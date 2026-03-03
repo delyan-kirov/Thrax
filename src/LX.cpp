@@ -20,6 +20,73 @@ is_white_space(
   }
 }
 
+// TODO: We may have functions as input params, but for now we
+// ignore this case
+// Functions can only have integer params in their signature
+std::pair<LX::E, LX::Sig>
+parse_sig(
+  UT::Vec<UT::String> &types, AR::Arena &arena, const size_t idx)
+{
+  Sig sig{};
+
+  // TODO: Don't hardcode types like that
+  if ("C_int" == types[idx])
+  {
+    if (idx == types.m_len - 1)
+    {
+      sig.m_type = LX::LangType::Int;
+    }
+    else
+    {
+      sig.m_type            = LangType::Fn;
+      UT::Pair<Sig> *pair   = &sig.as.m_pair;
+      *pair                 = { arena };
+      pair->begin()->m_type = LX::LangType::Int;
+      *pair->last()         = parse_sig(types, arena, idx + 1).second;
+      sig.as.m_pair         = *pair;
+    }
+  }
+  else if ("C_void" == types[idx])
+  {
+    if (idx == types.m_len - 1)
+    {
+      sig.m_type = LX::LangType::Void;
+    }
+    else
+    {
+      sig.m_type            = LangType::Fn;
+      UT::Pair<Sig> *pair   = &sig.as.m_pair;
+      *pair                 = { arena };
+      pair->begin()->m_type = LX::LangType::Void;
+      *pair->last()         = parse_sig(types, arena, idx + 1).second;
+      sig.as.m_pair         = *pair;
+    }
+  }
+  else if ("C_str" == types[idx])
+  {
+    if (idx == types.m_len - 1)
+    {
+      // TODO: The pointer should indicate what it points to
+      sig.m_type = LX::LangType::Ptr;
+    }
+    else
+    {
+      sig.m_type          = LangType::Fn;
+      UT::Pair<Sig> *pair = &sig.as.m_pair;
+      *pair               = { arena };
+      // TODO: this should also include the type behind the pointer
+      pair->begin()->m_type = LX::LangType::Ptr;
+      *pair->last()         = parse_sig(types, arena, idx + 1).second;
+      sig.as.m_pair         = *pair;
+    }
+  }
+  else
+  {
+    // TODO: Think how to handle the other cases
+  }
+  return std::pair{ LX::E::OK, sig };
+}
+
 bool
 delimits_word(
   char c)
@@ -510,18 +577,16 @@ Lexer::run()
 
         UT::String sym_name = this->get_word(this->m_cursor);
 
-        LX_ASSERT("" != sym_name,
-                  E::WORD_NOT_FOUND); // TODO: use a different error
+        // TODO: use a different error
+        LX_ASSERT("" != sym_name, E::WORD_NOT_FOUND);
 
         LX_FN_TRY(this->match_operator('='));
 
-        Lexer new_lexer{
-          this->m_input, this->m_arena, this->m_cursor, next_symbol_idx
-        };
+        Lexer new_lexer{ m_input, m_arena, m_cursor, next_symbol_idx };
         LX_FN_TRY(new_lexer.run());
 
         // TODO: candidate for refactor
-        Token symbol{ "int" == word ? Type::IntDef : Type::ExtDef };
+        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef };
         symbol.m_cursor            = new_lexer.m_cursor;
         symbol.m_line              = new_lexer.m_lines;
         symbol.as.m_sym.m_def      = new_lexer.m_tokens;
@@ -549,8 +614,8 @@ Lexer::run()
 
         // TODO: Token should have an end
         Token token{ Type::Let };
-        token.m_line                          = this->m_lines;
-        token.m_cursor                        = this->m_cursor;
+        token.m_line                       = this->m_lines;
+        token.m_cursor                     = this->m_cursor;
         token.as.m_let_tokens.m_var_name   = var_name;
         token.as.m_let_tokens.m_let_tokens = let_lexer.m_tokens;
         token.as.m_let_tokens.m_in_tokens  = in_lexer.m_tokens;
@@ -619,6 +684,60 @@ Lexer::run()
 
         UT_TRACE("While expression tokenized: %s", UT_TCS(token));
         if (E::IN_KEYWORD == e || e == E::ELSE_KEYWORD) return e;
+      }
+      else if (this->match_keyword(LX::Keyword::EXT, word))
+      {
+        size_t next_symbol_idx;
+        E      e = this->find_next_global_symbol(next_symbol_idx);
+        if (E::WORD_NOT_FOUND == e) next_symbol_idx = this->m_end;
+
+        UT::String sym_name = this->get_word(this->m_cursor);
+
+        LX_ASSERT("" != sym_name,
+                  E::WORD_NOT_FOUND); // TODO: use a different error
+
+        LX_FN_TRY(this->match_operator(':'));
+
+        Lexer sig_lexer{ m_input, m_arena, m_cursor, next_symbol_idx };
+        UT::Vec<UT::String> types{ m_arena };
+        UT::String          type{};
+        e = E::OK;
+
+        while (E::OK == e)
+        {
+          type = sig_lexer.get_word(sig_lexer.m_cursor);
+          LX_ASSERT("" != type, E::UNRECOGNIZED_STRING);
+          types.push(type);
+          e = sig_lexer.match_operator("->");
+        }
+
+        auto parse_result = parse_sig(types, m_arena, 0);
+
+        // TODO : Use better error
+        LX_ASSERT(E::OK == parse_result.first, E::CONTROL_STRUCTURE_ERROR);
+        Sig sig = parse_result.second;
+
+        // TODO: parse this
+        // LX_FN_TRY(sig_lexer.match_operator('='));
+
+        // UT_FAIL_IF("here");
+
+        sig_lexer.run();
+        Tokens sym_defs{ m_arena };
+        sym_defs.push(sig_lexer.m_tokens.last()->as.m_tokens[0]);
+        sym_defs.push(sig_lexer.m_tokens.last()->as.m_tokens[1]);
+
+        Token symbol{ Type::ExtDef };
+        symbol.as.m_ext_sym.m_name = sym_name;
+        symbol.as.m_ext_sym.m_sig  = sig;
+        symbol.as.m_ext_sym.m_def  = sym_defs;
+
+        // UT_VAR_INSP(symbol);
+        m_cursor = next_symbol_idx;
+        m_lines += sig_lexer.m_lines;
+
+
+        m_tokens.push(symbol);
       }
       else
       {
@@ -764,6 +883,22 @@ Lexer::match_operator(
   return E::OK;
 };
 
+E
+Lexer::match_operator(
+  UT::String s)
+{
+  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
+
+  this->strip_white_space(this->m_cursor - 1);
+  for (size_t idx = 0; idx < s.m_len; ++idx)
+  {
+    LX_ASSERT(s[idx] == this->next_char(), E::UNRECOGNIZED_STRING);
+  }
+
+  UT_TRACE("Successfully matched operator %c", c);
+  return E::OK;
+}
+
 // TODO: candidate for refactor
 void
 Lexer::strip_white_space(
@@ -839,7 +974,7 @@ Lexer::find_next_global_symbol(
     {
       search_lexer.strip_line(search_lexer.m_cursor);
     }
-    if ("int" == next_word || "pub" == next_word)
+    if ("int" == next_word || "pub" == next_word || "ext" == next_word)
     {
       /*
          Need to return the cursor just before

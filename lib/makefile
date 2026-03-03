@@ -1,15 +1,17 @@
-PROJECT_DIR = /home/dk/Projects/BC/
+PROJECT_NAME = Thrax
+PROJECT_DIR = /home/dk/Projects/$(PROJECT_NAME)/
 PREFIX ?= $(PROJECT_DIR)bin/
 
 FFI_HEADER = $(PROJECT_DIR)inc/ffi.h
 FFI_TARGET_HEADER = $(PROJECT_DIR)inc/ffitarget.h
 
 LIBFFI_OBJ = $(PREFIX)lib64/libffi.so
-LIBFFI_DIR = /home/dk/Projects/BC/lib/libffi/
+LIBFFI_DIR = $(PROJECT_DIR)lib/libffi/
 LIBFFI_BLD = $(LIBFFI_DIR)x86_64-pc-linux-gnu/include/ffi.h
 LIBFFI_CONFIG = $(LIBFFI_DIR).configured
 
-RAYLIB_BLD = $(PROJECT_DIR)lib/raylib/build/
+RAYLIB_SRC = $(PROJECT_DIR)lib/raylib/
+RAYLIB_BLD = $(RAYLIB_SRC)build/
 RAYLIB_HEADER = $(PROJECT_DIR)inc/raylib.h
 RAYLIB_OBJ = $(PROJECT_DIR)bin/raylib.so
 
@@ -27,6 +29,7 @@ all: $(ffitargets) $(raytargets)
 clean:
 	rm -rf $(LIBFFI_DIR)x86_64-pc-linux-gnu/
 	rm -f $(LIBFFI_DIR).configured
+	rm -rf $(RAYLIB_BLD)
 
 $(LIBFFI_CONFIG):
 	cd $(LIBFFI_DIR) && ./configure --prefix=$(PREFIX)
@@ -35,13 +38,9 @@ $(LIBFFI_CONFIG):
 $(LIBFFI_BLD): $(LIBFFI_CONFIG)
 	$(MAKE) -C $(LIBFFI_DIR)
 
-configure_raylib:
-	cd $(PROJECT_DIR)lib/raylib/ \
-	&& rm -rf build \
-	&& mkdir build
-
-$(RAYLIB_BLD): configure_raylib
-	cd $(PROJECT_DIR)lib/raylib/build \
+$(RAYLIB_BLD):
+	mkdir -p $(RAYLIB_BLD) \
+	&& cd $(RAYLIB_BLD) \
 	&& cmake -DPLATFORM=Desktop -DBUILD_SHARED_LIBS=ON .. \
 	&& $(MAKE)
 

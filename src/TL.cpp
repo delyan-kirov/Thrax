@@ -5,8 +5,10 @@
 #include "ffi.h"
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <dlfcn.h>
 #include <map>
+#include <stdio.h>
 #include <string>
 #include <unistd.h>
 #include <utility>
@@ -15,9 +17,7 @@
 namespace TL
 {
 
-// FIXME : just don't do it like that
-constexpr const char *RAYLIB_PATH = "./bin/libraylib.so";
-using FnMap_t                     = std::map<std::string, void *>;
+using FnMap_t = std::map<std::string, void *>;
 class DFN
 {
 public:
@@ -33,11 +33,17 @@ public:
         m_in_types{ in_types },
         m_out_type{ out_type }
   {
-    if (!m_handle) m_handle = dlopen(RAYLIB_PATH, RTLD_LAZY | RTLD_LOCAL);
+  }
+
+  static void
+  init(
+    UT::String lib_path)
+  {
+    if (!m_handle) m_handle = dlopen(lib_path.m_mem, RTLD_LAZY | RTLD_LOCAL);
   }
 
   void
-  init(
+  configure(
     void)
   {
     if (m_fn_map.end() == m_fn_map.find(std::string(m_fn_name)))
@@ -58,11 +64,11 @@ public:
     }
   }
 
-  void
+  static void
   deinit(
     void)
   {
-    // if (m_handle) dlclose(m_handle);
+    if (m_handle) dlclose(m_handle);
   }
 
   bool
@@ -92,42 +98,29 @@ public:
 void   *DFN::m_handle = nullptr;
 FnMap_t DFN::m_fn_map = {};
 
-// InitWindow: void InitWindow(int, int, char*)
-const ffi_type *init_window_in_types[3]
-  = { &ffi_type_sint, &ffi_type_sint, &ffi_type_pointer };
+static std::map<std::string, DFN *> raylib_functions = {};
 
-DFN init_window_fn{ "InitWindow",
-                    (ffi_type **)init_window_in_types,
-                    &ffi_type_void };
+std::vector<LX::LangType>
+expand_signature(
+  LX::Sig &sig)
+{
+  std::vector<LX::LangType> expansion{};
 
-DFN window_should_close_fn{ "WindowShouldClose", nullptr, &ffi_type_sint };
+  if (LX::LangType::Fn == sig.m_type)
+  {
+    expansion.push_back(sig.as.m_pair.first().m_type);
+    LX::Sig                   left_sig       = sig.as.m_pair.second();
+    std::vector<LX::LangType> left_expansion = expand_signature(left_sig);
+    expansion.insert(
+      expansion.end(), left_expansion.begin(), left_expansion.end());
+  }
+  else
+  {
+    expansion.push_back(sig.m_type);
+  }
 
-DFN get_key_pressed_fn{ "GetKeyPressed", nullptr, &ffi_type_sint };
-
-const ffi_type *set_target_fps_types[1] = { &ffi_type_sint };
-DFN             set_target_fps_fn{ "SetTargetFPS",
-                       (ffi_type **)set_target_fps_types,
-                       &ffi_type_void };
-
-DFN begin_drawing_fn{ "BeginDrawing", nullptr, &ffi_type_void };
-
-DFN end_drawing_fn{ "EndDrawing", nullptr, &ffi_type_void };
-
-const ffi_type *clear_background_in_types[1] = { &ffi_type_uint32 };
-
-DFN clear_background_fn{ "ClearBackground",
-                         (ffi_type **)clear_background_in_types,
-                         &ffi_type_void };
-
-const std::map<std::string, DFN *> raylib_functions = {
-  { "init_window", &init_window_fn },
-  { "window_should_close", &window_should_close_fn },
-  { "begin_drawing", &begin_drawing_fn },
-  { "end_drawing", &end_drawing_fn },
-  { "set_target_fps", &set_target_fps_fn },
-  { "get_key_pressed", &get_key_pressed_fn },
-  { "clear_background", &clear_background_fn },
-};
+  return expansion;
+}
 
 Mod::Mod(
   UT::String file_name, AR::Arena &arena)
@@ -147,9 +140,60 @@ Mod::Mod(
     TL::Type def_type = TL::Type::ExtDef;
     switch (t.m_type)
     {
-    case LX::Type::ExtDef: def_type = TL::Type::ExtDef; break;
+    // TODO: this should be handled better
+    case LX::Type::PubDef: def_type = TL::Type::PubDef; break;
     case LX::Type::IntDef: def_type = TL::Type::IntDef; break;
+    case LX::Type::ExtDef: def_type = TL::Type::ExtDef; break;
     default              : UT_FAIL_MSG("UNREACHABLE token type: %s", UT_TCS(t.m_type));
+    }
+
+    // TODO: this should be handled better
+    if (LX::Type::ExtDef == t.m_type)
+    {
+      LX::Sig sig = t.as.m_ext_sym.m_sig;
+      DFN::init(t.as.m_ext_sym.m_def[1].as.m_string);
+
+      if (LX::LangType::Fn == sig.m_type)
+      {
+        // TODO: It is assumed C functions are simple (Type, Type, Type) -> Type
+        // where Type is not a function type or a structure or union
+        // ie, it is a primitive, or effectively an alias to a primitive
+        auto expansion = expand_signature(sig);
+
+        size_t idx = 0;
+        auto   sig_in_types
+          = (ffi_type **)arena.alloc<ffi_type *>(expansion.size() - 1);
+        ffi_type *sig_out_types = nullptr;
+
+        for (size_t i = 0; i < expansion.size() - 1; ++i)
+        {
+          LX::LangType t = expansion[i];
+          // TODO: Handle all other cases
+          switch (t)
+          {
+          case LX::LangType::Ptr : sig_in_types[idx] = &ffi_type_pointer; break;
+          case LX::LangType::Void: sig_in_types[idx] = &ffi_type_void; break;
+          default                : sig_in_types[idx] = &ffi_type_sint; break;
+          }
+          idx += 1;
+        }
+
+        switch (expansion.back())
+        {
+        case LX::LangType::Ptr : sig_out_types = &ffi_type_pointer; break;
+        case LX::LangType::Void: sig_out_types = &ffi_type_void; break;
+        default                : sig_out_types = &ffi_type_sint; break;
+        }
+
+        auto sym = (DFN *)arena.alloc(sizeof(DFN));
+        *sym     = { t.as.m_ext_sym.m_def[0].as.m_string.m_mem,
+                     sig_in_types,
+                     sig_out_types };
+
+        raylib_functions[std::to_string(t.as.m_ext_sym.m_name)] = sym;
+      }
+
+      continue;
     }
 
     UT::String def_name   = t.as.m_sym.m_sym_name;
@@ -178,6 +222,8 @@ Mod::Mod(
   {
     std::printf("INFO: %s -> %s\n", it->first.c_str(), UT_TCS(it->second));
   }
+
+  DFN::deinit();
 }
 
 static Instance
@@ -238,15 +284,17 @@ eval(
              != raylib_functions.find(std::to_string(var_name)))
     {
       DFN raylib_fn = *raylib_functions.find(var_name.m_mem)->second;
-      raylib_fn.init();
+      raylib_fn.configure();
       AR::Arena output_arena{};
 
       // FIXME: assume output fits in 64 bytes
-      void               *output = output_arena.alloc(64);
+      void *output = output_arena.alloc(64);
+
+      // The output might never be written to so 0 init
+      std::memset(output, 0, 64);
       std::vector<void *> _input;
 
       raylib_fn.call(_input, output);
-      raylib_fn.deinit();
 
       // FIXME: Don't assume the function only returns ints
       EX::Expr int_expr{ EX::Type::Int };
@@ -322,7 +370,7 @@ eval(
     else if (raylib_functions.end() != is_raylib)
     {
       DFN raylib_fn = *raylib_functions.find(fn_name.c_str())->second;
-      raylib_fn.init();
+      raylib_fn.configure();
 
       AR::Arena           input_buffer{};
       std::vector<void *> input;
@@ -358,8 +406,8 @@ eval(
         }
       }
 
-      raylib_fn.call(input, output);
-      raylib_fn.deinit();
+      bool ok = raylib_fn.call(input, output);
+      (void)ok;
 
       Instance app_instance{ fndef, env };
       app_instance.m_expr.m_type   = EX::Type::Int;

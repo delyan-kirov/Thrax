@@ -46,6 +46,12 @@
 
 #define UT_TCS(o) (std::to_string(o).c_str())
 
+#define UT_VAR_INSP(UT_VAR)                                                    \
+  do                                                                           \
+  {                                                                            \
+    UT_FAIL_MSG("INFO (%s)", UT_TCS(UT_VAR));                                  \
+  } while (false)
+
 #define ARRAY_LEN(UT_ARRAY_OBJ)                                                \
   (sizeof(UT_ARRAY_OBJ) / (sizeof(UT_ARRAY_OBJ[0])))
 
