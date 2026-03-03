@@ -7,3 +7,7 @@ Low level, expression based language.
 ```sh
 make
 ```
+
+## Raylib demo
+
+![Demo GIF](lib/blobs/raylib-demo.gif)

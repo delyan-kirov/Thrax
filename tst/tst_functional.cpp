@@ -2,11 +2,8 @@
 #include "UT.hpp"
 #include <cstdio>
 
-constexpr UT::String sut_file        = "./dat/addition.se";
-constexpr UT::String sut_file_basic  = "./dat/basic.se";
-constexpr UT::String sut_file_raylib = "./dat/raylib.se";
-
-constexpr bool RUN = false;
+constexpr UT::String sut_file_basic  = "./dat/basic.thr";
+constexpr UT::String sut_file_raylib = "./dat/raylib.thr";
 
 constexpr bool RUN_BASIC =
 #if GIT_ACTION_CTX
@@ -27,11 +24,7 @@ main()
 {
   AR::Arena arena{};
 
-  if (RUN)
-  {
-    TL::Mod mod(sut_file, arena);
-  }
-  else if (RUN_BASIC)
+  if (RUN_BASIC)
   {
     TL::Mod mod_basic(sut_file_basic, arena);
   }

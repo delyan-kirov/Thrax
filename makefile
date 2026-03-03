@@ -8,6 +8,9 @@ TST = tst/
 CFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -O1 
 ifdef GIT_ACTION_CTX
 CFLAGS += -DGIT_ACTION_CTX=1
+else
+RAYLIB_ENABLED ?= 1
+export RAYLIB_ENABLED
 endif
 
 CC = clang++ $(CFLAGS) -I$(INC)
@@ -29,42 +32,42 @@ test: $(BIN)tst_mult $(BIN)tst_functional
 	@$(BIN)tst_functional
 
 #------------------------------OBJC-----------------------------
-BCsrc = \
+THRAXsrc = \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
 	$(SRC)TL.cpp
 
-BCinc = \
+THRAXinc = \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
 	$(INC)EX.hpp \
 	$(INC)TL.hpp
 
-BC = $(BIN)bc.so
+THRAX = $(BIN)thrax.so
 
-# $(BIN)main: $(BC)
+# $(BIN)main: $(THRAX)
 # 	$(CC) $(SRC)main.cpp -o $@ $^
 
-$(BC): $(BCinc) $(BCsrc)
-	$(CC) $(CFSO) $(BCsrc) $(LIBS) -o $@
+$(THRAX): $(THRAXinc) $(THRAXsrc)
+	$(CC) $(CFSO) $(THRAXsrc) $(LIBS) -o $@
 
 #-----------------------------TEST------------------------------
 
-$(BIN)tst_mult: $(TST)tst_mult.cpp $(BC)
-	$(CC) $(BC) $(TST)tst_mult.cpp $(LIBS) -o $@
+$(BIN)tst_mult: $(TST)tst_mult.cpp $(THRAX)
+	$(CC) $(THRAX) $(TST)tst_mult.cpp $(LIBS) -o $@
 
-$(BIN)tst_functional: $(TST)tst_functional.cpp $(BC) 
-	$(CC) $(BC) $(TST)tst_functional.cpp $(LIBS) -o $@
+$(BIN)tst_functional: $(TST)tst_functional.cpp $(THRAX) 
+	$(CC) $(THRAX) $(TST)tst_functional.cpp $(LIBS) -o $@
 
 #-----------------------------CMND------------------------------
 COMMANDS = clean bear test init list format valgrind gf2 trace executables tokei
 .PHONY: COMMANDS
 
-executables: $(BC)
+executables: $(THRAX)
 	@true
 
 trace: CFLAGS += -DTRACE_ENABLED
-trace: clean $(BC)
+trace: clean $(THRAX)
 	make
 
 debug:

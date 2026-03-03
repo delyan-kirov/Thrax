@@ -7,6 +7,7 @@
 
 #define TL_TypeEnumVariants                                                    \
   X(IntDef)                                                                    \
+  X(PubDef)                                                                    \
   X(ExtDef)
 
 namespace TL

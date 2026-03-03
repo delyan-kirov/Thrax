@@ -28,6 +28,7 @@ constexpr UT::String ELSE{ "else" };
 constexpr UT::String INT{ "int" };
 constexpr UT::String PUB{ "pub" };
 constexpr UT::String WHILE{ "while" };
+constexpr UT::String EXT{ "ext" };
 
 } // namespace Keyword
 
@@ -125,10 +126,11 @@ struct ErrorE : public ER::E
   X(Word)                                                                      \
   X(If)                                                                        \
   X(IntDef)                                                                    \
-  X(ExtDef)                                                                    \
+  X(PubDef)                                                                    \
   X(Not)                                                                       \
   X(Str)                                                                       \
   X(While)                                                                     \
+  X(ExtDef)                                                                    \
   X(Max)
 
 enum class Type
@@ -169,6 +171,46 @@ struct SymDef
   Tokens     m_def;
 };
 
+#define LX_LangType_ENUM_VARIANTS                                              \
+  X(Fn)                                                                        \
+  X(Nat)                                                                       \
+  X(Nat8)                                                                      \
+  X(Nat16)                                                                     \
+  X(Nat32)                                                                     \
+  X(Nat64)                                                                     \
+  X(Int)                                                                       \
+  X(Int8)                                                                      \
+  X(Int16)                                                                     \
+  X(Int32)                                                                     \
+  X(Int64)                                                                     \
+  X(Ptr)                                                                       \
+  X(Void)
+
+enum class LangType
+{
+#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
+  LX_LangType_ENUM_VARIANTS
+#undef X
+};
+
+// NOTE: T -> (T -> (T -> T))
+//   is: T -> T -> T -> T
+struct Sig
+{
+  LangType m_type;
+  union
+  {
+    UT::Pair<Sig> m_pair;
+  } as;
+};
+
+struct ExtSym
+{
+  UT::String m_name;
+  Sig        m_sig;
+  Tokens     m_def;
+};
+
 struct While
 {
   Tokens m_condition;
@@ -188,6 +230,8 @@ struct Token
     Fn         m_fn;
     SymDef     m_sym;
     While      m_while;
+    ExtSym     m_ext_sym;
+    Sig        m_sig;
     UT::String m_string;
     ssize_t    m_int = 0;
   } as;
@@ -317,6 +361,8 @@ public:
 
   E match_operator(char c);
 
+  E match_operator(UT::String s);
+
   UT::String get_word(size_t idx);
 
   bool match_keyword(UT::String keyword, UT::String word);
@@ -357,6 +403,47 @@ to_string(
   UT_FAIL_IF("UNREACHABLE");
   return "";
 };
+
+inline string
+to_string(
+  LX::LangType lang_type)
+{
+  switch (lang_type)
+  {
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+    LX_LangType_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_MSG("Got unexpected type %d", lang_type);
+  return "";
+}
+
+// TODO: Knowing what type I need from the union is not obvious.
+// There should be a better way to do it
+inline string
+to_string(
+  LX::Sig sig)
+{
+  switch (sig.m_type)
+  {
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::LangType::LX_ENUM_VALUE:                                            \
+    if constexpr (LX::LangType::LX_ENUM_VALUE == LX::LangType::Fn)             \
+    {                                                                          \
+      UT::Pair<LX::Sig> pair = sig.as.m_pair;                                  \
+      return to_string(pair.first()) + " -> " + to_string(pair.second());      \
+    }                                                                          \
+    return to_string(sig.m_type);
+    LX_LangType_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_MSG("Unreachable variant %d\n", sig.m_type);
+
+  return "";
+}
 
 inline string
 to_string(
@@ -438,7 +525,7 @@ to_string(
   {
     return to_string(t.as.m_tokens);
   }
-  case LX::Type::ExtDef:
+  case LX::Type::PubDef:
   {
     return "pub " + to_string(t.as.m_sym.m_sym_name) + " = "
            + to_string(t.as.m_sym.m_def);
@@ -460,6 +547,13 @@ to_string(
   {
     return "while " + to_string(t.as.m_while.m_condition) + " "
            + to_string(t.as.m_while.m_body);
+  }
+  case LX::Type::ExtDef:
+  {
+    auto ext_sym = t.as.m_ext_sym;
+
+    return "ext " + to_string(ext_sym.m_name) + ": " + to_string(ext_sym.m_sig)
+           + " = " + to_string(ext_sym.m_def);
   }
   }
   UT_FAIL_IF("UNREACHABLE");
