@@ -5,6 +5,7 @@
 #include "ffi.h"
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <dlfcn.h>
 #include <map>
 #include <stdio.h>
@@ -16,9 +17,7 @@
 namespace TL
 {
 
-// FIXME : just don't do it like that
-constexpr const char *RAYLIB_PATH = "./bin/raylib.so";
-using FnMap_t                     = std::map<std::string, void *>;
+using FnMap_t = std::map<std::string, void *>;
 class DFN
 {
 public:
@@ -34,11 +33,17 @@ public:
         m_in_types{ in_types },
         m_out_type{ out_type }
   {
-    if (!m_handle) m_handle = dlopen(RAYLIB_PATH, RTLD_LAZY | RTLD_LOCAL);
+  }
+
+  static void
+  init(
+    UT::String lib_path)
+  {
+    if (!m_handle) m_handle = dlopen(lib_path.m_mem, RTLD_LAZY | RTLD_LOCAL);
   }
 
   void
-  init(
+  configure(
     void)
   {
     if (m_fn_map.end() == m_fn_map.find(std::string(m_fn_name)))
@@ -59,11 +64,11 @@ public:
     }
   }
 
-  void
+  static void
   deinit(
     void)
   {
-    // if (m_handle) dlclose(m_handle);
+    if (m_handle) dlclose(m_handle);
   }
 
   bool
@@ -142,11 +147,12 @@ Mod::Mod(
     default              : UT_FAIL_MSG("UNREACHABLE token type: %s", UT_TCS(t.m_type));
     }
 
+    // TODO: this should be handled better
     if (LX::Type::ExtDef == t.m_type)
     {
-      // TODO: this should be handled better
-
       LX::Sig sig = t.as.m_ext_sym.m_sig;
+      DFN::init(t.as.m_ext_sym.m_def[1].as.m_string);
+
       if (LX::LangType::Fn == sig.m_type)
       {
         // TODO: It is assumed C functions are simple (Type, Type, Type) -> Type
@@ -216,6 +222,8 @@ Mod::Mod(
   {
     std::printf("INFO: %s -> %s\n", it->first.c_str(), UT_TCS(it->second));
   }
+
+  DFN::deinit();
 }
 
 static Instance
@@ -276,15 +284,17 @@ eval(
              != raylib_functions.find(std::to_string(var_name)))
     {
       DFN raylib_fn = *raylib_functions.find(var_name.m_mem)->second;
-      raylib_fn.init();
+      raylib_fn.configure();
       AR::Arena output_arena{};
 
       // FIXME: assume output fits in 64 bytes
-      void               *output = output_arena.alloc(64);
+      void *output = output_arena.alloc(64);
+
+      // The output might never be written to so 0 init
+      std::memset(output, 0, 64);
       std::vector<void *> _input;
 
       raylib_fn.call(_input, output);
-      raylib_fn.deinit();
 
       // FIXME: Don't assume the function only returns ints
       EX::Expr int_expr{ EX::Type::Int };
@@ -360,7 +370,7 @@ eval(
     else if (raylib_functions.end() != is_raylib)
     {
       DFN raylib_fn = *raylib_functions.find(fn_name.c_str())->second;
-      raylib_fn.init();
+      raylib_fn.configure();
 
       AR::Arena           input_buffer{};
       std::vector<void *> input;
@@ -398,7 +408,6 @@ eval(
 
       bool ok = raylib_fn.call(input, output);
       (void)ok;
-      raylib_fn.deinit();
 
       Instance app_instance{ fndef, env };
       app_instance.m_expr.m_type   = EX::Type::Int;

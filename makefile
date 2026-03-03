@@ -8,6 +8,9 @@ TST = tst/
 CFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -O1 
 ifdef GIT_ACTION_CTX
 CFLAGS += -DGIT_ACTION_CTX=1
+else
+RAYLIB_ENABLED ?= 1
+export RAYLIB_ENABLED
 endif
 
 CC = clang++ $(CFLAGS) -I$(INC)
