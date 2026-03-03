@@ -1,11 +1,12 @@
-PROJECT_DIR = /home/dk/Projects/BC/
+PROJECT_NAME = Thrax
+PROJECT_DIR = /home/dk/Projects/$(PROJECT_NAME)/
 PREFIX ?= $(PROJECT_DIR)bin/
 
 FFI_HEADER = $(PROJECT_DIR)inc/ffi.h
 FFI_TARGET_HEADER = $(PROJECT_DIR)inc/ffitarget.h
 
 LIBFFI_OBJ = $(PREFIX)lib64/libffi.so
-LIBFFI_DIR = /home/dk/Projects/BC/lib/libffi/
+LIBFFI_DIR = $(PROJECT_DIR)lib/libffi/
 LIBFFI_BLD = $(LIBFFI_DIR)x86_64-pc-linux-gnu/include/ffi.h
 LIBFFI_CONFIG = $(LIBFFI_DIR).configured
 
@@ -28,6 +29,7 @@ all: $(ffitargets) $(raytargets)
 clean:
 	rm -rf $(LIBFFI_DIR)x86_64-pc-linux-gnu/
 	rm -f $(LIBFFI_DIR).configured
+	rm -rf $(RAYLIB_BLD)
 
 $(LIBFFI_CONFIG):
 	cd $(LIBFFI_DIR) && ./configure --prefix=$(PREFIX)
