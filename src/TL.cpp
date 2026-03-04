@@ -3,15 +3,9 @@
 #include "LX.hpp"
 #include "UT.hpp"
 #include "ffi.h"
-#include <cstddef>
-#include <cstdio>
-#include <cstring>
 #include <dlfcn.h>
 #include <map>
-#include <stdio.h>
 #include <string>
-#include <unistd.h>
-#include <utility>
 #include <vector>
 
 namespace TL

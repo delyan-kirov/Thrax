@@ -104,12 +104,14 @@ endif
 clean:
 	rm -f tmp.*
 	rm -f vgcore*
+	rm -f *.orig
 	rm -rf $(BIN)*
 	$(MAKE) -C ./lib clean
 
 clean_wkspace:
 	rm -f tmp.*
 	rm -f vgcore*
+	rm -f *.orig
 	$(MAKE) -C ./lib clean
 
 bear:
