@@ -1,17 +1,22 @@
+/*-------------------------------------------------------------------------------
+ *\file TL.hpp
+ *\info Header file for the translation layer
+ * *----------------------------------------------------------------------------*/
+
 #ifndef TL_HEADER
 #define TL_HEADER
+
+/*------------------------------------------------------------------------------
+ *\INCLUDES
+ *-----------------------------------------------------------------------------*/
 
 #include "EX.hpp"
 #include "UT.hpp"
 #include <map>
 
-#define TL_TypeEnumVariants                                                    \
-  X(IntDef)                                                                    \
-  X(PubDef)                                                                    \
-  X(ExtDef)
-
 namespace TL
 {
+
 using Env = std::map<std::string, EX::Expr>;
 
 struct Instance
@@ -19,6 +24,11 @@ struct Instance
   EX::Expr m_expr;
   Env      m_env;
 };
+
+#define TL_TypeEnumVariants                                                    \
+  X(IntDef)                                                                    \
+  X(PubDef)                                                                    \
+  X(ExtDef)
 
 enum class Type
 {

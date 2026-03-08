@@ -1,12 +1,24 @@
+/*-------------------------------------------------------------------------------
+ *\file LX.cpp
+ *\info Lexer impl
+ * *----------------------------------------------------------------------------*/
+
+/*------------------------------------------------------------------------------
+ *\INCLUDES
+ *-----------------------------------------------------------------------------*/
+
 #include "LX.hpp"
 #include "UT.hpp"
-#include <cstdio>
 
 namespace LX
 {
 
 namespace
+/*-------------------------------------------------------------------------------
+ *\UTILS
+ *------------------------------------------------------------------------------*/
 {
+
 bool
 is_white_space(
   char c)
@@ -23,7 +35,7 @@ is_white_space(
 // TODO: We may have functions as input params, but for now we
 // ignore this case
 // Functions can only have integer params in their signature
-std::pair<LX::E, LX::Sig>
+std::pair<LX::E, Sig>
 parse_sig(
   UT::Vec<UT::String> &types, AR::Arena &arena, const size_t idx)
 {
@@ -34,32 +46,32 @@ parse_sig(
   {
     if (idx == types.m_len - 1)
     {
-      sig.m_type = LX::LangType::Int;
+      sig.type = LangType::Int;
     }
     else
     {
-      sig.m_type            = LangType::Fn;
-      UT::Pair<Sig> *pair   = &sig.as.m_pair;
-      *pair                 = { arena };
-      pair->begin()->m_type = LX::LangType::Int;
-      *pair->last()         = parse_sig(types, arena, idx + 1).second;
-      sig.as.m_pair         = *pair;
+      sig.type            = LangType::Fn;
+      UT::Pair<Sig> *pair = &sig.as.pair;
+      *pair               = { arena };
+      pair->begin()->type = LangType::Int;
+      *pair->last()       = parse_sig(types, arena, idx + 1).second;
+      sig.as.pair         = *pair;
     }
   }
   else if ("C_void" == types[idx])
   {
     if (idx == types.m_len - 1)
     {
-      sig.m_type = LX::LangType::Void;
+      sig.type = LangType::Void;
     }
     else
     {
-      sig.m_type            = LangType::Fn;
-      UT::Pair<Sig> *pair   = &sig.as.m_pair;
-      *pair                 = { arena };
-      pair->begin()->m_type = LX::LangType::Void;
-      *pair->last()         = parse_sig(types, arena, idx + 1).second;
-      sig.as.m_pair         = *pair;
+      sig.type            = LangType::Fn;
+      UT::Pair<Sig> *pair = &sig.as.pair;
+      *pair               = { arena };
+      pair->begin()->type = LangType::Void;
+      *pair->last()       = parse_sig(types, arena, idx + 1).second;
+      sig.as.pair         = *pair;
     }
   }
   else if ("C_str" == types[idx])
@@ -67,17 +79,17 @@ parse_sig(
     if (idx == types.m_len - 1)
     {
       // TODO: The pointer should indicate what it points to
-      sig.m_type = LX::LangType::Ptr;
+      sig.type = LangType::Ptr;
     }
     else
     {
-      sig.m_type          = LangType::Fn;
-      UT::Pair<Sig> *pair = &sig.as.m_pair;
+      sig.type            = LangType::Fn;
+      UT::Pair<Sig> *pair = &sig.as.pair;
       *pair               = { arena };
       // TODO: this should also include the type behind the pointer
-      pair->begin()->m_type = LX::LangType::Ptr;
-      *pair->last()         = parse_sig(types, arena, idx + 1).second;
-      sig.as.m_pair         = *pair;
+      pair->begin()->type = LangType::Ptr;
+      *pair->last()       = parse_sig(types, arena, idx + 1).second;
+      sig.as.pair         = *pair;
     }
   }
   else
@@ -119,15 +131,39 @@ delimits_word(
 
 } // namespace
 
+/*-------------------------------------------------------------------------------
+ *\IMPL (LX)
+ *------------------------------------------------------------------------------*/
+
+ErrorE::ErrorE(
+  AR::Arena  &arena,
+  const char *fn_name,
+  int         line,
+  const char *data,
+  LX::E       error)
+    : E{
+        ER::Level::ERROR,
+        0,
+        arena,
+        (void *)data,
+      }
+{
+  UT::SB sb{};
+  sb.concatf("[%s] %s ln(%d) %s", UT_TCS(error), fn_name, line, data);
+  UT::Vu<char> msg = UT::memcopy(*this->m_arena, sb.vu().m_mem);
+  this->m_data     = (void *)msg.m_mem;
+}
+
+E
+Lexer::operator()()
+{
+  return this->run();
+};
+
 bool
 Lexer::match_keyword(
   UT::String keyword, UT::String word)
 {
-  UT_BEGIN_TRACE(this->m_arena,
-                 this->m_events,
-                 "keyword = %s, word = %s",
-                 UT_TCS(keyword),
-                 UT_TCS(word));
   bool result = UT::strcompare(keyword, word);
   return result;
 }
@@ -136,11 +172,9 @@ Lexer::match_keyword(
 // FIXME: 'word=' does not work but it should
 // FIXME: bug when ignoring comments, see find_next_global_symbol
 UT::String
-LX::Lexer::get_word(
+Lexer::get_word(
   size_t idx)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "idx = %d", idx);
-
   UT::SB sb{};
   this->strip_white_space(idx);
   idx = this->m_cursor;
@@ -157,11 +191,9 @@ LX::Lexer::get_word(
 }
 
 LX::E
-LX::Lexer::find_matching_paren(
+Lexer::find_matching_paren(
   size_t &paren_match_idx)
 {
-  UT_BEGIN_TRACE(
-    this->m_arena, this->m_events, "paren_match_idx = %d", paren_match_idx);
   size_t stack = 1;
 
   for (size_t idx = this->m_cursor; idx < this->m_end; ++idx)
@@ -179,7 +211,6 @@ LX::Lexer::find_matching_paren(
     {
       paren_match_idx = idx;
 
-      UT_TRACE("Found matching paren at: %d", this->m_cursor);
       return LX::E::OK;
     }
   }
@@ -201,8 +232,6 @@ Lexer::next_char()
 LX::E
 Lexer::push_int()
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   int    result       = 0;
   size_t cursor       = this->m_cursor;
   size_t lines        = this->m_lines;
@@ -259,8 +288,8 @@ Lexer::push_int()
     result = parse_as_hex ? std::stoi(s.c_str(), nullptr, 16)
                           : std::stoi(s.c_str(), nullptr, 10);
 
-    LX::Token t{ LX::Type::Int };
-    t.as.m_int = result;
+    Token t{ Type::Int };
+    t.as.integer = result;
     this->m_tokens.push(t);
   }
   catch (std::exception &e)
@@ -277,27 +306,23 @@ void
 Lexer::push_operator(
   char c)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
-  LX::Type t_type = LX::Type::Min;
+  Type t_type = Type::Min;
   switch (c)
   {
-  case '-': t_type = LX::Type::Minus; break;
-  case '+': t_type = LX::Type::Plus; break;
-  case '*': t_type = LX::Type::Mult; break;
-  case '/': t_type = LX::Type::Div; break;
-  case '%': t_type = LX::Type::Modulus; break;
+  case '-': t_type = Type::Minus; break;
+  case '+': t_type = Type::Plus; break;
+  case '*': t_type = Type::Mult; break;
+  case '/': t_type = Type::Div; break;
+  case '%': t_type = Type::Modulus; break;
   default : /* UNREACHABLE */ UT_FAIL_IF("UNERACHABLE");
   }
-  m_tokens.push(LX::Token{ t_type });
+  m_tokens.push(Token{ t_type });
 }
 
 // TODO: candidate for refactor
 LX::E
 Lexer::run()
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   for (char c = this->next_char(); //
        c;                          //
        c = this->next_char()       //
@@ -365,7 +390,7 @@ Lexer::run()
     break;
     case '!':
     {
-      Token not_token{ LX::Type::Not };
+      Token not_token{ Type::Not };
       m_tokens.push(not_token);
     }
     break;
@@ -379,7 +404,7 @@ Lexer::run()
 
       UT::String string = sb.to_String(m_arena);
       Token      string_token{ Type::Str };
-      string_token.as.m_string = string;
+      string_token.as.string = string;
 
       m_tokens.push(string_token);
     }
@@ -447,8 +472,8 @@ Lexer::run()
 
       LX_FN_TRY(this->find_matching_paren(group_end));
 
-      LX::Lexer new_l = LX::Lexer(*this, group_begin, group_end);
-      LX_FN_TRY(new_l.run());
+      Lexer new_l = Lexer(*this, group_begin, group_end);
+      LX_FN_TRY(new_l());
 
       this->push_group(new_l);
     }
@@ -499,16 +524,16 @@ Lexer::run()
       Lexer body_lexer{
         this->m_input, this->m_arena, this->m_cursor, this->m_end
       };
-      LX::E e = body_lexer.run();
+      LX::E e = body_lexer();
       LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
                 LX::E::CONTROL_STRUCTURE_ERROR);
 
       Token fn{};
-      fn.m_type             = Type::Fn;
-      fn.m_line             = this->m_lines;
-      fn.m_cursor           = this->m_cursor;
-      fn.as.m_fn.m_var_name = var_name;
-      fn.as.m_fn.m_body     = body_lexer.m_tokens;
+      fn.type             = Type::Fn;
+      fn.line             = this->m_lines;
+      fn.cursor           = this->m_cursor;
+      fn.as.fn.param_name = var_name;
+      fn.as.fn.body       = body_lexer.m_tokens;
 
       this->m_tokens.push(fn);
       this->skip_to(body_lexer);
@@ -560,16 +585,16 @@ Lexer::run()
       UT::String word = this->get_word(
         this->m_cursor - 1); // we already got the first char so go back 1
 
-      if (this->match_keyword(LX::Keyword::IN, word))
+      if (this->match_keyword(Keyword::IN, word))
       {
         return LX::E::IN_KEYWORD;
       }
-      else if (this->match_keyword(LX::Keyword::ELSE, word))
+      else if (this->match_keyword(Keyword::ELSE, word))
       {
         return LX::E::ELSE_KEYWORD;
       }
-      else if (this->match_keyword(LX::Keyword::INT, word)
-               || this->match_keyword(LX::Keyword::PUB, word))
+      else if (this->match_keyword(Keyword::INT, word)
+               || this->match_keyword(Keyword::PUB, word))
       {
         size_t next_symbol_idx;
         E      e = this->find_next_global_symbol(next_symbol_idx);
@@ -583,20 +608,20 @@ Lexer::run()
         LX_FN_TRY(this->match_operator('='));
 
         Lexer new_lexer{ m_input, m_arena, m_cursor, next_symbol_idx };
-        LX_FN_TRY(new_lexer.run());
+        LX_FN_TRY(new_lexer());
 
         // TODO: candidate for refactor
         Token symbol{ "int" == word ? Type::IntDef : Type::PubDef };
-        symbol.m_cursor            = new_lexer.m_cursor;
-        symbol.m_line              = new_lexer.m_lines;
-        symbol.as.m_sym.m_def      = new_lexer.m_tokens;
-        symbol.as.m_sym.m_sym_name = sym_name;
+        symbol.cursor      = new_lexer.m_cursor;
+        symbol.line        = new_lexer.m_lines;
+        symbol.as.sym.def  = new_lexer.m_tokens;
+        symbol.as.sym.name = sym_name;
 
         this->m_tokens.push(symbol);
         this->skip_to(new_lexer);
         this->m_cursor = next_symbol_idx;
       }
-      else if (this->match_keyword(LX::Keyword::LET, word))
+      else if (this->match_keyword(Keyword::LET, word))
       {
         UT::String var_name = this->get_word(this->m_cursor);
 
@@ -605,87 +630,85 @@ Lexer::run()
         Lexer let_lexer{
           this->m_input, this->m_arena, this->m_cursor, this->m_end
         };
-        LX_ASSERT(E::IN_KEYWORD == let_lexer.run(), E::CONTROL_STRUCTURE_ERROR);
+        LX_ASSERT(E::IN_KEYWORD == let_lexer(), E::CONTROL_STRUCTURE_ERROR);
 
         Lexer in_lexer{
           let_lexer.m_input, let_lexer.m_arena, let_lexer.m_cursor, this->m_end
         };
-        LX_FN_TRY(in_lexer.run());
+        LX_FN_TRY(in_lexer());
 
         // TODO: Token should have an end
         Token token{ Type::Let };
-        token.m_line                       = this->m_lines;
-        token.m_cursor                     = this->m_cursor;
-        token.as.m_let_tokens.m_var_name   = var_name;
-        token.as.m_let_tokens.m_let_tokens = let_lexer.m_tokens;
-        token.as.m_let_tokens.m_in_tokens  = in_lexer.m_tokens;
+        token.line            = this->m_lines;
+        token.cursor          = this->m_cursor;
+        token.as.binding.name = var_name;
+        token.as.binding.let  = let_lexer.m_tokens;
+        token.as.binding.in   = in_lexer.m_tokens;
 
         this->m_tokens.push(token);
         this->skip_to(in_lexer);
       }
-      else if (this->match_keyword(LX::Keyword::IF, word))
+      else if (this->match_keyword(Keyword::IF, word))
       {
         Lexer if_condition_lexer{
           this->m_input, this->m_arena, this->m_cursor, this->m_end
         };
-        LX_ASSERT(E::FAT_ARROW == if_condition_lexer.run(),
+        LX_ASSERT(E::FAT_ARROW == if_condition_lexer(),
                   E::OPERATOR_MATCH_FAILURE);
 
         Lexer true_branch_lexer{ if_condition_lexer.m_input,
                                  if_condition_lexer.m_arena,
                                  if_condition_lexer.m_cursor,
                                  this->m_end };
-        LX_ASSERT(E::ELSE_KEYWORD == true_branch_lexer.run(),
+        LX_ASSERT(E::ELSE_KEYWORD == true_branch_lexer(),
                   E::CONTROL_STRUCTURE_ERROR);
 
         Lexer else_branch_lexer{ true_branch_lexer.m_input,
                                  true_branch_lexer.m_arena,
                                  true_branch_lexer.m_cursor,
                                  this->m_end };
-        LX::E e = else_branch_lexer.run();
+        LX::E e = else_branch_lexer();
         LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
                   LX::E::CONTROL_STRUCTURE_ERROR);
 
         // TODO: candidate for refactor
         Token token{ Type::If };
-        token.as.m_if_tokens.m_condition   = if_condition_lexer.m_tokens;
-        token.as.m_if_tokens.m_true_branch = true_branch_lexer.m_tokens;
-        token.as.m_if_tokens.m_else_branch = else_branch_lexer.m_tokens;
+        token.as.if_else.condition   = if_condition_lexer.m_tokens;
+        token.as.if_else.true_branch = true_branch_lexer.m_tokens;
+        token.as.if_else.else_branch = else_branch_lexer.m_tokens;
 
         this->m_tokens.push(token);
         this->skip_to(else_branch_lexer);
 
-        UT_TRACE("If expression tokenized: %s", UT_TCS(token));
         if (E::IN_KEYWORD == e) return e;
       }
-      else if (this->match_keyword(LX::Keyword::WHILE, word))
+      else if (this->match_keyword(Keyword::WHILE, word))
       {
         Lexer condition_lexer{
           this->m_input, this->m_arena, this->m_cursor, this->m_end
         };
-        LX_ASSERT(E::FAT_ARROW == condition_lexer.run(),
+        LX_ASSERT(E::FAT_ARROW == condition_lexer(),
                   E::OPERATOR_MATCH_FAILURE);
 
         Lexer body_lexer{ condition_lexer.m_input,
                           condition_lexer.m_arena,
                           condition_lexer.m_cursor,
                           this->m_end };
-        LX::E e = body_lexer.run();
+        LX::E e = body_lexer();
         LX_ASSERT(e == E::ELSE_KEYWORD || e == E::IN_KEYWORD || e == E::OK,
                   E::CONTROL_STRUCTURE_ERROR);
 
         // TODO: candidate for refactor
         Token token{ Type::While };
-        token.as.m_while.m_condition = condition_lexer.m_tokens;
-        token.as.m_while.m_body      = body_lexer.m_tokens;
+        token.as.whyle.condition = condition_lexer.m_tokens;
+        token.as.whyle.body      = body_lexer.m_tokens;
 
         this->m_tokens.push(token);
         this->skip_to(body_lexer);
 
-        UT_TRACE("While expression tokenized: %s", UT_TCS(token));
         if (E::IN_KEYWORD == e || e == E::ELSE_KEYWORD) return e;
       }
-      else if (this->match_keyword(LX::Keyword::EXT, word))
+      else if (this->match_keyword(Keyword::EXT, word))
       {
         size_t next_symbol_idx;
         E      e = this->find_next_global_symbol(next_symbol_idx);
@@ -722,28 +745,27 @@ Lexer::run()
 
         // UT_FAIL_IF("here");
 
-        sig_lexer.run();
+        sig_lexer();
         Tokens sym_defs{ m_arena };
-        sym_defs.push(sig_lexer.m_tokens.last()->as.m_tokens[0]);
-        sym_defs.push(sig_lexer.m_tokens.last()->as.m_tokens[1]);
+        sym_defs.push(sig_lexer.m_tokens.last()->as.tokens[0]);
+        sym_defs.push(sig_lexer.m_tokens.last()->as.tokens[1]);
 
         Token symbol{ Type::ExtDef };
-        symbol.as.m_ext_sym.m_name = sym_name;
-        symbol.as.m_ext_sym.m_sig  = sig;
-        symbol.as.m_ext_sym.m_def  = sym_defs;
+        symbol.as.ext_sym.name = sym_name;
+        symbol.as.ext_sym.sig  = sig;
+        symbol.as.ext_sym.def  = sym_defs;
 
         // UT_VAR_INSP(symbol);
         m_cursor = next_symbol_idx;
         m_lines += sig_lexer.m_lines;
-
 
         m_tokens.push(symbol);
       }
       else
       {
         LX_ASSERT(word.m_len > 0, LX::E::UNRECOGNIZED_STRING);
-        LX::Token t{ LX::Type::Word };
-        t.as.m_string = word;
+        Token t{ Type::Word };
+        t.as.string = word;
         this->m_tokens.push(t);
       }
     }
@@ -853,11 +875,9 @@ void
 Lexer::subsume_sub_lexer(
   Lexer &l)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   for (auto t : l.m_tokens)
   {
-    LX::Token token{ t };
+    Token token{ t };
     this->m_tokens.push(token);
   }
   this->m_cursor = l.m_cursor;
@@ -874,12 +894,8 @@ E
 Lexer::match_operator(
   char c)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   this->strip_white_space(this->m_cursor - 1);
   LX_ASSERT(c == this->next_char(), E::UNRECOGNIZED_STRING);
-
-  UT_TRACE("Successfully matched operator %c", c);
   return E::OK;
 };
 
@@ -887,15 +903,12 @@ E
 Lexer::match_operator(
   UT::String s)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   this->strip_white_space(this->m_cursor - 1);
   for (size_t idx = 0; idx < s.m_len; ++idx)
   {
     LX_ASSERT(s[idx] == this->next_char(), E::UNRECOGNIZED_STRING);
   }
 
-  UT_TRACE("Successfully matched operator %c", c);
   return E::OK;
 }
 
@@ -904,8 +917,6 @@ void
 Lexer::strip_white_space(
   size_t idx)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "idx = %d", idx);
-
   char   c         = this->m_input[idx];
   size_t new_lines = 0;
 
@@ -925,8 +936,6 @@ void
 Lexer::strip_line(
   size_t idx)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "idx = %d", idx);
-
   char c = this->m_input[idx];
 
   while (c && '\n' != c)
@@ -943,8 +952,6 @@ void
 Lexer::push_group(
   Lexer l)
 {
-  UT_BEGIN_TRACE(this->m_arena, this->m_events, "{}", 0);
-
   Token t{ l.m_tokens };
   this->m_tokens.push(t);
   this->m_cursor = l.m_cursor + 1;
@@ -988,5 +995,77 @@ Lexer::find_next_global_symbol(
 
   return E::WORD_NOT_FOUND;
 }
+
+Lexer::Lexer(
+  const char *const input, AR::Arena &arena, size_t begin, size_t end)
+    : m_arena{ arena },
+      m_events{ arena },
+      m_input{ input },
+      m_tokens{ Tokens(arena) },
+      m_lines{ 0 },
+      m_cursor{ begin },
+      m_begin{ begin },
+      m_end{ end }
+{
+}
+Lexer::Lexer(
+  Lexer const &l)
+    : m_arena(l.m_arena),              //
+      m_events(std::move(l.m_events)), //
+      m_input{ l.m_input },            //
+      m_tokens(l.m_tokens),            //
+      m_lines(l.m_lines),              //
+      m_cursor(l.m_cursor),            //
+      m_begin(l.m_begin),              //
+      m_end(l.m_end)                   //
+{
+  for (size_t i = 0; i < l.m_events.m_len; ++i)
+  {
+    ER::E e = l.m_events[i];
+    this->m_events.push(e);
+  }
+};
+Lexer::Lexer(
+  Lexer const &l, size_t begin, size_t end)
+    : m_arena{ l.m_arena },
+      m_events(l.m_arena)
+{
+  this->m_begin  = l.m_begin;
+  this->m_end    = l.m_end;
+  this->m_cursor = l.m_cursor;
+  this->m_input  = l.m_input;
+  this->m_begin  = begin;
+  this->m_end    = end;
+  new (&this->m_tokens) Tokens{ l.m_arena };
+}
+Lexer::Lexer(
+  Lexer const &l, size_t begin)
+    : m_arena{ l.m_arena },
+      m_events(l.m_arena)
+{
+  this->m_begin  = l.m_begin;
+  this->m_end    = l.m_end;
+  this->m_cursor = l.m_cursor;
+  this->m_input  = l.m_input;
+  this->m_begin  = begin;
+  this->m_end    = l.m_end;
+  new (&this->m_tokens) Tokens{ l.m_arena };
+}
+void
+Lexer::skip_to(
+  Lexer const &l)
+{
+  this->m_cursor = l.m_cursor;
+  this->m_lines += l.m_lines;
+
+  for (auto e : l.m_events)
+  {
+    this->m_events.push(e);
+  }
+}
+
+/*-------------------------------------------------------------------------------
+ *\EOF
+ *------------------------------------------------------------------------------*/
 
 } // namespace LX

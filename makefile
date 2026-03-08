@@ -60,15 +60,11 @@ $(BIN)tst_functional: $(TST)tst_functional.cpp $(THRAX)
 	$(CC) $(THRAX) $(TST)tst_functional.cpp $(LIBS) -o $@
 
 #-----------------------------CMND------------------------------
-COMMANDS = clean bear test init list format valgrind gf2 trace executables tokei
+COMMANDS = clean bear test init list format valgrind gf2 executables tokei
 .PHONY: COMMANDS
 
 executables: $(THRAX)
 	@true
-
-trace: CFLAGS += -DTRACE_ENABLED
-trace: clean $(THRAX)
-	make
 
 debug:
 	gf2 $(BIN)tst_mult &
@@ -82,7 +78,7 @@ valgrind:
 	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_functional
 
 format:
-	find . -regex '.*\.\(cpp\|hpp\|c\|h\)$\' -exec clang-format -i {} + 
+	find . -maxdepth 1 -regex '.*\.\(cpp\|hpp\|c\|h\)$\' -exec clang-format -i {} + 
 
 all:
 	make
@@ -104,12 +100,14 @@ endif
 clean:
 	rm -f tmp.*
 	rm -f vgcore*
+	rm -f *.orig
 	rm -rf $(BIN)*
 	$(MAKE) -C ./lib clean
 
 clean_wkspace:
 	rm -f tmp.*
 	rm -f vgcore*
+	rm -f *.orig
 	$(MAKE) -C ./lib clean
 
 bear:

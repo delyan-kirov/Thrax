@@ -1,21 +1,20 @@
+/*-------------------------------------------------------------------------------
+ *\file XX.hpp
+ *\info Header file for Parser
+ * *----------------------------------------------------------------------------*/
+
 #ifndef EX_HEADER
 #define EX_HEADER
 
 #include "LX.hpp"
 #include "UT.hpp"
-#include <cstdint>
-#include <cstdio>
-#include <string>
 
 namespace EX
 {
 
-enum class E
-{
-  MIN = -1,
-  OK,
-  MAX
-};
+/*------------------------------------------------------------------------------
+ *\TYPES
+ *-----------------------------------------------------------------------------*/
 
 #define EX_Type_EnumVariants                                                   \
   X(Unknown)                                                                   \
@@ -47,28 +46,13 @@ enum class Type
 struct Expr;
 using Exprs = UT::Vec<Expr>;
 
-enum FnFlags : std::uint64_t
-{
-  MIN            = 0,
-  NONE           = 0,
-  FN_MUST_INLINE = 1 << 0,
-  MAX            = FN_MUST_INLINE,
-};
-
 struct FnDef
 {
-  FnFlags    m_flags;
   UT::String m_param;
   Expr      *m_body;
 
   FnDef() = default;
-  FnDef(
-    FnFlags flags, UT::String param, AR::Arena &arena)
-      : m_flags{ flags },
-        m_param{ param }
-  {
-    this->m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
-  }
+  FnDef(UT::String param, AR::Arena &arena);
 };
 
 struct If
@@ -77,6 +61,14 @@ struct If
   Expr *m_true_branch;
   Expr *m_else_branch;
 };
+
+enum class E
+{
+  MIN = -1,
+  OK,
+  MAX
+};
+
 
 struct FnApp
 {
@@ -122,37 +114,13 @@ struct Expr
   } as;
 
   Expr() = default;
-  Expr(Type type)
-      : m_type{ type } {};
-  Expr(
-    Type type, AR::Arena &arena)
-      : m_type{ type }
-  {
-    switch (type)
-    {
-    case Type::FnApp : this->as.m_fnapp.m_param = { arena }; break;
-    case Type::VarApp: this->as.m_varapp.m_param = { arena }; break;
-    case Type::FnDef:
-      this->as.m_fn.m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
-      break;
-    case Type::If:
-    {
-      this->as.m_if.m_condition   = (Expr *)arena.alloc<Expr>(1);
-      this->as.m_if.m_else_branch = (Expr *)arena.alloc<Expr>(1);
-      this->as.m_if.m_true_branch = (Expr *)arena.alloc<Expr>(1);
-    }
-    break;
-    case Type::Div:
-    case Type::Sub:
-    case Type::Modulus:
-    case Type::Mult:
-    case Type::IsEq:
-    case Type::Add    : this->as.m_pair = { arena }; break;
-    case Type::Minus  : this->as.m_expr = (Expr *)arena.alloc<Expr>(1); break;
-    default           : UT_FAIL_IF("Invalid type for this constructor");
-    }
-  };
+  Expr(Type type);
+  Expr(Type type, AR::Arena &arena);
 };
+
+/*-------------------------------------------------------------------------------
+ *\CLASSES
+ *------------------------------------------------------------------------------*/
 
 class Parser
 {
@@ -166,71 +134,25 @@ public:
   size_t           m_end;
   Exprs            m_exprs;
 
-  Parser(
-    LX::Lexer l)
-      : m_arena{ l.m_arena },
-        m_events{ std::move(l.m_events) },
-        m_input{ l.m_input },
-        m_tokens{ std::move(l.m_tokens) },
-        m_begin{ 0 },
-        m_end{ 0 },
-        m_exprs{ l.m_arena }
-  {
-    this->m_end = this->m_tokens.m_len;
-  };
+  Parser(LX::Lexer l);
 
-  Parser(LX::Tokens tokens, AR::Arena &arena, const char *input)
-      : m_arena{ arena },
-        m_events{ arena },
-        m_input{ input },
-        m_tokens{ tokens },
-        m_begin{ 0 },
-        m_end{ tokens.m_len },
-        m_exprs{ arena } {};
+  Parser(LX::Tokens tokens, AR::Arena &arena, const char *input);
 
-  Parser(EX::Parser old, size_t begin, size_t end)
-      : m_arena{ old.m_arena },   //
-        m_events{ old.m_arena },  //
-        m_input{ old.m_input },   //
-        m_tokens{ old.m_tokens }, //
-        m_begin{ begin },         //
-        m_end{ end },             //
-        m_exprs{ old.m_arena }    //
-  {};
+  Parser(EX::Parser old, size_t begin, size_t end);
 
-  Parser(EX::Parser &parent_parser, LX::Tokens &t)
-      : m_arena{ parent_parser.m_arena },  //
-        m_events{ parent_parser.m_arena }, //
-        m_input{ parent_parser.m_input },  //
-        m_tokens{ t },                     //
-        m_begin{ 0 },                      //
-        m_end{ t.m_len },                  //
-        m_exprs{ parent_parser.m_arena }   //
-  {};
+  Parser(EX::Parser &parent_parser, LX::Tokens &t);
 
   E run();
+
+  E operator()();
 
   E parse_binop(EX::Type type, size_t start, size_t end);
 
   E parse_max_precedence_arithmetic_op(EX::Type, size_t &idx);
+
   E parse_min_precedence_arithmetic_op(EX::Type, size_t &idx);
 
-  bool
-  match_token_type(
-    size_t start, const LX::Type type)
-  {
-    // NOTE: here, we NEED to check that start index is in bounds
-    LX::Type m_type = this->m_tokens[start].m_type;
-    if (this->m_tokens.m_len <= start)
-    {
-      return false; //
-    }
-    else
-    {
-      UT_FAIL_IF(LX::Type::Max <= m_type || LX::Type::Min >= m_type);
-      return type == m_type;
-    }
-  }
+  bool match_token_type(size_t start, const LX::Type type);
 
   template <typename... Args>
   bool
@@ -245,8 +167,13 @@ public:
 
 } // namespace EX
 
+/*-------------------------------------------------------------------------------
+ *\UTILS
+ *------------------------------------------------------------------------------*/
+
 namespace std
 {
+
 inline string
 to_string(
   EX::Type expr_type)
@@ -420,5 +347,9 @@ to_string(
          + ")";
 }
 } // namespace std
+
+/*-------------------------------------------------------------------------------
+ *\EOF
+ *------------------------------------------------------------------------------*/
 
 #endif // EX_HEADER

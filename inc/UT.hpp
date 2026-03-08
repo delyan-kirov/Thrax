@@ -861,12 +861,6 @@ to_string(
 
 namespace ER
 {
-constexpr bool TRACE_ENABLE =
-#if TRACE_ENABLED
-  true;
-#else
-  false;
-#endif
 
 enum class Level
 {
@@ -921,112 +915,6 @@ public:
 
   using UT::Vec<E>::push;
   using UT::Vec<E>::operator[];
-};
-
-#ifdef TRACE_ENABLED
-
-#define UT_BEGIN_TRACE(UT_ARENA, UT_EVENTS, UT_FORMAT, ...)                    \
-  ER::Trace trace{ __PRETTY_FUNCTION__, __FILE__, UT_ARENA, UT_EVENTS };       \
-  do                                                                           \
-  {                                                                            \
-    trace.log_entry(__LINE__, UT_FORMAT, __VA_ARGS__);                         \
-  } while (false)
-
-#define UT_TRACE(UT_FORMAT, ...) trace.logf(__LINE__, UT_FORMAT, __VA_ARGS__)
-
-#else
-
-#define UT_BEGIN_TRACE(UT_ARENA, UT_EVENTS, UT_FORMAT, ...)
-#define UT_TRACE(UT_FORMAT, ...)
-
-#endif
-
-#define UT_TRACE_ENTRY_ARROW " >>> "
-#define UT_TRACE_EXIT_ARROW " <<< "
-class Trace
-{
-public:
-  const char *m_fn_name;
-  const char *m_file_name;
-  AR::Arena  *m_arena;
-  Events     *m_event_log;
-
-  Trace(
-    const char *fn_name,
-    const char *file_name,
-    AR::Arena  &arena,
-    Events     &event_log)
-  {
-    if (TRACE_ENABLE)
-    {
-      this->m_fn_name   = fn_name;
-      this->m_file_name = file_name;
-      this->m_arena     = &arena;
-      this->m_event_log = &event_log;
-    }
-  };
-
-  ~Trace()
-  {
-    if (TRACE_ENABLE)
-    {
-      UT::SB sb{};
-      sb.concatf(
-        UT_TRACE_EXIT_ARROW "%s->%s", this->m_file_name, this->m_fn_name);
-      {
-        UT::String buffer_copy
-          = UT::strdup(*this->m_arena, sb.to_cstr(*this->m_arena));
-        E event{ Level::INFO, 0, *this->m_arena, buffer_copy.m_mem };
-        this->m_event_log->push(event);
-      }
-    }
-  }
-
-  template <typename... Args>
-  void
-  log_entry(
-    int line, const char *fmt, Args &&...args)
-  {
-    if (TRACE_ENABLE)
-    {
-      char  *buffer;
-      UT::SB sb{};
-      sb.concatf(UT_TRACE_ENTRY_ARROW "%s :: %s \n %d | %s",
-                 this->m_file_name,
-                 this->m_fn_name,
-                 line,
-                 fmt);
-      (void)asprintf(
-        &buffer, sb.to_cstr(*this->m_arena), std::forward<Args>(args)...);
-      {
-        UT::String buffer_copy = UT::strdup(*this->m_arena, buffer);
-        E          event{ Level::INFO, 0, *this->m_arena, buffer_copy.m_mem };
-        this->m_event_log->push(event);
-      }
-      std::free(buffer);
-    }
-  }
-
-  template <typename... Args>
-  void
-  logf(
-    int line, const char *fmt, Args &&...args)
-  {
-    if (TRACE_ENABLE)
-    {
-      char  *buffer;
-      UT::SB sb{};
-      sb.concatf(" %d | %s", line, fmt);
-      (void)asprintf(
-        &buffer, sb.to_cstr(*this->m_arena), std::forward<Args>(args)...);
-      {
-        UT::String buffer_copy = UT::strdup(*this->m_arena, buffer);
-        E          event{ Level::INFO, 0, *this->m_arena, buffer_copy.m_mem };
-        this->m_event_log->push(event);
-      }
-      std::free(buffer);
-    }
-  }
 };
 
 } // namespace ER

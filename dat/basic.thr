@@ -34,9 +34,6 @@ pub pow = \base = \power =
 
 pub powres = pow 3 9
 
-pub add3 = \x = \y = \z = x + y + z
-pub add3res = add3 (1 + 1) 2 (add3 3 2 2)
-
 pub summate = \sum = \x =
 	if x ?= 0 => sum
 	else summate (sum + x) (x - 1)

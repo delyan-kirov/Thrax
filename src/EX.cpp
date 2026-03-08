@@ -1,10 +1,127 @@
+/*-------------------------------------------------------------------------------
+ *\file EX.cpp
+ *\info Parser impl
+ * *----------------------------------------------------------------------------*/
+
+/*------------------------------------------------------------------------------
+ *\INCLUDES
+ *-----------------------------------------------------------------------------*/
+
 #include "EX.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
-#include <cstdio>
 
 namespace EX
 {
+
+/*-------------------------------------------------------------------------------
+ *\IMPL (EX)
+ *------------------------------------------------------------------------------*/
+
+FnDef::FnDef(
+  UT::String param, AR::Arena &arena)
+    : m_param{ param }
+{
+  this->m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
+}
+
+Expr::Expr(Type type)
+    : m_type{ type } {};
+
+Expr::Expr(
+  Type type, AR::Arena &arena)
+    : m_type{ type }
+{
+  switch (type)
+  {
+  case Type::FnApp : this->as.m_fnapp.m_param = { arena }; break;
+  case Type::VarApp: this->as.m_varapp.m_param = { arena }; break;
+  case Type::FnDef:
+    this->as.m_fn.m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
+    break;
+  case Type::If:
+  {
+    this->as.m_if.m_condition   = (Expr *)arena.alloc<Expr>(1);
+    this->as.m_if.m_else_branch = (Expr *)arena.alloc<Expr>(1);
+    this->as.m_if.m_true_branch = (Expr *)arena.alloc<Expr>(1);
+  }
+  break;
+  case Type::Div:
+  case Type::Sub:
+  case Type::Modulus:
+  case Type::Mult:
+  case Type::IsEq:
+  case Type::Add    : this->as.m_pair = { arena }; break;
+  case Type::Minus  : this->as.m_expr = (Expr *)arena.alloc<Expr>(1); break;
+  default           : UT_FAIL_IF("Invalid type for this constructor");
+  }
+};
+
+Parser::Parser(
+  LX::Lexer l)
+    : m_arena{ l.m_arena },
+      m_events{ std::move(l.m_events) },
+      m_input{ l.m_input },
+      m_tokens{ std::move(l.m_tokens) },
+      m_begin{ 0 },
+      m_end{ 0 },
+      m_exprs{ l.m_arena }
+{
+  this->m_end = this->m_tokens.m_len;
+};
+
+Parser::Parser(LX::Tokens tokens, AR::Arena &arena, const char *input)
+    : m_arena{ arena },
+      m_events{ arena },
+      m_input{ input },
+      m_tokens{ tokens },
+      m_begin{ 0 },
+      m_end{ tokens.m_len },
+      m_exprs{ arena } {};
+
+Parser::Parser(EX::Parser old, size_t begin, size_t end)
+    : m_arena{ old.m_arena },   //
+      m_events{ old.m_arena },  //
+      m_input{ old.m_input },   //
+      m_tokens{ old.m_tokens }, //
+      m_begin{ begin },         //
+      m_end{ end },             //
+      m_exprs{ old.m_arena }    //
+{};
+
+Parser::Parser(EX::Parser &parent_parser, LX::Tokens &t)
+    : m_arena{ parent_parser.m_arena },  //
+      m_events{ parent_parser.m_arena }, //
+      m_input{ parent_parser.m_input },  //
+      m_tokens{ t },                     //
+      m_begin{ 0 },                      //
+      m_end{ t.m_len },                  //
+      m_exprs{ parent_parser.m_arena }   //
+{};
+
+E
+Parser::operator()()
+{
+  return this->run();
+}
+
+bool
+Parser::match_token_type(
+  size_t start, const LX::Type type)
+{
+  // NOTE: here, we NEED to check that start index is in bounds
+  LX::Type m_type = this->m_tokens[start].type;
+  if (this->m_tokens.m_len <= start)
+  {
+    return false; //
+  }
+  else
+  {
+    UT_FAIL_IF(LX::Type::Max <= m_type || LX::Type::Min >= m_type);
+    return type == m_type;
+  }
+}
+
 E
 Parser::parse_min_precedence_arithmetic_op(
   EX::Type type, size_t &idx)
@@ -84,7 +201,7 @@ Parser::parse_binop(
   root_expr.m_type = type;
 
   EX::Parser new_parser{ *this, start, end };
-  result = new_parser.run();
+  result = new_parser();
 
   EX::Expr right               = *new_parser.m_exprs.last();
   *root_expr.as.m_pair.begin() = left;
@@ -104,12 +221,12 @@ Parser::run()
   {
     LX::Token t = this->m_tokens[i];
 
-    switch (t.m_type)
+    switch (t.type)
     {
     case LX::Type::Int:
     {
       EX::Expr expr{ EX::Type::Int };
-      expr.as.m_int = t.as.m_int;
+      expr.as.m_int = t.as.integer;
       if (this->m_exprs.is_empty()) goto CASE_INT_SINGLE_EXPR;
 
       if (EX::Type::VarApp == this->m_exprs.last()->m_type)
@@ -124,7 +241,6 @@ Parser::run()
         fnapp.as.m_fnapp.m_param.push(expr);
         fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last()->as.m_fn.m_body;
         fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-        fnapp.as.m_fnapp.m_body.m_flags = this->m_exprs.last()->as.m_fn.m_flags;
 
         (void)m_exprs.pop();
         m_exprs.push(fnapp);
@@ -144,8 +260,8 @@ Parser::run()
     break;
     case LX::Type::Group:
     {
-      Parser group_parser{ *this, t.as.m_tokens };
-      group_parser.run();
+      Parser group_parser{ *this, t.as.tokens };
+      group_parser();
       EX::Expr expr = *group_parser.m_exprs.last();
       if (this->m_exprs.is_empty()) goto CASE_GROUP_SINGLE_PARAM;
 
@@ -161,7 +277,6 @@ Parser::run()
         fnapp.as.m_fnapp.m_param.push(expr);
         fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last();
         fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-        fnapp.as.m_fnapp.m_body.m_flags = this->m_exprs.last()->as.m_fn.m_flags;
 
         (void)m_exprs.pop();
       }
@@ -182,7 +297,7 @@ Parser::run()
       // TODO: candidate for refactor, label abuse unnecessary
       {
         EX::Expr var{ EX::Type::Var };
-        var.as.m_var = t.as.m_string;
+        var.as.m_var = t.as.string;
         i += 1;
 
         if (this->m_exprs.is_empty()) goto CASE_WORD_NOT_APPLIED;
@@ -200,8 +315,6 @@ Parser::run()
           fnapp.as.m_fnapp.m_body.m_body = this->m_exprs.last();
           fnapp.as.m_fnapp.m_body.m_param
             = this->m_exprs.last()->as.m_fn.m_param;
-          fnapp.as.m_fnapp.m_body.m_flags
-            = this->m_exprs.last()->as.m_fn.m_flags;
 
           (void)m_exprs.pop();
         }
@@ -223,11 +336,11 @@ Parser::run()
           next_token.push(this->m_tokens[i]);
 
           EX::Parser param_parser{ *this, next_token };
-          param_parser.run();
+          param_parser();
           EX::Exprs param_expr = param_parser.m_exprs;
 
           EX::Expr var_app{ EX::Type::VarApp, this->m_arena };
-          var_app.as.m_varapp.m_fn_name = t.as.m_string;
+          var_app.as.m_varapp.m_fn_name = t.as.string;
           var_app.as.m_varapp.m_param   = param_expr;
 
           this->m_exprs.push(var_app);
@@ -273,7 +386,7 @@ Parser::run()
           i + 1, LX::Type::Group, LX::Type::Int, LX::Type::Word));
 
         EX::Parser new_parser{ *this, i + 1, i + 2 };
-        new_parser.run();
+        new_parser();
 
         EX::Expr expr{ Type::Minus, this->m_arena };
         *expr.as.m_expr = *new_parser.m_exprs.last();
@@ -294,14 +407,14 @@ Parser::run()
     {
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
-      UT::String var_name = t.as.m_let_tokens.m_var_name;
+      UT::String var_name = t.as.binding.name;
 
-      EX::Parser value_parser{ *this, t.as.m_let_tokens.m_let_tokens };
-      value_parser.run();
+      EX::Parser value_parser{ *this, t.as.binding.let };
+      value_parser();
       EX::Expr *value_expr = value_parser.m_exprs.last();
 
-      EX::Parser continuation_parser{ *this, t.as.m_let_tokens.m_in_tokens };
-      continuation_parser.run();
+      EX::Parser continuation_parser{ *this, t.as.binding.in };
+      continuation_parser();
       EX::Expr *continuation_expr = continuation_parser.m_exprs.last();
 
       EX::Expr let_expr{ EX::Type::Let };
@@ -317,13 +430,13 @@ Parser::run()
     case LX::Type::Fn:
     {
       // \<var> = <expr>
-      UT::String param = t.as.m_fn.m_var_name;
+      UT::String param = t.as.fn.param_name;
 
-      EX::Parser body_parser{ *this, t.as.m_fn.m_body };
-      body_parser.run();
+      EX::Parser body_parser{ *this, t.as.fn.body };
+      body_parser();
       EX::Expr body_expr = *body_parser.m_exprs.last();
 
-      EX::FnDef fn_def{ EX::FnFlags::FN_MUST_INLINE, param, this->m_arena };
+      EX::FnDef fn_def{ param, this->m_arena };
       *fn_def.m_body = body_expr;
 
       i += 1;
@@ -336,7 +449,7 @@ Parser::run()
         next_token.push(this->m_tokens[i]);
 
         EX::Parser param_parser{ *this, next_token };
-        param_parser.run();
+        param_parser();
         EX::Exprs param_expr = param_parser.m_exprs;
 
         EX::Expr fn_app{ EX::Type::FnApp, this->m_arena };
@@ -348,7 +461,6 @@ Parser::run()
       else
       {
         EX::Expr fn_def{ EX::Type::FnDef, this->m_arena };
-        fn_def.as.m_fn.m_flags = FnFlags::FN_MUST_INLINE;
         fn_def.as.m_fn.m_param = param;
         *fn_def.as.m_fn.m_body = body_expr;
 
@@ -360,16 +472,16 @@ Parser::run()
     break;
     case LX::Type::If:
     {
-      EX::Parser condition_parser{ *this, t.as.m_if_tokens.m_condition };
-      condition_parser.run();
+      EX::Parser condition_parser{ *this, t.as.if_else.condition };
+      condition_parser();
       EX::Expr condition = *condition_parser.m_exprs.last();
 
-      EX::Parser true_branch_parser{ *this, t.as.m_if_tokens.m_true_branch };
-      true_branch_parser.run();
+      EX::Parser true_branch_parser{ *this, t.as.if_else.true_branch };
+      true_branch_parser();
       EX::Expr true_branch_expr = *true_branch_parser.m_exprs.last();
 
-      EX::Parser else_branch_parser{ *this, t.as.m_if_tokens.m_else_branch };
-      else_branch_parser.run();
+      EX::Parser else_branch_parser{ *this, t.as.if_else.else_branch };
+      else_branch_parser();
       EX::Expr else_branch_expr = *else_branch_parser.m_exprs.last();
 
       EX::Expr if_expr{ EX::Type::If, this->m_arena };
@@ -394,7 +506,7 @@ Parser::run()
       next_token.push(this->m_tokens[i]);
 
       EX::Parser not_parser{ *this, next_token };
-      not_parser.run();
+      not_parser();
 
       EX::Expr not_expr{ EX::Type::Not };
       not_expr.as.m_expr = not_parser.m_exprs.last();
@@ -407,7 +519,7 @@ Parser::run()
     case LX::Type::Str:
     {
       EX::Expr expr{ EX::Type::Str };
-      expr.as.m_string = t.as.m_string;
+      expr.as.m_string = t.as.string;
       if (this->m_exprs.is_empty()) goto CASE_STR_SINGLE_EXPR;
 
       if (EX::Type::VarApp == this->m_exprs.last()->m_type)
@@ -422,7 +534,6 @@ Parser::run()
         fnapp.as.m_fnapp.m_param.push(expr);
         fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last()->as.m_fn.m_body;
         fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-        fnapp.as.m_fnapp.m_body.m_flags = this->m_exprs.last()->as.m_fn.m_flags;
 
         (void)m_exprs.pop();
         m_exprs.push(fnapp);
@@ -444,13 +555,13 @@ Parser::run()
     {
       i += 1;
 
-      EX::Parser condition_parser{ *this, t.as.m_while.m_condition };
-      condition_parser.run();
+      EX::Parser condition_parser{ *this, t.as.whyle.condition };
+      condition_parser();
 
       // FIXME: variable str should result in function app but currently, the
       // variable is ignored
-      EX::Parser body_parser{ *this, t.as.m_while.m_body };
-      body_parser.run();
+      EX::Parser body_parser{ *this, t.as.whyle.body };
+      body_parser();
 
       EX::Expr while_expr{ EX::Type::While };
       while_expr.as.m_while.m_body      = body_parser.m_exprs.last();
@@ -464,7 +575,7 @@ Parser::run()
     default:
     {
       // TODO: instead of UT_FAIL_IF, implement error reporting macros
-      UT_FAIL_MSG("The token type <%s> is unhandled", UT_TCS(t.m_type));
+      UT_FAIL_MSG("The token type <%s> is unhandled", UT_TCS(t.type));
     }
     break;
     }
@@ -472,4 +583,5 @@ Parser::run()
 
   return e;
 }
+
 } // namespace EX
