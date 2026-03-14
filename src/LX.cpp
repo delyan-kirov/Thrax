@@ -420,43 +420,13 @@ Lexer::run()
     case '-':
     {
       char next_c = this->peek_char();
-      switch (next_c)
+      if (std::isdigit(next_c))
       {
-      case ' ':
-      case '\t':
-      case '\n':
-      case '(' : this->push_operator(c); break;
-      case '\0':
-      {
-        // TODO: There should be better error message reporting
-        LX_ERROR_REPORT(
-          E::UNREACHABLE_CASE_REACHED,
-          "Expression starting with '-' should be followed by a variable, "
-          "literal or parenthesis but expression ends unexpectedly");
+        this->push_int();
       }
-      default:
+      else
       {
-        if (std::isalpha(next_c))
-        {
-          if (std::islower(next_c))
-          {
-            this->push_operator(c);
-          }
-          else
-          {
-            LX_ASSERT(false, E::UNRECOGNIZED_STRING);
-          }
-        }
-        else if (std::isdigit(next_c))
-        {
-          this->push_int();
-        }
-        else
-        {
-          LX_ASSERT(false, E::OPERATOR_MATCH_FAILURE);
-        }
-      }
-      break;
+        push_operator('-');
       }
     }
     break;

@@ -1,1 +1,2 @@
-pub c: Int = 1
+pub a=1
+pub b=a+1
