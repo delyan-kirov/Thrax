@@ -102,7 +102,6 @@ constexpr UT::String EXT{ "ext" };
 enum class LangType
 {
   Min = 0,
-  _   = -1,
 #define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
   LX_LangType_ENUM_VARIANTS
 #undef X
@@ -231,6 +230,7 @@ struct While
   Tokens body;
 };
 
+// TODO: Candidate for refactor
 struct Token
 {
   Type   type;
@@ -253,19 +253,12 @@ struct Token
   Token()  = default;
   ~Token() = default;
   // TODO: the line and cursor should be set
-  Token(Type t)
-      : type{ t },
-        line{ 0 },
-        cursor{ 0 },
-        as{} {};
-  Token(
-    Tokens tokens)
-      : type{ Type::Group },
-        line{ 0 },
-        cursor{ 0 }
-  {
-    new (&as.tokens) Tokens{ tokens }; // NOTE: placement new
-  };
+  // TODO: Candidate for removal
+  Token(Type t);
+  // TODO: Candidate for removal
+  Token(Type type, size_t line, size_t cursor);
+  // TODO: Candidate for removal
+  Token(Tokens tokens);
 };
 
 /*-------------------------------------------------------------------------------
@@ -362,7 +355,7 @@ to_string(
   switch (lang_type)
   {
   case LX::LangType::Max:
-  case LX::LangType::_  : break;
+  case LX::LangType::Min: return "";
 #define X(LX_ENUM_VALUE)                                                       \
   case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
     LX_LangType_ENUM_VARIANTS
@@ -381,7 +374,7 @@ to_string(
 {
   switch (sig.type)
   {
-  case LX::LangType::_  : break;
+  case LX::LangType::Min:
   case LX::LangType::Max: return "";
 #define X(LX_ENUM_VALUE)                                                       \
   case LX::LangType::LX_ENUM_VALUE:                                            \

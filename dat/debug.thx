@@ -2,3 +2,4 @@ pub b: Int = 0
 int c = 2
 int f: Int = 1 + 1
 # int d: Int = "hello"
+int t = (1: Int) + 2

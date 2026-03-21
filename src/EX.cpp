@@ -59,6 +59,7 @@ Expr::Expr(
   }
 };
 
+// TODO: candidate for removal
 Parser::Parser(
   LX::Lexer l)
     : m_arena{ l.m_arena },

@@ -405,7 +405,6 @@ Lexer::run()
     case '\'':
     case ',':
     case '.':
-    case ':':
     case ';':
     case '<':
     case '>':
@@ -531,10 +530,7 @@ Lexer::run()
       LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
                 LX::E::CONTROL_STRUCTURE_ERROR);
 
-      Token fn{};
-      fn.type             = Type::Fn;
-      fn.line             = this->m_lines;
-      fn.cursor           = this->m_cursor;
+      Token fn{ Type::Fn, m_lines, m_cursor };
       fn.as.fn.param_name = var_name;
       fn.as.fn.body       = body_lexer.m_tokens;
 
@@ -542,6 +538,11 @@ Lexer::run()
       this->skip_to(body_lexer);
 
       return e;
+    }
+    break;
+    case ':':
+    {
+      UT_TODO("Type annotations inside expressions not handled yet");
     }
     break;
     case '0':
@@ -608,8 +609,7 @@ Lexer::run()
         // TODO: use a different error
         LX_ASSERT("" != sym_name, E::WORD_NOT_FOUND);
 
-        // TODO: We cannot assume that '=' will match, we need to check if ':'
-        // will match first
+        // TODO: Simplify type annotations checks
         e = match_operator(':');
         Sig sig{ LangType::Max };
 
@@ -626,9 +626,12 @@ Lexer::run()
         LX_FN_TRY(new_lexer());
 
         // TODO: candidate for refactor
-        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef };
-        symbol.cursor      = new_lexer.m_cursor;
-        symbol.line        = new_lexer.m_lines;
+        // Tokens are too annoying to construct, perhaps dedicated constructors
+        // and other helpers could make this a lot easier to use and simpler to
+        // understand
+        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef,
+                      new_lexer.m_lines,
+                      new_lexer.m_cursor };
         symbol.as.sym.def  = new_lexer.m_tokens;
         symbol.as.sym.name = sym_name;
         symbol.as.sym.sig  = sig;
@@ -641,6 +644,7 @@ Lexer::run()
       {
         UT::String var_name = this->get_word(this->m_cursor);
 
+        // TODO: we should check for type annotation here
         LX_FN_TRY(this->match_operator('='));
 
         Lexer let_lexer{ *this, m_cursor, m_end };
@@ -650,9 +654,7 @@ Lexer::run()
         LX_FN_TRY(in_lexer());
 
         // TODO: Token should have an end
-        Token token{ Type::Let };
-        token.line              = this->m_lines;
-        token.cursor            = this->m_cursor;
+        Token token{ Type::Let, m_lines, m_cursor };
         token.as.binding.var    = var_name;
         token.as.binding.equals = let_lexer.m_tokens;
         token.as.binding.in     = in_lexer.m_tokens;
@@ -680,7 +682,7 @@ Lexer::run()
                   LX::E::CONTROL_STRUCTURE_ERROR);
 
         // TODO: candidate for refactor
-        Token token{ Type::If };
+        Token token{ Type::If, m_lines, m_cursor };
         token.as.if_else.condition   = if_condition_lexer.m_tokens;
         token.as.if_else.true_branch = true_branch_lexer.m_tokens;
         token.as.if_else.else_branch = else_branch_lexer.m_tokens;
@@ -1062,6 +1064,30 @@ Lexer::skip_to(
     this->m_events.push(e);
   }
 }
+
+// TODO: Candidate for removal
+Token::Token(Type t)
+    : type{ t },
+      line{ 0 },
+      cursor{ 0 },
+      as{} {};
+
+// TODO: Candidate for removal
+Token::Token(Type type, size_t line, size_t cursor)
+    : type{ type },
+      line{ line },
+      cursor{ cursor },
+      as{} {};
+
+// TODO: Candidate for removal
+Token::Token(
+  Tokens tokens)
+    : type{ Type::Group },
+      line{ 0 },
+      cursor{ 0 }
+{
+  new (&as.tokens) Tokens{ tokens }; // NOTE: placement new
+};
 
 /*-------------------------------------------------------------------------------
  *\EOF
