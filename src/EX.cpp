@@ -411,6 +411,11 @@ Parser::run()
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
       UT::String var_name = t.as.binding.var;
+      LX::Sig    sig      = t.as.binding.sig;
+      if (LX::LangType::Max != sig.type)
+      {
+        UT_TODO("Type annotations in let bindings are not handled yet.");
+      }
 
       EX::Parser value_parser{ *this, t.as.binding.equals };
       value_parser();

@@ -148,6 +148,7 @@ enum class E
   X(Str)                                                                       \
   X(While)                                                                     \
   X(ExtDef)                                                                    \
+  X(Sig)                                                                       \
   X(Max)
 
 enum class Type
@@ -178,19 +179,6 @@ struct If
   Tokens else_branch;
 };
 
-struct Binding
-{
-  UT::String var;
-  Tokens     equals;
-  Tokens     in;
-};
-
-struct Fn
-{
-  UT::String param_name;
-  Tokens     body;
-};
-
 // NOTE: T -> (T -> (T -> T))
 //   is: T -> T -> T -> T
 struct Sig
@@ -208,6 +196,20 @@ struct Sig
         as{}
   {
   }
+};
+
+struct Binding
+{
+  UT::String var;
+  Sig        sig;
+  Tokens     equals;
+  Tokens     in;
+};
+
+struct Fn
+{
+  UT::String param_name;
+  Tokens     body;
 };
 
 struct SymDef
@@ -508,6 +510,10 @@ to_string(
 
     return "ext " + to_string(ext_sym.name) + ": " + to_string(ext_sym.sig)
            + " = " + to_string(ext_sym.def);
+  }
+  case LX::Type::Sig:
+  {
+    return ": ( " + to_string(t.as.sig) + " )";
   }
   }
   UT_FAIL_IF("UNREACHABLE");

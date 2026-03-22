@@ -9,6 +9,7 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <cstdio>
 
 namespace LX
 {
@@ -290,6 +291,7 @@ Lexer::push_int()
       case '/':
       case '%':
       case '?':
+      case ':':
       case '=': this->m_cursor -= 1; break;
       case '|':
       case '^':
@@ -542,7 +544,16 @@ Lexer::run()
     break;
     case ':':
     {
-      UT_TODO("Type annotations inside expressions not handled yet");
+      Sig sig{ LangType::Max };
+
+      Lexer sig_lexer{ *this, m_cursor, m_end };
+      sig_lexer.parse_signature(sig);
+
+      LX_ASSERT(LangType::Max > sig.type && sig.type > LangType::Min,
+                LX::E::CONTROL_STRUCTURE_ERROR);
+
+      skip_to(sig_lexer);
+      m_tokens.push(Token{ Type::Sig, m_lines, m_cursor });
     }
     break;
     case '0':
@@ -586,6 +597,8 @@ Lexer::run()
     case 'y':
     case 'z':
     {
+      // TODO: instead of match_keyword if-else chains, make an enum and match
+      // over the variants
       UT::String word = this->get_word(
         this->m_cursor - 1); // we already got the first char so go back 1
 
@@ -645,6 +658,17 @@ Lexer::run()
         UT::String var_name = this->get_word(this->m_cursor);
 
         // TODO: we should check for type annotation here
+        Sig   sig{ LangType::Max };
+        LX::E e = match_operator(':');
+
+        if (E::OK == e)
+        {
+          // UT_TODO("Cannot parse annotations in let bindigns yet");
+          Lexer sig_lexer{ *this, m_cursor, m_end };
+          sig_lexer.parse_signature(sig);
+          skip_to(sig_lexer);
+        }
+
         LX_FN_TRY(this->match_operator('='));
 
         Lexer let_lexer{ *this, m_cursor, m_end };
@@ -658,6 +682,7 @@ Lexer::run()
         token.as.binding.var    = var_name;
         token.as.binding.equals = let_lexer.m_tokens;
         token.as.binding.in     = in_lexer.m_tokens;
+        token.as.binding.sig    = sig;
 
         this->m_tokens.push(token);
         this->skip_to(in_lexer);
@@ -1016,6 +1041,16 @@ Lexer::parse_signature(
     LX_ASSERT("" != type, E::UNRECOGNIZED_STRING);
     types.push(type);
     e = match_operator("->");
+    if (E::OK == e)
+    {
+      continue;
+    }
+    else
+    {
+      // TODO: parsing type annotations should be more robust
+      // we cannot check if we matched on something valid in this context
+      // e = match_operator('=');
+    }
   }
 
   auto parse_result = parse_signature_helper(types, m_arena, 0);

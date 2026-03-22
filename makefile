@@ -69,7 +69,7 @@ $(BIN)tst_debug: $(TST)tst_debug.cpp $(THRAX)
 	$(CC) $(THRAX) $(TST)tst_debug.cpp $(LIBS) -o $@
 
 #-----------------------------CMND------------------------------
-COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug
+COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug clean_workspace
 .PHONY: COMMANDS
 
 executables: $(THRAX)
@@ -102,6 +102,7 @@ init:
 ifndef GIT_ACTION_CTX
 	git submodule update --init
 	$(MAKE) -C ./lib CC= CXX= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS=
+	$(MAKE) -C ./lib BLOBIFY
 endif
 	make test
 	make valgrind
