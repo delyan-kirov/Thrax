@@ -73,7 +73,7 @@ Parser::Parser(
   this->m_end = this->m_tokens.m_len;
 };
 
-Parser::Parser(LX::Tokens tokens, AR::Arena &arena, const char *input)
+Parser::Parser(LX::Tokens tokens, AR::Arena &arena, const UT::String input)
     : m_arena{ arena },
       m_events{ arena },
       m_input{ input },

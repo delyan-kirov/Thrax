@@ -271,16 +271,16 @@ class Lexer
 {
   // TODO: use UT::String, not const char*
 public:
-  AR::Arena  &m_arena;
-  ER::Events  m_events;
-  const char *m_input;
-  Tokens      m_tokens;
-  size_t      m_lines;
-  size_t      m_cursor;
-  size_t      m_begin;
-  size_t      m_end;
+  AR::Arena       &m_arena;
+  ER::Events       m_events;
+  const UT::String m_input;
+  Tokens           m_tokens;
+  size_t           m_lines;
+  size_t           m_cursor;
+  size_t           m_begin;
+  size_t           m_end;
 
-  Lexer(const char *const input, AR::Arena &arena, size_t begin, size_t end);
+  Lexer(const UT::String input, AR::Arena &arena, size_t begin, size_t end);
 
   Lexer(Lexer const &l, size_t begin, size_t end);
 

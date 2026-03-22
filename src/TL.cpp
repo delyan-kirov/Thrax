@@ -156,11 +156,12 @@ type_check(
 Mod::Mod(
   UT::String file_name, AR::Arena &arena)
 {
-  UT::String source_code = UT::read_entire_file(file_name, arena);
-  this->m_defs           = { arena };
-  this->m_name           = file_name;
+  m_defs = { arena };
+  m_name = file_name;
 
-  LX::Lexer l{ source_code.m_mem, arena, 0, source_code.m_len };
+  UT::String source_code = UT::read_entire_file(file_name, arena);
+
+  LX::Lexer l{ source_code, arena, 0, source_code.m_len };
   l.run();
   l.generate_event_report();
 

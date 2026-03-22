@@ -1063,7 +1063,7 @@ Lexer::parse_signature(
 }
 
 Lexer::Lexer(
-  const char *const input, AR::Arena &arena, size_t begin, size_t end)
+  const UT::String input, AR::Arena &arena, size_t begin, size_t end)
     : m_arena{ arena },
       m_events{ arena },
       m_input{ input },

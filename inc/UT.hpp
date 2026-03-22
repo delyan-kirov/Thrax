@@ -118,6 +118,12 @@ private:
   size_t  len;
   size_t  max_len;
   Block **mem;
+
+private:
+  Arena(const Arena &)            = delete;
+  Arena &operator=(const Arena &) = delete;
+  Arena(Arena &&)                 = delete;
+  Arena &operator=(Arena &&)      = delete;
 };
 
 constexpr size_t DEFAULT_T_MEM_SIZE = 8;
