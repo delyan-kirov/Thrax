@@ -411,11 +411,10 @@ Parser::run()
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
       UT::String var_name = t.as.binding.var;
-      LX::Sig    sig      = t.as.binding.sig;
-      if (LX::LangType::Max != sig.type)
-      {
-        UT_TODO("Type annotations in let bindings are not handled yet.");
-      }
+      /* TODO: we should parse signatures in the parser(EX) not in the
+       * tokenizer(LX)
+       */
+      LX::Sig sig = t.as.binding.sig;
 
       EX::Parser value_parser{ *this, t.as.binding.equals };
       value_parser();
@@ -429,6 +428,7 @@ Parser::run()
       let_expr.as.m_let.m_continuation = continuation_expr;
       let_expr.as.m_let.m_var_name     = var_name;
       let_expr.as.m_let.m_value        = value_expr;
+      let_expr.m_sig                   = sig;
 
       this->m_exprs.push(let_expr);
 
@@ -576,6 +576,16 @@ Parser::run()
       while_expr.as.m_while.m_condition = condition_parser.m_exprs.last();
 
       m_exprs.push(while_expr);
+    }
+    break;
+    case LX::Type::Sig:
+    {
+      /* TODO: we should parse signatures in the parser(EX) not in the
+       * tokenizer(LX)
+       */
+      i += 1;
+      UT_FAIL_IF(0 == m_exprs.m_len);
+      m_exprs.last()->m_sig = t.as.sig;
     }
     break;
     case LX::Type::Min:

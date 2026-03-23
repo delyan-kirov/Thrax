@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------------
  *\file TL.hpp
- *\info Translation later impl
+ *\info Translation layer impl
  * *----------------------------------------------------------------------------*/
 
 /*------------------------------------------------------------------------------
@@ -243,21 +243,6 @@ Mod::Mod(
     TL::Def def{ def_type, def_name, instance.m_expr };
 
     this->m_defs.push(def);
-
-    if (!true)
-    {
-      UT::SB sb{};
-      if (LX::LangType::Max != t.as.sym.sig.type)
-      {
-        sb.concatf(": %s", UT_TCS(t.as.sym.sig));
-      }
-
-      std::printf("%s %s%s = %s\n",
-                  UT_TCS(def.m_type),
-                  UT_TCS(def_name),
-                  sb.vu().m_mem,
-                  UT_TCS(global_env[std::to_string(def_name)]));
-    }
   }
 
   for (auto it = global_env.begin(); it != global_env.end(); ++it)
