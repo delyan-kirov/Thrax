@@ -59,6 +59,14 @@
 #define ARRAY_LEN(UT_ARRAY_OBJ)                                                \
   (sizeof(UT_ARRAY_OBJ) / (sizeof(UT_ARRAY_OBJ[0])))
 
+#define UT_WARNING(MSG_FORMAT, ...)                                            \
+  do                                                                           \
+  {                                                                            \
+    std::fprintf(stderr, "WARN: ");                                         \
+    std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
+    std::fprintf(stderr, "\n");                                                \
+  } while (false)
+
 namespace AR
 {
 constexpr size_t BLOCK_DEFAULT_LEN = (1 << 10);

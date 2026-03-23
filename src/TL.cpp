@@ -135,21 +135,50 @@ type_check(
   LX::Sig  sig  = expr.m_sig;
   EX::Type type = expr.m_type;
 
-  if (LX::LangType::Max == sig.type) return;
-
   switch (type)
   {
   case EX::Type::Int:
   {
+    switch (sig.type)
+    {
+    case LX::LangType::Int: return;
+    case LX::LangType::Min: return;
+    case LX::LangType::Max: return;
+    default:
+    {
+      UT_FAIL_MSG("Type check failed: expected integer, got: %s",
+                  UT_TCS(sig.type));
+    }
+    }
     UT_FAIL_IF(LX::LangType::Int != sig.type);
+  }
+  break;
+  case EX::Type::Let:
+  {
+    UT_WARNING("Type not handled: %s", UT_TCS(type));
   }
   break;
   case EX::Type::Str:
   {
+    switch (sig.type)
+    {
+    case LX::LangType::Ptr: return;
+    case LX::LangType::Min: return;
+    case LX::LangType::Max: return;
+    default:
+    {
+      UT_FAIL_MSG("Type check failed: expected integer, got: %s",
+                  UT_TCS(sig.type));
+    }
+    }
     UT_FAIL_IF(LX::LangType::Ptr != sig.type);
   }
   break;
-  default: return;
+  default:
+  {
+    UT_WARNING("Type not handled: %s", UT_TCS(type));
+  }
+  break;
   }
 }
 
@@ -236,9 +265,9 @@ Mod::Mod(
 
     Instance instance{ *parser.m_exprs.last(), global_env };
     instance.m_expr.m_sig = t.as.sym.sig;
-    instance              = eval(instance);
-    // FIXME: Type check before executing
     type_check(instance.m_expr);
+    instance = eval(instance);
+    // FIXME: Type check before executing
     global_env[std::to_string(def_name)] = instance.m_expr;
     TL::Def def{ def_type, def_name, instance.m_expr };
 
