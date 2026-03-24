@@ -39,9 +39,13 @@
 #define UT_FAIL_MSG(MSG_FORMAT, ...)                                           \
   do                                                                           \
   {                                                                            \
-    char *s = nullptr;                                                         \
-    asprintf(&s, MSG_FORMAT, __VA_ARGS__);                                     \
-    UT::IMPL::fail_if(__FILE__, __PRETTY_FUNCTION__, __LINE__, UT::SERROR, s); \
+    char *UT_STRING_BUFFER_NO_ESCAPE = nullptr;                                \
+    asprintf(&UT_STRING_BUFFER_NO_ESCAPE, MSG_FORMAT, __VA_ARGS__);            \
+    UT::IMPL::fail_if(__FILE__,                                                \
+                      __PRETTY_FUNCTION__,                                     \
+                      __LINE__,                                                \
+                      UT::SERROR,                                              \
+                      UT_STRING_BUFFER_NO_ESCAPE);                             \
   } while (false)
 
 #define UT_TCS(o) (std::to_string(o).c_str())
@@ -54,6 +58,14 @@
 
 #define ARRAY_LEN(UT_ARRAY_OBJ)                                                \
   (sizeof(UT_ARRAY_OBJ) / (sizeof(UT_ARRAY_OBJ[0])))
+
+#define UT_WARNING(MSG_FORMAT, ...)                                            \
+  do                                                                           \
+  {                                                                            \
+    std::fprintf(stderr, "WARN: ");                                         \
+    std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
+    std::fprintf(stderr, "\n");                                                \
+  } while (false)
 
 namespace AR
 {
@@ -114,6 +126,12 @@ private:
   size_t  len;
   size_t  max_len;
   Block **mem;
+
+private:
+  Arena(const Arena &)            = delete;
+  Arena &operator=(const Arena &) = delete;
+  Arena(Arena &&)                 = delete;
+  Arena &operator=(Arena &&)      = delete;
 };
 
 constexpr size_t DEFAULT_T_MEM_SIZE = 8;
@@ -353,6 +371,13 @@ struct String : public Vu<char>
   {
   }
 
+  String(
+    char *s)
+  {
+    this->m_len = std::strlen(s);
+    this->m_mem = s;
+  }
+
   String()                          = default;
   String(const String &)            = default;
   String(String &&)                 = default;
@@ -371,7 +396,7 @@ struct String : public Vu<char>
 
   bool
   operator==(
-    String &other)
+    String &other) const
   {
     return (this->m_len == other.m_len)
            && (0 == std::memcmp(this->m_mem, other.m_mem, this->m_len));
@@ -379,7 +404,7 @@ struct String : public Vu<char>
 
   bool
   operator!=(
-    String &other)
+    String &other) const
   {
     return !((this->m_len == other.m_len)
              && (0 == std::memcmp(this->m_mem, other.m_mem, this->m_len)));

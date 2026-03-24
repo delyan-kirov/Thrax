@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------------
  *\file TL.hpp
- *\info Translation later impl
+ *\info Translation layer impl
  * *----------------------------------------------------------------------------*/
 
 /*------------------------------------------------------------------------------
@@ -8,230 +8,37 @@
  *-----------------------------------------------------------------------------*/
 
 #include "TL.hpp"
-#include "EX.hpp"
-#include "LX.hpp"
-#include "UT.hpp"
-#include "ffi.h"
 #include <dlfcn.h>
-#include <map>
-#include <string>
-#include <vector>
 
 namespace TL
 {
 
+/*-------------------------------------------------------------------------------
+ *\GLOBAL DATA
+ *------------------------------------------------------------------------------*/
+void   *Dfn::m_handle = nullptr;
+FnMap_t Dfn::m_fn_map = {};
+
+/*-------------------------------------------------------------------------------
+ *\Defines
+ *------------------------------------------------------------------------------*/
 using FnMap_t = std::map<std::string, void *>;
-class DFN
+using Dfn_map = std::map<std::string, Dfn *>;
+
+namespace
+/*-------------------------------------------------------------------------------
+ *\UTILS
+ *------------------------------------------------------------------------------*/
 {
-public:
-  const char    *m_fn_name;
-  ffi_type     **m_in_types;
-  ffi_type      *m_out_type;
-  static void   *m_handle;
-  static FnMap_t m_fn_map;
+/*-------------------------------------------------------------------------------
+ *\STATIC DATA
+ *------------------------------------------------------------------------------*/
+Dfn_map foreign_functions = {};
 
-  DFN(
-    const char *fn_name, ffi_type **in_types, ffi_type *out_type)
-      : m_fn_name{ fn_name },
-        m_in_types{ in_types },
-        m_out_type{ out_type }
-  {
-  }
-
-  static void
-  init(
-    UT::String lib_path)
-  {
-    if (!m_handle) m_handle = dlopen(lib_path.m_mem, RTLD_LAZY | RTLD_LOCAL);
-  }
-
-  void
-  configure(
-    void)
-  {
-    if (m_fn_map.end() == m_fn_map.find(std::string(m_fn_name)))
-    {
-      void *fn_handle = dlsym(m_handle, m_fn_name);
-      if (!fn_handle)
-      {
-        UT_FAIL_MSG("ERROR: function (%s) not found\n", m_fn_name);
-      }
-      else
-      {
-        m_fn_map[std::string(m_fn_name)] = fn_handle;
-      }
-    }
-    else
-    {
-      // Nothing to do
-    }
-  }
-
-  static void
-  deinit(
-    void)
-  {
-    if (m_handle) dlclose(m_handle);
-  }
-
-  bool
-  call(
-    std::vector<void *> &input, void *output)
-  {
-    ffi_cif cif;
-
-    void **args = input.empty() ? nullptr : input.data();
-
-    if (ffi_prep_cif(&cif,
-                     FFI_DEFAULT_ABI,
-                     input.size(),
-                     m_out_type,
-                     input.empty() ? nullptr : m_in_types)
-        != FFI_OK)
-      return false;
-
-    void *fn_handle = m_fn_map[std::string(m_fn_name)];
-
-    ffi_call(&cif, FFI_FN(fn_handle), output, args);
-
-    return true;
-  };
-};
-
-void   *DFN::m_handle = nullptr;
-FnMap_t DFN::m_fn_map = {};
-
-using DFN_map = std::map<std::string, DFN *>;
-
-static DFN_map foreign_functions = {};
-
-std::vector<LX::LangType>
-expand_signature(
-  LX::Sig &sig)
-{
-  std::vector<LX::LangType> expansion{};
-
-  if (LX::LangType::Fn == sig.type)
-  {
-    expansion.push_back(sig.as.pair.first().type);
-    LX::Sig                   left_sig       = sig.as.pair.second();
-    std::vector<LX::LangType> left_expansion = expand_signature(left_sig);
-    expansion.insert(
-      expansion.end(), left_expansion.begin(), left_expansion.end());
-  }
-  else
-  {
-    expansion.push_back(sig.type);
-  }
-
-  return expansion;
-}
-
-Mod::Mod(
-  UT::String file_name, AR::Arena &arena)
-{
-  UT::String source_code = UT::read_entire_file(file_name, arena);
-  this->m_defs           = { arena };
-  this->m_name           = file_name;
-
-  LX::Lexer l{ source_code.m_mem, arena, 0, source_code.m_len };
-  l.run();
-  l.generate_event_report();
-
-  Env global_env{};
-
-  for (LX::Token t : l.m_tokens)
-  {
-    TL::Type def_type = TL::Type::ExtDef;
-    switch (t.type)
-    {
-    // TODO: this should be handled better
-    case LX::Type::PubDef: def_type = TL::Type::PubDef; break;
-    case LX::Type::IntDef: def_type = TL::Type::IntDef; break;
-    case LX::Type::ExtDef: def_type = TL::Type::ExtDef; break;
-    default              : UT_FAIL_MSG("UNREACHABLE token type: %s", UT_TCS(t.type));
-    }
-
-    // TODO: this should be handled better
-    if (LX::Type::ExtDef == t.type)
-    {
-      LX::Sig sig = t.as.ext_sym.sig;
-      DFN::init(t.as.ext_sym.def[1].as.string);
-
-      if (LX::LangType::Fn == sig.type)
-      {
-        // TODO: It is assumed C functions are simple (Type, Type, Type) -> Type
-        // where Type is not a function type or a structure or union
-        // ie, it is a primitive, or effectively an alias to a primitive
-        auto expansion = expand_signature(sig);
-
-        size_t idx = 0;
-        auto   sig_in_types
-          = (ffi_type **)arena.alloc<ffi_type *>(expansion.size() - 1);
-        ffi_type *sig_out_types = nullptr;
-
-        for (size_t i = 0; i < expansion.size() - 1; ++i)
-        {
-          LX::LangType t = expansion[i];
-          // TODO: Handle all other cases
-          switch (t)
-          {
-          case LX::LangType::Ptr : sig_in_types[idx] = &ffi_type_pointer; break;
-          case LX::LangType::Void: sig_in_types[idx] = &ffi_type_void; break;
-          default                : sig_in_types[idx] = &ffi_type_sint; break;
-          }
-          idx += 1;
-        }
-
-        switch (expansion.back())
-        {
-        case LX::LangType::Ptr : sig_out_types = &ffi_type_pointer; break;
-        case LX::LangType::Void: sig_out_types = &ffi_type_void; break;
-        default                : sig_out_types = &ffi_type_sint; break;
-        }
-
-        auto sym = (DFN *)arena.alloc(sizeof(DFN));
-        *sym     = { t.as.ext_sym.def[0].as.string.m_mem,
-                     sig_in_types,
-                     sig_out_types };
-
-        foreign_functions[std::to_string(t.as.ext_sym.name)] = sym;
-      }
-
-      continue;
-    }
-
-    UT::String def_name   = t.as.sym.name;
-    LX::Tokens def_tokens = t.as.sym.def;
-
-    EX::Parser parser{ def_tokens, arena, source_code.m_mem };
-    parser.run();
-
-    Instance instance{ *parser.m_exprs.last(), global_env };
-    instance                             = eval(instance);
-    global_env[std::to_string(def_name)] = instance.m_expr;
-    TL::Def def{ def_type, def_name, instance.m_expr };
-
-    this->m_defs.push(def);
-
-    if (!true)
-    {
-      std::printf("%s %s = %s\n",
-                  UT_TCS(def.m_type),
-                  UT_TCS(def_name),
-                  UT_TCS(global_env[std::to_string(def_name)]));
-    }
-  }
-
-  for (auto it = global_env.begin(); it != global_env.end(); ++it)
-  {
-    std::printf("INFO: %s -> %s\n", it->first.c_str(), UT_TCS(it->second));
-  }
-
-  DFN::deinit();
-}
-
-static Instance
+/*-------------------------------------------------------------------------------
+ *\HELPER FUNCTIONS
+ *------------------------------------------------------------------------------*/
+Instance
 eval_bi_op(
   Instance &inst)
 {
@@ -259,6 +66,299 @@ eval_bi_op(
   return result_instance;
 }
 
+std::vector<LX::LangType>
+expand_signature(
+  LX::Sig &sig)
+{
+  std::vector<LX::LangType> expansion{};
+
+  if (LX::LangType::Fn == sig.type)
+  {
+    expansion.push_back(sig.as.pair.first().type);
+    LX::Sig                   left_sig       = sig.as.pair.second();
+    std::vector<LX::LangType> left_expansion = expand_signature(left_sig);
+    expansion.insert(
+      expansion.end(), left_expansion.begin(), left_expansion.end());
+  }
+  else
+  {
+    expansion.push_back(sig.type);
+  }
+
+  return expansion;
+}
+
+// TODO: We need to walk the tree
+void
+type_check(
+  Instance &inst)
+{
+  EX::Expr expr = inst.m_expr;
+  LX::Sig  sig  = expr.m_sig;
+  EX::Type type = expr.m_type;
+
+  switch (type)
+  {
+  case EX::Type::Int:
+  {
+    switch (sig.type)
+    {
+    case LX::LangType::Int: return;
+    case LX::LangType::Min: return;
+    case LX::LangType::Max: return;
+    default:
+    {
+      UT_FAIL_MSG("Type check failed: expected integer, got: %s",
+                  UT_TCS(sig.type));
+    }
+    }
+    UT_FAIL_IF(LX::LangType::Int != sig.type);
+  }
+  break;
+  case EX::Type::Let:
+  {
+    UT_WARNING("Type not handled: %s", UT_TCS(type));
+  }
+  break;
+  case EX::Type::Str:
+  {
+    switch (sig.type)
+    {
+    case LX::LangType::Ptr: return;
+    case LX::LangType::Min: return;
+    case LX::LangType::Max: return;
+    default:
+    {
+      UT_FAIL_MSG("Type check failed: expected integer, got: %s",
+                  UT_TCS(sig.type));
+    }
+    }
+    UT_FAIL_IF(LX::LangType::Ptr != sig.type);
+  }
+  break;
+  default:
+  {
+    UT_WARNING("Type not handled: %s", UT_TCS(type));
+  }
+  break;
+  }
+}
+
+// TODO: Handle errors better
+bool
+parse_foreign_function(
+  AR::Arena &arena, LX::Token t)
+{
+  LX::Sig sig = t.as.ext_sym.sig;
+  // TODO: This is stupid, why am I initializing the library like that?
+  Dfn::init(t.as.ext_sym.def[1].as.string);
+
+  if (LX::LangType::Fn == sig.type)
+  {
+    // TODO: It is assumed C functions are simple (Type, Type, Type) -> Type
+    // where Type is not a function type or a structure or union
+    // ie, it is a primitive, or effectively an alias to a primitive
+    // TODO: Why am I parsing the signature in here instead of the parser?
+    auto expansion = expand_signature(sig);
+
+    size_t idx = 0;
+    auto   sig_in_types
+      = (ffi_type **)arena.alloc<ffi_type *>(expansion.size() - 1);
+    ffi_type *sig_out_types = nullptr;
+
+    for (size_t i = 0; i < expansion.size() - 1; ++i)
+    {
+      LX::LangType t = expansion[i];
+      // TODO: Handle all other cases
+      switch (t)
+      {
+      case LX::LangType::Ptr : sig_in_types[idx] = &ffi_type_pointer; break;
+      case LX::LangType::Void: sig_in_types[idx] = &ffi_type_void; break;
+      default                : sig_in_types[idx] = &ffi_type_sint; break;
+      }
+      idx += 1;
+    }
+
+    switch (expansion.back())
+    {
+    case LX::LangType::Ptr : sig_out_types = &ffi_type_pointer; break;
+    case LX::LangType::Void: sig_out_types = &ffi_type_void; break;
+    default                : sig_out_types = &ffi_type_sint; break;
+    }
+
+    auto sym = (Dfn *)arena.alloc(sizeof(Dfn));
+    *sym = { t.as.ext_sym.def[0].as.string.m_mem, sig_in_types, sig_out_types };
+
+    foreign_functions[std::to_string(t.as.ext_sym.name)] = sym;
+  }
+  else
+  {
+    // TODO: It's also possible to have foreign data
+  }
+
+  return true;
+}
+
+TL::Type
+get_def_type(
+  LX::Token t)
+{
+  switch (t.type)
+  {
+  // TODO: this should be handled better
+  case LX::Type::PubDef: return TL::Type::PubDef;
+  case LX::Type::IntDef: return TL::Type::IntDef;
+  case LX::Type::ExtDef: return TL::Type::ExtDef;
+  default:
+    UT_FAIL_MSG("UNREACHABLE token type: %s", UT_TCS(t.type));
+    return TL::Type::ExtDef;
+  }
+}
+
+void
+print_symbols(
+  const Env &env)
+{
+  for (auto it = env.begin(); it != env.end(); ++it)
+  {
+    UT::SB sb{};
+    if (LX::LangType::Max != it->second.m_sig.type)
+    {
+      sb.concatf(": %s", UT_TCS(it->second.m_sig));
+    }
+    std::printf("INFO: %s%s = %s\n",
+                it->first.c_str(),
+                sb.vu().m_mem,
+                UT_TCS(it->second));
+  }
+}
+}
+
+/*-------------------------------------------------------------------------------
+ *\IMPL (Dfn)
+ *------------------------------------------------------------------------------*/
+Dfn::Dfn(
+  const char *fn_name, ffi_type **in_types, ffi_type *out_type)
+    : m_fn_name{ fn_name },
+      m_in_types{ in_types },
+      m_out_type{ out_type }
+{
+}
+
+void
+Dfn::init(
+  UT::String lib_path)
+{
+  if (!m_handle) m_handle = dlopen(lib_path.m_mem, RTLD_LAZY | RTLD_LOCAL);
+}
+
+void
+Dfn::configure(
+  void)
+{
+  if (m_fn_map.end() == m_fn_map.find(std::string(m_fn_name)))
+  {
+    void *fn_handle = dlsym(m_handle, m_fn_name);
+    if (!fn_handle)
+    {
+      UT_FAIL_MSG("ERROR: function (%s) not found\n", m_fn_name);
+    }
+    else
+    {
+      m_fn_map[std::string(m_fn_name)] = fn_handle;
+    }
+  }
+  else
+  {
+    // Nothing to do
+  }
+}
+
+void
+Dfn::deinit(
+  void)
+{
+  if (m_handle) dlclose(m_handle);
+}
+
+bool
+Dfn::call(
+  std::vector<void *> &input, void *output)
+{
+  ffi_cif cif;
+
+  void **args = input.empty() ? nullptr : input.data();
+
+  if (ffi_prep_cif(&cif,
+                   FFI_DEFAULT_ABI,
+                   input.size(),
+                   m_out_type,
+                   input.empty() ? nullptr : m_in_types)
+      != FFI_OK)
+    return false;
+
+  void *fn_handle = m_fn_map[std::string(m_fn_name)];
+
+  ffi_call(&cif, FFI_FN(fn_handle), output, args);
+
+  return true;
+};
+
+/*-------------------------------------------------------------------------------
+ *\IMPL (Mod)
+ *------------------------------------------------------------------------------*/
+Mod::Mod(
+  UT::String file_name, AR::Arena &arena)
+    : m_name{ file_name },
+      m_defs{ arena }
+{
+  UT::String source_code = UT::read_entire_file(file_name, arena);
+
+  LX::Lexer l{ source_code, arena, 0, source_code.m_len };
+  l();
+  l.generate_event_report();
+
+  Env global_env{};
+
+  for (LX::Token t : l.m_tokens)
+  {
+    TL::Type def_type = get_def_type(t);
+
+    // TODO: this should be handled better
+    if (LX::Type::ExtDef == t.type)
+    {
+      parse_foreign_function(arena, t);
+      continue;
+    }
+
+    UT::String def_name   = t.as.sym.name;
+    LX::Tokens def_tokens = t.as.sym.def;
+
+    EX::Parser parser{ def_tokens, arena, source_code.m_mem };
+    parser.run();
+
+    Instance instance{ *parser.m_exprs.last(), global_env };
+    instance.m_expr.m_sig = t.as.sym.sig;
+    // TODO: Why am I doing type checking here (in TL), type checking should be
+    // done in its own stage
+    type_check(instance);
+    // TODO: Don't evaluate before main
+    instance = eval(instance);
+    // FIXME: Type check before executing
+    global_env[std::to_string(def_name)] = instance.m_expr;
+    TL::Def def{ def_type, def_name, instance.m_expr };
+
+    this->m_defs.push(def);
+  }
+
+  print_symbols(global_env);
+
+  Dfn::deinit();
+}
+
+/*-------------------------------------------------------------------------------
+ *\IMPL (TL)
+ *------------------------------------------------------------------------------*/
 Instance
 eval(
   Instance &inst)
@@ -288,7 +388,7 @@ eval(
     else if (foreign_functions.end()
              != foreign_functions.find(std::to_string(var_name)))
     {
-      DFN foreign_fn = *foreign_functions.find(var_name.m_mem)->second;
+      Dfn foreign_fn = *foreign_functions.find(var_name.m_mem)->second;
       foreign_fn.configure();
       AR::Arena output_arena{};
 
@@ -379,7 +479,7 @@ eval(
     // TODO: There should be a better way to both load and define functions
     else if (foreign_functions.end() != foreign_fn_it)
     {
-      DFN foreign_fn = *foreign_functions.find(fn_name.c_str())->second;
+      Dfn foreign_fn = *foreign_functions.find(fn_name.c_str())->second;
       foreign_fn.configure();
 
       AR::Arena           input_buffer{};

@@ -63,3 +63,8 @@ $(FFI_HEADER):
 
 $(FFI_TARGET_HEADER):
 	cd $(PROJECT_DIR) && cp $(PREFIX)include/ffitarget.h $(FFI_TARGET_HEADER)
+
+.PHONY: BLOBIFY
+BLOBIFY: $(RAYLIB_OBJ) $(LIBFFI_OBJ)
+	cp $(RAYLIB_OBJ) $(PROJECT_DIR)lib/blobs/
+	cp $(LIBFFI_OBJ) $(PROJECT_DIR)lib/blobs/

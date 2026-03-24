@@ -26,11 +26,13 @@ FnDef::FnDef(
 }
 
 Expr::Expr(Type type)
-    : m_type{ type } {};
+    : m_type{ type },
+      m_sig{ LX::LangType::Max } {};
 
 Expr::Expr(
   Type type, AR::Arena &arena)
-    : m_type{ type }
+    : m_type{ type },
+      m_sig{ LX::LangType::Max }
 {
   switch (type)
   {
@@ -57,6 +59,7 @@ Expr::Expr(
   }
 };
 
+// TODO: candidate for removal
 Parser::Parser(
   LX::Lexer l)
     : m_arena{ l.m_arena },
@@ -70,7 +73,7 @@ Parser::Parser(
   this->m_end = this->m_tokens.m_len;
 };
 
-Parser::Parser(LX::Tokens tokens, AR::Arena &arena, const char *input)
+Parser::Parser(LX::Tokens tokens, AR::Arena &arena, const UT::String input)
     : m_arena{ arena },
       m_events{ arena },
       m_input{ input },
@@ -407,9 +410,13 @@ Parser::run()
     {
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
-      UT::String var_name = t.as.binding.name;
+      UT::String var_name = t.as.binding.var;
+      /* TODO: we should parse signatures in the parser(EX) not in the
+       * tokenizer(LX)
+       */
+      LX::Sig sig = t.as.binding.sig;
 
-      EX::Parser value_parser{ *this, t.as.binding.let };
+      EX::Parser value_parser{ *this, t.as.binding.equals };
       value_parser();
       EX::Expr *value_expr = value_parser.m_exprs.last();
 
@@ -421,6 +428,7 @@ Parser::run()
       let_expr.as.m_let.m_continuation = continuation_expr;
       let_expr.as.m_let.m_var_name     = var_name;
       let_expr.as.m_let.m_value        = value_expr;
+      let_expr.m_sig                   = sig;
 
       this->m_exprs.push(let_expr);
 
@@ -568,6 +576,16 @@ Parser::run()
       while_expr.as.m_while.m_condition = condition_parser.m_exprs.last();
 
       m_exprs.push(while_expr);
+    }
+    break;
+    case LX::Type::Sig:
+    {
+      /* TODO: we should parse signatures in the parser(EX) not in the
+       * tokenizer(LX)
+       */
+      i += 1;
+      UT_FAIL_IF(0 == m_exprs.m_len);
+      m_exprs.last()->m_sig = t.as.sig;
     }
     break;
     case LX::Type::Min:

@@ -69,7 +69,6 @@ enum class E
   MAX
 };
 
-
 struct FnApp
 {
   FnDef m_body;
@@ -97,7 +96,8 @@ struct While
 
 struct Expr
 {
-  Type m_type;
+  Type    m_type;
+  LX::Sig m_sig;
   union
   {
     FnDef          m_fn;
@@ -128,7 +128,7 @@ class Parser
 public:
   AR::Arena       &m_arena;
   ER::Events       m_events;
-  const char      *m_input;
+  const UT::String m_input;
   const LX::Tokens m_tokens;
   size_t           m_begin;
   size_t           m_end;
@@ -136,7 +136,7 @@ public:
 
   Parser(LX::Lexer l);
 
-  Parser(LX::Tokens tokens, AR::Arena &arena, const char *input);
+  Parser(LX::Tokens tokens, AR::Arena &arena, const UT::String input);
 
   Parser(EX::Parser old, size_t begin, size_t end);
 

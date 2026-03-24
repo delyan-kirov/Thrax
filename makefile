@@ -5,10 +5,13 @@ INC = inc/
 BIN = bin/
 TST = tst/
 
-CFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -O1 
+CFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g 
 ifdef GIT_ACTION_CTX
+# We need to enable optimization or we wont compile in nix develop shell
+CFLAGS += -O1
 CFLAGS += -DGIT_ACTION_CTX=1
 else
+CFLAGS += -O0
 RAYLIB_ENABLED ?= 1
 export RAYLIB_ENABLED
 endif
@@ -66,7 +69,7 @@ $(BIN)tst_debug: $(TST)tst_debug.cpp $(THRAX)
 	$(CC) $(THRAX) $(TST)tst_debug.cpp $(LIBS) -o $@
 
 #-----------------------------CMND------------------------------
-COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug
+COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug clean_wkspace
 .PHONY: COMMANDS
 
 executables: $(THRAX)
@@ -99,6 +102,7 @@ init:
 ifndef GIT_ACTION_CTX
 	git submodule update --init
 	$(MAKE) -C ./lib CC= CXX= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS=
+	$(MAKE) -C ./lib BLOBIFY
 endif
 	make test
 	make valgrind

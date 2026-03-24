@@ -91,10 +91,12 @@ run()
 {
   for (size_t i = 0; i < ARRAY_LEN(TDATA::INPUTS); ++i)
   {
-    auto        tdata = TDATA::INPUTS[i];
-    AR::Arena   arena{};
-    const char *input = tdata.first;
-    LX::Lexer   l{ input, arena, 0, std::strlen(input) };
+    auto         tdata = TDATA::INPUTS[i];
+    AR::Arena    arena{};
+    const char  *input      = tdata.first;
+    const size_t input_size = std::strlen(input);
+    LX::Lexer    l{ UT::String{ input, input_size }, arena, 0, input_size };
+
     (void)l.run();
     l.generate_event_report();
     EX::Parser parser{ l };

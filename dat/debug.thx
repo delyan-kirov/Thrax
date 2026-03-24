@@ -1,1 +1,10 @@
-pub b = 1 + -2 * 3
+pub b: Int = 0
+int c = 2
+int f: Int = 1 + 1
+
+int ss = let ssa = 1 in ssa + c
+# int d: Int = "hello"
+int ss = let
+	ssa: Int = "1"
+	in ssa + 1
+int t = ("1": Int) + 2

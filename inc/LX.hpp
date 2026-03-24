@@ -94,14 +94,19 @@ constexpr UT::String EXT{ "ext" };
   X(Int32)                                                                     \
   X(Int64)                                                                     \
   X(Ptr)                                                                       \
-  X(Void)
+  X(Void)                                                                      \
+  X(Struct)                                                                    \
+  X(Enum)                                                                      \
+  X(Alias)
 
 enum class LangType
 {
+  Min = 0,
 #define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
   LX_LangType_ENUM_VARIANTS
 #undef X
-};
+    Max,
+}; // namespace LX
 
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
@@ -143,6 +148,7 @@ enum class E
   X(Str)                                                                       \
   X(While)                                                                     \
   X(ExtDef)                                                                    \
+  X(Sig)                                                                       \
   X(Max)
 
 enum class Type
@@ -173,10 +179,30 @@ struct If
   Tokens else_branch;
 };
 
+// NOTE: T -> (T -> (T -> T))
+//   is: T -> T -> T -> T
+struct Sig
+{
+  LangType type;
+  union
+  {
+    UT::Pair<Sig> pair;
+  } as;
+
+  Sig() = default;
+  Sig(
+    LangType type)
+      : type{ type },
+        as{}
+  {
+  }
+};
+
 struct Binding
 {
-  UT::String name;
-  Tokens     let;
+  UT::String var;
+  Sig        sig;
+  Tokens     equals;
   Tokens     in;
 };
 
@@ -188,19 +214,9 @@ struct Fn
 
 struct SymDef
 {
-  UT::String name;
   Tokens     def;
-};
-
-// NOTE: T -> (T -> (T -> T))
-//   is: T -> T -> T -> T
-struct Sig
-{
-  LangType type;
-  union
-  {
-    UT::Pair<Sig> pair;
-  } as;
+  UT::String name;
+  Sig        sig;
 };
 
 struct ExtSym
@@ -216,6 +232,7 @@ struct While
   Tokens body;
 };
 
+// TODO: Candidate for refactor
 struct Token
 {
   Type   type;
@@ -238,19 +255,12 @@ struct Token
   Token()  = default;
   ~Token() = default;
   // TODO: the line and cursor should be set
-  Token(Type t)
-      : type{ t },
-        line{ 0 },
-        cursor{ 0 },
-        as{} {};
-  Token(
-    Tokens tokens)
-      : type{ Type::Group },
-        line{ 0 },
-        cursor{ 0 }
-  {
-    new (&as.tokens) Tokens{ tokens }; // NOTE: placement new
-  };
+  // TODO: Candidate for removal
+  Token(Type t);
+  // TODO: Candidate for removal
+  Token(Type type, size_t line, size_t cursor);
+  // TODO: Candidate for removal
+  Token(Tokens tokens);
 };
 
 /*-------------------------------------------------------------------------------
@@ -261,22 +271,18 @@ class Lexer
 {
   // TODO: use UT::String, not const char*
 public:
-  AR::Arena  &m_arena;
-  ER::Events  m_events;
-  const char *m_input;
-  Tokens      m_tokens;
-  size_t      m_lines;
-  size_t      m_cursor;
-  size_t      m_begin;
-  size_t      m_end;
+  AR::Arena       &m_arena;
+  ER::Events       m_events;
+  const UT::String m_input;
+  Tokens           m_tokens;
+  size_t           m_lines;
+  size_t           m_cursor;
+  size_t           m_begin;
+  size_t           m_end;
 
-  Lexer(const char *const input, AR::Arena &arena, size_t begin, size_t end);
-
-  Lexer(Lexer const &l);
+  Lexer(const UT::String input, AR::Arena &arena, size_t begin, size_t end);
 
   Lexer(Lexer const &l, size_t begin, size_t end);
-
-  Lexer(Lexer const &l, size_t begin);
 
   ~Lexer() {}
 
@@ -311,6 +317,8 @@ public:
   void strip_white_space(size_t idx);
 
   void strip_line(size_t idx);
+
+  LX::E parse_signature(Sig &sig);
 
   E run();
 
@@ -348,6 +356,8 @@ to_string(
 {
   switch (lang_type)
   {
+  case LX::LangType::Max:
+  case LX::LangType::Min: return "";
 #define X(LX_ENUM_VALUE)                                                       \
   case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
     LX_LangType_ENUM_VARIANTS
@@ -366,6 +376,8 @@ to_string(
 {
   switch (sig.type)
   {
+  case LX::LangType::Min:
+  case LX::LangType::Max: return "";
 #define X(LX_ENUM_VALUE)                                                       \
   case LX::LangType::LX_ENUM_VALUE:                                            \
     if constexpr (LX::LangType::LX_ENUM_VALUE == LX::LangType::Fn)             \
@@ -435,9 +447,9 @@ to_string(
            ")";
   case LX::Type::Let:
   {
-    std::string let_string = to_string(t.as.binding.let);
+    std::string let_string = to_string(t.as.binding.equals);
     std::string in_string  = to_string(t.as.binding.in);
-    std::string var_name   = to_string(t.as.binding.name);
+    std::string var_name   = to_string(t.as.binding.var);
     return "let " + var_name + " = " + let_string + " in " + in_string;
   }
   break;
@@ -463,12 +475,13 @@ to_string(
     return to_string(t.as.tokens);
   }
   case LX::Type::PubDef:
-  {
-    return "pub " + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def);
-  }
   case LX::Type::IntDef:
   {
-    return "int " + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def);
+    return (LX::Type::PubDef == t.type ? "pub" : "int")
+           + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def)
+           + (LX::LangType::Max == t.as.sym.sig.type
+                ? ""
+                : (": " + to_string(t.as.sym.sig)));
   }
   case LX::Type::Not:
   {
@@ -497,6 +510,10 @@ to_string(
 
     return "ext " + to_string(ext_sym.name) + ": " + to_string(ext_sym.sig)
            + " = " + to_string(ext_sym.def);
+  }
+  case LX::Type::Sig:
+  {
+    return ": ( " + to_string(t.as.sig) + " )";
   }
   }
   UT_FAIL_IF("UNREACHABLE");

@@ -10,3 +10,5 @@ tmp.*
 inc/ffi.h
 inc/ffitarget.h
 inc/raylib.h
+
+lib/*

@@ -9,6 +9,7 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <cstdio>
 
 namespace LX
 {
@@ -32,71 +33,98 @@ is_white_space(
   }
 }
 
+LangType
+c_type_to_langtype(
+  UT::String s)
+{
+  if ("C_int" == s)
+    return LangType::Int;
+  else if ("C_str" == s)
+    return LangType::Ptr;
+  else if ("C_void" == s)
+    return LangType::Void;
+  else
+    return LangType::Max;
+}
+
 // TODO: We may have functions as input params, but for now we
 // ignore this case
 // Functions can only have integer params in their signature
 std::pair<LX::E, Sig>
-parse_sig(
+parse_signature_helper(
   UT::Vec<UT::String> &types, AR::Arena &arena, const size_t idx)
 {
   Sig sig{};
 
   // TODO: Don't hardcode types like that
-  if ("C_int" == types[idx])
+  LangType type = c_type_to_langtype(types[idx]);
+  if (LangType::Max == type)
   {
-    if (idx == types.m_len - 1)
+    for (size_t i = (size_t)LX::LangType::Min; i < (size_t)LX::LangType::Max;
+         ++i)
     {
-      sig.type = LangType::Int;
-    }
-    else
-    {
-      sig.type            = LangType::Fn;
-      UT::Pair<Sig> *pair = &sig.as.pair;
-      *pair               = { arena };
-      pair->begin()->type = LangType::Int;
-      *pair->last()       = parse_sig(types, arena, idx + 1).second;
-      sig.as.pair         = *pair;
+      UT::String s{ (char *)UT_TCS((LangType)i) };
+      if (types[idx] == s)
+      {
+        type = (LangType)i;
+      }
     }
   }
-  else if ("C_void" == types[idx])
+
+  if (LangType::Max == type)
   {
-    if (idx == types.m_len - 1)
-    {
-      sig.type = LangType::Void;
-    }
-    else
-    {
-      sig.type            = LangType::Fn;
-      UT::Pair<Sig> *pair = &sig.as.pair;
-      *pair               = { arena };
-      pair->begin()->type = LangType::Void;
-      *pair->last()       = parse_sig(types, arena, idx + 1).second;
-      sig.as.pair         = *pair;
-    }
+    return std::pair{ LX::E::CONTROL_STRUCTURE_ERROR, sig }; // TODO: new error
   }
-  else if ("C_str" == types[idx])
+
+  if (idx == types.m_len - 1)
   {
-    if (idx == types.m_len - 1)
-    {
-      // TODO: The pointer should indicate what it points to
-      sig.type = LangType::Ptr;
-    }
-    else
-    {
-      sig.type            = LangType::Fn;
-      UT::Pair<Sig> *pair = &sig.as.pair;
-      *pair               = { arena };
-      // TODO: this should also include the type behind the pointer
-      pair->begin()->type = LangType::Ptr;
-      *pair->last()       = parse_sig(types, arena, idx + 1).second;
-      sig.as.pair         = *pair;
-    }
+    // TODO: The pointer should indicate what it points to
+    sig.type = type;
   }
   else
   {
-    // TODO: Think how to handle the other cases
+    sig.type            = LangType::Fn;
+    UT::Pair<Sig> *pair = &sig.as.pair;
+    *pair               = { arena };
+    // TODO: this should also include the type behind the pointer
+    pair->begin()->type = type;
+    *pair->last()       = parse_signature_helper(types, arena, idx + 1).second;
+    sig.as.pair         = *pair;
   }
+
   return std::pair{ LX::E::OK, sig };
+}
+
+bool
+is_hex_char(
+  char c)
+{
+  switch (c)
+  {
+  case '0':
+  case '1':
+  case '2':
+  case '3':
+  case '4':
+  case '5':
+  case '6':
+  case '7':
+  case '8':
+  case '9':
+  case 'a':
+  case 'b':
+  case 'c':
+  case 'd':
+  case 'e':
+  case 'f':
+  case 'A':
+  case 'B':
+  case 'C':
+  case 'D':
+  case 'E':
+  case 'F': return true;
+  default : return false;
+  }
 }
 
 bool
@@ -253,7 +281,7 @@ Lexer::push_int()
   };
   for (char c = this->next_char(); c; c = this->next_char())
   {
-    if (!c || !std::isdigit(c))
+    if (!is_hex_char(c))
     {
       switch (c)
       {
@@ -263,6 +291,7 @@ Lexer::push_int()
       case '/':
       case '%':
       case '?':
+      case ':':
       case '=': this->m_cursor -= 1; break;
       case '|':
       case '^':
@@ -378,7 +407,6 @@ Lexer::run()
     case '\'':
     case ',':
     case '.':
-    case ':':
     case ';':
     case '<':
     case '>':
@@ -499,17 +527,12 @@ Lexer::run()
 
       LX_FN_TRY(this->match_operator('='));
 
-      Lexer body_lexer{
-        this->m_input, this->m_arena, this->m_cursor, this->m_end
-      };
+      Lexer body_lexer{ *this, m_cursor, m_end };
       LX::E e = body_lexer();
       LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
                 LX::E::CONTROL_STRUCTURE_ERROR);
 
-      Token fn{};
-      fn.type             = Type::Fn;
-      fn.line             = this->m_lines;
-      fn.cursor           = this->m_cursor;
+      Token fn{ Type::Fn, m_lines, m_cursor };
       fn.as.fn.param_name = var_name;
       fn.as.fn.body       = body_lexer.m_tokens;
 
@@ -517,6 +540,20 @@ Lexer::run()
       this->skip_to(body_lexer);
 
       return e;
+    }
+    break;
+    case ':':
+    {
+      Sig sig{ LangType::Max };
+
+      Lexer sig_lexer{ *this, m_cursor, m_end };
+      sig_lexer.parse_signature(sig);
+
+      LX_ASSERT(LangType::Max > sig.type && sig.type > LangType::Min,
+                LX::E::CONTROL_STRUCTURE_ERROR);
+
+      skip_to(sig_lexer);
+      m_tokens.push(Token{ Type::Sig, m_lines, m_cursor });
     }
     break;
     case '0':
@@ -560,6 +597,8 @@ Lexer::run()
     case 'y':
     case 'z':
     {
+      // TODO: instead of match_keyword if-else chains, make an enum and match
+      // over the variants
       UT::String word = this->get_word(
         this->m_cursor - 1); // we already got the first char so go back 1
 
@@ -583,17 +622,32 @@ Lexer::run()
         // TODO: use a different error
         LX_ASSERT("" != sym_name, E::WORD_NOT_FOUND);
 
+        // TODO: Simplify type annotations checks
+        e = match_operator(':');
+        Sig sig{ LangType::Max };
+
+        if (E::OK == e)
+        {
+          Lexer sig_lexer{ *this, m_cursor, next_symbol_idx };
+          sig_lexer.parse_signature(sig);
+          skip_to(sig_lexer);
+        }
+
         LX_FN_TRY(this->match_operator('='));
 
-        Lexer new_lexer{ m_input, m_arena, m_cursor, next_symbol_idx };
+        Lexer new_lexer{ *this, m_cursor, next_symbol_idx };
         LX_FN_TRY(new_lexer());
 
         // TODO: candidate for refactor
-        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef };
-        symbol.cursor      = new_lexer.m_cursor;
-        symbol.line        = new_lexer.m_lines;
+        // Tokens are too annoying to construct, perhaps dedicated constructors
+        // and other helpers could make this a lot easier to use and simpler to
+        // understand
+        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef,
+                      new_lexer.m_lines,
+                      new_lexer.m_cursor };
         symbol.as.sym.def  = new_lexer.m_tokens;
         symbol.as.sym.name = sym_name;
+        symbol.as.sym.sig  = sig;
 
         this->m_tokens.push(symbol);
         this->skip_to(new_lexer);
@@ -603,54 +657,57 @@ Lexer::run()
       {
         UT::String var_name = this->get_word(this->m_cursor);
 
+        // TODO: we should check for type annotation here
+        Sig   sig{ LangType::Max };
+        LX::E e = match_operator(':');
+
+        if (E::OK == e)
+        {
+          // UT_TODO("Cannot parse annotations in let bindigns yet");
+          Lexer sig_lexer{ *this, m_cursor, m_end };
+          sig_lexer.parse_signature(sig);
+          skip_to(sig_lexer);
+        }
+
         LX_FN_TRY(this->match_operator('='));
 
-        Lexer let_lexer{
-          this->m_input, this->m_arena, this->m_cursor, this->m_end
-        };
+        Lexer let_lexer{ *this, m_cursor, m_end };
         LX_ASSERT(E::IN_KEYWORD == let_lexer(), E::CONTROL_STRUCTURE_ERROR);
 
-        Lexer in_lexer{
-          let_lexer.m_input, let_lexer.m_arena, let_lexer.m_cursor, this->m_end
-        };
+        Lexer in_lexer{ let_lexer, let_lexer.m_cursor, m_end };
         LX_FN_TRY(in_lexer());
 
         // TODO: Token should have an end
-        Token token{ Type::Let };
-        token.line            = this->m_lines;
-        token.cursor          = this->m_cursor;
-        token.as.binding.name = var_name;
-        token.as.binding.let  = let_lexer.m_tokens;
-        token.as.binding.in   = in_lexer.m_tokens;
+        Token token{ Type::Let, m_lines, m_cursor };
+        token.as.binding.var    = var_name;
+        token.as.binding.equals = let_lexer.m_tokens;
+        token.as.binding.in     = in_lexer.m_tokens;
+        token.as.binding.sig    = sig;
 
         this->m_tokens.push(token);
         this->skip_to(in_lexer);
       }
       else if (this->match_keyword(Keyword::IF, word))
       {
-        Lexer if_condition_lexer{
-          this->m_input, this->m_arena, this->m_cursor, this->m_end
-        };
+        Lexer if_condition_lexer{ *this, m_cursor, m_end };
         LX_ASSERT(E::FAT_ARROW == if_condition_lexer(),
                   E::OPERATOR_MATCH_FAILURE);
 
-        Lexer true_branch_lexer{ if_condition_lexer.m_input,
-                                 if_condition_lexer.m_arena,
+        Lexer true_branch_lexer{ if_condition_lexer,
                                  if_condition_lexer.m_cursor,
-                                 this->m_end };
+                                 m_end };
         LX_ASSERT(E::ELSE_KEYWORD == true_branch_lexer(),
                   E::CONTROL_STRUCTURE_ERROR);
 
-        Lexer else_branch_lexer{ true_branch_lexer.m_input,
-                                 true_branch_lexer.m_arena,
+        Lexer else_branch_lexer{ true_branch_lexer,
                                  true_branch_lexer.m_cursor,
-                                 this->m_end };
+                                 m_end };
         LX::E e = else_branch_lexer();
         LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
                   LX::E::CONTROL_STRUCTURE_ERROR);
 
         // TODO: candidate for refactor
-        Token token{ Type::If };
+        Token token{ Type::If, m_lines, m_cursor };
         token.as.if_else.condition   = if_condition_lexer.m_tokens;
         token.as.if_else.true_branch = true_branch_lexer.m_tokens;
         token.as.if_else.else_branch = else_branch_lexer.m_tokens;
@@ -662,15 +719,10 @@ Lexer::run()
       }
       else if (this->match_keyword(Keyword::WHILE, word))
       {
-        Lexer condition_lexer{
-          this->m_input, this->m_arena, this->m_cursor, this->m_end
-        };
+        Lexer condition_lexer{ *this, m_cursor, m_end };
         LX_ASSERT(E::FAT_ARROW == condition_lexer(), E::OPERATOR_MATCH_FAILURE);
 
-        Lexer body_lexer{ condition_lexer.m_input,
-                          condition_lexer.m_arena,
-                          condition_lexer.m_cursor,
-                          this->m_end };
+        Lexer body_lexer{ condition_lexer, condition_lexer.m_cursor, m_end };
         LX::E e = body_lexer();
         LX_ASSERT(e == E::ELSE_KEYWORD || e == E::IN_KEYWORD || e == E::OK,
                   E::CONTROL_STRUCTURE_ERROR);
@@ -698,27 +750,11 @@ Lexer::run()
 
         LX_FN_TRY(this->match_operator(':'));
 
-        Lexer sig_lexer{ m_input, m_arena, m_cursor, next_symbol_idx };
-        UT::Vec<UT::String> types{ m_arena };
-        UT::String          type{};
-        e = E::OK;
+        Lexer sig_lexer{ *this, m_cursor, next_symbol_idx };
+        Sig   sig;
+        sig_lexer.parse_signature(sig);
 
-        while (E::OK == e)
-        {
-          type = sig_lexer.get_word(sig_lexer.m_cursor);
-          LX_ASSERT("" != type, E::UNRECOGNIZED_STRING);
-          types.push(type);
-          e = sig_lexer.match_operator("->");
-        }
-
-        auto parse_result = parse_sig(types, m_arena, 0);
-
-        // TODO : Use better error
-        LX_ASSERT(E::OK == parse_result.first, E::CONTROL_STRUCTURE_ERROR);
-        Sig sig = parse_result.second;
-
-        // TODO: parse this
-        // LX_FN_TRY(sig_lexer.match_operator('='));
+        LX_FN_TRY(sig_lexer.match_operator('='));
 
         sig_lexer();
         Tokens sym_defs{ m_arena };
@@ -730,9 +766,8 @@ Lexer::run()
         symbol.as.ext_sym.sig  = sig;
         symbol.as.ext_sym.def  = sym_defs;
 
-        // UT_VAR_INSP(symbol);
+        skip_to(sig_lexer);
         m_cursor = next_symbol_idx;
-        m_lines += sig_lexer.m_lines;
 
         m_tokens.push(symbol);
       }
@@ -869,22 +904,38 @@ E
 Lexer::match_operator(
   char c)
 {
-  this->strip_white_space(this->m_cursor);
-  LX_ASSERT(c == this->next_char(), E::UNRECOGNIZED_STRING);
-  return E::OK;
+  Lexer match_lexer{ *this, m_cursor, m_end };
+  match_lexer.strip_white_space(m_cursor);
+  char next_char = match_lexer.next_char();
+  if (c == next_char)
+  {
+    skip_to(match_lexer);
+    return E::OK;
+  }
+
+  return E::UNRECOGNIZED_STRING;
 };
 
+// FIXME: Should not mutate state if it fails
 E
 Lexer::match_operator(
   UT::String s)
 {
-  this->strip_white_space(this->m_cursor);
+  Lexer match_lexer{ *this, m_cursor, m_end };
+  match_lexer.strip_white_space(m_cursor);
+
+  UT::SB sb{};
   for (size_t idx = 0; idx < s.m_len; ++idx)
   {
-    LX_ASSERT(s[idx] == this->next_char(), E::UNRECOGNIZED_STRING);
+    sb.add(match_lexer.next_char());
   }
 
-  return E::OK;
+  if (sb.vu() == s)
+  {
+    skip_to(match_lexer);
+    return E::OK;
+  }
+  return E::UNRECOGNIZED_STRING;
 }
 
 // TODO: candidate for refactor
@@ -975,8 +1026,44 @@ Lexer::find_next_global_symbol(
   return E::WORD_NOT_FOUND;
 }
 
+// FIXME: Signature parsing should be the job of the parser
+LX::E
+Lexer::parse_signature(
+  Sig &sig)
+{
+  UT::Vec<UT::String> types{ m_arena };
+  LX::E               e = E::OK;
+  UT::String          type{};
+
+  while (E::OK == e)
+  {
+    type = get_word(m_cursor);
+    LX_ASSERT("" != type, E::UNRECOGNIZED_STRING);
+    types.push(type);
+    e = match_operator("->");
+    if (E::OK == e)
+    {
+      continue;
+    }
+    else
+    {
+      // TODO: parsing type annotations should be more robust
+      // we cannot check if we matched on something valid in this context
+      // e = match_operator('=');
+    }
+  }
+
+  auto parse_result = parse_signature_helper(types, m_arena, 0);
+
+  LX_ASSERT(E::OK == parse_result.first, E::CONTROL_STRUCTURE_ERROR);
+
+  sig = parse_result.second;
+
+  return E::OK;
+}
+
 Lexer::Lexer(
-  const char *const input, AR::Arena &arena, size_t begin, size_t end)
+  const UT::String input, AR::Arena &arena, size_t begin, size_t end)
     : m_arena{ arena },
       m_events{ arena },
       m_input{ input },
@@ -987,49 +1074,19 @@ Lexer::Lexer(
       m_end{ end }
 {
 }
-Lexer::Lexer(
-  Lexer const &l)
-    : m_arena(l.m_arena),              //
-      m_events(std::move(l.m_events)), //
-      m_input{ l.m_input },            //
-      m_tokens(l.m_tokens),            //
-      m_lines(l.m_lines),              //
-      m_cursor(l.m_cursor),            //
-      m_begin(l.m_begin),              //
-      m_end(l.m_end)                   //
-{
-  for (size_t i = 0; i < l.m_events.m_len; ++i)
-  {
-    ER::E e = l.m_events[i];
-    this->m_events.push(e);
-  }
-};
+
 Lexer::Lexer(
   Lexer const &l, size_t begin, size_t end)
     : m_arena{ l.m_arena },
-      m_events(l.m_arena)
+      m_events{ l.m_arena },
+      m_input{ l.m_input },
+      m_cursor(l.m_cursor),
+      m_begin{ begin },
+      m_end{ end }
 {
-  this->m_begin  = l.m_begin;
-  this->m_end    = l.m_end;
-  this->m_cursor = l.m_cursor;
-  this->m_input  = l.m_input;
-  this->m_begin  = begin;
-  this->m_end    = end;
   new (&this->m_tokens) Tokens{ l.m_arena };
 }
-Lexer::Lexer(
-  Lexer const &l, size_t begin)
-    : m_arena{ l.m_arena },
-      m_events(l.m_arena)
-{
-  this->m_begin  = l.m_begin;
-  this->m_end    = l.m_end;
-  this->m_cursor = l.m_cursor;
-  this->m_input  = l.m_input;
-  this->m_begin  = begin;
-  this->m_end    = l.m_end;
-  new (&this->m_tokens) Tokens{ l.m_arena };
-}
+
 void
 Lexer::skip_to(
   Lexer const &l)
@@ -1042,6 +1099,30 @@ Lexer::skip_to(
     this->m_events.push(e);
   }
 }
+
+// TODO: Candidate for removal
+Token::Token(Type t)
+    : type{ t },
+      line{ 0 },
+      cursor{ 0 },
+      as{} {};
+
+// TODO: Candidate for removal
+Token::Token(Type type, size_t line, size_t cursor)
+    : type{ type },
+      line{ line },
+      cursor{ cursor },
+      as{} {};
+
+// TODO: Candidate for removal
+Token::Token(
+  Tokens tokens)
+    : type{ Type::Group },
+      line{ 0 },
+      cursor{ 0 }
+{
+  new (&as.tokens) Tokens{ tokens }; // NOTE: placement new
+};
 
 /*-------------------------------------------------------------------------------
  *\EOF
