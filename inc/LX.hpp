@@ -128,6 +128,19 @@ enum class E
 #undef X
 };
 
+#define LX_CHARTYPE_ENUM_VARIANTS                                              \
+  X(CONTROL)                                                                   \
+  X(INVALID)                                                                   \
+  X(DELIMITER)                                                                 \
+  X(TEXTUAL)
+
+enum class CharType
+{
+#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
+  LX_CHARTYPE_ENUM_VARIANTS
+#undef X
+};
+
 #define LX_Type_ENUM_VARIANTS                                                  \
   X(Min)                                                                       \
   X(Int)                                                                       \
@@ -299,6 +312,8 @@ public:
   char next_char();
 
   char peek_char();
+
+  CharType next_word(UT::SB &sb);
 
   E push_int();
 

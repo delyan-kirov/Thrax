@@ -9,6 +9,7 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <cctype>
 #include <cstdio>
 
 namespace LX
@@ -134,6 +135,7 @@ delimits_word(
   switch (c)
   {
   case ' ':
+  case '.':
   case '\t':
   case '\n':
   case '(':
@@ -263,6 +265,59 @@ Lexer::next_char()
   if ('\n' == c) this->m_lines += 1;
   this->m_cursor += 1;
   return c;
+}
+
+// TODO: finish implementation
+LX::CharType
+Lexer::next_word(
+  UT::SB &sb)
+{
+  strip_white_space(m_cursor);
+
+  char current_char = m_input[m_cursor];
+  if ('\0' == current_char          //
+      || std::iscntrl(current_char) //
+      || not isascii(current_char)  //
+  )
+  {
+    return CharType::INVALID;
+  }
+
+  for (char c = next_char(); '\0' != c; c = next_char())
+  {
+    if ('#' == c)
+    {
+      strip_line(m_cursor);
+      strip_white_space(m_cursor);
+      continue;
+    }
+    if ('"' == c)
+    {
+      // TODO: this is a special case
+    }
+    if ('-' == c)
+    {
+      // TODO: this is a special case
+    }
+    if (delimits_word(c))
+    {
+      if (is_white_space(c))
+      {
+        return CharType::TEXTUAL;
+      }
+      else
+      {
+        m_cursor -= 1;
+        return CharType::CONTROL;
+      }
+    }
+    else
+    {
+      sb.add(c);
+    }
+  }
+
+  return CharType::TEXTUAL;
 }
 
 LX::E
