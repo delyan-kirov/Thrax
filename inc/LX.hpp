@@ -77,6 +77,21 @@ constexpr UT::String EXT{ "ext" };
 
 } // namespace Keyword
 
+constexpr const char *NEXT_WORD_ERROR_ASCII_CTR /**/
+  = "NEXT_WORD_ERROR_ASCII_CTR";
+constexpr const char *NEXT_WORD_ERROR_NON_ASCII_CHAR /**/
+  = "NEXT_WORD_ERROR_NON_ASCII_CHAR";
+constexpr const char *NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT /**/
+  = "NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT";
+constexpr const char *NEXT_WORD_ERROR_UNCLOSED_QUOTMARK /**/
+  = "NEXT_WORD_ERROR_UNCLOSED_QUOTMARK";
+constexpr const char *NEXT_WORD_ERROR_QESTION_REQUIRES_EQ /**/
+  = "NEXT_WORD_ERROR_QESTION_REQUIRES_EQ";
+constexpr const char *NEXT_WORD_INFO_END /**/
+  = "NEXT_WORD_INFO_END";
+constexpr const char *NEXT_WORD_INFO_OK /**/
+  = "NEXT_WORD_INFO_OK";
+
 /*------------------------------------------------------------------------------
  *\TYPES
  *-----------------------------------------------------------------------------*/
@@ -125,19 +140,6 @@ enum class E
 {
 #define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
   LX_E_ENUM_VARIANTS
-#undef X
-};
-
-#define LX_CHARTYPE_ENUM_VARIANTS                                              \
-  X(CONTROL)                                                                   \
-  X(INVALID)                                                                   \
-  X(DELIMITER)                                                                 \
-  X(TEXTUAL)
-
-enum class CharType
-{
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_CHARTYPE_ENUM_VARIANTS
 #undef X
 };
 
@@ -313,7 +315,7 @@ public:
 
   char peek_char();
 
-  CharType next_word(UT::SB &sb);
+  std::string next_word();
 
   E push_int();
 

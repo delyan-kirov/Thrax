@@ -267,24 +267,110 @@ Lexer::next_char()
   return c;
 }
 
-// TODO: finish implementation
-LX::CharType
-Lexer::next_word(
-  UT::SB &sb)
+std::string
+ascii_error_description(
+  char c)
 {
+  if (is_white_space(c))
+  {
+    return NEXT_WORD_INFO_OK;
+  }
+  if ('\0' == c)
+  {
+    return NEXT_WORD_INFO_END;
+  }
+  if (std::iscntrl(c))
+  {
+    printf("INFO: %d\n", c);
+    return NEXT_WORD_ERROR_ASCII_CTR;
+  }
+  if (not isascii(c))
+  {
+    return NEXT_WORD_ERROR_NON_ASCII_CHAR;
+  }
+  return NEXT_WORD_INFO_OK;
+}
+
+#define ASCII_ERROR_DESCRIPTION_CHECK(ASCII_CHAR)                              \
+  do                                                                           \
+  {                                                                            \
+    std::string DESCRIPTION = ascii_error_description(ASCII_CHAR);             \
+    if (NEXT_WORD_INFO_OK != DESCRIPTION)                                      \
+    {                                                                          \
+      return DESCRIPTION;                                                      \
+    }                                                                          \
+  } while (0)
+
+// TODO: What if symbol is valid ascii and reserved but not used?
+std::string
+Lexer::next_word()
+{
+  std::string sb{ "" };
   strip_white_space(m_cursor);
 
   char current_char = m_input[m_cursor];
-  if ('\0' == current_char          //
-      || std::iscntrl(current_char) //
-      || not isascii(current_char)  //
-  )
+  ASCII_ERROR_DESCRIPTION_CHECK(current_char);
+
+  switch (current_char)
   {
-    return CharType::INVALID;
+  case '+':
+  case ':':
+  case '-':
+  case '*':
+  case '/':
+  case '%':
+  case '!':
+  {
+    m_cursor += 1;
+    sb += current_char;
+    return sb;
+  }
+  break;
+  case '?':
+  {
+    m_cursor += 1;
+    char next_char = peek_char();
+    ASCII_ERROR_DESCRIPTION_CHECK(next_char);
+    if ('=' != next_char)
+    {
+      return NEXT_WORD_ERROR_QESTION_REQUIRES_EQ;
+    }
+    else
+    {
+      m_cursor += 1;
+      sb += current_char + next_char;
+      return sb;
+    }
+  }
+  break;
+  case '=':
+  {
+    m_cursor += 1;
+    char next_char = peek_char();
+    ASCII_ERROR_DESCRIPTION_CHECK(next_char);
+    if ('\0' == next_char)
+    {
+      return NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT;
+    }
+    if ('>' == next_char)
+    {
+      m_cursor += 1;
+      sb += current_char + next_char;
+      return sb;
+    }
+    if (is_white_space(next_char) || std::isalnum(next_char))
+    {
+      sb += current_char;
+      return sb;
+    }
+  }
+  break;
+  default: break;
   }
 
   for (char c = next_char(); '\0' != c; c = next_char())
   {
+    ASCII_ERROR_DESCRIPTION_CHECK(c);
     if ('#' == c)
     {
       strip_line(m_cursor);
@@ -293,31 +379,44 @@ Lexer::next_word(
     }
     if ('"' == c)
     {
-      // TODO: this is a special case
-    }
-    if ('-' == c)
-    {
-      // TODO: this is a special case
+      for (;;)
+      {
+        c = this->next_char();
+        ASCII_ERROR_DESCRIPTION_CHECK(c);
+        if ('\0' == c)
+        {
+          return NEXT_WORD_ERROR_UNCLOSED_QUOTMARK;
+        }
+        else if ('"' == c)
+        {
+          m_cursor += 1;
+          return sb;
+        }
+        else
+        {
+          sb += c;
+        }
+      }
     }
     if (delimits_word(c))
     {
       if (is_white_space(c))
       {
-        return CharType::TEXTUAL;
+        return sb;
       }
       else
       {
         m_cursor -= 1;
-        return CharType::CONTROL;
+        return sb;
       }
     }
     else
     {
-      sb.add(c);
+      sb += c;
     }
   }
 
-  return CharType::TEXTUAL;
+  return sb;
 }
 
 LX::E
