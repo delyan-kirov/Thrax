@@ -8,6 +8,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 // TODO: There should be a special format for macro args
@@ -66,6 +67,11 @@
     std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
     std::fprintf(stderr, "\n");                                                \
   } while (false)
+
+#define UT_UNUSED(UT_UNUSED_VAR) (void)UT_UNUSED_VAR
+
+#define UTSTRf "%.*s"
+#define UTSTFa(UT_STR_VAR) (int)UT_STR_VAR.m_len, UT_STR_VAR.m_mem
 
 namespace AR
 {
@@ -378,6 +384,13 @@ struct String : public Vu<char>
     this->m_mem = s;
   }
 
+  String(
+    int i)
+  {
+    void *mem = (void *)this;
+    std::memset(mem, i, sizeof(String));
+  }
+
   String()                          = default;
   String(const String &)            = default;
   String(String &&)                 = default;
@@ -408,6 +421,34 @@ struct String : public Vu<char>
   {
     return !((this->m_len == other.m_len)
              && (0 == std::memcmp(this->m_mem, other.m_mem, this->m_len)));
+  }
+
+  template <typename T>
+  using is_non_char_integral
+    = std::integral_constant<bool,
+                             std::is_integral<T>::value
+                               && !std::is_same<T, char>::value
+                               && !std::is_same<T, signed char>::value
+                               && !std::is_same<T, unsigned char>::value>;
+
+  template <typename T,
+            typename
+            = typename std::enable_if<is_non_char_integral<T>::value>::type>
+  void
+  operator+=(
+    T i)
+  {
+    this->m_len += i;
+  }
+
+  template <typename T,
+            typename
+            = typename std::enable_if<is_non_char_integral<T>::value>::type>
+  void
+  operator-=(
+    T i)
+  {
+    this->m_len -= i;
   }
 };
 

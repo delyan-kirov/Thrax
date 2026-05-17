@@ -190,6 +190,7 @@ Lexer::operator()()
   return this->run();
 };
 
+// FIXME: Marked for removal, there is no point in this function
 bool
 Lexer::match_keyword(
   UT::String keyword, UT::String word)
@@ -267,40 +268,6 @@ Lexer::next_char()
   return c;
 }
 
-std::string
-ascii_error_description(
-  char c)
-{
-  if (is_white_space(c))
-  {
-    return NEXT_WORD_INFO_OK;
-  }
-  if ('\0' == c)
-  {
-    return NEXT_WORD_INFO_END;
-  }
-  if (std::iscntrl(c))
-  {
-    printf("INFO: %d\n", c);
-    return NEXT_WORD_ERROR_ASCII_CTR;
-  }
-  if (not isascii(c))
-  {
-    return NEXT_WORD_ERROR_NON_ASCII_CHAR;
-  }
-  return NEXT_WORD_INFO_OK;
-}
-
-#define ASCII_ERROR_DESCRIPTION_CHECK(ASCII_CHAR)                              \
-  do                                                                           \
-  {                                                                            \
-    std::string DESCRIPTION = ascii_error_description(ASCII_CHAR);             \
-    if (NEXT_WORD_INFO_OK != DESCRIPTION)                                      \
-    {                                                                          \
-      return DESCRIPTION;                                                      \
-    }                                                                          \
-  } while (0)
-
 bool
 is_operator(
   char c)
@@ -373,9 +340,10 @@ Lexer::next_valid_char(
 // TODO: What if symbol is valid ascii and reserved but not used?
 E
 Lexer::next_word(
-  std::string &sb)
+  UT::String &sb)
 {
   strip_white_space(m_cursor);
+  sb.m_mem = m_input.m_mem + m_cursor;
 
   char current_char = m_input[m_cursor];
   LX_FN_TRY(get_char_validity(current_char));
@@ -394,7 +362,7 @@ Lexer::next_word(
         m_cursor -= 1;
         return E::OK;
       }
-      sb += current_char;
+      sb += 1;
     }
   }
 
@@ -424,7 +392,7 @@ Lexer::next_word(
         }
         else
         {
-          sb += current_char;
+          sb += 1;
         }
       }
     }
@@ -442,9 +410,55 @@ Lexer::next_word(
     }
     else
     {
-      sb += current_char;
+      sb += 1;
     }
   }
+
+  return E::OK;
+}
+
+// TODO: Think how to tokenize with this approach
+// NOTE: When we have '-' we can do the same trink we do now by checking if the
+// next char is an integer, this makes parsing later way easier
+bool
+matches_operator(
+  UT::String s)
+{
+  if ("+" == s)
+  {
+    return true;
+  }
+  else if ("-" == s)
+  {
+    return true;
+  }
+  else if ("?=" == s)
+  {
+    return true;
+  }
+  else if ("*" == s)
+  {
+    return true;
+  }
+  UT_TODO();
+  return true;
+}
+
+// TODO: UNFINISHED
+LX::E
+Lexer::tokenize()
+{
+  UT::String sb{ 0 };
+  Tokens     tokens = {};
+  UT_UNUSED(tokens);
+
+  for (LX::E e = next_word(sb); LX::E::OK == e; e = next_word(sb))
+  {
+    std::printf("INFO: " UTSTRf "\n", UTSTFa(sb));
+    sb = { 0 };
+  }
+
+  UT_TODO();
 
   return E::OK;
 }

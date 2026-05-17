@@ -77,21 +77,6 @@ constexpr UT::String EXT{ "ext" };
 
 } // namespace Keyword
 
-constexpr const char *NEXT_WORD_ERROR_ASCII_CTR /**/
-  = "NEXT_WORD_ERROR_ASCII_CTR";
-constexpr const char *NEXT_WORD_ERROR_NON_ASCII_CHAR /**/
-  = "NEXT_WORD_ERROR_NON_ASCII_CHAR";
-constexpr const char *NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT /**/
-  = "NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT";
-constexpr const char *NEXT_WORD_ERROR_UNCLOSED_QUOTMARK /**/
-  = "NEXT_WORD_ERROR_UNCLOSED_QUOTMARK";
-constexpr const char *NEXT_WORD_ERROR_QESTION_REQUIRES_EQ /**/
-  = "NEXT_WORD_ERROR_QESTION_REQUIRES_EQ";
-constexpr const char *NEXT_WORD_INFO_END /**/
-  = "NEXT_WORD_INFO_END";
-constexpr const char *NEXT_WORD_INFO_OK /**/
-  = "NEXT_WORD_INFO_OK";
-
 /*------------------------------------------------------------------------------
  *\TYPES
  *-----------------------------------------------------------------------------*/
@@ -321,7 +306,7 @@ public:
 
   E next_valid_char(char & /*out*/ c);
 
-  E next_word(std::string &sb);
+  E next_word(UT::String &sb);
 
   E push_int();
 
@@ -342,6 +327,8 @@ public:
   void strip_line(size_t idx);
 
   LX::E parse_signature(Sig &sig);
+
+  LX::E tokenize();
 
   E run();
 
