@@ -62,7 +62,7 @@
 #define UT_WARNING(MSG_FORMAT, ...)                                            \
   do                                                                           \
   {                                                                            \
-    std::fprintf(stderr, "WARN: ");                                         \
+    std::fprintf(stderr, "WARN: ");                                            \
     std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
     std::fprintf(stderr, "\n");                                                \
   } while (false)

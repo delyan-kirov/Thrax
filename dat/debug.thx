@@ -4,6 +4,6 @@ ext c=let x=32 in
 int d:Int=let c
 	in cdd +x-x
        
-
+int d = 32 ?= 12
 					
 

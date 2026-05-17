@@ -125,6 +125,10 @@ enum class LangType
 
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
+  X(END_OF_FILE)                                                                 \
+  X(ASCII_CTR_CHAR)                                                            \
+  X(NON_ASCII_CHAR)                                                            \
+  X(QUOTM_UNCLOSED)                                                            \
   X(PARENTHESIS_UNBALANCED)                                                    \
   X(NUMBER_PARSING_FAILURE)                                                    \
   X(UNRECOGNIZED_STRING)                                                       \
@@ -315,7 +319,9 @@ public:
 
   char peek_char();
 
-  std::string next_word();
+  E next_valid_char(char & /*out*/ c);
+
+  E next_word(std::string &sb);
 
   E push_int();
 

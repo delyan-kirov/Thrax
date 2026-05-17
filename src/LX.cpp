@@ -301,17 +301,11 @@ ascii_error_description(
     }                                                                          \
   } while (0)
 
-// TODO: What if symbol is valid ascii and reserved but not used?
-std::string
-Lexer::next_word()
+bool
+is_operator(
+  char c)
 {
-  std::string sb{ "" };
-  strip_white_space(m_cursor);
-
-  char current_char = m_input[m_cursor];
-  ASCII_ERROR_DESCRIPTION_CHECK(current_char);
-
-  switch (current_char)
+  switch (c)
   {
   case '+':
   case ':':
@@ -320,103 +314,139 @@ Lexer::next_word()
   case '/':
   case '%':
   case '!':
-  {
-    m_cursor += 1;
-    sb += current_char;
-    return sb;
-  }
-  break;
   case '?':
-  {
-    m_cursor += 1;
-    char next_char = peek_char();
-    ASCII_ERROR_DESCRIPTION_CHECK(next_char);
-    if ('=' != next_char)
-    {
-      return NEXT_WORD_ERROR_QESTION_REQUIRES_EQ;
-    }
-    else
-    {
-      m_cursor += 1;
-      sb += current_char + next_char;
-      return sb;
-    }
-  }
-  break;
   case '=':
   {
-    m_cursor += 1;
-    char next_char = peek_char();
-    ASCII_ERROR_DESCRIPTION_CHECK(next_char);
-    if ('\0' == next_char)
-    {
-      return NEXT_WORD_ERROR_UNEXPECTED_END_OF_TEXT;
-    }
-    if ('>' == next_char)
-    {
-      m_cursor += 1;
-      sb += current_char + next_char;
-      return sb;
-    }
-    if (is_white_space(next_char) || std::isalnum(next_char))
-    {
-      sb += current_char;
-      return sb;
-    }
+    return true;
   }
   break;
-  default: break;
+  default:
+  {
+    return false;
+  }
+  break;
+  }
+}
+
+E
+get_char_validity(
+  const char c)
+{
+  if (is_white_space(c))
+  {
+    return E::OK;
+  }
+  if ('\0' == c)
+  {
+    return E::END_OF_FILE;
+  }
+  if (std::iscntrl(c))
+  {
+    return E::ASCII_CTR_CHAR;
+  }
+  if (not isascii(c))
+  {
+    return E::NON_ASCII_CHAR;
   }
 
-  for (char c = next_char(); '\0' != c; c = next_char())
+  return E::OK;
+}
+
+E
+Lexer::next_valid_char(
+  char &c)
+{
+  char next_char = this->next_char();
+  E    e         = get_char_validity(next_char);
+  if (E::OK == e)
   {
-    ASCII_ERROR_DESCRIPTION_CHECK(c);
-    if ('#' == c)
+    c = next_char;
+  }
+  else
+  {
+    return e;
+  }
+
+  return E::OK;
+}
+
+// TODO: What if symbol is valid ascii and reserved but not used?
+E
+Lexer::next_word(
+  std::string &sb)
+{
+  strip_white_space(m_cursor);
+
+  char current_char = m_input[m_cursor];
+  LX_FN_TRY(get_char_validity(current_char));
+
+  if (is_operator(current_char))
+  {
+    for (;;)
+    {
+      LX_FN_TRY(next_valid_char(current_char));
+      if (is_white_space(current_char))
+      {
+        return E::OK;
+      }
+      if (std::isalnum(current_char))
+      {
+        m_cursor -= 1;
+        return E::OK;
+      }
+      sb += current_char;
+    }
+  }
+
+  for (;;)
+  {
+    LX_FN_TRY(next_valid_char(current_char));
+
+    if ('#' == current_char)
     {
       strip_line(m_cursor);
       strip_white_space(m_cursor);
       continue;
     }
-    if ('"' == c)
+    if ('"' == current_char)
     {
       for (;;)
       {
-        c = this->next_char();
-        ASCII_ERROR_DESCRIPTION_CHECK(c);
-        if ('\0' == c)
+        LX_FN_TRY(next_valid_char(current_char));
+        if ('\0' == current_char)
         {
-          return NEXT_WORD_ERROR_UNCLOSED_QUOTMARK;
+          return E::QUOTM_UNCLOSED;
         }
-        else if ('"' == c)
+        else if ('"' == current_char)
         {
           m_cursor += 1;
-          return sb;
+          return E::OK;
         }
         else
         {
-          sb += c;
+          sb += current_char;
         }
       }
     }
-    if (delimits_word(c))
+    if (delimits_word(current_char))
     {
-      if (is_white_space(c))
+      if (is_white_space(current_char))
       {
-        return sb;
+        return E::OK;
       }
       else
       {
         m_cursor -= 1;
-        return sb;
+        return E::OK;
       }
     }
     else
     {
-      sb += c;
+      sb += current_char;
     }
   }
 
-  return sb;
+  return E::OK;
 }
 
 LX::E
