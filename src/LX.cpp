@@ -159,6 +159,46 @@ delimits_word(
   }
 }
 
+bool
+delimiter_operator(
+  char c)
+{
+  switch (c)
+  {
+  case '(':
+  case ')':
+  case ',':
+  case '{':
+  case '}':
+  case '[':
+  case ']':
+  case ';': return true;
+  default : return false;
+  }
+}
+
+bool
+reserved_not_used(
+  char c)
+{
+  switch (c)
+  {
+  case ',':
+  case '.':
+  case '[':
+  case ']':
+  case '$':
+  case '@':
+  case '\'':
+  case '~':
+  case '`':
+  case '&':
+  case '|':
+  case '^' : return true;
+  default  : return false;
+  }
+}
+
 } // namespace
 
 /*-------------------------------------------------------------------------------
@@ -345,8 +385,17 @@ Lexer::next_word(
   strip_white_space(m_cursor);
   sb.m_mem = m_input.m_mem + m_cursor;
 
+  // FIXME: Combine to single operation
   char current_char = m_input[m_cursor];
   LX_FN_TRY(get_char_validity(current_char));
+  LX_ASSERT(not reserved_not_used(current_char), E::UNRECOGNIZED_STRING);
+
+  if (delimiter_operator(current_char))
+  {
+    m_cursor += 1;
+    sb += 1;
+    return E::OK;
+  }
 
   if (is_operator(current_char))
   {
