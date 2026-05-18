@@ -1,9 +1,1 @@
-ext c=let x=32 in
-	x+32
-
-int d:Int=let c
-	in cdd +x-x
-       
-int d = 32 ?= 12
-					
-
+ext t = let adsf in 0"123"69"23" 12

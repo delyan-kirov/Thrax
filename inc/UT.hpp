@@ -351,6 +351,12 @@ template <typename O> struct Vu
   };
 
   O *
+  first()
+  {
+    return this->m_mem;
+  };
+
+  O *
   last()
   {
     return this->m_mem + (this->m_len - 1);

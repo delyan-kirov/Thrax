@@ -152,6 +152,7 @@ delimits_word(
   case '=':
   case ':':
   case ',':
+  case '"':
   case '@' : return true;
   default  : return false;
   }
@@ -388,6 +389,30 @@ Lexer::next_word(
   LX_FN_TRY(get_char_validity(current_char));
   LX_ASSERT(not reserved_not_used(current_char), E::UNRECOGNIZED_STRING);
 
+  if ('"' == current_char)
+  {
+    sb += 1;
+    m_cursor += 1;
+    for (;;)
+    {
+      LX_FN_TRY(next_valid_char(current_char));
+      if ('\0' == current_char)
+      {
+        return E::QUOTM_UNCLOSED;
+      }
+      else if ('"' == current_char)
+      {
+        // NOTE: the cursor now points after '"'
+        sb += 1;
+        return E::OK;
+      }
+      else
+      {
+        sb += 1;
+      }
+    }
+  }
+
   if (delimiter_operator(current_char))
   {
     m_cursor += 1;
@@ -422,28 +447,6 @@ Lexer::next_word(
       strip_line(m_cursor);
       strip_white_space(m_cursor);
       continue;
-    }
-    if ('"' == current_char)
-    {
-      sb += 1;
-      for (;;)
-      {
-        LX_FN_TRY(next_valid_char(current_char));
-        if ('\0' == current_char)
-        {
-          return E::QUOTM_UNCLOSED;
-        }
-        else if ('"' == current_char)
-        {
-          sb += 1;
-          m_cursor += 1;
-          return E::OK;
-        }
-        else
-        {
-          sb += 1;
-        }
-      }
     }
     if (delimits_word(current_char))
     {
@@ -511,15 +514,20 @@ Lexer::matches_operator(
   return does_match;
 }
 
-// TODO: UNFINISHED
-
-LX::E
-Lexer::get_words(
-  std::vector<UT::String> words)
+bool
+Lexer::matches_quotm(
+  UT::String s)
 {
+  return '"' == *s.first() && '"' == *s.last();
+}
 
-  UT::String sb{ 0 };
-  LX::E      e;
+// TODO: UNFINISHED
+LX::E
+Lexer::init()
+{
+  std::vector<UT::String> words;
+  UT::String              sb{ 0 };
+  LX::E                   e;
 
   for (e = next_word(sb); LX::E::OK == e; e = next_word(sb))
   {
@@ -529,27 +537,49 @@ Lexer::get_words(
 
   LX_ASSERT(E::END_OF_FILE == e, E::UNRECOGNIZED_STRING);
 
-  for (auto &word : words)
-  {
-    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
-  }
+  AR::Arena arena{};
+  Tokens    tokens{ arena };
+  tokenize(words, tokens);
 
   return E::OK;
 }
 
 // TODO: Need to figure out if the lexer should be aware of ext symbols and
 // stuff like that
+// FIXME: This function should have inout params words and tokens
 LX::E
-Lexer::tokenize()
+Lexer::tokenize(
+  std::vector<UT::String> words, Tokens tokens)
 {
   UT::String sb{ 0 };
-  Tokens     tokens = {};
   UT_UNUSED(tokens);
 
-  for (LX::E e = next_word(sb); LX::E::OK == e; e = next_word(sb))
+  for (auto &word : words)
   {
-    std::printf("INFO: " UTSTRf "\n", UTSTFa(sb));
-    sb = { 0 };
+    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
+  }
+
+  size_t idx = 0;
+  for (;;)
+  {
+    if (idx >= words.size()) break;
+    UT::String word = words[idx];
+    if (matches_operator(word))
+    {
+      idx += 1;
+      continue;
+    }
+    // matches quotm
+    // matches if
+    // matches let
+    // matches `(`
+    // matches ext/int
+    // matches string (this is non trivial because we might match another
+    //    keyword like `in` or `else` which is an error)
+    else
+    {
+      break;
+    }
   }
 
   UT_TODO();

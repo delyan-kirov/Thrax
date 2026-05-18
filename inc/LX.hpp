@@ -319,6 +319,8 @@ public:
 
   bool matches_operator(UT::String);
 
+  bool matches_quotm(UT::String);
+
   E match_operator(UT::String s);
 
   UT::String get_word(size_t idx);
@@ -331,9 +333,9 @@ public:
 
   LX::E parse_signature(Sig &sig);
 
-  LX::E tokenize();
+  LX::E tokenize(std::vector<UT::String>, Tokens);
 
-  LX::E get_words(std::vector<UT::String> words);
+  LX::E init();
 
   E run();
 
