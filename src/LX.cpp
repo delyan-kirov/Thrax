@@ -427,6 +427,7 @@ Lexer::next_word(
     }
     if ('"' == current_char)
     {
+      sb += 1;
       for (;;)
       {
         LX_FN_TRY(next_valid_char(current_char));
@@ -436,6 +437,7 @@ Lexer::next_word(
         }
         else if ('"' == current_char)
         {
+          sb += 1;
           m_cursor += 1;
           return E::OK;
         }
@@ -470,27 +472,45 @@ Lexer::next_word(
 // NOTE: When we have '-' we can do the same trink we do now by checking if the
 // next char is an integer, this makes parsing later way easier
 bool
-matches_operator(
+Lexer::matches_operator(
   UT::String s)
 {
+  Token t{}; // FIXME: should have start and end
+  bool  does_match = false;
+
   if ("+" == s)
   {
-    return true;
+    does_match = true;
+    t.type     = Type::Plus;
   }
   else if ("-" == s)
   {
-    return true;
+    // FIXME: See note above
+    does_match = true;
+    t.type     = Type::Minus;
   }
   else if ("?=" == s)
   {
-    return true;
+    does_match = true;
+    t.type     = Type::IsEq;
   }
   else if ("*" == s)
   {
-    return true;
+    does_match = true;
+    t.type     = Type::Mult;
   }
-  UT_TODO();
-  return true;
+  else if ("%" == s)
+  {
+    does_match = true;
+    t.type     = Type::Modulus;
+  }
+
+  if (does_match)
+  {
+    m_tokens.push(t);
+  }
+
+  return does_match;
 }
 
 // TODO: UNFINISHED

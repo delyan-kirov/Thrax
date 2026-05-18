@@ -110,7 +110,7 @@ enum class LangType
 
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
-  X(END_OF_FILE)                                                                 \
+  X(END_OF_FILE)                                                               \
   X(ASCII_CTR_CHAR)                                                            \
   X(NON_ASCII_CHAR)                                                            \
   X(QUOTM_UNCLOSED)                                                            \
@@ -315,6 +315,8 @@ public:
   void push_group(Lexer l);
 
   E match_operator(char c);
+
+  bool matches_operator(UT::String);
 
   E match_operator(UT::String s);
 
