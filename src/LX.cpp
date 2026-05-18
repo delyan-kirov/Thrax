@@ -9,8 +9,6 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
-#include <cctype>
-#include <cstdio>
 
 namespace LX
 {
@@ -514,6 +512,33 @@ Lexer::matches_operator(
 }
 
 // TODO: UNFINISHED
+
+LX::E
+Lexer::get_words(
+  std::vector<UT::String> words)
+{
+
+  UT::String sb{ 0 };
+  LX::E      e;
+
+  for (e = next_word(sb); LX::E::OK == e; e = next_word(sb))
+  {
+    words.push_back(sb);
+    sb = { 0 };
+  }
+
+  LX_ASSERT(E::END_OF_FILE == e, E::UNRECOGNIZED_STRING);
+
+  for (auto &word : words)
+  {
+    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
+  }
+
+  return E::OK;
+}
+
+// TODO: Need to figure out if the lexer should be aware of ext symbols and
+// stuff like that
 LX::E
 Lexer::tokenize()
 {

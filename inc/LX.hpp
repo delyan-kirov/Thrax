@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include "UT.hpp"
+#include <vector>
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -331,6 +332,8 @@ public:
   LX::E parse_signature(Sig &sig);
 
   LX::E tokenize();
+
+  LX::E get_words(std::vector<UT::String> words);
 
   E run();
 
