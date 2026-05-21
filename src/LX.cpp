@@ -9,6 +9,7 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <vector>
 
 namespace LX
 {
@@ -376,6 +377,39 @@ Lexer::next_valid_char(
   return E::OK;
 }
 
+bool
+word_matches_global_sym_keyword(
+  UT::String s)
+{
+  return Keyword::PUB == s || Keyword::INT == s;
+}
+
+E
+Lexer::next_global_sym(
+  Token &t)
+{
+  UT_UNUSED(t);
+  Lexer new_l{ *this, m_cursor, m_end };
+
+  UT::String w{};
+  LX_FN_TRY(new_l.next_word(w));
+  LX_ASSERT(word_matches_global_sym_keyword(w), E::UNRECOGNIZED_STRING);
+
+  std::vector<UT::String> words{};
+  for (;;)
+  {
+    w   = { 0 };
+    E e = new_l.next_word(w);
+    if (E::END_OF_FILE == e) break;
+    if (word_matches_global_sym_keyword(w)) break;
+    words.push_back(w);
+  }
+
+  new_l.tokenize(words);
+
+  return E::OK;
+}
+
 // TODO: What if symbol is valid ascii and reserved but not used?
 E
 Lexer::next_word(
@@ -472,7 +506,7 @@ Lexer::next_word(
 // TODO: Think how to tokenize with this approach
 // NOTE: When we have '-' we can do the same trink we do now by checking if the
 // next char is an integer, this makes parsing later way easier
-bool
+E
 Lexer::matches_operator(
   UT::String s)
 {
@@ -509,16 +543,17 @@ Lexer::matches_operator(
   if (does_match)
   {
     m_tokens.push(t);
+    return E::MATCHED_OPERATOR;
   }
 
-  return does_match;
+  return E::OK;
 }
 
-bool
+E
 Lexer::matches_quotm(
   UT::String s)
 {
-  return '"' == *s.first() && '"' == *s.last();
+  return '"' == *s.first() && '"' == *s.last() ? E::MATCHED_QUOTM : E::OK;
 }
 
 // TODO: UNFINISHED
@@ -539,47 +574,52 @@ Lexer::init()
 
   AR::Arena arena{};
   Tokens    tokens{ arena };
-  tokenize(words, tokens);
+  tokenize(words);
 
   return E::OK;
 }
+
+#define TOKEN_MATCHING_HANDLER(LX_MATCH_EXPR, LX_EVENT_CODE)                   \
+  do                                                                           \
+  {                                                                            \
+    E LX_EVENT_VAR = E::OK;                                                    \
+    LX_EVENT_VAR   = matches_operator(word);                                   \
+    if (LX_EVENT_CODE == LX_EVENT_VAR)                                         \
+    {                                                                          \
+      continue;                                                                \
+    }                                                                          \
+    else if (E::OK != LX_EVENT_VAR)                                            \
+    {                                                                          \
+      return LX_EVENT_VAR;                                                     \
+    }                                                                          \
+  } while (false)
 
 // TODO: Need to figure out if the lexer should be aware of ext symbols and
 // stuff like that
 // FIXME: This function should have inout params words and tokens
 LX::E
 Lexer::tokenize(
-  std::vector<UT::String> words, Tokens tokens)
+  std::vector<UT::String> words)
 {
   UT::String sb{ 0 };
-  UT_UNUSED(tokens);
 
   for (auto &word : words)
   {
     std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
   }
 
-  size_t idx = 0;
-  for (;;)
+  for (size_t i = 0; i < words.size(); ++i)
   {
-    if (idx >= words.size()) break;
-    UT::String word = words[idx];
-    if (matches_operator(word))
-    {
-      idx += 1;
-      continue;
-    }
-    // matches quotm
+    UT::String word = words[i];
+
+    TOKEN_MATCHING_HANDLER(matches_operator(word), E::MATCHED_OPERATOR);
+    TOKEN_MATCHING_HANDLER(matches_quotm(word), E::MATCHED_QUOTM);
+
     // matches if
     // matches let
     // matches `(`
-    // matches ext/int
     // matches string (this is non trivial because we might match another
     //    keyword like `in` or `else` which is an error)
-    else
-    {
-      break;
-    }
   }
 
   UT_TODO();

@@ -124,7 +124,9 @@ enum class LangType
   X(ELSE_KEYWORD)                                                              \
   X(IN_KEYWORD)                                                                \
   X(CONTROL_STRUCTURE_ERROR)                                                   \
-  X(WORD_NOT_FOUND)
+  X(WORD_NOT_FOUND)                                                            \
+  X(MATCHED_OPERATOR)                                                          \
+  X(MATCHED_QUOTM)
 
 enum class E
 {
@@ -309,6 +311,8 @@ public:
 
   E next_word(UT::String &sb);
 
+  E next_global_sym(Token &t);
+
   E push_int();
 
   void push_operator(char c);
@@ -317,9 +321,9 @@ public:
 
   E match_operator(char c);
 
-  bool matches_operator(UT::String);
+  E matches_operator(UT::String);
 
-  bool matches_quotm(UT::String);
+  E matches_quotm(UT::String);
 
   E match_operator(UT::String s);
 
@@ -333,7 +337,7 @@ public:
 
   LX::E parse_signature(Sig &sig);
 
-  LX::E tokenize(std::vector<UT::String>, Tokens);
+  LX::E tokenize(std::vector<UT::String>);
 
   LX::E init();
 
