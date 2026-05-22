@@ -555,12 +555,72 @@ E
 Lexer::matches_quotm(
   UT::Vu<UT::String> &words)
 {
-  UT::String *word = words.first();
-  if ('"' == *word->first() && '"' == *word->last())
+  UT::String word = *words.first();
+  if ('"' == *word.first() && '"' == *word.last())
   {
     words.pop_front();
     return E::MATCHED_QUOTM;
   }
+
+  return E::OK;
+}
+
+E
+Lexer::matches_ifelse(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if (Keyword::IF != word) return E::OK;
+
+  Lexer lcond{ *this, m_cursor, m_end };
+  LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+
+  Lexer ltrue{ lcond, m_cursor, m_end };
+  LX_ASSERT(E::ELSE_KEYWORD == ltrue.tokenize(words),
+            E::UNREACHABLE_CASE_REACHED);
+
+  Lexer lelse{ lcond, m_cursor, m_end };
+  LX_FN_TRY(lelse.tokenize(words));
+
+  Token t{ m_arena };
+  t.type = Type::If;
+  t.as.if_else.condition.push(lcond.m_tokens);
+  t.as.if_else.true_branch.push(ltrue.m_tokens);
+  t.as.if_else.else_branch.push(lelse.m_tokens);
+
+  return E::OK;
+}
+
+// FIXME: we may need to handle this appropriately
+// let x: <type> = <expr> in <expr>
+E
+Lexer::matches_letin(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if (Keyword::LET != word) return E::OK;
+  words.pop_front();
+  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+
+  UT::String varname = *words.pop_front();
+  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+  LX_ASSERT("=" == *words.pop_front(), E::UNRECOGNIZED_STRING);
+  LX_ASSERT(not words.is_empty(), E::UNRECOGNIZED_STRING);
+
+  Lexer llet{ *this, m_cursor, m_end };
+  LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+
+  Lexer lin{ llet, m_cursor, m_end };
+  LX_FN_TRY(llet.tokenize(words));
+
+  Token t{ m_arena };
+  t.type           = Type::Let;
+  t.as.binding.var = varname;
+  t.as.binding.equals.push(llet.m_tokens);
+  t.as.binding.in.push(lin.m_tokens);
+  UT_UNUSED(t.as.binding.sig); // FIXME
+
+  m_tokens.push(t);
 
   return E::OK;
 }
@@ -589,10 +649,8 @@ Lexer::init()
 }
 
 #define TOKEN_MATCHING_HANDLER(LX_MATCH_EXPR, LX_EVENT_CODE)                   \
-  do                                                                           \
   {                                                                            \
-    E LX_EVENT_VAR = E::OK;                                                    \
-    LX_EVENT_VAR   = LX_MATCH_EXPR;                                            \
+    E LX_EVENT_VAR = LX_MATCH_EXPR;                                            \
     if (LX_EVENT_CODE == LX_EVENT_VAR)                                         \
     {                                                                          \
       continue;                                                                \
@@ -601,29 +659,27 @@ Lexer::init()
     {                                                                          \
       return LX_EVENT_VAR;                                                     \
     }                                                                          \
-  } while (false)
+  }
 
 LX::E
 Lexer::tokenize(
-  std::vector<UT::String> &ws)
+  UT::Vu<UT::String> words)
 {
   UT::String sb{ 0 };
 
-  for (auto &word : ws)
+  for (auto &word : words)
   {
     std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
   }
 
-  UT::Vu<UT::String> words{ ws };
-
   while (not words.is_empty())
   {
     TOKEN_MATCHING_HANDLER(matches_operator(words), E::MATCHED_OPERATOR);
-    TOKEN_MATCHING_HANDLER(matches_quotm(words), E::MATCHED_OPERATOR);
+    TOKEN_MATCHING_HANDLER(matches_quotm(words), E::MATCHED_QUOTM);
+    TOKEN_MATCHING_HANDLER(matches_letin(words), E::MATCHED_OPERATOR);
+    TOKEN_MATCHING_HANDLER(matches_ifelse(words), E::MATCHED_OPERATOR);
     LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
 
-    // matches if
-    // matches let
     // matches `(`
     // matches int
     // matches string (this is non trivial because we might match another

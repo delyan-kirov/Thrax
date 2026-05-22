@@ -326,6 +326,10 @@ public:
 
   E matches_operator(UT::Vu<UT::String> &words);
 
+  E matches_ifelse(UT::Vu<UT::String> &words);
+
+  E matches_letin(UT::Vu<UT::String> &words);
+
   UT::String get_word(size_t idx);
 
   bool match_keyword(UT::String keyword, UT::String word);
@@ -336,7 +340,7 @@ public:
 
   LX::E parse_signature(Sig &sig);
 
-  LX::E tokenize(std::vector<UT::String> &words);
+  LX::E tokenize(UT::Vu<UT::String> words);
 
   LX::E init();
 
