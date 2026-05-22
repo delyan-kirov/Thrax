@@ -320,12 +320,11 @@ public:
   void push_group(Lexer l);
 
   E match_operator(char c);
-
-  E matches_operator(UT::String);
-
-  E matches_quotm(UT::String);
-
   E match_operator(UT::String s);
+
+  E matches_quotm(UT::Vu<UT::String> &words);
+
+  E matches_operator(UT::Vu<UT::String> &words);
 
   UT::String get_word(size_t idx);
 
@@ -337,7 +336,7 @@ public:
 
   LX::E parse_signature(Sig &sig);
 
-  LX::E tokenize(std::vector<UT::String>);
+  LX::E tokenize(std::vector<UT::String> &words);
 
   LX::E init();
 

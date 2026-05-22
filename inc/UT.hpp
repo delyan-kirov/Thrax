@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 // TODO: There should be a special format for macro args
 // This is because arguments can resolve to other macros
@@ -297,10 +298,18 @@ template <typename O> struct Vu
   };
 
   Vu(
-    std::string s)
-      : m_mem{ s.c_str() }
+    std::string &s)
+      : m_mem{ s.c_str() },
+        m_len(s.size())
   {
-    this->m_len = s.size();
+  }
+
+  template <typename T>
+  Vu(
+    std::vector<T> &v)
+      : m_mem{ v.data() },
+        m_len{ v.size() }
+  {
   }
 
   bool
@@ -361,6 +370,23 @@ template <typename O> struct Vu
   {
     return this->m_mem + (this->m_len - 1);
   };
+
+  O *
+  pop_front()
+  {
+    O *elem = m_mem;
+    m_mem += 1;
+    m_len -= 1;
+    return elem;
+  }
+
+  O *
+  pop_back()
+  {
+    O *elem = m_mem[m_len - 1];
+    m_len -= 1;
+    return elem;
+  }
 };
 
 struct String : public Vu<char>

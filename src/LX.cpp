@@ -508,10 +508,11 @@ Lexer::next_word(
 // next char is an integer, this makes parsing later way easier
 E
 Lexer::matches_operator(
-  UT::String s)
+  UT::Vu<UT::String> &words)
 {
-  Token t{}; // FIXME: should have start and end
-  bool  does_match = false;
+  UT::String s = *words.first();
+  Token      t{}; // FIXME: should have start and end
+  bool       does_match = false;
 
   if ("+" == s)
   {
@@ -543,6 +544,7 @@ Lexer::matches_operator(
   if (does_match)
   {
     m_tokens.push(t);
+    words.pop_front();
     return E::MATCHED_OPERATOR;
   }
 
@@ -551,9 +553,16 @@ Lexer::matches_operator(
 
 E
 Lexer::matches_quotm(
-  UT::String s)
+  UT::Vu<UT::String> &words)
 {
-  return '"' == *s.first() && '"' == *s.last() ? E::MATCHED_QUOTM : E::OK;
+  UT::String *word = words.first();
+  if ('"' == *word->first() && '"' == *word->last())
+  {
+    words.pop_front();
+    return E::MATCHED_QUOTM;
+  }
+
+  return E::OK;
 }
 
 // TODO: UNFINISHED
@@ -583,7 +592,7 @@ Lexer::init()
   do                                                                           \
   {                                                                            \
     E LX_EVENT_VAR = E::OK;                                                    \
-    LX_EVENT_VAR   = matches_operator(word);                                   \
+    LX_EVENT_VAR   = LX_MATCH_EXPR;                                            \
     if (LX_EVENT_CODE == LX_EVENT_VAR)                                         \
     {                                                                          \
       continue;                                                                \
@@ -594,30 +603,29 @@ Lexer::init()
     }                                                                          \
   } while (false)
 
-// TODO: Need to figure out if the lexer should be aware of ext symbols and
-// stuff like that
-// FIXME: This function should have inout params words and tokens
 LX::E
 Lexer::tokenize(
-  std::vector<UT::String> words)
+  std::vector<UT::String> &ws)
 {
   UT::String sb{ 0 };
 
-  for (auto &word : words)
+  for (auto &word : ws)
   {
     std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
   }
 
-  for (size_t i = 0; i < words.size(); ++i)
-  {
-    UT::String word = words[i];
+  UT::Vu<UT::String> words{ ws };
 
-    TOKEN_MATCHING_HANDLER(matches_operator(word), E::MATCHED_OPERATOR);
-    TOKEN_MATCHING_HANDLER(matches_quotm(word), E::MATCHED_QUOTM);
+  while (not words.is_empty())
+  {
+    TOKEN_MATCHING_HANDLER(matches_operator(words), E::MATCHED_OPERATOR);
+    TOKEN_MATCHING_HANDLER(matches_quotm(words), E::MATCHED_OPERATOR);
+    LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
 
     // matches if
     // matches let
     // matches `(`
+    // matches int
     // matches string (this is non trivial because we might match another
     //    keyword like `in` or `else` which is an error)
   }
