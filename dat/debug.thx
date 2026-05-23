@@ -1,1 +1,4 @@
-ext t = let adsf in 0"123"69"23" 12
+let 1 =
+	let 2 = 3
+	 in if 4 => 5 else 6
+in let 7 = 8 in 9

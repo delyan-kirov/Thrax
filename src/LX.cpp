@@ -9,6 +9,9 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <cstdio>
+#include <map>
+#include <string>
 #include <vector>
 
 namespace LX
@@ -405,7 +408,8 @@ Lexer::next_global_sym(
     words.push_back(w);
   }
 
-  new_l.tokenize(words);
+  UT::Vu<UT::String> wv{ words };
+  new_l.tokenize(wv);
 
   return E::OK;
 }
@@ -503,46 +507,29 @@ Lexer::next_word(
   return E::OK;
 }
 
-// TODO: Think how to tokenize with this approach
-// NOTE: When we have '-' we can do the same trink we do now by checking if the
-// next char is an integer, this makes parsing later way easier
+const std::map<std::string, Type> opertator_info_db{
+  { "+", Type::Plus }, { "-", Type::Minus },   { "?=", Type::IsEq },
+  { "*", Type::Mult }, { "%", Type::Modulus },
+};
+
+const std::map<std::string, E> control_delimiter_info_db{
+  { "in", E::IN_KEYWORD },
+  { "=>", E::FAT_ARROW },
+  { ")", E::PAREN_LEFT },
+  { "else", E::ELSE_KEYWORD },
+};
+
+// NOTE: later in the parser, we can check if - is an operator or part of the
+// integer
 E
 Lexer::matches_operator(
   UT::Vu<UT::String> &words)
 {
-  UT::String s = *words.first();
-  Token      t{}; // FIXME: should have start and end
-  bool       does_match = false;
-
-  if ("+" == s)
+  UT::String s      = *words.first();
+  auto       lookup = opertator_info_db.find(std::to_string(s));
+  if (opertator_info_db.end() != lookup)
   {
-    does_match = true;
-    t.type     = Type::Plus;
-  }
-  else if ("-" == s)
-  {
-    // FIXME: See note above
-    does_match = true;
-    t.type     = Type::Minus;
-  }
-  else if ("?=" == s)
-  {
-    does_match = true;
-    t.type     = Type::IsEq;
-  }
-  else if ("*" == s)
-  {
-    does_match = true;
-    t.type     = Type::Mult;
-  }
-  else if ("%" == s)
-  {
-    does_match = true;
-    t.type     = Type::Modulus;
-  }
-
-  if (does_match)
-  {
+    Token t{ lookup->second }; // FIXME: should have start and end
     m_tokens.push(t);
     words.pop_front();
     return E::MATCHED_OPERATOR;
@@ -556,15 +543,19 @@ Lexer::matches_quotm(
   UT::Vu<UT::String> &words)
 {
   UT::String word = *words.first();
-  if ('"' == *word.first() && '"' == *word.last())
+  if (not('"' == *word.first() && '"' == *word.last()))
   {
-    words.pop_front();
-    return E::MATCHED_QUOTM;
+    return E::OK;
   }
 
-  return E::OK;
+  words.pop_front();
+  Token t{ Type::Str };
+  t.as.string = word;
+  m_tokens.push(t);
+  return E::MATCHED_QUOTM;
 }
 
+// FIXME: We should not return in, =>, else etc. We should return OK only.
 E
 Lexer::matches_ifelse(
   UT::Vu<UT::String> &words)
@@ -572,6 +563,7 @@ Lexer::matches_ifelse(
   UT::String word = *words.first();
   if (Keyword::IF != word) return E::OK;
 
+  words.pop_front();
   Lexer lcond{ *this, m_cursor, m_end };
   LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words), E::UNREACHABLE_CASE_REACHED);
 
@@ -579,18 +571,31 @@ Lexer::matches_ifelse(
   LX_ASSERT(E::ELSE_KEYWORD == ltrue.tokenize(words),
             E::UNREACHABLE_CASE_REACHED);
 
-  Lexer lelse{ lcond, m_cursor, m_end };
-  LX_FN_TRY(lelse.tokenize(words));
+  Lexer lelse{ ltrue, m_cursor, m_end };
+  E     e = lelse.tokenize(words);
 
-  Token t{ m_arena };
-  t.type = Type::If;
-  t.as.if_else.condition.push(lcond.m_tokens);
-  t.as.if_else.true_branch.push(ltrue.m_tokens);
-  t.as.if_else.else_branch.push(lelse.m_tokens);
+  if (not(E::OK == e || E::IN_KEYWORD == e))
+  {
+    return E::OPERATOR_MATCH_FAILURE;
+  }
 
-  return E::OK;
+  if (E::IN_KEYWORD == e)
+  {
+    words.m_mem -= 1;
+    words.m_len += 1;
+  }
+
+  Token t{ Type::If, m_lines, m_cursor };
+  t.as.if_else.condition   = lcond.m_tokens;
+  t.as.if_else.true_branch = ltrue.m_tokens;
+  t.as.if_else.else_branch = lelse.m_tokens;
+  m_tokens.push(t);
+
+  return E::MATCHES_IFELSE;
 }
 
+// FIXME: This should be parsed like matching_paren (ie matching the in with its
+// let)
 // FIXME: we may need to handle this appropriately
 // let x: <type> = <expr> in <expr>
 E
@@ -610,17 +615,98 @@ Lexer::matches_letin(
   Lexer llet{ *this, m_cursor, m_end };
   LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::UNREACHABLE_CASE_REACHED);
 
-  Lexer lin{ llet, m_cursor, m_end };
-  LX_FN_TRY(llet.tokenize(words));
+  Lexer lin{ *this, m_cursor, m_end };
+  E     e = lin.tokenize(words);
+  LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::CONTROL_STRUCTURE_ERROR);
 
-  Token t{ m_arena };
-  t.type           = Type::Let;
-  t.as.binding.var = varname;
-  t.as.binding.equals.push(llet.m_tokens);
-  t.as.binding.in.push(lin.m_tokens);
+  if (E::IN_KEYWORD == e)
+  {
+    words.m_mem -= 1;
+    words.m_len += 1;
+  }
+
+  Token t{ Type::Let, m_lines, m_cursor };
+  t.type              = Type::Let;
+  t.as.binding.var    = varname;
+  t.as.binding.equals = llet.m_tokens;
+  t.as.binding.in     = lin.m_tokens;
   UT_UNUSED(t.as.binding.sig); // FIXME
 
   m_tokens.push(t);
+
+  return E::MATCHES_LETIN;
+}
+
+E
+Lexer::matches_open_paren(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s = *words.first();
+  if ("(" != s)
+  {
+    return E::OK;
+  }
+  Lexer lpar{ *this, m_cursor, m_end };
+  LX_ASSERT(E::PAREN_LEFT == lpar.tokenize(words), E::PARENTHESIS_UNBALANCED);
+
+  return E::MATCHES_OPEN_PAREN;
+}
+
+E
+Lexer::matches_integer(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s = *words.first();
+  if (not std::isdigit(s[0]))
+  {
+    return E::OK;
+  }
+
+  words.pop_front();
+  Token t{ Type::Int };
+
+  try
+  {
+    t.as.integer = std::stoi(s.m_mem);
+  }
+  catch (...)
+  {
+    return E::NUMBER_PARSING_FAILURE;
+  }
+  m_tokens.push(t);
+
+  return E::MATCHES_INTEGER;
+}
+
+E
+Lexer::matches_string(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s = *words.first();
+  if (not std::isalpha(s[0]))
+  {
+    return E::OK;
+  }
+
+  words.pop_front();
+  Token t{ Type::Word };
+  t.as.string = s;
+  m_tokens.push(t);
+
+  return E::MATCHES_STRING;
+}
+
+E
+Lexer::matches_control_operator(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s      = *words.first();
+  auto       lookup = control_delimiter_info_db.find(std::to_string(s));
+  if (control_delimiter_info_db.end() != lookup)
+  {
+    words.pop_front();
+    return lookup->second;
+  }
 
   return E::OK;
 }
@@ -638,17 +724,18 @@ Lexer::init()
     words.push_back(sb);
     sb = { 0 };
   }
+  for (auto &word : words)
+  {
+    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
+  }
 
   LX_ASSERT(E::END_OF_FILE == e, E::UNRECOGNIZED_STRING);
 
-  AR::Arena arena{};
-  Tokens    tokens{ arena };
-  tokenize(words);
-
-  return E::OK;
+  UT::Vu<UT::String> wv{ words };
+  return tokenize(wv);
 }
 
-#define TOKEN_MATCHING_HANDLER(LX_MATCH_EXPR, LX_EVENT_CODE)                   \
+#define TOKEN_HANDLE(LX_MATCH_EXPR, LX_EVENT_CODE)                             \
   {                                                                            \
     E LX_EVENT_VAR = LX_MATCH_EXPR;                                            \
     if (LX_EVENT_CODE == LX_EVENT_VAR)                                         \
@@ -663,30 +750,21 @@ Lexer::init()
 
 LX::E
 Lexer::tokenize(
-  UT::Vu<UT::String> words)
+  UT::Vu<UT::String> &words)
 {
-  UT::String sb{ 0 };
-
-  for (auto &word : words)
-  {
-    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
-  }
-
   while (not words.is_empty())
   {
-    TOKEN_MATCHING_HANDLER(matches_operator(words), E::MATCHED_OPERATOR);
-    TOKEN_MATCHING_HANDLER(matches_quotm(words), E::MATCHED_QUOTM);
-    TOKEN_MATCHING_HANDLER(matches_letin(words), E::MATCHED_OPERATOR);
-    TOKEN_MATCHING_HANDLER(matches_ifelse(words), E::MATCHED_OPERATOR);
+    E e = matches_control_operator(words);
+    if (E::OK != e) return e;
+    TOKEN_HANDLE(matches_operator(words), E::MATCHED_OPERATOR);
+    TOKEN_HANDLE(matches_quotm(words), E::MATCHED_QUOTM);
+    TOKEN_HANDLE(matches_letin(words), E::MATCHES_LETIN);
+    TOKEN_HANDLE(matches_ifelse(words), E::MATCHES_IFELSE);
+    TOKEN_HANDLE(matches_integer(words), E::MATCHES_INTEGER);
+    TOKEN_HANDLE(matches_string(words), E::MATCHES_STRING);
+    TOKEN_HANDLE(matches_open_paren(words), E::MATCHES_OPEN_PAREN);
     LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
-
-    // matches `(`
-    // matches int
-    // matches string (this is non trivial because we might match another
-    //    keyword like `in` or `else` which is an error)
   }
-
-  UT_TODO();
 
   return E::OK;
 }

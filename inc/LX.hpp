@@ -11,7 +11,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include "UT.hpp"
-#include <vector>
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -126,7 +125,14 @@ enum class LangType
   X(CONTROL_STRUCTURE_ERROR)                                                   \
   X(WORD_NOT_FOUND)                                                            \
   X(MATCHED_OPERATOR)                                                          \
-  X(MATCHED_QUOTM)
+  X(PAREN_LEFT)                                                                \
+  X(MATCHED_QUOTM)                                                             \
+  X(MATCHES_IFELSE)                                                            \
+  X(MATCHES_LETIN)                                                             \
+  X(MATCHES_OPEN_PAREN)                                                        \
+  X(MATCHES_INTEGER)                                                           \
+  X(MATCHES_STRING)                                                            \
+  X(MATCHES_CONTROL_OPERATOR)
 
 enum class E
 {
@@ -330,6 +336,14 @@ public:
 
   E matches_letin(UT::Vu<UT::String> &words);
 
+  E matches_open_paren(UT::Vu<UT::String> &words);
+
+  E matches_integer(UT::Vu<UT::String> &words);
+
+  E matches_string(UT::Vu<UT::String> &words);
+
+  E matches_control_operator(UT::Vu<UT::String> &words);
+
   UT::String get_word(size_t idx);
 
   bool match_keyword(UT::String keyword, UT::String word);
@@ -340,7 +354,7 @@ public:
 
   LX::E parse_signature(Sig &sig);
 
-  LX::E tokenize(UT::Vu<UT::String> words);
+  LX::E tokenize(UT::Vu<UT::String> &words);
 
   LX::E init();
 
