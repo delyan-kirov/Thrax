@@ -685,13 +685,15 @@ E
 Lexer::matches_open_paren(
   UT::Vu<UT::String> &words)
 {
-  UT::String s = *words.first();
-  if ("(" != s)
-  {
-    return E::OK;
-  }
-  Lexer lpar{ *this, m_cursor, m_end };
-  LX_ASSERT(E::PAREN_LEFT == lpar.tokenize(words), E::PARENTHESIS_UNBALANCED);
+  UT::String word = *words.first();
+  if ("(" != word) return E::OK;
+  words.pop_front();
+
+  Lexer new_l{ *this, m_cursor, m_end };
+  LX_ASSERT(E::PAREN_LEFT == new_l.tokenize(words), E::PARENTHESIS_UNBALANCED);
+
+  Token t{ new_l.m_tokens };
+  m_tokens.push(t);
 
   return E::MATCHES_OPEN_PAREN;
 }

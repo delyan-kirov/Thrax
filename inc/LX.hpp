@@ -512,12 +512,12 @@ to_string(
   }
   case LX::Type::Group:
   {
-    return to_string(t.as.tokens);
+    return "Group" + to_string(t.as.tokens);
   }
   case LX::Type::PubDef:
   case LX::Type::IntDef:
   {
-    return (LX::Type::PubDef == t.type ? "pub" : "int")
+    return to_string(LX::Type::PubDef == t.type ? "pub" : "int") + " "
            + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def)
            + (LX::LangType::Max == t.as.sym.sig.type
                 ? ""

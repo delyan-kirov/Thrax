@@ -1,3 +1,3 @@
 pub 1 = let 2 = 3 + 4 in 5 + 6
-pub 7 = 8
-pub 9 = if 10 + 11 => 12 else 13
+pub 7 = (8)
+pub 9 = if 10 + 11 => 12 else (13 + 14)
