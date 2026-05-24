@@ -344,6 +344,8 @@ public:
 
   E matches_control_operator(UT::Vu<UT::String> &words);
 
+  E next_non_extern_sym(Token &t);
+
   UT::String get_word(size_t idx);
 
   bool match_keyword(UT::String keyword, UT::String word);

@@ -388,28 +388,71 @@ word_matches_global_sym_keyword(
 }
 
 E
+Lexer::next_non_extern_sym(
+  Token &t)
+{
+  std::vector<UT::String> words;
+  Lexer                   l{ *this, m_cursor, m_end };
+  UT::String              sb{ 0 };
+  LX::E                   e;
+
+  for (;;)
+  {
+    e = l.next_word(sb);
+    if (E::END_OF_FILE == e)
+    {
+      break;
+    }
+    if (Keyword::INT == sb || Keyword::PUB == sb || Keyword::EXT == sb)
+    {
+      l.m_cursor -= sb.m_len + 1;
+      break;
+    }
+    words.push_back(sb);
+  }
+
+  UT::Vu<UT::String> ws{ words };
+  LX_ASSERT(ws.m_len >= 3, E::CONTROL_STRUCTURE_ERROR);
+
+  UT::String varname = *ws.pop_front();
+  LX_ASSERT("=" == *ws.pop_front(), E::CONTROL_STRUCTURE_ERROR);
+
+  LX_FN_TRY(tokenize(ws));
+  m_cursor = l.m_cursor;
+
+  t.as.sym.name = varname;
+  t.as.sym.def  = m_tokens;
+
+  return E::OK;
+}
+
+E
 Lexer::next_global_sym(
   Token &t)
 {
-  UT_UNUSED(t);
-  Lexer new_l{ *this, m_cursor, m_end };
+  Lexer      l{ *this, m_cursor, m_end };
+  UT::String sb{ 0 };
+  LX::E      e;
 
-  UT::String w{};
-  LX_FN_TRY(new_l.next_word(w));
-  LX_ASSERT(word_matches_global_sym_keyword(w), E::UNRECOGNIZED_STRING);
+  e = l.next_word(sb);
+  if (E::OK != e) return e;
 
-  std::vector<UT::String> words{};
-  for (;;)
+  if (Keyword::INT == sb || Keyword::PUB == sb)
   {
-    w   = { 0 };
-    E e = new_l.next_word(w);
-    if (E::END_OF_FILE == e) break;
-    if (word_matches_global_sym_keyword(w)) break;
-    words.push_back(w);
+    LX_FN_TRY(l.next_non_extern_sym(t));
+    m_cursor          = l.m_cursor;
+    t.type            = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
+    t.as.sym.sig.type = LX::LangType::Min;
+    return E::OK;
   }
-
-  UT::Vu<UT::String> wv{ words };
-  new_l.tokenize(wv);
+  else if (Keyword::EXT == sb)
+  {
+    UT_TODO(Keyword::EXT == sb);
+  }
+  else
+  {
+    return E::CONTROL_STRUCTURE_ERROR;
+  }
 
   return E::OK;
 }
@@ -421,6 +464,7 @@ Lexer::next_word(
 {
   strip_white_space(m_cursor);
   sb.m_mem = m_input.m_mem + m_cursor;
+  sb.m_len = 0;
 
   // FIXME: Combine to single operation
   char current_char = m_input[m_cursor];
@@ -715,24 +759,24 @@ Lexer::matches_control_operator(
 LX::E
 Lexer::init()
 {
-  std::vector<UT::String> words;
-  UT::String              sb{ 0 };
-  LX::E                   e;
-
-  for (e = next_word(sb); LX::E::OK == e; e = next_word(sb))
+  for (;;)
   {
-    words.push_back(sb);
-    sb = { 0 };
+    LX::E e = E::OK;
+    Token t;
+    e = next_global_sym(t);
+    if (E::END_OF_FILE == e)
+    {
+      return E::OK;
+    }
+    else if (E::OK == e)
+    {
+      m_tokens.push(t);
+    }
+    else
+    {
+      return e;
+    }
   }
-  for (auto &word : words)
-  {
-    std::printf("INFO: " UTSTRf "\n", UTSTFa(word));
-  }
-
-  LX_ASSERT(E::END_OF_FILE == e, E::UNRECOGNIZED_STRING);
-
-  UT::Vu<UT::String> wv{ words };
-  return tokenize(wv);
 }
 
 #define TOKEN_HANDLE(LX_MATCH_EXPR, LX_EVENT_CODE)                             \
