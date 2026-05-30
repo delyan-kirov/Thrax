@@ -1,10 +1,4 @@
-pub a = 1
-
-int b = let c
-	= a + a
-	in c + 2
-
-# int foo
-# 	= \x = 2*x + b
-
-
+# here
+pub t = 2?=1
+pub c = \t = t + 1
+pub d = c 4

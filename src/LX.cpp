@@ -349,6 +349,7 @@ delimits_word(
   case '%':
   case '^':
   case '!':
+  case '?':
   case '~':
   case '$':
   case ';':
@@ -374,6 +375,7 @@ delimiter_operator(
   case '}':
   case '[':
   case ']':
+  case '\\':
   case ';': return true;
   default : return false;
   }
@@ -584,6 +586,7 @@ Lexer::next_global_sym(
 }
 
 // TODO: What if symbol is valid ascii and reserved but not used?
+// FIXME: freezes sometimes
 E
 Lexer::next_word(
   UT::String &sb)
@@ -621,6 +624,13 @@ Lexer::next_word(
     }
   }
 
+  if ('#' == current_char)
+  {
+    strip_line(m_cursor);
+    strip_white_space(m_cursor);
+    sb.m_mem = m_input.m_mem + m_cursor;
+  }
+
   if (delimiter_operator(current_char))
   {
     m_cursor += 1;
@@ -650,6 +660,7 @@ Lexer::next_word(
   {
     LX_FN_TRY(next_valid_char(current_char));
 
+    // FIXME: deal with comments
     if ('#' == current_char)
     {
       strip_line(m_cursor);
@@ -907,6 +918,47 @@ Lexer::matches_control_operator(
   return E::OK;
 }
 
+E
+Lexer::matches_lambda(
+  UT::Vu<UT::String> &words)
+{
+  if (words.is_empty()) return E::OK;
+  UT::String s = *words.first();
+  if ("\\" != s) return E::OK;
+  words.pop_front();
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  UT::String varname = *words.pop_front();
+
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT("=" == *words.pop_front(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+
+  Lexer lambda = Lexer{ *this, m_cursor, m_end };
+  E     e      = lambda.tokenize(words);
+
+  switch (e)
+  {
+  case E::IN_KEYWORD:
+  case E::PAREN_LEFT:
+  case E::ELSE_KEYWORD:
+  {
+    words.retreat();
+    break;
+  }
+  case E::OK: break;
+  default   : return e;
+  }
+
+  Token t{ m_arena };
+  t.type             = Type::Fn;
+  t.as.fn.param_name = varname;
+  t.as.fn.body       = lambda.m_tokens;
+
+  m_tokens.push(t);
+
+  return E::MATCHES_LAMBDA;
+}
+
 LX::E
 Lexer::tokenize(
   UT::Vu<UT::String> &words)
@@ -922,6 +974,7 @@ Lexer::tokenize(
     TOKEN_HANDLE(matches_integer(words), E::MATCHES_INTEGER);
     TOKEN_HANDLE(matches_string(words), E::MATCHES_STRING);
     TOKEN_HANDLE(matches_open_paren(words), E::MATCHES_OPEN_PAREN);
+    TOKEN_HANDLE(matches_lambda(words), E::MATCHES_LAMBDA);
     LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
   }
 

@@ -90,7 +90,8 @@ enum class LangType
   X(MATCHES_INTEGER)                                                           \
   X(MATCHES_STRING)                                                            \
   X(MATCHES_CONTROL_OPERATOR)                                                  \
-  X(MATCHES_COLON)
+  X(MATCHES_COLON)                                                             \
+  X(MATCHES_LAMBDA)
 
 enum class E
 {
@@ -288,6 +289,8 @@ public:
   E matches_control_operator(UT::Vu<UT::String> &words);
 
   E matches_colon(UT::Vu<UT::String> &words, Sig &sig);
+
+  E matches_lambda(UT::Vu<UT::String> &words);
 
   E next_non_extern_sym(Token &t);
 
