@@ -7,6 +7,8 @@ constexpr UT::String sut_file_raylib = "./dat/raylib.thr";
 constexpr bool RUN_RAYLIB =
 #if GIT_ACTION_CTX
   false;
+#elif !RAYLIB_ENABLED
+  false;
 #else
   true;
 #endif

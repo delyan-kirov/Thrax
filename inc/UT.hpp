@@ -387,6 +387,13 @@ template <typename O> struct Vu
     m_len -= 1;
     return elem;
   }
+
+  void
+  retreat()
+  {
+    m_mem -= 1;
+    m_len += 1;
+  }
 };
 
 struct String : public Vu<char>

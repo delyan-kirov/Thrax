@@ -315,13 +315,22 @@ Mod::Mod(
   UT::String source_code = UT::read_entire_file(file_name, arena);
 
   LX::Lexer l{ source_code, arena, 0, source_code.m_len };
-  l();
-  l.generate_event_report();
+  Env       global_env{};
 
-  Env global_env{};
-
-  for (LX::Token t : l.m_tokens)
+  for (;;)
   {
+    LX::Token t;
+    LX::E     e = l.next_global_sym(t);
+    if (LX::E::END_OF_FILE == e)
+    {
+      break;
+    }
+    else if (LX::E::OK != e)
+    {
+      l.generate_event_report();
+      break;
+    }
+
     TL::Type def_type = get_def_type(t);
 
     // TODO: this should be handled better

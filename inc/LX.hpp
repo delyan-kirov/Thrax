@@ -12,50 +12,6 @@
 
 #include "UT.hpp"
 
-/*------------------------------------------------------------------------------
- *\MACROS
- *-----------------------------------------------------------------------------*/
-
-#define LX_ERROR_REPORT(LX_ERROR_E, LX_ERROR_MSG)                              \
-  do                                                                           \
-  {                                                                            \
-    this->m_events.push(LX::ErrorE{ this->m_arena,                             \
-                                    __PRETTY_FUNCTION__,                       \
-                                    __LINE__,                                  \
-                                    (LX_ERROR_MSG),                            \
-                                    (LX_ERROR_E) });                           \
-    return (LX_ERROR_E);                                                       \
-  } while (false)
-
-#define LX_FN_TRY(LX_FN)                                                       \
-  do                                                                           \
-  {                                                                            \
-    LX::E result = (LX_FN);                                                    \
-    if (LX::E::OK != result)                                                   \
-    {                                                                          \
-      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
-                                      __PRETTY_FUNCTION__,                     \
-                                      __LINE__,                                \
-                                      ("The function: " #LX_FN " failed!"),    \
-                                      result });                               \
-      return result;                                                           \
-    }                                                                          \
-  } while (false)
-
-#define LX_ASSERT(LX_BOOL_EXPR, LX_ERROR_E)                                    \
-  do                                                                           \
-  {                                                                            \
-    if (!(LX_BOOL_EXPR))                                                       \
-    {                                                                          \
-      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
-                                      __PRETTY_FUNCTION__,                     \
-                                      __LINE__,                                \
-                                      (#LX_BOOL_EXPR),                         \
-                                      (LX_ERROR_E) });                         \
-      return (LX_ERROR_E);                                                     \
-    }                                                                          \
-  } while (false)
-
 namespace LX
 {
 
@@ -108,6 +64,7 @@ enum class LangType
     Max,
 }; // namespace LX
 
+// TODO: Need to have actual error codes here
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
   X(END_OF_FILE)                                                               \
@@ -132,7 +89,8 @@ enum class LangType
   X(MATCHES_OPEN_PAREN)                                                        \
   X(MATCHES_INTEGER)                                                           \
   X(MATCHES_STRING)                                                            \
-  X(MATCHES_CONTROL_OPERATOR)
+  X(MATCHES_CONTROL_OPERATOR)                                                  \
+  X(MATCHES_COLON)
 
 enum class E
 {
@@ -164,6 +122,7 @@ enum class E
   X(Sig)                                                                       \
   X(Max)
 
+// TODO: Rename
 enum class Type
 {
 #define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
@@ -192,6 +151,7 @@ struct If
   Tokens else_branch;
 };
 
+// TODO: remove
 // NOTE: T -> (T -> (T -> T))
 //   is: T -> T -> T -> T
 struct Sig
@@ -246,6 +206,7 @@ struct While
 };
 
 // TODO: Candidate for refactor
+// TODO: Needs to have begin and end
 struct Token
 {
   Type   type;
@@ -282,7 +243,6 @@ struct Token
 
 class Lexer
 {
-  // TODO: use UT::String, not const char*
 public:
   AR::Arena       &m_arena;
   ER::Events       m_events;
@@ -299,15 +259,7 @@ public:
 
   ~Lexer() {}
 
-  void skip_to(Lexer const &l);
-
   void generate_event_report();
-
-  void subsume_sub_lexer(Lexer &l);
-
-  LX::E find_matching_paren(size_t &paren_match_idx);
-
-  LX::E find_next_global_symbol(size_t &idx);
 
   char next_char();
 
@@ -318,15 +270,6 @@ public:
   E next_word(UT::String &sb);
 
   E next_global_sym(Token &t);
-
-  E push_int();
-
-  void push_operator(char c);
-
-  void push_group(Lexer l);
-
-  E match_operator(char c);
-  E match_operator(UT::String s);
 
   E matches_quotm(UT::Vu<UT::String> &words);
 
@@ -344,25 +287,17 @@ public:
 
   E matches_control_operator(UT::Vu<UT::String> &words);
 
+  E matches_colon(UT::Vu<UT::String> &words, Sig &sig);
+
   E next_non_extern_sym(Token &t);
 
   UT::String get_word(size_t idx);
-
-  bool match_keyword(UT::String keyword, UT::String word);
 
   void strip_white_space(size_t idx);
 
   void strip_line(size_t idx);
 
-  LX::E parse_signature(Sig &sig);
-
   LX::E tokenize(UT::Vu<UT::String> &words);
-
-  LX::E init();
-
-  E run();
-
-  E operator()();
 };
 
 } // namespace LX
@@ -373,207 +308,16 @@ public:
 
 namespace std
 {
-
-inline string
-to_string(
-  LX::E e)
-{
-  switch (e)
-  {
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::E::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
-    LX_E_ENUM_VARIANTS
-#undef X
-  }
-
-  UT_FAIL_IF("UNREACHABLE");
-  return "";
-};
-
-inline string
-to_string(
-  LX::LangType lang_type)
-{
-  switch (lang_type)
-  {
-  case LX::LangType::Max:
-  case LX::LangType::Min: return "";
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
-    LX_LangType_ENUM_VARIANTS
-#undef X
-  }
-
-  UT_FAIL_MSG("Got unexpected type %d", lang_type);
-  return "";
-}
-
 // TODO: Knowing what type I need from the union is not obvious.
 // There should be a better way to do it
-inline string
-to_string(
-  LX::Sig sig)
-{
-  switch (sig.type)
-  {
-  case LX::LangType::Min:
-  case LX::LangType::Max: return "";
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::LangType::LX_ENUM_VALUE:                                            \
-    if constexpr (LX::LangType::LX_ENUM_VALUE == LX::LangType::Fn)             \
-    {                                                                          \
-      UT::Pair<LX::Sig> pair = sig.as.pair;                                    \
-      return to_string(pair.first()) + " -> " + to_string(pair.second());      \
-    }                                                                          \
-    return to_string(sig.type);
-    LX_LangType_ENUM_VARIANTS
-#undef X
-  }
 
-  UT_FAIL_MSG("Unreachable variant %d\n", sig.type);
-
-  return "";
-}
-
-inline string
-to_string(
-  LX::Type t)
-{
-  switch (t)
-  {
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::Type::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
-    LX_Type_ENUM_VARIANTS
-#undef X
-  }
-
-  UT_FAIL_MSG("Got unexpected type %d", t);
-  return "";
-}
-
-inline string to_string(LX::Tokens ts);
-
-inline string
-to_string(
-  LX::Token t)
-{
-  switch (t.type)
-  {
-  case LX::Type::Int:
-    return string("Int") + "(" + to_string(t.as.integer) + ")";
-  case LX::Type::Plus:
-    return "Op("
-           "+"
-           ")";
-  case LX::Type::Minus:
-    return "Op("
-           "-"
-           ")";
-  case LX::Type::Mult:
-    return "Op("
-           "*"
-           ")";
-  case LX::Type::Div:
-    return "Op("
-           "/"
-           ")";
-  case LX::Type::IsEq:
-    return "Op("
-           "?="
-           ")";
-  case LX::Type::Modulus:
-    return "Op("
-           "%"
-           ")";
-  case LX::Type::Let:
-  {
-    std::string let_string = to_string(t.as.binding.equals);
-    std::string in_string  = to_string(t.as.binding.in);
-    std::string var_name   = to_string(t.as.binding.var);
-    return "let " + var_name + " = " + let_string + " in " + in_string;
-  }
-  break;
-  case LX::Type::Fn:
-  {
-    std::string var_name    = to_string(t.as.fn.param_name);
-    std::string body_string = to_string(t.as.fn.body);
-    return "(\\" + var_name + " = " + body_string + ")";
-  }
-  break;
-  case LX::Type::Word:
-  {
-    return "Word " + to_string(t.as.string);
-  }
-  case LX::Type::If:
-  {
-    return "if " + to_string(t.as.if_else.condition) +    //
-           " => " + to_string(t.as.if_else.true_branch) + //
-           " else " + to_string(t.as.if_else.else_branch);
-  }
-  case LX::Type::Group:
-  {
-    return "Group" + to_string(t.as.tokens);
-  }
-  case LX::Type::PubDef:
-  case LX::Type::IntDef:
-  {
-    return to_string(LX::Type::PubDef == t.type ? "pub" : "int") + " "
-           + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def)
-           + (LX::LangType::Max == t.as.sym.sig.type
-                ? ""
-                : (": " + to_string(t.as.sym.sig)));
-  }
-  case LX::Type::Not:
-  {
-    return "(not)";
-  }
-  case LX::Type::Str:
-  {
-    return "\"" + to_string(t.as.string) + "\"";
-  }
-  case LX::Type::Min:
-  {
-    return "Min";
-  }
-  case LX::Type::Max:
-  {
-    return "Max";
-  }
-  case LX::Type::While:
-  {
-    return "while " + to_string(t.as.whyle.condition) + " "
-           + to_string(t.as.whyle.body);
-  }
-  case LX::Type::ExtDef:
-  {
-    auto ext_sym = t.as.ext_sym;
-
-    return "ext " + to_string(ext_sym.name) + ": " + to_string(ext_sym.sig)
-           + " = " + to_string(ext_sym.def);
-  }
-  case LX::Type::Sig:
-  {
-    return ": ( " + to_string(t.as.sig) + " )";
-  }
-  }
-  UT_FAIL_IF("UNREACHABLE");
-  return "";
-}
-
-inline string
-to_string(
-  LX::Tokens ts)
-{
-  string s{ "[ " };
-  for (size_t i = 0; i < ts.m_len; ++i)
-  {
-    LX::Token t = ts[i];
-    s += to_string(t);
-    s += (i != ts.m_len - 1) ? " , " : "";
-  }
-  s += " ]";
-  return s;
-}
+string to_string(LX::E e);
+string to_string(LX::LangType lang_type);
+string to_string(LX::Sig sig);
+string to_string(LX::Type t);
+string to_string(LX::Tokens ts);
+string to_string(LX::Token t);
+string to_string(LX::Tokens ts);
 } // namespace std
 
 /*-------------------------------------------------------------------------------
