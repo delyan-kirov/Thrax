@@ -1,10 +1,4 @@
-pub b: Int = 0
-int c = 2
-int f: Int = 1 + 1
-
-int ss = let ssa = 1 in ssa + c
-# int d: Int = "hello"
-int ss = let
-	ssa: Int = "1"
-	in ssa + 1
-int t = ("1": Int) + 2
+# here
+pub t = 2?=1
+pub c = \t = t + 1
+pub d = c 4

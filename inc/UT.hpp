@@ -8,7 +8,9 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 // TODO: There should be a special format for macro args
 // This is because arguments can resolve to other macros
@@ -62,10 +64,15 @@
 #define UT_WARNING(MSG_FORMAT, ...)                                            \
   do                                                                           \
   {                                                                            \
-    std::fprintf(stderr, "WARN: ");                                         \
+    std::fprintf(stderr, "WARN: ");                                            \
     std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
     std::fprintf(stderr, "\n");                                                \
   } while (false)
+
+#define UT_UNUSED(UT_UNUSED_VAR) (void)UT_UNUSED_VAR
+
+#define UTSTRf "%.*s"
+#define UTSTFa(UT_STR_VAR) (int)UT_STR_VAR.m_len, UT_STR_VAR.m_mem
 
 namespace AR
 {
@@ -291,10 +298,18 @@ template <typename O> struct Vu
   };
 
   Vu(
-    std::string s)
-      : m_mem{ s.c_str() }
+    std::string &s)
+      : m_mem{ s.c_str() },
+        m_len(s.size())
   {
-    this->m_len = s.size();
+  }
+
+  template <typename T>
+  Vu(
+    std::vector<T> &v)
+      : m_mem{ v.data() },
+        m_len{ v.size() }
+  {
   }
 
   bool
@@ -345,10 +360,40 @@ template <typename O> struct Vu
   };
 
   O *
+  first()
+  {
+    return this->m_mem;
+  };
+
+  O *
   last()
   {
     return this->m_mem + (this->m_len - 1);
   };
+
+  O *
+  pop_front()
+  {
+    O *elem = m_mem;
+    m_mem += 1;
+    m_len -= 1;
+    return elem;
+  }
+
+  O *
+  pop_back()
+  {
+    O *elem = m_mem[m_len - 1];
+    m_len -= 1;
+    return elem;
+  }
+
+  void
+  retreat()
+  {
+    m_mem -= 1;
+    m_len += 1;
+  }
 };
 
 struct String : public Vu<char>
@@ -376,6 +421,13 @@ struct String : public Vu<char>
   {
     this->m_len = std::strlen(s);
     this->m_mem = s;
+  }
+
+  String(
+    int i)
+  {
+    void *mem = (void *)this;
+    std::memset(mem, i, sizeof(String));
   }
 
   String()                          = default;
@@ -408,6 +460,34 @@ struct String : public Vu<char>
   {
     return !((this->m_len == other.m_len)
              && (0 == std::memcmp(this->m_mem, other.m_mem, this->m_len)));
+  }
+
+  template <typename T>
+  using is_non_char_integral
+    = std::integral_constant<bool,
+                             std::is_integral<T>::value
+                               && !std::is_same<T, char>::value
+                               && !std::is_same<T, signed char>::value
+                               && !std::is_same<T, unsigned char>::value>;
+
+  template <typename T,
+            typename
+            = typename std::enable_if<is_non_char_integral<T>::value>::type>
+  void
+  operator+=(
+    T i)
+  {
+    this->m_len += i;
+  }
+
+  template <typename T,
+            typename
+            = typename std::enable_if<is_non_char_integral<T>::value>::type>
+  void
+  operator-=(
+    T i)
+  {
+    this->m_len -= i;
   }
 };
 

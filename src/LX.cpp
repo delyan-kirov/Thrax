@@ -10,13 +10,277 @@
 #include "LX.hpp"
 #include "UT.hpp"
 #include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+
+/*------------------------------------------------------------------------------
+ *\MACROS
+ *-----------------------------------------------------------------------------*/
+#define LX_ERROR_REPORT(LX_ERROR_E, LX_ERROR_MSG)                              \
+  do                                                                           \
+  {                                                                            \
+    this->m_events.push(LX::ErrorE{ this->m_arena,                             \
+                                    __PRETTY_FUNCTION__,                       \
+                                    __LINE__,                                  \
+                                    (LX_ERROR_MSG),                            \
+                                    (LX_ERROR_E) });                           \
+    return (LX_ERROR_E);                                                       \
+  } while (false)
+
+#define LX_FN_TRY(LX_FN)                                                       \
+  do                                                                           \
+  {                                                                            \
+    LX::E result = (LX_FN);                                                    \
+    if (LX::E::OK != result)                                                   \
+    {                                                                          \
+      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
+                                      __PRETTY_FUNCTION__,                     \
+                                      __LINE__,                                \
+                                      ("The function: " #LX_FN " failed!"),    \
+                                      result });                               \
+      return result;                                                           \
+    }                                                                          \
+  } while (false)
+
+#define LX_ASSERT(LX_BOOL_EXPR, LX_ERROR_E)                                    \
+  do                                                                           \
+  {                                                                            \
+    if (!(LX_BOOL_EXPR))                                                       \
+    {                                                                          \
+      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
+                                      __PRETTY_FUNCTION__,                     \
+                                      __LINE__,                                \
+                                      (#LX_BOOL_EXPR),                         \
+                                      (LX_ERROR_E) });                         \
+      return (LX_ERROR_E);                                                     \
+    }                                                                          \
+  } while (false)
+
+#define TOKEN_HANDLE(LX_MATCH_EXPR, LX_EVENT_CODE)                             \
+  {                                                                            \
+    E LX_EVENT_VAR = LX_MATCH_EXPR;                                            \
+    if (LX_EVENT_CODE == LX_EVENT_VAR)                                         \
+    {                                                                          \
+      continue;                                                                \
+    }                                                                          \
+    else if (E::OK != LX_EVENT_VAR)                                            \
+    {                                                                          \
+      return LX_EVENT_VAR;                                                     \
+    }                                                                          \
+  }
+
+/*-------------------------------------------------------------------------------
+ *\EXTERNAL UTILS
+ *------------------------------------------------------------------------------*/
+
+namespace std
+{
+inline string
+to_string(
+  LX::E e)
+{
+  switch (e)
+  {
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::E::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+    LX_E_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_IF("UNREACHABLE");
+  return "";
+};
+
+string
+to_string(
+  LX::LangType lang_type)
+{
+  switch (lang_type)
+  {
+  case LX::LangType::Max:
+  case LX::LangType::Min: return "";
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+    LX_LangType_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_MSG("Got unexpected type %d", lang_type);
+  return "";
+}
+
+// TODO: remove
+string
+to_string(
+  LX::Sig sig)
+{
+  switch (sig.type)
+  {
+  case LX::LangType::Min:
+  case LX::LangType::Max: return "";
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::LangType::LX_ENUM_VALUE:                                            \
+    if constexpr (LX::LangType::LX_ENUM_VALUE == LX::LangType::Fn)             \
+    {                                                                          \
+      UT::Pair<LX::Sig> pair = sig.as.pair;                                    \
+      return to_string(pair.first()) + " -> " + to_string(pair.second());      \
+    }                                                                          \
+    return to_string(sig.type);
+    LX_LangType_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_MSG("Unreachable variant %d\n", sig.type);
+
+  return "";
+}
+
+string
+to_string(
+  LX::Type t)
+{
+  switch (t)
+  {
+#define X(LX_ENUM_VALUE)                                                       \
+  case LX::Type::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+    LX_Type_ENUM_VARIANTS
+#undef X
+  }
+
+  UT_FAIL_MSG("Got unexpected type %d", t);
+  return "";
+}
+
+string
+to_string(
+  LX::Token t)
+{
+  switch (t.type)
+  {
+  case LX::Type::Int:
+    return string("Int") + "(" + to_string(t.as.integer) + ")";
+  case LX::Type::Plus:
+    return "Op("
+           "+"
+           ")";
+  case LX::Type::Minus:
+    return "Op("
+           "-"
+           ")";
+  case LX::Type::Mult:
+    return "Op("
+           "*"
+           ")";
+  case LX::Type::Div:
+    return "Op("
+           "/"
+           ")";
+  case LX::Type::IsEq:
+    return "Op("
+           "?="
+           ")";
+  case LX::Type::Modulus:
+    return "Op("
+           "%"
+           ")";
+  case LX::Type::Let:
+  {
+    std::string let_string = to_string(t.as.binding.equals);
+    std::string in_string  = to_string(t.as.binding.in);
+    std::string var_name   = to_string(t.as.binding.var);
+    return "let " + var_name + " = " + let_string + " in " + in_string;
+  }
+  break;
+  case LX::Type::Fn:
+  {
+    std::string var_name    = to_string(t.as.fn.param_name);
+    std::string body_string = to_string(t.as.fn.body);
+    return "(\\" + var_name + " = " + body_string + ")";
+  }
+  break;
+  case LX::Type::Word:
+  {
+    return "Word " + to_string(t.as.string);
+  }
+  case LX::Type::If:
+  {
+    return "if " + to_string(t.as.if_else.condition) +    //
+           " => " + to_string(t.as.if_else.true_branch) + //
+           " else " + to_string(t.as.if_else.else_branch);
+  }
+  case LX::Type::Group:
+  {
+    return "Group" + to_string(t.as.tokens);
+  }
+  case LX::Type::PubDef:
+  case LX::Type::IntDef:
+  {
+    return to_string(LX::Type::PubDef == t.type ? "pub" : "int") + " "
+           + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def)
+           + (LX::LangType::Max == t.as.sym.sig.type
+                ? ""
+                : (": " + to_string(t.as.sym.sig)));
+  }
+  case LX::Type::Not:
+  {
+    return "(not)";
+  }
+  case LX::Type::Str:
+  {
+    return "\"" + to_string(t.as.string) + "\"";
+  }
+  case LX::Type::Min:
+  {
+    return "Min";
+  }
+  case LX::Type::Max:
+  {
+    return "Max";
+  }
+  case LX::Type::While:
+  {
+    return "while " + to_string(t.as.whyle.condition) + " "
+           + to_string(t.as.whyle.body);
+  }
+  case LX::Type::ExtDef:
+  {
+    auto ext_sym = t.as.ext_sym;
+
+    return "ext " + to_string(ext_sym.name) + ": " + to_string(ext_sym.sig)
+           + " = " + to_string(ext_sym.def);
+  }
+  case LX::Type::Sig:
+  {
+    return ": ( " + to_string(t.as.sig) + " )";
+  }
+  }
+  UT_FAIL_IF("UNREACHABLE");
+  return "";
+}
+
+string
+to_string(
+  LX::Tokens ts)
+{
+  string s{ "[ " };
+  for (size_t i = 0; i < ts.m_len; ++i)
+  {
+    LX::Token t = ts[i];
+    s += to_string(t);
+    s += (i != ts.m_len - 1) ? " , " : "";
+  }
+  s += " ]";
+  return s;
+}
+} // namespace std
 
 namespace LX
 {
 
 namespace
 /*-------------------------------------------------------------------------------
- *\UTILS
+ *\INTERNAL UTILS
  *------------------------------------------------------------------------------*/
 {
 
@@ -33,99 +297,37 @@ is_white_space(
   }
 }
 
-LangType
-c_type_to_langtype(
-  UT::String s)
-{
-  if ("C_int" == s)
-    return LangType::Int;
-  else if ("C_str" == s)
-    return LangType::Ptr;
-  else if ("C_void" == s)
-    return LangType::Void;
-  else
-    return LangType::Max;
-}
-
-// TODO: We may have functions as input params, but for now we
-// ignore this case
-// Functions can only have integer params in their signature
-std::pair<LX::E, Sig>
-parse_signature_helper(
-  UT::Vec<UT::String> &types, AR::Arena &arena, const size_t idx)
-{
-  Sig sig{};
-
-  // TODO: Don't hardcode types like that
-  LangType type = c_type_to_langtype(types[idx]);
-  if (LangType::Max == type)
-  {
-    for (size_t i = (size_t)LX::LangType::Min; i < (size_t)LX::LangType::Max;
-         ++i)
-    {
-      UT::String s{ (char *)UT_TCS((LangType)i) };
-      if (types[idx] == s)
-      {
-        type = (LangType)i;
-      }
-    }
-  }
-
-  if (LangType::Max == type)
-  {
-    return std::pair{ LX::E::CONTROL_STRUCTURE_ERROR, sig }; // TODO: new error
-  }
-
-  if (idx == types.m_len - 1)
-  {
-    // TODO: The pointer should indicate what it points to
-    sig.type = type;
-  }
-  else
-  {
-    sig.type            = LangType::Fn;
-    UT::Pair<Sig> *pair = &sig.as.pair;
-    *pair               = { arena };
-    // TODO: this should also include the type behind the pointer
-    pair->begin()->type = type;
-    *pair->last()       = parse_signature_helper(types, arena, idx + 1).second;
-    sig.as.pair         = *pair;
-  }
-
-  return std::pair{ LX::E::OK, sig };
-}
-
-bool
-is_hex_char(
-  char c)
-{
-  switch (c)
-  {
-  case '0':
-  case '1':
-  case '2':
-  case '3':
-  case '4':
-  case '5':
-  case '6':
-  case '7':
-  case '8':
-  case '9':
-  case 'a':
-  case 'b':
-  case 'c':
-  case 'd':
-  case 'e':
-  case 'f':
-  case 'A':
-  case 'B':
-  case 'C':
-  case 'D':
-  case 'E':
-  case 'F': return true;
-  default : return false;
-  }
-}
+// bool
+// is_hex_char(
+//   char c)
+// {
+//   switch (c)
+//   {
+//   case '0':
+//   case '1':
+//   case '2':
+//   case '3':
+//   case '4':
+//   case '5':
+//   case '6':
+//   case '7':
+//   case '8':
+//   case '9':
+//   case 'a':
+//   case 'b':
+//   case 'c':
+//   case 'd':
+//   case 'e':
+//   case 'f':
+//   case 'A':
+//   case 'B':
+//   case 'C':
+//   case 'D':
+//   case 'E':
+//   case 'F': return true;
+//   default : return false;
+//   }
+// }
 
 bool
 delimits_word(
@@ -134,6 +336,7 @@ delimits_word(
   switch (c)
   {
   case ' ':
+  case '.':
   case '\t':
   case '\n':
   case '(':
@@ -146,13 +349,56 @@ delimits_word(
   case '%':
   case '^':
   case '!':
+  case '?':
   case '~':
   case '$':
   case ';':
   case '=':
   case ':':
   case ',':
+  case '"':
   case '@' : return true;
+  default  : return false;
+  }
+}
+
+bool
+delimiter_operator(
+  char c)
+{
+  switch (c)
+  {
+  case '(':
+  case ')':
+  case ',':
+  case '{':
+  case '}':
+  case '[':
+  case ']':
+  case '\\':
+  case ';': return true;
+  default : return false;
+  }
+}
+
+bool
+reserved_not_used(
+  char c)
+{
+  switch (c)
+  {
+  case ',':
+  case '.':
+  case '[':
+  case ']':
+  case '$':
+  case '@':
+  case '\'':
+  case '~':
+  case '`':
+  case '&':
+  case '|':
+  case '^' : return true;
   default  : return false;
   }
 }
@@ -182,78 +428,6 @@ ErrorE::ErrorE(
   this->m_data     = (void *)msg.m_mem;
 }
 
-E
-Lexer::operator()()
-{
-  return this->run();
-};
-
-bool
-Lexer::match_keyword(
-  UT::String keyword, UT::String word)
-{
-  bool result = UT::strcompare(keyword, word);
-  return result;
-}
-
-// TODO: should be comment aware
-// FIXME: 'word=' does not work but it should
-// FIXME: bug when ignoring comments, see find_next_global_symbol
-UT::String
-Lexer::get_word(
-  size_t idx)
-{
-  UT::SB sb{};
-  this->strip_white_space(idx);
-  idx = this->m_cursor;
-
-  for (char c = m_input[idx++]; c; c = m_input[idx++])
-  {
-    if (delimits_word(c))
-    {
-      if (!is_white_space(c))
-      {
-        idx -= 1;
-      }
-      break;
-    }
-    sb.add(c);
-  }
-
-  UT::String string = sb.to_String(m_arena);
-  m_cursor          = idx;
-
-  return string;
-}
-
-LX::E
-Lexer::find_matching_paren(
-  size_t &paren_match_idx)
-{
-  size_t stack = 1;
-
-  for (size_t idx = this->m_cursor; idx < this->m_end; ++idx)
-  {
-    char c = this->m_input[idx];
-    if (')' == c)
-    {
-      stack -= 1;
-    }
-    else if ('(' == c)
-    {
-      stack += 1;
-    }
-    if (0 == stack)
-    {
-      paren_match_idx = idx;
-
-      return LX::E::OK;
-    }
-  }
-
-  LX_ERROR_REPORT(LX::E::PARENTHESIS_UNBALANCED, "");
-}
-
 char
 Lexer::next_char()
 {
@@ -265,559 +439,546 @@ Lexer::next_char()
   return c;
 }
 
-LX::E
-Lexer::push_int()
+bool
+is_operator(
+  char c)
 {
-  int    result       = 0;
-  size_t cursor       = this->m_cursor;
-  size_t lines        = this->m_lines;
-  bool   parse_as_hex = false;
-
-  std::string s{
-    this->m_input[this->m_cursor
-                  - 1 /* since we entered this function, the point
-                         where we need to start parsing is offset by 1 */
-  ]
-  };
-  for (char c = this->next_char(); c; c = this->next_char())
+  switch (c)
   {
-    if (!is_hex_char(c))
+  case '+':
+  case ':':
+  case '-':
+  case '*':
+  case '/':
+  case '%':
+  case '!':
+  case '?':
+  case '=':
+  {
+    return true;
+  }
+  break;
+  default:
+  {
+    return false;
+  }
+  break;
+  }
+}
+
+E
+get_char_validity(
+  const char c)
+{
+  if (is_white_space(c))
+  {
+    return E::OK;
+  }
+  if ('\0' == c)
+  {
+    return E::END_OF_FILE;
+  }
+  if (std::iscntrl(c))
+  {
+    return E::ASCII_CTR_CHAR;
+  }
+  if (not isascii(c))
+  {
+    return E::NON_ASCII_CHAR;
+  }
+
+  return E::OK;
+}
+
+E
+Lexer::next_valid_char(
+  char &c)
+{
+  char next_char = this->next_char();
+  E    e         = get_char_validity(next_char);
+  if (E::OK == e)
+  {
+    c = next_char;
+  }
+  else
+  {
+    return e;
+  }
+
+  return E::OK;
+}
+
+bool
+word_matches_global_sym_keyword(
+  UT::String s)
+{
+  return Keyword::PUB == s || Keyword::INT == s;
+}
+
+E
+Lexer::next_non_extern_sym(
+  Token &t)
+{
+  std::vector<UT::String> words;
+  Lexer                   l{ *this, m_cursor, m_end };
+  UT::String              sb{ 0 };
+  LX::E                   e;
+
+  for (;;)
+  {
+    e = l.next_word(sb);
+    if (E::END_OF_FILE == e)
     {
-      switch (c)
-      {
-      case '+':
-      case '-':
-      case '*':
-      case '/':
-      case '%':
-      case '?':
-      case ':':
-      case '=': this->m_cursor -= 1; break;
-      case '|':
-      case '^':
-      case '~':
-      case '&':
-      case '@':
-      case '$':
-      case '#':
-      case '!':
-        LX_ERROR_REPORT(LX::E::NUMBER_PARSING_FAILURE,
-                        "Symbol reserved but currently not parse-able");
-        break;
-      case ')':
-      case ' ':
-      case '\t':
-      case '\n': break;
-      case 'x' : parse_as_hex = true; goto LX_ACCUMILATE_STRING;
-      default:
-        LX_ERROR_REPORT(LX::E::NUMBER_PARSING_FAILURE,
-                        "Unparse-able symbol found");
-        break;
-      }
       break;
     }
-  LX_ACCUMILATE_STRING:
-    s += c;
+    if (Keyword::INT == sb || Keyword::PUB == sb || Keyword::EXT == sb)
+    {
+      l.m_cursor -= sb.m_len + 1;
+      break;
+    }
+    words.push_back(sb);
   }
+
+  UT::Vu<UT::String> ws{ words };
+  LX_ASSERT(ws.m_len >= 3, E::CONTROL_STRUCTURE_ERROR);
+
+  UT::String varname = *ws.pop_front();
+  LX_ASSERT("=" == *ws.pop_front(), E::CONTROL_STRUCTURE_ERROR);
+
+  LX_FN_TRY(tokenize(ws));
+  m_cursor = l.m_cursor;
+
+  t.as.sym.name = varname;
+  t.as.sym.def  = m_tokens;
+
+  return E::OK;
+}
+
+E
+Lexer::next_global_sym(
+  Token &t)
+{
+  Lexer      l{ *this, m_cursor, m_end };
+  UT::String sb{ 0 };
+  LX::E      e;
+
+  e = l.next_word(sb);
+  if (E::OK != e) return e;
+
+  if (Keyword::INT == sb || Keyword::PUB == sb)
+  {
+    LX_FN_TRY(l.next_non_extern_sym(t));
+    m_cursor          = l.m_cursor;
+    t.type            = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
+    t.as.sym.sig.type = LX::LangType::Min;
+    return E::OK;
+  }
+  else if (Keyword::EXT == sb)
+  {
+    UT_TODO(Keyword::EXT == sb);
+  }
+  else
+  {
+    return E::CONTROL_STRUCTURE_ERROR;
+  }
+
+  return E::OK;
+}
+
+// TODO: What if symbol is valid ascii and reserved but not used?
+// FIXME: freezes sometimes
+E
+Lexer::next_word(
+  UT::String &sb)
+{
+  strip_white_space(m_cursor);
+  sb.m_mem = m_input.m_mem + m_cursor;
+  sb.m_len = 0;
+
+  // FIXME: Combine to single operation
+  char current_char = m_input[m_cursor];
+  LX_FN_TRY(get_char_validity(current_char));
+  LX_ASSERT(not reserved_not_used(current_char), E::UNRECOGNIZED_STRING);
+
+  if ('"' == current_char)
+  {
+    sb += 1;
+    m_cursor += 1;
+    for (;;)
+    {
+      LX_FN_TRY(next_valid_char(current_char));
+      if ('\0' == current_char)
+      {
+        return E::QUOTM_UNCLOSED;
+      }
+      else if ('"' == current_char)
+      {
+        // NOTE: the cursor now points after '"'
+        sb += 1;
+        return E::OK;
+      }
+      else
+      {
+        sb += 1;
+      }
+    }
+  }
+
+  if ('#' == current_char)
+  {
+    strip_line(m_cursor);
+    strip_white_space(m_cursor);
+    sb.m_mem = m_input.m_mem + m_cursor;
+  }
+
+  if (delimiter_operator(current_char))
+  {
+    m_cursor += 1;
+    sb += 1;
+    return E::OK;
+  }
+
+  if (is_operator(current_char))
+  {
+    for (;;)
+    {
+      LX_FN_TRY(next_valid_char(current_char));
+      if (is_white_space(current_char))
+      {
+        return E::OK;
+      }
+      if (std::isalnum(current_char))
+      {
+        m_cursor -= 1;
+        return E::OK;
+      }
+      sb += 1;
+    }
+  }
+
+  for (;;)
+  {
+    LX_FN_TRY(next_valid_char(current_char));
+
+    // FIXME: deal with comments
+    if ('#' == current_char)
+    {
+      strip_line(m_cursor);
+      strip_white_space(m_cursor);
+      continue;
+    }
+    if (delimits_word(current_char))
+    {
+      if (is_white_space(current_char))
+      {
+        return E::OK;
+      }
+      else
+      {
+        m_cursor -= 1;
+        return E::OK;
+      }
+    }
+    else
+    {
+      sb += 1;
+    }
+  }
+
+  return E::OK;
+}
+
+const std::map<std::string, Type> opertator_info_db{
+  { "+", Type::Plus }, { "-", Type::Minus },   { "?=", Type::IsEq },
+  { "*", Type::Mult }, { "%", Type::Modulus },
+};
+
+const std::map<std::string, E> control_delimiter_info_db{
+  { "in", E::IN_KEYWORD },
+  { "=>", E::FAT_ARROW },
+  { ")", E::PAREN_LEFT },
+  { "else", E::ELSE_KEYWORD },
+};
+
+// NOTE: later in the parser, we can check if - is an operator or part of the
+// integer
+E
+Lexer::matches_operator(
+  UT::Vu<UT::String> &words)
+{
+  if (words.is_empty()) return E::OK;
+
+  UT::String s      = *words.first();
+  auto       lookup = opertator_info_db.find(std::to_string(s));
+  if (opertator_info_db.end() != lookup)
+  {
+    Token t{ lookup->second }; // FIXME: should have start and end
+    m_tokens.push(t);
+    words.pop_front();
+    return E::MATCHED_OPERATOR;
+  }
+
+  return E::OK;
+}
+
+E
+Lexer::matches_colon(
+  UT::Vu<UT::String> &words, Sig &sig)
+{
+  if (words.is_empty()) return E::OK;
+  UT::String s = *words.first();
+  if (":" != s)
+    return E::OK;
+  else
+    UT_TODO(Lexer::matches_colon);
+  words.pop_front();
+  UT_UNUSED(sig);
+
+  return E::MATCHES_COLON;
+}
+
+E
+Lexer::matches_quotm(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if (not('"' == *word.first() && '"' == *word.last()))
+  {
+    return E::OK;
+  }
+
+  words.pop_front();
+  Token t{ Type::Str };
+  t.as.string = word;
+  m_tokens.push(t);
+  return E::MATCHED_QUOTM;
+}
+
+// FIXME: We should not return in, =>, else etc. We should return OK only.
+E
+Lexer::matches_ifelse(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if (Keyword::IF != word) return E::OK;
+
+  words.pop_front();
+  Lexer lcond{ *this, m_cursor, m_end };
+  LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+
+  Lexer ltrue{ lcond, m_cursor, m_end };
+  LX_ASSERT(E::ELSE_KEYWORD == ltrue.tokenize(words),
+            E::UNREACHABLE_CASE_REACHED);
+
+  Lexer lelse{ ltrue, m_cursor, m_end };
+  E     e = lelse.tokenize(words);
+
+  if (not(E::OK == e || E::IN_KEYWORD == e))
+  {
+    return E::OPERATOR_MATCH_FAILURE;
+  }
+
+  if (E::IN_KEYWORD == e) words.retreat();
+
+  Token t{ Type::If, m_lines, m_cursor };
+  t.as.if_else.condition   = lcond.m_tokens;
+  t.as.if_else.true_branch = ltrue.m_tokens;
+  t.as.if_else.else_branch = lelse.m_tokens;
+  m_tokens.push(t);
+
+  return E::MATCHES_IFELSE;
+}
+
+// FIXME: This should be parsed like matching_paren (ie matching the in with its
+// let)
+// FIXME: we may need to handle this appropriately
+// let x: <type> = <expr> in <expr>
+E
+Lexer::matches_letin(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if (Keyword::LET != word) return E::OK;
+  words.pop_front();
+  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+
+  UT::String varname = *words.pop_front();
+  LX_ASSERT("" != varname, E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+
+  Token t{ Type::Let, m_lines, m_cursor };
+  Sig   sig{};
+  E     e = matches_colon(words, sig);
+
+  if (E::MATCHES_COLON == e)
+  {
+    t.as.sym.sig = sig;
+  }
+  else if (E::OK != e)
+  {
+    return e;
+  }
+
+  LX_ASSERT("=" == *words.pop_front(), E::UNRECOGNIZED_STRING);
+  LX_ASSERT(not words.is_empty(), E::UNRECOGNIZED_STRING);
+
+  Lexer llet{ *this, m_cursor, m_end };
+  LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+
+  Lexer lin{ *this, m_cursor, m_end };
+  e = lin.tokenize(words);
+  LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::CONTROL_STRUCTURE_ERROR);
+
+  if (E::IN_KEYWORD == e) words.retreat();
+
+  t.type              = Type::Let;
+  t.as.binding.var    = varname;
+  t.as.binding.equals = llet.m_tokens;
+  t.as.binding.in     = lin.m_tokens;
+  UT_UNUSED(t.as.binding.sig); // FIXME
+
+  m_tokens.push(t);
+
+  return E::MATCHES_LETIN;
+}
+
+E
+Lexer::matches_open_paren(
+  UT::Vu<UT::String> &words)
+{
+  UT::String word = *words.first();
+  if ("(" != word) return E::OK;
+  words.pop_front();
+
+  Lexer new_l{ *this, m_cursor, m_end };
+  LX_ASSERT(E::PAREN_LEFT == new_l.tokenize(words), E::PARENTHESIS_UNBALANCED);
+
+  Token t{ new_l.m_tokens };
+  m_tokens.push(t);
+
+  return E::MATCHES_OPEN_PAREN;
+}
+
+E
+Lexer::matches_integer(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s = *words.first();
+  if (not std::isdigit(s[0]))
+  {
+    return E::OK;
+  }
+
+  words.pop_front();
+  Token t{ Type::Int };
 
   try
   {
-    result = parse_as_hex ? std::stoi(s.c_str(), nullptr, 16)
-                          : std::stoi(s.c_str(), nullptr, 10);
-
-    Token t{ Type::Int };
-    t.as.integer = result;
-    this->m_tokens.push(t);
+    t.as.integer = std::stoi(s.m_mem);
   }
-  catch (std::exception &e)
+  catch (...)
   {
-    this->m_cursor = cursor;
-    this->m_lines  = lines;
-    LX_ERROR_REPORT(E::NUMBER_PARSING_FAILURE, "std::stoi exception occured");
+    return E::NUMBER_PARSING_FAILURE;
   }
+  m_tokens.push(t);
 
-  return LX::E::OK;
+  return E::MATCHES_INTEGER;
 }
 
-void
-Lexer::push_operator(
-  char c)
+E
+Lexer::matches_string(
+  UT::Vu<UT::String> &words)
 {
-  Type t_type = Type::Min;
-  switch (c)
+  UT::String s = *words.first();
+  if (not std::isalpha(s[0]))
   {
-  case '-': t_type = Type::Minus; break;
-  case '+': t_type = Type::Plus; break;
-  case '*': t_type = Type::Mult; break;
-  case '/': t_type = Type::Div; break;
-  case '%': t_type = Type::Modulus; break;
-  default : /* UNREACHABLE */ UT_FAIL_IF("UNERACHABLE");
+    return E::OK;
   }
-  m_tokens.push(Token{ t_type });
+
+  words.pop_front();
+  Token t{ Type::Word };
+  t.as.string = s;
+  m_tokens.push(t);
+
+  return E::MATCHES_STRING;
 }
 
-// TODO: candidate for refactor
+E
+Lexer::matches_control_operator(
+  UT::Vu<UT::String> &words)
+{
+  UT::String s      = *words.first();
+  auto       lookup = control_delimiter_info_db.find(std::to_string(s));
+  if (control_delimiter_info_db.end() != lookup)
+  {
+    words.pop_front();
+    return lookup->second;
+  }
+
+  return E::OK;
+}
+
+E
+Lexer::matches_lambda(
+  UT::Vu<UT::String> &words)
+{
+  if (words.is_empty()) return E::OK;
+  UT::String s = *words.first();
+  if ("\\" != s) return E::OK;
+  words.pop_front();
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  UT::String varname = *words.pop_front();
+
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT("=" == *words.pop_front(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+
+  Lexer lambda = Lexer{ *this, m_cursor, m_end };
+  E     e      = lambda.tokenize(words);
+
+  switch (e)
+  {
+  case E::IN_KEYWORD:
+  case E::PAREN_LEFT:
+  case E::ELSE_KEYWORD:
+  {
+    words.retreat();
+    break;
+  }
+  case E::OK: break;
+  default   : return e;
+  }
+
+  Token t{ m_arena };
+  t.type             = Type::Fn;
+  t.as.fn.param_name = varname;
+  t.as.fn.body       = lambda.m_tokens;
+
+  m_tokens.push(t);
+
+  return E::MATCHES_LAMBDA;
+}
+
 LX::E
-Lexer::run()
+Lexer::tokenize(
+  UT::Vu<UT::String> &words)
 {
-  for (char c = this->next_char(); //
-       c;                          //
-       c = this->next_char()       //
-  )
+  while (not words.is_empty())
   {
-    switch (c)
-    {
-    case 1:
-    case 2:
-    case 3:
-    case 4:
-    case 5:
-    case 6:
-    case 7:
-    case 8:
-    case 11:
-    case 12:
-    case 14:
-    case 15:
-    case 16:
-    case 17:
-    case 18:
-    case 19:
-    case 20:
-    case 21:
-    case 22:
-    case 23:
-    case 24:
-    case 25:
-    case 26:
-    case 27:
-    case 28:
-    case 29:
-    case 30:
-    case 31:
-    case 127:
-    {
-      UT_FAIL_MSG(
-        "ASCII control char `%d` should not be present in the source file", c);
-    }
-    break;
-
-    case '$':
-    case '&':
-    case '\'':
-    case ',':
-    case '.':
-    case ';':
-    case '<':
-    case '>':
-    case '@':
-    case '[':
-    case ']':
-    case '^':
-    case '_':
-    case '`':
-    case '|':
-    case '{':
-    case '}':
-    case '~':
-    {
-      UT_FAIL_MSG("Symbol `%c` reserved but not used", c);
-    }
-    break;
-    case '!':
-    {
-      Token not_token{ Type::Not };
-      m_tokens.push(not_token);
-    }
-    break;
-    case '"':
-    {
-      UT::SB sb{};
-      for (char c = this->next_char(); c && c != '"'; c = this->next_char())
-      {
-        sb.add(c);
-      }
-
-      UT::String string = sb.to_String(m_arena);
-      Token      string_token{ Type::Str };
-      string_token.as.string = string;
-
-      m_tokens.push(string_token);
-    }
-    break;
-    case '-':
-    {
-      char next_c = this->peek_char();
-      if (std::isdigit(next_c))
-      {
-        this->push_int();
-      }
-      else
-      {
-        push_operator('-');
-      }
-    }
-    break;
-    case '+':
-    case '*':
-    case '/':
-    case '%':
-    {
-      this->push_operator(c);
-    }
-    break;
-    case '#':
-    {
-      this->strip_line(this->m_cursor);
-    }
-    break;
-    case '(':
-    {
-      size_t group_begin = this->m_cursor + 1;
-      size_t group_end   = group_begin;
-
-      LX_FN_TRY(this->find_matching_paren(group_end));
-
-      Lexer new_l = Lexer(*this, group_begin, group_end);
-      LX_FN_TRY(new_l());
-
-      this->push_group(new_l);
-    }
-    break;
-    case '?':
-    {
-      LX_ASSERT('=' == this->next_char(), LX::E::OPERATOR_MATCH_FAILURE);
-      Token token{ Type::IsEq };
-      this->m_tokens.push(token);
-    }
-    break;
-    case ')':
-    {
-      LX_ERROR_REPORT(LX::E::UNREACHABLE_CASE_REACHED,
-                      "')' should never match in this branch");
-    }
-    break;
-    case '\r': // For windows compatibility
-    {
-      UT_TODO("Add windows support");
-    }
-    break;
-    case '\t': // Tabs are white-space
-    case ' ':  // Spaces are white-space
-    case '\n': // New lines are white-space
-    {
-      ; // Do nothing
-    }
-    break;
-    case '\0':
-    {
-      UT_FAIL_IF("UNREACHABLE");
-    }
-    break;
-    case '=':
-    {
-      LX_ASSERT('>' == this->next_char(), LX::E::OPERATOR_MATCH_FAILURE);
-      return E::FAT_ARROW;
-    }
-    break;
-    case '\\': // \<var> = <expr>
-    {
-      this->strip_white_space(this->m_cursor);
-      UT::String var_name = this->get_word(this->m_cursor);
-
-      LX_FN_TRY(this->match_operator('='));
-
-      Lexer body_lexer{ *this, m_cursor, m_end };
-      LX::E e = body_lexer();
-      LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
-                LX::E::CONTROL_STRUCTURE_ERROR);
-
-      Token fn{ Type::Fn, m_lines, m_cursor };
-      fn.as.fn.param_name = var_name;
-      fn.as.fn.body       = body_lexer.m_tokens;
-
-      this->m_tokens.push(fn);
-      this->skip_to(body_lexer);
-
-      return e;
-    }
-    break;
-    case ':':
-    {
-      Sig sig{ LangType::Max };
-
-      Lexer sig_lexer{ *this, m_cursor, m_end };
-      sig_lexer.parse_signature(sig);
-
-      LX_ASSERT(LangType::Max > sig.type && sig.type > LangType::Min,
-                LX::E::CONTROL_STRUCTURE_ERROR);
-
-      skip_to(sig_lexer);
-      m_tokens.push(Token{ Type::Sig, m_lines, m_cursor });
-    }
-    break;
-    case '0':
-    case '1':
-    case '2':
-    case '3':
-    case '4':
-    case '5':
-    case '6':
-    case '7':
-    case '8':
-    case '9':
-    {
-      LX_FN_TRY(this->push_int());
-    }
-    break;
-    case 'a':
-    case 'b':
-    case 'c':
-    case 'd':
-    case 'e':
-    case 'f':
-    case 'g':
-    case 'h':
-    case 'i':
-    case 'j':
-    case 'k':
-    case 'l':
-    case 'm':
-    case 'n':
-    case 'o':
-    case 'p':
-    case 'q':
-    case 'r':
-    case 's':
-    case 't':
-    case 'u':
-    case 'v':
-    case 'w':
-    case 'x':
-    case 'y':
-    case 'z':
-    {
-      // TODO: instead of match_keyword if-else chains, make an enum and match
-      // over the variants
-      UT::String word = this->get_word(
-        this->m_cursor - 1); // we already got the first char so go back 1
-
-      if (this->match_keyword(Keyword::IN, word))
-      {
-        return LX::E::IN_KEYWORD;
-      }
-      else if (this->match_keyword(Keyword::ELSE, word))
-      {
-        return LX::E::ELSE_KEYWORD;
-      }
-      else if (this->match_keyword(Keyword::INT, word)
-               || this->match_keyword(Keyword::PUB, word))
-      {
-        size_t next_symbol_idx;
-        E      e = this->find_next_global_symbol(next_symbol_idx);
-        if (E::WORD_NOT_FOUND == e) next_symbol_idx = this->m_end;
-
-        UT::String sym_name = this->get_word(this->m_cursor);
-
-        // TODO: use a different error
-        LX_ASSERT("" != sym_name, E::WORD_NOT_FOUND);
-
-        // TODO: Simplify type annotations checks
-        e = match_operator(':');
-        Sig sig{ LangType::Max };
-
-        if (E::OK == e)
-        {
-          Lexer sig_lexer{ *this, m_cursor, next_symbol_idx };
-          sig_lexer.parse_signature(sig);
-          skip_to(sig_lexer);
-        }
-
-        LX_FN_TRY(this->match_operator('='));
-
-        Lexer new_lexer{ *this, m_cursor, next_symbol_idx };
-        LX_FN_TRY(new_lexer());
-
-        // TODO: candidate for refactor
-        // Tokens are too annoying to construct, perhaps dedicated constructors
-        // and other helpers could make this a lot easier to use and simpler to
-        // understand
-        Token symbol{ "int" == word ? Type::IntDef : Type::PubDef,
-                      new_lexer.m_lines,
-                      new_lexer.m_cursor };
-        symbol.as.sym.def  = new_lexer.m_tokens;
-        symbol.as.sym.name = sym_name;
-        symbol.as.sym.sig  = sig;
-
-        this->m_tokens.push(symbol);
-        this->skip_to(new_lexer);
-        this->m_cursor = next_symbol_idx;
-      }
-      else if (this->match_keyword(Keyword::LET, word))
-      {
-        UT::String var_name = this->get_word(this->m_cursor);
-
-        // TODO: we should check for type annotation here
-        Sig   sig{ LangType::Max };
-        LX::E e = match_operator(':');
-
-        if (E::OK == e)
-        {
-          // UT_TODO("Cannot parse annotations in let bindigns yet");
-          Lexer sig_lexer{ *this, m_cursor, m_end };
-          sig_lexer.parse_signature(sig);
-          skip_to(sig_lexer);
-        }
-
-        LX_FN_TRY(this->match_operator('='));
-
-        Lexer let_lexer{ *this, m_cursor, m_end };
-        LX_ASSERT(E::IN_KEYWORD == let_lexer(), E::CONTROL_STRUCTURE_ERROR);
-
-        Lexer in_lexer{ let_lexer, let_lexer.m_cursor, m_end };
-        LX_FN_TRY(in_lexer());
-
-        // TODO: Token should have an end
-        Token token{ Type::Let, m_lines, m_cursor };
-        token.as.binding.var    = var_name;
-        token.as.binding.equals = let_lexer.m_tokens;
-        token.as.binding.in     = in_lexer.m_tokens;
-        token.as.binding.sig    = sig;
-
-        this->m_tokens.push(token);
-        this->skip_to(in_lexer);
-      }
-      else if (this->match_keyword(Keyword::IF, word))
-      {
-        Lexer if_condition_lexer{ *this, m_cursor, m_end };
-        LX_ASSERT(E::FAT_ARROW == if_condition_lexer(),
-                  E::OPERATOR_MATCH_FAILURE);
-
-        Lexer true_branch_lexer{ if_condition_lexer,
-                                 if_condition_lexer.m_cursor,
-                                 m_end };
-        LX_ASSERT(E::ELSE_KEYWORD == true_branch_lexer(),
-                  E::CONTROL_STRUCTURE_ERROR);
-
-        Lexer else_branch_lexer{ true_branch_lexer,
-                                 true_branch_lexer.m_cursor,
-                                 m_end };
-        LX::E e = else_branch_lexer();
-        LX_ASSERT(LX::E::OK == e || LX::E::IN_KEYWORD == e,
-                  LX::E::CONTROL_STRUCTURE_ERROR);
-
-        // TODO: candidate for refactor
-        Token token{ Type::If, m_lines, m_cursor };
-        token.as.if_else.condition   = if_condition_lexer.m_tokens;
-        token.as.if_else.true_branch = true_branch_lexer.m_tokens;
-        token.as.if_else.else_branch = else_branch_lexer.m_tokens;
-
-        this->m_tokens.push(token);
-        this->skip_to(else_branch_lexer);
-
-        if (E::IN_KEYWORD == e) return e;
-      }
-      else if (this->match_keyword(Keyword::WHILE, word))
-      {
-        Lexer condition_lexer{ *this, m_cursor, m_end };
-        LX_ASSERT(E::FAT_ARROW == condition_lexer(), E::OPERATOR_MATCH_FAILURE);
-
-        Lexer body_lexer{ condition_lexer, condition_lexer.m_cursor, m_end };
-        LX::E e = body_lexer();
-        LX_ASSERT(e == E::ELSE_KEYWORD || e == E::IN_KEYWORD || e == E::OK,
-                  E::CONTROL_STRUCTURE_ERROR);
-
-        // TODO: candidate for refactor
-        Token token{ Type::While };
-        token.as.whyle.condition = condition_lexer.m_tokens;
-        token.as.whyle.body      = body_lexer.m_tokens;
-
-        this->m_tokens.push(token);
-        this->skip_to(body_lexer);
-
-        if (E::IN_KEYWORD == e || e == E::ELSE_KEYWORD) return e;
-      }
-      else if (this->match_keyword(Keyword::EXT, word))
-      {
-        size_t next_symbol_idx;
-        E      e = this->find_next_global_symbol(next_symbol_idx);
-        if (E::WORD_NOT_FOUND == e) next_symbol_idx = this->m_end;
-
-        UT::String sym_name = this->get_word(this->m_cursor);
-
-        LX_ASSERT("" != sym_name,
-                  E::WORD_NOT_FOUND); // TODO: use a different error
-
-        LX_FN_TRY(this->match_operator(':'));
-
-        Lexer sig_lexer{ *this, m_cursor, next_symbol_idx };
-        Sig   sig;
-        sig_lexer.parse_signature(sig);
-
-        LX_FN_TRY(sig_lexer.match_operator('='));
-
-        sig_lexer();
-        Tokens sym_defs{ m_arena };
-        sym_defs.push(sig_lexer.m_tokens.last()->as.tokens[0]);
-        sym_defs.push(sig_lexer.m_tokens.last()->as.tokens[1]);
-
-        Token symbol{ Type::ExtDef };
-        symbol.as.ext_sym.name = sym_name;
-        symbol.as.ext_sym.sig  = sig;
-        symbol.as.ext_sym.def  = sym_defs;
-
-        skip_to(sig_lexer);
-        m_cursor = next_symbol_idx;
-
-        m_tokens.push(symbol);
-      }
-      else
-      {
-        LX_ASSERT(word.m_len > 0, LX::E::UNRECOGNIZED_STRING);
-        Token t{ Type::Word };
-        t.as.string = word;
-        this->m_tokens.push(t);
-      }
-    }
-    break;
-    case 'A':
-    case 'B':
-    case 'C':
-    case 'D':
-    case 'E':
-    case 'F':
-    case 'G':
-    case 'H':
-    case 'I':
-    case 'J':
-    case 'K':
-    case 'L':
-    case 'M':
-    case 'N':
-    case 'O':
-    case 'P':
-    case 'Q':
-    case 'R':
-    case 'S':
-    case 'T':
-    case 'U':
-    case 'V':
-    case 'W':
-    case 'X':
-    case 'Y':
-    case 'Z':
-    {
-      UT_TODO("Capital letters reserved for types");
-    }
-    break;
-    default:
-    {
-      UT_TODO("Non ascii chars not supported yet");
-    }
-    }
+    E e = matches_control_operator(words);
+    if (E::OK != e) return e;
+    TOKEN_HANDLE(matches_operator(words), E::MATCHED_OPERATOR);
+    TOKEN_HANDLE(matches_quotm(words), E::MATCHED_QUOTM);
+    TOKEN_HANDLE(matches_letin(words), E::MATCHES_LETIN);
+    TOKEN_HANDLE(matches_ifelse(words), E::MATCHES_IFELSE);
+    TOKEN_HANDLE(matches_integer(words), E::MATCHES_INTEGER);
+    TOKEN_HANDLE(matches_string(words), E::MATCHES_STRING);
+    TOKEN_HANDLE(matches_open_paren(words), E::MATCHES_OPEN_PAREN);
+    TOKEN_HANDLE(matches_lambda(words), E::MATCHES_LAMBDA);
+    LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
   }
 
-  return LX::E::OK;
+  return E::OK;
 }
 
 // TODO: should be rewritten
@@ -881,62 +1042,6 @@ Lexer::generate_event_report()
     }
   }
 }
-void
-Lexer::subsume_sub_lexer(
-  Lexer &l)
-{
-  for (auto t : l.m_tokens)
-  {
-    Token token{ t };
-    this->m_tokens.push(token);
-  }
-  this->m_cursor = l.m_cursor;
-
-  for (size_t i = 0; i < l.m_events.m_len; ++i)
-  {
-    ER::E e = l.m_events[i];
-    this->m_events.push(e);
-  }
-}
-
-// TODO: candidate for refactor
-E
-Lexer::match_operator(
-  char c)
-{
-  Lexer match_lexer{ *this, m_cursor, m_end };
-  match_lexer.strip_white_space(m_cursor);
-  char next_char = match_lexer.next_char();
-  if (c == next_char)
-  {
-    skip_to(match_lexer);
-    return E::OK;
-  }
-
-  return E::UNRECOGNIZED_STRING;
-};
-
-// FIXME: Should not mutate state if it fails
-E
-Lexer::match_operator(
-  UT::String s)
-{
-  Lexer match_lexer{ *this, m_cursor, m_end };
-  match_lexer.strip_white_space(m_cursor);
-
-  UT::SB sb{};
-  for (size_t idx = 0; idx < s.m_len; ++idx)
-  {
-    sb.add(match_lexer.next_char());
-  }
-
-  if (sb.vu() == s)
-  {
-    skip_to(match_lexer);
-    return E::OK;
-  }
-  return E::UNRECOGNIZED_STRING;
-}
 
 // TODO: candidate for refactor
 void
@@ -974,92 +1079,10 @@ Lexer::strip_line(
   this->m_cursor = idx;
 }
 
-void
-Lexer::push_group(
-  Lexer l)
-{
-  Token t{ l.m_tokens };
-  this->m_tokens.push(t);
-  this->m_cursor = l.m_cursor + 1;
-}
-
 char
 Lexer::peek_char()
 {
   return this->m_cursor < this->m_end ? this->m_input[this->m_cursor] : '\0';
-}
-
-// TODO: candidate for refactor
-LX::E
-Lexer::find_next_global_symbol(
-  size_t &idx)
-{
-  Lexer search_lexer{
-    this->m_input, this->m_arena, this->m_cursor, this->m_end
-  };
-
-  for (UT::String next_word = search_lexer.get_word(this->m_cursor);
-       search_lexer.m_cursor < search_lexer.m_end;
-       next_word = search_lexer.get_word(search_lexer.m_cursor))
-  {
-    // FIXME: lexer .get_word method should be aware of comments '#'
-    if ("#" == next_word)
-    {
-      search_lexer.strip_line(search_lexer.m_cursor);
-    }
-    if (delimits_word(search_lexer.m_input[search_lexer.m_cursor]))
-    {
-      search_lexer.m_cursor += 1;
-    }
-    if ("int" == next_word || "pub" == next_word || "ext" == next_word)
-    {
-      /*
-         Need to return the cursor just before
-         ..int...
-          ^    ^
-      */
-      idx = search_lexer.m_cursor - 3 - 1;
-      return E::OK;
-    }
-  }
-
-  return E::WORD_NOT_FOUND;
-}
-
-// FIXME: Signature parsing should be the job of the parser
-LX::E
-Lexer::parse_signature(
-  Sig &sig)
-{
-  UT::Vec<UT::String> types{ m_arena };
-  LX::E               e = E::OK;
-  UT::String          type{};
-
-  while (E::OK == e)
-  {
-    type = get_word(m_cursor);
-    LX_ASSERT("" != type, E::UNRECOGNIZED_STRING);
-    types.push(type);
-    e = match_operator("->");
-    if (E::OK == e)
-    {
-      continue;
-    }
-    else
-    {
-      // TODO: parsing type annotations should be more robust
-      // we cannot check if we matched on something valid in this context
-      // e = match_operator('=');
-    }
-  }
-
-  auto parse_result = parse_signature_helper(types, m_arena, 0);
-
-  LX_ASSERT(E::OK == parse_result.first, E::CONTROL_STRUCTURE_ERROR);
-
-  sig = parse_result.second;
-
-  return E::OK;
 }
 
 Lexer::Lexer(
@@ -1085,19 +1108,6 @@ Lexer::Lexer(
       m_end{ end }
 {
   new (&this->m_tokens) Tokens{ l.m_arena };
-}
-
-void
-Lexer::skip_to(
-  Lexer const &l)
-{
-  this->m_cursor = l.m_cursor;
-  this->m_lines += l.m_lines;
-
-  for (auto e : l.m_events)
-  {
-    this->m_events.push(e);
-  }
 }
 
 // TODO: Candidate for removal

@@ -12,7 +12,8 @@ CFLAGS += -O1
 CFLAGS += -DGIT_ACTION_CTX=1
 else
 CFLAGS += -O0
-RAYLIB_ENABLED ?= 1
+# FIXME: Reenamble when ready
+RAYLIB_ENABLED ?= 0
 export RAYLIB_ENABLED
 endif
 
@@ -99,6 +100,7 @@ tokei:
 init:
 	mkdir -p $(BIN)
 	make clean
+	make $(BIN)raylib.so
 ifndef GIT_ACTION_CTX
 	git submodule update --init
 	$(MAKE) -C ./lib CC= CXX= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS=
@@ -106,6 +108,9 @@ ifndef GIT_ACTION_CTX
 endif
 	make test
 	make valgrind
+
+$(BIN)raylib.so:
+	cp $(shell find /nix/store -name "libraylib.so" 2>/dev/null | head -1) bin/raylib.so
 
 clean:
 	rm -f tmp.*

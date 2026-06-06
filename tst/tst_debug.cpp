@@ -7,5 +7,5 @@ int
 main()
 {
   AR::Arena arena{};
-  TL::Mod   mod_basic(sut_file, arena);
+  TL::Mod   mod{ sut_file, arena };
 }

@@ -6,8 +6,7 @@ int b = let c
 	= a + a
 	in c + 2
 
-int foo
-	= \x = 2*x + b
+pub foo = \x = 2 * x
 
 int baz = foo 2
 

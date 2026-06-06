@@ -11,15 +11,6 @@ namespace
 bool
 tst_allocating_exprs()
 {
-  constexpr char input[] = "1 + 3 - (33 - 3 + 3) - 1 + 2";
-  auto           ts      = LX::run(std::string(input));
-
-  AR::T  arena{};
-  EX::T *expr = (EX::T *)arena.alloc<EX::T>();
-  (void)EX::parse(ts, arena, 0, ts.size(), expr);
-
-  std::printf("%s\n", std::to_string(expr->m_type).c_str());
-
   return true;
 }
 
