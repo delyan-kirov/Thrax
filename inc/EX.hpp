@@ -18,6 +18,8 @@ namespace EX
 
 #define EX_Type_EnumVariants                                                   \
   X(Unknown)                                                                   \
+  X(PubDef)                                                                    \
+  X(IntDef)                                                                    \
   X(Int)                                                                       \
   X(Minus)                                                                     \
   X(Add)                                                                       \
@@ -33,7 +35,6 @@ namespace EX
   X(Var)                                                                       \
   X(If)                                                                        \
   X(Not)                                                                       \
-  X(While)                                                                     \
   X(Str)
 
 enum class Type
@@ -45,6 +46,12 @@ enum class Type
 
 struct Expr;
 using Exprs = UT::Vec<Expr>;
+
+struct Gdef
+{
+  UT::String name;
+  Expr      *def;
+};
 
 struct FnDef
 {
@@ -69,6 +76,7 @@ enum class E
   MAX
 };
 
+// FIXME: This should be Expr and Exprs
 struct FnApp
 {
   FnDef m_body;
@@ -96,10 +104,10 @@ struct While
 
 struct Expr
 {
-  Type    m_type;
-  LX::Sig m_sig;
+  Type m_type;
   union
   {
+    Gdef           m_gdef;
     FnDef          m_fn;
     FnApp          m_fnapp;
     VarApp         m_varapp;
@@ -124,7 +132,6 @@ struct Expr
 
 class Parser
 {
-  // TODO: use UT::String, not const char*
 public:
   AR::Arena       &m_arena;
   ER::Events       m_events;
@@ -165,188 +172,14 @@ public:
   }
 };
 
-} // namespace EX
-
 /*-------------------------------------------------------------------------------
- *\UTILS
+ *\PPRINT
  *------------------------------------------------------------------------------*/
 
-namespace std
-{
+std::string pprint(Type t, int level = 0);
+std::string pprint(Expr *e, int level = 0);
 
-inline string
-to_string(
-  EX::Type expr_type)
-{
-  switch (expr_type)
-  {
-#define X(X_enum)                                                              \
-  case EX::Type::X_enum: return #X_enum;
-    EX_Type_EnumVariants
-  }
-#undef X
-
-  UT_FAIL_IF("UNREACHABLE");
-}
-
-inline string to_string(EX::FnDef fndef);
-
-inline string
-to_string(
-  EX::Expr expr)
-{
-  string s{ "" };
-
-  switch (expr.m_type)
-  {
-  case EX::Type::Int:
-  {
-    s = std::to_string(expr.as.m_int);
-  }
-  break;
-  case EX::Type::Add:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " + ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::Minus:
-  {
-    s += "-(";
-    s += to_string(*expr.as.m_expr);
-    s += ")";
-  }
-  break;
-  case EX::Type::Sub:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " - ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::Mult:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " * ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::Div:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " / ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::Modulus:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " % ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::IsEq:
-  {
-    s += "(";
-    s += to_string(expr.as.m_pair.first());
-    s += " ?= ";
-    s += to_string(expr.as.m_pair.second());
-    s += ")";
-  }
-  break;
-  case EX::Type::FnDef:
-  {
-    s += "( \\" + to_string(expr.as.m_fn.m_param) + " = "
-         + to_string(*expr.as.m_fn.m_body) + " )";
-  }
-  break;
-  case EX::Type::FnApp:
-  {
-    s += to_string(expr.as.m_fnapp.m_body) + " (" + " ";
-    for (size_t i = 0; i < expr.as.m_fnapp.m_param.m_len; ++i)
-    {
-      auto &param = expr.as.m_fnapp.m_param[i];
-      if (i != expr.as.m_fnapp.m_param.m_len - 1)
-      {
-        s += to_string(param) + ", ";
-      }
-      else
-      {
-        s += to_string(param);
-      }
-    }
-    s += " )";
-  }
-  break;
-  case EX::Type::VarApp:
-  {
-    s += to_string(expr.as.m_varapp.m_fn_name) + " (" + " "
-         + to_string(*expr.as.m_varapp.m_param.last()) + " )";
-  }
-  break;
-  case EX::Type::Var:
-  {
-    s += "Var (" + std::to_string(expr.as.m_var) + ")";
-  }
-  break;
-  case EX::Type::If:
-  {
-    s += "if " + std::to_string(*expr.as.m_if.m_condition) +    //
-         " => " + std::to_string(*expr.as.m_if.m_true_branch) + //
-         " else " + std::to_string(*expr.as.m_if.m_else_branch);
-  }
-  break;
-  case EX::Type::Unknown:
-  {
-    s += "EX::T::Unknown";
-  }
-  break;
-  case EX::Type::Let:
-  {
-    s += "let " + to_string(expr.as.m_let.m_var_name) + " = "
-         + to_string(*expr.as.m_let.m_value) + " in "
-         + to_string(*expr.as.m_let.m_continuation);
-  }
-  break;
-  case EX::Type::Not:
-  {
-    s += "neg ( " + to_string(*expr.as.m_expr) + " )";
-  }
-  break;
-  case EX::Type::Str:
-  {
-    s += "\"" + to_string(expr.as.m_string) + "\"";
-  }
-  break;
-  default:
-  {
-    // TODO: Don't use default case here, fail under switch
-    UT_FAIL_MSG("UNREACHABLE %d", expr.m_type);
-  }
-  break;
-  }
-
-  return s;
-}
-inline string
-to_string(
-  EX::FnDef fndef)
-{
-  return "(\\" + to_string(fndef.m_param) + " = " + to_string(*fndef.m_body)
-         + ")";
-}
-} // namespace std
+} // namespace EX
 
 /*-------------------------------------------------------------------------------
  *\EOF

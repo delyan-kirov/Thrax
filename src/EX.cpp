@@ -26,13 +26,11 @@ FnDef::FnDef(
 }
 
 Expr::Expr(Type type)
-    : m_type{ type },
-      m_sig{ LX::LangType::Max } {};
+    : m_type{ type } {};
 
 Expr::Expr(
   Type type, AR::Arena &arena)
-    : m_type{ type },
-      m_sig{ LX::LangType::Max }
+    : m_type{ type }
 {
   switch (type)
   {
@@ -376,6 +374,23 @@ Parser::run()
       this->parse_max_precedence_arithmetic_op(EX::Type::Modulus, i);
     }
     break;
+    case LX::Type::PubDef:
+    case LX::Type::IntDef:
+    {
+      Expr global_def{ t.type == LX::Type::PubDef ? EX::Type::PubDef
+                                                  : EX::Type::IntDef };
+
+      global_def.as.m_gdef.name = t.as.sym.name;
+
+      Parser sym_parser{ *this, t.as.sym.def };
+      UT_FAIL_IF(E::OK != sym_parser.run());
+      global_def.as.m_gdef.def = sym_parser.m_exprs.last();
+
+      this->m_exprs.push(global_def);
+
+      i += 1;
+    }
+    break;
     case LX::Type::Minus:
     {
       if (this->m_exprs.is_empty()
@@ -411,11 +426,6 @@ Parser::run()
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
       UT::String var_name = t.as.binding.var;
-      /* TODO: we should parse signatures in the parser(EX) not in the
-       * tokenizer(LX)
-       */
-      LX::Sig sig = t.as.binding.sig;
-
       EX::Parser value_parser{ *this, t.as.binding.equals };
       value_parser();
       EX::Expr *value_expr = value_parser.m_exprs.last();
@@ -428,7 +438,6 @@ Parser::run()
       let_expr.as.m_let.m_continuation = continuation_expr;
       let_expr.as.m_let.m_var_name     = var_name;
       let_expr.as.m_let.m_value        = value_expr;
-      let_expr.m_sig                   = sig;
 
       this->m_exprs.push(let_expr);
 
@@ -559,47 +568,134 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::While:
-    {
-      i += 1;
-
-      EX::Parser condition_parser{ *this, t.as.whyle.condition };
-      condition_parser();
-
-      // FIXME: variable str should result in function app but currently, the
-      // variable is ignored
-      EX::Parser body_parser{ *this, t.as.whyle.body };
-      body_parser();
-
-      EX::Expr while_expr{ EX::Type::While };
-      while_expr.as.m_while.m_body      = body_parser.m_exprs.last();
-      while_expr.as.m_while.m_condition = condition_parser.m_exprs.last();
-
-      m_exprs.push(while_expr);
-    }
-    break;
-    case LX::Type::Sig:
-    {
-      /* TODO: we should parse signatures in the parser(EX) not in the
-       * tokenizer(LX)
-       */
-      i += 1;
-      UT_FAIL_IF(0 == m_exprs.m_len);
-      m_exprs.last()->m_sig = t.as.sig;
-    }
-    break;
     case LX::Type::Min:
     case LX::Type::Max:
     default:
     {
       // TODO: instead of UT_FAIL_IF, implement error reporting macros
-      UT_FAIL_MSG("The token type <%s> is unhandled", UT_TCS(t.type));
+      UT_FAIL_MSG("The token type <%s> is unhandled", LX::pprint(t.type).c_str());
     }
     break;
     }
   }
 
   return e;
+}
+
+/*-------------------------------------------------------------------------------
+ *\PPRINT
+ *------------------------------------------------------------------------------*/
+
+namespace
+{
+const char *
+binop_str(
+  EX::Type t)
+{
+  switch (t)
+  {
+  case EX::Type::Add    : return " + ";
+  case EX::Type::Sub    : return " - ";
+  case EX::Type::Mult   : return " * ";
+  case EX::Type::Div    : return " / ";
+  case EX::Type::Modulus : return " % ";
+  case EX::Type::IsEq   : return " ?= ";
+  default: UT_FAIL_IF("Not a binop"); return "";
+  }
+}
+} // namespace
+
+std::string
+pprint(
+  Type t, int level)
+{
+  std::string pad(level * 2, ' ');
+  switch (t)
+  {
+#define X(X_enum)                                                              \
+  case Type::X_enum: return pad + #X_enum;
+    EX_Type_EnumVariants
+#undef X
+  }
+  UT_FAIL_IF("UNREACHABLE");
+  return "";
+}
+
+std::string
+pprint(
+  Expr *e, int level)
+{
+  if (!e) return std::string(level * 2, ' ') + "(null)";
+
+  std::string pad(level * 2, ' ');
+  switch (e->m_type)
+  {
+  case Type::Int:
+    return pad + std::to_string(e->as.m_int);
+  case Type::Var:
+    return pad + std::to_string(e->as.m_var);
+  case Type::Str:
+    return pad + "\"" + std::to_string(e->as.m_string) + "\"";
+  case Type::Minus:
+    return pad + "-" + pprint(e->as.m_expr, 0);
+  case Type::Not:
+    return pad + "not " + pprint(e->as.m_expr, 0);
+  case Type::Add:
+  case Type::Sub:
+  case Type::Mult:
+  case Type::Div:
+  case Type::Modulus:
+  case Type::IsEq:
+    return pad + pprint(e->as.m_pair.begin(), 0)
+         + binop_str(e->m_type)
+         + pprint(e->as.m_pair.last(), 0);
+  case Type::Let:
+    return pad + "let " + std::to_string(e->as.m_let.m_var_name) + " =\n"
+         + pprint(e->as.m_let.m_value, level + 1) + "\n"
+         + pad + "in\n"
+         + pprint(e->as.m_let.m_continuation, level + 1);
+  case Type::If:
+    return pad + "if " + pprint(e->as.m_if.m_condition, 0) + " then\n"
+         + pprint(e->as.m_if.m_true_branch, level + 1) + "\n"
+         + pad + "else\n"
+         + pprint(e->as.m_if.m_else_branch, level + 1);
+  case Type::FnDef:
+    return pad + "\\" + std::to_string(e->as.m_fn.m_param) + " =\n"
+         + pprint(e->as.m_fn.m_body, level + 1);
+  case Type::FnApp:
+  {
+    std::string s = pad + "(\\" + std::to_string(e->as.m_fnapp.m_body.m_param)
+                  + " =\n" + pprint(e->as.m_fnapp.m_body.m_body, level + 1)
+                  + "\n" + pad + ")(";
+    for (size_t i = 0; i < e->as.m_fnapp.m_param.m_len; ++i)
+    {
+      if (i > 0) s += ", ";
+      s += pprint(&e->as.m_fnapp.m_param[i], 0);
+    }
+    s += ")";
+    return s;
+  }
+  case Type::VarApp:
+  {
+    std::string s = pad + std::to_string(e->as.m_varapp.m_fn_name) + "(";
+    for (size_t i = 0; i < e->as.m_varapp.m_param.m_len; ++i)
+    {
+      if (i > 0) s += ", ";
+      s += pprint(&e->as.m_varapp.m_param[i], 0);
+    }
+    s += ")";
+    return s;
+  }
+  case Type::PubDef:
+  case Type::IntDef:
+    return pad + (Type::PubDef == e->m_type ? "pub " : "int ")
+         + std::to_string(e->as.m_gdef.name) + " =\n"
+         + pprint(e->as.m_gdef.def, level + 1);
+  case Type::Unknown:
+    return pad + "?unknown";
+  }
+  UT_FAIL_IF("UNREACHABLE");
+  return "";
 }
 
 } // namespace EX

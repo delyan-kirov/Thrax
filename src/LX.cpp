@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <map>
 #include <string>
-#include <vector>
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -70,213 +69,112 @@
     }                                                                          \
   }
 
+namespace LX
+{
+
 /*-------------------------------------------------------------------------------
- *\EXTERNAL UTILS
+ *\PPRINT
  *------------------------------------------------------------------------------*/
 
-namespace std
+std::string
+pprint(
+  E e, int level)
 {
-inline string
-to_string(
-  LX::E e)
-{
+  std::string pad(level * 2, ' ');
   switch (e)
   {
 #define X(LX_ENUM_VALUE)                                                       \
-  case LX::E::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+  case E::LX_ENUM_VALUE: return pad + #LX_ENUM_VALUE;
     LX_E_ENUM_VARIANTS
 #undef X
   }
 
   UT_FAIL_IF("UNREACHABLE");
   return "";
-};
-
-string
-to_string(
-  LX::LangType lang_type)
-{
-  switch (lang_type)
-  {
-  case LX::LangType::Max:
-  case LX::LangType::Min: return "";
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::LangType::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
-    LX_LangType_ENUM_VARIANTS
-#undef X
-  }
-
-  UT_FAIL_MSG("Got unexpected type %d", lang_type);
-  return "";
 }
 
-// TODO: remove
-string
-to_string(
-  LX::Sig sig)
+std::string
+pprint(
+  Type t, int level)
 {
-  switch (sig.type)
-  {
-  case LX::LangType::Min:
-  case LX::LangType::Max: return "";
-#define X(LX_ENUM_VALUE)                                                       \
-  case LX::LangType::LX_ENUM_VALUE:                                            \
-    if constexpr (LX::LangType::LX_ENUM_VALUE == LX::LangType::Fn)             \
-    {                                                                          \
-      UT::Pair<LX::Sig> pair = sig.as.pair;                                    \
-      return to_string(pair.first()) + " -> " + to_string(pair.second());      \
-    }                                                                          \
-    return to_string(sig.type);
-    LX_LangType_ENUM_VARIANTS
-#undef X
-  }
-
-  UT_FAIL_MSG("Unreachable variant %d\n", sig.type);
-
-  return "";
-}
-
-string
-to_string(
-  LX::Type t)
-{
+  std::string pad(level * 2, ' ');
   switch (t)
   {
 #define X(LX_ENUM_VALUE)                                                       \
-  case LX::Type::LX_ENUM_VALUE: return #LX_ENUM_VALUE;
+  case Type::LX_ENUM_VALUE: return pad + #LX_ENUM_VALUE;
     LX_Type_ENUM_VARIANTS
 #undef X
   }
 
-  UT_FAIL_MSG("Got unexpected type %d", t);
+  UT_FAIL_MSG("Got unexpected type %d", (int)t);
   return "";
 }
 
-string
-to_string(
-  LX::Token t)
+std::string
+pprint(
+  Token t, int level)
 {
+  std::string pad(level * 2, ' ');
   switch (t.type)
   {
-  case LX::Type::Int:
-    return string("Int") + "(" + to_string(t.as.integer) + ")";
-  case LX::Type::Plus:
-    return "Op("
-           "+"
-           ")";
-  case LX::Type::Minus:
-    return "Op("
-           "-"
-           ")";
-  case LX::Type::Mult:
-    return "Op("
-           "*"
-           ")";
-  case LX::Type::Div:
-    return "Op("
-           "/"
-           ")";
-  case LX::Type::IsEq:
-    return "Op("
-           "?="
-           ")";
-  case LX::Type::Modulus:
-    return "Op("
-           "%"
-           ")";
-  case LX::Type::Let:
-  {
-    std::string let_string = to_string(t.as.binding.equals);
-    std::string in_string  = to_string(t.as.binding.in);
-    std::string var_name   = to_string(t.as.binding.var);
-    return "let " + var_name + " = " + let_string + " in " + in_string;
-  }
-  break;
-  case LX::Type::Fn:
-  {
-    std::string var_name    = to_string(t.as.fn.param_name);
-    std::string body_string = to_string(t.as.fn.body);
-    return "(\\" + var_name + " = " + body_string + ")";
-  }
-  break;
-  case LX::Type::Word:
-  {
-    return "Word " + to_string(t.as.string);
-  }
-  case LX::Type::If:
-  {
-    return "if " + to_string(t.as.if_else.condition) +    //
-           " => " + to_string(t.as.if_else.true_branch) + //
-           " else " + to_string(t.as.if_else.else_branch);
-  }
-  case LX::Type::Group:
-  {
-    return "Group" + to_string(t.as.tokens);
-  }
-  case LX::Type::PubDef:
-  case LX::Type::IntDef:
-  {
-    return to_string(LX::Type::PubDef == t.type ? "pub" : "int") + " "
-           + to_string(t.as.sym.name) + " = " + to_string(t.as.sym.def)
-           + (LX::LangType::Max == t.as.sym.sig.type
-                ? ""
-                : (": " + to_string(t.as.sym.sig)));
-  }
-  case LX::Type::Not:
-  {
-    return "(not)";
-  }
-  case LX::Type::Str:
-  {
-    return "\"" + to_string(t.as.string) + "\"";
-  }
-  case LX::Type::Min:
-  {
-    return "Min";
-  }
-  case LX::Type::Max:
-  {
-    return "Max";
-  }
-  case LX::Type::While:
-  {
-    return "while " + to_string(t.as.whyle.condition) + " "
-           + to_string(t.as.whyle.body);
-  }
-  case LX::Type::ExtDef:
-  {
-    auto ext_sym = t.as.ext_sym;
-
-    return "ext " + to_string(ext_sym.name) + ": " + to_string(ext_sym.sig)
-           + " = " + to_string(ext_sym.def);
-  }
-  case LX::Type::Sig:
-  {
-    return ": ( " + to_string(t.as.sig) + " )";
-  }
+  case Type::Int:
+    return pad + "(int " + std::to_string(t.as.integer) + ")";
+  case Type::Plus   : return pad + "(op +)";
+  case Type::Minus  : return pad + "(op -)";
+  case Type::Mult   : return pad + "(op *)";
+  case Type::Div    : return pad + "(op /)";
+  case Type::IsEq   : return pad + "(op ?=)";
+  case Type::Modulus: return pad + "(op %)";
+  case Type::Not    : return pad + "(not)";
+  case Type::Word:
+    return pad + "(word " + std::to_string(t.as.string) + ")";
+  case Type::Str:
+    return pad + "(str \"" + std::to_string(t.as.string) + "\")";
+  case Type::Min: return pad + "(min)";
+  case Type::Max: return pad + "(max)";
+  case Type::Let:
+    return pad + "(let " + std::to_string(t.as.binding.var) + "\n"
+         + pad + "  (=\n" + pprint(t.as.binding.equals, level + 2) + ")\n"
+         + pad + "  (in\n" + pprint(t.as.binding.in, level + 2) + "))";
+  case Type::Fn:
+    return pad + "(fn \\" + std::to_string(t.as.fn.param_name) + "\n"
+         + pprint(t.as.fn.body, level + 1) + ")";
+  case Type::If:
+    return pad + "(if\n"
+         + pad + "  (cond\n" + pprint(t.as.if_else.condition, level + 2) + ")\n"
+         + pad + "  (then\n" + pprint(t.as.if_else.true_branch, level + 2) + ")\n"
+         + pad + "  (else\n" + pprint(t.as.if_else.else_branch, level + 2) + "))";
+  case Type::Group:
+    return pad + "(group\n" + pprint(t.as.tokens, level + 1) + ")";
+  case Type::PubDef:
+  case Type::IntDef:
+    return pad + "(" + (Type::PubDef == t.type ? "pub" : "int") + " "
+         + std::to_string(t.as.sym.name) + "\n"
+         + pprint(t.as.sym.def, level + 1) + ")";
+  case Type::While:
+    return pad + "(while\n"
+         + pad + "  (cond\n" + pprint(t.as.whyle.condition, level + 2) + ")\n"
+         + pad + "  (body\n" + pprint(t.as.whyle.body, level + 2) + "))";
+  case Type::ExtDef:
+    return pad + "(ext " + std::to_string(t.as.ext_sym.name) + "\n"
+         + pprint(t.as.ext_sym.def, level + 1) + ")";
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";
 }
 
-string
-to_string(
-  LX::Tokens ts)
+std::string
+pprint(
+  Tokens ts, int level)
 {
-  string s{ "[ " };
+  std::string s;
   for (size_t i = 0; i < ts.m_len; ++i)
   {
-    LX::Token t = ts[i];
-    s += to_string(t);
-    s += (i != ts.m_len - 1) ? " , " : "";
+    if (i > 0) s += "\n";
+    s += pprint(ts[i], level);
   }
-  s += " ]";
   return s;
 }
-} // namespace std
-
-namespace LX
-{
 
 namespace
 /*-------------------------------------------------------------------------------
@@ -296,38 +194,6 @@ is_white_space(
   default  : return false;
   }
 }
-
-// bool
-// is_hex_char(
-//   char c)
-// {
-//   switch (c)
-//   {
-//   case '0':
-//   case '1':
-//   case '2':
-//   case '3':
-//   case '4':
-//   case '5':
-//   case '6':
-//   case '7':
-//   case '8':
-//   case '9':
-//   case 'a':
-//   case 'b':
-//   case 'c':
-//   case 'd':
-//   case 'e':
-//   case 'f':
-//   case 'A':
-//   case 'B':
-//   case 'C':
-//   case 'D':
-//   case 'E':
-//   case 'F': return true;
-//   default : return false;
-//   }
-// }
 
 bool
 delimits_word(
@@ -376,8 +242,8 @@ delimiter_operator(
   case '[':
   case ']':
   case '\\':
-  case ';': return true;
-  default : return false;
+  case ';' : return true;
+  default  : return false;
   }
 }
 
@@ -423,7 +289,7 @@ ErrorE::ErrorE(
       }
 {
   UT::SB sb{};
-  sb.concatf("[%s] %s ln(%d) %s", UT_TCS(error), fn_name, line, data);
+  sb.concatf("[%s] %s ln(%d) %s", pprint(error).c_str(), fn_name, line, data);
   UT::Vu<char> msg = UT::memcopy(*this->m_arena, sb.vu().m_mem);
   this->m_data     = (void *)msg.m_mem;
 }
@@ -434,7 +300,6 @@ Lexer::next_char()
   if (this->m_cursor >= this->m_end) return '\0';
   char c = this->m_input[this->m_cursor];
   UT_FAIL_IF('\0' == c);
-  if ('\n' == c) this->m_lines += 1;
   this->m_cursor += 1;
   return c;
 }
@@ -568,9 +433,8 @@ Lexer::next_global_sym(
   if (Keyword::INT == sb || Keyword::PUB == sb)
   {
     LX_FN_TRY(l.next_non_extern_sym(t));
-    m_cursor          = l.m_cursor;
-    t.type            = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
-    t.as.sym.sig.type = LX::LangType::Min;
+    m_cursor = l.m_cursor;
+    t.type   = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
     return E::OK;
   }
   else if (Keyword::EXT == sb)
@@ -722,22 +586,6 @@ Lexer::matches_operator(
 }
 
 E
-Lexer::matches_colon(
-  UT::Vu<UT::String> &words, Sig &sig)
-{
-  if (words.is_empty()) return E::OK;
-  UT::String s = *words.first();
-  if (":" != s)
-    return E::OK;
-  else
-    UT_TODO(Lexer::matches_colon);
-  words.pop_front();
-  UT_UNUSED(sig);
-
-  return E::MATCHES_COLON;
-}
-
-E
 Lexer::matches_quotm(
   UT::Vu<UT::String> &words)
 {
@@ -754,7 +602,6 @@ Lexer::matches_quotm(
   return E::MATCHED_QUOTM;
 }
 
-// FIXME: We should not return in, =>, else etc. We should return OK only.
 E
 Lexer::matches_ifelse(
   UT::Vu<UT::String> &words)
@@ -780,7 +627,7 @@ Lexer::matches_ifelse(
 
   if (E::IN_KEYWORD == e) words.retreat();
 
-  Token t{ Type::If, m_lines, m_cursor };
+  Token t{ Type::If, m_cursor };
   t.as.if_else.condition   = lcond.m_tokens;
   t.as.if_else.true_branch = ltrue.m_tokens;
   t.as.if_else.else_branch = lelse.m_tokens;
@@ -789,9 +636,6 @@ Lexer::matches_ifelse(
   return E::MATCHES_IFELSE;
 }
 
-// FIXME: This should be parsed like matching_paren (ie matching the in with its
-// let)
-// FIXME: we may need to handle this appropriately
 // let x: <type> = <expr> in <expr>
 E
 Lexer::matches_letin(
@@ -806,18 +650,7 @@ Lexer::matches_letin(
   LX_ASSERT("" != varname, E::CONTROL_STRUCTURE_ERROR);
   LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
 
-  Token t{ Type::Let, m_lines, m_cursor };
-  Sig   sig{};
-  E     e = matches_colon(words, sig);
-
-  if (E::MATCHES_COLON == e)
-  {
-    t.as.sym.sig = sig;
-  }
-  else if (E::OK != e)
-  {
-    return e;
-  }
+  Token t{ Type::Let, m_cursor };
 
   LX_ASSERT("=" == *words.pop_front(), E::UNRECOGNIZED_STRING);
   LX_ASSERT(not words.is_empty(), E::UNRECOGNIZED_STRING);
@@ -826,7 +659,7 @@ Lexer::matches_letin(
   LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::UNREACHABLE_CASE_REACHED);
 
   Lexer lin{ *this, m_cursor, m_end };
-  e = lin.tokenize(words);
+  E     e = lin.tokenize(words);
   LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::CONTROL_STRUCTURE_ERROR);
 
   if (E::IN_KEYWORD == e) words.retreat();
@@ -835,7 +668,6 @@ Lexer::matches_letin(
   t.as.binding.var    = varname;
   t.as.binding.equals = llet.m_tokens;
   t.as.binding.in     = lin.m_tokens;
-  UT_UNUSED(t.as.binding.sig); // FIXME
 
   m_tokens.push(t);
 
@@ -1043,26 +875,21 @@ Lexer::generate_event_report()
   }
 }
 
-// TODO: candidate for refactor
 void
 Lexer::strip_white_space(
   size_t idx)
 {
-  char   c         = this->m_input[idx];
-  size_t new_lines = 0;
+  char c = this->m_input[idx];
 
   while (is_white_space(c))
   {
-    if ('\n' == c) new_lines += 1;
     idx += 1;
     c = this->m_input[idx];
   }
 
-  this->m_lines += new_lines;
   this->m_cursor = idx;
 };
 
-// TODO: candidate for refactor
 void
 Lexer::strip_line(
   size_t idx)
@@ -1075,7 +902,6 @@ Lexer::strip_line(
     c = this->m_input[idx];
   }
 
-  this->m_lines += 1;
   this->m_cursor = idx;
 }
 
@@ -1091,7 +917,6 @@ Lexer::Lexer(
       m_events{ arena },
       m_input{ input },
       m_tokens{ Tokens(arena) },
-      m_lines{ 0 },
       m_cursor{ begin },
       m_begin{ begin },
       m_end{ end }
@@ -1110,25 +935,22 @@ Lexer::Lexer(
   new (&this->m_tokens) Tokens{ l.m_arena };
 }
 
-// TODO: Candidate for removal
+// FIXME: Candidate for removal
 Token::Token(Type t)
     : type{ t },
-      line{ 0 },
       cursor{ 0 },
       as{} {};
 
-// TODO: Candidate for removal
-Token::Token(Type type, size_t line, size_t cursor)
+// FIXME: Candidate for removal
+Token::Token(Type type, size_t line)
     : type{ type },
-      line{ line },
-      cursor{ cursor },
+      cursor{ line },
       as{} {};
 
-// TODO: Candidate for removal
+// FIXME: Candidate for removal
 Token::Token(
   Tokens tokens)
     : type{ Type::Group },
-      line{ 0 },
       cursor{ 0 }
 {
   new (&as.tokens) Tokens{ tokens }; // NOTE: placement new

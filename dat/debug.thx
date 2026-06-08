@@ -1,4 +1,6 @@
-# here
-pub t = 2?=1
-pub c = \t = t + 1
-pub d = c 4
+pub id = \x = x
+pub add = \x = \y = x + y
+int fact = \n = if n ?= 0 => 1 else n * fact (n - 1)
+pub msg = "hello"
+pub answer = let x = 6 in x * 7
+pub complex = (1 + 2) * (3 - 4) + 5

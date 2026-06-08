@@ -12,22 +12,10 @@ CFLAGS += -O1
 CFLAGS += -DGIT_ACTION_CTX=1
 else
 CFLAGS += -O0
-# FIXME: Reenamble when ready
-RAYLIB_ENABLED ?= 0
-export RAYLIB_ENABLED
 endif
 
 CC = clang++ $(CFLAGS) -I$(INC)
 CFSO = -fPIC -shared
-
-ifdef RAYLIB_ENABLED
-LIBS = -L./bin/lib64 -lffi -Wl,-rpath,'$$ORIGIN/lib64' -L./bin/
-# LIBS = -lffi -lraylib -Wl,-rpath,'$$ORIGIN/lib'
-else ifdef GIT_ACTION_CTX
-LIBS = -lffi -Wl,-rpath,'$$ORIGIN/lib64'
-else
-LIBS = -L./bin/lib64 -lffi -Wl,-rpath,'$$ORIGIN/lib64'
-endif
 
 #------------------------------MAIN-----------------------------
 TESTS = tst_mult tst_functional tst_debug
@@ -42,13 +30,13 @@ test-debug: $(BIN)tst_debug
 THRAXsrc = \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
-	$(SRC)TL.cpp
+	$(SRC)IT.cpp 
 
 THRAXinc = \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
-	$(INC)EX.hpp \
-	$(INC)TL.hpp
+	$(INC)IT.hpp \
+	$(INC)EX.hpp 
 
 THRAX = $(BIN)thrax.so
 

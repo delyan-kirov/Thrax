@@ -37,33 +37,6 @@ constexpr UT::String EXT{ "ext" };
  *\TYPES
  *-----------------------------------------------------------------------------*/
 
-#define LX_LangType_ENUM_VARIANTS                                              \
-  X(Fn)                                                                        \
-  X(Nat)                                                                       \
-  X(Nat8)                                                                      \
-  X(Nat16)                                                                     \
-  X(Nat32)                                                                     \
-  X(Nat64)                                                                     \
-  X(Int)                                                                       \
-  X(Int8)                                                                      \
-  X(Int16)                                                                     \
-  X(Int32)                                                                     \
-  X(Int64)                                                                     \
-  X(Ptr)                                                                       \
-  X(Void)                                                                      \
-  X(Struct)                                                                    \
-  X(Enum)                                                                      \
-  X(Alias)
-
-enum class LangType
-{
-  Min = 0,
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_LangType_ENUM_VARIANTS
-#undef X
-    Max,
-}; // namespace LX
-
 // TODO: Need to have actual error codes here
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
@@ -120,7 +93,6 @@ enum class E
   X(Str)                                                                       \
   X(While)                                                                     \
   X(ExtDef)                                                                    \
-  X(Sig)                                                                       \
   X(Max)
 
 // TODO: Rename
@@ -152,30 +124,9 @@ struct If
   Tokens else_branch;
 };
 
-// TODO: remove
-// NOTE: T -> (T -> (T -> T))
-//   is: T -> T -> T -> T
-struct Sig
-{
-  LangType type;
-  union
-  {
-    UT::Pair<Sig> pair;
-  } as;
-
-  Sig() = default;
-  Sig(
-    LangType type)
-      : type{ type },
-        as{}
-  {
-  }
-};
-
 struct Binding
 {
   UT::String var;
-  Sig        sig;
   Tokens     equals;
   Tokens     in;
 };
@@ -190,13 +141,11 @@ struct SymDef
 {
   Tokens     def;
   UT::String name;
-  Sig        sig;
 };
 
 struct ExtSym
 {
   UT::String name;
-  Sig        sig;
   Tokens     def;
 };
 
@@ -211,7 +160,6 @@ struct While
 struct Token
 {
   Type   type;
-  size_t line;
   size_t cursor;
   union
   {
@@ -222,7 +170,6 @@ struct Token
     SymDef     sym;
     While      whyle;
     ExtSym     ext_sym;
-    Sig        sig;
     UT::String string;
     ssize_t    integer = 0;
   } as;
@@ -233,7 +180,7 @@ struct Token
   // TODO: Candidate for removal
   Token(Type t);
   // TODO: Candidate for removal
-  Token(Type type, size_t line, size_t cursor);
+  Token(Type type, size_t cursor);
   // TODO: Candidate for removal
   Token(Tokens tokens);
 };
@@ -249,7 +196,6 @@ public:
   ER::Events       m_events;
   const UT::String m_input;
   Tokens           m_tokens;
-  size_t           m_lines;
   size_t           m_cursor;
   size_t           m_begin;
   size_t           m_end;
@@ -288,8 +234,6 @@ public:
 
   E matches_control_operator(UT::Vu<UT::String> &words);
 
-  E matches_colon(UT::Vu<UT::String> &words, Sig &sig);
-
   E matches_lambda(UT::Vu<UT::String> &words);
 
   E next_non_extern_sym(Token &t);
@@ -303,25 +247,16 @@ public:
   LX::E tokenize(UT::Vu<UT::String> &words);
 };
 
-} // namespace LX
-
 /*-------------------------------------------------------------------------------
- *\UTILS
+ *\PPRINT
  *------------------------------------------------------------------------------*/
 
-namespace std
-{
-// TODO: Knowing what type I need from the union is not obvious.
-// There should be a better way to do it
+std::string pprint(E e, int level = 0);
+std::string pprint(Type t, int level = 0);
+std::string pprint(Token t, int level = 0);
+std::string pprint(Tokens ts, int level = 0);
 
-string to_string(LX::E e);
-string to_string(LX::LangType lang_type);
-string to_string(LX::Sig sig);
-string to_string(LX::Type t);
-string to_string(LX::Tokens ts);
-string to_string(LX::Token t);
-string to_string(LX::Tokens ts);
-} // namespace std
+} // namespace LX
 
 /*-------------------------------------------------------------------------------
  *\EOF
