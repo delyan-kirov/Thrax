@@ -99,6 +99,8 @@ pLm exprs2pLm(EX::Expr *expr, StatEnv &env);
 
 std::string pprint(pLm lm, int level = 0);
 
+pLm eval(pLm node, DynEnv denv, StatEnv &senv);
+
 } // namespace IT
 
 /*-------------------------------------------------------------------------------

@@ -166,6 +166,10 @@ Parser::parse_min_precedence_arithmetic_op(
   return result;
 }
 
+// FIXME: When the right operand of a binary op is a Word followed by arguments
+// (e.g. `2 * pow (n - 1)`), only the Word is parsed as the operand and the
+// arguments are dropped. The function application should be parsed before
+// creating the binary operation.
 E
 Parser::parse_max_precedence_arithmetic_op(
   EX::Type type, size_t &idx)

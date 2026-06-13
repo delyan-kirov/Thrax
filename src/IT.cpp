@@ -80,6 +80,74 @@ assign_id(
 
 } // namespace
 
+pLm eval(pLm node, DynEnv denv, StatEnv &senv);
+
+namespace
+{
+
+pLm
+apply_builtin(
+  const Var &v, DynEnv denv, StatEnv &senv)
+{
+  const auto &op   = v.unwrap;
+  const auto &args = v.env;
+
+  // Lazy: evaluate condition first, then only the taken branch
+  if (op == "if")
+  {
+    UT_FAIL_IF(args.size() != 3);
+    pLm cond = eval(args[0], denv, senv);
+    UT_FAIL_IF(cond->tag != LTag::INT);
+    if (std::get<Int>(cond->as).unwrap != 0)
+      return eval(args[1], denv, senv);
+    else
+      return eval(args[2], denv, senv);
+  }
+
+  // Unary operators — evaluate the single operand
+  if (op == "neg")
+  {
+    UT_FAIL_IF(args.size() != 1);
+    pLm val = eval(args[0], denv, senv);
+    UT_FAIL_IF(val->tag != LTag::INT);
+    return std::make_shared<Lm>(
+      Lm{ .tag = LTag::INT, .as = Int{ -std::get<Int>(val->as).unwrap } });
+  }
+
+  if (op == "not")
+  {
+    UT_FAIL_IF(args.size() != 1);
+    pLm val = eval(args[0], denv, senv);
+    UT_FAIL_IF(val->tag != LTag::INT);
+    ssize_t v = std::get<Int>(val->as).unwrap;
+    return std::make_shared<Lm>(
+      Lm{ .tag = LTag::INT, .as = Int{ v == 0 ? 1 : 0 } });
+  }
+
+  // Binary operators — evaluate both operands
+  UT_FAIL_IF(args.size() != 2);
+  pLm lhs_node = eval(args[0], denv, senv);
+  pLm rhs_node = eval(args[1], denv, senv);
+  UT_FAIL_IF(lhs_node->tag != LTag::INT);
+  UT_FAIL_IF(rhs_node->tag != LTag::INT);
+
+  ssize_t lhs = std::get<Int>(lhs_node->as).unwrap;
+  ssize_t rhs = std::get<Int>(rhs_node->as).unwrap;
+
+  ssize_t result = 0;
+  if (op == "+")       result = lhs + rhs;
+  else if (op == "-")  result = lhs - rhs;
+  else if (op == "*")  result = lhs * rhs;
+  else if (op == "/")  { UT_FAIL_IF(rhs == 0); result = lhs / rhs; }
+  else if (op == "%")  { UT_FAIL_IF(rhs == 0); result = lhs % rhs; }
+  else if (op == "?=") result = (lhs == rhs) ? 1 : 0;
+  else                 UT_FAIL_IF(true);
+
+  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
+}
+
+} // namespace
+
 pLm
 exprs2pLm_helper(
   EX::Expr *expr, StatEnv &env)
@@ -181,10 +249,16 @@ exprs2pLm_helper(
 
   case EX::Type::VarApp:
   {
-    // FIXME, should spread out the args
-    App app = App{ exprs2pLm_helper(expr->as.m_fnapp.m_param.begin(), env),
-                   exprs2pLm_helper(expr->as.m_fnapp.m_body.m_body, env) };
-    lm      = { .tag = LTag::APP, .as = app };
+    pLm result = std::make_shared<Lm>(
+      Lm{ .tag = LTag::VAR, .as = mkVar(expr->as.m_varapp.m_fn_name) });
+    for (size_t i = 0; i < expr->as.m_varapp.m_param.m_len; ++i)
+    {
+      result = std::make_shared<Lm>(
+        Lm{ .tag = LTag::APP,
+            .as  = App{ result,
+                       exprs2pLm_helper(&expr->as.m_varapp.m_param[i], env) } });
+    }
+    lm = *result;
   }
   break;
 
@@ -267,6 +341,72 @@ exprs2pLm(
   pLm       node = exprs2pLm_helper(expr, env);
   NameStack ns;
   assign_id(node, ns);
+  return node;
+}
+
+pLm
+eval(
+  pLm node, DynEnv denv, StatEnv &senv)
+{
+  UT_FAIL_IF(!node);
+
+  switch (node->tag)
+  {
+  case LTag::INT:
+  case LTag::STR:
+    return node;
+
+  case LTag::VAR:
+  {
+    auto &v = std::get<Var>(node->as);
+
+    // Builtin operator or if-expression
+    if (!v.env.empty()) return apply_builtin(v, denv, senv);
+
+    // Global definition placeholder
+    if (v.idx == (size_t)-1) return node;
+
+    // Local variable (De Bruijn indexed)
+    if (v.idx > 0)
+    {
+      UT_FAIL_IF(v.idx > denv.size());
+      return denv[denv.size() - v.idx];
+    }
+
+    // Global variable (idx == 0, env empty)
+    auto it = senv.find(v.unwrap);
+    UT_FAIL_IF(it == senv.end());
+    return eval(it->second, {}, senv);
+  }
+
+  case LTag::FUN:
+  {
+    auto &f = std::get<Fun>(node->as);
+    Fun   closure;
+    closure.var  = Var{ f.var.unwrap, f.var.idx, denv };
+    closure.body = f.body;
+    return std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = closure });
+  }
+
+  case LTag::APP:
+  {
+    auto &a = std::get<App>(node->as);
+
+    pLm closure = eval(a.fn, denv, senv);
+    UT_FAIL_IF(closure->tag != LTag::FUN);
+
+    pLm val = eval(a.arg, denv, senv);
+
+    auto  &fun     = std::get<Fun>(closure->as);
+    DynEnv new_env = fun.var.env;
+    new_env.push_back(val);
+    return eval(fun.body, new_env, senv);
+  }
+
+  case LTag::UNK:
+    return node;
+  }
+
   return node;
 }
 
