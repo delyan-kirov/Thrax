@@ -9,13 +9,6 @@ namespace IT
 namespace
 {
 
-Int
-mkInt(
-  ssize_t n)
-{
-  return Int{ n };
-}
-
 Var
 mkVar(
   UT::String s, size_t idx = 0)
@@ -31,23 +24,14 @@ mkStr(
   return Str{ ss };
 }
 
-template <typename S>
 Fun
 mkFun(
-  S s, pLm body)
+  UT::String s, pLm body)
 {
   return Fun{ mkVar(s), body };
 }
 
-App
-mkApp(
-  pLm fn, pLm arg)
-{
-  return App{ fn, arg };
-}
-
 using NameStack = std::vector<std::string>;
-
 void
 assign_id(
   pLm node, NameStack &env)
@@ -154,7 +138,7 @@ exprs2pLm_helper(
     pLm value        = exprs2pLm_helper(expr->as.m_let.m_value, env);
     Fun fn           = mkFun(expr->as.m_let.m_var_name, continuation);
     pLm fn_lm        = std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = fn });
-    lm               = { .tag = LTag::APP, .as = mkApp(fn_lm, value) };
+    lm               = { .tag = LTag::APP, .as = App{ fn_lm, value } };
   }
   break;
 
@@ -168,8 +152,8 @@ exprs2pLm_helper(
     {
       result = std::make_shared<Lm>(
         Lm{ .tag = LTag::APP,
-            .as  = mkApp(result,
-                        exprs2pLm_helper(&expr->as.m_fnapp.m_param[i], env)) });
+            .as  = App{ result,
+                       exprs2pLm_helper(&expr->as.m_fnapp.m_param[i], env) } });
     }
     lm = *result;
   }
@@ -198,15 +182,15 @@ exprs2pLm_helper(
   case EX::Type::VarApp:
   {
     // FIXME, should spread out the args
-    App app = mkApp(exprs2pLm_helper(expr->as.m_fnapp.m_param.begin(), env),
-                    exprs2pLm_helper(expr->as.m_fnapp.m_body.m_body, env));
+    App app = App{ exprs2pLm_helper(expr->as.m_fnapp.m_param.begin(), env),
+                   exprs2pLm_helper(expr->as.m_fnapp.m_body.m_body, env) };
     lm      = { .tag = LTag::APP, .as = app };
   }
   break;
 
   case EX::Type::Int:
   {
-    lm = { .tag = LTag::INT, .as = mkInt(expr->as.m_int) };
+    lm = { .tag = LTag::INT, .as = Int{ expr->as.m_int } };
   }
   break;
 
