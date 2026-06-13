@@ -19,11 +19,15 @@
 #define LX_ERROR_REPORT(LX_ERROR_E, LX_ERROR_MSG)                              \
   do                                                                           \
   {                                                                            \
-    this->m_events.push(LX::ErrorE{ this->m_arena,                             \
-                                    __PRETTY_FUNCTION__,                       \
-                                    __LINE__,                                  \
-                                    (LX_ERROR_MSG),                            \
-                                    (LX_ERROR_E) });                           \
+    this->m_events->push(LX::ErrorE{ this->m_arena,                            \
+                                     __FILE__,                                 \
+                                     __PRETTY_FUNCTION__,                      \
+                                     __LINE__,                                 \
+                                     (LX_ERROR_MSG),                           \
+                                     (LX_ERROR_E),                             \
+                                     this->m_input,                            \
+                                     this->m_filename,                         \
+                                     this->m_cursor });                        \
     return (LX_ERROR_E);                                                       \
   } while (false)
 
@@ -33,25 +37,49 @@
     LX::E result = (LX_FN);                                                    \
     if (LX::E::OK != result)                                                   \
     {                                                                          \
-      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
-                                      __PRETTY_FUNCTION__,                     \
-                                      __LINE__,                                \
-                                      ("The function: " #LX_FN " failed!"),    \
-                                      result });                               \
+      this->m_events->push(LX::ErrorE{ this->m_arena,                          \
+                                       __FILE__,                               \
+                                       __PRETTY_FUNCTION__,                    \
+                                       __LINE__,                               \
+                                       ("The function: " #LX_FN " failed!"),   \
+                                       result,                                 \
+                                       this->m_input,                          \
+                                       this->m_filename,                       \
+                                       this->m_cursor });                      \
       return result;                                                           \
     }                                                                          \
   } while (false)
 
+#define LX_RETURN_ERROR(LX_ERROR)                                              \
+  do                                                                           \
+  {                                                                            \
+    this->m_events->push(LX::ErrorE{ this->m_arena,                            \
+                                     __FILE__,                                 \
+                                     __PRETTY_FUNCTION__,                      \
+                                     __LINE__,                                 \
+                                     ("The function failed!"),                 \
+                                     LX_ERROR,                                 \
+                                     this->m_input,                            \
+                                     this->m_filename,                         \
+                                     this->m_cursor });                        \
+    return LX_ERROR;                                                           \
+  } while (false)
+
+// FIXME: should take a cursor or something
 #define LX_ASSERT(LX_BOOL_EXPR, LX_ERROR_E)                                    \
   do                                                                           \
   {                                                                            \
     if (!(LX_BOOL_EXPR))                                                       \
     {                                                                          \
-      this->m_events.push(LX::ErrorE{ this->m_arena,                           \
-                                      __PRETTY_FUNCTION__,                     \
-                                      __LINE__,                                \
-                                      (#LX_BOOL_EXPR),                         \
-                                      (LX_ERROR_E) });                         \
+      this->m_events->push(LX::ErrorE{ this->m_arena,                          \
+                                       __FILE__,                               \
+                                       __PRETTY_FUNCTION__,                    \
+                                       __LINE__,                               \
+                                       (#LX_BOOL_EXPR),                        \
+                                       (LX_ERROR_E),                           \
+                                       this->m_input,                          \
+                                       this->m_filename,                       \
+                                       this->m_cursor });                      \
       return (LX_ERROR_E);                                                     \
     }                                                                          \
   } while (false)
@@ -76,9 +104,34 @@ namespace LX
  *\ UTILS
  *------------------------------------------------------------------------------*/
 
+struct ErrorData
+{
+  LX::E      error;
+  UT::String file;
+  UT::String fn_name;
+  int        cpp_line;
+  UT::String message;
+  UT::String input;
+  UT::String filename;
+  size_t     cursor;
+};
+
+struct ErrorE : public ER::E
+{
+  ErrorE(AR::Arena &arena,
+         UT::String file,
+         UT::String fn_name,
+         int        line,
+         UT::String data,
+         LX::E      error,
+         UT::String input,
+         UT::String filename,
+         size_t     cursor);
+};
+
 std::string
 pprint(
-  E e, int level)
+  E e, size_t level)
 {
   std::string pad(level * 2, ' ');
   switch (e)
@@ -95,7 +148,7 @@ pprint(
 
 std::string
 pprint(
-  Type t, int level)
+  Type t, size_t level)
 {
   std::string pad(level * 2, ' ');
   switch (t)
@@ -112,7 +165,7 @@ pprint(
 
 std::string
 pprint(
-  Token t, int level)
+  Token t, size_t level)
 {
   std::string pad(level * 2, ' ');
   switch (t.type)
@@ -149,13 +202,6 @@ pprint(
     return pad + "(" + (Type::PubDef == t.type ? "pub" : "int") + " "
            + std::to_string(t.as.sym.name) + "\n"
            + pprint(t.as.sym.def, level + 1) + ")";
-  case Type::While:
-    return pad + "(while\n" + pad + "  (cond\n"
-           + pprint(t.as.whyle.condition, level + 2) + ")\n" + pad + "  (body\n"
-           + pprint(t.as.whyle.body, level + 2) + "))";
-  case Type::ExtDef:
-    return pad + "(ext " + std::to_string(t.as.ext_sym.name) + "\n"
-           + pprint(t.as.ext_sym.def, level + 1) + ")";
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";
@@ -163,7 +209,7 @@ pprint(
 
 std::string
 pprint(
-  Tokens ts, int level)
+  Tokens ts, size_t level)
 {
   std::string s;
   for (size_t i = 0; i < ts.m_len; ++i)
@@ -325,22 +371,32 @@ get_char_validity(
  *------------------------------------------------------------------------------*/
 
 ErrorE::ErrorE(
-  AR::Arena  &arena,
-  const char *fn_name,
-  int         line,
-  const char *data,
-  LX::E       error)
+  AR::Arena &arena,
+  UT::String file,
+  UT::String fn_name,
+  int        line,
+  UT::String data,
+  LX::E      error,
+  UT::String input,
+  UT::String filename,
+  size_t     cursor)
     : E{
         ER::Level::ERROR,
         0,
         arena,
-        (void *)data,
+        nullptr,
       }
 {
-  UT::SB sb{};
-  sb.concatf("[%s] %s ln(%d) %s", pprint(error).c_str(), fn_name, line, data);
-  UT::Vu<char> msg = UT::memcopy(*this->m_arena, sb.vu().m_mem);
-  this->m_data     = (void *)msg.m_mem;
+  auto *ed     = (ErrorData *)arena.alloc(sizeof(ErrorData));
+  ed->error    = error;
+  ed->file     = file;
+  ed->fn_name  = fn_name;
+  ed->cpp_line = line;
+  ed->message  = data;
+  ed->input    = input;
+  ed->filename = filename;
+  ed->cursor   = cursor;
+  this->m_data = (void *)ed;
 }
 
 char
@@ -365,21 +421,14 @@ Lexer::next_valid_char(
   }
   else
   {
-    return e;
+    LX_RETURN_ERROR(e);
   }
 
   return E::OK;
 }
 
-bool
-word_matches_global_sym_keyword(
-  UT::String s)
-{
-  return Keyword::PUB == s || Keyword::INT == s;
-}
-
 E
-Lexer::next_non_extern_sym(
+Lexer::next_sym(
   Token &t)
 {
   std::vector<UT::String> words;
@@ -398,6 +447,10 @@ Lexer::next_non_extern_sym(
     {
       l.m_cursor -= sb.m_len + 1;
       break;
+    }
+    if (E::OK != e)
+    {
+      LX_RETURN_ERROR(e);
     }
     words.push_back(sb);
   }
@@ -422,14 +475,12 @@ Lexer::next(
 {
   Lexer      l{ *this, m_cursor, m_end };
   UT::String sb{ 0 };
-  LX::E      e;
 
-  e = l.next_word(sb);
-  if (E::OK != e) return e;
+  LX_FN_TRY(l.next_word(sb));
 
   if (Keyword::INT == sb || Keyword::PUB == sb)
   {
-    LX_FN_TRY(l.next_non_extern_sym(t));
+    LX_FN_TRY(l.next_sym(t));
     m_cursor = l.m_cursor;
     t.type   = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
     return E::OK;
@@ -440,7 +491,8 @@ Lexer::next(
   }
   else
   {
-    return E::UNEXPECTED_GLOBAL_DEF_SYM_MARKER;
+    std::printf("%s\n", UT_TCS(sb));
+    LX_RETURN_ERROR(E::UNEXPECTED_GLOBAL_DEF_SYM_MARKER);
   }
 
   return E::OK;
@@ -473,7 +525,7 @@ Lexer::next_word(
       {
         // TODO: Perhaps string literals should be by default on one line, with
         // multiline being a special case
-        return E::QUOTM_UNCLOSED;
+        LX_RETURN_ERROR(E::QUOTM_UNCLOSED);
       }
       else if ('"' == current_char)
       {
@@ -623,12 +675,14 @@ Lexer::matches_ifelse(
 
   if (not(E::OK == e || E::IN_KEYWORD == e))
   {
-    return E::IF_EXPR_MALFORMED_ELSE_BRANCH;
+    LX_RETURN_ERROR(E::IF_EXPR_MALFORMED_ELSE_BRANCH);
   }
+
+  LX_ASSERT(not lelse.m_tokens.is_empty(), E::IF_EXPR_ELSE_BRANCH_EMPTY);
 
   if (E::IN_KEYWORD == e) words.retreat();
 
-  Token t{ Type::If, m_cursor };
+  Token t{ Type::If };
   t.as.if_else.condition   = lcond.m_tokens;
   t.as.if_else.true_branch = ltrue.m_tokens;
   t.as.if_else.else_branch = lelse.m_tokens;
@@ -651,11 +705,12 @@ Lexer::matches_letin(
   LX_ASSERT("" != varname, E::LET_EXPR_EMPTY_VAR_NAME);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_DEF_EMPTY);
 
-  Token t{ Type::Let, m_cursor };
+  Token t{ Type::Let };
 
   LX_ASSERT("=" == *words.pop_front(), E::LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_EXPECTED_DEF_AFTER_EQ);
 
+  // FIXME: what if tokens from llet or lin are empty?
   Lexer llet{ *this, m_cursor, m_end };
   LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::LET_EXPR_MISSING_IN);
 
@@ -711,7 +766,7 @@ Lexer::matches_integer(
   }
   catch (...)
   {
-    return E::NUMBER_PARSING_FAILURE;
+    LX_RETURN_ERROR(E::NUMBER_PARSING_FAILURE);
   }
   m_tokens.push(t);
 
@@ -779,8 +834,9 @@ Lexer::matches_lambda(
     break;
   }
   case E::OK: break;
-  default   : return e;
+  default   : LX_RETURN_ERROR(e);
   }
+  m_cursor = lambda.m_cursor;
 
   Token t{ m_arena };
   t.type             = Type::Fn;
@@ -798,8 +854,7 @@ Lexer::tokenize(
 {
   while (not words.is_empty())
   {
-    E e = matches_control_operator(words);
-    if (E::OK != e) return e;
+    LX_FN_TRY(matches_control_operator(words));
     TOKEN_HANDLE(matches_operator(words), E::MATCHED_OPERATOR);
     TOKEN_HANDLE(matches_quotm(words), E::MATCHED_QUOTM);
     TOKEN_HANDLE(matches_letin(words), E::MATCHES_LETIN);
@@ -814,66 +869,128 @@ Lexer::tokenize(
   return E::OK;
 }
 
-// TODO: should be rewritten
-void
-Lexer::generate_event_report()
+namespace
 {
-  ER::Events events = this->m_events;
+
+size_t
+compute_src_line(
+  UT::String input, size_t cursor)
+{
+  size_t line = 1;
+  for (size_t j = 0; j < input.m_len && j < cursor; ++j)
+  {
+    if (input[j] == '\n') line += 1;
+  }
+  return line;
+}
+
+std::string
+format_src_context(
+  UT::String input, size_t cursor, std::string pad)
+{
+  std::string s;
+  size_t      line       = 1;
+  size_t      line_begin = 0;
+  size_t      line_end   = input.m_len;
+
+  for (size_t j = 0; j < input.m_len; ++j)
+  {
+    if (input[j] == '\n')
+    {
+      if (j >= cursor) break;
+      line_begin = j + 1;
+      line += 1;
+    }
+  }
+
+  for (size_t j = line_begin + 1; j < input.m_len; ++j)
+  {
+    if (input[j] == '\n')
+    {
+      line_end = j;
+      break;
+    }
+  }
+
+  std::string src_line;
+  for (size_t j = line_begin; j < line_end; ++j)
+  {
+    src_line += input[j];
+  }
+
+  size_t offset = (cursor > line_begin) ? (cursor - line_begin) : 0;
+
+  s += pad + std::to_string(line) + " | \033[1;37m" + src_line + "\033[0m\n";
+  s += pad + std::string(std::to_string(line).size(), ' ') + " | "
+       + std::string(offset, ' ') + "\033[31m^\033[0m\n";
+
+  return s;
+}
+
+} // namespace
+
+std::string
+pprint(
+  ER::Events events, size_t level)
+{
+  std::string s;
+  LX::E       prev_error    = LX::E::OK;
+  size_t      prev_src_line = 0;
+  size_t      depth         = level;
+
   for (size_t i = 0; i < events.m_len; ++i)
   {
     ER::E e = events.m_mem[i];
-    if (ER::Level::ERROR == e.m_level)
+    if (ER::Level::ERROR != e.m_level) continue;
+
+    auto       *ed = (ErrorData *)e.m_data;
+    std::string pad(depth * 2, ' ');
+
+    if (ed->error != prev_error)
     {
-      std::printf("[%s] %s\n", UT::SERROR, (char *)e.m_data);
+      // New error group — find the furthest cursor among events with this code
+      depth         = level;
+      pad           = std::string(depth * 2, ' ');
+      prev_error    = ed->error;
+      prev_src_line = 0;
 
-      // Find the line with the error
-      size_t line       = 1;
-      size_t line_begin = this->m_begin;
-      size_t line_end   = this->m_end;
-
-      // Locate the start of the line
-      for (size_t i = this->m_begin; i < this->m_end; ++i)
+      size_t max_cursor = ed->cursor;
+      for (size_t j = i + 1; j < events.m_len; ++j)
       {
-        if (this->m_input[i] == '\n')
-        {
-          line_begin = i + 1;
-          line += 1;
-        }
-        if (i == this->m_cursor - 1)
-        {
-          break;
-        }
+        ER::E ej = events.m_mem[j];
+        if (ER::Level::ERROR != ej.m_level) continue;
+        auto *ej_ed = (ErrorData *)ej.m_data;
+        if (ej_ed->error != ed->error) break;
+        if (ej_ed->cursor > max_cursor) max_cursor = ej_ed->cursor;
       }
 
-      // Locate the end of the line
-      for (size_t i = line_begin + 1; i < this->m_end; ++i)
-      {
-        if (this->m_input[i] == '\n')
-        {
-          line_end = i;
-          break;
-        }
-      }
+      size_t src_line = compute_src_line(ed->input, max_cursor);
 
-      // Extract the line
-      std::string msg;
-      for (size_t i = line_begin; i < line_end; ++i)
-      {
-        msg += this->m_input[i];
-      }
-      size_t offset = (this->m_cursor - line_begin) + 1;
-
-      // Print the error context
-      std::printf("   %ld |   \033[1;37m%s\033[0m\n", line, msg.c_str());
-      std::printf("%*c\033[31m^\033[0m\n", (int)offset + 7, ' ');
-
-      return;
+      s += pad + "\033[31m[" + pprint(ed->error) + "]\033[0m "
+           + std::to_string(ed->filename) + ":" + std::to_string(src_line)
+           + "\n";
+      s += format_src_context(ed->input, max_cursor, pad + "  ");
+      prev_src_line = src_line;
     }
-    else
+
+    // Show source context when the source line changes
+    size_t src_line = compute_src_line(ed->input, ed->cursor);
+    if (src_line != prev_src_line)
     {
-      std::printf("%s\n", (char *)e.m_data);
+      s += format_src_context(ed->input, ed->cursor, pad + "  ");
+      prev_src_line = src_line;
     }
+
+    // C++ source location and message
+    s += pad + "  " + std::to_string(ed->file) + ":"
+         + std::to_string(ed->cpp_line) + " " + std::to_string(ed->fn_name)
+         + "\n";
+    s += pad + "    " + std::to_string(ed->message) + "\n";
+
+    depth += 1;
   }
+
+  return s;
 }
 
 void
@@ -913,10 +1030,15 @@ Lexer::peek_char()
 }
 
 Lexer::Lexer(
-  const UT::String input, AR::Arena &arena, size_t begin, size_t end)
+  const UT::String input,
+  const UT::String filename,
+  AR::Arena       &arena,
+  size_t           begin,
+  size_t           end)
     : m_arena{ arena },
-      m_events{ arena },
+      m_events{ new (arena.alloc(sizeof(ER::Events))) ER::Events(arena) },
       m_input{ input },
+      m_filename{ filename },
       m_tokens{ Tokens(arena) },
       m_cursor{ begin },
       m_begin{ begin },
@@ -927,8 +1049,9 @@ Lexer::Lexer(
 Lexer::Lexer(
   Lexer const &l, size_t begin, size_t end)
     : m_arena{ l.m_arena },
-      m_events{ l.m_arena },
+      m_events{ l.m_events },
       m_input{ l.m_input },
+      m_filename{ l.m_filename },
       m_cursor(l.m_cursor),
       m_begin{ begin },
       m_end{ end }
@@ -940,12 +1063,6 @@ Lexer::Lexer(
 Token::Token(Type t)
     : type{ t },
       cursor{ 0 },
-      as{} {};
-
-// FIXME: Candidate for removal
-Token::Token(Type type, size_t line)
-    : type{ type },
-      cursor{ line },
       as{} {};
 
 // FIXME: Candidate for removal

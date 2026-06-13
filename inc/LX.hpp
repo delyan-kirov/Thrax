@@ -66,6 +66,7 @@ constexpr UT::String EXT{ "ext" };
   X(ILLEGAL_USE_OF_RESERVED_CHAR)                                              \
   X(IF_CONDITION_SEPARATOR_MISSING)                                            \
   X(IF_EXPR_MISSING_ELSE_BRANCH)                                               \
+  X(IF_EXPR_ELSE_BRANCH_EMPTY)                                                 \
   X(IF_EXPR_MALFORMED_ELSE_BRANCH)                                             \
   X(LET_EXPR_VAR_NAME_MISSING)                                                 \
   X(LET_EXPR_EMPTY_VAR_NAME)                                                   \
@@ -105,8 +106,6 @@ enum class E
   X(PubDef)                                                                    \
   X(Not)                                                                       \
   X(Str)                                                                       \
-  X(While)                                                                     \
-  X(ExtDef)                                                                    \
   X(Max)
 
 // TODO: Rename
@@ -119,15 +118,6 @@ enum class Type
 
 struct Token;
 using Tokens = UT::Vec<Token>;
-
-struct ErrorE : public ER::E
-{
-  ErrorE(AR::Arena  &arena,
-         const char *fn_name,
-         int         line,
-         const char *data,
-         LX::E       error);
-};
 
 struct If
 // if expr => expr else expr
@@ -157,18 +147,6 @@ struct SymDef
   UT::String name;
 };
 
-struct ExtSym
-{
-  UT::String name;
-  Tokens     def;
-};
-
-struct While
-{
-  Tokens condition;
-  Tokens body;
-};
-
 // TODO: Candidate for refactor
 // TODO: Needs to have begin and end
 struct Token
@@ -182,20 +160,13 @@ struct Token
     If         if_else;
     Fn         fn;
     SymDef     sym;
-    While      whyle;
-    ExtSym     ext_sym;
     UT::String string;
     ssize_t    integer = 0;
   } as;
 
   Token()  = default;
   ~Token() = default;
-  // TODO: the line and cursor should be set
-  // TODO: Candidate for removal
   Token(Type t);
-  // TODO: Candidate for removal
-  Token(Type type, size_t cursor);
-  // TODO: Candidate for removal
   Token(Tokens tokens);
 };
 
@@ -207,20 +178,23 @@ class Lexer
 {
 public:
   AR::Arena       &m_arena;
-  ER::Events       m_events;
+  ER::Events      *m_events;
   const UT::String m_input;
+  const UT::String m_filename;
   Tokens           m_tokens;
   size_t           m_cursor;
   size_t           m_begin;
   size_t           m_end;
 
-  Lexer(const UT::String input, AR::Arena &arena, size_t begin, size_t end);
+  Lexer(const UT::String input,
+        const UT::String filename,
+        AR::Arena       &arena,
+        size_t           begin,
+        size_t           end);
 
   Lexer(Lexer const &l, size_t begin, size_t end);
 
   ~Lexer() {}
-
-  void generate_event_report();
 
   char next_char();
 
@@ -250,7 +224,7 @@ public:
 
   UT_NODISCARD E matches_lambda(UT::Vu<UT::String> &words);
 
-  UT_NODISCARD E next_non_extern_sym(Token &t);
+  UT_NODISCARD E next_sym(Token &t);
 
   UT_NODISCARD LX::E tokenize(UT::Vu<UT::String> &words);
 
@@ -265,10 +239,11 @@ public:
  *\ UTILS
  *------------------------------------------------------------------------------*/
 
-std::string pprint(E e, int level = 0);
-std::string pprint(Type t, int level = 0);
-std::string pprint(Token t, int level = 0);
-std::string pprint(Tokens ts, int level = 0);
+std::string pprint(E e, size_t level = 0);
+std::string pprint(Type t, size_t level = 0);
+std::string pprint(Token t, size_t level = 0);
+std::string pprint(Tokens ts, size_t level = 0);
+std::string pprint(ER::Events events, size_t level = 0);
 
 } // namespace LX
 

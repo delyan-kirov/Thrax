@@ -12,7 +12,7 @@ interpret_file(
 {
   AR::Arena  arena{};
   UT::String f = UT::read_entire_file(file, arena);
-  LX::Lexer  l{ f, arena, 0, f.m_len };
+  LX::Lexer  l{ f, file, arena, 0, f.m_len };
   LX::Tokens tokens{ arena };
 
   for (;;)
@@ -23,7 +23,7 @@ interpret_file(
     {
     case LX::E::END_OF_FILE: goto DONE_LEX;
     case LX::E::OK         : tokens.push(t); break;
-    default                : printf("ERROR: %s\n", LX::pprint(e).c_str()); return {};
+    default                : printf("%s\n", LX::pprint(*l.m_events, 0).c_str()); return {};
     }
   }
 DONE_LEX:

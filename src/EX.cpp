@@ -1,6 +1,6 @@
 /*-------------------------------------------------------------------------------
  *\file EX.cpp
- *\info Parser impl
+ *\info Type and Precedence parsing
  * *----------------------------------------------------------------------------*/
 
 /*------------------------------------------------------------------------------
@@ -61,7 +61,7 @@ Expr::Expr(
 Parser::Parser(
   LX::Lexer l)
     : m_arena{ l.m_arena },
-      m_events{ std::move(l.m_events) },
+      m_events{ *l.m_events },
       m_input{ l.m_input },
       m_tokens{ std::move(l.m_tokens) },
       m_begin{ 0 },
