@@ -26,7 +26,9 @@ enum class E
 };
 
 struct Lm;
-using pLm = std::shared_ptr<Lm>;
+using pLm     = std::shared_ptr<Lm>;
+using StatEnv = std::unordered_map<std::string, pLm>;
+using DynEnv  = std::vector<pLm>;
 
 struct Int
 {
@@ -43,6 +45,7 @@ struct Var
 {
   std::string unwrap;
   size_t      idx;
+  DynEnv      env;
 };
 
 struct Str
@@ -56,16 +59,8 @@ struct Fun
   pLm body;
 };
 
-struct Ifc
-{
-  pLm cond;
-  pLm then;
-  pLm othw;
-};
-
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
-  X(IFC, Ifc)                                                                  \
   X(STR, Str)                                                                  \
   X(APP, App)                                                                  \
   X(FUN, Fun)                                                                  \
@@ -76,7 +71,7 @@ enum class LTag
 #define X(tag, variant) tag,
   IT_L_VARIANTS
 #undef X
-  UNK,
+    UNK,
 };
 
 using LmUnion =
@@ -90,9 +85,6 @@ struct Lm
   LTag    tag;
   LmUnion as;
 };
-
-using StatEnv = std::unordered_map<std::string, pLm>;
-using DynEnv  = std::vector<pLm>;
 
 inline pLm
 lookup(
