@@ -28,5 +28,7 @@ pub answer = let x = 6 in x * 7
 pub complex = (1 + 2) * (3 - 4) + 5
 
 pub loop =
-	let loop = \x = loop x
+	let loop = \x =
+		(puts msg) +
+		loop x
 	in loop # 1

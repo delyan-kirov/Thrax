@@ -46,14 +46,9 @@ constexpr UT::String EXT{ "ext" };
   X(QUOTM_UNCLOSED)                                                            \
   X(PARENTHESIS_UNBALANCED)                                                    \
   X(NUMBER_PARSING_FAILURE)                                                    \
-  X(UNRECOGNIZED_STRING)                                                       \
-  X(OPERATOR_MATCH_FAILURE)                                                    \
-  X(UNREACHABLE_CASE_REACHED)                                                  \
   X(FAT_ARROW)                                                                 \
   X(ELSE_KEYWORD)                                                              \
   X(IN_KEYWORD)                                                                \
-  X(CONTROL_STRUCTURE_ERROR)                                                   \
-  X(WORD_NOT_FOUND)                                                            \
   X(MATCHED_OPERATOR)                                                          \
   X(PAREN_LEFT)                                                                \
   X(MATCHED_QUOTM)                                                             \
@@ -64,7 +59,26 @@ constexpr UT::String EXT{ "ext" };
   X(MATCHES_STRING)                                                            \
   X(MATCHES_CONTROL_OPERATOR)                                                  \
   X(MATCHES_COLON)                                                             \
-  X(MATCHES_LAMBDA)
+  X(MATCHES_LAMBDA)                                                            \
+  X(GLOBAL_DEF_STRUCTURE_MALFORMED)                                            \
+  X(EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF)                                        \
+  X(UNEXPECTED_GLOBAL_DEF_SYM_MARKER)                                          \
+  X(ILLEGAL_USE_OF_RESERVED_CHAR)                                              \
+  X(IF_CONDITION_SEPARATOR_MISSING)                                            \
+  X(IF_EXPR_MISSING_ELSE_BRANCH)                                               \
+  X(IF_EXPR_MALFORMED_ELSE_BRANCH)                                             \
+  X(LET_EXPR_VAR_NAME_MISSING)                                                 \
+  X(LET_EXPR_EMPTY_VAR_NAME)                                                   \
+  X(LET_EXPR_VAR_DEF_EMPTY)                                                    \
+  X(LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING)                                        \
+  X(LET_EXPR_EXPECTED_DEF_AFTER_EQ)                                            \
+  X(LET_EXPR_MISSING_IN)                                                       \
+  X(LET_EXPR_ERRONEOUS_IN_EXPR)                                                \
+  X(LAMBDA_NO_VAR_NAME)                                                        \
+  X(LAMBDA_NOTHING_AFTER_VAR)                                                  \
+  X(LAMBDA_EQ_EXPECTED_AFTER_VARNAME)                                          \
+  X(LAMBDA_EXPECTED_DEF_AFTER_EQ)                                              \
+  X(MATCHES_NOTHING)
 
 enum class E
 {
@@ -212,43 +226,43 @@ public:
 
   char peek_char();
 
-  E next_valid_char(char & /*out*/ c);
+  UT_NODISCARD E next_valid_char(char & /*out*/ c);
 
-  E next_word(UT::String &sb);
+  UT_NODISCARD E next_word(UT::String &sb);
 
-  E next_global_sym(Token &t);
+  UT_NODISCARD E next(Token &t);
 
-  E matches_quotm(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_quotm(UT::Vu<UT::String> &words);
 
-  E matches_operator(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_operator(UT::Vu<UT::String> &words);
 
-  E matches_ifelse(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_ifelse(UT::Vu<UT::String> &words);
 
-  E matches_letin(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_letin(UT::Vu<UT::String> &words);
 
-  E matches_open_paren(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_open_paren(UT::Vu<UT::String> &words);
 
-  E matches_integer(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_integer(UT::Vu<UT::String> &words);
 
-  E matches_string(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_string(UT::Vu<UT::String> &words);
 
-  E matches_control_operator(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_control_operator(UT::Vu<UT::String> &words);
 
-  E matches_lambda(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_lambda(UT::Vu<UT::String> &words);
 
-  E next_non_extern_sym(Token &t);
+  UT_NODISCARD E next_non_extern_sym(Token &t);
+
+  UT_NODISCARD LX::E tokenize(UT::Vu<UT::String> &words);
 
   UT::String get_word(size_t idx);
 
   void strip_white_space(size_t idx);
 
   void strip_line(size_t idx);
-
-  LX::E tokenize(UT::Vu<UT::String> &words);
 };
 
 /*-------------------------------------------------------------------------------
- *\PPRINT
+ *\ UTILS
  *------------------------------------------------------------------------------*/
 
 std::string pprint(E e, int level = 0);

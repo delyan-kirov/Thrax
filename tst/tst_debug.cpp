@@ -18,14 +18,12 @@ interpret_file(
   for (;;)
   {
     LX::Token t{};
-    LX::E     e = l.next_global_sym(t);
+    LX::E     e = l.next(t);
     switch (e)
     {
     case LX::E::END_OF_FILE: goto DONE_LEX;
-    case LX::E::OK: tokens.push(t); break;
-    default:
-      printf("ERROR: %s\n", LX::pprint(e).c_str());
-      return {};
+    case LX::E::OK         : tokens.push(t); break;
+    default                : printf("ERROR: %s\n", LX::pprint(e).c_str()); return {};
     }
   }
 DONE_LEX:

@@ -73,7 +73,7 @@ namespace LX
 {
 
 /*-------------------------------------------------------------------------------
- *\PPRINT
+ *\ UTILS
  *------------------------------------------------------------------------------*/
 
 std::string
@@ -117,8 +117,7 @@ pprint(
   std::string pad(level * 2, ' ');
   switch (t.type)
   {
-  case Type::Int:
-    return pad + "(int " + std::to_string(t.as.integer) + ")";
+  case Type::Int    : return pad + "(int " + std::to_string(t.as.integer) + ")";
   case Type::Plus   : return pad + "(op +)";
   case Type::Minus  : return pad + "(op -)";
   case Type::Mult   : return pad + "(op *)";
@@ -126,38 +125,37 @@ pprint(
   case Type::IsEq   : return pad + "(op ?=)";
   case Type::Modulus: return pad + "(op %)";
   case Type::Not    : return pad + "(not)";
-  case Type::Word:
-    return pad + "(word " + std::to_string(t.as.string) + ")";
-  case Type::Str:
-    return pad + "(str \"" + std::to_string(t.as.string) + "\")";
-  case Type::Min: return pad + "(min)";
-  case Type::Max: return pad + "(max)";
+  case Type::Word   : return pad + "(word " + std::to_string(t.as.string) + ")";
+  case Type::Str    : return pad + "(str \"" + std::to_string(t.as.string) + "\")";
+  case Type::Min    : return pad + "(min)";
+  case Type::Max    : return pad + "(max)";
   case Type::Let:
-    return pad + "(let " + std::to_string(t.as.binding.var) + "\n"
-         + pad + "  (=\n" + pprint(t.as.binding.equals, level + 2) + ")\n"
-         + pad + "  (in\n" + pprint(t.as.binding.in, level + 2) + "))";
+    return pad + "(let " + std::to_string(t.as.binding.var) + "\n" + pad
+           + "  (=\n" + pprint(t.as.binding.equals, level + 2) + ")\n" + pad
+           + "  (in\n" + pprint(t.as.binding.in, level + 2) + "))";
   case Type::Fn:
     return pad + "(fn \\" + std::to_string(t.as.fn.param_name) + "\n"
-         + pprint(t.as.fn.body, level + 1) + ")";
+           + pprint(t.as.fn.body, level + 1) + ")";
   case Type::If:
-    return pad + "(if\n"
-         + pad + "  (cond\n" + pprint(t.as.if_else.condition, level + 2) + ")\n"
-         + pad + "  (then\n" + pprint(t.as.if_else.true_branch, level + 2) + ")\n"
-         + pad + "  (else\n" + pprint(t.as.if_else.else_branch, level + 2) + "))";
+    return pad + "(if\n" + pad + "  (cond\n"
+           + pprint(t.as.if_else.condition, level + 2) + ")\n" + pad
+           + "  (then\n" + pprint(t.as.if_else.true_branch, level + 2) + ")\n"
+           + pad + "  (else\n" + pprint(t.as.if_else.else_branch, level + 2)
+           + "))";
   case Type::Group:
     return pad + "(group\n" + pprint(t.as.tokens, level + 1) + ")";
   case Type::PubDef:
   case Type::IntDef:
     return pad + "(" + (Type::PubDef == t.type ? "pub" : "int") + " "
-         + std::to_string(t.as.sym.name) + "\n"
-         + pprint(t.as.sym.def, level + 1) + ")";
+           + std::to_string(t.as.sym.name) + "\n"
+           + pprint(t.as.sym.def, level + 1) + ")";
   case Type::While:
-    return pad + "(while\n"
-         + pad + "  (cond\n" + pprint(t.as.whyle.condition, level + 2) + ")\n"
-         + pad + "  (body\n" + pprint(t.as.whyle.body, level + 2) + "))";
+    return pad + "(while\n" + pad + "  (cond\n"
+           + pprint(t.as.whyle.condition, level + 2) + ")\n" + pad + "  (body\n"
+           + pprint(t.as.whyle.body, level + 2) + "))";
   case Type::ExtDef:
     return pad + "(ext " + std::to_string(t.as.ext_sym.name) + "\n"
-         + pprint(t.as.ext_sym.def, level + 1) + ")";
+           + pprint(t.as.ext_sym.def, level + 1) + ")";
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";
@@ -181,6 +179,33 @@ namespace
  *\INTERNAL UTILS
  *------------------------------------------------------------------------------*/
 {
+
+bool
+is_operator(
+  char c)
+{
+  switch (c)
+  {
+  case '+':
+  case ':':
+  case '-':
+  case '*':
+  case '/':
+  case '%':
+  case '!':
+  case '?':
+  case '=':
+  {
+    return true;
+  }
+  break;
+  default:
+  {
+    return false;
+  }
+  break;
+  }
+}
 
 bool
 is_white_space(
@@ -269,6 +294,30 @@ reserved_not_used(
   }
 }
 
+UT_NODISCARD E
+get_char_validity(
+  const char c)
+{
+  if (is_white_space(c))
+  {
+    return E::OK;
+  }
+  if ('\0' == c)
+  {
+    return E::END_OF_FILE;
+  }
+  if (std::iscntrl(c))
+  {
+    return E::ASCII_CTR_CHAR;
+  }
+  if (not isascii(c))
+  {
+    return E::NON_ASCII_CHAR;
+  }
+
+  return E::OK;
+}
+
 } // namespace
 
 /*-------------------------------------------------------------------------------
@@ -302,57 +351,6 @@ Lexer::next_char()
   UT_FAIL_IF('\0' == c);
   this->m_cursor += 1;
   return c;
-}
-
-bool
-is_operator(
-  char c)
-{
-  switch (c)
-  {
-  case '+':
-  case ':':
-  case '-':
-  case '*':
-  case '/':
-  case '%':
-  case '!':
-  case '?':
-  case '=':
-  {
-    return true;
-  }
-  break;
-  default:
-  {
-    return false;
-  }
-  break;
-  }
-}
-
-E
-get_char_validity(
-  const char c)
-{
-  if (is_white_space(c))
-  {
-    return E::OK;
-  }
-  if ('\0' == c)
-  {
-    return E::END_OF_FILE;
-  }
-  if (std::iscntrl(c))
-  {
-    return E::ASCII_CTR_CHAR;
-  }
-  if (not isascii(c))
-  {
-    return E::NON_ASCII_CHAR;
-  }
-
-  return E::OK;
 }
 
 E
@@ -405,11 +403,10 @@ Lexer::next_non_extern_sym(
   }
 
   UT::Vu<UT::String> ws{ words };
-  LX_ASSERT(ws.m_len >= 3, E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(ws.m_len >= 3, E::GLOBAL_DEF_STRUCTURE_MALFORMED);
 
   UT::String varname = *ws.pop_front();
-  LX_ASSERT("=" == *ws.pop_front(), E::CONTROL_STRUCTURE_ERROR);
-
+  LX_ASSERT("=" == *ws.pop_front(), E::EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF);
   LX_FN_TRY(tokenize(ws));
   m_cursor = l.m_cursor;
 
@@ -420,7 +417,7 @@ Lexer::next_non_extern_sym(
 }
 
 E
-Lexer::next_global_sym(
+Lexer::next(
   Token &t)
 {
   Lexer      l{ *this, m_cursor, m_end };
@@ -443,7 +440,7 @@ Lexer::next_global_sym(
   }
   else
   {
-    return E::CONTROL_STRUCTURE_ERROR;
+    return E::UNEXPECTED_GLOBAL_DEF_SYM_MARKER;
   }
 
   return E::OK;
@@ -462,7 +459,8 @@ Lexer::next_word(
   // FIXME: Combine to single operation
   char current_char = m_input[m_cursor];
   LX_FN_TRY(get_char_validity(current_char));
-  LX_ASSERT(not reserved_not_used(current_char), E::UNRECOGNIZED_STRING);
+  LX_ASSERT(not reserved_not_used(current_char),
+            E::ILLEGAL_USE_OF_RESERVED_CHAR);
 
   if ('"' == current_char)
   {
@@ -473,6 +471,8 @@ Lexer::next_word(
       LX_FN_TRY(next_valid_char(current_char));
       if ('\0' == current_char)
       {
+        // TODO: Perhaps string literals should be by default on one line, with
+        // multiline being a special case
         return E::QUOTM_UNCLOSED;
       }
       else if ('"' == current_char)
@@ -611,18 +611,19 @@ Lexer::matches_ifelse(
 
   words.pop_front();
   Lexer lcond{ *this, m_cursor, m_end };
-  LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+  LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words),
+            E::IF_CONDITION_SEPARATOR_MISSING);
 
   Lexer ltrue{ lcond, m_cursor, m_end };
   LX_ASSERT(E::ELSE_KEYWORD == ltrue.tokenize(words),
-            E::UNREACHABLE_CASE_REACHED);
+            E::IF_EXPR_MISSING_ELSE_BRANCH);
 
   Lexer lelse{ ltrue, m_cursor, m_end };
   E     e = lelse.tokenize(words);
 
   if (not(E::OK == e || E::IN_KEYWORD == e))
   {
-    return E::OPERATOR_MATCH_FAILURE;
+    return E::IF_EXPR_MALFORMED_ELSE_BRANCH;
   }
 
   if (E::IN_KEYWORD == e) words.retreat();
@@ -644,23 +645,23 @@ Lexer::matches_letin(
   UT::String word = *words.first();
   if (Keyword::LET != word) return E::OK;
   words.pop_front();
-  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+  LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_NAME_MISSING);
 
   UT::String varname = *words.pop_front();
-  LX_ASSERT("" != varname, E::CONTROL_STRUCTURE_ERROR);
-  LX_ASSERT(not words.is_empty(), E::WORD_NOT_FOUND);
+  LX_ASSERT("" != varname, E::LET_EXPR_EMPTY_VAR_NAME);
+  LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_DEF_EMPTY);
 
   Token t{ Type::Let, m_cursor };
 
-  LX_ASSERT("=" == *words.pop_front(), E::UNRECOGNIZED_STRING);
-  LX_ASSERT(not words.is_empty(), E::UNRECOGNIZED_STRING);
+  LX_ASSERT("=" == *words.pop_front(), E::LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING);
+  LX_ASSERT(not words.is_empty(), E::LET_EXPR_EXPECTED_DEF_AFTER_EQ);
 
   Lexer llet{ *this, m_cursor, m_end };
-  LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::UNREACHABLE_CASE_REACHED);
+  LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::LET_EXPR_MISSING_IN);
 
   Lexer lin{ *this, m_cursor, m_end };
   E     e = lin.tokenize(words);
-  LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::LET_EXPR_ERRONEOUS_IN_EXPR);
 
   if (E::IN_KEYWORD == e) words.retreat();
 
@@ -758,12 +759,12 @@ Lexer::matches_lambda(
   UT::String s = *words.first();
   if ("\\" != s) return E::OK;
   words.pop_front();
-  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(not words.is_empty(), E::LAMBDA_NO_VAR_NAME);
   UT::String varname = *words.pop_front();
 
-  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
-  LX_ASSERT("=" == *words.pop_front(), E::CONTROL_STRUCTURE_ERROR);
-  LX_ASSERT(not words.is_empty(), E::CONTROL_STRUCTURE_ERROR);
+  LX_ASSERT(not words.is_empty(), E::LAMBDA_NOTHING_AFTER_VAR);
+  LX_ASSERT("=" == *words.pop_front(), E::LAMBDA_EQ_EXPECTED_AFTER_VARNAME);
+  LX_ASSERT(not words.is_empty(), E::LAMBDA_EXPECTED_DEF_AFTER_EQ);
 
   Lexer lambda = Lexer{ *this, m_cursor, m_end };
   E     e      = lambda.tokenize(words);
@@ -807,7 +808,7 @@ Lexer::tokenize(
     TOKEN_HANDLE(matches_string(words), E::MATCHES_STRING);
     TOKEN_HANDLE(matches_open_paren(words), E::MATCHES_OPEN_PAREN);
     TOKEN_HANDLE(matches_lambda(words), E::MATCHES_LAMBDA);
-    LX_ASSERT(false, E::CONTROL_STRUCTURE_ERROR);
+    LX_ASSERT(false, E::MATCHES_NOTHING);
   }
 
   return E::OK;
