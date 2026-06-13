@@ -23,6 +23,16 @@
 #define UT_PRINTF_LIKE(fmt_idx, arg_idx)
 #endif
 
+#if __cplusplus >= 201703L
+#define UT_NODISCARD [[nodiscard]]
+#elif defined(__GNUC__) || defined(__clang__)
+#define UT_NODISCARD __attribute__((warn_unused_result))
+#elif defined(_MSC_VER)
+#define UT_NODISCARD _Check_return_
+#else
+#define UT_NODISCARD
+#endif
+
 // TODO: should report line and file
 #define UT_TODO(TODO_MSG)                                                      \
   UT::IMPL::fail_if(                                                           \

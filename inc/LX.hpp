@@ -37,33 +37,6 @@ constexpr UT::String EXT{ "ext" };
  *\TYPES
  *-----------------------------------------------------------------------------*/
 
-#define LX_LangType_ENUM_VARIANTS                                              \
-  X(Fn)                                                                        \
-  X(Nat)                                                                       \
-  X(Nat8)                                                                      \
-  X(Nat16)                                                                     \
-  X(Nat32)                                                                     \
-  X(Nat64)                                                                     \
-  X(Int)                                                                       \
-  X(Int8)                                                                      \
-  X(Int16)                                                                     \
-  X(Int32)                                                                     \
-  X(Int64)                                                                     \
-  X(Ptr)                                                                       \
-  X(Void)                                                                      \
-  X(Struct)                                                                    \
-  X(Enum)                                                                      \
-  X(Alias)
-
-enum class LangType
-{
-  Min = 0,
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_LangType_ENUM_VARIANTS
-#undef X
-    Max,
-}; // namespace LX
-
 // TODO: Need to have actual error codes here
 #define LX_E_ENUM_VARIANTS                                                     \
   X(OK)                                                                        \
@@ -73,14 +46,9 @@ enum class LangType
   X(QUOTM_UNCLOSED)                                                            \
   X(PARENTHESIS_UNBALANCED)                                                    \
   X(NUMBER_PARSING_FAILURE)                                                    \
-  X(UNRECOGNIZED_STRING)                                                       \
-  X(OPERATOR_MATCH_FAILURE)                                                    \
-  X(UNREACHABLE_CASE_REACHED)                                                  \
   X(FAT_ARROW)                                                                 \
   X(ELSE_KEYWORD)                                                              \
   X(IN_KEYWORD)                                                                \
-  X(CONTROL_STRUCTURE_ERROR)                                                   \
-  X(WORD_NOT_FOUND)                                                            \
   X(MATCHED_OPERATOR)                                                          \
   X(PAREN_LEFT)                                                                \
   X(MATCHED_QUOTM)                                                             \
@@ -91,7 +59,27 @@ enum class LangType
   X(MATCHES_STRING)                                                            \
   X(MATCHES_CONTROL_OPERATOR)                                                  \
   X(MATCHES_COLON)                                                             \
-  X(MATCHES_LAMBDA)
+  X(MATCHES_LAMBDA)                                                            \
+  X(GLOBAL_DEF_STRUCTURE_MALFORMED)                                            \
+  X(EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF)                                        \
+  X(UNEXPECTED_GLOBAL_DEF_SYM_MARKER)                                          \
+  X(ILLEGAL_USE_OF_RESERVED_CHAR)                                              \
+  X(IF_CONDITION_SEPARATOR_MISSING)                                            \
+  X(IF_EXPR_MISSING_ELSE_BRANCH)                                               \
+  X(IF_EXPR_ELSE_BRANCH_EMPTY)                                                 \
+  X(IF_EXPR_MALFORMED_ELSE_BRANCH)                                             \
+  X(LET_EXPR_VAR_NAME_MISSING)                                                 \
+  X(LET_EXPR_EMPTY_VAR_NAME)                                                   \
+  X(LET_EXPR_VAR_DEF_EMPTY)                                                    \
+  X(LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING)                                        \
+  X(LET_EXPR_EXPECTED_DEF_AFTER_EQ)                                            \
+  X(LET_EXPR_MISSING_IN)                                                       \
+  X(LET_EXPR_ERRONEOUS_IN_EXPR)                                                \
+  X(LAMBDA_NO_VAR_NAME)                                                        \
+  X(LAMBDA_NOTHING_AFTER_VAR)                                                  \
+  X(LAMBDA_EQ_EXPECTED_AFTER_VARNAME)                                          \
+  X(LAMBDA_EXPECTED_DEF_AFTER_EQ)                                              \
+  X(MATCHES_NOTHING)
 
 enum class E
 {
@@ -118,9 +106,6 @@ enum class E
   X(PubDef)                                                                    \
   X(Not)                                                                       \
   X(Str)                                                                       \
-  X(While)                                                                     \
-  X(ExtDef)                                                                    \
-  X(Sig)                                                                       \
   X(Max)
 
 // TODO: Rename
@@ -134,15 +119,6 @@ enum class Type
 struct Token;
 using Tokens = UT::Vec<Token>;
 
-struct ErrorE : public ER::E
-{
-  ErrorE(AR::Arena  &arena,
-         const char *fn_name,
-         int         line,
-         const char *data,
-         LX::E       error);
-};
-
 struct If
 // if expr => expr else expr
 // [TODO] if expr is pattern => is ... else =>
@@ -152,30 +128,9 @@ struct If
   Tokens else_branch;
 };
 
-// TODO: remove
-// NOTE: T -> (T -> (T -> T))
-//   is: T -> T -> T -> T
-struct Sig
-{
-  LangType type;
-  union
-  {
-    UT::Pair<Sig> pair;
-  } as;
-
-  Sig() = default;
-  Sig(
-    LangType type)
-      : type{ type },
-        as{}
-  {
-  }
-};
-
 struct Binding
 {
   UT::String var;
-  Sig        sig;
   Tokens     equals;
   Tokens     in;
 };
@@ -190,20 +145,6 @@ struct SymDef
 {
   Tokens     def;
   UT::String name;
-  Sig        sig;
-};
-
-struct ExtSym
-{
-  UT::String name;
-  Sig        sig;
-  Tokens     def;
-};
-
-struct While
-{
-  Tokens condition;
-  Tokens body;
 };
 
 // TODO: Candidate for refactor
@@ -211,7 +152,6 @@ struct While
 struct Token
 {
   Type   type;
-  size_t line;
   size_t cursor;
   union
   {
@@ -220,21 +160,13 @@ struct Token
     If         if_else;
     Fn         fn;
     SymDef     sym;
-    While      whyle;
-    ExtSym     ext_sym;
-    Sig        sig;
     UT::String string;
     ssize_t    integer = 0;
   } as;
 
   Token()  = default;
   ~Token() = default;
-  // TODO: the line and cursor should be set
-  // TODO: Candidate for removal
   Token(Type t);
-  // TODO: Candidate for removal
-  Token(Type type, size_t line, size_t cursor);
-  // TODO: Candidate for removal
   Token(Tokens tokens);
 };
 
@@ -246,82 +178,74 @@ class Lexer
 {
 public:
   AR::Arena       &m_arena;
-  ER::Events       m_events;
+  ER::Events      *m_events;
   const UT::String m_input;
+  const UT::String m_filename;
   Tokens           m_tokens;
-  size_t           m_lines;
   size_t           m_cursor;
   size_t           m_begin;
   size_t           m_end;
 
-  Lexer(const UT::String input, AR::Arena &arena, size_t begin, size_t end);
+  Lexer(const UT::String input,
+        const UT::String filename,
+        AR::Arena       &arena,
+        size_t           begin,
+        size_t           end);
 
   Lexer(Lexer const &l, size_t begin, size_t end);
 
   ~Lexer() {}
 
-  void generate_event_report();
-
   char next_char();
 
   char peek_char();
 
-  E next_valid_char(char & /*out*/ c);
+  UT_NODISCARD E next_valid_char(char & /*out*/ c);
 
-  E next_word(UT::String &sb);
+  UT_NODISCARD E next_word(UT::String &sb);
 
-  E next_global_sym(Token &t);
+  UT_NODISCARD E next(Token &t);
 
-  E matches_quotm(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_quotm(UT::Vu<UT::String> &words);
 
-  E matches_operator(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_operator(UT::Vu<UT::String> &words);
 
-  E matches_ifelse(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_ifelse(UT::Vu<UT::String> &words);
 
-  E matches_letin(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_letin(UT::Vu<UT::String> &words);
 
-  E matches_open_paren(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_open_paren(UT::Vu<UT::String> &words);
 
-  E matches_integer(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_integer(UT::Vu<UT::String> &words);
 
-  E matches_string(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_string(UT::Vu<UT::String> &words);
 
-  E matches_control_operator(UT::Vu<UT::String> &words);
+  UT_NODISCARD E matches_control_operator(UT::Vu<UT::String> &words);
 
-  E matches_colon(UT::Vu<UT::String> &words, Sig &sig);
+  UT_NODISCARD E matches_lambda(UT::Vu<UT::String> &words);
 
-  E matches_lambda(UT::Vu<UT::String> &words);
+  UT_NODISCARD E next_sym(Token &t);
 
-  E next_non_extern_sym(Token &t);
+  UT_NODISCARD LX::E tokenize(UT::Vu<UT::String> &words);
 
   UT::String get_word(size_t idx);
 
   void strip_white_space(size_t idx);
 
   void strip_line(size_t idx);
-
-  LX::E tokenize(UT::Vu<UT::String> &words);
 };
 
-} // namespace LX
-
 /*-------------------------------------------------------------------------------
- *\UTILS
+ *\ UTILS
  *------------------------------------------------------------------------------*/
 
-namespace std
-{
-// TODO: Knowing what type I need from the union is not obvious.
-// There should be a better way to do it
+std::string pprint(E e, size_t level = 0);
+std::string pprint(Type t, size_t level = 0);
+std::string pprint(Token t, size_t level = 0);
+std::string pprint(Tokens ts, size_t level = 0);
+std::string pprint(ER::Events events, size_t level = 0);
 
-string to_string(LX::E e);
-string to_string(LX::LangType lang_type);
-string to_string(LX::Sig sig);
-string to_string(LX::Type t);
-string to_string(LX::Tokens ts);
-string to_string(LX::Token t);
-string to_string(LX::Tokens ts);
-} // namespace std
+} // namespace LX
 
 /*-------------------------------------------------------------------------------
  *\EOF

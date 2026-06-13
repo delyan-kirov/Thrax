@@ -1,4 +1,27 @@
-# here
-pub t = 2?=1
-pub c = \t = t + 1
-pub d = c 4
+pub add = \x = \y = x + y
+<+>
+
+pub two = add 1 2
+
+int pow = \n =
+	if n ?= 0 =>
+		1 else
+		2 * (pow (n - 1))
+
+int pow22 = pow 322
+
+int fib = \n =
+	if n ?= 0 =>
+		0
+	else if n ?= 1 =>
+		1
+	else
+		(fib (n - 1)) + (fib (n - 2))
+
+int fib10 = fib 10
+
+pub msg = "hello"
+
+pub answer = let x = 6 in x * 7
+
+pub complex = (1 + 2) * (3 - 4) + 5
