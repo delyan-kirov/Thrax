@@ -6,6 +6,7 @@
 #ifndef EX_HEADER
 #define EX_HEADER
 
+#include "ER.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
 #include <variant>

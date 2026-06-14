@@ -28,15 +28,18 @@ test-debug: $(BIN)tst_debug
 
 #------------------------------OBJC-----------------------------
 THRAXsrc = \
+	$(SRC)AR.cpp \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
-	$(SRC)IT.cpp 
+	$(SRC)IT.cpp
 
 THRAXinc = \
+	$(INC)AR.hpp \
+	$(INC)ER.hpp \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
 	$(INC)IT.hpp \
-	$(INC)EX.hpp 
+	$(INC)EX.hpp
 
 THRAX = $(BIN)thrax.so
 
