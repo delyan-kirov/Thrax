@@ -80,7 +80,8 @@ constexpr UT::String EXT{ "ext" };
   X(LAMBDA_NOTHING_AFTER_VAR)                                                  \
   X(LAMBDA_EQ_EXPECTED_AFTER_VARNAME)                                          \
   X(LAMBDA_EXPECTED_DEF_AFTER_EQ)                                              \
-  X(MATCHES_NOTHING)
+  X(MATCHES_NOTHING)                                                           \
+  X(NO_TOKENS)
 
 enum class E
 {
@@ -96,15 +97,45 @@ using Tokens = UT::Vec<Token>;
  *\TOKEN VARIANT TYPES
  *-----------------------------------------------------------------------------*/
 
-struct TkMin     {};
-struct TkInt     { ssize_t value; };
-struct TkPlus    {};
-struct TkMinus   {};
-struct TkDiv     {};
-struct TkModulus {};
-struct TkMult    {};
-struct TkIsEq    {};
-struct TkGroup   { Tokens tokens; };
+struct TkMin
+{
+};
+struct TkInt
+{
+  ssize_t value;
+};
+struct TkPlus
+{
+};
+struct TkMinus
+{
+};
+struct TkDiv
+{
+};
+struct TkModulus
+{
+};
+struct TkMult
+{
+};
+struct TkIsEq
+{
+};
+struct TkGroup
+{
+  Tokens tokens;
+};
+struct TkNot
+{
+};
+struct TkStr
+{
+  UT::String value;
+};
+struct TkMax
+{
+};
 
 struct TkLet
 {
@@ -119,7 +150,10 @@ struct TkFn
   Tokens     body;
 };
 
-struct TkWord    { UT::String value; };
+struct TkWord
+{
+  UT::String value;
+};
 
 struct TkIf
 {
@@ -140,33 +174,29 @@ struct TkPubDef
   UT::String name;
 };
 
-struct TkNot     {};
-struct TkStr     { UT::String value; };
-struct TkMax     {};
-
 /*------------------------------------------------------------------------------
  *\TOKEN TAG + VARIANT
  *-----------------------------------------------------------------------------*/
 
 #define LX_TOKEN_VARIANTS                                                      \
-  X(Min,     TkMin)                                                            \
-  X(Int,     TkInt)                                                            \
-  X(Plus,    TkPlus)                                                           \
-  X(Minus,   TkMinus)                                                          \
-  X(Div,     TkDiv)                                                            \
-  X(Modulus, TkModulus)                                                         \
-  X(Mult,    TkMult)                                                           \
-  X(IsEq,    TkIsEq)                                                           \
-  X(Group,   TkGroup)                                                          \
-  X(Let,     TkLet)                                                        \
-  X(Fn,      TkFn)                                                             \
-  X(Word,    TkWord)                                                           \
-  X(If,      TkIf)                                                             \
-  X(IntDef,  TkIntDef)                                                         \
-  X(PubDef,  TkPubDef)                                                         \
-  X(Not,     TkNot)                                                            \
-  X(Str,     TkStr)                                                            \
-  X(Max,     TkMax)
+  X(Min, TkMin)                                                                \
+  X(Int, TkInt)                                                                \
+  X(Plus, TkPlus)                                                              \
+  X(Minus, TkMinus)                                                            \
+  X(Div, TkDiv)                                                                \
+  X(Modulus, TkModulus)                                                        \
+  X(Mult, TkMult)                                                              \
+  X(IsEq, TkIsEq)                                                              \
+  X(Group, TkGroup)                                                            \
+  X(Let, TkLet)                                                                \
+  X(Fn, TkFn)                                                                  \
+  X(Word, TkWord)                                                              \
+  X(If, TkIf)                                                                  \
+  X(IntDef, TkIntDef)                                                          \
+  X(PubDef, TkPubDef)                                                          \
+  X(Not, TkNot)                                                                \
+  X(Str, TkStr)                                                                \
+  X(Max, TkMax)
 
 enum class TokenTag
 {
@@ -183,14 +213,9 @@ using TokenData =
 
 struct Token
 {
-  TokenTag  tag;
-  size_t    cursor;
-  TokenData as;
-
-  Token()  = default;
-  ~Token() = default;
-  Token(TokenTag t);
-  Token(Tokens tokens);
+  TokenTag   tag;
+  UT::String word;
+  TokenData  as;
 };
 
 /*-------------------------------------------------------------------------------
