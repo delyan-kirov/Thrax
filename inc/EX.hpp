@@ -8,6 +8,7 @@
 
 #include "LX.hpp"
 #include "UT.hpp"
+#include <variant>
 
 namespace EX
 {
@@ -159,15 +160,15 @@ public:
 
   E parse_min_precedence_arithmetic_op(EX::Type, size_t &idx);
 
-  bool match_token_type(size_t start, const LX::Type type);
+  bool match_token_type(size_t start, const LX::TokenTag type);
 
   template <typename... Args>
   bool
   match_token_type(
     size_t start, Args &&...args)
   {
-    static_assert((std::is_same_v<std::decay_t<Args>, LX::Type> && ...),
-                  "[TYPE-ERROR] All extra arguments must be LX::Type");
+    static_assert((std::is_same_v<std::decay_t<Args>, LX::TokenTag> && ...),
+                  "[TYPE-ERROR] All extra arguments must be LX::TokenTag");
     return (... || this->match_token_type(start, args));
   }
 };

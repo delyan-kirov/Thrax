@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include "UT.hpp"
+#include <variant>
 
 namespace LX
 {
@@ -88,85 +89,107 @@ enum class E
 #undef X
 };
 
-#define LX_Type_ENUM_VARIANTS                                                  \
-  X(Min)                                                                       \
-  X(Int)                                                                       \
-  X(Plus)                                                                      \
-  X(Minus)                                                                     \
-  X(Div)                                                                       \
-  X(Modulus)                                                                   \
-  X(Mult)                                                                      \
-  X(IsEq)                                                                      \
-  X(Group)                                                                     \
-  X(Let)                                                                       \
-  X(Fn)                                                                        \
-  X(Word)                                                                      \
-  X(If)                                                                        \
-  X(IntDef)                                                                    \
-  X(PubDef)                                                                    \
-  X(Not)                                                                       \
-  X(Str)                                                                       \
-  X(Max)
-
-// TODO: Rename
-enum class Type
-{
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_Type_ENUM_VARIANTS
-#undef X
-};
-
 struct Token;
 using Tokens = UT::Vec<Token>;
 
-struct If
-// if expr => expr else expr
-// [TODO] if expr is pattern => is ... else =>
-{
-  Tokens condition;
-  Tokens true_branch;
-  Tokens else_branch;
-};
+/*------------------------------------------------------------------------------
+ *\TOKEN VARIANT TYPES
+ *-----------------------------------------------------------------------------*/
 
-struct Binding
+struct TkMin     {};
+struct TkInt     { ssize_t value; };
+struct TkPlus    {};
+struct TkMinus   {};
+struct TkDiv     {};
+struct TkModulus {};
+struct TkMult    {};
+struct TkIsEq    {};
+struct TkGroup   { Tokens tokens; };
+
+struct TkLet
 {
   UT::String var;
   Tokens     equals;
   Tokens     in;
 };
 
-struct Fn
+struct TkFn
 {
   UT::String param_name;
   Tokens     body;
 };
 
-struct SymDef
+struct TkWord    { UT::String value; };
+
+struct TkIf
+{
+  Tokens condition;
+  Tokens true_branch;
+  Tokens else_branch;
+};
+
+struct TkIntDef
 {
   Tokens     def;
   UT::String name;
 };
 
-// TODO: Candidate for refactor
-// TODO: Needs to have begin and end
+struct TkPubDef
+{
+  Tokens     def;
+  UT::String name;
+};
+
+struct TkNot     {};
+struct TkStr     { UT::String value; };
+struct TkMax     {};
+
+/*------------------------------------------------------------------------------
+ *\TOKEN TAG + VARIANT
+ *-----------------------------------------------------------------------------*/
+
+#define LX_TOKEN_VARIANTS                                                      \
+  X(Min,     TkMin)                                                            \
+  X(Int,     TkInt)                                                            \
+  X(Plus,    TkPlus)                                                           \
+  X(Minus,   TkMinus)                                                          \
+  X(Div,     TkDiv)                                                            \
+  X(Modulus, TkModulus)                                                         \
+  X(Mult,    TkMult)                                                           \
+  X(IsEq,    TkIsEq)                                                           \
+  X(Group,   TkGroup)                                                          \
+  X(Let,     TkLet)                                                        \
+  X(Fn,      TkFn)                                                             \
+  X(Word,    TkWord)                                                           \
+  X(If,      TkIf)                                                             \
+  X(IntDef,  TkIntDef)                                                         \
+  X(PubDef,  TkPubDef)                                                         \
+  X(Not,     TkNot)                                                            \
+  X(Str,     TkStr)                                                            \
+  X(Max,     TkMax)
+
+enum class TokenTag
+{
+#define X(tag, type) tag,
+  LX_TOKEN_VARIANTS
+#undef X
+};
+
+using TokenData =
+#define X(tag, type) type,
+  std::variant<LX_TOKEN_VARIANTS std::monostate>
+#undef X
+  ;
+
 struct Token
 {
-  Type   type;
-  size_t cursor;
-  union
-  {
-    Tokens     tokens;
-    Binding    binding;
-    If         if_else;
-    Fn         fn;
-    SymDef     sym;
-    UT::String string;
-    ssize_t    integer = 0;
-  } as;
+  TokenTag  tag;
+  size_t    cursor;
+  TokenData as;
 
   Token()  = default;
   ~Token() = default;
-  Token(Type t);
+  Token(TokenTag t);
   Token(Tokens tokens);
 };
 
@@ -240,7 +263,7 @@ public:
  *------------------------------------------------------------------------------*/
 
 std::string pprint(E e, size_t level = 0);
-std::string pprint(Type t, size_t level = 0);
+std::string pprint(TokenTag t, size_t level = 0);
 std::string pprint(Token t, size_t level = 0);
 std::string pprint(Tokens ts, size_t level = 0);
 std::string pprint(ER::Events events, size_t level = 0);

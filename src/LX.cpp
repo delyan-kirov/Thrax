@@ -148,18 +148,18 @@ pprint(
 
 std::string
 pprint(
-  Type t, size_t level)
+  TokenTag t, size_t level)
 {
   std::string pad(level * 2, ' ');
   switch (t)
   {
-#define X(LX_ENUM_VALUE)                                                       \
-  case Type::LX_ENUM_VALUE: return pad + #LX_ENUM_VALUE;
-    LX_Type_ENUM_VARIANTS
+#define X(tag, type)                                                           \
+  case TokenTag::tag: return pad + #tag;
+    LX_TOKEN_VARIANTS
 #undef X
   }
 
-  UT_FAIL_MSG("Got unexpected type %d", (int)t);
+  UT_FAIL_MSG("Got unexpected tag %d", (int)t);
   return "";
 }
 
@@ -168,40 +168,56 @@ pprint(
   Token t, size_t level)
 {
   std::string pad(level * 2, ' ');
-  switch (t.type)
+  switch (t.tag)
   {
-  case Type::Int    : return pad + "(int " + std::to_string(t.as.integer) + ")";
-  case Type::Plus   : return pad + "(op +)";
-  case Type::Minus  : return pad + "(op -)";
-  case Type::Mult   : return pad + "(op *)";
-  case Type::Div    : return pad + "(op /)";
-  case Type::IsEq   : return pad + "(op ?=)";
-  case Type::Modulus: return pad + "(op %)";
-  case Type::Not    : return pad + "(not)";
-  case Type::Word   : return pad + "(word " + std::to_string(t.as.string) + ")";
-  case Type::Str    : return pad + "(str \"" + std::to_string(t.as.string) + "\")";
-  case Type::Min    : return pad + "(min)";
-  case Type::Max    : return pad + "(max)";
-  case Type::Let:
-    return pad + "(let " + std::to_string(t.as.binding.var) + "\n" + pad
-           + "  (=\n" + pprint(t.as.binding.equals, level + 2) + ")\n" + pad
-           + "  (in\n" + pprint(t.as.binding.in, level + 2) + "))";
-  case Type::Fn:
-    return pad + "(fn \\" + std::to_string(t.as.fn.param_name) + "\n"
-           + pprint(t.as.fn.body, level + 1) + ")";
-  case Type::If:
+  case TokenTag::Int    : return pad + "(int " + std::to_string(std::get<TkInt>(t.as).value) + ")";
+  case TokenTag::Plus   : return pad + "(op +)";
+  case TokenTag::Minus  : return pad + "(op -)";
+  case TokenTag::Mult   : return pad + "(op *)";
+  case TokenTag::Div    : return pad + "(op /)";
+  case TokenTag::IsEq   : return pad + "(op ?=)";
+  case TokenTag::Modulus: return pad + "(op %)";
+  case TokenTag::Not    : return pad + "(not)";
+  case TokenTag::Word   : return pad + "(word " + std::to_string(std::get<TkWord>(t.as).value) + ")";
+  case TokenTag::Str    : return pad + "(str \"" + std::to_string(std::get<TkStr>(t.as).value) + "\")";
+  case TokenTag::Min    : return pad + "(min)";
+  case TokenTag::Max    : return pad + "(max)";
+  case TokenTag::Let:
+  {
+    auto &b = std::get<TkLet>(t.as);
+    return pad + "(let " + std::to_string(b.var) + "\n" + pad
+           + "  (=\n" + pprint(b.equals, level + 2) + ")\n" + pad
+           + "  (in\n" + pprint(b.in, level + 2) + "))";
+  }
+  case TokenTag::Fn:
+  {
+    auto &f = std::get<TkFn>(t.as);
+    return pad + "(fn \\" + std::to_string(f.param_name) + "\n"
+           + pprint(f.body, level + 1) + ")";
+  }
+  case TokenTag::If:
+  {
+    auto &ie = std::get<TkIf>(t.as);
     return pad + "(if\n" + pad + "  (cond\n"
-           + pprint(t.as.if_else.condition, level + 2) + ")\n" + pad
-           + "  (then\n" + pprint(t.as.if_else.true_branch, level + 2) + ")\n"
-           + pad + "  (else\n" + pprint(t.as.if_else.else_branch, level + 2)
+           + pprint(ie.condition, level + 2) + ")\n" + pad
+           + "  (then\n" + pprint(ie.true_branch, level + 2) + ")\n"
+           + pad + "  (else\n" + pprint(ie.else_branch, level + 2)
            + "))";
-  case Type::Group:
-    return pad + "(group\n" + pprint(t.as.tokens, level + 1) + ")";
-  case Type::PubDef:
-  case Type::IntDef:
-    return pad + "(" + (Type::PubDef == t.type ? "pub" : "int") + " "
-           + std::to_string(t.as.sym.name) + "\n"
-           + pprint(t.as.sym.def, level + 1) + ")";
+  }
+  case TokenTag::Group:
+    return pad + "(group\n" + pprint(std::get<TkGroup>(t.as).tokens, level + 1) + ")";
+  case TokenTag::PubDef:
+  {
+    auto &pd = std::get<TkPubDef>(t.as);
+    return pad + "(pub " + std::to_string(pd.name) + "\n"
+           + pprint(pd.def, level + 1) + ")";
+  }
+  case TokenTag::IntDef:
+  {
+    auto &id = std::get<TkIntDef>(t.as);
+    return pad + "(int " + std::to_string(id.name) + "\n"
+           + pprint(id.def, level + 1) + ")";
+  }
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";
@@ -463,8 +479,8 @@ Lexer::next_sym(
   LX_FN_TRY(tokenize(ws));
   m_cursor = l.m_cursor;
 
-  t.as.sym.name = varname;
-  t.as.sym.def  = m_tokens;
+  t.tag = TokenTag::IntDef;
+  t.as  = TkIntDef{ m_tokens, varname };
 
   return E::OK;
 }
@@ -482,7 +498,12 @@ Lexer::next(
   {
     LX_FN_TRY(l.next_sym(t));
     m_cursor = l.m_cursor;
-    t.type   = Keyword::INT == sb ? Type::IntDef : Type::PubDef;
+    if (Keyword::PUB == sb)
+    {
+      auto id = std::get<TkIntDef>(t.as);
+      t.tag   = TokenTag::PubDef;
+      t.as    = TkPubDef{ id.def, id.name };
+    }
     return E::OK;
   }
   else if (Keyword::EXT == sb)
@@ -604,9 +625,9 @@ Lexer::next_word(
   return E::OK;
 }
 
-const std::map<std::string, Type> opertator_info_db{
-  { "+", Type::Plus }, { "-", Type::Minus },   { "?=", Type::IsEq },
-  { "*", Type::Mult }, { "%", Type::Modulus },
+const std::map<std::string, TokenTag> opertator_info_db{
+  { "+", TokenTag::Plus }, { "-", TokenTag::Minus },   { "?=", TokenTag::IsEq },
+  { "*", TokenTag::Mult }, { "%", TokenTag::Modulus },
 };
 
 const std::map<std::string, E> control_delimiter_info_db{
@@ -648,8 +669,8 @@ Lexer::matches_quotm(
   }
 
   words.pop_front();
-  Token t{ Type::Str };
-  t.as.string = word;
+  Token t{ TokenTag::Str };
+  t.as = TkStr{ word };
   m_tokens.push(t);
   return E::MATCHED_QUOTM;
 }
@@ -682,10 +703,8 @@ Lexer::matches_ifelse(
 
   if (E::IN_KEYWORD == e) words.retreat();
 
-  Token t{ Type::If };
-  t.as.if_else.condition   = lcond.m_tokens;
-  t.as.if_else.true_branch = ltrue.m_tokens;
-  t.as.if_else.else_branch = lelse.m_tokens;
+  Token t{ TokenTag::If };
+  t.as = TkIf{ lcond.m_tokens, ltrue.m_tokens, lelse.m_tokens };
   m_tokens.push(t);
 
   return E::MATCHES_IFELSE;
@@ -705,7 +724,7 @@ Lexer::matches_letin(
   LX_ASSERT("" != varname, E::LET_EXPR_EMPTY_VAR_NAME);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_DEF_EMPTY);
 
-  Token t{ Type::Let };
+  Token t{ TokenTag::Let };
 
   LX_ASSERT("=" == *words.pop_front(), E::LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_EXPECTED_DEF_AFTER_EQ);
@@ -720,10 +739,8 @@ Lexer::matches_letin(
 
   if (E::IN_KEYWORD == e) words.retreat();
 
-  t.type              = Type::Let;
-  t.as.binding.var    = varname;
-  t.as.binding.equals = llet.m_tokens;
-  t.as.binding.in     = lin.m_tokens;
+  t.tag = TokenTag::Let;
+  t.as  = TkLet{ varname, llet.m_tokens, lin.m_tokens };
 
   m_tokens.push(t);
 
@@ -758,11 +775,11 @@ Lexer::matches_integer(
   }
 
   words.pop_front();
-  Token t{ Type::Int };
+  Token t{ TokenTag::Int };
 
   try
   {
-    t.as.integer = std::stoi(s.m_mem);
+    t.as = TkInt{ static_cast<ssize_t>(std::stoi(s.m_mem)) };
   }
   catch (...)
   {
@@ -784,8 +801,8 @@ Lexer::matches_string(
   }
 
   words.pop_front();
-  Token t{ Type::Word };
-  t.as.string = s;
+  Token t{ TokenTag::Word };
+  t.as = TkWord{ s };
   m_tokens.push(t);
 
   return E::MATCHES_STRING;
@@ -838,10 +855,9 @@ Lexer::matches_lambda(
   }
   m_cursor = lambda.m_cursor;
 
-  Token t{ m_arena };
-  t.type             = Type::Fn;
-  t.as.fn.param_name = varname;
-  t.as.fn.body       = lambda.m_tokens;
+  Token t;
+  t.tag = TokenTag::Fn;
+  t.as  = TkFn{ varname, lambda.m_tokens };
 
   m_tokens.push(t);
 
@@ -1059,20 +1075,22 @@ Lexer::Lexer(
   new (&this->m_tokens) Tokens{ l.m_arena };
 }
 
-// FIXME: Candidate for removal
-Token::Token(Type t)
-    : type{ t },
-      cursor{ 0 },
-      as{} {};
-
-// FIXME: Candidate for removal
-Token::Token(
-  Tokens tokens)
-    : type{ Type::Group },
+Token::Token(TokenTag t)
+    : tag{ t },
       cursor{ 0 }
 {
-  new (&as.tokens) Tokens{ tokens }; // NOTE: placement new
-};
+  switch (t) {
+#define X(xtag, xtype) case TokenTag::xtag: as = xtype{}; break;
+  LX_TOKEN_VARIANTS
+#undef X
+  }
+}
+
+Token::Token(
+  Tokens tokens)
+    : tag{ TokenTag::Group },
+      cursor{ 0 },
+      as{ TkGroup{ std::move(tokens) } } {};
 
 /*-------------------------------------------------------------------------------
  *\EOF

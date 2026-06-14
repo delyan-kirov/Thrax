@@ -108,17 +108,17 @@ Parser::operator()()
 
 bool
 Parser::match_token_type(
-  size_t start, const LX::Type type)
+  size_t start, const LX::TokenTag type)
 {
   // NOTE: here, we NEED to check that start index is in bounds
-  LX::Type m_type = this->m_tokens[start].type;
+  LX::TokenTag m_type = this->m_tokens[start].tag;
   if (this->m_tokens.m_len <= start)
   {
     return false; //
   }
   else
   {
-    UT_FAIL_IF(LX::Type::Max <= m_type || LX::Type::Min >= m_type);
+    UT_FAIL_IF(LX::TokenTag::Max <= m_type || LX::TokenTag::Min >= m_type);
     return type == m_type;
   }
 }
@@ -131,10 +131,10 @@ Parser::parse_min_precedence_arithmetic_op(
   E result = E::OK;
 
   if (this->match_token_type(
-        idx + 1, LX::Type::Int, LX::Type::Group, LX::Type::Word))
+        idx + 1, LX::TokenTag::Int, LX::TokenTag::Group, LX::TokenTag::Word))
   {
     if (this->match_token_type(
-          idx + 2, LX::Type::Mult, LX::Type::Modulus, LX::Type::Div))
+          idx + 2, LX::TokenTag::Mult, LX::TokenTag::Modulus, LX::TokenTag::Div))
     {
       if (EX::Type::Sub == type)
       {
@@ -153,14 +153,14 @@ Parser::parse_min_precedence_arithmetic_op(
       idx += 2;
     }
   }
-  else if (this->match_token_type(idx + 1, LX::Type::Minus))
+  else if (this->match_token_type(idx + 1, LX::TokenTag::Minus))
   {
     parse_binop(type, idx + 1, idx + 2);
     idx += 3;
   }
   else
   {
-    UT_FAIL_IF("Unreachable branch reached (LX::Type::Plus)"); //
+    UT_FAIL_IF("Unreachable branch reached (LX::TokenTag::Plus)"); //
   }
 
   return result;
@@ -177,19 +177,19 @@ Parser::parse_max_precedence_arithmetic_op(
   E result = E::OK;
 
   if (this->match_token_type(
-        idx + 1, LX::Type::Int, LX::Type::Group, LX::Type::Word))
+        idx + 1, LX::TokenTag::Int, LX::TokenTag::Group, LX::TokenTag::Word))
   {
     this->parse_binop(type, idx + 1, idx + 2);
     idx += 2;
   }
-  else if (this->match_token_type(idx + 1, LX::Type::Minus))
+  else if (this->match_token_type(idx + 1, LX::TokenTag::Minus))
   {
     parse_binop(type, idx + 1, idx + 2);
     idx += 3;
   }
   else
   {
-    UT_FAIL_IF("Unreachable branch reached (LX::Type::Mult)"); //
+    UT_FAIL_IF("Unreachable branch reached (LX::TokenTag::Mult)"); //
   }
 
   return result;
@@ -226,12 +226,12 @@ Parser::run()
   {
     LX::Token t = this->m_tokens[i];
 
-    switch (t.type)
+    switch (t.tag)
     {
-    case LX::Type::Int:
+    case LX::TokenTag::Int:
     {
       EX::Expr expr{ EX::Type::Int };
-      expr.as.m_int = t.as.integer;
+      expr.as.m_int = std::get<LX::TkInt>(t.as).value;
       if (this->m_exprs.is_empty()) goto CASE_INT_SINGLE_EXPR;
 
       if (EX::Type::VarApp == this->m_exprs.last()->m_type)
@@ -263,9 +263,9 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::Group:
+    case LX::TokenTag::Group:
     {
-      Parser group_parser{ *this, t.as.tokens };
+      Parser group_parser{ *this, std::get<LX::TkGroup>(t.as).tokens };
       group_parser();
       EX::Expr expr = *group_parser.m_exprs.last();
       if (this->m_exprs.is_empty()) goto CASE_GROUP_SINGLE_PARAM;
@@ -298,11 +298,11 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::Word:
+    case LX::TokenTag::Word:
       // TODO: candidate for refactor, label abuse unnecessary
       {
         EX::Expr var{ EX::Type::Var };
-        var.as.m_var = t.as.string;
+        var.as.m_var = std::get<LX::TkWord>(t.as).value;
         i += 1;
 
         if (this->m_exprs.is_empty()) goto CASE_WORD_NOT_APPLIED;
@@ -331,11 +331,11 @@ Parser::run()
 
       CASE_WORD_NOT_APPLIED:
         if (this->match_token_type(i,
-                                   LX::Type::Group,
-                                   LX::Type::Int,
-                                   LX::Type::Fn,
-                                   LX::Type::Word,
-                                   LX::Type::Str))
+                                   LX::TokenTag::Group,
+                                   LX::TokenTag::Int,
+                                   LX::TokenTag::Fn,
+                                   LX::TokenTag::Word,
+                                   LX::TokenTag::Str))
         {
           LX::Tokens next_token = { this->m_arena };
           next_token.push(this->m_tokens[i]);
@@ -345,7 +345,7 @@ Parser::run()
           EX::Exprs param_expr = param_parser.m_exprs;
 
           EX::Expr var_app{ EX::Type::VarApp, this->m_arena };
-          var_app.as.m_varapp.m_fn_name = t.as.string;
+          var_app.as.m_varapp.m_fn_name = std::get<LX::TkWord>(t.as).value;
           var_app.as.m_varapp.m_param   = param_expr;
 
           this->m_exprs.push(var_app);
@@ -358,54 +358,65 @@ Parser::run()
       }
     CASE_WORD_END:
       break;
-    case LX::Type::Plus:
+    case LX::TokenTag::Plus:
     {
       this->parse_min_precedence_arithmetic_op(EX::Type::Add, i);
     }
     break;
-    case LX::Type::Mult:
+    case LX::TokenTag::Mult:
     {
       this->parse_max_precedence_arithmetic_op(EX::Type::Mult, i);
     }
     break;
-    case LX::Type::Div:
+    case LX::TokenTag::Div:
     {
       this->parse_max_precedence_arithmetic_op(EX::Type::Div, i);
     }
     break;
-    case LX::Type::Modulus:
+    case LX::TokenTag::Modulus:
     {
       this->parse_max_precedence_arithmetic_op(EX::Type::Modulus, i);
     }
     break;
-    case LX::Type::PubDef:
-    case LX::Type::IntDef:
+    case LX::TokenTag::IntDef:
     {
-      Expr global_def{ t.type == LX::Type::PubDef ? EX::Type::PubDef
-                                                  : EX::Type::IntDef };
+      Expr global_def{ EX::Type::IntDef };
+      auto &sd = std::get<LX::TkIntDef>(t.as);
+      global_def.as.m_gdef.name = sd.name;
 
-      global_def.as.m_gdef.name = t.as.sym.name;
-
-      Parser sym_parser{ *this, t.as.sym.def };
+      Parser sym_parser{ *this, sd.def };
       UT_FAIL_IF(E::OK != sym_parser.run());
       global_def.as.m_gdef.def = sym_parser.m_exprs.last();
 
       this->m_exprs.push(global_def);
-
       i += 1;
     }
     break;
-    case LX::Type::Minus:
+    case LX::TokenTag::PubDef:
+    {
+      Expr global_def{ EX::Type::PubDef };
+      auto &sd = std::get<LX::TkPubDef>(t.as);
+      global_def.as.m_gdef.name = sd.name;
+
+      Parser sym_parser{ *this, sd.def };
+      UT_FAIL_IF(E::OK != sym_parser.run());
+      global_def.as.m_gdef.def = sym_parser.m_exprs.last();
+
+      this->m_exprs.push(global_def);
+      i += 1;
+    }
+    break;
+    case LX::TokenTag::Minus:
     {
       if (this->m_exprs.is_empty()
           || this->match_token_type(i - 1,
-                                    LX::Type::Mult,
-                                    LX::Type::Plus,
-                                    LX::Type::Div,
-                                    LX::Type::Modulus)) // The minus is unary
+                                    LX::TokenTag::Mult,
+                                    LX::TokenTag::Plus,
+                                    LX::TokenTag::Div,
+                                    LX::TokenTag::Modulus)) // The minus is unary
       {
         UT_FAIL_IF(not this->match_token_type(
-          i + 1, LX::Type::Group, LX::Type::Int, LX::Type::Word));
+          i + 1, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Word));
 
         EX::Parser new_parser{ *this, i + 1, i + 2 };
         new_parser();
@@ -419,22 +430,23 @@ Parser::run()
       else // Binary minus
       {
         UT_FAIL_IF(not this->match_token_type(
-          i + 1, LX::Type::Group, LX::Type::Int, LX::Type::Word));
+          i + 1, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Word));
 
         parse_min_precedence_arithmetic_op(EX::Type::Sub, i);
       }
     }
     break;
-    case LX::Type::Let:
+    case LX::TokenTag::Let:
     {
       // FIXME: https://github.com/delyan-kirov/BC/issues/25
       // let var = body_expr in app_expr
-      UT::String var_name = t.as.binding.var;
-      EX::Parser value_parser{ *this, t.as.binding.equals };
+      auto      &bnd      = std::get<LX::TkLet>(t.as);
+      UT::String var_name = bnd.var;
+      EX::Parser value_parser{ *this, bnd.equals };
       value_parser();
       EX::Expr *value_expr = value_parser.m_exprs.last();
 
-      EX::Parser continuation_parser{ *this, t.as.binding.in };
+      EX::Parser continuation_parser{ *this, bnd.in };
       continuation_parser();
       EX::Expr *continuation_expr = continuation_parser.m_exprs.last();
 
@@ -448,12 +460,13 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::Fn:
+    case LX::TokenTag::Fn:
     {
       // \<var> = <expr>
-      UT::String param = t.as.fn.param_name;
+      auto      &lxfn = std::get<LX::TkFn>(t.as);
+      UT::String param = lxfn.param_name;
 
-      EX::Parser body_parser{ *this, t.as.fn.body };
+      EX::Parser body_parser{ *this, lxfn.body };
       body_parser();
       EX::Expr body_expr = *body_parser.m_exprs.last();
 
@@ -462,7 +475,7 @@ Parser::run()
 
       i += 1;
       if (this->match_token_type(
-            i, LX::Type::Group, LX::Type::Int, LX::Type::Fn))
+            i, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Fn))
       {
         UT_TODO("This branch should be explored");
 
@@ -491,17 +504,18 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::If:
+    case LX::TokenTag::If:
     {
-      EX::Parser condition_parser{ *this, t.as.if_else.condition };
+      auto &ie = std::get<LX::TkIf>(t.as);
+      EX::Parser condition_parser{ *this, ie.condition };
       condition_parser();
       EX::Expr condition = *condition_parser.m_exprs.last();
 
-      EX::Parser true_branch_parser{ *this, t.as.if_else.true_branch };
+      EX::Parser true_branch_parser{ *this, ie.true_branch };
       true_branch_parser();
       EX::Expr true_branch_expr = *true_branch_parser.m_exprs.last();
 
-      EX::Parser else_branch_parser{ *this, t.as.if_else.else_branch };
+      EX::Parser else_branch_parser{ *this, ie.else_branch };
       else_branch_parser();
       EX::Expr else_branch_expr = *else_branch_parser.m_exprs.last();
 
@@ -514,12 +528,12 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::IsEq:
+    case LX::TokenTag::IsEq:
     {
       this->parse_max_precedence_arithmetic_op(EX::Type::IsEq, i);
     }
     break;
-    case LX::Type::Not:
+    case LX::TokenTag::Not:
     {
       i += 1;
 
@@ -537,10 +551,10 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::Str:
+    case LX::TokenTag::Str:
     {
       EX::Expr expr{ EX::Type::Str };
-      expr.as.m_string = t.as.string;
+      expr.as.m_string = std::get<LX::TkStr>(t.as).value;
       if (this->m_exprs.is_empty()) goto CASE_STR_SINGLE_EXPR;
 
       if (EX::Type::VarApp == this->m_exprs.last()->m_type)
@@ -572,12 +586,12 @@ Parser::run()
       i += 1;
     }
     break;
-    case LX::Type::Min:
-    case LX::Type::Max:
+    case LX::TokenTag::Min:
+    case LX::TokenTag::Max:
     default:
     {
       // TODO: instead of UT_FAIL_IF, implement error reporting macros
-      UT_FAIL_MSG("The token type <%s> is unhandled", LX::pprint(t.type).c_str());
+      UT_FAIL_MSG("The token type <%s> is unhandled", LX::pprint(t.tag).c_str());
     }
     break;
     }

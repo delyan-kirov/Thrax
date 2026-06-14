@@ -1,5 +1,4 @@
 pub add = \x = \y = x + y
-<+>
 
 pub two = add 1 2
 
