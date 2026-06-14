@@ -24,3 +24,12 @@ pub msg = "hello"
 pub answer = let x = 6 in x * 7
 
 pub complex = (1 + 2) * (3 - 4) + 5
+
+pub neg = \x = -x
+pub a = neg 2
+pub b = !a
+
+# FIXME: application is not handle well
+pub application =
+	(\x = \y = x + y + 1) 4 (2 + 1)
+	# (\x = x + 1) (4) (2 + 1)

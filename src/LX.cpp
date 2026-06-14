@@ -683,7 +683,7 @@ START_LOOKING_AGAIN:
 
 const std::map<std::string, TokenTag> opertator_info_db{
   { "+", TokenTag::Plus }, { "-", TokenTag::Minus },   { "?=", TokenTag::IsEq },
-  { "*", TokenTag::Mult }, { "%", TokenTag::Modulus },
+  { "*", TokenTag::Mult }, { "%", TokenTag::Modulus }, { "!", TokenTag::Not },
 };
 
 const std::map<std::string, E> control_delimiter_info_db{

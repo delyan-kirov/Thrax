@@ -10,50 +10,212 @@
 #include "EX.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
+#include <map>
+#include <vector>
 
 namespace EX
 {
 
 /*-------------------------------------------------------------------------------
+ *\OPERATOR TABLE
+ *------------------------------------------------------------------------------*/
+
+namespace
+{
+
+enum class OpTag
+{
+  App,
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Mod,
+  IsEq,
+  Neg,
+  Not
+};
+
+struct OpEntry
+{
+  int  prec;
+  bool right_assoc;
+};
+
+using OpInfoDb = std::map<OpTag, OpEntry>;
+using ValStack = std::vector<Expr *>;
+using OpStack  = std::vector<OpTag>;
+
+const OpInfoDb op_info_db{
+  { OpTag::App, { 5, false } },  { OpTag::Neg, { 4, true } },
+  { OpTag::Not, { 4, true } },   { OpTag::Mul, { 3, false } },
+  { OpTag::Div, { 3, false } },  { OpTag::Mod, { 3, false } },
+  { OpTag::Add, { 2, false } },  { OpTag::Sub, { 2, false } },
+  { OpTag::IsEq, { 1, false } },
+};
+
+OpEntry
+op_lookup(
+  OpTag op)
+{
+  auto result = op_info_db.find(op);
+  UT_FAIL_IF(op_info_db.end() == result);
+  return result->second;
+}
+
+class ShuntState
+{
+public:
+  ValStack   m_vals;
+  OpStack    m_op_stk;
+  bool       m_last_was_val = false;
+  AR::Arena &m_arena;
+
+  ShuntState(
+    AR::Arena &arena)
+      : m_arena{ arena }
+  {
+  }
+
+  Expr *alloc(Expr e);
+  void  combine();
+  void  push_op(OpTag op);
+  void  push_val(Expr e);
+};
+
+Expr *
+ShuntState::alloc(
+  Expr e)
+{
+  Expr *p = (Expr *)m_arena.alloc<Expr>(1);
+  *p      = e;
+  return p;
+}
+
+void
+ShuntState::combine()
+{
+  UT_FAIL_IF(m_op_stk.empty());
+  OpTag op = m_op_stk.back();
+  m_op_stk.pop_back();
+
+  if (op == OpTag::App)
+  {
+    UT_FAIL_IF(m_vals.size() < 2);
+    Expr *arg = m_vals.back();
+    m_vals.pop_back();
+    Expr *fn = m_vals.back();
+    m_vals.pop_back();
+    Expr e{ ExprTag::App };
+    e.as = ExApp{ fn, arg };
+    m_vals.push_back(alloc(e));
+  }
+  else if (op == OpTag::Neg || op == OpTag::Not)
+  {
+    UT_FAIL_IF(m_vals.empty());
+    Expr *operand = m_vals.back();
+    m_vals.pop_back();
+    Expr e{ ExprTag::Unop };
+    e.as = ExUnop{ op == OpTag::Neg ? UnopTag::Neg : UnopTag::Not, operand };
+    m_vals.push_back(alloc(e));
+  }
+  else
+  {
+    UT_FAIL_IF(m_vals.size() < 2);
+    Expr *rhs = m_vals.back();
+    m_vals.pop_back();
+    Expr *lhs = m_vals.back();
+    m_vals.pop_back();
+
+    BinopTag btag;
+    switch (op)
+    {
+    case OpTag::Add : btag = BinopTag::Add; break;
+    case OpTag::Sub : btag = BinopTag::Sub; break;
+    case OpTag::Mul : btag = BinopTag::Mul; break;
+    case OpTag::Div : btag = BinopTag::Div; break;
+    case OpTag::Mod : btag = BinopTag::Mod; break;
+    case OpTag::IsEq: btag = BinopTag::IsEq; break;
+    default         : UT_FAIL_IF("Not a binop"); btag = BinopTag::Add;
+    }
+
+    ExPair pair{ m_arena };
+    *pair.begin() = *lhs;
+    *pair.last()  = *rhs;
+    Expr e{ ExprTag::Binop };
+    e.as = ExBinop{ btag, pair };
+    m_vals.push_back(alloc(e));
+  }
+}
+
+void
+ShuntState::push_op(
+  OpTag op)
+{
+  OpEntry info = op_lookup(op);
+  while (!m_op_stk.empty())
+  {
+    OpEntry top = op_lookup(m_op_stk.back());
+    if (info.right_assoc ? top.prec > info.prec : top.prec >= info.prec)
+      combine();
+    else
+      break;
+  }
+  m_op_stk.push_back(op);
+}
+
+void
+ShuntState::push_val(
+  Expr e)
+{
+  if (m_last_was_val) push_op(OpTag::App);
+  m_vals.push_back(alloc(e));
+  m_last_was_val = true;
+}
+
+} // namespace
+
+/*-------------------------------------------------------------------------------
  *\IMPL (EX)
  *------------------------------------------------------------------------------*/
 
-FnDef::FnDef(
+ExFnDef::ExFnDef(
   UT::String param, AR::Arena &arena)
-    : m_param{ param }
+    : param{ param }
 {
-  this->m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
+  this->body = (EX::Expr *)arena.alloc<EX::Expr>(1);
 }
 
-Expr::Expr(Type type)
-    : m_type{ type } {};
+Expr::Expr(ExprTag tag)
+    : tag{ tag } {};
 
 Expr::Expr(
-  Type type, AR::Arena &arena)
-    : m_type{ type }
+  ExprTag tag, AR::Arena &arena)
+    : tag{ tag }
 {
-  switch (type)
+  switch (tag)
   {
-  case Type::FnApp : this->as.m_fnapp.m_param = { arena }; break;
-  case Type::VarApp: this->as.m_varapp.m_param = { arena }; break;
-  case Type::FnDef:
-    this->as.m_fn.m_body = (EX::Expr *)arena.alloc<EX::Expr>(1);
-    break;
-  case Type::If:
+  case ExprTag::FnDef:
   {
-    this->as.m_if.m_condition   = (Expr *)arena.alloc<Expr>(1);
-    this->as.m_if.m_else_branch = (Expr *)arena.alloc<Expr>(1);
-    this->as.m_if.m_true_branch = (Expr *)arena.alloc<Expr>(1);
+    ExFnDef fndef;
+    fndef.body = (EX::Expr *)arena.alloc<EX::Expr>(1);
+    this->as   = fndef;
   }
   break;
-  case Type::Div:
-  case Type::Sub:
-  case Type::Modulus:
-  case Type::Mult:
-  case Type::IsEq:
-  case Type::Add    : this->as.m_pair = { arena }; break;
-  case Type::Minus  : this->as.m_expr = (Expr *)arena.alloc<Expr>(1); break;
-  default           : UT_FAIL_IF("Invalid type for this constructor");
+  case ExprTag::If:
+  {
+    this->as = ExIf{ (Expr *)arena.alloc<Expr>(1),
+                     (Expr *)arena.alloc<Expr>(1),
+                     (Expr *)arena.alloc<Expr>(1) };
+  }
+  break;
+  case ExprTag::Binop:
+    this->as = ExBinop{ BinopTag::Add, ExPair{ arena } };
+    break;
+  case ExprTag::Unop:
+    this->as = ExUnop{ UnopTag::Neg, (Expr *)arena.alloc<Expr>(1) };
+    break;
+  default: UT_FAIL_IF("Invalid tag for this constructor");
   }
 };
 
@@ -90,7 +252,7 @@ Parser::Parser(EX::Parser old, size_t begin, size_t end)
       m_exprs{ old.m_arena }    //
 {};
 
-Parser::Parser(EX::Parser &parent_parser, LX::Tokens &t)
+Parser::Parser(EX::Parser &parent_parser, const LX::Tokens &t)
     : m_arena{ parent_parser.m_arena },  //
       m_events{ parent_parser.m_arena }, //
       m_input{ parent_parser.m_input },  //
@@ -106,498 +268,161 @@ Parser::operator()()
   return this->run();
 }
 
-bool
-Parser::match_token_type(
-  size_t start, const LX::TokenTag type)
-{
-  // NOTE: here, we NEED to check that start index is in bounds
-  LX::TokenTag m_type = this->m_tokens[start].tag;
-  if (this->m_tokens.m_len <= start)
-  {
-    return false; //
-  }
-  else
-  {
-    UT_FAIL_IF(LX::TokenTag::Max <= m_type || LX::TokenTag::Min >= m_type);
-    return type == m_type;
-  }
-}
-
-E
-Parser::parse_min_precedence_arithmetic_op(
-  EX::Type type, size_t &idx)
-{
-  UT_FAIL_IF(not(EX::Type::Add == type || EX::Type::Sub == type));
-  E result = E::OK;
-
-  if (this->match_token_type(
-        idx + 1, LX::TokenTag::Int, LX::TokenTag::Group, LX::TokenTag::Word))
-  {
-    if (this->match_token_type(
-          idx + 2, LX::TokenTag::Mult, LX::TokenTag::Modulus, LX::TokenTag::Div))
-    {
-      if (EX::Type::Sub == type)
-      {
-        parse_binop(EX::Type::Add, idx, this->m_end);
-        idx += this->m_end + 1;
-      }
-      else
-      {
-        parse_binop(type, idx + 1, this->m_end);
-        idx += this->m_end + 1;
-      }
-    }
-    else
-    {
-      this->parse_binop(type, idx + 1, idx + 2);
-      idx += 2;
-    }
-  }
-  else if (this->match_token_type(idx + 1, LX::TokenTag::Minus))
-  {
-    parse_binop(type, idx + 1, idx + 2);
-    idx += 3;
-  }
-  else
-  {
-    UT_FAIL_IF("Unreachable branch reached (LX::TokenTag::Plus)"); //
-  }
-
-  return result;
-}
-
-// FIXME: When the right operand of a binary op is a Word followed by arguments
-// (e.g. `2 * pow (n - 1)`), only the Word is parsed as the operand and the
-// arguments are dropped. The function application should be parsed before
-// creating the binary operation.
-E
-Parser::parse_max_precedence_arithmetic_op(
-  EX::Type type, size_t &idx)
-{
-  E result = E::OK;
-
-  if (this->match_token_type(
-        idx + 1, LX::TokenTag::Int, LX::TokenTag::Group, LX::TokenTag::Word))
-  {
-    this->parse_binop(type, idx + 1, idx + 2);
-    idx += 2;
-  }
-  else if (this->match_token_type(idx + 1, LX::TokenTag::Minus))
-  {
-    parse_binop(type, idx + 1, idx + 2);
-    idx += 3;
-  }
-  else
-  {
-    UT_FAIL_IF("Unreachable branch reached (LX::TokenTag::Mult)"); //
-  }
-
-  return result;
-}
-
-E
-Parser::parse_binop(
-  EX::Type type, size_t start, size_t end)
-{
-  E result = E::OK;
-
-  EX::Expr root_expr{ type, this->m_arena };
-  EX::Expr left    = *this->m_exprs.last();
-  root_expr.m_type = type;
-
-  EX::Parser new_parser{ *this, start, end };
-  result = new_parser();
-
-  EX::Expr right               = *new_parser.m_exprs.last();
-  *root_expr.as.m_pair.begin() = left;
-  *root_expr.as.m_pair.last()  = right;
-
-  *this->m_exprs.last() = root_expr;
-
-  return result;
-};
-
 E
 Parser::run()
 {
-  E e{};
+  ShuntState s{ m_arena };
+  E          result = E::OK;
 
-  for (size_t i = this->m_begin; i < this->m_end;)
-  {
-    LX::Token t = this->m_tokens[i];
-
-    switch (t.tag)
+  for (const LX::Token &t : m_tokens) switch (t.tag)
     {
     case LX::TokenTag::Int:
     {
-      EX::Expr expr{ EX::Type::Int };
-      expr.as.m_int = std::get<LX::TkInt>(t.as).value;
-      if (this->m_exprs.is_empty()) goto CASE_INT_SINGLE_EXPR;
-
-      if (EX::Type::VarApp == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        this->m_exprs.last()->as.m_varapp.m_param.push(expr);
-      }
-      else if (EX::Type::FnDef == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        EX::Expr fnapp{ EX::Type::FnApp, m_arena };
-        fnapp.as.m_fnapp.m_param.push(expr);
-        fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last()->as.m_fn.m_body;
-        fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-
-        (void)m_exprs.pop();
-        m_exprs.push(fnapp);
-      }
-      else if (EX::Type::FnApp == this->m_exprs.last()->m_type)
-      {
-        m_exprs.last()->as.m_fnapp.m_param.push(expr);
-      }
-      else
-      {
-      CASE_INT_SINGLE_EXPR:
-        this->m_exprs.push(expr);
-      }
-
-      i += 1;
+      Expr e{ ExprTag::Int };
+      e.as = ExInt{ std::get<LX::TkInt>(t.as).value };
+      s.push_val(e);
+    }
+    break;
+    case LX::TokenTag::Str:
+    {
+      Expr e{ ExprTag::Str };
+      e.as = ExStr{ std::get<LX::TkStr>(t.as).value };
+      s.push_val(e);
+    }
+    break;
+    case LX::TokenTag::Word:
+    {
+      Expr e{ ExprTag::Var };
+      e.as = ExVar{ std::get<LX::TkWord>(t.as).value };
+      s.push_val(e);
     }
     break;
     case LX::TokenTag::Group:
     {
       Parser group_parser{ *this, std::get<LX::TkGroup>(t.as).tokens };
-      group_parser();
-      EX::Expr expr = *group_parser.m_exprs.last();
-      if (this->m_exprs.is_empty()) goto CASE_GROUP_SINGLE_PARAM;
-
-      if (EX::Type::VarApp == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        this->m_exprs.last()->as.m_varapp.m_param.push(expr);
-      }
-      else if (EX::Type::FnDef == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        EX::Expr fnapp{ EX::Type::FnApp, m_arena };
-        fnapp.as.m_fnapp.m_param.push(expr);
-        fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last();
-        fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-
-        (void)m_exprs.pop();
-      }
-      else if (EX::Type::FnApp == this->m_exprs.last()->m_type)
-      {
-        m_exprs.last()->as.m_fnapp.m_param.push(expr);
-      }
-      else
-      {
-      CASE_GROUP_SINGLE_PARAM:
-        this->m_exprs.push(expr);
-      }
-
-      i += 1;
-    }
-    break;
-    case LX::TokenTag::Word:
-      // TODO: candidate for refactor, label abuse unnecessary
-      {
-        EX::Expr var{ EX::Type::Var };
-        var.as.m_var = std::get<LX::TkWord>(t.as).value;
-        i += 1;
-
-        if (this->m_exprs.is_empty()) goto CASE_WORD_NOT_APPLIED;
-
-        if (EX::Type::VarApp == this->m_exprs.last()->m_type)
-        {
-          // (\x = \y = ...) expr expr
-          this->m_exprs.last()->as.m_varapp.m_param.push(var);
-        }
-        else if (EX::Type::FnDef == this->m_exprs.last()->m_type)
-        {
-          // (\x = \y = ...) expr expr
-          EX::Expr fnapp{ EX::Type::FnApp, m_arena };
-          fnapp.as.m_fnapp.m_param.push(var);
-          fnapp.as.m_fnapp.m_body.m_body = this->m_exprs.last();
-          fnapp.as.m_fnapp.m_body.m_param
-            = this->m_exprs.last()->as.m_fn.m_param;
-
-          (void)m_exprs.pop();
-        }
-        else if (EX::Type::FnApp == this->m_exprs.last()->m_type)
-        {
-          m_exprs.last()->as.m_fnapp.m_param.push(var);
-        }
-        goto CASE_WORD_END;
-
-      CASE_WORD_NOT_APPLIED:
-        if (this->match_token_type(i,
-                                   LX::TokenTag::Group,
-                                   LX::TokenTag::Int,
-                                   LX::TokenTag::Fn,
-                                   LX::TokenTag::Word,
-                                   LX::TokenTag::Str))
-        {
-          LX::Tokens next_token = { this->m_arena };
-          next_token.push(this->m_tokens[i]);
-
-          EX::Parser param_parser{ *this, next_token };
-          param_parser();
-          EX::Exprs param_expr = param_parser.m_exprs;
-
-          EX::Expr var_app{ EX::Type::VarApp, this->m_arena };
-          var_app.as.m_varapp.m_fn_name = std::get<LX::TkWord>(t.as).value;
-          var_app.as.m_varapp.m_param   = param_expr;
-
-          this->m_exprs.push(var_app);
-          i += 1;
-        }
-        else
-        {
-          this->m_exprs.push(var);
-        }
-      }
-    CASE_WORD_END:
-      break;
-    case LX::TokenTag::Plus:
-    {
-      this->parse_min_precedence_arithmetic_op(EX::Type::Add, i);
-    }
-    break;
-    case LX::TokenTag::Mult:
-    {
-      this->parse_max_precedence_arithmetic_op(EX::Type::Mult, i);
-    }
-    break;
-    case LX::TokenTag::Div:
-    {
-      this->parse_max_precedence_arithmetic_op(EX::Type::Div, i);
-    }
-    break;
-    case LX::TokenTag::Modulus:
-    {
-      this->parse_max_precedence_arithmetic_op(EX::Type::Modulus, i);
-    }
-    break;
-    case LX::TokenTag::IntDef:
-    {
-      Expr global_def{ EX::Type::IntDef };
-      auto &sd = std::get<LX::TkIntDef>(t.as);
-      global_def.as.m_gdef.name = sd.name;
-
-      Parser sym_parser{ *this, sd.def };
-      UT_FAIL_IF(E::OK != sym_parser.run());
-      global_def.as.m_gdef.def = sym_parser.m_exprs.last();
-
-      this->m_exprs.push(global_def);
-      i += 1;
-    }
-    break;
-    case LX::TokenTag::PubDef:
-    {
-      Expr global_def{ EX::Type::PubDef };
-      auto &sd = std::get<LX::TkPubDef>(t.as);
-      global_def.as.m_gdef.name = sd.name;
-
-      Parser sym_parser{ *this, sd.def };
-      UT_FAIL_IF(E::OK != sym_parser.run());
-      global_def.as.m_gdef.def = sym_parser.m_exprs.last();
-
-      this->m_exprs.push(global_def);
-      i += 1;
-    }
-    break;
-    case LX::TokenTag::Minus:
-    {
-      if (this->m_exprs.is_empty()
-          || this->match_token_type(i - 1,
-                                    LX::TokenTag::Mult,
-                                    LX::TokenTag::Plus,
-                                    LX::TokenTag::Div,
-                                    LX::TokenTag::Modulus)) // The minus is unary
-      {
-        UT_FAIL_IF(not this->match_token_type(
-          i + 1, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Word));
-
-        EX::Parser new_parser{ *this, i + 1, i + 2 };
-        new_parser();
-
-        EX::Expr expr{ Type::Minus, this->m_arena };
-        *expr.as.m_expr = *new_parser.m_exprs.last();
-
-        this->m_exprs.push(expr);
-        i += 2;
-      }
-      else // Binary minus
-      {
-        UT_FAIL_IF(not this->match_token_type(
-          i + 1, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Word));
-
-        parse_min_precedence_arithmetic_op(EX::Type::Sub, i);
-      }
+      result = group_parser();
+      s.push_val(*group_parser.m_exprs.last());
     }
     break;
     case LX::TokenTag::Let:
     {
-      // FIXME: https://github.com/delyan-kirov/BC/issues/25
-      // let var = body_expr in app_expr
-      auto      &bnd      = std::get<LX::TkLet>(t.as);
-      UT::String var_name = bnd.var;
-      EX::Parser value_parser{ *this, bnd.equals };
-      value_parser();
-      EX::Expr *value_expr = value_parser.m_exprs.last();
-
-      EX::Parser continuation_parser{ *this, bnd.in };
-      continuation_parser();
-      EX::Expr *continuation_expr = continuation_parser.m_exprs.last();
-
-      EX::Expr let_expr{ EX::Type::Let };
-      let_expr.as.m_let.m_continuation = continuation_expr;
-      let_expr.as.m_let.m_var_name     = var_name;
-      let_expr.as.m_let.m_value        = value_expr;
-
-      this->m_exprs.push(let_expr);
-
-      i += 1;
+      auto  &bnd = std::get<LX::TkLet>(t.as);
+      Parser vp{ *this, bnd.equals };
+      vp();
+      Parser cp{ *this, bnd.in };
+      cp();
+      Expr e{ ExprTag::Let };
+      e.as = ExLet{ bnd.var, vp.m_exprs.last(), cp.m_exprs.last() };
+      s.push_val(e);
     }
     break;
     case LX::TokenTag::Fn:
     {
-      // \<var> = <expr>
-      auto      &lxfn = std::get<LX::TkFn>(t.as);
-      UT::String param = lxfn.param_name;
-
-      EX::Parser body_parser{ *this, lxfn.body };
-      body_parser();
-      EX::Expr body_expr = *body_parser.m_exprs.last();
-
-      EX::FnDef fn_def{ param, this->m_arena };
-      *fn_def.m_body = body_expr;
-
-      i += 1;
-      if (this->match_token_type(
-            i, LX::TokenTag::Group, LX::TokenTag::Int, LX::TokenTag::Fn))
-      {
-        UT_TODO("This branch should be explored");
-
-        LX::Tokens next_token = { this->m_arena };
-        next_token.push(this->m_tokens[i]);
-
-        EX::Parser param_parser{ *this, next_token };
-        param_parser();
-        EX::Exprs param_expr = param_parser.m_exprs;
-
-        EX::Expr fn_app{ EX::Type::FnApp, this->m_arena };
-        fn_app.as.m_fnapp.m_param.push(*param_expr.last());
-        fn_app.as.m_fnapp.m_body = fn_def;
-
-        this->m_exprs.push(fn_app);
-      }
-      else
-      {
-        EX::Expr fn_def{ EX::Type::FnDef, this->m_arena };
-        fn_def.as.m_fn.m_param = param;
-        *fn_def.as.m_fn.m_body = body_expr;
-
-        this->m_exprs.push(fn_def);
-      }
-
-      i += 1;
+      auto  &lxfn = std::get<LX::TkFn>(t.as);
+      Parser bp{ *this, lxfn.body };
+      bp();
+      ExFnDef fn_def{ lxfn.param_name, m_arena };
+      *fn_def.body = *bp.m_exprs.last();
+      Expr e{ ExprTag::FnDef };
+      e.as = fn_def;
+      s.push_val(e);
     }
     break;
     case LX::TokenTag::If:
     {
-      auto &ie = std::get<LX::TkIf>(t.as);
-      EX::Parser condition_parser{ *this, ie.condition };
-      condition_parser();
-      EX::Expr condition = *condition_parser.m_exprs.last();
-
-      EX::Parser true_branch_parser{ *this, ie.true_branch };
-      true_branch_parser();
-      EX::Expr true_branch_expr = *true_branch_parser.m_exprs.last();
-
-      EX::Parser else_branch_parser{ *this, ie.else_branch };
-      else_branch_parser();
-      EX::Expr else_branch_expr = *else_branch_parser.m_exprs.last();
-
-      EX::Expr if_expr{ EX::Type::If, this->m_arena };
-      *if_expr.as.m_if.m_condition   = condition;
-      *if_expr.as.m_if.m_else_branch = else_branch_expr;
-      *if_expr.as.m_if.m_true_branch = true_branch_expr;
-
-      this->m_exprs.push(if_expr);
-      i += 1;
+      auto  &ie = std::get<LX::TkIf>(t.as);
+      Parser cp{ *this, ie.condition };
+      cp();
+      Parser tp{ *this, ie.true_branch };
+      tp();
+      Parser ep{ *this, ie.else_branch };
+      ep();
+      Expr e{ ExprTag::If, m_arena };
+      *std::get<ExIf>(e.as).cond = *cp.m_exprs.last();
+      *std::get<ExIf>(e.as).then = *tp.m_exprs.last();
+      *std::get<ExIf>(e.as).alt  = *ep.m_exprs.last();
+      s.push_val(e);
+    }
+    break;
+    case LX::TokenTag::IntDef:
+    {
+      auto  &sd = std::get<LX::TkIntDef>(t.as);
+      Parser sp{ *this, sd.def };
+      UT_FAIL_IF(E::OK != sp.run());
+      Expr e{ ExprTag::IntDef };
+      e.as = ExIntDef{ sd.name, sp.m_exprs.last() };
+      s.push_val(e);
+    }
+    break;
+    case LX::TokenTag::PubDef:
+    {
+      auto  &sd = std::get<LX::TkPubDef>(t.as);
+      Parser sp{ *this, sd.def };
+      UT_FAIL_IF(E::OK != sp.run());
+      Expr e{ ExprTag::PubDef };
+      e.as = ExPubDef{ sd.name, sp.m_exprs.last() };
+      s.push_val(e);
+    }
+    break;
+    case LX::TokenTag::Plus:
+    {
+      s.m_last_was_val = false;
+      s.push_op(OpTag::Add);
+    }
+    break;
+    case LX::TokenTag::Mult:
+    {
+      s.m_last_was_val = false;
+      s.push_op(OpTag::Mul);
+    }
+    break;
+    case LX::TokenTag::Div:
+    {
+      s.m_last_was_val = false;
+      s.push_op(OpTag::Div);
+    }
+    break;
+    case LX::TokenTag::Modulus:
+    {
+      s.m_last_was_val = false;
+      s.push_op(OpTag::Mod);
     }
     break;
     case LX::TokenTag::IsEq:
     {
-      this->parse_max_precedence_arithmetic_op(EX::Type::IsEq, i);
+      s.m_last_was_val = false;
+      s.push_op(OpTag::IsEq);
+    }
+    break;
+    case LX::TokenTag::Minus:
+    {
+      if (!s.m_last_was_val)
+        s.push_op(OpTag::Neg);
+      else
+      {
+        s.m_last_was_val = false;
+        s.push_op(OpTag::Sub);
+      }
     }
     break;
     case LX::TokenTag::Not:
     {
-      i += 1;
-
-      LX::Tokens next_token = { this->m_arena };
-      next_token.push(this->m_tokens[i]);
-
-      EX::Parser not_parser{ *this, next_token };
-      not_parser();
-
-      EX::Expr not_expr{ EX::Type::Not };
-      not_expr.as.m_expr = not_parser.m_exprs.last();
-
-      m_exprs.push(not_expr);
-
-      i += 1;
-    }
-    break;
-    case LX::TokenTag::Str:
-    {
-      EX::Expr expr{ EX::Type::Str };
-      expr.as.m_string = std::get<LX::TkStr>(t.as).value;
-      if (this->m_exprs.is_empty()) goto CASE_STR_SINGLE_EXPR;
-
-      if (EX::Type::VarApp == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        this->m_exprs.last()->as.m_varapp.m_param.push(expr);
-      }
-      else if (EX::Type::FnDef == this->m_exprs.last()->m_type)
-      {
-        // (\x = \y = ...) expr expr
-        EX::Expr fnapp{ EX::Type::FnApp, m_arena };
-        fnapp.as.m_fnapp.m_param.push(expr);
-        fnapp.as.m_fnapp.m_body.m_body  = this->m_exprs.last()->as.m_fn.m_body;
-        fnapp.as.m_fnapp.m_body.m_param = this->m_exprs.last()->as.m_fn.m_param;
-
-        (void)m_exprs.pop();
-        m_exprs.push(fnapp);
-      }
-      else if (EX::Type::FnApp == this->m_exprs.last()->m_type)
-      {
-        m_exprs.last()->as.m_fnapp.m_param.push(expr);
-      }
-      else
-      {
-      CASE_STR_SINGLE_EXPR:
-        this->m_exprs.push(expr);
-      }
-
-      i += 1;
+      s.m_last_was_val = false;
+      s.push_op(OpTag::Not);
     }
     break;
     case LX::TokenTag::Min:
     case LX::TokenTag::Max:
     default:
-    {
-      // TODO: instead of UT_FAIL_IF, implement error reporting macros
-      UT_FAIL_MSG("The token type <%s> is unhandled", LX::pprint(t.tag).c_str());
+      UT_FAIL_MSG("The token type <%s> is unhandled",
+                  LX::pprint(t.tag).c_str());
+      break;
     }
-    break;
-    }
-  }
 
-  return e;
+  while (!s.m_op_stk.empty()) s.combine();
+  if (!s.m_vals.empty()) m_exprs.push(*s.m_vals.back());
+
+  return result;
 }
 
 /*-------------------------------------------------------------------------------
@@ -608,31 +433,32 @@ namespace
 {
 const char *
 binop_str(
-  EX::Type t)
+  BinopTag op)
 {
-  switch (t)
+  switch (op)
   {
-  case EX::Type::Add    : return " + ";
-  case EX::Type::Sub    : return " - ";
-  case EX::Type::Mult   : return " * ";
-  case EX::Type::Div    : return " / ";
-  case EX::Type::Modulus : return " % ";
-  case EX::Type::IsEq   : return " ?= ";
-  default: UT_FAIL_IF("Not a binop"); return "";
+  case BinopTag::Add : return " + ";
+  case BinopTag::Sub : return " - ";
+  case BinopTag::Mul : return " * ";
+  case BinopTag::Div : return " / ";
+  case BinopTag::Mod : return " % ";
+  case BinopTag::IsEq: return " ?= ";
   }
+  UT_FAIL_IF("Not a binop");
+  return "";
 }
 } // namespace
 
 std::string
 pprint(
-  Type t, int level)
+  ExprTag t, int level)
 {
   std::string pad(level * 2, ' ');
   switch (t)
   {
-#define X(X_enum)                                                              \
-  case Type::X_enum: return pad + #X_enum;
-    EX_Type_EnumVariants
+#define X(tag, type)                                                           \
+  case ExprTag::tag: return pad + #tag;
+    EX_EXPR_VARIANTS
 #undef X
   }
   UT_FAIL_IF("UNREACHABLE");
@@ -646,71 +472,47 @@ pprint(
   if (!e) return std::string(level * 2, ' ') + "(null)";
 
   std::string pad(level * 2, ' ');
-  switch (e->m_type)
+  switch (e->tag)
   {
-  case Type::Int:
-    return pad + std::to_string(e->as.m_int);
-  case Type::Var:
-    return pad + std::to_string(e->as.m_var);
-  case Type::Str:
-    return pad + "\"" + std::to_string(e->as.m_string) + "\"";
-  case Type::Minus:
-    return pad + "-" + pprint(e->as.m_expr, 0);
-  case Type::Not:
-    return pad + "not " + pprint(e->as.m_expr, 0);
-  case Type::Add:
-  case Type::Sub:
-  case Type::Mult:
-  case Type::Div:
-  case Type::Modulus:
-  case Type::IsEq:
-    return pad + pprint(e->as.m_pair.begin(), 0)
-         + binop_str(e->m_type)
-         + pprint(e->as.m_pair.last(), 0);
-  case Type::Let:
-    return pad + "let " + std::to_string(e->as.m_let.m_var_name) + " =\n"
-         + pprint(e->as.m_let.m_value, level + 1) + "\n"
-         + pad + "in\n"
-         + pprint(e->as.m_let.m_continuation, level + 1);
-  case Type::If:
-    return pad + "if " + pprint(e->as.m_if.m_condition, 0) + " then\n"
-         + pprint(e->as.m_if.m_true_branch, level + 1) + "\n"
-         + pad + "else\n"
-         + pprint(e->as.m_if.m_else_branch, level + 1);
-  case Type::FnDef:
-    return pad + "\\" + std::to_string(e->as.m_fn.m_param) + " =\n"
-         + pprint(e->as.m_fn.m_body, level + 1);
-  case Type::FnApp:
+  case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
+  case ExprTag::Var: return pad + std::to_string(std::get<ExVar>(e->as).name);
+  case ExprTag::Str:
+    return pad + "\"" + std::to_string(std::get<ExStr>(e->as).value) + "\"";
+  case ExprTag::Unop:
   {
-    std::string s = pad + "(\\" + std::to_string(e->as.m_fnapp.m_body.m_param)
-                  + " =\n" + pprint(e->as.m_fnapp.m_body.m_body, level + 1)
-                  + "\n" + pad + ")(";
-    for (size_t i = 0; i < e->as.m_fnapp.m_param.m_len; ++i)
-    {
-      if (i > 0) s += ", ";
-      s += pprint(&e->as.m_fnapp.m_param[i], 0);
-    }
-    s += ")";
-    return s;
+    auto &u = std::get<ExUnop>(e->as);
+    return pad + (u.tag == UnopTag::Neg ? "-" : "not ") + pprint(u.op, 0);
   }
-  case Type::VarApp:
+  case ExprTag::Binop:
   {
-    std::string s = pad + std::to_string(e->as.m_varapp.m_fn_name) + "(";
-    for (size_t i = 0; i < e->as.m_varapp.m_param.m_len; ++i)
-    {
-      if (i > 0) s += ", ";
-      s += pprint(&e->as.m_varapp.m_param[i], 0);
-    }
-    s += ")";
-    return s;
+    auto &b = std::get<ExBinop>(e->as);
+    return pad + pprint(b.ops.begin(), 0) + binop_str(b.tag)
+           + pprint(b.ops.last(), 0);
   }
-  case Type::PubDef:
-  case Type::IntDef:
-    return pad + (Type::PubDef == e->m_type ? "pub " : "int ")
-         + std::to_string(e->as.m_gdef.name) + " =\n"
-         + pprint(e->as.m_gdef.def, level + 1);
-  case Type::Unknown:
-    return pad + "?unknown";
+  case ExprTag::Let:
+    return pad + "let " + std::to_string(std::get<ExLet>(e->as).var) + " =\n"
+           + pprint(std::get<ExLet>(e->as).val, level + 1) + "\n" + pad + "in\n"
+           + pprint(std::get<ExLet>(e->as).body, level + 1);
+  case ExprTag::If:
+    return pad + "if " + pprint(std::get<ExIf>(e->as).cond, 0) + " then\n"
+           + pprint(std::get<ExIf>(e->as).then, level + 1) + "\n" + pad
+           + "else\n" + pprint(std::get<ExIf>(e->as).alt, level + 1);
+  case ExprTag::FnDef:
+    return pad + "\\" + std::to_string(std::get<ExFnDef>(e->as).param) + " =\n"
+           + pprint(std::get<ExFnDef>(e->as).body, level + 1);
+  case ExprTag::App:
+  {
+    auto &app = std::get<ExApp>(e->as);
+    return pad + "(app\n" + pprint(app.fn, level + 1) + "\n"
+           + pprint(app.arg, level + 1) + ")";
+  }
+  case ExprTag::PubDef:
+    return pad + "pub " + std::to_string(std::get<ExPubDef>(e->as).name)
+           + " =\n" + pprint(std::get<ExPubDef>(e->as).def, level + 1);
+  case ExprTag::IntDef:
+    return pad + "int " + std::to_string(std::get<ExIntDef>(e->as).name)
+           + " =\n" + pprint(std::get<ExIntDef>(e->as).def, level + 1);
+  case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";
