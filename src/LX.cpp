@@ -34,7 +34,7 @@
     }                                                                          \
   } while (false)
 
-#define LX_FN_TRY_L(LX_LEXER, LX_FN)                                          \
+#define LX_FN_TRY_L(LX_LEXER, LX_FN)                                           \
   do                                                                           \
   {                                                                            \
     LX::E result = (LX_FN);                                                    \
@@ -87,7 +87,7 @@
     }                                                                          \
   } while (false)
 
-#define LX_ASSERT_L(LX_LEXER, LX_BOOL_EXPR, LX_ERROR_E)                       \
+#define LX_ASSERT_L(LX_LEXER, LX_BOOL_EXPR, LX_ERROR_E)                        \
   do                                                                           \
   {                                                                            \
     if (!(LX_BOOL_EXPR))                                                       \
@@ -101,7 +101,7 @@
                                        (LX_ERROR_E),                           \
                                        this->m_input,                          \
                                        this->m_filename,                       \
-                                       (LX_LEXER).m_cursor });                \
+                                       (LX_LEXER).m_cursor });                 \
       return (LX_ERROR_E);                                                     \
     }                                                                          \
   } while (false)
@@ -566,7 +566,7 @@ Lexer::next(
   }
   else
   {
-    std::printf("%s\n", UT_TCS(sb));
+    std::printf("[%s]\n", UT_TCS(sb));
     LX_RETURN_ERROR(E::UNEXPECTED_GLOBAL_DEF_SYM_MARKER);
   }
 
@@ -579,6 +579,7 @@ E
 Lexer::next_word(
   UT::String &sb)
 {
+START_LOOKING_AGAIN:
   strip_white_space(m_cursor);
   sb.m_mem = m_input.m_mem + m_cursor;
   sb.m_len = 0;
@@ -588,6 +589,14 @@ Lexer::next_word(
   LX_FN_TRY(get_char_validity(current_char));
   LX_ASSERT(not reserved_not_used(current_char),
             E::ILLEGAL_USE_OF_RESERVED_CHAR);
+
+  if ('#' == current_char)
+  {
+    strip_line(m_cursor);
+    strip_white_space(m_cursor);
+    sb.m_mem = m_input.m_mem + m_cursor;
+    goto START_LOOKING_AGAIN;
+  }
 
   if ('"' == current_char)
   {
@@ -613,13 +622,6 @@ Lexer::next_word(
         sb += 1;
       }
     }
-  }
-
-  if ('#' == current_char)
-  {
-    strip_line(m_cursor);
-    strip_white_space(m_cursor);
-    sb.m_mem = m_input.m_mem + m_cursor;
   }
 
   if (delimiter_operator(current_char))
@@ -737,11 +739,13 @@ Lexer::matches_ifelse(
 
   pop_word(words);
   Lexer lcond{ *this, m_cursor, m_end };
-  LX_ASSERT_L(lcond, E::FAT_ARROW == lcond.tokenize(words),
+  LX_ASSERT_L(lcond,
+              E::FAT_ARROW == lcond.tokenize(words),
               E::IF_CONDITION_SEPARATOR_MISSING);
 
   Lexer ltrue{ lcond, m_cursor, m_end };
-  LX_ASSERT_L(ltrue, E::ELSE_KEYWORD == ltrue.tokenize(words),
+  LX_ASSERT_L(ltrue,
+              E::ELSE_KEYWORD == ltrue.tokenize(words),
               E::IF_EXPR_MISSING_ELSE_BRANCH);
 
   Lexer lelse{ ltrue, m_cursor, m_end };
@@ -753,7 +757,8 @@ Lexer::matches_ifelse(
     LX_RETURN_ERROR(E::IF_EXPR_MALFORMED_ELSE_BRANCH);
   }
 
-  LX_ASSERT_L(lelse, not lelse.m_tokens.is_empty(),
+  LX_ASSERT_L(lelse,
+              not lelse.m_tokens.is_empty(),
               E::IF_EXPR_ELSE_BRANCH_EMPTY); // FIXME [empty tokens]
 
   if (E::IN_KEYWORD == e) words.retreat();
@@ -785,13 +790,13 @@ Lexer::matches_letin(
 
   // FIXME: what if tokens from llet or lin are empty?
   Lexer llet{ *this, m_cursor, m_end };
-  LX_ASSERT_L(llet, E::IN_KEYWORD == llet.tokenize(words),
-              E::LET_EXPR_MISSING_IN);
+  LX_ASSERT_L(
+    llet, E::IN_KEYWORD == llet.tokenize(words), E::LET_EXPR_MISSING_IN);
 
   Lexer lin{ *this, m_cursor, m_end };
   E     e = lin.tokenize(words);
-  LX_ASSERT_L(lin, E::IN_KEYWORD == e || E::OK == e,
-              E::LET_EXPR_ERRONEOUS_IN_EXPR);
+  LX_ASSERT_L(
+    lin, E::IN_KEYWORD == e || E::OK == e, E::LET_EXPR_ERRONEOUS_IN_EXPR);
 
   if (E::IN_KEYWORD == e) words.retreat();
 
@@ -811,11 +816,11 @@ Lexer::matches_open_paren(
   pop_word(words);
 
   Lexer new_l{ *this, m_cursor, m_end };
-  LX_ASSERT_L(new_l, E::PAREN_LEFT == new_l.tokenize(words),
-              E::PARENTHESIS_UNBALANCED);
+  LX_ASSERT_L(
+    new_l, E::PAREN_LEFT == new_l.tokenize(words), E::PARENTHESIS_UNBALANCED);
 
-  Token t = mk_token(
-    TokenTag::Group, TkGroup{ std::move(new_l.m_tokens) }, word);
+  Token t
+    = mk_token(TokenTag::Group, TkGroup{ std::move(new_l.m_tokens) }, word);
   m_tokens.push(t);
 
   return E::MATCHES_OPEN_PAREN;
@@ -908,9 +913,7 @@ Lexer::matches_lambda(
     break;
   }
   case E::OK: break;
-  default:
-    subsume(lambda);
-    LX_RETURN_ERROR(e);
+  default   : subsume(lambda); LX_RETURN_ERROR(e);
   }
   m_cursor = lambda.m_cursor;
 
@@ -1142,7 +1145,8 @@ Lexer::Lexer(
 Lexer::Lexer(
   Lexer const &l, size_t begin, size_t end)
     : m_arena{ l.m_arena },
-      m_events{ new (l.m_arena.alloc(sizeof(ER::Events))) ER::Events(l.m_arena) },
+      m_events{ new (l.m_arena.alloc(sizeof(ER::Events)))
+                  ER::Events(l.m_arena) },
       m_input{ l.m_input },
       m_filename{ l.m_filename },
       m_cursor(l.m_cursor),

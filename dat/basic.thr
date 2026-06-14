@@ -1,3 +1,6 @@
+# \file basic.thr
+# \info Basic examples for the language
+
 # ---------- arithmetic & let ----------
 
 pub answer = let x = 6 in x * 7
