@@ -31,11 +31,13 @@ THRAXsrc = \
 	$(SRC)AR.cpp \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
-	$(SRC)IT.cpp
+	$(SRC)IT.cpp \
+	$(SRC)DR.cpp
 
 THRAXinc = \
 	$(INC)AR.hpp \
 	$(INC)ER.hpp \
+	$(INC)DR.hpp \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
 	$(INC)IT.hpp \

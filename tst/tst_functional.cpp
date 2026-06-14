@@ -1,9 +1,10 @@
-#include "UT.hpp"
+#include "TS.hpp"
 
-constexpr UT::String sut_file_basic = "./dat/basic.thr";
+constexpr UT::String sut_file = "./dat/basic.thr";
+
 
 int
 main()
 {
-  UT_UNUSED(sut_file_basic);
+  tst_file(sut_file);
 }

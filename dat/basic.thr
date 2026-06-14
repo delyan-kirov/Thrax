@@ -1,63 +1,122 @@
-# this is an expression
+# ---------- arithmetic & let ----------
 
-pub a = 1
+pub answer = let x = 6 in x * 7
 
-int b = let c
-	= a + a
-	in c + 2
+pub complex = (1 + 2) * (3 - 4) + 5
 
-pub foo = \x = 2 * x
+pub nested_let =
+	let a = 10 in
+	let b = 20 in
+	a * b + a
 
-int baz = foo 2
+# ---------- identity & constant ----------
 
-int baz = foo 5
+pub id = \x = x
 
-int fib = \x =
-	if x ?= 0 => 0
-	else if x ?= 1 => 1
-else let previous = fib (x - 1)
-		 in let preprevious = fib (x - 2)
-		 in previous + preprevious
+pub const = \x = \y = x
 
-int fib12 = fib 15
+pub id_five = id 5
 
-pub pow2 = \x =
-	if x ?= 0 => 1
-	else 2 * (pow2 (x - 1))
+pub const_ab = const 42 99
 
-int pow2_50 = pow2 50
+# ---------- simple branching ----------
 
-pub pow = \base = \power =
-	if power ?= 0 => 1
-	else base * (pow base (power - 1))
+int abs = \n =
+	if n ?= 0 => 0
+	else if n ?= (0 - n) => 0 - n
+	else n
 
-pub powres = pow 3 9
+int max = \a = \b =
+	if a ?= b => a
+	else if a ?= (abs a) => a
+	else b
 
-pub summate = \sum = \x =
-	if x ?= 0 => sum
-	else summate (sum + x) (x - 1)
+int min = \a = \b =
+	if a ?= b => a
+	else if a ?= (abs a) => b
+	else a
 
-pub summing = summate 0 10
+pub max_ex = max 3 7
+pub min_ex = min 3 7
 
-pub neg = \x = -x
+# ---------- recursion: fibonacci ----------
 
-pub neg3 = neg (2 + 1)
+int fib = \n =
+	if n ?= 0 => 0
+	else if n ?= 1 => 1
+	else (fib (n - 1)) + (fib (n - 2))
 
-pub fnappthis = \fn = \x = fn x
-pub appli =
-	let newfn = \x = -x
-	in fnappthis newfn 31
+pub fib0  = fib 0
+pub fib1  = fib 1
+pub fib5  = fib 5
+pub fib10 = fib 10
 
-# FIXME https://github.com/delyan-kirov/BC/issues/25
-# pub tryrecfn = let innerrec = \fn = \x =
-# 	if (x ?= 0) => 1
-# 	else 2 * (innerrec (x - 1))
-# in innerrec
+# ---------- recursion: power of 2 ----------
 
-# pub inner1 = tryrecfn 3
+int pow2 = \n =
+	if n ?= 0 => 1
+	else 2 * (pow2 (n - 1))
 
-# FIXME: https://github.com/delyan-kirov/BC/issues/23
-# pub succ = \n = \f = \x = f (n f x)
-# pub zero = \f = \x = x
-# pub one  = \f = \x = f x
-# pub two = succ one
+pub pow2_0  = pow2 0
+pub pow2_8  = pow2 8
+pub pow2_10 = pow2 10
+
+# ---------- recursion: power of n ----------
+
+int pow = \base = \exp =
+	if exp ?= 0 => 1
+	else base * (pow base (exp - 1))
+
+pub pow_2_10 = pow 2 10
+pub pow_3_4  = pow 3 4
+pub pow_5_3  = pow 5 3
+
+# ---------- recursion: factorial ----------
+
+int fact = \n =
+	if n ?= 0 => 1
+	else n * (fact (n - 1))
+
+pub fact5  = fact 5
+pub fact10 = fact 10
+
+# ---------- recursion: sum 1..n ----------
+
+int sum_to = \n =
+	if n ?= 0 => 0
+	else n + (sum_to (n - 1))
+
+pub sum_to_10  = sum_to 10
+pub sum_to_100 = sum_to 100
+
+# ---------- recursion: gcd ----------
+
+int gcd = \a = \b =
+	if b ?= 0 => a
+	else gcd b (a % b)
+
+pub gcd_12_8   = gcd 12 8
+pub gcd_54_24  = gcd 54 24
+pub gcd_100_75 = gcd 100 75
+
+# ---------- higher-order: apply twice ----------
+
+pub apply_twice = \f = \x = f (f x)
+
+int inc = \x = x + 1
+int dbl = \x = x * 2
+
+pub inc_twice = apply_twice inc 0
+pub dbl_twice = apply_twice dbl 3
+
+# ---------- composition via let ----------
+
+pub composed =
+	let square = \x = x * x in
+	let add1   = \x = x + 1 in
+	add1 (square 5)
+
+# ---------- strings ----------
+
+pub greeting = "hello world"
+pub lang     = "thrax"
