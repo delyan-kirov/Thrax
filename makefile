@@ -74,6 +74,7 @@ list:
 valgrind:
 	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_mult
 	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_functional
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_debug
 
 format:
 	find . -maxdepth 1 -regex '.*\.\(cpp\|hpp\|c\|h\)$\' -exec clang-format -i {} + 
