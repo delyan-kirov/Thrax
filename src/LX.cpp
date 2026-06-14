@@ -15,27 +15,32 @@
 /*------------------------------------------------------------------------------
  *\MACROS
  *-----------------------------------------------------------------------------*/
-#define LX_ERROR_REPORT(LX_ERROR_E, LX_ERROR_MSG)                              \
-  do                                                                           \
-  {                                                                            \
-    this->m_events->push(LX::ErrorE{ this->m_arena,                            \
-                                     __FILE__,                                 \
-                                     __PRETTY_FUNCTION__,                      \
-                                     __LINE__,                                 \
-                                     (LX_ERROR_MSG),                           \
-                                     (LX_ERROR_E),                             \
-                                     this->m_input,                            \
-                                     this->m_filename,                         \
-                                     this->m_cursor });                        \
-    return (LX_ERROR_E);                                                       \
-  } while (false)
-
 #define LX_FN_TRY(LX_FN)                                                       \
   do                                                                           \
   {                                                                            \
     LX::E result = (LX_FN);                                                    \
     if (LX::E::OK != result)                                                   \
     {                                                                          \
+      this->m_events->push(LX::ErrorE{ this->m_arena,                          \
+                                       __FILE__,                               \
+                                       __PRETTY_FUNCTION__,                    \
+                                       __LINE__,                               \
+                                       ("The function: " #LX_FN " failed!"),   \
+                                       result,                                 \
+                                       this->m_input,                          \
+                                       this->m_filename,                       \
+                                       this->m_cursor });                      \
+      return result;                                                           \
+    }                                                                          \
+  } while (false)
+
+#define LX_FN_TRY_L(LX_LEXER, LX_FN)                                          \
+  do                                                                           \
+  {                                                                            \
+    LX::E result = (LX_FN);                                                    \
+    if (LX::E::OK != result)                                                   \
+    {                                                                          \
+      this->subsume(LX_LEXER);                                                 \
       this->m_events->push(LX::ErrorE{ this->m_arena,                          \
                                        __FILE__,                               \
                                        __PRETTY_FUNCTION__,                    \
@@ -64,7 +69,6 @@
     return LX_ERROR;                                                           \
   } while (false)
 
-// FIXME: should take a cursor or something
 #define LX_ASSERT(LX_BOOL_EXPR, LX_ERROR_E)                                    \
   do                                                                           \
   {                                                                            \
@@ -79,6 +83,25 @@
                                        this->m_input,                          \
                                        this->m_filename,                       \
                                        this->m_cursor });                      \
+      return (LX_ERROR_E);                                                     \
+    }                                                                          \
+  } while (false)
+
+#define LX_ASSERT_L(LX_LEXER, LX_BOOL_EXPR, LX_ERROR_E)                       \
+  do                                                                           \
+  {                                                                            \
+    if (!(LX_BOOL_EXPR))                                                       \
+    {                                                                          \
+      this->subsume(LX_LEXER);                                                 \
+      this->m_events->push(LX::ErrorE{ this->m_arena,                          \
+                                       __FILE__,                               \
+                                       __PRETTY_FUNCTION__,                    \
+                                       __LINE__,                               \
+                                       (#LX_BOOL_EXPR),                        \
+                                       (LX_ERROR_E),                           \
+                                       this->m_input,                          \
+                                       this->m_filename,                       \
+                                       (LX_LEXER).m_cursor });                \
       return (LX_ERROR_E);                                                     \
     }                                                                          \
   } while (false)
@@ -497,6 +520,7 @@ Lexer::next_sym(
     }
     if (E::OK != e)
     {
+      subsume(l);
       LX_RETURN_ERROR(e);
     }
     words.push_back(sb);
@@ -505,8 +529,9 @@ Lexer::next_sym(
   UT::Vu<UT::String> ws{ words };
   LX_ASSERT(ws.m_len >= 3, E::GLOBAL_DEF_STRUCTURE_MALFORMED);
 
-  UT::String varname = *ws.pop_front();
-  LX_ASSERT("=" == *ws.pop_front(), E::EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF);
+  UT::String varname = pop_word(ws);
+  UT::String eq      = pop_word(ws);
+  LX_ASSERT("=" == eq, E::EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF);
   LX_FN_TRY(tokenize(ws));
   m_cursor = l.m_cursor;
 
@@ -522,11 +547,11 @@ Lexer::next(
   Lexer      l{ *this, m_cursor, m_end };
   UT::String sb{ 0 };
 
-  LX_FN_TRY(l.next_word(sb));
+  LX_FN_TRY_L(l, l.next_word(sb));
 
   if (Keyword::INT == sb || Keyword::PUB == sb)
   {
-    LX_FN_TRY(l.next_sym(t));
+    LX_FN_TRY_L(l, l.next_sym(t));
     m_cursor = l.m_cursor;
     if (Keyword::PUB == sb)
     {
@@ -680,7 +705,7 @@ Lexer::matches_operator(
   {
     Token t = mk_token(lookup->second, s);
     m_tokens.push(t);
-    words.pop_front();
+    pop_word(words);
     return E::MATCHED_OPERATOR;
   }
 
@@ -697,7 +722,7 @@ Lexer::matches_quotm(
     return E::OK;
   }
 
-  words.pop_front();
+  pop_word(words);
   Token t = mk_token(TokenTag::Str, TkStr{ word }, word);
   m_tokens.push(t);
   return E::MATCHED_QUOTM;
@@ -710,25 +735,26 @@ Lexer::matches_ifelse(
   UT::String word = *words.first();
   if (Keyword::IF != word) return E::OK;
 
-  words.pop_front();
+  pop_word(words);
   Lexer lcond{ *this, m_cursor, m_end };
-  LX_ASSERT(E::FAT_ARROW == lcond.tokenize(words),
-            E::IF_CONDITION_SEPARATOR_MISSING);
+  LX_ASSERT_L(lcond, E::FAT_ARROW == lcond.tokenize(words),
+              E::IF_CONDITION_SEPARATOR_MISSING);
 
   Lexer ltrue{ lcond, m_cursor, m_end };
-  LX_ASSERT(E::ELSE_KEYWORD == ltrue.tokenize(words),
-            E::IF_EXPR_MISSING_ELSE_BRANCH);
+  LX_ASSERT_L(ltrue, E::ELSE_KEYWORD == ltrue.tokenize(words),
+              E::IF_EXPR_MISSING_ELSE_BRANCH);
 
   Lexer lelse{ ltrue, m_cursor, m_end };
   E     e = lelse.tokenize(words);
 
   if (not(E::OK == e || E::IN_KEYWORD == e))
   {
+    subsume(lelse);
     LX_RETURN_ERROR(E::IF_EXPR_MALFORMED_ELSE_BRANCH);
   }
 
-  LX_ASSERT(not lelse.m_tokens.is_empty(),
-            E::IF_EXPR_ELSE_BRANCH_EMPTY); // FIXME [empty tokens]
+  LX_ASSERT_L(lelse, not lelse.m_tokens.is_empty(),
+              E::IF_EXPR_ELSE_BRANCH_EMPTY); // FIXME [empty tokens]
 
   if (E::IN_KEYWORD == e) words.retreat();
 
@@ -746,23 +772,26 @@ Lexer::matches_letin(
 {
   UT::String word = *words.first();
   if (Keyword::LET != word) return E::OK;
-  words.pop_front();
+  pop_word(words);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_NAME_MISSING);
 
-  UT::String varname = *words.pop_front();
+  UT::String varname = pop_word(words);
   LX_ASSERT("" != varname, E::LET_EXPR_EMPTY_VAR_NAME);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_VAR_DEF_EMPTY);
 
-  LX_ASSERT("=" == *words.pop_front(), E::LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING);
+  UT::String eq = pop_word(words);
+  LX_ASSERT("=" == eq, E::LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING);
   LX_ASSERT(not words.is_empty(), E::LET_EXPR_EXPECTED_DEF_AFTER_EQ);
 
   // FIXME: what if tokens from llet or lin are empty?
   Lexer llet{ *this, m_cursor, m_end };
-  LX_ASSERT(E::IN_KEYWORD == llet.tokenize(words), E::LET_EXPR_MISSING_IN);
+  LX_ASSERT_L(llet, E::IN_KEYWORD == llet.tokenize(words),
+              E::LET_EXPR_MISSING_IN);
 
   Lexer lin{ *this, m_cursor, m_end };
   E     e = lin.tokenize(words);
-  LX_ASSERT(E::IN_KEYWORD == e || E::OK == e, E::LET_EXPR_ERRONEOUS_IN_EXPR);
+  LX_ASSERT_L(lin, E::IN_KEYWORD == e || E::OK == e,
+              E::LET_EXPR_ERRONEOUS_IN_EXPR);
 
   if (E::IN_KEYWORD == e) words.retreat();
 
@@ -779,10 +808,11 @@ Lexer::matches_open_paren(
 {
   UT::String word = *words.first();
   if ("(" != word) return E::OK;
-  words.pop_front();
+  pop_word(words);
 
   Lexer new_l{ *this, m_cursor, m_end };
-  LX_ASSERT(E::PAREN_LEFT == new_l.tokenize(words), E::PARENTHESIS_UNBALANCED);
+  LX_ASSERT_L(new_l, E::PAREN_LEFT == new_l.tokenize(words),
+              E::PARENTHESIS_UNBALANCED);
 
   Token t = mk_token(
     TokenTag::Group, TkGroup{ std::move(new_l.m_tokens) }, word);
@@ -801,7 +831,7 @@ Lexer::matches_integer(
     return E::OK;
   }
 
-  words.pop_front();
+  pop_word(words);
 
   try
   {
@@ -827,7 +857,7 @@ Lexer::matches_string(
     return E::OK;
   }
 
-  words.pop_front();
+  pop_word(words);
   Token t = mk_token(TokenTag::Word, TkWord{ s }, s);
   m_tokens.push(t);
 
@@ -842,7 +872,7 @@ Lexer::matches_control_operator(
   auto       lookup = control_delimiter_info_db.find(std::to_string(s));
   if (control_delimiter_info_db.end() != lookup)
   {
-    words.pop_front();
+    pop_word(words);
     return lookup->second;
   }
 
@@ -856,12 +886,13 @@ Lexer::matches_lambda(
   if (words.is_empty()) return E::OK;
   UT::String s = *words.first();
   if ("\\" != s) return E::OK;
-  words.pop_front();
+  pop_word(words);
   LX_ASSERT(not words.is_empty(), E::LAMBDA_NO_VAR_NAME);
-  UT::String varname = *words.pop_front();
+  UT::String varname = pop_word(words);
 
   LX_ASSERT(not words.is_empty(), E::LAMBDA_NOTHING_AFTER_VAR);
-  LX_ASSERT("=" == *words.pop_front(), E::LAMBDA_EQ_EXPECTED_AFTER_VARNAME);
+  UT::String eq = pop_word(words);
+  LX_ASSERT("=" == eq, E::LAMBDA_EQ_EXPECTED_AFTER_VARNAME);
   LX_ASSERT(not words.is_empty(), E::LAMBDA_EXPECTED_DEF_AFTER_EQ);
 
   Lexer lambda = Lexer{ *this, m_cursor, m_end };
@@ -877,7 +908,9 @@ Lexer::matches_lambda(
     break;
   }
   case E::OK: break;
-  default   : LX_RETURN_ERROR(e);
+  default:
+    subsume(lambda);
+    LX_RETURN_ERROR(e);
   }
   m_cursor = lambda.m_cursor;
 
@@ -1064,6 +1097,25 @@ Lexer::strip_line(
   this->m_cursor = idx;
 }
 
+UT::String
+Lexer::pop_word(
+  UT::Vu<UT::String> &words)
+{
+  UT::String w = *words.pop_front();
+  m_cursor     = w.m_mem - m_input.m_mem;
+  return w;
+}
+
+void
+Lexer::subsume(
+  const Lexer &l)
+{
+  for (size_t i = 0; i < l.m_events->m_len; ++i)
+  {
+    m_events->push((*l.m_events)[i]);
+  }
+}
+
 char
 Lexer::peek_char()
 {
@@ -1090,7 +1142,7 @@ Lexer::Lexer(
 Lexer::Lexer(
   Lexer const &l, size_t begin, size_t end)
     : m_arena{ l.m_arena },
-      m_events{ l.m_events },
+      m_events{ new (l.m_arena.alloc(sizeof(ER::Events))) ER::Events(l.m_arena) },
       m_input{ l.m_input },
       m_filename{ l.m_filename },
       m_cursor(l.m_cursor),

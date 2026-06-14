@@ -278,6 +278,10 @@ public:
 
   UT::String get_word(size_t idx);
 
+  UT::String pop_word(UT::Vu<UT::String> &words);
+
+  void subsume(const Lexer &l);
+
   void strip_white_space(size_t idx);
 
   void strip_line(size_t idx);
