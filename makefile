@@ -111,7 +111,7 @@ clean:
 	rm -f vgcore*
 	rm -f *.orig
 	rm -rf $(BIN)*
-	rm valgrind*
+	rm -f valgrind*
 	$(MAKE) -C ./lib clean
 
 clean_wkspace:
