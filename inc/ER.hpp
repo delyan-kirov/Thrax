@@ -13,10 +13,6 @@
 #ifndef ER_HEADER
 #define ER_HEADER
 
-#include <cstdarg>
-#include <cstdio>
-#include <string>
-
 #include "AR.hpp"
 #include "UT.hpp"
 

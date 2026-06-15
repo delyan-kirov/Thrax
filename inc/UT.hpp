@@ -1,6 +1,7 @@
 #ifndef UT_HEADER
 #define UT_HEADER
 
+#include <cstdarg>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
