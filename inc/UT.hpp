@@ -1,16 +1,23 @@
 #ifndef UT_HEADER
 #define UT_HEADER
 
+#include <cstdarg>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <memory.h>
+#include <memory>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
+
+#include "AR.hpp"
 
 // TODO: There should be a special format for macro args
 // This is because arguments can resolve to other macros
@@ -83,158 +90,6 @@
 
 #define UTSTRf "%.*s"
 #define UTSTFa(UT_STR_VAR) (int)UT_STR_VAR.m_len, UT_STR_VAR.m_mem
-
-namespace AR
-{
-constexpr size_t BLOCK_DEFAULT_LEN = (1 << 10);
-
-class Arena;
-class Block
-{
-  friend class Arena;
-
-private:
-  size_t  len;
-  size_t  max_len;
-  uint8_t mem[];
-
-  Block()  = delete;
-  ~Block() = delete;
-
-  Block(const Block &)            = delete;
-  Block &operator=(const Block &) = delete;
-
-  Block(Block &&)            = delete;
-  Block &operator=(Block &&) = delete;
-};
-
-class Arena
-{
-public:
-  void *alloc(size_t size);
-
-  template <typename Type>
-  void *
-  alloc()
-  {
-    return alloc(sizeof(Type));
-  }
-
-  template <typename Type>
-  void *
-  alloc(
-    size_t size)
-  {
-    return alloc(size * sizeof(Type));
-  }
-
-  template <typename Type>
-  void *
-  alloc(
-    Type *t)
-  {
-    return alloc(sizeof(t));
-  }
-
-  Arena();
-  ~Arena();
-
-private:
-  size_t  len;
-  size_t  max_len;
-  Block **mem;
-
-private:
-  Arena(const Arena &)            = delete;
-  Arena &operator=(const Arena &) = delete;
-  Arena(Arena &&)                 = delete;
-  Arena &operator=(Arena &&)      = delete;
-};
-
-constexpr size_t DEFAULT_T_MEM_SIZE = 8;
-
-inline AR::Arena::Arena()
-{
-  this->len     = 1;
-  this->max_len = DEFAULT_T_MEM_SIZE;
-  this->mem     = (Block **)malloc(sizeof(Block *) * DEFAULT_T_MEM_SIZE);
-
-  Block *block = (Block *)std::malloc(
-    sizeof(Block) + sizeof(uint8_t) * AR::BLOCK_DEFAULT_LEN);
-
-  block->max_len = AR::BLOCK_DEFAULT_LEN;
-  block->len     = 0;
-
-  this->mem[0] = block;
-}
-
-inline AR::Arena::~Arena()
-{
-  for (size_t i = 0; i < this->len; ++i)
-  {
-    Block *block = this->mem[i];
-    std::free(block);
-  }
-  std::free(this->mem);
-
-  return;
-}
-
-inline void *
-AR::Arena::alloc(
-  size_t size)
-{
-  if (!size)
-  {
-    return nullptr;
-  }
-now_allocate:
-  Block *block       = this->mem[this->len - 1];
-  size_t size_of_ptr = sizeof(void *);
-  size_t alloc_size  = ((size + size_of_ptr - 1) / size_of_ptr) * size_of_ptr;
-  size_t mem_left    = block->max_len - block->len;
-
-  void *ptr = nullptr;
-
-  if (mem_left >= alloc_size)
-  {
-    ptr = block->mem + block->len;
-    block->len += alloc_size;
-  }
-  else // The current block is full
-  {
-    if (this->max_len > this->len) // Create a new block
-    {
-      size_t block_new_size
-        = sizeof(Block)
-          + sizeof(uint8_t) * std::max(alloc_size, AR::BLOCK_DEFAULT_LEN);
-
-      Block *block   = (Block *)malloc(block_new_size);
-      block->len     = 0;
-      block->max_len = block_new_size - sizeof(Block);
-
-      this->mem[this->len] = block;
-      this->len += 1;
-
-      goto now_allocate;
-    }
-    else // The aray is full, we need to resize it
-    {
-      size_t block_new_len = this->len * 2;
-      auto   new_mem
-        = (Block **)std::realloc(this->mem, block_new_len * sizeof(Block *));
-
-      this->mem     = new_mem;
-      this->max_len = block_new_len;
-
-      goto now_allocate;
-    }
-  }
-
-  return ptr;
-}
-
-} // namespace AR
 
 namespace UT
 {
@@ -403,6 +258,13 @@ template <typename O> struct Vu
   {
     m_mem -= 1;
     m_len += 1;
+  }
+
+  O *
+  forsakened(
+    size_t i = 1)
+  {
+    return m_mem - i;
   }
 };
 
@@ -918,6 +780,38 @@ SB::append(
   (..., this->concat(std::forward<Args>(args), " "));
 }
 
+// Look up a key in any map-like container, returning a pointer to the mapped
+// value, or nullptr when absent. Use when not finding the key is a normal case.
+template <typename Map, typename Key>
+const typename Map::mapped_type *
+try_lookup(
+  const Map &m, const Key &k)
+{
+  auto it = m.find(k);
+  return it == m.end() ? nullptr : &it->second;
+}
+
+// Look up a key that is expected to be present; fails hard when it is not.
+template <typename Map, typename Key>
+const typename Map::mapped_type &
+lookup(
+  const Map &m, const Key &k)
+{
+  auto it = m.find(k);
+  UT_FAIL_IF(it == m.end());
+  return it->second;
+}
+
+// Look up a key, falling back to a default value when it is absent.
+template <typename Map, typename Key>
+typename Map::mapped_type
+lookup_or(
+  const Map &m, const Key &k, typename Map::mapped_type fallback)
+{
+  auto it = m.find(k);
+  return it == m.end() ? fallback : it->second;
+}
+
 // TODO: Better print messages
 // TODO: Better error handling
 inline String
@@ -971,85 +865,6 @@ to_string(
   string result{ var_mem };
   delete[] var_mem;
   return result;
-}
-} // namespace std
-
-namespace ER
-{
-
-enum class Level
-{
-  MIN = 0,
-  ERROR,
-  WARNING,
-  INFO,
-  MAX,
-};
-
-struct E
-{
-  Level      m_level = Level::MIN;
-  size_t     m_type  = 0;
-  AR::Arena *m_arena = nullptr;
-  void      *m_data  = nullptr;
-  ;
-
-  E();
-  E(Level level, size_t type, AR::Arena &arena, void *data)
-      : m_level{ level },  //
-        m_type{ type },    //
-        m_arena{ &arena }, //
-        m_data{ data }     //
-  {};
-};
-
-class Events : public UT::Vec<E>
-{
-public:
-  Events(
-    AR::Arena &arena)
-      : UT::Vec<E>{ arena }
-  {
-  }
-  Events()                    = delete;
-  ~Events()                   = default;
-  Events(const Events &other) = default;
-  Events(
-    Events &&other)
-  {
-    this->m_arena   = other.m_arena;
-    this->m_len     = other.m_len;
-    this->m_max_len = other.m_max_len;
-    this->m_mem     = other.m_mem;
-
-    other.m_mem     = nullptr;
-    other.m_len     = 0;
-    other.m_max_len = 0;
-    other.m_arena   = nullptr;
-  }
-
-  using UT::Vec<E>::push;
-  using UT::Vec<E>::operator[];
-};
-
-} // namespace ER
-
-namespace std
-{
-inline string
-to_string(
-  ER::Level type)
-{
-  switch (type)
-  {
-  case ER::Level::MIN    : return "MIN";
-  case ER::Level::ERROR  : return "ERROR";
-  case ER::Level::WARNING: return "WARNING";
-  case ER::Level::INFO   : return "INFO";
-  case ER::Level::MAX    : return "MAX";
-  }
-
-  return "UNREACHABLE";
 }
 } // namespace std
 

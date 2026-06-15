@@ -1,11 +1,19 @@
 /*-------------------------------------------------------------------------------
- *\file XX.hpp
- *\info Header file for Parser
- * *----------------------------------------------------------------------------*/
+ *\file EX.hpp
+ *\info Header file for the Parser.
+ *
+ * EX is a Pratt (precedence-climbing) parser that pulls flat tokens from a
+ * streaming LX::Lexer and builds the Expr tree below. Operator precedence and
+ * structure (groups, let, if, lambda) interleave through one recursion, so the
+ * C++ call stack mirrors the grammar -- which is what lets errors carry a
+ * meaningful context chain (see ER::Diagnostic). The Expr types are unchanged
+ * from before; only the parsing engine is new.
+ *-----------------------------------------------------------------------------*/
 
 #ifndef EX_HEADER
 #define EX_HEADER
 
+#include "ER.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
 
@@ -16,173 +24,180 @@ namespace EX
  *\TYPES
  *-----------------------------------------------------------------------------*/
 
-#define EX_Type_EnumVariants                                                   \
-  X(Unknown)                                                                   \
-  X(PubDef)                                                                    \
-  X(IntDef)                                                                    \
-  X(Int)                                                                       \
-  X(Minus)                                                                     \
-  X(Add)                                                                       \
-  X(Sub)                                                                       \
-  X(Mult)                                                                      \
-  X(Div)                                                                       \
-  X(Modulus)                                                                   \
-  X(Let)                                                                       \
-  X(IsEq)                                                                      \
-  X(FnDef)                                                                     \
-  X(FnApp)                                                                     \
-  X(VarApp)                                                                    \
-  X(Var)                                                                       \
-  X(If)                                                                        \
-  X(Not)                                                                       \
-  X(Str)
-
-enum class Type
-{
-#define X(X_enum) X_enum,
-  EX_Type_EnumVariants
-#undef X
-};
-
 struct Expr;
-using Exprs = UT::Vec<Expr>;
+using Exprs  = UT::Vec<Expr>;
+using ExPair = UT::Pair<Expr>;
 
-struct Gdef
+struct ExUnknown
+{
+};
+struct ExPubDef
 {
   UT::String name;
   Expr      *def;
 };
-
-struct FnDef
+struct ExIntDef
 {
-  UT::String m_param;
-  Expr      *m_body;
-
-  FnDef() = default;
-  FnDef(UT::String param, AR::Arena &arena);
+  UT::String name;
+  Expr      *def;
+};
+struct ExInt
+{
+  ssize_t value;
+};
+struct ExVar
+{
+  UT::String name;
+};
+struct ExStr
+{
+  UT::String value;
 };
 
-struct If
+enum class BinopTag
 {
-  Expr *m_condition;
-  Expr *m_true_branch;
-  Expr *m_else_branch;
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Mod,
+  IsEq
+};
+enum class UnopTag
+{
+  Neg,
+  Not
 };
 
-enum class E
+struct ExBinop
 {
-  MIN = -1,
-  OK,
-  MAX
+  BinopTag tag;
+  ExPair   ops;
+};
+struct ExUnop
+{
+  UnopTag tag;
+  Expr   *op;
 };
 
-// FIXME: This should be Expr and Exprs
-struct FnApp
+struct ExFnDef
 {
-  FnDef m_body;
-  Exprs m_param;
+  UT::String param;
+  Expr      *body;
+
+  ExFnDef() = default;
+  ExFnDef(UT::String param, AR::Arena &arena);
 };
 
-struct VarApp
+struct ExIf
 {
-  UT::String m_fn_name;
-  Exprs      m_param;
+  Expr *cond;
+  Expr *then;
+  Expr *alt;
 };
 
-struct Let
+struct ExApp
 {
-  UT::String m_var_name;
-  Expr      *m_value;
-  Expr      *m_continuation;
+  Expr *fn;
+  Expr *arg;
 };
 
-struct While
+struct ExLet
 {
-  Expr *m_condition;
-  Expr *m_body;
+  UT::String var;
+  Expr      *val;
+  Expr      *body;
 };
+
+#define EX_EXPR_VARIANTS                                                       \
+  X(Unknown, ExUnknown)                                                        \
+  X(PubDef, ExPubDef)                                                          \
+  X(IntDef, ExIntDef)                                                          \
+  X(Int, ExInt)                                                                \
+  X(Unop, ExUnop)                                                              \
+  X(Binop, ExBinop)                                                            \
+  X(Let, ExLet)                                                                \
+  X(FnDef, ExFnDef)                                                            \
+  X(App, ExApp)                                                                \
+  X(Var, ExVar)                                                                \
+  X(If, ExIf)                                                                  \
+  X(Str, ExStr)
+
+enum class ExprTag
+{
+#define X(tag, type) tag,
+  EX_EXPR_VARIANTS
+#undef X
+};
+
+using ExprData =
+#define X(tag, type) type,
+  std::variant<EX_EXPR_VARIANTS std::monostate>
+#undef X
+  ;
 
 struct Expr
 {
-  Type m_type;
-  union
-  {
-    Gdef           m_gdef;
-    FnDef          m_fn;
-    FnApp          m_fnapp;
-    VarApp         m_varapp;
-    UT::String     m_var;
-    UT::String     m_string;
-    UT::Pair<Expr> m_pair;
-    Expr          *m_expr;
-    ssize_t        m_int = 0;
-    If             m_if;
-    Let            m_let;
-    While          m_while;
-  } as;
+  ExprTag  tag;
+  ExprData as;
 
   Expr() = default;
-  Expr(Type type);
-  Expr(Type type, AR::Arena &arena);
+  Expr(ExprTag tag);
+  Expr(ExprTag tag, AR::Arena &arena);
 };
 
+using R           = ER::Result<Expr *>;
+using Diagnostics = std::vector<ER::Diagnostic>;
+
 /*-------------------------------------------------------------------------------
- *\CLASSES
+ *\PARSER
  *------------------------------------------------------------------------------*/
 
 class Parser
 {
 public:
-  AR::Arena       &m_arena;
-  ER::Events       m_events;
-  const UT::String m_input;
-  const LX::Tokens m_tokens;
-  size_t           m_begin;
-  size_t           m_end;
-  Exprs            m_exprs;
+  AR::Arena  &m_arena;
+  LX::Lexer  &m_lex;
+  Exprs       m_exprs;
+  Diagnostics m_diags;
 
-  Parser(LX::Lexer l);
+  Parser(LX::Lexer &lex);
 
-  Parser(LX::Tokens tokens, AR::Arena &arena, const UT::String input);
+  void operator()();
 
-  Parser(EX::Parser old, size_t begin, size_t end);
+private:
+  UT_NODISCARD R parse_global();
+  UT_NODISCARD R parse_expr(int min_bp);
+  UT_NODISCARD R parse_prefix();
+  UT_NODISCARD R parse_primary();
+  UT_NODISCARD R parse_group();
+  UT_NODISCARD R parse_let();
+  UT_NODISCARD R parse_if();
+  UT_NODISCARD R parse_closure();
+  UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
+  void               recover();
 
-  Parser(EX::Parser &parent_parser, LX::Tokens &t);
-
-  E run();
-
-  E operator()();
-
-  E parse_binop(EX::Type type, size_t start, size_t end);
-
-  E parse_max_precedence_arithmetic_op(EX::Type, size_t &idx);
-
-  E parse_min_precedence_arithmetic_op(EX::Type, size_t &idx);
-
-  bool match_token_type(size_t start, const LX::Type type);
-
-  template <typename... Args>
-  bool
-  match_token_type(
-    size_t start, Args &&...args)
-  {
-    static_assert((std::is_same_v<std::decay_t<Args>, LX::Type> && ...),
-                  "[TYPE-ERROR] All extra arguments must be LX::Type");
-    return (... || this->match_token_type(start, args));
-  }
+  UT_NODISCARD Expr *alloc(Expr e);
+  UT_NODISCARD Expr *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr *mk_str(const LX::Token &t);
+  UT_NODISCARD Expr *mk_var(const LX::Token &t);
+  UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
+  UT_NODISCARD Expr *mk_unop(LX::TokenTag op, Expr *operand);
+  UT_NODISCARD Expr *mk_binop(BinopTag op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
+  UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
+  UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
+  UT_NODISCARD Expr *mk_intdef(UT::String name, Expr *def);
+  UT_NODISCARD Expr *mk_pubdef(UT::String name, Expr *def);
 };
 
 /*-------------------------------------------------------------------------------
  *\PPRINT
  *------------------------------------------------------------------------------*/
 
-std::string pprint(Type t, int level = 0);
+std::string pprint(ExprTag t, int level = 0);
 std::string pprint(Expr *e, int level = 0);
 
 } // namespace EX
-
-/*-------------------------------------------------------------------------------
- *\EOF
- *------------------------------------------------------------------------------*/
 
 #endif // EX_HEADER

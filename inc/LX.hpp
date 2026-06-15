@@ -1,254 +1,207 @@
 /*-------------------------------------------------------------------------------
  *\file LX.hpp
- *\info Header file for Lexer
- * *----------------------------------------------------------------------------*/
+ *\info Header file for the Lexer.
+ *
+ * The lexer is a forward, buffered iterator over the source: peek(n)/next()
+ * hand out one flat token at a time, lexing on demand. It does no structural
+ * work -- '(', ')', '\\', '=', keywords, etc. are all ordinary tokens, and the
+ * parser (EX) recovers structure. Every token keeps its source view (`str`),
+ * its 1-based line, a tag, and a variant payload (only Int/Str carry data).
+ * Comments are lexed as tokens but skipped by peek/next.
+ *-----------------------------------------------------------------------------*/
 
 #ifndef LX_HEADER
 #define LX_HEADER
 
-/*------------------------------------------------------------------------------
- *\INCLUDES
- *-----------------------------------------------------------------------------*/
-
+#include "ER.hpp"
 #include "UT.hpp"
 
 namespace LX
 {
 
 /*------------------------------------------------------------------------------
- *\CONSTANTS
+ *\TOKEN PAYLOADS
  *-----------------------------------------------------------------------------*/
 
-namespace Keyword
+// Only Int and Str carry parsed data; every other kind is fully determined by
+// its tag plus its source view (`Token::str`), so its payload is empty. The
+// payload structs stay distinct (not one shared type) so the std::variant has
+// no duplicate alternatives.
+struct TkInt
 {
-
-constexpr UT::String LET{ "let" };
-constexpr UT::String IN{ "in" };
-constexpr UT::String IF{ "if" };
-constexpr UT::String ELSE{ "else" };
-constexpr UT::String INT{ "int" };
-constexpr UT::String PUB{ "pub" };
-constexpr UT::String WHILE{ "while" };
-constexpr UT::String EXT{ "ext" };
-
-} // namespace Keyword
+  ssize_t value;
+};
+struct TkStr
+{
+  UT::String value; // unescaped contents (Token::str still holds the quotes)
+};
+struct TkWord
+{
+};
+struct TkComment
+{
+};
+struct TkPlus
+{
+};
+struct TkMinus
+{
+};
+struct TkMult
+{
+};
+struct TkDiv
+{
+};
+struct TkModulus
+{
+};
+struct TkIsEq
+{
+};
+struct TkNot
+{
+};
+struct TkLParen
+{
+};
+struct TkRParen
+{
+};
+struct TkLambda
+{
+};
+struct TkEq
+{
+};
+struct TkFatArrow
+{
+};
+struct TkKwLet
+{
+};
+struct TkKwIn
+{
+};
+struct TkKwIf
+{
+};
+struct TkKwElse
+{
+};
+struct TkKwInt
+{
+};
+struct TkKwPub
+{
+};
+struct TkKwExt
+{
+};
+struct TkEof
+{
+};
 
 /*------------------------------------------------------------------------------
- *\TYPES
+ *\TOKEN TAG + VARIANT
  *-----------------------------------------------------------------------------*/
 
-// TODO: Need to have actual error codes here
-#define LX_E_ENUM_VARIANTS                                                     \
-  X(OK)                                                                        \
-  X(END_OF_FILE)                                                               \
-  X(ASCII_CTR_CHAR)                                                            \
-  X(NON_ASCII_CHAR)                                                            \
-  X(QUOTM_UNCLOSED)                                                            \
-  X(PARENTHESIS_UNBALANCED)                                                    \
-  X(NUMBER_PARSING_FAILURE)                                                    \
-  X(FAT_ARROW)                                                                 \
-  X(ELSE_KEYWORD)                                                              \
-  X(IN_KEYWORD)                                                                \
-  X(MATCHED_OPERATOR)                                                          \
-  X(PAREN_LEFT)                                                                \
-  X(MATCHED_QUOTM)                                                             \
-  X(MATCHES_IFELSE)                                                            \
-  X(MATCHES_LETIN)                                                             \
-  X(MATCHES_OPEN_PAREN)                                                        \
-  X(MATCHES_INTEGER)                                                           \
-  X(MATCHES_STRING)                                                            \
-  X(MATCHES_CONTROL_OPERATOR)                                                  \
-  X(MATCHES_COLON)                                                             \
-  X(MATCHES_LAMBDA)                                                            \
-  X(GLOBAL_DEF_STRUCTURE_MALFORMED)                                            \
-  X(EXPECT_EQUALS_AFTER_GLOBAL_SYM_DEF)                                        \
-  X(UNEXPECTED_GLOBAL_DEF_SYM_MARKER)                                          \
-  X(ILLEGAL_USE_OF_RESERVED_CHAR)                                              \
-  X(IF_CONDITION_SEPARATOR_MISSING)                                            \
-  X(IF_EXPR_MISSING_ELSE_BRANCH)                                               \
-  X(IF_EXPR_ELSE_BRANCH_EMPTY)                                                 \
-  X(IF_EXPR_MALFORMED_ELSE_BRANCH)                                             \
-  X(LET_EXPR_VAR_NAME_MISSING)                                                 \
-  X(LET_EXPR_EMPTY_VAR_NAME)                                                   \
-  X(LET_EXPR_VAR_DEF_EMPTY)                                                    \
-  X(LET_EXPR_EQ_SYMB_AFTER_VAR_MISSING)                                        \
-  X(LET_EXPR_EXPECTED_DEF_AFTER_EQ)                                            \
-  X(LET_EXPR_MISSING_IN)                                                       \
-  X(LET_EXPR_ERRONEOUS_IN_EXPR)                                                \
-  X(LAMBDA_NO_VAR_NAME)                                                        \
-  X(LAMBDA_NOTHING_AFTER_VAR)                                                  \
-  X(LAMBDA_EQ_EXPECTED_AFTER_VARNAME)                                          \
-  X(LAMBDA_EXPECTED_DEF_AFTER_EQ)                                              \
-  X(MATCHES_NOTHING)
+#define LX_TOKEN_VARIANTS                                                      \
+  X(Int, TkInt)                                                                \
+  X(Str, TkStr)                                                                \
+  X(Word, TkWord)                                                              \
+  X(Comment, TkComment)                                                        \
+  X(Plus, TkPlus)                                                              \
+  X(Minus, TkMinus)                                                            \
+  X(Mult, TkMult)                                                              \
+  X(Div, TkDiv)                                                                \
+  X(Modulus, TkModulus)                                                        \
+  X(IsEq, TkIsEq)                                                              \
+  X(Not, TkNot)                                                                \
+  X(LParen, TkLParen)                                                          \
+  X(RParen, TkRParen)                                                          \
+  X(Lambda, TkLambda)                                                          \
+  X(Eq, TkEq)                                                                  \
+  X(FatArrow, TkFatArrow)                                                      \
+  X(KwLet, TkKwLet)                                                            \
+  X(KwIn, TkKwIn)                                                              \
+  X(KwIf, TkKwIf)                                                              \
+  X(KwElse, TkKwElse)                                                          \
+  X(KwInt, TkKwInt)                                                            \
+  X(KwPub, TkKwPub)                                                            \
+  X(KwExt, TkKwExt)                                                            \
+  X(Eof, TkEof)
 
-enum class E
+enum class TokenTag
 {
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_E_ENUM_VARIANTS
+#define X(tag, type) tag,
+  LX_TOKEN_VARIANTS
 #undef X
 };
 
-#define LX_Type_ENUM_VARIANTS                                                  \
-  X(Min)                                                                       \
-  X(Int)                                                                       \
-  X(Plus)                                                                      \
-  X(Minus)                                                                     \
-  X(Div)                                                                       \
-  X(Modulus)                                                                   \
-  X(Mult)                                                                      \
-  X(IsEq)                                                                      \
-  X(Group)                                                                     \
-  X(Let)                                                                       \
-  X(Fn)                                                                        \
-  X(Word)                                                                      \
-  X(If)                                                                        \
-  X(IntDef)                                                                    \
-  X(PubDef)                                                                    \
-  X(Not)                                                                       \
-  X(Str)                                                                       \
-  X(Max)
-
-// TODO: Rename
-enum class Type
-{
-#define X(LX_ENUM_VALUE) LX_ENUM_VALUE,
-  LX_Type_ENUM_VARIANTS
+using TokenData =
+#define X(tag, type) type,
+  std::variant<LX_TOKEN_VARIANTS std::monostate>
 #undef X
-};
+  ;
 
-struct Token;
-using Tokens = UT::Vec<Token>;
-
-struct If
-// if expr => expr else expr
-// [TODO] if expr is pattern => is ... else =>
-{
-  Tokens condition;
-  Tokens true_branch;
-  Tokens else_branch;
-};
-
-struct Binding
-{
-  UT::String var;
-  Tokens     equals;
-  Tokens     in;
-};
-
-struct Fn
-{
-  UT::String param_name;
-  Tokens     body;
-};
-
-struct SymDef
-{
-  Tokens     def;
-  UT::String name;
-};
-
-// TODO: Candidate for refactor
-// TODO: Needs to have begin and end
 struct Token
 {
-  Type   type;
-  size_t cursor;
-  union
-  {
-    Tokens     tokens;
-    Binding    binding;
-    If         if_else;
-    Fn         fn;
-    SymDef     sym;
-    UT::String string;
-    ssize_t    integer = 0;
-  } as;
-
-  Token()  = default;
-  ~Token() = default;
-  Token(Type t);
-  Token(Tokens tokens);
+  TokenTag   tag;
+  UT::String str;  // lexeme view into the source -> pointer, offset and length
+  size_t     line; // 1-based source line
+  TokenData  as;
 };
 
-/*-------------------------------------------------------------------------------
- *\CLASSES
- *------------------------------------------------------------------------------*/
+using R      = ER::Result<Token>;
+using Tokens = std::vector<Token>;
+
+/*------------------------------------------------------------------------------
+ *\LEXER
+ *-----------------------------------------------------------------------------*/
 
 class Lexer
 {
 public:
-  AR::Arena       &m_arena;
-  ER::Events      *m_events;
-  const UT::String m_input;
-  const UT::String m_filename;
-  Tokens           m_tokens;
-  size_t           m_cursor;
-  size_t           m_begin;
-  size_t           m_end;
+  AR::Arena &m_arena;
 
-  Lexer(const UT::String input,
-        const UT::String filename,
-        AR::Arena       &arena,
-        size_t           begin,
-        size_t           end);
+public:
+  Lexer(UT::String input, UT::String filename, AR::Arena &arena);
 
-  Lexer(Lexer const &l, size_t begin, size_t end);
+  UT_NODISCARD R peek(size_t n = 0);
+  R              next();
+  size_t         mark() const;
+  void           reset(size_t m);
 
-  ~Lexer() {}
+private:
+  UT::String m_input;
+  UT::String m_filename;
+  size_t     m_cursor;
+  size_t     m_line;
+  Tokens     m_buffer;
+  size_t     m_pos; // raw buffer index of the next token to hand out
 
-  char next_char();
-
-  char peek_char();
-
-  UT_NODISCARD E next_valid_char(char & /*out*/ c);
-
-  UT_NODISCARD E next_word(UT::String &sb);
-
-  UT_NODISCARD E next(Token &t);
-
-  UT_NODISCARD E matches_quotm(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_operator(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_ifelse(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_letin(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_open_paren(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_integer(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_string(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_control_operator(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E matches_lambda(UT::Vu<UT::String> &words);
-
-  UT_NODISCARD E next_sym(Token &t);
-
-  UT_NODISCARD LX::E tokenize(UT::Vu<UT::String> &words);
-
-  UT::String get_word(size_t idx);
-
-  void strip_white_space(size_t idx);
-
-  void strip_line(size_t idx);
+private:
+  UT_NODISCARD R    lex_one();
+  UT_NODISCARD R    lex_comment(size_t start, size_t line);
+  UT_NODISCARD R    lex_string(size_t start, size_t line);
+  UT_NODISCARD R    lex_number(size_t start, size_t line);
+  UT_NODISCARD R    lex_word(size_t start, size_t line);
+  UT_NODISCARD R    lex_symbol(size_t start, size_t line);
+  void              skip_ws();
+  UT_NODISCARD char cur() const;
+  UT_NODISCARD char at(size_t i) const;
+  UT_NODISCARD UT::String slice(size_t start) const;
+  UT_NODISCARD Token      mk(TokenTag tag, size_t start, size_t line) const;
 };
 
-/*-------------------------------------------------------------------------------
- *\ UTILS
- *------------------------------------------------------------------------------*/
+/*------------------------------------------------------------------------------
+ *\UTILS
+ *-----------------------------------------------------------------------------*/
 
-std::string pprint(E e, size_t level = 0);
-std::string pprint(Type t, size_t level = 0);
-std::string pprint(Token t, size_t level = 0);
-std::string pprint(Tokens ts, size_t level = 0);
-std::string pprint(ER::Events events, size_t level = 0);
+std::string pprint(TokenTag t);
+std::string pprint(const Token &t);
 
 } // namespace LX
-
-/*-------------------------------------------------------------------------------
- *\EOF
- *------------------------------------------------------------------------------*/
 
 #endif // LX_HEADER

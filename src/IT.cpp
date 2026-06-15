@@ -1,7 +1,4 @@
 #include "IT.hpp"
-#include <cstdio>
-#include <memory>
-#include <string>
 
 namespace IT
 {
@@ -153,135 +150,119 @@ exprs2pLm_helper(
   EX::Expr *expr, StatEnv &env)
 {
   Lm lm;
-  switch (expr->m_type)
+  switch (expr->tag)
   {
-  case EX::Type::Add:
-  case EX::Type::Div:
-  case EX::Type::Modulus:
-  case EX::Type::Sub:
-  case EX::Type::Mult:
-  case EX::Type::IsEq:
+  case EX::ExprTag::Binop:
   {
-    const char *op_str;
-    switch (expr->m_type)
+    auto       &b      = std::get<EX::ExBinop>(expr->as);
+    const char *op_str = nullptr;
+    switch (b.tag)
     {
-    case EX::Type::Add    : op_str = "+"; break;
-    case EX::Type::Sub    : op_str = "-"; break;
-    case EX::Type::Mult   : op_str = "*"; break;
-    case EX::Type::Div    : op_str = "/"; break;
-    case EX::Type::Modulus: op_str = "%"; break;
-    case EX::Type::IsEq   : op_str = "?="; break;
-    default               : op_str = "?"; break;
+    case EX::BinopTag::Add : op_str = "+";  break;
+    case EX::BinopTag::Sub : op_str = "-";  break;
+    case EX::BinopTag::Mul : op_str = "*";  break;
+    case EX::BinopTag::Div : op_str = "/";  break;
+    case EX::BinopTag::Mod : op_str = "%";  break;
+    case EX::BinopTag::IsEq: op_str = "?="; break;
     }
-    pLm lhs = exprs2pLm_helper(expr->as.m_pair.begin(), env);
-    pLm rhs = exprs2pLm_helper(expr->as.m_pair.last(), env);
+    pLm lhs = exprs2pLm_helper(b.ops.begin(), env);
+    pLm rhs = exprs2pLm_helper(b.ops.last(), env);
     lm      = { .tag = LTag::VAR,
                 .as  = Var{ std::string{ op_str }, 0, { lhs, rhs } } };
   }
   break;
 
-  case EX::Type::Minus:
-  case EX::Type::Not:
+  case EX::ExprTag::Unop:
   {
-    const char *op_str  = (expr->m_type == EX::Type::Minus) ? "neg" : "not";
-    pLm         operand = exprs2pLm_helper(expr->as.m_expr, env);
+    auto       &u      = std::get<EX::ExUnop>(expr->as);
+    const char *op_str = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
+    pLm         operand = exprs2pLm_helper(u.op, env);
     lm                  = { .tag = LTag::VAR,
                             .as  = Var{ std::string{ op_str }, 0, { operand } } };
   }
   break;
 
-  case EX::Type::If:
+  case EX::ExprTag::If:
   {
-    EX::If ifexpr = expr->as.m_if;
-    pLm    cond   = exprs2pLm_helper(ifexpr.m_condition, env);
-    pLm    then   = exprs2pLm_helper(ifexpr.m_true_branch, env);
-    pLm    othw   = exprs2pLm_helper(ifexpr.m_else_branch, env);
+    EX::ExIf &ifexpr = std::get<EX::ExIf>(expr->as);
+    pLm     cond   = exprs2pLm_helper(ifexpr.cond, env);
+    pLm     then   = exprs2pLm_helper(ifexpr.then, env);
+    pLm     othw   = exprs2pLm_helper(ifexpr.alt, env);
     lm = { .tag = LTag::VAR, .as = Var{ "if", 0, { cond, then, othw } } };
   }
   break;
 
-  case EX::Type::Let:
+  case EX::ExprTag::Let:
   {
-    pLm continuation = exprs2pLm_helper(expr->as.m_let.m_continuation, env);
-    pLm value        = exprs2pLm_helper(expr->as.m_let.m_value, env);
-    Fun fn           = mkFun(expr->as.m_let.m_var_name, continuation);
+    auto &lt         = std::get<EX::ExLet>(expr->as);
+    pLm continuation = exprs2pLm_helper(lt.body, env);
+    pLm value        = exprs2pLm_helper(lt.val, env);
+    Fun fn           = mkFun(lt.var, continuation);
     pLm fn_lm        = std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = fn });
     lm               = { .tag = LTag::APP, .as = App{ fn_lm, value } };
   }
   break;
 
-  case EX::Type::FnApp:
+  case EX::ExprTag::App:
   {
-    // FIXME: FnApp should just be a pair of expressions in my opinion
-    Fun fn     = mkFun(expr->as.m_fnapp.m_body.m_param,
-                   exprs2pLm_helper(expr->as.m_fnapp.m_body.m_body, env));
-    pLm result = std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = fn });
-    for (size_t i = 0; i < expr->as.m_fnapp.m_param.m_len; ++i)
-    {
-      result = std::make_shared<Lm>(
-        Lm{ .tag = LTag::APP,
-            .as  = App{ result,
-                       exprs2pLm_helper(&expr->as.m_fnapp.m_param[i], env) } });
-    }
-    lm = *result;
+    auto &app = std::get<EX::ExApp>(expr->as);
+    pLm  fn   = exprs2pLm_helper(app.fn, env);
+    pLm  arg  = exprs2pLm_helper(app.arg, env);
+    lm        = { .tag = LTag::APP, .as = App{ fn, arg } };
   }
   break;
 
-  case EX::Type::FnDef:
+  case EX::ExprTag::FnDef:
   {
-    Fun fn = mkFun(expr->as.m_fn.m_param,
-                   exprs2pLm_helper(expr->as.m_fn.m_body, env));
-    lm     = { .tag = LTag::FUN, .as = fn };
+    auto &fn = std::get<EX::ExFnDef>(expr->as);
+    Fun   f  = mkFun(fn.param, exprs2pLm_helper(fn.body, env));
+    lm       = { .tag = LTag::FUN, .as = f };
   }
   break;
 
-  case EX::Type::Str:
+  case EX::ExprTag::Str:
   {
-    lm = { .tag = LTag::STR, .as = mkStr(expr->as.m_string) };
+    lm = { .tag = LTag::STR, .as = mkStr(std::get<EX::ExStr>(expr->as).value) };
   }
   break;
 
-  case EX::Type::Var:
+  case EX::ExprTag::Var:
   {
-    lm = { .tag = LTag::VAR, .as = mkVar(expr->as.m_var) };
+    lm = { .tag = LTag::VAR, .as = mkVar(std::get<EX::ExVar>(expr->as).name) };
   }
   break;
 
-  case EX::Type::VarApp:
+  case EX::ExprTag::Int:
   {
-    pLm result = std::make_shared<Lm>(
-      Lm{ .tag = LTag::VAR, .as = mkVar(expr->as.m_varapp.m_fn_name) });
-    for (size_t i = 0; i < expr->as.m_varapp.m_param.m_len; ++i)
-    {
-      result = std::make_shared<Lm>(
-        Lm{ .tag = LTag::APP,
-            .as  = App{ result,
-                       exprs2pLm_helper(&expr->as.m_varapp.m_param[i], env) } });
-    }
-    lm = *result;
+    lm = { .tag = LTag::INT, .as = Int{ std::get<EX::ExInt>(expr->as).value } };
   }
   break;
 
-  case EX::Type::Int:
+  case EX::ExprTag::PubDef:
   {
-    lm = { .tag = LTag::INT, .as = Int{ expr->as.m_int } };
-  }
-  break;
-
-  case EX::Type::PubDef:
-  case EX::Type::IntDef:
-  {
-    std::string name
-      = std::string{ expr->as.m_gdef.name.m_mem, expr->as.m_gdef.name.m_len };
-    pLm       def = exprs2pLm_helper(expr->as.m_gdef.def, env);
-    NameStack ns;
+    auto       &gd   = std::get<EX::ExPubDef>(expr->as);
+    std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
+    pLm         def  = exprs2pLm_helper(gd.def, env);
+    NameStack   ns;
     assign_id(def, ns);
     env[name] = def;
     lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
   }
   break;
 
-  case EX::Type::Unknown:
+  case EX::ExprTag::IntDef:
+  {
+    auto       &gd   = std::get<EX::ExIntDef>(expr->as);
+    std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
+    pLm         def  = exprs2pLm_helper(gd.def, env);
+    NameStack   ns;
+    assign_id(def, ns);
+    env[name] = def;
+    lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
+  }
+  break;
+
+  case EX::ExprTag::Unknown:
   {
     lm = { .tag = LTag::UNK, .as = std::monostate{} };
   }

@@ -28,15 +28,20 @@ test-debug: $(BIN)tst_debug
 
 #------------------------------OBJC-----------------------------
 THRAXsrc = \
+	$(SRC)AR.cpp \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
-	$(SRC)IT.cpp 
+	$(SRC)IT.cpp \
+	$(SRC)DR.cpp
 
 THRAXinc = \
+	$(INC)AR.hpp \
+	$(INC)ER.hpp \
+	$(INC)DR.hpp \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
 	$(INC)IT.hpp \
-	$(INC)EX.hpp 
+	$(INC)EX.hpp
 
 THRAX = $(BIN)thrax.so
 
@@ -74,6 +79,7 @@ list:
 valgrind:
 	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_mult
 	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_functional
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_debug
 
 format:
 	find . -maxdepth 1 -regex '.*\.\(cpp\|hpp\|c\|h\)$\' -exec clang-format -i {} + 
@@ -105,6 +111,7 @@ clean:
 	rm -f vgcore*
 	rm -f *.orig
 	rm -rf $(BIN)*
+	rm -f valgrind*
 	$(MAKE) -C ./lib clean
 
 clean_wkspace:
