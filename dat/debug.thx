@@ -3,19 +3,20 @@ pub add = \x = \y = x + y
 pub two = add 1 2
 
 int pow = \n =
-	if n ?= 0 =>
-		1 else
-		2 * (pow (n - 1))
+    if n ?= 0 =>
+        1
+    else
+        2 * pow (n - 1)
 
 int pow22 = pow 322
 
 int fib = \n =
-	if n ?= 0 =>
-		0
-	else if n ?= 1 =>
-		1
-	else
-		(fib (n - 1)) + (fib (n - 2))
+    if n ?= 0 =>
+        0
+    else if n ?= 1 =>
+        1
+    else
+        (fib (n - 1)) + (fib (n - 2))
 
 int fib10 = fib 10
 
@@ -29,7 +30,5 @@ pub neg = \x = -x
 pub a = neg 2
 pub b = !a
 
-# FIXME: application is not handle well
 pub application =
-	(\x = \y = x + y + 1) 4 (2 + 1)
-	# (\x = x + 1) (4) (2 + 1)
+    (\x = \y = x + y) 1 2 

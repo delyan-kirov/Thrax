@@ -253,6 +253,13 @@ template <typename O> struct Vu
     m_mem -= 1;
     m_len += 1;
   }
+
+  O *
+  forsakened(
+    size_t i = 1)
+  {
+    return m_mem - i;
+  }
 };
 
 struct String : public Vu<char>

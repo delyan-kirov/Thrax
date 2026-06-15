@@ -1,7 +1,14 @@
 /*-------------------------------------------------------------------------------
  *\file EX.hpp
- *\info Header file for Parser
- * *----------------------------------------------------------------------------*/
+ *\info Header file for the Parser.
+ *
+ * EX is a Pratt (precedence-climbing) parser that pulls flat tokens from a
+ * streaming LX::Lexer and builds the Expr tree below. Operator precedence and
+ * structure (groups, let, if, lambda) interleave through one recursion, so the
+ * C++ call stack mirrors the grammar -- which is what lets errors carry a
+ * meaningful context chain (see ER::Diagnostic). The Expr types are unchanged
+ * from before; only the parsing engine is new.
+ *-----------------------------------------------------------------------------*/
 
 #ifndef EX_HEADER
 #define EX_HEADER
@@ -10,6 +17,7 @@
 #include "LX.hpp"
 #include "UT.hpp"
 #include <variant>
+#include <vector>
 
 namespace EX
 {
@@ -130,13 +138,6 @@ using ExprData =
 #undef X
   ;
 
-enum class E
-{
-  MIN = -1,
-  OK,
-  MAX
-};
-
 struct Expr
 {
   ExprTag  tag;
@@ -148,27 +149,48 @@ struct Expr
 };
 
 /*-------------------------------------------------------------------------------
- *\CLASSES
+ *\PARSER
  *------------------------------------------------------------------------------*/
 
 class Parser
 {
 public:
-  AR::Arena       &m_arena;
-  ER::Events       m_events;
-  const UT::String m_input;
-  const LX::Tokens m_tokens;
-  size_t           m_begin;
-  size_t           m_end;
-  Exprs            m_exprs;
+  AR::Arena                  &m_arena;
+  LX::Lexer                  &m_lex;
+  Exprs                       m_exprs; // successfully parsed top-level defs
+  std::vector<ER::Diagnostic> m_diags; // one chain per failed definition
 
-  Parser(LX::Lexer l);
-  Parser(LX::Tokens tokens, AR::Arena &arena, const UT::String input);
-  Parser(EX::Parser old, size_t begin, size_t end);
-  Parser(EX::Parser &parent_parser, const LX::Tokens &t);
+  Parser(LX::Lexer &lex);
 
-  E run();
-  E operator()();
+  // Parse every top-level definition. Good defs land in m_exprs; each failed
+  // definition contributes one chain to m_diags and parsing recovers to the
+  // next definition.
+  void run();
+
+private:
+  ER::Result<Expr *>     parse_global();
+  ER::Result<Expr *>     parse_expr(int min_bp);
+  ER::Result<Expr *>     parse_prefix();
+  ER::Result<Expr *>     parse_primary();
+  ER::Result<Expr *>     parse_group();
+  ER::Result<Expr *>     parse_let();
+  ER::Result<Expr *>     parse_if();
+  ER::Result<Expr *>     parse_closure();
+  ER::Result<LX::Token>  expect(LX::TokenTag tag, const char *what);
+  void                   recover();
+
+  Expr *alloc(Expr e);
+  Expr *mk_int(const LX::Token &t);
+  Expr *mk_str(const LX::Token &t);
+  Expr *mk_var(const LX::Token &t);
+  Expr *mk_app(Expr *fn, Expr *arg);
+  Expr *mk_unop(LX::TokenTag op, Expr *operand);
+  Expr *mk_binop(LX::TokenTag op, Expr *lhs, Expr *rhs);
+  Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
+  Expr *mk_let(UT::String var, Expr *val, Expr *body);
+  Expr *mk_fndef(UT::String param, Expr *body);
+  Expr *mk_intdef(UT::String name, Expr *def);
+  Expr *mk_pubdef(UT::String name, Expr *def);
 };
 
 /*-------------------------------------------------------------------------------
@@ -179,9 +201,5 @@ std::string pprint(ExprTag t, int level = 0);
 std::string pprint(Expr *e, int level = 0);
 
 } // namespace EX
-
-/*-------------------------------------------------------------------------------
- *\EOF
- *------------------------------------------------------------------------------*/
 
 #endif // EX_HEADER
