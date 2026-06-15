@@ -8,6 +8,9 @@
 #include "LX.hpp"
 #include "UT.hpp"
 
+#include <unordered_map>
+#include <unordered_set>
+
 /*------------------------------------------------------------------------------
  *\MACROS
  *
@@ -35,7 +38,7 @@
                    (TOK).str,                                                  \
                    (TOK).line,                                                 \
                    ER::mk_msg(m_arena, __VA_ARGS__));                          \
-      return ER::Fail{ _r.err };                                              \
+      return ER::Fail{ _r.err };                                               \
     }                                                                          \
     _r.value;                                                                  \
   })
@@ -70,57 +73,42 @@ struct Bp
   int r;
 };
 
-const Bp APP_BP{ 50, 51 };
+struct InfixInfo
+{
+  Bp       bp;    // binding powers
+  BinopTag binop; // node this operator builds
+};
+
+using InfixTable = std::unordered_map<LX::TokenTag, InfixInfo>;
+using UnopTable  = std::unordered_map<LX::TokenTag, UnopTag>;
+using OperandSet = std::unordered_set<LX::TokenTag>;
+
+const Bp  APP_BP{ 50, 51 };
 const int PREFIX_BP = 40; // unary - and !
 
-bool
-is_infix(
-  LX::TokenTag t)
-{
-  switch (t)
-  {
-  case LX::TokenTag::Plus:
-  case LX::TokenTag::Minus:
-  case LX::TokenTag::Mult:
-  case LX::TokenTag::Div:
-  case LX::TokenTag::Modulus:
-  case LX::TokenTag::IsEq  : return true;
-  default                  : return false;
-  }
-}
+// Binary operators. Presence in this table is exactly "is an infix operator",
+// and it carries both the binding power and the node to build.
+const InfixTable infix_db{
+  { LX::TokenTag::IsEq, { { 10, 11 }, BinopTag::IsEq } },
+  { LX::TokenTag::Plus, { { 20, 21 }, BinopTag::Add } },
+  { LX::TokenTag::Minus, { { 20, 21 }, BinopTag::Sub } },
+  { LX::TokenTag::Mult, { { 30, 31 }, BinopTag::Mul } },
+  { LX::TokenTag::Div, { { 30, 31 }, BinopTag::Div } },
+  { LX::TokenTag::Modulus, { { 30, 31 }, BinopTag::Mod } },
+};
 
-Bp
-infix_bp(
-  LX::TokenTag t)
-{
-  switch (t)
-  {
-  case LX::TokenTag::IsEq                          : return { 10, 11 };
-  case LX::TokenTag::Plus:
-  case LX::TokenTag::Minus                         : return { 20, 21 };
-  case LX::TokenTag::Mult:
-  case LX::TokenTag::Div:
-  case LX::TokenTag::Modulus                       : return { 30, 31 };
-  default                                          : return { 0, 0 };
-  }
-}
+// Tokens that can begin an operand -> juxtaposition is application.
+const OperandSet operand_starters{
+  LX::TokenTag::Int,    LX::TokenTag::Str,   LX::TokenTag::Word,
+  LX::TokenTag::LParen, LX::TokenTag::KwLet, LX::TokenTag::KwIf,
+  LX::TokenTag::Lambda,
+};
 
-bool
-starts_operand(
-  LX::TokenTag t)
-{
-  switch (t)
-  {
-  case LX::TokenTag::Int:
-  case LX::TokenTag::Str:
-  case LX::TokenTag::Word:
-  case LX::TokenTag::LParen:
-  case LX::TokenTag::KwLet:
-  case LX::TokenTag::KwIf:
-  case LX::TokenTag::Lambda: return true;
-  default                  : return false;
-  }
-}
+// Prefix (unary) operators.
+const UnopTable unop_db{
+  { LX::TokenTag::Minus, UnopTag::Neg },
+  { LX::TokenTag::Not, UnopTag::Not },
+};
 
 const char *
 tok_desc(
@@ -132,7 +120,7 @@ tok_desc(
 } // namespace
 
 /*-------------------------------------------------------------------------------
- *\EXPR CTORS (unchanged data model)
+ *\EXPR CTORS 
  *------------------------------------------------------------------------------*/
 
 ExFnDef::ExFnDef(
@@ -229,27 +217,14 @@ Parser::mk_unop(
   LX::TokenTag op, Expr *operand)
 {
   Expr e{ ExprTag::Unop };
-  e.as = ExUnop{ LX::TokenTag::Minus == op ? UnopTag::Neg : UnopTag::Not,
-                 operand };
+  e.as = ExUnop{ UT::lookup(unop_db, op), operand };
   return alloc(e);
 }
 
 Expr *
 Parser::mk_binop(
-  LX::TokenTag op, Expr *lhs, Expr *rhs)
+  BinopTag bt, Expr *lhs, Expr *rhs)
 {
-  BinopTag bt;
-  switch (op)
-  {
-  case LX::TokenTag::Plus   : bt = BinopTag::Add; break;
-  case LX::TokenTag::Minus  : bt = BinopTag::Sub; break;
-  case LX::TokenTag::Mult   : bt = BinopTag::Mul; break;
-  case LX::TokenTag::Div    : bt = BinopTag::Div; break;
-  case LX::TokenTag::Modulus: bt = BinopTag::Mod; break;
-  case LX::TokenTag::IsEq   : bt = BinopTag::IsEq; break;
-  default                   : UT_FAIL_IF("not a binary operator"); bt = BinopTag::Add;
-  }
-
   ExPair pair{ m_arena };
   *pair.begin() = *lhs;
   *pair.last()  = *rhs;
@@ -310,7 +285,7 @@ Parser::mk_pubdef(
  *\PARSE
  *------------------------------------------------------------------------------*/
 
-ER::Result<LX::Token>
+LX::R
 Parser::expect(
   LX::TokenTag tag, const char *what)
 {
@@ -323,7 +298,7 @@ Parser::expect(
   return { true, consumed, {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_primary()
 {
   LX::Token t = TRY(m_lex.peek());
@@ -339,7 +314,11 @@ Parser::parse_primary()
   default:
   {
     const char *desc = tok_desc(t);
-    if (desc) EX_ERR(ER::Code::EXPECTED_OPERAND, t, "expected an expression, found %s", desc);
+    if (desc)
+      EX_ERR(ER::Code::EXPECTED_OPERAND,
+             t,
+             "expected an expression, found %s",
+             desc);
     EX_ERR(ER::Code::EXPECTED_OPERAND,
            t,
            "expected an expression, found '%s'",
@@ -348,7 +327,7 @@ Parser::parse_primary()
   }
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_prefix()
 {
   LX::Token t = TRY(m_lex.peek());
@@ -361,7 +340,7 @@ Parser::parse_prefix()
   return parse_primary();
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_expr(
   int min_bp)
 {
@@ -371,15 +350,14 @@ Parser::parse_expr(
   {
     LX::Token t = TRY(m_lex.peek());
 
-    if (is_infix(t.tag))
+    if (const InfixInfo *infix = UT::try_lookup(infix_db, t.tag))
     {
-      Bp bp = infix_bp(t.tag);
-      if (bp.l < min_bp) break;
-      LX::Token op  = TRY(m_lex.next());
-      Expr     *rhs = TRY(parse_expr(bp.r));
-      lhs           = mk_binop(op.tag, lhs, rhs);
+      if (infix->bp.l < min_bp) break;
+      TRY(m_lex.next()); // consume the operator
+      Expr *rhs = TRY(parse_expr(infix->bp.r));
+      lhs       = mk_binop(infix->binop, lhs, rhs);
     }
-    else if (starts_operand(t.tag))
+    else if (operand_starters.count(t.tag))
     {
       if (APP_BP.l < min_bp) break;
       Expr *rhs = TRY(parse_expr(APP_BP.r));
@@ -394,7 +372,7 @@ Parser::parse_expr(
   return { true, lhs, {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_group()
 {
   LX::Token lp = TRY(m_lex.next()); // '('
@@ -411,12 +389,12 @@ Parser::parse_group()
   return { true, e, {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_let()
 {
-  LX::Token kw   = TRY(m_lex.next()); // 'let'
-  LX::Token name = TRY(expect(LX::TokenTag::Word,
-                              "expected a variable name after 'let'"));
+  LX::Token kw = TRY(m_lex.next()); // 'let'
+  LX::Token name
+    = TRY(expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
   TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
 
   Expr *val = CTX(parse_expr(0),
@@ -430,25 +408,24 @@ Parser::parse_let()
   return { true, mk_let(name.str, val, body), {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_if()
 {
   LX::Token kw   = TRY(m_lex.next()); // 'if'
   Expr     *cond = CTX(parse_expr(0), kw, "in the condition of this 'if'");
 
-  TRY(expect(LX::TokenTag::FatArrow,
-             "expected '=>' after the 'if' condition"));
+  TRY(expect(LX::TokenTag::FatArrow, "expected '=>' after the 'if' condition"));
 
   Expr *then = CTX(parse_expr(0), kw, "in the then-branch of this 'if'");
 
-  LX::Token els = TRY(expect(LX::TokenTag::KwElse,
-                             "expected 'else' after the then-branch"));
+  LX::Token els = TRY(
+    expect(LX::TokenTag::KwElse, "expected 'else' after the then-branch"));
 
   Expr *alt = CTX(parse_expr(0), els, "in the else branch of this 'if'");
   return { true, mk_if(cond, then, alt), {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_closure()
 {
   LX::Token bs = TRY(m_lex.next()); // '\'
@@ -460,7 +437,7 @@ Parser::parse_closure()
   return { true, mk_fndef(nm.str, body), {} };
 }
 
-ER::Result<Expr *>
+R
 Parser::parse_global()
 {
   LX::Token marker = TRY(m_lex.peek());
@@ -471,9 +448,8 @@ Parser::parse_global()
   case LX::TokenTag::KwInt: is_pub = false; break;
   case LX::TokenTag::KwPub: is_pub = true; break;
   case LX::TokenTag::KwExt:
-    EX_ERR(ER::Code::UNSUPPORTED,
-           marker,
-           "'ext' definitions are not supported yet");
+    EX_ERR(
+      ER::Code::UNSUPPORTED, marker, "'ext' definitions are not supported yet");
   default:
   {
     const char *desc = tok_desc(marker);
@@ -490,8 +466,8 @@ Parser::parse_global()
   }
   m_lex.next(); // consume the marker
 
-  LX::Token name = TRY(expect(LX::TokenTag::Word,
-                              "expected a name after the global marker"));
+  LX::Token name = TRY(
+    expect(LX::TokenTag::Word, "expected a name after the global marker"));
   TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
   Expr *body = CTX(parse_expr(0),
@@ -509,7 +485,7 @@ Parser::recover()
 {
   for (;;)
   {
-    ER::Result<LX::Token> pk = m_lex.peek();
+    LX::R pk = m_lex.peek();
     if (!pk.ok) return;
     LX::TokenTag tag = pk.value.tag;
     if (LX::TokenTag::Eof == tag || LX::TokenTag::KwInt == tag
@@ -520,11 +496,11 @@ Parser::recover()
 }
 
 void
-Parser::run()
+Parser::operator()()
 {
   for (;;)
   {
-    ER::Result<LX::Token> pk = m_lex.peek();
+    LX::R pk = m_lex.peek();
     if (!pk.ok)
     {
       m_diags.push_back(pk.err);
@@ -532,8 +508,8 @@ Parser::run()
     }
     if (LX::TokenTag::Eof == pk.value.tag) return;
 
-    size_t             before = m_lex.mark();
-    ER::Result<Expr *> r      = parse_global();
+    size_t before = m_lex.mark();
+    R      r      = parse_global();
     if (r.ok)
     {
       m_exprs.push(*r.value);
@@ -556,21 +532,19 @@ Parser::run()
 
 namespace
 {
+using BinopNames = std::unordered_map<BinopTag, const char *>;
+
+const BinopNames binop_str_db{
+  { BinopTag::Add, " + " }, { BinopTag::Sub, " - " },
+  { BinopTag::Mul, " * " }, { BinopTag::Div, " / " },
+  { BinopTag::Mod, " % " }, { BinopTag::IsEq, " ?= " },
+};
+
 const char *
 binop_str(
   BinopTag op)
 {
-  switch (op)
-  {
-  case BinopTag::Add : return " + ";
-  case BinopTag::Sub : return " - ";
-  case BinopTag::Mul : return " * ";
-  case BinopTag::Div : return " / ";
-  case BinopTag::Mod : return " % ";
-  case BinopTag::IsEq: return " ?= ";
-  }
-  UT_FAIL_IF("Not a binop");
-  return "";
+  return UT::lookup(binop_str_db, op);
 }
 } // namespace
 

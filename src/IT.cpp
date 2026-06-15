@@ -1,7 +1,4 @@
 #include "IT.hpp"
-#include <cstdio>
-#include <memory>
-#include <string>
 
 namespace IT
 {

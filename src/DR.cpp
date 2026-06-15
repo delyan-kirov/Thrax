@@ -1,8 +1,6 @@
 #include "DR.hpp"
-
 #include "ER.hpp"
-
-#include <cstdio>
+#include "UT.hpp"
 
 namespace DR
 {
@@ -16,7 +14,7 @@ interpret_file(
   UT::String content = UT::read_entire_file(file, arena);
   LX::Lexer  lexer{ content, file, arena };
   EX::Parser parser{ lexer };
-  parser.run();
+  parser();
 
   for (const ER::Diagnostic &d : parser.m_diags)
   {

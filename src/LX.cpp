@@ -10,6 +10,8 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
+#include <string>
+#include <unordered_map>
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -57,18 +59,31 @@ is_ident_cont(
   return std::isalnum((unsigned char)c) || '_' == c;
 }
 
+using Keywords = std::unordered_map<std::string, TokenTag>;
+using Symbols  = std::unordered_map<char, TokenTag>;
+
+const Keywords keyword_db{
+  { "let", TokenTag::KwLet }, { "in", TokenTag::KwIn },
+  { "if", TokenTag::KwIf },   { "else", TokenTag::KwElse },
+  { "int", TokenTag::KwInt }, { "pub", TokenTag::KwPub },
+  { "ext", TokenTag::KwExt },
+};
+
+// Single-character symbols. Multi-character ones ('?=', '=>') and the
+// standalone '=' depend on the next character and are handled in lex_symbol.
+const Symbols symbol_db{
+  { '(', TokenTag::LParen },  { ')', TokenTag::RParen },
+  { '\\', TokenTag::Lambda }, { '+', TokenTag::Plus },
+  { '*', TokenTag::Mult },    { '/', TokenTag::Div },
+  { '%', TokenTag::Modulus }, { '!', TokenTag::Not },
+  { '-', TokenTag::Minus },
+};
+
 TokenTag
 keyword_tag(
   UT::String s)
 {
-  if ("let" == s) return TokenTag::KwLet;
-  if ("in" == s) return TokenTag::KwIn;
-  if ("if" == s) return TokenTag::KwIf;
-  if ("else" == s) return TokenTag::KwElse;
-  if ("int" == s) return TokenTag::KwInt;
-  if ("pub" == s) return TokenTag::KwPub;
-  if ("ext" == s) return TokenTag::KwExt;
-  return TokenTag::Word;
+  return UT::lookup_or(keyword_db, std::to_string(s), TokenTag::Word);
 }
 
 } // namespace
@@ -161,7 +176,7 @@ Lexer::skip_ws()
  *\PER-KIND LEXERS
  *-----------------------------------------------------------------------------*/
 
-ER::Result<Token>
+R
 Lexer::lex_comment(
   size_t start, size_t line)
 {
@@ -169,7 +184,7 @@ Lexer::lex_comment(
   return { true, mk(TokenTag::Comment, start, line), {} };
 }
 
-ER::Result<Token>
+R
 Lexer::lex_string(
   size_t start, size_t line)
 {
@@ -199,15 +214,15 @@ Lexer::lex_string(
   }
 }
 
-ER::Result<Token>
+R
 Lexer::lex_number(
   size_t start, size_t line)
 {
   while (is_digit(cur())) m_cursor += 1;
   UT::String s = slice(start);
 
-  errno          = 0;
-  long long      v = std::strtoll(s.m_mem, nullptr, 10);
+  errno       = 0;
+  long long v = std::strtoll(s.m_mem, nullptr, 10);
   if (0 != errno)
   {
     Token anchor = mk(TokenTag::Int, start, line);
@@ -222,7 +237,7 @@ Lexer::lex_number(
   return { true, t, {} };
 }
 
-ER::Result<Token>
+R
 Lexer::lex_word(
   size_t start, size_t line)
 {
@@ -231,7 +246,7 @@ Lexer::lex_word(
   return { true, mk(keyword_tag(s), start, line), {} };
 }
 
-ER::Result<Token>
+R
 Lexer::lex_symbol(
   size_t start, size_t line)
 {
@@ -239,24 +254,11 @@ Lexer::lex_symbol(
   TokenTag tag = TokenTag::Eof;
   size_t   len = 1;
 
-  switch (c)
+  // Multi-character operators (and the '=' that may begin one) first, since
+  // they depend on the following character.
+  if ('?' == c)
   {
-  case '(' : tag = TokenTag::LParen; break;
-  case ')' : tag = TokenTag::RParen; break;
-  case '\\': tag = TokenTag::Lambda; break;
-  case '+' : tag = TokenTag::Plus; break;
-  case '*' : tag = TokenTag::Mult; break;
-  case '/' : tag = TokenTag::Div; break;
-  case '%' : tag = TokenTag::Modulus; break;
-  case '!' : tag = TokenTag::Not; break;
-  case '-' : tag = TokenTag::Minus; break;
-  case '?':
-    if ('=' == at(m_cursor + 1))
-    {
-      tag = TokenTag::IsEq;
-      len = 2;
-    }
-    else
+    if ('=' != at(m_cursor + 1))
     {
       Token anchor = mk(TokenTag::Eof, start, line);
       anchor.str   = UT::String{ m_input.m_mem + start, 1 };
@@ -264,8 +266,11 @@ Lexer::lex_symbol(
              anchor,
              "'?' is only valid as part of the '?=' operator");
     }
-    break;
-  case '=':
+    tag = TokenTag::IsEq;
+    len = 2;
+  }
+  else if ('=' == c)
+  {
     if ('>' == at(m_cursor + 1))
     {
       tag = TokenTag::FatArrow;
@@ -275,23 +280,23 @@ Lexer::lex_symbol(
     {
       tag = TokenTag::Eq;
     }
-    break;
-  default:
+  }
+  else if (const TokenTag *found = UT::try_lookup(symbol_db, c))
+  {
+    tag = *found;
+  }
+  else
   {
     Token anchor = mk(TokenTag::Eof, start, line);
     anchor.str   = UT::String{ m_input.m_mem + start, 1 };
-    LX_ERR(ER::Code::UNKNOWN_SYMBOL,
-           anchor,
-           "unexpected character '%c'",
-           c);
-  }
+    LX_ERR(ER::Code::UNKNOWN_SYMBOL, anchor, "unexpected character '%c'", c);
   }
 
   m_cursor += len;
   return { true, mk(tag, start, line), {} };
 }
 
-ER::Result<Token>
+R
 Lexer::lex_one()
 {
   skip_ws();
@@ -311,7 +316,7 @@ Lexer::lex_one()
  *\ITERATOR SURFACE
  *-----------------------------------------------------------------------------*/
 
-ER::Result<Token>
+R
 Lexer::peek(
   size_t n)
 {
@@ -323,7 +328,7 @@ Lexer::peek(
     {
       if (!m_buffer.empty() && TokenTag::Eof == m_buffer.back().tag)
         return { true, m_buffer.back(), {} };
-      ER::Result<Token> r = lex_one();
+      R r = lex_one();
       if (!r.ok) return r;
       m_buffer.push_back(r.value);
     }
@@ -338,7 +343,7 @@ Lexer::peek(
   }
 }
 
-ER::Result<Token>
+R
 Lexer::next()
 {
   for (;;)
@@ -347,7 +352,7 @@ Lexer::next()
     {
       if (!m_buffer.empty() && TokenTag::Eof == m_buffer.back().tag)
         return { true, m_buffer.back(), {} };
-      ER::Result<Token> r = lex_one();
+      R r = lex_one();
       if (!r.ok) return r;
       m_buffer.push_back(r.value);
     }
@@ -361,6 +366,18 @@ Lexer::next()
 /*------------------------------------------------------------------------------
  *\CTOR
  *-----------------------------------------------------------------------------*/
+
+size_t
+Lexer::mark() const
+{
+  return m_pos;
+}
+void
+Lexer::reset(
+  size_t m)
+{
+  m_pos = m;
+}
 
 Lexer::Lexer(
   UT::String input, UT::String filename, AR::Arena &arena)

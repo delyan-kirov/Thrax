@@ -15,8 +15,6 @@
 
 #include "ER.hpp"
 #include "UT.hpp"
-#include <variant>
-#include <vector>
 
 namespace LX
 {
@@ -155,6 +153,9 @@ struct Token
   TokenData  as;
 };
 
+using R      = ER::Result<Token>;
+using Tokens = std::vector<Token>;
+
 /*------------------------------------------------------------------------------
  *\LEXER
  *-----------------------------------------------------------------------------*/
@@ -162,38 +163,36 @@ struct Token
 class Lexer
 {
 public:
-  AR::Arena         &m_arena;
-  UT::String         m_input;
-  UT::String         m_filename;
-  size_t             m_cursor; // byte offset of the next char to lex
-  size_t             m_line;   // current 1-based line
-  std::vector<Token> m_buffer; // all tokens lexed so far (incl. comments)
-  size_t             m_pos;    // raw buffer index of the next token to hand out
+  AR::Arena &m_arena;
 
+public:
   Lexer(UT::String input, UT::String filename, AR::Arena &arena);
 
-  // Significant-token surface (Comment tokens are skipped transparently).
-  ER::Result<Token> peek(size_t n = 0);
-  ER::Result<Token> next();
-
-  // Backtracking: snapshot and restore the read position.
-  size_t mark() const { return m_pos; }
-  void   reset(size_t m) { m_pos = m; }
+  UT_NODISCARD R peek(size_t n = 0);
+  R              next();
+  size_t         mark() const;
+  void           reset(size_t m);
 
 private:
-  ER::Result<Token> lex_one(); // lex exactly one token from m_cursor
+  UT::String m_input;
+  UT::String m_filename;
+  size_t     m_cursor;
+  size_t     m_line;
+  Tokens     m_buffer;
+  size_t     m_pos; // raw buffer index of the next token to hand out
 
-  ER::Result<Token> lex_comment(size_t start, size_t line);
-  ER::Result<Token> lex_string(size_t start, size_t line);
-  ER::Result<Token> lex_number(size_t start, size_t line);
-  ER::Result<Token> lex_word(size_t start, size_t line);
-  ER::Result<Token> lex_symbol(size_t start, size_t line);
-
-  void       skip_ws();
-  char       cur() const;
-  char       at(size_t i) const;
-  UT::String slice(size_t start) const;
-  Token      mk(TokenTag tag, size_t start, size_t line) const;
+private:
+  UT_NODISCARD R    lex_one();
+  UT_NODISCARD R    lex_comment(size_t start, size_t line);
+  UT_NODISCARD R    lex_string(size_t start, size_t line);
+  UT_NODISCARD R    lex_number(size_t start, size_t line);
+  UT_NODISCARD R    lex_word(size_t start, size_t line);
+  UT_NODISCARD R    lex_symbol(size_t start, size_t line);
+  void              skip_ws();
+  UT_NODISCARD char cur() const;
+  UT_NODISCARD char at(size_t i) const;
+  UT_NODISCARD UT::String slice(size_t start) const;
+  UT_NODISCARD Token      mk(TokenTag tag, size_t start, size_t line) const;
 };
 
 /*------------------------------------------------------------------------------

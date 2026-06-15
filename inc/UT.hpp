@@ -6,9 +6,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <memory.h>
+#include <memory>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "AR.hpp"
@@ -772,6 +777,38 @@ SB::append(
   Args &&...args)
 {
   (..., this->concat(std::forward<Args>(args), " "));
+}
+
+// Look up a key in any map-like container, returning a pointer to the mapped
+// value, or nullptr when absent. Use when not finding the key is a normal case.
+template <typename Map, typename Key>
+const typename Map::mapped_type *
+try_lookup(
+  const Map &m, const Key &k)
+{
+  auto it = m.find(k);
+  return it == m.end() ? nullptr : &it->second;
+}
+
+// Look up a key that is expected to be present; fails hard when it is not.
+template <typename Map, typename Key>
+const typename Map::mapped_type &
+lookup(
+  const Map &m, const Key &k)
+{
+  auto it = m.find(k);
+  UT_FAIL_IF(it == m.end());
+  return it->second;
+}
+
+// Look up a key, falling back to a default value when it is absent.
+template <typename Map, typename Key>
+typename Map::mapped_type
+lookup_or(
+  const Map &m, const Key &k, typename Map::mapped_type fallback)
+{
+  auto it = m.find(k);
+  return it == m.end() ? fallback : it->second;
 }
 
 // TODO: Better print messages

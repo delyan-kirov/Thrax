@@ -16,8 +16,6 @@
 #include "ER.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
-#include <variant>
-#include <vector>
 
 namespace EX
 {
@@ -148,6 +146,9 @@ struct Expr
   Expr(ExprTag tag, AR::Arena &arena);
 };
 
+using R           = ER::Result<Expr *>;
+using Diagnostics = std::vector<ER::Diagnostic>;
+
 /*-------------------------------------------------------------------------------
  *\PARSER
  *------------------------------------------------------------------------------*/
@@ -155,42 +156,39 @@ struct Expr
 class Parser
 {
 public:
-  AR::Arena                  &m_arena;
-  LX::Lexer                  &m_lex;
-  Exprs                       m_exprs; // successfully parsed top-level defs
-  std::vector<ER::Diagnostic> m_diags; // one chain per failed definition
+  AR::Arena  &m_arena;
+  LX::Lexer  &m_lex;
+  Exprs       m_exprs;
+  Diagnostics m_diags;
 
   Parser(LX::Lexer &lex);
 
-  // Parse every top-level definition. Good defs land in m_exprs; each failed
-  // definition contributes one chain to m_diags and parsing recovers to the
-  // next definition.
-  void run();
+  void operator()();
 
 private:
-  ER::Result<Expr *>     parse_global();
-  ER::Result<Expr *>     parse_expr(int min_bp);
-  ER::Result<Expr *>     parse_prefix();
-  ER::Result<Expr *>     parse_primary();
-  ER::Result<Expr *>     parse_group();
-  ER::Result<Expr *>     parse_let();
-  ER::Result<Expr *>     parse_if();
-  ER::Result<Expr *>     parse_closure();
-  ER::Result<LX::Token>  expect(LX::TokenTag tag, const char *what);
-  void                   recover();
+  UT_NODISCARD R parse_global();
+  UT_NODISCARD R parse_expr(int min_bp);
+  UT_NODISCARD R parse_prefix();
+  UT_NODISCARD R parse_primary();
+  UT_NODISCARD R parse_group();
+  UT_NODISCARD R parse_let();
+  UT_NODISCARD R parse_if();
+  UT_NODISCARD R parse_closure();
+  UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
+  void               recover();
 
-  Expr *alloc(Expr e);
-  Expr *mk_int(const LX::Token &t);
-  Expr *mk_str(const LX::Token &t);
-  Expr *mk_var(const LX::Token &t);
-  Expr *mk_app(Expr *fn, Expr *arg);
-  Expr *mk_unop(LX::TokenTag op, Expr *operand);
-  Expr *mk_binop(LX::TokenTag op, Expr *lhs, Expr *rhs);
-  Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
-  Expr *mk_let(UT::String var, Expr *val, Expr *body);
-  Expr *mk_fndef(UT::String param, Expr *body);
-  Expr *mk_intdef(UT::String name, Expr *def);
-  Expr *mk_pubdef(UT::String name, Expr *def);
+  UT_NODISCARD Expr *alloc(Expr e);
+  UT_NODISCARD Expr *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr *mk_str(const LX::Token &t);
+  UT_NODISCARD Expr *mk_var(const LX::Token &t);
+  UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
+  UT_NODISCARD Expr *mk_unop(LX::TokenTag op, Expr *operand);
+  UT_NODISCARD Expr *mk_binop(BinopTag op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
+  UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
+  UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
+  UT_NODISCARD Expr *mk_intdef(UT::String name, Expr *def);
+  UT_NODISCARD Expr *mk_pubdef(UT::String name, Expr *def);
 };
 
 /*-------------------------------------------------------------------------------
