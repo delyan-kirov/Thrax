@@ -99,6 +99,13 @@ struct ExStr
 {
   UT::String value;
 };
+// `@extern ("symbol", "lib")` -- a foreign binding. Only valid as a global
+// body; its type comes from the enclosing global's signature.
+struct ExExtern
+{
+  UT::String symbol;
+  UT::String lib;
+};
 
 enum class BinopTag
 {
@@ -166,7 +173,8 @@ struct ExLet
   X(App, ExApp)                                                                \
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
-  X(Str, ExStr)
+  X(Str, ExStr)                                                                \
+  X(Extern, ExExtern)
 
 enum class ExprTag
 {
@@ -212,6 +220,7 @@ public:
 
 private:
   UT_NODISCARD R parse_global();
+  UT_NODISCARD R parse_extern();
   UT_NODISCARD ER::Result<Ty *> parse_type();
   UT_NODISCARD ER::Result<Ty *> parse_type_atom();
   UT_NODISCARD R parse_expr(int min_bp);
@@ -235,6 +244,7 @@ private:
   UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
+  UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
   UT_NODISCARD Ty   *mk_ty(Ty t);
 };
 

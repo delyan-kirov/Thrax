@@ -26,12 +26,18 @@ test: $(addprefix $(BIN),$(TESTS))
 test-debug: $(BIN)tst_debug
 	@$(BIN)tst_debug
 
+# FFI demo (libc via @extern). Kept out of `test` so a THRAX_NO_FFI build of the
+# default suite still works; run explicitly with `make test-ffi`.
+test-ffi: $(BIN)tst_ffi
+	@$(BIN)tst_ffi
+
 #------------------------------OBJC-----------------------------
 THRAXsrc = \
 	$(SRC)AR.cpp \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
 	$(SRC)TC.cpp \
+	$(SRC)FF.cpp \
 	$(SRC)IT.cpp \
 	$(SRC)DR.cpp
 
@@ -43,7 +49,16 @@ THRAXinc = \
 	$(INC)UT.hpp \
 	$(INC)IT.hpp \
 	$(INC)TC.hpp \
+	$(INC)FF.hpp \
 	$(INC)EX.hpp
+
+# FFI: libffi + dlopen. $ORIGIN/lib64 lets the loaded thrax.so find libffi.so
+# next to it. Build with THRAX_NO_FFI=1 to drop the dependency entirely.
+ifdef THRAX_NO_FFI
+CFLAGS += -DTHRAX_NO_FFI=1
+else
+LIBS += -Lbin/lib64 -lffi -ldl -Wl,-rpath,'$$ORIGIN/lib64'
+endif
 
 THRAX = $(BIN)thrax.so
 
@@ -61,11 +76,14 @@ $(BIN)tst_mult: $(TST)tst_mult.cpp $(THRAX)
 $(BIN)tst_functional: $(TST)tst_functional.cpp $(THRAX) 
 	$(CC) $(THRAX) $(TST)tst_functional.cpp $(LIBS) -o $@
 
-$(BIN)tst_debug: $(TST)tst_debug.cpp $(THRAX) 
+$(BIN)tst_debug: $(TST)tst_debug.cpp $(THRAX)
 	$(CC) $(THRAX) $(TST)tst_debug.cpp $(LIBS) -o $@
 
+$(BIN)tst_ffi: $(TST)tst_ffi.cpp $(THRAX)
+	$(CC) $(THRAX) $(TST)tst_ffi.cpp $(LIBS) -o $@
+
 #-----------------------------CMND------------------------------
-COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug clean_wkspace
+COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug test-ffi clean_wkspace
 .PHONY: COMMANDS
 
 executables: $(THRAX)

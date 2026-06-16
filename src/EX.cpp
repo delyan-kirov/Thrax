@@ -281,6 +281,15 @@ Parser::mk_ty(
   return p;
 }
 
+Expr *
+Parser::mk_extern(
+  UT::String symbol, UT::String lib)
+{
+  Expr e{ ExprTag::Extern };
+  e.as = ExExtern{ symbol, lib };
+  return alloc(e);
+}
+
 /*-------------------------------------------------------------------------------
  *\PARSE
  *------------------------------------------------------------------------------*/
@@ -477,12 +486,53 @@ Parser::parse_global()
 
   TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
+  // A `@extern (...)` body is only valid here, and needs a signature to know
+  // its foreign call types.
+  if (LX::TokenTag::At == TRY(m_lex.peek()).tag)
+  {
+    if (!sig)
+      EX_ERR(ER::Code::EXPECTED_GLOBAL,
+             name,
+             "extern global '%s' requires a type signature",
+             std::to_string(name.str).c_str());
+    Expr *ext = CTX(parse_extern(),
+                    name,
+                    "in the definition of extern '%s'",
+                    std::to_string(name.str).c_str());
+    return { true, mk_def(name.str, sig, ext), {} };
+  }
+
   Expr *body = CTX(parse_expr(0),
                    name,
                    "in the definition of global '%s'",
                    std::to_string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
+}
+
+R
+Parser::parse_extern()
+{
+  LX::Token at = TRY(m_lex.peek());
+  if (at.str != "@extern")
+    EX_ERR(ER::Code::UNSUPPORTED,
+           at,
+           "unknown intrinsic '%s' (only '@extern' is supported)",
+           std::to_string(at.str).c_str());
+  m_lex.next(); // '@extern'
+
+  TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
+  LX::Token sym = TRY(
+    expect(LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
+  TRY(expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
+  LX::Token lib = TRY(
+    expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
+  TRY(expect(LX::TokenTag::RParen, "expected ')' to close @extern"));
+
+  return { true,
+           mk_extern(std::get<LX::TkStr>(sym.as).value,
+                     std::get<LX::TkStr>(lib.as).value),
+           {} };
 }
 
 /*-------------------------------------------------------------------------------
@@ -678,6 +728,10 @@ pprint(
   case ExprTag::Def:
     return pad + "$" + std::to_string(std::get<ExDef>(e->as).name) + " =\n"
            + pprint(std::get<ExDef>(e->as).def, level + 1);
+  case ExprTag::Extern:
+    return pad + "@extern(\""
+           + std::to_string(std::get<ExExtern>(e->as).symbol) + "\", \""
+           + std::to_string(std::get<ExExtern>(e->as).lib) + "\")";
   case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");

@@ -64,12 +64,25 @@ struct Let
   pLm body;
 };
 
+// A foreign binding. `arg_types`/`ret_type` are Thrax type names taken from the
+// signature; `args` accumulates curried arguments until the function is
+// saturated, at which point the C call is made (see eval / call_extern).
+struct Extern
+{
+  std::string              symbol;
+  std::string              lib;
+  std::vector<std::string> arg_types;
+  std::string              ret_type;
+  std::vector<pLm>         args;
+};
+
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
   X(STR, Str)                                                                  \
   X(APP, App)                                                                  \
   X(FUN, Fun)                                                                  \
   X(LET, Let)                                                                  \
+  X(EXTERN, Extern)                                                            \
   X(VAR, Var)
 
 enum class LTag

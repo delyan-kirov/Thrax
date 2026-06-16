@@ -69,7 +69,8 @@ enum class CKind
   LitStr,
   Lam,
   App,
-  Let
+  Let,
+  Extern // a foreign binding; its type comes entirely from the signature
 };
 
 struct Core
@@ -423,6 +424,8 @@ Checker::desugar(
     return core(CKind::LitInt);
   case EX::ExprTag::Str:
     return core(CKind::LitStr);
+  case EX::ExprTag::Extern:
+    return core(CKind::Extern);
   case EX::ExprTag::Var:
   {
     Core *c   = core(CKind::Var);
@@ -519,7 +522,8 @@ Checker::occurs_free(
   {
   case CKind::Var: return e->name == name;
   case CKind::LitInt:
-  case CKind::LitStr: return false;
+  case CKind::LitStr:
+  case CKind::Extern: return false;
   case CKind::Lam:
     if (e->name == name) return false; // shadowed
     return occurs_free(name, e->a);
@@ -544,6 +548,7 @@ Checker::infer(
   {
   case CKind::LitInt: return con("Int");
   case CKind::LitStr: return con("Str");
+  case CKind::Extern: return fresh(); // unifies with the declared signature
 
   case CKind::Var:
   {

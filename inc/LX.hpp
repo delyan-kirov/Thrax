@@ -89,6 +89,12 @@ struct TkDollar
 struct TkColon
 {
 }; // : has-type
+struct TkComma
+{
+}; // ,
+struct TkAt
+{
+}; // @name -- an intrinsic; the name is Token::str past the leading '@'
 struct TkKwLet
 {
 };
@@ -133,6 +139,8 @@ struct TkEof
   X(Arrow, TkArrow)                                                            \
   X(Dollar, TkDollar)                                                          \
   X(Colon, TkColon)                                                            \
+  X(Comma, TkComma)                                                            \
+  X(At, TkAt)                                                                  \
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \
   X(KwIf, TkKwIf)                                                              \
@@ -196,6 +204,7 @@ private:
   UT_NODISCARD R    lex_number(size_t start, size_t line);
   UT_NODISCARD R    lex_word(size_t start, size_t line);
   UT_NODISCARD R    lex_tyvar(size_t start, size_t line);
+  UT_NODISCARD R    lex_at(size_t start, size_t line);
   UT_NODISCARD R    lex_symbol(size_t start, size_t line);
   void              skip_ws();
   UT_NODISCARD char cur() const;

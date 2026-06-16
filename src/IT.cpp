@@ -1,4 +1,7 @@
 #include "IT.hpp"
+#include "FF.hpp"
+
+#include <cstdint>
 
 namespace IT
 {
@@ -80,6 +83,13 @@ assign_id(
   }
   break;
 
+  case LTag::EXTERN:
+  {
+    auto &v = std::get<Extern>(node->as);
+    for (auto &a : v.args) assign_id(a, env);
+  }
+  break;
+
   case LTag::INT:
   case LTag::STR:
   case LTag::UNK: break;
@@ -152,6 +162,75 @@ apply_builtin(
   else                 UT_FAIL_IF(true);
 
   return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
+}
+
+// A foreign type name as written in a signature. Type variables and function
+// arguments are opaque, word-sized values, so they marshal as pointers.
+std::string
+ffi_type_name(
+  EX::Ty *t)
+{
+  switch (t->tag)
+  {
+  case EX::TyTag::Con: return std::to_string(std::get<EX::TyCon>(t->as).name);
+  case EX::TyTag::Var:
+  case EX::TyTag::Arrow: return "Ptr";
+  }
+  return "Int";
+}
+
+// Split a signature `A -> B -> R` into argument types [A, B] and result R.
+void
+flatten_sig(
+  EX::Ty *t, std::vector<std::string> &args, std::string &ret)
+{
+  while (t && EX::TyTag::Arrow == t->tag)
+  {
+    auto &ar = std::get<EX::TyArrow>(t->as);
+    args.push_back(ffi_type_name(ar.from));
+    t = ar.to;
+  }
+  ret = t ? ffi_type_name(t) : "Int";
+}
+
+// Marshal the accumulated arguments, perform the foreign call, and wrap the
+// result back into an Lm (Str returns copy the C string; everything else is an
+// integer-width / pointer word represented as Int).
+pLm
+call_extern(
+  const Extern &e)
+{
+  std::vector<ssize_t> args;
+  args.reserve(e.args.size());
+  for (const pLm &a : e.args)
+  {
+    UT_FAIL_IF(!a);
+    if (LTag::INT == a->tag)
+    {
+      args.push_back(std::get<Int>(a->as).unwrap);
+    }
+    else if (LTag::STR == a->tag)
+    {
+      const std::string &s = std::get<Str>(a->as).unwrap;
+      args.push_back((ssize_t)(intptr_t)s.c_str());
+    }
+    else
+    {
+      UT_FAIL_MSG("FFI argument to '%s' must be Int or Str", e.symbol.c_str());
+    }
+  }
+
+  ssize_t r = FF::call(UT::String{ e.lib.c_str(), e.lib.size() },
+                       UT::String{ e.symbol.c_str(), e.symbol.size() },
+                       e.arg_types, e.ret_type, args);
+
+  if ("Str" == e.ret_type)
+  {
+    const char *p = (const char *)(intptr_t)r;
+    return std::make_shared<Lm>(
+      Lm{ .tag = LTag::STR, .as = Str{ p ? std::string(p) : std::string() } });
+  }
+  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ r } });
 }
 
 } // namespace
@@ -251,13 +330,36 @@ exprs2pLm_helper(
   {
     auto       &gd   = std::get<EX::ExDef>(expr->as);
     std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
-    pLm         def  = exprs2pLm_helper(gd.def, env);
-    NameStack   ns;
+
+    pLm def;
+    if (EX::ExprTag::Extern == gd.def->tag)
+    {
+      // Foreign binding: the call types come from the signature, not the body.
+      auto  &ex = std::get<EX::ExExtern>(gd.def->as);
+      Extern e;
+      e.symbol = std::string{ ex.symbol.m_mem, ex.symbol.m_len };
+      e.lib    = std::string{ ex.lib.m_mem, ex.lib.m_len };
+      if (gd.sig)
+        flatten_sig(gd.sig, e.arg_types, e.ret_type);
+      else
+        e.ret_type = "Int";
+      def = std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
+    }
+    else
+    {
+      def = exprs2pLm_helper(gd.def, env);
+    }
+
+    NameStack ns;
     assign_id(def, ns);
     env[name] = def;
     lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
   }
   break;
+
+  case EX::ExprTag::Extern:
+    UT_FAIL_MSG("%s", "@extern is only valid as a global definition");
+    break;
 
   case EX::ExprTag::Unknown:
   {
@@ -312,6 +414,11 @@ pprint(
     auto &v = std::get<Let>(lm->as);
     return pad + "(let " + v.var.unwrap + "\n" + pprint(v.val, level + 1) + "\n"
            + pprint(v.body, level + 1) + ")";
+  }
+  case LTag::EXTERN:
+  {
+    auto &v = std::get<Extern>(lm->as);
+    return pad + "@extern(" + v.symbol + " in " + v.lib + ")";
   }
   case LTag::UNK: return pad + "?unknown";
   }
@@ -391,14 +498,30 @@ eval(
     auto &a = std::get<App>(node->as);
 
     pLm closure = eval(a.fn, denv, senv);
+    pLm val     = eval(a.arg, denv, senv);
+
+    // Foreign function: accumulate the argument, call once saturated.
+    if (LTag::EXTERN == closure->tag)
+    {
+      Extern e = std::get<Extern>(closure->as); // copy and extend
+      e.args.push_back(val);
+      if (e.args.size() >= e.arg_types.size()) return call_extern(e);
+      return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
+    }
+
     UT_FAIL_IF(closure->tag != LTag::FUN);
-
-    pLm val = eval(a.arg, denv, senv);
-
     auto  &fun     = std::get<Fun>(closure->as);
     DynEnv new_env = fun.var.env;
     new_env.push_back(val);
     return eval(fun.body, new_env, senv);
+  }
+
+  case LTag::EXTERN:
+  {
+    auto &e = std::get<Extern>(node->as);
+    // A nullary extern is already saturated; otherwise it is a function value.
+    if (e.args.size() >= e.arg_types.size()) return call_extern(e);
+    return node;
   }
 
   case LTag::UNK:

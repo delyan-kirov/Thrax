@@ -77,6 +77,7 @@ const Symbols symbol_db{
   { '*', TokenTag::Mult },    { '/', TokenTag::Div },
   { '%', TokenTag::Modulus }, { '!', TokenTag::Not },
   { '$', TokenTag::Dollar },  { ':', TokenTag::Colon },
+  { ',', TokenTag::Comma },
 };
 
 TokenTag
@@ -263,6 +264,22 @@ Lexer::lex_tyvar(
 }
 
 R
+Lexer::lex_at(
+  size_t start, size_t line)
+{
+  m_cursor += 1; // leading '@'
+  if (!is_ident_start(cur()))
+  {
+    Token anchor = mk(TokenTag::At, start, line);
+    LX_ERR(ER::Code::UNKNOWN_SYMBOL,
+           anchor,
+           "expected an intrinsic name after '@' (e.g. @extern)");
+  }
+  while (is_ident_cont(cur())) m_cursor += 1;
+  return { true, mk(TokenTag::At, start, line), {} };
+}
+
+R
 Lexer::lex_symbol(
   size_t start, size_t line)
 {
@@ -338,6 +355,7 @@ Lexer::lex_one()
   if ('"' == c) return lex_string(start, line);
   if (is_digit(c)) return lex_number(start, line);
   if ('`' == c) return lex_tyvar(start, line);
+  if ('@' == c) return lex_at(start, line);
   if (is_ident_start(c)) return lex_word(start, line);
   return lex_symbol(start, line);
 }
