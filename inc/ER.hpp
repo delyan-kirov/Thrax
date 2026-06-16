@@ -35,10 +35,10 @@ namespace ER
   X(UNEXPECTED_TOKEN)                                                          \
   X(PARENTHESIS_UNBALANCED)                                                    \
   X(EXPECTED_GLOBAL)                                                           \
-  X(UNSUPPORTED)                                                                \
-  X(TYPE_MISMATCH)                                                              \
-  X(TYPE_UNBOUND)                                                               \
-  X(TYPE_ANNOTATION_REQUIRED)                                                   \
+  X(UNSUPPORTED)                                                               \
+  X(TYPE_MISMATCH)                                                             \
+  X(TYPE_UNBOUND)                                                              \
+  X(TYPE_ANNOTATION_REQUIRED)                                                  \
   X(TYPE_CYCLE)
 
 enum class Code
@@ -108,7 +108,8 @@ struct Fail
  *-----------------------------------------------------------------------------*/
 
 // Format a printf-style message into the arena so it outlives the call.
-UT_PRINTF_LIKE(2, 3)
+UT_PRINTF_LIKE(
+  2, 3)
 inline UT::String
 mk_msg(
   AR::Arena &arena, const char *fmt, ...)
@@ -179,7 +180,7 @@ pprint(
     size_t off = (f->anchor.m_mem && input.m_mem)
                    ? (size_t)(f->anchor.m_mem - input.m_mem)
                    : 0;
-    size_t ls = off;
+    size_t ls  = off;
     while (ls > 0 && input.m_mem[ls - 1] != '\n') ls -= 1;
     size_t le = off;
     while (le < input.m_len && input.m_mem[le] != '\n') le += 1;

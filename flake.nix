@@ -10,25 +10,20 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
+        # -O0 debug builds trip glibc's _FORTIFY_SOURCE warning (which needs -O);
+        # disable that hardening so the makefile stays free of workaround flags.
+        hardeningDisable = [ "fortify" ];
+
         buildInputs = [
           pkgs.clang
           pkgs.gcc
           pkgs.gnumake
-          pkgs.bear
           pkgs.git
           pkgs.valgrind
 
-          # Build tools for lib
-          pkgs.autoconf
-          pkgs.automake
-          pkgs.libtool
-          pkgs.texinfo
+          # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
           pkgs.libffi
-          pkgs.cmakeWithGui
-
-          # Extra libs
           pkgs.raylib
-          pkgs.libffi
 
           # X11 support for raylib
           pkgs.xorg.libX11
@@ -43,6 +38,9 @@
         ];
 
         shellHook = ''
+          export RAYLIB=${pkgs.raylib}
+          export LIBFFI=${pkgs.libffi.out}
+          export LIBFFI_DEV=${pkgs.libffi.dev}
         '';
       };
     };

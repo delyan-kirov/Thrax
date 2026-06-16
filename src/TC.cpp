@@ -41,8 +41,8 @@ enum class Kind
 struct Type
 {
   Kind        kind;
-  std::string name;        // Con: "Int"/"Str"; Var (rigid): the skolem name
-  int         id    = 0;   // Var: identity
+  std::string name;            // Con: "Int"/"Str"; Var (rigid): the skolem name
+  int         id    = 0;       // Var: identity
   Type       *ref   = nullptr; // Var: union-find link (bound variable)
   bool        rigid = false;   // Var: a skolem, only unifies with itself
   Type       *from  = nullptr; // Arrow
@@ -76,10 +76,10 @@ enum class CKind
 struct Core
 {
   CKind       kind;
-  std::string name;            // Var name / Lam param / Let name
-  Core       *a = nullptr;     // Lam: body; App: fn; Let: value
-  Core       *b = nullptr;     // App: arg; Let: body
-  UT::String  anchor;          // source slice for diagnostics (Var only)
+  std::string name;        // Var name / Lam param / Let name
+  Core       *a = nullptr; // Lam: body; App: fn; Let: value
+  Core       *b = nullptr; // App: arg; Let: body
+  UT::String  anchor;      // source slice for diagnostics (Var only)
 };
 
 /*------------------------------------------------------------------------------
@@ -95,14 +95,16 @@ struct GlobalEntry
     Unresolved,
     Resolving,
     Resolved
-  } state = Unresolved;
+  } state
+    = Unresolved;
   Scheme scheme{};
 };
 
 class Checker
 {
 public:
-  Checker(AR::Arena &arena, UT::String src)
+  Checker(
+    AR::Arena &arena, UT::String src)
       : m_arena{ arena },
         m_src{ src }
   {
@@ -114,14 +116,14 @@ public:
   std::vector<ER::Diagnostic> m_diags;
 
 private:
-  AR::Arena                            &m_arena;
-  UT::String                            m_src;
-  std::deque<Type>                      m_types;
-  std::deque<Core>                      m_cores;
-  int                                   m_next_id = 0;
-  Env                                   m_prim;
+  AR::Arena                                   &m_arena;
+  UT::String                                   m_src;
+  std::deque<Type>                             m_types;
+  std::deque<Core>                             m_cores;
+  int                                          m_next_id = 0;
+  Env                                          m_prim;
   std::unordered_map<std::string, GlobalEntry> m_globals;
-  std::vector<std::string>              m_order; // source order of globals
+  std::vector<std::string> m_order; // source order of globals
 
   // current diagnostic anchor (the global under check)
   UT::String m_anchor;
@@ -145,8 +147,9 @@ private:
   Type  *instantiate(const Scheme &s);
 
   // signatures
-  Type *sig_to_type(EX::Ty *sig, std::unordered_map<std::string, Type *> &tv,
-                    bool rigid);
+  Type  *sig_to_type(EX::Ty                                  *sig,
+                     std::unordered_map<std::string, Type *> &tv,
+                     bool                                     rigid);
   Scheme scheme_of_sig(EX::Ty *sig);
 
   // desugar + inference
@@ -174,8 +177,13 @@ Type *
 Checker::fresh(
   bool rigid, std::string name)
 {
-  m_types.push_back(Type{ Kind::Var, std::move(name), m_next_id++, nullptr,
-                          rigid, nullptr, nullptr });
+  m_types.push_back(Type{ Kind::Var,
+                          std::move(name),
+                          m_next_id++,
+                          nullptr,
+                          rigid,
+                          nullptr,
+                          nullptr });
   return &m_types.back();
 }
 
@@ -192,8 +200,7 @@ Type *
 Checker::arrow(
   Type *from, Type *to)
 {
-  m_types.push_back(
-    Type{ Kind::Arrow, "", 0, nullptr, false, from, to });
+  m_types.push_back(Type{ Kind::Arrow, "", 0, nullptr, false, from, to });
   return &m_types.back();
 }
 
@@ -227,8 +234,7 @@ Checker::occurs(
 {
   t = prune(t);
   if (t == var) return true;
-  if (t->kind == Kind::Arrow)
-    return occurs(var, t->from) || occurs(var, t->to);
+  if (t->kind == Kind::Arrow) return occurs(var, t->from) || occurs(var, t->to);
   return false;
 }
 
@@ -244,8 +250,11 @@ Checker::unify(
   {
     if (occurs(a, b))
     {
-      fail(ER::Code::TYPE_MISMATCH, m_anchor, "infinite type: '%s' occurs in '%s'",
-           show(a).c_str(), show(b).c_str());
+      fail(ER::Code::TYPE_MISMATCH,
+           m_anchor,
+           "infinite type: '%s' occurs in '%s'",
+           show(a).c_str(),
+           show(b).c_str());
       return false;
     }
     a->ref = b;
@@ -255,8 +264,11 @@ Checker::unify(
   {
     if (occurs(b, a))
     {
-      fail(ER::Code::TYPE_MISMATCH, m_anchor, "infinite type: '%s' occurs in '%s'",
-           show(b).c_str(), show(a).c_str());
+      fail(ER::Code::TYPE_MISMATCH,
+           m_anchor,
+           "infinite type: '%s' occurs in '%s'",
+           show(b).c_str(),
+           show(a).c_str());
       return false;
     }
     b->ref = a;
@@ -273,8 +285,11 @@ Checker::unify(
     return l && r;
   }
 
-  fail(ER::Code::TYPE_MISMATCH, m_anchor, "type mismatch: expected '%s', got '%s'",
-       show(a).c_str(), show(b).c_str());
+  fail(ER::Code::TYPE_MISMATCH,
+       m_anchor,
+       "type mismatch: expected '%s', got '%s'",
+       show(a).c_str(),
+       show(b).c_str());
   return false;
 }
 
@@ -359,7 +374,7 @@ Checker::instantiate(
       auto it = sub.find(t->id);
       return it == sub.end() ? t : it->second;
     }
-    case Kind::Con: return t;
+    case Kind::Con  : return t;
     case Kind::Arrow: return arrow(go(t->from), go(t->to));
     }
     return t;
@@ -420,12 +435,9 @@ Checker::desugar(
 {
   switch (e->tag)
   {
-  case EX::ExprTag::Int:
-    return core(CKind::LitInt);
-  case EX::ExprTag::Str:
-    return core(CKind::LitStr);
-  case EX::ExprTag::Extern:
-    return core(CKind::Extern);
+  case EX::ExprTag::Int   : return core(CKind::LitInt);
+  case EX::ExprTag::Str   : return core(CKind::LitStr);
+  case EX::ExprTag::Extern: return core(CKind::Extern);
   case EX::ExprTag::Var:
   {
     Core *c   = core(CKind::Var);
@@ -464,16 +476,16 @@ Checker::desugar(
     const char *op;
     switch (b.tag)
     {
-    case EX::BinopTag::Add : op = "+";  break;
-    case EX::BinopTag::Sub : op = "-";  break;
-    case EX::BinopTag::Mul : op = "*";  break;
-    case EX::BinopTag::Div : op = "/";  break;
-    case EX::BinopTag::Mod : op = "%";  break;
+    case EX::BinopTag::Add : op = "+"; break;
+    case EX::BinopTag::Sub : op = "-"; break;
+    case EX::BinopTag::Mul : op = "*"; break;
+    case EX::BinopTag::Div : op = "/"; break;
+    case EX::BinopTag::Mod : op = "%"; break;
     case EX::BinopTag::IsEq: op = "?="; break;
-    default                : op = "+";  break;
+    default                : op = "+"; break;
     }
-    Core *v = core(CKind::Var);
-    v->name = op;
+    Core *v    = core(CKind::Var);
+    v->name    = op;
     Core *app1 = core(CKind::App);
     app1->a    = v;
     app1->b    = desugar(b.ops.begin());
@@ -484,9 +496,9 @@ Checker::desugar(
   }
   case EX::ExprTag::Unop:
   {
-    auto &u = std::get<EX::ExUnop>(e->as);
-    Core *v = core(CKind::Var);
-    v->name = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
+    auto &u   = std::get<EX::ExUnop>(e->as);
+    Core *v   = core(CKind::Var);
+    v->name   = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
     Core *app = core(CKind::App);
     app->a    = v;
     app->b    = desugar(u.op);
@@ -494,9 +506,9 @@ Checker::desugar(
   }
   case EX::ExprTag::If:
   {
-    auto &i = std::get<EX::ExIf>(e->as);
-    Core *v = core(CKind::Var);
-    v->name = "if";
+    auto &i  = std::get<EX::ExIf>(e->as);
+    Core *v  = core(CKind::Var);
+    v->name  = "if";
     Core *a1 = core(CKind::App);
     a1->a    = v;
     a1->b    = desugar(i.cond);
@@ -520,7 +532,7 @@ Checker::occurs_free(
 {
   switch (e->kind)
   {
-  case CKind::Var: return e->name == name;
+  case CKind::Var   : return e->name == name;
   case CKind::LitInt:
   case CKind::LitStr:
   case CKind::Extern: return false;
@@ -560,14 +572,15 @@ Checker::infer(
 
     fail(ER::Code::TYPE_UNBOUND,
          e->anchor.m_mem ? e->anchor : m_anchor,
-         "unbound variable '%s'", e->name.c_str());
+         "unbound variable '%s'",
+         e->name.c_str());
     return fresh();
   }
 
   case CKind::Lam:
   {
-    Type *pv = fresh();
-    Env   inner = locals;
+    Type *pv       = fresh();
+    Env   inner    = locals;
     inner[e->name] = Scheme{ {}, pv }; // lambda params are monomorphic
     Type *bt       = infer(e->a, inner);
     return arrow(pv, bt);
@@ -588,10 +601,10 @@ Checker::infer(
     if (occurs_free(e->name, e->a))
     {
       // recursive: bind the name monomorphically while inferring the value
-      Type *nv      = fresh();
-      Env   rec     = locals;
-      rec[e->name]  = Scheme{ {}, nv };
-      vt            = infer(e->a, rec);
+      Type *nv     = fresh();
+      Env   rec    = locals;
+      rec[e->name] = Scheme{ {}, nv };
+      vt           = infer(e->a, rec);
       unify(nv, vt);
       vt = nv;
     }
@@ -599,9 +612,9 @@ Checker::infer(
     {
       vt = infer(e->a, locals);
     }
-    Scheme s        = generalize(locals, vt);
-    Env    inner    = locals;
-    inner[e->name]  = s;
+    Scheme s       = generalize(locals, vt);
+    Env    inner   = locals;
+    inner[e->name] = s;
     return infer(e->b, inner);
   }
   }
@@ -620,8 +633,10 @@ Checker::resolve(
   if (g.state == GlobalEntry::Resolved) return g.scheme;
   if (g.state == GlobalEntry::Resolving)
   {
-    fail(ER::Code::TYPE_CYCLE, g.def->name,
-         "global '%s' depends on itself but has no type annotation", name.c_str());
+    fail(ER::Code::TYPE_CYCLE,
+         g.def->name,
+         "global '%s' depends on itself but has no type annotation",
+         name.c_str());
     g.scheme = Scheme{ {}, fresh() };
     g.state  = GlobalEntry::Resolved;
     return g.scheme;
@@ -645,10 +660,13 @@ Checker::resolve(
 
     if (t->kind != Kind::Con)
     {
-      fail(ER::Code::TYPE_ANNOTATION_REQUIRED, g.def->name,
-           "global '%s' needs a type annotation (its type is '%s', not a ground "
-           "Int/Str)",
-           name.c_str(), show(t).c_str());
+      fail(
+        ER::Code::TYPE_ANNOTATION_REQUIRED,
+        g.def->name,
+        "global '%s' needs a type annotation (its type is '%s', not a ground "
+        "Int/Str)",
+        name.c_str(),
+        show(t).c_str());
       g.scheme = Scheme{ {}, t };
     }
     else
@@ -679,8 +697,8 @@ Checker::run(
     EX::ExDef  &d    = std::get<EX::ExDef>(e->as);
     std::string name = std::to_string(d.name);
     GlobalEntry g;
-    g.def  = &d;
-    g.body = desugar(d.def);
+    g.def           = &d;
+    g.body          = desugar(d.def);
     m_globals[name] = g;
     m_order.push_back(name);
   }
@@ -769,8 +787,7 @@ Checker::fail(
   }
   va_end(copy);
 
-  m_diags.push_back(
-    ER::mk_root(m_arena, code, anchor, line_of(anchor), msg));
+  m_diags.push_back(ER::mk_root(m_arena, code, anchor, line_of(anchor), msg));
 }
 
 void
@@ -779,20 +796,19 @@ Checker::seed_primitives()
   auto arith = [&] {
     return Scheme{ {}, arrow(con("Int"), arrow(con("Int"), con("Int"))) };
   };
-  m_prim["+"]  = arith();
-  m_prim["-"]  = arith();
-  m_prim["*"]  = arith();
-  m_prim["/"]  = arith();
-  m_prim["%"]  = arith();
-  m_prim["?="] = arith();
+  m_prim["+"]   = arith();
+  m_prim["-"]   = arith();
+  m_prim["*"]   = arith();
+  m_prim["/"]   = arith();
+  m_prim["%"]   = arith();
+  m_prim["?="]  = arith();
   m_prim["neg"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
   m_prim["not"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
 
   // if : forall T. Int -> T -> T -> T
   Type *tv = fresh();
   m_prim["if"]
-    = Scheme{ { tv->id },
-              arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
+    = Scheme{ { tv->id }, arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
 }
 
 } // namespace

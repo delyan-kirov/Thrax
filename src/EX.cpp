@@ -120,7 +120,7 @@ tok_desc(
 } // namespace
 
 /*-------------------------------------------------------------------------------
- *\EXPR CTORS 
+ *\EXPR CTORS
  *------------------------------------------------------------------------------*/
 
 ExFnDef::ExFnDef(
@@ -470,8 +470,7 @@ Parser::parse_global()
   }
   m_lex.next(); // consume '$'
 
-  LX::Token name
-    = TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
+  LX::Token name = TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
   // Optional type annotation: `$ name : type = ...`
   Ty *sig = nullptr;
@@ -593,8 +592,8 @@ Parser::parse_type()
 
   if (LX::TokenTag::Arrow == TRY(m_lex.peek()).tag)
   {
-    m_lex.next();                  // '->'
-    Ty *rhs = TRY(parse_type());   // right-associative
+    m_lex.next();                // '->'
+    Ty *rhs = TRY(parse_type()); // right-associative
     return { true, mk_ty(Ty{ TyTag::Arrow, TyArrow{ lhs, rhs } }), {} };
   }
   return { true, lhs, {} };
@@ -729,9 +728,8 @@ pprint(
     return pad + "$" + std::to_string(std::get<ExDef>(e->as).name) + " =\n"
            + pprint(std::get<ExDef>(e->as).def, level + 1);
   case ExprTag::Extern:
-    return pad + "@extern(\""
-           + std::to_string(std::get<ExExtern>(e->as).symbol) + "\", \""
-           + std::to_string(std::get<ExExtern>(e->as).lib) + "\")";
+    return pad + "@extern(\"" + std::to_string(std::get<ExExtern>(e->as).symbol)
+           + "\", \"" + std::to_string(std::get<ExExtern>(e->as).lib) + "\")";
   case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");

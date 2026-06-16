@@ -26,7 +26,8 @@ interpret_file(
   if (!parser.m_diags.empty()) return env; // do not type-check broken syntax
 
   // Type check before interpreting; a type error stops the pipeline.
-  std::vector<ER::Diagnostic> type_diags = TC::check(parser.m_exprs, arena, content);
+  std::vector<ER::Diagnostic> type_diags
+    = TC::check(parser.m_exprs, arena, content);
   for (const ER::Diagnostic &d : type_diags)
   {
     std::printf("%s\n", ER::pprint(d, content, file).c_str());

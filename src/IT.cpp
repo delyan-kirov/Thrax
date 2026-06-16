@@ -153,13 +153,26 @@ apply_builtin(
   ssize_t rhs = std::get<Int>(rhs_node->as).unwrap;
 
   ssize_t result = 0;
-  if (op == "+")       result = lhs + rhs;
-  else if (op == "-")  result = lhs - rhs;
-  else if (op == "*")  result = lhs * rhs;
-  else if (op == "/")  { UT_FAIL_IF(rhs == 0); result = lhs / rhs; }
-  else if (op == "%")  { UT_FAIL_IF(rhs == 0); result = lhs % rhs; }
-  else if (op == "?=") result = (lhs == rhs) ? 1 : 0;
-  else                 UT_FAIL_IF(true);
+  if (op == "+")
+    result = lhs + rhs;
+  else if (op == "-")
+    result = lhs - rhs;
+  else if (op == "*")
+    result = lhs * rhs;
+  else if (op == "/")
+  {
+    UT_FAIL_IF(rhs == 0);
+    result = lhs / rhs;
+  }
+  else if (op == "%")
+  {
+    UT_FAIL_IF(rhs == 0);
+    result = lhs % rhs;
+  }
+  else if (op == "?=")
+    result = (lhs == rhs) ? 1 : 0;
+  else
+    UT_FAIL_IF(true);
 
   return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
 }
@@ -172,8 +185,8 @@ ffi_type_name(
 {
   switch (t->tag)
   {
-  case EX::TyTag::Con: return std::to_string(std::get<EX::TyCon>(t->as).name);
-  case EX::TyTag::Var:
+  case EX::TyTag::Con  : return std::to_string(std::get<EX::TyCon>(t->as).name);
+  case EX::TyTag::Var  :
   case EX::TyTag::Arrow: return "Ptr";
   }
   return "Int";
@@ -222,7 +235,9 @@ call_extern(
 
   ssize_t r = FF::call(UT::String{ e.lib.c_str(), e.lib.size() },
                        UT::String{ e.symbol.c_str(), e.symbol.size() },
-                       e.arg_types, e.ret_type, args);
+                       e.arg_types,
+                       e.ret_type,
+                       args);
 
   if ("Str" == e.ret_type)
   {
@@ -248,11 +263,11 @@ exprs2pLm_helper(
     const char *op_str = nullptr;
     switch (b.tag)
     {
-    case EX::BinopTag::Add : op_str = "+";  break;
-    case EX::BinopTag::Sub : op_str = "-";  break;
-    case EX::BinopTag::Mul : op_str = "*";  break;
-    case EX::BinopTag::Div : op_str = "/";  break;
-    case EX::BinopTag::Mod : op_str = "%";  break;
+    case EX::BinopTag::Add : op_str = "+"; break;
+    case EX::BinopTag::Sub : op_str = "-"; break;
+    case EX::BinopTag::Mul : op_str = "*"; break;
+    case EX::BinopTag::Div : op_str = "/"; break;
+    case EX::BinopTag::Mod : op_str = "%"; break;
     case EX::BinopTag::IsEq: op_str = "?="; break;
     }
     pLm lhs = exprs2pLm_helper(b.ops.begin(), env);
@@ -264,8 +279,8 @@ exprs2pLm_helper(
 
   case EX::ExprTag::Unop:
   {
-    auto       &u      = std::get<EX::ExUnop>(expr->as);
-    const char *op_str = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
+    auto       &u       = std::get<EX::ExUnop>(expr->as);
+    const char *op_str  = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
     pLm         operand = exprs2pLm_helper(u.op, env);
     lm                  = { .tag = LTag::VAR,
                             .as  = Var{ std::string{ op_str }, 0, { operand } } };
@@ -275,9 +290,9 @@ exprs2pLm_helper(
   case EX::ExprTag::If:
   {
     EX::ExIf &ifexpr = std::get<EX::ExIf>(expr->as);
-    pLm     cond   = exprs2pLm_helper(ifexpr.cond, env);
-    pLm     then   = exprs2pLm_helper(ifexpr.then, env);
-    pLm     othw   = exprs2pLm_helper(ifexpr.alt, env);
+    pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
+    pLm       then   = exprs2pLm_helper(ifexpr.then, env);
+    pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
     lm = { .tag = LTag::VAR, .as = Var{ "if", 0, { cond, then, othw } } };
   }
   break;
@@ -294,8 +309,8 @@ exprs2pLm_helper(
   case EX::ExprTag::App:
   {
     auto &app = std::get<EX::ExApp>(expr->as);
-    pLm  fn   = exprs2pLm_helper(app.fn, env);
-    pLm  arg  = exprs2pLm_helper(app.arg, env);
+    pLm   fn  = exprs2pLm_helper(app.fn, env);
+    pLm   arg = exprs2pLm_helper(app.arg, env);
     lm        = { .tag = LTag::APP, .as = App{ fn, arg } };
   }
   break;
@@ -444,8 +459,7 @@ eval(
   switch (node->tag)
   {
   case LTag::INT:
-  case LTag::STR:
-    return node;
+  case LTag::STR: return node;
 
   case LTag::VAR:
   {
@@ -485,8 +499,8 @@ eval(
     // Bind the name to a placeholder, evaluate the value with that binding in
     // scope, then back-patch the slot so recursive references resolve. (For a
     // non-recursive let the placeholder is simply never read before patching.)
-    pLm slot = std::make_shared<Lm>(
-      Lm{ .tag = LTag::UNK, .as = std::monostate{} });
+    pLm slot
+      = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
     DynEnv new_env = denv;
     new_env.push_back(slot);
     *slot = *eval(l.val, new_env, senv);
@@ -524,8 +538,7 @@ eval(
     return node;
   }
 
-  case LTag::UNK:
-    return node;
+  case LTag::UNK: return node;
   }
 
   return node;

@@ -9,14 +9,18 @@
 namespace FF
 {
 
-#ifdef THRAX_NO_FFI
+#ifdef THRAX_NO_3RD_PARTY
 
 ssize_t
 call(
-  UT::String, UT::String, const std::vector<std::string> &,
-  const std::string &, const std::vector<ssize_t> &)
+  UT::String,
+  UT::String,
+  const std::vector<std::string> &,
+  const std::string &,
+  const std::vector<ssize_t> &)
 {
-  UT_FAIL_MSG("%s", "this build has no FFI support (compiled with THRAX_NO_FFI)");
+  UT_FAIL_MSG("%s",
+              "this build has no FFI support (compiled with NO_3RD_PARTY)");
   return 0;
 }
 
@@ -25,9 +29,9 @@ call(
 } // namespace FF
 
 #include "ffi.h"
-#include <dlfcn.h>
 #include <cstdint>
 #include <cstring>
+#include <dlfcn.h>
 #include <unordered_map>
 
 namespace FF
@@ -40,7 +44,7 @@ namespace
 struct Desc
 {
   ffi_type *type;
-  int       width;     // bytes (ignored for pointers)
+  int       width; // bytes (ignored for pointers)
   bool      is_signed;
   bool      is_ptr;
 };
@@ -50,13 +54,13 @@ desc_of(
   const std::string &name)
 {
   // Int/Nat are the platform word (ssize_t/size_t == long/unsigned long here).
-  if (name == "Int")  return { &ffi_type_slong, 8, true, false };
-  if (name == "Nat")  return { &ffi_type_ulong, 8, false, false };
-  if (name == "Int8")  return { &ffi_type_sint8, 1, true, false };
+  if (name == "Int") return { &ffi_type_slong, 8, true, false };
+  if (name == "Nat") return { &ffi_type_ulong, 8, false, false };
+  if (name == "Int8") return { &ffi_type_sint8, 1, true, false };
   if (name == "Int16") return { &ffi_type_sint16, 2, true, false };
   if (name == "Int32") return { &ffi_type_sint32, 4, true, false };
   if (name == "Int64") return { &ffi_type_sint64, 8, true, false };
-  if (name == "Nat8")  return { &ffi_type_uint8, 1, false, false };
+  if (name == "Nat8") return { &ffi_type_uint8, 1, false, false };
   if (name == "Nat16") return { &ffi_type_uint16, 2, false, false };
   if (name == "Nat32") return { &ffi_type_uint32, 4, false, false };
   if (name == "Nat64") return { &ffi_type_uint64, 8, false, false };
@@ -112,7 +116,8 @@ resolve(
 
   void *fn = dlsym(handle, symbol.c_str());
   if (!fn)
-    UT_FAIL_MSG("FFI: symbol '%s' not found in '%s'", symbol.c_str(), lib.c_str());
+    UT_FAIL_MSG(
+      "FFI: symbol '%s' not found in '%s'", symbol.c_str(), lib.c_str());
   sc[key] = fn;
   return fn;
 }
@@ -124,9 +129,9 @@ extend(
   if (d.is_ptr) return (ssize_t)raw;
   switch (d.width)
   {
-  case 1: return d.is_signed ? (ssize_t)(int8_t)raw : (ssize_t)(uint8_t)raw;
-  case 2: return d.is_signed ? (ssize_t)(int16_t)raw : (ssize_t)(uint16_t)raw;
-  case 4: return d.is_signed ? (ssize_t)(int32_t)raw : (ssize_t)(uint32_t)raw;
+  case 1 : return d.is_signed ? (ssize_t)(int8_t)raw : (ssize_t)(uint8_t)raw;
+  case 2 : return d.is_signed ? (ssize_t)(int16_t)raw : (ssize_t)(uint16_t)raw;
+  case 4 : return d.is_signed ? (ssize_t)(int32_t)raw : (ssize_t)(uint32_t)raw;
   default: return d.is_signed ? (ssize_t)(int64_t)raw : (ssize_t)(uint64_t)raw;
   }
 }
@@ -135,9 +140,11 @@ extend(
 
 ssize_t
 call(
-  UT::String lib, UT::String symbol,
-  const std::vector<std::string> &arg_types, const std::string &ret_type,
-  const std::vector<ssize_t> &args)
+  UT::String                      lib,
+  UT::String                      symbol,
+  const std::vector<std::string> &arg_types,
+  const std::string              &ret_type,
+  const std::vector<ssize_t>     &args)
 {
   std::string libs{ lib.m_mem, lib.m_len };
   std::string syms{ symbol.m_mem, symbol.m_len };
@@ -154,11 +161,11 @@ call(
     argp[i]     = &storage[i];
   }
 
-  Desc      rd  = desc_of(ret_type);
+  Desc      rd = desc_of(ret_type);
   ffi_cif   cif;
   ffi_type *ret = rd.type;
-  if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, (unsigned)n, ret,
-                   n ? in_types.data() : nullptr)
+  if (ffi_prep_cif(
+        &cif, FFI_DEFAULT_ABI, (unsigned)n, ret, n ? in_types.data() : nullptr)
       != FFI_OK)
     UT_FAIL_MSG("FFI: failed to prepare call to '%s'", syms.c_str());
 
@@ -170,6 +177,6 @@ call(
   return extend(rd, result);
 }
 
-#endif // THRAX_NO_FFI
+#endif // THRAX_NO_3RD_PARTY
 
 } // namespace FF

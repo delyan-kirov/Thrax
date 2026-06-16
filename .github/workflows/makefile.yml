@@ -17,6 +17,6 @@ jobs:
         run: |
           nix develop --command bash -c '
             make format
-            make init GIT_ACTION_CTX=1
+            make
           '
 

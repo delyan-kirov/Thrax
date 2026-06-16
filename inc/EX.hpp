@@ -223,13 +223,13 @@ private:
   UT_NODISCARD R parse_extern();
   UT_NODISCARD ER::Result<Ty *> parse_type();
   UT_NODISCARD ER::Result<Ty *> parse_type_atom();
-  UT_NODISCARD R parse_expr(int min_bp);
-  UT_NODISCARD R parse_prefix();
-  UT_NODISCARD R parse_primary();
-  UT_NODISCARD R parse_group();
-  UT_NODISCARD R parse_let();
-  UT_NODISCARD R parse_if();
-  UT_NODISCARD R parse_closure();
+  UT_NODISCARD R                parse_expr(int min_bp);
+  UT_NODISCARD R                parse_prefix();
+  UT_NODISCARD R                parse_primary();
+  UT_NODISCARD R                parse_group();
+  UT_NODISCARD R                parse_let();
+  UT_NODISCARD R                parse_if();
+  UT_NODISCARD R                parse_closure();
   UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
   void               recover();
 
