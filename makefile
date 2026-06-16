@@ -1,126 +1,60 @@
-#------------------------------DIRS-----------------------------
+# \file makefile
+# \note Targets:  make           build libs + tests (default)
+#                 make test      build and run the tests
+#                 make clean     remove build artifacts
+#                 make format    clang-format the sources
+#                 make tokei     line counts
+#       Options:  OPT=-O3        optimization level (default -O0)
+#                 NO_3RD_PARTY=1 build without libffi/raylib
 
-SRC = src/
-INC = inc/
-BIN = bin/
-TST = tst/
+CXX      = clang++
+OPT     ?= -O0
 
-CFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g 
-ifdef GIT_ACTION_CTX
-# We need to enable optimization or we wont compile in nix develop shell
-CFLAGS += -O1
-CFLAGS += -DGIT_ACTION_CTX=1
+CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g $(OPT) -Iinc
+LIBS     =
+
+# Third-party deps (libffi, raylib) are on by default; build with NO_3RD_PARTY=1
+# to drop them entirely (FFI calls then abort at runtime).
+ifndef NO_3RD_PARTY
+CXXFLAGS += -I$(LIBFFI_DEV)/include
+LIBS     += -L$(LIBFFI)/lib -lffi -ldl -Wl,-rpath,$(LIBFFI)/lib
 else
-CFLAGS += -O0
+CXXFLAGS += -DTHRAX_NO_3RD_PARTY=1
 endif
 
-CC = clang++ $(CFLAGS) -I$(INC)
-CFSO = -fPIC -shared
+SRCS  = $(filter-out src/main.cpp,$(wildcard src/*.cpp))
+OBJS  = $(patsubst src/%.cpp,bin/%.o,$(SRCS))
+TESTS = $(patsubst tst/%.cpp,bin/%,$(wildcard tst/tst_*.cpp))
 
-#------------------------------MAIN-----------------------------
-TESTS = tst_mult tst_functional tst_debug
-
-test: $(addprefix $(BIN),$(TESTS))
-	@for t in $(TESTS); do $(BIN)$$t; done
-
-test-debug: $(BIN)tst_debug
-	@$(BIN)tst_debug
-
-#------------------------------OBJC-----------------------------
-THRAXsrc = \
-	$(SRC)AR.cpp \
-	$(SRC)LX.cpp \
-	$(SRC)EX.cpp \
-	$(SRC)IT.cpp \
-	$(SRC)DR.cpp
-
-THRAXinc = \
-	$(INC)AR.hpp \
-	$(INC)ER.hpp \
-	$(INC)DR.hpp \
-	$(INC)LX.hpp \
-	$(INC)UT.hpp \
-	$(INC)IT.hpp \
-	$(INC)EX.hpp
-
-THRAX = $(BIN)thrax.so
-
-# $(BIN)main: $(THRAX)
-# 	$(CC) $(SRC)main.cpp -o $@ $^
-
-$(THRAX): $(THRAXinc) $(THRAXsrc)
-	$(CC) $(CFSO) $(THRAXsrc) $(LIBS) -o $@
-
-#-----------------------------TEST------------------------------
-
-$(BIN)tst_mult: $(TST)tst_mult.cpp $(THRAX)
-	$(CC) $(THRAX) $(TST)tst_mult.cpp $(LIBS) -o $@
-
-$(BIN)tst_functional: $(TST)tst_functional.cpp $(THRAX) 
-	$(CC) $(THRAX) $(TST)tst_functional.cpp $(LIBS) -o $@
-
-$(BIN)tst_debug: $(TST)tst_debug.cpp $(THRAX) 
-	$(CC) $(THRAX) $(TST)tst_debug.cpp $(LIBS) -o $@
-
-#-----------------------------CMND------------------------------
-COMMANDS = clean bear test init list format valgrind gf2 executables tokei test-debug clean_wkspace
-.PHONY: COMMANDS
-
-executables: $(THRAX)
-	@true
-
-debug:
-	gf2 $(BIN)tst_mult &
-
-list:
-	@true
-	$(foreach command, $(COMMANDS), $(info $(command)))
-
-valgrind:
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_mult
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_functional
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose ./bin/tst_debug
-
-format:
-	find . -maxdepth 1 -regex '.*\.\(cpp\|hpp\|c\|h\)$\' -exec clang-format -i {} + 
-
-all:
-	make
-	make test
-
-tokei:
-	tokei --exclude lib
-
-init:
-	mkdir -p $(BIN)
-	make clean
-	make $(BIN)raylib.so
-ifndef GIT_ACTION_CTX
-	git submodule update --init
-	$(MAKE) -C ./lib CC= CXX= CFLAGS= CXXFLAGS= CPPFLAGS= LDFLAGS=
-	$(MAKE) -C ./lib BLOBIFY
+# raylib is only reachable through FFI (dlopen), so a NO_3RD_PARTY build skips it.
+ifndef NO_3RD_PARTY
+RAYLIB_SO = bin/raylib.so
 endif
-	make test
-	make valgrind
 
-$(BIN)raylib.so:
-	cp $(shell find /nix/store -name "libraylib.so" 2>/dev/null | head -1) bin/raylib.so
+all: bin/libthrax.a bin/thrax.so $(RAYLIB_SO) compile_flags.txt $(TESTS)
 
-clean:
-	rm -f tmp.*
-	rm -f vgcore*
-	rm -f *.orig
-	rm -rf $(BIN)*
-	rm -f valgrind*
-	$(MAKE) -C ./lib clean
+# thrax: static + shared from the SAME objects (compiled once, -fPIC)
+bin/%.o: src/%.cpp | bin ; $(CXX) $(CXXFLAGS) -fPIC -c $< -o $@
+bin/libthrax.a: $(OBJS) ; ar rcs $@ $^
+bin/thrax.so:   $(OBJS) ; $(CXX) -shared $^ $(LIBS) -o $@
 
-clean_wkspace:
-	rm -f tmp.*
-	rm -f vgcore*
-	rm -f *.orig
-	$(MAKE) -C ./lib clean
+# tests link the static lib
+bin/%: tst/%.cpp bin/libthrax.a ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
 
-bear:
-	mkdir -p $(BIN)
-	make clean
-	bear -- make init
+# deps copied straight from nix ($RAYLIB comes from the flake's shellHook)
+bin/raylib.so: | bin
+	@test -n "$(RAYLIB)" || { echo "error: RAYLIB unset — run inside 'nix develop'"; exit 1; }
+	cp $(RAYLIB)/lib/libraylib.so $@
+bin: ; mkdir -p bin
+
+# clangd reads compile_flags.txt; regenerated whenever the flags change
+compile_flags.txt: makefile ; @printf '%s\n' $(CXXFLAGS) > $@
+
+# alias kept so .zed/debug.json's `make executables` build step still works
+executables: all
+
+.PHONY: test clean format tokei executables
+test: $(TESTS) ; @for t in $(TESTS); do echo "== $$t =="; ./$$t || exit 1; done
+clean:  ; rm -rf bin tmp.* vgcore* *.orig compile_flags.txt
+format: ; clang-format -i src/*.cpp inc/*.hpp tst/*.cpp tst/*.hpp
+tokei:  ; tokei --exclude lib

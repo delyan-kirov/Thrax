@@ -1,0 +1,33 @@
+# \file ffi.thx
+# \info Exercises the @extern FFI against libc (headless-friendly).
+
+# --- foreign declarations ---------------------------------------------------
+
+$puts   : Str -> Int = @extern ("puts", "./bin/thrax.so")
+$strlen : Str -> Int = @extern ("strlen", "./bin/thrax.so")
+$abs    : Int -> Int = @extern ("abs", "./bin/thrax.so")
+$atoi   : Str -> Int = @extern ("atoi", "./bin/thrax.so")
+$getenv : Str -> Str = @extern ("getenv", "./bin/thrax.so")
+$getpid : Int        = @extern ("getpid", "./bin/thrax.so")   # nullary
+
+# --- plain calls ------------------------------------------------------------
+
+$greeting = puts "Hello from Thrax through libc!"   # side effect; returns >= 0
+
+$len    = strlen "functional"           # 10
+$magn   = abs (0 - 99)                  # 99
+$parsed = atoi "2024"                   # 2024
+$mix    = (strlen "abc") + (atoi "10")  # 3 + 10 = 13
+$home   = getenv "HOME"                 # a Str return (the $HOME path)
+$pid    = getpid                        # nullary call -> this process' pid
+
+# --- an FFI call used inside recursion --------------------------------------
+
+$shout : Int -> Int = \n =
+	if n ?= 0 => 0
+	else
+		(puts "  tick") +
+		(puts home) +
+		(shout (n - 1))
+
+$ticks = shout 1

@@ -28,17 +28,63 @@ struct Expr;
 using Exprs  = UT::Vec<Expr>;
 using ExPair = UT::Pair<Expr>;
 
+/*------------------------------------------------------------------------------
+ *\TYPE SYNTAX
+ *
+ * The syntactic type written in a signature: `Int`, `Str` (TyCon), `T (TyVar),
+ * and `T -> U` (TyArrow). This is what the parser builds; the type checker (TC)
+ * lowers it into its own representation with unification variables.
+ *-----------------------------------------------------------------------------*/
+
+struct Ty;
+
+struct TyCon
+{
+  UT::String name; // Int, Str
+};
+struct TyVar
+{
+  UT::String name; // type-variable name, without the leading backtick
+};
+struct TyArrow
+{
+  Ty *from;
+  Ty *to;
+};
+
+#define EX_TY_VARIANTS                                                         \
+  X(Con, TyCon)                                                                \
+  X(Var, TyVar)                                                                \
+  X(Arrow, TyArrow)
+
+enum class TyTag
+{
+#define X(tag, type) tag,
+  EX_TY_VARIANTS
+#undef X
+};
+
+using TyData =
+#define X(tag, type) type,
+  std::variant<EX_TY_VARIANTS std::monostate>
+#undef X
+  ;
+
+struct Ty
+{
+  TyTag  tag;
+  TyData as;
+};
+
 struct ExUnknown
 {
 };
-struct ExPubDef
+// A global definition: `$ name [: sig] = def`. `sig` is null when omitted (the
+// type checker must then infer a ground, non-arrow type for it).
+struct ExDef
 {
   UT::String name;
-  Expr      *def;
-};
-struct ExIntDef
-{
-  UT::String name;
+  Ty        *sig;
   Expr      *def;
 };
 struct ExInt
@@ -52,6 +98,13 @@ struct ExVar
 struct ExStr
 {
   UT::String value;
+};
+// `@extern ("symbol", "lib")` -- a foreign binding. Only valid as a global
+// body; its type comes from the enclosing global's signature.
+struct ExExtern
+{
+  UT::String symbol;
+  UT::String lib;
 };
 
 enum class BinopTag
@@ -111,8 +164,7 @@ struct ExLet
 
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
-  X(PubDef, ExPubDef)                                                          \
-  X(IntDef, ExIntDef)                                                          \
+  X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
   X(Unop, ExUnop)                                                              \
   X(Binop, ExBinop)                                                            \
@@ -121,7 +173,8 @@ struct ExLet
   X(App, ExApp)                                                                \
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
-  X(Str, ExStr)
+  X(Str, ExStr)                                                                \
+  X(Extern, ExExtern)
 
 enum class ExprTag
 {
@@ -167,13 +220,16 @@ public:
 
 private:
   UT_NODISCARD R parse_global();
-  UT_NODISCARD R parse_expr(int min_bp);
-  UT_NODISCARD R parse_prefix();
-  UT_NODISCARD R parse_primary();
-  UT_NODISCARD R parse_group();
-  UT_NODISCARD R parse_let();
-  UT_NODISCARD R parse_if();
-  UT_NODISCARD R parse_closure();
+  UT_NODISCARD R parse_extern();
+  UT_NODISCARD ER::Result<Ty *> parse_type();
+  UT_NODISCARD ER::Result<Ty *> parse_type_atom();
+  UT_NODISCARD R                parse_expr(int min_bp);
+  UT_NODISCARD R                parse_prefix();
+  UT_NODISCARD R                parse_primary();
+  UT_NODISCARD R                parse_group();
+  UT_NODISCARD R                parse_let();
+  UT_NODISCARD R                parse_if();
+  UT_NODISCARD R                parse_closure();
   UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
   void               recover();
 
@@ -187,8 +243,9 @@ private:
   UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
-  UT_NODISCARD Expr *mk_intdef(UT::String name, Expr *def);
-  UT_NODISCARD Expr *mk_pubdef(UT::String name, Expr *def);
+  UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
+  UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
+  UT_NODISCARD Ty   *mk_ty(Ty t);
 };
 
 /*-------------------------------------------------------------------------------

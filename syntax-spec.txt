@@ -1,0 +1,149 @@
+This is the Thrax syntax specification. This document is a work in progress.
+
+================================================================================
+LEXICAL STRUCTURE
+================================================================================
+
+Definition alphabet:
+	The alphabet consists of all ASCII characters except control characters.
+
+Definition atom:
+	An atom is one of:
+		- An integer literal like 1, 2, etc., or in hex notation 0x1, 0x2, etc.
+		- A floating point number like 1.2, 0.1, etc., or in scientific notation
+		  12e+12, 12e-3, etc.
+		- A string literal like "Hello world\n". Supported escape sequences:
+		  \n, \t, \\, \".
+		- A token group
+.
+
+Definition variable:
+	A variable is an identifier starting with a lowercase letter, followed by
+	zero or more alphanumeric characters or underscores. Variables name terms.
+
+Definition type name:
+	A type name is an identifier starting with an UPPERCASE letter. Type names
+	name types (e.g. Int, Str). The case of the first letter is what
+	distinguishes a type name from a variable.
+
+Definition type variable:
+	A type variable is a backtick followed by a type name, e.g. `T, `Elem. It
+	stands for "some type". All type variables free in a signature are
+	implicitly universally quantified at the front of that signature.
+
+Definition delimiter token:
+	The following are delimiter tokens:
+		- `+`  `-`  `*`  `/`  `%`     (arithmetic)
+		- `!`                         (logical not, unary)
+		- `?=`                        (equality test)
+		- `$`                         (global marker)
+		- `:`                         (has-type)
+		- `->`                        (function type arrow)
+		- `=`  `=>`                   (binding / branch)
+		- `(`  `)`  `\`               (group / lambda)
+.
+
+================================================================================
+TERMS (expr)
+================================================================================
+
+Definition expr:
+	- An atom is an expression.
+	- A variable is an expression.
+	- For expressions e_1 .. e_n and a binary operator `op`:
+		e_1 `op` e_2 `op` ... `op` e_n  is an expression.
+	- For an expression e and a unary operator `op`: `op` e is an expression.
+	- Application is juxtaposition: `f x` applies f to x (left-associative,
+	  binds tighter than any operator).
+	- `\` var `=` e            is a lambda (anonymous function).
+	- `if` e_1 `=>` e_2 `else` e_3   is a conditional. The condition e_1 is an
+	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
+	- `let` var `=` e_1 `in` e_2     is a local binding. A let binding is
+	  polymorphic (let-generalization). It is recursive exactly when `var`
+	  occurs free in e_1 -- there is no `let rec` keyword; recursion is
+	  detected, not declared.
+
+The `-` token is special: binary subtraction between two expressions, unary
+negation when it prefixes one.
+
+================================================================================
+TYPES
+================================================================================
+
+Definition type:
+	type ::= atom '->' type        # '->' is right-associative
+	       | atom
+	atom ::= TypeName              # type constructor: Int, Str
+	       | `TypeName             # type variable
+	       | '(' type ')'
+
+The base types are Int and Str. At runtime every value is an ssize_t (Str is a
+pointer stored in an ssize_t); the type checker keeps Int and Str distinct, the
+runtime does not. There are no algebraic data types yet.
+
+================================================================================
+GLOBAL DEFINITIONS
+================================================================================
+
+A global is introduced with the `$` marker (`$a` and `$ a` are equivalent):
+
+	global ::= '$' var [ ':' type ] '=' expr
+
+A type annotation is REQUIRED unless inference assigns the body a ground,
+non-arrow type (i.e. it works out to Int or Str with no type variables left).
+Equivalently: functions and anything polymorphic must be annotated; plain
+constants need not be. (Option B / permissive: the inferred body may reference
+other globals; only the result's shape matters.)
+
+	$a = 1               # ok, inferred Int
+	$a = "hi"            # ok, inferred Str
+	$a = 1 + 1           # ok, inferred Int
+	$a = id 5            # ok, inferred Int (id resolved from its signature)
+	$id : `T -> `T = \x = x          # required: function / polymorphic
+	$abs : Int -> Int = \n = if n ?= 0 => 0 else 0 - n
+
+Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
+DAG; a cycle among unannotated globals is an error.
+
+(FFI: `ext name : type = ("sym" "lib.so")` is reserved but not yet implemented.)
+
+================================================================================
+TYPE SYSTEM (Hindley-Milner, no type classes)
+================================================================================
+
+The checker (TC) runs between the parser (EX) and the interpreter (IT). It does
+not touch the EX tree directly; it first desugars to a minimal typed Core:
+
+	Core ::= Var name
+	       | Lit (Int | Str)
+	       | Lam param body
+	       | App fn arg
+	       | Let name val body
+
+Everything else desugars to applications of primitives held in the initial type
+environment:
+
+	+ - * / %   : Int -> Int -> Int
+	?=          : Int -> Int -> Int
+	neg  (-)    : Int -> Int
+	not  (!)    : Int -> Int
+	if          : Int -> `T -> `T -> `T
+
+	a + b            ==>  App (App (Var "+") a) b
+	if c => t else e ==>  App (App (App (Var "if") c) t) e
+	-x               ==>  App (Var "neg") x
+
+Inference is Algorithm W over a union-find of unification variables:
+	- unify: constructors by name, arrows structurally, occurs-check on bind.
+	- generalize at every let (the language is pure, so no value restriction);
+	  instantiate a scheme at every use.
+	- a let `x = e1` whose `x` occurs free in `e1` is recursive: bind
+	  `x : fresh` before inferring e1, then unify.
+	- annotated globals: the signature's `T vars become rigid skolems while the
+	  body is checked, so a `T -> `T body cannot assume `T = Int.
+
+Checking proceeds in three phases:
+	A. collect every global (name, optional signature, body).
+	B. resolve each global's type: annotated -> its scheme; unannotated -> infer
+	   on demand (DAG, cycle = error) and require a ground non-arrow result.
+	C. check each body against its resolved/declared type.

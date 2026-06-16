@@ -3,123 +3,123 @@
 
 # ---------- arithmetic & let ----------
 
-pub answer = let x = 6 in x * 7
+$answer = let x = 6 in x * 7
 
-pub complex = (1 + 2) * (3 - 4) + 5
+$complex = (1 + 2) * (3 - 4) + 5
 
-pub nested_let =
+$nested_let =
 	let a = 10 in
 	let b = 20 in
 	a * b + a
 
 # ---------- identity & constant ----------
 
-pub id = \x = x
+$id : `T -> `T = \x = x
 
-pub const = \x = \y = x
+$const : `T -> `U -> `T = \x = \y = x
 
-pub id_five = id 5
+$id_five = id 5
 
-pub const_ab = const 42 99
+$const_ab = const 42 99
 
 # ---------- simple branching ----------
 
-int abs = \n =
+$abs : Int -> Int = \n =
 	if n ?= 0 => 0
 	else if n ?= (0 - n) => 0 - n
 	else n
 
-int max = \a = \b =
+$max : Int -> Int -> Int = \a = \b =
 	if a ?= b => a
 	else if a ?= (abs a) => a
 	else b
 
-int min = \a = \b =
+$min : Int -> Int -> Int = \a = \b =
 	if a ?= b => a
 	else if a ?= (abs a) => b
 	else a
 
-pub max_ex = max 3 7
-pub min_ex = min 3 7
+$max_ex = max 3 7
+$min_ex = min 3 7
 
 # ---------- recursion: fibonacci ----------
 
-int fib = \n =
+$fib : Int -> Int = \n =
 	if n ?= 0 => 0
 	else if n ?= 1 => 1
 	else (fib (n - 1)) + (fib (n - 2))
 
-pub fib0  = fib 0
-pub fib1  = fib 1
-pub fib5  = fib 5
-pub fib10 = fib 10
+$fib0  = fib 0
+$fib1  = fib 1
+$fib5  = fib 5
+$fib10 = fib 10
 
 # ---------- recursion: power of 2 ----------
 
-int pow2 = \n =
+$pow2 : Int -> Int = \n =
 	if n ?= 0 => 1
 	else 2 * (pow2 (n - 1))
 
-pub pow2_0  = pow2 0
-pub pow2_8  = pow2 8
-pub pow2_10 = pow2 10
+$pow2_0  = pow2 0
+$pow2_8  = pow2 8
+$pow2_10 = pow2 10
 
 # ---------- recursion: power of n ----------
 
-int pow = \base = \exp =
+$pow : Int -> Int -> Int = \base = \exp =
 	if exp ?= 0 => 1
 	else base * (pow base (exp - 1))
 
-pub pow_2_10 = pow 2 10
-pub pow_3_4  = pow 3 4
-pub pow_5_3  = pow 5 3
+$pow_2_10 = pow 2 10
+$pow_3_4  = pow 3 4
+$pow_5_3  = pow 5 3
 
 # ---------- recursion: factorial ----------
 
-int fact = \n =
+$fact : Int -> Int = \n =
 	if n ?= 0 => 1
 	else n * (fact (n - 1))
 
-pub fact5  = fact 5
-pub fact10 = fact 10
+$fact5  = fact 5
+$fact10 = fact 10
 
 # ---------- recursion: sum 1..n ----------
 
-int sum_to = \n =
+$sum_to : Int -> Int = \n =
 	if n ?= 0 => 0
 	else n + (sum_to (n - 1))
 
-pub sum_to_10  = sum_to 10
-pub sum_to_100 = sum_to 100
+$sum_to_10  = sum_to 10
+$sum_to_100 = sum_to 100
 
 # ---------- recursion: gcd ----------
 
-int gcd = \a = \b =
+$gcd : Int -> Int -> Int = \a = \b =
 	if b ?= 0 => a
 	else gcd b (a % b)
 
-pub gcd_12_8   = gcd 12 8
-pub gcd_54_24  = gcd 54 24
-pub gcd_100_75 = gcd 100 75
+$gcd_12_8   = gcd 12 8
+$gcd_54_24  = gcd 54 24
+$gcd_100_75 = gcd 100 75
 
 # ---------- higher-order: apply twice ----------
 
-pub apply_twice = \f = \x = f (f x)
+$apply_twice : (`T -> `T) -> `T -> `T = \f = \x = f (f x)
 
-int inc = \x = x + 1
-int dbl = \x = x * 2
+$inc : Int -> Int = \x = x + 1
+$dbl : Int -> Int = \x = x * 2
 
-pub inc_twice = apply_twice inc 0
-pub dbl_twice = apply_twice dbl 3
+$inc_twice = apply_twice inc 0
+$dbl_twice = apply_twice dbl 3
 
 # ---------- composition via let ----------
 
-pub composed =
+$composed =
 	let square = \x = x * x in
 	let add1   = \x = x + 1 in
 	add1 (square 5)
 
 # ---------- strings ----------
 
-pub greeting = "hello world"
-pub lang     = "thrax"
+$greeting = "hello world"
+$lang     = "thrax"

@@ -65,18 +65,19 @@ using Symbols  = std::unordered_map<char, TokenTag>;
 const Keywords keyword_db{
   { "let", TokenTag::KwLet }, { "in", TokenTag::KwIn },
   { "if", TokenTag::KwIf },   { "else", TokenTag::KwElse },
-  { "int", TokenTag::KwInt }, { "pub", TokenTag::KwPub },
   { "ext", TokenTag::KwExt },
 };
 
-// Single-character symbols. Multi-character ones ('?=', '=>') and the
-// standalone '=' depend on the next character and are handled in lex_symbol.
+// Single-character symbols. Multi-character ones ('?=', '=>', '->') and the
+// standalone '=' / '-' depend on the next character and are handled in
+// lex_symbol.
 const Symbols symbol_db{
   { '(', TokenTag::LParen },  { ')', TokenTag::RParen },
   { '\\', TokenTag::Lambda }, { '+', TokenTag::Plus },
   { '*', TokenTag::Mult },    { '/', TokenTag::Div },
   { '%', TokenTag::Modulus }, { '!', TokenTag::Not },
-  { '-', TokenTag::Minus },
+  { '$', TokenTag::Dollar },  { ':', TokenTag::Colon },
+  { ',', TokenTag::Comma },
 };
 
 TokenTag
@@ -247,6 +248,38 @@ Lexer::lex_word(
 }
 
 R
+Lexer::lex_tyvar(
+  size_t start, size_t line)
+{
+  m_cursor += 1; // leading backtick
+  if (!is_ident_start(cur()))
+  {
+    Token anchor = mk(TokenTag::TyVar, start, line);
+    LX_ERR(ER::Code::UNKNOWN_SYMBOL,
+           anchor,
+           "expected a type name after '`' (e.g. `T)");
+  }
+  while (is_ident_cont(cur())) m_cursor += 1;
+  return { true, mk(TokenTag::TyVar, start, line), {} };
+}
+
+R
+Lexer::lex_at(
+  size_t start, size_t line)
+{
+  m_cursor += 1; // leading '@'
+  if (!is_ident_start(cur()))
+  {
+    Token anchor = mk(TokenTag::At, start, line);
+    LX_ERR(ER::Code::UNKNOWN_SYMBOL,
+           anchor,
+           "expected an intrinsic name after '@' (e.g. @extern)");
+  }
+  while (is_ident_cont(cur())) m_cursor += 1;
+  return { true, mk(TokenTag::At, start, line), {} };
+}
+
+R
 Lexer::lex_symbol(
   size_t start, size_t line)
 {
@@ -281,6 +314,19 @@ Lexer::lex_symbol(
       tag = TokenTag::Eq;
     }
   }
+  else if ('-' == c)
+  {
+    // '-' is binary subtraction / unary negation; '->' is the type arrow.
+    if ('>' == at(m_cursor + 1))
+    {
+      tag = TokenTag::Arrow;
+      len = 2;
+    }
+    else
+    {
+      tag = TokenTag::Minus;
+    }
+  }
   else if (const TokenTag *found = UT::try_lookup(symbol_db, c))
   {
     tag = *found;
@@ -308,6 +354,8 @@ Lexer::lex_one()
   if ('#' == c) return lex_comment(start, line);
   if ('"' == c) return lex_string(start, line);
   if (is_digit(c)) return lex_number(start, line);
+  if ('`' == c) return lex_tyvar(start, line);
+  if ('@' == c) return lex_at(start, line);
   if (is_ident_start(c)) return lex_word(start, line);
   return lex_symbol(start, line);
 }
