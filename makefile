@@ -31,6 +31,7 @@ THRAXsrc = \
 	$(SRC)AR.cpp \
 	$(SRC)LX.cpp \
 	$(SRC)EX.cpp \
+	$(SRC)TC.cpp \
 	$(SRC)IT.cpp \
 	$(SRC)DR.cpp
 
@@ -41,6 +42,7 @@ THRAXinc = \
 	$(INC)LX.hpp \
 	$(INC)UT.hpp \
 	$(INC)IT.hpp \
+	$(INC)TC.hpp \
 	$(INC)EX.hpp
 
 THRAX = $(BIN)thrax.so

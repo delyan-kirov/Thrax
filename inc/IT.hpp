@@ -54,11 +54,22 @@ struct Fun
   pLm body;
 };
 
+// A (possibly recursive) local binding. `var` is in scope while `val` is
+// evaluated, so a value that refers to itself resolves once `val` is
+// back-patched into the binding slot (see eval).
+struct Let
+{
+  Var var;
+  pLm val;
+  pLm body;
+};
+
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
   X(STR, Str)                                                                  \
   X(APP, App)                                                                  \
   X(FUN, Fun)                                                                  \
+  X(LET, Let)                                                                  \
   X(VAR, Var)
 
 enum class LTag

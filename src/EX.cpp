@@ -264,21 +264,21 @@ Parser::mk_fndef(
 }
 
 Expr *
-Parser::mk_intdef(
-  UT::String name, Expr *def)
+Parser::mk_def(
+  UT::String name, Ty *sig, Expr *def)
 {
-  Expr e{ ExprTag::IntDef };
-  e.as = ExIntDef{ name, def };
+  Expr e{ ExprTag::Def };
+  e.as = ExDef{ name, sig, def };
   return alloc(e);
 }
 
-Expr *
-Parser::mk_pubdef(
-  UT::String name, Expr *def)
+Ty *
+Parser::mk_ty(
+  Ty t)
 {
-  Expr e{ ExprTag::PubDef };
-  e.as = ExPubDef{ name, def };
-  return alloc(e);
+  Ty *p = (Ty *)m_arena.alloc<Ty>(1);
+  *p    = t;
+  return p;
 }
 
 /*-------------------------------------------------------------------------------
@@ -442,32 +442,39 @@ Parser::parse_global()
 {
   LX::Token marker = TRY(m_lex.peek());
 
-  bool is_pub;
-  switch (marker.tag)
-  {
-  case LX::TokenTag::KwInt: is_pub = false; break;
-  case LX::TokenTag::KwPub: is_pub = true; break;
-  case LX::TokenTag::KwExt:
+  if (LX::TokenTag::KwExt == marker.tag)
     EX_ERR(
       ER::Code::UNSUPPORTED, marker, "'ext' definitions are not supported yet");
-  default:
+
+  if (LX::TokenTag::Dollar != marker.tag)
   {
     const char *desc = tok_desc(marker);
     if (desc)
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
              marker,
-             "expected a global definition ('int' or 'pub'), found %s",
+             "expected a global definition (starting with '$'), found %s",
              desc);
     EX_ERR(ER::Code::EXPECTED_GLOBAL,
            marker,
-           "expected a global definition ('int' or 'pub'), found '%s'",
+           "expected a global definition (starting with '$'), found '%s'",
            std::to_string(marker.str).c_str());
   }
-  }
-  m_lex.next(); // consume the marker
+  m_lex.next(); // consume '$'
 
-  LX::Token name = TRY(
-    expect(LX::TokenTag::Word, "expected a name after the global marker"));
+  LX::Token name
+    = TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
+
+  // Optional type annotation: `$ name : type = ...`
+  Ty *sig = nullptr;
+  if (LX::TokenTag::Colon == TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // ':'
+    sig = CTX(parse_type(),
+              name,
+              "in the type signature of global '%s'",
+              std::to_string(name.str).c_str());
+  }
+
   TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
   Expr *body = CTX(parse_expr(0),
@@ -475,9 +482,72 @@ Parser::parse_global()
                    "in the definition of global '%s'",
                    std::to_string(name.str).c_str());
 
-  return { true,
-           is_pub ? mk_pubdef(name.str, body) : mk_intdef(name.str, body),
-           {} };
+  return { true, mk_def(name.str, sig, body), {} };
+}
+
+/*-------------------------------------------------------------------------------
+ *\PARSE TYPES
+ *
+ * type ::= atom ('->' type)?     -- '->' right-associative
+ * atom ::= UpperWord | TyVar | '(' type ')'
+ *------------------------------------------------------------------------------*/
+
+ER::Result<Ty *>
+Parser::parse_type_atom()
+{
+  LX::Token t = TRY(m_lex.peek());
+  switch (t.tag)
+  {
+  case LX::TokenTag::Word:
+  {
+    char c = t.str.m_len ? t.str.m_mem[0] : '\0';
+    if (c < 'A' || c > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             t,
+             "expected a type name (must start uppercase), found '%s'",
+             std::to_string(t.str).c_str());
+    m_lex.next();
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str } }), {} };
+  }
+  case LX::TokenTag::TyVar:
+  {
+    m_lex.next();
+    // strip the leading backtick for the stored name
+    UT::String nm{ t.str.m_mem + 1, t.str.m_len - 1 };
+    return { true, mk_ty(Ty{ TyTag::Var, TyVar{ nm } }), {} };
+  }
+  case LX::TokenTag::LParen:
+  {
+    LX::Token lp = TRY(m_lex.next()); // '('
+    Ty       *ty = CTX(parse_type(), lp, "in this parenthesized type");
+    LX::Token rp = TRY(m_lex.peek());
+    if (LX::TokenTag::RParen != rp.tag)
+      EX_ERR(ER::Code::PARENTHESIS_UNBALANCED,
+             lp,
+             "expected a closing ')' to match this '(' in the type");
+    m_lex.next();
+    return { true, ty, {} };
+  }
+  default:
+    EX_ERR(ER::Code::EXPECTED_OPERAND,
+           t,
+           "expected a type, found '%s'",
+           std::to_string(t.str).c_str());
+  }
+}
+
+ER::Result<Ty *>
+Parser::parse_type()
+{
+  Ty *lhs = TRY(parse_type_atom());
+
+  if (LX::TokenTag::Arrow == TRY(m_lex.peek()).tag)
+  {
+    m_lex.next();                  // '->'
+    Ty *rhs = TRY(parse_type());   // right-associative
+    return { true, mk_ty(Ty{ TyTag::Arrow, TyArrow{ lhs, rhs } }), {} };
+  }
+  return { true, lhs, {} };
 }
 
 void
@@ -488,8 +558,8 @@ Parser::recover()
     LX::R pk = m_lex.peek();
     if (!pk.ok) return;
     LX::TokenTag tag = pk.value.tag;
-    if (LX::TokenTag::Eof == tag || LX::TokenTag::KwInt == tag
-        || LX::TokenTag::KwPub == tag || LX::TokenTag::KwExt == tag)
+    if (LX::TokenTag::Eof == tag || LX::TokenTag::Dollar == tag
+        || LX::TokenTag::KwExt == tag)
       return;
     if (!m_lex.next().ok) return;
   }
@@ -605,12 +675,9 @@ pprint(
     return pad + "(app\n" + pprint(app.fn, level + 1) + "\n"
            + pprint(app.arg, level + 1) + ")";
   }
-  case ExprTag::PubDef:
-    return pad + "pub " + std::to_string(std::get<ExPubDef>(e->as).name)
-           + " =\n" + pprint(std::get<ExPubDef>(e->as).def, level + 1);
-  case ExprTag::IntDef:
-    return pad + "int " + std::to_string(std::get<ExIntDef>(e->as).name)
-           + " =\n" + pprint(std::get<ExIntDef>(e->as).def, level + 1);
+  case ExprTag::Def:
+    return pad + "$" + std::to_string(std::get<ExDef>(e->as).name) + " =\n"
+           + pprint(std::get<ExDef>(e->as).def, level + 1);
   case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");

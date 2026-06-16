@@ -1,16 +1,16 @@
-pub add = \x = \y = x + y
+$add : Int -> Int -> Int = \x = \y = x + y
 
-pub two = add 1 2
+$two = add 1 2
 
-int pow = \n =
+$pow : Int -> Int = \n =
     if n ?= 0 =>
         1
     else
         2 * pow (n - 1)
 
-int pow22 = pow 322
+$pow22 = pow 322
 
-int fib = \n =
+$fib : Int -> Int = \n =
     if n ?= 0 =>
         0
     else if n ?= 1 =>
@@ -18,17 +18,17 @@ int fib = \n =
     else
         (fib (n - 1)) + (fib (n - 2))
 
-int fib10 = fib 10
+$fib10 = fib 10
 
-pub msg = "hello"
+$msg = "hello"
 
-pub answer = let x = 6 in x * 7
+$answer = let x = 6 in x * 7
 
-pub complex = (1 + 2) * (3 - 4) + 5
+$complex = (1 + 2) * (3 - 4) + 5
 
-pub neg = \x = -x
-pub a = neg 2
-pub b = !a
+$neg : Int -> Int = \x = -x
+$a = neg 2
+$b = !a
 
-pub application =
-    (\x = \y = x + y) 1 2 
+$application =
+    (\x = \y = x + y) 1 2

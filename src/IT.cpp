@@ -61,6 +61,17 @@ assign_id(
   }
   break;
 
+  case LTag::LET:
+  {
+    auto &v = std::get<Let>(node->as);
+    // the bound name is in scope for both the value (recursion) and the body
+    env.push_back(v.var.unwrap);
+    assign_id(v.val, env);
+    assign_id(v.body, env);
+    env.pop_back();
+  }
+  break;
+
   case LTag::APP:
   {
     auto &v = std::get<App>(node->as);
@@ -194,12 +205,10 @@ exprs2pLm_helper(
 
   case EX::ExprTag::Let:
   {
-    auto &lt         = std::get<EX::ExLet>(expr->as);
-    pLm continuation = exprs2pLm_helper(lt.body, env);
-    pLm value        = exprs2pLm_helper(lt.val, env);
-    Fun fn           = mkFun(lt.var, continuation);
-    pLm fn_lm        = std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = fn });
-    lm               = { .tag = LTag::APP, .as = App{ fn_lm, value } };
+    auto &lt   = std::get<EX::ExLet>(expr->as);
+    pLm   val  = exprs2pLm_helper(lt.val, env);
+    pLm   body = exprs2pLm_helper(lt.body, env);
+    lm         = { .tag = LTag::LET, .as = Let{ mkVar(lt.var), val, body } };
   }
   break;
 
@@ -238,21 +247,9 @@ exprs2pLm_helper(
   }
   break;
 
-  case EX::ExprTag::PubDef:
+  case EX::ExprTag::Def:
   {
-    auto       &gd   = std::get<EX::ExPubDef>(expr->as);
-    std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
-    pLm         def  = exprs2pLm_helper(gd.def, env);
-    NameStack   ns;
-    assign_id(def, ns);
-    env[name] = def;
-    lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
-  }
-  break;
-
-  case EX::ExprTag::IntDef:
-  {
-    auto       &gd   = std::get<EX::ExIntDef>(expr->as);
+    auto       &gd   = std::get<EX::ExDef>(expr->as);
     std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
     pLm         def  = exprs2pLm_helper(gd.def, env);
     NameStack   ns;
@@ -309,6 +306,12 @@ pprint(
   {
     auto &v = std::get<Fun>(lm->as);
     return pad + "(fn " + v.var.unwrap + "\n" + pprint(v.body, level + 1) + ")";
+  }
+  case LTag::LET:
+  {
+    auto &v = std::get<Let>(lm->as);
+    return pad + "(let " + v.var.unwrap + "\n" + pprint(v.val, level + 1) + "\n"
+           + pprint(v.body, level + 1) + ")";
   }
   case LTag::UNK: return pad + "?unknown";
   }
@@ -367,6 +370,20 @@ eval(
     closure.var  = Var{ f.var.unwrap, f.var.idx, denv };
     closure.body = f.body;
     return std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = closure });
+  }
+
+  case LTag::LET:
+  {
+    auto &l = std::get<Let>(node->as);
+    // Bind the name to a placeholder, evaluate the value with that binding in
+    // scope, then back-patch the slot so recursive references resolve. (For a
+    // non-recursive let the placeholder is simply never read before patching.)
+    pLm slot = std::make_shared<Lm>(
+      Lm{ .tag = LTag::UNK, .as = std::monostate{} });
+    DynEnv new_env = denv;
+    new_env.push_back(slot);
+    *slot = *eval(l.val, new_env, senv);
+    return eval(l.body, new_env, senv);
   }
 
   case LTag::APP:

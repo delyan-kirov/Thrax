@@ -35,7 +35,11 @@ namespace ER
   X(UNEXPECTED_TOKEN)                                                          \
   X(PARENTHESIS_UNBALANCED)                                                    \
   X(EXPECTED_GLOBAL)                                                           \
-  X(UNSUPPORTED)
+  X(UNSUPPORTED)                                                                \
+  X(TYPE_MISMATCH)                                                              \
+  X(TYPE_UNBOUND)                                                               \
+  X(TYPE_ANNOTATION_REQUIRED)                                                   \
+  X(TYPE_CYCLE)
 
 enum class Code
 {

@@ -38,6 +38,9 @@ struct TkStr
 struct TkWord
 {
 };
+struct TkTyVar
+{
+}; // `T -- a type variable; the name is Token::str past the leading backtick
 struct TkComment
 {
 };
@@ -77,6 +80,15 @@ struct TkEq
 struct TkFatArrow
 {
 };
+struct TkArrow
+{
+}; // -> function type arrow
+struct TkDollar
+{
+}; // $ global marker
+struct TkColon
+{
+}; // : has-type
 struct TkKwLet
 {
 };
@@ -87,12 +99,6 @@ struct TkKwIf
 {
 };
 struct TkKwElse
-{
-};
-struct TkKwInt
-{
-};
-struct TkKwPub
 {
 };
 struct TkKwExt
@@ -110,6 +116,7 @@ struct TkEof
   X(Int, TkInt)                                                                \
   X(Str, TkStr)                                                                \
   X(Word, TkWord)                                                              \
+  X(TyVar, TkTyVar)                                                            \
   X(Comment, TkComment)                                                        \
   X(Plus, TkPlus)                                                              \
   X(Minus, TkMinus)                                                            \
@@ -123,12 +130,13 @@ struct TkEof
   X(Lambda, TkLambda)                                                          \
   X(Eq, TkEq)                                                                  \
   X(FatArrow, TkFatArrow)                                                      \
+  X(Arrow, TkArrow)                                                            \
+  X(Dollar, TkDollar)                                                          \
+  X(Colon, TkColon)                                                            \
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \
   X(KwIf, TkKwIf)                                                              \
   X(KwElse, TkKwElse)                                                          \
-  X(KwInt, TkKwInt)                                                            \
-  X(KwPub, TkKwPub)                                                            \
   X(KwExt, TkKwExt)                                                            \
   X(Eof, TkEof)
 
@@ -187,6 +195,7 @@ private:
   UT_NODISCARD R    lex_string(size_t start, size_t line);
   UT_NODISCARD R    lex_number(size_t start, size_t line);
   UT_NODISCARD R    lex_word(size_t start, size_t line);
+  UT_NODISCARD R    lex_tyvar(size_t start, size_t line);
   UT_NODISCARD R    lex_symbol(size_t start, size_t line);
   void              skip_ws();
   UT_NODISCARD char cur() const;
