@@ -19,7 +19,7 @@ interpret_file(
 
   for (const ER::Diagnostic &d : parser.m_diags)
   {
-    std::printf("%s\n", ER::pprint(d, content, file).c_str());
+    std::fprintf(stderr, "%s\n", ER::pprint(d, content, file).c_str());
   }
 
   IT::StatEnv env;
@@ -30,7 +30,7 @@ interpret_file(
     = TC::check(parser.m_exprs, arena, content);
   for (const ER::Diagnostic &d : type_diags)
   {
-    std::printf("%s\n", ER::pprint(d, content, file).c_str());
+    std::fprintf(stderr, "%s\n", ER::pprint(d, content, file).c_str());
   }
   if (!type_diags.empty()) return env;
 

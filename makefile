@@ -22,9 +22,13 @@ else
 CXXFLAGS += -DTHRAX_NO_3RD_PARTY=1
 endif
 
-SRCS  = $(filter-out src/main.cpp,$(wildcard src/*.cpp))
-OBJS  = $(patsubst src/%.cpp,bin/%.o,$(SRCS))
-TESTS = $(patsubst tst/%.cpp,bin/%,$(wildcard tst/tst_*.cpp))
+# Unity build: the whole library is one translation unit -- src/UTxAMALG.cpp
+# #includes every other library .cpp. main.cpp stays separate (it is the
+# executable entry point, not part of the library).
+# The tests are a single binary too: tst_all.cpp drives TS.hpp, which scans the
+# dat/ folder and interprets every file in it.
+OBJS    = bin/UTxAMALG.o
+TESTS   = bin/tst_all
 
 # raylib is only reachable through FFI (dlopen), so a NO_3RD_PARTY build skips it.
 ifndef NO_3RD_PARTY
@@ -33,13 +37,17 @@ endif
 
 all: bin/libthrax.a bin/thrax.so $(RAYLIB_SO) compile_flags.txt $(TESTS)
 
-# thrax: static + shared from the SAME objects (compiled once, -fPIC)
-bin/%.o: src/%.cpp | bin ; $(CXX) $(CXXFLAGS) -fPIC -c $< -o $@
+# thrax: static + shared from the SAME objects (compiled once, -fPIC). -MMD -MP
+# emits bin/UTxAMALG.d listing every header AND .cpp the unity TU #includes, so
+# make rebuilds it whenever any of them change -- no hand-written dep list.
+bin/%.o: src/%.cpp | bin ; $(CXX) $(CXXFLAGS) -MMD -MP -fPIC -c $< -o $@
+
+-include $(OBJS:.o=.d)
 bin/libthrax.a: $(OBJS) ; ar rcs $@ $^
 bin/thrax.so:   $(OBJS) ; $(CXX) -shared $^ $(LIBS) -o $@
 
 # tests link the static lib
-bin/%: tst/%.cpp bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
+bin/%: tst/%.cpp $(wildcard tst/*.hpp) bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
 
 # deps copied straight from nix ($RAYLIB comes from the flake's shellHook)
 bin/raylib.so: | bin

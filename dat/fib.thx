@@ -1,0 +1,13 @@
+# \file fib.thx
+# \info The Fibonacci sequence by naive double recursion.
+
+$fib : Int -> Int = \n =
+	if n ?= 0 => 0
+	else if n ?= 1 => 1
+	else (fib (n - 1)) + (fib (n - 2))
+
+$fib0  = fib 0
+$fib1  = fib 1
+$fib5  = fib 5
+$fib10 = fib 10
+$fib15 = fib 15

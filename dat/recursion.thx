@@ -1,0 +1,21 @@
+# \file recursion.thx
+# \info Self-recursive global functions: factorial, summation, and gcd.
+
+$fact : Int -> Int = \n =
+	if n ?= 0 => 1
+	else n * (fact (n - 1))
+
+$sum_to : Int -> Int = \n =
+	if n ?= 0 => 0
+	else n + (sum_to (n - 1))
+
+$gcd : Int -> Int -> Int = \a = \b =
+	if b ?= 0 => a
+	else gcd b (a % b)
+
+$fact5      = fact 5
+$fact10     = fact 10
+$sum_to_10  = sum_to 10
+$sum_to_100 = sum_to 100
+$gcd_54_24  = gcd 54 24
+$gcd_100_75 = gcd 100 75

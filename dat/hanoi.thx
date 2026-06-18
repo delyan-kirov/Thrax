@@ -1,0 +1,13 @@
+# \file hanoi.thx
+# \info Tower of Hanoi. Without I/O we count the moves instead of printing them:
+#       moving a stack of n disks takes hanoi(n) = 2 * hanoi(n-1) + 1 moves,
+#       which is 2^n - 1.
+
+$hanoi : Int -> Int = \n =
+	if n ?= 0 => 0
+	else 1 + 2 * (hanoi (n - 1))
+
+$hanoi1  = hanoi 1
+$hanoi3  = hanoi 3
+$hanoi5  = hanoi 5
+$hanoi10 = hanoi 10

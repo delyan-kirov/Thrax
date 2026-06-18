@@ -119,6 +119,8 @@ const ArityTable arity_db{
   { ISEQ, Arity::Binary }, //
   { GEQ, Arity::Binary },  //
   { LEQ, Arity::Binary },  //
+  { MORE, Arity::Binary }, //
+  { LESS, Arity::Binary }, //
   { IF, Arity::Ternary },  //
 };
 
