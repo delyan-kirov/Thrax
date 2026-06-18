@@ -1,7 +1,6 @@
 #include "IT.hpp"
 #include "FF.hpp"
-
-#include <cstdint>
+#include "UTxOP.hpp"
 
 namespace IT
 {
@@ -110,71 +109,47 @@ apply_builtin(
   const auto &op   = v.unwrap;
   const auto &args = v.env;
 
-  // Lazy: evaluate condition first, then only the taken branch
-  if (op == "if")
+  const OP::Arity *arity = UT::try_lookup(OP::arity_db, op);
+  UT_FAIL_IF(!arity);
+
+  switch (*arity)
   {
+  case OP::Arity::Ternary:
+  {
+    // Only `if` is ternary, and it is lazy: evaluate the condition, then only
+    // the taken branch.
+    UT_FAIL_IF(op != OP::IF);
     UT_FAIL_IF(args.size() != 3);
     pLm cond = eval(args[0], denv, senv);
     UT_FAIL_IF(cond->tag != LTag::INT);
-    if (std::get<Int>(cond->as).unwrap != 0)
-      return eval(args[1], denv, senv);
-    else
-      return eval(args[2], denv, senv);
+    bool taken = std::get<Int>(cond->as).unwrap != 0;
+    return eval(args[taken ? 1 : 2], denv, senv);
   }
-
-  // Unary operators — evaluate the single operand
-  if (op == "neg")
+  case OP::Arity::Unary:
   {
     UT_FAIL_IF(args.size() != 1);
     pLm val = eval(args[0], denv, senv);
     UT_FAIL_IF(val->tag != LTag::INT);
-    return std::make_shared<Lm>(
-      Lm{ .tag = LTag::INT, .as = Int{ -std::get<Int>(val->as).unwrap } });
+    OP::UnaryFn fn     = UT::lookup(OP::unary_db, op);
+    ssize_t     result = fn(std::get<Int>(val->as).unwrap);
+    return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
   }
-
-  if (op == "not")
+  case OP::Arity::Binary:
   {
-    UT_FAIL_IF(args.size() != 1);
-    pLm val = eval(args[0], denv, senv);
-    UT_FAIL_IF(val->tag != LTag::INT);
-    ssize_t v = std::get<Int>(val->as).unwrap;
-    return std::make_shared<Lm>(
-      Lm{ .tag = LTag::INT, .as = Int{ v == 0 ? 1 : 0 } });
+    UT_FAIL_IF(args.size() != 2);
+    pLm lhs = eval(args[0], denv, senv);
+    pLm rhs = eval(args[1], denv, senv);
+    UT_FAIL_IF(lhs->tag != LTag::INT);
+    UT_FAIL_IF(rhs->tag != LTag::INT);
+    OP::BinaryFn fn     = UT::lookup(OP::binary_db, op);
+    ssize_t      result = fn(std::get<Int>(lhs->as).unwrap,
+                        std::get<Int>(rhs->as).unwrap);
+    return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
+  }
   }
 
-  // Binary operators — evaluate both operands
-  UT_FAIL_IF(args.size() != 2);
-  pLm lhs_node = eval(args[0], denv, senv);
-  pLm rhs_node = eval(args[1], denv, senv);
-  UT_FAIL_IF(lhs_node->tag != LTag::INT);
-  UT_FAIL_IF(rhs_node->tag != LTag::INT);
-
-  ssize_t lhs = std::get<Int>(lhs_node->as).unwrap;
-  ssize_t rhs = std::get<Int>(rhs_node->as).unwrap;
-
-  ssize_t result = 0;
-  if (op == "+")
-    result = lhs + rhs;
-  else if (op == "-")
-    result = lhs - rhs;
-  else if (op == "*")
-    result = lhs * rhs;
-  else if (op == "/")
-  {
-    UT_FAIL_IF(rhs == 0);
-    result = lhs / rhs;
-  }
-  else if (op == "%")
-  {
-    UT_FAIL_IF(rhs == 0);
-    result = lhs % rhs;
-  }
-  else if (op == "?=")
-    result = (lhs == rhs) ? 1 : 0;
-  else
-    UT_FAIL_IF(true);
-
-  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
+  UT_FAIL_IF(true);
+  return nullptr;
 }
 
 // A foreign type name as written in a signature. Type variables and function
@@ -259,31 +234,20 @@ exprs2pLm_helper(
   {
   case EX::ExprTag::Binop:
   {
-    auto       &b      = std::get<EX::ExBinop>(expr->as);
-    const char *op_str = nullptr;
-    switch (b.tag)
-    {
-    case EX::BinopTag::Add : op_str = "+"; break;
-    case EX::BinopTag::Sub : op_str = "-"; break;
-    case EX::BinopTag::Mul : op_str = "*"; break;
-    case EX::BinopTag::Div : op_str = "/"; break;
-    case EX::BinopTag::Mod : op_str = "%"; break;
-    case EX::BinopTag::IsEq: op_str = "?="; break;
-    }
-    pLm lhs = exprs2pLm_helper(b.ops.begin(), env);
-    pLm rhs = exprs2pLm_helper(b.ops.last(), env);
-    lm      = { .tag = LTag::VAR,
-                .as  = Var{ std::string{ op_str }, 0, { lhs, rhs } } };
+    auto &b   = std::get<EX::ExBinop>(expr->as);
+    pLm   lhs = exprs2pLm_helper(b.ops.begin(), env);
+    pLm   rhs = exprs2pLm_helper(b.ops.last(), env);
+    lm        = { .tag = LTag::VAR,
+                  .as  = Var{ std::to_string(b.op), 0, { lhs, rhs } } };
   }
   break;
 
   case EX::ExprTag::Unop:
   {
-    auto       &u       = std::get<EX::ExUnop>(expr->as);
-    const char *op_str  = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
-    pLm         operand = exprs2pLm_helper(u.op, env);
-    lm                  = { .tag = LTag::VAR,
-                            .as  = Var{ std::string{ op_str }, 0, { operand } } };
+    auto &u       = std::get<EX::ExUnop>(expr->as);
+    pLm   operand = exprs2pLm_helper(u.operand, env);
+    lm            = { .tag = LTag::VAR,
+                      .as  = Var{ std::to_string(u.op), 0, { operand } } };
   }
   break;
 
@@ -293,7 +257,7 @@ exprs2pLm_helper(
     pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
     pLm       then   = exprs2pLm_helper(ifexpr.then, env);
     pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
-    lm = { .tag = LTag::VAR, .as = Var{ "if", 0, { cond, then, othw } } };
+    lm = { .tag = LTag::VAR, .as = Var{ OP::IF, 0, { cond, then, othw } } };
   }
   break;
 

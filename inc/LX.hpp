@@ -44,27 +44,9 @@ struct TkTyVar
 struct TkComment
 {
 };
-struct TkPlus
+struct TkOp
 {
-};
-struct TkMinus
-{
-};
-struct TkMult
-{
-};
-struct TkDiv
-{
-};
-struct TkModulus
-{
-};
-struct TkIsEq
-{
-};
-struct TkNot
-{
-};
+}; // an operator: + - * / % ! ?= ?> ?< -- the lexeme is Token::str
 struct TkLParen
 {
 };
@@ -124,13 +106,7 @@ struct TkEof
   X(Word, TkWord)                                                              \
   X(TyVar, TkTyVar)                                                            \
   X(Comment, TkComment)                                                        \
-  X(Plus, TkPlus)                                                              \
-  X(Minus, TkMinus)                                                            \
-  X(Mult, TkMult)                                                              \
-  X(Div, TkDiv)                                                                \
-  X(Modulus, TkModulus)                                                        \
-  X(IsEq, TkIsEq)                                                              \
-  X(Not, TkNot)                                                                \
+  X(Op, TkOp)                                                                  \
   X(LParen, TkLParen)                                                          \
   X(RParen, TkRParen)                                                          \
   X(Lambda, TkLambda)                                                          \
@@ -208,7 +184,6 @@ private:
   UT_NODISCARD R    lex_symbol(size_t start, size_t line);
   void              skip_ws();
   UT_NODISCARD char cur() const;
-  UT_NODISCARD char at(size_t i) const;
   UT_NODISCARD UT::String slice(size_t start) const;
   UT_NODISCARD Token      mk(TokenTag tag, size_t start, size_t line) const;
 };

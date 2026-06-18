@@ -107,30 +107,18 @@ struct ExExtern
   UT::String lib;
 };
 
-enum class BinopTag
-{
-  Add,
-  Sub,
-  Mul,
-  Div,
-  Mod,
-  IsEq
-};
-enum class UnopTag
-{
-  Neg,
-  Not
-};
-
+// Operators carry their canonical OP name (see UTxOP): binary ops use the source
+// lexeme ("+", "?=", ...); unary ops use "neg"/"not" so they stay distinct from
+// the binary '-'. IT and TC read this name straight back out.
 struct ExBinop
 {
-  BinopTag tag;
-  ExPair   ops;
+  UT::String op;  // "+", "-", "?=", ...
+  ExPair     ops; // (lhs, rhs)
 };
 struct ExUnop
 {
-  UnopTag tag;
-  Expr   *op;
+  UT::String op; // "neg" or "not"
+  Expr      *operand;
 };
 
 struct ExFnDef
@@ -238,8 +226,8 @@ private:
   UT_NODISCARD Expr *mk_str(const LX::Token &t);
   UT_NODISCARD Expr *mk_var(const LX::Token &t);
   UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
-  UT_NODISCARD Expr *mk_unop(LX::TokenTag op, Expr *operand);
-  UT_NODISCARD Expr *mk_binop(BinopTag op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *mk_unop(UT::String op, Expr *operand);
+  UT_NODISCARD Expr *mk_binop(UT::String op, Expr *lhs, Expr *rhs);
   UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);

@@ -6,12 +6,7 @@
 #include "LX.hpp"
 #include "ER.hpp"
 #include "UT.hpp"
-
-#include <cctype>
-#include <cerrno>
-#include <cstdlib>
-#include <string>
-#include <unordered_map>
+#include "UTxOP.hpp"
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -59,24 +54,55 @@ is_ident_cont(
   return std::isalnum((unsigned char)c) || '_' == c;
 }
 
-using Keywords = std::unordered_map<std::string, TokenTag>;
-using Symbols  = std::unordered_map<char, TokenTag>;
+using Keywords  = std::unordered_map<std::string, TokenTag>;
+using Operators = std::unordered_map<std::string, TokenTag>;
+using Delims    = std::unordered_map<char, TokenTag>;
+using CharSet   = std::unordered_set<char>;
 
 const Keywords keyword_db{
-  { "let", TokenTag::KwLet }, { "in", TokenTag::KwIn },
-  { "if", TokenTag::KwIf },   { "else", TokenTag::KwElse },
-  { "ext", TokenTag::KwExt },
+  { "let", TokenTag::KwLet },   //
+  { "in", TokenTag::KwIn },     //
+  { "if", TokenTag::KwIf },     //
+  { "else", TokenTag::KwElse }, //
+  { "ext", TokenTag::KwExt },   //
 };
 
-// Single-character symbols. Multi-character ones ('?=', '=>', '->') and the
-// standalone '=' / '-' depend on the next character and are handled in
-// lex_symbol.
-const Symbols symbol_db{
-  { '(', TokenTag::LParen },  { ')', TokenTag::RParen },
-  { '\\', TokenTag::Lambda }, { '+', TokenTag::Plus },
-  { '*', TokenTag::Mult },    { '/', TokenTag::Div },
-  { '%', TokenTag::Modulus }, { '!', TokenTag::Not },
-  { '$', TokenTag::Dollar },  { ':', TokenTag::Colon },
+// The operator characters: ASCII punctuation minus the delimiters and the lead
+// characters of other token kinds. A maximal run of these forms one operator.
+const CharSet operator_char_db{
+  '!', '$', '%', '&', '*', '+', '-', '/',  ':',
+  '<', '=', '>', '?', '^', '|', '~', '\\',
+};
+
+// Operators are looked up by their full lexeme. The structural ones ('=', '=>',
+// '->', '\\', ':', '$') carry their own tag; the evaluable arithmetic/logical
+// operators all share TokenTag::Op, with the lexeme kept in Token::str. See OP
+// (UTxOP) for what each Op means.
+const Operators operator_db{
+  { "\\", TokenTag::Lambda },   //
+  { "=", TokenTag::Eq },        //
+  { "=>", TokenTag::FatArrow }, //
+  { "->", TokenTag::Arrow },    //
+  { ":", TokenTag::Colon },     //
+  { "$", TokenTag::Dollar },    //
+  { OP::ADD, TokenTag::Op },    //
+  { OP::SUB, TokenTag::Op },    //
+  { OP::MUL, TokenTag::Op },    //
+  { OP::DIV, TokenTag::Op },    //
+  { OP::MOD, TokenTag::Op },    //
+  { OP::BANG, TokenTag::Op },   //
+  { OP::ISEQ, TokenTag::Op },   //
+  { OP::GEQ, TokenTag::Op },    //
+  { OP::LEQ, TokenTag::Op },    //
+  { OP::MORE, TokenTag::Op },   //
+  { OP::LESS, TokenTag::Op },   //
+};
+
+// Single-character delimiters: brackets and the comma separator. Unlike
+// operators these never coalesce with neighbouring punctuation.
+const Delims delim_db{
+  { '(', TokenTag::LParen },
+  { ')', TokenTag::RParen },
   { ',', TokenTag::Comma },
 };
 
@@ -122,13 +148,6 @@ char
 Lexer::cur() const
 {
   return m_cursor < m_input.m_len ? m_input.m_mem[m_cursor] : '\0';
-}
-
-char
-Lexer::at(
-  size_t i) const
-{
-  return i < m_input.m_len ? m_input.m_mem[i] : '\0';
 }
 
 UT::String
@@ -283,63 +302,35 @@ R
 Lexer::lex_symbol(
   size_t start, size_t line)
 {
-  char     c   = cur();
-  TokenTag tag = TokenTag::Eof;
-  size_t   len = 1;
+  char c = cur();
 
-  // Multi-character operators (and the '=' that may begin one) first, since
-  // they depend on the following character.
-  if ('?' == c)
+  // Delimiters stand alone -- they never join a neighbouring operator run.
+  if (const TokenTag *found = UT::try_lookup(delim_db, c))
   {
-    if ('=' != at(m_cursor + 1))
-    {
-      Token anchor = mk(TokenTag::Eof, start, line);
-      anchor.str   = UT::String{ m_input.m_mem + start, 1 };
-      LX_ERR(ER::Code::UNKNOWN_SYMBOL,
-             anchor,
-             "'?' is only valid as part of the '?=' operator");
-    }
-    tag = TokenTag::IsEq;
-    len = 2;
+    m_cursor += 1;
+    return { true, mk(*found, start, line), {} };
   }
-  else if ('=' == c)
+
+  // Otherwise consume a maximal run of operator characters and look the whole
+  // lexeme up in the operator table.
+  if (operator_char_db.count(c))
   {
-    if ('>' == at(m_cursor + 1))
+    while (operator_char_db.count(cur())) m_cursor += 1;
+    UT::String  s   = slice(start);
+    std::string key = std::to_string(s);
+    if (const TokenTag *found = UT::try_lookup(operator_db, key))
     {
-      tag = TokenTag::FatArrow;
-      len = 2;
+      return { true, mk(*found, start, line), {} };
     }
-    else
-    {
-      tag = TokenTag::Eq;
-    }
-  }
-  else if ('-' == c)
-  {
-    // '-' is binary subtraction / unary negation; '->' is the type arrow.
-    if ('>' == at(m_cursor + 1))
-    {
-      tag = TokenTag::Arrow;
-      len = 2;
-    }
-    else
-    {
-      tag = TokenTag::Minus;
-    }
-  }
-  else if (const TokenTag *found = UT::try_lookup(symbol_db, c))
-  {
-    tag = *found;
-  }
-  else
-  {
     Token anchor = mk(TokenTag::Eof, start, line);
-    anchor.str   = UT::String{ m_input.m_mem + start, 1 };
-    LX_ERR(ER::Code::UNKNOWN_SYMBOL, anchor, "unexpected character '%c'", c);
+    anchor.str   = s;
+    LX_ERR(
+      ER::Code::UNKNOWN_SYMBOL, anchor, "unknown operator '%s'", key.c_str());
   }
 
-  m_cursor += len;
-  return { true, mk(tag, start, line), {} };
+  Token anchor = mk(TokenTag::Eof, start, line);
+  anchor.str   = UT::String{ m_input.m_mem + start, 1 };
+  LX_ERR(ER::Code::UNKNOWN_SYMBOL, anchor, "unexpected character '%c'", c);
 }
 
 R

@@ -10,12 +10,7 @@
 #include "TC.hpp"
 #include "ER.hpp"
 #include "UT.hpp"
-
-#include <deque>
-#include <functional>
-#include <string>
-#include <unordered_map>
-#include <vector>
+#include "UTxOP.hpp"
 
 namespace TC
 {
@@ -472,20 +467,9 @@ Checker::desugar(
   }
   case EX::ExprTag::Binop:
   {
-    auto       &b = std::get<EX::ExBinop>(e->as);
-    const char *op;
-    switch (b.tag)
-    {
-    case EX::BinopTag::Add : op = "+"; break;
-    case EX::BinopTag::Sub : op = "-"; break;
-    case EX::BinopTag::Mul : op = "*"; break;
-    case EX::BinopTag::Div : op = "/"; break;
-    case EX::BinopTag::Mod : op = "%"; break;
-    case EX::BinopTag::IsEq: op = "?="; break;
-    default                : op = "+"; break;
-    }
+    auto &b    = std::get<EX::ExBinop>(e->as);
     Core *v    = core(CKind::Var);
-    v->name    = op;
+    v->name    = std::to_string(b.op);
     Core *app1 = core(CKind::App);
     app1->a    = v;
     app1->b    = desugar(b.ops.begin());
@@ -498,17 +482,17 @@ Checker::desugar(
   {
     auto &u   = std::get<EX::ExUnop>(e->as);
     Core *v   = core(CKind::Var);
-    v->name   = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
+    v->name   = std::to_string(u.op);
     Core *app = core(CKind::App);
     app->a    = v;
-    app->b    = desugar(u.op);
+    app->b    = desugar(u.operand);
     return app;
   }
   case EX::ExprTag::If:
   {
     auto &i  = std::get<EX::ExIf>(e->as);
     Core *v  = core(CKind::Var);
-    v->name  = "if";
+    v->name  = OP::IF;
     Core *a1 = core(CKind::App);
     a1->a    = v;
     a1->b    = desugar(i.cond);
@@ -796,18 +780,22 @@ Checker::seed_primitives()
   auto arith = [&] {
     return Scheme{ {}, arrow(con("Int"), arrow(con("Int"), con("Int"))) };
   };
-  m_prim["+"]   = arith();
-  m_prim["-"]   = arith();
-  m_prim["*"]   = arith();
-  m_prim["/"]   = arith();
-  m_prim["%"]   = arith();
-  m_prim["?="]  = arith();
-  m_prim["neg"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
-  m_prim["not"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
+  m_prim[OP::ADD]  = arith();
+  m_prim[OP::SUB]  = arith();
+  m_prim[OP::MUL]  = arith();
+  m_prim[OP::DIV]  = arith();
+  m_prim[OP::MOD]  = arith();
+  m_prim[OP::ISEQ] = arith();
+  m_prim[OP::GEQ]  = arith();
+  m_prim[OP::LEQ]  = arith();
+  m_prim[OP::LESS] = arith();
+  m_prim[OP::MORE] = arith();
+  m_prim[OP::NEG]  = Scheme{ {}, arrow(con("Int"), con("Int")) };
+  m_prim[OP::NOT]  = Scheme{ {}, arrow(con("Int"), con("Int")) };
 
   // if : forall T. Int -> T -> T -> T
   Type *tv = fresh();
-  m_prim["if"]
+  m_prim[OP::IF]
     = Scheme{ { tv->id }, arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
 }
 

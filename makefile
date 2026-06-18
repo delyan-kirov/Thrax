@@ -10,7 +10,7 @@
 CXX      = clang++
 OPT     ?= -O0
 
-CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g $(OPT) -Iinc
+CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -Wimplicit-fallthrough -g $(OPT) -Iinc
 LIBS     =
 
 # Third-party deps (libffi, raylib) are on by default; build with NO_3RD_PARTY=1
@@ -39,7 +39,7 @@ bin/libthrax.a: $(OBJS) ; ar rcs $@ $^
 bin/thrax.so:   $(OBJS) ; $(CXX) -shared $^ $(LIBS) -o $@
 
 # tests link the static lib
-bin/%: tst/%.cpp bin/libthrax.a ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
+bin/%: tst/%.cpp bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
 
 # deps copied straight from nix ($RAYLIB comes from the flake's shellHook)
 bin/raylib.so: | bin
