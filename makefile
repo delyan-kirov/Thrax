@@ -1,15 +1,13 @@
 # \file makefile
-# \note Targets:  make           build libs + tests (default)
+# \note Targets:  make           build thrax + tests (default)
 #                 make test      build and run the tests
 #                 make clean     remove build artifacts
 #                 make format    clang-format the sources
 #                 make tokei     line counts
-#       Options:  OPT=-O3        optimization level (default -O0)
-#                 NO_3RD_PARTY=1 build without libffi/raylib
+#       Options:  NO_3RD_PARTY=1 build without libffi/raylib
 
 CXX      = clang++
-
-CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -Wimplicit-fallthrough -g -Iinc
+CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -Iinc
 LIBS     =
 
 # Third-party deps (libffi, raylib) are on by default; build with NO_3RD_PARTY=1
@@ -17,55 +15,34 @@ LIBS     =
 ifndef NO_3RD_PARTY
 CXXFLAGS += -I$(LIBFFI_DEV)/include
 LIBS     += -L$(LIBFFI)/lib -lffi -ldl -Wl,-rpath,$(LIBFFI)/lib
+# raylib is only reachable through FFI (dlopen), so a NO_3RD_PARTY build skips it.
+RAYLIB_SO = bin/raylib.so
 else
 CXXFLAGS += -DTHRAX_NO_3RD_PARTY=1
 endif
 
-# Unity build: the whole library is one translation unit -- src/UTxAMALG.cpp
-# #includes every other library .cpp. main.cpp stays separate (it is the
-# executable entry point, not part of the library).
-# The tests are a single binary too: tst_all.cpp drives TS.hpp, which scans the
-# dat/ folder and interprets every file in it.
-OBJS    = bin/UTxAMALG.o
-TESTS   = bin/tst_all
+all: bin/thrax bin/tst_all $(RAYLIB_SO) compile_flags.txt
 
-# raylib is only reachable through FFI (dlopen), so a NO_3RD_PARTY build skips it.
-ifndef NO_3RD_PARTY
-RAYLIB_SO = bin/raylib.so
-endif
+LIB_SRCS = $(filter-out src/main.cpp,$(wildcard src/*.cpp)) $(wildcard inc/*.hpp)
+bin/UTxAMALG.o: $(LIB_SRCS) | bin
+	$(CXX) $(CXXFLAGS) -c src/UTxAMALG.cpp -o $@
 
-all: bin/libthrax.a bin/thrax.so bin/thrax $(RAYLIB_SO) compile_flags.txt $(TESTS)
+bin/thrax:   src/main.cpp    bin/UTxAMALG.o | bin ; $(CXX) $(CXXFLAGS) $^ $(LIBS) -o $@
+bin/tst_all: tst/tst_all.cpp bin/UTxAMALG.o $(wildcard tst/*.hpp) | bin ; $(CXX) $(CXXFLAGS) $(filter %.cpp %.o,$^) $(LIBS) -o $@
 
-# thrax: static + shared from the SAME objects (compiled once, -fPIC). -MMD -MP
-# emits bin/UTxAMALG.d listing every header AND .cpp the unity TU #includes, so
-# make rebuilds it whenever any of them change -- no hand-written dep list.
-bin/%.o: src/%.cpp | bin ; $(CXX) $(CXXFLAGS) -MMD -MP -fPIC -c $< -o $@
-
--include $(OBJS:.o=.d)
-bin/libthrax.a: $(OBJS) ; ar rcs $@ $^
-bin/thrax.so:   $(OBJS) ; $(CXX) -shared $^ $(LIBS) -o $@
-
-# thrax: the interpreter executable -- main.cpp is its own TU, linked against
-# the static lib. Explicit rule, so the tst/%.cpp pattern below does not match.
-bin/thrax: src/main.cpp bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
-
-# tests link the static lib
-bin/%: tst/%.cpp $(wildcard tst/*.hpp) bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
-
-# deps copied straight from nix ($RAYLIB comes from the flake's shellHook)
+# raylib copied straight from nix ($RAYLIB comes from the flake's shellHook)
 bin/raylib.so: | bin
 	@test -n "$(RAYLIB)" || { echo "error: RAYLIB unset — run inside 'nix develop'"; exit 1; }
 	cp -n $(RAYLIB)/lib/libraylib.so $@
+
 bin: ; mkdir -p bin
 
 # clangd reads compile_flags.txt; regenerated whenever the flags change
 compile_flags.txt: makefile ; @printf '%s\n' $(CXXFLAGS) > $@
 
-# alias kept so .zed/debug.json's `make executables` build step still works
-executables: all
-
-.PHONY: test clean format tokei executables
-test: $(TESTS) ; @for t in $(TESTS); do echo "== $$t =="; ./$$t || exit 1; done
-clean:  ; rm -rf bin tmp.* vgcore* *.orig compile_flags.txt
-format: ; clang-format -i src/*.cpp inc/*.hpp tst/*.cpp tst/*.hpp
-tokei:  ; tokei --exclude lib
+.PHONY: test clean format tokei executables valgrind
+test: bin/tst_all ; ./bin/tst_all
+clean:            ; rm -rf bin tmp.* vgcore* *.orig compile_flags.txt
+format:           ; clang-format -i src/*.cpp inc/*.hpp tst/*.cpp tst/*.hpp
+tokei:            ; tokei --exclude lib
+valgrind:         ; valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose make test
