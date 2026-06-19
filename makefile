@@ -45,4 +45,4 @@ test: bin/tst_all ; ./bin/tst_all
 clean:            ; rm -rf bin tmp.* vgcore* *.orig compile_flags.txt
 format:           ; clang-format -i src/*.cpp inc/*.hpp tst/*.cpp tst/*.hpp
 tokei:            ; tokei --exclude lib
-valgrind:         ; valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --verbose make test
+valgrind:         ; valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./bin/tst_all

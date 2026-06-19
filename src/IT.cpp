@@ -112,6 +112,7 @@ assign_id(
   case LTag::INT:
   case LTag::REAL:
   case LTag::STR:
+  case LTag::REC: // a runtime-only cell; never present in the static AST
   case LTag::UNK: break;
   }
 }
@@ -443,6 +444,7 @@ pprint(
     return pad + "(if\n" + pprint(v.cond, level + 1) + "\n"
            + pprint(v.yes, level + 1) + "\n" + pprint(v.no, level + 1) + ")";
   }
+  case LTag::REC: return pad + "<rec>";
   case LTag::UNK: return pad + "?unknown";
   }
   return pad + "?unreachable";
@@ -487,7 +489,16 @@ eval(
     if (v.idx > 0)
     {
       UT_FAIL_IF(v.idx > denv.size());
-      return denv[denv.size() - v.idx];
+      pLm entry = denv[denv.size() - v.idx];
+      // A `let` binding is held weakly while its value is built (see LET), to
+      // keep the closure graph acyclic; lock it to recover the value.
+      if (entry && LTag::REC == entry->tag)
+      {
+        pLm target = std::get<Rec>(entry->as).target.lock();
+        UT_FAIL_IF(!target);
+        return target;
+      }
+      return entry;
     }
 
     // Global variable (idx == 0, env empty)
@@ -508,15 +519,24 @@ eval(
   case LTag::LET:
   {
     auto &l = std::get<Let>(node->as);
-    // Bind the name to a placeholder, evaluate the value with that binding in
-    // scope, then back-patch the slot so recursive references resolve. (For a
-    // non-recursive let the placeholder is simply never read before patching.)
-    pLm slot
+    // Bind the name to a placeholder, then evaluate the value with that binding
+    // *weakly* in scope and back-patch the slot, so recursive references resolve
+    // without the value's captured environment forming a shared_ptr cycle with
+    // it. (For a non-recursive let the placeholder is simply never read before
+    // patching.) The body then evaluates with the binding held strongly, so a
+    // closure it returns keeps the value alive.
+    pLm value
       = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
-    DynEnv new_env = denv;
-    new_env.push_back(slot);
-    *slot = *eval(l.val, new_env, senv);
-    return eval(l.body, new_env, senv);
+    pLm self = std::make_shared<Lm>(
+      Lm{ .tag = LTag::REC, .as = Rec{ std::weak_ptr<Lm>(value) } });
+
+    DynEnv val_env = denv;
+    val_env.push_back(self);
+    *value = *eval(l.val, val_env, senv);
+
+    DynEnv body_env = denv;
+    body_env.push_back(value);
+    return eval(l.body, body_env, senv);
   }
 
   case LTag::APP:
@@ -570,6 +590,15 @@ eval(
 
   // An unapplied built-in is already a value.
   case LTag::BUILTIN: return node;
+
+  // A let binding's weak self-reference (see LET); lock it to the value. eval is
+  // never called on one directly -- VAR resolves it -- but handle it for safety.
+  case LTag::REC:
+  {
+    pLm target = std::get<Rec>(node->as).target.lock();
+    UT_FAIL_IF(!target);
+    return target;
+  }
 
   case LTag::UNK: return node;
   }

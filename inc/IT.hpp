@@ -103,6 +103,17 @@ struct If
   pLm no;
 };
 
+// A self-reference cell for a `let` binding. A binding's value (typically a
+// closure) captures the environment the binding lives in, which would otherwise
+// hold a shared_ptr back to the value -- a cycle that leaks. While the value is
+// evaluated the binding is therefore held *weakly* through one of these; eval's
+// VAR lookup locks `target` to recover it. The value is always live when locked:
+// the body keeps it strongly in scope, and a call site keeps the closure alive.
+struct Rec
+{
+  std::weak_ptr<Lm> target;
+};
+
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
   X(REAL, Real)                                                                \
@@ -113,6 +124,7 @@ struct If
   X(EXTERN, Extern)                                                            \
   X(BUILTIN, Builtin)                                                          \
   X(IF, If)                                                                    \
+  X(REC, Rec)                                                                  \
   X(VAR, Var)
 
 enum class LTag
