@@ -12,7 +12,10 @@ interpret_file(
 {
   AR::Arena arena{};
 
-  UT::String content = UT::read_entire_file(file, arena);
+  IT::StatEnv env;
+  UT::String  content = UT::read_entire_file(file, arena);
+  if (!content.m_mem) return env; // unreadable file; error already printed
+
   LX::Lexer  lexer{ content, file, arena };
   EX::Parser parser{ lexer };
   parser();
@@ -22,7 +25,6 @@ interpret_file(
     std::fprintf(stderr, "%s\n", ER::pprint(d, content, file).c_str());
   }
 
-  IT::StatEnv env;
   if (!parser.m_diags.empty()) return env; // do not type-check broken syntax
 
   // Type check before interpreting; a type error stops the pipeline.
@@ -40,6 +42,45 @@ interpret_file(
   }
 
   return env;
+}
+
+bool
+run_file(
+  UT::String file)
+{
+  IT::StatEnv env = interpret_file(file);
+  if (env.empty()) return false;
+
+  // Force every definition so a runtime fault surfaces here.
+  for (auto &kv : env) IT::eval(kv.second, {}, env);
+  return true;
+}
+
+bool
+dump_ast(
+  UT::String file)
+{
+  AR::Arena arena{};
+
+  UT::String content = UT::read_entire_file(file, arena);
+  if (!content.m_mem) return false; // unreadable file; error already printed
+
+  LX::Lexer  lexer{ content, file, arena };
+  EX::Parser parser{ lexer };
+  parser();
+
+  for (const ER::Diagnostic &d : parser.m_diags)
+  {
+    std::fprintf(stderr, "%s\n", ER::pprint(d, content, file).c_str());
+  }
+  if (!parser.m_diags.empty()) return false;
+
+  for (size_t i = 0; i < parser.m_exprs.m_len; ++i)
+  {
+    std::printf("%s\n", EX::pprint(&parser.m_exprs[i]).c_str());
+  }
+
+  return true;
 }
 
 } // namespace DR

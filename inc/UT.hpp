@@ -849,7 +849,7 @@ read_entire_file(
   }
 
 DEFER_RETURN:
-  std::fclose(file_stream);
+  if (file_stream) std::fclose(file_stream);
   return UT::String{ buffer, file_len };
 }
 

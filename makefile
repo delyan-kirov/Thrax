@@ -34,7 +34,7 @@ ifndef NO_3RD_PARTY
 RAYLIB_SO = bin/raylib.so
 endif
 
-all: bin/libthrax.a bin/thrax.so $(RAYLIB_SO) compile_flags.txt $(TESTS)
+all: bin/libthrax.a bin/thrax.so bin/thrax $(RAYLIB_SO) compile_flags.txt $(TESTS)
 
 # thrax: static + shared from the SAME objects (compiled once, -fPIC). -MMD -MP
 # emits bin/UTxAMALG.d listing every header AND .cpp the unity TU #includes, so
@@ -45,13 +45,17 @@ bin/%.o: src/%.cpp | bin ; $(CXX) $(CXXFLAGS) -MMD -MP -fPIC -c $< -o $@
 bin/libthrax.a: $(OBJS) ; ar rcs $@ $^
 bin/thrax.so:   $(OBJS) ; $(CXX) -shared $^ $(LIBS) -o $@
 
+# thrax: the interpreter executable -- main.cpp is its own TU, linked against
+# the static lib. Explicit rule, so the tst/%.cpp pattern below does not match.
+bin/thrax: src/main.cpp bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
+
 # tests link the static lib
 bin/%: tst/%.cpp $(wildcard tst/*.hpp) bin/libthrax.a makefile ; $(CXX) $(CXXFLAGS) $< bin/libthrax.a $(LIBS) -o $@
 
 # deps copied straight from nix ($RAYLIB comes from the flake's shellHook)
 bin/raylib.so: | bin
 	@test -n "$(RAYLIB)" || { echo "error: RAYLIB unset — run inside 'nix develop'"; exit 1; }
-	cp $(RAYLIB)/lib/libraylib.so $@
+	cp -n $(RAYLIB)/lib/libraylib.so $@
 bin: ; mkdir -p bin
 
 # clangd reads compile_flags.txt; regenerated whenever the flags change
