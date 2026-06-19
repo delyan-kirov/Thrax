@@ -6,7 +6,7 @@
 #include "LX.hpp"
 #include "ER.hpp"
 #include "UT.hpp"
-#include "UTxOP.hpp"
+#include "OP.hpp"
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -38,6 +38,22 @@ is_digit(
   char c)
 {
   return c >= '0' && c <= '9';
+}
+
+// Digits valid after a `0x` prefix.
+bool
+is_hex_digit(
+  char c)
+{
+  return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+// Digits valid after a `0b` prefix.
+bool
+is_bin_digit(
+  char c)
+{
+  return '0' == c || '1' == c;
 }
 
 bool
@@ -76,8 +92,8 @@ const CharSet operator_char_db{
 
 // Operators are looked up by their full lexeme. The structural ones ('=', '=>',
 // '->', '\\', ':', '$') carry their own tag; the evaluable arithmetic/logical
-// operators all share TokenTag::Op, with the lexeme kept in Token::str. See OP
-// (UTxOP) for what each Op means.
+// operators all share TokenTag::Op, with the lexeme kept in Token::str. EX
+// desugars each Op to a Var of that lexeme; see OP.hpp for the name vocabulary.
 const Operators operator_db{
   { "\\", TokenTag::Lambda },   //
   { "=", TokenTag::Eq },        //
@@ -148,6 +164,20 @@ char
 Lexer::cur() const
 {
   return m_cursor < m_input.m_len ? m_input.m_mem[m_cursor] : '\0';
+}
+
+char
+Lexer::at(
+  size_t i) const
+{
+  return i < m_input.m_len ? m_input.m_mem[i] : '\0';
+}
+
+void
+Lexer::scan(
+  bool (*member)(char))
+{
+  while (member(cur())) m_cursor += 1;
 }
 
 UT::String
@@ -234,27 +264,96 @@ Lexer::lex_string(
   }
 }
 
+// Parse the lexeme [start, cursor) as an integer in `base`, reading from `num`
+// (which may skip a radix prefix), and emit an Int token.
 R
-Lexer::lex_number(
-  size_t start, size_t line)
+Lexer::emit_int(
+  size_t start, size_t line, const char *num, int base)
 {
-  while (is_digit(cur())) m_cursor += 1;
-  UT::String s = slice(start);
-
   errno       = 0;
-  long long v = std::strtoll(s.m_mem, nullptr, 10);
+  long long v = std::strtoll(num, nullptr, base);
   if (0 != errno)
   {
     Token anchor = mk(TokenTag::Int, start, line);
     LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
            anchor,
            "could not parse '%s' as an integer",
-           std::to_string(s).c_str());
+           std::to_string(slice(start)).c_str());
   }
-
   Token t = mk(TokenTag::Int, start, line);
   t.as    = TkInt{ (ssize_t)v };
   return { true, t, {} };
+}
+
+// Parse the lexeme [start, cursor) as a 64-bit Real and emit a Real token.
+R
+Lexer::emit_real(
+  size_t start, size_t line)
+{
+  errno    = 0;
+  double d = std::strtod(slice(start).m_mem, nullptr);
+  if (0 != errno)
+  {
+    Token anchor = mk(TokenTag::Real, start, line);
+    LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
+           anchor,
+           "could not parse '%s' as a Real",
+           std::to_string(slice(start)).c_str());
+  }
+  Token t = mk(TokenTag::Real, start, line);
+  t.as    = TkReal{ d };
+  return { true, t, {} };
+}
+
+// A radix literal: a `0x` / `0b` prefix (already at the cursor) followed by at
+// least one digit of `member`. `skip` is how many leading chars strtoll should
+// ignore (0 for hex -- base 16 eats `0x`; 2 for binary).
+R
+Lexer::lex_radix(
+  size_t start, size_t line, bool (*member)(char), int base, size_t skip)
+{
+  m_cursor += 2; // the '0x' / '0b' prefix
+  size_t digits_at = m_cursor;
+  scan(member);
+  if (m_cursor == digits_at)
+  {
+    Token anchor = mk(TokenTag::Int, start, line);
+    LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
+           anchor,
+           "expected digits after '%s'",
+           std::to_string(slice(start)).c_str());
+  }
+  return emit_int(start, line, slice(start).m_mem + skip, base);
+}
+
+R
+Lexer::lex_number(
+  size_t start, size_t line)
+{
+  if ('0' == cur() && ('x' == at(m_cursor + 1) || 'X' == at(m_cursor + 1)))
+    return lex_radix(start, line, is_hex_digit, 16, 0);
+  if ('0' == cur() && ('b' == at(m_cursor + 1) || 'B' == at(m_cursor + 1)))
+    return lex_radix(start, line, is_bin_digit, 2, 2);
+
+  // Decimal: an integer, unless a '.' fraction or an exponent makes it a Real.
+  bool is_real = false;
+  scan(is_digit);
+  if ('.' == cur())
+  {
+    is_real = true;
+    m_cursor += 1;
+    scan(is_digit);
+  }
+  if ('e' == cur() || 'E' == cur())
+  {
+    is_real = true;
+    m_cursor += 1;
+    if ('+' == cur() || '-' == cur()) m_cursor += 1;
+    scan(is_digit);
+  }
+
+  return is_real ? emit_real(start, line)
+                 : emit_int(start, line, slice(start).m_mem, 10);
 }
 
 R

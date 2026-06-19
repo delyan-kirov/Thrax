@@ -7,7 +7,7 @@
 #include "ER.hpp"
 #include "LX.hpp"
 #include "UT.hpp"
-#include "UTxOP.hpp"
+#include "OP.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -99,9 +99,9 @@ const InfixTable infix_db{
 
 // Tokens that can begin an operand -> juxtaposition is application.
 const OperandSet operand_starters{
-  LX::TokenTag::Int,    LX::TokenTag::Str,   LX::TokenTag::Word,
-  LX::TokenTag::LParen, LX::TokenTag::KwLet, LX::TokenTag::KwIf,
-  LX::TokenTag::Lambda,
+  LX::TokenTag::Int,    LX::TokenTag::Real,  LX::TokenTag::Str,
+  LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
+  LX::TokenTag::KwIf,   LX::TokenTag::Lambda,
 };
 
 // Tokens that end an expression
@@ -161,12 +161,6 @@ Expr::Expr(
                      (Expr *)arena.alloc<Expr>(1) };
   }
   break;
-  case ExprTag::Binop:
-    this->as = ExBinop{ UT::String{}, ExPair{ arena } };
-    break;
-  case ExprTag::Unop:
-    this->as = ExUnop{ UT::String{}, (Expr *)arena.alloc<Expr>(1) };
-    break;
   default: UT_FAIL_IF("Invalid tag for this constructor");
   }
 };
@@ -190,6 +184,15 @@ Parser::mk_int(
 {
   Expr e{ ExprTag::Int };
   e.as = ExInt{ std::get<LX::TkInt>(t.as).value };
+  return alloc(e);
+}
+
+Expr *
+Parser::mk_real(
+  const LX::Token &t)
+{
+  Expr e{ ExprTag::Real };
+  e.as = ExReal{ std::get<LX::TkReal>(t.as).value };
   return alloc(e);
 }
 
@@ -220,25 +223,32 @@ Parser::mk_app(
   return alloc(e);
 }
 
+// An operator reference, as a plain variable of its canonical name. Operators
+// are just functions with infix/prefix syntax: once parsed they are ordinary
+// Var/App nodes, and TC/IT never need to know they came from an operator.
+Expr *
+Parser::mk_op_var(
+  UT::String name)
+{
+  Expr e{ ExprTag::Var };
+  e.as = ExVar{ name };
+  return alloc(e);
+}
+
+// Prefix `op operand`  ==>  (op operand).
 Expr *
 Parser::mk_unop(
   UT::String op, Expr *operand)
 {
-  Expr e{ ExprTag::Unop };
-  e.as = ExUnop{ op, operand };
-  return alloc(e);
+  return mk_app(mk_op_var(op), operand);
 }
 
+// Infix `lhs op rhs`  ==>  ((op lhs) rhs).
 Expr *
 Parser::mk_binop(
   UT::String op, Expr *lhs, Expr *rhs)
 {
-  ExPair pair{ m_arena };
-  *pair.begin() = *lhs;
-  *pair.last()  = *rhs;
-  Expr e{ ExprTag::Binop };
-  e.as = ExBinop{ op, pair };
-  return alloc(e);
+  return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
 
 Expr *
@@ -322,6 +332,7 @@ Parser::parse_primary()
   switch (t.tag)
   {
   case LX::TokenTag::Int   : m_lex.next(); return { true, mk_int(t), {} };
+  case LX::TokenTag::Real  : m_lex.next(); return { true, mk_real(t), {} };
   case LX::TokenTag::Str   : m_lex.next(); return { true, mk_str(t), {} };
   case LX::TokenTag::Word  : m_lex.next(); return { true, mk_var(t), {} };
   case LX::TokenTag::LParen: return parse_group();
@@ -699,20 +710,11 @@ pprint(
   switch (e->tag)
   {
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
+  case ExprTag::Real:
+    return pad + std::to_string(std::get<ExReal>(e->as).value);
   case ExprTag::Var: return pad + std::to_string(std::get<ExVar>(e->as).name);
   case ExprTag::Str:
     return pad + "\"" + std::to_string(std::get<ExStr>(e->as).value) + "\"";
-  case ExprTag::Unop:
-  {
-    auto &u = std::get<ExUnop>(e->as);
-    return pad + std::to_string(u.op) + " " + pprint(u.operand, 0);
-  }
-  case ExprTag::Binop:
-  {
-    auto &b = std::get<ExBinop>(e->as);
-    return pad + pprint(b.ops.begin(), 0) + " " + std::to_string(b.op) + " "
-           + pprint(b.ops.last(), 0);
-  }
   case ExprTag::Let:
     return pad + "let " + std::to_string(std::get<ExLet>(e->as).var) + " =\n"
            + pprint(std::get<ExLet>(e->as).val, level + 1) + "\n" + pad + "in\n"

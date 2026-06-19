@@ -30,6 +30,11 @@ struct Int
   ssize_t unwrap;
 };
 
+struct Real
+{
+  double unwrap;
+};
+
 struct App
 {
   pLm fn;
@@ -76,13 +81,38 @@ struct Extern
   std::vector<pLm>         args;
 };
 
+// A built-in operation as a first-class, curried value. `impl` is the key the
+// type checker resolved an overloaded use to (e.g. "+@Int"); `args` accumulates
+// applied arguments until it reaches `arity`, at which point the implementation
+// runs (see eval). Because it is an ordinary value, a built-in can be partially
+// applied and passed around like any function.
+struct Builtin
+{
+  std::string      impl;
+  size_t           arity;
+  std::vector<pLm> args;
+};
+
+// A conditional. `if` is not a function (it must not evaluate both branches), so
+// it stays a dedicated lazy node rather than a builtin: eval forces `cond`, then
+// only the taken branch.
+struct If
+{
+  pLm cond;
+  pLm yes;
+  pLm no;
+};
+
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
+  X(REAL, Real)                                                                \
   X(STR, Str)                                                                  \
   X(APP, App)                                                                  \
   X(FUN, Fun)                                                                  \
   X(LET, Let)                                                                  \
   X(EXTERN, Extern)                                                            \
+  X(BUILTIN, Builtin)                                                          \
+  X(IF, If)                                                                    \
   X(VAR, Var)
 
 enum class LTag

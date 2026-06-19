@@ -91,6 +91,10 @@ struct ExInt
 {
   ssize_t value;
 };
+struct ExReal
+{
+  double value;
+};
 struct ExVar
 {
   UT::String name;
@@ -105,20 +109,6 @@ struct ExExtern
 {
   UT::String symbol;
   UT::String lib;
-};
-
-// Operators carry their canonical OP name (see UTxOP): binary ops use the source
-// lexeme ("+", "?=", ...); unary ops use "neg"/"not" so they stay distinct from
-// the binary '-'. IT and TC read this name straight back out.
-struct ExBinop
-{
-  UT::String op;  // "+", "-", "?=", ...
-  ExPair     ops; // (lhs, rhs)
-};
-struct ExUnop
-{
-  UT::String op; // "neg" or "not"
-  Expr      *operand;
 };
 
 struct ExFnDef
@@ -154,8 +144,7 @@ struct ExLet
   X(Unknown, ExUnknown)                                                        \
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
-  X(Unop, ExUnop)                                                              \
-  X(Binop, ExBinop)                                                            \
+  X(Real, ExReal)                                                              \
   X(Let, ExLet)                                                                \
   X(FnDef, ExFnDef)                                                            \
   X(App, ExApp)                                                                \
@@ -223,9 +212,11 @@ private:
 
   UT_NODISCARD Expr *alloc(Expr e);
   UT_NODISCARD Expr *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr *mk_real(const LX::Token &t);
   UT_NODISCARD Expr *mk_str(const LX::Token &t);
   UT_NODISCARD Expr *mk_var(const LX::Token &t);
   UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
+  UT_NODISCARD Expr *mk_op_var(UT::String name);
   UT_NODISCARD Expr *mk_unop(UT::String op, Expr *operand);
   UT_NODISCARD Expr *mk_binop(UT::String op, Expr *lhs, Expr *rhs);
   UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);

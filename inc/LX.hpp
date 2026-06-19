@@ -31,6 +31,10 @@ struct TkInt
 {
   ssize_t value;
 };
+struct TkReal
+{
+  double value; // 64-bit floating point
+};
 struct TkStr
 {
   UT::String value; // unescaped contents (Token::str still holds the quotes)
@@ -102,6 +106,7 @@ struct TkEof
 
 #define LX_TOKEN_VARIANTS                                                      \
   X(Int, TkInt)                                                                \
+  X(Real, TkReal)                                                              \
   X(Str, TkStr)                                                                \
   X(Word, TkWord)                                                              \
   X(TyVar, TkTyVar)                                                            \
@@ -178,12 +183,18 @@ private:
   UT_NODISCARD R    lex_comment(size_t start, size_t line);
   UT_NODISCARD R    lex_string(size_t start, size_t line);
   UT_NODISCARD R    lex_number(size_t start, size_t line);
+  UT_NODISCARD R    lex_radix(size_t start, size_t line, bool (*member)(char),
+                              int base, size_t skip);
+  UT_NODISCARD R    emit_int(size_t start, size_t line, const char *num, int base);
+  UT_NODISCARD R    emit_real(size_t start, size_t line);
   UT_NODISCARD R    lex_word(size_t start, size_t line);
   UT_NODISCARD R    lex_tyvar(size_t start, size_t line);
   UT_NODISCARD R    lex_at(size_t start, size_t line);
   UT_NODISCARD R    lex_symbol(size_t start, size_t line);
   void              skip_ws();
+  void              scan(bool (*member)(char)); // advance over a run of digits
   UT_NODISCARD char cur() const;
+  UT_NODISCARD char at(size_t i) const;
   UT_NODISCARD UT::String slice(size_t start) const;
   UT_NODISCARD Token      mk(TokenTag tag, size_t start, size_t line) const;
 };

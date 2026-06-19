@@ -1,6 +1,8 @@
 #include "IT.hpp"
 #include "FF.hpp"
-#include "UTxOP.hpp"
+#include "OP.hpp"
+
+#include <cmath>
 
 namespace IT
 {
@@ -89,7 +91,26 @@ assign_id(
   }
   break;
 
+  case LTag::IF:
+  {
+    auto &v = std::get<If>(node->as);
+    assign_id(v.cond, env);
+    assign_id(v.yes, env);
+    assign_id(v.no, env);
+  }
+  break;
+
+  case LTag::BUILTIN:
+  {
+    // Built-in values are produced during evaluation, not here; an unapplied
+    // one carries no arguments to index. Handled for completeness.
+    auto &v = std::get<Builtin>(node->as);
+    for (auto &a : v.args) assign_id(a, env);
+  }
+  break;
+
   case LTag::INT:
+  case LTag::REAL:
   case LTag::STR:
   case LTag::UNK: break;
   }
@@ -102,55 +123,73 @@ pLm eval(pLm node, DynEnv denv, StatEnv &senv);
 namespace
 {
 
-pLm
-apply_builtin(
-  const Var &v, DynEnv denv, StatEnv &senv)
+// Operand extraction / result construction. The type checker resolved the
+// overload, so an "@Int" impl only sees Ints. An "@Real" impl may see an Int on
+// one side (mixed Int/Real combinations route here), so it reads via `as_num`,
+// which coerces an Int operand to double.
+ssize_t
+as_int(
+  const pLm &v)
 {
-  const auto &op   = v.unwrap;
-  const auto &args = v.env;
-
-  const OP::Arity *arity = UT::try_lookup(OP::arity_db, op);
-  UT_FAIL_IF(!arity);
-
-  switch (*arity)
-  {
-  case OP::Arity::Ternary:
-  {
-    // Only `if` is ternary, and it is lazy: evaluate the condition, then only
-    // the taken branch.
-    UT_FAIL_IF(op != OP::IF);
-    UT_FAIL_IF(args.size() != 3);
-    pLm cond = eval(args[0], denv, senv);
-    UT_FAIL_IF(cond->tag != LTag::INT);
-    bool taken = std::get<Int>(cond->as).unwrap != 0;
-    return eval(args[taken ? 1 : 2], denv, senv);
-  }
-  case OP::Arity::Unary:
-  {
-    UT_FAIL_IF(args.size() != 1);
-    pLm val = eval(args[0], denv, senv);
-    UT_FAIL_IF(val->tag != LTag::INT);
-    OP::UnaryFn fn     = UT::lookup(OP::unary_db, op);
-    ssize_t     result = fn(std::get<Int>(val->as).unwrap);
-    return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
-  }
-  case OP::Arity::Binary:
-  {
-    UT_FAIL_IF(args.size() != 2);
-    pLm lhs = eval(args[0], denv, senv);
-    pLm rhs = eval(args[1], denv, senv);
-    UT_FAIL_IF(lhs->tag != LTag::INT);
-    UT_FAIL_IF(rhs->tag != LTag::INT);
-    OP::BinaryFn fn     = UT::lookup(OP::binary_db, op);
-    ssize_t      result = fn(std::get<Int>(lhs->as).unwrap,
-                        std::get<Int>(rhs->as).unwrap);
-    return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
-  }
-  }
-
-  UT_FAIL_IF(true);
-  return nullptr;
+  return std::get<Int>(v->as).unwrap;
 }
+double
+as_num(
+  const pLm &v)
+{
+  return LTag::REAL == v->tag ? std::get<Real>(v->as).unwrap
+                              : (double)std::get<Int>(v->as).unwrap;
+}
+pLm
+mk_int(
+  ssize_t v)
+{
+  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ v } });
+}
+pLm
+mk_real(
+  double v)
+{
+  return std::make_shared<Lm>(Lm{ .tag = LTag::REAL, .as = Real{ v } });
+}
+
+// One built-in implementation: its arity and a function over the already
+// evaluated, saturated operands.
+struct Impl
+{
+  size_t arity;
+  pLm (*fn)(const std::vector<pLm> &);
+};
+
+// The dispatch table, keyed by the monomorphic key the type checker resolved
+// each overloaded use to (see TC's overload_db). An "@Int" impl only sees Ints;
+// an "@Real" impl may see an Int on one side (mixed Int/Real combinations route
+// here), so it reads operands via as_num, which coerces an Int to double.
+const std::unordered_map<std::string, Impl> impls{
+  { OP::mono(OP::ADD, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) + as_int(a[1])); } } },
+  { OP::mono(OP::SUB, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) - as_int(a[1])); } } },
+  { OP::mono(OP::MUL, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) * as_int(a[1])); } } },
+  { OP::mono(OP::DIV, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { UT_FAIL_IF(as_int(a[1]) == 0); return mk_int(as_int(a[0]) / as_int(a[1])); } } },
+  { OP::mono(OP::MOD, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { UT_FAIL_IF(as_int(a[1]) == 0); return mk_int(as_int(a[0]) % as_int(a[1])); } } },
+  { OP::mono(OP::ISEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::GEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::LEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::MORE, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::LESS, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::ADD, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) + as_num(a[1])); } } },
+  { OP::mono(OP::SUB, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) - as_num(a[1])); } } },
+  { OP::mono(OP::MUL, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) * as_num(a[1])); } } },
+  { OP::mono(OP::DIV, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) / as_num(a[1])); } } },
+  { OP::mono(OP::MOD, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(std::fmod(as_num(a[0]), as_num(a[1]))); } } },
+  { OP::mono(OP::ISEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) == as_num(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::GEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) >= as_num(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::LEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) <= as_num(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::MORE, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) > as_num(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::LESS, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0); } } },
+  { OP::mono(OP::NEG, OP::TY_INT), { 1, [](const std::vector<pLm> &a) { return mk_int(-as_int(a[0])); } } },
+  { OP::mono(OP::NEG, OP::TY_REAL), { 1, [](const std::vector<pLm> &a) { return mk_real(-as_num(a[0])); } } },
+  { OP::mono(OP::NOT, OP::TY_INT), { 1, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) == 0 ? 1 : 0); } } },
+};
 
 // A foreign type name as written in a signature. Type variables and function
 // arguments are opaque, word-sized values, so they marshal as pointers.
@@ -232,32 +271,13 @@ exprs2pLm_helper(
   Lm lm;
   switch (expr->tag)
   {
-  case EX::ExprTag::Binop:
-  {
-    auto &b   = std::get<EX::ExBinop>(expr->as);
-    pLm   lhs = exprs2pLm_helper(b.ops.begin(), env);
-    pLm   rhs = exprs2pLm_helper(b.ops.last(), env);
-    lm        = { .tag = LTag::VAR,
-                  .as  = Var{ std::to_string(b.op), 0, { lhs, rhs } } };
-  }
-  break;
-
-  case EX::ExprTag::Unop:
-  {
-    auto &u       = std::get<EX::ExUnop>(expr->as);
-    pLm   operand = exprs2pLm_helper(u.operand, env);
-    lm            = { .tag = LTag::VAR,
-                      .as  = Var{ std::to_string(u.op), 0, { operand } } };
-  }
-  break;
-
   case EX::ExprTag::If:
   {
     EX::ExIf &ifexpr = std::get<EX::ExIf>(expr->as);
     pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
     pLm       then   = exprs2pLm_helper(ifexpr.then, env);
     pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
-    lm = { .tag = LTag::VAR, .as = Var{ OP::IF, 0, { cond, then, othw } } };
+    lm = { .tag = LTag::IF, .as = If{ cond, then, othw } };
   }
   break;
 
@@ -302,6 +322,12 @@ exprs2pLm_helper(
   case EX::ExprTag::Int:
   {
     lm = { .tag = LTag::INT, .as = Int{ std::get<EX::ExInt>(expr->as).value } };
+  }
+  break;
+
+  case EX::ExprTag::Real:
+  {
+    lm = { .tag = LTag::REAL, .as = Real{ std::get<EX::ExReal>(expr->as).value } };
   }
   break;
 
@@ -364,6 +390,11 @@ pprint(
     auto &v = std::get<Int>(lm->as);
     return pad + std::to_string(v.unwrap);
   }
+  case LTag::REAL:
+  {
+    auto &v = std::get<Real>(lm->as);
+    return pad + std::to_string(v.unwrap);
+  }
   case LTag::STR:
   {
     auto &v = std::get<Str>(lm->as);
@@ -399,6 +430,19 @@ pprint(
     auto &v = std::get<Extern>(lm->as);
     return pad + "@extern(" + v.symbol + " in " + v.lib + ")";
   }
+  case LTag::BUILTIN:
+  {
+    auto       &v = std::get<Builtin>(lm->as);
+    std::string s = pad + v.impl;
+    for (auto &arg : v.args) s += "\n" + pprint(arg, level + 1);
+    return s;
+  }
+  case LTag::IF:
+  {
+    auto &v = std::get<If>(lm->as);
+    return pad + "(if\n" + pprint(v.cond, level + 1) + "\n"
+           + pprint(v.yes, level + 1) + "\n" + pprint(v.no, level + 1) + ")";
+  }
   case LTag::UNK: return pad + "?unknown";
   }
   return pad + "?unreachable";
@@ -423,14 +467,18 @@ eval(
   switch (node->tag)
   {
   case LTag::INT:
+  case LTag::REAL:
   case LTag::STR: return node;
 
   case LTag::VAR:
   {
     auto &v = std::get<Var>(node->as);
 
-    // Builtin operator or if-expression
-    if (!v.env.empty()) return apply_builtin(v, denv, senv);
+    // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
+    auto bit = impls.find(v.unwrap);
+    if (bit != impls.end())
+      return std::make_shared<Lm>(Lm{
+        .tag = LTag::BUILTIN, .as = Builtin{ v.unwrap, bit->second.arity, {} } });
 
     // Global definition placeholder
     if (v.idx == (size_t)-1) return node;
@@ -487,6 +535,15 @@ eval(
       return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
     }
 
+    // Built-in: accumulate the argument, run the impl once saturated.
+    if (LTag::BUILTIN == closure->tag)
+    {
+      Builtin b = std::get<Builtin>(closure->as); // copy and extend
+      b.args.push_back(val);
+      if (b.args.size() >= b.arity) return impls.at(b.impl).fn(b.args);
+      return std::make_shared<Lm>(Lm{ .tag = LTag::BUILTIN, .as = b });
+    }
+
     UT_FAIL_IF(closure->tag != LTag::FUN);
     auto  &fun     = std::get<Fun>(closure->as);
     DynEnv new_env = fun.var.env;
@@ -501,6 +558,18 @@ eval(
     if (e.args.size() >= e.arg_types.size()) return call_extern(e);
     return node;
   }
+
+  case LTag::IF:
+  {
+    auto &i    = std::get<If>(node->as);
+    pLm   cond = eval(i.cond, denv, senv);
+    UT_FAIL_IF(cond->tag != LTag::INT);
+    bool taken = std::get<Int>(cond->as).unwrap != 0;
+    return eval(taken ? i.yes : i.no, denv, senv);
+  }
+
+  // An unapplied built-in is already a value.
+  case LTag::BUILTIN: return node;
 
   case LTag::UNK: return node;
   }

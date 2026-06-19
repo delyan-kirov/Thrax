@@ -12,5 +12,5 @@ $pow : Int -> Int -> Int = \base = \exp =
 $pow2_8   = pow2 8
 $pow2_10  = pow2 10
 $pow_2_10 = pow 2 10
-$pow_3_4  = pow 3 4
+$pow_3_4  = pow 0x3 4
 $pow_5_3  = pow 5 3
