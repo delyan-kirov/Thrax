@@ -8,9 +8,8 @@
 #                 NO_3RD_PARTY=1 build without libffi/raylib
 
 CXX      = clang++
-OPT     ?= -O0
 
-CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -Wimplicit-fallthrough -g $(OPT) -Iinc
+CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -Wimplicit-fallthrough -g -Iinc
 LIBS     =
 
 # Third-party deps (libffi, raylib) are on by default; build with NO_3RD_PARTY=1
