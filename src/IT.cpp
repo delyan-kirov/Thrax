@@ -2,8 +2,6 @@
 #include "FF.hpp"
 #include "OP.hpp"
 
-#include <cmath>
-
 namespace IT
 {
 

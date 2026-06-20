@@ -7,11 +7,6 @@
 
 #include "OP.hpp"
 
-#include <cstring>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
 namespace LL
 {
 
@@ -54,9 +49,7 @@ struct Lowerer
   UT::String
   ustr(const std::string &s)
   {
-    char *mem = (char *)arena.alloc(s.size() + 1);
-    std::memcpy(mem, s.c_str(), s.size() + 1);
-    return UT::String{ mem, s.size() };
+    return UT::strdup(arena, s.c_str());
   }
 
   Expr *

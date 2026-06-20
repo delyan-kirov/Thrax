@@ -1,6 +1,7 @@
 #ifndef UT_HEADER
 #define UT_HEADER
 
+#include <cmath>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -44,16 +45,18 @@
 
 // TODO: should report line and file
 #define UT_TODO(TODO_MSG)                                                      \
-  UT::IMPL::fail_if(                                                           \
-    __FILE__, __PRETTY_FUNCTION__, __LINE__, UT::STODO, #TODO_MSG)
+  UT::IMPL::fail_if(__FILE__, __PRETTY_FUNCTION__, __LINE__, "TODO", #TODO_MSG)
 
 #define UT_FAIL_IF(CONDITION)                                                  \
   do                                                                           \
   {                                                                            \
     if (CONDITION)                                                             \
     {                                                                          \
-      UT::IMPL::fail_if(                                                       \
-        __FILE__, __PRETTY_FUNCTION__, __LINE__, UT::SERROR, #CONDITION);      \
+      UT::IMPL::fail_if(__FILE__,                                              \
+                        __PRETTY_FUNCTION__,                                   \
+                        __LINE__,                                              \
+                        "\033[31mERROR\033[0m",                                \
+                        #CONDITION);                                           \
     }                                                                          \
   } while (false)
 
@@ -65,28 +68,12 @@
     UT::IMPL::fail_if(__FILE__,                                                \
                       __PRETTY_FUNCTION__,                                     \
                       __LINE__,                                                \
-                      UT::SERROR,                                              \
+                      "\033[31mERROR\033[0m",                                  \
                       UT_STRING_BUFFER_NO_ESCAPE);                             \
-  } while (false)
-
-#define UT_TCS(o) (std::to_string(o).c_str())
-
-#define UT_VAR_INSP(UT_VAR)                                                    \
-  do                                                                           \
-  {                                                                            \
-    UT_FAIL_MSG("INFO (%s)", UT_TCS(UT_VAR));                                  \
   } while (false)
 
 #define ARRAY_LEN(UT_ARRAY_OBJ)                                                \
   (sizeof(UT_ARRAY_OBJ) / (sizeof(UT_ARRAY_OBJ[0])))
-
-#define UT_WARNING(MSG_FORMAT, ...)                                            \
-  do                                                                           \
-  {                                                                            \
-    std::fprintf(stderr, "WARN: ");                                            \
-    std::fprintf(stderr, MSG_FORMAT, __VA_ARGS__);                             \
-    std::fprintf(stderr, "\n");                                                \
-  } while (false)
 
 #define UT_UNUSED(UT_UNUSED_VAR) (void)UT_UNUSED_VAR
 
@@ -95,9 +82,6 @@
 
 namespace UT
 {
-
-constexpr const char *STODO  = "TODO";
-constexpr const char *SERROR = "\033[31mERROR\033[0m";
 
 namespace IMPL
 {
@@ -491,7 +475,7 @@ template <typename O> struct Vec
         m_max_len{ 0 },
         m_mem{ 0 }
   {
-    (void)lst;
+    UT_UNUSED(lst);
   };
 
   Vec(

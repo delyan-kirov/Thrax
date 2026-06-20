@@ -5,12 +5,7 @@
  *      of interpreting.
  *-----------------------------------------------------------------------------*/
 
-#include "DR.hpp"
-#include "UT.hpp"
-
-#include <cstdio>
-#include <cstring>
-#include <vector>
+#include "UTxAMALG.hpp"
 
 namespace
 {
