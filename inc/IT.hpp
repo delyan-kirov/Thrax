@@ -93,9 +93,9 @@ struct Builtin
   std::vector<pLm> args;
 };
 
-// A conditional. `if` is not a function (it must not evaluate both branches), so
-// it stays a dedicated lazy node rather than a builtin: eval forces `cond`, then
-// only the taken branch.
+// A conditional. `if` is not a function (it must not evaluate both branches),
+// so it stays a dedicated lazy node rather than a builtin: eval forces `cond`,
+// then only the taken branch.
 struct If
 {
   pLm cond;
@@ -107,11 +107,28 @@ struct If
 // closure) captures the environment the binding lives in, which would otherwise
 // hold a shared_ptr back to the value -- a cycle that leaks. While the value is
 // evaluated the binding is therefore held *weakly* through one of these; eval's
-// VAR lookup locks `target` to recover it. The value is always live when locked:
-// the body keeps it strongly in scope, and a call site keeps the closure alive.
+// VAR lookup locks `target` to recover it. The value is always live when
+// locked: the body keeps it strongly in scope, and a call site keeps the
+// closure alive.
 struct Rec
 {
   std::weak_ptr<Lm> target;
+};
+
+// A struct value: the type name plus its fields in declaration order. Built
+// from a `Type.{...}` literal; eval forces every field.
+struct Struct
+{
+  std::string                              name;
+  std::vector<std::pair<std::string, pLm>> fields;
+};
+
+// Field access `record.field`. eval forces the record (a Struct) and returns
+// the named field; the type checker guarantees the field exists.
+struct Field
+{
+  pLm         record;
+  std::string name;
 };
 
 #define IT_L_VARIANTS                                                          \
@@ -125,6 +142,8 @@ struct Rec
   X(BUILTIN, Builtin)                                                          \
   X(IF, If)                                                                    \
   X(REC, Rec)                                                                  \
+  X(STRUCT, Struct)                                                            \
+  X(FIELD, Field)                                                              \
   X(VAR, Var)
 
 enum class LTag

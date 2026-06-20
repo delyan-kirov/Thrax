@@ -5,8 +5,8 @@
 
 #include "LX.hpp"
 #include "ER.hpp"
-#include "UT.hpp"
 #include "OP.hpp"
+#include "UT.hpp"
 
 /*------------------------------------------------------------------------------
  *\MACROS
@@ -117,9 +117,9 @@ const Operators operator_db{
 // Single-character delimiters: brackets and the comma separator. Unlike
 // operators these never coalesce with neighbouring punctuation.
 const Delims delim_db{
-  { '(', TokenTag::LParen },
-  { ')', TokenTag::RParen },
-  { ',', TokenTag::Comma },
+  { '(', TokenTag::LParen }, { ')', TokenTag::RParen },
+  { ',', TokenTag::Comma },  { '.', TokenTag::Dot },
+  { '{', TokenTag::LBrace }, { '}', TokenTag::RBrace },
 };
 
 TokenTag

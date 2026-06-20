@@ -109,11 +109,25 @@ assign_id(
   }
   break;
 
+  case LTag::STRUCT:
+  {
+    auto &v = std::get<Struct>(node->as);
+    for (auto &f : v.fields) assign_id(f.second, env);
+  }
+  break;
+
+  case LTag::FIELD:
+  {
+    auto &v = std::get<Field>(node->as);
+    assign_id(v.record, env);
+  }
+  break;
+
   case LTag::INT:
   case LTag::REAL:
   case LTag::STR:
   case LTag::REC: // a runtime-only cell; never present in the static AST
-  case LTag::UNK: break;
+  case LTag::UNK : break;
   }
 }
 
@@ -167,29 +181,117 @@ struct Impl
 // an "@Real" impl may see an Int on one side (mixed Int/Real combinations route
 // here), so it reads operands via as_num, which coerces an Int to double.
 const std::unordered_map<std::string, Impl> impls{
-  { OP::mono(OP::ADD, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) + as_int(a[1])); } } },
-  { OP::mono(OP::SUB, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) - as_int(a[1])); } } },
-  { OP::mono(OP::MUL, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) * as_int(a[1])); } } },
-  { OP::mono(OP::DIV, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { UT_FAIL_IF(as_int(a[1]) == 0); return mk_int(as_int(a[0]) / as_int(a[1])); } } },
-  { OP::mono(OP::MOD, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { UT_FAIL_IF(as_int(a[1]) == 0); return mk_int(as_int(a[0]) % as_int(a[1])); } } },
-  { OP::mono(OP::ISEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::GEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::LEQ, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::MORE, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::LESS, OP::TY_INT), { 2, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::ADD, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) + as_num(a[1])); } } },
-  { OP::mono(OP::SUB, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) - as_num(a[1])); } } },
-  { OP::mono(OP::MUL, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) * as_num(a[1])); } } },
-  { OP::mono(OP::DIV, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(as_num(a[0]) / as_num(a[1])); } } },
-  { OP::mono(OP::MOD, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_real(std::fmod(as_num(a[0]), as_num(a[1]))); } } },
-  { OP::mono(OP::ISEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) == as_num(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::GEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) >= as_num(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::LEQ, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) <= as_num(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::MORE, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) > as_num(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::LESS, OP::TY_REAL), { 2, [](const std::vector<pLm> &a) { return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0); } } },
-  { OP::mono(OP::NEG, OP::TY_INT), { 1, [](const std::vector<pLm> &a) { return mk_int(-as_int(a[0])); } } },
-  { OP::mono(OP::NEG, OP::TY_REAL), { 1, [](const std::vector<pLm> &a) { return mk_real(-as_num(a[0])); } } },
-  { OP::mono(OP::NOT, OP::TY_INT), { 1, [](const std::vector<pLm> &a) { return mk_int(as_int(a[0]) == 0 ? 1 : 0); } } },
+  { OP::mono(OP::ADD, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) + as_int(a[1]));
+      } } },
+  { OP::mono(OP::SUB, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) - as_int(a[1]));
+      } } },
+  { OP::mono(OP::MUL, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) * as_int(a[1]));
+      } } },
+  { OP::mono(OP::DIV, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int(as_int(a[0]) / as_int(a[1]));
+      } } },
+  { OP::mono(OP::MOD, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int(as_int(a[0]) % as_int(a[1]));
+      } } },
+  { OP::mono(OP::ISEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::GEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::MORE, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LESS, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::ADD, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) + as_num(a[1]));
+      } } },
+  { OP::mono(OP::SUB, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) - as_num(a[1]));
+      } } },
+  { OP::mono(OP::MUL, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) * as_num(a[1]));
+      } } },
+  { OP::mono(OP::DIV, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) / as_num(a[1]));
+      } } },
+  { OP::mono(OP::MOD, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(std::fmod(as_num(a[0]), as_num(a[1])));
+      } } },
+  { OP::mono(OP::ISEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) == as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::GEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) >= as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) <= as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::MORE, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) > as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LESS, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::NEG, OP::TY_INT),
+    { 1, [](const std::vector<pLm> &a) { return mk_int(-as_int(a[0])); } } },
+  { OP::mono(OP::NEG, OP::TY_REAL),
+    { 1, [](const std::vector<pLm> &a) { return mk_real(-as_num(a[0])); } } },
+  { OP::mono(OP::NOT, OP::TY_INT),
+    { 1,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) == 0 ? 1 : 0);
+      } } },
 };
 
 // A foreign type name as written in a signature. Type variables and function
@@ -278,7 +380,7 @@ exprs2pLm_helper(
     pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
     pLm       then   = exprs2pLm_helper(ifexpr.then, env);
     pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
-    lm = { .tag = LTag::IF, .as = If{ cond, then, othw } };
+    lm               = { .tag = LTag::IF, .as = If{ cond, then, othw } };
   }
   break;
 
@@ -328,7 +430,8 @@ exprs2pLm_helper(
 
   case EX::ExprTag::Real:
   {
-    lm = { .tag = LTag::REAL, .as = Real{ std::get<EX::ExReal>(expr->as).value } };
+    lm = { .tag = LTag::REAL,
+           .as  = Real{ std::get<EX::ExReal>(expr->as).value } };
   }
   break;
 
@@ -360,6 +463,36 @@ exprs2pLm_helper(
     assign_id(def, ns);
     env[name] = def;
     lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
+  }
+  break;
+
+  case EX::ExprTag::StructLit:
+  {
+    auto  &sl = std::get<EX::ExStructLit>(expr->as);
+    Struct s;
+    s.name = std::string{ sl.type_name.m_mem, sl.type_name.m_len };
+    for (size_t i = 0; i < sl.fields.m_len; ++i)
+      s.fields.push_back(
+        { std::string{ sl.fields[i].name.m_mem, sl.fields[i].name.m_len },
+          exprs2pLm_helper(sl.fields[i].val, env) });
+    lm = { .tag = LTag::STRUCT, .as = s };
+  }
+  break;
+
+  case EX::ExprTag::Field:
+  {
+    auto &fa = std::get<EX::ExField>(expr->as);
+    Field f;
+    f.record = exprs2pLm_helper(fa.record, env);
+    f.name   = std::string{ fa.field.m_mem, fa.field.m_len };
+    lm       = { .tag = LTag::FIELD, .as = f };
+  }
+  break;
+
+  // A struct *declaration* is a type-level form with no runtime value.
+  case EX::ExprTag::StructDecl:
+  {
+    lm = { .tag = LTag::UNK, .as = std::monostate{} };
   }
   break;
 
@@ -444,6 +577,20 @@ pprint(
     return pad + "(if\n" + pprint(v.cond, level + 1) + "\n"
            + pprint(v.yes, level + 1) + "\n" + pprint(v.no, level + 1) + ")";
   }
+  case LTag::STRUCT:
+  {
+    auto       &v = std::get<Struct>(lm->as);
+    std::string s = pad + v.name + ".{";
+    for (auto &f : v.fields)
+      s += "\n" + std::string((level + 1) * 2, ' ') + f.first + " =\n"
+           + pprint(f.second, level + 2);
+    return s + ")";
+  }
+  case LTag::FIELD:
+  {
+    auto &v = std::get<Field>(lm->as);
+    return pad + "(field " + v.name + "\n" + pprint(v.record, level + 1) + ")";
+  }
   case LTag::REC: return pad + "<rec>";
   case LTag::UNK: return pad + "?unknown";
   }
@@ -470,7 +617,7 @@ eval(
   {
   case LTag::INT:
   case LTag::REAL:
-  case LTag::STR: return node;
+  case LTag::STR : return node;
 
   case LTag::VAR:
   {
@@ -479,8 +626,9 @@ eval(
     // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
     auto bit = impls.find(v.unwrap);
     if (bit != impls.end())
-      return std::make_shared<Lm>(Lm{
-        .tag = LTag::BUILTIN, .as = Builtin{ v.unwrap, bit->second.arity, {} } });
+      return std::make_shared<Lm>(
+        Lm{ .tag = LTag::BUILTIN,
+            .as  = Builtin{ v.unwrap, bit->second.arity, {} } });
 
     // Global definition placeholder
     if (v.idx == (size_t)-1) return node;
@@ -520,11 +668,11 @@ eval(
   {
     auto &l = std::get<Let>(node->as);
     // Bind the name to a placeholder, then evaluate the value with that binding
-    // *weakly* in scope and back-patch the slot, so recursive references resolve
-    // without the value's captured environment forming a shared_ptr cycle with
-    // it. (For a non-recursive let the placeholder is simply never read before
-    // patching.) The body then evaluates with the binding held strongly, so a
-    // closure it returns keeps the value alive.
+    // *weakly* in scope and back-patch the slot, so recursive references
+    // resolve without the value's captured environment forming a shared_ptr
+    // cycle with it. (For a non-recursive let the placeholder is simply never
+    // read before patching.) The body then evaluates with the binding held
+    // strongly, so a closure it returns keeps the value alive.
     pLm value
       = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
     pLm self = std::make_shared<Lm>(
@@ -591,8 +739,33 @@ eval(
   // An unapplied built-in is already a value.
   case LTag::BUILTIN: return node;
 
-  // A let binding's weak self-reference (see LET); lock it to the value. eval is
-  // never called on one directly -- VAR resolves it -- but handle it for safety.
+  case LTag::STRUCT:
+  {
+    // Force every field, building a fully evaluated struct value.
+    auto  &s = std::get<Struct>(node->as);
+    Struct out;
+    out.name = s.name;
+    for (auto &f : s.fields)
+      out.fields.push_back({ f.first, eval(f.second, denv, senv) });
+    return std::make_shared<Lm>(Lm{ .tag = LTag::STRUCT, .as = out });
+  }
+
+  case LTag::FIELD:
+  {
+    auto &fa  = std::get<Field>(node->as);
+    pLm   rec = eval(fa.record, denv, senv);
+    UT_FAIL_IF(rec->tag != LTag::STRUCT);
+    for (auto &f : std::get<Struct>(rec->as).fields)
+      if (f.first == fa.name) return f.second;
+    UT_FAIL_MSG("no field '%s' on struct '%s'",
+                fa.name.c_str(),
+                std::get<Struct>(rec->as).name.c_str());
+    break;
+  }
+
+  // A let binding's weak self-reference (see LET); lock it to the value. eval
+  // is never called on one directly -- VAR resolves it -- but handle it for
+  // safety.
   case LTag::REC:
   {
     pLm target = std::get<Rec>(node->as).target.lock();

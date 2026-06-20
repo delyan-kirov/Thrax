@@ -11,8 +11,8 @@
 
 #include "TC.hpp"
 #include "ER.hpp"
-#include "UT.hpp"
 #include "OP.hpp"
+#include "UT.hpp"
 
 namespace TC
 {
@@ -120,7 +120,8 @@ const OverloadTable overload_db{
   { OP::NEG,
     { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NEG, OP::TY_INT) },
       { { OP::TY_REAL, OP::TY_REAL }, OP::mono(OP::NEG, OP::TY_REAL) } } },
-  { OP::NOT, { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NOT, OP::TY_INT) } } },
+  { OP::NOT,
+    { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NOT, OP::TY_INT) } } },
 };
 
 /*------------------------------------------------------------------------------
@@ -136,25 +137,29 @@ enum class CKind
   Lam,
   App,
   Let,
-  Extern // a foreign binding; its type comes entirely from the signature
+  Extern,    // a foreign binding; its type comes entirely from the signature
+  StructLit, // `Type.{ field = expr, ... }`: name is the type, fields the inits
+  Field      // `record.field`: a is the record, name is the field
 };
 
 struct Core
 {
   CKind       kind;
-  std::string name;          // Var name / Lam param / Let name
-  Core       *a    = nullptr; // Lam: body; App: fn; Let: value
-  Core       *b    = nullptr; // App: arg; Let: body
-  UT::String  anchor;         // source slice for diagnostics (Var only)
+  std::string name;           // Var name / Lam param / Let name / struct/field
+  Core       *a = nullptr;    // Lam: body; App: fn; Let: value; Field: record
+  Core       *b = nullptr;    // App: arg; Let: body
+  UT::String  anchor;         // source slice for diagnostics
   UT::String *slot = nullptr; // overloaded Var: the EX name field to rewrite
+  // StructLit: the field initializers, in source order.
+  std::vector<std::pair<std::string, Core *>> fields;
 };
 
 // A deferred overload resolution. An overloaded name (e.g. `+`) is typed as a
 // fresh variable `use` and applied like any function; once the enclosing global
 // is fully inferred its operand/result types are settled, and we rewrite `slot`
-// (the EX Var name field) to the matching monomorphic key. The whole use type is
-// stored -- not split into lhs/rhs -- so resolution is uniform across arities
-// and ready to also match on the result type later.
+// (the EX Var name field) to the matching monomorphic key. The whole use type
+// is stored -- not split into lhs/rhs -- so resolution is uniform across
+// arities and ready to also match on the result type later.
 struct ResolveSite
 {
   UT::String *slot;   // the EX Var name to rewrite to the resolved impl
@@ -205,6 +210,11 @@ private:
   Env                                          m_prim;
   std::unordered_map<std::string, GlobalEntry> m_globals;
   std::vector<std::string> m_order; // source order of globals
+
+  // Declared struct types: name -> ordered (field name, field type). Nominal:
+  // the struct's value type is just con(name); this holds the field shape.
+  using StructFields = std::vector<std::pair<std::string, Type *>>;
+  std::unordered_map<std::string, StructFields> m_structs;
 
   // current diagnostic anchor (the global under check)
   UT::String m_anchor;
@@ -294,8 +304,10 @@ Core *
 Checker::core(
   CKind k)
 {
-  m_cores.push_back(Core{ k, "", nullptr, nullptr, {} });
-  return &m_cores.back();
+  m_cores.push_back(Core{});
+  Core *c = &m_cores.back();
+  c->kind = k;
+  return c;
 }
 
 /*------------------------------------------------------------------------------
@@ -434,9 +446,10 @@ Checker::generalize(
   // Also keep monomorphic any variable an unresolved overload site still
   // constrains: it will be pinned (or defaulted) by resolution, so generalizing
   // it would let one binding be used at two types while a single overload was
-  // chosen -- SML's "monomorphism restriction" for overloaded numerics. (Without
-  // this, `let square = \x = x*x` would generalize its result variable and the
-  // call's result would never be tied back to the resolved operand type.)
+  // chosen -- SML's "monomorphism restriction" for overloaded numerics.
+  // (Without this, `let square = \x = x*x` would generalize its result variable
+  // and the call's result would never be tied back to the resolved operand
+  // type.)
   for (const ResolveSite &s : m_sites) free_vars(s.use, ev);
 
   std::vector<int> q;
@@ -583,10 +596,35 @@ Checker::desugar(
     a3->b    = desugar(i.alt);
     return a3;
   }
-  default:
-    // Def / Unknown never appear nested in an expression.
-    return core(CKind::LitInt);
+  case EX::ExprTag::StructLit:
+  {
+    auto &sl  = std::get<EX::ExStructLit>(e->as);
+    Core *c   = core(CKind::StructLit);
+    c->name   = std::to_string(sl.type_name);
+    c->anchor = sl.type_name;
+    for (size_t i = 0; i < sl.fields.m_len; ++i)
+      c->fields.push_back(
+        { std::to_string(sl.fields[i].name), desugar(sl.fields[i].val) });
+    return c;
   }
+  case EX::ExprTag::Field:
+  {
+    auto &fa  = std::get<EX::ExField>(e->as);
+    Core *c   = core(CKind::Field);
+    c->a      = desugar(fa.record);
+    c->name   = std::to_string(fa.field);
+    c->anchor = fa.field;
+    return c;
+  }
+  // Def / StructDecl are top-level only; Unknown is never produced as a body.
+  case EX::ExprTag::Def:
+  case EX::ExprTag::StructDecl:
+  case EX::ExprTag::Unknown:
+    UT_FAIL_MSG("desugar: unexpected top-level node %s",
+                EX::pprint(e->tag).c_str());
+  }
+  UT_FAIL_MSG("%s", "desugar: unhandled ExprTag");
+  return core(CKind::LitInt);
 }
 
 bool
@@ -608,6 +646,11 @@ Checker::occurs_free(
     // name shadowed in the body; still visible in the (recursive) value
     if (e->name == name) return occurs_free(name, e->a);
     return occurs_free(name, e->a) || occurs_free(name, e->b);
+  case CKind::StructLit:
+    for (auto &f : e->fields)
+      if (occurs_free(name, f.second)) return true;
+    return false;
+  case CKind::Field: return occurs_free(name, e->a);
   }
   return false;
 }
@@ -691,6 +734,84 @@ Checker::infer(
     inner[e->name] = s;
     return infer(e->b, inner);
   }
+
+  case CKind::StructLit:
+  {
+    auto sit = m_structs.find(e->name);
+    if (sit == m_structs.end())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           e->anchor.m_mem ? e->anchor : m_anchor,
+           "unknown struct type '%s'",
+           e->name.c_str());
+      return fresh();
+    }
+    const StructFields &decl = sit->second;
+
+    // Every declared field must be initialized exactly once; reject unknown and
+    // duplicate fields. Each initializer is checked against its declared type.
+    std::vector<bool> seen(decl.size(), false);
+    for (auto &init : e->fields)
+    {
+      size_t idx = decl.size();
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (decl[k].first == init.first) idx = k;
+
+      if (idx == decl.size())
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "struct '%s' has no field '%s'",
+             e->name.c_str(),
+             init.first.c_str());
+        continue;
+      }
+      if (seen[idx])
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "field '%s' is set more than once in '%s'",
+             init.first.c_str(),
+             e->name.c_str());
+        continue;
+      }
+      seen[idx] = true;
+      Type *vt  = infer(init.second, locals);
+      unify(decl[idx].second, vt);
+    }
+    for (size_t k = 0; k < decl.size(); ++k)
+      if (!seen[k])
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "struct '%s' is missing field '%s'",
+             e->name.c_str(),
+             decl[k].first.c_str());
+
+    return con(e->name);
+  }
+
+  case CKind::Field:
+  {
+    Type *rt = prune(infer(e->a, locals));
+    if (rt->kind != Kind::Con || !m_structs.count(rt->name))
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           e->anchor.m_mem ? e->anchor : m_anchor,
+           "cannot access field '%s': '%s' is not a known struct type",
+           e->name.c_str(),
+           show(rt).c_str());
+      return fresh();
+    }
+    for (auto &f : m_structs.at(rt->name))
+      if (f.first == e->name) return f.second;
+
+    fail(ER::Code::TYPE_UNBOUND,
+         e->anchor.m_mem ? e->anchor : m_anchor,
+         "struct '%s' has no field '%s'",
+         rt->name.c_str(),
+         e->name.c_str());
+    return fresh();
+  }
   }
   return fresh();
 }
@@ -758,12 +879,12 @@ Checker::resolve(
   return g.scheme;
 }
 
-// Resolve the overload sites collected since index `from` (one inference scope's
-// worth), then drop them. For each site we force the use type into an arrow chain
-// of the operator's arity -- so an under-applied use still exposes operand
-// variables -- default any still-unconstrained operand to Int (SML-style), then
-// pick the overload whose operand types match and rewrite the EX Var name to its
-// implementation key.
+// Resolve the overload sites collected since index `from` (one inference
+// scope's worth), then drop them. For each site we force the use type into an
+// arrow chain of the operator's arity -- so an under-applied use still exposes
+// operand variables -- default any still-unconstrained operand to Int
+// (SML-style), then pick the overload whose operand types match and rewrite the
+// EX Var name to its implementation key.
 void
 Checker::resolve_sites(
   size_t from)
@@ -773,11 +894,13 @@ Checker::resolve_sites(
     const ResolveSite &s = m_sites[i];
 
     const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
-    UT_FAIL_IF(!ovs || ovs->empty()); // a site is only made for overloaded names
+    UT_FAIL_IF(!ovs
+               || ovs->empty()); // a site is only made for overloaded names
     size_t arity = ovs->front().sig.size() - 1;
 
     // Shape the use as (a1 -> ... -> ak -> r) so the operands are reachable
-    // whether the operator was fully applied, partially applied, or passed bare.
+    // whether the operator was fully applied, partially applied, or passed
+    // bare.
     std::vector<Type *> args(arity);
     Type               *result = fresh();
     Type               *shape  = result;
@@ -848,7 +971,23 @@ void
 Checker::run(
   EX::Exprs &exprs)
 {
-  // Phase A: collect globals.
+  // Phase A: register struct types and collect value globals. Structs are
+  // registered up front so a global may reference a struct declared later.
+  for (size_t i = 0; i < exprs.m_len; ++i)
+  {
+    EX::Expr *e = &exprs[i];
+    if (e->tag != EX::ExprTag::StructDecl) continue;
+    EX::ExStructDecl &sd = std::get<EX::ExStructDecl>(e->as);
+    StructFields      flds;
+    for (size_t f = 0; f < sd.fields.m_len; ++f)
+    {
+      std::unordered_map<std::string, Type *> tv;
+      Type *ft = sig_to_type(sd.fields[f].ty, tv, false);
+      flds.push_back({ std::to_string(sd.fields[f].name), ft });
+    }
+    m_structs[std::to_string(sd.name)] = std::move(flds);
+  }
+
   for (size_t i = 0; i < exprs.m_len; ++i)
   {
     EX::Expr *e = &exprs[i];

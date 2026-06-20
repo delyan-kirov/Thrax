@@ -79,7 +79,8 @@ Definition type:
 
 The base types are Int and Str. At runtime every value is an ssize_t (Str is a
 pointer stored in an ssize_t); the type checker keeps Int and Str distinct, the
-runtime does not. There are no algebraic data types yet.
+runtime does not. A struct type name (see STRUCTS) is also a type constructor.
+Sum types do not exist yet.
 
 ================================================================================
 GLOBAL DEFINITIONS
@@ -106,6 +107,42 @@ Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
 
 (FFI: `ext name : type = ("sym" "lib.so")` is reserved but not yet implemented.)
+
+================================================================================
+STRUCTS (product types)
+================================================================================
+
+A struct is a named record type. It is declared with the `Struct` annotation in
+place of a type; the body is a comma-separated list of typed fields (a trailing
+comma is allowed). The type name must start uppercase, field names lowercase:
+
+	struct ::= '$' TypeName ':' 'Struct' '=' [ field (',' field)* ','? ]
+	field  ::= var ':' type
+
+	$ Person : Struct =
+		name: Str,
+		age: Int,
+
+A struct value is built with a literal. Only the qualified form is supported:
+the type name precedes `.{ ... }`, and every declared field must be set exactly
+once (unknown, missing, or duplicate fields are type errors):
+
+	lit ::= TypeName '.{' [ var '=' expr (',' ...)* ','? ] '}'
+
+	$ person : Person = Person.{ name = "Will", age = 21 }
+
+A field is read with postfix `.`, which binds tighter than application and
+chains left-to-right (`a.b.c`):
+
+	access ::= expr '.' var
+
+	$ who : Str = person.name
+	$ yrs : Int = person.age
+
+Structs are nominal: a struct name is an ordinary type constructor that unifies
+by name. Not yet supported: the bare literal `.{ ... }` (type inferred from
+context), polymorphic/generic struct fields, and field access where the
+receiver's type is not statically known (e.g. `\p = p.name`).
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)

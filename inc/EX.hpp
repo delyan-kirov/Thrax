@@ -140,6 +140,40 @@ struct ExLet
   Expr      *body;
 };
 
+// One `field : Type` entry in a struct declaration.
+struct FieldDecl
+{
+  UT::String name;
+  Ty        *ty;
+};
+// One `field = expr` entry in a struct literal.
+struct FieldInit
+{
+  UT::String name;
+  Expr      *val;
+};
+
+// A struct type declaration: `$ Name : Struct = field: Ty, ...`. Defines a
+// nominal record type; it produces no runtime value.
+struct ExStructDecl
+{
+  UT::String         name;
+  UT::Vec<FieldDecl> fields;
+};
+// A struct literal: `Type.{ field = expr, ... }`. Qualified form only, so
+// `type_name` is always set (bare `.{...}` is a later increment).
+struct ExStructLit
+{
+  UT::String         type_name;
+  UT::Vec<FieldInit> fields;
+};
+// Field access: `record.field`.
+struct ExField
+{
+  Expr      *record;
+  UT::String field;
+};
+
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
   X(Def, ExDef)                                                                \
@@ -151,7 +185,10 @@ struct ExLet
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
   X(Str, ExStr)                                                                \
-  X(Extern, ExExtern)
+  X(Extern, ExExtern)                                                          \
+  X(StructDecl, ExStructDecl)                                                  \
+  X(StructLit, ExStructLit)                                                    \
+  X(Field, ExField)
 
 enum class ExprTag
 {
@@ -198,6 +235,8 @@ public:
 private:
   UT_NODISCARD R parse_global();
   UT_NODISCARD R parse_extern();
+  UT_NODISCARD R parse_struct_decl(const LX::Token &name);
+  UT_NODISCARD R parse_struct_lit(UT::String type_name);
   UT_NODISCARD ER::Result<Ty *> parse_type();
   UT_NODISCARD ER::Result<Ty *> parse_type_atom();
   UT_NODISCARD R                parse_expr(int min_bp);
@@ -224,6 +263,7 @@ private:
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
   UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
+  UT_NODISCARD Expr *mk_field(Expr *record, UT::String field);
   UT_NODISCARD Ty   *mk_ty(Ty t);
 };
 
