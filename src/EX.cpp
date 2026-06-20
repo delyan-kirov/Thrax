@@ -12,33 +12,34 @@
 /*------------------------------------------------------------------------------
  *\MACROS
  *
- * TRY / CTX / EX_ERR are the only error primitives. TRY propagates a failure
- * unchanged; CTX propagates it but first appends a context frame anchored at a
- * token; EX_ERR starts a fresh root cause. All three rely on ER::Fail
- * converting to whatever Result<T> the enclosing method returns. They use the
- * GNU statement-expression form so they can yield the unwrapped value inline.
+ * EX_TRY / EX_CTX / EX_ERR are the only error primitives. EX_TRY propagates a
+ * failure unchanged; EX_CTX propagates it but first appends a context frame
+ * anchored at a token; EX_ERR starts a fresh root cause. All three rely on
+ * ER::Fail converting to whatever Result<T> the enclosing method returns. They
+ * use the GNU statement-expression form so they can yield the unwrapped value
+ * inline.
  *-----------------------------------------------------------------------------*/
 
-#define TRY(EXPR)                                                              \
+#define EX_TRY(EXPR)                                                           \
   ({                                                                           \
-    auto _r = (EXPR);                                                          \
-    if (!_r.ok) return ER::Fail{ _r.err };                                     \
-    _r.value;                                                                  \
+    auto r_ = (EXPR);                                                          \
+    if (!r_.ok) return ER::Fail{ r_.err };                                     \
+    r_.value;                                                                  \
   })
 
-#define CTX(EXPR, TOK, ...)                                                    \
+#define EX_CTX(EXPR, TOK, ...)                                                 \
   ({                                                                           \
-    auto _r = (EXPR);                                                          \
-    if (!_r.ok)                                                                \
+    auto r_ = (EXPR);                                                          \
+    if (!r_.ok)                                                                \
     {                                                                          \
       ER::push_ctx(m_arena,                                                    \
-                   _r.err,                                                     \
+                   r_.err,                                                     \
                    (TOK).str,                                                  \
                    (TOK).line,                                                 \
                    ER::mk_msg(m_arena, __VA_ARGS__));                          \
-      return ER::Fail{ _r.err };                                               \
+      return ER::Fail{ r_.err };                                               \
     }                                                                          \
-    _r.value;                                                                  \
+    r_.value;                                                                  \
   })
 
 #define EX_ERR(CODE, TOK, ...)                                                 \
@@ -331,19 +332,19 @@ LX::RToken
 Parser::expect(
   LX::TokenTag tag, const char *what)
 {
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t = EX_TRY(m_lex.peek());
   if (t.tag != tag)
   {
     EX_ERR(ER::Code::UNEXPECTED_TOKEN, t, "%s", what);
   }
-  LX::Token consumed = TRY(m_lex.next());
+  LX::Token consumed = EX_TRY(m_lex.next());
   return { true, consumed, {} };
 }
 
 RExpr
 Parser::parse_primary()
 {
-  LX::Token t    = TRY(m_lex.peek());
+  LX::Token t    = EX_TRY(m_lex.peek());
   Expr     *base = nullptr;
   switch (t.tag)
   {
@@ -363,10 +364,10 @@ Parser::parse_primary()
     m_lex.next();
     base = mk_var(t);
     break;
-  case LX::TokenTag::LParen: base = TRY(parse_group()); break;
-  case LX::TokenTag::KwLet : base = TRY(parse_let()); break;
-  case LX::TokenTag::KwIf  : base = TRY(parse_if()); break;
-  case LX::TokenTag::Lambda: base = TRY(parse_closure()); break;
+  case LX::TokenTag::LParen: base = EX_TRY(parse_group()); break;
+  case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
+  case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
+  case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
   default:
   {
     const char *desc = tok_desc(t);
@@ -387,9 +388,9 @@ Parser::parse_primary()
   // `f x.y` is `f (x.y)`.
   for (;;)
   {
-    if (LX::TokenTag::Dot != TRY(m_lex.peek()).tag) break;
-    LX::Token dot   = TRY(m_lex.next()); // '.'
-    LX::Token ahead = TRY(m_lex.peek());
+    if (LX::TokenTag::Dot != EX_TRY(m_lex.peek()).tag) break;
+    LX::Token dot   = EX_TRY(m_lex.next()); // '.'
+    LX::Token ahead = EX_TRY(m_lex.peek());
 
     if (LX::TokenTag::LBrace == ahead.tag)
     {
@@ -406,16 +407,16 @@ Parser::parse_primary()
                dot,
                "a struct literal's type name must start uppercase, found '%s'",
                std::string(tn).c_str());
-      base = CTX(parse_struct_lit(tn),
-                 dot,
-                 "in this '%s' struct literal",
-                 std::string(tn).c_str());
+      base = EX_CTX(parse_struct_lit(tn),
+                    dot,
+                    "in this '%s' struct literal",
+                    std::string(tn).c_str());
     }
     else
     {
       // `record.field` -- the field is a lowercase variable name.
       LX::Token fld
-        = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
+        = EX_TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
       char c = fld.str.size() ? fld.str.data()[0] : '\0';
       if (c >= 'A' && c <= 'Z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
@@ -432,13 +433,13 @@ Parser::parse_primary()
 RExpr
 Parser::parse_prefix()
 {
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t = EX_TRY(m_lex.peek());
   if (LX::TokenTag::Op == t.tag)
   {
     if (const char *const *name = UT::try_lookup(unop_db, std::string(t.str)))
     {
       m_lex.next();
-      Expr *operand = TRY(parse_expr(PREFIX_BP));
+      Expr *operand = EX_TRY(parse_expr(PREFIX_BP));
       return { true,
                mk_unop(UT::Vu{ *name, std::strlen(*name) }, operand),
                {} };
@@ -451,11 +452,11 @@ RExpr
 Parser::parse_expr(
   int min_bp)
 {
-  Expr *lhs = TRY(parse_prefix());
+  Expr *lhs = EX_TRY(parse_prefix());
 
   for (;;)
   {
-    LX::Token t = TRY(m_lex.peek());
+    LX::Token t = EX_TRY(m_lex.peek());
 
     if (LX::TokenTag::Op == t.tag)
     {
@@ -466,14 +467,14 @@ Parser::parse_expr(
                "operator '%s' cannot be used here",
                std::string(t.str).c_str());
       if (bp->l < min_bp) break;
-      TRY(m_lex.next()); // consume the operator
-      Expr *rhs = TRY(parse_expr(bp->r));
+      EX_TRY(m_lex.next()); // consume the operator
+      Expr *rhs = EX_TRY(parse_expr(bp->r));
       lhs       = mk_binop(t.str, lhs, rhs);
     }
     else if (operand_starters.count(t.tag))
     {
       if (APP_BP.l < min_bp) break;
-      Expr *rhs = TRY(parse_expr(APP_BP.r));
+      Expr *rhs = EX_TRY(parse_expr(APP_BP.r));
       lhs       = mk_app(lhs, rhs);
     }
     else if (expr_terminators.count(t.tag))
@@ -495,10 +496,10 @@ Parser::parse_expr(
 RExpr
 Parser::parse_group()
 {
-  LX::Token lp = TRY(m_lex.next()); // '('
-  Expr     *e  = CTX(parse_expr(0), lp, "in this parenthesized group");
+  LX::Token lp = EX_TRY(m_lex.next()); // '('
+  Expr     *e  = EX_CTX(parse_expr(0), lp, "in this parenthesized group");
 
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t = EX_TRY(m_lex.peek());
   if (LX::TokenTag::RParen != t.tag)
   {
     EX_ERR(ER::Code::PARENTHESIS_UNBALANCED,
@@ -512,12 +513,12 @@ Parser::parse_group()
 RExpr
 Parser::parse_let()
 {
-  LX::Token kw = TRY(m_lex.next()); // 'let'
+  LX::Token kw = EX_TRY(m_lex.next()); // 'let'
 
   // A `let` binder is either a plain variable (`let x = ...`) or a structural
   // pattern (`let Person.{x,y} = ...`). An uppercase-initial word starts a
   // pattern; the LL pass lowers it into nested plain lets.
-  LX::Token la     = TRY(m_lex.peek());
+  LX::Token la     = EX_TRY(m_lex.peek());
   bool      is_pat = false;
   if (LX::TokenTag::Word == la.tag)
   {
@@ -527,11 +528,11 @@ Parser::parse_let()
 
   if (is_pat)
   {
-    Pattern *pat = TRY(parse_pattern());
-    TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' pattern"));
-    Expr *val = CTX(parse_expr(0), la, "in this 'let' binding");
-    TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
-    Expr *body = CTX(parse_expr(0), kw, "in the body of this 'let'");
+    Pattern *pat = EX_TRY(parse_pattern());
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' pattern"));
+    Expr *val = EX_CTX(parse_expr(0), la, "in this 'let' binding");
+    EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
+    Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
 
     ExLet lt;
     lt.var  = UT::Vu{};
@@ -543,59 +544,61 @@ Parser::parse_let()
     return { true, alloc(e), {} };
   }
 
-  LX::Token name
-    = TRY(expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
-  TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
+  LX::Token name = EX_TRY(
+    expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
+  EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
 
-  Expr *val = CTX(parse_expr(0),
-                  name,
-                  "in the binding of 'let %s'",
-                  std::string(name.str).c_str());
+  Expr *val = EX_CTX(parse_expr(0),
+                     name,
+                     "in the binding of 'let %s'",
+                     std::string(name.str).c_str());
 
-  TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
+  EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
 
-  Expr *body = CTX(parse_expr(0), kw, "in the body of this 'let'");
+  Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
   return { true, mk_let(name.str, val, body), {} };
 }
 
 RExpr
 Parser::parse_if()
 {
-  LX::Token kw   = TRY(m_lex.next()); // 'if'
-  Expr     *cond = CTX(parse_expr(0), kw, "in the condition of this 'if'");
+  LX::Token kw   = EX_TRY(m_lex.next()); // 'if'
+  Expr     *cond = EX_CTX(parse_expr(0), kw, "in the condition of this 'if'");
 
   // `if scrut is pat then e ... else d` is a match; `if c then t else e` is the
   // boolean conditional. The `is` after the scrutinee chooses between them.
-  if (LX::TokenTag::KwIs == TRY(m_lex.peek()).tag)
+  if (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
   {
     UT::Vec<MatchArm> arms{ m_arena };
-    while (LX::TokenTag::KwIs == TRY(m_lex.peek()).tag)
+    while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
     {
       m_lex.next(); // 'is'
-      Pattern *pat = TRY(parse_pattern());
-      TRY(expect(LX::TokenTag::KwThen,
-                 "expected 'then' after the match pattern"));
-      Expr *body = CTX(parse_expr(0), kw, "in this match arm");
+      Pattern *pat = EX_TRY(parse_pattern());
+      EX_TRY(expect(LX::TokenTag::KwThen,
+                    "expected 'then' after the match pattern"));
+      Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
       arms.push(MatchArm{ pat, body });
     }
-    LX::Token els = TRY(expect(LX::TokenTag::KwElse,
-                               "expected another 'is' arm or 'else' to close "
-                               "the match"));
-    Expr     *alt = CTX(parse_expr(0), els, "in the else branch of this match");
+    LX::Token els
+      = EX_TRY(expect(LX::TokenTag::KwElse,
+                      "expected another 'is' arm or 'else' to close "
+                      "the match"));
+    Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this match");
 
     Expr e{ ExprTag::Match };
     e.as = ExMatch{ cond, arms, alt };
     return { true, alloc(e), {} };
   }
 
-  TRY(expect(LX::TokenTag::KwThen, "expected 'then' after the 'if' condition"));
+  EX_TRY(
+    expect(LX::TokenTag::KwThen, "expected 'then' after the 'if' condition"));
 
-  Expr *then = CTX(parse_expr(0), kw, "in the then-branch of this 'if'");
+  Expr *then = EX_CTX(parse_expr(0), kw, "in the then-branch of this 'if'");
 
-  LX::Token els = TRY(
+  LX::Token els = EX_TRY(
     expect(LX::TokenTag::KwElse, "expected 'else' after the then-branch"));
 
-  Expr *alt = CTX(parse_expr(0), els, "in the else branch of this 'if'");
+  Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'if'");
   return { true, mk_if(cond, then, alt), {} };
 }
 
@@ -605,7 +608,7 @@ Parser::parse_if()
 RPattern
 Parser::parse_pattern()
 {
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t = EX_TRY(m_lex.peek());
   switch (t.tag)
   {
   case LX::TokenTag::Int:
@@ -662,9 +665,9 @@ RPattern
 Parser::parse_struct_pattern(
   UT::Vu type_name, const LX::Token &tn)
 {
-  TRY(expect(LX::TokenTag::Dot,
-             "expected '.{' after a struct pattern's type name"));
-  TRY(
+  EX_TRY(expect(LX::TokenTag::Dot,
+                "expected '.{' after a struct pattern's type name"));
+  EX_TRY(
     expect(LX::TokenTag::LBrace, "expected '{' after '.' in a struct pattern"));
 
   UT::Vec<FieldPat> fields{ m_arena };
@@ -672,15 +675,15 @@ Parser::parse_struct_pattern(
 
   for (;;)
   {
-    if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
+    if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
 
-    if (LX::TokenTag::Dot == TRY(m_lex.peek()).tag)
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
     {
       // A named field: `.field = subpat`, or `.field` punning to `.field =
       // field`.
       m_lex.next(); // '.'
       LX::Token fname
-        = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
+        = EX_TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
       char c = fname.str.size() ? fname.str.data()[0] : '\0';
       if (c < 'a' || c > 'z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
@@ -689,10 +692,10 @@ Parser::parse_struct_pattern(
                std::string(fname.str).c_str());
 
       Pattern *sub;
-      if (LX::TokenTag::Eq == TRY(m_lex.peek()).tag)
+      if (LX::TokenTag::Eq == EX_TRY(m_lex.peek()).tag)
       {
         m_lex.next(); // '='
-        sub = TRY(parse_pattern());
+        sub = EX_TRY(parse_pattern());
       }
       else
         sub = alloc_pat(Pattern{ PatTag::Var, PatVar{ fname.str } }); // pun
@@ -701,14 +704,15 @@ Parser::parse_struct_pattern(
     }
     else
     {
-      Pattern *sub = TRY(parse_pattern());
+      Pattern *sub = EX_TRY(parse_pattern());
       fields.push(FieldPat{ UT::Vu{}, sub });
     }
 
-    if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
+    if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
     m_lex.next(); // ','
   }
-  TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the struct pattern"));
+  EX_TRY(
+    expect(LX::TokenTag::RBrace, "expected '}' to close the struct pattern"));
 
   // A struct pattern is all-named (`.field`) or all-positional, not a mix.
   if (any_named)
@@ -728,19 +732,20 @@ Parser::parse_struct_pattern(
 RExpr
 Parser::parse_closure()
 {
-  LX::Token bs = TRY(m_lex.next()); // '\'
+  LX::Token bs = EX_TRY(m_lex.next()); // '\'
 
   // `\p1 p2 .. pn = e` binds one pattern per parameter; the `=` ends the list.
   UT::Vec<Pattern *> params{ m_arena };
-  params.push(TRY(parse_pattern()));
-  for (LX::Token nxt = TRY(m_lex.peek()); LX::TokenTag::Word == nxt.tag;
-       nxt           = TRY(m_lex.peek()))
-    params.push(TRY(parse_pattern()));
+  params.push(EX_TRY(parse_pattern()));
+  for (LX::Token nxt = EX_TRY(m_lex.peek()); LX::TokenTag::Word == nxt.tag;
+       nxt           = EX_TRY(m_lex.peek()))
+    params.push(EX_TRY(parse_pattern()));
 
-  TRY(expect(LX::TokenTag::Eq,
-             "expected '=' or another parameter after the lambda parameter"));
+  EX_TRY(
+    expect(LX::TokenTag::Eq,
+           "expected '=' or another parameter after the lambda parameter"));
 
-  Expr *body = CTX(parse_expr(0), bs, "while parsing this closure");
+  Expr *body = EX_CTX(parse_expr(0), bs, "while parsing this closure");
 
   // Curried sugar: `\p1 p2 .. pn = e` desugars to `\p1 = \p2 = .. = e`. A plain
   // variable/wildcard parameter stays an ordinary binder; a structural pattern
@@ -769,7 +774,7 @@ Parser::parse_closure()
 RExpr
 Parser::parse_global()
 {
-  LX::Token marker = TRY(m_lex.peek());
+  LX::Token marker = EX_TRY(m_lex.peek());
 
   if (LX::TokenTag::KwExt == marker.tag)
     EX_ERR(
@@ -790,50 +795,51 @@ Parser::parse_global()
   }
   m_lex.next(); // consume '$'
 
-  LX::Token name = TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
+  LX::Token name
+    = EX_TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
   // Optional type annotation: `$ name : type = ...`. The special annotation
   // `Struct` marks a struct type declaration rather than a value, so the body
   // is a field list, not an expression.
   Ty *sig = nullptr;
-  if (LX::TokenTag::Colon == TRY(m_lex.peek()).tag)
+  if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // ':'
-    LX::Token ann = TRY(m_lex.peek());
+    LX::Token ann = EX_TRY(m_lex.peek());
     if (LX::TokenTag::Word == ann.tag && ann.str == "Struct")
     {
       m_lex.next(); // 'Struct'
-      TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
       return parse_struct_decl(name);
     }
-    sig = CTX(parse_type(),
-              name,
-              "in the type signature of global '%s'",
-              std::string(name.str).c_str());
+    sig = EX_CTX(parse_type(),
+                 name,
+                 "in the type signature of global '%s'",
+                 std::string(name.str).c_str());
   }
 
-  TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
+  EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
   // A `@extern (...)` body is only valid here, and needs a signature to know
   // its foreign call types.
-  if (LX::TokenTag::At == TRY(m_lex.peek()).tag)
+  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag)
   {
     if (!sig)
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
              name,
              "extern global '%s' requires a type signature",
              std::string(name.str).c_str());
-    Expr *ext = CTX(parse_extern(),
-                    name,
-                    "in the definition of extern '%s'",
-                    std::string(name.str).c_str());
+    Expr *ext = EX_CTX(parse_extern(),
+                       name,
+                       "in the definition of extern '%s'",
+                       std::string(name.str).c_str());
     return { true, mk_def(name.str, sig, ext), {} };
   }
 
-  Expr *body = CTX(parse_expr(0),
-                   name,
-                   "in the definition of global '%s'",
-                   std::string(name.str).c_str());
+  Expr *body = EX_CTX(parse_expr(0),
+                      name,
+                      "in the definition of global '%s'",
+                      std::string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
 }
@@ -841,7 +847,7 @@ Parser::parse_global()
 RExpr
 Parser::parse_extern()
 {
-  LX::Token at = TRY(m_lex.peek());
+  LX::Token at = EX_TRY(m_lex.peek());
   if (at.str != "@extern")
     EX_ERR(ER::Code::UNSUPPORTED,
            at,
@@ -849,13 +855,14 @@ Parser::parse_extern()
            std::string(at.str).c_str());
   m_lex.next(); // '@extern'
 
-  TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
-  LX::Token sym = TRY(
+  EX_TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
+  LX::Token sym = EX_TRY(
     expect(LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
-  TRY(expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
-  LX::Token lib = TRY(
+  EX_TRY(
+    expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
+  LX::Token lib = EX_TRY(
     expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
-  TRY(expect(LX::TokenTag::RParen, "expected ')' to close @extern"));
+  EX_TRY(expect(LX::TokenTag::RParen, "expected ')' to close @extern"));
 
   return { true,
            mk_extern(std::get<LX::TkStr>(sym.as).value,
@@ -880,25 +887,26 @@ Parser::parse_struct_decl(
   UT::Vec<FieldDecl> fields{ m_arena };
   for (;;)
   {
-    LX::TokenTag tag = TRY(m_lex.peek()).tag;
+    LX::TokenTag tag = EX_TRY(m_lex.peek()).tag;
     if (LX::TokenTag::Dollar == tag || LX::TokenTag::Eof == tag) break;
 
-    LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
-    char      fc    = fname.str.size() ? fname.str.data()[0] : '\0';
+    LX::Token fname
+      = EX_TRY(expect(LX::TokenTag::Word, "expected a field name"));
+    char fc = fname.str.size() ? fname.str.data()[0] : '\0';
     if (fc >= 'A' && fc <= 'Z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              fname,
              "a struct field name must start lowercase, found '%s'",
              std::string(fname.str).c_str());
 
-    TRY(expect(LX::TokenTag::Colon, "expected ':' after the field name"));
-    Ty *ty = CTX(parse_type(),
-                 fname,
-                 "in the type of field '%s'",
-                 std::string(fname.str).c_str());
+    EX_TRY(expect(LX::TokenTag::Colon, "expected ':' after the field name"));
+    Ty *ty = EX_CTX(parse_type(),
+                    fname,
+                    "in the type of field '%s'",
+                    std::string(fname.str).c_str());
     fields.push(FieldDecl{ fname.str, ty });
 
-    if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
+    if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
     m_lex.next(); // ','
   }
 
@@ -914,29 +922,32 @@ RExpr
 Parser::parse_struct_lit(
   UT::Vu type_name)
 {
-  TRY(expect(LX::TokenTag::LBrace, "expected '{' after the struct type name"));
+  EX_TRY(
+    expect(LX::TokenTag::LBrace, "expected '{' after the struct type name"));
 
   UT::Vec<FieldInit> fields{ m_arena };
   for (;;)
   {
-    if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
+    if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
 
-    TRY(expect(LX::TokenTag::Dot,
-               "expected '.' before the field name (fields "
-               "are written '.field = value')"));
-    LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
-    TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
-    Expr *val = CTX(parse_expr(0),
-                    fname,
-                    "in the value of field '%s'",
-                    std::string(fname.str).c_str());
+    EX_TRY(expect(LX::TokenTag::Dot,
+                  "expected '.' before the field name (fields "
+                  "are written '.field = value')"));
+    LX::Token fname
+      = EX_TRY(expect(LX::TokenTag::Word, "expected a field name"));
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
+    Expr *val = EX_CTX(parse_expr(0),
+                       fname,
+                       "in the value of field '%s'",
+                       std::string(fname.str).c_str());
     fields.push(FieldInit{ fname.str, val });
 
-    if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
+    if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
     m_lex.next(); // ','
   }
 
-  TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the struct literal"));
+  EX_TRY(
+    expect(LX::TokenTag::RBrace, "expected '}' to close the struct literal"));
 
   Expr e{ ExprTag::StructLit };
   e.as = ExStructLit{ type_name, fields };
@@ -953,7 +964,7 @@ Parser::parse_struct_lit(
 RTy
 Parser::parse_type_atom()
 {
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t = EX_TRY(m_lex.peek());
   switch (t.tag)
   {
   case LX::TokenTag::Word:
@@ -976,9 +987,9 @@ Parser::parse_type_atom()
   }
   case LX::TokenTag::LParen:
   {
-    LX::Token lp = TRY(m_lex.next()); // '('
-    Ty       *ty = CTX(parse_type(), lp, "in this parenthesized type");
-    LX::Token rp = TRY(m_lex.peek());
+    LX::Token lp = EX_TRY(m_lex.next()); // '('
+    Ty       *ty = EX_CTX(parse_type(), lp, "in this parenthesized type");
+    LX::Token rp = EX_TRY(m_lex.peek());
     if (LX::TokenTag::RParen != rp.tag)
       EX_ERR(ER::Code::PARENTHESIS_UNBALANCED,
              lp,
@@ -997,12 +1008,12 @@ Parser::parse_type_atom()
 RTy
 Parser::parse_type()
 {
-  Ty *lhs = TRY(parse_type_atom());
+  Ty *lhs = EX_TRY(parse_type_atom());
 
-  if (LX::TokenTag::Arrow == TRY(m_lex.peek()).tag)
+  if (LX::TokenTag::Arrow == EX_TRY(m_lex.peek()).tag)
   {
-    m_lex.next();                // '->'
-    Ty *rhs = TRY(parse_type()); // right-associative
+    m_lex.next();                   // '->'
+    Ty *rhs = EX_TRY(parse_type()); // right-associative
     return { true, mk_ty(Ty{ TyTag::Arrow, TyArrow{ lhs, rhs } }), {} };
   }
   return { true, lhs, {} };

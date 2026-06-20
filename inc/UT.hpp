@@ -1,6 +1,7 @@
-#ifndef UT_HEADER
-#define UT_HEADER
+#ifndef UT_HEADER_
+#define UT_HEADER_
 
+#include <dirent.h>
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -23,10 +24,6 @@
 
 #include "AR.hpp"
 
-// TODO: There should be a special format for macro args
-// This is because arguments can resolve to other macros
-// Which is dangerous and difficult to debug
-// Therefore, arguments should follow some type of convention
 #if defined(__GNUC__) || defined(__clang__)
 #define UT_PRINTF_LIKE(fmt_idx, arg_idx)                                       \
   __attribute__((format(printf, fmt_idx, arg_idx)))
@@ -44,47 +41,36 @@
 #define UT_NODISCARD
 #endif
 
-// TODO: should report line and file
-#define UT_TODO(TODO_MSG)                                                      \
-  UT::IMPL::fail_if(__FILE__, __PRETTY_FUNCTION__, __LINE__, "TODO", #TODO_MSG)
+#define UT_TODO(MSG)                                                           \
+  UT::fail_if(__FILE__, __PRETTY_FUNCTION__, __LINE__, "TODO", #MSG)
 
-#define UT_FAIL_IF(CONDITION)                                                  \
+#define UT_FAIL_IF(COND)                                                       \
   do                                                                           \
   {                                                                            \
-    if (CONDITION)                                                             \
+    if (COND)                                                                  \
     {                                                                          \
-      UT::IMPL::fail_if(__FILE__,                                              \
-                        __PRETTY_FUNCTION__,                                   \
-                        __LINE__,                                              \
-                        "\033[31mERROR\033[0m",                                \
-                        #CONDITION);                                           \
+      UT::fail_if(__FILE__,                                                    \
+                  __PRETTY_FUNCTION__,                                         \
+                  __LINE__,                                                    \
+                  "\033[31mERROR\033[0m",                                      \
+                  #COND);                                                      \
     }                                                                          \
   } while (false)
 
-#define UT_FAIL_MSG(MSG_FORMAT, ...)                                           \
+#define UT_FAIL_MSG(FMT, ...)                                                  \
   do                                                                           \
   {                                                                            \
-    char *UT_STRING_BUFFER_NO_ESCAPE = nullptr;                                \
-    asprintf(&UT_STRING_BUFFER_NO_ESCAPE, MSG_FORMAT, __VA_ARGS__);            \
-    UT::IMPL::fail_if(__FILE__,                                                \
-                      __PRETTY_FUNCTION__,                                     \
-                      __LINE__,                                                \
-                      "\033[31mERROR\033[0m",                                  \
-                      UT_STRING_BUFFER_NO_ESCAPE);                             \
+    char *buf_ = nullptr;                                                      \
+    asprintf(&buf_, FMT, __VA_ARGS__);                                         \
+    UT::fail_if(                                                               \
+      __FILE__, __PRETTY_FUNCTION__, __LINE__, "\033[31mERROR\033[0m", buf_);  \
   } while (false)
 
-#define ARRAY_LEN(UT_ARRAY_OBJ)                                                \
-  (sizeof(UT_ARRAY_OBJ) / (sizeof(UT_ARRAY_OBJ[0])))
+#define ARRAY_LEN(ARR) (sizeof(ARR) / (sizeof(ARR[0])))
 
-#define UT_UNUSED(UT_UNUSED_VAR) (void)UT_UNUSED_VAR
-
-#define UTSTRf "%.*s"
-#define UTSTFa(UT_STR_VAR) (int)UT_STR_VAR.size(), UT_STR_VAR.data()
+#define UT_UNUSED(VAR) (void)VAR
 
 namespace UT
-{
-
-namespace IMPL
 {
 
 void abort();
@@ -94,8 +80,6 @@ void fail_if(const char *file,    //
              const int   line,    //
              const char *prefix,  //
              const char *msg);
-
-} // namespace IMPL
 
 constexpr size_t V_DEFAULT_MAX_LEN = 1 << 6;
 
@@ -288,4 +272,4 @@ lookup_or(
 
 } // namespace UT
 
-#endif // UT_HEADER
+#endif // UT_HEADER_

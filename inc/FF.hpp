@@ -10,8 +10,8 @@
  * entirely (calls then abort).
  *-----------------------------------------------------------------------------*/
 
-#ifndef FF_HEADER
-#define FF_HEADER
+#ifndef FF_HEADER_
+#define FF_HEADER_
 
 #include "UT.hpp"
 
@@ -30,4 +30,4 @@ ssize_t call(UT::Vu                          lib,
 
 } // namespace FF
 
-#endif // FF_HEADER
+#endif // FF_HEADER_

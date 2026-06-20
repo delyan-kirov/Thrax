@@ -11,8 +11,8 @@
  * (Int or Str). Annotated signatures may be polymorphic via `T type variables.
  *-----------------------------------------------------------------------------*/
 
-#ifndef TC_HEADER
-#define TC_HEADER
+#ifndef TC_HEADER_
+#define TC_HEADER_
 
 #include "EX.hpp"
 
@@ -27,4 +27,4 @@ check(EX::Exprs &exprs, AR::Arena &arena, UT::Vu src);
 
 } // namespace TC
 
-#endif // TC_HEADER
+#endif // TC_HEADER_

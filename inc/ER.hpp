@@ -10,8 +10,8 @@
  * error buffer to leak on the success path.
  *-----------------------------------------------------------------------------*/
 
-#ifndef ER_HEADER
-#define ER_HEADER
+#ifndef ER_HEADER_
+#define ER_HEADER_
 
 #include "AR.hpp"
 #include "UT.hpp"
@@ -200,4 +200,7 @@ pprint(
 
 } // namespace ER
 
-#endif // ER_HEADER
+#undef ER_CODE_VARIANTS
+#undef X
+
+#endif // ER_HEADER_

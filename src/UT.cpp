@@ -9,9 +9,6 @@
 namespace UT
 {
 
-namespace IMPL
-{
-
 void
 abort()
 {
@@ -37,11 +34,9 @@ fail_if(
   {
     std::printf("[%s] %s:%d: %s\n", prefix, file, line, fn_name);
     std::printf("  %d | \033[1;37m%s\033[0m\n", line, msg);
-    UT::IMPL::abort();
+    UT::abort();
   }
 }
-
-} // namespace IMPL
 
 Vu
 strdup(

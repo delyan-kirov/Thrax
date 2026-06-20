@@ -10,8 +10,8 @@
  * Comments are lexed as tokens but skipped by peek/next.
  *-----------------------------------------------------------------------------*/
 
-#ifndef LX_HEADER
-#define LX_HEADER
+#ifndef LX_HEADER_
+#define LX_HEADER_
 
 #include "ER.hpp"
 #include "UT.hpp"
@@ -231,4 +231,6 @@ std::string pprint(const Token &t);
 
 } // namespace LX
 
-#endif // LX_HEADER
+#undef X
+
+#endif // LX_HEADER_

@@ -16,8 +16,8 @@
  * receiver type for `.field`).
  *-----------------------------------------------------------------------------*/
 
-#ifndef LL_HEADER
-#define LL_HEADER
+#ifndef LL_HEADER_
+#define LL_HEADER_
 
 #include "EX.hpp"
 
@@ -31,4 +31,4 @@ std::vector<ER::Diagnostic> lower(EX::Exprs &exprs, AR::Arena &arena);
 
 } // namespace LL
 
-#endif // LL_HEADER
+#endif // LL_HEADER_

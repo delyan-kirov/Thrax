@@ -18,8 +18,8 @@
  * be included anywhere with no circular dependency.
  *-----------------------------------------------------------------------------*/
 
-#ifndef OP_HEADER
-#define OP_HEADER
+#ifndef OP_HEADER_
+#define OP_HEADER_
 
 #include "UT.hpp"
 
@@ -62,4 +62,4 @@ mono(
 
 } // namespace OP
 
-#endif // OP_HEADER
+#endif // OP_HEADER_

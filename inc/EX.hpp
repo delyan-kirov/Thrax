@@ -10,8 +10,8 @@
  * from before; only the parsing engine is new.
  *-----------------------------------------------------------------------------*/
 
-#ifndef EX_HEADER
-#define EX_HEADER
+#ifndef EX_HEADER_
+#define EX_HEADER_
 
 #include "ER.hpp"
 #include "LX.hpp"
@@ -393,4 +393,4 @@ std::string pprint(Pattern *p);
 
 } // namespace EX
 
-#endif // EX_HEADER
+#endif // EX_HEADER_

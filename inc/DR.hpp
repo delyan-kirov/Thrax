@@ -3,8 +3,8 @@
  *\info Header file for the Driver (pipeline orchestration)
  * *----------------------------------------------------------------------------*/
 
-#ifndef DR_HEADER
-#define DR_HEADER
+#ifndef DR_HEADER_
+#define DR_HEADER_
 
 #include "IT.hpp"
 
@@ -24,4 +24,4 @@ bool dump_ast(UT::Vu file);
 
 } // namespace DR
 
-#endif // DR_HEADER
+#endif // DR_HEADER_
