@@ -3,9 +3,9 @@
 
 $id : `T -> `T = \x = x
 
-$const : `T -> `U -> `T = \x = \y = x
+$const : `T -> `U -> `T = \x y = x
 
-$apply_twice : (`T -> `T) -> `T -> `T = \f = \x = f (f x)
+$apply_twice : (`T -> `T) -> `T -> `T = \f x = f (f x)
 
 $inc : Int -> Int = \x = x + 1
 $dbl : Int -> Int = \x = x * 2

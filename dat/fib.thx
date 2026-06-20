@@ -6,6 +6,10 @@ $fib : Int -> Int = \n =
 	else if n ?= 1 => 1
 	else (fib (n - 1)) + (fib (n - 2))
 
+$ foo =
+	let bar = \x y = x + y
+	 in bar 2 3
+
 $fib0  = fib 0
 $fib1  = fib 1
 $fib5  = fib 5
