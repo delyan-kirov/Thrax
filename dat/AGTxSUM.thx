@@ -6,10 +6,11 @@ $ Person : Struct =
 	name: Str,
 	age: Int,
 
-# A struct literal. The qualified form `Type.{ ... }` names the type explicitly.
+# A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
+# each field is set with a leading-dot `.field = value` (as in C).
 $ person : Person = Person.{
-	name = "Will",
-	age = 21, # trailing comma is allowed but not required
+	.name = "Will",
+	.age = 21, # trailing comma is allowed but not required
 }
 
 # Field access reads a field out of a struct.

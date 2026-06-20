@@ -79,6 +79,8 @@ const Keywords keyword_db{
   { "let", TokenTag::KwLet },   //
   { "in", TokenTag::KwIn },     //
   { "if", TokenTag::KwIf },     //
+  { "is", TokenTag::KwIs },     //
+  { "then", TokenTag::KwThen }, //
   { "else", TokenTag::KwElse }, //
   { "ext", TokenTag::KwExt },   //
 };

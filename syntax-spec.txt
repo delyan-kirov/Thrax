@@ -39,7 +39,7 @@ Definition delimiter token:
 		- `$`                         (global marker)
 		- `:`                         (has-type)
 		- `->`                        (function type arrow)
-		- `=`  `=>`                   (binding / branch)
+		- `=`                         (binding)
 		- `(`  `)`  `\`               (group / lambda)
 .
 
@@ -55,14 +55,18 @@ Definition expr:
 	- For an expression e and a unary operator `op`: `op` e is an expression.
 	- Application is juxtaposition: `f x` applies f to x (left-associative,
 	  binds tighter than any operator).
-	- `\` var+ `=` e           is a lambda (anonymous function). Multiple
-	  parameters are curried sugar: `\x y z = e` means `\x = \y = \z = e`.
-	- `if` e_1 `=>` e_2 `else` e_3   is a conditional. The condition e_1 is an
+	- `\` pat+ `=` e           is a lambda (anonymous function). Multiple
+	  parameters are curried sugar: `\x y z = e` means `\x = \y = \z = e`. A
+	  parameter may be an irrefutable pattern (see PATTERNS), e.g.
+	  `\Person.{ name, _ } = name`.
+	- `if` e_1 `then` e_2 `else` e_3   is a conditional. The condition e_1 is an
 	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
-	- `let` var `=` e_1 `in` e_2     is a local binding. A let binding is
-	  polymorphic (let-generalization). It is recursive exactly when `var`
-	  occurs free in e_1 -- there is no `let rec` keyword; recursion is
-	  detected, not declared.
+	- `if` e `is` pat `then` e ... `else` e   is a match (note the `is`). See
+	  PATTERNS.
+	- `let` pat `=` e_1 `in` e_2     is a local binding; `pat` is a variable or an
+	  irrefutable pattern (see PATTERNS). A let binding is polymorphic
+	  (let-generalization). It is recursive exactly when its variable occurs free
+	  in e_1 -- there is no `let rec` keyword; recursion is detected, not declared.
 
 The `-` token is special: binary subtraction between two expressions, unary
 negation when it prefixes one.
@@ -102,7 +106,7 @@ other globals; only the result's shape matters.)
 	$a = 1 + 1           # ok, inferred Int
 	$a = id 5            # ok, inferred Int (id resolved from its signature)
 	$id : `T -> `T = \x = x          # required: function / polymorphic
-	$abs : Int -> Int = \n = if n ?= 0 => 0 else 0 - n
+	$abs : Int -> Int = \n = if n ?= 0 then 0 else 0 - n
 
 Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
@@ -126,11 +130,12 @@ comma is allowed). The type name must start uppercase, field names lowercase:
 
 A struct value is built with a literal. Only the qualified form is supported:
 the type name precedes `.{ ... }`, and every declared field must be set exactly
-once (unknown, missing, or duplicate fields are type errors):
+once (unknown, missing, or duplicate fields are type errors). Each field is set
+with a leading-dot `.field = expr`, as in C designated initializers:
 
-	lit ::= TypeName '.{' [ var '=' expr (',' ...)* ','? ] '}'
+	lit ::= TypeName '.{' [ '.' var '=' expr (',' ...)* ','? ] '}'
 
-	$ person : Person = Person.{ name = "Will", age = 21 }
+	$ person : Person = Person.{ .name = "Will", .age = 21 }
 
 A field is read with postfix `.`, which binds tighter than application and
 chains left-to-right (`a.b.c`):
@@ -144,6 +149,73 @@ Structs are nominal: a struct name is an ordinary type constructor that unifies
 by name. Not yet supported: the bare literal `.{ ... }` (type inferred from
 context), polymorphic/generic struct fields, and field access where the
 receiver's type is not statically known (e.g. `\p = p.name`).
+
+================================================================================
+PATTERNS
+================================================================================
+
+A pattern destructures a value and binds its parts. Patterns appear in lambda
+parameters and `let` bindings (and, later, `if .. is` match arms):
+
+	pattern  ::= '_'                      # wildcard: matches anything, binds nothing
+	           | var                      # binds the value to this name
+	           | Int | Real | Str         # literal: matches by equality (refutable)
+	           | TypeName '.{' fields '}'  # struct pattern (see below)
+	fields   ::= positional | named
+	positional ::= [ pattern (',' pattern)* ','? ]
+	named    ::= [ fieldpat (',' fieldpat)* ','? ]
+	fieldpat ::= '.' var '=' pattern      # bind this field to a sub-pattern
+	           | '.' var                  # pun: `.name` means `.name = name`
+
+A struct pattern `Type.{ ... }` matches a struct of `Type` and its fields. As in
+a literal, named fields carry a leading-dot `.field`; a pattern is
+
+	- POSITIONAL when fields are bare (no dot): one sub-pattern per field, in
+	  declaration order; every field must be listed (use `_` to ignore one). E.g.
+	  for `Person.{name, age}` the pattern `Person.{ who, _ }` binds `who` = name.
+	- NAMED when fields are dotted: any order, omitted fields ignored. A lone
+	  `.name` puns (binds the field to a variable of the same name), so a single
+	  field is matched unambiguously as `Person.{ .name }`.
+
+The two forms cannot be mixed in one struct pattern.
+
+Lambda and `let` patterns must be IRREFUTABLE: only `_`, variables, and struct
+patterns built from them. A literal sub-pattern is refutable and is rejected
+there (it belongs in an `if .. is` match). Patterns nest:
+
+	$ fst   : Person -> Str       = \Person.{ n, _ } = n
+	$ age   : Int                 = let Person.{ .age = a } = person in a
+	$ start : Line -> Int         = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
+
+Lowering: a pattern binding desugars to plain `let`s over field accesses, so it
+is pure surface syntax -- `let Person.{ n, a } = p in e` becomes
+`let s = p in let n = s.name in let a = s.age in e`.
+
+A MATCH tries several patterns against one scrutinee:
+
+	match ::= 'if' e ('is' pattern 'then' e)+ 'else' e
+
+The `is` right after the scrutinee distinguishes a match from the boolean `if`.
+Arms are tried top to bottom; the first whose pattern matches wins and binds its
+variables in that arm's body. Here patterns MAY be refutable -- literal guards
+and field-literal guards are allowed:
+
+	$ classify : Int -> Str = \n =
+		if n is 0 then "zero" is 1 then "one" else "many"
+	$ greet : Person -> Str = \p =
+		if p is Person.{ .age = 0 } then "newborn"
+		       is Person.{ .name = who } then who
+		       else "?"
+
+`else` is mandatory (there is no exhaustiveness checking yet -- there are no sum
+types, so a value has exactly one struct type and arms differ only by their field
+patterns/literals). An irrefutable arm always matches, making later arms dead.
+A match lowers to a single binding of the scrutinee followed by a chain of
+boolean `if`s: a literal pattern `is k` becomes the guard `scrut ?= k`, a struct
+field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables
+become `let`s in the arm body. Current limits: matching Int and Real literals
+only (no string equality yet), and no `_` catch-all sugar (use a variable arm or
+`else`).
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)
@@ -168,7 +240,7 @@ environment:
 	if          : Int -> `T -> `T -> `T
 
 	a + b            ==>  App (App (Var "+") a) b
-	if c => t else e ==>  App (App (App (Var "if") c) t) e
+	if c then t else e ==>  App (App (App (Var "if") c) t) e
 	-x               ==>  App (Var "neg") x
 
 Inference is Algorithm W over a union-find of unification variables:

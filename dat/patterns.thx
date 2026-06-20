@@ -1,0 +1,59 @@
+# \file patterns.thx
+# \info Destructuring patterns in `let` bindings and lambda parameters. A struct
+#       pattern `Type.{ ... }` matches a struct and binds its fields. It is
+#       POSITIONAL when fields are bare (one sub-pattern per field, in declared
+#       order; `_` ignores a field), and NAMED when fields carry a leading-dot
+#       `.field` (any order, omitted fields ignored; a lone `.field` puns as
+#       `.field = field`). Only irrefutable patterns are allowed here -- no
+#       literals (see `if .. is`).
+
+$ Person : Struct =
+	name: Str,
+	age: Int,
+
+$ Point : Struct =
+	x: Int,
+	y: Int,
+
+$ Line : Struct =
+	from: Point,
+	to: Point,
+
+$ alice : Person = Person.{ .name = "Alice", .age = 30 }
+
+# Positional `let`: sub-patterns bind the fields in declaration order (name, age).
+# The tight `Str`/`Int` annotations make a wrong order a type error.
+$ p_name : Str = let Person.{ n, a } = alice in n
+$ p_age  : Int = let Person.{ n, a } = alice in a
+
+# Named `let`: any order, and fields may be omitted.
+$ n_age  : Int = let Person.{ .age = yrs } = alice in yrs
+$ n_both : Str = let Person.{ .age = yrs, .name = who } = alice in who
+
+# Punning: a lone `.name` means `.name = name`.
+$ pun    : Str = let Person.{ .name, .age = a } = alice in name
+
+# Wildcard ignores a field.
+$ just_x : Int = let Point.{ x, _ } = Point.{ .x = 7, .y = 9 } in x
+
+# Lambda struct pattern (positional).
+$ get_name : Person -> Str = \Person.{ n, _ } = n
+$ who1     : Str = get_name alice
+
+# Lambda struct pattern (named), used with another argument.
+$ older : Person -> Int -> Int = \Person.{ .age = a } y = a + y
+$ a1    : Int = older alice 5
+
+# Nested patterns: destructure a struct inside a struct.
+$ seg : Line = Line.{ .from = Point.{ .x = 0, .y = 0 }, .to = Point.{ .x = 3, .y = 4 } }
+
+# Named outer, positional inner.
+$ start_x : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
+
+# Positional outer and inner.
+$ end_y : Int =
+	let Line.{ _, Point.{ _, by } } = seg in by
+
+# Nested lambda pattern.
+$ line_start_x : Line -> Int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
+$ sx : Int = line_start_x seg

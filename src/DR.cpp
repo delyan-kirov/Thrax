@@ -1,5 +1,6 @@
 #include "DR.hpp"
 #include "ER.hpp"
+#include "LL.hpp"
 #include "TC.hpp"
 #include "UT.hpp"
 
@@ -26,6 +27,13 @@ interpret_file(
   }
 
   if (!parser.m_diags.empty()) return env; // do not type-check broken syntax
+
+  // Lower pattern sugar (pattern lambdas / lets) into the plain core before
+  // type checking; the rest of the pipeline never sees a Pattern node.
+  std::vector<ER::Diagnostic> lower_diags = LL::lower(parser.m_exprs, arena);
+  for (const ER::Diagnostic &d : lower_diags)
+    std::fprintf(stderr, "%s\n", ER::pprint(d, content, file).c_str());
+  if (!lower_diags.empty()) return env;
 
   // Type check before interpreting; a type error stops the pipeline.
   std::vector<ER::Diagnostic> type_diags

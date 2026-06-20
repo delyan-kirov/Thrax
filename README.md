@@ -45,7 +45,7 @@ pub main =
 	in let cy3 = (cy3 + (screan_height - 5)) % screan_height
 	in let cx4 = (cx4 + (screan_width - 5)) % screan_width
 	in let cy4 = (cy4 + (screan_height - 5)) % screan_height
-	in let random_color = (if !counter => -1 * (get_random_value 10 10000000) else random_color)
+	in let random_color = (if !counter then -1 * (get_random_value 10 10000000) else random_color)
 	in begin_drawing
 	 + (clear_background black)
 	 + (draw_rectangle rec_x y rec_size rec_size random_color)

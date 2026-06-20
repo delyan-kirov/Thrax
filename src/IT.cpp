@@ -500,6 +500,10 @@ exprs2pLm_helper(
     UT_FAIL_MSG("%s", "@extern is only valid as a global definition");
     break;
 
+  case EX::ExprTag::Match:
+    UT_FAIL_MSG("%s", "match should have been lowered by LL");
+    break;
+
   case EX::ExprTag::Unknown:
   {
     lm = { .tag = LTag::UNK, .as = std::monostate{} };
