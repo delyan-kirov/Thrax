@@ -28,11 +28,8 @@ call(
 
 } // namespace FF
 
-#include <cstdint>
-#include <cstring>
 #include <dlfcn.h>
 #include <ffi.h>
-#include <unordered_map>
 
 namespace FF
 {
@@ -108,7 +105,7 @@ resolve(
   }
   else
   {
-    handle = dlopen(lib.c_str(), RTLD_LAZY | RTLD_LOCAL);
+    handle = dlopen(lib.c_str(), RTLD_NOW);
     if (!handle)
       UT_FAIL_MSG("FFI: cannot open library '%s': %s", lib.c_str(), dlerror());
     hc[lib] = handle;

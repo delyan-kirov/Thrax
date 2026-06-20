@@ -35,10 +35,16 @@ struct Real
   double unwrap;
 };
 
+// An application `fn arg`. After the ANF pass (see IT.cpp) `fn` and `arg` are
+// always atomic (a variable, literal, or lambda), and `tail` records whether
+// the call sits in program tail position -- the property the trampoline in eval
+// relies on and that a future optimizer (e.g. fusion over a normalized core)
+// can read directly.
 struct App
 {
-  pLm fn;
-  pLm arg;
+  pLm  fn;
+  pLm  arg;
+  bool tail = false;
 };
 
 struct Var

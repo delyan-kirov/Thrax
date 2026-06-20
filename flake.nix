@@ -1,12 +1,14 @@
 {
-  description = "C++ dev environment for BC";
+  description = "C++ dev environment for Thrax";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs }: 
+  outputs =
+    { self, nixpkgs }:
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
+      mingwPkgs = pkgs.pkgsCross.mingwW64;
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -35,6 +37,8 @@
 
           # extra
           pkgs.tokei
+          mingwPkgs.stdenv.cc
+          pkgs.wineWowPackages.stable
         ];
 
         shellHook = ''
@@ -45,4 +49,3 @@
       };
     };
 }
-

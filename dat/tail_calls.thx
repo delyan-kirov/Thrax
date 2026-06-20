@@ -1,0 +1,33 @@
+# \file tail_calls.thx
+# \info Tail-call optimization: deep tail recursion must run in constant stack
+#       (these depths overflowed the C interpreter's stack before TCO). Each
+#       result is checked against its closed form; a wrong answer divides by
+#       zero and aborts, so the test fails loudly rather than silently.
+
+# Abort (1 / 0) unless `ok` holds; returns 0 when it does.
+$assert : Int -> Int = \ok =
+	if ok ?= 0 then 1 / 0
+	else 0
+
+# Global self-recursion in tail position (accumulator).
+$sum_to : Int -> Int -> Int = \n acc =
+	if n ?= 0 then acc
+	else sum_to (n - 1) (acc + n)
+
+# Tail recursion through a recursive `let` binding -- exercises the weak-Rec
+# closure keep-alive the trampoline relies on.
+$let_sum : Int -> Int = \m =
+	let go = \n acc =
+		if n ?= 0 then acc
+		else go (n - 1) (acc + n)
+	 in go m 0
+
+# Mutually recursive tail calls (even/odd) bounce between two globals.
+$is_even : Int -> Int = \n = if n ?= 0 then 1 else is_odd (n - 1)
+$is_odd  : Int -> Int = \n = if n ?= 0 then 0 else is_even (n - 1)
+
+# 1_000_000 * 1_000_001 / 2 = 500_000_500_000
+# $ck_global = assert (sum_to 1000000 0 ?= 500000500000)
+# $ck_let    = assert (let_sum 1000000 ?= 500000500000)
+# $ck_even   = assert (is_even 1000000)
+$ck_odd    = is_odd 100

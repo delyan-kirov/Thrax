@@ -3,7 +3,7 @@
 namespace TS
 {
 
-inline void
+void
 tst_file(
   UT::Vu file)
 {
@@ -23,27 +23,27 @@ tst_file(
   printf("\033[1;32mOK\033[0m   [%s]\n", file.data());
 }
 
-// Collect every file in `dir`, sorted for stable output.
-inline std::vector<std::string>
+// Collect every non-directory entry in `dir`, sorted for stable output.
+std::vector<std::string>
 scan_dir(
   const char *dir)
 {
   std::vector<std::string> files;
 
-  DIR *d = opendir(dir);
-  if (!d)
+  std::error_code                     ec;
+  std::filesystem::directory_iterator it(dir, ec);
+  if (ec)
   {
-    printf("ERROR: could not open directory %s\n", dir);
+    printf(
+      "ERROR: could not open directory %s: %s\n", dir, ec.message().c_str());
     return files;
   }
 
-  for (struct dirent *e = readdir(d); e; e = readdir(d))
+  for (const auto &entry : it)
   {
-    std::string name = e->d_name;
-    if ("." == name || ".." == name) continue;
-    files.push_back(std::string(dir) + "/" + name);
+    if (entry.is_directory(ec)) continue;
+    files.push_back(entry.path().string());
   }
-  closedir(d);
 
   std::sort(files.begin(), files.end());
   return files;
