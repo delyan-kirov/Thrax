@@ -150,6 +150,7 @@ struct Core
   Core       *b = nullptr;    // App: arg; Let: body
   UT::String  anchor;         // source slice for diagnostics
   UT::String *slot = nullptr; // overloaded Var: the EX name field to rewrite
+  Type       *sig  = nullptr; // Let: an optional type the bound value is pinned to
   // StructLit: the field initializers, in source order.
   std::vector<std::pair<std::string, Core *>> fields;
 };
@@ -578,6 +579,11 @@ Checker::desugar(
     c->name  = std::to_string(lt.var);
     c->a     = desugar(lt.val);
     c->b     = desugar(lt.body);
+    if (lt.sig)
+    {
+      std::unordered_map<std::string, Type *> tv;
+      c->sig = sig_to_type(lt.sig, tv, false);
+    }
     return c;
   }
   case EX::ExprTag::If:
@@ -616,11 +622,13 @@ Checker::desugar(
     c->anchor = fa.field;
     return c;
   }
-  // Def / StructDecl are top-level only; Unknown is never produced as a body.
+  // Match is removed by the LL pass before type checking; Def / StructDecl are
+  // top-level only; Unknown is never produced as a body.
+  case EX::ExprTag::Match:
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::Unknown:
-    UT_FAIL_MSG("desugar: unexpected top-level node %s",
+    UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
                 EX::pprint(e->tag).c_str());
   }
   UT_FAIL_MSG("%s", "desugar: unhandled ExprTag");
@@ -729,6 +737,7 @@ Checker::infer(
     {
       vt = infer(e->a, locals);
     }
+    if (e->sig) unify(e->sig, vt); // pin the value's type (pattern-let subject)
     Scheme s       = generalize(locals, vt);
     Env    inner   = locals;
     inner[e->name] = s;

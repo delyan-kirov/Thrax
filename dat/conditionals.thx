@@ -1,21 +1,21 @@
 # \file conditionals.thx
-# \info Branching with `if c => then else alt`, including else-if chains.
+# \info Branching with `if c then e else alt`, including else-if chains.
 
 $abs : Int -> Int = \n =
-	if n ?> 0 => n
+	if n ?> 0 then n
 	else 0 - n
 
 $sign : Int -> Int = \n =
-	if n ?= 0 => 0
-	else if n ?> 0 => 1
+	if n ?= 0 then 0
+	else if n ?> 0 then 1
 	else 0 - 1
 
 $max : Int -> Int -> Int = \a b =
-	if a ?> b => a
+	if a ?> b then a
 	else b
 
 $min : Int -> Int -> Int = \a b =
-	if a ?< b => a
+	if a ?< b then a
 	else b
 
 $abs_neg   = abs (0 - 9)

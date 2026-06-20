@@ -4,7 +4,7 @@
 #       which is 2^n - 1.
 
 $hanoi : Int -> Int = \n =
-	if n ?= 0 => 0
+	if n ?= 0 then 0
 	else 1 + 2 * (hanoi (n - 1))
 
 $hanoi1  = hanoi 1

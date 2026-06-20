@@ -99,6 +99,12 @@ struct TkKwIn
 struct TkKwIf
 {
 };
+struct TkKwIs
+{
+};
+struct TkKwThen
+{
+};
 struct TkKwElse
 {
 };
@@ -137,6 +143,8 @@ struct TkEof
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \
   X(KwIf, TkKwIf)                                                              \
+  X(KwIs, TkKwIs)                                                              \
+  X(KwThen, TkKwThen)                                                          \
   X(KwElse, TkKwElse)                                                          \
   X(KwExt, TkKwExt)                                                            \
   X(Eof, TkEof)

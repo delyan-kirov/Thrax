@@ -76,6 +76,88 @@ struct Ty
   TyData as;
 };
 
+/*------------------------------------------------------------------------------
+ *\PATTERNS
+ *
+ * Patterns appear in lambda parameters, `let` bindings, and (soon) `if .. is`
+ * match arms. They are lowered away by the LL pass (see LL.hpp) before type
+ * checking, so neither TC nor IT ever sees a Pattern node.
+ *-----------------------------------------------------------------------------*/
+
+struct Pattern;
+
+struct PatWild // `_` -- matches anything, binds nothing
+{
+};
+struct PatVar // a lowercase name -- matches anything, binds it
+{
+  UT::String name;
+};
+struct PatInt // an integer literal -- matches by equality (refutable)
+{
+  ssize_t    value;
+  UT::String anchor;
+  size_t     line;
+};
+struct PatReal // a real literal (refutable)
+{
+  double     value;
+  UT::String anchor;
+  size_t     line;
+};
+struct PatStr // a string literal (refutable)
+{
+  UT::String value;
+  UT::String anchor;
+  size_t     line;
+};
+// One entry in a struct pattern. `name` is the field name; it is empty for a
+// positional slot. `pat` is the sub-pattern matched against that field.
+struct FieldPat
+{
+  UT::String name;
+  Pattern   *pat;
+};
+// `Type.{ ... }` -- matches a struct of the named type and destructures its
+// fields. Named when any entry carries a field name (out-of-order and partial;
+// a bare entry puns `name` as `name = name`); positional otherwise (one slot
+// per field, in declaration order). `anchor`/`line` locate the type name for
+// diagnostics.
+struct PatStruct
+{
+  UT::String        type_name;
+  UT::Vec<FieldPat> fields;
+  UT::String        anchor;
+  size_t            line;
+};
+
+#define EX_PAT_VARIANTS                                                        \
+  X(Wild, PatWild)                                                             \
+  X(Var, PatVar)                                                               \
+  X(Int, PatInt)                                                               \
+  X(Real, PatReal)                                                             \
+  X(Str, PatStr)                                                               \
+  X(Struct, PatStruct)
+
+enum class PatTag
+{
+#define X(tag, type) tag,
+  EX_PAT_VARIANTS
+#undef X
+};
+
+using PatData =
+#define X(tag, type) type,
+  std::variant<EX_PAT_VARIANTS std::monostate>
+#undef X
+  ;
+
+struct Pattern
+{
+  PatTag  tag;
+  PatData as;
+};
+
 struct ExUnknown
 {
 };
@@ -115,6 +197,10 @@ struct ExFnDef
 {
   UT::String param;
   Expr      *body;
+  // Set when the parameter is a pattern (e.g. `\Person.{x,y} = ...`); the LL
+  // pass lowers it into a plain `param` plus destructuring lets, then clears
+  // this back to null. Null for an ordinary `\x = ...`.
+  Pattern *param_pat = nullptr;
 
   ExFnDef() = default;
   ExFnDef(UT::String param, AR::Arena &arena);
@@ -125,6 +211,22 @@ struct ExIf
   Expr *cond;
   Expr *then;
   Expr *alt;
+};
+
+// One `is pat then body` arm of a match.
+struct MatchArm
+{
+  Pattern *pat;
+  Expr    *body;
+};
+// A match: `if scrut is pat then e ... is pat then e else alt`. Distinguished
+// from ExIf by the `is` after the scrutinee. The LL pass lowers it into nested
+// boolean `if`s with equality guards and binding lets, so TC/IT never see it.
+struct ExMatch
+{
+  Expr               *scrut;
+  UT::Vec<MatchArm>   arms;
+  Expr               *alt;
 };
 
 struct ExApp
@@ -138,6 +240,12 @@ struct ExLet
   UT::String var;
   Expr      *val;
   Expr      *body;
+  // Set when the binder is a pattern (`let Person.{x,y} = e in ...`); the LL
+  // pass lowers it into nested plain lets, then clears this to null. `sig`, when
+  // set, pins the bound value's type (used by lowering to make the destructured
+  // field accesses statically typed); TC unifies the value with it.
+  Pattern *pat = nullptr;
+  Ty      *sig = nullptr;
 };
 
 // One `field : Type` entry in a struct declaration.
@@ -184,6 +292,7 @@ struct ExField
   X(App, ExApp)                                                                \
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
+  X(Match, ExMatch)                                                            \
   X(Str, ExStr)                                                                \
   X(Extern, ExExtern)                                                          \
   X(StructDecl, ExStructDecl)                                                  \
@@ -246,6 +355,9 @@ private:
   UT_NODISCARD R                parse_let();
   UT_NODISCARD R                parse_if();
   UT_NODISCARD R                parse_closure();
+  UT_NODISCARD ER::Result<Pattern *> parse_pattern();
+  UT_NODISCARD ER::Result<Pattern *> parse_struct_pattern(UT::String type_name,
+                                                          const LX::Token &tn);
   UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
   void               recover();
 
@@ -263,8 +375,9 @@ private:
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
   UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
-  UT_NODISCARD Expr *mk_field(Expr *record, UT::String field);
-  UT_NODISCARD Ty   *mk_ty(Ty t);
+  UT_NODISCARD Expr    *mk_field(Expr *record, UT::String field);
+  UT_NODISCARD Ty      *mk_ty(Ty t);
+  UT_NODISCARD Pattern *alloc_pat(Pattern p);
 };
 
 /*-------------------------------------------------------------------------------
@@ -273,6 +386,7 @@ private:
 
 std::string pprint(ExprTag t, int level = 0);
 std::string pprint(Expr *e, int level = 0);
+std::string pprint(Pattern *p);
 
 } // namespace EX
 
