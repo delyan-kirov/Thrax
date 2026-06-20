@@ -3,19 +3,16 @@
  *\info Hindley-Milner type checker.
  *
  * Pipeline: desugar EX::Expr -> Core (lambda calculus + let), then Algorithm W
- * over a union-find of unification variables. Operators and `if` are primitives
- * in the initial environment, so the core stays tiny.
+ * over a union-find of unification variables. Operators are just overloaded
+ * names (see overload_db): a use is typed as a fresh variable and the overload
+ * is chosen by resolve_sites once its operands are known, rewriting the EX Var
+ * to a monomorphic key. Only `if` is a real primitive in the initial env.
  * *----------------------------------------------------------------------------*/
 
 #include "TC.hpp"
 #include "ER.hpp"
+#include "OP.hpp"
 #include "UT.hpp"
-
-#include <deque>
-#include <functional>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace TC
 {
@@ -59,6 +56,75 @@ struct Scheme
 using Env = std::unordered_map<std::string, Scheme>;
 
 /*------------------------------------------------------------------------------
+ *\OVERLOADS
+ *
+ * The typed overload registry. Each overloaded name (operators today, but the
+ * mechanism is not operator-specific) maps to a list of overloads; an overload
+ * is a full type signature -- the operand types followed by the result type --
+ * plus the monomorphic implementation key the resolver rewrites a use to.
+ *
+ * The signature shape is arity-agnostic: unary is {operand, result}, binary is
+ * {lhs, rhs, result}. The resolver searches by operand types (return-type
+ * overloading is a later extension; the result is stored, just not matched on
+ * yet). Several rows may share an impl -- every Real-involving combination of
+ * '+' runs the one coercing "+@Real". Adding a row is the only extension point.
+ *
+ * It lives here, not in a shared header, precisely because only TC needs the
+ * type signatures; nothing below TC includes it, so there is no circularity.
+ *-----------------------------------------------------------------------------*/
+
+struct Overload
+{
+  std::vector<const char *> sig;  // operand types..., then the result type
+  std::string               mono; // implementation key, e.g. "+@Int"
+};
+using OverloadTable = std::unordered_map<std::string, std::vector<Overload>>;
+
+// Arithmetic: Int x Int -> Int, otherwise Real (mixed operands coerce).
+std::vector<Overload>
+arith(
+  const char *name)
+{
+  return {
+    { { OP::TY_INT, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_INT) },
+    { { OP::TY_REAL, OP::TY_REAL, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_INT, OP::TY_REAL, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_REAL, OP::TY_INT, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
+  };
+}
+
+// Comparison: any Int/Real combination -> Int.
+std::vector<Overload>
+cmp(
+  const char *name)
+{
+  return {
+    { { OP::TY_INT, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_INT) },
+    { { OP::TY_REAL, OP::TY_REAL, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_INT, OP::TY_REAL, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_REAL, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
+  };
+}
+
+const OverloadTable overload_db{
+  { OP::ADD, arith(OP::ADD) },
+  { OP::SUB, arith(OP::SUB) },
+  { OP::MUL, arith(OP::MUL) },
+  { OP::DIV, arith(OP::DIV) },
+  { OP::MOD, arith(OP::MOD) },
+  { OP::ISEQ, cmp(OP::ISEQ) },
+  { OP::GEQ, cmp(OP::GEQ) },
+  { OP::LEQ, cmp(OP::LEQ) },
+  { OP::MORE, cmp(OP::MORE) },
+  { OP::LESS, cmp(OP::LESS) },
+  { OP::NEG,
+    { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NEG, OP::TY_INT) },
+      { { OP::TY_REAL, OP::TY_REAL }, OP::mono(OP::NEG, OP::TY_REAL) } } },
+  { OP::NOT,
+    { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NOT, OP::TY_INT) } } },
+};
+
+/*------------------------------------------------------------------------------
  *\CORE
  *-----------------------------------------------------------------------------*/
 
@@ -66,20 +132,40 @@ enum class CKind
 {
   Var,
   LitInt,
+  LitReal,
   LitStr,
   Lam,
   App,
   Let,
-  Extern // a foreign binding; its type comes entirely from the signature
+  Extern,    // a foreign binding; its type comes entirely from the signature
+  StructLit, // `Type.{ field = expr, ... }`: name is the type, fields the inits
+  Field      // `record.field`: a is the record, name is the field
 };
 
 struct Core
 {
   CKind       kind;
-  std::string name;        // Var name / Lam param / Let name
-  Core       *a = nullptr; // Lam: body; App: fn; Let: value
-  Core       *b = nullptr; // App: arg; Let: body
-  UT::String  anchor;      // source slice for diagnostics (Var only)
+  std::string name;           // Var name / Lam param / Let name / struct/field
+  Core       *a = nullptr;    // Lam: body; App: fn; Let: value; Field: record
+  Core       *b = nullptr;    // App: arg; Let: body
+  UT::String  anchor;         // source slice for diagnostics
+  UT::String *slot = nullptr; // overloaded Var: the EX name field to rewrite
+  // StructLit: the field initializers, in source order.
+  std::vector<std::pair<std::string, Core *>> fields;
+};
+
+// A deferred overload resolution. An overloaded name (e.g. `+`) is typed as a
+// fresh variable `use` and applied like any function; once the enclosing global
+// is fully inferred its operand/result types are settled, and we rewrite `slot`
+// (the EX Var name field) to the matching monomorphic key. The whole use type
+// is stored -- not split into lhs/rhs -- so resolution is uniform across
+// arities and ready to also match on the result type later.
+struct ResolveSite
+{
+  UT::String *slot;   // the EX Var name to rewrite to the resolved impl
+  Type       *use;    // the use's type: an arrow chain over the operands
+  std::string base;   // the overloaded name to look up in overload_db
+  UT::String  anchor; // for diagnostics
 };
 
 /*------------------------------------------------------------------------------
@@ -125,9 +211,18 @@ private:
   std::unordered_map<std::string, GlobalEntry> m_globals;
   std::vector<std::string> m_order; // source order of globals
 
+  // Declared struct types: name -> ordered (field name, field type). Nominal:
+  // the struct's value type is just con(name); this holds the field shape.
+  using StructFields = std::vector<std::pair<std::string, Type *>>;
+  std::unordered_map<std::string, StructFields> m_structs;
+
   // current diagnostic anchor (the global under check)
   UT::String m_anchor;
   size_t     m_line = 0;
+
+  // overload resolution: deferred sites collected during an inference scope and
+  // resolved at its end (see infer's Var case / resolve_sites).
+  std::vector<ResolveSite> m_sites;
 
   // type constructors
   Type *fresh(bool rigid = false, std::string name = "");
@@ -159,6 +254,7 @@ private:
 
   // resolution
   Scheme resolve(const std::string &name);
+  void   resolve_sites(size_t from);
 
   // diagnostics
   size_t      line_of(UT::String anchor);
@@ -208,8 +304,10 @@ Core *
 Checker::core(
   CKind k)
 {
-  m_cores.push_back(Core{ k, "", nullptr, nullptr, {} });
-  return &m_cores.back();
+  m_cores.push_back(Core{});
+  Core *c = &m_cores.back();
+  c->kind = k;
+  return c;
 }
 
 /*------------------------------------------------------------------------------
@@ -345,6 +443,15 @@ Checker::generalize(
   std::vector<int> ev;
   env_free_vars(locals, ev);
 
+  // Also keep monomorphic any variable an unresolved overload site still
+  // constrains: it will be pinned (or defaulted) by resolution, so generalizing
+  // it would let one binding be used at two types while a single overload was
+  // chosen -- SML's "monomorphism restriction" for overloaded numerics.
+  // (Without this, `let square = \x = x*x` would generalize its result variable
+  // and the call's result would never be tied back to the resolved operand
+  // type.)
+  for (const ResolveSite &s : m_sites) free_vars(s.use, ev);
+
   std::vector<int> q;
   for (int id : tv)
   {
@@ -436,13 +543,16 @@ Checker::desugar(
   switch (e->tag)
   {
   case EX::ExprTag::Int   : return core(CKind::LitInt);
+  case EX::ExprTag::Real  : return core(CKind::LitReal);
   case EX::ExprTag::Str   : return core(CKind::LitStr);
   case EX::ExprTag::Extern: return core(CKind::Extern);
   case EX::ExprTag::Var:
   {
+    auto &v   = std::get<EX::ExVar>(e->as);
     Core *c   = core(CKind::Var);
-    c->anchor = std::get<EX::ExVar>(e->as).name;
-    c->name   = std::to_string(c->anchor);
+    c->anchor = v.name;
+    c->name   = std::to_string(v.name);
+    c->slot   = &v.name; // rewritten if this name turns out to be overloaded
     return c;
   }
   case EX::ExprTag::App:
@@ -470,45 +580,11 @@ Checker::desugar(
     c->b     = desugar(lt.body);
     return c;
   }
-  case EX::ExprTag::Binop:
-  {
-    auto       &b = std::get<EX::ExBinop>(e->as);
-    const char *op;
-    switch (b.tag)
-    {
-    case EX::BinopTag::Add : op = "+"; break;
-    case EX::BinopTag::Sub : op = "-"; break;
-    case EX::BinopTag::Mul : op = "*"; break;
-    case EX::BinopTag::Div : op = "/"; break;
-    case EX::BinopTag::Mod : op = "%"; break;
-    case EX::BinopTag::IsEq: op = "?="; break;
-    default                : op = "+"; break;
-    }
-    Core *v    = core(CKind::Var);
-    v->name    = op;
-    Core *app1 = core(CKind::App);
-    app1->a    = v;
-    app1->b    = desugar(b.ops.begin());
-    Core *app2 = core(CKind::App);
-    app2->a    = app1;
-    app2->b    = desugar(b.ops.last());
-    return app2;
-  }
-  case EX::ExprTag::Unop:
-  {
-    auto &u   = std::get<EX::ExUnop>(e->as);
-    Core *v   = core(CKind::Var);
-    v->name   = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
-    Core *app = core(CKind::App);
-    app->a    = v;
-    app->b    = desugar(u.op);
-    return app;
-  }
   case EX::ExprTag::If:
   {
     auto &i  = std::get<EX::ExIf>(e->as);
     Core *v  = core(CKind::Var);
-    v->name  = "if";
+    v->name  = OP::IF;
     Core *a1 = core(CKind::App);
     a1->a    = v;
     a1->b    = desugar(i.cond);
@@ -520,10 +596,35 @@ Checker::desugar(
     a3->b    = desugar(i.alt);
     return a3;
   }
-  default:
-    // Def / Unknown never appear nested in an expression.
-    return core(CKind::LitInt);
+  case EX::ExprTag::StructLit:
+  {
+    auto &sl  = std::get<EX::ExStructLit>(e->as);
+    Core *c   = core(CKind::StructLit);
+    c->name   = std::to_string(sl.type_name);
+    c->anchor = sl.type_name;
+    for (size_t i = 0; i < sl.fields.m_len; ++i)
+      c->fields.push_back(
+        { std::to_string(sl.fields[i].name), desugar(sl.fields[i].val) });
+    return c;
   }
+  case EX::ExprTag::Field:
+  {
+    auto &fa  = std::get<EX::ExField>(e->as);
+    Core *c   = core(CKind::Field);
+    c->a      = desugar(fa.record);
+    c->name   = std::to_string(fa.field);
+    c->anchor = fa.field;
+    return c;
+  }
+  // Def / StructDecl are top-level only; Unknown is never produced as a body.
+  case EX::ExprTag::Def:
+  case EX::ExprTag::StructDecl:
+  case EX::ExprTag::Unknown:
+    UT_FAIL_MSG("desugar: unexpected top-level node %s",
+                EX::pprint(e->tag).c_str());
+  }
+  UT_FAIL_MSG("%s", "desugar: unhandled ExprTag");
+  return core(CKind::LitInt);
 }
 
 bool
@@ -532,10 +633,11 @@ Checker::occurs_free(
 {
   switch (e->kind)
   {
-  case CKind::Var   : return e->name == name;
-  case CKind::LitInt:
-  case CKind::LitStr:
-  case CKind::Extern: return false;
+  case CKind::Var    : return e->name == name;
+  case CKind::LitInt :
+  case CKind::LitReal:
+  case CKind::LitStr :
+  case CKind::Extern : return false;
   case CKind::Lam:
     if (e->name == name) return false; // shadowed
     return occurs_free(name, e->a);
@@ -544,6 +646,11 @@ Checker::occurs_free(
     // name shadowed in the body; still visible in the (recursive) value
     if (e->name == name) return occurs_free(name, e->a);
     return occurs_free(name, e->a) || occurs_free(name, e->b);
+  case CKind::StructLit:
+    for (auto &f : e->fields)
+      if (occurs_free(name, f.second)) return true;
+    return false;
+  case CKind::Field: return occurs_free(name, e->a);
   }
   return false;
 }
@@ -558,9 +665,10 @@ Checker::infer(
 {
   switch (e->kind)
   {
-  case CKind::LitInt: return con("Int");
-  case CKind::LitStr: return con("Str");
-  case CKind::Extern: return fresh(); // unifies with the declared signature
+  case CKind::LitInt : return con("Int");
+  case CKind::LitReal: return con("Real");
+  case CKind::LitStr : return con("Str");
+  case CKind::Extern : return fresh(); // unifies with the declared signature
 
   case CKind::Var:
   {
@@ -569,6 +677,15 @@ Checker::infer(
     if (m_globals.count(e->name)) return instantiate(resolve(e->name));
     auto pit = m_prim.find(e->name);
     if (pit != m_prim.end()) return instantiate(pit->second);
+
+    // An overloaded name: type it as a fresh variable and defer the choice of
+    // overload to resolve_sites, once its operands (and result) are settled.
+    if (overload_db.count(e->name))
+    {
+      Type *use = fresh();
+      m_sites.push_back({ e->slot, use, e->name, e->anchor });
+      return use;
+    }
 
     fail(ER::Code::TYPE_UNBOUND,
          e->anchor.m_mem ? e->anchor : m_anchor,
@@ -617,6 +734,84 @@ Checker::infer(
     inner[e->name] = s;
     return infer(e->b, inner);
   }
+
+  case CKind::StructLit:
+  {
+    auto sit = m_structs.find(e->name);
+    if (sit == m_structs.end())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           e->anchor.m_mem ? e->anchor : m_anchor,
+           "unknown struct type '%s'",
+           e->name.c_str());
+      return fresh();
+    }
+    const StructFields &decl = sit->second;
+
+    // Every declared field must be initialized exactly once; reject unknown and
+    // duplicate fields. Each initializer is checked against its declared type.
+    std::vector<bool> seen(decl.size(), false);
+    for (auto &init : e->fields)
+    {
+      size_t idx = decl.size();
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (decl[k].first == init.first) idx = k;
+
+      if (idx == decl.size())
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "struct '%s' has no field '%s'",
+             e->name.c_str(),
+             init.first.c_str());
+        continue;
+      }
+      if (seen[idx])
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "field '%s' is set more than once in '%s'",
+             init.first.c_str(),
+             e->name.c_str());
+        continue;
+      }
+      seen[idx] = true;
+      Type *vt  = infer(init.second, locals);
+      unify(decl[idx].second, vt);
+    }
+    for (size_t k = 0; k < decl.size(); ++k)
+      if (!seen[k])
+        fail(ER::Code::TYPE_MISMATCH,
+             e->anchor.m_mem ? e->anchor : m_anchor,
+             "struct '%s' is missing field '%s'",
+             e->name.c_str(),
+             decl[k].first.c_str());
+
+    return con(e->name);
+  }
+
+  case CKind::Field:
+  {
+    Type *rt = prune(infer(e->a, locals));
+    if (rt->kind != Kind::Con || !m_structs.count(rt->name))
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           e->anchor.m_mem ? e->anchor : m_anchor,
+           "cannot access field '%s': '%s' is not a known struct type",
+           e->name.c_str(),
+           show(rt).c_str());
+      return fresh();
+    }
+    for (auto &f : m_structs.at(rt->name))
+      if (f.first == e->name) return f.second;
+
+    fail(ER::Code::TYPE_UNBOUND,
+         e->anchor.m_mem ? e->anchor : m_anchor,
+         "struct '%s' has no field '%s'",
+         rt->name.c_str(),
+         e->name.c_str());
+    return fresh();
+  }
   }
   return fresh();
 }
@@ -655,8 +850,11 @@ Checker::resolve(
     m_anchor          = g.def->name;
     m_line            = line_of(g.def->name);
 
-    Env   empty;
-    Type *t = prune(infer(g.body, empty));
+    Env    empty;
+    size_t base = m_sites.size();
+    Type  *t    = infer(g.body, empty);
+    resolve_sites(base); // settle this body's overloads before judging its type
+    t = prune(t);
 
     if (t->kind != Kind::Con)
     {
@@ -681,6 +879,90 @@ Checker::resolve(
   return g.scheme;
 }
 
+// Resolve the overload sites collected since index `from` (one inference
+// scope's worth), then drop them. For each site we force the use type into an
+// arrow chain of the operator's arity -- so an under-applied use still exposes
+// operand variables -- default any still-unconstrained operand to Int
+// (SML-style), then pick the overload whose operand types match and rewrite the
+// EX Var name to its implementation key.
+void
+Checker::resolve_sites(
+  size_t from)
+{
+  for (size_t i = from; i < m_sites.size(); ++i)
+  {
+    const ResolveSite &s = m_sites[i];
+
+    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
+    UT_FAIL_IF(!ovs
+               || ovs->empty()); // a site is only made for overloaded names
+    size_t arity = ovs->front().sig.size() - 1;
+
+    // Shape the use as (a1 -> ... -> ak -> r) so the operands are reachable
+    // whether the operator was fully applied, partially applied, or passed
+    // bare.
+    std::vector<Type *> args(arity);
+    Type               *result = fresh();
+    Type               *shape  = result;
+    for (size_t k = arity; k-- > 0;)
+    {
+      args[k] = fresh();
+      shape   = arrow(args[k], shape);
+    }
+    unify(s.use, shape);
+
+    // SML-style defaulting: an operand left unconstrained (e.g. `\x = x * x`)
+    // becomes Int rather than an error.
+    for (Type *&a : args)
+    {
+      a = prune(a);
+      if (a->kind == Kind::Var && !a->rigid)
+      {
+        a->ref = con(OP::TY_INT);
+        a      = prune(a);
+      }
+    }
+
+    // Match on operand types. The result type is stored in every signature and
+    // unified back in, but is not yet used to discriminate (return-type
+    // overloading is the next extension; see Overload).
+    const Overload *hit = nullptr;
+    for (const Overload &o : *ovs)
+    {
+      if (o.sig.size() != arity + 1) continue;
+      bool ok = true;
+      for (size_t k = 0; k < arity; ++k)
+        if (args[k]->kind != Kind::Con || args[k]->name != o.sig[k])
+        {
+          ok = false;
+          break;
+        }
+      if (ok)
+      {
+        hit = &o;
+        break;
+      }
+    }
+
+    if (!hit)
+    {
+      std::string operands;
+      for (size_t k = 0; k < arity; ++k)
+        operands += (k ? ", " : "") + show(args[k]);
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "no overload of '%s' for operand type(s): %s",
+           s.base.c_str(),
+           operands.c_str());
+      continue;
+    }
+
+    unify(prune(result), con(hit->sig.back()));
+    *s.slot = UT::String{ hit->mono.c_str(), hit->mono.size() };
+  }
+  m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
+}
+
 /*------------------------------------------------------------------------------
  *\DRIVER
  *-----------------------------------------------------------------------------*/
@@ -689,7 +971,23 @@ void
 Checker::run(
   EX::Exprs &exprs)
 {
-  // Phase A: collect globals.
+  // Phase A: register struct types and collect value globals. Structs are
+  // registered up front so a global may reference a struct declared later.
+  for (size_t i = 0; i < exprs.m_len; ++i)
+  {
+    EX::Expr *e = &exprs[i];
+    if (e->tag != EX::ExprTag::StructDecl) continue;
+    EX::ExStructDecl &sd = std::get<EX::ExStructDecl>(e->as);
+    StructFields      flds;
+    for (size_t f = 0; f < sd.fields.m_len; ++f)
+    {
+      std::unordered_map<std::string, Type *> tv;
+      Type *ft = sig_to_type(sd.fields[f].ty, tv, false);
+      flds.push_back({ std::to_string(sd.fields[f].name), ft });
+    }
+    m_structs[std::to_string(sd.name)] = std::move(flds);
+  }
+
   for (size_t i = 0; i < exprs.m_len; ++i)
   {
     EX::Expr *e = &exprs[i];
@@ -706,15 +1004,20 @@ Checker::run(
   // Phase B: resolve every global's type (on-demand, DAG, cycle-checked).
   for (const std::string &name : m_order) resolve(name);
 
-  // Phase C: check every body against its resolved/declared type.
+  // Phase C: check every body against its resolved/declared type, then resolve
+  // the overloaded uses it contains (their operand types are now known). A
+  // signatured global is only inferred here, so this is where its overloads are
+  // resolved; a signature-less one was already resolved in Phase B, and is
+  // re-resolved to the same impl here, which is idempotent.
   for (const std::string &name : m_order)
   {
     GlobalEntry &g = m_globals.at(name);
     m_anchor       = g.def->name;
     m_line         = line_of(g.def->name);
 
-    Env   empty;
-    Type *bt = infer(g.body, empty);
+    Env    empty;
+    size_t base = m_sites.size();
+    Type  *bt   = infer(g.body, empty);
 
     if (g.def->sig)
     {
@@ -726,6 +1029,8 @@ Checker::run(
     {
       unify(bt, g.scheme.type);
     }
+
+    resolve_sites(base);
   }
 }
 
@@ -793,21 +1098,12 @@ Checker::fail(
 void
 Checker::seed_primitives()
 {
-  auto arith = [&] {
-    return Scheme{ {}, arrow(con("Int"), arrow(con("Int"), con("Int"))) };
-  };
-  m_prim["+"]   = arith();
-  m_prim["-"]   = arith();
-  m_prim["*"]   = arith();
-  m_prim["/"]   = arith();
-  m_prim["%"]   = arith();
-  m_prim["?="]  = arith();
-  m_prim["neg"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
-  m_prim["not"] = Scheme{ {}, arrow(con("Int"), con("Int")) };
-
+  // Operators are overloaded and resolved per use (see infer_op / overload_db),
+  // so they are not primitives. Only `if`, which is parametric, lives here.
+  //
   // if : forall T. Int -> T -> T -> T
   Type *tv = fresh();
-  m_prim["if"]
+  m_prim[OP::IF]
     = Scheme{ { tv->id }, arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
 }
 

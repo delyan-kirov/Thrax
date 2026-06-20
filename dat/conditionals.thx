@@ -1,0 +1,27 @@
+# \file conditionals.thx
+# \info Branching with `if c => then else alt`, including else-if chains.
+
+$abs : Int -> Int = \n =
+	if n ?> 0 => n
+	else 0 - n
+
+$sign : Int -> Int = \n =
+	if n ?= 0 => 0
+	else if n ?> 0 => 1
+	else 0 - 1
+
+$max : Int -> Int -> Int = \a = \b =
+	if a ?> b => a
+	else b
+
+$min : Int -> Int -> Int = \a = \b =
+	if a ?< b => a
+	else b
+
+$abs_neg   = abs (0 - 9)
+$abs_pos   = abs 9
+$sign_neg  = sign (0 - 3)
+$sign_zero = sign 0
+$sign_pos  = sign 3
+$max_ex    = max 3 7
+$min_ex    = min 3 7

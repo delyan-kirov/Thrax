@@ -1,0 +1,12 @@
+# \file numbers.thx
+# \info Integer literal forms: decimal, hexadecimal (0x), and binary (0b).
+
+$dec   = 255
+$hex   = 0xFF
+$hex2  = 0xff
+$bin   = 0b11111111
+$mix   = 0x10 + 0b10 + 8
+$big   = 0xDEADBEEF
+$zero  = 0b0
+$ten   = 0b1010
+$mixer = 1 + 1.0

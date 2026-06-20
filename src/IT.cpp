@@ -1,7 +1,8 @@
 #include "IT.hpp"
 #include "FF.hpp"
+#include "OP.hpp"
 
-#include <cstdint>
+#include <cmath>
 
 namespace IT
 {
@@ -90,9 +91,43 @@ assign_id(
   }
   break;
 
+  case LTag::IF:
+  {
+    auto &v = std::get<If>(node->as);
+    assign_id(v.cond, env);
+    assign_id(v.yes, env);
+    assign_id(v.no, env);
+  }
+  break;
+
+  case LTag::BUILTIN:
+  {
+    // Built-in values are produced during evaluation, not here; an unapplied
+    // one carries no arguments to index. Handled for completeness.
+    auto &v = std::get<Builtin>(node->as);
+    for (auto &a : v.args) assign_id(a, env);
+  }
+  break;
+
+  case LTag::STRUCT:
+  {
+    auto &v = std::get<Struct>(node->as);
+    for (auto &f : v.fields) assign_id(f.second, env);
+  }
+  break;
+
+  case LTag::FIELD:
+  {
+    auto &v = std::get<Field>(node->as);
+    assign_id(v.record, env);
+  }
+  break;
+
   case LTag::INT:
+  case LTag::REAL:
   case LTag::STR:
-  case LTag::UNK: break;
+  case LTag::REC: // a runtime-only cell; never present in the static AST
+  case LTag::UNK : break;
   }
 }
 
@@ -103,79 +138,161 @@ pLm eval(pLm node, DynEnv denv, StatEnv &senv);
 namespace
 {
 
-pLm
-apply_builtin(
-  const Var &v, DynEnv denv, StatEnv &senv)
+// Operand extraction / result construction. The type checker resolved the
+// overload, so an "@Int" impl only sees Ints. An "@Real" impl may see an Int on
+// one side (mixed Int/Real combinations route here), so it reads via `as_num`,
+// which coerces an Int operand to double.
+ssize_t
+as_int(
+  const pLm &v)
 {
-  const auto &op   = v.unwrap;
-  const auto &args = v.env;
-
-  // Lazy: evaluate condition first, then only the taken branch
-  if (op == "if")
-  {
-    UT_FAIL_IF(args.size() != 3);
-    pLm cond = eval(args[0], denv, senv);
-    UT_FAIL_IF(cond->tag != LTag::INT);
-    if (std::get<Int>(cond->as).unwrap != 0)
-      return eval(args[1], denv, senv);
-    else
-      return eval(args[2], denv, senv);
-  }
-
-  // Unary operators — evaluate the single operand
-  if (op == "neg")
-  {
-    UT_FAIL_IF(args.size() != 1);
-    pLm val = eval(args[0], denv, senv);
-    UT_FAIL_IF(val->tag != LTag::INT);
-    return std::make_shared<Lm>(
-      Lm{ .tag = LTag::INT, .as = Int{ -std::get<Int>(val->as).unwrap } });
-  }
-
-  if (op == "not")
-  {
-    UT_FAIL_IF(args.size() != 1);
-    pLm val = eval(args[0], denv, senv);
-    UT_FAIL_IF(val->tag != LTag::INT);
-    ssize_t v = std::get<Int>(val->as).unwrap;
-    return std::make_shared<Lm>(
-      Lm{ .tag = LTag::INT, .as = Int{ v == 0 ? 1 : 0 } });
-  }
-
-  // Binary operators — evaluate both operands
-  UT_FAIL_IF(args.size() != 2);
-  pLm lhs_node = eval(args[0], denv, senv);
-  pLm rhs_node = eval(args[1], denv, senv);
-  UT_FAIL_IF(lhs_node->tag != LTag::INT);
-  UT_FAIL_IF(rhs_node->tag != LTag::INT);
-
-  ssize_t lhs = std::get<Int>(lhs_node->as).unwrap;
-  ssize_t rhs = std::get<Int>(rhs_node->as).unwrap;
-
-  ssize_t result = 0;
-  if (op == "+")
-    result = lhs + rhs;
-  else if (op == "-")
-    result = lhs - rhs;
-  else if (op == "*")
-    result = lhs * rhs;
-  else if (op == "/")
-  {
-    UT_FAIL_IF(rhs == 0);
-    result = lhs / rhs;
-  }
-  else if (op == "%")
-  {
-    UT_FAIL_IF(rhs == 0);
-    result = lhs % rhs;
-  }
-  else if (op == "?=")
-    result = (lhs == rhs) ? 1 : 0;
-  else
-    UT_FAIL_IF(true);
-
-  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ result } });
+  return std::get<Int>(v->as).unwrap;
 }
+double
+as_num(
+  const pLm &v)
+{
+  return LTag::REAL == v->tag ? std::get<Real>(v->as).unwrap
+                              : (double)std::get<Int>(v->as).unwrap;
+}
+pLm
+mk_int(
+  ssize_t v)
+{
+  return std::make_shared<Lm>(Lm{ .tag = LTag::INT, .as = Int{ v } });
+}
+pLm
+mk_real(
+  double v)
+{
+  return std::make_shared<Lm>(Lm{ .tag = LTag::REAL, .as = Real{ v } });
+}
+
+// One built-in implementation: its arity and a function over the already
+// evaluated, saturated operands.
+struct Impl
+{
+  size_t arity;
+  pLm (*fn)(const std::vector<pLm> &);
+};
+
+// The dispatch table, keyed by the monomorphic key the type checker resolved
+// each overloaded use to (see TC's overload_db). An "@Int" impl only sees Ints;
+// an "@Real" impl may see an Int on one side (mixed Int/Real combinations route
+// here), so it reads operands via as_num, which coerces an Int to double.
+const std::unordered_map<std::string, Impl> impls{
+  { OP::mono(OP::ADD, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) + as_int(a[1]));
+      } } },
+  { OP::mono(OP::SUB, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) - as_int(a[1]));
+      } } },
+  { OP::mono(OP::MUL, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) * as_int(a[1]));
+      } } },
+  { OP::mono(OP::DIV, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int(as_int(a[0]) / as_int(a[1]));
+      } } },
+  { OP::mono(OP::MOD, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int(as_int(a[0]) % as_int(a[1]));
+      } } },
+  { OP::mono(OP::ISEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::GEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LEQ, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::MORE, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LESS, OP::TY_INT),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::ADD, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) + as_num(a[1]));
+      } } },
+  { OP::mono(OP::SUB, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) - as_num(a[1]));
+      } } },
+  { OP::mono(OP::MUL, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) * as_num(a[1]));
+      } } },
+  { OP::mono(OP::DIV, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(as_num(a[0]) / as_num(a[1]));
+      } } },
+  { OP::mono(OP::MOD, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_real(std::fmod(as_num(a[0]), as_num(a[1])));
+      } } },
+  { OP::mono(OP::ISEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) == as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::GEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) >= as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LEQ, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) <= as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::MORE, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) > as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LESS, OP::TY_REAL),
+    { 2,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::NEG, OP::TY_INT),
+    { 1, [](const std::vector<pLm> &a) { return mk_int(-as_int(a[0])); } } },
+  { OP::mono(OP::NEG, OP::TY_REAL),
+    { 1, [](const std::vector<pLm> &a) { return mk_real(-as_num(a[0])); } } },
+  { OP::mono(OP::NOT, OP::TY_INT),
+    { 1,
+      [](const std::vector<pLm> &a) {
+        return mk_int(as_int(a[0]) == 0 ? 1 : 0);
+      } } },
+};
 
 // A foreign type name as written in a signature. Type variables and function
 // arguments are opaque, word-sized values, so they marshal as pointers.
@@ -257,43 +374,13 @@ exprs2pLm_helper(
   Lm lm;
   switch (expr->tag)
   {
-  case EX::ExprTag::Binop:
-  {
-    auto       &b      = std::get<EX::ExBinop>(expr->as);
-    const char *op_str = nullptr;
-    switch (b.tag)
-    {
-    case EX::BinopTag::Add : op_str = "+"; break;
-    case EX::BinopTag::Sub : op_str = "-"; break;
-    case EX::BinopTag::Mul : op_str = "*"; break;
-    case EX::BinopTag::Div : op_str = "/"; break;
-    case EX::BinopTag::Mod : op_str = "%"; break;
-    case EX::BinopTag::IsEq: op_str = "?="; break;
-    }
-    pLm lhs = exprs2pLm_helper(b.ops.begin(), env);
-    pLm rhs = exprs2pLm_helper(b.ops.last(), env);
-    lm      = { .tag = LTag::VAR,
-                .as  = Var{ std::string{ op_str }, 0, { lhs, rhs } } };
-  }
-  break;
-
-  case EX::ExprTag::Unop:
-  {
-    auto       &u       = std::get<EX::ExUnop>(expr->as);
-    const char *op_str  = (u.tag == EX::UnopTag::Neg) ? "neg" : "not";
-    pLm         operand = exprs2pLm_helper(u.op, env);
-    lm                  = { .tag = LTag::VAR,
-                            .as  = Var{ std::string{ op_str }, 0, { operand } } };
-  }
-  break;
-
   case EX::ExprTag::If:
   {
     EX::ExIf &ifexpr = std::get<EX::ExIf>(expr->as);
     pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
     pLm       then   = exprs2pLm_helper(ifexpr.then, env);
     pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
-    lm = { .tag = LTag::VAR, .as = Var{ "if", 0, { cond, then, othw } } };
+    lm               = { .tag = LTag::IF, .as = If{ cond, then, othw } };
   }
   break;
 
@@ -341,6 +428,13 @@ exprs2pLm_helper(
   }
   break;
 
+  case EX::ExprTag::Real:
+  {
+    lm = { .tag = LTag::REAL,
+           .as  = Real{ std::get<EX::ExReal>(expr->as).value } };
+  }
+  break;
+
   case EX::ExprTag::Def:
   {
     auto       &gd   = std::get<EX::ExDef>(expr->as);
@@ -372,6 +466,36 @@ exprs2pLm_helper(
   }
   break;
 
+  case EX::ExprTag::StructLit:
+  {
+    auto  &sl = std::get<EX::ExStructLit>(expr->as);
+    Struct s;
+    s.name = std::string{ sl.type_name.m_mem, sl.type_name.m_len };
+    for (size_t i = 0; i < sl.fields.m_len; ++i)
+      s.fields.push_back(
+        { std::string{ sl.fields[i].name.m_mem, sl.fields[i].name.m_len },
+          exprs2pLm_helper(sl.fields[i].val, env) });
+    lm = { .tag = LTag::STRUCT, .as = s };
+  }
+  break;
+
+  case EX::ExprTag::Field:
+  {
+    auto &fa = std::get<EX::ExField>(expr->as);
+    Field f;
+    f.record = exprs2pLm_helper(fa.record, env);
+    f.name   = std::string{ fa.field.m_mem, fa.field.m_len };
+    lm       = { .tag = LTag::FIELD, .as = f };
+  }
+  break;
+
+  // A struct *declaration* is a type-level form with no runtime value.
+  case EX::ExprTag::StructDecl:
+  {
+    lm = { .tag = LTag::UNK, .as = std::monostate{} };
+  }
+  break;
+
   case EX::ExprTag::Extern:
     UT_FAIL_MSG("%s", "@extern is only valid as a global definition");
     break;
@@ -398,6 +522,11 @@ pprint(
   case LTag::INT:
   {
     auto &v = std::get<Int>(lm->as);
+    return pad + std::to_string(v.unwrap);
+  }
+  case LTag::REAL:
+  {
+    auto &v = std::get<Real>(lm->as);
     return pad + std::to_string(v.unwrap);
   }
   case LTag::STR:
@@ -435,6 +564,34 @@ pprint(
     auto &v = std::get<Extern>(lm->as);
     return pad + "@extern(" + v.symbol + " in " + v.lib + ")";
   }
+  case LTag::BUILTIN:
+  {
+    auto       &v = std::get<Builtin>(lm->as);
+    std::string s = pad + v.impl;
+    for (auto &arg : v.args) s += "\n" + pprint(arg, level + 1);
+    return s;
+  }
+  case LTag::IF:
+  {
+    auto &v = std::get<If>(lm->as);
+    return pad + "(if\n" + pprint(v.cond, level + 1) + "\n"
+           + pprint(v.yes, level + 1) + "\n" + pprint(v.no, level + 1) + ")";
+  }
+  case LTag::STRUCT:
+  {
+    auto       &v = std::get<Struct>(lm->as);
+    std::string s = pad + v.name + ".{";
+    for (auto &f : v.fields)
+      s += "\n" + std::string((level + 1) * 2, ' ') + f.first + " =\n"
+           + pprint(f.second, level + 2);
+    return s + ")";
+  }
+  case LTag::FIELD:
+  {
+    auto &v = std::get<Field>(lm->as);
+    return pad + "(field " + v.name + "\n" + pprint(v.record, level + 1) + ")";
+  }
+  case LTag::REC: return pad + "<rec>";
   case LTag::UNK: return pad + "?unknown";
   }
   return pad + "?unreachable";
@@ -459,14 +616,19 @@ eval(
   switch (node->tag)
   {
   case LTag::INT:
-  case LTag::STR: return node;
+  case LTag::REAL:
+  case LTag::STR : return node;
 
   case LTag::VAR:
   {
     auto &v = std::get<Var>(node->as);
 
-    // Builtin operator or if-expression
-    if (!v.env.empty()) return apply_builtin(v, denv, senv);
+    // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
+    auto bit = impls.find(v.unwrap);
+    if (bit != impls.end())
+      return std::make_shared<Lm>(
+        Lm{ .tag = LTag::BUILTIN,
+            .as  = Builtin{ v.unwrap, bit->second.arity, {} } });
 
     // Global definition placeholder
     if (v.idx == (size_t)-1) return node;
@@ -475,7 +637,16 @@ eval(
     if (v.idx > 0)
     {
       UT_FAIL_IF(v.idx > denv.size());
-      return denv[denv.size() - v.idx];
+      pLm entry = denv[denv.size() - v.idx];
+      // A `let` binding is held weakly while its value is built (see LET), to
+      // keep the closure graph acyclic; lock it to recover the value.
+      if (entry && LTag::REC == entry->tag)
+      {
+        pLm target = std::get<Rec>(entry->as).target.lock();
+        UT_FAIL_IF(!target);
+        return target;
+      }
+      return entry;
     }
 
     // Global variable (idx == 0, env empty)
@@ -496,15 +667,24 @@ eval(
   case LTag::LET:
   {
     auto &l = std::get<Let>(node->as);
-    // Bind the name to a placeholder, evaluate the value with that binding in
-    // scope, then back-patch the slot so recursive references resolve. (For a
-    // non-recursive let the placeholder is simply never read before patching.)
-    pLm slot
+    // Bind the name to a placeholder, then evaluate the value with that binding
+    // *weakly* in scope and back-patch the slot, so recursive references
+    // resolve without the value's captured environment forming a shared_ptr
+    // cycle with it. (For a non-recursive let the placeholder is simply never
+    // read before patching.) The body then evaluates with the binding held
+    // strongly, so a closure it returns keeps the value alive.
+    pLm value
       = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
-    DynEnv new_env = denv;
-    new_env.push_back(slot);
-    *slot = *eval(l.val, new_env, senv);
-    return eval(l.body, new_env, senv);
+    pLm self = std::make_shared<Lm>(
+      Lm{ .tag = LTag::REC, .as = Rec{ std::weak_ptr<Lm>(value) } });
+
+    DynEnv val_env = denv;
+    val_env.push_back(self);
+    *value = *eval(l.val, val_env, senv);
+
+    DynEnv body_env = denv;
+    body_env.push_back(value);
+    return eval(l.body, body_env, senv);
   }
 
   case LTag::APP:
@@ -523,6 +703,15 @@ eval(
       return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
     }
 
+    // Built-in: accumulate the argument, run the impl once saturated.
+    if (LTag::BUILTIN == closure->tag)
+    {
+      Builtin b = std::get<Builtin>(closure->as); // copy and extend
+      b.args.push_back(val);
+      if (b.args.size() >= b.arity) return impls.at(b.impl).fn(b.args);
+      return std::make_shared<Lm>(Lm{ .tag = LTag::BUILTIN, .as = b });
+    }
+
     UT_FAIL_IF(closure->tag != LTag::FUN);
     auto  &fun     = std::get<Fun>(closure->as);
     DynEnv new_env = fun.var.env;
@@ -536,6 +725,52 @@ eval(
     // A nullary extern is already saturated; otherwise it is a function value.
     if (e.args.size() >= e.arg_types.size()) return call_extern(e);
     return node;
+  }
+
+  case LTag::IF:
+  {
+    auto &i    = std::get<If>(node->as);
+    pLm   cond = eval(i.cond, denv, senv);
+    UT_FAIL_IF(cond->tag != LTag::INT);
+    bool taken = std::get<Int>(cond->as).unwrap != 0;
+    return eval(taken ? i.yes : i.no, denv, senv);
+  }
+
+  // An unapplied built-in is already a value.
+  case LTag::BUILTIN: return node;
+
+  case LTag::STRUCT:
+  {
+    // Force every field, building a fully evaluated struct value.
+    auto  &s = std::get<Struct>(node->as);
+    Struct out;
+    out.name = s.name;
+    for (auto &f : s.fields)
+      out.fields.push_back({ f.first, eval(f.second, denv, senv) });
+    return std::make_shared<Lm>(Lm{ .tag = LTag::STRUCT, .as = out });
+  }
+
+  case LTag::FIELD:
+  {
+    auto &fa  = std::get<Field>(node->as);
+    pLm   rec = eval(fa.record, denv, senv);
+    UT_FAIL_IF(rec->tag != LTag::STRUCT);
+    for (auto &f : std::get<Struct>(rec->as).fields)
+      if (f.first == fa.name) return f.second;
+    UT_FAIL_MSG("no field '%s' on struct '%s'",
+                fa.name.c_str(),
+                std::get<Struct>(rec->as).name.c_str());
+    break;
+  }
+
+  // A let binding's weak self-reference (see LET); lock it to the value. eval
+  // is never called on one directly -- VAR resolves it -- but handle it for
+  // safety.
+  case LTag::REC:
+  {
+    pLm target = std::get<Rec>(node->as).target.lock();
+    UT_FAIL_IF(!target);
+    return target;
   }
 
   case LTag::UNK: return node;

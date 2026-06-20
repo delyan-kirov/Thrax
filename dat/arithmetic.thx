@@ -1,0 +1,14 @@
+# \file arithmetic.thx
+# \info Integer arithmetic: operator precedence, grouping, division, modulo,
+#       and unary negation.
+
+$sum        = -1 + 2 + 3 + 4.2
+$product    = 2 * 3 * 4
+$precedence = 1 + 2 * 3 - 4
+$grouped    = (1 + 2) * (3 - 4) + 5
+$quotient   = 100 / 7
+$remainder  = 100.123 % 7
+$negate     = -42
+$double_neg = - (-7)
+$chained    = 1 - 2 - 3 - 4
+$big        = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)

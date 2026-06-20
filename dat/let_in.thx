@@ -1,0 +1,21 @@
+# \file let_in.thx
+# \info Local bindings with `let x = e in body`, including nesting and using
+#       earlier bindings in later ones.
+
+$simple = let x = 6 in x * 7
+
+$nested =
+	let a = 10 in
+	let b = 20 in
+	a * b + a
+
+$chained =
+	let x = 1 in
+	let y = x + 10 in
+	let z = y * 2 in
+	x + y + z
+
+$compose =
+	let square = \x = x * x in
+	let add1   = \x = x + 1 in
+	add1 (square 5)

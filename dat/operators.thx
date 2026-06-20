@@ -1,0 +1,15 @@
+# \file operators.thx
+# \info Comparison and logical operators. There is no Bool type yet: 0 is false
+#       and any nonzero value is true, so these all evaluate to 0 or 1.
+
+$eq_true   = 7 ?= 7
+$eq_false  = 7 ?= 8
+$geq_true  = 9 ?> 4
+$geq_equal = 4 ?> 4
+$geq_false = 2 ?> 4
+$leq_true  = 3 ?< 8
+$leq_equal = 8 ?< 8
+$leq_false = 8 ?< 3
+$not_zero  = !0
+$not_five  = !5
+$not_not   = !(!5)

@@ -6,6 +6,7 @@
 #include "EX.hpp"
 #include "ER.hpp"
 #include "LX.hpp"
+#include "OP.hpp"
 #include "UT.hpp"
 
 #include <unordered_map>
@@ -73,41 +74,48 @@ struct Bp
   int r;
 };
 
-struct InfixInfo
-{
-  Bp       bp;    // binding powers
-  BinopTag binop; // node this operator builds
-};
-
-using InfixTable = std::unordered_map<LX::TokenTag, InfixInfo>;
-using UnopTable  = std::unordered_map<LX::TokenTag, UnopTag>;
+using InfixTable = std::unordered_map<std::string, Bp>;
+using UnopTable  = std::unordered_map<std::string, const char *>;
 using OperandSet = std::unordered_set<LX::TokenTag>;
 
 const Bp  APP_BP{ 50, 51 };
 const int PREFIX_BP = 40; // unary - and !
 
-// Binary operators. Presence in this table is exactly "is an infix operator",
-// and it carries both the binding power and the node to build.
+// Binary operators, keyed by lexeme. Presence is exactly "is an infix
+// operator"; the value is its binding power. The name stored on the node is the
+// lexeme itself, which doubles as the OP key (see UTxOP).
 const InfixTable infix_db{
-  { LX::TokenTag::IsEq, { { 10, 11 }, BinopTag::IsEq } },
-  { LX::TokenTag::Plus, { { 20, 21 }, BinopTag::Add } },
-  { LX::TokenTag::Minus, { { 20, 21 }, BinopTag::Sub } },
-  { LX::TokenTag::Mult, { { 30, 31 }, BinopTag::Mul } },
-  { LX::TokenTag::Div, { { 30, 31 }, BinopTag::Div } },
-  { LX::TokenTag::Modulus, { { 30, 31 }, BinopTag::Mod } },
+  { OP::ISEQ, { 10, 11 } }, //
+  { OP::GEQ, { 10, 11 } },  //
+  { OP::LEQ, { 10, 11 } },  //
+  { OP::MORE, { 10, 11 } }, //
+  { OP::LESS, { 10, 11 } }, //
+  { OP::ADD, { 20, 21 } },  //
+  { OP::SUB, { 20, 21 } },  //
+  { OP::MUL, { 30, 31 } },  //
+  { OP::DIV, { 30, 31 } },  //
+  { OP::MOD, { 30, 31 } },  //
 };
 
 // Tokens that can begin an operand -> juxtaposition is application.
 const OperandSet operand_starters{
-  LX::TokenTag::Int,    LX::TokenTag::Str,   LX::TokenTag::Word,
-  LX::TokenTag::LParen, LX::TokenTag::KwLet, LX::TokenTag::KwIf,
-  LX::TokenTag::Lambda,
+  LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
+  LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
+  LX::TokenTag::KwIf, LX::TokenTag::Lambda,
 };
 
-// Prefix (unary) operators.
+// Tokens that end an expression
+const OperandSet expr_terminators{
+  LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
+  LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::FatArrow,
+  LX::TokenTag::KwElse, LX::TokenTag::RBrace,
+};
+
+// Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is
+// distinct from the lexeme so unary '-' (neg) never aliases binary '-'.
 const UnopTable unop_db{
-  { LX::TokenTag::Minus, UnopTag::Neg },
-  { LX::TokenTag::Not, UnopTag::Not },
+  { OP::SUB, OP::NEG },
+  { OP::BANG, OP::NOT },
 };
 
 const char *
@@ -153,12 +161,6 @@ Expr::Expr(
                      (Expr *)arena.alloc<Expr>(1) };
   }
   break;
-  case ExprTag::Binop:
-    this->as = ExBinop{ BinopTag::Add, ExPair{ arena } };
-    break;
-  case ExprTag::Unop:
-    this->as = ExUnop{ UnopTag::Neg, (Expr *)arena.alloc<Expr>(1) };
-    break;
   default: UT_FAIL_IF("Invalid tag for this constructor");
   }
 };
@@ -182,6 +184,15 @@ Parser::mk_int(
 {
   Expr e{ ExprTag::Int };
   e.as = ExInt{ std::get<LX::TkInt>(t.as).value };
+  return alloc(e);
+}
+
+Expr *
+Parser::mk_real(
+  const LX::Token &t)
+{
+  Expr e{ ExprTag::Real };
+  e.as = ExReal{ std::get<LX::TkReal>(t.as).value };
   return alloc(e);
 }
 
@@ -212,25 +223,32 @@ Parser::mk_app(
   return alloc(e);
 }
 
+// An operator reference, as a plain variable of its canonical name. Operators
+// are just functions with infix/prefix syntax: once parsed they are ordinary
+// Var/App nodes, and TC/IT never need to know they came from an operator.
 Expr *
-Parser::mk_unop(
-  LX::TokenTag op, Expr *operand)
+Parser::mk_op_var(
+  UT::String name)
 {
-  Expr e{ ExprTag::Unop };
-  e.as = ExUnop{ UT::lookup(unop_db, op), operand };
+  Expr e{ ExprTag::Var };
+  e.as = ExVar{ name };
   return alloc(e);
 }
 
+// Prefix `op operand`  ==>  (op operand).
+Expr *
+Parser::mk_unop(
+  UT::String op, Expr *operand)
+{
+  return mk_app(mk_op_var(op), operand);
+}
+
+// Infix `lhs op rhs`  ==>  ((op lhs) rhs).
 Expr *
 Parser::mk_binop(
-  BinopTag bt, Expr *lhs, Expr *rhs)
+  UT::String op, Expr *lhs, Expr *rhs)
 {
-  ExPair pair{ m_arena };
-  *pair.begin() = *lhs;
-  *pair.last()  = *rhs;
-  Expr e{ ExprTag::Binop };
-  e.as = ExBinop{ bt, pair };
-  return alloc(e);
+  return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
 
 Expr *
@@ -290,6 +308,15 @@ Parser::mk_extern(
   return alloc(e);
 }
 
+Expr *
+Parser::mk_field(
+  Expr *record, UT::String field)
+{
+  Expr e{ ExprTag::Field };
+  e.as = ExField{ record, field };
+  return alloc(e);
+}
+
 /*-------------------------------------------------------------------------------
  *\PARSE
  *------------------------------------------------------------------------------*/
@@ -310,16 +337,30 @@ Parser::expect(
 R
 Parser::parse_primary()
 {
-  LX::Token t = TRY(m_lex.peek());
+  LX::Token t    = TRY(m_lex.peek());
+  Expr     *base = nullptr;
   switch (t.tag)
   {
-  case LX::TokenTag::Int   : m_lex.next(); return { true, mk_int(t), {} };
-  case LX::TokenTag::Str   : m_lex.next(); return { true, mk_str(t), {} };
-  case LX::TokenTag::Word  : m_lex.next(); return { true, mk_var(t), {} };
-  case LX::TokenTag::LParen: return parse_group();
-  case LX::TokenTag::KwLet : return parse_let();
-  case LX::TokenTag::KwIf  : return parse_if();
-  case LX::TokenTag::Lambda: return parse_closure();
+  case LX::TokenTag::Int:
+    m_lex.next();
+    base = mk_int(t);
+    break;
+  case LX::TokenTag::Real:
+    m_lex.next();
+    base = mk_real(t);
+    break;
+  case LX::TokenTag::Str:
+    m_lex.next();
+    base = mk_str(t);
+    break;
+  case LX::TokenTag::Word:
+    m_lex.next();
+    base = mk_var(t);
+    break;
+  case LX::TokenTag::LParen: base = TRY(parse_group()); break;
+  case LX::TokenTag::KwLet : base = TRY(parse_let()); break;
+  case LX::TokenTag::KwIf  : base = TRY(parse_if()); break;
+  case LX::TokenTag::Lambda: base = TRY(parse_closure()); break;
   default:
   {
     const char *desc = tok_desc(t);
@@ -334,17 +375,69 @@ Parser::parse_primary()
            std::to_string(t.str).c_str());
   }
   }
+
+  // Postfix `.`: a struct literal `Type.{...}` or field access `record.field`.
+  // Both bind tighter than application, left-associative, so `a.b.c` chains and
+  // `f x.y` is `f (x.y)`.
+  for (;;)
+  {
+    if (LX::TokenTag::Dot != TRY(m_lex.peek()).tag) break;
+    LX::Token dot   = TRY(m_lex.next()); // '.'
+    LX::Token ahead = TRY(m_lex.peek());
+
+    if (LX::TokenTag::LBrace == ahead.tag)
+    {
+      // `Type.{ ... }` -- the base must be a bare, uppercase-initial type name.
+      if (base->tag != ExprTag::Var)
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               dot,
+               "a struct literal must be qualified with a type name, e.g. "
+               "Type.{ ... }");
+      UT::String tn = std::get<ExVar>(base->as).name;
+      char       c  = tn.m_len ? tn.m_mem[0] : '\0';
+      if (c < 'A' || c > 'Z')
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               dot,
+               "a struct literal's type name must start uppercase, found '%s'",
+               std::to_string(tn).c_str());
+      base = CTX(parse_struct_lit(tn),
+                 dot,
+                 "in this '%s' struct literal",
+                 std::to_string(tn).c_str());
+    }
+    else
+    {
+      // `record.field` -- the field is a lowercase variable name.
+      LX::Token fld
+        = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
+      char c = fld.str.m_len ? fld.str.m_mem[0] : '\0';
+      if (c >= 'A' && c <= 'Z')
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               fld,
+               "a field name must start lowercase, found '%s'",
+               std::to_string(fld.str).c_str());
+      base = mk_field(base, fld.str);
+    }
+  }
+
+  return { true, base, {} };
 }
 
 R
 Parser::parse_prefix()
 {
   LX::Token t = TRY(m_lex.peek());
-  if (LX::TokenTag::Minus == t.tag || LX::TokenTag::Not == t.tag)
+  if (LX::TokenTag::Op == t.tag)
   {
-    m_lex.next();
-    Expr *operand = TRY(parse_expr(PREFIX_BP));
-    return { true, mk_unop(t.tag, operand), {} };
+    if (const char *const *name
+        = UT::try_lookup(unop_db, std::to_string(t.str)))
+    {
+      m_lex.next();
+      Expr *operand = TRY(parse_expr(PREFIX_BP));
+      return { true,
+               mk_unop(UT::String{ *name, std::strlen(*name) }, operand),
+               {} };
+    }
   }
   return parse_primary();
 }
@@ -359,12 +452,18 @@ Parser::parse_expr(
   {
     LX::Token t = TRY(m_lex.peek());
 
-    if (const InfixInfo *infix = UT::try_lookup(infix_db, t.tag))
+    if (LX::TokenTag::Op == t.tag)
     {
-      if (infix->bp.l < min_bp) break;
+      const Bp *bp = UT::try_lookup(infix_db, std::to_string(t.str));
+      if (!bp)
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               t,
+               "operator '%s' cannot be used here",
+               std::to_string(t.str).c_str());
+      if (bp->l < min_bp) break;
       TRY(m_lex.next()); // consume the operator
-      Expr *rhs = TRY(parse_expr(infix->bp.r));
-      lhs       = mk_binop(infix->binop, lhs, rhs);
+      Expr *rhs = TRY(parse_expr(bp->r));
+      lhs       = mk_binop(t.str, lhs, rhs);
     }
     else if (operand_starters.count(t.tag))
     {
@@ -372,9 +471,16 @@ Parser::parse_expr(
       Expr *rhs = TRY(parse_expr(APP_BP.r));
       lhs       = mk_app(lhs, rhs);
     }
-    else
+    else if (expr_terminators.count(t.tag))
     {
       break;
+    }
+    else
+    {
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             t,
+             "Unexpected symbol '%s'",
+             std::to_string(t.str).c_str());
     }
   }
 
@@ -472,11 +578,20 @@ Parser::parse_global()
 
   LX::Token name = TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
-  // Optional type annotation: `$ name : type = ...`
+  // Optional type annotation: `$ name : type = ...`. The special annotation
+  // `Struct` marks a struct type declaration rather than a value, so the body
+  // is a field list, not an expression.
   Ty *sig = nullptr;
   if (LX::TokenTag::Colon == TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // ':'
+    LX::Token ann = TRY(m_lex.peek());
+    if (LX::TokenTag::Word == ann.tag && ann.str == "Struct")
+    {
+      m_lex.next(); // 'Struct'
+      TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
+      return parse_struct_decl(name);
+    }
     sig = CTX(parse_type(),
               name,
               "in the type signature of global '%s'",
@@ -532,6 +647,83 @@ Parser::parse_extern()
            mk_extern(std::get<LX::TkStr>(sym.as).value,
                      std::get<LX::TkStr>(lib.as).value),
            {} };
+}
+
+// A struct declaration body: a comma-separated `field : type` list, trailing
+// comma allowed, ending at the next global ('$') or end of input. The name
+// token (already consumed by parse_global) is the struct's type name.
+R
+Parser::parse_struct_decl(
+  const LX::Token &name)
+{
+  char nc = name.str.m_len ? name.str.m_mem[0] : '\0';
+  if (nc < 'A' || nc > 'Z')
+    EX_ERR(ER::Code::EXPECTED_GLOBAL,
+           name,
+           "a struct type name must start uppercase, found '%s'",
+           std::to_string(name.str).c_str());
+
+  UT::Vec<FieldDecl> fields{ m_arena };
+  for (;;)
+  {
+    LX::TokenTag tag = TRY(m_lex.peek()).tag;
+    if (LX::TokenTag::Dollar == tag || LX::TokenTag::Eof == tag) break;
+
+    LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
+    char      fc    = fname.str.m_len ? fname.str.m_mem[0] : '\0';
+    if (fc >= 'A' && fc <= 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             fname,
+             "a struct field name must start lowercase, found '%s'",
+             std::to_string(fname.str).c_str());
+
+    TRY(expect(LX::TokenTag::Colon, "expected ':' after the field name"));
+    Ty *ty = CTX(parse_type(),
+                 fname,
+                 "in the type of field '%s'",
+                 std::to_string(fname.str).c_str());
+    fields.push(FieldDecl{ fname.str, ty });
+
+    if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
+    m_lex.next(); // ','
+  }
+
+  Expr e{ ExprTag::StructDecl };
+  e.as = ExStructDecl{ name.str, fields };
+  return { true, alloc(e), {} };
+}
+
+// A struct literal `Type.{ field = expr, ... }`. Called with the leading `.`
+// already consumed and `type_name` resolved from the qualifying type; the next
+// token is the opening '{'.
+R
+Parser::parse_struct_lit(
+  UT::String type_name)
+{
+  TRY(expect(LX::TokenTag::LBrace, "expected '{' after the struct type name"));
+
+  UT::Vec<FieldInit> fields{ m_arena };
+  for (;;)
+  {
+    if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
+
+    LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
+    TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
+    Expr *val = CTX(parse_expr(0),
+                    fname,
+                    "in the value of field '%s'",
+                    std::to_string(fname.str).c_str());
+    fields.push(FieldInit{ fname.str, val });
+
+    if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
+    m_lex.next(); // ','
+  }
+
+  TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the struct literal"));
+
+  Expr e{ ExprTag::StructLit };
+  e.as = ExStructLit{ type_name, fields };
+  return { true, alloc(e), {} };
 }
 
 /*-------------------------------------------------------------------------------
@@ -649,24 +841,6 @@ Parser::operator()()
  *\PPRINT
  *------------------------------------------------------------------------------*/
 
-namespace
-{
-using BinopNames = std::unordered_map<BinopTag, const char *>;
-
-const BinopNames binop_str_db{
-  { BinopTag::Add, " + " }, { BinopTag::Sub, " - " },
-  { BinopTag::Mul, " * " }, { BinopTag::Div, " / " },
-  { BinopTag::Mod, " % " }, { BinopTag::IsEq, " ?= " },
-};
-
-const char *
-binop_str(
-  BinopTag op)
-{
-  return UT::lookup(binop_str_db, op);
-}
-} // namespace
-
 std::string
 pprint(
   ExprTag t, int level)
@@ -683,6 +857,25 @@ pprint(
   return "";
 }
 
+static std::string
+pprint_ty(
+  Ty *t)
+{
+  if (!t) return "?";
+  switch (t->tag)
+  {
+  case TyTag::Con: return std::to_string(std::get<TyCon>(t->as).name);
+  case TyTag::Var: return "`" + std::to_string(std::get<TyVar>(t->as).name);
+  case TyTag::Arrow:
+  {
+    auto &ar = std::get<TyArrow>(t->as);
+    return pprint_ty(ar.from) + " -> " + pprint_ty(ar.to);
+  }
+  }
+  UT_FAIL_MSG("%s", "unhandled TyTag in pprint_ty");
+  return "?";
+}
+
 std::string
 pprint(
   Expr *e, int level)
@@ -693,20 +886,11 @@ pprint(
   switch (e->tag)
   {
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
+  case ExprTag::Real:
+    return pad + std::to_string(std::get<ExReal>(e->as).value);
   case ExprTag::Var: return pad + std::to_string(std::get<ExVar>(e->as).name);
   case ExprTag::Str:
     return pad + "\"" + std::to_string(std::get<ExStr>(e->as).value) + "\"";
-  case ExprTag::Unop:
-  {
-    auto &u = std::get<ExUnop>(e->as);
-    return pad + (u.tag == UnopTag::Neg ? "-" : "not ") + pprint(u.op, 0);
-  }
-  case ExprTag::Binop:
-  {
-    auto &b = std::get<ExBinop>(e->as);
-    return pad + pprint(b.ops.begin(), 0) + binop_str(b.tag)
-           + pprint(b.ops.last(), 0);
-  }
   case ExprTag::Let:
     return pad + "let " + std::to_string(std::get<ExLet>(e->as).var) + " =\n"
            + pprint(std::get<ExLet>(e->as).val, level + 1) + "\n" + pad + "in\n"
@@ -730,6 +914,32 @@ pprint(
   case ExprTag::Extern:
     return pad + "@extern(\"" + std::to_string(std::get<ExExtern>(e->as).symbol)
            + "\", \"" + std::to_string(std::get<ExExtern>(e->as).lib) + "\")";
+  case ExprTag::StructDecl:
+  {
+    auto       &sd = std::get<ExStructDecl>(e->as);
+    std::string s  = pad + "$" + std::to_string(sd.name) + " : Struct";
+    for (size_t i = 0; i < sd.fields.m_len; ++i)
+      s += "\n" + std::string((level + 1) * 2, ' ')
+           + std::to_string(sd.fields[i].name) + " : "
+           + pprint_ty(sd.fields[i].ty);
+    return s;
+  }
+  case ExprTag::StructLit:
+  {
+    auto       &sl = std::get<ExStructLit>(e->as);
+    std::string s  = pad + std::to_string(sl.type_name) + ".{";
+    for (size_t i = 0; i < sl.fields.m_len; ++i)
+      s += "\n" + std::string((level + 1) * 2, ' ')
+           + std::to_string(sl.fields[i].name) + " =\n"
+           + pprint(sl.fields[i].val, level + 2);
+    return s + ")";
+  }
+  case ExprTag::Field:
+  {
+    auto &fa = std::get<ExField>(e->as);
+    return pad + "(field " + std::to_string(fa.field) + "\n"
+           + pprint(fa.record, level + 1) + ")";
+  }
   case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");

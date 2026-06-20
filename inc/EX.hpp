@@ -91,6 +91,10 @@ struct ExInt
 {
   ssize_t value;
 };
+struct ExReal
+{
+  double value;
+};
 struct ExVar
 {
   UT::String name;
@@ -105,32 +109,6 @@ struct ExExtern
 {
   UT::String symbol;
   UT::String lib;
-};
-
-enum class BinopTag
-{
-  Add,
-  Sub,
-  Mul,
-  Div,
-  Mod,
-  IsEq
-};
-enum class UnopTag
-{
-  Neg,
-  Not
-};
-
-struct ExBinop
-{
-  BinopTag tag;
-  ExPair   ops;
-};
-struct ExUnop
-{
-  UnopTag tag;
-  Expr   *op;
 };
 
 struct ExFnDef
@@ -162,19 +140,55 @@ struct ExLet
   Expr      *body;
 };
 
+// One `field : Type` entry in a struct declaration.
+struct FieldDecl
+{
+  UT::String name;
+  Ty        *ty;
+};
+// One `field = expr` entry in a struct literal.
+struct FieldInit
+{
+  UT::String name;
+  Expr      *val;
+};
+
+// A struct type declaration: `$ Name : Struct = field: Ty, ...`. Defines a
+// nominal record type; it produces no runtime value.
+struct ExStructDecl
+{
+  UT::String         name;
+  UT::Vec<FieldDecl> fields;
+};
+// A struct literal: `Type.{ field = expr, ... }`. Qualified form only, so
+// `type_name` is always set (bare `.{...}` is a later increment).
+struct ExStructLit
+{
+  UT::String         type_name;
+  UT::Vec<FieldInit> fields;
+};
+// Field access: `record.field`.
+struct ExField
+{
+  Expr      *record;
+  UT::String field;
+};
+
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
-  X(Unop, ExUnop)                                                              \
-  X(Binop, ExBinop)                                                            \
+  X(Real, ExReal)                                                              \
   X(Let, ExLet)                                                                \
   X(FnDef, ExFnDef)                                                            \
   X(App, ExApp)                                                                \
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
   X(Str, ExStr)                                                                \
-  X(Extern, ExExtern)
+  X(Extern, ExExtern)                                                          \
+  X(StructDecl, ExStructDecl)                                                  \
+  X(StructLit, ExStructLit)                                                    \
+  X(Field, ExField)
 
 enum class ExprTag
 {
@@ -221,6 +235,8 @@ public:
 private:
   UT_NODISCARD R parse_global();
   UT_NODISCARD R parse_extern();
+  UT_NODISCARD R parse_struct_decl(const LX::Token &name);
+  UT_NODISCARD R parse_struct_lit(UT::String type_name);
   UT_NODISCARD ER::Result<Ty *> parse_type();
   UT_NODISCARD ER::Result<Ty *> parse_type_atom();
   UT_NODISCARD R                parse_expr(int min_bp);
@@ -235,16 +251,19 @@ private:
 
   UT_NODISCARD Expr *alloc(Expr e);
   UT_NODISCARD Expr *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr *mk_real(const LX::Token &t);
   UT_NODISCARD Expr *mk_str(const LX::Token &t);
   UT_NODISCARD Expr *mk_var(const LX::Token &t);
   UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
-  UT_NODISCARD Expr *mk_unop(LX::TokenTag op, Expr *operand);
-  UT_NODISCARD Expr *mk_binop(BinopTag op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *mk_op_var(UT::String name);
+  UT_NODISCARD Expr *mk_unop(UT::String op, Expr *operand);
+  UT_NODISCARD Expr *mk_binop(UT::String op, Expr *lhs, Expr *rhs);
   UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
   UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
   UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
+  UT_NODISCARD Expr *mk_field(Expr *record, UT::String field);
   UT_NODISCARD Ty   *mk_ty(Ty t);
 };
 

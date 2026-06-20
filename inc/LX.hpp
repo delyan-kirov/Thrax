@@ -31,6 +31,10 @@ struct TkInt
 {
   ssize_t value;
 };
+struct TkReal
+{
+  double value; // 64-bit floating point
+};
 struct TkStr
 {
   UT::String value; // unescaped contents (Token::str still holds the quotes)
@@ -44,27 +48,9 @@ struct TkTyVar
 struct TkComment
 {
 };
-struct TkPlus
+struct TkOp
 {
-};
-struct TkMinus
-{
-};
-struct TkMult
-{
-};
-struct TkDiv
-{
-};
-struct TkModulus
-{
-};
-struct TkIsEq
-{
-};
-struct TkNot
-{
-};
+}; // an operator: + - * / % ! ?= ?> ?< -- the lexeme is Token::str
 struct TkLParen
 {
 };
@@ -92,6 +78,15 @@ struct TkColon
 struct TkComma
 {
 }; // ,
+struct TkDot
+{
+}; // . -- struct-literal qualifier (T.{...}) and field access (record.field)
+struct TkLBrace
+{
+}; // {
+struct TkRBrace
+{
+}; // }
 struct TkAt
 {
 }; // @name -- an intrinsic; the name is Token::str past the leading '@'
@@ -120,17 +115,12 @@ struct TkEof
 
 #define LX_TOKEN_VARIANTS                                                      \
   X(Int, TkInt)                                                                \
+  X(Real, TkReal)                                                              \
   X(Str, TkStr)                                                                \
   X(Word, TkWord)                                                              \
   X(TyVar, TkTyVar)                                                            \
   X(Comment, TkComment)                                                        \
-  X(Plus, TkPlus)                                                              \
-  X(Minus, TkMinus)                                                            \
-  X(Mult, TkMult)                                                              \
-  X(Div, TkDiv)                                                                \
-  X(Modulus, TkModulus)                                                        \
-  X(IsEq, TkIsEq)                                                              \
-  X(Not, TkNot)                                                                \
+  X(Op, TkOp)                                                                  \
   X(LParen, TkLParen)                                                          \
   X(RParen, TkRParen)                                                          \
   X(Lambda, TkLambda)                                                          \
@@ -140,6 +130,9 @@ struct TkEof
   X(Dollar, TkDollar)                                                          \
   X(Colon, TkColon)                                                            \
   X(Comma, TkComma)                                                            \
+  X(Dot, TkDot)                                                                \
+  X(LBrace, TkLBrace)                                                          \
+  X(RBrace, TkRBrace)                                                          \
   X(At, TkAt)                                                                  \
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \
@@ -198,15 +191,20 @@ private:
   size_t     m_pos; // raw buffer index of the next token to hand out
 
 private:
-  UT_NODISCARD R    lex_one();
-  UT_NODISCARD R    lex_comment(size_t start, size_t line);
-  UT_NODISCARD R    lex_string(size_t start, size_t line);
-  UT_NODISCARD R    lex_number(size_t start, size_t line);
-  UT_NODISCARD R    lex_word(size_t start, size_t line);
-  UT_NODISCARD R    lex_tyvar(size_t start, size_t line);
-  UT_NODISCARD R    lex_at(size_t start, size_t line);
-  UT_NODISCARD R    lex_symbol(size_t start, size_t line);
-  void              skip_ws();
+  UT_NODISCARD R lex_one();
+  UT_NODISCARD R lex_comment(size_t start, size_t line);
+  UT_NODISCARD R lex_string(size_t start, size_t line);
+  UT_NODISCARD R lex_number(size_t start, size_t line);
+  UT_NODISCARD R lex_radix(
+    size_t start, size_t line, bool (*member)(char), int base, size_t skip);
+  UT_NODISCARD R emit_int(size_t start, size_t line, const char *num, int base);
+  UT_NODISCARD R emit_real(size_t start, size_t line);
+  UT_NODISCARD R lex_word(size_t start, size_t line);
+  UT_NODISCARD R lex_tyvar(size_t start, size_t line);
+  UT_NODISCARD R lex_at(size_t start, size_t line);
+  UT_NODISCARD R lex_symbol(size_t start, size_t line);
+  void           skip_ws();
+  void           scan(bool (*member)(char)); // advance over a run of digits
   UT_NODISCARD char cur() const;
   UT_NODISCARD char at(size_t i) const;
   UT_NODISCARD UT::String slice(size_t start) const;

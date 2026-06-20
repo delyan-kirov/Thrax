@@ -1,0 +1,20 @@
+# Product types (structs): a named record type, a literal, and field access.
+
+# A struct type declaration. Fields are `name : Type`, comma-separated; a
+# trailing comma is allowed but not required.
+$ Person : Struct =
+	name: Str,
+	age: Int,
+
+# A struct literal. The qualified form `Type.{ ... }` names the type explicitly.
+$ person : Person = Person.{
+	name = "Will",
+	age = 21, # trailing comma is allowed but not required
+}
+
+# Field access reads a field out of a struct.
+$ who : Str = person.name
+$ yrs : Int = person.age
+
+# Fields compose like any other expression.
+$ older : Int = person.age + 1
