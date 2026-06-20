@@ -544,12 +544,25 @@ R
 Parser::parse_closure()
 {
   LX::Token bs = TRY(m_lex.next()); // '\'
-  LX::Token nm
+
+  // `\x y z = e` binds one parameter per word; the `=` ends the list.
+  UT::Vec<UT::String> params{ m_arena };
+  LX::Token           first
     = TRY(expect(LX::TokenTag::Word, "expected a parameter name after '\\'"));
-  TRY(expect(LX::TokenTag::Eq, "expected '=' after the lambda parameter"));
+  params.push(first.str);
+  for (LX::Token nxt = TRY(m_lex.peek()); LX::TokenTag::Word == nxt.tag;
+       nxt           = TRY(m_lex.peek()))
+    params.push(TRY(m_lex.next()).str);
+
+  TRY(expect(LX::TokenTag::Eq,
+             "expected '=' or another parameter after the lambda parameter"));
 
   Expr *body = CTX(parse_expr(0), bs, "while parsing this closure");
-  return { true, mk_fndef(nm.str, body), {} };
+
+  // Curried sugar: `\x y z = e` desugars to `\x = \y = \z = e`.
+  for (size_t i = params.m_len; i-- > 0;)
+    body = mk_fndef(params[i], body);
+  return { true, body, {} };
 }
 
 R

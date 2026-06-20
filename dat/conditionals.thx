@@ -10,11 +10,11 @@ $sign : Int -> Int = \n =
 	else if n ?> 0 => 1
 	else 0 - 1
 
-$max : Int -> Int -> Int = \a = \b =
+$max : Int -> Int -> Int = \a b =
 	if a ?> b => a
 	else b
 
-$min : Int -> Int -> Int = \a = \b =
+$min : Int -> Int -> Int = \a b =
 	if a ?< b => a
 	else b
 

@@ -5,7 +5,7 @@ $pow2 : Int -> Int = \n =
 	if n ?= 0 => 1
 	else 2 * (pow2 (n - 1))
 
-$pow : Int -> Int -> Int = \base = \exp =
+$pow : Int -> Int -> Int = \base exp =
 	if exp ?= 0 => 1
 	else base * (pow base (exp - 1))
 

@@ -19,7 +19,7 @@ $ge      = 3.0 >= 3.0
 $eq      = 0.1 ?= 0.1
 
 # a Real-typed recursive function
-$pow : Real -> Int -> Real = \base = \n =
+$pow : Real -> Int -> Real = \base n =
 	if n ?= 0 => 1.0
 	else base * (pow base (n - 1))
 

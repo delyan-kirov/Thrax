@@ -55,7 +55,8 @@ Definition expr:
 	- For an expression e and a unary operator `op`: `op` e is an expression.
 	- Application is juxtaposition: `f x` applies f to x (left-associative,
 	  binds tighter than any operator).
-	- `\` var `=` e            is a lambda (anonymous function).
+	- `\` var+ `=` e           is a lambda (anonymous function). Multiple
+	  parameters are curried sugar: `\x y z = e` means `\x = \y = \z = e`.
 	- `if` e_1 `=>` e_2 `else` e_3   is a conditional. The condition e_1 is an
 	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
 	- `let` var `=` e_1 `in` e_2     is a local binding. A let binding is
