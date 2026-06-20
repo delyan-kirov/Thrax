@@ -28,11 +28,8 @@ call(
 
 } // namespace FF
 
-#include <cstdint>
-#include <cstring>
 #include <dlfcn.h>
 #include <ffi.h>
-#include <unordered_map>
 
 namespace FF
 {
