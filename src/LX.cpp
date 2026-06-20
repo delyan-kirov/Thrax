@@ -126,9 +126,9 @@ const Delims delim_db{
 
 TokenTag
 keyword_tag(
-  UT::String s)
+  UT::Vu s)
 {
-  return UT::lookup_or(keyword_db, std::to_string(s), TokenTag::Word);
+  return UT::lookup_or(keyword_db, std::string(s), TokenTag::Word);
 }
 
 } // namespace
@@ -155,7 +155,7 @@ std::string
 pprint(
   const Token &t)
 {
-  return pprint(t.tag) + " '" + std::to_string(t.str) + "'";
+  return pprint(t.tag) + " '" + std::string(t.str) + "'";
 }
 
 /*------------------------------------------------------------------------------
@@ -165,14 +165,14 @@ pprint(
 char
 Lexer::cur() const
 {
-  return m_cursor < m_input.m_len ? m_input.m_mem[m_cursor] : '\0';
+  return m_cursor < m_input.size() ? m_input.data()[m_cursor] : '\0';
 }
 
 char
 Lexer::at(
   size_t i) const
 {
-  return i < m_input.m_len ? m_input.m_mem[i] : '\0';
+  return i < m_input.size() ? m_input.data()[i] : '\0';
 }
 
 void
@@ -182,11 +182,11 @@ Lexer::scan(
   while (member(cur())) m_cursor += 1;
 }
 
-UT::String
+UT::Vu
 Lexer::slice(
   size_t start) const
 {
-  return UT::String{ m_input.m_mem + start, m_cursor - start };
+  return UT::Vu{ m_input.data() + start, m_cursor - start };
 }
 
 Token
@@ -228,7 +228,7 @@ Lexer::skip_ws()
  *\PER-KIND LEXERS
  *-----------------------------------------------------------------------------*/
 
-R
+RToken
 Lexer::lex_comment(
   size_t start, size_t line)
 {
@@ -236,7 +236,7 @@ Lexer::lex_comment(
   return { true, mk(TokenTag::Comment, start, line), {} };
 }
 
-R
+RToken
 Lexer::lex_string(
   size_t start, size_t line)
 {
@@ -258,8 +258,8 @@ Lexer::lex_string(
       size_t content_end = m_cursor;
       m_cursor += 1; // closing quote
       Token t = mk(TokenTag::Str, start, line);
-      t.as    = TkStr{ UT::String{ m_input.m_mem + content_start,
-                                content_end - content_start } };
+      t.as    = TkStr{ UT::Vu{ m_input.data() + content_start,
+                            content_end - content_start } };
       return { true, t, {} };
     }
     m_cursor += 1;
@@ -268,7 +268,7 @@ Lexer::lex_string(
 
 // Parse the lexeme [start, cursor) as an integer in `base`, reading from `num`
 // (which may skip a radix prefix), and emit an Int token.
-R
+RToken
 Lexer::emit_int(
   size_t start, size_t line, const char *num, int base)
 {
@@ -280,7 +280,7 @@ Lexer::emit_int(
     LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
            anchor,
            "could not parse '%s' as an integer",
-           std::to_string(slice(start)).c_str());
+           std::string(slice(start)).c_str());
   }
   Token t = mk(TokenTag::Int, start, line);
   t.as    = TkInt{ (ssize_t)v };
@@ -288,19 +288,19 @@ Lexer::emit_int(
 }
 
 // Parse the lexeme [start, cursor) as a 64-bit Real and emit a Real token.
-R
+RToken
 Lexer::emit_real(
   size_t start, size_t line)
 {
   errno    = 0;
-  double d = std::strtod(slice(start).m_mem, nullptr);
+  double d = std::strtod(slice(start).data(), nullptr);
   if (0 != errno)
   {
     Token anchor = mk(TokenTag::Real, start, line);
     LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
            anchor,
            "could not parse '%s' as a Real",
-           std::to_string(slice(start)).c_str());
+           std::string(slice(start)).c_str());
   }
   Token t = mk(TokenTag::Real, start, line);
   t.as    = TkReal{ d };
@@ -310,7 +310,7 @@ Lexer::emit_real(
 // A radix literal: a `0x` / `0b` prefix (already at the cursor) followed by at
 // least one digit of `member`. `skip` is how many leading chars strtoll should
 // ignore (0 for hex -- base 16 eats `0x`; 2 for binary).
-R
+RToken
 Lexer::lex_radix(
   size_t start, size_t line, bool (*member)(char), int base, size_t skip)
 {
@@ -323,12 +323,12 @@ Lexer::lex_radix(
     LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
            anchor,
            "expected digits after '%s'",
-           std::to_string(slice(start)).c_str());
+           std::string(slice(start)).c_str());
   }
-  return emit_int(start, line, slice(start).m_mem + skip, base);
+  return emit_int(start, line, slice(start).data() + skip, base);
 }
 
-R
+RToken
 Lexer::lex_number(
   size_t start, size_t line)
 {
@@ -355,19 +355,19 @@ Lexer::lex_number(
   }
 
   return is_real ? emit_real(start, line)
-                 : emit_int(start, line, slice(start).m_mem, 10);
+                 : emit_int(start, line, slice(start).data(), 10);
 }
 
-R
+RToken
 Lexer::lex_word(
   size_t start, size_t line)
 {
   while (is_ident_cont(cur())) m_cursor += 1;
-  UT::String s = slice(start);
+  UT::Vu s = slice(start);
   return { true, mk(keyword_tag(s), start, line), {} };
 }
 
-R
+RToken
 Lexer::lex_tyvar(
   size_t start, size_t line)
 {
@@ -383,7 +383,7 @@ Lexer::lex_tyvar(
   return { true, mk(TokenTag::TyVar, start, line), {} };
 }
 
-R
+RToken
 Lexer::lex_at(
   size_t start, size_t line)
 {
@@ -399,7 +399,7 @@ Lexer::lex_at(
   return { true, mk(TokenTag::At, start, line), {} };
 }
 
-R
+RToken
 Lexer::lex_symbol(
   size_t start, size_t line)
 {
@@ -417,8 +417,8 @@ Lexer::lex_symbol(
   if (operator_char_db.count(c))
   {
     while (operator_char_db.count(cur())) m_cursor += 1;
-    UT::String  s   = slice(start);
-    std::string key = std::to_string(s);
+    UT::Vu      s   = slice(start);
+    std::string key = std::string(s);
     if (const TokenTag *found = UT::try_lookup(operator_db, key))
     {
       return { true, mk(*found, start, line), {} };
@@ -430,11 +430,11 @@ Lexer::lex_symbol(
   }
 
   Token anchor = mk(TokenTag::Eof, start, line);
-  anchor.str   = UT::String{ m_input.m_mem + start, 1 };
+  anchor.str   = UT::Vu{ m_input.data() + start, 1 };
   LX_ERR(ER::Code::UNKNOWN_SYMBOL, anchor, "unexpected character '%c'", c);
 }
 
-R
+RToken
 Lexer::lex_one()
 {
   skip_ws();
@@ -456,7 +456,7 @@ Lexer::lex_one()
  *\ITERATOR SURFACE
  *-----------------------------------------------------------------------------*/
 
-R
+RToken
 Lexer::peek(
   size_t n)
 {
@@ -468,7 +468,7 @@ Lexer::peek(
     {
       if (!m_buffer.empty() && TokenTag::Eof == m_buffer.back().tag)
         return { true, m_buffer.back(), {} };
-      R r = lex_one();
+      RToken r = lex_one();
       if (!r.ok) return r;
       m_buffer.push_back(r.value);
     }
@@ -483,7 +483,7 @@ Lexer::peek(
   }
 }
 
-R
+RToken
 Lexer::next()
 {
   for (;;)
@@ -492,7 +492,7 @@ Lexer::next()
     {
       if (!m_buffer.empty() && TokenTag::Eof == m_buffer.back().tag)
         return { true, m_buffer.back(), {} };
-      R r = lex_one();
+      RToken r = lex_one();
       if (!r.ok) return r;
       m_buffer.push_back(r.value);
     }
@@ -520,7 +520,7 @@ Lexer::reset(
 }
 
 Lexer::Lexer(
-  UT::String input, UT::String filename, AR::Arena &arena)
+  UT::Vu input, UT::Vu filename, AR::Arena &arena)
     : m_arena{ arena },
       m_input{ input },
       m_filename{ filename },

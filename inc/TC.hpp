@@ -23,7 +23,7 @@ namespace TC
 // when the program is well typed; otherwise it holds one diagnostic per error,
 // anchored into `src` for rendering with ER::pprint.
 std::vector<ER::Diagnostic>
-check(EX::Exprs &exprs, AR::Arena &arena, UT::String src);
+check(EX::Exprs &exprs, AR::Arena &arena, UT::Vu src);
 
 } // namespace TC
 

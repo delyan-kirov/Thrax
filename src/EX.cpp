@@ -9,9 +9,6 @@
 #include "OP.hpp"
 #include "UT.hpp"
 
-#include <unordered_map>
-#include <unordered_set>
-
 /*------------------------------------------------------------------------------
  *\MACROS
  *
@@ -132,7 +129,7 @@ tok_desc(
  *------------------------------------------------------------------------------*/
 
 ExFnDef::ExFnDef(
-  UT::String param, AR::Arena &arena)
+  UT::Vu param, AR::Arena &arena)
     : param{ param }
 {
   this->body = (EX::Expr *)arena.alloc<EX::Expr>(1);
@@ -237,7 +234,7 @@ Parser::mk_app(
 // Var/App nodes, and TC/IT never need to know they came from an operator.
 Expr *
 Parser::mk_op_var(
-  UT::String name)
+  UT::Vu name)
 {
   Expr e{ ExprTag::Var };
   e.as = ExVar{ name };
@@ -247,7 +244,7 @@ Parser::mk_op_var(
 // Prefix `op operand`  ==>  (op operand).
 Expr *
 Parser::mk_unop(
-  UT::String op, Expr *operand)
+  UT::Vu op, Expr *operand)
 {
   return mk_app(mk_op_var(op), operand);
 }
@@ -255,7 +252,7 @@ Parser::mk_unop(
 // Infix `lhs op rhs`  ==>  ((op lhs) rhs).
 Expr *
 Parser::mk_binop(
-  UT::String op, Expr *lhs, Expr *rhs)
+  UT::Vu op, Expr *lhs, Expr *rhs)
 {
   return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
@@ -271,7 +268,7 @@ Parser::mk_if(
 
 Expr *
 Parser::mk_let(
-  UT::String var, Expr *val, Expr *body)
+  UT::Vu var, Expr *val, Expr *body)
 {
   Expr e{ ExprTag::Let };
   e.as = ExLet{ var, val, body };
@@ -280,7 +277,7 @@ Parser::mk_let(
 
 Expr *
 Parser::mk_fndef(
-  UT::String param, Expr *body)
+  UT::Vu param, Expr *body)
 {
   ExFnDef fn;
   fn.param = param;
@@ -292,7 +289,7 @@ Parser::mk_fndef(
 
 Expr *
 Parser::mk_def(
-  UT::String name, Ty *sig, Expr *def)
+  UT::Vu name, Ty *sig, Expr *def)
 {
   Expr e{ ExprTag::Def };
   e.as = ExDef{ name, sig, def };
@@ -310,7 +307,7 @@ Parser::mk_ty(
 
 Expr *
 Parser::mk_extern(
-  UT::String symbol, UT::String lib)
+  UT::Vu symbol, UT::Vu lib)
 {
   Expr e{ ExprTag::Extern };
   e.as = ExExtern{ symbol, lib };
@@ -319,7 +316,7 @@ Parser::mk_extern(
 
 Expr *
 Parser::mk_field(
-  Expr *record, UT::String field)
+  Expr *record, UT::Vu field)
 {
   Expr e{ ExprTag::Field };
   e.as = ExField{ record, field };
@@ -330,7 +327,7 @@ Parser::mk_field(
  *\PARSE
  *------------------------------------------------------------------------------*/
 
-LX::R
+LX::RToken
 Parser::expect(
   LX::TokenTag tag, const char *what)
 {
@@ -343,7 +340,7 @@ Parser::expect(
   return { true, consumed, {} };
 }
 
-R
+RExpr
 Parser::parse_primary()
 {
   LX::Token t    = TRY(m_lex.peek());
@@ -381,7 +378,7 @@ Parser::parse_primary()
     EX_ERR(ER::Code::EXPECTED_OPERAND,
            t,
            "expected an expression, found '%s'",
-           std::to_string(t.str).c_str());
+           std::string(t.str).c_str());
   }
   }
 
@@ -402,29 +399,29 @@ Parser::parse_primary()
                dot,
                "a struct literal must be qualified with a type name, e.g. "
                "Type.{ ... }");
-      UT::String tn = std::get<ExVar>(base->as).name;
-      char       c  = tn.m_len ? tn.m_mem[0] : '\0';
+      UT::Vu tn = std::get<ExVar>(base->as).name;
+      char   c  = tn.size() ? tn.data()[0] : '\0';
       if (c < 'A' || c > 'Z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                dot,
                "a struct literal's type name must start uppercase, found '%s'",
-               std::to_string(tn).c_str());
+               std::string(tn).c_str());
       base = CTX(parse_struct_lit(tn),
                  dot,
                  "in this '%s' struct literal",
-                 std::to_string(tn).c_str());
+                 std::string(tn).c_str());
     }
     else
     {
       // `record.field` -- the field is a lowercase variable name.
       LX::Token fld
         = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
-      char c = fld.str.m_len ? fld.str.m_mem[0] : '\0';
+      char c = fld.str.size() ? fld.str.data()[0] : '\0';
       if (c >= 'A' && c <= 'Z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                fld,
                "a field name must start lowercase, found '%s'",
-               std::to_string(fld.str).c_str());
+               std::string(fld.str).c_str());
       base = mk_field(base, fld.str);
     }
   }
@@ -432,26 +429,25 @@ Parser::parse_primary()
   return { true, base, {} };
 }
 
-R
+RExpr
 Parser::parse_prefix()
 {
   LX::Token t = TRY(m_lex.peek());
   if (LX::TokenTag::Op == t.tag)
   {
-    if (const char *const *name
-        = UT::try_lookup(unop_db, std::to_string(t.str)))
+    if (const char *const *name = UT::try_lookup(unop_db, std::string(t.str)))
     {
       m_lex.next();
       Expr *operand = TRY(parse_expr(PREFIX_BP));
       return { true,
-               mk_unop(UT::String{ *name, std::strlen(*name) }, operand),
+               mk_unop(UT::Vu{ *name, std::strlen(*name) }, operand),
                {} };
     }
   }
   return parse_primary();
 }
 
-R
+RExpr
 Parser::parse_expr(
   int min_bp)
 {
@@ -463,12 +459,12 @@ Parser::parse_expr(
 
     if (LX::TokenTag::Op == t.tag)
     {
-      const Bp *bp = UT::try_lookup(infix_db, std::to_string(t.str));
+      const Bp *bp = UT::try_lookup(infix_db, std::string(t.str));
       if (!bp)
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                t,
                "operator '%s' cannot be used here",
-               std::to_string(t.str).c_str());
+               std::string(t.str).c_str());
       if (bp->l < min_bp) break;
       TRY(m_lex.next()); // consume the operator
       Expr *rhs = TRY(parse_expr(bp->r));
@@ -489,14 +485,14 @@ Parser::parse_expr(
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              t,
              "Unexpected symbol '%s'",
-             std::to_string(t.str).c_str());
+             std::string(t.str).c_str());
     }
   }
 
   return { true, lhs, {} };
 }
 
-R
+RExpr
 Parser::parse_group()
 {
   LX::Token lp = TRY(m_lex.next()); // '('
@@ -513,7 +509,7 @@ Parser::parse_group()
   return { true, e, {} };
 }
 
-R
+RExpr
 Parser::parse_let()
 {
   LX::Token kw = TRY(m_lex.next()); // 'let'
@@ -525,7 +521,7 @@ Parser::parse_let()
   bool      is_pat = false;
   if (LX::TokenTag::Word == la.tag)
   {
-    char c = la.str.m_len ? la.str.m_mem[0] : '\0';
+    char c = la.str.size() ? la.str.data()[0] : '\0';
     is_pat = (c >= 'A' && c <= 'Z');
   }
 
@@ -533,12 +529,12 @@ Parser::parse_let()
   {
     Pattern *pat = TRY(parse_pattern());
     TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' pattern"));
-    Expr *val  = CTX(parse_expr(0), la, "in this 'let' binding");
+    Expr *val = CTX(parse_expr(0), la, "in this 'let' binding");
     TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
     Expr *body = CTX(parse_expr(0), kw, "in the body of this 'let'");
 
     ExLet lt;
-    lt.var  = UT::String{};
+    lt.var  = UT::Vu{};
     lt.val  = val;
     lt.body = body;
     lt.pat  = pat;
@@ -554,7 +550,7 @@ Parser::parse_let()
   Expr *val = CTX(parse_expr(0),
                   name,
                   "in the binding of 'let %s'",
-                  std::to_string(name.str).c_str());
+                  std::string(name.str).c_str());
 
   TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
 
@@ -562,7 +558,7 @@ Parser::parse_let()
   return { true, mk_let(name.str, val, body), {} };
 }
 
-R
+RExpr
 Parser::parse_if()
 {
   LX::Token kw   = TRY(m_lex.next()); // 'if'
@@ -577,22 +573,22 @@ Parser::parse_if()
     {
       m_lex.next(); // 'is'
       Pattern *pat = TRY(parse_pattern());
-      TRY(expect(LX::TokenTag::KwThen, "expected 'then' after the match pattern"));
+      TRY(expect(LX::TokenTag::KwThen,
+                 "expected 'then' after the match pattern"));
       Expr *body = CTX(parse_expr(0), kw, "in this match arm");
       arms.push(MatchArm{ pat, body });
     }
     LX::Token els = TRY(expect(LX::TokenTag::KwElse,
                                "expected another 'is' arm or 'else' to close "
                                "the match"));
-    Expr *alt = CTX(parse_expr(0), els, "in the else branch of this match");
+    Expr     *alt = CTX(parse_expr(0), els, "in the else branch of this match");
 
     Expr e{ ExprTag::Match };
     e.as = ExMatch{ cond, arms, alt };
     return { true, alloc(e), {} };
   }
 
-  TRY(
-    expect(LX::TokenTag::KwThen, "expected 'then' after the 'if' condition"));
+  TRY(expect(LX::TokenTag::KwThen, "expected 'then' after the 'if' condition"));
 
   Expr *then = CTX(parse_expr(0), kw, "in the then-branch of this 'if'");
 
@@ -606,7 +602,7 @@ Parser::parse_if()
 // A single pattern: `_`, a variable, a literal, or a `Type.{ ... }` struct
 // pattern. Literals and literal-bearing struct patterns are refutable; the LL
 // pass rejects them where only irrefutable patterns are allowed (lambda / let).
-ER::Result<Pattern *>
+RPattern
 Parser::parse_pattern()
 {
   LX::Token t = TRY(m_lex.peek());
@@ -615,34 +611,31 @@ Parser::parse_pattern()
   case LX::TokenTag::Int:
     m_lex.next();
     return { true,
-             alloc_pat(Pattern{ PatTag::Int,
-                                PatInt{ std::get<LX::TkInt>(t.as).value,
-                                        t.str,
-                                        t.line } }),
+             alloc_pat(Pattern{
+               PatTag::Int,
+               PatInt{ std::get<LX::TkInt>(t.as).value, t.str, t.line } }),
              {} };
   case LX::TokenTag::Real:
     m_lex.next();
     return { true,
-             alloc_pat(Pattern{ PatTag::Real,
-                                PatReal{ std::get<LX::TkReal>(t.as).value,
-                                         t.str,
-                                         t.line } }),
+             alloc_pat(Pattern{
+               PatTag::Real,
+               PatReal{ std::get<LX::TkReal>(t.as).value, t.str, t.line } }),
              {} };
   case LX::TokenTag::Str:
     m_lex.next();
     return { true,
-             alloc_pat(Pattern{ PatTag::Str,
-                                PatStr{ std::get<LX::TkStr>(t.as).value,
-                                        t.str,
-                                        t.line } }),
+             alloc_pat(Pattern{
+               PatTag::Str,
+               PatStr{ std::get<LX::TkStr>(t.as).value, t.str, t.line } }),
              {} };
   case LX::TokenTag::Word:
   {
     m_lex.next();
-    UT::String nm = t.str;
-    if (nm.m_len == 1 && nm.m_mem[0] == '_')
+    UT::Vu nm = t.str;
+    if (nm.size() == 1 && nm.data()[0] == '_')
       return { true, alloc_pat(Pattern{ PatTag::Wild, PatWild{} }), {} };
-    char c = nm.m_len ? nm.m_mem[0] : '\0';
+    char c = nm.size() ? nm.data()[0] : '\0';
     if (c >= 'A' && c <= 'Z') return parse_struct_pattern(nm, t);
     return { true, alloc_pat(Pattern{ PatTag::Var, PatVar{ nm } }), {} };
   }
@@ -650,22 +643,24 @@ Parser::parse_pattern()
   {
     const char *desc = tok_desc(t);
     if (desc)
-      EX_ERR(ER::Code::EXPECTED_OPERAND, t, "expected a pattern, found %s", desc);
+      EX_ERR(
+        ER::Code::EXPECTED_OPERAND, t, "expected a pattern, found %s", desc);
     EX_ERR(ER::Code::EXPECTED_OPERAND,
            t,
            "expected a pattern, found '%s'",
-           std::to_string(t.str).c_str());
+           std::string(t.str).c_str());
   }
   }
 }
 
 // `Type.{ field-patterns }`. A field-pattern is either `name = subpat` (named)
-// or a bare sub-pattern. If any field is named, the pattern is in named mode and
-// bare lowercase entries pun (`name` == `name = name`); otherwise it is
-// positional. Mode/arity validation against the struct declaration happens in LL.
-ER::Result<Pattern *>
+// or a bare sub-pattern. If any field is named, the pattern is in named mode
+// and bare lowercase entries pun (`name` == `name = name`); otherwise it is
+// positional. Mode/arity validation against the struct declaration happens in
+// LL.
+RPattern
 Parser::parse_struct_pattern(
-  UT::String type_name, const LX::Token &tn)
+  UT::Vu type_name, const LX::Token &tn)
 {
   TRY(expect(LX::TokenTag::Dot,
              "expected '.{' after a struct pattern's type name"));
@@ -681,16 +676,17 @@ Parser::parse_struct_pattern(
 
     if (LX::TokenTag::Dot == TRY(m_lex.peek()).tag)
     {
-      // A named field: `.field = subpat`, or `.field` punning to `.field = field`.
+      // A named field: `.field = subpat`, or `.field` punning to `.field =
+      // field`.
       m_lex.next(); // '.'
       LX::Token fname
         = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
-      char c = fname.str.m_len ? fname.str.m_mem[0] : '\0';
+      char c = fname.str.size() ? fname.str.data()[0] : '\0';
       if (c < 'a' || c > 'z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                fname,
                "a field name must start lowercase, found '%s'",
-               std::to_string(fname.str).c_str());
+               std::string(fname.str).c_str());
 
       Pattern *sub;
       if (LX::TokenTag::Eq == TRY(m_lex.peek()).tag)
@@ -706,7 +702,7 @@ Parser::parse_struct_pattern(
     else
     {
       Pattern *sub = TRY(parse_pattern());
-      fields.push(FieldPat{ UT::String{}, sub });
+      fields.push(FieldPat{ UT::Vu{}, sub });
     }
 
     if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
@@ -716,20 +712,20 @@ Parser::parse_struct_pattern(
 
   // A struct pattern is all-named (`.field`) or all-positional, not a mix.
   if (any_named)
-    for (size_t i = 0; i < fields.m_len; ++i)
-      if (!fields[i].name.m_len)
+    for (size_t i = 0; i < fields.size(); ++i)
+      if (!fields[i].name.size())
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                tn,
                "struct pattern '%s' mixes named ('.field') and positional "
                "entries; use one or the other",
-               std::to_string(type_name).c_str());
+               std::string(type_name).c_str());
 
   Pattern pat{ PatTag::Struct,
                PatStruct{ type_name, fields, tn.str, tn.line } };
   return { true, alloc_pat(pat), {} };
 }
 
-R
+RExpr
 Parser::parse_closure()
 {
   LX::Token bs = TRY(m_lex.next()); // '\'
@@ -749,17 +745,17 @@ Parser::parse_closure()
   // Curried sugar: `\p1 p2 .. pn = e` desugars to `\p1 = \p2 = .. = e`. A plain
   // variable/wildcard parameter stays an ordinary binder; a structural pattern
   // is carried on `param_pat` for the LL pass to lower.
-  for (size_t i = params.m_len; i-- > 0;)
+  for (size_t i = params.size(); i-- > 0;)
   {
     Pattern *p = params[i];
     if (PatTag::Var == p->tag)
       body = mk_fndef(std::get<PatVar>(p->as).name, body);
     else if (PatTag::Wild == p->tag)
-      body = mk_fndef(UT::String{ "_", 1 }, body);
+      body = mk_fndef(UT::Vu{ "_", 1 }, body);
     else
     {
       ExFnDef fn;
-      fn.param     = UT::String{};
+      fn.param     = UT::Vu{};
       fn.body      = body;
       fn.param_pat = p;
       Expr e{ ExprTag::FnDef };
@@ -770,7 +766,7 @@ Parser::parse_closure()
   return { true, body, {} };
 }
 
-R
+RExpr
 Parser::parse_global()
 {
   LX::Token marker = TRY(m_lex.peek());
@@ -790,7 +786,7 @@ Parser::parse_global()
     EX_ERR(ER::Code::EXPECTED_GLOBAL,
            marker,
            "expected a global definition (starting with '$'), found '%s'",
-           std::to_string(marker.str).c_str());
+           std::string(marker.str).c_str());
   }
   m_lex.next(); // consume '$'
 
@@ -813,7 +809,7 @@ Parser::parse_global()
     sig = CTX(parse_type(),
               name,
               "in the type signature of global '%s'",
-              std::to_string(name.str).c_str());
+              std::string(name.str).c_str());
   }
 
   TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
@@ -826,23 +822,23 @@ Parser::parse_global()
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
              name,
              "extern global '%s' requires a type signature",
-             std::to_string(name.str).c_str());
+             std::string(name.str).c_str());
     Expr *ext = CTX(parse_extern(),
                     name,
                     "in the definition of extern '%s'",
-                    std::to_string(name.str).c_str());
+                    std::string(name.str).c_str());
     return { true, mk_def(name.str, sig, ext), {} };
   }
 
   Expr *body = CTX(parse_expr(0),
                    name,
                    "in the definition of global '%s'",
-                   std::to_string(name.str).c_str());
+                   std::string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
 }
 
-R
+RExpr
 Parser::parse_extern()
 {
   LX::Token at = TRY(m_lex.peek());
@@ -850,7 +846,7 @@ Parser::parse_extern()
     EX_ERR(ER::Code::UNSUPPORTED,
            at,
            "unknown intrinsic '%s' (only '@extern' is supported)",
-           std::to_string(at.str).c_str());
+           std::string(at.str).c_str());
   m_lex.next(); // '@extern'
 
   TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
@@ -870,16 +866,16 @@ Parser::parse_extern()
 // A struct declaration body: a comma-separated `field : type` list, trailing
 // comma allowed, ending at the next global ('$') or end of input. The name
 // token (already consumed by parse_global) is the struct's type name.
-R
+RExpr
 Parser::parse_struct_decl(
   const LX::Token &name)
 {
-  char nc = name.str.m_len ? name.str.m_mem[0] : '\0';
+  char nc = name.str.size() ? name.str.data()[0] : '\0';
   if (nc < 'A' || nc > 'Z')
     EX_ERR(ER::Code::EXPECTED_GLOBAL,
            name,
            "a struct type name must start uppercase, found '%s'",
-           std::to_string(name.str).c_str());
+           std::string(name.str).c_str());
 
   UT::Vec<FieldDecl> fields{ m_arena };
   for (;;)
@@ -888,18 +884,18 @@ Parser::parse_struct_decl(
     if (LX::TokenTag::Dollar == tag || LX::TokenTag::Eof == tag) break;
 
     LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
-    char      fc    = fname.str.m_len ? fname.str.m_mem[0] : '\0';
+    char      fc    = fname.str.size() ? fname.str.data()[0] : '\0';
     if (fc >= 'A' && fc <= 'Z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              fname,
              "a struct field name must start lowercase, found '%s'",
-             std::to_string(fname.str).c_str());
+             std::string(fname.str).c_str());
 
     TRY(expect(LX::TokenTag::Colon, "expected ':' after the field name"));
     Ty *ty = CTX(parse_type(),
                  fname,
                  "in the type of field '%s'",
-                 std::to_string(fname.str).c_str());
+                 std::string(fname.str).c_str());
     fields.push(FieldDecl{ fname.str, ty });
 
     if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
@@ -914,9 +910,9 @@ Parser::parse_struct_decl(
 // A struct literal `Type.{ field = expr, ... }`. Called with the leading `.`
 // already consumed and `type_name` resolved from the qualifying type; the next
 // token is the opening '{'.
-R
+RExpr
 Parser::parse_struct_lit(
-  UT::String type_name)
+  UT::Vu type_name)
 {
   TRY(expect(LX::TokenTag::LBrace, "expected '{' after the struct type name"));
 
@@ -925,14 +921,15 @@ Parser::parse_struct_lit(
   {
     if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
 
-    TRY(expect(LX::TokenTag::Dot, "expected '.' before the field name (fields "
-                                  "are written '.field = value')"));
+    TRY(expect(LX::TokenTag::Dot,
+               "expected '.' before the field name (fields "
+               "are written '.field = value')"));
     LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
     TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
     Expr *val = CTX(parse_expr(0),
                     fname,
                     "in the value of field '%s'",
-                    std::to_string(fname.str).c_str());
+                    std::string(fname.str).c_str());
     fields.push(FieldInit{ fname.str, val });
 
     if (LX::TokenTag::Comma != TRY(m_lex.peek()).tag) break;
@@ -953,7 +950,7 @@ Parser::parse_struct_lit(
  * atom ::= UpperWord | TyVar | '(' type ')'
  *------------------------------------------------------------------------------*/
 
-ER::Result<Ty *>
+RTy
 Parser::parse_type_atom()
 {
   LX::Token t = TRY(m_lex.peek());
@@ -961,12 +958,12 @@ Parser::parse_type_atom()
   {
   case LX::TokenTag::Word:
   {
-    char c = t.str.m_len ? t.str.m_mem[0] : '\0';
+    char c = t.str.size() ? t.str.data()[0] : '\0';
     if (c < 'A' || c > 'Z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              t,
              "expected a type name (must start uppercase), found '%s'",
-             std::to_string(t.str).c_str());
+             std::string(t.str).c_str());
     m_lex.next();
     return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str } }), {} };
   }
@@ -974,7 +971,7 @@ Parser::parse_type_atom()
   {
     m_lex.next();
     // strip the leading backtick for the stored name
-    UT::String nm{ t.str.m_mem + 1, t.str.m_len - 1 };
+    UT::Vu nm{ t.str.data() + 1, t.str.size() - 1 };
     return { true, mk_ty(Ty{ TyTag::Var, TyVar{ nm } }), {} };
   }
   case LX::TokenTag::LParen:
@@ -993,11 +990,11 @@ Parser::parse_type_atom()
     EX_ERR(ER::Code::EXPECTED_OPERAND,
            t,
            "expected a type, found '%s'",
-           std::to_string(t.str).c_str());
+           std::string(t.str).c_str());
   }
 }
 
-ER::Result<Ty *>
+RTy
 Parser::parse_type()
 {
   Ty *lhs = TRY(parse_type_atom());
@@ -1016,7 +1013,7 @@ Parser::recover()
 {
   for (;;)
   {
-    LX::R pk = m_lex.peek();
+    LX::RToken pk = m_lex.peek();
     if (!pk.ok) return;
     LX::TokenTag tag = pk.value.tag;
     if (LX::TokenTag::Eof == tag || LX::TokenTag::Dollar == tag
@@ -1031,7 +1028,7 @@ Parser::operator()()
 {
   for (;;)
   {
-    LX::R pk = m_lex.peek();
+    LX::RToken pk = m_lex.peek();
     if (!pk.ok)
     {
       m_diags.push_back(pk.err);
@@ -1040,7 +1037,7 @@ Parser::operator()()
     if (LX::TokenTag::Eof == pk.value.tag) return;
 
     size_t before = m_lex.mark();
-    R      r      = parse_global();
+    RExpr  r      = parse_global();
     if (r.ok)
     {
       m_exprs.push(*r.value);
@@ -1084,8 +1081,8 @@ pprint_ty(
   if (!t) return "?";
   switch (t->tag)
   {
-  case TyTag::Con: return std::to_string(std::get<TyCon>(t->as).name);
-  case TyTag::Var: return "`" + std::to_string(std::get<TyVar>(t->as).name);
+  case TyTag::Con: return std::string(std::get<TyCon>(t->as).name);
+  case TyTag::Var: return "`" + std::string(std::get<TyVar>(t->as).name);
   case TyTag::Arrow:
   {
     auto &ar = std::get<TyArrow>(t->as);
@@ -1108,14 +1105,13 @@ pprint(
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
   case ExprTag::Real:
     return pad + std::to_string(std::get<ExReal>(e->as).value);
-  case ExprTag::Var: return pad + std::to_string(std::get<ExVar>(e->as).name);
+  case ExprTag::Var: return pad + std::string(std::get<ExVar>(e->as).name);
   case ExprTag::Str:
-    return pad + "\"" + std::to_string(std::get<ExStr>(e->as).value) + "\"";
+    return pad + "\"" + std::string(std::get<ExStr>(e->as).value) + "\"";
   case ExprTag::Let:
   {
-    auto       &lt = std::get<ExLet>(e->as);
-    std::string binder
-      = lt.pat ? pprint(lt.pat) : std::to_string(lt.var);
+    auto       &lt     = std::get<ExLet>(e->as);
+    std::string binder = lt.pat ? pprint(lt.pat) : std::string(lt.var);
     return pad + "let " + binder + " =\n" + pprint(lt.val, level + 1) + "\n"
            + pad + "in\n" + pprint(lt.body, level + 1);
   }
@@ -1127,7 +1123,7 @@ pprint(
   {
     auto       &m = std::get<ExMatch>(e->as);
     std::string s = pad + "match " + pprint(m.scrut, 0);
-    for (size_t i = 0; i < m.arms.m_len; ++i)
+    for (size_t i = 0; i < m.arms.size(); ++i)
       s += "\n" + pad + "is " + pprint(m.arms[i].pat) + " then\n"
            + pprint(m.arms[i].body, level + 1);
     return s + "\n" + pad + "else\n" + pprint(m.alt, level + 1);
@@ -1136,7 +1132,7 @@ pprint(
   {
     auto       &fn = std::get<ExFnDef>(e->as);
     std::string binder
-      = fn.param_pat ? pprint(fn.param_pat) : std::to_string(fn.param);
+      = fn.param_pat ? pprint(fn.param_pat) : std::string(fn.param);
     return pad + "\\" + binder + " =\n" + pprint(fn.body, level + 1);
   }
   case ExprTag::App:
@@ -1146,35 +1142,35 @@ pprint(
            + pprint(app.arg, level + 1) + ")";
   }
   case ExprTag::Def:
-    return pad + "$" + std::to_string(std::get<ExDef>(e->as).name) + " =\n"
+    return pad + "$" + std::string(std::get<ExDef>(e->as).name) + " =\n"
            + pprint(std::get<ExDef>(e->as).def, level + 1);
   case ExprTag::Extern:
-    return pad + "@extern(\"" + std::to_string(std::get<ExExtern>(e->as).symbol)
-           + "\", \"" + std::to_string(std::get<ExExtern>(e->as).lib) + "\")";
+    return pad + "@extern(\"" + std::string(std::get<ExExtern>(e->as).symbol)
+           + "\", \"" + std::string(std::get<ExExtern>(e->as).lib) + "\")";
   case ExprTag::StructDecl:
   {
     auto       &sd = std::get<ExStructDecl>(e->as);
-    std::string s  = pad + "$" + std::to_string(sd.name) + " : Struct";
-    for (size_t i = 0; i < sd.fields.m_len; ++i)
+    std::string s  = pad + "$" + std::string(sd.name) + " : Struct";
+    for (size_t i = 0; i < sd.fields.size(); ++i)
       s += "\n" + std::string((level + 1) * 2, ' ')
-           + std::to_string(sd.fields[i].name) + " : "
+           + std::string(sd.fields[i].name) + " : "
            + pprint_ty(sd.fields[i].ty);
     return s;
   }
   case ExprTag::StructLit:
   {
     auto       &sl = std::get<ExStructLit>(e->as);
-    std::string s  = pad + std::to_string(sl.type_name) + ".{";
-    for (size_t i = 0; i < sl.fields.m_len; ++i)
+    std::string s  = pad + std::string(sl.type_name) + ".{";
+    for (size_t i = 0; i < sl.fields.size(); ++i)
       s += "\n" + std::string((level + 1) * 2, ' ') + "."
-           + std::to_string(sl.fields[i].name) + " =\n"
+           + std::string(sl.fields[i].name) + " =\n"
            + pprint(sl.fields[i].val, level + 2);
     return s + ")";
   }
   case ExprTag::Field:
   {
     auto &fa = std::get<ExField>(e->as);
-    return pad + "(field " + std::to_string(fa.field) + "\n"
+    return pad + "(field " + std::string(fa.field) + "\n"
            + pprint(fa.record, level + 1) + ")";
   }
   case ExprTag::Unknown: return pad + "?unknown";
@@ -1191,20 +1187,20 @@ pprint(
   switch (p->tag)
   {
   case PatTag::Wild: return "_";
-  case PatTag::Var : return std::to_string(std::get<PatVar>(p->as).name);
+  case PatTag::Var : return std::string(std::get<PatVar>(p->as).name);
   case PatTag::Int : return std::to_string(std::get<PatInt>(p->as).value);
   case PatTag::Real: return std::to_string(std::get<PatReal>(p->as).value);
-  case PatTag::Str :
-    return "\"" + std::to_string(std::get<PatStr>(p->as).value) + "\"";
+  case PatTag::Str:
+    return "\"" + std::string(std::get<PatStr>(p->as).value) + "\"";
   case PatTag::Struct:
   {
     auto       &ps = std::get<PatStruct>(p->as);
-    std::string s  = std::to_string(ps.type_name) + ".{";
-    for (size_t i = 0; i < ps.fields.m_len; ++i)
+    std::string s  = std::string(ps.type_name) + ".{";
+    for (size_t i = 0; i < ps.fields.size(); ++i)
     {
       if (i) s += ", ";
-      if (ps.fields[i].name.m_len)
-        s += "." + std::to_string(ps.fields[i].name) + " = ";
+      if (ps.fields[i].name.size())
+        s += "." + std::string(ps.fields[i].name) + " = ";
       s += pprint(ps.fields[i].pat);
     }
     return s + "}";

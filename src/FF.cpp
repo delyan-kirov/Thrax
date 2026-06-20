@@ -13,8 +13,8 @@ namespace FF
 
 ssize_t
 call(
-  UT::String,
-  UT::String,
+  UT::Vu,
+  UT::Vu,
   const std::vector<std::string> &,
   const std::string &,
   const std::vector<ssize_t> &)
@@ -28,10 +28,10 @@ call(
 
 } // namespace FF
 
-#include <ffi.h>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <ffi.h>
 #include <unordered_map>
 
 namespace FF
@@ -140,14 +140,14 @@ extend(
 
 ssize_t
 call(
-  UT::String                      lib,
-  UT::String                      symbol,
+  UT::Vu                          lib,
+  UT::Vu                          symbol,
   const std::vector<std::string> &arg_types,
   const std::string              &ret_type,
   const std::vector<ssize_t>     &args)
 {
-  std::string libs{ lib.m_mem, lib.m_len };
-  std::string syms{ symbol.m_mem, symbol.m_len };
+  std::string libs{ lib };
+  std::string syms{ symbol };
 
   size_t n = args.size();
 

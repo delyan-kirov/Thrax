@@ -37,7 +37,7 @@ struct TkReal
 };
 struct TkStr
 {
-  UT::String value; // unescaped contents (Token::str still holds the quotes)
+  UT::Vu value; // unescaped contents (Token::str still holds the quotes)
 };
 struct TkWord
 {
@@ -164,13 +164,13 @@ using TokenData =
 
 struct Token
 {
-  TokenTag   tag;
-  UT::String str;  // lexeme view into the source -> pointer, offset and length
-  size_t     line; // 1-based source line
-  TokenData  as;
+  TokenTag  tag;
+  UT::Vu    str;  // lexeme view into the source -> pointer, offset and length
+  size_t    line; // 1-based source line
+  TokenData as;
 };
 
-using R      = ER::Result<Token>;
+using RToken = ER::Result<Token>;
 using Tokens = std::vector<Token>;
 
 /*------------------------------------------------------------------------------
@@ -183,40 +183,43 @@ public:
   AR::Arena &m_arena;
 
 public:
-  Lexer(UT::String input, UT::String filename, AR::Arena &arena);
+  Lexer(UT::Vu input, UT::Vu filename, AR::Arena &arena);
 
-  UT_NODISCARD R peek(size_t n = 0);
-  R              next();
-  size_t         mark() const;
-  void           reset(size_t m);
-
-private:
-  UT::String m_input;
-  UT::String m_filename;
-  size_t     m_cursor;
-  size_t     m_line;
-  Tokens     m_buffer;
-  size_t     m_pos; // raw buffer index of the next token to hand out
+  UT_NODISCARD RToken peek(size_t n = 0);
+  RToken              next();
+  size_t              mark() const;
+  void                reset(size_t m);
 
 private:
-  UT_NODISCARD R lex_one();
-  UT_NODISCARD R lex_comment(size_t start, size_t line);
-  UT_NODISCARD R lex_string(size_t start, size_t line);
-  UT_NODISCARD R lex_number(size_t start, size_t line);
-  UT_NODISCARD R lex_radix(
+  UT::Vu m_input;
+  UT::Vu m_filename;
+  size_t m_cursor;
+  size_t m_line;
+  Tokens m_buffer;
+  size_t m_pos; // raw buffer index of the next token to hand out
+
+private:
+  UT_NODISCARD RToken lex_one();
+  UT_NODISCARD RToken lex_comment(size_t start, size_t line);
+  UT_NODISCARD RToken lex_string(size_t start, size_t line);
+  UT_NODISCARD RToken lex_number(size_t start, size_t line);
+  UT_NODISCARD RToken lex_radix(
     size_t start, size_t line, bool (*member)(char), int base, size_t skip);
-  UT_NODISCARD R emit_int(size_t start, size_t line, const char *num, int base);
-  UT_NODISCARD R emit_real(size_t start, size_t line);
-  UT_NODISCARD R lex_word(size_t start, size_t line);
-  UT_NODISCARD R lex_tyvar(size_t start, size_t line);
-  UT_NODISCARD R lex_at(size_t start, size_t line);
-  UT_NODISCARD R lex_symbol(size_t start, size_t line);
-  void           skip_ws();
-  void           scan(bool (*member)(char)); // advance over a run of digits
+  UT_NODISCARD RToken emit_int(size_t      start,
+                               size_t      line,
+                               const char *num,
+                               int         base);
+  UT_NODISCARD RToken emit_real(size_t start, size_t line);
+  UT_NODISCARD RToken lex_word(size_t start, size_t line);
+  UT_NODISCARD RToken lex_tyvar(size_t start, size_t line);
+  UT_NODISCARD RToken lex_at(size_t start, size_t line);
+  UT_NODISCARD RToken lex_symbol(size_t start, size_t line);
+  void                skip_ws();
+  void              scan(bool (*member)(char)); // advance over a run of digits
   UT_NODISCARD char cur() const;
   UT_NODISCARD char at(size_t i) const;
-  UT_NODISCARD UT::String slice(size_t start) const;
-  UT_NODISCARD Token      mk(TokenTag tag, size_t start, size_t line) const;
+  UT_NODISCARD UT::Vu slice(size_t start) const;
+  UT_NODISCARD Token  mk(TokenTag tag, size_t start, size_t line) const;
 };
 
 /*------------------------------------------------------------------------------

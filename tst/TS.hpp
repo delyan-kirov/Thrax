@@ -13,11 +13,11 @@ namespace TS
 
 // Interpret a source file as a smoke test: parse, type-check and evaluate every
 // top-level definition. interpret_file prints any parse/type diagnostics (to
-// stderr); a clean run reports a single green OK on stdout, otherwise a red FAIL
-// on stderr. No value dumps.
+// stderr); a clean run reports a single green OK on stdout, otherwise a red
+// FAIL on stderr. No value dumps.
 inline void
 tst_file(
-  UT::String file)
+  UT::Vu file)
 {
   IT::StatEnv env = DR::interpret_file(file);
 
@@ -25,14 +25,14 @@ tst_file(
   // messages have already been printed by interpret_file.
   if (env.empty())
   {
-    fprintf(stderr, "\033[1;31mFAIL\033[0m [%s]\n", file.m_mem);
+    fprintf(stderr, "\033[1;31mFAIL\033[0m [%s]\n", file.data());
     return;
   }
 
   // Force every definition so a runtime fault surfaces here.
   for (auto &kv : env) IT::eval(kv.second, {}, env);
 
-  printf("\033[1;32mOK\033[0m   [%s]\n", file.m_mem);
+  printf("\033[1;32mOK\033[0m   [%s]\n", file.data());
 }
 
 // Collect every file in `dir`, sorted for stable output.
@@ -67,7 +67,7 @@ run_all()
 {
   for (const std::string &path : scan_dir("./dat"))
   {
-    tst_file(UT::String{ path.c_str(), path.size() });
+    tst_file(UT::Vu{ path.c_str(), path.size() });
   }
 }
 
