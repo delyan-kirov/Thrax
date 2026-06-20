@@ -365,6 +365,220 @@ call_extern(
 
 } // namespace
 
+namespace
+{
+
+/*------------------------------------------------------------------------------
+ *\ANF -- A-Normal Form
+ *
+ * Rewrite the freshly built Lm tree into A-normal form before De Bruijn
+ * indexing (assign_id) runs. After this pass:
+ *
+ *   - every application's operator and operand is an *atom* (a variable,
+ *     literal, or lambda); any non-atomic sub-expression is hoisted into a
+ *     fresh `let`, so evaluation order is explicit and named;
+ *   - every `App` carries `tail`, set iff the call is in genuine program tail
+ *     position. A non-tail `if` is bound to a `let` (its branches normalized as
+ *     value producers) rather than inlined into the continuation, so no code is
+ *     duplicated and branch calls are marked accurately.
+ *
+ * This is the standard two-function transform (Flanagan et al., "The Essence of
+ * Compiling with Continuations"): `norm` threads a continuation `k` that
+ * consumes the produced value-expression and returns the rest; `norm_name`
+ * forces that value to be an atom. The trampoline in eval reads the resulting
+ * shape directly, and the named core is the substrate a later optimizer (e.g.
+ * list fusion over lazy sum types) would rewrite against.
+ *-----------------------------------------------------------------------------*/
+
+using Cont = std::function<pLm(pLm)>;
+
+// An atom is a value-expression that needs no further evaluation to name: a
+// literal, a variable, a lambda, or an already-opaque runtime value.
+bool
+is_atom(
+  const pLm &e)
+{
+  switch (e->tag)
+  {
+  case LTag::INT:
+  case LTag::REAL:
+  case LTag::STR:
+  case LTag::VAR:
+  case LTag::FUN:
+  case LTag::EXTERN:
+  case LTag::BUILTIN:
+  case LTag::REC:
+  case LTag::UNK    : return true;
+  default           : return false;
+  }
+}
+
+pLm
+mk(
+  Lm lm)
+{
+  return std::make_shared<Lm>(std::move(lm));
+}
+pLm
+mk_varref(
+  const std::string &name)
+{
+  return mk(Lm{ .tag = LTag::VAR, .as = Var{ name, 0, {} } });
+}
+pLm
+mk_let(
+  const Var &var, pLm val, pLm body)
+{
+  return mk(Lm{ .tag = LTag::LET, .as = Let{ var, val, body } });
+}
+
+struct Anf
+{
+  size_t counter = 0;
+
+  // A fresh binder name; the '%' prefix cannot collide with a user identifier.
+  std::string
+  fresh()
+  {
+    return "%a" + std::to_string(counter++);
+  }
+
+  // Normalize a whole expression in tail position: its value is the answer.
+  pLm
+  term(
+    pLm e)
+  {
+    return norm(e, true, [](pLm v) { return v; });
+  }
+
+  // Normalize `e`; `tail` marks tail position (then `k` is the identity that
+  // returns the answer). `k` receives the produced value-expression.
+  pLm norm(pLm e, bool tail, const Cont &k);
+
+  // Normalize `e` and ensure the result handed to `k` is an atom, hoisting a
+  // non-atom into a fresh `let`. Always a non-tail position.
+  pLm
+  norm_name(
+    pLm e, const Cont &k)
+  {
+    return norm(e, false, [this, k](pLm e2) {
+      if (is_atom(e2)) return k(e2);
+      std::string t = fresh();
+      return mk_let(Var{ t, 0, {} }, e2, k(mk_varref(t)));
+    });
+  }
+
+  // Normalize struct fields left-to-right into atoms, then rebuild the struct.
+  pLm
+  norm_struct(
+    Struct                                   s,
+    size_t                                   i,
+    std::vector<std::pair<std::string, pLm>> acc,
+    const Cont                              &k)
+  {
+    if (i == s.fields.size())
+      return k(mk(Lm{ .tag = LTag::STRUCT, .as = Struct{ s.name, acc } }));
+    return norm_name(s.fields[i].second, [this, s, i, acc, k](pLm a) {
+      auto acc2 = acc;
+      acc2.push_back({ s.fields[i].first, a });
+      return norm_struct(s, i + 1, acc2, k);
+    });
+  }
+};
+
+pLm
+Anf::norm(
+  pLm e, bool tail, const Cont &k)
+{
+  switch (e->tag)
+  {
+  case LTag::INT:
+  case LTag::REAL:
+  case LTag::STR:
+  case LTag::VAR:
+  case LTag::EXTERN:
+  case LTag::BUILTIN:
+  case LTag::REC:
+  case LTag::UNK    : return k(e);
+
+  case LTag::FUN:
+  {
+    Fun f  = std::get<Fun>(e->as);
+    f.body = term(f.body); // a lambda body is itself in tail position
+    return k(mk(Lm{ .tag = LTag::FUN, .as = f }));
+  }
+
+  case LTag::APP:
+  {
+    App a = std::get<App>(e->as);
+    return norm_name(a.fn, [this, a, tail, k](pLm fn2) {
+      return norm_name(a.arg, [fn2, tail, k](pLm arg2) {
+        return k(mk(Lm{ .tag = LTag::APP, .as = App{ fn2, arg2, tail } }));
+      });
+    });
+  }
+
+  case LTag::IF:
+  {
+    If i = std::get<If>(e->as);
+    return norm_name(i.cond, [this, i, tail, k](pLm c2) {
+      pLm y, n;
+      if (tail)
+      {
+        // Tail `if`: each branch is itself in tail position.
+        y = term(i.yes);
+        n = term(i.no);
+      }
+      else
+      {
+        // Non-tail `if`: each branch produces the value the `if` is bound to,
+        // so its calls are not tail. Bind the whole `if` via `k`.
+        Cont id = [](pLm v) { return v; };
+        y       = norm(i.yes, false, id);
+        n       = norm(i.no, false, id);
+      }
+      return k(mk(Lm{ .tag = LTag::IF, .as = If{ c2, y, n } }));
+    });
+  }
+
+  case LTag::LET:
+  {
+    Let l = std::get<Let>(e->as);
+    // The bound value is never in tail position; the body inherits this `let`'s
+    // position and continuation.
+    return norm(l.val, false, [this, l, tail, k](pLm v2) {
+      return mk_let(l.var, v2, norm(l.body, tail, k));
+    });
+  }
+
+  case LTag::FIELD:
+  {
+    Field fa = std::get<Field>(e->as);
+    return norm_name(fa.record, [k, fa](pLm r2) {
+      return k(mk(Lm{ .tag = LTag::FIELD, .as = Field{ r2, fa.name } }));
+    });
+  }
+
+  case LTag::STRUCT: return norm_struct(std::get<Struct>(e->as), 0, {}, k);
+  }
+  return k(e);
+}
+
+// Normalize to ANF, then assign De Bruijn indices -- the finishing steps shared
+// by every definition before it is stored or evaluated.
+pLm
+finalize(
+  pLm node)
+{
+  Anf anf;
+  node = anf.term(node);
+  NameStack ns;
+  assign_id(node, ns);
+  return node;
+}
+
+} // namespace
+
 pLm
 exprs2pLm_helper(
   EX::Expr *expr, StatEnv &env)
@@ -457,9 +671,7 @@ exprs2pLm_helper(
       def = exprs2pLm_helper(gd.def, env);
     }
 
-    NameStack ns;
-    assign_id(def, ns);
-    env[name] = def;
+    env[name] = finalize(def);
     lm        = { .tag = LTag::VAR, .as = Var{ name, (size_t)-1, {} } };
   }
   break;
@@ -602,182 +814,212 @@ pLm
 exprs2pLm(
   EX::Expr *expr, StatEnv &env)
 {
-  pLm       node = exprs2pLm_helper(expr, env);
-  NameStack ns;
-  assign_id(node, ns);
-  return node;
+  return finalize(exprs2pLm_helper(expr, env));
 }
 
 pLm
 eval(
   pLm node, DynEnv denv, StatEnv &senv)
 {
-  UT_FAIL_IF(!node);
+  // Trampoline: a call in tail position rebinds `node`/`denv` and loops instead
+  // of recursing, so tail recursion runs in constant C++ stack. Non-tail
+  // sub-evaluations (an `if` condition, a `let` value, an application's atoms)
+  // still recurse -- their depth is the program's, not the call chain's.
+  //
+  // `live` keeps recursive `let` closures alive across the loop: such a closure
+  // is held only weakly by its own captured environment (the Rec cell, see
+  // LET), and the C++ stack used to keep it live across a call. Globals (empty
+  // env) and ordinary closures hold no Rec, so they are never added and plain
+  // tail recursion stays in constant space.
+  std::vector<pLm> live;
 
-  switch (node->tag)
+  for (;;)
   {
-  case LTag::INT:
-  case LTag::REAL:
-  case LTag::STR : return node;
+    UT_FAIL_IF(!node);
 
-  case LTag::VAR:
-  {
-    auto &v = std::get<Var>(node->as);
-
-    // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
-    auto bit = impls.find(v.unwrap);
-    if (bit != impls.end())
-      return std::make_shared<Lm>(
-        Lm{ .tag = LTag::BUILTIN,
-            .as  = Builtin{ v.unwrap, bit->second.arity, {} } });
-
-    // Global definition placeholder
-    if (v.idx == (size_t)-1) return node;
-
-    // Local variable (De Bruijn indexed)
-    if (v.idx > 0)
+    switch (node->tag)
     {
-      UT_FAIL_IF(v.idx > denv.size());
-      pLm entry = denv[denv.size() - v.idx];
-      // A `let` binding is held weakly while its value is built (see LET), to
-      // keep the closure graph acyclic; lock it to recover the value.
-      if (entry && LTag::REC == entry->tag)
+    case LTag::INT:
+    case LTag::REAL:
+    case LTag::STR : return node;
+
+    case LTag::VAR:
+    {
+      auto &v = std::get<Var>(node->as);
+
+      // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
+      auto bit = impls.find(v.unwrap);
+      if (bit != impls.end())
+        return std::make_shared<Lm>(
+          Lm{ .tag = LTag::BUILTIN,
+              .as  = Builtin{ v.unwrap, bit->second.arity, {} } });
+
+      // Global definition placeholder
+      if (v.idx == (size_t)-1) return node;
+
+      // Local variable (De Bruijn indexed)
+      if (v.idx > 0)
       {
-        pLm target = std::get<Rec>(entry->as).target.lock();
-        UT_FAIL_IF(!target);
-        return target;
+        UT_FAIL_IF(v.idx > denv.size());
+        pLm entry = denv[denv.size() - v.idx];
+        // A `let` binding is held weakly while its value is built (see LET), to
+        // keep the closure graph acyclic; lock it to recover the value.
+        if (entry && LTag::REC == entry->tag)
+        {
+          pLm target = std::get<Rec>(entry->as).target.lock();
+          UT_FAIL_IF(!target);
+          return target;
+        }
+        return entry;
       }
-      return entry;
+
+      // Global variable (idx == 0): jump to its definition in tail position.
+      auto it = senv.find(v.unwrap);
+      UT_FAIL_IF(it == senv.end());
+      node = it->second;
+      denv.clear();
+      continue;
     }
 
-    // Global variable (idx == 0, env empty)
-    auto it = senv.find(v.unwrap);
-    UT_FAIL_IF(it == senv.end());
-    return eval(it->second, {}, senv);
-  }
-
-  case LTag::FUN:
-  {
-    auto &f = std::get<Fun>(node->as);
-    Fun   closure;
-    closure.var  = Var{ f.var.unwrap, f.var.idx, denv };
-    closure.body = f.body;
-    return std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = closure });
-  }
-
-  case LTag::LET:
-  {
-    auto &l = std::get<Let>(node->as);
-    // Bind the name to a placeholder, then evaluate the value with that binding
-    // *weakly* in scope and back-patch the slot, so recursive references
-    // resolve without the value's captured environment forming a shared_ptr
-    // cycle with it. (For a non-recursive let the placeholder is simply never
-    // read before patching.) The body then evaluates with the binding held
-    // strongly, so a closure it returns keeps the value alive.
-    pLm value
-      = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
-    pLm self = std::make_shared<Lm>(
-      Lm{ .tag = LTag::REC, .as = Rec{ std::weak_ptr<Lm>(value) } });
-
-    DynEnv val_env = denv;
-    val_env.push_back(self);
-    *value = *eval(l.val, val_env, senv);
-
-    DynEnv body_env = denv;
-    body_env.push_back(value);
-    return eval(l.body, body_env, senv);
-  }
-
-  case LTag::APP:
-  {
-    auto &a = std::get<App>(node->as);
-
-    pLm closure = eval(a.fn, denv, senv);
-    pLm val     = eval(a.arg, denv, senv);
-
-    // Foreign function: accumulate the argument, call once saturated.
-    if (LTag::EXTERN == closure->tag)
+    case LTag::FUN:
     {
-      Extern e = std::get<Extern>(closure->as); // copy and extend
-      e.args.push_back(val);
+      auto &f = std::get<Fun>(node->as);
+      Fun   closure;
+      closure.var  = Var{ f.var.unwrap, f.var.idx, denv };
+      closure.body = f.body;
+      return std::make_shared<Lm>(Lm{ .tag = LTag::FUN, .as = closure });
+    }
+
+    case LTag::LET:
+    {
+      auto &l = std::get<Let>(node->as);
+      // Bind the name to a placeholder, then evaluate the value with that
+      // binding *weakly* in scope and back-patch the slot, so recursive
+      // references resolve without the value's captured environment forming a
+      // shared_ptr cycle with it. (For a non-recursive let the placeholder is
+      // simply never read before patching.) The body then evaluates in tail
+      // position with the binding held strongly.
+      pLm value
+        = std::make_shared<Lm>(Lm{ .tag = LTag::UNK, .as = std::monostate{} });
+      pLm self = std::make_shared<Lm>(
+        Lm{ .tag = LTag::REC, .as = Rec{ std::weak_ptr<Lm>(value) } });
+
+      DynEnv val_env = denv;
+      val_env.push_back(self);
+      *value = *eval(l.val, val_env, senv);
+
+      denv.push_back(value);
+      node = l.body;
+      continue;
+    }
+
+    case LTag::APP:
+    {
+      auto &a = std::get<App>(node->as);
+
+      pLm closure = eval(a.fn, denv, senv);
+      pLm val     = eval(a.arg, denv, senv);
+
+      // Foreign function: accumulate the argument, call once saturated.
+      if (LTag::EXTERN == closure->tag)
+      {
+        Extern e = std::get<Extern>(closure->as); // copy and extend
+        e.args.push_back(val);
+        if (e.args.size() >= e.arg_types.size()) return call_extern(e);
+        return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
+      }
+
+      // Built-in: accumulate the argument, run the impl once saturated.
+      if (LTag::BUILTIN == closure->tag)
+      {
+        Builtin b = std::get<Builtin>(closure->as); // copy and extend
+        b.args.push_back(val);
+        if (b.args.size() >= b.arity) return impls.at(b.impl).fn(b.args);
+        return std::make_shared<Lm>(Lm{ .tag = LTag::BUILTIN, .as = b });
+      }
+
+      UT_FAIL_IF(closure->tag != LTag::FUN);
+      auto  &fun     = std::get<Fun>(closure->as);
+      DynEnv new_env = fun.var.env;
+      new_env.push_back(val);
+      // A recursive `let` value is reachable from a closure's captured
+      // environment only weakly, through a Rec cell (see LET). The C++ stack
+      // used to keep it alive across a call; with the call trampolined, pin
+      // each such value for the loop's lifetime. Globals (empty env) and
+      // ordinary closures carry no Rec, so nothing is pinned and plain tail
+      // recursion stays in constant space; dedup keeps self-recursion at O(1).
+      for (const pLm &slot : fun.var.env)
+        if (slot && LTag::REC == slot->tag)
+        {
+          pLm tgt = std::get<Rec>(slot->as).target.lock();
+          if (tgt && (live.empty() || live.back() != tgt)) live.push_back(tgt);
+        }
+      node = fun.body;
+      denv = std::move(new_env);
+      continue;
+    }
+
+    case LTag::EXTERN:
+    {
+      auto &e = std::get<Extern>(node->as);
+      // A nullary extern is already saturated; otherwise it is a function
+      // value.
       if (e.args.size() >= e.arg_types.size()) return call_extern(e);
-      return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
+      return node;
     }
 
-    // Built-in: accumulate the argument, run the impl once saturated.
-    if (LTag::BUILTIN == closure->tag)
+    case LTag::IF:
     {
-      Builtin b = std::get<Builtin>(closure->as); // copy and extend
-      b.args.push_back(val);
-      if (b.args.size() >= b.arity) return impls.at(b.impl).fn(b.args);
-      return std::make_shared<Lm>(Lm{ .tag = LTag::BUILTIN, .as = b });
+      auto &i    = std::get<If>(node->as);
+      pLm   cond = eval(i.cond, denv, senv);
+      UT_FAIL_IF(cond->tag != LTag::INT);
+      bool taken = std::get<Int>(cond->as).unwrap != 0;
+      node       = taken ? i.yes : i.no;
+      continue;
     }
 
-    UT_FAIL_IF(closure->tag != LTag::FUN);
-    auto  &fun     = std::get<Fun>(closure->as);
-    DynEnv new_env = fun.var.env;
-    new_env.push_back(val);
-    return eval(fun.body, new_env, senv);
-  }
+    // An unapplied built-in is already a value.
+    case LTag::BUILTIN: return node;
 
-  case LTag::EXTERN:
-  {
-    auto &e = std::get<Extern>(node->as);
-    // A nullary extern is already saturated; otherwise it is a function value.
-    if (e.args.size() >= e.arg_types.size()) return call_extern(e);
+    case LTag::STRUCT:
+    {
+      // Force every field, building a fully evaluated struct value.
+      auto  &s = std::get<Struct>(node->as);
+      Struct out;
+      out.name = s.name;
+      for (auto &f : s.fields)
+        out.fields.push_back({ f.first, eval(f.second, denv, senv) });
+      return std::make_shared<Lm>(Lm{ .tag = LTag::STRUCT, .as = out });
+    }
+
+    case LTag::FIELD:
+    {
+      auto &fa  = std::get<Field>(node->as);
+      pLm   rec = eval(fa.record, denv, senv);
+      UT_FAIL_IF(rec->tag != LTag::STRUCT);
+      for (auto &f : std::get<Struct>(rec->as).fields)
+        if (f.first == fa.name) return f.second;
+      UT_FAIL_MSG("no field '%s' on struct '%s'",
+                  fa.name.c_str(),
+                  std::get<Struct>(rec->as).name.c_str());
+      return node;
+    }
+
+    // A let binding's weak self-reference (see LET); lock it to the value. eval
+    // is never called on one directly -- VAR resolves it -- but handle it for
+    // safety.
+    case LTag::REC:
+    {
+      pLm target = std::get<Rec>(node->as).target.lock();
+      UT_FAIL_IF(!target);
+      return target;
+    }
+
+    case LTag::UNK: return node;
+    }
+
     return node;
   }
-
-  case LTag::IF:
-  {
-    auto &i    = std::get<If>(node->as);
-    pLm   cond = eval(i.cond, denv, senv);
-    UT_FAIL_IF(cond->tag != LTag::INT);
-    bool taken = std::get<Int>(cond->as).unwrap != 0;
-    return eval(taken ? i.yes : i.no, denv, senv);
-  }
-
-  // An unapplied built-in is already a value.
-  case LTag::BUILTIN: return node;
-
-  case LTag::STRUCT:
-  {
-    // Force every field, building a fully evaluated struct value.
-    auto  &s = std::get<Struct>(node->as);
-    Struct out;
-    out.name = s.name;
-    for (auto &f : s.fields)
-      out.fields.push_back({ f.first, eval(f.second, denv, senv) });
-    return std::make_shared<Lm>(Lm{ .tag = LTag::STRUCT, .as = out });
-  }
-
-  case LTag::FIELD:
-  {
-    auto &fa  = std::get<Field>(node->as);
-    pLm   rec = eval(fa.record, denv, senv);
-    UT_FAIL_IF(rec->tag != LTag::STRUCT);
-    for (auto &f : std::get<Struct>(rec->as).fields)
-      if (f.first == fa.name) return f.second;
-    UT_FAIL_MSG("no field '%s' on struct '%s'",
-                fa.name.c_str(),
-                std::get<Struct>(rec->as).name.c_str());
-    break;
-  }
-
-  // A let binding's weak self-reference (see LET); lock it to the value. eval
-  // is never called on one directly -- VAR resolves it -- but handle it for
-  // safety.
-  case LTag::REC:
-  {
-    pLm target = std::get<Rec>(node->as).target.lock();
-    UT_FAIL_IF(!target);
-    return target;
-  }
-
-  case LTag::UNK: return node;
-  }
-
-  return node;
 }
 
 } // namespace IT
