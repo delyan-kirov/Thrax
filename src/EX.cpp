@@ -679,20 +679,28 @@ Parser::parse_struct_pattern(
   {
     if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
 
-    LX::Token nxt = TRY(m_lex.peek());
-    LX::Token la1 = TRY(m_lex.peek(1));
-    if (LX::TokenTag::Word == nxt.tag && LX::TokenTag::Eq == la1.tag)
+    if (LX::TokenTag::Dot == TRY(m_lex.peek()).tag)
     {
-      char c = nxt.str.m_len ? nxt.str.m_mem[0] : '\0';
+      // A named field: `.field = subpat`, or `.field` punning to `.field = field`.
+      m_lex.next(); // '.'
+      LX::Token fname
+        = TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
+      char c = fname.str.m_len ? fname.str.m_mem[0] : '\0';
       if (c < 'a' || c > 'z')
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
-               nxt,
+               fname,
                "a field name must start lowercase, found '%s'",
-               std::to_string(nxt.str).c_str());
-      m_lex.next(); // field name
-      m_lex.next(); // '='
-      Pattern *sub = TRY(parse_pattern());
-      fields.push(FieldPat{ nxt.str, sub });
+               std::to_string(fname.str).c_str());
+
+      Pattern *sub;
+      if (LX::TokenTag::Eq == TRY(m_lex.peek()).tag)
+      {
+        m_lex.next(); // '='
+        sub = TRY(parse_pattern());
+      }
+      else
+        sub = alloc_pat(Pattern{ PatTag::Var, PatVar{ fname.str } }); // pun
+      fields.push(FieldPat{ fname.str, sub });
       any_named = true;
     }
     else
@@ -706,20 +714,15 @@ Parser::parse_struct_pattern(
   }
   TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the struct pattern"));
 
-  // In named mode, a bare lowercase entry puns the field name.
+  // A struct pattern is all-named (`.field`) or all-positional, not a mix.
   if (any_named)
     for (size_t i = 0; i < fields.m_len; ++i)
-    {
-      if (fields[i].name.m_len) continue;
-      Pattern *p = fields[i].pat;
-      if (p->tag != PatTag::Var)
+      if (!fields[i].name.m_len)
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                tn,
-               "struct pattern '%s' mixes named fields with a positional entry; "
-               "write `field = pattern`, or a bare field name to pun it",
+               "struct pattern '%s' mixes named ('.field') and positional "
+               "entries; use one or the other",
                std::to_string(type_name).c_str());
-      fields[i].name = std::get<PatVar>(p->as).name;
-    }
 
   Pattern pat{ PatTag::Struct,
                PatStruct{ type_name, fields, tn.str, tn.line } };
@@ -922,6 +925,8 @@ Parser::parse_struct_lit(
   {
     if (LX::TokenTag::RBrace == TRY(m_lex.peek()).tag) break;
 
+    TRY(expect(LX::TokenTag::Dot, "expected '.' before the field name (fields "
+                                  "are written '.field = value')"));
     LX::Token fname = TRY(expect(LX::TokenTag::Word, "expected a field name"));
     TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
     Expr *val = CTX(parse_expr(0),
@@ -1161,7 +1166,7 @@ pprint(
     auto       &sl = std::get<ExStructLit>(e->as);
     std::string s  = pad + std::to_string(sl.type_name) + ".{";
     for (size_t i = 0; i < sl.fields.m_len; ++i)
-      s += "\n" + std::string((level + 1) * 2, ' ')
+      s += "\n" + std::string((level + 1) * 2, ' ') + "."
            + std::to_string(sl.fields[i].name) + " =\n"
            + pprint(sl.fields[i].val, level + 2);
     return s + ")";
@@ -1199,7 +1204,7 @@ pprint(
     {
       if (i) s += ", ";
       if (ps.fields[i].name.m_len)
-        s += std::to_string(ps.fields[i].name) + " = ";
+        s += "." + std::to_string(ps.fields[i].name) + " = ";
       s += pprint(ps.fields[i].pat);
     }
     return s + "}";

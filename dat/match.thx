@@ -27,28 +27,28 @@ $ cN : Str = classify 17
 
 # Guard on a struct's field value, then bind, then a catch-all.
 $ greet : Person -> Str = \p =
-	if p is Person.{ age = 0 } then "newborn"
-	       is Person.{ name = who } then who
+	if p is Person.{ .age = 0 } then "newborn"
+	       is Person.{ .name = who } then who
 	       else "?"
 
-$ g_baby  : Str = greet Person.{ name = "Q", age = 0 }
-$ g_alice : Str = greet Person.{ name = "Alice", age = 41 }
+$ g_baby  : Str = greet Person.{ .name = "Q", .age = 0 }
+$ g_alice : Str = greet Person.{ .name = "Alice", .age = 41 }
 
 # Bind fields out of the matched value (irrefutable arm: always matches).
 $ sum_xy : Point -> Int = \pt =
 	if pt is Point.{ x, y } then x + y
 	        else 0
 
-$ s : Int = sum_xy Point.{ x = 3, y = 4 }
+$ s : Int = sum_xy Point.{ .x = 3, .y = 4 }
 
 # Nested: guard a struct inside a struct, binding from the same arm.
 $ origin_or : Point -> Int = \pt =
-	if pt is Point.{ x = 0, y = 0 } then 0
-	        is Point.{ x = a, y = b } then a + b
+	if pt is Point.{ .x = 0, .y = 0 } then 0
+	        is Point.{ .x = a, .y = b } then a + b
 	        else 0
 
-$ o0 : Int = origin_or Point.{ x = 0, y = 0 }
-$ o7 : Int = origin_or Point.{ x = 3, y = 4 }
+$ o0 : Int = origin_or Point.{ .x = 0, .y = 0 }
+$ o7 : Int = origin_or Point.{ .x = 3, .y = 4 }
 
 # A catch-all variable arm binds the whole scrutinee.
 $ describe : Int -> Int = \n =

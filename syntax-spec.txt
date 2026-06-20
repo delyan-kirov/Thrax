@@ -130,11 +130,12 @@ comma is allowed). The type name must start uppercase, field names lowercase:
 
 A struct value is built with a literal. Only the qualified form is supported:
 the type name precedes `.{ ... }`, and every declared field must be set exactly
-once (unknown, missing, or duplicate fields are type errors):
+once (unknown, missing, or duplicate fields are type errors). Each field is set
+with a leading-dot `.field = expr`, as in C designated initializers:
 
-	lit ::= TypeName '.{' [ var '=' expr (',' ...)* ','? ] '}'
+	lit ::= TypeName '.{' [ '.' var '=' expr (',' ...)* ','? ] '}'
 
-	$ person : Person = Person.{ name = "Will", age = 21 }
+	$ person : Person = Person.{ .name = "Will", .age = 21 }
 
 A field is read with postfix `.`, which binds tighter than application and
 chains left-to-right (`a.b.c`):
@@ -160,27 +161,31 @@ parameters and `let` bindings (and, later, `if .. is` match arms):
 	           | var                      # binds the value to this name
 	           | Int | Real | Str         # literal: matches by equality (refutable)
 	           | TypeName '.{' fields '}'  # struct pattern (see below)
-	fields   ::= [ fieldpat (',' fieldpat)* ','? ]
-	fieldpat ::= var '=' pattern          # named: bind this field
-	           | pattern                  # positional slot, or a pun in named mode
+	fields   ::= positional | named
+	positional ::= [ pattern (',' pattern)* ','? ]
+	named    ::= [ fieldpat (',' fieldpat)* ','? ]
+	fieldpat ::= '.' var '=' pattern      # bind this field to a sub-pattern
+	           | '.' var                  # pun: `.name` means `.name = name`
 
-A struct pattern `Type.{ ... }` matches a struct of `Type` and its fields. It is
+A struct pattern `Type.{ ... }` matches a struct of `Type` and its fields. As in
+a literal, named fields carry a leading-dot `.field`; a pattern is
 
-	- POSITIONAL when no field uses `=`: one sub-pattern per field, in declaration
-	  order; every field must be listed (use `_` to ignore one). E.g. for
-	  `Person.{name, age}` the pattern `Person.{ who, _ }` binds `who` = name.
-	- NAMED when any field uses `=`: fields may appear in any order and omitted
-	  fields are ignored. A bare lowercase entry then PUNS, i.e. `name` means
-	  `name = name`. (To bind a single field by name, use the named form
-	  `Person.{ name = name }` -- a lone `Person.{ name }` is read positionally.)
+	- POSITIONAL when fields are bare (no dot): one sub-pattern per field, in
+	  declaration order; every field must be listed (use `_` to ignore one). E.g.
+	  for `Person.{name, age}` the pattern `Person.{ who, _ }` binds `who` = name.
+	- NAMED when fields are dotted: any order, omitted fields ignored. A lone
+	  `.name` puns (binds the field to a variable of the same name), so a single
+	  field is matched unambiguously as `Person.{ .name }`.
+
+The two forms cannot be mixed in one struct pattern.
 
 Lambda and `let` patterns must be IRREFUTABLE: only `_`, variables, and struct
 patterns built from them. A literal sub-pattern is refutable and is rejected
 there (it belongs in an `if .. is` match). Patterns nest:
 
 	$ fst   : Person -> Str       = \Person.{ n, _ } = n
-	$ age   : Int                 = let Person.{ age = a } = person in a
-	$ start : Line -> Int         = \Line.{ from = Point.{ x, _ }, to = _ } = x
+	$ age   : Int                 = let Person.{ .age = a } = person in a
+	$ start : Line -> Int         = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
 
 Lowering: a pattern binding desugars to plain `let`s over field accesses, so it
 is pure surface syntax -- `let Person.{ n, a } = p in e` becomes
@@ -198,8 +203,8 @@ and field-literal guards are allowed:
 	$ classify : Int -> Str = \n =
 		if n is 0 then "zero" is 1 then "one" else "many"
 	$ greet : Person -> Str = \p =
-		if p is Person.{ age = 0 } then "newborn"
-		       is Person.{ name = who } then who
+		if p is Person.{ .age = 0 } then "newborn"
+		       is Person.{ .name = who } then who
 		       else "?"
 
 `else` is mandatory (there is no exhaustiveness checking yet -- there are no sum
@@ -207,7 +212,7 @@ types, so a value has exactly one struct type and arms differ only by their fiel
 patterns/literals). An irrefutable arm always matches, making later arms dead.
 A match lowers to a single binding of the scrutinee followed by a chain of
 boolean `if`s: a literal pattern `is k` becomes the guard `scrut ?= k`, a struct
-field literal `Type.{ f = k }` becomes `scrut.f ?= k`, and the bound variables
+field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables
 become `let`s in the arm body. Current limits: matching Int and Real literals
 only (no string equality yet), and no `_` catch-all sugar (use a variable arm or
 `else`).
