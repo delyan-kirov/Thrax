@@ -10,8 +10,8 @@
  * error buffer to leak on the success path.
  *-----------------------------------------------------------------------------*/
 
-#ifndef ER_HEADER
-#define ER_HEADER
+#ifndef ER_HEADER_
+#define ER_HEADER_
 
 #include "AR.hpp"
 #include "UT.hpp"
@@ -70,11 +70,11 @@ pprint(
 // (used to draw the caret); `line` is its 1-based source line.
 struct Frame
 {
-  Code       code;
-  UT::String anchor;
-  size_t     line;
-  UT::String msg;
-  Frame     *next; // toward the outer context
+  Code   code;
+  UT::Vu anchor;
+  size_t line;
+  UT::Vu msg;
+  Frame *next; // toward the outer context
 };
 
 // A diagnostic is a chain of frames, root cause (`root`) first.
@@ -110,7 +110,7 @@ struct Fail
 // Format a printf-style message into the arena so it outlives the call.
 UT_PRINTF_LIKE(
   2, 3)
-inline UT::String
+inline UT::Vu
 mk_msg(
   AR::Arena &arena, const char *fmt, ...)
 {
@@ -124,18 +124,18 @@ mk_msg(
   if (len < 0)
   {
     va_end(copy);
-    return UT::String{ "<message formatting failed>" };
+    return UT::Vu{ "<message formatting failed>" };
   }
 
   char *mem = (char *)arena.alloc((size_t)len + 1);
   std::vsnprintf(mem, (size_t)len + 1, fmt, copy);
   va_end(copy);
-  return UT::String{ mem, (size_t)len };
+  return UT::Vu{ mem, (size_t)len };
 }
 
 inline Diagnostic
 mk_root(
-  AR::Arena &arena, Code code, UT::String anchor, size_t line, UT::String msg)
+  AR::Arena &arena, Code code, UT::Vu anchor, size_t line, UT::Vu msg)
 {
   Frame *f = (Frame *)arena.alloc<Frame>(1);
   *f       = Frame{ code, anchor, line, msg, nullptr };
@@ -144,11 +144,7 @@ mk_root(
 
 inline void
 push_ctx(
-  AR::Arena  &arena,
-  Diagnostic &d,
-  UT::String  anchor,
-  size_t      line,
-  UT::String  msg)
+  AR::Arena &arena, Diagnostic &d, UT::Vu anchor, size_t line, UT::Vu msg)
 {
   Frame *f = (Frame *)arena.alloc<Frame>(1);
   *f = Frame{ d.root ? d.root->code : Code::OK, anchor, line, msg, nullptr };
@@ -168,7 +164,7 @@ push_ctx(
 // the frame's own token.
 inline std::string
 pprint(
-  const Diagnostic &d, UT::String input, UT::String filename)
+  const Diagnostic &d, UT::Vu input, UT::Vu filename)
 {
   std::string s;
   size_t      depth = 0;
@@ -177,24 +173,24 @@ pprint(
   {
     std::string pad(depth * 2, ' ');
 
-    size_t off = (f->anchor.m_mem && input.m_mem)
-                   ? (size_t)(f->anchor.m_mem - input.m_mem)
+    size_t off = (f->anchor.data() && input.data())
+                   ? (size_t)(f->anchor.data() - input.data())
                    : 0;
     size_t ls  = off;
-    while (ls > 0 && input.m_mem[ls - 1] != '\n') ls -= 1;
+    while (ls > 0 && input.data()[ls - 1] != '\n') ls -= 1;
     size_t le = off;
-    while (le < input.m_len && input.m_mem[le] != '\n') le += 1;
+    while (le < input.size() && input.data()[le] != '\n') le += 1;
 
-    std::string line_txt(input.m_mem + ls, le - ls);
+    std::string line_txt(input.data() + ls, le - ls);
     size_t      col = off - ls;
     std::string ln  = std::to_string(f->line);
 
     s += pad + "\033[31m[" + pprint(f->code) + "]\033[0m "
-         + std::to_string(filename) + ":" + ln + "\n";
+         + std::string(filename) + ":" + ln + "\n";
     s += pad + "  " + ln + " | \033[1;37m" + line_txt + "\033[0m\n";
     s += pad + "  " + std::string(ln.size(), ' ') + " | "
          + std::string(col, ' ') + "\033[31m^\033[0m\n";
-    s += pad + "    " + std::to_string(f->msg) + "\n";
+    s += pad + "    " + std::string(f->msg) + "\n";
 
     depth += 1;
   }
@@ -204,4 +200,7 @@ pprint(
 
 } // namespace ER
 
-#endif // ER_HEADER
+#undef ER_CODE_VARIANTS
+#undef X
+
+#endif // ER_HEADER_

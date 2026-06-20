@@ -10,8 +10,8 @@
  * from before; only the parsing engine is new.
  *-----------------------------------------------------------------------------*/
 
-#ifndef EX_HEADER
-#define EX_HEADER
+#ifndef EX_HEADER_
+#define EX_HEADER_
 
 #include "ER.hpp"
 #include "LX.hpp"
@@ -26,7 +26,7 @@ namespace EX
 
 struct Expr;
 using Exprs  = UT::Vec<Expr>;
-using ExPair = UT::Pair<Expr>;
+using ExPair = std::pair<Expr, Expr>;
 
 /*------------------------------------------------------------------------------
  *\TYPE SYNTAX
@@ -40,11 +40,11 @@ struct Ty;
 
 struct TyCon
 {
-  UT::String name; // Int, Str
+  UT::Vu name; // Int, Str
 };
 struct TyVar
 {
-  UT::String name; // type-variable name, without the leading backtick
+  UT::Vu name; // type-variable name, without the leading backtick
 };
 struct TyArrow
 {
@@ -91,32 +91,32 @@ struct PatWild // `_` -- matches anything, binds nothing
 };
 struct PatVar // a lowercase name -- matches anything, binds it
 {
-  UT::String name;
+  UT::Vu name;
 };
 struct PatInt // an integer literal -- matches by equality (refutable)
 {
-  ssize_t    value;
-  UT::String anchor;
-  size_t     line;
+  ssize_t value;
+  UT::Vu  anchor;
+  size_t  line;
 };
 struct PatReal // a real literal (refutable)
 {
-  double     value;
-  UT::String anchor;
-  size_t     line;
+  double value;
+  UT::Vu anchor;
+  size_t line;
 };
 struct PatStr // a string literal (refutable)
 {
-  UT::String value;
-  UT::String anchor;
-  size_t     line;
+  UT::Vu value;
+  UT::Vu anchor;
+  size_t line;
 };
 // One entry in a struct pattern. `name` is the field name; it is empty for a
 // positional slot. `pat` is the sub-pattern matched against that field.
 struct FieldPat
 {
-  UT::String name;
-  Pattern   *pat;
+  UT::Vu   name;
+  Pattern *pat;
 };
 // `Type.{ ... }` -- matches a struct of the named type and destructures its
 // fields. Named when any entry carries a field name (out-of-order and partial;
@@ -125,9 +125,9 @@ struct FieldPat
 // diagnostics.
 struct PatStruct
 {
-  UT::String        type_name;
+  UT::Vu            type_name;
   UT::Vec<FieldPat> fields;
-  UT::String        anchor;
+  UT::Vu            anchor;
   size_t            line;
 };
 
@@ -165,9 +165,9 @@ struct ExUnknown
 // type checker must then infer a ground, non-arrow type for it).
 struct ExDef
 {
-  UT::String name;
-  Ty        *sig;
-  Expr      *def;
+  UT::Vu name;
+  Ty    *sig;
+  Expr  *def;
 };
 struct ExInt
 {
@@ -179,31 +179,31 @@ struct ExReal
 };
 struct ExVar
 {
-  UT::String name;
+  UT::Vu name;
 };
 struct ExStr
 {
-  UT::String value;
+  UT::Vu value;
 };
 // `@extern ("symbol", "lib")` -- a foreign binding. Only valid as a global
 // body; its type comes from the enclosing global's signature.
 struct ExExtern
 {
-  UT::String symbol;
-  UT::String lib;
+  UT::Vu symbol;
+  UT::Vu lib;
 };
 
 struct ExFnDef
 {
-  UT::String param;
-  Expr      *body;
+  UT::Vu param;
+  Expr  *body;
   // Set when the parameter is a pattern (e.g. `\Person.{x,y} = ...`); the LL
   // pass lowers it into a plain `param` plus destructuring lets, then clears
   // this back to null. Null for an ordinary `\x = ...`.
   Pattern *param_pat = nullptr;
 
   ExFnDef() = default;
-  ExFnDef(UT::String param, AR::Arena &arena);
+  ExFnDef(UT::Vu param, AR::Arena &arena);
 };
 
 struct ExIf
@@ -224,9 +224,9 @@ struct MatchArm
 // boolean `if`s with equality guards and binding lets, so TC/IT never see it.
 struct ExMatch
 {
-  Expr               *scrut;
-  UT::Vec<MatchArm>   arms;
-  Expr               *alt;
+  Expr             *scrut;
+  UT::Vec<MatchArm> arms;
+  Expr             *alt;
 };
 
 struct ExApp
@@ -237,13 +237,14 @@ struct ExApp
 
 struct ExLet
 {
-  UT::String var;
-  Expr      *val;
-  Expr      *body;
+  UT::Vu var;
+  Expr  *val;
+  Expr  *body;
   // Set when the binder is a pattern (`let Person.{x,y} = e in ...`); the LL
-  // pass lowers it into nested plain lets, then clears this to null. `sig`, when
-  // set, pins the bound value's type (used by lowering to make the destructured
-  // field accesses statically typed); TC unifies the value with it.
+  // pass lowers it into nested plain lets, then clears this to null. `sig`,
+  // when set, pins the bound value's type (used by lowering to make the
+  // destructured field accesses statically typed); TC unifies the value with
+  // it.
   Pattern *pat = nullptr;
   Ty      *sig = nullptr;
 };
@@ -251,35 +252,35 @@ struct ExLet
 // One `field : Type` entry in a struct declaration.
 struct FieldDecl
 {
-  UT::String name;
-  Ty        *ty;
+  UT::Vu name;
+  Ty    *ty;
 };
 // One `field = expr` entry in a struct literal.
 struct FieldInit
 {
-  UT::String name;
-  Expr      *val;
+  UT::Vu name;
+  Expr  *val;
 };
 
 // A struct type declaration: `$ Name : Struct = field: Ty, ...`. Defines a
 // nominal record type; it produces no runtime value.
 struct ExStructDecl
 {
-  UT::String         name;
+  UT::Vu             name;
   UT::Vec<FieldDecl> fields;
 };
 // A struct literal: `Type.{ field = expr, ... }`. Qualified form only, so
 // `type_name` is always set (bare `.{...}` is a later increment).
 struct ExStructLit
 {
-  UT::String         type_name;
+  UT::Vu             type_name;
   UT::Vec<FieldInit> fields;
 };
 // Field access: `record.field`.
 struct ExField
 {
-  Expr      *record;
-  UT::String field;
+  Expr  *record;
+  UT::Vu field;
 };
 
 #define EX_EXPR_VARIANTS                                                       \
@@ -322,7 +323,9 @@ struct Expr
   Expr(ExprTag tag, AR::Arena &arena);
 };
 
-using R           = ER::Result<Expr *>;
+using RExpr       = ER::Result<Expr *>;
+using RTy         = ER::Result<Ty *>;
+using RPattern    = ER::Result<Pattern *>;
 using Diagnostics = std::vector<ER::Diagnostic>;
 
 /*-------------------------------------------------------------------------------
@@ -342,40 +345,40 @@ public:
   void operator()();
 
 private:
-  UT_NODISCARD R parse_global();
-  UT_NODISCARD R parse_extern();
-  UT_NODISCARD R parse_struct_decl(const LX::Token &name);
-  UT_NODISCARD R parse_struct_lit(UT::String type_name);
-  UT_NODISCARD ER::Result<Ty *> parse_type();
-  UT_NODISCARD ER::Result<Ty *> parse_type_atom();
-  UT_NODISCARD R                parse_expr(int min_bp);
-  UT_NODISCARD R                parse_prefix();
-  UT_NODISCARD R                parse_primary();
-  UT_NODISCARD R                parse_group();
-  UT_NODISCARD R                parse_let();
-  UT_NODISCARD R                parse_if();
-  UT_NODISCARD R                parse_closure();
-  UT_NODISCARD ER::Result<Pattern *> parse_pattern();
-  UT_NODISCARD ER::Result<Pattern *> parse_struct_pattern(UT::String type_name,
-                                                          const LX::Token &tn);
-  UT_NODISCARD LX::R expect(LX::TokenTag tag, const char *what);
-  void               recover();
+  UT_NODISCARD RExpr    parse_global();
+  UT_NODISCARD RExpr    parse_extern();
+  UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);
+  UT_NODISCARD RExpr    parse_struct_lit(UT::Vu type_name);
+  UT_NODISCARD RTy      parse_type();
+  UT_NODISCARD RTy      parse_type_atom();
+  UT_NODISCARD RExpr    parse_expr(int min_bp);
+  UT_NODISCARD RExpr    parse_prefix();
+  UT_NODISCARD RExpr    parse_primary();
+  UT_NODISCARD RExpr    parse_group();
+  UT_NODISCARD RExpr    parse_let();
+  UT_NODISCARD RExpr    parse_if();
+  UT_NODISCARD RExpr    parse_closure();
+  UT_NODISCARD RPattern parse_pattern();
+  UT_NODISCARD RPattern parse_struct_pattern(UT::Vu           type_name,
+                                             const LX::Token &tn);
+  UT_NODISCARD LX::RToken expect(LX::TokenTag tag, const char *what);
+  void                    recover();
 
-  UT_NODISCARD Expr *alloc(Expr e);
-  UT_NODISCARD Expr *mk_int(const LX::Token &t);
-  UT_NODISCARD Expr *mk_real(const LX::Token &t);
-  UT_NODISCARD Expr *mk_str(const LX::Token &t);
-  UT_NODISCARD Expr *mk_var(const LX::Token &t);
-  UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
-  UT_NODISCARD Expr *mk_op_var(UT::String name);
-  UT_NODISCARD Expr *mk_unop(UT::String op, Expr *operand);
-  UT_NODISCARD Expr *mk_binop(UT::String op, Expr *lhs, Expr *rhs);
-  UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
-  UT_NODISCARD Expr *mk_let(UT::String var, Expr *val, Expr *body);
-  UT_NODISCARD Expr *mk_fndef(UT::String param, Expr *body);
-  UT_NODISCARD Expr *mk_def(UT::String name, Ty *sig, Expr *def);
-  UT_NODISCARD Expr *mk_extern(UT::String symbol, UT::String lib);
-  UT_NODISCARD Expr    *mk_field(Expr *record, UT::String field);
+  UT_NODISCARD Expr    *alloc(Expr e);
+  UT_NODISCARD Expr    *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr    *mk_real(const LX::Token &t);
+  UT_NODISCARD Expr    *mk_str(const LX::Token &t);
+  UT_NODISCARD Expr    *mk_var(const LX::Token &t);
+  UT_NODISCARD Expr    *mk_app(Expr *fn, Expr *arg);
+  UT_NODISCARD Expr    *mk_op_var(UT::Vu name);
+  UT_NODISCARD Expr    *mk_unop(UT::Vu op, Expr *operand);
+  UT_NODISCARD Expr    *mk_binop(UT::Vu op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
+  UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
+  UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);
+  UT_NODISCARD Expr    *mk_def(UT::Vu name, Ty *sig, Expr *def);
+  UT_NODISCARD Expr    *mk_extern(UT::Vu symbol, UT::Vu lib);
+  UT_NODISCARD Expr    *mk_field(Expr *record, UT::Vu field);
   UT_NODISCARD Ty      *mk_ty(Ty t);
   UT_NODISCARD Pattern *alloc_pat(Pattern p);
 };
@@ -390,4 +393,4 @@ std::string pprint(Pattern *p);
 
 } // namespace EX
 
-#endif // EX_HEADER
+#endif // EX_HEADER_

@@ -11,8 +11,8 @@
  * (Int or Str). Annotated signatures may be polymorphic via `T type variables.
  *-----------------------------------------------------------------------------*/
 
-#ifndef TC_HEADER
-#define TC_HEADER
+#ifndef TC_HEADER_
+#define TC_HEADER_
 
 #include "EX.hpp"
 
@@ -23,8 +23,8 @@ namespace TC
 // when the program is well typed; otherwise it holds one diagnostic per error,
 // anchored into `src` for rendering with ER::pprint.
 std::vector<ER::Diagnostic>
-check(EX::Exprs &exprs, AR::Arena &arena, UT::String src);
+check(EX::Exprs &exprs, AR::Arena &arena, UT::Vu src);
 
 } // namespace TC
 
-#endif // TC_HEADER
+#endif // TC_HEADER_

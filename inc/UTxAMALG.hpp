@@ -4,18 +4,18 @@
  *      unity build (UTxAMALG.cpp) and consumers have the whole interface.
  *-----------------------------------------------------------------------------*/
 
-#ifndef UTXAMALG_HEADER
-#define UTXAMALG_HEADER
+#ifndef UTXAMALG_HEADER_
+#define UTXAMALG_HEADER_
 
 #include "AR.hpp"
-#include "UT.hpp"
-#include "OP.hpp"
+#include "DR.hpp"
 #include "ER.hpp"
-#include "LX.hpp"
 #include "EX.hpp"
-#include "TC.hpp"
 #include "FF.hpp"
 #include "IT.hpp"
-#include "DR.hpp"
+#include "LX.hpp"
+#include "OP.hpp"
+#include "TC.hpp"
+#include "UT.hpp"
 
-#endif // UTXAMALG_HEADER
+#endif // UTXAMALG_HEADER_

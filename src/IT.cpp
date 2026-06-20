@@ -2,8 +2,6 @@
 #include "FF.hpp"
 #include "OP.hpp"
 
-#include <cmath>
-
 namespace IT
 {
 
@@ -12,22 +10,22 @@ namespace
 
 Var
 mkVar(
-  UT::String s, size_t idx = 0)
+  UT::Vu s, size_t idx = 0)
 {
-  return Var{ std::string{ s.m_mem, s.m_len }, idx, {} };
+  return Var{ std::string{ s }, idx, {} };
 }
 
 Str
 mkStr(
-  UT::String s)
+  UT::Vu s)
 {
-  std::string ss = { s.m_mem, s.m_len };
+  std::string ss{ s };
   return Str{ ss };
 }
 
 Fun
 mkFun(
-  UT::String s, pLm body)
+  UT::Vu s, pLm body)
 {
   return Fun{ mkVar(s), body };
 }
@@ -302,7 +300,7 @@ ffi_type_name(
 {
   switch (t->tag)
   {
-  case EX::TyTag::Con  : return std::to_string(std::get<EX::TyCon>(t->as).name);
+  case EX::TyTag::Con  : return std::string(std::get<EX::TyCon>(t->as).name);
   case EX::TyTag::Var  :
   case EX::TyTag::Arrow: return "Ptr";
   }
@@ -350,8 +348,8 @@ call_extern(
     }
   }
 
-  ssize_t r = FF::call(UT::String{ e.lib.c_str(), e.lib.size() },
-                       UT::String{ e.symbol.c_str(), e.symbol.size() },
+  ssize_t r = FF::call(UT::Vu{ e.lib.c_str(), e.lib.size() },
+                       UT::Vu{ e.symbol.c_str(), e.symbol.size() },
                        e.arg_types,
                        e.ret_type,
                        args);
@@ -438,7 +436,7 @@ exprs2pLm_helper(
   case EX::ExprTag::Def:
   {
     auto       &gd   = std::get<EX::ExDef>(expr->as);
-    std::string name = std::string{ gd.name.m_mem, gd.name.m_len };
+    std::string name = std::string{ gd.name };
 
     pLm def;
     if (EX::ExprTag::Extern == gd.def->tag)
@@ -446,8 +444,8 @@ exprs2pLm_helper(
       // Foreign binding: the call types come from the signature, not the body.
       auto  &ex = std::get<EX::ExExtern>(gd.def->as);
       Extern e;
-      e.symbol = std::string{ ex.symbol.m_mem, ex.symbol.m_len };
-      e.lib    = std::string{ ex.lib.m_mem, ex.lib.m_len };
+      e.symbol = std::string{ ex.symbol };
+      e.lib    = std::string{ ex.lib };
       if (gd.sig)
         flatten_sig(gd.sig, e.arg_types, e.ret_type);
       else
@@ -470,11 +468,10 @@ exprs2pLm_helper(
   {
     auto  &sl = std::get<EX::ExStructLit>(expr->as);
     Struct s;
-    s.name = std::string{ sl.type_name.m_mem, sl.type_name.m_len };
-    for (size_t i = 0; i < sl.fields.m_len; ++i)
-      s.fields.push_back(
-        { std::string{ sl.fields[i].name.m_mem, sl.fields[i].name.m_len },
-          exprs2pLm_helper(sl.fields[i].val, env) });
+    s.name = std::string{ sl.type_name };
+    for (size_t i = 0; i < sl.fields.size(); ++i)
+      s.fields.push_back({ std::string{ sl.fields[i].name },
+                           exprs2pLm_helper(sl.fields[i].val, env) });
     lm = { .tag = LTag::STRUCT, .as = s };
   }
   break;
@@ -484,7 +481,7 @@ exprs2pLm_helper(
     auto &fa = std::get<EX::ExField>(expr->as);
     Field f;
     f.record = exprs2pLm_helper(fa.record, env);
-    f.name   = std::string{ fa.field.m_mem, fa.field.m_len };
+    f.name   = std::string{ fa.field };
     lm       = { .tag = LTag::FIELD, .as = f };
   }
   break;

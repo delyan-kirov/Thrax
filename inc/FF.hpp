@@ -10,8 +10,8 @@
  * entirely (calls then abort).
  *-----------------------------------------------------------------------------*/
 
-#ifndef FF_HEADER
-#define FF_HEADER
+#ifndef FF_HEADER_
+#define FF_HEADER_
 
 #include "UT.hpp"
 
@@ -22,12 +22,12 @@ namespace FF
 // `arg_types`/`ret_type` are Thrax type names; `args` are raw machine words
 // (a Str/Ptr argument is its char*/pointer already cast to ssize_t). The result
 // is returned widened to a machine word (a Str/Ptr return is the pointer bits).
-ssize_t call(UT::String                      lib,
-             UT::String                      symbol,
+ssize_t call(UT::Vu                          lib,
+             UT::Vu                          symbol,
              const std::vector<std::string> &arg_types,
              const std::string              &ret_type,
              const std::vector<ssize_t>     &args);
 
 } // namespace FF
 
-#endif // FF_HEADER
+#endif // FF_HEADER_

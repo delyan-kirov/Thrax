@@ -1,16 +1,11 @@
 /*-------------------------------------------------------------------------------
  *\file main.cpp
  *\info thrax -- the command-line interpreter. Parses argv and hands each source
- *      file to the driver (DR). With --ast / -a it prints the parsed AST instead
- *      of interpreting.
+ *      file to the driver (DR). With --ast / -a it prints the parsed AST
+ * instead of interpreting.
  *-----------------------------------------------------------------------------*/
 
-#include "DR.hpp"
-#include "UT.hpp"
-
-#include <cstdio>
-#include <cstring>
-#include <vector>
+#include "UTxAMALG.hpp"
 
 namespace
 {
@@ -25,8 +20,8 @@ int
 main(
   int argc, char **argv)
 {
-  bool                    print_ast = false;
-  std::vector<UT::String> files;
+  bool                print_ast = false;
+  std::vector<UT::Vu> files;
 
   for (int i = 1; i < argc; ++i)
   {
@@ -44,7 +39,7 @@ main(
       return 2;
     }
     else
-      files.push_back(UT::String{ arg, std::strlen(arg) });
+      files.push_back(UT::Vu{ arg, std::strlen(arg) });
   }
 
   if (files.empty())
@@ -54,7 +49,7 @@ main(
   }
 
   bool ok = true;
-  for (UT::String file : files)
+  for (UT::Vu file : files)
     ok &= print_ast ? DR::dump_ast(file) : DR::run_file(file);
 
   return ok ? 0 : 1;

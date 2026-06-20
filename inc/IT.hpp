@@ -4,8 +4,8 @@
  *\info Header file for the interpreter
  * *----------------------------------------------------------------------------*/
 
-#ifndef IT_HEADER
-#define IT_HEADER
+#ifndef IT_HEADER_
+#define IT_HEADER_
 
 /*------------------------------------------------------------------------------
  *\INCLUDES
@@ -183,8 +183,11 @@ pLm eval(pLm node, DynEnv denv, StatEnv &senv);
 
 } // namespace IT
 
+#undef IT_L_VARIANTS
+#undef X
+
+#endif // IT_HEADER_
+
 /*-------------------------------------------------------------------------------
  *\EOF
  *------------------------------------------------------------------------------*/
-
-#endif // IT_HEADER

@@ -28,6 +28,11 @@ namespace
  * `ref` (union-find); `prune` chases the chain.
  *-----------------------------------------------------------------------------*/
 
+struct GlobalEntry;
+struct Scheme;
+using Env          = std::unordered_map<std::string, Scheme>;
+using GlobalSymMap = std::unordered_map<std::string, GlobalEntry>;
+
 enum class Kind
 {
   Con,
@@ -52,8 +57,6 @@ struct Scheme
   std::vector<int> vars;
   Type            *type;
 };
-
-using Env = std::unordered_map<std::string, Scheme>;
 
 /*------------------------------------------------------------------------------
  *\OVERLOADS
@@ -148,9 +151,9 @@ struct Core
   std::string name;           // Var name / Lam param / Let name / struct/field
   Core       *a = nullptr;    // Lam: body; App: fn; Let: value; Field: record
   Core       *b = nullptr;    // App: arg; Let: body
-  UT::String  anchor;         // source slice for diagnostics
-  UT::String *slot = nullptr; // overloaded Var: the EX name field to rewrite
-  Type       *sig  = nullptr; // Let: an optional type the bound value is pinned to
+  UT::Vu      anchor;         // source slice for diagnostics
+  UT::Vu     *slot = nullptr; // overloaded Var: the EX name field to rewrite
+  Type *sig = nullptr; // Let: an optional type the bound value is pinned to
   // StructLit: the field initializers, in source order.
   std::vector<std::pair<std::string, Core *>> fields;
 };
@@ -163,10 +166,10 @@ struct Core
 // arities and ready to also match on the result type later.
 struct ResolveSite
 {
-  UT::String *slot;   // the EX Var name to rewrite to the resolved impl
+  UT::Vu     *slot;   // the EX Var name to rewrite to the resolved impl
   Type       *use;    // the use's type: an arrow chain over the operands
   std::string base;   // the overloaded name to look up in overload_db
-  UT::String  anchor; // for diagnostics
+  UT::Vu      anchor; // for diagnostics
 };
 
 /*------------------------------------------------------------------------------
@@ -191,7 +194,7 @@ class Checker
 {
 public:
   Checker(
-    AR::Arena &arena, UT::String src)
+    AR::Arena &arena, UT::Vu src)
       : m_arena{ arena },
         m_src{ src }
   {
@@ -203,14 +206,15 @@ public:
   std::vector<ER::Diagnostic> m_diags;
 
 private:
-  AR::Arena                                   &m_arena;
-  UT::String                                   m_src;
-  std::deque<Type>                             m_types;
-  std::deque<Core>                             m_cores;
-  int                                          m_next_id = 0;
-  Env                                          m_prim;
-  std::unordered_map<std::string, GlobalEntry> m_globals;
-  std::vector<std::string> m_order; // source order of globals
+  AR::Arena       &m_arena;
+  UT::Vu           m_src;
+  std::deque<Type> m_types;
+  std::deque<Core> m_cores;
+  int              m_next_id = 0;
+  Env              m_prim;
+  GlobalSymMap     m_globals;
+  std::vector<std::string>
+    m_order; // source order of globals, FIXME (why do we need this?)
 
   // Declared struct types: name -> ordered (field name, field type). Nominal:
   // the struct's value type is just con(name); this holds the field shape.
@@ -218,8 +222,8 @@ private:
   std::unordered_map<std::string, StructFields> m_structs;
 
   // current diagnostic anchor (the global under check)
-  UT::String m_anchor;
-  size_t     m_line = 0;
+  UT::Vu m_anchor;
+  size_t m_line = 0;
 
   // overload resolution: deferred sites collected during an inference scope and
   // resolved at its end (see infer's Var case / resolve_sites).
@@ -258,9 +262,9 @@ private:
   void   resolve_sites(size_t from);
 
   // diagnostics
-  size_t      line_of(UT::String anchor);
+  size_t      line_of(UT::Vu anchor);
   std::string show(Type *t);
-  void        fail(ER::Code code, UT::String anchor, const char *fmt, ...)
+  void        fail(ER::Code code, UT::Vu anchor, const char *fmt, ...)
     UT_PRINTF_LIKE(4, 5);
 
   void seed_primitives();
@@ -501,10 +505,10 @@ Checker::sig_to_type(
   switch (sig->tag)
   {
   case EX::TyTag::Con:
-    return con(std::to_string(std::get<EX::TyCon>(sig->as).name));
+    return con(std::string(std::get<EX::TyCon>(sig->as).name));
   case EX::TyTag::Var:
   {
-    std::string nm = std::to_string(std::get<EX::TyVar>(sig->as).name);
+    std::string nm = std::string(std::get<EX::TyVar>(sig->as).name);
     auto        it = tv.find(nm);
     if (it != tv.end()) return it->second;
     Type *v = fresh(rigid, nm);
@@ -552,7 +556,7 @@ Checker::desugar(
     auto &v   = std::get<EX::ExVar>(e->as);
     Core *c   = core(CKind::Var);
     c->anchor = v.name;
-    c->name   = std::to_string(v.name);
+    c->name   = std::string(v.name);
     c->slot   = &v.name; // rewritten if this name turns out to be overloaded
     return c;
   }
@@ -568,7 +572,7 @@ Checker::desugar(
   {
     auto &fn = std::get<EX::ExFnDef>(e->as);
     Core *c  = core(CKind::Lam);
-    c->name  = std::to_string(fn.param);
+    c->name  = std::string(fn.param);
     c->a     = desugar(fn.body);
     return c;
   }
@@ -576,7 +580,7 @@ Checker::desugar(
   {
     auto &lt = std::get<EX::ExLet>(e->as);
     Core *c  = core(CKind::Let);
-    c->name  = std::to_string(lt.var);
+    c->name  = std::string(lt.var);
     c->a     = desugar(lt.val);
     c->b     = desugar(lt.body);
     if (lt.sig)
@@ -606,11 +610,11 @@ Checker::desugar(
   {
     auto &sl  = std::get<EX::ExStructLit>(e->as);
     Core *c   = core(CKind::StructLit);
-    c->name   = std::to_string(sl.type_name);
+    c->name   = std::string(sl.type_name);
     c->anchor = sl.type_name;
-    for (size_t i = 0; i < sl.fields.m_len; ++i)
+    for (size_t i = 0; i < sl.fields.size(); ++i)
       c->fields.push_back(
-        { std::to_string(sl.fields[i].name), desugar(sl.fields[i].val) });
+        { std::string(sl.fields[i].name), desugar(sl.fields[i].val) });
     return c;
   }
   case EX::ExprTag::Field:
@@ -618,7 +622,7 @@ Checker::desugar(
     auto &fa  = std::get<EX::ExField>(e->as);
     Core *c   = core(CKind::Field);
     c->a      = desugar(fa.record);
-    c->name   = std::to_string(fa.field);
+    c->name   = std::string(fa.field);
     c->anchor = fa.field;
     return c;
   }
@@ -696,7 +700,7 @@ Checker::infer(
     }
 
     fail(ER::Code::TYPE_UNBOUND,
-         e->anchor.m_mem ? e->anchor : m_anchor,
+         e->anchor.data() ? e->anchor : m_anchor,
          "unbound variable '%s'",
          e->name.c_str());
     return fresh();
@@ -750,7 +754,7 @@ Checker::infer(
     if (sit == m_structs.end())
     {
       fail(ER::Code::TYPE_UNBOUND,
-           e->anchor.m_mem ? e->anchor : m_anchor,
+           e->anchor.data() ? e->anchor : m_anchor,
            "unknown struct type '%s'",
            e->name.c_str());
       return fresh();
@@ -769,7 +773,7 @@ Checker::infer(
       if (idx == decl.size())
       {
         fail(ER::Code::TYPE_MISMATCH,
-             e->anchor.m_mem ? e->anchor : m_anchor,
+             e->anchor.data() ? e->anchor : m_anchor,
              "struct '%s' has no field '%s'",
              e->name.c_str(),
              init.first.c_str());
@@ -778,7 +782,7 @@ Checker::infer(
       if (seen[idx])
       {
         fail(ER::Code::TYPE_MISMATCH,
-             e->anchor.m_mem ? e->anchor : m_anchor,
+             e->anchor.data() ? e->anchor : m_anchor,
              "field '%s' is set more than once in '%s'",
              init.first.c_str(),
              e->name.c_str());
@@ -791,7 +795,7 @@ Checker::infer(
     for (size_t k = 0; k < decl.size(); ++k)
       if (!seen[k])
         fail(ER::Code::TYPE_MISMATCH,
-             e->anchor.m_mem ? e->anchor : m_anchor,
+             e->anchor.data() ? e->anchor : m_anchor,
              "struct '%s' is missing field '%s'",
              e->name.c_str(),
              decl[k].first.c_str());
@@ -805,7 +809,7 @@ Checker::infer(
     if (rt->kind != Kind::Con || !m_structs.count(rt->name))
     {
       fail(ER::Code::TYPE_MISMATCH,
-           e->anchor.m_mem ? e->anchor : m_anchor,
+           e->anchor.data() ? e->anchor : m_anchor,
            "cannot access field '%s': '%s' is not a known struct type",
            e->name.c_str(),
            show(rt).c_str());
@@ -815,7 +819,7 @@ Checker::infer(
       if (f.first == e->name) return f.second;
 
     fail(ER::Code::TYPE_UNBOUND,
-         e->anchor.m_mem ? e->anchor : m_anchor,
+         e->anchor.data() ? e->anchor : m_anchor,
          "struct '%s' has no field '%s'",
          rt->name.c_str(),
          e->name.c_str());
@@ -854,10 +858,10 @@ Checker::resolve(
   }
   else
   {
-    UT::String save_a = m_anchor;
-    size_t     save_l = m_line;
-    m_anchor          = g.def->name;
-    m_line            = line_of(g.def->name);
+    UT::Vu save_a = m_anchor;
+    size_t save_l = m_line;
+    m_anchor      = g.def->name;
+    m_line        = line_of(g.def->name);
 
     Env    empty;
     size_t base = m_sites.size();
@@ -967,7 +971,7 @@ Checker::resolve_sites(
     }
 
     unify(prune(result), con(hit->sig.back()));
-    *s.slot = UT::String{ hit->mono.c_str(), hit->mono.size() };
+    *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
   }
   m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
 }
@@ -982,27 +986,27 @@ Checker::run(
 {
   // Phase A: register struct types and collect value globals. Structs are
   // registered up front so a global may reference a struct declared later.
-  for (size_t i = 0; i < exprs.m_len; ++i)
+  for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
     if (e->tag != EX::ExprTag::StructDecl) continue;
     EX::ExStructDecl &sd = std::get<EX::ExStructDecl>(e->as);
     StructFields      flds;
-    for (size_t f = 0; f < sd.fields.m_len; ++f)
+    for (size_t f = 0; f < sd.fields.size(); ++f)
     {
       std::unordered_map<std::string, Type *> tv;
       Type *ft = sig_to_type(sd.fields[f].ty, tv, false);
-      flds.push_back({ std::to_string(sd.fields[f].name), ft });
+      flds.push_back({ std::string(sd.fields[f].name), ft });
     }
-    m_structs[std::to_string(sd.name)] = std::move(flds);
+    m_structs[std::string(sd.name)] = std::move(flds);
   }
 
-  for (size_t i = 0; i < exprs.m_len; ++i)
+  for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
     if (e->tag != EX::ExprTag::Def) continue;
     EX::ExDef  &d    = std::get<EX::ExDef>(e->as);
-    std::string name = std::to_string(d.name);
+    std::string name = std::string(d.name);
     GlobalEntry g;
     g.def           = &d;
     g.body          = desugar(d.def);
@@ -1049,14 +1053,14 @@ Checker::run(
 
 size_t
 Checker::line_of(
-  UT::String anchor)
+  UT::Vu anchor)
 {
-  if (!anchor.m_mem || !m_src.m_mem) return 0;
-  if (anchor.m_mem < m_src.m_mem) return 0;
-  size_t off  = (size_t)(anchor.m_mem - m_src.m_mem);
+  if (!anchor.data() || !m_src.data()) return 0;
+  if (anchor.data() < m_src.data()) return 0;
+  size_t off  = (size_t)(anchor.data() - m_src.data());
   size_t line = 1;
-  for (size_t i = 0; i < off && i < m_src.m_len; ++i)
-    if (m_src.m_mem[i] == '\n') line++;
+  for (size_t i = 0; i < off && i < m_src.size(); ++i)
+    if (m_src.data()[i] == '\n') line++;
   return line;
 }
 
@@ -1083,7 +1087,7 @@ Checker::show(
 
 void
 Checker::fail(
-  ER::Code code, UT::String anchor, const char *fmt, ...)
+  ER::Code code, UT::Vu anchor, const char *fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
@@ -1092,12 +1096,12 @@ Checker::fail(
   int len = std::vsnprintf(nullptr, 0, fmt, args);
   va_end(args);
 
-  UT::String msg{ "<message formatting failed>" };
+  UT::Vu msg{ "<message formatting failed>" };
   if (len >= 0)
   {
     char *mem = (char *)m_arena.alloc((size_t)len + 1);
     std::vsnprintf(mem, (size_t)len + 1, fmt, copy);
-    msg = UT::String{ mem, (size_t)len };
+    msg = UT::Vu{ mem, (size_t)len };
   }
   va_end(copy);
 
@@ -1120,7 +1124,7 @@ Checker::seed_primitives()
 
 std::vector<ER::Diagnostic>
 check(
-  EX::Exprs &exprs, AR::Arena &arena, UT::String src)
+  EX::Exprs &exprs, AR::Arena &arena, UT::Vu src)
 {
   Checker c{ arena, src };
   c.run(exprs);

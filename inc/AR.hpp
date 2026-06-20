@@ -1,5 +1,5 @@
-#ifndef AR_HEADER
-#define AR_HEADER
+#ifndef AR_HEADER_
+#define AR_HEADER_
 
 #include <algorithm>
 #include <cstddef>
@@ -77,4 +77,4 @@ constexpr size_t DEFAULT_T_MEM_SIZE = 8;
 
 } // namespace AR
 
-#endif // AR_HEADER
+#endif // AR_HEADER_
