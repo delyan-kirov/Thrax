@@ -99,14 +99,34 @@ struct Builtin
   std::vector<pLm> args;
 };
 
-// A conditional. `if` is not a function (it must not evaluate both branches),
-// so it stays a dedicated lazy node rather than a builtin: eval forces `cond`,
-// then only the taken branch.
-struct If
+// The kind of head an alternative matches on -- shared with the parser AST.
+using AltKind = EX::AltKind;
+
+// One alternative of a `Case`. It is taken when the forced scrutinee's head
+// matches `kind`: constructor index `tag` (binding the payload positionally to
+// `binders`), or the literal `ival` / `rval`. `binders` entries are De Bruijn
+// locals in `body`, in payload order; an empty string ignores a slot.
+struct CaseAlt
 {
-  pLm cond;
-  pLm yes;
-  pLm no;
+  AltKind                  kind;
+  std::string              ctor; // Con: constructor name (matched at runtime)
+  size_t                   tag  = 0; // Con: constructor index within its type
+  ssize_t                  ival = 0; // Int
+  double                   rval = 0; // Real
+  std::vector<std::string> binders;  // Con: payload binder names, positional
+  pLm                      body;
+};
+
+// `case scrut of alt... else deflt`. Like the former `If`, this is a dedicated
+// lazy node, NOT a function: eval forces `scrut`, then runs only the taken
+// alternative's body (binding a Con alt's payload first), or `deflt` if none
+// match. `if` and every match lower to a `Case` -- it is the one brancher.
+// `if c then t else e` is the single Int alternative `{ 0 -> e }` over `t`.
+struct Case
+{
+  pLm                  scrut;
+  std::vector<CaseAlt> alts;
+  pLm                  deflt;
 };
 
 // A self-reference cell for a `let` binding. A binding's value (typically a
@@ -137,6 +157,31 @@ struct Field
   std::string name;
 };
 
+// A sum value: the union type, the variant `tag`, and the payload `fields` in
+// the variant's declared order (LL normalizes named construction to
+// positional). Built from a `Type.Tag.{...}` literal. Thrax is otherwise
+// call-by-value, but data constructors are non-strict: each field is a Thunk,
+// forced only on demand, so recursive / infinite values terminate. A `Case` Con
+// alternative matches on `tag` and binds `fields` positionally (the thunks
+// themselves, so the binders stay lazy until used).
+struct Variant
+{
+  std::string      type_name;
+  std::string      tag;
+  std::vector<pLm> fields;
+};
+
+// A suspended computation -- a lazy data-constructor field, the one place the
+// otherwise call-by-value runtime defers work. `expr` is evaluated in the
+// captured `env` the first time the thunk is forced; `memo` caches the (forced)
+// result for every later demand. Runtime-only: never built by exprs2pLm/ANF.
+struct Thunk
+{
+  pLm    expr;
+  DynEnv env;
+  pLm    memo; // null until forced
+};
+
 #define IT_L_VARIANTS                                                          \
   X(INT, Int)                                                                  \
   X(REAL, Real)                                                                \
@@ -146,10 +191,12 @@ struct Field
   X(LET, Let)                                                                  \
   X(EXTERN, Extern)                                                            \
   X(BUILTIN, Builtin)                                                          \
-  X(IF, If)                                                                    \
+  X(CASE, Case)                                                                \
   X(REC, Rec)                                                                  \
   X(STRUCT, Struct)                                                            \
   X(FIELD, Field)                                                              \
+  X(VARIANT, Variant)                                                          \
+  X(THUNK, Thunk)                                                              \
   X(VAR, Var)
 
 enum class LTag

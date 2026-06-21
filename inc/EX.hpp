@@ -130,6 +130,18 @@ struct PatStruct
   UT::Vu            anchor;
   size_t            line;
 };
+// `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload) -- matches a variant of
+// the named union and destructures its payload, reusing FieldPat with the same
+// named/positional rule as PatStruct. Refutable: it tests the constructor tag,
+// so it may appear only in `if .. is` arms, never a lambda / `let`.
+struct PatVariant
+{
+  UT::Vu            type_name;
+  UT::Vu            tag;
+  UT::Vec<FieldPat> fields;
+  UT::Vu            anchor;
+  size_t            line;
+};
 
 #define EX_PAT_VARIANTS                                                        \
   X(Wild, PatWild)                                                             \
@@ -137,7 +149,8 @@ struct PatStruct
   X(Int, PatInt)                                                               \
   X(Real, PatReal)                                                             \
   X(Str, PatStr)                                                               \
-  X(Struct, PatStruct)
+  X(Struct, PatStruct)                                                         \
+  X(Variant, PatVariant)
 
 enum class PatTag
 {
@@ -220,13 +233,48 @@ struct MatchArm
   Expr    *body;
 };
 // A match: `if scrut is pat then e ... is pat then e else alt`. Distinguished
-// from ExIf by the `is` after the scrutinee. The LL pass lowers it into nested
-// boolean `if`s with equality guards and binding lets, so TC/IT never see it.
+// from ExIf by the `is` after the scrutinee. The LL pass lowers it into an
+// ExCase, so TC/IT never see an ExMatch.
 struct ExMatch
 {
   Expr             *scrut;
   UT::Vec<MatchArm> arms;
   Expr             *alt;
+};
+
+// The head an alternative matches on (see ExCase). Shared with the interpreter
+// (IT aliases this), so it lives here.
+enum class AltKind
+{
+  Con,
+  Int,
+  Real,
+};
+
+// One alternative of a lowered `Case`. Selected when the forced scrutinee's
+// head matches `kind`: a constructor (`type_name`.`ctor`, the `tag`-th of its
+// type, binding the payload positionally to `binders`; an empty binder ignores
+// a slot) or an Int/Real literal (`ival`/`rval`). Built only by LL.
+struct CaseAlt
+{
+  AltKind         kind;
+  UT::Vu          type_name{}; // Con: the scrutinee's nominal type
+  UT::Vu          ctor{};      // Con: the constructor / variant name
+  size_t          tag  = 0;    // Con: constructor index within its type
+  ssize_t         ival = 0;    // Int
+  double          rval = 0;    // Real
+  UT::Vec<UT::Vu> binders;     // Con: payload binder names, positional
+  Expr           *body = nullptr;
+};
+
+// `case scrut of alt... else deflt` -- the one branching form after lowering.
+// `if` and every match compile to this; TC types it directly and IT runs it as
+// the lazy `Case` node.
+struct ExCase
+{
+  Expr            *scrut;
+  UT::Vec<CaseAlt> alts;
+  Expr            *deflt;
 };
 
 struct ExApp
@@ -283,6 +331,36 @@ struct ExField
   UT::Vu field;
 };
 
+// One variant of a union declaration: `Tag: payload`. The payload is a list of
+// fields (reusing FieldDecl); a field name is empty for an anonymous positional
+// payload (`{T, U}`) and set for a named one (`{lhs: T, rhs: U}`). A bare type
+// `Tag: T` is one anonymous field; `Tag: {}` is the empty (unit) payload.
+struct VariantDecl
+{
+  UT::Vu             tag;
+  UT::Vec<FieldDecl> fields;
+  UT::Vu             anchor;
+  size_t             line = 0;
+};
+// A union type declaration: `$ Name : Union = Tag: payload, ...`. A nominal sum
+// type; it produces no runtime value.
+struct ExUnionDecl
+{
+  UT::Vu               name;
+  UT::Vec<VariantDecl> variants;
+};
+// A variant construction `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload).
+// `fields` are the payload values (reusing FieldInit): named when any carries a
+// field name, positional otherwise -- same rule as a struct literal/pattern.
+struct ExVariantLit
+{
+  UT::Vu             type_name;
+  UT::Vu             tag;
+  UT::Vec<FieldInit> fields;
+  UT::Vu             anchor;
+  size_t             line = 0;
+};
+
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
   X(Def, ExDef)                                                                \
@@ -294,11 +372,14 @@ struct ExField
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
   X(Match, ExMatch)                                                            \
+  X(Case, ExCase)                                                              \
   X(Str, ExStr)                                                                \
   X(Extern, ExExtern)                                                          \
   X(StructDecl, ExStructDecl)                                                  \
   X(StructLit, ExStructLit)                                                    \
-  X(Field, ExField)
+  X(Field, ExField)                                                            \
+  X(UnionDecl, ExUnionDecl)                                                    \
+  X(VariantLit, ExVariantLit)
 
 enum class ExprTag
 {
@@ -349,6 +430,10 @@ private:
   UT_NODISCARD RExpr    parse_extern();
   UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_struct_lit(UT::Vu type_name);
+  UT_NODISCARD RExpr    parse_union_decl(const LX::Token &name);
+  UT_NODISCARD RExpr    parse_variant_lit(UT::Vu           type_name,
+                                          UT::Vu           tag,
+                                          const LX::Token &tok);
   UT_NODISCARD RTy      parse_type();
   UT_NODISCARD RTy      parse_type_atom();
   UT_NODISCARD RExpr    parse_expr(int min_bp);
@@ -359,8 +444,14 @@ private:
   UT_NODISCARD RExpr    parse_if();
   UT_NODISCARD RExpr    parse_closure();
   UT_NODISCARD RPattern parse_pattern();
+  // Parses a qualified pattern after an uppercase type name: dispatches to a
+  // `Type.{ ... }` struct pattern or a `Type.Tag[.{ ... }]` variant pattern.
   UT_NODISCARD RPattern parse_struct_pattern(UT::Vu           type_name,
                                              const LX::Token &tn);
+  // Parses the `{ field-patterns }` body shared by struct patterns and variant
+  // payloads. Assumes the opening `{` is the next token.
+  UT_NODISCARD ER::Result<UT::Vec<FieldPat>>
+               parse_field_pats(UT::Vu type_name, const LX::Token &tn);
   UT_NODISCARD LX::RToken expect(LX::TokenTag tag, const char *what);
   void                    recover();
 
