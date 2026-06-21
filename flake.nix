@@ -28,17 +28,18 @@
           pkgs.raylib
 
           # X11 support for raylib
-          pkgs.xorg.libX11
-          pkgs.xorg.libX11.dev
-          pkgs.xorg.libXcursor
-          pkgs.xorg.libXi
-          pkgs.xorg.libXinerama
-          pkgs.xorg.libXrandr
+          pkgs.libX11
+          pkgs.libX11.dev
+          pkgs.libXcursor
+          pkgs.libXi
+          pkgs.libXinerama
+          pkgs.libXrandr
 
           # extra
           pkgs.tokei
-          mingwPkgs.stdenv.cc
-          pkgs.wineWowPackages.stable
+          # mingwPkgs.stdenv.cc
+          # should be enabled manually to check windows build
+          pkgs.wineWow64Packages.stable
         ];
 
         shellHook = ''
