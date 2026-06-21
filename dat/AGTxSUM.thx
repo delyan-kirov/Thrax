@@ -1,21 +1,82 @@
-# Product types (structs): a named record type, a literal, and field access.
+# Sum types (unions): create an enumeration of a tag and a payload
 
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
-$ Person : Struct =
-	name: Str,
-	age: Int,
+$ Token : Union =
+    Num: Int,
+    Op: {Token, Token}, # Sum types should support lazy recursion
+    Txt: Str, # trailing commas are allowe
 
-# A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
-# each field is set with a leading-dot `.field = value` (as in C).
-$ person : Person = Person.{
-	.name = "Will",
-	.age = 21, # trailing comma is allowed but not required
-}
+$ Bool : Union =
+    True: {}, # Empty payload allowed (empty sum, unit)
+    False: {}
 
-# Field access reads a field out of a struct.
-$ who : Str = person.name
-$ yrs : Int = person.age
+# Basic way to create a token
+$ num_tok: Token = Token.Num.{1}
 
-# Fields compose like any other expression.
-$ older : Int = person.age + 1
+# Switching on tokens
+$ is_num: Token -> Bool = \tok =
+    if tok
+        is Token.Num.{_} then Bool.True
+    else
+        Bool.False
+
+# Sum types: constructor matching, payload binding, and lazy (non-strict)
+# data constructors. Each `chk*` is 0 when correct and divides by zero (a
+# runtime fault) when wrong, so a regression makes this file fail loudly.
+
+$ Maybe : Union =
+    Just: Int,
+    None: {}
+
+# Match a variant, bind its payload, fall back through `else`.
+$ get : Int -> Maybe -> Int = \d = \m =
+    if m
+        is Maybe.Just.{x} then x
+    else d
+
+$ chk1 : Int = if get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
+$ chk2 : Int = if get 99 Maybe.None        is 99 then 0 else 1 / 0
+
+# A lazy, infinite stream. Constructors are non-strict, so `from 1` builds one
+# cell at a time on demand; were they strict it would loop forever.
+$ List : Union =
+    Cons: {Int, List},
+    Nil: {}
+
+$ from : Int -> List = \n = List.Cons.{n, from (n + 1)}
+
+$ take3sum : List -> Int = \xs =
+    if xs is List.Cons.{a, r1} then
+        if r1 is List.Cons.{b, r2} then
+            if r2 is List.Cons.{c, _} then a + b + c
+            else a + b
+        else a
+    else 0
+
+# $ printf: Str -> Int -> Int = @extern ("printf", "bin/libc.so")
+# $ print: Int -> Int = \n = printf " [%d] " n
+
+# $ forever: List =
+#     let go = \l =
+#         let n = if l
+#             is List.Nil.{} then print 0
+#             is List.Cons.{x, _} then (print x) + x
+#             else 0
+#          in go List.Cons.{n + 1, l}
+#      in go List.Nil.{}
+
+$ chk3 : Int = if take3sum (from 1) is 6 then 0 else 1 / 0
+
+# Named payload, written out of declared order; LL normalizes it positionally.
+$ Pair : Union = P: {lhs: Int, rhs: Int}
+$ mk : Pair = Pair.P.{ .rhs = 2, .lhs = 1 }
+$ chk4 : Int =
+    if mk is Pair.P.{ .lhs = l, .rhs = r } then
+        if r - l is 1 then 0 else 1 / 0
+    else 1 / 0
+
+# Laziness: a bomb payload is never evaluated when its binder is ignored.
+$ Box : Union = B: Int
+$ bomb : Box = Box.B.{ 1 / 0 }
+$ chk5 : Int = if bomb is Box.B.{_} then 0 else 1 / 0

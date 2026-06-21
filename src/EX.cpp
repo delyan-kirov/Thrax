@@ -414,16 +414,36 @@ Parser::parse_primary()
     }
     else
     {
-      // `record.field` -- the field is a lowercase variable name.
-      LX::Token fld
-        = EX_TRY(expect(LX::TokenTag::Word, "expected a field name after '.'"));
-      char c = fld.str.size() ? fld.str.data()[0] : '\0';
+      LX::Token fld = EX_TRY(expect(
+        LX::TokenTag::Word, "expected a field name or variant tag after '.'"));
+      char      c   = fld.str.size() ? fld.str.data()[0] : '\0';
       if (c >= 'A' && c <= 'Z')
-        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
-               fld,
-               "a field name must start lowercase, found '%s'",
-               std::string(fld.str).c_str());
-      base = mk_field(base, fld.str);
+      {
+        // `Type.Tag` -- a variant constructor; the base must be a bare type
+        // name. An optional `.{ ... }` payload follows (see parse_variant_lit).
+        if (base->tag != ExprTag::Var)
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 dot,
+                 "a variant constructor must be qualified with a type name, "
+                 "e.g. Type.Tag");
+        UT::Vu tn = std::get<ExVar>(base->as).name;
+        char   bc = tn.size() ? tn.data()[0] : '\0';
+        if (bc < 'A' || bc > 'Z')
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 dot,
+                 "a variant constructor's type name must start uppercase, "
+                 "found '%s'",
+                 std::string(tn).c_str());
+        base = EX_CTX(parse_variant_lit(tn, fld.str, fld),
+                      dot,
+                      "in this '%s.%s' variant",
+                      std::string(tn).c_str(),
+                      std::string(fld.str).c_str());
+      }
+      else
+      {
+        base = mk_field(base, fld.str); // `record.field`
+      }
     }
   }
 
@@ -656,19 +676,16 @@ Parser::parse_pattern()
   }
 }
 
-// `Type.{ field-patterns }`. A field-pattern is either `name = subpat` (named)
-// or a bare sub-pattern. If any field is named, the pattern is in named mode
-// and bare lowercase entries pun (`name` == `name = name`); otherwise it is
-// positional. Mode/arity validation against the struct declaration happens in
-// LL.
-RPattern
-Parser::parse_struct_pattern(
+// `{ field-patterns }`. A field-pattern is either `.name = subpat` / `.name`
+// (named, the bare form punning `name` == `name = name`) or a bare positional
+// sub-pattern. All-named or all-positional, not a mix. Shared by struct
+// patterns and variant payloads; assumes the opening `{` is next. Mode/arity
+// validation against the declaration happens in LL.
+ER::Result<UT::Vec<FieldPat>>
+Parser::parse_field_pats(
   UT::Vu type_name, const LX::Token &tn)
 {
-  EX_TRY(expect(LX::TokenTag::Dot,
-                "expected '.{' after a struct pattern's type name"));
-  EX_TRY(
-    expect(LX::TokenTag::LBrace, "expected '{' after '.' in a struct pattern"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' to open the pattern"));
 
   UT::Vec<FieldPat> fields{ m_arena };
   bool              any_named = false;
@@ -711,20 +728,58 @@ Parser::parse_struct_pattern(
     if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
     m_lex.next(); // ','
   }
-  EX_TRY(
-    expect(LX::TokenTag::RBrace, "expected '}' to close the struct pattern"));
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the pattern"));
 
-  // A struct pattern is all-named (`.field`) or all-positional, not a mix.
+  // All-named (`.field`) or all-positional, not a mix.
   if (any_named)
     for (size_t i = 0; i < fields.size(); ++i)
       if (!fields[i].name.size())
         EX_ERR(ER::Code::UNEXPECTED_TOKEN,
                tn,
-               "struct pattern '%s' mixes named ('.field') and positional "
+               "pattern '%s' mixes named ('.field') and positional "
                "entries; use one or the other",
                std::string(type_name).c_str());
 
-  Pattern pat{ PatTag::Struct,
+  return { true, fields, {} };
+}
+
+// A qualified pattern, the type name already consumed. `Type.{ ... }` is a
+// struct pattern; `Type.Tag` / `Type.Tag.{ ... }` (uppercase tag) is a variant
+// pattern.
+RPattern
+Parser::parse_struct_pattern(
+  UT::Vu type_name, const LX::Token &tn)
+{
+  EX_TRY(expect(LX::TokenTag::Dot,
+                "expected '.{' or '.Tag' after a pattern's type name"));
+
+  LX::Token ahead = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::Word == ahead.tag)
+  {
+    char c = ahead.str.size() ? ahead.str.data()[0] : '\0';
+    if (c < 'A' || c > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             ahead,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(ahead.str).c_str());
+    m_lex.next(); // tag
+    UT::Vu tag = ahead.str;
+
+    // An optional `.{ ... }` payload; its absence means a unit payload.
+    UT::Vec<FieldPat> fields{ m_arena };
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+        && LX::TokenTag::LBrace == EX_TRY(m_lex.peek(1)).tag)
+    {
+      m_lex.next(); // '.'
+      fields = EX_TRY(parse_field_pats(type_name, tn));
+    }
+    Pattern pat{ PatTag::Variant,
+                 PatVariant{ type_name, tag, fields, tn.str, tn.line } };
+    return { true, alloc_pat(pat), {} };
+  }
+
+  UT::Vec<FieldPat> fields = EX_TRY(parse_field_pats(type_name, tn));
+  Pattern           pat{ PatTag::Struct,
                PatStruct{ type_name, fields, tn.str, tn.line } };
   return { true, alloc_pat(pat), {} };
 }
@@ -811,6 +866,12 @@ Parser::parse_global()
       m_lex.next(); // 'Struct'
       EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
       return parse_struct_decl(name);
+    }
+    if (LX::TokenTag::Word == ann.tag && ann.str == "Union")
+    {
+      m_lex.next(); // 'Union'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Union'"));
+      return parse_union_decl(name);
     }
     sig = EX_CTX(parse_type(),
                  name,
@@ -951,6 +1012,165 @@ Parser::parse_struct_lit(
 
   Expr e{ ExprTag::StructLit };
   e.as = ExStructLit{ type_name, fields };
+  return { true, alloc(e), {} };
+}
+
+// A union declaration body: a comma-separated `Tag: payload` list, trailing
+// comma allowed, ending at the next global ('$') or end of input. A payload is
+// a brace list `{...}` (positional types `{T, U}`, named `{f: T, ...}`, or
+// empty
+// `{}`) or a bare type `T` (one anonymous field). The name token was consumed
+// by parse_global.
+RExpr
+Parser::parse_union_decl(
+  const LX::Token &name)
+{
+  char nc = name.str.size() ? name.str.data()[0] : '\0';
+  if (nc < 'A' || nc > 'Z')
+    EX_ERR(ER::Code::EXPECTED_GLOBAL,
+           name,
+           "a union type name must start uppercase, found '%s'",
+           std::string(name.str).c_str());
+
+  UT::Vec<VariantDecl> variants{ m_arena };
+  for (;;)
+  {
+    LX::TokenTag tag = EX_TRY(m_lex.peek()).tag;
+    if (LX::TokenTag::Dollar == tag || LX::TokenTag::Eof == tag) break;
+
+    LX::Token tname
+      = EX_TRY(expect(LX::TokenTag::Word, "expected a variant tag"));
+    char tc = tname.str.size() ? tname.str.data()[0] : '\0';
+    if (tc < 'A' || tc > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             tname,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(tname.str).c_str());
+
+    EX_TRY(expect(LX::TokenTag::Colon, "expected ':' after the variant tag"));
+
+    UT::Vec<FieldDecl> fields{ m_arena };
+    if (LX::TokenTag::LBrace == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '{'
+      bool any_named = false;
+      for (;;)
+      {
+        if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+
+        // A named field `f: T` (lowercase word then ':') vs a positional type.
+        LX::Token t0  = EX_TRY(m_lex.peek(0));
+        char      t0c = t0.str.size() ? t0.str.data()[0] : '\0';
+        bool named    = LX::TokenTag::Word == t0.tag && t0c >= 'a' && t0c <= 'z'
+                     && LX::TokenTag::Colon == EX_TRY(m_lex.peek(1)).tag;
+        UT::Vu fname{};
+        if (named)
+        {
+          LX::Token fn = EX_TRY(m_lex.next()); // field name
+          m_lex.next();                        // ':'
+          fname     = fn.str;
+          any_named = true;
+        }
+        Ty *ty = EX_CTX(parse_type(),
+                        tname,
+                        "in the payload of variant '%s'",
+                        std::string(tname.str).c_str());
+        fields.push(FieldDecl{ fname, ty });
+
+        if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+        m_lex.next(); // ','
+      }
+      EX_TRY(expect(LX::TokenTag::RBrace,
+                    "expected '}' to close the variant payload"));
+      if (any_named)
+        for (size_t i = 0; i < fields.size(); ++i)
+          if (!fields[i].name.size())
+            EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                   tname,
+                   "variant '%s' mixes named and positional payload fields; "
+                   "use one or the other",
+                   std::string(tname.str).c_str());
+    }
+    else
+    {
+      // A bare type is one anonymous field, e.g. `Num: Int`.
+      Ty *ty = EX_CTX(parse_type(),
+                      tname,
+                      "in the payload of variant '%s'",
+                      std::string(tname.str).c_str());
+      fields.push(FieldDecl{ UT::Vu{}, ty });
+    }
+
+    variants.push(VariantDecl{ tname.str, fields, tname.str, tname.line });
+
+    if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+    m_lex.next(); // ','
+  }
+
+  Expr e{ ExprTag::UnionDecl };
+  e.as = ExUnionDecl{ name.str, variants };
+  return { true, alloc(e), {} };
+}
+
+// A variant construction. Called with `Type` and `Tag` already consumed; an
+// optional `.{ ... }` payload follows. Without it the payload is unit (e.g.
+// `Bool.True`). Payload values are positional (`{a, b}`) or named (`{.f = a}`),
+// not mixed -- the same rule as a struct literal.
+RExpr
+Parser::parse_variant_lit(
+  UT::Vu type_name, UT::Vu tag, const LX::Token &tok)
+{
+  UT::Vec<FieldInit> fields{ m_arena };
+
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+      && LX::TokenTag::LBrace == EX_TRY(m_lex.peek(1)).tag)
+  {
+    m_lex.next(); // '.'
+    m_lex.next(); // '{'
+    bool any_named = false;
+    for (;;)
+    {
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+
+      if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+      {
+        m_lex.next(); // '.'
+        LX::Token fn = EX_TRY(
+          expect(LX::TokenTag::Word, "expected a field name after '.'"));
+        EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
+        Expr *val = EX_CTX(parse_expr(0),
+                           fn,
+                           "in the value of field '%s'",
+                           std::string(fn.str).c_str());
+        fields.push(FieldInit{ fn.str, val });
+        any_named = true;
+      }
+      else
+      {
+        Expr *val = EX_CTX(parse_expr(0),
+                           tok,
+                           "in a positional payload value of '%s'",
+                           std::string(tag).c_str());
+        fields.push(FieldInit{ UT::Vu{}, val });
+      }
+
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+    }
+    EX_TRY(expect(LX::TokenTag::RBrace,
+                  "expected '}' to close the variant payload"));
+    if (any_named)
+      for (size_t i = 0; i < fields.size(); ++i)
+        if (!fields[i].name.size())
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 tok,
+                 "variant '%s' mixes named and positional payload values; use "
+                 "one or the other",
+                 std::string(tag).c_str());
+  }
+
+  Expr e{ ExprTag::VariantLit };
+  e.as = ExVariantLit{ type_name, tag, fields, tok.str, tok.line };
   return { true, alloc(e), {} };
 }
 
@@ -1139,6 +1359,14 @@ pprint(
            + pprint(m.arms[i].body, level + 1);
     return s + "\n" + pad + "else\n" + pprint(m.alt, level + 1);
   }
+  case ExprTag::Case:
+  {
+    auto       &cs = std::get<ExCase>(e->as);
+    std::string s  = pad + "case " + pprint(cs.scrut, 0);
+    for (size_t i = 0; i < cs.alts.size(); ++i)
+      s += "\n" + pad + "alt ->\n" + pprint(cs.alts[i].body, level + 1);
+    return s + "\n" + pad + "else\n" + pprint(cs.deflt, level + 1);
+  }
   case ExprTag::FnDef:
   {
     auto       &fn = std::get<ExFnDef>(e->as);
@@ -1184,6 +1412,36 @@ pprint(
     return pad + "(field " + std::string(fa.field) + "\n"
            + pprint(fa.record, level + 1) + ")";
   }
+  case ExprTag::UnionDecl:
+  {
+    auto       &ud = std::get<ExUnionDecl>(e->as);
+    std::string s  = pad + "$" + std::string(ud.name) + " : Union";
+    for (size_t i = 0; i < ud.variants.size(); ++i)
+    {
+      s += "\n" + std::string((level + 1) * 2, ' ')
+           + std::string(ud.variants[i].tag) + ": {";
+      auto &fs = ud.variants[i].fields;
+      for (size_t k = 0; k < fs.size(); ++k)
+        s += (k ? ", " : "")
+             + (fs[k].name.size() ? std::string(fs[k].name) + ": " : "")
+             + pprint_ty(fs[k].ty);
+      s += "}";
+    }
+    return s;
+  }
+  case ExprTag::VariantLit:
+  {
+    auto       &vl = std::get<ExVariantLit>(e->as);
+    std::string s
+      = pad + std::string(vl.type_name) + "." + std::string(vl.tag) + ".{";
+    for (size_t i = 0; i < vl.fields.size(); ++i)
+      s += "\n" + std::string((level + 1) * 2, ' ')
+           + (vl.fields[i].name.size()
+                ? "." + std::string(vl.fields[i].name) + " =\n"
+                : "\n")
+           + pprint(vl.fields[i].val, level + 2);
+    return s + ")";
+  }
   case ExprTag::Unknown: return pad + "?unknown";
   }
   UT_FAIL_IF("UNREACHABLE");
@@ -1213,6 +1471,20 @@ pprint(
       if (ps.fields[i].name.size())
         s += "." + std::string(ps.fields[i].name) + " = ";
       s += pprint(ps.fields[i].pat);
+    }
+    return s + "}";
+  }
+  case PatTag::Variant:
+  {
+    auto       &pv = std::get<PatVariant>(p->as);
+    std::string s
+      = std::string(pv.type_name) + "." + std::string(pv.tag) + ".{";
+    for (size_t i = 0; i < pv.fields.size(); ++i)
+    {
+      if (i) s += ", ";
+      if (pv.fields[i].name.size())
+        s += "." + std::string(pv.fields[i].name) + " = ";
+      s += pprint(pv.fields[i].pat);
     }
     return s + "}";
   }

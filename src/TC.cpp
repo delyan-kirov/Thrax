@@ -142,20 +142,40 @@ enum class CKind
   Let,
   Extern,    // a foreign binding; its type comes entirely from the signature
   StructLit, // `Type.{ field = expr, ... }`: name is the type, fields the inits
-  Field      // `record.field`: a is the record, name is the field
+  Field,     // `record.field`: a is the record, name is the field
+  Case,      // `case scrut of alt..`: a is the scrutinee, b the default
+  VariantLit // `Type.Tag.{...}`: name is the union, vtag the variant, fields
+             // inits
+};
+
+struct Core;
+
+// One alternative of a CKind::Case. `kind` discriminates on a constructor (the
+// `tag`-th of `type_name`, binding the payload positionally to `binders`) or an
+// Int/Real literal (the literal value itself is irrelevant to typing). `body`
+// is the arm's result.
+struct CoreAlt
+{
+  EX::AltKind              kind;
+  std::string              type_name; // Con: the scrutinee's nominal type
+  size_t                   tag = 0;   // Con: constructor index within its type
+  std::vector<std::string> binders;   // Con: payload binders, positional
+  Core                    *body = nullptr;
 };
 
 struct Core
 {
   CKind       kind;
-  std::string name;           // Var name / Lam param / Let name / struct/field
-  Core       *a = nullptr;    // Lam: body; App: fn; Let: value; Field: record
-  Core       *b = nullptr;    // App: arg; Let: body
-  UT::Vu      anchor;         // source slice for diagnostics
+  std::string name;        // Var name / Lam param / Let name / struct/field
+  Core       *a = nullptr; // Lam: body; App: fn; Let: value; Field/Case: scrut
+  Core       *b = nullptr; // App: arg; Let: body; Case: default
+  UT::Vu      anchor;      // source slice for diagnostics
   UT::Vu     *slot = nullptr; // overloaded Var: the EX name field to rewrite
   Type *sig = nullptr; // Let: an optional type the bound value is pinned to
-  // StructLit: the field initializers, in source order.
+  // StructLit / VariantLit: the field initializers, in source order.
   std::vector<std::pair<std::string, Core *>> fields;
+  std::vector<CoreAlt>                        alts; // Case: the alternatives
+  std::string vtag; // VariantLit: the variant tag
 };
 
 // A deferred overload resolution. An overloaded name (e.g. `+`) is typed as a
@@ -220,6 +240,17 @@ private:
   // the struct's value type is just con(name); this holds the field shape.
   using StructFields = std::vector<std::pair<std::string, Type *>>;
   std::unordered_map<std::string, StructFields> m_structs;
+
+  // Declared union types: name -> ordered variants, each a tag plus its payload
+  // shape (StructFields; a field name is empty for a positional payload). A
+  // variant's index here is its runtime constructor tag; the union's value type
+  // is con(name).
+  struct VariantShape
+  {
+    std::string  tag;
+    StructFields fields;
+  };
+  std::unordered_map<std::string, std::vector<VariantShape>> m_unions;
 
   // current diagnostic anchor (the global under check)
   UT::Vu m_anchor;
@@ -617,6 +648,18 @@ Checker::desugar(
         { std::string(sl.fields[i].name), desugar(sl.fields[i].val) });
     return c;
   }
+  case EX::ExprTag::VariantLit:
+  {
+    auto &vl  = std::get<EX::ExVariantLit>(e->as);
+    Core *c   = core(CKind::VariantLit);
+    c->name   = std::string(vl.type_name);
+    c->vtag   = std::string(vl.tag);
+    c->anchor = vl.anchor;
+    for (size_t i = 0; i < vl.fields.size(); ++i)
+      c->fields.push_back(
+        { std::string(vl.fields[i].name), desugar(vl.fields[i].val) });
+    return c;
+  }
   case EX::ExprTag::Field:
   {
     auto &fa  = std::get<EX::ExField>(e->as);
@@ -626,11 +669,35 @@ Checker::desugar(
     c->anchor = fa.field;
     return c;
   }
-  // Match is removed by the LL pass before type checking; Def / StructDecl are
-  // top-level only; Unknown is never produced as a body.
+  case EX::ExprTag::Case:
+  {
+    auto &ec = std::get<EX::ExCase>(e->as);
+    Core *c  = core(CKind::Case);
+    c->a     = desugar(ec.scrut);
+    c->b     = desugar(ec.deflt);
+    for (size_t i = 0; i < ec.alts.size(); ++i)
+    {
+      EX::CaseAlt &a = ec.alts[i];
+      CoreAlt      ca;
+      ca.kind = a.kind;
+      if (a.kind == EX::AltKind::Con) // type_name/tag/binders are Con-only
+      {
+        ca.type_name = std::string(a.type_name);
+        ca.tag       = a.tag;
+        for (size_t j = 0; j < a.binders.size(); ++j)
+          ca.binders.push_back(std::string(a.binders[j]));
+      }
+      ca.body = desugar(a.body);
+      c->alts.push_back(ca);
+    }
+    return c;
+  }
+  // Match is removed by the LL pass before type checking; Def / StructDecl /
+  // UnionDecl are top-level only; Unknown is never produced as a body.
   case EX::ExprTag::Match:
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
+  case EX::ExprTag::UnionDecl:
   case EX::ExprTag::Unknown:
     UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
                 EX::pprint(e->tag).c_str());
@@ -659,10 +726,21 @@ Checker::occurs_free(
     if (e->name == name) return occurs_free(name, e->a);
     return occurs_free(name, e->a) || occurs_free(name, e->b);
   case CKind::StructLit:
+  case CKind::VariantLit:
     for (auto &f : e->fields)
       if (occurs_free(name, f.second)) return true;
     return false;
   case CKind::Field: return occurs_free(name, e->a);
+  case CKind::Case:
+    if (occurs_free(name, e->a) || occurs_free(name, e->b)) return true;
+    for (auto &alt : e->alts)
+    {
+      bool shadowed = false;
+      for (auto &b : alt.binders)
+        if (b == name) shadowed = true; // bound by this alt's payload
+      if (!shadowed && occurs_free(name, alt.body)) return true;
+    }
+    return false;
   }
   return false;
 }
@@ -803,6 +881,95 @@ Checker::infer(
     return con(e->name);
   }
 
+  case CKind::VariantLit:
+  {
+    auto uit = m_unions.find(e->name);
+    if (uit == m_unions.end())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           e->anchor.data() ? e->anchor : m_anchor,
+           "unknown union type '%s'",
+           e->name.c_str());
+      return fresh();
+    }
+    const StructFields *decl = nullptr;
+    for (auto &v : uit->second)
+      if (v.tag == e->vtag) decl = &v.fields;
+    if (!decl)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           e->anchor.data() ? e->anchor : m_anchor,
+           "union '%s' has no variant '%s'",
+           e->name.c_str(),
+           e->vtag.c_str());
+      return fresh();
+    }
+
+    // Named when any value carries a field name (then all must be set exactly
+    // once, any order); positional otherwise (one value per field, in order).
+    bool named = false;
+    for (auto &init : e->fields)
+      if (!init.first.empty()) named = true;
+
+    if (named)
+    {
+      std::vector<bool> seen(decl->size(), false);
+      for (auto &init : e->fields)
+      {
+        size_t idx = decl->size();
+        for (size_t k = 0; k < decl->size(); ++k)
+          if ((*decl)[k].first == init.first) idx = k;
+        if (idx == decl->size())
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               e->anchor.data() ? e->anchor : m_anchor,
+               "variant '%s.%s' has no field '%s'",
+               e->name.c_str(),
+               e->vtag.c_str(),
+               init.first.c_str());
+          continue;
+        }
+        if (seen[idx])
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               e->anchor.data() ? e->anchor : m_anchor,
+               "field '%s' is set more than once in '%s.%s'",
+               init.first.c_str(),
+               e->name.c_str(),
+               e->vtag.c_str());
+          continue;
+        }
+        seen[idx] = true;
+        unify((*decl)[idx].second, infer(init.second, locals));
+      }
+      for (size_t k = 0; k < decl->size(); ++k)
+        if (!seen[k])
+          fail(ER::Code::TYPE_MISMATCH,
+               e->anchor.data() ? e->anchor : m_anchor,
+               "variant '%s.%s' is missing field '%s'",
+               e->name.c_str(),
+               e->vtag.c_str(),
+               (*decl)[k].first.c_str());
+    }
+    else if (e->fields.size() != decl->size())
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           e->anchor.data() ? e->anchor : m_anchor,
+           "variant '%s.%s' takes %zu payload field(s), but %zu given",
+           e->name.c_str(),
+           e->vtag.c_str(),
+           decl->size(),
+           e->fields.size());
+    }
+    else
+    {
+      for (size_t k = 0; k < decl->size(); ++k)
+        unify((*decl)[k].second, infer(e->fields[k].second, locals));
+    }
+
+    return con(e->name);
+  }
+
   case CKind::Field:
   {
     Type *rt = prune(infer(e->a, locals));
@@ -824,6 +991,39 @@ Checker::infer(
          rt->name.c_str(),
          e->name.c_str());
     return fresh();
+  }
+
+  case CKind::Case:
+  {
+    Type *st = infer(e->a, locals); // the scrutinee
+    Type *rt = fresh();             // every arm and the default share one type
+    for (auto &alt : e->alts)
+    {
+      Env inner = locals;
+      switch (alt.kind)
+      {
+      case EX::AltKind::Int : unify(st, con("Int")); break;
+      case EX::AltKind::Real: unify(st, con("Real")); break;
+      case EX::AltKind::Con:
+      {
+        // The scrutinee is the constructor's union type; bind its payload from
+        // the matched variant's declared field types.
+        unify(st, con(alt.type_name));
+        auto uit = m_unions.find(alt.type_name);
+        if (uit != m_unions.end() && alt.tag < uit->second.size())
+        {
+          const StructFields &decl = uit->second[alt.tag].fields;
+          for (size_t i = 0; i < alt.binders.size() && i < decl.size(); ++i)
+            if (!alt.binders[i].empty())
+              inner[alt.binders[i]] = Scheme{ {}, decl[i].second };
+        }
+        break;
+      }
+      }
+      unify(rt, infer(alt.body, inner));
+    }
+    unify(rt, infer(e->b, locals)); // the default arm
+    return rt;
   }
   }
   return fresh();
@@ -999,6 +1199,27 @@ Checker::run(
       flds.push_back({ std::string(sd.fields[f].name), ft });
     }
     m_structs[std::string(sd.name)] = std::move(flds);
+  }
+
+  // ... and union types, likewise registered up front for forward references.
+  for (size_t i = 0; i < exprs.size(); ++i)
+  {
+    EX::Expr *e = &exprs[i];
+    if (e->tag != EX::ExprTag::UnionDecl) continue;
+    EX::ExUnionDecl          &ud = std::get<EX::ExUnionDecl>(e->as);
+    std::vector<VariantShape> variants;
+    for (size_t v = 0; v < ud.variants.size(); ++v)
+    {
+      StructFields flds;
+      for (size_t f = 0; f < ud.variants[v].fields.size(); ++f)
+      {
+        std::unordered_map<std::string, Type *> tv;
+        Type *ft = sig_to_type(ud.variants[v].fields[f].ty, tv, false);
+        flds.push_back({ std::string(ud.variants[v].fields[f].name), ft });
+      }
+      variants.push_back({ std::string(ud.variants[v].tag), std::move(flds) });
+    }
+    m_unions[std::string(ud.name)] = std::move(variants);
   }
 
   for (size_t i = 0; i < exprs.size(); ++i)

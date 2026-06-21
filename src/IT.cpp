@@ -89,12 +89,17 @@ assign_id(
   }
   break;
 
-  case LTag::IF:
+  case LTag::CASE:
   {
-    auto &v = std::get<If>(node->as);
-    assign_id(v.cond, env);
-    assign_id(v.yes, env);
-    assign_id(v.no, env);
+    auto &v = std::get<Case>(node->as);
+    assign_id(v.scrut, env);
+    for (auto &alt : v.alts)
+    {
+      for (auto &b : alt.binders) env.push_back(b);
+      assign_id(alt.body, env);
+      for (size_t i = 0; i < alt.binders.size(); ++i) env.pop_back();
+    }
+    assign_id(v.deflt, env);
   }
   break;
 
@@ -121,11 +126,21 @@ assign_id(
   }
   break;
 
+  case LTag::VARIANT:
+  {
+    // A constructor binds nothing; index each payload field in place (it is
+    // suspended into a Thunk capturing this same scope at eval time).
+    auto &v = std::get<Variant>(node->as);
+    for (auto &f : v.fields) assign_id(f, env);
+  }
+  break;
+
   case LTag::INT:
   case LTag::REAL:
   case LTag::STR:
-  case LTag::REC: // a runtime-only cell; never present in the static AST
-  case LTag::UNK : break;
+  case LTag::REC:   // a runtime-only cell; never present in the static AST
+  case LTag::THUNK: // likewise built only during eval
+  case LTag::UNK  : break;
   }
 }
 
@@ -135,6 +150,24 @@ pLm eval(pLm node, DynEnv denv, StatEnv &senv);
 
 namespace
 {
+
+// Force a value to weak head normal form. Thrax is call-by-value, so most
+// values arrive already forced; the exception is a constructor field, which is
+// suspended as a Thunk (see Variant). Every strict eliminator -- a `case`
+// scrutinee, a field access, a builtin / extern operand, the callee of an
+// application -- forces its input through here, evaluating the thunk once,
+// memoizing the result, and collapsing any chain of thunks. Constructor fields
+// that are merely passed along stay suspended, so recursion stays lazy.
+pLm
+force(
+  pLm v, StatEnv &senv)
+{
+  if (!v || v->tag != LTag::THUNK) return v;
+  auto &t = std::get<Thunk>(v->as);
+  if (!t.memo) t.memo = eval(t.expr, t.env, senv);
+  t.memo = force(t.memo, senv);
+  return t.memo;
+}
 
 // Operand extraction / result construction. The type checker resolved the
 // overload, so an "@Int" impl only sees Ints. An "@Real" impl may see an Int on
@@ -408,6 +441,7 @@ is_atom(
   case LTag::EXTERN:
   case LTag::BUILTIN:
   case LTag::REC:
+  case LTag::THUNK:
   case LTag::UNK    : return true;
   default           : return false;
   }
@@ -499,6 +533,7 @@ Anf::norm(
   case LTag::EXTERN:
   case LTag::BUILTIN:
   case LTag::REC:
+  case LTag::THUNK:
   case LTag::UNK    : return k(e);
 
   case LTag::FUN:
@@ -506,6 +541,17 @@ Anf::norm(
     Fun f  = std::get<Fun>(e->as);
     f.body = term(f.body); // a lambda body is itself in tail position
     return k(mk(Lm{ .tag = LTag::FUN, .as = f }));
+  }
+
+  case LTag::VARIANT:
+  {
+    // A constructor's fields are non-strict: normalize each as its own value
+    // producer (like a lambda body) but keep it INLINE -- never hoist it into a
+    // `let`, which would force it eagerly and defeat the laziness. eval
+    // suspends each into a Thunk.
+    Variant v = std::get<Variant>(e->as);
+    for (auto &f : v.fields) f = term(f);
+    return k(mk(Lm{ .tag = LTag::VARIANT, .as = v }));
   }
 
   case LTag::APP:
@@ -518,26 +564,19 @@ Anf::norm(
     });
   }
 
-  case LTag::IF:
+  case LTag::CASE:
   {
-    If i = std::get<If>(e->as);
-    return norm_name(i.cond, [this, i, tail, k](pLm c2) {
-      pLm y, n;
-      if (tail)
-      {
-        // Tail `if`: each branch is itself in tail position.
-        y = term(i.yes);
-        n = term(i.no);
-      }
-      else
-      {
-        // Non-tail `if`: each branch produces the value the `if` is bound to,
-        // so its calls are not tail. Bind the whole `if` via `k`.
-        Cont id = [](pLm v) { return v; };
-        y       = norm(i.yes, false, id);
-        n       = norm(i.no, false, id);
-      }
-      return k(mk(Lm{ .tag = LTag::IF, .as = If{ c2, y, n } }));
+    Case c = std::get<Case>(e->as);
+    return norm_name(c.scrut, [this, c, tail, k](pLm s2) mutable {
+      // Each alternative body (and the default) sits in the `case`'s own
+      // position: in tail position they stay tail, otherwise they each produce
+      // the value the `case` is bound to, so the whole `case` is bound via `k`.
+      Cont id = [](pLm v) { return v; };
+      for (auto &alt : c.alts)
+        alt.body = tail ? term(alt.body) : norm(alt.body, false, id);
+      c.deflt = tail ? term(c.deflt) : norm(c.deflt, false, id);
+      c.scrut = s2;
+      return k(mk(Lm{ .tag = LTag::CASE, .as = c }));
     });
   }
 
@@ -592,7 +631,43 @@ exprs2pLm_helper(
     pLm       cond   = exprs2pLm_helper(ifexpr.cond, env);
     pLm       then   = exprs2pLm_helper(ifexpr.then, env);
     pLm       othw   = exprs2pLm_helper(ifexpr.alt, env);
-    lm               = { .tag = LTag::IF, .as = If{ cond, then, othw } };
+    // `if c then t else e`  ==>  case c of { 0 -> e } else t
+    CaseAlt zero;
+    zero.kind = AltKind::Int;
+    zero.ival = 0;
+    zero.body = othw;
+    Case cs;
+    cs.scrut = cond;
+    cs.alts  = { zero };
+    cs.deflt = then;
+    lm       = { .tag = LTag::CASE, .as = cs };
+  }
+  break;
+
+  case EX::ExprTag::Case:
+  {
+    auto &ec = std::get<EX::ExCase>(expr->as);
+    Case  cs;
+    cs.scrut = exprs2pLm_helper(ec.scrut, env);
+    cs.deflt = exprs2pLm_helper(ec.deflt, env);
+    for (size_t i = 0; i < ec.alts.size(); ++i)
+    {
+      EX::CaseAlt &a = ec.alts[i];
+      CaseAlt      b;
+      b.kind = a.kind;
+      b.tag  = a.tag;
+      b.ival = a.ival;
+      b.rval = a.rval;
+      if (a.kind == EX::AltKind::Con) // ctor / binders are Con-only
+      {
+        b.ctor = std::string(a.ctor);
+        for (size_t j = 0; j < a.binders.size(); ++j)
+          b.binders.push_back(std::string(a.binders[j]));
+      }
+      b.body = exprs2pLm_helper(a.body, env);
+      cs.alts.push_back(b);
+    }
+    lm = { .tag = LTag::CASE, .as = cs };
   }
   break;
 
@@ -698,8 +773,22 @@ exprs2pLm_helper(
   }
   break;
 
-  // A struct *declaration* is a type-level form with no runtime value.
+  case EX::ExprTag::VariantLit:
+  {
+    auto   &vl = std::get<EX::ExVariantLit>(expr->as);
+    Variant v;
+    v.type_name = std::string{ vl.type_name };
+    v.tag       = std::string{ vl.tag };
+    // Fields are positional in declared order (LL normalized any named form).
+    for (size_t i = 0; i < vl.fields.size(); ++i)
+      v.fields.push_back(exprs2pLm_helper(vl.fields[i].val, env));
+    lm = { .tag = LTag::VARIANT, .as = v };
+  }
+  break;
+
+  // A struct / union *declaration* is a type-level form with no runtime value.
   case EX::ExprTag::StructDecl:
+  case EX::ExprTag::UnionDecl:
   {
     lm = { .tag = LTag::UNK, .as = std::monostate{} };
   }
@@ -784,11 +873,14 @@ pprint(
     for (auto &arg : v.args) s += "\n" + pprint(arg, level + 1);
     return s;
   }
-  case LTag::IF:
+  case LTag::CASE:
   {
-    auto &v = std::get<If>(lm->as);
-    return pad + "(if\n" + pprint(v.cond, level + 1) + "\n"
-           + pprint(v.yes, level + 1) + "\n" + pprint(v.no, level + 1) + ")";
+    auto       &v    = std::get<Case>(lm->as);
+    std::string pad1 = std::string((level + 1) * 2, ' ');
+    std::string s    = pad + "(case\n" + pprint(v.scrut, level + 1);
+    for (auto &alt : v.alts)
+      s += "\n" + pad1 + "alt ->\n" + pprint(alt.body, level + 2);
+    return s + "\n" + pad1 + "else ->\n" + pprint(v.deflt, level + 2) + ")";
   }
   case LTag::STRUCT:
   {
@@ -804,8 +896,16 @@ pprint(
     auto &v = std::get<Field>(lm->as);
     return pad + "(field " + v.name + "\n" + pprint(v.record, level + 1) + ")";
   }
-  case LTag::REC: return pad + "<rec>";
-  case LTag::UNK: return pad + "?unknown";
+  case LTag::VARIANT:
+  {
+    auto       &v = std::get<Variant>(lm->as);
+    std::string s = pad + v.type_name + "." + v.tag + ".{";
+    for (auto &f : v.fields) s += "\n" + pprint(f, level + 1);
+    return s + ")";
+  }
+  case LTag::THUNK: return pad + "<thunk>";
+  case LTag::REC  : return pad + "<rec>";
+  case LTag::UNK  : return pad + "?unknown";
   }
   return pad + "?unreachable";
 }
@@ -917,23 +1017,25 @@ eval(
     {
       auto &a = std::get<App>(node->as);
 
-      pLm closure = eval(a.fn, denv, senv);
+      pLm closure = force(eval(a.fn, denv, senv), senv);
       pLm val     = eval(a.arg, denv, senv);
 
-      // Foreign function: accumulate the argument, call once saturated.
+      // Foreign function: accumulate the (forced) argument, call once
+      // saturated.
       if (LTag::EXTERN == closure->tag)
       {
         Extern e = std::get<Extern>(closure->as); // copy and extend
-        e.args.push_back(val);
+        e.args.push_back(force(val, senv));
         if (e.args.size() >= e.arg_types.size()) return call_extern(e);
         return std::make_shared<Lm>(Lm{ .tag = LTag::EXTERN, .as = e });
       }
 
-      // Built-in: accumulate the argument, run the impl once saturated.
+      // Built-in: accumulate the (forced) argument, run the impl once
+      // saturated.
       if (LTag::BUILTIN == closure->tag)
       {
         Builtin b = std::get<Builtin>(closure->as); // copy and extend
-        b.args.push_back(val);
+        b.args.push_back(force(val, senv));
         if (b.args.size() >= b.arity) return impls.at(b.impl).fn(b.args);
         return std::make_shared<Lm>(Lm{ .tag = LTag::BUILTIN, .as = b });
       }
@@ -968,13 +1070,46 @@ eval(
       return node;
     }
 
-    case LTag::IF:
+    case LTag::CASE:
     {
-      auto &i    = std::get<If>(node->as);
-      pLm   cond = eval(i.cond, denv, senv);
-      UT_FAIL_IF(cond->tag != LTag::INT);
-      bool taken = std::get<Int>(cond->as).unwrap != 0;
-      node       = taken ? i.yes : i.no;
+      auto          &c   = std::get<Case>(node->as);
+      pLm            sv  = force(eval(c.scrut, denv, senv), senv); // to WHNF
+      const CaseAlt *hit = nullptr;
+      for (auto &alt : c.alts)
+      {
+        bool m = false;
+        switch (alt.kind)
+        {
+        case AltKind::Int:
+          UT_FAIL_IF(sv->tag != LTag::INT);
+          m = std::get<Int>(sv->as).unwrap == alt.ival;
+          break;
+        case AltKind::Real:
+          UT_FAIL_IF(sv->tag != LTag::REAL);
+          m = std::get<Real>(sv->as).unwrap == alt.rval;
+          break;
+        case AltKind::Con:
+          UT_FAIL_IF(sv->tag != LTag::VARIANT);
+          m = std::get<Variant>(sv->as).tag == alt.ctor;
+          break;
+        }
+        if (m)
+        {
+          hit = &alt;
+          break;
+        }
+      }
+      // A Con alt binds its payload positionally onto `denv`, in the same order
+      // assign_id pushed the binders, so De Bruijn indices line up. The fields
+      // are the constructor's thunks -- binders stay lazy until forced.
+      if (hit && hit->kind == AltKind::Con)
+      {
+        auto &var = std::get<Variant>(sv->as);
+        UT_FAIL_IF(hit->binders.size() != var.fields.size());
+        for (size_t i = 0; i < var.fields.size(); ++i)
+          denv.push_back(var.fields[i]);
+      }
+      node = hit ? hit->body : c.deflt;
       continue;
     }
 
@@ -995,7 +1130,7 @@ eval(
     case LTag::FIELD:
     {
       auto &fa  = std::get<Field>(node->as);
-      pLm   rec = eval(fa.record, denv, senv);
+      pLm   rec = force(eval(fa.record, denv, senv), senv);
       UT_FAIL_IF(rec->tag != LTag::STRUCT);
       for (auto &f : std::get<Struct>(rec->as).fields)
         if (f.first == fa.name) return f.second;
@@ -1004,6 +1139,25 @@ eval(
                   std::get<Struct>(rec->as).name.c_str());
       return node;
     }
+
+    case LTag::VARIANT:
+    {
+      // Construct eagerly but suspend each payload field into a Thunk capturing
+      // the current environment: data constructors are non-strict, so the
+      // fields are evaluated only when forced (see force / Variant).
+      auto   &v = std::get<Variant>(node->as);
+      Variant out;
+      out.type_name = v.type_name;
+      out.tag       = v.tag;
+      for (auto &f : v.fields)
+        out.fields.push_back(std::make_shared<Lm>(
+          Lm{ .tag = LTag::THUNK, .as = Thunk{ f, denv, nullptr } }));
+      return std::make_shared<Lm>(Lm{ .tag = LTag::VARIANT, .as = out });
+    }
+
+    // Reached only if a thunk is evaluated directly (a VAR bound to one returns
+    // it unforced); force it to its value.
+    case LTag::THUNK: return force(node, senv);
 
     // A let binding's weak self-reference (see LET); lock it to the value. eval
     // is never called on one directly -- VAR resolves it -- but handle it for
