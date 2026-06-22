@@ -9,7 +9,7 @@
 namespace FF
 {
 
-#ifdef THRAX_NO_3RD_PARTY
+#ifdef THRAX_3RD_PARTY_ON
 
 ssize_t
 call(

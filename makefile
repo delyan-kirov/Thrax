@@ -12,22 +12,21 @@ CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -Iinc
 LIBS     = 
 
 ifdef THRAX_WINDOWS
-NO_3RD_PARTY=1
 CXXFLAGS += -D_GNU_SOURCE
 LIBS += -static
 CXX = x86_64-w64-mingw32-g++
 Tthrax = bin/thrax.exe
 Ttest  = bin/tst_all.exe
+THRAX_3RD_PARTY_ON=1
 else
 Tthrax = bin/thrax
 Ttest  = bin/tst_all
 endif
 
-ifndef NO_3RD_PARTY
+ifdef THRAX_3RD_PARTY_ON
 CXXFLAGS += -I$(LIBFFI_DEV)/include
 LIBS     += -L$(LIBFFI)/lib -lffi -ldl -Wl,-rpath,$(LIBFFI)/lib
-else
-CXXFLAGS += -DTHRAX_NO_3RD_PARTY=1
+CXXFLAGS += -DTHRAX_3RD_PARTY_ON=1
 endif
 
 all: $(Tthrax) $(Ttest) compile_flags.txt
