@@ -88,7 +88,7 @@ struct Lowerer
     UT::Vu name)
   {
     EX::Ty *t = (EX::Ty *)arena.alloc<EX::Ty>(1);
-    *t        = EX::Ty{ EX::TyTag::Con, EX::TyCon{ name } };
+    *t        = EX::Ty{ EX::TyTag::Con, EX::TyCon{ name, {} } };
     return t;
   }
 
@@ -583,11 +583,51 @@ struct Lowerer
     return true;
   }
 
+  // Determine which union a match's variant arms belong to. A qualified arm
+  // (`Type.Tag`) names it; if every arm is bare (`.Tag`), find the unique
+  // declared union whose variants include all the arms' tags. "" if undecided.
+  std::string
+  match_union(
+    EX::ExMatch &m)
+  {
+    std::vector<std::string> tags;
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      if (m.arms[i].pat->tag != PatTag::Variant) continue;
+      auto &pv = std::get<EX::PatVariant>(m.arms[i].pat->as);
+      if (pv.type_name.size()) return std::string(pv.type_name);
+      tags.push_back(std::string(pv.tag));
+    }
+    std::string found;
+    for (auto &kv : unions)
+    {
+      bool all = true;
+      for (const std::string &t : tags)
+      {
+        bool has = false;
+        for (const UVariant &v : kv.second)
+          if (v.tag == t) has = true;
+        if (!has)
+        {
+          all = false;
+          break;
+        }
+      }
+      if (all)
+      {
+        if (!found.empty()) return ""; // ambiguous: more than one union fits
+        found = kv.first;
+      }
+    }
+    return found;
+  }
+
   // `if scrut is Type.Tag.{..} then e .. else d` lowers to `let $m = scrut in
   // case $m of <Con alt>.. else d`. Each variant arm becomes a Con alternative
   // carrying the constructor's tag index and a positional binder per payload
   // field (empty for an ignored slot); the first irrefutable var/wildcard arm
   // becomes the default. Payload sub-patterns must be variables or `_` for now.
+  // A bare arm (`.Tag`, no type name) takes the union resolved for the match.
   Expr *
   lower_match_variant(
     EX::ExMatch &m, Expr *scrut, Expr *deflt)
@@ -596,8 +636,9 @@ struct Lowerer
     Expr  *mvar = mk_var(mv);
 
     UT::Vec<EX::CaseAlt> alts{ arena };
-    Expr                *dflt = deflt;
-    EX::Ty              *sig  = nullptr; // pin the scrutinee to the union type
+    Expr                *dflt   = deflt;
+    EX::Ty              *sig    = nullptr; // pin the scrutinee to the union type
+    std::string          munion = match_union(m);
 
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
@@ -630,8 +671,19 @@ struct Lowerer
       }
 
       auto       &pv    = std::get<EX::PatVariant>(pat->as);
-      std::string uname = std::string(pv.type_name);
-      auto        uit   = unions.find(uname);
+      bool        bare  = pv.type_name.size() == 0;
+      std::string uname = bare ? munion : std::string(pv.type_name);
+      if (bare && uname.empty())
+      {
+        err(ER::Code::TYPE_UNBOUND,
+            pv.anchor,
+            pv.line,
+            "cannot infer the union for bare variant '." + std::string(pv.tag)
+              + "'; qualify it (Type." + std::string(pv.tag) + ") or match a "
+              "constructor that names the type");
+        continue;
+      }
+      auto uit = unions.find(uname);
       if (uit == unions.end())
       {
         err(ER::Code::TYPE_UNBOUND,
@@ -640,6 +692,7 @@ struct Lowerer
             "unknown union type '" + uname + "' in pattern");
         continue;
       }
+      UT::Vu uname_vu = bare ? ustr(uname) : pv.type_name;
       size_t tagidx = uit->second.size();
       for (size_t k = 0; k < uit->second.size(); ++k)
         if (uit->second[k].tag == std::string(pv.tag)) tagidx = k;
@@ -654,7 +707,7 @@ struct Lowerer
       }
 
       const std::vector<std::string> &decl = uit->second[tagidx].fields;
-      if (!sig) sig = mk_con(pv.type_name);
+      if (!sig) sig = mk_con(uname_vu);
 
       std::vector<Pattern *> subs;
       if (!resolve_payload(pv, decl, subs)) continue;
@@ -685,7 +738,7 @@ struct Lowerer
 
       EX::CaseAlt a;
       a.kind      = EX::AltKind::Con;
-      a.type_name = pv.type_name;
+      a.type_name = uname_vu;
       a.ctor      = pv.tag;
       a.tag       = tagidx;
       a.binders   = binders;

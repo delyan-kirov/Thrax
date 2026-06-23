@@ -5,164 +5,12 @@
 
 #include "EX.hpp"
 #include "ER.hpp"
+#include "EXxDATA.hpp"
 #include "LX.hpp"
-#include "OP.hpp"
 #include "UT.hpp"
-
-/*------------------------------------------------------------------------------
- *\MACROS
- *
- * EX_TRY / EX_CTX / EX_ERR are the only error primitives. EX_TRY propagates a
- * failure unchanged; EX_CTX propagates it but first appends a context frame
- * anchored at a token; EX_ERR starts a fresh root cause. All three rely on
- * ER::Fail converting to whatever Result<T> the enclosing method returns. They
- * use the GNU statement-expression form so they can yield the unwrapped value
- * inline.
- *-----------------------------------------------------------------------------*/
-
-#define EX_TRY(EXPR)                                                           \
-  ({                                                                           \
-    auto r_ = (EXPR);                                                          \
-    if (!r_.ok) return ER::Fail{ r_.err };                                     \
-    r_.value;                                                                  \
-  })
-
-#define EX_CTX(EXPR, TOK, ...)                                                 \
-  ({                                                                           \
-    auto r_ = (EXPR);                                                          \
-    if (!r_.ok)                                                                \
-    {                                                                          \
-      ER::push_ctx(m_arena,                                                    \
-                   r_.err,                                                     \
-                   (TOK).str,                                                  \
-                   (TOK).line,                                                 \
-                   ER::mk_msg(m_arena, __VA_ARGS__));                          \
-      return ER::Fail{ r_.err };                                               \
-    }                                                                          \
-    r_.value;                                                                  \
-  })
-
-#define EX_ERR(CODE, TOK, ...)                                                 \
-  return ER::Fail                                                              \
-  {                                                                            \
-    ER::mk_root(m_arena,                                                       \
-                (CODE),                                                        \
-                (TOK).str,                                                     \
-                (TOK).line,                                                    \
-                ER::mk_msg(m_arena, __VA_ARGS__))                              \
-  }
 
 namespace EX
 {
-
-/*-------------------------------------------------------------------------------
- *\PRECEDENCE
- *
- * (lbp, rbp) binding powers. A left-associative operator of precedence p gets
- * lbp = 10p, rbp = 10p + 1, so equal precedence folds left. Application
- * (juxtaposition) binds tightest; unary - and ! are prefix.
- *------------------------------------------------------------------------------*/
-
-namespace
-{
-
-struct Bp
-{
-  int l;
-  int r;
-};
-
-using InfixTable = std::unordered_map<std::string, Bp>;
-using UnopTable  = std::unordered_map<std::string, const char *>;
-using OperandSet = std::unordered_set<LX::TokenTag>;
-
-const Bp  APP_BP{ 50, 51 };
-const int PREFIX_BP = 40; // unary - and !
-
-// Binary operators, keyed by lexeme. Presence is exactly "is an infix
-// operator"; the value is its binding power. The name stored on the node is the
-// lexeme itself, which doubles as the OP key (see UTxOP).
-const InfixTable infix_db{
-  { OP::ISEQ, { 10, 11 } }, //
-  { OP::GEQ, { 10, 11 } },  //
-  { OP::LEQ, { 10, 11 } },  //
-  { OP::MORE, { 10, 11 } }, //
-  { OP::LESS, { 10, 11 } }, //
-  { OP::ADD, { 20, 21 } },  //
-  { OP::SUB, { 20, 21 } },  //
-  { OP::MUL, { 30, 31 } },  //
-  { OP::DIV, { 30, 31 } },  //
-  { OP::MOD, { 30, 31 } },  //
-};
-
-// Tokens that can begin an operand -> juxtaposition is application.
-const OperandSet operand_starters{
-  LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
-  LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
-  LX::TokenTag::KwIf, LX::TokenTag::Lambda,
-};
-
-// Tokens that end an expression
-const OperandSet expr_terminators{
-  LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
-  LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,
-  LX::TokenTag::KwElse, LX::TokenTag::RBrace, LX::TokenTag::KwIs,
-};
-
-// Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is
-// distinct from the lexeme so unary '-' (neg) never aliases binary '-'.
-const UnopTable unop_db{
-  { OP::SUB, OP::NEG },
-  { OP::BANG, OP::NOT },
-};
-
-const char *
-tok_desc(
-  const LX::Token &t)
-{
-  return LX::TokenTag::Eof == t.tag ? "end of input" : nullptr;
-}
-
-} // namespace
-
-/*-------------------------------------------------------------------------------
- *\EXPR CTORS
- *------------------------------------------------------------------------------*/
-
-ExFnDef::ExFnDef(
-  UT::Vu param, AR::Arena &arena)
-    : param{ param }
-{
-  this->body = (EX::Expr *)arena.alloc<EX::Expr>(1);
-}
-
-Expr::Expr(ExprTag tag)
-    : tag{ tag } {};
-
-Expr::Expr(
-  ExprTag tag, AR::Arena &arena)
-    : tag{ tag }
-{
-  switch (tag)
-  {
-  case ExprTag::FnDef:
-  {
-    ExFnDef fndef;
-    fndef.body = (EX::Expr *)arena.alloc<EX::Expr>(1);
-    this->as   = fndef;
-  }
-  break;
-  case ExprTag::If:
-  {
-    this->as = ExIf{ (Expr *)arena.alloc<Expr>(1),
-                     (Expr *)arena.alloc<Expr>(1),
-                     (Expr *)arena.alloc<Expr>(1) };
-  }
-  break;
-  default: UT_FAIL_IF("Invalid tag for this constructor");
-  }
-};
-
 /*-------------------------------------------------------------------------------
  *\NODE BUILDERS
  *------------------------------------------------------------------------------*/
@@ -368,6 +216,33 @@ Parser::parse_primary()
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::Dot:
+  {
+    // An unqualified literal whose type is inferred from context: a bare struct
+    // literal `.{ ... }` or a bare variant constructor `.Tag [.{ ... }]`. The
+    // type name is left empty for TC to resolve.
+    LX::Token dot   = EX_TRY(m_lex.next()); // '.'
+    LX::Token ahead = EX_TRY(m_lex.peek());
+    if (LX::TokenTag::LBrace == ahead.tag)
+    {
+      base = EX_CTX(
+        parse_struct_lit(UT::Vu{}), dot, "in this struct literal");
+      break;
+    }
+    LX::Token tag = EX_TRY(expect(
+      LX::TokenTag::Word, "expected '{' or a variant tag after a leading '.'"));
+    char c = tag.str.size() ? tag.str.data()[0] : '\0';
+    if (c < 'A' || c > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             tag,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(tag.str).c_str());
+    base = EX_CTX(parse_variant_lit(UT::Vu{}, tag.str, tag),
+                  dot,
+                  "in this '.%s' variant",
+                  std::string(tag.str).c_str());
+    break;
+  }
   default:
   {
     const char *desc = tok_desc(t);
@@ -566,6 +441,19 @@ Parser::parse_let()
 
   LX::Token name = EX_TRY(
     expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
+
+  // An optional type annotation: `let x : T = ...`. It pins the bound value's
+  // type (and gives a recursive binding its declared type).
+  Ty *sig = nullptr;
+  if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // ':'
+    sig = EX_CTX(parse_type(),
+                 name,
+                 "in the type of 'let %s'",
+                 std::string(name.str).c_str());
+  }
+
   EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
 
   Expr *val = EX_CTX(parse_expr(0),
@@ -576,7 +464,15 @@ Parser::parse_let()
   EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
 
   Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
-  return { true, mk_let(name.str, val, body), {} };
+
+  ExLet lt;
+  lt.var  = name.str;
+  lt.val  = val;
+  lt.body = body;
+  lt.sig  = sig;
+  Expr e{ ExprTag::Let };
+  e.as = lt;
+  return { true, alloc(e), {} };
 }
 
 RExpr
@@ -661,6 +557,32 @@ Parser::parse_pattern()
     char c = nm.size() ? nm.data()[0] : '\0';
     if (c >= 'A' && c <= 'Z') return parse_struct_pattern(nm, t);
     return { true, alloc_pat(Pattern{ PatTag::Var, PatVar{ nm } }), {} };
+  }
+  case LX::TokenTag::Dot:
+  {
+    // A bare variant pattern `.Tag` / `.Tag.{ ... }`: the union type is left
+    // empty and inferred from the match (see LL). Only an uppercase tag is a
+    // bare constructor here.
+    m_lex.next(); // '.'
+    LX::Token tag = EX_TRY(
+      expect(LX::TokenTag::Word, "expected a variant tag after '.' in a pattern"));
+    char tc = tag.str.size() ? tag.str.data()[0] : '\0';
+    if (tc < 'A' || tc > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             tag,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(tag.str).c_str());
+
+    UT::Vec<FieldPat> fields{ m_arena };
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+        && LX::TokenTag::LBrace == EX_TRY(m_lex.peek(1)).tag)
+    {
+      m_lex.next(); // '.'
+      fields = EX_TRY(parse_field_pats(UT::Vu{}, tag));
+    }
+    Pattern pat{ PatTag::Variant,
+                 PatVariant{ UT::Vu{}, tag.str, fields, tag.str, tag.line } };
+    return { true, alloc_pat(pat), {} };
   }
   default:
   {
@@ -1132,7 +1054,19 @@ Parser::parse_variant_lit(
     {
       if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
 
-      if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+      // A named field is `.field = value` with a lowercase field name. A leading
+      // `.` otherwise begins a positional value that is itself a bare literal
+      // (`.{...}` or `.Tag...`, whose tag is uppercase), so let parse_expr take
+      // it -- only `.lowercase =` is a field name here.
+      LX::Token p1 = EX_TRY(m_lex.peek(1));
+      LX::Token p2 = EX_TRY(m_lex.peek(2));
+      bool      named_field
+        = LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+          && LX::TokenTag::Word == p1.tag && p1.str.size()
+          && p1.str.data()[0] >= 'a' && p1.str.data()[0] <= 'z'
+          && LX::TokenTag::Eq == p2.tag;
+
+      if (named_field)
       {
         m_lex.next(); // '.'
         LX::Token fn = EX_TRY(
@@ -1177,9 +1111,30 @@ Parser::parse_variant_lit(
 /*-------------------------------------------------------------------------------
  *\PARSE TYPES
  *
- * type ::= atom ('->' type)?     -- '->' right-associative
+ * type ::= app ('->' type)?      -- '->' right-associative
+ * app  ::= UpperWord atom*       -- type application, juxtaposition (Maybe Int)
+ *        | atom
  * atom ::= UpperWord | TyVar | '(' type ')'
+ *
+ * Application binds tighter than '->' and only an uppercase con may head it; an
+ * argument is a bare atom, so a nested application is parenthesized: `List
+ * (Maybe Int)`.
  *------------------------------------------------------------------------------*/
+
+// True when `t` can begin a type atom -- i.e. start an application argument.
+static bool
+ty_atom_starts(
+  const LX::Token &t)
+{
+  switch (t.tag)
+  {
+  case LX::TokenTag::Word:
+    return t.str.size() && t.str.data()[0] >= 'A' && t.str.data()[0] <= 'Z';
+  case LX::TokenTag::TyVar:
+  case LX::TokenTag::LParen: return true;
+  default                  : return false;
+  }
+}
 
 RTy
 Parser::parse_type_atom()
@@ -1196,7 +1151,7 @@ Parser::parse_type_atom()
              "expected a type name (must start uppercase), found '%s'",
              std::string(t.str).c_str());
     m_lex.next();
-    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str } }), {} };
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
   }
   case LX::TokenTag::TyVar:
   {
@@ -1226,9 +1181,26 @@ Parser::parse_type_atom()
 }
 
 RTy
+Parser::parse_type_app()
+{
+  Ty *head = EX_TRY(parse_type_atom());
+
+  // Only an uppercase con may be applied; juxtaposed atoms are its arguments.
+  if (TyTag::Con != head->tag || !ty_atom_starts(EX_TRY(m_lex.peek())))
+    return { true, head, {} };
+
+  UT::Vec<Ty *> args{ m_arena };
+  while (ty_atom_starts(EX_TRY(m_lex.peek())))
+    args.push(EX_TRY(parse_type_atom()));
+
+  UT::Vu name = std::get<TyCon>(head->as).name;
+  return { true, mk_ty(Ty{ TyTag::Con, TyCon{ name, args } }), {} };
+}
+
+RTy
 Parser::parse_type()
 {
-  Ty *lhs = EX_TRY(parse_type_atom());
+  Ty *lhs = EX_TRY(parse_type_app());
 
   if (LX::TokenTag::Arrow == EX_TRY(m_lex.peek()).tag)
   {
@@ -1283,214 +1255,6 @@ Parser::operator()()
       if (!m_lex.next().ok) return;
     }
   }
-}
-
-/*-------------------------------------------------------------------------------
- *\PPRINT
- *------------------------------------------------------------------------------*/
-
-std::string
-pprint(
-  ExprTag t, int level)
-{
-  std::string pad(level * 2, ' ');
-  switch (t)
-  {
-#define X(tag, type)                                                           \
-  case ExprTag::tag: return pad + #tag;
-    EX_EXPR_VARIANTS
-#undef X
-  }
-  UT_FAIL_IF("UNREACHABLE");
-  return "";
-}
-
-static std::string
-pprint_ty(
-  Ty *t)
-{
-  if (!t) return "?";
-  switch (t->tag)
-  {
-  case TyTag::Con: return std::string(std::get<TyCon>(t->as).name);
-  case TyTag::Var: return "`" + std::string(std::get<TyVar>(t->as).name);
-  case TyTag::Arrow:
-  {
-    auto &ar = std::get<TyArrow>(t->as);
-    return pprint_ty(ar.from) + " -> " + pprint_ty(ar.to);
-  }
-  }
-  UT_FAIL_MSG("%s", "unhandled TyTag in pprint_ty");
-  return "?";
-}
-
-std::string
-pprint(
-  Expr *e, int level)
-{
-  if (!e) return std::string(level * 2, ' ') + "(null)";
-
-  std::string pad(level * 2, ' ');
-  switch (e->tag)
-  {
-  case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
-  case ExprTag::Real:
-    return pad + std::to_string(std::get<ExReal>(e->as).value);
-  case ExprTag::Var: return pad + std::string(std::get<ExVar>(e->as).name);
-  case ExprTag::Str:
-    return pad + "\"" + std::string(std::get<ExStr>(e->as).value) + "\"";
-  case ExprTag::Let:
-  {
-    auto       &lt     = std::get<ExLet>(e->as);
-    std::string binder = lt.pat ? pprint(lt.pat) : std::string(lt.var);
-    return pad + "let " + binder + " =\n" + pprint(lt.val, level + 1) + "\n"
-           + pad + "in\n" + pprint(lt.body, level + 1);
-  }
-  case ExprTag::If:
-    return pad + "if " + pprint(std::get<ExIf>(e->as).cond, 0) + " then\n"
-           + pprint(std::get<ExIf>(e->as).then, level + 1) + "\n" + pad
-           + "else\n" + pprint(std::get<ExIf>(e->as).alt, level + 1);
-  case ExprTag::Match:
-  {
-    auto       &m = std::get<ExMatch>(e->as);
-    std::string s = pad + "match " + pprint(m.scrut, 0);
-    for (size_t i = 0; i < m.arms.size(); ++i)
-      s += "\n" + pad + "is " + pprint(m.arms[i].pat) + " then\n"
-           + pprint(m.arms[i].body, level + 1);
-    return s + "\n" + pad + "else\n" + pprint(m.alt, level + 1);
-  }
-  case ExprTag::Case:
-  {
-    auto       &cs = std::get<ExCase>(e->as);
-    std::string s  = pad + "case " + pprint(cs.scrut, 0);
-    for (size_t i = 0; i < cs.alts.size(); ++i)
-      s += "\n" + pad + "alt ->\n" + pprint(cs.alts[i].body, level + 1);
-    return s + "\n" + pad + "else\n" + pprint(cs.deflt, level + 1);
-  }
-  case ExprTag::FnDef:
-  {
-    auto       &fn = std::get<ExFnDef>(e->as);
-    std::string binder
-      = fn.param_pat ? pprint(fn.param_pat) : std::string(fn.param);
-    return pad + "\\" + binder + " =\n" + pprint(fn.body, level + 1);
-  }
-  case ExprTag::App:
-  {
-    auto &app = std::get<ExApp>(e->as);
-    return pad + "(app\n" + pprint(app.fn, level + 1) + "\n"
-           + pprint(app.arg, level + 1) + ")";
-  }
-  case ExprTag::Def:
-    return pad + "$" + std::string(std::get<ExDef>(e->as).name) + " =\n"
-           + pprint(std::get<ExDef>(e->as).def, level + 1);
-  case ExprTag::Extern:
-    return pad + "@extern(\"" + std::string(std::get<ExExtern>(e->as).symbol)
-           + "\", \"" + std::string(std::get<ExExtern>(e->as).lib) + "\")";
-  case ExprTag::StructDecl:
-  {
-    auto       &sd = std::get<ExStructDecl>(e->as);
-    std::string s  = pad + "$" + std::string(sd.name) + " : Struct";
-    for (size_t i = 0; i < sd.fields.size(); ++i)
-      s += "\n" + std::string((level + 1) * 2, ' ')
-           + std::string(sd.fields[i].name) + " : "
-           + pprint_ty(sd.fields[i].ty);
-    return s;
-  }
-  case ExprTag::StructLit:
-  {
-    auto       &sl = std::get<ExStructLit>(e->as);
-    std::string s  = pad + std::string(sl.type_name) + ".{";
-    for (size_t i = 0; i < sl.fields.size(); ++i)
-      s += "\n" + std::string((level + 1) * 2, ' ') + "."
-           + std::string(sl.fields[i].name) + " =\n"
-           + pprint(sl.fields[i].val, level + 2);
-    return s + ")";
-  }
-  case ExprTag::Field:
-  {
-    auto &fa = std::get<ExField>(e->as);
-    return pad + "(field " + std::string(fa.field) + "\n"
-           + pprint(fa.record, level + 1) + ")";
-  }
-  case ExprTag::UnionDecl:
-  {
-    auto       &ud = std::get<ExUnionDecl>(e->as);
-    std::string s  = pad + "$" + std::string(ud.name) + " : Union";
-    for (size_t i = 0; i < ud.variants.size(); ++i)
-    {
-      s += "\n" + std::string((level + 1) * 2, ' ')
-           + std::string(ud.variants[i].tag) + ": {";
-      auto &fs = ud.variants[i].fields;
-      for (size_t k = 0; k < fs.size(); ++k)
-        s += (k ? ", " : "")
-             + (fs[k].name.size() ? std::string(fs[k].name) + ": " : "")
-             + pprint_ty(fs[k].ty);
-      s += "}";
-    }
-    return s;
-  }
-  case ExprTag::VariantLit:
-  {
-    auto       &vl = std::get<ExVariantLit>(e->as);
-    std::string s
-      = pad + std::string(vl.type_name) + "." + std::string(vl.tag) + ".{";
-    for (size_t i = 0; i < vl.fields.size(); ++i)
-      s += "\n" + std::string((level + 1) * 2, ' ')
-           + (vl.fields[i].name.size()
-                ? "." + std::string(vl.fields[i].name) + " =\n"
-                : "\n")
-           + pprint(vl.fields[i].val, level + 2);
-    return s + ")";
-  }
-  case ExprTag::Unknown: return pad + "?unknown";
-  }
-  UT_FAIL_IF("UNREACHABLE");
-  return "";
-}
-
-std::string
-pprint(
-  Pattern *p)
-{
-  if (!p) return "(null-pat)";
-  switch (p->tag)
-  {
-  case PatTag::Wild: return "_";
-  case PatTag::Var : return std::string(std::get<PatVar>(p->as).name);
-  case PatTag::Int : return std::to_string(std::get<PatInt>(p->as).value);
-  case PatTag::Real: return std::to_string(std::get<PatReal>(p->as).value);
-  case PatTag::Str:
-    return "\"" + std::string(std::get<PatStr>(p->as).value) + "\"";
-  case PatTag::Struct:
-  {
-    auto       &ps = std::get<PatStruct>(p->as);
-    std::string s  = std::string(ps.type_name) + ".{";
-    for (size_t i = 0; i < ps.fields.size(); ++i)
-    {
-      if (i) s += ", ";
-      if (ps.fields[i].name.size())
-        s += "." + std::string(ps.fields[i].name) + " = ";
-      s += pprint(ps.fields[i].pat);
-    }
-    return s + "}";
-  }
-  case PatTag::Variant:
-  {
-    auto       &pv = std::get<PatVariant>(p->as);
-    std::string s
-      = std::string(pv.type_name) + "." + std::string(pv.tag) + ".{";
-    for (size_t i = 0; i < pv.fields.size(); ++i)
-    {
-      if (i) s += ", ";
-      if (pv.fields[i].name.size())
-        s += "." + std::string(pv.fields[i].name) + " = ";
-      s += pprint(pv.fields[i].pat);
-    }
-    return s + "}";
-  }
-  }
-  UT_FAIL_IF("UNREACHABLE");
-  return "";
 }
 
 /*-------------------------------------------------------------------------------

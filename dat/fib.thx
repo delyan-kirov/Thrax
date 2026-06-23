@@ -15,3 +15,28 @@ $fib1  = fib 1
 $fib5  = fib 5
 $fib10 = fib 10
 $fib15 = fib 15
+
+# A generic list and its length, by a tail-recursive accumulator. `helper` is an
+# annotated, recursive `let`; the match arms are bare variant patterns (`.Nil`,
+# `.Cons`) whose union is inferred from the constructors.
+$ List : Union =
+	Cons: {`T, List `T},
+	Nil: {}
+
+$ len: List `T -> Int =
+	let helper: List `T -> Int -> Int = \l n =
+		if l
+			is .Nil then n
+			is .Cons.{_, xs} then helper xs (n + 1)
+			else n
+	 in \l = helper l 0
+
+$ to: Int -> Int -> List Int = \a b =
+	let helper: Int -> Int -> List Int -> List Int =
+		\a b xs =
+			if a ?< b then helper (a+1) b List.Cons.{a, xs}
+			else xs
+	 in helper a b List.Nil
+
+$ sample : List Int = to 0 3
+$ len3 : Int = if len sample is 3 then 0 else 1 / 0

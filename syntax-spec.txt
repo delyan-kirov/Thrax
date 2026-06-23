@@ -63,10 +63,13 @@ Definition expr:
 	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
 	- `if` e `is` pat `then` e ... `else` e   is a match (note the `is`). See
 	  PATTERNS.
-	- `let` pat `=` e_1 `in` e_2     is a local binding; `pat` is a variable or an
-	  irrefutable pattern (see PATTERNS). A let binding is polymorphic
-	  (let-generalization). It is recursive exactly when its variable occurs free
-	  in e_1 -- there is no `let rec` keyword; recursion is detected, not declared.
+	- `let` pat [ `:` type ] `=` e_1 `in` e_2     is a local binding; `pat` is a
+	  variable or an irrefutable pattern (see PATTERNS). A let binding is
+	  polymorphic (let-generalization). It is recursive exactly when its variable
+	  occurs free in e_1 -- there is no `let rec` keyword; recursion is detected,
+	  not declared. A variable binder may carry a type annotation, `let f : T =
+	  ...`, which pins the bound value's type (and gives a recursive binding its
+	  declared type up front).
 
 The `-` token is special: binary subtraction between two expressions, unary
 negation when it prefixes one.
@@ -76,7 +79,9 @@ TYPES
 ================================================================================
 
 Definition type:
-	type ::= atom '->' type        # '->' is right-associative
+	type ::= app '->' type         # '->' is right-associative
+	       | app
+	app  ::= TypeName atom*        # type application (Maybe Int); juxtaposition
 	       | atom
 	atom ::= TypeName              # type constructor: Int, Str
 	       | `TypeName             # type variable
@@ -84,8 +89,16 @@ Definition type:
 
 The base types are Int and Str. At runtime every value is an ssize_t (Str is a
 pointer stored in an ssize_t); the type checker keeps Int and Str distinct, the
-runtime does not. A struct type name (see STRUCTS) is also a type constructor.
-Sum types do not exist yet.
+runtime does not. A struct type name (see STRUCTS) -- or a union (sum) type name
+-- is also a type constructor.
+
+A generic type is APPLIED to type arguments by juxtaposition, like a function
+call: `Maybe Int`, `Pair Int Str`. Application binds tighter than `->` and only
+a TypeName may head it (there are no higher-kinded variables); an argument is a
+bare atom, so a nested application is parenthesized: `List (Maybe Int)`. A
+generic type must be given either all of its arguments or none -- when none are
+written they are inferred (e.g. the element of a bare `Maybe` used in context) --
+and any other count is an arity error.
 
 ================================================================================
 GLOBAL DEFINITIONS
@@ -128,14 +141,16 @@ comma is allowed). The type name must start uppercase, field names lowercase:
 		name: Str,
 		age: Int,
 
-A struct value is built with a literal. Only the qualified form is supported:
-the type name precedes `.{ ... }`, and every declared field must be set exactly
-once (unknown, missing, or duplicate fields are type errors). Each field is set
-with a leading-dot `.field = expr`, as in C designated initializers:
+A struct value is built with a literal: the type name precedes `.{ ... }`, and
+every declared field must be set exactly once (unknown, missing, or duplicate
+fields are type errors). Each field is set with a leading-dot `.field = expr`, as
+in C designated initializers. The type name may be OMITTED -- a bare `.{ ... }`
+-- when it is determined by context (an annotation, or an enclosing field):
 
-	lit ::= TypeName '.{' [ '.' var '=' expr (',' ...)* ','? ] '}'
+	lit ::= [ TypeName ] '.{' [ '.' var '=' expr (',' ...)* ','? ] '}'
 
 	$ person : Person = Person.{ .name = "Will", .age = 21 }
+	$ p2     : Person = .{ .name = "Q", .age = 3 }   # type inferred from `: Person`
 
 A field is read with postfix `.`, which binds tighter than application and
 chains left-to-right (`a.b.c`):
@@ -146,9 +161,36 @@ chains left-to-right (`a.b.c`):
 	$ yrs : Int = person.age
 
 Structs are nominal: a struct name is an ordinary type constructor that unifies
-by name. Not yet supported: the bare literal `.{ ... }` (type inferred from
-context), polymorphic/generic struct fields, and field access where the
-receiver's type is not statically known (e.g. `\p = p.name`).
+by name.
+
+A struct (like a union) may be GENERIC. There is no separate parameter list: any
+type variable left free in a field type is an implicit parameter of the
+declaration, quantified in order of first appearance -- the same rule that makes
+a function signature polymorphic. The type is then applied to arguments at use
+sites (see TYPES):
+
+	$ Box : Struct = val: `T,          # Box is generic in `T
+	$ Pair : Struct =                  # Pair is generic in `A then `B
+		fst: `A,
+		snd: `B,
+
+	$ ibox : Box Int      = Box.{ .val = 7 }
+	$ sbox : Box Str      = Box.{ .val = "hi" }   # a second instantiation
+	$ pair : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
+
+A literal instantiates the parameters fresh from its field values, and field
+access reads a field at the receiver's instantiation, so `ibox.val` is an Int
+and `sbox.val` a Str. Field types nest like any other: a field may be `Box `T` or
+`List (Maybe `T)`.
+
+A bare literal works for generic types too: `$ b : Box Int = .{ .val = 5 }`
+resolves to `Box` (and pins its parameter to Int) from the annotation. The same
+holds for a union constructor written without its type name -- `.Tag` or
+`.Tag.{ ... }` -- so a bare literal is the general way to let context choose the
+type. A bare literal whose type cannot be determined from context is an error.
+
+Not yet supported: field access where the receiver's type is not statically known
+(e.g. `\p = p.name`).
 
 ================================================================================
 PATTERNS
@@ -207,9 +249,22 @@ and field-literal guards are allowed:
 		       is Person.{ .name = who } then who
 		       else "?"
 
-`else` is mandatory (there is no exhaustiveness checking yet -- there are no sum
-types, so a value has exactly one struct type and arms differ only by their field
-patterns/literals). An irrefutable arm always matches, making later arms dead.
+A match on a union dispatches on the constructor: arms are variant patterns
+`Type.Tag` / `Type.Tag.{ ... }`, with an optional trailing variable/`else` arm.
+A variant arm may be written BARE -- `.Tag` / `.Tag.{ ... }`, dropping the type
+name -- and the union is inferred from the arms: a qualified arm names it, or, if
+every arm is bare, the unique declared union whose variants cover all the arms'
+tags. If two unions fit, qualify one arm to disambiguate.
+
+	$ len : List `T -> Int =
+		let go : List `T -> Int -> Int = \l n =
+			if l is .Nil then n
+			     is .Cons.{ _, xs } then go xs (n + 1)
+			     else n
+		 in \l = go l 0
+
+`else` is mandatory (there is no exhaustiveness checking yet). An irrefutable arm
+always matches, making later arms dead.
 A match lowers to a single binding of the scrutinee followed by a chain of
 boolean `if`s: a literal pattern `is k` becomes the guard `scrut ?= k`, a struct
 field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables

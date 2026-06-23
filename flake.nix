@@ -17,6 +17,7 @@
         hardeningDisable = [ "fortify" ];
 
         buildInputs = [
+          # Tools
           pkgs.clang
           pkgs.gcc
           pkgs.gnumake
@@ -25,27 +26,28 @@
 
           # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
           pkgs.libffi
-          pkgs.raylib
+          # pkgs.raylib
 
           # X11 support for raylib
-          pkgs.libX11
-          pkgs.libX11.dev
-          pkgs.libXcursor
-          pkgs.libXi
-          pkgs.libXinerama
-          pkgs.libXrandr
+          # pkgs.libX11
+          # pkgs.libX11.dev
+          # pkgs.libXcursor
+          # pkgs.libXi
+          # pkgs.libXinerama
+          # pkgs.libXrandr
 
           # extra
           pkgs.tokei
           # mingwPkgs.stdenv.cc
           # should be enabled manually to check windows build
-          pkgs.wineWow64Packages.stable
+          # pkgs.wineWow64Packages.stable
         ];
 
         shellHook = ''
           export RAYLIB=${pkgs.raylib}
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
+          export LIBC=${pkgs.libc}
         '';
       };
     };

@@ -6,11 +6,9 @@
 #include "FF.hpp"
 #include "UT.hpp"
 
+#ifndef THRAX_3RD_PARTY_ON
 namespace FF
 {
-
-#ifdef THRAX_NO_3RD_PARTY
-
 ssize_t
 call(
   UT::Vu,
@@ -24,9 +22,9 @@ call(
   return 0;
 }
 
-#else
-
 } // namespace FF
+
+#else
 
 #include <dlfcn.h>
 #include <ffi.h>
@@ -174,6 +172,5 @@ call(
   return extend(rd, result);
 }
 
-#endif // THRAX_NO_3RD_PARTY
-
 } // namespace FF
+#endif // THRAX_NO_3RD_PARTY
