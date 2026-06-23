@@ -37,7 +37,20 @@ pprint_ty(
   if (!t) return "?";
   switch (t->tag)
   {
-  case TyTag::Con: return std::string(std::get<TyCon>(t->as).name);
+  case TyTag::Con:
+  {
+    auto       &c   = std::get<TyCon>(t->as);
+    std::string out = std::string(c.name);
+    for (Ty *arg : c.args)
+    {
+      // Parenthesize an applied-con argument so `List (Maybe Int)` round-trips.
+      bool nest = arg && TyTag::Con == arg->tag
+                  && !std::get<TyCon>(arg->as).args.empty();
+      out += " ";
+      out += nest ? "(" + pprint_ty(arg) + ")" : pprint_ty(arg);
+    }
+    return out;
+  }
   case TyTag::Var: return "`" + std::string(std::get<TyVar>(t->as).name);
   case TyTag::Arrow:
   {

@@ -25,12 +25,15 @@ $ is_num: Token -> Bool = \tok =
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a
 # runtime fault) when wrong, so a regression makes this file fail loudly.
 
+# `Maybe` is generic: the free `T in its body is an implicit type parameter, so
+# `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
 $ Maybe : Union =
-    Just: Int,
+    Just: `T,
     None: {}
 
-# Match a variant, bind its payload, fall back through `else`.
-$ get : Int -> Maybe -> Int = \d = \m =
+# Match a variant, bind its payload, fall back through `else`. The signature
+# fixes the element type with `Maybe Int` (application is juxtaposition).
+$ get : Int -> Maybe Int -> Int = \d = \m =
     if m
         is Maybe.Just.{x} then x
     else d
@@ -38,15 +41,28 @@ $ get : Int -> Maybe -> Int = \d = \m =
 $ chk1 : Int = if get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
 $ chk2 : Int = if get 99 Maybe.None        is 99 then 0 else 1 / 0
 
+# The same `Maybe` at a different element type, in the same program.
+$ greeting : Maybe Str = Maybe.Just.{ "hi" }
+$ chk2b : Int = if greeting is Maybe.Just.{_} then 0 else 1 / 0
+
+# Bare constructors: the type name is dropped and inferred from context (the
+# `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
+# payload.
+$ none_i : Maybe Int = .None
+$ some_i : Maybe Int = .Just.{ 5 }
+$ chk2c : Int = if get 0 some_i is 5 then 0 else 1 / 0
+$ chk2d : Int = if get 8 none_i is 8 then 0 else 1 / 0
+
 # A lazy, infinite stream. Constructors are non-strict, so `from 1` builds one
 # cell at a time on demand; were they strict it would loop forever.
+# A generic, recursive sum type: `List `T` refers to itself with a type argument.
 $ List : Union =
-    Cons: {Int, List},
+    Cons: {`T, List `T},
     Nil: {}
 
-$ from : Int -> List = \n = List.Cons.{n, from (n + 1)}
+$ from : Int -> List Int = \n = List.Cons.{n, from (n + 1)}
 
-$ take3sum : List -> Int = \xs =
+$ take3sum : List Int -> Int = \xs =
     if xs is List.Cons.{a, r1} then
         if r1 is List.Cons.{b, r2} then
             if r2 is List.Cons.{c, _} then a + b + c
@@ -60,23 +76,31 @@ $ take3sum : List -> Int = \xs =
 # $ forever: List =
 #     let go = \l =
 #         let n = if l
-#             is List.Nil.{} then print 0
 #             is List.Cons.{x, _} then (print x) + x
+#             is .Nil then print 0
 #             else 0
 #          in go List.Cons.{n + 1, l}
-#      in go List.Nil.{}
+#      in go .Nil
 
 $ chk3 : Int = if take3sum (from 1) is 6 then 0 else 1 / 0
 
-# Named payload, written out of declared order; LL normalizes it positionally.
-$ Pair : Union = P: {lhs: Int, rhs: Int}
-$ mk : Pair = Pair.P.{ .rhs = 2, .lhs = 1 }
+# Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
+# written out of declared order; LL normalizes it positionally.
+$ Pair : Union = P: {lhs: `A, rhs: `B}
+$ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
     if mk is Pair.P.{ .lhs = l, .rhs = r } then
         if r - l is 1 then 0 else 1 / 0
     else 1 / 0
 
+# Nested instantiation: a `List` whose element is itself a `Maybe Int`.
+$ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
+$ chk4b : Int =
+    if boxed is List.Cons.{ h, _ } then
+        if h is Maybe.Just.{ v } then (if v is 42 then 0 else 1 / 0) else 1 / 0
+    else 1 / 0
+
 # Laziness: a bomb payload is never evaluated when its binder is ignored.
 $ Box : Union = B: Int
-$ bomb : Box = Box.B.{ 1 / 0 }
+$ bomb : Box = .B.{ 1 / 0 }
 $ chk5 : Int = if bomb is Box.B.{_} then 0 else 1 / 0

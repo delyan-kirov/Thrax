@@ -19,3 +19,34 @@ $ yrs : Int = person.age
 
 # Fields compose like any other expression.
 $ older : Int = person.age + 1
+
+# Generic structs: a free `T in a field type is an implicit type parameter, so
+# the declaration is parameterized and applied with juxtaposition at use sites.
+$ Box : Struct =
+	val: `T,
+
+# One declaration, two instantiations in the same program.
+$ ibox : Box Int = Box.{ .val = 7 }
+$ sbox : Box Str = Box.{ .val = "hi" }
+
+# Field access returns the field at the receiver's instantiation: `ibox.val` is
+# an Int, `sbox.val` is a Str. The tight annotations make a wrong one a type
+# error.
+$ unboxed : Int = ibox.val
+$ label   : Str = sbox.val
+
+# Two parameters, ordered by first appearance: `Pair `A `B`.
+$ Pair : Struct =
+	fst: `A,
+	snd: `B,
+
+$ pair  : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
+$ left  : Int          = pair.fst
+$ right : Str          = pair.snd
+
+# Generic field types nest: a struct holding a `Box Int`.
+$ Wrap : Struct =
+	inner: Box `T,
+
+$ wrap   : Wrap Int = .{ .inner = ibox }
+$ deep   : Int      = wrap.inner.val

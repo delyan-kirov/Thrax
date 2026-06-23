@@ -216,6 +216,33 @@ Parser::parse_primary()
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::Dot:
+  {
+    // An unqualified literal whose type is inferred from context: a bare struct
+    // literal `.{ ... }` or a bare variant constructor `.Tag [.{ ... }]`. The
+    // type name is left empty for TC to resolve.
+    LX::Token dot   = EX_TRY(m_lex.next()); // '.'
+    LX::Token ahead = EX_TRY(m_lex.peek());
+    if (LX::TokenTag::LBrace == ahead.tag)
+    {
+      base = EX_CTX(
+        parse_struct_lit(UT::Vu{}), dot, "in this struct literal");
+      break;
+    }
+    LX::Token tag = EX_TRY(expect(
+      LX::TokenTag::Word, "expected '{' or a variant tag after a leading '.'"));
+    char c = tag.str.size() ? tag.str.data()[0] : '\0';
+    if (c < 'A' || c > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             tag,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(tag.str).c_str());
+    base = EX_CTX(parse_variant_lit(UT::Vu{}, tag.str, tag),
+                  dot,
+                  "in this '.%s' variant",
+                  std::string(tag.str).c_str());
+    break;
+  }
   default:
   {
     const char *desc = tok_desc(t);
@@ -414,6 +441,19 @@ Parser::parse_let()
 
   LX::Token name = EX_TRY(
     expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
+
+  // An optional type annotation: `let x : T = ...`. It pins the bound value's
+  // type (and gives a recursive binding its declared type).
+  Ty *sig = nullptr;
+  if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // ':'
+    sig = EX_CTX(parse_type(),
+                 name,
+                 "in the type of 'let %s'",
+                 std::string(name.str).c_str());
+  }
+
   EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
 
   Expr *val = EX_CTX(parse_expr(0),
@@ -424,7 +464,15 @@ Parser::parse_let()
   EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
 
   Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
-  return { true, mk_let(name.str, val, body), {} };
+
+  ExLet lt;
+  lt.var  = name.str;
+  lt.val  = val;
+  lt.body = body;
+  lt.sig  = sig;
+  Expr e{ ExprTag::Let };
+  e.as = lt;
+  return { true, alloc(e), {} };
 }
 
 RExpr
@@ -509,6 +557,32 @@ Parser::parse_pattern()
     char c = nm.size() ? nm.data()[0] : '\0';
     if (c >= 'A' && c <= 'Z') return parse_struct_pattern(nm, t);
     return { true, alloc_pat(Pattern{ PatTag::Var, PatVar{ nm } }), {} };
+  }
+  case LX::TokenTag::Dot:
+  {
+    // A bare variant pattern `.Tag` / `.Tag.{ ... }`: the union type is left
+    // empty and inferred from the match (see LL). Only an uppercase tag is a
+    // bare constructor here.
+    m_lex.next(); // '.'
+    LX::Token tag = EX_TRY(
+      expect(LX::TokenTag::Word, "expected a variant tag after '.' in a pattern"));
+    char tc = tag.str.size() ? tag.str.data()[0] : '\0';
+    if (tc < 'A' || tc > 'Z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             tag,
+             "a variant tag must start uppercase, found '%s'",
+             std::string(tag.str).c_str());
+
+    UT::Vec<FieldPat> fields{ m_arena };
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+        && LX::TokenTag::LBrace == EX_TRY(m_lex.peek(1)).tag)
+    {
+      m_lex.next(); // '.'
+      fields = EX_TRY(parse_field_pats(UT::Vu{}, tag));
+    }
+    Pattern pat{ PatTag::Variant,
+                 PatVariant{ UT::Vu{}, tag.str, fields, tag.str, tag.line } };
+    return { true, alloc_pat(pat), {} };
   }
   default:
   {
@@ -980,7 +1054,19 @@ Parser::parse_variant_lit(
     {
       if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
 
-      if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+      // A named field is `.field = value` with a lowercase field name. A leading
+      // `.` otherwise begins a positional value that is itself a bare literal
+      // (`.{...}` or `.Tag...`, whose tag is uppercase), so let parse_expr take
+      // it -- only `.lowercase =` is a field name here.
+      LX::Token p1 = EX_TRY(m_lex.peek(1));
+      LX::Token p2 = EX_TRY(m_lex.peek(2));
+      bool      named_field
+        = LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+          && LX::TokenTag::Word == p1.tag && p1.str.size()
+          && p1.str.data()[0] >= 'a' && p1.str.data()[0] <= 'z'
+          && LX::TokenTag::Eq == p2.tag;
+
+      if (named_field)
       {
         m_lex.next(); // '.'
         LX::Token fn = EX_TRY(
@@ -1025,9 +1111,30 @@ Parser::parse_variant_lit(
 /*-------------------------------------------------------------------------------
  *\PARSE TYPES
  *
- * type ::= atom ('->' type)?     -- '->' right-associative
+ * type ::= app ('->' type)?      -- '->' right-associative
+ * app  ::= UpperWord atom*       -- type application, juxtaposition (Maybe Int)
+ *        | atom
  * atom ::= UpperWord | TyVar | '(' type ')'
+ *
+ * Application binds tighter than '->' and only an uppercase con may head it; an
+ * argument is a bare atom, so a nested application is parenthesized: `List
+ * (Maybe Int)`.
  *------------------------------------------------------------------------------*/
+
+// True when `t` can begin a type atom -- i.e. start an application argument.
+static bool
+ty_atom_starts(
+  const LX::Token &t)
+{
+  switch (t.tag)
+  {
+  case LX::TokenTag::Word:
+    return t.str.size() && t.str.data()[0] >= 'A' && t.str.data()[0] <= 'Z';
+  case LX::TokenTag::TyVar:
+  case LX::TokenTag::LParen: return true;
+  default                  : return false;
+  }
+}
 
 RTy
 Parser::parse_type_atom()
@@ -1044,7 +1151,7 @@ Parser::parse_type_atom()
              "expected a type name (must start uppercase), found '%s'",
              std::string(t.str).c_str());
     m_lex.next();
-    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str } }), {} };
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
   }
   case LX::TokenTag::TyVar:
   {
@@ -1074,9 +1181,26 @@ Parser::parse_type_atom()
 }
 
 RTy
+Parser::parse_type_app()
+{
+  Ty *head = EX_TRY(parse_type_atom());
+
+  // Only an uppercase con may be applied; juxtaposed atoms are its arguments.
+  if (TyTag::Con != head->tag || !ty_atom_starts(EX_TRY(m_lex.peek())))
+    return { true, head, {} };
+
+  UT::Vec<Ty *> args{ m_arena };
+  while (ty_atom_starts(EX_TRY(m_lex.peek())))
+    args.push(EX_TRY(parse_type_atom()));
+
+  UT::Vu name = std::get<TyCon>(head->as).name;
+  return { true, mk_ty(Ty{ TyTag::Con, TyCon{ name, args } }), {} };
+}
+
+RTy
 Parser::parse_type()
 {
-  Ty *lhs = EX_TRY(parse_type_atom());
+  Ty *lhs = EX_TRY(parse_type_app());
 
   if (LX::TokenTag::Arrow == EX_TRY(m_lex.peek()).tag)
   {

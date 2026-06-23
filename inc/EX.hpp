@@ -47,6 +47,7 @@ private:
                                           UT::Vu           tag,
                                           const LX::Token &tok);
   UT_NODISCARD RTy      parse_type();
+  UT_NODISCARD RTy      parse_type_app();
   UT_NODISCARD RTy      parse_type_atom();
   UT_NODISCARD RExpr    parse_expr(int min_bp);
   UT_NODISCARD RExpr    parse_prefix();

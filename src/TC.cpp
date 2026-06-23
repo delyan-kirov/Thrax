@@ -50,6 +50,10 @@ private:
   Globals     m_globals;
   StructTable m_structs;
   UnionTable  m_unions;
+  // Declared parameter count (arity) of every nominal type, keyed by name.
+  // Populated before any field type is built so applied cons can be arity-checked
+  // even across forward references. Built-ins (Int/Str) are absent => arity 0.
+  std::unordered_map<std::string, size_t> m_arity;
 
   // current diagnostic anchor (the global under check)
   UT::Vu m_anchor;
@@ -59,11 +63,30 @@ private:
   // resolved at its end (see infer's Var case / resolve_sites).
   ResolveSites m_sites;
 
+  // An unqualified struct/union literal whose type is inferred from context.
+  // Like an overload site, it is typed as a fresh `use` var and settled once
+  // unification binds it to a concrete nominal type (see resolve_lit_sites).
+  struct LitSite
+  {
+    bool                                        is_struct;
+    Type                                       *use;
+    UT::Vu                                      anchor;
+    std::vector<std::pair<std::string, Type *>> fields; // (name, value type)
+    std::string                                 vtag;   // variant only
+    EX::ExStructLit                            *exs = nullptr; // write-back
+    EX::ExVariantLit                           *exv = nullptr; // write-back
+  };
+  std::vector<LitSite> m_lit_sites;
+
   // type constructors
   Type *fresh(bool rigid = false, std::string name = "");
-  Type *con(std::string name);
+  Type *con(std::string name, std::vector<Type *> args = {});
   Type *arrow(Type *from, Type *to);
   Core *core(CoreData as);
+
+  // substitution / nominal instantiation
+  Type *subst(Type *t, const Subst &s);
+  Subst fresh_subst(const VarIds &params, std::vector<Type *> &args_out);
 
   // union-find
   Type *prune(Type *t);
@@ -77,7 +100,8 @@ private:
   Type  *instantiate(const Scheme &s);
 
   // signatures
-  Type  *sig_to_type(EX::Ty *sig, TyVarEnv &tv, bool rigid);
+  Type  *sig_to_type(EX::Ty *sig, TyVarEnv &tv, bool rigid,
+                     VarIds *order = nullptr);
   Scheme scheme_of_sig(EX::Ty *sig);
 
   // desugar + inference
@@ -88,6 +112,8 @@ private:
   // resolution
   Scheme resolve(const std::string &name);
   void   resolve_sites(size_t from);
+  void   resolve_lit_sites(size_t from);
+  UT::Vu intern(const std::string &s);
 
   // diagnostics
   size_t      line_of(UT::Vu anchor);
@@ -113,9 +139,9 @@ Checker::fresh(
 
 Type *
 Checker::con(
-  std::string name)
+  std::string name, std::vector<Type *> args)
 {
-  m_types.push_back(Type{ TCon{ std::move(name) } });
+  m_types.push_back(Type{ TCon{ std::move(name), std::move(args) } });
   return &m_types.back();
 }
 
@@ -166,6 +192,11 @@ Checker::occurs(
     TArrow &a = std::get<TArrow>(t->as);
     return occurs(var, a.from) || occurs(var, a.to);
   }
+  if (t->kind() == Kind::Con)
+  {
+    for (Type *arg : std::get<TCon>(t->as).args)
+      if (occurs(var, arg)) return true;
+  }
   return false;
 }
 
@@ -206,9 +237,18 @@ Checker::unify(
     return true;
   }
 
-  if (a->kind() == Kind::Con && b->kind() == Kind::Con
-      && std::get<TCon>(a->as).name == std::get<TCon>(b->as).name)
-    return true;
+  if (a->kind() == Kind::Con && b->kind() == Kind::Con)
+  {
+    TCon &ca = std::get<TCon>(a->as);
+    TCon &cb = std::get<TCon>(b->as);
+    if (ca.name == cb.name && ca.args.size() == cb.args.size())
+    {
+      bool ok = true;
+      for (size_t i = 0; i < ca.args.size(); ++i)
+        ok &= unify(ca.args[i], cb.args[i]);
+      return ok;
+    }
+  }
 
   if (a->kind() == Kind::Arrow && b->kind() == Kind::Arrow)
   {
@@ -247,7 +287,11 @@ Checker::free_vars(
     out.push_back(v.id);
     break;
   }
-  case Kind::Con: break;
+  case Kind::Con:
+  {
+    for (Type *arg : std::get<TCon>(t->as).args) free_vars(arg, out);
+    break;
+  }
   case Kind::Arrow:
   {
     TArrow &a = std::get<TArrow>(t->as);
@@ -305,6 +349,58 @@ Checker::generalize(
   return Scheme{ q, t };
 }
 
+// Copy `t`, replacing any type-variable whose id is in `s` with its mapping and
+// rebuilding constructors/arrows around the result. Variables not in `s`, and
+// constructors with no substituted descendant, are shared structurally.
+Type *
+Checker::subst(
+  Type *t, const Subst &s)
+{
+  t = prune(t);
+  switch (t->kind())
+  {
+  case Kind::Var:
+  {
+    auto it = s.find(std::get<TVar>(t->as).id);
+    return it == s.end() ? t : it->second;
+  }
+  case Kind::Con:
+  {
+    TCon &c = std::get<TCon>(t->as);
+    if (c.args.empty()) return t;
+    std::vector<Type *> args;
+    args.reserve(c.args.size());
+    for (Type *a : c.args) args.push_back(subst(a, s));
+    return con(c.name, std::move(args));
+  }
+  case Kind::Arrow:
+  {
+    TArrow &a = std::get<TArrow>(t->as);
+    return arrow(subst(a.from, s), subst(a.to, s));
+  }
+  }
+  return t;
+}
+
+// Make a fresh unification variable for each parameter id, returning the
+// id->var substitution and (in `args_out`) the fresh vars in parameter order --
+// exactly the type arguments of the instantiated nominal type.
+Subst
+Checker::fresh_subst(
+  const VarIds &params, std::vector<Type *> &args_out)
+{
+  Subst sub;
+  args_out.clear();
+  args_out.reserve(params.size());
+  for (int id : params)
+  {
+    Type *v   = fresh();
+    sub[id]   = v;
+    args_out.push_back(v);
+  }
+  return sub;
+}
+
 Type *
 Checker::instantiate(
   const Scheme &s)
@@ -313,26 +409,7 @@ Checker::instantiate(
 
   Subst sub;
   for (int id : s.vars) sub[id] = fresh();
-
-  std::function<Type *(Type *)> go = [&](Type *t) -> Type * {
-    t = prune(t);
-    switch (t->kind())
-    {
-    case Kind::Var:
-    {
-      auto it = sub.find(std::get<TVar>(t->as).id);
-      return it == sub.end() ? t : it->second;
-    }
-    case Kind::Con: return t;
-    case Kind::Arrow:
-    {
-      TArrow &a = std::get<TArrow>(t->as);
-      return arrow(go(a.from), go(a.to));
-    }
-    }
-    return t;
-  };
-  return go(s.type);
+  return subst(s.type, sub);
 }
 
 /*------------------------------------------------------------------------------
@@ -341,12 +418,40 @@ Checker::instantiate(
 
 Type *
 Checker::sig_to_type(
-  EX::Ty *sig, TyVarEnv &tv, bool rigid)
+  EX::Ty *sig, TyVarEnv &tv, bool rigid, VarIds *order)
 {
   switch (sig->tag)
   {
   case EX::TyTag::Con:
-    return con(std::string(std::get<EX::TyCon>(sig->as).name));
+  {
+    auto       &c     = std::get<EX::TyCon>(sig->as);
+    std::string name  = std::string(c.name);
+    size_t      arity = m_arity.count(name) ? m_arity.at(name) : 0;
+    size_t      given = c.args.size();
+
+    // Either spell out every argument, or none (then infer them with fresh
+    // holes); any other count is a kind/arity error. Built-ins have arity 0.
+    // Reported only on the non-rigid pass so a signature checked twice (its
+    // scheme in phase B, then rigidly against the body in phase C) faults once.
+    if (!rigid && given != 0 && given != arity)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           m_anchor,
+           "type '%s' expects %zu argument(s), but %zu given",
+           name.c_str(),
+           arity,
+           given);
+      return fresh();
+    }
+
+    std::vector<Type *> args;
+    args.reserve(arity);
+    if (given == arity)
+      for (EX::Ty *a : c.args) args.push_back(sig_to_type(a, tv, rigid, order));
+    else // given == 0, arity > 0: infer each argument
+      for (size_t i = 0; i < arity; ++i) args.push_back(fresh());
+    return con(std::move(name), std::move(args));
+  }
   case EX::TyTag::Var:
   {
     std::string nm = std::string(std::get<EX::TyVar>(sig->as).name);
@@ -354,13 +459,14 @@ Checker::sig_to_type(
     if (it != tv.end()) return it->second;
     Type *v = fresh(rigid, nm);
     tv[nm]  = v;
+    if (order) order->push_back(std::get<TVar>(v->as).id);
     return v;
   }
   case EX::TyTag::Arrow:
   {
     auto &ar = std::get<EX::TyArrow>(sig->as);
-    Type *f  = sig_to_type(ar.from, tv, rigid);
-    Type *t  = sig_to_type(ar.to, tv, rigid);
+    Type *f  = sig_to_type(ar.from, tv, rigid, order);
+    Type *t  = sig_to_type(ar.to, tv, rigid, order);
     return arrow(f, t);
   }
   }
@@ -436,8 +542,8 @@ Checker::desugar(
     for (size_t i = 0; i < sl.fields.size(); ++i)
       fields.push_back(
         { std::string(sl.fields[i].name), desugar(sl.fields[i].val) });
-    return core(
-      CStructLit{ std::string(sl.type_name), sl.type_name, std::move(fields) });
+    return core(CStructLit{
+      std::string(sl.type_name), sl.type_name, std::move(fields), &sl });
   }
   case EX::ExprTag::VariantLit:
   {
@@ -449,7 +555,8 @@ Checker::desugar(
     return core(CVariantLit{ std::string(vl.type_name),
                              std::string(vl.tag),
                              vl.anchor,
-                             std::move(fields) });
+                             std::move(fields),
+                             &vl });
   }
   case EX::ExprTag::Field:
   {
@@ -655,9 +762,26 @@ Checker::infer(
 
   case CKind::StructLit:
   {
-    CStructLit &sl  = std::get<CStructLit>(e->as);
-    UT::Vu      at  = sl.anchor.data() ? sl.anchor : m_anchor;
-    auto        sit = m_structs.find(sl.type_name);
+    CStructLit &sl = std::get<CStructLit>(e->as);
+    UT::Vu      at = sl.anchor.data() ? sl.anchor : m_anchor;
+
+    // Bare `.{...}`: defer to a lit site, typed as a fresh var that later
+    // unification (an annotation or an enclosing field) must bind to a struct.
+    if (sl.type_name.empty())
+    {
+      LitSite s;
+      s.is_struct = true;
+      s.use       = fresh();
+      s.anchor    = at;
+      s.exs       = sl.ex;
+      for (auto &init : sl.fields)
+        s.fields.push_back({ init.first, infer(init.second, locals) });
+      Type *use = s.use;
+      m_lit_sites.push_back(std::move(s));
+      return use;
+    }
+
+    auto sit = m_structs.find(sl.type_name);
     if (sit == m_structs.end())
     {
       fail(ER::Code::TYPE_UNBOUND,
@@ -666,7 +790,12 @@ Checker::infer(
            sl.type_name.c_str());
       return fresh();
     }
-    const StructFields &decl = sit->second;
+    const StructFields &decl = sit->second.fields;
+
+    // Instantiate the struct's parameters fresh for this use; field types are
+    // read through this substitution and the result is `con(name, args)`.
+    std::vector<Type *> args;
+    Subst               sub = fresh_subst(sit->second.params, args);
 
     // Every declared field must be initialized exactly once; reject unknown and
     // duplicate fields. Each initializer is checked against its declared type.
@@ -697,7 +826,7 @@ Checker::infer(
       }
       seen[idx] = true;
       Type *vt  = infer(init.second, locals);
-      unify(decl[idx].second, vt);
+      unify(subst(decl[idx].second, sub), vt);
     }
     for (size_t k = 0; k < decl.size(); ++k)
       if (!seen[k])
@@ -707,14 +836,32 @@ Checker::infer(
              sl.type_name.c_str(),
              decl[k].first.c_str());
 
-    return con(sl.type_name);
+    return con(sl.type_name, args);
   }
 
   case CKind::VariantLit:
   {
-    CVariantLit &vl  = std::get<CVariantLit>(e->as);
-    UT::Vu       at  = vl.anchor.data() ? vl.anchor : m_anchor;
-    auto         uit = m_unions.find(vl.type_name);
+    CVariantLit &vl = std::get<CVariantLit>(e->as);
+    UT::Vu       at = vl.anchor.data() ? vl.anchor : m_anchor;
+
+    // Bare `.Tag...`: defer to a lit site keyed by the tag; later unification
+    // binds its `use` var to the union the tag belongs to.
+    if (vl.type_name.empty())
+    {
+      LitSite s;
+      s.is_struct = false;
+      s.use       = fresh();
+      s.anchor    = at;
+      s.vtag      = vl.vtag;
+      s.exv       = vl.ex;
+      for (auto &init : vl.fields)
+        s.fields.push_back({ init.first, infer(init.second, locals) });
+      Type *use = s.use;
+      m_lit_sites.push_back(std::move(s));
+      return use;
+    }
+
+    auto uit = m_unions.find(vl.type_name);
     if (uit == m_unions.end())
     {
       fail(ER::Code::TYPE_UNBOUND,
@@ -724,7 +871,7 @@ Checker::infer(
       return fresh();
     }
     const StructFields *decl = nullptr;
-    for (auto &v : uit->second)
+    for (auto &v : uit->second.variants)
       if (v.tag == vl.vtag) decl = &v.fields;
     if (!decl)
     {
@@ -735,6 +882,11 @@ Checker::infer(
            vl.vtag.c_str());
       return fresh();
     }
+
+    // Instantiate the union's parameters fresh; payload types are read through
+    // this substitution and the result is `con(name, args)`.
+    std::vector<Type *> args;
+    Subst               sub = fresh_subst(uit->second.params, args);
 
     // Named when any value carries a field name (then all must be set exactly
     // once, any order); positional otherwise (one value per field, in order).
@@ -771,7 +923,7 @@ Checker::infer(
           continue;
         }
         seen[idx] = true;
-        unify((*decl)[idx].second, infer(init.second, locals));
+        unify(subst((*decl)[idx].second, sub), infer(init.second, locals));
       }
       for (size_t k = 0; k < decl->size(); ++k)
         if (!seen[k])
@@ -795,10 +947,10 @@ Checker::infer(
     else
     {
       for (size_t k = 0; k < decl->size(); ++k)
-        unify((*decl)[k].second, infer(vl.fields[k].second, locals));
+        unify(subst((*decl)[k].second, sub), infer(vl.fields[k].second, locals));
     }
 
-    return con(vl.type_name);
+    return con(vl.type_name, args);
   }
 
   case CKind::Field:
@@ -817,8 +969,15 @@ Checker::infer(
       return fresh();
     }
     const std::string &rname = std::get<TCon>(rt->as).name;
-    for (auto &f : m_structs.at(rname))
-      if (f.first == fld.field) return f.second;
+    const StructDef   &sdef  = m_structs.at(rname);
+    // Bind the struct's parameters to the receiver's actual type arguments, so
+    // the field type comes back at the receiver's instantiation.
+    Subst sub;
+    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
+    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
+      sub[sdef.params[k]] = actual[k];
+    for (auto &f : sdef.fields)
+      if (f.first == fld.field) return subst(f.second, sub);
 
     fail(ER::Code::TYPE_UNBOUND,
          at,
@@ -849,18 +1008,23 @@ Checker::infer(
         break;
       case EX::AltKind::Con:
       {
-        // The scrutinee is the constructor's union type; bind its payload from
-        // the matched variant's declared field types.
-        AltCon &ac = std::get<AltCon>(alt.as);
-        unify(st, con(ac.type_name));
-        auto uit = m_unions.find(ac.type_name);
-        if (uit != m_unions.end() && ac.tag < uit->second.size())
+        // The scrutinee is the constructor's union type; instantiate the union
+        // fresh and bind its payload from the matched variant's field types,
+        // read through that same instantiation.
+        AltCon &ac  = std::get<AltCon>(alt.as);
+        auto    uit = m_unions.find(ac.type_name);
+        if (uit != m_unions.end() && ac.tag < uit->second.variants.size())
         {
-          const StructFields &decl = uit->second[ac.tag].fields;
+          std::vector<Type *> args;
+          Subst               sub = fresh_subst(uit->second.params, args);
+          unify(st, con(ac.type_name, args));
+          const StructFields &decl = uit->second.variants[ac.tag].fields;
           for (size_t i = 0; i < ac.binders.size() && i < decl.size(); ++i)
             if (!ac.binders[i].empty())
-              inner[ac.binders[i]] = Scheme{ {}, decl[i].second };
+              inner[ac.binders[i]] = Scheme{ {}, subst(decl[i].second, sub) };
         }
+        else
+          unify(st, con(ac.type_name));
         body = ac.body;
         break;
       }
@@ -899,7 +1063,13 @@ Checker::resolve(
 
   if (g.def->sig)
   {
-    g.scheme = scheme_of_sig(g.def->sig);
+    UT::Vu save_a = m_anchor;
+    size_t save_l = m_line;
+    m_anchor      = g.def->name;
+    m_line        = line_of(g.def->name);
+    g.scheme      = scheme_of_sig(g.def->sig);
+    m_anchor      = save_a;
+    m_line        = save_l;
   }
   else
   {
@@ -909,9 +1079,11 @@ Checker::resolve(
     m_line        = line_of(g.def->name);
 
     Env    empty;
-    size_t base = m_sites.size();
-    Type  *t    = infer(g.body, empty);
+    size_t base  = m_sites.size();
+    size_t lbase = m_lit_sites.size();
+    Type  *t     = infer(g.body, empty);
     resolve_sites(base); // settle this body's overloads before judging its type
+    resolve_lit_sites(lbase); // ... and any unqualified literals (no context)
     t = prune(t);
 
     if (t->kind() != Kind::Con)
@@ -1022,29 +1194,296 @@ Checker::resolve_sites(
   m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
 }
 
+UT::Vu
+Checker::intern(
+  const std::string &s)
+{
+  char *mem = (char *)m_arena.alloc(s.size() ? s.size() : 1);
+  std::memcpy(mem, s.data(), s.size());
+  return UT::Vu{ mem, s.size() };
+}
+
+// Settle the bare struct/union literals collected since `from`. Each was typed
+// as a fresh `use` var; by now unification (an annotation, an enclosing field,
+// ...) should have bound it to a concrete nominal type. We check the payload
+// against that type's (instantiated) fields and patch the EX node's type name so
+// the interpreter sees a resolved literal. Resolved outermost-first (reverse of
+// the post-order in which they were recorded) so an outer literal binds an inner
+// one's `use` before the inner is judged.
+void
+Checker::resolve_lit_sites(
+  size_t from)
+{
+  for (size_t i = m_lit_sites.size(); i-- > from;)
+  {
+    LitSite &s = m_lit_sites[i];
+    Type    *u = prune(s.use);
+    if (u->kind() != Kind::Con)
+    {
+      fail(ER::Code::TYPE_ANNOTATION_REQUIRED,
+           s.anchor,
+           "cannot infer the type of this %s literal; add a type annotation",
+           s.is_struct ? "struct" : "variant");
+      continue;
+    }
+    TCon              &uc  = std::get<TCon>(u->as);
+    const std::string &nm  = uc.name;
+
+    // Bind the nominal type's parameters to the receiver's actual arguments, so
+    // declared field types are read at this literal's instantiation.
+    auto bind = [&](const VarIds &params) {
+      Subst sub;
+      for (size_t k = 0; k < params.size() && k < uc.args.size(); ++k)
+        sub[params[k]] = uc.args[k];
+      return sub;
+    };
+
+    if (s.is_struct)
+    {
+      auto it = m_structs.find(nm);
+      if (it == m_structs.end())
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             s.anchor,
+             "'%s' is not a struct type",
+             nm.c_str());
+        continue;
+      }
+      const StructFields &decl = it->second.fields;
+      Subst               sub  = bind(it->second.params);
+
+      std::vector<bool> seen(decl.size(), false);
+      for (auto &fv : s.fields)
+      {
+        size_t idx = decl.size();
+        for (size_t k = 0; k < decl.size(); ++k)
+          if (decl[k].first == fv.first) idx = k;
+        if (idx == decl.size())
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "struct '%s' has no field '%s'",
+               nm.c_str(),
+               fv.first.c_str());
+          continue;
+        }
+        if (seen[idx])
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "field '%s' is set more than once in '%s'",
+               fv.first.c_str(),
+               nm.c_str());
+          continue;
+        }
+        seen[idx] = true;
+        unify(subst(decl[idx].second, sub), fv.second);
+      }
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (!seen[k])
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "struct '%s' is missing field '%s'",
+               nm.c_str(),
+               decl[k].first.c_str());
+
+      if (s.exs) s.exs->type_name = intern(nm); // patch for the interpreter
+      continue;
+    }
+
+    // Variant.
+    auto it = m_unions.find(nm);
+    if (it == m_unions.end())
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "'%s' is not a union type",
+           nm.c_str());
+      continue;
+    }
+    const StructFields *decl = nullptr;
+    for (auto &v : it->second.variants)
+      if (v.tag == s.vtag) decl = &v.fields;
+    if (!decl)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "union '%s' has no variant '%s'",
+           nm.c_str(),
+           s.vtag.c_str());
+      continue;
+    }
+    Subst sub = bind(it->second.params);
+
+    bool named = false;
+    for (auto &fv : s.fields)
+      if (!fv.first.empty()) named = true;
+
+    if (named)
+    {
+      std::vector<bool> seen(decl->size(), false);
+      for (auto &fv : s.fields)
+      {
+        size_t idx = decl->size();
+        for (size_t k = 0; k < decl->size(); ++k)
+          if ((*decl)[k].first == fv.first) idx = k;
+        if (idx == decl->size())
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "variant '%s.%s' has no field '%s'",
+               nm.c_str(),
+               s.vtag.c_str(),
+               fv.first.c_str());
+          continue;
+        }
+        if (seen[idx])
+        {
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "field '%s' is set more than once in '%s.%s'",
+               fv.first.c_str(),
+               nm.c_str(),
+               s.vtag.c_str());
+          continue;
+        }
+        seen[idx] = true;
+        unify(subst((*decl)[idx].second, sub), fv.second);
+      }
+      for (size_t k = 0; k < decl->size(); ++k)
+        if (!seen[k])
+          fail(ER::Code::TYPE_MISMATCH,
+               s.anchor,
+               "variant '%s.%s' is missing field '%s'",
+               nm.c_str(),
+               s.vtag.c_str(),
+               (*decl)[k].first.c_str());
+    }
+    else if (s.fields.size() != decl->size())
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "variant '%s.%s' takes %zu payload field(s), but %zu given",
+           nm.c_str(),
+           s.vtag.c_str(),
+           decl->size(),
+           s.fields.size());
+    }
+    else
+    {
+      for (size_t k = 0; k < decl->size(); ++k)
+        unify(subst((*decl)[k].second, sub), s.fields[k].second);
+    }
+
+    if (s.exv)
+    {
+      s.exv->type_name = intern(nm); // patch for the interpreter
+      // A named bare literal was left unnormalized by LL (it had no type then);
+      // reorder its payload into declared field order, dropping the names, so IT
+      // (which builds positionally) and a `case` agree.
+      if (named && s.exv->fields.size() == decl->size())
+      {
+        UT::Vec<EX::FieldInit> out{ m_arena };
+        bool                   ok = true;
+        for (size_t k = 0; k < decl->size(); ++k)
+        {
+          EX::Expr *val = nullptr;
+          for (size_t j = 0; j < s.exv->fields.size(); ++j)
+            if (std::string(s.exv->fields[j].name) == (*decl)[k].first)
+              val = s.exv->fields[j].val;
+          if (!val)
+          {
+            ok = false;
+            break;
+          }
+          out.push(EX::FieldInit{ UT::Vu{}, val });
+        }
+        if (ok) s.exv->fields = out;
+      }
+    }
+  }
+  m_lit_sites.erase(m_lit_sites.begin() + (long)from, m_lit_sites.end());
+}
+
 /*------------------------------------------------------------------------------
  *\DRIVER
  *-----------------------------------------------------------------------------*/
+
+// Collect the distinct type-variable names free in `t`, in order of first
+// appearance, appending to `out`. A nominal type's implicit parameters are
+// exactly these over its whole declaration body.
+static void
+collect_tyvars(
+  EX::Ty *t, std::vector<std::string> &out)
+{
+  switch (t->tag)
+  {
+  case EX::TyTag::Var:
+  {
+    std::string nm = std::string(std::get<EX::TyVar>(t->as).name);
+    for (const std::string &s : out)
+      if (s == nm) return;
+    out.push_back(nm);
+    break;
+  }
+  case EX::TyTag::Con:
+    for (EX::Ty *a : std::get<EX::TyCon>(t->as).args) collect_tyvars(a, out);
+    break;
+  case EX::TyTag::Arrow:
+  {
+    auto &ar = std::get<EX::TyArrow>(t->as);
+    collect_tyvars(ar.from, out);
+    collect_tyvars(ar.to, out);
+    break;
+  }
+  }
+}
 
 void
 Checker::run(
   EX::Exprs &exprs)
 {
+  // Phase A0: record every nominal type's arity (its distinct free type vars)
+  // before any field type is built, so applied cons can be arity-checked even
+  // when they reference a type declared later.
+  for (EX::Expr &e : exprs)
+  {
+    std::vector<std::string> ps;
+    if (e.tag == EX::ExprTag::StructDecl)
+    {
+      auto &sd = std::get<EX::ExStructDecl>(e.as);
+      for (auto &f : sd.fields) collect_tyvars(f.ty, ps);
+      m_arity[std::string(sd.name)] = ps.size();
+    }
+    else if (e.tag == EX::ExprTag::UnionDecl)
+    {
+      auto &ud = std::get<EX::ExUnionDecl>(e.as);
+      for (auto &v : ud.variants)
+        for (auto &f : v.fields) collect_tyvars(f.ty, ps);
+      m_arity[std::string(ud.name)] = ps.size();
+    }
+  }
+
   // Phase A: register struct types and collect value globals. Structs are
-  // registered up front so a global may reference a struct declared later.
+  // registered up front so a global may reference a struct declared later. One
+  // TyVarEnv per declaration ties every `T in the body to the same parameter;
+  // `order` records the parameter ids in appearance order.
   for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
     if (e->tag != EX::ExprTag::StructDecl) continue;
     EX::ExStructDecl &sd = std::get<EX::ExStructDecl>(e->as);
     StructFields      flds;
+    TyVarEnv          tv;
+    VarIds            params;
+    m_anchor = sd.name;
     for (size_t f = 0; f < sd.fields.size(); ++f)
     {
-      TyVarEnv tv;
-      Type    *ft = sig_to_type(sd.fields[f].ty, tv, false);
+      Type *ft = sig_to_type(sd.fields[f].ty, tv, false, &params);
       flds.push_back({ std::string(sd.fields[f].name), ft });
     }
-    m_structs[std::string(sd.name)] = std::move(flds);
+    m_structs[std::string(sd.name)] = StructDef{ std::move(params),
+                                                 std::move(flds) };
   }
 
   // ... and union types, likewise registered up front for forward references.
@@ -1054,18 +1493,21 @@ Checker::run(
     if (e->tag != EX::ExprTag::UnionDecl) continue;
     EX::ExUnionDecl &ud = std::get<EX::ExUnionDecl>(e->as);
     Variants         variants;
+    TyVarEnv         tv;
+    VarIds           params;
+    m_anchor = ud.name;
     for (size_t v = 0; v < ud.variants.size(); ++v)
     {
       StructFields flds;
       for (size_t f = 0; f < ud.variants[v].fields.size(); ++f)
       {
-        TyVarEnv tv;
-        Type    *ft = sig_to_type(ud.variants[v].fields[f].ty, tv, false);
+        Type *ft = sig_to_type(ud.variants[v].fields[f].ty, tv, false, &params);
         flds.push_back({ std::string(ud.variants[v].fields[f].name), ft });
       }
       variants.push_back({ std::string(ud.variants[v].tag), std::move(flds) });
     }
-    m_unions[std::string(ud.name)] = std::move(variants);
+    m_unions[std::string(ud.name)] = UnionDef{ std::move(params),
+                                               std::move(variants) };
   }
 
   for (size_t i = 0; i < exprs.size(); ++i)
@@ -1093,8 +1535,9 @@ Checker::run(
     m_line   = line_of(g.def->name);
 
     Env    empty;
-    size_t base = m_sites.size();
-    Type  *bt   = infer(g.body, empty);
+    size_t base  = m_sites.size();
+    size_t lbase = m_lit_sites.size();
+    Type  *bt    = infer(g.body, empty);
 
     if (g.def->sig)
     {
@@ -1108,6 +1551,8 @@ Checker::run(
     }
 
     resolve_sites(base);
+    // Bare literals last: their type comes from the unification just done.
+    resolve_lit_sites(lbase);
   }
 }
 
@@ -1135,7 +1580,21 @@ Checker::show(
   t = prune(t);
   switch (t->kind())
   {
-  case Kind::Con: return std::get<TCon>(t->as).name;
+  case Kind::Con:
+  {
+    TCon       &c   = std::get<TCon>(t->as);
+    std::string out = c.name;
+    for (Type *arg : c.args)
+    {
+      Type *pa   = prune(arg);
+      bool  nest = pa->kind() == Kind::Arrow
+                  || (pa->kind() == Kind::Con
+                      && !std::get<TCon>(pa->as).args.empty());
+      std::string a = show(arg);
+      out += " " + (nest ? "(" + a + ")" : a);
+    }
+    return out;
+  }
   case Kind::Var:
   {
     TVar &v = std::get<TVar>(t->as);

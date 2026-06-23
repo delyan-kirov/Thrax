@@ -35,9 +35,12 @@ using Env = std::unordered_map<std::string, Scheme>;
 struct Type;
 
 /// A nominal type constructor: `Int`, `Str`, or a declared struct/union name.
+/// `args` are the type arguments of a generic type (e.g. `Int` in `Maybe Int`);
+/// empty for a nullary constructor.
 struct TCon
 {
-  std::string name;
+  std::string         name;
+  std::vector<Type *> args;
 };
 /// A unification variable. `ref` is its union-find link once bound; a `rigid`
 /// variable is a signature skolem that unifies only with itself, with `name`
@@ -217,9 +220,10 @@ struct CLet
 };
 struct CStructLit
 {
-  std::string type_name;
+  std::string type_name; ///< empty for a bare `.{...}` literal (type inferred)
   UT::Vu      anchor;
   FieldInits  fields;
+  EX::ExStructLit *ex = nullptr; ///< back-link to patch a resolved bare literal
 };
 struct CField
 {
@@ -235,10 +239,11 @@ struct CCase
 };
 struct CVariantLit
 {
-  std::string type_name;
+  std::string type_name; ///< empty for a bare `.Tag...` literal (type inferred)
   std::string vtag;
   UT::Vu      anchor;
   FieldInits  fields;
+  EX::ExVariantLit *ex = nullptr; ///< back-link to patch a resolved bare literal
 };
 ///@}
 
@@ -349,10 +354,24 @@ struct VariantShape
 };
 using Variants = std::vector<VariantShape>;
 
-/// Declared nominal types, keyed by type name. The value type of either is just
-/// `con(name)`; these hold the field/variant shapes.
-using StructTable = std::unordered_map<std::string, StructFields>;
-using UnionTable  = std::unordered_map<std::string, Variants>;
+/// A declared nominal type's polymorphic shape. `params` are the type-variable
+/// ids it is generic over (empty for a monomorphic type), referenced by the
+/// field/variant types; a use site instantiates them with fresh vars and forms
+/// `con(name, args)`. \see TC::instantiate_struct / instantiate_union.
+struct StructDef
+{
+  VarIds       params;
+  StructFields fields;
+};
+struct UnionDef
+{
+  VarIds   params;
+  Variants variants;
+};
+
+/// Declared nominal types, keyed by type name.
+using StructTable = std::unordered_map<std::string, StructDef>;
+using UnionTable  = std::unordered_map<std::string, UnionDef>;
 
 } // namespace TC
 
