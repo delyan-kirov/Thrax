@@ -12,6 +12,7 @@
 #include "EX.cpp"
 #include "FF.cpp"
 #include "IT.cpp"
+#include "ITxANF.cpp"
 #include "LL.cpp"
 #include "LX.cpp"
 #include "LXxDATA.cpp"

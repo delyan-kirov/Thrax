@@ -47,6 +47,7 @@
           export RAYLIB=${pkgs.raylib}
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
+          export LIBC=${pkgs.libc}
         '';
       };
     };
