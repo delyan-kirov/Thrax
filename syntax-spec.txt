@@ -127,6 +127,55 @@ DAG; a cycle among unannotated globals is an error.
 (FFI: `ext name : type = ("sym" "lib.so")` is reserved but not yet implemented.)
 
 ================================================================================
+MODULES
+================================================================================
+
+Every source file MUST begin with a module header:
+
+	modhdr ::= '@mod' ModuleName
+
+`@mod` declares the module the file's definitions belong to; it is not a reserved
+word elsewhere (the `@` keeps `mod` free). A ModuleName starts with an uppercase
+letter and then allows uppercase letters, digits, '_' and the lowercase letter
+'x' (an inert separator) -- no other lowercase, no dots. So `MAIN`, `MODxA`,
+`LIST_UTIL` are module names; `List`, `Person` (PascalCase) are type names, a
+distinct namespace.
+
+A module may span several files: repeat `@mod NAME` at the top of each, and the
+fragments merge into one module. The compiler is given the whole set of files at
+once and resolves modules across that set -- filenames never *resolve* anything.
+They are, however, VALIDATED (a lint): a file for module NAME must be called
+`NAME.thx` or `NAME_impl<Tag>.thx` (the tag is mandatory). Because a real module
+name can contain no lowercase but `x`, the `_impl` marker is unambiguous.
+
+IMPORTS.  A module pulls in others with `$ with` lines:
+
+	import ::= '$' 'with' name                 # prefix optional
+	        |  '$' 'with' name '=' modname      # qualified-only, aliased
+	        |  '$' 'with' name '=' modname '.' name   # one symbol
+	name   ::= ident | ModuleName '.' ident
+
+	$ with MODxA              # MODxA's public names usable bare, or `MODxA.x`
+	$ with MY = MODxB         # qualified only: `MY.x` (bare names not in scope)
+	$ with MODxB = MODxB      # qualified only, under its own name
+	$ with foo = MODxC.bar    # just `bar` from MODxC, bound to bare `foo`
+	$ with MODxC.bar = MODxC.bar   # just that symbol, used as `MODxC.bar`
+
+It is ALWAYS valid to qualify a symbol with its module, `Module.symbol`, whether
+or not the module was imported. The program entry point is the `main` of module
+`MAIN`; its type must be `Int` or `Str -> Int`.
+
+VISIBILITY.  Symbols are public (exported) by default. `$ @private` makes every
+symbol after it module-private (visible to the module's own files, hidden from
+importers); `$ @public` toggles back. The toggle resets at end of file.
+
+RESOLUTION.  Definitions may appear in any order. Overlapping names coexist
+freely; a name is resolved only where it is USED. A use of `Module.symbol`, or
+of a bare name provided by exactly one module in scope, resolves directly. A bare
+name provided by more than one in-scope module is ambiguous and is an error at
+the use site -- qualify it (or import just one). An unused ambiguous name is fine.
+
+================================================================================
 STRUCTS (product types)
 ================================================================================
 

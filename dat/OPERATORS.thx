@@ -1,3 +1,5 @@
+@mod OPERATORS
+
 # \file operators.thx
 # \info Comparison and logical operators. There is no Bool type yet: 0 is false
 #       and any nonzero value is true, so these all evaluate to 0 or 1.

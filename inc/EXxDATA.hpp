@@ -209,12 +209,15 @@ struct ExUnknown
 {
 };
 // A global definition: `$ name [: sig] = def`. `sig` is null when omitted (the
-// type checker must then infer a ground, non-arrow type for it).
+// type checker must then infer a ground, non-arrow type for it). `name` is
+// rewritten to the mangled `MOD/name` by MR; `origin` keeps the original
+// source-name view (for diagnostics: a caret location and an un-mangled label).
 struct ExDef
 {
   UT::Vu name;
   Ty    *sig;
   Expr  *def;
+  UT::Vu origin{};
 };
 struct ExInt
 {
@@ -227,6 +230,7 @@ struct ExReal
 struct ExVar
 {
   UT::Vu name;
+  UT::Vu qualifier{}; // module prefix from `MOD.name`; empty when unqualified
 };
 struct ExStr
 {
@@ -238,6 +242,48 @@ struct ExExtern
 {
   UT::Vu symbol;
   UT::Vu lib;
+};
+
+// `@mod NAME` -- declares the file's module. The first top-level node of a
+// file.
+struct ExModDecl
+{
+  UT::Vu name;
+};
+
+// `$ with <lhs> [= <rhs>]` -- one import directive, captured literally as
+// parsed; the MR pass interprets it. A name part is a (prefix, name) pair:
+// `MOD.sym` is (MOD, sym), a bare `MOD` or `name` is ("", MOD/name). `has_eq`
+// records whether
+// `= rhs` was written. The five forms:
+//   with MOD                 lhs=(_,MOD)                 has_eq=0
+//   with ALIAS = MOD         lhs=(_,ALIAS) rhs=(_,MOD)   has_eq=1
+//   with MOD = MOD           lhs=(_,MOD)   rhs=(_,MOD)   has_eq=1
+//   with name = MOD.sym      lhs=(_,name)  rhs=(MOD,sym) has_eq=1
+//   with MOD.sym = MOD.sym   lhs=(MOD,sym) rhs=(MOD,sym) has_eq=1
+struct ExImport
+{
+  UT::Vu lhs_prefix;
+  UT::Vu lhs_name;
+  UT::Vu rhs_prefix;
+  UT::Vu rhs_name;
+  bool   has_eq = false;
+};
+
+// `$ @private` / `$ @public` -- toggles export visibility of the symbols that
+// follow it in the file (public is the default; reset at end of file).
+struct ExVis
+{
+  bool is_private;
+};
+
+// An unresolved overload set: a use whose unqualified name matched several
+// imported symbols. Produced by MR, resolved by TC (by type). `name` is the
+// original source name (diagnostics); `candidates` are the mangled globals.
+struct ExOverload
+{
+  UT::Vu          name;
+  UT::Vec<UT::Vu> candidates;
 };
 
 struct ExFnDef
@@ -413,7 +459,11 @@ struct ExVariantLit
   X(StructLit, ExStructLit)                                                    \
   X(Field, ExField)                                                            \
   X(UnionDecl, ExUnionDecl)                                                    \
-  X(VariantLit, ExVariantLit)
+  X(VariantLit, ExVariantLit)                                                  \
+  X(ModDecl, ExModDecl)                                                        \
+  X(Import, ExImport)                                                          \
+  X(Vis, ExVis)                                                                \
+  X(Overload, ExOverload)
 
 enum class ExprTag
 {

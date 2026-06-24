@@ -243,7 +243,8 @@ struct CVariantLit
   std::string vtag;
   UT::Vu      anchor;
   FieldInits  fields;
-  EX::ExVariantLit *ex = nullptr; ///< back-link to patch a resolved bare literal
+  EX::ExVariantLit *ex
+    = nullptr; ///< back-link to patch a resolved bare literal
 };
 ///@}
 

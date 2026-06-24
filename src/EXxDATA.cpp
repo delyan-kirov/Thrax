@@ -74,7 +74,12 @@ pprint(
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
   case ExprTag::Real:
     return pad + std::to_string(std::get<ExReal>(e->as).value);
-  case ExprTag::Var: return pad + std::string(std::get<ExVar>(e->as).name);
+  case ExprTag::Var:
+  {
+    auto &v = std::get<ExVar>(e->as);
+    return pad + (v.qualifier.size() ? std::string(v.qualifier) + "." : "")
+           + std::string(v.name);
+  }
   case ExprTag::Str:
     return pad + "\"" + std::string(std::get<ExStr>(e->as).value) + "\"";
   case ExprTag::Let:
@@ -179,6 +184,32 @@ pprint(
                 : "\n")
            + pprint(vl.fields[i].val, level + 2);
     return s + ")";
+  }
+  case ExprTag::ModDecl:
+    return pad + "@mod " + std::string(std::get<ExModDecl>(e->as).name);
+  case ExprTag::Import:
+  {
+    auto       &im = std::get<ExImport>(e->as);
+    std::string s  = pad + "with ";
+    if (im.lhs_prefix.size()) s += std::string(im.lhs_prefix) + ".";
+    s += std::string(im.lhs_name);
+    if (im.has_eq)
+    {
+      s += " = ";
+      if (im.rhs_prefix.size()) s += std::string(im.rhs_prefix) + ".";
+      s += std::string(im.rhs_name);
+    }
+    return s;
+  }
+  case ExprTag::Vis:
+    return pad + (std::get<ExVis>(e->as).is_private ? "@private" : "@public");
+  case ExprTag::Overload:
+  {
+    auto       &ov = std::get<ExOverload>(e->as);
+    std::string s  = pad + "overload " + std::string(ov.name) + " {";
+    for (size_t i = 0; i < ov.candidates.size(); ++i)
+      s += (i ? ", " : "") + std::string(ov.candidates[i]);
+    return s + "}";
   }
   case ExprTag::Unknown: return pad + "?unknown";
   }

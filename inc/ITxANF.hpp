@@ -55,10 +55,10 @@ struct Anf
   pLm norm_name(pLm e, const Cont &k);
 
   // Normalize struct fields left-to-right into atoms, then rebuild the struct.
-  pLm norm_struct(Struct                                    s,
-                  size_t                                    i,
-                  std::vector<std::pair<std::string, pLm> > acc,
-                  const Cont                               &k);
+  pLm norm_struct(Struct                                   s,
+                  size_t                                   i,
+                  std::vector<std::pair<std::string, pLm>> acc,
+                  const Cont                              &k);
 };
 
 } // namespace IT

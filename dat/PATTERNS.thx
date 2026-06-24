@@ -1,3 +1,5 @@
+@mod PATTERNS
+
 # \file patterns.thx
 # \info Destructuring patterns in `let` bindings and lambda parameters. A struct
 #       pattern `Type.{ ... }` matches a struct and binds its fields. It is

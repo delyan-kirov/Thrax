@@ -2,6 +2,8 @@
 # \info Local bindings with `let x = e in body`, including nesting and using
 #       earlier bindings in later ones.
 
+@mod LET_IN
+
 $simple = let x = 6 in x * 7
 
 $nested =

@@ -1,3 +1,5 @@
+@mod AGTxPRO
+
 # Product types (structs): a named record type, a literal, and field access.
 
 # A struct type declaration. Fields are `name : Type`, comma-separated; a

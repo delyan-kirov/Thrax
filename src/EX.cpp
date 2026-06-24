@@ -225,13 +225,12 @@ Parser::parse_primary()
     LX::Token ahead = EX_TRY(m_lex.peek());
     if (LX::TokenTag::LBrace == ahead.tag)
     {
-      base = EX_CTX(
-        parse_struct_lit(UT::Vu{}), dot, "in this struct literal");
+      base = EX_CTX(parse_struct_lit(UT::Vu{}), dot, "in this struct literal");
       break;
     }
     LX::Token tag = EX_TRY(expect(
       LX::TokenTag::Word, "expected '{' or a variant tag after a leading '.'"));
-    char c = tag.str.size() ? tag.str.data()[0] : '\0';
+    char      c   = tag.str.size() ? tag.str.data()[0] : '\0';
     if (c < 'A' || c > 'Z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              tag,
@@ -314,6 +313,21 @@ Parser::parse_primary()
                       "in this '%s.%s' variant",
                       std::string(tn).c_str(),
                       std::string(fld.str).c_str());
+      }
+      else if (base->tag == ExprTag::Var
+               && std::get<ExVar>(base->as).qualifier.empty()
+               && std::get<ExVar>(base->as).name.size()
+               && std::get<ExVar>(base->as).name.data()[0] >= 'A'
+               && std::get<ExVar>(base->as).name.data()[0] <= 'Z')
+      {
+        // `MOD.foo` -- an uppercase base with a lowercase member is a
+        // module-qualified variable reference (MR resolves the module). Field
+        // access reads from a value, whose name is lowercase, so the two never
+        // collide.
+        UT::Vu mod = std::get<ExVar>(base->as).name;
+        Expr   e{ ExprTag::Var };
+        e.as = ExVar{ fld.str, mod };
+        base = alloc(e);
       }
       else
       {
@@ -564,9 +578,9 @@ Parser::parse_pattern()
     // empty and inferred from the match (see LL). Only an uppercase tag is a
     // bare constructor here.
     m_lex.next(); // '.'
-    LX::Token tag = EX_TRY(
-      expect(LX::TokenTag::Word, "expected a variant tag after '.' in a pattern"));
-    char tc = tag.str.size() ? tag.str.data()[0] : '\0';
+    LX::Token tag = EX_TRY(expect(
+      LX::TokenTag::Word, "expected a variant tag after '.' in a pattern"));
+    char      tc  = tag.str.size() ? tag.str.data()[0] : '\0';
     if (tc < 'A' || tc > 'Z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              tag,
@@ -772,6 +786,12 @@ Parser::parse_global()
   }
   m_lex.next(); // consume '$'
 
+  // `$ with ...` is an import directive; `$ @private` / `$ @public` toggle
+  // export visibility. Both are stripped by MR before later passes.
+  LX::Token after = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::KwWith == after.tag) return parse_import();
+  if (LX::TokenTag::At == after.tag) return parse_vis();
+
   LX::Token name
     = EX_TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
@@ -825,6 +845,89 @@ Parser::parse_global()
                       std::string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
+}
+
+// `@mod NAME` -- the module header that must open every file. The name's
+// grammar (uppercase, no lowercase but `x`, etc.) is validated later by the MR
+// pass.
+RExpr
+Parser::parse_mod_decl()
+{
+  LX::Token at = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::At != at.tag || at.str != "@mod")
+    EX_ERR(ER::Code::EXPECTED_GLOBAL,
+           at,
+           "a source file must begin with a module header, '@mod NAME'");
+  m_lex.next(); // '@mod'
+  LX::Token name
+    = EX_TRY(expect(LX::TokenTag::Word, "expected a module name after '@mod'"));
+  Expr e{ ExprTag::ModDecl };
+  e.as = ExModDecl{ name.str };
+  return { true, alloc(e), {} };
+}
+
+// `$ with <lhs> [= <rhs>]` -- captured literally; the MR pass classifies it
+// into a whole-module or single-symbol import. The leading `$` is already
+// consumed.
+RExpr
+Parser::parse_import()
+{
+  m_lex.next(); // 'with'
+
+  ExImport  im;
+  LX::Token l1
+    = EX_TRY(expect(LX::TokenTag::Word, "expected a name after 'with'"));
+  im.lhs_name = l1.str;
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // '.'
+    LX::Token l2 = EX_TRY(
+      expect(LX::TokenTag::Word, "expected a name after '.' in an import"));
+    im.lhs_prefix = l1.str;
+    im.lhs_name   = l2.str;
+  }
+
+  if (LX::TokenTag::Eq == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // '='
+    im.has_eq    = true;
+    LX::Token r1 = EX_TRY(
+      expect(LX::TokenTag::Word, "expected a module or 'MOD.sym' after '='"));
+    im.rhs_name = r1.str;
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '.'
+      LX::Token r2 = EX_TRY(
+        expect(LX::TokenTag::Word, "expected a name after '.' in an import"));
+      im.rhs_prefix = r1.str;
+      im.rhs_name   = r2.str;
+    }
+  }
+
+  Expr e{ ExprTag::Import };
+  e.as = im;
+  return { true, alloc(e), {} };
+}
+
+// `$ @private` / `$ @public` -- toggles export visibility of following symbols.
+// The leading `$` is already consumed.
+RExpr
+Parser::parse_vis()
+{
+  LX::Token at = EX_TRY(m_lex.next()); // '@private' / '@public'
+  bool      is_private;
+  if (at.str == "@private")
+    is_private = true;
+  else if (at.str == "@public")
+    is_private = false;
+  else
+    EX_ERR(ER::Code::UNSUPPORTED,
+           at,
+           "unknown directive '%s' (expected @private or @public)",
+           std::string(at.str).c_str());
+  Expr e{ ExprTag::Vis };
+  e.as = ExVis{ is_private };
+  return { true, alloc(e), {} };
 }
 
 RExpr
@@ -1054,17 +1157,17 @@ Parser::parse_variant_lit(
     {
       if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
 
-      // A named field is `.field = value` with a lowercase field name. A leading
+      // A named field is `.field = value` with a lowercase field name. A
+      // leading
       // `.` otherwise begins a positional value that is itself a bare literal
       // (`.{...}` or `.Tag...`, whose tag is uppercase), so let parse_expr take
       // it -- only `.lowercase =` is a field name here.
-      LX::Token p1 = EX_TRY(m_lex.peek(1));
-      LX::Token p2 = EX_TRY(m_lex.peek(2));
-      bool      named_field
-        = LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
-          && LX::TokenTag::Word == p1.tag && p1.str.size()
-          && p1.str.data()[0] >= 'a' && p1.str.data()[0] <= 'z'
-          && LX::TokenTag::Eq == p2.tag;
+      LX::Token p1          = EX_TRY(m_lex.peek(1));
+      LX::Token p2          = EX_TRY(m_lex.peek(2));
+      bool      named_field = LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+                         && LX::TokenTag::Word == p1.tag && p1.str.size()
+                         && p1.str.data()[0] >= 'a' && p1.str.data()[0] <= 'z'
+                         && LX::TokenTag::Eq == p2.tag;
 
       if (named_field)
       {
@@ -1229,6 +1332,23 @@ Parser::recover()
 void
 Parser::operator()()
 {
+  // Every file must open with a `@mod NAME` header declaring its module.
+  {
+    LX::RToken pk = m_lex.peek();
+    if (!pk.ok)
+    {
+      m_diags.push_back(pk.err);
+      return;
+    }
+    RExpr md = parse_mod_decl();
+    if (!md.ok)
+    {
+      m_diags.push_back(md.err);
+      return;
+    }
+    m_exprs.push(*md.value);
+  }
+
   for (;;)
   {
     LX::RToken pk = m_lex.peek();

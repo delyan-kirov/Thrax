@@ -1,3 +1,5 @@
+@mod RECURSION
+
 # \file recursion.thx
 # \info Self-recursive global functions: factorial, summation, and gcd.
 

@@ -39,6 +39,9 @@ public:
 
 private:
   UT_NODISCARD RExpr    parse_global();
+  UT_NODISCARD RExpr    parse_mod_decl(); // `@mod NAME` at the start of a file
+  UT_NODISCARD RExpr    parse_import();   // `$ with ...`
+  UT_NODISCARD RExpr    parse_vis();      // `$ @private` / `$ @public`
   UT_NODISCARD RExpr    parse_extern();
   UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_struct_lit(UT::Vu type_name);

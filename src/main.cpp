@@ -48,9 +48,14 @@ main(
     return 2;
   }
 
-  bool ok = true;
-  for (UT::Vu file : files)
-    ok &= print_ast ? DR::dump_ast(file) : DR::run_file(file);
+  if (print_ast)
+  {
+    bool ok = true;
+    for (UT::Vu file : files) ok &= DR::dump_ast(file);
+    return ok ? 0 : 1;
+  }
 
-  return ok ? 0 : 1;
+  // All files form one program; modules link across them and the entry point is
+  // the `main` of module MAIN. The program's exit code is main's Int result.
+  return DR::run_program(files);
 }
