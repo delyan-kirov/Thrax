@@ -148,6 +148,12 @@ They are, however, VALIDATED (a lint): a file for module NAME must be called
 `NAME.thx` or `NAME_impl<Tag>.thx` (the tag is mandatory). Because a real module
 name can contain no lowercase but `x`, the `_impl` marker is unambiguous.
 
+INVOCATION.  `thrax PATH...` compiles the given paths as one program. A PATH that
+is a directory contributes every `.thx` file directly inside it (sorted, NOT
+recursive, skipping `_`-prefixed names); a PATH that names a file is taken as-is.
+With no PATH the current directory is used. So `thrax` (or `thrax src`) compiles a
+whole folder, while `thrax MAIN.thx LIB.thx` names files explicitly.
+
 IMPORTS.  A module pulls in others with `$ with` lines:
 
 	import ::= '$' 'with' name                 # prefix optional

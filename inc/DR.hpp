@@ -8,10 +8,15 @@
 
 #include "IT.hpp"
 
-#include <vector>
-
 namespace DR
 {
+
+// Expand command-line paths into the list of source files to compile. A path
+// that names a directory contributes every `.thx` file directly inside it
+// (sorted, NOT recursing into sub-directories, skipping names that start with
+// '_'); any other path is taken verbatim (so an explicitly named file is always
+// included, even a `_`-prefixed one). The returned strings own the names.
+std::vector<std::string> expand_sources(const std::vector<UT::Vu> &paths);
 
 // Full single-file pipeline (LX -> EX -> LL -> MR -> TC -> IT), returning the
 // module-resolved global environment. Used by the test harness; does not

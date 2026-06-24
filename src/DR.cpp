@@ -6,10 +6,6 @@
 #include "TC.hpp"
 #include "UT.hpp"
 
-#include <string>
-#include <unordered_set>
-#include <vector>
-
 namespace DR
 {
 
@@ -151,6 +147,43 @@ compile_units(
 }
 
 } // namespace
+
+std::vector<std::string>
+expand_sources(
+  const std::vector<UT::Vu> &paths)
+{
+  namespace fs = std::filesystem;
+  std::vector<std::string> out;
+
+  for (UT::Vu p : paths)
+  {
+    std::string     ps(p);
+    std::error_code ec;
+    if (!fs::is_directory(ps, ec))
+    {
+      out.push_back(ps); // a file (or a non-existent path): take it verbatim
+      continue;
+    }
+
+    // A directory: every `.thx` file directly inside it, sorted, no recursion,
+    // skipping `_`-prefixed names.
+    std::vector<std::string> here;
+    for (const fs::directory_entry &e : fs::directory_iterator(ps, ec))
+    {
+      if (ec) break;
+      if (!e.is_regular_file(ec)) continue; // skips sub-directories
+      const fs::path &path = e.path();
+      if (path.extension() != ".thx") continue;
+      std::string name = path.filename().string();
+      if (!name.empty() && name[0] == '_') continue;
+      here.push_back(path.string());
+    }
+    std::sort(here.begin(), here.end());
+    for (std::string &f : here) out.push_back(std::move(f));
+  }
+
+  return out;
+}
 
 IT::StatEnv
 interpret_file(
