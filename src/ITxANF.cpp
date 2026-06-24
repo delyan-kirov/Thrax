@@ -97,10 +97,10 @@ Anf::norm_name(
 // Normalize struct fields left-to-right into atoms, then rebuild the struct.
 pLm
 Anf::norm_struct(
-  Struct                                    s,
-  size_t                                    i,
-  std::vector<std::pair<std::string, pLm> > acc,
-  const Cont                               &k)
+  Struct                                   s,
+  size_t                                   i,
+  std::vector<std::pair<std::string, pLm>> acc,
+  const Cont                              &k)
 {
   if (i == s.fields.size())
     return k(mk(Lm{ .tag = LTag::STRUCT, .as = Struct{ s.name, acc } }));

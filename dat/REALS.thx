@@ -1,3 +1,5 @@
+@mod REALS
+
 # \file reals.thx
 # \info 64-bit Real literals (decimal and scientific) and Real arithmetic. The
 #       operators are the same as for Int -- overload resolution picks the Real

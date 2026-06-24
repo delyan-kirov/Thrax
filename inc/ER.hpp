@@ -39,7 +39,15 @@ namespace ER
   X(TYPE_MISMATCH)                                                             \
   X(TYPE_UNBOUND)                                                              \
   X(TYPE_ANNOTATION_REQUIRED)                                                  \
-  X(TYPE_CYCLE)
+  X(TYPE_CYCLE)                                                                \
+  X(BAD_MODULE_NAME)                                                           \
+  X(FILENAME_MISMATCH)                                                         \
+  X(AMBIGUOUS_NAME)                                                            \
+  X(DUPLICATE_SYMBOL)                                                          \
+  X(UNKNOWN_MODULE)                                                            \
+  X(PRIVATE_SYMBOL)                                                            \
+  X(NO_ENTRY)                                                                  \
+  X(ENTRY_SIGNATURE)
 
 enum class Code
 {
@@ -173,9 +181,10 @@ pprint(
   {
     std::string pad(depth * 2, ' ');
 
-    size_t off = (f->anchor.data() && input.data())
-                   ? (size_t)(f->anchor.data() - input.data())
-                   : 0;
+    bool in_src = f->anchor.data() && input.data()
+                  && f->anchor.data() >= input.data()
+                  && f->anchor.data() < input.data() + input.size();
+    size_t off = in_src ? (size_t)(f->anchor.data() - input.data()) : 0;
     size_t ls  = off;
     while (ls > 0 && input.data()[ls - 1] != '\n') ls -= 1;
     size_t le = off;
@@ -183,7 +192,13 @@ pprint(
 
     std::string line_txt(input.data() + ls, le - ls);
     size_t      col = off - ls;
-    std::string ln  = std::to_string(f->line);
+    // Compute the line number from the offset so it is correct even when the
+    // anchor points into a different source file than `f->line` was set for
+    // (multi-file builds reuse one diagnostic type across units).
+    size_t lineno = 1;
+    for (size_t i = 0; in_src && i < off; ++i)
+      if (input.data()[i] == '\n') lineno += 1;
+    std::string ln = in_src ? std::to_string(lineno) : std::to_string(f->line);
 
     s += pad + "\033[31m[" + pprint(f->code) + "]\033[0m "
          + std::string(filename) + ":" + ln + "\n";

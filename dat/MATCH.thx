@@ -1,3 +1,5 @@
+@mod MATCH
+
 # \file match.thx
 # \info The match form `if scrut is pat then e ... is pat then e else d`. It is
 #       distinguished from the boolean `if c then t else e` by the `is` after the

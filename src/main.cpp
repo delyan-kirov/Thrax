@@ -1,8 +1,11 @@
 /*-------------------------------------------------------------------------------
  *\file main.cpp
- *\info thrax -- the command-line interpreter. Parses argv and hands each source
- *      file to the driver (DR). With --ast / -a it prints the parsed AST
- * instead of interpreting.
+ *\info thrax -- the command-line interpreter. Parses argv into source paths and
+ *      hands them to the driver (DR). A path may be a `.thx` file or a
+ * directory (every `.thx` directly inside it, non-recursive, skipping
+ * `_`-prefixed names); with no path the current directory is used. All
+ * resulting files form one program. With --ast / -a it prints the parsed AST
+ * instead.
  *-----------------------------------------------------------------------------*/
 
 #include "UTxAMALG.hpp"
@@ -11,8 +14,11 @@ namespace
 {
 
 const char *USAGE
-  = "usage: thrax [--ast|-a] FILE...\n"
-    "  interpret each FILE; with --ast print the parsed AST instead\n";
+  = "usage: thrax [--ast|-a] [PATH...]\n"
+    "  PATH is a .thx file or a directory (every .thx in it, non-recursive,\n"
+    "  skipping _*.thx). With no PATH the current directory is used. All "
+    "files\n"
+    "  form one program; with --ast print the parsed AST instead.\n";
 
 } // namespace
 
@@ -21,7 +27,7 @@ main(
   int argc, char **argv)
 {
   bool                print_ast = false;
-  std::vector<UT::Vu> files;
+  std::vector<UT::Vu> paths;
 
   for (int i = 1; i < argc; ++i)
   {
@@ -39,18 +45,34 @@ main(
       return 2;
     }
     else
-      files.push_back(UT::Vu{ arg, std::strlen(arg) });
+      paths.push_back(UT::Vu{ arg, std::strlen(arg) });
   }
 
-  if (files.empty())
+  // No path given: compile the current directory.
+  if (paths.empty()) paths.push_back(UT::Vu{ ".", 1 });
+
+  // Expand directories to their `.thx` files. `names` owns the strings; `files`
+  // are views into them, valid for the rest of main.
+  std::vector<std::string> names = DR::expand_sources(paths);
+  if (names.empty())
   {
-    std::fprintf(stderr, "thrax: no input files\n%s", USAGE);
+    std::fprintf(stderr, "thrax: no .thx source files found\n%s", USAGE);
     return 2;
   }
 
-  bool ok = true;
-  for (UT::Vu file : files)
-    ok &= print_ast ? DR::dump_ast(file) : DR::run_file(file);
+  std::vector<UT::Vu> files;
+  files.reserve(names.size());
+  for (const std::string &n : names)
+    files.push_back(UT::Vu{ n.data(), n.size() });
 
-  return ok ? 0 : 1;
+  if (print_ast)
+  {
+    bool ok = true;
+    for (UT::Vu file : files) ok &= DR::dump_ast(file);
+    return ok ? 0 : 1;
+  }
+
+  // All files form one program; modules link across them and the entry point is
+  // the `main` of module MAIN. The program's exit code is main's Int result.
+  return DR::run_program(files);
 }

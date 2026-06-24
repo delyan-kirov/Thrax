@@ -1,0 +1,13 @@
+@mod MATHxLIB
+
+# A small library module. Public symbols are exported to importers; everything
+# after `$ @private` is module-private (still visible to MATHxLIB's own files,
+# but hidden from anyone who imports it).
+
+$ square : Int -> Int = \n = n * n
+
+$ cube : Int -> Int = \n = n * square n
+
+$ @private
+
+$ scale : Int = 1000

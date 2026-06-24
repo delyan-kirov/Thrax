@@ -1,3 +1,5 @@
+@mod ARITHMETIC
+
 # \file arithmetic.thx
 # \info Integer arithmetic: operator precedence, grouping, division, modulo,
 #       and unary negation.

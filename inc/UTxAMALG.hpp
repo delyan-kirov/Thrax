@@ -14,6 +14,7 @@
 #include "FF.hpp"
 #include "IT.hpp"
 #include "LX.hpp"
+#include "MR.hpp"
 #include "OP.hpp"
 #include "TC.hpp"
 #include "UT.hpp"

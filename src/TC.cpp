@@ -51,8 +51,9 @@ private:
   StructTable m_structs;
   UnionTable  m_unions;
   // Declared parameter count (arity) of every nominal type, keyed by name.
-  // Populated before any field type is built so applied cons can be arity-checked
-  // even across forward references. Built-ins (Int/Str) are absent => arity 0.
+  // Populated before any field type is built so applied cons can be
+  // arity-checked even across forward references. Built-ins (Int/Str) are
+  // absent => arity 0.
   std::unordered_map<std::string, size_t> m_arity;
 
   // current diagnostic anchor (the global under check)
@@ -100,8 +101,8 @@ private:
   Type  *instantiate(const Scheme &s);
 
   // signatures
-  Type  *sig_to_type(EX::Ty *sig, TyVarEnv &tv, bool rigid,
-                     VarIds *order = nullptr);
+  Type *
+  sig_to_type(EX::Ty *sig, TyVarEnv &tv, bool rigid, VarIds *order = nullptr);
   Scheme scheme_of_sig(EX::Ty *sig);
 
   // desugar + inference
@@ -394,8 +395,8 @@ Checker::fresh_subst(
   args_out.reserve(params.size());
   for (int id : params)
   {
-    Type *v   = fresh();
-    sub[id]   = v;
+    Type *v = fresh();
+    sub[id] = v;
     args_out.push_back(v);
   }
   return sub;
@@ -600,6 +601,10 @@ Checker::desugar(
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
+  case EX::ExprTag::ModDecl:
+  case EX::ExprTag::Import:
+  case EX::ExprTag::Vis:
+  case EX::ExprTag::Overload:
   case EX::ExprTag::Unknown:
     UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
                 EX::pprint(e->tag).c_str());
@@ -947,7 +952,8 @@ Checker::infer(
     else
     {
       for (size_t k = 0; k < decl->size(); ++k)
-        unify(subst((*decl)[k].second, sub), infer(vl.fields[k].second, locals));
+        unify(subst((*decl)[k].second, sub),
+              infer(vl.fields[k].second, locals));
     }
 
     return con(vl.type_name, args);
@@ -972,7 +978,7 @@ Checker::infer(
     const StructDef   &sdef  = m_structs.at(rname);
     // Bind the struct's parameters to the receiver's actual type arguments, so
     // the field type comes back at the receiver's instantiation.
-    Subst sub;
+    Subst                      sub;
     const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
     for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
       sub[sdef.params[k]] = actual[k];
@@ -1042,6 +1048,27 @@ Checker::infer(
  *\RESOLUTION (phase B)
  *-----------------------------------------------------------------------------*/
 
+// A global's source-name view, for anchoring a diagnostic at its definition.
+// (`name` is the mangled `MOD/x`, which is an arena string with no source
+// location; `origin` keeps the original view into the file.)
+static UT::Vu
+def_anchor(
+  const EX::ExDef *d)
+{
+  return d->origin.data() ? d->origin : d->name;
+}
+
+// A global's name for a user-facing message: the mangled `MOD/x` shown `MOD.x`.
+static std::string
+def_label(
+  UT::Vu mangled)
+{
+  std::string s(mangled);
+  size_t      slash = s.find('/');
+  if (slash != std::string::npos) s[slash] = '.';
+  return s;
+}
+
 Scheme
 Checker::resolve(
   const std::string &name)
@@ -1051,9 +1078,9 @@ Checker::resolve(
   if (g.state == GlobalEntry::Resolving)
   {
     fail(ER::Code::TYPE_CYCLE,
-         g.def->name,
+         def_anchor(g.def),
          "global '%s' depends on itself but has no type annotation",
-         name.c_str());
+         def_label(g.def->name).c_str());
     g.scheme = Scheme{ {}, fresh() };
     g.state  = GlobalEntry::Resolved;
     return g.scheme;
@@ -1065,8 +1092,8 @@ Checker::resolve(
   {
     UT::Vu save_a = m_anchor;
     size_t save_l = m_line;
-    m_anchor      = g.def->name;
-    m_line        = line_of(g.def->name);
+    m_anchor      = def_anchor(g.def);
+    m_line        = line_of(m_anchor);
     g.scheme      = scheme_of_sig(g.def->sig);
     m_anchor      = save_a;
     m_line        = save_l;
@@ -1075,8 +1102,8 @@ Checker::resolve(
   {
     UT::Vu save_a = m_anchor;
     size_t save_l = m_line;
-    m_anchor      = g.def->name;
-    m_line        = line_of(g.def->name);
+    m_anchor      = def_anchor(g.def);
+    m_line        = line_of(m_anchor);
 
     Env    empty;
     size_t base  = m_sites.size();
@@ -1090,10 +1117,10 @@ Checker::resolve(
     {
       fail(
         ER::Code::TYPE_ANNOTATION_REQUIRED,
-        g.def->name,
+        def_anchor(g.def),
         "global '%s' needs a type annotation (its type is '%s', not a ground "
         "Int/Str)",
-        name.c_str(),
+        def_label(g.def->name).c_str(),
         show(t).c_str());
       g.scheme = Scheme{ {}, t };
     }
@@ -1206,10 +1233,10 @@ Checker::intern(
 // Settle the bare struct/union literals collected since `from`. Each was typed
 // as a fresh `use` var; by now unification (an annotation, an enclosing field,
 // ...) should have bound it to a concrete nominal type. We check the payload
-// against that type's (instantiated) fields and patch the EX node's type name so
-// the interpreter sees a resolved literal. Resolved outermost-first (reverse of
-// the post-order in which they were recorded) so an outer literal binds an inner
-// one's `use` before the inner is judged.
+// against that type's (instantiated) fields and patch the EX node's type name
+// so the interpreter sees a resolved literal. Resolved outermost-first (reverse
+// of the post-order in which they were recorded) so an outer literal binds an
+// inner one's `use` before the inner is judged.
 void
 Checker::resolve_lit_sites(
   size_t from)
@@ -1226,8 +1253,8 @@ Checker::resolve_lit_sites(
            s.is_struct ? "struct" : "variant");
       continue;
     }
-    TCon              &uc  = std::get<TCon>(u->as);
-    const std::string &nm  = uc.name;
+    TCon              &uc = std::get<TCon>(u->as);
+    const std::string &nm = uc.name;
 
     // Bind the nominal type's parameters to the receiver's actual arguments, so
     // declared field types are read at this literal's instantiation.
@@ -1379,8 +1406,8 @@ Checker::resolve_lit_sites(
     {
       s.exv->type_name = intern(nm); // patch for the interpreter
       // A named bare literal was left unnormalized by LL (it had no type then);
-      // reorder its payload into declared field order, dropping the names, so IT
-      // (which builds positionally) and a `case` agree.
+      // reorder its payload into declared field order, dropping the names, so
+      // IT (which builds positionally) and a `case` agree.
       if (named && s.exv->fields.size() == decl->size())
       {
         UT::Vec<EX::FieldInit> out{ m_arena };
@@ -1482,8 +1509,8 @@ Checker::run(
       Type *ft = sig_to_type(sd.fields[f].ty, tv, false, &params);
       flds.push_back({ std::string(sd.fields[f].name), ft });
     }
-    m_structs[std::string(sd.name)] = StructDef{ std::move(params),
-                                                 std::move(flds) };
+    m_structs[std::string(sd.name)]
+      = StructDef{ std::move(params), std::move(flds) };
   }
 
   // ... and union types, likewise registered up front for forward references.
@@ -1506,8 +1533,8 @@ Checker::run(
       }
       variants.push_back({ std::string(ud.variants[v].tag), std::move(flds) });
     }
-    m_unions[std::string(ud.name)] = UnionDef{ std::move(params),
-                                               std::move(variants) };
+    m_unions[std::string(ud.name)]
+      = UnionDef{ std::move(params), std::move(variants) };
   }
 
   for (size_t i = 0; i < exprs.size(); ++i)
@@ -1531,8 +1558,8 @@ Checker::run(
   // re-resolved to the same impl here, which is idempotent.
   for (GlobalEntry &g : m_globals)
   {
-    m_anchor = g.def->name;
-    m_line   = line_of(g.def->name);
+    m_anchor = def_anchor(g.def);
+    m_line   = line_of(m_anchor);
 
     Env    empty;
     size_t base  = m_sites.size();
@@ -1586,10 +1613,10 @@ Checker::show(
     std::string out = c.name;
     for (Type *arg : c.args)
     {
-      Type *pa   = prune(arg);
-      bool  nest = pa->kind() == Kind::Arrow
-                  || (pa->kind() == Kind::Con
-                      && !std::get<TCon>(pa->as).args.empty());
+      Type *pa = prune(arg);
+      bool  nest
+        = pa->kind() == Kind::Arrow
+          || (pa->kind() == Kind::Con && !std::get<TCon>(pa->as).args.empty());
       std::string a = show(arg);
       out += " " + (nest ? "(" + a + ")" : a);
     }

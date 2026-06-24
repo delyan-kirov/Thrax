@@ -1,3 +1,5 @@
+@mod TAIL_CALLS
+
 # \file tail_calls.thx
 # \info Tail-call optimization: deep tail recursion must run in constant stack
 #       (these depths overflowed the C interpreter's stack before TCO). Each

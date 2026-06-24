@@ -4,7 +4,6 @@
  *-----------------------------------------------------------------------------*/
 
 #include "LL.hpp"
-
 #include "OP.hpp"
 
 namespace LL
@@ -636,8 +635,8 @@ struct Lowerer
     Expr  *mvar = mk_var(mv);
 
     UT::Vec<EX::CaseAlt> alts{ arena };
-    Expr                *dflt   = deflt;
-    EX::Ty              *sig    = nullptr; // pin the scrutinee to the union type
+    Expr                *dflt = deflt;
+    EX::Ty              *sig  = nullptr; // pin the scrutinee to the union type
     std::string          munion = match_union(m);
 
     for (size_t i = 0; i < m.arms.size(); ++i)
@@ -679,8 +678,9 @@ struct Lowerer
             pv.anchor,
             pv.line,
             "cannot infer the union for bare variant '." + std::string(pv.tag)
-              + "'; qualify it (Type." + std::string(pv.tag) + ") or match a "
-              "constructor that names the type");
+              + "'; qualify it (Type." + std::string(pv.tag)
+              + ") or match a "
+                "constructor that names the type");
         continue;
       }
       auto uit = unions.find(uname);
@@ -693,7 +693,7 @@ struct Lowerer
         continue;
       }
       UT::Vu uname_vu = bare ? ustr(uname) : pv.type_name;
-      size_t tagidx = uit->second.size();
+      size_t tagidx   = uit->second.size();
       for (size_t k = 0; k < uit->second.size(); ++k)
         if (uit->second[k].tag == std::string(pv.tag)) tagidx = k;
       if (tagidx == uit->second.size())
@@ -813,6 +813,10 @@ struct Lowerer
     case ExprTag::Extern:
     case ExprTag::StructDecl:
     case ExprTag::UnionDecl:
+    case ExprTag::Overload: // leaf produced by MR; TC resolves it
+    case ExprTag::ModDecl:  // module directives are stripped by MR before LL,
+    case ExprTag::Import:   // so these are unreachable here -- pass through
+    case ExprTag::Vis:
     case ExprTag::Unknown   : return e;
 
     case ExprTag::App:

@@ -222,6 +222,16 @@ exprs2pLm_helper(
     UT_FAIL_MSG("%s", "match should have been lowered by LL");
     break;
 
+  case EX::ExprTag::ModDecl:
+  case EX::ExprTag::Import:
+  case EX::ExprTag::Vis:
+    UT_FAIL_MSG("%s", "module directive should have been removed by MR");
+    break;
+
+  case EX::ExprTag::Overload:
+    UT_FAIL_MSG("%s", "overload should have been resolved/rejected before IT");
+    break;
+
   case EX::ExprTag::Unknown:
   {
     lm = { .tag = LTag::UNK, .as = std::monostate{} };

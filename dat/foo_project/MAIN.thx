@@ -1,0 +1,12 @@
+@mod MAIN
+
+# The entry module. Run with:  thrax examples/modules/MATHxLIB.thx examples/modules/MAIN.thx
+# All files passed to `thrax` form one program; modules link across them.
+
+$ with MATHxLIB                 # bring MATHxLIB's public names into scope
+$ with sq = MATHxLIB.square     # ...and an alias for a single symbol
+
+# `square` and `cube` are available unqualified, or qualified as `MATHxLIB.cube`.
+# `scale` is private to MATHxLIB, so referencing it here would be an error.
+
+$ main : Int = sq 3 + MATHxLIB.cube 2 + square 4

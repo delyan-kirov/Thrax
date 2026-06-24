@@ -111,6 +111,9 @@ struct TkKwElse
 struct TkKwExt
 {
 };
+struct TkKwWith
+{
+}; // with -- module import
 struct TkEof
 {
 };
@@ -147,6 +150,7 @@ struct TkEof
   X(KwThen, TkKwThen)                                                          \
   X(KwElse, TkKwElse)                                                          \
   X(KwExt, TkKwExt)                                                            \
+  X(KwWith, TkKwWith)                                                          \
   X(Eof, TkEof)
 
 enum class TokenTag
