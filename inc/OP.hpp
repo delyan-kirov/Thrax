@@ -49,6 +49,21 @@ inline constexpr const char *IF   = "if";
 inline constexpr const char *TY_INT  = "Int";
 inline constexpr const char *TY_REAL = "Real";
 
+// Is `name` the canonical name of an overloadable (binary) operator? These are
+// exactly the names a use site carries (mk_binop stores the lexeme, which
+// equals the canonical name for binaries) and the keys of the type checker's
+// overload_db. A user may add overloads of these via `$ @operator.{<op>}`; MR
+// uses this to route an operator use through type-directed resolution, TC to
+// fold the built-in candidates in beside the user's.
+inline bool
+is_operator(
+  UT::Vu name)
+{
+  return name == ADD || name == SUB || name == MUL || name == DIV || name == MOD
+         || name == ISEQ || name == GEQ || name == LEQ || name == MORE
+         || name == LESS;
+}
+
 // The monomorphic implementation key for one resolved overload: the operator
 // name tagged with the type that selects the implementation, e.g. "+@Int". TC
 // rewrites a resolved use to this string; IT dispatches on it. Both ends build

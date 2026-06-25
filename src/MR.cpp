@@ -389,10 +389,17 @@ struct Linker
   // candidate rewrites the Var to its mangled global; several turn the node
   // into an ExOverload the type checker resolves by type (and reports as
   // ambiguous only if no -- or more than one -- candidate fits). `anchor` is
-  // the use's source slice (its original, still-unmangled name).
+  // the use's source slice (its original, still-unmangled name). `is_operator`
+  // forces the ExOverload form even for a single candidate: an operator always
+  // has its built-in meanings too, which TC folds in beside the user's, so the
+  // choice is never settled here.
   void
   install_resolution(
-    Expr *e, UT::Vu name, UT::Vu anchor, std::vector<UT::Vu> &cands)
+    Expr                *e,
+    UT::Vu               name,
+    UT::Vu               anchor,
+    std::vector<UT::Vu> &cands,
+    bool                 is_operator = false)
   {
     // Drop duplicates (the same global reachable via own + import).
     std::vector<UT::Vu> uniq;
@@ -404,7 +411,7 @@ struct Linker
       if (!seen) uniq.push_back(c);
     }
     if (uniq.empty()) return;
-    if (uniq.size() == 1)
+    if (uniq.size() == 1 && !is_operator)
     {
       auto &v     = std::get<EX::ExVar>(e->as);
       v.name      = uniq[0];
@@ -444,8 +451,12 @@ struct Linker
       for (auto &l : locals)
         if (l == v.name) return; // a local binder shadows
       auto it = sc.unq.find(std::string(v.name));
-      if (it == sc.unq.end()) return; // operator / builtin / unknown
-      install_resolution(e, anchor, anchor, it->second);
+      if (it == sc.unq.end())
+        return; // operator / builtin / unknown -- left for TC. (A built-in
+                // operator with no user overload in scope stays a plain Var and
+                // resolves through TC's overload_db, exactly as before.)
+      install_resolution(
+        e, anchor, anchor, it->second, OP::is_operator(v.name));
       return;
     }
     case ExprTag::App:

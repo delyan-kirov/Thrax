@@ -790,7 +790,11 @@ Parser::parse_global()
   // export visibility. Both are stripped by MR before later passes.
   LX::Token after = EX_TRY(m_lex.peek());
   if (LX::TokenTag::KwWith == after.tag) return parse_import();
-  if (LX::TokenTag::At == after.tag) return parse_vis();
+  if (LX::TokenTag::At == after.tag)
+  {
+    if (after.str == "@operator") return parse_operator_def();
+    return parse_vis();
+  }
 
   LX::Token name
     = EX_TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
@@ -845,6 +849,44 @@ Parser::parse_global()
                       std::string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
+}
+
+// `$ @operator.{<op>} : type = expr` -- defines an overload of a built-in
+// operator. The body is an ordinary expression (typically a lambda); the
+// definition is just a global named after the operator's lexeme (e.g. "+"), so
+// the rest of the pipeline treats it like any other global -- MR mangles it,
+// and an operator use resolves to it (or a built-in) by type. The leading `$`
+// is already consumed; `@operator` is the next token.
+RExpr
+Parser::parse_operator_def()
+{
+  m_lex.next(); // '@operator'
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@operator'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@operator.'"));
+
+  LX::Token op = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::Op != op.tag || !OP::is_operator(op.str))
+    EX_ERR(ER::Code::UNSUPPORTED,
+           op,
+           "'%s' is not an overloadable operator",
+           std::string(op.str).c_str());
+  m_lex.next(); // the operator
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' after the operator name"));
+
+  // A signature is required: operand types are what select the overload.
+  EX_TRY(expect(LX::TokenTag::Colon,
+                "an operator overload needs a type signature ': ...'"));
+  Ty *sig = EX_CTX(parse_type(),
+                   op,
+                   "in the type signature of operator '%s'",
+                   std::string(op.str).c_str());
+
+  EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the operator signature"));
+  Expr *body = EX_CTX(parse_expr(0),
+                      op,
+                      "in the definition of operator '%s'",
+                      std::string(op.str).c_str());
+  return { true, mk_def(op.str, sig, body), {} };
 }
 
 // `@mod NAME` -- the module header that must open every file. The name's

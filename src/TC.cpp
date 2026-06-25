@@ -1318,18 +1318,74 @@ Checker::resolve_sites(
 // is fixed by its surrounding context, so for each site we probe every
 // candidate global -- instantiating its scheme and speculatively unifying it
 // against the use (try_unify rolls the trial back) -- and keep the ones that
-// fit. Exactly one fit is the answer: we commit it for real and write its
-// mangled name to the slot (the EX::ExOverload's `chosen`). None or several is
-// an error.
+// fit. For an operator site the built-in meanings (overload_db) are folded in
+// too: the use is shaped into an arrow chain, unconstrained operands default to
+// Int (as for a plain built-in operator), and a matching built-in counts as a
+// candidate. Exactly one fit is the answer: we commit it and write the chosen
+// name to the slot (the EX::ExOverload's `chosen`) -- a mangled global for a
+// user overload, or a "+@Int"-style key for a built-in, both of which IT reads.
+// None or several is an error.
 void
 Checker::resolve_user_sites(
   size_t from)
 {
   for (size_t i = from; i < m_usites.size(); ++i)
   {
-    const UserSite &s   = m_usites[i];
-    Type           *use = prune(s.use);
+    const UserSite              &s   = m_usites[i];
+    Type                        *use = prune(s.use);
+    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.name);
 
+    // For an operator, shape the use as an arrow chain and default any
+    // unconstrained operand to Int, so the built-in candidates can be matched
+    // by operand type (and `\x = x + x` still defaults to the Int built-in).
+    std::vector<Type *> args;
+    Type               *result = nullptr;
+    if (ovs)
+    {
+      size_t arity = ovs->front().sig.size() - 1;
+      result       = fresh();
+      Type *shape  = result;
+      args.resize(arity);
+      for (size_t k = arity; k-- > 0;)
+      {
+        args[k] = fresh();
+        shape   = arrow(args[k], shape);
+      }
+      unify(use, shape);
+      for (Type *&a : args)
+      {
+        a = prune(a);
+        if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
+        {
+          std::get<TVar>(a->as).ref = con(OP::TY_INT);
+          a                         = prune(a);
+        }
+      }
+      use = prune(use);
+    }
+
+    // The matching built-in overload, if any (operators only).
+    const Overload *bhit = nullptr;
+    if (ovs)
+      for (const Overload &o : *ovs)
+      {
+        if (o.sig.size() != args.size() + 1) continue;
+        bool ok = true;
+        for (size_t k = 0; k < args.size(); ++k)
+          if (args[k]->kind() != Kind::Con
+              || std::get<TCon>(args[k]->as).name != o.sig[k])
+          {
+            ok = false;
+            break;
+          }
+        if (ok)
+        {
+          bhit = &o;
+          break;
+        }
+      }
+
+    // The fitting user candidates.
     std::vector<size_t> fits;
     for (size_t k = 0; k < s.cands->size(); ++k)
     {
@@ -1337,7 +1393,8 @@ Checker::resolve_user_sites(
       if (try_unify(use, cand)) fits.push_back(k);
     }
 
-    if (fits.empty())
+    size_t total = fits.size() + (bhit ? 1u : 0u);
+    if (total == 0)
     {
       fail(ER::Code::TYPE_MISMATCH,
            s.anchor,
@@ -1346,9 +1403,10 @@ Checker::resolve_user_sites(
            show(use).c_str());
       continue;
     }
-    if (fits.size() > 1)
+    if (total > 1)
     {
       std::string cands;
+      if (bhit) cands += "built-in " + bhit->mono;
       for (size_t f : fits)
         cands += (cands.empty() ? "" : ", ") + def_label((*s.cands)[f]);
       fail(ER::Code::AMBIGUOUS_NAME,
@@ -1357,6 +1415,13 @@ Checker::resolve_user_sites(
            s.name.c_str(),
            show(use).c_str(),
            cands.c_str());
+      continue;
+    }
+
+    if (bhit)
+    {
+      unify(prune(result), con(bhit->sig.back()));
+      *s.slot = UT::Vu{ bhit->mono.c_str(), bhit->mono.size() };
       continue;
     }
 
