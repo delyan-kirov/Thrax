@@ -1,10 +1,10 @@
 #ifndef AR_HEADER_
 #define AR_HEADER_
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 
 namespace AR
 {
@@ -35,11 +35,29 @@ class Arena
 public:
   void *alloc(size_t size);
 
+  // Rewind the arena so every byte it has handed out can be reused, without
+  // freeing (and later re-mallocing) the underlying blocks. The blocks stay
+  // owned by the arena; only the fill cursors are reset. Any pointers handed
+  // out before the reset are dangling afterwards.
+  void reset();
+
+  // Eagerly free every block now instead of waiting for the destructor.
+  // Idempotent: it flips a flag so the destructor (which also calls this) is a
+  // no-op afterwards. Do not allocate from the arena after calling this.
+  void dealloc();
+
+  // Object-allocating overloads zero the memory they hand back: the arena
+  // gives raw bytes, but callers here are constructing structures and then
+  // assigning into them (e.g. `*p = Expr{...}`). std::variant assignment reads
+  // the destination's discriminant, so the bytes must start as a valid value
+  // (zero == alternative 0 / null / size 0) rather than garbage.
   template <typename Type>
   void *
   alloc()
   {
-    return alloc(sizeof(Type));
+    void *ptr = alloc(sizeof(Type));
+    std::memset(ptr, 0, sizeof(Type));
+    return ptr;
   }
 
   template <typename Type>
@@ -47,7 +65,10 @@ public:
   alloc(
     size_t size)
   {
-    return alloc(size * sizeof(Type));
+    size_t bytes = size * sizeof(Type);
+    void  *ptr   = alloc(bytes);
+    std::memset(ptr, 0, bytes);
+    return ptr;
   }
 
   template <typename Type>
@@ -62,9 +83,11 @@ public:
   ~Arena();
 
 private:
-  size_t  len;
-  size_t  max_len;
+  size_t  len;     // number of blocks ever allocated (kept across reset)
+  size_t  cur;     // index of the block currently being filled
+  size_t  max_len; // capacity of the `mem` array
   Block **mem;
+  bool    freed; // true once dealloc() has run; guards a double free
 
 private:
   Arena(const Arena &)            = delete;

@@ -56,6 +56,13 @@ private:
   // absent => arity 0.
   std::unordered_map<std::string, size_t> m_arity;
 
+  // Transparent type aliases: `$ Name : @alias = target` registers Name -> the
+  // target's EX type. sig_to_type resolves an alias name to its target wherever
+  // it is written, so the two are interchangeable. `m_alias_depth` guards a
+  // cyclic alias (A = B, B = A) from recursing forever.
+  std::unordered_map<std::string, EX::Ty *> m_aliases;
+  size_t                                    m_alias_depth = 0;
+
   // current diagnostic anchor (the global under check)
   UT::Vu m_anchor;
   size_t m_line = 0;
@@ -63,6 +70,24 @@ private:
   // overload resolution: deferred sites collected during an inference scope and
   // resolved at its end (see infer's Var case / resolve_sites).
   ResolveSites m_sites;
+
+  // A deferred user-overload resolution: a use MR left as an overload set. Like
+  // an operator site it is typed as a fresh `use` var; resolve_user_sites later
+  // picks the one candidate whose (instantiated) type fits and writes its
+  // mangled name to `slot` (the EX::ExOverload's `chosen` field).
+  struct UserSite
+  {
+    UT::Vu                *slot;
+    Type                  *use;
+    const UT::Vec<UT::Vu> *cands;
+    std::string            name;
+    UT::Vu                 anchor;
+  };
+  std::vector<UserSite> m_usites;
+
+  // When non-null, unify records every variable it binds here so a speculative
+  // unification (a candidate trial in resolve_user_sites) can be rolled back.
+  std::vector<Type *> *m_trail = nullptr;
 
   // An unqualified struct/union literal whose type is inferred from context.
   // Like an overload site, it is typed as a fresh `use` var and settled once
@@ -79,6 +104,21 @@ private:
   };
   std::vector<LitSite> m_lit_sites;
 
+  // A deferred field access `record.field`. Field access needs the receiver's
+  // struct type known, but that type may settle only later -- after an overload
+  // is resolved, or a parameter's signature type is applied. So a use is typed
+  // as a fresh `result` var here and checked once its `record` type is concrete
+  // (see resolve_field_sites). Sites are resolved in recording order, which is
+  // innermost-first, so a chain `a.b.c` settles `a.b` before `(a.b).c`.
+  struct FieldSite
+  {
+    Type       *record; // receiver type (a var until its context settles it)
+    std::string field;
+    UT::Vu      anchor;
+    Type       *result; // unified with the field's type once resolved
+  };
+  std::vector<FieldSite> m_field_sites;
+
   // type constructors
   Type *fresh(bool rigid = false, std::string name = "");
   Type *con(std::string name, std::vector<Type *> args = {});
@@ -93,6 +133,7 @@ private:
   Type *prune(Type *t);
   bool  occurs(Type *var, Type *t);
   bool  unify(Type *a, Type *b);
+  bool  try_unify(Type *a, Type *b); // speculative: rolled back, never reported
 
   // schemes
   void   free_vars(Type *t, VarIds &out);
@@ -109,11 +150,14 @@ private:
   Core *desugar(EX::Expr *e);
   bool  occurs_free(const std::string &name, Core *e);
   Type *infer(Core *e, Env &locals);
+  Type *infer_against(Core *e, Type *expected, Env &locals);
 
   // resolution
   Scheme resolve(const std::string &name);
   void   resolve_sites(size_t from);
+  void   resolve_user_sites(size_t from);
   void   resolve_lit_sites(size_t from);
+  void   resolve_field_sites(size_t from);
   UT::Vu intern(const std::string &s);
 
   // diagnostics
@@ -220,6 +264,7 @@ Checker::unify(
            show(b).c_str());
       return false;
     }
+    if (m_trail) m_trail->push_back(a);
     std::get<TVar>(a->as).ref = b;
     return true;
   }
@@ -234,6 +279,7 @@ Checker::unify(
            show(a).c_str());
       return false;
     }
+    if (m_trail) m_trail->push_back(b);
     std::get<TVar>(b->as).ref = a;
     return true;
   }
@@ -266,6 +312,26 @@ Checker::unify(
        show(a).c_str(),
        show(b).c_str());
   return false;
+}
+
+// Speculatively unify `a` and `b`, then undo every binding it made and discard
+// any diagnostics it produced -- the union-find is left exactly as it was. Used
+// to probe whether an overload candidate fits without committing to it. (Path
+// compression by prune may shorten already-bound chains; that is harmless,
+// since nothing pre-existing points into the freshly-bound vars we roll back.)
+bool
+Checker::try_unify(
+  Type *a, Type *b)
+{
+  std::vector<Type *>  trail;
+  std::vector<Type *> *save  = m_trail;
+  size_t               diag0 = m_diags.size();
+  m_trail                    = &trail;
+  bool ok                    = unify(a, b);
+  m_trail                    = save;
+  for (Type *v : trail) std::get<TVar>(v->as).ref = nullptr;
+  m_diags.resize(diag0);
+  return ok;
 }
 
 /*------------------------------------------------------------------------------
@@ -338,6 +404,9 @@ Checker::generalize(
   // and the call's result would never be tied back to the resolved operand
   // type.)
   for (const ResolveSite &s : m_sites) free_vars(s.use, ev);
+  for (const UserSite &s : m_usites) free_vars(s.use, ev);
+  // A pending field access is likewise monomorphic until its receiver settles.
+  for (const FieldSite &s : m_field_sites) free_vars(s.result, ev);
 
   VarIds q;
   for (int id : tv)
@@ -425,10 +494,22 @@ Checker::sig_to_type(
   {
   case EX::TyTag::Con:
   {
-    auto       &c     = std::get<EX::TyCon>(sig->as);
-    std::string name  = std::string(c.name);
-    size_t      arity = m_arity.count(name) ? m_arity.at(name) : 0;
-    size_t      given = c.args.size();
+    auto       &c    = std::get<EX::TyCon>(sig->as);
+    std::string name = std::string(c.name);
+
+    // A transparent alias used without arguments resolves to its target. (Aliases
+    // are nullary for now; an alias applied to type arguments is left as an
+    // ordinary con, so the arity check below reports it.)
+    if (c.args.empty() && m_aliases.count(name) && m_alias_depth < 64)
+    {
+      m_alias_depth++;
+      Type *r = sig_to_type(m_aliases.at(name), tv, rigid, order);
+      m_alias_depth--;
+      return r;
+    }
+
+    size_t arity = m_arity.count(name) ? m_arity.at(name) : 0;
+    size_t given = c.args.size();
 
     // Either spell out every argument, or none (then infer them with fresh
     // holes); any other count is a kind/arity error. Built-ins have arity 0.
@@ -595,16 +676,29 @@ Checker::desugar(
     }
     return core(CCase{ scrut, deflt, std::move(alts) });
   }
+  case EX::ExprTag::Overload:
+  {
+    // A use MR left as an overload set: type it as a fresh var and let
+    // resolve_user_sites pick the candidate that fits, writing its name to
+    // `chosen` (which the slot points at, and IT later reads).
+    auto &ov = std::get<EX::ExOverload>(e->as);
+    CVar  v;
+    v.name     = std::string(ov.name);
+    v.anchor   = ov.anchor;
+    v.slot     = &ov.chosen;
+    v.overload = &ov.candidates;
+    return core(std::move(v));
+  }
   // Match is removed by the LL pass before type checking; Def / StructDecl /
   // UnionDecl are top-level only; Unknown is never produced as a body.
   case EX::ExprTag::Match:
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
+  case EX::ExprTag::AliasDecl:
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:
   case EX::ExprTag::Vis:
-  case EX::ExprTag::Overload:
   case EX::ExprTag::Unknown:
     UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
                 EX::pprint(e->tag).c_str());
@@ -690,15 +784,25 @@ Checker::infer(
 {
   switch (e->kind())
   {
-  case CKind::LitInt : return con("Int");
-  case CKind::LitReal: return con("Real");
-  case CKind::LitStr : return con("Str");
+  case CKind::LitInt : return con(OP::TY_INT);
+  case CKind::LitReal: return con(OP::TY_REAL);
+  case CKind::LitStr : return con(OP::TY_STR);
   case CKind::Extern : return fresh(); // unifies with the declared signature
 
   case CKind::Var:
   {
-    CVar &v  = std::get<CVar>(e->as);
-    auto  it = locals.find(v.name);
+    CVar &v = std::get<CVar>(e->as);
+
+    // An overload set (from MR): type as a fresh var and defer the choice to
+    // resolve_user_sites, once the use's type is settled by its context.
+    if (v.overload)
+    {
+      Type *use = fresh();
+      m_usites.push_back({ v.slot, use, v.overload, v.name, v.anchor });
+      return use;
+    }
+
+    auto it = locals.find(v.name);
     if (it != locals.end()) return instantiate(it->second);
     if (m_globals.find(v.name)) return instantiate(resolve(v.name));
     auto pit = m_prim.find(v.name);
@@ -961,36 +1065,15 @@ Checker::infer(
 
   case CKind::Field:
   {
+    // Defer: the receiver's type may not be concrete yet (e.g. it is the result
+    // of an as-yet-unresolved overload). Type the access as a fresh var and
+    // settle it in resolve_field_sites once the receiver is known.
     CField &fld = std::get<CField>(e->as);
     UT::Vu  at  = fld.anchor.data() ? fld.anchor : m_anchor;
-    Type   *rt  = prune(infer(fld.record, locals));
-    if (rt->kind() != Kind::Con
-        || !m_structs.count(std::get<TCon>(rt->as).name))
-    {
-      fail(ER::Code::TYPE_MISMATCH,
-           at,
-           "cannot access field '%s': '%s' is not a known struct type",
-           fld.field.c_str(),
-           show(rt).c_str());
-      return fresh();
-    }
-    const std::string &rname = std::get<TCon>(rt->as).name;
-    const StructDef   &sdef  = m_structs.at(rname);
-    // Bind the struct's parameters to the receiver's actual type arguments, so
-    // the field type comes back at the receiver's instantiation.
-    Subst                      sub;
-    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
-    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
-      sub[sdef.params[k]] = actual[k];
-    for (auto &f : sdef.fields)
-      if (f.first == fld.field) return subst(f.second, sub);
-
-    fail(ER::Code::TYPE_UNBOUND,
-         at,
-         "struct '%s' has no field '%s'",
-         rname.c_str(),
-         fld.field.c_str());
-    return fresh();
+    Type   *rt  = infer(fld.record, locals);
+    Type   *res = fresh();
+    m_field_sites.push_back({ rt, fld.field, at, res });
+    return res;
   }
 
   case CKind::Case:
@@ -1005,11 +1088,11 @@ Checker::infer(
       switch (alt.kind())
       {
       case EX::AltKind::Int:
-        unify(st, con("Int"));
+        unify(st, con(OP::TY_INT));
         body = std::get<AltInt>(alt.as).body;
         break;
       case EX::AltKind::Real:
-        unify(st, con("Real"));
+        unify(st, con(OP::TY_REAL));
         body = std::get<AltReal>(alt.as).body;
         break;
       case EX::AltKind::Con:
@@ -1042,6 +1125,32 @@ Checker::infer(
   }
   }
   return fresh();
+}
+
+// Infer a body in "checking mode" against an expected type. When the term is a
+// lambda and the expectation an arrow, the parameter is bound to the arrow's
+// domain *before* the body is inferred -- so a type-directed operation on a
+// parameter (notably field access, which needs the receiver's struct type known
+// at that point) sees its declared type, which a plain synthesize-then-unify
+// pass would only learn afterwards. Any other shape falls back to ordinary
+// inference unified against the expectation.
+Type *
+Checker::infer_against(
+  Core *e, Type *expected, Env &locals)
+{
+  Type *exp = prune(expected);
+  if (e->kind() == CKind::Lam && exp->kind() == Kind::Arrow)
+  {
+    CLam   &l      = std::get<CLam>(e->as);
+    TArrow &a      = std::get<TArrow>(exp->as);
+    Env     inner  = locals;
+    inner[l.param] = Scheme{ {}, a.from }; // param pinned to its declared type
+    Type *bt       = infer_against(l.body, a.to, inner);
+    return arrow(a.from, bt);
+  }
+  Type *t = infer(e, locals);
+  unify(t, expected);
+  return t;
 }
 
 /*------------------------------------------------------------------------------
@@ -1107,10 +1216,14 @@ Checker::resolve(
 
     Env    empty;
     size_t base  = m_sites.size();
+    size_t ubase = m_usites.size();
+    size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty);
     resolve_sites(base); // settle this body's overloads before judging its type
-    resolve_lit_sites(lbase); // ... and any unqualified literals (no context)
+    resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
+    resolve_field_sites(fbase); // ... then field accesses (receivers now known)
+    resolve_lit_sites(lbase);   // ... and any unqualified literals (no context)
     t = prune(t);
 
     if (t->kind() != Kind::Con)
@@ -1219,6 +1332,175 @@ Checker::resolve_sites(
     *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
   }
   m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
+}
+
+// Resolve the user-overload sites collected since `from`. By now the use's type
+// is fixed by its surrounding context, so for each site we probe every
+// candidate global -- instantiating its scheme and speculatively unifying it
+// against the use (try_unify rolls the trial back) -- and keep the ones that
+// fit. For an operator site the built-in meanings (overload_db) are folded in
+// too: the use is shaped into an arrow chain, unconstrained operands default to
+// Int (as for a plain built-in operator), and a matching built-in counts as a
+// candidate. Exactly one fit is the answer: we commit it and write the chosen
+// name to the slot (the EX::ExOverload's `chosen`) -- a mangled global for a
+// user overload, or a "+@Int"-style key for a built-in, both of which IT reads.
+// None or several is an error.
+void
+Checker::resolve_user_sites(
+  size_t from)
+{
+  for (size_t i = from; i < m_usites.size(); ++i)
+  {
+    const UserSite              &s   = m_usites[i];
+    Type                        *use = prune(s.use);
+    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.name);
+
+    // For an operator, shape the use as an arrow chain and default any
+    // unconstrained operand to Int, so the built-in candidates can be matched
+    // by operand type (and `\x = x + x` still defaults to the Int built-in).
+    std::vector<Type *> args;
+    Type               *result = nullptr;
+    if (ovs)
+    {
+      size_t arity = ovs->front().sig.size() - 1;
+      result       = fresh();
+      Type *shape  = result;
+      args.resize(arity);
+      for (size_t k = arity; k-- > 0;)
+      {
+        args[k] = fresh();
+        shape   = arrow(args[k], shape);
+      }
+      unify(use, shape);
+      for (Type *&a : args)
+      {
+        a = prune(a);
+        if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
+        {
+          std::get<TVar>(a->as).ref = con(OP::TY_INT);
+          a                         = prune(a);
+        }
+      }
+      use = prune(use);
+    }
+
+    // The matching built-in overload, if any (operators only).
+    const Overload *bhit = nullptr;
+    if (ovs)
+      for (const Overload &o : *ovs)
+      {
+        if (o.sig.size() != args.size() + 1) continue;
+        bool ok = true;
+        for (size_t k = 0; k < args.size(); ++k)
+          if (args[k]->kind() != Kind::Con
+              || std::get<TCon>(args[k]->as).name != o.sig[k])
+          {
+            ok = false;
+            break;
+          }
+        if (ok)
+        {
+          bhit = &o;
+          break;
+        }
+      }
+
+    // The fitting user candidates.
+    std::vector<size_t> fits;
+    for (size_t k = 0; k < s.cands->size(); ++k)
+    {
+      Type *cand = instantiate(resolve(std::string((*s.cands)[k])));
+      if (try_unify(use, cand)) fits.push_back(k);
+    }
+
+    size_t total = fits.size() + (bhit ? 1u : 0u);
+    if (total == 0)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "no overload of '%s' has type '%s'",
+           s.name.c_str(),
+           show(use).c_str());
+      continue;
+    }
+    if (total > 1)
+    {
+      std::string cands;
+      if (bhit) cands += "built-in " + bhit->mono;
+      for (size_t f : fits)
+        cands += (cands.empty() ? "" : ", ") + def_label((*s.cands)[f]);
+      fail(ER::Code::AMBIGUOUS_NAME,
+           s.anchor,
+           "ambiguous overload of '%s' at type '%s'; candidates: %s",
+           s.name.c_str(),
+           show(use).c_str(),
+           cands.c_str());
+      continue;
+    }
+
+    if (bhit)
+    {
+      unify(prune(result), con(bhit->sig.back()));
+      *s.slot = UT::Vu{ bhit->mono.c_str(), bhit->mono.size() };
+      continue;
+    }
+
+    UT::Vu chosen = (*s.cands)[fits.front()];
+    unify(use, instantiate(resolve(std::string(chosen))));
+    *s.slot = chosen;
+  }
+  m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
+}
+
+// Settle the field accesses collected since `from`. By now each receiver's type
+// has been fixed by its context (an overload resolved, a signature applied,
+// ...), so we can look the field up on its struct and unify its type into the
+// access's result var. Resolved in recording order (innermost-first), so
+// `a.b.c` settles `a.b` -- giving the receiver of `.c` its struct type --
+// before `(a.b).c`.
+void
+Checker::resolve_field_sites(
+  size_t from)
+{
+  for (size_t i = from; i < m_field_sites.size(); ++i)
+  {
+    const FieldSite &s  = m_field_sites[i];
+    Type            *rt = prune(s.record);
+    if (rt->kind() != Kind::Con
+        || !m_structs.count(std::get<TCon>(rt->as).name))
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "cannot access field '%s': '%s' is not a known struct type",
+           s.field.c_str(),
+           show(rt).c_str());
+      continue;
+    }
+    const std::string &rname = std::get<TCon>(rt->as).name;
+    const StructDef   &sdef  = m_structs.at(rname);
+    // Bind the struct's parameters to the receiver's actual type arguments, so
+    // the field type comes back at the receiver's instantiation.
+    Subst                      sub;
+    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
+    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
+      sub[sdef.params[k]] = actual[k];
+
+    bool found = false;
+    for (auto &f : sdef.fields)
+      if (f.first == s.field)
+      {
+        unify(s.result, subst(f.second, sub));
+        found = true;
+        break;
+      }
+    if (!found)
+      fail(ER::Code::TYPE_UNBOUND,
+           s.anchor,
+           "struct '%s' has no field '%s'",
+           rname.c_str(),
+           s.field.c_str());
+  }
+  m_field_sites.erase(m_field_sites.begin() + (long)from, m_field_sites.end());
 }
 
 UT::Vu
@@ -1470,6 +1752,20 @@ void
 Checker::run(
   EX::Exprs &exprs)
 {
+  // The built-in base types are nullary type constructors, known up front. They
+  // share the nominal-type arity table so a sized type used with arguments
+  // (e.g. `Int32 Foo`) is still an arity error like any other nullary type.
+  for (const char *t : OP::base_types) m_arity[t] = 0;
+
+  // Register transparent type aliases up front, so sig_to_type can resolve an
+  // alias used by any (possibly earlier) declaration.
+  for (EX::Expr &e : exprs)
+    if (e.tag == EX::ExprTag::AliasDecl)
+    {
+      auto &ad             = std::get<EX::ExAliasDecl>(e.as);
+      m_aliases[std::string(ad.name)] = ad.target;
+    }
+
   // Phase A0: record every nominal type's arity (its distinct free type vars)
   // before any field type is built, so applied cons can be arity-checked even
   // when they reference a type declared later.
@@ -1563,21 +1859,27 @@ Checker::run(
 
     Env    empty;
     size_t base  = m_sites.size();
+    size_t ubase = m_usites.size();
+    size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
-    Type  *bt    = infer(g.body, empty);
 
     if (g.def->sig)
     {
+      // Check the body against its declared type so parameters carry their
+      // signature types into the body (see infer_against).
       TyVarEnv tv;
       Type    *rigid = sig_to_type(g.def->sig, tv, true);
-      unify(bt, rigid);
+      infer_against(g.body, rigid, empty);
     }
     else
     {
+      Type *bt = infer(g.body, empty);
       unify(bt, g.scheme.type);
     }
 
     resolve_sites(base);
+    resolve_user_sites(ubase);
+    resolve_field_sites(fbase);
     // Bare literals last: their type comes from the unification just done.
     resolve_lit_sites(lbase);
   }
@@ -1671,7 +1973,12 @@ Checker::seed_primitives()
   // if : forall T. Int -> T -> T -> T
   Type *tv       = fresh();
   m_prim[OP::IF] = Scheme{ { std::get<TVar>(tv->as).id },
-                           arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
+                           arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv))) };
+
+  // %array : Int -> Array -- the byte-block allocator that `@array.{n}`
+  // desugars to (see EX::parse_array).
+  m_prim[OP::ARR_ALLOC]
+    = Scheme{ {}, arrow(con(OP::TY_INT), con(OP::TY_ARRAY)) };
 }
 
 } // namespace

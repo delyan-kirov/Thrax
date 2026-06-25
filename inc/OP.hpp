@@ -45,9 +45,66 @@ inline constexpr const char *NEG  = "neg"; // unary '-'
 inline constexpr const char *NOT  = "not"; // unary '!'
 inline constexpr const char *IF   = "if";
 
-// Operand type names, as the type checker spells them (con("Int") etc.).
-inline constexpr const char *TY_INT  = "Int";
-inline constexpr const char *TY_REAL = "Real";
+// Base (scalar) type names -- the built-in, non-aggregate types the compiler
+// knows, spelled exactly as the type checker spells them (con("Int") etc.).
+// `Int`/`Nat`/`Real` are the platform-word numerics; the sized variants pin a
+// width (and signedness); `Str`/`Ptr` are pointer-shaped. This block is the
+// single source of truth: `base_types` lists them all, TC registers them as
+// nullary type constructors, and FF maps each to its C ABI descriptor.
+inline constexpr const char *TY_INT    = "Int";
+inline constexpr const char *TY_REAL   = "Real";
+inline constexpr const char *TY_STR    = "Str";
+inline constexpr const char *TY_NAT    = "Nat";
+inline constexpr const char *TY_PTR    = "Ptr";
+inline constexpr const char *TY_INT8   = "Int8";
+inline constexpr const char *TY_INT16  = "Int16";
+inline constexpr const char *TY_INT32  = "Int32";
+inline constexpr const char *TY_INT64  = "Int64";
+inline constexpr const char *TY_NAT8   = "Nat8";
+inline constexpr const char *TY_NAT16  = "Nat16";
+inline constexpr const char *TY_NAT32  = "Nat32";
+inline constexpr const char *TY_NAT64  = "Nat64";
+inline constexpr const char *TY_REAL32 = "Real32";
+inline constexpr const char *TY_REAL64 = "Real64";
+inline constexpr const char *TY_ARRAY
+  = "Array"; // a sized, contiguous block of bytes
+
+inline constexpr const char *base_types[] = {
+  TY_INT,   TY_NAT,    TY_REAL,   TY_STR,   TY_PTR,   TY_INT8,
+  TY_INT16, TY_INT32,  TY_INT64,  TY_NAT8,  TY_NAT16, TY_NAT32,
+  TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY,
+};
+
+// Internal name of the byte-block allocation primitive that `@array.{ size }`
+// desugars to (an ordinary `Int -> Array` builtin: typed in TC's m_prim, run
+// via IT's impls). The leading '%' cannot occur in source, so it never collides
+// with a user name.
+inline constexpr const char *ARR_ALLOC = "%array";
+
+// Is `name` one of the built-in base types above?
+inline bool
+is_base_type(
+  UT::Vu name)
+{
+  for (const char *t : base_types)
+    if (name == t) return true;
+  return false;
+}
+
+// Is `name` the canonical name of an overloadable (binary) operator? These are
+// exactly the names a use site carries (mk_binop stores the lexeme, which
+// equals the canonical name for binaries) and the keys of the type checker's
+// overload_db. A user may add overloads of these via `$ @operator.{<op>}`; MR
+// uses this to route an operator use through type-directed resolution, TC to
+// fold the built-in candidates in beside the user's.
+inline bool
+is_operator(
+  UT::Vu name)
+{
+  return name == ADD || name == SUB || name == MUL || name == DIV || name == MOD
+         || name == ISEQ || name == GEQ || name == LEQ || name == MORE
+         || name == LESS;
+}
 
 // The monomorphic implementation key for one resolved overload: the operator
 // name tagged with the type that selects the implementation, e.g. "+@Int". TC

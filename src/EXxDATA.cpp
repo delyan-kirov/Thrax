@@ -127,12 +127,12 @@ pprint(
     return pad + "$" + std::string(std::get<ExDef>(e->as).name) + " =\n"
            + pprint(std::get<ExDef>(e->as).def, level + 1);
   case ExprTag::Extern:
-    return pad + "@extern(\"" + std::string(std::get<ExExtern>(e->as).symbol)
-           + "\", \"" + std::string(std::get<ExExtern>(e->as).lib) + "\")";
+    return pad + "@extern.{\"" + std::string(std::get<ExExtern>(e->as).symbol)
+           + "\", \"" + std::string(std::get<ExExtern>(e->as).lib) + "\"}";
   case ExprTag::StructDecl:
   {
     auto       &sd = std::get<ExStructDecl>(e->as);
-    std::string s  = pad + "$" + std::string(sd.name) + " : Struct";
+    std::string s  = pad + "$" + std::string(sd.name) + " : @struct";
     for (size_t i = 0; i < sd.fields.size(); ++i)
       s += "\n" + std::string((level + 1) * 2, ' ')
            + std::string(sd.fields[i].name) + " : "
@@ -158,7 +158,7 @@ pprint(
   case ExprTag::UnionDecl:
   {
     auto       &ud = std::get<ExUnionDecl>(e->as);
-    std::string s  = pad + "$" + std::string(ud.name) + " : Union";
+    std::string s  = pad + "$" + std::string(ud.name) + " : @union";
     for (size_t i = 0; i < ud.variants.size(); ++i)
     {
       s += "\n" + std::string((level + 1) * 2, ' ')
@@ -171,6 +171,12 @@ pprint(
       s += "}";
     }
     return s;
+  }
+  case ExprTag::AliasDecl:
+  {
+    auto &ad = std::get<ExAliasDecl>(e->as);
+    return pad + "$" + std::string(ad.name) + " : @alias = "
+           + pprint_ty(ad.target);
   }
   case ExprTag::VariantLit:
   {

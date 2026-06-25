@@ -216,6 +216,7 @@ Parser::parse_primary()
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::At    : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::Dot:
   {
     // An unqualified literal whose type is inferred from context: a bare struct
@@ -790,30 +791,40 @@ Parser::parse_global()
   // export visibility. Both are stripped by MR before later passes.
   LX::Token after = EX_TRY(m_lex.peek());
   if (LX::TokenTag::KwWith == after.tag) return parse_import();
-  if (LX::TokenTag::At == after.tag) return parse_vis();
+  if (LX::TokenTag::At == after.tag)
+  {
+    if (after.str == "@operator") return parse_operator_def();
+    return parse_vis();
+  }
 
   LX::Token name
     = EX_TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
-  // Optional type annotation: `$ name : type = ...`. The special annotation
-  // `Struct` marks a struct type declaration rather than a value, so the body
-  // is a field list, not an expression.
+  // Optional type annotation: `$ name : type = ...`. The special annotations
+  // `@struct` / `@union` mark a type declaration rather than a value, so the
+  // body is a field/variant list, not an expression.
   Ty *sig = nullptr;
   if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // ':'
     LX::Token ann = EX_TRY(m_lex.peek());
-    if (LX::TokenTag::Word == ann.tag && ann.str == "Struct")
+    if (LX::TokenTag::At == ann.tag && ann.str == "@struct")
     {
-      m_lex.next(); // 'Struct'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
+      m_lex.next(); // '@struct'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@struct'"));
       return parse_struct_decl(name);
     }
-    if (LX::TokenTag::Word == ann.tag && ann.str == "Union")
+    if (LX::TokenTag::At == ann.tag && ann.str == "@union")
     {
-      m_lex.next(); // 'Union'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Union'"));
+      m_lex.next(); // '@union'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@union'"));
       return parse_union_decl(name);
+    }
+    if (LX::TokenTag::At == ann.tag && ann.str == "@alias")
+    {
+      m_lex.next(); // '@alias'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@alias'"));
+      return parse_alias_decl(name);
     }
     sig = EX_CTX(parse_type(),
                  name,
@@ -823,9 +834,11 @@ Parser::parse_global()
 
   EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
-  // A `@extern (...)` body is only valid here, and needs a signature to know
-  // its foreign call types.
-  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag)
+  // A `@extern.{...}` body is only valid here, and needs a signature to know
+  // its foreign call types. Other `@` forms (e.g. `@array`) are ordinary
+  // expressions, so they fall through to parse_expr below.
+  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag
+      && EX_TRY(m_lex.peek()).str == "@extern")
   {
     if (!sig)
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
@@ -845,6 +858,89 @@ Parser::parse_global()
                       std::string(name.str).c_str());
 
   return { true, mk_def(name.str, sig, body), {} };
+}
+
+// `$ @operator.{<op>} : type = expr` -- defines an overload of a built-in
+// operator. The body is an ordinary expression (typically a lambda); the
+// definition is just a global named after the operator's lexeme (e.g. "+"), so
+// the rest of the pipeline treats it like any other global -- MR mangles it,
+// and an operator use resolves to it (or a built-in) by type. The leading `$`
+// is already consumed; `@operator` is the next token.
+RExpr
+Parser::parse_operator_def()
+{
+  m_lex.next(); // '@operator'
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@operator'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@operator.'"));
+
+  LX::Token op = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::Op != op.tag || !OP::is_operator(op.str))
+    EX_ERR(ER::Code::UNSUPPORTED,
+           op,
+           "'%s' is not an overloadable operator",
+           std::string(op.str).c_str());
+  m_lex.next(); // the operator
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' after the operator name"));
+
+  // A signature is required: operand types are what select the overload.
+  EX_TRY(expect(LX::TokenTag::Colon,
+                "an operator overload needs a type signature ': ...'"));
+  Ty *sig = EX_CTX(parse_type(),
+                   op,
+                   "in the type signature of operator '%s'",
+                   std::string(op.str).c_str());
+
+  EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the operator signature"));
+  Expr *body = EX_CTX(parse_expr(0),
+                      op,
+                      "in the definition of operator '%s'",
+                      std::string(op.str).c_str());
+  return { true, mk_def(op.str, sig, body), {} };
+}
+
+// `@array.{ size }` (or `@array.{ .size = expr }`) -- allocates a contiguous,
+// zeroed block of `size` bytes, of type Array. The brace block mirrors a struct
+// literal (positional or one named `.size` field). It desugars to an
+// application of the internal allocation builtin, so the rest of the pipeline
+// sees an ordinary `Int -> Array` call.
+RExpr
+Parser::parse_array()
+{
+  LX::Token at = EX_TRY(m_lex.peek());
+  if (at.str != "@array")
+    EX_ERR(ER::Code::UNSUPPORTED,
+           at,
+           "unknown directive '%s' in expression (expected @array)",
+           std::string(at.str).c_str());
+  m_lex.next(); // '@array'
+
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@array'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@array.'"));
+
+  Expr *size = nullptr;
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+  {
+    // Named form: `.size = expr`.
+    m_lex.next(); // '.'
+    LX::Token f
+      = EX_TRY(expect(LX::TokenTag::Word, "expected '.size' in @array"));
+    if (f.str != "size")
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             f,
+             "unknown @array field '%s' (expected 'size')",
+             std::string(f.str).c_str());
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '.size'"));
+    size = EX_CTX(parse_expr(0), at, "in the size of this @array");
+  }
+  else
+  {
+    // Positional form: a single size expression.
+    size = EX_CTX(parse_expr(0), at, "in the size of this @array");
+  }
+  if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag) m_lex.next(); // trailing
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close @array"));
+
+  return { true, mk_app(mk_op_var(UT::Vu{ OP::ARR_ALLOC }), size), {} };
 }
 
 // `@mod NAME` -- the module header that must open every file. The name's
@@ -930,6 +1026,10 @@ Parser::parse_vis()
   return { true, alloc(e), {} };
 }
 
+// `@extern.{ ... }` -- a foreign binding. The brace block mirrors a struct
+// literal: either positional, `.{ "symbol", "lib" }` (symbol then library), or
+// named, `.{ .symbol = "...", .lib = "..." }` in any order. Both fields are
+// required. A trailing comma is allowed.
 RExpr
 Parser::parse_extern()
 {
@@ -941,19 +1041,62 @@ Parser::parse_extern()
            std::string(at.str).c_str());
   m_lex.next(); // '@extern'
 
-  EX_TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
-  LX::Token sym = EX_TRY(
-    expect(LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
-  EX_TRY(
-    expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
-  LX::Token lib = EX_TRY(
-    expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
-  EX_TRY(expect(LX::TokenTag::RParen, "expected ')' to close @extern"));
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@extern'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@extern.'"));
 
-  return { true,
-           mk_extern(std::get<LX::TkStr>(sym.as).value,
-                     std::get<LX::TkStr>(lib.as).value),
-           {} };
+  UT::Vu symbol{};
+  UT::Vu lib{};
+  bool   have_sym = false;
+  bool   have_lib = false;
+
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+  {
+    // Named form: `.symbol = "..."`, `.lib = "..."` in any order.
+    for (;;)
+    {
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+      EX_TRY(expect(LX::TokenTag::Dot, "expected '.field' in @extern"));
+      LX::Token f = EX_TRY(expect(
+        LX::TokenTag::Word, "expected a field name (symbol or lib) after '.'"));
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
+      LX::Token s
+        = EX_TRY(expect(LX::TokenTag::Str, "expected a \"string\" value"));
+      UT::Vu val = std::get<LX::TkStr>(s.as).value;
+      if (f.str == "symbol")
+        symbol = val, have_sym = true;
+      else if (f.str == "lib")
+        lib = val, have_lib = true;
+      else
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               f,
+               "unknown @extern field '%s' (expected 'symbol' or 'lib')",
+               std::string(f.str).c_str());
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+    }
+  }
+  else
+  {
+    // Positional form: `"symbol", "lib"`.
+    LX::Token sym = EX_TRY(expect(
+      LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
+    EX_TRY(
+      expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
+    LX::Token l = EX_TRY(
+      expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
+    symbol = std::get<LX::TkStr>(sym.as).value, have_sym = true;
+    lib = std::get<LX::TkStr>(l.as).value, have_lib = true;
+    if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag)
+      m_lex.next(); // trailing
+  }
+
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close @extern"));
+  if (!have_sym || !have_lib)
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           at,
+           "@extern needs both a 'symbol' and a 'lib'");
+
+  return { true, mk_extern(symbol, lib), {} };
 }
 
 // A struct declaration body: a comma-separated `field : type` list, trailing
@@ -1134,6 +1277,21 @@ Parser::parse_union_decl(
 
   Expr e{ ExprTag::UnionDecl };
   e.as = ExUnionDecl{ name.str, variants };
+  return { true, alloc(e), {} };
+}
+
+// `$ Name : @alias = target` -- a transparent type alias. The body is a single
+// type (the `=` is already consumed; `name` is the alias's type name).
+RExpr
+Parser::parse_alias_decl(
+  const LX::Token &name)
+{
+  Ty *target = EX_CTX(parse_type(),
+                      name,
+                      "in the target of type alias '%s'",
+                      std::string(name.str).c_str());
+  Expr e{ ExprTag::AliasDecl };
+  e.as = ExAliasDecl{ name.str, target };
   return { true, alloc(e), {} };
 }
 

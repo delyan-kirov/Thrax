@@ -59,7 +59,14 @@ desc_of(
   if (name == "Nat16") return { &ffi_type_uint16, 2, false, false };
   if (name == "Nat32") return { &ffi_type_uint32, 4, false, false };
   if (name == "Nat64") return { &ffi_type_uint64, 8, false, false };
-  if (name == "Str" || name == "Ptr")
+  // Floating point. NOTE: the argument/return marshalling below moves values as
+  // machine words, so passing/returning a float or double is not wired yet --
+  // these descriptors record the ABI type only (kept in sync with the float
+  // entries of OP::base_types).
+  if (name == "Real" || name == "Real64")
+    return { &ffi_type_double, 8, true, false };
+  if (name == "Real32") return { &ffi_type_float, 4, true, false };
+  if (name == "Str" || name == "Ptr" || name == "Array")
     return { &ffi_type_pointer, 8, false, true };
 
   if (name == "Int128" || name == "Nat128")

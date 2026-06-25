@@ -8,11 +8,11 @@
 #       literals (Int/Real) and destructure structs; an irrefutable arm (only
 #       variables / wildcards) always matches.
 
-$ Person : Struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
-$ Point : Struct =
+$ Point : @struct =
 	x: Int,
 	y: Int,
 

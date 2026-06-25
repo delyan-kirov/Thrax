@@ -188,6 +188,11 @@ struct CVar
   std::string name;
   UT::Vu      anchor;
   UT::Vu     *slot = nullptr;
+  /// Non-null for a use that MR left as an overload set (an EX::ExOverload):
+  /// the mangled candidate globals. The use is typed as a fresh variable and
+  /// the fit candidate chosen by resolve_user_sites, which writes its name to
+  /// `slot`.
+  const UT::Vec<UT::Vu> *overload = nullptr;
 };
 struct CLitInt
 {

@@ -3,31 +3,40 @@
 namespace AR
 {
 
+// Construction allocates nothing; the block array and first block are created
+// lazily on the first alloc() (see below).
 Arena::Arena()
 {
-  this->len     = 1;
-  this->max_len = DEFAULT_T_MEM_SIZE;
-  this->mem     = (Block **)malloc(sizeof(Block *) * DEFAULT_T_MEM_SIZE);
-
-  Block *block = (Block *)std::malloc(
-    sizeof(Block) + sizeof(uint8_t) * AR::BLOCK_DEFAULT_LEN);
-
-  block->max_len = AR::BLOCK_DEFAULT_LEN;
-  block->len     = 0;
-
-  this->mem[0] = block;
+  this->len     = 0;
+  this->cur     = 0;
+  this->max_len = 0;
+  this->mem     = nullptr;
+  this->freed   = false;
 }
 
 Arena::~Arena()
 {
+  this->dealloc();
+}
+
+void
+Arena::dealloc()
+{
+  if (this->freed)
+  {
+    return;
+  }
+
   for (size_t i = 0; i < this->len; ++i)
   {
-    Block *block = this->mem[i];
-    std::free(block);
+    std::free(this->mem[i]);
   }
   std::free(this->mem);
 
-  return;
+  this->mem   = nullptr;
+  this->len   = 0;
+  this->cur   = 0;
+  this->freed = true;
 }
 
 void *
@@ -38,50 +47,80 @@ Arena::alloc(
   {
     return nullptr;
   }
-now_allocate:
-  Block *block       = this->mem[this->len - 1];
+
   size_t size_of_ptr = sizeof(void *);
   size_t alloc_size  = ((size + size_of_ptr - 1) / size_of_ptr) * size_of_ptr;
-  size_t mem_left    = block->max_len - block->len;
 
-  void *ptr = nullptr;
-
-  if (mem_left >= alloc_size)
+  // Lazily create the block-pointer array on first use. This also re-arms the
+  // arena after a dealloc() (which leaves mem == nullptr, freed == true).
+  if (!this->mem)
   {
-    ptr = block->mem + block->len;
-    block->len += alloc_size;
+    this->max_len = DEFAULT_T_MEM_SIZE;
+    this->mem     = (Block **)std::malloc(sizeof(Block *) * this->max_len);
+    this->len     = 0;
+    this->cur     = 0;
+    this->freed   = false;
   }
-  else // The current block is full
+
+now_allocate:
+  if (this->cur < this->len) // We have a current block
   {
-    if (this->max_len > this->len) // Create a new block
+    Block *block    = this->mem[this->cur];
+    size_t mem_left = block->max_len - block->len;
+
+    if (mem_left >= alloc_size)
     {
-      size_t block_new_size
-        = sizeof(Block)
-          + sizeof(uint8_t) * std::max(alloc_size, BLOCK_DEFAULT_LEN);
-
-      Block *block   = (Block *)malloc(block_new_size);
-      block->len     = 0;
-      block->max_len = block_new_size - sizeof(Block);
-
-      this->mem[this->len] = block;
-      this->len += 1;
-
-      goto now_allocate;
+      void *ptr = block->mem + block->len;
+      block->len += alloc_size;
+      return ptr;
     }
-    else // The aray is full, we need to resize it
+
+    // The current block is full; reuse a spare left behind by reset().
+    if (this->cur + 1 < this->len)
     {
-      size_t block_new_len = this->len * 2;
-      auto   new_mem
-        = (Block **)std::realloc(this->mem, block_new_len * sizeof(Block *));
-
-      this->mem     = new_mem;
-      this->max_len = block_new_len;
-
+      this->cur += 1;
       goto now_allocate;
     }
   }
 
-  return ptr;
+  // No usable block: the arena is empty or every existing block is full.
+  if (this->len < this->max_len) // Room in the array for a new block
+  {
+    size_t block_new_size
+      = sizeof(Block)
+        + sizeof(uint8_t) * std::max(alloc_size, BLOCK_DEFAULT_LEN);
+
+    Block *block   = (Block *)std::malloc(block_new_size);
+    block->len     = 0;
+    block->max_len = block_new_size - sizeof(Block);
+
+    this->mem[this->len] = block;
+    this->cur            = this->len;
+    this->len += 1;
+
+    goto now_allocate;
+  }
+  else // The array is full, we need to resize it
+  {
+    size_t block_new_len = this->max_len * 2;
+    auto   new_mem
+      = (Block **)std::realloc(this->mem, block_new_len * sizeof(Block *));
+
+    this->mem     = new_mem;
+    this->max_len = block_new_len;
+
+    goto now_allocate;
+  }
+}
+
+void
+Arena::reset()
+{
+  for (size_t i = 0; i < this->len; ++i)
+  {
+    this->mem[i]->len = 0;
+  }
+  this->cur = 0;
 }
 
 } // namespace AR

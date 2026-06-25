@@ -9,15 +9,15 @@
 #       `.field = field`). Only irrefutable patterns are allowed here -- no
 #       literals (see `if .. is`).
 
-$ Person : Struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
-$ Point : Struct =
+$ Point : @struct =
 	x: Int,
 	y: Int,
 
-$ Line : Struct =
+$ Line : @struct =
 	from: Point,
 	to: Point,
 

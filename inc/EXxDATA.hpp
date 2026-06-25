@@ -236,7 +236,7 @@ struct ExStr
 {
   UT::Vu value;
 };
-// `@extern ("symbol", "lib")` -- a foreign binding. Only valid as a global
+// `@extern.{ "symbol", "lib" }` -- a foreign binding. Only valid as a global
 // body; its type comes from the enclosing global's signature.
 struct ExExtern
 {
@@ -277,13 +277,18 @@ struct ExVis
   bool is_private;
 };
 
-// An unresolved overload set: a use whose unqualified name matched several
-// imported symbols. Produced by MR, resolved by TC (by type). `name` is the
-// original source name (diagnostics); `candidates` are the mangled globals.
+// An unresolved overload set: a use whose name (bare or qualified) matched
+// several definitions. Produced by MR, resolved by TC (by type). `name` is the
+// original source name (diagnostics); `candidates` are the mangled globals;
+// `anchor` is the source slice of the use. `chosen` is empty until TC picks the
+// candidate whose type fits the use, after which IT reads it as the resolved
+// global name.
 struct ExOverload
 {
   UT::Vu          name;
   UT::Vec<UT::Vu> candidates;
+  UT::Vu          anchor{};
+  UT::Vu          chosen{};
 };
 
 struct ExFnDef
@@ -429,6 +434,14 @@ struct ExUnionDecl
   UT::Vu               name;
   UT::Vec<VariantDecl> variants;
 };
+// A type alias declaration: `$ Name : @alias = target`. Fully transparent --
+// the type checker resolves `Name` to `target` wherever it is written, so the
+// two are interchangeable (like a C typedef). Produces no runtime value.
+struct ExAliasDecl
+{
+  UT::Vu name;
+  Ty    *target;
+};
 // A variant construction `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload).
 // `fields` are the payload values (reusing FieldInit): named when any carries a
 // field name, positional otherwise -- same rule as a struct literal/pattern.
@@ -459,6 +472,7 @@ struct ExVariantLit
   X(StructLit, ExStructLit)                                                    \
   X(Field, ExField)                                                            \
   X(UnionDecl, ExUnionDecl)                                                    \
+  X(AliasDecl, ExAliasDecl)                                                    \
   X(VariantLit, ExVariantLit)                                                  \
   X(ModDecl, ExModDecl)                                                        \
   X(Import, ExImport)                                                          \
