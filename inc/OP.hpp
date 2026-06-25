@@ -45,9 +45,43 @@ inline constexpr const char *NEG  = "neg"; // unary '-'
 inline constexpr const char *NOT  = "not"; // unary '!'
 inline constexpr const char *IF   = "if";
 
-// Operand type names, as the type checker spells them (con("Int") etc.).
-inline constexpr const char *TY_INT  = "Int";
-inline constexpr const char *TY_REAL = "Real";
+// Base (scalar) type names -- the built-in, non-aggregate types the compiler
+// knows, spelled exactly as the type checker spells them (con("Int") etc.).
+// `Int`/`Nat`/`Real` are the platform-word numerics; the sized variants pin a
+// width (and signedness); `Str`/`Ptr` are pointer-shaped. This block is the
+// single source of truth: `base_types` lists them all, TC registers them as
+// nullary type constructors, and FF maps each to its C ABI descriptor.
+inline constexpr const char *TY_INT    = "Int";
+inline constexpr const char *TY_REAL   = "Real";
+inline constexpr const char *TY_STR    = "Str";
+inline constexpr const char *TY_NAT    = "Nat";
+inline constexpr const char *TY_PTR    = "Ptr";
+inline constexpr const char *TY_INT8   = "Int8";
+inline constexpr const char *TY_INT16  = "Int16";
+inline constexpr const char *TY_INT32  = "Int32";
+inline constexpr const char *TY_INT64  = "Int64";
+inline constexpr const char *TY_NAT8   = "Nat8";
+inline constexpr const char *TY_NAT16  = "Nat16";
+inline constexpr const char *TY_NAT32  = "Nat32";
+inline constexpr const char *TY_NAT64  = "Nat64";
+inline constexpr const char *TY_REAL32 = "Real32";
+inline constexpr const char *TY_REAL64 = "Real64";
+
+inline constexpr const char *base_types[] = {
+  TY_INT,   TY_NAT,   TY_REAL,  TY_STR,    TY_PTR,
+  TY_INT8,  TY_INT16, TY_INT32, TY_INT64,  TY_NAT8,
+  TY_NAT16, TY_NAT32, TY_NAT64, TY_REAL32, TY_REAL64,
+};
+
+// Is `name` one of the built-in base types above?
+inline bool
+is_base_type(
+  UT::Vu name)
+{
+  for (const char *t : base_types)
+    if (name == t) return true;
+  return false;
+}
 
 // Is `name` the canonical name of an overloadable (binary) operator? These are
 // exactly the names a use site carries (mk_binop stores the lexeme, which

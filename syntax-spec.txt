@@ -87,10 +87,15 @@ Definition type:
 	       | `TypeName             # type variable
 	       | '(' type ')'
 
-The base types are Int and Str. At runtime every value is an ssize_t (Str is a
-pointer stored in an ssize_t); the type checker keeps Int and Str distinct, the
-runtime does not. A struct type name (see STRUCTS) -- or a union (sum) type name
--- is also a type constructor.
+The base types are the platform-word numerics Int (signed), Nat (unsigned) and
+Real, the fixed-width numerics Int8/Int16/Int32/Int64, Nat8/Nat16/Nat32/Nat64
+and Real32/Real64, and the pointer-shaped Str and Ptr. The compiler knows them
+as distinct nullary type constructors (so Int and Int32 do not unify). At runtime
+every value is an ssize_t (Str/Ptr are pointers stored in one, Real a double);
+the type checker keeps the base types distinct, the runtime does not. The sized
+numerics are presently used mainly to spell C-ABI types in `@extern` signatures;
+there are no sized literals or arithmetic on them yet. A struct type name (see
+STRUCTS) -- or a union (sum) type name -- is also a type constructor.
 
 A generic type is APPLIED to type arguments by juxtaposition, like a function
 call: `Maybe Int`, `Pair Int Str`. Application binds tighter than `->` and only

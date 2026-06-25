@@ -764,9 +764,9 @@ Checker::infer(
 {
   switch (e->kind())
   {
-  case CKind::LitInt : return con("Int");
-  case CKind::LitReal: return con("Real");
-  case CKind::LitStr : return con("Str");
+  case CKind::LitInt : return con(OP::TY_INT);
+  case CKind::LitReal: return con(OP::TY_REAL);
+  case CKind::LitStr : return con(OP::TY_STR);
   case CKind::Extern : return fresh(); // unifies with the declared signature
 
   case CKind::Var:
@@ -1068,11 +1068,11 @@ Checker::infer(
       switch (alt.kind())
       {
       case EX::AltKind::Int:
-        unify(st, con("Int"));
+        unify(st, con(OP::TY_INT));
         body = std::get<AltInt>(alt.as).body;
         break;
       case EX::AltKind::Real:
-        unify(st, con("Real"));
+        unify(st, con(OP::TY_REAL));
         body = std::get<AltReal>(alt.as).body;
         break;
       case EX::AltKind::Con:
@@ -1732,6 +1732,11 @@ void
 Checker::run(
   EX::Exprs &exprs)
 {
+  // The built-in base types are nullary type constructors, known up front. They
+  // share the nominal-type arity table so a sized type used with arguments
+  // (e.g. `Int32 Foo`) is still an arity error like any other nullary type.
+  for (const char *t : OP::base_types) m_arity[t] = 0;
+
   // Phase A0: record every nominal type's arity (its distinct free type vars)
   // before any field type is built, so applied cons can be arity-checked even
   // when they reference a type declared later.
@@ -1939,7 +1944,7 @@ Checker::seed_primitives()
   // if : forall T. Int -> T -> T -> T
   Type *tv       = fresh();
   m_prim[OP::IF] = Scheme{ { std::get<TVar>(tv->as).id },
-                           arrow(con("Int"), arrow(tv, arrow(tv, tv))) };
+                           arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv))) };
 }
 
 } // namespace
