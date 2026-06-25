@@ -229,8 +229,14 @@ exprs2pLm_helper(
     break;
 
   case EX::ExprTag::Overload:
-    UT_FAIL_MSG("%s", "overload should have been resolved/rejected before IT");
-    break;
+  {
+    // TC resolved the overload set, writing the chosen mangled global to
+    // `chosen`; from here it is an ordinary variable reference.
+    auto &ov = std::get<EX::ExOverload>(expr->as);
+    UT_FAIL_IF(!ov.chosen.data()); // TC leaves it set, or fails before IT
+    lm = { .tag = LTag::VAR, .as = mkVar(ov.chosen) };
+  }
+  break;
 
   case EX::ExprTag::Unknown:
   {

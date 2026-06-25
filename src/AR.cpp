@@ -87,7 +87,8 @@ now_allocate:
   if (this->len < this->max_len) // Room in the array for a new block
   {
     size_t block_new_size
-      = sizeof(Block) + sizeof(uint8_t) * std::max(alloc_size, BLOCK_DEFAULT_LEN);
+      = sizeof(Block)
+        + sizeof(uint8_t) * std::max(alloc_size, BLOCK_DEFAULT_LEN);
 
     Block *block   = (Block *)std::malloc(block_new_size);
     block->len     = 0;

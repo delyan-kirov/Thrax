@@ -277,13 +277,18 @@ struct ExVis
   bool is_private;
 };
 
-// An unresolved overload set: a use whose unqualified name matched several
-// imported symbols. Produced by MR, resolved by TC (by type). `name` is the
-// original source name (diagnostics); `candidates` are the mangled globals.
+// An unresolved overload set: a use whose name (bare or qualified) matched
+// several definitions. Produced by MR, resolved by TC (by type). `name` is the
+// original source name (diagnostics); `candidates` are the mangled globals;
+// `anchor` is the source slice of the use. `chosen` is empty until TC picks the
+// candidate whose type fits the use, after which IT reads it as the resolved
+// global name.
 struct ExOverload
 {
   UT::Vu          name;
   UT::Vec<UT::Vu> candidates;
+  UT::Vu          anchor{};
+  UT::Vu          chosen{};
 };
 
 struct ExFnDef

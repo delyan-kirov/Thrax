@@ -47,12 +47,14 @@ struct SymInfo
 };
 
 // All fragments of one module, merged across files: its symbols and the imports
-// every fragment requested.
+// every fragment requested. A name maps to a *list* of definitions: a module
+// may overload a term name, giving each definition a distinct mangled global
+// and letting the type checker pick the one that fits each use.
 struct ModuleData
 {
-  UT::Vu                                   name;
-  std::unordered_map<std::string, SymInfo> symbols;
-  std::vector<EX::ExImport>                imports;
+  UT::Vu                                                name;
+  std::unordered_map<std::string, std::vector<SymInfo>> symbols;
+  std::vector<EX::ExImport>                             imports;
 };
 
 // A module's name-resolution scope: the unqualified candidates a bare name may
@@ -109,16 +111,20 @@ struct Linker
     diags.push_back(ER::mk_root(arena, code, anchor, line_of(anchor), m));
   }
 
-  // `MOD/name`, copied into the arena so it outlives this pass.
+  // `MOD/name`, copied into the arena so it outlives this pass. An overloaded
+  // name's second and later definitions get a `#k` suffix (`MOD/name#1`, ...)
+  // so every definition has a unique global; the '#' cannot occur in a source
+  // identifier, so these never collide with a real name.
   UT::Vu
   mangle(
-    UT::Vu mod, UT::Vu name)
+    UT::Vu mod, UT::Vu name, size_t dup = 0)
   {
     std::string s;
-    s.reserve(mod.size() + 1 + name.size());
+    s.reserve(mod.size() + 1 + name.size() + 4);
     s.append(mod.data(), mod.size());
     s.push_back('/');
     s.append(name.data(), name.size());
+    if (dup) s += "#" + std::to_string(dup);
     return UT::strdup(arena, UT::Vu{ s.data(), s.size() });
   }
 
@@ -191,18 +197,13 @@ struct Linker
           auto       &d    = std::get<EX::ExDef>(e->as);
           UT::Vu      orig = d.name;
           std::string key(orig);
-          if (md.symbols.count(key))
-          {
-            err(ER::Code::DUPLICATE_SYMBOL,
-                orig,
-                "symbol '" + key + "' is already defined in module "
-                  + std::string(M));
-            break;
-          }
-          UT::Vu mg       = mangle(M, orig);
-          md.symbols[key] = { mg, !priv, e };
-          d.origin        = orig; // keep the source name for diagnostics
-          d.name = mg; // the rest of the pipeline sees the mangled name
+          // A repeated name is an overload, not an error: each definition gets
+          // its own mangled global (the first keeps the plain `MOD/name`).
+          auto  &cands = md.symbols[key];
+          UT::Vu mg    = mangle(M, orig, cands.size());
+          cands.push_back({ mg, !priv, e });
+          d.origin = orig; // keep the source name for diagnostics
+          d.name   = mg;   // the rest of the pipeline sees the mangled name
           defs.push_back({ M, e });
           break;
         }
@@ -237,8 +238,10 @@ struct Linker
   {
     Scope sc;
     // Own symbols (including private ones) are visible unqualified within the
-    // module, and qualified resolution handles `Mkey.x` directly.
-    for (auto &kv : md.symbols) sc.unq[kv.first].push_back(kv.second.mangled);
+    // module, and qualified resolution handles `Mkey.x` directly. An overloaded
+    // name contributes every one of its definitions.
+    for (auto &kv : md.symbols)
+      for (auto &si : kv.second) sc.unq[kv.first].push_back(si.mangled);
 
     for (auto &im : md.imports)
     {
@@ -277,8 +280,8 @@ struct Linker
         {
           // `with MOD` -- unqualified public symbols, plus `MOD.x`.
           for (auto &kv : src.symbols)
-            if (kv.second.is_public)
-              sc.unq[kv.first].push_back(kv.second.mangled);
+            for (auto &si : kv.second)
+              if (si.is_public) sc.unq[kv.first].push_back(si.mangled);
           add_alias(sc, im.lhs_name, srcMod);
         }
         else
@@ -306,26 +309,37 @@ struct Linker
               "module '" + srcKey + "' has no symbol '" + symKey + "'");
           continue;
         }
-        if (!sit->second.is_public)
+        // An overloaded name imports every public definition (one or many).
+        bool any_public = false;
+        for (auto &si : sit->second)
+          if (si.is_public)
+          {
+            any_public = true;
+            // `with name = MOD.sym` binds it unqualified; `with MOD.sym =
+            // MOD.sym` is qualified-only (and `MOD.sym` already works), so for
+            // that form there is nothing to add -- just validate visibility.
+            if (im.lhs_prefix.empty())
+              sc.unq[std::string(im.lhs_name)].push_back(si.mangled);
+          }
+        if (!any_public)
         {
           err(ER::Code::PRIVATE_SYMBOL,
               srcSym,
               "symbol '" + symKey + "' is private to module '" + srcKey + "'");
           continue;
         }
-        // `with name = MOD.sym` binds it unqualified; `with MOD.sym = MOD.sym`
-        // is qualified-only (and `MOD.sym` already works), so just validate it.
-        if (im.lhs_prefix.empty())
-          sc.unq[std::string(im.lhs_name)].push_back(sit->second.mangled);
       }
     }
     return sc;
   }
 
-  // Resolve a qualified `PFX.name` use to its mangled global, in place.
+  // Collect the mangled globals a qualified `PFX.name` use may refer to. One
+  // candidate is the ordinary case; an overloaded name yields several, left for
+  // the type checker to pick from. Emits a diagnostic (and leaves `out` empty)
+  // for an unknown module/symbol or an entirely-private match.
   void
   resolve_qualified(
-    EX::ExVar &v, const std::string &Mkey, Scope &sc)
+    EX::ExVar &v, const std::string &Mkey, Scope &sc, std::vector<UT::Vu> &out)
   {
     std::string PFX(v.qualifier);
     std::string nm(v.name);
@@ -363,15 +377,47 @@ struct Linker
           "module '" + std::string(T) + "' has no symbol '" + nm + "'");
       return;
     }
-    if (!ownAccess && !sit->second.is_public)
-    {
+    for (auto &si : sit->second)
+      if (ownAccess || si.is_public) out.push_back(si.mangled);
+    if (out.empty())
       err(ER::Code::PRIVATE_SYMBOL,
           v.name,
           "symbol '" + nm + "' is private to module '" + std::string(T) + "'");
+  }
+
+  // Settle a variable use against the candidates a name resolved to. A single
+  // candidate rewrites the Var to its mangled global; several turn the node
+  // into an ExOverload the type checker resolves by type (and reports as
+  // ambiguous only if no -- or more than one -- candidate fits). `anchor` is
+  // the use's source slice (its original, still-unmangled name).
+  void
+  install_resolution(
+    Expr *e, UT::Vu name, UT::Vu anchor, std::vector<UT::Vu> &cands)
+  {
+    // Drop duplicates (the same global reachable via own + import).
+    std::vector<UT::Vu> uniq;
+    for (UT::Vu c : cands)
+    {
+      bool seen = false;
+      for (UT::Vu u : uniq)
+        if (u == c) seen = true;
+      if (!seen) uniq.push_back(c);
+    }
+    if (uniq.empty()) return;
+    if (uniq.size() == 1)
+    {
+      auto &v     = std::get<EX::ExVar>(e->as);
+      v.name      = uniq[0];
+      v.qualifier = UT::Vu{};
       return;
     }
-    v.name      = sit->second.mangled;
-    v.qualifier = UT::Vu{};
+    EX::ExOverload ov;
+    ov.name       = name;
+    ov.anchor     = anchor;
+    ov.candidates = UT::Vec<UT::Vu>{ arena };
+    for (UT::Vu c : uniq) ov.candidates.push(c);
+    e->tag = ExprTag::Overload;
+    e->as  = std::move(ov);
   }
 
   // Pass 2b: rewrite every variable reference in a body. Locals
@@ -386,27 +432,20 @@ struct Linker
     {
     case ExprTag::Var:
     {
-      auto &v = std::get<EX::ExVar>(e->as);
+      auto  &v      = std::get<EX::ExVar>(e->as);
+      UT::Vu anchor = v.name; // the original (still-unmangled) source slice
       if (v.qualifier.size())
       {
-        resolve_qualified(v, Mkey, sc);
+        std::vector<UT::Vu> cands;
+        resolve_qualified(v, Mkey, sc, cands);
+        install_resolution(e, anchor, anchor, cands);
         return;
       }
       for (auto &l : locals)
         if (l == v.name) return; // a local binder shadows
       auto it = sc.unq.find(std::string(v.name));
       if (it == sc.unq.end()) return; // operator / builtin / unknown
-      if (it->second.size() == 1)
-      {
-        v.name = it->second[0];
-        return;
-      }
-      std::string msg
-        = "'" + std::string(v.name) + "' is ambiguous; provided by";
-      for (size_t i = 0; i < it->second.size(); ++i)
-        msg += (i ? "," : "") + (" " + std::string(it->second[i]));
-      msg += " -- qualify it (e.g. MOD." + std::string(v.name) + ")";
-      err(ER::Code::AMBIGUOUS_NAME, v.name, msg);
+      install_resolution(e, anchor, anchor, it->second);
       return;
     }
     case ExprTag::App:
@@ -543,17 +582,18 @@ struct Linker
     if (mit != modules.end())
     {
       auto sit = mit->second.symbols.find("main");
-      if (sit != mit->second.symbols.end())
+      if (sit != mit->second.symbols.end() && !sit->second.empty())
       {
-        auto &d         = std::get<EX::ExDef>(sit->second.node->as);
-        bool  takes_arg = false;
+        SymInfo &mainSym   = sit->second.front();
+        auto    &d         = std::get<EX::ExDef>(mainSym.node->as);
+        bool     takes_arg = false;
         if (!check_entry_sig(d.sig, takes_arg))
           err(ER::Code::ENTRY_SIGNATURE,
               mit->second.name,
               "'main' must be annotated ': Int' or ': Str -> Int'");
         else
         {
-          r.entry           = sit->second.mangled;
+          r.entry           = mainSym.mangled;
           r.entry_takes_arg = takes_arg;
         }
       }

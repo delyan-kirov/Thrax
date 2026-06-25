@@ -64,6 +64,24 @@ private:
   // resolved at its end (see infer's Var case / resolve_sites).
   ResolveSites m_sites;
 
+  // A deferred user-overload resolution: a use MR left as an overload set. Like
+  // an operator site it is typed as a fresh `use` var; resolve_user_sites later
+  // picks the one candidate whose (instantiated) type fits and writes its
+  // mangled name to `slot` (the EX::ExOverload's `chosen` field).
+  struct UserSite
+  {
+    UT::Vu                *slot;
+    Type                  *use;
+    const UT::Vec<UT::Vu> *cands;
+    std::string            name;
+    UT::Vu                 anchor;
+  };
+  std::vector<UserSite> m_usites;
+
+  // When non-null, unify records every variable it binds here so a speculative
+  // unification (a candidate trial in resolve_user_sites) can be rolled back.
+  std::vector<Type *> *m_trail = nullptr;
+
   // An unqualified struct/union literal whose type is inferred from context.
   // Like an overload site, it is typed as a fresh `use` var and settled once
   // unification binds it to a concrete nominal type (see resolve_lit_sites).
@@ -93,6 +111,7 @@ private:
   Type *prune(Type *t);
   bool  occurs(Type *var, Type *t);
   bool  unify(Type *a, Type *b);
+  bool  try_unify(Type *a, Type *b); // speculative: rolled back, never reported
 
   // schemes
   void   free_vars(Type *t, VarIds &out);
@@ -109,10 +128,12 @@ private:
   Core *desugar(EX::Expr *e);
   bool  occurs_free(const std::string &name, Core *e);
   Type *infer(Core *e, Env &locals);
+  Type *infer_against(Core *e, Type *expected, Env &locals);
 
   // resolution
   Scheme resolve(const std::string &name);
   void   resolve_sites(size_t from);
+  void   resolve_user_sites(size_t from);
   void   resolve_lit_sites(size_t from);
   UT::Vu intern(const std::string &s);
 
@@ -220,6 +241,7 @@ Checker::unify(
            show(b).c_str());
       return false;
     }
+    if (m_trail) m_trail->push_back(a);
     std::get<TVar>(a->as).ref = b;
     return true;
   }
@@ -234,6 +256,7 @@ Checker::unify(
            show(a).c_str());
       return false;
     }
+    if (m_trail) m_trail->push_back(b);
     std::get<TVar>(b->as).ref = a;
     return true;
   }
@@ -266,6 +289,26 @@ Checker::unify(
        show(a).c_str(),
        show(b).c_str());
   return false;
+}
+
+// Speculatively unify `a` and `b`, then undo every binding it made and discard
+// any diagnostics it produced -- the union-find is left exactly as it was. Used
+// to probe whether an overload candidate fits without committing to it. (Path
+// compression by prune may shorten already-bound chains; that is harmless,
+// since nothing pre-existing points into the freshly-bound vars we roll back.)
+bool
+Checker::try_unify(
+  Type *a, Type *b)
+{
+  std::vector<Type *>  trail;
+  std::vector<Type *> *save  = m_trail;
+  size_t               diag0 = m_diags.size();
+  m_trail                    = &trail;
+  bool ok                    = unify(a, b);
+  m_trail                    = save;
+  for (Type *v : trail) std::get<TVar>(v->as).ref = nullptr;
+  m_diags.resize(diag0);
+  return ok;
 }
 
 /*------------------------------------------------------------------------------
@@ -338,6 +381,7 @@ Checker::generalize(
   // and the call's result would never be tied back to the resolved operand
   // type.)
   for (const ResolveSite &s : m_sites) free_vars(s.use, ev);
+  for (const UserSite &s : m_usites) free_vars(s.use, ev);
 
   VarIds q;
   for (int id : tv)
@@ -595,6 +639,19 @@ Checker::desugar(
     }
     return core(CCase{ scrut, deflt, std::move(alts) });
   }
+  case EX::ExprTag::Overload:
+  {
+    // A use MR left as an overload set: type it as a fresh var and let
+    // resolve_user_sites pick the candidate that fits, writing its name to
+    // `chosen` (which the slot points at, and IT later reads).
+    auto &ov = std::get<EX::ExOverload>(e->as);
+    CVar  v;
+    v.name     = std::string(ov.name);
+    v.anchor   = ov.anchor;
+    v.slot     = &ov.chosen;
+    v.overload = &ov.candidates;
+    return core(std::move(v));
+  }
   // Match is removed by the LL pass before type checking; Def / StructDecl /
   // UnionDecl are top-level only; Unknown is never produced as a body.
   case EX::ExprTag::Match:
@@ -604,7 +661,6 @@ Checker::desugar(
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:
   case EX::ExprTag::Vis:
-  case EX::ExprTag::Overload:
   case EX::ExprTag::Unknown:
     UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
                 EX::pprint(e->tag).c_str());
@@ -697,8 +753,18 @@ Checker::infer(
 
   case CKind::Var:
   {
-    CVar &v  = std::get<CVar>(e->as);
-    auto  it = locals.find(v.name);
+    CVar &v = std::get<CVar>(e->as);
+
+    // An overload set (from MR): type as a fresh var and defer the choice to
+    // resolve_user_sites, once the use's type is settled by its context.
+    if (v.overload)
+    {
+      Type *use = fresh();
+      m_usites.push_back({ v.slot, use, v.overload, v.name, v.anchor });
+      return use;
+    }
+
+    auto it = locals.find(v.name);
     if (it != locals.end()) return instantiate(it->second);
     if (m_globals.find(v.name)) return instantiate(resolve(v.name));
     auto pit = m_prim.find(v.name);
@@ -1044,6 +1110,32 @@ Checker::infer(
   return fresh();
 }
 
+// Infer a body in "checking mode" against an expected type. When the term is a
+// lambda and the expectation an arrow, the parameter is bound to the arrow's
+// domain *before* the body is inferred -- so a type-directed operation on a
+// parameter (notably field access, which needs the receiver's struct type known
+// at that point) sees its declared type, which a plain synthesize-then-unify
+// pass would only learn afterwards. Any other shape falls back to ordinary
+// inference unified against the expectation.
+Type *
+Checker::infer_against(
+  Core *e, Type *expected, Env &locals)
+{
+  Type *exp = prune(expected);
+  if (e->kind() == CKind::Lam && exp->kind() == Kind::Arrow)
+  {
+    CLam   &l      = std::get<CLam>(e->as);
+    TArrow &a      = std::get<TArrow>(exp->as);
+    Env     inner  = locals;
+    inner[l.param] = Scheme{ {}, a.from }; // param pinned to its declared type
+    Type *bt       = infer_against(l.body, a.to, inner);
+    return arrow(a.from, bt);
+  }
+  Type *t = infer(e, locals);
+  unify(t, expected);
+  return t;
+}
+
 /*------------------------------------------------------------------------------
  *\RESOLUTION (phase B)
  *-----------------------------------------------------------------------------*/
@@ -1107,10 +1199,12 @@ Checker::resolve(
 
     Env    empty;
     size_t base  = m_sites.size();
+    size_t ubase = m_usites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty);
     resolve_sites(base); // settle this body's overloads before judging its type
-    resolve_lit_sites(lbase); // ... and any unqualified literals (no context)
+    resolve_user_sites(ubase); // ... and its user overloads (now constrained)
+    resolve_lit_sites(lbase);  // ... and any unqualified literals (no context)
     t = prune(t);
 
     if (t->kind() != Kind::Con)
@@ -1219,6 +1313,59 @@ Checker::resolve_sites(
     *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
   }
   m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
+}
+
+// Resolve the user-overload sites collected since `from`. By now the use's type
+// is fixed by its surrounding context, so for each site we probe every
+// candidate global -- instantiating its scheme and speculatively unifying it
+// against the use (try_unify rolls the trial back) -- and keep the ones that
+// fit. Exactly one fit is the answer: we commit it for real and write its
+// mangled name to the slot (the EX::ExOverload's `chosen`). None or several is
+// an error.
+void
+Checker::resolve_user_sites(
+  size_t from)
+{
+  for (size_t i = from; i < m_usites.size(); ++i)
+  {
+    const UserSite &s   = m_usites[i];
+    Type           *use = prune(s.use);
+
+    std::vector<size_t> fits;
+    for (size_t k = 0; k < s.cands->size(); ++k)
+    {
+      Type *cand = instantiate(resolve(std::string((*s.cands)[k])));
+      if (try_unify(use, cand)) fits.push_back(k);
+    }
+
+    if (fits.empty())
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "no overload of '%s' has type '%s'",
+           s.name.c_str(),
+           show(use).c_str());
+      continue;
+    }
+    if (fits.size() > 1)
+    {
+      std::string cands;
+      for (size_t f : fits)
+        cands += (cands.empty() ? "" : ", ") + def_label((*s.cands)[f]);
+      fail(ER::Code::AMBIGUOUS_NAME,
+           s.anchor,
+           "ambiguous overload of '%s' at type '%s'; candidates: %s",
+           s.name.c_str(),
+           show(use).c_str(),
+           cands.c_str());
+      continue;
+    }
+
+    UT::Vu chosen = (*s.cands)[fits.front()];
+    unify(use, instantiate(resolve(std::string(chosen))));
+    *s.slot = chosen;
+  }
+  m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
 }
 
 UT::Vu
@@ -1563,21 +1710,25 @@ Checker::run(
 
     Env    empty;
     size_t base  = m_sites.size();
+    size_t ubase = m_usites.size();
     size_t lbase = m_lit_sites.size();
-    Type  *bt    = infer(g.body, empty);
 
     if (g.def->sig)
     {
+      // Check the body against its declared type so parameters carry their
+      // signature types into the body (see infer_against).
       TyVarEnv tv;
       Type    *rigid = sig_to_type(g.def->sig, tv, true);
-      unify(bt, rigid);
+      infer_against(g.body, rigid, empty);
     }
     else
     {
+      Type *bt = infer(g.body, empty);
       unify(bt, g.scheme.type);
     }
 
     resolve_sites(base);
+    resolve_user_sites(ubase);
     // Bare literals last: their type comes from the unification just done.
     resolve_lit_sites(lbase);
   }

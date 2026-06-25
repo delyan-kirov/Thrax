@@ -42,3 +42,12 @@ $ to: Int -> Int -> List Int = \a b =
 
 $ sample : List Int = to 0 3
 $ len3 : Int = if len sample is 3 then 0 else 1 / 0
+
+$ Point: Struct =
+	x: Int,
+	y: Int,
+
+$ add: Int -> Int -> Int = \a b = a + b
+$ add: Real -> Real -> Real = \a b = a + b
+$ add: Point -> Point -> Point = \p1 p2 =
+	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
