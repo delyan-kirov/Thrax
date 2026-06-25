@@ -216,6 +216,7 @@ Parser::parse_primary()
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::At    : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::Dot:
   {
     // An unqualified literal whose type is inferred from context: a bare struct
@@ -819,6 +820,12 @@ Parser::parse_global()
       EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@union'"));
       return parse_union_decl(name);
     }
+    if (LX::TokenTag::At == ann.tag && ann.str == "@alias")
+    {
+      m_lex.next(); // '@alias'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@alias'"));
+      return parse_alias_decl(name);
+    }
     sig = EX_CTX(parse_type(),
                  name,
                  "in the type signature of global '%s'",
@@ -827,9 +834,11 @@ Parser::parse_global()
 
   EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
-  // A `@extern (...)` body is only valid here, and needs a signature to know
-  // its foreign call types.
-  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag)
+  // A `@extern.{...}` body is only valid here, and needs a signature to know
+  // its foreign call types. Other `@` forms (e.g. `@array`) are ordinary
+  // expressions, so they fall through to parse_expr below.
+  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag
+      && EX_TRY(m_lex.peek()).str == "@extern")
   {
     if (!sig)
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
@@ -887,6 +896,51 @@ Parser::parse_operator_def()
                       "in the definition of operator '%s'",
                       std::string(op.str).c_str());
   return { true, mk_def(op.str, sig, body), {} };
+}
+
+// `@array.{ size }` (or `@array.{ .size = expr }`) -- allocates a contiguous,
+// zeroed block of `size` bytes, of type Array. The brace block mirrors a struct
+// literal (positional or one named `.size` field). It desugars to an
+// application of the internal allocation builtin, so the rest of the pipeline
+// sees an ordinary `Int -> Array` call.
+RExpr
+Parser::parse_array()
+{
+  LX::Token at = EX_TRY(m_lex.peek());
+  if (at.str != "@array")
+    EX_ERR(ER::Code::UNSUPPORTED,
+           at,
+           "unknown directive '%s' in expression (expected @array)",
+           std::string(at.str).c_str());
+  m_lex.next(); // '@array'
+
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@array'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@array.'"));
+
+  Expr *size = nullptr;
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+  {
+    // Named form: `.size = expr`.
+    m_lex.next(); // '.'
+    LX::Token f
+      = EX_TRY(expect(LX::TokenTag::Word, "expected '.size' in @array"));
+    if (f.str != "size")
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             f,
+             "unknown @array field '%s' (expected 'size')",
+             std::string(f.str).c_str());
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '.size'"));
+    size = EX_CTX(parse_expr(0), at, "in the size of this @array");
+  }
+  else
+  {
+    // Positional form: a single size expression.
+    size = EX_CTX(parse_expr(0), at, "in the size of this @array");
+  }
+  if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag) m_lex.next(); // trailing
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close @array"));
+
+  return { true, mk_app(mk_op_var(UT::Vu{ OP::ARR_ALLOC }), size), {} };
 }
 
 // `@mod NAME` -- the module header that must open every file. The name's
@@ -1223,6 +1277,21 @@ Parser::parse_union_decl(
 
   Expr e{ ExprTag::UnionDecl };
   e.as = ExUnionDecl{ name.str, variants };
+  return { true, alloc(e), {} };
+}
+
+// `$ Name : @alias = target` -- a transparent type alias. The body is a single
+// type (the `=` is already consumed; `name` is the alias's type name).
+RExpr
+Parser::parse_alias_decl(
+  const LX::Token &name)
+{
+  Ty *target = EX_CTX(parse_type(),
+                      name,
+                      "in the target of type alias '%s'",
+                      std::string(name.str).c_str());
+  Expr e{ ExprTag::AliasDecl };
+  e.as = ExAliasDecl{ name.str, target };
   return { true, alloc(e), {} };
 }
 

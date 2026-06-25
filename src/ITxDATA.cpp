@@ -178,6 +178,13 @@ mk_real(
 {
   return std::make_shared<Lm>(Lm{ .tag = LTag::REAL, .as = Real{ v } });
 }
+pLm
+mk_bytes(
+  size_t n)
+{
+  return std::make_shared<Lm>(
+    Lm{ .tag = LTag::STR, .as = Str{ std::string(n, '\0') } });
+}
 
 // A foreign type name as written in a signature. Type variables and function
 // arguments are opaque, word-sized values, so they marshal as pointers.

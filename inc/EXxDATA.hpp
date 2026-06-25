@@ -434,6 +434,14 @@ struct ExUnionDecl
   UT::Vu               name;
   UT::Vec<VariantDecl> variants;
 };
+// A type alias declaration: `$ Name : @alias = target`. Fully transparent --
+// the type checker resolves `Name` to `target` wherever it is written, so the
+// two are interchangeable (like a C typedef). Produces no runtime value.
+struct ExAliasDecl
+{
+  UT::Vu name;
+  Ty    *target;
+};
 // A variant construction `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload).
 // `fields` are the payload values (reusing FieldInit): named when any carries a
 // field name, positional otherwise -- same rule as a struct literal/pattern.
@@ -464,6 +472,7 @@ struct ExVariantLit
   X(StructLit, ExStructLit)                                                    \
   X(Field, ExField)                                                            \
   X(UnionDecl, ExUnionDecl)                                                    \
+  X(AliasDecl, ExAliasDecl)                                                    \
   X(VariantLit, ExVariantLit)                                                  \
   X(ModDecl, ExModDecl)                                                        \
   X(Import, ExImport)                                                          \

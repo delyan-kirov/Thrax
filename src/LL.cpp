@@ -813,6 +813,7 @@ struct Lowerer
     case ExprTag::Extern:
     case ExprTag::StructDecl:
     case ExprTag::UnionDecl:
+    case ExprTag::AliasDecl:
     case ExprTag::Overload: // leaf produced by MR; TC resolves it
     case ExprTag::ModDecl:  // module directives are stripped by MR before LL,
     case ExprTag::Import:   // so these are unreachable here -- pass through

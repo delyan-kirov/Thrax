@@ -1,0 +1,37 @@
+@mod ARRAY
+
+# Array: a builtin type -- a sized, contiguous block of bytes. It is allocated
+# with the `@array` form, an expression that yields a fresh block of that many
+# zeroed bytes.
+
+# Positional: the size, in bytes.
+$ buf : Array = @array.{ 64 }
+
+# Named: the same, with the `size` field spelled out.
+$ buf2 : Array = @array.{ .size = 8 }
+
+# The size is an ordinary Int expression, not just a literal.
+$ n : Int = 10
+$ buf3 : Array = @array.{ n * 4 }
+
+# `@array` is an expression, so it nests like any other -- here behind a `let`,
+# and as the body of a function that computes its size from an argument.
+$ make : Int -> Array = \k = let extra = 16 in @array.{ k + extra }
+$ buf4 : Array = make 32
+
+$ Count: @alias = Int
+$ List: @union =
+	Cons: {`T, List `T},
+	Nil: {},
+
+$ IntList: @alias = List Int
+
+$ list: IntList = List.Cons.{1, .Nil}
+
+# Array is an ordinary type, so it can be a struct field like any other.
+$ Buffer : @struct =
+	bytes: Array,
+	len: Int,
+
+$ b    : Buffer = Buffer.{ .bytes = @array.{ 128 }, .len = 128 }
+$ blen : Count    = b.len

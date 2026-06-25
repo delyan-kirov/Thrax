@@ -222,12 +222,24 @@ ssize_t as_int(const pLm &v);
 double  as_num(const pLm &v);
 pLm     mk_int(ssize_t v);
 pLm     mk_real(double v);
+// An Array value: `n` zeroed bytes. Backed by the byte-bearing STR value, so an
+// Array is a sized, mutable block of bytes (the type checker keeps Array and
+// Str distinct; the runtime, like every other value, does not).
+pLm mk_bytes(size_t n);
 
 // The dispatch table, keyed by the monomorphic key the type checker resolved
 // each overloaded use to (see TC's overload_db). An "@Int" impl only sees Ints;
 // an "@Real" impl may see an Int on one side (mixed Int/Real combinations route
 // here), so it reads operands via as_num, which coerces an Int to double.
 const std::unordered_map<std::string, Impl> impls{
+  // `@array.{ n }` -- allocate n zeroed bytes (see EX::parse_array,
+  // OP::ARR_ALLOC).
+  { OP::ARR_ALLOC,
+    { 1,
+      [](const std::vector<pLm> &a) {
+        ssize_t n = as_int(a[0]);
+        return mk_bytes(n < 0 ? 0 : (size_t)n);
+      } } },
   { OP::mono(OP::ADD, OP::TY_INT),
     { 2,
       [](const std::vector<pLm> &a) {

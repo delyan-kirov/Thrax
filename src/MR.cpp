@@ -208,7 +208,8 @@ struct Linker
           break;
         }
         case ExprTag::StructDecl:
-        case ExprTag::UnionDecl : decls.push_back(e); break;
+        case ExprTag::UnionDecl:
+        case ExprTag::AliasDecl : decls.push_back(e); break;
         default                 : break; // nothing else is valid at top level
         }
       }

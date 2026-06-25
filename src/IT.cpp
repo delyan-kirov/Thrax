@@ -206,9 +206,11 @@ exprs2pLm_helper(
   }
   break;
 
-  // A struct / union *declaration* is a type-level form with no runtime value.
+  // A struct / union / alias *declaration* is a type-level form with no runtime
+  // value.
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
+  case EX::ExprTag::AliasDecl:
   {
     lm = { .tag = LTag::UNK, .as = std::monostate{} };
   }

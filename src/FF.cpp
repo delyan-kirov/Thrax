@@ -66,7 +66,7 @@ desc_of(
   if (name == "Real" || name == "Real64")
     return { &ffi_type_double, 8, true, false };
   if (name == "Real32") return { &ffi_type_float, 4, true, false };
-  if (name == "Str" || name == "Ptr")
+  if (name == "Str" || name == "Ptr" || name == "Array")
     return { &ffi_type_pointer, 8, false, true };
 
   if (name == "Int128" || name == "Nat128")

@@ -66,12 +66,20 @@ inline constexpr const char *TY_NAT32  = "Nat32";
 inline constexpr const char *TY_NAT64  = "Nat64";
 inline constexpr const char *TY_REAL32 = "Real32";
 inline constexpr const char *TY_REAL64 = "Real64";
+inline constexpr const char *TY_ARRAY
+  = "Array"; // a sized, contiguous block of bytes
 
 inline constexpr const char *base_types[] = {
-  TY_INT,   TY_NAT,   TY_REAL,  TY_STR,    TY_PTR,
-  TY_INT8,  TY_INT16, TY_INT32, TY_INT64,  TY_NAT8,
-  TY_NAT16, TY_NAT32, TY_NAT64, TY_REAL32, TY_REAL64,
+  TY_INT,   TY_NAT,    TY_REAL,   TY_STR,   TY_PTR,   TY_INT8,
+  TY_INT16, TY_INT32,  TY_INT64,  TY_NAT8,  TY_NAT16, TY_NAT32,
+  TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY,
 };
+
+// Internal name of the byte-block allocation primitive that `@array.{ size }`
+// desugars to (an ordinary `Int -> Array` builtin: typed in TC's m_prim, run
+// via IT's impls). The leading '%' cannot occur in source, so it never collides
+// with a user name.
+inline constexpr const char *ARR_ALLOC = "%array";
 
 // Is `name` one of the built-in base types above?
 inline bool

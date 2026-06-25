@@ -43,10 +43,12 @@ private:
   UT_NODISCARD RExpr    parse_import();   // `$ with ...`
   UT_NODISCARD RExpr    parse_vis();      // `$ @private` / `$ @public`
   UT_NODISCARD RExpr    parse_operator_def(); // `$ @operator.{<op>} : ty = e`
+  UT_NODISCARD RExpr    parse_array();        // `@array.{ size }` expression
   UT_NODISCARD RExpr    parse_extern();
   UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_struct_lit(UT::Vu type_name);
   UT_NODISCARD RExpr    parse_union_decl(const LX::Token &name);
+  UT_NODISCARD RExpr    parse_alias_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_variant_lit(UT::Vu           type_name,
                                           UT::Vu           tag,
                                           const LX::Token &tok);

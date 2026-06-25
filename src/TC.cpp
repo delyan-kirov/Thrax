@@ -56,6 +56,13 @@ private:
   // absent => arity 0.
   std::unordered_map<std::string, size_t> m_arity;
 
+  // Transparent type aliases: `$ Name : @alias = target` registers Name -> the
+  // target's EX type. sig_to_type resolves an alias name to its target wherever
+  // it is written, so the two are interchangeable. `m_alias_depth` guards a
+  // cyclic alias (A = B, B = A) from recursing forever.
+  std::unordered_map<std::string, EX::Ty *> m_aliases;
+  size_t                                    m_alias_depth = 0;
+
   // current diagnostic anchor (the global under check)
   UT::Vu m_anchor;
   size_t m_line = 0;
@@ -487,10 +494,22 @@ Checker::sig_to_type(
   {
   case EX::TyTag::Con:
   {
-    auto       &c     = std::get<EX::TyCon>(sig->as);
-    std::string name  = std::string(c.name);
-    size_t      arity = m_arity.count(name) ? m_arity.at(name) : 0;
-    size_t      given = c.args.size();
+    auto       &c    = std::get<EX::TyCon>(sig->as);
+    std::string name = std::string(c.name);
+
+    // A transparent alias used without arguments resolves to its target. (Aliases
+    // are nullary for now; an alias applied to type arguments is left as an
+    // ordinary con, so the arity check below reports it.)
+    if (c.args.empty() && m_aliases.count(name) && m_alias_depth < 64)
+    {
+      m_alias_depth++;
+      Type *r = sig_to_type(m_aliases.at(name), tv, rigid, order);
+      m_alias_depth--;
+      return r;
+    }
+
+    size_t arity = m_arity.count(name) ? m_arity.at(name) : 0;
+    size_t given = c.args.size();
 
     // Either spell out every argument, or none (then infer them with fresh
     // holes); any other count is a kind/arity error. Built-ins have arity 0.
@@ -676,6 +695,7 @@ Checker::desugar(
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
+  case EX::ExprTag::AliasDecl:
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:
   case EX::ExprTag::Vis:
@@ -1737,6 +1757,15 @@ Checker::run(
   // (e.g. `Int32 Foo`) is still an arity error like any other nullary type.
   for (const char *t : OP::base_types) m_arity[t] = 0;
 
+  // Register transparent type aliases up front, so sig_to_type can resolve an
+  // alias used by any (possibly earlier) declaration.
+  for (EX::Expr &e : exprs)
+    if (e.tag == EX::ExprTag::AliasDecl)
+    {
+      auto &ad             = std::get<EX::ExAliasDecl>(e.as);
+      m_aliases[std::string(ad.name)] = ad.target;
+    }
+
   // Phase A0: record every nominal type's arity (its distinct free type vars)
   // before any field type is built, so applied cons can be arity-checked even
   // when they reference a type declared later.
@@ -1945,6 +1974,11 @@ Checker::seed_primitives()
   Type *tv       = fresh();
   m_prim[OP::IF] = Scheme{ { std::get<TVar>(tv->as).id },
                            arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv))) };
+
+  // %array : Int -> Array -- the byte-block allocator that `@array.{n}`
+  // desugars to (see EX::parse_array).
+  m_prim[OP::ARR_ALLOC]
+    = Scheme{ {}, arrow(con(OP::TY_INT), con(OP::TY_ARRAY)) };
 }
 
 } // namespace
