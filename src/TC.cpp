@@ -97,6 +97,21 @@ private:
   };
   std::vector<LitSite> m_lit_sites;
 
+  // A deferred field access `record.field`. Field access needs the receiver's
+  // struct type known, but that type may settle only later -- after an overload
+  // is resolved, or a parameter's signature type is applied. So a use is typed
+  // as a fresh `result` var here and checked once its `record` type is concrete
+  // (see resolve_field_sites). Sites are resolved in recording order, which is
+  // innermost-first, so a chain `a.b.c` settles `a.b` before `(a.b).c`.
+  struct FieldSite
+  {
+    Type       *record; // receiver type (a var until its context settles it)
+    std::string field;
+    UT::Vu      anchor;
+    Type       *result; // unified with the field's type once resolved
+  };
+  std::vector<FieldSite> m_field_sites;
+
   // type constructors
   Type *fresh(bool rigid = false, std::string name = "");
   Type *con(std::string name, std::vector<Type *> args = {});
@@ -135,6 +150,7 @@ private:
   void   resolve_sites(size_t from);
   void   resolve_user_sites(size_t from);
   void   resolve_lit_sites(size_t from);
+  void   resolve_field_sites(size_t from);
   UT::Vu intern(const std::string &s);
 
   // diagnostics
@@ -382,6 +398,8 @@ Checker::generalize(
   // type.)
   for (const ResolveSite &s : m_sites) free_vars(s.use, ev);
   for (const UserSite &s : m_usites) free_vars(s.use, ev);
+  // A pending field access is likewise monomorphic until its receiver settles.
+  for (const FieldSite &s : m_field_sites) free_vars(s.result, ev);
 
   VarIds q;
   for (int id : tv)
@@ -1027,36 +1045,15 @@ Checker::infer(
 
   case CKind::Field:
   {
+    // Defer: the receiver's type may not be concrete yet (e.g. it is the result
+    // of an as-yet-unresolved overload). Type the access as a fresh var and
+    // settle it in resolve_field_sites once the receiver is known.
     CField &fld = std::get<CField>(e->as);
     UT::Vu  at  = fld.anchor.data() ? fld.anchor : m_anchor;
-    Type   *rt  = prune(infer(fld.record, locals));
-    if (rt->kind() != Kind::Con
-        || !m_structs.count(std::get<TCon>(rt->as).name))
-    {
-      fail(ER::Code::TYPE_MISMATCH,
-           at,
-           "cannot access field '%s': '%s' is not a known struct type",
-           fld.field.c_str(),
-           show(rt).c_str());
-      return fresh();
-    }
-    const std::string &rname = std::get<TCon>(rt->as).name;
-    const StructDef   &sdef  = m_structs.at(rname);
-    // Bind the struct's parameters to the receiver's actual type arguments, so
-    // the field type comes back at the receiver's instantiation.
-    Subst                      sub;
-    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
-    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
-      sub[sdef.params[k]] = actual[k];
-    for (auto &f : sdef.fields)
-      if (f.first == fld.field) return subst(f.second, sub);
-
-    fail(ER::Code::TYPE_UNBOUND,
-         at,
-         "struct '%s' has no field '%s'",
-         rname.c_str(),
-         fld.field.c_str());
-    return fresh();
+    Type   *rt  = infer(fld.record, locals);
+    Type   *res = fresh();
+    m_field_sites.push_back({ rt, fld.field, at, res });
+    return res;
   }
 
   case CKind::Case:
@@ -1200,11 +1197,13 @@ Checker::resolve(
     Env    empty;
     size_t base  = m_sites.size();
     size_t ubase = m_usites.size();
+    size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty);
     resolve_sites(base); // settle this body's overloads before judging its type
-    resolve_user_sites(ubase); // ... and its user overloads (now constrained)
-    resolve_lit_sites(lbase);  // ... and any unqualified literals (no context)
+    resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
+    resolve_field_sites(fbase); // ... then field accesses (receivers now known)
+    resolve_lit_sites(lbase);   // ... and any unqualified literals (no context)
     t = prune(t);
 
     if (t->kind() != Kind::Con)
@@ -1366,6 +1365,57 @@ Checker::resolve_user_sites(
     *s.slot = chosen;
   }
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
+}
+
+// Settle the field accesses collected since `from`. By now each receiver's type
+// has been fixed by its context (an overload resolved, a signature applied,
+// ...), so we can look the field up on its struct and unify its type into the
+// access's result var. Resolved in recording order (innermost-first), so
+// `a.b.c` settles `a.b` -- giving the receiver of `.c` its struct type --
+// before `(a.b).c`.
+void
+Checker::resolve_field_sites(
+  size_t from)
+{
+  for (size_t i = from; i < m_field_sites.size(); ++i)
+  {
+    const FieldSite &s  = m_field_sites[i];
+    Type            *rt = prune(s.record);
+    if (rt->kind() != Kind::Con
+        || !m_structs.count(std::get<TCon>(rt->as).name))
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "cannot access field '%s': '%s' is not a known struct type",
+           s.field.c_str(),
+           show(rt).c_str());
+      continue;
+    }
+    const std::string &rname = std::get<TCon>(rt->as).name;
+    const StructDef   &sdef  = m_structs.at(rname);
+    // Bind the struct's parameters to the receiver's actual type arguments, so
+    // the field type comes back at the receiver's instantiation.
+    Subst                      sub;
+    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
+    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
+      sub[sdef.params[k]] = actual[k];
+
+    bool found = false;
+    for (auto &f : sdef.fields)
+      if (f.first == s.field)
+      {
+        unify(s.result, subst(f.second, sub));
+        found = true;
+        break;
+      }
+    if (!found)
+      fail(ER::Code::TYPE_UNBOUND,
+           s.anchor,
+           "struct '%s' has no field '%s'",
+           rname.c_str(),
+           s.field.c_str());
+  }
+  m_field_sites.erase(m_field_sites.begin() + (long)from, m_field_sites.end());
 }
 
 UT::Vu
@@ -1711,6 +1761,7 @@ Checker::run(
     Env    empty;
     size_t base  = m_sites.size();
     size_t ubase = m_usites.size();
+    size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
 
     if (g.def->sig)
@@ -1729,6 +1780,7 @@ Checker::run(
 
     resolve_sites(base);
     resolve_user_sites(ubase);
+    resolve_field_sites(fbase);
     // Bare literals last: their type comes from the unification just done.
     resolve_lit_sites(lbase);
   }

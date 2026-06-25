@@ -8,6 +8,15 @@ $ square : Int -> Int = \n = n * n
 
 $ cube : Int -> Int = \n = n * square n
 
+$ Point: Struct =
+	x: Int,
+	y: Int,
+
+$ add: Point -> Point -> Point = \p1 p2 =
+	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
+
+$ add: Int -> Int -> Int = \a b = a + b
+
 $ @private
 
 $ scale : Int = 1000
