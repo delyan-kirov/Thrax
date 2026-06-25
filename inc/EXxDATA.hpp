@@ -236,7 +236,7 @@ struct ExStr
 {
   UT::Vu value;
 };
-// `@extern ("symbol", "lib")` -- a foreign binding. Only valid as a global
+// `@extern.{ "symbol", "lib" }` -- a foreign binding. Only valid as a global
 // body; its type comes from the enclosing global's signature.
 struct ExExtern
 {

@@ -19,18 +19,18 @@
 
 # --- raylib bindings -------------------------------------------------------
 
-$ set_config_flags : Int -> Int               = @extern("SetConfigFlags", "bin/libraylib.so")
-$ set_target_fps   : Int -> Int               = @extern("SetTargetFPS", "bin/libraylib.so")
-$ init_window      : Int -> Int -> Str -> Int = @extern("InitWindow", "bin/libraylib.so")
-$ window_should_close : Int -> Int            = @extern("WindowShouldClose", "bin/libraylib.so")
-$ get_screen_width  : Int -> Int              = @extern("GetScreenWidth", "bin/libraylib.so")
-$ get_screen_height : Int -> Int              = @extern("GetScreenHeight", "bin/libraylib.so")
-$ begin_drawing    : Int -> Int               = @extern("BeginDrawing", "bin/libraylib.so")
-$ clear_background : Int -> Int                = @extern("ClearBackground", "bin/libraylib.so")
-$ draw_rectangle : Int -> Int -> Int -> Int -> Int -> Int = @extern("DrawRectangle", "bin/libraylib.so")
-$ end_drawing     : Int -> Int                = @extern("EndDrawing", "bin/libraylib.so")
-$ get_random_value : Int -> Int -> Int        = @extern("GetRandomValue", "bin/libraylib.so")
-$ close_window    : Int -> Int                = @extern("CloseWindow", "bin/libraylib.so")
+$ set_config_flags : Int -> Int               = @extern.{"SetConfigFlags", "bin/libraylib.so"}
+$ set_target_fps   : Int -> Int               = @extern.{"SetTargetFPS", "bin/libraylib.so"}
+$ init_window      : Int -> Int -> Str -> Int = @extern.{"InitWindow", "bin/libraylib.so"}
+$ window_should_close : Int -> Int            = @extern.{"WindowShouldClose", "bin/libraylib.so"}
+$ get_screen_width  : Int -> Int              = @extern.{"GetScreenWidth", "bin/libraylib.so"}
+$ get_screen_height : Int -> Int              = @extern.{"GetScreenHeight", "bin/libraylib.so"}
+$ begin_drawing    : Int -> Int               = @extern.{"BeginDrawing", "bin/libraylib.so"}
+$ clear_background : Int -> Int                = @extern.{"ClearBackground", "bin/libraylib.so"}
+$ draw_rectangle : Int -> Int -> Int -> Int -> Int -> Int = @extern.{"DrawRectangle", "bin/libraylib.so"}
+$ end_drawing     : Int -> Int                = @extern.{"EndDrawing", "bin/libraylib.so"}
+$ get_random_value : Int -> Int -> Int        = @extern.{"GetRandomValue", "bin/libraylib.so"}
+$ close_window    : Int -> Int                = @extern.{"CloseWindow", "bin/libraylib.so"}
 
 # --- constants -------------------------------------------------------------
 

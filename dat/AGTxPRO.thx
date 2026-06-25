@@ -4,7 +4,7 @@
 
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
-$ Person : Struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
@@ -24,7 +24,7 @@ $ older : Int = person.age + 1
 
 # Generic structs: a free `T in a field type is an implicit type parameter, so
 # the declaration is parameterized and applied with juxtaposition at use sites.
-$ Box : Struct =
+$ Box : @struct =
 	val: `T,
 
 # One declaration, two instantiations in the same program.
@@ -38,7 +38,7 @@ $ unboxed : Int = ibox.val
 $ label   : Str = sbox.val
 
 # Two parameters, ordered by first appearance: `Pair `A `B`.
-$ Pair : Struct =
+$ Pair : @struct =
 	fst: `A,
 	snd: `B,
 
@@ -47,7 +47,7 @@ $ left  : Int          = pair.fst
 $ right : Str          = pair.snd
 
 # Generic field types nest: a struct holding a `Box Int`.
-$ Wrap : Struct =
+$ Wrap : @struct =
 	inner: Box `T,
 
 $ wrap   : Wrap Int = .{ .inner = ibox }

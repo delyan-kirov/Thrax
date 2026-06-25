@@ -8,7 +8,7 @@ $ square : Int -> Int = \n = n * n
 
 $ cube : Int -> Int = \n = n * square n
 
-$ Point: Struct =
+$ Point: @struct =
 	x: Int,
 	y: Int,
 

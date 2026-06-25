@@ -4,12 +4,12 @@
 
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
-$ Token : Union =
+$ Token : @union =
     Num: Int,
     Op: {Token, Token}, # Sum types should support lazy recursion
     Txt: Str, # trailing commas are allowe
 
-$ Bool : Union =
+$ Bool : @union =
     True: {}, # Empty payload allowed (empty sum, unit)
     False: {}
 
@@ -29,7 +29,7 @@ $ is_num: Token -> Bool = \tok =
 
 # `Maybe` is generic: the free `T in its body is an implicit type parameter, so
 # `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
-$ Maybe : Union =
+$ Maybe : @union =
     Just: `T,
     None: {}
 
@@ -58,7 +58,7 @@ $ chk2d : Int = if get 8 none_i is 8 then 0 else 1 / 0
 # A lazy, infinite stream. Constructors are non-strict, so `from 1` builds one
 # cell at a time on demand; were they strict it would loop forever.
 # A generic, recursive sum type: `List `T` refers to itself with a type argument.
-$ List : Union =
+$ List : @union =
     Cons: {`T, List `T},
     Nil: {}
 
@@ -72,7 +72,7 @@ $ take3sum : List Int -> Int = \xs =
         else a
     else 0
 
-# $ printf: Str -> Int -> Int = @extern ("printf", "bin/libc.so")
+# $ printf: Str -> Int -> Int = @extern.{"printf", "bin/libc.so"}
 # $ print: Int -> Int = \n = printf " [%d] " n
 
 # $ forever: List =
@@ -88,7 +88,7 @@ $ chk3 : Int = if take3sum (from 1) is 6 then 0 else 1 / 0
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
-$ Pair : Union = P: {lhs: `A, rhs: `B}
+$ Pair : @union = P: {lhs: `A, rhs: `B}
 $ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
     if mk is Pair.P.{ .lhs = l, .rhs = r } then
@@ -103,6 +103,6 @@ $ chk4b : Int =
     else 1 / 0
 
 # Laziness: a bomb payload is never evaluated when its binder is ignored.
-$ Box : Union = B: Int
+$ Box : @union = B: Int
 $ bomb : Box = .B.{ 1 / 0 }
 $ chk5 : Int = if bomb is Box.B.{_} then 0 else 1 / 0

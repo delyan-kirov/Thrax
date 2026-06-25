@@ -799,24 +799,24 @@ Parser::parse_global()
   LX::Token name
     = EX_TRY(expect(LX::TokenTag::Word, "expected a name after '$'"));
 
-  // Optional type annotation: `$ name : type = ...`. The special annotation
-  // `Struct` marks a struct type declaration rather than a value, so the body
-  // is a field list, not an expression.
+  // Optional type annotation: `$ name : type = ...`. The special annotations
+  // `@struct` / `@union` mark a type declaration rather than a value, so the
+  // body is a field/variant list, not an expression.
   Ty *sig = nullptr;
   if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // ':'
     LX::Token ann = EX_TRY(m_lex.peek());
-    if (LX::TokenTag::Word == ann.tag && ann.str == "Struct")
+    if (LX::TokenTag::At == ann.tag && ann.str == "@struct")
     {
-      m_lex.next(); // 'Struct'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Struct'"));
+      m_lex.next(); // '@struct'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@struct'"));
       return parse_struct_decl(name);
     }
-    if (LX::TokenTag::Word == ann.tag && ann.str == "Union")
+    if (LX::TokenTag::At == ann.tag && ann.str == "@union")
     {
-      m_lex.next(); // 'Union'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after 'Union'"));
+      m_lex.next(); // '@union'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@union'"));
       return parse_union_decl(name);
     }
     sig = EX_CTX(parse_type(),
@@ -972,6 +972,10 @@ Parser::parse_vis()
   return { true, alloc(e), {} };
 }
 
+// `@extern.{ ... }` -- a foreign binding. The brace block mirrors a struct
+// literal: either positional, `.{ "symbol", "lib" }` (symbol then library), or
+// named, `.{ .symbol = "...", .lib = "..." }` in any order. Both fields are
+// required. A trailing comma is allowed.
 RExpr
 Parser::parse_extern()
 {
@@ -983,19 +987,62 @@ Parser::parse_extern()
            std::string(at.str).c_str());
   m_lex.next(); // '@extern'
 
-  EX_TRY(expect(LX::TokenTag::LParen, "expected '(' after '@extern'"));
-  LX::Token sym = EX_TRY(
-    expect(LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
-  EX_TRY(
-    expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
-  LX::Token lib = EX_TRY(
-    expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
-  EX_TRY(expect(LX::TokenTag::RParen, "expected ')' to close @extern"));
+  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@extern'"));
+  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@extern.'"));
 
-  return { true,
-           mk_extern(std::get<LX::TkStr>(sym.as).value,
-                     std::get<LX::TkStr>(lib.as).value),
-           {} };
+  UT::Vu symbol{};
+  UT::Vu lib{};
+  bool   have_sym = false;
+  bool   have_lib = false;
+
+  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+  {
+    // Named form: `.symbol = "..."`, `.lib = "..."` in any order.
+    for (;;)
+    {
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+      EX_TRY(expect(LX::TokenTag::Dot, "expected '.field' in @extern"));
+      LX::Token f = EX_TRY(expect(
+        LX::TokenTag::Word, "expected a field name (symbol or lib) after '.'"));
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
+      LX::Token s
+        = EX_TRY(expect(LX::TokenTag::Str, "expected a \"string\" value"));
+      UT::Vu val = std::get<LX::TkStr>(s.as).value;
+      if (f.str == "symbol")
+        symbol = val, have_sym = true;
+      else if (f.str == "lib")
+        lib = val, have_lib = true;
+      else
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               f,
+               "unknown @extern field '%s' (expected 'symbol' or 'lib')",
+               std::string(f.str).c_str());
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+    }
+  }
+  else
+  {
+    // Positional form: `"symbol", "lib"`.
+    LX::Token sym = EX_TRY(expect(
+      LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
+    EX_TRY(
+      expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
+    LX::Token l = EX_TRY(
+      expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
+    symbol = std::get<LX::TkStr>(sym.as).value, have_sym = true;
+    lib = std::get<LX::TkStr>(l.as).value, have_lib = true;
+    if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag)
+      m_lex.next(); // trailing
+  }
+
+  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close @extern"));
+  if (!have_sym || !have_lib)
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           at,
+           "@extern needs both a 'symbol' and a 'lib'");
+
+  return { true, mk_extern(symbol, lib), {} };
 }
 
 // A struct declaration body: a comma-separated `field : type` list, trailing
