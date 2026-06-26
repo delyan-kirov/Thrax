@@ -1,27 +1,8 @@
-# \file makefile
-# \note Targets:  make           build thrax + tests (default)
-#                 make test      build and run the tests
-#                 make clean     remove build artifacts
-#                 make format    clang-format the sources
-#                 make tokei     line counts
-#       Options:  NO_3RD_PARTY=1 build without libffi
-#       Options:  THRAX_WINDOWS  build for windows
-
 CXX      = clang++
-CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -Iinc 
-LIBS     = 
+CXXFLAGS = -Wall -Wextra -Wimplicit-fallthrough -Werror -g -Iinc -MMD -MP
 
-ifdef THRAX_WINDOWS
-CXXFLAGS += -D_GNU_SOURCE
-LIBS += -static
-CXX = x86_64-w64-mingw32-g++
-Tthrax = bin/thrax.exe
-Ttest  = bin/tst_all.exe
-THRAX_3RD_PARTY_ON=1
-else
 Tthrax = bin/thrax
 Ttest  = bin/tst_all
-endif
 
 ifdef THRAX_3RD_PARTY_ON
 CXXFLAGS += -I$(LIBFFI_DEV)/include
@@ -31,21 +12,47 @@ endif
 
 all: $(Tthrax) $(Ttest) compile_flags.txt
 
-LIB_SRCS = $(filter-out src/main.cpp,$(wildcard src/*.cpp)) $(wildcard inc/*.hpp)
-bin/UTxAMALG.o: $(LIB_SRCS) | bin ; $(CXX) $(CXXFLAGS) -c src/UTxAMALG.cpp -o $@
+# --- PCH Configuration ---
+PCH_SRC = inc/UTxAMALG.hpp
+PCH_OUT = bin/UTxAMALG.hpp.pch
+PCH_FLAGS = -Xclang -include-pch -Xclang $(PCH_OUT)
 
-TS_LIB_SRCS = $(filter-out tst/tst_all.cpp,$(wildcard tst/*.cpp)) $(wildcard tst/*.hpp)
-bin/TS.o: $(TS_LIB_SRCS) | bin ; $(CXX) $(CXXFLAGS) -c tst/TS.cpp -o $@
+# Rule to compile PCH binary
+$(PCH_OUT): $(PCH_SRC) | bin
+	$(CXX) $(CXXFLAGS) -x c++-header $< -o $@
 
-$(Tthrax):   src/main.cpp    bin/UTxAMALG.o          | bin ; $(CXX) $(CXXFLAGS) $^ $(LIBS) -o $@
-$(Ttest): tst/tst_all.cpp bin/TS.o bin/UTxAMALG.o | bin ; $(CXX) $(CXXFLAGS) $^ $(LIBS) -o $@
+# --- Object rules ---
+OBJS = bin/UTxAMALG.o bin/TS.o bin/main.o bin/tst_all.o
+-include $(OBJS:.o=.d)
+
+bin/UTxAMALG.o: src/UTxAMALG.cpp $(PCH_OUT) | bin
+	$(CXX) $(CXXFLAGS) $(PCH_FLAGS) -c $< -o $@
+
+bin/TS.o: tst/TS.cpp $(PCH_OUT) | bin
+	$(CXX) $(CXXFLAGS) $(PCH_FLAGS) -c $< -o $@
+
+bin/main.o: src/main.cpp $(PCH_OUT) | bin
+	$(CXX) $(CXXFLAGS) $(PCH_FLAGS) -c $< -o $@
+
+bin/tst_all.o: tst/tst_all.cpp $(PCH_OUT) | bin
+	$(CXX) $(CXXFLAGS) $(PCH_FLAGS) -c $< -o $@
+
+# --- Linking Rules ---
+$(Tthrax): bin/main.o bin/UTxAMALG.o | bin
+	$(CXX) $(CXXFLAGS) $^ $(LIBS) -o $@
+
+$(Ttest): bin/tst_all.o bin/TS.o bin/UTxAMALG.o | bin
+	$(CXX) $(CXXFLAGS) $^ $(LIBS) -o $@
 
 bin: ; mkdir -p bin
 
-# clangd reads compile_flags.txt; regenerated whenever the flags change
-compile_flags.txt: makefile ; @printf '%s\n' $(CXXFLAGS) > $@
+compile_flags.txt: makefile | bin
+	@printf '%s\n' $(CXXFLAGS) > $@
+	@printf '%s\n' "-include-pch bin/UTxAMALG.hpp.pch" >> $@
 
+# --- Utility commands ---
 .PHONY: test clean format tokei executables valgrind
+
 clean:                ; rm -rf bin tmp.* vgcore* *.orig compile_flags.txt
 format:               ; clang-format -i src/*.cpp inc/*.hpp tst/*.cpp tst/*.hpp
 tokei:                ; tokei --exclude lib
