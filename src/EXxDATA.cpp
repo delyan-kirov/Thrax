@@ -175,8 +175,8 @@ pprint(
   case ExprTag::AliasDecl:
   {
     auto &ad = std::get<ExAliasDecl>(e->as);
-    return pad + "$" + std::string(ad.name) + " : @alias = "
-           + pprint_ty(ad.target);
+    return pad + "$" + std::string(ad.name)
+           + " : @alias = " + pprint_ty(ad.target);
   }
   case ExprTag::VariantLit:
   {

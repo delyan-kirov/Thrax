@@ -185,36 +185,40 @@ expand_sources(
   return out;
 }
 
-IT::StatEnv
+Interp
 interpret_file(
   UT::Vu file)
 {
-  AR::Arena             arena{};
-  IT::StatEnv           env;
-  std::vector<MR::Unit> units;
+  // The front-end arena lives only for lexing/parsing/type-checking; the Core
+  // arena (owned by the returned Interp) outlives it and holds the Core the env
+  // points into, copied out of the front end by CR::build.
+  AR::Arena front{};
+  Interp    ip;
+  ip.arena = std::make_unique<AR::Arena>();
 
-  if (!parse_units({ file }, arena, units)) return env;
+  std::vector<MR::Unit> units;
+  if (!parse_units({ file }, front, units)) return ip;
 
   MR::Result mr;
-  if (!compile_units(units, arena, mr)) return env;
+  if (!compile_units(units, front, mr)) return ip;
 
   for (size_t i = 0; i < mr.program.size(); ++i)
-    IT::exprs2pLm(&mr.program[i], env);
+    CR::build(&mr.program[i], ip.env, *ip.arena);
 
-  return env;
+  return ip;
 }
 
 int
 run_program(
   const std::vector<UT::Vu> &files)
 {
-  AR::Arena             arena{};
+  AR::Arena             front{};
   std::vector<MR::Unit> units;
 
-  if (!parse_units(files, arena, units)) return 1;
+  if (!parse_units(files, front, units)) return 1;
 
   MR::Result mr;
-  if (!compile_units(units, arena, mr)) return 1;
+  if (!compile_units(units, front, mr)) return 1;
 
   if (mr.entry.empty())
   {
@@ -224,12 +228,16 @@ run_program(
     return 1;
   }
 
-  IT::StatEnv env;
+  // The Core arena outlives the front-end arena and holds every Core node the
+  // interpreter walks (built by copying out of the front end).
+  AR::Arena   core_arena{};
+  CR::StatEnv env;
   for (size_t i = 0; i < mr.program.size(); ++i)
-    IT::exprs2pLm(&mr.program[i], env);
+    CR::build(&mr.program[i], env, core_arena);
 
   // Invoke the entry: `main` for `Int`, or `main ""` for `Str -> Int` (the CLI
-  // argument is empty until an `Args` type exists).
+  // argument is empty until an `Args` type exists). The stack EX nodes are only
+  // read by CR::build, which copies what it keeps into core_arena.
   EX::Expr var{ EX::ExprTag::Var };
   var.as         = EX::ExVar{ mr.entry };
   EX::Expr *node = &var;
@@ -242,9 +250,9 @@ run_program(
     node    = &app;
   }
 
-  IT::pLm res = IT::eval(IT::exprs2pLm(node, env), {}, env);
-  if (res && res->tag == IT::LTag::INT)
-    return (int)std::get<IT::Int>(res->as).unwrap;
+  IT::pVal res = IT::eval(CR::build(node, env, core_arena), {}, env);
+  if (res && IT::VKind::Int == IT::kind(res))
+    return (int)std::get<IT::VInt>(res->as).val;
   return 0;
 }
 

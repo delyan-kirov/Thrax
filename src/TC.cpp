@@ -497,9 +497,9 @@ Checker::sig_to_type(
     auto       &c    = std::get<EX::TyCon>(sig->as);
     std::string name = std::string(c.name);
 
-    // A transparent alias used without arguments resolves to its target. (Aliases
-    // are nullary for now; an alias applied to type arguments is left as an
-    // ordinary con, so the arity check below reports it.)
+    // A transparent alias used without arguments resolves to its target.
+    // (Aliases are nullary for now; an alias applied to type arguments is left
+    // as an ordinary con, so the arity check below reports it.)
     if (c.args.empty() && m_aliases.count(name) && m_alias_depth < 64)
     {
       m_alias_depth++;
@@ -1762,7 +1762,7 @@ Checker::run(
   for (EX::Expr &e : exprs)
     if (e.tag == EX::ExprTag::AliasDecl)
     {
-      auto &ad             = std::get<EX::ExAliasDecl>(e.as);
+      auto &ad                        = std::get<EX::ExAliasDecl>(e.as);
       m_aliases[std::string(ad.name)] = ad.target;
     }
 

@@ -7,18 +7,19 @@ void
 tst_file(
   UT::Vu file)
 {
-  IT::StatEnv env = DR::interpret_file(file);
+  DR::Interp ip = DR::interpret_file(file);
 
   // A failed pipeline (parse or type error) yields no definitions; the error
   // messages have already been printed by interpret_file.
-  if (env.empty())
+  if (ip.env.empty())
   {
     fprintf(stderr, "\033[1;31mFAIL\033[0m [%s]\n", file.data());
     return;
   }
 
-  // Force every definition so a runtime fault surfaces here.
-  for (auto &kv : env) IT::eval(kv.second, {}, env);
+  // Force every definition so a runtime fault surfaces here. `ip.arena` keeps
+  // the Core alive for the duration of these evaluations.
+  for (auto &kv : ip.env) IT::eval(kv.second, {}, ip.env);
 
   printf("\033[1;32mOK\033[0m   [%s]\n", file.data());
 }

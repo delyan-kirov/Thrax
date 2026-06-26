@@ -1,374 +1,323 @@
 #ifndef ITxDATA_HEADER_
 #define ITxDATA_HEADER_
 
-#include "EX.hpp"
+#include "CR.hpp"
 #include "OP.hpp"
 
 namespace IT
 {
 
-struct Lm;
-using pLm     = std::shared_ptr<Lm>;
-using StatEnv = std::unordered_map<std::string, pLm>;
-using DynEnv  = std::vector<pLm>;
+/*------------------------------------------------------------------------------
+ *\RUNTIME VALUES
+ *
+ * A Value is what `eval` produces from a CR::Term. Unlike the Core (which is
+ * immutable, arena-owned, raw-pointer code), values have dynamic lifetimes --
+ * closures escape, thunks memoize, data is built and discarded -- so they are
+ * REFERENCE-COUNTED (std::shared_ptr). The two worlds meet only by pointer: a
+ * closure/thunk holds the CR::Term it will run (the Core arena outlives every
+ * value), and forcing a Core literal copies its bytes into an owning value.
+ *
+ * Like the Core, a Value is a tagged union with no stored tag -- the variant is
+ * the discriminant and `kind()` reads it back.
+ *-----------------------------------------------------------------------------*/
 
-struct Int
+struct Value;
+using pVal   = std::shared_ptr<Value>;
+using ValEnv = std::vector<pVal>;
+
+struct VUnk
 {
-  ssize_t unwrap;
 };
 
-struct Real
+struct VInt
 {
-  double unwrap;
+  ssize_t val;
 };
 
-// An application `fn arg`. After the ANF pass (see IT.cpp) `fn` and `arg` are
-// always atomic (a variable, literal, or lambda), and `tail` records whether
-// the call sits in program tail position -- the property the trampoline in eval
-// relies on and that a future optimizer (e.g. fusion over a normalized core)
-// can read directly.
-struct App
+struct VReal
 {
-  pLm  fn;
-  pLm  arg;
-  bool tail = false;
+  double val;
 };
 
-struct Var
+struct VStr
 {
-  std::string unwrap;
-  size_t      idx;
-  DynEnv      env;
+  std::string val; // owned: literals are copied in, FFI results are fresh
 };
 
-struct Str
+// A closure: the lambda body (Core) plus the environment captured where the
+// lambda was evaluated. `param` is kept for diagnostics; binding is positional.
+struct VClosure
 {
-  std::string unwrap;
+  const CR::Term *body;
+  UT::Vu          param;
+  ValEnv          env;
 };
 
-struct Fun
+// A built-in operation as a first-class, curried value. `impl` is the
+// monomorphic key the type checker resolved an overloaded use to (e.g. "+@Int",
+// a view into the Core arena); `args` accumulates applied operands until it
+// reaches `arity`, at which point the implementation runs (see eval).
+struct VBuiltin
 {
-  Var var;
-  pLm body;
+  UT::Vu            impl;
+  size_t            arity;
+  std::vector<pVal> args;
 };
 
-// A (possibly recursive) local binding. `var` is in scope while `val` is
-// evaluated, so a value that refers to itself resolves once `val` is
-// back-patched into the binding slot (see eval).
-struct Let
+// A foreign function as a first-class, curried value. `decl` points at its Core
+// declaration (which carries the symbol, library and marshalling types); `args`
+// accumulates operands until saturated, at which point the C call is made (see
+// eval / call_extern).
+struct VExtern
 {
-  Var var;
-  pLm val;
-  pLm body;
+  const CR::Extern *decl;
+  std::vector<pVal> args;
 };
 
-// A foreign binding. `arg_types`/`ret_type` are Thrax type names taken from the
-// signature; `args` accumulates curried arguments until the function is
-// saturated, at which point the C call is made (see eval / call_extern).
-struct Extern
+// A struct value: the type name plus its fields in declaration order, every
+// field already forced.
+struct VStruct
 {
-  std::string              symbol;
-  std::string              lib;
-  std::vector<std::string> arg_types;
-  std::string              ret_type;
-  std::vector<pLm>         args;
+  UT::Vu                               name;
+  std::vector<std::pair<UT::Vu, pVal>> fields;
 };
 
-// A built-in operation as a first-class, curried value. `impl` is the key the
-// type checker resolved an overloaded use to (e.g. "+@Int"); `args` accumulates
-// applied arguments until it reaches `arity`, at which point the implementation
-// runs (see eval). Because it is an ordinary value, a built-in can be partially
-// applied and passed around like any function.
-struct Builtin
+// A sum value: the union type, the variant `tag`, and the payload `fields` in
+// declared order. Data constructors are non-strict, so each field is a VThunk,
+// forced only on demand -- this is the one place the call-by-value runtime
+// defers work, so recursive / infinite values terminate.
+struct VVariant
 {
-  std::string      impl;
-  size_t           arity;
-  std::vector<pLm> args;
+  UT::Vu            type_name;
+  UT::Vu            tag;
+  std::vector<pVal> fields;
 };
 
-// The kind of head an alternative matches on -- shared with the parser AST.
-using AltKind = EX::AltKind;
-
-// One alternative of a `Case`. It is taken when the forced scrutinee's head
-// matches `kind`: constructor index `tag` (binding the payload positionally to
-// `binders`), or the literal `ival` / `rval`. `binders` entries are De Bruijn
-// locals in `body`, in payload order; an empty string ignores a slot.
-struct CaseAlt
+// A suspended computation: a lazy data-constructor field. `expr` is the Core
+// evaluated in the captured `env` the first time the thunk is forced; `memo`
+// caches the (forced) result for every later demand.
+struct VThunk
 {
-  AltKind                  kind;
-  std::string              ctor; // Con: constructor name (matched at runtime)
-  size_t                   tag  = 0; // Con: constructor index within its type
-  ssize_t                  ival = 0; // Int
-  double                   rval = 0; // Real
-  std::vector<std::string> binders;  // Con: payload binder names, positional
-  pLm                      body;
-};
-
-// `case scrut of alt... else deflt`. Like the former `If`, this is a dedicated
-// lazy node, NOT a function: eval forces `scrut`, then runs only the taken
-// alternative's body (binding a Con alt's payload first), or `deflt` if none
-// match. `if` and every match lower to a `Case` -- it is the one brancher.
-// `if c then t else e` is the single Int alternative `{ 0 -> e }` over `t`.
-struct Case
-{
-  pLm                  scrut;
-  std::vector<CaseAlt> alts;
-  pLm                  deflt;
+  const CR::Term *expr;
+  ValEnv          env;
+  pVal            memo; // null until forced
 };
 
 // A self-reference cell for a `let` binding. A binding's value (typically a
 // closure) captures the environment the binding lives in, which would otherwise
 // hold a shared_ptr back to the value -- a cycle that leaks. While the value is
-// evaluated the binding is therefore held *weakly* through one of these; eval's
-// VAR lookup locks `target` to recover it. The value is always live when
-// locked: the body keeps it strongly in scope, and a call site keeps the
-// closure alive.
-struct Rec
+// built the binding is held *weakly* through one of these; eval's VAR lookup
+// locks `target` to recover it (always live: the body keeps it in scope).
+struct VRec
 {
-  std::weak_ptr<Lm> target;
+  std::weak_ptr<Value> target;
 };
 
-// A struct value: the type name plus its fields in declaration order. Built
-// from a `Type.{...}` literal; eval forces every field.
-struct Struct
-{
-  std::string                              name;
-  std::vector<std::pair<std::string, pLm>> fields;
-};
+#define IT_VALUE_VARIANTS                                                      \
+  X(Unk, VUnk)                                                                 \
+  X(Int, VInt)                                                                 \
+  X(Real, VReal)                                                               \
+  X(Str, VStr)                                                                 \
+  X(Closure, VClosure)                                                         \
+  X(Builtin, VBuiltin)                                                         \
+  X(Extern, VExtern)                                                           \
+  X(Struct, VStruct)                                                           \
+  X(Variant, VVariant)                                                         \
+  X(Thunk, VThunk)                                                             \
+  X(Rec, VRec)
 
-// Field access `record.field`. eval forces the record (a Struct) and returns
-// the named field; the type checker guarantees the field exists.
-struct Field
+enum class VKind
 {
-  pLm         record;
-  std::string name;
-};
-
-// A sum value: the union type, the variant `tag`, and the payload `fields` in
-// the variant's declared order (LL normalizes named construction to
-// positional). Built from a `Type.Tag.{...}` literal. Thrax is otherwise
-// call-by-value, but data constructors are non-strict: each field is a Thunk,
-// forced only on demand, so recursive / infinite values terminate. A `Case` Con
-// alternative matches on `tag` and binds `fields` positionally (the thunks
-// themselves, so the binders stay lazy until used).
-struct Variant
-{
-  std::string      type_name;
-  std::string      tag;
-  std::vector<pLm> fields;
-};
-
-// A suspended computation -- a lazy data-constructor field, the one place the
-// otherwise call-by-value runtime defers work. `expr` is evaluated in the
-// captured `env` the first time the thunk is forced; `memo` caches the (forced)
-// result for every later demand. Runtime-only: never built by exprs2pLm/ANF.
-struct Thunk
-{
-  pLm    expr;
-  DynEnv env;
-  pLm    memo; // null until forced
-};
-
-#define IT_L_VARIANTS                                                          \
-  X(INT, Int)                                                                  \
-  X(REAL, Real)                                                                \
-  X(STR, Str)                                                                  \
-  X(APP, App)                                                                  \
-  X(FUN, Fun)                                                                  \
-  X(LET, Let)                                                                  \
-  X(EXTERN, Extern)                                                            \
-  X(BUILTIN, Builtin)                                                          \
-  X(CASE, Case)                                                                \
-  X(REC, Rec)                                                                  \
-  X(STRUCT, Struct)                                                            \
-  X(FIELD, Field)                                                              \
-  X(VARIANT, Variant)                                                          \
-  X(THUNK, Thunk)                                                              \
-  X(VAR, Var)
-
-enum class LTag
-{
-#define X(tag, variant) tag,
-  IT_L_VARIANTS
+#define X(name, type) name,
+  IT_VALUE_VARIANTS
 #undef X
-    UNK,
 };
 
-using LmUnion =
-#define X(tag, variant) variant,
-  std::variant<IT_L_VARIANTS std::monostate>
+using ValData =
+#define X(name, type) type,
+  std::variant<IT_VALUE_VARIANTS std::monostate>
 #undef X
   ;
 
-struct Lm
+struct Value
 {
-  LTag    tag;
-  LmUnion as;
+  ValData as;
 };
+
+inline VKind
+kind(
+  const Value *v)
+{
+  return static_cast<VKind>(v->as.index());
+}
+inline VKind
+kind(
+  const pVal &v)
+{
+  return static_cast<VKind>(v->as.index());
+}
+
+inline pVal
+mk(
+  Value v)
+{
+  return std::make_shared<Value>(std::move(v));
+}
+
+/*------------------------------------------------------------------------------
+ *\BUILTINS
+ *-----------------------------------------------------------------------------*/
+
+// Operand extraction / result construction. The type checker resolved the
+// overload, so an "@Int" impl only sees Ints. An "@Real" impl may see an Int on
+// one side (mixed Int/Real combinations route here), so it reads via `as_num`,
+// which coerces an Int operand to double.
+ssize_t as_int(const pVal &v);
+double  as_num(const pVal &v);
+pVal    mk_int(ssize_t v);
+pVal    mk_real(double v);
+// An Array value: `n` zeroed bytes, backed by the byte-bearing VStr value (the
+// type checker keeps Array and Str distinct; the runtime, like every value,
+// does not).
+pVal mk_bytes(size_t n);
 
 // One built-in implementation: its arity and a function over the already
 // evaluated, saturated operands.
 struct Impl
 {
   size_t arity;
-  pLm (*fn)(const std::vector<pLm> &);
+  pVal (*fn)(const std::vector<pVal> &);
 };
 
-// Operand extraction / result construction. The type checker resolved the
-// overload, so an "@Int" impl only sees Ints. An "@Real" impl may see an Int on
-// one side (mixed Int/Real combinations route here), so it reads via `as_num`,
-// which coerces an Int operand to double.
-ssize_t as_int(const pLm &v);
-double  as_num(const pLm &v);
-pLm     mk_int(ssize_t v);
-pLm     mk_real(double v);
-// An Array value: `n` zeroed bytes. Backed by the byte-bearing STR value, so an
-// Array is a sized, mutable block of bytes (the type checker keeps Array and
-// Str distinct; the runtime, like every other value, does not).
-pLm mk_bytes(size_t n);
-
 // The dispatch table, keyed by the monomorphic key the type checker resolved
-// each overloaded use to (see TC's overload_db). An "@Int" impl only sees Ints;
-// an "@Real" impl may see an Int on one side (mixed Int/Real combinations route
-// here), so it reads operands via as_num, which coerces an Int to double.
+// each overloaded use to (see TC's overload_db). Const, so it has internal
+// linkage and may live in this header.
 const std::unordered_map<std::string, Impl> impls{
   // `@array.{ n }` -- allocate n zeroed bytes (see EX::parse_array,
   // OP::ARR_ALLOC).
   { OP::ARR_ALLOC,
     { 1,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         ssize_t n = as_int(a[0]);
         return mk_bytes(n < 0 ? 0 : (size_t)n);
       } } },
   { OP::mono(OP::ADD, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) + as_int(a[1]));
       } } },
   { OP::mono(OP::SUB, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) - as_int(a[1]));
       } } },
   { OP::mono(OP::MUL, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) * as_int(a[1]));
       } } },
   { OP::mono(OP::DIV, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) / as_int(a[1]));
       } } },
   { OP::mono(OP::MOD, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) % as_int(a[1]));
       } } },
   { OP::mono(OP::ISEQ, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::GEQ, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::LEQ, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::MORE, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::LESS, OP::TY_INT),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::ADD, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_real(as_num(a[0]) + as_num(a[1]));
       } } },
   { OP::mono(OP::SUB, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_real(as_num(a[0]) - as_num(a[1]));
       } } },
   { OP::mono(OP::MUL, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_real(as_num(a[0]) * as_num(a[1]));
       } } },
   { OP::mono(OP::DIV, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_real(as_num(a[0]) / as_num(a[1]));
       } } },
   { OP::mono(OP::MOD, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_real(std::fmod(as_num(a[0]), as_num(a[1])));
       } } },
   { OP::mono(OP::ISEQ, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) == as_num(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::GEQ, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) >= as_num(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::LEQ, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) <= as_num(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::MORE, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) > as_num(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::LESS, OP::TY_REAL),
     { 2,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0);
       } } },
   { OP::mono(OP::NEG, OP::TY_INT),
-    { 1, [](const std::vector<pLm> &a) { return mk_int(-as_int(a[0])); } } },
+    { 1, [](const std::vector<pVal> &a) { return mk_int(-as_int(a[0])); } } },
   { OP::mono(OP::NEG, OP::TY_REAL),
-    { 1, [](const std::vector<pLm> &a) { return mk_real(-as_num(a[0])); } } },
+    { 1, [](const std::vector<pVal> &a) { return mk_real(-as_num(a[0])); } } },
   { OP::mono(OP::NOT, OP::TY_INT),
     { 1,
-      [](const std::vector<pLm> &a) {
+      [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == 0 ? 1 : 0);
       } } },
 };
 
-pLm lookup(const StatEnv &env, const std::string &name);
-Var mkVar(UT::Vu s);
-Str mkStr(UT::Vu s);
-Fun mkFun(UT::Vu s, pLm body);
+// Marshal the saturated arguments and make the foreign call described by `e`.
+pVal call_extern(const CR::Extern &e, const std::vector<pVal> &args);
 
-using NameStack = std::vector<std::string>;
-void assign_id(pLm node, NameStack &env);
-
-// A foreign type name as written in a signature. Type variables and function
-// arguments are opaque, word-sized values, so they marshal as pointers.
-std::string ffi_type_name(EX::Ty *t);
-
-// Split a signature `A -> B -> R` into argument types [A, B] and result R.
-void flatten_sig(EX::Ty *t, std::vector<std::string> &args, std::string &ret);
-
-pLm call_extern(const Extern &e);
+std::string pprint(const pVal &v, int level = 0);
 
 } // namespace IT
 
