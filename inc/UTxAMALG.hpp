@@ -13,6 +13,7 @@
 #include "ER.hpp"
 #include "EX.hpp"
 #include "FF.hpp"
+#include "IR.hpp"
 #include "IT.hpp"
 #include "LX.hpp"
 #include "MR.hpp"

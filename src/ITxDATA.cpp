@@ -88,9 +88,6 @@ pprint(
   case VKind::Int : return pad + std::to_string(std::get<VInt>(v->as).val);
   case VKind::Real: return pad + std::to_string(std::get<VReal>(v->as).val);
   case VKind::Str : return pad + "\"" + std::get<VStr>(v->as).val + "\"";
-  case VKind::Closure:
-    return pad + "<closure " + std::string(std::get<VClosure>(v->as).param)
-           + ">";
   case VKind::Builtin:
   {
     auto       &b = std::get<VBuiltin>(v->as);
@@ -118,9 +115,10 @@ pprint(
     for (const pVal &f : vr.fields) r += "\n" + pprint(f, level + 1);
     return r + ")";
   }
-  case VKind::Thunk: return pad + "<thunk>";
-  case VKind::Rec  : return pad + "<rec>";
-  case VKind::Unk  : return pad + "?unknown";
+  case VKind::Rec: return pad + "<rec>";
+  case VKind::Code:
+    return pad + "<code#" + std::to_string(std::get<VCode>(v->as).code) + ">";
+  case VKind::Unk: return pad + "?unknown";
   }
   return pad + "?unreachable";
 }

@@ -48,7 +48,7 @@ bin: ; mkdir -p bin
 
 compile_flags.txt: makefile | bin
 	@printf '%s\n' $(CXXFLAGS) > $@
-	@printf '%s\n' "-include-pch bin/UTxAMALG.hpp.pch" >> $@
+	@printf '%s\n' "-I./inc/" >> $@
 
 # --- Utility commands ---
 .PHONY: test clean format tokei executables valgrind

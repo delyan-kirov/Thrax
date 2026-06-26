@@ -227,8 +227,8 @@ Term *alloc(AR::Arena &arena, Term t);
 // Compile `expr` to Core in `arena`, normalize it (ANF) and assign De-Bruijn
 // indices. A global definition (`$ name = ...`) is finalized, stored into `env`
 // and yields a placeholder Var; every other form returns its finished Core.
-// This is the whole EX::Expr -> Core lowering. Names are copied into `arena`, so
-// the result is independent of the front-end arena `expr` came from.
+// This is the whole EX::Expr -> Core lowering. Names are copied into `arena`,
+// so the result is independent of the front-end arena `expr` came from.
 Term *build(EX::Expr *expr, StatEnv &env, AR::Arena &arena);
 
 // Assign each Var its De-Bruijn index against the binder stack `names`.

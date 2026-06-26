@@ -12,15 +12,15 @@
 namespace DR
 {
 
-// A compiled-and-loaded program: the global Core environment plus the arena
-// that owns the Core it points into. The front-end arena is gone by the time
-// this is returned (its data was copied into the Core), so this is the only
-// allocation the interpreter needs alive while it evaluates. Kept in a
-// unique_ptr because AR::Arena is neither movable nor copyable.
+// A compiled-and-loaded program: the IR program plus the arena that owns the IR
+// (and the Core it was lowered from). The front-end arena is gone by the time
+// this is returned (its data was copied into the Core), so this arena is the
+// only allocation the machine needs alive while it runs. Kept in a unique_ptr
+// because AR::Arena is neither movable nor copyable.
 struct Interp
 {
   std::unique_ptr<AR::Arena> arena;
-  CR::StatEnv                env;
+  IR::Program                prog;
 };
 
 // Expand command-line paths into the list of source files to compile. A path
@@ -37,13 +37,18 @@ std::vector<std::string> expand_sources(const std::vector<UT::Vu> &paths);
 Interp interpret_file(UT::Vu file);
 
 // Compile every file as one program (modules link across all of them) and run
-// its entry point -- the `main` of module `MAIN`. Returns the program's exit
-// code, or 1 on a compile error (diagnostics already printed).
+// its entry point -- the `main` of module `MAIN` -- via the IR + reified-K
+// machine. Returns the program's exit code, or 1 on a compile error
+// (diagnostics already printed).
 int run_program(const std::vector<UT::Vu> &files);
 
 // Lex + parse `file` and print the resulting AST to stdout (parse diagnostics
 // go to stderr). Returns false if the file failed to parse.
 bool dump_ast(UT::Vu file);
+
+// Run the full front end on `files`, lower the Core to IR (closure conversion),
+// and print the IR program to stdout. Returns false on a compile error.
+bool dump_ir(const std::vector<UT::Vu> &files);
 
 } // namespace DR
 

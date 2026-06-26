@@ -14,11 +14,12 @@ namespace
 {
 
 const char *USAGE
-  = "usage: thrax [--ast|-a] [PATH...]\n"
+  = "usage: thrax [--ast|-a] [--ir|-i] [PATH...]\n"
     "  PATH is a .thx file or a directory (every .thx in it, non-recursive,\n"
     "  skipping _*.thx). With no PATH the current directory is used. All "
     "files\n"
-    "  form one program; with --ast print the parsed AST instead.\n";
+    "  form one program; with --ast print the parsed AST, with --ir the\n"
+    "  closure-converted IR, instead of running.\n";
 
 } // namespace
 
@@ -27,6 +28,7 @@ main(
   int argc, char **argv)
 {
   bool                print_ast = false;
+  bool                print_ir  = false;
   std::vector<UT::Vu> paths;
 
   for (int i = 1; i < argc; ++i)
@@ -34,6 +36,8 @@ main(
     const char *arg = argv[i];
     if (0 == std::strcmp(arg, "--ast") || 0 == std::strcmp(arg, "-a"))
       print_ast = true;
+    else if (0 == std::strcmp(arg, "--ir") || 0 == std::strcmp(arg, "-i"))
+      print_ir = true;
     else if (0 == std::strcmp(arg, "--help") || 0 == std::strcmp(arg, "-h"))
     {
       std::printf("%s", USAGE);
@@ -71,6 +75,8 @@ main(
     for (UT::Vu file : files) ok &= DR::dump_ast(file);
     return ok ? 0 : 1;
   }
+
+  if (print_ir) return DR::dump_ir(files) ? 0 : 1;
 
   // All files form one program; modules link across them and the entry point is
   // the `main` of module MAIN. The program's exit code is main's Int result.

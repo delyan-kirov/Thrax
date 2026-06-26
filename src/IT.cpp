@@ -3,198 +3,230 @@
 namespace IT
 {
 
-namespace
-{
-
-// Force a value to weak head normal form. Thrax is call-by-value, so most
-// values arrive already forced; the exception is a constructor field, which is
-// suspended as a VThunk (see VVariant). Every strict eliminator -- a `case`
-// scrutinee, a field access, a builtin / extern operand, the callee of an
-// application -- forces its input through here, evaluating the thunk once,
-// memoizing the result, and collapsing any chain of thunks. Constructor fields
-// that are merely passed along stay suspended, so recursion stays lazy.
 pVal
-force(
-  pVal v, CR::StatEnv &senv)
+Machine::deref(
+  pVal v)
 {
-  if (!v || VKind::Thunk != kind(v)) return v;
-  auto &t = std::get<VThunk>(v->as);
-  if (!t.memo) t.memo = eval(t.expr, t.env, senv);
-  t.memo = force(t.memo, senv);
-  return t.memo;
+  // A let binding is held weakly while its value is built (VRec); lock it to
+  // recover the value. Strict data never nests VRecs, so this is shallow.
+  while (v && VKind::Rec == kind(v))
+  {
+    pVal t = std::get<VRec>(v->as).target.lock();
+    UT_FAIL_IF(!t);
+    v = t;
+  }
+  return v;
 }
 
-} // namespace
+pVal
+Machine::eval_atom(
+  const IR::Atom *a, const FrameP &frame)
+{
+  switch (IR::akind(a))
+  {
+  case IR::AKind::Local:
+  {
+    size_t i = std::get<IR::Local>(a->as).i;
+    UT_FAIL_IF(i >= frame->locals.size());
+    return frame->locals[i];
+  }
+  case IR::AKind::Env:
+  {
+    size_t i = std::get<IR::Env>(a->as).i;
+    UT_FAIL_IF(i >= frame->env.size());
+    return frame->env[i];
+  }
+  case IR::AKind::Glob: return glob(std::get<IR::Glob>(a->as).name);
+  case IR::AKind::LitI: return mk_int(std::get<IR::LitI>(a->as).v);
+  case IR::AKind::LitR: return mk_real(std::get<IR::LitR>(a->as).v);
+  case IR::AKind::LitS:
+    return mk(Value{ VStr{ std::string(std::get<IR::LitS>(a->as).v) } });
+  case IR::AKind::Clos:
+  {
+    // Capture each free atom RAW (no deref): a recursive self-reference must be
+    // captured as its weak cell, or it would form a reference cycle.
+    auto  &c = std::get<IR::MkClosure>(a->as);
+    ValEnv env;
+    env.reserve(c.captures.size());
+    for (size_t i = 0; i < c.captures.size(); ++i)
+      env.push_back(eval_atom(c.captures[i], frame));
+    return mk(Value{ VCode{ c.code, std::move(env) } });
+  }
+  }
+  UT_FAIL_MSG("%s", "unreachable: bad IR::Atom in eval_atom");
+  return mk(Value{ VUnk{} });
+}
 
 pVal
-eval(
-  const CR::Term *node, ValEnv denv, CR::StatEnv &senv)
+Machine::glob(
+  UT::Vu name)
 {
-  // Trampoline: a call in tail position rebinds `node`/`denv` and loops instead
-  // of recursing, so tail recursion runs in constant C++ stack. Non-tail
-  // sub-evaluations (a `case` scrutinee, a `let` value, an application's atoms)
-  // still recurse -- their depth is the program's, not the call chain's.
-  //
-  // `live` keeps recursive `let` closures alive across the loop: such a closure
-  // is held only weakly by its own captured environment (the VRec cell, see
-  // LET), and by the C++ stack used to keep it live across a call. Globals
-  // (empty env) and ordinary closures hold no VRec, so they are never added and
-  // plain tail recursion stays in constant space.
+  std::string n(name);
+
+  // A resolved built-in (e.g. "+@Int", "%array") is a first-class curried
+  // value.
+  auto bit = impls.find(n);
+  if (bit != impls.end())
+    return mk(Value{ VBuiltin{ name, bit->second.arity, {} } });
+
+  // Lazy-memoized CAF: evaluate the global once on first demand.
+  auto mit = memo.find(n);
+  if (mit != memo.end()) return mit->second;
+
+  auto git = prog.globals.find(n);
+  UT_FAIL_IF(git == prog.globals.end());
+  UT_FAIL_IF(in_progress.count(n)); // a cyclic value global (forbidden)
+
+  in_progress.insert(n);
+  pVal v = run(git->second, {}, {});
+  in_progress.erase(n);
+  memo[n] = v;
+  return v;
+}
+
+pVal
+Machine::apply(
+  pVal callee, pVal arg)
+{
+  callee = deref(callee);
+  if (VKind::Code == kind(callee))
+  {
+    auto  &clo = std::get<VCode>(callee->as);
+    ValEnv locals;
+    locals.push_back(arg);
+    return run(clo.code, std::move(locals), clo.env);
+  }
+  if (VKind::Builtin == kind(callee))
+  {
+    VBuiltin b = std::get<VBuiltin>(callee->as);
+    b.args.push_back(arg);
+    if (b.args.size() >= b.arity)
+      return impls.at(std::string(b.impl)).fn(b.args);
+    return mk(Value{ b });
+  }
+  UT_FAIL_MSG("%s", "IR machine: applying a non-function value");
+  return mk(Value{ VUnk{} });
+}
+
+pVal
+Machine::run(
+  size_t code_id, ValEnv locals0, ValEnv env0)
+{
+  FrameP frame  = std::make_shared<Frame>();
+  frame->locals = std::move(locals0);
+  frame->locals.resize(prog.codes[code_id].nlocals);
+  frame->env           = std::move(env0);
+  const IR::Expr *ctrl = prog.codes[code_id].body;
+
+  std::vector<KRet> kont;
+  // Recursive-let closures are reachable from their own captured env only
+  // weakly (VRec). The C stack used to pin them across a call; with calls
+  // trampolined, keep each one live here for the run's duration. Dedup against
+  // the back keeps self-recursion O(1); non-recursive code pins nothing.
   std::vector<pVal> live;
+
+  pVal result;
+  bool done = false;
+
+  // Hand a finished value to the top continuation (or finish the run).
+  auto ret = [&](pVal v) {
+    if (kont.empty())
+    {
+      result = v;
+      done   = true;
+      return;
+    }
+    KRet kr = std::move(kont.back());
+    kont.pop_back();
+    *kr.box                   = *v; // back-patch the let placeholder
+    kr.frame->locals[kr.slot] = kr.box;
+    frame                     = kr.frame;
+    ctrl                      = kr.cont;
+  };
 
   for (;;)
   {
-    UT_FAIL_IF(!node);
-
-    switch (kind(node))
+    switch (IR::ekind(ctrl))
     {
-    case CR::Kind::Int : return mk_int(std::get<CR::Int>(node->as).val);
-    case CR::Kind::Real: return mk_real(std::get<CR::Real>(node->as).val);
-    case CR::Kind::Str:
-      return mk(Value{ VStr{ std::string(std::get<CR::Str>(node->as).val) } });
+    case IR::EKind::Ret:
+      ret(deref(eval_atom(std::get<IR::Ret>(ctrl->as).a, frame)));
+      if (done) return result;
+      break;
 
-    case CR::Kind::Var:
+    case IR::EKind::Let:
     {
-      auto &v = std::get<CR::Var>(node->as);
+      // Bind the slot to a weak self-reference, build the value (which may
+      // capture that cell), then back-patch and bind it strongly (see KRet).
+      auto &l               = std::get<IR::Let>(ctrl->as);
+      pVal  box             = mk(Value{ VUnk{} });
+      pVal  self            = mk(Value{ VRec{ std::weak_ptr<Value>(box) } });
+      frame->locals[l.slot] = self;
+      kont.push_back(KRet{ box, l.slot, l.body, frame });
+      ctrl = l.rhs;
+    }
+    break;
 
-      // A resolved built-in (e.g. "+@Int") is a first-class, curried value.
-      auto bit = impls.find(std::string(v.name));
-      if (bit != impls.end())
-        return mk(Value{ VBuiltin{ v.name, bit->second.arity, {} } });
+    case IR::EKind::App:
+    {
+      auto &a      = std::get<IR::App>(ctrl->as);
+      pVal  callee = deref(eval_atom(a.fn, frame));
+      pVal  argv   = deref(eval_atom(a.arg, frame));
 
-      // Global definition placeholder (the value a `$ name = ...` evaluates
-      // to).
-      if (v.idx == (size_t)-1) return mk(Value{ VUnk{} });
-
-      // Local variable (De-Bruijn indexed).
-      if (v.idx > 0)
+      if (VKind::Code == kind(callee))
       {
-        UT_FAIL_IF(v.idx > denv.size());
-        pVal entry = denv[denv.size() - v.idx];
-        // A `let` binding is held weakly while its value is built (see LET), to
-        // keep the closure graph acyclic; lock it to recover the value.
-        if (entry && VKind::Rec == kind(entry))
-        {
-          pVal target = std::get<VRec>(entry->as).target.lock();
-          UT_FAIL_IF(!target);
-          return target;
-        }
-        return entry;
+        auto &clo = std::get<VCode>(callee->as);
+        // Pin any recursive closures reachable from this one's captures, so a
+        // tail call doesn't free them out from under their own weak self-ref.
+        for (const pVal &cap : clo.env)
+          if (cap && VKind::Rec == kind(cap))
+          {
+            pVal tgt = std::get<VRec>(cap->as).target.lock();
+            if (tgt && (live.empty() || live.back() != tgt))
+              live.push_back(tgt);
+          }
+        const IR::Code &c  = prog.codes[clo.code];
+        FrameP          nf = std::make_shared<Frame>();
+        nf->locals.resize(c.nlocals);
+        nf->locals[0] = argv;
+        nf->env       = clo.env;
+        frame         = nf;
+        ctrl          = c.body;
+        break;
       }
-
-      // Global variable (idx == 0): jump to its definition in tail position.
-      auto it = senv.find(std::string(v.name));
-      UT_FAIL_IF(it == senv.end());
-      node = it->second;
-      denv.clear();
-      continue;
-    }
-
-    case CR::Kind::Fun:
-    {
-      auto &f = std::get<CR::Fun>(node->as);
-      return mk(Value{ VClosure{ f.body, f.param, denv } });
-    }
-
-    case CR::Kind::Let:
-    {
-      auto &l = std::get<CR::Let>(node->as);
-      // Bind the name to a placeholder, then evaluate the value with that
-      // binding *weakly* in scope and back-patch the slot, so recursive
-      // references resolve without the value's captured environment forming a
-      // shared_ptr cycle with it. (For a non-recursive let the placeholder is
-      // simply never read before patching.) The body then evaluates in tail
-      // position with the binding held strongly.
-      pVal value = mk(Value{ VUnk{} });
-      pVal self  = mk(Value{ VRec{ std::weak_ptr<Value>(value) } });
-
-      ValEnv val_env = denv;
-      val_env.push_back(self);
-      *value = *eval(l.val, val_env, senv);
-
-      denv.push_back(value);
-      node = l.body;
-      continue;
-    }
-
-    case CR::Kind::App:
-    {
-      auto &a = std::get<CR::App>(node->as);
-
-      pVal callee = force(eval(a.fn, denv, senv), senv);
-      pVal val    = eval(a.arg, denv, senv);
-
-      // Foreign function: accumulate the (forced) argument, call once
-      // saturated.
-      if (VKind::Extern == kind(callee))
-      {
-        VExtern e = std::get<VExtern>(callee->as); // copy and extend
-        e.args.push_back(force(val, senv));
-        if (e.args.size() >= e.decl->arg_types.size())
-          return call_extern(*e.decl, e.args);
-        return mk(Value{ e });
-      }
-
-      // Built-in: accumulate the (forced) argument, run the impl once
-      // saturated.
       if (VKind::Builtin == kind(callee))
       {
-        VBuiltin b = std::get<VBuiltin>(callee->as); // copy and extend
-        b.args.push_back(force(val, senv));
+        VBuiltin b = std::get<VBuiltin>(callee->as);
+        b.args.push_back(argv);
         if (b.args.size() >= b.arity)
-          return impls.at(std::string(b.impl)).fn(b.args);
-        return mk(Value{ b });
+          ret(impls.at(std::string(b.impl)).fn(b.args));
+        else
+          ret(mk(Value{ b }));
+        if (done) return result;
+        break;
       }
-
-      UT_FAIL_IF(VKind::Closure != kind(callee));
-      auto  &clo     = std::get<VClosure>(callee->as);
-      ValEnv new_env = clo.env;
-      new_env.push_back(val);
-      // A recursive `let` value is reachable from a closure's captured
-      // environment only weakly, through a VRec cell (see LET). The C++ stack
-      // used to keep it alive across a call; with the call trampolined, pin
-      // each such value for the loop's lifetime. Globals (empty env) and
-      // ordinary closures carry no VRec, so nothing is pinned and plain tail
-      // recursion stays in constant space; dedup keeps self-recursion at O(1).
-      for (const pVal &slot : clo.env)
-        if (slot && VKind::Rec == kind(slot))
-        {
-          pVal tgt = std::get<VRec>(slot->as).target.lock();
-          if (tgt && (live.empty() || live.back() != tgt)) live.push_back(tgt);
-        }
-      node = clo.body;
-      denv = std::move(new_env);
-      continue;
+      UT_FAIL_MSG("%s", "IR machine: applying a non-function value");
     }
+    break;
 
-    case CR::Kind::Extern:
+    case IR::EKind::Case:
     {
-      auto &e = std::get<CR::Extern>(node->as);
-      // A nullary extern is already saturated; otherwise it is a function
-      // value.
-      if (e.arg_types.size() == 0) return call_extern(e, {});
-      return mk(Value{ VExtern{ &e, {} } });
-    }
-
-    case CR::Kind::Case:
-    {
-      auto          &c   = std::get<CR::Case>(node->as);
-      pVal           sv  = force(eval(c.scrut, denv, senv), senv); // to WHNF
-      const CR::Alt *hit = nullptr;
-      for (const CR::Alt &alt : c.alts)
+      auto          &c   = std::get<IR::Case>(ctrl->as);
+      pVal           sv  = deref(eval_atom(c.scrut, frame));
+      const IR::Alt *hit = nullptr;
+      for (const IR::Alt &alt : c.alts)
       {
         bool m = false;
         switch (alt.kind)
         {
-        case CR::AltKind::Int:
+        case IR::AltKind::Int:
           UT_FAIL_IF(VKind::Int != kind(sv));
           m = std::get<VInt>(sv->as).val == alt.ival;
           break;
-        case CR::AltKind::Real:
+        case IR::AltKind::Real:
           UT_FAIL_IF(VKind::Real != kind(sv));
           m = std::get<VReal>(sv->as).val == alt.rval;
           break;
-        case CR::AltKind::Con:
+        case IR::AltKind::Con:
           UT_FAIL_IF(VKind::Variant != kind(sv));
           m = std::get<VVariant>(sv->as).tag == alt.ctor;
           break;
@@ -205,63 +237,82 @@ eval(
           break;
         }
       }
-      // A Con alt binds its payload positionally onto `denv`, in the same order
-      // assign_id pushed the binders, so De-Bruijn indices line up. The fields
-      // are the constructor's thunks -- binders stay lazy until forced.
-      if (hit && hit->kind == CR::AltKind::Con)
+      if (hit && hit->kind == IR::AltKind::Con)
       {
         auto &var = std::get<VVariant>(sv->as);
         UT_FAIL_IF(hit->binders.size() != var.fields.size());
-        for (const pVal &field : var.fields) denv.push_back(field);
+        for (size_t i = 0; i < var.fields.size(); ++i)
+          frame->locals[hit->binder_base + i] = var.fields[i];
       }
-      node = hit ? hit->body : c.deflt;
-      continue;
+      ctrl = hit ? hit->body : c.deflt;
     }
+    break;
 
-    case CR::Kind::Struct:
+    case IR::EKind::MkStruct:
     {
-      // Force every field, building a fully evaluated struct value.
-      auto   &s = std::get<CR::Struct>(node->as);
+      auto   &m = std::get<IR::MkStruct>(ctrl->as);
       VStruct out;
-      out.name = s.name;
-      for (const CR::FieldInit &f : s.fields)
-        out.fields.push_back({ f.name, eval(f.val, denv, senv) });
-      return mk(Value{ out });
+      out.name = m.name;
+      for (const IR::FieldA &f : m.fields)
+        out.fields.push_back({ f.name, deref(eval_atom(f.val, frame)) });
+      ret(mk(Value{ out }));
+      if (done) return result;
     }
+    break;
 
-    case CR::Kind::Field:
+    case IR::EKind::Field:
     {
-      auto &fa  = std::get<CR::Field>(node->as);
-      pVal  rec = force(eval(fa.record, denv, senv), senv);
+      auto &f   = std::get<IR::Field>(ctrl->as);
+      pVal  rec = deref(eval_atom(f.rec, frame));
       UT_FAIL_IF(VKind::Struct != kind(rec));
-      for (const auto &f : std::get<VStruct>(rec->as).fields)
-        if (f.first == fa.name) return f.second;
-      UT_FAIL_MSG("no field '%s' on struct '%s'",
-                  std::string(fa.name).c_str(),
-                  std::string(std::get<VStruct>(rec->as).name).c_str());
-      return mk(Value{ VUnk{} });
+      pVal v;
+      for (const auto &fld : std::get<VStruct>(rec->as).fields)
+        if (fld.first == f.name)
+        {
+          v = fld.second;
+          break;
+        }
+      UT_FAIL_IF(!v);
+      ret(v);
+      if (done) return result;
     }
+    break;
 
-    case CR::Kind::Variant:
+    case IR::EKind::MkVariant:
     {
-      // Construct eagerly but suspend each payload field into a VThunk
-      // capturing the current environment: data constructors are non-strict, so
-      // the fields are evaluated only when forced (see force / VVariant).
-      auto    &v = std::get<CR::Variant>(node->as);
+      auto    &mv = std::get<IR::MkVariant>(ctrl->as);
       VVariant out;
-      out.type_name = v.type_name;
-      out.tag       = v.tag;
-      for (const CR::Term *f : v.fields)
-        out.fields.push_back(mk(Value{ VThunk{ f, denv, nullptr } }));
-      return mk(Value{ out });
+      out.type_name = mv.type_name;
+      out.tag       = mv.tag;
+      for (size_t i = 0; i < mv.fields.size(); ++i)
+        out.fields.push_back(deref(eval_atom(mv.fields[i], frame)));
+      ret(mk(Value{ out }));
+      if (done) return result;
     }
+    break;
 
-    case CR::Kind::Unk: return mk(Value{ VUnk{} });
+    case IR::EKind::Extern:
+      UT_FAIL_MSG("%s", "IR machine: @extern not yet supported");
+      break;
+
+    case IR::EKind::Unk:
+      ret(mk(Value{ VUnk{} }));
+      if (done) return result;
+      break;
     }
-
-    UT_FAIL_MSG("%s", "unreachable: unhandled CR::Kind in eval");
-    return mk(Value{ VUnk{} });
   }
+}
+
+int
+machine_main(
+  const IR::Program &prog, UT::Vu entry, bool takes_arg)
+{
+  Machine m{ prog };
+  pVal    v = m.glob(entry);
+  if (takes_arg) v = m.apply(v, mk(Value{ VStr{ "" } }));
+  v = m.deref(v);
+  if (v && VKind::Int == kind(v)) return (int)std::get<VInt>(v->as).val;
+  return 0;
 }
 
 } // namespace IT

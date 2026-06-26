@@ -2,6 +2,7 @@
 #define ITxDATA_HEADER_
 
 #include "CR.hpp"
+#include "IR.hpp"
 #include "OP.hpp"
 
 namespace IT
@@ -10,12 +11,13 @@ namespace IT
 /*------------------------------------------------------------------------------
  *\RUNTIME VALUES
  *
- * A Value is what `eval` produces from a CR::Term. Unlike the Core (which is
- * immutable, arena-owned, raw-pointer code), values have dynamic lifetimes --
- * closures escape, thunks memoize, data is built and discarded -- so they are
- * REFERENCE-COUNTED (std::shared_ptr). The two worlds meet only by pointer: a
- * closure/thunk holds the CR::Term it will run (the Core arena outlives every
- * value), and forcing a Core literal copies its bytes into an owning value.
+ * A Value is what the reified-K machine (ITxMACHINE) produces from the IR.
+ * Unlike the IR/Core (immutable, arena-owned, raw-pointer code), values have
+ * dynamic lifetimes -- closures escape, data is built and discarded -- so they
+ * are REFERENCE-COUNTED (std::shared_ptr). The two worlds meet only by index/
+ * pointer: a closure (VCode) holds the IR code it will run (the arena outlives
+ * every value), and a literal is copied into an owning value when evaluated.
+ * Evaluation is strict: there are no thunks.
  *
  * Like the Core, a Value is a tagged union with no stored tag -- the variant is
  * the discriminant and `kind()` reads it back.
@@ -42,15 +44,6 @@ struct VReal
 struct VStr
 {
   std::string val; // owned: literals are copied in, FFI results are fresh
-};
-
-// A closure: the lambda body (Core) plus the environment captured where the
-// lambda was evaluated. `param` is kept for diagnostics; binding is positional.
-struct VClosure
-{
-  const CR::Term *body;
-  UT::Vu          param;
-  ValEnv          env;
 };
 
 // A built-in operation as a first-class, curried value. `impl` is the
@@ -83,24 +76,14 @@ struct VStruct
 };
 
 // A sum value: the union type, the variant `tag`, and the payload `fields` in
-// declared order. Data constructors are non-strict, so each field is a VThunk,
-// forced only on demand -- this is the one place the call-by-value runtime
-// defers work, so recursive / infinite values terminate.
+// declared order. Evaluation is strict -- every field is already a forced value
+// (no thunks). Coinductive / infinite structures are `@codata`, a separate kind
+// (see docs/effect-system-design.md §1a), not lazy data.
 struct VVariant
 {
   UT::Vu            type_name;
   UT::Vu            tag;
   std::vector<pVal> fields;
-};
-
-// A suspended computation: a lazy data-constructor field. `expr` is the Core
-// evaluated in the captured `env` the first time the thunk is forced; `memo`
-// caches the (forced) result for every later demand.
-struct VThunk
-{
-  const CR::Term *expr;
-  ValEnv          env;
-  pVal            memo; // null until forced
 };
 
 // A self-reference cell for a `let` binding. A binding's value (typically a
@@ -113,18 +96,26 @@ struct VRec
   std::weak_ptr<Value> target;
 };
 
+// A closure built by the reified-K machine (ITxMACHINE): the lifted `code`
+// (index into IR::Program::codes) plus its captured environment, read
+// positional as `Env i`.
+struct VCode
+{
+  size_t code;
+  ValEnv env;
+};
+
 #define IT_VALUE_VARIANTS                                                      \
   X(Unk, VUnk)                                                                 \
   X(Int, VInt)                                                                 \
   X(Real, VReal)                                                               \
   X(Str, VStr)                                                                 \
-  X(Closure, VClosure)                                                         \
   X(Builtin, VBuiltin)                                                         \
   X(Extern, VExtern)                                                           \
   X(Struct, VStruct)                                                           \
   X(Variant, VVariant)                                                         \
-  X(Thunk, VThunk)                                                             \
-  X(Rec, VRec)
+  X(Rec, VRec)                                                                 \
+  X(Code, VCode)
 
 enum class VKind
 {

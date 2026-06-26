@@ -11,15 +11,16 @@ tst_file(
 
   // A failed pipeline (parse or type error) yields no definitions; the error
   // messages have already been printed by interpret_file.
-  if (ip.env.empty())
+  if (ip.prog.globals.empty())
   {
     fprintf(stderr, "\033[1;31mFAIL\033[0m [%s]\n", file.data());
     return;
   }
 
-  // Force every definition so a runtime fault surfaces here. `ip.arena` keeps
-  // the Core alive for the duration of these evaluations.
-  for (auto &kv : ip.env) IT::eval(kv.second, {}, ip.env);
+  // Force every global through the reified-K machine so a runtime fault
+  // surfaces here. `ip.arena` keeps the IR alive for the duration.
+  IT::Machine m{ ip.prog };
+  for (const auto &kv : ip.prog.globals) m.glob(UT::Vu{ kv.first });
 
   printf("\033[1;32mOK\033[0m   [%s]\n", file.data());
 }

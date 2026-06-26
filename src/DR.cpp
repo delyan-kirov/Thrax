@@ -1,6 +1,8 @@
 #include "DR.hpp"
 #include "ER.hpp"
 #include "EX.hpp"
+#include "IR.hpp"
+#include "IT.hpp"
 #include "LL.hpp"
 #include "MR.hpp"
 #include "TC.hpp"
@@ -202,9 +204,11 @@ interpret_file(
   MR::Result mr;
   if (!compile_units(units, front, mr)) return ip;
 
+  CR::StatEnv env;
   for (size_t i = 0; i < mr.program.size(); ++i)
-    CR::build(&mr.program[i], ip.env, *ip.arena);
+    CR::build(&mr.program[i], env, *ip.arena);
 
+  ip.prog = IR::lower(env, *ip.arena);
   return ip;
 }
 
@@ -228,32 +232,39 @@ run_program(
     return 1;
   }
 
-  // The Core arena outlives the front-end arena and holds every Core node the
-  // interpreter walks (built by copying out of the front end).
+  // The IR arena outlives the front-end arena and holds every IR node the
+  // machine runs (lowered from the Core, which is copied out of the front end).
+  AR::Arena   ir_arena{};
+  CR::StatEnv env;
+  for (size_t i = 0; i < mr.program.size(); ++i)
+    CR::build(&mr.program[i], env, ir_arena);
+
+  IR::Program prog = IR::lower(env, ir_arena);
+
+  // Run the entry via the reified-K machine: `main` for `Int`, or `main ""` for
+  // `Str -> Int` (the CLI argument is empty until an `Args` type exists).
+  return IT::machine_main(prog, mr.entry, mr.entry_takes_arg);
+}
+
+bool
+dump_ir(
+  const std::vector<UT::Vu> &files)
+{
+  AR::Arena             front{};
+  std::vector<MR::Unit> units;
+  if (!parse_units(files, front, units)) return false;
+
+  MR::Result mr;
+  if (!compile_units(units, front, mr)) return false;
+
   AR::Arena   core_arena{};
   CR::StatEnv env;
   for (size_t i = 0; i < mr.program.size(); ++i)
     CR::build(&mr.program[i], env, core_arena);
 
-  // Invoke the entry: `main` for `Int`, or `main ""` for `Str -> Int` (the CLI
-  // argument is empty until an `Args` type exists). The stack EX nodes are only
-  // read by CR::build, which copies what it keeps into core_arena.
-  EX::Expr var{ EX::ExprTag::Var };
-  var.as         = EX::ExVar{ mr.entry };
-  EX::Expr *node = &var;
-  EX::Expr  strn{ EX::ExprTag::Str };
-  EX::Expr  app{ EX::ExprTag::App };
-  if (mr.entry_takes_arg)
-  {
-    strn.as = EX::ExStr{ UT::Vu{ "", 0 } };
-    app.as  = EX::ExApp{ &var, &strn };
-    node    = &app;
-  }
-
-  IT::pVal res = IT::eval(CR::build(node, env, core_arena), {}, env);
-  if (res && IT::VKind::Int == IT::kind(res))
-    return (int)std::get<IT::VInt>(res->as).val;
-  return 0;
+  IR::Program prog = IR::lower(env, core_arena);
+  std::printf("%s", IR::pprint(prog).c_str());
+  return true;
 }
 
 bool

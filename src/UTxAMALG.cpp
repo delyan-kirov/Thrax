@@ -14,6 +14,7 @@
 #include "EX.cpp"
 #include "EXxDATA.cpp"
 #include "FF.cpp"
+#include "IR.cpp"
 #include "IT.cpp"
 #include "ITxDATA.cpp"
 #include "LL.cpp"
