@@ -1286,7 +1286,7 @@ RExpr
 Parser::parse_alias_decl(
   const LX::Token &name)
 {
-  Ty *target = EX_CTX(parse_type(),
+  Ty  *target = EX_CTX(parse_type(),
                       name,
                       "in the target of type alias '%s'",
                       std::string(name.str).c_str());

@@ -8,10 +8,12 @@
 #define UTXAMALG_HEADER_
 
 #include "AR.hpp"
+#include "CR.hpp"
 #include "DR.hpp"
 #include "ER.hpp"
 #include "EX.hpp"
 #include "FF.hpp"
+#include "IR.hpp"
 #include "IT.hpp"
 #include "LX.hpp"
 #include "MR.hpp"
