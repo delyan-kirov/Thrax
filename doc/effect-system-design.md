@@ -240,6 +240,13 @@ checker intact and lets the runtime model be validated independently. The
 tail-resumptive optimization is still partly available dynamically; the
 O(1)-evidence indexing specifically needs the types.
 
+**Status (2026-06-27): the rows have landed for TYPING (M3.1).** A function's
+type now carries an effect row, handlers discharge what they handle, and an
+unhandled effect is a **compile-time** error. RUNTIME dispatch is still the
+dynamic K-stack search above — evidence passing and the tail-resumptive
+optimization (which consume the types) remain M3.2, as does effect subsumption.
+See the roadmap (§10).
+
 ---
 
 ## 6. Runtime model: reified-K abstract machine
@@ -435,9 +442,24 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     module-scoped, effect-tagged resolution (see §11 / tasks). REMAINING.
   - Not yet: `discontinue`/`finally`, coroutine scheduler example, async.
 
-- [ ] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
+- [~] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
   inference, handler typing; **evidence passing** + the tail-resumptive
   optimization; compile-time unhandled-effect / exhaustiveness.
+  - [X] **M3.1 — correctness slice (2026-06-27).** Effect rows in the type graph
+    (`TRowEmpty`/`TRowExtend`, an `eff` on `TArrow`); Leijen scoped-label row
+    unification; ambient-effect threading through `infer`/`infer_against` (App
+    unifies the callee's latent row with the ambient, Lam opens a fresh ambient,
+    Handle discharges its handled effects, top level is the empty row);
+    operations typed with an open tail `<L | mu>`; Koka-style `<…>` surface
+    syntax on the arrow (`A -> <E1, E2 | `e> B`, bare arrow = pure). Catches
+    unhandled effects at compile time. TC-only (types erased before CR/IR/IT);
+    `dat/EFFECTS.thx` + `dat/COROUTINES.thx` annotated and passing,
+    valgrind-clean. Known gap: no effect SUBSUMPTION (application uses row
+    equality), so an explicitly-pure arrow isn't callable in an effectful
+    context unless made row-polymorphic.
+  - [ ] **M3.2 — perf + subsumption.** Evidence passing (O(1) dispatch), the
+    tail-resumptive optimization, effect subtyping/subsumption; exhaustiveness
+    policy. Parametric effects (effects with type arguments).
 
 - [ ] **M4 — Perceus + C backend.** Explicit `dup`/`drop` over the IR; uniform
   boxed value representation with RC headers; C emission.

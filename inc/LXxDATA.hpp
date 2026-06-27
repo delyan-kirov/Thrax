@@ -82,6 +82,15 @@ const Operators operator_db{
   { OP::LEQ, TokenTag::Op },    //
   { OP::MORE, TokenTag::Op },   //
   { OP::LESS, TokenTag::Op },   //
+  // Effect-row delimiters (M3): `A -> <E1, E2 | `e> B`. Op-char runs coalesce,
+  // so the opener may arrive as `<`, the empty row as `<>`, or a label-less open
+  // row as `<|`; the closing `>` and the tail separator `|` stand alone. Outside
+  // a type these would just be unbound variable names.
+  { "<", TokenTag::Op },        //
+  { ">", TokenTag::Op },        //
+  { "|", TokenTag::Op },        //
+  { "<>", TokenTag::Op },       //
+  { "<|", TokenTag::Op },       //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike

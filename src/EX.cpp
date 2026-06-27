@@ -1596,9 +1596,82 @@ Parser::parse_type()
 
   if (LX::TokenTag::Arrow == EX_TRY(m_lex.peek()).tag)
   {
-    m_lex.next();                   // '->'
-    Ty *rhs = EX_TRY(parse_type()); // right-associative
-    return { true, mk_ty(Ty{ TyTag::Arrow, TyArrow{ lhs, rhs } }), {} };
+    m_lex.next(); // '->'
+
+    // Optional effect-row annotation between the arrow and the result type (M3):
+    //   <>                empty / pure         <E1, E2>         closed labels
+    //   <`e>              just a row variable  <E1, E2 | `e>    open row
+    // Op-char runs coalesce, so the opener arrives as `<`, `<>` or `<|`. Bare
+    // `->` is implicitly pure too.
+    UT::Vec<UT::Vu> eff_labels{ m_arena };
+    UT::Vu          eff_tail{};
+    bool            has_eff = false;
+
+    LX::Token pk      = EX_TRY(m_lex.peek());
+    bool      is_op   = LX::TokenTag::Op == pk.tag;
+    bool      pending_tail = false; // a `<|` opener already consumed the '|'
+    if (is_op && pk.str == "<>")
+    {
+      m_lex.next(); // '<>'
+      has_eff = true;
+    }
+    else if ((is_op && pk.str == "<") || (is_op && pk.str == "<|"))
+    {
+      has_eff      = true;
+      pending_tail = pk.str == "<|";
+      m_lex.next(); // '<' or '<|'
+      // Labels (comma-separated), an optional `| `e` tail, then `>`. A bare row
+      // variable in label position is the tail (so `<`e>` is a pure row var).
+      for (;;)
+      {
+        LX::Token t = EX_TRY(m_lex.peek());
+        if (!pending_tail && LX::TokenTag::Op == t.tag && t.str == ">")
+        {
+          m_lex.next();
+          break;
+        }
+        if (pending_tail
+            || (LX::TokenTag::Op == t.tag && t.str == "|")
+            || LX::TokenTag::TyVar == t.tag)
+        {
+          if (!pending_tail && LX::TokenTag::Op == t.tag) m_lex.next(); // '|'
+          LX::Token tv = EX_TRY(m_lex.peek());
+          if (LX::TokenTag::TyVar != tv.tag)
+            EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                   tv,
+                   "expected a row variable (e.g. `e) in the effect row, found "
+                   "'%s'",
+                   std::string(tv.str).c_str());
+          m_lex.next();
+          eff_tail        = UT::Vu{ tv.str.data() + 1, tv.str.size() - 1 };
+          LX::Token close = EX_TRY(m_lex.peek());
+          if (!(LX::TokenTag::Op == close.tag && close.str == ">"))
+            EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                   close,
+                   "expected '>' to close the effect row, found '%s'",
+                   std::string(close.str).c_str());
+          m_lex.next();
+          break;
+        }
+        // An effect name: an uppercase Word.
+        char c = t.str.size() ? t.str.data()[0] : '\0';
+        if (LX::TokenTag::Word != t.tag || c < 'A' || c > 'Z')
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 t,
+                 "expected an effect name (uppercase) in the effect row, found "
+                 "'%s'",
+                 std::string(t.str).c_str());
+        m_lex.next();
+        eff_labels.push(t.str);
+
+        LX::Token sep = EX_TRY(m_lex.peek());
+        if (LX::TokenTag::Comma == sep.tag) m_lex.next();
+      }
+    }
+
+    Ty     *rhs = EX_TRY(parse_type()); // right-associative
+    TyArrow a{ lhs, rhs, eff_labels, eff_tail, has_eff };
+    return { true, mk_ty(Ty{ TyTag::Arrow, a }), {} };
   }
   return { true, lhs, {} };
 }

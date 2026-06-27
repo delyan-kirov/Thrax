@@ -10,7 +10,7 @@ $ Task : @union = Fin: {}, Susp: { Int, {} -> Task },
 
 # Run a task one step: it either finishes (`Fin`) or yields a value and suspends,
 # in which case we capture its continuation `k` in `Susp` for the scheduler.
-$ spawn : ({} -> {}) -> Task = \t =
+$ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
     ctl k
        is yield v = .Susp.{ v, k }
@@ -27,8 +27,8 @@ $ rr : Task -> Task -> Int = \a b =
          is .Susp.{ va, ka } then va + rr b (ka {})
          else 0
 
-$ t1 : {} -> {} = \u = let _ = yield 1 in let _ = yield 3 in {}
-$ t2 : {} -> {} = \u = let _ = yield 2 in let _ = yield 4 in {}
+$ t1 : {} -> <Co> {} = \u = let _ = yield 1 in let _ = yield 3 in {}
+$ t2 : {} -> <Co> {} = \u = let _ = yield 2 in let _ = yield 4 in {}
 
 # Interleaved order is 1,2,3,4 -> sum 10.
 $ scheduled : Int = rr (spawn t1) (spawn t2)

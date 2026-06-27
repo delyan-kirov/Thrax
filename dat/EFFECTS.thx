@@ -1,41 +1,41 @@
 @mod EFFECTS
 
-# Algebraic effects + handlers (untyped, M2). Operations are performed by calling
+# Algebraic effects + handlers (typed, M3). Operations are performed by calling
 # them; a handler is `do <body> ctl k  is op a = e ...  [else x = e]`; the
-# continuation `k` is resumed by applying it (affine: at most once).
+# continuation `k` is resumed by applying it (affine: at most once). A function's
+# type carries the effects it may perform as a row on the arrow: `A -> <E> B`; a
+# bare arrow is pure, and an unhandled effect is a compile-time error.
 
 $ Exn   : @effect = throw : Str -> `a,        # never resumes -> polymorphic result
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
-# FIXME: should support extern in IR
-# [ERROR] src/IT.cpp:398: pVal IT::Machine::run(size_t, ValEnv, ValEnv)
-#   398 | IR machine: @extern not yet supported
-# $ puts: Str -> Int = @extern.{"puts", "bin/libc.so"}
-
-# Exception: the clause ignores k (resume 0 times).
+# Exception: the clause ignores k (resume 0 times). Exn is handled here, so
+# safeDiv is pure at its boundary.
 $ safeDiv : Int -> Int -> Int = \a b =
     do if b ?= 0 then throw "div0" else a / b
-    ctl k is throw msg = puts msg
+    ctl k is throw msg = 0 - 1
 
 # Generator: resume once, summing every yielded value; else is the base case.
-$ sumGen : ({} -> {}) -> Int = \gen =
+# The argument performs Yield, so its arrow is `{} -> <Yield> {}`.
+$ sumGen : ({} -> <Yield> {}) -> Int = \gen =
     do gen {}
     ctl k is yield v = v + k {}
           else _ = 0
 
-$ gen3 : {} -> {} = \u =
+$ gen3 : {} -> <Yield> {} = \u =
     let _ = yield 10 in let _ = yield 20 in let _ = yield 12 in {}
 
 # State via parameter-passing: each clause returns a state-transforming function.
-$ runState : ({} -> Int) -> Int -> Int = \action s0 =
+# The action performs State, so its arrow is `{} -> <State> Int`.
+$ runState : ({} -> <State> Int) -> Int -> Int = \action s0 =
     let h = do action {}
             ctl k is get u = \s = (k s) s
                   is put n = \s = (k {}) n
                   else x = \s = x
      in h s0
 
-$ counter : {} -> Int = \u =
+$ counter : {} -> <State> Int = \u =
     let x = get {} in let _ = put (x + 1) in let y = get {} in x + y
 
 # Top-level results force the handlers to run under the test harness.

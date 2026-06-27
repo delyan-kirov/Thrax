@@ -80,10 +80,18 @@ struct TyVar
 {
   UT::Vu name; // type-variable name, without the leading backtick
 };
+// A function type `from -> to`, optionally carrying an effect-row annotation
+// written `from -> <E1, E2 | `e> to` (M3 effect rows). `eff_labels` are the
+// effect names; `eff_tail` is the row-variable name (without backtick) for an
+// open row, empty for a closed one. No annotation (both empty, `eff` false)
+// means the pure/total empty row; an explicit `<>` is also pure with eff set.
 struct TyArrow
 {
-  Ty *from;
-  Ty *to;
+  Ty            *from;
+  Ty            *to;
+  UT::Vec<UT::Vu> eff_labels;
+  UT::Vu         eff_tail{};
+  bool           eff = false; // an effect row was written (even if `<>`)
 };
 
 #define EX_TY_VARIANTS                                                         \

@@ -462,13 +462,36 @@ is handled each time.
             is fork f  = let _ = enqueue k in spawn f
             else _     = run_next
 
-STATUS.  Effects are presently UNTYPED / dynamic: a function's type does NOT yet
-carry the effects it may perform, the handler is found by dynamic search up the
-continuation stack, and an unhandled operation is a RUNTIME error. The operation
-signatures are checked for their argument/result types but are not yet tracked as
-an effect ROW on the arrow. Typed effect rows (effect polymorphism, compile-time
-unhandled-effect errors, the tail-resumptive optimization) are a later milestone;
-see doc/effect-system-design.md.
+EFFECT ROWS (types).  A function's type carries an effect ROW on the arrow: the
+effects a call may perform, written between the arrow and the result type.
+
+    arrow ::= type '->' [ effrow ] type
+    effrow ::= '<' [ effname (',' effname)* ] [ '|' tyvar ] '>'
+             | '<' tyvar '>'                 # a bare row variable
+
+    f : Int -> Int                  # pure: an absent row means the empty row <>
+    g : {} -> <State> Int           # may perform State
+    h : {} -> <Yield, State> {}     # may perform Yield and/or State
+    map : (`a -> <`e> `b) -> List `a -> <`e> List `b   # effect-polymorphic
+
+A handler DISCHARGES the effects it handles: `do body ctl k is op ...` types
+`body` under the ambient row extended with each handled effect, and the handle
+expression itself under the ambient without them. Operation use injects the
+operation's effect into the ambient. A top-level definition is typed under the
+empty row, so a performed-but-unhandled effect is a COMPILE-TIME error
+(`effect 'E' is performed but not handled`). Rows unify up to reordering and
+allow duplicate (scoped) labels; a row variable makes a function effect-
+polymorphic. Effect annotations skolemize/generalize their row variables exactly
+like ordinary type variables.
+
+STATUS.  Typed effect rows (the above), effect polymorphism + inference, handler
+typing, and compile-time unhandled-effect errors are IMPLEMENTED (M3.1). The
+handler is still found by dynamic search up the continuation stack at run time;
+evidence passing (O(1) dispatch) and the tail-resumptive optimization remain a
+later milestone, as does effect SUBSUMPTION -- application unifies the callee's
+latent row with the ambient by equality, so a function written pure (`Int ->
+Int`) is not yet callable in an effectful context unless given a row variable
+(`Int -> <`e> Int`). See doc/effect-system-design.md.
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)

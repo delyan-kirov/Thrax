@@ -50,6 +50,13 @@ private:
   Globals     m_globals;
   StructTable m_structs;
   UnionTable  m_unions;
+
+  // Declared effects and their operations (M3 effect rows). `m_effects` is the
+  // set of declared `@effect` names (so a `<E>` row annotation can validate its
+  // labels); `m_op_effect` maps each operation to its owning effect, so a
+  // handler knows which effect its clauses discharge from the ambient row.
+  std::unordered_set<std::string>              m_effects;
+  std::unordered_map<std::string, std::string> m_op_effect;
   // Declared parameter count (arity) of every nominal type, keyed by name.
   // Populated before any field type is built so applied cons can be
   // arity-checked even across forward references. Built-ins (Int/Str) are
@@ -122,7 +129,12 @@ private:
   // type constructors
   Type *fresh(bool rigid = false, std::string name = "");
   Type *con(std::string name, std::vector<Type *> args = {});
-  Type *arrow(Type *from, Type *to);
+  Type *arrow(Type *from, Type *to, Type *eff);
+  Type *arrow(Type *from, Type *to); // eff defaults to a fresh row variable
+  Type *row_empty();
+  Type *row_extend(std::string label, Type *rest);
+  bool  unify_row(Type *a, Type *b);
+  bool  rewrite_row(Type *row, const std::string &label, Type *&found_rest);
   Core *core(CoreData as);
 
   // substitution / nominal instantiation
@@ -149,8 +161,8 @@ private:
   // desugar + inference
   Core *desugar(EX::Expr *e);
   bool  occurs_free(const std::string &name, Core *e);
-  Type *infer(Core *e, Env &locals);
-  Type *infer_against(Core *e, Type *expected, Env &locals);
+  Type *infer(Core *e, Env &locals, Type *amb);
+  Type *infer_against(Core *e, Type *expected, Env &locals, Type *amb);
 
   // resolution
   Scheme resolve(const std::string &name);
@@ -192,9 +204,34 @@ Checker::con(
 
 Type *
 Checker::arrow(
+  Type *from, Type *to, Type *eff)
+{
+  m_types.push_back(Type{ TArrow{ from, to, eff } });
+  return &m_types.back();
+}
+
+// A function type whose latent effect is left open: a fresh row variable. Used
+// for shaped/probed arrows and effect-polymorphic primitives -- the variable
+// unifies with whatever ambient effect the use site demands.
+Type *
+Checker::arrow(
   Type *from, Type *to)
 {
-  m_types.push_back(Type{ TArrow{ from, to } });
+  return arrow(from, to, fresh());
+}
+
+Type *
+Checker::row_empty()
+{
+  m_types.push_back(Type{ TRowEmpty{} });
+  return &m_types.back();
+}
+
+Type *
+Checker::row_extend(
+  std::string label, Type *rest)
+{
+  m_types.push_back(Type{ TRowExtend{ std::move(label), rest } });
   return &m_types.back();
 }
 
@@ -235,13 +272,15 @@ Checker::occurs(
   if (t->kind() == Kind::Arrow)
   {
     TArrow &a = std::get<TArrow>(t->as);
-    return occurs(var, a.from) || occurs(var, a.to);
+    return occurs(var, a.from) || occurs(var, a.to) || occurs(var, a.eff);
   }
   if (t->kind() == Kind::Con)
   {
     for (Type *arg : std::get<TCon>(t->as).args)
       if (occurs(var, arg)) return true;
   }
+  if (t->kind() == Kind::RowExtend)
+    return occurs(var, std::get<TRowExtend>(t->as).rest);
   return false;
 }
 
@@ -303,14 +342,83 @@ Checker::unify(
     TArrow &fb = std::get<TArrow>(b->as);
     bool    l  = unify(fa.from, fb.from);
     bool    r  = unify(fa.to, fb.to);
-    return l && r;
+    bool    e  = unify(fa.eff, fb.eff);
+    return l && r && e;
   }
+
+  if (a->kind() == Kind::RowEmpty && b->kind() == Kind::RowEmpty) return true;
+
+  if (a->kind() == Kind::RowExtend || b->kind() == Kind::RowExtend)
+    return unify_row(a, b);
 
   fail(ER::Code::TYPE_MISMATCH,
        m_anchor,
        "type mismatch: expected '%s', got '%s'",
        show(a).c_str(),
        show(b).c_str());
+  return false;
+}
+
+// Unify two effect rows, at least one a `<label | rest>` extension (Var-vs-row
+// and empty-vs-empty are handled by unify's earlier arms). Following Leijen's
+// scoped-label discipline: pull the head label of `a` out of `b` (rewrite_row),
+// then unify the two remaining tails. A label absent from a closed `b` is the
+// unhandled-effect error.
+bool
+Checker::unify_row(
+  Type *a, Type *b)
+{
+  // Normalize so `a` is the extension we decompose.
+  if (a->kind() != Kind::RowExtend) std::swap(a, b);
+  TRowExtend &ea = std::get<TRowExtend>(a->as);
+
+  Type *b_rest = nullptr;
+  if (!rewrite_row(b, ea.label, b_rest))
+  {
+    fail(ER::Code::TYPE_MISMATCH,
+         m_anchor,
+         "effect '%s' is performed but not handled (expected '%s', got '%s')",
+         ea.label.c_str(),
+         show(b).c_str(),
+         show(a).c_str());
+    return false;
+  }
+  return unify(ea.rest, b_rest);
+}
+
+// Bring an occurrence of effect `label` to the head of `row`, yielding the row
+// that remains once it is removed (`found_rest`). If `row`'s tail is a variable
+// and `label` is absent, extend that variable with `<label | fresh>` and report
+// the fresh tail -- this is how an open row grows to accept a new effect.
+// Returns false iff `row` is closed and lacks `label`.
+bool
+Checker::rewrite_row(
+  Type *row, const std::string &label, Type *&found_rest)
+{
+  row = prune(row);
+  if (row->kind() == Kind::RowExtend)
+  {
+    TRowExtend &r = std::get<TRowExtend>(row->as);
+    if (r.label == label)
+    {
+      found_rest = r.rest;
+      return true;
+    }
+    Type *deeper = nullptr;
+    if (!rewrite_row(r.rest, label, deeper)) return false;
+    // Keep this head, splice the rest found below it.
+    found_rest = row_extend(r.label, deeper);
+    return true;
+  }
+  if (row->kind() == Kind::Var && !std::get<TVar>(row->as).rigid)
+  {
+    Type *tail = fresh();
+    if (m_trail) m_trail->push_back(row);
+    std::get<TVar>(row->as).ref = row_extend(label, tail);
+    found_rest                  = tail;
+    return true;
+  }
+  // Closed row (empty or rigid var) without the label.
   return false;
 }
 
@@ -364,8 +472,11 @@ Checker::free_vars(
     TArrow &a = std::get<TArrow>(t->as);
     free_vars(a.from, out);
     free_vars(a.to, out);
+    free_vars(a.eff, out);
     break;
   }
+  case Kind::RowExtend: free_vars(std::get<TRowExtend>(t->as).rest, out); break;
+  case Kind::RowEmpty : break;
   }
 }
 
@@ -446,8 +557,14 @@ Checker::subst(
   case Kind::Arrow:
   {
     TArrow &a = std::get<TArrow>(t->as);
-    return arrow(subst(a.from, s), subst(a.to, s));
+    return arrow(subst(a.from, s), subst(a.to, s), subst(a.eff, s));
   }
+  case Kind::RowExtend:
+  {
+    TRowExtend &r = std::get<TRowExtend>(t->as);
+    return row_extend(r.label, subst(r.rest, s));
+  }
+  case Kind::RowEmpty: return t;
   }
   return t;
 }
@@ -549,7 +666,37 @@ Checker::sig_to_type(
     auto &ar = std::get<EX::TyArrow>(sig->as);
     Type *f  = sig_to_type(ar.from, tv, rigid, order);
     Type *t  = sig_to_type(ar.to, tv, rigid, order);
-    return arrow(f, t);
+
+    // The effect row: the tail (a row variable, shared with type vars via `tv`
+    // so it skolemizes/generalizes consistently) or the empty closed row, then
+    // each written label extended onto it. A label must name a declared effect.
+    Type *eff;
+    if (ar.eff_tail.data() && ar.eff_tail.size())
+    {
+      std::string nm(ar.eff_tail);
+      auto        it = tv.find(nm);
+      if (it != tv.end())
+        eff = it->second;
+      else
+      {
+        eff    = fresh(rigid, nm);
+        tv[nm] = eff;
+        if (order) order->push_back(std::get<TVar>(eff->as).id);
+      }
+    }
+    else
+      eff = row_empty();
+    for (UT::Vu lab : ar.eff_labels)
+    {
+      std::string name(lab);
+      if (!rigid && !m_effects.count(name))
+        fail(ER::Code::TYPE_UNBOUND,
+             m_anchor,
+             "unknown effect '%s' in effect row",
+             name.c_str());
+      eff = row_extend(name, eff);
+    }
+    return arrow(f, t, eff);
   }
   }
   return fresh();
@@ -809,9 +956,15 @@ Checker::occurs_free(
  *\INFERENCE
  *-----------------------------------------------------------------------------*/
 
+// `amb` is the ambient effect row: the effects this expression is allowed to
+// perform. Performing an operation injects its effect into `amb` (an App unifies
+// the callee's latent effect with `amb`); a handler discharges the effects it
+// handles by typing its body under `<handled... | amb>`; a lambda body runs
+// under its own fresh ambient (the arrow's latent effect). A top-level body is
+// typed under the empty closed row, so an unhandled effect fails to unify.
 Type *
 Checker::infer(
-  Core *e, Env &locals)
+  Core *e, Env &locals, Type *amb)
 {
   switch (e->kind())
   {
@@ -823,18 +976,33 @@ Checker::infer(
 
   case CKind::Handle:
   {
-    // result: the handler's type. body: typed plainly (effects are untyped in
-    // M2). else x = e: x has the body's type, e has `result`; with no else the
-    // body's result IS the handler's. Each clause `is op a = e` for `op : A ->
-    // B` binds a : A and k : B -> result, and e : result.
+    // The handler discharges the effects named by its clauses: the body runs
+    // under `<handled... | amb>`, the handle expression itself under `amb`. else
+    // x = e: x has the body's type, e has `result`; with no else the body's
+    // result IS the handler's. Each clause `is op a = e` for `op : A -> B` binds
+    // a : A and k : B ->^amb result (resuming is deep, so k runs under amb).
     CHandle &h      = std::get<CHandle>(e->as);
     Type    *result = fresh();
-    Type    *tbody  = infer(h.body, locals);
+
+    // Build the body's ambient: amb extended with each DISTINCT handled effect
+    // (several clauses may handle one effect, e.g. get/put both belong to State;
+    // adding the label once keeps the row in step with what the body performs).
+    Type *inner = amb;
+    {
+      std::unordered_set<std::string> seen;
+      for (CHandleClause &c : h.clauses)
+      {
+        auto oe = m_op_effect.find(c.op);
+        if (oe != m_op_effect.end() && seen.insert(oe->second).second)
+          inner = row_extend(oe->second, inner);
+      }
+    }
+    Type *tbody = infer(h.body, locals, inner);
     if (h.els)
     {
       Env e2        = locals;
       e2[h.els_var] = Scheme{ {}, tbody };
-      unify(infer(h.els, e2), result);
+      unify(infer(h.els, e2, amb), result);
     }
     else
       unify(tbody, result);
@@ -855,8 +1023,8 @@ Checker::infer(
       unify(opty, arrow(A, B));
       Env e2    = locals;
       e2[c.arg] = Scheme{ {}, A };
-      e2[h.k]   = Scheme{ {}, arrow(B, result) };
-      unify(infer(c.body, e2), result);
+      e2[h.k]   = Scheme{ {}, arrow(B, result, amb) };
+      unify(infer(c.body, e2, amb), result);
     }
     return result;
   }
@@ -898,21 +1066,28 @@ Checker::infer(
 
   case CKind::Lam:
   {
+    // Constructing a closure performs no effect (the lambda itself is pure under
+    // `amb`); its body runs under a fresh ambient that becomes the arrow's
+    // latent effect.
     CLam &l        = std::get<CLam>(e->as);
     Type *pv       = fresh();
+    Type *e_body   = fresh();
     Env   inner    = locals;
     inner[l.param] = Scheme{ {}, pv }; // lambda params are monomorphic
-    Type *bt       = infer(l.body, inner);
-    return arrow(pv, bt);
+    Type *bt       = infer(l.body, inner, e_body);
+    return arrow(pv, bt, e_body);
   }
 
   case CKind::App:
   {
+    // The call's latent effect is the ambient: the callee may perform at most
+    // what is allowed here. (Operations are Apps whose callee carries `<L|mu>`,
+    // so performing one forces L into amb.)
     CApp &ap = std::get<CApp>(e->as);
-    Type *ft = infer(ap.fn, locals);
-    Type *at = infer(ap.arg, locals);
+    Type *ft = infer(ap.fn, locals, amb);
+    Type *at = infer(ap.arg, locals, amb);
     Type *rv = fresh();
-    unify(ft, arrow(at, rv));
+    unify(ft, arrow(at, rv, amb));
     return rv;
   }
 
@@ -926,19 +1101,19 @@ Checker::infer(
       Type *nv     = fresh();
       Env   rec    = locals;
       rec[lt.name] = Scheme{ {}, nv };
-      vt           = infer(lt.val, rec);
+      vt           = infer(lt.val, rec, amb);
       unify(nv, vt);
       vt = nv;
     }
     else
     {
-      vt = infer(lt.val, locals);
+      vt = infer(lt.val, locals, amb);
     }
     if (lt.sig) unify(lt.sig, vt); // pin the value's type (pattern-let subject)
     Scheme s       = generalize(locals, vt);
     Env    inner   = locals;
     inner[lt.name] = s;
-    return infer(lt.body, inner);
+    return infer(lt.body, inner, amb);
   }
 
   case CKind::StructLit:
@@ -956,7 +1131,7 @@ Checker::infer(
       s.anchor    = at;
       s.exs       = sl.ex;
       for (auto &init : sl.fields)
-        s.fields.push_back({ init.first, infer(init.second, locals) });
+        s.fields.push_back({ init.first, infer(init.second, locals, amb) });
       Type *use = s.use;
       m_lit_sites.push_back(std::move(s));
       return use;
@@ -1006,7 +1181,7 @@ Checker::infer(
         continue;
       }
       seen[idx] = true;
-      Type *vt  = infer(init.second, locals);
+      Type *vt  = infer(init.second, locals, amb);
       unify(subst(decl[idx].second, sub), vt);
     }
     for (size_t k = 0; k < decl.size(); ++k)
@@ -1036,7 +1211,7 @@ Checker::infer(
       s.vtag      = vl.vtag;
       s.exv       = vl.ex;
       for (auto &init : vl.fields)
-        s.fields.push_back({ init.first, infer(init.second, locals) });
+        s.fields.push_back({ init.first, infer(init.second, locals, amb) });
       Type *use = s.use;
       m_lit_sites.push_back(std::move(s));
       return use;
@@ -1104,7 +1279,7 @@ Checker::infer(
           continue;
         }
         seen[idx] = true;
-        unify(subst((*decl)[idx].second, sub), infer(init.second, locals));
+        unify(subst((*decl)[idx].second, sub), infer(init.second, locals, amb));
       }
       for (size_t k = 0; k < decl->size(); ++k)
         if (!seen[k])
@@ -1129,7 +1304,7 @@ Checker::infer(
     {
       for (size_t k = 0; k < decl->size(); ++k)
         unify(subst((*decl)[k].second, sub),
-              infer(vl.fields[k].second, locals));
+              infer(vl.fields[k].second, locals, amb));
     }
 
     return con(vl.type_name, args);
@@ -1142,7 +1317,7 @@ Checker::infer(
     // settle it in resolve_field_sites once the receiver is known.
     CField &fld = std::get<CField>(e->as);
     UT::Vu  at  = fld.anchor.data() ? fld.anchor : m_anchor;
-    Type   *rt  = infer(fld.record, locals);
+    Type   *rt  = infer(fld.record, locals, amb);
     Type   *res = fresh();
     m_field_sites.push_back({ rt, fld.field, at, res });
     return res;
@@ -1151,7 +1326,7 @@ Checker::infer(
   case CKind::Case:
   {
     CCase &cc = std::get<CCase>(e->as);
-    Type  *st = infer(cc.scrut, locals); // the scrutinee
+    Type  *st = infer(cc.scrut, locals, amb); // the scrutinee
     Type  *rt = fresh(); // every arm and the default share one type
     for (CoreAlt &alt : cc.alts)
     {
@@ -1190,9 +1365,9 @@ Checker::infer(
         break;
       }
       }
-      unify(rt, infer(body, inner));
+      unify(rt, infer(body, inner, amb));
     }
-    unify(rt, infer(cc.deflt, locals)); // the default arm
+    unify(rt, infer(cc.deflt, locals, amb)); // the default arm
     return rt;
   }
   }
@@ -1208,19 +1383,21 @@ Checker::infer(
 // inference unified against the expectation.
 Type *
 Checker::infer_against(
-  Core *e, Type *expected, Env &locals)
+  Core *e, Type *expected, Env &locals, Type *amb)
 {
   Type *exp = prune(expected);
   if (e->kind() == CKind::Lam && exp->kind() == Kind::Arrow)
   {
+    // The declared arrow's latent effect becomes the body's ambient, so a
+    // signature like `{} -> <State> Int` lets the body perform State.
     CLam   &l      = std::get<CLam>(e->as);
     TArrow &a      = std::get<TArrow>(exp->as);
     Env     inner  = locals;
     inner[l.param] = Scheme{ {}, a.from }; // param pinned to its declared type
-    Type *bt       = infer_against(l.body, a.to, inner);
-    return arrow(a.from, bt);
+    Type *bt       = infer_against(l.body, a.to, inner, a.eff);
+    return arrow(a.from, bt, a.eff);
   }
-  Type *t = infer(e, locals);
+  Type *t = infer(e, locals, amb);
   unify(t, expected);
   return t;
 }
@@ -1291,7 +1468,7 @@ Checker::resolve(
     size_t ubase = m_usites.size();
     size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
-    Type  *t     = infer(g.body, empty);
+    Type  *t     = infer(g.body, empty, row_empty()); // top level is pure
     resolve_sites(base); // settle this body's overloads before judging its type
     resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
     resolve_field_sites(fbase); // ... then field accesses (receivers now known)
@@ -1838,6 +2015,12 @@ Checker::run(
       m_aliases[std::string(ad.name)] = ad.target;
     }
 
+  // Record every declared effect name up front, so an effect-row annotation
+  // `<E>` in any (possibly earlier) signature can validate its labels.
+  for (EX::Expr &e : exprs)
+    if (e.tag == EX::ExprTag::EffectDecl)
+      m_effects.insert(std::string(std::get<EX::ExEffectDecl>(e.as).name));
+
   // Phase A0: record every nominal type's arity (its distinct free type vars)
   // before any field type is built, so applied cons can be arity-checked even
   // when they reference a type declared later.
@@ -1940,10 +2123,21 @@ Checker::run(
              std::string(ed.name).c_str());
         continue;
       }
-      op_owner[key] = ed.name;
+      op_owner[key]    = ed.name;
+      m_op_effect[key] = std::string(ed.name);
       TyVarEnv tv;
       VarIds   params;
-      Type    *t  = sig_to_type(op.ty, tv, false, &params);
+      Type    *t = sig_to_type(op.ty, tv, false, &params);
+
+      // The performing arrow carries an open-tailed effect row `<Eff | mu>`
+      // (mu fresh and quantified): performing the operation forces `Eff` into
+      // the ambient and fits any ambient that already contains more effects.
+      if (t->kind() == Kind::Arrow)
+      {
+        Type *mu = fresh();
+        params.push_back(std::get<TVar>(mu->as).id);
+        std::get<TArrow>(t->as).eff = row_extend(std::string(ed.name), mu);
+      }
       m_prim[key] = Scheme{ std::move(params), t };
     }
   }
@@ -1984,11 +2178,11 @@ Checker::run(
       // signature types into the body (see infer_against).
       TyVarEnv tv;
       Type    *rigid = sig_to_type(g.def->sig, tv, true);
-      infer_against(g.body, rigid, empty);
+      infer_against(g.body, rigid, empty, row_empty()); // top level is pure
     }
     else
     {
-      Type *bt = infer(g.body, empty);
+      Type *bt = infer(g.body, empty, row_empty()); // top level is pure
       unify(bt, g.scheme.type);
     }
 
@@ -2050,7 +2244,27 @@ Checker::show(
     TArrow     &a = std::get<TArrow>(t->as);
     std::string l = show(a.from);
     if (prune(a.from)->kind() == Kind::Arrow) l = "(" + l + ")";
-    return l + " -> " + show(a.to);
+    Type       *eff = prune(a.eff);
+    std::string e   = eff->kind() == Kind::RowEmpty ? "" : show(eff) + " ";
+    return l + " -> " + e + show(a.to);
+  }
+  case Kind::RowEmpty: return "<>";
+  case Kind::RowExtend:
+  {
+    std::string out = "<";
+    Type       *cur = t;
+    bool        first = true;
+    for (; prune(cur)->kind() == Kind::RowExtend;)
+    {
+      TRowExtend &r = std::get<TRowExtend>(prune(cur)->as);
+      if (!first) out += ", ";
+      out += r.label;
+      first = false;
+      cur   = r.rest;
+    }
+    Type *tail = prune(cur);
+    if (tail->kind() != Kind::RowEmpty) out += " | " + show(tail);
+    return out + ">";
   }
   }
   return "?";
@@ -2085,15 +2299,18 @@ Checker::seed_primitives()
   // Operators are overloaded and resolved per use (see infer_op / overload_db),
   // so they are not primitives. Only `if`, which is parametric, lives here.
   //
-  // if : forall T. Int -> T -> T -> T
-  Type *tv       = fresh();
-  m_prim[OP::IF] = Scheme{ { std::get<TVar>(tv->as).id },
-                           arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv))) };
+  // if : forall T e1 e2 e3. Int ->e1 T ->e2 T ->e3 T. The arrows' latent
+  // effects are fresh row variables that generalize, so `if` is effect-
+  // polymorphic and adapts to whatever ambient its use site demands.
+  Type *tv = fresh();
+  Type *ift
+    = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
+  m_prim[OP::IF] = generalize(Env{}, ift);
 
   // %array : Int -> Array -- the byte-block allocator that `@array.{n}`
   // desugars to (see EX::parse_array).
-  m_prim[OP::ARR_ALLOC]
-    = Scheme{ {}, arrow(con(OP::TY_INT), con(OP::TY_ARRAY)) };
+  Type *arrt = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
+  m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 }
 
 } // namespace
