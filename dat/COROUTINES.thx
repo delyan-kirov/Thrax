@@ -1,0 +1,34 @@
+@mod COROUTINES
+
+# Cooperative coroutines from effects: a `yield` operation whose handler does NOT
+# resume immediately but hands the suspended continuation back (a first-class,
+# stored resumption). A scheduler resumes it later, from a different context --
+# the defining test of coroutines (vs a plain generator that resumes in place).
+
+$ Co   : @effect = yield : Int -> {},
+$ Task : @union = Fin: {}, Susp: { Int, {} -> Task },
+
+# Run a task one step: it either finishes (`Fin`) or yields a value and suspends,
+# in which case we capture its continuation `k` in `Susp` for the scheduler.
+$ spawn : ({} -> {}) -> Task = \t =
+    do t {}
+    ctl k
+       is yield v = .Susp.{ v, k }
+       else _ = .Fin.{}
+
+# Round-robin two tasks: step the head task, emit its yield, then swap so the
+# other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
+# `spawn`'s handler from HERE -- cross-context resume.
+$ rr : Task -> Task -> Int = \a b =
+    if a is .Fin.{} then
+         (if b is .Fin.{} then 0
+               is .Susp.{ vb, kb } then vb + rr (.Fin.{}) (kb {})
+               else 0)
+         is .Susp.{ va, ka } then va + rr b (ka {})
+         else 0
+
+$ t1 : {} -> {} = \u = let _ = yield 1 in let _ = yield 3 in {}
+$ t2 : {} -> {} = \u = let _ = yield 2 in let _ = yield 4 in {}
+
+# Interleaved order is 1,2,3,4 -> sum 10.
+$ scheduled : Int = rr (spawn t1) (spawn t2)

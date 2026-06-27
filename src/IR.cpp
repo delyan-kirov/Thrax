@@ -232,6 +232,48 @@ struct Conv
     return mkA(Atom{ MkClosure{ id, std::move(captures) } });
   }
 
+  // Convert a handler clause `\a = \k = body` (curried CR Funs) into a SINGLE
+  // 2-parameter Code: the operation argument is Local 0, the continuation k is
+  // Local 1. The machine fills both slots at perform time and runs the body
+  // inline (no nested application -> constant host stack). Mirrors conv_fun but
+  // with two binders.
+  Atom *
+  conv_clause(
+    CR::Term *t, Ctx &outer)
+  {
+    UT_FAIL_IF(CR::kind(t) != CR::Kind::Fun);
+    auto &fa = std::get<CR::Fun>(t->as); // \a = ...
+    UT_FAIL_IF(CR::kind(fa.body) != CR::Kind::Fun);
+    auto     &fk   = std::get<CR::Fun>(fa.body->as); // \k = body
+    CR::Term *body = fk.body;
+
+    size_t           m = outer.scope.size();
+    std::set<size_t> free;
+    collect_free(body, m, 2, free); // a and k are the two binders in scope
+
+    UT::Vec<Atom *>                    captures{ arena };
+    std::unordered_map<size_t, size_t> env_of;
+    for (size_t pos : free)
+    {
+      env_of[pos] = captures.size();
+      captures.push(outer.scope[pos]);
+    }
+
+    Ctx inner;
+    inner.scope.resize(m + 2, nullptr);
+    for (size_t pos = 0; pos < m; ++pos)
+      if (env_of.count(pos)) inner.scope[pos] = mkA(Atom{ Env{ env_of[pos] } });
+    inner.scope[m]     = mkA(Atom{ Local{ 0 } }); // the operation argument `a`
+    inner.scope[m + 1] = mkA(Atom{ Local{ 1 } }); // the continuation `k`
+    inner.next_local   = 2;
+    inner.nlocals      = 2;
+
+    Expr  *cbody = conv_expr(body, inner);
+    size_t id    = prog.codes.size();
+    prog.codes.push_back(Code{ 2, inner.nlocals, cbody, fa.param });
+    return mkA(Atom{ MkClosure{ id, std::move(captures) } });
+  }
+
   Expr *
   conv_expr(
     CR::Term *t, Ctx &ctx)
@@ -349,7 +391,7 @@ struct Conv
       Expr                 *body = conv_expr(h.body, ctx);
       UT::Vec<HandleClause> clauses{ arena };
       for (const CR::HClause &c : h.clauses)
-        clauses.push(HandleClause{ c.op, conv_atom(c.fn, ctx) });
+        clauses.push(HandleClause{ c.op, conv_clause(c.fn, ctx) });
       Atom *els = conv_atom(h.els, ctx);
       return mkE(Expr{ Handle{ body, std::move(clauses), els } });
     }

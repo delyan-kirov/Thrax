@@ -454,20 +454,20 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     …`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
-  - **Machine limitations of the first cut (3d, 2026-06-27)** — the clause runs
-    via a nested `apply(apply(clause, arg), k)` rather than inline on the single
-    reified-K stack. Consequences to revisit:
-    - **O(N) host-stack for deep resumption chains** (a generator/coroutine of N
-      steps nests N host `run` frames) instead of the constant-stack single-`kont`
-      the §6 model intends. Fix: run the clause inline (clause as a 2-slot Code
-      with `a`=Local 0, `k`=Local 1; perform fills both and jumps), no nested
-      `apply`.
-    - **Effects do not cross a builtin-invoked closure** (a higher-order builtin
-      calling `Machine::apply` starts a fresh `kont`, hiding outer prompts). No
-      current builtin does this; revisit if/when one takes a function argument.
-    - **Coroutine scheduler** not yet exercised: `k` is first-class and storable
-      (a `VResump`), but a scheduler needs a queue (mutable state via the State
-      effect or functional threading) — deferred to a worked example.
+  - **Machine notes (3d/3b, 2026-06-27):**
+    - **Constant host stack — DONE.** A clause lowers to a single 2-slot `Code`
+      (`a`=Local 0, `k`=Local 1) and `perform` jumps into it inline on the single
+      reified-`kont`, with no nested `apply`. A 100 000-resume generator runs
+      without host-stack overflow, valgrind-clean. (A non-tail resume still grows
+      the `kont` vector O(N) on the heap, which is fine; the host stack is
+      bounded.)
+    - **Coroutines validated** (`dat/COROUTINES.thx`): a two-task round-robin
+      scheduler with first-class stored resumptions resumed cross-context works,
+      valgrind-clean.
+    - **Effects still do not cross a builtin-invoked closure** (`Machine::apply`,
+      used for the entry point and any higher-order builtin, starts a fresh
+      `kont`). No current builtin takes a function argument, so this is moot;
+      revisit if one ever does.
   - **Operation name resolution — partially done.** Operations are still
     registered in TC's flat global primitive table (`m_prim`), so a bare op
     resolves program-wide by name (both at the type level and at runtime, where a
@@ -480,7 +480,7 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     registers operations as **module-scoped, effect-tagged symbols** through MR's
     symbol scope + the `ExOverload` candidate machinery operators/functions
     already use, replacing the `m_prim` shortcut (not layering on it) and giving
-    `perform` an effect-qualified identity. Tracked as a task.
+    `perform` an effect-qualified identity.
 - **M3 (types):**
   - Effect-**row representation** (open rows + a polymorphism tail variable;
     duplicate labels / scoped labels à la Leijen).

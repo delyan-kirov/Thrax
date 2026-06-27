@@ -257,13 +257,25 @@ Machine::run(
 
         auto seg = std::make_shared<Resumption>();
         seg->seg.assign(kont.begin() + (long)p, kont.end());
-        kont.resize(p);
+        kont.resize(p); // the clause runs below the prompt (outside it)
 
-        pVal k     = mk(Value{ VResump{ seg } });
-        pVal inner = apply(clause, argv); // \arg = ...  -> the \k closure
-        pVal res   = apply(inner, k);     // \k = e      -> the clause's result
-        ret(res);
-        if (done) return result;
+        // Jump into the clause inline: a 2-slot Code with the operation argument
+        // in slot 0 and the resumption k in slot 1. Its body runs in this same
+        // loop on the now-truncated stack -- no nested call, so resume/perform
+        // chains stay constant-stack. The clause's eventual Ret flows to the
+        // continuation below the (removed) prompt.
+        pVal kval = mk(Value{ VResump{ seg } });
+        pVal cl   = deref(clause);
+        UT_FAIL_IF(VKind::Code != kind(cl));
+        auto           &clo = std::get<VCode>(cl->as);
+        const IR::Code &cc  = prog.codes[clo.code];
+        FrameP          nf  = std::make_shared<Frame>();
+        nf->locals.resize(cc.nlocals);
+        nf->locals[0] = argv;
+        nf->locals[1] = kval;
+        nf->env       = clo.env;
+        frame         = nf;
+        ctrl          = cc.body;
         break;
       }
       if (VKind::Resump == kind(callee))

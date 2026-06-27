@@ -8,10 +8,15 @@ $ Exn   : @effect = throw : Str -> `a,        # never resumes -> polymorphic res
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
+# FIXME: should support extern in IR
+# [ERROR] src/IT.cpp:398: pVal IT::Machine::run(size_t, ValEnv, ValEnv)
+#   398 | IR machine: @extern not yet supported
+# $ puts: Str -> Int = @extern.{"puts", "bin/libc.so"}
+
 # Exception: the clause ignores k (resume 0 times).
 $ safeDiv : Int -> Int -> Int = \a b =
     do if b ?= 0 then throw "div0" else a / b
-    ctl k is throw msg = 0 - 1
+    ctl k is throw msg = puts msg
 
 # Generator: resume once, summing every yielded value; else is the base case.
 $ sumGen : ({} -> {}) -> Int = \gen =
