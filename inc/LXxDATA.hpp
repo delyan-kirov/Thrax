@@ -51,6 +51,7 @@ const Keywords keyword_db{
   { "with", TokenTag::KwWith }, //
   { "do", TokenTag::KwDo },     //
   { "ctl", TokenTag::KwCtl },   //
+  { "defer", TokenTag::KwDefer }, //
 };
 
 // The operator characters: ASCII punctuation minus the delimiters and the lead

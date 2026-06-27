@@ -606,20 +606,23 @@ const InfixTable infix_db{
   { OP::MOD, { 30, 31 } },  //
 };
 
-// Tokens that can begin an operand -> juxtaposition is application.
+// Tokens that can begin an operand -> juxtaposition is application. `do` is NOT
+// here: a `do` block is only ever a primary (parse_prefix), never an argument by
+// juxtaposition -- so `defer <cleanup> do <body>` reads `do` as the body opener,
+// not as applying the cleanup to a do-block. (Use `f (do ...)` to pass one.)
 const OperandSet operand_starters{
-  LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
-  LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
-  LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
-  LX::TokenTag::KwDo,
+  LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
+  LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
+  LX::TokenTag::KwIf, LX::TokenTag::Lambda, LX::TokenTag::LBrace,
 };
 
-// Tokens that end an expression
+// Tokens that end an expression. `do` ends one so `defer <cleanup> do ...` stops
+// the cleanup at the `do`.
 const OperandSet expr_terminators{
   LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
   LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,
   LX::TokenTag::KwElse, LX::TokenTag::RBrace, LX::TokenTag::KwIs,
-  LX::TokenTag::KwCtl,
+  LX::TokenTag::KwCtl,  LX::TokenTag::KwDo,
 };
 
 // Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is

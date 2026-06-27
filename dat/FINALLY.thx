@@ -1,40 +1,41 @@
 @mod FINALLY
 
-# `finally action cleanup` (Koka-style, no new keyword) runs `cleanup` when the
-# action's scope exits: on normal completion, on abort (an effect handled by an
-# outer handler that does not resume), and when a stored continuation that holds
-# it eventually completes. Cleanups run innermost-first. There is no IO here, so
-# each case observes its cleanup by performing an effect a handler collects.
+# `defer <cleanup> do <body>` (Go-style) runs `cleanup` when the body's scope
+# exits: on normal completion, on abort (an effect handled by an outer handler
+# that does not resume -- cleanup still runs, on the live stack with enclosing
+# handlers installed), and when a stored continuation holding it completes.
+# Nested defers run innermost-first (LIFO). No IO here, so each case observes its
+# cleanup by performing an effect a handler collects.
 
 $ Y   : @effect = yield : Int -> {},
 $ Exn : @effect = throw : Str -> `a,
 
 # Sum every yielded value, plus the body's own result.
-$ sum : ({} -> <Y> Int) -> Int = \body =
-    do body {} ctl k is yield v = v + k {} else r = r
+$ sum : ({} -> <Y> Int) -> Int =
+    \body = do body {} ctl k is yield v = v + k {} else r = r
 
-# Normal completion: action yields 1 and returns 100; cleanup yields 2.  -> 103
-$ r_normal : Int = sum (\_ = finally (\_ = let _ = yield 1 in 100) (\_ = yield 2))
+# Normal completion: body yields 1 and returns 100; cleanup yields 2.       -> 103
+$ r_normal : Int = sum (\_ = defer yield 2 do (let _ = yield 1 in 100))
 
-# Abort: the action throws to an OUTER handler that drops the continuation; the
+# Abort: the body throws to an OUTER handler that drops the continuation; the
 # cleanup (yield 9) still runs as the discarded scope is finalized.            -> 9
 $ r_abort : Int = sum (\_ =
-    do (finally (\_ = let _ = throw "x" in 100) (\_ = yield 9))
+    do (defer yield 9 do (let _ = throw "x" in 100))
     ctl k is throw e = 0)
 
-# Nested finallys run inner-first (LIFO); both cleanups run.            -> 1+2+3 = 6
+# Nested defers run inner-first (LIFO); both cleanups run.            -> 1+2+3 = 6
 $ r_nested : Int = sum (\_ =
-    finally (\_ = finally (\_ = let _ = yield 1 in 0) (\_ = yield 2)) (\_ = yield 3))
+    defer yield 3 do (defer yield 2 do (let _ = yield 1 in 0)))
 
 # A stored continuation (coroutine): cleanup runs once, when the resumed task
 # finally completes -- not when the continuation is first stashed.
 $ Task : @union = Fin: {}, Susp: { {} -> Task },
+$ Co : @effect = step : Int -> {},
 $ spawn : ({} -> <Co> {}) -> Task = \t =
-    do t {} ctl k is yield2 v = .Susp.{ k } else _ = .Fin.{}
-$ Co : @effect = yield2 : Int -> {},
+    do t {} ctl k is step v = .Susp.{ k } else _ = .Fin.{}
 $ drive : Task -> Int = \t =
     if t is .Fin.{} then 0
        is .Susp.{ k } then 1 + drive (k {})
        else 0
 $ r_stored : Int = drive (spawn (\_ =
-    finally (\_ = let _ = yield2 1 in {}) (\_ = yield2 2)))   # 2 steps
+    defer step 2 do (let _ = step 1 in {})))   # 2 steps

@@ -63,8 +63,9 @@ Machine::glob(
 {
   std::string n(name);
 
-  // The `finally` intrinsic: a first-class value applied to (action, cleanup).
-  if (n == "finally") return mk(Value{ VFinally{ {} } });
+  // The cleanup intrinsic `defer` desugars to: a value applied to (action,
+  // cleanup). `%`-prefixed, so no user identifier reaches this.
+  if (n == OP::DEFER) return mk(Value{ VDefer{ {} } });
 
   // An effect operation is a first-class value that performs when applied.
   if (prog.operations.count(n)) return mk(Value{ VOp{ n } });
@@ -179,7 +180,7 @@ Machine::run(
       }
       if (std::holds_alternative<KDefer>(kf))
       {
-        // Normal completion through a `finally`: run the cleanup, then deliver
+        // Normal completion through a `defer`: run the cleanup, then deliver
         // the protected value `v` (KThunkRet discards the cleanup's own result).
         pVal cleanup = deref(std::get<KDefer>(kf).cleanup);
         kont.push_back(KThunkRet{ v });
@@ -192,11 +193,11 @@ Machine::run(
         continue;
       }
       // KAfterClause: the handler operation clause just finished with value `v`.
-      // If its resumption `k` was resumed, its finally cleanups run on the
+      // If its resumption `k` was resumed, its defer cleanups run on the
       // resumed computation's completion (their KDefer); if `k` was stored (an
       // extra live reference to kval beyond this frame and the clause slot), they
       // run when it is later resumed and completes. Otherwise `k` was discarded
-      // (the exception/abort case): run its captured finally cleanups now, here,
+      // (the exception/abort case): run its captured defer cleanups now, here,
       // with the enclosing handlers still installed, then deliver `v`.
       {
         pVal       &kval = std::get<KAfterClause>(kf).kval;
@@ -292,22 +293,22 @@ Machine::run(
         if (done) goto finish;
         break;
       }
-      if (VKind::Finally == kind(callee))
+      if (VKind::Defer == kind(callee))
       {
-        // `finally action cleanup`: once both thunks are in hand, install the
+        // `Defer action cleanup`: once both thunks are in hand, install the
         // cleanup as a KDefer marker and run `action {}` under it. The cleanup
         // runs when the action's value returns through the marker (normal
         // completion) or when its continuation is dropped (see ~Resumption).
-        VFinally f = std::get<VFinally>(callee->as);
-        f.args.push_back(argv);
-        if (f.args.size() < 2)
+        VDefer defer = std::get<VDefer>(callee->as);
+        defer.args.push_back(argv);
+        if (defer.args.size() < 2)
         {
-          ret(mk(Value{ f }));
+          ret(mk(Value{ defer }));
           if (done) goto finish;
           break;
         }
-        kont.push_back(KDefer{ f.args[1] });    // cleanup
-        jump1(deref(f.args[0]), mk(Value{ VUnk{} })); // action {}
+        kont.push_back(KDefer{ defer.args[1] });    // cleanup
+        jump1(deref(defer.args[0]), mk(Value{ VUnk{} })); // action {}
         break;
       }
       if (VKind::Op == kind(callee))
@@ -340,7 +341,7 @@ Machine::run(
         kont.resize(p); // the clause runs below the prompt (outside it)
 
         // Mark the clause boundary with the resumption, so when the clause
-        // finishes we can finalize `k`'s `finally` cleanups if it was discarded
+        // finishes we can finalize `k`'s `Defer` cleanups if it was discarded
         // (see ret's KAfterClause case). This sits below the clause and above the
         // enclosing handlers, so a discard-time cleanup still sees them.
         pVal kval = mk(Value{ VResump{ seg } });

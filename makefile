@@ -13,7 +13,7 @@ endif
 all: $(Tthrax) $(Ttest) compile_flags.txt
 
 # --- PCH Configuration ---
-PCH_SRC = inc/UTxAMALG.hpp
+PCH_SRC = $(wildcard inc/*.hpp)
 PCH_OUT = bin/UTxAMALG.hpp.pch
 PCH_FLAGS = -Xclang -include-pch -Xclang $(PCH_OUT)
 

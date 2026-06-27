@@ -63,6 +63,7 @@ private:
   UT_NODISCARD RExpr    parse_let();
   UT_NODISCARD RExpr    parse_if();
   UT_NODISCARD RExpr    parse_handle();
+  UT_NODISCARD RExpr    parse_defer();
   UT_NODISCARD RExpr    parse_closure();
   UT_NODISCARD RPattern parse_pattern();
   // Parses a qualified pattern after an uppercase type name: dispatches to a

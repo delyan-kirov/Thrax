@@ -454,20 +454,27 @@ Handlers are DEEP: a resumed computation is still governed by the same handler
 (the captured continuation re-installs it), so a generator that yields many times
 is handled each time.
 
-FINALLY.  `finally action cleanup` (a built-in, not a keyword; cf. Koka) runs
-`action {}` and runs `cleanup {}` when the action's scope exits -- whether by
-normal completion, OR by an effect handled by an OUTER handler that does not
-resume (the abort case: cleanup still runs, on the live stack with enclosing
-handlers installed), OR when a stored continuation holding it finally completes.
-Both are thunks: `finally : ({} -> `a) -> ({} -> {}) -> `a`, effect-polymorphic
-(the two thunks share one effect row). Nested finallys run innermost-first. With
-FFI this is the resource-safe idiom (e.g. open a handle, `finally` close it).
-Limitation: a continuation that is STORED and then dropped WITHOUT ever being
-resumed does not run its `finally` (its cleanup is tied to completion or to a
+DEFER.  `defer <cleanup> do <body>` (a keyword; Go-style; the runtime mechanism
+is Koka-style finalization) runs `<body>` and runs `<cleanup>` when the body's
+scope exits -- whether by normal completion, OR by an effect handled by an OUTER
+handler that does not resume (the abort case: cleanup still runs, on the live
+stack with enclosing handlers installed), OR when a stored continuation holding it
+finally completes. `do` delimits the cleanup from the body; the body is an
+ordinary `do` block (optionally a `ctl` handler). The whole form has the body's
+type and is effect-polymorphic (cleanup and body share one effect row, so the
+cleanup's effects must also fit the ambient). Nested defers run innermost-first
+(LIFO). With FFI this is the resource-safe idiom (open a handle, `defer` close
+it). Limitation: a continuation STORED and then dropped WITHOUT ever being
+resumed does not run its `defer` (cleanup is tied to completion or to a
 not-resumed handler clause, not to garbage collection).
 
-    $ withResource : ({} -> <`e> `a) -> <`e> `a = \body =
-        let r = acquire {} in finally body (\_ = release r)
+    $ useFile : Str -> Int = \path =
+        let f = open path in
+        defer close f do
+            read f
+
+A `do <body>` with no `ctl` is just a block (it groups its body and has no
+runtime form of its own) -- which is what `defer ... do ...` opens.
 
     # Exceptions -- ignore k, no else clause (identity)
     $ safeDiv : Int -> Int -> Int = \a b =

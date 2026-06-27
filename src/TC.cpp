@@ -2338,18 +2338,19 @@ Checker::seed_primitives()
   Type *arrt = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 
-  // finally : forall a e. ({} ->e a) -> ({} ->e {}) ->e a -- run the action,
-  // running the cleanup when its scope exits (normal completion or discard).
-  // Both thunks and the running arrows share one effect row `e`, so the action's
-  // effects must fit the call's ambient (subsumption), and finally is effect-
-  // polymorphic.
+  // %defer : forall a e. ({} ->e a) -> ({} ->e {}) ->e a -- the cleanup
+  // intrinsic the `defer` keyword desugars to: run the action, running the
+  // cleanup when its scope exits (normal completion or discard). Both thunks and
+  // the running arrows share one effect row `e`, so the action's effects must fit
+  // the call's ambient (subsumption), and it is effect-polymorphic. `%`-prefixed
+  // => not user-writable; reached only via `defer`.
   Type *e    = fresh(); // the shared effect row
   Type *a    = fresh();
   Type *unit = con(OP::TY_UNIT);
   Type *act  = arrow(unit, a, e);    // {} ->e a
   Type *cln  = arrow(unit, unit, e); // {} ->e {}
   Type *fin  = arrow(act, arrow(cln, a, e), e);
-  m_prim["finally"] = generalize(Env{}, fin);
+  m_prim[OP::DEFER] = generalize(Env{}, fin);
 }
 
 } // namespace

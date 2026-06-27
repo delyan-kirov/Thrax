@@ -82,6 +82,10 @@ inline constexpr const char *base_types[] = {
 // via IT's impls). The leading '%' cannot occur in source, so it never collides
 // with a user name.
 inline constexpr const char *ARR_ALLOC = "%array";
+// The `defer` cleanup intrinsic. `%`-prefixed so it is not a writable identifier;
+// the surface is the `defer <cleanup> do <body>` keyword, which desugars to
+// `%defer (\_ = body) (\_ = cleanup)`.
+inline constexpr const char *DEFER = "%defer";
 
 // Is `name` one of the built-in base types above?
 inline bool

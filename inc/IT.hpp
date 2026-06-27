@@ -62,7 +62,7 @@ struct KPrompt
   Handler handler;
 };
 
-// A `finally`/deferred-cleanup marker on the continuation stack. When a value
+// A `defer`/deferred-cleanup marker on the continuation stack. When a value
 // returns *through* it (normal completion of the protected computation), the
 // machine runs `cleanup` and then delivers the value. When it rides inside a
 // captured continuation that the handler discards, its cleanup is run at the
@@ -81,11 +81,11 @@ struct KThunkRet
 
 // A marker pushed just below a handler operation clause, holding the clause's
 // resumption `k` (as the value `kval`). When the clause finishes, this decides
-// the fate of any `finally` cleanups captured in `k`: if `k` was resumed they
+// the fate of any `defer` cleanups captured in `k`: if `k` was resumed they
 // run on the resumed computation's completion (via their KDefer); if `k` was
 // neither resumed nor stored (the exception/abort case) its cleanups run HERE,
 // on the live stack with the enclosing handlers still installed -- which is what
-// makes `finally` exception-safe, and why it must happen at the clause boundary,
+// makes `defer` exception-safe, and why it must happen at the clause boundary,
 // not whenever `k` is later freed. "Stored" is detected by an extra live
 // reference to kval.
 struct KAfterClause

@@ -14,9 +14,9 @@ $ memset : Ptr -> Int -> Int -> Ptr = @extern.{ "memset", "libc.so.6" }
 $ free   : Ptr -> {}                = @extern.{ "free",   "libc.so.6" }
 
 # Allocate a 64-byte block, use it (fill with 'A' = 65), and ALWAYS release it
-# with `finally` -- the cleanup runs whether the body completes normally or
-# aborts. Run under valgrind to confirm the block is freed: no leak.
+# with `defer` -- the cleanup runs whether the body completes normally or aborts.
+# Run under valgrind to confirm the block is freed: no leak.
 $ main : Int =
     let p = malloc 64 in
-    finally (\_ = let _ = memset p 65 64 in puts "block allocated and used")
-            (\_ = free p)
+    defer free p do
+        (let _ = memset p 65 64 in puts "block allocated and used")

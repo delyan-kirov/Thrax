@@ -231,8 +231,9 @@ Parser::parse_primary()
   case LX::TokenTag::LParen: base = EX_TRY(parse_group()); break;
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
-  case LX::TokenTag::KwDo  : base = EX_TRY(parse_handle()); break;
-  case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
+  case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
+  case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
   case LX::TokenTag::At    : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::LBrace:
   {
@@ -579,10 +580,15 @@ RExpr
 Parser::parse_handle()
 {
   LX::Token kw = EX_TRY(m_lex.next()); // 'do'
-  Expr *body   = EX_CTX(parse_expr(0), kw, "in the body of this 'do' handler");
+  Expr *body   = EX_CTX(parse_expr(0), kw, "in the body of this 'do' block");
 
-  EX_TRY(expect(LX::TokenTag::KwCtl,
-                "expected 'ctl' to begin the handler after the 'do' body"));
+  // A `do` with no `ctl` is just a block -- it groups its body (handy after
+  // `defer`, or to parenthesize-free a sequence). It has no runtime form of its
+  // own, so return the body directly.
+  if (LX::TokenTag::KwCtl != EX_TRY(m_lex.peek()).tag)
+    return { true, body, {} };
+
+  EX_TRY(m_lex.next()); // 'ctl'
   LX::Token kt = EX_TRY(
     expect(LX::TokenTag::Word, "expected a continuation name after 'ctl'"));
 
@@ -636,6 +642,33 @@ Parser::parse_handle()
   Expr e{ ExprTag::Handle };
   e.as = ExHandle{ body, kt.str, clauses, els_var, els_body };
   return { true, alloc(e), {} };
+}
+
+// `defer <cleanup> do <body>` -- run `cleanup` when `body`'s scope exits (normal
+// completion OR an abort that discards the continuation). `do` delimits the
+// cleanup from the body; the body is an ordinary `do` block (optionally a `ctl`
+// handler). Desugars to `%defer (\_ = body) (\_ = cleanup)` -- the cleanup
+// intrinsic; both sides become thunks so neither runs until the machine wants it.
+RExpr
+Parser::parse_defer()
+{
+  LX::Token kw      = EX_TRY(m_lex.next()); // 'defer'
+  Expr     *cleanup = EX_CTX(
+    parse_expr(0), kw, "in the cleanup of this 'defer' (it ends at 'do')");
+
+  LX::Token d = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::KwDo != d.tag)
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           d,
+           "expected 'do' to open the 'defer' body, found '%s'",
+           std::string(d.str).c_str());
+  Expr *body = EX_TRY(parse_handle()); // consumes `do <body> [ctl ...]`
+
+  Expr *body_thunk    = mk_fndef(UT::Vu{ "_", 1 }, body);
+  Expr *cleanup_thunk = mk_fndef(UT::Vu{ "_", 1 }, cleanup);
+  Expr *call          = mk_app(
+    mk_app(mk_op_var(UT::Vu{ OP::DEFER }), body_thunk), cleanup_thunk);
+  return { true, call, {} };
 }
 
 // A single pattern: `_`, a variable, a literal, or a `Type.{ ... }` struct

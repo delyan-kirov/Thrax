@@ -120,6 +120,9 @@ struct TkKwDo
 struct TkKwCtl
 {
 }; // ctl -- opens a handler's clause block, binding the continuation k
+struct TkKwDefer
+{
+}; // defer -- `defer <cleanup> do <body>`: run cleanup when body's scope exits
 struct TkEof
 {
 };
@@ -159,6 +162,7 @@ struct TkEof
   X(KwWith, TkKwWith)                                                          \
   X(KwDo, TkKwDo)                                                              \
   X(KwCtl, TkKwCtl)                                                            \
+  X(KwDefer, TkKwDefer)                                                        \
   X(Eof, TkEof)
 
 enum class TokenTag
