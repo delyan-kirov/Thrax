@@ -587,6 +587,13 @@ const int PREFIX_BP = 40; // unary - and !
 // operator"; the value is its binding power. The name stored on the node is the
 // lexeme itself, which doubles as the OP key (see UTxOP).
 const InfixTable infix_db{
+  // Sequencing / pipes -- parser-desugared (see parse_expr): `a ; b` = run a,
+  // then b; `x |> f` = `f x`; `f <| x` = `f x`. Lowest precedences so they bind
+  // looser than arithmetic/comparison and application. `;` is right-associative
+  // (l>r), `|>` left-associative (l<r), `<|` right-associative (l>r).
+  { ";", { 2, 1 } },        //
+  { "<|", { 5, 4 } },       //
+  { "|>", { 6, 7 } },       //
   { OP::ISEQ, { 10, 11 } }, //
   { OP::GEQ, { 10, 11 } },  //
   { OP::LEQ, { 10, 11 } },  //

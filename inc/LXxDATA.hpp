@@ -56,7 +56,7 @@ const Keywords keyword_db{
 // The operator characters: ASCII punctuation minus the delimiters and the lead
 // characters of other token kinds. A maximal run of these forms one operator.
 const CharSet operator_char_db{
-  '!', '$', '%', '&', '*', '+', '-', '/',  ':',
+  '!', '$', '%', '&', '*', '+', '-', '/', ':', ';',
   '<', '=', '>', '?', '^', '|', '~', '\\',
 };
 
@@ -91,6 +91,9 @@ const Operators operator_db{
   { "|", TokenTag::Op },        //
   { "<>", TokenTag::Op },       //
   { "<|", TokenTag::Op },       //
+  // Sequencing and pipes (desugared in the parser, not runtime functions).
+  { ";", TokenTag::Op },        //
+  { "|>", TokenTag::Op },       //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike

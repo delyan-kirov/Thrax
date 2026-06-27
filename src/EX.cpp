@@ -106,6 +106,22 @@ Parser::mk_binop(
   return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
 
+// Sequencing `lhs ; rhs`  ==>  `let _ = lhs in rhs`: run lhs for effect, discard
+// its value, then evaluate rhs (whose value is the result). A plain desugar -- no
+// runtime `;` operator.
+Expr *
+Parser::mk_seq(
+  Expr *lhs, Expr *rhs)
+{
+  ExLet lt;
+  lt.var  = UT::Vu{ "_", 1 };
+  lt.val  = lhs;
+  lt.body = rhs;
+  Expr e{ ExprTag::Let };
+  e.as = lt;
+  return alloc(e);
+}
+
 Expr *
 Parser::mk_if(
   Expr *cond, Expr *then, Expr *alt)
@@ -390,7 +406,16 @@ Parser::parse_expr(
       if (bp->l < min_bp) break;
       EX_TRY(m_lex.next()); // consume the operator
       Expr *rhs = EX_TRY(parse_expr(bp->r));
-      lhs       = mk_binop(t.str, lhs, rhs);
+      // Sequencing and pipes desugar away here; everything else is an ordinary
+      // (overloadable) binary operator call.
+      if (t.str == ";")
+        lhs = mk_seq(lhs, rhs);
+      else if (t.str == "|>")
+        lhs = mk_app(rhs, lhs); // `x |> f` == `f x`
+      else if (t.str == "<|")
+        lhs = mk_app(lhs, rhs); // `f <| x` == `f x`
+      else
+        lhs = mk_binop(t.str, lhs, rhs);
     }
     else if (operand_starters.count(t.tag))
     {

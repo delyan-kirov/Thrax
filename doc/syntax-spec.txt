@@ -74,6 +74,18 @@ Definition expr:
 The `-` token is special: binary subtraction between two expressions, unary
 negation when it prefixes one.
 
+Sequencing and pipes (parser sugar, lowest precedence -- below arithmetic and
+application; they desugar to existing forms, there are no runtime `;`/`|>`/`<|`
+functions):
+	- `a ; b`   = `let _ = a in b`  -- run `a` for its effect, discard its value,
+	  then evaluate `b` (whose value is the result). Right-associative, so
+	  `a ; b ; c` runs a, then b, then c. Like C's `;`, but an expression.
+	- `x |> f`  = `f x`  -- forward pipe, LEFT-associative:
+	  `x |> f |> g` = `g (f x)`. Application binds tighter, so `xs |> map f`
+	  is `(map f) xs`.
+	- `f <| x`  = `f x`  -- backward pipe, RIGHT-associative:
+	  `f <| g <| x` = `f (g x)`.
+
 ================================================================================
 TYPES
 ================================================================================

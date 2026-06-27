@@ -85,6 +85,7 @@ private:
   UT_NODISCARD Expr    *mk_op_var(UT::Vu name);
   UT_NODISCARD Expr    *mk_unop(UT::Vu op, Expr *operand);
   UT_NODISCARD Expr    *mk_binop(UT::Vu op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr    *mk_seq(Expr *lhs, Expr *rhs);
   UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
   UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);
