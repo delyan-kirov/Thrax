@@ -134,6 +134,7 @@ private:
   Type *row_empty();
   Type *row_extend(std::string label, Type *rest);
   bool  unify_row(Type *a, Type *b);
+  bool  subrow(Type *sub, Type *super);
   bool  rewrite_row(Type *row, const std::string &label, Type *&found_rest);
   Core *core(CoreData as);
 
@@ -384,6 +385,40 @@ Checker::unify_row(
     return false;
   }
   return unify(ea.rest, b_rest);
+}
+
+// Effect subsumption: require `sub` to be a SUBROW of `super` -- every effect
+// the callee performs (`sub`) must be permitted by the ambient (`super`). Used
+// at a call site so a pure (or smaller-effect) function fits a larger ambient.
+//   - empty `sub` fits any `super` (a pure call performs nothing);
+//   - a labelled `sub` peels each label out of `super` (which may grow an open
+//     tail) and recurses, so a missing label in a closed `super` is the
+//     unhandled-effect error;
+//   - a variable `sub` (an unknown callee effect) is tied to `super` by
+//     equality -- sound, since `super` is a subrow of itself.
+bool
+Checker::subrow(
+  Type *sub, Type *super)
+{
+  sub = prune(sub);
+  if (sub->kind() == Kind::RowEmpty) return true;
+  if (sub->kind() == Kind::Var) return unify(sub, super);
+  if (sub->kind() == Kind::RowExtend)
+  {
+    TRowExtend &r          = std::get<TRowExtend>(sub->as);
+    Type       *super_rest = nullptr;
+    if (!rewrite_row(super, r.label, super_rest))
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           m_anchor,
+           "effect '%s' is performed but not handled (it is not in '%s')",
+           r.label.c_str(),
+           show(super).c_str());
+      return false;
+    }
+    return subrow(r.rest, super_rest);
+  }
+  return unify(sub, super); // non-row (shouldn't occur); fall back to equality
 }
 
 // Bring an occurrence of effect `label` to the head of `row`, yielding the row
@@ -1080,14 +1115,18 @@ Checker::infer(
 
   case CKind::App:
   {
-    // The call's latent effect is the ambient: the callee may perform at most
-    // what is allowed here. (Operations are Apps whose callee carries `<L|mu>`,
-    // so performing one forces L into amb.)
+    // The callee may perform AT MOST what the ambient allows: its latent effect
+    // must be a SUBROW of the ambient (subsumption), not equal to it. So a pure
+    // (or smaller-effect) function is callable in any larger effect context.
+    // Argument and result still unify exactly. (Operations are Apps whose callee
+    // carries `<L|mu>`, so subsuming it forces L into amb.)
     CApp &ap = std::get<CApp>(e->as);
     Type *ft = infer(ap.fn, locals, amb);
     Type *at = infer(ap.arg, locals, amb);
     Type *rv = fresh();
-    unify(ft, arrow(at, rv, amb));
+    Type *ef = fresh(); // the callee's latent effect, extracted then subsumed
+    unify(ft, arrow(at, rv, ef));
+    subrow(ef, amb);
     return rv;
   }
 

@@ -488,10 +488,11 @@ STATUS.  Typed effect rows (the above), effect polymorphism + inference, handler
 typing, and compile-time unhandled-effect errors are IMPLEMENTED (M3.1). The
 handler is still found by dynamic search up the continuation stack at run time;
 evidence passing (O(1) dispatch) and the tail-resumptive optimization remain a
-later milestone, as does effect SUBSUMPTION -- application unifies the callee's
-latent row with the ambient by equality, so a function written pure (`Int ->
-Int`) is not yet callable in an effectful context unless given a row variable
-(`Int -> <`e> Int`). See doc/effect-system-design.md.
+later milestone. Effect SUBSUMPTION is implemented: a CALL requires the callee's
+latent row to be a subrow of the ambient (so a pure `Int -> Int` is callable in
+any effectful context), while passing a function as an ARGUMENT still matches its
+row exactly (an effectful function is not accepted where a pure one is declared).
+See doc/effect-system-design.md.
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)

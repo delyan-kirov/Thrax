@@ -457,9 +457,15 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     valgrind-clean. Known gap: no effect SUBSUMPTION (application uses row
     equality), so an explicitly-pure arrow isn't callable in an effectful
     context unless made row-polymorphic.
-  - [ ] **M3.2 — perf + subsumption.** Evidence passing (O(1) dispatch), the
-    tail-resumptive optimization, effect subtyping/subsumption; exhaustiveness
-    policy. Parametric effects (effects with type arguments).
+  - [~] **M3.2 — perf + subsumption.**
+    - [X] **Effect subsumption (2026-06-27).** A call site requires the callee's
+      latent row to be a SUBROW of the ambient (`subrow` in TC), not equal to it,
+      so a pure (or smaller-effect) function is callable in any larger effect
+      context. Function-TYPE unification (argument positions) still uses
+      equality, so an effectful function cannot be passed where a pure one is
+      expected. Closes the M3.1 ergonomic gap.
+    - [ ] Evidence passing (O(1) dispatch), the tail-resumptive optimization;
+      exhaustiveness policy; parametric effects (effects with type arguments).
 
 - [ ] **M4 — Perceus + C backend.** Explicit `dup`/`drop` over the IR; uniform
   boxed value representation with RC headers; C emission.
