@@ -68,11 +68,13 @@ inline constexpr const char *TY_REAL32 = "Real32";
 inline constexpr const char *TY_REAL64 = "Real64";
 inline constexpr const char *TY_ARRAY
   = "Array"; // a sized, contiguous block of bytes
+inline constexpr const char *TY_UNIT
+  = "{}"; // the empty record / unit type; runtime-represented as 0
 
 inline constexpr const char *base_types[] = {
   TY_INT,   TY_NAT,    TY_REAL,   TY_STR,   TY_PTR,   TY_INT8,
   TY_INT16, TY_INT32,  TY_INT64,  TY_NAT8,  TY_NAT16, TY_NAT32,
-  TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY,
+  TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY, TY_UNIT,
 };
 
 // Internal name of the byte-block allocation primitive that `@array.{ size }`

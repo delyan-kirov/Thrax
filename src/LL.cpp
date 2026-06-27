@@ -809,11 +809,13 @@ struct Lowerer
     case ExprTag::Int:
     case ExprTag::Real:
     case ExprTag::Str:
+    case ExprTag::Unit:
     case ExprTag::Var:
     case ExprTag::Extern:
     case ExprTag::StructDecl:
     case ExprTag::UnionDecl:
     case ExprTag::AliasDecl:
+    case ExprTag::EffectDecl:
     case ExprTag::Overload: // leaf produced by MR; TC resolves it
     case ExprTag::ModDecl:  // module directives are stripped by MR before LL,
     case ExprTag::Import:   // so these are unreachable here -- pass through
@@ -833,6 +835,15 @@ struct Lowerer
       i.cond  = lower(i.cond);
       i.then  = lower(i.then);
       i.alt   = lower(i.alt);
+      return e;
+    }
+
+    case ExprTag::Handle:
+    {
+      auto &h = std::get<EX::ExHandle>(e->as);
+      h.body  = lower(h.body);
+      for (auto &c : h.clauses) c.body = lower(c.body);
+      if (h.else_body) h.else_body = lower(h.else_body);
       return e;
     }
     case ExprTag::Match: return lower_match(e);

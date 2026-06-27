@@ -579,6 +579,7 @@ Checker::desugar(
   case EX::ExprTag::Int   : return core(CLitInt{});
   case EX::ExprTag::Real  : return core(CLitReal{});
   case EX::ExprTag::Str   : return core(CLitStr{});
+  case EX::ExprTag::Unit  : return core(CLitUnit{});
   case EX::ExprTag::Extern: return core(CExtern{});
   case EX::ExprTag::Var:
   {
@@ -689,6 +690,12 @@ Checker::desugar(
     v.overload = &ov.candidates;
     return core(std::move(v));
   }
+  // Handlers: type-checking lands in increment 3c (this stub keeps 3a's
+  // parser-only milestone honest -- a handler program aborts here until then).
+  case EX::ExprTag::Handle:
+    UT_FAIL_MSG("%s", "desugar: handler type-checking is not implemented yet "
+                      "(increment 3c)");
+    return core(CLitUnit{}); // unreachable
   // Match is removed by the LL pass before type checking; Def / StructDecl /
   // UnionDecl are top-level only; Unknown is never produced as a body.
   case EX::ExprTag::Match:
@@ -696,6 +703,7 @@ Checker::desugar(
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
   case EX::ExprTag::AliasDecl:
+  case EX::ExprTag::EffectDecl:
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:
   case EX::ExprTag::Vis:
@@ -717,6 +725,7 @@ Checker::occurs_free(
   case CKind::LitInt :
   case CKind::LitReal:
   case CKind::LitStr :
+  case CKind::LitUnit:
   case CKind::Extern : return false;
   case CKind::Lam:
   {
@@ -787,6 +796,7 @@ Checker::infer(
   case CKind::LitInt : return con(OP::TY_INT);
   case CKind::LitReal: return con(OP::TY_REAL);
   case CKind::LitStr : return con(OP::TY_STR);
+  case CKind::LitUnit: return con(OP::TY_UNIT);
   case CKind::Extern : return fresh(); // unifies with the declared signature
 
   case CKind::Var:
@@ -1831,6 +1841,26 @@ Checker::run(
     }
     m_unions[std::string(ud.name)]
       = UnionDef{ std::move(params), std::move(variants) };
+  }
+
+  // Effect declarations: register each operation as a typed name (a primitive
+  // scheme), so a use `op a` type-checks against its declared signature. The
+  // runtime meaning of a use (perform) and handlers come later; here we only
+  // make operations known to inference. Generalize over the signature's free
+  // type variables, so a generic effect's operation is polymorphic per use.
+  for (size_t i = 0; i < exprs.size(); ++i)
+  {
+    EX::Expr *e = &exprs[i];
+    if (e->tag != EX::ExprTag::EffectDecl) continue;
+    EX::ExEffectDecl &ed = std::get<EX::ExEffectDecl>(e->as);
+    for (auto &op : ed.ops)
+    {
+      TyVarEnv tv;
+      VarIds   params;
+      m_anchor      = op.name;
+      Type *t       = sig_to_type(op.ty, tv, false, &params);
+      m_prim[std::string(op.name)] = Scheme{ std::move(params), t };
+    }
   }
 
   for (size_t i = 0; i < exprs.size(); ++i)

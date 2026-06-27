@@ -114,6 +114,12 @@ struct TkKwExt
 struct TkKwWith
 {
 }; // with -- module import
+struct TkKwDo
+{
+}; // do -- opens a handler's body (do <body> ctl k ...)
+struct TkKwCtl
+{
+}; // ctl -- opens a handler's clause block, binding the continuation k
 struct TkEof
 {
 };
@@ -151,6 +157,8 @@ struct TkEof
   X(KwElse, TkKwElse)                                                          \
   X(KwExt, TkKwExt)                                                            \
   X(KwWith, TkKwWith)                                                          \
+  X(KwDo, TkKwDo)                                                              \
+  X(KwCtl, TkKwCtl)                                                            \
   X(Eof, TkEof)
 
 enum class TokenTag

@@ -98,6 +98,12 @@ The sized numerics are presently used mainly to spell C-ABI types in `@extern`
 signatures; there are no sized literals or arithmetic on them yet. A struct type
 name (see STRUCTS) -- or a union (sum) type name -- is also a type constructor.
 
+The empty record `{}` is the UNIT type; its sole value is also written `{}`. It is
+what a function or an effect operation passes or returns when there is no
+information to carry (the analogue of ML `unit` / C `void`). Type and value share
+the spelling, disambiguated by position (a `{}` in a type is the unit type, a `{}`
+in a term is the unit value).
+
 An Array is allocated with the `@array` form, an expression that yields a fresh
 block of `size` zeroed bytes:
 
@@ -349,6 +355,117 @@ field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables
 become `let`s in the arm body. Current limits: matching Int and Real literals
 only (no string equality yet), and no `_` catch-all sugar (use a variable arm or
 `else`).
+
+================================================================================
+EFFECTS (algebraic effects + handlers)
+================================================================================
+
+An effect is a named set of OPERATIONS that a computation may perform; a HANDLER
+supplies their meaning. Performing an operation suspends the computation up to the
+nearest enclosing handler for that effect, hands the handler the operation's
+argument together with the captured CONTINUATION `k`, and -- if the handler
+applies `k` -- resumes the computation from where it suspended. So an effect is an
+exception you may resume; an exception is an effect whose handler does not resume.
+
+DECLARATION.  An effect is a global declared with the `@effect` annotation in
+place of a type; its body is a comma-separated list of operation signatures (a
+trailing comma is allowed). The effect name is a TypeName (uppercase); each
+operation is a variable (lowercase):
+
+    effect ::= '$' EffectName ':' '@effect' '=' [ opsig (',' opsig)* ','? ]
+    opsig  ::= var ':' type '->' type        # argument type -> resume type
+
+    $ State : @effect =
+        get : {} -> Int,        # takes unit, resumes with an Int
+        put : Int -> {},        # takes an Int, resumes with unit
+    $ Exn : @effect =
+        throw : Str -> {},      # never resumes; its resume type is irrelevant
+    $ Yield : @effect =
+        yield : Int -> {},      # hand out an Int, resume with unit
+
+Every operation takes exactly one argument and names one result; the codomain is
+the type the matching perform yields back (the value handed to `k`). An operation
+that needs no argument takes `{}` (unit); one that yields no value resumes with
+`{}`.
+
+PERFORMING.  An operation is performed simply by CALLING it, like a function --
+there is no `perform` keyword (cf. Koka, Flix). A use of an operation name is a
+perform:
+
+    get {}              # perform get; evaluates to the Int the handler resumes with
+    put 5               # perform put 5; evaluates to {}
+    throw "boom"        # perform throw
+
+A bare operation name resolves by the ordinary module name rules: usable
+unqualified when exactly one in-scope effect declares it, else qualified
+`Effect.op`.
+
+HANDLING.  A computation is run under a handler with `do` ... `ctl`:
+
+    handle ::= 'do' expr 'ctl' var clause+ [ 'else' var '=' expr ]
+    clause ::= 'is' opname var '=' expr
+
+`do expr` is the body to run -- no parentheses; the `ctl` keyword delimits it.
+`ctl k` names the continuation `k`, shared by every clause (there is exactly one
+continuation per performed operation, so it is bound once, not per clause). Each
+`is op a = e` clause handles operation `op`, binding its argument to `a`; the body
+`e` may apply `k` to resume. The optional `else x = e` clause runs when the body
+completes WITHOUT performing (normal completion), binding the body's result to
+`x`; it defaults to identity (`else x = x`) when omitted. `is` and `else` are the
+same arm keywords as `match`.
+
+RESUMING.  The continuation `k` is an ordinary first-class value of function type
+`A -> B` (A the operation's resume type). RESUMING is just APPLYING it -- there is
+no `resume` keyword (cf. Flix's `resume` parameter, OCaml's continuation). `k v`
+splices the suspended computation back on and delivers `v` to the perform site.
+`k` is AFFINE: it may be applied AT MOST ONCE (resuming twice is a runtime error);
+not applying it discards the suspended computation (the exception / abort case).
+`k` may be STORED (in a data structure, a run-queue) before being applied -- which
+is what generators and coroutines need.
+
+Handlers are DEEP: a resumed computation is still governed by the same handler
+(the captured continuation re-installs it), so a generator that yields many times
+is handled each time.
+
+    # Exceptions -- ignore k, no else clause (identity)
+    $ safeDiv : Int -> Int -> Int = \a b =
+        do  if b ?= 0 then throw "div0" else a / b
+        ctl k
+            is throw msg = 0 - 1
+
+    # Generator -- `yield v` performs; `k {}` resumes; else supplies the tail
+    $ collect : ({} -> {}) -> List Int = \gen =
+        do  gen {}
+        ctl k
+            is yield v = .Cons.{ v, k {} }
+            else _     = .Nil
+
+    # State -- resume with `k s`; else transforms the result into a state function
+    $ runState : ({} -> Int) -> Int -> Pair Int Int = \action s0 =
+        let go : Int -> Pair Int Int =
+            do  action {}
+            ctl k
+                is get _ = \s = (k s) s
+                is put n = \s = (k {}) n
+                else x   = \s = .Pair.{ x, s }
+         in go s0
+
+    # Coroutine -- k is a value: stash it, apply it later from the queue
+    # (enqueue / spawn / run_next elided)
+    $ scheduler : ({} -> {}) -> {} = \main =
+        do  main {}
+        ctl k
+            is yield _ = enqueue k
+            is fork f  = let _ = enqueue k in spawn f
+            else _     = run_next
+
+STATUS.  Effects are presently UNTYPED / dynamic: a function's type does NOT yet
+carry the effects it may perform, the handler is found by dynamic search up the
+continuation stack, and an unhandled operation is a RUNTIME error. The operation
+signatures are checked for their argument/result types but are not yet tracked as
+an effect ROW on the arrow. Typed effect rows (effect polymorphism, compile-time
+unhandled-effect errors, the tail-resumptive optimization) are a later milestone;
+see doc/effect-system-design.md.
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)

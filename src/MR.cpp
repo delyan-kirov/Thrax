@@ -209,7 +209,8 @@ struct Linker
         }
         case ExprTag::StructDecl:
         case ExprTag::UnionDecl:
-        case ExprTag::AliasDecl : decls.push_back(e); break;
+        case ExprTag::AliasDecl:
+        case ExprTag::EffectDecl: decls.push_back(e); break;
         default                 : break; // nothing else is valid at top level
         }
       }
@@ -507,6 +508,27 @@ struct Linker
         locals.resize(base);
       }
       resolve(c.deflt, Mkey, sc, locals);
+      return;
+    }
+    case ExprTag::Handle:
+    {
+      auto &h = std::get<EX::ExHandle>(e->as);
+      resolve(h.body, Mkey, sc, locals); // k is NOT in scope in the body
+      for (size_t c = 0; c < h.clauses.size(); ++c)
+      {
+        size_t base = locals.size();
+        locals.push_back(h.clauses[c].arg); // the operation's argument
+        locals.push_back(h.k);              // the shared continuation
+        resolve(h.clauses[c].body, Mkey, sc, locals);
+        locals.resize(base);
+      }
+      if (h.else_body)
+      {
+        size_t base = locals.size();
+        locals.push_back(h.else_var);
+        resolve(h.else_body, Mkey, sc, locals);
+        locals.resize(base);
+      }
       return;
     }
     case ExprTag::Field:

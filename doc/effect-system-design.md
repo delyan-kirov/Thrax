@@ -434,9 +434,23 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
 - **M2 (effects):**
   - `discontinue` / `finally` / `initially` — resource-cleanup semantics when an
     affine resumption is dropped (run cleanup frames as the segment unwinds).
-  - Effect **surface syntax** (how `effect`, `handle`, `perform`, `resume` are
-    written).
+  - Effect **surface syntax** — **DECIDED 2026-06-27**; see §12 and
+    `doc/syntax-spec.txt` (EFFECTS). `@effect` declaration; `do … ctl k … is … else
+    …`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
+    unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
+  - **Operation name resolution — TODO (currently a shortcut).** Increment 2
+    registers each effect operation in TC's flat global primitive table
+    (`m_prim`, alongside `if`/`%array`), so a bare op resolves program-wide with
+    no scoping, no qualification, and **silent last-wins** on a name clash (two
+    effects declaring `get` → the second overwrites the first, no error). The
+    proper fix (planned for increment 3, where the runtime needs it anyway):
+    register operations as **module-scoped overloadable symbols** carrying their
+    **effect identity**, routed through MR's symbol scope + the `ExOverload`
+    candidate machinery that operators/functions already use — so bare ops obey
+    the module rules (unique-in-scope resolves, clash is an ambiguity error,
+    qualify with `Effect.op`), AND `perform` gets the op identity it needs to
+    match handlers. Do this *instead of* the `m_prim` shortcut, not on top of it.
 - **M3 (types):**
   - Effect-**row representation** (open rows + a polymorphism tail variable;
     duplicate labels / scoped labels à la Leijen).
@@ -449,7 +463,41 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
 
 ---
 
-## 12. Glossary
+## 12. Surface syntax (decided 2026-06-27)
+
+The M2 (untyped) surface, recorded in full in `doc/syntax-spec.txt` (EFFECTS).
+Chosen to reuse Thrax's existing grammar and spend as few keywords as possible;
+the result is **closest to Flix**.
+
+- **Declaration.** `$ Eff : @effect = op : A -> B, …` — an `@effect` annotation
+  parallel to `@struct` / `@codata`. Effect = TypeName, operations = lowercase
+  vars. Each op is `arg-type -> resume-type`; every op takes exactly one argument
+  and names one result. The new **unit** type/value `{}` (empty record, added to
+  the language for this) spells "no argument" / "no result".
+
+- **No `perform`.** An operation is performed by **calling it** (`yield v`,
+  `get {}`), as in Koka/Flix — a use of an operation name _is_ a perform. Resolves
+  by the ordinary module name rules.
+
+- **No `resume`.** The continuation `k` is a **first-class value** of function
+  type; **applying it** (`k v`) resumes, as in Flix/OCaml. Affine: applied ≤ once
+  (runtime-checked), droppable (= the exception case), storable (= generators /
+  coroutines).
+
+- **Handling.** `do <body> ctl k  <is-clauses>  [else x = e]`. `do` takes the body
+  (no parens — `ctl` delimits it). `ctl k` binds the one continuation, shared by
+  all clauses (exactly one `k` per performed op). `is op a = e` handles `op`,
+  binding its argument `a`. `else x = e` is the value clause (normal completion),
+  binding the result; optional, identity by default. `is` / `else` are reused from
+  `match`; handlers are deep (§3).
+
+Net new keywords: `@effect`, `do`, `ctl` (plus reused `is` / `else`); all
+contextual. `ctl` is borrowed from Koka and reserved as the slot for a future
+`fun` (tail-resumptive, no-capture) clause kind — see §6.
+
+---
+
+## 13. Glossary
 
 - **Affine resumption** — a captured continuation invoked _at most once_.
 - **Deep handler** — the handler stays installed for the resumed computation

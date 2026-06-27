@@ -203,6 +203,9 @@ struct CLitReal
 struct CLitStr
 {
 };
+struct CLitUnit
+{
+};
 struct CExtern
 {
 };
@@ -258,6 +261,7 @@ struct CVariantLit
   X(LitInt, CLitInt)                                                           \
   X(LitReal, CLitReal)                                                         \
   X(LitStr, CLitStr)                                                           \
+  X(LitUnit, CLitUnit)                                                         \
   X(Lam, CLam)                                                                 \
   X(App, CApp)                                                                 \
   X(Let, CLet)                                                                 \

@@ -49,6 +49,8 @@ const Keywords keyword_db{
   { "else", TokenTag::KwElse }, //
   { "ext", TokenTag::KwExt },   //
   { "with", TokenTag::KwWith }, //
+  { "do", TokenTag::KwDo },     //
+  { "ctl", TokenTag::KwCtl },   //
 };
 
 // The operator characters: ASCII punctuation minus the delimiters and the lead

@@ -208,6 +208,12 @@ struct Pattern
 struct ExUnknown
 {
 };
+// The unit value `{}` (empty record). Its type is the unit type, also written
+// `{}`. The type checker keeps it distinct from Int; the runtime represents it
+// as 0 (CR lowers it to the integer literal 0).
+struct ExUnit
+{
+};
 // A global definition: `$ name [: sig] = def`. `sig` is null when omitted (the
 // type checker must then infer a ground, non-arrow type for it). `name` is
 // rewritten to the mangled `MOD/name` by MR; `origin` keeps the original
@@ -327,6 +333,31 @@ struct ExMatch
   Expr             *alt;
 };
 
+// One `is op a = body` clause of a handler: operation `op`, its single argument
+// bound to `arg`, and the clause body (in which both `arg` and the handler's
+// continuation `k` are in scope). To resume, the body applies `k` (a first-class
+// value); to abort (exceptions), it ignores `k`.
+struct HandlerClause
+{
+  UT::Vu op;
+  UT::Vu arg;
+  Expr  *body;
+};
+// A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. Runs `body`; an
+// operation performed within it dispatches to the matching clause (binding the
+// operation's argument and the continuation `k`). The optional `else x = e` is
+// the value clause -- it transforms the body's normal result, defaulting to
+// identity when omitted. It installs a handler; it has no runtime value of its
+// own.
+struct ExHandle
+{
+  Expr                  *body;
+  UT::Vu                 k;
+  UT::Vec<HandlerClause> clauses;
+  UT::Vu                 else_var{};        // empty when there is no `else`
+  Expr                  *else_body = nullptr;
+};
+
 // The head an alternative matches on (see ExCase). Shared with the interpreter
 // (IT aliases this), so it lives here.
 enum class AltKind
@@ -434,6 +465,16 @@ struct ExUnionDecl
   UT::Vu               name;
   UT::Vec<VariantDecl> variants;
 };
+// An effect declaration: `$ Name : @effect = op : A -> B, ...`. Declares a set
+// of OPERATIONS (reusing FieldDecl: `name` is the operation, `ty` its `A -> B`
+// signature, whose codomain is the type a `perform` of it yields back). Produces
+// no runtime value; its operations are registered as typed names. The effect
+// name is a TypeName (uppercase), each operation a variable (lowercase).
+struct ExEffectDecl
+{
+  UT::Vu             name;
+  UT::Vec<FieldDecl> ops;
+};
 // A type alias declaration: `$ Name : @alias = target`. Fully transparent --
 // the type checker resolves `Name` to `target` wherever it is written, so the
 // two are interchangeable (like a C typedef). Produces no runtime value.
@@ -456,6 +497,7 @@ struct ExVariantLit
 
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
+  X(Unit, ExUnit)                                                              \
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
   X(Real, ExReal)                                                              \
@@ -465,6 +507,7 @@ struct ExVariantLit
   X(Var, ExVar)                                                                \
   X(If, ExIf)                                                                  \
   X(Match, ExMatch)                                                            \
+  X(Handle, ExHandle)                                                          \
   X(Case, ExCase)                                                              \
   X(Str, ExStr)                                                                \
   X(Extern, ExExtern)                                                          \
@@ -473,6 +516,7 @@ struct ExVariantLit
   X(Field, ExField)                                                            \
   X(UnionDecl, ExUnionDecl)                                                    \
   X(AliasDecl, ExAliasDecl)                                                    \
+  X(EffectDecl, ExEffectDecl)                                                  \
   X(VariantLit, ExVariantLit)                                                  \
   X(ModDecl, ExModDecl)                                                        \
   X(Import, ExImport)                                                          \
@@ -546,9 +590,10 @@ const InfixTable infix_db{
 
 // Tokens that can begin an operand -> juxtaposition is application.
 const OperandSet operand_starters{
-  LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
-  LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
-  LX::TokenTag::KwIf, LX::TokenTag::Lambda,
+  LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
+  LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
+  LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
+  LX::TokenTag::KwDo,
 };
 
 // Tokens that end an expression
@@ -556,6 +601,7 @@ const OperandSet expr_terminators{
   LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
   LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,
   LX::TokenTag::KwElse, LX::TokenTag::RBrace, LX::TokenTag::KwIs,
+  LX::TokenTag::KwCtl,
 };
 
 // Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is

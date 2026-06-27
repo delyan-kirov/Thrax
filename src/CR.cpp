@@ -151,6 +151,10 @@ go(
   case EX::ExprTag::Int:
     return alloc(arena, Term{ Int{ std::get<EX::ExInt>(expr->as).value } });
 
+  // The unit value `{}` -- represented at runtime as the integer 0 (the type
+  // checker keeps the unit type distinct from Int; the runtime does not).
+  case EX::ExprTag::Unit: return alloc(arena, Term{ Int{ 0 } });
+
   case EX::ExprTag::Real:
     return alloc(arena, Term{ Real{ std::get<EX::ExReal>(expr->as).value } });
 
@@ -215,11 +219,18 @@ go(
     return alloc(arena, Term{ v });
   }
 
+  // Handlers: Core lowering lands in increment 3c/3d.
+  case EX::ExprTag::Handle:
+    UT_FAIL_MSG("%s", "CR: handler lowering is not implemented yet "
+                      "(increment 3c/3d)");
+    return alloc(arena, Term{ Unk{} }); // unreachable
+
   // A struct / union / alias *declaration* is a type-level form with no runtime
   // value.
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
   case EX::ExprTag::AliasDecl:
+  case EX::ExprTag::EffectDecl:
   case EX::ExprTag::Unknown   : return alloc(arena, Term{ Unk{} });
 
   case EX::ExprTag::Overload:
