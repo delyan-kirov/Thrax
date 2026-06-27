@@ -146,9 +146,16 @@ other globals; only the result's shape matters.)
 Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
 
-(FFI: a foreign binding is a global whose body is `@extern.{ ... }`, naming the
-symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
-`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required.)
+(FFI / IO: a foreign binding is a global whose body is `@extern.{ ... }`, naming
+the symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
+`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required; its
+argument/result types drive C-ABI marshalling (Int/Real/Str and the sized
+numerics; a `{}` parameter means "no C argument", e.g. `getchar : {} -> Int`; a
+`{}` result discards it). Applying the binding calls the C function. Foreign calls
+are typed by the written signature -- IO is NOT yet tracked as an effect. Foreign
+calls require the FFI build (`make THRAX_3RD_PARTY_ON=1`, libffi); without it a
+foreign call aborts at runtime. Example: `$ puts : Str -> Int = @extern.{ "puts",
+"libc.so.6" }` then `puts "hi"` writes to stdout. See examples/MAIN.thx.)
 
 (Operator overloading: `$ @operator.{ <op> } : type = expr` adds an overload of a
 built-in binary operator (e.g. `+`) for the operand types in its signature; a use

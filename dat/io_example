@@ -1,0 +1,11 @@
+@mod MAIN
+
+# FFI / IO demo. `@extern.{ "symbol", "library" }` binds a C function; its
+# argument/result marshalling types come from the signature. Run with the FFI
+# build:  make THRAX_3RD_PARTY_ON=1  &&  ./bin/thrax examples/MAIN.thx
+#
+# `puts` writes the string + a newline to stdout and returns a non-negative Int.
+
+$ puts : Str -> Int = @extern.{ "puts", "libc.so.6" }
+
+$ main : Int = puts "Hello, Thrax!"

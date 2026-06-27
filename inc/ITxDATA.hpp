@@ -57,13 +57,13 @@ struct VBuiltin
   std::vector<pVal> args;
 };
 
-// A foreign function as a first-class, curried value. `decl` points at its Core
-// declaration (which carries the symbol, library and marshalling types); `args`
+// A foreign function as a first-class, curried value. `decl` points at its IR
+// node (which carries the symbol, library and marshalling types); `args`
 // accumulates operands until saturated, at which point the C call is made (see
-// eval / call_extern).
+// the machine's App handling / call_extern).
 struct VExtern
 {
-  const CR::Extern *decl;
+  const IR::Extern *decl;
   std::vector<pVal> args;
 };
 
@@ -329,7 +329,7 @@ const std::unordered_map<std::string, Impl> impls{
 };
 
 // Marshal the saturated arguments and make the foreign call described by `e`.
-pVal call_extern(const CR::Extern &e, const std::vector<pVal> &args);
+pVal call_extern(const IR::Extern &e, const std::vector<pVal> &args);
 
 std::string pprint(const pVal &v, int level = 0);
 

@@ -230,6 +230,19 @@ Machine::run(
         if (done) return result;
         break;
       }
+      if (VKind::Extern == kind(callee))
+      {
+        // A foreign function: accumulate operands until saturated, then make the
+        // C call (call_extern marshals args <-> machine words via FF::call).
+        VExtern x = std::get<VExtern>(callee->as);
+        x.args.push_back(argv);
+        if (x.args.size() >= x.decl->arg_types.size())
+          ret(call_extern(*x.decl, x.args));
+        else
+          ret(mk(Value{ x }));
+        if (done) return result;
+        break;
+      }
       if (VKind::Op == kind(callee))
       {
         // Perform: find the nearest installed prompt with a clause for this
@@ -395,7 +408,11 @@ Machine::run(
     break;
 
     case IR::EKind::Extern:
-      UT_FAIL_MSG("%s", "IR machine: @extern not yet supported");
+      // A foreign binding evaluates to a curried foreign callable; the C call
+      // happens once it is saturated (see the App handling above). The IR node
+      // lives for the whole run, so the pointer is stable.
+      ret(mk(Value{ VExtern{ &std::get<IR::Extern>(ctrl->as), {} } }));
+      if (done) return result;
       break;
 
     case IR::EKind::Unk:
