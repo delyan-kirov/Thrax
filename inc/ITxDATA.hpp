@@ -126,6 +126,16 @@ struct VResump
   std::shared_ptr<Resumption> seg;
 };
 
+// The `finally` intrinsic as a first-class, curried value: `finally action
+// cleanup` runs `action {}` with `cleanup` registered to run when the action's
+// scope exits -- on normal completion (a value returning through the installed
+// KDefer) or on discard (the continuation dropped un-resumed). `args` collects
+// the two thunks before the machine installs the cleanup and runs the action.
+struct VFinally
+{
+  std::vector<pVal> args;
+};
+
 #define IT_VALUE_VARIANTS                                                      \
   X(Unk, VUnk)                                                                 \
   X(Int, VInt)                                                                 \
@@ -138,7 +148,8 @@ struct VResump
   X(Rec, VRec)                                                                 \
   X(Code, VCode)                                                               \
   X(Op, VOp)                                                                   \
-  X(Resump, VResump)
+  X(Resump, VResump)                                                           \
+  X(Finally, VFinally)
 
 enum class VKind
 {

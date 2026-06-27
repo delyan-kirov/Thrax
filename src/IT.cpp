@@ -63,6 +63,9 @@ Machine::glob(
 {
   std::string n(name);
 
+  // The `finally` intrinsic: a first-class value applied to (action, cleanup).
+  if (n == "finally") return mk(Value{ VFinally{ {} } });
+
   // An effect operation is a first-class value that performs when applied.
   if (prog.operations.count(n)) return mk(Value{ VOp{ n } });
 
@@ -149,25 +152,71 @@ Machine::run(
   // resumes its saved activation; a KPrompt means the handler's body completed
   // normally, so we run its value clause `els` on the result.
   auto ret = [&](pVal v) {
-    if (kont.empty())
+    for (;;)
     {
-      result = v;
-      done   = true;
-      return;
+      if (kont.empty())
+      {
+        result = v;
+        done   = true;
+        return;
+      }
+      KFrame kf = std::move(kont.back());
+      kont.pop_back();
+      if (std::holds_alternative<KRet>(kf))
+      {
+        KRet &kr                  = std::get<KRet>(kf);
+        *kr.box                   = *v; // back-patch the let placeholder
+        kr.frame->locals[kr.slot] = kr.box;
+        frame                     = kr.frame;
+        ctrl                      = kr.cont;
+        return;
+      }
+      if (std::holds_alternative<KPrompt>(kf))
+      {
+        pVal els = deref(std::get<KPrompt>(kf).handler.els);
+        jump1(els, v); // run the value clause on the normal result
+        return;
+      }
+      if (std::holds_alternative<KDefer>(kf))
+      {
+        // Normal completion through a `finally`: run the cleanup, then deliver
+        // the protected value `v` (KThunkRet discards the cleanup's own result).
+        pVal cleanup = deref(std::get<KDefer>(kf).cleanup);
+        kont.push_back(KThunkRet{ v });
+        jump1(cleanup, mk(Value{ VUnk{} }));
+        return;
+      }
+      if (std::holds_alternative<KThunkRet>(kf))
+      {
+        v = std::get<KThunkRet>(kf).saved; // discard incoming, deliver saved
+        continue;
+      }
+      // KAfterClause: the handler operation clause just finished with value `v`.
+      // If its resumption `k` was resumed, its finally cleanups run on the
+      // resumed computation's completion (their KDefer); if `k` was stored (an
+      // extra live reference to kval beyond this frame and the clause slot), they
+      // run when it is later resumed and completes. Otherwise `k` was discarded
+      // (the exception/abort case): run its captured finally cleanups now, here,
+      // with the enclosing handlers still installed, then deliver `v`.
+      {
+        pVal       &kval = std::get<KAfterClause>(kf).kval;
+        Resumption *res  = std::get<VResump>(deref(kval)->as).seg.get();
+        bool        resumed = res->used;
+        // Baseline references to kval: this frame's (kf) and the clause's slot 1.
+        // Any beyond that means the clause stashed `k` somewhere (a generator /
+        // scheduler) -- don't finalize; its cleanup runs when it resumes.
+        bool stored = kval.use_count() > 2;
+        if (resumed || stored) continue; // deliver v unchanged
+        // Schedule the captured cleanups (innermost last in seg => ends on top
+        // => runs first: LIFO), then re-deliver the clause's value `v`.
+        kont.push_back(KThunkRet{ v });
+        for (KFrame &sf : res->seg)
+          if (std::holds_alternative<KDefer>(sf))
+            kont.push_back(KDefer{ std::get<KDefer>(sf).cleanup });
+        v = mk(Value{ VUnk{} }); // start unwinding the freshly pushed KDefers
+        continue;
+      }
     }
-    KFrame kf = std::move(kont.back());
-    kont.pop_back();
-    if (std::holds_alternative<KRet>(kf))
-    {
-      KRet &kr                  = std::get<KRet>(kf);
-      *kr.box                   = *v; // back-patch the let placeholder
-      kr.frame->locals[kr.slot] = kr.box;
-      frame                     = kr.frame;
-      ctrl                      = kr.cont;
-      return;
-    }
-    pVal els = deref(std::get<KPrompt>(kf).handler.els);
-    jump1(els, v); // run the value clause on the normal result
   };
 
   for (;;)
@@ -176,7 +225,7 @@ Machine::run(
     {
     case IR::EKind::Ret:
       ret(deref(eval_atom(std::get<IR::Ret>(ctrl->as).a, frame)));
-      if (done) return result;
+      if (done) goto finish;
       break;
 
     case IR::EKind::Let:
@@ -227,7 +276,7 @@ Machine::run(
           ret(impls.at(std::string(b.impl)).fn(b.args));
         else
           ret(mk(Value{ b }));
-        if (done) return result;
+        if (done) goto finish;
         break;
       }
       if (VKind::Extern == kind(callee))
@@ -240,7 +289,25 @@ Machine::run(
           ret(call_extern(*x.decl, x.args));
         else
           ret(mk(Value{ x }));
-        if (done) return result;
+        if (done) goto finish;
+        break;
+      }
+      if (VKind::Finally == kind(callee))
+      {
+        // `finally action cleanup`: once both thunks are in hand, install the
+        // cleanup as a KDefer marker and run `action {}` under it. The cleanup
+        // runs when the action's value returns through the marker (normal
+        // completion) or when its continuation is dropped (see ~Resumption).
+        VFinally f = std::get<VFinally>(callee->as);
+        f.args.push_back(argv);
+        if (f.args.size() < 2)
+        {
+          ret(mk(Value{ f }));
+          if (done) goto finish;
+          break;
+        }
+        kont.push_back(KDefer{ f.args[1] });    // cleanup
+        jump1(deref(f.args[0]), mk(Value{ VUnk{} })); // action {}
         break;
       }
       if (VKind::Op == kind(callee))
@@ -272,13 +339,19 @@ Machine::run(
         seg->seg.assign(kont.begin() + (long)p, kont.end());
         kont.resize(p); // the clause runs below the prompt (outside it)
 
+        // Mark the clause boundary with the resumption, so when the clause
+        // finishes we can finalize `k`'s `finally` cleanups if it was discarded
+        // (see ret's KAfterClause case). This sits below the clause and above the
+        // enclosing handlers, so a discard-time cleanup still sees them.
+        pVal kval = mk(Value{ VResump{ seg } });
+        kont.push_back(KAfterClause{ kval });
+
         // Jump into the clause inline: a 2-slot Code with the operation argument
         // in slot 0 and the resumption k in slot 1. Its body runs in this same
         // loop on the now-truncated stack -- no nested call, so resume/perform
         // chains stay constant-stack. The clause's eventual Ret flows to the
         // continuation below the (removed) prompt.
-        pVal kval = mk(Value{ VResump{ seg } });
-        pVal cl   = deref(clause);
+        pVal cl = deref(clause);
         UT_FAIL_IF(VKind::Code != kind(cl));
         auto           &clo = std::get<VCode>(cl->as);
         const IR::Code &cc  = prog.codes[clo.code];
@@ -301,7 +374,7 @@ Machine::run(
         r.seg->used = true;
         kont.insert(kont.end(), r.seg->seg.begin(), r.seg->seg.end());
         ret(argv);
-        if (done) return result;
+        if (done) goto finish;
         break;
       }
       UT_FAIL_MSG("%s", "IR machine: applying a non-function value");
@@ -356,7 +429,7 @@ Machine::run(
       for (const IR::FieldA &f : m.fields)
         out.fields.push_back({ f.name, deref(eval_atom(f.val, frame)) });
       ret(mk(Value{ out }));
-      if (done) return result;
+      if (done) goto finish;
     }
     break;
 
@@ -374,7 +447,7 @@ Machine::run(
         }
       UT_FAIL_IF(!v);
       ret(v);
-      if (done) return result;
+      if (done) goto finish;
     }
     break;
 
@@ -387,7 +460,7 @@ Machine::run(
       for (size_t i = 0; i < mv.fields.size(); ++i)
         out.fields.push_back(deref(eval_atom(mv.fields[i], frame)));
       ret(mk(Value{ out }));
-      if (done) return result;
+      if (done) goto finish;
     }
     break;
 
@@ -412,15 +485,18 @@ Machine::run(
       // happens once it is saturated (see the App handling above). The IR node
       // lives for the whole run, so the pointer is stable.
       ret(mk(Value{ VExtern{ &std::get<IR::Extern>(ctrl->as), {} } }));
-      if (done) return result;
+      if (done) goto finish;
       break;
 
     case IR::EKind::Unk:
       ret(mk(Value{ VUnk{} }));
-      if (done) return result;
+      if (done) goto finish;
       break;
     }
   }
+
+finish:
+  return result;
 }
 
 int

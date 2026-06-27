@@ -448,7 +448,16 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     heads accept `is Effect.op a` and must qualify a shared name. The old
     `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.thx` covers
     it.
-  - Not yet: `discontinue`/`finally`, coroutine scheduler example, async.
+  - [X] **`finally` (2026-06-27).** Koka-style `finally action cleanup` built-in
+    (no `discontinue` keyword): cleanup runs on normal completion (a value
+    returning through a `KDefer` marker), on abort (the clause-boundary
+    `KAfterClause` marker finalizes a discarded `k`'s cleanups on the live stack,
+    so enclosing handlers are still installed), and when a stored continuation
+    completes. Detected via the resumption's `used` flag + a kval refcount
+    ("stored") check -- NOT a destructor, so timing is correct. `dat/FINALLY.thx`.
+    Limitation: a stored continuation dropped without ever being resumed does not
+    run its `finally`.
+  - Not yet: coroutine scheduler example, async.
 
 - [~] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
   inference, handler typing; **evidence passing** + the tail-resumptive
@@ -483,8 +492,10 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
 ## 11. Deferred
 
 - **M2 (effects):**
-  - `discontinue` / `finally` / `initially` — resource-cleanup semantics when an
-    affine resumption is dropped (run cleanup frames as the segment unwinds).
+  - `finally` — DONE (2026-06-27): `finally action cleanup` runs cleanup on
+    completion/abort/stored-completion via `KDefer` + clause-boundary
+    `KAfterClause` markers (no `discontinue` keyword; Koka-style). `initially`
+    and the stored-then-dropped case remain unaddressed.
   - Effect **surface syntax** — **DECIDED 2026-06-27**; see §12 and
     `doc/syntax-spec.txt` (EFFECTS). `@effect` declaration; `do … ctl k … is … else
     …`; no `perform` (call the operation), no `resume` (apply the first-class `k`);

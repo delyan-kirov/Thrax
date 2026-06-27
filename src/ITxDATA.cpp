@@ -134,8 +134,9 @@ pprint(
   case VKind::Code:
     return pad + "<code#" + std::to_string(std::get<VCode>(v->as).code) + ">";
   case VKind::Op: return pad + "<op " + std::get<VOp>(v->as).name + ">";
-  case VKind::Resump: return pad + "<resumption>";
-  case VKind::Unk: return pad + "?unknown";
+  case VKind::Resump : return pad + "<resumption>";
+  case VKind::Finally: return pad + "<finally>";
+  case VKind::Unk    : return pad + "?unknown";
   }
   return pad + "?unreachable";
 }
