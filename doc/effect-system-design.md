@@ -438,8 +438,16 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     Validated: exceptions (resume 0), generator (resume 1, sum + list), state
     (parameter-passing, deep); affine double-resume faults; valgrind-clean;
     `dat/EFFECTS.thx` in the suite.
-  - [ ] **3b** — replace the `m_prim` operation-resolution shortcut with proper
-    module-scoped, effect-tagged resolution (see §11 / tasks). REMAINING.
+  - [X] **3b — effect-qualified op resolution (2026-06-27).** Operations are now
+    module-scoped symbols whose canonical identity is `Effect.op`, registered in
+    MR's symbol table and resolved through the ordinary scope + `ExOverload`
+    machinery (TC keys `m_prim`/`m_op_effect` by the identity; the runtime matches
+    by it unchanged). Same-named ops from different effects coexist: a bare use
+    resolves when unambiguous (one in scope, or the ambient effect picks it) else
+    needs `Effect.op`; a perform may also resolve by type via `ExOverload`. Clause
+    heads accept `is Effect.op a` and must qualify a shared name. The old
+    `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.thx` covers
+    it.
   - Not yet: `discontinue`/`finally`, coroutine scheduler example, async.
 
 - [~] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
@@ -496,19 +504,18 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
       used for the entry point and any higher-order builtin, starts a fresh
       `kont`). No current builtin takes a function argument, so this is moot;
       revisit if one ever does.
-  - **Operation name resolution — partially done.** Operations are still
-    registered in TC's flat global primitive table (`m_prim`), so a bare op
-    resolves program-wide by name (both at the type level and at runtime, where a
-    performed op matches a handler clause by name). The **silent last-wins** hole
-    is CLOSED (3b, 2026-06-27): two effects declaring the same operation name now
-    raise an `AMBIGUOUS_NAME` error up front instead of one silently overwriting
-    the other. REMAINING (ergonomic): let same-named operations from different
-    effects **coexist**, resolving a bare op by the module rules (unique-in-scope
-    resolves, otherwise qualify with `Effect.op`). The proper implementation
-    registers operations as **module-scoped, effect-tagged symbols** through MR's
-    symbol scope + the `ExOverload` candidate machinery operators/functions
-    already use, replacing the `m_prim` shortcut (not layering on it) and giving
-    `perform` an effect-qualified identity.
+  - **Operation name resolution — DONE (3b, 2026-06-27).** Operations are now
+    registered as **module-scoped symbols** in MR, each with the canonical
+    identity `Effect.op`, and resolved through the ordinary scope + `ExOverload`
+    candidate machinery (TC keys its `m_prim`/`m_op_effect` schemes by that
+    identity; the runtime matches a performed op to a clause by it, unchanged).
+    Same-named operations from different effects **coexist**: a bare op resolves
+    when unambiguous (the one in scope, or the ambient effect selects it), may
+    resolve by type via `ExOverload`, and is otherwise qualified `Effect.op`.
+    Handler clause heads accept `is Effect.op a` and must qualify a shared name
+    (a clause cannot be type-resolved). The `m_prim` shortcut and the
+    `AMBIGUOUS_NAME` up-front rejection are gone; `m_prim` now holds only the
+    `if`/array builtins plus identity-keyed operation schemes.
 - **M3 (types):**
   - Effect-**row representation** (open rows + a polymorphism tail variable;
     duplicate labels / scoped labels à la Leijen).

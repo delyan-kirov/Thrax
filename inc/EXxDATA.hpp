@@ -350,6 +350,9 @@ struct HandlerClause
   UT::Vu op;
   UT::Vu arg;
   Expr  *body;
+  UT::Vu qualifier{}; // effect prefix from `is Effect.op a`; empty when bare. MR
+                      // rewrites `op` to the canonical `Effect.op` identity and
+                      // clears this.
 };
 // A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. Runs `body`; an
 // operation performed within it dispatches to the matching clause (binding the

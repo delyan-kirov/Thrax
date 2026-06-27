@@ -1693,11 +1693,15 @@ Checker::resolve_user_sites(
         }
       }
 
-    // The fitting user candidates.
+    // The fitting user candidates. A candidate may be an effect operation
+    // (its scheme is in m_prim, keyed by `Effect.op`) rather than a global.
     std::vector<size_t> fits;
     for (size_t k = 0; k < s.cands->size(); ++k)
     {
-      Type *cand = instantiate(resolve(std::string((*s.cands)[k])));
+      std::string cname(std::string((*s.cands)[k]));
+      auto        pit  = m_prim.find(cname);
+      Type       *cand = instantiate(pit != m_prim.end() ? pit->second
+                                                         : resolve(cname));
       if (try_unify(use, cand)) fits.push_back(k);
     }
 
@@ -1733,8 +1737,11 @@ Checker::resolve_user_sites(
       continue;
     }
 
-    UT::Vu chosen = (*s.cands)[fits.front()];
-    unify(use, instantiate(resolve(std::string(chosen))));
+    UT::Vu      chosen = (*s.cands)[fits.front()];
+    std::string cname(chosen);
+    auto        pit = m_prim.find(cname); // an operation candidate lives here
+    unify(use,
+          instantiate(pit != m_prim.end() ? pit->second : resolve(cname)));
     *s.slot = chosen;
   }
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
@@ -2128,18 +2135,11 @@ Checker::run(
   }
 
   // Effect declarations: register each operation as a typed name (a primitive
-  // scheme), so a use `op a` type-checks against its declared signature.
-  // Generalize over the signature's free type variables, so a generic effect's
-  // operation is polymorphic per use.
-  //
-  // Operations currently resolve program-wide by bare name (both at the type
-  // level here and at runtime, where a performed operation matches a handler
-  // clause by name). So an operation name shared by two effects would collide;
-  // we reject that up front rather than silently letting one win. Proper
-  // module-scoped, effect-qualified resolution (allowing such names to coexist
-  // and be disambiguated with `Effect.op`) is a follow-up -- see
-  // doc/effect-system-design.md §11.
-  std::unordered_map<std::string, UT::Vu> op_owner; // op name -> its effect
+  // scheme) keyed by its canonical `Effect.op` identity (the same identity MR
+  // rewrites uses and clause heads to), so a use `op a` type-checks against its
+  // declared signature. Generalize over the signature's free type variables, so
+  // a generic effect's operation is polymorphic per use. Same-named operations
+  // from different effects coexist -- their identities differ.
   for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
@@ -2147,22 +2147,9 @@ Checker::run(
     EX::ExEffectDecl &ed = std::get<EX::ExEffectDecl>(e->as);
     for (auto &op : ed.ops)
     {
-      std::string key(op.name);
-      m_anchor  = op.name;
-      auto prev = op_owner.find(key);
-      if (prev != op_owner.end())
-      {
-        fail(ER::Code::AMBIGUOUS_NAME,
-             op.name,
-             "operation '%s' is declared by more than one effect ('%s' and "
-             "'%s'); operation names must be unique for now (effect-qualified "
-             "resolution is not yet supported)",
-             key.c_str(),
-             std::string(prev->second).c_str(),
-             std::string(ed.name).c_str());
-        continue;
-      }
-      op_owner[key]    = ed.name;
+      std::string key
+        = std::string(ed.name) + "." + std::string(op.name); // Effect.op
+      m_anchor         = op.name;
       m_op_effect[key] = std::string(ed.name);
       TyVarEnv tv;
       VarIds   params;

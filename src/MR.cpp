@@ -74,6 +74,12 @@ struct Linker
   std::vector<std::pair<UT::Vu, Expr *>>      defs;  // (module, Def node)
   std::vector<ER::Diagnostic>                 diags;
 
+  // Declared effects: effect name -> (operation source name -> its canonical
+  // `Effect.op` identity). Effect names are global, so this is program-wide. Used
+  // to resolve an effect-qualified `Effect.op` and a handler clause's operation.
+  std::unordered_map<std::string, std::unordered_map<std::string, UT::Vu>>
+    effects;
+
   Linker(
     AR::Arena &a, std::vector<MR::Unit> &u)
       : arena{ a },
@@ -125,6 +131,21 @@ struct Linker
     s.push_back('/');
     s.append(name.data(), name.size());
     if (dup) s += "#" + std::to_string(dup);
+    return UT::strdup(arena, UT::Vu{ s.data(), s.size() });
+  }
+
+  // `Effect.op`, the canonical program-wide identity of an operation, copied into
+  // the arena. The '.' separator cannot occur in a mangled global (`MOD/name`),
+  // so an operation identity never collides with one.
+  UT::Vu
+  op_identity(
+    UT::Vu eff, UT::Vu op)
+  {
+    std::string s;
+    s.reserve(eff.size() + 1 + op.size());
+    s.append(eff.data(), eff.size());
+    s.push_back('.');
+    s.append(op.data(), op.size());
     return UT::strdup(arena, UT::Vu{ s.data(), s.size() });
   }
 
@@ -207,11 +228,33 @@ struct Linker
           defs.push_back({ M, e });
           break;
         }
+        case ExprTag::EffectDecl:
+        {
+          // Register each operation as a module symbol whose mangled identity is
+          // the canonical `Effect.op`, so a bare op resolves through the ordinary
+          // scope/overload path and same-named ops from different effects get
+          // distinct identities. Also record the effect in the program-wide table
+          // for qualified `Effect.op` and clause-op resolution.
+          auto       &ed = std::get<EX::ExEffectDecl>(e->as);
+          std::string ekey(ed.name);
+          if (effects.count(ekey))
+            err(ER::Code::DUPLICATE_SYMBOL,
+                ed.name,
+                "effect '" + ekey + "' is declared more than once");
+          auto &opmap = effects[ekey];
+          for (auto &op : ed.ops)
+          {
+            UT::Vu id = op_identity(ed.name, op.name);
+            opmap[std::string(op.name)] = id;
+            md.symbols[std::string(op.name)].push_back({ id, true, e });
+          }
+          decls.push_back(e);
+          break;
+        }
         case ExprTag::StructDecl:
         case ExprTag::UnionDecl:
-        case ExprTag::AliasDecl:
-        case ExprTag::EffectDecl: decls.push_back(e); break;
-        default                 : break; // nothing else is valid at top level
+        case ExprTag::AliasDecl: decls.push_back(e); break;
+        default                : break; // nothing else is valid at top level
         }
       }
     }
@@ -364,9 +407,22 @@ struct Linker
     }
     else
     {
+      // Not a module/alias: an effect-qualified operation `Effect.op`?
+      auto eff = effects.find(PFX);
+      if (eff != effects.end())
+      {
+        auto oit = eff->second.find(nm);
+        if (oit == eff->second.end())
+          err(ER::Code::UNKNOWN_SYMBOL,
+              v.name,
+              "effect '" + PFX + "' has no operation '" + nm + "'");
+        else
+          out.push_back(oit->second);
+        return;
+      }
       err(ER::Code::UNKNOWN_MODULE,
           v.qualifier,
-          "no module named '" + PFX + "' in '" + PFX + "." + nm + "'");
+          "no module or effect named '" + PFX + "' in '" + PFX + "." + nm + "'");
       return;
     }
 
@@ -427,6 +483,65 @@ struct Linker
     for (UT::Vu c : uniq) ov.candidates.push(c);
     e->tag = ExprTag::Overload;
     e->as  = std::move(ov);
+  }
+
+  // Resolve a handler clause's operation to its canonical `Effect.op` identity,
+  // rewriting `c.op` (and clearing `c.qualifier`). A clause names exactly one
+  // operation, so -- unlike a perform site -- it is never an ExOverload and
+  // cannot be settled by type: an unqualified op shared by several effects must
+  // be qualified `Effect.op`. (Effects are program-wide, so resolution is by the
+  // global effect table, not module scope.)
+  void
+  resolve_clause_op(
+    EX::HandlerClause &c)
+  {
+    std::string op(c.op);
+    if (c.qualifier.size())
+    {
+      std::string eff(c.qualifier);
+      auto        eit = effects.find(eff);
+      if (eit == effects.end())
+        return (void)err(ER::Code::UNKNOWN_MODULE,
+                         c.qualifier,
+                         "no effect named '" + eff + "'");
+      auto oit = eit->second.find(op);
+      if (oit == eit->second.end())
+        return (void)err(ER::Code::UNKNOWN_SYMBOL,
+                         c.op,
+                         "effect '" + eff + "' has no operation '" + op + "'");
+      c.op        = oit->second;
+      c.qualifier = UT::Vu{};
+      return;
+    }
+
+    // Bare: gather every effect declaring this operation name.
+    std::vector<std::string> owners;
+    UT::Vu                   hit{};
+    for (auto &ekv : effects)
+    {
+      auto oit = ekv.second.find(op);
+      if (oit != ekv.second.end())
+      {
+        owners.push_back(ekv.first);
+        hit = oit->second;
+      }
+    }
+    if (owners.empty())
+      return (void)err(ER::Code::UNKNOWN_SYMBOL,
+                       c.op,
+                       "no effect declares an operation '" + op + "'");
+    if (owners.size() > 1)
+    {
+      std::string qs;
+      for (size_t i = 0; i < owners.size(); ++i)
+        qs += (i ? ", " : "") + owners[i] + "." + op;
+      return (void)err(ER::Code::AMBIGUOUS_NAME,
+                       c.op,
+                       "operation '" + op
+                         + "' is declared by several effects; qualify it ("
+                         + qs + ")");
+    }
+    c.op = hit;
   }
 
   // Pass 2b: rewrite every variable reference in a body. Locals
@@ -516,6 +631,7 @@ struct Linker
       resolve(h.body, Mkey, sc, locals); // k is NOT in scope in the body
       for (size_t c = 0; c < h.clauses.size(); ++c)
       {
+        resolve_clause_op(h.clauses[c]); // rewrite op to its `Effect.op` identity
         size_t base = locals.size();
         locals.push_back(h.clauses[c].arg); // the operation's argument
         locals.push_back(h.k);              // the shared continuation

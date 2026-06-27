@@ -197,8 +197,11 @@ collect_operations(
   {
     const EX::Expr &e = program[i];
     if (e.tag != EX::ExprTag::EffectDecl) continue;
-    for (const EX::FieldDecl &op : std::get<EX::ExEffectDecl>(e.as).ops)
-      prog.operations.insert(std::string(op.name));
+    const EX::ExEffectDecl &ed = std::get<EX::ExEffectDecl>(e.as);
+    for (const EX::FieldDecl &op : ed.ops)
+      // The canonical `Effect.op` identity -- matches what MR rewrites uses and
+      // clause heads to, and what TC keys its operation schemes by.
+      prog.operations.insert(std::string(ed.name) + "." + std::string(op.name));
   }
 }
 

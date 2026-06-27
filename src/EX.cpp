@@ -568,6 +568,18 @@ Parser::parse_handle()
     LX::Token op = EX_TRY(
       expect(LX::TokenTag::Word, "expected an operation name after 'is'"));
     char oc = op.str.size() ? op.str.data()[0] : '\0';
+
+    // An uppercase head followed by '.' is an effect qualifier: `is Effect.op a`.
+    UT::Vu qual{};
+    if (oc >= 'A' && oc <= 'Z'
+        && LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '.'
+      qual = op.str;
+      op   = EX_TRY(expect(LX::TokenTag::Word,
+                         "expected an operation name after the effect prefix"));
+      oc   = op.str.size() ? op.str.data()[0] : '\0';
+    }
     if (oc < 'a' || oc > 'z')
       EX_ERR(ER::Code::UNEXPECTED_TOKEN,
              op,
@@ -577,7 +589,7 @@ Parser::parse_handle()
       LX::TokenTag::Word, "expected the operation's argument binder"));
     EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the clause head"));
     Expr *cbody = EX_CTX(parse_expr(0), op, "in this handler clause");
-    clauses.push(HandlerClause{ op.str, arg.str, cbody });
+    clauses.push(HandlerClause{ op.str, arg.str, cbody, qual });
   }
   if (clauses.empty())
     EX_ERR(ER::Code::UNEXPECTED_TOKEN,

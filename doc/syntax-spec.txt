@@ -399,14 +399,19 @@ perform:
     put 5               # perform put 5; evaluates to {}
     throw "boom"        # perform throw
 
-A bare operation name resolves by the ordinary module name rules: usable
-unqualified when exactly one in-scope effect declares it, else qualified
-`Effect.op`.
+Same-named operations from different effects may coexist. A bare operation name
+resolves when it is unambiguous -- either only one in-scope effect declares it, or
+the ambient effect (the handler in scope) picks one of the candidates; otherwise
+it is qualified `Effect.op`. The qualifier is the EFFECT name (`Reader.ask`), not
+a module.
 
 HANDLING.  A computation is run under a handler with `do` ... `ctl`:
 
     handle ::= 'do' expr 'ctl' var clause+ [ 'else' var '=' expr ]
-    clause ::= 'is' opname var '=' expr
+    clause ::= 'is' [ EffectName '.' ] opname var '=' expr
+
+A clause head naming a shared operation must qualify it (`is Reader.ask u = ...`),
+since a clause -- unlike a use -- cannot be disambiguated by type.
 
 `do expr` is the body to run -- no parentheses; the `ctl` keyword delimits it.
 `ctl k` names the continuation `k`, shared by every clause (there is exactly one
