@@ -74,6 +74,18 @@ Definition expr:
 The `-` token is special: binary subtraction between two expressions, unary
 negation when it prefixes one.
 
+Sequencing and pipes (parser sugar, lowest precedence -- below arithmetic and
+application; they desugar to existing forms, there are no runtime `;`/`|>`/`<|`
+functions):
+	- `a ; b`   = `let _ = a in b`  -- run `a` for its effect, discard its value,
+	  then evaluate `b` (whose value is the result). Right-associative, so
+	  `a ; b ; c` runs a, then b, then c. Like C's `;`, but an expression.
+	- `x |> f`  = `f x`  -- forward pipe, LEFT-associative:
+	  `x |> f |> g` = `g (f x)`. Application binds tighter, so `xs |> map f`
+	  is `(map f) xs`.
+	- `f <| x`  = `f x`  -- backward pipe, RIGHT-associative:
+	  `f <| g <| x` = `f (g x)`.
+
 ================================================================================
 TYPES
 ================================================================================
@@ -97,6 +109,12 @@ buffer); the type checker keeps the base types distinct, the runtime does not.
 The sized numerics are presently used mainly to spell C-ABI types in `@extern`
 signatures; there are no sized literals or arithmetic on them yet. A struct type
 name (see STRUCTS) -- or a union (sum) type name -- is also a type constructor.
+
+The empty record `{}` is the UNIT type; its sole value is also written `{}`. It is
+what a function or an effect operation passes or returns when there is no
+information to carry (the analogue of ML `unit` / C `void`). Type and value share
+the spelling, disambiguated by position (a `{}` in a type is the unit type, a `{}`
+in a term is the unit value).
 
 An Array is allocated with the `@array` form, an expression that yields a fresh
 block of `size` zeroed bytes:
@@ -140,9 +158,16 @@ other globals; only the result's shape matters.)
 Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
 
-(FFI: a foreign binding is a global whose body is `@extern.{ ... }`, naming the
-symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
-`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required.)
+(FFI / IO: a foreign binding is a global whose body is `@extern.{ ... }`, naming
+the symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
+`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required; its
+argument/result types drive C-ABI marshalling (Int/Real/Str and the sized
+numerics; a `{}` parameter means "no C argument", e.g. `getchar : {} -> Int`; a
+`{}` result discards it). Applying the binding calls the C function. Foreign calls
+are typed by the written signature -- IO is NOT yet tracked as an effect. Foreign
+calls require the FFI build (`make THRAX_3RD_PARTY_ON=1`, libffi); without it a
+foreign call aborts at runtime. Example: `$ puts : Str -> Int = @extern.{ "puts",
+"libc.so.6" }` then `puts "hi"` writes to stdout. See examples/MAIN.thx.)
 
 (Operator overloading: `$ @operator.{ <op> } : type = expr` adds an overload of a
 built-in binary operator (e.g. `+`) for the operand types in its signature; a use
@@ -349,6 +374,171 @@ field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables
 become `let`s in the arm body. Current limits: matching Int and Real literals
 only (no string equality yet), and no `_` catch-all sugar (use a variable arm or
 `else`).
+
+================================================================================
+EFFECTS (algebraic effects + handlers)
+================================================================================
+
+An effect is a named set of OPERATIONS that a computation may perform; a HANDLER
+supplies their meaning. Performing an operation suspends the computation up to the
+nearest enclosing handler for that effect, hands the handler the operation's
+argument together with the captured CONTINUATION `k`, and -- if the handler
+applies `k` -- resumes the computation from where it suspended. So an effect is an
+exception you may resume; an exception is an effect whose handler does not resume.
+
+DECLARATION.  An effect is a global declared with the `@effect` annotation in
+place of a type; its body is a comma-separated list of operation signatures (a
+trailing comma is allowed). The effect name is a TypeName (uppercase); each
+operation is a variable (lowercase):
+
+    effect ::= '$' EffectName ':' '@effect' '=' [ opsig (',' opsig)* ','? ]
+    opsig  ::= var ':' type '->' type        # argument type -> resume type
+
+    $ State : @effect =
+        get : {} -> Int,        # takes unit, resumes with an Int
+        put : Int -> {},        # takes an Int, resumes with unit
+    $ Exn : @effect =
+        throw : Str -> `a,      # never resumes; resume type is a fresh variable
+    $ Yield : @effect =
+        yield : Int -> {},      # hand out an Int, resume with unit
+
+Every operation takes exactly one argument and names one result; the codomain is
+the type the matching perform yields back (the value handed to `k`). An operation
+that needs no argument takes `{}` (unit); one that yields no value resumes with
+`{}`. An operation whose handler NEVER resumes (an exception) names a type
+VARIABLE as its result (`throw : Str -> `a`), so a use unifies with whatever its
+context expects -- e.g. `if c then throw "x" else n` is well-typed because
+`throw "x"` takes the type of `n`.
+
+PERFORMING.  An operation is performed simply by CALLING it, like a function --
+there is no `perform` keyword (cf. Koka, Flix). A use of an operation name is a
+perform:
+
+    get {}              # perform get; evaluates to the Int the handler resumes with
+    put 5               # perform put 5; evaluates to {}
+    throw "boom"        # perform throw
+
+Same-named operations from different effects may coexist. A bare operation name
+resolves when it is unambiguous -- either only one in-scope effect declares it, or
+the ambient effect (the handler in scope) picks one of the candidates; otherwise
+it is qualified `Effect.op`. The qualifier is the EFFECT name (`Reader.ask`), not
+a module.
+
+HANDLING.  A computation is run under a handler with `do` ... `ctl`:
+
+    handle ::= 'do' expr 'ctl' var clause+ [ 'else' var '=' expr ]
+    clause ::= 'is' [ EffectName '.' ] opname var '=' expr
+
+A clause head naming a shared operation must qualify it (`is Reader.ask u = ...`),
+since a clause -- unlike a use -- cannot be disambiguated by type.
+
+`do expr` is the body to run -- no parentheses; the `ctl` keyword delimits it.
+`ctl k` names the continuation `k`, shared by every clause (there is exactly one
+continuation per performed operation, so it is bound once, not per clause). Each
+`is op a = e` clause handles operation `op`, binding its argument to `a`; the body
+`e` may apply `k` to resume. The optional `else x = e` clause runs when the body
+completes WITHOUT performing (normal completion), binding the body's result to
+`x`; it defaults to identity (`else x = x`) when omitted. `is` and `else` are the
+same arm keywords as `match`.
+
+RESUMING.  The continuation `k` is an ordinary first-class value of function type
+`A -> B` (A the operation's resume type). RESUMING is just APPLYING it -- there is
+no `resume` keyword (cf. Flix's `resume` parameter, OCaml's continuation). `k v`
+splices the suspended computation back on and delivers `v` to the perform site.
+`k` is AFFINE: it may be applied AT MOST ONCE (resuming twice is a runtime error);
+not applying it discards the suspended computation (the exception / abort case).
+`k` may be STORED (in a data structure, a run-queue) before being applied -- which
+is what generators and coroutines need.
+
+Handlers are DEEP: a resumed computation is still governed by the same handler
+(the captured continuation re-installs it), so a generator that yields many times
+is handled each time.
+
+DEFER.  `defer <cleanup> do <body>` (a keyword; Go-style; the runtime mechanism
+is Koka-style finalization) runs `<body>` and runs `<cleanup>` when the body's
+scope exits -- whether by normal completion, OR by an effect handled by an OUTER
+handler that does not resume (the abort case: cleanup still runs, on the live
+stack with enclosing handlers installed), OR when a stored continuation holding it
+finally completes. `do` delimits the cleanup from the body; the body is an
+ordinary `do` block (optionally a `ctl` handler). The whole form has the body's
+type and is effect-polymorphic (cleanup and body share one effect row, so the
+cleanup's effects must also fit the ambient). Nested defers run innermost-first
+(LIFO). With FFI this is the resource-safe idiom (open a handle, `defer` close
+it). Limitation: a continuation STORED and then dropped WITHOUT ever being
+resumed does not run its `defer` (cleanup is tied to completion or to a
+not-resumed handler clause, not to garbage collection).
+
+    $ useFile : Str -> Int = \path =
+        let f = open path in
+        defer close f do
+            read f
+
+A `do <body>` with no `ctl` is just a block (it groups its body and has no
+runtime form of its own) -- which is what `defer ... do ...` opens.
+
+    # Exceptions -- ignore k, no else clause (identity)
+    $ safeDiv : Int -> Int -> Int = \a b =
+        do  if b ?= 0 then throw "div0" else a / b
+        ctl k
+            is throw msg = 0 - 1
+
+    # Generator -- `yield v` performs; `k {}` resumes; else supplies the tail
+    $ collect : ({} -> {}) -> List Int = \gen =
+        do  gen {}
+        ctl k
+            is yield v = .Cons.{ v, k {} }
+            else _     = .Nil
+
+    # State -- resume with `k s`; else transforms the result into a state function
+    $ runState : ({} -> Int) -> Int -> Pair Int Int = \action s0 =
+        let go : Int -> Pair Int Int =
+            do  action {}
+            ctl k
+                is get _ = \s = (k s) s
+                is put n = \s = (k {}) n
+                else x   = \s = .Pair.{ x, s }
+         in go s0
+
+    # Coroutine -- k is a value: stash it, apply it later from the queue
+    # (enqueue / spawn / run_next elided)
+    $ scheduler : ({} -> {}) -> {} = \main =
+        do  main {}
+        ctl k
+            is yield _ = enqueue k
+            is fork f  = let _ = enqueue k in spawn f
+            else _     = run_next
+
+EFFECT ROWS (types).  A function's type carries an effect ROW on the arrow: the
+effects a call may perform, written between the arrow and the result type.
+
+    arrow ::= type '->' [ effrow ] type
+    effrow ::= '<' [ effname (',' effname)* ] [ '|' tyvar ] '>'
+             | '<' tyvar '>'                 # a bare row variable
+
+    f : Int -> Int                  # pure: an absent row means the empty row <>
+    g : {} -> <State> Int           # may perform State
+    h : {} -> <Yield, State> {}     # may perform Yield and/or State
+    map : (`a -> <`e> `b) -> List `a -> <`e> List `b   # effect-polymorphic
+
+A handler DISCHARGES the effects it handles: `do body ctl k is op ...` types
+`body` under the ambient row extended with each handled effect, and the handle
+expression itself under the ambient without them. Operation use injects the
+operation's effect into the ambient. A top-level definition is typed under the
+empty row, so a performed-but-unhandled effect is a COMPILE-TIME error
+(`effect 'E' is performed but not handled`). Rows unify up to reordering and
+allow duplicate (scoped) labels; a row variable makes a function effect-
+polymorphic. Effect annotations skolemize/generalize their row variables exactly
+like ordinary type variables.
+
+STATUS.  Typed effect rows (the above), effect polymorphism + inference, handler
+typing, and compile-time unhandled-effect errors are IMPLEMENTED (M3.1). The
+handler is still found by dynamic search up the continuation stack at run time;
+evidence passing (O(1) dispatch) and the tail-resumptive optimization remain a
+later milestone. Effect SUBSUMPTION is implemented: a CALL requires the callee's
+latent row to be a subrow of the ambient (so a pure `Int -> Int` is callable in
+any effectful context), while passing a function as an ARGUMENT still matches its
+row exactly (an effectful function is not accepted where a pure one is declared).
+See doc/effect-system-design.md.
 
 ================================================================================
 TYPE SYSTEM (Hindley-Milner, no type classes)

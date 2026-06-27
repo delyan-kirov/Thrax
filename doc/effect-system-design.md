@@ -240,6 +240,13 @@ checker intact and lets the runtime model be validated independently. The
 tail-resumptive optimization is still partly available dynamically; the
 O(1)-evidence indexing specifically needs the types.
 
+**Status (2026-06-27): the rows have landed for TYPING (M3.1).** A function's
+type now carries an effect row, handlers discharge what they handle, and an
+unhandled effect is a **compile-time** error. RUNTIME dispatch is still the
+dynamic K-stack search above — evidence passing and the tail-resumptive
+optimization (which consume the types) remain M3.2, as does effect subsumption.
+See the roadmap (§10).
+
 ---
 
 ## 6. Runtime model: reified-K abstract machine
@@ -416,13 +423,67 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
   former stream as codata. Needs the strict machine (M1) as substrate;
   independent of the effect milestones, so it can interleave with M2/M3. See §1a.
 
-- [ ] **M2 — untyped affine effects.** `Handle/Perform/Resume` on the K stack:
-  deep, affine, first-class resumptions, dynamic handler search, `discontinue`.
-  Validate on the §9 examples (state, generator, coroutine, exceptions, async).
+- [~] **M2 — untyped affine effects.** `Handle` + perform/resume on the K stack:
+  deep, affine, first-class resumptions, dynamic handler search. **Mostly landed
+  (2026-06-27).** Surface is keyword-frugal (§12): no `perform`/`resume` — calling
+  an operation performs, applying `k` resumes; unit `{}` added. Done in substeps:
+  - [X] **3a** — parse `do <body> ctl k  is op a = e ...  [else x = e]` into
+    `ExHandle` (new `do`/`ctl` keywords; `is`/`else` reused).
+  - [X] **3c** — typing (`CHandle` in TC: `op : A -> B` gives `a:A`, `k:B->result`;
+    `else`/identity value clause) + CR/IR lowering (clauses/`else` as lifted
+    closures; a `Handle` IR node; `Program.operations`).
+  - [X] **3d** — the machine (`IT`): `KPrompt` on the `kont` stack, `VOp`
+    (perform = search-down + capture + run clause outside its prompt), `VResump`
+    (resume = splice, affine-guarded), `ret` runs `els` on normal completion.
+    Validated: exceptions (resume 0), generator (resume 1, sum + list), state
+    (parameter-passing, deep); affine double-resume faults; valgrind-clean;
+    `dat/EFFECTS.thx` in the suite.
+  - [X] **3b — effect-qualified op resolution (2026-06-27).** Operations are now
+    module-scoped symbols whose canonical identity is `Effect.op`, registered in
+    MR's symbol table and resolved through the ordinary scope + `ExOverload`
+    machinery (TC keys `m_prim`/`m_op_effect` by the identity; the runtime matches
+    by it unchanged). Same-named ops from different effects coexist: a bare use
+    resolves when unambiguous (one in scope, or the ambient effect picks it) else
+    needs `Effect.op`; a perform may also resolve by type via `ExOverload`. Clause
+    heads accept `is Effect.op a` and must qualify a shared name. The old
+    `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.thx` covers
+    it.
+  - [X] **`defer` (2026-06-27).** `defer <cleanup> do <body>` keyword (Go-style
+    surface; Koka-style runtime; no `discontinue`). Desugars to an internal
+    `%finally` intrinsic (`OP::FINALLY`; not a user identifier). Cleanup runs on
+    normal completion (a value returning through a `KDefer` marker), on abort (the
+    clause-boundary `KAfterClause` marker finalizes a discarded `k`'s cleanups on
+    the live stack, so enclosing handlers are still installed), and when a stored
+    continuation completes. Detected via the resumption's `used` flag + a kval
+    refcount ("stored") check -- NOT a destructor, so timing is correct. Also made
+    `do <body>` (no `ctl`) a plain block. `dat/FINALLY.thx`. Limitation: a stored
+    continuation dropped without ever being resumed does not run its `defer`.
+  - Not yet: coroutine scheduler example, async.
 
-- [ ] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
+- [~] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
   inference, handler typing; **evidence passing** + the tail-resumptive
   optimization; compile-time unhandled-effect / exhaustiveness.
+  - [X] **M3.1 — correctness slice (2026-06-27).** Effect rows in the type graph
+    (`TRowEmpty`/`TRowExtend`, an `eff` on `TArrow`); Leijen scoped-label row
+    unification; ambient-effect threading through `infer`/`infer_against` (App
+    unifies the callee's latent row with the ambient, Lam opens a fresh ambient,
+    Handle discharges its handled effects, top level is the empty row);
+    operations typed with an open tail `<L | mu>`; Koka-style `<…>` surface
+    syntax on the arrow (`A -> <E1, E2 | `e> B`, bare arrow = pure). Catches
+    unhandled effects at compile time. TC-only (types erased before CR/IR/IT);
+    `dat/EFFECTS.thx` + `dat/COROUTINES.thx` annotated and passing,
+    valgrind-clean. Known gap: no effect SUBSUMPTION (application uses row
+    equality), so an explicitly-pure arrow isn't callable in an effectful
+    context unless made row-polymorphic.
+  - [~] **M3.2 — perf + subsumption.**
+    - [X] **Effect subsumption (2026-06-27).** A call site requires the callee's
+      latent row to be a SUBROW of the ambient (`subrow` in TC), not equal to it,
+      so a pure (or smaller-effect) function is callable in any larger effect
+      context. Function-TYPE unification (argument positions) still uses
+      equality, so an effectful function cannot be passed where a pure one is
+      expected. Closes the M3.1 ergonomic gap.
+    - [ ] Evidence passing (O(1) dispatch), the tail-resumptive optimization;
+      exhaustiveness policy; parametric effects (effects with type arguments).
 
 - [ ] **M4 — Perceus + C backend.** Explicit `dup`/`drop` over the IR; uniform
   boxed value representation with RC headers; C emission.
@@ -432,11 +493,42 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
 ## 11. Deferred
 
 - **M2 (effects):**
-  - `discontinue` / `finally` / `initially` — resource-cleanup semantics when an
-    affine resumption is dropped (run cleanup frames as the segment unwinds).
-  - Effect **surface syntax** (how `effect`, `handle`, `perform`, `resume` are
-    written).
+  - `defer` — DONE (2026-06-27): `defer <cleanup> do <body>` keyword runs cleanup
+    on completion/abort/stored-completion via `KDefer` + clause-boundary
+    `KAfterClause` markers (no `discontinue` keyword; Koka-style runtime,
+    Go-style surface; desugars to the internal `%finally` intrinsic). `initially`
+    and the stored-then-dropped case remain unaddressed.
+  - Effect **surface syntax** — **DECIDED 2026-06-27**; see §12 and
+    `doc/syntax-spec.txt` (EFFECTS). `@effect` declaration; `do … ctl k … is … else
+    …`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
+    unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
+  - **Machine notes (3d/3b, 2026-06-27):**
+    - **Constant host stack — DONE.** A clause lowers to a single 2-slot `Code`
+      (`a`=Local 0, `k`=Local 1) and `perform` jumps into it inline on the single
+      reified-`kont`, with no nested `apply`. A 100 000-resume generator runs
+      without host-stack overflow, valgrind-clean. (A non-tail resume still grows
+      the `kont` vector O(N) on the heap, which is fine; the host stack is
+      bounded.)
+    - **Coroutines validated** (`dat/COROUTINES.thx`): a two-task round-robin
+      scheduler with first-class stored resumptions resumed cross-context works,
+      valgrind-clean.
+    - **Effects still do not cross a builtin-invoked closure** (`Machine::apply`,
+      used for the entry point and any higher-order builtin, starts a fresh
+      `kont`). No current builtin takes a function argument, so this is moot;
+      revisit if one ever does.
+  - **Operation name resolution — DONE (3b, 2026-06-27).** Operations are now
+    registered as **module-scoped symbols** in MR, each with the canonical
+    identity `Effect.op`, and resolved through the ordinary scope + `ExOverload`
+    candidate machinery (TC keys its `m_prim`/`m_op_effect` schemes by that
+    identity; the runtime matches a performed op to a clause by it, unchanged).
+    Same-named operations from different effects **coexist**: a bare op resolves
+    when unambiguous (the one in scope, or the ambient effect selects it), may
+    resolve by type via `ExOverload`, and is otherwise qualified `Effect.op`.
+    Handler clause heads accept `is Effect.op a` and must qualify a shared name
+    (a clause cannot be type-resolved). The `m_prim` shortcut and the
+    `AMBIGUOUS_NAME` up-front rejection are gone; `m_prim` now holds only the
+    `if`/array builtins plus identity-keyed operation schemes.
 - **M3 (types):**
   - Effect-**row representation** (open rows + a polymorphism tail variable;
     duplicate labels / scoped labels à la Leijen).
@@ -449,7 +541,41 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
 
 ---
 
-## 12. Glossary
+## 12. Surface syntax (decided 2026-06-27)
+
+The M2 (untyped) surface, recorded in full in `doc/syntax-spec.txt` (EFFECTS).
+Chosen to reuse Thrax's existing grammar and spend as few keywords as possible;
+the result is **closest to Flix**.
+
+- **Declaration.** `$ Eff : @effect = op : A -> B, …` — an `@effect` annotation
+  parallel to `@struct` / `@codata`. Effect = TypeName, operations = lowercase
+  vars. Each op is `arg-type -> resume-type`; every op takes exactly one argument
+  and names one result. The new **unit** type/value `{}` (empty record, added to
+  the language for this) spells "no argument" / "no result".
+
+- **No `perform`.** An operation is performed by **calling it** (`yield v`,
+  `get {}`), as in Koka/Flix — a use of an operation name _is_ a perform. Resolves
+  by the ordinary module name rules.
+
+- **No `resume`.** The continuation `k` is a **first-class value** of function
+  type; **applying it** (`k v`) resumes, as in Flix/OCaml. Affine: applied ≤ once
+  (runtime-checked), droppable (= the exception case), storable (= generators /
+  coroutines).
+
+- **Handling.** `do <body> ctl k  <is-clauses>  [else x = e]`. `do` takes the body
+  (no parens — `ctl` delimits it). `ctl k` binds the one continuation, shared by
+  all clauses (exactly one `k` per performed op). `is op a = e` handles `op`,
+  binding its argument `a`. `else x = e` is the value clause (normal completion),
+  binding the result; optional, identity by default. `is` / `else` are reused from
+  `match`; handlers are deep (§3).
+
+Net new keywords: `@effect`, `do`, `ctl` (plus reused `is` / `else`); all
+contextual. `ctl` is borrowed from Koka and reserved as the slot for a future
+`fun` (tail-resumptive, no-capture) clause kind — see §6.
+
+---
+
+## 13. Glossary
 
 - **Affine resumption** — a captured continuation invoked _at most once_.
 - **Deep handler** — the handler stays installed for the resumed computation

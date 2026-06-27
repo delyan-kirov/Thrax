@@ -57,13 +57,13 @@ struct VBuiltin
   std::vector<pVal> args;
 };
 
-// A foreign function as a first-class, curried value. `decl` points at its Core
-// declaration (which carries the symbol, library and marshalling types); `args`
+// A foreign function as a first-class, curried value. `decl` points at its IR
+// node (which carries the symbol, library and marshalling types); `args`
 // accumulates operands until saturated, at which point the C call is made (see
-// eval / call_extern).
+// the machine's App handling / call_extern).
 struct VExtern
 {
-  const CR::Extern *decl;
+  const IR::Extern *decl;
   std::vector<pVal> args;
 };
 
@@ -105,6 +105,37 @@ struct VCode
   ValEnv env;
 };
 
+// An effect operation as a first-class value (the surface "calls" an operation
+// to perform it). Applying it searches the continuation stack for the nearest
+// handler with a clause for `name`, captures the continuation, and runs that
+// clause. Operations are unary.
+struct VOp
+{
+  std::string name;
+};
+
+// A captured, first-class continuation (resumption) -- the slice of the reified
+// continuation stack from a handler's prompt up to a perform point. Applying it
+// resumes the suspended computation with the supplied value. AFFINE: it may be
+// applied at most once (enforced in the machine via Resumption::used). `seg`
+// holds the captured K-frames; the frame type lives in IT.hpp, so it is opaque
+// here (a shared_ptr to the forward-declared Resumption).
+struct Resumption;
+struct VResump
+{
+  std::shared_ptr<Resumption> seg;
+};
+
+// The `defer` intrinsic as a first-class, curried value: `defer action
+// cleanup` runs `action {}` with `cleanup` registered to run when the action's
+// scope exits -- on normal completion (a value returning through the installed
+// KDefer) or on discard (the continuation dropped un-resumed). `args` collects
+// the two thunks before the machine installs the cleanup and runs the action.
+struct VDefer
+{
+  std::vector<pVal> args;
+};
+
 #define IT_VALUE_VARIANTS                                                      \
   X(Unk, VUnk)                                                                 \
   X(Int, VInt)                                                                 \
@@ -115,7 +146,10 @@ struct VCode
   X(Struct, VStruct)                                                           \
   X(Variant, VVariant)                                                         \
   X(Rec, VRec)                                                                 \
-  X(Code, VCode)
+  X(Code, VCode)                                                               \
+  X(Op, VOp)                                                                   \
+  X(Resump, VResump)                                                           \
+  X(Defer, VDefer)
 
 enum class VKind
 {
@@ -306,7 +340,7 @@ const std::unordered_map<std::string, Impl> impls{
 };
 
 // Marshal the saturated arguments and make the foreign call described by `e`.
-pVal call_extern(const CR::Extern &e, const std::vector<pVal> &args);
+pVal call_extern(const IR::Extern &e, const std::vector<pVal> &args);
 
 std::string pprint(const pVal &v, int level = 0);
 

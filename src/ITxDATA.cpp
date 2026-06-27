@@ -38,41 +38,56 @@ mk_bytes(
 
 pVal
 call_extern(
-  const CR::Extern &e, const std::vector<pVal> &args)
+  const IR::Extern &e, const std::vector<pVal> &args)
 {
+  // The marshalling type names, minus any unit `{}` slots: a `{}` parameter is
+  // "no argument" (lets a nullary C function be written `{} -> Int`), so it
+  // contributes neither a type nor a word to the C call.
   std::vector<std::string> arg_types;
+  std::vector<ssize_t>     words;
   arg_types.reserve(e.arg_types.size());
-  for (UT::Vu t : e.arg_types) arg_types.push_back(std::string(t));
-  std::string ret_type(e.ret_type);
-
-  std::vector<ssize_t> words;
   words.reserve(args.size());
-  for (const pVal &a : args)
+
+  UT_FAIL_IF(args.size() != e.arg_types.size());
+  for (size_t i = 0; i < args.size(); ++i)
   {
+    std::string ty(e.arg_types[i]);
+    const pVal &a = args[i];
     UT_FAIL_IF(!a);
+    if (ty == OP::TY_UNIT) continue; // `{}` arg: skipped, not passed
+
+    arg_types.push_back(ty);
     if (VKind::Int == kind(a))
-    {
       words.push_back(std::get<VInt>(a->as).val);
+    else if (VKind::Real == kind(a))
+    {
+      double   d = std::get<VReal>(a->as).val;
+      ssize_t  w;
+      std::memcpy(&w, &d, sizeof(w)); // FF reads Real words as double bits
+      words.push_back(w);
     }
     else if (VKind::Str == kind(a))
-    {
-      const std::string &s = std::get<VStr>(a->as).val;
-      words.push_back((ssize_t)(intptr_t)s.c_str());
-    }
+      words.push_back((ssize_t)(intptr_t)std::get<VStr>(a->as).val.c_str());
     else
-    {
-      UT_FAIL_MSG("FFI argument to '%s' must be Int or Str",
+      UT_FAIL_MSG("FFI argument to '%s' must be Int, Real or Str",
                   std::string(e.symbol).c_str());
-    }
   }
 
-  ssize_t r = FF::call(e.lib, e.symbol, arg_types, ret_type, words);
+  std::string ret_type(e.ret_type);
+  ssize_t     r = FF::call(e.lib, e.symbol, arg_types, ret_type, words);
 
   if ("Str" == ret_type)
   {
     const char *p = (const char *)(intptr_t)r;
     return mk(Value{ VStr{ p ? std::string(p) : std::string() } });
   }
+  if ("Real" == ret_type || "Real32" == ret_type)
+  {
+    double d;
+    std::memcpy(&d, &r, sizeof(d));
+    return mk_real(d);
+  }
+  if (ret_type == OP::TY_UNIT) return mk(Value{ VUnk{} });
   return mk_int(r);
 }
 
@@ -118,7 +133,10 @@ pprint(
   case VKind::Rec: return pad + "<rec>";
   case VKind::Code:
     return pad + "<code#" + std::to_string(std::get<VCode>(v->as).code) + ">";
-  case VKind::Unk: return pad + "?unknown";
+  case VKind::Op: return pad + "<op " + std::get<VOp>(v->as).name + ">";
+  case VKind::Resump : return pad + "<resumption>";
+  case VKind::Defer: return pad + "<defer>";
+  case VKind::Unk    : return pad + "?unknown";
   }
   return pad + "?unreachable";
 }

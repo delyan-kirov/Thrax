@@ -151,6 +151,10 @@ go(
   case EX::ExprTag::Int:
     return alloc(arena, Term{ Int{ std::get<EX::ExInt>(expr->as).value } });
 
+  // The unit value `{}` -- represented at runtime as the integer 0 (the type
+  // checker keeps the unit type distinct from Int; the runtime does not).
+  case EX::ExprTag::Unit: return alloc(arena, Term{ Int{ 0 } });
+
   case EX::ExprTag::Real:
     return alloc(arena, Term{ Real{ std::get<EX::ExReal>(expr->as).value } });
 
@@ -215,11 +219,42 @@ go(
     return alloc(arena, Term{ v });
   }
 
+  case EX::ExprTag::Handle:
+  {
+    auto            &h    = std::get<EX::ExHandle>(expr->as);
+    Term            *body = go(h.body, env, arena);
+    UT::Vec<HClause> clauses{ arena };
+    for (auto &c : h.clauses)
+    {
+      // \arg = \k = <clause body> -- the curried Fun nesting gives `arg` and
+      // `k` their binders, which assign_id / closure conversion then handle.
+      Term *cb    = go(c.body, env, arena);
+      Term *inner = alloc(arena, Term{ Fun{ UT::strdup(arena, h.k), cb } });
+      Term *outer
+        = alloc(arena, Term{ Fun{ UT::strdup(arena, c.arg), inner } });
+      clauses.push(HClause{ UT::strdup(arena, c.op), outer });
+    }
+    Term *els;
+    if (h.else_body)
+      els = alloc(
+        arena,
+        Term{ Fun{ UT::strdup(arena, h.else_var),
+                   go(h.else_body, env, arena) } });
+    else
+    {
+      // No else clause: the value clause is the identity `\x = x`.
+      UT::Vu x = UT::strdup(arena, "%x");
+      els      = alloc(arena, Term{ Fun{ x, alloc(arena, Term{ Var{ x, 0 } }) } });
+    }
+    return alloc(arena, Term{ Handle{ body, clauses, els } });
+  }
+
   // A struct / union / alias *declaration* is a type-level form with no runtime
   // value.
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
   case EX::ExprTag::AliasDecl:
+  case EX::ExprTag::EffectDecl:
   case EX::ExprTag::Unknown   : return alloc(arena, Term{ Unk{} });
 
   case EX::ExprTag::Overload:
@@ -339,6 +374,17 @@ assign_id(
   }
   break;
 
+  case Kind::Handle:
+  {
+    // body, each clause `fn` (a Fun, which pushes its own binders), and the
+    // value clause `els` (also a Fun) are all indexed in this same scope.
+    auto &h = std::get<Handle>(node->as);
+    assign_id(h.body, names);
+    for (HClause &c : h.clauses) assign_id(c.fn, names);
+    assign_id(h.els, names);
+  }
+  break;
+
   case Kind::Int:
   case Kind::Real:
   case Kind::Str:
@@ -399,6 +445,16 @@ pprint(
     for (const Alt &alt : v.alts)
       s += "\n" + pad1 + "alt ->\n" + pprint(alt.body, level + 2);
     return s + "\n" + pad1 + "else ->\n" + pprint(v.deflt, level + 2) + ")";
+  }
+  case Kind::Handle:
+  {
+    auto       &v    = std::get<Handle>(t->as);
+    std::string pad1 = std::string((level + 1) * 2, ' ');
+    std::string s    = pad + "(handle\n" + pprint(v.body, level + 1);
+    for (const HClause &c : v.clauses)
+      s += "\n" + pad1 + "is " + std::string(c.op) + " ->\n"
+           + pprint(c.fn, level + 2);
+    return s + "\n" + pad1 + "else ->\n" + pprint(v.els, level + 2) + ")";
   }
   case Kind::Struct:
   {

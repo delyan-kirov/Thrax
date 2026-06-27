@@ -49,6 +49,7 @@ private:
   UT_NODISCARD RExpr    parse_struct_lit(UT::Vu type_name);
   UT_NODISCARD RExpr    parse_union_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_alias_decl(const LX::Token &name);
+  UT_NODISCARD RExpr    parse_effect_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_variant_lit(UT::Vu           type_name,
                                           UT::Vu           tag,
                                           const LX::Token &tok);
@@ -61,6 +62,8 @@ private:
   UT_NODISCARD RExpr    parse_group();
   UT_NODISCARD RExpr    parse_let();
   UT_NODISCARD RExpr    parse_if();
+  UT_NODISCARD RExpr    parse_handle();
+  UT_NODISCARD RExpr    parse_defer();
   UT_NODISCARD RExpr    parse_closure();
   UT_NODISCARD RPattern parse_pattern();
   // Parses a qualified pattern after an uppercase type name: dispatches to a
@@ -83,6 +86,7 @@ private:
   UT_NODISCARD Expr    *mk_op_var(UT::Vu name);
   UT_NODISCARD Expr    *mk_unop(UT::Vu op, Expr *operand);
   UT_NODISCARD Expr    *mk_binop(UT::Vu op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr    *mk_seq(Expr *lhs, Expr *rhs);
   UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
   UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);

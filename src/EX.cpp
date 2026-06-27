@@ -106,6 +106,22 @@ Parser::mk_binop(
   return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
 
+// Sequencing `lhs ; rhs`  ==>  `let _ = lhs in rhs`: run lhs for effect, discard
+// its value, then evaluate rhs (whose value is the result). A plain desugar -- no
+// runtime `;` operator.
+Expr *
+Parser::mk_seq(
+  Expr *lhs, Expr *rhs)
+{
+  ExLet lt;
+  lt.var  = UT::Vu{ "_", 1 };
+  lt.val  = lhs;
+  lt.body = rhs;
+  Expr e{ ExprTag::Let };
+  e.as = lt;
+  return alloc(e);
+}
+
 Expr *
 Parser::mk_if(
   Expr *cond, Expr *then, Expr *alt)
@@ -215,8 +231,20 @@ Parser::parse_primary()
   case LX::TokenTag::LParen: base = EX_TRY(parse_group()); break;
   case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
-  case LX::TokenTag::Lambda: base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
+  case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
+  case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
   case LX::TokenTag::At    : base = EX_TRY(parse_array()); break;
+  case LX::TokenTag::LBrace:
+  {
+    // The unit value `{}` (empty record).
+    m_lex.next(); // '{'
+    EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the unit '{}'"));
+    Expr e{ ExprTag::Unit };
+    e.as = ExUnit{};
+    base = alloc(e);
+    break;
+  }
   case LX::TokenTag::Dot:
   {
     // An unqualified literal whose type is inferred from context: a bare struct
@@ -379,7 +407,16 @@ Parser::parse_expr(
       if (bp->l < min_bp) break;
       EX_TRY(m_lex.next()); // consume the operator
       Expr *rhs = EX_TRY(parse_expr(bp->r));
-      lhs       = mk_binop(t.str, lhs, rhs);
+      // Sequencing and pipes desugar away here; everything else is an ordinary
+      // (overloadable) binary operator call.
+      if (t.str == ";")
+        lhs = mk_seq(lhs, rhs);
+      else if (t.str == "|>")
+        lhs = mk_app(rhs, lhs); // `x |> f` == `f x`
+      else if (t.str == "<|")
+        lhs = mk_app(lhs, rhs); // `f <| x` == `f x`
+      else
+        lhs = mk_binop(t.str, lhs, rhs);
     }
     else if (operand_starters.count(t.tag))
     {
@@ -531,6 +568,107 @@ Parser::parse_if()
 
   Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'if'");
   return { true, mk_if(cond, then, alt), {} };
+}
+
+// A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. The `do` body is
+// a single expression (parenthesize a nested handler); `ctl k` binds the one
+// continuation shared by every clause; each `is op a = e` clause handles an
+// operation, binding its argument to `a`; the optional `else x = e` is the value
+// clause for normal completion. There is no `perform`/`resume` syntax: an
+// operation is performed by calling it, and `k` is resumed by applying it.
+RExpr
+Parser::parse_handle()
+{
+  LX::Token kw = EX_TRY(m_lex.next()); // 'do'
+  Expr *body   = EX_CTX(parse_expr(0), kw, "in the body of this 'do' block");
+
+  // A `do` with no `ctl` is just a block -- it groups its body (handy after
+  // `defer`, or to parenthesize-free a sequence). It has no runtime form of its
+  // own, so return the body directly.
+  if (LX::TokenTag::KwCtl != EX_TRY(m_lex.peek()).tag)
+    return { true, body, {} };
+
+  EX_TRY(m_lex.next()); // 'ctl'
+  LX::Token kt = EX_TRY(
+    expect(LX::TokenTag::Word, "expected a continuation name after 'ctl'"));
+
+  UT::Vec<HandlerClause> clauses{ m_arena };
+  while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // 'is'
+    LX::Token op = EX_TRY(
+      expect(LX::TokenTag::Word, "expected an operation name after 'is'"));
+    char oc = op.str.size() ? op.str.data()[0] : '\0';
+
+    // An uppercase head followed by '.' is an effect qualifier: `is Effect.op a`.
+    UT::Vu qual{};
+    if (oc >= 'A' && oc <= 'Z'
+        && LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '.'
+      qual = op.str;
+      op   = EX_TRY(expect(LX::TokenTag::Word,
+                         "expected an operation name after the effect prefix"));
+      oc   = op.str.size() ? op.str.data()[0] : '\0';
+    }
+    if (oc < 'a' || oc > 'z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             op,
+             "a handler operation must start lowercase, found '%s'",
+             std::string(op.str).c_str());
+    LX::Token arg = EX_TRY(expect(
+      LX::TokenTag::Word, "expected the operation's argument binder"));
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the clause head"));
+    Expr *cbody = EX_CTX(parse_expr(0), op, "in this handler clause");
+    clauses.push(HandlerClause{ op.str, arg.str, cbody, qual });
+  }
+  if (clauses.empty())
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           kt,
+           "a handler needs at least one 'is op a = ...' clause");
+
+  UT::Vu els_var{};
+  Expr  *els_body = nullptr;
+  if (LX::TokenTag::KwElse == EX_TRY(m_lex.peek()).tag)
+  {
+    LX::Token els = EX_TRY(m_lex.next()); // 'else'
+    LX::Token v   = EX_TRY(
+      expect(LX::TokenTag::Word, "expected the result binder after 'else'"));
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'else' binder"));
+    els_var  = v.str;
+    els_body = EX_CTX(parse_expr(0), els, "in the 'else' value clause");
+  }
+
+  Expr e{ ExprTag::Handle };
+  e.as = ExHandle{ body, kt.str, clauses, els_var, els_body };
+  return { true, alloc(e), {} };
+}
+
+// `defer <cleanup> do <body>` -- run `cleanup` when `body`'s scope exits (normal
+// completion OR an abort that discards the continuation). `do` delimits the
+// cleanup from the body; the body is an ordinary `do` block (optionally a `ctl`
+// handler). Desugars to `%defer (\_ = body) (\_ = cleanup)` -- the cleanup
+// intrinsic; both sides become thunks so neither runs until the machine wants it.
+RExpr
+Parser::parse_defer()
+{
+  LX::Token kw      = EX_TRY(m_lex.next()); // 'defer'
+  Expr     *cleanup = EX_CTX(
+    parse_expr(0), kw, "in the cleanup of this 'defer' (it ends at 'do')");
+
+  LX::Token d = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::KwDo != d.tag)
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           d,
+           "expected 'do' to open the 'defer' body, found '%s'",
+           std::string(d.str).c_str());
+  Expr *body = EX_TRY(parse_handle()); // consumes `do <body> [ctl ...]`
+
+  Expr *body_thunk    = mk_fndef(UT::Vu{ "_", 1 }, body);
+  Expr *cleanup_thunk = mk_fndef(UT::Vu{ "_", 1 }, cleanup);
+  Expr *call          = mk_app(
+    mk_app(mk_op_var(UT::Vu{ OP::DEFER }), body_thunk), cleanup_thunk);
+  return { true, call, {} };
 }
 
 // A single pattern: `_`, a variable, a literal, or a `Type.{ ... }` struct
@@ -825,6 +963,12 @@ Parser::parse_global()
       m_lex.next(); // '@alias'
       EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@alias'"));
       return parse_alias_decl(name);
+    }
+    if (LX::TokenTag::At == ann.tag && ann.str == "@effect")
+    {
+      m_lex.next(); // '@effect'
+      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@effect'"));
+      return parse_effect_decl(name);
     }
     sig = EX_CTX(parse_type(),
                  name,
@@ -1295,6 +1439,53 @@ Parser::parse_alias_decl(
   return { true, alloc(e), {} };
 }
 
+// An effect declaration body: a comma-separated `op : type` list (trailing comma
+// allowed), ending at the next global ('$') or end of input. Each `op` is a
+// lowercase name; its type is a full signature `A -> B`. The name token was
+// consumed by parse_global.
+RExpr
+Parser::parse_effect_decl(
+  const LX::Token &name)
+{
+  char nc = name.str.size() ? name.str.data()[0] : '\0';
+  if (nc < 'A' || nc > 'Z')
+    EX_ERR(ER::Code::EXPECTED_GLOBAL,
+           name,
+           "an effect name must start uppercase, found '%s'",
+           std::string(name.str).c_str());
+
+  UT::Vec<FieldDecl> ops{ m_arena };
+  for (;;)
+  {
+    LX::TokenTag tag = EX_TRY(m_lex.peek()).tag;
+    if (LX::TokenTag::Dollar == tag || LX::TokenTag::Eof == tag) break;
+
+    LX::Token oname
+      = EX_TRY(expect(LX::TokenTag::Word, "expected an operation name"));
+    char oc = oname.str.size() ? oname.str.data()[0] : '\0';
+    if (oc < 'a' || oc > 'z')
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             oname,
+             "an effect operation must start lowercase, found '%s'",
+             std::string(oname.str).c_str());
+
+    EX_TRY(
+      expect(LX::TokenTag::Colon, "expected ':' after the operation name"));
+    Ty *ty = EX_CTX(parse_type(),
+                    oname,
+                    "in the signature of operation '%s'",
+                    std::string(oname.str).c_str());
+    ops.push(FieldDecl{ oname.str, ty });
+
+    if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+    m_lex.next(); // ','
+  }
+
+  Expr e{ ExprTag::EffectDecl };
+  e.as = ExEffectDecl{ name.str, ops };
+  return { true, alloc(e), {} };
+}
+
 // A variant construction. Called with `Type` and `Tag` already consumed; an
 // optional `.{ ... }` payload follows. Without it the payload is unit (e.g.
 // `Bool.True`). Payload values are positional (`{a, b}`) or named (`{.f = a}`),
@@ -1421,6 +1612,16 @@ Parser::parse_type_atom()
     UT::Vu nm{ t.str.data() + 1, t.str.size() - 1 };
     return { true, mk_ty(Ty{ TyTag::Var, TyVar{ nm } }), {} };
   }
+  case LX::TokenTag::LBrace:
+  {
+    // The unit type `{}` (empty record).
+    m_lex.next(); // '{'
+    EX_TRY(
+      expect(LX::TokenTag::RBrace, "expected '}' to close the unit type '{}'"));
+    return {
+      true, mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }), {}
+    };
+  }
   case LX::TokenTag::LParen:
   {
     LX::Token lp = EX_TRY(m_lex.next()); // '('
@@ -1465,9 +1666,82 @@ Parser::parse_type()
 
   if (LX::TokenTag::Arrow == EX_TRY(m_lex.peek()).tag)
   {
-    m_lex.next();                   // '->'
-    Ty *rhs = EX_TRY(parse_type()); // right-associative
-    return { true, mk_ty(Ty{ TyTag::Arrow, TyArrow{ lhs, rhs } }), {} };
+    m_lex.next(); // '->'
+
+    // Optional effect-row annotation between the arrow and the result type (M3):
+    //   <>                empty / pure         <E1, E2>         closed labels
+    //   <`e>              just a row variable  <E1, E2 | `e>    open row
+    // Op-char runs coalesce, so the opener arrives as `<`, `<>` or `<|`. Bare
+    // `->` is implicitly pure too.
+    UT::Vec<UT::Vu> eff_labels{ m_arena };
+    UT::Vu          eff_tail{};
+    bool            has_eff = false;
+
+    LX::Token pk      = EX_TRY(m_lex.peek());
+    bool      is_op   = LX::TokenTag::Op == pk.tag;
+    bool      pending_tail = false; // a `<|` opener already consumed the '|'
+    if (is_op && pk.str == "<>")
+    {
+      m_lex.next(); // '<>'
+      has_eff = true;
+    }
+    else if ((is_op && pk.str == "<") || (is_op && pk.str == "<|"))
+    {
+      has_eff      = true;
+      pending_tail = pk.str == "<|";
+      m_lex.next(); // '<' or '<|'
+      // Labels (comma-separated), an optional `| `e` tail, then `>`. A bare row
+      // variable in label position is the tail (so `<`e>` is a pure row var).
+      for (;;)
+      {
+        LX::Token t = EX_TRY(m_lex.peek());
+        if (!pending_tail && LX::TokenTag::Op == t.tag && t.str == ">")
+        {
+          m_lex.next();
+          break;
+        }
+        if (pending_tail
+            || (LX::TokenTag::Op == t.tag && t.str == "|")
+            || LX::TokenTag::TyVar == t.tag)
+        {
+          if (!pending_tail && LX::TokenTag::Op == t.tag) m_lex.next(); // '|'
+          LX::Token tv = EX_TRY(m_lex.peek());
+          if (LX::TokenTag::TyVar != tv.tag)
+            EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                   tv,
+                   "expected a row variable (e.g. `e) in the effect row, found "
+                   "'%s'",
+                   std::string(tv.str).c_str());
+          m_lex.next();
+          eff_tail        = UT::Vu{ tv.str.data() + 1, tv.str.size() - 1 };
+          LX::Token close = EX_TRY(m_lex.peek());
+          if (!(LX::TokenTag::Op == close.tag && close.str == ">"))
+            EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                   close,
+                   "expected '>' to close the effect row, found '%s'",
+                   std::string(close.str).c_str());
+          m_lex.next();
+          break;
+        }
+        // An effect name: an uppercase Word.
+        char c = t.str.size() ? t.str.data()[0] : '\0';
+        if (LX::TokenTag::Word != t.tag || c < 'A' || c > 'Z')
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 t,
+                 "expected an effect name (uppercase) in the effect row, found "
+                 "'%s'",
+                 std::string(t.str).c_str());
+        m_lex.next();
+        eff_labels.push(t.str);
+
+        LX::Token sep = EX_TRY(m_lex.peek());
+        if (LX::TokenTag::Comma == sep.tag) m_lex.next();
+      }
+    }
+
+    Ty     *rhs = EX_TRY(parse_type()); // right-associative
+    TyArrow a{ lhs, rhs, eff_labels, eff_tail, has_eff };
+    return { true, mk_ty(Ty{ TyTag::Arrow, a }), {} };
   }
   return { true, lhs, {} };
 }

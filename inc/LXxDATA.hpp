@@ -49,12 +49,15 @@ const Keywords keyword_db{
   { "else", TokenTag::KwElse }, //
   { "ext", TokenTag::KwExt },   //
   { "with", TokenTag::KwWith }, //
+  { "do", TokenTag::KwDo },     //
+  { "ctl", TokenTag::KwCtl },   //
+  { "defer", TokenTag::KwDefer }, //
 };
 
 // The operator characters: ASCII punctuation minus the delimiters and the lead
 // characters of other token kinds. A maximal run of these forms one operator.
 const CharSet operator_char_db{
-  '!', '$', '%', '&', '*', '+', '-', '/',  ':',
+  '!', '$', '%', '&', '*', '+', '-', '/', ':', ';',
   '<', '=', '>', '?', '^', '|', '~', '\\',
 };
 
@@ -80,6 +83,18 @@ const Operators operator_db{
   { OP::LEQ, TokenTag::Op },    //
   { OP::MORE, TokenTag::Op },   //
   { OP::LESS, TokenTag::Op },   //
+  // Effect-row delimiters (M3): `A -> <E1, E2 | `e> B`. Op-char runs coalesce,
+  // so the opener may arrive as `<`, the empty row as `<>`, or a label-less open
+  // row as `<|`; the closing `>` and the tail separator `|` stand alone. Outside
+  // a type these would just be unbound variable names.
+  { "<", TokenTag::Op },        //
+  { ">", TokenTag::Op },        //
+  { "|", TokenTag::Op },        //
+  { "<>", TokenTag::Op },       //
+  { "<|", TokenTag::Op },       //
+  // Sequencing and pipes (desugared in the parser, not runtime functions).
+  { ";", TokenTag::Op },        //
+  { "|>", TokenTag::Op },       //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike

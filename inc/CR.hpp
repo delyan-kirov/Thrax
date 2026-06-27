@@ -158,6 +158,25 @@ struct Case
   Term        *deflt;
 };
 
+// A handler: run `body`; an operation performed within it dispatches to the
+// matching clause. Each clause's `fn` is a 2-argument curried lambda
+// `\arg = \k = e` and `els` is a 1-argument lambda `\x = e` (the value clause,
+// synthesized as the identity `\x = x` when no `else` was written). Modelling
+// the clauses/else as ordinary `Fun`s lets assign_id and the closure converter
+// handle their binders with no special cases. Installed at runtime as a prompt
+// on the continuation stack; see IT.
+struct HClause
+{
+  UT::Vu op;
+  Term  *fn;
+};
+struct Handle
+{
+  Term            *body;
+  UT::Vec<HClause> clauses;
+  Term            *els;
+};
+
 // A foreign binding `@extern.{ symbol, lib }`: the body of an FFI global. Its
 // argument / result types come from the enclosing signature, not the body. The
 // interpreter wraps it in a runtime value and calls it once saturated.
@@ -185,6 +204,7 @@ struct Extern
   X(Struct, Struct)                                                            \
   X(Variant, Variant)                                                          \
   X(Case, Case)                                                                \
+  X(Handle, Handle)                                                            \
   X(Extern, Extern)
 
 // `Kind` exists only as a readable view of the variant's discriminant: it lists

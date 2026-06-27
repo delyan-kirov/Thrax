@@ -52,17 +52,35 @@ struct TVar
   bool        rigid = false;
   std::string name;
 };
-/// A function type `from -> to`.
+/// A function type `from -[eff]-> to`. `eff` is the function's latent effect
+/// row -- the effects performed by calling it (\see TRowEmpty / TRowExtend). A
+/// pure function's `eff` is the empty closed row.
 struct TArrow
 {
   Type *from;
   Type *to;
+  Type *eff;
+};
+/// The empty, closed effect row `<>` -- a pure computation performs no effect.
+struct TRowEmpty
+{
+};
+/// An effect-row extension `<label | rest>`: the row contains effect `label`
+/// over the row `rest` (another extension, a row variable, or the empty row).
+/// Rows are unordered up to reordering and may carry duplicate labels (scoped
+/// labels, a la Leijen); a row variable in tail position is an ordinary TVar.
+struct TRowExtend
+{
+  std::string label;
+  Type       *rest;
 };
 
 #define TC_TYPE_VARIANTS                                                       \
   X(Con, TCon)                                                                 \
   X(Var, TVar)                                                                 \
-  X(Arrow, TArrow)
+  X(Arrow, TArrow)                                                             \
+  X(RowEmpty, TRowEmpty)                                                       \
+  X(RowExtend, TRowExtend)
 
 enum class Kind
 {
@@ -203,6 +221,9 @@ struct CLitReal
 struct CLitStr
 {
 };
+struct CLitUnit
+{
+};
 struct CExtern
 {
 };
@@ -253,11 +274,32 @@ struct CVariantLit
 };
 ///@}
 
+// A handler `do body ctl k  is op a = e ...  [else x = e]`. Typed in infer: the
+// body and each clause/else body are typed so that an operation `op : A -> B`
+// gives its clause `a : A` and `k : B -> result`, every clause/else body has the
+// handler's `result` type, and `else`/identity transforms the body's result.
+struct CHandleClause
+{
+  std::string op;
+  std::string arg;
+  Core       *body;
+};
+struct CHandle
+{
+  Core                      *body;
+  std::string                k;
+  std::vector<CHandleClause> clauses;
+  std::string                els_var; ///< empty when there is no `else`
+  Core                      *els = nullptr; ///< null when there is no `else`
+};
+
 #define TC_CORE_VARIANTS                                                       \
   X(Var, CVar)                                                                 \
+  X(Handle, CHandle)                                                           \
   X(LitInt, CLitInt)                                                           \
   X(LitReal, CLitReal)                                                         \
   X(LitStr, CLitStr)                                                           \
+  X(LitUnit, CLitUnit)                                                         \
   X(Lam, CLam)                                                                 \
   X(App, CApp)                                                                 \
   X(Let, CLet)                                                                 \

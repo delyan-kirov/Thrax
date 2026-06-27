@@ -82,12 +82,36 @@ pprint(
   }
   case ExprTag::Str:
     return pad + "\"" + std::string(std::get<ExStr>(e->as).value) + "\"";
+  case ExprTag::Unit: return pad + "{}";
+  case ExprTag::EffectDecl:
+  {
+    auto       &ed = std::get<ExEffectDecl>(e->as);
+    std::string r  = pad + "$" + std::string(ed.name) + " : @effect =";
+    for (auto &op : ed.ops)
+      r += "\n" + std::string((level + 1) * 2, ' ') + std::string(op.name)
+           + " : " + pprint_ty(op.ty);
+    return r;
+  }
   case ExprTag::Let:
   {
     auto       &lt     = std::get<ExLet>(e->as);
     std::string binder = lt.pat ? pprint(lt.pat) : std::string(lt.var);
     return pad + "let " + binder + " =\n" + pprint(lt.val, level + 1) + "\n"
            + pad + "in\n" + pprint(lt.body, level + 1);
+  }
+  case ExprTag::Handle:
+  {
+    auto       &h = std::get<ExHandle>(e->as);
+    std::string r = pad + "do\n" + pprint(h.body, level + 1) + "\n" + pad
+                    + "ctl " + std::string(h.k);
+    std::string ipad((level + 1) * 2, ' ');
+    for (auto &c : h.clauses)
+      r += "\n" + ipad + "is " + std::string(c.op) + " " + std::string(c.arg)
+           + " =\n" + pprint(c.body, level + 2);
+    if (h.else_body)
+      r += "\n" + ipad + "else " + std::string(h.else_var) + " =\n"
+           + pprint(h.else_body, level + 2);
+    return r;
   }
   case ExprTag::If:
     return pad + "if " + pprint(std::get<ExIf>(e->as).cond, 0) + " then\n"

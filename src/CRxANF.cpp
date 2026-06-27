@@ -161,6 +161,18 @@ Anf::norm(
   case Kind::Struct:
     return norm_struct(
       std::get<Struct>(e->as), 0, UT::Vec<FieldInit>{ arena }, k);
+
+  case Kind::Handle:
+  {
+    // The body sits in the prompt's tail position; the clause/els lambdas
+    // normalize like any other Fun. The handler itself is a computation, so a
+    // non-atom caller (norm_name) hoists it into a let.
+    Handle h = std::get<Handle>(e->as);
+    h.body   = term(h.body);
+    for (HClause &c : h.clauses) c.fn = term(c.fn);
+    h.els = term(h.els);
+    return k(mk(Term{ h }));
+  }
   }
   UT_FAIL_MSG("%s", "unreachable: unhandled CR::Kind in Anf::norm");
   return k(e);

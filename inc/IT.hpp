@@ -18,6 +18,8 @@
 #include "IR.hpp"
 #include "ITxDATA.hpp"
 
+#include <variant>
+
 namespace IT
 {
 
@@ -40,6 +42,67 @@ struct KRet
   size_t          slot;
   const IR::Expr *cont;
   FrameP          frame;
+};
+
+// A handler installed by `do <body> ctl k ...`. Each operation's clause is a
+// 2-argument curried closure (the machine applies it to the operation's argument
+// then the resumption), keyed by operation name; `els` is the 1-argument value
+// clause, run on the body's normal result.
+struct Handler
+{
+  std::vector<std::pair<std::string, pVal>> clauses;
+  pVal                                      els;
+};
+
+// A prompt delimiter on the continuation stack -- where a handler is installed.
+// `perform` searches down for the nearest one whose handler has the operation;
+// `ret` meeting one runs `els` (the body finished without performing).
+struct KPrompt
+{
+  Handler handler;
+};
+
+// A `defer`/deferred-cleanup marker on the continuation stack. When a value
+// returns *through* it (normal completion of the protected computation), the
+// machine runs `cleanup` and then delivers the value. When it rides inside a
+// captured continuation that the handler discards, its cleanup is run at the
+// clause boundary instead (see KAfterClause).
+struct KDefer
+{
+  pVal cleanup; // a nullary `{} -> {}` closure
+};
+
+// "Deliver `saved`, ignoring the incoming value." Pushed under a KDefer cleanup
+// so the cleanup's own result is discarded and the protected value continues.
+struct KThunkRet
+{
+  pVal saved;
+};
+
+// A marker pushed just below a handler operation clause, holding the clause's
+// resumption `k` (as the value `kval`). When the clause finishes, this decides
+// the fate of any `defer` cleanups captured in `k`: if `k` was resumed they
+// run on the resumed computation's completion (via their KDefer); if `k` was
+// neither resumed nor stored (the exception/abort case) its cleanups run HERE,
+// on the live stack with the enclosing handlers still installed -- which is what
+// makes `defer` exception-safe, and why it must happen at the clause boundary,
+// not whenever `k` is later freed. "Stored" is detected by an extra live
+// reference to kval.
+struct KAfterClause
+{
+  pVal kval;
+};
+
+// One frame of the reified continuation stack. `perform` captures a contiguous
+// slice of these.
+using KFrame = std::variant<KRet, KPrompt, KDefer, KThunkRet, KAfterClause>;
+
+// A captured continuation: the KFrame slice from a prompt up to a perform point.
+// Affine -- `used` guards against resuming twice. Held opaquely by a VResump.
+struct Resumption
+{
+  std::vector<KFrame> seg;
+  bool                used = false;
 };
 
 // The machine. Holds the program and the global (CAF) memo table; one instance

@@ -187,6 +187,24 @@ expand_sources(
   return out;
 }
 
+// Record the names of all effect operations declared in `program` into the
+// lowered IR, so the machine resolves a use of one to an operation value.
+static void
+collect_operations(
+  const EX::Exprs &program, IR::Program &prog)
+{
+  for (size_t i = 0; i < program.size(); ++i)
+  {
+    const EX::Expr &e = program[i];
+    if (e.tag != EX::ExprTag::EffectDecl) continue;
+    const EX::ExEffectDecl &ed = std::get<EX::ExEffectDecl>(e.as);
+    for (const EX::FieldDecl &op : ed.ops)
+      // The canonical `Effect.op` identity -- matches what MR rewrites uses and
+      // clause heads to, and what TC keys its operation schemes by.
+      prog.operations.insert(std::string(ed.name) + "." + std::string(op.name));
+  }
+}
+
 Interp
 interpret_file(
   UT::Vu file)
@@ -209,6 +227,7 @@ interpret_file(
     CR::build(&mr.program[i], env, *ip.arena);
 
   ip.prog = IR::lower(env, *ip.arena);
+  collect_operations(mr.program, ip.prog);
   return ip;
 }
 
@@ -240,6 +259,7 @@ run_program(
     CR::build(&mr.program[i], env, ir_arena);
 
   IR::Program prog = IR::lower(env, ir_arena);
+  collect_operations(mr.program, prog);
 
   // Run the entry via the reified-K machine: `main` for `Int`, or `main ""` for
   // `Str -> Int` (the CLI argument is empty until an `Args` type exists).
@@ -263,6 +283,7 @@ dump_ir(
     CR::build(&mr.program[i], env, core_arena);
 
   IR::Program prog = IR::lower(env, core_arena);
+  collect_operations(mr.program, prog);
   std::printf("%s", IR::pprint(prog).c_str());
   return true;
 }
