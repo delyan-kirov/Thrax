@@ -111,6 +111,16 @@ collect_free(
     for (CR::Term *f : std::get<CR::Variant>(t->as).fields)
       collect_free(f, m, depth, out);
     break;
+  case CR::Kind::Handle:
+  {
+    // body and the clause/els Funs are all at this scope (each Fun bumps depth
+    // itself when collect_free recurses into it).
+    auto &h = std::get<CR::Handle>(t->as);
+    collect_free(h.body, m, depth, out);
+    for (const CR::HClause &c : h.clauses) collect_free(c.fn, m, depth, out);
+    collect_free(h.els, m, depth, out);
+  }
+  break;
   case CR::Kind::Int:
   case CR::Kind::Real:
   case CR::Kind::Str:
@@ -331,6 +341,19 @@ struct Conv
       return res;
     }
 
+    case CR::Kind::Handle:
+    {
+      // body converts in this activation; each clause `fn` and `els` is a CR
+      // Fun, so conv_atom lifts it to a Code and yields its MkClosure.
+      auto                 &h    = std::get<CR::Handle>(t->as);
+      Expr                 *body = conv_expr(h.body, ctx);
+      UT::Vec<HandleClause> clauses{ arena };
+      for (const CR::HClause &c : h.clauses)
+        clauses.push(HandleClause{ c.op, conv_atom(c.fn, ctx) });
+      Atom *els = conv_atom(h.els, ctx);
+      return mkE(Expr{ Handle{ body, std::move(clauses), els } });
+    }
+
     case CR::Kind::Extern:
     {
       auto &e = std::get<CR::Extern>(t->as);
@@ -450,6 +473,15 @@ pp_expr(
     for (size_t i = 0; i < v.fields.size(); ++i)
       s += (i ? ", " : "") + pp_atom(v.fields[i]);
     return s + "}";
+  }
+  case EKind::Handle:
+  {
+    auto       &h = std::get<Handle>(e->as);
+    std::string s = pad + "handle\n" + pp_expr(h.body, lvl + 1);
+    for (const HandleClause &c : h.clauses)
+      s += "\n" + pad + "  is " + std::string(c.op) + " " + pp_atom(c.fn);
+    s += "\n" + pad + "  else " + pp_atom(h.els);
+    return s;
   }
   case EKind::Extern:
     return pad + "@extern(" + std::string(std::get<Extern>(e->as).symbol) + ")";

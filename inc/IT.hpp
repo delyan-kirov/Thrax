@@ -18,6 +18,8 @@
 #include "IR.hpp"
 #include "ITxDATA.hpp"
 
+#include <variant>
+
 namespace IT
 {
 
@@ -40,6 +42,36 @@ struct KRet
   size_t          slot;
   const IR::Expr *cont;
   FrameP          frame;
+};
+
+// A handler installed by `do <body> ctl k ...`. Each operation's clause is a
+// 2-argument curried closure (the machine applies it to the operation's argument
+// then the resumption), keyed by operation name; `els` is the 1-argument value
+// clause, run on the body's normal result.
+struct Handler
+{
+  std::vector<std::pair<std::string, pVal>> clauses;
+  pVal                                      els;
+};
+
+// A prompt delimiter on the continuation stack -- where a handler is installed.
+// `perform` searches down for the nearest one whose handler has the operation;
+// `ret` meeting one runs `els` (the body finished without performing).
+struct KPrompt
+{
+  Handler handler;
+};
+
+// One frame of the reified continuation stack: a return continuation (KRet) or a
+// handler prompt (KPrompt). `perform` captures a contiguous slice of these.
+using KFrame = std::variant<KRet, KPrompt>;
+
+// A captured continuation: the KFrame slice from a prompt up to a perform point.
+// Affine -- `used` guards against resuming twice. Held opaquely by a VResump.
+struct Resumption
+{
+  std::vector<KFrame> seg;
+  bool                used = false;
 };
 
 // The machine. Holds the program and the global (CAF) memo table; one instance

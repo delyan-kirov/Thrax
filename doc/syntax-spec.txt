@@ -379,14 +379,17 @@ operation is a variable (lowercase):
         get : {} -> Int,        # takes unit, resumes with an Int
         put : Int -> {},        # takes an Int, resumes with unit
     $ Exn : @effect =
-        throw : Str -> {},      # never resumes; its resume type is irrelevant
+        throw : Str -> `a,      # never resumes; resume type is a fresh variable
     $ Yield : @effect =
         yield : Int -> {},      # hand out an Int, resume with unit
 
 Every operation takes exactly one argument and names one result; the codomain is
 the type the matching perform yields back (the value handed to `k`). An operation
 that needs no argument takes `{}` (unit); one that yields no value resumes with
-`{}`.
+`{}`. An operation whose handler NEVER resumes (an exception) names a type
+VARIABLE as its result (`throw : Str -> `a`), so a use unifies with whatever its
+context expects -- e.g. `if c then throw "x" else n` is well-typed because
+`throw "x"` takes the type of `n`.
 
 PERFORMING.  An operation is performed simply by CALLING it, like a function --
 there is no `perform` keyword (cf. Koka, Flix). A use of an operation name is a

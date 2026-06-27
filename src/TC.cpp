@@ -693,9 +693,21 @@ Checker::desugar(
   // Handlers: type-checking lands in increment 3c (this stub keeps 3a's
   // parser-only milestone honest -- a handler program aborts here until then).
   case EX::ExprTag::Handle:
-    UT_FAIL_MSG("%s", "desugar: handler type-checking is not implemented yet "
-                      "(increment 3c)");
-    return core(CLitUnit{}); // unreachable
+  {
+    auto   &h = std::get<EX::ExHandle>(e->as);
+    CHandle ch;
+    ch.body = desugar(h.body);
+    ch.k    = std::string(h.k);
+    for (auto &c : h.clauses)
+      ch.clauses.push_back(
+        { std::string(c.op), std::string(c.arg), desugar(c.body) });
+    if (h.else_body)
+    {
+      ch.els_var = std::string(h.else_var);
+      ch.els     = desugar(h.else_body);
+    }
+    return core(std::move(ch));
+  }
   // Match is removed by the LL pass before type checking; Def / StructDecl /
   // UnionDecl are top-level only; Unknown is never produced as a body.
   case EX::ExprTag::Match:
@@ -754,6 +766,16 @@ Checker::occurs_free(
       if (occurs_free(name, f.second)) return true;
     return false;
   case CKind::Field: return occurs_free(name, std::get<CField>(e->as).record);
+  case CKind::Handle:
+  {
+    CHandle &h = std::get<CHandle>(e->as);
+    if (occurs_free(name, h.body)) return true;
+    if (h.els && h.els_var != name && occurs_free(name, h.els)) return true;
+    for (CHandleClause &c : h.clauses)
+      if (c.arg != name && h.k != name && occurs_free(name, c.body))
+        return true;
+    return false;
+  }
   case CKind::Case:
   {
     CCase &c = std::get<CCase>(e->as);
@@ -798,6 +820,46 @@ Checker::infer(
   case CKind::LitStr : return con(OP::TY_STR);
   case CKind::LitUnit: return con(OP::TY_UNIT);
   case CKind::Extern : return fresh(); // unifies with the declared signature
+
+  case CKind::Handle:
+  {
+    // result: the handler's type. body: typed plainly (effects are untyped in
+    // M2). else x = e: x has the body's type, e has `result`; with no else the
+    // body's result IS the handler's. Each clause `is op a = e` for `op : A ->
+    // B` binds a : A and k : B -> result, and e : result.
+    CHandle &h      = std::get<CHandle>(e->as);
+    Type    *result = fresh();
+    Type    *tbody  = infer(h.body, locals);
+    if (h.els)
+    {
+      Env e2        = locals;
+      e2[h.els_var] = Scheme{ {}, tbody };
+      unify(infer(h.els, e2), result);
+    }
+    else
+      unify(tbody, result);
+    for (CHandleClause &c : h.clauses)
+    {
+      auto pit = m_prim.find(c.op);
+      if (pit == m_prim.end())
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             m_anchor,
+             "unknown effect operation '%s' in handler",
+             c.op.c_str());
+        continue;
+      }
+      Type *opty = instantiate(pit->second);
+      Type *A    = fresh();
+      Type *B    = fresh();
+      unify(opty, arrow(A, B));
+      Env e2    = locals;
+      e2[c.arg] = Scheme{ {}, A };
+      e2[h.k]   = Scheme{ {}, arrow(B, result) };
+      unify(infer(c.body, e2), result);
+    }
+    return result;
+  }
 
   case CKind::Var:
   {
@@ -1844,10 +1906,18 @@ Checker::run(
   }
 
   // Effect declarations: register each operation as a typed name (a primitive
-  // scheme), so a use `op a` type-checks against its declared signature. The
-  // runtime meaning of a use (perform) and handlers come later; here we only
-  // make operations known to inference. Generalize over the signature's free
-  // type variables, so a generic effect's operation is polymorphic per use.
+  // scheme), so a use `op a` type-checks against its declared signature.
+  // Generalize over the signature's free type variables, so a generic effect's
+  // operation is polymorphic per use.
+  //
+  // Operations currently resolve program-wide by bare name (both at the type
+  // level here and at runtime, where a performed operation matches a handler
+  // clause by name). So an operation name shared by two effects would collide;
+  // we reject that up front rather than silently letting one win. Proper
+  // module-scoped, effect-qualified resolution (allowing such names to coexist
+  // and be disambiguated with `Effect.op`) is a follow-up -- see
+  // doc/effect-system-design.md §11.
+  std::unordered_map<std::string, UT::Vu> op_owner; // op name -> its effect
   for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
@@ -1855,11 +1925,26 @@ Checker::run(
     EX::ExEffectDecl &ed = std::get<EX::ExEffectDecl>(e->as);
     for (auto &op : ed.ops)
     {
+      std::string key(op.name);
+      m_anchor  = op.name;
+      auto prev = op_owner.find(key);
+      if (prev != op_owner.end())
+      {
+        fail(ER::Code::AMBIGUOUS_NAME,
+             op.name,
+             "operation '%s' is declared by more than one effect ('%s' and "
+             "'%s'); operation names must be unique for now (effect-qualified "
+             "resolution is not yet supported)",
+             key.c_str(),
+             std::string(prev->second).c_str(),
+             std::string(ed.name).c_str());
+        continue;
+      }
+      op_owner[key] = ed.name;
       TyVarEnv tv;
       VarIds   params;
-      m_anchor      = op.name;
-      Type *t       = sig_to_type(op.ty, tv, false, &params);
-      m_prim[std::string(op.name)] = Scheme{ std::move(params), t };
+      Type    *t  = sig_to_type(op.ty, tv, false, &params);
+      m_prim[key] = Scheme{ std::move(params), t };
     }
   }
 

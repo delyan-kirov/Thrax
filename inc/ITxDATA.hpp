@@ -105,6 +105,27 @@ struct VCode
   ValEnv env;
 };
 
+// An effect operation as a first-class value (the surface "calls" an operation
+// to perform it). Applying it searches the continuation stack for the nearest
+// handler with a clause for `name`, captures the continuation, and runs that
+// clause. Operations are unary.
+struct VOp
+{
+  std::string name;
+};
+
+// A captured, first-class continuation (resumption) -- the slice of the reified
+// continuation stack from a handler's prompt up to a perform point. Applying it
+// resumes the suspended computation with the supplied value. AFFINE: it may be
+// applied at most once (enforced in the machine via Resumption::used). `seg`
+// holds the captured K-frames; the frame type lives in IT.hpp, so it is opaque
+// here (a shared_ptr to the forward-declared Resumption).
+struct Resumption;
+struct VResump
+{
+  std::shared_ptr<Resumption> seg;
+};
+
 #define IT_VALUE_VARIANTS                                                      \
   X(Unk, VUnk)                                                                 \
   X(Int, VInt)                                                                 \
@@ -115,7 +136,9 @@ struct VCode
   X(Struct, VStruct)                                                           \
   X(Variant, VVariant)                                                         \
   X(Rec, VRec)                                                                 \
-  X(Code, VCode)
+  X(Code, VCode)                                                               \
+  X(Op, VOp)                                                                   \
+  X(Resump, VResump)
 
 enum class VKind
 {

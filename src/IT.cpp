@@ -63,6 +63,9 @@ Machine::glob(
 {
   std::string n(name);
 
+  // An effect operation is a first-class value that performs when applied.
+  if (prog.operations.count(n)) return mk(Value{ VOp{ n } });
+
   // A resolved built-in (e.g. "+@Int", "%array") is a first-class curried
   // value.
   auto bit = impls.find(n);
@@ -118,7 +121,7 @@ Machine::run(
   frame->env           = std::move(env0);
   const IR::Expr *ctrl = prog.codes[code_id].body;
 
-  std::vector<KRet> kont;
+  std::vector<KFrame> kont;
   // Recursive-let closures are reachable from their own captured env only
   // weakly (VRec). The C stack used to pin them across a call; with calls
   // trampolined, keep each one live here for the run's duration. Dedup against
@@ -128,7 +131,23 @@ Machine::run(
   pVal result;
   bool done = false;
 
-  // Hand a finished value to the top continuation (or finish the run).
+  // Jump into a 1-argument closure `clo` with `arg` in slot 0 (like a tail
+  // call): set the frame and control so the main loop runs its body next.
+  auto jump1 = [&](const pVal &clo, pVal arg) {
+    UT_FAIL_IF(VKind::Code != kind(clo));
+    auto           &c  = std::get<VCode>(clo->as);
+    const IR::Code &cc = prog.codes[c.code];
+    FrameP          nf = std::make_shared<Frame>();
+    nf->locals.resize(cc.nlocals);
+    nf->locals[0] = std::move(arg);
+    nf->env       = c.env;
+    frame         = nf;
+    ctrl          = cc.body;
+  };
+
+  // Hand a finished value to the top continuation (or finish the run). A KRet
+  // resumes its saved activation; a KPrompt means the handler's body completed
+  // normally, so we run its value clause `els` on the result.
   auto ret = [&](pVal v) {
     if (kont.empty())
     {
@@ -136,12 +155,19 @@ Machine::run(
       done   = true;
       return;
     }
-    KRet kr = std::move(kont.back());
+    KFrame kf = std::move(kont.back());
     kont.pop_back();
-    *kr.box                   = *v; // back-patch the let placeholder
-    kr.frame->locals[kr.slot] = kr.box;
-    frame                     = kr.frame;
-    ctrl                      = kr.cont;
+    if (std::holds_alternative<KRet>(kf))
+    {
+      KRet &kr                  = std::get<KRet>(kf);
+      *kr.box                   = *v; // back-patch the let placeholder
+      kr.frame->locals[kr.slot] = kr.box;
+      frame                     = kr.frame;
+      ctrl                      = kr.cont;
+      return;
+    }
+    pVal els = deref(std::get<KPrompt>(kf).handler.els);
+    jump1(els, v); // run the value clause on the normal result
   };
 
   for (;;)
@@ -201,6 +227,55 @@ Machine::run(
           ret(impls.at(std::string(b.impl)).fn(b.args));
         else
           ret(mk(Value{ b }));
+        if (done) return result;
+        break;
+      }
+      if (VKind::Op == kind(callee))
+      {
+        // Perform: find the nearest installed prompt with a clause for this
+        // operation, capture the continuation slice from that prompt up to here
+        // (INCLUDING the prompt -> deep handler), and run the clause OUTSIDE the
+        // prompt (the stack below it). The clause is the 2-argument curried
+        // closure `\arg = \k = e`; we apply it to the operation argument then the
+        // resumption, and hand its result to the (now truncated) continuation.
+        const std::string &op = std::get<VOp>(callee->as).name;
+        size_t             p  = kont.size();
+        pVal               clause;
+        for (size_t i = kont.size(); i-- > 0;)
+        {
+          if (!std::holds_alternative<KPrompt>(kont[i])) continue;
+          for (auto &cl : std::get<KPrompt>(kont[i]).handler.clauses)
+            if (cl.first == op)
+            {
+              clause = cl.second;
+              p      = i;
+              break;
+            }
+          if (clause) break;
+        }
+        UT_FAIL_IF(!clause); // unhandled effect operation (untyped: a fault)
+
+        auto seg = std::make_shared<Resumption>();
+        seg->seg.assign(kont.begin() + (long)p, kont.end());
+        kont.resize(p);
+
+        pVal k     = mk(Value{ VResump{ seg } });
+        pVal inner = apply(clause, argv); // \arg = ...  -> the \k closure
+        pVal res   = apply(inner, k);     // \k = e      -> the clause's result
+        ret(res);
+        if (done) return result;
+        break;
+      }
+      if (VKind::Resump == kind(callee))
+      {
+        // Resume: splice the captured continuation slice back on (re-installing
+        // its prompt -> deep) and deliver the value to the suspended point.
+        // Affine: a resumption may be used at most once.
+        auto &r = std::get<VResump>(callee->as);
+        UT_FAIL_IF(r.seg->used);
+        r.seg->used = true;
+        kont.insert(kont.end(), r.seg->seg.begin(), r.seg->seg.end());
+        ret(argv);
         if (done) return result;
         break;
       }
@@ -288,6 +363,22 @@ Machine::run(
         out.fields.push_back(deref(eval_atom(mv.fields[i], frame)));
       ret(mk(Value{ out }));
       if (done) return result;
+    }
+    break;
+
+    case IR::EKind::Handle:
+    {
+      // Install a prompt holding the (evaluated) clause and value closures, then
+      // run the body under it. The clause/els closures capture the current
+      // activation here, exactly when the handler is entered.
+      auto   &h = std::get<IR::Handle>(ctrl->as);
+      Handler handler;
+      for (const IR::HandleClause &c : h.clauses)
+        handler.clauses.push_back(
+          { std::string(c.op), deref(eval_atom(c.fn, frame)) });
+      handler.els = deref(eval_atom(h.els, frame));
+      kont.push_back(KPrompt{ std::move(handler) });
+      ctrl = h.body;
     }
     break;
 

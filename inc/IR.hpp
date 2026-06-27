@@ -25,6 +25,8 @@
 #include "CR.hpp"
 #include "UT.hpp"
 
+#include <unordered_set>
+
 namespace IR
 {
 
@@ -187,6 +189,23 @@ struct Case
   Expr        *deflt;
 };
 
+// A handler. `body` runs under the installed prompt. Each clause's `fn` is the
+// MkClosure of a 2-argument curried clause (`\arg = \k = e`, applied by the
+// machine to the operation's argument then the continuation); `els` is the
+// MkClosure of the 1-argument value clause (`\x = e`), run on the body's normal
+// result. Operations are matched against `clauses` by name.
+struct HandleClause
+{
+  UT::Vu op;
+  Atom  *fn;
+};
+struct Handle
+{
+  Expr                *body;
+  UT::Vec<HandleClause> clauses;
+  Atom                *els;
+};
+
 // A foreign binding (the body of an FFI global), carried through unchanged.
 struct Extern
 {
@@ -208,6 +227,7 @@ struct Unk
   X(MkStruct, MkStruct)                                                        \
   X(Field, Field)                                                              \
   X(MkVariant, MkVariant)                                                      \
+  X(Handle, Handle)                                                            \
   X(Extern, Extern)                                                            \
   X(Unk, Unk)
 
@@ -258,6 +278,10 @@ struct Program
 {
   std::vector<Code>                       codes;
   std::unordered_map<std::string, size_t> globals;
+  // Names of effect operations (from `@effect` declarations). The machine
+  // resolves a Glob naming one of these to an operation value that performs when
+  // applied. Populated by the driver from the program's effect declarations.
+  std::unordered_set<std::string> operations;
 };
 
 /*------------------------------------------------------------------------------

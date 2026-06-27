@@ -416,9 +416,24 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
   former stream as codata. Needs the strict machine (M1) as substrate;
   independent of the effect milestones, so it can interleave with M2/M3. See §1a.
 
-- [ ] **M2 — untyped affine effects.** `Handle/Perform/Resume` on the K stack:
-  deep, affine, first-class resumptions, dynamic handler search, `discontinue`.
-  Validate on the §9 examples (state, generator, coroutine, exceptions, async).
+- [~] **M2 — untyped affine effects.** `Handle` + perform/resume on the K stack:
+  deep, affine, first-class resumptions, dynamic handler search. **Mostly landed
+  (2026-06-27).** Surface is keyword-frugal (§12): no `perform`/`resume` — calling
+  an operation performs, applying `k` resumes; unit `{}` added. Done in substeps:
+  - [X] **3a** — parse `do <body> ctl k  is op a = e ...  [else x = e]` into
+    `ExHandle` (new `do`/`ctl` keywords; `is`/`else` reused).
+  - [X] **3c** — typing (`CHandle` in TC: `op : A -> B` gives `a:A`, `k:B->result`;
+    `else`/identity value clause) + CR/IR lowering (clauses/`else` as lifted
+    closures; a `Handle` IR node; `Program.operations`).
+  - [X] **3d** — the machine (`IT`): `KPrompt` on the `kont` stack, `VOp`
+    (perform = search-down + capture + run clause outside its prompt), `VResump`
+    (resume = splice, affine-guarded), `ret` runs `els` on normal completion.
+    Validated: exceptions (resume 0), generator (resume 1, sum + list), state
+    (parameter-passing, deep); affine double-resume faults; valgrind-clean;
+    `dat/EFFECTS.thx` in the suite.
+  - [ ] **3b** — replace the `m_prim` operation-resolution shortcut with proper
+    module-scoped, effect-tagged resolution (see §11 / tasks). REMAINING.
+  - Not yet: `discontinue`/`finally`, coroutine scheduler example, async.
 
 - [ ] **M3 — effect-row type system.** Rows in TC, effect polymorphism +
   inference, handler typing; **evidence passing** + the tail-resumptive
@@ -439,18 +454,33 @@ Status legend: ✅ done · 🔜 next · ⬜ planned.
     …`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
-  - **Operation name resolution — TODO (currently a shortcut).** Increment 2
-    registers each effect operation in TC's flat global primitive table
-    (`m_prim`, alongside `if`/`%array`), so a bare op resolves program-wide with
-    no scoping, no qualification, and **silent last-wins** on a name clash (two
-    effects declaring `get` → the second overwrites the first, no error). The
-    proper fix (planned for increment 3, where the runtime needs it anyway):
-    register operations as **module-scoped overloadable symbols** carrying their
-    **effect identity**, routed through MR's symbol scope + the `ExOverload`
-    candidate machinery that operators/functions already use — so bare ops obey
-    the module rules (unique-in-scope resolves, clash is an ambiguity error,
-    qualify with `Effect.op`), AND `perform` gets the op identity it needs to
-    match handlers. Do this *instead of* the `m_prim` shortcut, not on top of it.
+  - **Machine limitations of the first cut (3d, 2026-06-27)** — the clause runs
+    via a nested `apply(apply(clause, arg), k)` rather than inline on the single
+    reified-K stack. Consequences to revisit:
+    - **O(N) host-stack for deep resumption chains** (a generator/coroutine of N
+      steps nests N host `run` frames) instead of the constant-stack single-`kont`
+      the §6 model intends. Fix: run the clause inline (clause as a 2-slot Code
+      with `a`=Local 0, `k`=Local 1; perform fills both and jumps), no nested
+      `apply`.
+    - **Effects do not cross a builtin-invoked closure** (a higher-order builtin
+      calling `Machine::apply` starts a fresh `kont`, hiding outer prompts). No
+      current builtin does this; revisit if/when one takes a function argument.
+    - **Coroutine scheduler** not yet exercised: `k` is first-class and storable
+      (a `VResump`), but a scheduler needs a queue (mutable state via the State
+      effect or functional threading) — deferred to a worked example.
+  - **Operation name resolution — partially done.** Operations are still
+    registered in TC's flat global primitive table (`m_prim`), so a bare op
+    resolves program-wide by name (both at the type level and at runtime, where a
+    performed op matches a handler clause by name). The **silent last-wins** hole
+    is CLOSED (3b, 2026-06-27): two effects declaring the same operation name now
+    raise an `AMBIGUOUS_NAME` error up front instead of one silently overwriting
+    the other. REMAINING (ergonomic): let same-named operations from different
+    effects **coexist**, resolving a bare op by the module rules (unique-in-scope
+    resolves, otherwise qualify with `Effect.op`). The proper implementation
+    registers operations as **module-scoped, effect-tagged symbols** through MR's
+    symbol scope + the `ExOverload` candidate machinery operators/functions
+    already use, replacing the `m_prim` shortcut (not layering on it) and giving
+    `perform` an effect-qualified identity. Tracked as a task.
 - **M3 (types):**
   - Effect-**row representation** (open rows + a polymorphism tail variable;
     duplicate labels / scoped labels à la Leijen).

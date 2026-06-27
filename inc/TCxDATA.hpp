@@ -256,8 +256,28 @@ struct CVariantLit
 };
 ///@}
 
+// A handler `do body ctl k  is op a = e ...  [else x = e]`. Typed in infer: the
+// body and each clause/else body are typed so that an operation `op : A -> B`
+// gives its clause `a : A` and `k : B -> result`, every clause/else body has the
+// handler's `result` type, and `else`/identity transforms the body's result.
+struct CHandleClause
+{
+  std::string op;
+  std::string arg;
+  Core       *body;
+};
+struct CHandle
+{
+  Core                      *body;
+  std::string                k;
+  std::vector<CHandleClause> clauses;
+  std::string                els_var; ///< empty when there is no `else`
+  Core                      *els = nullptr; ///< null when there is no `else`
+};
+
 #define TC_CORE_VARIANTS                                                       \
   X(Var, CVar)                                                                 \
+  X(Handle, CHandle)                                                           \
   X(LitInt, CLitInt)                                                           \
   X(LitReal, CLitReal)                                                         \
   X(LitStr, CLitStr)                                                           \
