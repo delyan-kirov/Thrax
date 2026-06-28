@@ -236,15 +236,14 @@ go(
     }
     Term *els;
     if (h.else_body)
-      els = alloc(
-        arena,
-        Term{ Fun{ UT::strdup(arena, h.else_var),
-                   go(h.else_body, env, arena) } });
+      els = alloc(arena,
+                  Term{ Fun{ UT::strdup(arena, h.else_var),
+                             go(h.else_body, env, arena) } });
     else
     {
       // No else clause: the value clause is the identity `\x = x`.
       UT::Vu x = UT::strdup(arena, "%x");
-      els      = alloc(arena, Term{ Fun{ x, alloc(arena, Term{ Var{ x, 0 } }) } });
+      els = alloc(arena, Term{ Fun{ x, alloc(arena, Term{ Var{ x, 0 } }) } });
     }
     return alloc(arena, Term{ Handle{ body, clauses, els } });
   }

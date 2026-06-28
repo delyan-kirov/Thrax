@@ -106,9 +106,9 @@ Parser::mk_binop(
   return mk_app(mk_app(mk_op_var(op), lhs), rhs);
 }
 
-// Sequencing `lhs ; rhs`  ==>  `let _ = lhs in rhs`: run lhs for effect, discard
-// its value, then evaluate rhs (whose value is the result). A plain desugar -- no
-// runtime `;` operator.
+// Sequencing `lhs ; rhs`  ==>  `let _ = lhs in rhs`: run lhs for effect,
+// discard its value, then evaluate rhs (whose value is the result). A plain
+// desugar -- no runtime `;` operator.
 Expr *
 Parser::mk_seq(
   Expr *lhs, Expr *rhs)
@@ -228,13 +228,13 @@ Parser::parse_primary()
     m_lex.next();
     base = mk_var(t);
     break;
-  case LX::TokenTag::LParen: base = EX_TRY(parse_group()); break;
-  case LX::TokenTag::KwLet : base = EX_TRY(parse_let()); break;
-  case LX::TokenTag::KwIf  : base = EX_TRY(parse_if()); break;
+  case LX::TokenTag::LParen : base = EX_TRY(parse_group()); break;
+  case LX::TokenTag::KwLet  : base = EX_TRY(parse_let()); break;
+  case LX::TokenTag::KwIf   : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
   case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
   case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
-  case LX::TokenTag::At    : base = EX_TRY(parse_array()); break;
+  case LX::TokenTag::At     : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::LBrace:
   {
     // The unit value `{}` (empty record).
@@ -573,14 +573,14 @@ Parser::parse_if()
 // A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. The `do` body is
 // a single expression (parenthesize a nested handler); `ctl k` binds the one
 // continuation shared by every clause; each `is op a = e` clause handles an
-// operation, binding its argument to `a`; the optional `else x = e` is the value
-// clause for normal completion. There is no `perform`/`resume` syntax: an
+// operation, binding its argument to `a`; the optional `else x = e` is the
+// value clause for normal completion. There is no `perform`/`resume` syntax: an
 // operation is performed by calling it, and `k` is resumed by applying it.
 RExpr
 Parser::parse_handle()
 {
-  LX::Token kw = EX_TRY(m_lex.next()); // 'do'
-  Expr *body   = EX_CTX(parse_expr(0), kw, "in the body of this 'do' block");
+  LX::Token kw   = EX_TRY(m_lex.next()); // 'do'
+  Expr     *body = EX_CTX(parse_expr(0), kw, "in the body of this 'do' block");
 
   // A `do` with no `ctl` is just a block -- it groups its body (handy after
   // `defer`, or to parenthesize-free a sequence). It has no runtime form of its
@@ -600,10 +600,10 @@ Parser::parse_handle()
       expect(LX::TokenTag::Word, "expected an operation name after 'is'"));
     char oc = op.str.size() ? op.str.data()[0] : '\0';
 
-    // An uppercase head followed by '.' is an effect qualifier: `is Effect.op a`.
+    // An uppercase head followed by '.' is an effect qualifier: `is Effect.op
+    // a`.
     UT::Vu qual{};
-    if (oc >= 'A' && oc <= 'Z'
-        && LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+    if (oc >= 'A' && oc <= 'Z' && LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
     {
       m_lex.next(); // '.'
       qual = op.str;
@@ -616,8 +616,8 @@ Parser::parse_handle()
              op,
              "a handler operation must start lowercase, found '%s'",
              std::string(op.str).c_str());
-    LX::Token arg = EX_TRY(expect(
-      LX::TokenTag::Word, "expected the operation's argument binder"));
+    LX::Token arg = EX_TRY(
+      expect(LX::TokenTag::Word, "expected the operation's argument binder"));
     EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the clause head"));
     Expr *cbody = EX_CTX(parse_expr(0), op, "in this handler clause");
     clauses.push(HandlerClause{ op.str, arg.str, cbody, qual });
@@ -644,11 +644,12 @@ Parser::parse_handle()
   return { true, alloc(e), {} };
 }
 
-// `defer <cleanup> do <body>` -- run `cleanup` when `body`'s scope exits (normal
-// completion OR an abort that discards the continuation). `do` delimits the
-// cleanup from the body; the body is an ordinary `do` block (optionally a `ctl`
-// handler). Desugars to `%defer (\_ = body) (\_ = cleanup)` -- the cleanup
-// intrinsic; both sides become thunks so neither runs until the machine wants it.
+// `defer <cleanup> do <body>` -- run `cleanup` when `body`'s scope exits
+// (normal completion OR an abort that discards the continuation). `do` delimits
+// the cleanup from the body; the body is an ordinary `do` block (optionally a
+// `ctl` handler). Desugars to `%defer (\_ = body) (\_ = cleanup)` -- the
+// cleanup intrinsic; both sides become thunks so neither runs until the machine
+// wants it.
 RExpr
 Parser::parse_defer()
 {
@@ -666,8 +667,8 @@ Parser::parse_defer()
 
   Expr *body_thunk    = mk_fndef(UT::Vu{ "_", 1 }, body);
   Expr *cleanup_thunk = mk_fndef(UT::Vu{ "_", 1 }, cleanup);
-  Expr *call          = mk_app(
-    mk_app(mk_op_var(UT::Vu{ OP::DEFER }), body_thunk), cleanup_thunk);
+  Expr *call
+    = mk_app(mk_app(mk_op_var(UT::Vu{ OP::DEFER }), body_thunk), cleanup_thunk);
   return { true, call, {} };
 }
 
@@ -1439,9 +1440,9 @@ Parser::parse_alias_decl(
   return { true, alloc(e), {} };
 }
 
-// An effect declaration body: a comma-separated `op : type` list (trailing comma
-// allowed), ending at the next global ('$') or end of input. Each `op` is a
-// lowercase name; its type is a full signature `A -> B`. The name token was
+// An effect declaration body: a comma-separated `op : type` list (trailing
+// comma allowed), ending at the next global ('$') or end of input. Each `op` is
+// a lowercase name; its type is a full signature `A -> B`. The name token was
 // consumed by parse_global.
 RExpr
 Parser::parse_effect_decl(
@@ -1618,9 +1619,9 @@ Parser::parse_type_atom()
     m_lex.next(); // '{'
     EX_TRY(
       expect(LX::TokenTag::RBrace, "expected '}' to close the unit type '{}'"));
-    return {
-      true, mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }), {}
-    };
+    return { true,
+             mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }),
+             {} };
   }
   case LX::TokenTag::LParen:
   {
@@ -1668,7 +1669,8 @@ Parser::parse_type()
   {
     m_lex.next(); // '->'
 
-    // Optional effect-row annotation between the arrow and the result type (M3):
+    // Optional effect-row annotation between the arrow and the result type
+    // (M3):
     //   <>                empty / pure         <E1, E2>         closed labels
     //   <`e>              just a row variable  <E1, E2 | `e>    open row
     // Op-char runs coalesce, so the opener arrives as `<`, `<>` or `<|`. Bare
@@ -1677,8 +1679,8 @@ Parser::parse_type()
     UT::Vu          eff_tail{};
     bool            has_eff = false;
 
-    LX::Token pk      = EX_TRY(m_lex.peek());
-    bool      is_op   = LX::TokenTag::Op == pk.tag;
+    LX::Token pk           = EX_TRY(m_lex.peek());
+    bool      is_op        = LX::TokenTag::Op == pk.tag;
     bool      pending_tail = false; // a `<|` opener already consumed the '|'
     if (is_op && pk.str == "<>")
     {
@@ -1700,8 +1702,7 @@ Parser::parse_type()
           m_lex.next();
           break;
         }
-        if (pending_tail
-            || (LX::TokenTag::Op == t.tag && t.str == "|")
+        if (pending_tail || (LX::TokenTag::Op == t.tag && t.str == "|")
             || LX::TokenTag::TyVar == t.tag)
         {
           if (!pending_tail && LX::TokenTag::Op == t.tag) m_lex.next(); // '|'

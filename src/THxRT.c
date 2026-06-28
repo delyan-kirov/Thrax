@@ -1,0 +1,330 @@
+/*-------------------------------------------------------------------------------
+ *\file THxRT.c
+ *\info The runtime core: value constructors, the apply trampoline, and the
+ *      built-in operator dispatch. It mirrors the interpreter's runtime
+ *      semantics (inc/ITxDATA.hpp, src/IT.cpp) in C: strict evaluation, curried
+ *      builtins that fire when saturated, and tail calls that reuse the
+ *      activation (constant stack) via an explicit bounce.
+ *-----------------------------------------------------------------------------*/
+
+#include "THxRT.h"
+
+#include <string.h>
+
+/*------------------------------------------------------------------------------
+ *\CONSTRUCTORS
+ *-----------------------------------------------------------------------------*/
+
+Value *
+THxRT_int(
+  long long v)
+{
+  Value *x = THxMEM_alloc_value();
+  x->tag   = T_INT;
+  x->u.i   = v;
+  return x;
+}
+
+Value *
+THxRT_real(
+  double v)
+{
+  Value *x = THxMEM_alloc_value();
+  x->tag   = T_REAL;
+  x->u.r   = v;
+  return x;
+}
+
+Value *
+THxRT_str(
+  const char *p, size_t n)
+{
+  Value *x = THxMEM_alloc_value();
+  x->tag   = T_STR;
+  char *b  = (char *)THxMEM_alloc(n + 1);
+  if (n > 0) memcpy(b, p, n);
+  b[n]     = '\0';
+  x->u.s.p = b;
+  x->u.s.n = n;
+  return x;
+}
+
+Value *
+THxRT_unk(
+  void)
+{
+  Value *x = THxMEM_alloc_value();
+  x->tag   = T_UNK;
+  return x;
+}
+
+Value *
+THxRT_bytes(
+  size_t n)
+{
+  Value *x = THxMEM_alloc_value();
+  x->tag   = T_STR; /* the runtime, like the interpreter, does not distinguish
+                       Array from Str -- both are a byte block. */
+  x->u.s.p = (char *)THxMEM_alloc(n == 0 ? 1 : n);
+  x->u.s.n = n;
+  return x;
+}
+
+Value *
+THxRT_struct(
+  const char *name, size_t n, const char **fnames, Value **fields)
+{
+  Value *x         = THxMEM_alloc_value();
+  x->tag           = T_STRUCT;
+  x->u.st.name     = name;
+  x->u.st.n        = n;
+  const char **fns = (const char **)THxMEM_alloc(n * sizeof(const char *));
+  Value      **fs  = (Value **)THxMEM_alloc(n * sizeof(Value *));
+  for (size_t i = 0; i < n; ++i)
+  {
+    fns[i] = fnames[i];
+    fs[i]  = fields[i];
+  }
+  x->u.st.fnames = fns;
+  x->u.st.f      = fs;
+  return x;
+}
+
+Value *
+THxRT_variant(
+  const char *tname, const char *ctor, size_t n, Value **fields)
+{
+  Value *x       = THxMEM_alloc_value();
+  x->tag         = T_VARIANT;
+  x->u.var.tname = tname;
+  x->u.var.ctor  = ctor;
+  x->u.var.n     = n;
+  Value **fs     = (Value **)THxMEM_alloc(n * sizeof(Value *));
+  for (size_t i = 0; i < n; ++i) fs[i] = fields[i];
+  x->u.var.f = fs;
+  return x;
+}
+
+Value *
+THxRT_closure(
+  int code, Value **captures, size_t n)
+{
+  Value *x       = THxMEM_alloc_value();
+  x->tag         = T_CLOS;
+  x->u.clos.code = code;
+  x->u.clos.nenv = n;
+  Value **env    = (Value **)THxMEM_alloc(n * sizeof(Value *));
+  for (size_t i = 0; i < n; ++i) env[i] = captures[i];
+  x->u.clos.env = env;
+  return x;
+}
+
+/*------------------------------------------------------------------------------
+ *\BUILT-IN OPERATORS
+ *
+ * The finite dispatch table reimplemented from inc/ITxDATA.hpp's `impls`, keyed
+ * by the monomorphic strings OP::mono produces ("+@Int", "?<@Real", ...). The
+ * arity table and the dispatch chain below must list the same keys; a key in
+ * one but not the other trips a THxCHECK_FAIL (domino).
+ *-----------------------------------------------------------------------------*/
+
+typedef struct
+{
+  const char *key;
+  size_t      arity;
+} BuiltinArity;
+
+static const BuiltinArity g_builtins[] = {
+  { "%array", 1 },  { "neg@Int", 1 }, { "neg@Real", 1 }, { "not@Int", 1 },
+  { "+@Int", 2 },   { "-@Int", 2 },   { "*@Int", 2 },    { "/@Int", 2 },
+  { "%@Int", 2 },   { "?=@Int", 2 },  { "?>@Int", 2 },   { "?<@Int", 2 },
+  { "<=@Int", 2 },  { ">=@Int", 2 },  { "+@Real", 2 },   { "-@Real", 2 },
+  { "*@Real", 2 },  { "/@Real", 2 },  { "%@Real", 2 },   { "?=@Real", 2 },
+  { "?>@Real", 2 }, { "?<@Real", 2 }, { "<=@Real", 2 },  { ">=@Real", 2 },
+};
+
+static size_t
+builtin_arity(
+  const char *key)
+{
+  for (size_t i = 0; i < sizeof(g_builtins) / sizeof(g_builtins[0]); ++i)
+    if (strcmp(g_builtins[i].key, key) == 0) return g_builtins[i].arity;
+  THxCHECK_FAILF("THxRT_builtin: unknown built-in '%s'", key);
+}
+
+Value *
+THxRT_builtin(
+  const char *impl)
+{
+  Value *x      = THxMEM_alloc_value();
+  x->tag        = T_BUILTIN;
+  x->u.bi.impl  = impl;
+  x->u.bi.arity = builtin_arity(impl);
+  x->u.bi.nargs = 0;
+  x->u.bi.args  = NULL;
+  return x;
+}
+
+static Value *
+builtin_dispatch(
+  Value *b)
+{
+  const char *k = b->u.bi.impl;
+  Value     **a = b->u.bi.args;
+
+  if (!strcmp(k, "%array"))
+  {
+    long long n = THxVALUE_as_int(a[0]);
+    return THxRT_bytes(n < 0 ? 0 : (size_t)n);
+  }
+
+  if (!strcmp(k, "neg@Int")) return THxRT_int(-THxVALUE_as_int(a[0]));
+  if (!strcmp(k, "neg@Real")) return THxRT_real(-THxVALUE_as_num(a[0]));
+  if (!strcmp(k, "not@Int")) return THxRT_int(THxVALUE_as_int(a[0]) == 0 ? 1 : 0);
+
+  if (!strcmp(k, "+@Int")) return THxRT_int(THxVALUE_as_int(a[0]) + THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "-@Int")) return THxRT_int(THxVALUE_as_int(a[0]) - THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "*@Int")) return THxRT_int(THxVALUE_as_int(a[0]) * THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "/@Int"))
+  {
+    long long d = THxVALUE_as_int(a[1]);
+    if (d == 0) THxCHECK_FAIL("division by zero (/@Int)");
+    return THxRT_int(THxVALUE_as_int(a[0]) / d);
+  }
+  if (!strcmp(k, "%@Int"))
+  {
+    long long d = THxVALUE_as_int(a[1]);
+    if (d == 0) THxCHECK_FAIL("division by zero (%@Int)");
+    return THxRT_int(THxVALUE_as_int(a[0]) % d);
+  }
+  if (!strcmp(k, "?=@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) == THxVALUE_as_int(a[1]) ? 1 : 0);
+  if (!strcmp(k, "?>@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) > THxVALUE_as_int(a[1]) ? 1 : 0);
+  if (!strcmp(k, "?<@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) < THxVALUE_as_int(a[1]) ? 1 : 0);
+  if (!strcmp(k, "<=@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) <= THxVALUE_as_int(a[1]) ? 1 : 0);
+  if (!strcmp(k, ">=@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) >= THxVALUE_as_int(a[1]) ? 1 : 0);
+
+  if (!strcmp(k, "+@Real")) return THxRT_real(THxVALUE_as_num(a[0]) + THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "-@Real")) return THxRT_real(THxVALUE_as_num(a[0]) - THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "*@Real")) return THxRT_real(THxVALUE_as_num(a[0]) * THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "/@Real")) return THxRT_real(THxVALUE_as_num(a[0]) / THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "%@Real"))
+  {
+    double x = THxVALUE_as_num(a[0]), y = THxVALUE_as_num(a[1]);
+    return THxRT_real(x - y * (double)(long long)(x / y));
+  }
+  if (!strcmp(k, "?=@Real"))
+    return THxRT_int(THxVALUE_as_num(a[0]) == THxVALUE_as_num(a[1]) ? 1 : 0);
+  if (!strcmp(k, "?>@Real"))
+    return THxRT_int(THxVALUE_as_num(a[0]) > THxVALUE_as_num(a[1]) ? 1 : 0);
+  if (!strcmp(k, "?<@Real"))
+    return THxRT_int(THxVALUE_as_num(a[0]) < THxVALUE_as_num(a[1]) ? 1 : 0);
+  if (!strcmp(k, "<=@Real"))
+    return THxRT_int(THxVALUE_as_num(a[0]) <= THxVALUE_as_num(a[1]) ? 1 : 0);
+  if (!strcmp(k, ">=@Real"))
+    return THxRT_int(THxVALUE_as_num(a[0]) >= THxVALUE_as_num(a[1]) ? 1 : 0);
+
+  THxCHECK_FAILF("builtin_dispatch: unimplemented built-in '%s'", k);
+}
+
+/* A fresh builtin value with `x` appended to `b`'s accumulated arguments. */
+static Value *
+builtin_push(
+  Value *b, Value *x)
+{
+  size_t n       = b->u.bi.nargs;
+  Value *nb      = THxMEM_alloc_value();
+  nb->tag        = T_BUILTIN;
+  nb->u.bi.impl  = b->u.bi.impl;
+  nb->u.bi.arity = b->u.bi.arity;
+  nb->u.bi.nargs = n + 1;
+  Value **args   = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
+  for (size_t i = 0; i < n; ++i) args[i] = b->u.bi.args[i];
+  args[n]       = x;
+  nb->u.bi.args = args;
+  return nb;
+}
+
+/*------------------------------------------------------------------------------
+ *\APPLICATION -- the trampoline
+ *
+ * A tail call does not recurse in C: the generated body calls THxRT_tailcall,
+ * which parks (fn, arg) in the bounce registers and returns the sentinel; the
+ * loop here picks it up and continues, so chains of tail calls run in constant
+ * stack. Non-tail calls recurse through THxRT_apply (and thus use the C stack --
+ * see doc/native-backend.md for that v1 limitation).
+ *-----------------------------------------------------------------------------*/
+
+static int    g_bounce     = 0;
+static Value *g_bounce_fn  = NULL;
+static Value *g_bounce_arg = NULL;
+
+Value *
+THxRT_tailcall(
+  Value *f, Value *arg)
+{
+  g_bounce     = 1;
+  g_bounce_fn  = f;
+  g_bounce_arg = arg;
+  return NULL; /* sentinel; the trampoline consumes the bounce */
+}
+
+Value *
+THxRT_apply(
+  Value *f, Value *arg)
+{
+  for (;;)
+  {
+    THxCHECK_ASSERT(f != NULL, "THxRT_apply: null callee");
+    switch (f->tag)
+    {
+    case T_CLOS:
+    {
+      size_t code = (size_t)f->u.clos.code;
+      THxCHECK_ASSERT(code < THxRT_code_count, "THxRT_apply: closure code out of range");
+      Value *r = THxRT_code_table[code](f->u.clos.env, arg);
+      if (g_bounce)
+      {
+        g_bounce = 0;
+        f        = g_bounce_fn;
+        arg      = g_bounce_arg;
+        continue;
+      }
+      return r;
+    }
+    case T_BUILTIN:
+    {
+      Value *b = builtin_push(f, arg);
+      if (b->u.bi.nargs >= b->u.bi.arity) return builtin_dispatch(b);
+      return b;
+    }
+    case T_INT:
+    case T_REAL:
+    case T_STR:
+    case T_STRUCT:
+    case T_VARIANT:
+    case T_UNK:
+      THxCHECK_FAILF("THxRT_apply: callee is not a function (%s)",
+                THxVALUE_tag_name(f->tag));
+    }
+    THxCHECK_FAIL("THxRT_apply: unhandled value tag");
+  }
+}
+
+Value *
+THxRT_force_code(
+  size_t code)
+{
+  THxCHECK_ASSERT(code < THxRT_code_count, "THxRT_force_code: code out of range");
+  Value *r = THxRT_code_table[code](NULL, NULL);
+  if (g_bounce)
+  {
+    g_bounce = 0;
+    r        = THxRT_apply(g_bounce_fn, g_bounce_arg);
+  }
+  return r;
+}

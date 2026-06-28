@@ -14,12 +14,15 @@ namespace
 {
 
 const char *USAGE
-  = "usage: thrax [--ast|-a] [--ir|-i] [PATH...]\n"
+  = "usage: thrax [--ast|-a] [--ir|-i] [--emit-c|-c] [--build|-b] [PATH...]\n"
     "  PATH is a .thx file or a directory (every .thx in it, non-recursive,\n"
     "  skipping _*.thx). With no PATH the current directory is used. All "
     "files\n"
     "  form one program; with --ast print the parsed AST, with --ir the\n"
-    "  closure-converted IR, instead of running.\n";
+    "  closure-converted IR, with --emit-c the generated C source (the native\n"
+    "  backend), instead of running.\n"
+    "  --build compiles a project (a directory with a MAIN module) via the\n"
+    "  native backend, writing <DIR>/bin/<name>.{ir,c} and the executable.\n";
 
 } // namespace
 
@@ -29,6 +32,8 @@ main(
 {
   bool                print_ast = false;
   bool                print_ir  = false;
+  bool                emit_c    = false;
+  bool                build     = false;
   std::vector<UT::Vu> paths;
 
   for (int i = 1; i < argc; ++i)
@@ -38,6 +43,10 @@ main(
       print_ast = true;
     else if (0 == std::strcmp(arg, "--ir") || 0 == std::strcmp(arg, "-i"))
       print_ir = true;
+    else if (0 == std::strcmp(arg, "--emit-c") || 0 == std::strcmp(arg, "-c"))
+      emit_c = true;
+    else if (0 == std::strcmp(arg, "--build") || 0 == std::strcmp(arg, "-b"))
+      build = true;
     else if (0 == std::strcmp(arg, "--help") || 0 == std::strcmp(arg, "-h"))
     {
       std::printf("%s", USAGE);
@@ -54,6 +63,19 @@ main(
 
   // No path given: compile the current directory.
   if (paths.empty()) paths.push_back(UT::Vu{ ".", 1 });
+
+  // --build operates on a project directory itself (not its expanded files).
+  if (build)
+  {
+    if (paths.size() != 1)
+    {
+      std::fprintf(stderr,
+                   "thrax: --build takes a single project directory\n%s",
+                   USAGE);
+      return 2;
+    }
+    return DR::build_project(paths[0]) ? 0 : 1;
+  }
 
   // Expand directories to their `.thx` files. `names` owns the strings; `files`
   // are views into them, valid for the rest of main.
@@ -77,6 +99,8 @@ main(
   }
 
   if (print_ir) return DR::dump_ir(files) ? 0 : 1;
+
+  if (emit_c) return DR::emit_c(files) ? 0 : 1;
 
   // All files form one program; modules link across them and the entry point is
   // the `main` of module MAIN. The program's exit code is main's Int result.

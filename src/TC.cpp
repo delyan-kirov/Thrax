@@ -992,11 +992,12 @@ Checker::occurs_free(
  *-----------------------------------------------------------------------------*/
 
 // `amb` is the ambient effect row: the effects this expression is allowed to
-// perform. Performing an operation injects its effect into `amb` (an App unifies
-// the callee's latent effect with `amb`); a handler discharges the effects it
-// handles by typing its body under `<handled... | amb>`; a lambda body runs
-// under its own fresh ambient (the arrow's latent effect). A top-level body is
-// typed under the empty closed row, so an unhandled effect fails to unify.
+// perform. Performing an operation injects its effect into `amb` (an App
+// unifies the callee's latent effect with `amb`); a handler discharges the
+// effects it handles by typing its body under `<handled... | amb>`; a lambda
+// body runs under its own fresh ambient (the arrow's latent effect). A
+// top-level body is typed under the empty closed row, so an unhandled effect
+// fails to unify.
 Type *
 Checker::infer(
   Core *e, Env &locals, Type *amb)
@@ -1012,16 +1013,18 @@ Checker::infer(
   case CKind::Handle:
   {
     // The handler discharges the effects named by its clauses: the body runs
-    // under `<handled... | amb>`, the handle expression itself under `amb`. else
-    // x = e: x has the body's type, e has `result`; with no else the body's
-    // result IS the handler's. Each clause `is op a = e` for `op : A -> B` binds
-    // a : A and k : B ->^amb result (resuming is deep, so k runs under amb).
+    // under `<handled... | amb>`, the handle expression itself under `amb`.
+    // else x = e: x has the body's type, e has `result`; with no else the
+    // body's result IS the handler's. Each clause `is op a = e` for `op : A ->
+    // B` binds a : A and k : B ->^amb result (resuming is deep, so k runs under
+    // amb).
     CHandle &h      = std::get<CHandle>(e->as);
     Type    *result = fresh();
 
     // Build the body's ambient: amb extended with each DISTINCT handled effect
-    // (several clauses may handle one effect, e.g. get/put both belong to State;
-    // adding the label once keeps the row in step with what the body performs).
+    // (several clauses may handle one effect, e.g. get/put both belong to
+    // State; adding the label once keeps the row in step with what the body
+    // performs).
     Type *inner = amb;
     {
       std::unordered_set<std::string> seen;
@@ -1101,9 +1104,9 @@ Checker::infer(
 
   case CKind::Lam:
   {
-    // Constructing a closure performs no effect (the lambda itself is pure under
-    // `amb`); its body runs under a fresh ambient that becomes the arrow's
-    // latent effect.
+    // Constructing a closure performs no effect (the lambda itself is pure
+    // under `amb`); its body runs under a fresh ambient that becomes the
+    // arrow's latent effect.
     CLam &l        = std::get<CLam>(e->as);
     Type *pv       = fresh();
     Type *e_body   = fresh();
@@ -1118,8 +1121,8 @@ Checker::infer(
     // The callee may perform AT MOST what the ambient allows: its latent effect
     // must be a SUBROW of the ambient (subsumption), not equal to it. So a pure
     // (or smaller-effect) function is callable in any larger effect context.
-    // Argument and result still unify exactly. (Operations are Apps whose callee
-    // carries `<L|mu>`, so subsuming it forces L into amb.)
+    // Argument and result still unify exactly. (Operations are Apps whose
+    // callee carries `<L|mu>`, so subsuming it forces L into amb.)
     CApp &ap = std::get<CApp>(e->as);
     Type *ft = infer(ap.fn, locals, amb);
     Type *at = infer(ap.arg, locals, amb);
@@ -1699,9 +1702,9 @@ Checker::resolve_user_sites(
     for (size_t k = 0; k < s.cands->size(); ++k)
     {
       std::string cname(std::string((*s.cands)[k]));
-      auto        pit  = m_prim.find(cname);
-      Type       *cand = instantiate(pit != m_prim.end() ? pit->second
-                                                         : resolve(cname));
+      auto        pit = m_prim.find(cname);
+      Type       *cand
+        = instantiate(pit != m_prim.end() ? pit->second : resolve(cname));
       if (try_unify(use, cand)) fits.push_back(k);
     }
 
@@ -1740,8 +1743,7 @@ Checker::resolve_user_sites(
     UT::Vu      chosen = (*s.cands)[fits.front()];
     std::string cname(chosen);
     auto        pit = m_prim.find(cname); // an operation candidate lives here
-    unify(use,
-          instantiate(pit != m_prim.end() ? pit->second : resolve(cname)));
+    unify(use, instantiate(pit != m_prim.end() ? pit->second : resolve(cname)));
     *s.slot = chosen;
   }
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
@@ -2277,8 +2279,8 @@ Checker::show(
   case Kind::RowEmpty: return "<>";
   case Kind::RowExtend:
   {
-    std::string out = "<";
-    Type       *cur = t;
+    std::string out   = "<";
+    Type       *cur   = t;
     bool        first = true;
     for (; prune(cur)->kind() == Kind::RowExtend;)
     {
@@ -2328,28 +2330,28 @@ Checker::seed_primitives()
   // if : forall T e1 e2 e3. Int ->e1 T ->e2 T ->e3 T. The arrows' latent
   // effects are fresh row variables that generalize, so `if` is effect-
   // polymorphic and adapts to whatever ambient its use site demands.
-  Type *tv = fresh();
-  Type *ift
-    = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
+  Type *tv       = fresh();
+  Type *ift      = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
   // %array : Int -> Array -- the byte-block allocator that `@array.{n}`
   // desugars to (see EX::parse_array).
-  Type *arrt = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
+  Type *arrt            = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 
   // %defer : forall a e. ({} ->e a) -> ({} ->e {}) ->e a -- the cleanup
   // intrinsic the `defer` keyword desugars to: run the action, running the
-  // cleanup when its scope exits (normal completion or discard). Both thunks and
-  // the running arrows share one effect row `e`, so the action's effects must fit
-  // the call's ambient (subsumption), and it is effect-polymorphic. `%`-prefixed
+  // cleanup when its scope exits (normal completion or discard). Both thunks
+  // and the running arrows share one effect row `e`, so the action's effects
+  // must fit the call's ambient (subsumption), and it is effect-polymorphic.
+  // `%`-prefixed
   // => not user-writable; reached only via `defer`.
-  Type *e    = fresh(); // the shared effect row
-  Type *a    = fresh();
-  Type *unit = con(OP::TY_UNIT);
-  Type *act  = arrow(unit, a, e);    // {} ->e a
-  Type *cln  = arrow(unit, unit, e); // {} ->e {}
-  Type *fin  = arrow(act, arrow(cln, a, e), e);
+  Type *e           = fresh(); // the shared effect row
+  Type *a           = fresh();
+  Type *unit        = con(OP::TY_UNIT);
+  Type *act         = arrow(unit, a, e);    // {} ->e a
+  Type *cln         = arrow(unit, unit, e); // {} ->e {}
+  Type *fin         = arrow(act, arrow(cln, a, e), e);
   m_prim[OP::DEFER] = generalize(Env{}, fin);
 }
 

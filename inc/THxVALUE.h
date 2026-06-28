@@ -1,0 +1,109 @@
+/*-------------------------------------------------------------------------------
+ *\file THxVALUE.h
+ *\info The runtime value -- a pointer-boxed tagged union, the C counterpart of
+ *      the interpreter's IT::Value (see inc/ITxDATA.hpp). Like the interpreter
+ *      it is strict: there are no thunks; every field of a struct/variant is an
+ *      already-evaluated value.
+ *
+ * Generated code NEVER reads a union arm directly. Every access goes through a
+ * checked accessor below, which asserts the tag (and bounds) via THxCHECK_ASSERT
+ * first. This keeps the boxed representation honest and makes a codegen bug
+ * abort with a precise message instead of corrupting memory.
+ *
+ * The `rc` field is RESERVED for the future reference-counting engine
+ * (ext/THxMEMRC.c); the bump allocator leaves it untouched. See
+ * doc/native-backend.md for the growth plan (ref counting, effects, FFI).
+ *-----------------------------------------------------------------------------*/
+
+#ifndef THxVALUE_H_
+#define THxVALUE_H_
+
+#include <stddef.h>
+
+/* The value discriminant. Adding a tag here is the head of a domino: the
+ * accessors, THxVALUE_tag_name, THxRT_apply's dispatch and the codegen all switch on
+ * it, so an unhandled case trips -Wswitch (-Werror) or a THxCHECK_FAIL. */
+typedef enum
+{
+  T_INT,     /* machine integer (also Unit, booleans 0/1) */
+  T_REAL,    /* double */
+  T_STR,     /* owned byte block: Str literal or Array bytes */
+  T_STRUCT,  /* record: named fields in declaration order */
+  T_VARIANT, /* sum value: type name + constructor tag + payload */
+  T_CLOS,    /* closure: an IR code index + captured environment */
+  T_BUILTIN, /* a (possibly partially applied) built-in operator */
+  T_UNK      /* the unknown/placeholder value (recursive-let box, unit) */
+} Tag;
+
+typedef struct Value Value;
+
+/* Every lifted IR Code is a curried, arity-1 function: it takes its captured
+ * environment and one argument and returns a value. */
+typedef Value *(*CodeFn)(Value **env, Value *arg);
+
+struct Value
+{
+  Tag      tag;
+  unsigned rc; /* RESERVED for ref counting; unused by the bump allocator */
+  union
+  {
+    long long i; /* T_INT */
+    double    r; /* T_REAL */
+    struct
+    {
+      char  *p;
+      size_t n;
+    } s; /* T_STR */
+    struct
+    {
+      const char  *name;
+      const char **fnames;
+      Value      **f;
+      size_t       n;
+    } st; /* T_STRUCT */
+    struct
+    {
+      const char *tname;
+      const char *ctor;
+      Value     **f;
+      size_t      n;
+    } var; /* T_VARIANT */
+    struct
+    {
+      int     code;
+      Value **env;
+      size_t  nenv;
+    } clos; /* T_CLOS */
+    struct
+    {
+      const char *impl;
+      size_t      arity;
+      size_t      nargs;
+      Value     **args;
+    } bi; /* T_BUILTIN */
+  } u;
+};
+
+/* Human-readable tag name, for diagnostics. */
+const char *THxVALUE_tag_name(Tag t);
+
+/*------------------------------------------------------------------------------
+ *\CHECKED ACCESSORS -- the only sanctioned way to read a value
+ *-----------------------------------------------------------------------------*/
+
+long long THxVALUE_as_int(Value *v); /* fails unless T_INT */
+double    THxVALUE_as_num(Value *v); /* T_REAL, or T_INT coerced to double */
+
+/* Bounds-checked reads of an activation's local slot / a closure's env field.
+ */
+Value *THxVALUE_local(Value **locals, size_t n, size_t i);
+Value *THxVALUE_env(Value **env, size_t n, size_t i);
+
+/* T_STRUCT field by name (fails, naming the field, if absent). */
+Value *THxVALUE_field(Value *rec, const char *name);
+
+/* T_VARIANT constructor tag and positional payload (bounds-checked). */
+const char *THxVALUE_ctor(Value *v);
+Value      *THxVALUE_variant_field(Value *v, size_t i);
+
+#endif /* THxVALUE_H_ */

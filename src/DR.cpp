@@ -1,5 +1,8 @@
 #include "DR.hpp"
+#include "CC.hpp"
 #include "ER.hpp"
+
+#include <fstream>
 #include "EX.hpp"
 #include "IR.hpp"
 #include "IT.hpp"
@@ -285,6 +288,161 @@ dump_ir(
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
   std::printf("%s", IR::pprint(prog).c_str());
+  return true;
+}
+
+bool
+emit_c(
+  const std::vector<UT::Vu> &files)
+{
+  AR::Arena             front{};
+  std::vector<MR::Unit> units;
+  if (!parse_units(files, front, units)) return false;
+
+  MR::Result mr;
+  if (!compile_units(units, front, mr)) return false;
+
+  // The IR arena must outlive emission: CC reads names/literals that view it.
+  AR::Arena   core_arena{};
+  CR::StatEnv env;
+  for (size_t i = 0; i < mr.program.size(); ++i)
+    CR::build(&mr.program[i], env, core_arena);
+
+  IR::Program prog = IR::lower(env, core_arena);
+  collect_operations(mr.program, prog);
+
+  if (std::optional<std::string> why = CC::unsupported(prog))
+  {
+    std::fprintf(stderr,
+                 "thrax: the native backend does not yet support %s; run with "
+                 "the interpreter instead\n",
+                 why->c_str());
+    return false;
+  }
+
+  std::string c = CC::emit(prog, mr.entry, mr.entry_takes_arg);
+  std::fwrite(c.data(), 1, c.size(), stdout);
+  return true;
+}
+
+bool
+build_project(
+  UT::Vu dir)
+{
+  namespace fs = std::filesystem;
+  std::string     dpath(dir);
+  std::error_code ec;
+
+  if (!fs::is_directory(dpath, ec))
+  {
+    std::fprintf(stderr,
+                 "thrax: '%s' is not a directory (a project is a directory "
+                 "containing a MAIN module)\n",
+                 dpath.c_str());
+    return false;
+  }
+
+  // The project's source files: every `.thx` directly in the directory (the same
+  // rule the CLI uses for a directory path).
+  std::vector<std::string> names = expand_sources({ dir });
+  if (names.empty())
+  {
+    std::fprintf(stderr, "thrax: no .thx source files in '%s'\n", dpath.c_str());
+    return false;
+  }
+  std::vector<UT::Vu> files;
+  files.reserve(names.size());
+  for (const std::string &n : names) files.push_back(UT::Vu{ n.data(), n.size() });
+
+  AR::Arena             front{};
+  std::vector<MR::Unit> units;
+  if (!parse_units(files, front, units)) return false;
+
+  MR::Result mr;
+  if (!compile_units(units, front, mr)) return false;
+
+  if (mr.entry.empty())
+  {
+    std::fprintf(stderr,
+                 "thrax: project '%s' has no entry point -- define a module "
+                 "'MAIN' with a 'main : Int' (or 'main : Str -> Int')\n",
+                 dpath.c_str());
+    return false;
+  }
+
+  AR::Arena   core_arena{};
+  CR::StatEnv env;
+  for (size_t i = 0; i < mr.program.size(); ++i)
+    CR::build(&mr.program[i], env, core_arena);
+
+  IR::Program prog = IR::lower(env, core_arena);
+  collect_operations(mr.program, prog);
+
+  if (std::optional<std::string> why = CC::unsupported(prog))
+  {
+    std::fprintf(stderr,
+                 "thrax: the native backend does not yet support %s; cannot "
+                 "build project '%s' (run it with the interpreter instead)\n",
+                 why->c_str(), dpath.c_str());
+    return false;
+  }
+
+  // Output goes in <project>/bin/<project>.{ir,c} and the executable
+  // <project>/bin/<project>. `stem` is the project directory's own name.
+  fs::path    pdir = fs::path(dpath);
+  std::string stem = pdir.filename().string();
+  if (stem.empty())
+  {
+    pdir = pdir.parent_path();
+    stem = pdir.filename().string();
+  }
+  fs::path outdir = pdir / "bin";
+  fs::create_directories(outdir, ec);
+  if (ec)
+  {
+    std::fprintf(stderr, "thrax: cannot create '%s': %s\n",
+                 outdir.string().c_str(), ec.message().c_str());
+    return false;
+  }
+
+  fs::path ir_path  = outdir / (stem + ".ir");
+  fs::path c_path   = outdir / (stem + ".c");
+  fs::path exe_path = outdir / stem;
+
+  {
+    std::ofstream f(ir_path);
+    if (!f)
+    {
+      std::fprintf(stderr, "thrax: cannot write '%s'\n", ir_path.string().c_str());
+      return false;
+    }
+    f << IR::pprint(prog);
+  }
+  {
+    std::ofstream f(c_path);
+    if (!f)
+    {
+      std::fprintf(stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
+      return false;
+    }
+    f << CC::emit(prog, mr.entry, mr.entry_takes_arg);
+  }
+
+  // The generated unit is self-contained (the runtime is baked in), so the
+  // compile needs nothing but a C compiler.
+  std::string cmd
+    = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+
+  int rc = std::system(cmd.c_str());
+  if (rc != 0)
+  {
+    std::fprintf(stderr, "thrax: C compilation failed (cc exit %d)\n", rc);
+    return false;
+  }
+
+  std::printf("thrax: built project '%s'\n  ir:  %s\n  c:   %s\n  exe: %s\n",
+              stem.c_str(), ir_path.string().c_str(), c_path.string().c_str(),
+              exe_path.string().c_str());
   return true;
 }
 
