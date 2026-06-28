@@ -2,8 +2,8 @@
  *\file THxMEM.h
  *\info The memory / value-lifetime seam. The runtime and generated code touch
  *      allocation ONLY through this interface, so the strategy is swappable:
- *      v1 links ext/THxMEMBUMP.c (a bump arena that never frees and whose
- *      retain/release are no-ops). A future ext/THxMEMRC.c implements
+ *      v1 links src/THxMEMBUMP.c (a bump arena that never frees and whose
+ *      retain/release are no-ops). A future src/THxMEMRC.c implements
  *      retain/release over Value::rc for reference counting -- at which point
  *      the codegen begins emitting THxMEM_retain/THxMEM_release at the documented
  *      binding/return/overwrite points (see doc/native-backend.md).

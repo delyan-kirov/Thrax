@@ -6,7 +6,7 @@
  *      run to completion well within memory, and never freeing means generated
  *      code needs no retain/release discipline and recursive-let cycles are a
  *      non-issue. retain/release are no-ops here; swap this file for
- *      ext/THxMEMRC.c to get reference counting. See doc/native-backend.md.
+ *      src/THxMEMRC.c to get reference counting. See doc/native-backend.md.
  *-----------------------------------------------------------------------------*/
 
 #include "THxMEM.h"

@@ -165,6 +165,21 @@ THxRT_builtin(
   return x;
 }
 
+Value *
+THxRT_extern(
+  int idx, size_t arity)
+{
+  THxCHECK_ASSERT((size_t)idx < THxRT_extern_count,
+                  "THxRT_extern: wrapper index out of range");
+  Value *x       = THxMEM_alloc_value();
+  x->tag         = T_EXTERN;
+  x->u.ext.idx   = idx;
+  x->u.ext.arity = arity;
+  x->u.ext.nargs = 0;
+  x->u.ext.args  = NULL;
+  return x;
+}
+
 static Value *
 builtin_dispatch(
   Value *b)
@@ -180,11 +195,15 @@ builtin_dispatch(
 
   if (!strcmp(k, "neg@Int")) return THxRT_int(-THxVALUE_as_int(a[0]));
   if (!strcmp(k, "neg@Real")) return THxRT_real(-THxVALUE_as_num(a[0]));
-  if (!strcmp(k, "not@Int")) return THxRT_int(THxVALUE_as_int(a[0]) == 0 ? 1 : 0);
+  if (!strcmp(k, "not@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) == 0 ? 1 : 0);
 
-  if (!strcmp(k, "+@Int")) return THxRT_int(THxVALUE_as_int(a[0]) + THxVALUE_as_int(a[1]));
-  if (!strcmp(k, "-@Int")) return THxRT_int(THxVALUE_as_int(a[0]) - THxVALUE_as_int(a[1]));
-  if (!strcmp(k, "*@Int")) return THxRT_int(THxVALUE_as_int(a[0]) * THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "+@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) + THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "-@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) - THxVALUE_as_int(a[1]));
+  if (!strcmp(k, "*@Int"))
+    return THxRT_int(THxVALUE_as_int(a[0]) * THxVALUE_as_int(a[1]));
   if (!strcmp(k, "/@Int"))
   {
     long long d = THxVALUE_as_int(a[1]);
@@ -208,10 +227,14 @@ builtin_dispatch(
   if (!strcmp(k, ">=@Int"))
     return THxRT_int(THxVALUE_as_int(a[0]) >= THxVALUE_as_int(a[1]) ? 1 : 0);
 
-  if (!strcmp(k, "+@Real")) return THxRT_real(THxVALUE_as_num(a[0]) + THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "-@Real")) return THxRT_real(THxVALUE_as_num(a[0]) - THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "*@Real")) return THxRT_real(THxVALUE_as_num(a[0]) * THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "/@Real")) return THxRT_real(THxVALUE_as_num(a[0]) / THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "+@Real"))
+    return THxRT_real(THxVALUE_as_num(a[0]) + THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "-@Real"))
+    return THxRT_real(THxVALUE_as_num(a[0]) - THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "*@Real"))
+    return THxRT_real(THxVALUE_as_num(a[0]) * THxVALUE_as_num(a[1]));
+  if (!strcmp(k, "/@Real"))
+    return THxRT_real(THxVALUE_as_num(a[0]) / THxVALUE_as_num(a[1]));
   if (!strcmp(k, "%@Real"))
   {
     double x = THxVALUE_as_num(a[0]), y = THxVALUE_as_num(a[1]);
@@ -249,14 +272,32 @@ builtin_push(
   return nb;
 }
 
+/* A fresh foreign value with `x` appended to `e`'s accumulated arguments. */
+static Value *
+extern_push(
+  Value *e, Value *x)
+{
+  size_t n        = e->u.ext.nargs;
+  Value *ne       = THxMEM_alloc_value();
+  ne->tag         = T_EXTERN;
+  ne->u.ext.idx   = e->u.ext.idx;
+  ne->u.ext.arity = e->u.ext.arity;
+  ne->u.ext.nargs = n + 1;
+  Value **args    = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
+  for (size_t i = 0; i < n; ++i) args[i] = e->u.ext.args[i];
+  args[n]        = x;
+  ne->u.ext.args = args;
+  return ne;
+}
+
 /*------------------------------------------------------------------------------
  *\APPLICATION -- the trampoline
  *
  * A tail call does not recurse in C: the generated body calls THxRT_tailcall,
  * which parks (fn, arg) in the bounce registers and returns the sentinel; the
  * loop here picks it up and continues, so chains of tail calls run in constant
- * stack. Non-tail calls recurse through THxRT_apply (and thus use the C stack --
- * see doc/native-backend.md for that v1 limitation).
+ * stack. Non-tail calls recurse through THxRT_apply (and thus use the C stack
+ * -- see doc/native-backend.md for that v1 limitation).
  *-----------------------------------------------------------------------------*/
 
 static int    g_bounce     = 0;
@@ -285,7 +326,8 @@ THxRT_apply(
     case T_CLOS:
     {
       size_t code = (size_t)f->u.clos.code;
-      THxCHECK_ASSERT(code < THxRT_code_count, "THxRT_apply: closure code out of range");
+      THxCHECK_ASSERT(code < THxRT_code_count,
+                      "THxRT_apply: closure code out of range");
       Value *r = THxRT_code_table[code](f->u.clos.env, arg);
       if (g_bounce)
       {
@@ -302,6 +344,17 @@ THxRT_apply(
       if (b->u.bi.nargs >= b->u.bi.arity) return builtin_dispatch(b);
       return b;
     }
+    case T_EXTERN:
+    {
+      Value *e = extern_push(f, arg);
+      if (e->u.ext.nargs >= e->u.ext.arity)
+      {
+        THxCHECK_ASSERT((size_t)e->u.ext.idx < THxRT_extern_count,
+                        "THxRT_apply: extern index out of range");
+        return THxRT_extern_table[e->u.ext.idx](e->u.ext.args);
+      }
+      return e;
+    }
     case T_INT:
     case T_REAL:
     case T_STR:
@@ -309,7 +362,7 @@ THxRT_apply(
     case T_VARIANT:
     case T_UNK:
       THxCHECK_FAILF("THxRT_apply: callee is not a function (%s)",
-                THxVALUE_tag_name(f->tag));
+                     THxVALUE_tag_name(f->tag));
     }
     THxCHECK_FAIL("THxRT_apply: unhandled value tag");
   }
@@ -319,7 +372,8 @@ Value *
 THxRT_force_code(
   size_t code)
 {
-  THxCHECK_ASSERT(code < THxRT_code_count, "THxRT_force_code: code out of range");
+  THxCHECK_ASSERT(code < THxRT_code_count,
+                  "THxRT_force_code: code out of range");
   Value *r = THxRT_code_table[code](NULL, NULL);
   if (g_bounce)
   {

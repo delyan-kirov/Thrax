@@ -25,6 +25,15 @@
 extern CodeFn       THxRT_code_table[]; /* one entry per lifted IR Code */
 extern const size_t THxRT_code_count;   /* length of THxRT_code_table */
 
+/* One foreign-call wrapper per `@extern` site: it marshals the collected,
+ * already-saturated arguments, makes the direct typed C call, and marshals the
+ * result back to a Value. Generated, with the FFI machinery, by the CC backend
+ * (the table is always defined -- empty when the program has no foreign calls).
+ */
+typedef Value *(*ExternFn)(Value **args);
+extern ExternFn     THxRT_extern_table[];
+extern const size_t THxRT_extern_count;
+
 /* Resolve a top-level name: a memoized CAF (the generated chain) or a built-in
  * operator key (falls through to THxRT_builtin). */
 Value *THxRT_glob(const char *name);
@@ -51,6 +60,11 @@ Value *THxRT_closure(int code, Value **captures, size_t n);
  * (e.g. "+@Int"); aborts on an unknown key. */
 Value *THxRT_builtin(const char *impl);
 
+/* A first-class (curried) foreign function value: `idx` selects its wrapper in
+ * THxRT_extern_table, `arity` is the number of curried arguments it consumes.
+ */
+Value *THxRT_extern(int idx, size_t arity);
+
 /*------------------------------------------------------------------------------
  *\APPLICATION (the trampoline)
  *-----------------------------------------------------------------------------*/
@@ -59,7 +73,8 @@ Value *THxRT_builtin(const char *impl);
 Value *THxRT_apply(Value *f, Value *arg);
 
 /* Request a tail call: record (f, arg) for the enclosing trampoline and return
- * the sentinel. Generated tail positions emit `return THxRT_tailcall(f, arg);`. */
+ * the sentinel. Generated tail positions emit `return THxRT_tailcall(f, arg);`.
+ */
 Value *THxRT_tailcall(Value *f, Value *arg);
 
 /* Run a nullary IR Code (a CAF body) to completion through the trampoline. */

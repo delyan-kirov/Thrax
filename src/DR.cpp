@@ -2,7 +2,6 @@
 #include "CC.hpp"
 #include "ER.hpp"
 
-#include <fstream>
 #include "EX.hpp"
 #include "IR.hpp"
 #include "IT.hpp"
@@ -10,6 +9,7 @@
 #include "MR.hpp"
 #include "TC.hpp"
 #include "UT.hpp"
+#include <fstream>
 
 namespace DR
 {
@@ -342,17 +342,19 @@ build_project(
     return false;
   }
 
-  // The project's source files: every `.thx` directly in the directory (the same
-  // rule the CLI uses for a directory path).
+  // The project's source files: every `.thx` directly in the directory (the
+  // same rule the CLI uses for a directory path).
   std::vector<std::string> names = expand_sources({ dir });
   if (names.empty())
   {
-    std::fprintf(stderr, "thrax: no .thx source files in '%s'\n", dpath.c_str());
+    std::fprintf(
+      stderr, "thrax: no .thx source files in '%s'\n", dpath.c_str());
     return false;
   }
   std::vector<UT::Vu> files;
   files.reserve(names.size());
-  for (const std::string &n : names) files.push_back(UT::Vu{ n.data(), n.size() });
+  for (const std::string &n : names)
+    files.push_back(UT::Vu{ n.data(), n.size() });
 
   AR::Arena             front{};
   std::vector<MR::Unit> units;
@@ -383,7 +385,8 @@ build_project(
     std::fprintf(stderr,
                  "thrax: the native backend does not yet support %s; cannot "
                  "build project '%s' (run it with the interpreter instead)\n",
-                 why->c_str(), dpath.c_str());
+                 why->c_str(),
+                 dpath.c_str());
     return false;
   }
 
@@ -400,8 +403,10 @@ build_project(
   fs::create_directories(outdir, ec);
   if (ec)
   {
-    std::fprintf(stderr, "thrax: cannot create '%s': %s\n",
-                 outdir.string().c_str(), ec.message().c_str());
+    std::fprintf(stderr,
+                 "thrax: cannot create '%s': %s\n",
+                 outdir.string().c_str(),
+                 ec.message().c_str());
     return false;
   }
 
@@ -413,7 +418,8 @@ build_project(
     std::ofstream f(ir_path);
     if (!f)
     {
-      std::fprintf(stderr, "thrax: cannot write '%s'\n", ir_path.string().c_str());
+      std::fprintf(
+        stderr, "thrax: cannot write '%s'\n", ir_path.string().c_str());
       return false;
     }
     f << IR::pprint(prog);
@@ -422,16 +428,19 @@ build_project(
     std::ofstream f(c_path);
     if (!f)
     {
-      std::fprintf(stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
+      std::fprintf(
+        stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
       return false;
     }
     f << CC::emit(prog, mr.entry, mr.entry_takes_arg);
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the
-  // compile needs nothing but a C compiler.
+  // compile needs nothing but a C compiler -- plus -ldl for dlopen/dlsym when
+  // the program makes foreign calls.
   std::string cmd
     = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+  if (CC::uses_ffi(prog)) cmd += " -ldl";
 
   int rc = std::system(cmd.c_str());
   if (rc != 0)
@@ -441,7 +450,9 @@ build_project(
   }
 
   std::printf("thrax: built project '%s'\n  ir:  %s\n  c:   %s\n  exe: %s\n",
-              stem.c_str(), ir_path.string().c_str(), c_path.string().c_str(),
+              stem.c_str(),
+              ir_path.string().c_str(),
+              c_path.string().c_str(),
               exe_path.string().c_str());
   return true;
 }

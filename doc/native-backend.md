@@ -110,10 +110,30 @@ built-in breaks **every** dependent path loudly:
 Atoms `Local`/`Env`/`Glob`/`LitI`/`LitR`/`LitS`/`MkClosure`; expressions `Ret`,
 `Let` (incl. recursive), `App` (with TCO), `Case` (Int/Real/Con + payload bind +
 default), `MkStruct`, `Field`, `MkVariant`, `Unk`; lazy-memoized global CAFs;
-built-in Int/Real operators and the `%array` primitive.
+built-in Int/Real operators and the `%array` primitive; and **C FFI** (`@extern`,
+below).
 
-This covers the strict, effect-free, FFI-free subset — 17 of the 22 `dat/`
-examples compile and run today.
+This is the strict subset plus FFI — the only thing the backend rejects today is
+algebraic effects, so 17 of the 22 `dat/` examples compile and run (the other 5
+use effects).
+
+### Foreign calls (FFI)
+
+`@extern.{ "symbol", "library" }` compiles to a **direct, typed C call** — no
+libffi. For each call site `CC::emit_externs` emits a wrapper that resolves the
+symbol once with `dlsym` (so there is no clash with the runtime's own
+`<stdio.h>`/`<stdlib.h>` declarations, and any library works), calls it through a
+function pointer whose type is built from the Thrax signature (`CC::c_type`
+mirrors `FF::desc_of`), and marshals arguments/result (`Str`/`Array` pass their
+byte pointer, `Ptr` is an integer address, `Real` a double, a `{}` arg is
+dropped, a `{}` result yields unit). The wrappers fill the `THxRT_extern_table`
+the runtime dispatches `T_EXTERN` through; the value side mirrors builtins
+(curried, fires when saturated). A program that uses FFI links with `-ldl`
+(`CC::uses_ffi`; `--build` adds it automatically):
+
+```sh
+thrax --emit-c FILE.thx > prog.c && cc -O2 prog.c -ldl -o prog
+```
 
 ## Missing features and where they plug in
 
@@ -154,13 +174,6 @@ trampoline (option 1's substrate) and the `Value`/accessor layer are already in
 place. Note: effects also subsume the deep-non-tail-recursion limit below, since
 an explicit stack removes the dependence on the C stack.
 
-### FFI *(intended next increment)*
-
-`Extern` / `VExtern` are rejected today. Adding them means reimplementing
-`IT::call_extern` / `FF` argument marshalling in C via libffi and emitting the
-`Extern` constructor + saturating-call path in `THxRT_apply`. Unlocks the
-`io_example` and `raylib_demo` programs.
-
 ### Unboxing *(optimization)*
 
 Values are pointer-boxed. A later representation pass could keep `Int`/`Real`
@@ -168,7 +181,11 @@ unboxed in registers for true low-level performance.
 
 ## Known v1 limitations
 
-- No effects, no FFI (clean diagnostics).
+- No algebraic effects (clean diagnostic; `defer` counts as an effect, so
+  `dat/io_example` is still rejected despite FFI now working).
+- FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
+  not passed across the boundary, and only libc-resolvable libraries are
+  exercised (others just need the right `-l`/path).
 - Bump allocator never frees — long-running loops leak.
 - Deep **non-tail** recursion uses the C stack and can overflow (tail recursion
   is constant-stack). Lifted by the effects/explicit-stack work.

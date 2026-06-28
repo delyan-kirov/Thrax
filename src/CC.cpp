@@ -3,8 +3,8 @@
  *\info Implementation of the C-code generation backend (see CC.hpp). Each IR
  *      Code becomes one C function `THx_code_<i>(env, arg)`; the ANF
  * structure maps almost one-to-one onto C statements. Tail applications emit
- *      `THxRT_tailcall` (constant stack via the runtime trampoline); non-tail ones
- *      emit `THxRT_apply`. Every value read goes through a checked accessor, so
+ *      `THxRT_tailcall` (constant stack via the runtime trampoline); non-tail
+ * ones emit `THxRT_apply`. Every value read goes through a checked accessor, so
  * the generated program fails loudly on a codegen bug rather than corrupting
  *      memory.
  *
@@ -243,11 +243,73 @@ struct Reject
       for (const IR::Atom *f : std::get<IR::MkVariant>(e->as).fields) atom(f);
       break;
     case IR::EKind::Handle: set("effect handlers (`do`/`ctl`)"); break;
-    case IR::EKind::Extern: set("foreign calls (`@extern` / FFI)"); break;
-    case IR::EKind::Unk   : break;
+    case IR::EKind::Extern:
+      break; // foreign calls are supported (see emit_externs)
+    case IR::EKind::Unk: break;
     }
   }
 };
+
+/*------------------------------------------------------------------------------
+ *\FFI -- Thrax type <-> C ABI for direct foreign calls
+ *-----------------------------------------------------------------------------*/
+
+// The C type a Thrax base type marshals to across the C ABI (mirrors
+// FF::desc_of in src/FF.cpp). `ret` allows the unit type as `void` (a result,
+// not an arg).
+std::string
+c_type(
+  const std::string &t, bool ret)
+{
+  if (t == OP::TY_INT) return "long";
+  if (t == OP::TY_NAT) return "unsigned long";
+  if (t == OP::TY_INT8) return "signed char";
+  if (t == OP::TY_INT16) return "short";
+  if (t == OP::TY_INT32) return "int";
+  if (t == OP::TY_INT64) return "long long";
+  if (t == OP::TY_NAT8) return "unsigned char";
+  if (t == OP::TY_NAT16) return "unsigned short";
+  if (t == OP::TY_NAT32) return "unsigned int";
+  if (t == OP::TY_NAT64) return "unsigned long long";
+  if (t == OP::TY_REAL || t == OP::TY_REAL64) return "double";
+  if (t == OP::TY_REAL32) return "float";
+  if (t == OP::TY_STR) return "char*";
+  if (t == OP::TY_PTR || t == OP::TY_ARRAY) return "void*";
+  if (ret && t == OP::TY_UNIT) return "void";
+  return "long"; // default / type variable: word-sized, like FF::desc_of
+}
+
+// Marshal the runtime Value `v` (a C expression) into the C value for arg type
+// `t`. A Str/Array passes its byte pointer; a Ptr is an integer address; a Real
+// reads as double; everything else is an integer.
+std::string
+marshal_arg(
+  const std::string &t, const std::string &v)
+{
+  if (t == OP::TY_STR) return "(char*)THxVALUE_str(" + v + ")";
+  if (t == OP::TY_ARRAY) return "(void*)THxVALUE_str(" + v + ")";
+  if (t == OP::TY_PTR) return "(void*)(intptr_t)THxVALUE_as_int(" + v + ")";
+  if (t == OP::TY_REAL || t == OP::TY_REAL64)
+    return "(double)THxVALUE_as_num(" + v + ")";
+  if (t == OP::TY_REAL32) return "(float)THxVALUE_as_num(" + v + ")";
+  return "(" + c_type(t, false) + ")THxVALUE_as_int(" + v + ")";
+}
+
+// A `return <Value>;` statement marshalling the C result `r` of return type
+// `t`.
+std::string
+marshal_ret(
+  const std::string &t, const std::string &r)
+{
+  if (t == OP::TY_STR)
+    return "return THxRT_str(" + r + " ? " + r + " : \"\", " + r + " ? strlen("
+           + r + ") : 0);";
+  if (t == OP::TY_REAL || t == OP::TY_REAL64 || t == OP::TY_REAL32)
+    return "return THxRT_real((double)" + r + ");";
+  if (t == OP::TY_PTR)
+    return "return THxRT_int((long long)(intptr_t)" + r + ");";
+  return "return THxRT_int((long long)" + r + ");";
+}
 
 /*------------------------------------------------------------------------------
  *\THE EMITTER
@@ -268,6 +330,9 @@ struct Emitter
   size_t             tmp     = 0;
   size_t             nlocals = 0; // of the code currently being emitted
   size_t             nenv    = 0;
+  // Each `@extern` site encountered while emitting code, in order; its position
+  // is the index passed to THxRT_extern and the slot in THxRT_extern_table.
+  std::vector<const IR::Extern *> externs;
 
   explicit Emitter(
     const IR::Program &p)
@@ -386,7 +451,8 @@ struct Emitter
         switch (al.kind)
         {
         case IR::AltKind::Int:
-          cond = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
+          cond
+            = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
           break;
         case IR::AltKind::Real:
           cond = "THxVALUE_as_num(" + s + ") == " + cdbl(al.rval);
@@ -400,8 +466,8 @@ struct Emitter
         if (al.kind == IR::AltKind::Con)
           for (size_t i = 0; i < al.binders.size(); ++i)
             out += "  locals[" + std::to_string(al.binder_base + i)
-                   + "] = THxVALUE_variant_field(" + s + ", " + std::to_string(i)
-                   + ");\n";
+                   + "] = THxVALUE_variant_field(" + s + ", "
+                   + std::to_string(i) + ");\n";
         expr(al.body, d);
         out += "  }\n";
         first = false;
@@ -426,8 +492,9 @@ struct Emitter
           names += cstr(f.name) + ", ";
           vals += atom(f.val) + ", ";
         }
-        v = "THxRT_struct(" + cstr(m.name) + ", " + std::to_string(m.fields.size())
-            + ", " + names + "}, " + vals + "})";
+        v = "THxRT_struct(" + cstr(m.name) + ", "
+            + std::to_string(m.fields.size()) + ", " + names + "}, " + vals
+            + "})";
       }
       finish(v, d);
     }
@@ -460,13 +527,84 @@ struct Emitter
 
     case IR::EKind::Unk: finish("THxRT_unk()", d); break;
 
-    case IR::EKind::Handle:
     case IR::EKind::Extern:
+    {
+      // A foreign binding: yield a curried foreign value whose wrapper is
+      // emitted by emit_externs. Its arity is the declared arg count (unit
+      // slots included -- they are dropped at the call, like the interpreter).
+      auto  &x   = std::get<IR::Extern>(e->as);
+      size_t idx = externs.size();
+      externs.push_back(&x);
+      finish("THxRT_extern(" + std::to_string(idx) + ", "
+               + std::to_string(x.arg_types.size()) + ")",
+             d);
+    }
+    break;
+
+    case IR::EKind::Handle:
       // Rejected by CC::unsupported before emit is ever called.
       UT_FAIL_MSG("%s",
-                  "CC: effect/FFI node reached codegen (unsupported gate "
-                  "should have caught it)");
+                  "CC: effect node reached codegen (unsupported gate should "
+                  "have caught it)");
       break;
+    }
+  }
+
+  // Emit one foreign-call wrapper per collected extern: it fetches the symbol
+  // once via THx_dlsym, marshals the saturated args to C, makes the direct
+  // typed call, and marshals the result back. Call after all code is emitted.
+  void
+  emit_externs()
+  {
+    for (size_t i = 0; i < externs.size(); ++i)
+    {
+      const IR::Extern &e    = *externs[i];
+      std::string       ret  = std::string(e.ret_type);
+      std::string       cret = c_type(ret, true);
+
+      // C types of the non-unit args, and their positions in the args[] array.
+      std::vector<std::string> cargs;
+      std::vector<size_t>      pos;
+      for (size_t j = 0; j < e.arg_types.size(); ++j)
+      {
+        std::string t(e.arg_types[j]);
+        if (t == OP::TY_UNIT) continue; // `{}` arg: not passed
+        cargs.push_back(c_type(t, false));
+        pos.push_back(j);
+      }
+      std::string proto;
+      for (size_t k = 0; k < cargs.size(); ++k)
+        proto += (k ? ", " : "") + cargs[k];
+      if (proto.empty()) proto = "void";
+
+      std::string id = std::to_string(i);
+      out += "static Value* THx_extern_" + id + "(Value** args) {\n";
+      out += "  (void)args;\n";
+      out += "  static " + cret + " (*fn)(" + proto + ") = 0;\n";
+      out += "  if (!fn) fn = (" + cret + "(*)(" + proto + "))THx_dlsym("
+             + cstr(e.lib) + ", " + cstr(e.symbol) + ");\n";
+
+      std::string callargs;
+      for (size_t k = 0; k < pos.size(); ++k)
+      {
+        std::string t(e.arg_types[pos[k]]);
+        std::string a = "a" + std::to_string(k);
+        out += "  " + cargs[k] + " " + a + " = "
+               + marshal_arg(t, "args[" + std::to_string(pos[k]) + "]") + ";\n";
+        callargs += (k ? ", " : "") + a;
+      }
+
+      if (ret == OP::TY_UNIT)
+      {
+        out += "  fn(" + callargs + ");\n";
+        out += "  return THxRT_unk();\n";
+      }
+      else
+      {
+        out += "  " + cret + " r = fn(" + callargs + ");\n";
+        out += "  " + marshal_ret(ret, "r") + "\n";
+      }
+      out += "}\n\n";
     }
   }
 
@@ -511,6 +649,52 @@ unsupported(
   return r.reason;
 }
 
+namespace
+{
+
+// Does this expression (transitively) contain a foreign binding? Externs nest
+// only in Let/Case bodies (aggregate fields are atoms, which cannot hold one).
+bool
+has_extern(
+  const IR::Expr *e)
+{
+  switch (IR::ekind(e))
+  {
+  case IR::EKind::Extern: return true;
+  case IR::EKind::Let:
+  {
+    auto &l = std::get<IR::Let>(e->as);
+    return has_extern(l.rhs) || has_extern(l.body);
+  }
+  case IR::EKind::Case:
+  {
+    auto &c = std::get<IR::Case>(e->as);
+    for (const IR::Alt &a : c.alts)
+      if (has_extern(a.body)) return true;
+    return has_extern(c.deflt);
+  }
+  case IR::EKind::Ret:
+  case IR::EKind::App:
+  case IR::EKind::MkStruct:
+  case IR::EKind::Field:
+  case IR::EKind::MkVariant:
+  case IR::EKind::Handle:
+  case IR::EKind::Unk      : return false;
+  }
+  return false;
+}
+
+} // namespace
+
+bool
+uses_ffi(
+  const IR::Program &prog)
+{
+  for (const IR::Code &c : prog.codes)
+    if (has_extern(c.body)) return true;
+  return false;
+}
+
 std::string
 emit(
   const IR::Program &prog, UT::Vu entry, bool entry_takes_arg)
@@ -518,8 +702,9 @@ emit(
   Emitter em{ prog };
 
   em.out += "/* Generated by the Thrax CC backend. Do not edit.\n";
-  em.out += " * Self-contained -- the runtime is inlined below. Build: cc -O2 "
-            "prog.c -o prog */\n\n";
+  em.out += " * Self-contained -- the runtime is inlined below. Build:\n";
+  em.out += " *   cc -O2 prog.c -o prog        (add -ldl if it uses @extern) */"
+            "\n\n";
   // The whole C runtime, baked into the compiler and emitted inline, so the
   // generated program is a single self-contained translation unit.
   em.out += RUNTIME_C;
@@ -532,13 +717,46 @@ emit(
   em.out += "\n";
   for (size_t i = 0; i < prog.codes.size(); ++i) em.emit_code(i);
 
+  // Foreign-call machinery (only if the program uses `@extern`): the symbol
+  // resolver, then one wrapper per call site. Emitted after the code (which
+  // only references THxRT_extern, in the runtime) and before the table below.
+  if (!em.externs.empty())
+  {
+    em.out += "#include <dlfcn.h>\n";
+    em.out += "#include <stdint.h>\n"; // intptr_t, for Ptr marshalling
+    em.out += "static void* THx_dlsym(const char* lib, const char* sym) {\n";
+    em.out += "  void* h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL);\n";
+    em.out += "  if (!h) THxCHECK_FAILF(\"FFI: cannot open library '%s': %s\", "
+              "lib, dlerror());\n";
+    em.out += "  void* f = dlsym(h, sym);\n";
+    em.out
+      += "  if (!f) THxCHECK_FAILF(\"FFI: symbol '%s' not found in '%s'\", "
+         "sym, lib);\n";
+    em.out += "  return f;\n}\n\n";
+    em.emit_externs();
+  }
+
+  // The foreign-wrapper table the runtime dispatches T_EXTERN through (always
+  // defined; a 1-element dummy when there are no foreign calls).
+  if (em.externs.empty())
+    em.out += "ExternFn THxRT_extern_table[1] = { 0 };\n";
+  else
+  {
+    em.out += "ExternFn THxRT_extern_table[] = {\n";
+    for (size_t i = 0; i < em.externs.size(); ++i)
+      em.out += "  THx_extern_" + std::to_string(i) + ",\n";
+    em.out += "};\n";
+  }
+  em.out += "const size_t THxRT_extern_count = "
+            + std::to_string(em.externs.size()) + ";\n\n";
+
   // The dispatch table the runtime calls back through.
   em.out += "CodeFn THxRT_code_table[] = {\n";
   for (size_t i = 0; i < prog.codes.size(); ++i)
     em.out += "  THx_code_" + std::to_string(i) + ",\n";
   em.out += "};\n";
-  em.out += "const size_t THxRT_code_count = " + std::to_string(prog.codes.size())
-            + ";\n\n";
+  em.out += "const size_t THxRT_code_count = "
+            + std::to_string(prog.codes.size()) + ";\n\n";
 
   // Globals: name -> CAF code index, lazily forced and memoized (matches
   // IT::glob). Stable iteration order for reproducible output.
@@ -591,7 +809,8 @@ emit(
   if (entry.size() > 0)
   {
     em.out += "  Value* e = THxRT_glob(" + cstr(entry) + ");\n";
-    if (entry_takes_arg) em.out += "  e = THxRT_apply(e, THxRT_str(\"\", 0));\n";
+    if (entry_takes_arg)
+      em.out += "  e = THxRT_apply(e, THxRT_str(\"\", 0));\n";
     em.out += "  return (int)THxVALUE_as_int(e);\n";
   }
   else

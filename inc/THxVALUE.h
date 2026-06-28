@@ -6,13 +6,13 @@
  *      already-evaluated value.
  *
  * Generated code NEVER reads a union arm directly. Every access goes through a
- * checked accessor below, which asserts the tag (and bounds) via THxCHECK_ASSERT
- * first. This keeps the boxed representation honest and makes a codegen bug
- * abort with a precise message instead of corrupting memory.
+ * checked accessor below, which asserts the tag (and bounds) via
+ * THxCHECK_ASSERT first. This keeps the boxed representation honest and makes a
+ * codegen bug abort with a precise message instead of corrupting memory.
  *
  * The `rc` field is RESERVED for the future reference-counting engine
- * (ext/THxMEMRC.c); the bump allocator leaves it untouched. See
- * doc/native-backend.md for the growth plan (ref counting, effects, FFI).
+ * (src/THxMEMRC.c); the bump allocator leaves it untouched. See
+ * doc/native-backend.md for the growth plan (ref counting, effects).
  *-----------------------------------------------------------------------------*/
 
 #ifndef THxVALUE_H_
@@ -21,8 +21,9 @@
 #include <stddef.h>
 
 /* The value discriminant. Adding a tag here is the head of a domino: the
- * accessors, THxVALUE_tag_name, THxRT_apply's dispatch and the codegen all switch on
- * it, so an unhandled case trips -Wswitch (-Werror) or a THxCHECK_FAIL. */
+ * accessors, THxVALUE_tag_name, THxRT_apply's dispatch and the codegen all
+ * switch on it, so an unhandled case trips -Wswitch (-Werror) or a
+ * THxCHECK_FAIL. */
 typedef enum
 {
   T_INT,     /* machine integer (also Unit, booleans 0/1) */
@@ -32,6 +33,7 @@ typedef enum
   T_VARIANT, /* sum value: type name + constructor tag + payload */
   T_CLOS,    /* closure: an IR code index + captured environment */
   T_BUILTIN, /* a (possibly partially applied) built-in operator */
+  T_EXTERN,  /* a (possibly partially applied) foreign C function (FFI) */
   T_UNK      /* the unknown/placeholder value (recursive-let box, unit) */
 } Tag;
 
@@ -81,6 +83,13 @@ struct Value
       size_t      nargs;
       Value     **args;
     } bi; /* T_BUILTIN */
+    struct
+    {
+      int     idx; /* index into the generated THxRT_extern_table */
+      size_t  arity;
+      size_t  nargs;
+      Value **args;
+    } ext; /* T_EXTERN */
   } u;
 };
 
@@ -98,6 +107,9 @@ double    THxVALUE_as_num(Value *v); /* T_REAL, or T_INT coerced to double */
  */
 Value *THxVALUE_local(Value **locals, size_t n, size_t i);
 Value *THxVALUE_env(Value **env, size_t n, size_t i);
+
+/* T_STR byte pointer (NUL-terminated), for passing to foreign functions. */
+char *THxVALUE_str(Value *v);
 
 /* T_STRUCT field by name (fails, naming the field, if absent). */
 Value *THxVALUE_field(Value *rec, const char *name);
