@@ -7,8 +7,8 @@ Ttest  = bin/tst_all
 # The C runtime, amalgamated into a generated header and baked into the compiler
 # so emitted programs are self-contained (see the $(GEN_HDR) rule, CC.cpp).
 # Headers first (inclusion order), then sources.
-RT_FILES = inc/THxCHECK.h inc/THxVALUE.h inc/THxMEM.h inc/THxRT.h \
-           src/THxCHECK.c src/THxVALUE.c src/THxMEMBUMP.c src/THxRT.c
+RT_FILES = inc/THxCHECK.h inc/THxVALUE.h inc/THxMEM.h inc/THxRT.h inc/THxK.h \
+           src/THxCHECK.c src/THxVALUE.c src/THxMEMBUMP.c src/THxRT.c src/THxK.c
 GEN_HDR  = inc/THxRTxAMALG.hpp
 
 ifdef THRAX_3RD_PARTY_ON

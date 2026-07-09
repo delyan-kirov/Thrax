@@ -23,8 +23,12 @@ prepends to every emitted program. So a generated `.c` needs no runtime on disk:
 
 The IR was designed for this: closure conversion splits every variable into
 `Local` (activation slot), `Env` (closure-record field) and `Glob` (top level),
-and the program is in A-normal form — so each IR `Code` becomes one C function
-and the ANF maps almost 1:1 onto C statements.
+and the program is in A-normal form — so an IR `Code` maps almost 1:1 onto C
+statements. Execution is driven by a **reified-K (CEK) machine in the runtime**
+(`src/THxK.c`), a C port of the interpreter's abstract machine: the continuation
+is an explicit heap stack, so algebraic-effect handlers can capture and splice
+the delimited continuation between a prompt and a `perform` — something compiled
+code on the native C stack cannot do. See *Algebraic effects* below.
 
 ## Usage
 
@@ -40,9 +44,10 @@ Or build a whole project in one step (writes `<dir>/bin/<name>.{ir,c}` + exe):
 thrax --build dat/foo_project && ./dat/foo_project/bin/foo_project
 ```
 
-`make native-test` emits, compiles and runs every effect-free example in `dat/`
-and checks each exits 0 (the same oracle as the interpreter smoke test — see
-*Verification*).
+`make native-test` emits, compiles and runs every example in `dat/` and checks
+each exits 0 (the same oracle as the interpreter smoke test — see
+*Verification*). All 22 examples — including the five that use algebraic effects
+— compile and run natively.
 
 ## Value representation
 
@@ -50,7 +55,9 @@ A runtime value is a pointer-boxed tagged union, `Value` (`inc/THxVALUE.h`),
 mirroring the interpreter's `IT::Value`. Evaluation is strict (no thunks). Tags:
 `T_INT`, `T_REAL`, `T_STR` (also Array bytes), `T_STRUCT`, `T_VARIANT`,
 `T_CLOS` (an IR code index + captured env), `T_BUILTIN` (a curried operator),
-`T_UNK` (placeholder / unit).
+`T_EXTERN` (a curried foreign call), `T_OP` (an effect operation),
+`T_RESUMP` (a captured continuation / resumption), `T_DEFER` (the `defer`
+intrinsic, curried over its two thunks), `T_UNK` (placeholder / unit).
 
 **Generated code never reads a union arm directly.** Every access goes through a
 *checked accessor* (`THxVALUE_as_int`, `THxVALUE_local`, `THxVALUE_env`, `THxVALUE_field`,
@@ -61,47 +68,64 @@ corrupting memory.
 
 ## How the lowering works (`src/CC.cpp`)
 
-- **One C function per IR `Code`**: `static Value* THx_code_<i>(Value** env,
-  Value* arg)`. Locals live in a zero-initialized `Value* locals[nlocals]`.
-- **Atoms** become single C expressions: `Local i`→`THxVALUE_local(...)`, `Env
-  i`→`THxVALUE_env(...)`, `Glob n`→`THxRT_glob("n")`, literals→`THxRT_int/THxRT_real/THxRT_str`,
-  `MkClosure`→`THxRT_closure(code, captures, n)`.
-- **`Ret`/`MkStruct`/`Field`/`MkVariant`/`Unk`** deliver one expression to the
-  destination (a `return`, or an assignment to a let/case result variable).
-- **`Let`** binds the slot to a placeholder `THxRT_unk()` box, builds the rhs (whose
-  closures may capture the box), then copies the value into the box — the same
-  back-patch the interpreter does (`IT.cpp` `KRet`), so recursive `let` works.
-- **`App`** in tail position emits `return THxRT_tailcall(fn, arg)`; otherwise
-  `THxRT_apply(fn, arg)`.
+The IR is lowered to **block functions** driven by the CEK machine. A block runs
+straight-line C and ends by calling exactly one **terminator**; the driver
+(`src/THxK.c`) acts on it. An activation's locals/env live in a heap `Frame`
+(not C autos), so a block can be re-entered after a suspension.
+
+- **Block**: `static void blk_<n>(Frame* fr, Value* in)`. A `Code`'s entry block
+  is its first; **suspension points spawn continuation blocks** (see `Let`).
+- **Atoms** become single C expressions: `Local i`→`THxVALUE_local(fr->locals,
+  …)`, `Env i`→`THxVALUE_env(fr->env, …)`, `Glob n`→`THxRT_glob("n")` (or
+  `THxK_op("Eff.op")` for an effect operation, `THxK_defer()` for `defer`),
+  literals→`THxRT_int/…`, `MkClosure`→`THxRT_closure(code, captures, n)`.
+- **Terminators**: `THxK_ret(v)` delivers a value up the continuation;
+  `THxK_tailcall(fn,arg)` tail-applies (constant stack); `THxK_apply(fr,fn,arg,
+  cont,slot)` non-tail-applies, pushing a return continuation to block `cont`;
+  `THxK_jump(cont)` transfers locally (a case join); `THxK_handle(…)` installs a
+  handler.
+- **`Ret`/`MkStruct`/`Field`/`MkVariant`/`Unk`/`Extern`** compute one value
+  expression and `deliver` it to the block's sink (a `THxK_ret`, or a slot
+  back-patch + `THxK_jump`).
+- **`Let`** places a placeholder box in the slot (`THxK_setbox`) so recursive
+  closures can capture it, then: if the rhs **suspends** (a non-tail `App` or a
+  `Handle`), the body becomes a fresh continuation block and the rhs delivers
+  into the slot (the driver back-patches the box on return, exactly as `IT.cpp`
+  `KRet`); otherwise the pure rhs is computed into the slot and the body is
+  emitted **inline** in the same block (the pure path stays flat).
+- **`App`** tail → `THxK_tailcall`; non-tail (always a let rhs, by ANF) →
+  `THxK_apply` with the let body as its continuation block.
 - **`Case`** evaluates the scrutinee once, then an if/else chain on
-  `THxVALUE_as_int` / `THxVALUE_as_num` / `strcmp(THxVALUE_ctor(...))`; a `Con` arm binds its
-  payload into the local slots via `THxVALUE_variant_field`.
-- **Globals** are lazy, memoized CAFs: `THxRT_glob` runs the nullary code on
-  first demand and caches it (cyclic value globals abort), exactly as
-  `IT::glob`. Unknown names fall through to `THxRT_builtin` (a built-in operator
-  key like `+@Int`).
+  `THxVALUE_as_int` / `THxVALUE_as_num` / `strcmp(THxVALUE_ctor(...))`; a `Con`
+  arm binds its payload into the frame slots via `THxVALUE_variant_field`; each
+  branch delivers to the same sink.
+- **Globals** are lazy, memoized CAFs: `THxRT_glob` runs the nullary code
+  (`THxK_run_code`) on first demand and caches it (cyclic value globals abort),
+  exactly as `IT::glob`. Unknown names fall through to `THxRT_builtin`.
 - **Entry**: `main` forces every global (mirroring the smoke test) and then, if
-  the program has an entry point, runs it and returns its `Int` as the exit
-  code.
+  the program has an entry point, applies it (`THxK_call`) and returns its `Int`
+  as the exit code.
 
-### Tail calls
+### Tail calls and deep recursion
 
-The runtime trampoline (`THxRT_apply` / `THxRT_tailcall` / `THxRT_force_code` in
-`src/THxRT.c`) makes all tail calls — including mutual recursion — run in
-**constant stack** (verified at 50M iterations). A tail call parks `(fn, arg)`
-in bounce registers and returns a sentinel; the enclosing `THxRT_apply` loop picks
-it up.
+The driver applies closures by allocating a heap `Frame` and jumping to the
+callee's entry block, never recursing on the C stack. A `THxK_tailcall` reuses no
+KRet, so tail calls — including mutual recursion — run in **constant stack**; a
+non-tail `THxK_apply` pushes one `KRet` on the heap continuation stack, so **deep
+non-tail recursion grows the heap, not the C stack** (this lifts the old v1
+stack-overflow limit).
 
 ## The "exploreable" / domino-failure discipline
 
 The backend is built so that adding or removing an IR node, a value tag or a
 built-in breaks **every** dependent path loudly:
 
-- C++ walkers (`CC.cpp`, the `EnvScan` / `Reject` / `Emitter` visitors) switch
-  over `IR::EKind` / `AKind` / `AltKind` with **no `default`**, so a new IR
-  variant fails `-Wswitch`/`-Werror` until handled; impossible arms use
-  `UT_FAIL_MSG`.
-- The C runtime switches over `Tag` with no `default` and ends in a
+- The `CC.cpp` `Emitter` visitors (`atom` / `value_expr` / `has_suspension` /
+  `emit_expr` / `has_extern`) switch over `IR::EKind` / `AKind` / `AltKind` with
+  **no `default`**, so a new IR variant fails `-Wswitch`/`-Werror` until handled;
+  impossible arms use `UT_FAIL_MSG`.
+- The C runtime switches over `Tag` (`THxK.c` `do_apply`, `THxVALUE_tag_name`)
+  and over the continuation-frame kind with no `default` and ends in a
   `THxCHECK_FAIL`; the built-in *arity table* and *dispatch chain*
   (`src/THxRT.c`) list the same keys, and a mismatch trips a `THxCHECK_FAIL`.
 
@@ -110,12 +134,13 @@ built-in breaks **every** dependent path loudly:
 Atoms `Local`/`Env`/`Glob`/`LitI`/`LitR`/`LitS`/`MkClosure`; expressions `Ret`,
 `Let` (incl. recursive), `App` (with TCO), `Case` (Int/Real/Con + payload bind +
 default), `MkStruct`, `Field`, `MkVariant`, `Unk`; lazy-memoized global CAFs;
-built-in Int/Real operators and the `%array` primitive; and **C FFI** (`@extern`,
-below).
+built-in Int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
+below); and **algebraic effects** — handlers (`do`/`ctl`), operations,
+first-class resumptions, and `defer` (see below).
 
-This is the strict subset plus FFI — the only thing the backend rejects today is
-algebraic effects, so 17 of the 22 `dat/` examples compile and run (the other 5
-use effects).
+The backend now lowers the whole IR: **all 22 `dat/` examples compile and run
+natively**, matching the interpreter. `CC::unsupported` no longer rejects
+anything (it is retained as a fallback seam).
 
 ### Foreign calls (FFI)
 
@@ -135,10 +160,42 @@ the runtime dispatches `T_EXTERN` through; the value side mirrors builtins
 thrax --emit-c FILE.thx > prog.c && cc -O2 prog.c -ldl -o prog
 ```
 
-## Missing features and where they plug in
+## Algebraic effects (the CEK driver)
 
-`CC::unsupported` rejects a program up front (naming the feature) when it uses
-something below, so the user is pointed back to the interpreter.
+Handlers/`perform`/`resume`/`defer` work by capturing and splicing slices of a
+**reified continuation stack** — the same design as the interpreter (`IT.cpp`),
+ported to C in `src/THxK.c` (option 1 of the two routes originally sketched
+here). The driver owns a single heap continuation stack `kont` of `KFrame`s
+(`K_RET` / `K_PROMPT` / `K_DEFER` / `K_THUNKRET` / `K_AFTERCLAUSE`) and drives
+the generated block functions:
+
+- **`do body ctl k …`** lowers to `THxK_handle`, which pushes a `K_PROMPT`
+  holding the (evaluated) clause closures and the value clause `els`, then runs
+  the body block under it. A handler clause is the 2-parameter `Code`
+  (`IR::conv_clause`): op argument in slot 0, resumption `k` in slot 1.
+- **Performing** an operation (`do_apply` on a `T_OP`) searches down for the
+  nearest prompt with a clause, captures the `kont` slice from that prompt to
+  here (**including** the prompt → deep handler) into a `THxK_Resump`, truncates
+  `kont`, pushes a `K_AFTERCLAUSE`, and runs the clause below the prompt.
+- **Resuming** (`do_apply` on a `T_RESUMP`) splices the captured slice back and
+  delivers the value. Resumptions are **affine**: a second use aborts
+  (`seg->used`).
+- **`defer cleanup do body`** lowers to the `%finally` intrinsic (`T_DEFER`,
+  curried over two thunks); it installs a `K_DEFER` marker that runs the cleanup
+  on normal completion, on abort (the captured continuation is discarded — the
+  `K_AFTERCLAUSE` runs the pending cleanups with enclosing handlers still
+  installed), or when a stored continuation later completes.
+
+The interpreter distinguishes a **stored** resumption (a coroutine that stashed
+`k`) from a **discarded** one via a `shared_ptr` use-count; the C runtime has no
+refcount, so instead `THxK_mark_escape` flags a `THxK_Resump` when it is copied
+into a closure capture or a struct/variant field (the value constructors in
+`src/THxRT.c` call it). A stored/escaped `k`'s `defer` cleanups are not finalized
+at the clause boundary — they run on later completion. (Limitation, inherited
+from the interpreter: a stored continuation dropped without ever resuming never
+runs its `defer`.)
+
+## Missing features and where they plug in
 
 ### Memory: ref counting *(seam in place)*
 
@@ -151,28 +208,11 @@ To add ref counting: provide `src/THxMEMRC.c` implementing `THxMEM_alloc`
 recursively releasing children), and link it instead of the bump engine. Then
 `CC` must emit `THxMEM_retain`/`THxMEM_release` at the binding/return/overwrite points
 (every accessor result that is stored or returned is retained; every local that
-goes out of scope is released). Recursive-`let` cycles need the back-patch box
-plus a *weak* self-slot, mirroring the interpreter's `VRec` (`ITxDATA.hpp`).
-This is why the lowering already routes all allocation through `THxMEM.h`.
-
-### Algebraic effects *(documented; the big one)*
-
-The interpreter implements handlers/`perform`/`resume`/`defer` by capturing and
-splicing slices of a **reified continuation stack** (`IT.cpp`: `kont`,
-`KPrompt`/`KDefer`/`KAfterClause`, `Resumption`). Compiled code on the native C
-stack cannot capture a continuation, so this needs one of:
-
-1. an explicit K-stack runtime in `src/` + `inc/` — a C port of the `IT` machine's `kont`
-   and `Resumption` machinery, with `CC` lowering bodies into steppable frames; or
-2. CPS-converting the `CC` output (every function takes a continuation; a
-   trampoline drives it).
-
-Work items either way: codegen for `Handle`, the effect-operation `Glob`
-(`prog.operations`), `Resump`, and `%defer`; the 2-parameter handler-clause
-`Code` (`IR::conv_clause`) the backend currently rejects. The bounce-register
-trampoline (option 1's substrate) and the `Value`/accessor layer are already in
-place. Note: effects also subsume the deep-non-tail-recursion limit below, since
-an explicit stack removes the dependence on the C stack.
+goes out of scope is released). Since data is strict and pure it is acyclic, so
+the recursive-`let` back-patch box needs no weak self-slot (unlike the
+interpreter's `VRec`); this is why the lowering routes all allocation through
+`THxMEM.h`. The `kont` stack and captured resumptions currently use `malloc` and
+are never freed either.
 
 ### Unboxing *(optimization)*
 
@@ -181,14 +221,14 @@ unboxed in registers for true low-level performance.
 
 ## Known v1 limitations
 
-- No algebraic effects (clean diagnostic; `defer` counts as an effect, so
-  `dat/io_example` is still rejected despite FFI now working).
+- Resumptions are **affine** (resume at most once); a second use aborts at
+  runtime. A stored continuation dropped without ever resuming never runs its
+  `defer` (inherited from the interpreter).
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).
-- Bump allocator never frees — long-running loops leak.
-- Deep **non-tail** recursion uses the C stack and can overflow (tail recursion
-  is constant-stack). Lifted by the effects/explicit-stack work.
+- Bump allocator (and the `malloc`'d `kont`/resumptions) never free — long-
+  running loops leak.
 - Values are pointer-boxed, not register-unboxed.
 
 ## Verification
@@ -200,5 +240,9 @@ this exactly, so the equivalence is:
 
 > interpreter smoke test **OK**  ⇔  compiled binary **exits 0**
 
-`make native-test` checks this for every effect-free `dat/*.thx` (and confirms
-the effectful ones are cleanly rejected).
+`make native-test` checks this for every `dat/*.thx` (all 22, effects included);
+`make test` runs the interpreter side. The effect examples (EFFECTS, FINALLY,
+COROUTINES, PIPES, EFFECT_OVERLOAD) are validated to produce the **same values**
+natively as under the interpreter (exceptions 42/-1, generator 42, state 21,
+`defer` 103/9/6/2), and the emitted binaries are valgrind-clean of invalid
+reads/writes.

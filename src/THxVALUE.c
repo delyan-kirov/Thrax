@@ -25,6 +25,9 @@ THxVALUE_tag_name(
   case T_CLOS   : return "Closure";
   case T_BUILTIN: return "Builtin";
   case T_EXTERN : return "Extern";
+  case T_OP     : return "Op";
+  case T_RESUMP : return "Resumption";
+  case T_DEFER  : return "Defer";
   case T_UNK    : return "Unk";
   }
   THxCHECK_FAIL("THxVALUE_tag_name: unhandled tag");

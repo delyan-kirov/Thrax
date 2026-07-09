@@ -7,13 +7,14 @@
  *      interpreter: it consumes exactly the same IR (DR::run_program feeds IT;
  *      DR::emit_c feeds CC).
  *
- * Supports the strict subset plus C FFI (`@extern` -- direct typed foreign
- * calls resolved via dlsym; see emit_externs). Programs using algebraic effects
- * (handlers / operations / resumptions / `defer`) are rejected up front by
- * `unsupported`, which names the offending feature so the driver can point the
- * user back at the interpreter. A program that makes foreign calls links with
- * `-ldl` (see `uses_ffi`). See doc/native-backend.md for the supported surface
- * and the seams for ref counting and effects.
+ * Lowers the strict subset, C FFI (`@extern` -- direct typed foreign calls
+ * resolved via dlsym; see emit_externs), AND algebraic effects (handlers /
+ * operations / resumptions / `defer`), which run on the CEK driver in the
+ * runtime (src/THxK.c): the IR becomes block functions whose continuation is an
+ * explicit heap stack, so a handler can capture and splice the delimited
+ * continuation. A program that makes foreign calls links with `-ldl` (see
+ * `uses_ffi`). `unsupported` is now a vestigial seam (returns std::nullopt). See
+ * doc/native-backend.md for the supported surface and the ref-counting seam.
  *-----------------------------------------------------------------------------*/
 
 #ifndef CC_HEADER_
@@ -28,9 +29,10 @@
 namespace CC
 {
 
-// If `prog` uses a feature the native backend cannot yet compile (effects,
-// FFI), return a human-readable reason; otherwise std::nullopt. The driver
-// prints the reason and falls back to suggesting the interpreter.
+// If `prog` uses a feature the native backend cannot yet compile, return a
+// human-readable reason; otherwise std::nullopt. The backend now lowers the
+// whole IR (subset + FFI + effects), so this currently always returns nullopt;
+// it is retained as the fallback seam and DR still honours a non-null reason.
 std::optional<std::string> unsupported(const IR::Program &prog);
 
 // True if `prog` makes any foreign (`@extern`) call. The emitted program then

@@ -1,17 +1,23 @@
 /*-------------------------------------------------------------------------------
  *\file CC.cpp
- *\info Implementation of the C-code generation backend (see CC.hpp). Each IR
- *      Code becomes one C function `THx_code_<i>(env, arg)`; the ANF
- * structure maps almost one-to-one onto C statements. Tail applications emit
- *      `THxRT_tailcall` (constant stack via the runtime trampoline); non-tail
- * ones emit `THxRT_apply`. Every value read goes through a checked accessor, so
- * the generated program fails loudly on a codegen bug rather than corrupting
- *      memory.
+ *\info Implementation of the C-code generation backend (see CC.hpp). The IR is
+ *      lowered to BLOCK FUNCTIONS driven by the CEK machine in the runtime
+ *      (src/THxK.c): each block runs straight-line C (atoms, pure lets, case
+ *      branching) and ends by calling exactly one TERMINATOR (THxK_ret /
+ *      THxK_tailcall / THxK_apply / THxK_jump / THxK_handle). A non-tail
+ *      application is a suspension point: the rest of the computation becomes a
+ *      continuation block, so the delimited continuation a handler captures is a
+ *      pure heap object rather than live C-stack frames.
  *
- * Domino discipline: the IR walkers switch over IR::EKind / AKind / AltKind
- * with NO default, so adding an IR variant fails to compile here
- * (-Wswitch/-Werror) until it is handled; genuinely-unreachable arms use
- * UT_FAIL_MSG.
+ * The emitter is continuation-passing: `emit_expr(e, sink)` lowers `e` so its
+ * value reaches `sink` -- either delivered up the continuation (RET) or written
+ * to a frame slot before jumping to a continuation block (SLOT). Pure lets are
+ * still emitted inline (as before); only suspending sub-expressions split into
+ * fresh blocks.
+ *
+ * Domino discipline: the IR walkers switch over IR::EKind / AKind / AltKind with
+ * NO default, so adding an IR variant fails to compile here (-Wswitch/-Werror)
+ * until it is handled; genuinely-unreachable arms use UT_FAIL_MSG.
  *-----------------------------------------------------------------------------*/
 
 #include "CC.hpp"
@@ -82,174 +88,6 @@ cdbl(
   return buf;
 }
 
-// Max `Env i` index used in a code body, +1 -- the closure env length, used as
-// the bound passed to THxVALUE_env. Matches the MkClosure capture count by
-// construction (IR::conv_fun assigns env slots densely).
-struct EnvScan
-{
-  size_t max1 = 0; // one past the highest Env index seen
-  void
-  atom(
-    const IR::Atom *a)
-  {
-    switch (IR::akind(a))
-    {
-    case IR::AKind::Env:
-    {
-      size_t i = std::get<IR::Env>(a->as).i;
-      if (i + 1 > max1) max1 = i + 1;
-    }
-    break;
-    case IR::AKind::Clos:
-      for (const IR::Atom *c : std::get<IR::MkClosure>(a->as).captures) atom(c);
-      break;
-    case IR::AKind::Local:
-    case IR::AKind::Glob:
-    case IR::AKind::LitI:
-    case IR::AKind::LitR:
-    case IR::AKind::LitS : break;
-    }
-  }
-  void
-  expr(
-    const IR::Expr *e)
-  {
-    switch (IR::ekind(e))
-    {
-    case IR::EKind::Ret: atom(std::get<IR::Ret>(e->as).a); break;
-    case IR::EKind::Let:
-    {
-      auto &l = std::get<IR::Let>(e->as);
-      expr(l.rhs);
-      expr(l.body);
-    }
-    break;
-    case IR::EKind::App:
-    {
-      auto &a = std::get<IR::App>(e->as);
-      atom(a.fn);
-      atom(a.arg);
-    }
-    break;
-    case IR::EKind::Case:
-    {
-      auto &c = std::get<IR::Case>(e->as);
-      atom(c.scrut);
-      for (const IR::Alt &al : c.alts) expr(al.body);
-      expr(c.deflt);
-    }
-    break;
-    case IR::EKind::MkStruct:
-      for (const IR::FieldA &f : std::get<IR::MkStruct>(e->as).fields)
-        atom(f.val);
-      break;
-    case IR::EKind::Field: atom(std::get<IR::Field>(e->as).rec); break;
-    case IR::EKind::MkVariant:
-      for (const IR::Atom *f : std::get<IR::MkVariant>(e->as).fields) atom(f);
-      break;
-    case IR::EKind::Handle:
-    case IR::EKind::Extern:
-    case IR::EKind::Unk   : break;
-    }
-  }
-};
-
-size_t
-env_size(
-  const IR::Code &c)
-{
-  EnvScan s;
-  s.expr(c.body);
-  return s.max1;
-}
-
-/*------------------------------------------------------------------------------
- *\UNSUPPORTED-FEATURE SCAN
- *-----------------------------------------------------------------------------*/
-
-struct Reject
-{
-  const IR::Program         &prog;
-  std::optional<std::string> reason;
-
-  void
-  set(
-    std::string r)
-  {
-    if (!reason) reason = std::move(r);
-  }
-
-  void
-  atom(
-    const IR::Atom *a)
-  {
-    switch (IR::akind(a))
-    {
-    case IR::AKind::Glob:
-    {
-      std::string n(std::get<IR::Glob>(a->as).name);
-      if (n == OP::DEFER)
-        set("`defer` cleanup");
-      else if (prog.operations.count(n))
-        set("effect operation `" + n + "`");
-    }
-    break;
-    case IR::AKind::Clos:
-      for (const IR::Atom *c : std::get<IR::MkClosure>(a->as).captures) atom(c);
-      break;
-    case IR::AKind::Local:
-    case IR::AKind::Env:
-    case IR::AKind::LitI:
-    case IR::AKind::LitR:
-    case IR::AKind::LitS : break;
-    }
-  }
-
-  void
-  expr(
-    const IR::Expr *e)
-  {
-    switch (IR::ekind(e))
-    {
-    case IR::EKind::Ret: atom(std::get<IR::Ret>(e->as).a); break;
-    case IR::EKind::Let:
-    {
-      auto &l = std::get<IR::Let>(e->as);
-      expr(l.rhs);
-      expr(l.body);
-    }
-    break;
-    case IR::EKind::App:
-    {
-      auto &a = std::get<IR::App>(e->as);
-      atom(a.fn);
-      atom(a.arg);
-    }
-    break;
-    case IR::EKind::Case:
-    {
-      auto &c = std::get<IR::Case>(e->as);
-      atom(c.scrut);
-      for (const IR::Alt &al : c.alts) expr(al.body);
-      expr(c.deflt);
-    }
-    break;
-    case IR::EKind::MkStruct:
-      for (const IR::FieldA &f : std::get<IR::MkStruct>(e->as).fields)
-        atom(f.val);
-      break;
-    case IR::EKind::Field: atom(std::get<IR::Field>(e->as).rec); break;
-    case IR::EKind::MkVariant:
-      for (const IR::Atom *f : std::get<IR::MkVariant>(e->as).fields) atom(f);
-      break;
-    case IR::EKind::Handle: set("effect handlers (`do`/`ctl`)"); break;
-    case IR::EKind::Extern:
-      break; // foreign calls are supported (see emit_externs)
-    case IR::EKind::Unk: break;
-    }
-  }
-};
-
 /*------------------------------------------------------------------------------
  *\FFI -- Thrax type <-> C ABI for direct foreign calls
  *-----------------------------------------------------------------------------*/
@@ -315,29 +153,37 @@ marshal_ret(
  *\THE EMITTER
  *-----------------------------------------------------------------------------*/
 
-// Where a computed value goes: either returned (tail position) or assigned to a
-// named C variable (the value was demanded as a let-binding / case result).
-struct Dest
+// Where a computed value goes.
+//  - RET  : delivered up the continuation stack (THxK_ret / tailcall).
+//  - SLOT : written into frame `slot` (a let-box back-patch), then control jumps
+//           to continuation block `cont`.
+struct Sink
 {
-  bool        tail;
-  std::string var; // valid iff !tail
+  enum Kind
+  {
+    RET,
+    SLOT
+  } kind;
+  size_t slot = 0; // valid iff SLOT
+  size_t cont = 0; // continuation block id, iff SLOT
 };
 
 struct Emitter
 {
   const IR::Program &prog;
-  std::string        out;
-  size_t             tmp     = 0;
-  size_t             nlocals = 0; // of the code currently being emitted
-  size_t             nenv    = 0;
-  // Each `@extern` site encountered while emitting code, in order; its position
-  // is the index passed to THxRT_extern and the slot in THxRT_extern_table.
-  std::vector<const IR::Extern *> externs;
+  // One entry per emitted block: its full C function text. Filled out of order
+  // (a block is reserved, then set once its body is built), so this is a vector
+  // of finished function definitions indexed by block id.
+  std::vector<std::string>        blocks;
+  std::vector<size_t>             code_entry; // code index -> entry block id
+  std::vector<const IR::Extern *> externs;    // each @extern site, in order
+  size_t                          tmp = 0;
 
   explicit Emitter(
     const IR::Program &p)
       : prog{ p }
   {
+    code_entry.assign(p.codes.size(), 0);
   }
 
   std::string
@@ -345,6 +191,23 @@ struct Emitter
     const char *p)
   {
     return std::string(p) + std::to_string(tmp++);
+  }
+
+  size_t
+  reserve_block()
+  {
+    size_t id = blocks.size();
+    blocks.push_back(std::string());
+    return id;
+  }
+
+  void
+  set_block(
+    size_t id, const std::string &body)
+  {
+    blocks[id] = "static void blk_" + std::to_string(id)
+                 + "(Frame* fr, Value* in) {\n  (void)fr; (void)in;\n" + body
+                 + "}\n\n";
   }
 
   // ---- atoms: each is a single, side-effect-light C expression ----
@@ -355,13 +218,19 @@ struct Emitter
     switch (IR::akind(a))
     {
     case IR::AKind::Local:
-      return "THxVALUE_local(locals, " + std::to_string(nlocals) + ", "
+      return "THxVALUE_local(fr->locals, fr->nlocals, "
              + std::to_string(std::get<IR::Local>(a->as).i) + ")";
     case IR::AKind::Env:
-      return "THxVALUE_env(env, " + std::to_string(nenv) + ", "
+      return "THxVALUE_env(fr->env, fr->nenv, "
              + std::to_string(std::get<IR::Env>(a->as).i) + ")";
     case IR::AKind::Glob:
-      return "THxRT_glob(" + cstr(std::get<IR::Glob>(a->as).name) + ")";
+    {
+      UT::Vu      nm = std::get<IR::Glob>(a->as).name;
+      std::string n(nm);
+      if (n == OP::DEFER) return "THxK_defer()";
+      if (prog.operations.count(n)) return "THxK_op(" + cstr(nm) + ")";
+      return "THxRT_glob(" + cstr(nm) + ")";
+    }
     case IR::AKind::LitI:
       return "THxRT_int(" + std::to_string(std::get<IR::LitI>(a->as).v) + "LL)";
     case IR::AKind::LitR:
@@ -390,171 +259,323 @@ struct Emitter
     return "THxRT_unk()";
   }
 
-  // Deliver a finished value expression to its destination.
-  void
-  finish(
-    const std::string &val, const Dest &d)
-  {
-    if (d.tail)
-      out += "  return " + val + ";\n";
-    else
-      out += "  " + d.var + " = " + val + ";\n";
-  }
-
-  // ---- expressions ----
-  void
-  expr(
-    const IR::Expr *e, const Dest &d)
+  // A single C expression for a value-producing, non-suspending, non-branching
+  // expression (Ret / aggregates / Unk / Extern). Case/Let/App/Handle are
+  // structural and never reach here.
+  std::string
+  value_expr(
+    const IR::Expr *e)
   {
     switch (IR::ekind(e))
     {
-    case IR::EKind::Ret: finish(atom(std::get<IR::Ret>(e->as).a), d); break;
-
-    case IR::EKind::App:
-    {
-      auto       &a   = std::get<IR::App>(e->as);
-      std::string fn  = atom(a.fn);
-      std::string arg = atom(a.arg);
-      if (d.tail)
-        out += "  return THxRT_tailcall(" + fn + ", " + arg + ");\n";
-      else
-        out += "  " + d.var + " = THxRT_apply(" + fn + ", " + arg + ");\n";
-    }
-    break;
-
-    case IR::EKind::Let:
-    {
-      auto       &l   = std::get<IR::Let>(e->as);
-      std::string box = fresh("box");
-      std::string v   = fresh("v");
-      // A recursive let: bind the slot to a placeholder box first, build the
-      // rhs (whose closures may capture the box), then copy the value into the
-      // box so those captures observe it. Mirrors the interpreter's back-patch.
-      out += "  Value* " + box + " = THxRT_unk();\n";
-      out += "  locals[" + std::to_string(l.slot) + "] = " + box + ";\n";
-      out += "  Value* " + v + ";\n";
-      expr(l.rhs, Dest{ false, v });
-      out += "  *" + box + " = *" + v + ";\n";
-      expr(l.body, d);
-    }
-    break;
-
-    case IR::EKind::Case:
-    {
-      auto       &c = std::get<IR::Case>(e->as);
-      std::string s = fresh("scrut");
-      out += "  Value* " + s + " = " + atom(c.scrut) + ";\n";
-      bool first = true;
-      for (const IR::Alt &al : c.alts)
-      {
-        std::string cond;
-        switch (al.kind)
-        {
-        case IR::AltKind::Int:
-          cond
-            = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
-          break;
-        case IR::AltKind::Real:
-          cond = "THxVALUE_as_num(" + s + ") == " + cdbl(al.rval);
-          break;
-        case IR::AltKind::Con:
-          cond = "strcmp(THxVALUE_ctor(" + s + "), " + cstr(al.ctor) + ") == 0";
-          break;
-        }
-        out += std::string("  ") + (first ? "if" : "else if") + " (" + cond
-               + ") {\n";
-        if (al.kind == IR::AltKind::Con)
-          for (size_t i = 0; i < al.binders.size(); ++i)
-            out += "  locals[" + std::to_string(al.binder_base + i)
-                   + "] = THxVALUE_variant_field(" + s + ", "
-                   + std::to_string(i) + ");\n";
-        expr(al.body, d);
-        out += "  }\n";
-        first = false;
-      }
-      out += first ? "  {\n" : "  else {\n";
-      expr(c.deflt, d);
-      out += "  }\n";
-    }
-    break;
-
+    case IR::EKind::Ret: return atom(std::get<IR::Ret>(e->as).a);
     case IR::EKind::MkStruct:
     {
-      auto       &m = std::get<IR::MkStruct>(e->as);
-      std::string v;
+      auto &m = std::get<IR::MkStruct>(e->as);
       if (m.fields.size() == 0)
-        v = "THxRT_struct(" + cstr(m.name) + ", 0, NULL, NULL)";
-      else
+        return "THxRT_struct(" + cstr(m.name) + ", 0, NULL, NULL)";
+      std::string names = "(const char*[]){ ", vals = "(Value*[]){ ";
+      for (const IR::FieldA &f : m.fields)
       {
-        std::string names = "(const char*[]){ ", vals = "(Value*[]){ ";
-        for (const IR::FieldA &f : m.fields)
-        {
-          names += cstr(f.name) + ", ";
-          vals += atom(f.val) + ", ";
-        }
-        v = "THxRT_struct(" + cstr(m.name) + ", "
-            + std::to_string(m.fields.size()) + ", " + names + "}, " + vals
-            + "})";
+        names += cstr(f.name) + ", ";
+        vals += atom(f.val) + ", ";
       }
-      finish(v, d);
+      return "THxRT_struct(" + cstr(m.name) + ", "
+             + std::to_string(m.fields.size()) + ", " + names + "}, " + vals
+             + "})";
     }
-    break;
-
     case IR::EKind::Field:
     {
       auto &f = std::get<IR::Field>(e->as);
-      finish("THxVALUE_field(" + atom(f.rec) + ", " + cstr(f.name) + ")", d);
+      return "THxVALUE_field(" + atom(f.rec) + ", " + cstr(f.name) + ")";
     }
-    break;
-
     case IR::EKind::MkVariant:
     {
-      auto       &mv = std::get<IR::MkVariant>(e->as);
-      std::string v;
+      auto &mv = std::get<IR::MkVariant>(e->as);
       if (mv.fields.size() == 0)
-        v = "THxRT_variant(" + cstr(mv.type_name) + ", " + cstr(mv.tag)
-            + ", 0, NULL)";
-      else
-      {
-        std::string vals = "(Value*[]){ ";
-        for (const IR::Atom *f : mv.fields) vals += atom(f) + ", ";
-        v = "THxRT_variant(" + cstr(mv.type_name) + ", " + cstr(mv.tag) + ", "
-            + std::to_string(mv.fields.size()) + ", " + vals + "})";
-      }
-      finish(v, d);
+        return "THxRT_variant(" + cstr(mv.type_name) + ", " + cstr(mv.tag)
+               + ", 0, NULL)";
+      std::string vals = "(Value*[]){ ";
+      for (const IR::Atom *f : mv.fields) vals += atom(f) + ", ";
+      return "THxRT_variant(" + cstr(mv.type_name) + ", " + cstr(mv.tag) + ", "
+             + std::to_string(mv.fields.size()) + ", " + vals + "})";
     }
-    break;
-
-    case IR::EKind::Unk: finish("THxRT_unk()", d); break;
-
+    case IR::EKind::Unk: return "THxRT_unk()";
     case IR::EKind::Extern:
     {
-      // A foreign binding: yield a curried foreign value whose wrapper is
-      // emitted by emit_externs. Its arity is the declared arg count (unit
-      // slots included -- they are dropped at the call, like the interpreter).
       auto  &x   = std::get<IR::Extern>(e->as);
       size_t idx = externs.size();
       externs.push_back(&x);
-      finish("THxRT_extern(" + std::to_string(idx) + ", "
-               + std::to_string(x.arg_types.size()) + ")",
-             d);
+      return "THxRT_extern(" + std::to_string(idx) + ", "
+             + std::to_string(x.arg_types.size()) + ")";
     }
-    break;
-
+    case IR::EKind::Let:
+    case IR::EKind::App:
+    case IR::EKind::Case:
     case IR::EKind::Handle:
-      // Rejected by CC::unsupported before emit is ever called.
-      UT_FAIL_MSG("%s",
-                  "CC: effect node reached codegen (unsupported gate should "
-                  "have caught it)");
-      break;
+      UT_FAIL_MSG("%s", "CC: value_expr on a non-value expression");
+    }
+    UT_FAIL_MSG("%s", "CC: unhandled IR::Expr in value_expr");
+    return "THxRT_unk()";
+  }
+
+  // Does producing `e`'s value cross a suspension point (a non-tail App or a
+  // Handle)? If so a `let`-body must become a separate continuation block.
+  bool
+  has_suspension(
+    const IR::Expr *e)
+  {
+    switch (IR::ekind(e))
+    {
+    case IR::EKind::Ret:
+    case IR::EKind::MkStruct:
+    case IR::EKind::Field:
+    case IR::EKind::MkVariant:
+    case IR::EKind::Unk:
+    case IR::EKind::Extern  : return false;
+    case IR::EKind::App     : return !std::get<IR::App>(e->as).tail;
+    case IR::EKind::Handle  : return true;
+    case IR::EKind::Let:
+    {
+      auto &l = std::get<IR::Let>(e->as);
+      return has_suspension(l.rhs) || has_suspension(l.body);
+    }
+    case IR::EKind::Case:
+    {
+      auto &c = std::get<IR::Case>(e->as);
+      for (const IR::Alt &al : c.alts)
+        if (has_suspension(al.body)) return true;
+      return has_suspension(c.deflt);
+    }
+    }
+    return false;
+  }
+
+  // Deliver a finished value C-expression `val` to its sink.
+  void
+  deliver(
+    const std::string &val, const Sink &sink, std::string &out)
+  {
+    if (sink.kind == Sink::RET)
+      out += "  THxK_ret(" + val + ");\n";
+    else
+    {
+      out += "  THxK_backpatch(fr, " + std::to_string(sink.slot) + ", " + val
+             + ");\n";
+      out += "  THxK_jump(blk_" + std::to_string(sink.cont) + ");\n";
     }
   }
 
-  // Emit one foreign-call wrapper per collected extern: it fetches the symbol
-  // once via THx_dlsym, marshals the saturated args to C, makes the direct
-  // typed call, and marshals the result back. Call after all code is emitted.
+  // Compute a pure (suspension-free) expression's value into frame `slot` (a
+  // let-box back-patch), emitted inline. Never reaches App/Handle.
   void
-  emit_externs()
+  emit_pure_into(
+    const IR::Expr *e, size_t slot, std::string &out)
+  {
+    switch (IR::ekind(e))
+    {
+    case IR::EKind::Ret:
+    case IR::EKind::MkStruct:
+    case IR::EKind::Field:
+    case IR::EKind::MkVariant:
+    case IR::EKind::Unk:
+    case IR::EKind::Extern:
+      out += "  THxK_backpatch(fr, " + std::to_string(slot) + ", "
+             + value_expr(e) + ");\n";
+      break;
+    case IR::EKind::Case: emit_case(e, slot_sink_pure(slot), out); break;
+    case IR::EKind::Let:
+    {
+      auto &l = std::get<IR::Let>(e->as);
+      out += "  THxK_setbox(fr, " + std::to_string(l.slot) + ");\n";
+      emit_pure_into(l.rhs, l.slot, out);
+      emit_pure_into(l.body, slot, out);
+    }
+    break;
+    case IR::EKind::App:
+    case IR::EKind::Handle:
+      UT_FAIL_MSG("%s", "CC: emit_pure_into on a suspending expression");
+    }
+  }
+
+  // A sink that means "back-patch this slot then fall through" (used by a pure
+  // Case's branches). Encoded as SLOT with cont == NO_CONT so `deliver` knows to
+  // omit the jump. See deliver / emit_case usage.
+  static constexpr size_t NO_CONT = (size_t)-1;
+  Sink
+  slot_sink_pure(
+    size_t slot)
+  {
+    return Sink{ Sink::SLOT, slot, NO_CONT };
+  }
+
+  // ---- the core continuation-passing lowering ----
+  void
+  emit_expr(
+    const IR::Expr *e, const Sink &sink, std::string &out)
+  {
+    switch (IR::ekind(e))
+    {
+    case IR::EKind::Ret:
+    case IR::EKind::MkStruct:
+    case IR::EKind::Field:
+    case IR::EKind::MkVariant:
+    case IR::EKind::Unk:
+    case IR::EKind::Extern: deliver(value_expr(e), sink, out); break;
+
+    case IR::EKind::App:
+    {
+      auto       &a  = std::get<IR::App>(e->as);
+      std::string fn = atom(a.fn), arg = atom(a.arg);
+      if (a.tail)
+      {
+        UT_FAIL_IF(sink.kind != Sink::RET);
+        out += "  THxK_tailcall(" + fn + ", " + arg + ");\n";
+      }
+      else
+      {
+        UT_FAIL_IF(sink.kind != Sink::SLOT);
+        out += "  THxK_apply(fr, " + fn + ", " + arg + ", blk_"
+               + std::to_string(sink.cont) + ", " + std::to_string(sink.slot)
+               + ");\n";
+      }
+    }
+    break;
+
+    case IR::EKind::Let: emit_let(e, sink, out); break;
+    case IR::EKind::Case: emit_case(e, sink, out); break;
+    case IR::EKind::Handle: emit_handle(e, sink, out); break;
+    }
+  }
+
+  void
+  emit_let(
+    const IR::Expr *e, const Sink &sink, std::string &out)
+  {
+    auto &l = std::get<IR::Let>(e->as);
+    out += "  THxK_setbox(fr, " + std::to_string(l.slot) + ");\n";
+    if (has_suspension(l.rhs))
+    {
+      // The body becomes a continuation block; the rhs delivers into the slot
+      // then control transfers there.
+      size_t body_blk = reserve_block();
+      emit_expr(l.rhs, Sink{ Sink::SLOT, l.slot, body_blk }, out);
+      std::string body_out;
+      emit_expr(l.body, sink, body_out);
+      set_block(body_blk, body_out);
+    }
+    else
+    {
+      // Pure rhs: compute into the slot inline, then continue with the body in
+      // the same block.
+      emit_pure_into(l.rhs, l.slot, out);
+      emit_expr(l.body, sink, out);
+    }
+  }
+
+  void
+  emit_case(
+    const IR::Expr *e, const Sink &sink, std::string &out)
+  {
+    auto       &c = std::get<IR::Case>(e->as);
+    std::string s = fresh("scrut");
+    out += "  Value* " + s + " = " + atom(c.scrut) + ";\n";
+    bool first = true;
+    for (const IR::Alt &al : c.alts)
+    {
+      std::string cond;
+      switch (al.kind)
+      {
+      case IR::AltKind::Int:
+        cond = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
+        break;
+      case IR::AltKind::Real:
+        cond = "THxVALUE_as_num(" + s + ") == " + cdbl(al.rval);
+        break;
+      case IR::AltKind::Con:
+        cond = "strcmp(THxVALUE_ctor(" + s + "), " + cstr(al.ctor) + ") == 0";
+        break;
+      }
+      out += std::string("  ") + (first ? "if" : "else if") + " (" + cond
+             + ") {\n";
+      if (al.kind == IR::AltKind::Con)
+        for (size_t i = 0; i < al.binders.size(); ++i)
+          out += "  fr->locals[" + std::to_string(al.binder_base + i)
+                 + "] = THxVALUE_variant_field(" + s + ", " + std::to_string(i)
+                 + ");\n";
+      emit_branch(al.body, sink, out);
+      out += "  }\n";
+      first = false;
+    }
+    out += first ? "  {\n" : "  else {\n";
+    emit_branch(c.deflt, sink, out);
+    out += "  }\n";
+  }
+
+  // A case branch: either a real sink (RET / SLOT-with-cont) or the "pure-into"
+  // sink (SLOT with NO_CONT, meaning back-patch and fall through -- the
+  // enclosing pure let continues after the if/else).
+  void
+  emit_branch(
+    const IR::Expr *e, const Sink &sink, std::string &out)
+  {
+    if (sink.kind == Sink::SLOT && sink.cont == NO_CONT)
+      emit_pure_into(e, sink.slot, out);
+    else
+      emit_expr(e, sink, out);
+  }
+
+  void
+  emit_handle(
+    const IR::Expr *e, const Sink &sink, std::string &out)
+  {
+    auto  &h        = std::get<IR::Handle>(e->as);
+    size_t hbody    = reserve_block();
+    std::string ops = "(const char*[]){ ", cls = "(Value*[]){ ";
+    for (const IR::HandleClause &c : h.clauses)
+    {
+      ops += cstr(c.op) + ", ";
+      cls += atom(c.fn) + ", ";
+    }
+    ops += "}";
+    cls += "}";
+    std::string n   = std::to_string(h.clauses.size());
+    std::string els = atom(h.els);
+    // cont == NULL means "deliver the handled value to the current continuation"
+    // (a RET sink); otherwise push a KRet for (cont, slot).
+    std::string cont = (sink.kind == Sink::RET)
+                         ? "NULL"
+                         : "blk_" + std::to_string(sink.cont);
+    std::string slot = std::to_string(sink.kind == Sink::RET ? 0 : sink.slot);
+    if (h.clauses.size() == 0) // no clauses -> empty tables are still valid
+    {
+      ops = "NULL";
+      cls = "NULL";
+    }
+    out += "  THxK_handle(fr, " + cont + ", " + slot + ", " + ops + ", " + cls
+           + ", " + n + ", " + els + ", blk_" + std::to_string(hbody) + ");\n";
+    std::string body_out;
+    emit_expr(h.body, Sink{ Sink::RET }, body_out);
+    set_block(hbody, body_out);
+  }
+
+  // Emit one code as its entry block (plus any continuation blocks it spawns).
+  void
+  emit_code(
+    size_t id)
+  {
+    size_t entry    = reserve_block();
+    code_entry[id]  = entry;
+    std::string out;
+    emit_expr(prog.codes[id].body, Sink{ Sink::RET }, out);
+    set_block(entry, out);
+  }
+
+  // Emit one foreign-call wrapper per collected extern (unchanged from the
+  // direct-style backend). Call after all code is emitted.
+  void
+  emit_externs(
+    std::string &out)
   {
     for (size_t i = 0; i < externs.size(); ++i)
     {
@@ -562,7 +583,6 @@ struct Emitter
       std::string       ret  = std::string(e.ret_type);
       std::string       cret = c_type(ret, true);
 
-      // C types of the non-unit args, and their positions in the args[] array.
       std::vector<std::string> cargs;
       std::vector<size_t>      pos;
       for (size_t j = 0; j < e.arg_types.size(); ++j)
@@ -607,27 +627,6 @@ struct Emitter
       out += "}\n\n";
     }
   }
-
-  void
-  emit_code(
-    size_t id)
-  {
-    const IR::Code &c = prog.codes[id];
-    nlocals           = c.nlocals;
-    nenv              = env_size(c);
-    tmp               = 0;
-
-    out += "static Value* THx_code_" + std::to_string(id)
-           + "(Value** env, Value* arg) {\n";
-    out += "  (void)env; (void)arg;\n";
-    if (c.nlocals > 0)
-    {
-      out += "  Value* locals[" + std::to_string(c.nlocals) + "] = {0};\n";
-      if (c.nparams >= 1) out += "  locals[0] = arg;\n";
-    }
-    expr(c.body, Dest{ true, {} });
-    out += "}\n\n";
-  }
 };
 
 } // namespace
@@ -640,20 +639,20 @@ std::optional<std::string>
 unsupported(
   const IR::Program &prog)
 {
-  Reject r{ prog, std::nullopt };
-  for (const IR::Code &c : prog.codes) r.expr(c.body);
-  // A 2-parameter Code is a handler clause (IR::conv_clause); its presence
-  // means effects even if every Handle node were somehow elided.
-  for (const IR::Code &c : prog.codes)
-    if (c.nparams >= 2) r.set("effect handler clauses");
-  return r.reason;
+  // The native backend now compiles the whole IR -- the strict subset, C FFI,
+  // and algebraic effects (handlers / operations / resumptions / `defer`) via
+  // the CEK driver. Nothing is statically rejected; affine (one-shot)
+  // resumption use is enforced at runtime. The seam remains so a future
+  // not-yet-lowered feature can be reported here.
+  (void)prog;
+  return std::nullopt;
 }
 
 namespace
 {
 
 // Does this expression (transitively) contain a foreign binding? Externs nest
-// only in Let/Case bodies (aggregate fields are atoms, which cannot hold one).
+// only in Let/Case/Handle bodies (aggregate fields are atoms).
 bool
 has_extern(
   const IR::Expr *e)
@@ -673,12 +672,12 @@ has_extern(
       if (has_extern(a.body)) return true;
     return has_extern(c.deflt);
   }
+  case IR::EKind::Handle: return has_extern(std::get<IR::Handle>(e->as).body);
   case IR::EKind::Ret:
   case IR::EKind::App:
   case IR::EKind::MkStruct:
   case IR::EKind::Field:
   case IR::EKind::MkVariant:
-  case IR::EKind::Handle:
   case IR::EKind::Unk      : return false;
   }
   return false;
@@ -700,63 +699,67 @@ emit(
   const IR::Program &prog, UT::Vu entry, bool entry_takes_arg)
 {
   Emitter em{ prog };
-
-  em.out += "/* Generated by the Thrax CC backend. Do not edit.\n";
-  em.out += " * Self-contained -- the runtime is inlined below. Build:\n";
-  em.out += " *   cc -O2 prog.c -o prog        (add -ldl if it uses @extern) */"
-            "\n\n";
-  // The whole C runtime, baked into the compiler and emitted inline, so the
-  // generated program is a single self-contained translation unit.
-  em.out += RUNTIME_C;
-  em.out += "\n#include <string.h>\n\n";
-
-  // Forward declarations, then definitions (codes call each other freely).
-  for (size_t i = 0; i < prog.codes.size(); ++i)
-    em.out += "static Value* THx_code_" + std::to_string(i)
-              + "(Value** env, Value* arg);\n";
-  em.out += "\n";
   for (size_t i = 0; i < prog.codes.size(); ++i) em.emit_code(i);
 
-  // Foreign-call machinery (only if the program uses `@extern`): the symbol
-  // resolver, then one wrapper per call site. Emitted after the code (which
-  // only references THxRT_extern, in the runtime) and before the table below.
+  std::string out;
+  out += "/* Generated by the Thrax CC backend. Do not edit.\n";
+  out += " * Self-contained -- the runtime is inlined below. Build:\n";
+  out += " *   cc -O2 prog.c -o prog        (add -ldl if it uses @extern) */"
+         "\n\n";
+  // The whole C runtime, baked into the compiler and emitted inline, so the
+  // generated program is a single self-contained translation unit.
+  out += RUNTIME_C;
+  out += "\n#include <string.h>\n\n";
+
+  // Forward declarations of every block, then the block definitions (blocks
+  // reference each other's continuations freely).
+  for (size_t i = 0; i < em.blocks.size(); ++i)
+    out += "static void blk_" + std::to_string(i) + "(Frame*, Value*);\n";
+  out += "\n";
+  for (const std::string &b : em.blocks) out += b;
+
+  // Foreign-call machinery (only if the program uses `@extern`).
   if (!em.externs.empty())
   {
-    em.out += "#include <dlfcn.h>\n";
-    em.out += "#include <stdint.h>\n"; // intptr_t, for Ptr marshalling
-    em.out += "static void* THx_dlsym(const char* lib, const char* sym) {\n";
-    em.out += "  void* h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL);\n";
-    em.out += "  if (!h) THxCHECK_FAILF(\"FFI: cannot open library '%s': %s\", "
-              "lib, dlerror());\n";
-    em.out += "  void* f = dlsym(h, sym);\n";
-    em.out
-      += "  if (!f) THxCHECK_FAILF(\"FFI: symbol '%s' not found in '%s'\", "
-         "sym, lib);\n";
-    em.out += "  return f;\n}\n\n";
-    em.emit_externs();
+    out += "#include <dlfcn.h>\n";
+    out += "#include <stdint.h>\n"; // intptr_t, for Ptr marshalling
+    out += "static void* THx_dlsym(const char* lib, const char* sym) {\n";
+    out += "  void* h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL);\n";
+    out += "  if (!h) THxCHECK_FAILF(\"FFI: cannot open library '%s': %s\", "
+           "lib, dlerror());\n";
+    out += "  void* f = dlsym(h, sym);\n";
+    out += "  if (!f) THxCHECK_FAILF(\"FFI: symbol '%s' not found in '%s'\", "
+           "sym, lib);\n";
+    out += "  return f;\n}\n\n";
+    em.emit_externs(out);
   }
 
   // The foreign-wrapper table the runtime dispatches T_EXTERN through (always
   // defined; a 1-element dummy when there are no foreign calls).
   if (em.externs.empty())
-    em.out += "ExternFn THxRT_extern_table[1] = { 0 };\n";
+    out += "ExternFn THxRT_extern_table[1] = { 0 };\n";
   else
   {
-    em.out += "ExternFn THxRT_extern_table[] = {\n";
+    out += "ExternFn THxRT_extern_table[] = {\n";
     for (size_t i = 0; i < em.externs.size(); ++i)
-      em.out += "  THx_extern_" + std::to_string(i) + ",\n";
-    em.out += "};\n";
+      out += "  THx_extern_" + std::to_string(i) + ",\n";
+    out += "};\n";
   }
-  em.out += "const size_t THxRT_extern_count = "
-            + std::to_string(em.externs.size()) + ";\n\n";
+  out += "const size_t THxRT_extern_count = "
+         + std::to_string(em.externs.size()) + ";\n\n";
 
-  // The dispatch table the runtime calls back through.
-  em.out += "CodeFn THxRT_code_table[] = {\n";
+  // The dispatch tables the runtime calls back through: entry block + slot count
+  // per lifted Code.
+  out += "BlockFn THxRT_code_table[] = {\n";
   for (size_t i = 0; i < prog.codes.size(); ++i)
-    em.out += "  THx_code_" + std::to_string(i) + ",\n";
-  em.out += "};\n";
-  em.out += "const size_t THxRT_code_count = "
-            + std::to_string(prog.codes.size()) + ";\n\n";
+    out += "  blk_" + std::to_string(em.code_entry[i]) + ",\n";
+  out += "};\n";
+  out += "const size_t THxRT_code_nlocals[] = {\n";
+  for (size_t i = 0; i < prog.codes.size(); ++i)
+    out += "  " + std::to_string(prog.codes[i].nlocals) + ",\n";
+  out += "};\n";
+  out += "const size_t THxRT_code_count = "
+         + std::to_string(prog.codes.size()) + ";\n\n";
 
   // Globals: name -> CAF code index, lazily forced and memoized (matches
   // IT::glob). Stable iteration order for reproducible output.
@@ -767,57 +770,57 @@ emit(
 
   if (ng > 0)
   {
-    em.out += "static Value* g_cache[" + std::to_string(ng) + "];\n";
-    em.out += "static char g_inited[" + std::to_string(ng) + "];\n";
-    em.out += "static char g_inprog[" + std::to_string(ng) + "];\n\n";
+    out += "static Value* g_cache[" + std::to_string(ng) + "];\n";
+    out += "static char g_inited[" + std::to_string(ng) + "];\n";
+    out += "static char g_inprog[" + std::to_string(ng) + "];\n\n";
   }
 
-  em.out += "Value* THxRT_glob(const char* name) {\n";
+  out += "Value* THxRT_glob(const char* name) {\n";
   for (size_t k = 0; k < ng; ++k)
   {
     UT::Vu nm{ globs[k].first.data(), globs[k].first.size() };
-    em.out += "  if (strcmp(name, " + cstr(nm) + ") == 0) {\n";
-    em.out += "    if (g_inited[" + std::to_string(k) + "]) return g_cache["
-              + std::to_string(k) + "];\n";
-    em.out += "    if (g_inprog[" + std::to_string(k)
-              + "]) THxCHECK_FAILF(\"cyclic value global '%s'\", name);\n";
-    em.out += "    g_inprog[" + std::to_string(k) + "] = 1;\n";
-    em.out += "    g_cache[" + std::to_string(k) + "] = THxRT_force_code("
-              + std::to_string(globs[k].second) + ");\n";
-    em.out += "    g_inited[" + std::to_string(k) + "] = 1;\n";
-    em.out += "    g_inprog[" + std::to_string(k) + "] = 0;\n";
-    em.out += "    return g_cache[" + std::to_string(k) + "];\n";
-    em.out += "  }\n";
+    out += "  if (strcmp(name, " + cstr(nm) + ") == 0) {\n";
+    out += "    if (g_inited[" + std::to_string(k) + "]) return g_cache["
+           + std::to_string(k) + "];\n";
+    out += "    if (g_inprog[" + std::to_string(k)
+           + "]) THxCHECK_FAILF(\"cyclic value global '%s'\", name);\n";
+    out += "    g_inprog[" + std::to_string(k) + "] = 1;\n";
+    out += "    g_cache[" + std::to_string(k) + "] = THxK_run_code("
+           + std::to_string(globs[k].second) + ");\n";
+    out += "    g_inited[" + std::to_string(k) + "] = 1;\n";
+    out += "    g_inprog[" + std::to_string(k) + "] = 0;\n";
+    out += "    return g_cache[" + std::to_string(k) + "];\n";
+    out += "  }\n";
   }
-  em.out += "  return THxRT_builtin(name);\n";
-  em.out += "}\n\n";
+  out += "  return THxRT_builtin(name);\n";
+  out += "}\n\n";
 
   // Force every global -- the compiled mirror of the interpreter smoke test
   // (tst/TS.cpp), so a runtime fault in any top-level definition surfaces.
-  em.out += "static void THx_force_all(void) {\n";
+  out += "static void THx_force_all(void) {\n";
   for (size_t k = 0; k < ng; ++k)
   {
     UT::Vu nm{ globs[k].first.data(), globs[k].first.size() };
-    em.out += "  (void)THxRT_glob(" + cstr(nm) + ");\n";
+    out += "  (void)THxRT_glob(" + cstr(nm) + ");\n";
   }
-  em.out += "}\n\n";
+  out += "}\n\n";
 
   // Entry: force all globals, then run the entry point if there is one. The
   // entry's Int result is the process exit code.
-  em.out += "int main(void) {\n";
-  em.out += "  THx_force_all();\n";
+  out += "int main(void) {\n";
+  out += "  THx_force_all();\n";
   if (entry.size() > 0)
   {
-    em.out += "  Value* e = THxRT_glob(" + cstr(entry) + ");\n";
+    out += "  Value* e = THxRT_glob(" + cstr(entry) + ");\n";
     if (entry_takes_arg)
-      em.out += "  e = THxRT_apply(e, THxRT_str(\"\", 0));\n";
-    em.out += "  return (int)THxVALUE_as_int(e);\n";
+      out += "  e = THxK_call(e, THxRT_str(\"\", 0));\n";
+    out += "  return (int)THxVALUE_as_int(e);\n";
   }
   else
-    em.out += "  return 0;\n";
-  em.out += "}\n";
+    out += "  return 0;\n";
+  out += "}\n";
 
-  return em.out;
+  return out;
 }
 
 } // namespace CC

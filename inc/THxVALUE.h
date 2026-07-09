@@ -34,10 +34,17 @@ typedef enum
   T_CLOS,    /* closure: an IR code index + captured environment */
   T_BUILTIN, /* a (possibly partially applied) built-in operator */
   T_EXTERN,  /* a (possibly partially applied) foreign C function (FFI) */
+  T_OP,      /* an effect operation, first-class; performs when applied */
+  T_RESUMP,  /* a captured continuation (resumption); affine -- resumes once */
+  T_DEFER,   /* the `defer` intrinsic, curried over its two thunks */
   T_UNK      /* the unknown/placeholder value (recursive-let box, unit) */
 } Tag;
 
 typedef struct Value Value;
+
+/* A captured continuation segment; defined by the CEK driver (THxK). Only a
+ * pointer is stored here, so THxVALUE need not know its layout. */
+typedef struct THxK_Resump THxK_Resump;
 
 /* Every lifted IR Code is a curried, arity-1 function: it takes its captured
  * environment and one argument and returns a value. */
@@ -90,6 +97,19 @@ struct Value
       size_t  nargs;
       Value **args;
     } ext; /* T_EXTERN */
+    struct
+    {
+      const char *name;
+    } op; /* T_OP: the operation's canonical "Effect.op" name */
+    struct
+    {
+      THxK_Resump *seg;
+    } resump; /* T_RESUMP: the captured continuation slice */
+    struct
+    {
+      size_t  nargs;
+      Value **args;
+    } defer; /* T_DEFER: accumulates the two thunks (action, cleanup) */
   } u;
 };
 

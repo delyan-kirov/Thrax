@@ -20,10 +20,11 @@ else
 	cd $(ROOT) && $(TESTER)
 endif
 
-# Emit, compile and run every effect-free example through the native backend and
-# check each exits 0 -- the compiled mirror of the interpreter smoke test (the
-# generated `THx_force_all` forces every global, so a fault surfaces). Effect /
-# FFI programs are expected to be cleanly rejected (SKIP), not to fail.
+# Emit, compile and run every example through the native backend and check each
+# exits 0 -- the compiled mirror of the interpreter smoke test (the generated
+# `THx_force_all` forces every global, so a fault surfaces). The whole IR is
+# supported now (subset + FFI + effects); a program is only SKIPped if `thrax -c`
+# itself declines it (none in dat/ today).
 native-test:
 	@cd $(ROOT) && \
 	pass=0; skip=0; fail=0; \

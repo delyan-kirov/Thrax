@@ -20,10 +20,10 @@
 
 /*------------------------------------------------------------------------------
  *\PROVIDED BY THE GENERATED PROGRAM
+ *
+ * The lifted-code tables (THxRT_code_table / THxRT_code_nlocals / count) live in
+ * THxK.h, since the CEK driver owns application.
  *-----------------------------------------------------------------------------*/
-
-extern CodeFn       THxRT_code_table[]; /* one entry per lifted IR Code */
-extern const size_t THxRT_code_count;   /* length of THxRT_code_table */
 
 /* One foreign-call wrapper per `@extern` site: it marshals the collected,
  * already-saturated arguments, makes the direct typed C call, and marshals the
@@ -66,18 +66,15 @@ Value *THxRT_builtin(const char *impl);
 Value *THxRT_extern(int idx, size_t arity);
 
 /*------------------------------------------------------------------------------
- *\APPLICATION (the trampoline)
+ *\APPLICATION -- builtin / foreign operand accumulation
+ *
+ * Application proper is the CEK driver's job (THxK); these apply the non-
+ * suspending callees. Each appends `arg` to the (curried) callee and, when
+ * saturated, runs the operator / foreign call and returns the result value;
+ * otherwise it returns the partially-applied callee.
  *-----------------------------------------------------------------------------*/
 
-/* Apply `f` to one argument, driving any tail-call bounces to completion. */
-Value *THxRT_apply(Value *f, Value *arg);
-
-/* Request a tail call: record (f, arg) for the enclosing trampoline and return
- * the sentinel. Generated tail positions emit `return THxRT_tailcall(f, arg);`.
- */
-Value *THxRT_tailcall(Value *f, Value *arg);
-
-/* Run a nullary IR Code (a CAF body) to completion through the trampoline. */
-Value *THxRT_force_code(size_t code);
+Value *THxRT_apply_builtin(Value *b, Value *arg);
+Value *THxRT_apply_extern(Value *e, Value *arg);
 
 #endif /* THxRT_H_ */

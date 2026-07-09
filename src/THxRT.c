@@ -84,6 +84,7 @@ THxRT_struct(
   {
     fns[i] = fnames[i];
     fs[i]  = fields[i];
+    THxK_mark_escape(fields[i]); /* a resumption stored in a field has escaped */
   }
   x->u.st.fnames = fns;
   x->u.st.f      = fs;
@@ -100,7 +101,11 @@ THxRT_variant(
   x->u.var.ctor  = ctor;
   x->u.var.n     = n;
   Value **fs     = (Value **)THxMEM_alloc(n * sizeof(Value *));
-  for (size_t i = 0; i < n; ++i) fs[i] = fields[i];
+  for (size_t i = 0; i < n; ++i)
+  {
+    fs[i] = fields[i];
+    THxK_mark_escape(fields[i]);
+  }
   x->u.var.f = fs;
   return x;
 }
@@ -114,7 +119,11 @@ THxRT_closure(
   x->u.clos.code = code;
   x->u.clos.nenv = n;
   Value **env    = (Value **)THxMEM_alloc(n * sizeof(Value *));
-  for (size_t i = 0; i < n; ++i) env[i] = captures[i];
+  for (size_t i = 0; i < n; ++i)
+  {
+    env[i] = captures[i];
+    THxK_mark_escape(captures[i]); /* a resumption captured in a closure escaped */
+  }
   x->u.clos.env = env;
   return x;
 }
@@ -291,94 +300,33 @@ extern_push(
 }
 
 /*------------------------------------------------------------------------------
- *\APPLICATION -- the trampoline
+ *\APPLICATION -- builtin / foreign operand accumulation
  *
- * A tail call does not recurse in C: the generated body calls THxRT_tailcall,
- * which parks (fn, arg) in the bounce registers and returns the sentinel; the
- * loop here picks it up and continues, so chains of tail calls run in constant
- * stack. Non-tail calls recurse through THxRT_apply (and thus use the C stack
- * -- see doc/native-backend.md for that v1 limitation).
+ * The CEK driver (THxK) drives application of closures/operations/resumptions;
+ * these two handle the non-suspending callees. Each appends one operand and, on
+ * saturation, runs the operator / foreign call, returning the result value (or
+ * the still-partial callee).
  *-----------------------------------------------------------------------------*/
 
-static int    g_bounce     = 0;
-static Value *g_bounce_fn  = NULL;
-static Value *g_bounce_arg = NULL;
-
 Value *
-THxRT_tailcall(
+THxRT_apply_builtin(
   Value *f, Value *arg)
 {
-  g_bounce     = 1;
-  g_bounce_fn  = f;
-  g_bounce_arg = arg;
-  return NULL; /* sentinel; the trampoline consumes the bounce */
+  Value *b = builtin_push(f, arg);
+  if (b->u.bi.nargs >= b->u.bi.arity) return builtin_dispatch(b);
+  return b;
 }
 
 Value *
-THxRT_apply(
+THxRT_apply_extern(
   Value *f, Value *arg)
 {
-  for (;;)
+  Value *e = extern_push(f, arg);
+  if (e->u.ext.nargs >= e->u.ext.arity)
   {
-    THxCHECK_ASSERT(f != NULL, "THxRT_apply: null callee");
-    switch (f->tag)
-    {
-    case T_CLOS:
-    {
-      size_t code = (size_t)f->u.clos.code;
-      THxCHECK_ASSERT(code < THxRT_code_count,
-                      "THxRT_apply: closure code out of range");
-      Value *r = THxRT_code_table[code](f->u.clos.env, arg);
-      if (g_bounce)
-      {
-        g_bounce = 0;
-        f        = g_bounce_fn;
-        arg      = g_bounce_arg;
-        continue;
-      }
-      return r;
-    }
-    case T_BUILTIN:
-    {
-      Value *b = builtin_push(f, arg);
-      if (b->u.bi.nargs >= b->u.bi.arity) return builtin_dispatch(b);
-      return b;
-    }
-    case T_EXTERN:
-    {
-      Value *e = extern_push(f, arg);
-      if (e->u.ext.nargs >= e->u.ext.arity)
-      {
-        THxCHECK_ASSERT((size_t)e->u.ext.idx < THxRT_extern_count,
-                        "THxRT_apply: extern index out of range");
-        return THxRT_extern_table[e->u.ext.idx](e->u.ext.args);
-      }
-      return e;
-    }
-    case T_INT:
-    case T_REAL:
-    case T_STR:
-    case T_STRUCT:
-    case T_VARIANT:
-    case T_UNK:
-      THxCHECK_FAILF("THxRT_apply: callee is not a function (%s)",
-                     THxVALUE_tag_name(f->tag));
-    }
-    THxCHECK_FAIL("THxRT_apply: unhandled value tag");
+    THxCHECK_ASSERT((size_t)e->u.ext.idx < THxRT_extern_count,
+                    "THxRT_apply_extern: extern index out of range");
+    return THxRT_extern_table[e->u.ext.idx](e->u.ext.args);
   }
-}
-
-Value *
-THxRT_force_code(
-  size_t code)
-{
-  THxCHECK_ASSERT(code < THxRT_code_count,
-                  "THxRT_force_code: code out of range");
-  Value *r = THxRT_code_table[code](NULL, NULL);
-  if (g_bounce)
-  {
-    g_bounce = 0;
-    r        = THxRT_apply(g_bounce_fn, g_bounce_arg);
-  }
-  return r;
+  return e;
 }
