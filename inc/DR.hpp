@@ -50,6 +50,19 @@ bool dump_ast(UT::Vu file);
 // and print the IR program to stdout. Returns false on a compile error.
 bool dump_ir(const std::vector<UT::Vu> &files);
 
+// Run the full front end on `files`, lower to IR, and emit a standalone C
+// translation unit (the native backend) to stdout. Returns false on a compile
+// error or if the program uses a feature the backend does not yet support
+// (effects, FFI) -- a diagnostic is printed in that case. See CC.hpp.
+bool emit_c(const std::vector<UT::Vu> &files);
+
+// Compile a project -- a directory containing a 'MAIN' module. Lowers it to IR
+// and the native backend, then invokes the system C compiler, writing all three
+// artifacts into <dir>/bin (created if absent): <name>.ir, <name>.c, and the
+// executable <name>. Returns false on a compile error or an unsupported feature
+// (a diagnostic is printed). See CC.hpp.
+bool build_project(UT::Vu dir);
+
 } // namespace DR
 
 #endif // DR_HEADER_

@@ -75,8 +75,9 @@ struct Linker
   std::vector<ER::Diagnostic>                 diags;
 
   // Declared effects: effect name -> (operation source name -> its canonical
-  // `Effect.op` identity). Effect names are global, so this is program-wide. Used
-  // to resolve an effect-qualified `Effect.op` and a handler clause's operation.
+  // `Effect.op` identity). Effect names are global, so this is program-wide.
+  // Used to resolve an effect-qualified `Effect.op` and a handler clause's
+  // operation.
   std::unordered_map<std::string, std::unordered_map<std::string, UT::Vu>>
     effects;
 
@@ -134,9 +135,9 @@ struct Linker
     return UT::strdup(arena, UT::Vu{ s.data(), s.size() });
   }
 
-  // `Effect.op`, the canonical program-wide identity of an operation, copied into
-  // the arena. The '.' separator cannot occur in a mangled global (`MOD/name`),
-  // so an operation identity never collides with one.
+  // `Effect.op`, the canonical program-wide identity of an operation, copied
+  // into the arena. The '.' separator cannot occur in a mangled global
+  // (`MOD/name`), so an operation identity never collides with one.
   UT::Vu
   op_identity(
     UT::Vu eff, UT::Vu op)
@@ -230,11 +231,12 @@ struct Linker
         }
         case ExprTag::EffectDecl:
         {
-          // Register each operation as a module symbol whose mangled identity is
-          // the canonical `Effect.op`, so a bare op resolves through the ordinary
-          // scope/overload path and same-named ops from different effects get
-          // distinct identities. Also record the effect in the program-wide table
-          // for qualified `Effect.op` and clause-op resolution.
+          // Register each operation as a module symbol whose mangled identity
+          // is the canonical `Effect.op`, so a bare op resolves through the
+          // ordinary scope/overload path and same-named ops from different
+          // effects get distinct identities. Also record the effect in the
+          // program-wide table for qualified `Effect.op` and clause-op
+          // resolution.
           auto       &ed = std::get<EX::ExEffectDecl>(e->as);
           std::string ekey(ed.name);
           if (effects.count(ekey))
@@ -244,7 +246,7 @@ struct Linker
           auto &opmap = effects[ekey];
           for (auto &op : ed.ops)
           {
-            UT::Vu id = op_identity(ed.name, op.name);
+            UT::Vu id                   = op_identity(ed.name, op.name);
             opmap[std::string(op.name)] = id;
             md.symbols[std::string(op.name)].push_back({ id, true, e });
           }
@@ -253,8 +255,8 @@ struct Linker
         }
         case ExprTag::StructDecl:
         case ExprTag::UnionDecl:
-        case ExprTag::AliasDecl: decls.push_back(e); break;
-        default                : break; // nothing else is valid at top level
+        case ExprTag::AliasDecl : decls.push_back(e); break;
+        default                 : break; // nothing else is valid at top level
         }
       }
     }
@@ -422,7 +424,8 @@ struct Linker
       }
       err(ER::Code::UNKNOWN_MODULE,
           v.qualifier,
-          "no module or effect named '" + PFX + "' in '" + PFX + "." + nm + "'");
+          "no module or effect named '" + PFX + "' in '" + PFX + "." + nm
+            + "'");
       return;
     }
 
@@ -489,8 +492,8 @@ struct Linker
   // rewriting `c.op` (and clearing `c.qualifier`). A clause names exactly one
   // operation, so -- unlike a perform site -- it is never an ExOverload and
   // cannot be settled by type: an unqualified op shared by several effects must
-  // be qualified `Effect.op`. (Effects are program-wide, so resolution is by the
-  // global effect table, not module scope.)
+  // be qualified `Effect.op`. (Effects are program-wide, so resolution is by
+  // the global effect table, not module scope.)
   void
   resolve_clause_op(
     EX::HandlerClause &c)
@@ -538,8 +541,8 @@ struct Linker
       return (void)err(ER::Code::AMBIGUOUS_NAME,
                        c.op,
                        "operation '" + op
-                         + "' is declared by several effects; qualify it ("
-                         + qs + ")");
+                         + "' is declared by several effects; qualify it (" + qs
+                         + ")");
     }
     c.op = hit;
   }
@@ -631,7 +634,8 @@ struct Linker
       resolve(h.body, Mkey, sc, locals); // k is NOT in scope in the body
       for (size_t c = 0; c < h.clauses.size(); ++c)
       {
-        resolve_clause_op(h.clauses[c]); // rewrite op to its `Effect.op` identity
+        resolve_clause_op(
+          h.clauses[c]); // rewrite op to its `Effect.op` identity
         size_t base = locals.size();
         locals.push_back(h.clauses[c].arg); // the operation's argument
         locals.push_back(h.k);              // the shared continuation

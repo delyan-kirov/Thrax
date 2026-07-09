@@ -87,11 +87,11 @@ struct TyVar
 // means the pure/total empty row; an explicit `<>` is also pure with eff set.
 struct TyArrow
 {
-  Ty            *from;
-  Ty            *to;
+  Ty             *from;
+  Ty             *to;
   UT::Vec<UT::Vu> eff_labels;
-  UT::Vu         eff_tail{};
-  bool           eff = false; // an effect row was written (even if `<>`)
+  UT::Vu          eff_tail{};
+  bool            eff = false; // an effect row was written (even if `<>`)
 };
 
 #define EX_TY_VARIANTS                                                         \
@@ -343,16 +343,16 @@ struct ExMatch
 
 // One `is op a = body` clause of a handler: operation `op`, its single argument
 // bound to `arg`, and the clause body (in which both `arg` and the handler's
-// continuation `k` are in scope). To resume, the body applies `k` (a first-class
-// value); to abort (exceptions), it ignores `k`.
+// continuation `k` are in scope). To resume, the body applies `k` (a
+// first-class value); to abort (exceptions), it ignores `k`.
 struct HandlerClause
 {
   UT::Vu op;
   UT::Vu arg;
   Expr  *body;
-  UT::Vu qualifier{}; // effect prefix from `is Effect.op a`; empty when bare. MR
-                      // rewrites `op` to the canonical `Effect.op` identity and
-                      // clears this.
+  UT::Vu qualifier{}; // effect prefix from `is Effect.op a`; empty when bare.
+                      // MR rewrites `op` to the canonical `Effect.op` identity
+                      // and clears this.
 };
 // A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. Runs `body`; an
 // operation performed within it dispatches to the matching clause (binding the
@@ -365,7 +365,7 @@ struct ExHandle
   Expr                  *body;
   UT::Vu                 k;
   UT::Vec<HandlerClause> clauses;
-  UT::Vu                 else_var{};        // empty when there is no `else`
+  UT::Vu                 else_var{}; // empty when there is no `else`
   Expr                  *else_body = nullptr;
 };
 
@@ -478,9 +478,9 @@ struct ExUnionDecl
 };
 // An effect declaration: `$ Name : @effect = op : A -> B, ...`. Declares a set
 // of OPERATIONS (reusing FieldDecl: `name` is the operation, `ty` its `A -> B`
-// signature, whose codomain is the type a `perform` of it yields back). Produces
-// no runtime value; its operations are registered as typed names. The effect
-// name is a TypeName (uppercase), each operation a variable (lowercase).
+// signature, whose codomain is the type a `perform` of it yields back).
+// Produces no runtime value; its operations are registered as typed names. The
+// effect name is a TypeName (uppercase), each operation a variable (lowercase).
 struct ExEffectDecl
 {
   UT::Vu             name;
@@ -607,17 +607,18 @@ const InfixTable infix_db{
 };
 
 // Tokens that can begin an operand -> juxtaposition is application. `do` is NOT
-// here: a `do` block is only ever a primary (parse_prefix), never an argument by
-// juxtaposition -- so `defer <cleanup> do <body>` reads `do` as the body opener,
-// not as applying the cleanup to a do-block. (Use `f (do ...)` to pass one.)
+// here: a `do` block is only ever a primary (parse_prefix), never an argument
+// by juxtaposition -- so `defer <cleanup> do <body>` reads `do` as the body
+// opener, not as applying the cleanup to a do-block. (Use `f (do ...)` to pass
+// one.)
 const OperandSet operand_starters{
   LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
   LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
   LX::TokenTag::KwIf, LX::TokenTag::Lambda, LX::TokenTag::LBrace,
 };
 
-// Tokens that end an expression. `do` ends one so `defer <cleanup> do ...` stops
-// the cleanup at the `do`.
+// Tokens that end an expression. `do` ends one so `defer <cleanup> do ...`
+// stops the cleanup at the `do`.
 const OperandSet expr_terminators{
   LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
   LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,

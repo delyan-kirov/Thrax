@@ -1,14 +1,13 @@
 .*
 bin/*
+**/bin/
 compile_commands.json
-BL*
-*.txt
+compile_flags.txt
+inc/THxRTxAMALG.hpp
 vgcore*
 tmp.*
 *.orig
-
 inc/ffi.h
 inc/ffitarget.h
 inc/raylib.h
-
 lib/*

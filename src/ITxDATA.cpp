@@ -61,8 +61,8 @@ call_extern(
       words.push_back(std::get<VInt>(a->as).val);
     else if (VKind::Real == kind(a))
     {
-      double   d = std::get<VReal>(a->as).val;
-      ssize_t  w;
+      double  d = std::get<VReal>(a->as).val;
+      ssize_t w;
       std::memcpy(&w, &d, sizeof(w)); // FF reads Real words as double bits
       words.push_back(w);
     }
@@ -133,10 +133,10 @@ pprint(
   case VKind::Rec: return pad + "<rec>";
   case VKind::Code:
     return pad + "<code#" + std::to_string(std::get<VCode>(v->as).code) + ">";
-  case VKind::Op: return pad + "<op " + std::get<VOp>(v->as).name + ">";
-  case VKind::Resump : return pad + "<resumption>";
-  case VKind::Defer: return pad + "<defer>";
-  case VKind::Unk    : return pad + "?unknown";
+  case VKind::Op    : return pad + "<op " + std::get<VOp>(v->as).name + ">";
+  case VKind::Resump: return pad + "<resumption>";
+  case VKind::Defer : return pad + "<defer>";
+  case VKind::Unk   : return pad + "?unknown";
   }
   return pad + "?unreachable";
 }

@@ -181,7 +181,8 @@ Machine::run(
       if (std::holds_alternative<KDefer>(kf))
       {
         // Normal completion through a `defer`: run the cleanup, then deliver
-        // the protected value `v` (KThunkRet discards the cleanup's own result).
+        // the protected value `v` (KThunkRet discards the cleanup's own
+        // result).
         pVal cleanup = deref(std::get<KDefer>(kf).cleanup);
         kont.push_back(KThunkRet{ v });
         jump1(cleanup, mk(Value{ VUnk{} }));
@@ -192,20 +193,22 @@ Machine::run(
         v = std::get<KThunkRet>(kf).saved; // discard incoming, deliver saved
         continue;
       }
-      // KAfterClause: the handler operation clause just finished with value `v`.
-      // If its resumption `k` was resumed, its defer cleanups run on the
+      // KAfterClause: the handler operation clause just finished with value
+      // `v`. If its resumption `k` was resumed, its defer cleanups run on the
       // resumed computation's completion (their KDefer); if `k` was stored (an
-      // extra live reference to kval beyond this frame and the clause slot), they
-      // run when it is later resumed and completes. Otherwise `k` was discarded
-      // (the exception/abort case): run its captured defer cleanups now, here,
-      // with the enclosing handlers still installed, then deliver `v`.
+      // extra live reference to kval beyond this frame and the clause slot),
+      // they run when it is later resumed and completes. Otherwise `k` was
+      // discarded (the exception/abort case): run its captured defer cleanups
+      // now, here, with the enclosing handlers still installed, then deliver
+      // `v`.
       {
-        pVal       &kval = std::get<KAfterClause>(kf).kval;
-        Resumption *res  = std::get<VResump>(deref(kval)->as).seg.get();
+        pVal       &kval    = std::get<KAfterClause>(kf).kval;
+        Resumption *res     = std::get<VResump>(deref(kval)->as).seg.get();
         bool        resumed = res->used;
-        // Baseline references to kval: this frame's (kf) and the clause's slot 1.
-        // Any beyond that means the clause stashed `k` somewhere (a generator /
-        // scheduler) -- don't finalize; its cleanup runs when it resumes.
+        // Baseline references to kval: this frame's (kf) and the clause's
+        // slot 1. Any beyond that means the clause stashed `k` somewhere (a
+        // generator / scheduler) -- don't finalize; its cleanup runs when it
+        // resumes.
         bool stored = kval.use_count() > 2;
         if (resumed || stored) continue; // deliver v unchanged
         // Schedule the captured cleanups (innermost last in seg => ends on top
@@ -282,8 +285,9 @@ Machine::run(
       }
       if (VKind::Extern == kind(callee))
       {
-        // A foreign function: accumulate operands until saturated, then make the
-        // C call (call_extern marshals args <-> machine words via FF::call).
+        // A foreign function: accumulate operands until saturated, then make
+        // the C call (call_extern marshals args <-> machine words via
+        // FF::call).
         VExtern x = std::get<VExtern>(callee->as);
         x.args.push_back(argv);
         if (x.args.size() >= x.decl->arg_types.size())
@@ -307,7 +311,7 @@ Machine::run(
           if (done) goto finish;
           break;
         }
-        kont.push_back(KDefer{ defer.args[1] });    // cleanup
+        kont.push_back(KDefer{ defer.args[1] });          // cleanup
         jump1(deref(defer.args[0]), mk(Value{ VUnk{} })); // action {}
         break;
       }
@@ -315,10 +319,11 @@ Machine::run(
       {
         // Perform: find the nearest installed prompt with a clause for this
         // operation, capture the continuation slice from that prompt up to here
-        // (INCLUDING the prompt -> deep handler), and run the clause OUTSIDE the
-        // prompt (the stack below it). The clause is the 2-argument curried
-        // closure `\arg = \k = e`; we apply it to the operation argument then the
-        // resumption, and hand its result to the (now truncated) continuation.
+        // (INCLUDING the prompt -> deep handler), and run the clause OUTSIDE
+        // the prompt (the stack below it). The clause is the 2-argument curried
+        // closure `\arg = \k = e`; we apply it to the operation argument then
+        // the resumption, and hand its result to the (now truncated)
+        // continuation.
         const std::string &op = std::get<VOp>(callee->as).name;
         size_t             p  = kont.size();
         pVal               clause;
@@ -342,16 +347,16 @@ Machine::run(
 
         // Mark the clause boundary with the resumption, so when the clause
         // finishes we can finalize `k`'s `Defer` cleanups if it was discarded
-        // (see ret's KAfterClause case). This sits below the clause and above the
-        // enclosing handlers, so a discard-time cleanup still sees them.
+        // (see ret's KAfterClause case). This sits below the clause and above
+        // the enclosing handlers, so a discard-time cleanup still sees them.
         pVal kval = mk(Value{ VResump{ seg } });
         kont.push_back(KAfterClause{ kval });
 
-        // Jump into the clause inline: a 2-slot Code with the operation argument
-        // in slot 0 and the resumption k in slot 1. Its body runs in this same
-        // loop on the now-truncated stack -- no nested call, so resume/perform
-        // chains stay constant-stack. The clause's eventual Ret flows to the
-        // continuation below the (removed) prompt.
+        // Jump into the clause inline: a 2-slot Code with the operation
+        // argument in slot 0 and the resumption k in slot 1. Its body runs in
+        // this same loop on the now-truncated stack -- no nested call, so
+        // resume/perform chains stay constant-stack. The clause's eventual Ret
+        // flows to the continuation below the (removed) prompt.
         pVal cl = deref(clause);
         UT_FAIL_IF(VKind::Code != kind(cl));
         auto           &clo = std::get<VCode>(cl->as);
@@ -467,8 +472,8 @@ Machine::run(
 
     case IR::EKind::Handle:
     {
-      // Install a prompt holding the (evaluated) clause and value closures, then
-      // run the body under it. The clause/els closures capture the current
+      // Install a prompt holding the (evaluated) clause and value closures,
+      // then run the body under it. The clause/els closures capture the current
       // activation here, exactly when the handler is entered.
       auto   &h = std::get<IR::Handle>(ctrl->as);
       Handler handler;

@@ -201,9 +201,9 @@ struct HandleClause
 };
 struct Handle
 {
-  Expr                *body;
+  Expr                 *body;
   UT::Vec<HandleClause> clauses;
-  Atom                *els;
+  Atom                 *els;
 };
 
 // A foreign binding (the body of an FFI global), carried through unchanged.
@@ -279,8 +279,9 @@ struct Program
   std::vector<Code>                       codes;
   std::unordered_map<std::string, size_t> globals;
   // Names of effect operations (from `@effect` declarations). The machine
-  // resolves a Glob naming one of these to an operation value that performs when
-  // applied. Populated by the driver from the program's effect declarations.
+  // resolves a Glob naming one of these to an operation value that performs
+  // when applied. Populated by the driver from the program's effect
+  // declarations.
   std::unordered_set<std::string> operations;
 };
 

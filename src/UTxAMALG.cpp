@@ -8,6 +8,7 @@
 #include "UTxAMALG.hpp"
 
 #include "AR.cpp"
+#include "CC.cpp"
 #include "CR.cpp"
 #include "CRxANF.cpp"
 #include "DR.cpp"
