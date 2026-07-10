@@ -324,6 +324,26 @@ needs_rebuild(
   return false;
 }
 
+// The nob-style self-update every build.cpp needs: if ./build is stale relative
+// to any of `srcs`, recompile it with `compile_cmd`, then re-exec the fresh
+// binary with the same args and exit with its code. `compile_cmd` and `srcs`
+// are the only things that vary per project (include paths, source set); the
+// mechanism -- timestamp check, portable re-exec (spawn, not execv) -- is
+// shared. A no-op on the first run (fresh ./build, nothing newer), so it never
+// loops.
+[[maybe_unused]] inline void
+rebuild_self(
+  int argc, char **argv, const string &compile_cmd, const vector<string> &srcs)
+{
+  if (!fs::exists("./build") || !needs_rebuild("./build", srcs)) return;
+  std::print("build: rebuilding self\n");
+  if (run(compile_cmd) != 0) die("failed to rebuild self");
+  vector<string> a = { "./build" };
+  for (int i = 1; i < argc; ++i) a.push_back(argv[i]);
+  std::fflush(stdout); // order our log before the child's inherited output
+  std::exit(spawn(a));
+}
+
 // Files with any of `exts` across `dirs`, excluding build-system files (which
 // live in module dirs but are not library sources), sorted by filename (stable,
 // matches the historical amalgamation order).
@@ -453,6 +473,17 @@ build(
 {
   fs::create_directories(c.artifacts);
 
+  // 0. Flag stamp: the compile flags that live in no source file -- notably the
+  // FFI -D/-l toggle. Rewritten only when it changes, which bumps its mtime so
+  // every TU that lists it as an input recompiles; an unchanged flag set leaves
+  // it untouched and triggers nothing. This is what lets `build ffi` /
+  // `build no-ffi` switch cleanly, with no manual clean.
+  const string flag_stamp = c.artifacts + "/.flags";
+  {
+    const string want = c.cxxflags() + " || " + c.ffi_libs;
+    if (read_file(flag_stamp) != want) write_file(flag_stamp, want);
+  }
+
   // 1. Per-module generation (e.g. the baked runtime header).
   for (const Module &m : mods)
     if (m.generate) m.generate(c);
@@ -482,6 +513,7 @@ build(
   const string   pch_flags = "-Xclang -include-pch -Xclang " + pch;
   vector<string> pch_ins   = hpps;
   pch_ins.push_back(amalg_hpp);
+  pch_ins.push_back(flag_stamp);
   if (needs_rebuild(pch, pch_ins))
     run_or_die(c.cxx + " " + c.cxxflags() + " -x c++-header " + amalg_hpp
                + " -o " + pch);
@@ -494,6 +526,7 @@ build(
     vector<string> ins = deps;
     ins.push_back(src);
     ins.push_back(pch);
+    ins.push_back(flag_stamp);
     if (needs_rebuild(o, ins))
       run_or_die(c.cxx + " " + c.cxxflags() + " " + pch_flags + " -c " + src
                  + " -o " + o);

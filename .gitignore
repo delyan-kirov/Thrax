@@ -1,6 +1,7 @@
 .*
 /artifacts/
 /build
+/examples/raylib_demo/build
 **/bin/
 compile_commands.json
 compile_flags.txt

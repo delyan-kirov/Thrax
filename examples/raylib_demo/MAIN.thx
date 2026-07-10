@@ -4,8 +4,8 @@
 # \info A raylib demo
 #       Note: raylib's `Color` is a 4-byte struct passed in an integer
 #       This is a self-contained little project: build and run it with its own
-#       makefile + flake, from this directory:
-#           nix develop   &&   make run
+#       build.cpp + flake, from this directory:
+#           nix develop   &&   ./build run
 #       (needs raylib -- provided by the flake -- and a display.)
 
 # --- raylib bindings ---------------------------------------------------

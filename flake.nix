@@ -19,6 +19,7 @@
         buildInputs = [
           # Tools
           pkgs.clang
+          pkgs.clang-tools
           pkgs.gcc
           pkgs.git
           pkgs.valgrind

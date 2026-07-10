@@ -11,7 +11,8 @@
  * ./build for you.
  *
  *      Subcommands: build (default), test, native-test, clean, format, tokei,
- *      valgrind, env.
+ *      valgrind, env. A leading ffi/no-ffi option toggles FFI (on by default):
+ *      `./build no-ffi test`, `./build ffi`.
  *-----------------------------------------------------------------------------*/
 
 #include "UTxBUILD.hpp"
@@ -25,12 +26,22 @@
 using BLD::Ctx;
 using BLD::Module;
 
+// FFI is on by default (the nix dev shell provides libffi). `no-ffi` forces it
+// off (for the no-nix bootstrap); `ffi` requires it (error if libffi is absent).
+enum class Ffi
+{
+  Default,
+  On,
+  Off
+};
+
 // libffi layered resolution: env (nix) -> pkg-config -> vendored (not wired).
 static void
 resolve_ffi(
-  Ctx &c)
+  Ctx &c, Ffi mode)
 {
-  if (!std::getenv("THRAX_3RD_PARTY_ON")) return;
+  if (mode == Ffi::Off) return;
+
   const char *dev = std::getenv("LIBFFI_DEV");
   const char *lib = std::getenv("LIBFFI");
   if (dev && lib)
@@ -50,14 +61,22 @@ resolve_ffi(
     c.ffi_libs   = l + " -ldl";
     return;
   }
-  BLD::die("libffi requested (THRAX_3RD_PARTY_ON) but not found: set $LIBFFI "
-           "and $LIBFFI_DEV (nix), install libffi (pkg-config), or vendor "
-           "external/libffi");
+
+  const std::string miss
+    = "libffi not found: enter `nix develop` (sets $LIBFFI / $LIBFFI_DEV), "
+      "install libffi (pkg-config), or vendor external/libffi";
+  // An explicit `ffi` must be satisfiable; the default is best-effort so the
+  // no-nix bootstrap still builds (without @extern support at runtime).
+  if (mode == Ffi::On) BLD::die(miss);
+  std::print(stderr,
+             "build: {}\nbuild: building WITHOUT FFI (@extern unavailable at "
+             "runtime; pass `ffi` to require it)\n",
+             miss);
 }
 
 static Ctx
 make_ctx(
-  int argc, char **argv)
+  int argc, char **argv, Ffi ffi)
 {
   Ctx c;
   c.includes
@@ -65,7 +84,7 @@ make_ctx(
   std::string inv = "./build";
   for (int i = 1; i < argc; ++i) inv += " " + std::string(argv[i]);
   c.invocation = inv;
-  resolve_ffi(c);
+  resolve_ffi(c, ffi);
   return c;
 }
 
@@ -117,9 +136,8 @@ cmd_clean(
   return 0;
 }
 
-// Recompile this program if any build source changed, then re-run it (portable
-// re-exec: spawn the fresh binary with the same args and exit with its code --
-// no execv, so no POSIX dependency here).
+// This project's sources + flags for the shared self-rebuild (BLD::rebuild_self
+// does the timestamp check and portable re-exec).
 static void
 rebuild_self(
   int argc, char **argv)
@@ -130,16 +148,8 @@ rebuild_self(
                                     "utilities/AR.hpp" };
   for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
     srcs.push_back(std::string(d) + "/build.cpp");
-  if (std::filesystem::exists("./build") && BLD::needs_rebuild("./build", srcs))
-  {
-    std::print("build: rebuilding self\n");
-    if (BLD::run("clang++ -std=c++23 -Iutilities -O0 build.cpp -o build") != 0)
-      BLD::die("failed to rebuild self");
-    std::vector<std::string> a = { "./build" };
-    for (int i = 1; i < argc; ++i) a.push_back(argv[i]);
-    std::fflush(stdout); // order our log before the child's inherited output
-    std::exit(BLD::spawn(a));
-  }
+  BLD::rebuild_self(
+    argc, argv, "clang++ -std=c++23 -O1 -Iutilities build.cpp -o build", srcs);
 }
 
 int
@@ -148,8 +158,22 @@ main(
 {
   rebuild_self(argc, argv);
 
-  std::string cmd  = argc > 1 ? argv[1] : "build";
-  Ctx         c    = make_ctx(argc, argv);
+  // Optional leading FFI option: `./build [ffi|no-ffi] <cmd> ...`.
+  int argi = 1;
+  Ffi ffi  = Ffi::Default;
+  if (argi < argc && std::string(argv[argi]) == "no-ffi")
+  {
+    ffi = Ffi::Off;
+    ++argi;
+  }
+  else if (argi < argc && std::string(argv[argi]) == "ffi")
+  {
+    ffi = Ffi::On;
+    ++argi;
+  }
+
+  std::string cmd  = argi < argc ? argv[argi] : "build";
+  Ctx         c    = make_ctx(argc, argv, ffi);
   auto        mods = modules();
 
   if (cmd == "build" || cmd == "all")
@@ -195,7 +219,7 @@ main(
   }
 
   std::print(stderr,
-             "usage: build [build|test|native-test|clean|format|"
+             "usage: build [ffi|no-ffi] [build|test|native-test|clean|format|"
              "compile-commands|tokei|valgrind|env]\n");
   return 2;
 }
