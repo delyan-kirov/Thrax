@@ -40,10 +40,8 @@ resolve_ffi(
                  + std::string(lib) + "/lib";
     return;
   }
-  std::string l
-    = BLD::trim(BLD::capture("pkg-config --libs libffi 2>/dev/null"));
-  std::string cf
-    = BLD::trim(BLD::capture("pkg-config --cflags libffi 2>/dev/null"));
+  std::string l  = BLD::trim(BLD::exec({ "pkg-config", "--libs", "libffi" }).out);
+  std::string cf = BLD::trim(BLD::exec({ "pkg-config", "--cflags", "libffi" }).out);
   if (!l.empty())
   {
     c.ffi_cflags = cf + " -DTHRAX_3RD_PARTY_ON=1";
@@ -92,15 +90,35 @@ cmd_format()
   for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
   f.push_back("build.cpp");
+  f.push_back("utilities/UTxBUILD.hpp");
   std::string cmd = "clang-format -i";
   for (auto &x : f) cmd += " " + x;
   return BLD::run(cmd);
 }
 
-// Recompile this program if any build source changed, then re-exec.
+// Remove build artifacts and scratch files (no shell -- pure std::filesystem).
+static int
+cmd_clean(const Ctx &c)
+{
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::remove_all(c.artifacts, ec);
+  fs::remove("compile_flags.txt", ec);
+  for (const auto &e : fs::directory_iterator("."))
+  {
+    std::string n = e.path().filename().string();
+    bool orig = n.size() > 5 && n.compare(n.size() - 5, 5, ".orig") == 0;
+    if (n.rfind("tmp.", 0) == 0 || n.rfind("vgcore", 0) == 0 || orig)
+      fs::remove_all(e.path(), ec);
+  }
+  return 0;
+}
+
+// Recompile this program if any build source changed, then re-run it (portable
+// re-exec: spawn the fresh binary with the same args and exit with its code --
+// no execv, so no POSIX dependency here).
 static void
-rebuild_self(
-  char **argv)
+rebuild_self(int argc, char **argv)
 {
   std::vector<std::string> srcs = { "build.cpp",
                                     "utilities/UTxBUILD.hpp",
@@ -110,12 +128,14 @@ rebuild_self(
     srcs.push_back(std::string(d) + "/build.cpp");
   if (std::filesystem::exists("./build") && BLD::needs_rebuild("./build", srcs))
   {
-    std::cout << "build: rebuilding self\n";
-    if (BLD::run("clang++ -std=c++20 -Iutilities -O0 build.cpp -o build") != 0)
+    std::print("build: rebuilding self\n");
+    if (BLD::run("clang++ -std=c++23 -Iutilities -O0 build.cpp -o build") != 0)
       BLD::die("failed to rebuild self");
-    std::cout.flush(); // execv replaces the image without flushing iostreams
-    execv("./build", argv);
-    BLD::die("failed to re-exec self");
+    std::vector<std::string> a = { "./build" };
+    for (int i = 1; i < argc; ++i)
+      a.push_back(argv[i]);
+    std::fflush(stdout); // order our log before the child's inherited output
+    std::exit(BLD::spawn(a));
   }
 }
 
@@ -123,7 +143,7 @@ int
 main(
   int argc, char **argv)
 {
-  rebuild_self(argv);
+  rebuild_self(argc, argv);
 
   std::string cmd  = argc > 1 ? argv[1] : "build";
   Ctx         c    = make_ctx(argc, argv);
@@ -144,9 +164,7 @@ main(
     BLD::build(c, mods);
     return tests_native(c);
   }
-  if (cmd == "clean")
-    return BLD::run("rm -rf " + c.artifacts
-                    + " tmp.* vgcore* *.orig compile_flags.txt");
+  if (cmd == "clean") return cmd_clean(c);
   if (cmd == "format") return cmd_format();
   if (cmd == "tokei")
     return BLD::run("tokei --exclude artifacts --exclude external");
@@ -160,13 +178,13 @@ main(
   if (cmd == "env")
   {
     std::string root = std::filesystem::current_path().string();
-    std::cout << "export THRAX_ROOT=" << root << "\n";
-    std::cout << "export PATH=" << root << ":" << root << "/" << c.artifacts
-              << ":$PATH\n";
+    std::print("export THRAX_ROOT={}\n", root);
+    std::print("export PATH={}:{}/{}:$PATH\n", root, root, c.artifacts);
     return 0;
   }
 
-  std::cerr << "usage: build "
-               "[build|test|native-test|clean|format|tokei|valgrind|env]\n";
+  std::print(stderr,
+             "usage: build "
+             "[build|test|native-test|clean|format|tokei|valgrind|env]\n");
   return 2;
 }

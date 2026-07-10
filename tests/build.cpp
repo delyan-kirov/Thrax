@@ -40,30 +40,34 @@ tests_native(
   int                      pass = 0, skip = 0, fail = 0;
   for (const std::string &f : files)
   {
-    if (BLD::run(thrax + " -c '" + f + "' > " + cfile + " 2>/dev/null") != 0)
+    // Emit the C to cfile (its stdout is the artifact); thrax's stderr flows
+    // live. cc and the compiled program are run captured -- nothing dropped --
+    // and their output is surfaced only when the step fails.
+    if (BLD::spawn({ thrax, "-c", f }, cfile) != 0)
     {
-      std::cout << "SKIP  " << f << "\n";
+      std::print("SKIP  {}\n", f);
       ++skip;
       continue;
     }
-    if (BLD::run("cc -O2 " + cfile + " -o " + bfile + " 2>/dev/null") != 0)
+    BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile });
+    if (cc.code != 0)
     {
-      std::cout << "FAIL(cc)  " << f << "\n";
+      std::print("FAIL(cc)  {}\n{}{}", f, cc.out, cc.err);
       ++fail;
       continue;
     }
-    if (BLD::run("./" + bfile + " >/dev/null 2>&1") != 0)
+    BLD::Output rn = BLD::exec({ "./" + bfile });
+    if (rn.code != 0)
     {
-      std::cout << "FAIL(run) " << f << "\n";
+      std::print("FAIL(run) {}\n{}{}", f, rn.out, rn.err);
       ++fail;
       continue;
     }
-    std::cout << "PASS  " << f << "\n";
+    std::print("PASS  {}\n", f);
     ++pass;
   }
   fs::remove(cfile);
   fs::remove(bfile);
-  std::cout << "native-test: pass=" << pass << " skip=" << skip
-            << " fail=" << fail << "\n";
+  std::print("native-test: pass={} skip={} fail={}\n", pass, skip, fail);
   return fail == 0 ? 0 : 1;
 }

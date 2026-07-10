@@ -25,17 +25,7 @@
 
           # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
           pkgs.libffi
-          # pkgs.raylib
 
-          # X11 support for raylib
-          # pkgs.libX11
-          # pkgs.libX11.dev
-          # pkgs.libXcursor
-          # pkgs.libXi
-          # pkgs.libXinerama
-          # pkgs.libXrandr
-
-          # extra
           pkgs.tokei
           # mingwPkgs.stdenv.cc
           # should be enabled manually to check windows build
@@ -52,7 +42,7 @@
           # + the built binaries on PATH. nix is an accelerator here, not a
           # requirement: the same `build.cpp` builds without nix (see README).
           export THRAX_ROOT=$PWD
-          [ -x ./build ] || clang++ -std=c++20 -Iutilities build.cpp -o build
+          [ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp -o build
           export PATH=$PWD:$PWD/artifacts:$PATH
         '';
       };

@@ -11,7 +11,7 @@ automates the bootstrap and provides optional tooling/libraries.
 **Without nix** (bootstrap once, then use `./build`):
 
 ```sh
-clang++ -std=c++20 -Iutilities build.cpp -o build && ./build
+clang++ -std=c++23 -Iutilities build.cpp -o build && ./build
 ```
 
 **With nix** (`nix develop` bootstraps `./build` and puts it on `PATH`):
