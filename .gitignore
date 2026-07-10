@@ -1,13 +1,10 @@
 .*
-bin/*
+/artifacts/
+/build
 **/bin/
 compile_commands.json
 compile_flags.txt
-inc/THxRTxAMALG.hpp
 vgcore*
 tmp.*
 *.orig
-inc/ffi.h
-inc/ffitarget.h
-inc/raylib.h
 lib/*

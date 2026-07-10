@@ -21,8 +21,8 @@
 /*------------------------------------------------------------------------------
  *\PROVIDED BY THE GENERATED PROGRAM
  *
- * The lifted-code tables (THxRT_code_table / THxRT_code_nlocals / count) live in
- * THxK.h, since the CEK driver owns application.
+ * The lifted-code tables (THxRT_code_table / THxRT_code_nlocals / count) live
+ * in THxK.h, since the CEK driver owns application.
  *-----------------------------------------------------------------------------*/
 
 /* One foreign-call wrapper per `@extern` site: it marshals the collected,

@@ -5,8 +5,8 @@
  *      v1 links src/THxMEMBUMP.c (a bump arena that never frees and whose
  *      retain/release are no-ops). A future src/THxMEMRC.c implements
  *      retain/release over Value::rc for reference counting -- at which point
- *      the codegen begins emitting THxMEM_retain/THxMEM_release at the documented
- *      binding/return/overwrite points (see doc/native-backend.md).
+ *      the codegen begins emitting THxMEM_retain/THxMEM_release at the
+ * documented binding/return/overwrite points (see doc/native-backend.md).
  *-----------------------------------------------------------------------------*/
 
 #ifndef THxMEM_H_

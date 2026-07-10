@@ -3,8 +3,8 @@
  *\info The reified-K (CEK) driver: a C port of the interpreter's abstract
  *      machine (src/IT.cpp). It owns the explicit continuation stack `kont`,
  *      applies values, unwinds returns, and implements algebraic effects --
- *      `perform` (capture a continuation slice from a prompt to here and run the
- *      clause below the prompt), `resume` (splice the slice back, affine), and
+ *      `perform` (capture a continuation slice from a prompt to here and run
+ * the clause below the prompt), `resume` (splice the slice back, affine), and
  *      `defer` (deferred cleanups). Generated blocks are leaves the driver
  *      calls; they never recurse into each other on the C stack, so a captured
  *      continuation is a pure heap object.
@@ -119,7 +119,8 @@ static Value  *g_fn;  /* ACT_APPLY callee */
 static Value  *g_arg; /* ACT_APPLY argument */
 static BlockFn g_blk; /* ACT_JUMP target */
 
-static Value *g_result; /* set when a run completes (kont drained to its base) */
+static Value
+  *g_result; /* set when a run completes (kont drained to its base) */
 
 /*------------------------------------------------------------------------------
  *\FRAMES
@@ -129,8 +130,9 @@ static Frame *
 frame_new(
   size_t nlocals, Value **env, size_t nenv)
 {
-  Frame *f  = (Frame *)THxMEM_alloc(sizeof(Frame));
-  f->locals = nlocals ? (Value **)THxMEM_alloc(nlocals * sizeof(Value *)) : NULL;
+  Frame *f = (Frame *)THxMEM_alloc(sizeof(Frame));
+  f->locals
+    = nlocals ? (Value **)THxMEM_alloc(nlocals * sizeof(Value *)) : NULL;
   f->nlocals = nlocals;
   f->env     = env;
   f->nenv    = nenv;
@@ -194,8 +196,8 @@ THxK_handle(
 {
   /* KRet for the handled expression's eventual value (sits below the prompt, so
    * the value clause's result flows to it). When `cont` is NULL the handler is
-   * in tail position: the value flows straight to the enclosing continuation, so
-   * no KRet is added. */
+   * in tail position: the value flows straight to the enclosing continuation,
+   * so no KRet is added. */
   if (cont)
   {
     KFrame kr;
@@ -216,11 +218,11 @@ THxK_handle(
     claus2[i] = clauses[i];
   }
   KFrame kp;
-  kp.tag            = K_PROMPT;
-  kp.u.prompt.ops   = ops2;
+  kp.tag              = K_PROMPT;
+  kp.u.prompt.ops     = ops2;
   kp.u.prompt.clauses = claus2;
-  kp.u.prompt.n     = nclauses;
-  kp.u.prompt.els   = els;
+  kp.u.prompt.n       = nclauses;
+  kp.u.prompt.els     = els;
   kont_push(kp);
 
   g_act = ACT_JUMP;
@@ -272,10 +274,10 @@ Value *
 THxK_defer(
   void)
 {
-  Value *x           = THxMEM_alloc_value();
-  x->tag             = T_DEFER;
-  x->u.defer.nargs   = 0;
-  x->u.defer.args    = NULL;
+  Value *x         = THxMEM_alloc_value();
+  x->tag           = T_DEFER;
+  x->u.defer.nargs = 0;
+  x->u.defer.args  = NULL;
   return x;
 }
 
@@ -284,11 +286,11 @@ static Value *
 defer_push(
   Value *d, Value *x)
 {
-  size_t n         = d->u.defer.nargs;
-  Value *nd        = THxMEM_alloc_value();
-  nd->tag          = T_DEFER;
+  size_t n          = d->u.defer.nargs;
+  Value *nd         = THxMEM_alloc_value();
+  nd->tag           = T_DEFER;
   nd->u.defer.nargs = n + 1;
-  Value **args     = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
+  Value **args      = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; ++i) args[i] = d->u.defer.args[i];
   args[n]          = x;
   nd->u.defer.args = args;
@@ -322,11 +324,12 @@ static int
 jump1(
   BlockFn *cur, Frame **fr, Value **in, Value *clo, Value *arg)
 {
-  THxCHECK_ASSERT(clo != NULL && clo->tag == T_CLOS, "THxK jump1: not a closure");
+  THxCHECK_ASSERT(clo != NULL && clo->tag == T_CLOS,
+                  "THxK jump1: not a closure");
   size_t code = (size_t)clo->u.clos.code;
   THxCHECK_ASSERT(code < THxRT_code_count, "THxK jump1: code out of range");
-  Frame *nf = frame_new(THxRT_code_nlocals[code], clo->u.clos.env,
-                        clo->u.clos.nenv);
+  Frame *nf
+    = frame_new(THxRT_code_nlocals[code], clo->u.clos.env, clo->u.clos.nenv);
   if (nf->nlocals > 0) nf->locals[0] = arg;
   *cur = THxRT_code_table[code];
   *fr  = nf;
@@ -335,8 +338,8 @@ jump1(
 }
 
 /* Hand a finished value to the continuation stack (the interpreter's `ret`).
- * Returns 1 to continue the driver loop (control updated), 0 when the run's base
- * is reached (g_result set). */
+ * Returns 1 to continue the driver loop (control updated), 0 when the run's
+ * base is reached (g_result set). */
 static int
 do_ret(
   BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base)
@@ -355,11 +358,11 @@ do_ret(
     {
       Value *box = kf.u.ret.frame->locals[kf.u.ret.slot];
       THxCHECK_ASSERT(box != NULL, "THxK ret: no box in resumed slot");
-      *box                                = *v;
+      *box                                  = *v;
       kf.u.ret.frame->locals[kf.u.ret.slot] = box;
-      *cur                                = kf.u.ret.cont;
-      *fr                                 = kf.u.ret.frame;
-      *in                                 = v;
+      *cur                                  = kf.u.ret.cont;
+      *fr                                   = kf.u.ret.frame;
+      *in                                   = v;
       return 1;
     }
     case K_PROMPT:
@@ -369,14 +372,12 @@ do_ret(
     {
       /* normal completion through a defer: run cleanup, then deliver v */
       KFrame tr;
-      tr.tag             = K_THUNKRET;
+      tr.tag              = K_THUNKRET;
       tr.u.thunkret.saved = v;
       kont_push(tr);
       return jump1(cur, fr, in, kf.u.defer.cleanup, unit());
     }
-    case K_THUNKRET:
-      v = kf.u.thunkret.saved;
-      continue;
+    case K_THUNKRET: v = kf.u.thunkret.saved; continue;
     case K_AFTERCLAUSE:
     {
       THxK_Resump *res     = kf.u.afterclause.kval->u.resump.seg;
@@ -386,14 +387,14 @@ do_ret(
       /* discarded (exception/abort): run the captured defer cleanups now, on
        * the live stack with enclosing handlers installed, then re-deliver v. */
       KFrame tr;
-      tr.tag             = K_THUNKRET;
+      tr.tag              = K_THUNKRET;
       tr.u.thunkret.saved = v;
       kont_push(tr);
       for (size_t i = 0; i < res->n; ++i)
         if (res->seg[i].tag == K_DEFER)
         {
           KFrame kd;
-          kd.tag           = K_DEFER;
+          kd.tag             = K_DEFER;
           kd.u.defer.cleanup = res->seg[i].u.defer.cleanup;
           kont_push(kd);
         }
@@ -418,21 +419,22 @@ do_apply(
   {
     size_t code = (size_t)fn->u.clos.code;
     THxCHECK_ASSERT(code < THxRT_code_count, "THxK apply: code out of range");
-    Frame *nf = frame_new(THxRT_code_nlocals[code], fn->u.clos.env,
-                          fn->u.clos.nenv);
+    Frame *nf
+      = frame_new(THxRT_code_nlocals[code], fn->u.clos.env, fn->u.clos.nenv);
     if (nf->nlocals > 0) nf->locals[0] = arg;
     *cur = THxRT_code_table[code];
     *fr  = nf;
     *in  = arg;
     return 1;
   }
-  case T_BUILTIN: return do_ret(cur, fr, in, THxRT_apply_builtin(fn, arg), base);
-  case T_EXTERN : return do_ret(cur, fr, in, THxRT_apply_extern(fn, arg), base);
+  case T_BUILTIN:
+    return do_ret(cur, fr, in, THxRT_apply_builtin(fn, arg), base);
+  case T_EXTERN: return do_ret(cur, fr, in, THxRT_apply_extern(fn, arg), base);
   case T_OP:
   {
-    /* perform: find the nearest prompt (above `base`) with a clause for this op,
-     * capture the slice [prompt, here] (INCLUDING the prompt -> deep handler),
-     * truncate to below the prompt, and run the clause there. */
+    /* perform: find the nearest prompt (above `base`) with a clause for this
+     * op, capture the slice [prompt, here] (INCLUDING the prompt -> deep
+     * handler), truncate to below the prompt, and run the clause there. */
     const char *op     = fn->u.op.name;
     size_t      p      = g_kn;
     Value      *clause = NULL;
@@ -461,16 +463,17 @@ do_apply(
 
     Value *kval = mk_resump(seg);
     KFrame ac;
-    ac.tag             = K_AFTERCLAUSE;
+    ac.tag                = K_AFTERCLAUSE;
     ac.u.afterclause.kval = kval;
     kont_push(ac);
 
     /* enter the 2-arg clause: op argument in slot 0, resumption k in slot 1 */
-    THxCHECK_ASSERT(clause->tag == T_CLOS, "THxK perform: clause not a closure");
+    THxCHECK_ASSERT(clause->tag == T_CLOS,
+                    "THxK perform: clause not a closure");
     size_t code = (size_t)clause->u.clos.code;
     THxCHECK_ASSERT(code < THxRT_code_count, "THxK perform: clause code range");
-    Frame *nf = frame_new(THxRT_code_nlocals[code], clause->u.clos.env,
-                          clause->u.clos.nenv);
+    Frame *nf = frame_new(
+      THxRT_code_nlocals[code], clause->u.clos.env, clause->u.clos.nenv);
     THxCHECK_ASSERT(nf->nlocals >= 2, "THxK perform: clause needs 2 slots");
     nf->locals[0] = arg;
     nf->locals[1] = kval;
@@ -495,7 +498,7 @@ do_apply(
     if (nd->u.defer.nargs < 2) return do_ret(cur, fr, in, nd, base);
     /* both thunks in hand: install cleanup, run action {}. */
     KFrame kd;
-    kd.tag           = K_DEFER;
+    kd.tag             = K_DEFER;
     kd.u.defer.cleanup = nd->u.defer.args[1];
     kont_push(kd);
     return jump1(cur, fr, in, nd->u.defer.args[0], unit());

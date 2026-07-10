@@ -13,8 +13,9 @@
  * runtime (src/THxK.c): the IR becomes block functions whose continuation is an
  * explicit heap stack, so a handler can capture and splice the delimited
  * continuation. A program that makes foreign calls links with `-ldl` (see
- * `uses_ffi`). `unsupported` is now a vestigial seam (returns std::nullopt). See
- * doc/native-backend.md for the supported surface and the ref-counting seam.
+ * `uses_ffi`). `unsupported` is now a vestigial seam (returns std::nullopt).
+ * See doc/native-backend.md for the supported surface and the ref-counting
+ * seam.
  *-----------------------------------------------------------------------------*/
 
 #ifndef CC_HEADER_

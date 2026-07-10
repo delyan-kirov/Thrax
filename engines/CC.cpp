@@ -6,8 +6,8 @@
  *      branching) and ends by calling exactly one TERMINATOR (THxK_ret /
  *      THxK_tailcall / THxK_apply / THxK_jump / THxK_handle). A non-tail
  *      application is a suspension point: the rest of the computation becomes a
- *      continuation block, so the delimited continuation a handler captures is a
- *      pure heap object rather than live C-stack frames.
+ *      continuation block, so the delimited continuation a handler captures is
+ * a pure heap object rather than live C-stack frames.
  *
  * The emitter is continuation-passing: `emit_expr(e, sink)` lowers `e` so its
  * value reaches `sink` -- either delivered up the continuation (RET) or written
@@ -15,9 +15,10 @@
  * still emitted inline (as before); only suspending sub-expressions split into
  * fresh blocks.
  *
- * Domino discipline: the IR walkers switch over IR::EKind / AKind / AltKind with
- * NO default, so adding an IR variant fails to compile here (-Wswitch/-Werror)
- * until it is handled; genuinely-unreachable arms use UT_FAIL_MSG.
+ * Domino discipline: the IR walkers switch over IR::EKind / AKind / AltKind
+ * with NO default, so adding an IR variant fails to compile here
+ * (-Wswitch/-Werror) until it is handled; genuinely-unreachable arms use
+ * UT_FAIL_MSG.
  *-----------------------------------------------------------------------------*/
 
 #include "CC.hpp"
@@ -155,7 +156,8 @@ marshal_ret(
 
 // Where a computed value goes.
 //  - RET  : delivered up the continuation stack (THxK_ret / tailcall).
-//  - SLOT : written into frame `slot` (a let-box back-patch), then control jumps
+//  - SLOT : written into frame `slot` (a let-box back-patch), then control
+//  jumps
 //           to continuation block `cont`.
 struct Sink
 {
@@ -332,9 +334,9 @@ struct Emitter
     case IR::EKind::Field:
     case IR::EKind::MkVariant:
     case IR::EKind::Unk:
-    case IR::EKind::Extern  : return false;
-    case IR::EKind::App     : return !std::get<IR::App>(e->as).tail;
-    case IR::EKind::Handle  : return true;
+    case IR::EKind::Extern   : return false;
+    case IR::EKind::App      : return !std::get<IR::App>(e->as).tail;
+    case IR::EKind::Handle   : return true;
     case IR::EKind::Let:
     {
       auto &l = std::get<IR::Let>(e->as);
@@ -399,8 +401,8 @@ struct Emitter
   }
 
   // A sink that means "back-patch this slot then fall through" (used by a pure
-  // Case's branches). Encoded as SLOT with cont == NO_CONT so `deliver` knows to
-  // omit the jump. See deliver / emit_case usage.
+  // Case's branches). Encoded as SLOT with cont == NO_CONT so `deliver` knows
+  // to omit the jump. See deliver / emit_case usage.
   static constexpr size_t NO_CONT = (size_t)-1;
   Sink
   slot_sink_pure(
@@ -421,7 +423,7 @@ struct Emitter
     case IR::EKind::Field:
     case IR::EKind::MkVariant:
     case IR::EKind::Unk:
-    case IR::EKind::Extern: deliver(value_expr(e), sink, out); break;
+    case IR::EKind::Extern   : deliver(value_expr(e), sink, out); break;
 
     case IR::EKind::App:
     {
@@ -442,8 +444,8 @@ struct Emitter
     }
     break;
 
-    case IR::EKind::Let: emit_let(e, sink, out); break;
-    case IR::EKind::Case: emit_case(e, sink, out); break;
+    case IR::EKind::Let   : emit_let(e, sink, out); break;
+    case IR::EKind::Case  : emit_case(e, sink, out); break;
     case IR::EKind::Handle: emit_handle(e, sink, out); break;
     }
   }
@@ -487,7 +489,8 @@ struct Emitter
       switch (al.kind)
       {
       case IR::AltKind::Int:
-        cond = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
+        cond
+          = "THxVALUE_as_int(" + s + ") == " + std::to_string(al.ival) + "LL";
         break;
       case IR::AltKind::Real:
         cond = "THxVALUE_as_num(" + s + ") == " + cdbl(al.rval);
@@ -529,8 +532,8 @@ struct Emitter
   emit_handle(
     const IR::Expr *e, const Sink &sink, std::string &out)
   {
-    auto  &h        = std::get<IR::Handle>(e->as);
-    size_t hbody    = reserve_block();
+    auto       &h     = std::get<IR::Handle>(e->as);
+    size_t      hbody = reserve_block();
     std::string ops = "(const char*[]){ ", cls = "(Value*[]){ ";
     for (const IR::HandleClause &c : h.clauses)
     {
@@ -541,11 +544,10 @@ struct Emitter
     cls += "}";
     std::string n   = std::to_string(h.clauses.size());
     std::string els = atom(h.els);
-    // cont == NULL means "deliver the handled value to the current continuation"
-    // (a RET sink); otherwise push a KRet for (cont, slot).
-    std::string cont = (sink.kind == Sink::RET)
-                         ? "NULL"
-                         : "blk_" + std::to_string(sink.cont);
+    // cont == NULL means "deliver the handled value to the current
+    // continuation" (a RET sink); otherwise push a KRet for (cont, slot).
+    std::string cont
+      = (sink.kind == Sink::RET) ? "NULL" : "blk_" + std::to_string(sink.cont);
     std::string slot = std::to_string(sink.kind == Sink::RET ? 0 : sink.slot);
     if (h.clauses.size() == 0) // no clauses -> empty tables are still valid
     {
@@ -564,8 +566,8 @@ struct Emitter
   emit_code(
     size_t id)
   {
-    size_t entry    = reserve_block();
-    code_entry[id]  = entry;
+    size_t entry   = reserve_block();
+    code_entry[id] = entry;
     std::string out;
     emit_expr(prog.codes[id].body, Sink{ Sink::RET }, out);
     set_block(entry, out);
@@ -672,11 +674,11 @@ has_extern(
       if (has_extern(a.body)) return true;
     return has_extern(c.deflt);
   }
-  case IR::EKind::Handle: return has_extern(std::get<IR::Handle>(e->as).body);
-  case IR::EKind::Ret:
-  case IR::EKind::App:
-  case IR::EKind::MkStruct:
-  case IR::EKind::Field:
+  case IR::EKind::Handle   : return has_extern(std::get<IR::Handle>(e->as).body);
+  case IR::EKind::Ret      :
+  case IR::EKind::App      :
+  case IR::EKind::MkStruct :
+  case IR::EKind::Field    :
   case IR::EKind::MkVariant:
   case IR::EKind::Unk      : return false;
   }
@@ -748,8 +750,8 @@ emit(
   out += "const size_t THxRT_extern_count = "
          + std::to_string(em.externs.size()) + ";\n\n";
 
-  // The dispatch tables the runtime calls back through: entry block + slot count
-  // per lifted Code.
+  // The dispatch tables the runtime calls back through: entry block + slot
+  // count per lifted Code.
   out += "BlockFn THxRT_code_table[] = {\n";
   for (size_t i = 0; i < prog.codes.size(); ++i)
     out += "  blk_" + std::to_string(em.code_entry[i]) + ",\n";
@@ -758,8 +760,8 @@ emit(
   for (size_t i = 0; i < prog.codes.size(); ++i)
     out += "  " + std::to_string(prog.codes[i].nlocals) + ",\n";
   out += "};\n";
-  out += "const size_t THxRT_code_count = "
-         + std::to_string(prog.codes.size()) + ";\n\n";
+  out += "const size_t THxRT_code_count = " + std::to_string(prog.codes.size())
+         + ";\n\n";
 
   // Globals: name -> CAF code index, lazily forced and memoized (matches
   // IT::glob). Stable iteration order for reproducible output.
@@ -812,8 +814,7 @@ emit(
   if (entry.size() > 0)
   {
     out += "  Value* e = THxRT_glob(" + cstr(entry) + ");\n";
-    if (entry_takes_arg)
-      out += "  e = THxK_call(e, THxRT_str(\"\", 0));\n";
+    if (entry_takes_arg) out += "  e = THxK_call(e, THxRT_str(\"\", 0));\n";
     out += "  return (int)THxVALUE_as_int(e);\n";
   }
   else

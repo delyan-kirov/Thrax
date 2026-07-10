@@ -84,7 +84,8 @@ THxRT_struct(
   {
     fns[i] = fnames[i];
     fs[i]  = fields[i];
-    THxK_mark_escape(fields[i]); /* a resumption stored in a field has escaped */
+    THxK_mark_escape(
+      fields[i]); /* a resumption stored in a field has escaped */
   }
   x->u.st.fnames = fns;
   x->u.st.f      = fs;
@@ -122,7 +123,8 @@ THxRT_closure(
   for (size_t i = 0; i < n; ++i)
   {
     env[i] = captures[i];
-    THxK_mark_escape(captures[i]); /* a resumption captured in a closure escaped */
+    THxK_mark_escape(
+      captures[i]); /* a resumption captured in a closure escaped */
   }
   x->u.clos.env = env;
   return x;

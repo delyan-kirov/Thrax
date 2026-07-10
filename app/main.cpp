@@ -69,9 +69,8 @@ main(
   {
     if (paths.size() != 1)
     {
-      std::fprintf(stderr,
-                   "thrax: --build takes a single project directory\n%s",
-                   USAGE);
+      std::fprintf(
+        stderr, "thrax: --build takes a single project directory\n%s", USAGE);
       return 2;
     }
     return DR::build_project(paths[0]) ? 0 : 1;

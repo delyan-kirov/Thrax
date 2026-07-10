@@ -4,9 +4,27 @@ Low level, expression based language.
 
 ## Build
 
+The project builds with a small self-contained build program (`build.cpp`) — no
+make, no external build system. Any platform with a C++ compiler works; nix just
+automates the bootstrap and provides optional tooling/libraries.
+
+**Without nix** (bootstrap once, then use `./build`):
+
 ```sh
-make
+clang++ -std=c++20 -Iutilities build.cpp -o build && ./build
 ```
+
+**With nix** (`nix develop` bootstraps `./build` and puts it on `PATH`):
+
+```sh
+nix develop
+build
+```
+
+Commands: `build` (default), `build test`, `build native-test`, `build clean`,
+`build format`. FFI (libffi) is enabled by setting `THRAX_3RD_PARTY_ON`; libffi
+is resolved from `$LIBFFI`/`$LIBFFI_DEV` (nix), then `pkg-config`, then a
+vendored copy.
 
 ## Raylib demo
 

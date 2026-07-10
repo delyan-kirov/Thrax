@@ -4,9 +4,9 @@
  *      machine (src/IT.cpp). The continuation is an EXPLICIT heap stack of
  *      frames, so a handler can capture and splice the delimited continuation
  *      between a prompt and a `perform`; the C call stack no longer holds
- *      pending work across a possible effect. This subsumes the old direct-style
- *      apply trampoline (THxRT_apply) and, as a side effect, makes deep non-tail
- *      recursion grow the heap rather than the C stack.
+ *      pending work across a possible effect. This subsumes the old
+ * direct-style apply trampoline (THxRT_apply) and, as a side effect, makes deep
+ * non-tail recursion grow the heap rather than the C stack.
  *
  * Generated code is compiled to BLOCK FUNCTIONS. A block runs straight-line C
  * (atoms, pure lets, case branching) and ends by calling exactly one TERMINATOR
@@ -85,8 +85,8 @@ void THxK_handle(Frame       *fr,
  *\LET-BOX HELPERS (recursive-let back-patch)
  *-----------------------------------------------------------------------------*/
 
-/* Place a fresh placeholder box in `slot`, so a recursive binding's closures can
- * capture it before the value exists. */
+/* Place a fresh placeholder box in `slot`, so a recursive binding's closures
+ * can capture it before the value exists. */
 void THxK_setbox(Frame *fr, size_t slot);
 
 /* Back-patch the box in `slot` with `v` (copies the value into the placeholder,

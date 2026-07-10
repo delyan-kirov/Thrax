@@ -44,7 +44,8 @@ new_block(
 {
   size_t cap = need > RT_BLOCK_MIN ? need : RT_BLOCK_MIN;
   Block *b   = (Block *)malloc(sizeof(Block) + cap);
-  if (b == NULL) THxCHECK_FAILF("THxMEM_alloc: out of memory (needed %zu bytes)", need);
+  if (b == NULL)
+    THxCHECK_FAILF("THxMEM_alloc: out of memory (needed %zu bytes)", need);
   b->prev = g_cur;
   b->len  = 0;
   b->cap  = cap;

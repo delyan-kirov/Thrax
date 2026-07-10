@@ -55,7 +55,7 @@ scan_dir(
 void
 run_all()
 {
-  for (const std::string &path : scan_dir("./dat"))
+  for (const std::string &path : scan_dir("./examples"))
   {
     tst_file(UT::Vu{ path.c_str(), path.size() });
   }

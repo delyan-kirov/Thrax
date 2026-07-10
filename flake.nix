@@ -20,7 +20,6 @@
           # Tools
           pkgs.clang
           pkgs.gcc
-          pkgs.gnumake
           pkgs.git
           pkgs.valgrind
 
@@ -48,6 +47,13 @@
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
           export LIBC=${pkgs.libc}
+
+          # Bootstrap the build program (it self-rebuilds thereafter) and put it
+          # + the built binaries on PATH. nix is an accelerator here, not a
+          # requirement: the same `build.cpp` builds without nix (see README).
+          export THRAX_ROOT=$PWD
+          [ -x ./build ] || clang++ -std=c++20 -Iutilities build.cpp -o build
+          export PATH=$PWD:$PWD/artifacts:$PATH
         '';
       };
     };
