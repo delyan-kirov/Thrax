@@ -22,9 +22,10 @@ build
 ```
 
 Commands: `build` (default), `build test`, `build native-test`, `build clean`,
-`build format`. FFI (libffi) is enabled by setting `THRAX_3RD_PARTY_ON`; libffi
-is resolved from `$LIBFFI`/`$LIBFFI_DEV` (nix), then `pkg-config`, then a
-vendored copy.
+`build format`, `build compile-commands` (generates `compile_commands.json` for
+clangd via bear), `build tokei`, `build valgrind`. FFI (libffi) is enabled by
+setting `THRAX_3RD_PARTY_ON`; libffi is resolved from `$LIBFFI`/`$LIBFFI_DEV`
+(nix), then `pkg-config`, then a vendored copy.
 
 ## Raylib demo
 

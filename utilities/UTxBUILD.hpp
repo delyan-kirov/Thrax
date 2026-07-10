@@ -49,7 +49,7 @@ using std::vector;
 struct Ctx
 {
   string cxx  = "clang++";
-  string std_ = "-std=c++20";
+  string std_ = "-std=c++23";
   string warn = "-Wall -Wextra -Wimplicit-fallthrough -Werror -g";
   string includes;   // -I flags (filled by build.cpp)
   string ffi_cflags; // libffi cflags when THRAX_3RD_PARTY_ON
@@ -85,7 +85,8 @@ struct Module
 // --- Process / filesystem helpers -------------------------------------------
 
 [[noreturn]] inline void
-die(const string &msg)
+die(
+  const string &msg)
 {
   std::print(stderr, "build: error: {}\n", msg);
   std::exit(1);
@@ -95,7 +96,8 @@ die(const string &msg)
 // no quote handling: our build inputs are space-free (nix store paths and the
 // compiler flags), so this is exact for our use.
 inline vector<string>
-split_ws(const string &s)
+split_ws(
+  const string &s)
 {
   vector<string> out;
   string         cur;
@@ -117,13 +119,15 @@ split_ws(const string &s)
 }
 
 // Spawn a program directly -- NO shell. argv[0] is the program (searched on
-// PATH when it contains no slash). `out_file`/`err_file`, if given, redirect the
-// child's stdout/stderr to those files; otherwise each stream is inherited
+// PATH when it contains no slash). `out_file`/`err_file`, if given, redirect
+// the child's stdout/stderr to those files; otherwise each stream is inherited
 // (live on the terminal). Nothing is ever discarded. Returns the child's exit
 // code, or -1 if it could not be spawned.
 inline int
-spawn(const vector<string> &argv, const string &out_file = "",
-      const string &err_file = "")
+spawn(
+  const vector<string> &argv,
+  const string         &out_file = "",
+  const string         &err_file = "")
 {
 #if defined(_WIN32)
   string cl; // Windows wants one command line, not an argv array.
@@ -141,22 +145,40 @@ spawn(const vector<string> &argv, const string &out_file = "",
   si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
   if (!out_file.empty())
   {
-    fo = CreateFileA(out_file.c_str(), GENERIC_WRITE, 0, &sa, CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL, nullptr);
+    fo            = CreateFileA(out_file.c_str(),
+                     GENERIC_WRITE,
+                     0,
+                     &sa,
+                     CREATE_ALWAYS,
+                     FILE_ATTRIBUTE_NORMAL,
+                     nullptr);
     si.hStdOutput = fo;
   }
   if (!err_file.empty())
   {
-    fe = CreateFileA(err_file.c_str(), GENERIC_WRITE, 0, &sa, CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL, nullptr);
+    fe           = CreateFileA(err_file.c_str(),
+                     GENERIC_WRITE,
+                     0,
+                     &sa,
+                     CREATE_ALWAYS,
+                     FILE_ATTRIBUTE_NORMAL,
+                     nullptr);
     si.hStdError = fe;
   }
   vector<char> cmd(cl.begin(), cl.end());
   cmd.push_back('\0');
   PROCESS_INFORMATION pi{};
   DWORD               code = (DWORD)-1;
-  if (CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr,
-                     nullptr, &si, &pi))
+  if (CreateProcessA(nullptr,
+                     cmd.data(),
+                     nullptr,
+                     nullptr,
+                     TRUE,
+                     0,
+                     nullptr,
+                     nullptr,
+                     &si,
+                     &pi))
   {
     WaitForSingleObject(pi.hProcess, INFINITE);
     GetExitCodeProcess(pi.hProcess, &code);
@@ -174,11 +196,11 @@ spawn(const vector<string> &argv, const string &out_file = "",
   posix_spawn_file_actions_t fa;
   posix_spawn_file_actions_init(&fa);
   if (!out_file.empty())
-    posix_spawn_file_actions_addopen(&fa, 1, out_file.c_str(),
-                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_addopen(
+      &fa, 1, out_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (!err_file.empty())
-    posix_spawn_file_actions_addopen(&fa, 2, err_file.c_str(),
-                                     O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_addopen(
+      &fa, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
   pid_t pid;
   int   rc = posix_spawnp(&pid, a[0], &fa, nullptr, a.data(), environ);
   posix_spawn_file_actions_destroy(&fa);
@@ -192,7 +214,8 @@ spawn(const vector<string> &argv, const string &out_file = "",
 // Echo and run a whitespace-split command (no shell), inheriting both streams
 // live. For redirection use spawn(); to capture output use exec().
 inline int
-run(const string &cmd)
+run(
+  const string &cmd)
 {
   std::print("{}\n", cmd);
   std::fflush(stdout); // keep the echo ahead of the child's inherited output
@@ -200,13 +223,15 @@ run(const string &cmd)
 }
 
 inline void
-run_or_die(const string &cmd)
+run_or_die(
+  const string &cmd)
 {
   if (run(cmd) != 0) die("command failed: " + cmd);
 }
 
 inline string
-read_file(const string &path)
+read_file(
+  const string &path)
 {
   string data;
   FILE  *f = std::fopen(path.c_str(), "rb");
@@ -219,7 +244,8 @@ read_file(const string &path)
 }
 
 inline void
-write_file(const string &path, const string &data)
+write_file(
+  const string &path, const string &data)
 {
   FILE *f = std::fopen(path.c_str(), "wb");
   if (!f) die("cannot write " + path);
@@ -229,7 +255,8 @@ write_file(const string &path, const string &data)
 
 // Split text into lines (newline stripped), like reading with getline.
 inline vector<string>
-split_lines(const string &s)
+split_lines(
+  const string &s)
 {
   vector<string> lines;
   size_t         start = 0;
@@ -259,13 +286,14 @@ struct Output
 // Run a program (no shell) and capture stdout AND stderr (via temp files, so
 // large output never deadlocks a pipe). Returns {code, out, err}.
 inline Output
-exec(const vector<string> &argv)
+exec(
+  const vector<string> &argv)
 {
   static unsigned long seq = 0;
   fs::path             dir = fs::temp_directory_path();
-  const string         of  = (dir / ("thrax-build-o" + std::to_string(seq))).string();
-  const string         ef  = (dir / ("thrax-build-e" + std::to_string(seq++))).string();
-  Output               r;
+  const string of = (dir / ("thrax-build-o" + std::to_string(seq))).string();
+  const string ef = (dir / ("thrax-build-e" + std::to_string(seq++))).string();
+  Output       r;
   r.code = spawn(argv, of, ef);
   r.out  = read_file(of);
   r.err  = read_file(ef);
@@ -495,11 +523,6 @@ build(
         run_or_die(cmd + " -o " + out);
       }
     }
-
-  // 7. compile_flags.txt for clangd.
-  string flags;
-  for (const string &tok : split_ws(c.cxxflags())) flags += tok + "\n";
-  write_file("compile_flags.txt", flags);
 }
 
 } // namespace BLD

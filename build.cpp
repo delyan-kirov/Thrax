@@ -40,8 +40,10 @@ resolve_ffi(
                  + std::string(lib) + "/lib";
     return;
   }
-  std::string l  = BLD::trim(BLD::exec({ "pkg-config", "--libs", "libffi" }).out);
-  std::string cf = BLD::trim(BLD::exec({ "pkg-config", "--cflags", "libffi" }).out);
+  std::string l
+    = BLD::trim(BLD::exec({ "pkg-config", "--libs", "libffi" }).out);
+  std::string cf
+    = BLD::trim(BLD::exec({ "pkg-config", "--cflags", "libffi" }).out);
   if (!l.empty())
   {
     c.ffi_cflags = cf + " -DTHRAX_3RD_PARTY_ON=1";
@@ -98,7 +100,8 @@ cmd_format()
 
 // Remove build artifacts and scratch files (no shell -- pure std::filesystem).
 static int
-cmd_clean(const Ctx &c)
+cmd_clean(
+  const Ctx &c)
 {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -106,8 +109,8 @@ cmd_clean(const Ctx &c)
   fs::remove("compile_flags.txt", ec);
   for (const auto &e : fs::directory_iterator("."))
   {
-    std::string n = e.path().filename().string();
-    bool orig = n.size() > 5 && n.compare(n.size() - 5, 5, ".orig") == 0;
+    std::string n    = e.path().filename().string();
+    bool        orig = n.size() > 5 && n.compare(n.size() - 5, 5, ".orig") == 0;
     if (n.rfind("tmp.", 0) == 0 || n.rfind("vgcore", 0) == 0 || orig)
       fs::remove_all(e.path(), ec);
   }
@@ -118,7 +121,8 @@ cmd_clean(const Ctx &c)
 // re-exec: spawn the fresh binary with the same args and exit with its code --
 // no execv, so no POSIX dependency here).
 static void
-rebuild_self(int argc, char **argv)
+rebuild_self(
+  int argc, char **argv)
 {
   std::vector<std::string> srcs = { "build.cpp",
                                     "utilities/UTxBUILD.hpp",
@@ -132,8 +136,7 @@ rebuild_self(int argc, char **argv)
     if (BLD::run("clang++ -std=c++23 -Iutilities -O0 build.cpp -o build") != 0)
       BLD::die("failed to rebuild self");
     std::vector<std::string> a = { "./build" };
-    for (int i = 1; i < argc; ++i)
-      a.push_back(argv[i]);
+    for (int i = 1; i < argc; ++i) a.push_back(argv[i]);
     std::fflush(stdout); // order our log before the child's inherited output
     std::exit(BLD::spawn(a));
   }
@@ -166,6 +169,14 @@ main(
   }
   if (cmd == "clean") return cmd_clean(c);
   if (cmd == "format") return cmd_format();
+  if (cmd == "compile-commands")
+  {
+    // Precise compile_commands.json for clangd: intercept a full (clean) build
+    // with bear so every TU's real command is recorded. clean first so every
+    // TU actually recompiles (bear only sees compilers it launches).
+    cmd_clean(c);
+    return BLD::spawn({ "bear", "--", "./build" });
+  }
   if (cmd == "tokei")
     return BLD::run("tokei --exclude artifacts --exclude external");
   if (cmd == "valgrind")
@@ -184,7 +195,7 @@ main(
   }
 
   std::print(stderr,
-             "usage: build "
-             "[build|test|native-test|clean|format|tokei|valgrind|env]\n");
+             "usage: build [build|test|native-test|clean|format|"
+             "compile-commands|tokei|valgrind|env]\n");
   return 2;
 }
