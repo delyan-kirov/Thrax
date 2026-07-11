@@ -238,21 +238,23 @@ is_module_dir(
 }
 
 // Make `build` do something meaningful no matter which directory it is run from
-// (it lives on $PATH via `build env`, so this is the common case). Three
+// (it lives on $PATH via `build env`, so this is the common case). Four
 // outcomes, in order:
 //
-//   1. A subdirectory with its own *standalone* build.cpp (one with a main(),
+//   1. The repo root: the full build. Returns "".
+//   2. A subdirectory with its own *standalone* build.cpp (one with a main(),
 //      like examples/raylib_demo) owns its build -- hand the whole invocation
-//      off to it, bootstrapping its ./build first if needed.
-//   2. A module directory (compiler/, engines/, app/, tests/, ...). Modules are
-//      not linked in isolation -- they all feed one amalgamation -- so the
-//      meaningful action is to build the whole project. The root build assumes
-//      the repo root as cwd, so chdir there and let main() carry on.
-//   3. Anything else (doc/, a fresh dir, outside the checkout): there is
+//      off to it, bootstrapping its ./build first if needed. Exits.
+//   3. A module directory (compiler/, engines/, platforms/, app/, tests/, ...).
+//      The root build assumes the repo root as cwd, so chdir there and return
+//      the module name; main() uses it to build just that module.
+//   4. Anything else (doc/, a fresh dir, outside the checkout): there is
 //      nothing to build here, so warn and stop rather than erroring cryptically.
+//      Exits.
 //
-// Returns only in case 2 (having chdir'd to the root); otherwise it exits.
-static void
+// Returns the module name to build (empty for the whole project) in cases 1/3,
+// having chdir'd to the root; otherwise it exits.
+static std::string
 delegate_local(
   int argc, char **argv)
 {
@@ -268,9 +270,9 @@ delegate_local(
                cwd.string());
     std::exit(0);
   }
-  if (root == cwd) return; // at the root already: run the normal build.
+  if (root == cwd) return ""; // at the root already: full build.
 
-  // (1) Standalone local build -- a build.cpp with its own main().
+  // (2) Standalone local build -- a build.cpp with its own main().
   fs::path local = cwd / "build.cpp";
   if (fs::exists(local)
       && BLD::read_file(local.string()).find("main(") != std::string::npos)
@@ -291,20 +293,21 @@ delegate_local(
     std::exit(BLD::spawn(a));
   }
 
-  // (2) A module directory: build the whole project from the root.
+  // (3) A module directory: build just that module (from the root, whose cwd
+  //     the build's relative paths assume). Consumer modules still pull in the
+  //     shared core lib; a pure library/generation module builds only its own
+  //     contribution. The per-module target applies to a plain `build`; other
+  //     subcommands (test, native-test, ...) ignore it and build the project.
   fs::path    rel = fs::relative(cwd, root);
   std::string top = rel.empty() ? "" : rel.begin()->string();
   if (is_module_dir(top))
   {
-    std::print("build: '{}' is part of the Thrax project (one amalgamation) -- "
-               "building the whole project from {}\n",
-               top,
-               root.string());
+    std::print("build: building the '{}' module (from {})\n", top, root.string());
     fs::current_path(root);
-    return; // fall through to the normal root build in main().
+    return top;
   }
 
-  // (3) Nothing meaningful here.
+  // (4) Nothing meaningful here.
   std::print(stderr,
              "build: warning: nothing to build in {} -- no standalone "
              "build.cpp, and not a Thrax module directory.\n"
@@ -318,7 +321,10 @@ int
 main(
   int argc, char **argv)
 {
-  delegate_local(argc, argv);
+  // When invoked from a subdirectory, this may chdir to the repo root and hand
+  // back the name of the single module to build (empty for the whole project),
+  // delegate to a standalone build, or stop with a warning.
+  std::string only = delegate_local(argc, argv);
   rebuild_self(argc, argv);
 
   // Optional leading FFI option: `./build [ffi|no-ffi] <cmd> ...`.
@@ -341,7 +347,7 @@ main(
 
   if (cmd == "build" || cmd == "all")
   {
-    BLD::build(c, mods);
+    BLD::build(c, mods, only); // `only` is set when run from a module dir
     return 0;
   }
   if (cmd == "test")

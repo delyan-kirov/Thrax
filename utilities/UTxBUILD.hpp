@@ -57,10 +57,14 @@ struct Ctx
   string artifacts  = "artifacts";
   string invocation = "./build"; // how this run was launched (for banners)
 
+  // -fPIC so the amalgam object can feed both the executables and the shared
+  // libthrax.so. It lives in the shared flags (not just on the amalgam compile)
+  // because the PCH is force-included into every TU and must be compiled with
+  // matching codegen flags.
   string
   cxxflags() const
   {
-    return std_ + " " + warn + " " + includes
+    return std_ + " " + warn + " -fPIC " + includes
            + (ffi_cflags.empty() ? "" : " " + ffi_cflags);
   }
 };
@@ -467,9 +471,15 @@ gen_amalgam(
 
 // --- Orchestration ----------------------------------------------------------
 
+// Build the project. With `only` empty this is the full build: the compiler
+// core (libthrax.a + libthrax.so) plus every module's executables. With `only`
+// naming a module it builds just that module -- but the core library is shared,
+// so consumer modules (those with executables: app, tests) still build the core
+// first and then link only their own exes against it. A pure-generation module
+// (platforms: no library code, no exes) is fully built by its generate step.
 inline void
 build(
-  const Ctx &c, const vector<Module> &mods)
+  const Ctx &c, const vector<Module> &mods, const string &only = "")
 {
   fs::create_directories(c.artifacts);
 
@@ -487,6 +497,12 @@ build(
   // 1. Per-module generation (e.g. the baked runtime header).
   for (const Module &m : mods)
     if (m.generate) m.generate(c);
+
+  // A pure-generation module (no library code, no executables -- platforms) is
+  // done once its header is generated; there is nothing to compile or link.
+  if (!only.empty())
+    for (const Module &m : mods)
+      if (m.name == only && m.amalgam_dirs.empty() && m.exes.empty()) return;
 
   // 2. Gather amalgam sources (module code minus the standalone entry TUs).
   vector<string> dirs;
@@ -533,29 +549,51 @@ build(
     return o;
   };
 
-  // 5. The amalgamation object.
+  // 5. The amalgamation object (PIC -- see Ctx::cxxflags).
   vector<string> amalg_deps = cpps;
   amalg_deps.insert(amalg_deps.end(), hpps.begin(), hpps.end());
   string amalg_o = compile(amalg_cpp, amalg_deps);
 
-  // 6. Standalone entry TUs + link each executable against the amalgam.
+  // 6. The compiler core as libraries: a static archive (what the executables
+  // link, so they stay self-contained) and a shared object (emitted alongside
+  // so the core can be consumed dynamically). Both derive from the single
+  // amalgam object, so a module can build against libthrax without recompiling
+  // the compiler.
+  const string liba  = c.artifacts + "/libthrax.a";
+  const string libso = c.artifacts + "/libthrax.so";
+  if (needs_rebuild(liba, { amalg_o }))
+    run_or_die("ar rcs " + liba + " " + amalg_o);
+  if (needs_rebuild(libso, { amalg_o }))
+  {
+    string cmd = c.cxx + " -shared " + amalg_o + " -o " + libso;
+    if (!c.ffi_libs.empty()) cmd += " " + c.ffi_libs;
+    run_or_die(cmd);
+  }
+
+  // 7. Standalone entry TUs, each linked against the static core lib. When
+  // `only` names a module, build just that module's executables.
   for (const Module &m : mods)
+  {
+    if (!only.empty() && m.name != only) continue;
     for (const Exe &e : m.exes)
     {
       vector<string> objs;
       for (const string &s : e.srcs)
         objs.push_back(
           compile(s, glob({ fs::path(s).parent_path().string() }, { ".hpp" })));
-      objs.push_back(amalg_o);
-      const string out = c.artifacts + "/" + e.name;
-      if (needs_rebuild(out, objs))
+      const string   out = c.artifacts + "/" + e.name;
+      vector<string> ins = objs;
+      ins.push_back(liba);
+      if (needs_rebuild(out, ins))
       {
         string cmd = c.cxx + " " + c.cxxflags();
         for (const string &o : objs) cmd += " " + o;
+        cmd += " " + liba;
         if (!c.ffi_libs.empty()) cmd += " " + c.ffi_libs;
         run_or_die(cmd + " -o " + out);
       }
     }
+  }
 }
 
 } // namespace BLD
