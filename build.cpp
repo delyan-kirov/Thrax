@@ -208,10 +208,117 @@ rebuild_self(
     argc, argv, "clang++ -std=c++23 -O1 -Iutilities build.cpp -o build", srcs);
 }
 
+// Locate the repo root: the nearest ancestor of `cwd` (inclusive) that holds
+// the bootstrap library. Empty if `cwd` is not inside a Thrax checkout.
+static std::filesystem::path
+find_root(
+  std::filesystem::path cwd)
+{
+  namespace fs = std::filesystem;
+  for (fs::path d = cwd;; d = d.parent_path())
+  {
+    if (fs::exists(d / "utilities" / "UTxBUILD.hpp")) return d;
+    if (d == d.parent_path()) return {}; // reached the filesystem root
+  }
+}
+
+// True if `top` (a top-level directory name under the root) belongs to a module
+// the root build knows how to build.
+static bool
+is_module_dir(
+  const std::string &top)
+{
+  for (const Module &m : modules())
+  {
+    if (m.name == top) return true;
+    for (const std::string &d : m.amalgam_dirs)
+      if (d == top) return true;
+  }
+  return false;
+}
+
+// Make `build` do something meaningful no matter which directory it is run from
+// (it lives on $PATH via `build env`, so this is the common case). Three
+// outcomes, in order:
+//
+//   1. A subdirectory with its own *standalone* build.cpp (one with a main(),
+//      like examples/raylib_demo) owns its build -- hand the whole invocation
+//      off to it, bootstrapping its ./build first if needed.
+//   2. A module directory (compiler/, engines/, app/, tests/, ...). Modules are
+//      not linked in isolation -- they all feed one amalgamation -- so the
+//      meaningful action is to build the whole project. The root build assumes
+//      the repo root as cwd, so chdir there and let main() carry on.
+//   3. Anything else (doc/, a fresh dir, outside the checkout): there is
+//      nothing to build here, so warn and stop rather than erroring cryptically.
+//
+// Returns only in case 2 (having chdir'd to the root); otherwise it exits.
+static void
+delegate_local(
+  int argc, char **argv)
+{
+  namespace fs = std::filesystem;
+  fs::path cwd  = fs::current_path();
+  fs::path root = find_root(cwd);
+
+  if (root.empty())
+  {
+    std::print(stderr,
+               "build: warning: not inside a Thrax project (no "
+               "utilities/UTxBUILD.hpp at or above {}); nothing to build\n",
+               cwd.string());
+    std::exit(0);
+  }
+  if (root == cwd) return; // at the root already: run the normal build.
+
+  // (1) Standalone local build -- a build.cpp with its own main().
+  fs::path local = cwd / "build.cpp";
+  if (fs::exists(local)
+      && BLD::read_file(local.string()).find("main(") != std::string::npos)
+  {
+    // Bootstrap ./build if missing; thereafter its own rebuild_self keeps it
+    // fresh. Standalone builds include the bootstrap library from the repo-root
+    // utilities dir, so that is the only include path the bootstrap needs.
+    if (!fs::exists("./build"))
+    {
+      std::print("build: bootstrapping local build in {}\n", cwd.string());
+      std::string boot = "clang++ -std=c++23 -O1 -I"
+                       + (root / "utilities").string() + " build.cpp -o build";
+      if (BLD::run(boot) != 0) BLD::die("failed to bootstrap local build");
+    }
+    std::vector<std::string> a = { "./build" };
+    for (int i = 1; i < argc; ++i) a.push_back(argv[i]);
+    std::fflush(stdout);
+    std::exit(BLD::spawn(a));
+  }
+
+  // (2) A module directory: build the whole project from the root.
+  fs::path    rel = fs::relative(cwd, root);
+  std::string top = rel.empty() ? "" : rel.begin()->string();
+  if (is_module_dir(top))
+  {
+    std::print("build: '{}' is part of the Thrax project (one amalgamation) -- "
+               "building the whole project from {}\n",
+               top,
+               root.string());
+    fs::current_path(root);
+    return; // fall through to the normal root build in main().
+  }
+
+  // (3) Nothing meaningful here.
+  std::print(stderr,
+             "build: warning: nothing to build in {} -- no standalone "
+             "build.cpp, and not a Thrax module directory.\n"
+             "build: run `build` from {} to build the project.\n",
+             cwd.string(),
+             root.string());
+  std::exit(0);
+}
+
 int
 main(
   int argc, char **argv)
 {
+  delegate_local(argc, argv);
   rebuild_self(argc, argv);
 
   // Optional leading FFI option: `./build [ffi|no-ffi] <cmd> ...`.
