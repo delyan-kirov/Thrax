@@ -84,6 +84,7 @@ THxRT_struct(
   {
     fns[i] = fnames[i];
     fs[i]  = fields[i];
+    THxMEM_retain(fields[i]); /* the struct owns its fields */
     THxK_mark_escape(
       fields[i]); /* a resumption stored in a field has escaped */
   }
@@ -105,6 +106,7 @@ THxRT_variant(
   for (size_t i = 0; i < n; ++i)
   {
     fs[i] = fields[i];
+    THxMEM_retain(fields[i]); /* the variant owns its payload */
     THxK_mark_escape(fields[i]);
   }
   x->u.var.f = fs;
@@ -123,6 +125,7 @@ THxRT_closure(
   for (size_t i = 0; i < n; ++i)
   {
     env[i] = captures[i];
+    THxMEM_retain(captures[i]); /* the closure owns its captured record */
     THxK_mark_escape(
       captures[i]); /* a resumption captured in a closure escaped */
   }
@@ -278,7 +281,9 @@ builtin_push(
   nb->u.bi.nargs = n + 1;
   Value **args   = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; ++i) args[i] = b->u.bi.args[i];
-  args[n]       = x;
+  args[n] = x;
+  for (size_t i = 0; i <= n; ++i)
+    THxMEM_retain(args[i]); /* the new callee owns its operand row */
   nb->u.bi.args = args;
   return nb;
 }
@@ -296,7 +301,9 @@ extern_push(
   ne->u.ext.nargs = n + 1;
   Value **args    = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
   for (size_t i = 0; i < n; ++i) args[i] = e->u.ext.args[i];
-  args[n]        = x;
+  args[n] = x;
+  for (size_t i = 0; i <= n; ++i)
+    THxMEM_retain(args[i]); /* the new callee owns its operand row */
   ne->u.ext.args = args;
   return ne;
 }

@@ -25,6 +25,7 @@ platforms_module()
                               "platforms/THxCHECK.c",
                               "platforms/THxVALUE.c",
                               "platforms/THxMEMBUMP.c",
+                              "platforms/THxMEMRC.c",
                               "platforms/THxRT.c",
                               "platforms/THxK.c" });
   };

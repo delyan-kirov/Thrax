@@ -25,13 +25,22 @@
 
 /* One activation: the local slot array (params + let/case binders) and the
  * current closure's captured record (`Env i`). Heap-allocated so it survives a
- * suspension captured in the continuation stack. */
+ * suspension captured in the continuation stack.
+ *
+ * Lifetime: frames are reference-counted (`rc`) -- the driver's current
+ * activation holds one reference and every KRet on the continuation stack
+ * (including captured segments) holds one. `env` is BORROWED from the closure
+ * the frame was created from; `clos` keeps that closure alive (+1) for the
+ * frame's lifetime (NULL for a nullary CAF frame). Slots own their values
+ * (+1 each, via THxK_setlocal). */
 typedef struct Frame
 {
-  Value **locals;
-  size_t  nlocals;
-  Value **env;
-  size_t  nenv;
+  unsigned rc;
+  Value   *clos;
+  Value  **locals;
+  size_t   nlocals;
+  Value  **env;
+  size_t   nenv;
 } Frame;
 
 /* A compiled basic block. `in` is the value delivered to a resumed block (the
@@ -84,6 +93,11 @@ void THxK_handle(Frame       *fr,
 /*------------------------------------------------------------------------------
  *\LET-BOX HELPERS (recursive-let back-patch)
  *-----------------------------------------------------------------------------*/
+
+/* Bind `v` into frame `fr`'s `slot`: the slot takes ownership (+1), releasing
+ * whatever it previously held. The sanctioned way to write a slot (case payload
+ * binds, argument placement). */
+void THxK_setlocal(Frame *fr, size_t slot, Value *v);
 
 /* Place a fresh placeholder box in `slot`, so a recursive binding's closures
  * can capture it before the value exists. */

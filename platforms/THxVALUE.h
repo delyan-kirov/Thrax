@@ -10,9 +10,9 @@
  * THxCHECK_ASSERT first. This keeps the boxed representation honest and makes a
  * codegen bug abort with a precise message instead of corrupting memory.
  *
- * The `rc` field is RESERVED for the future reference-counting engine
- * (src/THxMEMRC.c); the bump allocator leaves it untouched. See
- * doc/native-backend.md for the growth plan (ref counting, effects).
+ * The `rc` field drives the reference-counting engine (THxMEMRC.c, the
+ * default); the bump fallback (-DTHX_MEM_BUMP) leaves it untouched. See
+ * doc/native-backend.md.
  *-----------------------------------------------------------------------------*/
 
 #ifndef THxVALUE_H_
@@ -137,5 +137,24 @@ Value *THxVALUE_field(Value *rec, const char *name);
 /* T_VARIANT constructor tag and positional payload (bounds-checked). */
 const char *THxVALUE_ctor(Value *v);
 Value      *THxVALUE_variant_field(Value *v, size_t i);
+
+/*------------------------------------------------------------------------------
+ *\LIFETIME (used by the RC memory engine and the CEK driver)
+ *-----------------------------------------------------------------------------*/
+
+/* Release v's children and free its owned raw payload blocks (arrays, string
+ * bytes, resumption segment). Called exactly once by the RC engine when v's
+ * count reaches zero; never call it directly. A child pointer EQUAL TO v is
+ * skipped -- the weak self edge of a recursive-let closure that captured its
+ * own box (the one RC cycle; see doc/native-backend.md). */
+void THxVALUE_destroy(Value *v);
+
+/* Back-patch a let box: make `box` a copy of `v`, preserving box's own count.
+ * Pointer-array payloads (fields/env/args) and string bytes are DEEP-copied
+ * into fresh blocks and the children retained (a shared array would be freed
+ * twice), so box and v afterwards have independent lifetimes; a resumption's
+ * segment is shared via its own count. A child equal to `box` is left
+ * unretained (the weak self edge, matching THxVALUE_destroy). */
+void THxVALUE_patch_box(Value *box, Value *v);
 
 #endif /* THxVALUE_H_ */

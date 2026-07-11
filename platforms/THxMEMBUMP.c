@@ -1,13 +1,15 @@
 /*-------------------------------------------------------------------------------
  *\file THxMEMBUMP.c
- *\info The v1 memory engine: a growing chain of bump blocks that is never
- *      freed. This is deliberately the simplest correct strategy -- finite
- *      programs (every test and example that the native backend targets today)
- *      run to completion well within memory, and never freeing means generated
- *      code needs no retain/release discipline and recursive-let cycles are a
- *      non-issue. retain/release are no-ops here; swap this file for
- *      src/THxMEMRC.c to get reference counting. See doc/native-backend.md.
+ *\info The fallback memory engine (-DTHX_MEM_BUMP): a growing chain of bump
+ *      blocks that is never freed. Deliberately the simplest correct strategy;
+ *      retain/release/pool are no-ops, THxMEM_live is always 0 (a leak check
+ *      passes trivially). The default engine is THxMEMRC.c (reference
+ *      counting); this one is kept for debugging -- a memory bug that
+ *      disappears under bump is an RC-discipline bug. See
+ *      doc/native-backend.md.
  *-----------------------------------------------------------------------------*/
+
+#ifdef THX_MEM_BUMP
 
 #include "THxMEM.h"
 
@@ -72,6 +74,13 @@ THxMEM_alloc_value(
 }
 
 void
+THxMEM_free(
+  void *p)
+{
+  (void)p; /* no-op: the bump engine never frees */
+}
+
+void
 THxMEM_retain(
   Value *v)
 {
@@ -84,3 +93,26 @@ THxMEM_release(
 {
   (void)v; /* no-op: the bump engine never frees */
 }
+
+size_t
+THxMEM_pool_mark(
+  void)
+{
+  return 0;
+}
+
+void
+THxMEM_pool_drain(
+  size_t mark)
+{
+  (void)mark;
+}
+
+size_t
+THxMEM_live(
+  void)
+{
+  return 0; /* nothing is tracked, so a leak check passes trivially */
+}
+
+#endif /* THX_MEM_BUMP */
