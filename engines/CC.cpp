@@ -503,9 +503,9 @@ struct Emitter
              + ") {\n";
       if (al.kind == IR::AltKind::Con)
         for (size_t i = 0; i < al.binders.size(); ++i)
-          out += "  fr->locals[" + std::to_string(al.binder_base + i)
-                 + "] = THxVALUE_variant_field(" + s + ", " + std::to_string(i)
-                 + ");\n";
+          out += "  THxK_setlocal(fr, " + std::to_string(al.binder_base + i)
+                 + ", THxVALUE_variant_field(" + s + ", " + std::to_string(i)
+                 + "));\n";
       emit_branch(al.body, sink, out);
       out += "  }\n";
       first = false;
@@ -807,18 +807,47 @@ emit(
   }
   out += "}\n\n";
 
-  // Entry: force all globals, then run the entry point if there is one. The
-  // entry's Int result is the process exit code.
+  // Release the memoized CAF cache (each entry owns its value), so a clean run
+  // ends with zero live allocations and the leak check below can be exact.
+  out += "static void THx_release_globals(void) {\n";
+  for (size_t k = 0; k < ng; ++k)
+  {
+    std::string ks = std::to_string(k);
+    out += "  if (g_inited[" + ks + "]) { THxMEM_release(g_cache[" + ks
+           + "]); g_inited[" + ks + "] = 0; }\n";
+  }
+  out += "}\n\n";
+
+  // Entry: force all globals, then run the entry point if there is one; its
+  // Int result is the process exit code. Epilogue: release the globals and the
+  // temp pool, then assert nothing is still allocated -- the built-in LEAK
+  // CHECK. Under the RC engine a leak exits 97 (so every native test doubles
+  // as a leak regression test); under -DTHX_MEM_BUMP live() is 0 and the check
+  // passes trivially.
   out += "int main(void) {\n";
   out += "  THx_force_all();\n";
+  out += "  int code = 0;\n";
   if (entry.size() > 0)
   {
     out += "  Value* e = THxRT_glob(" + cstr(entry) + ");\n";
-    if (entry_takes_arg) out += "  e = THxK_call(e, THxRT_str(\"\", 0));\n";
-    out += "  return (int)THxVALUE_as_int(e);\n";
+    if (entry_takes_arg)
+    {
+      out += "  Value* r = THxK_call(e, THxRT_str(\"\", 0));\n";
+      out += "  code = (int)THxVALUE_as_int(r);\n";
+      out += "  THxMEM_release(r);\n";
+    }
+    else
+      out += "  code = (int)THxVALUE_as_int(e);\n"; // a cache borrow
   }
-  else
-    out += "  return 0;\n";
+  out += "  THx_release_globals();\n";
+  out += "  THxMEM_pool_drain(0);\n";
+  out += "  size_t leaked = THxMEM_live();\n";
+  out += "  if (leaked) {\n";
+  out += "    fprintf(stderr, \"THxMEM: %zu allocation(s) leaked\\n\", "
+         "leaked);\n";
+  out += "    return 97;\n";
+  out += "  }\n";
+  out += "  return code;\n";
   out += "}\n";
 
   return out;

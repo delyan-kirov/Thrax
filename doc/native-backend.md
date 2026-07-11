@@ -44,10 +44,11 @@ Or build a whole project in one step (writes `<dir>/bin/<name>.{ir,c}` + exe):
 thrax --build dat/foo_project && ./dat/foo_project/bin/foo_project
 ```
 
-`make native-test` emits, compiles and runs every example in `dat/` and checks
-each exits 0 (the same oracle as the interpreter smoke test — see
-*Verification*). All 22 examples — including the five that use algebraic effects
-— compile and run natively.
+`build native-test` emits, compiles and runs every example in `examples/` and
+checks each exits 0 (the same oracle as the interpreter smoke test — see
+*Verification* — and, since the generated main leak-checks on exit, also a leak
+regression). All 24 examples — including the ones that use algebraic effects —
+compile and run natively.
 
 ## Value representation
 
@@ -138,8 +139,8 @@ built-in Int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
 below); and **algebraic effects** — handlers (`do`/`ctl`), operations,
 first-class resumptions, and `defer` (see below).
 
-The backend now lowers the whole IR: **all 22 `dat/` examples compile and run
-natively**, matching the interpreter. `CC::unsupported` no longer rejects
+The backend now lowers the whole IR: **all 24 `examples/` programs compile and
+run natively**, matching the interpreter. `CC::unsupported` no longer rejects
 anything (it is retained as a fallback seam).
 
 ### Foreign calls (FFI)
@@ -195,41 +196,75 @@ at the clause boundary — they run on later completion. (Limitation, inherited
 from the interpreter: a stored continuation dropped without ever resuming never
 runs its `defer`.)
 
+## Memory: reference counting (the default engine)
+
+The runtime is memory-managed by **precise reference counting**
+(`platforms/THxMEMRC.c`, selected by default; compile the emitted C with
+`-DTHX_MEM_BUMP` to fall back to the old never-freeing bump arena — a memory
+bug that disappears under bump is an RC-discipline bug). Strict + pure data is
+acyclic by construction, so plain RC is complete for data; no cycle collector.
+
+The discipline lives in the **runtime seam, not in emitted retain/release
+pairs** — generated code was already forbidden from touching representation
+(every construction/read/store goes through `THxRT_*`/`THxVALUE_*`/`THxK_*`),
+so those functions carry the ownership rules:
+
+- **Stores own**: a frame slot (`THxK_setlocal`), a constructor child
+  (struct/variant fields, closure captures, curried builtin/extern/defer
+  operand rows), every kont frame's payload (KRet's frame, KPrompt's
+  clauses + `els`, KDefer's cleanup, KThunkRet's saved value, KAfterClause's
+  kval), and the global CAF cache each hold `+1`; reads borrow.
+- **Frames are refcounted** (driver's current activation + every KRet, live or
+  captured) and retain the closure whose `env` they borrow.
+- **The temp pool**: every fresh value is registered with the pool owning its
+  initial reference; the driver drains it after each block bounce. Whatever a
+  bounce stored survives via its own retain; the rest — the per-iteration
+  garbage of a long-running loop — dies immediately. (Measured on
+  `examples/RC_LOOP.thx`, 200k iterations of struct allocation: **1.3 MB peak
+  RSS under RC vs 277 MB under bump**.)
+- **Box back-patch** (`THxVALUE_patch_box`): the KRet delivery content-copies
+  into the let box, deep-copying payload arrays (a shared array would be freed
+  twice) and retaining children — *except a child pointing back at the box
+  itself*, the **weak self edge** of a recursive-`let` closure that captured
+  its own box. That is the one genuine RC cycle (the interpreter's `VRec`
+  analog) and both `patch_box` and `THxVALUE_destroy` skip it symmetrically.
+- **Continuation capture moves**: a performed effect moves the kont slice into
+  the resumption segment (no count changes); resuming moves it back; a
+  discarded, never-resumed segment releases its contents — so aborted
+  computations (exceptions) free their captured frames. Segments carry a small
+  count of their own since `patch_box` can alias a resumption value.
+- **Release is iterative** (a dead-value worklist in `THxMEMRC.c`), so dropping
+  a long list does not recurse on the C stack.
+
+**The built-in leak check:** the generated `main` releases the CAF cache and
+the temp pool on exit and then asserts `THxMEM_live() == 0`, exiting **97**
+(with a stderr report) if any allocation survived. Every `build native-test`
+example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
+`THxMEM_live()` is 0 and the check passes trivially.
+
 ## Missing features and where they plug in
-
-### Memory: ref counting *(seam in place)*
-
-v1 links `src/THxMEMBUMP.c`: a bump arena that never frees, with
-`THxMEM_retain`/`THxMEM_release` as no-ops and `Value::rc` reserved but unused. Finite
-programs run fine; long-running loops (e.g. a `while` UI loop) leak.
-
-To add ref counting: provide `src/THxMEMRC.c` implementing `THxMEM_alloc`
-(headered block), `THxMEM_retain`/`THxMEM_release` over `Value::rc` (freeing at zero and
-recursively releasing children), and link it instead of the bump engine. Then
-`CC` must emit `THxMEM_retain`/`THxMEM_release` at the binding/return/overwrite points
-(every accessor result that is stored or returned is retained; every local that
-goes out of scope is released). Since data is strict and pure it is acyclic, so
-the recursive-`let` back-patch box needs no weak self-slot (unlike the
-interpreter's `VRec`); this is why the lowering routes all allocation through
-`THxMEM.h`. The `kont` stack and captured resumptions currently use `malloc` and
-are never freed either.
 
 ### Unboxing *(optimization)*
 
 Values are pointer-boxed. A later representation pass could keep `Int`/`Real`
 unboxed in registers for true low-level performance.
 
-## Known v1 limitations
+## Known limitations
 
 - Resumptions are **affine** (resume at most once); a second use aborts at
   runtime. A stored continuation dropped without ever resuming never runs its
-  `defer` (inherited from the interpreter).
+  `defer` (inherited from the interpreter) — though its memory *is* reclaimed.
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).
-- Bump allocator (and the `malloc`'d `kont`/resumptions) never free — long-
-  running loops leak.
-- Values are pointer-boxed, not register-unboxed.
+- RC handles the direct self-cycle of a recursive-`let` closure (the weak self
+  edge). An *indirect* local value cycle (a recursive `let` whose box is
+  reachable only through other fresh nodes, e.g. `let rec x = Cons 1 (Cons 2
+  x)`) would leak — the same class the interpreter's weak-`VRec` assumption
+  covers; such bindings do not occur in practice (recursive lets bind
+  functions).
+- Values are pointer-boxed, not register-unboxed; RC is runtime-seam-based, not
+  a Perceus-style compile-time dup/drop pass (no in-place reuse optimization).
 
 ## Verification
 
@@ -240,8 +275,9 @@ this exactly, so the equivalence is:
 
 > interpreter smoke test **OK**  ⇔  compiled binary **exits 0**
 
-`make native-test` checks this for every `dat/*.thx` (all 22, effects included);
-`make test` runs the interpreter side. The effect examples (EFFECTS, FINALLY,
+`build native-test` checks this for every example (all 24, effects included),
+and the generated main's leak check makes each one a leak regression test too;
+`build test` runs the interpreter side. The effect examples (EFFECTS, FINALLY,
 COROUTINES, PIPES, EFFECT_OVERLOAD) are validated to produce the **same values**
 natively as under the interpreter (exceptions 42/-1, generator 42, state 21,
 `defer` 103/9/6/2), and the emitted binaries are valgrind-clean of invalid
