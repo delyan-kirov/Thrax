@@ -1,5 +1,8 @@
 .*
-/artifacts/
+# build output at any depth: root artifacts/, module scratch, and the vendored
+# libffi in external/artifacts/ (the subtree source under external/libffi/ stays
+# tracked).
+artifacts/
 /build
 /examples/raylib_demo/build
 **/bin/

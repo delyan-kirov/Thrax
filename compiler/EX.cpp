@@ -554,8 +554,8 @@ Parser::parse_if()
 RExpr
 Parser::parse_when()
 {
-  LX::Token kw    = EX_TRY(m_lex.next()); // 'when'
-  Expr     *scrut = EX_CTX(parse_expr(0), kw, "in the scrutinee of this 'when'");
+  LX::Token kw = EX_TRY(m_lex.next()); // 'when'
+  Expr *scrut  = EX_CTX(parse_expr(0), kw, "in the scrutinee of this 'when'");
 
   if (LX::TokenTag::KwIs != EX_TRY(m_lex.peek()).tag)
     EX_ERR(ER::Code::UNEXPECTED_TOKEN,
@@ -577,8 +577,9 @@ Parser::parse_when()
       guard = EX_CTX(parse_expr(0), gk, "in the guard of this match arm");
     }
 
-    EX_TRY(expect(LX::TokenTag::KwThen,
-                  "expected 'then' after the match pattern (or its 'if' guard)"));
+    EX_TRY(
+      expect(LX::TokenTag::KwThen,
+             "expected 'then' after the match pattern (or its 'if' guard)"));
     Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
     arms.push(MatchArm{ pat, body, guard });
   }

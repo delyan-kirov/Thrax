@@ -615,8 +615,8 @@ const InfixTable infix_db{
 // opener, not as applying the cleanup to a do-block. (Use `f (do ...)` to pass
 // one.)
 const OperandSet operand_starters{
-  LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
-  LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
+  LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
+  LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
   LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
   LX::TokenTag::KwWhen,
 };

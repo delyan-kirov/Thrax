@@ -515,7 +515,8 @@ struct Lowerer
 
   // One arm of a guarded match. `fv` names the fallthrough thunk to invoke (as
   // `$fv {}`) when this arm's pattern or guard does not match. Wraps the arm
-  // body with the guard *inside* the pattern's bindings, so the guard sees them.
+  // body with the guard *inside* the pattern's bindings, so the guard sees
+  // them.
   Expr *
   build_guarded_arm(
     EX::MatchArm      &arm,
@@ -540,16 +541,18 @@ struct Lowerer
     {
     case PatTag::Wild: return guarded(body); // always matches, binds nothing
     case PatTag::Var:
-      return mk_let(std::get<EX::PatVar>(pat->as).name, mvar, guarded(body),
-                    nullptr);
+      return mk_let(
+        std::get<EX::PatVar>(pat->as).name, mvar, guarded(body), nullptr);
     case PatTag::Int:
-      return mk_if(mk_binop(OP::ISEQ, mvar,
-                            mk_int(std::get<EX::PatInt>(pat->as).value)),
-                   guarded(body), fall());
+      return mk_if(
+        mk_binop(OP::ISEQ, mvar, mk_int(std::get<EX::PatInt>(pat->as).value)),
+        guarded(body),
+        fall());
     case PatTag::Real:
-      return mk_if(mk_binop(OP::ISEQ, mvar,
-                            mk_real(std::get<EX::PatReal>(pat->as).value)),
-                   guarded(body), fall());
+      return mk_if(
+        mk_binop(OP::ISEQ, mvar, mk_real(std::get<EX::PatReal>(pat->as).value)),
+        guarded(body),
+        fall());
     case PatTag::Str:
     {
       auto &ps = std::get<EX::PatStr>(pat->as);
@@ -564,11 +567,10 @@ struct Lowerer
     {
       // Test the literal fields, bind the variable fields, then the guard runs
       // in their scope; any failure invokes the fallthrough thunk.
-      Expr *test = test_of(pat, mvar);
-      Expr *bound
-        = bind_pattern(pat, mvar, guarded(body), anc, line, /*refutable_ok=*/true);
-      if (!*sig)
-        *sig = mk_con(std::get<EX::PatStruct>(pat->as).type_name);
+      Expr *test  = test_of(pat, mvar);
+      Expr *bound = bind_pattern(
+        pat, mvar, guarded(body), anc, line, /*refutable_ok=*/true);
+      if (!*sig) *sig = mk_con(std::get<EX::PatStruct>(pat->as).type_name);
       return test ? mk_if(test, bound, fall()) : bound;
     }
     case PatTag::Variant:

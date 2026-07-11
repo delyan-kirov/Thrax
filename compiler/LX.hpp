@@ -101,7 +101,8 @@ struct TkKwIf
 };
 struct TkKwWhen
 {
-}; // when -- opens a pattern match (when scrut is pat [if guard] then e .. else d)
+}; // when -- opens a pattern match (when scrut is pat [if guard] then e .. else
+   // d)
 struct TkKwIs
 {
 };
