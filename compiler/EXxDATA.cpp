@@ -120,10 +120,13 @@ pprint(
   case ExprTag::Match:
   {
     auto       &m = std::get<ExMatch>(e->as);
-    std::string s = pad + "match " + pprint(m.scrut, 0);
+    std::string s = pad + "when " + pprint(m.scrut, 0);
     for (size_t i = 0; i < m.arms.size(); ++i)
-      s += "\n" + pad + "is " + pprint(m.arms[i].pat) + " then\n"
-           + pprint(m.arms[i].body, level + 1);
+    {
+      s += "\n" + pad + "is " + pprint(m.arms[i].pat);
+      if (m.arms[i].guard) s += " if " + pprint(m.arms[i].guard, 0);
+      s += " then\n" + pprint(m.arms[i].body, level + 1);
+    }
     return s + "\n" + pad + "else\n" + pprint(m.alt, level + 1);
   }
   case ExprTag::Case:

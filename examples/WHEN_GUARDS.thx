@@ -1,0 +1,55 @@
+@mod WHEN_GUARDS
+
+# \file when_guards.thx
+# \info Guarded match arms: `is <pattern> if <guard> then <body>`. The guard is
+#       a boolean tested in the scope of the pattern's bindings; when it fails,
+#       the match falls through to the next arm -- even when the next arm shares
+#       the same pattern or (for unions) the same constructor. Each `chk*` is 0
+#       when correct and divides by zero (a runtime fault) when wrong, so a
+#       regression makes this file fail loudly.
+
+# --- Guards over a bound variable (literal-free) ------------------------------
+# `is m if <guard>` binds the whole scrutinee, then tests it; two guarded arms
+# fall through to each other and finally to `else`.
+$ sgn : Int -> Int = \n =
+	when n
+		is m if m ?> 0 then 1
+		is m if m ?< 0 then 0 - 1
+		else 0
+
+$ chk_sgn_p : Int = if sgn 7       ?= 1       then 0 else 1 / 0
+$ chk_sgn_n : Int = if sgn (0 - 4) ?= (0 - 1) then 0 else 1 / 0
+$ chk_sgn_0 : Int = if sgn 0       ?= 0       then 0 else 1 / 0
+
+# --- Guards on the SAME struct pattern (the motivating example) ---------------
+$ Pair : @struct =
+	a: Int,
+	b: Int,
+
+$ cmp : Pair -> Int = \p =
+	when p
+		is Pair.{ a, b } if a ?> b then 0
+		is Pair.{ a, b } if a ?= b then 1
+		else 2
+
+$ chk_cmp_gt : Int = if cmp Pair.{ .a = 3, .b = 1 } ?= 0 then 0 else 1 / 0
+$ chk_cmp_eq : Int = if cmp Pair.{ .a = 2, .b = 2 } ?= 1 then 0 else 1 / 0
+$ chk_cmp_lt : Int = if cmp Pair.{ .a = 1, .b = 3 } ?= 2 then 0 else 1 / 0
+
+# --- Guards on the SAME union constructor (fallthrough across one tag) ---------
+$ Box : @union =
+	Some: Int,
+	Nil: {},
+
+$ grade : Box -> Int = \x =
+	when x
+		is Box.Some.{ v } if v ?> 100 then 3
+		is Box.Some.{ v } if v ?> 0   then 2
+		is Box.Some.{ _ }             then 1
+		is Box.Nil.{}                 then 0
+		else 0 - 1
+
+$ chk_grade_big  : Int = if grade Box.Some.{ 500 }    ?= 3       then 0 else 1 / 0
+$ chk_grade_pos  : Int = if grade Box.Some.{ 7 }      ?= 2       then 0 else 1 / 0
+$ chk_grade_zero : Int = if grade Box.Some.{ 0 }      ?= 1       then 0 else 1 / 0
+$ chk_grade_nil  : Int = if grade Box.Nil.{}          ?= 0       then 0 else 1 / 0

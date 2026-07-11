@@ -99,6 +99,9 @@ struct TkKwIn
 struct TkKwIf
 {
 };
+struct TkKwWhen
+{
+}; // when -- opens a pattern match (when scrut is pat [if guard] then e .. else d)
 struct TkKwIs
 {
 };
@@ -155,6 +158,7 @@ struct TkEof
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \
   X(KwIf, TkKwIf)                                                              \
+  X(KwWhen, TkKwWhen)                                                          \
   X(KwIs, TkKwIs)                                                              \
   X(KwThen, TkKwThen)                                                          \
   X(KwElse, TkKwElse)                                                          \

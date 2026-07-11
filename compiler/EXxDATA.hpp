@@ -325,15 +325,18 @@ struct ExIf
   Expr *alt;
 };
 
-// One `is pat then body` arm of a match.
+// One `is pat [if guard] then body` arm of a match. `guard`, when non-null, is
+// an extra boolean test evaluated in the scope of the pattern's bindings; if it
+// fails, the match falls through to the next arm (LL threads a shared
+// fallthrough).
 struct MatchArm
 {
   Pattern *pat;
   Expr    *body;
+  Expr    *guard = nullptr;
 };
-// A match: `if scrut is pat then e ... is pat then e else alt`. Distinguished
-// from ExIf by the `is` after the scrutinee. The LL pass lowers it into an
-// ExCase, so TC/IT never see an ExMatch.
+// A match: `when scrut is pat then e ... is pat then e else alt`. The LL pass
+// lowers it into an ExCase / if-chain, so TC/IT never see an ExMatch.
 struct ExMatch
 {
   Expr             *scrut;
@@ -614,7 +617,8 @@ const InfixTable infix_db{
 const OperandSet operand_starters{
   LX::TokenTag::Int,  LX::TokenTag::Real,   LX::TokenTag::Str,
   LX::TokenTag::Word, LX::TokenTag::LParen, LX::TokenTag::KwLet,
-  LX::TokenTag::KwIf, LX::TokenTag::Lambda, LX::TokenTag::LBrace,
+  LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
+  LX::TokenTag::KwWhen,
 };
 
 // Tokens that end an expression. `do` ends one so `defer <cleanup> do ...`

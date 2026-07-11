@@ -18,7 +18,7 @@ $ num_tok: Token = Token.Num.{1}
 
 # Switching on tokens
 $ is_num: Token -> Bool = \tok =
-    if tok
+    when tok
         is Token.Num.{_} then Bool.True
     else
         Bool.False
@@ -36,24 +36,24 @@ $ Maybe : @union =
 # Match a variant, bind its payload, fall back through `else`. The signature
 # fixes the element type with `Maybe Int` (application is juxtaposition).
 $ get : Int -> Maybe Int -> Int = \d = \m =
-    if m
+    when m
         is Maybe.Just.{x} then x
     else d
 
-$ chk1 : Int = if get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
-$ chk2 : Int = if get 99 Maybe.None        is 99 then 0 else 1 / 0
+$ chk1 : Int = when get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
+$ chk2 : Int = when get 99 Maybe.None        is 99 then 0 else 1 / 0
 
 # The same `Maybe` at a different element type, in the same program.
 $ greeting : Maybe Str = Maybe.Just.{ "hi" }
-$ chk2b : Int = if greeting is Maybe.Just.{_} then 0 else 1 / 0
+$ chk2b : Int = when greeting is Maybe.Just.{_} then 0 else 1 / 0
 
 # Bare constructors: the type name is dropped and inferred from context (the
 # `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
 # payload.
 $ none_i : Maybe Int = .None
 $ some_i : Maybe Int = .Just.{ 5 }
-$ chk2c : Int = if get 0 some_i is 5 then 0 else 1 / 0
-$ chk2d : Int = if get 8 none_i is 8 then 0 else 1 / 0
+$ chk2c : Int = when get 0 some_i is 5 then 0 else 1 / 0
+$ chk2d : Int = when get 8 none_i is 8 then 0 else 1 / 0
 
 # A generic, recursive sum type: `List `T` refers to itself with a type
 # argument. Under STRICT evaluation this builds FINITE lists only; the former
@@ -68,15 +68,15 @@ $ List : @union =
 $ Pair : @union = P: {lhs: `A, rhs: `B}
 $ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
-    if mk is Pair.P.{ .lhs = l, .rhs = r } then
-        if r - l is 1 then 0 else 1 / 0
+    when mk is Pair.P.{ .lhs = l, .rhs = r } then
+        when r - l is 1 then 0 else 1 / 0
     else 1 / 0
 
 # Nested instantiation: a `List` whose element is itself a `Maybe Int`.
 $ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
 $ chk4b : Int =
-    if boxed is List.Cons.{ h, _ } then
-        if h is Maybe.Just.{ v } then (if v is 42 then 0 else 1 / 0) else 1 / 0
+    when boxed is List.Cons.{ h, _ } then
+        when h is Maybe.Just.{ v } then (when v is 42 then 0 else 1 / 0) else 1 / 0
     else 1 / 0
 
 # (Removed: a `bomb` payload `1 / 0` that strict evaluation would force. Relying

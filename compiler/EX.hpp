@@ -62,6 +62,7 @@ private:
   UT_NODISCARD RExpr    parse_group();
   UT_NODISCARD RExpr    parse_let();
   UT_NODISCARD RExpr    parse_if();
+  UT_NODISCARD RExpr    parse_when();
   UT_NODISCARD RExpr    parse_handle();
   UT_NODISCARD RExpr    parse_defer();
   UT_NODISCARD RExpr    parse_closure();

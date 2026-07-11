@@ -300,7 +300,7 @@ PATTERNS
 ================================================================================
 
 A pattern destructures a value and binds its parts. Patterns appear in lambda
-parameters and `let` bindings (and, later, `if .. is` match arms):
+parameters and `let` bindings (and `when` match arms):
 
 	pattern  ::= '_'                      # wildcard: matches anything, binds nothing
 	           | var                      # binds the value to this name
@@ -326,7 +326,7 @@ The two forms cannot be mixed in one struct pattern.
 
 Lambda and `let` patterns must be IRREFUTABLE: only `_`, variables, and struct
 patterns built from them. A literal sub-pattern is refutable and is rejected
-there (it belongs in an `if .. is` match). Patterns nest:
+there (it belongs in a `when` match). Patterns nest:
 
 	$ fst   : Person -> Str       = \Person.{ n, _ } = n
 	$ age   : Int                 = let Person.{ .age = a } = person in a
@@ -336,21 +336,32 @@ Lowering: a pattern binding desugars to plain `let`s over field accesses, so it
 is pure surface syntax -- `let Person.{ n, a } = p in e` becomes
 `let s = p in let n = s.name in let a = s.age in e`.
 
-A MATCH tries several patterns against one scrutinee:
+A MATCH tries several patterns against one scrutinee. It is introduced by the
+`when` keyword (the boolean `if` never matches):
 
-	match ::= 'if' e ('is' pattern 'then' e)+ 'else' e
+	match ::= 'when' e ('is' pattern [ 'if' e ] 'then' e)+ 'else' e
 
-The `is` right after the scrutinee distinguishes a match from the boolean `if`.
-Arms are tried top to bottom; the first whose pattern matches wins and binds its
-variables in that arm's body. Here patterns MAY be refutable -- literal guards
-and field-literal guards are allowed:
+Arms are tried top to bottom; the first whose pattern matches (and whose guard,
+if any, holds) wins and binds its variables in that arm's body. Here patterns
+MAY be refutable -- literal patterns and field-literal patterns are allowed:
 
 	$ classify : Int -> Str = \n =
-		if n is 0 then "zero" is 1 then "one" else "many"
+		when n is 0 then "zero" is 1 then "one" else "many"
 	$ greet : Person -> Str = \p =
-		if p is Person.{ .age = 0 } then "newborn"
+		when p is Person.{ .age = 0 } then "newborn"
 		       is Person.{ .name = who } then who
 		       else "?"
+
+An arm may carry an `if <guard>` after its pattern: an extra boolean, evaluated
+in the scope of the pattern's bindings, that must also hold for the arm to fire.
+When the pattern matches but the guard fails, control FALLS THROUGH to the next
+arm -- even if the next arm has the same pattern or (for a union) the same
+constructor:
+
+	$ cmp : Pair -> Int = \p =
+		when p is Pair.{ a, b } if a ?> b then 0
+		       is Pair.{ a, b } if a ?= b then 1
+		       else 2
 
 A match on a union dispatches on the constructor: arms are variant patterns
 `Type.Tag` / `Type.Tag.{ ... }`, with an optional trailing variable/`else` arm.
@@ -361,18 +372,21 @@ tags. If two unions fit, qualify one arm to disambiguate.
 
 	$ len : List `T -> Int =
 		let go : List `T -> Int -> Int = \l n =
-			if l is .Nil then n
-			     is .Cons.{ _, xs } then go xs (n + 1)
-			     else n
+			when l is .Nil then n
+			       is .Cons.{ _, xs } then go xs (n + 1)
+			       else n
 		 in \l = go l 0
 
 `else` is mandatory (there is no exhaustiveness checking yet). An irrefutable arm
 always matches, making later arms dead.
 A match lowers to a single binding of the scrutinee followed by a chain of
-boolean `if`s: a literal pattern `is k` becomes the guard `scrut ?= k`, a struct
-field literal `Type.{ .f = k }` becomes `scrut.f ?= k`, and the bound variables
-become `let`s in the arm body. Current limits: matching Int and Real literals
-only (no string equality yet), and no `_` catch-all sugar (use a variable arm or
+boolean `if`s / a constructor `case`: a literal pattern `is k` becomes the test
+`scrut ?= k`, a struct field literal `Type.{ .f = k }` becomes `scrut.f ?= k`,
+and the bound variables become `let`s in the arm body. A guarded match instead
+threads a shared FALLTHROUGH thunk per arm (`let $f = \_ = <rest> in <arm,
+falling to $f {}>`), so a failed pattern or guard resumes the remaining arms
+without duplicating them. Current limits: matching Int and Real literals only
+(no string equality yet), and no `_` catch-all sugar (use a variable arm or
 `else`).
 
 ================================================================================

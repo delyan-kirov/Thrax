@@ -231,6 +231,7 @@ Parser::parse_primary()
   case LX::TokenTag::LParen : base = EX_TRY(parse_group()); break;
   case LX::TokenTag::KwLet  : base = EX_TRY(parse_let()); break;
   case LX::TokenTag::KwIf   : base = EX_TRY(parse_if()); break;
+  case LX::TokenTag::KwWhen : base = EX_TRY(parse_when()); break;
   case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
   case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
   case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
@@ -533,31 +534,6 @@ Parser::parse_if()
   LX::Token kw   = EX_TRY(m_lex.next()); // 'if'
   Expr     *cond = EX_CTX(parse_expr(0), kw, "in the condition of this 'if'");
 
-  // `if scrut is pat then e ... else d` is a match; `if c then t else e` is the
-  // boolean conditional. The `is` after the scrutinee chooses between them.
-  if (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
-  {
-    UT::Vec<MatchArm> arms{ m_arena };
-    while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
-    {
-      m_lex.next(); // 'is'
-      Pattern *pat = EX_TRY(parse_pattern());
-      EX_TRY(expect(LX::TokenTag::KwThen,
-                    "expected 'then' after the match pattern"));
-      Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
-      arms.push(MatchArm{ pat, body });
-    }
-    LX::Token els
-      = EX_TRY(expect(LX::TokenTag::KwElse,
-                      "expected another 'is' arm or 'else' to close "
-                      "the match"));
-    Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this match");
-
-    Expr e{ ExprTag::Match };
-    e.as = ExMatch{ cond, arms, alt };
-    return { true, alloc(e), {} };
-  }
-
   EX_TRY(
     expect(LX::TokenTag::KwThen, "expected 'then' after the 'if' condition"));
 
@@ -568,6 +544,52 @@ Parser::parse_if()
 
   Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'if'");
   return { true, mk_if(cond, then, alt), {} };
+}
+
+// A pattern match: `when scrut is pat [if guard] then e .. [is ..] else d`.
+// Each arm tests `pat` against the scrutinee and, when it carries an `if
+// guard`, an extra boolean over the pattern's bindings; a failed pattern or
+// guard falls through to the next arm. `else` is required. The LL pass lowers
+// the whole form into a `case` / if-chain, so no layer below sees an ExMatch.
+RExpr
+Parser::parse_when()
+{
+  LX::Token kw    = EX_TRY(m_lex.next()); // 'when'
+  Expr     *scrut = EX_CTX(parse_expr(0), kw, "in the scrutinee of this 'when'");
+
+  if (LX::TokenTag::KwIs != EX_TRY(m_lex.peek()).tag)
+    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+           EX_TRY(m_lex.peek()),
+           "expected 'is' to open the first arm of this 'when'");
+
+  UT::Vec<MatchArm> arms{ m_arena };
+  while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // 'is'
+    Pattern *pat = EX_TRY(parse_pattern());
+
+    // Optional `if guard`: a boolean tested in the pattern's scope. The guard
+    // expression ends at `then` (an expression terminator).
+    Expr *guard = nullptr;
+    if (LX::TokenTag::KwIf == EX_TRY(m_lex.peek()).tag)
+    {
+      LX::Token gk = EX_TRY(m_lex.next()); // 'if'
+      guard = EX_CTX(parse_expr(0), gk, "in the guard of this match arm");
+    }
+
+    EX_TRY(expect(LX::TokenTag::KwThen,
+                  "expected 'then' after the match pattern (or its 'if' guard)"));
+    Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
+    arms.push(MatchArm{ pat, body, guard });
+  }
+  LX::Token els = EX_TRY(expect(LX::TokenTag::KwElse,
+                                "expected another 'is' arm or 'else' to close "
+                                "the 'when'"));
+  Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'when'");
+
+  Expr e{ ExprTag::Match };
+  e.as = ExMatch{ scrut, arms, alt };
+  return { true, alloc(e), {} };
 }
 
 // A handler: `do <body> ctl k  is op a = e ...  [else x = e]`. The `do` body is

@@ -34,7 +34,7 @@ $ Co : @effect = step : Int -> {},
 $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {} ctl k is step v = .Susp.{ k } else _ = .Fin.{}
 $ drive : Task -> Int = \t =
-    if t is .Fin.{} then 0
+    when t is .Fin.{} then 0
        is .Susp.{ k } then 1 + drive (k {})
        else 0
 $ r_stored : Int = drive (spawn (\_ =

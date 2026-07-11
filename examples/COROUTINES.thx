@@ -20,8 +20,8 @@ $ spawn : ({} -> <Co> {}) -> Task = \t =
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
 $ rr : Task -> Task -> Int = \a b =
-    if a is .Fin.{} then
-         (if b is .Fin.{} then 0
+    when a is .Fin.{} then
+         (when b is .Fin.{} then 0
                is .Susp.{ vb, kb } then vb + rr (.Fin.{}) (kb {})
                else 0)
          is .Susp.{ va, ka } then va + rr b (ka {})
