@@ -1,0 +1,41 @@
+@mod STRINGS
+
+# \file strings.thx
+# \info String-literal escapes and UTF-8. The lexer decodes backslash escapes
+#       into their actual bytes (the token's value is the runtime content), and
+#       raw UTF-8 passes through unchanged. There is no in-language string
+#       comparison yet, so this is a pipeline/leak regression: forcing every
+#       global decodes the literal, lowers it, and (natively) exercises the
+#       reference-counting paths -- struct/variant fields hold strings, so the
+#       leak check on exit proves they are released. Manually verified to print
+#       the expected bytes (see the module docs / commit).
+
+# The C-style escapes: newline, tab, carriage return, NUL, backslash, both
+# quotes, and the bell/backspace/formfeed/vtab set.
+$ ctrl  : Str = "tab\tnl\ncr\rnul\0end"
+$ slashes : Str = "back\\slash quote\" apos\'"
+$ bells : Str = "\a\b\f\v"
+
+# \xHH names one raw byte; "AB" via hex.
+$ hex : Str = "\x41\x42"
+
+# Raw UTF-8 in the source is preserved byte for byte.
+$ utf_raw : Str = "héllo → 世界 café"
+
+# \u{...} names a Unicode code point, emitted as UTF-8: an emoji (4-byte),
+# CJK (3-byte), and an accented letter (2-byte).
+$ utf_esc : Str = "\u{1F600} \u{4e16}\u{754c} \u{e9}"
+
+# Strings as aggregate fields, so the native backend's constructors retain them
+# and the exit-time leak check must release them.
+$ Tagged : @struct =
+	label: Str,
+	note: Str,
+
+$ rec : Tagged = Tagged.{ .label = "key\tval", .note = "π \u{2248} 3.14" }
+
+$ StrList : @union =
+	Cons: {Str, StrList},
+	Nil: {},
+
+$ items : StrList = StrList.Cons.{ "one\n", StrList.Cons.{ "two\t", .Nil } }

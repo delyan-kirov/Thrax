@@ -29,6 +29,8 @@ namespace ER
   X(NON_ASCII_CHAR)                                                            \
   X(ILLEGAL_RESERVED_CHAR)                                                     \
   X(QUOTM_UNCLOSED)                                                            \
+  X(INVALID_ESCAPE)                                                            \
+  X(INVALID_UTF8)                                                              \
   X(NUMBER_PARSING_FAILURE)                                                    \
   X(UNKNOWN_SYMBOL)                                                            \
   X(EXPECTED_OPERAND)                                                          \

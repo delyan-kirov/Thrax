@@ -12,8 +12,21 @@ Definition atom:
 		- An integer literal like 1, 2, etc., or in hex notation 0x1, 0x2, etc.
 		- A floating point number like 1.2, 0.1, etc., or in scientific notation
 		  12e+12, 12e-3, etc.
-		- A string literal like "Hello world\n". Supported escape sequences:
-		  \n, \t, \\, \".
+		- A string literal like "Hello world\n". A string is a block of bytes.
+		  Typed text must be well-formed UTF-8 (validated per the Unicode
+		  standard; a malformed byte sequence is a lex error). Backslash escapes
+		  decode to the bytes they name:
+		    \n \t \r \0 \\ \" \' \a \b \f \v   -- the C control set
+		    \xHH                                -- one RAW byte, two hex digits;
+		                                           the escape hatch for bytes
+		                                           that are not valid UTF-8
+		    \u{H..}                             -- a Unicode scalar value (1-6
+		                                           hex digits, <= U+10FFFF and
+		                                           not a surrogate), UTF-8
+		                                           encoded, e.g. \u{1F600}
+		  An unknown escape, a malformed \x / \u{...}, or invalid UTF-8 text is a
+		  lex error. A raw newline inside a literal is an "unclosed string" error
+		  (use \n).
 		- A token group
 .
 

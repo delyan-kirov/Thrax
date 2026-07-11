@@ -29,6 +29,7 @@ namespace LX
 
 bool is_digit(char c);
 bool is_hex_digit(char c);
+int  hex_val(char c);
 bool is_bin_digit(char c);
 bool is_ident_start(char c);
 bool is_ident_cont(char c);
