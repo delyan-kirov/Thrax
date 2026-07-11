@@ -1,0 +1,83 @@
+@mod AGTxSUM
+
+# Sum types (unions): create an enumeration of a tag and a payload
+
+# A struct type declaration. Fields are `name : Type`, comma-separated; a
+# trailing comma is allowed but not required.
+$ Token : @union =
+    Num: Int,
+    Op: {Token, Token}, # Sum types should support lazy recursion
+    Txt: Str, # trailing commas are allowe
+
+$ Bool : @union =
+    True: {}, # Empty payload allowed (empty sum, unit)
+    False: {}
+
+# Basic way to create a token
+$ num_tok: Token = Token.Num.{1}
+
+# Switching on tokens
+$ is_num: Token -> Bool = \tok =
+    when tok
+        is Token.Num.{_} then Bool.True
+    else
+        Bool.False
+
+# Sum types: constructor matching, payload binding, and lazy (non-strict)
+# data constructors. Each `chk*` is 0 when correct and divides by zero (a
+# runtime fault) when wrong, so a regression makes this file fail loudly.
+
+# `Maybe` is generic: the free `T in its body is an implicit type parameter, so
+# `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
+$ Maybe : @union =
+    Just: `T,
+    None: {}
+
+# Match a variant, bind its payload, fall back through `else`. The signature
+# fixes the element type with `Maybe Int` (application is juxtaposition).
+$ get : Int -> Maybe Int -> Int = \d = \m =
+    when m
+        is Maybe.Just.{x} then x
+    else d
+
+$ chk1 : Int = when get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
+$ chk2 : Int = when get 99 Maybe.None        is 99 then 0 else 1 / 0
+
+# The same `Maybe` at a different element type, in the same program.
+$ greeting : Maybe Str = Maybe.Just.{ "hi" }
+$ chk2b : Int = when greeting is Maybe.Just.{_} then 0 else 1 / 0
+
+# Bare constructors: the type name is dropped and inferred from context (the
+# `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
+# payload.
+$ none_i : Maybe Int = .None
+$ some_i : Maybe Int = .Just.{ 5 }
+$ chk2c : Int = when get 0 some_i is 5 then 0 else 1 / 0
+$ chk2d : Int = when get 8 none_i is 8 then 0 else 1 / 0
+
+# A generic, recursive sum type: `List `T` refers to itself with a type
+# argument. Under STRICT evaluation this builds FINITE lists only; the former
+# infinite stream (`from` / `take3sum`) was lazy data and will return as
+# `@codata` (docs/effect-system-design.md §1a).
+$ List : @union =
+    Cons: {`T, List `T},
+    Nil: {}
+
+# Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
+# written out of declared order; LL normalizes it positionally.
+$ Pair : @union = P: {lhs: `A, rhs: `B}
+$ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
+$ chk4 : Int =
+    when mk is Pair.P.{ .lhs = l, .rhs = r } then
+        when r - l is 1 then 0 else 1 / 0
+    else 1 / 0
+
+# Nested instantiation: a `List` whose element is itself a `Maybe Int`.
+$ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
+$ chk4b : Int =
+    when boxed is List.Cons.{ h, _ } then
+        when h is Maybe.Just.{ v } then (when v is 42 then 0 else 1 / 0) else 1 / 0
+    else 1 / 0
+
+# (Removed: a `bomb` payload `1 / 0` that strict evaluation would force. Relying
+# on an ignored `_` payload going unevaluated was a lazy-data behaviour.)

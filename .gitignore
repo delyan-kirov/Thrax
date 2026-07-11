@@ -1,13 +1,14 @@
 .*
-bin/*
+# build output at any depth: root artifacts/, module scratch, and the vendored
+# libffi in external/artifacts/ (the subtree source under external/libffi/ stays
+# tracked).
+artifacts/
+/build
+/examples/raylib_demo/build
 **/bin/
 compile_commands.json
 compile_flags.txt
-inc/THxRTxAMALG.hpp
 vgcore*
 tmp.*
 *.orig
-inc/ffi.h
-inc/ffitarget.h
-inc/raylib.h
 lib/*
