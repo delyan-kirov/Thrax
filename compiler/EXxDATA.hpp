@@ -598,6 +598,7 @@ const InfixTable infix_db{
   { "<|", { 5, 4 } },       //
   { "|>", { 6, 7 } },       //
   { "::", { 15, 14 } },     // cons: right-assoc, looser than +/comparison
+  { OP::CONCAT, { 16, 17 } }, // ++: left-assoc, tighter than comparison, looser than +
 
   { OP::ISEQ, { 10, 11 } }, //
   { OP::GEQ, { 10, 11 } },  //

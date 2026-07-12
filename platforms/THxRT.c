@@ -43,9 +43,10 @@ THxRT_str(
   x->tag   = T_STR;
   char *b  = (char *)THxMEM_alloc(n + 1);
   if (n > 0) memcpy(b, p, n);
-  b[n]     = '\0';
-  x->u.s.p = b;
-  x->u.s.n = n;
+  b[n]       = '\0';
+  x->u.s.p   = b;
+  x->u.s.n   = n;
+  x->u.s.cap = n; /* the +1 NUL slot is not counted as capacity */
   return x;
 }
 
@@ -65,8 +66,9 @@ THxRT_bytes(
   Value *x = THxMEM_alloc_value();
   x->tag   = T_STR; /* the runtime, like the interpreter, does not distinguish
                        Array from Str -- both are a byte block. */
-  x->u.s.p = (char *)THxMEM_alloc(n == 0 ? 1 : n);
-  x->u.s.n = n;
+  x->u.s.p   = (char *)THxMEM_alloc(n == 0 ? 1 : n);
+  x->u.s.n   = n;
+  x->u.s.cap = n;
   return x;
 }
 
@@ -149,6 +151,9 @@ typedef struct
 } BuiltinArity;
 
 static const BuiltinArity g_builtins[] = {
+  { "array_len", 1 }, { "array_cap", 1 }, { "array_get", 2 },
+  { "array_push", 2 }, { "array_set", 3 }, { "array_slice", 3 },
+  { "%concat", 2 }, { "?=@Str", 2 },
   { "%array", 1 },  { "neg@Int", 1 }, { "neg@Real", 1 }, { "not@Int", 1 },
   { "+@Int", 2 },   { "-@Int", 2 },   { "*@Int", 2 },    { "/@Int", 2 },
   { "%@Int", 2 },   { "?=@Int", 2 },  { "?>@Int", 2 },   { "?<@Int", 2 },
@@ -205,6 +210,134 @@ builtin_dispatch(
   {
     long long n = THxVALUE_as_int(a[0]);
     return THxRT_bytes(n < 0 ? 0 : (size_t)n);
+  }
+
+  /* Growable byte-vector reads (see doc/strings-and-arrays.md). */
+  if (!strcmp(k, "array_len")) return THxRT_int((long long)THxVALUE_str_len(a[0]));
+  if (!strcmp(k, "array_cap")) return THxRT_int((long long)THxVALUE_str_cap(a[0]));
+  if (!strcmp(k, "array_get"))
+  {
+    long long i = THxVALUE_as_int(a[1]);
+    THxCHECK_ASSERT(i >= 0 && (size_t)i < THxVALUE_str_len(a[0]),
+                    "array_get: index out of bounds");
+    return THxRT_int((unsigned char)THxVALUE_str(a[0])[i]);
+  }
+
+  /* Mutators -- opportunistic in-place: mutate a[0]'s buffer when it is uniquely
+   * owned (THxMEM_unique), else build a fresh value. When mutating in place we
+   * retain a[0] and return it, so it survives the caller builtin releasing its
+   * operand row. Value semantics are preserved either way. */
+  if (!strcmp(k, "array_push"))
+  {
+    Value        *v    = a[0];
+    unsigned char byte = (unsigned char)THxVALUE_as_int(a[1]);
+    size_t        n    = v->u.s.n;
+    if (THxMEM_unique(v))
+    {
+      if (n + 1 > v->u.s.cap)
+      {
+        size_t ncap = v->u.s.cap ? v->u.s.cap * 2 : 8;
+        if (ncap < n + 1) ncap = n + 1;
+        char *nb = (char *)THxMEM_alloc(ncap + 1);
+        if (n) memcpy(nb, v->u.s.p, n);
+        THxMEM_free(v->u.s.p);
+        v->u.s.p   = nb;
+        v->u.s.cap = ncap;
+      }
+      v->u.s.p[n]     = (char)byte;
+      v->u.s.p[n + 1] = '\0';
+      v->u.s.n        = n + 1;
+      THxMEM_retain(v);
+      return v;
+    }
+    size_t ncap = (n + 1 < 8) ? 8 : n + 1;
+    Value *x    = THxMEM_alloc_value();
+    x->tag      = T_STR;
+    char *nb    = (char *)THxMEM_alloc(ncap + 1);
+    if (n) memcpy(nb, v->u.s.p, n);
+    nb[n]      = (char)byte;
+    nb[n + 1]  = '\0';
+    x->u.s.p   = nb;
+    x->u.s.n   = n + 1;
+    x->u.s.cap = ncap;
+    return x;
+  }
+  if (!strcmp(k, "array_set"))
+  {
+    Value        *v    = a[0];
+    long long     i    = THxVALUE_as_int(a[1]);
+    unsigned char byte = (unsigned char)THxVALUE_as_int(a[2]);
+    size_t        n    = v->u.s.n;
+    THxCHECK_ASSERT(i >= 0 && (size_t)i < n, "array_set: index out of bounds");
+    if (THxMEM_unique(v))
+    {
+      v->u.s.p[i] = (char)byte;
+      THxMEM_retain(v);
+      return v;
+    }
+    Value *x = THxRT_str(v->u.s.p, n); /* fresh copy */
+    x->u.s.p[i] = (char)byte;
+    return x;
+  }
+  if (!strcmp(k, "array_slice"))
+  {
+    Value    *v   = a[0];
+    long long beg = THxVALUE_as_int(a[1]);
+    long long end = THxVALUE_as_int(a[2]);
+    size_t    n   = v->u.s.n;
+    if (beg < 0) beg = 0;
+    if (end > (long long)n) end = (long long)n;
+    if (end < beg) end = beg;
+    return THxRT_str(v->u.s.p + beg, (size_t)(end - beg));
+  }
+
+  /* `++` concatenation (Str/Array): append rhs to lhs. Opportunistic in-place on
+   * the lhs buffer when it is unique, else a fresh block. */
+  if (!strcmp(k, "%concat"))
+  {
+    Value *l    = a[0];
+    Value *r    = a[1];
+    size_t ln   = l->u.s.n;
+    size_t rn   = r->u.s.n;
+    size_t need = ln + rn;
+    if (THxMEM_unique(l))
+    {
+      if (need > l->u.s.cap)
+      {
+        size_t ncap = l->u.s.cap ? l->u.s.cap * 2 : 8;
+        if (ncap < need) ncap = need;
+        char *nb = (char *)THxMEM_alloc(ncap + 1);
+        if (ln) memcpy(nb, l->u.s.p, ln);
+        THxMEM_free(l->u.s.p);
+        l->u.s.p   = nb;
+        l->u.s.cap = ncap;
+      }
+      if (rn) memcpy(l->u.s.p + ln, r->u.s.p, rn);
+      l->u.s.p[need] = '\0';
+      l->u.s.n       = need;
+      THxMEM_retain(l);
+      return l;
+    }
+    size_t ncap = need < 8 ? 8 : need;
+    Value *x    = THxMEM_alloc_value();
+    x->tag      = T_STR;
+    char *nb    = (char *)THxMEM_alloc(ncap + 1);
+    if (ln) memcpy(nb, l->u.s.p, ln);
+    if (rn) memcpy(nb + ln, r->u.s.p, rn);
+    nb[need]   = '\0';
+    x->u.s.p   = nb;
+    x->u.s.n   = need;
+    x->u.s.cap = ncap;
+    return x;
+  }
+  /* Str byte-equality. */
+  if (!strcmp(k, "?=@Str"))
+  {
+    size_t ln = a[0]->u.s.n;
+    size_t rn = a[1]->u.s.n;
+    int    eq = ln == rn
+             && (ln == 0 || memcmp(a[0]->u.s.p, a[1]->u.s.p, ln) == 0);
+    return THxRT_int(eq ? 1 : 0);
   }
 
   if (!strcmp(k, "neg@Int")) return THxRT_int(-THxVALUE_as_int(a[0]));

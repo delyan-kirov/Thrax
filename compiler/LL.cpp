@@ -6,8 +6,6 @@
 #include "LL.hpp"
 #include "OP.hpp"
 
-#include <functional>
-
 namespace LL
 {
 
@@ -106,6 +104,24 @@ struct Lowerer
     Expr e{ ExprTag::Let };
     e.as = lt;
     return alloc(e);
+  }
+
+  Expr *
+  mk_str(
+    UT::Vu value)
+  {
+    Expr e{ ExprTag::Str };
+    e.as = EX::ExStr{ value };
+    return alloc(e);
+  }
+
+  // A Str-equality test `subject ?= "lit"` -> Int (1/0). TC resolves the `?=`
+  // overload to `?=@Str` from the operand types. Backs exact string patterns.
+  Expr *
+  str_eq(
+    Expr *subject, UT::Vu lit)
+  {
+    return mk_binop(OP::ISEQ, subject, mk_str(lit));
   }
 
   Expr *
@@ -394,15 +410,7 @@ struct Lowerer
       return mk_binop(
         OP::ISEQ, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
     case PatTag::Str:
-    {
-      auto &ps = std::get<EX::PatStr>(pat->as);
-      err(
-        ER::Code::UNSUPPORTED,
-        ps.anchor,
-        ps.line,
-        "matching a string literal is not supported yet (no string equality)");
-      return nullptr;
-    }
+      return str_eq(subject, std::get<EX::PatStr>(pat->as).value);
     case PatTag::Struct:
     {
       auto                  &ps = std::get<EX::PatStruct>(pat->as);
@@ -443,11 +451,12 @@ struct Lowerer
     Expr *alt   = lower(m.alt);
 
     bool has_struct = false, has_variant = false, has_guard = false,
-         has_nested = false;
+         has_nested = false, has_str = false;
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
       Pattern *pat = m.arms[i].pat;
       if (pat->tag == PatTag::Struct) has_struct = true;
+      if (pat->tag == PatTag::Str) has_str = true;
       if (m.arms[i].guard) has_guard = true;
       if (pat->tag == PatTag::Variant)
       {
@@ -464,9 +473,12 @@ struct Lowerer
 
     // Guards make an arm refutable even when its pattern is not, and nested
     // payload patterns let two arms share one constructor -- neither fits the
-    // single-dispatch `case` forms below. Route both through the backtracking
-    // lowering, which threads a shared fallthrough thunk between arms.
-    if (has_guard || has_nested) return lower_match_guarded(m, scrut, alt);
+    // single-dispatch `case` forms below. String patterns dispatch on a byte-
+    // equality test, not an Int/Real `case` alt, so they route here too. All go
+    // through the backtracking lowering, which threads a shared fallthrough
+    // thunk between arms.
+    if (has_guard || has_nested || has_str)
+      return lower_match_guarded(m, scrut, alt);
 
     // A union match dispatches on the constructor tag (a `case` of Con alts);
     // it cannot share the struct if-chain or literal flat forms.
@@ -856,15 +868,9 @@ struct Lowerer
                    success,
                    fall());
     case PatTag::Str:
-    {
-      auto &ps = std::get<EX::PatStr>(pat->as);
-      err(ER::Code::UNSUPPORTED,
-          ps.anchor,
-          ps.line,
-          "matching a string literal is not supported yet (no string "
-          "equality)");
-      return fall();
-    }
+      return mk_if(str_eq(subject, std::get<EX::PatStr>(pat->as).value),
+                   success,
+                   fall());
     case PatTag::Struct:
     {
       // Structs dispatch on field values, not a constructor tag: test the

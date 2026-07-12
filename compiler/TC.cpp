@@ -167,7 +167,14 @@ private:
 
   // resolution
   Scheme resolve(const std::string &name);
-  void   resolve_sites(size_t from);
+  enum class SiteState
+  {
+    Resolved,
+    Pending,
+    Failed
+  };
+  SiteState resolve_one_site(const ResolveSite &s, bool allow_default);
+  void      resolve_sites(size_t from);
   void   resolve_user_sites(size_t from);
   void   resolve_lit_sites(size_t from);
   void   resolve_field_sites(size_t from);
@@ -1546,82 +1553,127 @@ Checker::resolve(
 // operand variables -- default any still-unconstrained operand to Int
 // (SML-style), then pick the overload whose operand types match and rewrite the
 // EX Var name to its implementation key.
-void
-Checker::resolve_sites(
-  size_t from)
+// Try to resolve one overload site. `allow_default` permits SML-style
+// defaulting of an unconstrained operand to Int (`\x = x * x`). Returns:
+//   Resolved -- an overload was chosen (`*s.slot` written, result unified);
+//   Pending  -- some operand is still an unresolved variable and defaulting is
+//               off, so a later pass (once a dependency resolves) may settle it;
+//   Failed   -- operands are concrete but match no overload (a diagnostic was
+//               emitted).
+// Splitting resolution from the driver lets nested/chained overloads settle in
+// dependency order: `a ++ b ++ c` needs the inner `++` first, `let b = push a
+// .. in push b ..` needs the outer first -- opposite orders. A fixpoint over the
+// no-default pass handles both; defaulting is a last resort.
+Checker::SiteState
+Checker::resolve_one_site(
+  const ResolveSite &s, bool allow_default)
 {
-  for (size_t i = from; i < m_sites.size(); ++i)
+  const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
+  UT_FAIL_IF(!ovs || ovs->empty()); // a site is only made for overloaded names
+  size_t arity = ovs->front().sig.size() - 1;
+
+  // Shape the use as (a1 -> ... -> ak -> r) so the operands are reachable
+  // whether the operator was fully applied, partially applied, or passed bare.
+  std::vector<Type *> args(arity);
+  Type               *result = fresh();
+  Type               *shape  = result;
+  for (size_t k = arity; k-- > 0;)
   {
-    const ResolveSite &s = m_sites[i];
+    args[k] = fresh();
+    shape   = arrow(args[k], shape);
+  }
+  unify(s.use, shape);
 
-    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
-    UT_FAIL_IF(!ovs
-               || ovs->empty()); // a site is only made for overloaded names
-    size_t arity = ovs->front().sig.size() - 1;
+  for (Type *&a : args) a = prune(a);
 
-    // Shape the use as (a1 -> ... -> ak -> r) so the operands are reachable
-    // whether the operator was fully applied, partially applied, or passed
-    // bare.
-    std::vector<Type *> args(arity);
-    Type               *result = fresh();
-    Type               *shape  = result;
-    for (size_t k = arity; k-- > 0;)
-    {
-      args[k] = fresh();
-      shape   = arrow(args[k], shape);
-    }
-    unify(s.use, shape);
+  // Without defaulting, an unresolved operand means "come back later" -- a
+  // dependency (an inner/earlier overload) may still make it concrete.
+  if (!allow_default)
+    for (Type *a : args)
+      if (a->kind() == Kind::Var) return SiteState::Pending;
 
-    // SML-style defaulting: an operand left unconstrained (e.g. `\x = x * x`)
-    // becomes Int rather than an error.
+  // Last resort: an operand still unconstrained defaults to Int.
+  if (allow_default)
     for (Type *&a : args)
-    {
-      a = prune(a);
       if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
       {
         std::get<TVar>(a->as).ref = con(OP::TY_INT);
         a                         = prune(a);
       }
-    }
 
-    // Match on operand types. The result type is stored in every signature and
-    // unified back in, but is not yet used to discriminate (return-type
-    // overloading is the next extension; see Overload).
-    const Overload *hit = nullptr;
-    for (const Overload &o : *ovs)
-    {
-      if (o.sig.size() != arity + 1) continue;
-      bool ok = true;
-      for (size_t k = 0; k < arity; ++k)
-        if (args[k]->kind() != Kind::Con
-            || std::get<TCon>(args[k]->as).name != o.sig[k])
-        {
-          ok = false;
-          break;
-        }
-      if (ok)
+  // Match on operand types. The result type is stored in every signature and
+  // unified back in, but is not yet used to discriminate (return-type
+  // overloading is the next extension; see Overload).
+  const Overload *hit = nullptr;
+  for (const Overload &o : *ovs)
+  {
+    if (o.sig.size() != arity + 1) continue;
+    bool ok = true;
+    for (size_t k = 0; k < arity; ++k)
+      if (args[k]->kind() != Kind::Con
+          || std::get<TCon>(args[k]->as).name != o.sig[k])
       {
-        hit = &o;
+        ok = false;
         break;
       }
-    }
-
-    if (!hit)
+    if (ok)
     {
-      std::string operands;
-      for (size_t k = 0; k < arity; ++k)
-        operands += (k ? ", " : "") + show(args[k]);
-      fail(ER::Code::TYPE_MISMATCH,
-           s.anchor,
-           "no overload of '%s' for operand type(s): %s",
-           s.base.c_str(),
-           operands.c_str());
-      continue;
+      hit = &o;
+      break;
     }
-
-    unify(prune(result), con(hit->sig.back()));
-    *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
   }
+
+  if (!hit)
+  {
+    std::string operands;
+    for (size_t k = 0; k < arity; ++k)
+      operands += (k ? ", " : "") + show(args[k]);
+    fail(ER::Code::TYPE_MISMATCH,
+         s.anchor,
+         "no overload of '%s' for operand type(s): %s",
+         s.base.c_str(),
+         operands.c_str());
+    return SiteState::Failed;
+  }
+
+  unify(prune(result), con(hit->sig.back()));
+  *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
+  return SiteState::Resolved;
+}
+
+void
+Checker::resolve_sites(
+  size_t from)
+{
+  std::vector<size_t> pending;
+  for (size_t i = from; i < m_sites.size(); ++i) pending.push_back(i);
+
+  // Fixpoint over the no-default pass: resolve every site whose operands are
+  // already concrete, repeating while any pass makes progress. This settles
+  // dependencies in whatever order they actually chain (inner-first for nested
+  // ops, outer-first for let-threaded results) without committing to one.
+  bool progress = true;
+  while (progress)
+  {
+    progress = false;
+    for (size_t &idx : pending)
+    {
+      if (idx == (size_t)-1) continue; // already resolved
+      if (resolve_one_site(m_sites[idx], /*allow_default=*/false)
+          == SiteState::Resolved)
+      {
+        idx      = (size_t)-1;
+        progress = true;
+      }
+    }
+  }
+
+  // Whatever remains is genuinely unconstrained (or a real mismatch): force it
+  // with Int-defaulting, which either resolves or reports the error.
+  for (size_t idx : pending)
+    if (idx != (size_t)-1)
+      resolve_one_site(m_sites[idx], /*allow_default=*/true);
+
   m_sites.erase(m_sites.begin() + (long)from, m_sites.end());
 }
 
@@ -2338,6 +2390,12 @@ Checker::seed_primitives()
   // desugars to (see EX::parse_array).
   Type *arrt            = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
+
+  // The growable-byte-vector built-ins (array_len/get/push/... -- see
+  // doc/strings-and-arrays.md) are OVERLOADED on both Str and Array (kept
+  // nominally distinct, Str carrying the UTF-8 invariant like Rust `String` vs
+  // `Vec<u8>`, but sharing the runtime byte-vector rep). They live in
+  // `overload_db` (TCxDATA.cpp), resolved by operand type -- not m_prim.
 
   // %defer : forall a e. ({} ->e a) -> ({} ->e {}) ->e a -- the cleanup
   // intrinsic the `defer` keyword desugars to: run the action, running the

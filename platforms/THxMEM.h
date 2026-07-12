@@ -44,6 +44,15 @@ Value *THxMEM_alloc_value(void);
 void THxMEM_retain(Value *v);
 void THxMEM_release(Value *v);
 
+/* Is `v` provably uniquely owned -- safe to mutate in place (its buffer is
+ * observed by no one but the caller)? True under the ref-counting engine iff
+ * rc == 1 (every durable holder -- slot, field, kont -- retains, so anything
+ * shared is rc >= 2; a value still in the temp pool carries the pool's extra
+ * ref, so it reads as non-unique -- conservative but sound). ALWAYS false under
+ * the bump engine, which tracks no counts. Backs opportunistic in-place
+ * mutation (array_push / array_set / ++); see doc/strings-and-arrays.md. */
+int THxMEM_unique(Value *v);
+
 /* The temp pool: every THxMEM_alloc_value is registered here with the pool
  * owning its initial reference. The CEK driver brackets each block bounce with
  * mark/drain, releasing the bounce's temporaries; whatever was stored (slot,

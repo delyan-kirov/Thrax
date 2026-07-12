@@ -99,6 +99,8 @@ const Operators operator_db{
   { "|>", TokenTag::Op }, //
   // List cons `h :: t` -- parser-desugared to `List.Cons.{ h, t }`.
   { "::", TokenTag::Op }, //
+  // Str/Array concatenation (overloaded operator, resolved in TC).
+  { "++", TokenTag::Op }, //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike

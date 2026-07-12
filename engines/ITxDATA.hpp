@@ -226,6 +226,75 @@ const std::unordered_map<std::string, Impl> impls{
         ssize_t n = as_int(a[0]);
         return mk_bytes(n < 0 ? 0 : (size_t)n);
       } } },
+  // Growable byte-vector reads (see doc/strings-and-arrays.md). The Array/Str
+  // bytes live in the VStr string; a byte is an Int in 0..255.
+  { OP::ARR_LEN,
+    { 1,
+      [](const std::vector<pVal> &a) {
+        return mk_int((ssize_t)std::get<VStr>(a[0]->as).val.size());
+      } } },
+  { OP::ARR_CAP,
+    { 1,
+      [](const std::vector<pVal> &a) {
+        return mk_int((ssize_t)std::get<VStr>(a[0]->as).val.capacity());
+      } } },
+  { OP::ARR_GET,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        const std::string &s = std::get<VStr>(a[0]->as).val;
+        ssize_t            i = as_int(a[1]);
+        UT_FAIL_IF(i < 0 || (size_t)i >= s.size()); // out-of-bounds read
+        return mk_int((unsigned char)s[(size_t)i]);
+      } } },
+  // Growable byte-vector mutators. The interpreter is the semantic reference:
+  // it always returns a fresh value (value semantics are identical to the
+  // native backend's opportunistic in-place, which is a pure optimization).
+  { OP::ARR_PUSH,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        std::string s = std::get<VStr>(a[0]->as).val; // copy
+        s.push_back((char)(unsigned char)as_int(a[1]));
+        return mk(Value{ VStr{ std::move(s) } });
+      } } },
+  { OP::ARR_SET,
+    { 3,
+      [](const std::vector<pVal> &a) {
+        std::string s = std::get<VStr>(a[0]->as).val; // copy
+        ssize_t     i = as_int(a[1]);
+        UT_FAIL_IF(i < 0 || (size_t)i >= s.size());
+        s[(size_t)i] = (char)(unsigned char)as_int(a[2]);
+        return mk(Value{ VStr{ std::move(s) } });
+      } } },
+  { OP::ARR_SLICE,
+    { 3,
+      [](const std::vector<pVal> &a) {
+        const std::string &s   = std::get<VStr>(a[0]->as).val;
+        ssize_t            beg = as_int(a[1]);
+        ssize_t            end = as_int(a[2]);
+        if (beg < 0) beg = 0;
+        if (end > (ssize_t)s.size()) end = (ssize_t)s.size();
+        if (end < beg) end = beg;
+        return mk(Value{ VStr{ s.substr((size_t)beg, (size_t)(end - beg)) } });
+      } } },
+  // `++` concatenation (Str or Array -- one byte-concat impl). Interpreter
+  // copies (reference semantics); the native backend reuses the lhs buffer when
+  // unique.
+  { OP::CONCAT_IMPL,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        std::string s = std::get<VStr>(a[0]->as).val; // copy lhs
+        s += std::get<VStr>(a[1]->as).val;            // append rhs bytes
+        return mk(Value{ VStr{ std::move(s) } });
+      } } },
+  // Str byte-equality (`?=@Str`), backing exact string pattern matching.
+  { OP::mono(OP::ISEQ, OP::TY_STR),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(std::get<VStr>(a[0]->as).val
+                          == std::get<VStr>(a[1]->as).val
+                        ? 1
+                        : 0);
+      } } },
   { OP::mono(OP::ADD, OP::TY_INT),
     { 2,
       [](const std::vector<pVal> &a) {

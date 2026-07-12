@@ -94,6 +94,15 @@ THxMEM_release(
   (void)v; /* no-op: the bump engine never frees */
 }
 
+int
+THxMEM_unique(
+  Value *v)
+{
+  (void)v;  /* no ref counts here: never claim uniqueness, so a mutator
+             * always copies (correct; the bump engine never frees anyway) */
+  return 0;
+}
+
 size_t
 THxMEM_pool_mark(
   void)
