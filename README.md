@@ -1,87 +1,236 @@
 # Thrax
 
-Low level, expression based language. 
+Thrax is a functional language with support for algebraic data
+types (structs *and* sum types), pattern matching, and typed **algebraic effects
+with handlers** . It compiles to C and can also be interpreted.
 
-## Build
+```typescript
+@mod Testing
 
-The project builds with a small self-contained build program (`build.cpp`) — no
-make, no external build system. Any platform with a C++ compiler works; nix just
-automates the bootstrap and provides optional tooling/libraries.
+$ fib : Int -> Int = \n =
+    if n ?= 0 then 0
+    else if n ?= 1 then 1
+    else fib (n - 1) + fib (n - 2)
 
-**Without nix** (bootstrap once, then use `./build`):
+$ answer : Int = fib 10   # 55
+```
+
+---
+
+## Building
+
+Thrax builds with a single self-contained build program (`build.cpp`).
+Any platform with a C++23 compiler works; nix is optional but convenient.
+
+**Without nix** - bootstrap the build program once, then use `./build`:
 
 ```sh
 clang++ -std=c++23 -Iutilities build.cpp -o build && ./build
 ```
 
-**With nix** (`nix develop` bootstraps `./build` and puts it on `PATH`):
+**With nix**: `nix develop` bootstraps `./build` and puts it (and the built
+binaries) on `PATH`:
 
 ```sh
 nix develop
 build
 ```
 
-Commands: `build` (default), `build test`, `build native-test`, `build clean`,
-`build format`, `build compile-commands` (generates `compile_commands.json` for
-clangd via bear), `build tokei`, `build valgrind`.
+After that first bootstrap the build program self-rebuilds whenever `build.cpp`
+changes. See `build help`.
 
-FFI (libffi) is **on by default** — the nix dev shell provides libffi, resolved
-from `$LIBFFI`/`$LIBFFI_DEV` (nix), then `pkg-config`, then a vendored copy. If
-it can't be found the build warns and continues without FFI (so the no-nix
-bootstrap still works). A leading `ffi`/`no-ffi` option overrides this per build:
-`build no-ffi` forces it off; `build ffi` requires it (errors if libffi is
-absent). Switching modes rebuilds automatically — no `build clean` needed.
+### FFI
+
+FFI (via libffi) is **on by default**. libffi is resolved from `$LIBFFI` /
+`$LIBFFI_DEV` (nix provides these), then `pkg-config`, then a vendored copy. If
+it can't be found the build warns and continues without FFI.
+A leading option overrides this per build: `build no-ffi`
+forces it off, `build ffi` requires it (erroring if libffi is absent). Switching
+modes rebuilds automatically, no `build clean` needed.
+
+## Running programs
+
+The compiler is `thrax`. Point it at a `.thx` file or a directory (all `.thx` in
+it form one program):
+
+```sh
+thrax examples/FIB.thx          # run under the interpreter
+thrax --ast examples/FIB.thx    # print the parsed AST
+thrax --ir  examples/FIB.thx    # print the closure-converted IR
+thrax --emit-c examples/FIB.thx # print the generated C (the native backend)
+thrax --build examples/io_example   # compile a project to a native executable
+```
+
+---
+
+## A tour of the language
+
+Every snippet below is a real file under [`examples/`](examples/).
+
+### Algebraic data - products (structs)
+
+Structs are named records. A free `` `T `` in a field type is an implicit type
+parameter, so declarations are generic and applied by juxtaposition.
+([`AGTxPRO.thx`](examples/AGTxPRO.thx))
+
+```typescript
+$ Person : @struct =
+    name: Str,
+    age: Int,
+
+$ person : Person = Person.{ .name = "Will", .age = 21 }
+$ who    : Str    = person.name
+$ older  : Int    = person.age + 1
+
+# Generic: one declaration, two instantiations.
+$ Box : @struct = val: `T,
+$ ibox : Box Int = Box.{ .val = 7 }
+$ sbox : Box Str = Box.{ .val = "hi" }
+```
+
+### Algebraic data sums (unions)
+
+Sum types are a tagged choice of a variant and its payload. Recursion and
+generics work as you'd expect; a payload of `{}` is the unit variant.
+([`AGTxSUM.thx`](examples/AGTxSUM.thx))
+
+```typescript
+$ Maybe : @union =
+    Just: `T,
+    None: {}
+
+# Bare constructors: the type name is inferred from context (the annotation).
+$ some_i : Maybe Int = .Just.{ 5 }
+$ none_i : Maybe Int = .None
+
+$ List : @union =
+    Cons: {`T, List `T},
+    Nil: {}
+```
+
+### Pattern matching
+
+`when scrut is pat then e … else d` matches top to bottom; the first matching arm
+wins and binds its variables. Patterns test literals, destructure structs and
+variants (nested), and each arm can carry an `if <guard>` that falls through to
+the next arm on failure. ([`MATCH.thx`](examples/MATCH.thx),
+[`WHEN_GUARDS.thx`](examples/WHEN_GUARDS.thx), [`PATTERNS.thx`](examples/PATTERNS.thx))
+
+```typescript
+$ get : Int -> Maybe Int -> Int = \d = \m =
+    when m
+        is Maybe.Just.{ x } then x
+    else d
+
+# Guards fall through, even across arms that share a constructor.
+$ grade : Box -> Int = \x =
+    when x
+        is Box.Some.{ v } if v ?> 100 then 3
+        is Box.Some.{ v } if v ?> 0   then 2
+        is Box.Some.{ _ }             then 1
+        is Box.Nil.{}                 then 0
+        else 0 - 1
+```
+
+Irrefutable patterns also destructure directly in `let` and lambda parameters,
+positionally or by name:
+
+```typescript
+$ get_name : Person -> Str = \Person.{ n, _ } = n
+$ start_x  : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
+```
+
+### Algebraic effects and handlers
+
+Effects are declared as a set of operations; performing one is just calling it. A
+function's type carries the effects it may perform as a **row** on its arrow
+(`A -> <E> B`); a bare arrow is pure, and an *unhandled* effect is a compile-time
+error. A handler is `do <body> ctl k is op a = e … [else x = e]`; the captured
+continuation `k` is resumed by applying it (affine, **You only get one shot!**).
+([`EFFECTS.thx`](examples/EFFECTS.thx))
+
+```typescript
+$ Exn   : @effect = throw : Str -> `a,
+$ Yield : @effect = yield : Int -> {},
+$ State : @effect = get : {} -> Int, put : Int -> {},
+
+# Exception: the handler ignores k, so it resumes zero times.
+$ safeDiv : Int -> Int -> Int = \a b =
+    do if b ?= 0 then throw "div0" else a / b
+    ctl k is throw msg = 0 - 1
+
+# Generator: resume once per yield, summing the results.
+$ sumGen : ({} -> <Yield> {}) -> Int = \gen =
+    do gen {}
+    ctl k is yield v = v + k {}
+          else _ = 0
+```
+
+Because the continuation is first-class it can be *stored* and resumed later,
+from a different context, that is all coroutines are:
+([`COROUTINES.thx`](examples/COROUTINES.thx))
+
+```typescript
+$ Co   : @effect = yield : Int -> {},
+$ Task : @union  = Fin: {}, Susp: { Int, {} -> Task },
+
+# Capture the suspended continuation instead of resuming in place.
+$ spawn : ({} -> <Co> {}) -> Task = \t =
+    do t {}
+    ctl k is yield v = .Susp.{ v, k }
+          else _ = .Fin.{}
+```
+
+There's also `defer <cleanup> do <body>` (Go-style): the cleanup runs when the
+body's scope exits, on normal completion, on abort, or when a stored
+continuation holding it finally completes ([`FINALLY.thx`](examples/FINALLY.thx)).
+
+---
+
+## Native backend and FFI
+
+Beyond the interpreter, Thrax lowers the whole IR to self-contained C, including
+algebraic effects, via a CEK-style machine emitted in C, with reference-counted
+memory management. Foreign C functions are bound with `@extern`:
+([`io_example`](examples/io_example/MAIN.thx))
+
+```typescript
+$ puts : Str -> Int = @extern.{ "puts", "libc.so.6" }
+$ main : Int = puts "Hello world"; 0
+```
+
+```sh
+thrax --build examples/io_example   # -> examples/io_example/bin/<name>{.ir,.c,exe}
+```
 
 ## Raylib demo
 
-```haskell
-int black = 0
-int resizeable = 4
-int initial_window_size = 400
-int window_title = "I'm a square"
+The [`examples/raylib_demo`](examples/raylib_demo) project drives
+[raylib](https://www.raylib.com/) entirely through the native backend's FFI,
+eight rectangles sweeping a window, recoloured every tenth frame, in constant
+stack via tail recursion with no loop construct in the language. It's a
+standalone project (its own `build.cpp` and `flake.nix`) meant as a template for
+a real FFI program; see its README to run it.
 
-pub main =
-	let flags = set_config_flags resizeable in
-	let fps = set_target_fps 60 in
-	let window = init_window initial_window_size initial_window_size window_title in
-	let rec_size = 100 in
-	let y = 0    in let x = 0 in
-	let y2 = 200 in let x2 = 200 in
-	let cx1 = 0 in let cy1 = 0   in let cx2 = 200 in let cy2 = 0   in
-	let cx3 = 0 in let cy3 = 200 in let cx4 = 200 in let cy4 = 200 in
-	let counter = 1 in
-	let random_color = 0 in
-	(while !window_should_close
-	=> let screan_height = get_screen_height 0
-	in let counter = (counter + 1) % 10
-	in let screan_width = get_screen_width 0
-	in let rec_x = ((screan_width - rec_size) / 2)
-	in let rec_y = ((screan_height - rec_size) / 2)
-	in let y = (y + 5) % screan_height
-	in let x = (x + 5) % screan_width
-	in let y2 = (y2 + (screan_height - 5)) % screan_height
-	in let x2 = (x2 + (screan_width - 5)) % screan_width
-	in let cx1 = (cx1 + 5) % screan_width
-	in let cy1 = (cy1 + 5) % screan_height
-	in let cx2 = (cx2 + (screan_width - 5)) % screan_width
-	in let cy2 = (cy2 + 5) % screan_height
-	in let cx3 = (cx3 + 5) % screan_width
-	in let cy3 = (cy3 + (screan_height - 5)) % screan_height
-	in let cx4 = (cx4 + (screan_width - 5)) % screan_width
-	in let cy4 = (cy4 + (screan_height - 5)) % screan_height
-	in let random_color = (if !counter then -1 * (get_random_value 10 10000000) else random_color)
-	in begin_drawing
-	 + (clear_background black)
-	 + (draw_rectangle rec_x y rec_size rec_size random_color)
-	 + (draw_rectangle x rec_y rec_size rec_size random_color)
-	 + (draw_rectangle rec_x y2 rec_size rec_size random_color)
-	 + (draw_rectangle x2 rec_y rec_size rec_size random_color)
-	 + (draw_rectangle cx1 cy1 rec_size rec_size random_color)
-	 + (draw_rectangle cx2 cy2 rec_size rec_size random_color)
-	 + (draw_rectangle cx3 cy3 rec_size rec_size random_color)
-	 + (draw_rectangle cx4 cy4 rec_size rec_size random_color)
-	 + end_drawing
-	) + close_window
-```
+![Raylib demo](https://raw.githubusercontent.com/delyan-kirov/blobs/main/raylib-demo.gif)
 
-![Demo GIF](https://raw.githubusercontent.com/delyan-kirov/blobs/main/raylib-demo.gif)
+---
+
+## Project layout
+
+| Directory | Contents |
+| --- | --- |
+| `compiler/` | lexer, parser, type checker, lowering |
+| `engines/` | the interpreter (`IT`) and C backend (`CC`), plus FFI (`FF`) |
+| `platforms/` | the C runtime (`THx*`): machine, memory, values |
+| `utilities/` | shared build/support headers |
+| `examples/` | annotated `.thx` programs (also the test corpus) |
+| `doc/` | language spec and design notes |
+
+More detail lives in [`doc/`](doc/): the [syntax spec](doc/syntax-spec.txt), the
+[effect-system design](doc/effect-system-design.md), and the
+[native backend](doc/native-backend.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
