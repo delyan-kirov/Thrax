@@ -24,6 +24,16 @@ is_hex_digit(
   return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
+// The numeric value of a hex digit (assumes is_hex_digit(c)).
+int
+hex_val(
+  char c)
+{
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return c - 'A' + 10;
+}
+
 // Digits valid after a `0b` prefix.
 bool
 is_bin_digit(

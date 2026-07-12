@@ -96,6 +96,28 @@ THxVALUE_str(
   return v->u.s.p;
 }
 
+size_t
+THxVALUE_str_len(
+  Value *v)
+{
+  THxCHECK_ASSERT(v != NULL, "THxVALUE_str_len: null value");
+  if (v->tag != T_STR)
+    THxCHECK_FAILF("THxVALUE_str_len: expected Str, got %s",
+                   THxVALUE_tag_name(v->tag));
+  return v->u.s.n;
+}
+
+size_t
+THxVALUE_str_cap(
+  Value *v)
+{
+  THxCHECK_ASSERT(v != NULL, "THxVALUE_str_cap: null value");
+  if (v->tag != T_STR)
+    THxCHECK_FAILF("THxVALUE_str_cap: expected Str, got %s",
+                   THxVALUE_tag_name(v->tag));
+  return v->u.s.cap;
+}
+
 Value *
 THxVALUE_field(
   Value *rec, const char *name)
@@ -166,8 +188,8 @@ payload_destroy(
   case T_INT:
   case T_REAL:
   case T_OP:
-  case T_UNK: return;
-  case T_STR: THxMEM_free(v->u.s.p); return;
+  case T_UNK : return;
+  case T_STR : THxMEM_free(v->u.s.p); return;
   case T_STRUCT:
     THxMEM_free((void *)v->u.st.fnames); /* the array; the names are static */
     release_children(v, v->u.st.f, v->u.st.n);
@@ -224,13 +246,14 @@ THxVALUE_patch_box(
   case T_INT:
   case T_REAL:
   case T_OP:
-  case T_UNK: break;
+  case T_UNK : break;
   case T_STR:
   {
     char *b = (char *)THxMEM_alloc(box->u.s.n + 1);
     if (box->u.s.n > 0) memcpy(b, v->u.s.p, box->u.s.n);
     b[box->u.s.n] = '\0';
     box->u.s.p    = b;
+    box->u.s.cap  = box->u.s.n; /* the copy owns exactly its bytes */
     break;
   }
   case T_STRUCT:

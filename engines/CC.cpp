@@ -321,10 +321,14 @@ struct Emitter
     return "THxRT_unk()";
   }
 
-  // Does producing `e`'s value cross a suspension point (a non-tail App or a
-  // Handle)? If so a `let`-body must become a separate continuation block.
+  // Does `e` perform a call (any App) or install a Handle anywhere in the value
+  // it produces? If so a `let` RHS must deliver through a continuation block
+  // rather than be emitted inline -- emit_pure_into has no way to make a call.
+  // This counts *tail* Apps too: a `let` RHS is never in tail position, so a
+  // tail App bound there (a lazy constructor field the ANF marked "like a
+  // lambda body") is really a normal call.
   bool
-  has_suspension(
+  has_call(
     const IR::Expr *e)
   {
     switch (IR::ekind(e))
@@ -335,19 +339,19 @@ struct Emitter
     case IR::EKind::MkVariant:
     case IR::EKind::Unk:
     case IR::EKind::Extern   : return false;
-    case IR::EKind::App      : return !std::get<IR::App>(e->as).tail;
+    case IR::EKind::App      :
     case IR::EKind::Handle   : return true;
     case IR::EKind::Let:
     {
       auto &l = std::get<IR::Let>(e->as);
-      return has_suspension(l.rhs) || has_suspension(l.body);
+      return has_call(l.rhs) || has_call(l.body);
     }
     case IR::EKind::Case:
     {
       auto &c = std::get<IR::Case>(e->as);
       for (const IR::Alt &al : c.alts)
-        if (has_suspension(al.body)) return true;
-      return has_suspension(c.deflt);
+        if (has_call(al.body)) return true;
+      return has_call(c.deflt);
     }
     }
     return false;
@@ -429,18 +433,16 @@ struct Emitter
     {
       auto       &a  = std::get<IR::App>(e->as);
       std::string fn = atom(a.fn), arg = atom(a.arg);
-      if (a.tail)
-      {
-        UT_FAIL_IF(sink.kind != Sink::RET);
+      // Tail-ness follows the sink, not the ANF `tail` flag: only a RET sink is
+      // a genuine tail position. A call the ANF marked tail (a lazy constructor
+      // field, normalized "like a lambda body") but which IR lowering hoisted
+      // into a `let` is delivered into a slot -- a normal, non-tail call.
+      if (sink.kind == Sink::RET)
         out += "  THxK_tailcall(" + fn + ", " + arg + ");\n";
-      }
       else
-      {
-        UT_FAIL_IF(sink.kind != Sink::SLOT);
         out += "  THxK_apply(fr, " + fn + ", " + arg + ", blk_"
                + std::to_string(sink.cont) + ", " + std::to_string(sink.slot)
                + ");\n";
-      }
     }
     break;
 
@@ -456,7 +458,7 @@ struct Emitter
   {
     auto &l = std::get<IR::Let>(e->as);
     out += "  THxK_setbox(fr, " + std::to_string(l.slot) + ");\n";
-    if (has_suspension(l.rhs))
+    if (has_call(l.rhs))
     {
       // The body becomes a continuation block; the rhs delivers into the slot
       // then control transfers there.

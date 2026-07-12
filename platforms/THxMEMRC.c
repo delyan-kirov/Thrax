@@ -110,6 +110,13 @@ THxMEM_retain(
   ++v->rc;
 }
 
+int
+THxMEM_unique(
+  Value *v)
+{
+  return v != NULL && v->rc == 1;
+}
+
 /* Dead-value worklist: destruction never recurses on the C stack. */
 static Value **g_dead = NULL;
 static size_t  g_dn = 0, g_dcap = 0;

@@ -66,7 +66,10 @@ private:
   UT_NODISCARD RExpr    parse_handle();
   UT_NODISCARD RExpr    parse_defer();
   UT_NODISCARD RExpr    parse_closure();
+  UT_NODISCARD RExpr    parse_list(); // `[e1, .., en]` list literal
   UT_NODISCARD RPattern parse_pattern();
+  UT_NODISCARD RPattern parse_pattern_atom(); // a pattern without a trailing ::
+  UT_NODISCARD RPattern parse_list_pattern(); // `[p1, .., pn]` / `[]`
   // Parses a qualified pattern after an uppercase type name: dispatches to a
   // `Type.{ ... }` struct pattern or a `Type.Tag[.{ ... }]` variant pattern.
   UT_NODISCARD RPattern parse_struct_pattern(UT::Vu           type_name,
@@ -78,16 +81,25 @@ private:
   UT_NODISCARD LX::RToken expect(LX::TokenTag tag, const char *what);
   void                    recover();
 
-  UT_NODISCARD Expr    *alloc(Expr e);
-  UT_NODISCARD Expr    *mk_int(const LX::Token &t);
-  UT_NODISCARD Expr    *mk_real(const LX::Token &t);
-  UT_NODISCARD Expr    *mk_str(const LX::Token &t);
-  UT_NODISCARD Expr    *mk_var(const LX::Token &t);
-  UT_NODISCARD Expr    *mk_app(Expr *fn, Expr *arg);
-  UT_NODISCARD Expr    *mk_op_var(UT::Vu name);
-  UT_NODISCARD Expr    *mk_unop(UT::Vu op, Expr *operand);
-  UT_NODISCARD Expr    *mk_binop(UT::Vu op, Expr *lhs, Expr *rhs);
-  UT_NODISCARD Expr    *mk_seq(Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *alloc(Expr e);
+  UT_NODISCARD Expr *mk_int(const LX::Token &t);
+  UT_NODISCARD Expr *mk_real(const LX::Token &t);
+  UT_NODISCARD Expr *mk_str(const LX::Token &t);
+  UT_NODISCARD Expr *mk_var(const LX::Token &t);
+  UT_NODISCARD Expr *mk_app(Expr *fn, Expr *arg);
+  UT_NODISCARD Expr *mk_op_var(UT::Vu name);
+  UT_NODISCARD Expr *mk_unop(UT::Vu op, Expr *operand);
+  UT_NODISCARD Expr *mk_binop(UT::Vu op, Expr *lhs, Expr *rhs);
+  UT_NODISCARD Expr *mk_seq(Expr *lhs, Expr *rhs);
+  // Blessed-List desugaring: `List.Cons.{ head, tail }` / `List.Nil` as an
+  // expression or a pattern. `anchor`/`line` locate the `[`/`::` for
+  // diagnostics.
+  UT_NODISCARD Expr *
+  mk_cons(Expr *head, Expr *tail, UT::Vu anchor, size_t line);
+  UT_NODISCARD Expr *mk_nil(UT::Vu anchor, size_t line);
+  UT_NODISCARD Pattern *
+  mk_cons_pat(Pattern *h, Pattern *t, UT::Vu a, size_t ln);
+  UT_NODISCARD Pattern *mk_nil_pat(UT::Vu anchor, size_t line);
   UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
   UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);

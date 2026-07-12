@@ -272,6 +272,17 @@ struct CVariantLit
   EX::ExVariantLit *ex
     = nullptr; ///< back-link to patch a resolved bare literal
 };
+
+/// A `[e1, .., en]` sequence literal whose container (List vs Array) is
+/// inferred from context. Typed as a fresh `use` var with a shared element
+/// type; a lit-site (see resolve_lit_sites) settles `use` to `List elem` or
+/// `Array` and patches `ex->is_array`. CR then desugars the resolved form.
+struct CSeqLit
+{
+  std::vector<Core *> elems;
+  UT::Vu              anchor;
+  EX::ExSeqLit       *ex = nullptr; ///< back-link to patch the resolved kind
+};
 ///@}
 
 // A handler `do body ctl k  is op a = e ...  [else x = e]`. Typed in infer: the
@@ -308,7 +319,8 @@ struct CHandle
   X(StructLit, CStructLit)                                                     \
   X(Field, CField)                                                             \
   X(Case, CCase)                                                               \
-  X(VariantLit, CVariantLit)
+  X(VariantLit, CVariantLit)                                                   \
+  X(SeqLit, CSeqLit)
 
 enum class CKind
 {

@@ -27,7 +27,11 @@ namespace LL
 // Lower every pattern lambda and pattern `let` in `exprs` in place. Returns one
 // diagnostic per error (a refutable pattern in an irrefutable binding, an
 // unknown struct type or field, a positional arity mismatch); empty on success.
-std::vector<ER::Diagnostic> lower(EX::Exprs &exprs, AR::Arena &arena);
+// `extra_decls` are struct/union declarations from OTHER units (the prelude and
+// sibling modules) that patterns here may reference -- e.g. the blessed `List`.
+std::vector<ER::Diagnostic> lower(EX::Exprs                     &exprs,
+                                  const std::vector<EX::Expr *> &extra_decls,
+                                  AR::Arena                     &arena);
 
 } // namespace LL
 

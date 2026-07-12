@@ -1,0 +1,48 @@
+@mod LISTS
+
+# \file lists.thx
+# \info The blessed `List` type and its literal sugar. `[a, b, c]` builds a
+#       list, `h :: t` conses onto one, and `[]` is the empty list -- all
+#       desugaring to the prelude's `List.Cons` / `List.Nil` variant
+#       constructors. Patterns mirror the sugar: `is []` / `is h :: t` in a
+#       `when` destructure a list one cell at a time, and a fixed-arity
+#       `[a, b]` matches a list of exactly that length.
+
+$ sum : List Int -> Int = \xs =
+	when xs is [] then 0
+	           is h :: t then h + sum t
+	           else 0
+
+$ length : List Int -> Int = \xs =
+	when xs is [] then 0
+	           is _ :: t then 1 + length t
+	           else 0
+
+$ map_inc : List Int -> List Int = \xs =
+	when xs is [] then []
+	           is h :: t then (h + 1) :: map_inc t
+	           else []
+
+# Fixed-arity list patterns match a list of exactly that many elements, and
+# nest freely -- `[a, b]` is `Cons(a, Cons(b, Nil))`, so it binds two cells and
+# checks the third is `Nil`. Two arms may share the `Cons` head (`[a]` and
+# `[a, b]`); a failed inner match falls through to the next arm.
+$ size_class : List Int -> Int = \xs =
+	when xs is [] then 0
+	           is [a] then 1
+	           is [a, b] then 2
+	           else 9
+
+# `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
+$ xs : List Int = [1, 2, 3, 4, 5]
+$ ys : List Int = 1 :: 2 :: 3 :: 4 :: 5 :: []
+
+$ ck_sum : Int = if (sum xs) ?= 15 then 0 else 1 / 0
+$ ck_len : Int = if (length xs) ?= 5 then 0 else 1 / 0
+$ ck_cons : Int = if (sum ys) ?= 15 then 0 else 1 / 0
+$ ck_map : Int = if (sum (map_inc xs)) ?= 20 then 0 else 1 / 0
+$ ck_empty : Int = if (sum []) ?= 0 then 0 else 1 / 0
+$ ck_sc0 : Int = if (size_class []) ?= 0 then 0 else 1 / 0
+$ ck_sc1 : Int = if (size_class [7]) ?= 1 then 0 else 1 / 0
+$ ck_sc2 : Int = if (size_class [7, 8]) ?= 2 then 0 else 1 / 0
+$ ck_scN : Int = if (size_class xs) ?= 9 then 0 else 1 / 0

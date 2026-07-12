@@ -87,6 +87,12 @@ struct TkLBrace
 struct TkRBrace
 {
 }; // }
+struct TkLBrack
+{
+}; // [ -- list literal / list pattern
+struct TkRBrack
+{
+}; // ]
 struct TkAt
 {
 }; // @name -- an intrinsic; the name is Token::str past the leading '@'
@@ -155,6 +161,8 @@ struct TkEof
   X(Dot, TkDot)                                                                \
   X(LBrace, TkLBrace)                                                          \
   X(RBrace, TkRBrace)                                                          \
+  X(LBrack, TkLBrack)                                                          \
+  X(RBrack, TkRBrack)                                                          \
   X(At, TkAt)                                                                  \
   X(KwLet, TkKwLet)                                                            \
   X(KwIn, TkKwIn)                                                              \

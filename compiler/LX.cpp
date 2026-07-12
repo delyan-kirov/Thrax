@@ -88,12 +88,99 @@ Lexer::lex_comment(
   return { true, mk(TokenTag::Comment, start, line), {} };
 }
 
+static bool
+in_range(
+  unsigned char b, unsigned char lo, unsigned char hi)
+{
+  return b >= lo && b <= hi;
+}
+
+// Length (1..4) of the well-formed UTF-8 sequence at s[0..n), or 0 if the bytes
+// there are not well-formed UTF-8. Encodes the Unicode standard's Table 3-7, so
+// it rejects overlong encodings, surrogates (U+D800..U+DFFF) and code points
+// above U+10FFFF -- in a single pass, without decoding to a code point.
+static size_t
+utf8_seq_len(
+  const unsigned char *s, size_t n)
+{
+  if (n == 0) return 0;
+  unsigned char b = s[0];
+  if (b <= 0x7f) return 1;
+  if (in_range(b, 0xc2, 0xdf))
+    return (n >= 2 && in_range(s[1], 0x80, 0xbf)) ? 2 : 0;
+  if (b == 0xe0)
+    return (n >= 3 && in_range(s[1], 0xa0, 0xbf) && in_range(s[2], 0x80, 0xbf))
+             ? 3
+             : 0;
+  if (in_range(b, 0xe1, 0xec))
+    return (n >= 3 && in_range(s[1], 0x80, 0xbf) && in_range(s[2], 0x80, 0xbf))
+             ? 3
+             : 0;
+  if (b == 0xed)
+    return (n >= 3 && in_range(s[1], 0x80, 0x9f) && in_range(s[2], 0x80, 0xbf))
+             ? 3
+             : 0;
+  if (in_range(b, 0xee, 0xef))
+    return (n >= 3 && in_range(s[1], 0x80, 0xbf) && in_range(s[2], 0x80, 0xbf))
+             ? 3
+             : 0;
+  if (b == 0xf0)
+    return (n >= 4 && in_range(s[1], 0x90, 0xbf) && in_range(s[2], 0x80, 0xbf)
+            && in_range(s[3], 0x80, 0xbf))
+             ? 4
+             : 0;
+  if (in_range(b, 0xf1, 0xf3))
+    return (n >= 4 && in_range(s[1], 0x80, 0xbf) && in_range(s[2], 0x80, 0xbf)
+            && in_range(s[3], 0x80, 0xbf))
+             ? 4
+             : 0;
+  if (b == 0xf4)
+    return (n >= 4 && in_range(s[1], 0x80, 0x8f) && in_range(s[2], 0x80, 0xbf)
+            && in_range(s[3], 0x80, 0xbf))
+             ? 4
+             : 0;
+  return 0; /* 0x80..0xC1 (lone continuation / overlong lead), 0xF5..0xFF */
+}
+
+// Append the UTF-8 encoding of Unicode code point `cp` (already range-checked)
+// to `out`.
+static void
+utf8_encode(
+  std::string &out, unsigned long cp)
+{
+  if (cp <= 0x7f)
+    out += (char)cp;
+  else if (cp <= 0x7ff)
+  {
+    out += (char)(0xc0 | (cp >> 6));
+    out += (char)(0x80 | (cp & 0x3f));
+  }
+  else if (cp <= 0xffff)
+  {
+    out += (char)(0xe0 | (cp >> 12));
+    out += (char)(0x80 | ((cp >> 6) & 0x3f));
+    out += (char)(0x80 | (cp & 0x3f));
+  }
+  else
+  {
+    out += (char)(0xf0 | (cp >> 18));
+    out += (char)(0x80 | ((cp >> 12) & 0x3f));
+    out += (char)(0x80 | ((cp >> 6) & 0x3f));
+    out += (char)(0x80 | (cp & 0x3f));
+  }
+}
+
+// A string literal, decoding backslash escapes into the actual bytes they name
+// (so the token's `value` is the runtime content, while `str` keeps the raw
+// lexeme incl. quotes for diagnostics). Raw UTF-8 bytes pass through unchanged;
+// `\u{...}` names a Unicode code point and is emitted as UTF-8. The decoded
+// bytes are arena-owned, since they no longer coincide with a source slice.
 RToken
 Lexer::lex_string(
   size_t start, size_t line)
 {
   m_cursor += 1; // opening quote
-  size_t content_start = m_cursor;
+  std::string decoded;
 
   for (;;)
   {
@@ -107,14 +194,106 @@ Lexer::lex_string(
     }
     if ('"' == c)
     {
-      size_t content_end = m_cursor;
       m_cursor += 1; // closing quote
       Token t = mk(TokenTag::Str, start, line);
-      t.as    = TkStr{ UT::Vu{ m_input.data() + content_start,
-                            content_end - content_start } };
+      t.as    = TkStr{ UT::strdup(m_arena, UT::Vu{ decoded }) };
       return { true, t, {} };
     }
-    m_cursor += 1;
+    if ('\\' != c)
+    {
+      // Ordinary text: one well-formed UTF-8 scalar (ASCII is the 1-byte case).
+      // A malformed sequence is a lex error -- deliberate raw bytes go through
+      // \xHH, which bypasses this check.
+      const unsigned char *p = (const unsigned char *)m_input.data() + m_cursor;
+      size_t               len = utf8_seq_len(p, m_input.size() - m_cursor);
+      if (0 == len)
+      {
+        Token anchor = mk(TokenTag::Str, start, line);
+        LX_ERR(ER::Code::INVALID_UTF8,
+               anchor,
+               "invalid UTF-8 (byte 0x%02X) in a string literal; use \\xHH for "
+               "a raw byte",
+               (unsigned char)c);
+      }
+      for (size_t k = 0; k < len; ++k) decoded += (char)p[k];
+      m_cursor += len;
+      continue;
+    }
+
+    // An escape: the backslash plus at least one more char.
+    m_cursor += 1; // the backslash
+    char e = cur();
+    switch (e)
+    {
+    case 'n' : decoded += '\n'; break;
+    case 't' : decoded += '\t'; break;
+    case 'r' : decoded += '\r'; break;
+    case '0' : decoded += '\0'; break;
+    case '\\': decoded += '\\'; break;
+    case '"' : decoded += '"'; break;
+    case '\'': decoded += '\''; break;
+    case 'a' : decoded += '\a'; break;
+    case 'b' : decoded += '\b'; break;
+    case 'f' : decoded += '\f'; break;
+    case 'v' : decoded += '\v'; break;
+    case 'x': // \xHH -- exactly two hex digits -> one byte
+    {
+      char h1 = at(m_cursor + 1), h2 = at(m_cursor + 2);
+      if (!is_hex_digit(h1) || !is_hex_digit(h2))
+      {
+        Token anchor = mk(TokenTag::Str, start, line);
+        LX_ERR(ER::Code::INVALID_ESCAPE,
+               anchor,
+               "'\\x' must be followed by exactly two hex digits");
+      }
+      decoded += (char)((hex_val(h1) << 4) | hex_val(h2));
+      m_cursor += 2;
+      break;
+    }
+    case 'u': // \u{HHHH} -- 1..6 hex digits naming a Unicode code point
+    {
+      if (at(m_cursor + 1) != '{')
+      {
+        Token anchor = mk(TokenTag::Str, start, line);
+        LX_ERR(ER::Code::INVALID_ESCAPE,
+               anchor,
+               "'\\u' must be followed by '{CODEPOINT}' (e.g. \\u{1F600})");
+      }
+      m_cursor += 2; // 'u' and '{'
+      unsigned long cp = 0;
+      size_t        n  = 0;
+      while (is_hex_digit(cur()))
+      {
+        cp = cp * 16 + (unsigned long)hex_val(cur());
+        m_cursor += 1;
+        if (++n > 6) break;
+      }
+      bool surrogate = cp >= 0xd800 && cp <= 0xdfff;
+      if (n == 0 || cur() != '}' || cp > 0x10ffff || surrogate)
+      {
+        Token anchor = mk(TokenTag::Str, start, line);
+        LX_ERR(ER::Code::INVALID_ESCAPE,
+               anchor,
+               "'\\u{...}' needs 1-6 hex digits naming a Unicode scalar value "
+               "(<= U+10FFFF, not a surrogate U+D800..U+DFFF)");
+      }
+      utf8_encode(decoded, cp);
+      break; // the closing '}' is consumed by the m_cursor += 1 below
+    }
+    default:
+    {
+      Token anchor = mk(TokenTag::Str, start, line);
+      if ('\0' == e || '\n' == e) // a trailing backslash: really unterminated
+        LX_ERR(ER::Code::QUOTM_UNCLOSED,
+               anchor,
+               "string literal is not closed with a '\"'");
+      LX_ERR(ER::Code::INVALID_ESCAPE,
+             anchor,
+             "unknown escape '\\%c' in a string literal",
+             e);
+    }
+    }
+    m_cursor += 1; // the escape's final char (letter, second hex digit, or '}')
   }
 }
 

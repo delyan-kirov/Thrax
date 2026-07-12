@@ -29,6 +29,7 @@ namespace LX
 
 bool is_digit(char c);
 bool is_hex_digit(char c);
+int  hex_val(char c);
 bool is_bin_digit(char c);
 bool is_ident_start(char c);
 bool is_ident_cont(char c);
@@ -96,6 +97,10 @@ const Operators operator_db{
   // Sequencing and pipes (desugared in the parser, not runtime functions).
   { ";", TokenTag::Op },  //
   { "|>", TokenTag::Op }, //
+  // List cons `h :: t` -- parser-desugared to `List.Cons.{ h, t }`.
+  { "::", TokenTag::Op }, //
+  // Str/Array concatenation (overloaded operator, resolved in TC).
+  { "++", TokenTag::Op }, //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike
@@ -104,6 +109,7 @@ const Delims delim_db{
   { '(', TokenTag::LParen }, { ')', TokenTag::RParen },
   { ',', TokenTag::Comma },  { '.', TokenTag::Dot },
   { '{', TokenTag::LBrace }, { '}', TokenTag::RBrace },
+  { '[', TokenTag::LBrack }, { ']', TokenTag::RBrack },
 };
 
 } // namespace LX

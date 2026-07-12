@@ -509,8 +509,22 @@ struct ExVariantLit
   size_t             line = 0;
 };
 
+// A bracketed sequence literal `[e1, .., en]` whose container type is inferred:
+// a blessed `List` (desugared to Cons/Nil) by default, or an `Array` (a byte
+// vector) when the context demands one. The choice is deferred to the type
+// checker, which sets `is_array` (a lit-site write-back); CR then desugars.
+// `[..]` PATTERNS are not deferred -- they stay List (parsed straight to Cons).
+struct ExSeqLit
+{
+  UT::Vec<Expr *> elems;
+  UT::Vu          anchor;
+  size_t          line     = 0;
+  bool            is_array = false; // patched by TC; false => List
+};
+
 #define EX_EXPR_VARIANTS                                                       \
   X(Unknown, ExUnknown)                                                        \
+  X(SeqLit, ExSeqLit)                                                          \
   X(Unit, ExUnit)                                                              \
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
@@ -594,9 +608,13 @@ const InfixTable infix_db{
   // then b; `x |> f` = `f x`; `f <| x` = `f x`. Lowest precedences so they bind
   // looser than arithmetic/comparison and application. `;` is right-associative
   // (l>r), `|>` left-associative (l<r), `<|` right-associative (l>r).
-  { ";", { 2, 1 } },        //
-  { "<|", { 5, 4 } },       //
-  { "|>", { 6, 7 } },       //
+  { ";", { 2, 1 } },    //
+  { "<|", { 5, 4 } },   //
+  { "|>", { 6, 7 } },   //
+  { "::", { 15, 14 } }, // cons: right-assoc, looser than +/comparison
+  { OP::CONCAT,
+    { 16, 17 } }, // ++: left-assoc, tighter than comparison, looser than +
+
   { OP::ISEQ, { 10, 11 } }, //
   { OP::GEQ, { 10, 11 } },  //
   { OP::LEQ, { 10, 11 } },  //
@@ -618,7 +636,7 @@ const OperandSet operand_starters{
   LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
   LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
   LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
-  LX::TokenTag::KwWhen,
+  LX::TokenTag::KwWhen, LX::TokenTag::LBrack,
 };
 
 // Tokens that end an expression. `do` ends one so `defer <cleanup> do ...`
@@ -627,7 +645,7 @@ const OperandSet expr_terminators{
   LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
   LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,
   LX::TokenTag::KwElse, LX::TokenTag::RBrace, LX::TokenTag::KwIs,
-  LX::TokenTag::KwCtl,  LX::TokenTag::KwDo,
+  LX::TokenTag::KwCtl,  LX::TokenTag::KwDo,   LX::TokenTag::RBrack,
 };
 
 // Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is

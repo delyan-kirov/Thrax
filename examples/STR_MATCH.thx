@@ -1,0 +1,23 @@
+@mod STR_MATCH
+
+# Exact string pattern matching: `when s is "lit" then ...` compiles to a
+# byte-equality test, falling through arm to arm (see doc/strings-and-arrays.md).
+$ classify : Str -> Int = \s =
+	when s is "yes" then 1
+	         is "no" then 0
+	         is "maybe" then 2
+	         else 99
+
+$ ck_yes   : Int = if (classify "yes") ?= 1 then 0 else 1/0
+$ ck_no    : Int = if (classify "no") ?= 0 then 0 else 1/0
+$ ck_maybe : Int = if (classify "maybe") ?= 2 then 0 else 1/0
+$ ck_other : Int = if (classify "huh") ?= 99 then 0 else 1/0
+
+# `else` binds the whole scrutinee, so a string arm can fall through to a
+# default that reuses it.
+$ greet : Str -> Str = \name =
+	when name is "" then "nobody"
+	           else "hello " ++ name
+
+$ ck_empty : Int = if (greet "") ?= "nobody" then 0 else 1/0
+$ ck_named : Int = if (greet "sam") ?= "hello sam" then 0 else 1/0

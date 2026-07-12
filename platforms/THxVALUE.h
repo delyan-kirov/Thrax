@@ -61,8 +61,9 @@ struct Value
     struct
     {
       char  *p;
-      size_t n;
-    } s; /* T_STR */
+      size_t n;   /* byte length (len) */
+      size_t cap; /* buffer capacity (max_len); >= n. Growth reallocs p. */
+    } s; /* T_STR: Str (UTF-8) and Array share this growable byte vector. */
     struct
     {
       const char  *name;
@@ -130,6 +131,9 @@ Value *THxVALUE_env(Value **env, size_t n, size_t i);
 
 /* T_STR byte pointer (NUL-terminated), for passing to foreign functions. */
 char *THxVALUE_str(Value *v);
+/* T_STR byte length and capacity. */
+size_t THxVALUE_str_len(Value *v);
+size_t THxVALUE_str_cap(Value *v);
 
 /* T_STRUCT field by name (fails, naming the field, if absent). */
 Value *THxVALUE_field(Value *rec, const char *name);
