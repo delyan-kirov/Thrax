@@ -1,5 +1,15 @@
 # Strings & Arrays
 
+## Scope decision: `Array` is byte-only; generic vectors come later
+
+`Array` (and `Str`) are **byte vectors** (`Vec<u8>`) — this whole document. A
+generic, element-typed container (`Array Int`, `Array Str`, ...) is a SEPARATE
+future type, tentatively `Vector T`, with a **boxed** runtime rep (one `Value*`
+per element). It is deliberately NOT folded into `Array`: a generic element type
+forces boxing, but `Str`/`Array` must stay byte-packed for UTF-8 and so FFI can
+pass them as `char*`. So the two cannot share one layout. `Vector T` (boxed
+growable vector, its own `vector_*` ops) is deferred; `Array` stays byte-only.
+
 ## Goal
 
 Turn `Str`/`Array` from an opaque immutable byte block into a growable byte
