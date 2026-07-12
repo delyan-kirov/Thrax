@@ -9,6 +9,9 @@
 #       reference-counting paths -- struct/variant fields hold strings, so the
 #       leak check on exit proves they are released. Manually verified to print
 #       the expected bytes (see the module docs / commit).
+#
+# thrax-allow-nonascii: this file deliberately embeds raw UTF-8 to test the
+# lexer; it is exempt from the repo's ASCII-only rule (`build check-ascii`).
 
 # The C-style escapes: newline, tab, carriage return, NUL, backslash, both
 # quotes, and the bell/backspace/formfeed/vtab set.

@@ -110,7 +110,7 @@ $ List : @union =
 
 ### Pattern matching
 
-`when scrut is pat then e … else d` matches top to bottom; the first matching arm
+`when scrut is pat then e ... else d` matches top to bottom; the first matching arm
 wins and binds its variables. Patterns test literals, destructure structs and
 variants (nested), and each arm can carry an `if <guard>` that falls through to
 the next arm on failure. ([`MATCH.thx`](examples/MATCH.thx),
@@ -145,7 +145,7 @@ $ start_x  : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
 Effects are declared as a set of operations; performing one is just calling it. A
 function's type carries the effects it may perform as a **row** on its arrow
 (`A -> <E> B`); a bare arrow is pure, and an *unhandled* effect is a compile-time
-error. A handler is `do <body> ctl k is op a = e … [else x = e]`; the captured
+error. A handler is `do <body> ctl k is op a = e ... [else x = e]`; the captured
 continuation `k` is resumed by applying it (affine, **You only get one shot!**).
 ([`EFFECTS.thx`](examples/EFFECTS.thx))
 
@@ -233,4 +233,4 @@ More detail lives in [`doc/`](doc/): the [syntax spec](doc/syntax-spec.txt), the
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT see [LICENSE](LICENSE).

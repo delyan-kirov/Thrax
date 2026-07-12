@@ -1,18 +1,11 @@
 /*-------------------------------------------------------------------------------
  *\file build.cpp
- *\info The Thrax build program -- a thin orchestrator. All the build logic
- *      lives in utilities/UTxBUILD.hpp (the bootstrap library) and in each
- *      module's build.cpp; this file just wires them together, resolves the
- *      build context, and dispatches subcommands. It self-rebuilds when any
+ *\info The Thrax build program. Self-rebuilds when any
  *      build source changes (nob-style).
  *
  *      Bootstrap (Tier 0, no nix):  clang++ -std=c++20 -Iutilities build.cpp -o
  * build && ./build With nix:                    `nix develop` bootstraps
  * ./build for you.
- *
- *      Subcommands: build (default), test, native-test, clean, format, tokei,
- *      valgrind, env. A leading ffi/no-ffi option toggles FFI (on by default):
- *      `./build no-ffi test`, `./build ffi`.
  *-----------------------------------------------------------------------------*/
 
 #include "UTxBUILD.hpp"
@@ -23,15 +16,15 @@
 #include "platforms/build.cpp"
 #include "tests/build.cpp"
 
+namespace
+{
+
 using BLD::Ctx;
 using BLD::Module;
 
-// FFI is on by default (the nix dev shell provides libffi). `no-ffi` forces it
-// off (for the no-nix bootstrap); `ffi` requires it (error if libffi is
-// absent).
 enum class Ffi
 {
-  Default,
+  Default, // FFI ON
   On,
   Off
 };
@@ -39,19 +32,9 @@ enum class Ffi
 // Where the vendored libffi (static lib + headers) is built from the
 // external/libffi subtree. Kept out of the root artifacts/ so a plain
 // `build clean` never discards it (only `clean-recursive` does).
-static const std::string VENDORED_FFI = "external/artifacts";
-
-// Build the vendored libffi from the subtree into VENDORED_FFI. 0 on success,
-// non-zero on failure (with a diagnostic on stderr). Defined below; forward
-// declared so resolve_ffi can build on demand. Non-fatal so resolve_ffi can
-// fall back to nix.
-static int build_vendored_ffi();
-
-// libffi resolution. The vendored subtree is the DEFAULT: use it if built, else
-// build it on demand (needs the external dev shell's autotools). Only if that
-// build *fails* do we warn and fall back to nix / pkg-config. If nothing works,
-// error -- pass `no-ffi` to build without FFI.
-static void
+const std::string VENDORED_FFI = "external/artifacts";
+int               build_vendored_ffi();
+void
 resolve_ffi(
   Ctx &c, Ffi mode)
 {
@@ -111,7 +94,7 @@ resolve_ffi(
     "build without FFI.");
 }
 
-// Under nix, `clang++` is a wrapper that adds its real system include paths --
+// Under nix, `clang++` is a wrapper that adds its real system include paths,
 // the C++ stdlib (gcc/include/c++), libffi, glibc, the clang resource dir -- at
 // exec time, partly from $NIX_CFLAGS_COMPILE and partly from its own
 // resolution. `bear` records none of them, and clangd neither runs the wrapper
@@ -119,9 +102,9 @@ resolve_ffi(
 // <vector>/<print>/ffi.h. When generating the compile DB (THRAX_DB, set by the
 // compile-commands step) under nix, ask the driver for its full search list
 // (`clang++ -E -x c++ -v`) and bake every entry in as -isystem, so each
-// recorded command is self-contained -- working even with an editor launched
+// recorded command is self-contained, even with an editor launched
 // outside `nix develop`. No-op off nix and on normal builds.
-static void
+void
 bake_db_flags(
   Ctx &c)
 {
@@ -149,7 +132,7 @@ bake_db_flags(
 // it, so main() calls resolve_ffi/bake_db_flags separately. That keeps
 // non-compiling commands (clean, ffi-rebuild, env, ...) from triggering a
 // libffi build.
-static Ctx
+Ctx
 make_ctx(
   int argc, char **argv)
 {
@@ -162,7 +145,7 @@ make_ctx(
   return c;
 }
 
-static std::vector<Module>
+std::vector<Module>
 modules()
 {
   // utilities has no build.cpp: it bootstraps the build (UTxBUILD.hpp lives
@@ -174,25 +157,53 @@ modules()
   };
 }
 
-static int
-cmd_format()
+// The C/C++ sources clang-format owns (used by both `format` and the pre-push
+// format check). glob() skips build.cpp files, so add them and the root
+// explicitly.
+std::vector<std::string>
+format_files()
 {
   std::vector<std::string> f = BLD::glob(
     { "utilities", "compiler", "engines", "app" }, { ".cpp", ".hpp" });
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
-  // glob() skips build.cpp files; add them (and the root) explicitly.
   for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
   f.push_back("build.cpp");
   f.push_back("utilities/UTxBUILD.hpp");
+  return f;
+}
+
+int
+cmd_format()
+{
   std::string cmd = "clang-format -i";
-  for (auto &x : f) cmd += " " + x;
+  for (auto &x : format_files()) cmd += " " + x;
   return BLD::run(cmd);
 }
 
-// Remove build artifacts and scratch files (no shell -- pure std::filesystem).
-static int
+// Non-mutating counterpart of cmd_format: `--dry-run -Werror` makes
+// clang-format exit non-zero if any file would change, without editing it. The
+// pre-push hook uses this so a push FAILS on unformatted code instead of
+// silently rewriting the tree behind the committer's back.
+int
+cmd_check_format()
+{
+  std::string cmd = "clang-format --dry-run -Werror";
+  for (auto &x : format_files()) cmd += " " + x;
+  if (BLD::run(cmd) != 0)
+  {
+    std::print(stderr,
+               "build: check-format: some files need formatting; run "
+               "`build format`.\n");
+    return 1;
+  }
+  std::print("build: check-format: OK\n");
+  return 0;
+}
+
+// Remove build artifacts and scratch files.
+int
 cmd_clean(
   const Ctx &c)
 {
@@ -210,11 +221,9 @@ cmd_clean(
   return 0;
 }
 
-// Like clean, but also removes every nested artifacts/ dir -- module scratch
-// and the vendored libffi in external/artifacts -- forcing a libffi rebuild
-// next time. Plain `clean` deliberately leaves those alone (libffi is slow to
-// build).
-static int
+// Like clean, but also removes every nested artifacts/ dir
+// This will trigger full rebuild!
+int
 cmd_clean_recursive(
   const Ctx &c)
 {
@@ -244,16 +253,7 @@ cmd_clean_recursive(
   return 0;
 }
 
-// Build the vendored libffi from the external/libffi subtree into
-// external/artifacts (static lib + public headers). This is the ONLY step that
-// compiles libffi: it drives libffi's own autotools build (the single place the
-// project shells out to configure/make), and needs autoconf/automake/libtool --
-// provided by `nix develop ./external`. Output is version/triplet-independent:
-// we search the build tree for the freshly built libffi.a + generated headers.
-// Returns 0 on success; on failure it prints why and returns non-zero
-// (non-fatal so resolve_ffi can fall back to nix) -- `build ffi-rebuild` turns
-// that into a hard error.
-static int
+int
 build_vendored_ffi()
 {
   namespace fs          = std::filesystem;
@@ -349,20 +349,125 @@ build_vendored_ffi()
 }
 
 // `build ffi-rebuild`: force a vendored libffi build; a failure is fatal here.
-static int
+int
 cmd_ffi_rebuild()
 {
   if (build_vendored_ffi() != 0) BLD::die("libffi rebuild failed");
   return 0;
 }
 
-// Emit a .clangd so the editor works even when the DB isn't regenerated: nix's
-// clang++ wrapper hides its stdlib -isystem paths behind $NIX_CFLAGS_COMPILE,
-// so authorize clangd to query the driver directly and recover them.
-// Committable -- the glob is machine-independent. (Requires launching the
-// editor from inside `nix develop`; the baked-in DB flags cover the case where
-// it isn't.)
-static void
+// `build check-ascii`: enforce the ASCII-only rule
+const char *const ASCII_OPT_OUT = "thrax-allow-nonascii";
+
+bool
+ascii_checked_ext(
+  const std::string &ext)
+{
+  return ext == ".cpp" || ext == ".hpp" || ext == ".c" || ext == ".h"
+         || ext == ".md" || ext == ".txt" || ext == ".thx";
+}
+
+int
+cmd_check_ascii()
+{
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  int             violations = 0, scanned = 0, exempt = 0;
+  for (auto it = fs::recursive_directory_iterator(".", ec);
+       it != fs::recursive_directory_iterator();
+       it.increment(ec))
+  {
+    const fs::path   &p    = it->path();
+    const std::string name = p.filename().string();
+    if (it->is_directory(ec))
+    {
+      if (name == ".git" || name == "artifacts" || name == "external"
+          || name == "bin" || name == ".cache")
+        it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file(ec) || !ascii_checked_ext(p.extension().string()))
+      continue;
+
+    const std::string body = BLD::read_file(p.string());
+    if (body.find(ASCII_OPT_OUT) != std::string::npos)
+    {
+      ++exempt;
+      continue;
+    }
+    ++scanned;
+    int line = 1, col = 1;
+    for (unsigned char ch : body)
+    {
+      if (ch == '\n')
+      {
+        ++line;
+        col = 1;
+        continue;
+      }
+      if (ch >= 0x80)
+      {
+        std::print(stderr,
+                   "{}:{}:{}: non-ASCII byte 0x{:02x}\n",
+                   p.string(),
+                   line,
+                   col,
+                   static_cast<unsigned>(ch));
+        ++violations;
+      }
+      ++col;
+    }
+  }
+  if (violations)
+  {
+    std::print(stderr,
+               "build: check-ascii: {} non-ASCII byte(s) in tracked sources/"
+               "docs (see above). Keep sources and docs ASCII-only, or add the "
+               "marker '{}' to a file that must contain non-ASCII bytes.\n",
+               violations,
+               ASCII_OPT_OUT);
+    return 1;
+  }
+  std::print(
+    "build: check-ascii: OK ({} files scanned, {} exempt)\n", scanned, exempt);
+  return 0;
+}
+
+int
+cmd_install_hooks()
+{
+  namespace fs = std::filesystem;
+  if (!fs::exists(".git"))
+    BLD::die("install-hooks: no .git here -- run from the repo root");
+  std::error_code ec;
+  const fs::path  hooks = ".git/hooks";
+  fs::create_directories(hooks, ec);
+  const fs::path hook = hooks / "pre-push";
+  BLD::write_file(
+    hook.string(),
+    "#!/bin/sh\n"
+    "# Auto-generated by `build install-hooks`; do not edit. A one-line shim "
+    "so\n"
+    "# the real pre-push checks stay in the portable C++ build program (they "
+    "run\n"
+    "# on Windows too, where git executes hooks via its bundled sh). "
+    "Bootstrap\n"
+    "# the build program on a fresh clone, then hand off to it.\n"
+    "[ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp -o build\n"
+    "exec ./build pre-push\n");
+  fs::permissions(hook,
+                  fs::perms::owner_all | fs::perms::group_read
+                    | fs::perms::group_exec | fs::perms::others_read
+                    | fs::perms::others_exec,
+                  ec);
+  if (ec)
+    BLD::die("install-hooks: cannot set hook permissions: " + ec.message());
+  std::print("build: installed pre-push hook at {} (runs `build pre-push`)\n",
+             hook.string());
+  return 0;
+}
+
+void
 write_clangd_config()
 {
   BLD::write_file(
@@ -379,7 +484,7 @@ write_clangd_config()
 
 // This project's sources + flags for the shared self-rebuild (BLD::rebuild_self
 // does the timestamp check and portable re-exec).
-static void
+void
 rebuild_self(
   int argc, char **argv)
 {
@@ -395,7 +500,7 @@ rebuild_self(
 
 // Locate the repo root: the nearest ancestor of `cwd` (inclusive) that holds
 // the bootstrap library. Empty if `cwd` is not inside a Thrax checkout.
-static std::filesystem::path
+std::filesystem::path
 find_root(
   std::filesystem::path cwd)
 {
@@ -409,7 +514,7 @@ find_root(
 
 // True if `top` (a top-level directory name under the root) belongs to a module
 // the root build knows how to build.
-static bool
+bool
 is_module_dir(
   const std::string &top)
 {
@@ -439,7 +544,7 @@ is_module_dir(
 //
 // Returns the module name to build (empty for the whole project) in cases 1/3,
 // having chdir'd to the root; otherwise it exits.
-static std::string
+std::string
 delegate_local(
   int argc, char **argv)
 {
@@ -504,6 +609,8 @@ delegate_local(
   std::exit(0);
 }
 
+} // namespace
+
 int
 main(
   int argc, char **argv)
@@ -532,10 +639,11 @@ main(
   Ctx         c    = make_ctx(argc, argv);
   auto        mods = modules();
 
-  // Commands that neither compile Thrax nor need libffi are handled first, so
-  // they never trigger FFI resolution (which can build the vendored libffi).
   if (cmd == "clean") return cmd_clean(c);
   if (cmd == "clean-recursive") return cmd_clean_recursive(c);
+  if (cmd == "check-ascii") return cmd_check_ascii();
+  if (cmd == "check-format") return cmd_check_format();
+  if (cmd == "install-hooks") return cmd_install_hooks();
   if (cmd == "ffi-rebuild") return cmd_ffi_rebuild();
   if (cmd == "format") return cmd_format();
   if (cmd == "tokei")
@@ -588,10 +696,20 @@ main(
                     "--track-origins=yes ./"
                     + c.artifacts + "/tst_all");
   }
+  if (cmd == "pre-push")
+  {
+    // The gate the git pre-push hook runs (see cmd_install_hooks). Cheap,
+    // non-compiling checks first so a bad push fails fast, then build + tests.
+    if (int rc = cmd_check_ascii()) return rc;
+    if (int rc = cmd_check_format()) return rc;
+    BLD::build(c, mods);
+    return tests_smoke(c);
+  }
 
   std::print(stderr,
              "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|ffi-rebuild|format|compile-commands|tokei|"
-             "valgrind|env]\n");
+             "clean-recursive|check-ascii|check-format|install-hooks|"
+             "ffi-rebuild|format|compile-commands|tokei|valgrind|env|"
+             "pre-push]\n");
   return 2;
 }

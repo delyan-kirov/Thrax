@@ -2,8 +2,8 @@
  *\file THxMEMRC.c
  *\info The default memory engine: precise reference counting over Value::rc.
  *      Strict + pure data is acyclic by construction (see doc/native-backend.md
- *      and doc/effect-system-design.md §8), so plain RC is complete; the one
- *      cycle -- a recursive-let closure capturing its own box -- is a weak self
+ *      and doc/effect-system-design.md section 8), so plain RC is complete; the
+ * one cycle -- a recursive-let closure capturing its own box -- is a weak self
  *      edge handled in THxVALUE_destroy / THxVALUE_patch_box.
  *
  *      Release is ITERATIVE: dropping the last reference to a long list must
