@@ -78,7 +78,7 @@ struct VStruct
 // A sum value: the union type, the variant `tag`, and the payload `fields` in
 // declared order. Evaluation is strict -- every field is already a forced value
 // (no thunks). Coinductive / infinite structures are `@codata`, a separate kind
-// (see docs/effect-system-design.md §1a), not lazy data.
+// (see docs/effect-system-design.md section 1a), not lazy data.
 struct VVariant
 {
   UT::Vu            type_name;

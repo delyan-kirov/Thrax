@@ -81,9 +81,9 @@ mechanisms to keep writable and executable views of the trampoline memory
 separate.
 
 Bugs that defeat the W^X guarantee on platforms where libffi advertises
-support for it — for example, by leaving a page both writable and
+support for it for example, by leaving a page both writable and
 executable, by exposing a writable alias to attacker-controllable data, or
-by emitting a trampoline that branches into caller-controlled memory — are
+by emitting a trampoline that branches into caller-controlled memory are
 security bugs.
 
 On platforms where W^X enforcement is not available and libffi falls back

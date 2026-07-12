@@ -117,8 +117,8 @@ ffi_call_int (ffi_cif *cif,
 #ifdef FFI_TARGET_HAS_COMPLEX_TYPE
       /* Integer-typed _Complex: the .Lsmall_struct return path stored
 	 r3 at buffer offset 0 and r4 at offset 8.  Extract one inner-
-	 sized half from each slot — right-justified on BE, low-address
-	 on LE — and lay them out as the natural packed complex value
+	 sized half from each slot right-justified on BE, low-address
+	 on LE and lay them out as the natural packed complex value
 	 the caller expects (real@0, imag@hsize).  */
       if (cif->rtype->type == FFI_TYPE_COMPLEX
 	  && (cif->flags & (FLAG_RETURNS_FP | FLAG_RETURNS_VEC)) == 0)

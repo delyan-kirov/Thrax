@@ -10,8 +10,9 @@
  * build && ./build With nix:                    `nix develop` bootstraps
  * ./build for you.
  *
- *      Subcommands: build (default), test, native-test, clean, format, tokei,
- *      valgrind, env. A leading ffi/no-ffi option toggles FFI (on by default):
+ *      Subcommands: build (default), test, native-test, clean, check-ascii,
+ *      check-format, install-hooks, pre-push, format, tokei, valgrind, env. A
+ *      leading ffi/no-ffi option toggles FFI (on by default):
  *      `./build no-ffi test`, `./build ffi`.
  *-----------------------------------------------------------------------------*/
 
@@ -174,21 +175,49 @@ modules()
   };
 }
 
-static int
-cmd_format()
+// The C/C++ sources clang-format owns (used by both `format` and the pre-push
+// format check). glob() skips build.cpp files, so add them and the root
+// explicitly.
+static std::vector<std::string>
+format_files()
 {
   std::vector<std::string> f = BLD::glob(
     { "utilities", "compiler", "engines", "app" }, { ".cpp", ".hpp" });
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
-  // glob() skips build.cpp files; add them (and the root) explicitly.
   for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
   f.push_back("build.cpp");
   f.push_back("utilities/UTxBUILD.hpp");
+  return f;
+}
+
+static int
+cmd_format()
+{
   std::string cmd = "clang-format -i";
-  for (auto &x : f) cmd += " " + x;
+  for (auto &x : format_files()) cmd += " " + x;
   return BLD::run(cmd);
+}
+
+// Non-mutating counterpart of cmd_format: `--dry-run -Werror` makes
+// clang-format exit non-zero if any file would change, without editing it. The
+// pre-push hook uses this so a push FAILS on unformatted code instead of
+// silently rewriting the tree behind the committer's back.
+static int
+cmd_check_format()
+{
+  std::string cmd = "clang-format --dry-run -Werror";
+  for (auto &x : format_files()) cmd += " " + x;
+  if (BLD::run(cmd) != 0)
+  {
+    std::print(stderr,
+               "build: check-format: some files need formatting; run "
+               "`build format`.\n");
+    return 1;
+  }
+  std::print("build: check-format: OK\n");
+  return 0;
 }
 
 // Remove build artifacts and scratch files (no shell -- pure std::filesystem).
@@ -353,6 +382,134 @@ static int
 cmd_ffi_rebuild()
 {
   if (build_vendored_ffi() != 0) BLD::die("libffi rebuild failed");
+  return 0;
+}
+
+// `build check-ascii`: enforce the ASCII-only rule for tracked sources and
+// docs. Any byte >= 0x80 in a checked file is a violation, reported as
+// file:line:col. A file may opt out by containing the marker below (e.g.
+// examples/STRINGS.thx, whose whole point is to lex raw UTF-8). Skips the
+// build/vendor/VCS trees (artifacts/, external/, bin/, .git/, .cache/). Returns
+// 0 when clean, 1 on any violation. Wired into the git pre-push hook, not into
+// `build test`.
+//
+// The marker is spelled with adjacent string literals so this file -- which
+// must name the marker -- does not itself contain the contiguous token, and so
+// stays subject to the check rather than exempting itself.
+static const char *const ASCII_OPT_OUT = "thrax-allow"
+                                         "-nonascii";
+
+static bool
+ascii_checked_ext(
+  const std::string &ext)
+{
+  return ext == ".cpp" || ext == ".hpp" || ext == ".c" || ext == ".h"
+         || ext == ".md" || ext == ".txt" || ext == ".thx";
+}
+
+static int
+cmd_check_ascii()
+{
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  int             violations = 0, scanned = 0, exempt = 0;
+  for (auto it = fs::recursive_directory_iterator(".", ec);
+       it != fs::recursive_directory_iterator();
+       it.increment(ec))
+  {
+    const fs::path   &p    = it->path();
+    const std::string name = p.filename().string();
+    if (it->is_directory(ec))
+    {
+      if (name == ".git" || name == "artifacts" || name == "external"
+          || name == "bin" || name == ".cache")
+        it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file(ec) || !ascii_checked_ext(p.extension().string()))
+      continue;
+
+    const std::string body = BLD::read_file(p.string());
+    if (body.find(ASCII_OPT_OUT) != std::string::npos)
+    {
+      ++exempt;
+      continue;
+    }
+    ++scanned;
+    int line = 1, col = 1;
+    for (unsigned char ch : body)
+    {
+      if (ch == '\n')
+      {
+        ++line;
+        col = 1;
+        continue;
+      }
+      if (ch >= 0x80)
+      {
+        std::print(stderr,
+                   "{}:{}:{}: non-ASCII byte 0x{:02x}\n",
+                   p.string(),
+                   line,
+                   col,
+                   static_cast<unsigned>(ch));
+        ++violations;
+      }
+      ++col;
+    }
+  }
+  if (violations)
+  {
+    std::print(stderr,
+               "build: check-ascii: {} non-ASCII byte(s) in tracked sources/"
+               "docs (see above). Keep sources and docs ASCII-only, or add the "
+               "marker '{}' to a file that must contain non-ASCII bytes.\n",
+               violations,
+               ASCII_OPT_OUT);
+    return 1;
+  }
+  std::print(
+    "build: check-ascii: OK ({} files scanned, {} exempt)\n", scanned, exempt);
+  return 0;
+}
+
+// `build install-hooks`: install the git pre-push hook. To stay cross-platform
+// (Windows included) NONE of the check logic lives in shell -- the hook is a
+// one-line POSIX-sh shim that execs `build pre-push`, and git runs hooks
+// through its bundled sh on every platform. All real work (ascii + format
+// checks, tests) is portable C++ in the build program. Re-run this after
+// changing the shim.
+static int
+cmd_install_hooks()
+{
+  namespace fs = std::filesystem;
+  if (!fs::exists(".git"))
+    BLD::die("install-hooks: no .git here -- run from the repo root");
+  std::error_code ec;
+  const fs::path  hooks = ".git/hooks";
+  fs::create_directories(hooks, ec);
+  const fs::path hook = hooks / "pre-push";
+  BLD::write_file(
+    hook.string(),
+    "#!/bin/sh\n"
+    "# Auto-generated by `build install-hooks`; do not edit. A one-line shim "
+    "so\n"
+    "# the real pre-push checks stay in the portable C++ build program (they "
+    "run\n"
+    "# on Windows too, where git executes hooks via its bundled sh). "
+    "Bootstrap\n"
+    "# the build program on a fresh clone, then hand off to it.\n"
+    "[ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp -o build\n"
+    "exec ./build pre-push\n");
+  fs::permissions(hook,
+                  fs::perms::owner_all | fs::perms::group_read
+                    | fs::perms::group_exec | fs::perms::others_read
+                    | fs::perms::others_exec,
+                  ec);
+  if (ec)
+    BLD::die("install-hooks: cannot set hook permissions: " + ec.message());
+  std::print("build: installed pre-push hook at {} (runs `build pre-push`)\n",
+             hook.string());
   return 0;
 }
 
@@ -536,6 +693,9 @@ main(
   // they never trigger FFI resolution (which can build the vendored libffi).
   if (cmd == "clean") return cmd_clean(c);
   if (cmd == "clean-recursive") return cmd_clean_recursive(c);
+  if (cmd == "check-ascii") return cmd_check_ascii();
+  if (cmd == "check-format") return cmd_check_format();
+  if (cmd == "install-hooks") return cmd_install_hooks();
   if (cmd == "ffi-rebuild") return cmd_ffi_rebuild();
   if (cmd == "format") return cmd_format();
   if (cmd == "tokei")
@@ -588,10 +748,20 @@ main(
                     "--track-origins=yes ./"
                     + c.artifacts + "/tst_all");
   }
+  if (cmd == "pre-push")
+  {
+    // The gate the git pre-push hook runs (see cmd_install_hooks). Cheap,
+    // non-compiling checks first so a bad push fails fast, then build + tests.
+    if (int rc = cmd_check_ascii()) return rc;
+    if (int rc = cmd_check_format()) return rc;
+    BLD::build(c, mods);
+    return tests_smoke(c);
+  }
 
   std::print(stderr,
              "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|ffi-rebuild|format|compile-commands|tokei|"
-             "valgrind|env]\n");
+             "clean-recursive|check-ascii|check-format|install-hooks|"
+             "ffi-rebuild|format|compile-commands|tokei|valgrind|env|"
+             "pre-push]\n");
   return 2;
 }

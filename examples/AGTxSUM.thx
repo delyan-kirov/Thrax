@@ -58,7 +58,7 @@ $ chk2d : Int = when get 8 none_i is 8 then 0 else 1 / 0
 # A generic, recursive sum type: `List `T` refers to itself with a type
 # argument. Under STRICT evaluation this builds FINITE lists only; the former
 # infinite stream (`from` / `take3sum`) was lazy data and will return as
-# `@codata` (docs/effect-system-design.md §1a).
+# `@codata` (docs/effect-system-design.md section 1a).
 $ List : @union =
     Cons: {`T, List `T},
     Nil: {}
