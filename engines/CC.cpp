@@ -338,9 +338,9 @@ struct Emitter
     case IR::EKind::Field:
     case IR::EKind::MkVariant:
     case IR::EKind::Unk:
-    case IR::EKind::Extern: return false;
-    case IR::EKind::App:
-    case IR::EKind::Handle: return true;
+    case IR::EKind::Extern   : return false;
+    case IR::EKind::App      :
+    case IR::EKind::Handle   : return true;
     case IR::EKind::Let:
     {
       auto &l = std::get<IR::Let>(e->as);

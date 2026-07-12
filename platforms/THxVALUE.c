@@ -188,8 +188,8 @@ payload_destroy(
   case T_INT:
   case T_REAL:
   case T_OP:
-  case T_UNK: return;
-  case T_STR: THxMEM_free(v->u.s.p); return;
+  case T_UNK : return;
+  case T_STR : THxMEM_free(v->u.s.p); return;
   case T_STRUCT:
     THxMEM_free((void *)v->u.st.fnames); /* the array; the names are static */
     release_children(v, v->u.st.f, v->u.st.n);
@@ -246,7 +246,7 @@ THxVALUE_patch_box(
   case T_INT:
   case T_REAL:
   case T_OP:
-  case T_UNK: break;
+  case T_UNK : break;
   case T_STR:
   {
     char *b = (char *)THxMEM_alloc(box->u.s.n + 1);

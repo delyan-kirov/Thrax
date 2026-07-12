@@ -290,10 +290,8 @@ const std::unordered_map<std::string, Impl> impls{
   { OP::mono(OP::ISEQ, OP::TY_STR),
     { 2,
       [](const std::vector<pVal> &a) {
-        return mk_int(std::get<VStr>(a[0]->as).val
-                          == std::get<VStr>(a[1]->as).val
-                        ? 1
-                        : 0);
+        return mk_int(
+          std::get<VStr>(a[0]->as).val == std::get<VStr>(a[1]->as).val ? 1 : 0);
       } } },
   { OP::mono(OP::ADD, OP::TY_INT),
     { 2,

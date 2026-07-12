@@ -78,13 +78,14 @@ cmp(
 }
 
 // Equality: the numeric comparisons plus Str byte-equality (`?=` on two strings
-// -> Int, 1/0). Backs exact string pattern matching (see doc/strings-and-arrays.md).
+// -> Int, 1/0). Backs exact string pattern matching (see
+// doc/strings-and-arrays.md).
 std::vector<Overload>
 eq()
 {
   std::vector<Overload> v = cmp(OP::ISEQ);
-  v.push_back({ { OP::TY_STR, OP::TY_STR, OP::TY_INT },
-                OP::mono(OP::ISEQ, OP::TY_STR) });
+  v.push_back(
+    { { OP::TY_STR, OP::TY_STR, OP::TY_INT }, OP::mono(OP::ISEQ, OP::TY_STR) });
   return v;
 }
 

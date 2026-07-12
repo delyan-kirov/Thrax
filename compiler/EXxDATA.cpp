@@ -218,6 +218,14 @@ pprint(
            + pprint(vl.fields[i].val, level + 2);
     return s + ")";
   }
+  case ExprTag::SeqLit:
+  {
+    auto       &sl = std::get<ExSeqLit>(e->as);
+    std::string s  = pad + (sl.is_array ? "@[" : "[");
+    for (size_t i = 0; i < sl.elems.size(); ++i)
+      s += "\n" + pprint(sl.elems[i], level + 1);
+    return s + "]";
+  }
   case ExprTag::ModDecl:
     return pad + "@mod " + std::string(std::get<ExModDecl>(e->as).name);
   case ExprTag::Import:

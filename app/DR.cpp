@@ -101,9 +101,9 @@ print_diags(
 // declarations are linked into one flat program, so a bare name like `List`
 // resolves regardless of the declaring module. The file name matches the module
 // so the filename lint is satisfied.
-static const char PRELUDE_SRC[] = "@mod PRELUDE\n"
-                                  "$ List : @union = Cons: {`T, List `T}, "
-                                  "Nil: {},\n";
+static const char PRELUDE_SRC[]  = "@mod PRELUDE\n"
+                                   "$ List : @union = Cons: {`T, List `T}, "
+                                   "Nil: {},\n";
 static const char PRELUDE_FILE[] = "PRELUDE.thx";
 
 // Lex + parse one source (content/file) into `units`, forwarding diagnostics.

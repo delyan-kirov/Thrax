@@ -757,21 +757,21 @@ Parser::parse_defer()
 RPattern
 Parser::parse_pattern()
 {
-  Pattern *head = EX_TRY(parse_pattern_atom());
-  LX::Token t   = EX_TRY(m_lex.peek());
+  Pattern  *head = EX_TRY(parse_pattern_atom());
+  LX::Token t    = EX_TRY(m_lex.peek());
   if (LX::TokenTag::Op == t.tag && t.str == "::")
   {
-    m_lex.next();                                 // '::'
-    Pattern *tail = EX_TRY(parse_pattern());       // right-associative
+    m_lex.next();                            // '::'
+    Pattern *tail = EX_TRY(parse_pattern()); // right-associative
     return { true, mk_cons_pat(head, tail, t.str, t.line), {} };
   }
   return { true, head, {} };
 }
 
-// A single pattern: `_`, a variable, a literal, a `Type.{ ... }` struct pattern,
-// or a `[..]` list pattern. Literals and literal-bearing struct patterns are
-// refutable; the LL pass rejects them where only irrefutable patterns are
-// allowed (lambda / let).
+// A single pattern: `_`, a variable, a literal, a `Type.{ ... }` struct
+// pattern, or a `[..]` list pattern. Literals and literal-bearing struct
+// patterns are refutable; the LL pass rejects them where only irrefutable
+// patterns are allowed (lambda / let).
 RPattern
 Parser::parse_pattern_atom()
 {
@@ -856,17 +856,18 @@ Parser::parse_pattern_atom()
 RPattern
 Parser::parse_list_pattern()
 {
-  LX::Token lb = EX_TRY(m_lex.next()); // '['
+  LX::Token          lb = EX_TRY(m_lex.next()); // '['
   UT::Vec<Pattern *> elems{ m_arena };
   if (LX::TokenTag::RBrack != EX_TRY(m_lex.peek()).tag)
     for (;;)
     {
       elems.push(EX_TRY(parse_pattern()));
       if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
-      m_lex.next(); // ','
+      m_lex.next();                                                // ','
       if (LX::TokenTag::RBrack == EX_TRY(m_lex.peek()).tag) break; // trailing
     }
-  EX_TRY(expect(LX::TokenTag::RBrack, "expected ']' to close the list pattern"));
+  EX_TRY(
+    expect(LX::TokenTag::RBrack, "expected ']' to close the list pattern"));
 
   Pattern *acc = mk_nil_pat(lb.str, lb.line);
   for (size_t i = elems.size(); i-- > 0;)
@@ -1024,28 +1025,30 @@ Parser::parse_closure()
   return { true, body, {} };
 }
 
-// `[e1, e2, .., en]` -- a list literal. Desugars right-fold to
-// `List.Cons.{ e1, List.Cons.{ .., List.Nil } }`; `[]` is `List.Nil`.
+// `[e1, e2, .., en]` -- a sequence literal. Its container type is inferred: a
+// blessed `List` (the default) or an `Array` in an Array-typed context. The
+// choice is deferred to the type checker (ExSeqLit); CR desugars the resolved
+// form. `[]` is the empty sequence.
 RExpr
 Parser::parse_list()
 {
-  LX::Token lb = EX_TRY(m_lex.next()); // '['
+  LX::Token       lb = EX_TRY(m_lex.next()); // '['
   UT::Vec<Expr *> elems{ m_arena };
   if (LX::TokenTag::RBrack != EX_TRY(m_lex.peek()).tag)
     for (;;)
     {
-      elems.push(EX_CTX(parse_expr(0), lb, "in this list literal"));
+      elems.push(EX_CTX(parse_expr(0), lb, "in this sequence literal"));
       if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
       m_lex.next(); // ','
       // A trailing comma before ']' is allowed.
       if (LX::TokenTag::RBrack == EX_TRY(m_lex.peek()).tag) break;
     }
-  EX_TRY(expect(LX::TokenTag::RBrack, "expected ']' to close the list literal"));
+  EX_TRY(
+    expect(LX::TokenTag::RBrack, "expected ']' to close the sequence literal"));
 
-  Expr *acc = mk_nil(lb.str, lb.line);
-  for (size_t i = elems.size(); i-- > 0;)
-    acc = mk_cons(elems[i], acc, lb.str, lb.line);
-  return { true, acc, {} };
+  Expr e{ ExprTag::SeqLit };
+  e.as = ExSeqLit{ elems, lb.str, lb.line, false };
+  return { true, alloc(e), {} };
 }
 
 RExpr

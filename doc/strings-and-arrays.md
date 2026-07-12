@@ -124,19 +124,40 @@ Two forms in a `when ... is` arm:
 
 `%starts_with : Array -> Array -> Int` is added alongside the built-ins.
 
-## Pattern matching — arrays
+## Sequence literals — type-directed `[..]`  *(implemented)*
 
-Arrays are contiguous, not cons-lists, so they do not reuse the `List`
-desugaring. Surface (avoiding the `[..]` list-literal syntax, which is the
-blessed `List`):
+No new glyph: `[e1, .., en]` is one **sequence literal** whose container is
+inferred — a blessed `List` by default (and in a `List`-typed context), an
+`Array` (byte vector, elements must be `Int`) in an `Array`-typed context.
+Unannotated defaults to `List` (backward-compatible with the list literals).
 
-- Proposed literal/pattern syntax: `@[a, b, c]` for an array literal, `@[]`
-  empty, `@[first, ..rest]` head + rest slice. (`@[` reads as "array of", parallel
-  to `@array.{..}`.) Final glyph TBD in review; the desugaring is what matters.
-- Patterns lower to: length test (`%len scrut ?= k`, or `>= k` when a `..rest`
-  is present), element binds via `%get scrut i`, and `rest = %slice scrut k len`.
-- Element sub-patterns nest through the same `match_pat` fallthrough added for
-  list patterns (`[[list-literals-and-nested-patterns]]`).
+Because pattern lowering (LL) runs *before* the type checker, the choice must be
+deferred: the parser emits `ExSeqLit` (no Cons desugaring); TC types the elements
+against one shared type and registers a **lit-site** (like a bare struct/variant
+literal) that settles `use` to `List elem` or `Array` and patches
+`ExSeqLit::is_array`; **CR** then desugars — `List.Cons/Nil` for a List,
+`array_push (.. (%array 0) ..)` for an Array. The `array_push` overload's impl
+key *is* `array_push`, so emitting it post-TC dispatches correctly.
+
+## Pattern matching — arrays  *(TODO — blocked pre-TC)*
+
+`[..]` *patterns* stay `List` for now (the parser still lowers them straight to
+Cons/Nil). Making them type-directed like the literals is **not** symmetric: LL
+lowers every pattern into `case`/if-chains *before* TC, so at lowering time the
+scrutinee's `List`-vs-`Array` type is unknown. Options for the follow-up:
+
+- Move seq-pattern lowering *after* TC (defer the pattern through inference, like
+  `ExSeqLit`, then a post-TC pass emits the `array_len`/`array_get`/`array_slice`
+  destructure). This is the clean route; it is a real restructure since the whole
+  match machinery lives in LL today.
+- Meanwhile, array destructuring already works via the built-ins + guards:
+  `when arr is a if (array_len a) ?= 2 then <array_get a 0 ..>`.
+
+When built, array patterns lower to a length test (`array_len scrut ?= k`, or
+`>= k` with a `..rest`), element binds via `array_get scrut i`, and
+`rest = array_slice scrut k (array_len scrut)`, nesting through the same
+`match_pat` fallthrough as list patterns
+(`[[list-literals-and-nested-patterns]]`).
 
 ## Phasing (each phase ends green on both engines)
 
@@ -150,10 +171,14 @@ blessed `List`):
 4. **DONE — Exact string patterns.** `test_of` / `match_pat` emit a `?=@Str`
    test; string matches route to `lower_match_guarded`. `examples/STR_MATCH.thx`.
 5. **TODO — Literal-prefix string patterns** (`is "..." ++ rest`).
-6. **TODO — Array literals + patterns** (`@[..]`), pending the glyph decision.
+6a. **DONE — Type-directed `[..]` sequence literals** (List vs Array inferred,
+    no `@`). `examples/SEQ_INFER.thx`.
+6b. **TODO — Array `[..]` patterns** — blocked on pre-TC pattern lowering (see
+    above); needs post-TC seq-pattern lowering.
 
-Phases 1–4 (DONE) deliver the core "Rust `String`" experience (grow, concat,
-compare, switch); 5–6 are the richer pattern surface.
+Phases 1–4 + 6a (DONE) deliver the core "Rust `String`" experience (grow,
+concat, compare, switch) and inferred sequence literals; 5 and 6b are the
+richer pattern surface.
 
 ## Follow-ups
 

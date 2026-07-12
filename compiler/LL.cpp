@@ -460,8 +460,8 @@ struct Lowerer
       if (m.arms[i].guard) has_guard = true;
       if (pat->tag == PatTag::Variant)
       {
-        has_variant   = true;
-        auto &pv      = std::get<EX::PatVariant>(pat->as);
+        has_variant = true;
+        auto &pv    = std::get<EX::PatVariant>(pat->as);
         // A payload slot that is not a bare variable / wildcard is a nested
         // sub-pattern -- e.g. the `List.Nil` a `[a]` list pattern desugars to.
         for (size_t k = 0; k < pv.fields.size(); ++k)
@@ -731,7 +731,8 @@ struct Lowerer
   // alt body. Pins `*sig` to the union's type constructor on first success.
   // Returns false (a diagnostic recorded, or the arm skipped) if `pv` is not a
   // usable variant arm. Shared by the plain-variant and guarded lowerings.
-  // Resolve variant pattern `pv` -- with `munion` supplying the union for a bare
+  // Resolve variant pattern `pv` -- with `munion` supplying the union for a
+  // bare
   // `.Tag` -- to its union constructor (`uname_vu`), tag index, and declared
   // payload field names (`decl`). Records a diagnostic and returns false on an
   // unresolvable/unknown union or tag. Shared by the flat and nested lowerings.
@@ -857,10 +858,11 @@ struct Lowerer
       return mk_let(
         std::get<EX::PatVar>(pat->as).name, subject, success, nullptr);
     case PatTag::Int:
-      return mk_if(
-        mk_binop(OP::ISEQ, subject, mk_int(std::get<EX::PatInt>(pat->as).value)),
-        success,
-        fall());
+      return mk_if(mk_binop(OP::ISEQ,
+                            subject,
+                            mk_int(std::get<EX::PatInt>(pat->as).value)),
+                   success,
+                   fall());
     case PatTag::Real:
       return mk_if(mk_binop(OP::ISEQ,
                             subject,
@@ -868,16 +870,15 @@ struct Lowerer
                    success,
                    fall());
     case PatTag::Str:
-      return mk_if(str_eq(subject, std::get<EX::PatStr>(pat->as).value),
-                   success,
-                   fall());
+      return mk_if(
+        str_eq(subject, std::get<EX::PatStr>(pat->as).value), success, fall());
     case PatTag::Struct:
     {
       // Structs dispatch on field values, not a constructor tag: test the
       // literal fields, bind the variables, fall through on any mismatch. (A
       // nested variant *inside* a struct is still bound without a tag test --
       // the pre-existing struct limitation; lists don't hit it.)
-      Expr *test = test_of(pat, subject);
+      Expr  *test = test_of(pat, subject);
       UT::Vu anc;
       size_t line = 0;
       pat_anchor(pat, anc, line);
@@ -888,9 +889,13 @@ struct Lowerer
       return test ? mk_if(test, bound, fall()) : bound;
     }
     case PatTag::Variant:
-      return match_variant(
-        std::get<EX::PatVariant>(pat->as), subject, success, fall, munion, sig,
-        top);
+      return match_variant(std::get<EX::PatVariant>(pat->as),
+                           subject,
+                           success,
+                           fall,
+                           munion,
+                           sig,
+                           top);
     }
     return fall();
   }
@@ -922,7 +927,7 @@ struct Lowerer
 
     // One binder per payload slot: empty ignores it, a plain variable binds it
     // directly, and anything else binds a fresh slot to be matched recursively.
-    UT::Vec<UT::Vu>                          binders{ arena };
+    UT::Vec<UT::Vu>                           binders{ arena };
     std::vector<std::pair<UT::Vu, Pattern *>> nested;
     for (size_t k = 0; k < decl.size(); ++k)
     {
@@ -1156,6 +1161,13 @@ struct Lowerer
       normalize_variant_lit(vl);
       return e;
     }
+    case ExprTag::SeqLit:
+    {
+      auto &sl = std::get<EX::ExSeqLit>(e->as);
+      for (size_t i = 0; i < sl.elems.size(); ++i)
+        sl.elems[i] = lower(sl.elems[i]);
+      return e;
+    }
     case ExprTag::Def:
     {
       auto &d = std::get<EX::ExDef>(e->as);
@@ -1249,9 +1261,9 @@ struct Lowerer
     }
   }
 
-  // Register a struct/union declaration so variant/struct patterns can reference
-  // it regardless of source order -- and, when `e` comes from another unit (the
-  // prelude, or a sibling module), regardless of source FILE.
+  // Register a struct/union declaration so variant/struct patterns can
+  // reference it regardless of source order -- and, when `e` comes from another
+  // unit (the prelude, or a sibling module), regardless of source FILE.
   void
   register_decl(
     EX::Expr &e)
@@ -1303,7 +1315,9 @@ struct Lowerer
 
 std::vector<ER::Diagnostic>
 lower(
-  EX::Exprs &exprs, const std::vector<EX::Expr *> &extra_decls, AR::Arena &arena)
+  EX::Exprs                     &exprs,
+  const std::vector<EX::Expr *> &extra_decls,
+  AR::Arena                     &arena)
 {
   Lowerer l{ arena };
   return l.run(exprs, extra_decls);

@@ -668,6 +668,13 @@ struct Linker
         resolve(vl.fields[k].val, Mkey, sc, locals);
       return;
     }
+    case ExprTag::SeqLit:
+    {
+      auto &sl = std::get<EX::ExSeqLit>(e->as);
+      for (size_t k = 0; k < sl.elems.size(); ++k)
+        resolve(sl.elems[k], Mkey, sc, locals);
+      return;
+    }
     default: return; // Int / Real / Str / Extern / Unknown: nothing to resolve
     }
   }

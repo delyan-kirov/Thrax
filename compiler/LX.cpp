@@ -204,9 +204,8 @@ Lexer::lex_string(
       // Ordinary text: one well-formed UTF-8 scalar (ASCII is the 1-byte case).
       // A malformed sequence is a lex error -- deliberate raw bytes go through
       // \xHH, which bypasses this check.
-      const unsigned char *p
-        = (const unsigned char *)m_input.data() + m_cursor;
-      size_t len = utf8_seq_len(p, m_input.size() - m_cursor);
+      const unsigned char *p = (const unsigned char *)m_input.data() + m_cursor;
+      size_t               len = utf8_seq_len(p, m_input.size() - m_cursor);
       if (0 == len)
       {
         Token anchor = mk(TokenTag::Str, start, line);

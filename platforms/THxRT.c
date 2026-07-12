@@ -151,15 +151,17 @@ typedef struct
 } BuiltinArity;
 
 static const BuiltinArity g_builtins[] = {
-  { "array_len", 1 }, { "array_cap", 1 }, { "array_get", 2 },
+  { "array_len", 1 },  { "array_cap", 1 }, { "array_get", 2 },
   { "array_push", 2 }, { "array_set", 3 }, { "array_slice", 3 },
-  { "%concat", 2 }, { "?=@Str", 2 },
-  { "%array", 1 },  { "neg@Int", 1 }, { "neg@Real", 1 }, { "not@Int", 1 },
-  { "+@Int", 2 },   { "-@Int", 2 },   { "*@Int", 2 },    { "/@Int", 2 },
-  { "%@Int", 2 },   { "?=@Int", 2 },  { "?>@Int", 2 },   { "?<@Int", 2 },
-  { "<=@Int", 2 },  { ">=@Int", 2 },  { "+@Real", 2 },   { "-@Real", 2 },
-  { "*@Real", 2 },  { "/@Real", 2 },  { "%@Real", 2 },   { "?=@Real", 2 },
-  { "?>@Real", 2 }, { "?<@Real", 2 }, { "<=@Real", 2 },  { ">=@Real", 2 },
+  { "%concat", 2 },    { "?=@Str", 2 },    { "%array", 1 },
+  { "neg@Int", 1 },    { "neg@Real", 1 },  { "not@Int", 1 },
+  { "+@Int", 2 },      { "-@Int", 2 },     { "*@Int", 2 },
+  { "/@Int", 2 },      { "%@Int", 2 },     { "?=@Int", 2 },
+  { "?>@Int", 2 },     { "?<@Int", 2 },    { "<=@Int", 2 },
+  { ">=@Int", 2 },     { "+@Real", 2 },    { "-@Real", 2 },
+  { "*@Real", 2 },     { "/@Real", 2 },    { "%@Real", 2 },
+  { "?=@Real", 2 },    { "?>@Real", 2 },   { "?<@Real", 2 },
+  { "<=@Real", 2 },    { ">=@Real", 2 },
 };
 
 static size_t
@@ -213,8 +215,10 @@ builtin_dispatch(
   }
 
   /* Growable byte-vector reads (see doc/strings-and-arrays.md). */
-  if (!strcmp(k, "array_len")) return THxRT_int((long long)THxVALUE_str_len(a[0]));
-  if (!strcmp(k, "array_cap")) return THxRT_int((long long)THxVALUE_str_cap(a[0]));
+  if (!strcmp(k, "array_len"))
+    return THxRT_int((long long)THxVALUE_str_len(a[0]));
+  if (!strcmp(k, "array_cap"))
+    return THxRT_int((long long)THxVALUE_str_cap(a[0]));
   if (!strcmp(k, "array_get"))
   {
     long long i = THxVALUE_as_int(a[1]);
@@ -223,10 +227,10 @@ builtin_dispatch(
     return THxRT_int((unsigned char)THxVALUE_str(a[0])[i]);
   }
 
-  /* Mutators -- opportunistic in-place: mutate a[0]'s buffer when it is uniquely
-   * owned (THxMEM_unique), else build a fresh value. When mutating in place we
-   * retain a[0] and return it, so it survives the caller builtin releasing its
-   * operand row. Value semantics are preserved either way. */
+  /* Mutators -- opportunistic in-place: mutate a[0]'s buffer when it is
+   * uniquely owned (THxMEM_unique), else build a fresh value. When mutating in
+   * place we retain a[0] and return it, so it survives the caller builtin
+   * releasing its operand row. Value semantics are preserved either way. */
   if (!strcmp(k, "array_push"))
   {
     Value        *v    = a[0];
@@ -275,7 +279,7 @@ builtin_dispatch(
       THxMEM_retain(v);
       return v;
     }
-    Value *x = THxRT_str(v->u.s.p, n); /* fresh copy */
+    Value *x    = THxRT_str(v->u.s.p, n); /* fresh copy */
     x->u.s.p[i] = (char)byte;
     return x;
   }
@@ -291,8 +295,8 @@ builtin_dispatch(
     return THxRT_str(v->u.s.p + beg, (size_t)(end - beg));
   }
 
-  /* `++` concatenation (Str/Array): append rhs to lhs. Opportunistic in-place on
-   * the lhs buffer when it is unique, else a fresh block. */
+  /* `++` concatenation (Str/Array): append rhs to lhs. Opportunistic in-place
+   * on the lhs buffer when it is unique, else a fresh block. */
   if (!strcmp(k, "%concat"))
   {
     Value *l    = a[0];
@@ -335,8 +339,7 @@ builtin_dispatch(
   {
     size_t ln = a[0]->u.s.n;
     size_t rn = a[1]->u.s.n;
-    int    eq = ln == rn
-             && (ln == 0 || memcmp(a[0]->u.s.p, a[1]->u.s.p, ln) == 0);
+    int eq = ln == rn && (ln == 0 || memcmp(a[0]->u.s.p, a[1]->u.s.p, ln) == 0);
     return THxRT_int(eq ? 1 : 0);
   }
 

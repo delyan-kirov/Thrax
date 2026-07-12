@@ -710,7 +710,7 @@ run_loop(
     int cont = 1;
     switch (g_act)
     {
-    case ACT_JUMP: cur = g_blk; break; /* same frame; in is unused by blocks */
+    case ACT_JUMP : cur = g_blk; break; /* same frame; in is unused by blocks */
     case ACT_RET  : cont = do_ret(&cur, &fr, &in, g_v, base); break;
     case ACT_APPLY: cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base); break;
     case ACT_NONE : THxCHECK_FAIL("THxK: block set no terminator");

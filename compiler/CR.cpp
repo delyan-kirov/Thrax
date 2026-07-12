@@ -1,5 +1,6 @@
 #include "CR.hpp"
 #include "CRxANF.hpp"
+#include "OP.hpp"
 
 namespace CR
 {
@@ -217,6 +218,50 @@ go(
     for (const EX::FieldInit &f : vl.fields)
       v.fields.push(go(f.val, env, arena));
     return alloc(arena, Term{ v });
+  }
+
+  case EX::ExprTag::SeqLit:
+  {
+    // TC settled the container (ExSeqLit::is_array). Desugar accordingly:
+    //   Array : array_push (.. (array_push (%array 0) e0) ..) en   (byte
+    //   vector) List  : List.Cons.{ e0, .. List.Cons.{ en, List.Nil } }
+    //   (blessed List)
+    auto &sl = std::get<EX::ExSeqLit>(expr->as);
+
+    if (sl.is_array)
+    {
+      App   alloc0{ alloc(arena,
+                        Term{ Var{ UT::strdup(arena, OP::ARR_ALLOC), 0 } }),
+                  alloc(arena, Term{ Int{ 0 } }),
+                  false };
+      Term *acc = alloc(arena, Term{ alloc0 });
+      for (size_t i = 0; i < sl.elems.size(); ++i)
+      {
+        Term *push
+          = alloc(arena, Term{ Var{ UT::strdup(arena, OP::ARR_PUSH), 0 } });
+        Term *pa = alloc(arena, Term{ App{ push, acc, false } });
+        acc
+          = alloc(arena, Term{ App{ pa, go(sl.elems[i], env, arena), false } });
+      }
+      return acc;
+    }
+
+    Variant nil;
+    nil.type_name = UT::strdup(arena, "List");
+    nil.tag       = UT::strdup(arena, "Nil");
+    nil.fields    = UT::Vec<Term *>{ arena };
+    Term *acc     = alloc(arena, Term{ nil });
+    for (size_t i = sl.elems.size(); i-- > 0;)
+    {
+      Variant cons;
+      cons.type_name = UT::strdup(arena, "List");
+      cons.tag       = UT::strdup(arena, "Cons");
+      cons.fields    = UT::Vec<Term *>{ arena };
+      cons.fields.push(go(sl.elems[i], env, arena));
+      cons.fields.push(acc);
+      acc = alloc(arena, Term{ cons });
+    }
+    return acc;
   }
 
   case EX::ExprTag::Handle:

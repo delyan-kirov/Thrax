@@ -29,10 +29,9 @@ namespace LL
 // unknown struct type or field, a positional arity mismatch); empty on success.
 // `extra_decls` are struct/union declarations from OTHER units (the prelude and
 // sibling modules) that patterns here may reference -- e.g. the blessed `List`.
-std::vector<ER::Diagnostic>
-lower(EX::Exprs                        &exprs,
-      const std::vector<EX::Expr *>    &extra_decls,
-      AR::Arena                        &arena);
+std::vector<ER::Diagnostic> lower(EX::Exprs                     &exprs,
+                                  const std::vector<EX::Expr *> &extra_decls,
+                                  AR::Arena                     &arena);
 
 } // namespace LL
 

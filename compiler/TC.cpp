@@ -101,13 +101,16 @@ private:
   // unification binds it to a concrete nominal type (see resolve_lit_sites).
   struct LitSite
   {
-    bool                                        is_struct;
-    Type                                       *use;
-    UT::Vu                                      anchor;
+    bool   is_struct;
+    bool   is_seq = false; // `[..]` literal
+    Type  *use;
+    UT::Vu anchor;
     std::vector<std::pair<std::string, Type *>> fields; // (name, value type)
     std::string                                 vtag;   // variant only
-    EX::ExStructLit                            *exs = nullptr; // write-back
-    EX::ExVariantLit                           *exv = nullptr; // write-back
+    Type             *elem  = nullptr;                  // seq: elem type
+    EX::ExStructLit  *exs   = nullptr;                  // write-back
+    EX::ExVariantLit *exv   = nullptr;                  // write-back
+    EX::ExSeqLit     *exseq = nullptr;                  // write-back
   };
   std::vector<LitSite> m_lit_sites;
 
@@ -175,10 +178,10 @@ private:
   };
   SiteState resolve_one_site(const ResolveSite &s, bool allow_default);
   void      resolve_sites(size_t from);
-  void   resolve_user_sites(size_t from);
-  void   resolve_lit_sites(size_t from);
-  void   resolve_field_sites(size_t from);
-  UT::Vu intern(const std::string &s);
+  void      resolve_user_sites(size_t from);
+  void      resolve_lit_sites(size_t from);
+  void      resolve_field_sites(size_t from);
+  UT::Vu    intern(const std::string &s);
 
   // diagnostics
   size_t      line_of(UT::Vu anchor);
@@ -830,6 +833,14 @@ Checker::desugar(
                              std::move(fields),
                              &vl });
   }
+  case EX::ExprTag::SeqLit:
+  {
+    auto               &sl = std::get<EX::ExSeqLit>(e->as);
+    std::vector<Core *> elems;
+    for (size_t i = 0; i < sl.elems.size(); ++i)
+      elems.push_back(desugar(sl.elems[i]));
+    return core(CSeqLit{ std::move(elems), sl.anchor, &sl });
+  }
   case EX::ExprTag::Field:
   {
     auto &fa = std::get<EX::ExField>(e->as);
@@ -953,6 +964,10 @@ Checker::occurs_free(
   case CKind::VariantLit:
     for (auto &f : std::get<CVariantLit>(e->as).fields)
       if (occurs_free(name, f.second)) return true;
+    return false;
+  case CKind::SeqLit:
+    for (Core *el : std::get<CSeqLit>(e->as).elems)
+      if (occurs_free(name, el)) return true;
     return false;
   case CKind::Field: return occurs_free(name, std::get<CField>(e->as).record);
   case CKind::Handle:
@@ -1242,6 +1257,25 @@ Checker::infer(
              decl[k].first.c_str());
 
     return con(sl.type_name, args);
+  }
+
+  case CKind::SeqLit:
+  {
+    // `[e1, .., en]`: all elements share one type; the container (List vs
+    // Array) is deferred to a lit site, settled once `use` is bound by context.
+    CSeqLit &sq   = std::get<CSeqLit>(e->as);
+    UT::Vu   at   = sq.anchor.data() ? sq.anchor : m_anchor;
+    Type    *elem = fresh();
+    for (Core *el : sq.elems) unify(infer(el, locals, amb), elem);
+    LitSite s;
+    s.is_seq  = true;
+    s.use     = fresh();
+    s.anchor  = at;
+    s.elem    = elem;
+    s.exseq   = sq.ex;
+    Type *use = s.use;
+    m_lit_sites.push_back(std::move(s));
+    return use;
   }
 
   case CKind::VariantLit:
@@ -1557,13 +1591,14 @@ Checker::resolve(
 // defaulting of an unconstrained operand to Int (`\x = x * x`). Returns:
 //   Resolved -- an overload was chosen (`*s.slot` written, result unified);
 //   Pending  -- some operand is still an unresolved variable and defaulting is
-//               off, so a later pass (once a dependency resolves) may settle it;
+//               off, so a later pass (once a dependency resolves) may settle
+//               it;
 //   Failed   -- operands are concrete but match no overload (a diagnostic was
 //               emitted).
 // Splitting resolution from the driver lets nested/chained overloads settle in
 // dependency order: `a ++ b ++ c` needs the inner `++` first, `let b = push a
-// .. in push b ..` needs the outer first -- opposite orders. A fixpoint over the
-// no-default pass handles both; defaulting is a last resort.
+// .. in push b ..` needs the outer first -- opposite orders. A fixpoint over
+// the no-default pass handles both; defaulting is a last resort.
 Checker::SiteState
 Checker::resolve_one_site(
   const ResolveSite &s, bool allow_default)
@@ -1876,6 +1911,41 @@ Checker::resolve_lit_sites(
   {
     LitSite &s = m_lit_sites[i];
     Type    *u = prune(s.use);
+
+    // A `[..]` sequence literal: settle its container. Unconstrained defaults
+    // to a List (backward-compatible with the list literals); an Array context
+    // makes it a byte vector (elements must be Int). CR reads `is_array`.
+    if (s.is_seq)
+    {
+      if (u->kind() == Kind::Var)
+      {
+        unify(s.use, con("List", { s.elem }));
+        if (s.exseq) s.exseq->is_array = false;
+        continue;
+      }
+      if (u->kind() == Kind::Con)
+      {
+        TCon &uc = std::get<TCon>(u->as);
+        if (uc.name == OP::TY_ARRAY)
+        {
+          unify(s.elem, con(OP::TY_INT)); // Array holds bytes (Int 0..255)
+          if (s.exseq) s.exseq->is_array = true;
+          continue;
+        }
+        if (uc.name == "List")
+        {
+          if (!uc.args.empty()) unify(uc.args[0], s.elem);
+          if (s.exseq) s.exseq->is_array = false;
+          continue;
+        }
+      }
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "a sequence literal '[..]' must be a List or an Array, not '%s'",
+           show(u).c_str());
+      continue;
+    }
+
     if (u->kind() != Kind::Con)
     {
       fail(ER::Code::TYPE_ANNOTATION_REQUIRED,

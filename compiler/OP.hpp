@@ -84,18 +84,20 @@ inline constexpr const char *base_types[] = {
 inline constexpr const char *ARR_ALLOC = "%array";
 
 // The growable byte-vector (Str / Array) built-ins. Unlike %array these ARE
-// user-callable primitives (typed in TC's m_prim, run by IT's impls / the native
-// dispatch), so they carry ordinary names -- reserved, like `if`. A byte is an
-// Int in 0..255. Mutators (set/push/concat/slice) are opportunistic in-place:
-// they mutate their buffer when it is uniquely referenced, else copy (see
-// doc/strings-and-arrays.md).
-inline constexpr const char *ARR_LEN    = "array_len";    // Array -> Int
-inline constexpr const char *ARR_CAP    = "array_cap";    // Array -> Int
-inline constexpr const char *ARR_GET    = "array_get";    // Array -> Int -> Int
-inline constexpr const char *ARR_SET    = "array_set";    // Array -> Int -> Int -> Array
-inline constexpr const char *ARR_PUSH   = "array_push";   // Array -> Int -> Array
-inline constexpr const char *ARR_SLICE  = "array_slice";  // Array -> Int -> Int -> Array
-inline constexpr const char *CONCAT     = "++"; // Str/Array concat (overloaded)
+// user-callable primitives (typed in TC's m_prim, run by IT's impls / the
+// native dispatch), so they carry ordinary names -- reserved, like `if`. A byte
+// is an Int in 0..255. Mutators (set/push/concat/slice) are opportunistic
+// in-place: they mutate their buffer when it is uniquely referenced, else copy
+// (see doc/strings-and-arrays.md).
+inline constexpr const char *ARR_LEN = "array_len"; // Array -> Int
+inline constexpr const char *ARR_CAP = "array_cap"; // Array -> Int
+inline constexpr const char *ARR_GET = "array_get"; // Array -> Int -> Int
+inline constexpr const char *ARR_SET
+  = "array_set"; // Array -> Int -> Int -> Array
+inline constexpr const char *ARR_PUSH = "array_push"; // Array -> Int -> Array
+inline constexpr const char *ARR_SLICE
+  = "array_slice";                          // Array -> Int -> Int -> Array
+inline constexpr const char *CONCAT = "++"; // Str/Array concat (overloaded)
 // Shared impl key both `++` overloads (Str, Array) resolve to -- concatenation
 // is byte-for-byte identical for both, so one implementation serves. Not in
 // m_prim (unreachable except via `++` overload resolution).

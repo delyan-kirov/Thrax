@@ -98,8 +98,8 @@ int
 THxMEM_unique(
   Value *v)
 {
-  (void)v;  /* no ref counts here: never claim uniqueness, so a mutator
-             * always copies (correct; the bump engine never frees anyway) */
+  (void)v; /* no ref counts here: never claim uniqueness, so a mutator
+            * always copies (correct; the bump engine never frees anyway) */
   return 0;
 }
 
