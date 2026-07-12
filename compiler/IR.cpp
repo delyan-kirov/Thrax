@@ -370,8 +370,13 @@ struct Conv
           fields.push(conv_atom(f, ctx));
           continue;
         }
-        Expr  *rhs  = conv_expr(f, ctx);
+        // Reserve this field's slot BEFORE converting it, so a nested variant
+        // hoisted inside `f` gets a distinct slot -- not this one back. The
+        // native backend fills a `let` slot via an in-place box back-patch, so
+        // if the inner and outer `let` shared a slot the inner box would escape
+        // into a field and the outer back-patch would close it into a cycle.
         size_t slot = ctx.alloc_local();
+        Expr  *rhs  = conv_expr(f, ctx);
         lets.push_back({ slot, rhs });
         fields.push(mkA(Atom{ Local{ slot } }));
       }

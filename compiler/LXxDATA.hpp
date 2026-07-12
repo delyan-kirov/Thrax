@@ -97,6 +97,8 @@ const Operators operator_db{
   // Sequencing and pipes (desugared in the parser, not runtime functions).
   { ";", TokenTag::Op },  //
   { "|>", TokenTag::Op }, //
+  // List cons `h :: t` -- parser-desugared to `List.Cons.{ h, t }`.
+  { "::", TokenTag::Op }, //
 };
 
 // Single-character delimiters: brackets and the comma separator. Unlike
@@ -105,6 +107,7 @@ const Delims delim_db{
   { '(', TokenTag::LParen }, { ')', TokenTag::RParen },
   { ',', TokenTag::Comma },  { '.', TokenTag::Dot },
   { '{', TokenTag::LBrace }, { '}', TokenTag::RBrace },
+  { '[', TokenTag::LBrack }, { ']', TokenTag::RBrack },
 };
 
 } // namespace LX

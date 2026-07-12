@@ -122,6 +122,58 @@ Parser::mk_seq(
   return alloc(e);
 }
 
+// The blessed list type and its constructors (see the prelude in DR.cpp). List
+// literals and `::` desugar to ordinary variant construction against these.
+static const UT::Vu LIST_TY{ "List", 4 };
+static const UT::Vu CONS_TAG{ "Cons", 4 };
+static const UT::Vu NIL_TAG{ "Nil", 3 };
+
+// `List.Cons.{ head, tail }` -- a positional two-field variant literal.
+Expr *
+Parser::mk_cons(
+  Expr *head, Expr *tail, UT::Vu anchor, size_t line)
+{
+  UT::Vec<FieldInit> fields{ m_arena };
+  fields.push(FieldInit{ UT::Vu{}, head });
+  fields.push(FieldInit{ UT::Vu{}, tail });
+  Expr e{ ExprTag::VariantLit };
+  e.as = ExVariantLit{ LIST_TY, CONS_TAG, fields, anchor, line };
+  return alloc(e);
+}
+
+// `List.Nil` -- the empty-payload variant literal.
+Expr *
+Parser::mk_nil(
+  UT::Vu anchor, size_t line)
+{
+  UT::Vec<FieldInit> fields{ m_arena };
+  Expr               e{ ExprTag::VariantLit };
+  e.as = ExVariantLit{ LIST_TY, NIL_TAG, fields, anchor, line };
+  return alloc(e);
+}
+
+// `List.Cons.{ h, t }` as a (positional) variant pattern.
+Pattern *
+Parser::mk_cons_pat(
+  Pattern *h, Pattern *t, UT::Vu a, size_t ln)
+{
+  UT::Vec<FieldPat> fields{ m_arena };
+  fields.push(FieldPat{ UT::Vu{}, h });
+  fields.push(FieldPat{ UT::Vu{}, t });
+  return alloc_pat(
+    Pattern{ PatTag::Variant, PatVariant{ LIST_TY, CONS_TAG, fields, a, ln } });
+}
+
+// `List.Nil` as a variant pattern.
+Pattern *
+Parser::mk_nil_pat(
+  UT::Vu anchor, size_t line)
+{
+  UT::Vec<FieldPat> fields{ m_arena };
+  return alloc_pat(Pattern{
+    PatTag::Variant, PatVariant{ LIST_TY, NIL_TAG, fields, anchor, line } });
+}
+
 Expr *
 Parser::mk_if(
   Expr *cond, Expr *then, Expr *alt)
@@ -235,6 +287,7 @@ Parser::parse_primary()
   case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
   case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
   case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
+  case LX::TokenTag::LBrack : base = EX_TRY(parse_list()); break;
   case LX::TokenTag::At     : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::LBrace:
   {
@@ -416,6 +469,8 @@ Parser::parse_expr(
         lhs = mk_app(rhs, lhs); // `x |> f` == `f x`
       else if (t.str == "<|")
         lhs = mk_app(lhs, rhs); // `f <| x` == `f x`
+      else if (t.str == "::")
+        lhs = mk_cons(lhs, rhs, t.str, t.line); // `h :: t` == List.Cons.{h,t}
       else
         lhs = mk_binop(t.str, lhs, rhs);
     }
@@ -695,15 +750,35 @@ Parser::parse_defer()
   return { true, call, {} };
 }
 
-// A single pattern: `_`, a variable, a literal, or a `Type.{ ... }` struct
-// pattern. Literals and literal-bearing struct patterns are refutable; the LL
-// pass rejects them where only irrefutable patterns are allowed (lambda / let).
+// A pattern, folding a trailing `::` cons: `h :: t` desugars to a
+// `List.Cons.{ h, t }` variant pattern (right-associative). Cons/Nil patterns
+// are refutable, so a `::` or list pattern is rejected by LL where only
+// irrefutable patterns are allowed (lambda / let).
 RPattern
 Parser::parse_pattern()
+{
+  Pattern *head = EX_TRY(parse_pattern_atom());
+  LX::Token t   = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::Op == t.tag && t.str == "::")
+  {
+    m_lex.next();                                 // '::'
+    Pattern *tail = EX_TRY(parse_pattern());       // right-associative
+    return { true, mk_cons_pat(head, tail, t.str, t.line), {} };
+  }
+  return { true, head, {} };
+}
+
+// A single pattern: `_`, a variable, a literal, a `Type.{ ... }` struct pattern,
+// or a `[..]` list pattern. Literals and literal-bearing struct patterns are
+// refutable; the LL pass rejects them where only irrefutable patterns are
+// allowed (lambda / let).
+RPattern
+Parser::parse_pattern_atom()
 {
   LX::Token t = EX_TRY(m_lex.peek());
   switch (t.tag)
   {
+  case LX::TokenTag::LBrack: return parse_list_pattern();
   case LX::TokenTag::Int:
     m_lex.next();
     return { true,
@@ -773,6 +848,30 @@ Parser::parse_pattern()
            std::string(t.str).c_str());
   }
   }
+}
+
+// `[p1, .., pn]` / `[]` -- a list pattern. Desugars right-fold to nested
+// `List.Cons.{ pi, .. }` variant patterns ending in `List.Nil` (so it matches a
+// list of EXACTLY n elements). Refutable.
+RPattern
+Parser::parse_list_pattern()
+{
+  LX::Token lb = EX_TRY(m_lex.next()); // '['
+  UT::Vec<Pattern *> elems{ m_arena };
+  if (LX::TokenTag::RBrack != EX_TRY(m_lex.peek()).tag)
+    for (;;)
+    {
+      elems.push(EX_TRY(parse_pattern()));
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+      if (LX::TokenTag::RBrack == EX_TRY(m_lex.peek()).tag) break; // trailing
+    }
+  EX_TRY(expect(LX::TokenTag::RBrack, "expected ']' to close the list pattern"));
+
+  Pattern *acc = mk_nil_pat(lb.str, lb.line);
+  for (size_t i = elems.size(); i-- > 0;)
+    acc = mk_cons_pat(elems[i], acc, lb.str, lb.line);
+  return { true, acc, {} };
 }
 
 // `{ field-patterns }`. A field-pattern is either `.name = subpat` / `.name`
@@ -923,6 +1022,30 @@ Parser::parse_closure()
     }
   }
   return { true, body, {} };
+}
+
+// `[e1, e2, .., en]` -- a list literal. Desugars right-fold to
+// `List.Cons.{ e1, List.Cons.{ .., List.Nil } }`; `[]` is `List.Nil`.
+RExpr
+Parser::parse_list()
+{
+  LX::Token lb = EX_TRY(m_lex.next()); // '['
+  UT::Vec<Expr *> elems{ m_arena };
+  if (LX::TokenTag::RBrack != EX_TRY(m_lex.peek()).tag)
+    for (;;)
+    {
+      elems.push(EX_CTX(parse_expr(0), lb, "in this list literal"));
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+      // A trailing comma before ']' is allowed.
+      if (LX::TokenTag::RBrack == EX_TRY(m_lex.peek()).tag) break;
+    }
+  EX_TRY(expect(LX::TokenTag::RBrack, "expected ']' to close the list literal"));
+
+  Expr *acc = mk_nil(lb.str, lb.line);
+  for (size_t i = elems.size(); i-- > 0;)
+    acc = mk_cons(elems[i], acc, lb.str, lb.line);
+  return { true, acc, {} };
 }
 
 RExpr

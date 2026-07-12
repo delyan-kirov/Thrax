@@ -6,6 +6,8 @@
 #include "LL.hpp"
 #include "OP.hpp"
 
+#include <functional>
+
 namespace LL
 {
 
@@ -440,18 +442,31 @@ struct Lowerer
     Expr *scrut = lower(m.scrut);
     Expr *alt   = lower(m.alt);
 
-    bool has_struct = false, has_variant = false, has_guard = false;
+    bool has_struct = false, has_variant = false, has_guard = false,
+         has_nested = false;
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
-      if (m.arms[i].pat->tag == PatTag::Struct) has_struct = true;
-      if (m.arms[i].pat->tag == PatTag::Variant) has_variant = true;
+      Pattern *pat = m.arms[i].pat;
+      if (pat->tag == PatTag::Struct) has_struct = true;
       if (m.arms[i].guard) has_guard = true;
+      if (pat->tag == PatTag::Variant)
+      {
+        has_variant   = true;
+        auto &pv      = std::get<EX::PatVariant>(pat->as);
+        // A payload slot that is not a bare variable / wildcard is a nested
+        // sub-pattern -- e.g. the `List.Nil` a `[a]` list pattern desugars to.
+        for (size_t k = 0; k < pv.fields.size(); ++k)
+          if (pv.fields[k].pat->tag != PatTag::Var
+              && pv.fields[k].pat->tag != PatTag::Wild)
+            has_nested = true;
+      }
     }
 
-    // Guards make an arm refutable even when its pattern is not, and let two
-    // arms share one constructor -- neither fits the single-dispatch `case`
-    // forms below. Route the whole match through the backtracking lowering.
-    if (has_guard) return lower_match_guarded(m, scrut, alt);
+    // Guards make an arm refutable even when its pattern is not, and nested
+    // payload patterns let two arms share one constructor -- neither fits the
+    // single-dispatch `case` forms below. Route both through the backtracking
+    // lowering, which threads a shared fallthrough thunk between arms.
+    if (has_guard || has_nested) return lower_match_guarded(m, scrut, alt);
 
     // A union match dispatches on the constructor tag (a `case` of Con alts);
     // it cannot share the struct if-chain or literal flat forms.
@@ -527,68 +542,11 @@ struct Lowerer
   {
     Pattern *pat  = arm.pat;
     Expr    *body = lower(arm.body);
-    auto     fall = [&]() { return mk_app(mk_var(fv), mk_unit()); };
-    // Guard-wrap: run `body` only if the guard holds, else fall through.
-    auto guarded = [&](Expr *inner) {
-      return arm.guard ? mk_if(lower(arm.guard), inner, fall()) : inner;
-    };
-
-    UT::Vu anc;
-    size_t line = 0;
-    pat_anchor(pat, anc, line);
-
-    switch (pat->tag)
-    {
-    case PatTag::Wild: return guarded(body); // always matches, binds nothing
-    case PatTag::Var:
-      return mk_let(
-        std::get<EX::PatVar>(pat->as).name, mvar, guarded(body), nullptr);
-    case PatTag::Int:
-      return mk_if(
-        mk_binop(OP::ISEQ, mvar, mk_int(std::get<EX::PatInt>(pat->as).value)),
-        guarded(body),
-        fall());
-    case PatTag::Real:
-      return mk_if(
-        mk_binop(OP::ISEQ, mvar, mk_real(std::get<EX::PatReal>(pat->as).value)),
-        guarded(body),
-        fall());
-    case PatTag::Str:
-    {
-      auto &ps = std::get<EX::PatStr>(pat->as);
-      err(ER::Code::UNSUPPORTED,
-          ps.anchor,
-          ps.line,
-          "matching a string literal is not supported yet (no string "
-          "equality)");
-      return fall();
-    }
-    case PatTag::Struct:
-    {
-      // Test the literal fields, bind the variable fields, then the guard runs
-      // in their scope; any failure invokes the fallthrough thunk.
-      Expr *test  = test_of(pat, mvar);
-      Expr *bound = bind_pattern(
-        pat, mvar, guarded(body), anc, line, /*refutable_ok=*/true);
-      if (!*sig) *sig = mk_con(std::get<EX::PatStruct>(pat->as).type_name);
-      return test ? mk_if(test, bound, fall()) : bound;
-    }
-    case PatTag::Variant:
-    {
-      auto       &pv = std::get<EX::PatVariant>(pat->as);
-      EX::CaseAlt a;
-      if (!make_variant_alt(pv, munion, guarded(body), sig, a)) return fall();
-      EX::ExCase c;
-      c.scrut = mvar;
-      c.alts  = UT::Vec<EX::CaseAlt>{ arena };
-      c.alts.push(a);
-      c.deflt = fall();
-      Expr ce{ ExprTag::Case };
-      ce.as = c;
-      return alloc(ce);
-    }
-    }
-    return fall();
+    Fall     fall = [&]() { return mk_app(mk_var(fv), mk_unit()); };
+    // Run `body` only when the guard holds (it sees the pattern's bindings, so
+    // it sits at the innermost success point), else fall through.
+    Expr *success = arm.guard ? mk_if(lower(arm.guard), body, fall()) : body;
+    return match_pat(pat, mvar, success, fall, munion, sig, /*top=*/true);
   }
 
   // Lower a struct-free match into `let $m = scrut in case $m of lit -> e ..
@@ -761,13 +719,17 @@ struct Lowerer
   // alt body. Pins `*sig` to the union's type constructor on first success.
   // Returns false (a diagnostic recorded, or the arm skipped) if `pv` is not a
   // usable variant arm. Shared by the plain-variant and guarded lowerings.
+  // Resolve variant pattern `pv` -- with `munion` supplying the union for a bare
+  // `.Tag` -- to its union constructor (`uname_vu`), tag index, and declared
+  // payload field names (`decl`). Records a diagnostic and returns false on an
+  // unresolvable/unknown union or tag. Shared by the flat and nested lowerings.
   bool
-  make_variant_alt(
-    EX::PatVariant    &pv,
-    const std::string &munion,
-    Expr              *body,
-    EX::Ty           **sig,
-    EX::CaseAlt       &out)
+  resolve_variant(
+    EX::PatVariant                  &pv,
+    const std::string               &munion,
+    UT::Vu                          &uname_vu,
+    size_t                          &tagidx,
+    const std::vector<std::string> *&decl)
   {
     bool        bare  = pv.type_name.size() == 0;
     std::string uname = bare ? munion : std::string(pv.type_name);
@@ -790,8 +752,8 @@ struct Lowerer
           "unknown union type '" + uname + "' in pattern");
       return false;
     }
-    UT::Vu uname_vu = bare ? ustr(uname) : pv.type_name;
-    size_t tagidx   = uit->second.size();
+    uname_vu = bare ? ustr(uname) : pv.type_name;
+    tagidx   = uit->second.size();
     for (size_t k = 0; k < uit->second.size(); ++k)
       if (uit->second[k].tag == std::string(pv.tag)) tagidx = k;
     if (tagidx == uit->second.size())
@@ -802,8 +764,23 @@ struct Lowerer
           "union '" + uname + "' has no variant '" + std::string(pv.tag) + "'");
       return false;
     }
+    decl = &uit->second[tagidx].fields;
+    return true;
+  }
 
-    const std::vector<std::string> &decl = uit->second[tagidx].fields;
+  bool
+  make_variant_alt(
+    EX::PatVariant    &pv,
+    const std::string &munion,
+    Expr              *body,
+    EX::Ty           **sig,
+    EX::CaseAlt       &out)
+  {
+    UT::Vu                          uname_vu;
+    size_t                          tagidx;
+    const std::vector<std::string> *declp;
+    if (!resolve_variant(pv, munion, uname_vu, tagidx, declp)) return false;
+    const std::vector<std::string> &decl = *declp;
     if (!*sig) *sig = mk_con(uname_vu);
 
     std::vector<Pattern *> subs;
@@ -839,11 +816,160 @@ struct Lowerer
     return true;
   }
 
+  // A fallthrough continuation: makes a *fresh* "fall to the next arm" node on
+  // each call, since one arm's matching may fail at several points (a tag
+  // mismatch, then a nested sub-pattern) and each needs its own use site of the
+  // shared thunk. See match_pat / lower_match_guarded.
+  using Fall = std::function<Expr *()>;
+
+  // Match `pat` against `subject`, evaluating `success` (with `pat`'s bindings
+  // in scope) on a match and `fall()` otherwise -- recursing into nested
+  // variant payloads so that a failure at any depth lands on the same
+  // fallthrough. `munion` supplies the union for a bare top-level `.Tag` (""
+  // when nested: a nested variant must name its type). `top` pins the
+  // scrutinee's type via `*sig` only for the outermost pattern.
+  Expr *
+  match_pat(
+    Pattern           *pat,
+    Expr              *subject,
+    Expr              *success,
+    const Fall        &fall,
+    const std::string &munion,
+    EX::Ty           **sig,
+    bool               top)
+  {
+    switch (pat->tag)
+    {
+    case PatTag::Wild: return success;
+    case PatTag::Var:
+      return mk_let(
+        std::get<EX::PatVar>(pat->as).name, subject, success, nullptr);
+    case PatTag::Int:
+      return mk_if(
+        mk_binop(OP::ISEQ, subject, mk_int(std::get<EX::PatInt>(pat->as).value)),
+        success,
+        fall());
+    case PatTag::Real:
+      return mk_if(mk_binop(OP::ISEQ,
+                            subject,
+                            mk_real(std::get<EX::PatReal>(pat->as).value)),
+                   success,
+                   fall());
+    case PatTag::Str:
+    {
+      auto &ps = std::get<EX::PatStr>(pat->as);
+      err(ER::Code::UNSUPPORTED,
+          ps.anchor,
+          ps.line,
+          "matching a string literal is not supported yet (no string "
+          "equality)");
+      return fall();
+    }
+    case PatTag::Struct:
+    {
+      // Structs dispatch on field values, not a constructor tag: test the
+      // literal fields, bind the variables, fall through on any mismatch. (A
+      // nested variant *inside* a struct is still bound without a tag test --
+      // the pre-existing struct limitation; lists don't hit it.)
+      Expr *test = test_of(pat, subject);
+      UT::Vu anc;
+      size_t line = 0;
+      pat_anchor(pat, anc, line);
+      Expr *bound
+        = bind_pattern(pat, subject, success, anc, line, /*refutable_ok=*/true);
+      if (top && !*sig)
+        *sig = mk_con(std::get<EX::PatStruct>(pat->as).type_name);
+      return test ? mk_if(test, bound, fall()) : bound;
+    }
+    case PatTag::Variant:
+      return match_variant(
+        std::get<EX::PatVariant>(pat->as), subject, success, fall, munion, sig,
+        top);
+    }
+    return fall();
+  }
+
+  // Match variant pattern `pv` against `subject`: a `case` over the constructor
+  // tag with a single Con alt (its payload bound to fresh slots, then matched
+  // recursively) whose default is `fall()`. Any nested sub-pattern failure also
+  // falls to `fall`, so two arms that share a constructor but differ in their
+  // payloads backtrack correctly (via lower_match_guarded's shared thunk).
+  Expr *
+  match_variant(
+    EX::PatVariant    &pv,
+    Expr              *subject,
+    Expr              *success,
+    const Fall        &fall,
+    const std::string &munion,
+    EX::Ty           **sig,
+    bool               top)
+  {
+    UT::Vu                          uname_vu;
+    size_t                          tagidx;
+    const std::vector<std::string> *declp;
+    if (!resolve_variant(pv, munion, uname_vu, tagidx, declp)) return fall();
+    const std::vector<std::string> &decl = *declp;
+
+    std::vector<Pattern *> subs;
+    if (!resolve_payload(pv, decl, subs)) return fall();
+    if (top && !*sig) *sig = mk_con(uname_vu);
+
+    // One binder per payload slot: empty ignores it, a plain variable binds it
+    // directly, and anything else binds a fresh slot to be matched recursively.
+    UT::Vec<UT::Vu>                          binders{ arena };
+    std::vector<std::pair<UT::Vu, Pattern *>> nested;
+    for (size_t k = 0; k < decl.size(); ++k)
+    {
+      Pattern *sp = subs[k];
+      if (!sp || sp->tag == PatTag::Wild)
+        binders.push(UT::Vu{});
+      else if (sp->tag == PatTag::Var)
+        binders.push(std::get<EX::PatVar>(sp->as).name);
+      else
+      {
+        UT::Vu v = fresh("v");
+        binders.push(v);
+        nested.push_back({ v, sp });
+      }
+    }
+
+    // Fold the nested matches inside-out around `success` (earlier slots
+    // outermost), each threading the same `fall`.
+    Expr *inner = success;
+    for (size_t i = nested.size(); i-- > 0;)
+      inner = match_pat(nested[i].second,
+                        mk_var(nested[i].first),
+                        inner,
+                        fall,
+                        /*munion=*/"",
+                        sig,
+                        /*top=*/false);
+
+    EX::CaseAlt a;
+    a.kind      = EX::AltKind::Con;
+    a.type_name = uname_vu;
+    a.ctor      = pv.tag;
+    a.tag       = tagidx;
+    a.binders   = binders;
+    a.body      = inner;
+
+    EX::ExCase c;
+    c.scrut = subject;
+    c.alts  = UT::Vec<EX::CaseAlt>{ arena };
+    c.alts.push(a);
+    c.deflt = fall();
+    Expr ce{ ExprTag::Case };
+    ce.as = c;
+    return alloc(ce);
+  }
+
   // `if scrut is Type.Tag.{..} then e .. else d` lowers to `let $m = scrut in
   // case $m of <Con alt>.. else d`. Each variant arm becomes a Con alternative
   // carrying the constructor's tag index and a positional binder per payload
   // field (empty for an ignored slot); the first irrefutable var/wildcard arm
-  // becomes the default. Payload sub-patterns must be variables or `_` for now.
+  // becomes the default. This flat form handles only variable / `_` payload
+  // slots; an arm with a nested payload sub-pattern routes to the backtracking
+  // lower_match_guarded instead (see lower_match).
   // A bare arm (`.Tag`, no type name) takes the union resolved for the match.
   Expr *
   lower_match_variant(
@@ -1117,28 +1243,24 @@ struct Lowerer
     }
   }
 
-  std::vector<ER::Diagnostic>
-  run(
-    EX::Exprs &exprs)
+  // Register a struct/union declaration so variant/struct patterns can reference
+  // it regardless of source order -- and, when `e` comes from another unit (the
+  // prelude, or a sibling module), regardless of source FILE.
+  void
+  register_decl(
+    EX::Expr &e)
   {
-    // Collect struct declarations first so patterns may reference any of them
-    // regardless of source order.
-    for (size_t i = 0; i < exprs.size(); ++i)
+    if (e.tag == ExprTag::StructDecl)
     {
-      if (exprs[i].tag != ExprTag::StructDecl) continue;
-      auto                    &sd = std::get<EX::ExStructDecl>(exprs[i].as);
+      auto                    &sd = std::get<EX::ExStructDecl>(e.as);
       std::vector<std::string> fns;
       for (size_t k = 0; k < sd.fields.size(); ++k)
         fns.push_back(std::string(sd.fields[k].name));
       structs[std::string(sd.name)] = std::move(fns);
     }
-
-    // ... and union declarations, so variant patterns may reference any union
-    // regardless of source order.
-    for (size_t i = 0; i < exprs.size(); ++i)
+    else if (e.tag == ExprTag::UnionDecl)
     {
-      if (exprs[i].tag != ExprTag::UnionDecl) continue;
-      auto                 &ud = std::get<EX::ExUnionDecl>(exprs[i].as);
+      auto                 &ud = std::get<EX::ExUnionDecl>(e.as);
       std::vector<UVariant> vs;
       for (size_t v = 0; v < ud.variants.size(); ++v)
       {
@@ -1149,6 +1271,16 @@ struct Lowerer
       }
       unions[std::string(ud.name)] = std::move(vs);
     }
+  }
+
+  std::vector<ER::Diagnostic>
+  run(
+    EX::Exprs &exprs, const std::vector<EX::Expr *> &extra_decls)
+  {
+    // Declarations from every unit first (so cross-unit types -- notably the
+    // prelude's `List` -- resolve), then this unit's own.
+    for (EX::Expr *e : extra_decls) register_decl(*e);
+    for (size_t i = 0; i < exprs.size(); ++i) register_decl(exprs[i]);
 
     for (size_t i = 0; i < exprs.size(); ++i)
       if (exprs[i].tag == ExprTag::Def)
@@ -1165,10 +1297,10 @@ struct Lowerer
 
 std::vector<ER::Diagnostic>
 lower(
-  EX::Exprs &exprs, AR::Arena &arena)
+  EX::Exprs &exprs, const std::vector<EX::Expr *> &extra_decls, AR::Arena &arena)
 {
   Lowerer l{ arena };
-  return l.run(exprs);
+  return l.run(exprs, extra_decls);
 }
 
 } // namespace LL

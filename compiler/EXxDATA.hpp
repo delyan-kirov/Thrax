@@ -597,6 +597,8 @@ const InfixTable infix_db{
   { ";", { 2, 1 } },        //
   { "<|", { 5, 4 } },       //
   { "|>", { 6, 7 } },       //
+  { "::", { 15, 14 } },     // cons: right-assoc, looser than +/comparison
+
   { OP::ISEQ, { 10, 11 } }, //
   { OP::GEQ, { 10, 11 } },  //
   { OP::LEQ, { 10, 11 } },  //
@@ -618,7 +620,7 @@ const OperandSet operand_starters{
   LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
   LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
   LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
-  LX::TokenTag::KwWhen,
+  LX::TokenTag::KwWhen, LX::TokenTag::LBrack,
 };
 
 // Tokens that end an expression. `do` ends one so `defer <cleanup> do ...`
@@ -627,7 +629,7 @@ const OperandSet expr_terminators{
   LX::TokenTag::Eof,    LX::TokenTag::Dollar, LX::TokenTag::RParen,
   LX::TokenTag::Comma,  LX::TokenTag::KwIn,   LX::TokenTag::KwThen,
   LX::TokenTag::KwElse, LX::TokenTag::RBrace, LX::TokenTag::KwIs,
-  LX::TokenTag::KwCtl,  LX::TokenTag::KwDo,
+  LX::TokenTag::KwCtl,  LX::TokenTag::KwDo,   LX::TokenTag::RBrack,
 };
 
 // Prefix (unary) operators, keyed by lexeme -> canonical OP name. The name is

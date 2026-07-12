@@ -95,6 +95,33 @@ print_diags(
 // Read, lex, and parse every file into a unit. Returns false (after printing)
 // if any file failed to read or parse. Units are collected first so diagnostics
 // can be rendered against the right source.
+// The built-in prelude: types/values known to every module. Injected as a
+// synthetic unit ahead of the user's files, so its `List` (the blessed list
+// type that `[..]` / `::` / `[]` desugar to) is globally available -- type
+// declarations are linked into one flat program, so a bare name like `List`
+// resolves regardless of the declaring module. The file name matches the module
+// so the filename lint is satisfied.
+static const char PRELUDE_SRC[] = "@mod PRELUDE\n"
+                                  "$ List : @union = Cons: {`T, List `T}, "
+                                  "Nil: {},\n";
+static const char PRELUDE_FILE[] = "PRELUDE.thx";
+
+// Lex + parse one source (content/file) into `units`, forwarding diagnostics.
+static void
+parse_one(
+  UT::Vu                       content,
+  UT::Vu                       file,
+  AR::Arena                   &arena,
+  std::vector<MR::Unit>       &units,
+  std::vector<ER::Diagnostic> &parse_diags)
+{
+  LX::Lexer  lexer{ content, file, arena };
+  EX::Parser parser{ lexer };
+  parser();
+  units.push_back(MR::Unit{ file, content, parser.m_exprs });
+  for (const ER::Diagnostic &d : parser.m_diags) parse_diags.push_back(d);
+}
+
 bool
 parse_units(
   const std::vector<UT::Vu> &files,
@@ -104,6 +131,13 @@ parse_units(
   bool                        ok = true;
   std::vector<ER::Diagnostic> parse_diags;
 
+  // The prelude first, so its declarations are in scope for every file.
+  parse_one(UT::Vu{ PRELUDE_SRC, sizeof(PRELUDE_SRC) - 1 },
+            UT::Vu{ PRELUDE_FILE, sizeof(PRELUDE_FILE) - 1 },
+            arena,
+            units,
+            parse_diags);
+
   for (UT::Vu file : files)
   {
     UT::Vu content = read_entire_file(file, arena);
@@ -112,11 +146,7 @@ parse_units(
       ok = false;
       continue;
     }
-    LX::Lexer  lexer{ content, file, arena };
-    EX::Parser parser{ lexer };
-    parser();
-    units.push_back(MR::Unit{ file, content, parser.m_exprs });
-    for (const ER::Diagnostic &d : parser.m_diags) parse_diags.push_back(d);
+    parse_one(content, file, arena, units, parse_diags);
   }
 
   if (!parse_diags.empty())
@@ -134,10 +164,22 @@ bool
 compile_units(
   std::vector<MR::Unit> &units, AR::Arena &arena, MR::Result &out)
 {
+  // Pattern lowering runs per file, but a pattern may reference a type declared
+  // in another unit (the prelude's `List`, or a sibling module). Gather every
+  // unit's struct/union declarations up front and give the whole set to each
+  // file's LL pass. (Pointers stay valid: LL rewrites Def bodies in place but
+  // never grows a unit's expr vector.)
+  std::vector<EX::Expr *> all_decls;
+  for (MR::Unit &u : units)
+    for (size_t i = 0; i < u.exprs.size(); ++i)
+      if (u.exprs[i].tag == EX::ExprTag::StructDecl
+          || u.exprs[i].tag == EX::ExprTag::UnionDecl)
+        all_decls.push_back(&u.exprs[i]);
+
   std::vector<ER::Diagnostic> lower_diags;
   for (MR::Unit &u : units)
   {
-    std::vector<ER::Diagnostic> ds = LL::lower(u.exprs, arena);
+    std::vector<ER::Diagnostic> ds = LL::lower(u.exprs, all_decls, arena);
     for (const ER::Diagnostic &d : ds) lower_diags.push_back(d);
   }
   if (print_diags(units, lower_diags)) return false;
