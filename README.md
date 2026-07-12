@@ -5,7 +5,7 @@ types (structs *and* sum types), pattern matching, and typed **algebraic effects
 with handlers** . It compiles to C and can also be interpreted.
 
 ```typescript
-@mod TASTE
+@mod Testing
 
 $ fib : Int -> Int = \n =
     if n ?= 0 then 0
