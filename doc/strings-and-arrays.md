@@ -149,17 +149,29 @@ literal) that settles `use` to `List elem` or `Array` and patches
 `array_push (.. (%array 0) ..)` for an Array. The `array_push` overload's impl
 key *is* `array_push`, so emitting it post-TC dispatches correctly.
 
+## Open list patterns  *(DONE)*
+
+`[p1, .., pn, ..rest]` binds the leading cells and a `rest` tail (the remaining
+list), so it matches *at least* n elements; it is pure parser sugar
+`[a, ..t]` folds to `a :: t` (open) exactly as `[a, b]` folds to
+`a :: b :: Nil` (closed). `..` is two `.` tokens (a lone `.` is a variant tag).
+Both engines reuse the existing `List.Cons` nested-pattern machinery.
+`examples/LISTS.thx`.
+
 ## Pattern matching arrays  *(TODO blocked pre-TC)*
 
 `[..]` *patterns* stay `List` for now (the parser still lowers them straight to
 Cons/Nil). Making them type-directed like the literals is **not** symmetric: LL
 lowers every pattern into `case`/if-chains *before* TC, so at lowering time the
-scrutinee's `List`-vs-`Array` type is unknown. Options for the follow-up:
+scrutinee's `List`-vs-`Array` type is unknown.
 
-- Move seq-pattern lowering *after* TC (defer the pattern through inference, like
-  `ExSeqLit`, then a post-TC pass emits the `array_len`/`array_get`/`array_slice`
-  destructure). This is the clean route; it is a real restructure since the whole
-  match machinery lives in LL today.
+**The real fix is a pipeline reorder, tracked as its own goal:
+`doc/pattern-lowering-after-tc.md` ("be like Haskell" typecheck patterns
+first, then compile them to `Case`-trees with types in hand).** Once LL runs
+post-TC, array patterns fall out for free and the `ExSeqLit` deferral can go
+away. Options short of that:
+
+- Move only seq-pattern lowering after TC (defer the pattern through inference).
 - Meanwhile, array destructuring already works via the built-ins + guards:
   `when arr is a if (array_len a) ?= 2 then <array_get a 0 ..>`.
 
@@ -180,11 +192,17 @@ When built, array patterns lower to a length test (`array_len scrut ?= k`, or
    `resolve_sites` fixpoint rewrite, above.)
 4. **DONE Exact string patterns.** `test_of` / `match_pat` emit a `?=@Str`
    test; string matches route to `lower_match_guarded`. `examples/STR_MATCH.thx`.
-5. **TODO Literal-prefix string patterns** (`is "..." ++ rest`).
+5. **DONE Literal-prefix string patterns** (`is "GET " ++ rest`). A new
+   `PatStrPrefix` (parser: a `Str` literal followed by `++`) lowers, in LL's
+   guarded path, to a length-safe prefix test (`?=@Str (array_slice s 0 plen)
+   "GET "`, the slice clamps so a short subject just compares unequal) plus a
+   tail binding (`rest = array_slice s plen (array_len s)`); the `rest`
+   sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.thx`.
 6a. **DONE Type-directed `[..]` sequence literals** (List vs Array inferred,
     no `@`). `examples/SEQ_INFER.thx`.
-6b. **TODO Array `[..]` patterns** blocked on pre-TC pattern lowering (see
-    above); needs post-TC seq-pattern lowering.
+6b. **TODO Array `[..]` patterns** blocked on pre-TC pattern lowering; needs the
+    pipeline reorder in `doc/pattern-lowering-after-tc.md` (lower patterns after
+    TC), after which it is symmetric with 6a.
 
 Phases 1-4 + 6a (DONE) deliver the core "Rust `String`" experience (grow,
 concat, compare, switch) and inferred sequence literals; 5 and 6b are the

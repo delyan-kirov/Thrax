@@ -1,0 +1,40 @@
+@mod STR_PREFIX
+
+# Literal-prefix string patterns: `when s is "lit" ++ rest then ...` matches a
+# string that starts with the literal `"lit"`, binding `rest` to the remainder
+# (a Str). It compiles to a length-safe prefix slice + byte-equality test and a
+# tail slice, threading arm-to-arm fallthrough (see doc/strings-and-arrays.md).
+
+# Strip a known prefix, else fall through to the whole string.
+$ route : Str -> Str = \s =
+	when s is "GET " ++ path then path
+	         is "PUT " ++ path then path
+	         else s
+
+$ ck_get   : Int = if (route "GET /home") ?= "/home" then 0 else 1/0
+$ ck_put   : Int = if (route "PUT /x") ?= "/x" then 0 else 1/0
+$ ck_other : Int = if (route "nope") ?= "nope" then 0 else 1/0
+
+# An empty prefix matches everything; a prefix longer than the subject falls
+# through (the slice clamps, so the byte-equality simply fails).
+$ ck_empty_prefix : Int = when "hi" is "" ++ rest then
+	if rest ?= "hi" then 0 else 1/0 else 1/0
+$ ck_too_long : Int = when "ab" is "abcd" ++ _ then 1/0 else 0
+
+# The `rest` sub-pattern can itself be refutable: this arm matches only when
+# the tail is exactly empty, i.e. the whole string equals the prefix.
+$ exactly : Str -> Int = \s =
+	when s is "quit" ++ "" then 1
+	         is "quit" ++ more then 2
+	         else 0
+
+$ ck_exact   : Int = if (exactly "quit") ?= 1 then 0 else 1/0
+$ ck_partial : Int = if (exactly "quitting") ?= 2 then 0 else 1/0
+$ ck_nomatch : Int = if (exactly "stay") ?= 0 then 0 else 1/0
+
+# Nested prefixes strip layer by layer.
+$ strip2 : Str -> Str = \s =
+	when s is "a" ++ "b" ++ rest then rest else "?"
+
+$ ck_nested : Int = if (strip2 "abXY") ?= "XY" then 0 else 1/0
+$ ck_nested_no : Int = if (strip2 "aXY") ?= "?" then 0 else 1/0
