@@ -314,7 +314,7 @@ go(
     UT_FAIL_MSG("%s", "@extern is only valid as a global definition");
     break;
   case EX::ExprTag::Match:
-    UT_FAIL_MSG("%s", "match should have been lowered by LL");
+    UT_FAIL_MSG("%s", "match should have been lowered by TC");
     break;
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:

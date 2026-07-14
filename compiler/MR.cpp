@@ -65,6 +65,36 @@ struct Scope
   std::unordered_map<std::string, UT::Vu>              alias;
 };
 
+using Locals = std::vector<UT::Vu>;
+
+// Append every variable a pattern binds (in scope for its arm/body). Literal and
+// wildcard patterns bind nothing; nested struct/variant/prefix patterns recurse.
+void
+collect_pat_binders(
+  EX::Pattern *p, Locals &out)
+{
+  switch (p->tag)
+  {
+  case EX::PatTag::Wild:
+  case EX::PatTag::Int:
+  case EX::PatTag::Real:
+  case EX::PatTag::Str    : return;
+  case EX::PatTag::Var    : out.push_back(std::get<EX::PatVar>(p->as).name); return;
+  case EX::PatTag::StrPrefix:
+    collect_pat_binders(std::get<EX::PatStrPrefix>(p->as).rest, out);
+    return;
+  case EX::PatTag::Struct:
+    for (EX::FieldPat &f : std::get<EX::PatStruct>(p->as).fields)
+      collect_pat_binders(f.pat, out);
+    return;
+  case EX::PatTag::Variant:
+    for (EX::FieldPat &f : std::get<EX::PatVariant>(p->as).fields)
+      collect_pat_binders(f.pat, out);
+    return;
+  }
+  UT_FAIL_MSG("%s", "collect_pat_binders: unhandled PatTag");
+}
+
 struct Linker
 {
   AR::Arena                                  &arena;
@@ -588,19 +618,49 @@ struct Linker
     }
     case ExprTag::FnDef:
     {
-      auto &f = std::get<EX::ExFnDef>(e->as);
-      locals.push_back(f.param);
+      auto  &f    = std::get<EX::ExFnDef>(e->as);
+      size_t base = locals.size();
+      if (f.param_pat)
+        collect_pat_binders(f.param_pat, locals);
+      else
+        locals.push_back(f.param);
       resolve(f.body, Mkey, sc, locals);
-      locals.pop_back();
+      locals.resize(base);
       return;
     }
     case ExprTag::Let:
     {
       auto &l = std::get<EX::ExLet>(e->as);
+      // A pattern let destructures its value; the pattern's binders are in scope
+      // only in the body, not the value. A plain let's name is recursive.
+      if (l.pat)
+      {
+        resolve(l.val, Mkey, sc, locals);
+        size_t base = locals.size();
+        collect_pat_binders(l.pat, locals);
+        resolve(l.body, Mkey, sc, locals);
+        locals.resize(base);
+        return;
+      }
       locals.push_back(l.var); // in scope for the value too (recursive let)
       resolve(l.val, Mkey, sc, locals);
       resolve(l.body, Mkey, sc, locals);
       locals.pop_back();
+      return;
+    }
+    case ExprTag::Match:
+    {
+      auto &m = std::get<EX::ExMatch>(e->as);
+      resolve(m.scrut, Mkey, sc, locals);
+      for (size_t i = 0; i < m.arms.size(); ++i)
+      {
+        size_t base = locals.size();
+        collect_pat_binders(m.arms[i].pat, locals);
+        if (m.arms[i].guard) resolve(m.arms[i].guard, Mkey, sc, locals);
+        resolve(m.arms[i].body, Mkey, sc, locals);
+        locals.resize(base);
+      }
+      resolve(m.alt, Mkey, sc, locals);
       return;
     }
     case ExprTag::If:
