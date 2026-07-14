@@ -67,8 +67,9 @@ struct Scope
 
 using Locals = std::vector<UT::Vu>;
 
-// Append every variable a pattern binds (in scope for its arm/body). Literal and
-// wildcard patterns bind nothing; nested struct/variant/prefix patterns recurse.
+// Append every variable a pattern binds (in scope for its arm/body). Literal
+// and wildcard patterns bind nothing; nested struct/variant/prefix patterns
+// recurse.
 void
 collect_pat_binders(
   EX::Pattern *p, Locals &out)
@@ -78,8 +79,8 @@ collect_pat_binders(
   case EX::PatTag::Wild:
   case EX::PatTag::Int:
   case EX::PatTag::Real:
-  case EX::PatTag::Str    : return;
-  case EX::PatTag::Var    : out.push_back(std::get<EX::PatVar>(p->as).name); return;
+  case EX::PatTag::Str : return;
+  case EX::PatTag::Var : out.push_back(std::get<EX::PatVar>(p->as).name); return;
   case EX::PatTag::StrPrefix:
     collect_pat_binders(std::get<EX::PatStrPrefix>(p->as).rest, out);
     return;
@@ -631,8 +632,8 @@ struct Linker
     case ExprTag::Let:
     {
       auto &l = std::get<EX::ExLet>(e->as);
-      // A pattern let destructures its value; the pattern's binders are in scope
-      // only in the body, not the value. A plain let's name is recursive.
+      // A pattern let destructures its value; the pattern's binders are in
+      // scope only in the body, not the value. A plain let's name is recursive.
       if (l.pat)
       {
         resolve(l.val, Mkey, sc, locals);

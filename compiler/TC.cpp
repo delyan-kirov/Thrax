@@ -2,11 +2,11 @@
  *\file TC.cpp
  *\info Hindley-Milner type checker.
  *
- * Pipeline: desugar EX::Expr -> Core (lambda calculus + let), then Algorithm W
- * over a union-find of unification variables. Operators are just overloaded
- * names (see overload_db): a use is typed as a fresh variable and the overload
- * is chosen by resolve_sites once its operands are known, rewriting the EX Var
- * to a monomorphic key. Only `if` is a real primitive in the initial env.
+ * Runs Algorithm W over the EX::Expr tree (after PatLower removes
+ * pattern sugar) with a union-find of unification variables. Operators are just
+ * overloaded names (see overload_db): a use is typed as a fresh variable and
+ * the overload is chosen by resolve_sites once its operands are known, writing
+ * the impl key to the EX Var's `resolved` slot.
  * *----------------------------------------------------------------------------*/
 
 #include "TC.hpp"
@@ -25,8 +25,8 @@ namespace
  *\PATTERN LOWERING
  *
  * Turns the pattern surface (`when` arms, struct/variant patterns, pattern
- * `let`/lambda, string-prefix patterns) into the primitive core (`Case` + `if` +
- * `let` + field access) the checker and both engines already understand. Runs
+ * `let`/lambda, string-prefix patterns) into the primitive core (`Case` + `if`
+ * + `let` + field access) the checker and both engines already understand. Runs
  * inside TC::check once the struct/union tables are built, so it reads their
  * field names / variant tags straight from the checker's own declaration tables
  * (projected into `structs`/`unions` below) instead of re-deriving them.
@@ -352,8 +352,8 @@ struct PatLower
   }
 
   // Wrap `body` in the bindings that destructure `pat` applied to the
-  // (already-lowered) expression `subject`. When `refutable_ok` is false (lambda
-  // / let), a refutable sub-pattern is an error.
+  // (already-lowered) expression `subject`. When `refutable_ok` is false
+  // (lambda / let), a refutable sub-pattern is an error.
   Expr *
   bind_pattern(
     Pattern *pat,
@@ -468,9 +468,10 @@ struct PatLower
     return mk_if(a, b, mk_int(0));
   }
 
-  // An Int-valued test that is nonzero iff `pat` matches `subject`. Returns null
-  // when `pat` is irrefutable. Only the literal/struct-literal parts contribute
-  // a test; variable/wildcard parts are bound separately by `bind_pattern`.
+  // An Int-valued test that is nonzero iff `pat` matches `subject`. Returns
+  // null when `pat` is irrefutable. Only the literal/struct-literal parts
+  // contribute a test; variable/wildcard parts are bound separately by
+  // `bind_pattern`.
   Expr *
   test_of(
     Pattern *pat, Expr *subject)
@@ -798,7 +799,8 @@ struct PatLower
     return found;
   }
 
-  // Resolve variant pattern `pv` -- with `munion` supplying the union for a bare
+  // Resolve variant pattern `pv` -- with `munion` supplying the union for a
+  // bare
   // `.Tag` -- to its union constructor (`uname_vu`), tag index, and declared
   // payload field names (`decl`). Records a diagnostic and returns false on an
   // unresolvable/unknown union or tag.
@@ -901,8 +903,9 @@ struct PatLower
   using Fall = std::function<Expr *()>;
 
   // Match `pat` against `subject`, evaluating `success` (with `pat`'s bindings
-  // in scope) on a match and `fall()` otherwise -- recursing into nested variant
-  // payloads so that a failure at any depth lands on the same fallthrough.
+  // in scope) on a match and `fall()` otherwise -- recursing into nested
+  // variant payloads so that a failure at any depth lands on the same
+  // fallthrough.
   Expr *
   match_pat(
     Pattern           *pat,
@@ -1102,9 +1105,9 @@ struct PatLower
     return mk_let(mv, scrut, alloc(ce), sig);
   }
 
-  // Reorder a named variant literal's payload into declared field order and drop
-  // the names, so CR (which builds payloads positionally) and a Con `case` see
-  // fields in the same order. Anything malformed is left untouched for TC.
+  // Reorder a named variant literal's payload into declared field order and
+  // drop the names, so CR (which builds payloads positionally) and a Con `case`
+  // see fields in the same order. Anything malformed is left untouched for TC.
   void
   normalize_variant_lit(
     EX::ExVariantLit &vl)
@@ -1143,8 +1146,8 @@ struct PatLower
    *\TREE WALK
    *--------------------------------------------------------------------------*/
 
-  // Lower `e` and return the (possibly replaced) node. Children are rewritten in
-  // place; pattern lambdas/lets/matches are replaced by their desugarings.
+  // Lower `e` and return the (possibly replaced) node. Children are rewritten
+  // in place; pattern lambdas/lets/matches are replaced by their desugarings.
   Expr *
   lower(
     Expr *e)
@@ -1333,8 +1336,8 @@ struct PatLower
   }
 
   // Lower every pattern in `exprs` in place. Returns the accumulated
-  // diagnostics; on any error the caller must not proceed (an un-lowered pattern
-  // would survive into desugar).
+  // diagnostics; on any error the caller must not proceed (an un-lowered
+  // pattern would survive into desugar).
   Diagnostics
   run(
     EX::Exprs &exprs)
@@ -1372,7 +1375,6 @@ private:
   AR::Arena  &m_arena;
   UT::Vu      m_src;
   TypeStore   m_types;
-  CoreStore   m_cores;
   int         m_next_id = 0;
   Env         m_prim;
   Globals     m_globals;
@@ -1467,7 +1469,6 @@ private:
   bool  unify_row(Type *a, Type *b);
   bool  subrow(Type *sub, Type *super);
   bool  rewrite_row(Type *row, const std::string &label, Type *&found_rest);
-  Core *core(CoreData as);
 
   // substitution / nominal instantiation
   Type *subst(Type *t, const Subst &s);
@@ -1490,11 +1491,11 @@ private:
   sig_to_type(EX::Ty *sig, TyVarEnv &tv, bool rigid, VarIds *order = nullptr);
   Scheme scheme_of_sig(EX::Ty *sig);
 
-  // desugar + inference
-  Core *desugar(EX::Expr *e);
-  bool  occurs_free(const std::string &name, Core *e);
-  Type *infer(Core *e, Env &locals, Type *amb);
-  Type *infer_against(Core *e, Type *expected, Env &locals, Type *amb);
+  // inference
+  bool  occurs_free(const std::string &name, EX::Expr *e);
+  Type *infer(EX::Expr *e, Env &locals, Type *amb);
+  Type *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
+  Type *infer_against(EX::Expr *e, Type *expected, Env &locals, Type *amb);
 
   // resolution
   Scheme resolve(const std::string &name);
@@ -1572,14 +1573,6 @@ Checker::row_extend(
 {
   m_types.push_back(Type{ TRowExtend{ std::move(label), rest } });
   return &m_types.back();
-}
-
-Core *
-Checker::core(
-  CoreData as)
-{
-  m_cores.push_back(Core{ std::move(as) });
-  return &m_cores.back();
 }
 
 /*------------------------------------------------------------------------------
@@ -2087,157 +2080,92 @@ Checker::scheme_of_sig(
 }
 
 /*------------------------------------------------------------------------------
- *\DESUGAR
+ *\FREE-VARIABLE CHECK
  *-----------------------------------------------------------------------------*/
 
-Core *
-Checker::desugar(
-  EX::Expr *e)
+// Does `name` occur free in `e`? Used only to detect a recursive `let` (whether
+// the value references its own binder). Runs on the post-PatLower EX tree, so
+// no Match/pattern nodes appear.
+bool
+Checker::occurs_free(
+  const std::string &name, EX::Expr *e)
 {
   switch (e->tag)
   {
-  case EX::ExprTag::Int   : return core(CLitInt{});
-  case EX::ExprTag::Real  : return core(CLitReal{});
-  case EX::ExprTag::Str   : return core(CLitStr{});
-  case EX::ExprTag::Unit  : return core(CLitUnit{});
-  case EX::ExprTag::Extern: return core(CExtern{});
   case EX::ExprTag::Var:
+    return std::string(std::get<EX::ExVar>(e->as).name) == name;
+  case EX::ExprTag::Overload:
+    return std::string(std::get<EX::ExOverload>(e->as).name) == name;
+  case EX::ExprTag::Int:
+  case EX::ExprTag::Real:
+  case EX::ExprTag::Str:
+  case EX::ExprTag::Unit:
+  case EX::ExprTag::Extern: return false;
+  case EX::ExprTag::FnDef:
   {
-    auto &v = std::get<EX::ExVar>(e->as);
-    // slot is rewritten if this name turns out to be overloaded
-    return core(CVar{ std::string(v.name), v.name, &v.name });
+    EX::ExFnDef &l = std::get<EX::ExFnDef>(e->as);
+    if (std::string(l.param) == name) return false; // shadowed
+    return occurs_free(name, l.body);
   }
   case EX::ExprTag::App:
   {
-    auto &ap = std::get<EX::ExApp>(e->as);
-    return core(CApp{ desugar(ap.fn), desugar(ap.arg) });
-  }
-  case EX::ExprTag::FnDef:
-  {
-    auto &fn = std::get<EX::ExFnDef>(e->as);
-    return core(CLam{ std::string(fn.param), desugar(fn.body) });
-  }
-  case EX::ExprTag::Let:
-  {
-    auto &lt  = std::get<EX::ExLet>(e->as);
-    Type *sig = nullptr;
-    if (lt.sig)
-    {
-      TyVarEnv tv;
-      sig = sig_to_type(lt.sig, tv, false);
-    }
-    return core(
-      CLet{ std::string(lt.var), desugar(lt.val), desugar(lt.body), sig });
+    EX::ExApp &a = std::get<EX::ExApp>(e->as);
+    return occurs_free(name, a.fn) || occurs_free(name, a.arg);
   }
   case EX::ExprTag::If:
   {
-    auto &i  = std::get<EX::ExIf>(e->as);
-    Core *v  = core(CVar{ std::string(OP::IF), {}, nullptr });
-    Core *a1 = core(CApp{ v, desugar(i.cond) });
-    Core *a2 = core(CApp{ a1, desugar(i.then) });
-    Core *a3 = core(CApp{ a2, desugar(i.alt) });
-    return a3;
+    EX::ExIf &i = std::get<EX::ExIf>(e->as);
+    return occurs_free(name, i.cond) || occurs_free(name, i.then)
+           || occurs_free(name, i.alt);
+  }
+  case EX::ExprTag::Let:
+  {
+    // name shadowed in the body; still visible in the (recursive) value
+    EX::ExLet &l = std::get<EX::ExLet>(e->as);
+    if (std::string(l.var) == name) return occurs_free(name, l.val);
+    return occurs_free(name, l.val) || occurs_free(name, l.body);
   }
   case EX::ExprTag::StructLit:
-  {
-    auto      &sl = std::get<EX::ExStructLit>(e->as);
-    FieldInits fields;
-    for (size_t i = 0; i < sl.fields.size(); ++i)
-      fields.push_back(
-        { std::string(sl.fields[i].name), desugar(sl.fields[i].val) });
-    return core(CStructLit{
-      std::string(sl.type_name), sl.type_name, std::move(fields), &sl });
-  }
+    for (EX::FieldInit &f : std::get<EX::ExStructLit>(e->as).fields)
+      if (occurs_free(name, f.val)) return true;
+    return false;
   case EX::ExprTag::VariantLit:
-  {
-    auto      &vl = std::get<EX::ExVariantLit>(e->as);
-    FieldInits fields;
-    for (size_t i = 0; i < vl.fields.size(); ++i)
-      fields.push_back(
-        { std::string(vl.fields[i].name), desugar(vl.fields[i].val) });
-    return core(CVariantLit{ std::string(vl.type_name),
-                             std::string(vl.tag),
-                             vl.anchor,
-                             std::move(fields),
-                             &vl });
-  }
+    for (EX::FieldInit &f : std::get<EX::ExVariantLit>(e->as).fields)
+      if (occurs_free(name, f.val)) return true;
+    return false;
   case EX::ExprTag::SeqLit:
-  {
-    auto               &sl = std::get<EX::ExSeqLit>(e->as);
-    std::vector<Core *> elems;
-    for (size_t i = 0; i < sl.elems.size(); ++i)
-      elems.push_back(desugar(sl.elems[i]));
-    return core(CSeqLit{ std::move(elems), sl.anchor, &sl });
-  }
+    for (EX::Expr *el : std::get<EX::ExSeqLit>(e->as).elems)
+      if (occurs_free(name, el)) return true;
+    return false;
   case EX::ExprTag::Field:
+    return occurs_free(name, std::get<EX::ExField>(e->as).record);
+  case EX::ExprTag::Handle:
   {
-    auto &fa = std::get<EX::ExField>(e->as);
-    return core(CField{ desugar(fa.record), std::string(fa.field), fa.field });
+    EX::ExHandle &h = std::get<EX::ExHandle>(e->as);
+    if (occurs_free(name, h.body)) return true;
+    if (h.else_body && std::string(h.else_var) != name
+        && occurs_free(name, h.else_body))
+      return true;
+    for (EX::HandlerClause &c : h.clauses)
+      if (std::string(c.arg) != name && std::string(h.k) != name
+          && occurs_free(name, c.body))
+        return true;
+    return false;
   }
   case EX::ExprTag::Case:
   {
-    auto    &ec    = std::get<EX::ExCase>(e->as);
-    Core    *scrut = desugar(ec.scrut);
-    Core    *deflt = desugar(ec.deflt);
-    CoreAlts alts;
-    for (size_t i = 0; i < ec.alts.size(); ++i)
+    EX::ExCase &c = std::get<EX::ExCase>(e->as);
+    if (occurs_free(name, c.scrut) || occurs_free(name, c.deflt)) return true;
+    for (EX::CaseAlt &alt : c.alts)
     {
-      EX::CaseAlt &a    = ec.alts[i];
-      Core        *body = desugar(a.body);
-      CoreAlt      ca;
-      switch (a.kind)
-      {
-      case EX::AltKind::Con:
-      {
-        AltCon c;
-        c.type_name = std::string(a.type_name);
-        c.tag       = a.tag;
-        for (size_t j = 0; j < a.binders.size(); ++j)
-          c.binders.push_back(std::string(a.binders[j]));
-        c.body = body;
-        ca.as  = std::move(c);
-        break;
-      }
-      case EX::AltKind::Int : ca.as = AltInt{ body }; break;
-      case EX::AltKind::Real: ca.as = AltReal{ body }; break;
-      }
-      alts.push_back(std::move(ca));
+      bool shadowed = false; // bound by this alt's payload (Con only)
+      if (alt.kind == EX::AltKind::Con)
+        for (UT::Vu b : alt.binders)
+          if (std::string(b) == name) shadowed = true;
+      if (!shadowed && occurs_free(name, alt.body)) return true;
     }
-    return core(CCase{ scrut, deflt, std::move(alts) });
+    return false;
   }
-  case EX::ExprTag::Overload:
-  {
-    // A use MR left as an overload set: type it as a fresh var and let
-    // resolve_user_sites pick the candidate that fits, writing its name to
-    // `chosen` (which the slot points at, and IT later reads).
-    auto &ov = std::get<EX::ExOverload>(e->as);
-    CVar  v;
-    v.name     = std::string(ov.name);
-    v.anchor   = ov.anchor;
-    v.slot     = &ov.chosen;
-    v.overload = &ov.candidates;
-    return core(std::move(v));
-  }
-  // Handlers: type-checking lands in increment 3c (this stub keeps 3a's
-  // parser-only milestone honest -- a handler program aborts here until then).
-  case EX::ExprTag::Handle:
-  {
-    auto   &h = std::get<EX::ExHandle>(e->as);
-    CHandle ch;
-    ch.body = desugar(h.body);
-    ch.k    = std::string(h.k);
-    for (auto &c : h.clauses)
-      ch.clauses.push_back(
-        { std::string(c.op), std::string(c.arg), desugar(c.body) });
-    if (h.else_body)
-    {
-      ch.els_var = std::string(h.else_var);
-      ch.els     = desugar(h.else_body);
-    }
-    return core(std::move(ch));
-  }
-  // Match is removed by PatLower (run at the top of check) before desugar; Def
-  // / StructDecl / UnionDecl are top-level only; Unknown is never a body.
   case EX::ExprTag::Match:
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
@@ -2248,92 +2176,9 @@ Checker::desugar(
   case EX::ExprTag::Import:
   case EX::ExprTag::Vis:
   case EX::ExprTag::Unknown:
-    UT_FAIL_MSG("desugar: unexpected node %s (should be lowered by LL)",
-                EX::pprint(e->tag).c_str());
+    UT_FAIL_MSG("occurs_free: unexpected node %s", EX::pprint(e->tag).c_str());
   }
-  UT_FAIL_MSG("%s", "desugar: unhandled ExprTag");
-  return core(CLitInt{});
-}
-
-bool
-Checker::occurs_free(
-  const std::string &name, Core *e)
-{
-  switch (e->kind())
-  {
-  case CKind::Var    : return std::get<CVar>(e->as).name == name;
-  case CKind::LitInt :
-  case CKind::LitReal:
-  case CKind::LitStr :
-  case CKind::LitUnit:
-  case CKind::Extern : return false;
-  case CKind::Lam:
-  {
-    CLam &l = std::get<CLam>(e->as);
-    if (l.param == name) return false; // shadowed
-    return occurs_free(name, l.body);
-  }
-  case CKind::App:
-  {
-    CApp &a = std::get<CApp>(e->as);
-    return occurs_free(name, a.fn) || occurs_free(name, a.arg);
-  }
-  case CKind::Let:
-  {
-    // name shadowed in the body; still visible in the (recursive) value
-    CLet &l = std::get<CLet>(e->as);
-    if (l.name == name) return occurs_free(name, l.val);
-    return occurs_free(name, l.val) || occurs_free(name, l.body);
-  }
-  case CKind::StructLit:
-    for (auto &f : std::get<CStructLit>(e->as).fields)
-      if (occurs_free(name, f.second)) return true;
-    return false;
-  case CKind::VariantLit:
-    for (auto &f : std::get<CVariantLit>(e->as).fields)
-      if (occurs_free(name, f.second)) return true;
-    return false;
-  case CKind::SeqLit:
-    for (Core *el : std::get<CSeqLit>(e->as).elems)
-      if (occurs_free(name, el)) return true;
-    return false;
-  case CKind::Field: return occurs_free(name, std::get<CField>(e->as).record);
-  case CKind::Handle:
-  {
-    CHandle &h = std::get<CHandle>(e->as);
-    if (occurs_free(name, h.body)) return true;
-    if (h.els && h.els_var != name && occurs_free(name, h.els)) return true;
-    for (CHandleClause &c : h.clauses)
-      if (c.arg != name && h.k != name && occurs_free(name, c.body))
-        return true;
-    return false;
-  }
-  case CKind::Case:
-  {
-    CCase &c = std::get<CCase>(e->as);
-    if (occurs_free(name, c.scrut) || occurs_free(name, c.deflt)) return true;
-    for (CoreAlt &alt : c.alts)
-    {
-      Core *body     = nullptr;
-      bool  shadowed = false;
-      switch (alt.kind())
-      {
-      case EX::AltKind::Con:
-      {
-        AltCon &ac = std::get<AltCon>(alt.as);
-        for (auto &b : ac.binders)
-          if (b == name) shadowed = true; // bound by this alt's payload
-        body = ac.body;
-        break;
-      }
-      case EX::AltKind::Int : body = std::get<AltInt>(alt.as).body; break;
-      case EX::AltKind::Real: body = std::get<AltReal>(alt.as).body; break;
-      }
-      if (!shadowed && occurs_free(name, body)) return true;
-    }
-    return false;
-  }
-  }
+  UT_FAIL_MSG("%s", "occurs_free: unhandled ExprTag");
   return false;
 }
 
@@ -2348,19 +2193,34 @@ Checker::occurs_free(
 // body runs under its own fresh ambient (the arrow's latent effect). A
 // top-level body is typed under the empty closed row, so an unhandled effect
 // fails to unify.
+// Apply a function type to an argument expression: the callee's latent effect
+// must be a SUBROW of the ambient (subsumption), argument and result unify
+// exactly. Shared by App and If (`if` is the application of a primitive).
+Type *
+Checker::infer_apply(
+  Type *ft, EX::Expr *arg, Env &locals, Type *amb)
+{
+  Type *at = infer(arg, locals, amb);
+  Type *rv = fresh();
+  Type *ef = fresh(); // the callee's latent effect, extracted then subsumed
+  unify(ft, arrow(at, rv, ef));
+  subrow(ef, amb);
+  return rv;
+}
+
 Type *
 Checker::infer(
-  Core *e, Env &locals, Type *amb)
+  EX::Expr *e, Env &locals, Type *amb)
 {
-  switch (e->kind())
+  switch (e->tag)
   {
-  case CKind::LitInt : return con(OP::TY_INT);
-  case CKind::LitReal: return con(OP::TY_REAL);
-  case CKind::LitStr : return con(OP::TY_STR);
-  case CKind::LitUnit: return con(OP::TY_UNIT);
-  case CKind::Extern : return fresh(); // unifies with the declared signature
+  case EX::ExprTag::Int   : return con(OP::TY_INT);
+  case EX::ExprTag::Real  : return con(OP::TY_REAL);
+  case EX::ExprTag::Str   : return con(OP::TY_STR);
+  case EX::ExprTag::Unit  : return con(OP::TY_UNIT);
+  case EX::ExprTag::Extern: return fresh(); // unifies with declared signature
 
-  case CKind::Handle:
+  case EX::ExprTag::Handle:
   {
     // The handler discharges the effects named by its clauses: the body runs
     // under `<handled... | amb>`, the handle expression itself under `amb`.
@@ -2368,8 +2228,8 @@ Checker::infer(
     // body's result IS the handler's. Each clause `is op a = e` for `op : A ->
     // B` binds a : A and k : B ->^amb result (resuming is deep, so k runs under
     // amb).
-    CHandle &h      = std::get<CHandle>(e->as);
-    Type    *result = fresh();
+    EX::ExHandle &h      = std::get<EX::ExHandle>(e->as);
+    Type         *result = fresh();
 
     // Build the body's ambient: amb extended with each DISTINCT handled effect
     // (several clauses may handle one effect, e.g. get/put both belong to
@@ -2378,122 +2238,145 @@ Checker::infer(
     Type *inner = amb;
     {
       std::unordered_set<std::string> seen;
-      for (CHandleClause &c : h.clauses)
+      for (EX::HandlerClause &c : h.clauses)
       {
-        auto oe = m_op_effect.find(c.op);
+        std::string op(c.op);
+        auto        oe = m_op_effect.find(op);
         if (oe != m_op_effect.end() && seen.insert(oe->second).second)
           inner = row_extend(oe->second, inner);
       }
     }
     Type *tbody = infer(h.body, locals, inner);
-    if (h.els)
+    if (h.else_body)
     {
-      Env e2        = locals;
-      e2[h.els_var] = Scheme{ {}, tbody };
-      unify(infer(h.els, e2, amb), result);
+      Env e2                      = locals;
+      e2[std::string(h.else_var)] = Scheme{ {}, tbody };
+      unify(infer(h.else_body, e2, amb), result);
     }
     else
       unify(tbody, result);
-    for (CHandleClause &c : h.clauses)
+    for (EX::HandlerClause &c : h.clauses)
     {
-      auto pit = m_prim.find(c.op);
+      std::string op(c.op);
+      auto        pit = m_prim.find(op);
       if (pit == m_prim.end())
       {
         fail(ER::Code::TYPE_MISMATCH,
              m_anchor,
              "unknown effect operation '%s' in handler",
-             c.op.c_str());
+             op.c_str());
         continue;
       }
       Type *opty = instantiate(pit->second);
       Type *A    = fresh();
       Type *B    = fresh();
       unify(opty, arrow(A, B));
-      Env e2    = locals;
-      e2[c.arg] = Scheme{ {}, A };
-      e2[h.k]   = Scheme{ {}, arrow(B, result, amb) };
+      Env e2                 = locals;
+      e2[std::string(c.arg)] = Scheme{ {}, A };
+      e2[std::string(h.k)]   = Scheme{ {}, arrow(B, result, amb) };
       unify(infer(c.body, e2, amb), result);
     }
     return result;
   }
 
-  case CKind::Var:
+  case EX::ExprTag::Var:
   {
-    CVar &v = std::get<CVar>(e->as);
+    EX::ExVar  &v = std::get<EX::ExVar>(e->as);
+    std::string name(v.name);
 
-    // An overload set (from MR): type as a fresh var and defer the choice to
-    // resolve_user_sites, once the use's type is settled by its context.
-    if (v.overload)
-    {
-      Type *use = fresh();
-      m_usites.push_back({ v.slot, use, v.overload, v.name, v.anchor });
-      return use;
-    }
-
-    auto it = locals.find(v.name);
+    auto it = locals.find(name);
     if (it != locals.end()) return instantiate(it->second);
-    if (m_globals.find(v.name)) return instantiate(resolve(v.name));
-    auto pit = m_prim.find(v.name);
+    if (m_globals.find(name)) return instantiate(resolve(name));
+    auto pit = m_prim.find(name);
     if (pit != m_prim.end()) return instantiate(pit->second);
 
     // An overloaded name: type it as a fresh variable and defer the choice of
     // overload to resolve_sites, once its operands (and result) are settled.
-    if (overload_db.count(v.name))
+    if (overload_db.count(name))
     {
+      // The chosen impl key is written to `resolved` (which CR reads), NOT to
+      // `name`, so a re-inference of this same node still keys off the original
+      // overloaded name and resolves identically.
       Type *use = fresh();
-      m_sites.push_back({ v.slot, use, v.name, v.anchor });
+      m_sites.push_back({ &v.resolved, use, name, v.name });
       return use;
     }
 
     fail(ER::Code::TYPE_UNBOUND,
-         v.anchor.data() ? v.anchor : m_anchor,
+         v.name.data() ? v.name : m_anchor,
          "unbound variable '%s'",
-         v.name.c_str());
+         name.c_str());
     return fresh();
   }
 
-  case CKind::Lam:
+  case EX::ExprTag::Overload:
+  {
+    // A use MR left as an overload set: type as a fresh var and defer the
+    // choice to resolve_user_sites, once the use's type is settled by context.
+    EX::ExOverload &ov  = std::get<EX::ExOverload>(e->as);
+    Type           *use = fresh();
+    m_usites.push_back(
+      { &ov.chosen, use, &ov.candidates, std::string(ov.name), ov.anchor });
+    return use;
+  }
+
+  case EX::ExprTag::FnDef:
   {
     // Constructing a closure performs no effect (the lambda itself is pure
     // under `amb`); its body runs under a fresh ambient that becomes the
     // arrow's latent effect.
-    CLam &l        = std::get<CLam>(e->as);
-    Type *pv       = fresh();
-    Type *e_body   = fresh();
-    Env   inner    = locals;
-    inner[l.param] = Scheme{ {}, pv }; // lambda params are monomorphic
-    Type *bt       = infer(l.body, inner, e_body);
+    EX::ExFnDef &l              = std::get<EX::ExFnDef>(e->as);
+    Type        *pv             = fresh();
+    Type        *e_body         = fresh();
+    Env          inner          = locals;
+    inner[std::string(l.param)] = Scheme{ {}, pv }; // params are monomorphic
+    Type *bt                    = infer(l.body, inner, e_body);
     return arrow(pv, bt, e_body);
   }
 
-  case CKind::App:
+  case EX::ExprTag::App:
   {
-    // The callee may perform AT MOST what the ambient allows: its latent effect
-    // must be a SUBROW of the ambient (subsumption), not equal to it. So a pure
-    // (or smaller-effect) function is callable in any larger effect context.
-    // Argument and result still unify exactly. (Operations are Apps whose
-    // callee carries `<L|mu>`, so subsuming it forces L into amb.)
-    CApp &ap = std::get<CApp>(e->as);
-    Type *ft = infer(ap.fn, locals, amb);
-    Type *at = infer(ap.arg, locals, amb);
-    Type *rv = fresh();
-    Type *ef = fresh(); // the callee's latent effect, extracted then subsumed
-    unify(ft, arrow(at, rv, ef));
-    subrow(ef, amb);
-    return rv;
+    // The callee may perform AT MOST what the ambient allows (subsumption); see
+    // infer_apply. (Operations are Apps whose callee carries `<L|mu>`, so
+    // subsuming it forces L into amb.)
+    EX::ExApp &ap = std::get<EX::ExApp>(e->as);
+    Type      *ft = infer(ap.fn, locals, amb);
+    return infer_apply(ft, ap.arg, locals, amb);
   }
 
-  case CKind::Let:
+  case EX::ExprTag::If:
   {
-    CLet &lt = std::get<CLet>(e->as);
+    // `if` is the effect-polymorphic primitive `Int -> T -> T -> T` applied to
+    // cond/then/alt; typing it as three applications keeps the effect handling
+    // and result type identical to a source call.
+    EX::ExIf &i   = std::get<EX::ExIf>(e->as);
+    auto      pit = m_prim.find(OP::IF);
+    UT_FAIL_IF(pit == m_prim.end());
+    Type *ft = instantiate(pit->second);
+    ft       = infer_apply(ft, i.cond, locals, amb);
+    ft       = infer_apply(ft, i.then, locals, amb);
+    ft       = infer_apply(ft, i.alt, locals, amb);
+    return ft;
+  }
+
+  case EX::ExprTag::Let:
+  {
+    EX::ExLet  &lt = std::get<EX::ExLet>(e->as);
+    std::string nm(lt.var);
+    Type       *sig = nullptr;
+    if (lt.sig)
+    {
+      TyVarEnv tv;
+      sig = sig_to_type(lt.sig, tv, false);
+    }
     Type *vt;
-    if (occurs_free(lt.name, lt.val))
+    if (occurs_free(nm, lt.val))
     {
       // recursive: bind the name monomorphically while inferring the value
-      Type *nv     = fresh();
-      Env   rec    = locals;
-      rec[lt.name] = Scheme{ {}, nv };
-      vt           = infer(lt.val, rec, amb);
+      Type *nv  = fresh();
+      Env   rec = locals;
+      rec[nm]   = Scheme{ {}, nv };
+      vt        = infer(lt.val, rec, amb);
       unify(nv, vt);
       vt = nv;
     }
@@ -2501,41 +2384,40 @@ Checker::infer(
     {
       vt = infer(lt.val, locals, amb);
     }
-    if (lt.sig) unify(lt.sig, vt); // pin the value's type (pattern-let subject)
-    Scheme s       = generalize(locals, vt);
-    Env    inner   = locals;
-    inner[lt.name] = s;
+    if (sig) unify(sig, vt); // pin the value's type (pattern-let subject)
+    Scheme s     = generalize(locals, vt);
+    Env    inner = locals;
+    inner[nm]    = s;
     return infer(lt.body, inner, amb);
   }
 
-  case CKind::StructLit:
+  case EX::ExprTag::StructLit:
   {
-    CStructLit &sl = std::get<CStructLit>(e->as);
-    UT::Vu      at = sl.anchor.data() ? sl.anchor : m_anchor;
+    EX::ExStructLit &sl = std::get<EX::ExStructLit>(e->as);
+    UT::Vu           at = sl.type_name.data() ? sl.type_name : m_anchor;
+    std::string      tn(sl.type_name);
 
     // Bare `.{...}`: defer to a lit site, typed as a fresh var that later
     // unification (an annotation or an enclosing field) must bind to a struct.
-    if (sl.type_name.empty())
+    if (tn.empty())
     {
       LitSite s;
       s.is_struct = true;
       s.use       = fresh();
       s.anchor    = at;
-      s.exs       = sl.ex;
-      for (auto &init : sl.fields)
-        s.fields.push_back({ init.first, infer(init.second, locals, amb) });
+      s.exs       = &sl;
+      for (size_t i = 0; i < sl.fields.size(); ++i)
+        s.fields.push_back({ std::string(sl.fields[i].name),
+                             infer(sl.fields[i].val, locals, amb) });
       Type *use = s.use;
       m_lit_sites.push_back(std::move(s));
       return use;
     }
 
-    auto sit = m_structs.find(sl.type_name);
+    auto sit = m_structs.find(tn);
     if (sit == m_structs.end())
     {
-      fail(ER::Code::TYPE_UNBOUND,
-           at,
-           "unknown struct type '%s'",
-           sl.type_name.c_str());
+      fail(ER::Code::TYPE_UNBOUND, at, "unknown struct type '%s'", tn.c_str());
       return fresh();
     }
     const StructFields &decl = sit->second.fields;
@@ -2548,19 +2430,20 @@ Checker::infer(
     // Every declared field must be initialized exactly once; reject unknown and
     // duplicate fields. Each initializer is checked against its declared type.
     std::vector<bool> seen(decl.size(), false);
-    for (auto &init : sl.fields)
+    for (size_t i = 0; i < sl.fields.size(); ++i)
     {
-      size_t idx = decl.size();
+      std::string fn(sl.fields[i].name);
+      size_t      idx = decl.size();
       for (size_t k = 0; k < decl.size(); ++k)
-        if (decl[k].first == init.first) idx = k;
+        if (decl[k].first == fn) idx = k;
 
       if (idx == decl.size())
       {
         fail(ER::Code::TYPE_MISMATCH,
              at,
              "struct '%s' has no field '%s'",
-             sl.type_name.c_str(),
-             init.first.c_str());
+             tn.c_str(),
+             fn.c_str());
         continue;
       }
       if (seen[idx])
@@ -2568,12 +2451,12 @@ Checker::infer(
         fail(ER::Code::TYPE_MISMATCH,
              at,
              "field '%s' is set more than once in '%s'",
-             init.first.c_str(),
-             sl.type_name.c_str());
+             fn.c_str(),
+             tn.c_str());
         continue;
       }
       seen[idx] = true;
-      Type *vt  = infer(init.second, locals, amb);
+      Type *vt  = infer(sl.fields[i].val, locals, amb);
       unify(subst(decl[idx].second, sub), vt);
     }
     for (size_t k = 0; k < decl.size(); ++k)
@@ -2581,72 +2464,73 @@ Checker::infer(
         fail(ER::Code::TYPE_MISMATCH,
              at,
              "struct '%s' is missing field '%s'",
-             sl.type_name.c_str(),
+             tn.c_str(),
              decl[k].first.c_str());
 
-    return con(sl.type_name, args);
+    return con(tn, args);
   }
 
-  case CKind::SeqLit:
+  case EX::ExprTag::SeqLit:
   {
     // `[e1, .., en]`: all elements share one type; the container (List vs
     // Array) is deferred to a lit site, settled once `use` is bound by context.
-    CSeqLit &sq   = std::get<CSeqLit>(e->as);
-    UT::Vu   at   = sq.anchor.data() ? sq.anchor : m_anchor;
-    Type    *elem = fresh();
-    for (Core *el : sq.elems) unify(infer(el, locals, amb), elem);
+    EX::ExSeqLit &sq   = std::get<EX::ExSeqLit>(e->as);
+    UT::Vu        at   = sq.anchor.data() ? sq.anchor : m_anchor;
+    Type         *elem = fresh();
+    for (size_t i = 0; i < sq.elems.size(); ++i)
+      unify(infer(sq.elems[i], locals, amb), elem);
     LitSite s;
     s.is_seq  = true;
     s.use     = fresh();
     s.anchor  = at;
     s.elem    = elem;
-    s.exseq   = sq.ex;
+    s.exseq   = &sq;
     Type *use = s.use;
     m_lit_sites.push_back(std::move(s));
     return use;
   }
 
-  case CKind::VariantLit:
+  case EX::ExprTag::VariantLit:
   {
-    CVariantLit &vl = std::get<CVariantLit>(e->as);
-    UT::Vu       at = vl.anchor.data() ? vl.anchor : m_anchor;
+    EX::ExVariantLit &vl = std::get<EX::ExVariantLit>(e->as);
+    UT::Vu            at = vl.anchor.data() ? vl.anchor : m_anchor;
+    std::string       tn(vl.type_name);
+    std::string       vtag(vl.tag);
 
     // Bare `.Tag...`: defer to a lit site keyed by the tag; later unification
     // binds its `use` var to the union the tag belongs to.
-    if (vl.type_name.empty())
+    if (tn.empty())
     {
       LitSite s;
       s.is_struct = false;
       s.use       = fresh();
       s.anchor    = at;
-      s.vtag      = vl.vtag;
-      s.exv       = vl.ex;
-      for (auto &init : vl.fields)
-        s.fields.push_back({ init.first, infer(init.second, locals, amb) });
+      s.vtag      = vtag;
+      s.exv       = &vl;
+      for (size_t i = 0; i < vl.fields.size(); ++i)
+        s.fields.push_back({ std::string(vl.fields[i].name),
+                             infer(vl.fields[i].val, locals, amb) });
       Type *use = s.use;
       m_lit_sites.push_back(std::move(s));
       return use;
     }
 
-    auto uit = m_unions.find(vl.type_name);
+    auto uit = m_unions.find(tn);
     if (uit == m_unions.end())
     {
-      fail(ER::Code::TYPE_UNBOUND,
-           at,
-           "unknown union type '%s'",
-           vl.type_name.c_str());
+      fail(ER::Code::TYPE_UNBOUND, at, "unknown union type '%s'", tn.c_str());
       return fresh();
     }
     const StructFields *decl = nullptr;
     for (auto &v : uit->second.variants)
-      if (v.tag == vl.vtag) decl = &v.fields;
+      if (v.tag == vtag) decl = &v.fields;
     if (!decl)
     {
       fail(ER::Code::TYPE_MISMATCH,
            at,
            "union '%s' has no variant '%s'",
-           vl.type_name.c_str(),
-           vl.vtag.c_str());
+           tn.c_str(),
+           vtag.c_str());
       return fresh();
     }
 
@@ -2658,25 +2542,26 @@ Checker::infer(
     // Named when any value carries a field name (then all must be set exactly
     // once, any order); positional otherwise (one value per field, in order).
     bool named = false;
-    for (auto &init : vl.fields)
-      if (!init.first.empty()) named = true;
+    for (size_t i = 0; i < vl.fields.size(); ++i)
+      if (vl.fields[i].name.size()) named = true;
 
     if (named)
     {
       std::vector<bool> seen(decl->size(), false);
-      for (auto &init : vl.fields)
+      for (size_t i = 0; i < vl.fields.size(); ++i)
       {
-        size_t idx = decl->size();
+        std::string fn(vl.fields[i].name);
+        size_t      idx = decl->size();
         for (size_t k = 0; k < decl->size(); ++k)
-          if ((*decl)[k].first == init.first) idx = k;
+          if ((*decl)[k].first == fn) idx = k;
         if (idx == decl->size())
         {
           fail(ER::Code::TYPE_MISMATCH,
                at,
                "variant '%s.%s' has no field '%s'",
-               vl.type_name.c_str(),
-               vl.vtag.c_str(),
-               init.first.c_str());
+               tn.c_str(),
+               vtag.c_str(),
+               fn.c_str());
           continue;
         }
         if (seen[idx])
@@ -2684,21 +2569,22 @@ Checker::infer(
           fail(ER::Code::TYPE_MISMATCH,
                at,
                "field '%s' is set more than once in '%s.%s'",
-               init.first.c_str(),
-               vl.type_name.c_str(),
-               vl.vtag.c_str());
+               fn.c_str(),
+               tn.c_str(),
+               vtag.c_str());
           continue;
         }
         seen[idx] = true;
-        unify(subst((*decl)[idx].second, sub), infer(init.second, locals, amb));
+        unify(subst((*decl)[idx].second, sub),
+              infer(vl.fields[i].val, locals, amb));
       }
       for (size_t k = 0; k < decl->size(); ++k)
         if (!seen[k])
           fail(ER::Code::TYPE_MISMATCH,
                at,
                "variant '%s.%s' is missing field '%s'",
-               vl.type_name.c_str(),
-               vl.vtag.c_str(),
+               tn.c_str(),
+               vtag.c_str(),
                (*decl)[k].first.c_str());
     }
     else if (vl.fields.size() != decl->size())
@@ -2706,8 +2592,8 @@ Checker::infer(
       fail(ER::Code::TYPE_MISMATCH,
            at,
            "variant '%s.%s' takes %zu payload field(s), but %zu given",
-           vl.type_name.c_str(),
-           vl.vtag.c_str(),
+           tn.c_str(),
+           vtag.c_str(),
            decl->size(),
            vl.fields.size());
     }
@@ -2715,73 +2601,82 @@ Checker::infer(
     {
       for (size_t k = 0; k < decl->size(); ++k)
         unify(subst((*decl)[k].second, sub),
-              infer(vl.fields[k].second, locals, amb));
+              infer(vl.fields[k].val, locals, amb));
     }
 
-    return con(vl.type_name, args);
+    return con(tn, args);
   }
 
-  case CKind::Field:
+  case EX::ExprTag::Field:
   {
     // Defer: the receiver's type may not be concrete yet (e.g. it is the result
     // of an as-yet-unresolved overload). Type the access as a fresh var and
     // settle it in resolve_field_sites once the receiver is known.
-    CField &fld = std::get<CField>(e->as);
-    UT::Vu  at  = fld.anchor.data() ? fld.anchor : m_anchor;
-    Type   *rt  = infer(fld.record, locals, amb);
-    Type   *res = fresh();
-    m_field_sites.push_back({ rt, fld.field, at, res });
+    EX::ExField &fld = std::get<EX::ExField>(e->as);
+    UT::Vu       at  = fld.field.data() ? fld.field : m_anchor;
+    Type        *rt  = infer(fld.record, locals, amb);
+    Type        *res = fresh();
+    m_field_sites.push_back({ rt, std::string(fld.field), at, res });
     return res;
   }
 
-  case CKind::Case:
+  case EX::ExprTag::Case:
   {
-    CCase &cc = std::get<CCase>(e->as);
-    Type  *st = infer(cc.scrut, locals, amb); // the scrutinee
-    Type  *rt = fresh(); // every arm and the default share one type
-    for (CoreAlt &alt : cc.alts)
+    EX::ExCase &cc = std::get<EX::ExCase>(e->as);
+    Type       *st = infer(cc.scrut, locals, amb); // the scrutinee
+    Type       *rt = fresh(); // every arm and the default share one type
+    for (size_t ai = 0; ai < cc.alts.size(); ++ai)
     {
-      Env   inner = locals;
-      Core *body  = nullptr;
-      switch (alt.kind())
+      EX::CaseAlt &alt   = cc.alts[ai];
+      Env          inner = locals;
+      switch (alt.kind)
       {
-      case EX::AltKind::Int:
-        unify(st, con(OP::TY_INT));
-        body = std::get<AltInt>(alt.as).body;
-        break;
-      case EX::AltKind::Real:
-        unify(st, con(OP::TY_REAL));
-        body = std::get<AltReal>(alt.as).body;
-        break;
+      case EX::AltKind::Int : unify(st, con(OP::TY_INT)); break;
+      case EX::AltKind::Real: unify(st, con(OP::TY_REAL)); break;
       case EX::AltKind::Con:
       {
         // The scrutinee is the constructor's union type; instantiate the union
         // fresh and bind its payload from the matched variant's field types,
         // read through that same instantiation.
-        AltCon &ac  = std::get<AltCon>(alt.as);
-        auto    uit = m_unions.find(ac.type_name);
-        if (uit != m_unions.end() && ac.tag < uit->second.variants.size())
+        std::string tn(alt.type_name);
+        auto        uit = m_unions.find(tn);
+        if (uit != m_unions.end() && alt.tag < uit->second.variants.size())
         {
           std::vector<Type *> args;
           Subst               sub = fresh_subst(uit->second.params, args);
-          unify(st, con(ac.type_name, args));
-          const StructFields &decl = uit->second.variants[ac.tag].fields;
-          for (size_t i = 0; i < ac.binders.size() && i < decl.size(); ++i)
-            if (!ac.binders[i].empty())
-              inner[ac.binders[i]] = Scheme{ {}, subst(decl[i].second, sub) };
+          unify(st, con(tn, args));
+          const StructFields &decl = uit->second.variants[alt.tag].fields;
+          for (size_t i = 0; i < alt.binders.size() && i < decl.size(); ++i)
+            if (alt.binders[i].size())
+              inner[std::string(alt.binders[i])]
+                = Scheme{ {}, subst(decl[i].second, sub) };
         }
         else
-          unify(st, con(ac.type_name));
-        body = ac.body;
+          unify(st, con(tn));
         break;
       }
       }
-      unify(rt, infer(body, inner, amb));
+      unify(rt, infer(alt.body, inner, amb));
     }
     unify(rt, infer(cc.deflt, locals, amb)); // the default arm
     return rt;
   }
+
+  case EX::ExprTag::Match:
+  case EX::ExprTag::Def:
+  case EX::ExprTag::StructDecl:
+  case EX::ExprTag::UnionDecl:
+  case EX::ExprTag::AliasDecl:
+  case EX::ExprTag::EffectDecl:
+  case EX::ExprTag::ModDecl:
+  case EX::ExprTag::Import:
+  case EX::ExprTag::Vis:
+  case EX::ExprTag::Unknown:
+    UT_FAIL_MSG("infer: unexpected node %s (top-level-only, or removed by "
+                "MR/PatLower)",
+                EX::pprint(e->tag).c_str());
   }
+  UT_FAIL_MSG("%s", "infer: unhandled ExprTag");
   return fresh();
 }
 
@@ -2794,18 +2689,18 @@ Checker::infer(
 // inference unified against the expectation.
 Type *
 Checker::infer_against(
-  Core *e, Type *expected, Env &locals, Type *amb)
+  EX::Expr *e, Type *expected, Env &locals, Type *amb)
 {
   Type *exp = prune(expected);
-  if (e->kind() == CKind::Lam && exp->kind() == Kind::Arrow)
+  if (e->tag == EX::ExprTag::FnDef && exp->kind() == Kind::Arrow)
   {
     // The declared arrow's latent effect becomes the body's ambient, so a
     // signature like `{} -> <State> Int` lets the body perform State.
-    CLam   &l      = std::get<CLam>(e->as);
-    TArrow &a      = std::get<TArrow>(exp->as);
-    Env     inner  = locals;
-    inner[l.param] = Scheme{ {}, a.from }; // param pinned to its declared type
-    Type *bt       = infer_against(l.body, a.to, inner, a.eff);
+    EX::ExFnDef &l              = std::get<EX::ExFnDef>(e->as);
+    TArrow      &a              = std::get<TArrow>(exp->as);
+    Env          inner          = locals;
+    inner[std::string(l.param)] = Scheme{ {}, a.from }; // param pinned to decl
+    Type *bt                    = infer_against(l.body, a.to, inner, a.eff);
     return arrow(a.from, bt, a.eff);
   }
   Type *t = infer(e, locals, amb);
@@ -3639,7 +3534,7 @@ Checker::run(
     EX::ExDef  &d = std::get<EX::ExDef>(e->as);
     GlobalEntry g;
     g.def  = &d;
-    g.body = desugar(d.def);
+    g.body = d.def;
     m_globals.add(std::move(g));
   }
 

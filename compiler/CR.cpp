@@ -144,9 +144,9 @@ go(
 
   case EX::ExprTag::Var:
   {
-    return alloc(
-      arena,
-      Term{ Var{ UT::strdup(arena, std::get<EX::ExVar>(expr->as).name), 0 } });
+    auto  &v    = std::get<EX::ExVar>(expr->as);
+    UT::Vu name = v.resolved.data() ? v.resolved : v.name;
+    return alloc(arena, Term{ Var{ UT::strdup(arena, name), 0 } });
   }
 
   case EX::ExprTag::Int:

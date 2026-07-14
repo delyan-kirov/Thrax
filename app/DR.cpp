@@ -158,8 +158,8 @@ parse_units(
 
 // Link modules and type-check (which now lowers pattern sugar internally, after
 // its struct/union tables are built). On success `out` holds the flattened,
-// mangled program and entry point. Prints and returns false on the first failing
-// stage.
+// mangled program and entry point. Prints and returns false on the first
+// failing stage.
 bool
 compile_units(
   std::vector<MR::Unit> &units, AR::Arena &arena, MR::Result &out)

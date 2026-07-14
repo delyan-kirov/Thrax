@@ -254,6 +254,7 @@ struct ExVar
 {
   UT::Vu name;
   UT::Vu qualifier{}; // module prefix from `MOD.name`; empty when unqualified
+  UT::Vu resolved{};
 };
 struct ExStr
 {
