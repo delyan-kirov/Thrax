@@ -33,6 +33,24 @@ $ size_class : List Int -> Int = \xs =
 	           is [a, b] then 2
 	           else 9
 
+# An open list pattern `[a, ..rest]` binds leading cells and a `rest` tail
+# (the remaining list), so it matches AT LEAST that many elements -- `[a, ..t]`
+# is exactly `a :: t`, and `[a, b, ..t]` is `a :: b :: t`. `[..all]` binds the
+# whole list.
+$ second : List Int -> Int = \xs =
+	when xs is [_, x, ..rest] then x
+	         else 0-1
+
+$ drop2 : List Int -> List Int = \xs =
+	when xs is [_, _, ..rest] then rest
+	         else []
+
+$ ck_second : Int = if (second xs) ?= 2 then 0 else 1 / 0
+$ ck_second_short : Int = if (second [9]) ?= 0-1 then 0 else 1 / 0
+$ ck_drop2 : Int = if (sum (drop2 xs)) ?= 12 then 0 else 1 / 0
+$ ck_head_tail : Int = when xs is [h, ..t] then
+	if (h + sum t) ?= 15 then 0 else 1 / 0 else 1 / 0
+
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
 $ xs : List Int = [1, 2, 3, 4, 5]
 $ ys : List Int = 1 :: 2 :: 3 :: 4 :: 5 :: []

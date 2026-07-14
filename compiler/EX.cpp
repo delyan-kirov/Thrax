@@ -765,6 +765,20 @@ Parser::parse_pattern()
     Pattern *tail = EX_TRY(parse_pattern()); // right-associative
     return { true, mk_cons_pat(head, tail, t.str, t.line), {} };
   }
+  // `"lit" ++ rest`
+  if (LX::TokenTag::Op == t.tag && t.str == "++")
+  {
+    if (head->tag != PatTag::Str)
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             t,
+             "the left of '++' in a pattern must be a string literal");
+    m_lex.next();                            // '++'
+    Pattern *rest = EX_TRY(parse_pattern()); // right-associative remainder
+    auto    &ps   = std::get<PatStr>(head->as);
+    Pattern  pat{ PatTag::StrPrefix,
+                 PatStrPrefix{ ps.value, rest, ps.anchor, ps.line } };
+    return { true, alloc_pat(pat), {} };
+  }
   return { true, head, {} };
 }
 
@@ -850,17 +864,23 @@ Parser::parse_pattern_atom()
   }
 }
 
-// `[p1, .., pn]` / `[]` -- a list pattern. Desugars right-fold to nested
-// `List.Cons.{ pi, .. }` variant patterns ending in `List.Nil` (so it matches a
-// list of EXACTLY n elements). Refutable.
 RPattern
 Parser::parse_list_pattern()
 {
   LX::Token          lb = EX_TRY(m_lex.next()); // '['
   UT::Vec<Pattern *> elems{ m_arena };
+  Pattern           *tail = nullptr; // a `..rest` open tail, else null (closed)
   if (LX::TokenTag::RBrack != EX_TRY(m_lex.peek()).tag)
     for (;;)
     {
+      if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+          && LX::TokenTag::Dot == EX_TRY(m_lex.peek(1)).tag)
+      {
+        m_lex.next(); // first '.'
+        m_lex.next(); // second '.'
+        tail = EX_TRY(parse_pattern());
+        break;
+      }
       elems.push(EX_TRY(parse_pattern()));
       if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
       m_lex.next();                                                // ','
@@ -869,7 +889,7 @@ Parser::parse_list_pattern()
   EX_TRY(
     expect(LX::TokenTag::RBrack, "expected ']' to close the list pattern"));
 
-  Pattern *acc = mk_nil_pat(lb.str, lb.line);
+  Pattern *acc = tail ? tail : mk_nil_pat(lb.str, lb.line);
   for (size_t i = elems.size(); i-- > 0;)
     acc = mk_cons_pat(elems[i], acc, lb.str, lb.line);
   return { true, acc, {} };

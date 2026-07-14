@@ -172,6 +172,37 @@ struct Lowerer
     return mk_app(mk_app(fn, lhs), rhs);
   }
 
+  // A call to a named (possibly overloaded) builtin: `name arg0 arg1 ..`. TC
+  // resolves the overload from the argument types, just like for a source call.
+  Expr *
+  mk_call(
+    const char *name, std::initializer_list<Expr *> args)
+  {
+    Expr v{ ExprTag::Var };
+    v.as     = EX::ExVar{ UT::Vu{ name, std::strlen(name) } };
+    Expr *fn = alloc(v);
+    for (Expr *a : args) fn = mk_app(fn, a);
+    return fn;
+  }
+
+  // NOTE: doc/strings-and-arrays.md phase 5
+  Expr *
+  str_head(
+    Expr *subject, size_t plen)
+  {
+    return mk_call(OP::ARR_SLICE,
+                   { subject, mk_int(0), mk_int((ssize_t)plen) });
+  }
+
+  Expr *
+  str_tail(
+    Expr *subject, size_t plen)
+  {
+    return mk_call(
+      OP::ARR_SLICE,
+      { subject, mk_int((ssize_t)plen), mk_call(OP::ARR_LEN, { subject }) });
+  }
+
   Expr *
   mk_unit()
   {
@@ -325,6 +356,25 @@ struct Lowerer
             "'let' binding; use 'when' to match it");
       }
       return body;
+    case PatTag::StrPrefix:
+    {
+      auto &pp = std::get<EX::PatStrPrefix>(pat->as);
+      if (!refutable_ok)
+      {
+        err(ER::Code::UNSUPPORTED,
+            pp.anchor,
+            pp.line,
+            "a string-prefix pattern is refutable and cannot appear in a "
+            "lambda or 'let' binding; use 'when' to match it");
+        return body;
+      }
+      return bind_pattern(pp.rest,
+                          str_tail(subject, pp.prefix.size()),
+                          body,
+                          anchor,
+                          line,
+                          refutable_ok);
+    }
     case PatTag::Variant:
       // Refutable (it tests the constructor tag); only `if .. is` may use it,
       // where lower_match_variant handles it before bind_pattern is reached.
@@ -411,6 +461,14 @@ struct Lowerer
         OP::ISEQ, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
     case PatTag::Str:
       return str_eq(subject, std::get<EX::PatStr>(pat->as).value);
+    case PatTag::StrPrefix:
+    {
+      auto  &pp        = std::get<EX::PatStrPrefix>(pat->as);
+      size_t plen      = pp.prefix.size();
+      Expr  *head_test = str_eq(str_head(subject, plen), pp.prefix);
+      Expr  *rest_test = test_of(pp.rest, str_tail(subject, plen));
+      return and_test(head_test, rest_test);
+    }
     case PatTag::Struct:
     {
       auto                  &ps = std::get<EX::PatStruct>(pat->as);
@@ -456,7 +514,8 @@ struct Lowerer
     {
       Pattern *pat = m.arms[i].pat;
       if (pat->tag == PatTag::Struct) has_struct = true;
-      if (pat->tag == PatTag::Str) has_str = true;
+      if (pat->tag == PatTag::Str || pat->tag == PatTag::StrPrefix)
+        has_str = true;
       if (m.arms[i].guard) has_guard = true;
       if (pat->tag == PatTag::Variant)
       {
@@ -872,6 +931,16 @@ struct Lowerer
     case PatTag::Str:
       return mk_if(
         str_eq(subject, std::get<EX::PatStr>(pat->as).value), success, fall());
+    case PatTag::StrPrefix:
+    {
+      Expr  *test = test_of(pat, subject);
+      UT::Vu anc;
+      size_t line = 0;
+      pat_anchor(pat, anc, line);
+      Expr *bound
+        = bind_pattern(pat, subject, success, anc, line, /*refutable_ok=*/true);
+      return test ? mk_if(test, bound, fall()) : bound;
+    }
     case PatTag::Struct:
     {
       // Structs dispatch on field values, not a constructor tag: test the
@@ -1252,6 +1321,13 @@ struct Lowerer
     case PatTag::Str:
     {
       auto &p = std::get<EX::PatStr>(pat->as);
+      anchor  = p.anchor;
+      line    = p.line;
+      break;
+    }
+    case PatTag::StrPrefix:
+    {
+      auto &p = std::get<EX::PatStrPrefix>(pat->as);
       anchor  = p.anchor;
       line    = p.line;
       break;

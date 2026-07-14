@@ -153,6 +153,14 @@ struct PatStr // a string literal (refutable)
   UT::Vu anchor;
   size_t line;
 };
+// `"lit" ++ rest`
+struct PatStrPrefix
+{
+  UT::Vu   prefix;
+  Pattern *rest;
+  UT::Vu   anchor;
+  size_t   line;
+};
 // One entry in a struct pattern. `name` is the field name; it is empty for a
 // positional slot. `pat` is the sub-pattern matched against that field.
 struct FieldPat
@@ -191,6 +199,7 @@ struct PatVariant
   X(Int, PatInt)                                                               \
   X(Real, PatReal)                                                             \
   X(Str, PatStr)                                                               \
+  X(StrPrefix, PatStrPrefix)                                                   \
   X(Struct, PatStruct)                                                         \
   X(Variant, PatVariant)
 

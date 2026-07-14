@@ -271,6 +271,11 @@ pprint(
   case PatTag::Real: return std::to_string(std::get<PatReal>(p->as).value);
   case PatTag::Str:
     return "\"" + std::string(std::get<PatStr>(p->as).value) + "\"";
+  case PatTag::StrPrefix:
+  {
+    auto &pp = std::get<PatStrPrefix>(p->as);
+    return "\"" + std::string(pp.prefix) + "\" ++ " + pprint(pp.rest);
+  }
   case PatTag::Struct:
   {
     auto       &ps = std::get<PatStruct>(p->as);
