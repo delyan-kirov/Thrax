@@ -193,6 +193,15 @@ struct PatVariant
   size_t            line;
 };
 
+struct PatSeq
+{
+  UT::Vec<Pattern *> elems;
+  Pattern           *rest = nullptr;
+  UT::Vu             anchor;
+  size_t             line     = 0;
+  bool               is_array = false; // patched by TC; false => List
+};
+
 #define EX_PAT_VARIANTS                                                        \
   X(Wild, PatWild)                                                             \
   X(Var, PatVar)                                                               \
@@ -201,7 +210,8 @@ struct PatVariant
   X(Str, PatStr)                                                               \
   X(StrPrefix, PatStrPrefix)                                                   \
   X(Struct, PatStruct)                                                         \
-  X(Variant, PatVariant)
+  X(Variant, PatVariant)                                                       \
+  X(Seq, PatSeq)
 
 enum class PatTag
 {

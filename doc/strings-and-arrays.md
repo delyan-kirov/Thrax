@@ -158,28 +158,19 @@ list), so it matches *at least* n elements; it is pure parser sugar
 Both engines reuse the existing `List.Cons` nested-pattern machinery.
 `examples/LISTS.thx`.
 
-## Pattern matching arrays  *(TODO blocked pre-TC)*
+## Pattern matching arrays  *(DONE)*
 
-`[..]` *patterns* stay `List` for now (the parser still lowers them straight to
-Cons/Nil). Making them type-directed like the literals is **not** symmetric: LL
-lowers every pattern into `case`/if-chains *before* TC, so at lowering time the
-scrutinee's `List`-vs-`Array` type is unknown.
-
-**The real fix is a pipeline reorder, tracked as its own goal:
-`doc/pattern-lowering-after-tc.md` ("be like Haskell" typecheck patterns
-first, then compile them to `Case`-trees with types in hand).** Once LL runs
-post-TC, array patterns fall out for free and the `ExSeqLit` deferral can go
-away. Options short of that:
-
-- Move only seq-pattern lowering after TC (defer the pattern through inference).
-- Meanwhile, array destructuring already works via the built-ins + guards:
-  `when arr is a if (array_len a) ?= 2 then <array_get a 0 ..>`.
-
-When built, array patterns lower to a length test (`array_len scrut ?= k`, or
-`>= k` with a `..rest`), element binds via `array_get scrut i`, and
-`rest = array_slice scrut k (array_len scrut)`, nesting through the same
-`match_pat` fallthrough as list patterns
-(`[[list-literals-and-nested-patterns]]`).
+`[..]` patterns are type-directed, symmetric with the 6a literals. The parser
+emits an `EX::PatSeq` (it no longer folds to `Cons/Nil`); TC types it via a
+seq-pattern lit-site (mirroring `ExSeqLit`, settled in `resolve_lit_sites`,
+writing `PatSeq::is_array`); and `PatLower` -- which now runs *after* inference
+(the `doc/pattern-lowering-after-tc.md` reorder landed) -- lowers a List seq to
+the cons/nil variant match (rewritten up front so routing/IR match a hand-written
+`List.Cons`/`Nil` match) and an Array seq to a length test (`array_len s ?=@Int
+k`, or `>=@Int k` with a `..rest`), element binds via `array_get s i`, and
+`rest = array_slice s k (array_len s)`, threaded through the same `match_pat`
+fallthrough as list patterns (`[[list-literals-and-nested-patterns]]`). `::`
+stays List-only.
 
 ## Phasing (each phase ends green on both engines)
 
@@ -200,13 +191,15 @@ When built, array patterns lower to a length test (`array_len scrut ?= k`, or
    sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.thx`.
 6a. **DONE Type-directed `[..]` sequence literals** (List vs Array inferred,
     no `@`). `examples/SEQ_INFER.thx`.
-6b. **TODO Array `[..]` patterns** blocked on pre-TC pattern lowering; needs the
-    pipeline reorder in `doc/pattern-lowering-after-tc.md` (lower patterns after
-    TC), after which it is symmetric with 6a.
+6b. **DONE Array `[..]` patterns** (symmetric with 6a). The pipeline reorder in
+    `doc/pattern-lowering-after-tc.md` landed (patterns typed in TC, lowered
+    after), so a new `EX::PatSeq` is typed via a seq-pattern lit-site and
+    `PatLower` dispatches List (cons/nil) vs Array (length test + `array_get`/
+    `array_slice`). `::` stays List-only. `examples/ARRAY_PATTERNS.thx`.
 
-Phases 1-4 + 6a (DONE) deliver the core "Rust `String`" experience (grow,
-concat, compare, switch) and inferred sequence literals; 5 and 6b are the
-richer pattern surface.
+Phases 1-6 all DONE: the core "Rust `String`" experience (grow, concat, compare,
+switch), inferred sequence literals, and the full type-directed pattern surface
+(strings, lists, arrays).
 
 ## Follow-ups
 

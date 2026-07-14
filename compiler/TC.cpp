@@ -155,7 +155,7 @@ struct PatLower
   str_eq(
     Expr *subject, UT::Vu lit)
   {
-    return mk_binop(OP::ISEQ, subject, mk_str(lit));
+    return mk_iseq(OP::TY_STR, subject, mk_str(lit));
   }
 
   Expr *
@@ -204,6 +204,63 @@ struct PatLower
     v.as     = EX::ExVar{ UT::Vu{ op, std::strlen(op) } };
     Expr *fn = alloc(v);
     return mk_app(mk_app(fn, lhs), rhs);
+  }
+
+  Expr *
+  mk_iseq(
+    const char *ty, Expr *lhs, Expr *rhs)
+  {
+    return mk_cmp(OP::ISEQ, ty, lhs, rhs);
+  }
+
+  Expr *
+  mk_cmp(
+    const char *op, const char *ty, Expr *lhs, Expr *rhs)
+  {
+    Expr v{ ExprTag::Var };
+    v.as     = EX::ExVar{ ustr(OP::mono(op, ty)) };
+    Expr *fn = alloc(v);
+    return mk_app(mk_app(fn, lhs), rhs);
+  }
+
+  Pattern *
+  alloc_pat(
+    Pattern p)
+  {
+    Pattern *q = (Pattern *)arena.alloc<Pattern>(1);
+    *q         = p;
+    return q;
+  }
+
+  Pattern *
+  mk_cons_pat(
+    Pattern *h, Pattern *t, UT::Vu a, size_t ln)
+  {
+    UT::Vec<EX::FieldPat> fields{ arena };
+    fields.push(EX::FieldPat{ UT::Vu{}, h });
+    fields.push(EX::FieldPat{ UT::Vu{}, t });
+    return alloc_pat(Pattern{
+      PatTag::Variant,
+      EX::PatVariant{ UT::Vu{ "List", 4 }, UT::Vu{ "Cons", 4 }, fields, a, ln } });
+  }
+  Pattern *
+  mk_nil_pat(
+    UT::Vu a, size_t ln)
+  {
+    UT::Vec<EX::FieldPat> fields{ arena };
+    return alloc_pat(Pattern{
+      PatTag::Variant,
+      EX::PatVariant{ UT::Vu{ "List", 4 }, UT::Vu{ "Nil", 3 }, fields, a, ln } });
+  }
+
+  Pattern *
+  seq_as_list(
+    EX::PatSeq &pq)
+  {
+    Pattern *acc = pq.rest ? pq.rest : mk_nil_pat(pq.anchor, pq.line);
+    for (size_t i = pq.elems.size(); i-- > 0;)
+      acc = mk_cons_pat(pq.elems[i], acc, pq.anchor, pq.line);
+    return acc;
   }
 
   // A call to a named (possibly overloaded) builtin: `name arg0 arg1 ..`. TC
@@ -417,6 +474,18 @@ struct PatLower
       return body;
     case PatTag::Struct:
       return bind_struct(pat, subject, body, anchor, line, refutable_ok);
+    case PatTag::Seq:
+      // Refutable (length / nil test); only `when` may use it.
+      if (!refutable_ok)
+      {
+        auto &pq = std::get<EX::PatSeq>(pat->as);
+        err(ER::Code::UNSUPPORTED,
+            pq.anchor,
+            pq.line,
+            "a sequence pattern is refutable and cannot appear in a lambda or "
+            "'let' binding; use 'when' to match it");
+      }
+      return body;
     }
     UT_FAIL_MSG("%s", "bind_pattern: unhandled PatTag");
     return body;
@@ -481,11 +550,11 @@ struct PatLower
     case PatTag::Wild:
     case PatTag::Var : return nullptr;
     case PatTag::Int:
-      return mk_binop(
-        OP::ISEQ, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
+      return mk_iseq(
+        OP::TY_INT, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
     case PatTag::Real:
-      return mk_binop(
-        OP::ISEQ, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
+      return mk_iseq(
+        OP::TY_REAL, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
     case PatTag::Str:
       return str_eq(subject, std::get<EX::PatStr>(pat->as).value);
     case PatTag::StrPrefix:
@@ -514,9 +583,10 @@ struct PatLower
       return acc;
     }
     case PatTag::Variant:
-      // Variant matches lower to a `case` over the constructor tag, not a
-      // boolean test, so lower_match routes them to lower_match_variant before
-      // test_of is ever called. Defensive only.
+      return nullptr;
+    case PatTag::Seq:
+      // Seq patterns always route through match_seq (the guarded path). Never a
+      // plain boolean test. Defensive only.
       return nullptr;
     }
     UT_FAIL_MSG("%s", "test_of: unhandled PatTag");
@@ -535,14 +605,22 @@ struct PatLower
     Expr *scrut = lower(m.scrut);
     Expr *alt   = lower(m.alt);
 
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      Pattern *pat = m.arms[i].pat;
+      if (pat->tag == PatTag::Seq && !std::get<EX::PatSeq>(pat->as).is_array)
+        m.arms[i].pat = seq_as_list(std::get<EX::PatSeq>(pat->as));
+    }
+
     bool has_struct = false, has_variant = false, has_guard = false,
-         has_nested = false, has_str = false;
+         has_nested = false, has_str = false, has_seq = false;
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
       Pattern *pat = m.arms[i].pat;
       if (pat->tag == PatTag::Struct) has_struct = true;
       if (pat->tag == PatTag::Str || pat->tag == PatTag::StrPrefix)
         has_str = true;
+      if (pat->tag == PatTag::Seq) has_seq = true;
       if (m.arms[i].guard) has_guard = true;
       if (pat->tag == PatTag::Variant)
       {
@@ -557,9 +635,7 @@ struct PatLower
       }
     }
 
-    // Guards, nested payload patterns, and string tests all need the shared
-    // fallthrough thunk, so they route through the backtracking lowering.
-    if (has_guard || has_nested || has_str)
+    if (has_guard || has_nested || has_str || has_seq)
       return lower_match_guarded(m, scrut, alt);
 
     if (has_variant) return lower_match_variant(m, scrut, alt);
@@ -923,15 +999,15 @@ struct PatLower
       return mk_let(
         std::get<EX::PatVar>(pat->as).name, subject, success, nullptr);
     case PatTag::Int:
-      return mk_if(mk_binop(OP::ISEQ,
-                            subject,
-                            mk_int(std::get<EX::PatInt>(pat->as).value)),
+      return mk_if(mk_iseq(OP::TY_INT,
+                           subject,
+                           mk_int(std::get<EX::PatInt>(pat->as).value)),
                    success,
                    fall());
     case PatTag::Real:
-      return mk_if(mk_binop(OP::ISEQ,
-                            subject,
-                            mk_real(std::get<EX::PatReal>(pat->as).value)),
+      return mk_if(mk_iseq(OP::TY_REAL,
+                           subject,
+                           mk_real(std::get<EX::PatReal>(pat->as).value)),
                    success,
                    fall());
     case PatTag::Str:
@@ -969,9 +1045,47 @@ struct PatLower
                            munion,
                            sig,
                            top);
+    case PatTag::Seq: return match_seq(pat, subject, success, fall, sig, top);
     }
     UT_FAIL_MSG("%s", "match_pat: unhandled PatTag");
     return fall();
+  }
+
+  Expr *
+  match_seq(
+    Pattern           *pat,
+    Expr              *subject,
+    Expr              *success,
+    const Fall        &fall,
+    EX::Ty           **sig,
+    bool               top)
+  {
+    auto &pq = std::get<EX::PatSeq>(pat->as);
+    if (!pq.is_array)
+      return match_pat(
+        seq_as_list(pq), subject, success, fall, /*munion=*/"", sig, top);
+
+    if (top && !*sig) *sig = mk_con(UT::Vu{ "Array", 5 });
+    size_t k       = pq.elems.size();
+    Expr  *lenval  = mk_call(OP::ARR_LEN, { subject });
+    Expr  *lentest = pq.rest
+                       ? mk_cmp(OP::GEQ, OP::TY_INT, lenval, mk_int((ssize_t)k))
+                       : mk_iseq(OP::TY_INT, lenval, mk_int((ssize_t)k));
+
+    Expr *inner = success;
+    if (pq.rest)
+    {
+      Expr *slice = mk_call(
+        OP::ARR_SLICE,
+        { subject, mk_int((ssize_t)k), mk_call(OP::ARR_LEN, { subject }) });
+      inner = match_pat(pq.rest, slice, inner, fall, "", sig, /*top=*/false);
+    }
+    for (size_t i = k; i-- > 0;)
+    {
+      Expr *geti = mk_call(OP::ARR_GET, { subject, mk_int((ssize_t)i) });
+      inner = match_pat(pq.elems[i], geti, inner, fall, "", sig, /*top=*/false);
+    }
+    return mk_if(lentest, inner, fall());
   }
 
   // Match variant pattern `pv` against `subject`: a `case` over the constructor
@@ -1329,6 +1443,13 @@ struct PatLower
       line    = p.line;
       return;
     }
+    case PatTag::Seq:
+    {
+      auto &p = std::get<EX::PatSeq>(pat->as);
+      anchor  = p.anchor;
+      line    = p.line;
+      return;
+    }
     case PatTag::Wild:
     case PatTag::Var : return;
     }
@@ -1438,9 +1559,10 @@ private:
     std::vector<std::pair<std::string, Type *>> fields; // (name, value type)
     std::string                                 vtag;   // variant only
     Type             *elem  = nullptr;                  // seq: elem type
-    EX::ExStructLit  *exs   = nullptr;                  // write-back
-    EX::ExVariantLit *exv   = nullptr;                  // write-back
-    EX::ExSeqLit     *exseq = nullptr;                  // write-back
+    EX::ExStructLit  *exs     = nullptr;                // write-back
+    EX::ExVariantLit *exv     = nullptr;                // write-back
+    EX::ExSeqLit     *exseq   = nullptr;                // write-back (literal)
+    EX::PatSeq       *exseqpat = nullptr;               // write-back (pattern)
   };
   std::vector<LitSite> m_lit_sites;
 
@@ -1492,10 +1614,13 @@ private:
   Scheme scheme_of_sig(EX::Ty *sig);
 
   // inference
-  bool  occurs_free(const std::string &name, EX::Expr *e);
-  Type *infer(EX::Expr *e, Env &locals, Type *amb);
-  Type *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
-  Type *infer_against(EX::Expr *e, Type *expected, Env &locals, Type *amb);
+  bool occurs_free(const std::string &name, EX::Expr *e);
+  void        type_pattern(EX::Pattern *p, Type *scrut, Env &env,
+                           const std::string &munion);
+  std::string resolve_match_union(Type *scrut, EX::ExMatch &m);
+  Type       *infer(EX::Expr *e, Env &locals, Type *amb);
+  Type       *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
+  Type       *infer_against(EX::Expr *e, Type *expected, Env &locals, Type *amb);
 
   // resolution
   Scheme resolve(const std::string &name);
@@ -2080,12 +2205,74 @@ Checker::scheme_of_sig(
 }
 
 /*------------------------------------------------------------------------------
+ *\PATTERN HELPERS
+ *-----------------------------------------------------------------------------*/
+
+namespace
+{
+void
+match_fieldpats(
+  const UT::Vec<EX::FieldPat> &pats,
+  const StructFields          &decl,
+  std::vector<EX::Pattern *>  &subs)
+{
+  subs.assign(decl.size(), nullptr);
+  bool named = false;
+  for (size_t i = 0; i < pats.size(); ++i)
+    if (pats[i].name.size()) named = true;
+  if (named)
+  {
+    for (size_t i = 0; i < pats.size(); ++i)
+    {
+      std::string fn(pats[i].name);
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (decl[k].first == fn) subs[k] = pats[i].pat;
+    }
+  }
+  else
+    for (size_t i = 0; i < pats.size() && i < decl.size(); ++i)
+      subs[i] = pats[i].pat;
+}
+
+bool
+pat_shadows(
+  EX::Pattern *p, const std::string &name)
+{
+  switch (p->tag)
+  {
+  case EX::PatTag::Wild:
+  case EX::PatTag::Int:
+  case EX::PatTag::Real:
+  case EX::PatTag::Str : return false;
+  case EX::PatTag::Var:
+    return std::string(std::get<EX::PatVar>(p->as).name) == name;
+  case EX::PatTag::StrPrefix:
+    return pat_shadows(std::get<EX::PatStrPrefix>(p->as).rest, name);
+  case EX::PatTag::Struct:
+    for (EX::FieldPat &f : std::get<EX::PatStruct>(p->as).fields)
+      if (pat_shadows(f.pat, name)) return true;
+    return false;
+  case EX::PatTag::Variant:
+    for (EX::FieldPat &f : std::get<EX::PatVariant>(p->as).fields)
+      if (pat_shadows(f.pat, name)) return true;
+    return false;
+  case EX::PatTag::Seq:
+  {
+    auto &pq = std::get<EX::PatSeq>(p->as);
+    for (size_t i = 0; i < pq.elems.size(); ++i)
+      if (pat_shadows(pq.elems[i], name)) return true;
+    return pq.rest && pat_shadows(pq.rest, name);
+  }
+  }
+  UT_FAIL_MSG("%s", "pat_shadows: unhandled PatTag");
+  return false;
+}
+} // namespace
+
+/*------------------------------------------------------------------------------
  *\FREE-VARIABLE CHECK
  *-----------------------------------------------------------------------------*/
 
-// Does `name` occur free in `e`? Used only to detect a recursive `let` (whether
-// the value references its own binder). Runs on the post-PatLower EX tree, so
-// no Match/pattern nodes appear.
 bool
 Checker::occurs_free(
   const std::string &name, EX::Expr *e)
@@ -2104,7 +2291,9 @@ Checker::occurs_free(
   case EX::ExprTag::FnDef:
   {
     EX::ExFnDef &l = std::get<EX::ExFnDef>(e->as);
-    if (std::string(l.param) == name) return false; // shadowed
+    if (l.param_pat ? pat_shadows(l.param_pat, name)
+                    : std::string(l.param) == name)
+      return false; // shadowed
     return occurs_free(name, l.body);
   }
   case EX::ExprTag::App:
@@ -2120,8 +2309,11 @@ Checker::occurs_free(
   }
   case EX::ExprTag::Let:
   {
-    // name shadowed in the body; still visible in the (recursive) value
     EX::ExLet &l = std::get<EX::ExLet>(e->as);
+    if (l.pat) // pattern binders are in scope only in the body
+      return occurs_free(name, l.val)
+             || (!pat_shadows(l.pat, name) && occurs_free(name, l.body));
+    // name shadowed in the body; still visible in the (recursive) value
     if (std::string(l.var) == name) return occurs_free(name, l.val);
     return occurs_free(name, l.val) || occurs_free(name, l.body);
   }
@@ -2167,6 +2359,17 @@ Checker::occurs_free(
     return false;
   }
   case EX::ExprTag::Match:
+  {
+    EX::ExMatch &m = std::get<EX::ExMatch>(e->as);
+    if (occurs_free(name, m.scrut)) return true;
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      if (pat_shadows(m.arms[i].pat, name)) continue; // bound by this arm
+      if (m.arms[i].guard && occurs_free(name, m.arms[i].guard)) return true;
+      if (occurs_free(name, m.arms[i].body)) return true;
+    }
+    return occurs_free(name, m.alt);
+  }
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
@@ -2180,6 +2383,149 @@ Checker::occurs_free(
   }
   UT_FAIL_MSG("%s", "occurs_free: unhandled ExprTag");
   return false;
+}
+
+/*------------------------------------------------------------------------------
+ *\PATTERN TYPING
+ *-----------------------------------------------------------------------------*/
+
+std::string
+Checker::resolve_match_union(
+  Type *scrut, EX::ExMatch &m)
+{
+  Type *s = prune(scrut);
+  if (s->kind() == Kind::Con) return std::get<TCon>(s->as).name;
+
+  std::vector<std::string> tags;
+  for (size_t i = 0; i < m.arms.size(); ++i)
+  {
+    if (m.arms[i].pat->tag != EX::PatTag::Variant) continue;
+    auto &pv = std::get<EX::PatVariant>(m.arms[i].pat->as);
+    if (pv.type_name.size()) return std::string(pv.type_name);
+    tags.push_back(std::string(pv.tag));
+  }
+  std::string found;
+  for (auto &kv : m_unions)
+  {
+    bool all = true;
+    for (const std::string &t : tags)
+    {
+      bool has = false;
+      for (const VariantShape &v : kv.second.variants)
+        if (v.tag == t) has = true;
+      if (!has)
+      {
+        all = false;
+        break;
+      }
+    }
+    if (all)
+    {
+      if (!found.empty()) return ""; // ambiguous
+      found = kv.first;
+    }
+  }
+  return found;
+}
+
+void
+Checker::type_pattern(
+  EX::Pattern *p, Type *scrut, Env &env, const std::string &munion)
+{
+  switch (p->tag)
+  {
+  case EX::PatTag::Wild: return;
+  case EX::PatTag::Var:
+    env[std::string(std::get<EX::PatVar>(p->as).name)] = Scheme{ {}, scrut };
+    return;
+  case EX::PatTag::Int : unify(scrut, con(OP::TY_INT)); return;
+  case EX::PatTag::Real: unify(scrut, con(OP::TY_REAL)); return;
+  case EX::PatTag::Str : unify(scrut, con(OP::TY_STR)); return;
+  case EX::PatTag::StrPrefix:
+    unify(scrut, con(OP::TY_STR));
+    type_pattern(
+      std::get<EX::PatStrPrefix>(p->as).rest, con(OP::TY_STR), env, "");
+    return;
+  case EX::PatTag::Struct:
+  {
+    auto       &ps = std::get<EX::PatStruct>(p->as);
+    std::string tn(ps.type_name);
+    auto        sit = m_structs.find(tn);
+    if (sit == m_structs.end())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           ps.anchor,
+           "unknown struct type '%s' in pattern",
+           tn.c_str());
+      return;
+    }
+    std::vector<Type *> args;
+    Subst               sub = fresh_subst(sit->second.params, args);
+    unify(scrut, con(tn, args));
+    std::vector<EX::Pattern *> subs;
+    match_fieldpats(ps.fields, sit->second.fields, subs);
+    for (size_t k = 0; k < subs.size(); ++k)
+      if (subs[k])
+        type_pattern(subs[k], subst(sit->second.fields[k].second, sub), env, "");
+    return;
+  }
+  case EX::PatTag::Variant:
+  {
+    auto       &pv = std::get<EX::PatVariant>(p->as);
+    std::string uname
+      = pv.type_name.size() ? std::string(pv.type_name) : munion;
+    auto uit = m_unions.find(uname);
+    if (uit == m_unions.end())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           pv.anchor,
+           "unknown union type '%s' in pattern",
+           uname.empty() ? "?" : uname.c_str());
+      return;
+    }
+    std::string         vtag(pv.tag);
+    const VariantShape *vs = nullptr;
+    for (const VariantShape &v : uit->second.variants)
+      if (v.tag == vtag) vs = &v;
+    if (!vs)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           pv.anchor,
+           "union '%s' has no variant '%s'",
+           uname.c_str(),
+           vtag.c_str());
+      return;
+    }
+    std::vector<Type *> args;
+    Subst               sub = fresh_subst(uit->second.params, args);
+    unify(scrut, con(uname, args));
+    std::vector<EX::Pattern *> subs;
+    match_fieldpats(pv.fields, vs->fields, subs);
+    for (size_t k = 0; k < subs.size(); ++k)
+      if (subs[k]) type_pattern(subs[k], subst(vs->fields[k].second, sub), env, "");
+    return;
+  }
+  case EX::PatTag::Seq:
+  {
+    // `[..]`: defer the List-vs-Array choice to a seq site (mirrors ExSeqLit),
+    // settled in resolve_lit_sites, which writes `is_array`. Elements share one
+    // element type; the `..rest` tail has the whole sequence type.
+    auto &pq   = std::get<EX::PatSeq>(p->as);
+    Type *elem = fresh();
+    for (size_t i = 0; i < pq.elems.size(); ++i)
+      type_pattern(pq.elems[i], elem, env, "");
+    if (pq.rest) type_pattern(pq.rest, scrut, env, "");
+    LitSite s;
+    s.is_seq    = true;
+    s.use       = scrut;
+    s.anchor    = pq.anchor;
+    s.elem      = elem;
+    s.exseqpat  = &pq;
+    m_lit_sites.push_back(std::move(s));
+    return;
+  }
+  }
+  UT_FAIL_MSG("%s", "type_pattern: unhandled PatTag");
 }
 
 /*------------------------------------------------------------------------------
@@ -2325,12 +2671,15 @@ Checker::infer(
     // Constructing a closure performs no effect (the lambda itself is pure
     // under `amb`); its body runs under a fresh ambient that becomes the
     // arrow's latent effect.
-    EX::ExFnDef &l              = std::get<EX::ExFnDef>(e->as);
-    Type        *pv             = fresh();
-    Type        *e_body         = fresh();
-    Env          inner          = locals;
-    inner[std::string(l.param)] = Scheme{ {}, pv }; // params are monomorphic
-    Type *bt                    = infer(l.body, inner, e_body);
+    EX::ExFnDef &l      = std::get<EX::ExFnDef>(e->as);
+    Type        *pv     = fresh();
+    Type        *e_body = fresh();
+    Env          inner  = locals;
+    if (l.param_pat)
+      type_pattern(l.param_pat, pv, inner, "");
+    else
+      inner[std::string(l.param)] = Scheme{ {}, pv }; // params are monomorphic
+    Type *bt = infer(l.body, inner, e_body);
     return arrow(pv, bt, e_body);
   }
 
@@ -2361,15 +2710,23 @@ Checker::infer(
 
   case EX::ExprTag::Let:
   {
-    EX::ExLet  &lt = std::get<EX::ExLet>(e->as);
-    std::string nm(lt.var);
-    Type       *sig = nullptr;
+    EX::ExLet &lt  = std::get<EX::ExLet>(e->as);
+    Type      *sig = nullptr;
     if (lt.sig)
     {
       TyVarEnv tv;
       sig = sig_to_type(lt.sig, tv, false);
     }
-    Type *vt;
+    if (lt.pat)
+    {
+      Type *vt = infer(lt.val, locals, amb);
+      if (sig) unify(sig, vt);
+      Env inner = locals;
+      type_pattern(lt.pat, vt, inner, "");
+      return infer(lt.body, inner, amb);
+    }
+    std::string nm(lt.var);
+    Type       *vt;
     if (occurs_free(nm, lt.val))
     {
       // recursive: bind the name monomorphically while inferring the value
@@ -2663,6 +3020,23 @@ Checker::infer(
   }
 
   case EX::ExprTag::Match:
+  {
+    EX::ExMatch &m  = std::get<EX::ExMatch>(e->as);
+    Type        *st = infer(m.scrut, locals, amb);
+    std::string  mu = resolve_match_union(st, m);
+    Type        *rt = fresh();
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      Env inner = locals;
+      type_pattern(m.arms[i].pat, st, inner, mu);
+      if (m.arms[i].guard)
+        unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_INT));
+      unify(rt, infer(m.arms[i].body, inner, amb));
+    }
+    unify(rt, infer(m.alt, locals, amb));
+    return rt;
+  }
+
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
   case EX::ExprTag::UnionDecl:
@@ -2680,13 +3054,6 @@ Checker::infer(
   return fresh();
 }
 
-// Infer a body in "checking mode" against an expected type. When the term is a
-// lambda and the expectation an arrow, the parameter is bound to the arrow's
-// domain *before* the body is inferred -- so a type-directed operation on a
-// parameter (notably field access, which needs the receiver's struct type known
-// at that point) sees its declared type, which a plain synthesize-then-unify
-// pass would only learn afterwards. Any other shape falls back to ordinary
-// inference unified against the expectation.
 Type *
 Checker::infer_against(
   EX::Expr *e, Type *expected, Env &locals, Type *amb)
@@ -2694,13 +3061,14 @@ Checker::infer_against(
   Type *exp = prune(expected);
   if (e->tag == EX::ExprTag::FnDef && exp->kind() == Kind::Arrow)
   {
-    // The declared arrow's latent effect becomes the body's ambient, so a
-    // signature like `{} -> <State> Int` lets the body perform State.
-    EX::ExFnDef &l              = std::get<EX::ExFnDef>(e->as);
-    TArrow      &a              = std::get<TArrow>(exp->as);
-    Env          inner          = locals;
-    inner[std::string(l.param)] = Scheme{ {}, a.from }; // param pinned to decl
-    Type *bt                    = infer_against(l.body, a.to, inner, a.eff);
+    EX::ExFnDef &l     = std::get<EX::ExFnDef>(e->as);
+    TArrow      &a     = std::get<TArrow>(exp->as);
+    Env          inner = locals;
+    if (l.param_pat)
+      type_pattern(l.param_pat, a.from, inner, "");
+    else
+      inner[std::string(l.param)] = Scheme{ {}, a.from }; // param pinned to decl
+    Type *bt = infer_against(l.body, a.to, inner, a.eff);
     return arrow(a.from, bt, a.eff);
   }
   Type *t = infer(e, locals, amb);
@@ -3144,6 +3512,7 @@ Checker::resolve_lit_sites(
       {
         unify(s.use, con("List", { s.elem }));
         if (s.exseq) s.exseq->is_array = false;
+        if (s.exseqpat) s.exseqpat->is_array = false;
         continue;
       }
       if (u->kind() == Kind::Con)
@@ -3153,18 +3522,20 @@ Checker::resolve_lit_sites(
         {
           unify(s.elem, con(OP::TY_INT)); // Array holds bytes (Int 0..255)
           if (s.exseq) s.exseq->is_array = true;
+          if (s.exseqpat) s.exseqpat->is_array = true;
           continue;
         }
         if (uc.name == "List")
         {
           if (!uc.args.empty()) unify(uc.args[0], s.elem);
           if (s.exseq) s.exseq->is_array = false;
+          if (s.exseqpat) s.exseqpat->is_array = false;
           continue;
         }
       }
       fail(ER::Code::TYPE_MISMATCH,
            s.anchor,
-           "a sequence literal '[..]' must be a List or an Array, not '%s'",
+           "a sequence '[..]' must be a List or an Array, not '%s'",
            show(u).c_str());
       continue;
     }
@@ -3515,18 +3886,6 @@ Checker::run(
     }
   }
 
-  // Lower pattern sugar to the primitive core now that the struct/union tables
-  // are built (PatLower reads their field names / variant tags). On any error,
-  // stop: an un-lowered pattern would otherwise reach desugar.
-  {
-    Diagnostics pd = PatLower{ m_arena, m_structs, m_unions }.run(exprs);
-    if (!pd.empty())
-    {
-      for (ER::Diagnostic &d : pd) m_diags.push_back(d);
-      return;
-    }
-  }
-
   for (size_t i = 0; i < exprs.size(); ++i)
   {
     EX::Expr *e = &exprs[i];
@@ -3577,6 +3936,9 @@ Checker::run(
     // Bare literals last: their type comes from the unification just done.
     resolve_lit_sites(lbase);
   }
+
+  Diagnostics pd = PatLower{ m_arena, m_structs, m_unions }.run(exprs);
+  for (ER::Diagnostic &d : pd) m_diags.push_back(d);
 }
 
 /*------------------------------------------------------------------------------
@@ -3681,34 +4043,13 @@ Checker::fail(
 void
 Checker::seed_primitives()
 {
-  // Operators are overloaded and resolved per use (see infer_op / overload_db),
-  // so they are not primitives. Only `if`, which is parametric, lives here.
-  //
-  // if : forall T e1 e2 e3. Int ->e1 T ->e2 T ->e3 T. The arrows' latent
-  // effects are fresh row variables that generalize, so `if` is effect-
-  // polymorphic and adapts to whatever ambient its use site demands.
   Type *tv       = fresh();
   Type *ift      = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
-  // %array : Int -> Array -- the byte-block allocator that `@array.{n}`
-  // desugars to (see EX::parse_array).
   Type *arrt            = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 
-  // The growable-byte-vector built-ins (array_len/get/push/... -- see
-  // doc/strings-and-arrays.md) are OVERLOADED on both Str and Array (kept
-  // nominally distinct, Str carrying the UTF-8 invariant like Rust `String` vs
-  // `Vec<u8>`, but sharing the runtime byte-vector rep). They live in
-  // `overload_db` (TCxDATA.cpp), resolved by operand type -- not m_prim.
-
-  // %defer : forall a e. ({} ->e a) -> ({} ->e {}) ->e a -- the cleanup
-  // intrinsic the `defer` keyword desugars to: run the action, running the
-  // cleanup when its scope exits (normal completion or discard). Both thunks
-  // and the running arrows share one effect row `e`, so the action's effects
-  // must fit the call's ambient (subsumption), and it is effect-polymorphic.
-  // `%`-prefixed
-  // => not user-writable; reached only via `defer`.
   Type *e           = fresh(); // the shared effect row
   Type *a           = fresh();
   Type *unit        = con(OP::TY_UNIT);

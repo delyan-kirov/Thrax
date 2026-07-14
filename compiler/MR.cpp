@@ -92,6 +92,14 @@ collect_pat_binders(
     for (EX::FieldPat &f : std::get<EX::PatVariant>(p->as).fields)
       collect_pat_binders(f.pat, out);
     return;
+  case EX::PatTag::Seq:
+  {
+    auto &pq = std::get<EX::PatSeq>(p->as);
+    for (size_t i = 0; i < pq.elems.size(); ++i)
+      collect_pat_binders(pq.elems[i], out);
+    if (pq.rest) collect_pat_binders(pq.rest, out);
+    return;
+  }
   }
   UT_FAIL_MSG("%s", "collect_pat_binders: unhandled PatTag");
 }
