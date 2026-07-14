@@ -2,19 +2,16 @@
  * \file TCxDATA.hpp
  * \brief The type checker's data schema: the vocabulary TC::Checker (in TC.cpp)
  *
- * The checker lowers an EX::Expr tree into a typed \ref Core IR (desugar) and
- * runs Algorithm W over it. The data falls into five groups:
+ * The checker runs Algorithm W. The data falls into four groups:
  *
  *   - \ref Type   -- an inferred type: a union-find graph of Con / Var / Arrow.
  *   - \ref Scheme -- a generalized (polymorphic) type, `forall vars . type`.
- *   - \ref Core   -- the desugared term language that inference walks.
  *   - \ref Overload (and \ref overload_db) -- how overloaded names type.
  *   - \ref GlobalEntry / \ref Globals plus the nominal-type tables -- the
  *     top-level symbol environment.
  *
  * Nodes are pool-allocated in std::deque stores (\ref TypeStore, \ref
- * CoreStore,
- * \ref GlobalStore) so raw `Type *` / `Core *` stay valid as the pools grow.
+ * GlobalStore) so raw `Type *` stay valid as the pools grow.
  */
 
 #ifndef TCXDATA_HEADER_
@@ -142,212 +139,6 @@ using OverloadTable = std::unordered_map<std::string, std::vector<Overload>>;
 
 extern const OverloadTable overload_db;
 
-/* -- Core -------------------------------------------------------------------
- */
-
-struct Core;
-
-/// One alternative of a Case. The tag is EX::AltKind: a Con alt matches the
-/// `tag`-th constructor of `type_name`, binding its payload positionally to
-/// `binders`; an Int/Real alt matches a literal (value irrelevant to typing).
-/// `body` is the arm's result, present on every kind.
-struct AltCon
-{
-  std::string              type_name;
-  size_t                   tag = 0;
-  std::vector<std::string> binders;
-  Core                    *body = nullptr;
-};
-struct AltInt
-{
-  Core *body = nullptr;
-};
-struct AltReal
-{
-  Core *body = nullptr;
-};
-
-#define TC_ALT_VARIANTS                                                        \
-  X(Con, AltCon)                                                               \
-  X(Int, AltInt)                                                               \
-  X(Real, AltReal)
-
-using AltData =
-#define X(tag, type) type,
-  std::variant<TC_ALT_VARIANTS std::monostate>
-#undef X
-  ;
-
-/// A Case alternative. Its tag is EX::AltKind rather than a private enum, so it
-/// stays in step with the interpreter; AltData lists payloads in that same
-/// order, making the active variant index the tag.
-struct CoreAlt
-{
-  AltData as;
-  EX::AltKind
-  kind() const
-  {
-    return static_cast<EX::AltKind>(as.index());
-  }
-};
-using CoreAlts = std::vector<CoreAlt>;
-
-/// Struct/variant literal field initializers, (name, value) in source order; a
-/// name is empty for a positional variant payload.
-using FieldInits = std::vector<std::pair<std::string, Core *>>;
-
-/// \name Core payloads
-/// One struct per \ref CKind, holding only that kind's fields. `anchor` is the
-/// diagnostic source slice; CVar's `slot` is the EX name field rewritten when
-/// the use resolves to an overload.
-///@{
-struct CVar
-{
-  std::string name;
-  UT::Vu      anchor;
-  UT::Vu     *slot = nullptr;
-  /// Non-null for a use that MR left as an overload set (an EX::ExOverload):
-  /// the mangled candidate globals. The use is typed as a fresh variable and
-  /// the fit candidate chosen by resolve_user_sites, which writes its name to
-  /// `slot`.
-  const UT::Vec<UT::Vu> *overload = nullptr;
-};
-struct CLitInt
-{
-};
-struct CLitReal
-{
-};
-struct CLitStr
-{
-};
-struct CLitUnit
-{
-};
-struct CExtern
-{
-};
-struct CLam
-{
-  std::string param;
-  Core       *body;
-};
-struct CApp
-{
-  Core *fn;
-  Core *arg;
-};
-struct CLet
-{
-  std::string name;
-  Core       *val;
-  Core       *body;
-  Type       *sig = nullptr; ///< when set, pins the bound value's type
-};
-struct CStructLit
-{
-  std::string type_name; ///< empty for a bare `.{...}` literal (type inferred)
-  UT::Vu      anchor;
-  FieldInits  fields;
-  EX::ExStructLit *ex = nullptr; ///< back-link to patch a resolved bare literal
-};
-struct CField
-{
-  Core       *record;
-  std::string field;
-  UT::Vu      anchor;
-};
-struct CCase
-{
-  Core    *scrut;
-  Core    *deflt;
-  CoreAlts alts;
-};
-struct CVariantLit
-{
-  std::string type_name; ///< empty for a bare `.Tag...` literal (type inferred)
-  std::string vtag;
-  UT::Vu      anchor;
-  FieldInits  fields;
-  EX::ExVariantLit *ex
-    = nullptr; ///< back-link to patch a resolved bare literal
-};
-
-/// A `[e1, .., en]` sequence literal whose container (List vs Array) is
-/// inferred from context. Typed as a fresh `use` var with a shared element
-/// type; a lit-site (see resolve_lit_sites) settles `use` to `List elem` or
-/// `Array` and patches `ex->is_array`. CR then desugars the resolved form.
-struct CSeqLit
-{
-  std::vector<Core *> elems;
-  UT::Vu              anchor;
-  EX::ExSeqLit       *ex = nullptr; ///< back-link to patch the resolved kind
-};
-///@}
-
-// A handler `do body ctl k  is op a = e ...  [else x = e]`. Typed in infer: the
-// body and each clause/else body are typed so that an operation `op : A -> B`
-// gives its clause `a : A` and `k : B -> result`, every clause/else body has
-// the handler's `result` type, and `else`/identity transforms the body's
-// result.
-struct CHandleClause
-{
-  std::string op;
-  std::string arg;
-  Core       *body;
-};
-struct CHandle
-{
-  Core                      *body;
-  std::string                k;
-  std::vector<CHandleClause> clauses;
-  std::string                els_var;       ///< empty when there is no `else`
-  Core                      *els = nullptr; ///< null when there is no `else`
-};
-
-#define TC_CORE_VARIANTS                                                       \
-  X(Var, CVar)                                                                 \
-  X(Handle, CHandle)                                                           \
-  X(LitInt, CLitInt)                                                           \
-  X(LitReal, CLitReal)                                                         \
-  X(LitStr, CLitStr)                                                           \
-  X(LitUnit, CLitUnit)                                                         \
-  X(Lam, CLam)                                                                 \
-  X(App, CApp)                                                                 \
-  X(Let, CLet)                                                                 \
-  X(Extern, CExtern)                                                           \
-  X(StructLit, CStructLit)                                                     \
-  X(Field, CField)                                                             \
-  X(Case, CCase)                                                               \
-  X(VariantLit, CVariantLit)                                                   \
-  X(SeqLit, CSeqLit)
-
-enum class CKind
-{
-#define X(tag, type) tag,
-  TC_CORE_VARIANTS
-#undef X
-};
-
-using CoreData =
-#define X(tag, type) type,
-  std::variant<TC_CORE_VARIANTS std::monostate>
-#undef X
-  ;
-
-/// A desugared term node. \see CKind for the active-variant tag.
-struct Core
-{
-  CoreData as;
-  CKind
-  kind() const
-  {
-    return static_cast<CKind>(as.index());
-  }
-};
-
-using CoreStore = std::deque<Core>;
-
 /// A deferred overload resolution. An overloaded use is typed as a fresh
 /// variable `use` and resolved once its operands settle: the matching overload
 /// is chosen and `slot` (the EX Var name) rewritten to its impl key. The whole
@@ -367,13 +158,11 @@ using Diagnostics = std::vector<ER::Diagnostic>;
 /* -- Globals & nominal types ------------------------------------------------
  */
 
-/// A top-level binding: its EX definition, desugared `body`, and -- once
-/// resolved -- its `scheme`. `state` guards the on-demand, cycle-checked
-/// resolution (see resolve()).
+/// Top-level binding
 struct GlobalEntry
 {
   EX::ExDef *def;
-  Core      *body;
+  EX::Expr  *body;
   enum
   {
     Unresolved,

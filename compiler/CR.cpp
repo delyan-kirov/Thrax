@@ -144,9 +144,9 @@ go(
 
   case EX::ExprTag::Var:
   {
-    return alloc(
-      arena,
-      Term{ Var{ UT::strdup(arena, std::get<EX::ExVar>(expr->as).name), 0 } });
+    auto  &v    = std::get<EX::ExVar>(expr->as);
+    UT::Vu name = v.resolved.data() ? v.resolved : v.name;
+    return alloc(arena, Term{ Var{ UT::strdup(arena, name), 0 } });
   }
 
   case EX::ExprTag::Int:
@@ -314,7 +314,7 @@ go(
     UT_FAIL_MSG("%s", "@extern is only valid as a global definition");
     break;
   case EX::ExprTag::Match:
-    UT_FAIL_MSG("%s", "match should have been lowered by LL");
+    UT_FAIL_MSG("%s", "match should have been lowered by TC");
     break;
   case EX::ExprTag::ModDecl:
   case EX::ExprTag::Import:

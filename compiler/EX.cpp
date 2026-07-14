@@ -164,16 +164,6 @@ Parser::mk_cons_pat(
     Pattern{ PatTag::Variant, PatVariant{ LIST_TY, CONS_TAG, fields, a, ln } });
 }
 
-// `List.Nil` as a variant pattern.
-Pattern *
-Parser::mk_nil_pat(
-  UT::Vu anchor, size_t line)
-{
-  UT::Vec<FieldPat> fields{ m_arena };
-  return alloc_pat(Pattern{
-    PatTag::Variant, PatVariant{ LIST_TY, NIL_TAG, fields, anchor, line } });
-}
-
 Expr *
 Parser::mk_if(
   Expr *cond, Expr *then, Expr *alt)
@@ -887,12 +877,10 @@ Parser::parse_list_pattern()
       if (LX::TokenTag::RBrack == EX_TRY(m_lex.peek()).tag) break; // trailing
     }
   EX_TRY(
-    expect(LX::TokenTag::RBrack, "expected ']' to close the list pattern"));
+    expect(LX::TokenTag::RBrack, "expected ']' to close the sequence pattern"));
 
-  Pattern *acc = tail ? tail : mk_nil_pat(lb.str, lb.line);
-  for (size_t i = elems.size(); i-- > 0;)
-    acc = mk_cons_pat(elems[i], acc, lb.str, lb.line);
-  return { true, acc, {} };
+  Pattern pat{ PatTag::Seq, PatSeq{ elems, tail, lb.str, lb.line, false } };
+  return { true, alloc_pat(pat), {} };
 }
 
 // `{ field-patterns }`. A field-pattern is either `.name = subpat` / `.name`

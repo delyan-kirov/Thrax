@@ -1,0 +1,49 @@
+@mod ARRAY_PATTERNS
+
+# \info Type-directed `[..]` patterns on an Array (a byte vector). The SAME
+#       bracket syntax as list patterns; the scrutinee's inferred type picks the
+#       lowering -- a length test + `array_get`/`array_slice` here, cons/nil for
+#       a List. `::` stays List-only. See doc/strings-and-arrays.md phase 6b.
+
+$ emptA : Array = []
+$ arr2  : Array = [10, 20]
+$ arr3  : Array = [1, 2, 3]
+
+# Empty vs non-empty.
+$ is_empty : Array -> Int = \a =
+	when a is [] then 1
+	         else 0
+$ ck_empty    : Int = if (is_empty emptA) ?= 1 then 0 else 1/0
+$ ck_nonempty : Int = if (is_empty arr2) ?= 0 then 0 else 1/0
+
+# Exact-length destructure: [x, y] matches a 2-element array, else falls through.
+$ sum2 : Array -> Int = \a =
+	when a is [x, y] then x + y
+	              else 0
+$ ck_sum2      : Int = if (sum2 arr2) ?= 30 then 0 else 1/0
+$ ck_sum2_miss : Int = if (sum2 arr3) ?= 0 then 0 else 1/0
+
+# A literal element pattern: `[1, y]` only matches when element 0 is 1.
+$ after_one : Array -> Int = \a =
+	when a is [1, y] then y
+	              else 0
+$ ck_after_one : Int = if (after_one [1, 42]) ?= 42 then 0 else 1/0
+$ ck_after_two : Int = if (after_one [2, 42]) ?= 0 then 0 else 1/0
+
+# Open pattern `[h, ..rest]`: head plus the remaining slice.
+$ head3 : Array -> Int = \a =
+	when a is [h, ..rest] then h
+	                   else 0
+$ ck_head3 : Int = if (head3 arr3) ?= 1 then 0 else 1/0
+
+$ rest_len : Array -> Int = \a =
+	when a is [h, ..rest] then array_len rest
+	                   else 0
+$ ck_rest_len : Int = if (rest_len arr3) ?= 2 then 0 else 1/0
+
+# A guard on a sequence arm.
+$ ordered : Array -> Int = \a =
+	when a is [x, y] if (x ?< y) then 1
+	              is [x, y] then 2
+	              else 0
+$ ck_ord_lt : Int = if (ordered arr2) ?= 1 then 0 else 1/0

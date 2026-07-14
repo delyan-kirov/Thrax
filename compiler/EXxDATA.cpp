@@ -303,6 +303,18 @@ pprint(
     }
     return s + "}";
   }
+  case PatTag::Seq:
+  {
+    auto       &pq = std::get<PatSeq>(p->as);
+    std::string s  = "[";
+    for (size_t i = 0; i < pq.elems.size(); ++i)
+    {
+      if (i) s += ", ";
+      s += pprint(pq.elems[i]);
+    }
+    if (pq.rest) s += (pq.elems.size() ? ", .." : "..") + pprint(pq.rest);
+    return s + "]";
+  }
   }
   UT_FAIL_IF("UNREACHABLE");
   return "";

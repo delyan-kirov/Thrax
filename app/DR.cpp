@@ -5,7 +5,6 @@
 #include "EX.hpp"
 #include "IR.hpp"
 #include "IT.hpp"
-#include "LL.hpp"
 #include "MR.hpp"
 #include "TC.hpp"
 #include "UT.hpp"
@@ -157,33 +156,14 @@ parse_units(
   return ok;
 }
 
-// Lower patterns (per file), link modules, and type-check. On success `out`
-// holds the flattened, mangled program and entry point. Prints and returns
-// false on the first failing stage.
+// Link modules and type-check (which now lowers pattern sugar internally, after
+// its struct/union tables are built). On success `out` holds the flattened,
+// mangled program and entry point. Prints and returns false on the first
+// failing stage.
 bool
 compile_units(
   std::vector<MR::Unit> &units, AR::Arena &arena, MR::Result &out)
 {
-  // Pattern lowering runs per file, but a pattern may reference a type declared
-  // in another unit (the prelude's `List`, or a sibling module). Gather every
-  // unit's struct/union declarations up front and give the whole set to each
-  // file's LL pass. (Pointers stay valid: LL rewrites Def bodies in place but
-  // never grows a unit's expr vector.)
-  std::vector<EX::Expr *> all_decls;
-  for (MR::Unit &u : units)
-    for (size_t i = 0; i < u.exprs.size(); ++i)
-      if (u.exprs[i].tag == EX::ExprTag::StructDecl
-          || u.exprs[i].tag == EX::ExprTag::UnionDecl)
-        all_decls.push_back(&u.exprs[i]);
-
-  std::vector<ER::Diagnostic> lower_diags;
-  for (MR::Unit &u : units)
-  {
-    std::vector<ER::Diagnostic> ds = LL::lower(u.exprs, all_decls, arena);
-    for (const ER::Diagnostic &d : ds) lower_diags.push_back(d);
-  }
-  if (print_diags(units, lower_diags)) return false;
-
   out = MR::link(units, arena);
   if (print_diags(units, out.diags)) return false;
 

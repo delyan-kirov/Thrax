@@ -99,7 +99,6 @@ private:
   UT_NODISCARD Expr *mk_nil(UT::Vu anchor, size_t line);
   UT_NODISCARD Pattern *
   mk_cons_pat(Pattern *h, Pattern *t, UT::Vu a, size_t ln);
-  UT_NODISCARD Pattern *mk_nil_pat(UT::Vu anchor, size_t line);
   UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
   UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);

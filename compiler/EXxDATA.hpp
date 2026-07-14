@@ -121,9 +121,9 @@ struct Ty
 /*------------------------------------------------------------------------------
  *\PATTERNS
  *
- * Patterns appear in lambda parameters, `let` bindings, and (soon) `if .. is`
- * match arms. They are lowered away by the LL pass (see LL.hpp) before type
- * checking, so neither TC nor IT ever sees a Pattern node.
+ * Patterns appear in lambda parameters, `let` bindings, and `when` match arms.
+ * TC lowers them away (PatLower, run at the start of type checking, once the
+ * struct/union tables exist), so desugar/CR/IT never see a Pattern node.
  *-----------------------------------------------------------------------------*/
 
 struct Pattern;
@@ -193,6 +193,15 @@ struct PatVariant
   size_t            line;
 };
 
+struct PatSeq
+{
+  UT::Vec<Pattern *> elems;
+  Pattern           *rest = nullptr;
+  UT::Vu             anchor;
+  size_t             line     = 0;
+  bool               is_array = false; // patched by TC; false => List
+};
+
 #define EX_PAT_VARIANTS                                                        \
   X(Wild, PatWild)                                                             \
   X(Var, PatVar)                                                               \
@@ -201,7 +210,8 @@ struct PatVariant
   X(Str, PatStr)                                                               \
   X(StrPrefix, PatStrPrefix)                                                   \
   X(Struct, PatStruct)                                                         \
-  X(Variant, PatVariant)
+  X(Variant, PatVariant)                                                       \
+  X(Seq, PatSeq)
 
 enum class PatTag
 {
@@ -254,6 +264,7 @@ struct ExVar
 {
   UT::Vu name;
   UT::Vu qualifier{}; // module prefix from `MOD.name`; empty when unqualified
+  UT::Vu resolved{};
 };
 struct ExStr
 {
@@ -336,7 +347,7 @@ struct ExIf
 
 // One `is pat [if guard] then body` arm of a match. `guard`, when non-null, is
 // an extra boolean test evaluated in the scope of the pattern's bindings; if it
-// fails, the match falls through to the next arm (LL threads a shared
+// fails, the match falls through to the next arm (PatLower threads a shared
 // fallthrough).
 struct MatchArm
 {
@@ -344,8 +355,8 @@ struct MatchArm
   Expr    *body;
   Expr    *guard = nullptr;
 };
-// A match: `when scrut is pat then e ... is pat then e else alt`. The LL pass
-// lowers it into an ExCase / if-chain, so TC/IT never see an ExMatch.
+// A match: `when scrut is pat then e ... is pat then e else alt`. TC's PatLower
+// lowers it into an ExCase / if-chain, so desugar/IT never see an ExMatch.
 struct ExMatch
 {
   Expr             *scrut;
@@ -393,7 +404,7 @@ enum class AltKind
 // One alternative of a lowered `Case`. Selected when the forced scrutinee's
 // head matches `kind`: a constructor (`type_name`.`ctor`, the `tag`-th of its
 // type, binding the payload positionally to `binders`; an empty binder ignores
-// a slot) or an Int/Real literal (`ival`/`rval`). Built only by LL.
+// a slot) or an Int/Real literal (`ival`/`rval`). Built by TC's PatLower.
 struct CaseAlt
 {
   AltKind         kind;
