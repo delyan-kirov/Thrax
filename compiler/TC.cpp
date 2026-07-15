@@ -239,18 +239,20 @@ struct PatLower
     UT::Vec<EX::FieldPat> fields{ arena };
     fields.push(EX::FieldPat{ UT::Vu{}, h });
     fields.push(EX::FieldPat{ UT::Vu{}, t });
-    return alloc_pat(Pattern{
-      PatTag::Variant,
-      EX::PatVariant{ UT::Vu{ "List", 4 }, UT::Vu{ "Cons", 4 }, fields, a, ln } });
+    return alloc_pat(Pattern{ PatTag::Variant,
+                              EX::PatVariant{ UT::Vu{ "List", 4 },
+                                              UT::Vu{ "Cons", 4 }, fields, a, ln,
+                                              UT::Vu{ "List", 4 } } });
   }
   Pattern *
   mk_nil_pat(
     UT::Vu a, size_t ln)
   {
     UT::Vec<EX::FieldPat> fields{ arena };
-    return alloc_pat(Pattern{
-      PatTag::Variant,
-      EX::PatVariant{ UT::Vu{ "List", 4 }, UT::Vu{ "Nil", 3 }, fields, a, ln } });
+    return alloc_pat(Pattern{ PatTag::Variant,
+                              EX::PatVariant{ UT::Vu{ "List", 4 },
+                                              UT::Vu{ "Nil", 3 }, fields, a, ln,
+                                              UT::Vu{ "List", 4 } } });
   }
 
   Pattern *
@@ -337,21 +339,15 @@ struct PatLower
 
   // Resolve a struct pattern's fields against the declaration: fill `subs[i]`
   // with the sub-pattern matched against declared field i (null => unmatched).
-  // Returns false only on a fatal error (unknown type / positional arity).
-  bool
+  // TC (type_pattern / match_fieldpats) has already validated the type name and
+  // every field, so any mismatch here is a compiler bug.
+  void
   resolve_fields(
     EX::PatStruct &ps, std::vector<Pattern *> &subs)
   {
     std::string tname = std::string(ps.type_name);
     auto        it    = structs.find(tname);
-    if (it == structs.end())
-    {
-      err(ER::Code::TYPE_UNBOUND,
-          ps.anchor,
-          ps.line,
-          "unknown struct type '" + tname + "' in pattern");
-      return false;
-    }
+    UT_FAIL_IF(it == structs.end());
     const std::vector<std::string> &decl = it->second;
     subs.assign(decl.size(), nullptr);
 
@@ -371,41 +367,14 @@ struct PatLower
         size_t      idx = decl.size();
         for (size_t k = 0; k < decl.size(); ++k)
           if (decl[k] == fn) idx = k;
-        if (idx == decl.size())
-        {
-          err(ER::Code::TYPE_UNBOUND,
-              ps.anchor,
-              ps.line,
-              "struct '" + tname + "' has no field '" + fn + "'");
-          continue;
-        }
-        if (subs[idx])
-        {
-          err(ER::Code::TYPE_MISMATCH,
-              ps.anchor,
-              ps.line,
-              "field '" + fn + "' is matched more than once");
-          continue;
-        }
+        UT_FAIL_IF(idx == decl.size() || subs[idx]);
         subs[idx] = ps.fields[i].pat;
       }
-      return true; // omitted fields stay null: ignored, fine in named mode
+      return; // omitted fields stay null: ignored, fine in named mode
     }
 
-    if (ps.fields.size() != decl.size())
-    {
-      err(ER::Code::TYPE_MISMATCH,
-          ps.anchor,
-          ps.line,
-          "struct '" + tname + "' has " + std::to_string(decl.size())
-            + " field(s) but the pattern lists "
-            + std::to_string(ps.fields.size())
-            + "; list every field positionally (use '_' to ignore one) or "
-              "match by name");
-      return false;
-    }
+    UT_FAIL_IF(ps.fields.size() != decl.size());
     for (size_t i = 0; i < decl.size(); ++i) subs[i] = ps.fields[i].pat;
-    return true;
   }
 
   // Wrap `body` in the bindings that destructure `pat` applied to the
@@ -502,7 +471,7 @@ struct PatLower
   {
     auto                  &ps = std::get<EX::PatStruct>(pat->as);
     std::vector<Pattern *> subs;
-    if (!resolve_fields(ps, subs)) return body;
+    resolve_fields(ps, subs);
 
     auto it = structs.find(std::string(ps.type_name));
     const std::vector<std::string> &decl = it->second;
@@ -569,7 +538,7 @@ struct PatLower
     {
       auto                  &ps = std::get<EX::PatStruct>(pat->as);
       std::vector<Pattern *> subs;
-      if (!resolve_fields(ps, subs)) return nullptr;
+      resolve_fields(ps, subs);
 
       const std::vector<std::string> &decl
         = structs.find(std::string(ps.type_name))->second;
@@ -676,17 +645,16 @@ struct PatLower
   lower_match_guarded(
     EX::ExMatch &m, Expr *scrut, Expr *alt)
   {
-    UT::Vu      mv     = fresh("m");
-    Expr       *mvar   = mk_var(mv);
-    std::string munion = match_union(m); // "" unless there are variant arms
-    EX::Ty     *sig    = nullptr;        // scrutinee type pin (struct / union)
+    UT::Vu  mv   = fresh("m");
+    Expr   *mvar = mk_var(mv);
+    EX::Ty *sig  = nullptr; // scrutinee type pin (struct / union)
 
     Expr *acc = alt; // fallthrough base: the `else`
     for (size_t i = m.arms.size(); i-- > 0;)
     {
       UT::Vu fv    = fresh("f");
       Expr  *thunk = mk_thunk(acc);
-      Expr  *arm   = build_guarded_arm(m.arms[i], mvar, fv, munion, &sig);
+      Expr  *arm   = build_guarded_arm(m.arms[i], mvar, fv, &sig);
       acc          = mk_let(fv, thunk, arm, nullptr);
     }
     return mk_let(mv, scrut, acc, sig);
@@ -696,11 +664,7 @@ struct PatLower
   // `$fv {}`) when this arm's pattern or guard does not match.
   Expr *
   build_guarded_arm(
-    EX::MatchArm      &arm,
-    Expr              *mvar,
-    UT::Vu             fv,
-    const std::string &munion,
-    EX::Ty           **sig)
+    EX::MatchArm &arm, Expr *mvar, UT::Vu fv, EX::Ty **sig)
   {
     Pattern *pat  = arm.pat;
     Expr    *body = lower(arm.body);
@@ -708,7 +672,7 @@ struct PatLower
     // Run `body` only when the guard holds (it sees the pattern's bindings, so
     // it sits at the innermost success point), else fall through.
     Expr *success = arm.guard ? mk_if(lower(arm.guard), body, fall()) : body;
-    return match_pat(pat, mvar, success, fall, munion, sig, /*top=*/true);
+    return match_pat(pat, mvar, success, fall, sig, /*top=*/true);
   }
 
   // Lower a struct-free match into `let $m = scrut in case $m of lit -> e ..
@@ -744,14 +708,10 @@ struct PatLower
         alts.push(a);
       }
       else if (pat->tag == PatTag::Str)
-      {
-        auto &ps = std::get<EX::PatStr>(pat->as);
-        err(ER::Code::UNSUPPORTED,
-            ps.anchor,
-            ps.line,
-            "matching a string literal is not supported yet (no string "
-            "equality)");
-      }
+        // A string arm sets has_str, routing the whole match to the guarded
+        // lowering; the flat path never sees one.
+        UT_FAIL_MSG("%s", "lower_match_flat: string pattern should route to "
+                          "the guarded lowering");
       else // Var or wildcard: irrefutable, always matches -> the default
       {
         UT::Vu anc;
@@ -773,8 +733,9 @@ struct PatLower
 
   // Resolve a variant pattern's payload sub-patterns against the variant's
   // declared field names, filling `subs[i]` (null => unmatched). Mirrors
-  // resolve_fields. Returns false on a fatal error (unknown field / arity).
-  bool
+  // resolve_fields; TC has already validated every field, so a mismatch here is
+  // a compiler bug.
+  void
   resolve_payload(
     EX::PatVariant                 &pv,
     const std::vector<std::string> &decl,
@@ -790,7 +751,6 @@ struct PatLower
         break;
       }
 
-    std::string vname = std::string(pv.type_name) + "." + std::string(pv.tag);
     if (named)
     {
       for (size_t i = 0; i < pv.fields.size(); ++i)
@@ -799,136 +759,37 @@ struct PatLower
         size_t      idx = decl.size();
         for (size_t k = 0; k < decl.size(); ++k)
           if (decl[k] == fn) idx = k;
-        if (idx == decl.size())
-        {
-          err(ER::Code::TYPE_UNBOUND,
-              pv.anchor,
-              pv.line,
-              "variant '" + vname + "' has no field '" + fn + "'");
-          continue;
-        }
-        if (subs[idx])
-        {
-          err(ER::Code::TYPE_MISMATCH,
-              pv.anchor,
-              pv.line,
-              "field '" + fn + "' is matched more than once");
-          continue;
-        }
+        UT_FAIL_IF(idx == decl.size() || subs[idx]);
         subs[idx] = pv.fields[i].pat;
       }
-      return true;
+      return;
     }
 
-    if (pv.fields.size() != decl.size())
-    {
-      err(ER::Code::TYPE_MISMATCH,
-          pv.anchor,
-          pv.line,
-          "variant '" + vname + "' has " + std::to_string(decl.size())
-            + " payload field(s) but the pattern lists "
-            + std::to_string(pv.fields.size())
-            + "; list every field positionally (use '_' to ignore one) or "
-              "match by name");
-      return false;
-    }
+    UT_FAIL_IF(pv.fields.size() != decl.size());
     for (size_t i = 0; i < decl.size(); ++i) subs[i] = pv.fields[i].pat;
-    return true;
   }
 
-  // Determine which union a match's variant arms belong to. A qualified arm
-  // (`Type.Tag`) names it; if every arm is bare (`.Tag`), find the unique
-  // declared union whose variants include all the arms' tags. "" if undecided.
-  std::string
-  match_union(
-    EX::ExMatch &m)
-  {
-    std::vector<std::string> tags;
-    for (size_t i = 0; i < m.arms.size(); ++i)
-    {
-      if (m.arms[i].pat->tag != PatTag::Variant) continue;
-      auto &pv = std::get<EX::PatVariant>(m.arms[i].pat->as);
-      if (pv.type_name.size()) return std::string(pv.type_name);
-      tags.push_back(std::string(pv.tag));
-    }
-    std::string found;
-    for (auto &kv : unions)
-    {
-      bool all = true;
-      for (const std::string &t : tags)
-      {
-        bool has = false;
-        for (const UVariant &v : kv.second)
-          if (v.tag == t) has = true;
-        if (!has)
-        {
-          all = false;
-          break;
-        }
-      }
-      if (all)
-      {
-        if (!found.empty()) return ""; // ambiguous: more than one union fits
-        found = kv.first;
-      }
-    }
-    return found;
-  }
-
-  // Resolve variant pattern `pv` -- with `munion` supplying the union for a
-  // bare
-  // `.Tag` -- to its union constructor (`uname_vu`), tag index, and declared
-  // payload field names (`decl`). Records a diagnostic and returns false on an
-  // unresolvable/unknown union or tag.
-  bool
+  void
   resolve_variant(
     EX::PatVariant                  &pv,
-    const std::string               &munion,
     UT::Vu                          &uname_vu,
     size_t                          &tagidx,
     const std::vector<std::string> *&decl)
   {
-    bool        bare  = pv.type_name.size() == 0;
-    std::string uname = bare ? munion : std::string(pv.type_name);
-    if (bare && uname.empty())
-    {
-      err(ER::Code::TYPE_UNBOUND,
-          pv.anchor,
-          pv.line,
-          "cannot infer the union for bare variant '." + std::string(pv.tag)
-            + "'; qualify it (Type." + std::string(pv.tag)
-            + ") or match a constructor that names the type");
-      return false;
-    }
-    auto uit = unions.find(uname);
-    if (uit == unions.end())
-    {
-      err(ER::Code::TYPE_UNBOUND,
-          pv.anchor,
-          pv.line,
-          "unknown union type '" + uname + "' in pattern");
-      return false;
-    }
-    uname_vu = bare ? ustr(uname) : pv.type_name;
+    UT_FAIL_IF(pv.resolved_union.size() == 0);
+    auto uit = unions.find(std::string(pv.resolved_union));
+    UT_FAIL_IF(uit == unions.end());
+    uname_vu = pv.resolved_union;
     tagidx   = uit->second.size();
     for (size_t k = 0; k < uit->second.size(); ++k)
       if (uit->second[k].tag == std::string(pv.tag)) tagidx = k;
-    if (tagidx == uit->second.size())
-    {
-      err(ER::Code::TYPE_MISMATCH,
-          pv.anchor,
-          pv.line,
-          "union '" + uname + "' has no variant '" + std::string(pv.tag) + "'");
-      return false;
-    }
+    UT_FAIL_IF(tagidx == uit->second.size());
     decl = &uit->second[tagidx].fields;
-    return true;
   }
 
-  bool
+  void
   make_variant_alt(
     EX::PatVariant    &pv,
-    const std::string &munion,
     Expr              *body,
     EX::Ty           **sig,
     EX::CaseAlt       &out)
@@ -936,15 +797,13 @@ struct PatLower
     UT::Vu                          uname_vu;
     size_t                          tagidx;
     const std::vector<std::string> *declp;
-    if (!resolve_variant(pv, munion, uname_vu, tagidx, declp)) return false;
+    resolve_variant(pv, uname_vu, tagidx, declp);
     const std::vector<std::string> &decl = *declp;
     if (!*sig) *sig = mk_con(uname_vu);
 
     std::vector<Pattern *> subs;
-    if (!resolve_payload(pv, decl, subs)) return false;
+    resolve_payload(pv, decl, subs);
 
-    // One binder per payload slot; empty ignores it. Nested refutable
-    // sub-patterns are not expressible in a flat Con alt yet.
     UT::Vec<UT::Vu> binders{ arena };
     for (size_t k = 0; k < decl.size(); ++k)
     {
@@ -954,14 +813,8 @@ struct PatLower
       else if (sp->tag == PatTag::Var)
         binders.push(std::get<EX::PatVar>(sp->as).name);
       else
-      {
-        err(ER::Code::UNSUPPORTED,
-            pv.anchor,
-            pv.line,
-            "nested patterns in a variant payload are not supported yet; use "
-            "a variable or '_'");
-        return false;
-      }
+        UT_FAIL_MSG("%s", "make_variant_alt: nested payload should route to "
+                          "the guarded lowering");
     }
 
     out.kind      = EX::AltKind::Con;
@@ -970,7 +823,6 @@ struct PatLower
     out.tag       = tagidx;
     out.binders   = binders;
     out.body      = body;
-    return true;
   }
 
   // A fallthrough continuation: makes a *fresh* "fall to the next arm" node on
@@ -984,13 +836,12 @@ struct PatLower
   // fallthrough.
   Expr *
   match_pat(
-    Pattern           *pat,
-    Expr              *subject,
-    Expr              *success,
-    const Fall        &fall,
-    const std::string &munion,
-    EX::Ty           **sig,
-    bool               top)
+    Pattern    *pat,
+    Expr       *subject,
+    Expr       *success,
+    const Fall &fall,
+    EX::Ty    **sig,
+    bool        top)
   {
     switch (pat->tag)
     {
@@ -1038,13 +889,8 @@ struct PatLower
       return test ? mk_if(test, bound, fall()) : bound;
     }
     case PatTag::Variant:
-      return match_variant(std::get<EX::PatVariant>(pat->as),
-                           subject,
-                           success,
-                           fall,
-                           munion,
-                           sig,
-                           top);
+      return match_variant(
+        std::get<EX::PatVariant>(pat->as), subject, success, fall, sig, top);
     case PatTag::Seq: return match_seq(pat, subject, success, fall, sig, top);
     }
     UT_FAIL_MSG("%s", "match_pat: unhandled PatTag");
@@ -1062,8 +908,7 @@ struct PatLower
   {
     auto &pq = std::get<EX::PatSeq>(pat->as);
     if (!pq.is_array)
-      return match_pat(
-        seq_as_list(pq), subject, success, fall, /*munion=*/"", sig, top);
+      return match_pat(seq_as_list(pq), subject, success, fall, sig, top);
 
     if (top && !*sig) *sig = mk_con(UT::Vu{ "Array", 5 });
     size_t k       = pq.elems.size();
@@ -1078,12 +923,12 @@ struct PatLower
       Expr *slice = mk_call(
         OP::ARR_SLICE,
         { subject, mk_int((ssize_t)k), mk_call(OP::ARR_LEN, { subject }) });
-      inner = match_pat(pq.rest, slice, inner, fall, "", sig, /*top=*/false);
+      inner = match_pat(pq.rest, slice, inner, fall, sig, /*top=*/false);
     }
     for (size_t i = k; i-- > 0;)
     {
       Expr *geti = mk_call(OP::ARR_GET, { subject, mk_int((ssize_t)i) });
-      inner = match_pat(pq.elems[i], geti, inner, fall, "", sig, /*top=*/false);
+      inner = match_pat(pq.elems[i], geti, inner, fall, sig, /*top=*/false);
     }
     return mk_if(lentest, inner, fall());
   }
@@ -1093,22 +938,21 @@ struct PatLower
   // recursively) whose default is `fall()`.
   Expr *
   match_variant(
-    EX::PatVariant    &pv,
-    Expr              *subject,
-    Expr              *success,
-    const Fall        &fall,
-    const std::string &munion,
-    EX::Ty           **sig,
-    bool               top)
+    EX::PatVariant &pv,
+    Expr           *subject,
+    Expr           *success,
+    const Fall     &fall,
+    EX::Ty        **sig,
+    bool            top)
   {
     UT::Vu                          uname_vu;
     size_t                          tagidx;
     const std::vector<std::string> *declp;
-    if (!resolve_variant(pv, munion, uname_vu, tagidx, declp)) return fall();
+    resolve_variant(pv, uname_vu, tagidx, declp);
     const std::vector<std::string> &decl = *declp;
 
     std::vector<Pattern *> subs;
-    if (!resolve_payload(pv, decl, subs)) return fall();
+    resolve_payload(pv, decl, subs);
     if (top && !*sig) *sig = mk_con(uname_vu);
 
     // One binder per payload slot: empty ignores it, a plain variable binds it
@@ -1138,7 +982,6 @@ struct PatLower
                         mk_var(nested[i].first),
                         inner,
                         fall,
-                        /*munion=*/"",
                         sig,
                         /*top=*/false);
 
@@ -1173,7 +1016,6 @@ struct PatLower
     UT::Vec<EX::CaseAlt> alts{ arena };
     Expr                *dflt = deflt;
     EX::Ty              *sig  = nullptr; // pin the scrutinee to the union type
-    std::string          munion = match_union(m);
 
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
@@ -1182,32 +1024,18 @@ struct PatLower
 
       if (pat->tag != PatTag::Variant)
       {
-        if (pat->tag == PatTag::Var || pat->tag == PatTag::Wild)
-        {
-          UT::Vu anc;
-          size_t line = 0;
-          pat_anchor(pat, anc, line);
-          dflt
-            = bind_pattern(pat, mvar, body, anc, line, /*refutable_ok=*/true);
-        }
-        else
-        {
-          UT::Vu anc;
-          size_t line = 0;
-          pat_anchor(pat, anc, line);
-          err(
-            ER::Code::UNSUPPORTED,
-            anc,
-            line,
-            "a union match takes variant arms (and an optional variable arm), "
-            "not literal or struct patterns");
-        }
-        break; // an irrefutable / invalid arm ends the scan
+        UT_FAIL_IF(pat->tag != PatTag::Var && pat->tag != PatTag::Wild);
+        UT::Vu anc;
+        size_t line = 0;
+        pat_anchor(pat, anc, line);
+        dflt  = bind_pattern(pat, mvar, body, anc, line, /*refutable_ok=*/true);
+        break; // an irrefutable arm ends the scan
       }
 
       auto       &pv = std::get<EX::PatVariant>(pat->as);
       EX::CaseAlt a;
-      if (make_variant_alt(pv, munion, body, &sig, a)) alts.push(a);
+      make_variant_alt(pv, body, &sig, a);
+      alts.push(a);
     }
 
     EX::ExCase c;
@@ -1617,6 +1445,10 @@ private:
   bool occurs_free(const std::string &name, EX::Expr *e);
   void        type_pattern(EX::Pattern *p, Type *scrut, Env &env,
                            const std::string &munion);
+  void        match_fieldpats(const UT::Vec<EX::FieldPat> &pats,
+                              const StructFields &decl, const char *what,
+                              const std::string &tname, UT::Vu anchor,
+                              std::vector<EX::Pattern *> &subs);
   std::string resolve_match_union(Type *scrut, EX::ExMatch &m);
   Type       *infer(EX::Expr *e, Env &locals, Type *amb);
   Type       *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
@@ -2210,30 +2042,6 @@ Checker::scheme_of_sig(
 
 namespace
 {
-void
-match_fieldpats(
-  const UT::Vec<EX::FieldPat> &pats,
-  const StructFields          &decl,
-  std::vector<EX::Pattern *>  &subs)
-{
-  subs.assign(decl.size(), nullptr);
-  bool named = false;
-  for (size_t i = 0; i < pats.size(); ++i)
-    if (pats[i].name.size()) named = true;
-  if (named)
-  {
-    for (size_t i = 0; i < pats.size(); ++i)
-    {
-      std::string fn(pats[i].name);
-      for (size_t k = 0; k < decl.size(); ++k)
-        if (decl[k].first == fn) subs[k] = pats[i].pat;
-    }
-  }
-  else
-    for (size_t i = 0; i < pats.size() && i < decl.size(); ++i)
-      subs[i] = pats[i].pat;
-}
-
 bool
 pat_shadows(
   EX::Pattern *p, const std::string &name)
@@ -2429,6 +2237,47 @@ Checker::resolve_match_union(
 }
 
 void
+Checker::match_fieldpats(
+  const UT::Vec<EX::FieldPat> &pats, const StructFields &decl, const char *what,
+  const std::string &tname, UT::Vu anchor, std::vector<EX::Pattern *> &subs)
+{
+  subs.assign(decl.size(), nullptr);
+  bool named = false;
+  for (size_t i = 0; i < pats.size(); ++i)
+    if (pats[i].name.size()) named = true;
+
+  if (named)
+  {
+    for (size_t i = 0; i < pats.size(); ++i)
+    {
+      std::string fn(pats[i].name);
+      size_t      idx = decl.size();
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (decl[k].first == fn) idx = k;
+      if (idx == decl.size())
+        fail(ER::Code::TYPE_UNBOUND, anchor, "%s '%s' has no field '%s'", what,
+             tname.c_str(), fn.c_str());
+      else if (subs[idx])
+        fail(ER::Code::TYPE_MISMATCH, anchor,
+             "field '%s' is matched more than once", fn.c_str());
+      else
+        subs[idx] = pats[i].pat;
+    }
+    return; // omitted fields stay null: ignored, fine in named mode
+  }
+
+  if (pats.size() != decl.size())
+  {
+    fail(ER::Code::TYPE_MISMATCH, anchor,
+         "%s '%s' has %zu field(s) but the pattern lists %zu; list every field "
+         "positionally (use '_' to ignore one) or match by name",
+         what, tname.c_str(), decl.size(), pats.size());
+    return;
+  }
+  for (size_t i = 0; i < decl.size(); ++i) subs[i] = pats[i].pat;
+}
+
+void
 Checker::type_pattern(
   EX::Pattern *p, Type *scrut, Env &env, const std::string &munion)
 {
@@ -2463,7 +2312,7 @@ Checker::type_pattern(
     Subst               sub = fresh_subst(sit->second.params, args);
     unify(scrut, con(tn, args));
     std::vector<EX::Pattern *> subs;
-    match_fieldpats(ps.fields, sit->second.fields, subs);
+    match_fieldpats(ps.fields, sit->second.fields, "struct", tn, ps.anchor, subs);
     for (size_t k = 0; k < subs.size(); ++k)
       if (subs[k])
         type_pattern(subs[k], subst(sit->second.fields[k].second, sub), env, "");
@@ -2474,13 +2323,23 @@ Checker::type_pattern(
     auto       &pv = std::get<EX::PatVariant>(p->as);
     std::string uname
       = pv.type_name.size() ? std::string(pv.type_name) : munion;
+    if (uname.empty())
+    {
+      fail(ER::Code::TYPE_UNBOUND,
+           pv.anchor,
+           "cannot infer the union for bare variant '.%s'; qualify it (Type.%s) "
+           "or match a constructor that names the type",
+           std::string(pv.tag).c_str(),
+           std::string(pv.tag).c_str());
+      return;
+    }
     auto uit = m_unions.find(uname);
     if (uit == m_unions.end())
     {
       fail(ER::Code::TYPE_UNBOUND,
            pv.anchor,
            "unknown union type '%s' in pattern",
-           uname.empty() ? "?" : uname.c_str());
+           uname.c_str());
       return;
     }
     std::string         vtag(pv.tag);
@@ -2496,11 +2355,13 @@ Checker::type_pattern(
            vtag.c_str());
       return;
     }
+    pv.resolved_union = intern(uname); // authoritative union for PatLower
     std::vector<Type *> args;
     Subst               sub = fresh_subst(uit->second.params, args);
     unify(scrut, con(uname, args));
     std::vector<EX::Pattern *> subs;
-    match_fieldpats(pv.fields, vs->fields, subs);
+    std::string vname = uname + "." + vtag;
+    match_fieldpats(pv.fields, vs->fields, "variant", vname, pv.anchor, subs);
     for (size_t k = 0; k < subs.size(); ++k)
       if (subs[k]) type_pattern(subs[k], subst(vs->fields[k].second, sub), env, "");
     return;
@@ -3937,6 +3798,7 @@ Checker::run(
     resolve_lit_sites(lbase);
   }
 
+  if (!m_diags.empty()) return;
   Diagnostics pd = PatLower{ m_arena, m_structs, m_unions }.run(exprs);
   for (ER::Diagnostic &d : pd) m_diags.push_back(d);
 }
