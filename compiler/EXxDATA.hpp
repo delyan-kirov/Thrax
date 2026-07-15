@@ -191,6 +191,7 @@ struct PatVariant
   UT::Vec<FieldPat> fields;
   UT::Vu            anchor;
   size_t            line;
+  UT::Vu resolved_union{}; // patched by TC: the union this tag belongs to
 };
 
 struct PatSeq
