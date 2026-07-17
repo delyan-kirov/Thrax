@@ -25,49 +25,47 @@ tests_smoke(
   return BLD::run("./" + c.artifacts + "/tst_all");
 }
 
-// Emit, compile and run every example through the native backend; each must
-// exit 0 (the generated THx_force_all forces every global, so a fault
-// surfaces). A program is only SKIPped if `thrax -c` itself declines it.
+// Emit, compile and run the WHOLE example suite as one native program: every
+// example plus the shared driver (tests/MAIN.thx), whose MAIN runs each
+// example's `$ test`. A failing test prints its module name; the process exit
+// code is the number of failing modules, so one failure never masks the rest.
 int
 tests_native(
   const BLD::Ctx &c)
 {
-  namespace fs                   = std::filesystem;
-  const std::string        thrax = "./" + c.artifacts + "/thrax";
-  const std::string        cfile = c.artifacts + "/native.c";
-  const std::string        bfile = c.artifacts + "/native.bin";
-  std::vector<std::string> files = BLD::glob({ "examples" }, { ".thx" });
-  int                      pass = 0, skip = 0, fail = 0;
-  for (const std::string &f : files)
+  namespace fs            = std::filesystem;
+  const std::string thrax = "./" + c.artifacts + "/thrax";
+  const std::string cfile = c.artifacts + "/native.c";
+  const std::string bfile = c.artifacts + "/native.bin";
+
+  // The combined program: all top-level examples (glob does not recurse, so the
+  // sub-directory projects with their own MAIN are excluded) + the driver.
+  std::vector<std::string> cmd = { thrax, "-c" };
+  for (const std::string &f : BLD::glob({ "examples" }, { ".thx" }))
+    cmd.push_back(f);
+  cmd.push_back("tests/MAIN.thx");
+
+  if (BLD::spawn(cmd, cfile) != 0)
   {
-    // Emit the C to cfile (its stdout is the artifact); thrax's stderr flows
-    // live. cc and the compiled program are run captured -- nothing dropped --
-    // and their output is surfaced only when the step fails.
-    if (BLD::spawn({ thrax, "-c", f }, cfile) != 0)
-    {
-      std::print("SKIP  {}\n", f);
-      ++skip;
-      continue;
-    }
-    BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile });
-    if (cc.code != 0)
-    {
-      std::print("FAIL(cc)  {}\n{}{}", f, cc.out, cc.err);
-      ++fail;
-      continue;
-    }
-    BLD::Output rn = BLD::exec({ "./" + bfile });
-    if (rn.code != 0)
-    {
-      std::print("FAIL(run) {}\n{}{}", f, rn.out, rn.err);
-      ++fail;
-      continue;
-    }
-    std::print("PASS  {}\n", f);
-    ++pass;
+    std::print(
+      "native-test: FAIL -- `thrax -c` rejected the combined program\n");
+    return 1;
   }
+  BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile });
+  if (cc.code != 0)
+  {
+    std::print("native-test: FAIL(cc)\n{}{}", cc.out, cc.err);
+    return 1;
+  }
+  BLD::Output rn = BLD::exec({ "./" + bfile });
+  std::print("{}{}", rn.out, rn.err); // surface any "MODULE FAILED" lines
   fs::remove(cfile);
   fs::remove(bfile);
-  std::print("native-test: pass={} skip={} fail={}\n", pass, skip, fail);
-  return fail == 0 ? 0 : 1;
+  if (rn.code != 0)
+  {
+    std::print("native-test: FAIL -- {} module(s) failed\n", rn.code);
+    return 1;
+  }
+  std::print("native-test: OK -- all example modules passed\n");
+  return 0;
 }

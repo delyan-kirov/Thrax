@@ -1,0 +1,84 @@
+@mod MAIN
+
+# Combined test runner: import every example module (qualified) and run its
+# $ test (0 = pass). `check` prints "<mod> ok" / "<mod> FAILED" for every module
+# as it runs; every test runs regardless of earlier failures (no abort). Exit
+# code = number of failing modules.
+# FIXME(per-module-types): examples C-style prefix their types to coexist here
+# until the type world is namespaced per module (see MR.cpp collect()).
+
+$ with AGTxPRO = AGTxPRO
+$ with AGTxSUM = AGTxSUM
+$ with ARITHMETIC = ARITHMETIC
+$ with ARRAY = ARRAY
+$ with ARRAY_PATTERNS = ARRAY_PATTERNS
+$ with ARRAYS_MUT = ARRAYS_MUT
+$ with CONDITIONALS = CONDITIONALS
+$ with COROUTINES = COROUTINES
+$ with CT_ASSERT = CT_ASSERT
+$ with EFFECT_OVERLOAD = EFFECT_OVERLOAD
+$ with EFFECTS = EFFECTS
+$ with FIB = FIB
+$ with FINALLY = FINALLY
+$ with HANOI = HANOI
+$ with HIGHER_ORDER = HIGHER_ORDER
+$ with LET_IN = LET_IN
+$ with LISTS = LISTS
+$ with MATCH = MATCH
+$ with NUMBERS = NUMBERS
+$ with OPERATORS = OPERATORS
+$ with PATTERNS = PATTERNS
+$ with PIPES = PIPES
+$ with POWER = POWER
+$ with RC_LOOP = RC_LOOP
+$ with REALS = REALS
+$ with RECURSION = RECURSION
+$ with SEQ_INFER = SEQ_INFER
+$ with STRINGS = STRINGS
+$ with STR_MATCH = STR_MATCH
+$ with STR_OPS = STR_OPS
+$ with STR_PREFIX = STR_PREFIX
+$ with TAIL_CALLS = TAIL_CALLS
+$ with WHEN_GUARDS = WHEN_GUARDS
+
+# `\x1b[..m` are ANSI colour codes (decoded to the ESC byte at compile time, so
+# the source stays ASCII): green `[ok]` on pass, red `[FAILED]` on failure.
+$ check : Str -> Int -> Int = \name t =
+	if t ?= 0
+		then C.puts ("\x1b[1;32mOK\x1b[0m " ++ name); 0
+		else C.puts ("\x1b[1;31mERR\x1b[0m " ++ name); 1
+
+$ main : Int =
+	  check "AGTxPRO" AGTxPRO.test
+	+ check "AGTxSUM" AGTxSUM.test
+	+ check "ARITHMETIC" ARITHMETIC.test
+	+ check "ARRAY" ARRAY.test
+	+ check "ARRAY_PATTERNS" ARRAY_PATTERNS.test
+	+ check "ARRAYS_MUT" ARRAYS_MUT.test
+	+ check "CONDITIONALS" CONDITIONALS.test
+	+ check "COROUTINES" COROUTINES.test
+	+ check "CT_ASSERT" CT_ASSERT.test
+	+ check "EFFECT_OVERLOAD" EFFECT_OVERLOAD.test
+	+ check "EFFECTS" EFFECTS.test
+	+ check "FIB" FIB.test
+	+ check "FINALLY" FINALLY.test
+	+ check "HANOI" HANOI.test
+	+ check "HIGHER_ORDER" HIGHER_ORDER.test
+	+ check "LET_IN" LET_IN.test
+	+ check "LISTS" LISTS.test
+	+ check "MATCH" MATCH.test
+	+ check "NUMBERS" NUMBERS.test
+	+ check "OPERATORS" OPERATORS.test
+	+ check "PATTERNS" PATTERNS.test
+	+ check "PIPES" PIPES.test
+	+ check "POWER" POWER.test
+	+ check "RC_LOOP" RC_LOOP.test
+	+ check "REALS" REALS.test
+	+ check "RECURSION" RECURSION.test
+	+ check "SEQ_INFER" SEQ_INFER.test
+	+ check "STRINGS" STRINGS.test
+	+ check "STR_MATCH" STR_MATCH.test
+	+ check "STR_OPS" STR_OPS.test
+	+ check "STR_PREFIX" STR_PREFIX.test
+	+ check "TAIL_CALLS" TAIL_CALLS.test
+	+ check "WHEN_GUARDS" WHEN_GUARDS.test

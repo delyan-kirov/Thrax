@@ -13,3 +13,6 @@ $hanoi1  = hanoi 1
 $hanoi3  = hanoi 3
 $hanoi5  = hanoi 5
 $hanoi10 = hanoi 10
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = hanoi1 ; hanoi3 ; hanoi5 ; hanoi10 ; 0

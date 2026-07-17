@@ -21,3 +21,6 @@ $sum_to_10  = sum_to 10
 $sum_to_100 = sum_to 100
 $gcd_54_24  = gcd 54 24
 $gcd_100_75 = gcd 100 75
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = fact5 ; fact10 ; sum_to_10 ; sum_to_100 ; gcd_54_24 ; gcd_100_75 ; 0

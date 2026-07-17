@@ -14,3 +14,6 @@ $negate     = -42
 $double_neg = - (-7)
 $chained    = 1 - 2 - 3 - 4
 $big        = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0

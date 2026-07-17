@@ -15,3 +15,6 @@ $leq_false = 8 ?< 3
 $not_zero  = !0
 $not_five  = !5
 $not_not   = !(!5)
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal ; leq_false ; not_zero ; not_five ; not_not ; 0

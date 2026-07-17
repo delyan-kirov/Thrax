@@ -45,22 +45,25 @@ $ drop2 : List Int -> List Int = \xs =
 	when xs is [_, _, ..rest] then rest
 	         else []
 
-$ ck_second : Int = if (second xs) ?= 2 then 0 else 1 / 0
-$ ck_second_short : Int = if (second [9]) ?= 0-1 then 0 else 1 / 0
-$ ck_drop2 : Int = if (sum (drop2 xs)) ?= 12 then 0 else 1 / 0
+$ ck_second : Int = if (second xs) ?= 2 then 0 else 1
+$ ck_second_short : Int = if (second [9]) ?= 0-1 then 0 else 1
+$ ck_drop2 : Int = if (sum (drop2 xs)) ?= 12 then 0 else 1
 $ ck_head_tail : Int = when xs is [h, ..t] then
-	if (h + sum t) ?= 15 then 0 else 1 / 0 else 1 / 0
+	if (h + sum t) ?= 15 then 0 else 1 else 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
 $ xs : List Int = [1, 2, 3, 4, 5]
 $ ys : List Int = 1 :: 2 :: 3 :: 4 :: 5 :: []
 
-$ ck_sum : Int = if (sum xs) ?= 15 then 0 else 1 / 0
-$ ck_len : Int = if (length xs) ?= 5 then 0 else 1 / 0
-$ ck_cons : Int = if (sum ys) ?= 15 then 0 else 1 / 0
-$ ck_map : Int = if (sum (map_inc xs)) ?= 20 then 0 else 1 / 0
-$ ck_empty : Int = if (sum []) ?= 0 then 0 else 1 / 0
-$ ck_sc0 : Int = if (size_class []) ?= 0 then 0 else 1 / 0
-$ ck_sc1 : Int = if (size_class [7]) ?= 1 then 0 else 1 / 0
-$ ck_sc2 : Int = if (size_class [7, 8]) ?= 2 then 0 else 1 / 0
-$ ck_scN : Int = if (size_class xs) ?= 9 then 0 else 1 / 0
+$ ck_sum : Int = if (sum xs) ?= 15 then 0 else 1
+$ ck_len : Int = if (length xs) ?= 5 then 0 else 1
+$ ck_cons : Int = if (sum ys) ?= 15 then 0 else 1
+$ ck_map : Int = if (sum (map_inc xs)) ?= 20 then 0 else 1
+$ ck_empty : Int = if (sum []) ?= 0 then 0 else 1
+$ ck_sc0 : Int = if (size_class []) ?= 0 then 0 else 1
+$ ck_sc1 : Int = if (size_class [7]) ?= 1 then 0 else 1
+$ ck_sc2 : Int = if (size_class [7, 8]) ?= 2 then 0 else 1
+$ ck_scN : Int = if (size_class xs) ?= 9 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN

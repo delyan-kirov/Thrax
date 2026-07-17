@@ -27,3 +27,6 @@ $sign_zero = sign 0
 $sign_pos  = sign 3
 $max_ex    = max 3 7
 $min_ex    = min 3 7
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = abs_neg ; abs_pos ; sign_neg ; sign_zero ; sign_pos ; max_ex ; min_ex ; 0

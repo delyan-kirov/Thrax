@@ -33,3 +33,10 @@ $is_odd  : Int -> Int = \n = if n ?= 0 then 0 else is_even (n - 1)
 # $ck_let    = assert (let_sum 1000000 ?= 500000500000)
 # $ck_even   = assert (is_even 1000000)
 $ck_odd    = is_odd 100
+
+# Deep tail recursion (constant stack) checked against closed forms.
+$ test : Int =
+	(if sum_to 100000 0 ?= 5000050000 then 0 else 1)
+	+ (if let_sum 100000 ?= 5000050000 then 0 else 1)
+	+ (if is_even 100000 ?= 1 then 0 else 1)
+	+ (if is_odd 100000 ?= 0 then 0 else 1)

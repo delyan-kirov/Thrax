@@ -17,3 +17,6 @@ $ fact : Int -> Int = \n =
 $ @assert (fib 10 ?= 55)
 $ @assert (fact 5 ?= 120)
 $ @assert (fib 10 + fact 5 ?= 175)
+
+# Runtime side-check (the real test is the compile-time @assert above).
+$ test : Int = if fib 10 ?= 55 then 0 else 1

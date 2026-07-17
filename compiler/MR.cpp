@@ -294,6 +294,26 @@ struct Linker
           decls.push_back(e);
           break;
         }
+        // FIXME(per-module-types): the whole type world is NOT namespaced.
+        // Terms mangle to `MOD/name` and resolve as `MOD.name`; type-level
+        // names are pushed here verbatim into one flat global table, so two
+        // modules can't both define `Point`/`List`/`Exn` etc. To close this,
+        // give types the same treatment as terms:
+        //   1. mangle struct/union/alias/effect names to `MOD/Name` and
+        //      register them per module (like `md.symbols`);
+        //   2. resolve qualified type syntax `A.MyTyp` in `Ty::Con` and rewrite
+        //      every `Ty::Con` in signatures / struct fields / union payloads;
+        //   3. rewrite constructor + field refs (`Point.{..}`, `.Cons`,
+        //      `Type.Ctor`) and variant *pattern* tags to the mangled type;
+        //   4. key TC's `m_structs`/`m_unions` (and CR/engines) off the mangled
+        //      names.
+        // The effect table above is part of this too (drop the program-wide
+        // "declared more than once" check once effects are per-module). We'd
+        // also want a way to name a module's operator overload across a
+        // qualified import, e.g. `A.@operator "+"` (no such syntax today; a
+        // user `+` overload is a term `MOD/+`, only reachable unqualified).
+        // Until then, examples that must coexist in one program dodge the
+        // clash by C-style prefixing their type names (`MyMod_Whatever`).
         case ExprTag::StructDecl:
         case ExprTag::UnionDecl:
         case ExprTag::AliasDecl : decls.push_back(e); break;
