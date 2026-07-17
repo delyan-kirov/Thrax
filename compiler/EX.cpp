@@ -1090,6 +1090,7 @@ Parser::parse_global()
   if (LX::TokenTag::At == after.tag)
   {
     if (after.str == "@operator") return parse_operator_def();
+    if (after.str == "@assert") return parse_ctime_assert();
     return parse_vis();
   }
 
@@ -1198,6 +1199,24 @@ Parser::parse_operator_def()
                       "in the definition of operator '%s'",
                       std::string(op.str).c_str());
   return { true, mk_def(op.str, sig, body), {} };
+}
+
+RExpr
+Parser::parse_ctime_assert()
+{
+  LX::Token at = EX_TRY(m_lex.peek()); // '@assert' (the diagnostic anchor)
+  m_lex.next();                        // '@assert'
+  Expr *cond
+    = EX_CTX(parse_expr(0), at, "in this compile-time '@assert' condition");
+
+  UT::Vu name
+    = UT::strdup(m_arena, ("%assert$" + std::to_string(m_assert_n++)).c_str());
+  Ty   *sig        = mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_INT }, {} } });
+  Expr *d          = mk_def(name, sig, cond);
+  auto &def        = std::get<ExDef>(d->as);
+  def.ctime_assert = true;
+  def.assert_anchor = at.str; // anchor for the build-time diagnostic
+  return { true, d, {} };
 }
 
 // `@array.{ size }` (or `@array.{ .size = expr }`) -- allocates a contiguous,
@@ -1760,6 +1779,11 @@ Parser::parse_type_atom()
              t,
              "expected a type name (must start uppercase), found '%s'",
              std::string(t.str).c_str());
+    m_lex.next();
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
+  }
+  case LX::TokenTag::At:
+  {
     m_lex.next();
     return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
   }

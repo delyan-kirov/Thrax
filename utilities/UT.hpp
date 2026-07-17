@@ -10,6 +10,7 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <initializer_list>
 #include <memory.h>

@@ -43,6 +43,7 @@ struct Result
   UT::Vu                      entry;   // mangled MAIN/main, or empty
   bool                        entry_takes_arg = false; // true for `Str -> Int`
   std::vector<ER::Diagnostic> diags;                   // empty on success
+  std::vector<std::pair<UT::Vu, UT::Vu>> ctime_asserts;
 };
 
 // Link `units` into one program. On any error the diagnostics are returned and

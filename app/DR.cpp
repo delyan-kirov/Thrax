@@ -6,9 +6,9 @@
 #include "IR.hpp"
 #include "IT.hpp"
 #include "MR.hpp"
+#include "OP.hpp"
 #include "TC.hpp"
 #include "UT.hpp"
-#include <fstream>
 
 namespace DR
 {
@@ -53,10 +53,7 @@ DEFER_RETURN:
   if (file_stream) std::fclose(file_stream);
   return UT::Vu{ buffer, file_len };
 }
-// Render each diagnostic against whichever unit's source owns its anchor, so a
-// multi-file build points the caret at the right file. Identical diagnostics
-// (same code, location, and message -- e.g. a global inferred in both phase B
-// and phase C) are printed once. Returns true if any diagnostic was given.
+
 bool
 print_diags(
   const std::vector<MR::Unit> &units, const std::vector<ER::Diagnostic> &diags)
@@ -91,19 +88,120 @@ print_diags(
   return !diags.empty();
 }
 
-// Read, lex, and parse every file into a unit. Returns false (after printing)
-// if any file failed to read or parse. Units are collected first so diagnostics
-// can be rendered against the right source.
-// The built-in prelude: types/values known to every module. Injected as a
-// synthetic unit ahead of the user's files, so its `List` (the blessed list
-// type that `[..]` / `::` / `[]` desugar to) is globally available -- type
-// declarations are linked into one flat program, so a bare name like `List`
-// resolves regardless of the declaring module. The file name matches the module
-// so the filename lint is satisfied.
-static const char PRELUDE_SRC[]  = "@mod PRELUDE\n"
-                                   "$ List : @union = Cons: {`T, List `T}, "
-                                   "Nil: {},\n";
+bool
+check_ctime_asserts(
+  const IR::Program           &prog,
+  const MR::Result            &mr,
+  const std::vector<MR::Unit> &units,
+  AR::Arena                   &arena)
+{
+  if (mr.ctime_asserts.empty()) return true;
+
+  IT::Machine                 m{ prog };
+  std::vector<ER::Diagnostic> ds;
+  for (const auto &[name, anchor] : mr.ctime_asserts)
+  {
+    if (IT::as_int(m.glob(name)) != 0) continue; // held
+
+    size_t line = 0; // count newlines up to the anchor in its own unit
+    for (const MR::Unit &u : units)
+    {
+      const char *b = u.content.data();
+      const char *a = anchor.data();
+      if (a && b && a >= b && a < b + u.content.size())
+      {
+        line = 1;
+        for (const char *p = b; p < a; ++p)
+          if (*p == '\n') ++line;
+        break;
+      }
+    }
+    ds.push_back(
+      ER::mk_root(arena,
+                  ER::Code::ASSERT_FAILED,
+                  anchor,
+                  line,
+                  UT::strdup(arena, "compile-time assertion failed")));
+  }
+
+  if (ds.empty()) return true;
+  print_diags(units, ds);
+  return false;
+}
+
 static const char PRELUDE_FILE[] = "PRELUDE.thx";
+
+static UT::Vu
+prelude_source(
+  AR::Arena &arena)
+{
+  std::string s     = "@mod PRELUDE\n"
+                      "$ List : @union = Cons: {`T, List `T}, Nil: {},\n";
+  auto        alias = [&](const char *name, const char *target) {
+    s += "$ ";
+    s += name;
+    s += " : @alias = ";
+    s += target;
+    s += "\n";
+  };
+  alias("Int", OP::TY_INT);
+  alias("Nat", OP::TY_NAT);
+  alias("Real", OP::TY_REAL);
+  alias("Int8", OP::TY_INT8);
+  alias("Int16", OP::TY_INT16);
+  alias("Int32", OP::TY_INT32);
+  alias("Int64", OP::TY_INT64);
+  alias("Nat8", OP::TY_NAT8);
+  alias("Nat16", OP::TY_NAT16);
+  alias("Nat32", OP::TY_NAT32);
+  alias("Nat64", OP::TY_NAT64);
+  alias("Real32", OP::TY_REAL32);
+  alias("Real64", OP::TY_REAL64);
+  alias("Str", OP::TY_STR);
+  alias("Ptr", OP::TY_PTR);
+  alias("Array", OP::TY_ARRAY);
+
+  s += "$ assert : Int -> {} = \\n = if n then {} else (C.puts \"assertion "
+       "failed\"; C.exit 1)\n";
+  return UT::strdup(arena, s.c_str());
+}
+
+// FIXME: Don't do that here
+#if defined(_WIN32)
+#define THX_LIBC "msvcrt.dll"
+#else
+#define THX_LIBC "libc.so.6"
+#endif
+static const char C_FILE[] = "C.thx";
+
+static UT::Vu
+core_c_source(
+  AR::Arena &arena)
+{
+  const std::string I = OP::TY_INT, S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
+  std::string       s = "@mod C\n";
+  auto ext = [&](const char *name, const std::string &sig, const char *sym) {
+    s += "$ ";
+    s += name;
+    s += " : ";
+    s += sig;
+    s += " = @extern.{ \"";
+    s += sym;
+    s += "\", \"";
+    s += THX_LIBC;
+    s += "\" }\n";
+  };
+
+  ext("abort", U + " -> " + U, "abort");
+  ext("exit", I + " -> " + U, "exit");
+  ext("puts", S + " -> " + I, "puts");
+  ext("putchar", I + " -> " + I, "putchar");
+  ext("getchar", U + " -> " + I, "getchar");
+  ext("malloc", I + " -> " + P, "malloc");
+  ext("free", P + " -> " + U, "free");
+  ext("strlen", S + " -> " + I, "strlen");
+  return UT::strdup(arena, s.c_str());
+}
 
 // Lex + parse one source (content/file) into `units`, forwarding diagnostics.
 static void
@@ -130,9 +228,15 @@ parse_units(
   bool                        ok = true;
   std::vector<ER::Diagnostic> parse_diags;
 
-  // The prelude first, so its declarations are in scope for every file.
-  parse_one(UT::Vu{ PRELUDE_SRC, sizeof(PRELUDE_SRC) - 1 },
+  // The prelude and the `C` libc namespace first, so their declarations are in
+  // scope for every file.
+  parse_one(prelude_source(arena),
             UT::Vu{ PRELUDE_FILE, sizeof(PRELUDE_FILE) - 1 },
+            arena,
+            units,
+            parse_diags);
+  parse_one(core_c_source(arena),
+            UT::Vu{ C_FILE, sizeof(C_FILE) - 1 },
             arena,
             units,
             parse_diags);
@@ -253,6 +357,9 @@ interpret_file(
 
   ip.prog = IR::lower(env, *ip.arena);
   collect_operations(mr.program, ip.prog);
+
+  if (!check_ctime_asserts(ip.prog, mr, units, *ip.arena))
+    ip.prog = IR::Program{};
   return ip;
 }
 
@@ -286,6 +393,8 @@ run_program(
   IR::Program prog = IR::lower(env, ir_arena);
   collect_operations(mr.program, prog);
 
+  if (!check_ctime_asserts(prog, mr, units, ir_arena)) return 1;
+
   // Run the entry via the reified-K machine: `main` for `Int`, or `main ""` for
   // `Str -> Int` (the CLI argument is empty until an `Args` type exists).
   return IT::machine_main(prog, mr.entry, mr.entry_takes_arg);
@@ -309,6 +418,7 @@ dump_ir(
 
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
+  if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
   std::printf("%s", IR::pprint(prog).c_str());
   return true;
 }
@@ -332,6 +442,8 @@ emit_c(
 
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
+
+  if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
 
   if (std::optional<std::string> why = CC::unsupported(prog))
   {
@@ -401,6 +513,8 @@ build_project(
 
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
+
+  if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
 
   if (std::optional<std::string> why = CC::unsupported(prog))
   {

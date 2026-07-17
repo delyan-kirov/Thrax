@@ -252,6 +252,8 @@ struct ExDef
   Ty    *sig;
   Expr  *def;
   UT::Vu origin{};
+  bool   ctime_assert = false;
+  UT::Vu assert_anchor{};
 };
 struct ExInt
 {

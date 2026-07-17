@@ -45,29 +45,29 @@ inline constexpr const char *NEG  = "neg"; // unary '-'
 inline constexpr const char *NOT  = "not"; // unary '!'
 inline constexpr const char *IF   = "if";
 
-// Base (scalar) type names -- the built-in, non-aggregate types the compiler
-// knows, spelled exactly as the type checker spells them (con("Int") etc.).
-// `Int`/`Nat`/`Real` are the platform-word numerics; the sized variants pin a
-// width (and signedness); `Str`/`Ptr` are pointer-shaped. This block is the
-// single source of truth: `base_types` lists them all, TC registers them as
-// nullary type constructors, and FF maps each to its C ABI descriptor.
-inline constexpr const char *TY_INT    = "Int";
-inline constexpr const char *TY_REAL   = "Real";
-inline constexpr const char *TY_STR    = "Str";
-inline constexpr const char *TY_NAT    = "Nat";
-inline constexpr const char *TY_PTR    = "Ptr";
-inline constexpr const char *TY_INT8   = "Int8";
-inline constexpr const char *TY_INT16  = "Int16";
-inline constexpr const char *TY_INT32  = "Int32";
-inline constexpr const char *TY_INT64  = "Int64";
-inline constexpr const char *TY_NAT8   = "Nat8";
-inline constexpr const char *TY_NAT16  = "Nat16";
-inline constexpr const char *TY_NAT32  = "Nat32";
-inline constexpr const char *TY_NAT64  = "Nat64";
-inline constexpr const char *TY_REAL32 = "Real32";
-inline constexpr const char *TY_REAL64 = "Real64";
+// FIXME: Don't do that
+#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
+inline constexpr const char *TY_INT = "@int32";
+inline constexpr const char *TY_NAT = "@nat32";
+#else
+inline constexpr const char *TY_INT = "@int64";
+inline constexpr const char *TY_NAT = "@nat64";
+#endif
+inline constexpr const char *TY_REAL   = "@float64";
+inline constexpr const char *TY_STR    = "@str";
+inline constexpr const char *TY_PTR    = "@ptr";
+inline constexpr const char *TY_INT8   = "@int8";
+inline constexpr const char *TY_INT16  = "@int16";
+inline constexpr const char *TY_INT32  = "@int32";
+inline constexpr const char *TY_INT64  = "@int64";
+inline constexpr const char *TY_NAT8   = "@nat8";
+inline constexpr const char *TY_NAT16  = "@nat16";
+inline constexpr const char *TY_NAT32  = "@nat32";
+inline constexpr const char *TY_NAT64  = "@nat64";
+inline constexpr const char *TY_REAL32 = "@float32";
+inline constexpr const char *TY_REAL64 = "@float64";
 inline constexpr const char *TY_ARRAY
-  = "Array"; // a sized, contiguous block of bytes
+  = "@array"; // a sized, contiguous block of bytes
 inline constexpr const char *TY_UNIT
   = "{}"; // the empty record / unit type; runtime-represented as 0
 
@@ -134,14 +134,12 @@ is_operator(
          || name == LESS || name == CONCAT;
 }
 
-// The monomorphic implementation key for one resolved overload: the operator
-// name tagged with the type that selects the implementation, e.g. "+@Int". TC
-// rewrites a resolved use to this string; IT dispatches on it. Both ends build
-// it through this one helper, so a typo is impossible rather than silent.
+// Monomorphic implementation key
 inline std::string
 mono(
   const char *name, const char *ty)
 {
+  if (ty && ty[0] == '@') ty += 1;
   return std::string{ name } + "@" + ty;
 }
 

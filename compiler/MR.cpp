@@ -112,6 +112,8 @@ struct Linker
   std::vector<Expr *>                         decls; // struct/union (global)
   std::vector<std::pair<UT::Vu, Expr *>>      defs;  // (module, Def node)
   std::vector<ER::Diagnostic>                 diags;
+  std::unordered_map<std::string, std::vector<std::string>> edges;
+  std::string                                               m_current;
 
   // Declared effects: effect name -> (operation source name -> its canonical
   // `Effect.op` identity). Effect names are global, so this is program-wide.
@@ -329,6 +331,12 @@ struct Linker
     for (auto &kv : md.symbols)
       for (auto &si : kv.second) sc.unq[kv.first].push_back(si.mangled);
 
+    auto pit = modules.find("PRELUDE");
+    if (pit != modules.end() && &pit->second != &md)
+      for (auto &kv : pit->second.symbols)
+        for (auto &si : kv.second)
+          if (si.is_public) sc.unq[kv.first].push_back(si.mangled);
+
     for (auto &im : md.imports)
     {
       UT::Vu srcMod, srcSym;
@@ -511,6 +519,7 @@ struct Linker
       if (!seen) uniq.push_back(c);
     }
     if (uniq.empty()) return;
+    for (UT::Vu c : uniq) edges[m_current].push_back(std::string(c));
     if (uniq.size() == 1 && !is_operator)
     {
       auto &v     = std::get<EX::ExVar>(e->as);
@@ -796,13 +805,11 @@ struct Linker
       Scope              &sc = scopes[std::string(pr.first)];
       auto               &d  = std::get<EX::ExDef>(pr.second->as);
       std::vector<UT::Vu> locals;
+      m_current = std::string(d.name);
       resolve(d.def, std::string(pr.first), sc, locals);
     }
 
     Result r;
-    r.program = EX::Exprs{ arena };
-    for (auto *dnode : decls) r.program.push(*dnode);
-    for (auto &pr : defs) r.program.push(*pr.second);
 
     // Entry point: module MAIN's `main`, with a supported signature. Absence of
     // an entry is not an error here (a library or test snippet need not have
@@ -827,6 +834,43 @@ struct Linker
           r.entry_takes_arg = takes_arg;
         }
       }
+    }
+
+    // Dead-global elimination
+    std::vector<std::string> roots;
+    if (r.entry.size()) roots.push_back(std::string(r.entry));
+    for (auto &pr : defs)
+    {
+      auto &d = std::get<EX::ExDef>(pr.second->as);
+      if (d.ctime_assert)
+      {
+        roots.push_back(std::string(d.name));
+        r.ctime_asserts.push_back({ d.name, d.assert_anchor });
+      }
+    }
+
+    std::unordered_set<std::string> live;
+    {
+      std::vector<std::string> stack = roots;
+      for (const std::string &g : roots) live.insert(g);
+      while (stack.size())
+      {
+        std::string g = std::move(stack.back());
+        stack.pop_back();
+        auto it = edges.find(g);
+        if (it == edges.end()) continue;
+        for (const std::string &t : it->second)
+          if (live.insert(t).second) stack.push_back(t);
+      }
+    }
+
+    r.program = EX::Exprs{ arena };
+    for (auto *dnode : decls) r.program.push(*dnode);
+    for (auto &pr : defs)
+    {
+      auto &d = std::get<EX::ExDef>(pr.second->as);
+      if (roots.empty() || live.count(std::string(d.name)))
+        r.program.push(*pr.second);
     }
 
     r.diags = std::move(diags);

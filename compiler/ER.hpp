@@ -49,7 +49,8 @@ namespace ER
   X(UNKNOWN_MODULE)                                                            \
   X(PRIVATE_SYMBOL)                                                            \
   X(NO_ENTRY)                                                                  \
-  X(ENTRY_SIGNATURE)
+  X(ENTRY_SIGNATURE)                                                           \
+  X(ASSERT_FAILED)
 
 enum class Code
 {
