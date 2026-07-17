@@ -467,8 +467,9 @@ struct FieldInit
 // nominal record type; it produces no runtime value.
 struct ExStructDecl
 {
-  UT::Vu             name;
+  UT::Vu             name; // mangled `MOD/Name` after MR (else the source name)
   UT::Vec<FieldDecl> fields;
+  UT::Vu             origin; // the source-slice name, for diagnostics
 };
 // A struct literal: `Type.{ field = expr, ... }`. Qualified form only, so
 // `type_name` is always set (bare `.{...}` is a later increment).
@@ -499,8 +500,9 @@ struct VariantDecl
 // type; it produces no runtime value.
 struct ExUnionDecl
 {
-  UT::Vu               name;
+  UT::Vu               name; // mangled `MOD/Name` after MR (else source name)
   UT::Vec<VariantDecl> variants;
+  UT::Vu               origin; // the source-slice name, for diagnostics
 };
 // An effect declaration: `$ Name : @effect = op : A -> B, ...`. Declares a set
 // of OPERATIONS (reusing FieldDecl: `name` is the operation, `ty` its `A -> B`
@@ -509,16 +511,18 @@ struct ExUnionDecl
 // effect name is a TypeName (uppercase), each operation a variable (lowercase).
 struct ExEffectDecl
 {
-  UT::Vu             name;
+  UT::Vu             name; // mangled `MOD/Name` after MR (else the source name)
   UT::Vec<FieldDecl> ops;
+  UT::Vu             origin; // the source-slice name, for diagnostics
 };
 // A type alias declaration: `$ Name : @alias = target`. Fully transparent --
 // the type checker resolves `Name` to `target` wherever it is written, so the
 // two are interchangeable (like a C typedef). Produces no runtime value.
 struct ExAliasDecl
 {
-  UT::Vu name;
+  UT::Vu name; // mangled `MOD/Name` after MR (else the source name)
   Ty    *target;
+  UT::Vu origin; // the source-slice name, for diagnostics
 };
 // A variant construction `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload).
 // `fields` are the payload values (reusing FieldInit): named when any carries a

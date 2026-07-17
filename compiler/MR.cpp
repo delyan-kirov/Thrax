@@ -46,6 +46,18 @@ struct SymInfo
   Expr  *node;
 };
 
+// One module-level TYPE symbol (a struct/union/alias/effect name). `resolved`
+// is its program-wide identity -- `MOD/Name` for a user module, or the bare
+// source name for the exempt prelude/`C` modules whose types stay global
+// (`List`, `Int`, ...). `is_effect` marks an effect name, which also owns
+// operations.
+struct TypeSym
+{
+  UT::Vu resolved;
+  bool   is_public;
+  bool   is_effect;
+};
+
 // All fragments of one module, merged across files: its symbols and the imports
 // every fragment requested. A name maps to a *list* of definitions: a module
 // may overload a term name, giving each definition a distinct mangled global
@@ -54,15 +66,19 @@ struct ModuleData
 {
   UT::Vu                                                name;
   std::unordered_map<std::string, std::vector<SymInfo>> symbols;
+  std::unordered_map<std::string, TypeSym>              types;
   std::vector<EX::ExImport>                             imports;
 };
 
 // A module's name-resolution scope: the unqualified candidates a bare name may
-// resolve to, and the prefixes usable for qualified `PFX.x` access.
+// resolve to, the prefixes usable for qualified `PFX.x` access, and the visible
+// type/effect names (bare source name -> program-wide `resolved` identity) used
+// to rewrite every type reference to its owning module.
 struct Scope
 {
   std::unordered_map<std::string, std::vector<UT::Vu>> unq;
   std::unordered_map<std::string, UT::Vu>              alias;
+  std::unordered_map<std::string, UT::Vu>              tvis;
 };
 
 using Locals = std::vector<UT::Vu>;
@@ -109,16 +125,18 @@ struct Linker
   AR::Arena                                  &arena;
   std::vector<MR::Unit>                      &units;
   std::unordered_map<std::string, ModuleData> modules;
-  std::vector<Expr *>                         decls; // struct/union (global)
+  std::vector<std::pair<UT::Vu, Expr *>>      decls; // (module, type decl)
   std::vector<std::pair<UT::Vu, Expr *>>      defs;  // (module, Def node)
   std::vector<ER::Diagnostic>                 diags;
   std::unordered_map<std::string, std::vector<std::string>> edges;
   std::string                                               m_current;
 
-  // Declared effects: effect name -> (operation source name -> its canonical
-  // `Effect.op` identity). Effect names are global, so this is program-wide.
-  // Used to resolve an effect-qualified `Effect.op` and a handler clause's
-  // operation.
+  // Declared effects: RESOLVED effect name (`MOD/Eff`) -> (operation source
+  // name
+  // -> its canonical `MOD/Eff.op` identity). Keyed by the program-wide resolved
+  // name, so same-named effects in different modules stay distinct. Used to
+  // resolve an effect-qualified `Eff.op` and a handler clause's operation (the
+  // bare `Eff` is mapped to its resolved name through the module's `tvis`).
   std::unordered_map<std::string, std::unordered_map<std::string, UT::Vu>>
     effects;
 
@@ -176,9 +194,10 @@ struct Linker
     return UT::strdup(arena, UT::Vu{ s.data(), s.size() });
   }
 
-  // `Effect.op`, the canonical program-wide identity of an operation, copied
-  // into the arena. The '.' separator cannot occur in a mangled global
-  // (`MOD/name`), so an operation identity never collides with one.
+  // `MOD/Eff.op`, the canonical program-wide identity of an operation, copied
+  // into the arena. `eff` is the effect's already-resolved name; the '.'
+  // separator cannot occur in a mangled global (`MOD/name`), so an operation
+  // identity never collides with one.
   UT::Vu
   op_identity(
     UT::Vu eff, UT::Vu op)
@@ -213,6 +232,39 @@ struct Linker
         M,
         "file '" + base + "' does not match module '" + Ms + "': name it '" + Ms
           + ".thx' or '" + Ms + "_impl<Tag>.thx'");
+  }
+
+  // The prelude and the `C` libc namespace own the built-in-ish global types
+  // (`List`, the numeric aliases, ...) whose names are hard-wired into the rest
+  // of the pipeline (CR's `List`/`Cons`/`Nil`, TC's alias table, ...). Their
+  // type names stay bare and program-global; every other module's types are
+  // namespaced to `MOD/Name`.
+  static bool
+  type_exempt(
+    UT::Vu M)
+  {
+    return M == "PRELUDE" || M == "C";
+  }
+
+  // Register a type/effect declaration under its module: rewrite its name to
+  // the program-wide `resolved` identity (mangled for a user module, bare for
+  // an exempt one), keep the source name as `origin` for diagnostics, and
+  // record it in `md.types`. Returns the resolved name.
+  UT::Vu
+  register_type(
+    ModuleData &md, UT::Vu &name, UT::Vu &origin, bool priv, bool is_effect)
+  {
+    origin               = name;
+    UT::Vu      resolved = type_exempt(md.name) ? name : mangle(md.name, name);
+    std::string key(name);
+    if (md.types.count(key))
+      err(ER::Code::DUPLICATE_SYMBOL,
+          name,
+          "type '" + key + "' is declared more than once in module '"
+            + std::string(md.name) + "'");
+    md.types[key] = { resolved, !priv, is_effect };
+    name          = resolved;
+    return resolved;
   }
 
   // Pass 1: split each file into its module, mangle every term definition, and
@@ -272,52 +324,51 @@ struct Linker
         }
         case ExprTag::EffectDecl:
         {
-          // Register each operation as a module symbol whose mangled identity
-          // is the canonical `Effect.op`, so a bare op resolves through the
-          // ordinary scope/overload path and same-named ops from different
-          // effects get distinct identities. Also record the effect in the
-          // program-wide table for qualified `Effect.op` and clause-op
-          // resolution.
-          auto       &ed = std::get<EX::ExEffectDecl>(e->as);
-          std::string ekey(ed.name);
-          if (effects.count(ekey))
-            err(ER::Code::DUPLICATE_SYMBOL,
-                ed.name,
-                "effect '" + ekey + "' is declared more than once");
-          auto &opmap = effects[ekey];
+          // Namespace the effect (`MOD/Eff`), then register each operation as a
+          // module symbol whose identity is the canonical `MOD/Eff.op`: a bare
+          // op resolves through the ordinary scope/overload path and same-named
+          // ops from different effects get distinct identities. Also record the
+          // effect in the program-wide table (keyed by the resolved name) for
+          // qualified `Eff.op` and clause-op resolution.
+          auto  &ed       = std::get<EX::ExEffectDecl>(e->as);
+          UT::Vu resolved = register_type(md, ed.name, ed.origin, priv, true);
+          auto  &opmap    = effects[std::string(resolved)];
           for (auto &op : ed.ops)
           {
-            UT::Vu id                   = op_identity(ed.name, op.name);
+            UT::Vu id                   = op_identity(resolved, op.name);
             opmap[std::string(op.name)] = id;
-            md.symbols[std::string(op.name)].push_back({ id, true, e });
+            md.symbols[std::string(op.name)].push_back({ id, !priv, e });
           }
-          decls.push_back(e);
+          decls.push_back({ M, e });
           break;
         }
-        // FIXME(per-module-types): the whole type world is NOT namespaced.
-        // Terms mangle to `MOD/name` and resolve as `MOD.name`; type-level
-        // names are pushed here verbatim into one flat global table, so two
-        // modules can't both define `Point`/`List`/`Exn` etc. To close this,
-        // give types the same treatment as terms:
-        //   1. mangle struct/union/alias/effect names to `MOD/Name` and
-        //      register them per module (like `md.symbols`);
-        //   2. resolve qualified type syntax `A.MyTyp` in `Ty::Con` and rewrite
-        //      every `Ty::Con` in signatures / struct fields / union payloads;
-        //   3. rewrite constructor + field refs (`Point.{..}`, `.Cons`,
-        //      `Type.Ctor`) and variant *pattern* tags to the mangled type;
-        //   4. key TC's `m_structs`/`m_unions` (and CR/engines) off the mangled
-        //      names.
-        // The effect table above is part of this too (drop the program-wide
-        // "declared more than once" check once effects are per-module). We'd
-        // also want a way to name a module's operator overload across a
-        // qualified import, e.g. `A.@operator "+"` (no such syntax today; a
-        // user `+` overload is a term `MOD/+`, only reachable unqualified).
-        // Until then, examples that must coexist in one program dodge the
-        // clash by C-style prefixing their type names (`MyMod_Whatever`).
+        // Per-module types: a struct/union/alias name is namespaced to
+        // `MOD/Name` (except the exempt prelude/`C` globals) and every
+        // reference
+        // -- `Ty::Con` in signatures, constructor/field literals, and variant
+        // patterns -- is rewritten to it in the type-resolution pass below.
         case ExprTag::StructDecl:
+        {
+          auto &sd = std::get<EX::ExStructDecl>(e->as);
+          register_type(md, sd.name, sd.origin, priv, false);
+          decls.push_back({ M, e });
+          break;
+        }
         case ExprTag::UnionDecl:
-        case ExprTag::AliasDecl : decls.push_back(e); break;
-        default                 : break; // nothing else is valid at top level
+        {
+          auto &ud = std::get<EX::ExUnionDecl>(e->as);
+          register_type(md, ud.name, ud.origin, priv, false);
+          decls.push_back({ M, e });
+          break;
+        }
+        case ExprTag::AliasDecl:
+        {
+          auto &ad = std::get<EX::ExAliasDecl>(e->as);
+          register_type(md, ad.name, ad.origin, priv, false);
+          decls.push_back({ M, e });
+          break;
+        }
+        default: break; // nothing else is valid at top level
         }
       }
     }
@@ -351,11 +402,25 @@ struct Linker
     for (auto &kv : md.symbols)
       for (auto &si : kv.second) sc.unq[kv.first].push_back(si.mangled);
 
+    // Own types (including private ones) are visible unqualified by their bare
+    // source name; a reference is rewritten to the resolved identity.
+    for (auto &kv : md.types) sc.tvis[kv.first] = kv.second.resolved;
+
+    auto import_types = [&](ModuleData &src) {
+      for (auto &kv : src.types)
+        if (kv.second.is_public) sc.tvis[kv.first] = kv.second.resolved;
+    };
+
     auto pit = modules.find("PRELUDE");
     if (pit != modules.end() && &pit->second != &md)
+    {
       for (auto &kv : pit->second.symbols)
         for (auto &si : kv.second)
           if (si.is_public) sc.unq[kv.first].push_back(si.mangled);
+      // The prelude's global types (`List`, the numeric aliases, ...) are in
+      // scope everywhere, unqualified.
+      import_types(pit->second);
+    }
 
     for (auto &im : md.imports)
     {
@@ -392,10 +457,11 @@ struct Linker
         // Whole-module import.
         if (!im.has_eq)
         {
-          // `with MOD` -- unqualified public symbols, plus `MOD.x`.
+          // `with MOD` -- unqualified public symbols and types, plus `MOD.x`.
           for (auto &kv : src.symbols)
             for (auto &si : kv.second)
               if (si.is_public) sc.unq[kv.first].push_back(si.mangled);
+          import_types(src);
           add_alias(sc, im.lhs_name, srcMod);
         }
         else
@@ -476,18 +542,24 @@ struct Linker
     }
     else
     {
-      // Not a module/alias: an effect-qualified operation `Effect.op`?
-      auto eff = effects.find(PFX);
-      if (eff != effects.end())
+      // Not a module/alias: an effect-qualified operation `Eff.op`? Map the
+      // bare effect name through the module's visible types to its resolved
+      // identity.
+      auto tv = sc.tvis.find(PFX);
+      if (tv != sc.tvis.end())
       {
-        auto oit = eff->second.find(nm);
-        if (oit == eff->second.end())
-          err(ER::Code::UNKNOWN_SYMBOL,
-              v.name,
-              "effect '" + PFX + "' has no operation '" + nm + "'");
-        else
-          out.push_back(oit->second);
-        return;
+        auto eff = effects.find(std::string(tv->second));
+        if (eff != effects.end())
+        {
+          auto oit = eff->second.find(nm);
+          if (oit == eff->second.end())
+            err(ER::Code::UNKNOWN_SYMBOL,
+                v.name,
+                "effect '" + PFX + "' has no operation '" + nm + "'");
+          else
+            out.push_back(oit->second);
+          return;
+        }
       }
       err(ER::Code::UNKNOWN_MODULE,
           v.qualifier,
@@ -556,21 +628,23 @@ struct Linker
     e->as  = std::move(ov);
   }
 
-  // Resolve a handler clause's operation to its canonical `Effect.op` identity,
-  // rewriting `c.op` (and clearing `c.qualifier`). A clause names exactly one
-  // operation, so -- unlike a perform site -- it is never an ExOverload and
-  // cannot be settled by type: an unqualified op shared by several effects must
-  // be qualified `Effect.op`. (Effects are program-wide, so resolution is by
-  // the global effect table, not module scope.)
+  // Resolve a handler clause's operation to its canonical `MOD/Eff.op`
+  // identity, rewriting `c.op` (and clearing `c.qualifier`). A clause names
+  // exactly one operation, so -- unlike a perform site -- it is never an
+  // ExOverload and cannot be settled by type: an unqualified op shared by
+  // several effects visible in this module must be qualified `Eff.op`. Effects
+  // visible to the module are its `tvis` entries that name an effect.
   void
   resolve_clause_op(
-    EX::HandlerClause &c)
+    EX::HandlerClause &c, Scope &sc)
   {
     std::string op(c.op);
     if (c.qualifier.size())
     {
       std::string eff(c.qualifier);
-      auto        eit = effects.find(eff);
+      auto        tv  = sc.tvis.find(eff);
+      auto        eit = tv == sc.tvis.end() ? effects.end()
+                                            : effects.find(std::string(tv->second));
       if (eit == effects.end())
         return (void)err(ER::Code::UNKNOWN_MODULE,
                          c.qualifier,
@@ -585,15 +659,17 @@ struct Linker
       return;
     }
 
-    // Bare: gather every effect declaring this operation name.
-    std::vector<std::string> owners;
+    // Bare: gather every effect VISIBLE to this module that declares this op.
+    std::vector<std::string> owners; // bare names, for the diagnostic
     UT::Vu                   hit{};
-    for (auto &ekv : effects)
+    for (auto &tv : sc.tvis)
     {
-      auto oit = ekv.second.find(op);
-      if (oit != ekv.second.end())
+      auto eit = effects.find(std::string(tv.second));
+      if (eit == effects.end()) continue;
+      auto oit = eit->second.find(op);
+      if (oit != eit->second.end())
       {
-        owners.push_back(ekv.first);
+        owners.push_back(tv.first);
         hit = oit->second;
       }
     }
@@ -732,8 +808,8 @@ struct Linker
       resolve(h.body, Mkey, sc, locals); // k is NOT in scope in the body
       for (size_t c = 0; c < h.clauses.size(); ++c)
       {
-        resolve_clause_op(
-          h.clauses[c]); // rewrite op to its `Effect.op` identity
+        resolve_clause_op(h.clauses[c],
+                          sc); // rewrite op to its `MOD/Eff.op` identity
         size_t base = locals.size();
         locals.push_back(h.clauses[c].arg); // the operation's argument
         locals.push_back(h.k);              // the shared continuation
@@ -774,6 +850,202 @@ struct Linker
       return;
     }
     default: return; // Int / Real / Str / Extern / Unknown: nothing to resolve
+    }
+  }
+
+  /*--- Pass 2c: type-reference rewriting -------------------------------------
+   * With every type's resolved identity now known, rewrite each reference --
+   * `Ty::Con` names (and effect-row labels) in signatures, constructor/field
+   * literals, and variant/struct patterns -- to its owning module's `MOD/Name`.
+   * A name not in `tvis` (a `@`-sigil builtin, a type variable, or a genuine
+   * unknown) is left untouched for TC to interpret or reject. */
+
+  // Rewrite a bare type/effect name to its resolved identity, or leave it.
+  UT::Vu
+  rewrite_ty_name(
+    UT::Vu name, Scope &sc)
+  {
+    if (!name.size()) return name;
+    auto it = sc.tvis.find(std::string(name));
+    return it == sc.tvis.end() ? name : it->second;
+  }
+
+  void
+  rewrite_ty(
+    EX::Ty *t, Scope &sc)
+  {
+    if (!t) return;
+    switch (t->tag)
+    {
+    case EX::TyTag::Con:
+    {
+      auto &c = std::get<EX::TyCon>(t->as);
+      c.name  = rewrite_ty_name(c.name, sc);
+      for (EX::Ty *a : c.args) rewrite_ty(a, sc);
+      return;
+    }
+    case EX::TyTag::Arrow:
+    {
+      auto &a = std::get<EX::TyArrow>(t->as);
+      rewrite_ty(a.from, sc);
+      rewrite_ty(a.to, sc);
+      // Effect-row labels name effects; the tail is a row variable (untouched).
+      for (size_t i = 0; i < a.eff_labels.size(); ++i)
+        a.eff_labels[i] = rewrite_ty_name(a.eff_labels[i], sc);
+      return;
+    }
+    case EX::TyTag::Var: return;
+    }
+  }
+
+  void
+  rewrite_pat_types(
+    EX::Pattern *p, Scope &sc)
+  {
+    switch (p->tag)
+    {
+    case EX::PatTag::Struct:
+    {
+      auto &ps     = std::get<EX::PatStruct>(p->as);
+      ps.type_name = rewrite_ty_name(ps.type_name, sc);
+      for (EX::FieldPat &f : ps.fields) rewrite_pat_types(f.pat, sc);
+      return;
+    }
+    case EX::PatTag::Variant:
+    {
+      auto &pv     = std::get<EX::PatVariant>(p->as);
+      pv.type_name = rewrite_ty_name(pv.type_name, sc);
+      for (EX::FieldPat &f : pv.fields) rewrite_pat_types(f.pat, sc);
+      return;
+    }
+    case EX::PatTag::StrPrefix:
+      rewrite_pat_types(std::get<EX::PatStrPrefix>(p->as).rest, sc);
+      return;
+    case EX::PatTag::Seq:
+    {
+      auto &pq = std::get<EX::PatSeq>(p->as);
+      for (size_t i = 0; i < pq.elems.size(); ++i)
+        rewrite_pat_types(pq.elems[i], sc);
+      if (pq.rest) rewrite_pat_types(pq.rest, sc);
+      return;
+    }
+    default: return; // Wild / Var / Int / Real / Str: no type name
+    }
+  }
+
+  void
+  rewrite_types_expr(
+    Expr *e, Scope &sc)
+  {
+    switch (e->tag)
+    {
+    case ExprTag::StructLit:
+    {
+      auto &sl     = std::get<EX::ExStructLit>(e->as);
+      sl.type_name = rewrite_ty_name(sl.type_name, sc);
+      for (size_t k = 0; k < sl.fields.size(); ++k)
+        rewrite_types_expr(sl.fields[k].val, sc);
+      return;
+    }
+    case ExprTag::VariantLit:
+    {
+      auto &vl     = std::get<EX::ExVariantLit>(e->as);
+      vl.type_name = rewrite_ty_name(vl.type_name, sc);
+      for (size_t k = 0; k < vl.fields.size(); ++k)
+        rewrite_types_expr(vl.fields[k].val, sc);
+      return;
+    }
+    case ExprTag::App:
+    {
+      auto &a = std::get<EX::ExApp>(e->as);
+      rewrite_types_expr(a.fn, sc);
+      rewrite_types_expr(a.arg, sc);
+      return;
+    }
+    case ExprTag::FnDef:
+    {
+      auto &f = std::get<EX::ExFnDef>(e->as);
+      if (f.param_pat) rewrite_pat_types(f.param_pat, sc);
+      rewrite_types_expr(f.body, sc);
+      return;
+    }
+    case ExprTag::Let:
+    {
+      auto &l = std::get<EX::ExLet>(e->as);
+      if (l.pat) rewrite_pat_types(l.pat, sc);
+      if (l.sig) rewrite_ty(l.sig, sc);
+      rewrite_types_expr(l.val, sc);
+      rewrite_types_expr(l.body, sc);
+      return;
+    }
+    case ExprTag::Match:
+    {
+      auto &m = std::get<EX::ExMatch>(e->as);
+      rewrite_types_expr(m.scrut, sc);
+      for (size_t i = 0; i < m.arms.size(); ++i)
+      {
+        rewrite_pat_types(m.arms[i].pat, sc);
+        if (m.arms[i].guard) rewrite_types_expr(m.arms[i].guard, sc);
+        rewrite_types_expr(m.arms[i].body, sc);
+      }
+      rewrite_types_expr(m.alt, sc);
+      return;
+    }
+    case ExprTag::If:
+    {
+      auto &i = std::get<EX::ExIf>(e->as);
+      rewrite_types_expr(i.cond, sc);
+      rewrite_types_expr(i.then, sc);
+      rewrite_types_expr(i.alt, sc);
+      return;
+    }
+    case ExprTag::Handle:
+    {
+      auto &h = std::get<EX::ExHandle>(e->as);
+      rewrite_types_expr(h.body, sc);
+      for (size_t c = 0; c < h.clauses.size(); ++c)
+        rewrite_types_expr(h.clauses[c].body, sc);
+      if (h.else_body) rewrite_types_expr(h.else_body, sc);
+      return;
+    }
+    case ExprTag::Field:
+      rewrite_types_expr(std::get<EX::ExField>(e->as).record, sc);
+      return;
+    case ExprTag::SeqLit:
+    {
+      auto &sl = std::get<EX::ExSeqLit>(e->as);
+      for (size_t k = 0; k < sl.elems.size(); ++k)
+        rewrite_types_expr(sl.elems[k], sc);
+      return;
+    }
+    default: return; // Var / Int / Real / Str / Extern / Overload / Unknown
+    }
+  }
+
+  // Rewrite the type references embedded in a top-level type declaration's
+  // field / variant-payload / alias-target / operation signatures.
+  void
+  rewrite_decl_types(
+    Expr *e, Scope &sc)
+  {
+    switch (e->tag)
+    {
+    case ExprTag::StructDecl:
+      for (auto &f : std::get<EX::ExStructDecl>(e->as).fields)
+        rewrite_ty(f.ty, sc);
+      return;
+    case ExprTag::UnionDecl:
+      for (auto &v : std::get<EX::ExUnionDecl>(e->as).variants)
+        for (auto &f : v.fields) rewrite_ty(f.ty, sc);
+      return;
+    case ExprTag::AliasDecl:
+      rewrite_ty(std::get<EX::ExAliasDecl>(e->as).target, sc);
+      return;
+    case ExprTag::EffectDecl:
+      for (auto &op : std::get<EX::ExEffectDecl>(e->as).ops)
+        rewrite_ty(op.ty, sc);
+      return;
+    default: return;
     }
   }
 
@@ -827,6 +1099,19 @@ struct Linker
       std::vector<UT::Vu> locals;
       m_current = std::string(d.name);
       resolve(d.def, std::string(pr.first), sc, locals);
+    }
+
+    // Pass 2c: rewrite type references (decl signatures, def signatures, and
+    // the constructor/pattern references in every body) to their resolved
+    // names.
+    for (auto &pr : decls)
+      rewrite_decl_types(pr.second, scopes[std::string(pr.first)]);
+    for (auto &pr : defs)
+    {
+      Scope &sc = scopes[std::string(pr.first)];
+      auto  &d  = std::get<EX::ExDef>(pr.second->as);
+      rewrite_ty(d.sig, sc);
+      rewrite_types_expr(d.def, sc);
     }
 
     Result r;
@@ -885,7 +1170,7 @@ struct Linker
     }
 
     r.program = EX::Exprs{ arena };
-    for (auto *dnode : decls) r.program.push(*dnode);
+    for (auto &pr : decls) r.program.push(*pr.second);
     for (auto &pr : defs)
     {
       auto &d = std::get<EX::ExDef>(pr.second->as);

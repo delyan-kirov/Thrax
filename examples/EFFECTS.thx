@@ -6,15 +6,15 @@
 # type carries the effects it may perform as a row on the arrow: `A -> <E> B`; a
 # bare arrow is pure, and an unhandled effect is a compile-time error.
 
-$ EFFECTS_Exn : @effect = throw : Str -> `a,  # never resumes -> polymorphic result
+$ Exn : @effect = throw : Str -> `a,  # never resumes -> polymorphic result
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
 # Exception: the clause ignores k (resume 0 times). Exn is handled here, so
 # safeDiv is pure at its boundary.
 $ safeDiv : Int -> Int -> Int = \a b =
-    do if b ?= 0 then EFFECTS_Exn.throw "div0" else a / b
-    ctl k is EFFECTS_Exn.throw msg = 0 - 1
+    do if b ?= 0 then Exn.throw "div0" else a / b
+    ctl k is Exn.throw msg = 0 - 1
 
 # Generator: resume once, summing every yielded value; else is the base case.
 # The argument performs Yield, so its arrow is `{} -> <Yield> {}`.

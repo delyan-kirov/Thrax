@@ -1461,7 +1461,7 @@ Parser::parse_struct_decl(
   }
 
   Expr e{ ExprTag::StructDecl };
-  e.as = ExStructDecl{ name.str, fields };
+  e.as = ExStructDecl{ name.str, fields, name.str };
   return { true, alloc(e), {} };
 }
 
@@ -1597,7 +1597,7 @@ Parser::parse_union_decl(
   }
 
   Expr e{ ExprTag::UnionDecl };
-  e.as = ExUnionDecl{ name.str, variants };
+  e.as = ExUnionDecl{ name.str, variants, name.str };
   return { true, alloc(e), {} };
 }
 
@@ -1612,7 +1612,7 @@ Parser::parse_alias_decl(
                       "in the target of type alias '%s'",
                       std::string(name.str).c_str());
   Expr e{ ExprTag::AliasDecl };
-  e.as = ExAliasDecl{ name.str, target };
+  e.as = ExAliasDecl{ name.str, target, name.str };
   return { true, alloc(e), {} };
 }
 
@@ -1659,7 +1659,7 @@ Parser::parse_effect_decl(
   }
 
   Expr e{ ExprTag::EffectDecl };
-  e.as = ExEffectDecl{ name.str, ops };
+  e.as = ExEffectDecl{ name.str, ops, name.str };
   return { true, alloc(e), {} };
 }
 

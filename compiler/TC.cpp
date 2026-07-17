@@ -3706,7 +3706,7 @@ Checker::run(
     StructFields      flds;
     TyVarEnv          tv;
     VarIds            params;
-    m_anchor = sd.name;
+    m_anchor = sd.origin.size() ? sd.origin : sd.name;
     for (size_t f = 0; f < sd.fields.size(); ++f)
     {
       Type *ft = sig_to_type(sd.fields[f].ty, tv, false, &params);
@@ -3725,7 +3725,7 @@ Checker::run(
     Variants         variants;
     TyVarEnv         tv;
     VarIds           params;
-    m_anchor = ud.name;
+    m_anchor = ud.origin.size() ? ud.origin : ud.name;
     for (size_t v = 0; v < ud.variants.size(); ++v)
     {
       StructFields flds;
