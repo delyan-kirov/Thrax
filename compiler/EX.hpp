@@ -43,6 +43,8 @@ private:
   UT_NODISCARD RExpr    parse_import();   // `$ with ...`
   UT_NODISCARD RExpr    parse_vis();      // `$ @private` / `$ @public`
   UT_NODISCARD RExpr    parse_operator_def(); // `$ @operator.{<op>} : ty = e`
+  UT_NODISCARD RExpr    parse_ctime_assert(); // `$ @assert <expr>`
+  size_t                m_assert_n = 0;       // fresh compile-time assert names
   UT_NODISCARD RExpr    parse_array();        // `@array.{ size }` expression
   UT_NODISCARD RExpr    parse_extern();
   UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);
@@ -97,15 +99,15 @@ private:
   UT_NODISCARD Expr *
   mk_cons(Expr *head, Expr *tail, UT::Vu anchor, size_t line);
   UT_NODISCARD Expr *mk_nil(UT::Vu anchor, size_t line);
-  UT_NODISCARD Pattern *
+  UT_NODISCARD Pattern                    *
   mk_cons_pat(Pattern *h, Pattern *t, UT::Vu a, size_t ln);
-  UT_NODISCARD Expr    *mk_if(Expr *cond, Expr *then, Expr *alt);
-  UT_NODISCARD Expr    *mk_let(UT::Vu var, Expr *val, Expr *body);
-  UT_NODISCARD Expr    *mk_fndef(UT::Vu param, Expr *body);
-  UT_NODISCARD Expr    *mk_def(UT::Vu name, Ty *sig, Expr *def);
-  UT_NODISCARD Expr    *mk_extern(UT::Vu symbol, UT::Vu lib);
-  UT_NODISCARD Expr    *mk_field(Expr *record, UT::Vu field);
-  UT_NODISCARD Ty      *mk_ty(Ty t);
+  UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
+  UT_NODISCARD Expr *mk_let(UT::Vu var, Expr *val, Expr *body);
+  UT_NODISCARD Expr *mk_fndef(UT::Vu param, Expr *body);
+  UT_NODISCARD Expr *mk_def(UT::Vu name, Ty *sig, Expr *def);
+  UT_NODISCARD Expr *mk_extern(UT::Vu symbol, UT::Vu lib);
+  UT_NODISCARD Expr *mk_field(Expr *record, UT::Vu field);
+  UT_NODISCARD Ty   *mk_ty(Ty t);
   UT_NODISCARD Pattern *alloc_pat(Pattern p);
 };
 

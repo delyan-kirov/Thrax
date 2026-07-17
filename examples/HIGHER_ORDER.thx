@@ -16,3 +16,6 @@ $id_five   = id 5
 $const_ab  = const 42 99
 $inc_twice = apply_twice inc 0
 $dbl_twice = apply_twice dbl 3
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = id_five ; const_ab ; inc_twice ; dbl_twice ; 0

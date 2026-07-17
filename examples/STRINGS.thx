@@ -44,4 +44,7 @@ $ StrList : @union =
 $ items : StrList = StrList.Cons.{ "one\n", StrList.Cons.{ "two\t", .Nil } }
 
 $ string_concat : Str = "Hello" ++ " " ++ "world" ++ "\n"
-$ ck_concat : Int = if (string_concat ?= "Hello world\n") then 0 else 1 / 0
+$ ck_concat : Int = if (string_concat ?= "Hello world\n") then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_concat

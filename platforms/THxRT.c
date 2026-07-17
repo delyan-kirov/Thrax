@@ -150,18 +150,27 @@ typedef struct
   size_t      arity;
 } BuiltinArity;
 
+// FIXME: Don't do that
+#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
+#define THX_INT "@int32"
+#else
+#define THX_INT "@int64"
+#endif
+#define THX_REAL "@float64"
+#define THX_STR "@str"
+
 static const BuiltinArity g_builtins[] = {
-  { "array_len", 1 },  { "array_cap", 1 }, { "array_get", 2 },
-  { "array_push", 2 }, { "array_set", 3 }, { "array_slice", 3 },
-  { "%concat", 2 },    { "?=@Str", 2 },    { "%array", 1 },
-  { "neg@Int", 1 },    { "neg@Real", 1 },  { "not@Int", 1 },
-  { "+@Int", 2 },      { "-@Int", 2 },     { "*@Int", 2 },
-  { "/@Int", 2 },      { "%@Int", 2 },     { "?=@Int", 2 },
-  { "?>@Int", 2 },     { "?<@Int", 2 },    { "<=@Int", 2 },
-  { ">=@Int", 2 },     { "+@Real", 2 },    { "-@Real", 2 },
-  { "*@Real", 2 },     { "/@Real", 2 },    { "%@Real", 2 },
-  { "?=@Real", 2 },    { "?>@Real", 2 },   { "?<@Real", 2 },
-  { "<=@Real", 2 },    { ">=@Real", 2 },
+  { "array_len", 1 },   { "array_cap", 1 },    { "array_get", 2 },
+  { "array_push", 2 },  { "array_set", 3 },    { "array_slice", 3 },
+  { "%concat", 2 },     { "?=" THX_STR, 2 },   { "%array", 1 },
+  { "neg" THX_INT, 1 }, { "neg" THX_REAL, 1 }, { "not" THX_INT, 1 },
+  { "+" THX_INT, 2 },   { "-" THX_INT, 2 },    { "*" THX_INT, 2 },
+  { "/" THX_INT, 2 },   { "%" THX_INT, 2 },    { "?=" THX_INT, 2 },
+  { "?>" THX_INT, 2 },  { "?<" THX_INT, 2 },   { "<=" THX_INT, 2 },
+  { ">=" THX_INT, 2 },  { "+" THX_REAL, 2 },   { "-" THX_REAL, 2 },
+  { "*" THX_REAL, 2 },  { "/" THX_REAL, 2 },   { "%" THX_REAL, 2 },
+  { "?=" THX_REAL, 2 }, { "?>" THX_REAL, 2 },  { "?<" THX_REAL, 2 },
+  { "<=" THX_REAL, 2 }, { ">=" THX_REAL, 2 },
 };
 
 static size_t
@@ -201,6 +210,7 @@ THxRT_extern(
   return x;
 }
 
+// FIXME: This implementation is garbage
 static Value *
 builtin_dispatch(
   Value *b)
@@ -335,7 +345,7 @@ builtin_dispatch(
     return x;
   }
   /* Str byte-equality. */
-  if (!strcmp(k, "?=@Str"))
+  if (!strcmp(k, "?=" THX_STR))
   {
     size_t ln = a[0]->u.s.n;
     size_t rn = a[1]->u.s.n;
@@ -343,62 +353,62 @@ builtin_dispatch(
     return THxRT_int(eq ? 1 : 0);
   }
 
-  if (!strcmp(k, "neg@Int")) return THxRT_int(-THxVALUE_as_int(a[0]));
-  if (!strcmp(k, "neg@Real")) return THxRT_real(-THxVALUE_as_num(a[0]));
-  if (!strcmp(k, "not@Int"))
+  if (!strcmp(k, "neg" THX_INT)) return THxRT_int(-THxVALUE_as_int(a[0]));
+  if (!strcmp(k, "neg" THX_REAL)) return THxRT_real(-THxVALUE_as_num(a[0]));
+  if (!strcmp(k, "not" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) == 0 ? 1 : 0);
 
-  if (!strcmp(k, "+@Int"))
+  if (!strcmp(k, "+" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) + THxVALUE_as_int(a[1]));
-  if (!strcmp(k, "-@Int"))
+  if (!strcmp(k, "-" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) - THxVALUE_as_int(a[1]));
-  if (!strcmp(k, "*@Int"))
+  if (!strcmp(k, "*" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) * THxVALUE_as_int(a[1]));
-  if (!strcmp(k, "/@Int"))
+  if (!strcmp(k, "/" THX_INT))
   {
     long long d = THxVALUE_as_int(a[1]);
-    if (d == 0) THxCHECK_FAIL("division by zero (/@Int)");
+    if (d == 0) THxCHECK_FAIL("division by zero (/" THX_INT ")");
     return THxRT_int(THxVALUE_as_int(a[0]) / d);
   }
-  if (!strcmp(k, "%@Int"))
+  if (!strcmp(k, "%" THX_INT))
   {
     long long d = THxVALUE_as_int(a[1]);
-    if (d == 0) THxCHECK_FAIL("division by zero (%@Int)");
+    if (d == 0) THxCHECK_FAIL("division by zero (%" THX_INT ")");
     return THxRT_int(THxVALUE_as_int(a[0]) % d);
   }
-  if (!strcmp(k, "?=@Int"))
+  if (!strcmp(k, "?=" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) == THxVALUE_as_int(a[1]) ? 1 : 0);
-  if (!strcmp(k, "?>@Int"))
+  if (!strcmp(k, "?>" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) > THxVALUE_as_int(a[1]) ? 1 : 0);
-  if (!strcmp(k, "?<@Int"))
+  if (!strcmp(k, "?<" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) < THxVALUE_as_int(a[1]) ? 1 : 0);
-  if (!strcmp(k, "<=@Int"))
+  if (!strcmp(k, "<=" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) <= THxVALUE_as_int(a[1]) ? 1 : 0);
-  if (!strcmp(k, ">=@Int"))
+  if (!strcmp(k, ">=" THX_INT))
     return THxRT_int(THxVALUE_as_int(a[0]) >= THxVALUE_as_int(a[1]) ? 1 : 0);
 
-  if (!strcmp(k, "+@Real"))
+  if (!strcmp(k, "+" THX_REAL))
     return THxRT_real(THxVALUE_as_num(a[0]) + THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "-@Real"))
+  if (!strcmp(k, "-" THX_REAL))
     return THxRT_real(THxVALUE_as_num(a[0]) - THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "*@Real"))
+  if (!strcmp(k, "*" THX_REAL))
     return THxRT_real(THxVALUE_as_num(a[0]) * THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "/@Real"))
+  if (!strcmp(k, "/" THX_REAL))
     return THxRT_real(THxVALUE_as_num(a[0]) / THxVALUE_as_num(a[1]));
-  if (!strcmp(k, "%@Real"))
+  if (!strcmp(k, "%" THX_REAL))
   {
     double x = THxVALUE_as_num(a[0]), y = THxVALUE_as_num(a[1]);
     return THxRT_real(x - y * (double)(long long)(x / y));
   }
-  if (!strcmp(k, "?=@Real"))
+  if (!strcmp(k, "?=" THX_REAL))
     return THxRT_int(THxVALUE_as_num(a[0]) == THxVALUE_as_num(a[1]) ? 1 : 0);
-  if (!strcmp(k, "?>@Real"))
+  if (!strcmp(k, "?>" THX_REAL))
     return THxRT_int(THxVALUE_as_num(a[0]) > THxVALUE_as_num(a[1]) ? 1 : 0);
-  if (!strcmp(k, "?<@Real"))
+  if (!strcmp(k, "?<" THX_REAL))
     return THxRT_int(THxVALUE_as_num(a[0]) < THxVALUE_as_num(a[1]) ? 1 : 0);
-  if (!strcmp(k, "<=@Real"))
+  if (!strcmp(k, "<=" THX_REAL))
     return THxRT_int(THxVALUE_as_num(a[0]) <= THxVALUE_as_num(a[1]) ? 1 : 0);
-  if (!strcmp(k, ">=@Real"))
+  if (!strcmp(k, ">=" THX_REAL))
     return THxRT_int(THxVALUE_as_num(a[0]) >= THxVALUE_as_num(a[1]) ? 1 : 0);
 
   THxCHECK_FAILF("builtin_dispatch: unimplemented built-in '%s'", k);

@@ -20,16 +20,13 @@ $fib15 = fib 15
 
 # A generic list and its length, by a tail-recursive accumulator. `helper` is an
 # annotated, recursive `let`; the match arms are bare variant patterns (`.Nil`,
-# `.Cons`) whose union is inferred from the constructors.
-$ List : @union =
-	Cons: {`T, List `T},
-	Nil: {}
-
+# `.Cons`) whose union is inferred from the constructors. `List` is the prelude
+# type (its `[..]`/`::` sugar is hardwired to that name).
 $ len: List `T -> Int =
 	let helper: List `T -> Int -> Int = \l n =
 		when l
-			is .Nil then n
-			is .Cons.{_, xs} then helper xs (n + 1)
+			is List.Nil then n
+			is List.Cons.{_, xs} then helper xs (n + 1)
 			else n
 	 in \l = helper l 0
 
@@ -41,13 +38,20 @@ $ to: Int -> Int -> List Int = \a b =
 	 in helper a b List.Nil
 
 $ sample : List Int = to 0 3
-$ len3 : Int = when len sample is 3 then 0 else 1 / 0
+$ len3 : Int = when len sample is 3 then 0 else 1
 
-$ Point: @struct =
+$ FIB_Point: @struct =
 	x: Int,
 	y: Int,
 
 $ add: Int -> Int -> Int = \a b = a + b
 $ add: Real -> Real -> Real = \a b = a + b
-$ add: Point -> Point -> Point = \p1 p2 =
+$ add: FIB_Point -> FIB_Point -> FIB_Point = \p1 p2 =
 	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int =
+	len3
+	+ (if fib5 ?= 5 then 0 else 1)
+	+ (if fib10 ?= 55 then 0 else 1)
+	+ (if fib15 ?= 610 then 0 else 1)

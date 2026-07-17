@@ -21,3 +21,6 @@ $compose =
 	let square = \x = x * x in
 	let add1   = \x = x + 1 in
 	add1 (square 5)
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = simple ; nested ; chained ; compose ; 0

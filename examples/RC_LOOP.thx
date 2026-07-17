@@ -8,18 +8,21 @@
 #       zero live allocations (the generated main's leak check enforces this).
 #       A wrong sum divides by zero, so the test fails loudly.
 
-$ Pair : @struct =
+$ RC_LOOP_Pair : @struct =
 	fst: Int,
 	snd: Int,
 
-# A tail-recursive loop: every step builds a Pair, reads it back, and carries
-# the sum. The Pair (and the ints inside it) die each iteration -- exactly the
+# A tail-recursive loop: every step builds a RC_LOOP_Pair, reads it back, and carries
+# the sum. The RC_LOOP_Pair (and the ints inside it) die each iteration -- exactly the
 # per-iteration garbage a long-running program must reclaim.
 $ spin : Int -> Int -> Int = \n acc =
 	if n ?= 0 then acc
 	else
-		let p = Pair.{ .fst = n, .snd = acc } in
+		let p = RC_LOOP_Pair.{ .fst = n, .snd = acc } in
 		spin (n - 1) (p.fst + p.snd)
 
 # 200_000 * 200_001 / 2 = 20_000_100_000
-$ ck : Int = if (spin 200000 0) ?= 20000100000 then 0 else 1 / 0
+$ ck : Int = if (spin 200000 0) ?= 20000100000 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck

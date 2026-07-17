@@ -13,37 +13,40 @@ $ arr3  : Array = [1, 2, 3]
 $ is_empty : Array -> Int = \a =
 	when a is [] then 1
 	         else 0
-$ ck_empty    : Int = if (is_empty emptA) ?= 1 then 0 else 1/0
-$ ck_nonempty : Int = if (is_empty arr2) ?= 0 then 0 else 1/0
+$ ck_empty    : Int = if (is_empty emptA) ?= 1 then 0 else 1
+$ ck_nonempty : Int = if (is_empty arr2) ?= 0 then 0 else 1
 
 # Exact-length destructure: [x, y] matches a 2-element array, else falls through.
 $ sum2 : Array -> Int = \a =
 	when a is [x, y] then x + y
 	              else 0
-$ ck_sum2      : Int = if (sum2 arr2) ?= 30 then 0 else 1/0
-$ ck_sum2_miss : Int = if (sum2 arr3) ?= 0 then 0 else 1/0
+$ ck_sum2      : Int = if (sum2 arr2) ?= 30 then 0 else 1
+$ ck_sum2_miss : Int = if (sum2 arr3) ?= 0 then 0 else 1
 
 # A literal element pattern: `[1, y]` only matches when element 0 is 1.
 $ after_one : Array -> Int = \a =
 	when a is [1, y] then y
 	              else 0
-$ ck_after_one : Int = if (after_one [1, 42]) ?= 42 then 0 else 1/0
-$ ck_after_two : Int = if (after_one [2, 42]) ?= 0 then 0 else 1/0
+$ ck_after_one : Int = if (after_one [1, 42]) ?= 42 then 0 else 1
+$ ck_after_two : Int = if (after_one [2, 42]) ?= 0 then 0 else 1
 
 # Open pattern `[h, ..rest]`: head plus the remaining slice.
 $ head3 : Array -> Int = \a =
 	when a is [h, ..rest] then h
 	                   else 0
-$ ck_head3 : Int = if (head3 arr3) ?= 1 then 0 else 1/0
+$ ck_head3 : Int = if (head3 arr3) ?= 1 then 0 else 1
 
 $ rest_len : Array -> Int = \a =
 	when a is [h, ..rest] then array_len rest
 	                   else 0
-$ ck_rest_len : Int = if (rest_len arr3) ?= 2 then 0 else 1/0
+$ ck_rest_len : Int = if (rest_len arr3) ?= 2 then 0 else 1
 
 # A guard on a sequence arm.
 $ ordered : Array -> Int = \a =
 	when a is [x, y] if (x ?< y) then 1
 	              is [x, y] then 2
 	              else 0
-$ ck_ord_lt : Int = if (ordered arr2) ?= 1 then 0 else 1/0
+$ ck_ord_lt : Int = if (ordered arr2) ?= 1 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3 + ck_rest_len + ck_ord_lt

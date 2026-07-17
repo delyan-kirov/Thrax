@@ -8,23 +8,26 @@ $ build3 : Array =
 	let c = array_push b 66 in
 	array_push c 67
 
-$ ck_len : Int = if (array_len build3) ?= 3 then 0 else 1/0
-$ ck_0 : Int = if (array_get build3 0) ?= 65 then 0 else 1/0
-$ ck_2 : Int = if (array_get build3 2) ?= 67 then 0 else 1/0
+$ ck_len : Int = if (array_len build3) ?= 3 then 0 else 1
+$ ck_0 : Int = if (array_get build3 0) ?= 65 then 0 else 1
+$ ck_2 : Int = if (array_get build3 2) ?= 67 then 0 else 1
 
 # array_set replaces a byte; original semantics preserved (value returned).
 $ setted : Array = array_set (array_push (array_push (@array.{0}) 10) 20) 0 99
-$ ck_set : Int = if (array_get setted 0) ?= 99 then 0 else 1/0
-$ ck_set1 : Int = if (array_get setted 1) ?= 20 then 0 else 1/0
+$ ck_set : Int = if (array_get setted 0) ?= 99 then 0 else 1
+$ ck_set1 : Int = if (array_get setted 1) ?= 20 then 0 else 1
 
 # array_slice takes a subrange [start, end).
 $ big : Array = array_push (array_push (array_push (@array.{0}) 1) 2) 3
 $ mid : Array = array_slice big 1 3
-$ ck_slice_len : Int = if (array_len mid) ?= 2 then 0 else 1/0
-$ ck_slice_0 : Int = if (array_get mid 0) ?= 2 then 0 else 1/0
+$ ck_slice_len : Int = if (array_len mid) ?= 2 then 0 else 1
+$ ck_slice_0 : Int = if (array_get mid 0) ?= 2 then 0 else 1
 
 # Value semantics: pushing onto a shared array must not disturb the original.
 $ base : Array = array_push (@array.{0}) 7
 $ grown : Array = array_push base 8
-$ ck_base_unchanged : Int = if (array_len base) ?= 1 then 0 else 1/0
-$ ck_ext : Int = if (array_len grown) ?= 2 then 0 else 1/0
+$ ck_base_unchanged : Int = if (array_len base) ?= 1 then 0 else 1
+$ ck_ext : Int = if (array_len grown) ?= 2 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_len + ck_0 + ck_2 + ck_set + ck_set1 + ck_slice_len + ck_slice_0 + ck_base_unchanged + ck_ext

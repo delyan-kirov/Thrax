@@ -3,5 +3,5 @@
 int
 main()
 {
-  TS::run_all();
+  return TS::run_all();
 }

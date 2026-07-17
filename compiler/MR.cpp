@@ -112,6 +112,8 @@ struct Linker
   std::vector<Expr *>                         decls; // struct/union (global)
   std::vector<std::pair<UT::Vu, Expr *>>      defs;  // (module, Def node)
   std::vector<ER::Diagnostic>                 diags;
+  std::unordered_map<std::string, std::vector<std::string>> edges;
+  std::string                                               m_current;
 
   // Declared effects: effect name -> (operation source name -> its canonical
   // `Effect.op` identity). Effect names are global, so this is program-wide.
@@ -292,6 +294,26 @@ struct Linker
           decls.push_back(e);
           break;
         }
+        // FIXME(per-module-types): the whole type world is NOT namespaced.
+        // Terms mangle to `MOD/name` and resolve as `MOD.name`; type-level
+        // names are pushed here verbatim into one flat global table, so two
+        // modules can't both define `Point`/`List`/`Exn` etc. To close this,
+        // give types the same treatment as terms:
+        //   1. mangle struct/union/alias/effect names to `MOD/Name` and
+        //      register them per module (like `md.symbols`);
+        //   2. resolve qualified type syntax `A.MyTyp` in `Ty::Con` and rewrite
+        //      every `Ty::Con` in signatures / struct fields / union payloads;
+        //   3. rewrite constructor + field refs (`Point.{..}`, `.Cons`,
+        //      `Type.Ctor`) and variant *pattern* tags to the mangled type;
+        //   4. key TC's `m_structs`/`m_unions` (and CR/engines) off the mangled
+        //      names.
+        // The effect table above is part of this too (drop the program-wide
+        // "declared more than once" check once effects are per-module). We'd
+        // also want a way to name a module's operator overload across a
+        // qualified import, e.g. `A.@operator "+"` (no such syntax today; a
+        // user `+` overload is a term `MOD/+`, only reachable unqualified).
+        // Until then, examples that must coexist in one program dodge the
+        // clash by C-style prefixing their type names (`MyMod_Whatever`).
         case ExprTag::StructDecl:
         case ExprTag::UnionDecl:
         case ExprTag::AliasDecl : decls.push_back(e); break;
@@ -328,6 +350,12 @@ struct Linker
     // name contributes every one of its definitions.
     for (auto &kv : md.symbols)
       for (auto &si : kv.second) sc.unq[kv.first].push_back(si.mangled);
+
+    auto pit = modules.find("PRELUDE");
+    if (pit != modules.end() && &pit->second != &md)
+      for (auto &kv : pit->second.symbols)
+        for (auto &si : kv.second)
+          if (si.is_public) sc.unq[kv.first].push_back(si.mangled);
 
     for (auto &im : md.imports)
     {
@@ -511,6 +539,7 @@ struct Linker
       if (!seen) uniq.push_back(c);
     }
     if (uniq.empty()) return;
+    for (UT::Vu c : uniq) edges[m_current].push_back(std::string(c));
     if (uniq.size() == 1 && !is_operator)
     {
       auto &v     = std::get<EX::ExVar>(e->as);
@@ -796,13 +825,11 @@ struct Linker
       Scope              &sc = scopes[std::string(pr.first)];
       auto               &d  = std::get<EX::ExDef>(pr.second->as);
       std::vector<UT::Vu> locals;
+      m_current = std::string(d.name);
       resolve(d.def, std::string(pr.first), sc, locals);
     }
 
     Result r;
-    r.program = EX::Exprs{ arena };
-    for (auto *dnode : decls) r.program.push(*dnode);
-    for (auto &pr : defs) r.program.push(*pr.second);
 
     // Entry point: module MAIN's `main`, with a supported signature. Absence of
     // an entry is not an error here (a library or test snippet need not have
@@ -827,6 +854,43 @@ struct Linker
           r.entry_takes_arg = takes_arg;
         }
       }
+    }
+
+    // Dead-global elimination
+    std::vector<std::string> roots;
+    if (r.entry.size()) roots.push_back(std::string(r.entry));
+    for (auto &pr : defs)
+    {
+      auto &d = std::get<EX::ExDef>(pr.second->as);
+      if (d.ctime_assert)
+      {
+        roots.push_back(std::string(d.name));
+        r.ctime_asserts.push_back({ d.name, d.assert_anchor });
+      }
+    }
+
+    std::unordered_set<std::string> live;
+    {
+      std::vector<std::string> stack = roots;
+      for (const std::string &g : roots) live.insert(g);
+      while (stack.size())
+      {
+        std::string g = std::move(stack.back());
+        stack.pop_back();
+        auto it = edges.find(g);
+        if (it == edges.end()) continue;
+        for (const std::string &t : it->second)
+          if (live.insert(t).second) stack.push_back(t);
+      }
+    }
+
+    r.program = EX::Exprs{ arena };
+    for (auto *dnode : decls) r.program.push(*dnode);
+    for (auto &pr : defs)
+    {
+      auto &d = std::get<EX::ExDef>(pr.second->as);
+      if (roots.empty() || live.count(std::string(d.name)))
+        r.program.push(*pr.second);
     }
 
     r.diags = std::move(diags);

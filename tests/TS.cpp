@@ -3,29 +3,9 @@
 namespace TS
 {
 
-void
-tst_file(
-  UT::Vu file)
-{
-  DR::Interp ip = DR::interpret_file(file);
-
-  // A failed pipeline (parse or type error) yields no definitions; the error
-  // messages have already been printed by interpret_file.
-  if (ip.prog.globals.empty())
-  {
-    fprintf(stderr, "\033[1;31mFAIL\033[0m [%s]\n", file.data());
-    return;
-  }
-
-  // Force every global through the reified-K machine so a runtime fault
-  // surfaces here. `ip.arena` keeps the IR alive for the duration.
-  IT::Machine m{ ip.prog };
-  for (const auto &kv : ip.prog.globals) m.glob(UT::Vu{ kv.first });
-
-  printf("\033[1;32mOK\033[0m   [%s]\n", file.data());
-}
-
-// Collect every non-directory entry in `dir`, sorted for stable output.
+// Collect every non-directory entry in `dir`, sorted for stable output. The
+// sub-directory projects (foo_project, ...) have their own MAIN and are
+// skipped.
 std::vector<std::string>
 scan_dir(
   const char *dir)
@@ -51,14 +31,28 @@ scan_dir(
   return files;
 }
 
-// Scan ./dat and interpret every file in it, one by one.
-void
+// Compile every example plus the combined test driver into ONE program and run
+// its MAIN entry (tests/MAIN.thx). The driver runs each example's `$ test`,
+// prints the name of any module whose test fails, and the exit code is the
+// number of failing modules -- so a single failure never masks the others (no
+// `assert`/abort, every test runs). Returns that count (0 = all pass).
+int
 run_all()
 {
-  for (const std::string &path : scan_dir("./examples"))
-  {
-    tst_file(UT::Vu{ path.c_str(), path.size() });
-  }
+  std::vector<std::string> files = scan_dir("./examples");
+  files.push_back("./tests/MAIN.thx");
+
+  std::vector<UT::Vu> vus;
+  vus.reserve(files.size());
+  for (const std::string &f : files)
+    vus.push_back(UT::Vu{ f.c_str(), f.size() });
+
+  int code = DR::run_program(vus);
+  if (code == 0)
+    printf("\033[1;32mOK\033[0m   all example tests passed\n");
+  else
+    printf("\033[1;31mFAIL\033[0m %d example module(s) failed\n", code);
+  return code;
 }
 
 } // namespace TS

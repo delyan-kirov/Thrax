@@ -20,10 +20,8 @@ $ make : Int -> Array = \k = let extra = 16 in @array.{ k + extra }
 $ buf4 : Array = make 32
 
 $ Count: @alias = Int
-$ List: @union =
-	Cons: {`T, List `T},
-	Nil: {},
 
+# `List` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
 $ IntList: @alias = List Int
 
 $ list: IntList = List.Cons.{1, .Nil}
@@ -35,3 +33,6 @@ $ Buffer : @struct =
 
 $ b    : Buffer = Buffer.{ .bytes = @array.{ 128 }, .len = 128 }
 $ blen : Count    = b.len
+
+# Force-evaluate results for the combined test runner (pass = no fault).
+$ test : Int = buf ; buf2 ; buf3 ; buf4 ; list ; b ; blen ; n ; 0

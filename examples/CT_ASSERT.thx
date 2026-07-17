@@ -1,0 +1,22 @@
+@mod CT_ASSERT
+
+# \file CT_ASSERT.thx
+# \info Test compile-time assertion `@assert <expr>`
+
+$ fib : Int -> Int = \n
+	= if n ?< 2
+		then n
+		else fib (n - 1) + fib (n - 2)
+
+$ fact : Int -> Int = \n =
+	if n ?< 2
+		then 1
+		else n * fact (n - 1)
+
+# Checked at compile time: a wrong number here fails `./build`.
+$ @assert (fib 10 ?= 55)
+$ @assert (fact 5 ?= 120)
+$ @assert (fib 10 + fact 5 ?= 175)
+
+# Runtime side-check (the real test is the compile-time @assert above).
+$ test : Int = if fib 10 ?= 55 then 0 else 1

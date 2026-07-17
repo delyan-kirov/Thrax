@@ -5,8 +5,8 @@
 
 # Array context -> a byte vector.
 $ bytes : Array = [10, 20, 30]
-$ ck_alen : Int = if (array_len bytes) ?= 3 then 0 else 1/0
-$ ck_a1   : Int = if (array_get bytes 1) ?= 20 then 0 else 1/0
+$ ck_alen : Int = if (array_len bytes) ?= 3 then 0 else 1
+$ ck_a1   : Int = if (array_get bytes 1) ?= 20 then 0 else 1
 
 # List context -> the blessed List.
 $ nums : List Int = [1, 2, 3, 4]
@@ -14,14 +14,17 @@ $ sum : List Int -> Int = \xs =
 	when xs is [] then 0
 	           is h :: t then h + sum t
 	           else 0
-$ ck_sum : Int = if (sum nums) ?= 10 then 0 else 1/0
+$ ck_sum : Int = if (sum nums) ?= 10 then 0 else 1
 
 # Empty literal in each context.
 $ empt_a : Array = []
 $ empt_l : List Int = []
-$ ck_ea : Int = if (array_len empt_a) ?= 0 then 0 else 1/0
-$ ck_el : Int = if (sum empt_l) ?= 0 then 0 else 1/0
+$ ck_ea : Int = if (array_len empt_a) ?= 0 then 0 else 1
+$ ck_el : Int = if (sum empt_l) ?= 0 then 0 else 1
 
 # Unannotated defaults to List.
 $ deflist : List Int = [7, 8]
-$ ck_def : Int = if (sum deflist) ?= 15 then 0 else 1/0
+$ ck_def : Int = if (sum deflist) ?= 15 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_alen + ck_a1 + ck_sum + ck_ea + ck_el + ck_def

@@ -40,44 +40,44 @@ $ get : Int -> Maybe Int -> Int = \d = \m =
         is Maybe.Just.{x} then x
     else d
 
-$ chk1 : Int = when get 99 (Maybe.Just.{7}) is 7  then 0 else 1 / 0
-$ chk2 : Int = when get 99 Maybe.None        is 99 then 0 else 1 / 0
+$ chk1 : Int = when get 99 (Maybe.Just.{7}) is 7  then 0 else 1
+$ chk2 : Int = when get 99 Maybe.None        is 99 then 0 else 1
 
 # The same `Maybe` at a different element type, in the same program.
 $ greeting : Maybe Str = Maybe.Just.{ "hi" }
-$ chk2b : Int = when greeting is Maybe.Just.{_} then 0 else 1 / 0
+$ chk2b : Int = when greeting is Maybe.Just.{_} then 0 else 1
 
 # Bare constructors: the type name is dropped and inferred from context (the
 # `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
 # payload.
 $ none_i : Maybe Int = .None
 $ some_i : Maybe Int = .Just.{ 5 }
-$ chk2c : Int = when get 0 some_i is 5 then 0 else 1 / 0
-$ chk2d : Int = when get 8 none_i is 8 then 0 else 1 / 0
+$ chk2c : Int = when get 0 some_i is 5 then 0 else 1
+$ chk2d : Int = when get 8 none_i is 8 then 0 else 1
 
-# A generic, recursive sum type: `List `T` refers to itself with a type
-# argument. Under STRICT evaluation this builds FINITE lists only; the former
+# The prelude's generic, recursive `List` (its `[..]`/`::` sugar is hardwired to
+# that name). Under STRICT evaluation this builds FINITE lists only; the former
 # infinite stream (`from` / `take3sum`) was lazy data and will return as
 # `@codata` (docs/effect-system-design.md section 1a).
-$ List : @union =
-    Cons: {`T, List `T},
-    Nil: {}
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
-$ Pair : @union = P: {lhs: `A, rhs: `B}
-$ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
+$ AGTxSUM_Pair : @union = P: {lhs: `A, rhs: `B}
+$ mk : AGTxSUM_Pair Int Int = AGTxSUM_Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
-    when mk is Pair.P.{ .lhs = l, .rhs = r } then
-        when r - l is 1 then 0 else 1 / 0
-    else 1 / 0
+    when mk is AGTxSUM_Pair.P.{ .lhs = l, .rhs = r } then
+        when r - l is 1 then 0 else 1
+    else 1
 
 # Nested instantiation: a `List` whose element is itself a `Maybe Int`.
 $ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
 $ chk4b : Int =
     when boxed is List.Cons.{ h, _ } then
-        when h is Maybe.Just.{ v } then (when v is 42 then 0 else 1 / 0) else 1 / 0
-    else 1 / 0
+        when h is Maybe.Just.{ v } then (when v is 42 then 0 else 1) else 1
+    else 1
 
-# (Removed: a `bomb` payload `1 / 0` that strict evaluation would force. Relying
+# (Removed: a `bomb` payload `1` that strict evaluation would force. Relying
 # on an ignored `_` payload going unevaluated was a lazy-data behaviour.)
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b
