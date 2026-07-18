@@ -29,6 +29,7 @@
 
           pkgs.tokei
           pkgs.bear # compile_commands.json via `build compile-commands`
+          pkgs.bison # grammar spec + conflict check (see grammar/)
           # mingwPkgs.stdenv.cc
           # should be enabled manually to check windows build
           # pkgs.wineWow64Packages.stable
