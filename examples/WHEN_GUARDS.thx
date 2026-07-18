@@ -22,37 +22,37 @@ $ chk_sgn_n : Int = if sgn (0 - 4) ?= (0 - 1) then 0 else 1
 $ chk_sgn_0 : Int = if sgn 0       ?= 0       then 0 else 1
 
 # --- Guards on the SAME struct pattern (the motivating example) ---------------
-$ WHEN_GUARDS_Pair : @struct =
+$ Pair : @struct =
 	a: Int,
 	b: Int,
 
-$ cmp : WHEN_GUARDS_Pair -> Int = \p =
+$ cmp : Pair -> Int = \p =
 	when p
-		is WHEN_GUARDS_Pair.{ a, b } if a ?> b then 0
-		is WHEN_GUARDS_Pair.{ a, b } if a ?= b then 1
+		is Pair.{ a, b } if a ?> b then 0
+		is Pair.{ a, b } if a ?= b then 1
 		else 2
 
-$ chk_cmp_gt : Int = if cmp WHEN_GUARDS_Pair.{ .a = 3, .b = 1 } ?= 0 then 0 else 1
-$ chk_cmp_eq : Int = if cmp WHEN_GUARDS_Pair.{ .a = 2, .b = 2 } ?= 1 then 0 else 1
-$ chk_cmp_lt : Int = if cmp WHEN_GUARDS_Pair.{ .a = 1, .b = 3 } ?= 2 then 0 else 1
+$ chk_cmp_gt : Int = if cmp Pair.{ .a = 3, .b = 1 } ?= 0 then 0 else 1
+$ chk_cmp_eq : Int = if cmp Pair.{ .a = 2, .b = 2 } ?= 1 then 0 else 1
+$ chk_cmp_lt : Int = if cmp Pair.{ .a = 1, .b = 3 } ?= 2 then 0 else 1
 
 # --- Guards on the SAME union constructor (fallthrough across one tag) ---------
-$ WHEN_GUARDS_Box : @union =
+$ Box : @union =
 	Some: Int,
 	Nil: {},
 
-$ grade : WHEN_GUARDS_Box -> Int = \x =
+$ grade : Box -> Int = \x =
 	when x
-		is WHEN_GUARDS_Box.Some.{ v } if v ?> 100 then 3
-		is WHEN_GUARDS_Box.Some.{ v } if v ?> 0   then 2
-		is WHEN_GUARDS_Box.Some.{ _ }             then 1
-		is WHEN_GUARDS_Box.Nil.{}                 then 0
+		is Box.Some.{ v } if v ?> 100 then 3
+		is Box.Some.{ v } if v ?> 0   then 2
+		is Box.Some.{ _ }             then 1
+		is Box.Nil.{}                 then 0
 		else 0 - 1
 
-$ chk_grade_big  : Int = if grade WHEN_GUARDS_Box.Some.{ 500 }    ?= 3       then 0 else 1
-$ chk_grade_pos  : Int = if grade WHEN_GUARDS_Box.Some.{ 7 }      ?= 2       then 0 else 1
-$ chk_grade_zero : Int = if grade WHEN_GUARDS_Box.Some.{ 0 }      ?= 1       then 0 else 1
-$ chk_grade_nil  : Int = if grade WHEN_GUARDS_Box.Nil.{}          ?= 0       then 0 else 1
+$ chk_grade_big  : Int = if grade Box.Some.{ 500 }    ?= 3       then 0 else 1
+$ chk_grade_pos  : Int = if grade Box.Some.{ 7 }      ?= 2       then 0 else 1
+$ chk_grade_zero : Int = if grade Box.Some.{ 0 }      ?= 1       then 0 else 1
+$ chk_grade_nil  : Int = if grade Box.Nil.{}          ?= 0       then 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = chk_sgn_p + chk_sgn_n + chk_sgn_0 + chk_cmp_gt + chk_cmp_eq + chk_cmp_lt + chk_grade_big + chk_grade_pos + chk_grade_zero + chk_grade_nil

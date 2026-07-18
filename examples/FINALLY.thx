@@ -7,37 +7,37 @@
 # Nested defers run innermost-first (LIFO). No IO here, so each case observes its
 # cleanup by performing an effect a handler collects.
 
-$ FINALLY_Y   : @effect = yield : Int -> {},
-$ FINALLY_Exn : @effect = throw : Str -> `a,
+$ Y   : @effect = yield : Int -> {},
+$ Exn : @effect = throw : Str -> `a,
 
 # Sum every yielded value, plus the body's own result.
-$ sum : ({} -> <FINALLY_Y> Int) -> Int =
-    \body = do body {} ctl k is FINALLY_Y.yield v = v + k {} else r = r
+$ sum : ({} -> <Y> Int) -> Int =
+    \body = do body {} ctl k is Y.yield v = v + k {} else r = r
 
 # Normal completion: body yields 1 and returns 100; cleanup yields 2.       -> 103
 $ r_normal : Int =
-    sum (\_ = defer FINALLY_Y.yield 2 do (let _ = FINALLY_Y.yield 1 in 100))
+    sum (\_ = defer Y.yield 2 do (let _ = Y.yield 1 in 100))
 
 # Abort: the body throws to an OUTER handler that drops the continuation; the
 # cleanup (yield 9) still runs as the discarded scope is finalized.            -> 9
 $ r_abort : Int = sum (\_ =
-    do (defer FINALLY_Y.yield 9 do (let _ = FINALLY_Exn.throw "x" in 100))
-    ctl k is FINALLY_Exn.throw e = 0)
+    do (defer Y.yield 9 do (let _ = Exn.throw "x" in 100))
+    ctl k is Exn.throw e = 0)
 
 # Nested defers run inner-first (LIFO); both cleanups run.            -> 1+2+3 = 6
 $ r_nested : Int = sum (\_ =
-    defer FINALLY_Y.yield 3
-      do (defer FINALLY_Y.yield 2 do (let _ = FINALLY_Y.yield 1 in 0)))
+    defer Y.yield 3
+      do (defer Y.yield 2 do (let _ = Y.yield 1 in 0)))
 
 # A stored continuation (coroutine): cleanup runs once, when the resumed task
 # finally completes -- not when the continuation is first stashed.
-$ FINALLY_Task : @union = Fin: {}, Susp: { {} -> FINALLY_Task },
-$ FINALLY_Co : @effect = step : Int -> {},
-$ spawn : ({} -> <FINALLY_Co> {}) -> FINALLY_Task = \t =
-    do t {} ctl k is step v = FINALLY_Task.Susp.{ k } else _ = FINALLY_Task.Fin.{}
-$ drive : FINALLY_Task -> Int = \t =
-    when t is FINALLY_Task.Fin.{} then 0
-       is FINALLY_Task.Susp.{ k } then 1 + drive (k {})
+$ Task : @union = Fin: {}, Susp: { {} -> Task },
+$ Co : @effect = step : Int -> {},
+$ spawn : ({} -> <Co> {}) -> Task = \t =
+    do t {} ctl k is step v = Task.Susp.{ k } else _ = Task.Fin.{}
+$ drive : Task -> Int = \t =
+    when t is Task.Fin.{} then 0
+       is Task.Susp.{ k } then 1 + drive (k {})
        else 0
 $ r_stored : Int = drive (spawn (\_ =
     defer step 2 do (let _ = step 1 in {})))   # 2 steps

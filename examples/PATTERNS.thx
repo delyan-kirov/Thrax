@@ -9,55 +9,55 @@
 #       `.field = field`). Only irrefutable patterns are allowed here -- no
 #       literals (see `if .. is`).
 
-$ PATTERNS_Person : @struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
-$ PATTERNS_Point : @struct =
+$ Point : @struct =
 	x: Int,
 	y: Int,
 
 $ Line : @struct =
-	from: PATTERNS_Point,
-	to: PATTERNS_Point,
+	from: Point,
+	to: Point,
 
-$ alice : PATTERNS_Person = PATTERNS_Person.{ .name = "Alice", .age = 30 }
+$ alice : Person = Person.{ .name = "Alice", .age = 30 }
 
 # Positional `let`: sub-patterns bind the fields in declaration order (name, age).
 # The tight `Str`/`Int` annotations make a wrong order a type error.
-$ p_name : Str = let PATTERNS_Person.{ n, a } = alice in n
-$ p_age  : Int = let PATTERNS_Person.{ n, a } = alice in a
+$ p_name : Str = let Person.{ n, a } = alice in n
+$ p_age  : Int = let Person.{ n, a } = alice in a
 
 # Named `let`: any order, and fields may be omitted.
-$ n_age  : Int = let PATTERNS_Person.{ .age = yrs } = alice in yrs
-$ n_both : Str = let PATTERNS_Person.{ .age = yrs, .name = who } = alice in who
+$ n_age  : Int = let Person.{ .age = yrs } = alice in yrs
+$ n_both : Str = let Person.{ .age = yrs, .name = who } = alice in who
 
 # Punning: a lone `.name` means `.name = name`.
-$ pun    : Str = let PATTERNS_Person.{ .name, .age = a } = alice in name
+$ pun    : Str = let Person.{ .name, .age = a } = alice in name
 
 # Wildcard ignores a field.
-$ just_x : Int = let PATTERNS_Point.{ x, _ } = PATTERNS_Point.{ .x = 7, .y = 9 } in x
+$ just_x : Int = let Point.{ x, _ } = Point.{ .x = 7, .y = 9 } in x
 
 # Lambda struct pattern (positional).
-$ get_name : PATTERNS_Person -> Str = \PATTERNS_Person.{ n, _ } = n
+$ get_name : Person -> Str = \Person.{ n, _ } = n
 $ who1     : Str = get_name alice
 
 # Lambda struct pattern (named), used with another argument.
-$ older : PATTERNS_Person -> Int -> Int = \PATTERNS_Person.{ .age = a } y = a + y
+$ older : Person -> Int -> Int = \Person.{ .age = a } y = a + y
 $ a1    : Int = older alice 5
 
 # Nested patterns: destructure a struct inside a struct.
-$ seg : Line = Line.{ .from = PATTERNS_Point.{ .x = 0, .y = 0 }, .to = PATTERNS_Point.{ .x = 3, .y = 4 } }
+$ seg : Line = Line.{ .from = Point.{ .x = 0, .y = 0 }, .to = Point.{ .x = 3, .y = 4 } }
 
 # Named outer, positional inner.
-$ start_x : Int = let Line.{ .from = PATTERNS_Point.{ x, y }, .to = t } = seg in x
+$ start_x : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
 
 # Positional outer and inner.
 $ end_y : Int =
-	let Line.{ _, PATTERNS_Point.{ _, by } } = seg in by
+	let Line.{ _, Point.{ _, by } } = seg in by
 
 # Nested lambda pattern.
-$ line_start_x : Line -> Int = \Line.{ .from = PATTERNS_Point.{ x, _ }, .to = _ } = x
+$ line_start_x : Line -> Int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
 $ sx : Int = line_start_x seg
 
 # Force-evaluate results for the combined test runner (pass = no fault).

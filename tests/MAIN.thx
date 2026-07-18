@@ -4,8 +4,9 @@
 # $ test (0 = pass). `check` prints "<mod> ok" / "<mod> FAILED" for every module
 # as it runs; every test runs regardless of earlier failures (no abort). Exit
 # code = number of failing modules.
-# FIXME(per-module-types): examples C-style prefix their types to coexist here
-# until the type world is namespaced per module (see MR.cpp collect()).
+# Types and effects are namespaced per module (MR mangles them to `MOD/Name`),
+# so examples freely reuse natural names -- `Point`, `Pair`, `Task`, the `Exn`
+# and `Co` effects, ... -- across modules without clashing here.
 
 $ with AGTxPRO = AGTxPRO
 $ with AGTxSUM = AGTxSUM

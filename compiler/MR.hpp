@@ -2,22 +2,29 @@
  *\file MR.hpp
  *\info Module resolution ("link") layer.
  *
- * MR runs after the parser (EX) and pattern lowering (LL), across ALL source
- * files at once, and before the type checker (TC). It turns a set of per-file
- * module fragments into one flat program of uniquely-named globals:
+ * MR runs after the parser (EX), across ALL source files at once, and before
+ * the type checker (TC). It turns a set of per-file module fragments into one
+ * flat program of uniquely-named globals:
  *
  *   - every file opens with `@mod NAME`; files sharing a name are one module;
  *   - each module-level term symbol `foo` is mangled to a unique `NAME/foo`
  *     (the '/' cannot occur in a source identifier), and every reference to it
  *     -- qualified `MOD.foo` or an unambiguous unqualified `foo` -- is
  * rewritten to that mangled name;
+ *   - each type/effect name (struct/union/alias/effect) is likewise namespaced
+ *     to `NAME/Type`, and every reference -- `Ty::Con`s in signatures, effect
+ *     rows, constructor/field literals, and variant/struct patterns -- is
+ *     rewritten to it. A type may be written qualified `A.Type` (resolved like
+ *     `A.foo`), including constructors and patterns (`A.Type.{..}`,
+ *     `A.Type.Tag`); an unqualified name imported from two modules is ambiguous
+ *     and must be qualified. The exception is the prelude's built-in-ish global
+ *     types (`List`, the numeric aliases, ...), which stay bare and global;
  *   - `$ with ...` imports and `$ @private` / `$ @public` toggles are consumed
  *     here and stripped from the output;
  *   - the program entry point is the `main` global of module `MAIN`.
  *
  * After MR the rest of the pipeline (TC, IT) sees an ordinary flat list of
- * globals and needs no knowledge of modules. Type/constructor names stay in one
- * global namespace for now (per-module types are a later increment).
+ * globals and needs no knowledge of modules.
  *-----------------------------------------------------------------------------*/
 
 #ifndef MR_HEADER_

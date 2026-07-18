@@ -4,13 +4,13 @@
 
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
-$ AGTxPRO_Person : @struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
 # A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
 # each field is set with a leading-dot `.field = value` (as in C).
-$ person : AGTxPRO_Person = AGTxPRO_Person.{
+$ person : Person = Person.{
 	.name = "Will",
 	.age = 21, # trailing comma is allowed but not required
 }
@@ -24,12 +24,12 @@ $ older : Int = person.age + 1
 
 # Generic structs: a free `T in a field type is an implicit type parameter, so
 # the declaration is parameterized and applied with juxtaposition at use sites.
-$ AGTxPRO_Box : @struct =
+$ Box : @struct =
 	val: `T,
 
 # One declaration, two instantiations in the same program.
-$ ibox : AGTxPRO_Box Int = AGTxPRO_Box.{ .val = 7 }
-$ sbox : AGTxPRO_Box Str = AGTxPRO_Box.{ .val = "hi" }
+$ ibox : Box Int = Box.{ .val = 7 }
+$ sbox : Box Str = Box.{ .val = "hi" }
 
 # Field access returns the field at the receiver's instantiation: `ibox.val` is
 # an Int, `sbox.val` is a Str. The tight annotations make a wrong one a type
@@ -37,18 +37,18 @@ $ sbox : AGTxPRO_Box Str = AGTxPRO_Box.{ .val = "hi" }
 $ unboxed : Int = ibox.val
 $ label   : Str = sbox.val
 
-# Two parameters, ordered by first appearance: `AGTxPRO_Pair `A `B`.
-$ AGTxPRO_Pair : @struct =
+# Two parameters, ordered by first appearance: `Pair `A `B`.
+$ Pair : @struct =
 	fst: `A,
 	snd: `B,
 
-$ pair  : AGTxPRO_Pair Int Str = AGTxPRO_Pair.{ .fst = 1, .snd = "two" }
+$ pair  : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
 $ left  : Int          = pair.fst
 $ right : Str          = pair.snd
 
-# Generic field types nest: a struct holding a `AGTxPRO_Box Int`.
+# Generic field types nest: a struct holding a `Box Int`.
 $ Wrap : @struct =
-	inner: AGTxPRO_Box `T,
+	inner: Box `T,
 
 $ wrap   : Wrap Int = .{ .inner = ibox }
 $ deep   : Int      = wrap.inner.val

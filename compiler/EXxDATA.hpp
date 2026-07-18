@@ -72,9 +72,9 @@ struct Ty;
 
 struct TyCon
 {
-  UT::Vu        name; // Int, Str, or a struct/union name
-  UT::Vec<Ty *> args; // type arguments: empty for a nullary con, set for an
-                      // applied generic type like `Maybe Int`
+  UT::Vu        name;        // Int, Str, or a struct/union name
+  UT::Vec<Ty *> args;        // type arguments
+  UT::Vu        qualifier{}; // module prefix from a qualified type `A.MyType`
 };
 struct TyVar
 {
@@ -179,6 +179,7 @@ struct PatStruct
   UT::Vec<FieldPat> fields;
   UT::Vu            anchor;
   size_t            line;
+  UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
 };
 // `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload) -- matches a variant of
 // the named union and destructures its payload, reusing FieldPat with the same
@@ -192,6 +193,7 @@ struct PatVariant
   UT::Vu            anchor;
   size_t            line;
   UT::Vu resolved_union{}; // patched by TC: the union this tag belongs to
+  UT::Vu qualifier{}; // module prefix from `A.Type.Tag`; MR resolves+clears
 };
 
 struct PatSeq
@@ -467,8 +469,9 @@ struct FieldInit
 // nominal record type; it produces no runtime value.
 struct ExStructDecl
 {
-  UT::Vu             name;
+  UT::Vu             name; // mangled `MOD/Name` after MR (else the source name)
   UT::Vec<FieldDecl> fields;
+  UT::Vu             origin; // the source-slice name, for diagnostics
 };
 // A struct literal: `Type.{ field = expr, ... }`. Qualified form only, so
 // `type_name` is always set (bare `.{...}` is a later increment).
@@ -476,6 +479,7 @@ struct ExStructLit
 {
   UT::Vu             type_name;
   UT::Vec<FieldInit> fields;
+  UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
 };
 // Field access: `record.field`.
 struct ExField
@@ -499,8 +503,9 @@ struct VariantDecl
 // type; it produces no runtime value.
 struct ExUnionDecl
 {
-  UT::Vu               name;
+  UT::Vu               name; // mangled `MOD/Name` after MR (else source name)
   UT::Vec<VariantDecl> variants;
+  UT::Vu               origin; // the source-slice name, for diagnostics
 };
 // An effect declaration: `$ Name : @effect = op : A -> B, ...`. Declares a set
 // of OPERATIONS (reusing FieldDecl: `name` is the operation, `ty` its `A -> B`
@@ -509,16 +514,18 @@ struct ExUnionDecl
 // effect name is a TypeName (uppercase), each operation a variable (lowercase).
 struct ExEffectDecl
 {
-  UT::Vu             name;
+  UT::Vu             name; // mangled `MOD/Name` after MR (else the source name)
   UT::Vec<FieldDecl> ops;
+  UT::Vu             origin; // the source-slice name, for diagnostics
 };
 // A type alias declaration: `$ Name : @alias = target`. Fully transparent --
 // the type checker resolves `Name` to `target` wherever it is written, so the
 // two are interchangeable (like a C typedef). Produces no runtime value.
 struct ExAliasDecl
 {
-  UT::Vu name;
+  UT::Vu name; // mangled `MOD/Name` after MR (else the source name)
   Ty    *target;
+  UT::Vu origin; // the source-slice name, for diagnostics
 };
 // A variant construction `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload).
 // `fields` are the payload values (reusing FieldInit): named when any carries a
@@ -530,6 +537,7 @@ struct ExVariantLit
   UT::Vec<FieldInit> fields;
   UT::Vu             anchor;
   size_t             line = 0;
+  UT::Vu qualifier{}; // module prefix from `A.Type.Tag`; MR resolves + clears
 };
 
 // A bracketed sequence literal `[e1, .., en]` whose container type is inferred:

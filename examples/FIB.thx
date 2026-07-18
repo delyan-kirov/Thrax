@@ -40,13 +40,13 @@ $ to: Int -> Int -> List Int = \a b =
 $ sample : List Int = to 0 3
 $ len3 : Int = when len sample is 3 then 0 else 1
 
-$ FIB_Point: @struct =
+$ Point: @struct =
 	x: Int,
 	y: Int,
 
 $ add: Int -> Int -> Int = \a b = a + b
 $ add: Real -> Real -> Real = \a b = a + b
-$ add: FIB_Point -> FIB_Point -> FIB_Point = \p1 p2 =
+$ add: Point -> Point -> Point = \p1 p2 =
 	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
 
 # Aggregate check for the combined test runner: 0 = all pass.

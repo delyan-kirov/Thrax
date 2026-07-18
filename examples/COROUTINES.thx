@@ -5,32 +5,32 @@
 # stored resumption). A scheduler resumes it later, from a different context --
 # the defining test of coroutines (vs a plain generator that resumes in place).
 
-$ COROUTINES_Co   : @effect = yield : Int -> {},
-$ COROUTINES_Task : @union = Fin: {}, Susp: { Int, {} -> COROUTINES_Task },
+$ Co   : @effect = yield : Int -> {},
+$ Task : @union = Fin: {}, Susp: { Int, {} -> Task },
 
 # Run a task one step: it either finishes (`Fin`) or yields a value and suspends,
 # in which case we capture its continuation `k` in `Susp` for the scheduler.
-$ spawn : ({} -> <COROUTINES_Co> {}) -> COROUTINES_Task = \t =
+$ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
     ctl k
-       is COROUTINES_Co.yield v = COROUTINES_Task.Susp.{ v, k }
-       else _ = COROUTINES_Task.Fin.{}
+       is Co.yield v = Task.Susp.{ v, k }
+       else _ = Task.Fin.{}
 
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
-$ rr : COROUTINES_Task -> COROUTINES_Task -> Int = \a b =
-    when a is COROUTINES_Task.Fin.{} then
-         (when b is COROUTINES_Task.Fin.{} then 0
-               is COROUTINES_Task.Susp.{ vb, kb } then vb + rr (COROUTINES_Task.Fin.{}) (kb {})
+$ rr : Task -> Task -> Int = \a b =
+    when a is Task.Fin.{} then
+         (when b is Task.Fin.{} then 0
+               is Task.Susp.{ vb, kb } then vb + rr (Task.Fin.{}) (kb {})
                else 0)
-         is COROUTINES_Task.Susp.{ va, ka } then va + rr b (ka {})
+         is Task.Susp.{ va, ka } then va + rr b (ka {})
          else 0
 
-$ t1 : {} -> <COROUTINES_Co> {} =
-	\u = let _ = COROUTINES_Co.yield 1 in let _ = COROUTINES_Co.yield 3 in {}
-$ t2 : {} -> <COROUTINES_Co> {} =
-	\u = let _ = COROUTINES_Co.yield 2 in let _ = COROUTINES_Co.yield 4 in {}
+$ t1 : {} -> <Co> {} =
+	\u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}
+$ t2 : {} -> <Co> {} =
+	\u = let _ = Co.yield 2 in let _ = Co.yield 4 in {}
 
 # Interleaved order is 1,2,3,4 -> sum 10.
 $ scheduled : Int = rr (spawn t1) (spawn t2)

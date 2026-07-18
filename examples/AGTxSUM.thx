@@ -62,10 +62,10 @@ $ chk2d : Int = when get 8 none_i is 8 then 0 else 1
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
-$ AGTxSUM_Pair : @union = P: {lhs: `A, rhs: `B}
-$ mk : AGTxSUM_Pair Int Int = AGTxSUM_Pair.P.{ .rhs = 2, .lhs = 1 }
+$ Pair : @union = P: {lhs: `A, rhs: `B}
+$ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
-    when mk is AGTxSUM_Pair.P.{ .lhs = l, .rhs = r } then
+    when mk is Pair.P.{ .lhs = l, .rhs = r } then
         when r - l is 1 then 0 else 1
     else 1
 

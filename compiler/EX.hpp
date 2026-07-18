@@ -54,7 +54,8 @@ private:
   UT_NODISCARD RExpr    parse_effect_decl(const LX::Token &name);
   UT_NODISCARD RExpr    parse_variant_lit(UT::Vu           type_name,
                                           UT::Vu           tag,
-                                          const LX::Token &tok);
+                                          const LX::Token &tok,
+                                          UT::Vu           qualifier = UT::Vu{});
   UT_NODISCARD RTy      parse_type();
   UT_NODISCARD RTy      parse_type_app();
   UT_NODISCARD RTy      parse_type_atom();

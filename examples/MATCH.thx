@@ -9,11 +9,11 @@
 #       always matches. An arm may add an `if <guard>` after its pattern (see
 #       WHEN_GUARDS.thx) -- a failed guard falls through to the next arm.
 
-$ MATCH_Person : @struct =
+$ Person : @struct =
 	name: Str,
 	age: Int,
 
-$ MATCH_Point : @struct =
+$ Point : @struct =
 	x: Int,
 	y: Int,
 
@@ -29,29 +29,29 @@ $ c2 : Str = classify 2
 $ cN : Str = classify 17
 
 # Guard on a struct's field value, then bind, then a catch-all.
-$ greet : MATCH_Person -> Str = \p =
-	when p is MATCH_Person.{ .age = 0 } then "newborn"
-	       is MATCH_Person.{ .name = who } then who
+$ greet : Person -> Str = \p =
+	when p is Person.{ .age = 0 } then "newborn"
+	       is Person.{ .name = who } then who
 	       else "?"
 
-$ g_baby  : Str = greet MATCH_Person.{ .name = "Q", .age = 0 }
-$ g_alice : Str = greet MATCH_Person.{ .name = "Alice", .age = 41 }
+$ g_baby  : Str = greet Person.{ .name = "Q", .age = 0 }
+$ g_alice : Str = greet Person.{ .name = "Alice", .age = 41 }
 
 # Bind fields out of the matched value (irrefutable arm: always matches).
-$ sum_xy : MATCH_Point -> Int = \pt =
-	when pt is MATCH_Point.{ x, y } then x + y
+$ sum_xy : Point -> Int = \pt =
+	when pt is Point.{ x, y } then x + y
 	        else 0
 
-$ s : Int = sum_xy MATCH_Point.{ .x = 3, .y = 4 }
+$ s : Int = sum_xy Point.{ .x = 3, .y = 4 }
 
 # Nested: guard a struct inside a struct, binding from the same arm.
-$ origin_or : MATCH_Point -> Int = \pt =
-	when pt is MATCH_Point.{ .x = 0, .y = 0 } then 0
-	        is MATCH_Point.{ .x = a, .y = b } then a + b
+$ origin_or : Point -> Int = \pt =
+	when pt is Point.{ .x = 0, .y = 0 } then 0
+	        is Point.{ .x = a, .y = b } then a + b
 	        else 0
 
-$ o0 : Int = origin_or MATCH_Point.{ .x = 0, .y = 0 }
-$ o7 : Int = origin_or MATCH_Point.{ .x = 3, .y = 4 }
+$ o0 : Int = origin_or Point.{ .x = 0, .y = 0 }
+$ o7 : Int = origin_or Point.{ .x = 3, .y = 4 }
 
 # A catch-all variable arm binds the whole scrutinee.
 $ describe : Int -> Int = \n =
