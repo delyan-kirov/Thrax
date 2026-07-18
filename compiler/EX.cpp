@@ -1780,6 +1780,23 @@ Parser::parse_type_atom()
              "expected a type name (must start uppercase), found '%s'",
              std::string(t.str).c_str());
     m_lex.next();
+
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '.'
+      LX::Token nm
+        = EX_TRY(expect(LX::TokenTag::Word,
+                        "expected a type name after '.' in a qualified type"));
+      char nc = nm.str.size() ? nm.str.data()[0] : '\0';
+      if (nc < 'A' || nc > 'Z')
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               nm,
+               "a qualified type name must start uppercase, found '%s'",
+               std::string(nm.str).c_str());
+      TyCon tc{ nm.str, {} };
+      tc.qualifier = t.str;
+      return { true, mk_ty(Ty{ TyTag::Con, tc }), {} };
+    }
     return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
   }
   case LX::TokenTag::At:

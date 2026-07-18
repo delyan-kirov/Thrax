@@ -14,8 +14,10 @@
  *   - each type/effect name (struct/union/alias/effect) is likewise namespaced
  *     to `NAME/Type`, and every reference -- `Ty::Con`s in signatures, effect
  *     rows, constructor/field literals, and variant/struct patterns -- is
- *     rewritten to it. The exception is the prelude's built-in-ish global types
- *     (`List`, the numeric aliases, ...), which stay bare and program-global;
+ *     rewritten to it. A type may be written qualified `A.Type` (resolved like
+ *     `A.foo`); an unqualified name imported from two modules is ambiguous and
+ *     must be qualified. The exception is the prelude's built-in-ish global
+ *     types (`List`, the numeric aliases, ...), which stay bare and global;
  *   - `$ with ...` imports and `$ @private` / `$ @public` toggles are consumed
  *     here and stripped from the output;
  *   - the program entry point is the `main` global of module `MAIN`.

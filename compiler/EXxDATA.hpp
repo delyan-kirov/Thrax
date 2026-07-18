@@ -73,8 +73,8 @@ struct Ty;
 struct TyCon
 {
   UT::Vu        name; // Int, Str, or a struct/union name
-  UT::Vec<Ty *> args; // type arguments: empty for a nullary con, set for an
-                      // applied generic type like `Maybe Int`
+  UT::Vec<Ty *> args; // type arguments
+  UT::Vu qualifier{}; // module prefix from a qualified type `A.MyType`
 };
 struct TyVar
 {

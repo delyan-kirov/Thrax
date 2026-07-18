@@ -79,6 +79,7 @@ struct Scope
   std::unordered_map<std::string, std::vector<UT::Vu>> unq;
   std::unordered_map<std::string, UT::Vu>              alias;
   std::unordered_map<std::string, UT::Vu>              tvis;
+  std::unordered_map<std::string, std::vector<UT::Vu>> tamb;
 };
 
 using Locals = std::vector<UT::Vu>;
@@ -403,12 +404,40 @@ struct Linker
       for (auto &si : kv.second) sc.unq[kv.first].push_back(si.mangled);
 
     // Own types (including private ones) are visible unqualified by their bare
-    // source name; a reference is rewritten to the resolved identity.
-    for (auto &kv : md.types) sc.tvis[kv.first] = kv.second.resolved;
+    // source name; a reference is rewritten to the resolved identity. An own
+    // type shadows any imported one of the same name (which stays reachable
+    // qualified `A.Type`).
+    std::unordered_set<std::string> own_ty;
+    for (auto &kv : md.types)
+    {
+      sc.tvis[kv.first] = kv.second.resolved;
+      own_ty.insert(kv.first);
+    }
 
+    // Import a module's public types. A name already bound to a DIFFERENT type
+    // (imported from another module) is ambiguous: record every distinct
+    // candidate in `tamb` so an unqualified use is rejected with a suggestion
+    // to qualify. Re-importing the same type (e.g. via two paths) is not a
+    // clash.
     auto import_types = [&](ModuleData &src) {
       for (auto &kv : src.types)
-        if (kv.second.is_public) sc.tvis[kv.first] = kv.second.resolved;
+      {
+        if (!kv.second.is_public || own_ty.count(kv.first)) continue;
+        UT::Vu r  = kv.second.resolved;
+        auto   it = sc.tvis.find(kv.first);
+        if (it == sc.tvis.end())
+        {
+          sc.tvis[kv.first] = r;
+          continue;
+        }
+        if (std::string(it->second) == std::string(r)) continue;
+        auto &amb = sc.tamb[kv.first];
+        if (amb.empty()) amb.push_back(it->second);
+        bool seen = false;
+        for (UT::Vu c : amb)
+          if (std::string(c) == std::string(r)) seen = true;
+        if (!seen) amb.push_back(r);
+      }
     };
 
     auto pit = modules.find("PRELUDE");
@@ -860,19 +889,97 @@ struct Linker
    * A name not in `tvis` (a `@`-sigil builtin, a type variable, or a genuine
    * unknown) is left untouched for TC to interpret or reject. */
 
-  // Rewrite a bare type/effect name to its resolved identity, or leave it.
+  // A resolved `MOD/Name` shown as the user would qualify it (`MOD.Name`).
+  std::string
+  friendly_qual(
+    UT::Vu resolved)
+  {
+    std::string s(resolved);
+    size_t      slash = s.find('/');
+    if (slash != std::string::npos) s[slash] = '.';
+    return s;
+  }
+
+  // Resolve a bare type/effect name to its resolved identity. An ambiguous name
+  // (imported from several modules) is rejected with a suggestion to qualify;
+  // an unknown name (a `@`-sigil builtin, a type variable, a genuine unknown)
+  // is left untouched for TC. `anchor` locates the diagnostic at the source
+  // use.
   UT::Vu
   rewrite_ty_name(
-    UT::Vu name, Scope &sc)
+    UT::Vu name, UT::Vu anchor, Scope &sc)
   {
     if (!name.size()) return name;
-    auto it = sc.tvis.find(std::string(name));
+    std::string key(name);
+    auto        amb = sc.tamb.find(key);
+    if (amb != sc.tamb.end())
+    {
+      std::string qs;
+      for (size_t i = 0; i < amb->second.size(); ++i)
+        qs += (i ? ", " : "") + friendly_qual(amb->second[i]);
+      err(ER::Code::AMBIGUOUS_NAME,
+          anchor,
+          "type '" + key + "' is imported from several modules; qualify it ("
+            + qs + ")");
+      return name;
+    }
+    auto it = sc.tvis.find(key);
     return it == sc.tvis.end() ? name : it->second;
+  }
+
+  // Resolve a qualified type `A.Name` to its owning module's resolved identity
+  // (like `resolve_qualified` for terms: any program module or import alias may
+  // be the qualifier). Emits a diagnostic and returns empty on failure.
+  UT::Vu
+  resolve_qualified_type(
+    UT::Vu qual, UT::Vu name, const std::string &Mkey, Scope &sc)
+  {
+    std::string PFX(qual);
+    UT::Vu      T;
+    bool        ownAccess = false;
+    auto        ait       = sc.alias.find(PFX);
+    if (ait != sc.alias.end())
+      T = ait->second;
+    else if (PFX == Mkey)
+    {
+      T         = modules[Mkey].name;
+      ownAccess = true;
+    }
+    else if (modules.count(PFX))
+      T = modules[PFX].name;
+    else
+    {
+      err(ER::Code::UNKNOWN_MODULE,
+          qual,
+          "no module named '" + PFX + "' in qualified type '" + PFX + "."
+            + std::string(name) + "'");
+      return {};
+    }
+
+    ModuleData &tm  = modules[std::string(T)];
+    auto        tit = tm.types.find(std::string(name));
+    if (tit == tm.types.end())
+    {
+      err(ER::Code::UNKNOWN_SYMBOL,
+          name,
+          "module '" + std::string(T) + "' has no type '" + std::string(name)
+            + "'");
+      return {};
+    }
+    if (!ownAccess && !tit->second.is_public)
+    {
+      err(ER::Code::PRIVATE_SYMBOL,
+          name,
+          "type '" + std::string(name) + "' is private to module '"
+            + std::string(T) + "'");
+      return {};
+    }
+    return tit->second.resolved;
   }
 
   void
   rewrite_ty(
-    EX::Ty *t, Scope &sc)
+    EX::Ty *t, const std::string &Mkey, Scope &sc)
   {
     if (!t) return;
     switch (t->tag)
@@ -880,18 +987,25 @@ struct Linker
     case EX::TyTag::Con:
     {
       auto &c = std::get<EX::TyCon>(t->as);
-      c.name  = rewrite_ty_name(c.name, sc);
-      for (EX::Ty *a : c.args) rewrite_ty(a, sc);
+      if (c.qualifier.size())
+      {
+        UT::Vu r = resolve_qualified_type(c.qualifier, c.name, Mkey, sc);
+        if (r.size()) c.name = r;
+        c.qualifier = UT::Vu{}; // consumed
+      }
+      else
+        c.name = rewrite_ty_name(c.name, c.name, sc);
+      for (EX::Ty *a : c.args) rewrite_ty(a, Mkey, sc);
       return;
     }
     case EX::TyTag::Arrow:
     {
       auto &a = std::get<EX::TyArrow>(t->as);
-      rewrite_ty(a.from, sc);
-      rewrite_ty(a.to, sc);
+      rewrite_ty(a.from, Mkey, sc);
+      rewrite_ty(a.to, Mkey, sc);
       // Effect-row labels name effects; the tail is a row variable (untouched).
       for (size_t i = 0; i < a.eff_labels.size(); ++i)
-        a.eff_labels[i] = rewrite_ty_name(a.eff_labels[i], sc);
+        a.eff_labels[i] = rewrite_ty_name(a.eff_labels[i], a.eff_labels[i], sc);
       return;
     }
     case EX::TyTag::Var: return;
@@ -907,14 +1021,14 @@ struct Linker
     case EX::PatTag::Struct:
     {
       auto &ps     = std::get<EX::PatStruct>(p->as);
-      ps.type_name = rewrite_ty_name(ps.type_name, sc);
+      ps.type_name = rewrite_ty_name(ps.type_name, ps.type_name, sc);
       for (EX::FieldPat &f : ps.fields) rewrite_pat_types(f.pat, sc);
       return;
     }
     case EX::PatTag::Variant:
     {
       auto &pv     = std::get<EX::PatVariant>(p->as);
-      pv.type_name = rewrite_ty_name(pv.type_name, sc);
+      pv.type_name = rewrite_ty_name(pv.type_name, pv.type_name, sc);
       for (EX::FieldPat &f : pv.fields) rewrite_pat_types(f.pat, sc);
       return;
     }
@@ -935,87 +1049,87 @@ struct Linker
 
   void
   rewrite_types_expr(
-    Expr *e, Scope &sc)
+    Expr *e, const std::string &Mkey, Scope &sc)
   {
     switch (e->tag)
     {
     case ExprTag::StructLit:
     {
       auto &sl     = std::get<EX::ExStructLit>(e->as);
-      sl.type_name = rewrite_ty_name(sl.type_name, sc);
+      sl.type_name = rewrite_ty_name(sl.type_name, sl.type_name, sc);
       for (size_t k = 0; k < sl.fields.size(); ++k)
-        rewrite_types_expr(sl.fields[k].val, sc);
+        rewrite_types_expr(sl.fields[k].val, Mkey, sc);
       return;
     }
     case ExprTag::VariantLit:
     {
       auto &vl     = std::get<EX::ExVariantLit>(e->as);
-      vl.type_name = rewrite_ty_name(vl.type_name, sc);
+      vl.type_name = rewrite_ty_name(vl.type_name, vl.type_name, sc);
       for (size_t k = 0; k < vl.fields.size(); ++k)
-        rewrite_types_expr(vl.fields[k].val, sc);
+        rewrite_types_expr(vl.fields[k].val, Mkey, sc);
       return;
     }
     case ExprTag::App:
     {
       auto &a = std::get<EX::ExApp>(e->as);
-      rewrite_types_expr(a.fn, sc);
-      rewrite_types_expr(a.arg, sc);
+      rewrite_types_expr(a.fn, Mkey, sc);
+      rewrite_types_expr(a.arg, Mkey, sc);
       return;
     }
     case ExprTag::FnDef:
     {
       auto &f = std::get<EX::ExFnDef>(e->as);
       if (f.param_pat) rewrite_pat_types(f.param_pat, sc);
-      rewrite_types_expr(f.body, sc);
+      rewrite_types_expr(f.body, Mkey, sc);
       return;
     }
     case ExprTag::Let:
     {
       auto &l = std::get<EX::ExLet>(e->as);
       if (l.pat) rewrite_pat_types(l.pat, sc);
-      if (l.sig) rewrite_ty(l.sig, sc);
-      rewrite_types_expr(l.val, sc);
-      rewrite_types_expr(l.body, sc);
+      if (l.sig) rewrite_ty(l.sig, Mkey, sc);
+      rewrite_types_expr(l.val, Mkey, sc);
+      rewrite_types_expr(l.body, Mkey, sc);
       return;
     }
     case ExprTag::Match:
     {
       auto &m = std::get<EX::ExMatch>(e->as);
-      rewrite_types_expr(m.scrut, sc);
+      rewrite_types_expr(m.scrut, Mkey, sc);
       for (size_t i = 0; i < m.arms.size(); ++i)
       {
         rewrite_pat_types(m.arms[i].pat, sc);
-        if (m.arms[i].guard) rewrite_types_expr(m.arms[i].guard, sc);
-        rewrite_types_expr(m.arms[i].body, sc);
+        if (m.arms[i].guard) rewrite_types_expr(m.arms[i].guard, Mkey, sc);
+        rewrite_types_expr(m.arms[i].body, Mkey, sc);
       }
-      rewrite_types_expr(m.alt, sc);
+      rewrite_types_expr(m.alt, Mkey, sc);
       return;
     }
     case ExprTag::If:
     {
       auto &i = std::get<EX::ExIf>(e->as);
-      rewrite_types_expr(i.cond, sc);
-      rewrite_types_expr(i.then, sc);
-      rewrite_types_expr(i.alt, sc);
+      rewrite_types_expr(i.cond, Mkey, sc);
+      rewrite_types_expr(i.then, Mkey, sc);
+      rewrite_types_expr(i.alt, Mkey, sc);
       return;
     }
     case ExprTag::Handle:
     {
       auto &h = std::get<EX::ExHandle>(e->as);
-      rewrite_types_expr(h.body, sc);
+      rewrite_types_expr(h.body, Mkey, sc);
       for (size_t c = 0; c < h.clauses.size(); ++c)
-        rewrite_types_expr(h.clauses[c].body, sc);
-      if (h.else_body) rewrite_types_expr(h.else_body, sc);
+        rewrite_types_expr(h.clauses[c].body, Mkey, sc);
+      if (h.else_body) rewrite_types_expr(h.else_body, Mkey, sc);
       return;
     }
     case ExprTag::Field:
-      rewrite_types_expr(std::get<EX::ExField>(e->as).record, sc);
+      rewrite_types_expr(std::get<EX::ExField>(e->as).record, Mkey, sc);
       return;
     case ExprTag::SeqLit:
     {
       auto &sl = std::get<EX::ExSeqLit>(e->as);
       for (size_t k = 0; k < sl.elems.size(); ++k)
-        rewrite_types_expr(sl.elems[k], sc);
+        rewrite_types_expr(sl.elems[k], Mkey, sc);
       return;
     }
     default: return; // Var / Int / Real / Str / Extern / Overload / Unknown
@@ -1026,24 +1140,24 @@ struct Linker
   // field / variant-payload / alias-target / operation signatures.
   void
   rewrite_decl_types(
-    Expr *e, Scope &sc)
+    Expr *e, const std::string &Mkey, Scope &sc)
   {
     switch (e->tag)
     {
     case ExprTag::StructDecl:
       for (auto &f : std::get<EX::ExStructDecl>(e->as).fields)
-        rewrite_ty(f.ty, sc);
+        rewrite_ty(f.ty, Mkey, sc);
       return;
     case ExprTag::UnionDecl:
       for (auto &v : std::get<EX::ExUnionDecl>(e->as).variants)
-        for (auto &f : v.fields) rewrite_ty(f.ty, sc);
+        for (auto &f : v.fields) rewrite_ty(f.ty, Mkey, sc);
       return;
     case ExprTag::AliasDecl:
-      rewrite_ty(std::get<EX::ExAliasDecl>(e->as).target, sc);
+      rewrite_ty(std::get<EX::ExAliasDecl>(e->as).target, Mkey, sc);
       return;
     case ExprTag::EffectDecl:
       for (auto &op : std::get<EX::ExEffectDecl>(e->as).ops)
-        rewrite_ty(op.ty, sc);
+        rewrite_ty(op.ty, Mkey, sc);
       return;
     default: return;
     }
@@ -1105,13 +1219,17 @@ struct Linker
     // the constructor/pattern references in every body) to their resolved
     // names.
     for (auto &pr : decls)
-      rewrite_decl_types(pr.second, scopes[std::string(pr.first)]);
+    {
+      std::string Mkey(pr.first);
+      rewrite_decl_types(pr.second, Mkey, scopes[Mkey]);
+    }
     for (auto &pr : defs)
     {
-      Scope &sc = scopes[std::string(pr.first)];
-      auto  &d  = std::get<EX::ExDef>(pr.second->as);
-      rewrite_ty(d.sig, sc);
-      rewrite_types_expr(d.def, sc);
+      std::string Mkey(pr.first);
+      Scope      &sc = scopes[Mkey];
+      auto       &d  = std::get<EX::ExDef>(pr.second->as);
+      rewrite_ty(d.sig, Mkey, sc);
+      rewrite_types_expr(d.def, Mkey, sc);
     }
 
     Result r;

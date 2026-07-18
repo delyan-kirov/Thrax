@@ -8,7 +8,7 @@ Status: **not started** (future work). Motivating blocker: array `[..]` patterns
 Pattern lowering (`LL`) runs *before* the type checker (`TC`):
 
 ```
-Parse (EX) → Lower patterns (LL) → Link (MR) → Typecheck (TC) → Core (CR) → …
+Parse (EX) -> Lower patterns (LL) -> Link (MR) -> Typecheck (TC) -> Core (CR) -> ...
 ```
 
 `LL` compiles the rich pattern surface (`when` arms, `[..]`, `::`, structs,
@@ -16,7 +16,7 @@ variants) down to a small primitive core `Case` + `if` + `let` +
 field-access + `?=` so that no `Pattern` node survives and neither TC nor the
 engines need to know about patterns (see `LL.hpp`). That bet holds only while
 lowering is **purely structural**: the pattern text alone says how to
-destructure (`3` → `?= 3`; `Person.{x,y}` → typed field access; `.Cons.{h,t}` →
+destructure (`3` -> `?= 3`; `Person.{x,y}` -> typed field access; `.Cons.{h,t}` ->
 tag dispatch).
 
 It breaks for **type-directed pattern syntax** the same surface form that
@@ -37,7 +37,7 @@ patterns primitive: both compile them to trees of one-level `case`s (Wadler's
 pattern-match compiler). The **only** difference is ordering. GHC:
 
 ```
-Parse → Rename → Typecheck (patterns intact) → Desugar to Core case-trees
+Parse -> Rename -> Typecheck (patterns intact) -> Desugar to Core case-trees
 ```
 
 GHC typechecks the rich patterns *first*, then compiles them to case-trees with
@@ -49,10 +49,10 @@ class-method patterns, etc. "just work." We flipped the last two steps.
 Reorder so pattern compilation has types available:
 
 ```
-Parse (EX) → Link (MR) → Typecheck (TC, patterns intact) → Lower patterns → Core (CR) → …
+Parse (EX) -> Link (MR) -> Typecheck (TC, patterns intact) -> Lower patterns -> Core (CR) -> ...
 ```
 
-Keep `Case` as the primitive (already true). Move the `Pattern` → `Case`-tree
+Keep `Case` as the primitive (already true). Move the `Pattern` -> `Case`-tree
 compilation to run **after** TC, so a `[..]` (or any future type-directed
 pattern) reads the scrutinee's resolved type and emits the right destructure.
 
