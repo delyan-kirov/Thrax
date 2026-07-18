@@ -202,6 +202,38 @@ cmd_check_format()
   return 0;
 }
 
+// Run Bison's LALR analysis over doc/thrax.y. The grammar declares
+// `%expect N`, so Bison is silent while the conflict count holds and fails the
+// moment it diverges -- a new ambiguity, or a known one resolved. Pure grammar
+// analysis: no lexer, no codegen. Uses bison off PATH, else `nix shell`.
+int
+cmd_grammar_check(
+  bool verbose)
+{
+  const std::string y = "doc/thrax.y";
+  if (!std::filesystem::exists(y))
+  {
+    std::print(stderr, "build: grammar-check: {} not found\n", y);
+    return 1;
+  }
+  std::string prefix = BLD::exec({ "bison", "--version" }).code == 0
+                         ? ""
+                         : "nix shell nixpkgs#bison --command ";
+  std::string cmd    = prefix + "bison " + (verbose ? "-Wcounterexamples " : "")
+                  + "-o /dev/null " + y;
+  if (BLD::run(cmd) != 0)
+  {
+    std::print(stderr,
+               "build: grammar-check: conflict count != %expect in {} (new "
+               "ambiguity, or a known one resolved -- update %expect). Rerun "
+               "`build grammar-check -v` for counterexamples.\n",
+               y);
+    return 1;
+  }
+  std::print("build: grammar-check: OK\n");
+  return 0;
+}
+
 // Remove build artifacts and scratch files.
 int
 cmd_clean(
@@ -643,6 +675,9 @@ main(
   if (cmd == "clean-recursive") return cmd_clean_recursive(c);
   if (cmd == "check-ascii") return cmd_check_ascii();
   if (cmd == "check-format") return cmd_check_format();
+  if (cmd == "grammar-check")
+    return cmd_grammar_check(argi + 1 < argc
+                             && std::string(argv[argi + 1]) == "-v");
   if (cmd == "install-hooks") return cmd_install_hooks();
   if (cmd == "ffi-rebuild") return cmd_ffi_rebuild();
   if (cmd == "format") return cmd_format();
@@ -708,8 +743,8 @@ main(
 
   std::print(stderr,
              "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|check-ascii|check-format|install-hooks|"
-             "ffi-rebuild|format|compile-commands|tokei|valgrind|env|"
-             "pre-push]\n");
+             "clean-recursive|check-ascii|check-format|grammar-check|"
+             "install-hooks|ffi-rebuild|format|compile-commands|tokei|"
+             "valgrind|env|pre-push]\n");
   return 2;
 }
