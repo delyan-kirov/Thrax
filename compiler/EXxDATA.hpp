@@ -72,9 +72,9 @@ struct Ty;
 
 struct TyCon
 {
-  UT::Vu        name; // Int, Str, or a struct/union name
-  UT::Vec<Ty *> args; // type arguments
-  UT::Vu qualifier{}; // module prefix from a qualified type `A.MyType`
+  UT::Vu        name;        // Int, Str, or a struct/union name
+  UT::Vec<Ty *> args;        // type arguments
+  UT::Vu        qualifier{}; // module prefix from a qualified type `A.MyType`
 };
 struct TyVar
 {
@@ -179,6 +179,7 @@ struct PatStruct
   UT::Vec<FieldPat> fields;
   UT::Vu            anchor;
   size_t            line;
+  UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
 };
 // `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload) -- matches a variant of
 // the named union and destructures its payload, reusing FieldPat with the same
@@ -192,6 +193,7 @@ struct PatVariant
   UT::Vu            anchor;
   size_t            line;
   UT::Vu resolved_union{}; // patched by TC: the union this tag belongs to
+  UT::Vu qualifier{}; // module prefix from `A.Type.Tag`; MR resolves+clears
 };
 
 struct PatSeq
@@ -477,6 +479,7 @@ struct ExStructLit
 {
   UT::Vu             type_name;
   UT::Vec<FieldInit> fields;
+  UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
 };
 // Field access: `record.field`.
 struct ExField
@@ -534,6 +537,7 @@ struct ExVariantLit
   UT::Vec<FieldInit> fields;
   UT::Vu             anchor;
   size_t             line = 0;
+  UT::Vu qualifier{}; // module prefix from `A.Type.Tag`; MR resolves + clears
 };
 
 // A bracketed sequence literal `[e1, .., en]` whose container type is inferred:

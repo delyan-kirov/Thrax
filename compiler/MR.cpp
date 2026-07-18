@@ -977,6 +977,24 @@ struct Linker
     return tit->second.resolved;
   }
 
+  // Does `name` denote a type visible (by its bare name) in this scope?
+  bool
+  is_visible_type(
+    UT::Vu name, Scope &sc)
+  {
+    std::string s(name);
+    return sc.tvis.count(s) || sc.tamb.count(s);
+  }
+
+  // Does `name` denote a module (own, an import alias, or any program module)?
+  bool
+  is_module_ref(
+    UT::Vu name, const std::string &Mkey, Scope &sc)
+  {
+    std::string s(name);
+    return sc.alias.count(s) || s == Mkey || modules.count(s);
+  }
+
   void
   rewrite_ty(
     EX::Ty *t, const std::string &Mkey, Scope &sc)
@@ -1014,33 +1032,64 @@ struct Linker
 
   void
   rewrite_pat_types(
-    EX::Pattern *p, Scope &sc)
+    EX::Pattern *p, const std::string &Mkey, Scope &sc)
   {
     switch (p->tag)
     {
     case EX::PatTag::Struct:
     {
-      auto &ps     = std::get<EX::PatStruct>(p->as);
-      ps.type_name = rewrite_ty_name(ps.type_name, ps.type_name, sc);
-      for (EX::FieldPat &f : ps.fields) rewrite_pat_types(f.pat, sc);
+      auto &ps = std::get<EX::PatStruct>(p->as);
+      if (ps.qualifier.size())
+      {
+        UT::Vu r = resolve_qualified_type(ps.qualifier, ps.type_name, Mkey, sc);
+        if (r.size()) ps.type_name = r;
+        ps.qualifier = UT::Vu{};
+      }
+      else
+        ps.type_name = rewrite_ty_name(ps.type_name, ps.type_name, sc);
+      for (EX::FieldPat &f : ps.fields) rewrite_pat_types(f.pat, Mkey, sc);
       return;
     }
     case EX::PatTag::Variant:
     {
-      auto &pv     = std::get<EX::PatVariant>(p->as);
-      pv.type_name = rewrite_ty_name(pv.type_name, pv.type_name, sc);
-      for (EX::FieldPat &f : pv.fields) rewrite_pat_types(f.pat, sc);
+      auto &pv = std::get<EX::PatVariant>(p->as);
+      if (pv.qualifier.size())
+      {
+        UT::Vu r = resolve_qualified_type(pv.qualifier, pv.type_name, Mkey, sc);
+        if (r.size()) pv.type_name = r;
+        pv.qualifier = UT::Vu{};
+      }
+      else if (!is_visible_type(pv.type_name, sc)
+               && is_module_ref(pv.type_name, Mkey, sc))
+      {
+        // `M.Type.{..}` parsed as a variant but `M` is a module: it is really a
+        // module-qualified STRUCT pattern. Rebuild it as one.
+        UT::Vu r = resolve_qualified_type(pv.type_name, pv.tag, Mkey, sc);
+        EX::PatStruct ps;
+        ps.type_name = r.size() ? r : pv.tag;
+        ps.fields    = std::move(pv.fields);
+        ps.anchor    = pv.anchor;
+        ps.line      = pv.line;
+        p->tag       = EX::PatTag::Struct;
+        p->as        = std::move(ps);
+        for (EX::FieldPat &f : std::get<EX::PatStruct>(p->as).fields)
+          rewrite_pat_types(f.pat, Mkey, sc);
+        return;
+      }
+      else
+        pv.type_name = rewrite_ty_name(pv.type_name, pv.type_name, sc);
+      for (EX::FieldPat &f : pv.fields) rewrite_pat_types(f.pat, Mkey, sc);
       return;
     }
     case EX::PatTag::StrPrefix:
-      rewrite_pat_types(std::get<EX::PatStrPrefix>(p->as).rest, sc);
+      rewrite_pat_types(std::get<EX::PatStrPrefix>(p->as).rest, Mkey, sc);
       return;
     case EX::PatTag::Seq:
     {
       auto &pq = std::get<EX::PatSeq>(p->as);
       for (size_t i = 0; i < pq.elems.size(); ++i)
-        rewrite_pat_types(pq.elems[i], sc);
-      if (pq.rest) rewrite_pat_types(pq.rest, sc);
+        rewrite_pat_types(pq.elems[i], Mkey, sc);
+      if (pq.rest) rewrite_pat_types(pq.rest, Mkey, sc);
       return;
     }
     default: return; // Wild / Var / Int / Real / Str: no type name
@@ -1055,16 +1104,48 @@ struct Linker
     {
     case ExprTag::StructLit:
     {
-      auto &sl     = std::get<EX::ExStructLit>(e->as);
-      sl.type_name = rewrite_ty_name(sl.type_name, sl.type_name, sc);
+      auto &sl = std::get<EX::ExStructLit>(e->as);
+      if (sl.qualifier.size())
+      {
+        UT::Vu r = resolve_qualified_type(sl.qualifier, sl.type_name, Mkey, sc);
+        if (r.size()) sl.type_name = r;
+        sl.qualifier = UT::Vu{};
+      }
+      else
+        sl.type_name = rewrite_ty_name(sl.type_name, sl.type_name, sc);
       for (size_t k = 0; k < sl.fields.size(); ++k)
         rewrite_types_expr(sl.fields[k].val, Mkey, sc);
       return;
     }
     case ExprTag::VariantLit:
     {
-      auto &vl     = std::get<EX::ExVariantLit>(e->as);
-      vl.type_name = rewrite_ty_name(vl.type_name, vl.type_name, sc);
+      auto &vl = std::get<EX::ExVariantLit>(e->as);
+      if (vl.qualifier.size())
+      {
+        // `A.Type.Tag` -- resolve the qualified union type, keep the tag.
+        UT::Vu r = resolve_qualified_type(vl.qualifier, vl.type_name, Mkey, sc);
+        if (r.size()) vl.type_name = r;
+        vl.qualifier = UT::Vu{};
+      }
+      else if (!is_visible_type(vl.type_name, sc)
+               && is_module_ref(vl.type_name, Mkey, sc))
+      {
+        // `M.Type.{..}` was parsed as a variant (`M` type, `Type` tag), but `M`
+        // is a module: it is really a module-qualified STRUCT literal. Rebuild
+        // the node as one and resolve the qualified struct type.
+        UT::Vu r = resolve_qualified_type(vl.type_name, vl.tag, Mkey, sc);
+        EX::ExStructLit sl;
+        sl.type_name = r.size() ? r : vl.tag;
+        sl.fields    = std::move(vl.fields);
+        e->tag       = ExprTag::StructLit;
+        e->as        = std::move(sl);
+        auto &nsl    = std::get<EX::ExStructLit>(e->as);
+        for (size_t k = 0; k < nsl.fields.size(); ++k)
+          rewrite_types_expr(nsl.fields[k].val, Mkey, sc);
+        return;
+      }
+      else
+        vl.type_name = rewrite_ty_name(vl.type_name, vl.type_name, sc);
       for (size_t k = 0; k < vl.fields.size(); ++k)
         rewrite_types_expr(vl.fields[k].val, Mkey, sc);
       return;
@@ -1079,14 +1160,14 @@ struct Linker
     case ExprTag::FnDef:
     {
       auto &f = std::get<EX::ExFnDef>(e->as);
-      if (f.param_pat) rewrite_pat_types(f.param_pat, sc);
+      if (f.param_pat) rewrite_pat_types(f.param_pat, Mkey, sc);
       rewrite_types_expr(f.body, Mkey, sc);
       return;
     }
     case ExprTag::Let:
     {
       auto &l = std::get<EX::ExLet>(e->as);
-      if (l.pat) rewrite_pat_types(l.pat, sc);
+      if (l.pat) rewrite_pat_types(l.pat, Mkey, sc);
       if (l.sig) rewrite_ty(l.sig, Mkey, sc);
       rewrite_types_expr(l.val, Mkey, sc);
       rewrite_types_expr(l.body, Mkey, sc);
@@ -1098,7 +1179,7 @@ struct Linker
       rewrite_types_expr(m.scrut, Mkey, sc);
       for (size_t i = 0; i < m.arms.size(); ++i)
       {
-        rewrite_pat_types(m.arms[i].pat, sc);
+        rewrite_pat_types(m.arms[i].pat, Mkey, sc);
         if (m.arms[i].guard) rewrite_types_expr(m.arms[i].guard, Mkey, sc);
         rewrite_types_expr(m.arms[i].body, Mkey, sc);
       }

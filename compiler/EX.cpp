@@ -381,11 +381,28 @@ Parser::parse_primary()
                  "a variant constructor's type name must start uppercase, "
                  "found '%s'",
                  std::string(tn).c_str());
-        base = EX_CTX(parse_variant_lit(tn, fld.str, fld),
-                      dot,
-                      "in this '%s.%s' variant",
-                      std::string(tn).c_str(),
-                      std::string(fld.str).c_str());
+
+        LX::Token p0 = EX_TRY(m_lex.peek(0));
+        LX::Token p1 = EX_TRY(m_lex.peek(1));
+        if (p0.tag == LX::TokenTag::Dot && p1.tag == LX::TokenTag::Word
+            && p1.str.size() && p1.str.data()[0] >= 'A'
+            && p1.str.data()[0] <= 'Z')
+        {
+          m_lex.next(); // '.'
+          m_lex.next(); // the tag
+          base = EX_CTX(parse_variant_lit(fld.str, p1.str, p1, tn),
+                        dot,
+                        "in this '%s.%s.%s' variant",
+                        std::string(tn).c_str(),
+                        std::string(fld.str).c_str(),
+                        std::string(p1.str).c_str());
+        }
+        else
+          base = EX_CTX(parse_variant_lit(tn, fld.str, fld),
+                        dot,
+                        "in this '%s.%s' variant",
+                        std::string(tn).c_str(),
+                        std::string(fld.str).c_str());
       }
       else if (base->tag == ExprTag::Var
                && std::get<ExVar>(base->as).qualifier.empty()
@@ -972,16 +989,34 @@ Parser::parse_struct_pattern(
     m_lex.next(); // tag
     UT::Vu tag = ahead.str;
 
+    // A third uppercase segment makes this a module-qualified variant pattern
+    // `Qual.Type.Tag`: `ahead` is the type, the segment after is the tag.
+    UT::Vu qualifier{};
+    UT::Vu vtype = type_name;
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+        && LX::TokenTag::Word == EX_TRY(m_lex.peek(1)).tag
+        && EX_TRY(m_lex.peek(1)).str.size()
+        && EX_TRY(m_lex.peek(1)).str.data()[0] >= 'A'
+        && EX_TRY(m_lex.peek(1)).str.data()[0] <= 'Z')
+    {
+      m_lex.next();                        // '.'
+      LX::Token s3 = EX_TRY(m_lex.next()); // the tag
+      qualifier    = type_name;            // S1
+      vtype        = tag;                  // S2 (the type)
+      tag          = s3.str;               // S3 (the tag)
+    }
+
     // An optional `.{ ... }` payload; its absence means a unit payload.
     UT::Vec<FieldPat> fields{ m_arena };
     if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
         && LX::TokenTag::LBrace == EX_TRY(m_lex.peek(1)).tag)
     {
       m_lex.next(); // '.'
-      fields = EX_TRY(parse_field_pats(type_name, tn));
+      fields = EX_TRY(parse_field_pats(vtype, tn));
     }
     Pattern pat{ PatTag::Variant,
-                 PatVariant{ type_name, tag, fields, tn.str, tn.line } };
+                 PatVariant{
+                   vtype, tag, fields, tn.str, tn.line, {}, qualifier } };
     return { true, alloc_pat(pat), {} };
   }
 
@@ -1669,7 +1704,7 @@ Parser::parse_effect_decl(
 // not mixed -- the same rule as a struct literal.
 RExpr
 Parser::parse_variant_lit(
-  UT::Vu type_name, UT::Vu tag, const LX::Token &tok)
+  UT::Vu type_name, UT::Vu tag, const LX::Token &tok, UT::Vu qualifier)
 {
   UT::Vec<FieldInit> fields{ m_arena };
 
@@ -1733,7 +1768,7 @@ Parser::parse_variant_lit(
   }
 
   Expr e{ ExprTag::VariantLit };
-  e.as = ExVariantLit{ type_name, tag, fields, tok.str, tok.line };
+  e.as = ExVariantLit{ type_name, tag, fields, tok.str, tok.line, qualifier };
   return { true, alloc(e), {} };
 }
 
