@@ -197,8 +197,6 @@ Phase 3 -- language-gated (ordering above):
 - Generic `Vec \`T` -> `TABLE` (mutable hash map, section 4), `BIT_ARRAY`.
 - Tuples (section 5) -> PAIR retirement, tuple cmp/eq combinators.
 - C `int` return marshalling (kills `IO.is_byte`), argv, buffered readers.
-- Parser accepts `{}` as a type argument (`Map \`T {}`), so SET can drop
-  its throwaway Int values.
 
 Phase 4 -- text:
 - `PARSE`: parser combinators over `Str` + offset (no slices needed to
@@ -209,3 +207,61 @@ Phase 4 -- text:
 
 Non-goals for now: Koka's time-scale/astronomy tower, DOM bindings, Jai's
 windowing/GL layer, threads (no runtime story yet), decimal/ddouble.
+
+## 7. core.thx: the language-defined layer (planned)
+
+Historical note: `if` takes Int truth because the language predates its type
+system; predicates return 1/0 to match. The plan is a visible CORE layer
+that upgrades this without hiding anything:
+
+- **One real file** (a `core/` module, baked and auto-injected like the
+  stdlib but with BARE names -- today's prelude exemption). It holds what
+  the language DEFINES in itself: `List`, the numeric aliases, `assert`,
+  and eventually `Bool`, `String` as an alias of `@str`, ... Today this
+  text lives as a C++ string in app/DR.cpp (`prelude_source`), invisible to
+  users. As a file it is documentation: the `@` sigil marks what is truly
+  built-in; everything else is readable Thrax defined somewhere you can
+  open. Diagnostics already point into real files for the stdlib; core gets
+  the same.
+- **The target-dependent lines stay honest**: `Int`/`Nat` alias the
+  TARGET's word type, which is why the prelude is generated. Either DR
+  keeps generating just those two lines, or (cleaner) a `@word`/`@uword`
+  canonical spelling folds in TG and core.thx becomes fully static text.
+- **Bool rides this**: declare `Bool : @union = True: {}, False: {},` in
+  core and BLESS it (the compiler already blesses one core type: `List`,
+  which `[..]`/`::` are hardwired to). Blessing means comparisons return
+  `Bool` and `if`/guards consume it. Representation can stay a machine
+  word (a nullary-only union is just its tag), so the engines barely
+  change; the churn is TC's overload_db result types plus flipping stdlib
+  predicates, which the checker will point at exhaustively. Worth doing
+  BEFORE Vec/Table so new modules stop baking in Int truth.
+
+## 8. Extensible `[..]` (planned)
+
+`[a, b, c]` literals and `[..]` patterns are type-directed today between
+exactly two hardwired types: the prelude `List` and the byte-vector
+`Array`. To let user types opt in, desugar literals to an overloaded
+builder protocol instead of special-casing:
+
+    [a, b, c]  ==>  seq_done (seq_push (seq_push (seq_push seq_empty a) b) c)
+
+Three overloadable functions -- `seq_empty`, `seq_push`, `seq_done` --
+resolved by the expected type like any overload (the conservative
+user-site fixpoint already handles expected-type-directed picks). `done`
+exists so List can build reversed and flip once (O(n)), while Array's
+`done` is the identity. List's and Array's instances then live in core.thx
+-- the "implement the `[]` syntax for List and Array in the core" idea --
+and `Vec \`T` picks up literals for free the day it lands, as does any
+user collection.
+
+Two footnotes:
+- PATTERNS stay hardwired to List/Array for now. `is [a, b, ..rest]` for a
+  custom type needs an uncons VIEW (`seq_uncons : T -> Option {head,
+  rest}`), i.e. view patterns -- a separate, later design.
+- The desugaring turns one literal node into n applications; if literal
+  performance ever matters the compiler can keep the current fused path as
+  an optimization for the known core instances.
+
+Sequencing note: the protocol pays off most alongside Vec (section 6), so
+the natural order is Bool/core.thx, then Vec + `[]` protocol together,
+then tuples.

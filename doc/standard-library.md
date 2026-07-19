@@ -149,5 +149,3 @@ Smaller items:
 - Proper C `int` FFI marshalling (kills the `is_byte` idiom).
 - Migrate IO's error reporting from Int codes / Option to `Result` with a
   standard `Error` union, or `<Fail>` rows, once the shape settles.
-- `{}` does not parse as a type ARGUMENT in a struct field (`Map \`T {}`),
-  which is why SET stores a throwaway Int value.

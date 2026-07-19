@@ -1787,6 +1787,9 @@ Parser::parse_variant_lit(
  *------------------------------------------------------------------------------*/
 
 // True when `t` can begin a type atom -- i.e. start an application argument.
+// `{` starts the unit type `{}` and `@` a canonical base type (`@int64`);
+// both are complete atoms in parse_type_atom, so `Map `T {}` and
+// `Map `T @int64` apply like any other argument.
 static bool
 ty_atom_starts(
   const LX::Token &t)
@@ -1796,6 +1799,8 @@ ty_atom_starts(
   case LX::TokenTag::Word:
     return t.str.size() && t.str.data()[0] >= 'A' && t.str.data()[0] <= 'Z';
   case LX::TokenTag::TyVar:
+  case LX::TokenTag::At:
+  case LX::TokenTag::LBrace:
   case LX::TokenTag::LParen: return true;
   default                  : return false;
   }

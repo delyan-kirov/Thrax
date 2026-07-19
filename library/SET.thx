@@ -1,13 +1,12 @@
 @mod SET
 
 # \file SET.thx
-# \info An immutable ordered set: the AVL map (MAP) keyed by the elements
-#       (the stored value is a throwaway Int -- `{}` does not parse as a
-#       type argument in a field yet). Like Map, a set carries its element
-#       ordering (a three-way comparison) -- `new` takes it, `new_int` /
-#       `new_str` bake in the common element types. Sets are VALUES: `add` /
-#       `remove` return an updated copy; `to_list` / `fold` visit elements
-#       in ascending order. Membership, add and remove are O(log n).
+# \info An immutable ordered set: the AVL map (MAP) keyed by the elements,
+#       with unit values. Like Map, a set carries its element ordering (a
+#       three-way comparison) -- `new` takes it, `new_int` / `new_str` bake
+#       in the common element types. Sets are VALUES: `add` / `remove`
+#       return an updated copy; `to_list` / `fold` visit elements in
+#       ascending order. Membership, add and remove are O(log n).
 
 $ with MAP
 $ with LIST
@@ -15,7 +14,7 @@ $ with MATH
 $ with STR
 
 $ Set : @struct =
-	m: Map `T Int,
+	m: Map `T {},
 
 # ---- construction ----
 
@@ -30,7 +29,7 @@ $ from_list : (`T -> `T -> Int) -> List `T -> Set `T = \c xs =
 
 # ---- operations ----
 
-$ add : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.insert s.m x 1 }
+$ add : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.insert s.m x {} }
 
 $ has : Set `T -> `T -> Int = \s x = MAP.has s.m x
 
