@@ -1,0 +1,84 @@
+@mod PATH
+
+# \file PATH.thx
+# \info POSIX-style path manipulation, pure byte-string code (no filesystem
+#       access -- pair with IO for that). `basename`/`dirname` follow POSIX
+#       semantics: trailing slashes are ignored ("a/b/" behaves as "a/b") and
+#       the root "/" is its own basename and dirname. Extensions come back
+#       WITHOUT the dot, and a dotfile (".bashrc") has none.
+
+$ with STR
+$ with OPT
+$ with LIST
+
+# ---- byte scans (47 = '/', 46 = '.') ----
+
+# Index of the last '/', or -1 when there is none.
+$ last_sep : Str -> Int = \p = scan_back p ((array_len p) - 1) 47
+
+$ last_dot : Str -> Int = \p = scan_back p ((array_len p) - 1) 46
+
+$ scan_back : Str -> Int -> Int -> Int = \p i b =
+	if i ?< 0 then 0 - 1
+	else if (array_get p i) ?= b then i
+	else scan_back p (i - 1) b
+
+# Trailing slashes stripped ("a/b//" -> "a/b"); the root "/" is kept.
+$ strip_trailing : Str -> Str = \p =
+	let n = array_len p in
+	if n <= 1 then p
+	else if (array_get p (n - 1)) ?= 47 then
+		strip_trailing (array_slice p 0 (n - 1))
+	else p
+
+# ---- queries ----
+
+$ is_abs : Str -> Int = \p =
+	if (array_len p) ?= 0 then 0
+	else if (array_get p 0) ?= 47 then 1 else 0
+
+# The component after the last '/': "a/b/c" -> "c", "a/b/" -> "b", "/" -> "/".
+$ basename : Str -> Str = \p =
+	let q = strip_trailing p in
+	let i = last_sep q in
+	if i ?< 0 then q
+	else if (array_len q) ?= 1 then q # the root "/"
+	else array_slice q (i + 1) (array_len q)
+
+# Everything before the last '/': "a/b/c" -> "a/b", "a" -> ".", "/a" -> "/".
+$ dirname : Str -> Str = \p =
+	let q = strip_trailing p in
+	let i = last_sep q in
+	if i ?< 0 then "."
+	else if i ?= 0 then "/"
+	else strip_trailing (array_slice q 0 i)
+
+# The basename's extension, without the dot ("" when none).
+$ extension : Str -> Str = \p =
+	let b = basename p in
+	let i = last_dot b in
+	if i <= 0 then "" # no dot, or a leading dot (".bashrc")
+	else array_slice b (i + 1) (array_len b)
+
+# The path without its extension: "a/b.txt" -> "a/b".
+$ strip_ext : Str -> Str = \p =
+	let b = basename p in
+	let i = last_dot b in
+	if i <= 0 then p
+	else array_slice p 0 ((array_len p) - ((array_len b) - i))
+
+# The non-empty components: "/a//b/" -> ["a", "b"].
+$ parts : Str -> List Str = \p =
+	filter (\c = if (array_len c) ?= 0 then 0 else 1) (split p "/")
+
+# ---- building ----
+
+# Join with a single separator; an absolute `b` wins ("" joins as identity).
+$ join : Str -> Str -> Str = \a b =
+	if (array_len a) ?= 0 then b
+	else if (array_len b) ?= 0 then a
+	else if is_abs b then b
+	else
+		let sa = strip_trailing a in
+		if sa ?= "/" then "/" ++ b
+		else sa ++ "/" ++ b

@@ -157,10 +157,33 @@ level, and curried `Map Int Str` is already fine.
 
 ## 6. Target module tree and phases
 
-Phase 1 (DONE, this branch): the core above.
+Phase 1 (DONE): the core above. Follow-up landed with it: `SET` (the AVL
+tree keyed by the elements), `PATH` (POSIX paths, pure Str), and the TC
+overload fix that removed the annotated-let workaround (user sites now
+join the resolution fixpoint conservatively; see doc/standard-library.md,
+"A note on inference").
+
+### Agreed sequencing for the rest (decided 2026-07-20)
+
+1. **NEXT: generic `Vec \`T`** -- the single highest-leverage item, because
+   it is the only blocker for the mutable Rust/Jai-style `TABLE` (section
+   4) and also unlocks `BIT_ARRAY`, buffered readers and efficient string
+   builders. Not greenfield: `Str`/`Array` already prove the design
+   (growable storage, opportunistic rc==1 in-place mutation, copy on
+   shared); the work is generalizing that mechanism from bytes to boxed
+   values in both engines. Then `TABLE` is ~150 lines of stdlib: open
+   addressing, resize at 0.75 load, Jai's surface (`set`, `find` ->
+   Option, `remove`, iteration via `fold`).
+2. **Then tuples `{A, B}`** (section 5): bigger surface (parser, TC, CR,
+   both backends), compounding payoff -- PAIR retires, `zip`/`span`/
+   `partition`/`Map.to_list` get nicer, `Map {Int, Str}` (tuple keys)
+   falls out with a generic lexicographic `cmp_pair`. After Vec, because
+   Vec unblocks a module family while tuples improve ergonomics.
+3. **Alternative pure-stdlib track** (when compiler work is unwelcome):
+   the remaining OS layer below.
 
 Phase 2 -- OS layer, pure C wrapping, no language work:
-- `PATH`: dirname/basename/ext/join (pure Str code).
+- `PATH` (DONE), `SET` (DONE).
 - `DIR`: list/create/remove (opendir/readdir/mkdir/rmdir externs; readdir
   returns a struct -- needs either a small runtime shim or the dirent
   layout per platform, prefer a shim in THxRT).
@@ -169,12 +192,13 @@ Phase 2 -- OS layer, pure C wrapping, no language work:
   then Koka-flags-style parsing in pure Thrax.
 - `TIME`: now (done), `clock`, formatting via localtime/strftime (shim for
   the struct tm layout).
-- `SET`: the AVL tree with unit values (30 lines over MAP internals).
 
-Phase 3 -- language-gated:
+Phase 3 -- language-gated (ordering above):
 - Generic `Vec \`T` -> `TABLE` (mutable hash map, section 4), `BIT_ARRAY`.
 - Tuples (section 5) -> PAIR retirement, tuple cmp/eq combinators.
 - C `int` return marshalling (kills `IO.is_byte`), argv, buffered readers.
+- Parser accepts `{}` as a type argument (`Map \`T {}`), so SET can drop
+  its throwaway Int values.
 
 Phase 4 -- text:
 - `PARSE`: parser combinators over `Str` + offset (no slices needed to

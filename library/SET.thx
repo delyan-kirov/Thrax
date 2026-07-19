@@ -1,0 +1,62 @@
+@mod SET
+
+# \file SET.thx
+# \info An immutable ordered set: the AVL map (MAP) keyed by the elements
+#       (the stored value is a throwaway Int -- `{}` does not parse as a
+#       type argument in a field yet). Like Map, a set carries its element
+#       ordering (a three-way comparison) -- `new` takes it, `new_int` /
+#       `new_str` bake in the common element types. Sets are VALUES: `add` /
+#       `remove` return an updated copy; `to_list` / `fold` visit elements
+#       in ascending order. Membership, add and remove are O(log n).
+
+$ with MAP
+$ with LIST
+$ with MATH
+$ with STR
+
+$ Set : @struct =
+	m: Map `T Int,
+
+# ---- construction ----
+
+$ new : (`T -> `T -> Int) -> Set `T = \c = Set.{ .m = MAP.new c }
+
+$ new_int : Set Int = Set.{ .m = MAP.new_int }
+
+$ new_str : Set Str = Set.{ .m = MAP.new_str }
+
+$ from_list : (`T -> `T -> Int) -> List `T -> Set `T = \c xs =
+	foldl (\s x = add s x) (new c) xs
+
+# ---- operations ----
+
+$ add : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.insert s.m x 1 }
+
+$ has : Set `T -> `T -> Int = \s x = MAP.has s.m x
+
+$ remove : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.remove s.m x }
+
+$ size : Set `T -> Int = \s = MAP.size s.m
+
+$ is_empty : Set `T -> Int = \s = MAP.is_empty s.m
+
+# Elements in ascending order.
+$ to_list : Set `T -> List `T = \s = keys s.m
+
+$ fold : (`A -> `T -> `A) -> `A -> Set `T -> `A = \f acc s =
+	MAP.fold (\a k u = f a k) acc s.m
+
+$ filter : (`T -> Int) -> Set `T -> Set `T = \p s =
+	Set.{ .m = MAP.filter (\k u = p k) s.m }
+
+# ---- set algebra ----
+
+$ merge : Set `T -> Set `T -> Set `T = \a b =
+	Set.{ .m = MAP.merge a.m b.m }
+
+$ inter : Set `T -> Set `T -> Set `T = \a b =
+	filter (\x = has b x) a
+
+# Elements of `a` not in `b`.
+$ diff : Set `T -> Set `T -> Set `T = \a b =
+	filter (\x = if has b x then 0 else 1) a

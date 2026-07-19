@@ -47,6 +47,8 @@ there are no type classes.
 | `MAP`  | `Map \`K \`V` (immutable AVL tree); `new`, `new_str`, `new_int`, `from_list`, `insert`, `insert_with`, `get`, `get_or`, `has`, `remove`, `update`, `size`, `is_empty`, `to_list`, `keys`, `values`, `fold`, `map_values`, `filter`, `merge`, `min_entry`, `max_entry` |
 | `RESULT` | `Result` (`Ok`/`Err`), `is_ok`, `is_err`, `unwrap_or`, `map_ok`, `map_err`, `and_then`, `ok_opt`; the `Fail` effect, `try`, `try_or`, `untry`, `expect` |
 | `RANDOM` | `Rng` (Lehmer / MINSTD), `new`, `next`, `next_below`, `next_range` |
+| `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
+| `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`); importing both is fine -- overloading resolves by type,
@@ -123,6 +125,18 @@ TC's operator-resolution fixpoint -- previously the operator Int-defaulted
 before the projection's type was grounded. See `Checker::resolve_sites` /
 `settle_ready_field_sites` in compiler/TC.cpp.
 
+User overload sites joined the same fixpoint for the same reason:
+`(pow 2.0 10.0) ?= 1024.0` (a USER overload feeding an overloaded operator)
+used to deadlock -- built-in sites resolved (and Int-defaulted) before any
+user site was judged, so `?=` forced `pow`'s result to Int and both sites
+failed. Inside the fixpoint a user site is resolved CONSERVATIVELY (commit
+only when exactly one candidate fits, wait on open operator operands or
+multiple fits, never default); this is sound because unification only ever
+shrinks a site's fit set, so an early single-fit commit is the same commit a
+later pass would make. `resolve_user_sites` afterwards forces whatever is
+left, with the old Int-defaulting (`\x = x + x` still picks the Int
+built-in). See `Checker::resolve_one_user_site`.
+
 ## Future work
 
 See doc/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
@@ -135,8 +149,5 @@ Smaller items:
 - Proper C `int` FFI marshalling (kills the `is_byte` idiom).
 - Migrate IO's error reporting from Int codes / Option to `Result` with a
   standard `Error` union, or `<Fail>` rows, once the shape settles.
-- Overload-resolution wart: an overloaded call feeding an overloaded
-  operator (`(pow 2.0 10.0) ?= 1024.0`, `array_slice .. ++ ..`) can deadlock
-  the fixpoint into Int-defaulting; the workaround is an annotated
-  intermediate `let`. TC should retry operator defaulting after new sites
-  ground.
+- `{}` does not parse as a type ARGUMENT in a struct field (`Map \`T {}`),
+  which is why SET stores a throwaway Int value.
