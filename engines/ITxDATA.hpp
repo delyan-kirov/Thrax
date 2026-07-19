@@ -4,9 +4,11 @@
 #include "CR.hpp"
 #include "IR.hpp"
 #include "OP.hpp"
+#include "TG.hpp"
 
 namespace IT
 {
+inline constexpr const char *HOST_INT = TG::host().int_ty();
 
 /*------------------------------------------------------------------------------
  *\RUNTIME VALUES
@@ -293,54 +295,54 @@ const std::unordered_map<std::string, Impl> impls{
         return mk_int(
           std::get<VStr>(a[0]->as).val == std::get<VStr>(a[1]->as).val ? 1 : 0);
       } } },
-  { OP::mono(OP::ADD, OP::TY_INT),
+  { OP::mono(OP::ADD, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) + as_int(a[1]));
       } } },
-  { OP::mono(OP::SUB, OP::TY_INT),
+  { OP::mono(OP::SUB, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) - as_int(a[1]));
       } } },
-  { OP::mono(OP::MUL, OP::TY_INT),
+  { OP::mono(OP::MUL, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) * as_int(a[1]));
       } } },
-  { OP::mono(OP::DIV, OP::TY_INT),
+  { OP::mono(OP::DIV, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) / as_int(a[1]));
       } } },
-  { OP::mono(OP::MOD, OP::TY_INT),
+  { OP::mono(OP::MOD, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) % as_int(a[1]));
       } } },
-  { OP::mono(OP::ISEQ, OP::TY_INT),
+  { OP::mono(OP::ISEQ, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::GEQ, OP::TY_INT),
+  { OP::mono(OP::GEQ, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::LEQ, OP::TY_INT),
+  { OP::mono(OP::LEQ, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::MORE, OP::TY_INT),
+  { OP::mono(OP::MORE, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::LESS, OP::TY_INT),
+  { OP::mono(OP::LESS, HOST_INT),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
@@ -395,11 +397,11 @@ const std::unordered_map<std::string, Impl> impls{
       [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::NEG, OP::TY_INT),
+  { OP::mono(OP::NEG, HOST_INT),
     { 1, [](const std::vector<pVal> &a) { return mk_int(-as_int(a[0])); } } },
   { OP::mono(OP::NEG, OP::TY_REAL),
     { 1, [](const std::vector<pVal> &a) { return mk_real(-as_num(a[0])); } } },
-  { OP::mono(OP::NOT, OP::TY_INT),
+  { OP::mono(OP::NOT, HOST_INT),
     { 1,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == 0 ? 1 : 0);

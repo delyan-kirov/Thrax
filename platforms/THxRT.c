@@ -150,12 +150,10 @@ typedef struct
   size_t      arity;
 } BuiltinArity;
 
-// FIXME: Don't do that
-#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
-#define THX_INT "@int32"
-#else
-#define THX_INT "@int64"
+#ifndef THX_INT
+#error "THX_INT must be defined by the emitter (see engines/CC.cpp)"
 #endif
+// FIXME : How do we know float64 is supported on that platform?
 #define THX_REAL "@float64"
 #define THX_STR "@str"
 

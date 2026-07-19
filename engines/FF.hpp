@@ -2,12 +2,9 @@
  *\file FF.hpp
  *\info Foreign-function interface (the only module that touches libffi/dlopen).
  *
- * The interface is deliberately libffi-free: callers pass Thrax
- * type-constructor names ("Int", "Nat", "Int32", "Str", "Ptr", ...) and raw
- * machine words, and a machine word comes back. This keeps libffi/dlfcn
- * confined to FF.cpp, so the rest of the project links neither unless FFI is
- * actually used. Building with -DTHRAX_NO_3RD_PARTY drops the dependency
- * entirely (calls then abort).
+ * Keep libffi/dlfcn confined to FF.cpp, so the rest of the project
+ * links neither unless FFI is actually used. Building with
+ * -DTHRAX_NO_3RD_PARTY drops the dependency entirely (calls then abort).
  *-----------------------------------------------------------------------------*/
 
 #ifndef FF_HEADER_
@@ -18,15 +15,20 @@
 namespace FF
 {
 
-// Call `symbol` in shared library `lib` (assumed to be a resolvable path).
-// `arg_types`/`ret_type` are Thrax type names; `args` are raw machine words
-// (a Str/Ptr argument is its char*/pointer already cast to ssize_t). The result
-// is returned widened to a machine word (a Str/Ptr return is the pointer bits).
-ssize_t call(UT::Vu                          lib,
-             UT::Vu                          symbol,
-             const std::vector<std::string> &arg_types,
-             const std::string              &ret_type,
-             const std::vector<ssize_t>     &args);
+// One marshalling slot: every argument and result crosses the FFI seam in one
+// of these. Fixed at 64 bits (NOT the host word) so a pointer, a full Int, or
+// a double's bit pattern always fits, on 32-bit hosts too.
+using Slot = int64_t;
+
+// Call `symbol` in shared library `lib`. `arg_types`/`ret_type` are Thrax
+// type names (canonical "@int64"/"@str"/... or their bare prelude spellings);
+// a Str/Ptr argument is its pointer cast into the slot, a Real its double
+// bits. A float return comes back widened to double bits.
+Slot call(UT::Vu                          lib,
+          UT::Vu                          symbol,
+          const std::vector<std::string> &arg_types,
+          const std::string              &ret_type,
+          const std::vector<Slot>        &args);
 
 } // namespace FF
 

@@ -22,6 +22,7 @@
 #define CC_HEADER_
 
 #include "IR.hpp"
+#include "TG.hpp"
 #include "UT.hpp"
 
 #include <optional>
@@ -40,13 +41,11 @@ std::optional<std::string> unsupported(const IR::Program &prog);
 // needs `-ldl` at link time (for dlopen/dlsym).
 bool uses_ffi(const IR::Program &prog);
 
-// Emit the whole program as C source. `entry` is the mangled entry global (its
-// `Int` result becomes the process exit code); it may be empty, in which case
-// the program simply forces every global (matching the test harness) and exits
-// 0. `entry_takes_arg` is true for a `Str -> Int` entry (`main ""`).
-//
 // Precondition: `unsupported(prog)` returned std::nullopt.
-std::string emit(const IR::Program &prog, UT::Vu entry, bool entry_takes_arg);
+std::string emit(const IR::Program &prog,
+                 UT::Vu             entry,
+                 bool               entry_takes_arg,
+                 const TG::Target  &tg);
 
 } // namespace CC
 

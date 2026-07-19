@@ -14,7 +14,8 @@ namespace
 {
 
 const char *USAGE
-  = "usage: thrax [--ast|-a] [--ir|-i] [--emit-c|-c] [--build|-b] [PATH...]\n"
+  = "usage: thrax [--ast|-a] [--ir|-i] [--emit-c|-c] [--build|-b]\n"
+    "             [--target=ARCH-OS] [PATH...]\n"
     "  PATH is a .thx file or a directory (every .thx in it, non-recursive,\n"
     "  skipping _*.thx). With no PATH the current directory is used. All "
     "files\n"
@@ -22,7 +23,11 @@ const char *USAGE
     "  closure-converted IR, with --emit-c the generated C source (the native\n"
     "  backend), instead of running.\n"
     "  --build compiles a project (a directory with a MAIN module) via the\n"
-    "  native backend, writing <DIR>/bin/<name>.{ir,c} and the executable.\n";
+    "  native backend, writing <DIR>/bin/<name>.{ir,c} and the executable.\n"
+    "  --target selects the compilation target (default: this machine, e.g.\n"
+    "  x86_64-linux). Only the host target is accepted for now: the flag\n"
+    "  reserves the seam, cross-compilation lands with the later phases of\n"
+    "  doc/platform-abstraction.md.\n";
 
 } // namespace
 
@@ -34,6 +39,7 @@ main(
   bool                print_ir  = false;
   bool                emit_c    = false;
   bool                build     = false;
+  TG::Target          tg        = TG::host();
   std::vector<UT::Vu> paths;
 
   for (int i = 1; i < argc; ++i)
@@ -47,6 +53,25 @@ main(
       emit_c = true;
     else if (0 == std::strcmp(arg, "--build") || 0 == std::strcmp(arg, "-b"))
       build = true;
+    else if (0 == std::strncmp(arg, "--target=", 9))
+    {
+      std::optional<TG::Target> t = TG::parse(UT::Vu{ arg + 9 });
+      if (!t)
+      {
+        std::fprintf(stderr, "thrax: unknown target '%s'\n%s", arg + 9, USAGE);
+        return 2;
+      }
+      if (!(*t == TG::host()))
+      {
+        std::fprintf(stderr,
+                     "thrax: cross-compilation to '%s' is not supported yet "
+                     "(host is %s)\n",
+                     t->name().c_str(),
+                     TG::host().name().c_str());
+        return 2;
+      }
+      tg = *t;
+    }
     else if (0 == std::strcmp(arg, "--help") || 0 == std::strcmp(arg, "-h"))
     {
       std::printf("%s", USAGE);
@@ -73,7 +98,7 @@ main(
         stderr, "thrax: --build takes a single project directory\n%s", USAGE);
       return 2;
     }
-    return DR::build_project(paths[0]) ? 0 : 1;
+    return DR::build_project(paths[0], tg) ? 0 : 1;
   }
 
   // Expand directories to their `.thx` files. `names` owns the strings; `files`
@@ -97,11 +122,11 @@ main(
     return ok ? 0 : 1;
   }
 
-  if (print_ir) return DR::dump_ir(files) ? 0 : 1;
+  if (print_ir) return DR::dump_ir(files, tg) ? 0 : 1;
 
-  if (emit_c) return DR::emit_c(files) ? 0 : 1;
+  if (emit_c) return DR::emit_c(files, tg) ? 0 : 1;
 
   // All files form one program; modules link across them and the entry point is
   // the `main` of module MAIN. The program's exit code is main's Int result.
-  return DR::run_program(files);
+  return DR::run_program(files, tg);
 }

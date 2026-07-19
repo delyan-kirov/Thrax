@@ -220,7 +220,7 @@ cmd_grammar_check(
                          ? ""
                          : "nix shell nixpkgs#bison --command ";
   std::string cmd    = prefix + "bison " + (verbose ? "-Wcounterexamples " : "")
-                  + "-o /dev/null " + y;
+                    + "-o /dev/null " + y;
   if (BLD::run(cmd) != 0)
   {
     std::print(stderr,

@@ -13,6 +13,7 @@
 #include "ER.hpp"
 #include "OP.hpp"
 #include "TCxDATA.hpp"
+#include "TG.hpp"
 #include "UT.hpp"
 
 namespace TC
@@ -41,6 +42,7 @@ struct PatLower
 
   AR::Arena  &arena;
   Diagnostics diags;
+  const char *int_ty; // the target's Int
 
   // struct type name -> its field names, in declaration order
   std::unordered_map<std::string, std::vector<std::string>> structs;
@@ -56,8 +58,9 @@ struct PatLower
   size_t                                                 fresh_n = 0;
 
   PatLower(
-    AR::Arena &a, const StructTable &st, const UnionTable &ut)
-      : arena{ a }
+    AR::Arena &a, const StructTable &st, const UnionTable &ut, const char *ity)
+      : arena{ a },
+        int_ty{ ity }
   {
     for (const auto &kv : st)
     {
@@ -526,7 +529,7 @@ struct PatLower
     case PatTag::Var : return nullptr;
     case PatTag::Int:
       return mk_iseq(
-        OP::TY_INT, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
+        int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
     case PatTag::Real:
       return mk_iseq(
         OP::TY_REAL, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
@@ -854,11 +857,10 @@ struct PatLower
       return mk_let(
         std::get<EX::PatVar>(pat->as).name, subject, success, nullptr);
     case PatTag::Int:
-      return mk_if(mk_iseq(OP::TY_INT,
-                           subject,
-                           mk_int(std::get<EX::PatInt>(pat->as).value)),
-                   success,
-                   fall());
+      return mk_if(
+        mk_iseq(int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value)),
+        success,
+        fall());
     case PatTag::Real:
       return mk_if(mk_iseq(OP::TY_REAL,
                            subject,
@@ -918,8 +920,8 @@ struct PatLower
     size_t k       = pq.elems.size();
     Expr  *lenval  = mk_call(OP::ARR_LEN, { subject });
     Expr  *lentest = pq.rest
-                       ? mk_cmp(OP::GEQ, OP::TY_INT, lenval, mk_int((ssize_t)k))
-                       : mk_iseq(OP::TY_INT, lenval, mk_int((ssize_t)k));
+                       ? mk_cmp(OP::GEQ, int_ty, lenval, mk_int((ssize_t)k))
+                       : mk_iseq(int_ty, lenval, mk_int((ssize_t)k));
 
     Expr *inner = success;
     if (pq.rest)
@@ -1313,9 +1315,11 @@ class Checker
 {
 public:
   Checker(
-    AR::Arena &arena, UT::Vu src)
+    AR::Arena &arena, UT::Vu src, const TG::Target &tg)
       : m_arena{ arena },
-        m_src{ src }
+        m_src{ src },
+        m_tg{ tg },
+        m_ovdb{ make_overload_db(tg.int_ty()) }
   {
     seed_primitives();
   }
@@ -1325,14 +1329,16 @@ public:
   Diagnostics m_diags;
 
 private:
-  AR::Arena  &m_arena;
-  UT::Vu      m_src;
-  TypeStore   m_types;
-  int         m_next_id = 0;
-  Env         m_prim;
-  Globals     m_globals;
-  StructTable m_structs;
-  UnionTable  m_unions;
+  AR::Arena &m_arena;
+  UT::Vu     m_src;
+  TG::Target    m_tg;
+  OverloadTable m_ovdb;
+  TypeStore     m_types;
+  int           m_next_id = 0;
+  Env           m_prim;
+  Globals       m_globals;
+  StructTable   m_structs;
+  UnionTable    m_unions;
 
   // Declared effects and their operations (M3 effect rows). `m_effects` is the
   // set of declared `@effect` names (so a `<E>` row annotation can validate its
@@ -2309,7 +2315,7 @@ Checker::type_pattern(
   case EX::PatTag::Var:
     env[std::string(std::get<EX::PatVar>(p->as).name)] = Scheme{ {}, scrut };
     return;
-  case EX::PatTag::Int : unify(scrut, con(OP::TY_INT)); return;
+  case EX::PatTag::Int : unify(scrut, con(m_tg.int_ty())); return;
   case EX::PatTag::Real: unify(scrut, con(OP::TY_REAL)); return;
   case EX::PatTag::Str : unify(scrut, con(OP::TY_STR)); return;
   case EX::PatTag::StrPrefix:
@@ -2447,7 +2453,7 @@ Checker::infer(
 {
   switch (e->tag)
   {
-  case EX::ExprTag::Int   : return con(OP::TY_INT);
+  case EX::ExprTag::Int   : return con(m_tg.int_ty());
   case EX::ExprTag::Real  : return con(OP::TY_REAL);
   case EX::ExprTag::Str   : return con(OP::TY_STR);
   case EX::ExprTag::Unit  : return con(OP::TY_UNIT);
@@ -2525,7 +2531,7 @@ Checker::infer(
 
     // An overloaded name: type it as a fresh variable and defer the choice of
     // overload to resolve_sites, once its operands (and result) are settled.
-    if (overload_db.count(name))
+    if (m_ovdb.count(name))
     {
       // The chosen impl key is written to `resolved` (which CR reads), NOT to
       // `name`, so a re-inference of this same node still keys off the original
@@ -2875,7 +2881,7 @@ Checker::infer(
       Env          inner = locals;
       switch (alt.kind)
       {
-      case EX::AltKind::Int : unify(st, con(OP::TY_INT)); break;
+      case EX::AltKind::Int : unify(st, con(m_tg.int_ty())); break;
       case EX::AltKind::Real: unify(st, con(OP::TY_REAL)); break;
       case EX::AltKind::Con:
       {
@@ -2917,7 +2923,7 @@ Checker::infer(
       Env inner = locals;
       type_pattern(m.arms[i].pat, st, inner, mu);
       if (m.arms[i].guard)
-        unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_INT));
+        unify(infer(m.arms[i].guard, inner, amb), con(m_tg.int_ty()));
       unify(rt, infer(m.arms[i].body, inner, amb));
     }
     unify(rt, infer(m.alt, locals, amb));
@@ -3082,7 +3088,7 @@ Checker::SiteState
 Checker::resolve_one_site(
   const ResolveSite &s, bool allow_default)
 {
-  const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
+  const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.base);
   UT_FAIL_IF(!ovs || ovs->empty()); // a site is only made for overloaded names
   size_t arity = ovs->front().sig.size() - 1;
 
@@ -3111,7 +3117,7 @@ Checker::resolve_one_site(
     for (Type *&a : args)
       if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
       {
-        std::get<TVar>(a->as).ref = con(OP::TY_INT);
+        std::get<TVar>(a->as).ref = con(m_tg.int_ty());
         a                         = prune(a);
       }
 
@@ -3151,7 +3157,9 @@ Checker::resolve_one_site(
   }
 
   unify(prune(result), con(hit->sig.back()));
-  *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
+  // Intern the key: `hit->mono` lives in the per-checker overload table, which
+  // dies with the Checker, while the write-back is read later by CR.
+  *s.slot = UT::strdup(m_arena, hit->mono.c_str());
   return SiteState::Resolved;
 }
 
@@ -3210,7 +3218,7 @@ Checker::resolve_user_sites(
   {
     const UserSite              &s   = m_usites[i];
     Type                        *use = prune(s.use);
-    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.name);
+    const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.name);
 
     // For an operator, shape the use as an arrow chain and default any
     // unconstrained operand to Int, so the built-in candidates can be matched
@@ -3234,7 +3242,7 @@ Checker::resolve_user_sites(
         a = prune(a);
         if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
         {
-          std::get<TVar>(a->as).ref = con(OP::TY_INT);
+          std::get<TVar>(a->as).ref = con(m_tg.int_ty());
           a                         = prune(a);
         }
       }
@@ -3302,7 +3310,8 @@ Checker::resolve_user_sites(
     if (bhit)
     {
       unify(prune(result), con(bhit->sig.back()));
-      *s.slot = UT::Vu{ bhit->mono.c_str(), bhit->mono.size() };
+      // Interned for the same reason as the operator-site write-back above.
+      *s.slot = UT::strdup(m_arena, bhit->mono.c_str());
       continue;
     }
 
@@ -3408,7 +3417,7 @@ Checker::resolve_lit_sites(
         TCon &uc = std::get<TCon>(u->as);
         if (uc.name == OP::TY_ARRAY)
         {
-          unify(s.elem, con(OP::TY_INT)); // Array holds bytes (Int 0..255)
+          unify(s.elem, con(m_tg.int_ty())); // Array holds bytes (Int 0..255)
           if (s.exseq) s.exseq->is_array = true;
           if (s.exseqpat) s.exseqpat->is_array = true;
           continue;
@@ -3826,7 +3835,8 @@ Checker::run(
   }
 
   if (!m_diags.empty()) return;
-  Diagnostics pd = PatLower{ m_arena, m_structs, m_unions }.run(exprs);
+  Diagnostics pd
+    = PatLower{ m_arena, m_structs, m_unions, m_tg.int_ty() }.run(exprs);
   for (ER::Diagnostic &d : pd) m_diags.push_back(d);
 }
 
@@ -3933,10 +3943,10 @@ void
 Checker::seed_primitives()
 {
   Type *tv       = fresh();
-  Type *ift      = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
+  Type *ift      = arrow(con(m_tg.int_ty()), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
-  Type *arrt            = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
+  Type *arrt            = arrow(con(m_tg.int_ty()), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 
   Type *e           = fresh(); // the shared effect row
@@ -3952,9 +3962,9 @@ Checker::seed_primitives()
 
 std::vector<ER::Diagnostic>
 check(
-  EX::Exprs &exprs, AR::Arena &arena, UT::Vu src)
+  EX::Exprs &exprs, AR::Arena &arena, UT::Vu src, const TG::Target &tg)
 {
-  Checker c{ arena, src };
+  Checker c{ arena, src, tg };
   c.run(exprs);
   return c.m_diags;
 }

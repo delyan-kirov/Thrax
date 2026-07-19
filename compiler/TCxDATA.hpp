@@ -133,11 +133,14 @@ struct Overload
   std::vector<const char *> sig;
   std::string               mono;
 };
-/// Overloaded name -> its overloads. Defined in TCxDATA.cpp (it alone needs
-/// OP's type-name constants, keeping this header free of OP).
+/// Overloaded name -> its overloads. Built in TCxDATA.cpp (it alone needs
+/// OP's type-name constants, keeping this header free of OP). Built per
+/// checker, not a global: the numeric overloads mention the `Int` type, whose
+/// width is target policy, so the table takes the target's spelling
+/// (TG::Target::int_ty()).
 using OverloadTable = std::unordered_map<std::string, std::vector<Overload>>;
 
-extern const OverloadTable overload_db;
+OverloadTable make_overload_db(const char *int_ty);
 
 /// A deferred overload resolution. An overloaded use is typed as a fresh
 /// variable `use` and resolved once its operands settle: the matching overload

@@ -93,57 +93,49 @@ cdbl(
  *\FFI -- Thrax type <-> C ABI for direct foreign calls
  *-----------------------------------------------------------------------------*/
 
-// The C type a Thrax base type marshals to across the C ABI (mirrors
-// FF::desc_of in src/FF.cpp). `ret` allows the unit type as `void` (a result,
-// not an arg).
 std::string
 c_type(
-  const std::string &t, bool ret)
+  const std::string &t0, bool ret, const TG::Target &tg)
 {
-  if (t == OP::TY_INT) return "long";
-  if (t == OP::TY_NAT) return "unsigned long";
-  if (t == OP::TY_INT8) return "signed char";
-  if (t == OP::TY_INT16) return "short";
-  if (t == OP::TY_INT32) return "int";
-  if (t == OP::TY_INT64) return "long long";
-  if (t == OP::TY_NAT8) return "unsigned char";
-  if (t == OP::TY_NAT16) return "unsigned short";
-  if (t == OP::TY_NAT32) return "unsigned int";
-  if (t == OP::TY_NAT64) return "unsigned long long";
-  if (t == OP::TY_REAL || t == OP::TY_REAL64) return "double";
+  UT::Vu t = tg.canon(t0);
+  if (t == OP::TY_INT8) return "int8_t";
+  if (t == OP::TY_INT16) return "int16_t";
+  if (t == OP::TY_INT32) return "int32_t";
+  if (t == OP::TY_INT64) return "int64_t";
+  if (t == OP::TY_NAT8) return "uint8_t";
+  if (t == OP::TY_NAT16) return "uint16_t";
+  if (t == OP::TY_NAT32) return "uint32_t";
+  if (t == OP::TY_NAT64) return "uint64_t";
+  if (t == OP::TY_REAL64) return "double";
   if (t == OP::TY_REAL32) return "float";
   if (t == OP::TY_STR) return "char*";
   if (t == OP::TY_PTR || t == OP::TY_ARRAY) return "void*";
   if (ret && t == OP::TY_UNIT) return "void";
-  return "long"; // default / type variable: word-sized, like FF::desc_of
+  return "intptr_t"; // default / type variable: word-sized, like FF::desc_of
 }
 
-// Marshal the runtime Value `v` (a C expression) into the C value for arg type
-// `t`. A Str/Array passes its byte pointer; a Ptr is an integer address; a Real
-// reads as double; everything else is an integer.
 std::string
 marshal_arg(
-  const std::string &t, const std::string &v)
+  const std::string &t0, const std::string &v, const TG::Target &tg)
 {
+  UT::Vu t = tg.canon(t0);
   if (t == OP::TY_STR) return "(char*)THxVALUE_str(" + v + ")";
   if (t == OP::TY_ARRAY) return "(void*)THxVALUE_str(" + v + ")";
   if (t == OP::TY_PTR) return "(void*)(intptr_t)THxVALUE_as_int(" + v + ")";
-  if (t == OP::TY_REAL || t == OP::TY_REAL64)
-    return "(double)THxVALUE_as_num(" + v + ")";
+  if (t == OP::TY_REAL64) return "(double)THxVALUE_as_num(" + v + ")";
   if (t == OP::TY_REAL32) return "(float)THxVALUE_as_num(" + v + ")";
-  return "(" + c_type(t, false) + ")THxVALUE_as_int(" + v + ")";
+  return "(" + c_type(t0, false, tg) + ")THxVALUE_as_int(" + v + ")";
 }
 
-// A `return <Value>;` statement marshalling the C result `r` of return type
-// `t`.
 std::string
 marshal_ret(
-  const std::string &t, const std::string &r)
+  const std::string &t0, const std::string &r, const TG::Target &tg)
 {
+  UT::Vu t = tg.canon(t0);
   if (t == OP::TY_STR)
     return "return THxRT_str(" + r + " ? " + r + " : \"\", " + r + " ? strlen("
            + r + ") : 0);";
-  if (t == OP::TY_REAL || t == OP::TY_REAL64 || t == OP::TY_REAL32)
+  if (t == OP::TY_REAL64 || t == OP::TY_REAL32)
     return "return THxRT_real((double)" + r + ");";
   if (t == OP::TY_PTR)
     return "return THxRT_int((long long)(intptr_t)" + r + ");";
@@ -579,13 +571,13 @@ struct Emitter
   // direct-style backend). Call after all code is emitted.
   void
   emit_externs(
-    std::string &out)
+    std::string &out, const TG::Target &tg)
   {
     for (size_t i = 0; i < externs.size(); ++i)
     {
       const IR::Extern &e    = *externs[i];
       std::string       ret  = std::string(e.ret_type);
-      std::string       cret = c_type(ret, true);
+      std::string       cret = c_type(ret, true, tg);
 
       std::vector<std::string> cargs;
       std::vector<size_t>      pos;
@@ -593,7 +585,7 @@ struct Emitter
       {
         std::string t(e.arg_types[j]);
         if (t == OP::TY_UNIT) continue; // `{}` arg: not passed
-        cargs.push_back(c_type(t, false));
+        cargs.push_back(c_type(t, false, tg));
         pos.push_back(j);
       }
       std::string proto;
@@ -614,7 +606,8 @@ struct Emitter
         std::string t(e.arg_types[pos[k]]);
         std::string a = "a" + std::to_string(k);
         out += "  " + cargs[k] + " " + a + " = "
-               + marshal_arg(t, "args[" + std::to_string(pos[k]) + "]") + ";\n";
+               + marshal_arg(t, "args[" + std::to_string(pos[k]) + "]", tg)
+               + ";\n";
         callargs += (k ? ", " : "") + a;
       }
 
@@ -626,7 +619,7 @@ struct Emitter
       else
       {
         out += "  " + cret + " r = fn(" + callargs + ");\n";
-        out += "  " + marshal_ret(ret, "r") + "\n";
+        out += "  " + marshal_ret(ret, "r", tg) + "\n";
       }
       out += "}\n\n";
     }
@@ -700,16 +693,24 @@ uses_ffi(
 
 std::string
 emit(
-  const IR::Program &prog, UT::Vu entry, bool entry_takes_arg)
+  const IR::Program &prog,
+  UT::Vu             entry,
+  bool               entry_takes_arg,
+  const TG::Target  &tg)
 {
   Emitter em{ prog };
   for (size_t i = 0; i < prog.codes.size(); ++i) em.emit_code(i);
 
   std::string out;
-  out += "/* Generated by the Thrax CC backend. Do not edit.\n";
+  out += "/* Generated by the Thrax CC backend for target " + tg.name()
+         + ". Do not edit.\n";
   out += " * Self-contained -- the runtime is inlined below. Build:\n";
   out += " *   cc -O2 prog.c -o prog        (add -ldl if it uses @extern) */"
          "\n\n";
+  out += "#define THX_INT \"" + std::string(tg.int_ty()) + "\"\n";
+  out += "_Static_assert(sizeof(void*) == " + std::to_string(tg.ptr_bits() / 8)
+         + ", \"this program was generated for " + tg.name()
+         + "; compile it with a C compiler targeting it\");\n\n";
   // The whole C runtime, baked into the compiler and emitted inline, so the
   // generated program is a single self-contained translation unit.
   out += RUNTIME_C;
@@ -735,7 +736,7 @@ emit(
     out += "  if (!f) THxCHECK_FAILF(\"FFI: symbol '%s' not found in '%s'\", "
            "sym, lib);\n";
     out += "  return f;\n}\n\n";
-    em.emit_externs(out);
+    em.emit_externs(out, tg);
   }
 
   // The foreign-wrapper table the runtime dispatches T_EXTERN through (always
