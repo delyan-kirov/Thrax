@@ -30,20 +30,20 @@ namespace OP
 // For binary operators the spelling is also the source lexeme; the unary NEG
 // and NOT are distinct names (their lexemes are SUB and BANG) so unary '-'
 // never collides with binary '-'.
-inline constexpr const char *ADD  = "+";
-inline constexpr const char *SUB  = "-";
-inline constexpr const char *MUL  = "*";
-inline constexpr const char *DIV  = "/";
-inline constexpr const char *MOD  = "%";
-inline constexpr const char *ISEQ = "?=";
-inline constexpr const char *MORE = "?>";
-inline constexpr const char *LESS = "?<";
-inline constexpr const char *LEQ  = "<=";
-inline constexpr const char *GEQ  = ">=";
-inline constexpr const char *BANG = "!";   // lexeme of unary NOT
-inline constexpr const char *NEG  = "neg"; // unary '-'
-inline constexpr const char *NOT  = "not"; // unary '!'
-inline constexpr const char *IF   = "if";
+inline constexpr const char *ADD       = "+";
+inline constexpr const char *SUB       = "-";
+inline constexpr const char *MUL       = "*";
+inline constexpr const char *DIV       = "/";
+inline constexpr const char *MOD       = "%";
+inline constexpr const char *ISEQ      = "?=";
+inline constexpr const char *MORE      = "?>";
+inline constexpr const char *LESS      = "?<";
+inline constexpr const char *LEQ       = "<=";
+inline constexpr const char *GEQ       = ">=";
+inline constexpr const char *BANG      = "!";   // lexeme of unary NOT
+inline constexpr const char *NEG       = "neg"; // unary '-'
+inline constexpr const char *NOT       = "not"; // unary '!'
+inline constexpr const char *IF        = "if";
 inline constexpr const char *TY_REAL   = "@float64";
 inline constexpr const char *TY_STR    = "@str";
 inline constexpr const char *TY_PTR    = "@ptr";

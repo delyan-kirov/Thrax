@@ -84,6 +84,7 @@ struct Module
   vector<string> amalgam_dirs; // .cpp/.hpp here join the amalgamation
   vector<Exe>    exes;         // standalone binaries
   std::function<void(const Ctx &)> generate; // optional pre-build generation
+  vector<string> gen_deps;
 };
 
 // --- Process / filesystem helpers -------------------------------------------
@@ -434,6 +435,25 @@ gen_runtime_header(
   write_file(out, body);
 }
 
+inline void
+gen_stdlib_header(
+  const Ctx &c, const string &out, const vector<string> &srcs)
+{
+  if (!needs_rebuild(out, srcs)) return;
+  fs::create_directories(fs::path(out).parent_path());
+  std::print("gen {}\n", out);
+  string body = banner(c, out, "gen_stdlib_header", srcs);
+  body += "#ifndef STDLIBxAMALG_HEADER_\n#define STDLIBxAMALG_HEADER_\n";
+  body += "namespace DR\n{\n";
+  body += "struct StdlibUnit\n{\n  const char *name;\n  const char *src;\n};\n";
+  body += "inline const StdlibUnit STDLIB_UNITS[] = {\n";
+  for (const string &f : srcs)
+    body += "  { \"" + f + "\",\n    R\"THXSTDLIB(" + read_file(f)
+            + ")THXSTDLIB\" },\n";
+  body += "};\n} // namespace DR\n#endif // STDLIBxAMALG_HEADER_\n";
+  write_file(out, body);
+}
+
 // Emit the project amalgamation: a header including every module header, and a
 // TU including that header then every module .cpp. Includes are by bare
 // filename (resolved via the per-module -I paths).
@@ -549,9 +569,11 @@ build(
     return o;
   };
 
-  // 5. The amalgamation object (PIC -- see Ctx::cxxflags).
+  // 5. Amalgamation object
   vector<string> amalg_deps = cpps;
   amalg_deps.insert(amalg_deps.end(), hpps.begin(), hpps.end());
+  for (const Module &m : mods)
+    amalg_deps.insert(amalg_deps.end(), m.gen_deps.begin(), m.gen_deps.end());
   string amalg_o = compile(amalg_cpp, amalg_deps);
 
   // 6. The compiler core as libraries: a static archive (what the executables

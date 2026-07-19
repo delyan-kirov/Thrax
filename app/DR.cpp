@@ -1,6 +1,7 @@
 #include "DR.hpp"
 #include "CC.hpp"
 #include "ER.hpp"
+#include "STDLIBxAMALG.hpp"
 
 #include "EX.hpp"
 #include "IR.hpp"
@@ -182,6 +183,16 @@ core_c_source(
   ext("malloc", I + " -> " + P, "malloc");
   ext("free", P + " -> " + U, "free");
   ext("strlen", S + " -> " + I, "strlen");
+  ext("fopen", S + " -> " + S + " -> " + I, "fopen");
+  ext("fclose", I + " -> " + I, "fclose");
+  ext("fgetc", I + " -> " + I, "fgetc");
+  ext("fputs", S + " -> " + I + " -> " + I, "fputs");
+  ext("fflush", I + " -> " + I, "fflush");
+  ext("fseek", I + " -> " + I + " -> " + I + " -> " + I, "fseek");
+  ext("ftell", I + " -> " + I, "ftell");
+  ext("write", I + " -> " + S + " -> " + I + " -> " + I, "write");
+  ext("remove", S + " -> " + I, "remove");
+  ext("getenv", S + " -> " + S, "getenv");
   return UT::strdup(arena, s.c_str());
 }
 
@@ -223,6 +234,13 @@ parse_units(
             arena,
             units,
             parse_diags);
+
+  for (const StdlibUnit &u : STDLIB_UNITS)
+    parse_one(UT::Vu{ u.src, std::strlen(u.src) },
+              UT::Vu{ u.name, std::strlen(u.name) },
+              arena,
+              units,
+              parse_diags);
 
   for (UT::Vu file : files)
   {

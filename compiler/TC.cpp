@@ -1329,8 +1329,8 @@ public:
   Diagnostics m_diags;
 
 private:
-  AR::Arena &m_arena;
-  UT::Vu     m_src;
+  AR::Arena    &m_arena;
+  UT::Vu        m_src;
   TG::Target    m_tg;
   OverloadTable m_ovdb;
   TypeStore     m_types;
@@ -1415,7 +1415,8 @@ private:
     Type       *record; // receiver type (a var until its context settles it)
     std::string field;
     UT::Vu      anchor;
-    Type       *result; // unified with the field's type once resolved
+    Type       *result;       // unified with the field's type once resolved
+    bool        done = false; // settled early, inside resolve_sites' fixpoint
   };
   std::vector<FieldSite> m_field_sites;
 
@@ -1477,9 +1478,11 @@ private:
     Failed
   };
   SiteState resolve_one_site(const ResolveSite &s, bool allow_default);
-  void      resolve_sites(size_t from);
+  void      resolve_sites(size_t from, size_t ffrom);
   void      resolve_user_sites(size_t from);
   void      resolve_lit_sites(size_t from);
+  bool      settle_field_site(FieldSite &s);
+  bool      settle_ready_field_sites(size_t ffrom);
   void      resolve_field_sites(size_t from);
   UT::Vu    intern(const std::string &s);
 
@@ -3037,7 +3040,7 @@ Checker::resolve(
     size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty, row_empty()); // top level is pure
-    resolve_sites(base); // settle this body's overloads before judging its type
+    resolve_sites(base, fbase); // settle this body's overloads first
     resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
     resolve_field_sites(fbase); // ... then field accesses (receivers now known)
     resolve_lit_sites(lbase);   // ... and any unqualified literals (no context)
@@ -3165,7 +3168,7 @@ Checker::resolve_one_site(
 
 void
 Checker::resolve_sites(
-  size_t from)
+  size_t from, size_t ffrom)
 {
   std::vector<size_t> pending;
   for (size_t i = from; i < m_sites.size(); ++i) pending.push_back(i);
@@ -3174,10 +3177,13 @@ Checker::resolve_sites(
   // already concrete, repeating while any pass makes progress. This settles
   // dependencies in whatever order they actually chain (inner-first for nested
   // ops, outer-first for let-threaded results) without committing to one.
+  // Field accesses whose receiver is already a known struct join the fixpoint:
+  // `p.snd ?= "x"` needs the projection's type grounded BEFORE the operator is
+  // judged, or the last-resort Int-defaulting below would mistype it.
   bool progress = true;
   while (progress)
   {
-    progress = false;
+    progress = settle_ready_field_sites(ffrom);
     for (size_t &idx : pending)
     {
       if (idx == (size_t)-1) continue; // already resolved
@@ -3324,20 +3330,78 @@ Checker::resolve_user_sites(
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
 }
 
+// Settle one field access whose receiver is a known struct type: bind the
+// struct's parameters to the receiver's actual type arguments and unify the
+// field's type (at that instantiation) into the access's result var. The
+// receiver must already be a Con naming a struct; a missing field is reported
+// here. Marks the site done.
+bool
+Checker::settle_field_site(
+  FieldSite &s)
+{
+  Type                      *rt    = prune(s.record);
+  const std::string         &rname = std::get<TCon>(rt->as).name;
+  const StructDef           &sdef  = m_structs.at(rname);
+  Subst                      sub;
+  const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
+  for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
+    sub[sdef.params[k]] = actual[k];
+
+  s.done = true;
+  for (auto &f : sdef.fields)
+    if (f.first == s.field)
+    {
+      unify(s.result, subst(f.second, sub));
+      return true;
+    }
+  fail(ER::Code::TYPE_UNBOUND,
+       s.anchor,
+       "struct '%s' has no field '%s'",
+       rname.c_str(),
+       s.field.c_str());
+  return true;
+}
+
+// The eager half of field resolution, run inside resolve_sites' fixpoint:
+// settle every not-yet-done site whose receiver has ALREADY become a known
+// struct (via an annotation, a signature, an earlier resolution), so the
+// projection's type can feed operator-overload resolution. Sites whose
+// receiver is still open are left for resolve_field_sites, which may run
+// after further resolution grounds them. Returns whether anything settled.
+bool
+Checker::settle_ready_field_sites(
+  size_t ffrom)
+{
+  bool progress = false;
+  for (size_t i = ffrom; i < m_field_sites.size(); ++i)
+  {
+    FieldSite &s = m_field_sites[i];
+    if (s.done) continue;
+    Type *rt = prune(s.record);
+    if (rt->kind() != Kind::Con
+        || !m_structs.count(std::get<TCon>(rt->as).name))
+      continue; // not ready; the strict pass owns the eventual error
+    progress |= settle_field_site(s);
+  }
+  return progress;
+}
+
 // Settle the field accesses collected since `from`. By now each receiver's type
 // has been fixed by its context (an overload resolved, a signature applied,
 // ...), so we can look the field up on its struct and unify its type into the
 // access's result var. Resolved in recording order (innermost-first), so
 // `a.b.c` settles `a.b` -- giving the receiver of `.c` its struct type --
-// before `(a.b).c`.
+// before `(a.b).c`. Sites already settled inside resolve_sites' fixpoint are
+// skipped; a receiver still not a known struct here is an error.
 void
 Checker::resolve_field_sites(
   size_t from)
 {
   for (size_t i = from; i < m_field_sites.size(); ++i)
   {
-    const FieldSite &s  = m_field_sites[i];
-    Type            *rt = prune(s.record);
+    FieldSite &s = m_field_sites[i];
+    if (s.done) continue;
+    Type *rt = prune(s.record);
     if (rt->kind() != Kind::Con
         || !m_structs.count(std::get<TCon>(rt->as).name))
     {
@@ -3348,29 +3412,7 @@ Checker::resolve_field_sites(
            show(rt).c_str());
       continue;
     }
-    const std::string &rname = std::get<TCon>(rt->as).name;
-    const StructDef   &sdef  = m_structs.at(rname);
-    // Bind the struct's parameters to the receiver's actual type arguments, so
-    // the field type comes back at the receiver's instantiation.
-    Subst                      sub;
-    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
-    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
-      sub[sdef.params[k]] = actual[k];
-
-    bool found = false;
-    for (auto &f : sdef.fields)
-      if (f.first == s.field)
-      {
-        unify(s.result, subst(f.second, sub));
-        found = true;
-        break;
-      }
-    if (!found)
-      fail(ER::Code::TYPE_UNBOUND,
-           s.anchor,
-           "struct '%s' has no field '%s'",
-           rname.c_str(),
-           s.field.c_str());
+    settle_field_site(s);
   }
   m_field_sites.erase(m_field_sites.begin() + (long)from, m_field_sites.end());
 }
@@ -3827,7 +3869,7 @@ Checker::run(
       unify(bt, g.scheme.type);
     }
 
-    resolve_sites(base);
+    resolve_sites(base, fbase);
     resolve_user_sites(ubase);
     resolve_field_sites(fbase);
     // Bare literals last: their type comes from the unification just done.

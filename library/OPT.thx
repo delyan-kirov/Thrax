@@ -1,0 +1,29 @@
+@mod OPT
+
+# \file OPT.thx
+# \info The standard `Option` type: a value that may be absent. `Some` carries
+#       the value, `None` is the absence. Predicates return Int (1 true, 0
+#       false), matching the language's `if` convention.
+
+$ Option : @union =
+	Some: `T,
+	None: {},
+
+$ is_some : Option `T -> Int = \o =
+	when o is Option.Some.{_} then 1 else 0
+
+$ is_none : Option `T -> Int = \o =
+	when o is Option.Some.{_} then 0 else 1
+
+# The value inside, or `d` when absent.
+$ unwrap_or : Option `T -> `T -> `T = \o d =
+	when o is Option.Some.{x} then x else d
+
+# Apply `f` to the value inside, if any.
+$ opt_map : (`A -> `B) -> Option `A -> Option `B = \f o =
+	when o is Option.Some.{x} then Option.Some.{ f x } else Option.None
+
+# Chain a partial computation: feed the value (if any) to an `f` that may
+# itself decline.
+$ opt_then : (`A -> Option `B) -> Option `A -> Option `B = \f o =
+	when o is Option.Some.{x} then f x else Option.None
