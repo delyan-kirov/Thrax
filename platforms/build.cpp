@@ -14,6 +14,7 @@ platforms_module()
 {
   BLD::Module m;
   m.name     = "platforms";
+  m.gen_deps = { "artifacts/THxRTxAMALG.hpp" };
   m.generate = [](const BLD::Ctx &c) {
     BLD::gen_runtime_header(c,
                             c.artifacts + "/THxRTxAMALG.hpp",

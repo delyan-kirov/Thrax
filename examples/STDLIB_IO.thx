@@ -1,0 +1,45 @@
+@mod STDLIB_IO
+
+# \file STDLIB_IO.thx
+# \info The standard library's IO module: file round-trips and the
+#       environment. Console printing is exercised lightly (the combined
+#       runner owns the suite's output); the file tests write under /tmp
+#       and clean up after themselves.
+
+$ with IO
+$ with OPT
+$ with STR
+
+$ path : Str = "/tmp/thrax_stdlib_io_test.txt"
+
+# Write, append, read back, remove -- each step feeding the next.
+$ ck_roundtrip : Int =
+	let w = write_file path "line one\nline two\n" in
+	if w then 1
+	else
+		let a = append_file path "line three\n" in
+		if a then 1
+		else
+			let body = unwrap_or (read_file path) "<unreadable>" in
+			let rm = remove_file path in
+			if body ?= "line one\nline two\nline three\n" then rm else 1
+
+# A second remove fails: the file is gone.
+$ ck_gone : Int = if remove_file path then 0 else 1
+
+# An unopenable path is None, not a fault.
+$ ck_missing : Int =
+	if is_none (read_file "/tmp/thrax_stdlib/definitely/not/here") then 0 else 1
+
+# The environment: HOME is set in any sane test environment, and unset
+# variables come back "".
+$ ck_env      : Int = if (env "HOME") ?= "" then 1 else 0
+$ ck_env_none : Int = if (env "THRAX_SURELY_UNSET_VAR_42") ?= "" then 0 else 1
+
+# Number formatting composes with printing (evaluated for effect-freeness
+# here; the string is checked, the console write is the runner's).
+$ ck_fmt : Int = if (from_int 42) ?= "42" then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_roundtrip + ck_gone + ck_missing + ck_env + ck_env_none
+	+ ck_fmt

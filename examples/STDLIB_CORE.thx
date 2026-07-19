@@ -1,0 +1,46 @@
+@mod STDLIB_CORE
+
+# \file STDLIB_CORE.thx
+# \info The standard library's small core: `Option` (OPT), `Pair` (PAIR) and
+#       the integer helpers (MATH). A `$ with MOD` import makes the module's
+#       public names (and types) usable unqualified; everything stays
+#       reachable qualified (`OPT.is_some`, ...).
+
+$ with OPT
+$ with PAIR
+$ with MATH
+
+# ---- Option ----
+$ o : Option Int = Option.Some.{ 41 }
+$ n : Option Int = Option.None
+$ ck_some   : Int = if is_some o then 0 else 1
+$ ck_none   : Int = if is_none n then 0 else 1
+$ ck_unwrap : Int = if (unwrap_or o 0) ?= 41 then 0 else 1
+$ ck_default: Int = if (unwrap_or n 7) ?= 7 then 0 else 1
+$ ck_map    : Int = if (unwrap_or (opt_map (\x = x + 1) o) 0) ?= 42 then 0 else 1
+$ ck_then   : Int =
+	let half = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
+	if (unwrap_or (opt_then half o) 99) ?= 99 then 0 else 1
+
+# ---- Pair ----
+$ p : Pair Int Str = pair 1 "one"
+$ ck_fst  : Int = if p.fst ?= 1 then 0 else 1
+$ ck_snd  : Int = if p.snd ?= "one" then 0 else 1
+$ ck_swap : Int = if (swap p).snd ?= 1 then 0 else 1
+
+# ---- MATH ----
+$ ck_min   : Int = if (min 3 5) ?= 3 then 0 else 1
+$ ck_max   : Int = if (max 3 5) ?= 5 then 0 else 1
+$ ck_abs   : Int = if (abs (0 - 9)) ?= 9 then 0 else 1
+$ ck_sign  : Int = if (sign (0 - 2)) + 1 ?= 0 then 0 else 1
+$ ck_clamp : Int = if (clamp 0 10 42) ?= 10 then 0 else 1
+$ ck_even  : Int = if even 4 then 0 else 1
+$ ck_odd   : Int = if odd (0 - 3) then 0 else 1
+$ ck_gcd   : Int = if (gcd 12 18) ?= 6 then 0 else 1
+$ ck_pow   : Int = if (pow 2 10) ?= 1024 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then
+	+ ck_fst + ck_snd + ck_swap
+	+ ck_min + ck_max + ck_abs + ck_sign + ck_clamp + ck_even + ck_odd
+	+ ck_gcd + ck_pow

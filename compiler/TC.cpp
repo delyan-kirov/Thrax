@@ -13,6 +13,7 @@
 #include "ER.hpp"
 #include "OP.hpp"
 #include "TCxDATA.hpp"
+#include "TG.hpp"
 #include "UT.hpp"
 
 namespace TC
@@ -41,6 +42,7 @@ struct PatLower
 
   AR::Arena  &arena;
   Diagnostics diags;
+  const char *int_ty; // the target's Int
 
   // struct type name -> its field names, in declaration order
   std::unordered_map<std::string, std::vector<std::string>> structs;
@@ -56,8 +58,9 @@ struct PatLower
   size_t                                                 fresh_n = 0;
 
   PatLower(
-    AR::Arena &a, const StructTable &st, const UnionTable &ut)
-      : arena{ a }
+    AR::Arena &a, const StructTable &st, const UnionTable &ut, const char *ity)
+      : arena{ a },
+        int_ty{ ity }
   {
     for (const auto &kv : st)
     {
@@ -526,7 +529,7 @@ struct PatLower
     case PatTag::Var : return nullptr;
     case PatTag::Int:
       return mk_iseq(
-        OP::TY_INT, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
+        int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
     case PatTag::Real:
       return mk_iseq(
         OP::TY_REAL, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
@@ -854,11 +857,10 @@ struct PatLower
       return mk_let(
         std::get<EX::PatVar>(pat->as).name, subject, success, nullptr);
     case PatTag::Int:
-      return mk_if(mk_iseq(OP::TY_INT,
-                           subject,
-                           mk_int(std::get<EX::PatInt>(pat->as).value)),
-                   success,
-                   fall());
+      return mk_if(
+        mk_iseq(int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value)),
+        success,
+        fall());
     case PatTag::Real:
       return mk_if(mk_iseq(OP::TY_REAL,
                            subject,
@@ -918,8 +920,8 @@ struct PatLower
     size_t k       = pq.elems.size();
     Expr  *lenval  = mk_call(OP::ARR_LEN, { subject });
     Expr  *lentest = pq.rest
-                       ? mk_cmp(OP::GEQ, OP::TY_INT, lenval, mk_int((ssize_t)k))
-                       : mk_iseq(OP::TY_INT, lenval, mk_int((ssize_t)k));
+                       ? mk_cmp(OP::GEQ, int_ty, lenval, mk_int((ssize_t)k))
+                       : mk_iseq(int_ty, lenval, mk_int((ssize_t)k));
 
     Expr *inner = success;
     if (pq.rest)
@@ -1313,9 +1315,11 @@ class Checker
 {
 public:
   Checker(
-    AR::Arena &arena, UT::Vu src)
+    AR::Arena &arena, UT::Vu src, const TG::Target &tg)
       : m_arena{ arena },
-        m_src{ src }
+        m_src{ src },
+        m_tg{ tg },
+        m_ovdb{ make_overload_db(tg.int_ty()) }
   {
     seed_primitives();
   }
@@ -1325,14 +1329,16 @@ public:
   Diagnostics m_diags;
 
 private:
-  AR::Arena  &m_arena;
-  UT::Vu      m_src;
-  TypeStore   m_types;
-  int         m_next_id = 0;
-  Env         m_prim;
-  Globals     m_globals;
-  StructTable m_structs;
-  UnionTable  m_unions;
+  AR::Arena    &m_arena;
+  UT::Vu        m_src;
+  TG::Target    m_tg;
+  OverloadTable m_ovdb;
+  TypeStore     m_types;
+  int           m_next_id = 0;
+  Env           m_prim;
+  Globals       m_globals;
+  StructTable   m_structs;
+  UnionTable    m_unions;
 
   // Declared effects and their operations (M3 effect rows). `m_effects` is the
   // set of declared `@effect` names (so a `<E>` row annotation can validate its
@@ -1409,7 +1415,8 @@ private:
     Type       *record; // receiver type (a var until its context settles it)
     std::string field;
     UT::Vu      anchor;
-    Type       *result; // unified with the field's type once resolved
+    Type       *result;       // unified with the field's type once resolved
+    bool        done = false; // settled early, inside resolve_sites' fixpoint
   };
   std::vector<FieldSite> m_field_sites;
 
@@ -1471,9 +1478,11 @@ private:
     Failed
   };
   SiteState resolve_one_site(const ResolveSite &s, bool allow_default);
-  void      resolve_sites(size_t from);
+  void      resolve_sites(size_t from, size_t ffrom);
   void      resolve_user_sites(size_t from);
   void      resolve_lit_sites(size_t from);
+  bool      settle_field_site(FieldSite &s);
+  bool      settle_ready_field_sites(size_t ffrom);
   void      resolve_field_sites(size_t from);
   UT::Vu    intern(const std::string &s);
 
@@ -2309,7 +2318,7 @@ Checker::type_pattern(
   case EX::PatTag::Var:
     env[std::string(std::get<EX::PatVar>(p->as).name)] = Scheme{ {}, scrut };
     return;
-  case EX::PatTag::Int : unify(scrut, con(OP::TY_INT)); return;
+  case EX::PatTag::Int : unify(scrut, con(m_tg.int_ty())); return;
   case EX::PatTag::Real: unify(scrut, con(OP::TY_REAL)); return;
   case EX::PatTag::Str : unify(scrut, con(OP::TY_STR)); return;
   case EX::PatTag::StrPrefix:
@@ -2447,7 +2456,7 @@ Checker::infer(
 {
   switch (e->tag)
   {
-  case EX::ExprTag::Int   : return con(OP::TY_INT);
+  case EX::ExprTag::Int   : return con(m_tg.int_ty());
   case EX::ExprTag::Real  : return con(OP::TY_REAL);
   case EX::ExprTag::Str   : return con(OP::TY_STR);
   case EX::ExprTag::Unit  : return con(OP::TY_UNIT);
@@ -2525,7 +2534,7 @@ Checker::infer(
 
     // An overloaded name: type it as a fresh variable and defer the choice of
     // overload to resolve_sites, once its operands (and result) are settled.
-    if (overload_db.count(name))
+    if (m_ovdb.count(name))
     {
       // The chosen impl key is written to `resolved` (which CR reads), NOT to
       // `name`, so a re-inference of this same node still keys off the original
@@ -2875,7 +2884,7 @@ Checker::infer(
       Env          inner = locals;
       switch (alt.kind)
       {
-      case EX::AltKind::Int : unify(st, con(OP::TY_INT)); break;
+      case EX::AltKind::Int : unify(st, con(m_tg.int_ty())); break;
       case EX::AltKind::Real: unify(st, con(OP::TY_REAL)); break;
       case EX::AltKind::Con:
       {
@@ -2917,7 +2926,7 @@ Checker::infer(
       Env inner = locals;
       type_pattern(m.arms[i].pat, st, inner, mu);
       if (m.arms[i].guard)
-        unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_INT));
+        unify(infer(m.arms[i].guard, inner, amb), con(m_tg.int_ty()));
       unify(rt, infer(m.arms[i].body, inner, amb));
     }
     unify(rt, infer(m.alt, locals, amb));
@@ -3031,7 +3040,7 @@ Checker::resolve(
     size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty, row_empty()); // top level is pure
-    resolve_sites(base); // settle this body's overloads before judging its type
+    resolve_sites(base, fbase); // settle this body's overloads first
     resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
     resolve_field_sites(fbase); // ... then field accesses (receivers now known)
     resolve_lit_sites(lbase);   // ... and any unqualified literals (no context)
@@ -3082,7 +3091,7 @@ Checker::SiteState
 Checker::resolve_one_site(
   const ResolveSite &s, bool allow_default)
 {
-  const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.base);
+  const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.base);
   UT_FAIL_IF(!ovs || ovs->empty()); // a site is only made for overloaded names
   size_t arity = ovs->front().sig.size() - 1;
 
@@ -3111,7 +3120,7 @@ Checker::resolve_one_site(
     for (Type *&a : args)
       if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
       {
-        std::get<TVar>(a->as).ref = con(OP::TY_INT);
+        std::get<TVar>(a->as).ref = con(m_tg.int_ty());
         a                         = prune(a);
       }
 
@@ -3151,13 +3160,15 @@ Checker::resolve_one_site(
   }
 
   unify(prune(result), con(hit->sig.back()));
-  *s.slot = UT::Vu{ hit->mono.c_str(), hit->mono.size() };
+  // Intern the key: `hit->mono` lives in the per-checker overload table, which
+  // dies with the Checker, while the write-back is read later by CR.
+  *s.slot = UT::strdup(m_arena, hit->mono.c_str());
   return SiteState::Resolved;
 }
 
 void
 Checker::resolve_sites(
-  size_t from)
+  size_t from, size_t ffrom)
 {
   std::vector<size_t> pending;
   for (size_t i = from; i < m_sites.size(); ++i) pending.push_back(i);
@@ -3166,10 +3177,13 @@ Checker::resolve_sites(
   // already concrete, repeating while any pass makes progress. This settles
   // dependencies in whatever order they actually chain (inner-first for nested
   // ops, outer-first for let-threaded results) without committing to one.
+  // Field accesses whose receiver is already a known struct join the fixpoint:
+  // `p.snd ?= "x"` needs the projection's type grounded BEFORE the operator is
+  // judged, or the last-resort Int-defaulting below would mistype it.
   bool progress = true;
   while (progress)
   {
-    progress = false;
+    progress = settle_ready_field_sites(ffrom);
     for (size_t &idx : pending)
     {
       if (idx == (size_t)-1) continue; // already resolved
@@ -3210,7 +3224,7 @@ Checker::resolve_user_sites(
   {
     const UserSite              &s   = m_usites[i];
     Type                        *use = prune(s.use);
-    const std::vector<Overload> *ovs = UT::try_lookup(overload_db, s.name);
+    const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.name);
 
     // For an operator, shape the use as an arrow chain and default any
     // unconstrained operand to Int, so the built-in candidates can be matched
@@ -3234,7 +3248,7 @@ Checker::resolve_user_sites(
         a = prune(a);
         if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
         {
-          std::get<TVar>(a->as).ref = con(OP::TY_INT);
+          std::get<TVar>(a->as).ref = con(m_tg.int_ty());
           a                         = prune(a);
         }
       }
@@ -3302,7 +3316,8 @@ Checker::resolve_user_sites(
     if (bhit)
     {
       unify(prune(result), con(bhit->sig.back()));
-      *s.slot = UT::Vu{ bhit->mono.c_str(), bhit->mono.size() };
+      // Interned for the same reason as the operator-site write-back above.
+      *s.slot = UT::strdup(m_arena, bhit->mono.c_str());
       continue;
     }
 
@@ -3315,20 +3330,78 @@ Checker::resolve_user_sites(
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
 }
 
+// Settle one field access whose receiver is a known struct type: bind the
+// struct's parameters to the receiver's actual type arguments and unify the
+// field's type (at that instantiation) into the access's result var. The
+// receiver must already be a Con naming a struct; a missing field is reported
+// here. Marks the site done.
+bool
+Checker::settle_field_site(
+  FieldSite &s)
+{
+  Type                      *rt    = prune(s.record);
+  const std::string         &rname = std::get<TCon>(rt->as).name;
+  const StructDef           &sdef  = m_structs.at(rname);
+  Subst                      sub;
+  const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
+  for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
+    sub[sdef.params[k]] = actual[k];
+
+  s.done = true;
+  for (auto &f : sdef.fields)
+    if (f.first == s.field)
+    {
+      unify(s.result, subst(f.second, sub));
+      return true;
+    }
+  fail(ER::Code::TYPE_UNBOUND,
+       s.anchor,
+       "struct '%s' has no field '%s'",
+       rname.c_str(),
+       s.field.c_str());
+  return true;
+}
+
+// The eager half of field resolution, run inside resolve_sites' fixpoint:
+// settle every not-yet-done site whose receiver has ALREADY become a known
+// struct (via an annotation, a signature, an earlier resolution), so the
+// projection's type can feed operator-overload resolution. Sites whose
+// receiver is still open are left for resolve_field_sites, which may run
+// after further resolution grounds them. Returns whether anything settled.
+bool
+Checker::settle_ready_field_sites(
+  size_t ffrom)
+{
+  bool progress = false;
+  for (size_t i = ffrom; i < m_field_sites.size(); ++i)
+  {
+    FieldSite &s = m_field_sites[i];
+    if (s.done) continue;
+    Type *rt = prune(s.record);
+    if (rt->kind() != Kind::Con
+        || !m_structs.count(std::get<TCon>(rt->as).name))
+      continue; // not ready; the strict pass owns the eventual error
+    progress |= settle_field_site(s);
+  }
+  return progress;
+}
+
 // Settle the field accesses collected since `from`. By now each receiver's type
 // has been fixed by its context (an overload resolved, a signature applied,
 // ...), so we can look the field up on its struct and unify its type into the
 // access's result var. Resolved in recording order (innermost-first), so
 // `a.b.c` settles `a.b` -- giving the receiver of `.c` its struct type --
-// before `(a.b).c`.
+// before `(a.b).c`. Sites already settled inside resolve_sites' fixpoint are
+// skipped; a receiver still not a known struct here is an error.
 void
 Checker::resolve_field_sites(
   size_t from)
 {
   for (size_t i = from; i < m_field_sites.size(); ++i)
   {
-    const FieldSite &s  = m_field_sites[i];
-    Type            *rt = prune(s.record);
+    FieldSite &s = m_field_sites[i];
+    if (s.done) continue;
+    Type *rt = prune(s.record);
     if (rt->kind() != Kind::Con
         || !m_structs.count(std::get<TCon>(rt->as).name))
     {
@@ -3339,29 +3412,7 @@ Checker::resolve_field_sites(
            show(rt).c_str());
       continue;
     }
-    const std::string &rname = std::get<TCon>(rt->as).name;
-    const StructDef   &sdef  = m_structs.at(rname);
-    // Bind the struct's parameters to the receiver's actual type arguments, so
-    // the field type comes back at the receiver's instantiation.
-    Subst                      sub;
-    const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
-    for (size_t k = 0; k < sdef.params.size() && k < actual.size(); ++k)
-      sub[sdef.params[k]] = actual[k];
-
-    bool found = false;
-    for (auto &f : sdef.fields)
-      if (f.first == s.field)
-      {
-        unify(s.result, subst(f.second, sub));
-        found = true;
-        break;
-      }
-    if (!found)
-      fail(ER::Code::TYPE_UNBOUND,
-           s.anchor,
-           "struct '%s' has no field '%s'",
-           rname.c_str(),
-           s.field.c_str());
+    settle_field_site(s);
   }
   m_field_sites.erase(m_field_sites.begin() + (long)from, m_field_sites.end());
 }
@@ -3408,7 +3459,7 @@ Checker::resolve_lit_sites(
         TCon &uc = std::get<TCon>(u->as);
         if (uc.name == OP::TY_ARRAY)
         {
-          unify(s.elem, con(OP::TY_INT)); // Array holds bytes (Int 0..255)
+          unify(s.elem, con(m_tg.int_ty())); // Array holds bytes (Int 0..255)
           if (s.exseq) s.exseq->is_array = true;
           if (s.exseqpat) s.exseqpat->is_array = true;
           continue;
@@ -3818,7 +3869,7 @@ Checker::run(
       unify(bt, g.scheme.type);
     }
 
-    resolve_sites(base);
+    resolve_sites(base, fbase);
     resolve_user_sites(ubase);
     resolve_field_sites(fbase);
     // Bare literals last: their type comes from the unification just done.
@@ -3826,7 +3877,8 @@ Checker::run(
   }
 
   if (!m_diags.empty()) return;
-  Diagnostics pd = PatLower{ m_arena, m_structs, m_unions }.run(exprs);
+  Diagnostics pd
+    = PatLower{ m_arena, m_structs, m_unions, m_tg.int_ty() }.run(exprs);
   for (ER::Diagnostic &d : pd) m_diags.push_back(d);
 }
 
@@ -3933,10 +3985,10 @@ void
 Checker::seed_primitives()
 {
   Type *tv       = fresh();
-  Type *ift      = arrow(con(OP::TY_INT), arrow(tv, arrow(tv, tv)));
+  Type *ift      = arrow(con(m_tg.int_ty()), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
-  Type *arrt            = arrow(con(OP::TY_INT), con(OP::TY_ARRAY));
+  Type *arrt            = arrow(con(m_tg.int_ty()), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
 
   Type *e           = fresh(); // the shared effect row
@@ -3952,9 +4004,9 @@ Checker::seed_primitives()
 
 std::vector<ER::Diagnostic>
 check(
-  EX::Exprs &exprs, AR::Arena &arena, UT::Vu src)
+  EX::Exprs &exprs, AR::Arena &arena, UT::Vu src, const TG::Target &tg)
 {
-  Checker c{ arena, src };
+  Checker c{ arena, src, tg };
   c.run(exprs);
   return c.m_diags;
 }

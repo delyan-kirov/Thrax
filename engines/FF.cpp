@@ -4,18 +4,20 @@
  * *----------------------------------------------------------------------------*/
 
 #include "FF.hpp"
+#include "OP.hpp"
+#include "TG.hpp"
 #include "UT.hpp"
 
 #ifndef THRAX_3RD_PARTY_ON
 namespace FF
 {
-ssize_t
+Slot
 call(
   UT::Vu,
   UT::Vu,
   const std::vector<std::string> &,
   const std::string &,
-  const std::vector<ssize_t> &)
+  const std::vector<Slot> &)
 {
   UT_FAIL_MSG("%s",
               "this build has no FFI support (compiled with NO_3RD_PARTY)");
@@ -46,35 +48,28 @@ struct Desc
 
 Desc
 desc_of(
-  const std::string &name)
+  const std::string &name0)
 {
-  // Int/Nat are the platform word (ssize_t/size_t == long/unsigned long here).
-  if (name == "Int") return { &ffi_type_slong, 8, true, false };
-  if (name == "Nat") return { &ffi_type_ulong, 8, false, false };
-  if (name == "Int8") return { &ffi_type_sint8, 1, true, false };
-  if (name == "Int16") return { &ffi_type_sint16, 2, true, false };
-  if (name == "Int32") return { &ffi_type_sint32, 4, true, false };
-  if (name == "Int64") return { &ffi_type_sint64, 8, true, false };
-  if (name == "Nat8") return { &ffi_type_uint8, 1, false, false };
-  if (name == "Nat16") return { &ffi_type_uint16, 2, false, false };
-  if (name == "Nat32") return { &ffi_type_uint32, 4, false, false };
-  if (name == "Nat64") return { &ffi_type_uint64, 8, false, false };
-  // Floating point. NOTE: the argument/return marshalling below moves values as
-  // machine words, so passing/returning a float or double is not wired yet --
-  // these descriptors record the ABI type only (kept in sync with the float
-  // entries of OP::base_types).
-  if (name == "Real" || name == "Real64")
-    return { &ffi_type_double, 8, true, false };
-  if (name == "Real32") return { &ffi_type_float, 4, true, false };
-  if (name == "Str" || name == "Ptr" || name == "Array")
-    return { &ffi_type_pointer, 8, false, true };
+  UT::Vu name = TG::host().canon(name0);
 
-  if (name == "Int128" || name == "Nat128")
-    UT_FAIL_MSG("FFI: 128-bit type '%s' is not supported yet", name.c_str());
+  if (name == OP::TY_INT8) return { &ffi_type_sint8, 1, true, false };
+  if (name == OP::TY_INT16) return { &ffi_type_sint16, 2, true, false };
+  if (name == OP::TY_INT32) return { &ffi_type_sint32, 4, true, false };
+  if (name == OP::TY_INT64) return { &ffi_type_sint64, 8, true, false };
+  if (name == OP::TY_NAT8) return { &ffi_type_uint8, 1, false, false };
+  if (name == OP::TY_NAT16) return { &ffi_type_uint16, 2, false, false };
+  if (name == OP::TY_NAT32) return { &ffi_type_uint32, 4, false, false };
+  if (name == OP::TY_NAT64) return { &ffi_type_uint64, 8, false, false };
+  // A double argument travels as its bit pattern in the 64-bit slot; a float
+  // is narrowed into the slot by `call` below.
+  if (name == OP::TY_REAL64) return { &ffi_type_double, 8, true, false };
+  if (name == OP::TY_REAL32) return { &ffi_type_float, 4, true, false };
+  if (name == OP::TY_STR || name == OP::TY_PTR || name == OP::TY_ARRAY)
+    return { &ffi_type_pointer, (int)sizeof(void *), false, true };
 
   // Any other type name (including type variables) is treated as word-sized,
-  // since the runtime represents everything as an ssize_t.
-  return { &ffi_type_slong, 8, true, false };
+  // since the runtime represents everything as an integer word.
+  return { &ffi_type_slong, (int)sizeof(long), true, false };
 }
 
 // dlopen handles cached by library path; resolved symbols by lib+symbol.
@@ -124,29 +119,29 @@ resolve(
   return fn;
 }
 
-ssize_t
+Slot
 extend(
-  const Desc &d, ffi_arg raw)
+  const Desc &d, uint64_t raw)
 {
-  if (d.is_ptr) return (ssize_t)raw;
+  if (d.is_ptr) return (Slot)raw;
   switch (d.width)
   {
-  case 1 : return d.is_signed ? (ssize_t)(int8_t)raw : (ssize_t)(uint8_t)raw;
-  case 2 : return d.is_signed ? (ssize_t)(int16_t)raw : (ssize_t)(uint16_t)raw;
-  case 4 : return d.is_signed ? (ssize_t)(int32_t)raw : (ssize_t)(uint32_t)raw;
-  default: return d.is_signed ? (ssize_t)(int64_t)raw : (ssize_t)(uint64_t)raw;
+  case 1 : return d.is_signed ? (Slot)(int8_t)raw : (Slot)(uint8_t)raw;
+  case 2 : return d.is_signed ? (Slot)(int16_t)raw : (Slot)(uint16_t)raw;
+  case 4 : return d.is_signed ? (Slot)(int32_t)raw : (Slot)(uint32_t)raw;
+  default: return d.is_signed ? (Slot)raw : (Slot)(uint64_t)raw;
   }
 }
 
 } // namespace
 
-ssize_t
+Slot
 call(
   UT::Vu                          lib,
   UT::Vu                          symbol,
   const std::vector<std::string> &arg_types,
   const std::string              &ret_type,
-  const std::vector<ssize_t>     &args)
+  const std::vector<Slot>        &args)
 {
   std::string libs{ lib };
   std::string syms{ symbol };
@@ -154,13 +149,23 @@ call(
   size_t n = args.size();
 
   std::vector<ffi_type *> in_types(n);
-  std::vector<uint64_t>   storage(n); // one word of backing per argument
+  std::vector<uint64_t>   storage(n); // one 64-bit slot of backing per argument
   std::vector<void *>     argp(n);
   for (size_t i = 0; i < n; ++i)
   {
-    in_types[i] = desc_of(arg_types[i]).type;
+    Desc d      = desc_of(arg_types[i]);
+    in_types[i] = d.type;
     storage[i]  = (uint64_t)args[i]; // low `width` bytes are read by libffi
-    argp[i]     = &storage[i];
+    if (d.type == &ffi_type_float)
+    {
+      // The slot carries double bits (the caller's Real); libffi reads a
+      // float, so narrow in place.
+      double dv;
+      std::memcpy(&dv, &storage[i], sizeof(dv));
+      float fv = (float)dv;
+      std::memcpy(&storage[i], &fv, sizeof(fv));
+    }
+    argp[i] = &storage[i];
   }
 
   Desc      rd = desc_of(ret_type);
@@ -173,10 +178,28 @@ call(
 
   void *fn = resolve(libs, syms);
 
-  ffi_arg result = 0;
+  // The return buffer must be as wide as the widest return libffi may write;
+  // a union keeps each read correctly typed. Integral returns narrower than
+  // ffi_arg are widened by libffi into `a`.
+  union
+  {
+    ffi_arg  a;
+    uint64_t u64;
+    double   d;
+    float    f;
+  } result;
+  result.u64 = 0;
   ffi_call(&cif, FFI_FN(fn), &result, n ? argp.data() : nullptr);
 
-  return extend(rd, result);
+  if (rd.type == &ffi_type_double || rd.type == &ffi_type_float)
+  {
+    // Hand back double bits in the slot; widen a float return first.
+    double   dv = (rd.type == &ffi_type_float) ? (double)result.f : result.d;
+    uint64_t bits;
+    std::memcpy(&bits, &dv, sizeof(bits));
+    return (Slot)bits;
+  }
+  return extend(rd, result.u64);
 }
 
 } // namespace FF

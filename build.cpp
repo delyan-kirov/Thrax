@@ -13,6 +13,7 @@
 #include "app/build.cpp"
 #include "compiler/build.cpp"
 #include "engines/build.cpp"
+#include "library/build.cpp"
 #include "platforms/build.cpp"
 #include "tests/build.cpp"
 
@@ -150,11 +151,14 @@ modules()
 {
   // utilities has no build.cpp: it bootstraps the build (UTxBUILD.hpp lives
   // there). Its sources join the amalgamation directly.
-  Module util{ "utilities", { "utilities" }, {}, nullptr };
-  return {
-    util,         compiler_module(), engines_module(), platforms_module(),
-    app_module(), tests_module()
-  };
+  Module util{ "utilities", { "utilities" }, {}, nullptr, {} };
+  return { util,
+           compiler_module(),
+           engines_module(),
+           platforms_module(),
+           library_module(),
+           app_module(),
+           tests_module() };
 }
 
 // The C/C++ sources clang-format owns (used by both `format` and the pre-push
@@ -167,7 +171,8 @@ format_files()
     { "utilities", "compiler", "engines", "app" }, { ".cpp", ".hpp" });
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
-  for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
+  for (const char *d :
+       { "compiler", "engines", "platforms", "library", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
   f.push_back("build.cpp");
   f.push_back("utilities/UTxBUILD.hpp");
@@ -220,7 +225,7 @@ cmd_grammar_check(
                          ? ""
                          : "nix shell nixpkgs#bison --command ";
   std::string cmd    = prefix + "bison " + (verbose ? "-Wcounterexamples " : "")
-                  + "-o /dev/null " + y;
+                    + "-o /dev/null " + y;
   if (BLD::run(cmd) != 0)
   {
     std::print(stderr,
@@ -524,7 +529,8 @@ rebuild_self(
                                     "utilities/UTxBUILD.hpp",
                                     "utilities/UT.hpp",
                                     "utilities/AR.hpp" };
-  for (const char *d : { "compiler", "engines", "platforms", "app", "tests" })
+  for (const char *d :
+       { "compiler", "engines", "platforms", "library", "app", "tests" })
     srcs.push_back(std::string(d) + "/build.cpp");
   BLD::rebuild_self(
     argc, argv, "clang++ -std=c++23 -O1 -Iutilities build.cpp -o build", srcs);

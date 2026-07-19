@@ -1246,10 +1246,11 @@ Parser::parse_ctime_assert()
 
   UT::Vu name
     = UT::strdup(m_arena, ("%assert$" + std::to_string(m_assert_n++)).c_str());
-  Ty   *sig        = mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_INT }, {} } });
-  Expr *d          = mk_def(name, sig, cond);
-  auto &def        = std::get<ExDef>(d->as);
-  def.ctime_assert = true;
+
+  Ty   *sig         = mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ "Int" }, {} } });
+  Expr *d           = mk_def(name, sig, cond);
+  auto &def         = std::get<ExDef>(d->as);
+  def.ctime_assert  = true;
   def.assert_anchor = at.str; // anchor for the build-time diagnostic
   return { true, d, {} };
 }

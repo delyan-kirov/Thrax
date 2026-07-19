@@ -1,0 +1,100 @@
+@mod MAP
+
+# \file MAP.thx
+# \info A polymorphic hash map, `Map `K `V`. There are no type classes, so a
+#       map carries its own key operations (dictionary passing): `new` takes
+#       the hash and equality functions and stores them in the struct;
+#       `new_str` / `new_int` bake in the common cases. Buckets are
+#       association lists over a fixed bucket count -- fine for the small
+#       maps a script builds; an over-full map still works, just linearly.
+#       The map is a VALUE: `insert` / `remove` return an updated copy.
+
+$ with OPT
+$ with PAIR
+$ with LIST
+
+$ Map : @struct =
+	hashf: `K -> Int,
+	eqf: `K -> `K -> Int,
+	nbuckets: Int,
+	count: Int,
+	buckets: List (List (Pair `K `V)),
+
+# ---- construction ----
+
+$ new : (`K -> Int) -> (`K -> `K -> Int) -> Map `K `V = \h e =
+	new_sized h e 16
+
+$ new_sized : (`K -> Int) -> (`K -> `K -> Int) -> Int -> Map `K `V = \h e n =
+	let nb = if n ?< 1 then 1 else n in
+	Map.{ .hashf = h, .eqf = e, .nbuckets = nb, .count = 0,
+	      .buckets = empty_buckets nb }
+
+$ empty_buckets : Int -> List (List (Pair `K `V)) = \n =
+	if n <= 0 then [] else [] :: empty_buckets (n - 1)
+
+$ new_str : Map Str `V = new hash_str (\a b = if a ?= b then 1 else 0)
+
+$ new_int : Map Int `V = new hash_int (\a b = if a ?= b then 1 else 0)
+
+# ---- operations ----
+
+$ insert : Map `K `V -> `K -> `V -> Map `K `V = \m k v =
+	let i = bucket_of m k in
+	let b = unwrap_or (nth m.buckets i) [] in
+	let fresh = if bucket_has m.eqf k b then 0 else 1 in
+	Map.{ .hashf = m.hashf, .eqf = m.eqf, .nbuckets = m.nbuckets,
+	      .count = m.count + fresh,
+	      .buckets = set_nth m.buckets i (pair k v :: bucket_drop m.eqf k b) }
+
+$ get : Map `K `V -> `K -> Option `V = \m k =
+	bucket_get m.eqf k (unwrap_or (nth m.buckets (bucket_of m k)) [])
+
+$ has : Map `K `V -> `K -> Int = \m k = is_some (get m k)
+
+$ remove : Map `K `V -> `K -> Map `K `V = \m k =
+	let i = bucket_of m k in
+	let b = unwrap_or (nth m.buckets i) [] in
+	if bucket_has m.eqf k b then
+		Map.{ .hashf = m.hashf, .eqf = m.eqf, .nbuckets = m.nbuckets,
+		      .count = m.count - 1,
+		      .buckets = set_nth m.buckets i (bucket_drop m.eqf k b) }
+	else m
+
+$ size : Map `K `V -> Int = \m = m.count
+
+$ to_list : Map `K `V -> List (Pair `K `V) = \m = concat m.buckets
+
+$ keys : Map `K `V -> List `K = \m = map (\p = p.fst) (to_list m)
+
+$ values : Map `K `V -> List `V = \m = map (\p = p.snd) (to_list m)
+
+# ---- bucket internals (association lists) ----
+
+$ bucket_of : Map `K `V -> `K -> Int = \m k =
+	let h = m.hashf k in
+	(if h ?< 0 then 0 - h else h) % m.nbuckets
+
+$ bucket_get : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> Option `V = \eqf k b =
+	when b
+		is e :: t then
+			(if eqf k e.fst then Option.Some.{ e.snd } else bucket_get eqf k t)
+	else Option.None
+
+$ bucket_has : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> Int = \eqf k b =
+	any (\e = eqf k e.fst) b
+
+$ bucket_drop : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> List (Pair `K `V) = \eqf k b =
+	filter (\e = if eqf k e.fst then 0 else 1) b
+
+# ---- standard hashes ----
+
+# Multiplicative byte hash, kept small (mod a prime) so intermediate values
+# never overflow.
+$ hash_str : Str -> Int = \s = hash_str_from s 0 5381
+
+$ hash_str_from : Str -> Int -> Int -> Int = \s i h =
+	if i ?= array_len s then h
+	else hash_str_from s (i + 1) ((h * 33 + array_get s i) % 1000003)
+
+$ hash_int : Int -> Int = \n = if n ?< 0 then 0 - n else n

@@ -35,6 +35,11 @@ $ with RC_LOOP = RC_LOOP
 $ with REALS = REALS
 $ with RECURSION = RECURSION
 $ with SEQ_INFER = SEQ_INFER
+$ with STDLIB_CORE = STDLIB_CORE
+$ with STDLIB_IO = STDLIB_IO
+$ with STDLIB_LIST = STDLIB_LIST
+$ with STDLIB_MAP = STDLIB_MAP
+$ with STDLIB_STR = STDLIB_STR
 $ with STRINGS = STRINGS
 $ with STR_MATCH = STR_MATCH
 $ with STR_OPS = STR_OPS
@@ -77,6 +82,11 @@ $ main : Int =
 	+ check "REALS" REALS.test
 	+ check "RECURSION" RECURSION.test
 	+ check "SEQ_INFER" SEQ_INFER.test
+	+ check "STDLIB_CORE" STDLIB_CORE.test
+	+ check "STDLIB_IO" STDLIB_IO.test
+	+ check "STDLIB_LIST" STDLIB_LIST.test
+	+ check "STDLIB_MAP" STDLIB_MAP.test
+	+ check "STDLIB_STR" STDLIB_STR.test
 	+ check "STRINGS" STRINGS.test
 	+ check "STR_MATCH" STR_MATCH.test
 	+ check "STR_OPS" STR_OPS.test

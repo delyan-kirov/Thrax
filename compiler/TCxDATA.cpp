@@ -54,26 +54,26 @@ namespace
 // Arithmetic: Int x Int -> Int, otherwise Real (mixed operands coerce).
 std::vector<Overload>
 arith(
-  const char *name)
+  const char *name, const char *I)
 {
   return {
-    { { OP::TY_INT, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_INT) },
+    { { I, I, I }, OP::mono(name, I) },
     { { OP::TY_REAL, OP::TY_REAL, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
-    { { OP::TY_INT, OP::TY_REAL, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
-    { { OP::TY_REAL, OP::TY_INT, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
+    { { I, OP::TY_REAL, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_REAL, I, OP::TY_REAL }, OP::mono(name, OP::TY_REAL) },
   };
 }
 
 // Comparison: any Int/Real combination -> Int.
 std::vector<Overload>
 cmp(
-  const char *name)
+  const char *name, const char *I)
 {
   return {
-    { { OP::TY_INT, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_INT) },
-    { { OP::TY_REAL, OP::TY_REAL, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
-    { { OP::TY_INT, OP::TY_REAL, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
-    { { OP::TY_REAL, OP::TY_INT, OP::TY_INT }, OP::mono(name, OP::TY_REAL) },
+    { { I, I, I }, OP::mono(name, I) },
+    { { OP::TY_REAL, OP::TY_REAL, I }, OP::mono(name, OP::TY_REAL) },
+    { { I, OP::TY_REAL, I }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_REAL, I, I }, OP::mono(name, OP::TY_REAL) },
   };
 }
 
@@ -81,60 +81,66 @@ cmp(
 // -> Int, 1/0). Backs exact string pattern matching (see
 // doc/strings-and-arrays.md).
 std::vector<Overload>
-eq()
+eq(
+  const char *I)
 {
-  std::vector<Overload> v = cmp(OP::ISEQ);
+  std::vector<Overload> v = cmp(OP::ISEQ, I);
   v.push_back(
-    { { OP::TY_STR, OP::TY_STR, OP::TY_INT }, OP::mono(OP::ISEQ, OP::TY_STR) });
+    { { OP::TY_STR, OP::TY_STR, I }, OP::mono(OP::ISEQ, OP::TY_STR) });
   return v;
 }
 
 } // namespace
 
-const OverloadTable overload_db{
-  { OP::ADD, arith(OP::ADD) },
-  { OP::SUB, arith(OP::SUB) },
-  { OP::MUL, arith(OP::MUL) },
-  { OP::DIV, arith(OP::DIV) },
-  { OP::MOD, arith(OP::MOD) },
-  { OP::ISEQ, eq() },
-  { OP::GEQ, cmp(OP::GEQ) },
-  { OP::LEQ, cmp(OP::LEQ) },
-  { OP::MORE, cmp(OP::MORE) },
-  { OP::LESS, cmp(OP::LESS) },
-  { OP::NEG,
-    { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NEG, OP::TY_INT) },
-      { { OP::TY_REAL, OP::TY_REAL }, OP::mono(OP::NEG, OP::TY_REAL) } } },
-  { OP::NOT,
-    { { { OP::TY_INT, OP::TY_INT }, OP::mono(OP::NOT, OP::TY_INT) } } },
-  // `++` concatenation: Str x Str -> Str and Array x Array -> Array, both
-  // implemented by one byte-concat (OP::CONCAT_IMPL).
-  { OP::CONCAT,
-    { { { OP::TY_STR, OP::TY_STR, OP::TY_STR }, OP::CONCAT_IMPL },
-      { { OP::TY_ARRAY, OP::TY_ARRAY, OP::TY_ARRAY }, OP::CONCAT_IMPL } } },
+OverloadTable
+make_overload_db(
+  const char *I)
+{
+  return OverloadTable{
+    { OP::ADD, arith(OP::ADD, I) },
+    { OP::SUB, arith(OP::SUB, I) },
+    { OP::MUL, arith(OP::MUL, I) },
+    { OP::DIV, arith(OP::DIV, I) },
+    { OP::MOD, arith(OP::MOD, I) },
+    { OP::ISEQ, eq(I) },
+    { OP::GEQ, cmp(OP::GEQ, I) },
+    { OP::LEQ, cmp(OP::LEQ, I) },
+    { OP::MORE, cmp(OP::MORE, I) },
+    { OP::LESS, cmp(OP::LESS, I) },
+    { OP::NEG,
+      { { { I, I }, OP::mono(OP::NEG, I) },
+        { { OP::TY_REAL, OP::TY_REAL }, OP::mono(OP::NEG, OP::TY_REAL) } } },
+    { OP::NOT, { { { I, I }, OP::mono(OP::NOT, I) } } },
+    // `++` concatenation: Str x Str -> Str and Array x Array -> Array, both
+    // implemented by one byte-concat (OP::CONCAT_IMPL).
+    { OP::CONCAT,
+      { { { OP::TY_STR, OP::TY_STR, OP::TY_STR }, OP::CONCAT_IMPL },
+        { { OP::TY_ARRAY, OP::TY_ARRAY, OP::TY_ARRAY }, OP::CONCAT_IMPL } } },
 
-  // The growable-byte-vector ops, overloaded so they work on both Str and Array
-  // (nominally distinct, one runtime rep). Each variant maps to the same impl
-  // (the reserved name); the resolver discriminates on the first operand, and
-  // mutators return the same kind they took. A byte is an Int (0..255).
-  { OP::ARR_LEN,
-    { { { OP::TY_ARRAY, OP::TY_INT }, OP::ARR_LEN },
-      { { OP::TY_STR, OP::TY_INT }, OP::ARR_LEN } } },
-  { OP::ARR_CAP,
-    { { { OP::TY_ARRAY, OP::TY_INT }, OP::ARR_CAP },
-      { { OP::TY_STR, OP::TY_INT }, OP::ARR_CAP } } },
-  { OP::ARR_GET,
-    { { { OP::TY_ARRAY, OP::TY_INT, OP::TY_INT }, OP::ARR_GET },
-      { { OP::TY_STR, OP::TY_INT, OP::TY_INT }, OP::ARR_GET } } },
-  { OP::ARR_PUSH,
-    { { { OP::TY_ARRAY, OP::TY_INT, OP::TY_ARRAY }, OP::ARR_PUSH },
-      { { OP::TY_STR, OP::TY_INT, OP::TY_STR }, OP::ARR_PUSH } } },
-  { OP::ARR_SET,
-    { { { OP::TY_ARRAY, OP::TY_INT, OP::TY_INT, OP::TY_ARRAY }, OP::ARR_SET },
-      { { OP::TY_STR, OP::TY_INT, OP::TY_INT, OP::TY_STR }, OP::ARR_SET } } },
-  { OP::ARR_SLICE,
-    { { { OP::TY_ARRAY, OP::TY_INT, OP::TY_INT, OP::TY_ARRAY }, OP::ARR_SLICE },
-      { { OP::TY_STR, OP::TY_INT, OP::TY_INT, OP::TY_STR }, OP::ARR_SLICE } } },
-};
+    // The growable-byte-vector ops, overloaded so they work on both Str and
+    // Array (nominally distinct, one runtime rep). Each variant maps to the
+    // same impl (the reserved name); the resolver discriminates on the first
+    // operand, and mutators return the same kind they took. A byte is an Int
+    // (0..255).
+    { OP::ARR_LEN,
+      { { { OP::TY_ARRAY, I }, OP::ARR_LEN },
+        { { OP::TY_STR, I }, OP::ARR_LEN } } },
+    { OP::ARR_CAP,
+      { { { OP::TY_ARRAY, I }, OP::ARR_CAP },
+        { { OP::TY_STR, I }, OP::ARR_CAP } } },
+    { OP::ARR_GET,
+      { { { OP::TY_ARRAY, I, I }, OP::ARR_GET },
+        { { OP::TY_STR, I, I }, OP::ARR_GET } } },
+    { OP::ARR_PUSH,
+      { { { OP::TY_ARRAY, I, OP::TY_ARRAY }, OP::ARR_PUSH },
+        { { OP::TY_STR, I, OP::TY_STR }, OP::ARR_PUSH } } },
+    { OP::ARR_SET,
+      { { { OP::TY_ARRAY, I, I, OP::TY_ARRAY }, OP::ARR_SET },
+        { { OP::TY_STR, I, I, OP::TY_STR }, OP::ARR_SET } } },
+    { OP::ARR_SLICE,
+      { { { OP::TY_ARRAY, I, I, OP::TY_ARRAY }, OP::ARR_SLICE },
+        { { OP::TY_STR, I, I, OP::TY_STR }, OP::ARR_SLICE } } },
+  };
+}
 
 } // namespace TC

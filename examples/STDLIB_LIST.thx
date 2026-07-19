@@ -1,0 +1,40 @@
+@mod STDLIB_LIST
+
+# \file STDLIB_LIST.thx
+# \info The standard library's LIST module: transformation, folding,
+#       indexing and searching over the prelude's `List`. Operations that
+#       need equality take it explicitly (dictionary passing).
+
+$ with LIST
+$ with OPT
+$ with PAIR
+
+$ xs : List Int = range 1 6 # [1, 2, 3, 4, 5]
+
+$ ck_range  : Int = if (length xs) ?= 5 then 0 else 1
+$ ck_sum    : Int = if (sum xs) ?= 15 then 0 else 1
+$ ck_empty  : Int = if is_empty [] then 0 else 1
+$ ck_map    : Int = if (sum (map (\x = x * 2) xs)) ?= 30 then 0 else 1
+$ ck_filter : Int = if (length (filter (\x = x % 2) xs)) ?= 3 then 0 else 1
+$ ck_foldl  : Int = if (foldl (\a x = a * 10 + x) 0 xs) ?= 12345 then 0 else 1
+$ ck_foldr  : Int = if (foldr (\x a = x - a) 0 xs) ?= 3 then 0 else 1
+$ ck_rev    : Int = if (foldl (\a x = a * 10 + x) 0 (reverse xs)) ?= 54321 then 0 else 1
+$ ck_append : Int = if (length (append xs xs)) ?= 10 then 0 else 1
+$ ck_concat : Int = if (sum (concat [xs, [10], []])) ?= 25 then 0 else 1
+$ ck_take   : Int = if (sum (take 2 xs)) ?= 3 then 0 else 1
+$ ck_drop   : Int = if (sum (drop 3 xs)) ?= 9 then 0 else 1
+$ ck_nth    : Int = if (unwrap_or (nth xs 2) 0) ?= 3 then 0 else 1
+$ ck_nth_off: Int = if is_none (nth xs 9) then 0 else 1
+$ ck_set    : Int = if (sum (set_nth xs 0 100)) ?= 114 then 0 else 1
+$ ck_any    : Int = if any (\x = x ?> 4) xs then 0 else 1
+$ ck_all    : Int = if all (\x = x ?> 0) xs then 0 else 1
+$ ck_find   : Int = if (unwrap_or (find (\x = x ?> 3) xs) 0) ?= 4 then 0 else 1
+$ ck_has    : Int = if contains (\a b = if a ?= b then 1 else 0) 4 xs then 0 else 1
+$ ck_zip    : Int =
+	if (sum (map (\p = p.fst + p.snd) (zip xs (reverse xs)))) ?= 30 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_range + ck_sum + ck_empty + ck_map + ck_filter + ck_foldl
+	+ ck_foldr + ck_rev + ck_append + ck_concat + ck_take + ck_drop
+	+ ck_nth + ck_nth_off + ck_set + ck_any + ck_all + ck_find + ck_has
+	+ ck_zip

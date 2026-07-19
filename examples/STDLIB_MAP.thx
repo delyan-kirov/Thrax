@@ -1,0 +1,53 @@
+@mod STDLIB_MAP
+
+# \file STDLIB_MAP.thx
+# \info The standard library's polymorphic hash map. A map carries its own
+#       key operations (`new` takes hash + equality; `new_str` / `new_int`
+#       bake in the common keys), so `Map `K `V` works for any key type
+#       without type classes. Maps are values: `insert` / `remove` return an
+#       updated copy and never disturb the original.
+
+$ with MAP
+$ with OPT
+$ with LIST
+
+$ ages : Map Str Int =
+	MAP.insert (MAP.insert (MAP.insert MAP.new_str "alice" 30) "bob" 25) "carol" 41
+
+$ ck_size   : Int = if (MAP.size ages) ?= 3 then 0 else 1
+$ ck_get    : Int = if (unwrap_or (MAP.get ages "bob") 0) ?= 25 then 0 else 1
+$ ck_missing: Int = if MAP.has ages "dave" then 1 else 0
+$ ck_update : Int =
+	if (unwrap_or (MAP.get (MAP.insert ages "bob" 26) "bob") 0) ?= 26 then 0 else 1
+$ ck_upsize : Int = if (MAP.size (MAP.insert ages "bob" 26)) ?= 3 then 0 else 1
+$ ck_remove : Int = if (MAP.size (MAP.remove ages "alice")) ?= 2 then 0 else 1
+$ ck_gone   : Int = if MAP.has (MAP.remove ages "alice") "alice" then 1 else 0
+$ ck_shared : Int = if (MAP.size ages) ?= 3 then 0 else 1 # original undisturbed
+$ ck_values : Int = if (sum (MAP.values ages)) ?= 96 then 0 else 1
+$ ck_keys   : Int = if (length (MAP.keys ages)) ?= 3 then 0 else 1
+
+# Int keys, with a compound value type.
+$ squares : Map Int (List Int) =
+	MAP.insert (MAP.insert MAP.new_int 2 [4]) 3 [9]
+$ ck_intkey : Int = if (sum (unwrap_or (MAP.get squares 3) [])) ?= 9 then 0 else 1
+
+# A custom key dictionary: any hash works (collisions included), equality
+# decides.
+$ weird : Map Int Str = MAP.new (\k = k % 3) (\a b = if a ?= b then 1 else 0)
+$ ck_custom : Int =
+	if (unwrap_or (MAP.get (MAP.insert weird (0 - 5) "neg") (0 - 5)) "") ?= "neg"
+	then 0 else 1
+
+# Collision stress: 100 keys through 16 buckets, all retrievable.
+$ big : Map Int Int =
+	foldl (\m k = MAP.insert m k (k * k)) MAP.new_int (range 0 100)
+$ ck_bigsize : Int = if (MAP.size big) ?= 100 then 0 else 1
+$ ck_bigget  : Int =
+	if (all (\k = if (unwrap_or (MAP.get big k) (0 - 1)) ?= k * k then 1 else 0)
+	        (range 0 100))
+	then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_size + ck_get + ck_missing + ck_update + ck_upsize
+	+ ck_remove + ck_gone + ck_shared + ck_values + ck_keys + ck_intkey
+	+ ck_custom + ck_bigsize + ck_bigget

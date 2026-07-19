@@ -1,0 +1,39 @@
+@mod STDLIB_STR
+
+# \file STDLIB_STR.thx
+# \info The standard library's STR module: searching, splitting, trimming,
+#       ASCII case and number formatting/parsing over the byte-vector `Str`.
+#       `reverse`/`repeat`/`contains`/`find` also exist in LIST, so uses
+#       here qualify where both modules are imported.
+
+$ with STR
+$ with OPT
+$ with LIST
+
+$ ck_len    : Int = if (len "hello") ?= 5 then 0 else 1
+$ ck_at     : Int = if (at "hello" 1) ?= 101 then 0 else 1
+$ ck_substr : Int = if (substr "hello world" 6 11) ?= "world" then 0 else 1
+$ ck_starts : Int = if starts_with "hello" "he" then 0 else 1
+$ ck_ends   : Int = if ends_with "hello" "llo" then 0 else 1
+$ ck_find   : Int = if (unwrap_or (STR.find "hello world" "wor") 0) ?= 6 then 0 else 1
+$ ck_miss   : Int = if is_none (STR.find "hello" "xyz") then 0 else 1
+$ ck_split  : Int = if (length (split "a,b,,c" ",")) ?= 4 then 0 else 1
+$ ck_join   : Int = if (join "," (split "a,b,,c" ",")) ?= "a,b,,c" then 0 else 1
+$ ck_lines  : Int = if (length (lines "one\ntwo\nthree\n")) ?= 3 then 0 else 1
+$ ck_trim   : Int = if (trim " \t hi there \n") ?= "hi there" then 0 else 1
+$ ck_upper  : Int = if (to_upper "Hello, World!") ?= "HELLO, WORLD!" then 0 else 1
+$ ck_lower  : Int = if (to_lower "Hello!") ?= "hello!" then 0 else 1
+$ ck_rev    : Int = if (STR.reverse "abcdef") ?= "fedcba" then 0 else 1
+$ ck_rep    : Int = if (STR.repeat "ab" 3) ?= "ababab" then 0 else 1
+$ ck_fmt    : Int = if (from_int (0 - 1042)) ?= "-1042" then 0 else 1
+$ ck_fmt0   : Int = if (from_int 0) ?= "0" then 0 else 1
+$ ck_parse  : Int = if (unwrap_or (to_int "-273") 0) + 273 ?= 0 then 0 else 1
+$ ck_parse_bad : Int = if is_none (to_int "12x") then 0 else 1
+$ ck_digit  : Int = if is_digit (at "a1" 1) then 0 else 1
+$ ck_space  : Int = if is_space (at "\t" 0) then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_len + ck_at + ck_substr + ck_starts + ck_ends + ck_find
+	+ ck_miss + ck_split + ck_join + ck_lines + ck_trim + ck_upper
+	+ ck_lower + ck_rev + ck_rep + ck_fmt + ck_fmt0 + ck_parse
+	+ ck_parse_bad + ck_digit + ck_space

@@ -1,0 +1,147 @@
+@mod STR
+
+# \file STR.thx
+# \info String operations over the byte-vector `Str` (see
+#       doc/strings-and-arrays.md; indices are 0-based BYTE offsets, `at`
+#       returns a byte as an Int in 0..255). The primitive layer --
+#       `array_len` / `array_get` / `array_slice` / `array_push` / `++` /
+#       `?=` -- already works on `Str`; this module builds the searching,
+#       splitting and formatting layer on top of it.
+
+$ with OPT
+$ with LIST
+
+$ len : Str -> Int = \s = array_len s
+
+$ at : Str -> Int -> Int = \s i = array_get s i
+
+$ is_empty : Str -> Int = \s = if (array_len s) ?= 0 then 1 else 0
+
+$ eq : Str -> Str -> Int = \a b = if a ?= b then 1 else 0
+
+# The byte range [from, to), clamped to the string.
+$ substr : Str -> Int -> Int -> Str = \s from to = array_slice s from to
+
+$ starts_with : Str -> Str -> Int = \s p =
+	let n = array_len p in
+	if n ?> array_len s then 0
+	else if (array_slice s 0 n) ?= p then 1 else 0
+
+$ ends_with : Str -> Str -> Int = \s p =
+	let n  = array_len p in
+	let sn = array_len s in
+	if n ?> sn then 0
+	else if (array_slice s (sn - n) sn) ?= p then 1 else 0
+
+# The byte offset of the first occurrence of `needle` at or after `from`.
+# An empty needle matches at `from`.
+$ find_from : Str -> Str -> Int -> Option Int = \s needle from =
+	let n = array_len needle in
+	if from + n ?> array_len s then Option.None
+	else if (array_slice s from (from + n)) ?= needle then Option.Some.{ from }
+	else find_from s needle (from + 1)
+
+$ find : Str -> Str -> Option Int = \s needle = find_from s needle 0
+
+$ contains : Str -> Str -> Int = \s needle = is_some (find s needle)
+
+# Split on a non-empty separator; N separators yield N+1 pieces ("a,,b" on
+# "," is ["a", "", "b"]). An empty separator returns the whole string whole.
+$ split : Str -> Str -> List Str = \s sep =
+	if (array_len sep) ?= 0 then [s]
+	else when find s sep
+		is Option.Some.{i} then
+			array_slice s 0 i
+				:: split (array_slice s (i + array_len sep) (array_len s)) sep
+	else [s]
+
+# The lines of `s`, split on '\n'. A trailing newline does not produce a
+# final empty line.
+$ lines : Str -> List Str = \s =
+	let n = array_len s in
+	if n ?= 0 then []
+	else if (array_get s (n - 1)) ?= 10 then split (array_slice s 0 (n - 1)) "\n"
+	else split s "\n"
+
+$ join : Str -> List Str -> Str = \sep parts =
+	when parts
+		is h :: t then
+			(when t is [] then h else h ++ sep ++ join sep t)
+	else ""
+
+$ repeat : Str -> Int -> Str = \s n =
+	if n <= 0 then "" else s ++ repeat s (n - 1)
+
+$ reverse : Str -> Str = \s = rev_onto s (array_len s) ""
+
+$ rev_onto : Str -> Int -> Str -> Str = \s i acc =
+	if i ?= 0 then acc
+	else rev_onto s (i - 1) (array_push acc (array_get s (i - 1)))
+
+# ---- character (byte) predicates ----
+
+$ is_space : Int -> Int = \c =
+	if c ?= 32 then 1 else if c >= 9 then (if c <= 13 then 1 else 0) else 0
+
+$ is_digit : Int -> Int = \c =
+	if c >= 48 then (if c <= 57 then 1 else 0) else 0
+
+$ is_alpha : Int -> Int = \c =
+	if c >= 65 then
+		(if c <= 90 then 1 else if c >= 97 then (if c <= 122 then 1 else 0) else 0)
+	else 0
+
+# ---- trimming (ASCII whitespace) ----
+
+$ trim_left : Str -> Str = \s =
+	if (array_len s) ?= 0 then s
+	else if is_space (array_get s 0)
+		then trim_left (array_slice s 1 (array_len s))
+	else s
+
+$ trim_right : Str -> Str = \s =
+	let n = array_len s in
+	if n ?= 0 then s
+	else if is_space (array_get s (n - 1)) then trim_right (array_slice s 0 (n - 1))
+	else s
+
+$ trim : Str -> Str = \s = trim_left (trim_right s)
+
+# ---- ASCII case ----
+
+$ to_upper : Str -> Str = \s =
+	map_bytes (\c = if c >= 97 then (if c <= 122 then c - 32 else c) else c) s
+
+$ to_lower : Str -> Str = \s =
+	map_bytes (\c = if c >= 65 then (if c <= 90 then c + 32 else c) else c) s
+
+$ map_bytes : (Int -> Int) -> Str -> Str = \f s = map_bytes_from f s 0 ""
+
+$ map_bytes_from : (Int -> Int) -> Str -> Int -> Str -> Str = \f s i acc =
+	if i ?= array_len s then acc
+	else map_bytes_from f s (i + 1) (array_push acc (f (array_get s i)))
+
+# ---- number formatting / parsing ----
+
+$ from_int : Int -> Str = \n =
+	if n ?< 0 then "-" ++ digits_of (0 - n) ""
+	else digits_of n ""
+
+$ digits_of : Int -> Str -> Str = \n acc =
+	if n ?< 10 then (array_push "" (48 + n)) ++ acc
+	else digits_of (n / 10) ((array_push "" (48 + n % 10)) ++ acc)
+
+# Parse a (possibly '-'-signed) run of decimal digits; anything else is None.
+$ to_int : Str -> Option Int = \s =
+	if (array_len s) ?= 0 then Option.None
+	else if (array_get s 0) ?= 45 then
+		(if (array_len s) ?= 1 then Option.None
+		 else opt_map (\n = 0 - n) (digits_val s 1 0))
+	else digits_val s 0 0
+
+$ digits_val : Str -> Int -> Int -> Option Int = \s i acc =
+	if i ?= array_len s then Option.Some.{ acc }
+	else
+		let c = array_get s i in
+		if is_digit c then digits_val s (i + 1) (acc * 10 + (c - 48))
+		else Option.None

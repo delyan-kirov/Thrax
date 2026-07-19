@@ -40,11 +40,8 @@ pVal
 call_extern(
   const IR::Extern &e, const std::vector<pVal> &args)
 {
-  // The marshalling type names, minus any unit `{}` slots: a `{}` parameter is
-  // "no argument" (lets a nullary C function be written `{} -> Int`), so it
-  // contributes neither a type nor a word to the C call.
   std::vector<std::string> arg_types;
-  std::vector<ssize_t>     words;
+  std::vector<FF::Slot>    words; // one 64-bit marshalling slot each (FF.hpp)
   arg_types.reserve(e.arg_types.size());
   words.reserve(args.size());
 
@@ -61,34 +58,34 @@ call_extern(
       words.push_back(std::get<VInt>(a->as).val);
     else if (VKind::Real == kind(a))
     {
-      double  d = std::get<VReal>(a->as).val;
-      ssize_t w;
-      std::memcpy(&w, &d, sizeof(w)); // FF reads Real words as double bits
+      double   d = std::get<VReal>(a->as).val;
+      FF::Slot w;
+      std::memcpy(&w, &d, sizeof(w)); // FF reads Real slots as double bits
       words.push_back(w);
     }
     else if (VKind::Str == kind(a))
-      words.push_back((ssize_t)(intptr_t)std::get<VStr>(a->as).val.c_str());
+      words.push_back((FF::Slot)(intptr_t)std::get<VStr>(a->as).val.c_str());
     else
       UT_FAIL_MSG("FFI argument to '%s' must be Int, Real or Str",
                   std::string(e.symbol).c_str());
   }
 
-  std::string ret_type(e.ret_type);
-  ssize_t     r = FF::call(e.lib, e.symbol, arg_types, ret_type, words);
+  std::string ret_type(TG::host().canon(e.ret_type));
+  FF::Slot    r = FF::call(e.lib, e.symbol, arg_types, ret_type, words);
 
-  if ("Str" == ret_type)
+  if (OP::TY_STR == ret_type)
   {
     const char *p = (const char *)(intptr_t)r;
     return mk(Value{ VStr{ p ? std::string(p) : std::string() } });
   }
-  if ("Real" == ret_type || "Real32" == ret_type)
+  if (OP::TY_REAL64 == ret_type || OP::TY_REAL32 == ret_type)
   {
     double d;
     std::memcpy(&d, &r, sizeof(d));
     return mk_real(d);
   }
   if (ret_type == OP::TY_UNIT) return mk(Value{ VUnk{} });
-  return mk_int(r);
+  return mk_int((ssize_t)r);
 }
 
 std::string

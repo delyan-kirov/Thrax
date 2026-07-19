@@ -15,15 +15,18 @@
 #define TC_HEADER_
 
 #include "EX.hpp"
+#include "TG.hpp"
 
 namespace TC
 {
 
-// Type-check every top-level global in `exprs`. The returned vector is empty
-// when the program is well typed; otherwise it holds one diagnostic per error,
-// anchored into `src` for rendering with ER::pprint.
+// Type-check every top-level global in `exprs` for target `tg` (which decides
+// the width of `Int`: literal typing, the numeric overloads, the mono keys).
+// The returned vector is empty when the program is well typed; otherwise it
+// holds one diagnostic per error, anchored into `src` for rendering with
+// ER::pprint.
 std::vector<ER::Diagnostic>
-check(EX::Exprs &exprs, AR::Arena &arena, UT::Vu src);
+check(EX::Exprs &exprs, AR::Arena &arena, UT::Vu src, const TG::Target &tg);
 
 } // namespace TC
 

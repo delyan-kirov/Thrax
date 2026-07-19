@@ -30,29 +30,20 @@ namespace OP
 // For binary operators the spelling is also the source lexeme; the unary NEG
 // and NOT are distinct names (their lexemes are SUB and BANG) so unary '-'
 // never collides with binary '-'.
-inline constexpr const char *ADD  = "+";
-inline constexpr const char *SUB  = "-";
-inline constexpr const char *MUL  = "*";
-inline constexpr const char *DIV  = "/";
-inline constexpr const char *MOD  = "%";
-inline constexpr const char *ISEQ = "?=";
-inline constexpr const char *MORE = "?>";
-inline constexpr const char *LESS = "?<";
-inline constexpr const char *LEQ  = "<=";
-inline constexpr const char *GEQ  = ">=";
-inline constexpr const char *BANG = "!";   // lexeme of unary NOT
-inline constexpr const char *NEG  = "neg"; // unary '-'
-inline constexpr const char *NOT  = "not"; // unary '!'
-inline constexpr const char *IF   = "if";
-
-// FIXME: Don't do that
-#if defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ == 4
-inline constexpr const char *TY_INT = "@int32";
-inline constexpr const char *TY_NAT = "@nat32";
-#else
-inline constexpr const char *TY_INT = "@int64";
-inline constexpr const char *TY_NAT = "@nat64";
-#endif
+inline constexpr const char *ADD       = "+";
+inline constexpr const char *SUB       = "-";
+inline constexpr const char *MUL       = "*";
+inline constexpr const char *DIV       = "/";
+inline constexpr const char *MOD       = "%";
+inline constexpr const char *ISEQ      = "?=";
+inline constexpr const char *MORE      = "?>";
+inline constexpr const char *LESS      = "?<";
+inline constexpr const char *LEQ       = "<=";
+inline constexpr const char *GEQ       = ">=";
+inline constexpr const char *BANG      = "!";   // lexeme of unary NOT
+inline constexpr const char *NEG       = "neg"; // unary '-'
+inline constexpr const char *NOT       = "not"; // unary '!'
+inline constexpr const char *IF        = "if";
 inline constexpr const char *TY_REAL   = "@float64";
 inline constexpr const char *TY_STR    = "@str";
 inline constexpr const char *TY_PTR    = "@ptr";
@@ -72,10 +63,45 @@ inline constexpr const char *TY_UNIT
   = "{}"; // the empty record / unit type; runtime-represented as 0
 
 inline constexpr const char *base_types[] = {
-  TY_INT,   TY_NAT,    TY_REAL,   TY_STR,   TY_PTR,   TY_INT8,
-  TY_INT16, TY_INT32,  TY_INT64,  TY_NAT8,  TY_NAT16, TY_NAT32,
+  TY_REAL,  TY_STR,    TY_PTR,    TY_INT8,  TY_INT16,
+  TY_INT32, TY_INT64,  TY_NAT8,   TY_NAT16, TY_NAT32,
   TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY, TY_UNIT,
 };
+
+// The prelude's FIXED transparent aliases onto the base types, as data: DR
+// generates the `$ Name : @alias = target` prelude lines from this table
+// (after the target-dependent `Int`/`Nat`, which come from TG::Target), and
+// `canon` below folds the bare spellings back to canonical `@`-names. Single
+// source of truth for both directions. Order is the prelude declaration order.
+struct BaseAlias
+{
+  const char *name;
+  const char *target;
+};
+inline constexpr BaseAlias base_aliases[] = {
+  { "Real", TY_REAL },     { "Int8", TY_INT8 },     { "Int16", TY_INT16 },
+  { "Int32", TY_INT32 },   { "Int64", TY_INT64 },   { "Nat8", TY_NAT8 },
+  { "Nat16", TY_NAT16 },   { "Nat32", TY_NAT32 },   { "Nat64", TY_NAT64 },
+  { "Real32", TY_REAL32 }, { "Real64", TY_REAL64 }, { "Str", TY_STR },
+  { "Ptr", TY_PTR },       { "Array", TY_ARRAY },
+};
+
+// Canonical spelling of a base-type name: folds a bare prelude alias ("Str",
+// "Int32", ...) to its `@`-target; any other name (already-canonical
+// `@`-names, user types, type variables) passes through unchanged. NOTE:
+// `Int`/`Nat` are NOT folded here -- their width is target policy, so FFI
+// consumers canonicalize through TG::Target::canon, which folds them and
+// defers the rest to this. (Extern signatures reach the IR with their
+// *surface* spelling -- alias resolution lives in TC's sig_to_type and is
+// never written back to the EX type tree.)
+inline UT::Vu
+canon(
+  UT::Vu name)
+{
+  for (const BaseAlias &a : base_aliases)
+    if (name == a.name) return a.target;
+  return name;
+}
 
 // Internal name of the byte-block allocation primitive that `@array.{ size }`
 // desugars to (an ordinary `Int -> Array` builtin: typed in TC's m_prim, run

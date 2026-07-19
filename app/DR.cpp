@@ -1,6 +1,7 @@
 #include "DR.hpp"
 #include "CC.hpp"
 #include "ER.hpp"
+#include "STDLIBxAMALG.hpp"
 
 #include "EX.hpp"
 #include "IR.hpp"
@@ -133,7 +134,7 @@ static const char PRELUDE_FILE[] = "PRELUDE.thx";
 
 static UT::Vu
 prelude_source(
-  AR::Arena &arena)
+  AR::Arena &arena, const TG::Target &tg)
 {
   std::string s     = "@mod PRELUDE\n"
                       "$ List : @union = Cons: {`T, List `T}, Nil: {},\n";
@@ -144,41 +145,23 @@ prelude_source(
     s += target;
     s += "\n";
   };
-  alias("Int", OP::TY_INT);
-  alias("Nat", OP::TY_NAT);
-  alias("Real", OP::TY_REAL);
-  alias("Int8", OP::TY_INT8);
-  alias("Int16", OP::TY_INT16);
-  alias("Int32", OP::TY_INT32);
-  alias("Int64", OP::TY_INT64);
-  alias("Nat8", OP::TY_NAT8);
-  alias("Nat16", OP::TY_NAT16);
-  alias("Nat32", OP::TY_NAT32);
-  alias("Nat64", OP::TY_NAT64);
-  alias("Real32", OP::TY_REAL32);
-  alias("Real64", OP::TY_REAL64);
-  alias("Str", OP::TY_STR);
-  alias("Ptr", OP::TY_PTR);
-  alias("Array", OP::TY_ARRAY);
+  // `Int`/`Nat` alias the TARGET's word type
+  alias("Int", tg.int_ty());
+  alias("Nat", tg.nat_ty());
+  for (const OP::BaseAlias &a : OP::base_aliases) alias(a.name, a.target);
 
   s += "$ assert : Int -> {} = \\n = if n then {} else (C.puts \"assertion "
        "failed\"; C.exit 1)\n";
   return UT::strdup(arena, s.c_str());
 }
 
-// FIXME: Don't do that here
-#if defined(_WIN32)
-#define THX_LIBC "msvcrt.dll"
-#else
-#define THX_LIBC "libc.so.6"
-#endif
 static const char C_FILE[] = "C.thx";
 
 static UT::Vu
 core_c_source(
-  AR::Arena &arena)
+  AR::Arena &arena, const TG::Target &tg)
 {
-  const std::string I = OP::TY_INT, S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
+  const std::string I = tg.int_ty(), S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
   std::string       s = "@mod C\n";
   auto ext = [&](const char *name, const std::string &sig, const char *sym) {
     s += "$ ";
@@ -188,7 +171,7 @@ core_c_source(
     s += " = @extern.{ \"";
     s += sym;
     s += "\", \"";
-    s += THX_LIBC;
+    s += tg.libc_soname();
     s += "\" }\n";
   };
 
@@ -200,6 +183,16 @@ core_c_source(
   ext("malloc", I + " -> " + P, "malloc");
   ext("free", P + " -> " + U, "free");
   ext("strlen", S + " -> " + I, "strlen");
+  ext("fopen", S + " -> " + S + " -> " + I, "fopen");
+  ext("fclose", I + " -> " + I, "fclose");
+  ext("fgetc", I + " -> " + I, "fgetc");
+  ext("fputs", S + " -> " + I + " -> " + I, "fputs");
+  ext("fflush", I + " -> " + I, "fflush");
+  ext("fseek", I + " -> " + I + " -> " + I + " -> " + I, "fseek");
+  ext("ftell", I + " -> " + I, "ftell");
+  ext("write", I + " -> " + S + " -> " + I + " -> " + I, "write");
+  ext("remove", S + " -> " + I, "remove");
+  ext("getenv", S + " -> " + S, "getenv");
   return UT::strdup(arena, s.c_str());
 }
 
@@ -223,23 +216,31 @@ bool
 parse_units(
   const std::vector<UT::Vu> &files,
   AR::Arena                 &arena,
-  std::vector<MR::Unit>     &units)
+  std::vector<MR::Unit>     &units,
+  const TG::Target          &tg)
 {
   bool                        ok = true;
   std::vector<ER::Diagnostic> parse_diags;
 
   // The prelude and the `C` libc namespace first, so their declarations are in
   // scope for every file.
-  parse_one(prelude_source(arena),
+  parse_one(prelude_source(arena, tg),
             UT::Vu{ PRELUDE_FILE, sizeof(PRELUDE_FILE) - 1 },
             arena,
             units,
             parse_diags);
-  parse_one(core_c_source(arena),
+  parse_one(core_c_source(arena, tg),
             UT::Vu{ C_FILE, sizeof(C_FILE) - 1 },
             arena,
             units,
             parse_diags);
+
+  for (const StdlibUnit &u : STDLIB_UNITS)
+    parse_one(UT::Vu{ u.src, std::strlen(u.src) },
+              UT::Vu{ u.name, std::strlen(u.name) },
+              arena,
+              units,
+              parse_diags);
 
   for (UT::Vu file : files)
   {
@@ -266,12 +267,16 @@ parse_units(
 // failing stage.
 bool
 compile_units(
-  std::vector<MR::Unit> &units, AR::Arena &arena, MR::Result &out)
+  std::vector<MR::Unit> &units,
+  AR::Arena             &arena,
+  MR::Result            &out,
+  const TG::Target      &tg)
 {
   out = MR::link(units, arena);
   if (print_diags(units, out.diags)) return false;
 
-  std::vector<ER::Diagnostic> type_diags = TC::check(out.program, arena, {});
+  std::vector<ER::Diagnostic> type_diags
+    = TC::check(out.program, arena, {}, tg);
   if (print_diags(units, type_diags)) return false;
 
   return true;
@@ -336,7 +341,7 @@ collect_operations(
 
 Interp
 interpret_file(
-  UT::Vu file)
+  UT::Vu file, const TG::Target &tg)
 {
   // The front-end arena lives only for lexing/parsing/type-checking; the Core
   // arena (owned by the returned Interp) outlives it and holds the Core the env
@@ -346,10 +351,10 @@ interpret_file(
   ip.arena = std::make_unique<AR::Arena>();
 
   std::vector<MR::Unit> units;
-  if (!parse_units({ file }, front, units)) return ip;
+  if (!parse_units({ file }, front, units, tg)) return ip;
 
   MR::Result mr;
-  if (!compile_units(units, front, mr)) return ip;
+  if (!compile_units(units, front, mr, tg)) return ip;
 
   CR::StatEnv env;
   for (size_t i = 0; i < mr.program.size(); ++i)
@@ -365,15 +370,15 @@ interpret_file(
 
 int
 run_program(
-  const std::vector<UT::Vu> &files)
+  const std::vector<UT::Vu> &files, const TG::Target &tg)
 {
   AR::Arena             front{};
   std::vector<MR::Unit> units;
 
-  if (!parse_units(files, front, units)) return 1;
+  if (!parse_units(files, front, units, tg)) return 1;
 
   MR::Result mr;
-  if (!compile_units(units, front, mr)) return 1;
+  if (!compile_units(units, front, mr, tg)) return 1;
 
   if (mr.entry.empty())
   {
@@ -402,14 +407,14 @@ run_program(
 
 bool
 dump_ir(
-  const std::vector<UT::Vu> &files)
+  const std::vector<UT::Vu> &files, const TG::Target &tg)
 {
   AR::Arena             front{};
   std::vector<MR::Unit> units;
-  if (!parse_units(files, front, units)) return false;
+  if (!parse_units(files, front, units, tg)) return false;
 
   MR::Result mr;
-  if (!compile_units(units, front, mr)) return false;
+  if (!compile_units(units, front, mr, tg)) return false;
 
   AR::Arena   core_arena{};
   CR::StatEnv env;
@@ -425,14 +430,14 @@ dump_ir(
 
 bool
 emit_c(
-  const std::vector<UT::Vu> &files)
+  const std::vector<UT::Vu> &files, const TG::Target &tg)
 {
   AR::Arena             front{};
   std::vector<MR::Unit> units;
-  if (!parse_units(files, front, units)) return false;
+  if (!parse_units(files, front, units, tg)) return false;
 
   MR::Result mr;
-  if (!compile_units(units, front, mr)) return false;
+  if (!compile_units(units, front, mr, tg)) return false;
 
   // The IR arena must outlive emission: CC reads names/literals that view it.
   AR::Arena   core_arena{};
@@ -454,14 +459,14 @@ emit_c(
     return false;
   }
 
-  std::string c = CC::emit(prog, mr.entry, mr.entry_takes_arg);
+  std::string c = CC::emit(prog, mr.entry, mr.entry_takes_arg, tg);
   std::fwrite(c.data(), 1, c.size(), stdout);
   return true;
 }
 
 bool
 build_project(
-  UT::Vu dir)
+  UT::Vu dir, const TG::Target &tg)
 {
   namespace fs = std::filesystem;
   std::string     dpath(dir);
@@ -492,10 +497,10 @@ build_project(
 
   AR::Arena             front{};
   std::vector<MR::Unit> units;
-  if (!parse_units(files, front, units)) return false;
+  if (!parse_units(files, front, units, tg)) return false;
 
   MR::Result mr;
-  if (!compile_units(units, front, mr)) return false;
+  if (!compile_units(units, front, mr, tg)) return false;
 
   if (mr.entry.empty())
   {
@@ -568,7 +573,7 @@ build_project(
         stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
       return false;
     }
-    f << CC::emit(prog, mr.entry, mr.entry_takes_arg);
+    f << CC::emit(prog, mr.entry, mr.entry_takes_arg, tg);
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the

@@ -1,0 +1,87 @@
+@mod LIST
+
+# \file LIST.thx
+# \info Operations on the prelude's `List` type. Predicates passed in and
+#       returned use Int truth (1 true, 0 false). Where an operation needs
+#       equality on the element type, it takes the equality function
+#       explicitly (dictionary passing) -- there are no type classes.
+
+$ with OPT
+$ with PAIR
+
+$ length : List `T -> Int = \xs =
+	when xs is _ :: t then 1 + length t else 0
+
+$ is_empty : List `T -> Int = \xs =
+	when xs is [] then 1 else 0
+
+$ map : (`A -> `B) -> List `A -> List `B = \f xs =
+	when xs is h :: t then f h :: map f t else []
+
+$ filter : (`T -> Int) -> List `T -> List `T = \p xs =
+	when xs
+		is h :: t then (if p h then h :: filter p t else filter p t)
+	else []
+
+$ foldl : (`A -> `T -> `A) -> `A -> List `T -> `A = \f acc xs =
+	when xs is h :: t then foldl f (f acc h) t else acc
+
+$ foldr : (`T -> `A -> `A) -> `A -> List `T -> `A = \f z xs =
+	when xs is h :: t then f h (foldr f z t) else z
+
+$ reverse : List `T -> List `T = \xs =
+	foldl (\acc x = x :: acc) [] xs
+
+$ append : List `T -> List `T -> List `T = \xs ys =
+	when xs is h :: t then h :: append t ys else ys
+
+$ concat : List (List `T) -> List `T = \xss =
+	when xss is h :: t then append h (concat t) else []
+
+$ take : Int -> List `T -> List `T = \n xs =
+	if n <= 0 then []
+	else when xs is h :: t then h :: take (n - 1) t else []
+
+$ drop : Int -> List `T -> List `T = \n xs =
+	if n <= 0 then xs
+	else when xs is _ :: t then drop (n - 1) t else []
+
+# The element at (0-based) `i`, if the list is that long.
+$ nth : List `T -> Int -> Option `T = \xs i =
+	when xs
+		is h :: t then (if i ?= 0 then Option.Some.{ h } else nth t (i - 1))
+	else Option.None
+
+# A copy with the element at `i` replaced; too-short lists come back unchanged.
+$ set_nth : List `T -> Int -> `T -> List `T = \xs i v =
+	when xs
+		is h :: t then (if i ?= 0 then v :: t else h :: set_nth t (i - 1) v)
+	else []
+
+$ any : (`T -> Int) -> List `T -> Int = \p xs =
+	when xs is h :: t then (if p h then 1 else any p t) else 0
+
+$ all : (`T -> Int) -> List `T -> Int = \p xs =
+	when xs is h :: t then (if p h then all p t else 0) else 1
+
+# The first element satisfying `p`, if one exists.
+$ find : (`T -> Int) -> List `T -> Option `T = \p xs =
+	when xs
+		is h :: t then (if p h then Option.Some.{ h } else find p t)
+	else Option.None
+
+# Membership under the given equality.
+$ contains : (`T -> `T -> Int) -> `T -> List `T -> Int = \eqf x xs =
+	any (\y = eqf x y) xs
+
+# [lo, hi): counts up from `lo`, excludes `hi`.
+$ range : Int -> Int -> List Int = \lo hi =
+	if lo >= hi then [] else lo :: range (lo + 1) hi
+
+$ zip : List `A -> List `B -> List (Pair `A `B) = \xs ys =
+	when xs
+		is xh :: xt then
+			(when ys is yh :: yt then pair xh yh :: zip xt yt else [])
+	else []
+
+$ sum : List Int -> Int = \xs = foldl (\a x = a + x) 0 xs
