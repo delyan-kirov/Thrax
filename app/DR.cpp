@@ -162,8 +162,11 @@ core_c_source(
   AR::Arena &arena, const TG::Target &tg)
 {
   const std::string I = tg.int_ty(), S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
-  std::string       s = "@mod C\n";
-  auto ext = [&](const char *name, const std::string &sig, const char *sym) {
+  std::string       s      = "@mod C\n";
+  auto              ext_in = [&](const char        *soname,
+                    const char        *name,
+                    const std::string &sig,
+                    const char        *sym) {
     s += "$ ";
     s += name;
     s += " : ";
@@ -171,8 +174,11 @@ core_c_source(
     s += " = @extern.{ \"";
     s += sym;
     s += "\", \"";
-    s += tg.libc_soname();
+    s += soname;
     s += "\" }\n";
+  };
+  auto ext = [&](const char *name, const std::string &sig, const char *sym) {
+    ext_in(tg.libc_soname(), name, sig, sym);
   };
 
   ext("abort", U + " -> " + U, "abort");
@@ -193,6 +199,23 @@ core_c_source(
   ext("write", I + " -> " + S + " -> " + I + " -> " + I, "write");
   ext("remove", S + " -> " + I, "remove");
   ext("getenv", S + " -> " + S, "getenv");
+  ext("time", I + " -> " + I, "time"); // time(NULL): call as `C.time 0`
+
+  // libm; its own soname where libm is a separate library (Linux)
+  const std::string R  = OP::TY_REAL64;
+  const char       *lm = tg.libm_soname();
+  ext_in(lm, "sqrt", R + " -> " + R, "sqrt");
+  ext_in(lm, "sin", R + " -> " + R, "sin");
+  ext_in(lm, "cos", R + " -> " + R, "cos");
+  ext_in(lm, "tan", R + " -> " + R, "tan");
+  ext_in(lm, "exp", R + " -> " + R, "exp");
+  ext_in(lm, "log", R + " -> " + R, "log");
+  ext_in(lm, "floor", R + " -> " + R, "floor");
+  ext_in(lm, "ceil", R + " -> " + R, "ceil");
+  ext_in(lm, "round", R + " -> " + R, "round");
+  ext_in(lm, "pow", R + " -> " + R + " -> " + R, "pow");
+  ext_in(lm, "fmod", R + " -> " + R + " -> " + R, "fmod");
+  ext_in(lm, "atan2", R + " -> " + R + " -> " + R, "atan2");
   return UT::strdup(arena, s.c_str());
 }
 

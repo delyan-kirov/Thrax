@@ -88,3 +88,6 @@ $ remove_file : Str -> Int = \path =
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
 $ env : Str -> Str = \name = C.getenv name
+
+# Seconds since the Unix epoch (libc time(NULL)).
+$ now : {} -> Int = \u = C.time 0

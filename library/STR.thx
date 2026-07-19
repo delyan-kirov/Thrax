@@ -19,6 +19,23 @@ $ is_empty : Str -> Int = \s = if (array_len s) ?= 0 then 1 else 0
 
 $ eq : Str -> Str -> Int = \a b = if a ?= b then 1 else 0
 
+# Three-way byte-lexicographic comparison: negative / 0 / positive (strcmp
+# convention; this is the ordering MAP.new_str uses).
+$ cmp_str : Str -> Str -> Int = \a b = cmp_str_from a b 0
+
+$ cmp_str_from : Str -> Str -> Int -> Int = \a b i =
+	if i >= array_len a then (if i >= array_len b then 0 else 0 - 1)
+	else if i >= array_len b then 1
+	else
+		let ca = array_get a i in
+		let cb = array_get b i in
+		if ca ?< cb then 0 - 1
+		else if ca ?> cb then 1
+		else cmp_str_from a b (i + 1)
+
+# A one-byte string.
+$ from_byte : Int -> Str = \c = array_push "" c
+
 # The byte range [from, to), clamped to the string.
 $ substr : Str -> Int -> Int -> Str = \s from to = array_slice s from to
 
@@ -72,6 +89,33 @@ $ join : Str -> List Str -> Str = \sep parts =
 $ repeat : Str -> Int -> Str = \s n =
 	if n <= 0 then "" else s ++ repeat s (n - 1)
 
+$ concat : List Str -> Str = \parts = join "" parts
+
+# Pad with spaces to at least `width` bytes (no-op if already wider).
+$ pad_left : Str -> Int -> Str = \s width =
+	repeat " " (width - array_len s) ++ s
+
+$ pad_right : Str -> Int -> Str = \s width =
+	s ++ repeat " " (width - array_len s)
+
+# Replace every (non-overlapping) occurrence; an empty needle returns `s`.
+$ replace : Str -> Str -> Str -> Str = \s needle repl =
+	if (array_len needle) ?= 0 then s
+	else when find s needle
+		is Option.Some.{i} then
+			let head : Str = array_slice s 0 i in
+			let rest : Str = array_slice s (i + array_len needle) (array_len s) in
+			head ++ repl ++ replace rest needle repl
+	else s
+
+# Number of (non-overlapping) occurrences; an empty needle counts 0.
+$ count : Str -> Str -> Int = \s needle =
+	if (array_len needle) ?= 0 then 0
+	else when find s needle
+		is Option.Some.{i} then
+			1 + count (array_slice s (i + array_len needle) (array_len s)) needle
+	else 0
+
 $ reverse : Str -> Str = \s = rev_onto s (array_len s) ""
 
 $ rev_onto : Str -> Int -> Str -> Str = \s i acc =
@@ -90,6 +134,15 @@ $ is_alpha : Int -> Int = \c =
 	if c >= 65 then
 		(if c <= 90 then 1 else if c >= 97 then (if c <= 122 then 1 else 0) else 0)
 	else 0
+
+$ is_alnum : Int -> Int = \c =
+	if is_digit c then 1 else is_alpha c
+
+$ is_upper : Int -> Int = \c =
+	if c >= 65 then (if c <= 90 then 1 else 0) else 0
+
+$ is_lower : Int -> Int = \c =
+	if c >= 97 then (if c <= 122 then 1 else 0) else 0
 
 # ---- trimming (ASCII whitespace) ----
 

@@ -38,9 +38,26 @@ $ ck_even  : Int = if even 4 then 0 else 1
 $ ck_odd   : Int = if odd (0 - 3) then 0 else 1
 $ ck_gcd   : Int = if (gcd 12 18) ?= 6 then 0 else 1
 $ ck_pow   : Int = if (pow 2 10) ?= 1024 then 0 else 1
+$ ck_cmp   : Int =
+	if (cmp_int 1 2) ?< 0 then (if (cmp_int 5 5) ?= 0 then 0 else 1) else 1
+
+# ---- MATH on Reals (libm through the C namespace; exact IEEE results) ----
+$ ck_sqrt  : Int = if (sqrt 9.0) ?= 3.0 then 0 else 1
+$ ck_floor : Int = if (floor 2.7) ?= 2.0 then 0 else 1
+$ ck_ceil  : Int = if (ceil 2.1) ?= 3.0 then 0 else 1
+$ ck_round : Int = if (round 2.5) ?= 3.0 then 0 else 1
+$ ck_rpow  : Int = let v : Real = pow 2.0 10.0 in if v ?= 1024.0 then 0 else 1
+$ ck_fmod  : Int = if (fmod 7.5 2.0) ?= 1.5 then 0 else 1
+$ ck_trig  : Int = if (sin 0.0) ?= 0.0 then (if (cos 0.0) ?= 1.0 then 0 else 1) else 1
+$ ck_explog: Int = if (log (exp 1.0)) ?= 1.0 then 0 else 1
+$ ck_rmin  : Int = let v : Real = min 1.5 2.5 in if v ?= 1.5 then 0 else 1
+$ ck_rabs  : Int = let v : Real = abs (0.0 - 4.5) in if v ?= 4.5 then 0 else 1
+$ ck_rclamp: Int = let v : Real = clamp 0.0 1.0 7.25 in if v ?= 1.0 then 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then
 	+ ck_fst + ck_snd + ck_swap
 	+ ck_min + ck_max + ck_abs + ck_sign + ck_clamp + ck_even + ck_odd
-	+ ck_gcd + ck_pow
+	+ ck_gcd + ck_pow + ck_cmp
+	+ ck_sqrt + ck_floor + ck_ceil + ck_round + ck_rpow + ck_fmod
+	+ ck_trig + ck_explog + ck_rmin + ck_rabs + ck_rclamp

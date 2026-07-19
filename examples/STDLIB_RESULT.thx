@@ -1,0 +1,57 @@
+@mod STDLIB_RESULT
+
+# \file STDLIB_RESULT.thx
+# \info Fallible computation both ways: `Result` as a value (Ok/Err plus the
+#       usual combinators) and `Fail` as an effect -- `Fail.fail` aborts, the
+#       `<Fail>` row on the arrow propagates the possibility (no `?` operator
+#       needed), and `try` / `try_or` are the handlers at the boundary.
+#       `untry` / `expect` bridge Results and Options back into a Fail
+#       computation.
+
+$ with RESULT
+$ with OPT
+$ with STR
+
+$ good : Result Int Str = Result.Ok.{ 42 }
+$ bad  : Result Int Str = Result.Err.{ "boom" }
+
+$ ck_ok    : Int = if is_ok good then 0 else 1
+$ ck_err   : Int = if is_err bad then 0 else 1
+$ ck_unw   : Int = if (unwrap_or good 0) ?= 42 then 0 else 1
+$ ck_unwd  : Int = if (unwrap_or bad 7) ?= 7 then 0 else 1
+$ ck_map   : Int = if (unwrap_or (map_ok (\x = x + 1) good) 0) ?= 43 then 0 else 1
+$ ck_maperr: Int =
+	when map_err (\e = e ++ "!") bad
+		is Result.Err.{m} then (if m ?= "boom!" then 0 else 1)
+	else 1
+$ ck_then  : Int =
+	let checked = \x = if x ?> 0 then Result.Ok.{ x * 2 } else Result.Err.{ "neg" } in
+	if (unwrap_or (and_then checked good) 0) ?= 84 then 0 else 1
+$ ck_opt   : Int = if (unwrap_or (ok_opt good) 0) ?= 42 then 0 else 1
+
+# ---- the Fail effect ----
+
+# A computation that may fail, with the possibility in its type.
+$ half : Int -> <Fail> Int = \n =
+	if n % 2 ?= 0 then n / 2 else Fail.fail "odd"
+
+$ ck_try_ok : Int =
+	when try (\u = half 84) is Result.Ok.{x} then (if x ?= 42 then 0 else 1) else 1
+$ ck_try_err : Int =
+	when try (\u = half 7) is Result.Err.{m} then (if m ?= "odd" then 0 else 1) else 1
+
+# Failures propagate through calls without any plumbing.
+$ pipeline : Int -> <Fail> Int = \n = (half n) + (half (n / 2))
+$ ck_prop : Int = if (try_or (\u = pipeline 84) (0 - 1)) ?= 63 then 0 else 1
+$ ck_prop_fail : Int = if (try_or (\u = pipeline 86) (0 - 1)) + 1 ?= 0 then 0 else 1
+
+# Bridges: a Result re-raised into a Fail computation, an Option required.
+$ ck_untry : Int =
+	if (try_or (\u = (untry good) + 1) 0) ?= 43 then 0 else 1
+$ ck_expect : Int =
+	if (try_or (\u = expect Option.None "absent") 9) ?= 9 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_ok + ck_err + ck_unw + ck_unwd + ck_map + ck_maperr
+	+ ck_then + ck_opt + ck_try_ok + ck_try_err + ck_prop + ck_prop_fail
+	+ ck_untry + ck_expect

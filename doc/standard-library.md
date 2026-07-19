@@ -40,32 +40,53 @@ there are no type classes.
 |--------|----------|
 | `OPT`  | `Option` (`Some`/`None`), `is_some`, `is_none`, `unwrap_or`, `opt_map`, `opt_then` |
 | `PAIR` | `Pair` (`.fst`/`.snd`), `pair`, `swap` |
-| `LIST` | `length`, `is_empty`, `map`, `filter`, `foldl`, `foldr`, `reverse`, `append`, `concat`, `take`, `drop`, `nth`, `set_nth`, `any`, `all`, `find`, `contains`, `range`, `zip`, `sum` |
-| `STR`  | `len`, `at`, `substr`, `eq`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `trim`(`_left`/`_right`), `repeat`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`, `from_int`, `to_int` |
-| `MATH` | `min`, `max`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow` |
-| `IO`   | `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`, `read_file`, `write_file`, `append_file`, `remove_file`, `env` |
-| `MAP`  | `Map \`K \`V`; `new`, `new_sized`, `new_str`, `new_int`, `insert`, `get`, `has`, `remove`, `size`, `to_list`, `keys`, `values`, `hash_str`, `hash_int` |
+| `LIST` | `length`, `is_empty`, `map`, `filter`, `foldl`, `foldr`, `reverse`, `append`, `concat`, `take`, `drop`, `nth`, `set_nth`, `any`, `all`, `find`, `contains`, `range`, `zip`, `zip_with`, `unzip`, `sum`, `product`, `minimum`, `maximum`, `last`, `init`, `replicate`, `intersperse`, `take_while`, `drop_while`, `span`, `split_at`, `partition`, `filter_map`, `flat_map`, `remove_first`, `find_index`, `lookup`, `sort_by`, `merge_by` |
+| `STR`  | `len`, `at`, `substr`, `eq`, `cmp_str`, `from_byte`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `concat`, `trim`(`_left`/`_right`), `repeat`, `pad_left`, `pad_right`, `replace`, `count`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`/`is_alnum`/`is_upper`/`is_lower`, `from_int`, `to_int` |
+| `MATH` | Int: `min`, `max`, `cmp_int`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow`; Real: `pi`, `euler`, `min`, `max`, `abs`, `clamp`, `sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod` (libm via `C`) |
+| `IO`   | `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`, `read_file`, `write_file`, `append_file`, `remove_file`, `env`, `now` |
+| `MAP`  | `Map \`K \`V` (immutable AVL tree); `new`, `new_str`, `new_int`, `from_list`, `insert`, `insert_with`, `get`, `get_or`, `has`, `remove`, `update`, `size`, `is_empty`, `to_list`, `keys`, `values`, `fold`, `map_values`, `filter`, `merge`, `min_entry`, `max_entry` |
+| `RESULT` | `Result` (`Ok`/`Err`), `is_ok`, `is_err`, `unwrap_or`, `map_ok`, `map_err`, `and_then`, `ok_opt`; the `Fail` effect, `try`, `try_or`, `untry`, `expect` |
+| `RANDOM` | `Rng` (Lehmer / MINSTD), `new`, `next`, `next_below`, `next_range` |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
-`repeat`); importing both is fine -- overloading resolves by type, and the
-qualified `STR.reverse` / `LIST.find` forms always work.
+`repeat`, `concat`); importing both is fine -- overloading resolves by type,
+and the qualified `STR.reverse` / `LIST.find` forms always work.
 
-### The hash map
+### The map
 
-`Map \`K \`V` is polymorphic in both key and value with no type classes: the
-map STORES its key operations (`hashf`, `eqf`) as fields -- `new` takes them,
-`new_str`/`new_int` bake in the common cases, and every operation reads them
-back off the struct. Buckets are association lists behind a fixed bucket
-count (16 by default, `new_sized` to choose); an over-full map degrades to
-linear but stays correct. Maps are values: `insert`/`remove` return an
-updated copy and never disturb the original. Rehashing/growth is future work.
+`Map \`K \`V` is an immutable ORDERED map -- an AVL tree, the same design as
+Haskell's `Data.Map` -- polymorphic in key and value with no type classes:
+the map STORES its key ordering (a three-way `cmpf`, strcmp convention) as a
+field. `new` takes the comparison; `new_str`/`new_int` bake in the common
+keys (`STR.cmp_str`, `MATH.cmp_int`). Lookup, insert and remove are
+O(log n); `to_list`/`keys`/`fold` visit entries in ascending key order. Maps
+are values: `insert`/`remove` return an updated copy and never disturb the
+original -- structural sharing makes that cheap (path copying only). A
+MUTABLE hash table (Rust/Jai flavor) is future work gated on generic mutable
+storage; see doc/stdlib-design.md.
+
+### Fallible code: Result and the Fail effect
+
+`RESULT` carries both shapes of fallibility and the bridges between them:
+`Result` for storing outcomes as values, and the `Fail` effect for
+propagating them. A function that may fail says so in its row
+(`Int -> <Fail> Int`) and just calls `Fail.fail "msg"`; callers compose with
+no plumbing (the row does what Rust's `?` does, implicitly), and a boundary
+turns the possibility back into a value with `try` (giving a
+`Result \`T Str`, Koka's `error<a>` pattern) or `try_or` (a default).
+`untry`/`expect` re-raise a `Result`/`Option` inside a failing computation.
 
 ## The libc seam (and its sharp edge)
 
 IO goes through the injected `C` namespace, which DR extended with `fopen`,
-`fclose`, `fgetc`, `fputs`, `fflush`, `fseek`, `ftell`, `write`, `remove` and
-`getenv` (host libc soname via `TG::Target`, as before). Two deliberate
-compromises, both documented at the declarations in app/DR.cpp:
+`fclose`, `fgetc`, `fputs`, `fflush`, `fseek`, `ftell`, `write`, `remove`,
+`getenv` and `time` (host libc soname via `TG::Target`, as before), plus the
+libm functions (`sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`,
+`ceil`, `round`, `pow`, `fmod`) under `TG::Target::libm_soname()` -- on Linux
+libm is its own soname (Nix ships the symbols only in libm.so.6 even though
+glibc >= 2.34 folded them into libc for static linking); elsewhere the C
+library carries them. Two deliberate compromises, both documented at the
+declarations in app/DR.cpp:
 
 - **`FILE*` travels as `Int`, not `Ptr`.** The handle is only passed back to
   the same functions or tested against 0 (NULL), and `?=` is defined on Int
@@ -87,10 +108,12 @@ prelude's `assert` and quick scripts.
 
 ## Testing
 
-`examples/STDLIB_{CORE,LIST,STR,MAP,IO}.thx` exercise the library and run in
-BOTH engines via the combined runner (tests/MAIN.thx): `./build test`
-(interpreter) and `./build native-test` (C backend). The IO test round-trips
-a file under /tmp and cleans up after itself.
+`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO}.thx` exercise the
+library and run in BOTH engines via the combined runner (tests/MAIN.thx):
+`./build test` (interpreter) and `./build native-test` (C backend). The IO
+test round-trips a file under /tmp and cleans up after itself; the MAP test
+stresses the AVL balance with 200 ascending inserts (the classic worst case
+for an unbalanced BST); the RANDOM test pins the exact MINSTD sequence.
 
 ## A note on inference
 
@@ -102,8 +125,18 @@ before the projection's type was grounded. See `Checker::resolve_sites` /
 
 ## Future work
 
+See doc/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
+module surveys, the mutable hash table, tuples, SET/PATH/DIR/PROCESS/...).
+Smaller items:
+
 - A guard against user modules merging with stdlib module names.
-- `Result`/error type once effects are the blessed error channel.
-- Map growth (rehash on load factor), sorting for LIST, `Real` formatting
-  and parsing in STR (`gcvt`-style via libm/libc), buffered readers.
+- `Real` formatting and parsing in STR (`gcvt`-style via libm/libc),
+  buffered readers.
 - Proper C `int` FFI marshalling (kills the `is_byte` idiom).
+- Migrate IO's error reporting from Int codes / Option to `Result` with a
+  standard `Error` union, or `<Fail>` rows, once the shape settles.
+- Overload-resolution wart: an overloaded call feeding an overloaded
+  operator (`(pow 2.0 10.0) ?= 1024.0`, `array_slice .. ++ ..`) can deadlock
+  the fixpoint into Int-defaulting; the workaround is an annotated
+  intermediate `let`. TC should retry operator defaulting after new sites
+  ground.
