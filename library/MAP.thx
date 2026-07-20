@@ -12,7 +12,6 @@
 #       ascending key order.
 
 $ with OPT
-$ with PAIR
 $ with LIST
 $ with MATH
 $ with STR
@@ -35,8 +34,8 @@ $ new_int : Map Int `V = new cmp_int
 
 $ new_str : Map Str `V = new cmp_str
 
-$ from_list : (`K -> `K -> Int) -> List (Pair `K `V) -> Map `K `V = \c ps =
-	foldl (\m p = insert m p.fst p.snd) (new c) ps
+$ from_list : (`K -> `K -> Int) -> List {`K, `V} -> Map `K `V = \c ps =
+	foldl (\m p = insert m p.0 p.1) (new c) ps
 
 # ---- operations ----
 
@@ -77,11 +76,11 @@ $ is_empty : Map `K `V -> Bool = \m = m.count ?= 0
 # ---- whole-map operations ----
 
 # Entries in ascending key order.
-$ to_list : Map `K `V -> List (Pair `K `V) = \m = tlist m.root []
+$ to_list : Map `K `V -> List {`K, `V} = \m = tlist m.root []
 
-$ keys : Map `K `V -> List `K = \m = map (\p = p.fst) (to_list m)
+$ keys : Map `K `V -> List `K = \m = map (\p = p.0) (to_list m)
 
-$ values : Map `K `V -> List `V = \m = map (\p = p.snd) (to_list m)
+$ values : Map `K `V -> List `V = \m = map (\p = p.1) (to_list m)
 
 # Fold entries in ascending key order: `f acc k v`.
 $ fold : (`A -> `K -> `V -> `A) -> `A -> Map `K `V -> `A = \f acc m =
@@ -98,9 +97,9 @@ $ filter : (`K -> `V -> Bool) -> Map `K `V -> Map `K `V = \p m =
 $ merge : Map `K `V -> Map `K `V -> Map `K `V = \a b =
 	fold (\acc k v = if has acc k then acc else insert acc k v) a b
 
-$ min_entry : Map `K `V -> Option (Pair `K `V) = \m = tmin m.root
+$ min_entry : Map `K `V -> Option {`K, `V} = \m = tmin m.root
 
-$ max_entry : Map `K `V -> Option (Pair `K `V) = \m = tmax m.root
+$ max_entry : Map `K `V -> Option {`K, `V} = \m = tmax m.root
 
 # ---- AVL internals ----
 
@@ -161,17 +160,17 @@ $ tremove : (`K -> `K -> Int) -> `K -> Tree `K `V -> Tree `K `V = \c k t =
 # becomes the new root.
 $ tjoin : Tree `K `V -> Tree `K `V -> Tree `K `V = \l r =
 	when tmin r
-		is Option.Some.{p} then balance p.fst p.snd l (drop_min r)
+		is Option.Some.{p} then balance p.0 p.1 l (drop_min r)
 	else l
 
-$ tmin : Tree `K `V -> Option (Pair `K `V) = \t =
+$ tmin : Tree `K `V -> Option {`K, `V} = \t =
 	when t is Tree.Node.{k, v, l, _, _} then
-		(when l is Tree.Leaf then Option.Some.{ pair k v } else tmin l)
+		(when l is Tree.Leaf then Option.Some.{ {k, v} } else tmin l)
 	else Option.None
 
-$ tmax : Tree `K `V -> Option (Pair `K `V) = \t =
+$ tmax : Tree `K `V -> Option {`K, `V} = \t =
 	when t is Tree.Node.{k, v, _, r, _} then
-		(when r is Tree.Leaf then Option.Some.{ pair k v } else tmax r)
+		(when r is Tree.Leaf then Option.Some.{ {k, v} } else tmax r)
 	else Option.None
 
 $ drop_min : Tree `K `V -> Tree `K `V = \t =
@@ -179,9 +178,9 @@ $ drop_min : Tree `K `V -> Tree `K `V = \t =
 		(when l is Tree.Leaf then r else balance k v (drop_min l) r)
 	else Tree.Leaf
 
-$ tlist : Tree `K `V -> List (Pair `K `V) -> List (Pair `K `V) = \t acc =
+$ tlist : Tree `K `V -> List {`K, `V} -> List {`K, `V} = \t acc =
 	when t is Tree.Node.{k, v, l, r, _} then
-		tlist l (pair k v :: tlist r acc)
+		tlist l ({k, v} :: tlist r acc)
 	else acc
 
 $ tfold : (`A -> `K -> `V -> `A) -> `A -> Tree `K `V -> `A = \f acc t =

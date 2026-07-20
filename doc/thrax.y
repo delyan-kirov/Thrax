@@ -25,6 +25,10 @@
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
  *   - `if`/`when`     `else` attaches to the nearest opener
  *   - nested `when`   arms belong to the innermost `when`
+ * The one brace overlap tuples introduced -- `Tag: {A, B}` is the variant's
+ * positional PAYLOAD fields, never a bare tuple type is resolved
+ * structurally (payload_decl's bare-type alternative is non-brace-initial,
+ * type_nb), matching EX.cpp's context rule; see payload_decl.
  *
  * DIVERGENCES from EX.cpp (this grammar is intentionally stricter):
  *   - SHOULD WARN (future work): EX.cpp lets a control form (let/if/when/\)
@@ -114,13 +118,29 @@ union_body    : variant_decls opt_comma ;
 variant_decls : variant_decl | variant_decls COMMA variant_decl ;
 variant_decl  : UIDENT COLON payload_decl ;
 
+/* After `Tag:` a '{' ALWAYS opens the payload's field braces (`{}` empty,
+ * `{A, B}` two positional fields) never a bare tuple type; that is how
+ * EX.cpp reads it. A single tuple-typed field is written nested
+ * (`Tag: {{A, B}}`) or named (`Tag: {t: {A, B}}`), so the bare-type
+ * alternative is restricted to non-brace-initial types (type_nb). */
 payload_decl
-  : LBRACE payload_fields opt_comma RBRACE
-  | type
+  : LBRACE RBRACE
+  | LBRACE payload_fields opt_comma RBRACE
+  | type_nb
   ;
 
 payload_fields : payload_field | payload_fields COMMA payload_field ;
 payload_field  : type | LIDENT COLON type ;
+
+type_nb      : type_app_nb | type_app_nb ARROW type | type_app_nb ARROW eff_row type ;
+type_app_nb  : type_atom_nb | type_app_head type_args ;
+type_atom_nb
+  : UIDENT
+  | UIDENT DOT UIDENT
+  | AT_TYCON
+  | TYVAR
+  | LPAREN type RPAREN
+  ;
 
 effect_body : op_decls opt_comma ;
 op_decls    : op_decl | op_decls COMMA op_decl ;
@@ -144,8 +164,11 @@ type_atom
   | AT_TYCON
   | TYVAR
   | LBRACE RBRACE
+  | LBRACE type_list opt_comma RBRACE  /* tuple type; n >= 1 ({} is unit) */
   | LPAREN type RPAREN
   ;
+
+type_list : type | type_list COMMA type ;
 
 eff_row
   : ANGLE_EMPTY
@@ -170,6 +193,7 @@ ctrl_expr
 
 let_binder
   : LIDENT opt_sig
+  | LBRACE pat_elem_list opt_comma RBRACE  /* tuple pattern; n >= 1 */
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload
   | UIDENT DOT UIDENT DOT UIDENT pat_payload
@@ -206,11 +230,14 @@ atom
   | UIDENT
   | LPAREN expr RPAREN
   | LBRACE RBRACE
+  | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
   | array_lit
   | DOT LBRACE field_inits RBRACE
   | DOT UIDENT variant_payload
   | atom DOT LIDENT
+  | atom DOT INT   /* positional tuple access `t.0`; a chained `t.0.1`  */
+  | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
   | atom DOT UIDENT variant_payload
   | atom DOT LBRACE field_inits RBRACE
   ;
@@ -268,6 +295,7 @@ pat_atom
   | REAL
   | STR
   | list_pattern
+  | LBRACE pat_elem_list opt_comma RBRACE  /* tuple pattern; n >= 1 */
   | DOT UIDENT pat_payload
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload

@@ -10,7 +10,6 @@
 
 $ with MAP
 $ with OPT
-$ with PAIR
 $ with LIST
 $ with STR
 $ with MATH
@@ -56,12 +55,12 @@ $ ck_merge : Int =
 	if (size u) ?= 4 then (if (get_or u "bob" 0) ?= 25 then 0 else 1) else 1
 
 $ ck_min : Int =
-	when min_entry ages is Option.Some.{p} then (if p.fst ?= "alice" then 0 else 1) else 1
+	when min_entry ages is Option.Some.{p} then (if p.0 ?= "alice" then 0 else 1) else 1
 $ ck_max : Int =
-	when max_entry ages is Option.Some.{p} then (if p.snd ?= 41 then 0 else 1) else 1
+	when max_entry ages is Option.Some.{p} then (if p.1 ?= 41 then 0 else 1) else 1
 
 $ ck_froml : Int =
-	let m = from_list cmp_int [pair 2 "two", pair 1 "one", pair 2 "II"] in
+	let m = from_list cmp_int [{2, "two"}, {1, "one"}, {2, "II"}] in
 	if (size m) ?= 2 then (if (get_or m 2 "") ?= "II" then 0 else 1) else 1
 
 # Balance stress: 200 ascending inserts (the classic worst case for an
@@ -73,7 +72,7 @@ $ ck_bigget  : Int =
 	if (all (\k = (get_or big k (0 - 1)) ?= k * k) (range 0 200))
 	then 0 else 1
 $ ck_bigmin  : Int =
-	when min_entry big is Option.Some.{p} then (if p.fst ?= 0 then 0 else 1) else 1
+	when min_entry big is Option.Some.{p} then (if p.0 ?= 0 then 0 else 1) else 1
 $ ck_bigrm   : Int =
 	let slim = foldl (\m k = remove m k) big (range 0 100) in
 	if (size slim) ?= 100 then

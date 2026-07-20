@@ -7,7 +7,6 @@
 
 $ with LIST
 $ with OPT
-$ with PAIR
 
 $ xs : List Int = range 1 6 # [1, 2, 3, 4, 5]
 
@@ -31,11 +30,11 @@ $ ck_all    : Int = if all (\x = x ?> 0) xs then 0 else 1
 $ ck_find   : Int = if (unwrap_or (find (\x = x ?> 3) xs) 0) ?= 4 then 0 else 1
 $ ck_has    : Int = if contains (\a b = a ?= b) 4 xs then 0 else 1
 $ ck_zip    : Int =
-	if (sum (map (\p = p.fst + p.snd) (zip xs (reverse xs)))) ?= 30 then 0 else 1
+	if (sum (map (\p = p.0 + p.1) (zip xs (reverse xs)))) ?= 30 then 0 else 1
 $ ck_zipw   : Int = if (sum (zip_with (\a b = a * b) xs xs)) ?= 55 then 0 else 1
 $ ck_unzip  : Int =
 	let z = unzip (zip xs (reverse xs)) in
-	if (sum z.fst) + (sum z.snd) ?= 30 then 0 else 1
+	if (sum z.0) + (sum z.1) ?= 30 then 0 else 1
 $ ck_prod   : Int = if (product xs) ?= 120 then 0 else 1
 $ ck_minmax : Int =
 	if (minimum xs 0) ?= 1 then (if (maximum xs 0) ?= 5 then 0 else 1) else 1
@@ -49,13 +48,13 @@ $ ck_takew  : Int = if (sum (take_while (\x = x ?< 3) xs)) ?= 3 then 0 else 1
 $ ck_dropw  : Int = if (sum (drop_while (\x = x ?< 3) xs)) ?= 12 then 0 else 1
 $ ck_span   : Int =
 	let s = span (\x = x ?< 4) xs in
-	if (sum s.fst) ?= 6 then (if (sum s.snd) ?= 9 then 0 else 1) else 1
+	if (sum s.0) ?= 6 then (if (sum s.1) ?= 9 then 0 else 1) else 1
 $ ck_split  : Int =
 	let s = split_at 2 xs in
-	if (length s.fst) ?= 2 then (if (sum s.snd) ?= 12 then 0 else 1) else 1
+	if (length s.0) ?= 2 then (if (sum s.1) ?= 12 then 0 else 1) else 1
 $ ck_part   : Int =
 	let s = partition (\x = x % 2 ?= 1) xs in
-	if (sum s.fst) ?= 9 then (if (sum s.snd) ?= 6 then 0 else 1) else 1
+	if (sum s.0) ?= 9 then (if (sum s.1) ?= 6 then 0 else 1) else 1
 $ ck_fmap   : Int =
 	let halve = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
 	if (sum (filter_map halve xs)) ?= 3 then 0 else 1

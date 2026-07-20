@@ -37,12 +37,13 @@ Convention: predicates (and predicate parameters) are `Bool`-typed, matching
 / MAP orderings) stay Int (negative / 0 / positive). Where an operation needs
 equality or ordering on a type parameter, it takes the function(s) explicitly
 (dictionary passing); there are no type classes. IO's `write_file` /
-`append_file` / `remove_file` return `Bool` success (true = ok).
+`append_file` / `remove_file` return `Bool` success (true = ok). Paired
+results use the language's tuples (`{\`A, \`B}`, accessed `.0`/`.1`) --
+there is no Pair type.
 
 | module | contents |
 |--------|----------|
 | `OPT`  | `Option` (`Some`/`None`), `is_some`, `is_none`, `unwrap_or`, `opt_map`, `opt_then` |
-| `PAIR` | `Pair` (`.fst`/`.snd`), `pair`, `swap` |
 | `LIST` | `length`, `is_empty`, `map`, `filter`, `foldl`, `foldr`, `reverse`, `append`, `concat`, `take`, `drop`, `nth`, `set_nth`, `any`, `all`, `find`, `contains`, `range`, `zip`, `zip_with`, `unzip`, `sum`, `product`, `minimum`, `maximum`, `last`, `init`, `replicate`, `intersperse`, `take_while`, `drop_while`, `span`, `split_at`, `partition`, `filter_map`, `flat_map`, `remove_first`, `find_index`, `lookup`, `sort_by`, `merge_by` |
 | `STR`  | `len`, `at`, `substr`, `eq`, `cmp_str`, `from_byte`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `concat`, `trim`(`_left`/`_right`), `repeat`, `pad_left`, `pad_right`, `replace`, `count`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`/`is_alnum`/`is_upper`/`is_lower`, `from_int`, `to_int` |
 | `MATH` | Int: `min`, `max`, `cmp_int`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow`; Real: `pi`, `euler`, `min`, `max`, `abs`, `clamp`, `sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod` (libm via `C`) |

@@ -49,6 +49,7 @@ $ with STR_MATCH = STR_MATCH
 $ with STR_OPS = STR_OPS
 $ with STR_PREFIX = STR_PREFIX
 $ with TAIL_CALLS = TAIL_CALLS
+$ with TUPLES = TUPLES
 $ with WHEN_GUARDS = WHEN_GUARDS
 
 # `\x1b[..m` are ANSI colour codes (decoded to the ESC byte at compile time, so
@@ -100,4 +101,5 @@ $ main : Int =
 	+ check "STR_OPS" STR_OPS.test
 	+ check "STR_PREFIX" STR_PREFIX.test
 	+ check "TAIL_CALLS" TAIL_CALLS.test
+	+ check "TUPLES" TUPLES.test
 	+ check "WHEN_GUARDS" WHEN_GUARDS.test

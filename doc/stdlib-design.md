@@ -88,7 +88,7 @@ layer, and "wrap C, don't re-derive" is the rule for all OS-facing modules.
 ## 3. Where Thrax stands (this branch)
 
 Done, tested in both engines (see doc/standard-library.md for the per-module
-function tables): OPT, PAIR, RESULT (+ `Fail` effect), LIST (Koka core set
+function tables): OPT, RESULT (+ `Fail` effect), LIST (Koka core set
 incl. stable `sort_by`), STR (search/split/pad/replace/case/parse), MATH
 (Int + Real, libm via `C`), MAP (immutable AVL tree map, ordered, three-way
 cmp dictionary), RANDOM (MINSTD, value-threaded), IO (console/file/env/now).
@@ -130,30 +130,41 @@ routes, in order of preference:
    values in C memory fights the refcounter's ownership; only viable for
    word/Str payloads, which is too narrow to be THE mutable map.
 
-## 5. Tuples `{Int, Real}`, and `Map {Int, Str}`
+## 5. Tuples `{Int, Real}`, and `Map {Int, Str}` (DONE)
 
-Anonymous products already exist in one position: a union constructor's
-payload is literally a brace tuple (`Cons: {\`T, List \`T}`), constructed
-and matched as `.Cons.{a, b}`. The proposal is to promote that form to
-first-class types:
+The language feature landed (2026-07-20, branch standard-library-part-2;
+examples/TUPLES.thx):
 
-- Type former: `{A, B, ...}` (n >= 2; `{}` stays unit, `{A}` is not a
-  tuple).
-- Literals `{1, 2.5}`, patterns `{a, b}` in `when`/`let`/params -- the
-  syntax already parses inside constructor sugar, so the grammar cost is
-  low; the work is TC (a structural product type) and both backends (layout
-  = existing struct layout, anonymous).
-- PAIR then becomes sugar (`Pair A B` an alias for `{A, B}`, `.fst`/`.snd`
-  positional accessors `.0`/`.1` or prelude functions), and LIST's
-  `zip`/`span`/`partition`/MAP's `to_list` all migrate to tuples.
+- Type former `{A, B, ...}` of ANY arity: `{}` is the empty tuple (it IS
+  the unit type, kept word-represented), `{A}` a real one-element tuple,
+  no upper bound (TC registers each arity's synthetic struct def on first
+  use, `ensure_tuple`). Literals `{1, 2.5}`, positional access `.0`/`.1`
+  (chains split: `t.0.1` arrives from the lexer as one Real token and EX
+  splits it, Rust-style), and `{p, q}` patterns in `when` arms, `let`
+  binders and lambda parameters (`{}` is not a pattern; unit matches `_`).
+- Implementation shape: a tuple is an ANONYMOUS STRUCT. EX emits the
+  reserved per-arity names `%tupleN` (OP::tuple_name) with positional
+  fields "0".."n-1"; TC registers the synthetic struct def lazily wherever
+  a tuple name enters the type world (signature, literal, pattern), so
+  literals, field sites, patterns, PatLower and unification all ride the
+  existing nominal-struct machinery -- ZERO engine/runtime changes, and MR
+  passes the `%`-names through untouched (they cannot clash: user type
+  names must start uppercase). Diagnostics render `{@int64, @str}`, never
+  `%tupleN`.
+- One grammar subtlety: after `Tag:` in a union declaration, `{` always
+  opens the PAYLOAD's field braces, never a bare tuple type (a single
+  tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); doc/thrax.y
+  resolves this structurally (payload_decl / type_nb).
+- `Map {Int, Str}` works today as a type argument; keying a map by a tuple
+  just needs a lexicographic comparison (dictionary passing, see
+  STDLIB tests / section 4 of doc/standard-library.md).
 
-`Map {Int, Str}` -- a tuple as a type ARGUMENT -- then falls out for free
-under the existing curried application (`Map {Int, Str} V` is a map keyed by
-pairs, needing only a `cmp` for tuples: lexicographic composition
-`cmp_pair cmp_int cmp_str`, which the stdlib can ship generically). Reading
-`Map {Int, Str}` as sugar for `Map Int Str` (tuple of type args) is NOT
-recommended: it would make `{...}` mean two different things at the type
-level, and curried `Map Int Str` is already fine.
+The stdlib half is DONE too: PAIR is REMOVED (not sugar -- deleted).
+LIST's `zip`/`unzip`/`span`/`split_at`/`partition`/`lookup`, MAP's
+`from_list`/`to_list`/`min_entry`/`max_entry` and RANDOM's `next` family
+all speak `{\`A, \`B}` with `.0`/`.1` access. Still open: a stdlib
+`cmp_pair` (lexicographic composition) convenience for tuple-keyed maps --
+trivially user-writable meanwhile (see the tuple-keyed Map test).
 
 ## 6. Target module tree and phases
 
@@ -174,11 +185,11 @@ join the resolution fixpoint conservatively; see doc/standard-library.md,
    values in both engines. Then `TABLE` is ~150 lines of stdlib: open
    addressing, resize at 0.75 load, Jai's surface (`set`, `find` ->
    Option, `remove`, iteration via `fold`).
-2. **Then tuples `{A, B}`** (section 5): bigger surface (parser, TC, CR,
-   both backends), compounding payoff -- PAIR retires, `zip`/`span`/
-   `partition`/`Map.to_list` get nicer, `Map {Int, Str}` (tuple keys)
-   falls out with a generic lexicographic `cmp_pair`. After Vec, because
-   Vec unblocks a module family while tuples improve ergonomics.
+2. **Tuples `{A, B}`** (section 5): DONE, out of order -- landed before
+   Vec because the surface turned out small (anonymous structs, zero
+   engine work). PAIR is gone; `zip`/`span`/`partition`/`Map.to_list`
+   speak tuples; `Map {Int, Str}` (tuple keys) works with a hand-written
+   lexicographic cmp (a generic `cmp_pair` combinator is still to ship).
 3. **Alternative pure-stdlib track** (when compiler work is unwelcome):
    the remaining OS layer below.
 
@@ -195,7 +206,7 @@ Phase 2 -- OS layer, pure C wrapping, no language work:
 
 Phase 3 -- language-gated (ordering above):
 - Generic `Vec \`T` -> `TABLE` (mutable hash map, section 4), `BIT_ARRAY`.
-- Tuples (section 5) -> PAIR retirement, tuple cmp/eq combinators.
+- Tuples (section 5): DONE (PAIR removed); tuple cmp/eq combinators still to ship.
 - C `int` return marshalling (kills `IO.is_byte`), argv, buffered readers.
 
 Phase 4 -- text:

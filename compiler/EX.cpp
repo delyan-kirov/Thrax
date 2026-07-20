@@ -281,11 +281,33 @@ Parser::parse_primary()
   case LX::TokenTag::At     : base = EX_TRY(parse_array()); break;
   case LX::TokenTag::LBrace:
   {
-    // The unit value `{}` (empty record).
-    m_lex.next(); // '{'
-    EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close the unit '{}'"));
-    Expr e{ ExprTag::Unit };
-    e.as = ExUnit{};
+    // The unit value `{}` (empty record), or a tuple literal `{a, b, ...}`
+    // with positional fields "0".."n-1" (see OP.hpp).
+    LX::Token lb = EX_TRY(m_lex.next()); // '{'
+    if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '}'
+      Expr e{ ExprTag::Unit };
+      e.as = ExUnit{};
+      base = alloc(e);
+      break;
+    }
+    UT::Vec<FieldInit> fields{ m_arena };
+    for (;;)
+    {
+      Expr  *val = EX_CTX(parse_expr(0), lb, "in this tuple literal");
+      UT::Vu nm  = UT::strdup(m_arena, std::to_string(fields.size()).c_str());
+      fields.push(FieldInit{ nm, val });
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next();                                                // ','
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break; // trailing
+    }
+    EX_TRY(
+      expect(LX::TokenTag::RBrace, "expected '}' to close the tuple literal"));
+    Expr e{ ExprTag::StructLit };
+    e.as
+      = ExStructLit{ UT::strdup(m_arena, OP::tuple_name(fields.size()).c_str()),
+                     fields };
     base = alloc(e);
     break;
   }
@@ -358,6 +380,27 @@ Parser::parse_primary()
                     dot,
                     "in this '%s' struct literal",
                     std::string(tn).c_str());
+    }
+    else if (LX::TokenTag::Int == ahead.tag || LX::TokenTag::Real == ahead.tag)
+    {
+      m_lex.next();
+      UT::Vu lex   = ahead.str;
+      size_t start = 0;
+      for (size_t i = 0; i <= lex.size(); ++i)
+      {
+        if (i < lex.size() && lex.data()[i] != '.') continue;
+        UT::Vu part = lex.substr(start, i - start);
+        bool   ok   = part.size() > 0;
+        for (size_t k = 0; k < part.size(); ++k)
+          ok = ok && part.data()[k] >= '0' && part.data()[k] <= '9';
+        if (!ok)
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 ahead,
+                 "expected a tuple index after '.', found '%s'",
+                 std::string(lex).c_str());
+        base  = mk_field(base, part);
+        start = i + 1;
+      }
     }
     else
     {
@@ -526,10 +569,11 @@ Parser::parse_let()
   LX::Token kw = EX_TRY(m_lex.next()); // 'let'
 
   // A `let` binder is either a plain variable (`let x = ...`) or a structural
-  // pattern (`let Person.{x,y} = ...`). An uppercase-initial word starts a
-  // pattern; the LL pass lowers it into nested plain lets.
+  // pattern (`let Person.{x,y} = ...`, `let {a, b} = ...`). An
+  // uppercase-initial word or a '{' starts a pattern; the LL pass lowers it
+  // into nested plain lets.
   LX::Token la     = EX_TRY(m_lex.peek());
-  bool      is_pat = false;
+  bool      is_pat = LX::TokenTag::LBrace == la.tag;
   if (LX::TokenTag::Word == la.tag)
   {
     char c = la.str.size() ? la.str.data()[0] : '\0';
@@ -830,6 +874,27 @@ Parser::parse_pattern_atom()
     char c = nm.size() ? nm.data()[0] : '\0';
     if (c >= 'A' && c <= 'Z') return parse_struct_pattern(nm, t);
     return { true, alloc_pat(Pattern{ PatTag::Var, PatVar{ nm } }), {} };
+  }
+  case LX::TokenTag::LBrace:
+  {
+    LX::Token         lb = EX_TRY(m_lex.next()); // '{'
+    UT::Vec<FieldPat> fields{ m_arena };
+    for (;;)
+    {
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+      fields.push(FieldPat{ UT::Vu{}, EX_TRY(parse_pattern()) });
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next(); // ','
+    }
+    EX_TRY(
+      expect(LX::TokenTag::RBrace, "expected '}' to close the tuple pattern"));
+    if (fields.size() == 0)
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             lb,
+             "'{}' is not a pattern; match the unit value with '_'");
+    UT::Vu  nm = UT::strdup(m_arena, OP::tuple_name(fields.size()).c_str());
+    Pattern pat{ PatTag::Struct, PatStruct{ nm, fields, lb.str, lb.line } };
+    return { true, alloc_pat(pat), {} };
   }
   case LX::TokenTag::Dot:
   {
@@ -1854,13 +1919,27 @@ Parser::parse_type_atom()
   }
   case LX::TokenTag::LBrace:
   {
-    // The unit type `{}` (empty record).
-    m_lex.next(); // '{'
+    // The unit type `{}` (empty record), or a tuple type `{A, B, ...}`.
+    LX::Token lb = EX_TRY(m_lex.next()); // '{'
+    if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // '}'
+      return { true,
+               mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }),
+               {} };
+    }
+    UT::Vec<Ty *> elems{ m_arena };
+    for (;;)
+    {
+      elems.push(EX_CTX(parse_type(), lb, "in this tuple type"));
+      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
+      m_lex.next();                                                // ','
+      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break; // trailing
+    }
     EX_TRY(
-      expect(LX::TokenTag::RBrace, "expected '}' to close the unit type '{}'"));
-    return { true,
-             mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }),
-             {} };
+      expect(LX::TokenTag::RBrace, "expected '}' to close the tuple type"));
+    UT::Vu nm = UT::strdup(m_arena, OP::tuple_name(elems.size()).c_str());
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ nm, elems } }), {} };
   }
   case LX::TokenTag::LParen:
   {

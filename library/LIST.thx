@@ -7,7 +7,6 @@
 #       as there are no type classes.
 
 $ with OPT
-$ with PAIR
 
 $ length : List `T -> Int = \xs =
 	when xs is _ :: t then 1 + length t else 0
@@ -78,10 +77,10 @@ $ contains : (`T -> `T -> Bool) -> `T -> List `T -> Bool = \eqf x xs =
 $ range : Int -> Int -> List Int = \lo hi =
 	if lo >= hi then [] else lo :: range (lo + 1) hi
 
-$ zip : List `A -> List `B -> List (Pair `A `B) = \xs ys =
+$ zip : List `A -> List `B -> List {`A, `B} = \xs ys =
 	when xs
 		is xh :: xt then
-			(when ys is yh :: yt then pair xh yh :: zip xt yt else [])
+			(when ys is yh :: yt then {xh, yh} :: zip xt yt else [])
 	else []
 
 $ zip_with : (`A -> `B -> `C) -> List `A -> List `B -> List `C = \f xs ys =
@@ -90,9 +89,9 @@ $ zip_with : (`A -> `B -> `C) -> List `A -> List `B -> List `C = \f xs ys =
 			(when ys is yh :: yt then f xh yh :: zip_with f xt yt else [])
 	else []
 
-$ unzip : List (Pair `A `B) -> Pair (List `A) (List `B) = \ps =
-	foldr (\p acc = pair (p.fst :: acc.fst) (p.snd :: acc.snd))
-	      (pair [] []) ps
+$ unzip : List {`A, `B} -> {List `A, List `B} = \ps =
+	foldr (\p acc = {p.0 :: acc.0, p.1 :: acc.1})
+	      {[], []} ps
 
 $ sum : List Int -> Int = \xs = foldl (\a x = a + x) 0 xs
 
@@ -138,15 +137,15 @@ $ drop_while : (`T -> Bool) -> List `T -> List `T = \p xs =
 	else []
 
 # The longest prefix satisfying `p`, and the rest.
-$ span : (`T -> Bool) -> List `T -> Pair (List `T) (List `T) = \p xs =
-	pair (take_while p xs) (drop_while p xs)
+$ span : (`T -> Bool) -> List `T -> {List `T, List `T} = \p xs =
+	{take_while p xs, drop_while p xs}
 
-$ split_at : Int -> List `T -> Pair (List `T) (List `T) = \n xs =
-	pair (take n xs) (drop n xs)
+$ split_at : Int -> List `T -> {List `T, List `T} = \n xs =
+	{take n xs, drop n xs}
 
 # Elements satisfying `p`, and the elements that don't.
-$ partition : (`T -> Bool) -> List `T -> Pair (List `T) (List `T) = \p xs =
-	pair (filter p xs) (filter (\x = !(p x)) xs)
+$ partition : (`T -> Bool) -> List `T -> {List `T, List `T} = \p xs =
+	{filter p xs, filter (\x = !(p x)) xs}
 
 # Map a partial function, keeping the hits.
 $ filter_map : (`A -> Option `B) -> List `A -> List `B = \f xs =
@@ -177,9 +176,9 @@ $ find_index_from : (`T -> Bool) -> List `T -> Int -> Option Int = \p xs i =
 	else Option.None
 
 # Association-list lookup under the given key equality.
-$ lookup : (`K -> `K -> Bool) -> `K -> List (Pair `K `V) -> Option `V = \eqf k ps =
+$ lookup : (`K -> `K -> Bool) -> `K -> List {`K, `V} -> Option `V = \eqf k ps =
 	when ps
-		is h :: t then (if eqf k h.fst then Option.Some.{ h.snd } else lookup eqf k t)
+		is h :: t then (if eqf k h.0 then Option.Some.{ h.1 } else lookup eqf k t)
 	else Option.None
 
 # ---- sorting (stable merge sort) ----
@@ -192,7 +191,7 @@ $ sort_by : (`T -> `T -> Int) -> List `T -> List `T = \c xs =
 		is [x] then [x]
 	else
 		let halves = split_at ((length xs) / 2) xs in
-		merge_by c (sort_by c halves.fst) (sort_by c halves.snd)
+		merge_by c (sort_by c halves.0) (sort_by c halves.1)
 
 $ merge_by : (`T -> `T -> Int) -> List `T -> List `T -> List `T = \c xs ys =
 	when xs
