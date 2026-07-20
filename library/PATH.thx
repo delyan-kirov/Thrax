@@ -33,9 +33,9 @@ $ strip_trailing : Str -> Str = \p =
 
 # ---- queries ----
 
-$ is_abs : Str -> Int = \p =
-	if (array_len p) ?= 0 then 0
-	else if (array_get p 0) ?= 47 then 1 else 0
+$ is_abs : Str -> Bool = \p =
+	if (array_len p) ?= 0 then false
+	else (array_get p 0) ?= 47
 
 # The component after the last '/': "a/b/c" -> "c", "a/b/" -> "b", "/" -> "/".
 $ basename : Str -> Str = \p =
@@ -69,7 +69,7 @@ $ strip_ext : Str -> Str = \p =
 
 # The non-empty components: "/a//b/" -> ["a", "b"].
 $ parts : Str -> List Str = \p =
-	filter (\c = if (array_len c) ?= 0 then 0 else 1) (split p "/")
+	filter (\c = (array_len c) ?> 0) (split p "/")
 
 # ---- building ----
 

@@ -2,8 +2,8 @@
 
 # \file MATH.thx
 # \info Integer helpers, Real helpers, and the libm functions (wrapped from
-#       the auto-injected `C` namespace). Predicates return Int (1 true, 0
-#       false). `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
+#       the auto-injected `C` namespace). Predicates return Bool.
+#       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
 #       Real; overload resolution picks by operand type.
 
 $ min : Int -> Int -> Int = \a b = if a <= b then a else b
@@ -22,8 +22,8 @@ $ sign : Int -> Int = \n =
 # `x` forced into [lo, hi].
 $ clamp : Int -> Int -> Int -> Int = \lo hi x = max lo (min hi x)
 
-$ even : Int -> Int = \n = if (abs n) % 2 ?= 0 then 1 else 0
-$ odd  : Int -> Int = \n = if (abs n) % 2 ?= 0 then 0 else 1
+$ even : Int -> Bool = \n = (abs n) % 2 ?= 0
+$ odd  : Int -> Bool = \n = !(even n)
 
 $ gcd : Int -> Int -> Int = \a b =
 	if b ?= 0 then abs a else gcd b (a % b)

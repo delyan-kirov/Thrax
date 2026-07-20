@@ -32,7 +32,7 @@ $ ck_inter : Int =
 	if (foldl (\a x = a * 10 + x) 0 (to_list (inter s t))) ?= 23 then 0 else 1
 $ ck_diff  : Int =
 	if (foldl (\a x = a * 10 + x) 0 (to_list (diff s t))) ?= 1 then 0 else 1
-$ ck_filter: Int = if (size (SET.filter (\x = x % 2) s)) ?= 2 then 0 else 1
+$ ck_filter: Int = if (size (SET.filter (\x = x % 2 ?= 1) s)) ?= 2 then 0 else 1
 
 # String elements via the baked-in ordering.
 $ names : Set Str = add (add (add new_str "bob") "alice") "bob"

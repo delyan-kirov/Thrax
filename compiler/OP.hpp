@@ -61,6 +61,9 @@ inline constexpr const char *TY_ARRAY
   = "@array"; // a sized, contiguous block of bytes
 inline constexpr const char *TY_UNIT
   = "{}"; // the empty record / unit type; runtime-represented as 0
+inline constexpr const char *TY_BOOL
+  = "Bool"; // core-defined union (core/PRELUDE.thx), erased to Int 1/0; NOT a
+            // base type -- it is nominal, declared in the language itself
 
 inline constexpr const char *base_types[] = {
   TY_REAL,  TY_STR,    TY_PTR,    TY_INT8,  TY_INT16,

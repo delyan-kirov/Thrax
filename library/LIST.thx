@@ -2,9 +2,9 @@
 
 # \file LIST.thx
 # \info Operations on the prelude's `List` type. Predicates passed in and
-#       returned use Int truth (1 true, 0 false). Where an operation needs
-#       equality on the element type, it takes the equality function
-#       explicitly (dictionary passing) -- there are no type classes.
+#       returned use Bool. Where an operation needs equality on the element
+#       type, it takes the equality function explicitly (dictionary passing)
+#       as there are no type classes.
 
 $ with OPT
 $ with PAIR
@@ -12,13 +12,13 @@ $ with PAIR
 $ length : List `T -> Int = \xs =
 	when xs is _ :: t then 1 + length t else 0
 
-$ is_empty : List `T -> Int = \xs =
-	when xs is [] then 1 else 0
+$ is_empty : List `T -> Bool = \xs =
+	when xs is [] then true else false
 
 $ map : (`A -> `B) -> List `A -> List `B = \f xs =
 	when xs is h :: t then f h :: map f t else []
 
-$ filter : (`T -> Int) -> List `T -> List `T = \p xs =
+$ filter : (`T -> Bool) -> List `T -> List `T = \p xs =
 	when xs
 		is h :: t then (if p h then h :: filter p t else filter p t)
 	else []
@@ -58,20 +58,20 @@ $ set_nth : List `T -> Int -> `T -> List `T = \xs i v =
 		is h :: t then (if i ?= 0 then v :: t else h :: set_nth t (i - 1) v)
 	else []
 
-$ any : (`T -> Int) -> List `T -> Int = \p xs =
-	when xs is h :: t then (if p h then 1 else any p t) else 0
+$ any : (`T -> Bool) -> List `T -> Bool = \p xs =
+	when xs is h :: t then (if p h then true else any p t) else false
 
-$ all : (`T -> Int) -> List `T -> Int = \p xs =
-	when xs is h :: t then (if p h then all p t else 0) else 1
+$ all : (`T -> Bool) -> List `T -> Bool = \p xs =
+	when xs is h :: t then (if p h then all p t else false) else true
 
 # The first element satisfying `p`, if one exists.
-$ find : (`T -> Int) -> List `T -> Option `T = \p xs =
+$ find : (`T -> Bool) -> List `T -> Option `T = \p xs =
 	when xs
 		is h :: t then (if p h then Option.Some.{ h } else find p t)
 	else Option.None
 
 # Membership under the given equality.
-$ contains : (`T -> `T -> Int) -> `T -> List `T -> Int = \eqf x xs =
+$ contains : (`T -> `T -> Bool) -> `T -> List `T -> Bool = \eqf x xs =
 	any (\y = eqf x y) xs
 
 # [lo, hi): counts up from `lo`, excludes `hi`.
@@ -127,26 +127,26 @@ $ intersperse : `T -> List `T -> List `T = \sep xs =
 		is h :: t then h :: (sep :: intersperse sep t)
 	else []
 
-$ take_while : (`T -> Int) -> List `T -> List `T = \p xs =
+$ take_while : (`T -> Bool) -> List `T -> List `T = \p xs =
 	when xs
 		is h :: t then (if p h then h :: take_while p t else [])
 	else []
 
-$ drop_while : (`T -> Int) -> List `T -> List `T = \p xs =
+$ drop_while : (`T -> Bool) -> List `T -> List `T = \p xs =
 	when xs
 		is h :: t then (if p h then drop_while p t else xs)
 	else []
 
 # The longest prefix satisfying `p`, and the rest.
-$ span : (`T -> Int) -> List `T -> Pair (List `T) (List `T) = \p xs =
+$ span : (`T -> Bool) -> List `T -> Pair (List `T) (List `T) = \p xs =
 	pair (take_while p xs) (drop_while p xs)
 
 $ split_at : Int -> List `T -> Pair (List `T) (List `T) = \n xs =
 	pair (take n xs) (drop n xs)
 
 # Elements satisfying `p`, and the elements that don't.
-$ partition : (`T -> Int) -> List `T -> Pair (List `T) (List `T) = \p xs =
-	pair (filter p xs) (filter (\x = if p x then 0 else 1) xs)
+$ partition : (`T -> Bool) -> List `T -> Pair (List `T) (List `T) = \p xs =
+	pair (filter p xs) (filter (\x = !(p x)) xs)
 
 # Map a partial function, keeping the hits.
 $ filter_map : (`A -> Option `B) -> List `A -> List `B = \f xs =
@@ -161,23 +161,23 @@ $ flat_map : (`A -> List `B) -> List `A -> List `B = \f xs =
 	concat (map f xs)
 
 # Drop the first element satisfying `p` (only the first).
-$ remove_first : (`T -> Int) -> List `T -> List `T = \p xs =
+$ remove_first : (`T -> Bool) -> List `T -> List `T = \p xs =
 	when xs
 		is h :: t then (if p h then t else h :: remove_first p t)
 	else []
 
 # The (0-based) position of the first element satisfying `p`.
-$ find_index : (`T -> Int) -> List `T -> Option Int = \p xs =
+$ find_index : (`T -> Bool) -> List `T -> Option Int = \p xs =
 	find_index_from p xs 0
 
-$ find_index_from : (`T -> Int) -> List `T -> Int -> Option Int = \p xs i =
+$ find_index_from : (`T -> Bool) -> List `T -> Int -> Option Int = \p xs i =
 	when xs
 		is h :: t then
 			(if p h then Option.Some.{ i } else find_index_from p t (i + 1))
 	else Option.None
 
 # Association-list lookup under the given key equality.
-$ lookup : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> Option `V = \eqf k ps =
+$ lookup : (`K -> `K -> Bool) -> `K -> List (Pair `K `V) -> Option `V = \eqf k ps =
 	when ps
 		is h :: t then (if eqf k h.fst then Option.Some.{ h.snd } else lookup eqf k t)
 	else Option.None

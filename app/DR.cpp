@@ -130,14 +130,13 @@ check_ctime_asserts(
   return false;
 }
 
-static const char PRELUDE_FILE[] = "PRELUDE.thx";
+static const char PRELUDE_FILE[] = "PRELUDE_implTarget.thx";
 
 static UT::Vu
 prelude_source(
   AR::Arena &arena, const TG::Target &tg)
 {
-  std::string s     = "@mod PRELUDE\n"
-                      "$ List : @union = Cons: {`T, List `T}, Nil: {},\n";
+  std::string s     = "@mod PRELUDE\n";
   auto        alias = [&](const char *name, const char *target) {
     s += "$ ";
     s += name;
@@ -149,9 +148,6 @@ prelude_source(
   alias("Int", tg.int_ty());
   alias("Nat", tg.nat_ty());
   for (const OP::BaseAlias &a : OP::base_aliases) alias(a.name, a.target);
-
-  s += "$ assert : Int -> {} = \\n = if n then {} else (C.puts \"assertion "
-       "failed\"; C.exit 1)\n";
   return UT::strdup(arena, s.c_str());
 }
 

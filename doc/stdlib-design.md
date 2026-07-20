@@ -208,33 +208,35 @@ Phase 4 -- text:
 Non-goals for now: Koka's time-scale/astronomy tower, DOM bindings, Jai's
 windowing/GL layer, threads (no runtime story yet), decimal/ddouble.
 
-## 7. core.thx: the language-defined layer (planned)
+## 7. core.thx: the language-defined layer (DONE)
 
-Historical note: `if` takes Int truth because the language predates its type
-system; predicates return 1/0 to match. The plan is a visible CORE layer
-that upgrades this without hiding anything:
+Historical note: `if` took Int truth because the language predates its type
+system; predicates returned 1/0 to match. Both halves of the plan landed
+(2026-07-20, branch standard-library-part-2):
 
-- **One real file** (a `core/` module, baked and auto-injected like the
-  stdlib but with BARE names -- today's prelude exemption). It holds what
-  the language DEFINES in itself: `List`, the numeric aliases, `assert`,
-  and eventually `Bool`, `String` as an alias of `@str`, ... Today this
-  text lives as a C++ string in app/DR.cpp (`prelude_source`), invisible to
-  users. As a file it is documentation: the `@` sigil marks what is truly
-  built-in; everything else is readable Thrax defined somewhere you can
-  open. Diagnostics already point into real files for the stdlib; core gets
-  the same.
-- **The target-dependent lines stay honest**: `Int`/`Nat` alias the
-  TARGET's word type, which is why the prelude is generated. Either DR
-  keeps generating just those two lines, or (cleaner) a `@word`/`@uword`
-  canonical spelling folds in TG and core.thx becomes fully static text.
-- **Bool rides this**: declare `Bool : @union = True: {}, False: {},` in
-  core and BLESS it (the compiler already blesses one core type: `List`,
-  which `[..]`/`::` are hardwired to). Blessing means comparisons return
-  `Bool` and `if`/guards consume it. Representation can stay a machine
-  word (a nullary-only union is just its tag), so the engines barely
-  change; the churn is TC's overload_db result types plus flipping stdlib
-  predicates, which the checker will point at exhaustively. Worth doing
-  BEFORE Vec/Table so new modules stop baking in Int truth.
+- **One real file**: `core/PRELUDE.thx`, baked into the stdlib amalgam and
+  auto-injected with BARE names (the prelude exemption). It holds what the
+  language DEFINES in itself: `Bool` (with `true`/`false`), `List`, and
+  `assert`. The file is documentation: the `@` sigil marks what is truly
+  built-in; everything else is readable Thrax you can open. Diagnostics
+  point into it like any stdlib file.
+- **The target-dependent lines stay generated**: DR still emits the other
+  half of the PRELUDE module (`PRELUDE_implTarget.thx`) -- `Int`/`Nat`
+  alias the TARGET's word type, and the fixed aliases mirror
+  OP::base_aliases. A future `@word`/`@uword` canonical spelling would let
+  the whole prelude go static.
+- **Bool is blessed and erased**: `Bool : @union = True: {}, False: {},`
+  lives in core; the compiler makes comparisons/`?=`/`!` return it and
+  `if`/guards/`@assert` consume it (OP::TY_BOOL; overload RESULT types
+  flipped in TCxDATA while the mono impl keys stay operand-derived, so the
+  engines' 1/0 impls serve unchanged). It is ERASED after checking:
+  CR rewrites `Bool.True`/`Bool.False` literals to Int 1/0, and PatLower
+  rewrites Bool variant patterns to integer-literal patterns -- so at
+  runtime and across the C FFI a Bool is a plain word, but user code can
+  still construct and match it as an ordinary union (examples/AGTxSUM.thx
+  does both). Stdlib predicates and predicate parameters are all
+  `Bool`-typed now; IO's write/append/remove return `Bool` success
+  (true = ok) instead of C-style 0/1 status codes.
 
 ## 8. Extensible `[..]` (planned)
 

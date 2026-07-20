@@ -15,7 +15,7 @@ $ ck_range  : Int = if (length xs) ?= 5 then 0 else 1
 $ ck_sum    : Int = if (sum xs) ?= 15 then 0 else 1
 $ ck_empty  : Int = if is_empty [] then 0 else 1
 $ ck_map    : Int = if (sum (map (\x = x * 2) xs)) ?= 30 then 0 else 1
-$ ck_filter : Int = if (length (filter (\x = x % 2) xs)) ?= 3 then 0 else 1
+$ ck_filter : Int = if (length (filter (\x = x % 2 ?= 1) xs)) ?= 3 then 0 else 1
 $ ck_foldl  : Int = if (foldl (\a x = a * 10 + x) 0 xs) ?= 12345 then 0 else 1
 $ ck_foldr  : Int = if (foldr (\x a = x - a) 0 xs) ?= 3 then 0 else 1
 $ ck_rev    : Int = if (foldl (\a x = a * 10 + x) 0 (reverse xs)) ?= 54321 then 0 else 1
@@ -29,7 +29,7 @@ $ ck_set    : Int = if (sum (set_nth xs 0 100)) ?= 114 then 0 else 1
 $ ck_any    : Int = if any (\x = x ?> 4) xs then 0 else 1
 $ ck_all    : Int = if all (\x = x ?> 0) xs then 0 else 1
 $ ck_find   : Int = if (unwrap_or (find (\x = x ?> 3) xs) 0) ?= 4 then 0 else 1
-$ ck_has    : Int = if contains (\a b = if a ?= b then 1 else 0) 4 xs then 0 else 1
+$ ck_has    : Int = if contains (\a b = a ?= b) 4 xs then 0 else 1
 $ ck_zip    : Int =
 	if (sum (map (\p = p.fst + p.snd) (zip xs (reverse xs)))) ?= 30 then 0 else 1
 $ ck_zipw   : Int = if (sum (zip_with (\a b = a * b) xs xs)) ?= 55 then 0 else 1
@@ -54,7 +54,7 @@ $ ck_split  : Int =
 	let s = split_at 2 xs in
 	if (length s.fst) ?= 2 then (if (sum s.snd) ?= 12 then 0 else 1) else 1
 $ ck_part   : Int =
-	let s = partition (\x = x % 2) xs in
+	let s = partition (\x = x % 2 ?= 1) xs in
 	if (sum s.fst) ?= 9 then (if (sum s.snd) ?= 6 then 0 else 1) else 1
 $ ck_fmap   : Int =
 	let halve = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
@@ -63,7 +63,7 @@ $ ck_flat   : Int = if (sum (flat_map (\x = [x, x]) xs)) ?= 30 then 0 else 1
 $ ck_rmfst  : Int = if (sum (remove_first (\x = x ?= 3) xs)) ?= 12 then 0 else 1
 $ ck_index  : Int = if (unwrap_or (find_index (\x = x ?= 4) xs) 9) ?= 3 then 0 else 1
 $ ck_lookup : Int =
-	let eq = \a b = if a ?= b then 1 else 0 in
+	let eq = \a b = a ?= b in
 	if (unwrap_or (lookup eq 2 (zip xs (reverse xs))) 0) ?= 4 then 0 else 1
 
 # Sorting: stable merge sort under a three-way comparison.

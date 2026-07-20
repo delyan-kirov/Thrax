@@ -9,19 +9,18 @@ $ Token : @union =
     Op: {Token, Token}, # Sum types should support lazy recursion
     Txt: Str, # trailing commas are allowe
 
-$ Bool : @union =
-    True: {}, # Empty payload allowed (empty sum, unit)
-    False: {}
-
 # Basic way to create a token
 $ num_tok: Token = Token.Num.{1}
 
-# Switching on tokens
 $ is_num: Token -> Bool = \tok =
     when tok
         is Token.Num.{_} then Bool.True
     else
         Bool.False
+
+# And matching on a Bool is ordinary variant matching (empty payloads).
+$ chk0 : Int = when is_num num_tok is Bool.True then 0 else 1
+$ chk0b : Int = when is_num (Token.Txt.{"x"}) is Bool.False then 0 else 1
 
 # Sum types: constructor matching, payload binding, and lazy (non-strict)
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a
@@ -80,4 +79,4 @@ $ chk4b : Int =
 # on an ignored `_` payload going unevaluated was a lazy-data behaviour.)
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b
+$ test : Int = chk0 + chk0b + chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b

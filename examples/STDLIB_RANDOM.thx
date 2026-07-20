@@ -26,7 +26,7 @@ $ draw_n : Rng -> Int -> List Int = \g n =
 	if n <= 0 then []
 	else let d = next_below g 10 in d.fst :: draw_n d.snd (n - 1)
 $ ck_below : Int =
-	if all (\x = if x >= 0 then (if x ?< 10 then 1 else 0) else 0) draws
+	if all (\x = if x >= 0 then x ?< 10 else false) draws
 	then 0 else 1
 $ ck_spread : Int = if (maximum draws 0) ?> (minimum draws 9) then 0 else 1
 

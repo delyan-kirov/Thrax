@@ -56,7 +56,7 @@ $ get : Map `K `V -> `K -> Option `V = \m k = tget m.cmpf k m.root
 
 $ get_or : Map `K `V -> `K -> `V -> `V = \m k d = unwrap_or (get m k) d
 
-$ has : Map `K `V -> `K -> Int = \m k = is_some (get m k)
+$ has : Map `K `V -> `K -> Bool = \m k = is_some (get m k)
 
 $ remove : Map `K `V -> `K -> Map `K `V = \m k =
 	if has m k then
@@ -72,7 +72,7 @@ $ update : Map `K `V -> `K -> (`V -> `V) -> Map `K `V = \m k f =
 
 $ size : Map `K `V -> Int = \m = m.count
 
-$ is_empty : Map `K `V -> Int = \m = if m.count ?= 0 then 1 else 0
+$ is_empty : Map `K `V -> Bool = \m = m.count ?= 0
 
 # ---- whole-map operations ----
 
@@ -91,7 +91,7 @@ $ map_values : (`V -> `W) -> Map `K `V -> Map `K `W = \f m =
 	Map.{ .cmpf = m.cmpf, .count = m.count, .root = tmapv f m.root }
 
 # Keep the entries `p k v` approves of.
-$ filter : (`K -> `V -> Int) -> Map `K `V -> Map `K `V = \p m =
+$ filter : (`K -> `V -> Bool) -> Map `K `V -> Map `K `V = \p m =
 	fold (\acc k v = if p k v then insert acc k v else acc) (new m.cmpf) m
 
 # Left-biased union: entries of `a` win, keys only in `b` are added.

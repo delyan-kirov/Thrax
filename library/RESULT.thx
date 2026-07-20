@@ -21,11 +21,11 @@ $ Result : @union =
 
 # ---- the value shape ----
 
-$ is_ok : Result `T `E -> Int = \r =
-	when r is Result.Ok.{_} then 1 else 0
+$ is_ok : Result `T `E -> Bool = \r =
+	when r is Result.Ok.{_} then true else false
 
-$ is_err : Result `T `E -> Int = \r =
-	when r is Result.Ok.{_} then 0 else 1
+$ is_err : Result `T `E -> Bool = \r =
+	when r is Result.Ok.{_} then false else true
 
 # The answer, or `d` when the computation failed.
 $ unwrap_or : Result `T `E -> `T -> `T = \r d =

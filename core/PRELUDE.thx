@@ -1,0 +1,36 @@
+@mod PRELUDE
+
+# \file core/PRELUDE.thx
+# \info The language's core layer, written in Thrax itself and auto-injected
+#       into every compile (bare names, no import needed). This file is the
+#       boundary between "truly built-in" and "defined in the language": a
+#       name starting with `@` (`@int64`, `@str`, `@array`, `@union`,
+#       `@extern`, ...) is compiler primitive; everything else the language
+#       ships is ordinary Thrax you can read -- it lives here or in the
+#       standard library (library/*.thx, imported with `$ with MOD`).
+#
+#       The numeric aliases are the generated other half of this module
+#       (PRELUDE_implTarget.thx, emitted by the driver): `Int`/`Nat` alias
+#       the TARGET's word type, and `Str`/`Real`/`Int8`../`Real64` must stay
+#       in lockstep with the compiler's OP::base_aliases table, which FFI
+#       canonicalization reads.
+
+# The blessed truth type: `if`, `when` guards, comparisons (`?=`, `?<`, ...)
+# and `!` all speak Bool. The compiler erases it -- True runs as 1, False as
+# 0 -- so crossing into C (which has no Bool) costs nothing.
+$ Bool : @union =
+	True: {},
+	False: {},
+
+$ true : Bool = Bool.True
+$ false : Bool = Bool.False
+
+# The blessed list type: `[a, b]`, `[]`, `x :: xs` and `[h, ..rest]`
+# patterns are sugar for its constructors.
+$ List : @union =
+	Cons: {`T, List `T},
+	Nil: {},
+
+# Runtime assertion: no-op on truth, message + exit 1 on falsehood.
+$ assert : Bool -> {} = \b =
+	if b then {} else (C.puts "assertion failed"; C.exit 1)

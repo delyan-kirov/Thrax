@@ -47,7 +47,7 @@ $ ck_fold : Int =
 	if (fold (\acc k v = acc * 100 + v) 0 ages) ?= 302541 then 0 else 1
 
 $ ck_mapv : Int = if (sum (values (map_values (\v = v * 2) ages))) ?= 192 then 0 else 1
-$ ck_filt : Int = if (size (filter (\k v = if v ?< 40 then 1 else 0) ages)) ?= 2 then 0 else 1
+$ ck_filt : Int = if (size (filter (\k v = v ?< 40) ages)) ?= 2 then 0 else 1
 
 # merge is left-biased.
 $ others : Map Str Int = insert (insert new_str "bob" 99) "dave" 50
@@ -70,7 +70,7 @@ $ big : Map Int Int =
 	foldl (\m k = insert m k (k * k)) new_int (range 0 200)
 $ ck_bigsize : Int = if (size big) ?= 200 then 0 else 1
 $ ck_bigget  : Int =
-	if (all (\k = if (get_or big k (0 - 1)) ?= k * k then 1 else 0) (range 0 200))
+	if (all (\k = (get_or big k (0 - 1)) ?= k * k) (range 0 200))
 	then 0 else 1
 $ ck_bigmin  : Int =
 	when min_entry big is Option.Some.{p} then (if p.fst ?= 0 then 0 else 1) else 1

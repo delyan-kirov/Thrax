@@ -42,8 +42,8 @@ $ read_line_acc : Str -> Str = \acc =
 
 # A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
 # therefore "anything outside 0..255" rather than a negative Int.
-$ is_byte : Int -> Int = \c =
-	if c ?< 0 then 0 else if c ?> 255 then 0 else 1
+$ is_byte : Int -> Bool = \c =
+	if c ?< 0 then false else c <= 255
 
 # ---- files ----
 
@@ -67,23 +67,23 @@ $ read_bytes : Int -> Int -> Str -> Str = \f n acc =
 		if is_byte c then read_bytes f (n - 1) (array_push acc c)
 		else acc # stream ended early (unreadable path, truncated file)
 
-# Write (truncating) / append `content` to the file; 0 on success, 1 on
-# failure to open.
-$ write_file : Str -> Str -> Int = \path content =
+# Write (truncating) / append `content` to the file; true on success, false
+# on failure to open.
+$ write_file : Str -> Str -> Bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : Str -> Str -> Int = \path content =
+$ append_file : Str -> Str -> Bool = \path content =
 	spill_file path content "ab"
 
-$ spill_file : Str -> Str -> Str -> Int = \path content mode =
+$ spill_file : Str -> Str -> Str -> Bool = \path content mode =
 	let f = C.fopen path mode in
-	if f ?= 0 then 1
+	if f ?= 0 then false
 	else
 		C.fputs content f;
-		(if (C.fclose f) ?= 0 then 0 else 1)
+		(C.fclose f) ?= 0
 
-$ remove_file : Str -> Int = \path =
-	if (C.remove path) ?= 0 then 0 else 1
+$ remove_file : Str -> Bool = \path =
+	(C.remove path) ?= 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).

@@ -3,16 +3,17 @@
 The standard library is a set of ordinary Thrax modules under `library/`,
 nothing fancy: thin, readable code over the auto-injected `C` libc namespace
 and the byte-vector primitives. It is deliberately separate from the prelude
-(see doc/architecture.md): the prelude is the language's blessed core (`List`,
-the numeric aliases, `assert`); the standard library is a toolbox a program
-opts into with `$ with MOD`.
+(see doc/architecture.md): the prelude is the language's blessed core --
+`Bool`, `List`, `assert` in the readable `core/PRELUDE.thx`, plus the
+generated numeric aliases, while the standard library is a toolbox a
+program opts into with `$ with MOD`.
 
 ## How it reaches a program
 
-The build bakes `library/*.thx` into the compiler binary
+The build bakes `core/*.thx` and `library/*.thx` into the compiler binary
 (`BLD::gen_stdlib_header` -> `artifacts/STDLIBxAMALG.hpp`); DR injects every
-unit into every compile, right after the prelude and `C` (app/DR.cpp
-`parse_units`). So:
+unit into every compile, right after the generated prelude fragment and `C`
+(app/DR.cpp `parse_units`). So:
 
 - the `thrax` binary is self-contained -- no install path, no environment
   variable, and the standard library is identically available to the
@@ -31,10 +32,12 @@ Avoid reusing the stdlib module names for now; a guard is future work.
 
 ## The modules
 
-Convention: predicates (and predicate parameters) use Int truth -- 1 true, 0
-false -- matching `if`. Where an operation needs equality or hashing on a
-type parameter, it takes the function(s) explicitly (dictionary passing);
-there are no type classes.
+Convention: predicates (and predicate parameters) are `Bool`-typed, matching
+`if` and comparisons; three-way COMPARISONS (`cmp_int`, `cmp_str`, the `sort_by`
+/ MAP orderings) stay Int (negative / 0 / positive). Where an operation needs
+equality or ordering on a type parameter, it takes the function(s) explicitly
+(dictionary passing); there are no type classes. IO's `write_file` /
+`append_file` / `remove_file` return `Bool` success (true = ok).
 
 | module | contents |
 |--------|----------|

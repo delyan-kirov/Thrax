@@ -15,9 +15,9 @@ $ len : Str -> Int = \s = array_len s
 
 $ at : Str -> Int -> Int = \s i = array_get s i
 
-$ is_empty : Str -> Int = \s = if (array_len s) ?= 0 then 1 else 0
+$ is_empty : Str -> Bool = \s = (array_len s) ?= 0
 
-$ eq : Str -> Str -> Int = \a b = if a ?= b then 1 else 0
+$ eq : Str -> Str -> Bool = \a b = a ?= b
 
 # Three-way byte-lexicographic comparison: negative / 0 / positive (strcmp
 # convention; this is the ordering MAP.new_str uses).
@@ -39,16 +39,16 @@ $ from_byte : Int -> Str = \c = array_push "" c
 # The byte range [from, to), clamped to the string.
 $ substr : Str -> Int -> Int -> Str = \s from to = array_slice s from to
 
-$ starts_with : Str -> Str -> Int = \s p =
+$ starts_with : Str -> Str -> Bool = \s p =
 	let n = array_len p in
-	if n ?> array_len s then 0
-	else if (array_slice s 0 n) ?= p then 1 else 0
+	if n ?> array_len s then false
+	else (array_slice s 0 n) ?= p
 
-$ ends_with : Str -> Str -> Int = \s p =
+$ ends_with : Str -> Str -> Bool = \s p =
 	let n  = array_len p in
 	let sn = array_len s in
-	if n ?> sn then 0
-	else if (array_slice s (sn - n) sn) ?= p then 1 else 0
+	if n ?> sn then false
+	else (array_slice s (sn - n) sn) ?= p
 
 # The byte offset of the first occurrence of `needle` at or after `from`.
 # An empty needle matches at `from`.
@@ -60,7 +60,7 @@ $ find_from : Str -> Str -> Int -> Option Int = \s needle from =
 
 $ find : Str -> Str -> Option Int = \s needle = find_from s needle 0
 
-$ contains : Str -> Str -> Int = \s needle = is_some (find s needle)
+$ contains : Str -> Str -> Bool = \s needle = is_some (find s needle)
 
 # Split on a non-empty separator; N separators yield N+1 pieces ("a,,b" on
 # "," is ["a", "", "b"]). An empty separator returns the whole string whole.
@@ -124,25 +124,25 @@ $ rev_onto : Str -> Int -> Str -> Str = \s i acc =
 
 # ---- character (byte) predicates ----
 
-$ is_space : Int -> Int = \c =
-	if c ?= 32 then 1 else if c >= 9 then (if c <= 13 then 1 else 0) else 0
+$ is_space : Int -> Bool = \c =
+	if c ?= 32 then true else if c >= 9 then c <= 13 else false
 
-$ is_digit : Int -> Int = \c =
-	if c >= 48 then (if c <= 57 then 1 else 0) else 0
+$ is_digit : Int -> Bool = \c =
+	if c >= 48 then c <= 57 else false
 
-$ is_alpha : Int -> Int = \c =
+$ is_alpha : Int -> Bool = \c =
 	if c >= 65 then
-		(if c <= 90 then 1 else if c >= 97 then (if c <= 122 then 1 else 0) else 0)
-	else 0
+		(if c <= 90 then true else if c >= 97 then c <= 122 else false)
+	else false
 
-$ is_alnum : Int -> Int = \c =
-	if is_digit c then 1 else is_alpha c
+$ is_alnum : Int -> Bool = \c =
+	if is_digit c then true else is_alpha c
 
-$ is_upper : Int -> Int = \c =
-	if c >= 65 then (if c <= 90 then 1 else 0) else 0
+$ is_upper : Int -> Bool = \c =
+	if c >= 65 then c <= 90 else false
 
-$ is_lower : Int -> Int = \c =
-	if c >= 97 then (if c <= 122 then 1 else 0) else 0
+$ is_lower : Int -> Bool = \c =
+	if c >= 97 then c <= 122 else false
 
 # ---- trimming (ASCII whitespace) ----
 

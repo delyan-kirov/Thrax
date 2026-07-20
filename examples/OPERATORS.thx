@@ -1,8 +1,8 @@
 @mod OPERATORS
 
 # \file operators.thx
-# \info Comparison and logical operators. There is no Bool type yet: 0 is false
-#       and any nonzero value is true, so these all evaluate to 0 or 1.
+# \info Comparison and logical operators. Comparisons evaluate to Bool (the
+#       core-defined union in core/PRELUDE.thx); `!` negates a Bool.
 
 $eq_true   = 7 ?= 7
 $eq_false  = 7 ?= 8
@@ -12,9 +12,9 @@ $geq_false = 2 ?> 4
 $leq_true  = 3 ?< 8
 $leq_equal = 8 ?< 8
 $leq_false = 8 ?< 3
-$not_zero  = !0
-$not_five  = !5
-$not_not   = !(!5)
+$not_false = !false
+$not_true  = !true
+$not_not   = !(!true)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal ; leq_false ; not_zero ; not_five ; not_not ; 0
+$ test : Int = eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal ; leq_false ; not_false ; not_true ; not_not ; 0

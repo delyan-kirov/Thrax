@@ -589,6 +589,17 @@ struct PatLower
         m.arms[i].pat = seq_as_list(std::get<EX::PatSeq>(pat->as));
     }
 
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      Pattern *pat = m.arms[i].pat;
+      if (pat->tag != PatTag::Variant) continue;
+      auto &pv = std::get<EX::PatVariant>(pat->as);
+      if (pv.resolved_union != UT::Vu{ OP::TY_BOOL }) continue;
+      m.arms[i].pat = alloc_pat(Pattern{
+        PatTag::Int,
+        EX::PatInt{ pv.tag == UT::Vu{ "True" } ? 1 : 0, pv.anchor, pv.line } });
+    }
+
     bool has_struct = false, has_variant = false, has_guard = false,
          has_nested = false, has_str = false, has_seq = false;
     for (size_t i = 0; i < m.arms.size(); ++i)
@@ -2928,7 +2939,7 @@ Checker::infer(
       Env inner = locals;
       type_pattern(m.arms[i].pat, st, inner, mu);
       if (m.arms[i].guard)
-        unify(infer(m.arms[i].guard, inner, amb), con(m_tg.int_ty()));
+        unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_BOOL));
       unify(rt, infer(m.arms[i].body, inner, amb));
     }
     unify(rt, infer(m.alt, locals, amb));
@@ -4028,7 +4039,7 @@ void
 Checker::seed_primitives()
 {
   Type *tv       = fresh();
-  Type *ift      = arrow(con(m_tg.int_ty()), arrow(tv, arrow(tv, tv)));
+  Type *ift      = arrow(con(OP::TY_BOOL), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
   Type *arrt            = arrow(con(m_tg.int_ty()), con(OP::TY_ARRAY));
