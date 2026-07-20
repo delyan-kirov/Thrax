@@ -1,0 +1,34 @@
+@mod RANDOM
+
+# \file RANDOM.thx
+# \info A deterministic pseudo-random generator (Lehmer / MINSTD: the Park &
+#       Miller multiplicative congruential generator over the prime modulus
+#       2^31 - 1). The generator is a VALUE that is threaded explicitly:
+#       `next` returns the drawn number AND the advanced generator, so runs
+#       are reproducible from a seed. Seed from the clock (`IO.now`) for a
+#       different run each time.
+
+$ with PAIR
+
+$ Rng : @struct =
+	state: Int,
+
+# Any seed works; 0 (a fixed point of the recurrence) is nudged to 1.
+$ new : Int -> Rng = \seed =
+	let s = (if seed ?< 0 then 0 - seed else seed) % 2147483647 in
+	Rng.{ .state = if s ?= 0 then 1 else s }
+
+# A draw in [0, 2^31 - 1), and the generator to use for the next draw.
+$ next : Rng -> Pair Int Rng = \g =
+	let s = (g.state * 48271) % 2147483647 in
+	pair s Rng.{ .state = s }
+
+# A draw in [0, n) (n <= 0 yields 0), and the advanced generator.
+$ next_below : Rng -> Int -> Pair Int Rng = \g n =
+	let d = next g in
+	if n <= 0 then pair 0 d.snd else pair (d.fst % n) d.snd
+
+# A draw in [lo, hi] inclusive, and the advanced generator.
+$ next_range : Rng -> Int -> Int -> Pair Int Rng = \g lo hi =
+	let d = next_below g ((hi - lo) + 1) in
+	pair (lo + d.fst) d.snd

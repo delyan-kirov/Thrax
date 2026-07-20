@@ -2,18 +2,17 @@
 
 # \file OPT.thx
 # \info The standard `Option` type: a value that may be absent. `Some` carries
-#       the value, `None` is the absence. Predicates return Int (1 true, 0
-#       false), matching the language's `if` convention.
+#       the value, `None` is the absence. Predicates return Bool.
 
 $ Option : @union =
 	Some: `T,
 	None: {},
 
-$ is_some : Option `T -> Int = \o =
-	when o is Option.Some.{_} then 1 else 0
+$ is_some : Option `T -> Bool = \o =
+	when o is Option.Some.{_} then true else false
 
-$ is_none : Option `T -> Int = \o =
-	when o is Option.Some.{_} then 0 else 1
+$ is_none : Option `T -> Bool = \o =
+	when o is Option.Some.{_} then false else true
 
 # The value inside, or `d` when absent.
 $ unwrap_or : Option `T -> `T -> `T = \o d =

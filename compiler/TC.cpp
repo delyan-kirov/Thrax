@@ -589,6 +589,17 @@ struct PatLower
         m.arms[i].pat = seq_as_list(std::get<EX::PatSeq>(pat->as));
     }
 
+    for (size_t i = 0; i < m.arms.size(); ++i)
+    {
+      Pattern *pat = m.arms[i].pat;
+      if (pat->tag != PatTag::Variant) continue;
+      auto &pv = std::get<EX::PatVariant>(pat->as);
+      if (pv.resolved_union != UT::Vu{ OP::TY_BOOL }) continue;
+      m.arms[i].pat = alloc_pat(Pattern{
+        PatTag::Int,
+        EX::PatInt{ pv.tag == UT::Vu{ "True" } ? 1 : 0, pv.anchor, pv.line } });
+    }
+
     bool has_struct = false, has_variant = false, has_guard = false,
          has_nested = false, has_str = false, has_seq = false;
     for (size_t i = 0; i < m.arms.size(); ++i)
@@ -1378,6 +1389,7 @@ private:
     const UT::Vec<UT::Vu> *cands;
     std::string            name;
     UT::Vu                 anchor;
+    bool done = false; // settled inside resolve_sites' fixpoint
   };
   std::vector<UserSite> m_usites;
 
@@ -1478,7 +1490,8 @@ private:
     Failed
   };
   SiteState resolve_one_site(const ResolveSite &s, bool allow_default);
-  void      resolve_sites(size_t from, size_t ffrom);
+  void      resolve_sites(size_t from, size_t ffrom, size_t ufrom);
+  SiteState resolve_one_user_site(UserSite &s, bool conservative);
   void      resolve_user_sites(size_t from);
   void      resolve_lit_sites(size_t from);
   bool      settle_field_site(FieldSite &s);
@@ -2926,7 +2939,7 @@ Checker::infer(
       Env inner = locals;
       type_pattern(m.arms[i].pat, st, inner, mu);
       if (m.arms[i].guard)
-        unify(infer(m.arms[i].guard, inner, amb), con(m_tg.int_ty()));
+        unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_BOOL));
       unify(rt, infer(m.arms[i].body, inner, amb));
     }
     unify(rt, infer(m.alt, locals, amb));
@@ -3040,8 +3053,8 @@ Checker::resolve(
     size_t fbase = m_field_sites.size();
     size_t lbase = m_lit_sites.size();
     Type  *t     = infer(g.body, empty, row_empty()); // top level is pure
-    resolve_sites(base, fbase); // settle this body's overloads first
-    resolve_user_sites(ubase);  // ... and its user overloads (now constrained)
+    resolve_sites(base, fbase, ubase); // settle this body's overloads first
+    resolve_user_sites(ubase);  // ... then force the user overloads left open
     resolve_field_sites(fbase); // ... then field accesses (receivers now known)
     resolve_lit_sites(lbase);   // ... and any unqualified literals (no context)
     t = prune(t);
@@ -3168,7 +3181,7 @@ Checker::resolve_one_site(
 
 void
 Checker::resolve_sites(
-  size_t from, size_t ffrom)
+  size_t from, size_t ffrom, size_t ufrom)
 {
   std::vector<size_t> pending;
   for (size_t i = from; i < m_sites.size(); ++i) pending.push_back(i);
@@ -3179,7 +3192,14 @@ Checker::resolve_sites(
   // ops, outer-first for let-threaded results) without committing to one.
   // Field accesses whose receiver is already a known struct join the fixpoint:
   // `p.snd ?= "x"` needs the projection's type grounded BEFORE the operator is
-  // judged, or the last-resort Int-defaulting below would mistype it.
+  // judged, or the last-resort Int-defaulting below would mistype it. User
+  // overload sites join for the same reason, conservatively (commit only when
+  // exactly one candidate fits, never default): `(pow 2.0 10.0) ?= 1024.0`
+  // needs `pow` committed to its Real overload BEFORE `?=` is judged -- and a
+  // resolving operator can conversely narrow a user site's candidates. Both
+  // directions are safe to interleave because unification only ever shrinks a
+  // site's fit set: a single-fit commit now is the same commit any later pass
+  // would make.
   bool progress = true;
   while (progress)
   {
@@ -3194,10 +3214,20 @@ Checker::resolve_sites(
         progress = true;
       }
     }
+    for (size_t i = ufrom; i < m_usites.size(); ++i)
+    {
+      UserSite &u = m_usites[i];
+      if (u.done) continue;
+      if (resolve_one_user_site(u, /*conservative=*/true)
+          == SiteState::Resolved)
+        progress = true;
+    }
   }
 
   // Whatever remains is genuinely unconstrained (or a real mismatch): force it
-  // with Int-defaulting, which either resolves or reports the error.
+  // with Int-defaulting, which either resolves or reports the error. The
+  // remaining user sites are forced by resolve_user_sites, which the caller
+  // runs right after this.
   for (size_t idx : pending)
     if (idx != (size_t)-1)
       resolve_one_site(m_sites[idx], /*allow_default=*/true);
@@ -3216,116 +3246,140 @@ Checker::resolve_sites(
 // name to the slot (the EX::ExOverload's `chosen`) -- a mangled global for a
 // user overload, or a "+@Int"-style key for a built-in, both of which IT reads.
 // None or several is an error.
+// Try to resolve one user-overload site. In `conservative` mode (inside
+// resolve_sites' fixpoint) nothing is ever forced: an operator shape with a
+// still-open operand returns Pending (the built-in candidates cannot be judged
+// yet), and several fitting candidates return Pending (a later resolution may
+// narrow them). A commit happens only on exactly one fit -- which is sound to
+// do early, since unification only ever removes candidates from the fit set.
+// In final mode (from resolve_user_sites) unconstrained operator operands
+// default to Int (so `\x = x + x` still picks the Int built-in) and anything
+// other than exactly one fit is an error.
+Checker::SiteState
+Checker::resolve_one_user_site(
+  UserSite &s, bool conservative)
+{
+  Type                        *use = prune(s.use);
+  const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.name);
+
+  // For an operator, shape the use as an arrow chain so the operands are
+  // reachable by type.
+  std::vector<Type *> args;
+  Type               *result = nullptr;
+  if (ovs)
+  {
+    size_t arity = ovs->front().sig.size() - 1;
+    result       = fresh();
+    Type *shape  = result;
+    args.resize(arity);
+    for (size_t k = arity; k-- > 0;)
+    {
+      args[k] = fresh();
+      shape   = arrow(args[k], shape);
+    }
+    unify(use, shape);
+    for (Type *&a : args)
+    {
+      a = prune(a);
+      if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
+      {
+        if (conservative) return SiteState::Pending;
+        std::get<TVar>(a->as).ref = con(m_tg.int_ty());
+        a                         = prune(a);
+      }
+    }
+    use = prune(use);
+  }
+
+  // The matching built-in overload, if any (operators only).
+  const Overload *bhit = nullptr;
+  if (ovs)
+    for (const Overload &o : *ovs)
+    {
+      if (o.sig.size() != args.size() + 1) continue;
+      bool ok = true;
+      for (size_t k = 0; k < args.size(); ++k)
+        if (args[k]->kind() != Kind::Con
+            || std::get<TCon>(args[k]->as).name != o.sig[k])
+        {
+          ok = false;
+          break;
+        }
+      if (ok)
+      {
+        bhit = &o;
+        break;
+      }
+    }
+
+  // The fitting user candidates. A candidate may be an effect operation
+  // (its scheme is in m_prim, keyed by `Effect.op`) rather than a global.
+  std::vector<size_t> fits;
+  for (size_t k = 0; k < s.cands->size(); ++k)
+  {
+    std::string cname(std::string((*s.cands)[k]));
+    auto        pit = m_prim.find(cname);
+    Type       *cand
+      = instantiate(pit != m_prim.end() ? pit->second : resolve(cname));
+    if (try_unify(use, cand)) fits.push_back(k);
+  }
+
+  size_t total = fits.size() + (bhit ? 1u : 0u);
+  if (total == 0)
+  {
+    // No fit can appear later (grounding only removes candidates), so this is
+    // a real error even conservatively.
+    fail(ER::Code::TYPE_MISMATCH,
+         s.anchor,
+         "no overload of '%s' has type '%s'",
+         s.name.c_str(),
+         show(use).c_str());
+    s.done = true;
+    return SiteState::Failed;
+  }
+  if (total > 1)
+  {
+    if (conservative) return SiteState::Pending;
+    std::string cands;
+    if (bhit) cands += "built-in " + bhit->mono;
+    for (size_t f : fits)
+      cands += (cands.empty() ? "" : ", ") + def_label((*s.cands)[f]);
+    fail(ER::Code::AMBIGUOUS_NAME,
+         s.anchor,
+         "ambiguous overload of '%s' at type '%s'; candidates: %s",
+         s.name.c_str(),
+         show(use).c_str(),
+         cands.c_str());
+    s.done = true;
+    return SiteState::Failed;
+  }
+
+  s.done = true;
+  if (bhit)
+  {
+    unify(prune(result), con(bhit->sig.back()));
+    // Interned for the same reason as the operator-site write-back above.
+    *s.slot = UT::strdup(m_arena, bhit->mono.c_str());
+    return SiteState::Resolved;
+  }
+
+  UT::Vu      chosen = (*s.cands)[fits.front()];
+  std::string cname(chosen);
+  auto        pit = m_prim.find(cname); // an operation candidate lives here
+  unify(use, instantiate(pit != m_prim.end() ? pit->second : resolve(cname)));
+  *s.slot = chosen;
+  return SiteState::Resolved;
+}
+
 void
 Checker::resolve_user_sites(
   size_t from)
 {
   for (size_t i = from; i < m_usites.size(); ++i)
   {
-    const UserSite              &s   = m_usites[i];
-    Type                        *use = prune(s.use);
-    const std::vector<Overload> *ovs = UT::try_lookup(m_ovdb, s.name);
-
-    // For an operator, shape the use as an arrow chain and default any
-    // unconstrained operand to Int, so the built-in candidates can be matched
-    // by operand type (and `\x = x + x` still defaults to the Int built-in).
-    std::vector<Type *> args;
-    Type               *result = nullptr;
-    if (ovs)
-    {
-      size_t arity = ovs->front().sig.size() - 1;
-      result       = fresh();
-      Type *shape  = result;
-      args.resize(arity);
-      for (size_t k = arity; k-- > 0;)
-      {
-        args[k] = fresh();
-        shape   = arrow(args[k], shape);
-      }
-      unify(use, shape);
-      for (Type *&a : args)
-      {
-        a = prune(a);
-        if (a->kind() == Kind::Var && !std::get<TVar>(a->as).rigid)
-        {
-          std::get<TVar>(a->as).ref = con(m_tg.int_ty());
-          a                         = prune(a);
-        }
-      }
-      use = prune(use);
-    }
-
-    // The matching built-in overload, if any (operators only).
-    const Overload *bhit = nullptr;
-    if (ovs)
-      for (const Overload &o : *ovs)
-      {
-        if (o.sig.size() != args.size() + 1) continue;
-        bool ok = true;
-        for (size_t k = 0; k < args.size(); ++k)
-          if (args[k]->kind() != Kind::Con
-              || std::get<TCon>(args[k]->as).name != o.sig[k])
-          {
-            ok = false;
-            break;
-          }
-        if (ok)
-        {
-          bhit = &o;
-          break;
-        }
-      }
-
-    // The fitting user candidates. A candidate may be an effect operation
-    // (its scheme is in m_prim, keyed by `Effect.op`) rather than a global.
-    std::vector<size_t> fits;
-    for (size_t k = 0; k < s.cands->size(); ++k)
-    {
-      std::string cname(std::string((*s.cands)[k]));
-      auto        pit = m_prim.find(cname);
-      Type       *cand
-        = instantiate(pit != m_prim.end() ? pit->second : resolve(cname));
-      if (try_unify(use, cand)) fits.push_back(k);
-    }
-
-    size_t total = fits.size() + (bhit ? 1u : 0u);
-    if (total == 0)
-    {
-      fail(ER::Code::TYPE_MISMATCH,
-           s.anchor,
-           "no overload of '%s' has type '%s'",
-           s.name.c_str(),
-           show(use).c_str());
-      continue;
-    }
-    if (total > 1)
-    {
-      std::string cands;
-      if (bhit) cands += "built-in " + bhit->mono;
-      for (size_t f : fits)
-        cands += (cands.empty() ? "" : ", ") + def_label((*s.cands)[f]);
-      fail(ER::Code::AMBIGUOUS_NAME,
-           s.anchor,
-           "ambiguous overload of '%s' at type '%s'; candidates: %s",
-           s.name.c_str(),
-           show(use).c_str(),
-           cands.c_str());
-      continue;
-    }
-
-    if (bhit)
-    {
-      unify(prune(result), con(bhit->sig.back()));
-      // Interned for the same reason as the operator-site write-back above.
-      *s.slot = UT::strdup(m_arena, bhit->mono.c_str());
-      continue;
-    }
-
-    UT::Vu      chosen = (*s.cands)[fits.front()];
-    std::string cname(chosen);
-    auto        pit = m_prim.find(cname); // an operation candidate lives here
-    unify(use, instantiate(pit != m_prim.end() ? pit->second : resolve(cname)));
-    *s.slot = chosen;
+    UserSite &s = m_usites[i];
+    if (s.done) continue; // settled inside resolve_sites' fixpoint
+    resolve_one_user_site(s, /*conservative=*/false);
   }
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
 }
@@ -3869,7 +3923,7 @@ Checker::run(
       unify(bt, g.scheme.type);
     }
 
-    resolve_sites(base, fbase);
+    resolve_sites(base, fbase, ubase);
     resolve_user_sites(ubase);
     resolve_field_sites(fbase);
     // Bare literals last: their type comes from the unification just done.
@@ -3985,7 +4039,7 @@ void
 Checker::seed_primitives()
 {
   Type *tv       = fresh();
-  Type *ift      = arrow(con(m_tg.int_ty()), arrow(tv, arrow(tv, tv)));
+  Type *ift      = arrow(con(OP::TY_BOOL), arrow(tv, arrow(tv, tv)));
   m_prim[OP::IF] = generalize(Env{}, ift);
 
   Type *arrt            = arrow(con(m_tg.int_ty()), con(OP::TY_ARRAY));

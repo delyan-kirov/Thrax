@@ -1,0 +1,84 @@
+@mod RESULT
+
+# \file RESULT.thx
+# \info Fallible computation, in two interchangeable shapes (the Koka
+#       exn/error pattern):
+#         - `Result `T `E` is the VALUE shape: an `Ok` carrying the answer or
+#           an `Err` carrying what went wrong.
+#         - `Fail` is the EFFECT shape: `Fail.fail msg` aborts the current
+#           computation, the effect row (`-> <Fail> T`) propagates the
+#           possibility automatically -- no `?` operator needed -- and
+#           `try` / `try_or` are the handlers that turn a failing computation
+#           back into a value.
+#       `untry` and `expect` bridge the two directions, so code can move
+#       freely between "return a Result" and "perform Fail".
+
+$ with OPT
+
+$ Result : @union =
+	Ok: `T,
+	Err: `E,
+
+# ---- the value shape ----
+
+$ is_ok : Result `T `E -> Bool = \r =
+	when r is Result.Ok.{_} then true else false
+
+$ is_err : Result `T `E -> Bool = \r =
+	when r is Result.Ok.{_} then false else true
+
+# The answer, or `d` when the computation failed.
+$ unwrap_or : Result `T `E -> `T -> `T = \r d =
+	when r is Result.Ok.{x} then x else d
+
+# The arms below are exhaustive; the required `else` recurses, which is
+# unreachable (a Result is always Ok or Err) but well-typed.
+$ map_ok : (`A -> `B) -> Result `A `E -> Result `B `E = \f r =
+	when r
+		is Result.Ok.{x} then Result.Ok.{ f x }
+		is Result.Err.{e} then Result.Err.{ e }
+	else map_ok f r
+
+$ map_err : (`E -> `F) -> Result `T `E -> Result `T `F = \f r =
+	when r
+		is Result.Ok.{x} then Result.Ok.{ x }
+		is Result.Err.{e} then Result.Err.{ f e }
+	else map_err f r
+
+# Chain a fallible step onto an earlier result (monadic bind).
+$ and_then : (`A -> Result `B `E) -> Result `A `E -> Result `B `E = \f r =
+	when r
+		is Result.Ok.{x} then f x
+		is Result.Err.{e} then Result.Err.{ e }
+	else and_then f r
+
+$ ok_opt : Result `T `E -> Option `T = \r =
+	when r is Result.Ok.{x} then Option.Some.{ x } else Option.None
+
+# ---- the effect shape ----
+
+$ Fail : @effect = fail : Str -> `a,  # never resumes -> polymorphic result
+
+# Run a computation that may Fail, reifying the outcome as a Result.
+$ try : ({} -> <Fail> `T) -> Result `T Str = \action =
+	do Result.Ok.{ action {} }
+	ctl k is Fail.fail msg = Result.Err.{ msg }
+
+# Run a computation that may Fail; a failure just yields the default.
+$ try_or : ({} -> <Fail> `T) -> `T -> `T = \action d =
+	do action {}
+	ctl k is Fail.fail _ = d
+
+# ---- bridges ----
+
+# Re-raise a Result inside a Fail computation (Koka's untry): Ok passes
+# through, Err becomes a failure.
+$ untry : Result `T Str -> <Fail> `T = \r =
+	when r
+		is Result.Ok.{x} then x
+		is Result.Err.{m} then Fail.fail m
+	else Fail.fail "unreachable"
+
+# The Option bridge: absence becomes a failure carrying `msg`.
+$ expect : Option `T -> Str -> <Fail> `T = \o msg =
+	when o is Option.Some.{x} then x else Fail.fail msg

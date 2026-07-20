@@ -1,10 +1,18 @@
 @mod MATH
 
 # \file MATH.thx
-# \info Small integer helpers. Predicates return Int (1 true, 0 false).
+# \info Integer helpers, Real helpers, and the libm functions (wrapped from
+#       the auto-injected `C` namespace). Predicates return Bool.
+#       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
+#       Real; overload resolution picks by operand type.
 
 $ min : Int -> Int -> Int = \a b = if a <= b then a else b
 $ max : Int -> Int -> Int = \a b = if a >= b then a else b
+
+# Three-way comparison: negative / 0 / positive (the ordering MAP.new_int
+# uses).
+$ cmp_int : Int -> Int -> Int = \a b =
+	if a ?< b then 0 - 1 else if a ?> b then 1 else 0
 
 $ abs : Int -> Int = \n = if n ?< 0 then 0 - n else n
 
@@ -14,8 +22,8 @@ $ sign : Int -> Int = \n =
 # `x` forced into [lo, hi].
 $ clamp : Int -> Int -> Int -> Int = \lo hi x = max lo (min hi x)
 
-$ even : Int -> Int = \n = if (abs n) % 2 ?= 0 then 1 else 0
-$ odd  : Int -> Int = \n = if (abs n) % 2 ?= 0 then 0 else 1
+$ even : Int -> Bool = \n = (abs n) % 2 ?= 0
+$ odd  : Int -> Bool = \n = !(even n)
 
 $ gcd : Int -> Int -> Int = \a b =
 	if b ?= 0 then abs a else gcd b (a % b)
@@ -26,3 +34,30 @@ $ pow : Int -> Int -> Int = \base e =
 	if e ?< 0 then 0
 	else if e ?= 0 then 1
 	else base * pow base (e - 1)
+
+# ---- Real helpers ----
+
+$ pi : Real = 3.141592653589793
+$ euler : Real = 2.718281828459045
+
+$ min : Real -> Real -> Real = \a b = if a <= b then a else b
+$ max : Real -> Real -> Real = \a b = if a >= b then a else b
+
+$ abs : Real -> Real = \x = if x ?< 0.0 then 0.0 - x else x
+
+$ clamp : Real -> Real -> Real -> Real = \lo hi x = max lo (min hi x)
+
+# ---- libm (via the C namespace) ----
+
+$ sqrt : Real -> Real = \x = C.sqrt x
+$ sin  : Real -> Real = \x = C.sin x
+$ cos  : Real -> Real = \x = C.cos x
+$ tan  : Real -> Real = \x = C.tan x
+$ exp  : Real -> Real = \x = C.exp x
+$ log  : Real -> Real = \x = C.log x
+$ floor : Real -> Real = \x = C.floor x
+$ ceil  : Real -> Real = \x = C.ceil x
+$ round : Real -> Real = \x = C.round x
+$ pow  : Real -> Real -> Real = \b e = C.pow b e
+$ fmod : Real -> Real -> Real = \a b = C.fmod a b
+$ atan2 : Real -> Real -> Real = \y x = C.atan2 y x

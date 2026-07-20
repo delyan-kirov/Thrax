@@ -1,0 +1,44 @@
+@mod STDLIB_PATH
+
+# \file STDLIB_PATH.thx
+# \info POSIX path manipulation: basename/dirname (trailing slashes ignored,
+#       "/" is its own base and dir), extensions without the dot, joining,
+#       component splitting. Pure string code; no filesystem involved.
+
+$ with PATH
+$ with LIST
+$ with STR
+
+$ ck_base   : Int = if (basename "a/b/c.txt") ?= "c.txt" then 0 else 1
+$ ck_base_sl: Int = if (basename "a/b/") ?= "b" then 0 else 1
+$ ck_base_n : Int = if (basename "plain") ?= "plain" then 0 else 1
+$ ck_base_r : Int = if (basename "/") ?= "/" then 0 else 1
+
+$ ck_dir    : Int = if (dirname "a/b/c.txt") ?= "a/b" then 0 else 1
+$ ck_dir_sl : Int = if (dirname "a/b//") ?= "a" then 0 else 1
+$ ck_dir_n  : Int = if (dirname "plain") ?= "." then 0 else 1
+$ ck_dir_a  : Int = if (dirname "/a") ?= "/" then 0 else 1
+$ ck_dir_r  : Int = if (dirname "/") ?= "/" then 0 else 1
+
+$ ck_ext    : Int = if (extension "a/b.txt") ?= "txt" then 0 else 1
+$ ck_ext_n  : Int = if (extension "a.b/c") ?= "" then 0 else 1
+$ ck_ext_dot: Int = if (extension ".bashrc") ?= "" then 0 else 1
+$ ck_strip  : Int = if (strip_ext "a/b.txt") ?= "a/b" then 0 else 1
+$ ck_strip_n: Int = if (strip_ext "a/b") ?= "a/b" then 0 else 1
+
+$ ck_join   : Int = if (PATH.join "a" "b") ?= "a/b" then 0 else 1
+$ ck_join_sl: Int = if (PATH.join "a/" "b") ?= "a/b" then 0 else 1
+$ ck_join_r : Int = if (PATH.join "/" "a") ?= "/a" then 0 else 1
+$ ck_join_ab: Int = if (PATH.join "a" "/etc") ?= "/etc" then 0 else 1
+$ ck_join_mt: Int = if (PATH.join "" "b") ?= "b" then 0 else 1
+
+$ ck_abs    : Int = if is_abs "/etc" then (if is_abs "etc" then 1 else 0) else 1
+$ ck_parts  : Int = if (STR.join "," (parts "/a//b/")) ?= "a,b" then 0 else 1
+$ ck_parts_n: Int = if (length (parts "")) ?= 0 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_base + ck_base_sl + ck_base_n + ck_base_r
+	+ ck_dir + ck_dir_sl + ck_dir_n + ck_dir_a + ck_dir_r
+	+ ck_ext + ck_ext_n + ck_ext_dot + ck_strip + ck_strip_n
+	+ ck_join + ck_join_sl + ck_join_r + ck_join_ab + ck_join_mt
+	+ ck_abs + ck_parts + ck_parts_n

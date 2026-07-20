@@ -209,7 +209,9 @@ go(
 
   case EX::ExprTag::VariantLit:
   {
-    auto   &vl = std::get<EX::ExVariantLit>(expr->as);
+    auto &vl = std::get<EX::ExVariantLit>(expr->as);
+    if (vl.type_name == UT::Vu{ OP::TY_BOOL })
+      return alloc(arena, Term{ Int{ vl.tag == UT::Vu{ "True" } ? 1 : 0 } });
     Variant v;
     v.type_name = UT::strdup(arena, vl.type_name);
     v.tag       = UT::strdup(arena, vl.tag);

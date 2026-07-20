@@ -97,6 +97,16 @@ struct Target
     return "";
   }
 
+  // The math library's runtime name. On Linux libm is its own soname (even
+  // where glibc >= 2.34 folded the symbols into libc for static linking,
+  // distributions like Nix still ship them only in libm.so.6); elsewhere the
+  // C library carries the math symbols.
+  constexpr const char *
+  libm_soname() const
+  {
+    return Os::Linux == os ? "libm.so.6" : libc_soname();
+  }
+
   constexpr bool
   has_dlopen() const
   {

@@ -1,100 +1,195 @@
 @mod MAP
 
 # \file MAP.thx
-# \info A polymorphic hash map, `Map `K `V`. There are no type classes, so a
-#       map carries its own key operations (dictionary passing): `new` takes
-#       the hash and equality functions and stores them in the struct;
-#       `new_str` / `new_int` bake in the common cases. Buckets are
-#       association lists over a fixed bucket count -- fine for the small
-#       maps a script builds; an over-full map still works, just linearly.
-#       The map is a VALUE: `insert` / `remove` return an updated copy.
+# \info An immutable ordered map, `Map `K `V`, backed by an AVL tree -- the
+#       same design as Haskell's Data.Map and Koka's std/data/map. There are
+#       no type classes, so a map carries its ordering (dictionary passing):
+#       `new` takes a three-way comparison `cmpf k1 k2` (negative / 0 /
+#       positive, like C's strcmp) and stores it; `new_int` / `new_str` bake
+#       in the common keys. The map is a VALUE: `insert` / `remove` return an
+#       updated copy and never disturb the original. Lookup, insert and
+#       remove are O(log n); `to_list` / `keys` / `fold` visit entries in
+#       ascending key order.
 
 $ with OPT
 $ with PAIR
 $ with LIST
+$ with MATH
+$ with STR
+
+$ Tree : @union =
+	Leaf: {},
+	Node: {`K, `V, Tree `K `V, Tree `K `V, Int},  # key, value, left, right, height
 
 $ Map : @struct =
-	hashf: `K -> Int,
-	eqf: `K -> `K -> Int,
-	nbuckets: Int,
+	cmpf: `K -> `K -> Int,
 	count: Int,
-	buckets: List (List (Pair `K `V)),
+	root: Tree `K `V,
 
 # ---- construction ----
 
-$ new : (`K -> Int) -> (`K -> `K -> Int) -> Map `K `V = \h e =
-	new_sized h e 16
+$ new : (`K -> `K -> Int) -> Map `K `V = \c =
+	Map.{ .cmpf = c, .count = 0, .root = Tree.Leaf }
 
-$ new_sized : (`K -> Int) -> (`K -> `K -> Int) -> Int -> Map `K `V = \h e n =
-	let nb = if n ?< 1 then 1 else n in
-	Map.{ .hashf = h, .eqf = e, .nbuckets = nb, .count = 0,
-	      .buckets = empty_buckets nb }
+$ new_int : Map Int `V = new cmp_int
 
-$ empty_buckets : Int -> List (List (Pair `K `V)) = \n =
-	if n <= 0 then [] else [] :: empty_buckets (n - 1)
+$ new_str : Map Str `V = new cmp_str
 
-$ new_str : Map Str `V = new hash_str (\a b = if a ?= b then 1 else 0)
-
-$ new_int : Map Int `V = new hash_int (\a b = if a ?= b then 1 else 0)
+$ from_list : (`K -> `K -> Int) -> List (Pair `K `V) -> Map `K `V = \c ps =
+	foldl (\m p = insert m p.fst p.snd) (new c) ps
 
 # ---- operations ----
 
 $ insert : Map `K `V -> `K -> `V -> Map `K `V = \m k v =
-	let i = bucket_of m k in
-	let b = unwrap_or (nth m.buckets i) [] in
-	let fresh = if bucket_has m.eqf k b then 0 else 1 in
-	Map.{ .hashf = m.hashf, .eqf = m.eqf, .nbuckets = m.nbuckets,
-	      .count = m.count + fresh,
-	      .buckets = set_nth m.buckets i (pair k v :: bucket_drop m.eqf k b) }
+	let fresh = if has m k then 0 else 1 in
+	Map.{ .cmpf = m.cmpf, .count = m.count + fresh,
+	      .root = tinsert m.cmpf k v m.root }
 
-$ get : Map `K `V -> `K -> Option `V = \m k =
-	bucket_get m.eqf k (unwrap_or (nth m.buckets (bucket_of m k)) [])
+# Insert, combining with the existing value: `f old new` decides what an
+# already-present key maps to.
+$ insert_with : Map `K `V -> `K -> `V -> (`V -> `V -> `V) -> Map `K `V = \m k v f =
+	when get m k
+		is Option.Some.{old} then insert m k (f old v)
+	else insert m k v
 
-$ has : Map `K `V -> `K -> Int = \m k = is_some (get m k)
+$ get : Map `K `V -> `K -> Option `V = \m k = tget m.cmpf k m.root
+
+$ get_or : Map `K `V -> `K -> `V -> `V = \m k d = unwrap_or (get m k) d
+
+$ has : Map `K `V -> `K -> Bool = \m k = is_some (get m k)
 
 $ remove : Map `K `V -> `K -> Map `K `V = \m k =
-	let i = bucket_of m k in
-	let b = unwrap_or (nth m.buckets i) [] in
-	if bucket_has m.eqf k b then
-		Map.{ .hashf = m.hashf, .eqf = m.eqf, .nbuckets = m.nbuckets,
-		      .count = m.count - 1,
-		      .buckets = set_nth m.buckets i (bucket_drop m.eqf k b) }
+	if has m k then
+		Map.{ .cmpf = m.cmpf, .count = m.count - 1,
+		      .root = tremove m.cmpf k m.root }
+	else m
+
+# Apply `f` to the value at `k`, if present; absent keys leave the map as is.
+$ update : Map `K `V -> `K -> (`V -> `V) -> Map `K `V = \m k f =
+	when get m k
+		is Option.Some.{old} then insert m k (f old)
 	else m
 
 $ size : Map `K `V -> Int = \m = m.count
 
-$ to_list : Map `K `V -> List (Pair `K `V) = \m = concat m.buckets
+$ is_empty : Map `K `V -> Bool = \m = m.count ?= 0
+
+# ---- whole-map operations ----
+
+# Entries in ascending key order.
+$ to_list : Map `K `V -> List (Pair `K `V) = \m = tlist m.root []
 
 $ keys : Map `K `V -> List `K = \m = map (\p = p.fst) (to_list m)
 
 $ values : Map `K `V -> List `V = \m = map (\p = p.snd) (to_list m)
 
-# ---- bucket internals (association lists) ----
+# Fold entries in ascending key order: `f acc k v`.
+$ fold : (`A -> `K -> `V -> `A) -> `A -> Map `K `V -> `A = \f acc m =
+	tfold f acc m.root
 
-$ bucket_of : Map `K `V -> `K -> Int = \m k =
-	let h = m.hashf k in
-	(if h ?< 0 then 0 - h else h) % m.nbuckets
+$ map_values : (`V -> `W) -> Map `K `V -> Map `K `W = \f m =
+	Map.{ .cmpf = m.cmpf, .count = m.count, .root = tmapv f m.root }
 
-$ bucket_get : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> Option `V = \eqf k b =
-	when b
-		is e :: t then
-			(if eqf k e.fst then Option.Some.{ e.snd } else bucket_get eqf k t)
+# Keep the entries `p k v` approves of.
+$ filter : (`K -> `V -> Bool) -> Map `K `V -> Map `K `V = \p m =
+	fold (\acc k v = if p k v then insert acc k v else acc) (new m.cmpf) m
+
+# Left-biased union: entries of `a` win, keys only in `b` are added.
+$ merge : Map `K `V -> Map `K `V -> Map `K `V = \a b =
+	fold (\acc k v = if has acc k then acc else insert acc k v) a b
+
+$ min_entry : Map `K `V -> Option (Pair `K `V) = \m = tmin m.root
+
+$ max_entry : Map `K `V -> Option (Pair `K `V) = \m = tmax m.root
+
+# ---- AVL internals ----
+
+$ height : Tree `K `V -> Int = \t =
+	when t is Tree.Node.{_, _, _, _, h} then h else 0
+
+$ mknode : `K -> `V -> Tree `K `V -> Tree `K `V -> Tree `K `V = \k v l r =
+	Tree.Node.{ k, v, l, r, 1 + max (height l) (height r) }
+
+# Rebuild a node from parts whose subtrees may be off by one extra level
+# (a single insert or remove), restoring the AVL invariant with the usual
+# single / double rotations. The impossible Leaf arms fall back to a plain
+# node.
+$ balance : `K -> `V -> Tree `K `V -> Tree `K `V -> Tree `K `V = \k v l r =
+	if (height l) ?> ((height r) + 1) then
+		when l is Tree.Node.{lk, lv, ll, lr, _} then
+			(if (height ll) >= (height lr) then
+				mknode lk lv ll (mknode k v lr r)
+			 else when lr is Tree.Node.{ck, cv, cl, cr, _} then
+				mknode ck cv (mknode lk lv ll cl) (mknode k v cr r)
+			 else mknode k v l r)
+		else mknode k v l r
+	else if (height r) ?> ((height l) + 1) then
+		when r is Tree.Node.{rk, rv, rl, rr, _} then
+			(if (height rr) >= (height rl) then
+				mknode rk rv (mknode k v l rl) rr
+			 else when rl is Tree.Node.{ck, cv, cl, cr, _} then
+				mknode ck cv (mknode k v l cl) (mknode rk rv cr rr)
+			 else mknode k v l r)
+		else mknode k v l r
+	else mknode k v l r
+
+$ tinsert : (`K -> `K -> Int) -> `K -> `V -> Tree `K `V -> Tree `K `V = \c k v t =
+	when t is Tree.Node.{tk, tv, l, r, _} then
+		(let o = c k tk in
+		 if o ?< 0 then balance tk tv (tinsert c k v l) r
+		 else if o ?> 0 then balance tk tv l (tinsert c k v r)
+		 else mknode k v l r)
+	else mknode k v Tree.Leaf Tree.Leaf
+
+$ tget : (`K -> `K -> Int) -> `K -> Tree `K `V -> Option `V = \c k t =
+	when t is Tree.Node.{tk, tv, l, r, _} then
+		(let o = c k tk in
+		 if o ?< 0 then tget c k l
+		 else if o ?> 0 then tget c k r
+		 else Option.Some.{ tv })
 	else Option.None
 
-$ bucket_has : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> Int = \eqf k b =
-	any (\e = eqf k e.fst) b
+$ tremove : (`K -> `K -> Int) -> `K -> Tree `K `V -> Tree `K `V = \c k t =
+	when t is Tree.Node.{tk, tv, l, r, _} then
+		(let o = c k tk in
+		 if o ?< 0 then balance tk tv (tremove c k l) r
+		 else if o ?> 0 then balance tk tv l (tremove c k r)
+		 else tjoin l r)
+	else Tree.Leaf
 
-$ bucket_drop : (`K -> `K -> Int) -> `K -> List (Pair `K `V) -> List (Pair `K `V) = \eqf k b =
-	filter (\e = if eqf k e.fst then 0 else 1) b
+# Join two subtrees already ordered left < right: the right side's minimum
+# becomes the new root.
+$ tjoin : Tree `K `V -> Tree `K `V -> Tree `K `V = \l r =
+	when tmin r
+		is Option.Some.{p} then balance p.fst p.snd l (drop_min r)
+	else l
 
-# ---- standard hashes ----
+$ tmin : Tree `K `V -> Option (Pair `K `V) = \t =
+	when t is Tree.Node.{k, v, l, _, _} then
+		(when l is Tree.Leaf then Option.Some.{ pair k v } else tmin l)
+	else Option.None
 
-# Multiplicative byte hash, kept small (mod a prime) so intermediate values
-# never overflow.
-$ hash_str : Str -> Int = \s = hash_str_from s 0 5381
+$ tmax : Tree `K `V -> Option (Pair `K `V) = \t =
+	when t is Tree.Node.{k, v, _, r, _} then
+		(when r is Tree.Leaf then Option.Some.{ pair k v } else tmax r)
+	else Option.None
 
-$ hash_str_from : Str -> Int -> Int -> Int = \s i h =
-	if i ?= array_len s then h
-	else hash_str_from s (i + 1) ((h * 33 + array_get s i) % 1000003)
+$ drop_min : Tree `K `V -> Tree `K `V = \t =
+	when t is Tree.Node.{k, v, l, r, _} then
+		(when l is Tree.Leaf then r else balance k v (drop_min l) r)
+	else Tree.Leaf
 
-$ hash_int : Int -> Int = \n = if n ?< 0 then 0 - n else n
+$ tlist : Tree `K `V -> List (Pair `K `V) -> List (Pair `K `V) = \t acc =
+	when t is Tree.Node.{k, v, l, r, _} then
+		tlist l (pair k v :: tlist r acc)
+	else acc
+
+$ tfold : (`A -> `K -> `V -> `A) -> `A -> Tree `K `V -> `A = \f acc t =
+	when t is Tree.Node.{k, v, l, r, _} then
+		tfold f (f (tfold f acc l) k v) r
+	else acc
+
+$ tmapv : (`V -> `W) -> Tree `K `V -> Tree `K `W = \f t =
+	when t is Tree.Node.{k, v, l, r, h} then
+		Tree.Node.{ k, f v, tmapv f l, tmapv f r, h }
+	else Tree.Leaf

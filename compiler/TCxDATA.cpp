@@ -64,29 +64,29 @@ arith(
   };
 }
 
-// Comparison: any Int/Real combination -> Int.
 std::vector<Overload>
 cmp(
   const char *name, const char *I)
 {
+  const char *B = OP::TY_BOOL;
   return {
-    { { I, I, I }, OP::mono(name, I) },
-    { { OP::TY_REAL, OP::TY_REAL, I }, OP::mono(name, OP::TY_REAL) },
-    { { I, OP::TY_REAL, I }, OP::mono(name, OP::TY_REAL) },
-    { { OP::TY_REAL, I, I }, OP::mono(name, OP::TY_REAL) },
+    { { I, I, B }, OP::mono(name, I) },
+    { { OP::TY_REAL, OP::TY_REAL, B }, OP::mono(name, OP::TY_REAL) },
+    { { I, OP::TY_REAL, B }, OP::mono(name, OP::TY_REAL) },
+    { { OP::TY_REAL, I, B }, OP::mono(name, OP::TY_REAL) },
   };
 }
 
 // Equality: the numeric comparisons plus Str byte-equality (`?=` on two strings
-// -> Int, 1/0). Backs exact string pattern matching (see
+// -> Bool). Backs exact string pattern matching (see
 // doc/strings-and-arrays.md).
 std::vector<Overload>
 eq(
   const char *I)
 {
   std::vector<Overload> v = cmp(OP::ISEQ, I);
-  v.push_back(
-    { { OP::TY_STR, OP::TY_STR, I }, OP::mono(OP::ISEQ, OP::TY_STR) });
+  v.push_back({ { OP::TY_STR, OP::TY_STR, OP::TY_BOOL },
+                OP::mono(OP::ISEQ, OP::TY_STR) });
   return v;
 }
 
@@ -110,7 +110,7 @@ make_overload_db(
     { OP::NEG,
       { { { I, I }, OP::mono(OP::NEG, I) },
         { { OP::TY_REAL, OP::TY_REAL }, OP::mono(OP::NEG, OP::TY_REAL) } } },
-    { OP::NOT, { { { I, I }, OP::mono(OP::NOT, I) } } },
+    { OP::NOT, { { { OP::TY_BOOL, OP::TY_BOOL }, OP::mono(OP::NOT, I) } } },
     // `++` concatenation: Str x Str -> Str and Array x Array -> Array, both
     // implemented by one byte-concat (OP::CONCAT_IMPL).
     { OP::CONCAT,

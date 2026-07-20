@@ -84,7 +84,7 @@ struct Module
   vector<string> amalgam_dirs; // .cpp/.hpp here join the amalgamation
   vector<Exe>    exes;         // standalone binaries
   std::function<void(const Ctx &)> generate; // optional pre-build generation
-  vector<string> gen_deps;
+  vector<string>                   gen_deps;
 };
 
 // --- Process / filesystem helpers -------------------------------------------

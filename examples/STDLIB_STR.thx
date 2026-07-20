@@ -31,9 +31,27 @@ $ ck_parse  : Int = if (unwrap_or (to_int "-273") 0) + 273 ?= 0 then 0 else 1
 $ ck_parse_bad : Int = if is_none (to_int "12x") then 0 else 1
 $ ck_digit  : Int = if is_digit (at "a1" 1) then 0 else 1
 $ ck_space  : Int = if is_space (at "\t" 0) then 0 else 1
+$ ck_alnum  : Int = if is_alnum (at "a1" 0) then (if is_alnum (at "!" 0) then 1 else 0) else 1
+$ ck_case   : Int = if is_upper (at "Ab" 0) then (if is_lower (at "Ab" 1) then 0 else 1) else 1
+
+$ ck_cmp_lt : Int = if (cmp_str "abc" "abd") ?< 0 then 0 else 1
+$ ck_cmp_eq : Int = if (cmp_str "same" "same") ?= 0 then 0 else 1
+$ ck_cmp_pfx: Int = if (cmp_str "ab" "abc") ?< 0 then 0 else 1
+$ ck_byte   : Int = if (from_byte 65) ?= "A" then 0 else 1
+$ ck_concat : Int = if (STR.concat ["ab", "", "cd"]) ?= "abcd" then 0 else 1
+$ ck_padl   : Int = if (pad_left "7" 3) ?= "  7" then 0 else 1
+$ ck_padr   : Int = if (pad_right "7" 3) ?= "7  " then 0 else 1
+$ ck_padno  : Int = if (pad_left "long" 2) ?= "long" then 0 else 1
+$ ck_repl   : Int = if (replace "a,b,,c" "," ";") ?= "a;b;;c" then 0 else 1
+$ ck_replgrow : Int = if (replace "aa" "a" "aaa") ?= "aaaaaa" then 0 else 1
+$ ck_count  : Int = if (count "banana" "an") ?= 2 then 0 else 1
+$ ck_count0 : Int = if (count "banana" "") ?= 0 then 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_len + ck_at + ck_substr + ck_starts + ck_ends + ck_find
 	+ ck_miss + ck_split + ck_join + ck_lines + ck_trim + ck_upper
 	+ ck_lower + ck_rev + ck_rep + ck_fmt + ck_fmt0 + ck_parse
-	+ ck_parse_bad + ck_digit + ck_space
+	+ ck_parse_bad + ck_digit + ck_space + ck_alnum + ck_case
+	+ ck_cmp_lt + ck_cmp_eq + ck_cmp_pfx + ck_byte + ck_concat
+	+ ck_padl + ck_padr + ck_padno + ck_repl + ck_replgrow
+	+ ck_count + ck_count0
