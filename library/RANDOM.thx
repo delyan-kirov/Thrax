@@ -8,7 +8,6 @@
 #       are reproducible from a seed. Seed from the clock (`IO.now`) for a
 #       different run each time.
 
-$ with PAIR
 
 $ Rng : @struct =
 	state: Int,
@@ -19,16 +18,16 @@ $ new : Int -> Rng = \seed =
 	Rng.{ .state = if s ?= 0 then 1 else s }
 
 # A draw in [0, 2^31 - 1), and the generator to use for the next draw.
-$ next : Rng -> Pair Int Rng = \g =
+$ next : Rng -> {Int, Rng} = \g =
 	let s = (g.state * 48271) % 2147483647 in
-	pair s Rng.{ .state = s }
+	{s, Rng.{ .state = s }}
 
 # A draw in [0, n) (n <= 0 yields 0), and the advanced generator.
-$ next_below : Rng -> Int -> Pair Int Rng = \g n =
+$ next_below : Rng -> Int -> {Int, Rng} = \g n =
 	let d = next g in
-	if n <= 0 then pair 0 d.snd else pair (d.fst % n) d.snd
+	if n <= 0 then {0, d.1} else {d.0 % n, d.1}
 
 # A draw in [lo, hi] inclusive, and the advanced generator.
-$ next_range : Rng -> Int -> Int -> Pair Int Rng = \g lo hi =
+$ next_range : Rng -> Int -> Int -> {Int, Rng} = \g lo hi =
 	let d = next_below g ((hi - lo) + 1) in
-	pair (lo + d.fst) d.snd
+	{lo + d.0, d.1}

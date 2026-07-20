@@ -1,13 +1,12 @@
 @mod STDLIB_CORE
 
 # \file STDLIB_CORE.thx
-# \info The standard library's small core: `Option` (OPT), `Pair` (PAIR) and
+# \info The standard library's small core: `Option` (OPT), tuples and
 #       the integer helpers (MATH). A `$ with MOD` import makes the module's
 #       public names (and types) usable unqualified; everything stays
 #       reachable qualified (`OPT.is_some`, ...).
 
 $ with OPT
-$ with PAIR
 $ with MATH
 
 # ---- Option ----
@@ -22,11 +21,11 @@ $ ck_then   : Int =
 	let half = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
 	if (unwrap_or (opt_then half o) 99) ?= 99 then 0 else 1
 
-# ---- Pair ----
-$ p : Pair Int Str = pair 1 "one"
-$ ck_fst  : Int = if p.fst ?= 1 then 0 else 1
-$ ck_snd  : Int = if p.snd ?= "one" then 0 else 1
-$ ck_swap : Int = if (swap p).snd ?= 1 then 0 else 1
+# ---- tuples (the language's anonymous products) ----
+$ p : {Int, Str} = {1, "one"}
+$ ck_fst  : Int = if p.0 ?= 1 then 0 else 1
+$ ck_snd  : Int = if p.1 ?= "one" then 0 else 1
+$ ck_swap : Int = if {p.1, p.0}.1 ?= 1 then 0 else 1
 
 # ---- MATH ----
 $ ck_min   : Int = if (min 3 5) ?= 3 then 0 else 1

@@ -1497,6 +1497,7 @@ private:
   bool      settle_field_site(FieldSite &s);
   bool      settle_ready_field_sites(size_t ffrom);
   void      resolve_field_sites(size_t from);
+  void      ensure_tuple(size_t n);
   UT::Vu    intern(const std::string &s);
 
   // diagnostics
@@ -1967,6 +1968,8 @@ Checker::sig_to_type(
     auto       &c    = std::get<EX::TyCon>(sig->as);
     std::string name = std::string(c.name);
 
+    if (OP::is_tuple_name(c.name)) ensure_tuple(c.args.size());
+
     // A transparent alias used without arguments resolves to its target.
     // (Aliases are nullary for now; an alias applied to type arguments is left
     // as an ordinary con, so the arity check below reports it.)
@@ -2343,7 +2346,8 @@ Checker::type_pattern(
   {
     auto       &ps = std::get<EX::PatStruct>(p->as);
     std::string tn(ps.type_name);
-    auto        sit = m_structs.find(tn);
+    if (OP::is_tuple_name(ps.type_name)) ensure_tuple(ps.fields.size());
+    auto sit = m_structs.find(tn);
     if (sit == m_structs.end())
     {
       fail(ER::Code::TYPE_UNBOUND,
@@ -2680,6 +2684,7 @@ Checker::infer(
       return use;
     }
 
+    if (OP::is_tuple_name(sl.type_name)) ensure_tuple(sl.fields.size());
     auto sit = m_structs.find(tn);
     if (sit == m_structs.end())
     {
@@ -3384,11 +3389,24 @@ Checker::resolve_user_sites(
   m_usites.erase(m_usites.begin() + (long)from, m_usites.end());
 }
 
-// Settle one field access whose receiver is a known struct type: bind the
-// struct's parameters to the receiver's actual type arguments and unify the
-// field's type (at that instantiation) into the access's result var. The
-// receiver must already be a Con naming a struct; a missing field is reported
-// here. Marks the site done.
+void
+Checker::ensure_tuple(
+  size_t n)
+{
+  std::string nm = OP::tuple_name(n);
+  if (m_structs.count(nm)) return;
+  StructFields flds;
+  VarIds       params;
+  for (size_t k = 0; k < n; ++k)
+  {
+    Type *v = fresh();
+    params.push_back(std::get<TVar>(v->as).id);
+    flds.push_back({ std::to_string(k), v });
+  }
+  m_arity[nm]   = n;
+  m_structs[nm] = StructDef{ std::move(params), std::move(flds) };
+}
+
 bool
 Checker::settle_field_site(
   FieldSite &s)
@@ -3408,11 +3426,19 @@ Checker::settle_field_site(
       unify(s.result, subst(f.second, sub));
       return true;
     }
-  fail(ER::Code::TYPE_UNBOUND,
-       s.anchor,
-       "struct '%s' has no field '%s'",
-       rname.c_str(),
-       s.field.c_str());
+  if (OP::is_tuple_name(rname))
+    fail(ER::Code::TYPE_UNBOUND,
+         s.anchor,
+         "tuple '%s' has no element '.%s' (indices are 0..%zu)",
+         show(rt).c_str(),
+         s.field.c_str(),
+         sdef.fields.size() - 1);
+  else
+    fail(ER::Code::TYPE_UNBOUND,
+         s.anchor,
+         "struct '%s' has no field '%s'",
+         rname.c_str(),
+         s.field.c_str());
   return true;
 }
 
@@ -3962,7 +3988,14 @@ Checker::show(
   {
   case Kind::Con:
   {
-    TCon       &c   = std::get<TCon>(t->as);
+    TCon &c = std::get<TCon>(t->as);
+    if (OP::is_tuple_name(c.name)) // display as `{A, B}`, never `%tupleN`
+    {
+      std::string out = "{";
+      for (size_t i = 0; i < c.args.size(); ++i)
+        out += (i ? ", " : "") + show(c.args[i]);
+      return out + "}";
+    }
     std::string out = c.name;
     for (Type *arg : c.args)
     {

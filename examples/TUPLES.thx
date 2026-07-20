@@ -1,0 +1,65 @@
+@mod TUPLES
+
+# \file TUPLES.thx
+# \info Anonymous product types (tuples) of any size. `{A, B, ...}` is a
+#       structural product type: `{}` is the empty tuple (the unit type),
+#       `{A}` a one-element tuple, and there is no upper bound on the
+#       arity. Literals are `{a, b}`, elements are read positionally with
+#       `.0`, `.1`, ..., and `{p, q}` patterns destructure in `when` arms,
+#       `let` binders and lambda parameters. Under the hood a tuple is an
+#       ordinary anonymous struct, so there is nothing new at runtime.
+
+# The type former, in a signature: a pair of Int and Str.
+$ p : {Int, Str} = {42, "answer"}
+
+# Positional access, and chains (`n.1.0` reads through a nested tuple).
+$ chk_access : Int = if p.0 ?= 42 then 0 else 1
+
+$ nested : {Int, {Int, Int}} = {1, {2, 3}}
+$ chk_nested : Int = if nested.1.0 + nested.1.1 ?= 5 then 0 else 1
+
+# Tuples are first-class: function arguments, results, and generics.
+$ swap : {`A, `B} -> {`B, `A} = \t = {t.1, t.0}
+$ chk_swap : Int = if (swap p).1 ?= 42 then 0 else 1
+
+$ area : {Int, Int} -> Int = \d = d.0 * d.1
+$ chk_arg : Int = if area {6, 7} ?= 42 then 0 else 1
+
+# Patterns: a `when` arm, a `let` binder, and a lambda parameter all
+# destructure a tuple; sub-patterns nest (literals make the arm refutable).
+$ chk_when : Int =
+	when p
+		is {n, s} then (if n ?= 42 then (if s ?= "answer" then 0 else 1) else 1)
+	else 1
+
+$ chk_let : Int =
+	let {x, y} = {40, 2} in
+	if x + y ?= 42 then 0 else 1
+
+$ chk_lambda : Int = if (\{a, b} = a * 10 + b) {4, 2} ?= 42 then 0 else 1
+
+$ chk_refutable : Int =
+	when {0, 7}
+		is {0, x} then (if x ?= 7 then 0 else 1)
+		is {_, _} then 1
+	else 1
+
+# A triple, mixing element types.
+$ chk_triple : Int =
+	let t = {1, 2.5, "three"} in
+	if t.2 ?= "three" then (if t.0 ?= 1 then 0 else 1) else 1
+
+# A one-element tuple is a real (distinct) type, and arity is unbounded --
+# each size is registered by the checker on first use.
+$ single : {Str} = {"alone"}
+$ chk_single : Int =
+	when single is {s} then (if s ?= "alone" then 0 else 1) else 1
+
+$ chk_wide : Int =
+	let w = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18} in
+	if w.17 + w.0 ?= 19 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = chk_access + chk_nested + chk_swap + chk_arg + chk_when
+	+ chk_let + chk_lambda + chk_refutable + chk_triple + chk_single
+	+ chk_wide

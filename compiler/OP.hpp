@@ -65,6 +65,21 @@ inline constexpr const char *TY_BOOL
   = "Bool"; // core-defined union (core/PRELUDE.thx), erased to Int 1/0; NOT a
             // base type -- it is nominal, declared in the language itself
 
+inline constexpr const char *TUPLE_PREFIX = "%tuple";
+inline std::string
+tuple_name(
+  size_t n)
+{
+  return std::string{ TUPLE_PREFIX } + std::to_string(n);
+}
+inline bool
+is_tuple_name(
+  UT::Vu name)
+{
+  UT::Vu p{ TUPLE_PREFIX };
+  return name.size() > p.size() && name.substr(0, p.size()) == p;
+}
+
 inline constexpr const char *base_types[] = {
   TY_REAL,  TY_STR,    TY_PTR,    TY_INT8,  TY_INT16,
   TY_INT32, TY_INT64,  TY_NAT8,   TY_NAT16, TY_NAT32,
