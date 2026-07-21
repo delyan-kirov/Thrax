@@ -1,0 +1,53 @@
+@mod STDLIB_VEC
+
+# \file STDLIB_VEC.thx
+# \info The standard library's growable vector, `Vec `T`
+
+$ with VEC
+$ with OPT
+$ with LIST
+
+$ v : Vec Int = push (push (push (new {}) 10) 20) 30
+
+$ ck_len   : Int = if (len v) ?= 3 then 0 else 1
+$ ck_get   : Int = if (get_or v 1 0) ?= 20 then 0 else 1
+$ ck_oob   : Int = if is_some (get v 3) then 1 else 0
+$ ck_neg   : Int = if is_some (get v (0 - 1)) then 1 else 0
+$ ck_last  : Int = if (unwrap_or (last v) 0) ?= 30 then 0 else 1
+$ ck_empty : Int = if is_empty (new {}) then 0 else 1
+$ ck_nonem : Int = if is_empty v then 1 else 0
+
+# Mutators are functional: the original is undisturbed.
+$ ck_set    : Int = if (get_or (set v 0 99) 0 0) ?= 99 then 0 else 1
+$ ck_shared : Int = if (get_or v 0 0) ?= 10 then 0 else 1
+$ ck_setoob : Int = if (len (set v 9 99)) ?= 3 then 0 else 1
+$ ck_push   : Int = if (len (push v 40)) ?= 4 then 0 else 1
+$ ck_pushed : Int = if (len v) ?= 3 then 0 else 1
+
+# fill makes n copies; whole-vector ops round-trip through List.
+$ ck_fill  : Int = if (fold (\a x = a + x) 0 (fill 4 7)) ?= 28 then 0 else 1
+$ ck_froml : Int = if (len (from_list [1, 2, 3, 4])) ?= 4 then 0 else 1
+$ ck_tol   : Int = if (sum (to_list (from_list [1, 2, 3, 4]))) ?= 10 then 0 else 1
+$ ck_map   : Int =
+	if (sum (to_list (map (\x = x * 2) (from_list [1, 2, 3])))) ?= 12
+	then 0 else 1
+$ ck_fold  : Int = if (fold (\a x = a * 10 + x) 0 v) ?= 1230 then 0 else 1
+
+# Vec is generic: elements can be any type, tuples included.
+$ pts : Vec {Int, Int} = push (push (new {}) {1, 2}) {3, 4}
+$ ck_tup : Int =
+	when get pts 1 is Option.Some.{p} then
+		(if (p.0 + p.1) ?= 7 then 0 else 1)
+	else 1
+
+# A larger build loop: the native backend reuses the unique spine in place.
+$ ck_big : Int =
+	let big = LIST.foldl (\a x = push a x) (new {}) (range 0 500) in
+	if (len big) ?= 500 then
+		(if (fold (\a x = a + x) 0 big) ?= 124750 then 0 else 1)
+	else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_len + ck_get + ck_oob + ck_neg + ck_last + ck_empty
+	+ ck_nonem + ck_set + ck_shared + ck_setoob + ck_push + ck_pushed
+	+ ck_fill + ck_froml + ck_tol + ck_map + ck_fold + ck_tup + ck_big

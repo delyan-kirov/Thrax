@@ -1,0 +1,57 @@
+@mod VEC
+
+# \file VEC.thx
+# \info The generic growable vector `Vec `T` of boxed values
+
+$ with OPT
+$ with LIST
+
+$ new : {} -> Vec `T = \u = vec_new {}
+
+# `n` copies of `x` ("vec_fill 3 0" = [0, 0, 0]).
+$ fill : Int -> `T -> Vec `T = \n x = vec_fill n x
+
+$ len : Vec `T -> Int = \v = vec_len v
+
+$ is_empty : Vec `T -> Bool = \v = (vec_len v) ?= 0
+
+# Bounds-checked element access.
+$ get : Vec `T -> Int -> Option `T = \v i =
+	if i ?< 0 then Option.None
+	else if i >= vec_len v then Option.None
+	else Option.Some.{ vec_get v i }
+
+$ get_or : Vec `T -> Int -> `T -> `T = \v i d = unwrap_or (get v i) d
+
+# A copy with the element at `i` replaced; out-of-range leaves it unchanged.
+$ set : Vec `T -> Int -> `T -> Vec `T = \v i x =
+	if i ?< 0 then v
+	else if i >= vec_len v then v
+	else vec_set v i x
+
+$ push : Vec `T -> `T -> Vec `T = \v x = vec_push v x
+
+$ last : Vec `T -> Option `T = \v = get v ((vec_len v) - 1)
+
+# ---- whole-vector operations ----
+
+$ from_list : List `T -> Vec `T = \xs =
+	LIST.foldl (\v x = vec_push v x) (vec_new {}) xs
+
+$ to_list : Vec `T -> List `T = \v = suffix v 0
+
+$ suffix : Vec `T -> Int -> List `T = \v i =
+	if i >= vec_len v then [] else vec_get v i :: suffix v (i + 1)
+
+$ map : (`A -> `B) -> Vec `A -> Vec `B = \f v = map_from f v 0 (vec_new {})
+
+$ map_from : (`A -> `B) -> Vec `A -> Int -> Vec `B -> Vec `B = \f v i acc =
+	if i >= vec_len v then acc
+	else map_from f v (i + 1) (vec_push acc (f (vec_get v i)))
+
+$ fold : (`A -> `T -> `A) -> `A -> Vec `T -> `A = \f acc v =
+	fold_from f acc v 0
+
+$ fold_from : (`A -> `T -> `A) -> `A -> Vec `T -> Int -> `A = \f acc v i =
+	if i >= vec_len v then acc
+	else fold_from f (f acc (vec_get v i)) v (i + 1)

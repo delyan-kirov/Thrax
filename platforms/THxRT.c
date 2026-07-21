@@ -158,6 +158,8 @@ typedef struct
 #define THX_STR "@str"
 
 static const BuiltinArity g_builtins[] = {
+  { "vec_new", 1 },     { "vec_fill", 2 },     { "vec_len", 1 },
+  { "vec_get", 2 },     { "vec_set", 3 },      { "vec_push", 2 },
   { "array_len", 1 },   { "array_cap", 1 },    { "array_get", 2 },
   { "array_push", 2 },  { "array_set", 3 },    { "array_slice", 3 },
   { "%concat", 2 },     { "?=" THX_STR, 2 },   { "%array", 1 },
@@ -220,6 +222,79 @@ builtin_dispatch(
   {
     long long n = THxVALUE_as_int(a[0]);
     return THxRT_bytes(n < 0 ? 0 : (size_t)n);
+  }
+
+  /* The generic vector `Vec T`: a variant tagged "%vec" whose payload fields
+   * are the elements (mirrors the interpreter's representation, so no new
+   * value kind). Reads borrow-and-retain; mutators build a fresh vector via
+   * THxRT_variant (which retains the fields), except set/push on a uniquely
+   * owned spine, which mutate it in place like the byte vectors. */
+  if (!strcmp(k, "vec_new")) return THxRT_variant("%vec", "%vec", 0, NULL);
+  if (!strcmp(k, "vec_fill"))
+  {
+    long long n = THxVALUE_as_int(a[0]);
+    if (n <= 0) return THxRT_variant("%vec", "%vec", 0, NULL);
+    Value **fs = (Value **)THxMEM_alloc((size_t)n * sizeof(Value *));
+    for (long long i = 0; i < n; ++i) fs[i] = a[1];
+    Value *r = THxRT_variant("%vec", "%vec", (size_t)n, fs);
+    THxMEM_free(fs);
+    return r;
+  }
+  if (!strcmp(k, "vec_len")) return THxRT_int((long long)a[0]->u.var.n);
+  if (!strcmp(k, "vec_get"))
+  {
+    long long i = THxVALUE_as_int(a[1]);
+    THxCHECK_ASSERT(i >= 0 && (size_t)i < a[0]->u.var.n,
+                    "vec_get: index out of bounds");
+    /* Borrowed return: the vec (alive in the operand row until the bounce
+     * drain) keeps the element alive; do_ret takes its own reference. */
+    return a[0]->u.var.f[i];
+  }
+  if (!strcmp(k, "vec_set"))
+  {
+    Value    *v = a[0];
+    long long i = THxVALUE_as_int(a[1]);
+    THxCHECK_ASSERT(i >= 0 && (size_t)i < v->u.var.n,
+                    "vec_set: index out of bounds");
+    if (THxMEM_unique(v))
+    {
+      THxMEM_retain(a[2]);
+      THxK_mark_escape(a[2]);
+      THxMEM_release(v->u.var.f[i]);
+      v->u.var.f[i] = a[2];
+      THxMEM_retain(v);
+      return v;
+    }
+    Value **fs = (Value **)THxMEM_alloc(v->u.var.n * sizeof(Value *));
+    memcpy(fs, v->u.var.f, v->u.var.n * sizeof(Value *));
+    fs[i]    = a[2];
+    Value *r = THxRT_variant("%vec", "%vec", v->u.var.n, fs);
+    THxMEM_free(fs);
+    return r;
+  }
+  if (!strcmp(k, "vec_push"))
+  {
+    Value *v = a[0];
+    size_t n = v->u.var.n;
+    if (THxMEM_unique(v))
+    {
+      Value **nf = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
+      if (n) memcpy(nf, v->u.var.f, n * sizeof(Value *));
+      nf[n] = a[1];
+      THxMEM_retain(a[1]);
+      THxK_mark_escape(a[1]);
+      if (v->u.var.f) THxMEM_free(v->u.var.f);
+      v->u.var.f = nf;
+      v->u.var.n = n + 1;
+      THxMEM_retain(v);
+      return v;
+    }
+    Value **fs = (Value **)THxMEM_alloc((n + 1) * sizeof(Value *));
+    if (n) memcpy(fs, v->u.var.f, n * sizeof(Value *));
+    fs[n]    = a[1];
+    Value *r = THxRT_variant("%vec", "%vec", n + 1, fs);
+    THxMEM_free(fs);
+    return r;
   }
 
   /* Growable byte-vector reads (see doc/strings-and-arrays.md). */

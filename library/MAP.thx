@@ -37,6 +37,14 @@ $ new_str : Map Str `V = new cmp_str
 $ from_list : (`K -> `K -> Int) -> List {`K, `V} -> Map `K `V = \c ps =
 	foldl (\m p = insert m p.0 p.1) (new c) ps
 
+# Lexicographic ordering on pairs, composed from element orderings the
+# standard comparison for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)`
+# orders a `Map {Int, Str} `V`.
+$ cmp_pair : (`A -> `A -> Int) -> (`B -> `B -> Int)
+             -> {`A, `B} -> {`A, `B} -> Int = \ca cb x y =
+	let c = ca x.0 y.0 in
+	if c ?= 0 then cb x.1 y.1 else c
+
 # ---- operations ----
 
 $ insert : Map `K `V -> `K -> `V -> Map `K `V = \m k v =

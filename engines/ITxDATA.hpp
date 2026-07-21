@@ -248,6 +248,51 @@ const std::unordered_map<std::string, Impl> impls{
         UT_FAIL_IF(i < 0 || (size_t)i >= s.size()); // out-of-bounds read
         return mk_int((unsigned char)s[(size_t)i]);
       } } },
+  { OP::VEC_NEW,
+    { 1,
+      [](const std::vector<pVal> &) {
+        return mk(Value{
+          VVariant{ UT::Vu{ OP::VEC_REP }, UT::Vu{ OP::VEC_REP }, {} } });
+      } } },
+  { OP::VEC_FILL,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        ssize_t           n = as_int(a[0]);
+        std::vector<pVal> fs((size_t)(n < 0 ? 0 : n), a[1]);
+        return mk(Value{ VVariant{
+          UT::Vu{ OP::VEC_REP }, UT::Vu{ OP::VEC_REP }, std::move(fs) } });
+      } } },
+  { OP::VEC_LEN,
+    { 1,
+      [](const std::vector<pVal> &a) {
+        return mk_int((ssize_t)std::get<VVariant>(a[0]->as).fields.size());
+      } } },
+  { OP::VEC_GET,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        const std::vector<pVal> &fs = std::get<VVariant>(a[0]->as).fields;
+        ssize_t                  i  = as_int(a[1]);
+        UT_FAIL_IF(i < 0 || (size_t)i >= fs.size()); // out-of-bounds read
+        return fs[(size_t)i];
+      } } },
+  { OP::VEC_SET,
+    { 3,
+      [](const std::vector<pVal> &a) {
+        std::vector<pVal> fs = std::get<VVariant>(a[0]->as).fields; // copy
+        ssize_t           i  = as_int(a[1]);
+        UT_FAIL_IF(i < 0 || (size_t)i >= fs.size());
+        fs[(size_t)i] = a[2];
+        return mk(Value{ VVariant{
+          UT::Vu{ OP::VEC_REP }, UT::Vu{ OP::VEC_REP }, std::move(fs) } });
+      } } },
+  { OP::VEC_PUSH,
+    { 2,
+      [](const std::vector<pVal> &a) {
+        std::vector<pVal> fs = std::get<VVariant>(a[0]->as).fields; // copy
+        fs.push_back(a[1]);
+        return mk(Value{ VVariant{
+          UT::Vu{ OP::VEC_REP }, UT::Vu{ OP::VEC_REP }, std::move(fs) } });
+      } } },
   // Growable byte-vector mutators. The interpreter is the semantic reference:
   // it always returns a fresh value (value semantics are identical to the
   // native backend's opportunistic in-place, which is a pure optimization).

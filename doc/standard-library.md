@@ -48,11 +48,12 @@ there is no Pair type.
 | `STR`  | `len`, `at`, `substr`, `eq`, `cmp_str`, `from_byte`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `concat`, `trim`(`_left`/`_right`), `repeat`, `pad_left`, `pad_right`, `replace`, `count`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`/`is_alnum`/`is_upper`/`is_lower`, `from_int`, `to_int` |
 | `MATH` | Int: `min`, `max`, `cmp_int`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow`; Real: `pi`, `euler`, `min`, `max`, `abs`, `clamp`, `sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod` (libm via `C`) |
 | `IO`   | `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`, `read_file`, `write_file`, `append_file`, `remove_file`, `env`, `now` |
-| `MAP`  | `Map \`K \`V` (immutable AVL tree); `new`, `new_str`, `new_int`, `from_list`, `insert`, `insert_with`, `get`, `get_or`, `has`, `remove`, `update`, `size`, `is_empty`, `to_list`, `keys`, `values`, `fold`, `map_values`, `filter`, `merge`, `min_entry`, `max_entry` |
+| `MAP`  | `Map \`K \`V` (immutable AVL tree); `new`, `new_str`, `new_int`, `from_list`, `cmp_pair`, `insert`, `insert_with`, `get`, `get_or`, `has`, `remove`, `update`, `size`, `is_empty`, `to_list`, `keys`, `values`, `fold`, `map_values`, `filter`, `merge`, `min_entry`, `max_entry` |
 | `RESULT` | `Result` (`Ok`/`Err`), `is_ok`, `is_err`, `unwrap_or`, `map_ok`, `map_err`, `and_then`, `ok_opt`; the `Fail` effect, `try`, `try_or`, `untry`, `expect` |
 | `RANDOM` | `Rng` (Lehmer / MINSTD), `new`, `next`, `next_below`, `next_range` |
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
+| `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`); importing both is fine -- overloading resolves by type,
@@ -65,11 +66,29 @@ Haskell's `Data.Map` -- polymorphic in key and value with no type classes:
 the map STORES its key ordering (a three-way `cmpf`, strcmp convention) as a
 field. `new` takes the comparison; `new_str`/`new_int` bake in the common
 keys (`STR.cmp_str`, `MATH.cmp_int`). Lookup, insert and remove are
-O(log n); `to_list`/`keys`/`fold` visit entries in ascending key order. Maps
-are values: `insert`/`remove` return an updated copy and never disturb the
-original -- structural sharing makes that cheap (path copying only). A
-MUTABLE hash table (Rust/Jai flavor) is future work gated on generic mutable
-storage; see doc/stdlib-design.md.
+O(log n); `to_list`/`keys`/`fold` visit entries in ascending key order.
+`cmp_pair` composes two element orderings into the lexicographic ordering on
+tuples, for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)` orders a
+`Map {Int, Str} \`V`. Maps are values: `insert`/`remove` return an updated
+copy and never disturb the original -- structural sharing makes that cheap
+(path copying only). A MUTABLE hash table (Rust/Jai flavor) is future work,
+now unblocked by `Vec`; see doc/stdlib-design.md.
+
+### The vector
+
+`Vec \`T` is the generic growable vector: O(1) indexed access over elements
+of any type (the byte vectors `Str`/`Array` cover the Int-byte case). `Vec`
+is an OPAQUE core type -- the type checker knows only its name and arity;
+the behavior lives in the built-in primitives `vec_new` / `vec_fill` /
+`vec_len` / `vec_get` / `vec_set` / `vec_push` (reserved names, like the
+`array_*` family), and `library/VEC.thx` is the derived surface: `get`
+returns Option and `set` leaves the vector unchanged out of range (the raw
+primitives FAULT), plus `from_list`/`to_list`, `map`/`fold`. At runtime a
+Vec is a variant tagged `"%vec"` whose payload fields are the elements, so
+neither engine grew a new value kind. A Vec is a VALUE: mutators return an
+updated vector and never disturb the original; the native backend reuses a
+uniquely-owned (rc==1) spine in place for `set`/`push`, the same
+opportunistic trick as the byte vectors.
 
 ### Fallible code: Result and the Fail effect
 
@@ -114,7 +133,8 @@ prelude's `assert` and quick scripts.
 
 ## Testing
 
-`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO}.thx` exercise the
+`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO,SET,PATH,VEC}.thx`
+exercise the
 library and run in BOTH engines via the combined runner (tests/MAIN.thx):
 `./build test` (interpreter) and `./build native-test` (C backend). The IO
 test round-trips a file under /tmp and cleans up after itself; the MAP test
