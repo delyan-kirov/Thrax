@@ -207,8 +207,10 @@ struct Handle
 };
 
 // A foreign binding (the body of an FFI global), carried through unchanged.
+// `lib` is symbolic ("libc", "raylib"); resolution is the consumer's job.
 struct Extern
 {
+  UT::Vu          abi;
   UT::Vu          symbol;
   UT::Vu          lib;
   UT::Vec<UT::Vu> arg_types;

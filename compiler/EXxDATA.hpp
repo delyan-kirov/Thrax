@@ -275,10 +275,15 @@ struct ExStr
 {
   UT::Vu value;
 };
-// `@extern.{ "symbol", "lib" }` -- a foreign binding. Only valid as a global
-// body; its type comes from the enclosing global's signature.
+// `@extern "C" "symbol" "lib"` -- a foreign binding. Only valid as a global
+// body; its type comes from the enclosing global's signature. `abi` names the
+// foreign calling convention ("C" today; "js" reserved for wasm imports).
+// `lib` is SYMBOLIC ("libc", "raylib") -- where the library actually lives is
+// resolved at the edge (FF's dlopen for the interpreter host, the link line
+// for the native backend), never spelled in source.
 struct ExExtern
 {
+  UT::Vu abi;
   UT::Vu symbol;
   UT::Vu lib;
 };

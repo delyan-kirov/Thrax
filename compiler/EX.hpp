@@ -106,7 +106,7 @@ private:
   UT_NODISCARD Expr *mk_let(UT::Vu var, Expr *val, Expr *body);
   UT_NODISCARD Expr *mk_fndef(UT::Vu param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::Vu name, Ty *sig, Expr *def);
-  UT_NODISCARD Expr *mk_extern(UT::Vu symbol, UT::Vu lib);
+  UT_NODISCARD Expr *mk_extern(UT::Vu abi, UT::Vu symbol, UT::Vu lib);
   UT_NODISCARD Expr *mk_field(Expr *record, UT::Vu field);
   UT_NODISCARD Ty   *mk_ty(Ty t);
   UT_NODISCARD Pattern *alloc_pat(Pattern p);

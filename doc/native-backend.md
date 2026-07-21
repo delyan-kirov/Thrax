@@ -145,21 +145,31 @@ anything (it is retained as a fallback seam).
 
 ### Foreign calls (FFI)
 
-`@extern.{ "symbol", "library" }` compiles to a **direct, typed C call** no
-libffi. For each call site `CC::emit_externs` emits a wrapper that resolves the
-symbol once with `dlsym` (so there is no clash with the runtime's own
-`<stdio.h>`/`<stdlib.h>` declarations, and any library works), calls it through a
-function pointer whose type is built from the Thrax signature (`CC::c_type`
-mirrors `FF::desc_of`), and marshals arguments/result (`Str`/`Array` pass their
-byte pointer, `Ptr` is an integer address, `Real` a double, a `{}` arg is
-dropped, a `{}` result yields unit). The wrappers fill the `THxRT_extern_table`
-the runtime dispatches `T_EXTERN` through; the value side mirrors builtins
-(curried, fires when saturated). A program that uses FFI links with `-ldl`
-(`CC::uses_ffi`; `--build` adds it automatically):
+`@extern "C" "symbol" "lib"` compiles to a **direct, typed C call** -- no
+libffi, and no dlopen either: generated programs let the SYSTEM LINKER
+resolve every foreign symbol (statically or dynamically, per what it finds).
+For each call site `CC::emit_externs` declares the symbol via an asm label
+(`extern int64_t THx_sym_0(char*) __asm__("puts");` -- the C identifier is
+ours, so there is no clash with the runtime's own `<stdio.h>`/`<stdlib.h>`
+declarations; the assembler symbol is the real one), with a prototype built
+from the Thrax signature (`CC::c_type` mirrors `FF::desc_of`), and marshals
+arguments/result (`Str`/`Array` pass their byte pointer, `Ptr` is an integer
+address, `Real` a double, a `{}` arg is dropped, a `{}` result yields unit).
+The wrappers fill the `THxRT_extern_table` the runtime dispatches `T_EXTERN`
+through; the value side mirrors builtins (curried, fires when saturated).
+`@extern` names libraries SYMBOLICALLY ("libc", "libm", "raylib"); the link
+line carries one flag per library (`CC::link_flags` -- libc implicit,
+"libm" -> `-lm`, "raylib" -> `-lraylib`, an explicit path verbatim;
+`--build` adds them automatically, and the generated file's header comment
+prints the exact cc line):
 
 ```sh
-thrax --emit-c FILE.thx > prog.c && cc -O2 prog.c -ldl -o prog
+thrax --emit-c FILE.thx > prog.c && cc -O2 prog.c -lm -o prog
 ```
+
+The interpreter keeps dlopen (libffi + the host soname table in
+`TG::Target::soname`); dlopen-vs-link is exactly the interpreter/native
+split, which is what a no-dlopen target (wasm) needs.
 
 ## Algebraic effects (the CEK driver)
 

@@ -80,10 +80,10 @@ struct Target
     return 32 == ptr_bits() ? OP::TY_NAT32 : OP::TY_NAT64;
   }
 
-  // The C library's runtime name on this target. Interim: baked into the
-  // generated `C.thx` externs by DR until symbolic library names land
-  // (doc/platform-abstraction.md section 3.3), when this becomes a
-  // resolve-at-the-edge detail.
+  // The C library's runtime name on this target. Source code never spells
+  // this: `@extern` names libraries SYMBOLICALLY ("libc") and consumers
+  // resolve through soname() below at the last possible moment
+  // (doc/platform-abstraction.md section 3.3).
   constexpr const char *
   libc_soname() const
   {
@@ -111,6 +111,34 @@ struct Target
   has_dlopen() const
   {
     return Os::Wasi != os;
+  }
+
+  // Resolve a symbolic `@extern` library name to this target's runtime
+  // loadable name. "libc"/"libm" map to the known C/math libraries; a name
+  // containing '.' or '/' is an explicit soname/path and passes through
+  // verbatim (user's responsibility); anything else gets the platform's
+  // conventional decoration ("raylib" -> "libraylib.so" / "libraylib.dylib"
+  // / "raylib.dll"; a leading "lib" is not doubled). The native backend does
+  // NOT use this: it turns the symbolic name into a link-line flag instead.
+  std::string
+  soname(
+    UT::Vu lib) const
+  {
+    if (lib == "libc") return libc_soname();
+    if (lib == "libm") return libm_soname();
+    if (lib.find('.') != UT::Vu::npos || lib.find('/') != UT::Vu::npos)
+      return std::string(lib);
+    std::string base{ lib };
+    switch (os)
+    {
+    case Os::Linux:
+      return (base.starts_with("lib") ? base : "lib" + base) + ".so";
+    case Os::Macos:
+      return (base.starts_with("lib") ? base : "lib" + base) + ".dylib";
+    case Os::Windows: return base + ".dll";
+    case Os::Wasi   : return base; // no runtime loading; never dlopened
+    }
+    return base;
   }
 
   // Canonical spelling of a base-type name for THIS target: `Int`/`Nat` fold

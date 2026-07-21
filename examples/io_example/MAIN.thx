@@ -1,17 +1,17 @@
 @mod MAIN
 
-# FFI / IO demo. `@extern.{ "symbol", "library" }` binds a C function; its
+# FFI / IO demo. `@extern "C" "symbol" "lib"` binds a C function; its
 # argument/result marshalling types come from the signature. Run with the FFI
 # build:  make THRAX_3RD_PARTY_ON=1  &&  ./bin/thrax dat/io_example
 #
 # `puts` writes the string + a newline to stdout and returns a non-negative Int.
-$ puts : Str -> Int = @extern.{ "puts", "libc.so.6" }
+$ puts : Str -> Int = @extern "C" "puts" "libc"
 
 # Raw heap via libc. `Ptr` marshals as a machine pointer; sizes go as `Int`
 # (a plain integer literal is `Int`, which libc's size_t accepts).
-$ malloc : Int -> Ptr               = @extern.{ "malloc", "libc.so.6" }
-$ memset : Ptr -> Int -> Int -> Ptr = @extern.{ "memset", "libc.so.6" }
-$ free   : Ptr -> {}                = @extern.{ "free",   "libc.so.6" }
+$ malloc : Int -> Ptr               = @extern "C" "malloc" "libc"
+$ memset : Ptr -> Int -> Int -> Ptr = @extern "C" "memset" "libc"
+$ free   : Ptr -> {}                = @extern "C" "free" "libc"
 $ ok = 0
 
 # Allocate a 64-byte block, use it (fill with 'A' = 65), and ALWAYS release it

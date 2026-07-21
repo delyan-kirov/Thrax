@@ -143,7 +143,10 @@ call(
   const std::string              &ret_type,
   const std::vector<Slot>        &args)
 {
-  std::string libs{ lib };
+  // The interpreter runs programs for the host, so the host target resolves
+  // the symbolic library name ("libc" -> "libc.so.6" here and now -- the
+  // name never appears in source or IR as a soname).
+  std::string libs = TG::host().soname(lib);
   std::string syms{ symbol };
 
   size_t n = args.size();

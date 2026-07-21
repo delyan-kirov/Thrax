@@ -1,11 +1,19 @@
 # Platform Abstraction
 
-**Status:** Phases 0 and 1 DONE (2026-07-18): the latent FFI/CC bugs are
-fixed, `TG::Target` exists and is threaded through DR/TC/CC (`--target=` flag,
-host-only), `OP.hpp`'s `#if` and the `THxRT.c` re-derivation are deleted, the
-emitted C carries the `#define THX_INT` + `_Static_assert` domino. Phases 2-5
-(symbolic sonames, THxPLAT/THxDL, cross toolchains, wasm/32-bit) not started.
-**Date:** 2026-07-18.
+**Status:** Phases 0, 1 and 2 DONE. 0+1 (2026-07-18): the latent FFI/CC bugs
+are fixed, `TG::Target` exists and is threaded through DR/TC/CC (`--target=`
+flag, host-only), `OP.hpp`'s `#if` and the `THxRT.c` re-derivation are
+deleted, the emitted C carries the `#define THX_INT` + `_Static_assert`
+domino. Phase 2 (2026-07-21, revised form -- see section 3.3): `@extern` is
+now `@extern "C" "symbol" "lib"` with SYMBOLIC library names; the
+interpreter resolves them to host sonames at dlopen time
+(`TG::Target::soname`), the native backend emits DIRECT linker-resolved
+calls via asm-label declarations plus link flags (`CC::link_flags`) --
+generated programs never dlopen. Phases 3-5 (THxPLAT/THxDL, cross
+toolchains, wasm/32-bit) not started; the revised sequencing (section 4)
+makes wasm the FIRST cross target, en route to the compiler-in-browser
+playground and the showcase website.
+**Date:** 2026-07-21 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
 where platform-specific knowledge is allowed to live. Companion to
@@ -50,7 +58,7 @@ Marked FIXMEs:
 | Site | Leak |
 |---|---|
 | `compiler/OP.hpp:49` | `TY_INT`/`TY_NAT` chosen by the compiler binary's own pointer width (`#if __SIZEOF_POINTER__`). |
-| `app/DR.cpp:170` | `THX_LIBC` soname (`libc.so.6`/`msvcrt.dll`) hardcoded, baked into IR extern strings at frontend time. |
+| `app/DR.cpp:170` | `THX_LIBC` soname (`libc.so.6`/`msvcrt.dll`) hardcoded, baked into IR extern strings at frontend time. FIXED by phase 2: libs are symbolic, `THX_LIBC` deleted. |
 | `platforms/THxRT.c:153` | Runtime independently re-derives `THX_INT` from *its* build; must agree with (1) but nothing enforces it. |
 
 Unmarked, found by audit:
@@ -161,22 +169,39 @@ Koka's split, enforced:
   emitting raw `dlopen` calls and `#include <dlfcn.h>`; it calls the seam,
   which is already baked in with the rest of the runtime.
 
-### 3.3 Library names are symbolic; sonames resolve at the edge
+### 3.3 Library names are symbolic; resolution is the consumer's job (DONE)
 
-The IR must never contain `"libc.so.6"`. `@extern` grows the convention that a
-lib name without a dot/slash is **symbolic** (`"c"`, `"m"`, `"raylib"`), and
-each consumer resolves it as late as possible:
+The declaration form is `@extern "C" "symbol" "lib"` -- plain application
+shape: the ABI first (`"C"` is the only one today; `"js"` is reserved for
+wasm imports), the symbol, then the SYMBOLIC library name (`"libc"`,
+`"libm"`, `"raylib"`). No path or soname ever appears in source or IR, and
+each consumer resolves as late as possible -- dlopen-vs-link IS the
+interpreter/native split:
 
-- `FF` (interpreter, host): symbolic -> host soname table at `dlopen` time.
-- `CC` (native, target): symbolic -> target soname (from `Target`) at emit
-  time -- or, where the platform links libc implicitly (everywhere, really),
-  the "c" library lowers to a *direct call* to the named symbol instead of a
-  `THxDL_sym` lookup, which is also what wasm needs (no dlopen) and removes
-  `-ldl` from programs that only use libc.
-- `DR`'s generated `C.thx` writes `"c"`, and `THX_LIBC` is deleted.
+- `FF` (interpreter, host): `TG::Target::soname` maps the symbolic name to a
+  host loadable name at `dlopen` time ("libc" -> `libc.so.6` /
+  `libSystem.B.dylib` / `msvcrt.dll`, "libm" -> where the math symbols live,
+  "raylib" -> `libraylib.so` with the platform's decoration; a name
+  containing '.' or '/' passes verbatim, user's responsibility).
+- `CC` (native, target): every foreign symbol is a DIRECT call the system
+  linker resolves, statically or dynamically per what it finds. The
+  declaration uses an asm label (`extern int64_t THx_sym_0(char*)
+  __asm__("puts");`) so the C identifier cannot collide with the libc
+  headers the inlined runtime includes. Generated programs contain no
+  dlopen and need no `-ldl`; `CC::link_flags` derives one flag per library
+  ("libc" implicit, "libm" -> `-lm`, "raylib" -> `-lraylib`, paths
+  verbatim), `--build` applies them, and the generated header comment
+  prints the exact cc line. This is also what wasm needs (no dlopen).
+- `DR`'s generated `C.thx` writes `"libc"`/`"libm"`.
 
-An explicit path (`"./libfoo.so"`, `"foo.dll"`) stays verbatim -- user's
-responsibility, unchanged.
+Still to come here: SEARCH PATHS and the link set as project data, fed from
+Thrax itself via `@run` + a `Build` compiler API (`@run Build.lib "m"`,
+`@run Build.lib_path "./vendor"`) -- the Jai "build is a program" door,
+opened a crack. `@run <expr>` generalizes the existing `@assert` CTFE
+machinery (declaration-level first: value discarded, effects on the
+compilation model; expression-position splicing later). The ABI slot is
+where `"js"` externs for wasm imports will land (native wasm32: emitted
+import attributes; browser interpreter: the host-table trampolines).
 
 ### 3.4 Word size: `Int` is the target word, decided in one place
 
@@ -237,24 +262,53 @@ House rule applies: one variable per phase, suites green at every step,
   spelling), `CC`. Delete the `OP.hpp` `#if` and `TY_INT`/`TY_NAT` constants.
   `CC` emits `#define THX_INT` + the `_Static_assert` domino; delete the
   `THxRT.c` sniff. IR byte-identical on the host.
-- **Phase 2 -- Symbolic libs.** `C.thx` says `"c"`; `FF` gets the host soname
-  table; `CC` lowers `"c"` externs to direct calls (drops `-ldl` for
-  libc-only programs). Delete `THX_LIBC`. Rebaseline `--ir` (extern lib
-  strings change).
+- **Phase 2 (DONE, 2026-07-21, revised) -- Symbolic libs, direct native
+  calls.** Landed stronger than originally sketched: `@extern` became
+  `@extern "C" "symbol" "lib"` (ABI slot for future `"js"`), ALL native
+  externs are direct linker-resolved calls via asm labels (not just libc),
+  generated programs never dlopen, `CC::link_flags` + `--build` own the
+  link line, `TG::Target::soname` owns interpreter resolution. `THX_LIBC`
+  is gone. `--ir` rebaselined (extern lib strings changed).
+
+The goal driving the rest of the sequence (decided 2026-07-21): **wasm as
+the first cross target**, en route to a static showcase WEBSITE with the
+interpreter embedded in the page. Wasm forces the same discipline Windows
+would have (and more: no dlopen at all, 32-bit), and wasi-sdk/wasmtime are
+easier to hold in nix than mingw/wine; Windows moves after wasm.
+
+- **Phase 2.5 -- `@run` + the `Build` compiler API.** Declaration-level
+  `@run <expr>` (generalizing `@assert`'s CTFE: IT evaluates at build, value
+  discarded) and an auto-injected `Build` namespace of compile-time-only
+  intrinsics, starting with exactly `lib : Str -> {}` and
+  `lib_path : Str -> {}` feeding the link set / search paths -- so projects
+  declare their libraries in Thrax, serving both engines. (Jai's #run;
+  expression-position `@run` splicing literal-serializable values comes
+  later.)
 - **Phase 3 -- Runtime porting layer.** Add `platforms/THxPLAT.h` +
-  `platforms/THxDL.{h,c}` (POSIX + Win32 + wasi-stub); `CC` emits calls to the
-  seam only; `Value` int payload becomes `THX_INT_T`. Add the `build.cpp`
-  platform-macro gate over `compiler/`, `engines/`, `app/`, `utilities/`
-  (UTxBUILD's shim migrates onto `THxPLAT` detection).
-- **Phase 4 -- First real cross target.** `TARGET_*` prelude constants +
-  `Toolchain` table; enable `--target=x86_64-windows-gnu` (via mingw or
-  `zig cc`) for `--emit-c`/`--build`; CI job cross-compiles every example and
-  runs it under wine (or just compiles, first). Windows is the forcing
-  function for section 3.2/3.3 exactly as it is for the nix rule.
-- **Phase 5 -- 32-bit + wasm.** `wasm32-wasi` target: 32-bit `Int` end to end
-  (literal range checks in TC, `THX_INT_T` at work, no-dlopen path), the most
-  hostile target and therefore the best oracle that the abstraction holds.
-  CI matrix: linux-x64 (host suites) + windows-cross + wasm32-wasi.
+  `platforms/THxDL.{h,c}` (POSIX + Win32 + wasi-stub); `Value` int payload
+  becomes `THX_INT_T`. Add the `build.cpp` platform-macro gate over
+  `compiler/`, `engines/`, `app/`, `utilities/` (UTxBUILD's shim migrates
+  onto `THxPLAT` detection). Pay the flagged 32-bit debts (ITxDATA `Real`
+  word marshalling, `T_INT` width) -- both wasm artifacts hit them.
+- **Phase 4 -- First real cross target: `wasm32-wasi`.** `TARGET_*` prelude
+  constants + `Toolchain` table (`--target=wasm32-wasi` -> wasi-sdk clang;
+  the `std::system("cc -O2")` moves to the argv spawn from UTxBUILD);
+  32-bit `Int` end to end (target-keyed literal range checks in TC,
+  `@int32` mono keys, arithmetic that wraps at 32 bits). Exit criterion:
+  every example compiles for wasm32-wasi and passes under wasmtime in CI.
+- **Phase 5 -- The compiler in the browser + the website.** `build wasm`
+  compiles the compiler+interpreter with Emscripten (add emscripten to the
+  nix flake). The browser host is wasm32: `TG::host()` learns it, and FF
+  swaps libffi+dlopen for a compiled-in host table of the `C` namespace's
+  functions (statically linked from Emscripten's musl; custom externs
+  resolve against the table or fail clearly -- no libffi port needed).
+  Then `examples/website/`: a static site (landing + tour generated from
+  the CI-verified examples + rendered doc/*.md + the playground page
+  loading thrax.wasm), deployed to GitHub Pages by CI. `"js"` externs
+  (wasm imports via the ABI slot) follow for interactive demos.
+- **Phase 6 -- Windows + 32-bit natives.** `x86_64-windows-gnu` via mingw or
+  `zig cc`, wine-run CI; the remaining 32-bit native targets. CI matrix:
+  linux-x64 (host suites) + wasm32-wasi + windows-cross.
 
 ### Explicitly out of scope (doors left open)
 

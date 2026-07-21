@@ -51,7 +51,9 @@ tests_native(
       "native-test: FAIL -- `thrax -c` rejected the combined program\n");
     return 1;
   }
-  BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile });
+  // -lm: the suite's externs are libc (implicit) + libm; `thrax --build`
+  // derives this from the IR, a hand-rolled cc line names it itself.
+  BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile, "-lm" });
   if (cc.code != 0)
   {
     std::print("native-test: FAIL(cc)\n{}{}", cc.out, cc.err);

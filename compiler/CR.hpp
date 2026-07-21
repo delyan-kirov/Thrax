@@ -177,11 +177,14 @@ struct Handle
   Term            *els;
 };
 
-// A foreign binding `@extern.{ symbol, lib }`: the body of an FFI global. Its
-// argument / result types come from the enclosing signature, not the body. The
-// interpreter wraps it in a runtime value and calls it once saturated.
+// A foreign binding `@extern "C" "symbol" "lib"`: the body of an FFI global.
+// Its argument / result types come from the enclosing signature, not the
+// body. `lib` is symbolic; consumers resolve it (FF at dlopen time, CC on the
+// link line). The interpreter wraps it in a runtime value and calls it once
+// saturated.
 struct Extern
 {
+  UT::Vu          abi;
   UT::Vu          symbol;
   UT::Vu          lib;
   UT::Vec<UT::Vu> arg_types;

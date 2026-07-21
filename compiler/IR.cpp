@@ -404,7 +404,8 @@ struct Conv
     case CR::Kind::Extern:
     {
       auto &e = std::get<CR::Extern>(t->as);
-      return mkE(Expr{ Extern{ e.symbol, e.lib, e.arg_types, e.ret_type } });
+      return mkE(
+        Expr{ Extern{ e.abi, e.symbol, e.lib, e.arg_types, e.ret_type } });
     }
 
     case CR::Kind::Unk: return mkE(Expr{ Unk{} });

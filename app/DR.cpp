@@ -159,7 +159,7 @@ core_c_source(
 {
   const std::string I = tg.int_ty(), S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
   std::string       s      = "@mod C\n";
-  auto              ext_in = [&](const char        *soname,
+  auto              ext_in = [&](const char        *lib,
                     const char        *name,
                     const std::string &sig,
                     const char        *sym) {
@@ -167,14 +167,14 @@ core_c_source(
     s += name;
     s += " : ";
     s += sig;
-    s += " = @extern.{ \"";
+    s += " = @extern \"C\" \"";
     s += sym;
-    s += "\", \"";
-    s += soname;
-    s += "\" }\n";
+    s += "\" \"";
+    s += lib;
+    s += "\"\n";
   };
   auto ext = [&](const char *name, const std::string &sig, const char *sym) {
-    ext_in(tg.libc_soname(), name, sig, sym);
+    ext_in("libc", name, sig, sym);
   };
 
   ext("abort", U + " -> " + U, "abort");
@@ -197,9 +197,10 @@ core_c_source(
   ext("getenv", S + " -> " + S, "getenv");
   ext("time", I + " -> " + I, "time"); // time(NULL): call as `C.time 0`
 
-  // libm; its own soname where libm is a separate library (Linux)
+  // libm: symbolic "libm"; where the math symbols actually live (a separate
+  // soname on Linux, folded into libc elsewhere) is TG::soname's business.
   const std::string R  = OP::TY_REAL64;
-  const char       *lm = tg.libm_soname();
+  const char       *lm = "libm";
   ext_in(lm, "sqrt", R + " -> " + R, "sqrt");
   ext_in(lm, "sin", R + " -> " + R, "sin");
   ext_in(lm, "cos", R + " -> " + R, "cos");
@@ -596,11 +597,14 @@ build_project(
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the
-  // compile needs nothing but a C compiler -- plus -ldl for dlopen/dlsym when
-  // the program makes foreign calls.
+  // compile needs nothing but a C compiler -- plus a link flag per library
+  // the program's externs name (CC::link_flags; libc is implicit, generated
+  // programs never dlopen -- the system linker resolves, statically or
+  // dynamically per what it finds).
   std::string cmd
     = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
-  if (CC::uses_ffi(prog)) cmd += " -ldl";
+  for (const std::string &f : CC::link_flags(prog))
+    cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
 
   int rc = std::system(cmd.c_str());
   if (rc != 0)
