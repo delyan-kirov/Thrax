@@ -44,6 +44,7 @@ $ with STDLIB_RANDOM = STDLIB_RANDOM
 $ with STDLIB_RESULT = STDLIB_RESULT
 $ with STDLIB_SET = STDLIB_SET
 $ with STDLIB_STR = STDLIB_STR
+$ with STDLIB_VEC = STDLIB_VEC
 $ with STRINGS = STRINGS
 $ with STR_MATCH = STR_MATCH
 $ with STR_OPS = STR_OPS
@@ -96,6 +97,7 @@ $ main : Int =
 	+ check "STDLIB_RESULT" STDLIB_RESULT.test
 	+ check "STDLIB_SET" STDLIB_SET.test
 	+ check "STDLIB_STR" STDLIB_STR.test
+	+ check "STDLIB_VEC" STDLIB_VEC.test
 	+ check "STRINGS" STRINGS.test
 	+ check "STR_MATCH" STR_MATCH.test
 	+ check "STR_OPS" STR_OPS.test

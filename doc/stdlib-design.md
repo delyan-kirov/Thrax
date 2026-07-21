@@ -111,9 +111,9 @@ Design decisions already made:
 ## 4. The mutable map (Rust/Jai flavor): gated, and on what
 
 A real hash table needs O(1) random-access mutable storage for buckets.
-Thrax today has: immutable everything, byte vectors (`Str`/`Array`) with
-opportunistic in-place mutation at rc==1, and no generic `Array \`T`. Three
-routes, in order of preference:
+Thrax now HAS the gating piece: generic `Vec \`T` (route 1 below) landed --
+see section 6 item 1 for what shipped. The table itself is the next step.
+The original analysis, for the record:
 
 1. **Generic vectors first** (`Vec \`T`: `vec_new/len/get/set/push` with the
    same rc==1 in-place trick the byte vectors use). Then `Table \`K \`V` is
@@ -162,9 +162,9 @@ examples/TUPLES.thx):
 The stdlib half is DONE too: PAIR is REMOVED (not sugar -- deleted).
 LIST's `zip`/`unzip`/`span`/`split_at`/`partition`/`lookup`, MAP's
 `from_list`/`to_list`/`min_entry`/`max_entry` and RANDOM's `next` family
-all speak `{\`A, \`B}` with `.0`/`.1` access. Still open: a stdlib
-`cmp_pair` (lexicographic composition) convenience for tuple-keyed maps --
-trivially user-writable meanwhile (see the tuple-keyed Map test).
+all speak `{\`A, \`B}` with `.0`/`.1` access. `MAP.cmp_pair` (lexicographic
+composition of element orderings) ships the tuple-keyed-map convenience:
+`new (cmp_pair cmp_int cmp_str)` orders a `Map {Int, Str} \`V`.
 
 ## 6. Target module tree and phases
 
@@ -176,20 +176,23 @@ join the resolution fixpoint conservatively; see doc/standard-library.md,
 
 ### Agreed sequencing for the rest (decided 2026-07-20)
 
-1. **NEXT: generic `Vec \`T`** -- the single highest-leverage item, because
-   it is the only blocker for the mutable Rust/Jai-style `TABLE` (section
-   4) and also unlocks `BIT_ARRAY`, buffered readers and efficient string
-   builders. Not greenfield: `Str`/`Array` already prove the design
-   (growable storage, opportunistic rc==1 in-place mutation, copy on
-   shared); the work is generalizing that mechanism from bytes to boxed
-   values in both engines. Then `TABLE` is ~150 lines of stdlib: open
-   addressing, resize at 0.75 load, Jai's surface (`set`, `find` ->
-   Option, `remove`, iteration via `fold`).
+1. **Generic `Vec \`T`**: DONE. `Vec` is an opaque core type (TC knows the
+   name and arity 1; behavior lives in the reserved-name primitives
+   `vec_new/fill/len/get/set/push`, seeded like the `array_*` family). The
+   representation is the existing variant value tagged `"%vec"` whose
+   payload fields are the elements, NO new value kind in either engine;
+   the interpreter always copies (value semantics), the native runtime
+   mutates a uniquely-owned (rc==1) spine in place for `set`/`push` like
+   the byte vectors (no capacity field yet, so a non-unique push is O(n)
+   pointer memcpy -- add capacity when it shows up). `library/VEC.thx` is
+   the derived surface: checked `get` -> Option / `set` (out-of-range =
+   unchanged), `from_list`/`to_list`, `map`/`fold`. Next: `TABLE` is ~150
+   lines of stdlib over it: open addressing, resize at 0.75 load, Jai's
+   surface (`set`, `find` -> Option, `remove`, iteration via `fold`).
 2. **Tuples `{A, B}`** (section 5): DONE, out of order -- landed before
    Vec because the surface turned out small (anonymous structs, zero
    engine work). PAIR is gone; `zip`/`span`/`partition`/`Map.to_list`
-   speak tuples; `Map {Int, Str}` (tuple keys) works with a hand-written
-   lexicographic cmp (a generic `cmp_pair` combinator is still to ship).
+   speak tuples; `MAP.cmp_pair` composes element orderings for tuple keys.
 3. **Alternative pure-stdlib track** (when compiler work is unwelcome):
    the remaining OS layer below.
 
@@ -205,8 +208,9 @@ Phase 2 -- OS layer, pure C wrapping, no language work:
   the struct tm layout).
 
 Phase 3 -- language-gated (ordering above):
-- Generic `Vec \`T` -> `TABLE` (mutable hash map, section 4), `BIT_ARRAY`.
-- Tuples (section 5): DONE (PAIR removed); tuple cmp/eq combinators still to ship.
+- Generic `Vec \`T`: DONE -> `TABLE` (mutable hash map, section 4),
+  `BIT_ARRAY`.
+- Tuples (section 5): DONE (PAIR removed); `MAP.cmp_pair` shipped.
 - C `int` return marshalling (kills `IO.is_byte`), argv, buffered readers.
 
 Phase 4 -- text:

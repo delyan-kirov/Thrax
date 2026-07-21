@@ -63,6 +63,16 @@ $ ck_froml : Int =
 	let m = from_list cmp_int [{2, "two"}, {1, "one"}, {2, "II"}] in
 	if (size m) ?= 2 then (if (get_or m 2 "") ?= "II" then 0 else 1) else 1
 
+# cmp_pair composes element orderings lexicographically: tuple-keyed maps.
+$ grid : Map {Int, Str} Int =
+	from_list (cmp_pair cmp_int cmp_str)
+	          [{{1, "b"}, 12}, {{1, "a"}, 11}, {{2, "a"}, 21}]
+$ ck_pair  : Int = if (get_or grid {1, "a"} 0) ?= 11 then 0 else 1
+$ ck_pair2 : Int =
+	when min_entry grid is Option.Some.{p} then
+		(if p.0.1 ?= "a" then (if p.1 ?= 11 then 0 else 1) else 1)
+	else 1
+
 # Balance stress: 200 ascending inserts (the classic worst case for an
 # unbalanced BST), everything retrievable, ordered iteration intact.
 $ big : Map Int Int =
@@ -83,5 +93,5 @@ $ ck_bigrm   : Int =
 $ test : Int = ck_size + ck_get + ck_missing + ck_update + ck_upsize
 	+ ck_remove + ck_gone + ck_shared + ck_values + ck_sorted + ck_insw
 	+ ck_upd + ck_updno + ck_fold + ck_mapv + ck_filt + ck_merge
-	+ ck_min + ck_max + ck_froml
+	+ ck_min + ck_max + ck_froml + ck_pair + ck_pair2
 	+ ck_bigsize + ck_bigget + ck_bigmin + ck_bigrm

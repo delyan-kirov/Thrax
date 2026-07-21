@@ -3788,6 +3788,7 @@ Checker::run(
   // share the nominal-type arity table so a sized type used with arguments
   // (e.g. `Int32 Foo`) is still an arity error like any other nullary type.
   for (const char *t : OP::base_types) m_arity[t] = 0;
+  m_arity[OP::TY_VEC] = 1;
 
   // Register transparent type aliases up front, so sig_to_type can resolve an
   // alias used by any (possibly earlier) declaration.
@@ -4077,6 +4078,40 @@ Checker::seed_primitives()
 
   Type *arrt            = arrow(con(m_tg.int_ty()), con(OP::TY_ARRAY));
   m_prim[OP::ARR_ALLOC] = generalize(Env{}, arrt);
+
+  // The generic-vector primitives. `Vec` itself is opaque
+  {
+    Type *t = fresh();
+    m_prim[OP::VEC_NEW]
+      = generalize(Env{}, arrow(con(OP::TY_UNIT), con(OP::TY_VEC, { t })));
+  }
+  {
+    Type *t              = fresh();
+    m_prim[OP::VEC_FILL] = generalize(
+      Env{}, arrow(con(m_tg.int_ty()), arrow(t, con(OP::TY_VEC, { t }))));
+  }
+  {
+    Type *t = fresh();
+    m_prim[OP::VEC_LEN]
+      = generalize(Env{}, arrow(con(OP::TY_VEC, { t }), con(m_tg.int_ty())));
+  }
+  {
+    Type *t             = fresh();
+    m_prim[OP::VEC_GET] = generalize(
+      Env{}, arrow(con(OP::TY_VEC, { t }), arrow(con(m_tg.int_ty()), t)));
+  }
+  {
+    Type *t             = fresh();
+    m_prim[OP::VEC_SET] = generalize(
+      Env{},
+      arrow(con(OP::TY_VEC, { t }),
+            arrow(con(m_tg.int_ty()), arrow(t, con(OP::TY_VEC, { t })))));
+  }
+  {
+    Type *t              = fresh();
+    m_prim[OP::VEC_PUSH] = generalize(
+      Env{}, arrow(con(OP::TY_VEC, { t }), arrow(t, con(OP::TY_VEC, { t }))));
+  }
 
   Type *e           = fresh(); // the shared effect row
   Type *a           = fresh();

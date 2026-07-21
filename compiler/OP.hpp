@@ -57,13 +57,17 @@ inline constexpr const char *TY_NAT32  = "@nat32";
 inline constexpr const char *TY_NAT64  = "@nat64";
 inline constexpr const char *TY_REAL32 = "@float32";
 inline constexpr const char *TY_REAL64 = "@float64";
-inline constexpr const char *TY_ARRAY
-  = "@array"; // a sized, contiguous block of bytes
-inline constexpr const char *TY_UNIT
-  = "{}"; // the empty record / unit type; runtime-represented as 0
-inline constexpr const char *TY_BOOL
-  = "Bool"; // core-defined union (core/PRELUDE.thx), erased to Int 1/0; NOT a
-            // base type -- it is nominal, declared in the language itself
+inline constexpr const char *TY_ARRAY  = "@array";
+inline constexpr const char *TY_UNIT   = "{}";
+inline constexpr const char *TY_BOOL   = "Bool";
+inline constexpr const char *TY_VEC    = "Vec";
+inline constexpr const char *VEC_REP   = "%vec";
+inline constexpr const char *VEC_NEW   = "vec_new";
+inline constexpr const char *VEC_FILL  = "vec_fill";
+inline constexpr const char *VEC_LEN   = "vec_len";
+inline constexpr const char *VEC_GET   = "vec_get"; 
+inline constexpr const char *VEC_SET   = "vec_set";
+inline constexpr const char *VEC_PUSH  = "vec_push";
 
 inline constexpr const char *TUPLE_PREFIX = "%tuple";
 inline std::string
