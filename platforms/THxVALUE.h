@@ -18,6 +18,8 @@
 #ifndef THxVALUE_H_
 #define THxVALUE_H_
 
+#include "THxPLAT.h"
+
 #include <stddef.h>
 
 /* The value discriminant. Adding a tag here is the head of a domino: the
@@ -56,8 +58,10 @@ struct Value
   unsigned rc; /* RESERVED for ref counting; unused by the bump allocator */
   union
   {
-    long long i; /* T_INT */
-    double    r; /* T_REAL */
+    THX_INT_T i; /* T_INT: the TARGET word (THxPLAT.h) -- stores, and
+                  * therefore wraps, at the target's `Int` width. The
+                  * accessors widen to/from long long. */
+    double r;    /* T_REAL */
     struct
     {
       char  *p;

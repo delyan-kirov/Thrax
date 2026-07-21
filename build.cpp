@@ -404,6 +404,66 @@ ascii_checked_ext(
          || ext == ".md" || ext == ".txt" || ext == ".thx";
 }
 
+// `build check-platform`: platforms/ is the only directory allowed to
+// consult raw platform macros (doc/platform-abstraction.md section 3.2) --
+// everything else keys off TG::Target (compiler side) or THxPLAT.h (runtime
+// side). Boundaries by mechanism: this grep fails the gate on any raw macro
+// outside platforms/, minus the three sanctioned exemptions below.
+int
+cmd_check_platform()
+{
+  static const char *const exempt_files[] = {
+    "compiler/TG.hpp",        // the ONE sanctioned host() detection
+    "utilities/UTxBUILD.hpp", // the build tool's own process shim
+    "utilities/UT.cpp",       // the debug-trap arch dispatch (int3/abort)
+    "build.cpp",              // this gate's own macro list
+  };
+  static const std::regex macro(
+    "\\b(_WIN32|_WIN64|__linux__|__APPLE__|__wasi__|__wasm__|__wasm32__|"
+    "__EMSCRIPTEN__|__SIZEOF_POINTER__|__x86_64__|__aarch64__|__i386__|"
+    "__arm__|_M_X64|_M_ARM64|_M_IX86)\\b");
+
+  std::vector<std::string> files = BLD::glob(
+    { "utilities", "compiler", "engines", "app", "tests" }, { ".cpp", ".hpp" });
+  for (const char *d :
+       { "compiler", "engines", "platforms", "library", "app", "tests" })
+    files.push_back(std::string(d) + "/build.cpp");
+  files.push_back("build.cpp");
+  files.push_back("utilities/UTxBUILD.hpp");
+
+  int violations = 0, scanned = 0;
+  for (const std::string &f : files)
+  {
+    bool skip = false;
+    for (const char *e : exempt_files) skip = skip || f == e;
+    if (skip) continue;
+    ++scanned;
+    size_t line = 0;
+    for (const std::string &l : BLD::split_lines(BLD::read_file(f)))
+    {
+      ++line;
+      if (std::regex_search(l, macro))
+      {
+        std::print(stderr, "{}:{}: raw platform macro: {}\n", f, line, l);
+        ++violations;
+      }
+    }
+  }
+  if (violations)
+  {
+    std::print(stderr,
+               "build: check-platform: {} raw platform macro use(s) outside "
+               "platforms/ (see above). Ask TG::Target or THxPLAT.h instead, "
+               "or move the code into platforms/.\n",
+               violations);
+    return 1;
+  }
+  std::print("build: check-platform: OK ({} files scanned, {} exempt)\n",
+             scanned,
+             std::size(exempt_files));
+  return 0;
+}
+
 int
 cmd_check_ascii()
 {
@@ -680,6 +740,7 @@ main(
   if (cmd == "clean") return cmd_clean(c);
   if (cmd == "clean-recursive") return cmd_clean_recursive(c);
   if (cmd == "check-ascii") return cmd_check_ascii();
+  if (cmd == "check-platform") return cmd_check_platform();
   if (cmd == "check-format") return cmd_check_format();
   if (cmd == "grammar-check")
     return cmd_grammar_check(argi + 1 < argc
@@ -742,6 +803,7 @@ main(
     // The gate the git pre-push hook runs (see cmd_install_hooks). Cheap,
     // non-compiling checks first so a bad push fails fast, then build + tests.
     if (int rc = cmd_check_ascii()) return rc;
+    if (int rc = cmd_check_platform()) return rc;
     if (int rc = cmd_check_format()) return rc;
     BLD::build(c, mods);
     return tests_smoke(c);
@@ -749,8 +811,8 @@ main(
 
   std::print(stderr,
              "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|check-ascii|check-format|grammar-check|"
-             "install-hooks|ffi-rebuild|format|compile-commands|tokei|"
-             "valgrind|env|pre-push]\n");
+             "clean-recursive|check-ascii|check-platform|check-format|"
+             "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
+             "tokei|valgrind|env|pre-push]\n");
   return 2;
 }

@@ -12,10 +12,15 @@ calls via asm-label declarations plus link flags (`CC::link_flags`) --
 generated programs never dlopen. Phase 2.5 DONE (2026-07-21): `$ @run
 <expr>` compile-time execution + the `BUILD` module (library/BUILD.thx) --
 `@run BUILD.lib`/`BUILD.lib_path` directives feed the link set and library
-search paths from Thrax source, serving both engines. Phases 3-5
-(THxPLAT/THxDL, cross toolchains, wasm/32-bit) not started; the revised
-sequencing (section 4) makes wasm the FIRST cross target, en route to the
-compiler-in-browser playground and the showcase website.
+search paths from Thrax source, serving both engines. Phase 3 DONE
+(2026-07-21): `platforms/THxPLAT.h` (THX_OS_* / THX_PTR_BITS / THX_INT_T,
+first in the runtime bake), the Value `T_INT` payload is the TARGET word
+(wraps at 32 bits on 32-bit targets), and `build check-platform` enforces
+the no-raw-platform-macros boundary by mechanism (also in pre-push). THxDL
+was DROPPED as obsolete -- phase 2's direct-call design means generated
+programs never dlopen (see section 4). Phases 4-5 (wasm32-wasi cross
+target, compiler-in-browser + website) are next; the revised sequencing
+(section 4) makes wasm the FIRST cross target.
 **Date:** 2026-07-21 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
@@ -291,12 +296,23 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   intrinsic machinery -- a `Directive` built at run time is just a value.
   examples/CT_RUN.thx exercises it in the suite. (Expression-position
   `@run` splicing literal-serializable values comes later.)
-- **Phase 3 -- Runtime porting layer.** Add `platforms/THxPLAT.h` +
-  `platforms/THxDL.{h,c}` (POSIX + Win32 + wasi-stub); `Value` int payload
-  becomes `THX_INT_T`. Add the `build.cpp` platform-macro gate over
-  `compiler/`, `engines/`, `app/`, `utilities/` (UTxBUILD's shim migrates
-  onto `THxPLAT` detection). Pay the flagged 32-bit debts (ITxDATA `Real`
-  word marshalling, `T_INT` width) -- both wasm artifacts hit them.
+- **Phase 3 (DONE, 2026-07-21) -- Runtime porting layer.**
+  `platforms/THxPLAT.h`: centralized THX_OS_* / THX_PTR_BITS detection plus
+  `THX_INT_T` (the target word), baked FIRST into the runtime amalgam; the
+  `Value` `T_INT` payload is now `THX_INT_T` -- APIs still traffic in
+  `long long`, and the truncation on store IS the 32-bit wrap. The
+  `build check-platform` gate greps for raw platform macros outside
+  `platforms/` (wired into pre-push), with four justified exemptions:
+  `compiler/TG.hpp` (the sanctioned host() detection), `utilities/
+  UTxBUILD.hpp` and `utilities/UT.cpp` (build-tool/debug-trap shims --
+  KEPT on their own detection rather than migrated onto THxPLAT, because
+  utilities may not depend on platforms in the module DAG), and
+  `build.cpp` (the gate's own macro list). Two planned items were already
+  moot: `THxDL.{h,c}` is DROPPED (phase 2's direct calls mean generated
+  programs never dlopen; the interpreter's dlopen is confined to FF.cpp,
+  whose browser story is the phase-5 host table, and a Windows-native
+  compiler build is out of scope), and the ITxDATA/FF `Real` marshalling
+  debt was already paid in phase 0 (`FF::Slot` is fixed 64-bit).
 - **Phase 4 -- First real cross target: `wasm32-wasi`.** `TARGET_*` prelude
   constants + `Toolchain` table (`--target=wasm32-wasi` -> wasi-sdk clang;
   the `std::system("cc -O2")` moves to the argv spawn from UTxBUILD);

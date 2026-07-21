@@ -21,7 +21,7 @@ THxRT_int(
 {
   Value *x = THxMEM_alloc_value();
   x->tag   = T_INT;
-  x->u.i   = v;
+  x->u.i   = (THX_INT_T)v; /* truncation on a 32-bit target IS the wrap */
   return x;
 }
 
