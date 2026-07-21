@@ -30,6 +30,13 @@ Slot call(UT::Vu                          lib,
           const std::string              &ret_type,
           const std::vector<Slot>        &args);
 
+// BUILD directives (`@run BUILD.lib_path` / `BUILD.lib`), applied by DR
+// before the program runs: an extra dlopen search prefix for symbolic
+// libraries, and a library to preload with RTLD_GLOBAL (its symbols become
+// available to later loads). No-ops in a no-FFI build.
+void add_lib_path(const std::string &p);
+void add_preload(const std::string &lib);
+
 } // namespace FF
 
 #endif // FF_HEADER_

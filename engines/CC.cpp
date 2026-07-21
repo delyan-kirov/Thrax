@@ -698,6 +698,16 @@ collect_libs(
 
 } // namespace
 
+std::string
+lib_flag(
+  const std::string &lib)
+{
+  if (lib == "libc") return ""; // always linked
+  if (lib.find('/') != std::string::npos || lib.find('.') != std::string::npos)
+    return lib; // explicit path/soname: verbatim, user's problem
+  return "-l" + (lib.starts_with("lib") ? lib.substr(3) : lib);
+}
+
 std::vector<std::string>
 link_flags(
   const IR::Program &prog)
@@ -707,16 +717,7 @@ link_flags(
 
   std::vector<std::string> flags;
   for (const std::string &lib : libs)
-  {
-    if (lib == "libc") continue; // always linked
-    if (lib.find('/') != std::string::npos
-        || lib.find('.') != std::string::npos)
-    {
-      flags.push_back(lib); // explicit path/soname: verbatim, user's problem
-      continue;
-    }
-    flags.push_back("-l" + (lib.starts_with("lib") ? lib.substr(3) : lib));
-  }
+    if (std::string f = lib_flag(lib); !f.empty()) flags.push_back(f);
   return flags;
 }
 

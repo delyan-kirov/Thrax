@@ -45,6 +45,8 @@ private:
   UT_NODISCARD RExpr    parse_operator_def(); // `$ @operator.{<op>} : ty = e`
   UT_NODISCARD RExpr    parse_ctime_assert(); // `$ @assert <expr>`
   size_t                m_assert_n = 0;       // fresh compile-time assert names
+  UT_NODISCARD RExpr    parse_ctime_run();    // `$ @run <expr>`
+  size_t                m_run_n = 0;          // fresh compile-time run names
   UT_NODISCARD RExpr    parse_array();        // `@array.{ size }` expression
   UT_NODISCARD RExpr    parse_extern();
   UT_NODISCARD RExpr    parse_struct_decl(const LX::Token &name);

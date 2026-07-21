@@ -24,6 +24,18 @@ call(
   return 0;
 }
 
+void
+add_lib_path(
+  const std::string &)
+{
+}
+
+void
+add_preload(
+  const std::string &)
+{
+}
+
 } // namespace FF
 
 #else
@@ -87,6 +99,35 @@ symbol_cache()
   return c;
 }
 
+// BUILD-directive state (`@run BUILD.lib_path` / `BUILD.lib`, applied by DR
+// before the program runs): extra dlopen search prefixes, and libraries to
+// preload with RTLD_GLOBAL so their symbols are available to later loads.
+std::vector<std::string> &
+lib_paths()
+{
+  static std::vector<std::string> v;
+  return v;
+}
+
+std::vector<std::string> &
+pending_preloads()
+{
+  static std::vector<std::string> v;
+  return v;
+}
+
+// dlopen `soname`, trying each BUILD lib_path prefix first (a name that is
+// already a path skips the prefixes). Null on total failure.
+void *
+open_lib(
+  const std::string &soname)
+{
+  if (soname.find('/') == std::string::npos)
+    for (const std::string &dir : lib_paths())
+      if (void *h = dlopen((dir + "/" + soname).c_str(), RTLD_NOW)) return h;
+  return dlopen(soname.c_str(), RTLD_NOW);
+}
+
 void *
 resolve(
   const std::string &lib, const std::string &symbol)
@@ -95,6 +136,17 @@ resolve(
   auto       &sc  = symbol_cache();
   auto        it  = sc.find(key);
   if (it != sc.end()) return it->second;
+
+  for (const std::string &p : pending_preloads())
+  {
+    std::string soname = TG::host().soname(p);
+    if (!dlopen(soname.c_str(), RTLD_NOW | RTLD_GLOBAL))
+      UT_FAIL_MSG("FFI: cannot preload library '%s' (BUILD.lib \"%s\"): %s",
+                  soname.c_str(),
+                  p.c_str(),
+                  dlerror());
+  }
+  pending_preloads().clear();
 
   auto &hc = handle_cache();
   auto  h  = hc.find(lib);
@@ -105,7 +157,7 @@ resolve(
   }
   else
   {
-    handle = dlopen(lib.c_str(), RTLD_NOW);
+    handle = open_lib(lib);
     if (!handle)
       UT_FAIL_MSG("FFI: cannot open library '%s': %s", lib.c_str(), dlerror());
     hc[lib] = handle;
@@ -203,6 +255,20 @@ call(
     return (Slot)bits;
   }
   return extend(rd, result.u64);
+}
+
+void
+add_lib_path(
+  const std::string &p)
+{
+  lib_paths().push_back(p);
+}
+
+void
+add_preload(
+  const std::string &lib)
+{
+  pending_preloads().push_back(lib);
 }
 
 } // namespace FF

@@ -50,6 +50,7 @@
 %token TYVAR        /* `a */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_OPERATOR AT_ASSERT
+%token AT_RUN
 %token AT_PRIVATE AT_PUBLIC AT_EXTERN AT_ARRAY
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
@@ -94,6 +95,7 @@ global
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_PUBLIC
   | DOLLAR AT_ASSERT expr
+  | DOLLAR AT_RUN expr
   | DOLLAR AT_OPERATOR DOT LBRACE overloadable_op RBRACE COLON type EQ expr
   ;
 

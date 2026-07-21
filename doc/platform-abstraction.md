@@ -9,10 +9,13 @@ now `@extern "C" "symbol" "lib"` with SYMBOLIC library names; the
 interpreter resolves them to host sonames at dlopen time
 (`TG::Target::soname`), the native backend emits DIRECT linker-resolved
 calls via asm-label declarations plus link flags (`CC::link_flags`) --
-generated programs never dlopen. Phases 3-5 (THxPLAT/THxDL, cross
-toolchains, wasm/32-bit) not started; the revised sequencing (section 4)
-makes wasm the FIRST cross target, en route to the compiler-in-browser
-playground and the showcase website.
+generated programs never dlopen. Phase 2.5 DONE (2026-07-21): `$ @run
+<expr>` compile-time execution + the `BUILD` module (library/BUILD.thx) --
+`@run BUILD.lib`/`BUILD.lib_path` directives feed the link set and library
+search paths from Thrax source, serving both engines. Phases 3-5
+(THxPLAT/THxDL, cross toolchains, wasm/32-bit) not started; the revised
+sequencing (section 4) makes wasm the FIRST cross target, en route to the
+compiler-in-browser playground and the showcase website.
 **Date:** 2026-07-21 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
@@ -194,14 +197,12 @@ interpreter/native split:
   prints the exact cc line. This is also what wasm needs (no dlopen).
 - `DR`'s generated `C.thx` writes `"libc"`/`"libm"`.
 
-Still to come here: SEARCH PATHS and the link set as project data, fed from
-Thrax itself via `@run` + a `Build` compiler API (`@run Build.lib "m"`,
-`@run Build.lib_path "./vendor"`) -- the Jai "build is a program" door,
-opened a crack. `@run <expr>` generalizes the existing `@assert` CTFE
-machinery (declaration-level first: value discarded, effects on the
-compilation model; expression-position splicing later). The ABI slot is
-where `"js"` externs for wasm imports will land (native wasm32: emitted
-import attributes; browser interpreter: the host-table trampolines).
+SEARCH PATHS and the link set are project data fed from Thrax itself (phase
+2.5, DONE -- see section 4): `$ @run BUILD.lib "m"` /
+`$ @run BUILD.lib_path "./vendor"` -- the Jai "build is a program" door,
+opened a crack. The ABI slot is where `"js"` externs for wasm imports will
+land (native wasm32: emitted import attributes; browser interpreter: the
+host-table trampolines).
 
 ### 3.4 Word size: `Int` is the target word, decided in one place
 
@@ -276,14 +277,20 @@ interpreter embedded in the page. Wasm forces the same discipline Windows
 would have (and more: no dlopen at all, 32-bit), and wasi-sdk/wasmtime are
 easier to hold in nix than mingw/wine; Windows moves after wasm.
 
-- **Phase 2.5 -- `@run` + the `Build` compiler API.** Declaration-level
-  `@run <expr>` (generalizing `@assert`'s CTFE: IT evaluates at build, value
-  discarded) and an auto-injected `Build` namespace of compile-time-only
-  intrinsics, starting with exactly `lib : Str -> {}` and
-  `lib_path : Str -> {}` feeding the link set / search paths -- so projects
-  declare their libraries in Thrax, serving both engines. (Jai's #run;
-  expression-position `@run` splicing literal-serializable values comes
-  later.)
+- **Phase 2.5 (DONE, 2026-07-21) -- `@run` + the `BUILD` compiler API.**
+  Declaration-level `$ @run <expr>` (generalizing `@assert`'s CTFE: a
+  hidden `%run$N` global, a DCE root, forced through the interpreter after
+  linking in every mode; the value is discarded). The compiler API landed
+  as DATA rather than intrinsics: `library/BUILD.thx` is an ordinary stdlib
+  module whose `lib : Str -> Directive` / `lib_path : Str -> Directive`
+  build `BUILD.Directive` values; DR inspects each forced `@run` result and
+  applies directives (`force_ctime_runs`). `lib` joins the link line
+  natively (`CC::lib_flag`) and the interpreter's preload set (dlopen
+  RTLD_GLOBAL); `lib_path` becomes -L + rpath natively and a dlopen prefix
+  in the interpreter (`FF::add_lib_path`/`add_preload`). No new effect or
+  intrinsic machinery -- a `Directive` built at run time is just a value.
+  examples/CT_RUN.thx exercises it in the suite. (Expression-position
+  `@run` splicing literal-serializable values comes later.)
 - **Phase 3 -- Runtime porting layer.** Add `platforms/THxPLAT.h` +
   `platforms/THxDL.{h,c}` (POSIX + Win32 + wasi-stub); `Value` int payload
   becomes `THX_INT_T`. Add the `build.cpp` platform-macro gate over

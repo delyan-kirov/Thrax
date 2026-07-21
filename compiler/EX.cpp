@@ -1191,6 +1191,7 @@ Parser::parse_global()
   {
     if (after.str == "@operator") return parse_operator_def();
     if (after.str == "@assert") return parse_ctime_assert();
+    if (after.str == "@run") return parse_ctime_run();
     return parse_vis();
   }
 
@@ -1317,6 +1318,31 @@ Parser::parse_ctime_assert()
   auto &def         = std::get<ExDef>(d->as);
   def.ctime_assert  = true;
   def.assert_anchor = at.str; // anchor for the build-time diagnostic
+  return { true, d, {} };
+}
+
+// `$ @run <expr>` -- compile-time execution (Jai's #run): the expression
+// becomes a hidden global the build FORCES through the interpreter after
+// linking. The value is discarded, except that BUILD directives
+// (`BUILD.lib`, `BUILD.lib_path` -- BUILD.Directive values) steer the
+// compilation's link set and library search paths, so a project declares
+// its libraries in Thrax itself. No signature: the type is whatever the
+// expression has.
+RExpr
+Parser::parse_ctime_run()
+{
+  LX::Token at = EX_TRY(m_lex.peek()); // '@run' (the diagnostic anchor)
+  m_lex.next();                        // '@run'
+  Expr *body
+    = EX_CTX(parse_expr(0), at, "in this compile-time '@run' expression");
+
+  UT::Vu name
+    = UT::strdup(m_arena, ("%run$" + std::to_string(m_run_n++)).c_str());
+
+  Expr *d           = mk_def(name, nullptr, body);
+  auto &def         = std::get<ExDef>(d->as);
+  def.ctime_run     = true;
+  def.assert_anchor = at.str; // anchor for build-time diagnostics
   return { true, d, {} };
 }
 

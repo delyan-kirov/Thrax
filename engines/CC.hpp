@@ -40,10 +40,15 @@ namespace CC
 // it is retained as the fallback seam and DR still honours a non-null reason.
 std::optional<std::string> unsupported(const IR::Program &prog);
 
+// The link-line flag for one symbolic library name: "" for "libc" (always
+// linked), -l<name> for a symbolic name (a leading "lib" stripped), an
+// explicit path/soname verbatim.
+std::string lib_flag(const std::string &lib);
+
 // The link-line flags for every library `prog`'s `@extern`s name, in first
-// appearance order: "libc" is implicit (no flag), a symbolic name becomes
-// -l<name> (a leading "lib" stripped), an explicit path/soname passes
-// verbatim. Generated programs never dlopen; the system linker resolves.
+// appearance order. Generated programs never dlopen; the system linker
+// resolves. (`@run BUILD.lib`/`BUILD.lib_path` directives add further flags
+// in DR.)
 std::vector<std::string> link_flags(const IR::Program &prog);
 
 // Precondition: `unsupported(prog)` returned std::nullopt.

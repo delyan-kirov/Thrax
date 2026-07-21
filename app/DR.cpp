@@ -4,6 +4,7 @@
 #include "STDLIBxAMALG.hpp"
 
 #include "EX.hpp"
+#include "FF.hpp"
 #include "IR.hpp"
 #include "IT.hpp"
 #include "MR.hpp"
@@ -128,6 +129,42 @@ check_ctime_asserts(
   if (ds.empty()) return true;
   print_diags(units, ds);
   return false;
+}
+
+// What `@run` directives asked of this compilation (see library/BUILD.thx):
+// symbolic libraries to link/preload, and library search paths.
+struct BuildDirectives
+{
+  std::vector<std::string> libs;
+  std::vector<std::string> lib_paths;
+};
+
+// Force every `@run` global through the interpreter -- compile-time
+// execution, Jai's #run. Values are discarded, except BUILD.Directive
+// results, which are collected into `out` when the caller consumes them
+// (the interpret and --build paths; the others force for effect only).
+static void
+force_ctime_runs(
+  const IR::Program &prog, const MR::Result &mr, BuildDirectives *out)
+{
+  if (mr.ctime_runs.empty()) return;
+
+  IT::Machine m{ prog };
+  for (const auto &[name, anchor] : mr.ctime_runs)
+  {
+    (void)anchor;
+    IT::pVal v = m.glob(name);
+    if (!out || !v) continue;
+    if (IT::VKind::Variant != IT::kind(v)) continue;
+    const IT::VVariant &var = std::get<IT::VVariant>(v->as);
+    if (var.type_name != "BUILD/Directive" || var.fields.size() != 1) continue;
+    if (IT::VKind::Str != IT::kind(var.fields[0])) continue;
+    const std::string &s = std::get<IT::VStr>(var.fields[0]->as).val;
+    if (var.tag == "Lib")
+      out->libs.push_back(s);
+    else if (var.tag == "LibPath")
+      out->lib_paths.push_back(s);
+  }
 }
 
 static const char PRELUDE_FILE[] = "PRELUDE_implTarget.thx";
@@ -385,6 +422,8 @@ interpret_file(
 
   if (!check_ctime_asserts(ip.prog, mr, units, *ip.arena))
     ip.prog = IR::Program{};
+  else
+    force_ctime_runs(ip.prog, mr, nullptr);
   return ip;
 }
 
@@ -420,6 +459,13 @@ run_program(
 
   if (!check_ctime_asserts(prog, mr, units, ir_arena)) return 1;
 
+  // Apply the `@run` BUILD directives to this run: search paths and
+  // preloads for the FFI's dlopen.
+  BuildDirectives bd;
+  force_ctime_runs(prog, mr, &bd);
+  for (const std::string &p : bd.lib_paths) FF::add_lib_path(p);
+  for (const std::string &l : bd.libs) FF::add_preload(l);
+
   // Run the entry via the reified-K machine: `main` for `Int`, or `main ""` for
   // `Str -> Int` (the CLI argument is empty until an `Args` type exists).
   return IT::machine_main(prog, mr.entry, mr.entry_takes_arg);
@@ -444,6 +490,7 @@ dump_ir(
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
+  force_ctime_runs(prog, mr, nullptr);
   std::printf("%s", IR::pprint(prog).c_str());
   return true;
 }
@@ -469,6 +516,7 @@ emit_c(
   collect_operations(mr.program, prog);
 
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
+  force_ctime_runs(prog, mr, nullptr);
 
   if (std::optional<std::string> why = CC::unsupported(prog))
   {
@@ -541,6 +589,10 @@ build_project(
 
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
 
+  // `@run` BUILD directives join the link line below.
+  BuildDirectives bd;
+  force_ctime_runs(prog, mr, &bd);
+
   if (std::optional<std::string> why = CC::unsupported(prog))
   {
     std::fprintf(stderr,
@@ -600,11 +652,17 @@ build_project(
   // compile needs nothing but a C compiler -- plus a link flag per library
   // the program's externs name (CC::link_flags; libc is implicit, generated
   // programs never dlopen -- the system linker resolves, statically or
-  // dynamically per what it finds).
+  // dynamically per what it finds), plus whatever the `@run` BUILD
+  // directives asked for: -L/rpath per lib_path, one lib_flag per lib.
   std::string cmd
     = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+  for (const std::string &p : bd.lib_paths)
+    cmd += " -L\"" + p + "\" -Wl,-rpath,\"" + p + "\"";
   for (const std::string &f : CC::link_flags(prog))
     cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
+  for (const std::string &l : bd.libs)
+    if (std::string f = CC::lib_flag(l); !f.empty())
+      cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
 
   int rc = std::system(cmd.c_str());
   if (rc != 0)

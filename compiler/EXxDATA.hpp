@@ -254,8 +254,9 @@ struct ExDef
   Ty    *sig;
   Expr  *def;
   UT::Vu origin{};
-  bool   ctime_assert = false;
-  UT::Vu assert_anchor{};
+  bool   ctime_assert = false; // hidden `@assert` global: must eval to true
+  bool   ctime_run    = false; // hidden `@run` global: forced at build time
+  UT::Vu assert_anchor{};      // diagnostic anchor for either ctime form
 };
 struct ExInt
 {

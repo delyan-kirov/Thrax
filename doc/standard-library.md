@@ -54,6 +54,7 @@ there is no Pair type.
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
+| `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see doc/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`); importing both is fine -- overloading resolves by type,

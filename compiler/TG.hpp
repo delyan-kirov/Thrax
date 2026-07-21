@@ -124,8 +124,8 @@ struct Target
   soname(
     UT::Vu lib) const
   {
-    if (lib == "libc") return libc_soname();
-    if (lib == "libm") return libm_soname();
+    if (lib == "libc" || lib == "c") return libc_soname();
+    if (lib == "libm" || lib == "m") return libm_soname();
     if (lib.find('.') != UT::Vu::npos || lib.find('/') != UT::Vu::npos)
       return std::string(lib);
     std::string base{ lib };

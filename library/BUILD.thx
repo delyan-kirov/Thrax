@@ -1,0 +1,29 @@
+@mod BUILD
+
+# \file BUILD.thx
+# \info The compiler API: values that STEER THE BUILD. A `$ @run <expr>`
+#       global is forced through the interpreter at compile time; when the
+#       result is a `Directive`, the compiler applies it -- so a project
+#       declares its libraries and search paths in Thrax itself, serving
+#       both engines from one place:
+#
+#           $ with BUILD
+#           $ @run BUILD.lib "curl"
+#           $ @run BUILD.lib_path "vendor/lib"
+#
+#       `lib` adds a symbolic library to the LINK SET: the native backend
+#       links it (-lcurl), the interpreter preloads it (dlopen RTLD_GLOBAL,
+#       so its symbols are available to later loads). `lib_path` adds a
+#       library SEARCH PATH: -L (and rpath) for the native link line, a
+#       dlopen prefix for the interpreter. Any other `@run` result is
+#       evaluated and discarded (plain compile-time execution).
+
+$ Directive : @union =
+	Lib: {Str},
+	LibPath: {Str},
+
+# Link the symbolic library `name` ("m", "curl", "raylib", ...).
+$ lib : Str -> Directive = \name = Directive.Lib.{ name }
+
+# Search `p` when resolving symbolic libraries.
+$ lib_path : Str -> Directive = \p = Directive.LibPath.{ p }

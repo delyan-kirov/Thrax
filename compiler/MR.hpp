@@ -48,9 +48,10 @@ struct Result
 {
   EX::Exprs                   program; // flattened, mangled globals
   UT::Vu                      entry;   // mangled MAIN/main, or empty
-  bool                        entry_takes_arg = false; // true for `Str -> Int`
-  std::vector<ER::Diagnostic> diags;                   // empty on success
-  std::vector<std::pair<UT::Vu, UT::Vu>> ctime_asserts;
+  bool                        entry_takes_arg = false;  // true for `Str -> Int`
+  std::vector<ER::Diagnostic> diags;                    // empty on success
+  std::vector<std::pair<UT::Vu, UT::Vu>> ctime_asserts; // {global, anchor}
+  std::vector<std::pair<UT::Vu, UT::Vu>> ctime_runs;    // {global, anchor}
 };
 
 // Link `units` into one program. On any error the diagnostics are returned and
