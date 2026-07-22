@@ -171,6 +171,7 @@ format_files()
     { "utilities", "compiler", "engines", "app" }, { ".cpp", ".hpp" });
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
+  for (auto &x : BLD::glob({ "web" }, { ".cpp", ".hpp" })) f.push_back(x);
   for (const char *d :
        { "compiler", "engines", "platforms", "library", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
@@ -236,6 +237,91 @@ cmd_grammar_check(
     return 1;
   }
   std::print("build: grammar-check: OK\n");
+  return 0;
+}
+
+// Compile the compiler ITSELF to WebAssembly for the browser playground: the
+// project amalgam + web/playground.cpp through Emscripten (emcc), with FFI
+// OFF -- so FF.cpp's compiled-in host table (not libffi+dlopen, which a
+// browser has neither of) serves the `C`/libm namespace. Output:
+// web/site/thrax.{js,wasm}, loaded by web/site/index.html.
+int
+cmd_wasm(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  namespace fs = std::filesystem;
+
+  if (BLD::exec({ "sh", "-c", "command -v emcc >/dev/null" }).code != 0)
+  {
+    std::print(stderr,
+               "build: wasm: emcc not found -- enter `nix develop` (it "
+               "provides emscripten), then rerun `build wasm`\n");
+    return 1;
+  }
+
+  // The native build generates the amalgam sources + the baked runtime header
+  // the wasm compile reads (incremental -- cheap when already up to date).
+  BLD::build(c, mods);
+
+  const std::string amalg  = c.artifacts + "/UTxAMALG.cpp";
+  const std::string obj_a  = c.artifacts + "/wasm_amalg.o";
+  const std::string obj_p  = c.artifacts + "/wasm_playground.o";
+  const std::string outdir = "web/site";
+  fs::create_directories(outdir);
+
+  // FFI OFF: no -DTHRAX_3RD_PARTY_ON, so the host-table path compiles in. The
+  // -std / -O / -I set matches the native build (c.includes).
+  std::vector<std::string> inc = BLD::split_ws(c.includes);
+
+  auto compile = [&](const std::string &src, const std::string &obj) -> int {
+    std::vector<std::string> cmd = { "emcc", "-std=c++23", "-O2" };
+    for (auto &i : inc) cmd.push_back(i);
+    cmd.push_back("-c");
+    cmd.push_back(src);
+    cmd.push_back("-o");
+    cmd.push_back(obj);
+    BLD::Output o = BLD::exec(cmd);
+    if (o.code != 0)
+      std::print(
+        stderr, "build: wasm: compile failed for {}\n{}{}", src, o.out, o.err);
+    return o.code;
+  };
+  if (compile(amalg, obj_a) != 0) return 1;
+  if (compile("web/playground.cpp", obj_p) != 0) return 1;
+
+  // MODULARIZE gives a `createThrax()` factory the page awaits; the exported
+  // `thrax_eval` is reached with `Module.ccall`; a big stack + growable memory
+  // because the compiler recurses over the AST (Emscripten defaults to 64 KiB
+  // of stack, far too little). ENVIRONMENT spans browser and node (CI test).
+  std::vector<std::string> link = {
+    "emcc",
+    "-O2",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sSTACK_SIZE=33554432",
+    "-sMODULARIZE=1",
+    "-sEXPORT_ES6=1", // real ES module (`export default`), for the page's import
+    "-sEXPORT_NAME=createThrax",
+    "-sEXPORTED_FUNCTIONS=_thrax_eval,_main",
+    "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap",
+    "-sENVIRONMENT=web,worker,node",
+    obj_a,
+    obj_p,
+    "-o",
+    outdir + "/thrax.js",
+  };
+  BLD::Output l = BLD::exec(link);
+  if (l.code != 0)
+  {
+    std::print(stderr, "build: wasm: link failed\n{}{}", l.out, l.err);
+    return 1;
+  }
+
+  std::print("build: wasm: OK -- wrote {}/thrax.js + thrax.wasm\n"
+             "  serve {}/ (e.g. `python3 -m http.server -d {}`) and open "
+             "index.html\n",
+             outdir,
+             outdir,
+             outdir);
   return 0;
 }
 
@@ -796,6 +882,7 @@ main(
     BLD::build(c, mods);
     return tests_wasm(c);
   }
+  if (cmd == "wasm") return cmd_wasm(c, mods);
   if (cmd == "valgrind")
   {
     BLD::build(c, mods);
@@ -816,7 +903,7 @@ main(
 
   std::print(
     stderr,
-    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|clean|"
+    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|wasm|clean|"
     "clean-recursive|check-ascii|check-platform|check-format|"
     "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
     "tokei|valgrind|env|pre-push]\n");

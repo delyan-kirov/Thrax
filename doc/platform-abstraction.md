@@ -23,9 +23,12 @@ programs never dlopen (see section 4). Phase 4 DONE (2026-07-22):
 clang via `$WASI_CC`, stack placed first + enlarged), 32-bit `Int` end to end
 (`@int32` dispatch keys, literal range check, wrap-on-store), a generated
 qualified `TARGET` reflection module, and `build wasm-test` (combined suite
-under wasmtime, in CI). Phase 5 (compiler-in-browser + website via Emscripten)
-is next.
-**Date:** 2026-07-22 (originally 2026-07-18).
+under wasmtime, in CI). Phase 5 CORE DONE (2026-07-23): `build wasm` compiles
+the compiler itself to WebAssembly via Emscripten; FF gains a compiled-in host
+table of the `C`/libm namespace (no dlopen); `web/site/` is a working browser
+playground (`web/playground.cpp` string entry, node smoke test + GitHub Pages
+deploy in CI). Remaining: a fuller landing/tour site and `"js"` externs.
+**Date:** 2026-07-23 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
 where platform-specific knowledge is allowed to live. Companion to
@@ -342,16 +345,24 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   made portable (Schrage's method; constants kept under 2^31). `build
   wasm-test` cross-compiles the combined suite and runs it under wasmtime;
   wired into CI. Exit criterion met: every example passes under wasmtime.
-- **Phase 5 -- The compiler in the browser + the website.** `build wasm`
-  compiles the compiler+interpreter with Emscripten (add emscripten to the
-  nix flake). The browser host is wasm32: `TG::host()` learns it, and FF
-  swaps libffi+dlopen for a compiled-in host table of the `C` namespace's
-  functions (statically linked from Emscripten's musl; custom externs
-  resolve against the table or fail clearly -- no libffi port needed).
-  Then `examples/website/`: a static site (landing + tour generated from
-  the CI-verified examples + rendered doc/*.md + the playground page
-  loading thrax.wasm), deployed to GitHub Pages by CI. `"js"` externs
-  (wasm imports via the ABI slot) follow for interactive demos.
+- **Phase 5 -- The compiler in the browser + the website. CORE DONE.**
+  `build wasm` compiles the whole compiler+interpreter with Emscripten (emcc
+  + node in the flake) -- the amalgam and `web/playground.cpp` (a string-in
+  entry: source is written to a MEMFS file and run through the real
+  file-based driver, output flowing to `Module.print`/`printErr`). The
+  browser host is wasm32 (`TG::host()` -> wasm32-linux, so programs run with
+  32-bit `Int`), and FF swaps libffi+dlopen for a **compiled-in host table**
+  of the `C`/libm namespace (`engines/FF.cpp`'s `#ifndef THRAX_3RD_PARTY_ON`
+  branch: one adapter per symbol calling the real function with its TRUE
+  signature -- required because wasm type-checks indirect calls, so casting
+  `&free` to an int-returning pointer would trap). `web/site/index.html` is a
+  self-contained playground (Run / IR / C / AST, ccall into `thrax_eval`);
+  `web/smoke.mjs` runs it headlessly under node in CI, and `.github/
+  workflows/pages.yml` deploys `web/site/` to GitHub Pages. `no-ffi` native
+  builds gained the host table too (they used to abort on any FFI). STILL TO
+  DO: a fuller site (landing + tour generated from the CI-verified examples +
+  rendered doc/*.md); `"js"` externs (wasm imports via the ABI slot) for
+  interactive demos.
 - **Phase 6 -- Windows + 32-bit natives.** `x86_64-windows-gnu` via mingw or
   `zig cc`, wine-run CI; the remaining 32-bit native targets. CI matrix:
   linux-x64 (host suites) + wasm32-wasi + windows-cross.

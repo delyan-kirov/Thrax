@@ -43,6 +43,8 @@
           pkgs.bear # compile_commands.json via `build compile-commands`
           pkgs.bison # grammar spec + conflict check (see grammar/)
           pkgs.wasmtime # runs wasm32-wasi executables (`--target=wasm32-wasi`)
+          pkgs.emscripten # `build wasm`: the compiler itself to wasm (browser)
+          pkgs.nodejs # runs the emscripten output headlessly (tests, CI)
           # mingwPkgs.stdenv.cc
           # should be enabled manually to check windows build
           # pkgs.wineWow64Packages.stable

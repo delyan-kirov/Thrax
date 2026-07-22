@@ -9,19 +9,215 @@
 #include "UT.hpp"
 
 #ifndef THRAX_3RD_PARTY_ON
+
+// No libffi / dlopen (the `no-ffi` build, and the wasm/browser build where
+// neither exists). Foreign calls are served from a COMPILED-IN HOST TABLE of
+// the `C`/libm namespace instead: no dynamic loading, but the interpreter can
+// still print and compute in the browser. A symbol outside the table fails
+// with a clear message (e.g. a program's own `@extern "raylib"`).
+//
+// Each entry is a tiny adapter that calls its real C function with that
+// function's TRUE signature -- essential on wasm, whose indirect calls are
+// type-checked, so casting `&free` (returns void) to an int-returning pointer
+// would trap. The adapter reads/writes the uniform 64-bit `Slot` ABI that
+// FF::call already defines (a pointer is the slot's low word; a Real is the
+// slot's double bit-pattern).
+
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <string>
+#include <unistd.h>
+#include <unordered_map>
+
 namespace FF
 {
+namespace
+{
+
+using Adapter = Slot (*)(const Slot *a);
+
+// A Real travels as its double bit-pattern in the slot (FF::call's contract);
+// word args/results cast through intptr_t (a wasm pointer is a 32-bit word,
+// the low bits of the 64-bit slot).
+inline double
+as_real(
+  Slot s)
+{
+  double d;
+  std::memcpy(&d, &s, sizeof d);
+  return d;
+}
+inline Slot
+from_real(
+  double d)
+{
+  Slot s = 0;
+  std::memcpy(&s, &d, sizeof d);
+  return s;
+}
+
+const std::unordered_map<std::string, Adapter> &
+host_table()
+{
+  static const std::unordered_map<std::string, Adapter> t = {
+    // libc -- the `C` namespace DR generates (app/DR.cpp core_c_source). A
+    // FILE* / allocation travels as an Int carrying the pointer.
+    { "abort", [](const Slot *) -> Slot { std::abort(); } },
+    { "exit", [](const Slot *a) -> Slot { std::exit((int)a[0]); } },
+    { "puts",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::puts((const char *)(intptr_t)a[0]);
+      } },
+    { "putchar",
+      [](const Slot *a) -> Slot { return (Slot)std::putchar((int)a[0]); } },
+    { "getchar", [](const Slot *) -> Slot { return (Slot)std::getchar(); } },
+    { "malloc",
+      [](const Slot *a) -> Slot {
+        return (Slot)(intptr_t)std::malloc((size_t)a[0]);
+      } },
+    { "free",
+      [](const Slot *a) -> Slot {
+        std::free((void *)(intptr_t)a[0]);
+        return 0;
+      } },
+    { "memset",
+      [](const Slot *a) -> Slot {
+        return (Slot)(intptr_t)std::memset(
+          (void *)(intptr_t)a[0], (int)a[1], (size_t)a[2]);
+      } },
+    { "strlen",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::strlen((const char *)(intptr_t)a[0]);
+      } },
+    { "fopen",
+      [](const Slot *a) -> Slot {
+        return (Slot)(intptr_t)std::fopen((const char *)(intptr_t)a[0],
+                                          (const char *)(intptr_t)a[1]);
+      } },
+    { "fclose",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::fclose((FILE *)(intptr_t)a[0]);
+      } },
+    { "fgetc",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::fgetc((FILE *)(intptr_t)a[0]);
+      } },
+    { "fputs",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::fputs((const char *)(intptr_t)a[0],
+                                (FILE *)(intptr_t)a[1]);
+      } },
+    { "fflush",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::fflush((FILE *)(intptr_t)a[0]);
+      } },
+    { "fseek",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::fseek((FILE *)(intptr_t)a[0], (long)a[1], (int)a[2]);
+      } },
+    { "ftell",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::ftell((FILE *)(intptr_t)a[0]);
+      } },
+    { "write",
+      [](const Slot *a) -> Slot {
+        return (Slot)write(
+          (int)a[0], (const void *)(intptr_t)a[1], (size_t)a[2]);
+      } },
+    { "remove",
+      [](const Slot *a) -> Slot {
+        return (Slot)std::remove((const char *)(intptr_t)a[0]);
+      } },
+    { "getenv",
+      [](const Slot *a) -> Slot {
+        return (Slot)(intptr_t)std::getenv((const char *)(intptr_t)a[0]);
+      } },
+    { "time",
+      [](const Slot *a) -> Slot {
+        return (Slot)(intptr_t)std::time((time_t *)(intptr_t)a[0]);
+      } },
+    // libm.
+    { "sqrt",
+      [](const Slot *a) -> Slot {
+        return from_real(std::sqrt(as_real(a[0])));
+      } },
+    { "sin",
+      [](const Slot *a) -> Slot {
+        return from_real(std::sin(as_real(a[0])));
+      } },
+    { "cos",
+      [](const Slot *a) -> Slot {
+        return from_real(std::cos(as_real(a[0])));
+      } },
+    { "tan",
+      [](const Slot *a) -> Slot {
+        return from_real(std::tan(as_real(a[0])));
+      } },
+    { "exp",
+      [](const Slot *a) -> Slot {
+        return from_real(std::exp(as_real(a[0])));
+      } },
+    { "log",
+      [](const Slot *a) -> Slot {
+        return from_real(std::log(as_real(a[0])));
+      } },
+    { "floor",
+      [](const Slot *a) -> Slot {
+        return from_real(std::floor(as_real(a[0])));
+      } },
+    { "ceil",
+      [](const Slot *a) -> Slot {
+        return from_real(std::ceil(as_real(a[0])));
+      } },
+    { "round",
+      [](const Slot *a) -> Slot {
+        return from_real(std::round(as_real(a[0])));
+      } },
+    { "pow",
+      [](const Slot *a) -> Slot {
+        return from_real(std::pow(as_real(a[0]), as_real(a[1])));
+      } },
+    { "fmod",
+      [](const Slot *a) -> Slot {
+        return from_real(std::fmod(as_real(a[0]), as_real(a[1])));
+      } },
+    { "atan2",
+      [](const Slot *a) -> Slot {
+        return from_real(std::atan2(as_real(a[0]), as_real(a[1])));
+      } },
+  };
+  return t;
+}
+
+} // namespace
+
 Slot
 call(
-  UT::Vu,
-  UT::Vu,
-  const std::vector<std::string> &,
+  UT::Vu lib,
+  UT::Vu symbol,
+  const std::vector<std::string> &, // types: the adapter knows its own
   const std::string &,
-  const std::vector<Slot> &)
+  const std::vector<Slot> &args)
 {
-  UT_FAIL_MSG("%s",
-              "this build has no FFI support (compiled with NO_3RD_PARTY)");
-  return 0;
+  std::string sym{ symbol };
+  const auto &t  = host_table();
+  auto        it = t.find(sym);
+  if (it == t.end())
+    UT_FAIL_MSG(
+      "FFI: symbol '%s' (library '%s') is not in this build's host table -- "
+      "only the C/libm namespace is compiled in (no dynamic loading; see "
+      "engines/FF.cpp)",
+      sym.c_str(),
+      std::string(lib).c_str());
+
+  // Zero-pad so an adapter reads its fixed argument count without a check.
+  Slot buf[8] = { 0 };
+  for (size_t i = 0; i < args.size() && i < 8; ++i) buf[i] = args[i];
+  return it->second(buf);
 }
 
 void

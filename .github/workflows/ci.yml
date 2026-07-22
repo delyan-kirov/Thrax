@@ -13,6 +13,10 @@ jobs:
 
       - uses: cachix/install-nix-action@v27
 
+      # Each `build ...-test` builds the compiler first. wasm-test cross-compiles
+      # the suite for wasm32-wasi and runs it under wasmtime (platform phase 4);
+      # `build wasm` compiles the compiler itself to WebAssembly (Emscripten) for
+      # the browser playground, and web/smoke.mjs proves that path under Node.
       - name: Build and test in Nix dev shell
         run: |
           nix develop --command bash -c '
@@ -20,4 +24,6 @@ jobs:
             build test
             build native-test
             build wasm-test
+            build wasm
+            node web/smoke.mjs
           '

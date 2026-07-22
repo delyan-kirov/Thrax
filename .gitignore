@@ -12,3 +12,6 @@ vgcore*
 tmp.*
 *.orig
 lib/*
+# `build wasm` output (regenerated); the page source web/site/index.html is tracked.
+/web/site/thrax.js
+/web/site/thrax.wasm

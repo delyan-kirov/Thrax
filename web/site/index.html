@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thrax &mdash; playground</title>
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --ink: #e6e6e6; --dim: #8b93a1;
+    --accent: #7cc4ff; --ok: #7bd88f; --err: #ff6b6b; --line: #2a2e37;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  header .tag { color: var(--dim); font-size: 13px; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; margin-left: auto; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+  .col.src { border-right: 1px solid var(--line); }
+  .bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .bar .label { color: var(--dim); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; }
+  .bar .spacer { flex: 1; }
+  select, button {
+    font: inherit; font-size: 13px; color: var(--ink); background: #262a33;
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  }
+  button.run { background: var(--accent); color: #0c1116; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea, pre.out {
+    flex: 1; margin: 0; padding: 14px; border: 0; resize: none;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.55;
+    background: transparent; color: var(--ink); tab-size: 4; overflow: auto; white-space: pre;
+  }
+  textarea { outline: none; }
+  pre.out .err { color: var(--err); }
+  .status { font-size: 12px; color: var(--dim); }
+  .status.ok { color: var(--ok); }
+  .status.bad { color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Thrax</h1>
+  <span class="tag">a small strict functional language &mdash; compiled in your browser</span>
+  <a href="https://github.com/delyan-kirov/Thrax" target="_blank" rel="noopener">source &rarr;</a>
+</header>
+<main>
+  <div class="col src">
+    <div class="bar">
+      <span class="label">program</span>
+      <span class="spacer"></span>
+      <select id="example" title="load an example"></select>
+    </div>
+    <textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+  </div>
+  <div class="col">
+    <div class="bar">
+      <button class="run" id="run" disabled>&#9654; Run</button>
+      <select id="mode" title="what to produce">
+        <option value="0">Run (interpret)</option>
+        <option value="2">Intermediate representation</option>
+        <option value="1">Generated C</option>
+        <option value="3">Parsed AST</option>
+      </select>
+      <span class="spacer"></span>
+      <span class="status" id="status">loading runtime&hellip;</span>
+    </div>
+    <pre class="out" id="out"></pre>
+  </div>
+</main>
+
+<script type="module">
+import createThrax from "./thrax.js";
+
+const EXAMPLES = {
+  "hello": `@mod MAIN
+
+$ main : Int =
+\tC.puts "hello, Thrax"; 0
+`,
+  "fibonacci": `@mod MAIN
+
+$ with STR
+
+$ fib : Int -> Int = \\n =
+\tif n ?< 2 then n
+\telse fib (n - 1) + fib (n - 2)
+
+$ main : Int =
+\tC.puts ("fib 20 = " ++ STR.from_int (fib 20)); 0
+`,
+  "pattern matching": `@mod MAIN
+
+$ with STR
+
+$ Shape : @union =
+\tCircle: Int,
+\tRect: {Int, Int},
+
+# \`when\` tries arms top to bottom, binds the payload, and needs an \`else\`.
+$ area : Shape -> Int = \\s =
+\twhen s
+\t\tis Shape.Circle.{r} then 3 * r * r
+\t\tis Shape.Rect.{w, h} then w * h
+\telse 0
+
+$ main : Int =
+\tC.puts ("circle r=2: " ++ STR.from_int (area Shape.Circle.{2}));
+\tC.puts ("rect 3x4:   " ++ STR.from_int (area Shape.Rect.{3, 4})); 0
+`,
+  "target reflection": `@mod MAIN
+
+$ with STR
+
+# TARGET is generated per compile: the playground runs on wasm32.
+$ main : Int =
+\tC.puts ("target:   " ++ TARGET.name);
+\tC.puts ("int bits: " ++ STR.from_int TARGET.int_bits); 0
+`,
+};
+
+const $ = id => document.getElementById(id);
+const srcEl = $("src"), outEl = $("out"), runEl = $("run");
+const modeEl = $("mode"), statusEl = $("status"), exEl = $("example");
+
+for (const name of Object.keys(EXAMPLES)) {
+  const o = document.createElement("option");
+  o.value = name; o.textContent = name; exEl.appendChild(o);
+}
+srcEl.value = EXAMPLES["fibonacci"]; exEl.value = "fibonacci";
+exEl.onchange = () => { srcEl.value = EXAMPLES[exEl.value]; };
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = "status" + (cls ? " " + cls : ""); }
+
+let lines = [];
+let Module;
+try {
+  Module = await createThrax({
+    print:    s => lines.push({ t: s, err: false }),
+    printErr: s => lines.push({ t: s, err: true }),
+  });
+  runEl.disabled = false;
+  setStatus("ready");
+} catch (e) {
+  setStatus("runtime failed to load", "bad");
+  outEl.textContent =
+    "The Thrax runtime failed to load:\n  " + e + "\n\n" +
+    "This page must be served over http:// (not opened as a file), and " +
+    "thrax.js + thrax.wasm must sit next to it (run `build wasm`).";
+  throw e;
+}
+
+function render() {
+  outEl.textContent = "";
+  for (const l of lines) {
+    const span = document.createElement("span");
+    if (l.err) span.className = "err";
+    span.textContent = l.t + "\n";
+    outEl.appendChild(span);
+  }
+}
+
+runEl.onclick = () => {
+  lines = [];
+  const mode = parseInt(modeEl.value, 10);
+  setStatus("running…");
+  let rc;
+  try {
+    rc = Module.ccall("thrax_eval", "number", ["string", "number"], [srcEl.value, mode]);
+  } catch (e) {
+    lines.push({ t: "playground: the runtime crashed (" + e + ")", err: true });
+    render(); setStatus("crashed", "bad"); return;
+  }
+  render();
+  setStatus(rc === 0 ? "exit 0" : "exit " + rc, rc === 0 ? "ok" : "bad");
+};
+
+// Ctrl/Cmd+Enter to run.
+srcEl.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runEl.click(); }
+});
+</script>
+</body>
+</html>
