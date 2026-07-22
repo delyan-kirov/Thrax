@@ -1,0 +1,49 @@
+name: Pages
+
+# Build the browser playground (`build wasm`) and publish web/site/ to GitHub
+# Pages. Runs on pushes to the default branch; can also be triggered by hand.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+
+      # Produces web/site/thrax.{js,wasm} beside the tracked index.html, and
+      # proves the build actually runs before we publish it.
+      - name: Build the playground
+        run: |
+          nix develop --command bash -c '
+            set -e
+            build wasm
+            node web/smoke.mjs
+          '
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
