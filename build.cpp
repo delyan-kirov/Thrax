@@ -171,6 +171,7 @@ format_files()
     { "utilities", "compiler", "engines", "app" }, { ".cpp", ".hpp" });
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
+  for (auto &x : BLD::glob({ "web" }, { ".cpp", ".hpp" })) f.push_back(x);
   for (const char *d :
        { "compiler", "engines", "platforms", "library", "app", "tests" })
     f.push_back(std::string(d) + "/build.cpp");
@@ -236,6 +237,91 @@ cmd_grammar_check(
     return 1;
   }
   std::print("build: grammar-check: OK\n");
+  return 0;
+}
+
+// Compile the compiler ITSELF to WebAssembly for the browser playground: the
+// project amalgam + web/playground.cpp through Emscripten (emcc), with FFI
+// OFF -- so FF.cpp's compiled-in host table (not libffi+dlopen, which a
+// browser has neither of) serves the `C`/libm namespace. Output:
+// web/site/thrax.{js,wasm}, loaded by web/site/index.html.
+int
+cmd_wasm(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  namespace fs = std::filesystem;
+
+  if (BLD::exec({ "sh", "-c", "command -v emcc >/dev/null" }).code != 0)
+  {
+    std::print(stderr,
+               "build: wasm: emcc not found -- enter `nix develop` (it "
+               "provides emscripten), then rerun `build wasm`\n");
+    return 1;
+  }
+
+  // The native build generates the amalgam sources + the baked runtime header
+  // the wasm compile reads (incremental -- cheap when already up to date).
+  BLD::build(c, mods);
+
+  const std::string amalg  = c.artifacts + "/UTxAMALG.cpp";
+  const std::string obj_a  = c.artifacts + "/wasm_amalg.o";
+  const std::string obj_p  = c.artifacts + "/wasm_playground.o";
+  const std::string outdir = "web/site";
+  fs::create_directories(outdir);
+
+  // FFI OFF: no -DTHRAX_3RD_PARTY_ON, so the host-table path compiles in. The
+  // -std / -O / -I set matches the native build (c.includes).
+  std::vector<std::string> inc = BLD::split_ws(c.includes);
+
+  auto compile = [&](const std::string &src, const std::string &obj) -> int {
+    std::vector<std::string> cmd = { "emcc", "-std=c++23", "-O2" };
+    for (auto &i : inc) cmd.push_back(i);
+    cmd.push_back("-c");
+    cmd.push_back(src);
+    cmd.push_back("-o");
+    cmd.push_back(obj);
+    BLD::Output o = BLD::exec(cmd);
+    if (o.code != 0)
+      std::print(
+        stderr, "build: wasm: compile failed for {}\n{}{}", src, o.out, o.err);
+    return o.code;
+  };
+  if (compile(amalg, obj_a) != 0) return 1;
+  if (compile("web/playground.cpp", obj_p) != 0) return 1;
+
+  // MODULARIZE gives a `createThrax()` factory the page awaits; the exported
+  // `thrax_eval` is reached with `Module.ccall`; a big stack + growable memory
+  // because the compiler recurses over the AST (Emscripten defaults to 64 KiB
+  // of stack, far too little). ENVIRONMENT spans browser and node (CI test).
+  std::vector<std::string> link = {
+    "emcc",
+    "-O2",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sSTACK_SIZE=33554432",
+    "-sMODULARIZE=1",
+    "-sEXPORT_ES6=1", // real ES module (`export default`), for the page's import
+    "-sEXPORT_NAME=createThrax",
+    "-sEXPORTED_FUNCTIONS=_thrax_eval,_main",
+    "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap",
+    "-sENVIRONMENT=web,worker,node",
+    obj_a,
+    obj_p,
+    "-o",
+    outdir + "/thrax.js",
+  };
+  BLD::Output l = BLD::exec(link);
+  if (l.code != 0)
+  {
+    std::print(stderr, "build: wasm: link failed\n{}{}", l.out, l.err);
+    return 1;
+  }
+
+  std::print("build: wasm: OK -- wrote {}/thrax.js + thrax.wasm\n"
+             "  serve {}/ (e.g. `python3 -m http.server -d {}`) and open "
+             "index.html\n",
+             outdir,
+             outdir,
+             outdir);
   return 0;
 }
 
@@ -402,6 +488,66 @@ ascii_checked_ext(
 {
   return ext == ".cpp" || ext == ".hpp" || ext == ".c" || ext == ".h"
          || ext == ".md" || ext == ".txt" || ext == ".thx";
+}
+
+// `build check-platform`: platforms/ is the only directory allowed to
+// consult raw platform macros (doc/platform-abstraction.md section 3.2) --
+// everything else keys off TG::Target (compiler side) or THxPLAT.h (runtime
+// side). Boundaries by mechanism: this grep fails the gate on any raw macro
+// outside platforms/, minus the three sanctioned exemptions below.
+int
+cmd_check_platform()
+{
+  static const char *const exempt_files[] = {
+    "compiler/TG.hpp",        // the ONE sanctioned host() detection
+    "utilities/UTxBUILD.hpp", // the build tool's own process shim
+    "utilities/UT.cpp",       // the debug-trap arch dispatch (int3/abort)
+    "build.cpp",              // this gate's own macro list
+  };
+  static const std::regex macro(
+    "\\b(_WIN32|_WIN64|__linux__|__APPLE__|__wasi__|__wasm__|__wasm32__|"
+    "__EMSCRIPTEN__|__SIZEOF_POINTER__|__x86_64__|__aarch64__|__i386__|"
+    "__arm__|_M_X64|_M_ARM64|_M_IX86)\\b");
+
+  std::vector<std::string> files = BLD::glob(
+    { "utilities", "compiler", "engines", "app", "tests" }, { ".cpp", ".hpp" });
+  for (const char *d :
+       { "compiler", "engines", "platforms", "library", "app", "tests" })
+    files.push_back(std::string(d) + "/build.cpp");
+  files.push_back("build.cpp");
+  files.push_back("utilities/UTxBUILD.hpp");
+
+  int violations = 0, scanned = 0;
+  for (const std::string &f : files)
+  {
+    bool skip = false;
+    for (const char *e : exempt_files) skip = skip || f == e;
+    if (skip) continue;
+    ++scanned;
+    size_t line = 0;
+    for (const std::string &l : BLD::split_lines(BLD::read_file(f)))
+    {
+      ++line;
+      if (std::regex_search(l, macro))
+      {
+        std::print(stderr, "{}:{}: raw platform macro: {}\n", f, line, l);
+        ++violations;
+      }
+    }
+  }
+  if (violations)
+  {
+    std::print(stderr,
+               "build: check-platform: {} raw platform macro use(s) outside "
+               "platforms/ (see above). Ask TG::Target or THxPLAT.h instead, "
+               "or move the code into platforms/.\n",
+               violations);
+    return 1;
+  }
+  std::print("build: check-platform: OK ({} files scanned, {} exempt)\n",
+             scanned,
+             std::size(exempt_files));
+  return 0;
 }
 
 int
@@ -680,6 +826,7 @@ main(
   if (cmd == "clean") return cmd_clean(c);
   if (cmd == "clean-recursive") return cmd_clean_recursive(c);
   if (cmd == "check-ascii") return cmd_check_ascii();
+  if (cmd == "check-platform") return cmd_check_platform();
   if (cmd == "check-format") return cmd_check_format();
   if (cmd == "grammar-check")
     return cmd_grammar_check(argi + 1 < argc
@@ -730,6 +877,12 @@ main(
     BLD::build(c, mods);
     return tests_native(c);
   }
+  if (cmd == "wasm-test")
+  {
+    BLD::build(c, mods);
+    return tests_wasm(c);
+  }
+  if (cmd == "wasm") return cmd_wasm(c, mods);
   if (cmd == "valgrind")
   {
     BLD::build(c, mods);
@@ -742,15 +895,17 @@ main(
     // The gate the git pre-push hook runs (see cmd_install_hooks). Cheap,
     // non-compiling checks first so a bad push fails fast, then build + tests.
     if (int rc = cmd_check_ascii()) return rc;
+    if (int rc = cmd_check_platform()) return rc;
     if (int rc = cmd_check_format()) return rc;
     BLD::build(c, mods);
     return tests_smoke(c);
   }
 
-  std::print(stderr,
-             "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|check-ascii|check-format|grammar-check|"
-             "install-hooks|ffi-rebuild|format|compile-commands|tokei|"
-             "valgrind|env|pre-push]\n");
+  std::print(
+    stderr,
+    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|wasm|clean|"
+    "clean-recursive|check-ascii|check-platform|check-format|"
+    "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
+    "tokei|valgrind|env|pre-push]\n");
   return 2;
 }

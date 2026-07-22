@@ -17,9 +17,17 @@ $ new : Int -> Rng = \seed =
 	let s = (if seed ?< 0 then 0 - seed else seed) % 2147483647 in
 	Rng.{ .state = if s ?= 0 then 1 else s }
 
+# FIXME : this module is not good, also we should check int size isntead. 
 # A draw in [0, 2^31 - 1), and the generator to use for the next draw.
+# Schrage's method: (48271 * s) mod (2^31 - 1) without forming the product,
+# which overflows a 32-bit Int (48271 * (s % 44488) and 3399 * (s / 44488)
+# both fit; 44488 and 3399 are the modulus's quotient and remainder by
+# 48271). The sequence is identical on every target word size.
 $ next : Rng -> {Int, Rng} = \g =
-	let s = (g.state * 48271) % 2147483647 in
+	let hi = g.state / 44488 in
+	let lo = g.state % 44488 in
+	let t = (lo * 48271) - (hi * 3399) in
+	let s = if t <= 0 then t + 2147483647 else t in
 	{s, Rng.{ .state = s }}
 
 # A draw in [0, n) (n <= 0 yields 0), and the advanced generator.

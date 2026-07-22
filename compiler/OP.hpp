@@ -65,7 +65,7 @@ inline constexpr const char *VEC_REP   = "%vec";
 inline constexpr const char *VEC_NEW   = "vec_new";
 inline constexpr const char *VEC_FILL  = "vec_fill";
 inline constexpr const char *VEC_LEN   = "vec_len";
-inline constexpr const char *VEC_GET   = "vec_get"; 
+inline constexpr const char *VEC_GET   = "vec_get";
 inline constexpr const char *VEC_SET   = "vec_set";
 inline constexpr const char *VEC_PUSH  = "vec_push";
 

@@ -21,8 +21,10 @@ $ spin : Int -> Int -> Int = \n acc =
 		let p = Pair.{ .fst = n, .snd = acc } in
 		spin (n - 1) (p.fst + p.snd)
 
-# 200_000 * 200_001 / 2 = 20_000_100_000
-$ ck : Int = if (spin 200000 0) ?= 20000100000 then 0 else 1
+# FIXME : check integer size here instead
+# 65_000 * 65_001 / 2 = 2_112_532_500 -- kept under 2^31 so the sum is exact
+# on a 32-bit target too (this loop runs for every target, wasm included).
+$ ck : Int = if (spin 65000 0) ?= 2112532500 then 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck

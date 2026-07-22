@@ -1,0 +1,31 @@
+@mod PLATFORM
+
+# \file PLATFORM.thx
+# \info The compilation-target reflection module `TARGET`: the word size,
+#       Int bounds, and os/arch names for the target THIS program was built
+#       for. The values are fixed at compile time (generated like the Int/Nat
+#       aliases), so a program can adapt to its target -- e.g. pick a wider
+#       algorithm on a 64-bit word -- instead of hardcoding assumptions.
+#
+#       Accessed qualified (`TARGET.int_bits`); the module needs no import.
+
+# int_bits is the target word (32 or 64) and ptr_bits agrees -- Int IS the
+# word. `when` selects on the width the way target-adaptive code would.
+$ ck_bits : Int =
+	when TARGET.int_bits
+		is 64 then (if TARGET.ptr_bits ?= 64 then 0 else 1)
+		is 32 then (if TARGET.ptr_bits ?= 32 then 0 else 1)
+		else 1
+
+# The Int bounds bracket zero (a signed two's-complement word).
+$ ck_bounds : Int =
+	if TARGET.int_max ?> 0
+	then (if TARGET.int_min ?< 0 then 0 else 1)
+	else 1
+
+# `name` is exactly "arch-os".
+$ ck_name : Int =
+	if (TARGET.arch ++ "-" ++ TARGET.os) ?= TARGET.name then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = ck_bits + ck_bounds + ck_name

@@ -195,9 +195,13 @@ memory management. Foreign C functions are bound with `@extern`:
 ([`io_example`](examples/io_example/MAIN.thx))
 
 ```typescript
-$ puts : Str -> Int = @extern.{ "puts", "libc.so.6" }
+$ puts : Str -> Int = @extern "C" "puts" "libc"
 $ main : Int = puts "Hello world"; 0
 ```
+
+The library name is symbolic -- no path or soname appears in source. The
+interpreter resolves it with dlopen at run time; the native backend emits a
+direct call and a link flag, and the system linker does the rest.
 
 ```sh
 thrax --build examples/io_example   # -> examples/io_example/bin/<name>{.ir,.c,exe}

@@ -54,6 +54,7 @@ there is no Pair type.
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
+| `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see doc/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`); importing both is fine -- overloading resolves by type,
@@ -105,13 +106,15 @@ turns the possibility back into a value with `try` (giving a
 
 IO goes through the injected `C` namespace, which DR extended with `fopen`,
 `fclose`, `fgetc`, `fputs`, `fflush`, `fseek`, `ftell`, `write`, `remove`,
-`getenv` and `time` (host libc soname via `TG::Target`, as before), plus the
-libm functions (`sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`,
-`ceil`, `round`, `pow`, `fmod`) under `TG::Target::libm_soname()` -- on Linux
-libm is its own soname (Nix ships the symbols only in libm.so.6 even though
-glibc >= 2.34 folded them into libc for static linking); elsewhere the C
-library carries them. Two deliberate compromises, both documented at the
-declarations in app/DR.cpp:
+`getenv` and `time`, plus the libm functions (`sqrt`, `sin`, `cos`, `tan`,
+`atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod`). The
+declarations name their libraries SYMBOLICALLY (`"libc"`, `"libm"`); where
+the symbols actually live is resolved at the edge -- `TG::Target::soname`
+for the interpreter's dlopen (on Linux libm is its own soname: Nix ships the
+symbols only in libm.so.6 even though glibc >= 2.34 folded them into libc
+for static linking; elsewhere the C library carries them), and a link-line
+flag for the native backend (generated programs never dlopen). Two
+deliberate compromises, both documented at the declarations in app/DR.cpp:
 
 - **`FILE*` travels as `Int`, not `Ptr`.** The handle is only passed back to
   the same functions or tested against 0 (NULL), and `?=` is defined on Int

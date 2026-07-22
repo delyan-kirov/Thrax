@@ -24,9 +24,6 @@
 #include "OP.hpp"
 #include "UT.hpp"
 
-#include <optional>
-#include <string>
-
 namespace TG
 {
 
@@ -68,6 +65,25 @@ struct Target
     return 64;
   }
 
+  // The largest integer LITERAL that fits this target's word.
+  // FIXME : use int64_t not long long | better yet define integer aliases in UT
+  constexpr long long
+  lit_max() const
+  {
+    return 32 == ptr_bits() ? 0xffffffffLL : 0x7fffffffffffffffLL;
+  }
+
+  constexpr long long
+  int_max() const
+  {
+    return 32 == ptr_bits() ? 0x7fffffffLL : 0x7fffffffffffffffLL;
+  }
+  constexpr long long
+  int_min() const
+  {
+    return 32 == ptr_bits() ? -0x80000000LL : (-0x7fffffffffffffffLL - 1);
+  }
+
   // The canonical spelling the target's `Int`/`Nat` alias to: the target word.
   constexpr const char *
   int_ty() const
@@ -80,10 +96,10 @@ struct Target
     return 32 == ptr_bits() ? OP::TY_NAT32 : OP::TY_NAT64;
   }
 
-  // The C library's runtime name on this target. Interim: baked into the
-  // generated `C.thx` externs by DR until symbolic library names land
-  // (doc/platform-abstraction.md section 3.3), when this becomes a
-  // resolve-at-the-edge detail.
+  // The C library's runtime name on this target. Source code never spells
+  // this: `@extern` names libraries SYMBOLICALLY ("libc") and consumers
+  // resolve through soname() below at the last possible moment
+  // (doc/platform-abstraction.md section 3.3).
   constexpr const char *
   libc_soname() const
   {
@@ -113,6 +129,34 @@ struct Target
     return Os::Wasi != os;
   }
 
+  // Resolve a symbolic `@extern` library name to this target's runtime
+  // loadable name. "libc"/"libm" map to the known C/math libraries; a name
+  // containing '.' or '/' is an explicit soname/path and passes through
+  // verbatim (user's responsibility); anything else gets the platform's
+  // conventional decoration ("raylib" -> "libraylib.so" / "libraylib.dylib"
+  // / "raylib.dll"; a leading "lib" is not doubled). The native backend does
+  // NOT use this: it turns the symbolic name into a link-line flag instead.
+  std::string
+  soname(
+    UT::Vu lib) const
+  {
+    if (lib == "libc" || lib == "c") return libc_soname();
+    if (lib == "libm" || lib == "m") return libm_soname();
+    if (lib.find('.') != UT::Vu::npos || lib.find('/') != UT::Vu::npos)
+      return std::string(lib);
+    std::string base{ lib };
+    switch (os)
+    {
+    case Os::Linux:
+      return (base.starts_with("lib") ? base : "lib" + base) + ".so";
+    case Os::Macos:
+      return (base.starts_with("lib") ? base : "lib" + base) + ".dylib";
+    case Os::Windows: return base + ".dll";
+    case Os::Wasi   : return base; // no runtime loading; never dlopened
+    }
+    return base;
+  }
+
   // Canonical spelling of a base-type name for THIS target: `Int`/`Nat` fold
   // to the target word type, every other spelling through OP::canon. This is
   // the canonicalization FFI consumers must use (OP::canon alone cannot fold
@@ -126,27 +170,36 @@ struct Target
     return OP::canon(name);
   }
 
+  constexpr const char *
+  arch_name() const
+  {
+    switch (arch)
+    {
+    case Arch::X86_64 : return "x86_64";
+    case Arch::Aarch64: return "aarch64";
+    case Arch::X86    : return "x86";
+    case Arch::Arm    : return "arm";
+    case Arch::Wasm32 : return "wasm32";
+    }
+    return "?";
+  }
+  constexpr const char *
+  os_name() const
+  {
+    switch (os)
+    {
+    case Os::Linux  : return "linux";
+    case Os::Macos  : return "macos";
+    case Os::Windows: return "windows";
+    case Os::Wasi   : return "wasi";
+    }
+    return "?";
+  }
+
   std::string
   name() const
   {
-    const char *a = "?";
-    switch (arch)
-    {
-    case Arch::X86_64 : a = "x86_64"; break;
-    case Arch::Aarch64: a = "aarch64"; break;
-    case Arch::X86    : a = "x86"; break;
-    case Arch::Arm    : a = "arm"; break;
-    case Arch::Wasm32 : a = "wasm32"; break;
-    }
-    const char *o = "?";
-    switch (os)
-    {
-    case Os::Linux  : o = "linux"; break;
-    case Os::Macos  : o = "macos"; break;
-    case Os::Windows: o = "windows"; break;
-    case Os::Wasi   : o = "wasi"; break;
-    }
-    return std::string(a) + "-" + o;
+    return std::string(arch_name()) + "-" + os_name();
   }
 };
 
@@ -180,6 +233,61 @@ host()
 #endif
 
   return Target{ os, arch };
+}
+
+// How the host invokes a C compiler for a target: the `cc -O2` call as data
+// (doc/platform-abstraction.md section 4). The host target uses the system
+// `cc`; a cross target names its driver through an environment variable so
+// tool LOCATIONS stay out of the compiler, like `@extern` library locations
+// do (the nix flake exports WASI_CC; any wasi-sdk clang works). An empty
+// `cc` means no toolchain was found and `hint` says what to set.
+struct Toolchain
+{
+  std::string              cc;     // C compiler driver; empty = missing
+  std::string              hint;   // when cc is empty: how to provide one
+  std::vector<std::string> cflags; // always passed (optimization level etc.)
+  std::string runner;     // wraps execution ("wasmtime"); empty = run directly
+  std::string exe_suffix; // "" native, ".wasm" wasi (".exe" windows, later)
+  bool        rpath = true; // linker understands -Wl,-rpath (has dyn loading)
+};
+
+inline Toolchain
+toolchain(
+  const Target &t)
+{
+  Toolchain tc;
+  tc.cflags = { "-O2" };
+  if (t == host())
+  {
+    tc.cc = "cc";
+    return tc;
+  }
+  if (Os::Wasi == t.os && Arch::Wasm32 == t.arch)
+  {
+    const char *cc = std::getenv("WASI_CC");
+    tc.cc          = cc ? cc : "";
+    tc.hint        = "no C compiler for wasm32-wasi -- set WASI_CC to a "
+                     "wasi-sdk clang (the nix dev shell exports it)";
+    // Wasm linear memory has NO guard pages, and wasm-ld's default layout
+    // puts the (64 KiB) shadow stack ABOVE the data segment: a deep C stack
+    // silently tramples the program's globals instead of faulting. The
+    // runtime recurses on the C stack when forcing globals (THxRT_glob ->
+    // THxK_run_code -> blocks -> THxRT_glob), so give wasm programs the
+    // stack a native host gives them, placed FIRST so overflow traps at
+    // address zero instead of corrupting data.
+    tc.cflags.push_back("-Wl,--stack-first");
+    tc.cflags.push_back("-Wl,-z,stack-size=8388608");
+    tc.runner     = "wasmtime";
+    tc.exe_suffix = ".wasm";
+    tc.rpath      = false; // wasm-ld has no rpath; wasi never loads at runtime
+    return tc;
+  }
+  tc.cflags.clear();
+  tc.hint = "cross-compilation to '" + t.name()
+            + "' is not supported yet "
+              "(host is "
+            + host().name() + ")";
+  return tc;
 }
 
 // Parse a `--target=` spelling ("x86_64-linux", "wasm32-wasi", ...): the

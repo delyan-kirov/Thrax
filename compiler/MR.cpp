@@ -1351,6 +1351,11 @@ struct Linker
         roots.push_back(std::string(d.name));
         r.ctime_asserts.push_back({ d.name, d.assert_anchor });
       }
+      if (d.ctime_run)
+      {
+        roots.push_back(std::string(d.name));
+        r.ctime_runs.push_back({ d.name, d.assert_anchor });
+      }
     }
 
     std::unordered_set<std::string> live;

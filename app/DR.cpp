@@ -4,6 +4,7 @@
 #include "STDLIBxAMALG.hpp"
 
 #include "EX.hpp"
+#include "FF.hpp"
 #include "IR.hpp"
 #include "IT.hpp"
 #include "MR.hpp"
@@ -130,6 +131,42 @@ check_ctime_asserts(
   return false;
 }
 
+// What `@run` directives asked of this compilation (see library/BUILD.thx):
+// symbolic libraries to link/preload, and library search paths.
+struct BuildDirectives
+{
+  std::vector<std::string> libs;
+  std::vector<std::string> lib_paths;
+};
+
+// Force every `@run` global through the interpreter -- compile-time
+// execution, Jai's #run. Values are discarded, except BUILD.Directive
+// results, which are collected into `out` when the caller consumes them
+// (the interpret and --build paths; the others force for effect only).
+static void
+force_ctime_runs(
+  const IR::Program &prog, const MR::Result &mr, BuildDirectives *out)
+{
+  if (mr.ctime_runs.empty()) return;
+
+  IT::Machine m{ prog };
+  for (const auto &[name, anchor] : mr.ctime_runs)
+  {
+    (void)anchor;
+    IT::pVal v = m.glob(name);
+    if (!out || !v) continue;
+    if (IT::VKind::Variant != IT::kind(v)) continue;
+    const IT::VVariant &var = std::get<IT::VVariant>(v->as);
+    if (var.type_name != "BUILD/Directive" || var.fields.size() != 1) continue;
+    if (IT::VKind::Str != IT::kind(var.fields[0])) continue;
+    const std::string &s = std::get<IT::VStr>(var.fields[0]->as).val;
+    if (var.tag == "Lib")
+      out->libs.push_back(s);
+    else if (var.tag == "LibPath")
+      out->lib_paths.push_back(s);
+  }
+}
+
 static const char PRELUDE_FILE[] = "PRELUDE_implTarget.thx";
 
 static UT::Vu
@@ -159,7 +196,7 @@ core_c_source(
 {
   const std::string I = tg.int_ty(), S = OP::TY_STR, P = OP::TY_PTR, U = "{}";
   std::string       s      = "@mod C\n";
-  auto              ext_in = [&](const char        *soname,
+  auto              ext_in = [&](const char        *lib,
                     const char        *name,
                     const std::string &sig,
                     const char        *sym) {
@@ -167,14 +204,14 @@ core_c_source(
     s += name;
     s += " : ";
     s += sig;
-    s += " = @extern.{ \"";
+    s += " = @extern \"C\" \"";
     s += sym;
-    s += "\", \"";
-    s += soname;
-    s += "\" }\n";
+    s += "\" \"";
+    s += lib;
+    s += "\"\n";
   };
   auto ext = [&](const char *name, const std::string &sig, const char *sym) {
-    ext_in(tg.libc_soname(), name, sig, sym);
+    ext_in("libc", name, sig, sym);
   };
 
   ext("abort", U + " -> " + U, "abort");
@@ -197,9 +234,10 @@ core_c_source(
   ext("getenv", S + " -> " + S, "getenv");
   ext("time", I + " -> " + I, "time"); // time(NULL): call as `C.time 0`
 
-  // libm; its own soname where libm is a separate library (Linux)
+  // libm: symbolic "libm"; where the math symbols actually live (a separate
+  // soname on Linux, folded into libc elsewhere) is TG::soname's business.
   const std::string R  = OP::TY_REAL64;
-  const char       *lm = tg.libm_soname();
+  const char       *lm = "libm";
   ext_in(lm, "sqrt", R + " -> " + R, "sqrt");
   ext_in(lm, "sin", R + " -> " + R, "sin");
   ext_in(lm, "cos", R + " -> " + R, "cos");
@@ -212,6 +250,42 @@ core_c_source(
   ext_in(lm, "pow", R + " -> " + R + " -> " + R, "pow");
   ext_in(lm, "fmod", R + " -> " + R + " -> " + R, "fmod");
   ext_in(lm, "atan2", R + " -> " + R + " -> " + R, "atan2");
+  return UT::strdup(arena, s.c_str());
+}
+
+static const char TARGET_FILE[] = "TARGET.thx";
+
+// The `@mod TARGET` compilation-target reflection module: ordinary Thrax
+// globals whose values are the target chosen for THIS build, accessed
+// qualified (`TARGET.int_bits`, `TARGET.os`, ...). Generated (not a static
+// stdlib file) because the values are only known once the target is fixed --
+// the same reason the prelude's `Int`/`Nat` aliases are generated. A program
+// reads these to adapt to the target's word size instead of hardcoding a
+// portable constant (e.g. `when TARGET.int_bits is 64 then ... else ...`).
+static UT::Vu
+target_source(
+  AR::Arena &arena, const TG::Target &tg)
+{
+  const std::string I = tg.int_ty(), S = OP::TY_STR;
+  std::string       s       = "@mod TARGET\n";
+  auto              def_int = [&](const char *name, long long v) {
+    // A negative value's magnitude may be 2^(w-1) (int_min), which exceeds
+    // the positive-literal ceiling; write it as `0 - (|v|-1) - 1` so every
+    // literal part is in range (`-(v+1)` avoids overflow at v == INT_MIN).
+    std::string rhs
+      = v < 0 ? "0 - " + std::to_string(-(v + 1)) + " - 1" : std::to_string(v);
+    s += "$ " + std::string(name) + " : " + I + " = " + rhs + "\n";
+  };
+  auto def_str = [&](const char *name, const char *v) {
+    s += "$ " + std::string(name) + " : " + S + " = \"" + v + "\"\n";
+  };
+  def_int("int_bits", tg.ptr_bits()); // Int is the target word
+  def_int("ptr_bits", tg.ptr_bits());
+  def_int("int_max", tg.int_max());
+  def_int("int_min", tg.int_min());
+  def_str("os", tg.os_name());
+  def_str("arch", tg.arch_name());
+  def_str("name", tg.name().c_str());
   return UT::strdup(arena, s.c_str());
 }
 
@@ -250,6 +324,11 @@ parse_units(
             parse_diags);
   parse_one(core_c_source(arena, tg),
             UT::Vu{ C_FILE, sizeof(C_FILE) - 1 },
+            arena,
+            units,
+            parse_diags);
+  parse_one(target_source(arena, tg),
+            UT::Vu{ TARGET_FILE, sizeof(TARGET_FILE) - 1 },
             arena,
             units,
             parse_diags);
@@ -384,6 +463,8 @@ interpret_file(
 
   if (!check_ctime_asserts(ip.prog, mr, units, *ip.arena))
     ip.prog = IR::Program{};
+  else
+    force_ctime_runs(ip.prog, mr, nullptr);
   return ip;
 }
 
@@ -419,6 +500,13 @@ run_program(
 
   if (!check_ctime_asserts(prog, mr, units, ir_arena)) return 1;
 
+  // Apply the `@run` BUILD directives to this run: search paths and
+  // preloads for the FFI's dlopen.
+  BuildDirectives bd;
+  force_ctime_runs(prog, mr, &bd);
+  for (const std::string &p : bd.lib_paths) FF::add_lib_path(p);
+  for (const std::string &l : bd.libs) FF::add_preload(l);
+
   // Run the entry via the reified-K machine: `main` for `Int`, or `main ""` for
   // `Str -> Int` (the CLI argument is empty until an `Args` type exists).
   return IT::machine_main(prog, mr.entry, mr.entry_takes_arg);
@@ -443,6 +531,7 @@ dump_ir(
   IR::Program prog = IR::lower(env, core_arena);
   collect_operations(mr.program, prog);
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
+  force_ctime_runs(prog, mr, nullptr);
   std::printf("%s", IR::pprint(prog).c_str());
   return true;
 }
@@ -468,6 +557,7 @@ emit_c(
   collect_operations(mr.program, prog);
 
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
+  force_ctime_runs(prog, mr, nullptr);
 
   if (std::optional<std::string> why = CC::unsupported(prog))
   {
@@ -540,6 +630,10 @@ build_project(
 
   if (!check_ctime_asserts(prog, mr, units, core_arena)) return false;
 
+  // `@run` BUILD directives join the link line below.
+  BuildDirectives bd;
+  force_ctime_runs(prog, mr, &bd);
+
   if (std::optional<std::string> why = CC::unsupported(prog))
   {
     std::fprintf(stderr,
@@ -570,9 +664,16 @@ build_project(
     return false;
   }
 
+  TG::Toolchain tc = TG::toolchain(tg);
+  if (tc.cc.empty())
+  {
+    std::fprintf(stderr, "thrax: %s\n", tc.hint.c_str());
+    return false;
+  }
+
   fs::path ir_path  = outdir / (stem + ".ir");
   fs::path c_path   = outdir / (stem + ".c");
-  fs::path exe_path = outdir / stem;
+  fs::path exe_path = outdir / (stem + tc.exe_suffix);
 
   {
     std::ofstream f(ir_path);
@@ -596,11 +697,25 @@ build_project(
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the
-  // compile needs nothing but a C compiler -- plus -ldl for dlopen/dlsym when
-  // the program makes foreign calls.
-  std::string cmd
-    = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
-  if (CC::uses_ffi(prog)) cmd += " -ldl";
+  // compile needs nothing but the target's C compiler (TG::toolchain) --
+  // plus a link flag per library the program's externs name (CC::link_flags;
+  // libc is implicit, generated programs never dlopen -- the system linker
+  // resolves, statically or dynamically per what it finds), plus whatever
+  // the `@run` BUILD directives asked for: -L/rpath per lib_path, one
+  // lib_flag per lib.
+  std::string cmd = "\"" + tc.cc + "\"";
+  for (const std::string &f : tc.cflags) cmd += " " + f;
+  cmd += " \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+  for (const std::string &p : bd.lib_paths)
+  {
+    cmd += " -L\"" + p + "\"";
+    if (tc.rpath) cmd += " -Wl,-rpath,\"" + p + "\"";
+  }
+  for (const std::string &f : CC::link_flags(prog))
+    cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
+  for (const std::string &l : bd.libs)
+    if (std::string f = CC::lib_flag(l); !f.empty())
+      cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
 
   int rc = std::system(cmd.c_str());
   if (rc != 0)
@@ -614,6 +729,8 @@ build_project(
               ir_path.string().c_str(),
               c_path.string().c_str(),
               exe_path.string().c_str());
+  if (!tc.runner.empty())
+    std::printf("  run: %s %s\n", tc.runner.c_str(), exe_path.string().c_str());
   return true;
 }
 

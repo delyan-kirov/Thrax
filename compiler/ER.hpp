@@ -50,7 +50,8 @@ namespace ER
   X(PRIVATE_SYMBOL)                                                            \
   X(NO_ENTRY)                                                                  \
   X(ENTRY_SIGNATURE)                                                           \
-  X(ASSERT_FAILED)
+  X(ASSERT_FAILED)                                                             \
+  X(INT_LITERAL_RANGE)
 
 enum class Code
 {

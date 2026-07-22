@@ -50,6 +50,7 @@
 %token TYVAR        /* `a */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_OPERATOR AT_ASSERT
+%token AT_RUN
 %token AT_PRIVATE AT_PUBLIC AT_EXTERN AT_ARRAY
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
@@ -94,6 +95,7 @@ global
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_PUBLIC
   | DOLLAR AT_ASSERT expr
+  | DOLLAR AT_RUN expr
   | DOLLAR AT_OPERATOR DOT LBRACE overloadable_op RBRACE COLON type EQ expr
   ;
 
@@ -256,13 +258,10 @@ array_lit
   | AT_ARRAY DOT LBRACE DOT LIDENT EQ expr opt_comma RBRACE
   ;
 
-extern_lit
-  : AT_EXTERN DOT LBRACE STR COMMA STR opt_comma RBRACE
-  | AT_EXTERN DOT LBRACE extern_fields opt_comma RBRACE
-  ;
-
-extern_fields : extern_field | extern_fields COMMA extern_field ;
-extern_field  : DOT LIDENT EQ STR ;
+/* `@extern "C" "symbol" "lib"`: ABI, symbol, then SYMBOLIC library name --
+ * never a path or soname (resolution is the consumer's job: dlopen table in
+ * the interpreter, link line in the native backend). */
+extern_lit : AT_EXTERN STR STR STR ;
 
 handle
   : KW_DO expr

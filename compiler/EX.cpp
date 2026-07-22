@@ -214,10 +214,10 @@ Parser::mk_ty(
 
 Expr *
 Parser::mk_extern(
-  UT::Vu symbol, UT::Vu lib)
+  UT::Vu abi, UT::Vu symbol, UT::Vu lib)
 {
   Expr e{ ExprTag::Extern };
-  e.as = ExExtern{ symbol, lib };
+  e.as = ExExtern{ abi, symbol, lib };
   return alloc(e);
 }
 
@@ -1191,6 +1191,7 @@ Parser::parse_global()
   {
     if (after.str == "@operator") return parse_operator_def();
     if (after.str == "@assert") return parse_ctime_assert();
+    if (after.str == "@run") return parse_ctime_run();
     return parse_vis();
   }
 
@@ -1317,6 +1318,31 @@ Parser::parse_ctime_assert()
   auto &def         = std::get<ExDef>(d->as);
   def.ctime_assert  = true;
   def.assert_anchor = at.str; // anchor for the build-time diagnostic
+  return { true, d, {} };
+}
+
+// `$ @run <expr>` -- compile-time execution (Jai's #run): the expression
+// becomes a hidden global the build FORCES through the interpreter after
+// linking. The value is discarded, except that BUILD directives
+// (`BUILD.lib`, `BUILD.lib_path` -- BUILD.Directive values) steer the
+// compilation's link set and library search paths, so a project declares
+// its libraries in Thrax itself. No signature: the type is whatever the
+// expression has.
+RExpr
+Parser::parse_ctime_run()
+{
+  LX::Token at = EX_TRY(m_lex.peek()); // '@run' (the diagnostic anchor)
+  m_lex.next();                        // '@run'
+  Expr *body
+    = EX_CTX(parse_expr(0), at, "in this compile-time '@run' expression");
+
+  UT::Vu name
+    = UT::strdup(m_arena, ("%run$" + std::to_string(m_run_n++)).c_str());
+
+  Expr *d           = mk_def(name, nullptr, body);
+  auto &def         = std::get<ExDef>(d->as);
+  def.ctime_run     = true;
+  def.assert_anchor = at.str; // anchor for build-time diagnostics
   return { true, d, {} };
 }
 
@@ -1448,10 +1474,12 @@ Parser::parse_vis()
   return { true, alloc(e), {} };
 }
 
-// `@extern.{ ... }` -- a foreign binding. The brace block mirrors a struct
-// literal: either positional, `.{ "symbol", "lib" }` (symbol then library), or
-// named, `.{ .symbol = "...", .lib = "..." }` in any order. Both fields are
-// required. A trailing comma is allowed.
+// `@extern "C" "symbol" "lib"` -- a foreign binding, in plain application
+// shape: the ABI first ("C" is the only one today; "js" is reserved for wasm
+// imports), then the symbol, then the SYMBOLIC library name ("libc", "libm",
+// "raylib"). No path or soname appears in source: the interpreter resolves
+// the symbolic name to a host soname at dlopen time, the native backend to a
+// link-line flag (doc/platform-abstraction.md section 3.3).
 RExpr
 Parser::parse_extern()
 {
@@ -1463,62 +1491,25 @@ Parser::parse_extern()
            std::string(at.str).c_str());
   m_lex.next(); // '@extern'
 
-  EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@extern'"));
-  EX_TRY(expect(LX::TokenTag::LBrace, "expected '{' after '@extern.'"));
+  LX::Token abi = EX_TRY(expect(
+    LX::TokenTag::Str, "expected an \"ABI\" string after '@extern' (\"C\")"));
+  LX::Token sym = EX_TRY(expect(
+    LX::TokenTag::Str, "expected a \"symbol-name\" string after the ABI"));
+  LX::Token lib = EX_TRY(expect(
+    LX::TokenTag::Str, "expected a \"library\" string after the symbol"));
 
-  UT::Vu symbol{};
-  UT::Vu lib{};
-  bool   have_sym = false;
-  bool   have_lib = false;
+  UT::Vu abi_v = std::get<LX::TkStr>(abi.as).value;
+  if (abi_v != "C")
+    EX_ERR(ER::Code::UNSUPPORTED,
+           abi,
+           "unsupported @extern ABI '%s' (only \"C\" for now)",
+           std::string(abi_v).c_str());
 
-  if (LX::TokenTag::Dot == EX_TRY(m_lex.peek()).tag)
-  {
-    // Named form: `.symbol = "..."`, `.lib = "..."` in any order.
-    for (;;)
-    {
-      if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
-      EX_TRY(expect(LX::TokenTag::Dot, "expected '.field' in @extern"));
-      LX::Token f = EX_TRY(expect(
-        LX::TokenTag::Word, "expected a field name (symbol or lib) after '.'"));
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the field name"));
-      LX::Token s
-        = EX_TRY(expect(LX::TokenTag::Str, "expected a \"string\" value"));
-      UT::Vu val = std::get<LX::TkStr>(s.as).value;
-      if (f.str == "symbol")
-        symbol = val, have_sym = true;
-      else if (f.str == "lib")
-        lib = val, have_lib = true;
-      else
-        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
-               f,
-               "unknown @extern field '%s' (expected 'symbol' or 'lib')",
-               std::string(f.str).c_str());
-      if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
-      m_lex.next(); // ','
-    }
-  }
-  else
-  {
-    // Positional form: `"symbol", "lib"`.
-    LX::Token sym = EX_TRY(expect(
-      LX::TokenTag::Str, "expected a \"symbol-name\" string in @extern"));
-    EX_TRY(
-      expect(LX::TokenTag::Comma, "expected ',' between symbol and library"));
-    LX::Token l = EX_TRY(
-      expect(LX::TokenTag::Str, "expected a \"library\" string in @extern"));
-    symbol = std::get<LX::TkStr>(sym.as).value, have_sym = true;
-    lib = std::get<LX::TkStr>(l.as).value, have_lib = true;
-    if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag)
-      m_lex.next(); // trailing
-  }
-
-  EX_TRY(expect(LX::TokenTag::RBrace, "expected '}' to close @extern"));
-  if (!have_sym || !have_lib)
-    EX_ERR(ER::Code::UNEXPECTED_TOKEN,
-           at,
-           "@extern needs both a 'symbol' and a 'lib'");
-
-  return { true, mk_extern(symbol, lib), {} };
+  return { true,
+           mk_extern(abi_v,
+                     std::get<LX::TkStr>(sym.as).value,
+                     std::get<LX::TkStr>(lib.as).value),
+           {} };
 }
 
 // A struct declaration body: a comma-separated `field : type` list, trailing

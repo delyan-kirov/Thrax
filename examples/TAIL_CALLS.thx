@@ -34,9 +34,13 @@ $is_odd  : Int -> Int = \n = if n ?= 0 then 0 else is_even (n - 1)
 # $ck_even   = assert (is_even 1000000)
 $ck_odd    = is_odd 100
 
+# FIXME : Check int size here instead
 # Deep tail recursion (constant stack) checked against closed forms.
+# 65_000 * 65_001 / 2 = 2_112_532_500, kept under 2^31 so the sum is exact on
+# a 32-bit target too (this suite runs for every target, wasm included); the
+# depth still proves the trampoline runs it in constant stack.
 $ test : Int =
-	(if sum_to 100000 0 ?= 5000050000 then 0 else 1)
-	+ (if let_sum 100000 ?= 5000050000 then 0 else 1)
-	+ (if is_even 100000 ?= 1 then 0 else 1)
-	+ (if is_odd 100000 ?= 0 then 0 else 1)
+	(if sum_to 65000 0 ?= 2112532500 then 0 else 1)
+	+ (if let_sum 65000 ?= 2112532500 then 0 else 1)
+	+ (if is_even 65000 ?= 1 then 0 else 1)
+	+ (if is_odd 65000 ?= 0 then 0 else 1)

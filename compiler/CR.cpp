@@ -170,6 +170,7 @@ go(
       // Foreign binding: the call types come from the signature, not the body.
       auto  &ex = std::get<EX::ExExtern>(gd.def->as);
       Extern e;
+      e.abi       = UT::strdup(arena, ex.abi);
       e.symbol    = UT::strdup(arena, ex.symbol);
       e.lib       = UT::strdup(arena, ex.lib);
       e.arg_types = UT::Vec<UT::Vu>{ arena };

@@ -18,7 +18,8 @@ platforms_module()
   m.generate = [](const BLD::Ctx &c) {
     BLD::gen_runtime_header(c,
                             c.artifacts + "/THxRTxAMALG.hpp",
-                            { "platforms/THxCHECK.h",
+                            { "platforms/THxPLAT.h",
+                              "platforms/THxCHECK.h",
                               "platforms/THxVALUE.h",
                               "platforms/THxMEM.h",
                               "platforms/THxRT.h",

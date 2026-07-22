@@ -2473,7 +2473,20 @@ Checker::infer(
 {
   switch (e->tag)
   {
-  case EX::ExprTag::Int   : return con(m_tg.int_ty());
+  case EX::ExprTag::Int:
+  {
+    long long v = (long long)std::get<EX::ExInt>(e->as).value;
+    if (v > m_tg.lit_max())
+      fail(ER::Code::INT_LITERAL_RANGE,
+           m_anchor,
+           "integer literal %lld does not fit the target's %d-bit word (max "
+           "%lld for %s)",
+           v,
+           m_tg.ptr_bits(),
+           m_tg.lit_max(),
+           m_tg.name().c_str());
+    return con(m_tg.int_ty());
+  }
   case EX::ExprTag::Real  : return con(OP::TY_REAL);
   case EX::ExprTag::Str   : return con(OP::TY_STR);
   case EX::ExprTag::Unit  : return con(OP::TY_UNIT);

@@ -17,6 +17,7 @@ $ with ARRAYS_MUT = ARRAYS_MUT
 $ with CONDITIONALS = CONDITIONALS
 $ with COROUTINES = COROUTINES
 $ with CT_ASSERT = CT_ASSERT
+$ with CT_RUN = CT_RUN
 $ with EFFECT_OVERLOAD = EFFECT_OVERLOAD
 $ with EFFECTS = EFFECTS
 $ with FIB = FIB
@@ -29,6 +30,7 @@ $ with MATCH = MATCH
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
 $ with PATTERNS = PATTERNS
+$ with PLATFORM = PLATFORM
 $ with PIPES = PIPES
 $ with POWER = POWER
 $ with RC_LOOP = RC_LOOP
@@ -70,6 +72,7 @@ $ main : Int =
 	+ check "CONDITIONALS" CONDITIONALS.test
 	+ check "COROUTINES" COROUTINES.test
 	+ check "CT_ASSERT" CT_ASSERT.test
+	+ check "CT_RUN" CT_RUN.test
 	+ check "EFFECT_OVERLOAD" EFFECT_OVERLOAD.test
 	+ check "EFFECTS" EFFECTS.test
 	+ check "FIB" FIB.test
@@ -82,6 +85,7 @@ $ main : Int =
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
 	+ check "PATTERNS" PATTERNS.test
+	+ check "PLATFORM" PLATFORM.test
 	+ check "PIPES" PIPES.test
 	+ check "POWER" POWER.test
 	+ check "RC_LOOP" RC_LOOP.test

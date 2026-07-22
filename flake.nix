@@ -9,6 +9,18 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       mingwPkgs = pkgs.pkgsCross.mingwW64;
+      wasiPkgs = pkgs.pkgsCross.wasi32; # clang + wasi-libc for wasm32-wasi
+      # nix ships only prefixed binutils (wasm32-unknown-wasi-wasm-ld) but
+      # clang invokes the linker as bare `wasm-ld`, so give it one on PATH.
+      wasiLd = pkgs.runCommand "wasi-ld-shim" { } ''
+        mkdir -p $out/bin
+        ln -s ${wasiPkgs.stdenv.cc.bintools.bintools}/bin/wasm32-unknown-wasi-wasm-ld \
+          $out/bin/wasm-ld
+      '';
+      wasiClang = pkgs.writeShellScriptBin "wasi-clang" ''
+        export PATH=${wasiLd}/bin:$PATH
+        exec ${wasiPkgs.stdenv.cc}/bin/wasm32-unknown-wasi-clang "$@"
+      '';
     in
     {
       devShells.${system}.default = pkgs.mkShell {
@@ -30,6 +42,9 @@
           pkgs.tokei
           pkgs.bear # compile_commands.json via `build compile-commands`
           pkgs.bison # grammar spec + conflict check (see grammar/)
+          pkgs.wasmtime # runs wasm32-wasi executables (`--target=wasm32-wasi`)
+          pkgs.emscripten # `build wasm`: the compiler itself to wasm (browser)
+          pkgs.nodejs # runs the emscripten output headlessly (tests, CI)
           # mingwPkgs.stdenv.cc
           # should be enabled manually to check windows build
           # pkgs.wineWow64Packages.stable
@@ -40,6 +55,7 @@
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
           export LIBC=${pkgs.libc}
+          export WASI_CC=${wasiClang}/bin/wasi-clang
 
           # Bootstrap the build program (it self-rebuilds thereafter) and put it
           # + the built binaries on PATH. nix is an accelerator here, not a
