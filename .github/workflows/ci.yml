@@ -13,12 +13,11 @@ jobs:
 
       - uses: cachix/install-nix-action@v27
 
-      # `nix develop` runs the shellHook, which bootstraps ./build and puts it
-      # on PATH. `build test` / `build native-test` each build first.
       - name: Build and test in Nix dev shell
         run: |
           nix develop --command bash -c '
             set -e
             build test
             build native-test
+            build wasm-test
           '

@@ -71,3 +71,68 @@ tests_native(
   std::print("native-test: OK -- all example modules passed\n");
   return 0;
 }
+
+int
+tests_wasm(
+  const BLD::Ctx &c)
+{
+  namespace fs            = std::filesystem;
+  const std::string thrax = "./" + c.artifacts + "/thrax";
+  const std::string cfile = c.artifacts + "/wasm.c";
+  const std::string wfile = c.artifacts + "/wasm.bin.wasm";
+
+  const char *wasi_cc = std::getenv("WASI_CC");
+  if (!wasi_cc || !*wasi_cc)
+  {
+    std::print("wasm-test: FAIL -- WASI_CC is not set (the nix dev shell "
+               "exports it; any wasi-sdk clang works)\n");
+    return 1;
+  }
+
+  std::vector<std::string> cmd = { thrax, "-c", "--target=wasm32-wasi" };
+  for (const std::string &f : BLD::glob({ "examples" }, { ".thx" }))
+    cmd.push_back(f);
+  cmd.push_back("tests/MAIN.thx");
+
+  if (BLD::spawn(cmd, cfile) != 0)
+  {
+    std::print("wasm-test: FAIL -- `thrax -c --target=wasm32-wasi` rejected "
+               "the combined program\n");
+    return 1;
+  }
+  // -lm as in native-test. The stack flags mirror TG::toolchain: wasm has no
+  // guard pages and wasm-ld's default layout puts the 64 KiB shadow stack
+  // above the data segment, so a deep C stack silently corrupts globals,
+  // stack-first + a native-sized stack instead.
+  BLD::Output cc = BLD::exec({ wasi_cc,
+                               "-O2",
+                               cfile,
+                               "-o",
+                               wfile,
+                               "-lm",
+                               "-Wl,--stack-first",
+                               "-Wl,-z,stack-size=8388608" });
+  if (cc.code != 0)
+  {
+    std::print("wasm-test: FAIL(cc)\n{}{}", cc.out, cc.err);
+    return 1;
+  }
+  // The suite needs the wasi sandbox opened up: /tmp for the IO example's
+  // file round-trip, HOME for its environment check.
+  const char *home = std::getenv("HOME");
+  BLD::Output rn   = BLD::exec({ "wasmtime",
+                                 "--dir=/tmp",
+                                 "--env",
+                                 std::string("HOME=") + (home ? home : ""),
+                                 wfile });
+  std::print("{}{}", rn.out, rn.err);
+  fs::remove(cfile);
+  fs::remove(wfile);
+  if (rn.code != 0)
+  {
+    std::print("wasm-test: FAIL -- {} module(s) failed\n", rn.code);
+    return 1;
+  }
+  std::print("wasm-test: OK -- all example modules passed under wasmtime\n");
+  return 0;
+}

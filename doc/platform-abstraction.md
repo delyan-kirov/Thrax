@@ -18,10 +18,14 @@ first in the runtime bake), the Value `T_INT` payload is the TARGET word
 (wraps at 32 bits on 32-bit targets), and `build check-platform` enforces
 the no-raw-platform-macros boundary by mechanism (also in pre-push). THxDL
 was DROPPED as obsolete -- phase 2's direct-call design means generated
-programs never dlopen (see section 4). Phases 4-5 (wasm32-wasi cross
-target, compiler-in-browser + website) are next; the revised sequencing
-(section 4) makes wasm the FIRST cross target.
-**Date:** 2026-07-21 (originally 2026-07-18).
+programs never dlopen (see section 4). Phase 4 DONE (2026-07-22):
+`wasm32-wasi` is the first cross target -- `TG::Toolchain` as data (wasi-sdk
+clang via `$WASI_CC`, stack placed first + enlarged), 32-bit `Int` end to end
+(`@int32` dispatch keys, literal range check, wrap-on-store), a generated
+qualified `TARGET` reflection module, and `build wasm-test` (combined suite
+under wasmtime, in CI). Phase 5 (compiler-in-browser + website via Emscripten)
+is next.
+**Date:** 2026-07-22 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
 where platform-specific knowledge is allowed to live. Companion to
@@ -228,13 +232,19 @@ friends read the resolved alias). Consequences owned deliberately:
 
 No `#ifdef` enters the language. Instead:
 
-- `DR` injects compile-time constants into the prelude from `Target`:
-  `TARGET_OS : Str`, `TARGET_ARCH : Str`, `TARGET_PTR_BITS : Int`.
-- Platform-conditional code is ordinary Thrax (`if TARGET_OS ?= "windows"
-  then ... else ...`); the existing **dead-global elimination** prunes the
-  untaken side, so a Linux build never even references `Windows.*` externs.
-  (A CTFE `@if` that folds branches at compile time is the eventual
-  strengthening, but DCE + `@assert` already carry the model.)
+- `DR` generates a `TARGET` reflection module from `Target` (like the prelude
+  `Int`/`Nat` aliases and the `C` libc namespace, it is emitted per build
+  because the values are only known once the target is fixed). Accessed
+  qualified, no import: `TARGET.int_bits`/`.ptr_bits : Int` (the target word),
+  `TARGET.int_max`/`.int_min : Int` (the `Int` value range), `TARGET.os`/
+  `.arch`/`.name : Str`. A qualified module (not bare `TARGET_*` constants)
+  keeps the global namespace clean. **DONE** (phase 4).
+- Platform-conditional code is ordinary Thrax (`when TARGET.int_bits is 64
+  then ... else ...`); the existing **dead-global elimination** prunes an
+  unreferenced side, so a Linux build never even references `Windows.*`
+  externs. (A CTFE `@if` that folds a branch on a constant condition -- so a
+  64-bit-only literal in the dead branch never reaches TC's range check -- is
+  the eventual strengthening, but DCE + `@assert` already carry the model.)
 - Stdlib layering, Rust-shaped, matching the stdcore vision:
   - **core/prelude** -- platform-free (`List`, aliases, `assert`);
   - **sys** -- per-platform extern namespaces: today's auto-injected `C`
@@ -245,11 +255,14 @@ No `#ifdef` enters the language. Instead:
 
 ### 3.6 Toolchain is data too
 
-`DR::build_project`'s `"cc -O2"` becomes a `Toolchain{ cc, cflags, ldflags }`
-looked up from `Target` (host default: `cc`; `x86_64-windows-gnu`:
-`x86_64-w64-mingw32-gcc` or `zig cc -target ...`; `wasm32-wasi`: wasi-sdk
-clang), overridable by `--cc=`/env. The invocation moves from `std::system`
-to the argv-vector spawn we already trust in `UTxBUILD`.
+`DR::build_project`'s `"cc -O2"` becomes a `TG::Toolchain{ cc, hint, cflags,
+runner, exe_suffix, rpath }` looked up from `Target` (host default: `cc`;
+`wasm32-wasi`: `$WASI_CC`, a wasi-sdk clang; `x86_64-windows-gnu` later:
+`x86_64-w64-mingw32-gcc` or `zig cc -target ...`). **DONE** for host +
+wasm32-wasi (phase 4); the tool's *location* stays out of the compiler via an
+env var, the same discipline `@extern` library names follow. The invocation
+still goes through `std::system` for now; moving it to the argv-vector spawn
+in `UTxBUILD` is a later cleanup.
 
 ## 4. Implementation plan
 
@@ -313,12 +326,22 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   whose browser story is the phase-5 host table, and a Windows-native
   compiler build is out of scope), and the ITxDATA/FF `Real` marshalling
   debt was already paid in phase 0 (`FF::Slot` is fixed 64-bit).
-- **Phase 4 -- First real cross target: `wasm32-wasi`.** `TARGET_*` prelude
-  constants + `Toolchain` table (`--target=wasm32-wasi` -> wasi-sdk clang;
-  the `std::system("cc -O2")` moves to the argv spawn from UTxBUILD);
-  32-bit `Int` end to end (target-keyed literal range checks in TC,
-  `@int32` mono keys, arithmetic that wraps at 32 bits). Exit criterion:
-  every example compiles for wasm32-wasi and passes under wasmtime in CI.
+- **Phase 4 -- First real cross target: `wasm32-wasi`. DONE.** `TG::Toolchain`
+  as data (host: `cc`; wasm32-wasi: `$WASI_CC`, a wasi-sdk clang from the nix
+  flake, with `--stack-first`/`-z stack-size=8MB` -- wasm has no stack guard
+  page and wasm-ld defaults the shadow stack *above* the data segment, so the
+  runtime's recursive global-forcing silently corrupted globals until the
+  stack was placed first and enlarged) + `runner`/`exe_suffix`; `main.cpp`
+  lets a cross target through for `--build`/`--emit-c`/`--ir` (interpreting
+  stays host-only). 32-bit `Int` end to end: `@int32` mono keys registered in
+  ITxDATA (both widths present, TC's target-folded key selects; wasm32 CTFE
+  wraps on this host exactly like the emitted program), `THX_INT_T` payload
+  wraps on store, and TC rejects integer literals that don't fit the target
+  word (`Target::lit_max`, `INT_LITERAL_RANGE`). Target reflection is a
+  generated qualified module `TARGET` (see 3.5). RANDOM/TAIL_CALLS/RC_LOOP
+  made portable (Schrage's method; constants kept under 2^31). `build
+  wasm-test` cross-compiles the combined suite and runs it under wasmtime;
+  wired into CI. Exit criterion met: every example passes under wasmtime.
 - **Phase 5 -- The compiler in the browser + the website.** `build wasm`
   compiles the compiler+interpreter with Emscripten (add emscripten to the
   nix flake). The browser host is wasm32: `TG::host()` learns it, and FF

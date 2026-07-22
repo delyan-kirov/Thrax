@@ -253,6 +253,42 @@ core_c_source(
   return UT::strdup(arena, s.c_str());
 }
 
+static const char TARGET_FILE[] = "TARGET.thx";
+
+// The `@mod TARGET` compilation-target reflection module: ordinary Thrax
+// globals whose values are the target chosen for THIS build, accessed
+// qualified (`TARGET.int_bits`, `TARGET.os`, ...). Generated (not a static
+// stdlib file) because the values are only known once the target is fixed --
+// the same reason the prelude's `Int`/`Nat` aliases are generated. A program
+// reads these to adapt to the target's word size instead of hardcoding a
+// portable constant (e.g. `when TARGET.int_bits is 64 then ... else ...`).
+static UT::Vu
+target_source(
+  AR::Arena &arena, const TG::Target &tg)
+{
+  const std::string I = tg.int_ty(), S = OP::TY_STR;
+  std::string       s       = "@mod TARGET\n";
+  auto              def_int = [&](const char *name, long long v) {
+    // A negative value's magnitude may be 2^(w-1) (int_min), which exceeds
+    // the positive-literal ceiling; write it as `0 - (|v|-1) - 1` so every
+    // literal part is in range (`-(v+1)` avoids overflow at v == INT_MIN).
+    std::string rhs
+      = v < 0 ? "0 - " + std::to_string(-(v + 1)) + " - 1" : std::to_string(v);
+    s += "$ " + std::string(name) + " : " + I + " = " + rhs + "\n";
+  };
+  auto def_str = [&](const char *name, const char *v) {
+    s += "$ " + std::string(name) + " : " + S + " = \"" + v + "\"\n";
+  };
+  def_int("int_bits", tg.ptr_bits()); // Int is the target word
+  def_int("ptr_bits", tg.ptr_bits());
+  def_int("int_max", tg.int_max());
+  def_int("int_min", tg.int_min());
+  def_str("os", tg.os_name());
+  def_str("arch", tg.arch_name());
+  def_str("name", tg.name().c_str());
+  return UT::strdup(arena, s.c_str());
+}
+
 // Lex + parse one source (content/file) into `units`, forwarding diagnostics.
 static void
 parse_one(
@@ -288,6 +324,11 @@ parse_units(
             parse_diags);
   parse_one(core_c_source(arena, tg),
             UT::Vu{ C_FILE, sizeof(C_FILE) - 1 },
+            arena,
+            units,
+            parse_diags);
+  parse_one(target_source(arena, tg),
+            UT::Vu{ TARGET_FILE, sizeof(TARGET_FILE) - 1 },
             arena,
             units,
             parse_diags);
@@ -623,9 +664,16 @@ build_project(
     return false;
   }
 
+  TG::Toolchain tc = TG::toolchain(tg);
+  if (tc.cc.empty())
+  {
+    std::fprintf(stderr, "thrax: %s\n", tc.hint.c_str());
+    return false;
+  }
+
   fs::path ir_path  = outdir / (stem + ".ir");
   fs::path c_path   = outdir / (stem + ".c");
-  fs::path exe_path = outdir / stem;
+  fs::path exe_path = outdir / (stem + tc.exe_suffix);
 
   {
     std::ofstream f(ir_path);
@@ -649,15 +697,20 @@ build_project(
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the
-  // compile needs nothing but a C compiler -- plus a link flag per library
-  // the program's externs name (CC::link_flags; libc is implicit, generated
-  // programs never dlopen -- the system linker resolves, statically or
-  // dynamically per what it finds), plus whatever the `@run` BUILD
-  // directives asked for: -L/rpath per lib_path, one lib_flag per lib.
-  std::string cmd
-    = "cc -O2 \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+  // compile needs nothing but the target's C compiler (TG::toolchain) --
+  // plus a link flag per library the program's externs name (CC::link_flags;
+  // libc is implicit, generated programs never dlopen -- the system linker
+  // resolves, statically or dynamically per what it finds), plus whatever
+  // the `@run` BUILD directives asked for: -L/rpath per lib_path, one
+  // lib_flag per lib.
+  std::string cmd = "\"" + tc.cc + "\"";
+  for (const std::string &f : tc.cflags) cmd += " " + f;
+  cmd += " \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
   for (const std::string &p : bd.lib_paths)
-    cmd += " -L\"" + p + "\" -Wl,-rpath,\"" + p + "\"";
+  {
+    cmd += " -L\"" + p + "\"";
+    if (tc.rpath) cmd += " -Wl,-rpath,\"" + p + "\"";
+  }
   for (const std::string &f : CC::link_flags(prog))
     cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
   for (const std::string &l : bd.libs)
@@ -676,6 +729,8 @@ build_project(
               ir_path.string().c_str(),
               c_path.string().c_str(),
               exe_path.string().c_str());
+  if (!tc.runner.empty())
+    std::printf("  run: %s %s\n", tc.runner.c_str(), exe_path.string().c_str());
   return true;
 }
 

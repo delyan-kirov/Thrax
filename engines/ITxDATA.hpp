@@ -8,8 +8,6 @@
 
 namespace IT
 {
-inline constexpr const char *HOST_INT = TG::host().int_ty();
-
 /*------------------------------------------------------------------------------
  *\RUNTIME VALUES
  *
@@ -340,54 +338,112 @@ const std::unordered_map<std::string, Impl> impls{
         return mk_int(
           std::get<VStr>(a[0]->as).val == std::get<VStr>(a[1]->as).val ? 1 : 0);
       } } },
-  { OP::mono(OP::ADD, HOST_INT),
+  // The integer families. Both widths are always registered -- the mono key
+  // the type checker wrote (which folds `Int` to the TARGET word) selects
+  // the semantics, so compile-time evaluation of a wasm32 program observes
+  // 32-bit wrap on this 64-bit host, exactly like the emitted program will
+  // (THxPLAT.h's truncate-on-store). The @int32 arithmetic wraps its result;
+  // comparisons need no wrap (in-range operands, checked literals).
+  { OP::mono(OP::ADD, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) + as_int(a[1]));
       } } },
-  { OP::mono(OP::SUB, HOST_INT),
+  { OP::mono(OP::SUB, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) - as_int(a[1]));
       } } },
-  { OP::mono(OP::MUL, HOST_INT),
+  { OP::mono(OP::MUL, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) * as_int(a[1]));
       } } },
-  { OP::mono(OP::DIV, HOST_INT),
+  { OP::mono(OP::DIV, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) / as_int(a[1]));
       } } },
-  { OP::mono(OP::MOD, HOST_INT),
+  { OP::mono(OP::MOD, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         UT_FAIL_IF(as_int(a[1]) == 0);
         return mk_int(as_int(a[0]) % as_int(a[1]));
       } } },
-  { OP::mono(OP::ISEQ, HOST_INT),
+  { OP::mono(OP::ISEQ, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::GEQ, HOST_INT),
+  { OP::mono(OP::GEQ, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::LEQ, HOST_INT),
+  { OP::mono(OP::LEQ, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::MORE, HOST_INT),
+  { OP::mono(OP::MORE, OP::TY_INT64),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::LESS, HOST_INT),
+  { OP::mono(OP::LESS, OP::TY_INT64),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::ADD, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int((int32_t)(as_int(a[0]) + as_int(a[1])));
+      } } },
+  { OP::mono(OP::SUB, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int((int32_t)(as_int(a[0]) - as_int(a[1])));
+      } } },
+  { OP::mono(OP::MUL, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int((int32_t)(as_int(a[0]) * as_int(a[1])));
+      } } },
+  { OP::mono(OP::DIV, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int((int32_t)(as_int(a[0]) / as_int(a[1])));
+      } } },
+  { OP::mono(OP::MOD, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        UT_FAIL_IF(as_int(a[1]) == 0);
+        return mk_int((int32_t)(as_int(a[0]) % as_int(a[1])));
+      } } },
+  { OP::mono(OP::ISEQ, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) == as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::GEQ, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) >= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LEQ, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) <= as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::MORE, OP::TY_INT32),
+    { 2,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) > as_int(a[1]) ? 1 : 0);
+      } } },
+  { OP::mono(OP::LESS, OP::TY_INT32),
     { 2,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) < as_int(a[1]) ? 1 : 0);
@@ -442,11 +498,21 @@ const std::unordered_map<std::string, Impl> impls{
       [](const std::vector<pVal> &a) {
         return mk_int(as_num(a[0]) < as_num(a[1]) ? 1 : 0);
       } } },
-  { OP::mono(OP::NEG, HOST_INT),
+  { OP::mono(OP::NEG, OP::TY_INT64),
     { 1, [](const std::vector<pVal> &a) { return mk_int(-as_int(a[0])); } } },
+  { OP::mono(OP::NEG, OP::TY_INT32),
+    { 1,
+      [](const std::vector<pVal> &a) {
+        return mk_int((int32_t)-as_int(a[0]));
+      } } },
   { OP::mono(OP::NEG, OP::TY_REAL),
     { 1, [](const std::vector<pVal> &a) { return mk_real(-as_num(a[0])); } } },
-  { OP::mono(OP::NOT, HOST_INT),
+  { OP::mono(OP::NOT, OP::TY_INT64),
+    { 1,
+      [](const std::vector<pVal> &a) {
+        return mk_int(as_int(a[0]) == 0 ? 1 : 0);
+      } } },
+  { OP::mono(OP::NOT, OP::TY_INT32),
     { 1,
       [](const std::vector<pVal> &a) {
         return mk_int(as_int(a[0]) == 0 ? 1 : 0);

@@ -25,9 +25,9 @@ const char *USAGE
     "  --build compiles a project (a directory with a MAIN module) via the\n"
     "  native backend, writing <DIR>/bin/<name>.{ir,c} and the executable.\n"
     "  --target selects the compilation target (default: this machine, e.g.\n"
-    "  x86_64-linux). Only the host target is accepted for now: the flag\n"
-    "  reserves the seam, cross-compilation lands with the later phases of\n"
-    "  doc/platform-abstraction.md.\n";
+    "  x86_64-linux; cross: wasm32-wasi). A cross target goes through the\n"
+    "  native backend (--build, --emit-c, --ir); running a program directly\n"
+    "  always interprets it for this machine.\n";
 
 } // namespace
 
@@ -61,15 +61,6 @@ main(
         std::fprintf(stderr, "thrax: unknown target '%s'\n%s", arg + 9, USAGE);
         return 2;
       }
-      if (!(*t == TG::host()))
-      {
-        std::fprintf(stderr,
-                     "thrax: cross-compilation to '%s' is not supported yet "
-                     "(host is %s)\n",
-                     t->name().c_str(),
-                     TG::host().name().c_str());
-        return 2;
-      }
       tg = *t;
     }
     else if (0 == std::strcmp(arg, "--help") || 0 == std::strcmp(arg, "-h"))
@@ -84,6 +75,19 @@ main(
     }
     else
       paths.push_back(UT::Vu{ arg, std::strlen(arg) });
+  }
+
+  // A cross target compiles through the native backend; the interpreter is
+  // DEFINED to run programs for the machine it is on (see TG.hpp), so plain
+  // `thrax --target=... PATH` has nothing meaningful to do.
+  if (!(tg == TG::host()) && !(build || emit_c || print_ir || print_ast))
+  {
+    std::fprintf(stderr,
+                 "thrax: --target=%s needs --build, --emit-c or --ir (the "
+                 "interpreter runs programs for this machine, %s)\n",
+                 tg.name().c_str(),
+                 TG::host().name().c_str());
+    return 2;
   }
 
   // No path given: compile the current directory.

@@ -791,6 +791,11 @@ main(
     BLD::build(c, mods);
     return tests_native(c);
   }
+  if (cmd == "wasm-test")
+  {
+    BLD::build(c, mods);
+    return tests_wasm(c);
+  }
   if (cmd == "valgrind")
   {
     BLD::build(c, mods);
@@ -809,10 +814,11 @@ main(
     return tests_smoke(c);
   }
 
-  std::print(stderr,
-             "usage: build [ffi|no-ffi] [build|test|native-test|clean|"
-             "clean-recursive|check-ascii|check-platform|check-format|"
-             "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
-             "tokei|valgrind|env|pre-push]\n");
+  std::print(
+    stderr,
+    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|clean|"
+    "clean-recursive|check-ascii|check-platform|check-format|"
+    "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
+    "tokei|valgrind|env|pre-push]\n");
   return 2;
 }

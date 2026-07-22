@@ -30,6 +30,7 @@ $ with MATCH = MATCH
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
 $ with PATTERNS = PATTERNS
+$ with PLATFORM = PLATFORM
 $ with PIPES = PIPES
 $ with POWER = POWER
 $ with RC_LOOP = RC_LOOP
@@ -84,6 +85,7 @@ $ main : Int =
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
 	+ check "PATTERNS" PATTERNS.test
+	+ check "PLATFORM" PLATFORM.test
 	+ check "PIPES" PIPES.test
 	+ check "POWER" POWER.test
 	+ check "RC_LOOP" RC_LOOP.test
