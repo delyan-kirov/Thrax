@@ -15,15 +15,8 @@
 #       in lockstep with the compiler's OP::base_aliases table, which FFI
 #       canonicalization reads.
 
-# The blessed truth type: `if`, `when` guards, comparisons (`?=`, `?<`, ...)
-# and `!` all speak Bool. The compiler erases it -- True runs as 1, False as
-# 0 -- so crossing into C (which has no Bool) costs nothing.
-$ Bool : @union =
-	True: {},
-	False: {},
-
-$ true : Bool = Bool.True
-$ false : Bool = Bool.False
+$ true : Bool = @true
+$ false : Bool = @false
 
 # The blessed list type: `[a, b]`, `[]`, `x :: xs` and `[h, ..rest]`
 # patterns are sugar for its constructors.

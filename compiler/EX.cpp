@@ -884,6 +884,21 @@ Parser::parse_pattern_atom()
                PatTag::Str,
                PatStr{ std::get<LX::TkStr>(t.as).value, t.str, t.line } }),
              {} };
+  case LX::TokenTag::At:
+  {
+    if (t.str != OP::BOOL_TRUE && t.str != OP::BOOL_FALSE)
+      EX_ERR(ER::Code::EXPECTED_OPERAND,
+             t,
+             "expected a pattern, found directive '%s' (only '@true'/'@false' "
+             "are patterns)",
+             std::string(t.str).c_str());
+    m_lex.next();
+    return { true,
+             alloc_pat(
+               Pattern{ PatTag::Bool,
+                        PatBool{ t.str == OP::BOOL_TRUE, t.str, t.line } }),
+             {} };
+  }
   case LX::TokenTag::Word:
   {
     m_lex.next();
@@ -1374,6 +1389,13 @@ RExpr
 Parser::parse_array()
 {
   LX::Token at = EX_TRY(m_lex.peek());
+  if (at.str == OP::BOOL_TRUE || at.str == OP::BOOL_FALSE)
+  {
+    m_lex.next();
+    Expr e{ ExprTag::Bool };
+    e.as = ExBool{ at.str == OP::BOOL_TRUE };
+    return { true, alloc(e), {} };
+  }
   if (at.str != "@array")
     EX_ERR(ER::Code::UNSUPPORTED,
            at,

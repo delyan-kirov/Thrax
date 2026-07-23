@@ -95,6 +95,7 @@ collect_pat_binders(
   {
   case EX::PatTag::Wild:
   case EX::PatTag::Int:
+  case EX::PatTag::Bool:
   case EX::PatTag::Real:
   case EX::PatTag::Str : return;
   case EX::PatTag::Var : out.push_back(std::get<EX::PatVar>(p->as).name); return;

@@ -404,6 +404,7 @@ struct PatLower
     case PatTag::Var:
       return mk_let(std::get<EX::PatVar>(pat->as).name, subject, body, nullptr);
     case PatTag::Int:
+    case PatTag::Bool:
     case PatTag::Real:
     case PatTag::Str:
       if (!refutable_ok)
@@ -530,6 +531,9 @@ struct PatLower
     case PatTag::Int:
       return mk_iseq(
         int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value));
+    case PatTag::Bool:
+      return mk_iseq(
+        int_ty, subject, mk_int(std::get<EX::PatBool>(pat->as).value ? 1 : 0));
     case PatTag::Real:
       return mk_iseq(
         OP::TY_REAL, subject, mk_real(std::get<EX::PatReal>(pat->as).value));
@@ -616,17 +620,6 @@ struct PatLower
       Pattern *pat = m.arms[i].pat;
       if (pat->tag == PatTag::Seq && !std::get<EX::PatSeq>(pat->as).is_array)
         m.arms[i].pat = seq_as_list(std::get<EX::PatSeq>(pat->as));
-    }
-
-    for (size_t i = 0; i < m.arms.size(); ++i)
-    {
-      Pattern *pat = m.arms[i].pat;
-      if (pat->tag != PatTag::Variant) continue;
-      auto &pv = std::get<EX::PatVariant>(pat->as);
-      if (pv.resolved_union != UT::Vu{ OP::TY_BOOL }) continue;
-      m.arms[i].pat = alloc_pat(Pattern{
-        PatTag::Int,
-        EX::PatInt{ pv.tag == UT::Vu{ "True" } ? 1 : 0, pv.anchor, pv.line } });
     }
 
     bool has_struct = false, has_variant = false, has_guard = false,
@@ -755,6 +748,14 @@ struct PatLower
         EX::CaseAlt a;
         a.kind = EX::AltKind::Int;
         a.ival = std::get<EX::PatInt>(pat->as).value;
+        a.body = body;
+        alts.push(a);
+      }
+      else if (pat->tag == PatTag::Bool)
+      {
+        EX::CaseAlt a;
+        a.kind = EX::AltKind::Int;
+        a.ival = std::get<EX::PatBool>(pat->as).value ? 1 : 0;
         a.body = body;
         alts.push(a);
       }
@@ -910,6 +911,13 @@ struct PatLower
     case PatTag::Int:
       return mk_if(
         mk_iseq(int_ty, subject, mk_int(std::get<EX::PatInt>(pat->as).value)),
+        success,
+        fall());
+    case PatTag::Bool:
+      return mk_if(
+        mk_iseq(int_ty,
+                subject,
+                mk_int(std::get<EX::PatBool>(pat->as).value ? 1 : 0)),
         success,
         fall());
     case PatTag::Real:
@@ -1167,6 +1175,7 @@ struct PatLower
     switch (e->tag)
     {
     case ExprTag::Int:
+    case ExprTag::Bool:
     case ExprTag::Real:
     case ExprTag::Str:
     case ExprTag::Unit:
@@ -1316,6 +1325,13 @@ struct PatLower
     case PatTag::Int:
     {
       auto &p = std::get<EX::PatInt>(pat->as);
+      anchor  = p.anchor;
+      line    = p.line;
+      return;
+    }
+    case PatTag::Bool:
+    {
+      auto &p = std::get<EX::PatBool>(pat->as);
       anchor  = p.anchor;
       line    = p.line;
       return;
@@ -2171,6 +2187,7 @@ pat_shadows(
   {
   case EX::PatTag::Wild:
   case EX::PatTag::Int:
+  case EX::PatTag::Bool:
   case EX::PatTag::Real:
   case EX::PatTag::Str : return false;
   case EX::PatTag::Var:
@@ -2213,6 +2230,7 @@ Checker::occurs_free(
   case EX::ExprTag::Overload:
     return std::string(std::get<EX::ExOverload>(e->as).name) == name;
   case EX::ExprTag::Int:
+  case EX::ExprTag::Bool:
   case EX::ExprTag::Real:
   case EX::ExprTag::Str:
   case EX::ExprTag::Unit:
@@ -2435,6 +2453,11 @@ Checker::pat_head(
     out.finite = false;
     out.id     = "#i" + std::to_string(std::get<EX::PatInt>(p->as).value);
     return true;
+  case EX::PatTag::Bool:
+    out.finite = true;
+    out.id
+      = std::get<EX::PatBool>(p->as).value ? OP::BOOL_TRUE : OP::BOOL_FALSE;
+    return true;
   case EX::PatTag::Real:
     out.finite = false;
     out.id     = "#r" + std::to_string(std::get<EX::PatReal>(p->as).value);
@@ -2518,6 +2541,11 @@ Checker::column_sig(
   if (!rep) return false;
   switch (rep->tag)
   {
+  case EX::PatTag::Bool:
+    tyname = OP::TY_BOOL;
+    sig.push_back({ OP::BOOL_TRUE, 0 });
+    sig.push_back({ OP::BOOL_FALSE, 0 });
+    return true;
   case EX::PatTag::Variant:
   {
     auto       &pv = std::get<EX::PatVariant>(rep->as);
@@ -2594,6 +2622,7 @@ Checker::render_ctor(
   const std::vector<std::string> &subs,
   size_t                          arity)
 {
+  if (tyname == OP::TY_BOOL) return ctor;
   std::string ty = tyname;
   if (size_t sl = ty.find('/'); sl != std::string::npos) ty[sl] = '.';
   std::string head = ty.empty() ? ctor : ty + "." + ctor;
@@ -2804,6 +2833,7 @@ Checker::type_pattern(
     env[std::string(std::get<EX::PatVar>(p->as).name)] = Scheme{ {}, scrut };
     return;
   case EX::PatTag::Int : unify(scrut, con(m_tg.int_ty())); return;
+  case EX::PatTag::Bool: unify(scrut, con(OP::TY_BOOL)); return;
   case EX::PatTag::Real: unify(scrut, con(OP::TY_REAL)); return;
   case EX::PatTag::Str : unify(scrut, con(OP::TY_STR)); return;
   case EX::PatTag::StrPrefix:
@@ -2956,6 +2986,7 @@ Checker::infer(
            m_tg.name().c_str());
     return con(m_tg.int_ty());
   }
+  case EX::ExprTag::Bool  : return con(OP::TY_BOOL);
   case EX::ExprTag::Real  : return con(OP::TY_REAL);
   case EX::ExprTag::Str   : return con(OP::TY_STR);
   case EX::ExprTag::Unit  : return con(OP::TY_UNIT);

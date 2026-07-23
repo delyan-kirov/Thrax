@@ -14,13 +14,15 @@ $ num_tok: Token = Token.Num.{1}
 
 $ is_num: Token -> Bool = \tok =
     when tok
-        is Token.Num.{_} then Bool.True
+        is Token.Num.{_} then @true
     else
-        Bool.False
+        @false
 
-# And matching on a Bool is ordinary variant matching (empty payloads).
-$ chk0 : Int = when is_num num_tok is Bool.True then 0 else 1
-$ chk0b : Int = when is_num (Token.Txt.{"x"}) is Bool.False then 0 else 1
+# Bool is genuinely built-in: its values are the literals `@true`/`@false`, so
+# matching them uses the `@`-spelling (lowercase `true`/`false` would bind a
+# variable). Since `@bool` has exactly two values, these `when`s are exhaustive.
+$ chk0 : Int = when is_num num_tok is @true then 0 else 1
+$ chk0b : Int = when is_num (Token.Txt.{"x"}) is @false then 0 else 1
 
 # Sum types: constructor matching, payload binding, and lazy (non-strict)
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a

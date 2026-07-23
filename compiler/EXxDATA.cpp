@@ -72,6 +72,8 @@ pprint(
   switch (e->tag)
   {
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
+  case ExprTag::Bool:
+    return pad + (std::get<ExBool>(e->as).value ? "@true" : "@false");
   case ExprTag::Real:
     return pad + std::to_string(std::get<ExReal>(e->as).value);
   case ExprTag::Var:
@@ -269,6 +271,7 @@ pprint(
   case PatTag::Wild: return "_";
   case PatTag::Var : return std::string(std::get<PatVar>(p->as).name);
   case PatTag::Int : return std::to_string(std::get<PatInt>(p->as).value);
+  case PatTag::Bool: return std::get<PatBool>(p->as).value ? "@true" : "@false";
   case PatTag::Real: return std::to_string(std::get<PatReal>(p->as).value);
   case PatTag::Str:
     return "\"" + std::string(std::get<PatStr>(p->as).value) + "\"";
