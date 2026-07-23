@@ -11,49 +11,18 @@
 #include "OP.hpp"
 #include "TC.hpp"
 #include "UT.hpp"
+#include "UTxIO.hpp"
 
 namespace DR
 {
 
 namespace
 {
-// TODO: Better print messages
-// TODO: Better error handling
 UT::Vu
 read_entire_file(
   UT::Vu file_name, AR::Arena &arena)
 {
-  const char *file_str = file_name.data();
-  size_t      file_len = 0;
-  char       *buffer   = nullptr;
-  size_t      result   = 0;
-
-  FILE *file_stream = std::fopen(file_str, "rb");
-  if (!file_stream)
-  {
-    std::fprintf(stderr, "ERROR: could not open file: %s\n", file_str);
-    goto DEFER_RETURN;
-  }
-
-  std::fseek(file_stream, 0, SEEK_END);
-  file_len = ftell(file_stream);
-
-  std::rewind(file_stream);
-  buffer           = (char *)arena.alloc(sizeof(char) * (file_len + 1));
-  buffer[file_len] = 0;
-
-  result = std::fread(buffer, 1, file_len, file_stream);
-  if (result != file_len)
-  {
-    std::fprintf(
-      stderr, "ERROR: could not map file %s to memory buffer\n", file_str);
-
-    goto DEFER_RETURN;
-  }
-
-DEFER_RETURN:
-  if (file_stream) std::fclose(file_stream);
-  return UT::Vu{ buffer, file_len };
+  return IO::read_entire_file(std::string(file_name), arena);
 }
 
 bool
@@ -675,25 +644,17 @@ build_project(
   fs::path c_path   = outdir / (stem + ".c");
   fs::path exe_path = outdir / (stem + tc.exe_suffix);
 
+  if (!IO::write_to_file(ir_path.string(), IR::pprint(prog)))
   {
-    std::ofstream f(ir_path);
-    if (!f)
-    {
-      std::fprintf(
-        stderr, "thrax: cannot write '%s'\n", ir_path.string().c_str());
-      return false;
-    }
-    f << IR::pprint(prog);
+    std::fprintf(
+      stderr, "thrax: cannot write '%s'\n", ir_path.string().c_str());
+    return false;
   }
+  if (!IO::write_to_file(c_path.string(),
+                         CC::emit(prog, mr.entry, mr.entry_takes_arg, tg)))
   {
-    std::ofstream f(c_path);
-    if (!f)
-    {
-      std::fprintf(
-        stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
-      return false;
-    }
-    f << CC::emit(prog, mr.entry, mr.entry_takes_arg, tg);
+    std::fprintf(stderr, "thrax: cannot write '%s'\n", c_path.string().c_str());
+    return false;
   }
 
   // The generated unit is self-contained (the runtime is baked in), so the
@@ -702,22 +663,23 @@ build_project(
   // libc is implicit, generated programs never dlopen -- the system linker
   // resolves, statically or dynamically per what it finds), plus whatever
   // the `@run` BUILD directives asked for: -L/rpath per lib_path, one
-  // lib_flag per lib.
-  std::string cmd = "\"" + tc.cc + "\"";
-  for (const std::string &f : tc.cflags) cmd += " " + f;
-  cmd += " \"" + c_path.string() + "\" -o \"" + exe_path.string() + "\"";
+  // lib_flag per lib. Built as an argv vector and spawned with no shell
+  // (IO::run_command) -- no quoting, no injection surface, no std::system.
+  std::vector<std::string> argv = { tc.cc };
+  for (const std::string &f : tc.cflags) argv.push_back(f);
+  argv.push_back(c_path.string());
+  argv.push_back("-o");
+  argv.push_back(exe_path.string());
   for (const std::string &p : bd.lib_paths)
   {
-    cmd += " -L\"" + p + "\"";
-    if (tc.rpath) cmd += " -Wl,-rpath,\"" + p + "\"";
+    argv.push_back("-L" + p);
+    if (tc.rpath) argv.push_back("-Wl,-rpath," + p);
   }
-  for (const std::string &f : CC::link_flags(prog))
-    cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
+  for (const std::string &f : CC::link_flags(prog)) argv.push_back(f);
   for (const std::string &l : bd.libs)
-    if (std::string f = CC::lib_flag(l); !f.empty())
-      cmd += f.starts_with("-") ? " " + f : " \"" + f + "\"";
+    if (std::string f = CC::lib_flag(l); !f.empty()) argv.push_back(f);
 
-  int rc = std::system(cmd.c_str());
+  int rc = IO::run_command(argv);
   if (rc != 0)
   {
     std::fprintf(stderr, "thrax: C compilation failed (cc exit %d)\n", rc);

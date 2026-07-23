@@ -15,28 +15,7 @@
 #define UTxBUILD_HEADER_
 
 #include "UT.hpp" // std aggregation (<filesystem> <string> <vector> ...) + helpers
-
-#include <cstdio> // fopen/fread/fwrite/fflush -- file I/O without iostreams
-#include <ctime>
-#include <functional>
-#include <print>
-#include <regex>
-
-// Platform shim: all OS-specific process handling is isolated here. The rest of
-// the build spawns programs directly from an argv vector -- no std::system, no
-// shell -- so there is no quoting/injection surface and command semantics don't
-// depend on /bin/sh vs cmd.exe. POSIX uses posix_spawn; Windows uses
-// CreateProcess. (The Windows path is a deferred fallback -- Windows is
-// primarily supported via generated projects; see doc/architecture.md.)
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
-extern char **environ;
-#endif
+#include "UTxIO.hpp" // cross-platform file + process I/O (the BLD helpers forward here)
 
 namespace BLD
 {
@@ -123,97 +102,16 @@ split_ws(
   return out;
 }
 
-// Spawn a program directly -- NO shell. argv[0] is the program (searched on
-// PATH when it contains no slash). `out_file`/`err_file`, if given, redirect
-// the child's stdout/stderr to those files; otherwise each stream is inherited
-// (live on the terminal). Nothing is ever discarded. Returns the child's exit
-// code, or -1 if it could not be spawned.
+// Spawn a program directly -- NO shell (posix_spawn / CreateProcess). Thin
+// forwarder to IO::spawn, the single source of truth; kept in BLD so the
+// existing build call sites read unchanged. See IO::spawn for the contract.
 inline int
 spawn(
   const vector<string> &argv,
   const string         &out_file = "",
   const string         &err_file = "")
 {
-#if defined(_WIN32)
-  string cl; // Windows wants one command line, not an argv array.
-  for (size_t i = 0; i < argv.size(); ++i)
-    cl += (i ? " \"" : "\"") + argv[i] + "\"";
-  SECURITY_ATTRIBUTES sa{};
-  sa.nLength        = sizeof sa;
-  sa.bInheritHandle = TRUE;
-  HANDLE       fo = INVALID_HANDLE_VALUE, fe = INVALID_HANDLE_VALUE;
-  STARTUPINFOA si{};
-  si.cb         = sizeof si;
-  si.dwFlags    = STARTF_USESTDHANDLES;
-  si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-  si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-  si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
-  if (!out_file.empty())
-  {
-    fo            = CreateFileA(out_file.c_str(),
-                     GENERIC_WRITE,
-                     0,
-                     &sa,
-                     CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL,
-                     nullptr);
-    si.hStdOutput = fo;
-  }
-  if (!err_file.empty())
-  {
-    fe           = CreateFileA(err_file.c_str(),
-                     GENERIC_WRITE,
-                     0,
-                     &sa,
-                     CREATE_ALWAYS,
-                     FILE_ATTRIBUTE_NORMAL,
-                     nullptr);
-    si.hStdError = fe;
-  }
-  vector<char> cmd(cl.begin(), cl.end());
-  cmd.push_back('\0');
-  PROCESS_INFORMATION pi{};
-  DWORD               code = (DWORD)-1;
-  if (CreateProcessA(nullptr,
-                     cmd.data(),
-                     nullptr,
-                     nullptr,
-                     TRUE,
-                     0,
-                     nullptr,
-                     nullptr,
-                     &si,
-                     &pi))
-  {
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    GetExitCodeProcess(pi.hProcess, &code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-  }
-  if (fo != INVALID_HANDLE_VALUE) CloseHandle(fo);
-  if (fe != INVALID_HANDLE_VALUE) CloseHandle(fe);
-  return (int)code;
-#else
-  vector<char *> a;
-  a.reserve(argv.size() + 1);
-  for (const string &s : argv) a.push_back(const_cast<char *>(s.c_str()));
-  a.push_back(nullptr);
-  posix_spawn_file_actions_t fa;
-  posix_spawn_file_actions_init(&fa);
-  if (!out_file.empty())
-    posix_spawn_file_actions_addopen(
-      &fa, 1, out_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (!err_file.empty())
-    posix_spawn_file_actions_addopen(
-      &fa, 2, err_file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  pid_t pid;
-  int   rc = posix_spawnp(&pid, a[0], &fa, nullptr, a.data(), environ);
-  posix_spawn_file_actions_destroy(&fa);
-  if (rc != 0) return -1;
-  int st;
-  waitpid(pid, &st, 0);
-  return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
-#endif
+  return IO::spawn(argv, out_file, err_file);
 }
 
 // Echo and run a whitespace-split command (no shell), inheriting both streams
@@ -234,28 +132,20 @@ run_or_die(
   if (run(cmd) != 0) die("command failed: " + cmd);
 }
 
+// Read a whole file, or "" if it is missing (the build's stamp comparisons
+// treat absent and empty alike). Forwards to IO::read_entire_file.
 inline string
 read_file(
   const string &path)
 {
-  string data;
-  FILE  *f = std::fopen(path.c_str(), "rb");
-  if (!f) return data;
-  char   buf[4096];
-  size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) data.append(buf, n);
-  std::fclose(f);
-  return data;
+  return IO::read_entire_file(path).value_or("");
 }
 
 inline void
 write_file(
   const string &path, const string &data)
 {
-  FILE *f = std::fopen(path.c_str(), "wb");
-  if (!f) die("cannot write " + path);
-  std::fwrite(data.data(), 1, data.size(), f);
-  std::fclose(f);
+  if (!IO::write_to_file(path, data)) die("cannot write " + path);
 }
 
 // Split text into lines (newline stripped), like reading with getline.
@@ -280,13 +170,7 @@ split_lines(
 }
 
 // The full result of running a program: exit code plus BOTH captured streams.
-// Nothing is discarded -- the caller decides what to show.
-struct Output
-{
-  int    code;
-  string out;
-  string err;
-};
+using Output = IO::Captured;
 
 // Run a program (no shell) and capture stdout AND stderr (via temp files, so
 // large output never deadlocks a pipe). Returns {code, out, err}.
@@ -294,18 +178,7 @@ inline Output
 exec(
   const vector<string> &argv)
 {
-  static unsigned long seq = 0;
-  fs::path             dir = fs::temp_directory_path();
-  const string of = (dir / ("thrax-build-o" + std::to_string(seq))).string();
-  const string ef = (dir / ("thrax-build-e" + std::to_string(seq++))).string();
-  Output       r;
-  r.code = spawn(argv, of, ef);
-  r.out  = read_file(of);
-  r.err  = read_file(ef);
-  std::error_code ec;
-  fs::remove(of, ec);
-  fs::remove(ef, ec);
-  return r;
+  return IO::capture_command(argv);
 }
 
 inline string

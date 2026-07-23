@@ -25,7 +25,7 @@ Any platform with a C++23 compiler works; nix is optional but convenient.
 **Without nix** - bootstrap the build program once, then use `./build`:
 
 ```sh
-clang++ -std=c++23 -Iutilities build.cpp -o build && ./build
+clang++ -std=c++23 -Iutilities build.cpp utilities/UTxIO.cpp utilities/AR.cpp -o build && ./build
 ```
 
 **With nix**: `nix develop` bootstraps `./build` and puts it (and the built

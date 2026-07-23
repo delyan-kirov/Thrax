@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +16,8 @@
 #include <initializer_list>
 #include <memory.h>
 #include <memory>
+#include <print>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <system_error>

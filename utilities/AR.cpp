@@ -1,4 +1,5 @@
 #include "AR.hpp"
+#include <algorithm>
 
 namespace AR
 {

@@ -61,7 +61,7 @@
           # + the built binaries on PATH. nix is an accelerator here, not a
           # requirement: the same `build.cpp` builds without nix (see README).
           export THRAX_ROOT=$PWD
-          [ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp -o build
+          [ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp utilities/UTxIO.cpp utilities/AR.cpp -o build
           export PATH=$PWD:$PWD/artifacts:$PATH
         '';
       };
