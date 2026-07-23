@@ -625,19 +625,20 @@ Parser::parse_let_binding()
                     std::string(name.str).c_str());
   }
 
-  // ',' chains another binding (which becomes this let's body); 'in' ends the
-  // chain with the final body.
+  Expr *body = nullptr;
   if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // ','
-    lt.body = EX_TRY(parse_let_binding());
+    if (LX::TokenTag::KwIn != EX_TRY(m_lex.peek()).tag)
+      body = EX_TRY(parse_let_binding());
   }
-  else
+  if (!body)
   {
     EX_TRY(expect(LX::TokenTag::KwIn,
                   "expected 'in' or ',' after the 'let' binding"));
-    lt.body = EX_CTX(parse_expr(0), anchor, "in the body of this 'let'");
+    body = EX_CTX(parse_expr(0), anchor, "in the body of this 'let'");
   }
+  lt.body = body;
 
   Expr e{ ExprTag::Let };
   e.as = lt;

@@ -185,7 +185,7 @@ eff_names : UIDENT | eff_names COMMA UIDENT ;
 expr      : ctrl_expr | op_expr ;
 
 ctrl_expr
-  : KW_LET let_bindings KW_IN expr
+  : KW_LET let_bindings opt_comma KW_IN expr
   | KW_IF expr KW_THEN expr KW_ELSE expr
   | KW_WHEN expr arms KW_ELSE expr
   | LAMBDA params EQ expr
@@ -193,7 +193,8 @@ ctrl_expr
   | handle
   ;
 
-/* One or more bindings, comma-separated. `let x = a, y = b in e` desugars to
+/* One or more bindings, comma-separated (a trailing comma before `in` is
+   allowed). `let x = a, y = b in e` desugars to
    `let x = a in let y = b in e` (right-nested; each binding scopes the rest). */
 let_bindings
   : let_binder EQ expr
