@@ -3,19 +3,14 @@
  *\info The Thrax build program. Self-rebuilds when any
  *      build source changes (nob-style).
  *
- *      Bootstrap (Tier 0, no nix):  clang++ -std=c++20 -Iutilities build.cpp -o
- * build && ./build With nix:                    `nix develop` bootstraps
- * ./build for you.
+ *      Bootstrap (Tier 0, no nix):  clang++ -std=c++23 -Iutilities build.cpp
+ * utilities/UTxIO.cpp utilities/AR.cpp -o build && ./build   (the build tool
+ * forwards its I/O to the IO module, whose impl lives in UTxIO.cpp, which pulls
+ * in AR.cpp for the arena reader). With nix: `nix develop` bootstraps ./build
+ * for you.
  *-----------------------------------------------------------------------------*/
 
 #include "UTxBUILD.hpp"
-
-#include "app/build.cpp"
-#include "compiler/build.cpp"
-#include "engines/build.cpp"
-#include "library/build.cpp"
-#include "platforms/build.cpp"
-#include "tests/build.cpp"
 
 namespace
 {
@@ -62,7 +57,7 @@ resolve_ffi(
   if (built)
   {
     c.ffi_cflags = "-I" + vinc + " -DTHRAX_3RD_PARTY_ON=1";
-    c.ffi_libs   = vlib + " -ldl"; // static -- self-contained, no rpath
+    c.ffi_libs   = vlib + " -ldl"; // static
     return;
   }
 
@@ -96,7 +91,7 @@ resolve_ffi(
 }
 
 // Under nix, `clang++` is a wrapper that adds its real system include paths,
-// the C++ stdlib (gcc/include/c++), libffi, glibc, the clang resource dir -- at
+// the C++ stdlib (gcc/include/c++), libffi, glibc, the clang resource dir, at
 // exec time, partly from $NIX_CFLAGS_COMPILE and partly from its own
 // resolution. `bear` records none of them, and clangd neither runs the wrapper
 // nor reads $NIX_CFLAGS_COMPILE, so on its own it can't find
@@ -128,11 +123,6 @@ bake_db_flags(
   }
 }
 
-// Include paths + the invocation banner. FFI resolution (which can build the
-// vendored libffi) is deliberately NOT done here -- only compile commands need
-// it, so main() calls resolve_ffi/bake_db_flags separately. That keeps
-// non-compiling commands (clean, ffi-rebuild, env, ...) from triggering a
-// libffi build.
 Ctx
 make_ctx(
   int argc, char **argv)
@@ -146,24 +136,178 @@ make_ctx(
   return c;
 }
 
+// The project as data -- every module's contribution to the build, as a
+// { name, amalgam_dirs, exes, generate, gen_deps } descriptor:
+//
+//   utilities/compiler/engines  pure amalgam sources (no generation, no exes)
+//   platforms/library           pure generation: bake the runtime .c/.h and the
+//                               .thx stdlib into the headers DR embeds, so the
+//                               thrax binary is self-contained (no exes)
+//   app/tests                   the two standalone binaries -- the thrax CLI
+//                               (DR.cpp joins the amalgam, main.cpp is the
+//                               entry) and the interpreter test harness
 std::vector<Module>
 modules()
 {
-  // utilities has no build.cpp: it bootstraps the build (UTxBUILD.hpp lives
-  // there). Its sources join the amalgamation directly.
-  Module util{ "utilities", { "utilities" }, {}, nullptr, {} };
-  return { util,
-           compiler_module(),
-           engines_module(),
-           platforms_module(),
-           library_module(),
-           app_module(),
-           tests_module() };
+  return {
+    { "utilities", { "utilities" }, {}, nullptr, {} },
+    { "compiler", { "compiler" }, {}, nullptr, {} },
+    { "engines", { "engines" }, {}, nullptr, {} },
+    { "platforms",
+      {},
+      {},
+      [](const Ctx &c) {
+        BLD::gen_runtime_header(c,
+                                c.artifacts + "/THxRTxAMALG.hpp",
+                                { "platforms/THxPLAT.h",
+                                  "platforms/THxCHECK.h",
+                                  "platforms/THxVALUE.h",
+                                  "platforms/THxMEM.h",
+                                  "platforms/THxRT.h",
+                                  "platforms/THxK.h",
+                                  "platforms/THxCHECK.c",
+                                  "platforms/THxVALUE.c",
+                                  "platforms/THxMEMBUMP.c",
+                                  "platforms/THxMEMRC.c",
+                                  "platforms/THxRT.c",
+                                  "platforms/THxK.c" });
+      },
+      { "artifacts/THxRTxAMALG.hpp" } },
+    { "library",
+      {},
+      {},
+      [](const Ctx &c) {
+        BLD::gen_stdlib_header(c,
+                               c.artifacts + "/STDLIBxAMALG.hpp",
+                               BLD::glob({ "core", "library" }, { ".thx" }));
+      },
+      { "artifacts/STDLIBxAMALG.hpp" } },
+    { "app", { "app" }, { { "thrax", { "app/main.cpp" } } }, nullptr, {} },
+    { "tests",
+      {},
+      { { "tst_all", { "tests/tst_all.cpp", "tests/TS.cpp" } } },
+      nullptr,
+      {} },
+  };
+}
+
+// --- Test runners -----------------------------------------------------------
+
+// Interpreter smoke test: evaluate every example through the reified-K machine.
+int
+tests_smoke(
+  const Ctx &c)
+{
+  return BLD::run("./" + c.artifacts + "/tst_all");
+}
+
+int
+tests_native(
+  const Ctx &c)
+{
+  namespace fs            = std::filesystem;
+  const std::string thrax = "./" + c.artifacts + "/thrax";
+  const std::string cfile = c.artifacts + "/native.c";
+  const std::string bfile = c.artifacts + "/native.bin";
+
+  // The combined program: all top-level examples (glob does not recurse, so the
+  // sub-directory projects with their own MAIN are excluded) + the driver.
+  std::vector<std::string> cmd = { thrax, "-c" };
+  for (const std::string &f : BLD::glob({ "examples" }, { ".thx" }))
+    cmd.push_back(f);
+  cmd.push_back("tests/MAIN.thx");
+
+  if (BLD::spawn(cmd, cfile) != 0)
+  {
+    std::print(
+      "native-test: FAIL -- `thrax -c` rejected the combined program\n");
+    return 1;
+  }
+  // -lm: the suite's externs are libc (implicit) + libm; `thrax --build`
+  // derives this from the IR, a hand-rolled cc line names it itself.
+  BLD::Output cc = BLD::exec({ "cc", "-O2", cfile, "-o", bfile, "-lm" });
+  if (cc.code != 0)
+  {
+    std::print("native-test: FAIL(cc)\n{}{}", cc.out, cc.err);
+    return 1;
+  }
+  BLD::Output rn = BLD::exec({ "./" + bfile });
+  std::print("{}{}", rn.out, rn.err); // surface any "MODULE FAILED" lines
+  fs::remove(cfile);
+  fs::remove(bfile);
+  if (rn.code != 0)
+  {
+    std::print("native-test: FAIL -- {} module(s) failed\n", rn.code);
+    return 1;
+  }
+  std::print("native-test: OK -- all example modules passed\n");
+  return 0;
+}
+
+int
+tests_wasm(
+  const Ctx &c)
+{
+  namespace fs            = std::filesystem;
+  const std::string thrax = "./" + c.artifacts + "/thrax";
+  const std::string cfile = c.artifacts + "/wasm.c";
+  const std::string wfile = c.artifacts + "/wasm.bin.wasm";
+
+  const char *wasi_cc = std::getenv("WASI_CC");
+  if (!wasi_cc || !*wasi_cc)
+  {
+    std::print("wasm-test: FAIL -- WASI_CC is not set (the nix dev shell "
+               "exports it; any wasi-sdk clang works)\n");
+    return 1;
+  }
+
+  std::vector<std::string> cmd = { thrax, "-c", "--target=wasm32-wasi" };
+  for (const std::string &f : BLD::glob({ "examples" }, { ".thx" }))
+    cmd.push_back(f);
+  cmd.push_back("tests/MAIN.thx");
+
+  if (BLD::spawn(cmd, cfile) != 0)
+  {
+    std::print("wasm-test: FAIL -- `thrax -c --target=wasm32-wasi` rejected "
+               "the combined program\n");
+    return 1;
+  }
+  BLD::Output cc = BLD::exec({ wasi_cc,
+                               "-O2",
+                               cfile,
+                               "-o",
+                               wfile,
+                               "-lm",
+                               "-Wl,--stack-first",
+                               "-Wl,-z,stack-size=8388608" });
+  if (cc.code != 0)
+  {
+    std::print("wasm-test: FAIL(cc)\n{}{}", cc.out, cc.err);
+    return 1;
+  }
+  // The suite needs the wasi sandbox opened up: /tmp for the IO example's
+  // file round-trip, HOME for its environment check.
+  const char *home = std::getenv("HOME");
+  BLD::Output rn   = BLD::exec({ "wasmtime",
+                                 "--dir=/tmp",
+                                 "--env",
+                                 std::string("HOME=") + (home ? home : ""),
+                                 wfile });
+  std::print("{}{}", rn.out, rn.err);
+  fs::remove(cfile);
+  fs::remove(wfile);
+  if (rn.code != 0)
+  {
+    std::print("wasm-test: FAIL -- {} module(s) failed\n", rn.code);
+    return 1;
+  }
+  std::print("wasm-test: OK -- all example modules passed under wasmtime\n");
+  return 0;
 }
 
 // The C/C++ sources clang-format owns (used by both `format` and the pre-push
-// format check). glob() skips build.cpp files, so add them and the root
-// explicitly.
+// format check). glob() skips build.cpp / UTxBUILD.hpp, so add the build tool's
+// own sources explicitly.
 std::vector<std::string>
 format_files()
 {
@@ -172,9 +316,6 @@ format_files()
   for (auto &x : BLD::glob({ "platforms" }, { ".c", ".h" })) f.push_back(x);
   for (auto &x : BLD::glob({ "tests" }, { ".cpp", ".hpp" })) f.push_back(x);
   for (auto &x : BLD::glob({ "web" }, { ".cpp", ".hpp" })) f.push_back(x);
-  for (const char *d :
-       { "compiler", "engines", "platforms", "library", "app", "tests" })
-    f.push_back(std::string(d) + "/build.cpp");
   f.push_back("build.cpp");
   f.push_back("utilities/UTxBUILD.hpp");
   return f;
@@ -188,10 +329,7 @@ cmd_format()
   return BLD::run(cmd);
 }
 
-// Non-mutating counterpart of cmd_format: `--dry-run -Werror` makes
-// clang-format exit non-zero if any file would change, without editing it. The
-// pre-push hook uses this so a push FAILS on unformatted code instead of
-// silently rewriting the tree behind the committer's back.
+// Non-mutating counterpart of cmd_format
 int
 cmd_check_format()
 {
@@ -208,10 +346,7 @@ cmd_check_format()
   return 0;
 }
 
-// Run Bison's LALR analysis over doc/thrax.y. The grammar declares
-// `%expect N`, so Bison is silent while the conflict count holds and fails the
-// moment it diverges -- a new ambiguity, or a known one resolved. Pure grammar
-// analysis: no lexer, no codegen. Uses bison off PATH, else `nix shell`.
+// Run Bison's LALR analysis over doc/thrax.y
 int
 cmd_grammar_check(
   bool verbose)
@@ -240,11 +375,7 @@ cmd_grammar_check(
   return 0;
 }
 
-// Compile the compiler ITSELF to WebAssembly for the browser playground: the
-// project amalgam + web/playground.cpp through Emscripten (emcc), with FFI
-// OFF -- so FF.cpp's compiled-in host table (not libffi+dlopen, which a
-// browser has neither of) serves the `C`/libm namespace. Output:
-// web/site/thrax.{js,wasm}, loaded by web/site/index.html.
+// Compile the compiler to WebAssembly
 int
 cmd_wasm(
   const Ctx &c, const std::vector<Module> &mods)
@@ -299,7 +430,8 @@ cmd_wasm(
     "-sALLOW_MEMORY_GROWTH=1",
     "-sSTACK_SIZE=33554432",
     "-sMODULARIZE=1",
-    "-sEXPORT_ES6=1", // real ES module (`export default`), for the page's import
+    "-sEXPORT_ES6=1", // real ES module (`export default`), for the page's
+                      // import
     "-sEXPORT_NAME=createThrax",
     "-sEXPORTED_FUNCTIONS=_thrax_eval,_main",
     "-sEXPORTED_RUNTIME_METHODS=ccall,cwrap",
@@ -390,10 +522,7 @@ build_vendored_ffi()
     return 1;
   }
 
-  // Build in a throwaway copy under external/artifacts so the tracked subtree
-  // stays pristine: autoreconf would otherwise refresh config.guess/config.sub
-  // and scatter generated files into external/libffi, dirtying it for future
-  // `git subtree pull`. The copy (and all build scratch) is gitignored.
+  // Build in a throwaway copy under external/artifacts
   std::error_code   ec;
   const std::string bld = VENDORED_FFI + "/build";
   const std::string inc = VENDORED_FFI + "/include";
@@ -408,10 +537,6 @@ build_vendored_ffi()
     return 1;
   }
 
-  // libffi's own autotools build, as one shell pipeline. It needs
-  // autoconf/automake/libtool: if they are already on PATH (you are in the
-  // external dev shell) run it directly; otherwise pull them from the external
-  // flake with `nix develop ./external`. Either way the build runs from `bld`.
   const std::string steps
     = "cd " + bld
       + " && autoreconf -fiv && "
@@ -490,17 +615,13 @@ ascii_checked_ext(
          || ext == ".md" || ext == ".txt" || ext == ".thx";
 }
 
-// `build check-platform`: platforms/ is the only directory allowed to
-// consult raw platform macros (doc/platform-abstraction.md section 3.2) --
-// everything else keys off TG::Target (compiler side) or THxPLAT.h (runtime
-// side). Boundaries by mechanism: this grep fails the gate on any raw macro
-// outside platforms/, minus the three sanctioned exemptions below.
 int
 cmd_check_platform()
 {
   static const char *const exempt_files[] = {
     "compiler/TG.hpp",        // the ONE sanctioned host() detection
     "utilities/UTxBUILD.hpp", // the build tool's own process shim
+    "utilities/UTxIO.cpp",    // the cross-platform I/O module (spawn shim)
     "utilities/UT.cpp",       // the debug-trap arch dispatch (int3/abort)
     "build.cpp",              // this gate's own macro list
   };
@@ -511,9 +632,6 @@ cmd_check_platform()
 
   std::vector<std::string> files = BLD::glob(
     { "utilities", "compiler", "engines", "app", "tests" }, { ".cpp", ".hpp" });
-  for (const char *d :
-       { "compiler", "engines", "platforms", "library", "app", "tests" })
-    files.push_back(std::string(d) + "/build.cpp");
   files.push_back("build.cpp");
   files.push_back("utilities/UTxBUILD.hpp");
 
@@ -636,7 +754,8 @@ cmd_install_hooks()
     "# on Windows too, where git executes hooks via its bundled sh). "
     "Bootstrap\n"
     "# the build program on a fresh clone, then hand off to it.\n"
-    "[ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp -o build\n"
+    "[ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp "
+    "utilities/UTxIO.cpp utilities/AR.cpp -o build\n"
     "exec ./build pre-push\n");
   fs::permissions(hook,
                   fs::perms::owner_all | fs::perms::group_read
@@ -671,15 +790,15 @@ void
 rebuild_self(
   int argc, char **argv)
 {
-  std::vector<std::string> srcs = { "build.cpp",
-                                    "utilities/UTxBUILD.hpp",
-                                    "utilities/UT.hpp",
-                                    "utilities/AR.hpp" };
-  for (const char *d :
-       { "compiler", "engines", "platforms", "library", "app", "tests" })
-    srcs.push_back(std::string(d) + "/build.cpp");
-  BLD::rebuild_self(
-    argc, argv, "clang++ -std=c++23 -O1 -Iutilities build.cpp -o build", srcs);
+  const std::vector<std::string> srcs
+    = { "build.cpp",           "utilities/UTxBUILD.hpp", "utilities/UTxIO.hpp",
+        "utilities/UTxIO.cpp", "utilities/UT.hpp",       "utilities/AR.hpp",
+        "utilities/AR.cpp" };
+  BLD::rebuild_self(argc,
+                    argv,
+                    "clang++ -std=c++23 -O1 -Iutilities build.cpp "
+                    "utilities/UTxIO.cpp utilities/AR.cpp -o build",
+                    srcs);
 }
 
 // Locate the repo root: the nearest ancestor of `cwd` (inclusive) that holds
@@ -717,7 +836,7 @@ is_module_dir(
 //
 //   1. The repo root: the full build. Returns "".
 //   2. A subdirectory with its own *standalone* build.cpp (one with a main(),
-//      like examples/raylib_demo) owns its build -- hand the whole invocation
+//      like examples/raylib_demo) owns its build, hand the whole invocation
 //      off to it, bootstrapping its ./build first if needed. Exits.
 //   3. A module directory (compiler/, engines/, platforms/, app/, tests/, ...).
 //      The root build assumes the repo root as cwd, so chdir there and return
@@ -746,7 +865,6 @@ delegate_local(
   }
   if (root == cwd) return ""; // at the root already: full build.
 
-  // (2) Standalone local build -- a build.cpp with its own main().
   fs::path local = cwd / "build.cpp";
   if (fs::exists(local)
       && BLD::read_file(local.string()).find("main(") != std::string::npos)
@@ -757,9 +875,9 @@ delegate_local(
     if (!fs::exists("./build"))
     {
       std::print("build: bootstrapping local build in {}\n", cwd.string());
-      std::string boot = "clang++ -std=c++23 -O1 -I"
-                         + (root / "utilities").string()
-                         + " build.cpp -o build";
+      const std::string util = (root / "utilities").string();
+      std::string boot = "clang++ -std=c++23 -O1 -I" + util + " build.cpp "
+                         + util + "/UTxIO.cpp " + util + "/AR.cpp -o build";
       if (BLD::run(boot) != 0) BLD::die("failed to bootstrap local build");
     }
     std::vector<std::string> a = { "./build" };
