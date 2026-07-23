@@ -16,7 +16,7 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 9`: nine shift/reduce, all resolve by the default
+ * CONFLICTS. `%expect 11`: eleven shift/reduce, all resolve by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
  * -- EXPECTED, keep as is:
  *   - `f x.y`         postfix `.` binds tighter than application -> `f (x.y)`
@@ -25,6 +25,8 @@
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
  *   - `if`/`when`     `else` attaches to the nearest opener
  *   - nested `when`   arms belong to the innermost `when`
+ *   - optional `when` `else`  its `else` is optional (exhaustive matches omit
+ *                     it), so a dangling `else` shifts to the nearest `when`
  * The one brace overlap tuples introduced -- `Tag: {A, B}` is the variant's
  * positional PAYLOAD fields, never a bare tuple type is resolved
  * structurally (payload_decl's bare-type alternative is non-brace-initial,
@@ -41,7 +43,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 9
+%expect 11
 
 %token INT REAL STR
 %token UIDENT       /* Word, uppercase-initial */
@@ -187,7 +189,7 @@ expr      : ctrl_expr | op_expr ;
 ctrl_expr
   : KW_LET let_bindings opt_comma KW_IN expr
   | KW_IF expr KW_THEN expr KW_ELSE expr
-  | KW_WHEN expr arms KW_ELSE expr
+  | KW_WHEN expr arms opt_when_else
   | LAMBDA params EQ expr
   | KW_DEFER op_expr handle
   | handle
@@ -282,6 +284,11 @@ op_ref          : LIDENT | UIDENT DOT LIDENT ;
 opt_else_clause : /* empty */ | KW_ELSE LIDENT EQ expr ;
 
 arms : arm | arms arm ;
+
+/* `else` is optional: omit it when the arms are exhaustive (TC enforces this;
+   see check_exhaustive in compiler/TC.cpp). */
+opt_when_else : /* empty */ | KW_ELSE expr ;
+
 arm
   : KW_IS pattern KW_THEN expr
   | KW_IS pattern KW_IF expr KW_THEN expr

@@ -127,6 +127,7 @@ pprint(
       if (m.arms[i].guard) s += " if " + pprint(m.arms[i].guard, 0);
       s += " then\n" + pprint(m.arms[i].body, level + 1);
     }
+    if (!m.alt) return s; // exhaustive `when`, no `else`
     return s + "\n" + pad + "else\n" + pprint(m.alt, level + 1);
   }
   case ExprTag::Case:

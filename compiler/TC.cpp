@@ -570,6 +570,32 @@ struct PatLower
     return nullptr;
   }
 
+  // Whether matching `p` needs a constructor tag test that `test_of`'s flat
+  // boolean form cannot express (a variant, a seq, a string-prefix) -- possibly
+  // buried in a struct field. Such a pattern must take the guarded path, whose
+  // match_pat recurses; otherwise the tag test would be silently dropped.
+  bool
+  needs_case_test(
+    Pattern *p)
+  {
+    switch (p->tag)
+    {
+    case PatTag::Variant:
+    case PatTag::Seq:
+    case PatTag::StrPrefix: return true;
+    case PatTag::Struct:
+    {
+      auto                  &ps = std::get<EX::PatStruct>(p->as);
+      std::vector<Pattern *> subs;
+      resolve_fields(ps, subs);
+      for (Pattern *s : subs)
+        if (s && needs_case_test(s)) return true;
+      return false;
+    }
+    default: return false;
+    }
+  }
+
   // `when scrut is p1 then e1 .. is pn then en else d` lowers to a binding of
   // the scrutinee and a `case` over it. A struct-free match becomes one
   // multi-way `case`; a match with struct patterns keeps the chain-of-`if`s
@@ -580,7 +606,10 @@ struct PatLower
   {
     auto &m     = std::get<EX::ExMatch>(e->as);
     Expr *scrut = lower(m.scrut);
-    Expr *alt   = lower(m.alt);
+    // No `else` -> TC already proved the arms exhaustive, so this default is
+    // dead; a unit literal keeps the lowered `case` well-formed (uniform Value
+    // representation) without inventing a trap that would never run.
+    Expr *alt = m.alt ? lower(m.alt) : mk_unit();
 
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
@@ -605,7 +634,18 @@ struct PatLower
     for (size_t i = 0; i < m.arms.size(); ++i)
     {
       Pattern *pat = m.arms[i].pat;
-      if (pat->tag == PatTag::Struct) has_struct = true;
+      if (pat->tag == PatTag::Struct)
+      {
+        has_struct = true;
+        // A struct field that needs a constructor tag test (a nested variant /
+        // seq) can't be expressed by the flat struct path's boolean `test_of`;
+        // route the whole match through the guarded path, which recurses.
+        auto                  &ps = std::get<EX::PatStruct>(pat->as);
+        std::vector<Pattern *> subs;
+        resolve_fields(ps, subs);
+        for (Pattern *s : subs)
+          if (s && needs_case_test(s)) has_nested = true;
+      }
       if (pat->tag == PatTag::Str || pat->tag == PatTag::StrPrefix)
         has_str = true;
       if (pat->tag == PatTag::Seq) has_seq = true;
@@ -893,17 +933,30 @@ struct PatLower
     }
     case PatTag::Struct:
     {
-      // Structs dispatch on field values, not a constructor tag: test the
-      // literal fields, bind the variables, fall through on any mismatch.
-      Expr  *test = test_of(pat, subject);
-      UT::Vu anc;
-      size_t line = 0;
-      pat_anchor(pat, anc, line);
-      Expr *bound
-        = bind_pattern(pat, subject, success, anc, line, /*refutable_ok=*/true);
-      if (top && !*sig)
-        *sig = mk_con(std::get<EX::PatStruct>(pat->as).type_name);
-      return test ? mk_if(test, bound, fall()) : bound;
+      // A struct has no constructor tag; match each field against its
+      // sub-pattern, recursing (and threading the same `fall`) so a refutable
+      // field -- a nested variant, another struct -- is actually tested rather
+      // than silently ignored. Fields fold inside-out around `success`, so all
+      // their bindings are in scope for it.
+      auto &ps = std::get<EX::PatStruct>(pat->as);
+      if (top && !*sig) *sig = mk_con(ps.type_name);
+      std::vector<Pattern *> subs;
+      resolve_fields(ps, subs);
+      auto dit = structs.find(std::string(ps.type_name));
+      if (dit == structs.end()) return success; // TC already errored; defensive
+      const std::vector<std::string> &decl  = dit->second;
+      Expr                           *inner = success;
+      for (size_t i = decl.size(); i-- > 0;)
+      {
+        if (!subs[i] || subs[i]->tag == PatTag::Wild) continue;
+        inner = match_pat(subs[i],
+                          mk_field(subject, ustr(decl[i])),
+                          inner,
+                          fall,
+                          sig,
+                          /*top=*/false);
+      }
+      return inner;
     }
     case PatTag::Variant:
       return match_variant(
@@ -1477,8 +1530,43 @@ private:
                               UT::Vu                       anchor,
                               std::vector<EX::Pattern *>  &subs);
   std::string resolve_match_union(Type *scrut, EX::ExMatch &m);
-  Type       *infer(EX::Expr *e, Env &locals, Type *amb);
-  Type       *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
+  void        check_exhaustive(EX::ExMatch &m);
+
+  // Exhaustiveness (Maranget's usefulness algorithm). A pattern's constructor
+  // "head": its id and payload sub-patterns in declared order (nullptr slot =
+  // wildcard). `finite` is false for a head drawn from an infinite/opaque
+  // domain (Int/Real/Str literals, string-prefix, array `[..]`) -- such a
+  // column can be exhausted only by a wildcard, never by enumerating
+  // constructors.
+  struct PHead
+  {
+    std::string                      id;
+    std::vector<const EX::Pattern *> subs;
+    bool                             finite = true;
+  };
+  bool pat_head(const EX::Pattern *p, PHead &out);
+  std::vector<const EX::Pattern *>
+                     ordered_payload(const UT::Vec<EX::FieldPat> &fields,
+                                     const StructFields          &decl);
+  const EX::Pattern *seq_tail(const EX::PatSeq &sq);
+  bool               column_sig(const EX::Pattern                           *rep,
+                                std::vector<std::pair<std::string, size_t>> &sig,
+                                std::string                                 &tyname);
+  std::string        list_union();
+  std::string        render_ctor(const std::string              &tyname,
+                                 const std::string              &ctor,
+                                 const std::vector<std::string> &subs,
+                                 size_t                          arity);
+  std::vector<std::vector<const EX::Pattern *>>
+  specialize(const std::vector<std::vector<const EX::Pattern *>> &rows,
+             const std::string                                   &ctor,
+             size_t                                               arity);
+  std::vector<std::vector<std::string>>
+  match_witnesses(const std::vector<std::vector<const EX::Pattern *>> &rows,
+                  size_t                                               width);
+
+  Type *infer(EX::Expr *e, Env &locals, Type *amb);
+  Type *infer_apply(Type *fn, EX::Expr *arg, Env &locals, Type *amb);
   Type *infer_against(EX::Expr *e, Type *expected, Env &locals, Type *amb);
 
   // resolution
@@ -2209,7 +2297,7 @@ Checker::occurs_free(
       if (m.arms[i].guard && occurs_free(name, m.arms[i].guard)) return true;
       if (occurs_free(name, m.arms[i].body)) return true;
     }
-    return occurs_free(name, m.alt);
+    return m.alt && occurs_free(name, m.alt);
   }
   case EX::ExprTag::Def:
   case EX::ExprTag::StructDecl:
@@ -2267,6 +2355,387 @@ Checker::resolve_match_union(
     }
   }
   return found;
+}
+
+// The union whose variants are exactly Nil/Cons (the blessed List), or "" when
+// there is none -- lets exhaustiveness treat `[..]` seq patterns as List.
+std::string
+Checker::list_union()
+{
+  for (auto &kv : m_unions)
+  {
+    bool nil = false, cons = false;
+    for (const VariantShape &v : kv.second.variants)
+    {
+      nil  = nil || v.tag == "Nil";
+      cons = cons || v.tag == "Cons";
+    }
+    if (nil && cons) return kv.first;
+  }
+  return "";
+}
+
+// A variant/struct payload's sub-patterns in DECLARED field order (nullptr
+// where a named field is omitted -- an ignored slot, i.e. a wildcard).
+std::vector<const EX::Pattern *>
+Checker::ordered_payload(
+  const UT::Vec<EX::FieldPat> &fields, const StructFields &decl)
+{
+  std::vector<const EX::Pattern *> subs(decl.size(), nullptr);
+  bool                             named = false;
+  for (size_t i = 0; i < fields.size(); ++i)
+    if (fields[i].name.size()) named = true;
+  if (named)
+  {
+    for (size_t i = 0; i < fields.size(); ++i)
+    {
+      std::string fn(fields[i].name);
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (decl[k].first == fn) subs[k] = fields[i].pat;
+    }
+  }
+  else
+    for (size_t i = 0; i < fields.size() && i < decl.size(); ++i)
+      subs[i] = fields[i].pat;
+  return subs;
+}
+
+// The tail of a List seq: `[e0, e1, .., en (..r)]` has tail `[e1, .., en
+// (..r)]`.
+const EX::Pattern *
+Checker::seq_tail(
+  const EX::PatSeq &sq)
+{
+  EX::PatSeq t;
+  t.elems = UT::Vec<EX::Pattern *>{ m_arena };
+  for (size_t i = 1; i < sq.elems.size(); ++i) t.elems.push(sq.elems[i]);
+  t.rest     = sq.rest;
+  t.anchor   = sq.anchor;
+  t.line     = sq.line;
+  t.is_array = false;
+  auto *p    = (EX::Pattern *)m_arena.alloc<EX::Pattern>(1);
+  *p         = EX::Pattern{ EX::PatTag::Seq, t };
+  return p;
+}
+
+// A pattern's constructor head (id + ordered payload). Returns false for a
+// wildcard (Wild / Var / null slot). List seqs are read as Nil / Cons so `[..]`
+// and `List.Cons` patterns unify; array seqs and literals are opaque (finite =
+// false), so their column needs a wildcard rather than a constructor set.
+bool
+Checker::pat_head(
+  const EX::Pattern *p, PHead &out)
+{
+  if (!p) return false;
+  switch (p->tag)
+  {
+  case EX::PatTag::Wild:
+  case EX::PatTag::Var : return false;
+  case EX::PatTag::Int:
+    out.finite = false;
+    out.id     = "#i" + std::to_string(std::get<EX::PatInt>(p->as).value);
+    return true;
+  case EX::PatTag::Real:
+    out.finite = false;
+    out.id     = "#r" + std::to_string(std::get<EX::PatReal>(p->as).value);
+    return true;
+  case EX::PatTag::Str:
+    out.finite = false;
+    out.id     = "#s" + std::string(std::get<EX::PatStr>(p->as).value);
+    return true;
+  case EX::PatTag::StrPrefix:
+    out.finite = false; // refutable, cannot complete a signature
+    out.id     = "#sp";
+    return true;
+  case EX::PatTag::Struct:
+  {
+    auto &ps = std::get<EX::PatStruct>(p->as);
+    auto  it = m_structs.find(std::string(ps.type_name));
+    if (it == m_structs.end())
+    {
+      out.finite = false;
+      out.id     = "#opaque";
+      return true;
+    }
+    out.id   = std::string(ps.type_name);
+    out.subs = ordered_payload(ps.fields, it->second.fields);
+    return true;
+  }
+  case EX::PatTag::Variant:
+  {
+    auto       &pv = std::get<EX::PatVariant>(p->as);
+    std::string u  = pv.resolved_union.size() ? std::string(pv.resolved_union)
+                                              : std::string(pv.type_name);
+    auto        it = m_unions.find(u);
+    const VariantShape *vs = nullptr;
+    if (it != m_unions.end())
+      for (const VariantShape &v : it->second.variants)
+        if (v.tag == std::string(pv.tag)) vs = &v;
+    if (!vs)
+    {
+      out.finite = false;
+      out.id     = "#opaque";
+      return true;
+    }
+    out.id   = std::string(pv.tag);
+    out.subs = ordered_payload(pv.fields, vs->fields);
+    return true;
+  }
+  case EX::PatTag::Seq:
+  {
+    auto &sq = std::get<EX::PatSeq>(p->as);
+    if (sq.is_array)
+    {
+      out.finite = false; // dynamic length: not structurally exhaustible
+      out.id     = "#array";
+      return true;
+    }
+    if (sq.elems.empty())
+    {
+      if (sq.rest) return pat_head(sq.rest, out); // `[..r]` is just `r`
+      out.id = "Nil";
+      return true;
+    }
+    out.id = "Cons";
+    out.subs.push_back(sq.elems[0]);
+    out.subs.push_back(seq_tail(sq));
+    return true;
+  }
+  }
+  return false;
+}
+
+// The full constructor signature (id + arity) of the column whose
+// representative finite pattern is `rep`, plus the display type name. False
+// when `rep`'s type is not a finite union / struct (so the column is not
+// exhaustible).
+bool
+Checker::column_sig(
+  const EX::Pattern                           *rep,
+  std::vector<std::pair<std::string, size_t>> &sig,
+  std::string                                 &tyname)
+{
+  if (!rep) return false;
+  switch (rep->tag)
+  {
+  case EX::PatTag::Variant:
+  {
+    auto       &pv = std::get<EX::PatVariant>(rep->as);
+    std::string u  = pv.resolved_union.size() ? std::string(pv.resolved_union)
+                                              : std::string(pv.type_name);
+    auto        it = m_unions.find(u);
+    if (it == m_unions.end()) return false;
+    tyname = u;
+    for (const VariantShape &v : it->second.variants)
+      sig.push_back({ v.tag, v.fields.size() });
+    return true;
+  }
+  case EX::PatTag::Struct:
+  {
+    auto &ps = std::get<EX::PatStruct>(rep->as);
+    auto  it = m_structs.find(std::string(ps.type_name));
+    if (it == m_structs.end()) return false;
+    tyname = std::string(ps.type_name);
+    sig.push_back({ std::string(ps.type_name), it->second.fields.size() });
+    return true;
+  }
+  case EX::PatTag::Seq:
+  {
+    auto &sq = std::get<EX::PatSeq>(rep->as);
+    if (sq.is_array) return false;
+    if (sq.elems.empty() && sq.rest) return column_sig(sq.rest, sig, tyname);
+    std::string lu = list_union();
+    auto        it = m_unions.find(lu);
+    if (lu.empty() || it == m_unions.end()) return false;
+    tyname = lu;
+    for (const VariantShape &v : it->second.variants)
+      sig.push_back({ v.tag, v.fields.size() });
+    return true;
+  }
+  default: return false;
+  }
+}
+
+// Specialize the pattern matrix by constructor `c` (arity `a`): keep rows whose
+// first pattern is `c` (replacing it with its payload) or a wildcard (replacing
+// it with `a` wildcards); drop rows headed by a different constructor.
+std::vector<std::vector<const EX::Pattern *>>
+Checker::specialize(
+  const std::vector<std::vector<const EX::Pattern *>> &rows,
+  const std::string                                   &c,
+  size_t                                               a)
+{
+  std::vector<std::vector<const EX::Pattern *>> out;
+  for (const auto &r : rows)
+  {
+    PHead                            h;
+    std::vector<const EX::Pattern *> nr;
+    if (!pat_head(r[0], h))
+      nr.assign(a, nullptr); // wildcard row -> `a` wildcard slots
+    else if (h.finite && h.id == c)
+    {
+      nr = h.subs;
+      nr.resize(a, nullptr);
+    }
+    else
+      continue; // different constructor
+    nr.insert(nr.end(), r.begin() + 1, r.end());
+    out.push_back(std::move(nr));
+  }
+  return out;
+}
+
+// Render a constructor witness `Type.Ctor` (payload `.{..}` when it has one),
+// shown with the surface `.` spelling rather than the mangled `MOD/Name`.
+std::string
+Checker::render_ctor(
+  const std::string              &tyname,
+  const std::string              &ctor,
+  const std::vector<std::string> &subs,
+  size_t                          arity)
+{
+  std::string ty = tyname;
+  if (size_t sl = ty.find('/'); sl != std::string::npos) ty[sl] = '.';
+  std::string head = ty.empty() ? ctor : ty + "." + ctor;
+  if (arity == 0) return head;
+  std::string s = head + ".{";
+  for (size_t i = 0; i < arity; ++i) s += (i ? ", " : "") + subs[i];
+  return s + "}";
+}
+
+// Maranget's usefulness, producing witnesses: the value vectors (rendered per
+// column) that no row of `rows` matches. Empty result == the matrix is
+// exhaustive. Recurses column by column; the first column drives
+// specialization.
+std::vector<std::vector<std::string>>
+Checker::match_witnesses(
+  const std::vector<std::vector<const EX::Pattern *>> &rows, size_t width)
+{
+  if (width == 0)
+    return rows.empty() ? std::vector<std::vector<std::string>>{ {} }
+                        : std::vector<std::vector<std::string>>{};
+
+  // Survey column 0: the finite constructors present, and any finite rep.
+  const EX::Pattern       *finite_rep = nullptr;
+  std::vector<std::string> present;
+  for (const auto &r : rows)
+  {
+    PHead h;
+    if (!pat_head(r[0], h) || !h.finite) continue;
+    if (!finite_rep) finite_rep = r[0];
+    if (std::find(present.begin(), present.end(), h.id) == present.end())
+      present.push_back(h.id);
+  }
+
+  auto default_matrix = [&]() {
+    std::vector<std::vector<const EX::Pattern *>> d;
+    for (const auto &r : rows)
+    {
+      PHead h;
+      if (pat_head(r[0], h)) continue; // headed by a constructor -> dropped
+      d.emplace_back(r.begin() + 1, r.end());
+    }
+    return d;
+  };
+
+  std::vector<std::pair<std::string, size_t>> sig;
+  std::string                                 tyname;
+  // No finite signature to complete (all-wildcard, literal, or opaque column):
+  // exhaustible only by a wildcard -> recurse on the default, prefixing `_`.
+  if (!finite_rep || !column_sig(finite_rep, sig, tyname))
+  {
+    std::vector<std::vector<std::string>> out;
+    for (auto &w : match_witnesses(default_matrix(), width - 1))
+    {
+      std::vector<std::string> row{ "_" };
+      row.insert(row.end(), w.begin(), w.end());
+      out.push_back(std::move(row));
+    }
+    return out;
+  }
+
+  bool complete = true;
+  for (auto &c : sig)
+    if (std::find(present.begin(), present.end(), c.first) == present.end())
+      complete = false;
+
+  std::vector<std::vector<std::string>> out;
+  if (complete)
+  {
+    // Every constructor is present: a witness must live under one of them.
+    for (auto &c : sig)
+      for (auto &w : match_witnesses(specialize(rows, c.first, c.second),
+                                     c.second + width - 1))
+      {
+        std::vector<std::string> row{ render_ctor(
+          tyname, c.first, w, c.second) };
+        row.insert(row.end(), w.begin() + c.second, w.end());
+        out.push_back(std::move(row));
+      }
+  }
+  else
+  {
+    // A missing constructor is itself a witness (with wildcard payload),
+    // combined with any witness for the remaining columns.
+    auto sub = match_witnesses(default_matrix(), width - 1);
+    for (auto &c : sig)
+    {
+      if (std::find(present.begin(), present.end(), c.first) != present.end())
+        continue;
+      std::vector<std::string> wild(c.second, "_");
+      std::string head = render_ctor(tyname, c.first, wild, c.second);
+      for (auto &w : sub)
+      {
+        std::vector<std::string> row{ head };
+        row.insert(row.end(), w.begin(), w.end());
+        out.push_back(std::move(row));
+      }
+    }
+  }
+  return out;
+}
+
+// An `else`-less `when` must be exhaustive. Builds the pattern matrix from the
+// UNGUARDED arms (a guard may fail, so a guarded arm never guarantees coverage)
+// and reports the unmatched value witnesses when any exist. Reasons recursively
+// through nested variant / struct / list payloads (Maranget usefulness).
+void
+Checker::check_exhaustive(
+  EX::ExMatch &m)
+{
+  std::vector<std::vector<const EX::Pattern *>> rows;
+  for (size_t i = 0; i < m.arms.size(); ++i)
+    if (!m.arms[i].guard) rows.push_back({ m.arms[i].pat });
+
+  std::vector<std::vector<std::string>> w = match_witnesses(rows, 1);
+  if (w.empty()) return; // exhaustive
+
+  // Collect the (deduplicated) unmatched patterns; each witness has one column.
+  std::vector<std::string> items;
+  for (auto &row : w)
+    if (!row.empty()
+        && std::find(items.begin(), items.end(), row[0]) == items.end())
+      items.push_back(row[0]);
+
+  if (items.size() == 1 && items[0] == "_")
+  {
+    fail(ER::Code::TYPE_MISMATCH,
+         m.anchor,
+         "this 'when' has no 'else' and cannot be exhaustive: its scrutinee is "
+         "not a finite union. Add an 'else' branch or a wildcard '_' arm");
+    return;
+  }
+
+  std::string  list;
+  const size_t CAP = 6;
+  for (size_t i = 0; i < items.size() && i < CAP; ++i)
+    list += (i ? ", " : "") + items[i];
+  if (items.size() > CAP) list += ", ...";
+  fail(ER::Code::TYPE_MISMATCH,
+       m.anchor,
+       "this 'when' has no 'else' and is not exhaustive; unmatched: %s. Add "
+       "those arms or an 'else' branch",
+       list.c_str());
 }
 
 void
@@ -2960,7 +3429,13 @@ Checker::infer(
         unify(infer(m.arms[i].guard, inner, amb), con(OP::TY_BOOL));
       unify(rt, infer(m.arms[i].body, inner, amb));
     }
-    unify(rt, infer(m.alt, locals, amb));
+    // The `else` value (if written) is a fallthrough result of the same type;
+    // with no `else`, the arms must cover every case (checked here so PatLower
+    // can safely supply an unreachable default).
+    if (m.alt)
+      unify(rt, infer(m.alt, locals, amb));
+    else
+      check_exhaustive(m);
     return rt;
   }
 

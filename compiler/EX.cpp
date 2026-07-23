@@ -663,11 +663,13 @@ Parser::parse_if()
   return { true, mk_if(cond, then, alt), {} };
 }
 
-// A pattern match: `when scrut is pat [if guard] then e .. [is ..] else d`.
+// A pattern match: `when scrut is pat [if guard] then e .. [is ..] [else d]`.
 // Each arm tests `pat` against the scrutinee and, when it carries an `if
 // guard`, an extra boolean over the pattern's bindings; a failed pattern or
-// guard falls through to the next arm. `else` is required. The LL pass lowers
-// the whole form into a `case` / if-chain, so no layer below sees an ExMatch.
+// guard falls through to the next arm. The `else` may be omitted when the arms
+// are exhaustive (TC checks this and rejects a non-exhaustive `when` that has
+// no `else`). TC's PatLower lowers the whole form into a `case` / if-chain, so
+// no layer below sees an ExMatch.
 RExpr
 Parser::parse_when()
 {
@@ -700,13 +702,19 @@ Parser::parse_when()
     Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
     arms.push(MatchArm{ pat, body, guard });
   }
-  LX::Token els = EX_TRY(expect(LX::TokenTag::KwElse,
-                                "expected another 'is' arm or 'else' to close "
-                                "the 'when'"));
-  Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'when'");
+  // The `else` is optional: when present it supplies the fallthrough value;
+  // when absent, TC requires the arms to be exhaustive (and PatLower fills in
+  // an unreachable default). A non-'is', non-'else' token here is still an
+  // error.
+  Expr *alt = nullptr;
+  if (LX::TokenTag::KwElse == EX_TRY(m_lex.peek()).tag)
+  {
+    LX::Token els = EX_TRY(m_lex.next()); // 'else'
+    alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'when'");
+  }
 
   Expr e{ ExprTag::Match };
-  e.as = ExMatch{ scrut, arms, alt };
+  e.as = ExMatch{ scrut, arms, alt, kw.str };
   return { true, alloc(e), {} };
 }
 

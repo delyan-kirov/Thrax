@@ -366,13 +366,17 @@ struct MatchArm
   Expr    *body;
   Expr    *guard = nullptr;
 };
-// A match: `when scrut is pat then e ... is pat then e else alt`. TC's PatLower
-// lowers it into an ExCase / if-chain, so desugar/IT never see an ExMatch.
+// A match: `when scrut is pat then e ... is pat then e [else alt]`. `alt` is
+// null when the `else` is omitted, which is allowed only when TC finds the arms
+// exhaustive (PatLower then supplies an unreachable default). TC's PatLower
+// lowers the whole form into an ExCase / if-chain, so desugar/IT never see an
+// ExMatch. `anchor` is the `when` keyword, for the exhaustiveness diagnostic.
 struct ExMatch
 {
   Expr             *scrut;
   UT::Vec<MatchArm> arms;
   Expr             *alt;
+  UT::Vu            anchor{};
 };
 
 // One `is op a = body` clause of a handler: operation `op`, its single argument
