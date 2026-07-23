@@ -1,6 +1,8 @@
 # \file let_in.thx
 # \info Local bindings with `let x = e in body`, including nesting and using
-#       earlier bindings in later ones.
+#       earlier bindings in later ones. Multiple bindings chain with `,`:
+#       `let x = a, y = b in e` is exactly `let x = a in let y = b in e`, so
+#       each binding scopes the ones after it -- one `in`, no nesting.
 
 @mod LET_IN
 
@@ -17,10 +19,16 @@ $chained =
 	let z = y * 2 in
 	x + y + z
 
+# The same chain, comma-separated: one `in`, later bindings see earlier ones.
+$commas = let x = 1, y = x + 10, z = y * 2 in x + y + z
+
+# A comma chain mixing a tuple-pattern binder with a plain one.
+$mixed = let {a, b} = {3, 4}, s = a + b in s * 2
+
 $compose =
 	let square = \x = x * x in
 	let add1   = \x = x + 1 in
 	add1 (square 5)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = simple ; nested ; chained ; compose ; 0
+$ test : Int = simple ; nested ; chained ; commas ; mixed ; compose ; 0

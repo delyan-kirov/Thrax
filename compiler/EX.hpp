@@ -66,6 +66,7 @@ private:
   UT_NODISCARD RExpr    parse_primary();
   UT_NODISCARD RExpr    parse_group();
   UT_NODISCARD RExpr    parse_let();
+  UT_NODISCARD RExpr    parse_let_binding(); // one binding of a `,`-chained let
   UT_NODISCARD RExpr    parse_if();
   UT_NODISCARD RExpr    parse_when();
   UT_NODISCARD RExpr    parse_handle();
