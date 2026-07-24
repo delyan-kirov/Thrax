@@ -112,6 +112,17 @@ get_env(
   return string(v);
 }
 
+bool
+set_env(
+  const string &name, const string &value)
+{
+#if defined(_WIN32)
+  return _putenv_s(name.c_str(), value.c_str()) == 0;
+#else
+  return setenv(name.c_str(), value.c_str(), 1) == 0;
+#endif
+}
+
 // --- Process ----------------------------------------------------------------
 
 int

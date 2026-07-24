@@ -305,6 +305,93 @@ tests_wasm(
   return 0;
 }
 
+// Cross-compile the whole Thrax compiler to artifacts/thrax.exe for
+// x86_64-windows with zig (clang + libc++ + a bundled mingw sysroot 
+int
+win_cross_compile(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  if (BLD::exec({ "zig", "version" }).code != 0)
+  {
+    std::print(stderr,
+               "build: win: zig not found -- enter `nix develop` (it provides "
+               "zig), then rerun\n");
+    return 1;
+  }
+
+  // Native build first: emits the amalgam sources + baked runtime header the
+  // cross compile reads (incremental -- cheap when already up to date).
+  BLD::build(c, mods);
+
+  const std::string amalg = c.artifacts + "/UTxAMALG.cpp";
+  const std::string obj_a = c.artifacts + "/win_amalg.o";
+  const std::string obj_m = c.artifacts + "/win_main.o";
+  const std::string exe   = c.artifacts + "/thrax.exe";
+
+  // FFI OFF (no -DTHRAX_3RD_PARTY_ON). The -I set matches the native build
+  // (c.includes); the nullability warnings are libc++ Windows-header noise.
+  std::vector<std::string> base = { "zig",
+                                    "c++",
+                                    "-target",
+                                    "x86_64-windows-gnu",
+                                    "-std=c++23",
+                                    "-O2",
+                                    "-Wno-nullability-completeness" };
+  for (const std::string &i : BLD::split_ws(c.includes)) base.push_back(i);
+
+  auto compile = [&](const std::string &src, const std::string &obj) -> int {
+    std::vector<std::string> cmd = base;
+    cmd.insert(cmd.end(), { "-c", src, "-o", obj });
+    BLD::Output o = BLD::exec(cmd);
+    if (o.code != 0)
+      std::print(
+        stderr, "build: win: compile failed for {}\n{}{}", src, o.out, o.err);
+    return o.code;
+  };
+  if (compile(amalg, obj_a) != 0) return 1;
+  if (compile("app/main.cpp", obj_m) != 0) return 1;
+
+  BLD::Output l = BLD::exec(
+    { "zig", "c++", "-target", "x86_64-windows-gnu", obj_a, obj_m, "-o", exe });
+  if (l.code != 0)
+  {
+    std::print(stderr, "build: win: link failed\n{}{}", l.out, l.err);
+    return 1;
+  }
+  std::print("build: win: OK -- wrote {} (x86_64-windows, FFI off)\n", exe);
+  return 0;
+}
+
+// `build win-test`: cross-compile the compiler (above) and run the WHOLE
+// example suite through it under wine 
+int
+tests_win(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  if (int rc = win_cross_compile(c, mods)) return rc;
+  const std::string exe = c.artifacts + "/thrax.exe";
+
+  if (BLD::exec({ "wine", "--version" }).code != 0)
+  {
+    std::print("win-test: OK(compile-only) -- the compiler cross-compiles for "
+               "Windows; wine absent, suite not run\n");
+    return 0;
+  }
+
+  IO::set_env("WINEDEBUG", "-all"); // hush wine's own diagnostics
+  BLD::Output rn = BLD::exec({ "wine", exe, "examples", "tests/MAIN.thx" });
+  std::print("{}", rn.out); // the per-module OK/ERR lines from the runner
+  if (rn.code != 0)
+  {
+    std::print(
+      "win-test: FAIL -- {} module(s) failed under wine\n{}", rn.code, rn.err);
+    return 1;
+  }
+  std::print("win-test: OK -- the cross-built compiler passes the full example "
+             "suite under wine\n");
+  return 0;
+}
+
 // The C/C++ sources clang-format owns (used by both `format` and the pre-push
 // format check). glob() skips build.cpp / UTxBUILD.hpp, so add the build tool's
 // own sources explicitly.
@@ -454,6 +541,50 @@ cmd_wasm(
              outdir,
              outdir,
              outdir);
+  return 0;
+}
+
+int
+cmd_win(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  namespace fs = std::filesystem;
+
+  if (int rc = win_cross_compile(c, mods)) return rc;
+  const std::string exe = c.artifacts + "/thrax.exe";
+
+  // If wine is present, prove the cross-built compiler actually runs: interpret
+  // a trivial program and check it evaluates and prints. (No Windows runner
+  // needed; this all happens on Linux.)
+  if (BLD::exec({ "wine", "--version" }).code != 0)
+  {
+    std::print("build: win: (wine absent -- skipped running {})\n", exe);
+    return 0;
+  }
+  const std::string dir  = c.artifacts + "/winrun";
+  const std::string prog = dir + "/MAIN.thx";
+  fs::create_directories(dir);
+  BLD::write_file(prog,
+                  "@mod MAIN\n"
+                  "$ with IO\n"
+                  "$ main : Int =\n"
+                  "\tlet _ = print \"win-run: OK\" in\n"
+                  "\t0\n");
+  IO::set_env("WINEDEBUG", "-all");
+  BLD::Output       rn = BLD::exec({ "wine", exe, prog });
+  const std::string out
+    = rn.out; // CRLF from the Windows stdout is harmless here
+  if (rn.code != 0 || out.find("win-run: OK") == std::string::npos)
+  {
+    std::print(stderr,
+               "build: win: the cross-built compiler failed to run under wine "
+               "(exit {})\n{}{}",
+               rn.code,
+               rn.out,
+               rn.err);
+    return 1;
+  }
+  std::print("build: win: OK -- {} interprets correctly under wine\n", exe);
   return 0;
 }
 
@@ -621,6 +752,7 @@ cmd_check_platform()
   static const char *const exempt_files[] = {
     "compiler/TG.hpp",        // the ONE sanctioned host() detection
     "utilities/UTxBUILD.hpp", // the build tool's own process shim
+    "utilities/UT.hpp",       // libc gap shims (asprintf on Windows)
     "utilities/UTxIO.cpp",    // the cross-platform I/O module (spawn shim)
     "utilities/UT.cpp",       // the debug-trap arch dispatch (int3/abort)
     "build.cpp",              // this gate's own macro list
@@ -971,7 +1103,7 @@ main(
     // does its own FFI resolution.
     cmd_clean(c);
     write_clangd_config();
-    setenv("THRAX_DB", "1", 1);
+    IO::set_env("THRAX_DB", "1");
     return BLD::spawn({ "bear", "--", "./build" });
   }
 
@@ -1001,6 +1133,8 @@ main(
     return tests_wasm(c);
   }
   if (cmd == "wasm") return cmd_wasm(c, mods);
+  if (cmd == "win") return cmd_win(c, mods);
+  if (cmd == "win-test") return tests_win(c, mods);
   if (cmd == "valgrind")
   {
     BLD::build(c, mods);
@@ -1021,8 +1155,8 @@ main(
 
   std::print(
     stderr,
-    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|wasm|clean|"
-    "clean-recursive|check-ascii|check-platform|check-format|"
+    "usage: build [ffi|no-ffi] [build|test|native-test|wasm-test|win-test|wasm|"
+    "win|clean|clean-recursive|check-ascii|check-platform|check-format|"
     "grammar-check|install-hooks|ffi-rebuild|format|compile-commands|"
     "tokei|valgrind|env|pre-push]\n");
   return 2;

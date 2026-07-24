@@ -60,6 +60,8 @@ bool append_to_file(const string &path, UT::Vu bytes);
 // from set-but-empty, which is a present empty string).
 std::optional<string> get_env(const string &name);
 
+bool set_env(const string &name, const string &value);
+
 // --- Process ----------------------------------------------------------------
 
 // Spawn a program directly -- NO shell. argv[0] is the program (searched on

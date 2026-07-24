@@ -30,36 +30,36 @@ namespace OP
 // For binary operators the spelling is also the source lexeme; the unary NEG
 // and NOT are distinct names (their lexemes are SUB and BANG) so unary '-'
 // never collides with binary '-'.
-inline constexpr const char *ADD       = "+";
-inline constexpr const char *SUB       = "-";
-inline constexpr const char *MUL       = "*";
-inline constexpr const char *DIV       = "/";
-inline constexpr const char *MOD       = "%";
-inline constexpr const char *ISEQ      = "?=";
-inline constexpr const char *MORE      = "?>";
-inline constexpr const char *LESS      = "?<";
-inline constexpr const char *LEQ       = "<=";
-inline constexpr const char *GEQ       = ">=";
-inline constexpr const char *BANG      = "!";   // lexeme of unary NOT
-inline constexpr const char *NEG       = "neg"; // unary '-'
-inline constexpr const char *NOT       = "not"; // unary '!'
-inline constexpr const char *IF        = "if";
-inline constexpr const char *TY_REAL   = "@float64";
-inline constexpr const char *TY_STR    = "@str";
-inline constexpr const char *TY_PTR    = "@ptr";
-inline constexpr const char *TY_INT8   = "@int8";
-inline constexpr const char *TY_INT16  = "@int16";
-inline constexpr const char *TY_INT32  = "@int32";
-inline constexpr const char *TY_INT64  = "@int64";
-inline constexpr const char *TY_NAT8   = "@nat8";
-inline constexpr const char *TY_NAT16  = "@nat16";
-inline constexpr const char *TY_NAT32  = "@nat32";
-inline constexpr const char *TY_NAT64  = "@nat64";
-inline constexpr const char *TY_REAL32 = "@float32";
-inline constexpr const char *TY_REAL64 = "@float64";
-inline constexpr const char *TY_ARRAY  = "@array";
-inline constexpr const char *TY_UNIT   = "{}";
-inline constexpr const char *TY_BOOL   = "@bool";
+inline constexpr const char *ADD        = "+";
+inline constexpr const char *SUB        = "-";
+inline constexpr const char *MUL        = "*";
+inline constexpr const char *DIV        = "/";
+inline constexpr const char *MOD        = "%";
+inline constexpr const char *ISEQ       = "?=";
+inline constexpr const char *MORE       = "?>";
+inline constexpr const char *LESS       = "?<";
+inline constexpr const char *LEQ        = "<=";
+inline constexpr const char *GEQ        = ">=";
+inline constexpr const char *BANG       = "!";   // lexeme of unary NOT
+inline constexpr const char *NEG        = "neg"; // unary '-'
+inline constexpr const char *NOT        = "not"; // unary '!'
+inline constexpr const char *IF         = "if";
+inline constexpr const char *TY_REAL    = "@float64";
+inline constexpr const char *TY_STR     = "@str";
+inline constexpr const char *TY_PTR     = "@ptr";
+inline constexpr const char *TY_INT8    = "@int8";
+inline constexpr const char *TY_INT16   = "@int16";
+inline constexpr const char *TY_INT32   = "@int32";
+inline constexpr const char *TY_INT64   = "@int64";
+inline constexpr const char *TY_NAT8    = "@nat8";
+inline constexpr const char *TY_NAT16   = "@nat16";
+inline constexpr const char *TY_NAT32   = "@nat32";
+inline constexpr const char *TY_NAT64   = "@nat64";
+inline constexpr const char *TY_REAL32  = "@float32";
+inline constexpr const char *TY_REAL64  = "@float64";
+inline constexpr const char *TY_ARRAY   = "@array";
+inline constexpr const char *TY_UNIT    = "{}";
+inline constexpr const char *TY_BOOL    = "@bool";
 inline constexpr const char *BOOL_TRUE  = "@true";
 inline constexpr const char *BOOL_FALSE = "@false";
 inline constexpr const char *TY_VEC     = "Vec";
