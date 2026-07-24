@@ -141,6 +141,12 @@ struct PatInt // an integer literal -- matches by equality (refutable)
   UT::Vu  anchor;
   size_t  line;
 };
+struct PatBool // `@true` / `@false` -- matches `@bool` by value (refutable)
+{
+  bool   value;
+  UT::Vu anchor;
+  size_t line;
+};
 struct PatReal // a real literal (refutable)
 {
   double value;
@@ -209,6 +215,7 @@ struct PatSeq
   X(Wild, PatWild)                                                             \
   X(Var, PatVar)                                                               \
   X(Int, PatInt)                                                               \
+  X(Bool, PatBool)                                                             \
   X(Real, PatReal)                                                             \
   X(Str, PatStr)                                                               \
   X(StrPrefix, PatStrPrefix)                                                   \
@@ -261,6 +268,11 @@ struct ExDef
 struct ExInt
 {
   ssize_t value;
+};
+
+struct ExBool
+{
+  bool value;
 };
 struct ExReal
 {
@@ -366,13 +378,17 @@ struct MatchArm
   Expr    *body;
   Expr    *guard = nullptr;
 };
-// A match: `when scrut is pat then e ... is pat then e else alt`. TC's PatLower
-// lowers it into an ExCase / if-chain, so desugar/IT never see an ExMatch.
+// A match: `when scrut is pat then e ... is pat then e [else alt]`. `alt` is
+// null when the `else` is omitted, which is allowed only when TC finds the arms
+// exhaustive (PatLower then supplies an unreachable default). TC's PatLower
+// lowers the whole form into an ExCase / if-chain, so desugar/IT never see an
+// ExMatch. `anchor` is the `when` keyword, for the exhaustiveness diagnostic.
 struct ExMatch
 {
   Expr             *scrut;
   UT::Vec<MatchArm> arms;
   Expr             *alt;
+  UT::Vu            anchor{};
 };
 
 // One `is op a = body` clause of a handler: operation `op`, its single argument
@@ -565,6 +581,7 @@ struct ExSeqLit
   X(Unit, ExUnit)                                                              \
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
+  X(Bool, ExBool)                                                              \
   X(Real, ExReal)                                                              \
   X(Let, ExLet)                                                                \
   X(FnDef, ExFnDef)                                                            \
@@ -670,10 +687,18 @@ const InfixTable infix_db{
 // opener, not as applying the cleanup to a do-block. (Use `f (do ...)` to pass
 // one.)
 const OperandSet operand_starters{
-  LX::TokenTag::Int,    LX::TokenTag::Real,   LX::TokenTag::Str,
-  LX::TokenTag::Word,   LX::TokenTag::LParen, LX::TokenTag::KwLet,
-  LX::TokenTag::KwIf,   LX::TokenTag::Lambda, LX::TokenTag::LBrace,
-  LX::TokenTag::KwWhen, LX::TokenTag::LBrack,
+  LX::TokenTag::Int,
+  LX::TokenTag::Real,
+  LX::TokenTag::Str,
+  LX::TokenTag::Word,
+  LX::TokenTag::LParen,
+  LX::TokenTag::KwLet,
+  LX::TokenTag::KwIf,
+  LX::TokenTag::Lambda,
+  LX::TokenTag::LBrace,
+  LX::TokenTag::KwWhen,
+  LX::TokenTag::LBrack,
+  LX::TokenTag::At,
 };
 
 // Tokens that end an expression. `do` ends one so `defer <cleanup> do ...`

@@ -566,8 +566,19 @@ Parser::parse_group()
 RExpr
 Parser::parse_let()
 {
-  LX::Token kw = EX_TRY(m_lex.next()); // 'let'
+  EX_TRY(m_lex.next()); // 'let'
+  return parse_let_binding();
+}
 
+// One binding of a (possibly comma-chained) `let`, parsed from its binder
+// through its body. Bindings chain with ',': `let x = a, y = b in e` desugars
+// to `let x = a in let y = b in e` -- a ',' makes the *next* binding this let's
+// body, while 'in' introduces the final body. Each binding stays its own ExLet
+// (its own scope and error context), so chaining is a flat surface over the
+// nested lets we already had, not a new multi-binding node.
+RExpr
+Parser::parse_let_binding()
+{
   // A `let` binder is either a plain variable (`let x = ...`) or a structural
   // pattern (`let Person.{x,y} = ...`, `let {a, b} = ...`). An
   // uppercase-initial word or a '{' starts a pattern; the LL pass lowers it
@@ -580,55 +591,55 @@ Parser::parse_let()
     is_pat = (c >= 'A' && c <= 'Z');
   }
 
+  ExLet lt;
+  // Anchors the "in the body of this 'let'" context below at the binder.
+  LX::Token anchor = la;
   if (is_pat)
   {
-    Pattern *pat = EX_TRY(parse_pattern());
+    lt.pat = EX_TRY(parse_pattern());
     EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' pattern"));
-    Expr *val = EX_CTX(parse_expr(0), la, "in this 'let' binding");
-    EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
-    Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
-
-    ExLet lt;
-    lt.var  = UT::Vu{};
-    lt.val  = val;
-    lt.body = body;
-    lt.pat  = pat;
-    Expr e{ ExprTag::Let };
-    e.as = lt;
-    return { true, alloc(e), {} };
+    lt.val = EX_CTX(parse_expr(0), la, "in this 'let' binding");
   }
-
-  LX::Token name = EX_TRY(
-    expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
-
-  // An optional type annotation: `let x : T = ...`. It pins the bound value's
-  // type (and gives a recursive binding its declared type).
-  Ty *sig = nullptr;
-  if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
+  else
   {
-    m_lex.next(); // ':'
-    sig = EX_CTX(parse_type(),
-                 name,
-                 "in the type of 'let %s'",
-                 std::string(name.str).c_str());
+    LX::Token name = EX_TRY(
+      expect(LX::TokenTag::Word, "expected a variable name after 'let'"));
+    anchor = name;
+    lt.var = name.str;
+
+    // An optional type annotation: `let x : T = ...`. It pins the bound value's
+    // type (and gives a recursive binding its declared type).
+    if (LX::TokenTag::Colon == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // ':'
+      lt.sig = EX_CTX(parse_type(),
+                      name,
+                      "in the type of 'let %s'",
+                      std::string(name.str).c_str());
+    }
+
+    EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
+    lt.val = EX_CTX(parse_expr(0),
+                    name,
+                    "in the binding of 'let %s'",
+                    std::string(name.str).c_str());
   }
 
-  EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the 'let' variable"));
-
-  Expr *val = EX_CTX(parse_expr(0),
-                     name,
-                     "in the binding of 'let %s'",
-                     std::string(name.str).c_str());
-
-  EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'let' binding"));
-
-  Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'let'");
-
-  ExLet lt;
-  lt.var  = name.str;
-  lt.val  = val;
+  Expr *body = nullptr;
+  if (LX::TokenTag::Comma == EX_TRY(m_lex.peek()).tag)
+  {
+    m_lex.next(); // ','
+    if (LX::TokenTag::KwIn != EX_TRY(m_lex.peek()).tag)
+      body = EX_TRY(parse_let_binding());
+  }
+  if (!body)
+  {
+    EX_TRY(expect(LX::TokenTag::KwIn,
+                  "expected 'in' or ',' after the 'let' binding"));
+    body = EX_CTX(parse_expr(0), anchor, "in the body of this 'let'");
+  }
   lt.body = body;
-  lt.sig  = sig;
+
   Expr e{ ExprTag::Let };
   e.as = lt;
   return { true, alloc(e), {} };
@@ -652,11 +663,13 @@ Parser::parse_if()
   return { true, mk_if(cond, then, alt), {} };
 }
 
-// A pattern match: `when scrut is pat [if guard] then e .. [is ..] else d`.
+// A pattern match: `when scrut is pat [if guard] then e .. [is ..] [else d]`.
 // Each arm tests `pat` against the scrutinee and, when it carries an `if
 // guard`, an extra boolean over the pattern's bindings; a failed pattern or
-// guard falls through to the next arm. `else` is required. The LL pass lowers
-// the whole form into a `case` / if-chain, so no layer below sees an ExMatch.
+// guard falls through to the next arm. The `else` may be omitted when the arms
+// are exhaustive (TC checks this and rejects a non-exhaustive `when` that has
+// no `else`). TC's PatLower lowers the whole form into a `case` / if-chain, so
+// no layer below sees an ExMatch.
 RExpr
 Parser::parse_when()
 {
@@ -689,13 +702,19 @@ Parser::parse_when()
     Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
     arms.push(MatchArm{ pat, body, guard });
   }
-  LX::Token els = EX_TRY(expect(LX::TokenTag::KwElse,
-                                "expected another 'is' arm or 'else' to close "
-                                "the 'when'"));
-  Expr *alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'when'");
+  // The `else` is optional: when present it supplies the fallthrough value;
+  // when absent, TC requires the arms to be exhaustive (and PatLower fills in
+  // an unreachable default). A non-'is', non-'else' token here is still an
+  // error.
+  Expr *alt = nullptr;
+  if (LX::TokenTag::KwElse == EX_TRY(m_lex.peek()).tag)
+  {
+    LX::Token els = EX_TRY(m_lex.next()); // 'else'
+    alt = EX_CTX(parse_expr(0), els, "in the else branch of this 'when'");
+  }
 
   Expr e{ ExprTag::Match };
-  e.as = ExMatch{ scrut, arms, alt };
+  e.as = ExMatch{ scrut, arms, alt, kw.str };
   return { true, alloc(e), {} };
 }
 
@@ -865,6 +884,21 @@ Parser::parse_pattern_atom()
                PatTag::Str,
                PatStr{ std::get<LX::TkStr>(t.as).value, t.str, t.line } }),
              {} };
+  case LX::TokenTag::At:
+  {
+    if (t.str != OP::BOOL_TRUE && t.str != OP::BOOL_FALSE)
+      EX_ERR(ER::Code::EXPECTED_OPERAND,
+             t,
+             "expected a pattern, found directive '%s' (only '@true'/'@false' "
+             "are patterns)",
+             std::string(t.str).c_str());
+    m_lex.next();
+    return { true,
+             alloc_pat(
+               Pattern{ PatTag::Bool,
+                        PatBool{ t.str == OP::BOOL_TRUE, t.str, t.line } }),
+             {} };
+  }
   case LX::TokenTag::Word:
   {
     m_lex.next();
@@ -1355,6 +1389,13 @@ RExpr
 Parser::parse_array()
 {
   LX::Token at = EX_TRY(m_lex.peek());
+  if (at.str == OP::BOOL_TRUE || at.str == OP::BOOL_FALSE)
+  {
+    m_lex.next();
+    Expr e{ ExprTag::Bool };
+    e.as = ExBool{ at.str == OP::BOOL_TRUE };
+    return { true, alloc(e), {} };
+  }
   if (at.str != "@array")
     EX_ERR(ER::Code::UNSUPPORTED,
            at,

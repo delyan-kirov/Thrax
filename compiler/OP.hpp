@@ -59,15 +59,17 @@ inline constexpr const char *TY_REAL32 = "@float32";
 inline constexpr const char *TY_REAL64 = "@float64";
 inline constexpr const char *TY_ARRAY  = "@array";
 inline constexpr const char *TY_UNIT   = "{}";
-inline constexpr const char *TY_BOOL   = "Bool";
-inline constexpr const char *TY_VEC    = "Vec";
-inline constexpr const char *VEC_REP   = "%vec";
-inline constexpr const char *VEC_NEW   = "vec_new";
-inline constexpr const char *VEC_FILL  = "vec_fill";
-inline constexpr const char *VEC_LEN   = "vec_len";
-inline constexpr const char *VEC_GET   = "vec_get";
-inline constexpr const char *VEC_SET   = "vec_set";
-inline constexpr const char *VEC_PUSH  = "vec_push";
+inline constexpr const char *TY_BOOL   = "@bool";
+inline constexpr const char *BOOL_TRUE  = "@true";
+inline constexpr const char *BOOL_FALSE = "@false";
+inline constexpr const char *TY_VEC     = "Vec";
+inline constexpr const char *VEC_REP    = "%vec";
+inline constexpr const char *VEC_NEW    = "vec_new";
+inline constexpr const char *VEC_FILL   = "vec_fill";
+inline constexpr const char *VEC_LEN    = "vec_len";
+inline constexpr const char *VEC_GET    = "vec_get";
+inline constexpr const char *VEC_SET    = "vec_set";
+inline constexpr const char *VEC_PUSH   = "vec_push";
 
 inline constexpr const char *TUPLE_PREFIX = "%tuple";
 inline std::string
@@ -85,9 +87,9 @@ is_tuple_name(
 }
 
 inline constexpr const char *base_types[] = {
-  TY_REAL,  TY_STR,    TY_PTR,    TY_INT8,  TY_INT16,
-  TY_INT32, TY_INT64,  TY_NAT8,   TY_NAT16, TY_NAT32,
-  TY_NAT64, TY_REAL32, TY_REAL64, TY_ARRAY, TY_UNIT,
+  TY_REAL,   TY_STR,   TY_PTR,   TY_INT8,  TY_INT16, TY_INT32,
+  TY_INT64,  TY_NAT8,  TY_NAT16, TY_NAT32, TY_NAT64, TY_REAL32,
+  TY_REAL64, TY_ARRAY, TY_UNIT,  TY_BOOL,
 };
 
 // The prelude's FIXED transparent aliases onto the base types, as data: DR
@@ -105,7 +107,7 @@ inline constexpr BaseAlias base_aliases[] = {
   { "Int32", TY_INT32 },   { "Int64", TY_INT64 },   { "Nat8", TY_NAT8 },
   { "Nat16", TY_NAT16 },   { "Nat32", TY_NAT32 },   { "Nat64", TY_NAT64 },
   { "Real32", TY_REAL32 }, { "Real64", TY_REAL64 }, { "Str", TY_STR },
-  { "Ptr", TY_PTR },       { "Array", TY_ARRAY },
+  { "Ptr", TY_PTR },       { "Array", TY_ARRAY },   { "Bool", TY_BOOL },
 };
 
 // Canonical spelling of a base-type name: folds a bare prelude alias ("Str",

@@ -95,6 +95,7 @@ collect_pat_binders(
   {
   case EX::PatTag::Wild:
   case EX::PatTag::Int:
+  case EX::PatTag::Bool:
   case EX::PatTag::Real:
   case EX::PatTag::Str : return;
   case EX::PatTag::Var : out.push_back(std::get<EX::PatVar>(p->as).name); return;
@@ -803,7 +804,7 @@ struct Linker
         resolve(m.arms[i].body, Mkey, sc, locals);
         locals.resize(base);
       }
-      resolve(m.alt, Mkey, sc, locals);
+      if (m.alt) resolve(m.alt, Mkey, sc, locals); // null when `else` omitted
       return;
     }
     case ExprTag::If:
@@ -1183,7 +1184,7 @@ struct Linker
         if (m.arms[i].guard) rewrite_types_expr(m.arms[i].guard, Mkey, sc);
         rewrite_types_expr(m.arms[i].body, Mkey, sc);
       }
-      rewrite_types_expr(m.alt, Mkey, sc);
+      if (m.alt) rewrite_types_expr(m.alt, Mkey, sc); // null when no `else`
       return;
     }
     case ExprTag::If:

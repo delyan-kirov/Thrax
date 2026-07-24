@@ -1,10 +1,12 @@
 @mod MATCH
 
 # \file match.thx
-# \info The match form `when scrut is pat then e ... is pat then e else d`. The
+# \info The match form `when scrut is pat then e ... is pat then e [else d]`. The
 #       leading `when` distinguishes it from the boolean `if c then t else e`.
 #       Arms are tried top to bottom; the first matching pattern wins and binds
-#       its variables. `else` is required. Patterns may test literals (Int/Real)
+#       its variables. `else` is optional -- it may be omitted when the arms are
+#       exhaustive (cover every constructor of a union); a non-exhaustive `when`
+#       with no `else` is a type error. Patterns may test literals (Int/Real)
 #       and destructure structs; an irrefutable arm (only variables / wildcards)
 #       always matches. An arm may add an `if <guard>` after its pattern (see
 #       WHEN_GUARDS.thx) -- a failed guard falls through to the next arm.
@@ -60,5 +62,126 @@ $ describe : Int -> Int = \n =
 	         else 0
 $ d5 : Int = describe 5
 
-# Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = c0 ; c2 ; cN ; g_baby ; g_alice ; s ; o0 ; o7 ; d5 ; 0
+# An exhaustive union match needs no `else`: the three constructors cover the
+# type, so TC accepts the `when` with no fallthrough. Adding a fourth variant
+# without extending this `when` would then be a compile error.
+$ Light : @union = Red: {}, Yellow: {}, Green: {}
+
+$ go : Light -> Int = \l =
+	when l is Light.Red then 0
+	       is Light.Yellow then 1
+	       is Light.Green then 2
+
+$ lr : Int = go Light.Red
+$ lg : Int = go Light.Green
+
+# Exhaustiveness reasons recursively through nested payloads: matching the empty
+# `Opt.None` and the full `Opt.Some.{ _ }` inside `Wrap.W` covers `Wrap`, so this
+# needs no `else` even though the arms destructure a nested union.
+$ Opt  : @union = None: {}, Some: { Int }
+$ Wrap : @union = Empty: {}, W: { Opt }
+
+$ unwrap : Wrap -> Int = \w =
+	when w is Wrap.Empty then 0
+	       is Wrap.W.{ Opt.None } then 1
+	       is Wrap.W.{ Opt.Some.{ n } } then n
+
+$ u_none : Int = unwrap Wrap.W.{ Opt.None }
+$ u_some : Int = unwrap Wrap.W.{ Opt.Some.{ 42 } }
+
+# ===========================================================================
+# SUPER-DUPER NESTING. The exhaustiveness checker reasons RECURSIVELY (it runs
+# the classic "usefulness" algorithm over a pattern matrix), so a `when` that
+# destructures several constructors deep still needs no `else` -- as long as the
+# arms cover every shape. Delete any single arm below and the compiler rejects
+# the `when`, printing the exact nested value left unmatched (e.g.
+# `unmatched: MATCH.Peano.Succ.{MATCH.Peano.Succ.{MATCH.Peano.Zero}}`).
+# ===========================================================================
+
+# --- 1. Peano naturals: a RECURSIVE union, matched three levels deep. --------
+# `depth` peeks up to three `Succ`s; the fourth arm's `Succ.{Succ.{Succ._}}`
+# mops up everything deeper, so Zero + the three exact depths + that catch-all
+# cover `Peano` with no gap. (`Nat` is a built-in numeric type, hence `Peano`.)
+$ Peano : @union = Zero: {}, Succ: { Peano }
+
+$ depth : Peano -> Int = \n =
+	when n
+	is Peano.Zero then 0
+	is Peano.Succ.{ Peano.Zero } then 1
+	is Peano.Succ.{ Peano.Succ.{ Peano.Zero } } then 2
+	is Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ _ } } } then 3
+
+$ p0 : Peano = Peano.Zero
+$ p2 : Peano = Peano.Succ.{ Peano.Succ.{ Peano.Zero } }
+# Five deep -> the depth-3 catch-all arm, proving it really is a catch-all.
+$ p5 : Peano =
+	Peano.Succ.{ Peano.Succ.{ Peano.Succ.{
+		Peano.Succ.{ Peano.Succ.{ Peano.Zero } } } } }
+
+# --- 2. Binary trees: matching the SHAPE two levels down. --------------------
+# Each `Fork` child is itself a `Tip` or a `Fork`; the four arms partition all
+# four left/right shape combinations (Tip|Fork x Tip|Fork), so no `else`.
+$ Tree : @union = Tip: {}, Fork: { Tree, Tree }
+
+$ shape : Tree -> Int = \t =
+	when t
+	is Tree.Tip then 0
+	is Tree.Fork.{ Tree.Tip, Tree.Tip } then 1
+	is Tree.Fork.{ Tree.Tip, Tree.Fork.{ _, _ } } then 2
+	is Tree.Fork.{ Tree.Fork.{ _, _ }, _ } then 3
+
+$ tp : Tree = Tree.Tip
+$ t2 : Tree = Tree.Fork.{ Tree.Tip, Tree.Fork.{ Tree.Tip, Tree.Tip } }
+$ t3 : Tree = Tree.Fork.{ Tree.Fork.{ Tree.Tip, Tree.Tip }, Tree.Tip }
+
+# --- 3. A GENERIC box, nested three deep: `NestingDoll (NestingDoll (NestingDoll Int))`. -------
+# `peel` unwraps each `Skin` down to the `Core` at the bottom; the innermost
+# `Skin.{ n }` binds the payload. Generic + three levels, still exhaustive.
+$ NestingDoll : @union = Core: {}, Skin: { `T }
+
+$ peel : NestingDoll (NestingDoll (NestingDoll Int)) -> Int = \o =
+	when o
+	is NestingDoll.Core then 0
+	is NestingDoll.Skin.{ NestingDoll.Core } then 1
+	is NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Core } } then 2
+	is NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ n } } } then n
+
+$ k1 : NestingDoll (NestingDoll (NestingDoll Int)) = NestingDoll.Skin.{ NestingDoll.Core }
+$ k7 : NestingDoll (NestingDoll (NestingDoll Int)) =
+	NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ 7 } } }
+
+# --- 4. NON-recursive "types in types": union -> struct -> two unions. --------
+# `Cell.Set` carries a `Flags` STRUCT whose two fields are themselves unions.
+# The checker descends union -> struct -> union: `Blank` plus the four Sign x Bit
+# combinations exhaust `Cell` with no `else`, even though nothing here recurses.
+$ Sign  : @union  = Plus: {}, Minus: {}
+$ Bit   : @union  = Off: {}, On: {}
+$ Flags : @struct = sign: Sign, bit: Bit
+$ Cell  : @union  = Blank: {}, Set: { Flags }
+
+$ decode : Cell -> Int = \c =
+	when c
+	is Cell.Blank then 0
+	is Cell.Set.{ Flags.{ Sign.Plus, Bit.Off } } then 1
+	is Cell.Set.{ Flags.{ Sign.Plus, Bit.On } } then 2
+	is Cell.Set.{ Flags.{ Sign.Minus, Bit.Off } } then 3
+	is Cell.Set.{ Flags.{ Sign.Minus, Bit.On } } then 4
+
+$ c_blank : Cell = Cell.Blank
+$ c_po : Cell = Cell.Set.{ Flags.{ .sign = Sign.Plus, .bit = Bit.On } }
+$ c_mn : Cell = Cell.Set.{ Flags.{ .sign = Sign.Minus, .bit = Bit.On } }
+
+# Verify the nested matches DISPATCH correctly at runtime, not just that they
+# type-check: each term is (actual - expected), so this is 0 exactly when every
+# result is right -- and the combined runner treats a non-zero `test` as a fail.
+$ nested_ok : Int =
+	(depth p0 - 0) + (depth p2 - 2) + (depth p5 - 3)
+	+ (shape tp - 0) + (shape t2 - 2) + (shape t3 - 3)
+	+ (peel k1 - 1) + (peel k7 - 7)
+	+ (decode c_blank - 0) + (decode c_po - 2) + (decode c_mn - 4)
+
+# Force-evaluate results for the combined test runner (pass = no fault); the
+# nested block above additionally checks values, contributing 0 when correct.
+$ test : Int =
+	c0 ; c2 ; cN ; g_baby ; g_alice ; s ; o0 ; o7 ; d5 ; lr ; lg ;
+	u_none ; u_some ; nested_ok

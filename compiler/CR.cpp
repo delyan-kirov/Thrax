@@ -152,8 +152,10 @@ go(
   case EX::ExprTag::Int:
     return alloc(arena, Term{ Int{ std::get<EX::ExInt>(expr->as).value } });
 
-  // The unit value `{}` -- represented at runtime as the integer 0 (the type
-  // checker keeps the unit type distinct from Int; the runtime does not).
+  case EX::ExprTag::Bool:
+    return alloc(arena,
+                 Term{ Int{ std::get<EX::ExBool>(expr->as).value ? 1 : 0 } });
+
   case EX::ExprTag::Unit: return alloc(arena, Term{ Int{ 0 } });
 
   case EX::ExprTag::Real:
@@ -210,9 +212,7 @@ go(
 
   case EX::ExprTag::VariantLit:
   {
-    auto &vl = std::get<EX::ExVariantLit>(expr->as);
-    if (vl.type_name == UT::Vu{ OP::TY_BOOL })
-      return alloc(arena, Term{ Int{ vl.tag == UT::Vu{ "True" } ? 1 : 0 } });
+    auto   &vl = std::get<EX::ExVariantLit>(expr->as);
     Variant v;
     v.type_name = UT::strdup(arena, vl.type_name);
     v.tag       = UT::strdup(arena, vl.tag);

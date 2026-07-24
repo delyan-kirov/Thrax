@@ -238,7 +238,7 @@ template <typename O> struct Vec
   };
 
   bool
-  empty()
+  empty() const
   {
     return 0 == len;
   }
