@@ -285,13 +285,12 @@ tests_wasm(
     std::print("wasm-test: FAIL(cc)\n{}{}", cc.out, cc.err);
     return 1;
   }
-  // The suite needs the wasi sandbox opened up: /tmp for the IO example's
-  // file round-trip, HOME for its environment check.
-  const char *home = std::getenv("HOME");
+
+  const char *path = std::getenv("PATH");
   BLD::Output rn   = BLD::exec({ "wasmtime",
                                  "--dir=/tmp",
                                  "--env",
-                                 std::string("HOME=") + (home ? home : ""),
+                                 std::string("PATH=") + (path ? path : ""),
                                  wfile });
   std::print("{}{}", rn.out, rn.err);
   fs::remove(cfile);
