@@ -1,6 +1,12 @@
 name: Windows
 
-# Native Windows build
+# Two complementary Windows checks:
+#   native :  on a real windows-latest runner, compile the build tool + IO smoke
+#             with MSVC (cl.exe) and run the smoke: proves the build tooling and
+#             the cross-platform IO layer work with the genuine Microsoft CRT.
+#   cross  :  on Linux, `build win-test` cross-compiles the WHOLE compiler with
+#             zig and runs the full example suite through it under wine: proves
+#             the compiler itself builds for Windows and behaves correctly.
 on:
   push:
   pull_request:
@@ -32,3 +38,20 @@ jobs:
           cl /nologo /std:c++latest /EHsc /DNOMINMAX /I utilities
           tests\win_smoke.cpp utilities\UTxIO.cpp utilities\AR.cpp
           /Fe:win_smoke.exe && win_smoke.exe
+
+  cross:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+
+      # zig cross-compiles the whole compiler to a Windows PE; wine runs the
+      # full example suite through it. Both come from the nix dev shell.
+      - name: Cross-compile the compiler and run the suite under wine
+        run: |
+          nix develop --command bash -c '
+            set -e
+            build win-test
+          '

@@ -31,9 +31,9 @@ $ ck_gone : Int = if remove_file path then 1 else 0
 $ ck_missing : Int =
 	if is_none (read_file "/tmp/thrax_stdlib/definitely/not/here") then 0 else 1
 
-# The environment: HOME is set in any sane test environment, and unset
-# variables come back "".
-$ ck_env      : Int = if (env "HOME") ?= "" then 1 else 0
+# The environment: PATH is set on every platform (HOME is POSIX-only, absent on
+# Windows), and unset variables come back "".
+$ ck_env      : Int = if (env "PATH") ?= "" then 1 else 0
 $ ck_env_none : Int = if (env "THRAX_SURELY_UNSET_VAR_42") ?= "" then 0 else 1
 
 # Number formatting composes with printing (evaluated for effect-freeness

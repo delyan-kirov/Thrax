@@ -305,82 +305,90 @@ tests_wasm(
   return 0;
 }
 
-// Cross-compile to Windows with zig, then smoke-test under wine
+// Cross-compile the whole Thrax compiler to artifacts/thrax.exe for
+// x86_64-windows with zig (clang + libc++ + a bundled mingw sysroot 
 int
-tests_win(
-  const Ctx &c)
+win_cross_compile(
+  const Ctx &c, const std::vector<Module> &mods)
 {
-  namespace fs = std::filesystem;
-
   if (BLD::exec({ "zig", "version" }).code != 0)
   {
-    std::print("win-test: FAIL -- zig not found (the nix dev shell provides "
-               "it; any recent zig works)\n");
+    std::print(stderr,
+               "build: win: zig not found -- enter `nix develop` (it provides "
+               "zig), then rerun\n");
     return 1;
   }
-  const bool have_wine = BLD::exec({ "wine", "--version" }).code == 0;
 
-  const std::vector<std::string> zig
-    = { "zig",        "c++",
-        "-target",    "x86_64-windows-gnu",
-        "-std=c++23", "-Wno-nullability-completeness",
-        "-Iutilities" };
-  const std::vector<std::string> io_srcs
-    = { "utilities/UTxIO.cpp", "utilities/AR.cpp" };
+  // Native build first: emits the amalgam sources + baked runtime header the
+  // cross compile reads (incremental -- cheap when already up to date).
+  BLD::build(c, mods);
 
-  auto cross
-    = [&](const std::string &src, const std::string &exe) -> BLD::Output {
-    std::vector<std::string> cmd = zig;
-    cmd.push_back(src);
-    for (const std::string &s : io_srcs) cmd.push_back(s);
-    cmd.push_back("-o");
-    cmd.push_back(exe);
-    return BLD::exec(cmd);
+  const std::string amalg = c.artifacts + "/UTxAMALG.cpp";
+  const std::string obj_a = c.artifacts + "/win_amalg.o";
+  const std::string obj_m = c.artifacts + "/win_main.o";
+  const std::string exe   = c.artifacts + "/thrax.exe";
+
+  // FFI OFF (no -DTHRAX_3RD_PARTY_ON). The -I set matches the native build
+  // (c.includes); the nullability warnings are libc++ Windows-header noise.
+  std::vector<std::string> base = { "zig",
+                                    "c++",
+                                    "-target",
+                                    "x86_64-windows-gnu",
+                                    "-std=c++23",
+                                    "-O2",
+                                    "-Wno-nullability-completeness" };
+  for (const std::string &i : BLD::split_ws(c.includes)) base.push_back(i);
+
+  auto compile = [&](const std::string &src, const std::string &obj) -> int {
+    std::vector<std::string> cmd = base;
+    cmd.insert(cmd.end(), { "-c", src, "-o", obj });
+    BLD::Output o = BLD::exec(cmd);
+    if (o.code != 0)
+      std::print(
+        stderr, "build: win: compile failed for {}\n{}{}", src, o.out, o.err);
+    return o.code;
   };
+  if (compile(amalg, obj_a) != 0) return 1;
+  if (compile("app/main.cpp", obj_m) != 0) return 1;
 
-  // Gate 1: the build tool compiles for Windows.
-  const std::string build_exe = c.artifacts + "/build.exe";
-  if (BLD::Output cc = cross("build.cpp", build_exe); cc.code != 0)
+  BLD::Output l = BLD::exec(
+    { "zig", "c++", "-target", "x86_64-windows-gnu", obj_a, obj_m, "-o", exe });
+  if (l.code != 0)
   {
-    std::print("win-test: FAIL -- the build tool does not compile for "
-               "Windows\n{}{}",
-               cc.out,
-               cc.err);
+    std::print(stderr, "build: win: link failed\n{}{}", l.out, l.err);
     return 1;
   }
+  std::print("build: win: OK -- wrote {} (x86_64-windows, FFI off)\n", exe);
+  return 0;
+}
 
-  // Gate 2: the IO module compiles, and (with wine) runs, on Windows.
-  const std::string smoke_exe = c.artifacts + "/win_smoke.exe";
-  if (BLD::Output cc = cross("tests/win_smoke.cpp", smoke_exe); cc.code != 0)
-  {
-    std::print("win-test: FAIL -- the IO smoke does not compile for "
-               "Windows\n{}{}",
-               cc.out,
-               cc.err);
-    return 1;
-  }
+// `build win-test`: cross-compile the compiler (above) and run the WHOLE
+// example suite through it under wine 
+int
+tests_win(
+  const Ctx &c, const std::vector<Module> &mods)
+{
+  if (int rc = win_cross_compile(c, mods)) return rc;
+  const std::string exe = c.artifacts + "/thrax.exe";
 
-  if (!have_wine)
+  if (BLD::exec({ "wine", "--version" }).code != 0)
   {
-    std::print("win-test: OK(compile-only) -- build tool + IO module "
-               "cross-compile for Windows; wine absent, smoke not run\n");
+    std::print("win-test: OK(compile-only) -- the compiler cross-compiles for "
+               "Windows; wine absent, suite not run\n");
     return 0;
   }
 
-  IO::set_env("WINEDEBUG", "-all"); // hush wine's own diagnostics (dogfoods the
-                                    // very set_env this gate guards)
-  BLD::Output rn = BLD::exec({ "wine", smoke_exe });
-  std::print("{}", rn.out);
-  fs::remove(smoke_exe);
+  IO::set_env("WINEDEBUG", "-all"); // hush wine's own diagnostics
+  BLD::Output rn = BLD::exec({ "wine", exe, "examples", "tests/MAIN.thx" });
+  std::print("{}", rn.out); // the per-module OK/ERR lines from the runner
   if (rn.code != 0)
   {
-    std::print("win-test: FAIL -- the IO smoke failed under wine (exit {})\n{}",
-               rn.code,
-               rn.err);
+    std::print(
+      "win-test: FAIL -- {} module(s) failed under wine\n{}", rn.code, rn.err);
     return 1;
   }
-  std::print("win-test: OK -- Windows cross-compile passes and the IO smoke "
-             "runs under wine\n");
+  std::print("win-test: OK -- the cross-built compiler passes the full example "
+             "suite under wine\n");
   return 0;
 }
 
@@ -536,67 +544,14 @@ cmd_wasm(
   return 0;
 }
 
-// Cross-compile the whole Thrax compiler to a Windows executable, from Linux,
-// with zig (clang + libc++ + a bundled mingw sysroot -- one hermetic toolchain,
-// no -lstdc++exp dance). FFI is OFF: the same host-table path the wasm build
-// uses (FF.cpp's #ifndef THRAX_3RD_PARTY_ON), so no Windows libffi is needed.
-// A native Windows FFI (LoadLibrary in place of dlopen) is separate, later
-// work. Like cmd_wasm, this reuses the amalgam + baked runtime header the
-// native build emits, then compiles those for the Windows target.
 int
 cmd_win(
   const Ctx &c, const std::vector<Module> &mods)
 {
   namespace fs = std::filesystem;
 
-  if (BLD::exec({ "zig", "version" }).code != 0)
-  {
-    std::print(stderr,
-               "build: win: zig not found -- enter `nix develop` (it provides "
-               "zig), then rerun `build win`\n");
-    return 1;
-  }
-
-  // Native build first: emits the amalgam sources + baked runtime header the
-  // cross compile reads (incremental -- cheap when already up to date).
-  BLD::build(c, mods);
-
-  const std::string amalg = c.artifacts + "/UTxAMALG.cpp";
-  const std::string obj_a = c.artifacts + "/win_amalg.o";
-  const std::string obj_m = c.artifacts + "/win_main.o";
-  const std::string exe   = c.artifacts + "/thrax.exe";
-
-  // FFI OFF (no -DTHRAX_3RD_PARTY_ON). The -I set matches the native build
-  // (c.includes); the nullability warnings are libc++ Windows-header noise.
-  std::vector<std::string> base = { "zig",
-                                    "c++",
-                                    "-target",
-                                    "x86_64-windows-gnu",
-                                    "-std=c++23",
-                                    "-O2",
-                                    "-Wno-nullability-completeness" };
-  for (const std::string &i : BLD::split_ws(c.includes)) base.push_back(i);
-
-  auto compile = [&](const std::string &src, const std::string &obj) -> int {
-    std::vector<std::string> cmd = base;
-    cmd.insert(cmd.end(), { "-c", src, "-o", obj });
-    BLD::Output o = BLD::exec(cmd);
-    if (o.code != 0)
-      std::print(
-        stderr, "build: win: compile failed for {}\n{}{}", src, o.out, o.err);
-    return o.code;
-  };
-  if (compile(amalg, obj_a) != 0) return 1;
-  if (compile("app/main.cpp", obj_m) != 0) return 1;
-
-  BLD::Output l = BLD::exec(
-    { "zig", "c++", "-target", "x86_64-windows-gnu", obj_a, obj_m, "-o", exe });
-  if (l.code != 0)
-  {
-    std::print(stderr, "build: win: link failed\n{}{}", l.out, l.err);
-    return 1;
-  }
-  std::print("build: win: OK -- wrote {} (x86_64-windows, FFI off)\n", exe);
+  if (int rc = win_cross_compile(c, mods)) return rc;
+  const std::string exe = c.artifacts + "/thrax.exe";
 
   // If wine is present, prove the cross-built compiler actually runs: interpret
   // a trivial program and check it evaluates and prints. (No Windows runner
@@ -795,12 +750,12 @@ int
 cmd_check_platform()
 {
   static const char *const exempt_files[] = {
-    "compiler/TG.hpp",         // the ONE sanctioned host() detection
-    "utilities/UTxBUILD.hpp",  // the build tool's own process shim
-    "utilities/UT.hpp",        // libc gap shims (asprintf on Windows)
-    "utilities/UTxIO.cpp",     // the cross-platform I/O module (spawn shim)
-    "utilities/UT.cpp",        // the debug-trap arch dispatch (int3/abort)
-    "build.cpp",               // this gate's own macro list
+    "compiler/TG.hpp",        // the ONE sanctioned host() detection
+    "utilities/UTxBUILD.hpp", // the build tool's own process shim
+    "utilities/UT.hpp",       // libc gap shims (asprintf on Windows)
+    "utilities/UTxIO.cpp",    // the cross-platform I/O module (spawn shim)
+    "utilities/UT.cpp",       // the debug-trap arch dispatch (int3/abort)
+    "build.cpp",              // this gate's own macro list
   };
   static const std::regex macro(
     "\\b(_WIN32|_WIN64|__linux__|__APPLE__|__wasi__|__wasm__|__wasm32__|"
@@ -1152,8 +1107,6 @@ main(
     return BLD::spawn({ "bear", "--", "./build" });
   }
 
-  if (cmd == "win-test") return tests_win(c);
-
   // Everything below compiles Thrax, so resolve libffi now -- this is what may
   // build the vendored libffi on demand (see resolve_ffi).
   resolve_ffi(c, ffi);
@@ -1181,6 +1134,7 @@ main(
   }
   if (cmd == "wasm") return cmd_wasm(c, mods);
   if (cmd == "win") return cmd_win(c, mods);
+  if (cmd == "win-test") return tests_win(c, mods);
   if (cmd == "valgrind")
   {
     BLD::build(c, mods);
