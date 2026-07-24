@@ -29,7 +29,38 @@
 #include <vector>
 
 #include "AR.hpp"
-#include "UTxCOMPAT.hpp" // asprintf shim on targets whose libc lacks it (Windows)
+
+#if defined(_WIN32)
+inline int
+asprintf(
+  char **out, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  va_list ap_len;
+  va_copy(ap_len, ap);
+  const int len = std::vsnprintf(nullptr, 0, fmt, ap_len);
+  va_end(ap_len);
+  if (len < 0)
+  {
+    va_end(ap);
+    *out = nullptr;
+    return -1;
+  }
+  char *buf = static_cast<char *>(std::malloc(static_cast<size_t>(len) + 1));
+  if (!buf)
+  {
+    va_end(ap);
+    *out = nullptr;
+    return -1;
+  }
+  const int written
+    = std::vsnprintf(buf, static_cast<size_t>(len) + 1, fmt, ap);
+  va_end(ap);
+  *out = buf;
+  return written;
+}
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define UT_PRINTF_LIKE(fmt_idx, arg_idx)                                       \
@@ -48,19 +79,23 @@
 #define UT_NODISCARD
 #endif
 
-#define UT_TODO(MSG)                                                           \
-  UT::fail_if(__FILE__, __PRETTY_FUNCTION__, __LINE__, "TODO", #MSG)
+// The decorated function name for diagnostics: __PRETTY_FUNCTION__ is a
+// GCC/clang extension; MSVC spells the same thing __FUNCSIG__.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define UT_PRETTY_FN __FUNCSIG__
+#else
+#define UT_PRETTY_FN __PRETTY_FUNCTION__
+#endif
+
+#define UT_TODO(MSG) UT::fail_if(__FILE__, UT_PRETTY_FN, __LINE__, "TODO", #MSG)
 
 #define UT_FAIL_IF(COND)                                                       \
   do                                                                           \
   {                                                                            \
     if (COND)                                                                  \
     {                                                                          \
-      UT::fail_if(__FILE__,                                                    \
-                  __PRETTY_FUNCTION__,                                         \
-                  __LINE__,                                                    \
-                  "\033[31mERROR\033[0m",                                      \
-                  #COND);                                                      \
+      UT::fail_if(                                                             \
+        __FILE__, UT_PRETTY_FN, __LINE__, "\033[31mERROR\033[0m", #COND);      \
     }                                                                          \
   } while (false)
 
@@ -70,7 +105,7 @@
     char *buf_ = nullptr;                                                      \
     asprintf(&buf_, FMT, __VA_ARGS__);                                         \
     UT::fail_if(                                                               \
-      __FILE__, __PRETTY_FUNCTION__, __LINE__, "\033[31mERROR\033[0m", buf_);  \
+      __FILE__, UT_PRETTY_FN, __LINE__, "\033[31mERROR\033[0m", buf_);         \
   } while (false)
 
 #define ARRAY_LEN(ARR) (sizeof(ARR) / (sizeof(ARR[0])))

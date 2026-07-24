@@ -797,7 +797,7 @@ cmd_check_platform()
   static const char *const exempt_files[] = {
     "compiler/TG.hpp",         // the ONE sanctioned host() detection
     "utilities/UTxBUILD.hpp",  // the build tool's own process shim
-    "utilities/UTxCOMPAT.hpp", // libc gap shims (asprintf on Windows)
+    "utilities/UT.hpp",        // libc gap shims (asprintf on Windows)
     "utilities/UTxIO.cpp",     // the cross-platform I/O module (spawn shim)
     "utilities/UT.cpp",        // the debug-trap arch dispatch (int3/abort)
     "build.cpp",               // this gate's own macro list
