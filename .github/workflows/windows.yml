@@ -1,0 +1,34 @@
+name: Windows
+
+# Native Windows build
+on:
+  push:
+  pull_request:
+
+jobs:
+  native:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put cl.exe and the MSVC toolchain environment on PATH.
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # The build tool bootstraps from exactly these three sources (see the
+      # header of build.cpp). /std:c++latest selects C++23 (std::print, etc.);
+      # /EHsc enables the C++ exception model std::filesystem needs.
+      - name: Compile the build tool with MSVC
+        shell: cmd
+        run: >
+          cl /nologo /std:c++latest /EHsc /DNOMINMAX /I utilities
+          build.cpp utilities\UTxIO.cpp utilities\AR.cpp /Fe:build.exe
+
+      # Compile the smoke the same way and run it -- && so it runs only if the
+      # compile succeeded, and the step fails if either step does.
+      - name: Compile and run the IO smoke with MSVC
+        shell: cmd
+        run: >
+          cl /nologo /std:c++latest /EHsc /DNOMINMAX /I utilities
+          tests\win_smoke.cpp utilities\UTxIO.cpp utilities\AR.cpp
+          /Fe:win_smoke.exe && win_smoke.exe

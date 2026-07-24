@@ -8,7 +8,6 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
-      mingwPkgs = pkgs.pkgsCross.mingwW64;
       wasiPkgs = pkgs.pkgsCross.wasi32; # clang + wasi-libc for wasm32-wasi
       # nix ships only prefixed binutils (wasm32-unknown-wasi-wasm-ld) but
       # clang invokes the linker as bare `wasm-ld`, so give it one on PATH.
@@ -45,9 +44,8 @@
           pkgs.wasmtime # runs wasm32-wasi executables (`--target=wasm32-wasi`)
           pkgs.emscripten # `build wasm`: the compiler itself to wasm (browser)
           pkgs.nodejs # runs the emscripten output headlessly (tests, CI)
-          # mingwPkgs.stdenv.cc
-          # should be enabled manually to check windows build
-          # pkgs.wineWow64Packages.stable
+          pkgs.zig # `build win` / `win-test`: cross-compiles Thrax to Windows
+          pkgs.wineWow64Packages.stable # runs the resulting .exe headlessly
         ];
 
         shellHook = ''

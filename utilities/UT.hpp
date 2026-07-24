@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "AR.hpp"
+#include "UTxCOMPAT.hpp" // asprintf shim on targets whose libc lacks it (Windows)
 
 #if defined(__GNUC__) || defined(__clang__)
 #define UT_PRINTF_LIKE(fmt_idx, arg_idx)                                       \
