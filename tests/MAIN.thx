@@ -29,6 +29,7 @@ $ with LISTS = LISTS
 $ with MATCH = MATCH
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
+$ with OR_PATTERNS = OR_PATTERNS
 $ with PATTERNS = PATTERNS
 $ with PLATFORM = PLATFORM
 $ with PIPES = PIPES
@@ -84,6 +85,7 @@ $ main : Int =
 	+ check "MATCH" MATCH.test
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
+	+ check "OR_PATTERNS" OR_PATTERNS.test
 	+ check "PATTERNS" PATTERNS.test
 	+ check "PLATFORM" PLATFORM.test
 	+ check "PIPES" PIPES.test

@@ -292,9 +292,13 @@ arms : arm | arms arm ;
    see check_exhaustive in compiler/TC.cpp). */
 opt_when_else : /* empty */ | KW_ELSE expr ;
 
+/* An arm's `is pat` alternatives (or-patterns) share the body; EX.cpp collects
+   them and emits one arm per alternative. */
+alts : KW_IS pattern | alts KW_IS pattern ;
+
 arm
-  : KW_IS pattern KW_THEN expr
-  | KW_IS pattern KW_IF expr KW_THEN expr
+  : alts KW_THEN expr
+  | alts KW_IF expr KW_THEN expr
   ;
 
 params : pattern | params pattern ;

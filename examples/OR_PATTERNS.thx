@@ -1,0 +1,46 @@
+@mod OR_PATTERNS
+
+# \file or_patterns.thx
+# \info Or-patterns: an arm may list several `is <pattern>` alternatives before
+#       its `then`, sharing one body. Each alternative is its own matrix row, so
+#       the exhaustiveness checker counts them all (a `when` over a union may drop
+#       its `else` when the alternatives cover every constructor). v1 rule: an
+#       alternative binds no variables, since they share the body. Each `chk*` is
+#       0 when correct and 1 otherwise.
+
+# --- Literal alternatives, with an else ---------------------------------------
+$ small : Int -> Int = \n =
+	when n
+		is 0 is 1 is 2 then 1
+		else 0
+
+$ chk_small_0 : Int = if small 0 ?= 1 then 0 else 1
+$ chk_small_2 : Int = if small 2 ?= 1 then 0 else 1
+$ chk_small_9 : Int = if small 9 ?= 0 then 0 else 1
+
+# --- Variant alternatives, exhaustive WITHOUT an else -------------------------
+$ Color : @union =
+	Red: {},
+	Green: {},
+	Blue: {},
+
+$ warm : Color -> Int = \c =
+	when c
+		is Color.Red.{} is Color.Green.{} then 1
+		is Color.Blue.{}                  then 0
+
+$ chk_warm_r : Int = if warm Color.Red.{}   ?= 1 then 0 else 1
+$ chk_warm_g : Int = if warm Color.Green.{} ?= 1 then 0 else 1
+$ chk_warm_b : Int = if warm Color.Blue.{}  ?= 0 then 0 else 1
+
+# --- Alternatives combined with a guard (shared across the alternatives) -------
+$ tiny : Int -> Int = \n =
+	when n
+		is 1 is 2 is 3 if n ?< 3 then 1
+		else 0
+
+$ chk_tiny_1 : Int = if tiny 1 ?= 1 then 0 else 1
+$ chk_tiny_3 : Int = if tiny 3 ?= 0 then 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : Int = chk_small_0 + chk_small_2 + chk_small_9 + chk_warm_r + chk_warm_g + chk_warm_b + chk_tiny_1 + chk_tiny_3

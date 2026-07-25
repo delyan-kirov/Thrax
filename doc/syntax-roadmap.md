@@ -57,17 +57,20 @@ string-escape decoding (the parser only needs to decode the one scalar).
 
 ## Tier B -- parser plus existing machinery (~1-2 days each)
 
-### #1 Or-patterns `when foo is A is B is C then e`
+### #1 Or-patterns `when foo is A is B is C then e` -- DONE
 
-Grammar: `arm : KW_IS pattern (KW_IS pattern)+ KW_THEN expr`. In `parse_when`,
-collect patterns until `then`. Lowering emits N arms sharing one body via the
-fallthrough-thunk mechanism `lower_match_guarded` already uses -- so it is
-**exhaustiveness-aware for free** (each alternative becomes a matrix row for the
-usefulness algorithm).
+`parse_when` collects the `(is pat)+` alternatives of an arm and emits one
+`MatchArm` per alternative, all sharing the arm's body and guard. Because each
+alternative is its own arm (a matrix row), exhaustiveness works for free: a
+`when` over a union may drop its `else` when the alternatives cover every
+constructor, and a non-exhaustive one still reports the missing cases. No new AST
+node, no TC or lowering change.
 
-- **Decision:** binding alternatives. v1 recommendation: **alternatives bind no
-  variables** (or the identical set, rejected by TC otherwise). "No binders"
-  covers the enum case and sidesteps the merge problem.
+- **Decision (taken):** **alternatives bind no variables** in v1. A recursive
+  `pat_binds_any` check rejects a binder in any alternative of a multi-pattern
+  arm (single-pattern arms bind normally), so there is no inconsistent binding to
+  hand the shared body. `examples/OR_PATTERNS.thx`; grammar `alts` rule in
+  doc/thrax.y (no new conflicts, `%expect` unchanged).
 
 ### #5 Record update `{ .x = 1, .y = 2, ..foo }`
 
@@ -190,8 +193,8 @@ before implementing. It also interacts with #5 (record update spelling).
 ## Suggested order
 
 1. **Tier A (#11, #7, #8)** -- DONE. Cheap, isolated lexer wins, all shipped.
-2. **Or-patterns (#1), record update (#5)** -- high value; reuse the checker and
-   the `..spread` spelling already present. **(next)**
+2. **Or-patterns (#1)** -- DONE. **Record update (#5)** -- high value; reuses the
+   `..spread` spelling already present. **(next)**
 3. **String interpolation (#6)** -- after the stringify story is decided.
 4. **`.n` indexing (#10), ranges (#9)** -- type-directed but self-contained.
 5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
@@ -200,7 +203,7 @@ before implementing. It also interacts with #5 (record update spelling).
 
 ## Open decisions (blockers to a build-ready plan)
 
-- **#1:** allow binders in or-pattern alternatives, or v1 = no binders?
+- **#1:** RESOLVED -- v1 ships with no binders in alternatives (see #1 above).
 - **#6:** require interpolants to already be `Str`, or add a `show`/stringify
   overload first? Brace-escape spelling?
 - **#12:** pursue the `.`-drop at all, given the collision with application and
