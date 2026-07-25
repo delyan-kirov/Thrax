@@ -278,7 +278,7 @@ Parser::parse_primary()
   case LX::TokenTag::KwDefer: base = EX_TRY(parse_defer()); break;
   case LX::TokenTag::Lambda : base = EX_TRY(parse_closure()); break;
   case LX::TokenTag::LBrack : base = EX_TRY(parse_list()); break;
-  case LX::TokenTag::At     : base = EX_TRY(parse_array()); break;
+  case LX::TokenTag::At     : base = EX_TRY(parse_at_term()); break;
   case LX::TokenTag::LBrace:
   {
     // The unit value `{}` (empty record), or a tuple literal `{a, b, ...}`
@@ -886,7 +886,8 @@ Parser::parse_pattern_atom()
              {} };
   case LX::TokenTag::At:
   {
-    if (t.str != OP::BOOL_TRUE && t.str != OP::BOOL_FALSE)
+    const OP::AtIntrinsic *in = OP::at_lookup(t.str, OP::AtNs::Term);
+    if (!in || !in->pat_ok)
       EX_ERR(ER::Code::EXPECTED_OPERAND,
              t,
              "expected a pattern, found directive '%s' (only '@true'/'@false' "
@@ -896,7 +897,7 @@ Parser::parse_pattern_atom()
     return { true,
              alloc_pat(
                Pattern{ PatTag::Bool,
-                        PatBool{ t.str == OP::BOOL_TRUE, t.str, t.line } }),
+                        PatBool{ in->id == OP::AtId::True, t.str, t.line } }),
              {} };
   }
   case LX::TokenTag::Word:
@@ -1223,10 +1224,27 @@ Parser::parse_global()
   if (LX::TokenTag::KwWith == after.tag) return parse_import();
   if (LX::TokenTag::At == after.tag)
   {
-    if (after.str == "@operator") return parse_operator_def();
-    if (after.str == "@assert") return parse_ctime_assert();
-    if (after.str == "@run") return parse_ctime_run();
-    return parse_vis();
+    if (const OP::AtIntrinsic *in = OP::at_lookup(after.str, OP::AtNs::Decl))
+      switch (in->id)
+      {
+      case OP::AtId::Operator: return parse_operator_def();
+      case OP::AtId::Assert  : return parse_ctime_assert();
+      case OP::AtId::Run     : return parse_ctime_run();
+      case OP::AtId::Private :
+      case OP::AtId::Public  : return parse_vis();
+      default: break; // @mod/@struct/@union/@alias/@effect/@extern: wrong slot
+      }
+    OP::AtNs ns;
+    if (OP::at_classify(after.str, ns))
+      EX_ERR(ER::Code::UNSUPPORTED,
+             after,
+             "'%s' is not valid directly after '$' (it is a %s form)",
+             std::string(after.str).c_str(),
+             OP::at_ns_name(ns));
+    EX_ERR(ER::Code::UNSUPPORTED,
+           after,
+           "unknown intrinsic '%s' after '$'",
+           std::string(after.str).c_str());
   }
 
   LX::Token name
@@ -1240,30 +1258,33 @@ Parser::parse_global()
   {
     m_lex.next(); // ':'
     LX::Token ann = EX_TRY(m_lex.peek());
-    if (LX::TokenTag::At == ann.tag && ann.str == "@struct")
-    {
-      m_lex.next(); // '@struct'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@struct'"));
-      return parse_struct_decl(name);
-    }
-    if (LX::TokenTag::At == ann.tag && ann.str == "@union")
-    {
-      m_lex.next(); // '@union'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@union'"));
-      return parse_union_decl(name);
-    }
-    if (LX::TokenTag::At == ann.tag && ann.str == "@alias")
-    {
-      m_lex.next(); // '@alias'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@alias'"));
-      return parse_alias_decl(name);
-    }
-    if (LX::TokenTag::At == ann.tag && ann.str == "@effect")
-    {
-      m_lex.next(); // '@effect'
-      EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after '@effect'"));
-      return parse_effect_decl(name);
-    }
+    if (LX::TokenTag::At == ann.tag)
+      if (const OP::AtIntrinsic *in = OP::at_lookup(ann.str, OP::AtNs::Decl))
+      {
+        // The declaration-body forms: `$ name : @X = <body>`. Any other `@` in
+        // annotation position (a base type, or a wrong-slot decl) falls through
+        // to parse_type, which validates it.
+        auto eat = [&](const char *what) -> LX::RToken {
+          m_lex.next(); // the `@X`
+          return expect(LX::TokenTag::Eq, what);
+        };
+        switch (in->id)
+        {
+        case OP::AtId::Struct:
+          EX_TRY(eat("expected '=' after '@struct'"));
+          return parse_struct_decl(name);
+        case OP::AtId::Union:
+          EX_TRY(eat("expected '=' after '@union'"));
+          return parse_union_decl(name);
+        case OP::AtId::Alias:
+          EX_TRY(eat("expected '=' after '@alias'"));
+          return parse_alias_decl(name);
+        case OP::AtId::Effect:
+          EX_TRY(eat("expected '=' after '@effect'"));
+          return parse_effect_decl(name);
+        default: break; // other decls: let parse_type produce the error
+        }
+      }
     sig = EX_CTX(parse_type(),
                  name,
                  "in the type signature of global '%s'",
@@ -1272,11 +1293,13 @@ Parser::parse_global()
 
   EX_TRY(expect(LX::TokenTag::Eq, "expected '=' after the global name"));
 
-  // A `@extern.{...}` body is only valid here, and needs a signature to know
-  // its foreign call types. Other `@` forms (e.g. `@array`) are ordinary
+  // An `@extern` body is only valid here, and needs a signature to know its
+  // foreign call types. Other `@` forms (e.g. `@array`) are ordinary
   // expressions, so they fall through to parse_expr below.
-  if (LX::TokenTag::At == EX_TRY(m_lex.peek()).tag
-      && EX_TRY(m_lex.peek()).str == "@extern")
+  LX::Token eqbody = EX_TRY(m_lex.peek());
+  if (LX::TokenTag::At == eqbody.tag
+      && OP::at_lookup(eqbody.str, OP::AtNs::Decl)
+      && OP::at_lookup(eqbody.str, OP::AtNs::Decl)->id == OP::AtId::Extern)
   {
     if (!sig)
       EX_ERR(ER::Code::EXPECTED_GLOBAL,
@@ -1380,6 +1403,90 @@ Parser::parse_ctime_run()
   return { true, d, {} };
 }
 
+// Decode the single Unicode scalar in `bytes` to its code point. Fails (returns
+// false) unless the bytes are exactly one well-formed UTF-8 sequence -- empty,
+// truncated, a stray continuation byte, or trailing bytes after the first
+// scalar all reject. Used by `@char`.
+static bool
+decode_one_scalar(
+  UT::Vu bytes, uint32_t &out)
+{
+  if (bytes.empty()) return false;
+  const unsigned char *p = (const unsigned char *)bytes.data();
+  unsigned char        b0 = p[0];
+  size_t               len;
+  uint32_t             cp;
+  if (b0 < 0x80) { len = 1; cp = b0; }
+  else if ((b0 & 0xE0) == 0xC0) { len = 2; cp = b0 & 0x1F; }
+  else if ((b0 & 0xF0) == 0xE0) { len = 3; cp = b0 & 0x0F; }
+  else if ((b0 & 0xF8) == 0xF0) { len = 4; cp = b0 & 0x07; }
+  else return false;
+  if (bytes.size() != len) return false;
+  for (size_t i = 1; i < len; i += 1)
+  {
+    if ((p[i] & 0xC0) != 0x80) return false;
+    cp = (cp << 6) | (p[i] & 0x3F);
+  }
+  out = cp;
+  return true;
+}
+
+// Dispatch an `@`-intrinsic appearing in expression position. Routes by the
+// registry `form`; unknown or wrong-namespace names get a targeted error.
+RExpr
+Parser::parse_at_term()
+{
+  LX::Token          at  = EX_TRY(m_lex.peek());
+  const OP::AtIntrinsic *in = OP::at_lookup(at.str, OP::AtNs::Term);
+  if (!in)
+  {
+    OP::AtNs ns;
+    if (OP::at_classify(at.str, ns))
+      EX_ERR(ER::Code::UNSUPPORTED,
+             at,
+             "'%s' is a %s intrinsic, not valid in an expression",
+             std::string(at.str).c_str(),
+             OP::at_ns_name(ns));
+    EX_ERR(ER::Code::UNSUPPORTED,
+           at,
+           "unknown intrinsic '%s' in expression",
+           std::string(at.str).c_str());
+  }
+
+  switch (in->form)
+  {
+  case OP::AtForm::Nullary:
+  {
+    m_lex.next();
+    Expr e{ ExprTag::Bool };
+    e.as = ExBool{ in->id == OP::AtId::True };
+    return { true, alloc(e), {} };
+  }
+  case OP::AtForm::DotBlock: return parse_array();
+  case OP::AtForm::StrArg:
+  {
+    m_lex.next(); // '@char'
+    LX::Token s = EX_TRY(
+      expect(LX::TokenTag::Str, "expected a string literal after '@char'"));
+    UT::Vu   bytes = std::get<LX::TkStr>(s.as).value;
+    uint32_t cp;
+    if (!decode_one_scalar(bytes, cp))
+      EX_ERR(ER::Code::UNSUPPORTED,
+             s,
+             "'@char' takes exactly one character, found %zu byte(s)",
+             bytes.size());
+    Expr e{ ExprTag::Char };
+    e.as = ExChar{ cp };
+    return { true, alloc(e), {} };
+  }
+  case OP::AtForm::None: break;
+  }
+  EX_ERR(ER::Code::UNSUPPORTED,
+         at,
+         "intrinsic '%s' is not usable in an expression",
+         std::string(at.str).c_str());
+}
+
 // `@array.{ size }` (or `@array.{ .size = expr }`) -- allocates a contiguous,
 // zeroed block of `size` bytes, of type Array. The brace block mirrors a struct
 // literal (positional or one named `.size` field). It desugars to an
@@ -1389,18 +1496,6 @@ RExpr
 Parser::parse_array()
 {
   LX::Token at = EX_TRY(m_lex.peek());
-  if (at.str == OP::BOOL_TRUE || at.str == OP::BOOL_FALSE)
-  {
-    m_lex.next();
-    Expr e{ ExprTag::Bool };
-    e.as = ExBool{ at.str == OP::BOOL_TRUE };
-    return { true, alloc(e), {} };
-  }
-  if (at.str != "@array")
-    EX_ERR(ER::Code::UNSUPPORTED,
-           at,
-           "unknown directive '%s' in expression (expected @array)",
-           std::string(at.str).c_str());
   m_lex.next(); // '@array'
 
   EX_TRY(expect(LX::TokenTag::Dot, "expected '.{' after '@array'"));
@@ -1499,17 +1594,14 @@ Parser::parse_import()
 RExpr
 Parser::parse_vis()
 {
-  LX::Token at = EX_TRY(m_lex.next()); // '@private' / '@public'
-  bool      is_private;
-  if (at.str == "@private")
-    is_private = true;
-  else if (at.str == "@public")
-    is_private = false;
-  else
+  LX::Token              at = EX_TRY(m_lex.next()); // '@private' / '@public'
+  const OP::AtIntrinsic *in = OP::at_lookup(at.str, OP::AtNs::Decl);
+  if (!in || (in->id != OP::AtId::Private && in->id != OP::AtId::Public))
     EX_ERR(ER::Code::UNSUPPORTED,
            at,
            "unknown directive '%s' (expected @private or @public)",
            std::string(at.str).c_str());
+  bool is_private = in->id == OP::AtId::Private;
   Expr e{ ExprTag::Vis };
   e.as = ExVis{ is_private };
   return { true, alloc(e), {} };
@@ -1939,6 +2031,20 @@ Parser::parse_type_atom()
   }
   case LX::TokenTag::At:
   {
+    if (!OP::is_base_type(t.str))
+    {
+      OP::AtNs ns;
+      if (OP::at_classify(t.str, ns))
+        EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+               t,
+               "'%s' is a %s intrinsic, not a type",
+               std::string(t.str).c_str(),
+               OP::at_ns_name(ns));
+      EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+             t,
+             "unknown base type '%s'",
+             std::string(t.str).c_str());
+    }
     m_lex.next();
     return { true, mk_ty(Ty{ TyTag::Con, TyCon{ t.str, {} } }), {} };
   }

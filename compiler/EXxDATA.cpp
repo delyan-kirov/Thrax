@@ -74,6 +74,8 @@ pprint(
   case ExprTag::Int: return pad + std::to_string(std::get<ExInt>(e->as).value);
   case ExprTag::Bool:
     return pad + (std::get<ExBool>(e->as).value ? "@true" : "@false");
+  case ExprTag::Char:
+    return pad + "@char(" + std::to_string(std::get<ExChar>(e->as).cp) + ")";
   case ExprTag::Real:
     return pad + std::to_string(std::get<ExReal>(e->as).value);
   case ExprTag::Var:

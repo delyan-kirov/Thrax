@@ -156,6 +156,10 @@ go(
     return alloc(arena,
                  Term{ Int{ std::get<EX::ExBool>(expr->as).value ? 1 : 0 } });
 
+  case EX::ExprTag::Char:
+    return alloc(
+      arena, Term{ Int{ (ssize_t)std::get<EX::ExChar>(expr->as).cp } });
+
   case EX::ExprTag::Unit: return alloc(arena, Term{ Int{ 0 } });
 
   case EX::ExprTag::Real:

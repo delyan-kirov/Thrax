@@ -169,6 +169,125 @@ is_base_type(
   return false;
 }
 
+// The `@`-intrinsic registry for the Term and Decl namespaces: the single
+// source of truth for every non-type `@`-sigil built-in the parser recognizes.
+// (The Type namespace is `base_types[]` above, since it also carries the
+// non-`@` unit type `{}` and is consumed elsewhere; `is_base_type` is its
+// query.) An `@`-name belongs to exactly one namespace, which fixes *where* it
+// is legal:
+//   - Type  -- type position only, becomes a TyCon (base_types[], above).
+//   - Term  -- expression position (a `pat_ok` subset also patterns).
+//   - Decl  -- the head of a `$`-global only; produces a top-level declaration.
+// `@array` is a Term intrinsic here AND a base type above; each parse site knows
+// which namespace it wants, so the dual role is unambiguous. `form` records how
+// a Term intrinsic parses its arguments; `id` is the routing key each parse site
+// switches on (see doc/at-intrinsics.md).
+enum class AtNs
+{
+  Type,
+  Term,
+  Decl
+};
+enum class AtForm
+{
+  None,     // decls (routed by id, not form)
+  Nullary,  // `@true`        -- a bare atom
+  DotBlock, // `@array.{ e }` -- a `.{ ... }` block
+  StrArg,   // `@char "a"`    -- a following string literal
+};
+enum class AtId
+{
+  True,
+  False,
+  Char,
+  ArrayLit,
+  Mod,
+  Struct,
+  Union,
+  Alias,
+  Effect,
+  Operator,
+  Private,
+  Public,
+  Extern,
+  Run,
+  Assert,
+};
+struct AtIntrinsic
+{
+  const char *name;
+  AtNs        ns;
+  AtForm      form;
+  AtId        id;
+  bool        pat_ok; // Term only: also legal in a pattern (`@true`/`@false`)
+};
+inline constexpr AtIntrinsic at_intrinsics[] = {
+  { BOOL_TRUE, AtNs::Term, AtForm::Nullary, AtId::True, true },
+  { BOOL_FALSE, AtNs::Term, AtForm::Nullary, AtId::False, true },
+  { "@char", AtNs::Term, AtForm::StrArg, AtId::Char, false },
+  { TY_ARRAY, AtNs::Term, AtForm::DotBlock, AtId::ArrayLit, false },
+  { "@mod", AtNs::Decl, AtForm::None, AtId::Mod, false },
+  { "@struct", AtNs::Decl, AtForm::None, AtId::Struct, false },
+  { "@union", AtNs::Decl, AtForm::None, AtId::Union, false },
+  { "@alias", AtNs::Decl, AtForm::None, AtId::Alias, false },
+  { "@effect", AtNs::Decl, AtForm::None, AtId::Effect, false },
+  { "@operator", AtNs::Decl, AtForm::None, AtId::Operator, false },
+  { "@private", AtNs::Decl, AtForm::None, AtId::Private, false },
+  { "@public", AtNs::Decl, AtForm::None, AtId::Public, false },
+  { "@extern", AtNs::Decl, AtForm::None, AtId::Extern, false },
+  { "@run", AtNs::Decl, AtForm::None, AtId::Run, false },
+  { "@assert", AtNs::Decl, AtForm::None, AtId::Assert, false },
+};
+
+// Look a Term/Decl `@`-name up in a specific namespace (positions are
+// namespace-typed, so callers know which they want). Returns nullptr if `name`
+// is not an intrinsic of that namespace -- e.g. an unknown name, or `@struct`
+// asked for as a Term. For the Type namespace use `is_base_type`.
+inline const AtIntrinsic *
+at_lookup(
+  UT::Vu name, AtNs ns)
+{
+  for (const AtIntrinsic &a : at_intrinsics)
+    if (a.ns == ns && name == a.name) return &a;
+  return nullptr;
+}
+
+// A human-readable name for a namespace, for "wrong position" diagnostics.
+inline const char *
+at_ns_name(
+  AtNs ns)
+{
+  switch (ns)
+  {
+  case AtNs::Type: return "type";
+  case AtNs::Term: return "expression";
+  case AtNs::Decl: return "declaration";
+  }
+  return "";
+}
+
+// Classify a known `@`-name for diagnostics ("`@struct` is a declaration form,
+// not valid here"). Writes the namespace and returns true when `name` matches an
+// intrinsic; returns false for an unknown name. `@array` reports Term here (its
+// registry row); base types report Type.
+inline bool
+at_classify(
+  UT::Vu name, AtNs &out)
+{
+  for (const AtIntrinsic &a : at_intrinsics)
+    if (name == a.name)
+    {
+      out = a.ns;
+      return true;
+    }
+  if (is_base_type(name))
+  {
+    out = AtNs::Type;
+    return true;
+  }
+  return false;
+}
+
 // Is `name` the canonical name of an overloadable (binary) operator? These are
 // exactly the names a use site carries (mk_binop stores the lexeme, which
 // equals the canonical name for binaries) and the keys of the type checker's
