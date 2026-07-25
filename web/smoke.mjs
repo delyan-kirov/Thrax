@@ -8,6 +8,7 @@
 // browser.
 
 import createThrax from "./site/thrax.js";
+import { CELLS } from "./site/cells.mjs";
 
 // [name, mode, source, expected-substrings-in-stdout]
 const CASES = [
@@ -53,6 +54,31 @@ for (const [name, mode, src, wants] of CASES) {
     failures++;
   } else {
     console.log(`ok   ${name}`);
+  }
+}
+
+// Every tour cell the page ships must compile and run cleanly (exit 0, no
+// diagnostics on stderr), so a broken example can never reach the site.
+for (const cell of CELLS) {
+  const out = [];
+  const M = await createThrax({
+    print: (s) => out.push(s),
+    printErr: (s) => out.push("[err] " + s),
+  });
+  let rc;
+  try {
+    rc = M.ccall("thrax_eval", "number", ["string", "number"], [cell.src, 0]);
+  } catch (e) {
+    console.error(`FAIL cell:${cell.id}: runtime threw ${e}`);
+    failures++;
+    continue;
+  }
+  const errs = out.filter((l) => l.startsWith("[err]"));
+  if (rc !== 0 || errs.length || out.length === 0) {
+    console.error(`FAIL cell:${cell.id}: rc=${rc}\n${out.join("\n")}`);
+    failures++;
+  } else {
+    console.log(`ok   cell:${cell.id}`);
   }
 }
 
