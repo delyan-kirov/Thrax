@@ -84,6 +84,33 @@ RToken
 Lexer::lex_comment(
   size_t start, size_t line)
 {
+  // A `#-` opens a block comment, closed by a matching `-#`. Blocks nest, so a
+  // commented-out block that itself contains `#- -#` closes at the right place.
+  if ('-' == at(m_cursor + 1))
+  {
+    m_cursor += 2; // the opening '#-'
+    size_t depth = 1;
+    while (depth > 0)
+    {
+      char c = cur();
+      if ('\0' == c)
+      {
+        Token anchor = mk(TokenTag::Comment, start, line);
+        LX_ERR(ER::Code::QUOTM_UNCLOSED,
+               anchor,
+               "block comment is not closed with '-#'");
+      }
+      if ('#' == c && '-' == at(m_cursor + 1)) { depth += 1; m_cursor += 2; }
+      else if ('-' == c && '#' == at(m_cursor + 1)) { depth -= 1; m_cursor += 2; }
+      else
+      {
+        if ('\n' == c) m_line += 1;
+        m_cursor += 1;
+      }
+    }
+    return { true, mk(TokenTag::Comment, start, line), {} };
+  }
+
   while ('\n' != cur() && '\0' != cur()) m_cursor += 1;
   return { true, mk(TokenTag::Comment, start, line), {} };
 }
@@ -297,14 +324,29 @@ Lexer::lex_string(
   }
 }
 
-// Parse the lexeme [start, cursor) as an integer in `base`, reading from `num`
-// (which may skip a radix prefix), and emit an Int token.
+// The lexeme [start, cursor) with any '_' digit separators removed, as a
+// NUL-terminated buffer for strtoll/strtod. Placement of '_' was already
+// validated by scan_digits, so this only has to drop the bytes.
+static std::string
+strip_us(
+  UT::Vu s)
+{
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size(); i += 1)
+    if ('_' != s.data()[i]) out += s.data()[i];
+  return out;
+}
+
+// Parse the lexeme [start, cursor) as an integer in `base`; `skip` drops a radix
+// prefix (0 for hex -- base 16 eats `0x`; 2 for binary). Emits an Int token.
 RToken
 Lexer::emit_int(
-  size_t start, size_t line, const char *num, int base)
+  size_t start, size_t line, size_t skip, int base)
 {
-  errno       = 0;
-  long long v = std::strtoll(num, nullptr, base);
+  std::string clean = strip_us(slice(start));
+  errno             = 0;
+  long long v       = std::strtoll(clean.c_str() + skip, nullptr, base);
   if (0 != errno)
   {
     Token anchor = mk(TokenTag::Int, start, line);
@@ -323,8 +365,9 @@ RToken
 Lexer::emit_real(
   size_t start, size_t line)
 {
-  errno    = 0;
-  double d = std::strtod(slice(start).data(), nullptr);
+  std::string clean = strip_us(slice(start));
+  errno             = 0;
+  double d          = std::strtod(clean.c_str(), nullptr);
   if (0 != errno)
   {
     Token anchor = mk(TokenTag::Real, start, line);
@@ -338,6 +381,34 @@ Lexer::emit_real(
   return { true, t, {} };
 }
 
+// Scan a run of `member` digits that may contain interior '_' separators. The
+// cursor is left just past the run. A '_' is a separator only between two
+// digits, so a leading, trailing, doubled, or otherwise-stranded '_' is a lex
+// error. An empty run is not itself an error (callers that require a digit check
+// separately); `start` anchors the diagnostic at the number's beginning.
+ER::Result<bool>
+Lexer::scan_digits(
+  bool (*member)(char), size_t start)
+{
+  size_t run_start = m_cursor;
+  scan(member);
+  bool any = m_cursor > run_start;
+  while ('_' == cur())
+  {
+    if (!any || !member(at(m_cursor + 1)))
+    {
+      Token anchor = mk(TokenTag::Int, start, m_line);
+      LX_ERR(ER::Code::NUMBER_PARSING_FAILURE,
+             anchor,
+             "'_' in a numeric literal must separate two digits");
+    }
+    m_cursor += 1; // the '_'
+    scan(member); // the digit(s) after it (guaranteed present above)
+    any = true;
+  }
+  return { true, true, {} };
+}
+
 // A radix literal: a `0x` / `0b` prefix (already at the cursor) followed by at
 // least one digit of `member`. `skip` is how many leading chars strtoll should
 // ignore (0 for hex -- base 16 eats `0x`; 2 for binary).
@@ -347,7 +418,7 @@ Lexer::lex_radix(
 {
   m_cursor += 2; // the '0x' / '0b' prefix
   size_t digits_at = m_cursor;
-  scan(member);
+  if (auto r = scan_digits(member, start); !r.ok) return ER::Fail{ r.err };
   if (m_cursor == digits_at)
   {
     Token anchor = mk(TokenTag::Int, start, line);
@@ -356,7 +427,7 @@ Lexer::lex_radix(
            "expected digits after '%s'",
            std::string(slice(start)).c_str());
   }
-  return emit_int(start, line, slice(start).data() + skip, base);
+  return emit_int(start, line, skip, base);
 }
 
 RToken
@@ -370,23 +441,22 @@ Lexer::lex_number(
 
   // Decimal: an integer, unless a '.' fraction or an exponent makes it a Real.
   bool is_real = false;
-  scan(is_digit);
+  if (auto r = scan_digits(is_digit, start); !r.ok) return ER::Fail{ r.err };
   if ('.' == cur())
   {
     is_real = true;
     m_cursor += 1;
-    scan(is_digit);
+    if (auto r = scan_digits(is_digit, start); !r.ok) return ER::Fail{ r.err };
   }
   if ('e' == cur() || 'E' == cur())
   {
     is_real = true;
     m_cursor += 1;
     if ('+' == cur() || '-' == cur()) m_cursor += 1;
-    scan(is_digit);
+    if (auto r = scan_digits(is_digit, start); !r.ok) return ER::Fail{ r.err };
   }
 
-  return is_real ? emit_real(start, line)
-                 : emit_int(start, line, slice(start).data(), 10);
+  return is_real ? emit_real(start, line) : emit_int(start, line, 0, 10);
 }
 
 RToken

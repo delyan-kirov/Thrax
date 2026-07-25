@@ -234,11 +234,13 @@ private:
   UT_NODISCARD RToken lex_number(size_t start, size_t line);
   UT_NODISCARD RToken lex_radix(
     size_t start, size_t line, bool (*member)(char), int base, size_t skip);
-  UT_NODISCARD RToken emit_int(size_t      start,
-                               size_t      line,
-                               const char *num,
-                               int         base);
+  UT_NODISCARD RToken emit_int(size_t start,
+                               size_t line,
+                               size_t skip,
+                               int    base);
   UT_NODISCARD RToken emit_real(size_t start, size_t line);
+  // Scan a digit run (of `member`) that may carry interior '_' separators.
+  ER::Result<bool> scan_digits(bool (*member)(char), size_t start);
   UT_NODISCARD RToken lex_word(size_t start, size_t line);
   UT_NODISCARD RToken lex_tyvar(size_t start, size_t line);
   UT_NODISCARD RToken lex_at(size_t start, size_t line);
