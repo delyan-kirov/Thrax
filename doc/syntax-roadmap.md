@@ -29,19 +29,20 @@ Item numbers below match the original request list, for traceability.
 
 ## Tier A -- lexer-local, isolated (cheap wins, do first)
 
-### #11 Multi-line comments `#- -#`
+### #11 Multi-line comments `#- -#` -- DONE
 
-`lex_comment` currently runs to end-of-line. Add: when the char after `#` is
-`-`, scan to the closing `-#`, counting newlines for line tracking. Pure LX, no
-parser/TC impact.
+`lex_comment` now branches when the char after `#` is `-`: it scans to the
+matching `-#`, counting newlines for line tracking. **Nestable** (chosen), so a
+commented-out block containing `#- -#` closes at the right place; an unterminated
+block is a lex error. Pure LX, no parser/TC impact.
 
-- **Decision:** nestable or not. Recommend **nestable** -- it is nearly free and
-  avoids the classic "commented-out block containing `-#` ends early" footgun.
+### #7 Numeric separators `_` -- DONE
 
-### #7 Numeric separators `_`
-
-`lex_number` (and `lex_radix`) accept `_` between digits, stripped before
-`strtoll`/`strtod`. Reject leading, trailing, and doubled `_`. Pure LX.
+`lex_number` and `lex_radix` scan digit runs through a shared `scan_digits`
+helper that allows a `_` only between two digits (leading, trailing, doubled, or
+`.`/`e`/prefix-adjacent `_` is a lex error). `emit_int`/`emit_real` strip the
+`_`s before `strtoll`/`strtod`. Works in decimal, `0x`/`0b` radix, fractions, and
+exponents (`1_000_000`, `0xFF_FF`, `3.14_159`, `1e1_0`). Pure LX.
 
 ### #8 Char literal `@char "a"` -- DONE
 
@@ -188,9 +189,9 @@ before implementing. It also interacts with #5 (record update spelling).
 
 ## Suggested order
 
-1. **Tier A (#11, #7, #8)** -- cheap, isolated, immediate wins.
+1. **Tier A (#11, #7, #8)** -- DONE. Cheap, isolated lexer wins, all shipped.
 2. **Or-patterns (#1), record update (#5)** -- high value; reuse the checker and
-   the `..spread` spelling already present.
+   the `..spread` spelling already present. **(next)**
 3. **String interpolation (#6)** -- after the stringify story is decided.
 4. **`.n` indexing (#10), ranges (#9)** -- type-directed but self-contained.
 5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
