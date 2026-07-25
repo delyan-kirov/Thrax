@@ -130,6 +130,30 @@ The original analysis, for the record:
    values in C memory fights the refcounter's ownership; only viable for
    word/Str payloads, which is too narrow to be THE mutable map.
 
+### Status and the open decision (next step)
+
+`Vec \`T` shipped (PR #84, on master: `library/VEC.thx`, `vec_*` primitives,
+`"%vec"` rep, rc==1 in-place set/push). The stale local `vectors` branch is
+its dead precursor -- ignore it, start fresh off master (`vectors-part-2`).
+NOTHING is left to re-create for vectors.
+
+The ONLY remaining piece is `Table \`K \`V`, and it needs NO compiler work --
+it's ~150 lines of pure stdlib over Vec. Concrete shape (route 1 above):
+open-addressing table backed by a `Vec` of slots (flat array, not chained),
+linear/MINSTD probe, resize + rehash at 0.75 load, Jai surface (`new`, `set`,
+`find` -> Option, `remove`, `has`, `len`, `is_empty`, `fold`, `from_list`/
+`to_list`). Hashing is dictionary-passed like `MAP`'s `cmp` (`new hash_int
+eq_int`, ...); Int + Str hashers to start. Deliverables: `library/TABLE.thx`,
+`examples/STDLIB_TABLE.thx` (a `$ test : Int` summed by `tests/MAIN.thx`), a
+row in doc/standard-library.md.
+
+DECISION TO MAKE FIRST (deliberately deferred): is `Table` a plain VALUE --
+like `Vec`/`Map` today, mutators return a new handle, in-place when rc==1 --
+or an `st`-effect-scoped mutable twin (Koka `mdict` + `freeze`, route 2)?
+Route 1's whole premise is the plain-value form (simpler, consistent with the
+rest of the stdlib); the effect-scoped form is the more ambitious dogfood of
+the effect system. Pick this before writing code.
+
 ## 5. Tuples `{Int, Real}`, and `Map {Int, Str}` (DONE)
 
 The language feature landed (2026-07-20, branch standard-library-part-2;
