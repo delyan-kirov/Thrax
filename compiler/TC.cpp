@@ -1176,6 +1176,7 @@ struct PatLower
     {
     case ExprTag::Int:
     case ExprTag::Bool:
+    case ExprTag::Char:
     case ExprTag::Real:
     case ExprTag::Str:
     case ExprTag::Unit:
@@ -2231,6 +2232,7 @@ Checker::occurs_free(
     return std::string(std::get<EX::ExOverload>(e->as).name) == name;
   case EX::ExprTag::Int:
   case EX::ExprTag::Bool:
+  case EX::ExprTag::Char:
   case EX::ExprTag::Real:
   case EX::ExprTag::Str:
   case EX::ExprTag::Unit:
@@ -2987,6 +2989,7 @@ Checker::infer(
     return con(m_tg.int_ty());
   }
   case EX::ExprTag::Bool  : return con(OP::TY_BOOL);
+  case EX::ExprTag::Char  : return con(OP::TY_NAT32);
   case EX::ExprTag::Real  : return con(OP::TY_REAL);
   case EX::ExprTag::Str   : return con(OP::TY_STR);
   case EX::ExprTag::Unit  : return con(OP::TY_UNIT);

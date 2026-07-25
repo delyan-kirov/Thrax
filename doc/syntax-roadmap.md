@@ -43,13 +43,14 @@ parser/TC impact.
 `lex_number` (and `lex_radix`) accept `_` between digits, stripped before
 `strtoll`/`strtod`. Reject leading, trailing, and doubled `_`. Pure LX.
 
-### #8 Char literal `@char "a"`
+### #8 Char literal `@char "a"` -- DONE
 
-A new `@`-directive, parsed in the same `@`-dispatch that already handles
-`@true`/`@false`/`@array` (EX `parse_array`). Parse a following string literal,
-require exactly one byte (or one escape), emit an `ExInt` of that byte. No new
-AST node and no TC change -- it is just an `Int`, consistent with
-strings-as-byte-vectors. Reuses the existing string-escape decoder.
+Shipped on the `@`-intrinsic registry (see doc/at-intrinsics.md). `@char "x"`
+parses a following string literal, requires it to be exactly one Unicode scalar
+(1-4 UTF-8 bytes), decodes it to its code point, and emits an `EX::ExChar` leaf
+typed `Nat32` (a 4-byte code point, not a C byte). CR erases it to a Core integer
+constant, like `ExBool`, so no backend change was needed. Reuses the lexer's
+string-escape decoding (the parser only needs to decode the one scalar).
 
 ---
 

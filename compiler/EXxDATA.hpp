@@ -274,6 +274,13 @@ struct ExBool
 {
   bool value;
 };
+// A `@char "x"` literal: a single Unicode scalar, valued as its code point and
+// typed Nat32 (a 4-byte code point, not a byte). Erased to an integer constant
+// by CR, like ExBool.
+struct ExChar
+{
+  uint32_t cp;
+};
 struct ExReal
 {
   double value;
@@ -582,6 +589,7 @@ struct ExSeqLit
   X(Def, ExDef)                                                                \
   X(Int, ExInt)                                                                \
   X(Bool, ExBool)                                                              \
+  X(Char, ExChar)                                                              \
   X(Real, ExReal)                                                              \
   X(Let, ExLet)                                                                \
   X(FnDef, ExFnDef)                                                            \
