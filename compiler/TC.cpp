@@ -1265,6 +1265,14 @@ struct PatLower
     {
       auto &f  = std::get<EX::ExField>(e->as);
       f.record = lower(f.record);
+
+      if (f.index != EX::FieldIndex::None)
+      {
+        const char *getter
+          = f.index == EX::FieldIndex::Vec ? OP::VEC_GET : OP::ARR_GET;
+        ssize_t idx = (ssize_t)std::stoll(std::string(f.field));
+        return mk_call(getter, { f.record, mk_int(idx) });
+      }
       return e;
     }
     case ExprTag::StructLit:
@@ -1535,6 +1543,7 @@ private:
     UT::Vu      anchor;
     Type       *result;       // unified with the field's type once resolved
     bool        done = false; // settled early, inside resolve_sites' fixpoint
+    EX::ExField *node = nullptr; // write-back: tag a sequence index for PatLower
   };
   std::vector<FieldSite> m_field_sites;
 
@@ -3453,7 +3462,7 @@ Checker::infer(
     UT::Vu       at  = fld.field.data() ? fld.field : m_anchor;
     Type        *rt  = infer(fld.record, locals, amb);
     Type        *res = fresh();
-    m_field_sites.push_back({ rt, std::string(fld.field), at, res });
+    m_field_sites.push_back({ rt, std::string(fld.field), at, res, false, &fld });
     return res;
   }
 
@@ -3979,12 +3988,53 @@ Checker::ensure_tuple(
   m_structs[nm] = StructDef{ std::move(params), std::move(flds) };
 }
 
+static bool
+is_seq_ty(
+  const std::string &n)
+{
+  return n == OP::TY_ARRAY || n == OP::TY_STR || n == OP::TY_VEC;
+}
+
 bool
 Checker::settle_field_site(
   FieldSite &s)
 {
-  Type                      *rt    = prune(s.record);
-  const std::string         &rname = std::get<TCon>(rt->as).name;
+  Type              *rt    = prune(s.record);
+  const std::string &rname = std::get<TCon>(rt->as).name;
+
+  // `xs.n` on a sequence (Array/Str/Vec) is a type-directed index access, not a
+  // struct-field lookup: the numeric field is the index. The element is a byte
+  // (Int) for the Array/Str byte vectors, or the element type argument for Vec.
+  // PatLower rewrites the tagged node to array_get / vec_get after inference.
+  if (is_seq_ty(rname))
+  {
+    s.done       = true;
+    bool numeric = !s.field.empty();
+    for (char c : s.field) numeric = numeric && c >= '0' && c <= '9';
+    if (!numeric)
+    {
+      fail(ER::Code::TYPE_MISMATCH,
+           s.anchor,
+           "cannot access named field '.%s' on sequence type '%s'; index it "
+           "with a number, e.g. '.0'",
+           s.field.c_str(),
+           show(rt).c_str());
+      return true;
+    }
+    if (rname == OP::TY_VEC)
+    {
+      const std::vector<Type *> &args = std::get<TCon>(rt->as).args;
+      unify(s.result, args.empty() ? fresh() : args[0]);
+      if (s.node) s.node->index = EX::FieldIndex::Vec;
+    }
+    else
+    {
+      unify(s.result, con(m_tg.int_ty())); // Array/Str element is a byte
+      if (s.node) s.node->index = EX::FieldIndex::Array;
+    }
+    return true;
+  }
+
   const StructDef           &sdef  = m_structs.at(rname);
   Subst                      sub;
   const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
@@ -4030,8 +4080,9 @@ Checker::settle_ready_field_sites(
     FieldSite &s = m_field_sites[i];
     if (s.done) continue;
     Type *rt = prune(s.record);
-    if (rt->kind() != Kind::Con
-        || !m_structs.count(std::get<TCon>(rt->as).name))
+    if (rt->kind() != Kind::Con) continue;
+    const std::string &nm = std::get<TCon>(rt->as).name;
+    if (!m_structs.count(nm) && !is_seq_ty(nm))
       continue; // not ready; the strict pass owns the eventual error
     progress |= settle_field_site(s);
   }
@@ -4055,7 +4106,8 @@ Checker::resolve_field_sites(
     if (s.done) continue;
     Type *rt = prune(s.record);
     if (rt->kind() != Kind::Con
-        || !m_structs.count(std::get<TCon>(rt->as).name))
+        || (!m_structs.count(std::get<TCon>(rt->as).name)
+            && !is_seq_ty(std::get<TCon>(rt->as).name)))
     {
       fail(ER::Code::TYPE_MISMATCH,
            s.anchor,

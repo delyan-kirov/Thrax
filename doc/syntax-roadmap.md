@@ -123,15 +123,21 @@ Desugar to `chunk ++ stringify(expr) ++ chunk ...`.
 
 ## Tier C -- type-directed, one design decision each
 
-### #10 `xs.1` list/vector indexing
+### #10 `xs.1` list/vector indexing -- DONE
 
-Syntax is free (already parses to `mk_field`). The work is in TC: field-access
-on an `Array`/`Vec`/`Str` receiver routes to `array_get`/`vec_get`; on a tuple
-it stays positional field lookup. So `ExField` resolution becomes
-**type-directed**, resolved after inference like overload sites and PatLower.
+Syntax was already free (`atom DOT INT` builds an `ExField`). The work was in TC:
+`settle_field_site` now routes a numeric field on an `Array`/`Str` receiver to
+`array_get` (element = byte/Int) and on a `Vec T` to `vec_get` (element = the type
+argument), tagging the `ExField` with a `FieldIndex`; a tuple receiver stays
+positional field lookup, and a named field on a sequence is a type error. PatLower
+(after inference) rewrites a tagged node to the getter call, so CR/IR are
+unchanged. `examples/INDEXING.thx`. The index is a numeric literal (from the `.n`
+syntax), so it is always in range >= 0; runtime bounds behavior is whatever the
+existing `array_get`/`vec_get` primitives already do.
 
-- **Decision:** bounds behavior (runtime check vs UB); whether negative or `Real`
-  indices are a static error. Reuses the existing `array_get` primitive.
+- **Note:** a runtime index expression (`xs.(e)`) and range-indexing/slicing
+  (`xs.(a ..= b)`) are the on-ramp to the deferred LA subsystem; see
+  doc/ranges-codata-linalg.md. This item only covers the literal `.n` form.
 
 ### #9 Ranges `[1 ..= 10]`, `[1 ..< 10]`, and range patterns `is 1 ..= 5`
 
@@ -144,6 +150,11 @@ a refutable interval test; the exhaustiveness checker treats it like a literal
   function (recommended) or a core primitive? Descending `..>` semantics; step /
   stride (recommend none for v1). `@char "a" ..= @char "f"` already works once
   chars are Ints.
+- **Compose with the future:** ranges, `.n` indexing (#10), codata, and a
+  linear-algebra layer are entangled (ranges-as-slice-descriptors, type-directed
+  indexing, strict-data-vs-codata). If #9/#10 are built as the LA on-ramp, follow
+  the "lock now" constraints in **doc/ranges-codata-linalg.md** (that subsystem is
+  DEFERRED, but the surface work should not foreclose it).
 
 ### #2 `with p do ...` field-scoping (Jai-style)
 
@@ -219,7 +230,8 @@ before implementing. It also interacts with #5 (record update spelling).
 1. **Tier A (#11, #7, #8)** -- DONE. Cheap, isolated lexer wins, all shipped.
 2. **Or-patterns (#1)** -- DONE. **Record update (#5)** -- DONE.
 3. **String interpolation (#6)** -- after the stringify story is decided. **(next)**
-4. **`.n` indexing (#10), ranges (#9)** -- type-directed but self-contained.
+4. **`.n` indexing (#10)** -- DONE. **ranges (#9)** -- deferred into the LA
+   subsystem (doc/ranges-codata-linalg.md).
 5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
 6. **Multi-clause (#3)** -- bigger frontend, well understood.
 7. **Decide, then maybe #12; defer #4b** -- the ambiguity and soundness risks.

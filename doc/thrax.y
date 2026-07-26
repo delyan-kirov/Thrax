@@ -251,7 +251,8 @@ atom
   | DOT LBRACE struct_lit_body RBRACE
   | DOT UIDENT variant_payload
   | atom DOT LIDENT
-  | atom DOT INT   /* positional tuple access `t.0`; a chained `t.0.1`  */
+  | atom DOT INT   /* `.n`: tuple field `t.0`, or type-directed sequence index
+                      `xs.0` on Array/Str/Vec; chained `t.0.1` */
   | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
   | atom DOT UIDENT variant_payload
   | atom DOT LBRACE struct_lit_body RBRACE

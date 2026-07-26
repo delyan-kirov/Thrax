@@ -1,0 +1,40 @@
+@mod INDEXING
+
+# \file indexing.thx
+# \info Type-directed `.n` indexing. `xs.n` on a sequence (Array, Str, Vec) reads
+#       the element at index `n`, routing to array_get / vec_get; the same `.n` on
+#       a tuple stays positional field access. The index is a numeric literal; a
+#       named field on a sequence is a type error. Each `chk*` is 0 when correct
+#       and 1 otherwise.
+
+$ with VEC
+
+# Array of bytes: `.n` reads a byte (an Int).
+$ bytes : Array = array_set (array_set (@array.{ 3 }) 0 65) 1 66
+$ chk_arr0 : Int = if bytes.0 ?= 65 then 0 else 1
+$ chk_arr1 : Int = if bytes.1 ?= 66 then 0 else 1
+
+# Str is a byte vector too, so it indexes the same way.
+$ chk_str0 : Int = if "abc".0 ?= 97 then 0 else 1
+$ chk_str2 : Int = if "abc".2 ?= 99 then 0 else 1
+
+# Vec T indexes to a T (here Int).
+$ nums : Vec Int = push (push (push (new {}) 100) 200) 300
+$ chk_vec0 : Int = if nums.0 ?= 100 then 0 else 1
+$ chk_vec2 : Int = if nums.2 ?= 300 then 0 else 1
+
+# The same `.n` on a tuple stays positional field access.
+$ triple : {Int, Int, Int} = {10, 20, 30}
+$ chk_tup0 : Int = if triple.0 ?= 10 then 0 else 1
+$ chk_tup1 : Int = if triple.1 ?= 20 then 0 else 1
+$ chk_tup2 : Int = if triple.2 ?= 30 then 0 else 1
+
+# The receiver may be any expression, not just a variable.
+$ chk_expr : Int = if (array_set (@array.{ 1 }) 0 7).0 ?= 7 then 0 else 1
+
+$ test : Int =
+	  chk_arr0 + chk_arr1
+	+ chk_str0 + chk_str2
+	+ chk_vec0 + chk_vec2
+	+ chk_tup0 + chk_tup2 + chk_tup1
+	+ chk_expr

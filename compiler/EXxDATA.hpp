@@ -511,11 +511,19 @@ struct ExStructLit
   UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
   Expr *base{ nullptr }; // `..base` record-update source; TC fills unlisted fields
 };
+// `record.n` where the receiver is a sequence
+enum class FieldIndex
+{
+  None,
+  Array, // Array/Str byte vector -> array_get
+  Vec,   // Vec T -> vec_get
+};
 // Field access: `record.field`.
 struct ExField
 {
-  Expr  *record;
-  UT::Vu field;
+  Expr      *record;
+  UT::Vu     field;
+  FieldIndex index = FieldIndex::None; // set by TC when the receiver is a sequence
 };
 
 // One variant of a union declaration: `Tag: payload`. The payload is a list of

@@ -24,6 +24,7 @@ $ with FIB = FIB
 $ with FINALLY = FINALLY
 $ with HANOI = HANOI
 $ with HIGHER_ORDER = HIGHER_ORDER
+$ with INDEXING = INDEXING
 $ with LET_IN = LET_IN
 $ with LISTS = LISTS
 $ with MATCH = MATCH
@@ -81,6 +82,7 @@ $ main : Int =
 	+ check "FINALLY" FINALLY.test
 	+ check "HANOI" HANOI.test
 	+ check "HIGHER_ORDER" HIGHER_ORDER.test
+	+ check "INDEXING" INDEXING.test
 	+ check "LET_IN" LET_IN.test
 	+ check "LISTS" LISTS.test
 	+ check "MATCH" MATCH.test
