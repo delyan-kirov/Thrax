@@ -511,7 +511,7 @@ struct ExStructLit
   UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
   Expr *base{ nullptr }; // `..base` record-update source; TC fills unlisted fields
 };
-// Field access: `record.field`.
+// Field access: `record.field`, including tuple/struct positional `record.n`.
 struct ExField
 {
   Expr  *record;

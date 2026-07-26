@@ -8,9 +8,10 @@ open decision.
 
 Grounding facts that shape several items (verified against the tree, 2026-07-24):
 
-- **`.n` access already parses.** The postfix `atom DOT INT` rule builds a field
-  access (`mk_field(base, "1")`); today that only *means* tuple field access.
-  `xs.1` on an array/vec is new **semantics**, not new syntax (see item #10).
+- **`.n` access already parses and works.** The postfix `atom DOT INT` rule
+  builds a field access (`mk_field(base, "1")`), meaning positional tuple/struct
+  field access (`examples/TUPLES.thx`). Sequence/tensor indexing is NOT this rule;
+  it is deferred to the LA subsystem as `.[..]` (see item #10).
 - **`with` is already a keyword** (`KW_WITH`), used for imports (`$ with MOD`).
   Item #2 reuses it in a new (statement) position.
 - **Tuples are `%tupleN` structs** built on demand (`ensure_tuple`). "`{x}` == `x`"
@@ -123,15 +124,24 @@ Desugar to `chunk ++ stringify(expr) ++ chunk ...`.
 
 ## Tier C -- type-directed, one design decision each
 
-### #10 `xs.1` list/vector indexing
+### #10 positional `.n` -- DONE (tuple/struct only); sequence/tensor indexing -> LA
 
-Syntax is free (already parses to `mk_field`). The work is in TC: field-access
-on an `Array`/`Vec`/`Str` receiver routes to `array_get`/`vec_get`; on a tuple
-it stays positional field lookup. So `ExField` resolution becomes
-**type-directed**, resolved after inference like overload sites and PatLower.
+`.n` is positional field access on tuples and structs, and that already works via
+`atom DOT INT` -> `ExField` -> `settle_field_site` struct lookup
+(`examples/TUPLES.thx`). No new work was needed.
 
-- **Decision:** bounds behavior (runtime check vs UB); whether negative or `Real`
-  indices are a static error. Reuses the existing `array_get` primitive.
+Sequence and tensor indexing (`xs.[i]`, `m.[i, p ..= q, j]`, `map.["key"]`) is a
+**separate** operation and is **deferred into the LA subsystem**, not layered onto
+`.n`. Reason: `.n` is static heterogeneous projection (literal index, result type
+per-field), whereas indexing is dynamic homogeneous access that must grow to a
+runtime index, multi-dimensional/tuple indices, ranges (slices -> views), and
+user-extensible containers (maps). Chosen surface: `.[..]` (the leading `.` keeps
+it unambiguous vs list literals and juxtaposition application; `.` becomes a
+uniform access prefix: `.n`/`.field` = projection, `.[..]` = index, `.{..}` =
+struct literal). It desugars to an overloadable `index` call (type-directed on the
+index type), and axis variance (co/contra) lives in the tensor *type*, not the
+index. See doc/ranges-codata-linalg.md. A brief sequence-indexing prototype on
+`.n` was implemented and then reverted once this split was settled.
 
 ### #9 Ranges `[1 ..= 10]`, `[1 ..< 10]`, and range patterns `is 1 ..= 5`
 
@@ -144,6 +154,11 @@ a refutable interval test; the exhaustiveness checker treats it like a literal
   function (recommended) or a core primitive? Descending `..>` semantics; step /
   stride (recommend none for v1). `@char "a" ..= @char "f"` already works once
   chars are Ints.
+- **Compose with the future:** ranges, `.n` indexing (#10), codata, and a
+  linear-algebra layer are entangled (ranges-as-slice-descriptors, type-directed
+  indexing, strict-data-vs-codata). If #9/#10 are built as the LA on-ramp, follow
+  the "lock now" constraints in **doc/ranges-codata-linalg.md** (that subsystem is
+  DEFERRED, but the surface work should not foreclose it).
 
 ### #2 `with p do ...` field-scoping (Jai-style)
 
@@ -219,7 +234,9 @@ before implementing. It also interacts with #5 (record update spelling).
 1. **Tier A (#11, #7, #8)** -- DONE. Cheap, isolated lexer wins, all shipped.
 2. **Or-patterns (#1)** -- DONE. **Record update (#5)** -- DONE.
 3. **String interpolation (#6)** -- after the stringify story is decided. **(next)**
-4. **`.n` indexing (#10), ranges (#9)** -- type-directed but self-contained.
+4. **positional `.n` (#10)** -- DONE (tuple/struct only). **Sequence/tensor
+   indexing `.[..]`** and **ranges (#9)** -- deferred into the LA subsystem
+   (doc/ranges-codata-linalg.md).
 5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
 6. **Multi-clause (#3)** -- bigger frontend, well understood.
 7. **Decide, then maybe #12; defer #4b** -- the ambiguity and soundness risks.

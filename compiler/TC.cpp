@@ -3983,8 +3983,9 @@ bool
 Checker::settle_field_site(
   FieldSite &s)
 {
-  Type                      *rt    = prune(s.record);
-  const std::string         &rname = std::get<TCon>(rt->as).name;
+  Type              *rt    = prune(s.record);
+  const std::string &rname = std::get<TCon>(rt->as).name;
+
   const StructDef           &sdef  = m_structs.at(rname);
   Subst                      sub;
   const std::vector<Type *> &actual = std::get<TCon>(rt->as).args;
@@ -4030,8 +4031,9 @@ Checker::settle_ready_field_sites(
     FieldSite &s = m_field_sites[i];
     if (s.done) continue;
     Type *rt = prune(s.record);
-    if (rt->kind() != Kind::Con
-        || !m_structs.count(std::get<TCon>(rt->as).name))
+    if (rt->kind() != Kind::Con) continue;
+    const std::string &nm = std::get<TCon>(rt->as).name;
+    if (!m_structs.count(nm))
       continue; // not ready; the strict pass owns the eventual error
     progress |= settle_field_site(s);
   }
