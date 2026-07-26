@@ -15,14 +15,15 @@ Grounding facts that shape several items (verified against the tree, 2026-07-24)
 - **`with` is already a keyword** (`KW_WITH`), used for imports (`$ with MOD`).
   Item #2 reuses it in a new (statement) position.
 - **Tuples are `%tupleN` structs** built on demand (`ensure_tuple`). "`{x}` == `x`"
-  (item #4b) means making `%tuple1` transparent in unification -- a real
-  type-system change, not sugar.
+  (item #4b, SCRAPPED) would mean making `%tuple1` transparent in unification -- a
+  real type-system change, not sugar, and not worth the blast radius.
 - **The lexer is per-kind** (`lex_comment`, `lex_number`, `lex_string`, `lex_at`),
   so the literal-level items are localized to one function each.
 - **No range tokens** exist yet (item #9 adds them).
 - **Struct syntax is `Type.{...}`** and the postfix `.` is load-bearing (field
-  access, variant tags, tuple index all hang off it). Dropping it (item #12)
-  collides head-on with application juxtaposition and with bare `{a, b}` tuples.
+  access, variant tags, tuple index all hang off it). Dropping it (item #12,
+  SCRAPPED) collides head-on with application juxtaposition and with bare
+  `{a, b}` tuples, so `.{` stays.
 
 Item numbers below match the original request list, for traceability.
 
@@ -202,51 +203,26 @@ Two separable sub-features:
   `desugar_record_params` (parse_global) which also errors on a named record
   outside a leading parameter position. Reuses the existing tuple pattern-let
   lowering. Lambda `\{x,y}` destructuring already worked. `examples/RECORD_PARAMS.thx`.
-- **#4b -- `{x}` == `x` (1-tuple transparency).** Making `%tuple1 T` unify with
-  `T` touches the core unifier and every site that builds or inspects tuples.
-  High blast radius and easy to open soundness holes. Still **DEFERRED** (the
-  #4a arity-1 collapse gave the desired `{x:Int}->Int` == `Int->Int` ergonomics
-  without it; positional `{Int}` stays a distinct 1-tuple).
+- **#4b -- `{x}` == `x` (1-tuple transparency). SCRAPPED.** Making `%tuple1 T`
+  unify with `T` touches the core unifier and every site that builds or inspects
+  tuples: too much blast radius for too little gain. The #4a arity-1 collapse
+  already gives the `{x:Int}->Int` == `Int->Int` ergonomics; positional `{Int}`
+  stays a distinct 1-tuple, and that is fine. Not revisiting.
 
-### #3 Multi-clause definitions (Haskell equational style)
+### #3 Multi-clause definitions (Haskell equational style) -- SCRAPPED
 
-```
-$ depth Peano.Zero = 0
-$ depth Peano.Succ.{ n } = depth n + 1
-```
-
-Frontend change: after parsing top-level `$` bindings, group consecutive
-same-name clauses that have pattern params and merge them into one
-`\args = when args is ...`. Needs matching arities across clauses and a shared
-signature. Feeds straight into `when`/exhaustiveness, so a non-exhaustive
-multi-clause def warns for free. The biggest *frontend* item, but conceptually
-well-trodden.
-
-- **Decision:** where the signature lives -- one leading `$ f : T` then bare
-  `f pat = ...` clauses (recommended), vs. repeating the annotation.
+Considered and dropped: too much surface sugar for too little value. Equivalent
+code is already expressible with `when` and a single lambda. Not revisiting.
 
 ---
 
-## Tier D -- ambiguity-first, decide before touching code
+## Tier D -- SCRAPPED
 
-### #12 `MyStruct { ... }` (drop the `.` in struct syntax)
+### #12 `MyStruct { ... }` (drop the `.` in struct syntax) -- SCRAPPED
 
-Do **not** start this without a decision. `Name {...}` is currently unambiguous
-*application* (`f {}` applies `f` to the unit value), and a bare `{a, b}` is
-already a **tuple literal** -- the leading `.` is exactly what disambiguates a
-struct literal from a tuple today. Options:
-
-- **(i)** Special-case: an uppercase-initial atom immediately followed by `{`
-  (no intervening token) is a struct literal, never application. Cost: `Foo {}`
-  can no longer mean "apply constructor `Foo` to unit," and it complicates the
-  `app : app atom` rule. Variant payloads `Type.Tag.{...}` and bare `.{...}`
-  need a parallel answer (`Type.Tag {...}`? does `.{...}` stay?).
-- **(ii)** Accept `{` in addition to `.{` -- transitional, but two spellings.
-- **(iii)** Layout / leading-space rules -- fragile; avoid.
-
-Recommended: treat #12 as a syntax RFC settled on paper first (enumerate the
-ambiguity cases against application and against bare tuples, pick a grammar),
-before implementing. It also interacts with #5 (record update spelling).
+Dropped. The leading `.` is what disambiguates a struct literal from application
+(`f {}`) and from a bare tuple `{a, b}`; removing it buys one character at the
+cost of real grammar ambiguity. Keeping `.{ ... }`. Not revisiting.
 
 ---
 
@@ -259,17 +235,19 @@ before implementing. It also interacts with #5 (record update spelling).
    indexing `.[..]`** and **ranges (#9)** -- deferred into the LA subsystem
    (doc/ranges-codata-linalg.md).
 5. **#4a destructuring + `with` (#2)** -- DONE together.
-6. **Multi-clause (#3)** -- bigger frontend, well understood. **(next)**
-7. **Decide, then maybe #12; defer #4b** -- the ambiguity and soundness risks.
+6. **Multi-clause (#3)** -- SCRAPPED (too much sugar for the value).
+7. **#12 and #4b** -- SCRAPPED (see Tier D / #4b).
+
+The surface-syntax backlog is now effectively closed: everything is DONE,
+SCRAPPED, or deferred into the LA subsystem (`.[..]` indexing + ranges #9, see
+doc/ranges-codata-linalg.md). The only still-open surface item is #6, and it is
+gated on a `show`/stringify mechanism. Future work is substantive (LA, `show`,
+effects) rather than more syntax.
 
 ## Open decisions (blockers to a build-ready plan)
 
 - **#1:** RESOLVED -- v1 ships with no binders in alternatives (see #1 above).
 - **#6:** require interpolants to already be `Str`, or add a `show`/stringify
   overload first? Brace-escape spelling?
-- **#12:** pursue the `.`-drop at all, given the collision with application and
-  with bare `{a, b}` tuples -- or keep `.{`? Settle on paper first.
-- **#4:** OK to split into 4a (destructuring, soon) and 4b (1-tuple
-  transparency, deferred)?
 - **#9:** desugar ranges to a library `range` function (recommended) or a core
   primitive? Descending `..>` in v1 or later?
