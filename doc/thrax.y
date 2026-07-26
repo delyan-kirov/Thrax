@@ -170,10 +170,22 @@ type_atom
   | TYVAR
   | LBRACE RBRACE
   | LBRACE type_list opt_comma RBRACE  /* tuple type; n >= 1 ({} is unit) */
+  | LBRACE rec_field_list opt_comma RBRACE /* named-record parameter sugar:
+      `{x: T, y: U}` is the tuple `{T, U}` whose field names bind the argument;
+      a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
+      function parameter position. A `with`-prefixed field additionally scopes
+      that field's own struct fields into the body, as `with <field> in ..`. */
   | LPAREN type RPAREN
   ;
 
 type_list : type | type_list COMMA type ;
+
+rec_field_list
+  : opt_with LIDENT COLON type
+  | rec_field_list COMMA opt_with LIDENT COLON type
+  ;
+
+opt_with : /* empty */ | KW_WITH ;
 
 eff_row
   : ANGLE_EMPTY
@@ -189,6 +201,8 @@ expr      : ctrl_expr | op_expr ;
 
 ctrl_expr
   : KW_LET let_bindings opt_comma KW_IN expr
+  | KW_WITH expr KW_IN expr  /* field-scoping: bring the subject struct's fields
+                                into scope unqualified for the body */
   | KW_IF expr KW_THEN expr KW_ELSE expr
   | KW_WHEN expr arms opt_when_else
   | LAMBDA params EQ expr

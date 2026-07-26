@@ -160,32 +160,53 @@ a refutable interval test; the exhaustiveness checker treats it like a literal
   the "lock now" constraints in **doc/ranges-codata-linalg.md** (that subsystem is
   DEFERRED, but the surface work should not foreclose it).
 
-### #2 `with p do ...` field-scoping (Jai-style)
+### #2 `with p in body` field-scoping (Jai-style) -- DONE
 
-Reuse `KW_WITH` in statement position to bring `p`'s struct fields into scope
-unqualified. Must be **type-directed** (field names are known only after TC
-types `p`), so it desugars in/after TC like PatLower:
-`with p do body` -> `let x = p.x in let y = p.y in body` per field.
+`with p in body` brings `p`'s struct fields into scope unqualified for `body`.
+Spelled `with .. in ..` (not `do`), reusing `KW_WITH`/`KW_IN` in expression
+position (no grammar conflict vs `$ with MOD`: different position; `%expect`
+unchanged). Type-directed: it parses to a pattern-let with a `bind_all` struct
+pattern (`PatStruct::bind_all`, empty `type_name`/`fields`); TC's `type_pattern`
+resolves the struct from the subject's type, writes `type_name`, and binds every
+field to its own name in the env; PatLower emits `let $s = p in let f = $s.f in
+.. in body`. The subject may be any expression (evaluated once). `with`s nest,
+and a bound field shadows an outer local.
 
-- **Decisions:** (a) grammar disambiguation from the top-level `$ with MOD`
-  import -- different position (statement vs `$`), so likely fine; verify the
-  bison `%expect` count. (b) shadowing when two `with`s collide. (c) any struct
-  expr, or only a variable. Conceptually depends on #4a.
+Also usable in a **signature**: a `with`-prefixed named-record parameter field,
+`foo : {with p: Person} -> Int`, takes the parameter `p` and scopes its fields
+into the body, i.e. the same as `\p = with p in ..` (the parameter `p` itself
+stays in scope too). This rides the #4a named-record sugar: the field carries a
+`with_scope` flag (`RecField`), and `desugar_record_params` wraps the body with
+`mk_with_scope` per marked field. Works mixed with plain fields
+(`{k: Int, with q: Point}`).
+
+- **Resolved:** (a) subject can be any expression; (b) an unknown subject type is
+  an error ("annotate it") -- you cannot infer the struct from field usage
+  (needs row polymorphism, deferred). (c) MR guards the `bind_all` pattern
+  (skips type rewrite). **Known limit:** a field whose name coincides with a
+  module-level global resolves to the global (MR mangles it before TC knows the
+  fields); fields not colliding with globals work. `examples/WITH_SCOPE.thx`.
 
 ### #4 Destructuring params, and 1-tuple transparency
 
 Two separable sub-features:
 
-- **#4a -- param/binding destructuring.** `\{x, y} = ...` and
-  `foo : {x: X} -> Y` bringing `x` into scope directly. The lambda path already
-  carries `param_pat` for structural patterns (see `parse_closure`), and
-  pattern-lets already lower. So 4a is mostly **wiring signatures to accept a
-  pattern binder** and confirming irrefutable struct/tuple patterns bind their
-  fields. Moderate; reuses PatLower; overlaps heavily with #2.
+- **#4a -- param/binding destructuring.** DONE, as pure parse-time sugar. A
+  named-record parameter type `{x: T, y: U} -> R` erases to the positional tuple
+  `{T, U} -> R` and the field names become a destructuring binder on the value:
+  `$ f : {x:T,y:U} -> R = body` rewrites to `$ f : {T,U} -> R = \$p = let {x,y}
+  = $p in body`. A one-field record `{x: T}` **collapses** to a plain named
+  parameter `T` (call `f 5`, not `f {5}`), which is why `{x:Int} -> Int` really
+  is `Int -> Int` WITHOUT #4b. Lexed via a lowercase field name + `:` after `{`
+  (a type never starts lowercase). Kept on `TyCon::rec_fields`; erased in
+  `desugar_record_params` (parse_global) which also errors on a named record
+  outside a leading parameter position. Reuses the existing tuple pattern-let
+  lowering. Lambda `\{x,y}` destructuring already worked. `examples/RECORD_PARAMS.thx`.
 - **#4b -- `{x}` == `x` (1-tuple transparency).** Making `%tuple1 T` unify with
   `T` touches the core unifier and every site that builds or inspects tuples.
-  High blast radius and easy to open soundness holes. **Recommend deferring 4b**
-  as its own project with its own plan; ship 4a first.
+  High blast radius and easy to open soundness holes. Still **DEFERRED** (the
+  #4a arity-1 collapse gave the desired `{x:Int}->Int` == `Int->Int` ergonomics
+  without it; positional `{Int}` stays a distinct 1-tuple).
 
 ### #3 Multi-clause definitions (Haskell equational style)
 
@@ -237,8 +258,8 @@ before implementing. It also interacts with #5 (record update spelling).
 4. **positional `.n` (#10)** -- DONE (tuple/struct only). **Sequence/tensor
    indexing `.[..]`** and **ranges (#9)** -- deferred into the LA subsystem
    (doc/ranges-codata-linalg.md).
-5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
-6. **Multi-clause (#3)** -- bigger frontend, well understood.
+5. **#4a destructuring + `with` (#2)** -- DONE together.
+6. **Multi-clause (#3)** -- bigger frontend, well understood. **(next)**
 7. **Decide, then maybe #12; defer #4b** -- the ambiguity and soundness risks.
 
 ## Open decisions (blockers to a build-ready plan)

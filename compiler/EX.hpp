@@ -62,12 +62,18 @@ private:
   UT_NODISCARD RTy      parse_type();
   UT_NODISCARD RTy      parse_type_app();
   UT_NODISCARD RTy      parse_type_atom();
+  // Named-record parameter sugar `{x: T, ..} -> R` (see EX.cpp).
+  UT_NODISCARD RExpr
+  desugar_record_params(Ty *sig, Expr *body, const LX::Token &name);
+  UT_NODISCARD bool has_rec_fields(Ty *t);
+  size_t            m_rec_n = 0; // fresh named-record parameter binders
   UT_NODISCARD RExpr    parse_expr(int min_bp);
   UT_NODISCARD RExpr    parse_prefix();
   UT_NODISCARD RExpr    parse_primary();
   UT_NODISCARD RExpr    parse_group();
   UT_NODISCARD RExpr    parse_let();
   UT_NODISCARD RExpr    parse_let_binding(); // one binding of a `,`-chained let
+  UT_NODISCARD RExpr    parse_with();        // `with p in body` field-scoping
   UT_NODISCARD RExpr    parse_if();
   UT_NODISCARD RExpr    parse_when();
   UT_NODISCARD RExpr    parse_handle();
@@ -108,6 +114,8 @@ private:
   mk_cons_pat(Pattern *h, Pattern *t, UT::Vu a, size_t ln);
   UT_NODISCARD Expr *mk_if(Expr *cond, Expr *then, Expr *alt);
   UT_NODISCARD Expr *mk_let(UT::Vu var, Expr *val, Expr *body);
+  UT_NODISCARD Expr *
+  mk_with_scope(Expr *subject, Expr *body, const LX::Token &anchor);
   UT_NODISCARD Expr *mk_fndef(UT::Vu param, Expr *body);
   UT_NODISCARD Expr *mk_def(UT::Vu name, Ty *sig, Expr *def);
   UT_NODISCARD Expr *mk_extern(UT::Vu abi, UT::Vu symbol, UT::Vu lib);

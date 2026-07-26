@@ -1,0 +1,36 @@
+@mod RECORD_PARAMS
+
+# \file RECORD_PARAMS.thx
+# \info Named-record parameter sugar. A parameter type written with field names,
+#       `{x: Int, y: Int} -> R`, is sugar for a positional-tuple parameter
+#       destructured into those names: it desugars to `{Int, Int} -> R` with a
+#       `let {x, y} = <arg> in ...` around the body, so the field names are in
+#       scope and you do not write the lambda for that parameter. A one-field
+#       record `{x: Int}` collapses to a plain named parameter of type `Int`, so
+#       it is called with a bare value, not a one-tuple. Each `chk*` is 0 when
+#       correct and 1 otherwise.
+
+# Two named fields: one tuple argument, destructured to x and y.
+$ add : {x: Int, y: Int} -> Int = x + y
+$ chk_add : Int = if add {3, 4} ?= 7 then 0 else 1
+
+# Fields may differ in type.
+$ label : {n: Int, s: Str} -> Str = s ++ "!"
+$ chk_label : Int = if label {1, "hi"} ?= "hi!" then 0 else 1
+
+# One field collapses to a plain parameter: called with a bare Int, and the
+# signature is exactly `Int -> Int`.
+$ inc : {x: Int} -> Int = x + 1
+$ chk_inc : Int = if inc 5 ?= 6 then 0 else 1
+
+# Several named parameters in a row, each its own argument. The trailing
+# one-field record collapses, so it takes a bare Int.
+$ area : {w: Int, h: Int} -> {gain: Int} -> Int = w * h + gain
+$ chk_area : Int = if area {6, 7} 1 ?= 43 then 0 else 1
+
+# A leading named parameter followed by a plain one: the named field binds
+# automatically, the plain parameter is bound by an ordinary lambda.
+$ pick : {x: Int} -> Bool -> Int = \b = if b then x else 0
+$ chk_pick : Int = if pick 9 true ?= 9 then 0 else 1
+
+$ test : Int = chk_add + chk_label + chk_inc + chk_area + chk_pick

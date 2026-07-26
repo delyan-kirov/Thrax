@@ -272,6 +272,7 @@ Parser::parse_primary()
     break;
   case LX::TokenTag::LParen : base = EX_TRY(parse_group()); break;
   case LX::TokenTag::KwLet  : base = EX_TRY(parse_let()); break;
+  case LX::TokenTag::KwWith : base = EX_TRY(parse_with()); break;
   case LX::TokenTag::KwIf   : base = EX_TRY(parse_if()); break;
   case LX::TokenTag::KwWhen : base = EX_TRY(parse_when()); break;
   case LX::TokenTag::KwDo   : base = EX_TRY(parse_handle()); break;
@@ -643,6 +644,43 @@ Parser::parse_let_binding()
   Expr e{ ExprTag::Let };
   e.as = lt;
   return { true, alloc(e), {} };
+}
+
+// `with p in body` brings every field of `p`'s struct into scope unqualified for
+// `body`. It desugars to a pattern-let whose pattern binds all of `p`'s fields
+// punned; the struct (and thus its field names) is only known once TC types `p`,
+// so this is a `bind_all` struct pattern that TC resolves. `p` may be any
+// expression.
+// `with <subject> in body` as a pattern-let whose `bind_all` struct pattern TC
+// resolves against `subject`'s type. Shared by `parse_with` and the
+// `{with p: T}` parameter sugar.
+Expr *
+Parser::mk_with_scope(
+  Expr *subject, Expr *body, const LX::Token &anchor)
+{
+  UT::Vec<FieldPat> none{ m_arena };
+  Pattern pat{ PatTag::Struct,
+               PatStruct{ UT::Vu{}, none, anchor.str, anchor.line } };
+  std::get<PatStruct>(pat.as).bind_all = true;
+  ExLet lt;
+  lt.var  = UT::Vu{};
+  lt.pat  = alloc_pat(pat);
+  lt.val  = subject;
+  lt.body = body;
+  Expr e{ ExprTag::Let };
+  e.as = lt;
+  return alloc(e);
+}
+
+RExpr
+Parser::parse_with()
+{
+  LX::Token kw = EX_TRY(m_lex.next()); // 'with'
+  Expr     *subject
+    = EX_CTX(parse_expr(0), kw, "in the subject of this 'with'");
+  EX_TRY(expect(LX::TokenTag::KwIn, "expected 'in' after the 'with' subject"));
+  Expr *body = EX_CTX(parse_expr(0), kw, "in the body of this 'with'");
+  return { true, mk_with_scope(subject, body, kw), {} };
 }
 
 RExpr
@@ -1366,6 +1404,10 @@ Parser::parse_global()
              name,
              "extern global '%s' requires a type signature",
              std::string(name.str).c_str());
+    if (has_rec_fields(sig))
+      EX_ERR(ER::Code::UNSUPPORTED,
+             name,
+             "an extern signature cannot use a named-record parameter type");
     Expr *ext = EX_CTX(parse_extern(),
                        name,
                        "in the definition of extern '%s'",
@@ -1378,7 +1420,105 @@ Parser::parse_global()
                       "in the definition of global '%s'",
                       std::string(name.str).c_str());
 
+  if (sig) body = EX_TRY(desugar_record_params(sig, body, name));
   return { true, mk_def(name.str, sig, body), {} };
+}
+
+// Whether any `TyCon` reachable from `t` still carries named-record field names
+// (`{a: T, ..}`). True only for a named-record type that desugar_record_params
+// did not consume, i.e. one outside a leading parameter position.
+bool
+Parser::has_rec_fields(
+  Ty *t)
+{
+  switch (t->tag)
+  {
+  case TyTag::Con:
+  {
+    TyCon &c = std::get<TyCon>(t->as);
+    if (c.rec_fields.size() != 0) return true;
+    for (size_t i = 0; i < c.args.size(); ++i)
+      if (has_rec_fields(c.args[i])) return true;
+    return false;
+  }
+  case TyTag::Arrow:
+  {
+    TyArrow &a = std::get<TyArrow>(t->as);
+    return has_rec_fields(a.from) || has_rec_fields(a.to);
+  }
+  case TyTag::Var: return false;
+  }
+  return false;
+}
+
+// `$ f : {x: T, y: U} -> R = body` is sugar for a positional-tuple parameter
+// destructured into its named fields. Peel the leading named-record parameters
+// off the signature's arrow spine, erasing each in place (a one-field record
+// `{x: T}` collapses to `T`, a plain named parameter), and wrap `body` so the
+// field names are bound: `\$p = let {x, y} = $p in body`. A named-record type
+// anywhere but a leading parameter position is an error.
+RExpr
+Parser::desugar_record_params(
+  Ty *sig, Expr *body, const LX::Token &name)
+{
+  std::vector<UT::Vec<RecField>> binders;
+  Ty                            *a = sig;
+  while (TyTag::Arrow == a->tag)
+  {
+    TyArrow &ar = std::get<TyArrow>(a->as);
+    if (TyTag::Con != ar.from->tag) break;
+    TyCon &c = std::get<TyCon>(ar.from->as);
+    if (c.rec_fields.size() == 0) break;
+    UT::Vec<RecField> fields = c.rec_fields;
+    if (fields.size() == 1)
+      ar.from = c.args[0]; // `{x: T}` collapses to `T`
+    else
+      c.rec_fields = UT::Vec<RecField>{ m_arena }; // erase names -> plain tuple
+    binders.push_back(fields);
+    a = ar.to;
+  }
+
+  if (has_rec_fields(sig))
+    EX_ERR(ER::Code::UNSUPPORTED,
+           name,
+           "a named-record type '{field: T, ..}' is only allowed as a function "
+           "parameter, not in a return type or nested position");
+
+  for (size_t i = binders.size(); i-- > 0;)
+  {
+    UT::Vec<RecField> &fields = binders[i];
+
+    // A `with`-marked field scopes its own struct's fields into the body,
+    // innermost, once the field name is bound.
+    for (size_t k = fields.size(); k-- > 0;)
+      if (fields[k].with_scope)
+        body = mk_with_scope(mk_op_var(fields[k].name), body, name);
+
+    if (fields.size() == 1)
+    {
+      body = mk_fndef(fields[0].name, body);
+      continue;
+    }
+    UT::Vu pv
+      = UT::strdup(m_arena, ("%rec" + std::to_string(m_rec_n++)).c_str());
+    UT::Vec<FieldPat> fps{ m_arena };
+    for (size_t k = 0; k < fields.size(); ++k)
+      fps.push(FieldPat{
+        UT::Vu{}, alloc_pat(Pattern{ PatTag::Var, PatVar{ fields[k].name } }) });
+    UT::Vu tn = UT::strdup(m_arena, OP::tuple_name(fields.size()).c_str());
+    Pattern *pat
+      = alloc_pat(Pattern{ PatTag::Struct,
+                           PatStruct{ tn, fps, name.str, name.line } });
+    ExLet lt;
+    lt.var  = UT::Vu{};
+    lt.pat  = pat;
+    lt.val  = mk_op_var(pv);
+    lt.body = body;
+    Expr le{ ExprTag::Let };
+    le.as = lt;
+    body  = mk_fndef(pv, alloc(le));
+  }
+  return { true, body, {} };
 }
 
 // `$ @operator.{<op>} : type = expr` -- defines an overload of a built-in
@@ -2143,9 +2283,38 @@ Parser::parse_type_atom()
                mk_ty(Ty{ TyTag::Con, TyCon{ UT::Vu{ OP::TY_UNIT, 2 }, {} } }),
                {} };
     }
-    UT::Vec<Ty *> elems{ m_arena };
+    // A named-record parameter type `{a: T, b: U}`: sugar over the positional
+    // tuple `{T, U}` whose field names become binders (parse_global erases them).
+    // A type never starts with a lowercase word, so a lowercase field name
+    // followed by ':' (or a leading `with`) unambiguously distinguishes this
+    // from a positional tuple. A `with`-prefixed field also scopes its own
+    // struct's fields into the body, as if by `with <field> in ..`.
+    LX::Token f0    = EX_TRY(m_lex.peek());
+    bool      named = LX::TokenTag::KwWith == f0.tag
+              || (LX::TokenTag::Word == f0.tag && f0.str.size()
+                  && f0.str.data()[0] >= 'a' && f0.str.data()[0] <= 'z'
+                  && LX::TokenTag::Colon == EX_TRY(m_lex.peek(1)).tag);
+
+    UT::Vec<Ty *>     elems{ m_arena };
+    UT::Vec<RecField> fields{ m_arena };
     for (;;)
     {
+      if (named)
+      {
+        bool with_scope = LX::TokenTag::KwWith == EX_TRY(m_lex.peek()).tag;
+        if (with_scope) m_lex.next(); // 'with'
+        LX::Token fn = EX_TRY(expect(
+          LX::TokenTag::Word, "expected a field name in this named-record type"));
+        char fc = fn.str.size() ? fn.str.data()[0] : '\0';
+        if (fc < 'a' || fc > 'z')
+          EX_ERR(ER::Code::UNEXPECTED_TOKEN,
+                 fn,
+                 "a named-record field must be lowercase, found '%s'",
+                 std::string(fn.str).c_str());
+        EX_TRY(expect(LX::TokenTag::Colon,
+                      "expected ':' after a named-record field name"));
+        fields.push(RecField{ fn.str, with_scope });
+      }
       elems.push(EX_CTX(parse_type(), lb, "in this tuple type"));
       if (LX::TokenTag::Comma != EX_TRY(m_lex.peek()).tag) break;
       m_lex.next();                                                // ','
@@ -2154,7 +2323,7 @@ Parser::parse_type_atom()
     EX_TRY(
       expect(LX::TokenTag::RBrace, "expected '}' to close the tuple type"));
     UT::Vu nm = UT::strdup(m_arena, OP::tuple_name(elems.size()).c_str());
-    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ nm, elems } }), {} };
+    return { true, mk_ty(Ty{ TyTag::Con, TyCon{ nm, elems, {}, fields } }), {} };
   }
   case LX::TokenTag::LParen:
   {
