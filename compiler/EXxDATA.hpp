@@ -509,6 +509,7 @@ struct ExStructLit
   UT::Vu             type_name;
   UT::Vec<FieldInit> fields;
   UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
+  Expr *base{ nullptr }; // `..base` record-update source; TC fills unlisted fields
 };
 // Field access: `record.field`.
 struct ExField

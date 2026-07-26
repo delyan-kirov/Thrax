@@ -1162,6 +1162,40 @@ struct PatLower
     vl.fields = out;
   }
 
+  // Expand a record update `Type.{ .a = x, ..base }` into
+  // `let $base = base in Type.{ .a = x, <unlisted> = $base.<unlisted> }`. The
+  // source is bound once (its type pinned to the struct) and every field the
+  // literal did not mention is filled from it, yielding a complete literal that
+  // the rest of the pipeline handles unchanged. `e`'s written fields are
+  // already lowered by the caller.
+  Expr *
+  lower_record_update(
+    Expr *e)
+  {
+    auto &sl   = std::get<EX::ExStructLit>(e->as);
+    Expr *base = lower(sl.base);
+    sl.base    = nullptr;
+
+    auto it = structs.find(std::string(sl.type_name));
+    if (it == structs.end()) return e; // unknown type: TC reports it
+    const std::vector<std::string> &decl = it->second;
+
+    size_t n_written = sl.fields.size();
+    auto   is_listed = [&](const std::string &fn) {
+      for (size_t i = 0; i < n_written; ++i)
+        if (std::string(sl.fields[i].name) == fn) return true;
+      return false;
+    };
+
+    UT::Vu bv   = fresh("base");
+    Expr  *bvar = mk_var(bv);
+    for (const std::string &fn : decl)
+      if (!is_listed(fn))
+        sl.fields.push(EX::FieldInit{ ustr(fn), mk_field(bvar, ustr(fn)) });
+
+    return mk_let(bv, base, e, mk_con(sl.type_name));
+  }
+
   /*----------------------------------------------------------------------------
    *\TREE WALK
    *--------------------------------------------------------------------------*/
@@ -1238,6 +1272,7 @@ struct PatLower
       auto &sl = std::get<EX::ExStructLit>(e->as);
       for (size_t i = 0; i < sl.fields.size(); ++i)
         sl.fields[i].val = lower(sl.fields[i].val);
+      if (sl.base) return lower_record_update(e);
       return e;
     }
     case ExprTag::VariantLit:
@@ -1473,7 +1508,8 @@ private:
   struct LitSite
   {
     bool   is_struct;
-    bool   is_seq = false; // `[..]` literal
+    bool   is_seq = false;   // `[..]` literal
+    bool   has_base = false; // struct: carries a `..base` record-update spread
     Type  *use;
     UT::Vu anchor;
     std::vector<std::pair<std::string, Type *>> fields; // (name, value type)
@@ -3195,6 +3231,14 @@ Checker::infer(
       for (size_t i = 0; i < sl.fields.size(); ++i)
         s.fields.push_back({ std::string(sl.fields[i].name),
                              infer(sl.fields[i].val, locals, amb) });
+      // A `..base` spread ties `base` to the (still-unresolved) literal type;
+      // the annotation/context that settles `use` settles `base` too. The
+      // missing-field check is dropped for it in resolve_lit_sites.
+      if (sl.base)
+      {
+        s.has_base = true;
+        unify(s.use, infer(sl.base, locals, amb));
+      }
       Type *use = s.use;
       m_lit_sites.push_back(std::move(s));
       return use;
@@ -3246,13 +3290,19 @@ Checker::infer(
       Type *vt  = infer(sl.fields[i].val, locals, amb);
       unify(subst(decl[idx].second, sub), vt);
     }
-    for (size_t k = 0; k < decl.size(); ++k)
-      if (!seen[k])
-        fail(ER::Code::TYPE_MISMATCH,
-             at,
-             "struct '%s' is missing field '%s'",
-             tn.c_str(),
-             decl[k].first.c_str());
+    // A record-update spread `..base` supplies every field the literal omits,
+    // so type it against this struct instead of demanding completeness (PatLower
+    // fills the unlisted fields from it after inference).
+    if (sl.base)
+      unify(con(tn, args), infer(sl.base, locals, amb));
+    else
+      for (size_t k = 0; k < decl.size(); ++k)
+        if (!seen[k])
+          fail(ER::Code::TYPE_MISMATCH,
+               at,
+               "struct '%s' is missing field '%s'",
+               tn.c_str(),
+               decl[k].first.c_str());
 
     return con(tn, args);
   }
@@ -4142,13 +4192,14 @@ Checker::resolve_lit_sites(
         seen[idx] = true;
         unify(subst(decl[idx].second, sub), fv.second);
       }
-      for (size_t k = 0; k < decl.size(); ++k)
-        if (!seen[k])
-          fail(ER::Code::TYPE_MISMATCH,
-               s.anchor,
-               "struct '%s' is missing field '%s'",
-               nm.c_str(),
-               decl[k].first.c_str());
+      if (!s.has_base) // a `..base` spread supplies every unlisted field
+        for (size_t k = 0; k < decl.size(); ++k)
+          if (!seen[k])
+            fail(ER::Code::TYPE_MISMATCH,
+                 s.anchor,
+                 "struct '%s' is missing field '%s'",
+                 nm.c_str(),
+                 decl[k].first.c_str());
 
       if (s.exs) s.exs->type_name = intern(nm); // patch for the interpreter
       continue;
