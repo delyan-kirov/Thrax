@@ -1761,9 +1761,24 @@ Parser::parse_struct_lit(
     expect(LX::TokenTag::LBrace, "expected '{' after the struct type name"));
 
   UT::Vec<FieldInit> fields{ m_arena };
+  Expr              *base = nullptr; // `..base` record-update spread, if any
   for (;;)
   {
     if (LX::TokenTag::RBrace == EX_TRY(m_lex.peek()).tag) break;
+
+    // A record-update spread `..base`: copy the unlisted fields from an
+    // existing value of the same struct type. Must be the last entry. The type
+    // may be written (`Person.{ ..base }`) or inferred from context, in which
+    // case a bare `.{ ..base }` is settled at its lit site like any bare literal.
+    if (LX::TokenTag::Dot == EX_TRY(m_lex.peek(0)).tag
+        && LX::TokenTag::Dot == EX_TRY(m_lex.peek(1)).tag)
+    {
+      LX::Token dots = EX_TRY(m_lex.peek(0));
+      m_lex.next(); // first '.'
+      m_lex.next(); // second '.'
+      base = EX_CTX(parse_expr(0), dots, "in the record-update source");
+      break;
+    }
 
     EX_TRY(expect(LX::TokenTag::Dot,
                   "expected '.' before the field name (fields "
@@ -1784,8 +1799,10 @@ Parser::parse_struct_lit(
   EX_TRY(
     expect(LX::TokenTag::RBrace, "expected '}' to close the struct literal"));
 
-  Expr e{ ExprTag::StructLit };
-  e.as = ExStructLit{ type_name, fields };
+  Expr        e{ ExprTag::StructLit };
+  ExStructLit sl{ type_name, fields };
+  sl.base = base;
+  e.as    = sl;
   return { true, alloc(e), {} };
 }
 

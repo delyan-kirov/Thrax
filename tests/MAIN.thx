@@ -36,6 +36,7 @@ $ with PIPES = PIPES
 $ with POWER = POWER
 $ with RC_LOOP = RC_LOOP
 $ with REALS = REALS
+$ with RECORD_UPDATE = RECORD_UPDATE
 $ with RECURSION = RECURSION
 $ with SEQ_INFER = SEQ_INFER
 $ with STDLIB_CORE = STDLIB_CORE
@@ -92,6 +93,7 @@ $ main : Int =
 	+ check "POWER" POWER.test
 	+ check "RC_LOOP" RC_LOOP.test
 	+ check "REALS" REALS.test
+	+ check "RECORD_UPDATE" RECORD_UPDATE.test
 	+ check "RECURSION" RECURSION.test
 	+ check "SEQ_INFER" SEQ_INFER.test
 	+ check "STDLIB_CORE" STDLIB_CORE.test

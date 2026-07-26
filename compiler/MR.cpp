@@ -863,6 +863,7 @@ struct Linker
       auto &sl = std::get<EX::ExStructLit>(e->as);
       for (size_t k = 0; k < sl.fields.size(); ++k)
         resolve(sl.fields[k].val, Mkey, sc, locals);
+      if (sl.base) resolve(sl.base, Mkey, sc, locals);
       return;
     }
     case ExprTag::VariantLit:
@@ -1116,6 +1117,7 @@ struct Linker
         sl.type_name = rewrite_ty_name(sl.type_name, sl.type_name, sc);
       for (size_t k = 0; k < sl.fields.size(); ++k)
         rewrite_types_expr(sl.fields[k].val, Mkey, sc);
+      if (sl.base) rewrite_types_expr(sl.base, Mkey, sc);
       return;
     }
     case ExprTag::VariantLit:

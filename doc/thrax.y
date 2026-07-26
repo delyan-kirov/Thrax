@@ -248,18 +248,29 @@ atom
   | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
   | array_lit
-  | DOT LBRACE field_inits RBRACE
+  | DOT LBRACE struct_lit_body RBRACE
   | DOT UIDENT variant_payload
   | atom DOT LIDENT
   | atom DOT INT   /* positional tuple access `t.0`; a chained `t.0.1`  */
   | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
   | atom DOT UIDENT variant_payload
-  | atom DOT LBRACE field_inits RBRACE
+  | atom DOT LBRACE struct_lit_body RBRACE
   ;
 
 field_inits : /* empty */ | init_list opt_comma ;
 init_list   : field_init | init_list COMMA field_init ;
 field_init  : DOT LIDENT EQ expr | expr ;
+
+/* A struct literal may end with a record-update spread `..base`: it copies every
+   unlisted field from `base` (an expression of the same struct type) and must be
+   the final entry. Works for both the qualified `Person.{ ..base }` and the bare
+   `.{ ..base }` form; the bare form's type is settled at its lit site from
+   context, like any bare literal. */
+struct_lit_body
+  : field_inits
+  | init_list COMMA DOT DOT expr
+  | DOT DOT expr
+  ;
 
 variant_payload : /* empty */ | DOT LBRACE field_inits RBRACE ;
 

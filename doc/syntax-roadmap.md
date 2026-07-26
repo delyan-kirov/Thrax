@@ -72,16 +72,40 @@ node, no TC or lowering change.
   hand the shared body. `examples/OR_PATTERNS.thx`; grammar `alts` rule in
   doc/thrax.y (no new conflicts, `%expect` unchanged).
 
-### #5 Record update `{ .x = 1, .y = 2, ..foo }`
+### #5 Record update `Type.{ .x = 1, ..base }` -- DONE
 
-The `..spread` spelling is already established (list patterns parse `..rest`).
-Extend the struct/tuple literal parser to accept a `..base` entry. Add a `base`
-expr field to `ExStructLit`. Desugar (CR or a pre-pass) to: copy `base`, then
-override the named fields.
+**Same-type update** (the recommended nominal choice): `base` is an expression of
+the same struct type, the result is that type, and the literal takes its listed
+fields from itself and every unlisted field from `base`. `..base` must be the
+final entry. The type may be written (`Person.{ ..base }`) or inferred: a bare
+`.{ ..base }` is settled at its lit site, and the type flows from either the
+annotation/context OR from `base`'s own type (TC unifies `base`'s type with the
+literal's), so `.{ ..base }` resolves whenever `base` is typed.
 
-- **Decision:** does the result type equal `foo`'s type (true functional update)
-  or is it row-polymorphic? Recommend **same-type update** (matches nominal
-  structs, simplest).
+Implementation: a `base` `Expr *` on `ExStructLit` (parsed by recognizing `..`
+as two `Dot` tokens inside `parse_struct_lit`). MR traverses `base` in both its
+walks. The completeness relaxation must live in TC, not the desugar, because
+**PatLower runs *after* inference**. Two TC paths: the qualified literal's inline
+`StructLit` inference types `base` against the struct and drops the missing-field
+check when `base` is present; the bare literal's lit site (`LitSite::has_base`)
+unifies `base` with the lit-site `use` var and skips the missing-field check in
+`resolve_lit_sites` (which already patches the node's resolved `type_name`). The
+actual fill then happens in PatLower's `lower_record_update`: it binds `base`
+once to a struct-typed temp and appends `.<unlisted> = $base.<unlisted>` for
+every omitted field, yielding a complete literal CR/IR handle unchanged.
+`examples/RECORD_UPDATE.thx`; grammar `struct_lit_body` in doc/thrax.y (no new
+conflicts, `%expect` unchanged).
+
+- **TODO (deferred): record-rest binding `.{ .x = a, ..rest }` in *patterns*.**
+  Discarding the rest of a struct pattern needs no new type (see the pattern
+  discussion), but *binding* `rest` requires giving it the type "this struct
+  minus the matched fields", an anonymous structural record. Thrax records are
+  nominal, so that type does not exist today. It needs **row polymorphism**
+  (either scoped labels a la Koka/Leijen, or Remy/PureScript-style rows with a
+  `lacks` constraint; the latter is the cleaner fit for unordered nominal-style
+  records), plus a runtime repack (unlike an array tail, the remaining fields are
+  not a contiguous slice). This is its own project with its own plan. Until then,
+  reserve `..rest` in struct patterns and expand only `.._` (discard).
 
 ### #6 String interpolation `"Hi {a ++ b}, age {p.age}"`
 
@@ -193,9 +217,8 @@ before implementing. It also interacts with #5 (record update spelling).
 ## Suggested order
 
 1. **Tier A (#11, #7, #8)** -- DONE. Cheap, isolated lexer wins, all shipped.
-2. **Or-patterns (#1)** -- DONE. **Record update (#5)** -- high value; reuses the
-   `..spread` spelling already present. **(next)**
-3. **String interpolation (#6)** -- after the stringify story is decided.
+2. **Or-patterns (#1)** -- DONE. **Record update (#5)** -- DONE.
+3. **String interpolation (#6)** -- after the stringify story is decided. **(next)**
 4. **`.n` indexing (#10), ranges (#9)** -- type-directed but self-contained.
 5. **#4a destructuring -> `with` (#2)** -- shared machinery; do together.
 6. **Multi-clause (#3)** -- bigger frontend, well understood.

@@ -179,6 +179,9 @@ pprint(
       s += "\n" + std::string((level + 1) * 2, ' ') + "."
            + std::string(sl.fields[i].name) + " =\n"
            + pprint(sl.fields[i].val, level + 2);
+    if (sl.base)
+      s += "\n" + std::string((level + 1) * 2, ' ') + "..\n"
+           + pprint(sl.base, level + 2);
     return s + ")";
   }
   case ExprTag::Field:
