@@ -70,11 +70,23 @@ using ExPair = std::pair<Expr, Expr>;
 
 struct Ty;
 
+// One field of a named-record parameter type `{a: T, with p: U}`. `with_scope`
+// marks a `with`-prefixed field, whose own struct fields are scoped into the
+// body (as if by `with p in ..`).
+struct RecField
+{
+  UT::Vu name;
+  bool   with_scope = false;
+};
 struct TyCon
 {
   UT::Vu        name;        // Int, Str, or a struct/union name
   UT::Vec<Ty *> args;        // type arguments
   UT::Vu        qualifier{}; // module prefix from a qualified type `A.MyType`
+  // A named-record parameter type `{a: T, b: U}` parses as the positional tuple
+  // `{T, U}` with the field names kept here; parse_global erases them (binding
+  // the names) and this is empty on every ordinary con/tuple thereafter.
+  UT::Vec<RecField> rec_fields{};
 };
 struct TyVar
 {
@@ -186,6 +198,11 @@ struct PatStruct
   UT::Vu            anchor;
   size_t            line;
   UT::Vu qualifier{}; // module prefix from `A.Type.{..}`; MR resolves + clears
+  // `with p in ..`: bind every field of p's struct type to its own name. The
+  // struct is unknown until TC (it comes from p's type), so `type_name` and
+  // `fields` are empty until type_pattern fills `type_name`; PatLower then
+  // binds all declared fields punned. Stays false on ordinary struct patterns.
+  bool bind_all = false;
 };
 // `Type.Tag.{ ... }` (or `Type.Tag` for a unit payload) -- matches a variant of
 // the named union and destructures its payload, reusing FieldPat with the same

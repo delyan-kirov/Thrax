@@ -1,0 +1,54 @@
+@mod WITH_SCOPE
+
+# \file WITH_SCOPE.thx
+# \info `with p in body` brings every field of `p`'s struct into scope
+#       unqualified for `body`, so `p.name` can be written just `name`. It is
+#       type-directed: the struct (and thus which names it introduces) is taken
+#       from `p`'s type, so `p` must have a known struct type. The subject may be
+#       any expression, `with`s nest, and a bound field shadows an outer local of
+#       the same name. Each `chk*` is 0 when correct and 1 otherwise.
+
+$ Point : @struct = x: Int, y: Int
+$ Named : @struct = name: Str, age: Int
+
+# The fields of `p` are visible without the `p.` prefix.
+$ p : Point = Point.{ .x = 3, .y = 4 }
+$ chk_basic : Int = with p in (if x + y ?= 7 then 0 else 1)
+
+# Works for any field type.
+$ who : Named = Named.{ .name = "Bo", .age = 41 }
+$ chk_fields : Int =
+	with who in (if age ?= 41 then (if name ?= "Bo" then 0 else 1) else 1)
+
+# A `with` in a function body, over a parameter.
+$ sum : Point -> Int = \q = with q in x + y
+$ chk_param : Int = if sum Point.{ .x = 10, .y = 20 } ?= 30 then 0 else 1
+
+# The subject may be an arbitrary expression, evaluated once.
+$ mk : Int -> Point = \n = Point.{ .x = n, .y = n + 1 }
+$ chk_expr : Int = with mk 10 in (if x + y ?= 21 then 0 else 1)
+
+# `with`s nest; both structs' fields are in scope in the inner body.
+$ chk_nested : Int =
+	with p in with who in (if x + y + age ?= 48 then 0 else 1)
+
+# A bound field shadows an outer local of the same name.
+$ chk_shadow : Int =
+	let x = 1 in
+	with p in (if x ?= 3 then 0 else 1)
+
+# `with` in a signature: `{with q: Point}` takes a Point parameter `q` whose
+# fields are scoped into the body, the same as `\q = with q in ..`. The
+# parameter `q` itself stays usable alongside its scoped fields.
+$ diag : {with q: Point} -> Int = x + y + q.x
+$ chk_sig : Int = if diag Point.{ .x = 3, .y = 4 } ?= 10 then 0 else 1
+
+# A named field beside a `with` field: the first binds normally, the second
+# also scopes its struct's fields.
+$ tagged : {k: Int, with q: Point} -> Int = k + x + y
+$ chk_sig_mixed : Int =
+	if tagged {100, Point.{ .x = 3, .y = 4 }} ?= 107 then 0 else 1
+
+$ test : Int =
+	chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_shadow
+	+ chk_sig + chk_sig_mixed

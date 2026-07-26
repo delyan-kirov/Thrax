@@ -479,7 +479,23 @@ struct PatLower
     size_t   line,
     bool     refutable_ok)
   {
-    auto                  &ps = std::get<EX::PatStruct>(pat->as);
+    auto &ps = std::get<EX::PatStruct>(pat->as);
+
+    // `with p in body`: bind every field of p's struct to its own name (TC set
+    // `type_name`). `let $s = p in let f1 = $s.f1 in .. in body`.
+    if (ps.bind_all)
+    {
+      const std::vector<std::string> &decl
+        = structs.find(std::string(ps.type_name))->second;
+      UT::Vu sv    = fresh("s");
+      Expr  *svar  = mk_var(sv);
+      Expr  *inner = body;
+      for (size_t i = decl.size(); i-- > 0;)
+        inner = mk_let(ustr(decl[i]), mk_field(svar, ustr(decl[i])), inner,
+                       nullptr);
+      return mk_let(sv, subject, inner, mk_con(ps.type_name));
+    }
+
     std::vector<Pattern *> subs;
     resolve_fields(ps, subs);
 
@@ -2882,6 +2898,38 @@ Checker::type_pattern(
   case EX::PatTag::Struct:
   {
     auto       &ps = std::get<EX::PatStruct>(p->as);
+    // `with p in ..`: p's struct is now known from `scrut`. Bind every field to
+    // its own name and record the type for PatLower. (No `type_name` was given.)
+    if (ps.bind_all)
+    {
+      Type *st = prune(scrut);
+      if (st->kind() != Kind::Con)
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             ps.anchor,
+             "cannot determine the struct type of the 'with' subject here; "
+             "give it a type annotation");
+        return;
+      }
+      std::string sn(std::get<TCon>(st->as).name);
+      auto        sit = m_structs.find(sn);
+      if (sit == m_structs.end())
+      {
+        fail(ER::Code::TYPE_MISMATCH,
+             ps.anchor,
+             "'with' needs a struct subject, but its type is '%s'",
+             show(st).c_str());
+        return;
+      }
+      ps.type_name = intern(sn); // PatLower reads this to bind the fields
+      std::vector<Type *> args;
+      Subst               sub = fresh_subst(sit->second.params, args);
+      unify(scrut, con(sn, args));
+      for (size_t k = 0; k < sit->second.fields.size(); ++k)
+        env[sit->second.fields[k].first]
+          = Scheme{ {}, subst(sit->second.fields[k].second, sub) };
+      return;
+    }
     std::string tn(ps.type_name);
     if (OP::is_tuple_name(ps.type_name)) ensure_tuple(ps.fields.size());
     auto sit = m_structs.find(tn);

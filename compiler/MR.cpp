@@ -1047,7 +1047,7 @@ struct Linker
         if (r.size()) ps.type_name = r;
         ps.qualifier = UT::Vu{};
       }
-      else
+      else if (!ps.bind_all) // a `with` pattern's struct is resolved by TC
         ps.type_name = rewrite_ty_name(ps.type_name, ps.type_name, sc);
       for (EX::FieldPat &f : ps.fields) rewrite_pat_types(f.pat, Mkey, sc);
       return;
