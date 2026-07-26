@@ -663,13 +663,51 @@ Parser::parse_if()
   return { true, mk_if(cond, then, alt), {} };
 }
 
-// A pattern match: `when scrut is pat [if guard] then e .. [is ..] [else d]`.
-// Each arm tests `pat` against the scrutinee and, when it carries an `if
-// guard`, an extra boolean over the pattern's bindings; a failed pattern or
-// guard falls through to the next arm. The `else` may be omitted when the arms
-// are exhaustive (TC checks this and rejects a non-exhaustive `when` that has
-// no `else`). TC's PatLower lowers the whole form into a `case` / if-chain, so
-// no layer below sees an ExMatch.
+// True when `p` binds at least one variable (a `name` pattern, a `"lit" ++ rest`
+// tail, a struct/variant field pun or sub-binder, or a list/array element). Used
+// to reject binders in or-pattern alternatives, which share one body.
+static bool
+pat_binds_any(
+  const Pattern *p)
+{
+  switch (p->tag)
+  {
+  case PatTag::Wild:
+  case PatTag::Int:
+  case PatTag::Bool:
+  case PatTag::Real:
+  case PatTag::Str: return false;
+  case PatTag::Var: return true;
+  case PatTag::StrPrefix:
+    return pat_binds_any(std::get<PatStrPrefix>(p->as).rest);
+  case PatTag::Struct:
+    for (const FieldPat &f : std::get<PatStruct>(p->as).fields)
+      if (pat_binds_any(f.pat)) return true;
+    return false;
+  case PatTag::Variant:
+    for (const FieldPat &f : std::get<PatVariant>(p->as).fields)
+      if (pat_binds_any(f.pat)) return true;
+    return false;
+  case PatTag::Seq:
+  {
+    const PatSeq &s = std::get<PatSeq>(p->as);
+    for (Pattern *e : s.elems)
+      if (pat_binds_any(e)) return true;
+    return s.rest && pat_binds_any(s.rest);
+  }
+  }
+  return false;
+}
+
+// A pattern match: `when scrut is pat [is pat ...] [if guard] then e .. [else d]`.
+// Each arm tests one or more `is pat` alternatives against the scrutinee and,
+// when it carries an `if guard`, an extra boolean over the pattern's bindings; a
+// failed pattern or guard falls through to the next arm. Or-pattern alternatives
+// share the arm's body, so each is emitted as its own arm (a matrix row for the
+// exhaustiveness checker) and may bind no variables. The `else` may be omitted
+// when the arms are exhaustive (TC checks this and rejects a non-exhaustive
+// `when` that has no `else`). TC's PatLower lowers the whole form into a `case` /
+// if-chain, so no layer below sees an ExMatch.
 RExpr
 Parser::parse_when()
 {
@@ -685,7 +723,16 @@ Parser::parse_when()
   while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
   {
     m_lex.next(); // 'is'
-    Pattern *pat = EX_TRY(parse_pattern());
+    UT::Vec<Pattern *> alts{ m_arena };
+    alts.push(EX_TRY(parse_pattern()));
+
+    // Further `is pat` before the `then`/guard are or-pattern alternatives of
+    // this same arm, not new arms.
+    while (LX::TokenTag::KwIs == EX_TRY(m_lex.peek()).tag)
+    {
+      m_lex.next(); // 'is'
+      alts.push(EX_TRY(parse_pattern()));
+    }
 
     // Optional `if guard`: a boolean tested in the pattern's scope. The guard
     // expression ends at `then` (an expression terminator).
@@ -700,7 +747,20 @@ Parser::parse_when()
       expect(LX::TokenTag::KwThen,
              "expected 'then' after the match pattern (or its 'if' guard)"));
     Expr *body = EX_CTX(parse_expr(0), kw, "in this match arm");
-    arms.push(MatchArm{ pat, body, guard });
+
+    // An or-pattern's alternatives share this one body, so none may bind a
+    // variable (there would be no consistent binding to hand the body).
+    if (alts.size() > 1)
+      for (size_t i = 0; i < alts.size(); ++i)
+        if (pat_binds_any(alts[i]))
+          EX_ERR(ER::Code::UNSUPPORTED,
+                 kw,
+                 "an or-pattern alternative cannot bind a variable; the "
+                 "alternatives of one 'is ... is ...' arm share its body");
+
+    // Each alternative becomes its own arm sharing the body and guard.
+    for (size_t i = 0; i < alts.size(); ++i)
+      arms.push(MatchArm{ alts[i], body, guard });
   }
   // The `else` is optional: when present it supplies the fallthrough value;
   // when absent, TC requires the arms to be exhaustive (and PatLower fills in
