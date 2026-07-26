@@ -20,8 +20,58 @@
         export PATH=${wasiLd}/bin:$PATH
         exec ${wasiPkgs.stdenv.cc}/bin/wasm32-unknown-wasi-clang "$@"
       '';
+
+      # The compiler itself, built by the self-contained build.cpp. This is the
+      # same bootstrap the devShell runs; nix just fixes the inputs and captures
+      # artifacts/ into $out.
+      thrax = pkgs.stdenv.mkDerivation {
+        pname = "thrax";
+        version = "0.1.0";
+        src = self;
+
+        # Matches the devShell: -O0 debug builds trip _FORTIFY_SOURCE.
+        hardeningDisable = [ "fortify" ];
+
+        nativeBuildInputs = [ pkgs.clang ];
+        buildInputs = [ pkgs.libffi ];
+
+        buildPhase = ''
+          runHook preBuild
+          export THRAX_ROOT=$PWD
+          export LIBFFI=${pkgs.libffi.out}
+          export LIBFFI_DEV=${pkgs.libffi.dev}
+          clang++ -std=c++23 -Iutilities build.cpp \
+            utilities/UTxIO.cpp utilities/AR.cpp -o build
+          ./build ffi
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          install -Dm755 artifacts/thrax $out/bin/thrax
+          install -Dm755 build $out/bin/thrax-build
+          install -Dm644 artifacts/libthrax.a $out/lib/libthrax.a
+          install -Dm755 artifacts/libthrax.so $out/lib/libthrax.so
+          runHook postInstall
+        '';
+
+        meta = {
+          description = "The Thrax compiler and interpreter";
+          mainProgram = "thrax";
+        };
+      };
     in
     {
+      packages.${system} = {
+        inherit thrax;
+        default = thrax;
+      };
+
+      apps.${system}.default = {
+        type = "app";
+        program = "${thrax}/bin/thrax";
+      };
+
       devShells.${system}.default = pkgs.mkShell {
         # -O0 debug builds trip glibc's _FORTIFY_SOURCE warning (which needs -O);
         # disable that hardening so the makefile stays free of workaround flags.

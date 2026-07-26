@@ -14,3 +14,4 @@ lib/*
 /web/site/thrax.wasm
 # local configs/notes
 *.local.*
+result
