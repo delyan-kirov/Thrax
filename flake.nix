@@ -85,6 +85,15 @@
           pkgs.git
           pkgs.valgrind
 
+          # Rust toolchain for the in-progress rewrite (no external crates; a
+          # bare rustc + cargo is all the workspace needs). rustfmt/clippy/
+          # rust-analyzer are dev ergonomics only.
+          pkgs.rustc
+          pkgs.cargo
+          pkgs.rustfmt
+          pkgs.clippy
+          pkgs.rust-analyzer
+
           # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
           pkgs.libffi
 

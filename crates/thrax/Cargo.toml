@@ -1,0 +1,16 @@
+[package]
+name = "thrax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "thrax"
+path = "src/main.rs"
+
+[dependencies]
+diag = { path = "../diag" }
+arena = { path = "../arena" }
+lexer = { path = "../lexer" }
+syntax = { path = "../syntax" }
+types = { path = "../types" }
