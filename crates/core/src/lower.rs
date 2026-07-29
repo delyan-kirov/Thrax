@@ -14,7 +14,7 @@
 //! `ast.bytes`. Because `ast` is shared, those resolve to `'a`-lived data
 //! independent of the `&mut self` used for fresh-name generation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arena::Aol;
@@ -114,11 +114,30 @@ const CONS_FIELDS: &[Option<String>] = &[None, None];
 /// several), an optional guard, and the body.
 type ArmHandles = (Vec<Aol<Pattern>>, Option<Aol<Expr>>, Aol<Expr>);
 
+/// The type checker's resolutions that lowering cannot re-derive without types.
+/// `array_exprs`/`array_pats` are the `[..]` nodes resolved to `Array` (a byte
+/// vector) rather than the default `List`; `call_modules` maps a bare-call
+/// `Expr::Var` to the module its overload resolved to, so lowering can emit a
+/// qualified `MOD.name`. Empty (the default) means "no resolutions", correct for
+/// callers without a checker (all `[..]` are `List`, all calls stay bare).
+#[derive(Default)]
+pub struct Resolved {
+    pub array_exprs: HashSet<Aol<Expr>>,
+    pub array_pats: HashSet<Aol<Pattern>>,
+    pub call_modules: HashMap<Aol<Expr>, String>,
+}
+
 /// Lower one module's globals to Core.
-pub fn lower_program(ast: &Ast, program: &AstProgram, decls: &Decls) -> Program {
+pub fn lower_program(
+    ast: &Ast,
+    program: &AstProgram,
+    decls: &Decls,
+    resolved: &Resolved,
+) -> Program {
     let mut lw = Lowerer {
         ast,
         decls,
+        resolved,
         fresh: 0,
     };
     let mut effects = Vec::new();
@@ -151,6 +170,7 @@ pub fn lower_program(ast: &Ast, program: &AstProgram, decls: &Decls) -> Program 
 struct Lowerer<'a> {
     ast: &'a Ast,
     decls: &'a Decls,
+    resolved: &'a Resolved,
     fresh: u32,
 }
 
@@ -243,10 +263,16 @@ impl<'a> Lowerer<'a> {
                 match name {
                     "true" => Term::Bool(true),
                     "false" => Term::Bool(false),
-                    _ => Term::Var {
-                        module: module.map(|m| self.text(m).to_string()),
-                        name: name.to_string(),
-                    },
+                    _ => {
+                        let module = match module {
+                            Some(m) => Some(self.text(*m).to_string()),
+                            None => self.resolved.call_modules.get(&e).cloned(),
+                        };
+                        Term::Var {
+                            module,
+                            name: name.to_string(),
+                        }
+                    }
                 }
             }
 
@@ -271,11 +297,21 @@ impl<'a> Lowerer<'a> {
 
             Expr::List(items) => {
                 let items: Vec<Aol<Expr>> = items.to_vec();
-                let mut acc = nil();
-                for e in items.into_iter().rev() {
-                    acc = cons(self.expr(e), acc);
+                if self.resolved.array_exprs.contains(&e) {
+                    // A byte vector: start empty, push each element left to right.
+                    let mut acc = Term::app(Term::var("array_alloc"), Term::Int(0));
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("array_push"), acc), x);
+                    }
+                    acc
+                } else {
+                    let mut acc = nil();
+                    for e in items.into_iter().rev() {
+                        acc = cons(self.expr(e), acc);
+                    }
+                    acc
                 }
-                acc
             }
 
             Expr::Array { size } => Term::app(Term::var("array_alloc"), self.expr(*size)),
@@ -326,14 +362,18 @@ impl<'a> Lowerer<'a> {
                     .map(|arm| (arm.patterns.to_vec(), arm.guard, arm.body))
                     .collect();
                 for (patterns, guard, body) in arm_data {
-                    let guard = guard.map(|g| Arc::new(self.expr(g)));
+                    let user_guard = guard.map(|g| self.expr(g));
                     let body = Arc::new(self.expr(body));
                     for pat in patterns {
-                        lowered.push(Arm {
-                            pat: self.pat(pat),
-                            guard: guard.clone(),
-                            body: body.clone(),
-                        });
+                        if self.resolved.array_pats.contains(&pat) {
+                            lowered.push(self.array_arm(pat, user_guard.clone(), body.clone()));
+                        } else {
+                            lowered.push(Arm {
+                                pat: self.pat(pat),
+                                guard: user_guard.clone().map(Arc::new),
+                                body: body.clone(),
+                            });
+                        }
                     }
                 }
                 Term::Case {
@@ -409,7 +449,13 @@ impl<'a> Lowerer<'a> {
                     }),
                 }
             }
-            Expr::Defer { .. } => Term::Fault("defer".into()),
+            Expr::Defer { cleanup, body } => {
+                let (cleanup, body) = (*cleanup, *body);
+                Term::Defer {
+                    cleanup: Arc::new(self.expr(cleanup)),
+                    body: Arc::new(self.expr(body)),
+                }
+            }
             Expr::Extern { .. } => Term::Fault("foreign function".into()),
         }
     }
@@ -715,6 +761,116 @@ impl<'a> Lowerer<'a> {
         }
         slots
     }
+
+    /// Lower a type-directed array (byte-vector) pattern into a guarded arm. The
+    /// whole scrutinee binds to a fresh `v`; a length test (exact, or `>=` when an
+    /// open `..rest` follows) plus one equality per literal element form the
+    /// guard, and named elements/`rest` are extracted with `array_get` /
+    /// `array_slice`. The extractions run only after the length test passes, so
+    /// they never index out of bounds. The bindings are duplicated into the guard
+    /// so a user guard (and the literal checks) can see the element names.
+    fn array_arm(&mut self, pat: Aol<Pattern>, user_guard: Option<Term>, body: Arc<Term>) -> Arm {
+        let (elems, rest) = match self.pnode(pat) {
+            Pattern::List { elems, rest } => (elems.to_vec(), *rest),
+            _ => unreachable!("array_arm on a non-list pattern"),
+        };
+        let v = self.fresh();
+        let n = elems.len();
+        let mut binds: Vec<(String, Term)> = Vec::new();
+        let mut checks: Vec<Term> = Vec::new();
+        for (i, e) in elems.iter().enumerate() {
+            match self.pnode(*e) {
+                Pattern::Var(name) => binds.push((self.text(*name).to_string(), array_get(&v, i))),
+                Pattern::Wild => {}
+                Pattern::Int(k) => checks.push(bin("?=", array_get(&v, i), Term::Int(*k))),
+                Pattern::Real(r) => checks.push(bin("?=", array_get(&v, i), Term::Real(*r))),
+                Pattern::Bool(b) => checks.push(bin("?=", array_get(&v, i), Term::Bool(*b))),
+                _ => {}
+            }
+        }
+        if let Some(r) = rest {
+            if let Pattern::Var(name) = self.pnode(r) {
+                binds.push((self.text(*name).to_string(), array_slice(&v, n)));
+            }
+        }
+        let len_check = if rest.is_some() {
+            bin(">=", array_len(&v), Term::Int(n as i64))
+        } else {
+            bin("?=", array_len(&v), Term::Int(n as i64))
+        };
+        let guard = if checks.is_empty() && user_guard.is_none() {
+            len_check
+        } else {
+            let mut inner = user_guard.unwrap_or(Term::Bool(true));
+            for c in checks.into_iter().rev() {
+                inner = if_then_else(c, inner, Term::Bool(false));
+            }
+            let inner = let_chain(&binds, inner);
+            if_then_else(len_check, inner, Term::Bool(false))
+        };
+        let body = let_chain(&binds, (*body).clone());
+        Arm {
+            pat: Pat::Var(v),
+            guard: Some(Arc::new(guard)),
+            body: Arc::new(body),
+        }
+    }
+}
+
+/// `array_len v`.
+fn array_len(v: &str) -> Term {
+    Term::app(Term::var("array_len"), Term::var(v))
+}
+
+/// `array_get v i`.
+fn array_get(v: &str, i: usize) -> Term {
+    Term::app(
+        Term::app(Term::var("array_get"), Term::var(v)),
+        Term::Int(i as i64),
+    )
+}
+
+/// `array_slice v from (array_len v)` (the open tail from `from`).
+fn array_slice(v: &str, from: usize) -> Term {
+    Term::app(
+        Term::app(
+            Term::app(Term::var("array_slice"), Term::var(v)),
+            Term::Int(from as i64),
+        ),
+        array_len(v),
+    )
+}
+
+/// A binary operator application `l <op> r`.
+fn bin(op: &str, l: Term, r: Term) -> Term {
+    Term::app(Term::app(Term::var(op), l), r)
+}
+
+/// `if cond then t else e`, lowered like the surface `if`.
+fn if_then_else(cond: Term, t: Term, e: Term) -> Term {
+    Term::Case {
+        scrut: Arc::new(cond),
+        arms: Arc::from([Arm {
+            pat: Pat::Bool(true),
+            guard: None,
+            body: Arc::new(t),
+        }]),
+        default: Some(Arc::new(e)),
+    }
+}
+
+/// Wrap `inner` in a nest of non-recursive `let`s binding each `(name, value)`.
+fn let_chain(binds: &[(String, Term)], inner: Term) -> Term {
+    let mut acc = inner;
+    for (name, val) in binds.iter().rev() {
+        acc = Term::Let {
+            name: name.clone(),
+            rec: false,
+            val: Arc::new(val.clone()),
+            body: Arc::new(acc),
+        };
+    }
+    acc
 }
 
 fn nil() -> Term {

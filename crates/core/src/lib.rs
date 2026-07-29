@@ -10,5 +10,5 @@ pub mod lower;
 pub mod term;
 
 pub use eval::{Interp, Value};
-pub use lower::{lower_program, Decls};
+pub use lower::{lower_program, Decls, Resolved};
 pub use term::{Program, Term};

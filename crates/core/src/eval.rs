@@ -19,14 +19,24 @@
 //! The program already type-checked, so the operands always have a kind the
 //! implementation accepts; the interpreter needs no resolved overload keys.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use diag::{Code, Diagnostic, Result, Span};
 
 use crate::term::{Arm, Handler, Pat, Program, Term};
+
+thread_local! {
+    /// Open files behind the auto-injected `C` libc namespace. A `C.fopen`
+    /// returns the slot id (an `Int` handle, as the IO module expects), never a
+    /// real `FILE*`; `0` is the failure/`NULL` sentinel, so ids start at 1.
+    static FILES: RefCell<HashMap<i64, File>> = RefCell::new(HashMap::new());
+    static NEXT_FD: Cell<i64> = const { Cell::new(1) };
+}
 
 /// A runtime value. Aggregates own their elements; closures and the environment
 /// share structure through `Rc`.
@@ -76,6 +86,10 @@ pub struct Continuation(Rc<RefCell<Option<Resume>>>);
 type Eval = Result<Outcome>;
 type Resume = Rc<dyn Fn(Value) -> Eval>;
 
+/// A pending `defer` cleanup: the cleanup term and the environment to run it in.
+/// It runs when the deferred body's dynamic scope exits (see [`Term::Defer`]).
+type Finalizer = (Arc<Term>, Env);
+
 enum Outcome {
     Value(Value),
     Perform {
@@ -83,6 +97,10 @@ enum Outcome {
         op: String,
         arg: Value,
         resume: Resume,
+        /// `defer` cleanups pending between the perform point and the handler.
+        /// A handler that abandons this continuation runs them; one that resumes
+        /// leaves them to the resumption (which re-wraps them).
+        finalizers: Vec<Finalizer>,
     },
 }
 
@@ -390,6 +408,11 @@ impl Interp {
                 self.handle_outcome(out, handler.clone(), env.clone())
             }
 
+            Term::Defer { cleanup, body } => {
+                let out = self.eval(body, env)?;
+                self.run_with_finalizer(out, (cleanup.clone(), env.clone()))
+            }
+
             Term::Fault(what) => Err(fault(format!("unsupported at runtime: {what}"))),
         }
     }
@@ -402,17 +425,73 @@ impl Interp {
                 op,
                 arg,
                 resume,
+                finalizers,
             } => {
                 let this = self.clone();
                 Ok(Outcome::Perform {
                     effect,
                     op,
                     arg,
+                    finalizers,
                     resume: Rc::new(move |v| {
                         let next = resume(v)?;
                         this.bind(next, cont.clone())
                     }),
                 })
+            }
+        }
+    }
+
+    /// Attach a `defer` cleanup to a computation's outcome. On a value, run the
+    /// cleanup then yield the value. On a suspension, re-wrap the resumption (so
+    /// the cleanup runs when the resumed computation later completes) and record
+    /// the cleanup among the suspension's finalizers (so a handler that abandons
+    /// the continuation runs it instead).
+    fn run_with_finalizer(&self, out: Outcome, fin: Finalizer) -> Eval {
+        match out {
+            Outcome::Value(v) => {
+                let cleanup = self.eval(&fin.0, &fin.1)?;
+                self.bind(cleanup, Rc::new(move |_| Ok(Outcome::Value(v.clone()))))
+            }
+            Outcome::Perform {
+                effect,
+                op,
+                arg,
+                resume,
+                mut finalizers,
+            } => {
+                let this = self.clone();
+                let fin_for_resume = fin.clone();
+                let resume: Resume = Rc::new(move |x| {
+                    let next = resume(x)?;
+                    this.run_with_finalizer(next, fin_for_resume.clone())
+                });
+                finalizers.push(fin);
+                Ok(Outcome::Perform {
+                    effect,
+                    op,
+                    arg,
+                    resume,
+                    finalizers,
+                })
+            }
+        }
+    }
+
+    /// Run a suspension's pending `defer` cleanups in order (innermost first),
+    /// discarding their values, then yield `result`. Used when a handler abandons
+    /// the continuation that held them.
+    fn run_finalizers(&self, fins: &[Finalizer], result: Value) -> Eval {
+        match fins.split_first() {
+            None => Ok(Outcome::Value(result)),
+            Some((first, rest)) => {
+                let cleanup = self.eval(&first.0, &first.1)?;
+                let this = self.clone();
+                let rest = rest.to_vec();
+                self.bind(
+                    cleanup,
+                    Rc::new(move |_| this.run_finalizers(&rest, result.clone())),
+                )
             }
         }
     }
@@ -437,6 +516,22 @@ impl Interp {
                 arity,
                 args: Vec::new(),
             });
+        }
+        // The auto-injected namespaces: `TARGET` reflects the host as compile-time
+        // constants, `C` exposes a fixed set of libc functions as builtins.
+        if module == Some("TARGET") {
+            if let Some(v) = target_value(name) {
+                return Ok(v);
+            }
+        }
+        if module == Some("C") {
+            if let Some(arity) = c_arity(name) {
+                return Ok(Value::Builtin {
+                    name: format!("C.{name}").into(),
+                    arity,
+                    args: Vec::new(),
+                });
+            }
         }
         if let Some(module) = module {
             if self
@@ -487,6 +582,7 @@ impl Interp {
                 op,
                 arg,
                 resume: Rc::new(|v| Ok(Outcome::Value(v))),
+                finalizers: Vec::new(),
             }),
             Value::Resumption(k) => {
                 let resume =
@@ -674,6 +770,7 @@ impl Interp {
                 op,
                 arg,
                 resume,
+                finalizers,
             } => match self.match_clause(&handler, effect.as_deref(), &op)? {
                 Some(idx) => {
                     let deep_resume: Resume = Rc::new({
@@ -685,12 +782,26 @@ impl Interp {
                             this.handle_outcome(next, handler.clone(), env.clone())
                         }
                     });
-                    let k =
-                        Value::Resumption(Continuation(Rc::new(RefCell::new(Some(deep_resume)))));
+                    let cell = Rc::new(RefCell::new(Some(deep_resume)));
+                    let k = Value::Resumption(Continuation(cell.clone()));
                     let clause = &handler.clauses[idx];
                     let scope = extend(&env, clause.arg.clone(), arg);
                     let scope = extend(&scope, handler.continuation.clone(), k);
-                    self.eval(&clause.body, &scope)
+                    let result = self.eval(&clause.body, &scope)?;
+                    // Drop the scope's hold on the continuation, then decide its
+                    // fate: `is_none` means the clause resumed it (cleanups will
+                    // run through the resumption); a strong count above one means
+                    // it was stored (e.g. in a returned value) to resume later;
+                    // otherwise it is abandoned, so run its pending `defer`s now.
+                    drop(scope);
+                    match result {
+                        Outcome::Value(v)
+                            if cell.borrow().is_some() && Rc::strong_count(&cell) == 1 =>
+                        {
+                            self.run_finalizers(&finalizers, v)
+                        }
+                        other => Ok(other),
+                    }
                 }
                 None => {
                     let this = self.clone();
@@ -699,6 +810,7 @@ impl Interp {
                         effect,
                         op,
                         arg,
+                        finalizers,
                         resume: Rc::new(move |v| {
                             let next = resume(v)?;
                             this.handle_outcome(next, handler.clone(), env.clone())
@@ -894,7 +1006,155 @@ fn run_builtin(name: &str, a: Vec<Value>) -> Result<Value> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
+        _ if name.starts_with("C.") => run_c(name, &a),
         _ => Err(fault(format!("unknown built-in `{name}`"))),
+    }
+}
+
+// -- the auto-injected `C` libc namespace and `TARGET` reflection -----------
+
+/// The arity of a supported `C.<fn>`, or `None` for one this interpreter does not
+/// provide.
+fn c_arity(name: &str) -> Option<usize> {
+    Some(match name {
+        "getenv" | "fclose" | "fgetc" | "ftell" | "remove" | "getchar" | "time" => 1,
+        "fopen" | "fputs" => 2,
+        "fseek" | "write" => 3,
+        _ => return None,
+    })
+}
+
+/// A `TARGET.<field>` reflection constant for the host this interpreter runs on
+/// (the target, since there is no cross-compilation here).
+fn target_value(name: &str) -> Option<Value> {
+    let bytes = |s: &str| Value::Str(Rc::new(s.as_bytes().to_vec()));
+    Some(match name {
+        "int_bits" | "ptr_bits" => Value::Int(usize::BITS as i64),
+        "int_max" => Value::Int(i64::MAX),
+        "int_min" => Value::Int(i64::MIN),
+        "arch" => bytes(std::env::consts::ARCH),
+        "os" => bytes(std::env::consts::OS),
+        "name" => Value::Str(Rc::new(
+            format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS).into_bytes(),
+        )),
+        _ => return None,
+    })
+}
+
+/// Dispatch a `C.<fn>` call to a `std`-backed implementation. Files are keyed by
+/// an `Int` handle (see [`FILES`]); a byte outside `0..=255` (here `-1`) marks
+/// end-of-stream, matching the IO module's expectations.
+fn run_c(name: &str, a: &[Value]) -> Result<Value> {
+    let with_file = |id: i64, f: &mut dyn FnMut(&mut File) -> Value| -> Value {
+        FILES.with(|files| match files.borrow_mut().get_mut(&id) {
+            Some(file) => f(file),
+            None => Value::Int(-1),
+        })
+    };
+    match name {
+        "C.getenv" => {
+            let val = std::env::var(str_of(&a[0])?).unwrap_or_default();
+            Ok(Value::Str(Rc::new(val.into_bytes())))
+        }
+        "C.fopen" => {
+            let (path, mode) = (str_of(&a[0])?, str_of(&a[1])?);
+            let mut open = OpenOptions::new();
+            match mode.as_bytes().first() {
+                Some(b'w') => open.write(true).create(true).truncate(true),
+                Some(b'a') => open.append(true).create(true),
+                _ => open.read(true),
+            };
+            match open.open(&path) {
+                Ok(file) => {
+                    let id = NEXT_FD.with(|c| {
+                        let id = c.get();
+                        c.set(id + 1);
+                        id
+                    });
+                    FILES.with(|files| files.borrow_mut().insert(id, file));
+                    Ok(Value::Int(id))
+                }
+                Err(_) => Ok(Value::Int(0)),
+            }
+        }
+        "C.fclose" => {
+            let id = as_i64(&a[0])?;
+            let closed = FILES.with(|files| files.borrow_mut().remove(&id).is_some());
+            Ok(Value::Int(if closed { 0 } else { -1 }))
+        }
+        "C.fgetc" => Ok(with_file(as_i64(&a[0])?, &mut |file| {
+            let mut byte = [0u8; 1];
+            match file.read(&mut byte) {
+                Ok(1) => Value::Int(byte[0] as i64),
+                _ => Value::Int(-1),
+            }
+        })),
+        "C.fseek" => {
+            let (id, off, whence) = (as_i64(&a[0])?, as_i64(&a[1])?, as_i64(&a[2])?);
+            let pos = match whence {
+                1 => SeekFrom::Current(off),
+                2 => SeekFrom::End(off),
+                _ => SeekFrom::Start(off.max(0) as u64),
+            };
+            Ok(with_file(id, &mut |file| {
+                Value::Int(if file.seek(pos).is_ok() { 0 } else { -1 })
+            }))
+        }
+        "C.ftell" => Ok(with_file(as_i64(&a[0])?, &mut |file| {
+            Value::Int(file.stream_position().map(|p| p as i64).unwrap_or(-1))
+        })),
+        "C.fputs" => {
+            let bytes = as_bytes(&a[0])?.clone();
+            Ok(with_file(as_i64(&a[1])?, &mut |file| {
+                Value::Int(if file.write_all(&bytes).is_ok() {
+                    0
+                } else {
+                    -1
+                })
+            }))
+        }
+        "C.remove" => {
+            let ok = std::fs::remove_file(str_of(&a[0])?).is_ok();
+            Ok(Value::Int(if ok { 0 } else { -1 }))
+        }
+        "C.write" => {
+            let (fd, bytes, len) = (as_i64(&a[0])?, as_bytes(&a[1])?, as_index(&a[2])?);
+            let slice = &bytes[..len.min(bytes.len())];
+            let wrote = match fd {
+                2 => std::io::stderr().write_all(slice),
+                _ => std::io::stdout().write_all(slice),
+            };
+            Ok(Value::Int(if wrote.is_ok() {
+                slice.len() as i64
+            } else {
+                -1
+            }))
+        }
+        "C.getchar" => {
+            let mut byte = [0u8; 1];
+            match std::io::stdin().read(&mut byte) {
+                Ok(1) => Ok(Value::Int(byte[0] as i64)),
+                _ => Ok(Value::Int(-1)),
+            }
+        }
+        "C.time" => Ok(Value::Int(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        )),
+        _ => Err(fault(format!("unsupported C function `{name}`"))),
+    }
+}
+
+fn str_of(v: &Value) -> Result<String> {
+    Ok(String::from_utf8_lossy(as_bytes(v)?).into_owned())
+}
+
+fn as_i64(v: &Value) -> Result<i64> {
+    match v {
+        Value::Int(n) => Ok(*n),
+        _ => Err(fault("expected an integer")),
     }
 }
 

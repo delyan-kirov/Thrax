@@ -276,6 +276,31 @@ mod tests {
     }
 
     #[test]
+    fn effect_operation_is_bound_and_handler_types_result() {
+        // `get`/`put` are bound from the effect declaration; the `do/ctl` handler
+        // types to the clause/`else` bodies' common type.
+        let src = "@mod M\n\
+                   $ State : @effect = get : {} -> Int, put : Int -> {},\n\
+                   $ tick : {} -> Int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
+                   $ run : Int = do tick {} ctl k is get u = k 0 is put n = k {} else x = x";
+        assert_eq!(type_of(src, "tick"), "{} -> Int");
+        assert_eq!(type_of(src, "run"), "Int");
+    }
+
+    #[test]
+    fn same_operation_in_two_effects_resolves_by_result_type() {
+        // `ask` is declared by two effects (Int and Str result); a bare use is an
+        // overload resolved by how the result is used, and `Effect.op` disambiguates.
+        let src = "@mod M\n\
+                   $ Reader : @effect = ask : {} -> Int,\n\
+                   $ Config : @effect = ask : {} -> Str,\n\
+                   $ n : Int = do (ask {}) + 1 ctl k is Reader.ask u = k 10\n\
+                   $ s : Str = do Config.ask {} ctl k is Config.ask u = k \"hi\"";
+        assert_eq!(type_of(src, "n"), "Int");
+        assert_eq!(type_of(src, "s"), "Str");
+    }
+
+    #[test]
     fn array_primitives_overload_on_array_and_str() {
         let src = "@mod M\n\
                    $ a : Array = array_push (@array.{ 0 }) 65\n\

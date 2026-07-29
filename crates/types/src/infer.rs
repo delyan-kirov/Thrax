@@ -70,12 +70,27 @@ pub struct Checker<'a> {
     structs: HashMap<&'a str, StructInfo<'a>>,
     unions: HashMap<&'a str, UnionInfo<'a>>,
     aliases: HashMap<&'a str, Aol<Ty>>,
-    /// Names with more than one candidate type (built-in arithmetic and any user
-    /// name defined several times).
-    overloads: HashMap<&'a str, Vec<Type>>,
+    /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
+    /// scheme. Used to type a handler clause head, which cannot be resolved by
+    /// inference alone.
+    effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    /// Names with more than one candidate (built-in arithmetic, any user name
+    /// defined several times, and same-named functions imported from several
+    /// modules). Each candidate carries its source module so a resolved use can be
+    /// lowered to a qualified `MOD.name`.
+    overloads: HashMap<&'a str, Vec<Cand<'a>>>,
     /// Overload uses that were ambiguous when first seen. Solved to a fixpoint at
     /// each definition boundary.
-    pending: Vec<Pending>,
+    pending: Vec<Pending<'a>>,
+    /// Names this module defines itself, so a use of one is NOT rewritten to an
+    /// imported module's copy.
+    local_defs: HashSet<&'a str>,
+    /// Single imported values, `name -> module`, so a bare use lowers to the
+    /// owning module even when another loaded module defines the same name.
+    value_module: HashMap<&'a str, &'a str>,
+    /// Bare-call sites resolved to a specific module. Lowering rewrites the
+    /// referenced `Expr::Var` to `MOD.name`.
+    resolved_calls: HashMap<Aol<Expr>, &'a str>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -83,20 +98,47 @@ pub struct Checker<'a> {
     own_values: Vec<(&'a str, Type)>,
     own_overloads: Vec<(&'a str, Vec<Type>)>,
     own_type_names: Vec<&'a str>,
-    /// Value schemes pulled in from imports, finalized once.
-    imported: HashMap<&'a str, Vec<Type>>,
+    /// Value schemes pulled in from imports (with their source module), finalized
+    /// once.
+    imported: HashMap<&'a str, Vec<Cand<'a>>>,
     /// Imported names reachable qualified as `MOD.name`.
     qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
     module_name: &'a str,
+    /// `[..]` literal/pattern nodes the checker resolved to `Array` (a byte
+    /// vector) rather than the default `List`. Lowering reads this to emit array
+    /// construction / destructuring instead of `Cons`/`Nil`.
+    array_exprs: HashSet<Aol<Expr>>,
+    array_pats: HashSet<Aol<Pattern>>,
 }
 
-/// A deferred overload use: its candidate set, the argument types, and the fresh
-/// result variable standing in for the (not-yet-known) result.
-struct Pending {
+/// One candidate of an overloaded name: its type and, for an imported one, the
+/// module that owns it (`None` for a built-in or a definition in this module).
+#[derive(Clone)]
+struct Cand<'a> {
+    ty: Type,
+    module: Option<&'a str>,
+}
+
+impl<'a> Cand<'a> {
+    /// A built-in or effect-operation candidate, owned by no module (never
+    /// rewritten to a qualified reference).
+    fn local(ty: Type) -> Cand<'a> {
+        Cand { ty, module: None }
+    }
+    fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
+        Cand { ty, module }
+    }
+}
+
+/// A deferred overload use: its candidate set, the argument types, the fresh
+/// result variable standing in for the (not-yet-known) result, and the call site
+/// to annotate once it resolves.
+struct Pending<'a> {
     name: String,
-    candidates: Vec<Type>,
+    candidates: Vec<Cand<'a>>,
     args: Vec<Type>,
     result: Type,
+    site: Option<Aol<Expr>>,
 }
 
 /// The outcome of trying a candidate set against argument types.
@@ -115,8 +157,12 @@ impl<'a> Checker<'a> {
             structs: HashMap::new(),
             unions: HashMap::new(),
             aliases: HashMap::new(),
+            effect_ops: HashMap::new(),
             overloads: HashMap::new(),
             pending: Vec::new(),
+            local_defs: HashSet::new(),
+            value_module: HashMap::new(),
+            resolved_calls: HashMap::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -124,9 +170,25 @@ impl<'a> Checker<'a> {
             imported: HashMap::new(),
             qualified: HashMap::new(),
             module_name: "",
+            array_exprs: HashSet::new(),
+            array_pats: HashSet::new(),
         };
         c.install_builtins();
         c
+    }
+
+    /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
+    /// Lowering consults these to choose byte-vector construction/matching over
+    /// the default `List`.
+    pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
+        (&self.array_exprs, &self.array_pats)
+    }
+
+    /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
+    /// Lowering rewrites each to a qualified `MOD.name` so the interpreter reaches
+    /// the intended function rather than a same-named one from another module.
+    pub fn call_modules(&self) -> &HashMap<Aol<Expr>, &'a str> {
+        &self.resolved_calls
     }
 
     // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
@@ -150,6 +212,7 @@ impl<'a> Checker<'a> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
         self.register_types(program);
+        self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
             .items
@@ -163,6 +226,8 @@ impl<'a> Checker<'a> {
                 _ => None,
             })
             .collect();
+
+        self.local_defs = defs.iter().map(|d| d.name).collect();
 
         // A name is overloaded if defined more than once here, or if it adds to an
         // overload already imported.
@@ -183,7 +248,11 @@ impl<'a> Checker<'a> {
             if is_overloaded(d.name) {
                 if let Some(sig) = d.sig {
                     let scheme = self.scheme_of_sig(sig);
-                    self.overloads.entry(d.name).or_default().push(scheme);
+                    let module = self.module_name;
+                    self.overloads
+                        .entry(d.name)
+                        .or_default()
+                        .push(Cand::from(scheme, Some(module)));
                 }
             }
         }
@@ -248,7 +317,10 @@ impl<'a> Checker<'a> {
             let mut qualified = Vec::with_capacity(cands.len());
             for c in cands {
                 let unqualified = self.import_scheme(c);
-                self.imported.entry(name).or_default().push(unqualified);
+                self.imported.entry(name).or_default().push(Cand {
+                    ty: unqualified,
+                    module: Some(module),
+                });
                 qualified.push(self.import_scheme(c));
             }
             self.qualified
@@ -258,7 +330,10 @@ impl<'a> Checker<'a> {
         }
         for (name, scheme) in &other.own_values {
             let unqualified = self.import_scheme(scheme);
-            self.imported.entry(name).or_default().push(unqualified);
+            self.imported.entry(name).or_default().push(Cand {
+                ty: unqualified,
+                module: Some(module),
+            });
             let qualified = self.import_scheme(scheme);
             self.qualified
                 .entry(module)
@@ -273,7 +348,11 @@ impl<'a> Checker<'a> {
             if let Some(existing) = self.overloads.get_mut(name) {
                 existing.extend(cands);
             } else if cands.len() == 1 {
-                self.bind(name, cands.pop().expect("one candidate"));
+                let cand = cands.pop().expect("one candidate");
+                if let Some(module) = cand.module {
+                    self.value_module.insert(name, module);
+                }
+                self.bind(name, cand.ty);
             } else {
                 self.overloads.insert(name, cands);
             }
@@ -310,10 +389,11 @@ impl<'a> Checker<'a> {
             fresh
         } else {
             let inferred = self.infer(def.body)?;
+            let module = self.module_name;
             self.overloads
                 .entry(def.name)
                 .or_default()
-                .push(inferred.clone());
+                .push(Cand::from(inferred.clone(), Some(module)));
             inferred
         };
         self.solve_pending()?;
@@ -465,6 +545,7 @@ impl<'a> Checker<'a> {
                 out
             }
             Expr::List(items) if self.is_array(expected) => {
+                self.array_exprs.insert(e);
                 for item in items.iter() {
                     let t = self.infer(*item)?;
                     self.eng
@@ -559,6 +640,62 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// Register every declared effect's operations. An operation `op : Arg -> Res`
+    /// becomes a value: bound unqualified when a single effect declares that name,
+    /// or an overload when several do (resolved by result type at the use site);
+    /// always reachable qualified as `Effect.op`. Its `Arg -> Res` scheme is also
+    /// kept per effect for handler-clause typing.
+    fn register_effects(&mut self, program: &Program) {
+        let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
+        for item in program.items.iter() {
+            let Item::Effect { name, ops } = item else {
+                continue;
+            };
+            let effect = self.text(*name);
+            let mut op_schemes = HashMap::new();
+            for op in ops.iter() {
+                let op_name = self.text(op.name);
+                let scheme = self.scheme_of_sig(op.ty);
+                op_schemes.insert(op_name, scheme.clone());
+                per_op.entry(op_name).or_default().push(scheme.clone());
+                self.qualified
+                    .entry(effect)
+                    .or_default()
+                    .insert(op_name, vec![scheme]);
+            }
+            self.effect_ops.insert(effect, op_schemes);
+        }
+        for (op_name, mut schemes) in per_op {
+            if schemes.len() == 1 {
+                self.bind(op_name, schemes.pop().expect("one scheme"));
+            } else {
+                self.overloads
+                    .entry(op_name)
+                    .or_default()
+                    .extend(schemes.into_iter().map(Cand::local));
+            }
+        }
+    }
+
+    /// The `Arg -> Res` scheme of an operation named in a handler clause, resolved
+    /// by its explicit effect or, for a bare name, by the unique effect declaring
+    /// it.
+    fn resolve_op_ty(&self, effect: Option<&str>, op: &str) -> Option<Type> {
+        if let Some(e) = effect {
+            return self.effect_ops.get(e).and_then(|ops| ops.get(op)).cloned();
+        }
+        let mut found = None;
+        for ops in self.effect_ops.values() {
+            if let Some(scheme) = ops.get(op) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(scheme.clone());
+            }
+        }
+        found
     }
 
     // -- struct / union typing ----------------------------------------------
@@ -816,7 +953,7 @@ impl<'a> Checker<'a> {
             Expr::Var { module, name } => {
                 let module = module.map(|m| self.text(m));
                 let name = self.text(*name);
-                self.infer_var(module, name)
+                self.infer_var(module, name, e)
             }
 
             Expr::App(..) => self.infer_app(e),
@@ -826,7 +963,7 @@ impl<'a> Checker<'a> {
                 let tl = self.infer(lhs)?;
                 let tr = self.infer(rhs)?;
                 if let Some(cands) = self.overloads.get(op).cloned() {
-                    return self.resolve_overload(op, &cands, &[tl, tr]);
+                    return self.resolve_overload(op, &cands, &[tl, tr], None);
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
                 let op_ty = self.eng.instantiate(&scheme);
@@ -841,7 +978,7 @@ impl<'a> Checker<'a> {
                 let (op, operand) = (self.text(*op), *operand);
                 let t = self.infer(operand)?;
                 if let Some(cands) = self.overloads.get(op).cloned() {
-                    return self.resolve_overload(op, &cands, &[t]);
+                    return self.resolve_overload(op, &cands, &[t], None);
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
                 let op_ty = self.eng.instantiate(&scheme);
@@ -968,11 +1105,10 @@ impl<'a> Checker<'a> {
                 self.leave_scope();
                 t
             }
-            Expr::Handle { body, .. } => {
-                let body = *body;
-                self.infer(body)?;
-                Ok(self.eng.fresh())
-            }
+            Expr::Handle { body, handler } => match handler {
+                None => self.infer(*body),
+                Some(handler) => self.infer_handle(*body, handler),
+            },
             Expr::Defer { cleanup, body } => {
                 let (cleanup, body) = (*cleanup, *body);
                 self.infer(cleanup)?;
@@ -996,14 +1132,73 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Type a `do body ctl k <clauses> [else x = e]` handler. `R` is the result
+    /// of the whole handled computation: every clause body and the `else` body has
+    /// type `R`, and with no `else` the body's own value passes through (`R` is the
+    /// body type). In a clause handling `op : Arg -> Res`, the payload `arg` has
+    /// type `Arg` and the continuation `k` has type `Res -> R` (a deep handler:
+    /// resuming yields the final result).
+    fn infer_handle(&mut self, body: Aol<Expr>, handler: &'a syntax::Handler) -> Result<Type> {
+        let body_ty = self.infer(body)?;
+        let result = self.eng.fresh();
+        for clause in handler.clauses.iter() {
+            let effect = clause.effect.map(|e| self.text(e));
+            let op = self.text(clause.op);
+            let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
+                Some(scheme) => {
+                    let inst = self.eng.instantiate(&scheme);
+                    self.arrow_parts(&inst)?
+                }
+                None => (self.eng.fresh(), self.eng.fresh()),
+            };
+            self.enter_scope();
+            self.bind(self.text(clause.arg), arg_ty);
+            self.bind(
+                self.text(handler.continuation),
+                Type::arrow(res_ty, result.clone()),
+            );
+            let cb = self.infer(clause.body)?;
+            self.eng.unify(&cb, &result, "in a handler clause")?;
+            self.leave_scope();
+        }
+        match &handler.default {
+            Some((name, else_body)) => {
+                self.enter_scope();
+                self.bind(self.text(*name), body_ty);
+                let eb = self.infer(*else_body)?;
+                self.eng.unify(&eb, &result, "in a handler 'else' clause")?;
+                self.leave_scope();
+            }
+            None => self.eng.unify(&body_ty, &result, "in a handled body")?,
+        }
+        Ok(result)
+    }
+
     // -- overloading --------------------------------------------------------
 
-    fn infer_var(&mut self, module: Option<&'a str>, name: &'a str) -> Result<Type> {
+    fn infer_var(
+        &mut self,
+        module: Option<&'a str>,
+        name: &'a str,
+        site: Aol<Expr>,
+    ) -> Result<Type> {
         if let Some(m) = module {
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
                 _ => Ok(self.eng.fresh()),
             };
+        }
+        // Qualify a reference to a global so the interpreter reaches the intended
+        // definition rather than a same-named global from another loaded module.
+        // A local definition resolves to this module; a single imported value to
+        // its owner. Skip names an inner binder shadows, and overloaded names
+        // (resolved instead at the application site).
+        if !self.shadowed_locally(name) && !self.overloads.contains_key(name) {
+            if self.local_defs.contains(name) {
+                self.resolved_calls.insert(site, self.module_name);
+            } else if let Some(m) = self.value_module.get(name).copied() {
+                self.resolved_calls.insert(site, m);
+            }
         }
         if let Some(scheme) = self.lookup(name) {
             Ok(self.eng.instantiate(&scheme))
@@ -1012,6 +1207,12 @@ impl<'a> Checker<'a> {
         } else {
             Err(unbound(name))
         }
+    }
+
+    /// Whether `name` is bound by an inner scope (a lambda/`let`/pattern binder),
+    /// as opposed to the global scope where imports and top-level defs live.
+    fn shadowed_locally(&self, name: &str) -> bool {
+        self.scopes[1..].iter().any(|s| s.contains_key(name))
     }
 
     fn qualified_candidates(&self, module: &str, name: &str) -> Option<Vec<Type>> {
@@ -1031,16 +1232,31 @@ impl<'a> Checker<'a> {
         if let Expr::Var { module, name } = self.node(head) {
             let module = module.map(|m| self.text(m));
             let name = self.text(*name);
-            let cands = match module {
-                Some(m) => self.qualified_candidates(m, name).filter(|c| c.len() > 1),
-                None => self.overloads.get(name).cloned(),
-            };
-            if let Some(cands) = cands {
-                let arg_tys = args
-                    .iter()
-                    .map(|a| self.infer(*a))
-                    .collect::<Result<Vec<_>>>()?;
-                return self.resolve_overload(name, &cands, &arg_tys);
+            match module {
+                // A bare overloaded call: resolve by argument types and record the
+                // winning module so lowering can qualify it.
+                None => {
+                    if let Some(cands) = self.overloads.get(name).cloned() {
+                        let arg_tys = args
+                            .iter()
+                            .map(|a| self.infer(*a))
+                            .collect::<Result<Vec<_>>>()?;
+                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
+                    }
+                }
+                // A qualified call already names its module; resolve among that
+                // module's candidates without needing an annotation.
+                Some(m) => {
+                    if let Some(cands) = self.qualified_candidates(m, name).filter(|c| c.len() > 1)
+                    {
+                        let arg_tys = args
+                            .iter()
+                            .map(|a| self.infer(*a))
+                            .collect::<Result<Vec<_>>>()?;
+                        let cands: Vec<Cand> = cands.into_iter().map(Cand::local).collect();
+                        return self.resolve_overload(name, &cands, &arg_tys, None);
+                    }
+                }
             }
         }
 
@@ -1053,12 +1269,19 @@ impl<'a> Checker<'a> {
         Ok(tf)
     }
 
-    fn resolve_overload(&mut self, name: &str, candidates: &[Type], args: &[Type]) -> Result<Type> {
+    fn resolve_overload(
+        &mut self,
+        name: &str,
+        candidates: &[Cand<'a>],
+        args: &[Type],
+        site: Option<Aol<Expr>>,
+    ) -> Result<Type> {
         let result = self.eng.fresh();
         match self.match_overload(candidates, args, &result) {
             Match::Unique(idx) => {
-                let cand = candidates[idx].clone();
-                self.apply_overload(&cand, args, &result)?;
+                let cand_ty = candidates[idx].ty.clone();
+                self.apply_overload(&cand_ty, args, &result)?;
+                self.record_call(site, candidates[idx].module);
                 Ok(result)
             }
             Match::None => Err(self.no_overload(name, args)),
@@ -1068,18 +1291,27 @@ impl<'a> Checker<'a> {
                     candidates: candidates.to_vec(),
                     args: args.to_vec(),
                     result: result.clone(),
+                    site,
                 });
                 Ok(result)
             }
         }
     }
 
-    fn match_overload(&mut self, candidates: &[Type], args: &[Type], result: &Type) -> Match {
+    /// Note that a bare call `site` resolved to `module`, so lowering can qualify
+    /// it. A builtin/local candidate (`module` is `None`) needs no annotation.
+    fn record_call(&mut self, site: Option<Aol<Expr>>, module: Option<&'a str>) {
+        if let (Some(site), Some(module)) = (site, module) {
+            self.resolved_calls.insert(site, module);
+        }
+    }
+
+    fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: &Type) -> Match {
         let mut matched = None;
         let mut count = 0;
         for (idx, cand) in candidates.iter().enumerate() {
             let save = self.eng.save();
-            let ok = self.apply_overload(cand, args, result).is_ok();
+            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
             self.eng.restore(save);
             if ok {
                 count += 1;
@@ -1101,8 +1333,10 @@ impl<'a> Checker<'a> {
             for p in batch {
                 match self.match_overload(&p.candidates, &p.args, &p.result) {
                     Match::Unique(idx) => {
-                        let cand = p.candidates[idx].clone();
-                        self.apply_overload(&cand, &p.args, &p.result)?;
+                        let cand_ty = p.candidates[idx].ty.clone();
+                        let module = p.candidates[idx].module;
+                        self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                        self.record_call(p.site, module);
                         progress = true;
                     }
                     Match::None => return Err(self.no_overload(&p.name, &p.args)),
@@ -1256,6 +1490,7 @@ impl<'a> Checker<'a> {
                 self.type_pattern(tail, &list)
             }
             Pattern::List { elems, rest } if self.is_array(expected) => {
+                self.array_pats.insert(pat);
                 let rest = *rest;
                 for e in elems.iter() {
                     self.type_pattern(*e, &Type::con(ty::INT))?;
@@ -1438,14 +1673,17 @@ impl<'a> Checker<'a> {
             self.overloads.insert(
                 op,
                 vec![
-                    Type::arrow(int(), Type::arrow(int(), int())),
-                    Type::arrow(real(), Type::arrow(real(), real())),
+                    Cand::local(Type::arrow(int(), Type::arrow(int(), int()))),
+                    Cand::local(Type::arrow(real(), Type::arrow(real(), real()))),
                 ],
             );
         }
         self.overloads.insert(
             "neg",
-            vec![Type::arrow(int(), int()), Type::arrow(real(), real())],
+            vec![
+                Cand::local(Type::arrow(int(), int())),
+                Cand::local(Type::arrow(real(), real())),
+            ],
         );
         self.bind("not", Type::arrow(bool_(), bool_()));
 
@@ -1456,15 +1694,20 @@ impl<'a> Checker<'a> {
                 Type::arrows(params.map(Type::con), Type::con(ret))
             })
         };
-        self.overloads.insert("array_len", prim(&[], false).into());
         self.overloads
-            .insert("array_get", prim(&[ty::INT], false).into());
+            .insert("array_len", prim(&[], false).map(Cand::local).into());
         self.overloads
-            .insert("array_push", prim(&[ty::INT], true).into());
+            .insert("array_get", prim(&[ty::INT], false).map(Cand::local).into());
         self.overloads
-            .insert("array_set", prim(&[ty::INT, ty::INT], true).into());
-        self.overloads
-            .insert("array_slice", prim(&[ty::INT, ty::INT], true).into());
+            .insert("array_push", prim(&[ty::INT], true).map(Cand::local).into());
+        self.overloads.insert(
+            "array_set",
+            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
+        );
+        self.overloads.insert(
+            "array_slice",
+            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
+        );
 
         let vec = |eng: &mut Engine| {
             let t = eng.fresh_generic();
@@ -1651,7 +1894,24 @@ fn free_globals<'a>(
             free_globals(ast, *subject, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);
         }
-        Expr::Handle { body, .. } => free_globals(ast, *body, globals, bound, out),
+        Expr::Handle { body, handler } => {
+            free_globals(ast, *body, globals, bound, out);
+            if let Some(h) = handler {
+                for clause in h.clauses.iter() {
+                    let mark = bound.len();
+                    bound.push(ast.text(clause.arg));
+                    bound.push(ast.text(h.continuation));
+                    free_globals(ast, clause.body, globals, bound, out);
+                    bound.truncate(mark);
+                }
+                if let Some((name, else_body)) = &h.default {
+                    let mark = bound.len();
+                    bound.push(ast.text(*name));
+                    free_globals(ast, *else_body, globals, bound, out);
+                    bound.truncate(mark);
+                }
+            }
+        }
         Expr::Defer { cleanup, body } => {
             free_globals(ast, *cleanup, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);

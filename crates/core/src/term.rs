@@ -101,9 +101,18 @@ pub enum Term {
         body: Arc<Term>,
         handler: Arc<Handler>,
     },
-    /// A form the interpreter does not yet support (`defer`, FFI). It
-    /// raises a runtime fault only if actually forced, so a module may still run
-    /// the globals that avoid it.
+    /// `defer cleanup do body`: run `cleanup` when `body`'s dynamic scope exits.
+    /// That is on normal completion of `body`, when a continuation capturing it is
+    /// resumed to completion, or when a handler abandons such a continuation
+    /// (`cleanup` still runs, under the enclosing handlers). Nested defers run
+    /// innermost-first.
+    Defer {
+        cleanup: Arc<Term>,
+        body: Arc<Term>,
+    },
+    /// A form the interpreter does not yet support (FFI). It raises a runtime
+    /// fault only if actually forced, so a module may still run the globals that
+    /// avoid it.
     Fault(String),
 }
 

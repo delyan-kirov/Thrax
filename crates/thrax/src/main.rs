@@ -175,8 +175,21 @@ fn cmd_run(path: &str) -> ExitCode {
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    if check_all(&ast, &programs, &graph, &loaded.sources).is_err() {
-        return ExitCode::FAILURE;
+    let checkers = match check_all(&ast, &programs, &graph, &loaded.sources) {
+        Ok((checkers, _)) => checkers,
+        Err(_) => return ExitCode::FAILURE,
+    };
+
+    // Collect the checker's resolutions lowering needs: which `[..]` nodes are
+    // `Array`, and which bare calls resolved to a specific module.
+    let mut resolved = core::Resolved::default();
+    for checker in &checkers {
+        let (exprs, pats) = checker.array_nodes();
+        resolved.array_exprs.extend(exprs.iter().copied());
+        resolved.array_pats.extend(pats.iter().copied());
+        for (&site, &module) in checker.call_modules() {
+            resolved.call_modules.insert(site, module.to_string());
+        }
     }
 
     // Lower every module; put the root first so its names win when resolving an
@@ -187,7 +200,7 @@ fn cmd_run(path: &str) -> ExitCode {
     order.sort_by_key(|&i| i != root);
     let lowered: Vec<core::Program> = order
         .iter()
-        .map(|&i| core::lower_program(&ast, &programs[i], &decls))
+        .map(|&i| core::lower_program(&ast, &programs[i], &decls, &resolved))
         .collect();
 
     let entry = ["test", "main"]

@@ -11,3 +11,6 @@ path = "src/lib.rs"
 arena = { path = "../arena" }
 diag = { path = "../diag" }
 syntax = { path = "../syntax" }
+
+[dev-dependencies]
+types = { path = "../types" }

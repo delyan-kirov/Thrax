@@ -13,6 +13,7 @@ dependencies = [
  "arena",
  "diag",
  "syntax",
+ "types",
 ]
 
 [[package]]
