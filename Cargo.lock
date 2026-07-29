@@ -3,57 +3,33 @@
 version = 4
 
 [[package]]
-name = "arena"
+name = "cgen"
 version = "0.1.0"
 
 [[package]]
-name = "core"
+name = "frontend"
 version = "0.1.0"
 dependencies = [
- "arena",
- "diag",
- "syntax",
- "types",
+ "utilities",
 ]
 
 [[package]]
-name = "diag"
-version = "0.1.0"
-
-[[package]]
-name = "lexer"
+name = "interpreter"
 version = "0.1.0"
 dependencies = [
- "arena",
- "diag",
-]
-
-[[package]]
-name = "syntax"
-version = "0.1.0"
-dependencies = [
- "arena",
- "diag",
- "lexer",
+ "frontend",
+ "utilities",
 ]
 
 [[package]]
 name = "thrax"
 version = "0.1.0"
 dependencies = [
- "arena",
- "core",
- "diag",
- "lexer",
- "syntax",
- "types",
+ "frontend",
+ "interpreter",
+ "utilities",
 ]
 
 [[package]]
-name = "types"
+name = "utilities"
 version = "0.1.0"
-dependencies = [
- "arena",
- "diag",
- "syntax",
-]

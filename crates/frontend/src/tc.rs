@@ -1,0 +1,2057 @@
+//! Algorithm W over the [`syntax`] handle-based AST.
+//!
+//! Inference is driven by [`Checker::infer`] (expressions) and
+//! [`Checker::type_pattern`] (patterns), threading the [`Engine`] for
+//! unification and the lexical scope stack for variable types. The AST is read
+//! through a borrowed [`Ast`]: a node handle is resolved with [`Checker::node`] /
+//! [`Checker::tnode`] / [`Checker::pnode`], and an interned name with
+//! [`Checker::text`]. Because `ast` is a shared reference, those resolve to
+//! `'a`-lived data independent of the `&mut self` borrow, so a node can be read
+//! and its children inferred in the same method.
+//!
+//! Global definitions are grouped into strongly-connected components (see
+//! [`utilities::scc`]) and checked in dependency order: members of a component are
+//! bound to fresh monomorphic variables while their bodies are inferred (so self-
+//! and mutual recursion resolve), then the component is generalized before the
+//! components that depend on it (let-polymorphism).
+//!
+//! Structs, unions, aliases, and their generic parameters are registered up
+//! front by [`Checker::register_types`]. Overloaded names (built-in arithmetic,
+//! the `array_*` primitives, and any user name defined several times) are
+//! resolved at each use site by trial unification against the argument and result
+//! types; ambiguous uses are deferred and solved to a fixpoint at the definition
+//! boundary. Definition bodies are checked against their signatures (bidirectional
+//! checking); the monomorphism restriction keeps overload-constrained variables
+//! from being generalized early.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ex_data::{
+    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, Ty,
+};
+use utilities::Aol;
+use utilities::{Code, Diagnostic, Result, Span};
+
+use crate::tc_data::{self as ty, Type, VarId};
+use crate::tc_engine::Engine;
+
+/// A declared struct type. `params` are the implicit type parameters (the type
+/// variables appearing in the fields, in order of first appearance); `fields`
+/// keeps declaration order (which is also the positional-constructor order).
+#[derive(Clone)]
+struct StructInfo<'a> {
+    params: Vec<&'a str>,
+    fields: Vec<(&'a str, Aol<Ty>)>,
+}
+
+/// A declared union type: implicit `params` and one [`VariantSig`] per variant.
+#[derive(Clone)]
+struct UnionInfo<'a> {
+    params: Vec<&'a str>,
+    variants: Vec<VariantSig<'a>>,
+}
+
+/// A union variant: its tag and its (normalized) payload fields, each an optional
+/// name and its declared type.
+#[derive(Clone)]
+struct VariantSig<'a> {
+    tag: &'a str,
+    payload: Vec<(Option<&'a str>, Aol<Ty>)>,
+}
+
+/// A variant's payload instantiated to concrete types: one `(optional-name,
+/// type)` pair per field, in declaration order.
+type VariantPayload<'a> = Vec<(Option<&'a str>, Type)>;
+
+pub struct Checker<'a> {
+    ast: &'a Ast,
+    eng: Engine,
+    scopes: Vec<HashMap<&'a str, Type>>,
+    structs: HashMap<&'a str, StructInfo<'a>>,
+    unions: HashMap<&'a str, UnionInfo<'a>>,
+    aliases: HashMap<&'a str, Aol<Ty>>,
+    /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
+    /// scheme. Used to type a handler clause head, which cannot be resolved by
+    /// inference alone.
+    effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    /// Names with more than one candidate (built-in arithmetic, any user name
+    /// defined several times, and same-named functions imported from several
+    /// modules). Each candidate carries its source module so a resolved use can be
+    /// lowered to a qualified `MOD.name`.
+    overloads: HashMap<&'a str, Vec<Cand<'a>>>,
+    /// Overload uses that were ambiguous when first seen. Solved to a fixpoint at
+    /// each definition boundary.
+    pending: Vec<Pending<'a>>,
+    /// Names this module defines itself, so a use of one is NOT rewritten to an
+    /// imported module's copy.
+    local_defs: HashSet<&'a str>,
+    /// Single imported values, `name -> module`, so a bare use lowers to the
+    /// owning module even when another loaded module defines the same name.
+    value_module: HashMap<&'a str, &'a str>,
+    /// Bare-call sites resolved to a specific module. Lowering rewrites the
+    /// referenced `Expr::Var` to `MOD.name`.
+    resolved_calls: HashMap<Aol<Expr>, &'a str>,
+    /// Type variables introduced by integer literals, which may be Int or Real;
+    /// leftovers default to Int at the definition boundary.
+    numeric: Vec<Type>,
+    /// This module's own exports, recorded after checking.
+    own_values: Vec<(&'a str, Type)>,
+    own_overloads: Vec<(&'a str, Vec<Type>)>,
+    own_type_names: Vec<&'a str>,
+    /// Value schemes pulled in from imports (with their source module), finalized
+    /// once.
+    imported: HashMap<&'a str, Vec<Cand<'a>>>,
+    /// Imported names reachable qualified as `MOD.name`.
+    qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
+    module_name: &'a str,
+    /// `[..]` literal/pattern nodes the checker resolved to `Array` (a byte
+    /// vector) rather than the default `List`. Lowering reads this to emit array
+    /// construction / destructuring instead of `Cons`/`Nil`.
+    array_exprs: HashSet<Aol<Expr>>,
+    array_pats: HashSet<Aol<Pattern>>,
+}
+
+/// One candidate of an overloaded name: its type and, for an imported one, the
+/// module that owns it (`None` for a built-in or a definition in this module).
+#[derive(Clone)]
+struct Cand<'a> {
+    ty: Type,
+    module: Option<&'a str>,
+}
+
+impl<'a> Cand<'a> {
+    /// A built-in or effect-operation candidate, owned by no module (never
+    /// rewritten to a qualified reference).
+    fn local(ty: Type) -> Cand<'a> {
+        Cand { ty, module: None }
+    }
+    fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
+        Cand { ty, module }
+    }
+}
+
+/// A deferred overload use: its candidate set, the argument types, the fresh
+/// result variable standing in for the (not-yet-known) result, and the call site
+/// to annotate once it resolves.
+struct Pending<'a> {
+    name: String,
+    candidates: Vec<Cand<'a>>,
+    args: Vec<Type>,
+    result: Type,
+    site: Option<Aol<Expr>>,
+}
+
+/// The outcome of trying a candidate set against argument types.
+enum Match {
+    Unique(usize),
+    None,
+    Ambiguous,
+}
+
+impl<'a> Checker<'a> {
+    pub fn new(ast: &'a Ast) -> Checker<'a> {
+        let mut c = Checker {
+            ast,
+            eng: Engine::new(),
+            scopes: vec![HashMap::new()],
+            structs: HashMap::new(),
+            unions: HashMap::new(),
+            aliases: HashMap::new(),
+            effect_ops: HashMap::new(),
+            overloads: HashMap::new(),
+            pending: Vec::new(),
+            local_defs: HashSet::new(),
+            value_module: HashMap::new(),
+            resolved_calls: HashMap::new(),
+            numeric: Vec::new(),
+            own_values: Vec::new(),
+            own_overloads: Vec::new(),
+            own_type_names: Vec::new(),
+            imported: HashMap::new(),
+            qualified: HashMap::new(),
+            module_name: "",
+            array_exprs: HashSet::new(),
+            array_pats: HashSet::new(),
+        };
+        c.install_builtins();
+        c
+    }
+
+    /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
+    /// Lowering consults these to choose byte-vector construction/matching over
+    /// the default `List`.
+    pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
+        (&self.array_exprs, &self.array_pats)
+    }
+
+    /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
+    /// Lowering rewrites each to a qualified `MOD.name` so the interpreter reaches
+    /// the intended function rather than a same-named one from another module.
+    pub fn call_modules(&self) -> &HashMap<Aol<Expr>, &'a str> {
+        &self.resolved_calls
+    }
+
+    // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
+
+    fn node(&self, e: Aol<Expr>) -> &'a Expr {
+        self.ast.expr(e)
+    }
+    fn tnode(&self, t: Aol<Ty>) -> &'a Ty {
+        self.ast.ty(t)
+    }
+    fn pnode(&self, p: Aol<Pattern>) -> &'a Pattern {
+        self.ast.pat(p)
+    }
+    fn text(&self, id: utilities::StrId) -> &'a str {
+        self.ast.text(id)
+    }
+
+    /// Check a whole program, returning the inferred (generalized) type of every
+    /// global definition, in source order.
+    pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
+        self.module_name = self.text(program.module);
+        self.finalize_imports();
+        self.register_types(program);
+        self.register_effects(program);
+
+        let defs: Vec<Def<'a>> = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Def { name, sig, body } => Some(Def {
+                    name: self.text(*name),
+                    sig: *sig,
+                    body: *body,
+                }),
+                _ => None,
+            })
+            .collect();
+
+        self.local_defs = defs.iter().map(|d| d.name).collect();
+
+        // A name is overloaded if defined more than once here, or if it adds to an
+        // overload already imported.
+        let mut counts: HashMap<&'a str, usize> = HashMap::new();
+        for d in &defs {
+            *counts.entry(d.name).or_insert(0) += 1;
+        }
+        let mut overloaded_names: HashSet<&'a str> = HashSet::new();
+        for d in &defs {
+            if counts[d.name] > 1 || self.overloads.contains_key(d.name) {
+                overloaded_names.insert(d.name);
+            }
+        }
+        let is_overloaded = |name: &str| overloaded_names.contains(name);
+
+        // Seed each overloaded name's candidates from its declared signatures.
+        for d in &defs {
+            if is_overloaded(d.name) {
+                if let Some(sig) = d.sig {
+                    let scheme = self.scheme_of_sig(sig);
+                    let module = self.module_name;
+                    self.overloads
+                        .entry(d.name)
+                        .or_default()
+                        .push(Cand::from(scheme, Some(module)));
+                }
+            }
+        }
+
+        let singles: Vec<Def<'a>> = defs
+            .iter()
+            .filter(|d| !is_overloaded(d.name))
+            .cloned()
+            .collect();
+        let single_index: HashMap<&'a str, usize> = singles
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.name, i))
+            .collect();
+        let graph = dependency_graph(self.ast, &singles, &single_index);
+
+        let mut types: HashMap<&'a str, Type> = HashMap::new();
+        for component in utilities::scc::scc(&graph) {
+            self.check_component(&component, &singles, &mut types)?;
+        }
+
+        let mut overloaded_out = Vec::new();
+        for d in &defs {
+            if is_overloaded(d.name) {
+                let ty = self.check_overloaded_def(d)?;
+                overloaded_out.push((d.name, ty));
+            }
+        }
+
+        let mut out: Vec<(&'a str, Type)> = defs
+            .iter()
+            .filter(|d| !is_overloaded(d.name))
+            .map(|d| (d.name, types[d.name].clone()))
+            .collect();
+
+        self.own_values = out.clone();
+        let mut own_ov: HashMap<&'a str, Vec<Type>> = HashMap::new();
+        for (name, ty) in &overloaded_out {
+            own_ov.entry(name).or_default().push(ty.clone());
+        }
+        self.own_overloads = own_ov.into_iter().collect();
+
+        out.extend(overloaded_out);
+        Ok(out)
+    }
+
+    /// Import another module's public exports into this checker.
+    pub fn import_from(&mut self, other: &Checker<'a>) {
+        for &name in &other.own_type_names {
+            if let Some(s) = other.structs.get(name) {
+                self.structs.insert(name, s.clone());
+            }
+            if let Some(u) = other.unions.get(name) {
+                self.unions.insert(name, u.clone());
+            }
+            if let Some(a) = other.aliases.get(name) {
+                self.aliases.insert(name, *a);
+            }
+        }
+        let module = other.module_name;
+        for (name, cands) in &other.own_overloads {
+            let mut qualified = Vec::with_capacity(cands.len());
+            for c in cands {
+                let unqualified = self.import_scheme(c);
+                self.imported.entry(name).or_default().push(Cand {
+                    ty: unqualified,
+                    module: Some(module),
+                });
+                qualified.push(self.import_scheme(c));
+            }
+            self.qualified
+                .entry(module)
+                .or_default()
+                .insert(name, qualified);
+        }
+        for (name, scheme) in &other.own_values {
+            let unqualified = self.import_scheme(scheme);
+            self.imported.entry(name).or_default().push(Cand {
+                ty: unqualified,
+                module: Some(module),
+            });
+            let qualified = self.import_scheme(scheme);
+            self.qualified
+                .entry(module)
+                .or_default()
+                .insert(name, vec![qualified]);
+        }
+    }
+
+    fn finalize_imports(&mut self) {
+        let imported = std::mem::take(&mut self.imported);
+        for (name, mut cands) in imported {
+            if let Some(existing) = self.overloads.get_mut(name) {
+                existing.extend(cands);
+            } else if cands.len() == 1 {
+                let cand = cands.pop().expect("one candidate");
+                if let Some(module) = cand.module {
+                    self.value_module.insert(name, module);
+                }
+                self.bind(name, cand.ty);
+            } else {
+                self.overloads.insert(name, cands);
+            }
+        }
+    }
+
+    fn import_scheme(&mut self, ty: &Type) -> Type {
+        let mut map = HashMap::new();
+        self.import_ty(ty, &mut map)
+    }
+
+    fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
+        match ty {
+            Type::Var(id) => map
+                .entry(*id)
+                .or_insert_with(|| self.eng.fresh_generic())
+                .clone(),
+            Type::Con(name) => Type::Con(name.clone()),
+            Type::App(head, arg) => Type::app(self.import_ty(head, map), self.import_ty(arg, map)),
+            Type::Arrow(from, to) => {
+                Type::arrow(self.import_ty(from, map), self.import_ty(to, map))
+            }
+            Type::Tuple(items) => {
+                Type::Tuple(items.iter().map(|t| self.import_ty(t, map)).collect())
+            }
+        }
+    }
+
+    fn check_overloaded_def(&mut self, def: &Def<'a>) -> Result<Type> {
+        self.eng.enter_level();
+        let result = if def.sig.is_some() {
+            let fresh = self.eng.fresh();
+            self.check_def_body(def, &fresh)?;
+            fresh
+        } else {
+            let inferred = self.infer(def.body)?;
+            let module = self.module_name;
+            self.overloads
+                .entry(def.name)
+                .or_default()
+                .push(Cand::from(inferred.clone(), Some(module)));
+            inferred
+        };
+        self.solve_pending()?;
+        self.eng.leave_level();
+        let mono = self.pending_vars();
+        self.eng.generalize_except(&result, &mono);
+        Ok(self.eng.zonk(&result))
+    }
+
+    fn scheme_of_sig(&mut self, sig: Aol<Ty>) -> Type {
+        self.eng.enter_level();
+        let mut tvars = HashMap::new();
+        let ty = self.ty_of_ast(sig, &mut tvars);
+        self.eng.leave_level();
+        self.eng.generalize(&ty);
+        self.eng.zonk(&ty)
+    }
+
+    fn check_component(
+        &mut self,
+        component: &[usize],
+        defs: &[Def<'a>],
+        types: &mut HashMap<&'a str, Type>,
+    ) -> Result<()> {
+        self.eng.enter_level();
+        let mut declared = Vec::with_capacity(component.len());
+        for &i in component {
+            let v = self.eng.fresh();
+            self.bind(defs[i].name, v.clone());
+            declared.push(v);
+        }
+        for (&i, decl) in component.iter().zip(&declared) {
+            self.check_def_body(&defs[i], decl)?;
+        }
+        self.solve_pending()?;
+        self.eng.leave_level();
+        let mono = self.pending_vars();
+        for (&i, decl) in component.iter().zip(&declared) {
+            self.eng.generalize_except(decl, &mono);
+            types.insert(defs[i].name, self.eng.zonk(decl));
+        }
+        Ok(())
+    }
+
+    fn check_def_body(&mut self, def: &Def<'a>, decl: &Type) -> Result<()> {
+        if let Some(sig) = def.sig {
+            let mut tvars = HashMap::new();
+            let sig_ty = self.ty_of_ast(sig, &mut tvars);
+            self.eng.unify(
+                decl,
+                &sig_ty,
+                &format!("against the signature of `{}`", def.name),
+            )?;
+            self.check_body_against_sig(def.body, sig, &sig_ty)
+        } else {
+            let inferred = self.infer(def.body)?;
+            self.eng.unify(
+                decl,
+                &inferred,
+                &format!("in the definition of `{}`", def.name),
+            )
+        }
+    }
+
+    /// Check a body against its signature, implicitly consuming leading record
+    /// parameters (`{x: Int, y: Int}` binds its fields directly; a `with` field
+    /// also scopes its struct's fields).
+    fn check_body_against_sig(
+        &mut self,
+        body: Aol<Expr>,
+        sig: Aol<Ty>,
+        sig_ty: &Type,
+    ) -> Result<()> {
+        let fields = match self.tnode(sig) {
+            Ty::Arrow { from, .. } if matches!(self.tnode(*from), Ty::Record(_)) => {
+                let Ty::Record(fields) = self.tnode(*from) else {
+                    unreachable!("guarded on a record parameter")
+                };
+                fields
+            }
+            _ => return self.check(body, sig_ty),
+        };
+        let to = match self.tnode(sig) {
+            Ty::Arrow { to, .. } => *to,
+            _ => unreachable!("guarded on an arrow above"),
+        };
+        let (param_ty, result_ty) = self.arrow_parts(sig_ty)?;
+        self.enter_scope();
+        self.bind_record_param(fields, &param_ty)?;
+        let out = self.check_body_against_sig(body, to, &result_ty);
+        self.leave_scope();
+        out
+    }
+
+    fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: &Type) -> Result<()> {
+        if fields.len() == 1 {
+            let f = &fields[0];
+            self.bind(self.text(f.name), param_ty.clone());
+            if f.with {
+                self.scope_struct_fields(param_ty)?;
+            }
+            return Ok(());
+        }
+        let comps = match self.eng.resolve(param_ty) {
+            Type::Tuple(v) => v,
+            _ => {
+                let vs: Vec<Type> = fields.iter().map(|_| self.eng.fresh()).collect();
+                self.eng
+                    .unify(param_ty, &Type::Tuple(vs.clone()), "in a record parameter")?;
+                vs
+            }
+        };
+        for (f, comp) in fields.iter().zip(&comps) {
+            self.bind(self.text(f.name), comp.clone());
+            if f.with {
+                self.scope_struct_fields(comp)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn scope_struct_fields(&mut self, ty: &Type) -> Result<()> {
+        let (head, args) = self.spine(ty);
+        if let Type::Con(name) = &head {
+            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+                let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                for (fname, fty) in &info.fields {
+                    let field_ty = self.ty_of_ast(*fty, &mut subst);
+                    self.bind(fname, field_ty);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check an expression against an expected type (the checking direction).
+    fn check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<()> {
+        match self.node(e) {
+            Expr::Lambda { params, body } => {
+                self.enter_scope();
+                let mut exp = expected.clone();
+                for p in params.iter() {
+                    let (param_ty, rest) = self.arrow_parts(&exp)?;
+                    self.type_pattern(*p, &param_ty)?;
+                    exp = rest;
+                }
+                let out = self.check(*body, &exp);
+                self.leave_scope();
+                out
+            }
+            Expr::List(items) if self.is_array(expected) => {
+                self.array_exprs.insert(e);
+                for item in items.iter() {
+                    let t = self.infer(*item)?;
+                    self.eng
+                        .unify(&t, &Type::con(ty::INT), "in an array element")?;
+                }
+                Ok(())
+            }
+            _ => {
+                let got = self.infer(e)?;
+                self.eng.unify(&got, expected, "against the expected type")
+            }
+        }
+    }
+
+    fn is_array(&self, ty: &Type) -> bool {
+        matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
+    }
+
+    fn arrow_parts(&mut self, ty: &Type) -> Result<(Type, Type)> {
+        match self.eng.resolve(ty) {
+            Type::Arrow(from, to) => Ok((*from, *to)),
+            other => {
+                let from = self.eng.fresh();
+                let to = self.eng.fresh();
+                self.eng.unify(
+                    &other,
+                    &Type::arrow(from.clone(), to.clone()),
+                    "expected a function",
+                )?;
+                Ok((from, to))
+            }
+        }
+    }
+
+    fn pending_vars(&self) -> HashSet<VarId> {
+        let mut out = HashSet::new();
+        for p in &self.pending {
+            for a in &p.args {
+                self.eng.collect_vars(a, &mut out);
+            }
+            self.eng.collect_vars(&p.result, &mut out);
+        }
+        for t in &self.numeric {
+            self.eng.collect_vars(t, &mut out);
+        }
+        out
+    }
+
+    // -- type declarations --------------------------------------------------
+
+    fn register_types(&mut self, program: &Program) {
+        for item in program.items.iter() {
+            match item {
+                Item::Struct { name, fields } => {
+                    let mut params = Vec::new();
+                    for f in fields.iter() {
+                        collect_tyvars(self.ast, f.ty, &mut params);
+                    }
+                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
+                    let name = self.text(*name);
+                    self.structs.insert(name, StructInfo { params, fields });
+                    self.own_type_names.push(name);
+                }
+                Item::Union { name, variants } => {
+                    let mut params = Vec::new();
+                    let mut vs = Vec::with_capacity(variants.len());
+                    for v in variants.iter() {
+                        let payload = payload_fields(self.ast, &v.payload);
+                        for (_, ty) in &payload {
+                            collect_tyvars(self.ast, *ty, &mut params);
+                        }
+                        vs.push(VariantSig {
+                            tag: self.text(v.tag),
+                            payload,
+                        });
+                    }
+                    let name = self.text(*name);
+                    self.unions.insert(
+                        name,
+                        UnionInfo {
+                            params,
+                            variants: vs,
+                        },
+                    );
+                    self.own_type_names.push(name);
+                }
+                Item::Alias { name, ty } => {
+                    let name = self.text(*name);
+                    self.aliases.insert(name, *ty);
+                    self.own_type_names.push(name);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Register every declared effect's operations. An operation `op : Arg -> Res`
+    /// becomes a value: bound unqualified when a single effect declares that name,
+    /// or an overload when several do (resolved by result type at the use site);
+    /// always reachable qualified as `Effect.op`. Its `Arg -> Res` scheme is also
+    /// kept per effect for handler-clause typing.
+    fn register_effects(&mut self, program: &Program) {
+        let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
+        for item in program.items.iter() {
+            let Item::Effect { name, ops } = item else {
+                continue;
+            };
+            let effect = self.text(*name);
+            let mut op_schemes = HashMap::new();
+            for op in ops.iter() {
+                let op_name = self.text(op.name);
+                let scheme = self.scheme_of_sig(op.ty);
+                op_schemes.insert(op_name, scheme.clone());
+                per_op.entry(op_name).or_default().push(scheme.clone());
+                self.qualified
+                    .entry(effect)
+                    .or_default()
+                    .insert(op_name, vec![scheme]);
+            }
+            self.effect_ops.insert(effect, op_schemes);
+        }
+        for (op_name, mut schemes) in per_op {
+            if schemes.len() == 1 {
+                self.bind(op_name, schemes.pop().expect("one scheme"));
+            } else {
+                self.overloads
+                    .entry(op_name)
+                    .or_default()
+                    .extend(schemes.into_iter().map(Cand::local));
+            }
+        }
+    }
+
+    /// The `Arg -> Res` scheme of an operation named in a handler clause, resolved
+    /// by its explicit effect or, for a bare name, by the unique effect declaring
+    /// it.
+    fn resolve_op_ty(&self, effect: Option<&str>, op: &str) -> Option<Type> {
+        if let Some(e) = effect {
+            return self.effect_ops.get(e).and_then(|ops| ops.get(op)).cloned();
+        }
+        let mut found = None;
+        for ops in self.effect_ops.values() {
+            if let Some(scheme) = ops.get(op) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(scheme.clone());
+            }
+        }
+        found
+    }
+
+    // -- struct / union typing ----------------------------------------------
+
+    fn infer_field(&mut self, rec_ty: &Type, field: &str) -> Result<Type> {
+        let (head, args) = self.spine(rec_ty);
+        if let Type::Con(name) = &head {
+            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+                let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                if let Some((_, ty)) = info.fields.iter().find(|(n, _)| *n == field) {
+                    return Ok(self.ty_of_ast(*ty, &mut subst));
+                }
+            }
+        }
+        if let Type::Tuple(items) = &head {
+            if let Ok(idx) = field.parse::<usize>() {
+                if let Some(t) = items.get(idx) {
+                    return Ok(t.clone());
+                }
+            }
+        }
+        Ok(self.eng.fresh())
+    }
+
+    fn infer_struct_lit(
+        &mut self,
+        ty: Option<&'a str>,
+        fields: &'a [FieldInit],
+        spread: Option<Aol<Expr>>,
+    ) -> Result<Type> {
+        let (info, result, mut subst) = if let Some(base) = spread {
+            let base_ty = self.infer(base)?;
+            let (head, args) = self.spine(&base_ty);
+            match &head {
+                Type::Con(n) if self.structs.contains_key(n.as_str()) => {
+                    let info = self.structs[n.as_str()].clone();
+                    let subst = subst_from_args(&info.params, &args, &mut self.eng);
+                    (info, base_ty, subst)
+                }
+                _ => {
+                    self.infer_field_inits(fields)?;
+                    return Ok(base_ty);
+                }
+            }
+        } else {
+            let resolved = match ty {
+                Some(n) => self.structs.get(n).cloned().map(|info| (n, info)),
+                None => self.resolve_struct_by_fields(fields),
+            };
+            match resolved {
+                Some((name, info)) => {
+                    let (args, subst) = self.instantiate_params(&info.params);
+                    (info, applied(name, &args), subst)
+                }
+                None => {
+                    self.infer_field_inits(fields)?;
+                    return Ok(self.eng.fresh());
+                }
+            }
+        };
+
+        for (i, fi) in fields.iter().enumerate() {
+            let (decl_ty, value) = match fi {
+                FieldInit::Named { name, value } => {
+                    let name = self.text(*name);
+                    match info.fields.iter().find(|(n, _)| *n == name) {
+                        Some((_, t)) => (*t, *value),
+                        None => {
+                            self.infer(*value)?;
+                            continue;
+                        }
+                    }
+                }
+                FieldInit::Positional(value) => match info.fields.get(i) {
+                    Some((_, t)) => (*t, *value),
+                    None => {
+                        self.infer(*value)?;
+                        continue;
+                    }
+                },
+            };
+            let want = self.ty_of_ast(decl_ty, &mut subst);
+            let got = self.infer(value)?;
+            self.eng.unify(&got, &want, "in a struct field")?;
+        }
+        Ok(result)
+    }
+
+    fn infer_variant(
+        &mut self,
+        ty: Option<&'a str>,
+        tag: &'a str,
+        fields: &'a [FieldInit],
+    ) -> Result<Type> {
+        let resolved = match ty {
+            Some(n) => self.variant_sig(n, tag),
+            None => self
+                .find_union_by_tag(tag)
+                .and_then(|u| self.variant_sig(u, tag)),
+        };
+        let (result, payload) = match resolved {
+            Some(r) => r,
+            None => {
+                self.infer_field_inits(fields)?;
+                return Ok(self.eng.fresh());
+            }
+        };
+        for (i, fi) in fields.iter().enumerate() {
+            let (want, value) = match fi {
+                FieldInit::Named { name, value } => (
+                    variant_field_ty(&payload, Some(self.text(*name)), i),
+                    *value,
+                ),
+                FieldInit::Positional(value) => (variant_field_ty(&payload, None, i), *value),
+            };
+            let got = self.infer(value)?;
+            if let Some(want) = want {
+                self.eng.unify(&got, &want, "in a variant payload")?;
+            }
+        }
+        Ok(result)
+    }
+
+    fn variant_sig(&mut self, union: &str, tag: &str) -> Option<(Type, VariantPayload<'a>)> {
+        if union == ty::LIST {
+            let elem = self.eng.fresh();
+            let list = Type::app(Type::con(ty::LIST), elem.clone());
+            return match tag {
+                "Nil" => Some((list, vec![])),
+                "Cons" => Some((list.clone(), vec![(None, elem), (None, list)])),
+                _ => None,
+            };
+        }
+        let info = self.unions.get(union)?.clone();
+        let pos = info.variants.iter().position(|v| v.tag == tag)?;
+        let (args, mut subst) = self.instantiate_params(&info.params);
+        let result = applied(union, &args);
+        let variant = &info.variants[pos];
+        let payload = variant
+            .payload
+            .clone()
+            .into_iter()
+            .map(|(name, ast_ty)| (name, self.ty_of_ast(ast_ty, &mut subst)))
+            .collect();
+        Some((result, payload))
+    }
+
+    fn find_union_by_tag(&self, tag: &str) -> Option<&'a str> {
+        let user = self
+            .unions
+            .iter()
+            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name));
+        user.or(match tag {
+            "Nil" | "Cons" => Some(ty::LIST),
+            _ => None,
+        })
+    }
+
+    fn resolve_struct_by_fields(&self, fields: &[FieldInit]) -> Option<(&'a str, StructInfo<'a>)> {
+        let mut names = Vec::with_capacity(fields.len());
+        for f in fields {
+            match f {
+                FieldInit::Named { name, .. } => names.push(self.text(*name)),
+                FieldInit::Positional(_) => return None,
+            }
+        }
+        self.structs.iter().find_map(|(sname, info)| {
+            let same = info.fields.len() == names.len()
+                && names
+                    .iter()
+                    .all(|n| info.fields.iter().any(|(f, _)| f == n));
+            same.then(|| (*sname, info.clone()))
+        })
+    }
+
+    fn struct_field_ty(
+        &mut self,
+        info: &StructInfo<'a>,
+        subst: &mut HashMap<&'a str, Type>,
+        name: Option<&str>,
+        index: usize,
+    ) -> Option<Type> {
+        let ast_ty = match name {
+            Some(name) => info
+                .fields
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, t)| *t),
+            None => info.fields.get(index).map(|(_, t)| *t),
+        }?;
+        Some(self.ty_of_ast(ast_ty, subst))
+    }
+
+    fn instantiate_params(&mut self, params: &[&'a str]) -> (Vec<Type>, HashMap<&'a str, Type>) {
+        let mut subst = HashMap::new();
+        let mut args = Vec::with_capacity(params.len());
+        for p in params {
+            let v = self.eng.fresh();
+            subst.insert(*p, v.clone());
+            args.push(v);
+        }
+        (args, subst)
+    }
+
+    fn spine(&self, ty: &Type) -> (Type, Vec<Type>) {
+        let mut args = Vec::new();
+        let mut cur = self.eng.resolve(ty);
+        while let Type::App(head, arg) = cur {
+            args.push(self.eng.resolve(&arg));
+            cur = self.eng.resolve(&head);
+        }
+        args.reverse();
+        (cur, args)
+    }
+
+    // -- environment --------------------------------------------------------
+
+    pub fn show(&self, ty: &Type) -> String {
+        self.eng.show(ty)
+    }
+
+    fn bind(&mut self, name: &'a str, ty: Type) {
+        self.scopes
+            .last_mut()
+            .expect("a scope is always open")
+            .insert(name, ty);
+    }
+
+    fn lookup(&self, name: &str) -> Option<Type> {
+        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+    fn leave_scope(&mut self) {
+        self.scopes.pop();
+        debug_assert!(!self.scopes.is_empty(), "popped the global scope");
+    }
+
+    // -- expression inference ----------------------------------------------
+
+    pub fn infer(&mut self, e: Aol<Expr>) -> Result<Type> {
+        match self.node(e) {
+            Expr::Int(_) => {
+                let t = self.eng.fresh();
+                self.numeric.push(t.clone());
+                Ok(t)
+            }
+            Expr::Real(_) => Ok(Type::con(ty::REAL)),
+            Expr::Str(_) => Ok(Type::con(ty::STR)),
+            Expr::Bool(_) => Ok(Type::con(ty::BOOL)),
+            Expr::Unit => Ok(Type::con(ty::UNIT)),
+
+            Expr::Var { module, name } => {
+                let module = module.map(|m| self.text(m));
+                let name = self.text(*name);
+                self.infer_var(module, name, e)
+            }
+
+            Expr::App(..) => self.infer_app(e),
+
+            Expr::BinOp { op, lhs, rhs } => {
+                let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
+                let tl = self.infer(lhs)?;
+                let tr = self.infer(rhs)?;
+                if let Some(cands) = self.overloads.get(op).cloned() {
+                    return self.resolve_overload(op, &cands, &[tl, tr], None);
+                }
+                let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
+                let op_ty = self.eng.instantiate(&scheme);
+                let result = self.eng.fresh();
+                let want = Type::arrow(tl, Type::arrow(tr, result.clone()));
+                self.eng
+                    .unify(&op_ty, &want, &format!("in operator `{op}`"))?;
+                Ok(result)
+            }
+
+            Expr::UnOp { op, operand } => {
+                let (op, operand) = (self.text(*op), *operand);
+                let t = self.infer(operand)?;
+                if let Some(cands) = self.overloads.get(op).cloned() {
+                    return self.resolve_overload(op, &cands, &[t], None);
+                }
+                let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
+                let op_ty = self.eng.instantiate(&scheme);
+                let result = self.eng.fresh();
+                self.eng.unify(
+                    &op_ty,
+                    &Type::arrow(t, result.clone()),
+                    &format!("in unary `{op}`"),
+                )?;
+                Ok(result)
+            }
+
+            Expr::Tuple(items) => {
+                let mut tys = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    tys.push(self.infer(*item)?);
+                }
+                Ok(Type::Tuple(tys))
+            }
+
+            Expr::List(items) => {
+                let elem = self.eng.fresh();
+                for item in items.iter() {
+                    let t = self.infer(*item)?;
+                    self.eng.unify(&elem, &t, "in a list literal")?;
+                }
+                Ok(Type::app(Type::con(ty::LIST), elem))
+            }
+
+            Expr::If { cond, then, alt } => {
+                let (cond, then, alt) = (*cond, *then, *alt);
+                let tc = self.infer(cond)?;
+                self.eng
+                    .unify(&tc, &Type::con(ty::BOOL), "in an 'if' condition")?;
+                let tt = self.infer(then)?;
+                let ta = self.infer(alt)?;
+                self.eng
+                    .unify(&tt, &ta, "between the branches of an 'if'")?;
+                Ok(tt)
+            }
+
+            Expr::Let { bindings, body } => {
+                let body = *body;
+                self.enter_scope();
+                self.infer_let_group(bindings)?;
+                let t = self.infer(body);
+                self.leave_scope();
+                t
+            }
+
+            Expr::Lambda { params, body } => {
+                let body = *body;
+                self.enter_scope();
+                let mut param_tys = Vec::with_capacity(params.len());
+                for p in params.iter() {
+                    let pv = self.eng.fresh();
+                    self.type_pattern(*p, &pv)?;
+                    param_tys.push(pv);
+                }
+                let body_ty = self.infer(body)?;
+                self.leave_scope();
+                Ok(Type::arrows(param_tys.into_iter(), body_ty))
+            }
+
+            Expr::Match {
+                scrut,
+                arms,
+                default,
+            } => {
+                let (scrut, default) = (*scrut, *default);
+                let ts = self.infer(scrut)?;
+                let result = self.eng.fresh();
+                for arm in arms.iter() {
+                    self.enter_scope();
+                    for pat in arm.patterns.iter() {
+                        self.type_pattern(*pat, &ts)?;
+                    }
+                    if let Some(guard) = arm.guard {
+                        let tg = self.infer(guard)?;
+                        self.eng
+                            .unify(&tg, &Type::con(ty::BOOL), "in a match guard")?;
+                    }
+                    let tb = self.infer(arm.body)?;
+                    self.eng.unify(&result, &tb, "between match arms")?;
+                    self.leave_scope();
+                }
+                if let Some(d) = default {
+                    let td = self.infer(d)?;
+                    self.eng.unify(&result, &td, "in a match 'else' branch")?;
+                }
+                Ok(result)
+            }
+
+            Expr::Field { record, name } => {
+                let (record, name) = (*record, self.text(*name));
+                let rec_ty = self.infer(record)?;
+                self.infer_field(&rec_ty, name)
+            }
+            Expr::StructLit { ty, fields, spread } => {
+                let ty = ty.map(|t| self.text(t));
+                self.infer_struct_lit(ty, fields, *spread)
+            }
+            Expr::Variant {
+                ty, tag, fields, ..
+            } => {
+                let ty = ty.map(|t| self.text(t));
+                let tag = self.text(*tag);
+                self.infer_variant(ty, tag, fields)
+            }
+
+            Expr::Array { size } => {
+                let size = *size;
+                let ts = self.infer(size)?;
+                self.eng
+                    .unify(&ts, &Type::con(ty::INT), "in an array size")?;
+                Ok(Type::con(ty::ARRAY))
+            }
+            Expr::With { subject, body } => {
+                let (subject, body) = (*subject, *body);
+                let subject_ty = self.infer(subject)?;
+                self.enter_scope();
+                self.scope_struct_fields(&subject_ty)?;
+                let t = self.infer(body);
+                self.leave_scope();
+                t
+            }
+            Expr::Handle { body, handler } => match handler {
+                None => self.infer(*body),
+                Some(handler) => self.infer_handle(*body, handler),
+            },
+            Expr::Defer { cleanup, body } => {
+                let (cleanup, body) = (*cleanup, *body);
+                self.infer(cleanup)?;
+                self.infer(body)
+            }
+            Expr::Extern { .. } => Ok(self.eng.fresh()),
+        }
+    }
+
+    fn infer_field_inits(&mut self, fields: &'a [FieldInit]) -> Result<()> {
+        for f in fields {
+            match f {
+                FieldInit::Named { value, .. } => {
+                    self.infer(*value)?;
+                }
+                FieldInit::Positional(v) => {
+                    self.infer(*v)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Type a `do body ctl k <clauses> [else x = e]` handler. `R` is the result
+    /// of the whole handled computation: every clause body and the `else` body has
+    /// type `R`, and with no `else` the body's own value passes through (`R` is the
+    /// body type). In a clause handling `op : Arg -> Res`, the payload `arg` has
+    /// type `Arg` and the continuation `k` has type `Res -> R` (a deep handler:
+    /// resuming yields the final result).
+    fn infer_handle(
+        &mut self,
+        body: Aol<Expr>,
+        handler: &'a crate::ex_data::Handler,
+    ) -> Result<Type> {
+        let body_ty = self.infer(body)?;
+        let result = self.eng.fresh();
+        for clause in handler.clauses.iter() {
+            let effect = clause.effect.map(|e| self.text(e));
+            let op = self.text(clause.op);
+            let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
+                Some(scheme) => {
+                    let inst = self.eng.instantiate(&scheme);
+                    self.arrow_parts(&inst)?
+                }
+                None => (self.eng.fresh(), self.eng.fresh()),
+            };
+            self.enter_scope();
+            self.bind(self.text(clause.arg), arg_ty);
+            self.bind(
+                self.text(handler.continuation),
+                Type::arrow(res_ty, result.clone()),
+            );
+            let cb = self.infer(clause.body)?;
+            self.eng.unify(&cb, &result, "in a handler clause")?;
+            self.leave_scope();
+        }
+        match &handler.default {
+            Some((name, else_body)) => {
+                self.enter_scope();
+                self.bind(self.text(*name), body_ty);
+                let eb = self.infer(*else_body)?;
+                self.eng.unify(&eb, &result, "in a handler 'else' clause")?;
+                self.leave_scope();
+            }
+            None => self.eng.unify(&body_ty, &result, "in a handled body")?,
+        }
+        Ok(result)
+    }
+
+    // -- overloading --------------------------------------------------------
+
+    fn infer_var(
+        &mut self,
+        module: Option<&'a str>,
+        name: &'a str,
+        site: Aol<Expr>,
+    ) -> Result<Type> {
+        if let Some(m) = module {
+            return match self.qualified_candidates(m, name) {
+                Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
+                _ => Ok(self.eng.fresh()),
+            };
+        }
+        // Qualify a reference to a global so the interpreter reaches the intended
+        // definition rather than a same-named global from another loaded module.
+        // A local definition resolves to this module; a single imported value to
+        // its owner. Skip names an inner binder shadows, and overloaded names
+        // (resolved instead at the application site).
+        if !self.shadowed_locally(name) && !self.overloads.contains_key(name) {
+            if self.local_defs.contains(name) {
+                self.resolved_calls.insert(site, self.module_name);
+            } else if let Some(m) = self.value_module.get(name).copied() {
+                self.resolved_calls.insert(site, m);
+            }
+        }
+        if let Some(scheme) = self.lookup(name) {
+            Ok(self.eng.instantiate(&scheme))
+        } else if self.overloads.contains_key(name) {
+            Ok(self.eng.fresh())
+        } else {
+            Err(unbound(name))
+        }
+    }
+
+    /// Whether `name` is bound by an inner scope (a lambda/`let`/pattern binder),
+    /// as opposed to the global scope where imports and top-level defs live.
+    fn shadowed_locally(&self, name: &str) -> bool {
+        self.scopes[1..].iter().any(|s| s.contains_key(name))
+    }
+
+    fn qualified_candidates(&self, module: &str, name: &str) -> Option<Vec<Type>> {
+        self.qualified.get(module)?.get(name).cloned()
+    }
+
+    fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
+        let mut args_rev = Vec::new();
+        let mut head = e;
+        while let Expr::App(f, x) = self.node(head) {
+            args_rev.push(*x);
+            head = *f;
+        }
+        args_rev.reverse();
+        let args = args_rev;
+
+        if let Expr::Var { module, name } = self.node(head) {
+            let module = module.map(|m| self.text(m));
+            let name = self.text(*name);
+            match module {
+                // A bare overloaded call: resolve by argument types and record the
+                // winning module so lowering can qualify it.
+                None => {
+                    if let Some(cands) = self.overloads.get(name).cloned() {
+                        let arg_tys = args
+                            .iter()
+                            .map(|a| self.infer(*a))
+                            .collect::<Result<Vec<_>>>()?;
+                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
+                    }
+                }
+                // A qualified call already names its module; resolve among that
+                // module's candidates without needing an annotation.
+                Some(m) => {
+                    if let Some(cands) = self.qualified_candidates(m, name).filter(|c| c.len() > 1)
+                    {
+                        let arg_tys = args
+                            .iter()
+                            .map(|a| self.infer(*a))
+                            .collect::<Result<Vec<_>>>()?;
+                        let cands: Vec<Cand> = cands.into_iter().map(Cand::local).collect();
+                        return self.resolve_overload(name, &cands, &arg_tys, None);
+                    }
+                }
+            }
+        }
+
+        let mut tf = self.infer(head)?;
+        for a in &args {
+            let (param, result) = self.arrow_parts(&tf)?;
+            self.check(*a, &param)?;
+            tf = result;
+        }
+        Ok(tf)
+    }
+
+    fn resolve_overload(
+        &mut self,
+        name: &str,
+        candidates: &[Cand<'a>],
+        args: &[Type],
+        site: Option<Aol<Expr>>,
+    ) -> Result<Type> {
+        let result = self.eng.fresh();
+        match self.match_overload(candidates, args, &result) {
+            Match::Unique(idx) => {
+                let cand_ty = candidates[idx].ty.clone();
+                self.apply_overload(&cand_ty, args, &result)?;
+                self.record_call(site, candidates[idx].module);
+                Ok(result)
+            }
+            Match::None => Err(self.no_overload(name, args)),
+            Match::Ambiguous => {
+                self.pending.push(Pending {
+                    name: name.to_string(),
+                    candidates: candidates.to_vec(),
+                    args: args.to_vec(),
+                    result: result.clone(),
+                    site,
+                });
+                Ok(result)
+            }
+        }
+    }
+
+    /// Note that a bare call `site` resolved to `module`, so lowering can qualify
+    /// it. A builtin/local candidate (`module` is `None`) needs no annotation.
+    fn record_call(&mut self, site: Option<Aol<Expr>>, module: Option<&'a str>) {
+        if let (Some(site), Some(module)) = (site, module) {
+            self.resolved_calls.insert(site, module);
+        }
+    }
+
+    fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: &Type) -> Match {
+        let mut matched = None;
+        let mut count = 0;
+        for (idx, cand) in candidates.iter().enumerate() {
+            let save = self.eng.save();
+            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                matched = Some(idx);
+            }
+        }
+        match count {
+            1 => Match::Unique(matched.expect("a match was recorded")),
+            0 => Match::None,
+            _ => Match::Ambiguous,
+        }
+    }
+
+    fn solve_pending(&mut self) -> Result<()> {
+        loop {
+            let batch = std::mem::take(&mut self.pending);
+            let mut progress = false;
+            let mut still = Vec::new();
+            for p in batch {
+                match self.match_overload(&p.candidates, &p.args, &p.result) {
+                    Match::Unique(idx) => {
+                        let cand_ty = p.candidates[idx].ty.clone();
+                        let module = p.candidates[idx].module;
+                        self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                        self.record_call(p.site, module);
+                        progress = true;
+                    }
+                    Match::None => return Err(self.no_overload(&p.name, &p.args)),
+                    Match::Ambiguous => still.push(p),
+                }
+            }
+            self.pending = still;
+            if progress {
+                continue;
+            }
+            if self.default_numerics()? {
+                continue;
+            }
+            if let Some(p) = self.pending.first() {
+                return Err(Diagnostic::error(
+                    Code::AmbiguousName,
+                    Span::at(0),
+                    0,
+                    format!("ambiguous overloaded use of `{}`", p.name),
+                ));
+            }
+            return Ok(());
+        }
+    }
+
+    fn default_numerics(&mut self) -> Result<bool> {
+        let vars = std::mem::take(&mut self.numeric);
+        let mut changed = false;
+        for t in &vars {
+            if let Type::Var(_) = self.eng.resolve(t) {
+                self.eng
+                    .unify(t, &Type::con(ty::INT), "defaulting an integer literal")?;
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn no_overload(&self, name: &str, args: &[Type]) -> Diagnostic {
+        let shown: Vec<String> = args.iter().map(|a| self.show(a)).collect();
+        Diagnostic::error(
+            Code::TypeMismatch,
+            Span::at(0),
+            0,
+            format!(
+                "no overload of `{name}` matches argument types ({})",
+                shown.join(", ")
+            ),
+        )
+    }
+
+    fn apply_overload(&mut self, candidate: &Type, args: &[Type], result: &Type) -> Result<()> {
+        let mut f = self.eng.instantiate(candidate);
+        for a in args {
+            let next = self.eng.fresh();
+            self.eng.unify(
+                &f,
+                &Type::arrow(a.clone(), next.clone()),
+                "in an overloaded application",
+            )?;
+            f = next;
+        }
+        self.eng.unify(&f, result, "in an overloaded application")
+    }
+
+    fn infer_let_group(&mut self, bindings: &'a [Binding]) -> Result<()> {
+        for b in bindings {
+            self.infer_binding(b)?;
+        }
+        Ok(())
+    }
+
+    fn infer_binding(&mut self, b: &Binding) -> Result<()> {
+        self.eng.enter_level();
+        let declared = match self.pnode(b.pat) {
+            Pattern::Var(name) => {
+                let name = self.text(*name);
+                let v = self.eng.fresh();
+                self.bind(name, v.clone());
+                Some(v)
+            }
+            _ => None,
+        };
+        let value_ty = self.infer(b.value)?;
+        if let Some(sig) = b.sig {
+            let mut tvars = HashMap::new();
+            let sig_ty = self.ty_of_ast(sig, &mut tvars);
+            self.eng
+                .unify(&value_ty, &sig_ty, "against a 'let' signature")?;
+        }
+        if let Some(decl) = &declared {
+            self.eng
+                .unify(decl, &value_ty, "in a recursive 'let' binding")?;
+        }
+        self.eng.leave_level();
+        let mono = self.pending_vars();
+        match declared {
+            Some(decl) => self.eng.generalize_except(&decl, &mono),
+            None => {
+                self.eng.generalize_except(&value_ty, &mono);
+                self.type_pattern(b.pat, &value_ty)?;
+            }
+        }
+        Ok(())
+    }
+
+    // -- pattern typing -----------------------------------------------------
+
+    pub fn type_pattern(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<()> {
+        match self.pnode(pat) {
+            Pattern::Wild => Ok(()),
+            Pattern::Var(name) => {
+                self.bind(self.text(*name), expected.clone());
+                Ok(())
+            }
+            Pattern::Int(_) => {
+                self.eng
+                    .unify(expected, &Type::con(ty::INT), "in an integer pattern")
+            }
+            Pattern::Real(_) => self
+                .eng
+                .unify(expected, &Type::con(ty::REAL), "in a real pattern"),
+            Pattern::Str(_) => self
+                .eng
+                .unify(expected, &Type::con(ty::STR), "in a string pattern"),
+            Pattern::Bool(_) => {
+                self.eng
+                    .unify(expected, &Type::con(ty::BOOL), "in a boolean pattern")
+            }
+            Pattern::StrPrefix { rest, .. } => {
+                let rest = *rest;
+                self.eng
+                    .unify(expected, &Type::con(ty::STR), "in a string-prefix pattern")?;
+                self.type_pattern(rest, &Type::con(ty::STR))
+            }
+            Pattern::Tuple(pats) => {
+                let vars: Vec<Type> = pats.iter().map(|_| self.eng.fresh()).collect();
+                self.eng
+                    .unify(expected, &Type::Tuple(vars.clone()), "in a tuple pattern")?;
+                for (p, v) in pats.iter().zip(&vars) {
+                    self.type_pattern(*p, v)?;
+                }
+                Ok(())
+            }
+            Pattern::Cons { head, tail } => {
+                let (head, tail) = (*head, *tail);
+                let elem = self.eng.fresh();
+                let list = Type::app(Type::con(ty::LIST), elem.clone());
+                self.eng.unify(expected, &list, "in a '::' pattern")?;
+                self.type_pattern(head, &elem)?;
+                self.type_pattern(tail, &list)
+            }
+            Pattern::List { elems, rest } if self.is_array(expected) => {
+                self.array_pats.insert(pat);
+                let rest = *rest;
+                for e in elems.iter() {
+                    self.type_pattern(*e, &Type::con(ty::INT))?;
+                }
+                if let Some(rest) = rest {
+                    self.type_pattern(rest, &Type::con(ty::ARRAY))?;
+                }
+                Ok(())
+            }
+            Pattern::List { elems, rest } => {
+                let rest = *rest;
+                let elem = self.eng.fresh();
+                let list = Type::app(Type::con(ty::LIST), elem.clone());
+                self.eng.unify(expected, &list, "in a list pattern")?;
+                for e in elems.iter() {
+                    self.type_pattern(*e, &elem)?;
+                }
+                if let Some(rest) = rest {
+                    self.type_pattern(rest, &list)?;
+                }
+                Ok(())
+            }
+            Pattern::Struct { ty, fields } => {
+                let ty = self.text(*ty);
+                self.type_struct_pattern(ty, fields, expected)
+            }
+            Pattern::Variant {
+                ty, tag, fields, ..
+            } => {
+                let ty = ty.map(|t| self.text(t));
+                let tag = self.text(*tag);
+                self.type_variant_pattern(ty, tag, fields, expected)
+            }
+        }
+    }
+
+    fn type_struct_pattern(
+        &mut self,
+        ty: &'a str,
+        fields: &'a [FieldPat],
+        expected: &Type,
+    ) -> Result<()> {
+        let info = match self.structs.get(ty).cloned() {
+            Some(info) => info,
+            None => return self.bind_field_patterns_loose(fields),
+        };
+        let (args, mut subst) = self.instantiate_params(&info.params);
+        self.eng
+            .unify(expected, &applied(ty, &args), "in a struct pattern")?;
+        for (i, f) in fields.iter().enumerate() {
+            match f {
+                FieldPat::Named { name, pat } => {
+                    let want = self.struct_field_ty(&info, &mut subst, Some(self.text(*name)), i);
+                    self.bind_field_pattern(*pat, want)?;
+                }
+                FieldPat::Positional(pat) => {
+                    let want = self.struct_field_ty(&info, &mut subst, None, i);
+                    self.bind_field_pattern(*pat, want)?;
+                }
+                FieldPat::Shorthand(name) => {
+                    let name = self.text(*name);
+                    let want = self
+                        .struct_field_ty(&info, &mut subst, Some(name), i)
+                        .unwrap_or_else(|| self.eng.fresh());
+                    self.bind(name, want);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn type_variant_pattern(
+        &mut self,
+        ty: Option<&'a str>,
+        tag: &'a str,
+        fields: &'a [FieldPat],
+        expected: &Type,
+    ) -> Result<()> {
+        let resolved = match ty {
+            Some(n) => self.variant_sig(n, tag),
+            None => self
+                .find_union_by_tag(tag)
+                .and_then(|u| self.variant_sig(u, tag)),
+        };
+        let (result, payload) = match resolved {
+            Some(r) => r,
+            None => return self.bind_field_patterns_loose(fields),
+        };
+        self.eng.unify(expected, &result, "in a variant pattern")?;
+        for (i, f) in fields.iter().enumerate() {
+            match f {
+                FieldPat::Named { name, pat } => {
+                    let want = variant_field_ty(&payload, Some(self.text(*name)), i);
+                    self.bind_field_pattern(*pat, want)?;
+                }
+                FieldPat::Positional(pat) => {
+                    let want = variant_field_ty(&payload, None, i);
+                    self.bind_field_pattern(*pat, want)?;
+                }
+                FieldPat::Shorthand(name) => {
+                    let name = self.text(*name);
+                    let want = variant_field_ty(&payload, Some(name), i)
+                        .unwrap_or_else(|| self.eng.fresh());
+                    self.bind(name, want);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn bind_field_pattern(&mut self, pat: Aol<Pattern>, want: Option<Type>) -> Result<()> {
+        let want = want.unwrap_or_else(|| self.eng.fresh());
+        self.type_pattern(pat, &want)
+    }
+
+    fn bind_field_patterns_loose(&mut self, fields: &'a [FieldPat]) -> Result<()> {
+        for f in fields {
+            match f {
+                FieldPat::Named { pat, .. } | FieldPat::Positional(pat) => {
+                    let v = self.eng.fresh();
+                    self.type_pattern(*pat, &v)?;
+                }
+                FieldPat::Shorthand(name) => {
+                    let v = self.eng.fresh();
+                    self.bind(self.text(*name), v);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // -- AST types ----------------------------------------------------------
+
+    fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        match self.tnode(ty) {
+            Ty::Con { name, .. } => {
+                let name = self.text(*name);
+                match self.aliases.get(name).copied() {
+                    Some(alias) => self.ty_of_ast(alias, tvars),
+                    None => Type::con(canonical_con(name)),
+                }
+            }
+            Ty::Var(name) => {
+                let name = self.text(*name);
+                tvars
+                    .entry(name)
+                    .or_insert_with(|| self.eng.fresh())
+                    .clone()
+            }
+            Ty::App(head, arg) => {
+                let (head, arg) = (*head, *arg);
+                Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
+            }
+            Ty::Arrow { from, to, .. } => {
+                let (from, to) = (*from, *to);
+                Type::arrow(self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars))
+            }
+            Ty::Unit => Type::con(ty::UNIT),
+            Ty::Tuple(items) => {
+                Type::Tuple(items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect())
+            }
+            Ty::Record(fields) => {
+                if let [f] = fields.as_ref() {
+                    self.ty_of_ast(f.ty, tvars)
+                } else {
+                    Type::Tuple(fields.iter().map(|f| self.ty_of_ast(f.ty, tvars)).collect())
+                }
+            }
+        }
+    }
+
+    // -- built-ins ----------------------------------------------------------
+
+    fn install_builtins(&mut self) {
+        let int = || Type::con(ty::INT);
+        let real = || Type::con(ty::REAL);
+        let bool_ = || Type::con(ty::BOOL);
+
+        for op in ["+", "-", "*", "/", "%"] {
+            self.overloads.insert(
+                op,
+                vec![
+                    Cand::local(Type::arrow(int(), Type::arrow(int(), int()))),
+                    Cand::local(Type::arrow(real(), Type::arrow(real(), real()))),
+                ],
+            );
+        }
+        self.overloads.insert(
+            "neg",
+            vec![
+                Cand::local(Type::arrow(int(), int())),
+                Cand::local(Type::arrow(real(), real())),
+            ],
+        );
+        self.bind("not", Type::arrow(bool_(), bool_()));
+
+        let prim = |mids: &[&str], returns_self: bool| {
+            [ty::ARRAY, ty::STR].map(|recv| {
+                let ret = if returns_self { recv } else { ty::INT };
+                let params = std::iter::once(recv).chain(mids.iter().copied());
+                Type::arrows(params.map(Type::con), Type::con(ret))
+            })
+        };
+        self.overloads
+            .insert("array_len", prim(&[], false).map(Cand::local).into());
+        self.overloads
+            .insert("array_get", prim(&[ty::INT], false).map(Cand::local).into());
+        self.overloads
+            .insert("array_push", prim(&[ty::INT], true).map(Cand::local).into());
+        self.overloads.insert(
+            "array_set",
+            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
+        );
+        self.overloads.insert(
+            "array_slice",
+            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
+        );
+
+        let vec = |eng: &mut Engine| {
+            let t = eng.fresh_generic();
+            (t.clone(), Type::app(Type::con(ty::VEC), t))
+        };
+        let (_t, vt) = vec(&mut self.eng);
+        self.bind("vec_new", Type::arrow(Type::con(ty::UNIT), vt));
+        let (t, vt) = vec(&mut self.eng);
+        self.bind("vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
+        let (_t, vt) = vec(&mut self.eng);
+        self.bind("vec_len", Type::arrow(vt, int()));
+        let (t, vt) = vec(&mut self.eng);
+        self.bind("vec_get", Type::arrow(vt, Type::arrow(int(), t)));
+        let (t, vt) = vec(&mut self.eng);
+        self.bind(
+            "vec_set",
+            Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(t, vt))),
+        );
+        let (t, vt) = vec(&mut self.eng);
+        self.bind("vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+
+        self.bind("true", bool_());
+        self.bind("false", bool_());
+
+        for op in ["?=", "?<", "?>", "<=", ">="] {
+            let a = self.eng.fresh_generic();
+            let t = Type::arrow(a.clone(), Type::arrow(a, bool_()));
+            self.bind(op, t);
+        }
+        {
+            let a = self.eng.fresh_generic();
+            self.bind("++", Type::arrow(a.clone(), Type::arrow(a.clone(), a)));
+        }
+        {
+            let a = self.eng.fresh_generic();
+            let list = Type::app(Type::con(ty::LIST), a.clone());
+            self.bind("::", Type::arrow(a, Type::arrow(list.clone(), list)));
+        }
+        {
+            let a = self.eng.fresh_generic();
+            let b = self.eng.fresh_generic();
+            self.bind(";", Type::arrow(a, Type::arrow(b.clone(), b)));
+        }
+        {
+            let a = self.eng.fresh_generic();
+            let b = self.eng.fresh_generic();
+            self.bind(
+                "|>",
+                Type::arrow(a.clone(), Type::arrow(Type::arrow(a, b.clone()), b)),
+            );
+        }
+        {
+            let a = self.eng.fresh_generic();
+            let b = self.eng.fresh_generic();
+            self.bind(
+                "<|",
+                Type::arrow(Type::arrow(a.clone(), b.clone()), Type::arrow(a, b)),
+            );
+        }
+    }
+}
+
+/// A global `$` definition, extracted from the program for dependency analysis.
+#[derive(Clone, Copy)]
+struct Def<'a> {
+    name: &'a str,
+    sig: Option<Aol<Ty>>,
+    body: Aol<Expr>,
+}
+
+/// Build the reference graph over globals: `graph[i]` lists the definitions that
+/// definition `i` refers to.
+fn dependency_graph<'a>(
+    ast: &'a Ast,
+    defs: &[Def<'a>],
+    index: &HashMap<&'a str, usize>,
+) -> Vec<Vec<usize>> {
+    defs.iter()
+        .map(|def| {
+            let mut out = Vec::new();
+            let mut bound = Vec::new();
+            free_globals(ast, def.body, index, &mut bound, &mut out);
+            out.sort_unstable();
+            out.dedup();
+            out
+        })
+        .collect()
+}
+
+/// Collect the indices of global definitions referenced by `e`, skipping any
+/// reference that a local binder in `bound` shadows.
+fn free_globals<'a>(
+    ast: &'a Ast,
+    e: Aol<Expr>,
+    globals: &HashMap<&'a str, usize>,
+    bound: &mut Vec<&'a str>,
+    out: &mut Vec<usize>,
+) {
+    match ast.expr(e) {
+        Expr::Var { module: None, name } => {
+            let name = ast.text(*name);
+            if !bound.contains(&name) {
+                if let Some(&idx) = globals.get(name) {
+                    out.push(idx);
+                }
+            }
+        }
+        Expr::Int(_)
+        | Expr::Real(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Unit
+        | Expr::Var { .. }
+        | Expr::Extern { .. } => {}
+
+        Expr::App(f, x) => {
+            free_globals(ast, *f, globals, bound, out);
+            free_globals(ast, *x, globals, bound, out);
+        }
+        Expr::BinOp { lhs, rhs, .. } => {
+            free_globals(ast, *lhs, globals, bound, out);
+            free_globals(ast, *rhs, globals, bound, out);
+        }
+        Expr::UnOp { operand, .. } => free_globals(ast, *operand, globals, bound, out),
+        Expr::Tuple(items) | Expr::List(items) => items
+            .iter()
+            .for_each(|e| free_globals(ast, *e, globals, bound, out)),
+        Expr::Array { size } => free_globals(ast, *size, globals, bound, out),
+        Expr::Field { record, .. } => free_globals(ast, *record, globals, bound, out),
+        Expr::StructLit { fields, spread, .. } => {
+            free_globals_field_inits(ast, fields, globals, bound, out);
+            if let Some(s) = spread {
+                free_globals(ast, *s, globals, bound, out);
+            }
+        }
+        Expr::Variant { fields, .. } => free_globals_field_inits(ast, fields, globals, bound, out),
+
+        Expr::Let { bindings, body } => {
+            let mark = bound.len();
+            for b in bindings.iter() {
+                collect_pattern_binders(ast, b.pat, bound);
+            }
+            for b in bindings.iter() {
+                free_globals(ast, b.value, globals, bound, out);
+            }
+            free_globals(ast, *body, globals, bound, out);
+            bound.truncate(mark);
+        }
+        Expr::If { cond, then, alt } => {
+            free_globals(ast, *cond, globals, bound, out);
+            free_globals(ast, *then, globals, bound, out);
+            free_globals(ast, *alt, globals, bound, out);
+        }
+        Expr::Match {
+            scrut,
+            arms,
+            default,
+        } => {
+            free_globals(ast, *scrut, globals, bound, out);
+            for arm in arms.iter() {
+                let mark = bound.len();
+                for pat in arm.patterns.iter() {
+                    collect_pattern_binders(ast, *pat, bound);
+                }
+                if let Some(g) = arm.guard {
+                    free_globals(ast, g, globals, bound, out);
+                }
+                free_globals(ast, arm.body, globals, bound, out);
+                bound.truncate(mark);
+            }
+            if let Some(d) = default {
+                free_globals(ast, *d, globals, bound, out);
+            }
+        }
+        Expr::Lambda { params, body } => {
+            let mark = bound.len();
+            for p in params.iter() {
+                collect_pattern_binders(ast, *p, bound);
+            }
+            free_globals(ast, *body, globals, bound, out);
+            bound.truncate(mark);
+        }
+        Expr::With { subject, body } => {
+            free_globals(ast, *subject, globals, bound, out);
+            free_globals(ast, *body, globals, bound, out);
+        }
+        Expr::Handle { body, handler } => {
+            free_globals(ast, *body, globals, bound, out);
+            if let Some(h) = handler {
+                for clause in h.clauses.iter() {
+                    let mark = bound.len();
+                    bound.push(ast.text(clause.arg));
+                    bound.push(ast.text(h.continuation));
+                    free_globals(ast, clause.body, globals, bound, out);
+                    bound.truncate(mark);
+                }
+                if let Some((name, else_body)) = &h.default {
+                    let mark = bound.len();
+                    bound.push(ast.text(*name));
+                    free_globals(ast, *else_body, globals, bound, out);
+                    bound.truncate(mark);
+                }
+            }
+        }
+        Expr::Defer { cleanup, body } => {
+            free_globals(ast, *cleanup, globals, bound, out);
+            free_globals(ast, *body, globals, bound, out);
+        }
+    }
+}
+
+fn free_globals_field_inits<'a>(
+    ast: &'a Ast,
+    fields: &[FieldInit],
+    globals: &HashMap<&'a str, usize>,
+    bound: &mut Vec<&'a str>,
+    out: &mut Vec<usize>,
+) {
+    for f in fields {
+        match f {
+            FieldInit::Named { value, .. } => free_globals(ast, *value, globals, bound, out),
+            FieldInit::Positional(v) => free_globals(ast, *v, globals, bound, out),
+        }
+    }
+}
+
+/// Push every name a pattern binds onto `bound`.
+fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<&'a str>) {
+    match ast.pat(pat) {
+        Pattern::Var(name) => bound.push(ast.text(*name)),
+        Pattern::StrPrefix { rest, .. } => collect_pattern_binders(ast, *rest, bound),
+        Pattern::Cons { head, tail } => {
+            collect_pattern_binders(ast, *head, bound);
+            collect_pattern_binders(ast, *tail, bound);
+        }
+        Pattern::List { elems, rest } => {
+            elems
+                .iter()
+                .for_each(|p| collect_pattern_binders(ast, *p, bound));
+            if let Some(r) = rest {
+                collect_pattern_binders(ast, *r, bound);
+            }
+        }
+        Pattern::Tuple(pats) => pats
+            .iter()
+            .for_each(|p| collect_pattern_binders(ast, *p, bound)),
+        Pattern::Struct { fields, .. } | Pattern::Variant { fields, .. } => {
+            for f in fields.iter() {
+                match f {
+                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
+                }
+            }
+        }
+        Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {
+        }
+    }
+}
+
+fn applied(name: &str, args: &[Type]) -> Type {
+    args.iter()
+        .fold(Type::con(name), |acc, a| Type::app(acc, a.clone()))
+}
+
+fn subst_from_args<'a>(
+    params: &[&'a str],
+    args: &[Type],
+    eng: &mut Engine,
+) -> HashMap<&'a str, Type> {
+    let mut subst = HashMap::new();
+    for (i, p) in params.iter().enumerate() {
+        let a = args.get(i).cloned().unwrap_or_else(|| eng.fresh());
+        subst.insert(*p, a);
+    }
+    subst
+}
+
+/// Collect the type variables appearing in `ty`, in order of first appearance.
+fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
+    match ast.ty(ty) {
+        Ty::Var(name) => {
+            let name = ast.text(*name);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        Ty::App(a, b) => {
+            collect_tyvars(ast, *a, out);
+            collect_tyvars(ast, *b, out);
+        }
+        Ty::Arrow { from, to, .. } => {
+            collect_tyvars(ast, *from, out);
+            collect_tyvars(ast, *to, out);
+        }
+        Ty::Tuple(items) => items.iter().for_each(|t| collect_tyvars(ast, *t, out)),
+        Ty::Record(fields) => fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out)),
+        Ty::Con { .. } | Ty::Unit => {}
+    }
+}
+
+/// Normalize a variant payload into `(optional-name, type-handle)` pairs.
+fn payload_fields<'a>(ast: &'a Ast, p: &Payload) -> Vec<(Option<&'a str>, Aol<Ty>)> {
+    match p {
+        Payload::None => vec![],
+        Payload::Bare(ty) => vec![(None, *ty)],
+        Payload::Fields(fs) => fs
+            .iter()
+            .map(|f| (f.name.map(|n| ast.text(n)), f.ty))
+            .collect(),
+    }
+}
+
+/// Select a payload field's type by name (if named) or by position.
+fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) -> Option<Type> {
+    match name {
+        Some(name) => payload
+            .iter()
+            .find(|(n, _)| *n == Some(name))
+            .map(|(_, t)| t.clone()),
+        None => payload.get(index).map(|(_, t)| t.clone()),
+    }
+}
+
+/// Map the sigil/alias type constructors to their canonical built-in name.
+fn canonical_con(name: &str) -> &str {
+    match name {
+        "@int64" | "@int32" | "Nat" => ty::INT,
+        "@float64" | "@float32" => ty::REAL,
+        "@str" => ty::STR,
+        "@bool" => ty::BOOL,
+        other => other,
+    }
+}
+
+fn unbound(name: &str) -> Diagnostic {
+    Diagnostic::error(
+        Code::TypeUnbound,
+        Span::at(0),
+        0,
+        format!("unbound name `{name}`"),
+    )
+}
