@@ -88,6 +88,7 @@ pub enum Code {
     EntrySignature,
     AssertFailed,
     IntLiteralRange,
+    RuntimeFault,
 }
 
 impl Code {
@@ -124,6 +125,7 @@ impl Code {
             EntrySignature => "ENTRY_SIGNATURE",
             AssertFailed => "ASSERT_FAILED",
             IntLiteralRange => "INT_LITERAL_RANGE",
+            RuntimeFault => "RUNTIME_FAULT",
         }
     }
 }

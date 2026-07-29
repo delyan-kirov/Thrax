@@ -12,10 +12,12 @@
 //! * The control forms (`let`, `if`, `when`, `\`, `with`, `do`, `defer`) are
 //!   primaries, each with its own `parse_*` method.
 //!
-//! Sugar (`;`, `|>`, `<|`, `::`, `[..]`) is preserved as explicit AST nodes; a
-//! later pass desugars it.
+//! Nodes are built into the [`Ast`] stores as they are parsed (bottom-up), so a
+//! parse method returns an [`Aol`] handle, not a reference. Names are interned to
+//! [`StrId`]. Sugar (`;`, `|>`, `<|`, `::`, `[..]`) is preserved as explicit AST
+//! nodes; a later pass desugars it.
 
-use arena::Arena;
+use arena::{Aol, StrId};
 use diag::{Code, Diagnostic, Result};
 use lexer::{Kind, Lexer, Token};
 
@@ -24,7 +26,7 @@ use crate::table;
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
-    arena: &'a Arena,
+    ast: Ast,
 }
 
 /// Consume a token of an expected kind, or fail with an `UnexpectedToken`
@@ -40,23 +42,59 @@ macro_rules! expect {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(lex: Lexer<'a>, arena: &'a Arena) -> Parser<'a> {
-        Parser { lex, arena }
+    /// Build a parser that fills `ast`. Passing an existing [`Ast`] lets several
+    /// modules of one compilation share stores, so a handle minted for one module
+    /// resolves in every module (needed for cross-module type imports).
+    pub fn new(lex: Lexer<'a>, ast: Ast) -> Parser<'a> {
+        Parser { lex, ast }
     }
 
-    // -- arena + token helpers ----------------------------------------------
+    /// Consume the parser, yielding the filled store bundle.
+    pub fn into_ast(self) -> Ast {
+        self.ast
+    }
 
-    fn expr(&self, e: Expr<'a>) -> &'a Expr<'a> {
-        self.arena.alloc(e)
+    // -- store + token helpers ----------------------------------------------
+
+    fn expr(&mut self, e: Expr) -> Aol<Expr> {
+        self.ast.exprs.create(e)
     }
-    fn ty(&self, t: Ty<'a>) -> &'a Ty<'a> {
-        self.arena.alloc(t)
+    fn ty(&mut self, t: Ty) -> Aol<Ty> {
+        self.ast.tys.create(t)
     }
-    fn pat(&self, p: Pattern<'a>) -> &'a Pattern<'a> {
-        self.arena.alloc(p)
+    fn pat(&mut self, p: Pattern) -> Aol<Pattern> {
+        self.ast.pats.create(p)
     }
-    fn slice<T: Copy>(&self, v: &[T]) -> &'a [T] {
-        self.arena.alloc_slice_copy(v)
+    fn intern(&mut self, s: &str) -> StrId {
+        self.ast.strings.intern(s)
+    }
+    fn intern_bytes(&mut self, b: &[u8]) -> StrId {
+        self.ast.strings.intern_bytes(b)
+    }
+    /// Consume the next token and intern its text (the token is a checked word).
+    fn bump_word(&mut self) -> Result<StrId> {
+        let t = self.bump()?;
+        Ok(self.intern(t.text))
+    }
+    /// Expect a `Word` and intern it. Combines `expect!` + `intern` so the token
+    /// is bound to a local first (a nested `self.intern(self.bump()?...)` would
+    /// mutably borrow `self` twice in one expression).
+    fn expect_word(&mut self, what: &str) -> Result<StrId> {
+        let t = expect!(self, Kind::Word, what);
+        Ok(self.intern(t.text))
+    }
+    /// Consume a `` `type-var `` token and intern its name.
+    fn bump_tyvar(&mut self) -> Result<StrId> {
+        let t = self.bump()?;
+        Ok(self.intern(t.tyvar_name()))
+    }
+
+    /// If `base` is a bare, unqualified variable, its interned name.
+    fn bare_var_name(&self, base: Aol<Expr>) -> Option<StrId> {
+        match self.ast.exprs.lookup(base) {
+            Expr::Var { module: None, name } => Some(*name),
+            _ => None,
+        }
     }
 
     fn peek(&mut self) -> Result<Token<'a>> {
@@ -96,24 +134,25 @@ impl<'a> Parser<'a> {
     // -- program + globals --------------------------------------------------
 
     /// Parse a whole compilation unit.
-    pub fn parse_program(&mut self) -> Result<Program<'a>> {
+    pub fn parse_program(&mut self) -> Result<Program> {
         let at = expect!(self, Kind::At, "expected '@mod' at the start of the file");
         if at.intrinsic_name() != "mod" {
             return Err(self.unexpected(&at, "expected '@mod' at the start of the file"));
         }
         let name = expect!(self, Kind::Word, "expected a module name after '@mod'");
+        let module = self.intern(name.text);
 
         let mut items = Vec::new();
         while !matches!(self.peek_kind()?, Kind::Eof) {
             items.push(self.parse_global()?);
         }
         Ok(Program {
-            module: name.text,
-            items: self.slice(&items),
+            module,
+            items: items.into_boxed_slice(),
         })
     }
 
-    fn parse_global(&mut self) -> Result<Item<'a>> {
+    fn parse_global(&mut self) -> Result<Item> {
         expect!(
             self,
             Kind::Dollar,
@@ -129,7 +168,7 @@ impl<'a> Parser<'a> {
     }
 
     /// A `$ @...` directive: visibility, assert, run, or an operator definition.
-    fn parse_directive(&mut self, at: Token<'a>) -> Result<Item<'a>> {
+    fn parse_directive(&mut self, at: Token<'a>) -> Result<Item> {
         match at.intrinsic_name() {
             "private" => {
                 self.bump()?;
@@ -153,11 +192,12 @@ impl<'a> Parser<'a> {
     }
 
     /// `$ @operator.{ op } : ty = expr`
-    fn parse_operator_def(&mut self) -> Result<Item<'a>> {
+    fn parse_operator_def(&mut self) -> Result<Item> {
         self.bump()?; // '@operator'
         expect!(self, Kind::Dot, "expected '.{' after '@operator'");
         expect!(self, Kind::LBrace, "expected '{' after '@operator.'");
-        let op = expect!(self, Kind::Op, "expected an operator between the braces");
+        let op_tok = expect!(self, Kind::Op, "expected an operator between the braces");
+        let op = self.intern(op_tok.text);
         expect!(self, Kind::RBrace, "expected '}' after the operator");
         expect!(
             self,
@@ -171,15 +211,11 @@ impl<'a> Parser<'a> {
             "expected '=' before the operator's definition"
         );
         let body = self.parse_expr(0)?;
-        Ok(Item::OperatorDef {
-            op: op.text,
-            sig,
-            body,
-        })
+        Ok(Item::OperatorDef { op, sig, body })
     }
 
     /// `$ with module [= rename]`
-    fn parse_import(&mut self) -> Result<Item<'a>> {
+    fn parse_import(&mut self) -> Result<Item> {
         self.bump()?; // 'with'
         let module = self.parse_dotted_name()?;
         let rename = if self.eat(|k| matches!(k, Kind::Eq))? {
@@ -190,18 +226,20 @@ impl<'a> Parser<'a> {
         Ok(Item::Import { module, rename })
     }
 
-    fn parse_dotted_name(&mut self) -> Result<&'a [Name<'a>]> {
-        let mut names = vec![expect!(self, Kind::Word, "expected a module name").text];
+    fn parse_dotted_name(&mut self) -> Result<Box<[StrId]>> {
+        let first = expect!(self, Kind::Word, "expected a module name").text;
+        let mut names = vec![self.intern(first)];
         while matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?;
-            names.push(expect!(self, Kind::Word, "expected a name after '.'").text);
+            let part = expect!(self, Kind::Word, "expected a name after '.'").text;
+            names.push(self.intern(part));
         }
-        Ok(self.slice(&names))
+        Ok(names.into_boxed_slice())
     }
 
     /// `$ name ...`: a value definition, or a struct/union/alias/effect type.
-    fn parse_named_global(&mut self) -> Result<Item<'a>> {
-        let name = self.bump()?.text;
+    fn parse_named_global(&mut self) -> Result<Item> {
+        let name = self.bump_word()?;
         if !self.eat(|k| matches!(k, Kind::Colon))? {
             expect!(self, Kind::Eq, "expected ':' or '=' after the name");
             return Ok(Item::Def {
@@ -249,11 +287,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Comma-separated `name : Type` declarations (struct fields, effect ops).
-    /// The body is brace-less and ends at the next `$` (or EOF).
-    fn parse_field_decls(&mut self) -> Result<&'a [FieldDecl<'a>]> {
+    fn parse_field_decls(&mut self) -> Result<Box<[FieldDecl]>> {
         let mut fields = Vec::new();
         while matches!(self.peek_kind()?, Kind::Word) {
-            let name = self.bump()?.text;
+            let name = self.bump_word()?;
             expect!(self, Kind::Colon, "expected ':' after the field name");
             let ty = self.parse_type()?;
             fields.push(FieldDecl { name, ty });
@@ -261,13 +298,13 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(self.slice(&fields))
+        Ok(fields.into_boxed_slice())
     }
 
-    fn parse_union_body(&mut self) -> Result<&'a [VariantDecl<'a>]> {
+    fn parse_union_body(&mut self) -> Result<Box<[VariantDecl]>> {
         let mut variants = Vec::new();
         while matches!(self.peek_kind()?, Kind::Word) {
-            let tag = self.bump()?.text;
+            let tag = self.bump_word()?;
             let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
                 self.parse_payload()?
             } else {
@@ -278,10 +315,10 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(self.slice(&variants))
+        Ok(variants.into_boxed_slice())
     }
 
-    fn parse_payload(&mut self) -> Result<Payload<'a>> {
+    fn parse_payload(&mut self) -> Result<Payload> {
         if !matches!(self.peek_kind()?, Kind::LBrace) {
             return Ok(Payload::Bare(self.parse_type()?));
         }
@@ -292,7 +329,7 @@ impl<'a> Parser<'a> {
             let named = matches!(self.peek_kind()?, Kind::Word)
                 && matches!(self.peek_kind_at(1)?, Kind::Colon);
             if named {
-                let name = self.bump()?.text;
+                let name = self.bump_word()?;
                 self.bump()?; // ':'
                 let ty = self.parse_type()?;
                 fields.push(PayloadField {
@@ -312,7 +349,7 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the variant payload"
         );
-        Ok(Payload::Fields(self.slice(&fields)))
+        Ok(Payload::Fields(fields.into_boxed_slice()))
     }
 
     fn peek_kind_at(&mut self, n: usize) -> Result<Kind<'a>> {
@@ -321,7 +358,7 @@ impl<'a> Parser<'a> {
 
     // -- types --------------------------------------------------------------
 
-    fn parse_type(&mut self) -> Result<&'a Ty<'a>> {
+    fn parse_type(&mut self) -> Result<Aol<Ty>> {
         let from = self.parse_type_app()?;
         if !matches!(self.peek_kind()?, Kind::Arrow) {
             return Ok(from);
@@ -332,7 +369,7 @@ impl<'a> Parser<'a> {
         Ok(self.ty(Ty::Arrow { from, effect, to }))
     }
 
-    fn parse_type_app(&mut self) -> Result<&'a Ty<'a>> {
+    fn parse_type_app(&mut self) -> Result<Aol<Ty>> {
         let mut head = self.parse_type_atom()?;
         while self.starts_type_atom()? {
             let arg = self.parse_type_atom()?;
@@ -348,7 +385,7 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    fn parse_type_atom(&mut self) -> Result<&'a Ty<'a>> {
+    fn parse_type_atom(&mut self) -> Result<Aol<Ty>> {
         let t = self.peek()?;
         match t.kind {
             Kind::Word => {
@@ -356,27 +393,26 @@ impl<'a> Parser<'a> {
                 if matches!(self.peek_kind()?, Kind::Dot) {
                     self.bump()?; // '.'
                     let member = expect!(self, Kind::Word, "expected a type name after '.'");
+                    let module = self.intern(t.text);
+                    let name = self.intern(member.text);
                     Ok(self.ty(Ty::Con {
-                        module: Some(t.text),
-                        name: member.text,
+                        module: Some(module),
+                        name,
                     }))
                 } else {
-                    Ok(self.ty(Ty::Con {
-                        module: None,
-                        name: t.text,
-                    }))
+                    let name = self.intern(t.text);
+                    Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
             Kind::At => {
                 self.bump()?;
-                Ok(self.ty(Ty::Con {
-                    module: None,
-                    name: t.text,
-                }))
+                let name = self.intern(t.text);
+                Ok(self.ty(Ty::Con { module: None, name }))
             }
             Kind::TyVar => {
                 self.bump()?;
-                Ok(self.ty(Ty::Var(t.tyvar_name())))
+                let name = self.intern(t.tyvar_name());
+                Ok(self.ty(Ty::Var(name)))
             }
             Kind::LParen => {
                 self.bump()?;
@@ -390,7 +426,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `{}` unit, `{A, B}` tuple, or `{x: A, y: B}` named-record parameter sugar.
-    fn parse_brace_type(&mut self) -> Result<&'a Ty<'a>> {
+    fn parse_brace_type(&mut self) -> Result<Aol<Ty>> {
         self.bump()?; // '{'
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.ty(Ty::Unit));
@@ -402,7 +438,7 @@ impl<'a> Parser<'a> {
             let mut fields = Vec::new();
             loop {
                 let with = self.eat(|k| matches!(k, Kind::With))?;
-                let name = expect!(self, Kind::Word, "expected a record field name").text;
+                let name = self.expect_word("expected a record field name")?;
                 expect!(self, Kind::Colon, "expected ':' after the field name");
                 let ty = self.parse_type()?;
                 fields.push(RecField { with, name, ty });
@@ -413,11 +449,11 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the record type");
-            Ok(self.ty(Ty::Record(self.slice(&fields))))
+            Ok(self.ty(Ty::Record(fields.into_boxed_slice())))
         } else {
             let mut tys = Vec::new();
             loop {
-                tys.push(*self.parse_type()?);
+                tys.push(self.parse_type()?);
                 if !self.eat(|k| matches!(k, Kind::Comma))?
                     || matches!(self.peek_kind()?, Kind::RBrace)
                 {
@@ -425,17 +461,17 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the tuple type");
-            Ok(self.ty(Ty::Tuple(self.slice(&tys))))
+            Ok(self.ty(Ty::Tuple(tys.into_boxed_slice())))
         }
     }
 
     /// An optional effect row right after `->`: `<>`, `<`e>`, `<A, B>`,
     /// `<A, B | `e>`, or `<| `e>`.
-    fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow<'a>>> {
+    fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
             return Ok(Some(EffectRow {
-                names: &[],
+                names: Box::new([]),
                 tail: None,
             }));
         }
@@ -446,10 +482,11 @@ impl<'a> Parser<'a> {
                 Kind::TyVar,
                 "expected a `type variable in the effect row"
             );
+            let tail = self.intern(tail.tyvar_name());
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: &[],
-                tail: Some(tail.tyvar_name()),
+                names: Box::new([]),
+                tail: Some(tail),
             }));
         }
         if !self.at_op("<")? {
@@ -457,29 +494,31 @@ impl<'a> Parser<'a> {
         }
         self.bump()?; // '<'
         if matches!(self.peek_kind()?, Kind::TyVar) {
-            let tail = self.bump()?.tyvar_name();
+            let tail = self.bump_tyvar()?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: &[],
+                names: Box::new([]),
                 tail: Some(tail),
             }));
         }
         let mut names = Vec::new();
         loop {
-            names.push(expect!(self, Kind::Word, "expected an effect name").text);
+            let n = self.expect_word("expected an effect name")?;
+            names.push(n);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
         let tail = if self.at_op("|")? {
             self.bump()?;
-            Some(expect!(self, Kind::TyVar, "expected a `type variable after '|'").tyvar_name())
+            let t = expect!(self, Kind::TyVar, "expected a `type variable after '|'");
+            Some(self.intern(t.tyvar_name()))
         } else {
             None
         };
         self.expect_op(">", "expected '>' to close the effect row")?;
         Ok(Some(EffectRow {
-            names: self.slice(&names),
+            names: names.into_boxed_slice(),
             tail,
         }))
     }
@@ -496,7 +535,7 @@ impl<'a> Parser<'a> {
 
     // -- expressions: the Pratt core ----------------------------------------
 
-    fn parse_expr(&mut self, min_bp: u8) -> Result<&'a Expr<'a>> {
+    fn parse_expr(&mut self, min_bp: u8) -> Result<Aol<Expr>> {
         let mut lhs = self.parse_prefix()?;
         loop {
             let t = self.peek()?;
@@ -504,12 +543,9 @@ impl<'a> Parser<'a> {
                 Kind::Op => match table::infix(t.text) {
                     Some(bp) if bp.left >= min_bp => {
                         self.bump()?;
+                        let op = self.intern(t.text);
                         let rhs = self.parse_expr(bp.right)?;
-                        lhs = self.expr(Expr::BinOp {
-                            op: t.text,
-                            lhs,
-                            rhs,
-                        });
+                        lhs = self.expr(Expr::BinOp { op, lhs, rhs });
                     }
                     _ => break,
                 },
@@ -547,20 +583,21 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn parse_prefix(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_prefix(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
         if let Kind::Op = t.kind {
             if let Some(name) = table::prefix(t.text) {
                 self.bump()?;
+                let op = self.intern(name);
                 let operand = self.parse_expr(table::PREFIX)?;
-                return Ok(self.expr(Expr::UnOp { op: name, operand }));
+                return Ok(self.expr(Expr::UnOp { op, operand }));
             }
         }
         self.parse_primary()
     }
 
     /// One atom followed by a left-associative postfix `.` chain.
-    fn parse_primary(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_primary(&mut self) -> Result<Aol<Expr>> {
         let mut base = self.parse_atom()?;
         while matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?; // '.'
@@ -569,7 +606,7 @@ impl<'a> Parser<'a> {
         Ok(base)
     }
 
-    fn parse_atom(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_atom(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
         match t.kind {
             Kind::Int(v) => {
@@ -582,14 +619,13 @@ impl<'a> Parser<'a> {
             }
             Kind::Str(s) => {
                 self.bump()?;
+                let s = self.intern_bytes(s);
                 Ok(self.expr(Expr::Str(s)))
             }
             Kind::Word => {
                 self.bump()?;
-                Ok(self.expr(Expr::Var {
-                    module: None,
-                    name: t.text,
-                }))
+                let name = self.intern(t.text);
+                Ok(self.expr(Expr::Var { module: None, name }))
             }
             Kind::LParen => self.parse_group(),
             Kind::Let => self.parse_let(),
@@ -609,7 +645,7 @@ impl<'a> Parser<'a> {
 
     /// The postfix action after a `.`: struct literal, tuple index, variant
     /// constructor, module-qualified variable, or field access.
-    fn parse_postfix(&mut self, base: &'a Expr<'a>) -> Result<&'a Expr<'a>> {
+    fn parse_postfix(&mut self, base: Aol<Expr>) -> Result<Aol<Expr>> {
         let ahead = self.peek()?;
         match ahead.kind {
             Kind::LBrace => {
@@ -623,43 +659,43 @@ impl<'a> Parser<'a> {
             Kind::Word if is_upper(ahead.text) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;
                 self.bump()?; // the tag / type name
-                              // `Module.Type.Tag`: another uppercase `.Name` follows.
+                let ahead_name = self.intern(ahead.text);
+                // `Module.Type.Tag`: another uppercase `.Name` follows.
                 if matches!(self.peek_kind()?, Kind::Dot)
                     && matches!(self.peek_kind_at(1)?, Kind::Word)
                     && is_upper(self.peek_at(1)?.text)
                 {
                     self.bump()?; // '.'
-                    let tag = self.bump()?.text;
-                    self.parse_variant_lit(Some(ty), Some(ahead.text), tag)
+                    let tag = self.bump_word()?;
+                    self.parse_variant_lit(Some(ty), Some(ahead_name), tag)
                 } else {
-                    self.parse_variant_lit(None, Some(ty), ahead.text)
+                    self.parse_variant_lit(None, Some(ty), ahead_name)
                 }
             }
             Kind::Word => {
                 // `Module.name`: uppercase base, lowercase member -> qualified var.
-                if let Expr::Var { module: None, name } = base {
-                    if is_upper(name) {
+                if let Some(name) = self.bare_var_name(base) {
+                    if is_upper(self.ast.text(name)) {
                         self.bump()?;
+                        let member = self.intern(ahead.text);
                         return Ok(self.expr(Expr::Var {
                             module: Some(name),
-                            name: ahead.text,
+                            name: member,
                         }));
                     }
                 }
                 self.bump()?;
-                Ok(self.expr(Expr::Field {
-                    record: base,
-                    name: ahead.text,
-                }))
+                let name = self.intern(ahead.text);
+                Ok(self.expr(Expr::Field { record: base, name }))
             }
             _ => Err(self.unexpected(&ahead, "expected a field name, tag, or '{' after '.'")),
         }
     }
 
     /// Require that `base` is a bare, uppercase-initial type name and return it.
-    fn expect_bare_type_name(&self, base: &'a Expr<'a>, what: &str) -> Result<Name<'a>> {
-        if let Expr::Var { module: None, name } = base {
-            if is_upper(name) {
+    fn expect_bare_type_name(&self, base: Aol<Expr>, what: &str) -> Result<StrId> {
+        if let Some(name) = self.bare_var_name(base) {
+            if is_upper(self.ast.text(name)) {
                 return Ok(name);
             }
         }
@@ -673,19 +709,20 @@ impl<'a> Parser<'a> {
     }
 
     /// Split a `.0` / `.0.1` index token into nested field accesses.
-    fn tuple_indices(&self, base: &'a Expr<'a>, tok: Token<'a>) -> &'a Expr<'a> {
+    fn tuple_indices(&mut self, base: Aol<Expr>, tok: Token<'a>) -> Aol<Expr> {
         let mut record = base;
         for part in tok.text.split('.') {
             debug_assert!(
                 !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()),
                 "a tuple index token is dot-separated digit runs"
             );
-            record = self.expr(Expr::Field { record, name: part });
+            let name = self.intern(part);
+            record = self.expr(Expr::Field { record, name });
         }
         record
     }
 
-    fn parse_group(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_group(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
         let e = self.parse_expr(0)?;
         expect!(self, Kind::RParen, "expected ')' to close the group");
@@ -693,25 +730,25 @@ impl<'a> Parser<'a> {
     }
 
     /// `{}` unit or `{a, b, ...}` tuple.
-    fn parse_brace_expr(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_brace_expr(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '{'
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.expr(Expr::Unit));
         }
         let mut elems = Vec::new();
         loop {
-            elems.push(*self.parse_expr(0)?);
+            elems.push(self.parse_expr(0)?);
             if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
             {
                 break;
             }
         }
         expect!(self, Kind::RBrace, "expected '}' to close the tuple");
-        Ok(self.expr(Expr::Tuple(self.slice(&elems))))
+        Ok(self.expr(Expr::Tuple(elems.into_boxed_slice())))
     }
 
     /// A leading-dot atom: bare struct literal `.{...}` or bare variant `.Tag`.
-    fn parse_leading_dot(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_leading_dot(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '.'
         if matches!(self.peek_kind()?, Kind::LBrace) {
             return self.parse_struct_lit(None);
@@ -724,12 +761,13 @@ impl<'a> Parser<'a> {
         if !is_upper(tag.text) {
             return Err(self.unexpected(&tag, "a variant tag must start uppercase"));
         }
-        self.parse_variant_lit(None, None, tag.text)
+        let tag = self.intern(tag.text);
+        self.parse_variant_lit(None, None, tag)
     }
 
     /// A struct literal body `{ .field = e, ..., ..spread }`. Assumes the next
     /// token is `{`.
-    fn parse_struct_lit(&mut self, ty: Option<Name<'a>>) -> Result<&'a Expr<'a>> {
+    fn parse_struct_lit(&mut self, ty: Option<StrId>) -> Result<Aol<Expr>> {
         expect!(
             self,
             Kind::LBrace,
@@ -757,7 +795,7 @@ impl<'a> Parser<'a> {
         );
         Ok(self.expr(Expr::StructLit {
             ty,
-            fields: self.slice(&fields),
+            fields: fields.into_boxed_slice(),
             spread,
         }))
     }
@@ -765,10 +803,10 @@ impl<'a> Parser<'a> {
     /// A variant constructor with an optional `.{ payload }`.
     fn parse_variant_lit(
         &mut self,
-        module: Option<Name<'a>>,
-        ty: Option<Name<'a>>,
-        tag: Name<'a>,
-    ) -> Result<&'a Expr<'a>> {
+        module: Option<StrId>,
+        ty: Option<StrId>,
+        tag: StrId,
+    ) -> Result<Aol<Expr>> {
         let mut fields = Vec::new();
         if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::LBrace) {
             self.bump()?; // '.'
@@ -789,11 +827,11 @@ impl<'a> Parser<'a> {
             module,
             ty,
             tag,
-            fields: self.slice(&fields),
+            fields: fields.into_boxed_slice(),
         }))
     }
 
-    fn parse_field_init(&mut self) -> Result<FieldInit<'a>> {
+    fn parse_field_init(&mut self) -> Result<FieldInit> {
         // A named field is `.field = e` (lowercase field name). A positional
         // value may itself be a leading-dot literal (`.Tag`, `.{ ... }`), which
         // starts with `.` too, so only a lowercase `.name` is a named field.
@@ -802,7 +840,7 @@ impl<'a> Parser<'a> {
             && !is_upper(self.peek_at(1)?.text)
         {
             self.bump()?; // '.'
-            let name = self.bump()?.text;
+            let name = self.bump_word()?;
             expect!(self, Kind::Eq, "expected '=' after the field name");
             let value = self.parse_expr(0)?;
             Ok(FieldInit::Named { name, value })
@@ -811,22 +849,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_list(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_list(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '['
         let mut elems = Vec::new();
         while !matches!(self.peek_kind()?, Kind::RBrack) {
-            elems.push(*self.parse_expr(0)?);
+            elems.push(self.parse_expr(0)?);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list");
-        Ok(self.expr(Expr::List(self.slice(&elems))))
+        Ok(self.expr(Expr::List(elems.into_boxed_slice())))
     }
 
     /// An `@`-intrinsic in expression position: `@true`, `@false`, `@array`,
     /// `@extern`.
-    fn parse_at_term(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_at_term(&mut self) -> Result<Aol<Expr>> {
         let at = self.peek()?;
         match at.intrinsic_name() {
             "true" => {
@@ -846,7 +884,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `@array.{ n }` or `@array.{ .field = n }`.
-    fn parse_array(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_array(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '@array'
         expect!(self, Kind::Dot, "expected '.{' after '@array'");
         expect!(self, Kind::LBrace, "expected '{' after '@array.'");
@@ -866,7 +904,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `@extern "abi" "symbol" "lib"`.
-    fn parse_extern(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_extern(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '@extern'
         let abi = self.expect_string("expected an ABI string after '@extern'")?;
         let symbol = self.expect_string("expected a symbol string")?;
@@ -874,11 +912,11 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Extern { abi, symbol, lib }))
     }
 
-    fn expect_string(&mut self, what: &str) -> Result<&'a [u8]> {
+    fn expect_string(&mut self, what: &str) -> Result<StrId> {
         let t = self.peek()?;
         if let Kind::Str(s) = t.kind {
             self.bump()?;
-            Ok(s)
+            Ok(self.intern_bytes(s))
         } else {
             Err(self.unexpected(&t, what))
         }
@@ -886,13 +924,13 @@ impl<'a> Parser<'a> {
 
     // -- control forms ------------------------------------------------------
 
-    fn parse_let(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_let(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'let'
         let mut bindings = Vec::new();
         loop {
             let pat = self.parse_pattern()?;
-            let sig = if matches!(pat, Pattern::Var(_)) && matches!(self.peek_kind()?, Kind::Colon)
-            {
+            let is_var = matches!(self.ast.pats.lookup(pat), Pattern::Var(_));
+            let sig = if is_var && matches!(self.peek_kind()?, Kind::Colon) {
                 self.bump()?;
                 Some(self.parse_type()?)
             } else {
@@ -909,12 +947,12 @@ impl<'a> Parser<'a> {
         expect!(self, Kind::In, "expected 'in' after the 'let' bindings");
         let body = self.parse_expr(0)?;
         Ok(self.expr(Expr::Let {
-            bindings: self.slice(&bindings),
+            bindings: bindings.into_boxed_slice(),
             body,
         }))
     }
 
-    fn parse_with(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_with(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'with'
         let subject = self.parse_expr(0)?;
         expect!(self, Kind::In, "expected 'in' after the 'with' subject");
@@ -922,7 +960,7 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::With { subject, body }))
     }
 
-    fn parse_if(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_if(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'if'
         let cond = self.parse_expr(0)?;
         expect!(self, Kind::Then, "expected 'then' after the 'if' condition");
@@ -932,14 +970,14 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::If { cond, then, alt }))
     }
 
-    fn parse_when(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_when(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'when'
         let scrut = self.parse_expr(0)?;
         let mut arms = Vec::new();
         while matches!(self.peek_kind()?, Kind::Is) {
             let mut patterns = Vec::new();
             while self.eat(|k| matches!(k, Kind::Is))? {
-                patterns.push(*self.parse_pattern()?);
+                patterns.push(self.parse_pattern()?);
             }
             let guard = if matches!(self.peek_kind()?, Kind::If) {
                 self.bump()?;
@@ -950,7 +988,7 @@ impl<'a> Parser<'a> {
             expect!(self, Kind::Then, "expected 'then' after the match pattern");
             let body = self.parse_expr(0)?;
             arms.push(Arm {
-                patterns: self.slice(&patterns),
+                patterns: patterns.into_boxed_slice(),
                 guard,
                 body,
             });
@@ -963,26 +1001,26 @@ impl<'a> Parser<'a> {
         };
         Ok(self.expr(Expr::Match {
             scrut,
-            arms: self.slice(&arms),
+            arms: arms.into_boxed_slice(),
             default,
         }))
     }
 
-    fn parse_lambda(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_lambda(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '\'
         let mut params = Vec::new();
         while !matches!(self.peek_kind()?, Kind::Eq) {
-            params.push(*self.parse_pattern_atom()?);
+            params.push(self.parse_pattern_atom()?);
         }
         expect!(self, Kind::Eq, "expected '=' after the lambda parameters");
         let body = self.parse_expr(0)?;
         Ok(self.expr(Expr::Lambda {
-            params: self.slice(&params),
+            params: params.into_boxed_slice(),
             body,
         }))
     }
 
-    fn parse_handle(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_handle(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'do'
         let body = self.parse_expr(0)?;
         if !matches!(self.peek_kind()?, Kind::Ctl) {
@@ -992,26 +1030,18 @@ impl<'a> Parser<'a> {
             }));
         }
         self.bump()?; // 'ctl'
-        let continuation =
-            expect!(self, Kind::Word, "expected a continuation name after 'ctl'").text;
+        let continuation = self.expect_word("expected a continuation name after 'ctl'")?;
         let mut clauses = Vec::new();
         while self.eat(|k| matches!(k, Kind::Is))? {
-            let first = expect!(
-                self,
-                Kind::Word,
-                "expected an operation name in the handler clause"
-            )
-            .text;
+            let first = self.expect_word("expected an operation name in the handler clause")?;
             let (effect, op) = if matches!(self.peek_kind()?, Kind::Dot) {
                 self.bump()?;
-                (
-                    Some(first),
-                    expect!(self, Kind::Word, "expected an operation after '.'").text,
-                )
+                let op = self.expect_word("expected an operation after '.'")?;
+                (Some(first), op)
             } else {
                 (None, first)
             };
-            let arg = expect!(self, Kind::Word, "expected the operation's argument binder").text;
+            let arg = self.expect_word("expected the operation's argument binder")?;
             expect!(self, Kind::Eq, "expected '=' in the handler clause");
             let body = self.parse_expr(0)?;
             clauses.push(Clause {
@@ -1023,15 +1053,15 @@ impl<'a> Parser<'a> {
         }
         let default = if matches!(self.peek_kind()?, Kind::Else) {
             self.bump()?;
-            let name = expect!(self, Kind::Word, "expected a value binder after 'else'").text;
+            let name = self.expect_word("expected a value binder after 'else'")?;
             expect!(self, Kind::Eq, "expected '=' after the 'else' binder");
             Some((name, self.parse_expr(0)?))
         } else {
             None
         };
-        let handler = self.arena.alloc(Handler {
+        let handler = Box::new(Handler {
             continuation,
-            clauses: self.slice(&clauses),
+            clauses: clauses.into_boxed_slice(),
             default,
         });
         Ok(self.expr(Expr::Handle {
@@ -1040,7 +1070,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    fn parse_defer(&mut self) -> Result<&'a Expr<'a>> {
+    fn parse_defer(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'defer'
         let cleanup = self.parse_expr(0)?; // stops at 'do' (not an operand starter)
         expect!(self, Kind::Do, "expected 'do' after the 'defer' cleanup");
@@ -1050,7 +1080,7 @@ impl<'a> Parser<'a> {
 
     // -- patterns -----------------------------------------------------------
 
-    fn parse_pattern(&mut self) -> Result<&'a Pattern<'a>> {
+    fn parse_pattern(&mut self) -> Result<Aol<Pattern>> {
         let atom = self.parse_pattern_atom()?;
         if self.at_op("::")? {
             self.bump()?;
@@ -1058,7 +1088,8 @@ impl<'a> Parser<'a> {
             return Ok(self.pat(Pattern::Cons { head: atom, tail }));
         }
         if self.at_op("++")? {
-            if let Pattern::Str(prefix) = atom {
+            if let Pattern::Str(prefix) = self.ast.pats.lookup(atom) {
+                let prefix = *prefix;
                 self.bump()?;
                 let rest = self.parse_pattern()?;
                 return Ok(self.pat(Pattern::StrPrefix { prefix, rest }));
@@ -1069,7 +1100,7 @@ impl<'a> Parser<'a> {
         Ok(atom)
     }
 
-    fn parse_pattern_atom(&mut self) -> Result<&'a Pattern<'a>> {
+    fn parse_pattern_atom(&mut self) -> Result<Aol<Pattern>> {
         let t = self.peek()?;
         match t.kind {
             Kind::Int(v) => {
@@ -1082,6 +1113,7 @@ impl<'a> Parser<'a> {
             }
             Kind::Str(s) => {
                 self.bump()?;
+                let s = self.intern_bytes(s);
                 Ok(self.pat(Pattern::Str(s)))
             }
             Kind::Word if t.text == "_" => {
@@ -1091,7 +1123,8 @@ impl<'a> Parser<'a> {
             Kind::Word if is_upper(t.text) => self.parse_qualified_pattern(),
             Kind::Word => {
                 self.bump()?;
-                Ok(self.pat(Pattern::Var(t.text)))
+                let name = self.intern(t.text);
+                Ok(self.pat(Pattern::Var(name)))
             }
             Kind::At => {
                 self.bump()?;
@@ -1109,11 +1142,12 @@ impl<'a> Parser<'a> {
                 if !is_upper(tag.text) {
                     return Err(self.unexpected(&tag, "a variant tag must start uppercase"));
                 }
+                let tag = self.intern(tag.text);
                 let fields = self.parse_pattern_payload()?;
                 Ok(self.pat(Pattern::Variant {
                     module: None,
                     ty: None,
-                    tag: tag.text,
+                    tag,
                     fields,
                 }))
             }
@@ -1123,8 +1157,8 @@ impl<'a> Parser<'a> {
 
     /// An uppercase-led pattern: `Type.{ ... }` struct, `Type.Tag`, or
     /// `Module.Type.Tag`, each with an optional `.{ ... }` payload.
-    fn parse_qualified_pattern(&mut self) -> Result<&'a Pattern<'a>> {
-        let head = self.bump()?.text;
+    fn parse_qualified_pattern(&mut self) -> Result<Aol<Pattern>> {
+        let head = self.bump_word()?;
         expect!(
             self,
             Kind::Dot,
@@ -1135,17 +1169,18 @@ impl<'a> Parser<'a> {
             return Ok(self.pat(Pattern::Struct { ty: head, fields }));
         }
         let second = expect!(self, Kind::Word, "expected a variant tag after '.'");
+        let second_name = self.intern(second.text);
         // `Module.Type.Tag`
         if matches!(self.peek_kind()?, Kind::Dot)
             && matches!(self.peek_kind_at(1)?, Kind::Word)
             && is_upper(self.peek_at(1)?.text)
         {
             self.bump()?; // '.'
-            let tag = self.bump()?.text;
+            let tag = self.bump_word()?;
             let fields = self.parse_pattern_payload()?;
             Ok(self.pat(Pattern::Variant {
                 module: Some(head),
-                ty: Some(second.text),
+                ty: Some(second_name),
                 tag,
                 fields,
             }))
@@ -1154,23 +1189,23 @@ impl<'a> Parser<'a> {
             Ok(self.pat(Pattern::Variant {
                 module: None,
                 ty: Some(head),
-                tag: second.text,
+                tag: second_name,
                 fields,
             }))
         }
     }
 
-    fn parse_pattern_payload(&mut self) -> Result<&'a [FieldPat<'a>]> {
+    fn parse_pattern_payload(&mut self) -> Result<Box<[FieldPat]>> {
         if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::LBrace) {
             self.bump()?; // '.'
             self.parse_field_pats()
         } else {
-            Ok(&[])
+            Ok(Box::new([]))
         }
     }
 
     /// A `{ field-patterns }` body. Assumes the next token is `{`.
-    fn parse_field_pats(&mut self) -> Result<&'a [FieldPat<'a>]> {
+    fn parse_field_pats(&mut self) -> Result<Box<[FieldPat]>> {
         expect!(
             self,
             Kind::LBrace,
@@ -1180,7 +1215,7 @@ impl<'a> Parser<'a> {
         while !matches!(self.peek_kind()?, Kind::RBrace) {
             if matches!(self.peek_kind()?, Kind::Dot) {
                 self.bump()?; // '.'
-                let name = expect!(self, Kind::Word, "expected a field name after '.'").text;
+                let name = self.expect_word("expected a field name after '.'")?;
                 if self.eat(|k| matches!(k, Kind::Eq))? {
                     let pat = self.parse_pattern()?;
                     fields.push(FieldPat::Named { name, pat });
@@ -1199,10 +1234,10 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the field patterns"
         );
-        Ok(self.slice(&fields))
+        Ok(fields.into_boxed_slice())
     }
 
-    fn parse_list_pattern(&mut self) -> Result<&'a Pattern<'a>> {
+    fn parse_list_pattern(&mut self) -> Result<Aol<Pattern>> {
         self.bump()?; // '['
         let mut elems = Vec::new();
         let mut rest = None;
@@ -1214,23 +1249,23 @@ impl<'a> Parser<'a> {
                 rest = Some(self.parse_pattern()?);
                 break;
             }
-            elems.push(*self.parse_pattern()?);
+            elems.push(self.parse_pattern()?);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list pattern");
         Ok(self.pat(Pattern::List {
-            elems: self.slice(&elems),
+            elems: elems.into_boxed_slice(),
             rest,
         }))
     }
 
-    fn parse_tuple_pattern(&mut self) -> Result<&'a Pattern<'a>> {
+    fn parse_tuple_pattern(&mut self) -> Result<Aol<Pattern>> {
         self.bump()?; // '{'
         let mut elems = Vec::new();
         loop {
-            elems.push(*self.parse_pattern()?);
+            elems.push(self.parse_pattern()?);
             if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
             {
                 break;
@@ -1241,7 +1276,7 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the tuple pattern"
         );
-        Ok(self.pat(Pattern::Tuple(self.slice(&elems))))
+        Ok(self.pat(Pattern::Tuple(elems.into_boxed_slice())))
     }
 }
 

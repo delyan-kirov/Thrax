@@ -17,30 +17,39 @@ fn main() -> ExitCode {
         (Some("lex"), Some(path)) => cmd_lex(path),
         (Some("parse"), Some(path)) => cmd_parse(path),
         (Some("check"), Some(path)) => cmd_check(path),
+        (Some("run"), Some(path)) => cmd_run(path),
         _ => {
-            eprintln!("usage: thrax <lex|parse|check> <file.thx>");
+            eprintln!("usage: thrax <lex|parse|check|run> <file.thx>");
             ExitCode::FAILURE
         }
     }
 }
 
-fn cmd_check(path: &str) -> ExitCode {
+/// A module's name and source text, plus the name-to-slot index and the root
+/// module name. Shared by `check` and `run`.
+struct Loaded {
+    sources: Vec<(String, String)>,
+    index: HashMap<String, usize>,
+    root_name: String,
+}
+
+/// Load the root file and, transitively, every module it imports from the
+/// standard library.
+fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     let root_dir = Path::new(path)
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
 
-    // Load the root file and, transitively, every module it imports.
     let root_src = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("thrax: cannot read {path}: {e}");
-            return ExitCode::FAILURE;
+            return Err(ExitCode::FAILURE);
         }
     };
     let root_name = parse_mod_name(&root_src).unwrap_or_else(|| file_stem(path));
 
-    // sources[i] = (module name, source text); `index` maps a name to its slot.
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut queue: Vec<(String, String)> = vec![(root_name.clone(), root_src)];
@@ -63,48 +72,61 @@ fn cmd_check(path: &str) -> ExitCode {
                             "thrax: cannot read module `{imp}` ({}): {e}",
                             file.display()
                         );
-                        return ExitCode::FAILURE;
+                        return Err(ExitCode::FAILURE);
                     }
                 },
                 None => {
                     eprintln!("thrax: cannot find module `{imp}` imported by the program");
-                    return ExitCode::FAILURE;
+                    return Err(ExitCode::FAILURE);
                 }
             }
         }
     }
+    Ok(Loaded {
+        sources,
+        index,
+        root_name,
+    })
+}
 
-    // Parse every module into one shared arena.
-    let arena = Arena::new();
-    let mut programs: Vec<Program> = Vec::with_capacity(sources.len());
-    for (name, src) in &sources {
-        match syntax::parse(src, &arena) {
-            Ok(p) => programs.push(p),
-            Err(diag) => {
-                eprint!("{}", diag.render(src, name));
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-
-    // Build the import graph (edges point at dependencies) and order it so a
-    // module is checked after every module it imports.
+/// The dependency graph over parsed modules (edges point at imports).
+fn import_graph(
+    ast: &syntax::Ast,
+    programs: &[Program],
+    index: &HashMap<String, usize>,
+) -> Vec<Vec<usize>> {
     let mut graph = vec![Vec::new(); programs.len()];
     for (i, program) in programs.iter().enumerate() {
-        for item in program.items {
+        for item in &program.items {
             if let Item::Import { module, .. } = item {
-                if let Some(&j) = index.get(&module.join(".")) {
+                let name = module
+                    .iter()
+                    .map(|&part| ast.text(part))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                if let Some(&j) = index.get(&name) {
                     graph[i].push(j);
                 }
             }
         }
     }
+    graph
+}
 
-    // Check each module, importing its already-checked dependencies first.
+/// Type-check every module in dependency order, returning the per-module
+/// checkers (or the first error, rendered).
+type CheckOut<'a> = (Vec<types::Checker<'a>>, Vec<Vec<(&'a str, types::Type)>>);
+
+fn check_all<'a>(
+    ast: &'a syntax::Ast,
+    programs: &[Program],
+    graph: &[Vec<usize>],
+    sources: &[(String, String)],
+) -> Result<CheckOut<'a>, ExitCode> {
     let mut checkers: Vec<Option<types::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, types::Type)>> = vec![Vec::new(); programs.len()];
-    for i in topological_order(&graph) {
-        let mut checker = types::Checker::new();
+    for i in topological_order(graph) {
+        let mut checker = types::Checker::new(ast);
         for &dep in &graph[i] {
             let dep_checker = checkers[dep].as_ref().expect("dependency checked first");
             checker.import_from(dep_checker);
@@ -117,13 +139,127 @@ fn cmd_check(path: &str) -> ExitCode {
             Err(diag) => {
                 let (name, src) = &sources[i];
                 eprint!("{}", diag.render(src, name));
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
+    Ok((
+        checkers
+            .into_iter()
+            .map(|c| c.expect("all checked"))
+            .collect(),
+        results,
+    ))
+}
+
+/// Lower, then evaluate a module's entry point (`test`, else `main`).
+fn cmd_run(path: &str) -> ExitCode {
+    let loaded = match load_sources(path) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+
+    let mut ast = syntax::Ast::new();
+    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
+    for (name, src) in &loaded.sources {
+        match syntax::parse_into(ast, src) {
+            Ok((next_ast, p)) => {
+                ast = next_ast;
+                programs.push(p);
+            }
+            Err(diag) => {
+                eprint!("{}", diag.render(src, name));
                 return ExitCode::FAILURE;
             }
         }
     }
 
-    let root = index[&root_name];
-    let checker = checkers[root].as_ref().expect("root checked");
+    let graph = import_graph(&ast, &programs, &loaded.index);
+    if check_all(&ast, &programs, &graph, &loaded.sources).is_err() {
+        return ExitCode::FAILURE;
+    }
+
+    // Lower every module; put the root first so its names win when resolving an
+    // unqualified reference defined in more than one module.
+    let decls = core::Decls::collect(&ast, &programs);
+    let root = loaded.index[&loaded.root_name];
+    let mut order: Vec<usize> = (0..programs.len()).collect();
+    order.sort_by_key(|&i| i != root);
+    let lowered: Vec<core::Program> = order
+        .iter()
+        .map(|&i| core::lower_program(&ast, &programs[i], &decls))
+        .collect();
+
+    let entry = ["test", "main"]
+        .into_iter()
+        .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
+    let entry = match entry {
+        Some(e) => e.to_string(),
+        None => {
+            eprintln!(
+                "thrax: module `{}` has no `test` or `main` to run",
+                loaded.root_name
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Evaluate on a thread with a large stack: the interpreter recurses with the
+    // program, and without tail-call optimization even a tail-recursive loop
+    // nests one native frame per iteration, so a deep loop needs headroom.
+    let run_entry = entry.clone();
+    let result = std::thread::Builder::new()
+        .stack_size(4 << 30)
+        .spawn(move || {
+            let interp = core::Interp::new(&lowered);
+            interp.eval_global(&run_entry).map(|v| v.show())
+        })
+        .expect("spawn interpreter thread")
+        .join()
+        .expect("interpreter thread panicked");
+
+    match result {
+        Ok(shown) => {
+            println!("{entry} = {shown}");
+            ExitCode::SUCCESS
+        }
+        Err(diag) => {
+            eprint!("{}", diag.render("", &loaded.root_name));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_check(path: &str) -> ExitCode {
+    let loaded = match load_sources(path) {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+
+    // Parse every module into one shared arena.
+    let mut ast = syntax::Ast::new();
+    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
+    for (name, src) in &loaded.sources {
+        match syntax::parse_into(ast, src) {
+            Ok((next_ast, p)) => {
+                ast = next_ast;
+                programs.push(p);
+            }
+            Err(diag) => {
+                eprint!("{}", diag.render(src, name));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let graph = import_graph(&ast, &programs, &loaded.index);
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources) {
+        Ok(out) => out,
+        Err(code) => return code,
+    };
+
+    let root = loaded.index[&loaded.root_name];
+    let checker = &checkers[root];
     for (name, ty) in &results[root] {
         println!("{name} : {}", checker.show(ty));
     }
@@ -151,13 +287,17 @@ fn topological_order(graph: &[Vec<usize>]) -> Vec<usize> {
     order
 }
 
-/// Find the source file for a module, searching the sibling `library` directory
-/// (where the standard library lives) and a few nearby fallbacks.
+/// Find the source file for a module, searching the sibling standard-library and
+/// example directories, then a few nearby fallbacks. The combined test runner
+/// imports example modules from `tests/`, while ordinary programs import the
+/// standard library.
 fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
     let file = format!("{name}.thx");
     let candidates = [
         root_dir.join("..").join("library").join(&file),
+        root_dir.join("..").join("examples").join(&file),
         root_dir.join("library").join(&file),
+        root_dir.join("examples").join(&file),
         PathBuf::from("library").join(&file),
         root_dir.join(&file),
     ];
@@ -166,24 +306,29 @@ fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
 
 /// The `@mod` name declared by a source, by parsing it in a scratch arena.
 fn parse_mod_name(src: &str) -> Option<String> {
-    let arena = Arena::new();
-    syntax::parse(src, &arena)
+    syntax::parse(src)
         .ok()
-        .map(|p| p.module.to_string())
+        .map(|p| p.ast.text(p.program.module).to_string())
 }
 
 /// The module names a source imports (`$ with MOD`), or empty if it does not
 /// parse (the parse error is reported later, against the shared arena).
 fn parse_imports(src: &str) -> Vec<String> {
-    let arena = Arena::new();
-    let Ok(program) = syntax::parse(src, &arena) else {
+    let Ok(parsed) = syntax::parse(src) else {
         return Vec::new();
     };
-    program
+    parsed
+        .program
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, .. } => Some(module.join(".")),
+            Item::Import { module, .. } => Some(
+                module
+                    .iter()
+                    .map(|&part| parsed.ast.text(part))
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ),
             _ => None,
         })
         .collect()
@@ -206,11 +351,14 @@ fn cmd_parse(path: &str) -> ExitCode {
         }
     };
 
-    let arena = Arena::new();
-    match syntax::parse(&source, &arena) {
-        Ok(program) => {
-            println!("module {} ({} items)", program.module, program.items.len());
-            for item in program.items {
+    match syntax::parse(&source) {
+        Ok(parsed) => {
+            println!(
+                "module {} ({} items)",
+                parsed.ast.text(parsed.program.module),
+                parsed.program.items.len()
+            );
+            for item in parsed.program.items {
                 println!("  {item:?}");
             }
             ExitCode::SUCCESS

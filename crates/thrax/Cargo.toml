@@ -14,3 +14,4 @@ arena = { path = "../arena" }
 lexer = { path = "../lexer" }
 syntax = { path = "../syntax" }
 types = { path = "../types" }
+core = { path = "../core" }

@@ -22,6 +22,9 @@ use std::cell::UnsafeCell;
 use std::ptr::NonNull;
 use std::{mem, ptr, slice, str};
 
+pub mod handle;
+pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
+
 /// Default block capacity in bytes (matches the C++ arena's 1 KiB block).
 const BLOCK_DEFAULT: usize = 1 << 10;
 

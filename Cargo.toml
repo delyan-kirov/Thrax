@@ -6,6 +6,7 @@ members = [
     "crates/lexer",
     "crates/syntax",
     "crates/types",
+    "crates/core",
     "crates/thrax",
 ]
 

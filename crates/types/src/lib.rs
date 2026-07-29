@@ -18,25 +18,23 @@ pub use infer::Checker;
 pub use ty::Type;
 
 use diag::Result;
-use syntax::Program;
+use syntax::{Ast, Program};
 
 /// Type-check a program, returning each global definition's generalized type.
-pub fn check<'a>(program: &Program<'a>) -> Result<Vec<(&'a str, Type)>> {
-    Checker::new().check_program(program)
+pub fn check<'a>(ast: &'a Ast, program: &Program) -> Result<Vec<(&'a str, Type)>> {
+    Checker::new(ast).check_program(program)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arena::Arena;
 
     /// Infer the type of a single global `x`, rendered as a string.
     fn type_of(src: &str, name: &str) -> String {
-        let arena = Arena::new();
-        let program = syntax::parse(src, &arena).expect("parse");
-        let mut checker = Checker::new();
+        let parsed = syntax::parse(src).expect("parse");
+        let mut checker = Checker::new(&parsed.ast);
         let results = checker
-            .check_program(&program)
+            .check_program(&parsed.program)
             .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
         let ty = results
             .iter()
@@ -48,9 +46,8 @@ mod tests {
     }
 
     fn errors(src: &str) -> String {
-        let arena = Arena::new();
-        let program = syntax::parse(src, &arena).expect("parse");
-        match Checker::new().check_program(&program) {
+        let parsed = syntax::parse(src).expect("parse");
+        match Checker::new(&parsed.ast).check_program(&parsed.program) {
             Ok(_) => String::new(),
             Err(e) => format!("{e}"),
         }
@@ -215,24 +212,23 @@ mod tests {
 
     #[test]
     fn cross_module_import_brings_in_types_and_values() {
-        let arena = Arena::new();
         let dep_src = "@mod OPT\n\
                        $ Option : @union = Some: `T, None: {}\n\
                        $ is_some : Option `T -> Bool = \\o = \
                        when o is Option.Some.{_} then true else false\n\
                        $ unwrap_or : Option `T -> `T -> `T = \\o d = \
                        when o is Option.Some.{x} then x else d";
-        let dep = syntax::parse(dep_src, &arena).expect("parse dep");
-        let mut dep_checker = Checker::new();
-        dep_checker.check_program(&dep).expect("check dep");
-
         let use_src = "@mod U\n\
                        $ with OPT\n\
                        $ o : Option Int = Option.Some.{ 41 }\n\
                        $ present = is_some o\n\
                        $ value = unwrap_or o 0";
-        let program = syntax::parse(use_src, &arena).expect("parse use");
-        let mut checker = Checker::new();
+        // Both modules parse into one shared `Ast` so cross-module handles resolve.
+        let (ast, dep) = syntax::parse_into(syntax::Ast::new(), dep_src).expect("parse dep");
+        let (ast, program) = syntax::parse_into(ast, use_src).expect("parse use");
+        let mut dep_checker = Checker::new(&ast);
+        dep_checker.check_program(&dep).expect("check dep");
+        let mut checker = Checker::new(&ast);
         checker.import_from(&dep_checker);
         let results = checker
             .check_program(&program)

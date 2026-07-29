@@ -7,6 +7,15 @@ name = "arena"
 version = "0.1.0"
 
 [[package]]
+name = "core"
+version = "0.1.0"
+dependencies = [
+ "arena",
+ "diag",
+ "syntax",
+]
+
+[[package]]
 name = "diag"
 version = "0.1.0"
 
@@ -32,6 +41,7 @@ name = "thrax"
 version = "0.1.0"
 dependencies = [
  "arena",
+ "core",
  "diag",
  "lexer",
  "syntax",
