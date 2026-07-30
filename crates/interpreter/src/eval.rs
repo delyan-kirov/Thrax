@@ -1,4 +1,4 @@
-//! A tree-walking interpreter over the [`frontend::cr_data`] Core.
+//! A tree-walking interpreter over the [`frontend::lowering::data`] Core.
 //!
 //! Evaluation is strict and environment-passing. A definition is a lazily forced
 //! global (so a module runs only the globals it needs, and forward references
@@ -19,6 +19,8 @@
 //! The program already type-checked, so the operands always have a kind the
 //! implementation accepts; the interpreter needs no resolved overload keys.
 
+pub mod data;
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -26,10 +28,10 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use frontend::cr_data::{Arm, Handler, Pat, Program, Term};
+use frontend::lowering::data::{Arm, Handler, Pat, Program, Term};
 use utilities::{Code, Diagnostic, Result, Span};
 
-use crate::it_data::*;
+use crate::eval::data::*;
 
 thread_local! {
     /// Open files behind the auto-injected `C` libc namespace. A `C.fopen`

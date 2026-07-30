@@ -238,5 +238,5 @@ fn locate(source: &str, offset: usize) -> (usize, &str) {
 }
 
 #[cfg(test)]
-#[path = "er_tests.rs"]
+#[path = "error_tests.rs"]
 mod tests;

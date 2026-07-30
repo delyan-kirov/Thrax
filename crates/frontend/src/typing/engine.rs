@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use utilities::{Code, Diagnostic, Result, Span};
 
-use crate::tc_data::{display, Level, Type, VarId};
+use crate::typing::data::{display, Level, Type, VarId};
 
 /// The state of one unification variable.
 #[derive(Clone, Debug)]

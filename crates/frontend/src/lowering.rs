@@ -1,5 +1,5 @@
-//! Desugaring: the front-end handle-based AST ([`syntax`]) to the [`crate::term`]
-//! Core.
+//! Desugaring: the front-end handle-based AST ([`crate::parser::data`]) to the
+//! [`crate::lowering::data`] Core.
 //!
 //! This is the whole "remove the sugar" pass. Operators become applications of a
 //! built-in variable (or, for `;`/`|>`/`<|`/`::`, a `let`/application/`List`
@@ -14,16 +14,18 @@
 //! `ast.bytes`. Because `ast` is shared, those resolve to `'a`-lived data
 //! independent of the `&mut self` used for fresh-name generation.
 
+pub mod data;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::ex_data::{
+use crate::parser::data::{
     Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program as AstProgram,
     RecField, Ty,
 };
 use utilities::Aol;
 
-use crate::cr_data::{
+use crate::lowering::data::{
     Arm, Clause as CoreClause, Effect, Handler as CoreHandler, Pat, Program, Term,
 };
 

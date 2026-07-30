@@ -1,31 +1,25 @@
-//! The Thrax compiler front end, in cpp-style phases: `lx` lexes, `ex` parses to
-//! the handle-based AST, `tc` type-checks it, and `cr` lowers it to the Core.
-//! Each phase splits logic from its data (`ex`/`ex_data`, `tc`/`tc_data`,
-//! `cr`/`cr_data`), mirroring the C++ `X` / `XxDATA` layout.
+//! The Thrax compiler front end, as a pipeline of phases: [`lexer`] lexes,
+//! [`parser`] parses to the handle-based AST, [`typing`] type-checks it, and
+//! [`lowering`] lowers it to the Core. Each phase keeps its data in a nested
+//! module (`parser::data`, `typing::data`/`typing::engine`, `lowering::data`).
 //!
 //! Entry points: [`parse`] (source to AST), [`check`] (AST to inferred types),
-//! and [`cr::lower_program`] (AST to Core). The Core ([`cr_data`]) is what the
-//! `interpreter` and, later, `cgen` crates consume.
+//! and [`lowering::lower_program`] (AST to Core). The Core ([`lowering::data`])
+//! is what the `interpreter` and, later, `cgen` crates consume.
 
-pub mod cr;
-pub mod cr_data;
-pub mod ex;
-pub mod ex_data;
-mod ex_table;
-pub mod lx;
-pub mod lx_data;
-pub mod tc;
-pub mod tc_data;
-pub mod tc_engine;
+pub mod lexer;
+pub mod lowering;
+pub mod parser;
+pub mod typing;
 
-pub use cr::{lower_program, Decls, Resolved};
-pub use ex::Parser;
-pub use ex_data::*;
-pub use lx::Lexer;
-pub use lx_data::{Kind, Token};
-pub use tc::Checker;
-pub use tc_data::Type;
-pub use tc_engine::Engine;
+pub use lexer::data::{Kind, Token};
+pub use lexer::Lexer;
+pub use lowering::{lower_program, Decls, Resolved};
+pub use parser::data::*;
+pub use parser::Parser;
+pub use typing::data::Type;
+pub use typing::engine::Engine;
+pub use typing::Checker;
 
 use utilities::{Arena, Result};
 
@@ -60,10 +54,3 @@ pub fn parse_into(ast: Ast, source: &str) -> Result<(Ast, Program)> {
 pub fn check<'a>(ast: &'a Ast, program: &Program) -> Result<Vec<(&'a str, Type)>> {
     Checker::new(ast).check_program(program)
 }
-
-#[cfg(test)]
-#[path = "ex_tests.rs"]
-mod ex_tests;
-#[cfg(test)]
-#[path = "tc_tests.rs"]
-mod tc_tests;

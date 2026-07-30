@@ -10,10 +10,14 @@
 //! into a caller-supplied [`Arena`], so a `Token`'s payloads live as long as the
 //! source and arena do.
 
+pub mod data;
+#[cfg(test)]
+mod tests;
+
 use utilities::Arena;
 use utilities::{Code, Diagnostic, Line, Result, Span};
 
-pub use crate::lx_data::{Kind, Token};
+pub use crate::lexer::data::{Kind, Token};
 
 /// A forward, buffered cursor over the source token stream.
 pub struct Lexer<'a> {
@@ -166,11 +170,11 @@ impl<'a> Lexer<'a> {
             b'"' => self.lex_string(start, line),
             b'`' => self.lex_tyvar(start, line),
             b'@' => self.lex_intrinsic(start, line),
-            _ if crate::lx_data::is_digit(c) => self.lex_number(start, line),
-            _ if crate::lx_data::is_ident_start(c) => Ok(self.lex_word(start, line)),
-            _ if crate::lx_data::is_operator_char(c) => self.lex_operator(start, line),
+            _ if crate::lexer::data::is_digit(c) => self.lex_number(start, line),
+            _ if crate::lexer::data::is_ident_start(c) => Ok(self.lex_word(start, line)),
+            _ if crate::lexer::data::is_operator_char(c) => self.lex_operator(start, line),
             _ => {
-                if let Some(kind) = crate::lx_data::delimiter(c) {
+                if let Some(kind) = crate::lexer::data::delimiter(c) {
                     self.cursor += 1;
                     return Ok(self.mk(kind, start, line));
                 }
@@ -292,7 +296,7 @@ impl<'a> Lexer<'a> {
     fn escape_hex_byte(&mut self, start: usize, line: Line, out: &mut Vec<u8>) -> Result<()> {
         let h1 = self.at(self.cursor + 1);
         let h2 = self.at(self.cursor + 2);
-        if !crate::lx_data::is_hex_digit(h1) || !crate::lx_data::is_hex_digit(h2) {
+        if !crate::lexer::data::is_hex_digit(h1) || !crate::lexer::data::is_hex_digit(h2) {
             return Err(self.err(
                 Code::InvalidEscape,
                 start,
@@ -324,7 +328,7 @@ impl<'a> Lexer<'a> {
         self.cursor += 2; // 'u' and '{'
         let mut cp: u32 = 0;
         let mut digits = 0;
-        while crate::lx_data::is_hex_digit(self.cur()) && digits < 6 {
+        while crate::lexer::data::is_hex_digit(self.cur()) && digits < 6 {
             cp = cp * 16 + (self.cur() as char).to_digit(16).unwrap();
             self.cursor += 1;
             digits += 1;
@@ -342,7 +346,7 @@ impl<'a> Lexer<'a> {
     /// `` `T `` type variable: a backtick followed by an identifier.
     fn lex_tyvar(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
         self.cursor += 1; // backtick
-        if !crate::lx_data::is_ident_start(self.cur()) {
+        if !crate::lexer::data::is_ident_start(self.cur()) {
             return Err(self.err(
                 Code::UnknownSymbol,
                 start,
@@ -350,14 +354,14 @@ impl<'a> Lexer<'a> {
                 "expected a type-variable name after '`'",
             ));
         }
-        self.scan_while(crate::lx_data::is_ident_cont);
+        self.scan_while(crate::lexer::data::is_ident_cont);
         Ok(self.mk(Kind::TyVar, start, line))
     }
 
     /// `@name` intrinsic: an at-sign followed by an identifier.
     fn lex_intrinsic(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
         self.cursor += 1; // '@'
-        if !crate::lx_data::is_ident_start(self.cur()) {
+        if !crate::lexer::data::is_ident_start(self.cur()) {
             return Err(self.err(
                 Code::UnknownSymbol,
                 start,
@@ -365,22 +369,22 @@ impl<'a> Lexer<'a> {
                 "expected an intrinsic name after '@'",
             ));
         }
-        self.scan_while(crate::lx_data::is_ident_cont);
+        self.scan_while(crate::lexer::data::is_ident_cont);
         Ok(self.mk(Kind::At, start, line))
     }
 
     /// An identifier or a keyword.
     fn lex_word(&mut self, start: usize, line: Line) -> Token<'a> {
-        self.scan_while(crate::lx_data::is_ident_cont);
-        let kind = crate::lx_data::keyword_or_word(self.slice_from(start));
+        self.scan_while(crate::lexer::data::is_ident_cont);
+        let kind = crate::lexer::data::keyword_or_word(self.slice_from(start));
         self.mk(kind, start, line)
     }
 
     /// A maximal run of operator characters, resolved against the table.
     fn lex_operator(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
-        self.scan_while(crate::lx_data::is_operator_char);
+        self.scan_while(crate::lexer::data::is_operator_char);
         let lexeme = self.slice_from(start);
-        match crate::lx_data::operator(lexeme) {
+        match crate::lexer::data::operator(lexeme) {
             Some(kind) => Ok(self.mk(kind, start, line)),
             None => Err(self.err(
                 Code::UnknownSymbol,
@@ -397,30 +401,30 @@ impl<'a> Lexer<'a> {
     /// carry interior `_` separators, which are stripped before parsing.
     fn lex_number(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
         if self.cur() == b'0' && matches!(self.at(self.cursor + 1), b'x' | b'X') {
-            return self.lex_radix(start, line, 16, crate::lx_data::is_hex_digit);
+            return self.lex_radix(start, line, 16, crate::lexer::data::is_hex_digit);
         }
         if self.cur() == b'0' && matches!(self.at(self.cursor + 1), b'b' | b'B') {
-            return self.lex_radix(start, line, 2, crate::lx_data::is_bin_digit);
+            return self.lex_radix(start, line, 2, crate::lexer::data::is_bin_digit);
         }
 
-        self.scan_while_digit_or_sep(crate::lx_data::is_digit);
+        self.scan_while_digit_or_sep(crate::lexer::data::is_digit);
 
         // A real has a fractional part and/or an exponent.
         let mut is_real = false;
-        if self.cur() == b'.' && crate::lx_data::is_digit(self.at(self.cursor + 1)) {
+        if self.cur() == b'.' && crate::lexer::data::is_digit(self.at(self.cursor + 1)) {
             is_real = true;
             self.cursor += 1; // '.'
-            self.scan_while_digit_or_sep(crate::lx_data::is_digit);
+            self.scan_while_digit_or_sep(crate::lexer::data::is_digit);
         }
         if matches!(self.cur(), b'e' | b'E') {
             let mut look = self.cursor + 1;
             if matches!(self.at(look), b'+' | b'-') {
                 look += 1;
             }
-            if crate::lx_data::is_digit(self.at(look)) {
+            if crate::lexer::data::is_digit(self.at(look)) {
                 is_real = true;
                 self.cursor = look;
-                self.scan_while_digit_or_sep(crate::lx_data::is_digit);
+                self.scan_while_digit_or_sep(crate::lexer::data::is_digit);
             }
         }
 
@@ -502,151 +506,5 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn kinds(src: &str) -> Vec<Kind<'_>> {
-        // Leak a boxed arena so the returned kinds can borrow it for the test.
-        let arena: &'static Arena = Box::leak(Box::new(Arena::new()));
-        Lexer::tokenize(src, arena)
-            .expect("lex ok")
-            .into_iter()
-            .map(|t| t.kind)
-            .collect()
-    }
-
-    #[test]
-    fn global_declaration() {
-        let ks = kinds("$fib : Int -> Int = \\n = n");
-        assert_eq!(
-            ks,
-            vec![
-                Kind::Dollar,
-                Kind::Word,
-                Kind::Colon,
-                Kind::Word,
-                Kind::Arrow,
-                Kind::Word,
-                Kind::Eq,
-                Kind::Lambda,
-                Kind::Word,
-                Kind::Eq,
-                Kind::Word,
-                Kind::Eof,
-            ]
-        );
-    }
-
-    #[test]
-    fn operators_maximal_munch() {
-        assert_eq!(
-            kinds("a ?= b :: c ++ d |> e"),
-            vec![
-                Kind::Word,
-                Kind::Op,
-                Kind::Word,
-                Kind::Op,
-                Kind::Word,
-                Kind::Op,
-                Kind::Word,
-                Kind::Op,
-                Kind::Word,
-                Kind::Eof,
-            ]
-        );
-    }
-
-    #[test]
-    fn numbers_ints_reals_radix() {
-        let arena = Arena::new();
-        let toks = Lexer::tokenize("0xFF 0b1010 1_000 3.5 2e3", &arena).unwrap();
-        let vals: Vec<Kind> = toks.into_iter().map(|t| t.kind).collect();
-        assert_eq!(vals[0], Kind::Int(255));
-        assert_eq!(vals[1], Kind::Int(10));
-        assert_eq!(vals[2], Kind::Int(1000));
-        assert_eq!(vals[3], Kind::Real(3.5));
-        assert_eq!(vals[4], Kind::Real(2000.0));
-    }
-
-    #[test]
-    fn string_escapes_decoded() {
-        let arena = Arena::new();
-        let toks = Lexer::tokenize(r#""a\tb\x41""#, &arena).unwrap();
-        assert_eq!(toks[0].kind, Kind::Str(b"a\tbA"));
-    }
-
-    #[test]
-    fn string_raw_bytes_and_unicode() {
-        let arena = Arena::new();
-        let toks = Lexer::tokenize(r#""\xFF\u{41}\u{1F600}""#, &arena).unwrap();
-        // 0xFF raw byte, 'A', then the 4-byte UTF-8 of U+1F600.
-        assert_eq!(toks[0].kind, Kind::Str(b"\xFFA\xF0\x9F\x98\x80"));
-    }
-
-    #[test]
-    fn intrinsic_and_tyvar_names() {
-        let arena = Arena::new();
-        let toks = Lexer::tokenize("@struct `T", &arena).unwrap();
-        assert_eq!(toks[0].kind, Kind::At);
-        assert_eq!(toks[0].intrinsic_name(), "struct");
-        assert_eq!(toks[1].kind, Kind::TyVar);
-        assert_eq!(toks[1].tyvar_name(), "T");
-    }
-
-    #[test]
-    fn keywords_recognized() {
-        assert_eq!(
-            kinds("let x in when is then else"),
-            vec![
-                Kind::Let,
-                Kind::Word,
-                Kind::In,
-                Kind::When,
-                Kind::Is,
-                Kind::Then,
-                Kind::Else,
-                Kind::Eof,
-            ]
-        );
-    }
-
-    #[test]
-    fn comments_are_skipped_including_nested_blocks() {
-        assert_eq!(
-            kinds("a # line\n b #- outer #- inner -# still -# c"),
-            vec![Kind::Word, Kind::Word, Kind::Word, Kind::Eof]
-        );
-    }
-
-    #[test]
-    fn peek_then_next_and_backtrack() {
-        let arena = Arena::new();
-        let mut lx = Lexer::new("a b c", &arena);
-        assert_eq!(lx.peek(0).unwrap().kind, Kind::Word);
-        assert_eq!(lx.peek(2).unwrap().kind, Kind::Word);
-        let mark = lx.mark();
-        assert_eq!(lx.next_token().unwrap().text, "a");
-        assert_eq!(lx.next_token().unwrap().text, "b");
-        lx.reset(mark);
-        assert_eq!(lx.next_token().unwrap().text, "a");
-    }
-
-    #[test]
-    fn unclosed_string_is_an_error() {
-        let arena = Arena::new();
-        let err = Lexer::tokenize("\"oops", &arena).unwrap_err();
-        assert_eq!(err.root().code, Code::UnclosedQuote);
-    }
-
-    #[test]
-    fn line_numbers_track_newlines() {
-        let arena = Arena::new();
-        let toks = Lexer::tokenize("a\n\nb", &arena).unwrap();
-        assert_eq!(toks[0].line, 1);
-        assert_eq!(toks[1].line, 3);
     }
 }

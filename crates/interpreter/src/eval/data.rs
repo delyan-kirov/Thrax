@@ -1,5 +1,5 @@
 //! Runtime data for the interpreter: the value representation and the
-//! evaluator's internal structures. The logic lives in [`crate::it`]; this is
+//! evaluator's internal structures. The logic lives in [`crate::eval`]; this is
 //! the `IT` / `ITxDATA` split mirrored from the C++ tree.
 
 use std::cell::RefCell;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use frontend::cr_data::Term;
+use frontend::lowering::data::Term;
 use utilities::Result;
 
 /// A runtime value. Aggregates own their elements; closures and the environment

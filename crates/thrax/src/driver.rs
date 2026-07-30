@@ -185,7 +185,7 @@ pub fn cmd_run(path: &str) -> ExitCode {
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered: Vec<frontend::cr_data::Program> = order
+    let lowered: Vec<frontend::lowering::data::Program> = order
         .iter()
         .map(|&i| frontend::lower_program(&ast, &programs[i], &decls, &resolved))
         .collect();

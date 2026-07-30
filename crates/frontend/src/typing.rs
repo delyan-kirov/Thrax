@@ -1,4 +1,4 @@
-//! Algorithm W over the [`syntax`] handle-based AST.
+//! Algorithm W over the [`crate::parser::data`] handle-based AST.
 //!
 //! Inference is driven by [`Checker::infer`] (expressions) and
 //! [`Checker::type_pattern`] (patterns), threading the [`Engine`] for
@@ -24,16 +24,21 @@
 //! checking); the monomorphism restriction keeps overload-constrained variables
 //! from being generalized early.
 
+pub mod data;
+pub mod engine;
+#[cfg(test)]
+mod tests;
+
 use std::collections::{HashMap, HashSet};
 
-use crate::ex_data::{
+use crate::parser::data::{
     Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, Ty,
 };
 use utilities::Aol;
 use utilities::{Code, Diagnostic, Result, Span};
 
-use crate::tc_data::{self as ty, Type, VarId};
-use crate::tc_engine::Engine;
+use crate::typing::data::{self as ty, Type, VarId};
+use crate::typing::engine::Engine;
 
 /// A declared struct type. `params` are the implicit type parameters (the type
 /// variables appearing in the fields, in order of first appearance); `fields`
@@ -1141,7 +1146,7 @@ impl<'a> Checker<'a> {
     fn infer_handle(
         &mut self,
         body: Aol<Expr>,
-        handler: &'a crate::ex_data::Handler,
+        handler: &'a crate::parser::data::Handler,
     ) -> Result<Type> {
         let body_ty = self.infer(body)?;
         let result = self.eng.fresh();

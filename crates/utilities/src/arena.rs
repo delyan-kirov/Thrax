@@ -211,5 +211,5 @@ impl Drop for Arena {
 }
 
 #[cfg(test)]
-#[path = "ar_tests.rs"]
+#[path = "arena_tests.rs"]
 mod tests;

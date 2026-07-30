@@ -5,7 +5,7 @@
 //!
 //! * [`Parser::parse_expr`] is the precedence-climbing core: it parses a prefix,
 //!   then folds infix operators and juxtaposition (application) by binding power
-//!   from [`crate::ex_table`].
+//!   from [`crate::parser::table`].
 //! * [`Parser::parse_primary`] parses one atom then a left-associative postfix
 //!   `.` chain (field access, tuple index, struct/variant literals,
 //!   module-qualified names) that binds tighter than application.
@@ -17,13 +17,17 @@
 //! [`StrId`]. Sugar (`;`, `|>`, `<|`, `::`, `[..]`) is preserved as explicit AST
 //! nodes; a later pass desugars it.
 
-use crate::lx::Lexer;
-use crate::lx_data::{Kind, Token};
+pub mod data;
+mod table;
+#[cfg(test)]
+mod tests;
+
+use crate::lexer::data::{Kind, Token};
+use crate::lexer::Lexer;
 use utilities::{Aol, StrId};
 use utilities::{Code, Diagnostic, Result};
 
-use crate::ex_data::*;
-use crate::ex_table;
+use crate::parser::data::*;
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
@@ -541,7 +545,7 @@ impl<'a> Parser<'a> {
         loop {
             let t = self.peek()?;
             match t.kind {
-                Kind::Op => match ex_table::infix(t.text) {
+                Kind::Op => match table::infix(t.text) {
                     Some(bp) if bp.left >= min_bp => {
                         self.bump()?;
                         let op = self.intern(t.text);
@@ -551,10 +555,10 @@ impl<'a> Parser<'a> {
                     _ => break,
                 },
                 _ if self.starts_operand(t.kind) => {
-                    if ex_table::APP.left < min_bp {
+                    if table::APP.left < min_bp {
                         break;
                     }
-                    let rhs = self.parse_expr(ex_table::APP.right)?;
+                    let rhs = self.parse_expr(table::APP.right)?;
                     lhs = self.expr(Expr::App(lhs, rhs));
                 }
                 _ => break,
@@ -587,10 +591,10 @@ impl<'a> Parser<'a> {
     fn parse_prefix(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
         if let Kind::Op = t.kind {
-            if let Some(name) = ex_table::prefix(t.text) {
+            if let Some(name) = table::prefix(t.text) {
                 self.bump()?;
                 let op = self.intern(name);
-                let operand = self.parse_expr(ex_table::PREFIX)?;
+                let operand = self.parse_expr(table::PREFIX)?;
                 return Ok(self.expr(Expr::UnOp { op, operand }));
             }
         }
