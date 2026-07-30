@@ -81,6 +81,13 @@ fn assert_matches(src: &str, entry: &str) {
     assert_eq!(c_run(src, entry), expected);
 }
 
+/// Read a single-module example from the corpus and assert `entry` matches.
+fn assert_example(file: &str, entry: &str) {
+    let path = format!("{}/../../examples/{file}", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&path).expect("read example");
+    assert_matches(&src, entry);
+}
+
 #[test]
 fn arithmetic_and_precedence() {
     let src = "@mod T\n\
@@ -164,4 +171,45 @@ fn tuples() {
                $ test : Int = mid\n";
     assert_matches(src, "t");
     assert_matches(src, "test");
+}
+
+// -- algebraic effects (fiber engine) --------------------------------------
+
+#[test]
+fn effects_generator_and_state() {
+    // sumGen resumes once per yield (42); runState threads state (21); the
+    // exception clause never resumes (-1).
+    assert_example("EFFECTS.thx", "r_gen");
+    assert_example("EFFECTS.thx", "r_state");
+    assert_example("EFFECTS.thx", "r_exn_bad");
+    assert_example("EFFECTS.thx", "test");
+}
+
+#[test]
+fn effects_same_op_name_overload() {
+    assert_example("EFFECT_OVERLOAD.thx", "readEnv");
+    assert_example("EFFECT_OVERLOAD.thx", "cfg");
+}
+
+#[test]
+fn effects_coroutines_cross_context_resume() {
+    // A continuation captured in `spawn`'s handler, stored in `Susp`, and resumed
+    // later from `rr` (a different dynamic context).
+    assert_example("COROUTINES.thx", "scheduled");
+}
+
+#[test]
+fn effects_defer_finalization() {
+    // Normal completion, abort (handler drops the continuation), LIFO nesting,
+    // and a stored continuation whose cleanup runs when it finally completes.
+    assert_example("FINALLY.thx", "r_normal");
+    assert_example("FINALLY.thx", "r_abort");
+    assert_example("FINALLY.thx", "r_nested");
+    assert_example("FINALLY.thx", "r_stored");
+}
+
+#[test]
+fn effects_pipes_and_seq() {
+    assert_example("PIPES.thx", "r_seq");
+    assert_example("PIPES.thx", "test");
 }

@@ -3,10 +3,13 @@
 //! closing over a linked environment; globals become lazily forced, memoized
 //! functions. The scheme is direct-style: evaluation runs on the C stack.
 //!
-//! Algebraic effects (`Handle`, `Defer`, effect operations) cannot capture a
-//! resumable continuation in direct-style C, so they compile to a runtime fault,
-//! exactly as the interpreter faults on the FFI `Fault` node. The effect-free
-//! core (the bulk of the language) compiles and runs.
+//! Algebraic effects need to suspend a computation the C stack cannot: `Handle`,
+//! `Defer`, and applying an effect operation compile to calls into the runtime's
+//! fiber-based effect engine (`thrax_handle`/`thrax_defer_*`, and operations
+//! resolved by `resolve_var`). Handler clauses and the handled body are emitted
+//! as ordinary synthetic lambdas, so the codegen stays uniform.
+
+use std::sync::Arc;
 
 use frontend::lowering::data::{Pat, Term};
 
@@ -242,10 +245,75 @@ impl Emitter {
                 self.emit(b, &e, body)
             }
 
-            // Effects and FFI cannot be expressed in direct-style C; fault when
-            // forced, mirroring the interpreter's treatment of `Term::Fault`.
-            Term::Handle { .. } => self.fault(body, "ccg: algebraic effects are not supported"),
-            Term::Defer { .. } => self.fault(body, "ccg: `defer` is not supported"),
+            Term::Handle {
+                body: hbody,
+                handler,
+            } => {
+                let hv = self.fresh("h");
+                body.push_str(&format!(
+                    "HandlerV *{hv} = thrax_handler_new({});\n",
+                    handler.clauses.len()
+                ));
+                for (i, cl) in handler.clauses.iter().enumerate() {
+                    // Each clause is a curried `\arg = \k = body` closure, so the
+                    // engine applies it to the operation argument then the
+                    // continuation. Both binders scope over the clause body.
+                    let inner = Term::Lam {
+                        param: handler.continuation.clone(),
+                        body: Arc::new(cl.body.clone()),
+                    };
+                    let clause_lam = Term::Lam {
+                        param: cl.arg.clone(),
+                        body: Arc::new(inner),
+                    };
+                    let clo = self.emit(&clause_lam, env, body);
+                    let eff = match &cl.effect {
+                        Some(e) => c_string(e),
+                        None => "NULL".into(),
+                    };
+                    body.push_str(&format!(
+                        "thrax_handler_set({hv}, {i}, {eff}, {}, {clo});\n",
+                        c_string(&cl.op)
+                    ));
+                }
+                if let Some((name, dbody)) = &handler.default {
+                    let default_lam = Term::Lam {
+                        param: name.clone(),
+                        body: Arc::new(dbody.clone()),
+                    };
+                    let dclo = self.emit(&default_lam, env, body);
+                    body.push_str(&format!("thrax_handler_default({hv}, {dclo});\n"));
+                }
+                // The handled computation runs in a fiber; wrap it as a thunk the
+                // engine applies to `{}`.
+                let body_lam = Term::Lam {
+                    param: "_hbody".into(),
+                    body: hbody.clone(),
+                };
+                let bclo = self.emit(&body_lam, env, body);
+                let t = self.fresh("t");
+                body.push_str(&format!("Value *{t} = thrax_handle({bclo}, {hv});\n"));
+                t
+            }
+
+            Term::Defer {
+                cleanup,
+                body: dbody,
+            } => {
+                let cleanup_lam = Term::Lam {
+                    param: "_defer".into(),
+                    body: cleanup.clone(),
+                };
+                let clo = self.emit(&cleanup_lam, env, body);
+                body.push_str(&format!("thrax_defer_push({clo});\n"));
+                let v = self.emit(dbody, env, body);
+                let vt = self.hold(body, &v);
+                body.push_str("thrax_defer_run_top();\n");
+                vt
+            }
+
+            // FFI has no C-backend implementation yet; fault when forced,
+            // mirroring the interpreter's treatment of `Term::Fault`.
             Term::Fault(what) => self.fault(body, &format!("unsupported at runtime: {what}")),
         }
     }

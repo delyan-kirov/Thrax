@@ -45,6 +45,9 @@ pub fn emit(modules: &[Program], entry: &str) -> String {
     let entry_idx = entry_idx.unwrap_or_else(|| panic!("entry `{entry}` not found in root module"));
 
     let mut out = String::new();
+    // `ucontext` (the effect engine's fibers) is obsolescent POSIX; glibc gates
+    // its declarations behind _XOPEN_SOURCE, which must precede every header.
+    out.push_str("#define _XOPEN_SOURCE 700\n");
     out.push_str(&format!(
         "#define THRAX_ARCH {}\n",
         c_string(std::env::consts::ARCH)
@@ -80,6 +83,28 @@ pub fn emit(modules: &[Program], entry: &str) -> String {
         "static const Global *thrax_globals(void) { return THRAX_GLOBALS; }\n\
          static size_t thrax_nglobals(void) { return sizeof(THRAX_GLOBALS) / sizeof(THRAX_GLOBALS[0]); }\n",
     );
+
+    out.push_str("\n/* -- effect operations -- */\n");
+    let ops: Vec<(&str, &str)> = modules
+        .iter()
+        .flat_map(|m| m.effects.iter().map(|e| (e.effect.as_str(), e.op.as_str())))
+        .collect();
+    if ops.is_empty() {
+        out.push_str(
+            "static const OpDecl *thrax_ops(void) { return NULL; }\n\
+             static size_t thrax_nops(void) { return 0; }\n",
+        );
+    } else {
+        out.push_str("static OpDecl THRAX_OPS[] = {\n");
+        for (effect, op) in &ops {
+            out.push_str(&format!("  {{{}, {}}},\n", c_string(effect), c_string(op)));
+        }
+        out.push_str("};\n");
+        out.push_str(
+            "static const OpDecl *thrax_ops(void) { return THRAX_OPS; }\n\
+             static size_t thrax_nops(void) { return sizeof(THRAX_OPS) / sizeof(THRAX_OPS[0]); }\n",
+        );
+    }
 
     // Run on a thread with a large stack: evaluation recurses with the program,
     // and without tail-call optimization even a tail-recursive loop nests one

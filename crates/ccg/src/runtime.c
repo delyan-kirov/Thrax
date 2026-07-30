@@ -12,9 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ucontext.h>
 
 typedef struct Value Value;
 typedef struct Env Env;
+typedef struct Resump Resump;
 typedef Value *(*Fn)(Env *env, Value *arg);
 
 typedef enum {
@@ -28,7 +30,9 @@ typedef enum {
   T_VARIANT,
   T_VEC, /* Vec `T (boxed elements) */
   T_CLOSURE,
-  T_BUILTIN
+  T_BUILTIN,
+  T_OPERATION, /* an effect operation; applying it performs */
+  T_RESUMPTION /* a captured one-shot continuation; applying it resumes */
 } Tag;
 
 typedef struct {
@@ -71,6 +75,11 @@ struct Value {
       Value **args;
       size_t nargs;
     } builtin;
+    struct {
+      const char *effect; /* NULL for an ambient (unqualified) operation */
+      const char *op;
+    } operation;
+    Resump *resump;
   };
 };
 
@@ -173,6 +182,17 @@ static Value *mk_builtin(const char *name, size_t arity) {
   v->builtin.arity = arity;
   v->builtin.args = NULL;
   v->builtin.nargs = 0;
+  return v;
+}
+static Value *mk_operation(const char *effect, const char *op) {
+  Value *v = mk(T_OPERATION);
+  v->operation.effect = effect;
+  v->operation.op = op;
+  return v;
+}
+static Value *mk_resumption(Resump *r) {
+  Value *v = mk(T_RESUMPTION);
+  v->resump = r;
   return v;
 }
 
@@ -656,6 +676,11 @@ static size_t c_arity(const char *name) {
 
 /* -- application --------------------------------------------------------- */
 
+/* The effect engine (defined below). Applying an operation performs it;
+ * applying a resumption resumes the captured computation once. */
+static Value *thrax_perform(const char *effect, const char *op, Value *arg);
+static Value *thrax_resume(Resump *rk, Value *v);
+
 static Value *apply(Value *f, Value *x) {
   if (f->tag == T_CLOSURE)
     return f->clo.fn(f->clo.env, x);
@@ -673,7 +698,249 @@ static Value *apply(Value *f, Value *x) {
     v->builtin.nargs = n + 1;
     return v;
   }
+  if (f->tag == T_OPERATION)
+    return thrax_perform(f->operation.effect, f->operation.op, x);
+  if (f->tag == T_RESUMPTION)
+    return thrax_resume(f->resump, x);
   thrax_fault("applied a non-function value");
+}
+
+/* -- algebraic effects: a fiber-based engine ----------------------------- */
+/* Each `handle` runs its body on a fresh ucontext fiber. A performed operation
+ * swaps back to the matching handler's driver, delivering the op; the suspended
+ * fiber is the resumption. Resuming swaps back into the fiber (deep: the handler
+ * is reinstalled around the continuation). This mirrors the interpreter's CPS
+ * machine; the one-shot continuations may be stored and resumed from anywhere.
+ *
+ * `defer` cleanups live on the fiber that registered them and run on normal
+ * completion; a handler that abandons a continuation runs the still-pending
+ * cleanups of its fiber (found by a reachability scan of the clause result, in
+ * place of the interpreter's Rc strong-count check). */
+
+#define FIBER_STACK (1 << 20)
+
+typedef struct Fiber {
+  ucontext_t ctx;
+  Value **cleanups; /* stack of `\_ = cleanup` closures (defer) */
+  size_t ncleanups, capcleanups;
+} Fiber;
+
+typedef struct {
+  const char *effect; /* NULL = ambient clause */
+  const char *op;
+  Value *clause; /* closure `\arg = \k = body` */
+} HClause;
+
+typedef struct HandlerV {
+  HClause *clauses;
+  size_t n;
+  Value *deflt; /* closure `\x = body`, or NULL */
+} HandlerV;
+
+typedef struct Frame {
+  HandlerV *h;
+  ucontext_t drive; /* where to switch to reach this handle's driver */
+  struct Frame *parent;
+  Fiber *fiber;
+} Frame;
+
+struct Resump {
+  Fiber *fiber;
+  HandlerV *h; /* the handler, reinstalled on resume (deep) */
+  bool used;
+};
+
+/* Single-threaded machine registers (the whole program runs on one pthread). */
+static Fiber g_main_fiber;
+static Fiber *g_cur_fiber = &g_main_fiber;
+static Frame *g_frames = NULL;
+static ucontext_t *g_park; /* where the current fiber returns control */
+static Value *g_next_body; /* handoff: the body to start a fiber with */
+enum { SIG_RETURN, SIG_PERFORM };
+static int g_sig;
+static Value *g_hv; /* handoff: return value / perform arg / resume value */
+static const char *g_eff;
+static const char *g_op_name;
+
+static HandlerV *thrax_handler_new(size_t n) {
+  HandlerV *h = xmalloc(sizeof(HandlerV));
+  h->clauses = n ? xmalloc(n * sizeof(HClause)) : NULL;
+  h->n = n;
+  h->deflt = NULL;
+  return h;
+}
+static void thrax_handler_set(HandlerV *h, size_t i, const char *effect,
+                              const char *op, Value *clause) {
+  h->clauses[i].effect = effect;
+  h->clauses[i].op = op;
+  h->clauses[i].clause = clause;
+}
+static void thrax_handler_default(HandlerV *h, Value *clo) { h->deflt = clo; }
+
+static bool clause_matches(const char *c_eff, const char *c_op,
+                           const char *p_eff, const char *p_op) {
+  if (strcmp(c_op, p_op) != 0)
+    return false;
+  if (p_eff && c_eff)
+    return strcmp(p_eff, c_eff) == 0;
+  return true;
+}
+static HClause *find_clause(HandlerV *h, const char *eff, const char *op) {
+  for (size_t i = 0; i < h->n; i++)
+    if (clause_matches(h->clauses[i].effect, h->clauses[i].op, eff, op))
+      return &h->clauses[i];
+  return NULL;
+}
+
+static void fiber_trampoline(void) {
+  Value *body = g_next_body;
+  Value *v = apply(body, mk_unit());
+  g_sig = SIG_RETURN;
+  g_hv = v;
+  swapcontext(&g_cur_fiber->ctx, g_park); /* body done: back to the driver */
+}
+
+static Fiber *fiber_new(void) {
+  Fiber *f = xmalloc(sizeof(Fiber));
+  f->cleanups = NULL;
+  f->ncleanups = f->capcleanups = 0;
+  getcontext(&f->ctx);
+  f->ctx.uc_stack.ss_sp = xmalloc(FIBER_STACK);
+  f->ctx.uc_stack.ss_size = FIBER_STACK;
+  f->ctx.uc_link = NULL;
+  makecontext(&f->ctx, fiber_trampoline, 0);
+  return f;
+}
+
+/* Is `rk`'s continuation reachable from `v`? If so a clause stored it (to resume
+ * later) rather than abandoning it. */
+static bool reachable_resump(Value *v, Resump *rk, int depth) {
+  if (!v || depth > 100000)
+    return false;
+  switch (v->tag) {
+    case T_RESUMPTION:
+      return v->resump == rk;
+    case T_TUPLE:
+    case T_VEC:
+      for (size_t i = 0; i < v->seq.len; i++)
+        if (reachable_resump(v->seq.items[i], rk, depth + 1))
+          return true;
+      return false;
+    case T_STRUCT:
+      for (size_t i = 0; i < v->strct.len; i++)
+        if (reachable_resump(v->strct.fields[i].val, rk, depth + 1))
+          return true;
+      return false;
+    case T_VARIANT:
+      for (size_t i = 0; i < v->variant.len; i++)
+        if (reachable_resump(v->variant.fields[i], rk, depth + 1))
+          return true;
+      return false;
+    default:
+      return false;
+  }
+}
+
+static void run_finalizers_of(Resump *rk) {
+  Fiber *f = rk->fiber;
+  while (f->ncleanups > 0)
+    apply(f->cleanups[--f->ncleanups], mk_unit());
+}
+
+/* Drive a fiber under handler frame `fr`, either starting its body or delivering
+ * a resume value. Returns once the fiber returns (default applied) or performs an
+ * operation this handler matches (its clause run). */
+static Value *drive(Frame *fr, bool starting, Value *deliver) {
+  Fiber *f = fr->fiber;
+  Frame *saved_frames = g_frames; /* == fr->parent */
+  Fiber *saved_cur = g_cur_fiber;
+  ucontext_t *saved_park = g_park;
+
+  g_frames = fr;
+  g_cur_fiber = f;
+  g_park = &fr->drive;
+  if (starting)
+    g_next_body = deliver;
+  else
+    g_hv = deliver;
+
+  swapcontext(&fr->drive, &f->ctx);
+
+  g_cur_fiber = saved_cur;
+  g_park = saved_park;
+  g_frames = fr->parent; /* this handler is popped while its clause runs */
+
+  Value *out;
+  if (g_sig == SIG_RETURN) {
+    Value *v = g_hv;
+    out = fr->h->deflt ? apply(fr->h->deflt, v) : v;
+  } else {
+    Value *arg = g_hv;
+    Resump *rk = xmalloc(sizeof(Resump));
+    rk->fiber = f;
+    rk->h = fr->h;
+    rk->used = false;
+    Value *k = mk_resumption(rk);
+    HClause *c = find_clause(fr->h, g_eff, g_op_name);
+    if (!c)
+      thrax_fault("no handler clause matched a performed operation");
+    out = apply(apply(c->clause, arg), k);
+    if (!rk->used && !reachable_resump(out, rk, 0))
+      run_finalizers_of(rk);
+  }
+  g_frames = saved_frames;
+  return out;
+}
+
+static Value *thrax_handle(Value *body, HandlerV *h) {
+  Frame *fr = xmalloc(sizeof(Frame));
+  fr->h = h;
+  fr->parent = g_frames;
+  fr->fiber = fiber_new();
+  return drive(fr, true, body);
+}
+
+static Value *thrax_resume(Resump *rk, Value *v) {
+  if (rk->used)
+    thrax_fault("continuation resumed more than once");
+  rk->used = true;
+  Frame *fr = xmalloc(sizeof(Frame));
+  fr->h = rk->h;
+  fr->parent = g_frames;
+  fr->fiber = rk->fiber;
+  return drive(fr, false, v);
+}
+
+static Value *thrax_perform(const char *effect, const char *op, Value *arg) {
+  Frame *fr = g_frames;
+  while (fr && !find_clause(fr->h, effect, op))
+    fr = fr->parent;
+  if (!fr)
+    thrax_fault("unhandled effect operation");
+  g_sig = SIG_PERFORM;
+  g_eff = effect;
+  g_op_name = op;
+  g_hv = arg;
+  swapcontext(&g_cur_fiber->ctx, &fr->drive);
+  return g_hv; /* resumed with this value */
+}
+
+static void thrax_defer_push(Value *cleanup) {
+  Fiber *f = g_cur_fiber;
+  if (f->ncleanups == f->capcleanups) {
+    f->capcleanups = f->capcleanups ? f->capcleanups * 2 : 4;
+    f->cleanups = realloc(f->cleanups, f->capcleanups * sizeof(Value *));
+    if (!f->cleanups) {
+      fprintf(stderr, "thrax: out of memory\n");
+      exit(70);
+    }
+  }
+  f->cleanups[f->ncleanups++] = cleanup;
+}
+static void thrax_defer_run_top(void) {
+  Fiber *f = g_cur_fiber;
+  if (f->ncleanups > 0)
+    apply(f->cleanups[--f->ncleanups], mk_unit());
 }
 
 /* -- global resolution --------------------------------------------------- */
@@ -684,9 +951,40 @@ typedef struct {
   Value *(*force)(void);
 } Global;
 
+typedef struct {
+  const char *effect;
+  const char *op;
+} OpDecl;
+
 /* Defined by the generated part of the program (after the globals table). */
 static const Global *thrax_globals(void);
 static size_t thrax_nglobals(void);
+static const OpDecl *thrax_ops(void);
+static size_t thrax_nops(void);
+
+/* Resolve a name to an effect operation value, or NULL if it names none. A
+ * qualified `Effect.op` picks that effect; a bare `op` picks the sole effect
+ * declaring it, else stays ambient (NULL effect, resolved by the handler). */
+static Value *resolve_operation(const char *module, const char *name) {
+  const OpDecl *ops = thrax_ops();
+  size_t n = thrax_nops();
+  if (module) {
+    for (size_t i = 0; i < n; i++)
+      if (strcmp(ops[i].effect, module) == 0 && strcmp(ops[i].op, name) == 0)
+        return mk_operation(ops[i].effect, name);
+    return NULL;
+  }
+  const char *only = NULL;
+  int count = 0;
+  for (size_t i = 0; i < n; i++)
+    if (strcmp(ops[i].op, name) == 0) {
+      only = ops[i].effect;
+      count++;
+    }
+  if (count == 0)
+    return NULL;
+  return mk_operation(count == 1 ? only : NULL, name);
+}
 
 static Value *force_key(const char *key) {
   const Global *g = thrax_globals();
@@ -728,7 +1026,10 @@ static Value *resolve_var(Env *env, const char *module, const char *name) {
       return mk_builtin(full, ca);
     }
   }
-  thrax_fault("unbound name (or an unsupported effect operation)");
+  Value *op = resolve_operation(module, name);
+  if (op)
+    return op;
+  thrax_fault("unbound name");
 }
 
 /* -- show (matches interpreter Value::show) ------------------------------ */
@@ -854,7 +1155,11 @@ static void show_into(Str *s, Value *v) {
       break;
     case T_CLOSURE:
     case T_BUILTIN:
+    case T_OPERATION:
       str_puts(s, "<function>");
+      break;
+    case T_RESUMPTION:
+      str_puts(s, "<continuation>");
       break;
   }
 }
