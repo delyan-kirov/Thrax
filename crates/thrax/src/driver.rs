@@ -139,12 +139,11 @@ fn check_all<'a>(
     ))
 }
 
-/// Lower, then evaluate a module's entry point (`test`, else `main`).
-pub fn cmd_run(path: &str) -> ExitCode {
-    let loaded = match load_sources(path) {
-        Ok(l) => l,
-        Err(code) => return code,
-    };
+/// The full pipeline up to (but not including) execution: load, parse, check,
+/// and lower every module. Returns the lowered modules (root first) and the
+/// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
+fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, String), ExitCode> {
+    let loaded = load_sources(path)?;
 
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
@@ -156,16 +155,13 @@ pub fn cmd_run(path: &str) -> ExitCode {
             }
             Err(diag) => {
                 eprint!("{}", diag.render(src, name));
-                return ExitCode::FAILURE;
+                return Err(ExitCode::FAILURE);
             }
         }
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let checkers = match check_all(&ast, &programs, &graph, &loaded.sources) {
-        Ok((checkers, _)) => checkers,
-        Err(_) => return ExitCode::FAILURE,
-    };
+    let checkers = check_all(&ast, &programs, &graph, &loaded.sources)?.0;
 
     // Collect the checker's resolutions lowering needs: which `[..]` nodes are
     // `Array`, and which bare calls resolved to a specific module.
@@ -193,15 +189,23 @@ pub fn cmd_run(path: &str) -> ExitCode {
     let entry = ["test", "main"]
         .into_iter()
         .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
-    let entry = match entry {
-        Some(e) => e.to_string(),
+    match entry {
+        Some(e) => Ok((lowered, e.to_string())),
         None => {
             eprintln!(
                 "thrax: module `{}` has no `test` or `main` to run",
                 loaded.root_name
             );
-            return ExitCode::FAILURE;
+            Err(ExitCode::FAILURE)
         }
+    }
+}
+
+/// Lower, then evaluate a module's entry point (`test`, else `main`).
+pub fn cmd_run(path: &str) -> ExitCode {
+    let (lowered, entry) = match lower_all(path) {
+        Ok(x) => x,
+        Err(code) => return code,
     };
 
     // Evaluate on a thread with a large stack: the interpreter recurses with the
@@ -224,10 +228,20 @@ pub fn cmd_run(path: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(diag) => {
-            eprint!("{}", diag.render("", &loaded.root_name));
+            eprint!("{}", diag.render("", &entry));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Lower, then emit a standalone C program for the module to stdout.
+pub fn cmd_emit_c(path: &str) -> ExitCode {
+    let (lowered, entry) = match lower_all(path) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    print!("{}", ccg::emit(&lowered, &entry));
+    ExitCode::SUCCESS
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {

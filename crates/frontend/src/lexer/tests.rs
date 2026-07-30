@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn kinds(src: &str) -> Vec<Kind<'_>> {

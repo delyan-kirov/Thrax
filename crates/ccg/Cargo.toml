@@ -1,15 +1,14 @@
 [package]
-name = "thrax"
+name = "ccg"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "thrax"
-path = "src/main.rs"
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
-utilities = { path = "../utilities" }
 frontend = { path = "../frontend" }
+
+[dev-dependencies]
 interpreter = { path = "../interpreter" }
-ccg = { path = "../ccg" }

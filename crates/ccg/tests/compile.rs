@@ -1,0 +1,167 @@
+//! End-to-end backend tests: lower a program, emit C, compile it with the
+//! system C compiler, run it, and check the output matches the interpreter.
+//!
+//! These need a C compiler (`$CC`, else `cc`) and `-pthread`, both present in the
+//! project dev shell.
+
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use frontend::lowering::data::Program;
+use frontend::{lower_program, Decls, Resolved};
+
+/// Parse, check, and lower a single-module source. Mirrors the driver's pipeline
+/// (including the checker resolutions lowering consumes).
+fn lower(src: &str) -> Vec<Program> {
+    let parsed = frontend::parse(src).expect("parse");
+    let mut checker = frontend::Checker::new(&parsed.ast);
+    checker.check_program(&parsed.program).expect("check");
+    let (exprs, pats) = checker.array_nodes();
+    let mut resolved = Resolved::default();
+    resolved.array_exprs.extend(exprs.iter().copied());
+    resolved.array_pats.extend(pats.iter().copied());
+    for (&site, &m) in checker.call_modules() {
+        resolved.call_modules.insert(site, m.to_string());
+    }
+    let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
+    vec![lower_program(
+        &parsed.ast,
+        &parsed.program,
+        &decls,
+        &resolved,
+    )]
+}
+
+fn interp_show(src: &str, entry: &str) -> String {
+    let lowered = lower(src);
+    interpreter::Interp::new(&lowered)
+        .eval_global(entry)
+        .expect("interp")
+        .show()
+}
+
+/// Emit C for `src`, compile and run it, and return its stdout (trimmed).
+fn c_run(src: &str, entry: &str) -> String {
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let lowered = lower(src);
+    let code = ccg::emit(&lowered, entry);
+
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut c_path = std::env::temp_dir();
+    c_path.push(format!("ccg_{}_{}.c", std::process::id(), n));
+    let bin_path: PathBuf = c_path.with_extension("bin");
+    std::fs::write(&c_path, &code).expect("write C");
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let status = Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&c_path)
+        .status()
+        .expect("run C compiler");
+    assert!(status.success(), "C compile failed for entry `{entry}`");
+
+    let out = Command::new(&bin_path)
+        .output()
+        .expect("run compiled program");
+    let _ = std::fs::remove_file(&c_path);
+    let _ = std::fs::remove_file(&bin_path);
+    assert!(
+        out.status.success(),
+        "compiled program faulted: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+}
+
+/// The C program prints `entry = <show>`; assert it equals the interpreter.
+fn assert_matches(src: &str, entry: &str) {
+    let expected = format!("{entry} = {}", interp_show(src, entry));
+    assert_eq!(c_run(src, entry), expected);
+}
+
+#[test]
+fn arithmetic_and_precedence() {
+    let src = "@mod T\n\
+               $ a = 1 + 2 * 3 - 4\n\
+               $ b : Real = 100.123 % 7\n\
+               $ test : Int = a\n";
+    assert_matches(src, "a");
+    assert_matches(src, "b");
+    assert_matches(src, "test");
+}
+
+#[test]
+fn recursion_fib() {
+    let src = "@mod T\n\
+               $ fib : Int -> Int = \\n =\n\
+               \tif n ?= 0 then 0 else if n ?= 1 then 1 else (fib (n-1)) + (fib (n-2))\n\
+               $ test : Int = fib 15\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn higher_order_and_let() {
+    let src = "@mod T\n\
+               $ apply2 : (Int -> Int) -> Int -> Int = \\f x = f (f x)\n\
+               $ test : Int =\n\
+               \tlet inc = \\x = x + 1\n\
+               \t in apply2 inc 40\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn structs_and_fields() {
+    let src = "@mod T\n\
+               $ Point : @struct = x: Int, y: Int,\n\
+               $ p : Point = Point.{ .x = 3, .y = 4 }\n\
+               $ sx : Int = p.x + p.y\n\
+               $ test : Int = sx\n";
+    assert_matches(src, "p");
+    assert_matches(src, "test");
+}
+
+#[test]
+fn variants_and_when() {
+    let src = "@mod T\n\
+               $ Shape : @union = Dot: {}, Seg: { Int }\n\
+               $ size : Shape -> Int = \\s =\n\
+               \twhen s is Shape.Dot then 0 is Shape.Seg.{n} then n\n\
+               $ test : Int = size (Shape.Seg.{7}) - size Shape.Dot\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn lists_and_length() {
+    let src = "@mod T\n\
+               $ len : List `T -> Int =\n\
+               \tlet helper : List `T -> Int -> Int = \\l n =\n\
+               \t\twhen l is List.Nil then n is List.Cons.{_, xs} then helper xs (n + 1)\n\
+               \t in \\l = helper l 0\n\
+               $ xs : List Int = List.Cons.{1, List.Cons.{2, List.Cons.{3, List.Nil}}}\n\
+               $ test : Int = len xs\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn strings_and_arrays() {
+    let src = "@mod T\n\
+               $ s : Str = \"ab\" ++ \"cd\"\n\
+               $ n : Int = array_len s\n\
+               $ g : Int = array_get s 1\n\
+               $ test : Int = n + g\n";
+    assert_matches(src, "s");
+    assert_matches(src, "n");
+    assert_matches(src, "test");
+}
+
+#[test]
+fn tuples() {
+    let src = "@mod T\n\
+               $ t = {1, 2, 3}\n\
+               $ mid : Int = t.1\n\
+               $ test : Int = mid\n";
+    assert_matches(src, "t");
+    assert_matches(src, "test");
+}

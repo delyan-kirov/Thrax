@@ -11,8 +11,9 @@ fn main() -> ExitCode {
         (Some("parse"), Some(path)) => driver::cmd_parse(path),
         (Some("check"), Some(path)) => driver::cmd_check(path),
         (Some("run"), Some(path)) => driver::cmd_run(path),
+        (Some("emit-c"), Some(path)) => driver::cmd_emit_c(path),
         _ => {
-            eprintln!("usage: thrax <lex|parse|check|run> <file.thx>");
+            eprintln!("usage: thrax <lex|parse|check|run|emit-c> <file.thx>");
             ExitCode::FAILURE
         }
     }
