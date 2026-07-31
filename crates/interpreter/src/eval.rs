@@ -164,7 +164,7 @@ impl Interp {
             Term::Bool(b) => Ok(Outcome::Value(Value::Bool(*b))),
             Term::Unit => Ok(Outcome::Value(Value::Unit)),
 
-            Term::Var { module, name } => self
+            Term::Var { module, name, .. } => self
                 .resolve_var(module.as_deref(), name, env)
                 .map(Outcome::Value),
 
@@ -279,25 +279,6 @@ impl Interp {
                 )
             }
 
-            Term::With { subject, body } => {
-                let subj = self.eval(subject, env)?;
-                let this = self.clone();
-                let env = env.clone();
-                let body = body.clone();
-                self.bind(
-                    subj,
-                    Rc::new(move |subj| match subj {
-                        Value::Struct { fields, .. } => {
-                            let mut scope = env.clone();
-                            for (fname, fval) in fields {
-                                scope = extend(&scope, fname, fval);
-                            }
-                            this.eval(&body, &scope)
-                        }
-                        _ => Err(fault("`with` on a non-struct value")),
-                    }),
-                )
-            }
 
             Term::Handle { body, handler } => {
                 let out = self.eval(body, env)?;

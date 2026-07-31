@@ -43,9 +43,16 @@ pub enum Term {
     /// A variable. `module` is set for a qualified reference (`MOD.name`); an
     /// unqualified name resolves through the local environment, then the globals,
     /// then the built-in operators.
+    ///
+    /// `idx` is a De-Bruijn index filled by [`super::debruijn::assign_id`] after
+    /// lowering: `0` marks a global (resolved by `module`/`name`), and a positive
+    /// index counts outward through the binder stack to a local. The name-based
+    /// tree-walker ignores it; the closure converter reads it to split a variable
+    /// into a local slot vs an environment capture.
     Var {
         module: Option<String>,
         name: String,
+        idx: usize,
     },
     /// Application of one argument (curried).
     App(Arc<Term>, Arc<Term>),
@@ -90,12 +97,6 @@ pub enum Term {
     },
     /// Field access `record.field`; a numeric `field` indexes a tuple.
     Field(Arc<Term>, String),
-    /// `with subject in body`: bind every field of the (struct) `subject` into
-    /// scope for `body`.
-    With {
-        subject: Arc<Term>,
-        body: Arc<Term>,
-    },
     /// `do body ctl k ...`: install an algebraic-effect handler around `body`.
     Handle {
         body: Arc<Term>,
@@ -180,6 +181,7 @@ impl Term {
         Term::Var {
             module: None,
             name: name.into(),
+            idx: 0,
         }
     }
 }

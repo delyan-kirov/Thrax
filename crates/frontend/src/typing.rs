@@ -114,6 +114,10 @@ pub struct Checker<'a> {
     /// construction / destructuring instead of `Cons`/`Nil`.
     array_exprs: HashSet<Aol<Expr>>,
     array_pats: HashSet<Aol<Pattern>>,
+    /// The ordered field names each `with subject in body` brings into scope,
+    /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
+    /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
+    with_fields: HashMap<Aol<Expr>, Vec<String>>,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -177,6 +181,7 @@ impl<'a> Checker<'a> {
             module_name: "",
             array_exprs: HashSet::new(),
             array_pats: HashSet::new(),
+            with_fields: HashMap::new(),
         };
         c.install_builtins();
         c
@@ -194,6 +199,12 @@ impl<'a> Checker<'a> {
     /// the intended function rather than a same-named one from another module.
     pub fn call_modules(&self) -> &HashMap<Aol<Expr>, &'a str> {
         &self.resolved_calls
+    }
+
+    /// The ordered field names each `with` expression binds, keyed by the `With`
+    /// node. Lowering desugars `with` into a `let` per field using these.
+    pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
+        &self.with_fields
     }
 
     // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
@@ -520,18 +531,23 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn scope_struct_fields(&mut self, ty: &Type) -> Result<()> {
+    /// Bring the struct's fields into scope, returning their names in declaration
+    /// order (empty if `ty` is not a known struct). Lowering keys the `with`
+    /// desugaring off these names.
+    fn scope_struct_fields(&mut self, ty: &Type) -> Result<Vec<String>> {
         let (head, args) = self.spine(ty);
+        let mut names = Vec::new();
         if let Type::Con(name) = &head {
             if let Some(info) = self.structs.get(name.as_str()).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
                 for (fname, fty) in &info.fields {
                     let field_ty = self.ty_of_ast(*fty, &mut subst);
                     self.bind(fname, field_ty);
+                    names.push(fname.to_string());
                 }
             }
         }
-        Ok(())
+        Ok(names)
     }
 
     /// Check an expression against an expected type (the checking direction).
@@ -1105,7 +1121,8 @@ impl<'a> Checker<'a> {
                 let (subject, body) = (*subject, *body);
                 let subject_ty = self.infer(subject)?;
                 self.enter_scope();
-                self.scope_struct_fields(&subject_ty)?;
+                let names = self.scope_struct_fields(&subject_ty)?;
+                self.with_fields.insert(e, names);
                 let t = self.infer(body);
                 self.leave_scope();
                 t

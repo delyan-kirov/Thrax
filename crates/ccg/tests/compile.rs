@@ -24,6 +24,9 @@ fn lower(src: &str) -> Vec<Program> {
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
+    for (&site, fields) in checker.with_fields() {
+        resolved.with_fields.insert(site, fields.clone());
+    }
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     vec![lower_program(
         &parsed.ast,

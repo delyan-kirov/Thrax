@@ -173,6 +173,9 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }
+        for (&site, fields) in checker.with_fields() {
+            resolved.with_fields.insert(site, fields.clone());
+        }
     }
 
     // Lower every module; put the root first so its names win when resolving an

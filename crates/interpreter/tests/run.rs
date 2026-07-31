@@ -24,7 +24,7 @@ fn eval(src: &str, name: &str) -> String {
 
 /// Parse, type-check (to resolve type-directed `[..]` nodes), lower with that
 /// resolution, and evaluate `name`. Exercises the checker -> lowering side table.
-fn eval_checked(src: &str, name: &str) -> String {
+fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let parsed = frontend::parse(src).expect("parse");
     let mut checker = frontend::Checker::new(&parsed.ast);
     checker
@@ -37,14 +37,28 @@ fn eval_checked(src: &str, name: &str) -> String {
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
+    for (&site, fields) in checker.with_fields() {
+        resolved.with_fields.insert(site, fields.clone());
+    }
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
-    let lowered = vec![lower_program(
-        &parsed.ast,
-        &parsed.program,
-        &decls,
-        &resolved,
-    )];
-    Interp::new(&lowered)
+    lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
+}
+
+fn eval_checked(src: &str, name: &str) -> String {
+    Interp::new(&[lower_checked(src, name)])
+        .eval_global(name)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, name)))
+        .show()
+}
+
+/// Lower, then run the ANF and De-Bruijn passes (the IR-pipeline front) before
+/// evaluating. The passes are semantics-preserving, so this must match
+/// [`eval_checked`] exactly.
+fn eval_anf(src: &str, name: &str) -> String {
+    let mut program = lower_checked(src, name);
+    frontend::lowering::anf::normalize_program(&mut program);
+    frontend::lowering::debruijn::assign_program(&mut program);
+    Interp::new(&[program])
         .eval_global(name)
         .unwrap_or_else(|e| panic!("{}", e.render(src, name)))
         .show()
@@ -79,6 +93,9 @@ fn eval_modules(sources: &[&str], name: &str) -> String {
     for c in dep_checkers.iter().chain(std::iter::once(&root_checker)) {
         for (&site, &module) in c.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
+        }
+        for (&site, fields) in c.with_fields() {
+            resolved.with_fields.insert(site, fields.clone());
         }
     }
 
@@ -304,7 +321,7 @@ fn with_scopes_struct_fields() {
                $ Point : @struct = x: Int, y: Int\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
                $ a = with p in x + y";
-    assert_eq!(eval(src, "a"), "7");
+    assert_eq!(eval_checked(src, "a"), "7");
 }
 
 #[test]
@@ -346,4 +363,88 @@ fn string_concat_and_prefix_match() {
 #[test]
 fn sequencing_returns_last() {
     assert_eq!(eval("@mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
+}
+
+/// The ANF + De-Bruijn passes preserve behavior across the core constructs:
+/// arithmetic, recursion, closures/let, structs/fields, variants/`when`, lists,
+/// tuples, strings, and an effect handler. The normalized program must evaluate
+/// to exactly what the plain lowering does.
+#[test]
+fn anf_preserves_semantics() {
+    let cases: &[(&str, &str)] = &[
+        ("@mod T\n$ test : Int = 1 + 2 * 3 - 4\n", "test"),
+        (
+            "@mod T\n\
+             $ fib : Int -> Int = \\n =\n\
+             \tif n ?< 2 then n else fib (n - 1) + fib (n - 2)\n\
+             $ test : Int = fib 12\n",
+            "test",
+        ),
+        (
+            "@mod T\n\
+             $ apply2 : (Int -> Int) -> Int -> Int = \\f x = f (f x)\n\
+             $ test : Int =\n\
+             \tlet inc = \\x = x + 1\n\
+             \t in apply2 inc 40\n",
+            "test",
+        ),
+        (
+            "@mod T\n\
+             $ Point : @struct = x: Int, y: Int\n\
+             $ p : Point = Point.{ .x = 3, .y = 4 }\n\
+             $ test : Int = p.x + p.y\n",
+            "test",
+        ),
+        (
+            "@mod T\n\
+             $ Shape : @union = Dot: {}, Seg: { Int }\n\
+             $ size : Shape -> Int = \\s =\n\
+             \twhen s is Shape.Dot then 0 is Shape.Seg.{n} then n\n\
+             $ test : Int = size (Shape.Seg.{7}) - size Shape.Dot\n",
+            "test",
+        ),
+        (
+            "@mod T\n\
+             $ len : List `T -> Int =\n\
+             \tlet helper : List `T -> Int -> Int = \\l n =\n\
+             \t\twhen l is List.Nil then n is List.Cons.{_, xs} then helper xs (n + 1)\n\
+             \t in \\l = helper l 0\n\
+             $ xs : List Int = List.Cons.{1, List.Cons.{2, List.Cons.{3, List.Nil}}}\n\
+             $ test : Int = len xs\n",
+            "test",
+        ),
+        (
+            "@mod T\n$ t = {1, 2, 3}\n$ test : Int = t.0 + t.1 + t.2\n",
+            "test",
+        ),
+        (
+            "@mod T\n$ s : Str = \"ab\" ++ \"cd\"\n$ test : Int = array_len s + array_get s 1\n",
+            "test",
+        ),
+    ];
+    for (src, name) in cases {
+        assert_eq!(
+            eval_anf(src, name),
+            eval_checked(src, name),
+            "ANF changed the result of `{name}` in:\n{src}"
+        );
+    }
+}
+
+/// ANF preservation on the effects corpus (handlers, resume, state, `defer`).
+#[test]
+fn anf_preserves_effects() {
+    for (file, name) in [
+        ("EFFECTS.thx", "test"),
+        ("FINALLY.thx", "r_normal"),
+        ("FINALLY.thx", "r_abort"),
+    ] {
+        let path = format!("{}/../../examples/{file}", env!("CARGO_MANIFEST_DIR"));
+        let src = std::fs::read_to_string(&path).expect("read example");
+        assert_eq!(
+            eval_anf(&src, name),
+            eval_checked(&src, name),
+            "ANF changed the result of `{name}` in {file}"
+        );
+    }
 }

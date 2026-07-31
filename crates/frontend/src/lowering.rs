@@ -14,7 +14,9 @@
 //! `ast.bytes`. Because `ast` is shared, those resolve to `'a`-lived data
 //! independent of the `&mut self` used for fresh-name generation.
 
+pub mod anf;
 pub mod data;
+pub mod debruijn;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -102,6 +104,11 @@ impl Decls {
         }
     }
 
+    /// A struct's field names in declaration order, if `name` is a known struct.
+    fn fields_of(&self, name: &str) -> Option<&[String]> {
+        self.struct_fields.get(name).map(Vec::as_slice)
+    }
+
     /// The struct whose exact set of field names matches an all-named literal.
     fn struct_by_fields(&self, names: &[&str]) -> Option<&str> {
         self.struct_fields.iter().find_map(|(sname, fields)| {
@@ -129,6 +136,10 @@ pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
+    /// The ordered field names each `with` expression binds, keyed by the `With`
+    /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
+    /// `with` into a `let` per field so the Core carries no `with` node.
+    pub with_fields: HashMap<Aol<Expr>, Vec<String>>,
 }
 
 /// Lower one module's globals to Core.
@@ -197,6 +208,38 @@ impl<'a> Lowerer<'a> {
         format!("%{}", self.fresh)
     }
 
+    /// The head type constructor's name, if `t` is a (possibly applied) `Con`.
+    fn ty_head_con(&self, t: Aol<Ty>) -> Option<&'a str> {
+        match self.tnode(t) {
+            Ty::Con { name, .. } => Some(self.text(*name)),
+            Ty::App(head, _) => self.ty_head_con(*head),
+            _ => None,
+        }
+    }
+
+    /// Desugar `with subject in body` into a `let` per field: bind the subject to
+    /// a fresh name (so it is forced once) and each of its `fields` to a field
+    /// access on it. This removes the name-binding-by-type `with` node from the
+    /// Core, keeping it De-Bruijn indexable.
+    fn desugar_with(&mut self, subject: Term, fields: &[String], body: Term) -> Term {
+        let s = self.fresh();
+        let mut inner = body;
+        for f in fields.iter().rev() {
+            inner = Term::Let {
+                name: f.clone(),
+                rec: false,
+                val: Arc::new(Term::Field(Arc::new(Term::var(s.clone())), f.clone())),
+                body: Arc::new(inner),
+            };
+        }
+        Term::Let {
+            name: s,
+            rec: false,
+            val: Arc::new(subject),
+            body: Arc::new(inner),
+        }
+    }
+
     /// Lower a definition, consuming leading record parameters of its signature.
     fn def(&mut self, sig: Option<Aol<Ty>>, body: Aol<Expr>) -> Term {
         let term = self.expr(body);
@@ -221,10 +264,13 @@ impl<'a> Lowerer<'a> {
         let mut inner = body;
         for f in fields.iter().rev() {
             if f.with {
-                inner = Term::With {
-                    subject: Arc::new(Term::var(self.text(f.name))),
-                    body: Arc::new(inner),
-                };
+                let names: Vec<String> = self
+                    .ty_head_con(f.ty)
+                    .and_then(|s| self.decls.fields_of(s))
+                    .map(<[String]>::to_vec)
+                    .unwrap_or_default();
+                let subject = Term::var(self.text(f.name));
+                inner = self.desugar_with(subject, &names, inner);
             }
         }
         if let [f] = fields {
@@ -275,6 +321,7 @@ impl<'a> Lowerer<'a> {
                         Term::Var {
                             module,
                             name: name.to_string(),
+                            idx: 0,
                         }
                     }
                 }
@@ -409,10 +456,10 @@ impl<'a> Lowerer<'a> {
 
             Expr::With { subject, body } => {
                 let (subject, body) = (*subject, *body);
-                Term::With {
-                    subject: Arc::new(self.expr(subject)),
-                    body: Arc::new(self.expr(body)),
-                }
+                let subject_t = self.expr(subject);
+                let body_t = self.expr(body);
+                let fields = self.resolved.with_fields.get(&e).cloned().unwrap_or_default();
+                self.desugar_with(subject_t, &fields, body_t)
             }
 
             Expr::Handle { body, handler } => {

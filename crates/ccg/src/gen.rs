@@ -77,7 +77,7 @@ impl Emitter {
             Term::Unit => "mk_unit()".into(),
             Term::Str(bytes) => format!("mk_str({}, {})", c_bytes(bytes), bytes.len()),
 
-            Term::Var { module, name } => {
+            Term::Var { module, name, .. } => {
                 let m = match module {
                     Some(m) => c_string(m),
                     None => "NULL".into(),
@@ -225,24 +225,6 @@ impl Emitter {
                     c_string(name)
                 ));
                 t
-            }
-
-            Term::With { subject, body: b } => {
-                let s = self.emit(subject, env, body);
-                let st = self.hold(body, &s);
-                body.push_str(&format!(
-                    "if ({st}->tag != T_STRUCT) thrax_fault({});\n",
-                    c_string("`with` on a non-struct value")
-                ));
-                let e = self.fresh("e");
-                let i = self.fresh("i");
-                body.push_str(&format!("Env *{e} = {env};\n"));
-                body.push_str(&format!(
-                    "for (size_t {i} = 0; {i} < {st}->strct.len; {i}++) \
-                     {e} = env_extend({e}, {st}->strct.fields[{i}].name, \
-                     {st}->strct.fields[{i}].val);\n"
-                ));
-                self.emit(b, &e, body)
             }
 
             Term::Handle {
