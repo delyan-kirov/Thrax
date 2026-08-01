@@ -248,14 +248,43 @@ fn sequence_literal_is_type_directed() {
 
 #[test]
 fn effect_operation_is_bound_and_handler_types_result() {
-    // `get`/`put` are bound from the effect declaration; the `do/ctl` handler
+    // `get`/`put` are bound from the effect declaration; `tick` performs State, so
+    // its arrow carries the `<State>` row; the `do/ctl` handler discharges it and
     // types to the clause/`else` bodies' common type.
     let src = "@mod M\n\
                    $ State : @effect = get : {} -> Int, put : Int -> {},\n\
-                   $ tick : {} -> Int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
+                   $ tick : {} -> <State> Int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
                    $ run : Int = do tick {} ctl k is get u = k 0 is put n = k {} else x = x";
-    assert_eq!(type_of(src, "tick"), "{} -> Int");
+    assert_eq!(type_of(src, "tick"), "{} -> <State> Int");
     assert_eq!(type_of(src, "run"), "Int");
+}
+
+#[test]
+fn unhandled_effect_is_a_compile_error() {
+    // A function that performs an effect but declares a pure (or too-small) type
+    // is rejected: the latent `<State>` cannot be subsumed into the empty ambient.
+    let src = "@mod M\n\
+                   $ State : @effect = get : {} -> Int, put : Int -> {},\n\
+                   $ bad : {} -> Int = \\u = get {}";
+    assert!(
+        errors(src).contains("not handled"),
+        "expected an unhandled-effect error, got: {:?}",
+        errors(src)
+    );
+}
+
+#[test]
+fn top_level_unhandled_effect_is_rejected() {
+    // Performing an effect at the top level (no handler in scope) is a compile
+    // error, since a top-level body is typed under the empty closed row.
+    let src = "@mod M\n\
+                   $ Yield : @effect = yield : Int -> {},\n\
+                   $ oops : {} = yield 1";
+    assert!(
+        errors(src).contains("not handled"),
+        "expected an unhandled-effect error, got: {:?}",
+        errors(src)
+    );
 }
 
 #[test]

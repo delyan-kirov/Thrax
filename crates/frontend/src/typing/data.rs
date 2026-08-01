@@ -25,18 +25,35 @@ pub enum Type {
     Con(String),
     /// Type application `Head Arg`, e.g. `List Int` is `App(Con("List"), Int)`.
     App(Box<Type>, Box<Type>),
-    /// A function type `From -> To`.
-    Arrow(Box<Type>, Box<Type>),
+    /// A function type `From -[eff]-> To`. `eff` is the arrow's latent effect
+    /// row: the effects a call may perform. A pure arrow's `eff` is
+    /// [`Type::RowEmpty`].
+    Arrow(Box<Type>, Box<Type>, Box<Type>),
     /// A tuple `{ A, B, ... }`; the empty tuple is [`Type::Con`]`("{}")` (unit).
     Tuple(Vec<Type>),
+    /// The empty, closed effect row `<>`: a pure computation.
+    RowEmpty,
+    /// An effect-row extension `<label | rest>`. Rows are unordered up to
+    /// reordering (Leijen scoped labels); a row variable in tail position is an
+    /// ordinary [`Type::Var`].
+    RowExtend(String, Box<Type>),
 }
 
 impl Type {
     pub fn con(name: &str) -> Type {
         Type::Con(name.to_string())
     }
+    /// A pure arrow (empty latent effect). The default for built-ins and for a
+    /// written arrow with no `<...>` annotation.
     pub fn arrow(from: Type, to: Type) -> Type {
-        Type::Arrow(Box::new(from), Box::new(to))
+        Type::arrow_eff(from, to, Type::RowEmpty)
+    }
+    /// An arrow carrying an explicit latent effect row.
+    pub fn arrow_eff(from: Type, to: Type, eff: Type) -> Type {
+        Type::Arrow(Box::new(from), Box::new(to), Box::new(eff))
+    }
+    pub fn row_extend(label: &str, rest: Type) -> Type {
+        Type::RowExtend(label.to_string(), Box::new(rest))
     }
     pub fn app(head: Type, arg: Type) -> Type {
         Type::App(Box::new(head), Box::new(arg))
@@ -73,11 +90,24 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
                     go(arg, namer, out, 2);
                 });
             }
-            Type::Arrow(from, to) => {
+            Type::Arrow(from, to, eff) => {
                 let wrap = prec > 0;
                 paren(out, wrap, |out| {
                     go(from, namer, out, 1);
                     out.push_str(" -> ");
+                    // Only a row with concrete labels is shown; a pure or
+                    // fully-polymorphic effect (empty row / bare row variable) is
+                    // elided, so ordinary functions read as `A -> B`.
+                    let (labels, tail) = row_parts(eff);
+                    if !labels.is_empty() {
+                        out.push('<');
+                        out.push_str(&labels.join(", "));
+                        if let Some(t) = tail {
+                            out.push_str(" | ");
+                            out.push_str(&namer(t));
+                        }
+                        out.push_str("> ");
+                    }
                     go(to, namer, out, 0);
                 });
             }
@@ -90,6 +120,34 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
                     go(item, namer, out, 0);
                 }
                 out.push('}');
+            }
+            // A bare row outside an arrow (only shown in raw dumps / diagnostics).
+            Type::RowEmpty => out.push_str("<>"),
+            Type::RowExtend(..) => {
+                let (labels, tail) = row_parts(ty);
+                out.push('<');
+                out.push_str(&labels.join(", "));
+                if let Some(t) = tail {
+                    out.push_str(" | ");
+                    out.push_str(&namer(t));
+                }
+                out.push('>');
+            }
+        }
+    }
+    /// Flatten a row into its concrete labels and its tail variable (if the row is
+    /// open). An empty or bare-variable row yields no labels.
+    fn row_parts(row: &Type) -> (Vec<String>, Option<VarId>) {
+        let mut labels = Vec::new();
+        let mut cur = row;
+        loop {
+            match cur {
+                Type::RowExtend(label, rest) => {
+                    labels.push(label.clone());
+                    cur = rest;
+                }
+                Type::Var(id) => return (labels, Some(*id)),
+                _ => return (labels, None), // RowEmpty or a malformed tail
             }
         }
     }

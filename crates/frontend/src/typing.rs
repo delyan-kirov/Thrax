@@ -122,6 +122,12 @@ pub struct Checker<'a> {
     /// concrete arrow the declaration constrained it to. Lowering reads the
     /// flattened arg/result marshalling names off this.
     extern_tys: HashMap<Aol<Expr>, Type>,
+    /// The ambient effect row: the effects the expression currently being
+    /// inferred is allowed to perform. A call subsumes its callee's latent effect
+    /// into this; a lambda body and a handler body run under a fresh/extended
+    /// ambient; a top-level body runs under the empty closed row, so an unhandled
+    /// effect fails to unify.
+    ambient: Type,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -187,6 +193,7 @@ impl<'a> Checker<'a> {
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
+            ambient: Type::RowEmpty,
         };
         c.install_builtins();
         c
@@ -404,8 +411,14 @@ impl<'a> Checker<'a> {
                 .clone(),
             Type::Con(name) => Type::Con(name.clone()),
             Type::App(head, arg) => Type::app(self.import_ty(head, map), self.import_ty(arg, map)),
-            Type::Arrow(from, to) => {
-                Type::arrow(self.import_ty(from, map), self.import_ty(to, map))
+            Type::Arrow(from, to, eff) => Type::arrow_eff(
+                self.import_ty(from, map),
+                self.import_ty(to, map),
+                self.import_ty(eff, map),
+            ),
+            Type::RowEmpty => Type::RowEmpty,
+            Type::RowExtend(label, rest) => {
+                Type::RowExtend(label.clone(), Box::new(self.import_ty(rest, map)))
             }
             Type::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.import_ty(t, map)).collect())
@@ -414,6 +427,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_overloaded_def(&mut self, def: &Def<'a>) -> Result<Type> {
+        self.ambient = Type::RowEmpty; // a top-level body is pure
         self.eng.enter_level();
         let result = if def.sig.is_some() {
             let fresh = self.eng.fresh();
@@ -471,6 +485,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_def_body(&mut self, def: &Def<'a>, decl: &Type) -> Result<()> {
+        self.ambient = Type::RowEmpty; // a top-level body is pure
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
             let sig_ty = self.ty_of_ast(sig, &mut tvars);
@@ -512,10 +527,13 @@ impl<'a> Checker<'a> {
             Ty::Arrow { to, .. } => *to,
             _ => unreachable!("guarded on an arrow above"),
         };
-        let (param_ty, result_ty) = self.arrow_parts(sig_ty)?;
+        let (param_ty, result_ty, eff) = self.arrow_parts(sig_ty)?;
         self.enter_scope();
         self.bind_record_param(fields, &param_ty)?;
+        // The body may perform this arrow's latent effect (the declared row).
+        let saved = std::mem::replace(&mut self.ambient, eff);
         let out = self.check_body_against_sig(body, to, &result_ty);
+        self.ambient = saved;
         self.leave_scope();
         out
     }
@@ -572,12 +590,16 @@ impl<'a> Checker<'a> {
             Expr::Lambda { params, body } => {
                 self.enter_scope();
                 let mut exp = expected.clone();
+                let mut body_eff = self.ambient.clone();
                 for p in params.iter() {
-                    let (param_ty, rest) = self.arrow_parts(&exp)?;
+                    let (param_ty, rest, eff) = self.arrow_parts(&exp)?;
                     self.type_pattern(*p, &param_ty)?;
                     exp = rest;
+                    body_eff = eff; // the innermost arrow's effect: the body's ambient
                 }
+                let saved = std::mem::replace(&mut self.ambient, body_eff);
                 let out = self.check(*body, &exp);
+                self.ambient = saved;
                 self.leave_scope();
                 out
             }
@@ -601,18 +623,21 @@ impl<'a> Checker<'a> {
         matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
     }
 
-    fn arrow_parts(&mut self, ty: &Type) -> Result<(Type, Type)> {
+    /// Decompose a function type into (parameter, result, latent effect). If it is
+    /// not yet known to be an arrow, force it to one with fresh parts.
+    fn arrow_parts(&mut self, ty: &Type) -> Result<(Type, Type, Type)> {
         match self.eng.resolve(ty) {
-            Type::Arrow(from, to) => Ok((*from, *to)),
+            Type::Arrow(from, to, eff) => Ok((*from, *to, *eff)),
             other => {
                 let from = self.eng.fresh();
                 let to = self.eng.fresh();
+                let eff = self.eng.fresh();
                 self.eng.unify(
                     &other,
-                    &Type::arrow(from.clone(), to.clone()),
+                    &Type::arrow_eff(from.clone(), to.clone(), eff.clone()),
                     "expected a function",
                 )?;
-                Ok((from, to))
+                Ok((from, to, eff))
             }
         }
     }
@@ -694,7 +719,8 @@ impl<'a> Checker<'a> {
             let mut op_schemes = HashMap::new();
             for op in ops.iter() {
                 let op_name = self.text(op.name);
-                let scheme = self.scheme_of_sig(op.ty);
+                let base = self.scheme_of_sig(op.ty);
+                let scheme = self.with_effect(base, effect);
                 op_schemes.insert(op_name, scheme.clone());
                 per_op.entry(op_name).or_default().push(scheme.clone());
                 self.qualified
@@ -714,6 +740,38 @@ impl<'a> Checker<'a> {
                     .extend(schemes.into_iter().map(Cand::local));
             }
         }
+    }
+
+    /// Give an operation's outermost arrow the latent effect `<effect | mu>` (mu
+    /// a fresh quantified row variable), so performing it forces `effect` into the
+    /// ambient and fits any ambient already containing more effects.
+    fn with_effect(&mut self, scheme: Type, effect: &str) -> Type {
+        match scheme {
+            Type::Arrow(from, to, _) => {
+                let mu = self.eng.fresh_generic();
+                Type::arrow_eff(*from, *to, Type::row_extend(effect, mu))
+            }
+            other => other,
+        }
+    }
+
+    /// The effect a handler clause discharges: its explicit qualifier, or the
+    /// unique effect declaring a bare operation (ambiguous / unknown -> `None`,
+    /// left to dynamic dispatch).
+    fn op_owner(&self, effect: Option<&str>, op: &str) -> Option<String> {
+        if let Some(e) = effect {
+            return Some(e.to_string());
+        }
+        let mut found = None;
+        for (eff, ops) in &self.effect_ops {
+            if ops.contains_key(op) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((*eff).to_string());
+            }
+        }
+        found
     }
 
     /// The `Arg -> Res` scheme of an operation named in a handler clause, resolved
@@ -1075,9 +1133,28 @@ impl<'a> Checker<'a> {
                     self.type_pattern(*p, &pv)?;
                     param_tys.push(pv);
                 }
-                let body_ty = self.infer(body)?;
+                // Constructing the closure performs nothing under the current
+                // ambient; the body runs under its own fresh ambient, which becomes
+                // the innermost arrow's latent effect. Outer (curried, partial-
+                // application) arrows stay pure.
+                let e_body = self.eng.fresh();
+                let saved = std::mem::replace(&mut self.ambient, e_body.clone());
+                let body_ty = self.infer(body);
+                self.ambient = saved;
                 self.leave_scope();
-                Ok(Type::arrows(param_tys.into_iter(), body_ty))
+                let body_ty = body_ty?;
+                let last = param_tys.len() - 1;
+                let ty = param_tys.into_iter().enumerate().rev().fold(
+                    body_ty,
+                    |acc, (i, p)| {
+                        if i == last {
+                            Type::arrow_eff(p, acc, e_body.clone())
+                        } else {
+                            Type::arrow(p, acc)
+                        }
+                    },
+                );
+                Ok(ty)
             }
 
             Expr::Match {
@@ -1185,23 +1262,47 @@ impl<'a> Checker<'a> {
         body: Aol<Expr>,
         handler: &'a crate::parser::data::Handler,
     ) -> Result<Type> {
-        let body_ty = self.infer(body)?;
         let result = self.eng.fresh();
+
+        // The handler discharges the effects its clauses name: the body runs under
+        // the ambient extended with each DISTINCT handled effect (several clauses
+        // may handle one effect, e.g. get/put both belong to State), the handle
+        // expression itself under the outer ambient.
+        let mut inner = self.ambient.clone();
+        let mut seen: HashSet<String> = HashSet::new();
+        for clause in handler.clauses.iter() {
+            let effect = clause.effect.map(|e| self.text(e));
+            let op = self.text(clause.op);
+            if let Some(eff_name) = self.op_owner(effect, op) {
+                if seen.insert(eff_name.clone()) {
+                    inner = Type::row_extend(&eff_name, inner);
+                }
+            }
+        }
+        let saved = std::mem::replace(&mut self.ambient, inner);
+        let body_ty = self.infer(body);
+        self.ambient = saved;
+        let body_ty = body_ty?;
+
         for clause in handler.clauses.iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
             let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
                 Some(scheme) => {
                     let inst = self.eng.instantiate(&scheme);
-                    self.arrow_parts(&inst)?
+                    let (a, r, _) = self.arrow_parts(&inst)?;
+                    (a, r)
                 }
                 None => (self.eng.fresh(), self.eng.fresh()),
             };
             self.enter_scope();
             self.bind(self.text(clause.arg), arg_ty);
+            // Deep handler: resuming continues the computation under the outer
+            // ambient, so `k : Res -[amb]-> R`.
+            let amb = self.ambient.clone();
             self.bind(
                 self.text(handler.continuation),
-                Type::arrow(res_ty, result.clone()),
+                Type::arrow_eff(res_ty, result.clone(), amb),
             );
             let cb = self.infer(clause.body)?;
             self.eng.unify(&cb, &result, "in a handler clause")?;
@@ -1308,7 +1409,12 @@ impl<'a> Checker<'a> {
 
         let mut tf = self.infer(head)?;
         for a in &args {
-            let (param, result) = self.arrow_parts(&tf)?;
+            let (param, result, eff) = self.arrow_parts(&tf)?;
+            // The callee may perform at most what the ambient allows; performing
+            // an operation (whose latent row is `<Effect | mu>`) forces its effect
+            // into the ambient here.
+            let amb = self.ambient.clone();
+            self.eng.subrow(&eff, &amb, "in a function application")?;
             self.check(*a, &param)?;
             tf = result;
         }
@@ -1438,11 +1544,16 @@ impl<'a> Checker<'a> {
         let mut f = self.eng.instantiate(candidate);
         for a in args {
             let next = self.eng.fresh();
+            let eff = self.eng.fresh();
             self.eng.unify(
                 &f,
-                &Type::arrow(a.clone(), next.clone()),
+                &Type::arrow_eff(a.clone(), next.clone(), eff.clone()),
                 "in an overloaded application",
             )?;
+            // An effectful operation resolved by overload still injects its effect
+            // into the ambient (same as a plain call; see `infer_app`).
+            let amb = self.ambient.clone();
+            self.eng.subrow(&eff, &amb, "in an overloaded application")?;
             f = next;
         }
         self.eng.unify(&f, result, "in an overloaded application")
@@ -1690,9 +1801,28 @@ impl<'a> Checker<'a> {
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }
-            Ty::Arrow { from, to, .. } => {
+            Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
-                Type::arrow(self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars))
+                // The row's tail (a shared row variable) or the empty closed row,
+                // then each written label extended onto it. An unannotated arrow is
+                // pure. Labels are validated as declared effects elsewhere.
+                let eff = match effect {
+                    Some(row) => {
+                        let mut e = match row.tail {
+                            Some(tail) => {
+                                let name = self.text(tail);
+                                tvars.entry(name).or_insert_with(|| self.eng.fresh()).clone()
+                            }
+                            None => Type::RowEmpty,
+                        };
+                        for &label in row.names.iter() {
+                            e = Type::row_extend(self.text(label), e);
+                        }
+                        e
+                    }
+                    None => Type::RowEmpty,
+                };
+                Type::arrow_eff(self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars), eff)
             }
             Ty::Unit => Type::con(ty::UNIT),
             Ty::Tuple(items) => {
@@ -2024,7 +2154,7 @@ fn applied(name: &str, args: &[Type]) -> Type {
 fn flatten_extern(ty: &Type) -> (Vec<String>, String) {
     let mut args = Vec::new();
     let mut cur = ty;
-    while let Type::Arrow(from, to) = cur {
+    while let Type::Arrow(from, to, _) = cur {
         args.push(marshal_name(from));
         cur = to;
     }

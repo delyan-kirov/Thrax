@@ -112,9 +112,12 @@ impl Engine {
     pub fn zonk(&self, ty: &Type) -> Type {
         match self.resolve(ty) {
             Type::App(head, arg) => Type::app(self.zonk(&head), self.zonk(&arg)),
-            Type::Arrow(from, to) => Type::arrow(self.zonk(&from), self.zonk(&to)),
+            Type::Arrow(from, to, eff) => {
+                Type::arrow_eff(self.zonk(&from), self.zonk(&to), self.zonk(&eff))
+            }
             Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.zonk(t)).collect()),
-            other => other, // Var (unbound/generic) or Con
+            Type::RowExtend(label, rest) => Type::RowExtend(label, Box::new(self.zonk(&rest))),
+            other => other, // Var (unbound/generic), Con, or RowEmpty
         }
     }
 
@@ -130,9 +133,10 @@ impl Engine {
             (Type::Var(i), _) => self.bind(*i, &b),
             (_, Type::Var(j)) => self.bind(*j, &a),
             (Type::Con(x), Type::Con(y)) if x == y => Ok(()),
-            (Type::Arrow(a1, a2), Type::Arrow(b1, b2)) => {
+            (Type::Arrow(a1, a2, ae), Type::Arrow(b1, b2, be)) => {
                 self.unify(a1, b1, where_)?;
-                self.unify(a2, b2, where_)
+                self.unify(a2, b2, where_)?;
+                self.unify(ae, be, where_)
             }
             (Type::App(a1, a2), Type::App(b1, b2)) => {
                 self.unify(a1, b1, where_)?;
@@ -144,8 +148,74 @@ impl Engine {
                 }
                 Ok(())
             }
+            (Type::RowEmpty, Type::RowEmpty) => Ok(()),
+            (Type::RowExtend(..), _) | (_, Type::RowExtend(..)) => self.unify_row(&a, &b, where_),
             _ => Err(self.mismatch(&a, &b, where_)),
         }
+    }
+
+    /// Unify two effect rows, at least one a `<label | rest>` extension (Leijen's
+    /// scoped-label discipline): pull the head label of the extension out of the
+    /// other row, then unify the remaining tails.
+    fn unify_row(&mut self, a: &Type, b: &Type, where_: &str) -> Result<()> {
+        // Normalize so `a` is the extension we decompose.
+        let (a, b) = if matches!(a, Type::RowExtend(..)) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let Type::RowExtend(label, a_rest) = a else {
+            unreachable!("unify_row without a row extension")
+        };
+        let b_rest = self.rewrite_row(b, label, where_)?;
+        self.unify(a_rest, &b_rest, where_)
+    }
+
+    /// Bring an occurrence of effect `label` to the head of `row`, returning the
+    /// row that remains once it is removed. An open tail (a row variable) grows to
+    /// accept the label. A closed row lacking the label is the unhandled-effect
+    /// error.
+    fn rewrite_row(&mut self, row: &Type, label: &str, where_: &str) -> Result<Type> {
+        match self.resolve(row) {
+            Type::RowExtend(l, rest) => {
+                if l == label {
+                    Ok((*rest).clone())
+                } else {
+                    let deeper = self.rewrite_row(&rest, label, where_)?;
+                    Ok(Type::RowExtend(l, Box::new(deeper)))
+                }
+            }
+            Type::Var(id) => {
+                let tail = self.fresh();
+                let ext = Type::row_extend(label, tail.clone());
+                self.bind(id, &ext)?;
+                Ok(tail)
+            }
+            _ => Err(self.effect_not_handled(label, where_)),
+        }
+    }
+
+    /// Effect subsumption: require `sub` to be a subrow of `super_`. Every effect
+    /// the callee performs (`sub`) must be permitted by the ambient (`super_`).
+    pub fn subrow(&mut self, sub: &Type, super_: &Type, where_: &str) -> Result<()> {
+        match self.resolve(sub) {
+            Type::RowEmpty => Ok(()),
+            Type::Var(_) => self.unify(sub, super_, where_),
+            Type::RowExtend(label, rest) => {
+                let super_rest = self.rewrite_row(super_, &label, where_)?;
+                self.subrow(&rest, &super_rest, where_)
+            }
+            other => self.unify(&other, super_, where_),
+        }
+    }
+
+    fn effect_not_handled(&self, label: &str, where_: &str) -> Diagnostic {
+        Diagnostic::error(
+            Code::TypeMismatch,
+            Span::at(0),
+            0,
+            format!("effect `{label}` is performed but not handled {where_}"),
+        )
     }
 
     /// Point an unbound variable `id` at `ty` after the occurs/level check.
@@ -183,10 +253,15 @@ impl Engine {
                 }
                 Ok(())
             }
-            Type::Con(_) => Ok(()),
-            Type::App(head, arg) | Type::Arrow(head, arg) => {
+            Type::Con(_) | Type::RowEmpty => Ok(()),
+            Type::App(head, arg) => {
                 self.occurs_and_adjust(id, level, &head)?;
                 self.occurs_and_adjust(id, level, &arg)
+            }
+            Type::Arrow(from, to, eff) => {
+                self.occurs_and_adjust(id, level, &from)?;
+                self.occurs_and_adjust(id, level, &to)?;
+                self.occurs_and_adjust(id, level, &eff)
             }
             Type::Tuple(items) => {
                 for item in &items {
@@ -194,6 +269,7 @@ impl Engine {
                 }
                 Ok(())
             }
+            Type::RowExtend(_, rest) => self.occurs_and_adjust(id, level, &rest),
         }
     }
 
@@ -234,12 +310,18 @@ impl Engine {
                     }
                 }
             }
-            Type::App(head, arg) | Type::Arrow(head, arg) => {
+            Type::App(head, arg) => {
                 self.generalize_except(&head, mono);
                 self.generalize_except(&arg, mono);
             }
+            Type::Arrow(from, to, eff) => {
+                self.generalize_except(&from, mono);
+                self.generalize_except(&to, mono);
+                self.generalize_except(&eff, mono);
+            }
             Type::Tuple(items) => items.iter().for_each(|t| self.generalize_except(t, mono)),
-            Type::Con(_) => {}
+            Type::RowExtend(_, rest) => self.generalize_except(&rest, mono),
+            Type::Con(_) | Type::RowEmpty => {}
         }
     }
 
@@ -250,12 +332,18 @@ impl Engine {
             Type::Var(id) => {
                 out.insert(id);
             }
-            Type::App(head, arg) | Type::Arrow(head, arg) => {
+            Type::App(head, arg) => {
                 self.collect_vars(&head, out);
                 self.collect_vars(&arg, out);
             }
+            Type::Arrow(from, to, eff) => {
+                self.collect_vars(&from, out);
+                self.collect_vars(&to, out);
+                self.collect_vars(&eff, out);
+            }
             Type::Tuple(items) => items.iter().for_each(|t| self.collect_vars(t, out)),
-            Type::Con(_) => {}
+            Type::RowExtend(_, rest) => self.collect_vars(&rest, out),
+            Type::Con(_) | Type::RowEmpty => {}
         }
     }
 
@@ -279,9 +367,10 @@ impl Engine {
                 self.instantiate_with(&head, mapping),
                 self.instantiate_with(&arg, mapping),
             ),
-            Type::Arrow(from, to) => Type::arrow(
+            Type::Arrow(from, to, eff) => Type::arrow_eff(
                 self.instantiate_with(&from, mapping),
                 self.instantiate_with(&to, mapping),
+                self.instantiate_with(&eff, mapping),
             ),
             Type::Tuple(items) => Type::Tuple(
                 items
@@ -289,7 +378,10 @@ impl Engine {
                     .map(|t| self.instantiate_with(t, mapping))
                     .collect(),
             ),
-            other => other, // Con
+            Type::RowExtend(label, rest) => {
+                Type::RowExtend(label, Box::new(self.instantiate_with(&rest, mapping)))
+            }
+            other => other, // Con or RowEmpty
         }
     }
 
