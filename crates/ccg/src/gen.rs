@@ -28,6 +28,17 @@ enum Sink {
     Slot { slot: usize, cont: Option<usize> },
 }
 
+/// A distinct `@extern` binding the C backend emits a wrapper for. Deduplicated
+/// by symbol + library + signature; a `THxRT_extern(idx, arity)` value points at
+/// its wrapper in the generated `THxRT_extern_table`.
+#[derive(Clone)]
+pub struct ExternSite {
+    pub symbol: String,
+    pub lib: String,
+    pub arg_types: Vec<String>,
+    pub ret_type: String,
+}
+
 pub struct Emitter<'p> {
     prog: &'p Program,
     /// Canonical names of every global (`Module.name`); a `Glob` naming one
@@ -39,12 +50,96 @@ pub struct Emitter<'p> {
     ops_by_effect: HashMap<&'p str, Vec<&'p str>>,
     /// Operation name -> the effects declaring it (for bare resolution).
     ops_by_name: HashMap<&'p str, Vec<&'p str>>,
+    /// The distinct foreign functions, in wrapper-table order.
+    externs: Vec<ExternSite>,
+    /// Dedup key (`symbol\x1flib\x1fsig`) -> its index in `externs`.
+    extern_idx: HashMap<String, usize>,
     /// One entry per emitted block: its full C function text, filled out of order
     /// (a block is reserved, then set once its body is built).
     blocks: Vec<String>,
     /// Code index -> its entry block id.
     code_entry: Vec<usize>,
     tmp: usize,
+}
+
+/// The dedup key for an extern site.
+fn extern_key(symbol: &str, lib: &str, arg_types: &[String], ret_type: &str) -> String {
+    format!("{symbol}\x1f{lib}\x1f{}\x1f{ret_type}", arg_types.join(","))
+}
+
+/// Register any `Atom::Extern` reachable in `e` into the table (deduplicated).
+fn collect_externs(
+    e: &Expr,
+    externs: &mut Vec<ExternSite>,
+    idx: &mut HashMap<String, usize>,
+) {
+    let mut atom = |a: &Atom| collect_extern_atom(a, externs, idx);
+    match e {
+        Expr::Ret(a) | Expr::Field { rec: a, .. } => atom(a),
+        Expr::App { fun, arg, .. } => {
+            atom(fun);
+            atom(arg);
+        }
+        Expr::MkStruct { base, fields, .. } => {
+            if let Some(b) = base {
+                atom(b);
+            }
+            fields.iter().for_each(|(_, v)| atom(v));
+        }
+        Expr::MkVariant { fields, .. } => fields.iter().for_each(&mut atom),
+        Expr::MkTuple(items) => items.iter().for_each(&mut atom),
+        Expr::Fault(_) => {}
+        Expr::Let { rhs, body, .. } => {
+            collect_externs(rhs, externs, idx);
+            collect_externs(body, externs, idx);
+        }
+        Expr::Case { scrut, alts, default } => {
+            collect_extern_atom(scrut, externs, idx);
+            for al in alts {
+                collect_externs(&al.body, externs, idx);
+            }
+            collect_externs(default, externs, idx);
+        }
+        Expr::Handle { body, clauses, els } => {
+            collect_externs(body, externs, idx);
+            for c in clauses {
+                collect_extern_atom(&c.fun, externs, idx);
+            }
+            collect_extern_atom(els, externs, idx);
+        }
+        Expr::Defer { cleanup, body } => {
+            collect_extern_atom(cleanup, externs, idx);
+            collect_externs(body, externs, idx);
+        }
+    }
+}
+
+fn collect_extern_atom(a: &Atom, externs: &mut Vec<ExternSite>, idx: &mut HashMap<String, usize>) {
+    match a {
+        Atom::Extern {
+            symbol,
+            lib,
+            arg_types,
+            ret_type,
+        } => {
+            let key = extern_key(symbol, lib, arg_types, ret_type);
+            idx.entry(key).or_insert_with(|| {
+                externs.push(ExternSite {
+                    symbol: symbol.clone(),
+                    lib: lib.clone(),
+                    arg_types: arg_types.clone(),
+                    ret_type: ret_type.clone(),
+                });
+                externs.len() - 1
+            });
+        }
+        Atom::Clos { captures, .. } => {
+            for c in captures {
+                collect_extern_atom(c, externs, idx);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A C string literal (with surrounding quotes) for an arbitrary byte view.
@@ -76,6 +171,120 @@ pub fn cstr(bytes: &[u8]) -> String {
 /// A C double literal that round-trips the value.
 fn cdbl(v: f64) -> String {
     format!("{v:.17e}")
+}
+
+/// How a marshalling type name crosses the C ABI in a generated `@extern`
+/// wrapper. `Word` is the fallback (any Int/Nat/sized/type variable), matching
+/// the interpreter's host table and the C++ `desc_of`.
+enum Marshal {
+    Bytes, // Str/Array: the byte pointer
+    Ptr,   // an opaque pointer carried as a word
+    Real,  // double
+    Unit,  // {} : a void result
+    Word,  // an integer word
+}
+
+fn classify(name: &str) -> Marshal {
+    match name {
+        "Str" | "Array" | "@str" => Marshal::Bytes,
+        "Ptr" | "@ptr" => Marshal::Ptr,
+        "Real" | "Real32" | "Real64" | "@float64" | "@float32" => Marshal::Real,
+        "{}" => Marshal::Unit,
+        _ => Marshal::Word,
+    }
+}
+
+/// The C parameter type and the expression marshalling `args[i]` into it.
+fn c_param(name: &str, i: usize) -> (&'static str, String) {
+    match classify(name) {
+        Marshal::Bytes => ("char*", format!("(char*)THxVALUE_str(args[{i}])")),
+        Marshal::Ptr => ("void*", format!("(void*)(intptr_t)THxVALUE_as_int(args[{i}])")),
+        Marshal::Real => ("double", format!("THxVALUE_as_num(args[{i}])")),
+        Marshal::Unit | Marshal::Word => {
+            ("int64_t", format!("(int64_t)THxVALUE_as_int(args[{i}])"))
+        }
+    }
+}
+
+/// The C return type, and (for a non-void result) the expression wrapping the
+/// C result `_r` back into a `Value*`.
+fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
+    match classify(name) {
+        Marshal::Bytes => ("char*", Some("_r ? THxRT_str(_r, strlen(_r)) : THxRT_str(\"\", 0)")),
+        Marshal::Ptr => ("void*", Some("THxRT_int((long long)(intptr_t)_r)")),
+        Marshal::Real => ("double", Some("THxRT_real(_r)")),
+        Marshal::Unit => ("void", None),
+        Marshal::Word => ("int64_t", Some("THxRT_int((long long)_r)")),
+    }
+}
+
+/// Emit the foreign-function wrappers and the `THxRT_extern_table` the runtime
+/// dispatches through. Each wrapper declares the C symbol with an `__asm__`
+/// label (a direct call, resolved by the linker) and marshals the collected
+/// arguments across the seam.
+pub fn emit_extern_table(externs: &[ExternSite]) -> String {
+    let mut out = String::from("\n/* -- foreign functions (@extern) -- */\n#include <stdint.h>\n");
+    let libs: Vec<&str> = {
+        let mut ls: Vec<&str> = externs.iter().map(|e| e.lib.as_str()).collect();
+        ls.sort_unstable();
+        ls.dedup();
+        ls
+    };
+    if !libs.is_empty() {
+        out.push_str(&format!("/* link against: {} */\n", libs.join(", ")));
+    }
+    for (n, e) in externs.iter().enumerate() {
+        let (ret_ty, wrap) = c_ret(&e.ret_type);
+        let params: Vec<(String, String)> = e
+            .arg_types
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let (ty, expr) = c_param(t, i);
+                (ty.to_string(), expr)
+            })
+            .collect();
+        let sig = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>().join(", ")
+        };
+        out.push_str(&format!(
+            "extern {ret_ty} THx_sym_{n}({sig}) __asm__({});\n",
+            cstr(e.symbol.as_bytes())
+        ));
+        out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
+        let call_args: Vec<String> = params
+            .iter()
+            .enumerate()
+            .map(|(i, (ty, expr))| {
+                out.push_str(&format!("  {ty} a{i} = {expr};\n"));
+                format!("a{i}")
+            })
+            .collect();
+        let call = format!("THx_sym_{n}({})", call_args.join(", "));
+        match wrap {
+            None => {
+                out.push_str(&format!("  {call};\n  return THxRT_unit();\n"));
+            }
+            Some(w) => {
+                out.push_str(&format!("  {ret_ty} _r = {call};\n  return {w};\n"));
+            }
+        }
+        out.push_str("}\n");
+    }
+    let n = externs.len();
+    if n == 0 {
+        out.push_str("ExternFn THxRT_extern_table[1] = {0};\n");
+    } else {
+        out.push_str("ExternFn THxRT_extern_table[] = {\n");
+        for i in 0..n {
+            out.push_str(&format!("  THx_extern_{i},\n"));
+        }
+        out.push_str("};\n");
+    }
+    out.push_str(&format!("const size_t THxRT_extern_count = {n};\n"));
+    out
 }
 
 /// The arity of a built-in operator, or `None`. Mirrors the runtime's table and
@@ -125,25 +334,32 @@ impl<'p> Emitter<'p> {
             effects.sort_unstable();
             effects.dedup();
         }
+        let mut externs = Vec::new();
+        let mut extern_idx = HashMap::new();
+        for code in &prog.codes {
+            collect_externs(&code.body, &mut externs, &mut extern_idx);
+        }
         Emitter {
             prog,
             globals,
             bare,
             ops_by_effect,
             ops_by_name,
+            externs,
+            extern_idx,
             blocks: Vec::new(),
             code_entry: vec![0; prog.codes.len()],
             tmp: 0,
         }
     }
 
-    /// Emit every code, then return the finished block function texts and the
-    /// code index -> entry block map.
-    pub fn run(mut self) -> (Vec<String>, Vec<usize>) {
+    /// Emit every code, then return the finished block function texts, the code
+    /// index -> entry block map, and the foreign-function table.
+    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>) {
         for id in 0..self.prog.codes.len() {
             self.emit_code(id);
         }
-        (self.blocks, self.code_entry)
+        (self.blocks, self.code_entry, self.externs)
     }
 
     fn fresh(&mut self, p: &str) -> String {
@@ -218,6 +434,16 @@ impl<'p> Emitter<'p> {
                         captures.len()
                     )
                 }
+            }
+            Atom::Extern {
+                symbol,
+                lib,
+                arg_types,
+                ret_type,
+            } => {
+                let key = extern_key(symbol, lib, arg_types, ret_type);
+                let idx = self.extern_idx[&key];
+                format!("THxRT_extern({idx}, {})", arg_types.len())
             }
         }
     }

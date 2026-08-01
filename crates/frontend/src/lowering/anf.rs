@@ -54,6 +54,7 @@ fn is_atom(t: &Term) -> bool {
             | Term::Bool(_)
             | Term::Unit
             | Term::Var { .. }
+            | Term::Extern { .. }
             | Term::Lam { .. }
     )
 }
@@ -100,6 +101,7 @@ impl Anf {
             | Term::Bool(_)
             | Term::Unit
             | Term::Var { .. }
+            | Term::Extern { .. }
             | Term::Fault(_) => k(e.clone()),
 
             Term::Lam { param, body } => {

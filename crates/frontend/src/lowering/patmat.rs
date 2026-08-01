@@ -73,6 +73,7 @@ impl Pm {
             | Term::Bool(_)
             | Term::Unit
             | Term::Var { .. }
+            | Term::Extern { .. }
             | Term::Fault(_) => t.clone(),
 
             Term::App(f, x) => Term::App(Arc::new(self.go(f)), Arc::new(self.go(x))),

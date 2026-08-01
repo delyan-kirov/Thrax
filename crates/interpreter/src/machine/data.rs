@@ -53,6 +53,15 @@ pub enum Value<'p> {
         arity: usize,
         args: Vec<PVal<'p>>,
     },
+    /// A partially applied foreign C function (`@extern`); it marshals its
+    /// arguments across the C ABI and calls `symbol` once `args` reaches the
+    /// arity `arg_types.len()`. `ret_type` selects how the result is wrapped.
+    Extern {
+        symbol: Rc<str>,
+        arg_types: Rc<[String]>,
+        ret_type: Rc<str>,
+        args: Vec<PVal<'p>>,
+    },
     /// A closure: a lifted IR code block plus its captured environment record.
     Code {
         code: usize,
@@ -368,6 +377,156 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
     }
 }
 
+// -- foreign function interface (host table) --------------------------------
+
+// The interpreter serves `@extern` calls from a compiled-in host table of the
+// C/libm namespace, the port of `engines/FF.cpp`'s no-3rd-party build. There is
+// no dynamic loading (that would need libffi/dlopen, forbidden here), so a
+// symbol outside this table fails with a clear message; the C backend, which
+// emits a direct symbol call, still reaches an arbitrary library. Everything is
+// a machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
+
+use std::os::raw::{c_char, c_int, c_long, c_void};
+
+extern "C" {
+    fn puts(s: *const c_char) -> c_int;
+    fn putchar(c: c_int) -> c_int;
+    fn getchar() -> c_int;
+    fn malloc(n: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
+    fn memset(p: *mut c_void, c: c_int, n: usize) -> *mut c_void;
+    fn strlen(s: *const c_char) -> usize;
+    fn fopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
+    fn fclose(f: *mut c_void) -> c_int;
+    fn fgetc(f: *mut c_void) -> c_int;
+    fn fputs(s: *const c_char, f: *mut c_void) -> c_int;
+    fn fflush(f: *mut c_void) -> c_int;
+    fn fseek(f: *mut c_void, off: c_long, whence: c_int) -> c_int;
+    fn ftell(f: *mut c_void) -> c_long;
+    fn remove(path: *const c_char) -> c_int;
+    fn getenv(key: *const c_char) -> *mut c_char;
+    fn time(t: *mut c_void) -> c_long;
+    fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
+    fn sqrt(x: f64) -> f64;
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+    fn tan(x: f64) -> f64;
+    fn exp(x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn floor(x: f64) -> f64;
+    fn ceil(x: f64) -> f64;
+    fn round(x: f64) -> f64;
+    fn pow(x: f64, y: f64) -> f64;
+    fn fmod(x: f64, y: f64) -> f64;
+    fn atan2(x: f64, y: f64) -> f64;
+}
+
+/// A machine-word argument (`Int`, or a `Ptr` carrying its bits).
+fn ffi_word(args: &[PVal], i: usize) -> Result<i64> {
+    match &*args[i].borrow() {
+        Value::Int(n) => Ok(*n),
+        _ => Err(fault("FFI: expected an integer/pointer argument")),
+    }
+}
+
+fn ffi_real(args: &[PVal], i: usize) -> Result<f64> {
+    match &*args[i].borrow() {
+        Value::Int(n) => Ok(*n as f64),
+        Value::Real(r) => Ok(*r),
+        _ => Err(fault("FFI: expected a Real argument")),
+    }
+}
+
+/// A NUL-terminated copy of a `Str` argument's bytes, for passing as a C string.
+/// The returned buffer must outlive the call.
+fn ffi_cstr(args: &[PVal], i: usize) -> Result<Vec<u8>> {
+    match &*args[i].borrow() {
+        Value::Str(b) => {
+            let mut v = (**b).clone();
+            v.push(0);
+            Ok(v)
+        }
+        _ => Err(fault("FFI: expected a Str argument")),
+    }
+}
+
+/// Call a foreign C function from the host table with the marshalled `args`.
+/// Mirrors `FF.cpp`'s adapter table: each adapter knows its own signature, so
+/// the result is wrapped directly (`ret_type` drives only the C backend).
+pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+    let v = unsafe {
+        match symbol {
+            "puts" => Value::Int(puts(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "putchar" => Value::Int(putchar(ffi_word(args, 0)? as c_int) as i64),
+            "getchar" => Value::Int(getchar() as i64),
+            "malloc" => Value::Int(malloc(ffi_word(args, 0)? as usize) as i64),
+            "free" => {
+                free(ffi_word(args, 0)? as *mut c_void);
+                Value::Unit
+            }
+            "memset" => Value::Int(memset(
+                ffi_word(args, 0)? as *mut c_void,
+                ffi_word(args, 1)? as c_int,
+                ffi_word(args, 2)? as usize,
+            ) as i64),
+            "strlen" => Value::Int(strlen(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "fopen" => {
+                let path = ffi_cstr(args, 0)?;
+                let mode = ffi_cstr(args, 1)?;
+                Value::Int(fopen(path.as_ptr() as *const c_char, mode.as_ptr() as *const c_char)
+                    as i64)
+            }
+            "fclose" => Value::Int(fclose(ffi_word(args, 0)? as *mut c_void) as i64),
+            "fgetc" => Value::Int(fgetc(ffi_word(args, 0)? as *mut c_void) as i64),
+            "fputs" => {
+                let s = ffi_cstr(args, 0)?;
+                Value::Int(fputs(s.as_ptr() as *const c_char, ffi_word(args, 1)? as *mut c_void)
+                    as i64)
+            }
+            "fseek" => Value::Int(fseek(
+                ffi_word(args, 0)? as *mut c_void,
+                ffi_word(args, 1)? as c_long,
+                ffi_word(args, 2)? as c_int,
+            ) as i64),
+            "ftell" => Value::Int(ftell(ffi_word(args, 0)? as *mut c_void) as i64),
+            "remove" => Value::Int(remove(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "getenv" => Value::Int(getenv(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "time" => Value::Int(time(ffi_word(args, 0)? as *mut c_void) as i64),
+            "write" => {
+                let (fd, n) = (ffi_word(args, 0)?, ffi_word(args, 2)?);
+                let buf = match &*args[1].borrow() {
+                    Value::Str(b) => (**b).clone(),
+                    _ => return Err(fault("FFI: `write` expects a Str buffer")),
+                };
+                let n = (n as usize).min(buf.len());
+                Value::Int(write(fd as c_int, buf.as_ptr() as *const c_void, n) as i64)
+            }
+            "sqrt" => Value::Real(sqrt(ffi_real(args, 0)?)),
+            "sin" => Value::Real(sin(ffi_real(args, 0)?)),
+            "cos" => Value::Real(cos(ffi_real(args, 0)?)),
+            "tan" => Value::Real(tan(ffi_real(args, 0)?)),
+            "exp" => Value::Real(exp(ffi_real(args, 0)?)),
+            "log" => Value::Real(log(ffi_real(args, 0)?)),
+            "floor" => Value::Real(floor(ffi_real(args, 0)?)),
+            "ceil" => Value::Real(ceil(ffi_real(args, 0)?)),
+            "round" => Value::Real(round(ffi_real(args, 0)?)),
+            "pow" => Value::Real(pow(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "fmod" => Value::Real(fmod(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "atan2" => Value::Real(atan2(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            _ => {
+                return Err(fault(format!(
+                    "FFI: symbol `{symbol}` is not in the interpreter's host table \
+                     (only the C/libm namespace is available without dynamic loading)"
+                )))
+            }
+        }
+    };
+    // Keep foreign stdout (C stdio) ordered against the driver's own output,
+    // which the compiled C program produces in one stream.
+    unsafe { fflush(std::ptr::null_mut()) };
+    Ok(v)
+}
+
 impl<'p> Value<'p> {
     /// A shallow structural copy: aggregates share their `PVal` children (an `Rc`
     /// bump), so this is cheap. Used to move a value out of a borrowed cell.
@@ -393,6 +552,17 @@ impl<'p> Value<'p> {
             Value::Builtin { name, arity, args } => Value::Builtin {
                 name: name.clone(),
                 arity: *arity,
+                args: args.clone(),
+            },
+            Value::Extern {
+                symbol,
+                arg_types,
+                ret_type,
+                args,
+            } => Value::Extern {
+                symbol: symbol.clone(),
+                arg_types: arg_types.clone(),
+                ret_type: ret_type.clone(),
                 args: args.clone(),
             },
             Value::Code { code, env } => Value::Code {
@@ -441,7 +611,10 @@ impl<'p> Value<'p> {
                 let inner: Vec<String> = items.iter().map(|v| v.borrow().show()).collect();
                 format!("vec[{}]", inner.join(", "))
             }
-            Value::Builtin { .. } | Value::Code { .. } | Value::Op { .. } => "<function>".into(),
+            Value::Builtin { .. }
+            | Value::Extern { .. }
+            | Value::Code { .. }
+            | Value::Op { .. } => "<function>".into(),
             Value::Resump(_) => "<continuation>".into(),
             Value::Rec(_) => "<recursive>".into(),
         }

@@ -42,6 +42,13 @@ extern BlockFn THxRT_code_table[];
 extern const size_t THxRT_code_nlocals[];
 extern const size_t THxRT_code_count;
 
+/* One foreign-call wrapper per distinct `@extern`: it marshals the collected
+ * arguments across the C ABI and calls the symbol. Provided by the generated
+ * program (see the ccg `emit_extern_table`). */
+typedef Value *(*ExternFn)(Value **args);
+extern ExternFn THxRT_extern_table[];
+extern const size_t THxRT_extern_count;
+
 typedef enum {
   T_INT,
   T_REAL,
@@ -54,6 +61,7 @@ typedef enum {
   T_VEC,       /* Vec `T (boxed elements) */
   T_CLOS,      /* closure: an IR code index + captured environment */
   T_BUILTIN,   /* a (possibly partially applied) built-in operator */
+  T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
   T_OP,        /* an effect operation, first-class; performs when applied */
   T_RESUMP     /* a captured continuation; affine -- resumes once */
 } Tag;
@@ -100,6 +108,12 @@ struct Value {
       Value **args;
       size_t nargs;
     } builtin;
+    struct {
+      int idx; /* index into the generated THxRT_extern_table */
+      size_t arity;
+      Value **args;
+      size_t nargs;
+    } ext;
     struct {
       const char *effect; /* NULL for an ambient (unqualified) operation */
       const char *op;
@@ -298,10 +312,14 @@ Value *THxRT_bool(int b) {
 }
 Value *THxRT_unit(void) { return alloc_value(T_UNIT); }
 
+/* Byte vectors carry a trailing NUL that is not counted in `len`, so
+ * THxVALUE_str is a valid C string for the FFI seam (matching the C++
+ * runtime). `len` is still the byte length; the NUL is slack. */
 Value *THxRT_str(const char *data, size_t len) {
   Value *v = alloc_value(T_STR);
-  v->u.str.data = THxMEM_alloc(len ? len : 1);
+  v->u.str.data = THxMEM_alloc(len + 1);
   memcpy(v->u.str.data, data, len);
+  v->u.str.data[len] = 0;
   v->u.str.len = len;
   return v;
 }
@@ -381,6 +399,14 @@ Value *THxRT_builtin(const char *name, size_t arity) {
   v->u.builtin.arity = arity;
   v->u.builtin.args = NULL;
   v->u.builtin.nargs = 0;
+  return v;
+}
+Value *THxRT_extern(int idx, size_t arity) {
+  Value *v = alloc_value(T_EXTERN);
+  v->u.ext.idx = idx;
+  v->u.ext.arity = arity;
+  v->u.ext.args = NULL;
+  v->u.ext.nargs = 0;
   return v;
 }
 
@@ -627,9 +653,10 @@ static Value *list_append(Value *xs, Value *ys) {
 static Value *concat(Value *x, Value *y) {
   if (x->tag == T_STR && y->tag == T_STR) {
     size_t len = x->u.str.len + y->u.str.len;
-    uint8_t *data = THxMEM_alloc(len ? len : 1);
+    uint8_t *data = THxMEM_alloc(len + 1);
     memcpy(data, x->u.str.data, x->u.str.len);
     memcpy(data + x->u.str.len, y->u.str.data, y->u.str.len);
+    data[len] = 0;
     return mk_str_owned(data, len);
   }
   if (x->tag == T_VARIANT && strcmp(x->u.variant.ty, "List") == 0)
@@ -662,8 +689,8 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
 
   if (strcmp(name, "array_alloc") == 0) {
     size_t len = as_index(a[0]);
-    uint8_t *data = THxMEM_alloc(len ? len : 1);
-    memset(data, 0, len);
+    uint8_t *data = THxMEM_alloc(len + 1);
+    memset(data, 0, len + 1);
     return mk_str_owned(data, len);
   }
   if (strcmp(name, "array_len") == 0)
@@ -677,18 +704,20 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
   if (strcmp(name, "array_push") == 0) {
     Value *s = as_str(a[0]);
     size_t len = s->u.str.len + 1;
-    uint8_t *data = THxMEM_alloc(len);
+    uint8_t *data = THxMEM_alloc(len + 1);
     memcpy(data, s->u.str.data, s->u.str.len);
     data[s->u.str.len] = as_byte(a[1]);
+    data[len] = 0;
     return mk_str_owned(data, len);
   }
   if (strcmp(name, "array_set") == 0) {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
     if (i >= s->u.str.len) thrax_fault("array index out of bounds");
-    uint8_t *data = THxMEM_alloc(s->u.str.len ? s->u.str.len : 1);
+    uint8_t *data = THxMEM_alloc(s->u.str.len + 1);
     memcpy(data, s->u.str.data, s->u.str.len);
     data[i] = as_byte(a[2]);
+    data[s->u.str.len] = 0;
     return mk_str_owned(data, s->u.str.len);
   }
   if (strcmp(name, "array_slice") == 0) {
@@ -907,6 +936,7 @@ static void payload_destroy(Value *v) {
     case T_VARIANT: release_children(v, v->u.variant.fields, v->u.variant.len); return;
     case T_CLOS: release_children(v, v->u.clos.env, v->u.clos.nenv); return;
     case T_BUILTIN: release_children(v, v->u.builtin.args, v->u.builtin.nargs); return;
+    case T_EXTERN: release_children(v, v->u.ext.args, v->u.ext.nargs); return;
     case T_RESUMP: THxK_resump_release(v->u.resump); return;
   }
   thrax_fault("payload_destroy: unhandled tag");
@@ -945,8 +975,9 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
     case T_OP: break;
     case T_STR: {
       size_t len = box->u.str.len;
-      uint8_t *b = THxMEM_alloc(len ? len : 1);
+      uint8_t *b = THxMEM_alloc(len + 1);
       if (len) memcpy(b, v->u.str.data, len);
+      b[len] = 0;
       box->u.str.data = b;
       break;
     }
@@ -979,6 +1010,9 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
     case T_BUILTIN:
       box->u.builtin.args =
           copy_children(box, v->u.builtin.args, box->u.builtin.nargs);
+      break;
+    case T_EXTERN:
+      box->u.ext.args = copy_children(box, v->u.ext.args, box->u.ext.nargs);
       break;
     case T_RESUMP: THxK_resump_addref(box->u.resump); break;
   }
@@ -1297,6 +1331,21 @@ static Value *builtin_push(Value *f, Value *arg) {
   return nb;
 }
 
+/* A fresh foreign value with `arg` appended to `f`'s accumulated operands. */
+static Value *extern_push(Value *f, Value *arg) {
+  size_t n = f->u.ext.nargs;
+  Value *ne = alloc_value(T_EXTERN);
+  ne->u.ext.idx = f->u.ext.idx;
+  ne->u.ext.arity = f->u.ext.arity;
+  ne->u.ext.nargs = n + 1;
+  Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
+  for (size_t i = 0; i < n; i++) args[i] = f->u.ext.args[i];
+  args[n] = arg;
+  for (size_t i = 0; i <= n; i++) THxMEM_retain(args[i]);
+  ne->u.ext.args = args;
+  return ne;
+}
+
 /* Apply `fn` to `arg` (the interpreter's App dispatch). Returns 1 to continue,
  * 0 when the run completed. Holds owned in-flight references on `fn` and `arg`
  * across the frame switch (either may live in the dying activation). */
@@ -1325,6 +1374,22 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         r = do_ret(cur, fr, in, res, base);
       } else {
         r = do_ret(cur, fr, in, builtin_push(fn, arg), base);
+      }
+      break;
+    }
+    case T_EXTERN: {
+      size_t nn = fn->u.ext.nargs;
+      if (nn + 1 == fn->u.ext.arity) {
+        if ((size_t)fn->u.ext.idx >= THxRT_extern_count)
+          thrax_fault("extern index out of range");
+        Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
+        for (size_t i = 0; i < nn; i++) args[i] = fn->u.ext.args[i];
+        args[nn] = arg;
+        Value *res = THxRT_extern_table[fn->u.ext.idx](args);
+        THxMEM_free(args);
+        r = do_ret(cur, fr, in, res, base);
+      } else {
+        r = do_ret(cur, fr, in, extern_push(fn, arg), base);
       }
       break;
     }
@@ -1560,6 +1625,7 @@ static void show_into(Str *s, Value *v) {
       break;
     case T_CLOS:
     case T_BUILTIN:
+    case T_EXTERN:
     case T_OP: str_puts(s, "<function>"); break;
     case T_RESUMP: str_puts(s, "<continuation>"); break;
   }

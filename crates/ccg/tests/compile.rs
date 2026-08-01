@@ -27,6 +27,7 @@ fn lower(src: &str) -> Vec<Program> {
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
+    resolved.extern_sigs.extend(checker.extern_sigs());
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     vec![lower_program(
         &parsed.ast,

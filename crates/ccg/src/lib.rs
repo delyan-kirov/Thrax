@@ -16,7 +16,7 @@ mod gen;
 
 use frontend::ir;
 use frontend::lowering::data::Program;
-use gen::{cstr, Emitter};
+use gen::{cstr, emit_extern_table, Emitter};
 
 /// The runtime prelude, emitted verbatim ahead of the generated code.
 const RUNTIME: &str = include_str!("runtime.c");
@@ -25,7 +25,7 @@ const RUNTIME: &str = include_str!("runtime.c");
 /// global and prints `entry`.
 pub fn emit(modules: &[Program], entry: &str) -> String {
     let prog = ir::lower_modules(modules);
-    let (blocks, code_entry) = Emitter::new(&prog).run();
+    let (blocks, code_entry, externs) = Emitter::new(&prog).run();
 
     // Two resolution chains, mirroring the machine's `glob`: canonical
     // `Module.name` keys (exact), and bare last-segment names (first definition
@@ -91,6 +91,10 @@ pub fn emit(modules: &[Program], entry: &str) -> String {
     for b in &blocks {
         out.push_str(b);
     }
+
+    // The foreign-function wrappers and their dispatch table (empty table + count
+    // 0 when the program has no `@extern`).
+    out.push_str(&emit_extern_table(&externs));
 
     // The dispatch tables the runtime calls back through: entry block + slot count
     // per lifted Code.

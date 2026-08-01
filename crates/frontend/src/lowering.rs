@@ -141,6 +141,10 @@ pub struct Resolved {
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
     pub with_fields: HashMap<Aol<Expr>, Vec<String>>,
+    /// Each `@extern` node's marshalling signature (flattened argument type names
+    /// and result name) from [`crate::typing::Checker::extern_sigs`]. Lowering
+    /// needs the types to build the `Term::Extern` the checker erased into a var.
+    pub extern_sigs: HashMap<Aol<Expr>, (Vec<String>, String)>,
 }
 
 /// Lower one module's globals to Core.
@@ -508,7 +512,21 @@ impl<'a> Lowerer<'a> {
                     body: Arc::new(self.expr(body)),
                 }
             }
-            Expr::Extern { .. } => Term::Fault("foreign function".into()),
+            Expr::Extern { symbol, lib, .. } => {
+                let symbol = self.text(*symbol).to_string();
+                let lib = self.text(*lib).to_string();
+                match self.resolved.extern_sigs.get(&e) {
+                    Some((arg_types, ret_type)) => Term::Extern {
+                        symbol,
+                        lib,
+                        arg_types: arg_types.iter().cloned().collect(),
+                        ret_type: ret_type.clone(),
+                    },
+                    // No checker resolution (e.g. an untyped standalone lowering):
+                    // an extern with an unknown signature cannot be marshalled.
+                    None => Term::Fault(format!("foreign function `{symbol}` has no resolved type")),
+                }
+            }
         }
     }
 

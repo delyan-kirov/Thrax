@@ -118,6 +118,10 @@ pub struct Checker<'a> {
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
     with_fields: HashMap<Aol<Expr>, Vec<String>>,
+    /// Each `@extern` node's type variable, zonked after solving to recover the
+    /// concrete arrow the declaration constrained it to. Lowering reads the
+    /// flattened arg/result marshalling names off this.
+    extern_tys: HashMap<Aol<Expr>, Type>,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -182,6 +186,7 @@ impl<'a> Checker<'a> {
             array_exprs: HashSet::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
+            extern_tys: HashMap::new(),
         };
         c.install_builtins();
         c
@@ -205,6 +210,17 @@ impl<'a> Checker<'a> {
     /// node. Lowering desugars `with` into a `let` per field using these.
     pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
         &self.with_fields
+    }
+
+    /// Each `@extern` site's marshalling signature: the flattened argument type
+    /// names and the result type name, recovered by zonking the site's inferred
+    /// type (the declared arrow constrained it). Lowering builds `Term::Extern`
+    /// from these.
+    pub fn extern_sigs(&self) -> HashMap<Aol<Expr>, (Vec<String>, String)> {
+        self.extern_tys
+            .iter()
+            .map(|(&site, ty)| (site, flatten_extern(&self.eng.zonk(ty))))
+            .collect()
     }
 
     // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
@@ -1136,7 +1152,11 @@ impl<'a> Checker<'a> {
                 self.infer(cleanup)?;
                 self.infer(body)
             }
-            Expr::Extern { .. } => Ok(self.eng.fresh()),
+            Expr::Extern { .. } => {
+                let v = self.eng.fresh();
+                self.extern_tys.insert(e, v.clone());
+                Ok(v)
+            }
         }
     }
 
@@ -1997,6 +2017,29 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
 fn applied(name: &str, args: &[Type]) -> Type {
     args.iter()
         .fold(Type::con(name), |acc, a| Type::app(acc, a.clone()))
+}
+
+/// Flatten a zonked arrow `A -> B -> ... -> R` into its argument marshalling
+/// names and the result name.
+fn flatten_extern(ty: &Type) -> (Vec<String>, String) {
+    let mut args = Vec::new();
+    let mut cur = ty;
+    while let Type::Arrow(from, to) = cur {
+        args.push(marshal_name(from));
+        cur = to;
+    }
+    (args, marshal_name(cur))
+}
+
+/// A type's marshalling name for the FFI seam. A type variable or any composite
+/// (the checker's fallback, matching the C++ `desc_of`) marshals word-sized, so
+/// the backends read it as `Int`.
+fn marshal_name(ty: &Type) -> String {
+    match ty {
+        Type::Con(name) => name.clone(),
+        Type::Tuple(items) if items.is_empty() => ty::UNIT.to_string(),
+        _ => ty::INT.to_string(),
+    }
 }
 
 fn subst_from_args<'a>(

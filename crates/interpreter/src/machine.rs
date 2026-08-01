@@ -23,7 +23,7 @@ use std::rc::Rc;
 use frontend::ir::data::{Atom, AltKind, Expr, Program};
 use utilities::Result;
 
-use data::{builtin_arity, fault, mk, run_builtin, PVal, Resumption, Value};
+use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Value};
 
 /// One activation: the local slot array (params + let/case binders) and the
 /// current closure's captured record.
@@ -302,6 +302,17 @@ impl<'p> Machine<'p> {
                 }
                 Ok(mk(Value::Code { code: *code, env }))
             }
+            Atom::Extern {
+                symbol,
+                arg_types,
+                ret_type,
+                ..
+            } => Ok(mk(Value::Extern {
+                symbol: Rc::from(symbol.as_str()),
+                arg_types: Rc::from(arg_types.as_slice()),
+                ret_type: Rc::from(ret_type.as_str()),
+                args: Vec::new(),
+            })),
         }
     }
 
@@ -522,6 +533,7 @@ impl<'p> Machine<'p> {
         enum Kind<'p> {
             Code(usize, Vec<PVal<'p>>),
             Builtin(Rc<str>, usize, Vec<PVal<'p>>),
+            Extern(Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
             Op(Option<String>, String),
             Resump(Rc<RefCell<Resumption<'p>>>),
             Bad,
@@ -531,6 +543,12 @@ impl<'p> Machine<'p> {
             Value::Builtin { name, arity, args } => {
                 Kind::Builtin(name.clone(), *arity, args.clone())
             }
+            Value::Extern {
+                symbol,
+                arg_types,
+                ret_type,
+                args,
+            } => Kind::Extern(symbol.clone(), arg_types.clone(), ret_type.clone(), args.clone()),
             Value::Op { effect, op } => Kind::Op(effect.clone(), op.clone()),
             Value::Resump(r) => Kind::Resump(r.clone()),
             _ => Kind::Bad,
@@ -569,6 +587,21 @@ impl<'p> Machine<'p> {
                     mk(run_builtin(&name, &args)?)
                 } else {
                     mk(Value::Builtin { name, arity, args })
+                };
+                ex.ret(self, v)
+            }
+
+            Kind::Extern(symbol, arg_types, ret_type, mut args) => {
+                args.push(argv);
+                let v = if args.len() >= arg_types.len() {
+                    mk(run_extern(&symbol, &args)?)
+                } else {
+                    mk(Value::Extern {
+                        symbol,
+                        arg_types,
+                        ret_type,
+                        args,
+                    })
                 };
                 ex.ret(self, v)
             }

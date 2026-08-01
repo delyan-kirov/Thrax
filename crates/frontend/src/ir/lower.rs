@@ -122,6 +122,7 @@ fn is_atom(t: &Term) -> bool {
             | Term::Bool(_)
             | Term::Unit
             | Term::Var { .. }
+            | Term::Extern { .. }
             | Term::Lam { .. }
     )
 }
@@ -159,6 +160,7 @@ fn collect_free(t: &Term, m: usize, depth: usize, out: &mut BTreeSet<usize>) {
         | Term::Str(_)
         | Term::Bool(_)
         | Term::Unit
+        | Term::Extern { .. }
         | Term::Fault(_) => {}
 
         Term::Lam { body, .. } => collect_free(body, m, depth + 1, out),
@@ -253,6 +255,17 @@ impl Conv {
                 }
             }
             Term::Lam { param, body } => self.lift(body, 1, &[param.clone()], ctx),
+            Term::Extern {
+                symbol,
+                lib,
+                arg_types,
+                ret_type,
+            } => data::Atom::Extern {
+                symbol: symbol.clone(),
+                lib: lib.clone(),
+                arg_types: arg_types.to_vec(),
+                ret_type: ret_type.clone(),
+            },
             _ => unreachable!("non-atomic Core term in atom position (ANF violation)"),
         }
     }
@@ -309,6 +322,7 @@ impl Conv {
             | Term::Bool(_)
             | Term::Unit
             | Term::Var { .. }
+            | Term::Extern { .. }
             | Term::Lam { .. } => Expr::Ret(self.atom(t, ctx)),
 
             Term::Fault(s) => Expr::Fault(s.clone()),

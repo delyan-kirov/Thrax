@@ -112,9 +112,21 @@ pub enum Term {
         cleanup: Arc<Term>,
         body: Arc<Term>,
     },
-    /// A form the interpreter does not yet support (FFI). It raises a runtime
-    /// fault only if actually forced, so a module may still run the globals that
-    /// avoid it.
+    /// A foreign C function bound by `@extern "C" "symbol" "lib"`. A curried,
+    /// first-class value (like a builtin): applying it accumulates arguments and,
+    /// once saturated to `arg_types.len()`, marshals them across the C ABI and
+    /// calls `symbol`. `arg_types`/`ret_type` are the marshalling type names the
+    /// checker recovered from the declared signature (`Str`/`Ptr`/`Int`/`Real`/
+    /// `{}`/sized), driving how each slot crosses the seam.
+    Extern {
+        symbol: String,
+        lib: String,
+        arg_types: Arc<[String]>,
+        ret_type: String,
+    },
+    /// A form the interpreter does not yet support. It raises a runtime fault
+    /// only if actually forced, so a module may still run the globals that avoid
+    /// it.
     Fault(String),
 }
 

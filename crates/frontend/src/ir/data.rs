@@ -45,6 +45,17 @@ pub enum Atom {
         code: usize,
         captures: Vec<Atom>,
     },
+    /// A foreign C function (`@extern`). Produces a curried value that, once
+    /// applied to `arg_types.len()` arguments, marshals them across the C ABI
+    /// and calls `symbol`. Mirrors the C++ `IR::Extern`; both backends key off
+    /// `symbol`/`arg_types`/`ret_type` (the interpreter's host table, the C
+    /// backend's `__asm__`-label wrapper).
+    Extern {
+        symbol: String,
+        lib: String,
+        arg_types: Vec<String>,
+        ret_type: String,
+    },
 }
 
 /// A Case alternative: matched when the scrutinee's head agrees with `kind`. A

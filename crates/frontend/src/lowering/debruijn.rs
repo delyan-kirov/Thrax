@@ -33,6 +33,7 @@ fn assign(t: &Term, names: &mut Vec<String>) -> Term {
         | Term::Str(_)
         | Term::Bool(_)
         | Term::Unit
+        | Term::Extern { .. }
         | Term::Fault(_) => t.clone(),
 
         Term::Var { module, name, .. } => Term::Var {
