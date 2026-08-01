@@ -7,6 +7,7 @@
 //! and [`lowering::lower_program`] (AST to Core). The Core ([`lowering::data`])
 //! is what the `interpreter` and, later, `cgen` crates consume.
 
+pub mod ir;
 pub mod lexer;
 pub mod lowering;
 pub mod parser;

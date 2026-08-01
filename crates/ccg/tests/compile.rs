@@ -38,10 +38,8 @@ fn lower(src: &str) -> Vec<Program> {
 
 fn interp_show(src: &str, entry: &str) -> String {
     let lowered = lower(src);
-    interpreter::Interp::new(&lowered)
-        .eval_global(entry)
-        .expect("interp")
-        .show()
+    let ir = frontend::ir::lower_modules(&lowered);
+    interpreter::machine::eval(&ir, entry).expect("machine")
 }
 
 /// Emit C for `src`, compile and run it, and return its stdout (trimmed).
@@ -176,7 +174,7 @@ fn tuples() {
     assert_matches(src, "test");
 }
 
-// -- algebraic effects (fiber engine) --------------------------------------
+// -- algebraic effects (CEK driver) ----------------------------------------
 
 #[test]
 fn effects_generator_and_state() {

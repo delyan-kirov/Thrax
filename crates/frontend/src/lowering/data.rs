@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 /// A whole lowered module: its `@mod` name and its globals in source order.
+#[derive(Clone)]
 pub struct Program {
     pub module: String,
     pub effects: Vec<Effect>,

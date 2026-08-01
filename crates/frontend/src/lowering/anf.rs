@@ -41,8 +41,10 @@ pub fn normalize_program(program: &mut Program) {
     }
 }
 
-/// An atom needs no evaluation step to name: a literal, a variable, a lambda, or
-/// the runtime-fault leaf.
+/// An atom needs no evaluation step to name: a literal, a variable, or a lambda.
+/// `Fault` is a computation (it raises when forced), so it is hoisted into a
+/// `let` in operand position and becomes an [`Expr`](super::data::Term) the IR
+/// converter can render, never an atom.
 fn is_atom(t: &Term) -> bool {
     matches!(
         t,
@@ -53,7 +55,6 @@ fn is_atom(t: &Term) -> bool {
             | Term::Unit
             | Term::Var { .. }
             | Term::Lam { .. }
-            | Term::Fault(_)
     )
 }
 

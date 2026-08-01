@@ -17,6 +17,7 @@
 pub mod anf;
 pub mod data;
 pub mod debruijn;
+pub mod patmat;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

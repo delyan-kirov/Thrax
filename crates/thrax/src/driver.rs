@@ -204,28 +204,16 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
     }
 }
 
-/// Lower, then evaluate a module's entry point (`test`, else `main`).
+/// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
+/// on the reified-K machine. The machine's continuation is an explicit heap
+/// stack, so no large host stack is needed for deep recursion.
 pub fn cmd_run(path: &str) -> ExitCode {
     let (lowered, entry) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-
-    // Evaluate on a thread with a large stack: the interpreter recurses with the
-    // program, and without tail-call optimization even a tail-recursive loop
-    // nests one native frame per iteration, so a deep loop needs headroom.
-    let run_entry = entry.clone();
-    let result = std::thread::Builder::new()
-        .stack_size(4 << 30)
-        .spawn(move || {
-            let interp = interpreter::Interp::new(&lowered);
-            interp.eval_global(&run_entry).map(|v| v.show())
-        })
-        .expect("spawn interpreter thread")
-        .join()
-        .expect("interpreter thread panicked");
-
-    match result {
+    let ir = frontend::ir::lower_modules(&lowered);
+    match interpreter::machine::eval(&ir, &entry) {
         Ok(shown) => {
             println!("{entry} = {shown}");
             ExitCode::SUCCESS
