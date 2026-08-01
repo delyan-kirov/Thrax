@@ -5,6 +5,24 @@ fn prog(src: &str) -> Parsed {
     parse(src).unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")))
 }
 
+#[test]
+fn type_names_must_be_capitalized() {
+    // A bare lowercase name in type position (a typo for a type variable, which
+    // is the backtick form) is rejected, both in use and in declaration.
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+    assert!(err("@mod M\n$ x : foo = 5").contains("capital letter"));
+    assert!(err("@mod M\n$ point : @struct = a: Int,").contains("capital letter"));
+    // A lowercase backtick type variable is also rejected: type names are all
+    // capitalized, so a type variable is `` `A ``, not `` `a ``.
+    assert!(err("@mod M\n$ id : `a -> `a = \\x = x").contains("capital letter"));
+    // A capitalized backtick type variable and a capitalized type both parse.
+    assert!(parse("@mod M\n$ id : `A -> `A = \\x = x").is_ok());
+    assert!(parse("@mod M\n$ n : Int = 5").is_ok());
+}
+
 /// The single global's body handle, asserting the module has exactly one def.
 fn only_def_body(p: &Parsed) -> Aol<Expr> {
     assert_eq!(p.program.items.len(), 1);

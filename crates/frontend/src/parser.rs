@@ -136,6 +136,20 @@ impl<'a> Parser<'a> {
         )
     }
 
+    /// A type name must start with a capital letter; a lowercase name in type
+    /// position is a type variable only in the backtick form (`` `a ``). `tok` is
+    /// the offending name token, for the error span.
+    fn require_type_capital(&self, text: &str, tok: &Token<'a>) -> Result<()> {
+        if text.starts_with(|c: char| c.is_ascii_uppercase()) {
+            Ok(())
+        } else {
+            Err(self.unexpected(
+                tok,
+                "a type name must start with a capital letter (a type variable is written with a backtick, e.g. `` `a ``)",
+            ))
+        }
+    }
+
     // -- program + globals --------------------------------------------------
 
     /// Parse a whole compilation unit.
@@ -244,7 +258,8 @@ impl<'a> Parser<'a> {
 
     /// `$ name ...`: a value definition, or a struct/union/alias/effect type.
     fn parse_named_global(&mut self) -> Result<Item> {
-        let name = self.bump_word()?;
+        let name_tok = self.bump()?;
+        let name = self.intern(name_tok.text);
         if !self.eat(|k| matches!(k, Kind::Colon))? {
             expect!(self, Kind::Eq, "expected ':' or '=' after the name");
             return Ok(Item::Def {
@@ -257,6 +272,9 @@ impl<'a> Parser<'a> {
         // type declaration; anything else is a type signature on a value.
         if let Kind::At = self.peek_kind()? {
             let kw = self.peek()?.intrinsic_name();
+            if matches!(kw, "struct" | "union" | "alias" | "effect") {
+                self.require_type_capital(name_tok.text, &name_tok)?;
+            }
             match kw {
                 "struct" => {
                     self.bump()?;
@@ -398,6 +416,7 @@ impl<'a> Parser<'a> {
                 if matches!(self.peek_kind()?, Kind::Dot) {
                     self.bump()?; // '.'
                     let member = expect!(self, Kind::Word, "expected a type name after '.'");
+                    self.require_type_capital(member.text, &member)?;
                     let module = self.intern(t.text);
                     let name = self.intern(member.text);
                     Ok(self.ty(Ty::Con {
@@ -405,6 +424,7 @@ impl<'a> Parser<'a> {
                         name,
                     }))
                 } else {
+                    self.require_type_capital(t.text, &t)?;
                     let name = self.intern(t.text);
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }

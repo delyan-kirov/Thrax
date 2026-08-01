@@ -57,7 +57,7 @@ $ ok_opt : Result `T `E -> Option `T = \r =
 
 # ---- the effect shape ----
 
-$ Fail : @effect = fail : Str -> `a,  # never resumes -> polymorphic result
+$ Fail : @effect = fail : Str -> `A,  # never resumes -> polymorphic result
 
 # Run a computation that may Fail, reifying the outcome as a Result.
 $ try : ({} -> <Fail> `T) -> Result `T Str = \action =

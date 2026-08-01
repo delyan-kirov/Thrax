@@ -32,7 +32,7 @@ fn monomorphic_arithmetic() {
 #[test]
 fn identity_is_polymorphic() {
     // The classic let-generalization test: `id` gets `forall a. a -> a`.
-    assert_eq!(type_of("@mod M\n$ id = \\x = x", "id"), "`a -> `a");
+    assert_eq!(type_of("@mod M\n$ id = \\x = x", "id"), "`A -> `A");
 }
 
 #[test]
@@ -47,8 +47,8 @@ fn polymorphic_id_used_at_two_types() {
 #[test]
 fn function_application_and_arrows() {
     let src = "@mod M\n$ apply = \\f x = f x";
-    // `(a -> b) -> a -> b`.
-    assert_eq!(type_of(src, "apply"), "(`a -> `b) -> `a -> `b");
+    // `(A -> B) -> A -> B`.
+    assert_eq!(type_of(src, "apply"), "(`A -> `B) -> `A -> `B");
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn union_constructor_and_match() {
                    $ m : Maybe Int = Maybe.Just.{ 7 }\n\
                    $ get = \\d = \\o = when o is Maybe.Just.{x} then x else d";
     assert_eq!(type_of(src, "m"), "Maybe Int");
-    assert_eq!(type_of(src, "get"), "`a -> Maybe `a -> `a");
+    assert_eq!(type_of(src, "get"), "`A -> Maybe `A -> `A");
 }
 
 #[test]
@@ -257,6 +257,28 @@ fn effect_operation_is_bound_and_handler_types_result() {
                    $ run : Int = do tick {} ctl k is get u = k 0 is put n = k {} else x = x";
     assert_eq!(type_of(src, "tick"), "{} -> <State> Int");
     assert_eq!(type_of(src, "run"), "Int");
+}
+
+#[test]
+fn unknown_type_name_is_rejected() {
+    // A bare capitalized name in type position must be a known type; a type
+    // variable is the backtick form. `Itn` is a typo, not a type variable.
+    assert!(errors("@mod M\n$ x : Itn = 5").contains("unknown type `Itn`"));
+}
+
+#[test]
+fn type_variable_and_sized_and_declared_types_are_accepted() {
+    // `` `a `` is a type variable; `Int8`/`Ptr` are base types; a declared union
+    // name is known. None of these is an "unknown type".
+    let src = "@mod M\n\
+               $ Box : @union = Wrap: { Int },\n\
+               $ id : `A -> `A = \\x = x\n\
+               $ n : Int8 = 5\n\
+               $ p : Ptr = 0\n\
+               $ b : Box = Box.Wrap.{ 1 }";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "id"), "`A -> `A");
+    assert_eq!(type_of(src, "n"), "Int8");
 }
 
 #[test]

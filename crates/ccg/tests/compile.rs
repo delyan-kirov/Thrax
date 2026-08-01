@@ -215,3 +215,38 @@ fn effects_pipes_and_seq() {
     assert_example("PIPES.thx", "r_seq");
     assert_example("PIPES.thx", "test");
 }
+
+// -- FFI marshalling (sized numerics + Ptr) --------------------------------
+
+#[test]
+fn sized_extern_marshalling() {
+    // A foreign binding with sized / pointer / float32 arguments emits each
+    // argument's exact C ABI type in its wrapper (not a word-size fallback).
+    let src = "@mod T\n\
+               $ f : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = @extern \"C\" \"f\" \"libx\"\n\
+               $ test : Int = 0\n";
+    let lowered = lower(src);
+    let code = ccg::emit(&lowered, "test");
+    // The wrapper's symbol declaration carries the exact C ABI types, in order.
+    let decl = code
+        .lines()
+        .find(|l| l.contains("__asm__(\"f\")"))
+        .expect("the `f` wrapper declaration");
+    assert!(
+        decl.contains("double THx_sym_0(int8_t, int32_t, uint16_t, float, void*)"),
+        "wrong C ABI signature: {decl}"
+    );
+    // Real32 narrows the double slot to a float; a sized int casts to its width.
+    assert!(code.contains("float a3 = (float)THxVALUE_as_num(args[3]);"));
+    assert!(code.contains("int8_t a0 = (int8_t)THxVALUE_as_int(args[0]);"));
+}
+
+#[test]
+fn sized_extern_runs_and_matches() {
+    // A real libc call through a sized signature (`strlen : Str -> Nat64`, wrapped
+    // as `uint64_t(char*)`) runs and agrees with the interpreter's host table.
+    let src = "@mod T\n\
+               $ strlen : Str -> Nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
+               $ test : Nat64 = strlen \"hello\"\n";
+    assert_matches(src, "test");
+}

@@ -403,7 +403,9 @@ impl Engine {
             names
                 .entry(id)
                 .or_insert_with(|| {
-                    let name = format!("`{}", (b'a' + (next % 26) as u8) as char);
+                    // Type variables display capitalized (`` `A ``), matching the
+                    // source syntax where every type name starts with a capital.
+                    let name = format!("`{}", (b'A' + (next % 26) as u8) as char);
                     next += 1;
                     name
                 })

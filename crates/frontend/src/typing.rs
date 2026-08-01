@@ -128,6 +128,11 @@ pub struct Checker<'a> {
     /// ambient; a top-level body runs under the empty closed row, so an unhandled
     /// effect fails to unify.
     ambient: Type,
+    /// The first unknown type name met while converting a signature (a bare
+    /// `Con` that is neither a base type nor a declared struct/union/alias). A
+    /// type variable is the backtick form `` `T ``, so a bare unknown name is a
+    /// typo, surfaced at the end of the check.
+    unknown_type: Option<Diagnostic>,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -194,6 +199,7 @@ impl<'a> Checker<'a> {
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             ambient: Type::RowEmpty,
+            unknown_type: None,
         };
         c.install_builtins();
         c
@@ -335,6 +341,9 @@ impl<'a> Checker<'a> {
         self.own_overloads = own_ov.into_iter().collect();
 
         out.extend(overloaded_out);
+        if let Some(d) = self.unknown_type.take() {
+            return Err(d);
+        }
         Ok(out)
     }
 
@@ -1781,13 +1790,28 @@ impl<'a> Checker<'a> {
 
     // -- AST types ----------------------------------------------------------
 
+    /// Is `name` a usable type: a built-in base type, or a struct/union/alias
+    /// declared here or imported? A bare name that is none of these is a typo (a
+    /// type variable is the backtick form).
+    fn is_known_type(&self, name: &str) -> bool {
+        is_base_type(name)
+            || self.structs.contains_key(name)
+            || self.unions.contains_key(name)
+            || self.aliases.contains_key(name)
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         match self.tnode(ty) {
             Ty::Con { name, .. } => {
                 let name = self.text(*name);
                 match self.aliases.get(name).copied() {
                     Some(alias) => self.ty_of_ast(alias, tvars),
-                    None => Type::con(canonical_con(name)),
+                    None => {
+                        if !self.is_known_type(name) && self.unknown_type.is_none() {
+                            self.unknown_type = Some(unknown_type(name));
+                        }
+                        Type::con(canonical_con(name))
+                    }
                 }
             }
             Ty::Var(name) => {
@@ -2248,5 +2272,33 @@ fn unbound(name: &str) -> Diagnostic {
         Span::at(0),
         0,
         format!("unbound name `{name}`"),
+    )
+}
+
+/// The built-in scalar and container type names, in both their friendly and
+/// `@`-sigil spellings. A type in source is one of these, a declared type, or a
+/// backtick type variable.
+fn is_base_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Int" | "Nat" | "Real"
+            | "Int8" | "Int16" | "Int32" | "Int64"
+            | "Nat8" | "Nat16" | "Nat32" | "Nat64"
+            | "Real32" | "Real64"
+            | "Str" | "Ptr" | "Bool"
+            | "Array" | "Vec" | "List"
+            | "@int8" | "@int16" | "@int32" | "@int64"
+            | "@nat8" | "@nat16" | "@nat32" | "@nat64"
+            | "@float32" | "@float64"
+            | "@str" | "@ptr" | "@bool" | "@array"
+    )
+}
+
+fn unknown_type(name: &str) -> Diagnostic {
+    Diagnostic::error(
+        Code::TypeUnbound,
+        Span::at(0),
+        0,
+        format!("unknown type `{name}`: a type variable is written with a leading backtick (`` `{name} ``); otherwise the type must be declared"),
     )
 }

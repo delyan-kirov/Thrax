@@ -343,15 +343,17 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    /// `` `T `` type variable: a backtick followed by an identifier.
+    /// `` `T `` type variable: a backtick followed by a capitalized identifier.
+    /// The leading letter must be uppercase, since all type names (constructors
+    /// and variables alike) are capitalized.
     fn lex_tyvar(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
         self.cursor += 1; // backtick
-        if !crate::lexer::data::is_ident_start(self.cur()) {
+        if !self.cur().is_ascii_uppercase() {
             return Err(self.err(
                 Code::UnknownSymbol,
                 start,
                 line,
-                "expected a type-variable name after '`'",
+                "a type variable must start with a capital letter (e.g. `` `A ``)",
             ));
         }
         self.scan_while(crate::lexer::data::is_ident_cont);

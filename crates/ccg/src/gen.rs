@@ -173,48 +173,62 @@ fn cdbl(v: f64) -> String {
     format!("{v:.17e}")
 }
 
-/// How a marshalling type name crosses the C ABI in a generated `@extern`
-/// wrapper. `Word` is the fallback (any Int/Nat/sized/type variable), matching
-/// the interpreter's host table and the C++ `desc_of`.
-enum Marshal {
-    Bytes, // Str/Array: the byte pointer
-    Ptr,   // an opaque pointer carried as a word
-    Real,  // double
-    Unit,  // {} : a void result
-    Word,  // an integer word
+/// How a Thrax scalar crosses the C ABI in a generated `@extern` wrapper.
+/// `Int(t)` names the exact C integer type; the word-sized fallback (`Int`, a
+/// type variable, or any unrecognized name) is `int64_t`, matching the C++
+/// `desc_of`. Both the friendly (`Int8`) and `@`-sigil (`@int8`) spellings map
+/// to the same ABI.
+enum Cabi {
+    Bytes,             // Str/Array: the byte pointer (char*)
+    Ptr,               // Ptr: an opaque pointer carried as a word (void*)
+    F32,               // Real32: float
+    F64,               // Real/Real64: double
+    Unit,              // {}: a void result
+    Int(&'static str), // a sized/word integer: the named C int type
 }
 
-fn classify(name: &str) -> Marshal {
+fn cabi(name: &str) -> Cabi {
     match name {
-        "Str" | "Array" | "@str" => Marshal::Bytes,
-        "Ptr" | "@ptr" => Marshal::Ptr,
-        "Real" | "Real32" | "Real64" | "@float64" | "@float32" => Marshal::Real,
-        "{}" => Marshal::Unit,
-        _ => Marshal::Word,
+        "Str" | "Array" | "@str" => Cabi::Bytes,
+        "Ptr" | "@ptr" => Cabi::Ptr,
+        "Real32" | "@float32" => Cabi::F32,
+        "Real" | "Real64" | "@float64" => Cabi::F64,
+        "{}" => Cabi::Unit,
+        "Int8" | "@int8" => Cabi::Int("int8_t"),
+        "Int16" | "@int16" => Cabi::Int("int16_t"),
+        "Int32" | "@int32" => Cabi::Int("int32_t"),
+        "Int64" | "@int64" => Cabi::Int("int64_t"),
+        "Nat8" | "@nat8" => Cabi::Int("uint8_t"),
+        "Nat16" | "@nat16" => Cabi::Int("uint16_t"),
+        "Nat32" | "@nat32" => Cabi::Int("uint32_t"),
+        "Nat64" | "@nat64" | "Nat" => Cabi::Int("uint64_t"),
+        _ => Cabi::Int("int64_t"),
     }
 }
 
 /// The C parameter type and the expression marshalling `args[i]` into it.
 fn c_param(name: &str, i: usize) -> (&'static str, String) {
-    match classify(name) {
-        Marshal::Bytes => ("char*", format!("(char*)THxVALUE_str(args[{i}])")),
-        Marshal::Ptr => ("void*", format!("(void*)(intptr_t)THxVALUE_as_int(args[{i}])")),
-        Marshal::Real => ("double", format!("THxVALUE_as_num(args[{i}])")),
-        Marshal::Unit | Marshal::Word => {
-            ("int64_t", format!("(int64_t)THxVALUE_as_int(args[{i}])"))
-        }
+    match cabi(name) {
+        Cabi::Bytes => ("char*", format!("(char*)THxVALUE_str(args[{i}])")),
+        Cabi::Ptr => ("void*", format!("(void*)(intptr_t)THxVALUE_as_int(args[{i}])")),
+        Cabi::F32 => ("float", format!("(float)THxVALUE_as_num(args[{i}])")),
+        Cabi::F64 => ("double", format!("THxVALUE_as_num(args[{i}])")),
+        // A `{}` parameter is unusual; treat it as a word.
+        Cabi::Unit => ("int64_t", format!("(int64_t)THxVALUE_as_int(args[{i}])")),
+        Cabi::Int(t) => (t, format!("({t})THxVALUE_as_int(args[{i}])")),
     }
 }
 
 /// The C return type, and (for a non-void result) the expression wrapping the
 /// C result `_r` back into a `Value*`.
 fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
-    match classify(name) {
-        Marshal::Bytes => ("char*", Some("_r ? THxRT_str(_r, strlen(_r)) : THxRT_str(\"\", 0)")),
-        Marshal::Ptr => ("void*", Some("THxRT_int((long long)(intptr_t)_r)")),
-        Marshal::Real => ("double", Some("THxRT_real(_r)")),
-        Marshal::Unit => ("void", None),
-        Marshal::Word => ("int64_t", Some("THxRT_int((long long)_r)")),
+    match cabi(name) {
+        Cabi::Bytes => ("char*", Some("_r ? THxRT_str(_r, strlen(_r)) : THxRT_str(\"\", 0)")),
+        Cabi::Ptr => ("void*", Some("THxRT_int((long long)(intptr_t)_r)")),
+        Cabi::F32 => ("float", Some("THxRT_real((double)_r)")),
+        Cabi::F64 => ("double", Some("THxRT_real(_r)")),
+        Cabi::Unit => ("void", None),
+        Cabi::Int(t) => (t, Some("THxRT_int((long long)_r)")),
     }
 }
 
