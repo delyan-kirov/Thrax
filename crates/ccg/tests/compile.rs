@@ -60,6 +60,7 @@ fn c_run(src: &str, entry: &str) -> String {
         .args(["-w", "-O1", "-pthread", "-o"])
         .arg(&bin_path)
         .arg(&c_path)
+        .arg("-lm")
         .status()
         .expect("run C compiler");
     assert!(status.success(), "C compile failed for entry `{entry}`");

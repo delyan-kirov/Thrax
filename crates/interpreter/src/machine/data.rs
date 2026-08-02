@@ -227,7 +227,6 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
-        _ if name.starts_with("C.") => crate::machine::clib::run_c(name, a),
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }
 }
@@ -386,39 +385,92 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
 // emits a direct symbol call, still reaches an arbitrary library. Everything is
 // a machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
 
-use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 
 extern "C" {
+    // math.h (libm)
+    fn sqrt(x: f64) -> f64;
+    fn cbrt(x: f64) -> f64;
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+    fn tan(x: f64) -> f64;
+    fn asin(x: f64) -> f64;
+    fn acos(x: f64) -> f64;
+    fn atan(x: f64) -> f64;
+    fn sinh(x: f64) -> f64;
+    fn cosh(x: f64) -> f64;
+    fn tanh(x: f64) -> f64;
+    fn exp(x: f64) -> f64;
+    fn exp2(x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn log2(x: f64) -> f64;
+    fn log10(x: f64) -> f64;
+    fn fabs(x: f64) -> f64;
+    fn floor(x: f64) -> f64;
+    fn ceil(x: f64) -> f64;
+    fn round(x: f64) -> f64;
+    fn trunc(x: f64) -> f64;
+    fn pow(x: f64, y: f64) -> f64;
+    fn fmod(x: f64, y: f64) -> f64;
+    fn atan2(x: f64, y: f64) -> f64;
+    fn hypot(x: f64, y: f64) -> f64;
+    fn copysign(x: f64, y: f64) -> f64;
+    fn fmin(x: f64, y: f64) -> f64;
+    fn fmax(x: f64, y: f64) -> f64;
+    fn fdim(x: f64, y: f64) -> f64;
+    // stdlib.h
+    fn malloc(n: usize) -> *mut c_void;
+    fn calloc(count: usize, size: usize) -> *mut c_void;
+    fn realloc(p: *mut c_void, n: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
+    fn atoi(s: *const c_char) -> c_int;
+    fn atof(s: *const c_char) -> f64;
+    fn rand() -> c_int;
+    fn srand(seed: c_uint);
+    fn exit(code: c_int);
+    fn abort();
+    // string.h
+    fn strlen(s: *const c_char) -> usize;
+    fn strcmp(a: *const c_char, b: *const c_char) -> c_int;
+    fn strncmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
+    fn strchr(s: *const c_char, c: c_int) -> *mut c_char;
+    fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;
+    fn strstr(hay: *const c_char, needle: *const c_char) -> *mut c_char;
+    fn memcpy(d: *mut c_void, s: *const c_void, n: usize) -> *mut c_void;
+    fn memmove(d: *mut c_void, s: *const c_void, n: usize) -> *mut c_void;
+    fn memset(p: *mut c_void, c: c_int, n: usize) -> *mut c_void;
+    fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> c_int;
+    fn memchr(p: *const c_void, c: c_int, n: usize) -> *mut c_void;
+    // ctype.h
+    fn isalpha(c: c_int) -> c_int;
+    fn isdigit(c: c_int) -> c_int;
+    fn isalnum(c: c_int) -> c_int;
+    fn isspace(c: c_int) -> c_int;
+    fn isupper(c: c_int) -> c_int;
+    fn islower(c: c_int) -> c_int;
+    fn ispunct(c: c_int) -> c_int;
+    fn iscntrl(c: c_int) -> c_int;
+    fn isprint(c: c_int) -> c_int;
+    fn toupper(c: c_int) -> c_int;
+    fn tolower(c: c_int) -> c_int;
+    // stdio.h
     fn puts(s: *const c_char) -> c_int;
     fn putchar(c: c_int) -> c_int;
     fn getchar() -> c_int;
-    fn malloc(n: usize) -> *mut c_void;
-    fn free(p: *mut c_void);
-    fn memset(p: *mut c_void, c: c_int, n: usize) -> *mut c_void;
-    fn strlen(s: *const c_char) -> usize;
     fn fopen(path: *const c_char, mode: *const c_char) -> *mut c_void;
     fn fclose(f: *mut c_void) -> c_int;
     fn fgetc(f: *mut c_void) -> c_int;
+    fn fputc(c: c_int, f: *mut c_void) -> c_int;
     fn fputs(s: *const c_char, f: *mut c_void) -> c_int;
     fn fflush(f: *mut c_void) -> c_int;
     fn fseek(f: *mut c_void, off: c_long, whence: c_int) -> c_int;
     fn ftell(f: *mut c_void) -> c_long;
     fn remove(path: *const c_char) -> c_int;
+    fn rename(from: *const c_char, to: *const c_char) -> c_int;
+    // unistd.h / time.h
+    fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
     fn getenv(key: *const c_char) -> *mut c_char;
     fn time(t: *mut c_void) -> c_long;
-    fn write(fd: c_int, buf: *const c_void, n: usize) -> isize;
-    fn sqrt(x: f64) -> f64;
-    fn sin(x: f64) -> f64;
-    fn cos(x: f64) -> f64;
-    fn tan(x: f64) -> f64;
-    fn exp(x: f64) -> f64;
-    fn log(x: f64) -> f64;
-    fn floor(x: f64) -> f64;
-    fn ceil(x: f64) -> f64;
-    fn round(x: f64) -> f64;
-    fn pow(x: f64, y: f64) -> f64;
-    fn fmod(x: f64, y: f64) -> f64;
-    fn atan2(x: f64, y: f64) -> f64;
 }
 
 /// A machine-word argument (`Int`, or a `Ptr` carrying its bits).
@@ -450,39 +502,171 @@ fn ffi_cstr(args: &[PVal], i: usize) -> Result<Vec<u8>> {
     }
 }
 
+/// Wrap a C string result (`char*`) into a `Str` value, matching the C backend's
+/// `_r ? THxRT_str(_r, strlen(_r)) : THxRT_str("", 0)`.
+unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
+    if p.is_null() {
+        return Value::Str(Rc::new(Vec::new()));
+    }
+    let n = strlen(p);
+    let bytes = std::slice::from_raw_parts(p as *const u8, n).to_vec();
+    Value::Str(Rc::new(bytes))
+}
+
 /// Call a foreign C function from the host table with the marshalled `args`.
 /// Mirrors `FF.cpp`'s adapter table: each adapter knows its own signature, so
-/// the result is wrapped directly (`ret_type` drives only the C backend).
+/// the result is wrapped directly. The set of symbols served here is exactly the
+/// `C` namespace declared in `core/C.thx`; the C backend reaches these same
+/// symbols with a direct linked call, so both engines agree.
 pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
     let v = unsafe {
         match symbol {
-            "puts" => Value::Int(puts(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
-            "putchar" => Value::Int(putchar(ffi_word(args, 0)? as c_int) as i64),
-            "getchar" => Value::Int(getchar() as i64),
+            // -- math.h (unary) --
+            "sqrt" => Value::Real(sqrt(ffi_real(args, 0)?)),
+            "cbrt" => Value::Real(cbrt(ffi_real(args, 0)?)),
+            "sin" => Value::Real(sin(ffi_real(args, 0)?)),
+            "cos" => Value::Real(cos(ffi_real(args, 0)?)),
+            "tan" => Value::Real(tan(ffi_real(args, 0)?)),
+            "asin" => Value::Real(asin(ffi_real(args, 0)?)),
+            "acos" => Value::Real(acos(ffi_real(args, 0)?)),
+            "atan" => Value::Real(atan(ffi_real(args, 0)?)),
+            "sinh" => Value::Real(sinh(ffi_real(args, 0)?)),
+            "cosh" => Value::Real(cosh(ffi_real(args, 0)?)),
+            "tanh" => Value::Real(tanh(ffi_real(args, 0)?)),
+            "exp" => Value::Real(exp(ffi_real(args, 0)?)),
+            "exp2" => Value::Real(exp2(ffi_real(args, 0)?)),
+            "log" => Value::Real(log(ffi_real(args, 0)?)),
+            "log2" => Value::Real(log2(ffi_real(args, 0)?)),
+            "log10" => Value::Real(log10(ffi_real(args, 0)?)),
+            "fabs" => Value::Real(fabs(ffi_real(args, 0)?)),
+            "floor" => Value::Real(floor(ffi_real(args, 0)?)),
+            "ceil" => Value::Real(ceil(ffi_real(args, 0)?)),
+            "round" => Value::Real(round(ffi_real(args, 0)?)),
+            "trunc" => Value::Real(trunc(ffi_real(args, 0)?)),
+            // -- math.h (binary) --
+            "pow" => Value::Real(pow(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "fmod" => Value::Real(fmod(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "atan2" => Value::Real(atan2(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "hypot" => Value::Real(hypot(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "copysign" => Value::Real(copysign(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "fmin" => Value::Real(fmin(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "fmax" => Value::Real(fmax(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "fdim" => Value::Real(fdim(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            // -- stdlib.h --
             "malloc" => Value::Int(malloc(ffi_word(args, 0)? as usize) as i64),
+            "calloc" => Value::Int(
+                calloc(ffi_word(args, 0)? as usize, ffi_word(args, 1)? as usize) as i64,
+            ),
+            "realloc" => Value::Int(realloc(
+                ffi_word(args, 0)? as *mut c_void,
+                ffi_word(args, 1)? as usize,
+            ) as i64),
             "free" => {
                 free(ffi_word(args, 0)? as *mut c_void);
                 Value::Unit
             }
+            "atoi" => Value::Int(atoi(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "atof" => Value::Real(atof(ffi_cstr(args, 0)?.as_ptr() as *const c_char)),
+            "rand" => Value::Int(rand() as i64),
+            "srand" => {
+                srand(ffi_word(args, 0)? as c_uint);
+                Value::Unit
+            }
+            "exit" => {
+                exit(ffi_word(args, 0)? as c_int);
+                Value::Unit
+            }
+            "abort" => {
+                abort();
+                Value::Unit
+            }
+            // -- string.h --
+            "strlen" => Value::Int(strlen(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "strcmp" => {
+                let (a, b) = (ffi_cstr(args, 0)?, ffi_cstr(args, 1)?);
+                Value::Int(strcmp(a.as_ptr() as *const c_char, b.as_ptr() as *const c_char) as i64)
+            }
+            "strncmp" => {
+                let (a, b) = (ffi_cstr(args, 0)?, ffi_cstr(args, 1)?);
+                Value::Int(strncmp(
+                    a.as_ptr() as *const c_char,
+                    b.as_ptr() as *const c_char,
+                    ffi_word(args, 2)? as usize,
+                ) as i64)
+            }
+            "strchr" => {
+                let s = ffi_cstr(args, 0)?;
+                Value::Int(strchr(s.as_ptr() as *const c_char, ffi_word(args, 1)? as c_int) as i64)
+            }
+            "strrchr" => {
+                let s = ffi_cstr(args, 0)?;
+                Value::Int(strrchr(s.as_ptr() as *const c_char, ffi_word(args, 1)? as c_int) as i64)
+            }
+            "strstr" => {
+                let (h, n) = (ffi_cstr(args, 0)?, ffi_cstr(args, 1)?);
+                Value::Int(strstr(h.as_ptr() as *const c_char, n.as_ptr() as *const c_char) as i64)
+            }
+            "memcpy" => Value::Int(memcpy(
+                ffi_word(args, 0)? as *mut c_void,
+                ffi_word(args, 1)? as *const c_void,
+                ffi_word(args, 2)? as usize,
+            ) as i64),
+            "memmove" => Value::Int(memmove(
+                ffi_word(args, 0)? as *mut c_void,
+                ffi_word(args, 1)? as *const c_void,
+                ffi_word(args, 2)? as usize,
+            ) as i64),
             "memset" => Value::Int(memset(
                 ffi_word(args, 0)? as *mut c_void,
                 ffi_word(args, 1)? as c_int,
                 ffi_word(args, 2)? as usize,
             ) as i64),
-            "strlen" => Value::Int(strlen(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "memcmp" => Value::Int(memcmp(
+                ffi_word(args, 0)? as *const c_void,
+                ffi_word(args, 1)? as *const c_void,
+                ffi_word(args, 2)? as usize,
+            ) as i64),
+            "memchr" => Value::Int(memchr(
+                ffi_word(args, 0)? as *const c_void,
+                ffi_word(args, 1)? as c_int,
+                ffi_word(args, 2)? as usize,
+            ) as i64),
+            // -- ctype.h --
+            "isalpha" => Value::Int(isalpha(ffi_word(args, 0)? as c_int) as i64),
+            "isdigit" => Value::Int(isdigit(ffi_word(args, 0)? as c_int) as i64),
+            "isalnum" => Value::Int(isalnum(ffi_word(args, 0)? as c_int) as i64),
+            "isspace" => Value::Int(isspace(ffi_word(args, 0)? as c_int) as i64),
+            "isupper" => Value::Int(isupper(ffi_word(args, 0)? as c_int) as i64),
+            "islower" => Value::Int(islower(ffi_word(args, 0)? as c_int) as i64),
+            "ispunct" => Value::Int(ispunct(ffi_word(args, 0)? as c_int) as i64),
+            "iscntrl" => Value::Int(iscntrl(ffi_word(args, 0)? as c_int) as i64),
+            "isprint" => Value::Int(isprint(ffi_word(args, 0)? as c_int) as i64),
+            "toupper" => Value::Int(toupper(ffi_word(args, 0)? as c_int) as i64),
+            "tolower" => Value::Int(tolower(ffi_word(args, 0)? as c_int) as i64),
+            // -- stdio.h --
+            "puts" => Value::Int(puts(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
+            "putchar" => Value::Int(putchar(ffi_word(args, 0)? as c_int) as i64),
+            "getchar" => Value::Int(getchar() as i64),
             "fopen" => {
                 let path = ffi_cstr(args, 0)?;
                 let mode = ffi_cstr(args, 1)?;
-                Value::Int(fopen(path.as_ptr() as *const c_char, mode.as_ptr() as *const c_char)
-                    as i64)
+                Value::Int(
+                    fopen(path.as_ptr() as *const c_char, mode.as_ptr() as *const c_char) as i64,
+                )
             }
             "fclose" => Value::Int(fclose(ffi_word(args, 0)? as *mut c_void) as i64),
             "fgetc" => Value::Int(fgetc(ffi_word(args, 0)? as *mut c_void) as i64),
+            "fputc" => Value::Int(fputc(
+                ffi_word(args, 0)? as c_int,
+                ffi_word(args, 1)? as *mut c_void,
+            ) as i64),
             "fputs" => {
                 let s = ffi_cstr(args, 0)?;
-                Value::Int(fputs(s.as_ptr() as *const c_char, ffi_word(args, 1)? as *mut c_void)
-                    as i64)
+                Value::Int(
+                    fputs(s.as_ptr() as *const c_char, ffi_word(args, 1)? as *mut c_void) as i64,
+                )
             }
+            "fflush" => Value::Int(fflush(ffi_word(args, 0)? as *mut c_void) as i64),
             "fseek" => Value::Int(fseek(
                 ffi_word(args, 0)? as *mut c_void,
                 ffi_word(args, 1)? as c_long,
@@ -490,8 +674,13 @@ pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p
             ) as i64),
             "ftell" => Value::Int(ftell(ffi_word(args, 0)? as *mut c_void) as i64),
             "remove" => Value::Int(remove(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
-            "getenv" => Value::Int(getenv(ffi_cstr(args, 0)?.as_ptr() as *const c_char) as i64),
-            "time" => Value::Int(time(ffi_word(args, 0)? as *mut c_void) as i64),
+            "rename" => {
+                let (from, to) = (ffi_cstr(args, 0)?, ffi_cstr(args, 1)?);
+                Value::Int(
+                    rename(from.as_ptr() as *const c_char, to.as_ptr() as *const c_char) as i64,
+                )
+            }
+            // -- unistd.h / time.h --
             "write" => {
                 let (fd, n) = (ffi_word(args, 0)?, ffi_word(args, 2)?);
                 let buf = match &*args[1].borrow() {
@@ -501,18 +690,8 @@ pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p
                 let n = (n as usize).min(buf.len());
                 Value::Int(write(fd as c_int, buf.as_ptr() as *const c_void, n) as i64)
             }
-            "sqrt" => Value::Real(sqrt(ffi_real(args, 0)?)),
-            "sin" => Value::Real(sin(ffi_real(args, 0)?)),
-            "cos" => Value::Real(cos(ffi_real(args, 0)?)),
-            "tan" => Value::Real(tan(ffi_real(args, 0)?)),
-            "exp" => Value::Real(exp(ffi_real(args, 0)?)),
-            "log" => Value::Real(log(ffi_real(args, 0)?)),
-            "floor" => Value::Real(floor(ffi_real(args, 0)?)),
-            "ceil" => Value::Real(ceil(ffi_real(args, 0)?)),
-            "round" => Value::Real(round(ffi_real(args, 0)?)),
-            "pow" => Value::Real(pow(ffi_real(args, 0)?, ffi_real(args, 1)?)),
-            "fmod" => Value::Real(fmod(ffi_real(args, 0)?, ffi_real(args, 1)?)),
-            "atan2" => Value::Real(atan2(ffi_real(args, 0)?, ffi_real(args, 1)?)),
+            "getenv" => ffi_ret_str(getenv(ffi_cstr(args, 0)?.as_ptr() as *const c_char)),
+            "time" => Value::Int(time(ffi_word(args, 0)? as *mut c_void) as i64),
             _ => {
                 return Err(fault(format!(
                     "FFI: symbol `{symbol}` is not in the interpreter's host table \

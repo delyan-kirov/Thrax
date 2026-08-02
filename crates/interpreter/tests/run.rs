@@ -21,6 +21,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
+    resolved.extern_sigs.extend(checker.extern_sigs());
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
 }
@@ -141,17 +142,23 @@ fn defer_cleanup_runs_when_a_stored_continuation_completes() {
 }
 
 #[test]
-fn c_namespace_file_roundtrip() {
-    // Open for write, put bytes, close; reopen for read, read them back, then
-    // remove the file. "hi" is bytes 104 and 105.
+fn extern_ffi_file_roundtrip() {
+    // The `@extern` FFI host table, exercised directly (the `C` namespace is the
+    // same bindings injected by the driver). Open for write, put bytes, close;
+    // reopen for read, read them back, then remove the file. "hi" is 104 and 105.
     let src = "@mod M\n\
+        $ fopen : Str -> Str -> Int = @extern \"C\" \"fopen\" \"libc\"\n\
+        $ fputs : Str -> Int -> Int = @extern \"C\" \"fputs\" \"libc\"\n\
+        $ fclose : Int -> Int = @extern \"C\" \"fclose\" \"libc\"\n\
+        $ fgetc : Int -> Int = @extern \"C\" \"fgetc\" \"libc\"\n\
+        $ remove : Str -> Int = @extern \"C\" \"remove\" \"libc\"\n\
         $ p : Str = \"/tmp/thrax_core_roundtrip.txt\"\n\
         $ r : Int = \
-          let f = C.fopen p \"wb\" in \
-          C.fputs \"hi\" f ; C.fclose f ; \
-          let g = C.fopen p \"rb\" in \
-          let a = C.fgetc g in let b = C.fgetc g in \
-          C.fclose g ; C.remove p ; a + b";
+          let f = fopen p \"wb\" in \
+          fputs \"hi\" f ; fclose f ; \
+          let g = fopen p \"rb\" in \
+          let a = fgetc g in let b = fgetc g in \
+          fclose g ; remove p ; a + b";
     assert_eq!(run(src, "r"), "209");
 }
 

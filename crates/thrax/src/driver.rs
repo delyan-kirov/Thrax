@@ -66,12 +66,22 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
             }
         }
     }
+    // Auto-inject the `C` namespace (libc + libm as `@extern` bindings),
+    // reachable qualified (`C.sqrt`) with no import, like the prelude.
+    if !index.contains_key("C") {
+        index.insert("C".to_string(), sources.len());
+        sources.push(("C".to_string(), C_SOURCE.to_string()));
+    }
+
     Ok(Loaded {
         sources,
         index,
         root_name,
     })
 }
+
+/// The auto-injected `C` standard-library namespace (see core/C.thx).
+const C_SOURCE: &str = include_str!("../../../core/C.thx");
 
 /// The dependency graph over parsed modules (edges point at imports).
 fn import_graph(
@@ -112,8 +122,22 @@ fn check_all<'a>(
 ) -> Result<CheckOut<'a>, ExitCode> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
-    for i in topological_order(graph) {
+
+    // The auto-injected `C` namespace is checked first (it has no dependencies)
+    // and made available qualified-only to every other module.
+    let c_idx = sources.iter().position(|(n, _)| n == "C");
+    let mut order: Vec<usize> = topological_order(graph);
+    if let Some(c) = c_idx {
+        order.retain(|&i| i != c);
+        order.insert(0, c);
+    }
+    for i in order {
         let mut checker = frontend::Checker::new(ast);
+        if let Some(c) = c_idx {
+            if c != i {
+                checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
+            }
+        }
         for &dep in &graph[i] {
             let dep_checker = checkers[dep].as_ref().expect("dependency checked first");
             checker.import_from(dep_checker);

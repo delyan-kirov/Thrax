@@ -218,7 +218,8 @@ impl<'p> Machine<'p> {
 
     /// Resolve a single canonical name (the C++ `IR::Glob` scheme): a global CAF by
     /// `Module.name`, then a bare fallback (an unqualified reference or the entry),
-    /// a built-in operator, a `C.`/`TARGET.` member, or an effect operation.
+    /// a built-in operator, a `TARGET.` member, or an effect operation. The `C`
+    /// libc namespace resolves as ordinary `@extern` globals (`C.sqrt`, ...).
     fn glob(&self, name: &str) -> Result<PVal<'p>> {
         if let Some(&code) = self.globals.get(name).or_else(|| self.bare.get(name)) {
             return self.force(code);
@@ -229,15 +230,6 @@ impl<'p> Machine<'p> {
                 arity,
                 args: Vec::new(),
             }));
-        }
-        if let Some(suffix) = name.strip_prefix("C.") {
-            if let Some(arity) = clib::c_arity(suffix) {
-                return Ok(mk(Value::Builtin {
-                    name: name.into(),
-                    arity,
-                    args: Vec::new(),
-                }));
-            }
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {
             if let Some(v) = clib::target_value(suffix) {
@@ -771,58 +763,13 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
     Ok(s)
 }
 
-/// The auto-injected `C` libc namespace and `TARGET` host reflection, ported from
-/// the tree-walker so the machine matches it byte-for-byte.
+/// `TARGET` host reflection, ported from the tree-walker so the machine matches
+/// it byte-for-byte. The `C` libc namespace is no longer served here: it flows
+/// through the single `@extern` FFI path (`run_extern`).
 mod clib {
-    use std::cell::{Cell, RefCell};
-    use std::collections::HashMap;
-    use std::fs::{File, OpenOptions};
-    use std::io::{Read, Seek, SeekFrom, Write};
     use std::rc::Rc;
 
-    use utilities::Result;
-
-    use super::data::{fault, PVal, Value};
-
-    thread_local! {
-        static FILES: RefCell<HashMap<i64, File>> = RefCell::new(HashMap::new());
-        static NEXT_FD: Cell<i64> = const { Cell::new(1) };
-    }
-
-    fn as_i64(v: &PVal) -> Result<i64> {
-        match &*v.borrow() {
-            Value::Int(n) => Ok(*n),
-            _ => Err(fault("expected an integer")),
-        }
-    }
-
-    fn as_index(v: &PVal) -> Result<usize> {
-        match &*v.borrow() {
-            Value::Int(n) if *n >= 0 => Ok(*n as usize),
-            _ => Err(fault("expected an integer index")),
-        }
-    }
-
-    fn bytes_of(v: &PVal) -> Result<Rc<Vec<u8>>> {
-        match &*v.borrow() {
-            Value::Str(b) => Ok(b.clone()),
-            _ => Err(fault("expected a byte vector")),
-        }
-    }
-
-    fn str_of(v: &PVal) -> Result<String> {
-        Ok(String::from_utf8_lossy(&bytes_of(v)?).into_owned())
-    }
-
-    /// The arity of a supported `C.<fn>`, or `None`.
-    pub(super) fn c_arity(name: &str) -> Option<usize> {
-        Some(match name {
-            "getenv" | "fclose" | "fgetc" | "ftell" | "remove" | "getchar" | "time" => 1,
-            "fopen" | "fputs" => 2,
-            "fseek" | "write" => 3,
-            _ => return None,
-        })
-    }
+    use super::data::Value;
 
     /// A `TARGET.<field>` reflection constant for the host.
     pub(super) fn target_value<'p>(name: &str) -> Option<Value<'p>> {
@@ -838,104 +785,5 @@ mod clib {
             )),
             _ => return None,
         })
-    }
-
-    pub(super) fn run_c<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
-        let with_file = |id: i64, f: &mut dyn FnMut(&mut File) -> Value<'p>| -> Value<'p> {
-            FILES.with(|files| match files.borrow_mut().get_mut(&id) {
-                Some(file) => f(file),
-                None => Value::Int(-1),
-            })
-        };
-        match name {
-            "C.getenv" => {
-                let val = std::env::var(str_of(&a[0])?).unwrap_or_default();
-                Ok(Value::Str(Rc::new(val.into_bytes())))
-            }
-            "C.fopen" => {
-                let (path, mode) = (str_of(&a[0])?, str_of(&a[1])?);
-                let mut open = OpenOptions::new();
-                match mode.as_bytes().first() {
-                    Some(b'w') => open.write(true).create(true).truncate(true),
-                    Some(b'a') => open.append(true).create(true),
-                    _ => open.read(true),
-                };
-                match open.open(&path) {
-                    Ok(file) => {
-                        let id = NEXT_FD.with(|c| {
-                            let id = c.get();
-                            c.set(id + 1);
-                            id
-                        });
-                        FILES.with(|files| files.borrow_mut().insert(id, file));
-                        Ok(Value::Int(id))
-                    }
-                    Err(_) => Ok(Value::Int(0)),
-                }
-            }
-            "C.fclose" => {
-                let id = as_i64(&a[0])?;
-                let closed = FILES.with(|files| files.borrow_mut().remove(&id).is_some());
-                Ok(Value::Int(if closed { 0 } else { -1 }))
-            }
-            "C.fgetc" => Ok(with_file(as_i64(&a[0])?, &mut |file| {
-                let mut byte = [0u8; 1];
-                match file.read(&mut byte) {
-                    Ok(1) => Value::Int(byte[0] as i64),
-                    _ => Value::Int(-1),
-                }
-            })),
-            "C.fseek" => {
-                let (id, off, whence) = (as_i64(&a[0])?, as_i64(&a[1])?, as_i64(&a[2])?);
-                let pos = match whence {
-                    1 => SeekFrom::Current(off),
-                    2 => SeekFrom::End(off),
-                    _ => SeekFrom::Start(off.max(0) as u64),
-                };
-                Ok(with_file(id, &mut |file| {
-                    Value::Int(if file.seek(pos).is_ok() { 0 } else { -1 })
-                }))
-            }
-            "C.ftell" => Ok(with_file(as_i64(&a[0])?, &mut |file| {
-                Value::Int(file.stream_position().map(|p| p as i64).unwrap_or(-1))
-            })),
-            "C.fputs" => {
-                let data = bytes_of(&a[0])?;
-                Ok(with_file(as_i64(&a[1])?, &mut |file| {
-                    Value::Int(if file.write_all(&data).is_ok() { 0 } else { -1 })
-                }))
-            }
-            "C.remove" => {
-                let ok = std::fs::remove_file(str_of(&a[0])?).is_ok();
-                Ok(Value::Int(if ok { 0 } else { -1 }))
-            }
-            "C.write" => {
-                let (fd, data, len) = (as_i64(&a[0])?, bytes_of(&a[1])?, as_index(&a[2])?);
-                let slice = &data[..len.min(data.len())];
-                let wrote = match fd {
-                    2 => std::io::stderr().write_all(slice),
-                    _ => std::io::stdout().write_all(slice),
-                };
-                Ok(Value::Int(if wrote.is_ok() {
-                    slice.len() as i64
-                } else {
-                    -1
-                }))
-            }
-            "C.getchar" => {
-                let mut byte = [0u8; 1];
-                match std::io::stdin().read(&mut byte) {
-                    Ok(1) => Ok(Value::Int(byte[0] as i64)),
-                    _ => Ok(Value::Int(-1)),
-                }
-            }
-            "C.time" => Ok(Value::Int(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-            )),
-            _ => Err(fault(format!("unsupported C function `{name}`"))),
-        }
     }
 }

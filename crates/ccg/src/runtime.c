@@ -664,8 +664,6 @@ static Value *concat(Value *x, Value *y) {
   thrax_fault("`++` on unsupported operands");
 }
 
-static Value *run_c(const char *name, Value **a, size_t n);
-
 static Value *run_builtin(const char *name, Value **a, size_t n) {
   (void)n;
   if (strcmp(name, "+") == 0 || strcmp(name, "-") == 0 ||
@@ -772,105 +770,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return v;
   }
 
-  if (strncmp(name, "C.", 2) == 0) return run_c(name, a, n);
   thrax_fault("unknown built-in");
-}
-
-/* -- the auto-injected `C` libc namespace -------------------------------- */
-
-#define MAX_FILES 256
-static FILE *thrax_files[MAX_FILES];
-static int64_t thrax_next_fd = 1;
-
-/* Uncounted NUL-terminated copy for a C-string argument; the caller frees it. */
-static char *cstr_of(Value *v) {
-  Value *s = as_str(v);
-  char *out = xmalloc(s->u.str.len + 1);
-  memcpy(out, s->u.str.data, s->u.str.len);
-  out[s->u.str.len] = '\0';
-  return out;
-}
-
-static Value *run_c(const char *name, Value **a, size_t n) {
-  (void)n;
-  const char *fn = name + 2; /* skip "C." */
-  if (strcmp(fn, "getenv") == 0) {
-    char *key = cstr_of(a[0]);
-    const char *val = getenv(key);
-    if (!val) val = "";
-    free(key);
-    return THxRT_str(val, strlen(val));
-  }
-  if (strcmp(fn, "fopen") == 0) {
-    char *path = cstr_of(a[0]);
-    char *mode = cstr_of(a[1]);
-    FILE *f = fopen(path, mode);
-    free(path);
-    free(mode);
-    if (!f) return THxRT_int(0);
-    if (thrax_next_fd >= MAX_FILES) {
-      fclose(f);
-      return THxRT_int(0);
-    }
-    int64_t id = thrax_next_fd++;
-    thrax_files[id] = f;
-    return THxRT_int(id);
-  }
-  if (strcmp(fn, "fclose") == 0) {
-    int64_t id = as_i64(a[0]);
-    if (id > 0 && id < MAX_FILES && thrax_files[id]) {
-      fclose(thrax_files[id]);
-      thrax_files[id] = NULL;
-      return THxRT_int(0);
-    }
-    return THxRT_int(-1);
-  }
-  if (strcmp(fn, "fgetc") == 0) {
-    int64_t id = as_i64(a[0]);
-    if (id <= 0 || id >= MAX_FILES || !thrax_files[id]) return THxRT_int(-1);
-    int c = fgetc(thrax_files[id]);
-    return THxRT_int(c == EOF ? -1 : c);
-  }
-  if (strcmp(fn, "fseek") == 0) {
-    int64_t id = as_i64(a[0]), off = as_i64(a[1]), whence = as_i64(a[2]);
-    if (id <= 0 || id >= MAX_FILES || !thrax_files[id]) return THxRT_int(-1);
-    int w = whence == 1 ? SEEK_CUR : (whence == 2 ? SEEK_END : SEEK_SET);
-    return THxRT_int(fseek(thrax_files[id], (long)off, w) == 0 ? 0 : -1);
-  }
-  if (strcmp(fn, "ftell") == 0) {
-    int64_t id = as_i64(a[0]);
-    if (id <= 0 || id >= MAX_FILES || !thrax_files[id]) return THxRT_int(-1);
-    long p = ftell(thrax_files[id]);
-    return THxRT_int(p < 0 ? -1 : (int64_t)p);
-  }
-  if (strcmp(fn, "fputs") == 0) {
-    Value *s = as_str(a[0]);
-    int64_t id = as_i64(a[1]);
-    if (id <= 0 || id >= MAX_FILES || !thrax_files[id]) return THxRT_int(-1);
-    size_t wrote = fwrite(s->u.str.data, 1, s->u.str.len, thrax_files[id]);
-    return THxRT_int(wrote == s->u.str.len ? 0 : -1);
-  }
-  if (strcmp(fn, "remove") == 0) {
-    char *path = cstr_of(a[0]);
-    int rc = remove(path);
-    free(path);
-    return THxRT_int(rc == 0 ? 0 : -1);
-  }
-  if (strcmp(fn, "write") == 0) {
-    int64_t fd = as_i64(a[0]);
-    Value *s = as_str(a[1]);
-    size_t len = as_index(a[2]);
-    if (len > s->u.str.len) len = s->u.str.len;
-    FILE *out = fd == 2 ? stderr : stdout;
-    size_t wrote = fwrite(s->u.str.data, 1, len, out);
-    return THxRT_int(wrote == len ? (int64_t)len : -1);
-  }
-  if (strcmp(fn, "getchar") == 0) {
-    int c = getchar();
-    return THxRT_int(c == EOF ? -1 : c);
-  }
-  if (strcmp(fn, "time") == 0) return THxRT_int((int64_t)time(NULL));
-  thrax_fault("unsupported C function");
 }
 
 /* -- TARGET reflection --------------------------------------------------- */

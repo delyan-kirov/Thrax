@@ -249,10 +249,13 @@ pub fn emit_extern_table(externs: &[ExternSite]) -> String {
     }
     for (n, e) in externs.iter().enumerate() {
         let (ret_ty, wrap) = c_ret(&e.ret_type);
+        // A `{}` parameter carries no C argument (a `void`-taking function like
+        // `getchar`); it stays in the Thrax arity but is dropped from the call.
         let params: Vec<(String, String)> = e
             .arg_types
             .iter()
             .enumerate()
+            .filter(|(_, t)| !matches!(cabi(t), Cabi::Unit))
             .map(|(i, t)| {
                 let (ty, expr) = c_param(t, i);
                 (ty.to_string(), expr)
@@ -312,16 +315,6 @@ fn builtin_arity(name: &str) -> Option<usize> {
         _ => return None,
     };
     Some(n)
-}
-
-/// The arity of a supported `C.<fn>`, or `None`.
-fn c_arity(name: &str) -> Option<usize> {
-    Some(match name {
-        "getenv" | "fclose" | "fgetc" | "ftell" | "remove" | "getchar" | "time" => 1,
-        "fopen" | "fputs" => 2,
-        "fseek" | "write" => 3,
-        _ => return None,
-    })
 }
 
 impl<'p> Emitter<'p> {
@@ -396,18 +389,14 @@ impl<'p> Emitter<'p> {
 
     /// Resolve a `Glob` atom's single canonical name to its C expression,
     /// mirroring the machine's `glob` order: a global CAF (canonical or bare), a
-    /// built-in, a `C.`/`TARGET.` member, then an effect operation.
+    /// built-in, a `TARGET.` member, then an effect operation. The `C` libc
+    /// namespace resolves as ordinary `@extern` globals.
     fn glob_atom(&self, name: &str) -> String {
         if self.globals.contains(name) || self.bare.contains(name) {
             return format!("THxRT_glob({})", cstr(name.as_bytes()));
         }
         if let Some(arity) = builtin_arity(name) {
             return format!("THxRT_builtin({}, {arity})", cstr(name.as_bytes()));
-        }
-        if let Some(suffix) = name.strip_prefix("C.") {
-            if let Some(arity) = c_arity(suffix) {
-                return format!("THxRT_builtin({}, {arity})", cstr(name.as_bytes()));
-            }
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {
             return format!("THxRT_target({})", cstr(suffix.as_bytes()));

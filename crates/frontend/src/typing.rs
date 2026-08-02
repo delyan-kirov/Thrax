@@ -348,6 +348,28 @@ impl<'a> Checker<'a> {
     }
 
     /// Import another module's public exports into this checker.
+    /// Import another module's exports as QUALIFIED-only (`Module.name`), without
+    /// adding them to the unqualified namespace. Used for the auto-injected `C`
+    /// namespace, which is reachable as `C.foo` everywhere but must not pollute
+    /// bare names (a program's own `sqrt` is not libm's).
+    pub fn import_qualified(&mut self, other: &Checker<'a>) {
+        let module = other.module_name;
+        for (name, cands) in &other.own_overloads {
+            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c)).collect();
+            self.qualified
+                .entry(module)
+                .or_default()
+                .insert(name, qualified);
+        }
+        for (name, scheme) in &other.own_values {
+            let qualified = self.import_scheme(scheme);
+            self.qualified
+                .entry(module)
+                .or_default()
+                .insert(name, vec![qualified]);
+        }
+    }
+
     pub fn import_from(&mut self, other: &Checker<'a>) {
         for &name in &other.own_type_names {
             if let Some(s) = other.structs.get(name) {
