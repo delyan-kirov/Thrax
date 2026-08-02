@@ -216,12 +216,16 @@ impl<'p> Machine<'p> {
         Ok(v)
     }
 
-    /// Resolve a single canonical name (the C++ `IR::Glob` scheme): a global CAF by
-    /// `Module.name`, then a bare fallback (an unqualified reference or the entry),
-    /// a built-in operator, a `TARGET.` member, or an effect operation. The `C`
-    /// libc namespace resolves as ordinary `@extern` globals (`C.sqrt`, ...).
+    /// Resolve a single canonical name (the C++ `IR::Glob` scheme). The order
+    /// matters: an EXACT canonical global (`Module.name`, the form the checker
+    /// mangles every resolved reference to) wins first, then a built-in, then a
+    /// `TARGET.` member, then an effect operation, and only LAST the unqualified
+    /// fallback. Effect ops precede that fallback so an unrelated imported global
+    /// of the same name (whose last segment aliases into `bare`) cannot shadow a
+    /// same-named operation. The `C` libc namespace resolves as exact `@extern`
+    /// globals (`C.sqrt`, ...).
     fn glob(&self, name: &str) -> Result<PVal<'p>> {
-        if let Some(&code) = self.globals.get(name).or_else(|| self.bare.get(name)) {
+        if let Some(&code) = self.globals.get(name) {
             return self.force(code);
         }
         if let Some(arity) = builtin_arity(name) {
@@ -260,6 +264,11 @@ impl<'p> Machine<'p> {
                 effect,
                 op: name.to_string(),
             }));
+        }
+        // The unqualified fallback: a reference the checker left bare (the entry
+        // point, or a not-module-resolved name), matched by last name-segment.
+        if let Some(&code) = self.bare.get(name) {
+            return self.force(code);
         }
         Err(fault(format!("unbound name `{name}`")))
     }

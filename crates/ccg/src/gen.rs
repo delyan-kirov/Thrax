@@ -388,11 +388,13 @@ impl<'p> Emitter<'p> {
     }
 
     /// Resolve a `Glob` atom's single canonical name to its C expression,
-    /// mirroring the machine's `glob` order: a global CAF (canonical or bare), a
-    /// built-in, a `TARGET.` member, then an effect operation. The `C` libc
-    /// namespace resolves as ordinary `@extern` globals.
+    /// mirroring the machine's `glob` order: an EXACT canonical global first, then
+    /// a built-in, a `TARGET.` member, an effect operation, and only LAST the
+    /// unqualified fallback. Ops precede that fallback so an unrelated imported
+    /// global whose last segment aliases into `bare` cannot shadow a same-named
+    /// operation. The `C` libc namespace resolves as exact `@extern` globals.
     fn glob_atom(&self, name: &str) -> String {
-        if self.globals.contains(name) || self.bare.contains(name) {
+        if self.globals.contains(name) {
             return format!("THxRT_glob({})", cstr(name.as_bytes()));
         }
         if let Some(arity) = builtin_arity(name) {
@@ -408,11 +410,21 @@ impl<'p> Emitter<'p> {
                 return format!("THxK_op({}, {})", cstr(eff.as_bytes()), cstr(op.as_bytes()));
             }
         }
-        let eff = match self.ops_by_name.get(name) {
-            Some(effs) if effs.len() == 1 => cstr(effs[0].as_bytes()),
-            _ => "NULL".to_string(),
-        };
-        format!("THxK_op({eff}, {})", cstr(name.as_bytes()))
+        if let Some(effs) = self.ops_by_name.get(name) {
+            let eff = if effs.len() == 1 {
+                cstr(effs[0].as_bytes())
+            } else {
+                "NULL".to_string()
+            };
+            return format!("THxK_op({eff}, {})", cstr(name.as_bytes()));
+        }
+        // The unqualified fallback: a reference the codegen left bare (the entry
+        // point, or a name not resolved to a module), matched by last segment.
+        if self.bare.contains(name) {
+            return format!("THxRT_glob({})", cstr(name.as_bytes()));
+        }
+        // An unknown bare name: an ambient effect operation, resolved by a handler.
+        format!("THxK_op(NULL, {})", cstr(name.as_bytes()))
     }
 
     /// Each atom is a single, side-effect-light C expression.

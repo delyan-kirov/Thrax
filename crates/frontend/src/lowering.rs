@@ -34,12 +34,17 @@ use crate::lowering::data::{
 
 /// The type declarations a lowering needs: struct field order (to label
 /// positional literals and patterns) and each variant's union and payload field
-/// names. Gathered across every module (as owned strings) so a program can
-/// construct a type declared in an imported module.
+/// names. Two modules may declare the same-named type (`Pair`, `Maybe`, ...), so
+/// declarations are grouped BY MODULE and every lookup resolves against the
+/// lowering module's own types first, then the modules it imports (`$ with`),
+/// with a global fallback. This mirrors the C++ module-resolution layer, which
+/// namespaces every type to its owning module.
 #[derive(Default)]
 pub struct Decls {
-    struct_fields: HashMap<String, Vec<String>>,
-    variants: HashMap<String, VariantDecl>,
+    /// module name -> (struct name -> field names, in declaration order).
+    structs: HashMap<String, HashMap<String, Vec<String>>>,
+    /// module name -> (variant tag -> its union name and payload field names).
+    unions: HashMap<String, HashMap<String, VariantDecl>>,
 }
 
 struct VariantDecl {
@@ -58,6 +63,7 @@ impl Decls {
     }
 
     fn add(&mut self, ast: &Ast, program: &AstProgram) {
+        let module = ast.text(program.module).to_string();
         for item in program.items.iter() {
             match item {
                 Item::Struct { name, fields } => {
@@ -65,7 +71,9 @@ impl Decls {
                         .iter()
                         .map(|f| ast.text(f.name).to_string())
                         .collect();
-                    self.struct_fields
+                    self.structs
+                        .entry(module.clone())
+                        .or_default()
                         .insert(ast.text(*name).to_string(), names);
                 }
                 Item::Union { name, variants } => {
@@ -78,7 +86,7 @@ impl Decls {
                                 .map(|f| f.name.map(|n| ast.text(n).to_string()))
                                 .collect(),
                         };
-                        self.variants.insert(
+                        self.unions.entry(module.clone()).or_default().insert(
                             ast.text(v.tag).to_string(),
                             VariantDecl {
                                 union: ast.text(*name).to_string(),
@@ -92,31 +100,64 @@ impl Decls {
         }
     }
 
+    /// Resolve `pick` against `module`'s own declarations, then each imported
+    /// module's, then any module (a last-resort global fallback).
+    fn resolve<'d, T>(
+        &'d self,
+        table: &'d HashMap<String, HashMap<String, T>>,
+        module: &str,
+        imports: &[String],
+        key: &str,
+    ) -> Option<&'d T> {
+        table
+            .get(module)
+            .and_then(|m| m.get(key))
+            .or_else(|| imports.iter().find_map(|i| table.get(i).and_then(|m| m.get(key))))
+            .or_else(|| table.values().find_map(|m| m.get(key)))
+    }
+
     /// The payload arity and (union, field names) for a variant tag. `List`'s
     /// `Cons`/`Nil` are prelude, so they are answered directly.
-    fn variant(&self, tag: &str) -> Option<(&str, &[Option<String>])> {
+    fn variant(
+        &self,
+        module: &str,
+        imports: &[String],
+        tag: &str,
+    ) -> Option<(&str, &[Option<String>])> {
         match tag {
             "Cons" => Some(("List", CONS_FIELDS)),
             "Nil" => Some(("List", &[])),
             _ => self
-                .variants
-                .get(tag)
+                .resolve(&self.unions, module, imports, tag)
                 .map(|v| (v.union.as_str(), v.fields.as_slice())),
         }
     }
 
     /// A struct's field names in declaration order, if `name` is a known struct.
-    fn fields_of(&self, name: &str) -> Option<&[String]> {
-        self.struct_fields.get(name).map(Vec::as_slice)
+    fn fields_of(&self, module: &str, imports: &[String], name: &str) -> Option<&[String]> {
+        self.resolve(&self.structs, module, imports, name)
+            .map(Vec::as_slice)
     }
 
-    /// The struct whose exact set of field names matches an all-named literal.
-    fn struct_by_fields(&self, names: &[&str]) -> Option<&str> {
-        self.struct_fields.iter().find_map(|(sname, fields)| {
-            let same =
-                fields.len() == names.len() && names.iter().all(|n| fields.iter().any(|f| f == n));
-            same.then_some(sname.as_str())
-        })
+    /// The struct whose exact set of field names matches an all-named literal,
+    /// preferring the lowering module's own then imported declarations.
+    fn struct_by_fields(&self, module: &str, imports: &[String], names: &[&str]) -> Option<&str> {
+        fn hit<'d>(structs: &'d HashMap<String, Vec<String>>, names: &[&str]) -> Option<&'d str> {
+            structs.iter().find_map(|(sname, fields)| {
+                let same = fields.len() == names.len()
+                    && names.iter().all(|n| fields.iter().any(|f| f == n));
+                same.then_some(sname.as_str())
+            })
+        }
+        self.structs
+            .get(module)
+            .and_then(|s| hit(s, names))
+            .or_else(|| {
+                imports
+                    .iter()
+                    .find_map(|i| self.structs.get(i).and_then(|s| hit(s, names)))
+            })
+            .or_else(|| self.structs.values().find_map(|s| hit(s, names)))
     }
 }
 
@@ -154,10 +195,26 @@ pub fn lower_program(
     decls: &Decls,
     resolved: &Resolved,
 ) -> Program {
+    let imports = program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Import { module, .. } => Some(
+                module
+                    .iter()
+                    .map(|&p| ast.text(p))
+                    .collect::<Vec<_>>()
+                    .join("."),
+            ),
+            _ => None,
+        })
+        .collect();
     let mut lw = Lowerer {
         ast,
         decls,
         resolved,
+        module: ast.text(program.module).to_string(),
+        imports,
         fresh: 0,
     };
     let mut effects = Vec::new();
@@ -191,6 +248,10 @@ struct Lowerer<'a> {
     ast: &'a Ast,
     decls: &'a Decls,
     resolved: &'a Resolved,
+    /// This lowering's own `@mod` name and the modules it imports (`$ with`),
+    /// used to resolve a same-named type to the right module's declaration.
+    module: String,
+    imports: Vec<String>,
     fresh: u32,
 }
 
@@ -271,7 +332,7 @@ impl<'a> Lowerer<'a> {
             if f.with {
                 let names: Vec<String> = self
                     .ty_head_con(f.ty)
-                    .and_then(|s| self.decls.fields_of(s))
+                    .and_then(|s| self.decls.fields_of(&self.module, &self.imports, s))
                     .map(<[String]>::to_vec)
                     .unwrap_or_default();
                 let subject = Term::var(self.text(f.name));
@@ -624,18 +685,25 @@ impl<'a> Lowerer<'a> {
             .collect();
 
         let field_names: Option<Vec<String>> = ty
-            .and_then(|n| self.decls.struct_fields.get(n).cloned())
+            .and_then(|n| self.decls.fields_of(&self.module, &self.imports, n))
+            .map(<[String]>::to_vec)
             .or_else(|| {
                 named.as_ref().and_then(|ns| {
                     self.decls
-                        .struct_by_fields(ns)
+                        .struct_by_fields(&self.module, &self.imports, ns)
                         .map(|_| ns.iter().map(|s| s.to_string()).collect())
                 })
             });
 
         let name = ty
             .map(str::to_string)
-            .or_else(|| named.and_then(|ns| self.decls.struct_by_fields(&ns).map(str::to_string)))
+            .or_else(|| {
+                named.and_then(|ns| {
+                    self.decls
+                        .struct_by_fields(&self.module, &self.imports, &ns)
+                        .map(str::to_string)
+                })
+            })
             .unwrap_or_default();
 
         let mut out = Vec::with_capacity(fields.len());
@@ -663,7 +731,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn variant(&mut self, ty: Option<&str>, tag: &str, fields: &[FieldInit]) -> Term {
-        let (union, names) = match self.decls.variant(tag) {
+        let (union, names) = match self.decls.variant(&self.module, &self.imports, tag) {
             Some((u, ns)) => (u.to_string(), ns.to_vec()),
             None => (ty.unwrap_or_default().to_string(), Vec::new()),
         };
@@ -743,7 +811,11 @@ impl<'a> Lowerer<'a> {
                 acc
             }
             Pattern::Struct { ty, fields } => {
-                let names = self.decls.struct_fields.get(self.text(*ty)).cloned();
+                let sname = self.text(*ty);
+                let names = self
+                    .decls
+                    .fields_of(&self.module, &self.imports, sname)
+                    .map(<[String]>::to_vec);
                 let fields: Vec<FieldPat> = fields.to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, names.as_deref()),
@@ -756,10 +828,10 @@ impl<'a> Lowerer<'a> {
                 let ty = ty.map(|t| self.text(t));
                 let names = self
                     .decls
-                    .variant(&tag)
+                    .variant(&self.module, &self.imports, &tag)
                     .map(|(_, ns)| ns.to_vec())
                     .or_else(|| {
-                        ty.and_then(|t| self.decls.struct_fields.get(t))
+                        ty.and_then(|t| self.decls.fields_of(&self.module, &self.imports, t))
                             .map(|ns| ns.iter().cloned().map(Some).collect())
                     });
                 let fields: Vec<FieldPat> = fields.to_vec();

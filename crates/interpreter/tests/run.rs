@@ -99,6 +99,38 @@ fn cross_module_overload_dispatches_by_type() {
 }
 
 #[test]
+fn imported_global_does_not_shadow_a_same_named_effect_op() {
+    // Module A exports a plain global `get`; module B has a `State` effect whose
+    // operation is also `get`. In the combined program B's bare `get` must resolve
+    // to the operation, not A's imported global (which aliases into the bare-name
+    // fallback). Regression for the cross-module glob-resolution gap.
+    let a = "@mod A\n$ get : Int -> Int = \\x = x + 1000";
+    let b = "@mod B\n\
+        $ State : @effect = get : {} -> Int, put : Int -> {},\n\
+        $ getit : {} -> <State> Int = \\u = get {}\n\
+        $ run : Int = do getit {} ctl k is State.get u = k 42 is State.put v = k {} else r = r";
+    let root = "@mod M\n$ with A\n$ with B\n$ r : Int = B.run";
+    assert_eq!(run_modules(&[a, b, root], "r"), "42");
+}
+
+#[test]
+fn same_named_struct_types_in_two_modules_do_not_collide() {
+    // Two modules each declare a `Pair` struct with DIFFERENT fields. A positional
+    // struct pattern in B must be lowered against B's own layout, not A's (whose
+    // fields differ), which otherwise faults with "no field ...". Regression for
+    // the shared-`Decls` type collision.
+    let a = "@mod A\n\
+        $ Pair : @struct = fst: Int, snd: Int\n\
+        $ afst : Int = Pair.{ .fst = 7, .snd = 8 }.fst";
+    let b = "@mod B\n\
+        $ Pair : @struct = a: Int, b: Int\n\
+        $ first : Pair -> Int = \\p = when p is Pair.{ x, y } then x\n\
+        $ bfst : Int = first Pair.{ .a = 3, .b = 4 }";
+    let root = "@mod M\n$ with A\n$ with B\n$ r : Int = B.bfst";
+    assert_eq!(run_modules(&[a, b, root], "r"), "3");
+}
+
+#[test]
 fn defer_runs_cleanup_on_completion_abort_and_nesting() {
     // A `Y` handler that sums every yielded value; the deferred cleanups perform
     // `Y.yield`, so their effects are observable in the total.

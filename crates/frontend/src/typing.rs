@@ -1534,11 +1534,23 @@ impl<'a> Checker<'a> {
                 continue;
             }
             if let Some(p) = self.pending.first() {
+                let mut mods: Vec<&str> = p.candidates.iter().filter_map(|c| c.module).collect();
+                mods.sort_unstable();
+                mods.dedup();
+                let hint = match mods.as_slice() {
+                    [a, b, ..] => format!(
+                        "; several imported modules define `{name}` with a matching type. \
+                         Qualify just this reference to pick one, e.g. `{a}.{name}` or `{b}.{name}` \
+                         (the rest of the module keeps using the bare name)",
+                        name = p.name
+                    ),
+                    _ => String::new(),
+                };
                 return Err(Diagnostic::error(
                     Code::AmbiguousName,
                     Span::at(0),
                     0,
-                    format!("ambiguous overloaded use of `{}`", p.name),
+                    format!("ambiguous overloaded use of `{}`{hint}", p.name),
                 ));
             }
             return Ok(());
