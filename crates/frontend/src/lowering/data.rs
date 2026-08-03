@@ -112,13 +112,16 @@ pub enum Term {
         cleanup: Arc<Term>,
         body: Arc<Term>,
     },
-    /// A foreign C function bound by `@extern "C" "symbol" "lib"`. A curried,
+    /// A foreign function bound by `@extern "abi" "symbol" "lib"`. A curried,
     /// first-class value (like a builtin): applying it accumulates arguments and,
-    /// once saturated to `arg_types.len()`, marshals them across the C ABI and
-    /// calls `symbol`. `arg_types`/`ret_type` are the marshalling type names the
+    /// once saturated to `arg_types.len()`, marshals them across the seam and
+    /// calls `symbol`. `abi` selects the seam: `"C"` is a C library symbol,
+    /// `"wasm"` is a host import supplied by the embedder (the browser
+    /// playground). `arg_types`/`ret_type` are the marshalling type names the
     /// checker recovered from the declared signature (`Str`/`Ptr`/`Int`/`Real`/
     /// `{}`/sized), driving how each slot crosses the seam.
     Extern {
+        abi: String,
         symbol: String,
         lib: String,
         arg_types: Arc<[String]>,

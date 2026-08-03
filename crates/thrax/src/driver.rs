@@ -250,14 +250,68 @@ pub fn cmd_run(path: &str) -> ExitCode {
     }
 }
 
-/// Lower, then emit a standalone C program for the module to stdout.
-pub fn cmd_emit_c(path: &str) -> ExitCode {
+/// Lower, then emit a standalone C program for the module to stdout, compiled
+/// for `target` (default: the host).
+pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
     let (lowered, entry) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    print!("{}", ccg::emit(&lowered, &entry));
+    print!("{}", ccg::emit(&lowered, &entry, target));
     ExitCode::SUCCESS
+}
+
+/// Lower, emit C for `target`, then compile and link it with the target's
+/// toolchain (`cc` natively, `emcc` for wasm). Writes `<stem>.c` and the
+/// executable next to the source; prints the path built.
+pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
+    let (lowered, entry) = match lower_all(path) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    let emitted = ccg::emit_program(&lowered, &entry, target);
+
+    let tc = utilities::toolchain(target);
+    if tc.cc.is_empty() {
+        eprintln!("thrax: {}", tc.hint);
+        return ExitCode::FAILURE;
+    }
+
+    let src = Path::new(path);
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+    let c_path = dir.join(format!("{stem}.c"));
+    let out_path = dir.join(format!("{stem}{}", tc.exe_suffix));
+
+    if let Err(e) = std::fs::write(&c_path, &emitted.source) {
+        eprintln!("thrax: cannot write {}: {e}", c_path.display());
+        return ExitCode::FAILURE;
+    }
+
+    let mut cmd = std::process::Command::new(&tc.cc);
+    cmd.args(&tc.cflags)
+        .arg(&c_path)
+        .arg("-o")
+        .arg(&out_path);
+    for lib in &emitted.libraries {
+        if let Some(flag) = target.link_flag(lib) {
+            cmd.arg(flag);
+        }
+    }
+    match cmd.status() {
+        Ok(status) if status.success() => {
+            println!("built {}", out_path.display());
+            ExitCode::SUCCESS
+        }
+        Ok(status) => {
+            eprintln!("thrax: {} failed ({status})", tc.cc);
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("thrax: cannot run {} ({e}); {}", tc.cc, tc.hint);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {

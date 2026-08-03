@@ -1094,9 +1094,18 @@ impl<'a> Checker<'a> {
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
                 let op_ty = self.eng.instantiate(&scheme);
                 let result = self.eng.fresh();
-                let want = Type::arrow(tl, Type::arrow(tr, result.clone()));
+                // The operator's result arrow may carry a latent effect: `<|` and
+                // `|>` pass one through from their function argument (`f <| x` is a
+                // call to `f`). Force it into the ambient the way a plain
+                // application would. For every other operator this row is empty and
+                // the subrow is a no-op.
+                let eff = self.eng.fresh();
+                let want = Type::arrow(tl, Type::arrow_eff(tr, result.clone(), eff.clone()));
                 self.eng
                     .unify(&op_ty, &want, &format!("in operator `{op}`"))?;
+                let amb = self.ambient.clone();
+                self.eng
+                    .subrow(&eff, &amb, &format!("in operator `{op}`"))?;
                 Ok(result)
             }
 
@@ -1988,18 +1997,16 @@ impl<'a> Checker<'a> {
         {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
-            self.bind(
-                "|>",
-                Type::arrow(a.clone(), Type::arrow(Type::arrow(a, b.clone()), b)),
-            );
+            let e = self.eng.fresh_generic();
+            let f = Type::arrow_eff(a.clone(), b.clone(), e.clone());
+            self.bind("|>", Type::arrow(a, Type::arrow_eff(f, b, e)));
         }
         {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
-            self.bind(
-                "<|",
-                Type::arrow(Type::arrow(a.clone(), b.clone()), Type::arrow(a, b)),
-            );
+            let e = self.eng.fresh_generic();
+            let f = Type::arrow_eff(a, b, e);
+            self.bind("<|", Type::arrow(f.clone(), f));
         }
     }
 }

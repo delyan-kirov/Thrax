@@ -33,6 +33,7 @@ enum Sink {
 /// its wrapper in the generated `THxRT_extern_table`.
 #[derive(Clone)]
 pub struct ExternSite {
+    pub abi: String,
     pub symbol: String,
     pub lib: String,
     pub arg_types: Vec<String>,
@@ -59,12 +60,118 @@ pub struct Emitter<'p> {
     blocks: Vec<String>,
     /// Code index -> its entry block id.
     code_entry: Vec<usize>,
+    /// Codes reachable from the entry global; unreachable codes are emitted as
+    /// trap stubs and their `@extern` sites are not collected.
+    reachable: HashSet<usize>,
     tmp: usize,
 }
 
 /// The dedup key for an extern site.
-fn extern_key(symbol: &str, lib: &str, arg_types: &[String], ret_type: &str) -> String {
-    format!("{symbol}\x1f{lib}\x1f{}\x1f{ret_type}", arg_types.join(","))
+fn extern_key(abi: &str, symbol: &str, lib: &str, arg_types: &[String], ret_type: &str) -> String {
+    format!("{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}", arg_types.join(","))
+}
+
+/// Visit every [`Atom`] occurring in `e` (including those captured inside a
+/// nested [`Atom::Clos`]).
+fn for_each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
+    match e {
+        Expr::Ret(a) | Expr::Field { rec: a, .. } => visit_atom(a, f),
+        Expr::App { fun, arg, .. } => {
+            visit_atom(fun, f);
+            visit_atom(arg, f);
+        }
+        Expr::MkStruct { base, fields, .. } => {
+            if let Some(b) = base {
+                visit_atom(b, f);
+            }
+            for (_, v) in fields {
+                visit_atom(v, f);
+            }
+        }
+        Expr::MkVariant { fields, .. } => {
+            for v in fields {
+                visit_atom(v, f);
+            }
+        }
+        Expr::MkTuple(items) => {
+            for v in items {
+                visit_atom(v, f);
+            }
+        }
+        Expr::Fault(_) => {}
+        Expr::Let { rhs, body, .. } => {
+            for_each_atom(rhs, f);
+            for_each_atom(body, f);
+        }
+        Expr::Case { scrut, alts, default } => {
+            visit_atom(scrut, f);
+            for al in alts {
+                for_each_atom(&al.body, f);
+            }
+            for_each_atom(default, f);
+        }
+        Expr::Handle { body, clauses, els } => {
+            for_each_atom(body, f);
+            for c in clauses {
+                visit_atom(&c.fun, f);
+            }
+            visit_atom(els, f);
+        }
+        Expr::Defer { cleanup, body } => {
+            visit_atom(cleanup, f);
+            for_each_atom(body, f);
+        }
+    }
+}
+
+fn visit_atom(a: &Atom, f: &mut impl FnMut(&Atom)) {
+    f(a);
+    if let Atom::Clos { captures, .. } = a {
+        for c in captures {
+            visit_atom(c, f);
+        }
+    }
+}
+
+/// The codes reachable from the entry global, resolving a `Glob` reference the
+/// way the runtime does (exact canonical global, else the bare last-segment
+/// fallback; builtins/`TARGET`/operations are not codes) and following each
+/// `Clos`'s lifted code. Unreachable codes (e.g. the auto-injected `C` libc
+/// bindings a program never calls) are pruned so their `@extern` wrappers are
+/// not emitted; on a strict-signature target like wasm those redeclarations
+/// would otherwise clash with the real libc.
+pub fn reachable_codes(prog: &Program, entry: &str) -> HashSet<usize> {
+    let mut canon: HashMap<&str, usize> = HashMap::new();
+    let mut bare: HashMap<&str, usize> = HashMap::new();
+    for (name, code) in &prog.globals {
+        canon.entry(name.as_str()).or_insert(*code);
+        let last = name.rsplit('.').next().unwrap_or(name);
+        bare.entry(last).or_insert(*code);
+    }
+    let resolve = |name: &str| -> Option<usize> {
+        canon.get(name).copied().or_else(|| {
+            let last = name.rsplit('.').next().unwrap_or(name);
+            bare.get(last).copied()
+        })
+    };
+
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut work: Vec<usize> = resolve(entry).into_iter().collect();
+    while let Some(c) = work.pop() {
+        if !seen.insert(c) {
+            continue;
+        }
+        for_each_atom(&prog.codes[c].body, &mut |a| match a {
+            Atom::Glob { name } => {
+                if let Some(cc) = resolve(name) {
+                    work.push(cc);
+                }
+            }
+            Atom::Clos { code, .. } => work.push(*code),
+            _ => {}
+        });
+    }
+    seen
 }
 
 /// Register any `Atom::Extern` reachable in `e` into the table (deduplicated).
@@ -117,14 +224,16 @@ fn collect_externs(
 fn collect_extern_atom(a: &Atom, externs: &mut Vec<ExternSite>, idx: &mut HashMap<String, usize>) {
     match a {
         Atom::Extern {
+            abi,
             symbol,
             lib,
             arg_types,
             ret_type,
         } => {
-            let key = extern_key(symbol, lib, arg_types, ret_type);
+            let key = extern_key(abi, symbol, lib, arg_types, ret_type);
             idx.entry(key).or_insert_with(|| {
                 externs.push(ExternSite {
+                    abi: abi.clone(),
                     symbol: symbol.clone(),
                     lib: lib.clone(),
                     arg_types: arg_types.clone(),
@@ -239,7 +348,11 @@ fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
 pub fn emit_extern_table(externs: &[ExternSite]) -> String {
     let mut out = String::from("\n/* -- foreign functions (@extern) -- */\n#include <stdint.h>\n");
     let libs: Vec<&str> = {
-        let mut ls: Vec<&str> = externs.iter().map(|e| e.lib.as_str()).collect();
+        let mut ls: Vec<&str> = externs
+            .iter()
+            .filter(|e| e.abi != "WASM")
+            .map(|e| e.lib.as_str())
+            .collect();
         ls.sort_unstable();
         ls.dedup();
         ls
@@ -248,6 +361,18 @@ pub fn emit_extern_table(externs: &[ExternSite]) -> String {
         out.push_str(&format!("/* link against: {} */\n", libs.join(", ")));
     }
     for (n, e) in externs.iter().enumerate() {
+        // A `"WASM"` extern is a host import from the wasm embedder; standalone C
+        // has no such host, so its wrapper faults if ever called. (In the browser
+        // playground this program is interpreted, not compiled to C.)
+        if e.abi == "WASM" {
+            out.push_str(&format!(
+                "static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n  \
+                 thrax_fault({});\n}}\n",
+                cstr(format!("@extern \"WASM\" host import `{}` unavailable in native C", e.symbol)
+                    .as_bytes())
+            ));
+            continue;
+        }
         let (ret_ty, wrap) = c_ret(&e.ret_type);
         // A `{}` parameter carries no C argument (a `void`-taking function like
         // `getchar`); it stays in the Thrax arity but is dropped from the call.
@@ -318,7 +443,7 @@ fn builtin_arity(name: &str) -> Option<usize> {
 }
 
 impl<'p> Emitter<'p> {
-    pub fn new(prog: &'p Program) -> Emitter<'p> {
+    pub fn new(prog: &'p Program, reachable: HashSet<usize>) -> Emitter<'p> {
         let globals: HashSet<&str> = prog.globals.iter().map(|(n, _)| n.as_str()).collect();
         let bare = prog
             .globals
@@ -343,8 +468,10 @@ impl<'p> Emitter<'p> {
         }
         let mut externs = Vec::new();
         let mut extern_idx = HashMap::new();
-        for code in &prog.codes {
-            collect_externs(&code.body, &mut externs, &mut extern_idx);
+        for (id, code) in prog.codes.iter().enumerate() {
+            if reachable.contains(&id) {
+                collect_externs(&code.body, &mut externs, &mut extern_idx);
+            }
         }
         Emitter {
             prog,
@@ -356,6 +483,7 @@ impl<'p> Emitter<'p> {
             extern_idx,
             blocks: Vec::new(),
             code_entry: vec![0; prog.codes.len()],
+            reachable,
             tmp: 0,
         }
     }
@@ -451,12 +579,13 @@ impl<'p> Emitter<'p> {
                 }
             }
             Atom::Extern {
+                abi,
                 symbol,
                 lib,
                 arg_types,
                 ret_type,
             } => {
-                let key = extern_key(symbol, lib, arg_types, ret_type);
+                let key = extern_key(abi, symbol, lib, arg_types, ret_type);
                 let idx = self.extern_idx[&key];
                 format!("THxRT_extern({idx}, {})", arg_types.len())
             }
@@ -784,6 +913,13 @@ impl<'p> Emitter<'p> {
     fn emit_code(&mut self, id: usize) {
         let entry = self.reserve_block();
         self.code_entry[id] = entry;
+        // An unreachable code (a pruned global's CAF, or an `@extern` binding the
+        // program never calls) becomes a trap stub: its body is never emitted, so
+        // it references no foreign wrapper that was not collected.
+        if !self.reachable.contains(&id) {
+            self.set_block(entry, "  thrax_fault(\"unreachable code\");\n");
+            return;
+        }
         let prog = self.prog;
         let mut out = String::new();
         self.emit_expr(&prog.codes[id].body, Sink::Ret, &mut out);

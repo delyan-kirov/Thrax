@@ -304,11 +304,13 @@ impl<'p> Machine<'p> {
                 Ok(mk(Value::Code { code: *code, env }))
             }
             Atom::Extern {
+                abi,
                 symbol,
                 arg_types,
                 ret_type,
                 ..
             } => Ok(mk(Value::Extern {
+                abi: Rc::from(abi.as_str()),
                 symbol: Rc::from(symbol.as_str()),
                 arg_types: Rc::from(arg_types.as_slice()),
                 ret_type: Rc::from(ret_type.as_str()),
@@ -534,7 +536,7 @@ impl<'p> Machine<'p> {
         enum Kind<'p> {
             Code(usize, Vec<PVal<'p>>),
             Builtin(Rc<str>, usize, Vec<PVal<'p>>),
-            Extern(Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
+            Extern(Rc<str>, Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
             Op(Option<String>, String),
             Resump(Rc<RefCell<Resumption<'p>>>),
             Bad,
@@ -545,11 +547,18 @@ impl<'p> Machine<'p> {
                 Kind::Builtin(name.clone(), *arity, args.clone())
             }
             Value::Extern {
+                abi,
                 symbol,
                 arg_types,
                 ret_type,
                 args,
-            } => Kind::Extern(symbol.clone(), arg_types.clone(), ret_type.clone(), args.clone()),
+            } => Kind::Extern(
+                abi.clone(),
+                symbol.clone(),
+                arg_types.clone(),
+                ret_type.clone(),
+                args.clone(),
+            ),
             Value::Op { effect, op } => Kind::Op(effect.clone(), op.clone()),
             Value::Resump(r) => Kind::Resump(r.clone()),
             _ => Kind::Bad,
@@ -592,12 +601,13 @@ impl<'p> Machine<'p> {
                 ex.ret(self, v)
             }
 
-            Kind::Extern(symbol, arg_types, ret_type, mut args) => {
+            Kind::Extern(abi, symbol, arg_types, ret_type, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arg_types.len() {
-                    mk(run_extern(&symbol, &args)?)
+                    mk(run_extern(&abi, &symbol, &args)?)
                 } else {
                     mk(Value::Extern {
+                        abi,
                         symbol,
                         arg_types,
                         ret_type,
@@ -780,18 +790,18 @@ mod clib {
 
     use super::data::Value;
 
-    /// A `TARGET.<field>` reflection constant for the host.
+    /// A `TARGET.<field>` reflection constant. The interpreter is defined to run
+    /// programs for the host, so the reflected target is `Target::host()`.
     pub(super) fn target_value<'p>(name: &str) -> Option<Value<'p>> {
+        let t = utilities::Target::host();
         let bytes = |s: &str| Value::Str(Rc::new(s.as_bytes().to_vec()));
         Some(match name {
-            "int_bits" | "ptr_bits" => Value::Int(usize::BITS as i64),
-            "int_max" => Value::Int(i64::MAX),
-            "int_min" => Value::Int(i64::MIN),
-            "arch" => bytes(std::env::consts::ARCH),
-            "os" => bytes(std::env::consts::OS),
-            "name" => Value::Str(Rc::new(
-                format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS).into_bytes(),
-            )),
+            "int_bits" | "ptr_bits" => Value::Int(t.ptr_bits() as i64),
+            "int_max" => Value::Int(t.int_max() as i64),
+            "int_min" => Value::Int(t.int_min() as i64),
+            "arch" => bytes(t.arch_name()),
+            "os" => bytes(t.os_name()),
+            "name" => Value::Str(Rc::new(t.name().into_bytes())),
             _ => return None,
         })
     }

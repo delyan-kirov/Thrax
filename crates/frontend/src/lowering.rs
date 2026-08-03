@@ -573,11 +573,13 @@ impl<'a> Lowerer<'a> {
                     body: Arc::new(self.expr(body)),
                 }
             }
-            Expr::Extern { symbol, lib, .. } => {
+            Expr::Extern { abi, symbol, lib } => {
+                let abi = self.text(*abi).to_string();
                 let symbol = self.text(*symbol).to_string();
                 let lib = self.text(*lib).to_string();
                 match self.resolved.extern_sigs.get(&e) {
                     Some((arg_types, ret_type)) => Term::Extern {
+                        abi,
                         symbol,
                         lib,
                         arg_types: arg_types.iter().cloned().collect(),

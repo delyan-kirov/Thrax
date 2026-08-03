@@ -374,3 +374,82 @@ toolchain (generated projects remain the Windows-native story per
 architecture.md section 6); endianness (all initial targets little-endian; the
 `Target` field exists so byte-order-sensitive code has something to ask);
 per-target `std` beyond `IO` basics.
+
+---
+
+## The Rust port
+
+The Rust rewrite reimplements this layer as `utilities::target` (crate
+`utilities`, module `target.rs`), the single source of platform truth, mirroring
+the C++ `TG`. It is dependency-free and shared by every consumer.
+
+**The model (`Target`).** `Os` (Linux, Macos, Windows, Wasi) x `Arch` (X86_64,
+Aarch64, X86, Arm, Wasm32). `Target::host()` is the ONE place that reads the
+build's `cfg!` flags. The policy methods are the whole platform surface:
+
+- word size: `ptr_bits()`, and `int_ty()`/`nat_ty()` (what `Int`/`Nat` alias to,
+  `@int32` on a 32-bit word, `@int64` otherwise), plus `int_max`/`int_min`/
+  `lit_max`; `real_bits()` for the real width.
+- `@extern` library resolution: `soname()` maps a symbolic name (`"libc"`,
+  `"raylib"`) to the target's loadable name (`libraylib.so`/`.dylib`/`.dll`);
+  `link_flag()` maps it to the native link flag (`-lm`, `-lraylib`, a path
+  verbatim, or nothing for libc); `has_dlopen()` is false only for wasm.
+- `toolchain(target)` is the C compiler call as data: the host uses `cc`; a
+  `wasm32-wasi` target uses `emcc` (overridable via `THRAX_WASM_CC`) and runs
+  the result under `node`. An empty `cc` means none was found and `hint` says
+  what to install.
+
+**Threading.** Neither engine reads a platform macro of its own.
+
+- `TARGET.*` reflection is one source of truth. The interpreter (host-only by
+  definition) answers from `Target::host()`. The C backend bakes the compiled-
+  for target into the emitted program: `ccg::emit(modules, entry, target)`
+  writes `#define THRAX_ARCH/THRAX_OS/THRAX_INT_BITS/THRAX_INT_MAX/THRAX_INT_MIN`
+  from the `Target`, and the runtime's `THxRT_target` reads them. A `wasm32-wasi`
+  build therefore reports a 32-bit word even though the boxed `Value` still
+  stores `int64_t` (the representation is width-portable; only the reflected
+  policy changes).
+- `@extern` link flags come from `Target::link_flag` over the libraries the
+  program actually uses (`ccg::emit_program` returns them).
+
+**Driver.** `thrax [--target=ARCH-OS] <cmd> <file>`; `--target` parses via
+`Target::parse`. `build` lowers, emits C for the target, then compiles and links
+with `toolchain(target)` (native `cc`, or `emcc` for wasm), writing `<stem>.c`
+and the executable next to the source. `emit-c` takes the same `--target`.
+
+**Reachable-from-entry pruning (a prerequisite the C++ got via DCE).** The auto-
+injected `C` libc namespace is ~76 `@extern` bindings; a program that never
+calls them must not emit their wrappers, because each wrapper redeclares a libc
+symbol through an `__asm__` label and, on a target that type-checks calls
+(wasm), a signature that differs from the real libc replaces the symbol with a
+trapping stub that the runtime's own call then hits. `ccg::reachable_codes`
+walks the codes reachable from the entry global (resolving a `Glob` the way the
+runtime does, following each `Clos`); unreachable codes become trap stubs and
+their externs are never collected. The interpreter is already entry-lazy, so
+this also aligns the two engines (the C backend used to force every global).
+
+**Cross build (the wasm smoke test).** `web/demo.thx` compiled with
+`thrax --target=wasm32-wasi build` runs under `node`. It prints its own `TARGET`
+reflection, so the same source reports `wasm32-wasi (32-bit word)` in wasm and
+`x86_64-linux (64-bit word)` natively, a visible end-to-end check that the
+platform layer feeds the target through the whole pipeline.
+
+**The compiler in the browser (`web/playground`).** The frontend + interpreter
+build to `wasm32-unknown-unknown` as a `cdylib` (`web/playground`, a crate that
+lives under `web/` because it is a web deliverable), exposing a
+raw C-ABI (`thx_alloc`/`thx_compile`/`thx_out_ptr`/`thx_out_len`) over linear
+memory, driven from hand-written JS in `web/site/index.html` (no wasm-bindgen, no
+emscripten). It runs the WHOLE pipeline in the page: parse, check, lower, and
+either interpret (`Run`), emit C (`Generated C`), or dump the IR/AST. The bundled
+standard library is `include_str!`'d, so no filesystem is needed. nixpkgs `rustc`
+ships that target's `std` (allocator included) but not a bundled `rust-lld`, so
+the dev shell provides `wasm-ld` (`pkgs.lld`) and `.cargo/config.toml` points the
+target at it. The `@extern` host table is `#[cfg]`'d out for wasm (no libc), so a
+foreign call reports a clear message and every pure program runs. Serve with
+`node web/serve.mjs` and open `http://localhost:8000/`.
+
+**Not yet ported.** `$ @run` CTFE build directives + `library/BUILD.thx` link-set
+feeding; the `check-platform` boundary gate; native cross targets beyond
+`wasm32-wasi` (Windows, 32-bit natives). `@extern` still resolves fully at link
+time (no
+dlopen), as in the C++ native backend.

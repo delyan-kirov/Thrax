@@ -1,0 +1,9 @@
+@mod HOST
+
+# The playground's window onto the embedding host. In the browser the compiler
+# runs as WebAssembly with no libc, so `@extern "C"` symbols (stdout, puts, ...)
+# do not exist. `@extern "WASM"` instead names a function the host supplies as a
+# wasm import; the embedder decides what it does (see web/site/host.mjs). Here
+# `print` writes a line to the notebook's output pane.
+
+$ print : Str -> {} = @extern "WASM" "print" ""

@@ -6,12 +6,14 @@ export const CELLS = [
   {
     id: "hello",
     title: "Hello, Thrax",
-    blurb: "A program is a list of typed definitions. `main : Int` is the entry point and its Int is the exit code. `C.puts` prints a line; `;` runs one expression for its effect, then the next.",
+    blurb: "A program is a list of typed definitions. `main : Int` is the entry point and its Int is the exit code. `HOST.print` prints a line; `;` runs one expression for its effect, then the next.",
     src: `@mod MAIN
 
+$ with HOST
+
 $ main : Int =
-	C.puts "hello, Thrax";
-	C.puts "every definition has a type, and main returns the exit code";
+	HOST.print "hello, Thrax";
+	HOST.print "every definition has a type, and main returns the exit code";
 	0
 `,
   },
@@ -22,14 +24,15 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ fib : Int -> Int = \\n =
 	if n ?< 2 then n
 	else fib (n - 1) + fib (n - 2)
 
 $ main : Int =
-	C.puts ("fib 10 = " ++ STR.from_int (fib 10));
-	C.puts ("fib 20 = " ++ STR.from_int (fib 20));
+	HOST.print ("fib 10 = " ++ STR.from_int (fib 10));
+	HOST.print ("fib 20 = " ++ STR.from_int (fib 20));
 	0
 `,
   },
@@ -40,6 +43,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ Shape : @union =
 	Circle: Int,
@@ -51,8 +55,8 @@ $ area : Shape -> Int = \\s =
 		is Shape.Rect.{w, h} then w * h
 
 $ main : Int =
-	C.puts ("circle r=2: " ++ STR.from_int (area Shape.Circle.{2}));
-	C.puts ("rect 3x4:   " ++ STR.from_int (area Shape.Rect.{3, 4}));
+	HOST.print ("circle r=2: " ++ STR.from_int (area Shape.Circle.{2}));
+	HOST.print ("rect 3x4:   " ++ STR.from_int (area Shape.Rect.{3, 4}));
 	0
 `,
   },
@@ -63,6 +67,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ sign : Int -> Str = \\n =
 	when n
@@ -71,9 +76,9 @@ $ sign : Int -> Str = \\n =
 	else "zero"
 
 $ main : Int =
-	C.puts ("sign  7 = " ++ sign 7);
-	C.puts ("sign -3 = " ++ sign (0 - 3));
-	C.puts ("sign  0 = " ++ sign 0);
+	HOST.print ("sign  7 = " ++ sign 7);
+	HOST.print ("sign -3 = " ++ sign (0 - 3));
+	HOST.print ("sign  0 = " ++ sign 0);
 	0
 `,
   },
@@ -84,6 +89,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ swap : {\`A, \`B} -> {\`B, \`A} = \\t = {t.1, t.0}
 
@@ -92,8 +98,8 @@ $ main : Int =
 		p = {42, "answer"},
 		q = swap p,
 	in
-		C.puts <| "p.0        = " ++ STR.from_int p.0;
-		C.puts <| "swapped .0 = " ++ q.0;
+		HOST.print <| "p.0        = " ++ STR.from_int p.0;
+		HOST.print <| "swapped .0 = " ++ q.0;
 		0
 `,
   },
@@ -104,6 +110,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ sum : List Int -> Int = \\xs =
 	when xs
@@ -113,7 +120,7 @@ $ sum : List Int -> Int = \\xs =
 
 $ main : Int =
 	let xs = [1, 2, 3, 4, 5] in
-	C.puts ("sum [1..5] = " ++ STR.from_int (sum xs));
+	HOST.print ("sum [1..5] = " ++ STR.from_int (sum xs));
 	0
 `,
   },
@@ -124,13 +131,14 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ inc : Int -> Int = \\x = x + 1
 $ dbl : Int -> Int = \\x = x + x
 
 $ main : Int =
 	let r = 5 |> inc |> dbl in
-	C.puts ("5 |> inc |> dbl = " ++ STR.from_int r);
+	HOST.print ("5 |> inc |> dbl = " ++ STR.from_int r);
 	0
 `,
   },
@@ -141,6 +149,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ Yield : @effect = yield : Int -> {},
 
@@ -153,27 +162,28 @@ $ gen3 : {} -> <Yield> {} = \\u =
 	Yield.yield 10 ; Yield.yield 20 ; Yield.yield 12 ; {}
 
 $ main : Int =
-	C.puts ("sum of yields = " ++ STR.from_int (sumGen gen3));
+	HOST.print ("sum of yields = " ++ STR.from_int (sumGen gen3));
 	0
 `,
   },
   {
     id: "effects-exn",
     title: "Algebraic effects · exceptions",
-    blurb: "The same machine gives you exceptions: a handler that simply ignores `k` never resumes. `throw`'s result type is polymorphic (`\`a`) because it never returns to the call site. `Exn` is handled inside `safeDiv`, so `safeDiv` is pure. Its type carries no effect.",
+    blurb: "The same machine gives you exceptions: a handler that simply ignores `k` never resumes. `throw`'s result type is polymorphic (`\`A`) because it never returns to the call site. `Exn` is handled inside `safeDiv`, so `safeDiv` is pure. Its type carries no effect.",
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
-$ Exn : @effect = throw : Str -> \`a,
+$ Exn : @effect = throw : Str -> \`A,
 
 $ safeDiv : Int -> Int -> Int = \\a b =
 	do if b ?= 0 then Exn.throw "divide by zero" else a / b
 	ctl k is Exn.throw msg = 0 - 1
 
 $ main : Int =
-	C.puts ("84 / 2 = " ++ STR.from_int (safeDiv 84 2));
-	C.puts ("10 / 0 = " ++ STR.from_int (safeDiv 10 0));
+	HOST.print ("84 / 2 = " ++ STR.from_int (safeDiv 84 2));
+	HOST.print ("10 / 0 = " ++ STR.from_int (safeDiv 10 0));
 	0
 `,
   },
@@ -184,6 +194,7 @@ $ main : Int =
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
 
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
@@ -203,21 +214,50 @@ $ counter : {} -> <State> Int = \\u =
 		x + y
 
 $ main : Int =
-	C.puts ("counter from 10 = " ++ STR.from_int (runState counter 10));
+	HOST.print ("counter from 10 = " ++ STR.from_int (runState counter 10));
 	0
 `,
   },
   {
-    id: "browser",
-    title: "Compiled in your browser",
-    blurb: "This playground is the Thrax compiler itself, built to WebAssembly. Every program above is compiled, not interpreted by JS. `TARGET` is generated per compile; switch a cell's mode to see its Generated C or IR.",
+    id: "host",
+    title: "Talking to the host · WASM externs",
+    blurb: "The compiler was ported to web assembly and since the language has an ffi functionality with `@extern \"WASM\" \"name\"` we can call JavaScript functions. See what happens if you make `animate` true.",
     src: `@mod MAIN
 
 $ with STR
+$ with HOST
+
+# Flip to true and re-run to start seeing the colors.
+$ animate : Bool = false
+
+# An effect standing for "recolor the scratchpad".
+$ ChangeColorEffect : @effect = recolor : Str -> {},
+
+# Host imports
+$ paint  : Str -> {}  = @extern "WASM" "change_color" ""
+$ random : Int -> Int = @extern "WASM" "random" ""
+$ delay  : Int -> {}  = @extern "WASM" "delay" ""
+
+$ color : {} -> Str = \\u =
+	"rgb(" ++ STR.from_int (random 256)
+	      ++ ", " ++ STR.from_int (random 256)
+	      ++ ", " ++ STR.from_int (random 256) ++ ")"
+
+$ withColor : ({} -> <ChangeColorEffect> {}) -> {} = \\body =
+	do body {}
+	ctl k is ChangeColorEffect.recolor c = (if animate then paint c else {}) ; k {}
+
+$ spin : Int -> <ChangeColorEffect> {} = \\n =
+	if n ?= 0 then {}
+	else
+		let c = color {} in
+		HOST.print c ;
+		recolor c ;
+		spin (n - 1)
 
 $ main : Int =
-	C.puts ("target:   " ++ TARGET.name);
-	C.puts ("int bits: " ++ STR.from_int TARGET.int_bits);
+	delay 150 ;
+	let _ = withColor (\\u = spin 12) in
 	0
 `,
   },

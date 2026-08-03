@@ -256,11 +256,13 @@ impl Conv {
             }
             Term::Lam { param, body } => self.lift(body, 1, &[param.clone()], ctx),
             Term::Extern {
+                abi,
                 symbol,
                 lib,
                 arg_types,
                 ret_type,
             } => data::Atom::Extern {
+                abi: abi.clone(),
                 symbol: symbol.clone(),
                 lib: lib.clone(),
                 arg_types: arg_types.to_vec(),

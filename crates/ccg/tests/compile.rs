@@ -47,7 +47,7 @@ fn interp_show(src: &str, entry: &str) -> String {
 fn c_run(src: &str, entry: &str) -> String {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, entry);
+    let code = ccg::emit(&lowered, entry, utilities::Target::host());
 
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut c_path = std::env::temp_dir();
@@ -225,9 +225,9 @@ fn sized_extern_marshalling() {
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
     let src = "@mod T\n\
                $ f : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = @extern \"C\" \"f\" \"libx\"\n\
-               $ test : Int = 0\n";
+               $ test : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = f\n";
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, "test");
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
     let decl = code
         .lines()

@@ -777,9 +777,9 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
 
 Value *THxRT_target(const char *name) {
   if (strcmp(name, "int_bits") == 0 || strcmp(name, "ptr_bits") == 0)
-    return THxRT_int((int64_t)(sizeof(size_t) * 8));
-  if (strcmp(name, "int_max") == 0) return THxRT_int(INT64_MAX);
-  if (strcmp(name, "int_min") == 0) return THxRT_int(INT64_MIN);
+    return THxRT_int((int64_t)THRAX_INT_BITS);
+  if (strcmp(name, "int_max") == 0) return THxRT_int(THRAX_INT_MAX);
+  if (strcmp(name, "int_min") == 0) return THxRT_int(THRAX_INT_MIN);
   if (strcmp(name, "arch") == 0) return THxRT_str(THRAX_ARCH, strlen(THRAX_ARCH));
   if (strcmp(name, "os") == 0) return THxRT_str(THRAX_OS, strlen(THRAX_OS));
   if (strcmp(name, "name") == 0)

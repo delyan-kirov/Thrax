@@ -6,6 +6,7 @@ members = [
     "crates/interpreter",
     "crates/ccg",
     "crates/thrax",
+    "web/playground",
 ]
 
 [workspace.package]

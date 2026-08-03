@@ -1,0 +1,19 @@
+[package]
+name = "playground"
+version = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+
+# A cdylib for wasm32-unknown-unknown: the compiler (frontend + interpreter +
+# ccg) behind a raw C-ABI (`thx_compile`), driven from hand-written JS (no
+# wasm-bindgen). This is the browser playground: the Thrax compiler itself
+# running in the page. It lives under web/ because it is a web deliverable; it is
+# a crate only because compiling Rust to a browser wasm module requires one.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+frontend = { path = "../../crates/frontend" }
+interpreter = { path = "../../crates/interpreter" }
+ccg = { path = "../../crates/ccg" }
+utilities = { path = "../../crates/utilities" }

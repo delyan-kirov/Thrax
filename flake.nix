@@ -93,6 +93,10 @@
           pkgs.rustfmt
           pkgs.clippy
           pkgs.rust-analyzer
+          # wasm-ld for building the Rust compiler crates to wasm32-unknown-
+          # unknown (the browser playground); nixpkgs rustc ships that target's
+          # std but not a bundled rust-lld, so provide the linker on PATH.
+          pkgs.lld
 
           # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
           pkgs.libffi

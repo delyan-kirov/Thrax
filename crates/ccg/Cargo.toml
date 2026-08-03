@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 frontend = { path = "../frontend" }
+utilities = { path = "../utilities" }
 
 [dev-dependencies]
 interpreter = { path = "../interpreter" }

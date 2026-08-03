@@ -53,10 +53,12 @@ pub enum Value<'p> {
         arity: usize,
         args: Vec<PVal<'p>>,
     },
-    /// A partially applied foreign C function (`@extern`); it marshals its
-    /// arguments across the C ABI and calls `symbol` once `args` reaches the
-    /// arity `arg_types.len()`. `ret_type` selects how the result is wrapped.
+    /// A partially applied foreign function (`@extern`); it marshals its
+    /// arguments across the seam selected by `abi` (`"C"` = a C library symbol,
+    /// `"WASM"` = a host import) and calls `symbol` once `args` reaches the arity
+    /// `arg_types.len()`. `ret_type` selects how the result is wrapped.
     Extern {
+        abi: Rc<str>,
         symbol: Rc<str>,
         arg_types: Rc<[String]>,
         ret_type: Rc<str>,
@@ -385,8 +387,14 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
 // emits a direct symbol call, still reaches an arbitrary library. Everything is
 // a machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
 
+// The host table calls real libc/libm symbols, so it is compiled only where one
+// is linked. The wasm playground target (`wasm32-unknown-unknown`) has no libc;
+// there `run_extern` is a stub (see below) and none of these symbols are
+// referenced, so nothing needs importing from the host.
+#[cfg(not(target_arch = "wasm32"))]
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 
+#[cfg(not(target_arch = "wasm32"))]
 extern "C" {
     // math.h (libm)
     fn sqrt(x: f64) -> f64;
@@ -474,6 +482,7 @@ extern "C" {
 }
 
 /// A machine-word argument (`Int`, or a `Ptr` carrying its bits).
+#[cfg(not(target_arch = "wasm32"))]
 fn ffi_word(args: &[PVal], i: usize) -> Result<i64> {
     match &*args[i].borrow() {
         Value::Int(n) => Ok(*n),
@@ -481,6 +490,7 @@ fn ffi_word(args: &[PVal], i: usize) -> Result<i64> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn ffi_real(args: &[PVal], i: usize) -> Result<f64> {
     match &*args[i].borrow() {
         Value::Int(n) => Ok(*n as f64),
@@ -491,6 +501,7 @@ fn ffi_real(args: &[PVal], i: usize) -> Result<f64> {
 
 /// A NUL-terminated copy of a `Str` argument's bytes, for passing as a C string.
 /// The returned buffer must outlive the call.
+#[cfg(not(target_arch = "wasm32"))]
 fn ffi_cstr(args: &[PVal], i: usize) -> Result<Vec<u8>> {
     match &*args[i].borrow() {
         Value::Str(b) => {
@@ -504,6 +515,7 @@ fn ffi_cstr(args: &[PVal], i: usize) -> Result<Vec<u8>> {
 
 /// Wrap a C string result (`char*`) into a `Str` value, matching the C backend's
 /// `_r ? THxRT_str(_r, strlen(_r)) : THxRT_str("", 0)`.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
     if p.is_null() {
         return Value::Str(Rc::new(Vec::new()));
@@ -518,7 +530,14 @@ unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
 /// the result is wrapped directly. The set of symbols served here is exactly the
 /// `C` namespace declared in `core/C.thx`; the C backend reaches these same
 /// symbols with a direct linked call, so both engines agree.
-pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+    if abi == "WASM" {
+        return Err(fault(format!(
+            "FFI: `{symbol}` is an `@extern \"WASM\"` host import, available only in \
+             the wasm playground, not in a native run"
+        )));
+    }
     let v = unsafe {
         match symbol {
             // -- math.h (unary) --
@@ -706,6 +725,75 @@ pub(crate) fn run_extern<'p>(symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p
     Ok(v)
 }
 
+// On wasm there is no libc, so `@extern` resolves against the embedder (the
+// JavaScript host) instead. A single generic trampoline carries any call across:
+// the interpreter serialises `(symbol, args)`, the host looks the symbol up in
+// its own registry and answers. The compiler knows nothing about which host
+// functions exist; that is entirely the page's business. See `web/site/host.mjs`
+// for the other side of this contract.
+//
+// Arguments are serialised into one kind-tagged buffer: per argument a tag byte
+// (0 unit, 1 int, 2 real, 3 str) followed by its payload (i64/f64 little-endian,
+// or u32 length then bytes for a string). The call returns the result's kind;
+// the typed getters below read the value the host stashed.
+#[cfg(target_arch = "wasm32")]
+extern "C" {
+    fn thx_host_call(sym: *const u8, sym_len: usize, args: *const u8, args_len: usize) -> i32;
+    fn thx_host_ret_int() -> i64;
+    fn thx_host_ret_real() -> f64;
+    fn thx_host_ret_len() -> usize;
+    fn thx_host_ret_copy(dst: *mut u8);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+    if abi != "WASM" {
+        return Err(fault(format!(
+            "FFI: `{symbol}` is an `@extern \"{abi}\"` foreign call; there is no libc \
+             in the browser, only `@extern \"WASM\"` host imports"
+        )));
+    }
+    let mut buf = Vec::new();
+    for a in args {
+        match &*a.borrow() {
+            Value::Unit => buf.push(0),
+            Value::Int(n) => {
+                buf.push(1);
+                buf.extend_from_slice(&n.to_le_bytes());
+            }
+            Value::Real(r) => {
+                buf.push(2);
+                buf.extend_from_slice(&r.to_le_bytes());
+            }
+            Value::Str(b) => {
+                buf.push(3);
+                buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
+                buf.extend_from_slice(b);
+            }
+            _ => {
+                return Err(fault(format!(
+                    "FFI: `{symbol}` was passed an argument the host bridge cannot marshal"
+                )))
+            }
+        }
+    }
+    unsafe {
+        match thx_host_call(symbol.as_ptr(), symbol.len(), buf.as_ptr(), buf.len()) {
+            0 => Ok(Value::Unit),
+            1 => Ok(Value::Int(thx_host_ret_int())),
+            2 => Ok(Value::Real(thx_host_ret_real())),
+            3 => {
+                let mut out = vec![0u8; thx_host_ret_len()];
+                thx_host_ret_copy(out.as_mut_ptr());
+                Ok(Value::Str(Rc::new(out)))
+            }
+            _ => Err(fault(format!(
+                "FFI: the host registers no function `{symbol}` in this environment"
+            ))),
+        }
+    }
+}
+
 impl<'p> Value<'p> {
     /// A shallow structural copy: aggregates share their `PVal` children (an `Rc`
     /// bump), so this is cheap. Used to move a value out of a borrowed cell.
@@ -734,11 +822,13 @@ impl<'p> Value<'p> {
                 args: args.clone(),
             },
             Value::Extern {
+                abi,
                 symbol,
                 arg_types,
                 ret_type,
                 args,
             } => Value::Extern {
+                abi: abi.clone(),
                 symbol: symbol.clone(),
                 arg_types: arg_types.clone(),
                 ret_type: ret_type.clone(),
