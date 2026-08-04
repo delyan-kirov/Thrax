@@ -19,46 +19,44 @@ $ answer : Int = fib 10   # 55
 
 ## Building
 
-Thrax builds with a single self-contained build program (`build.cpp`).
-Any platform with a C++23 compiler works; nix is optional but convenient.
+Thrax is a Rust workspace (`crates/`) with no external crate dependencies. The
+interpreter builds the vendored `external/libffi` from source for its FFI, so a C
+toolchain (cc/make/ar) must be on `PATH`; nix provides everything.
 
-**Without nix** - bootstrap the build program once, then use `./build`:
-
-```sh
-clang++ -std=c++23 -Iutilities build.cpp utilities/UTxIO.cpp utilities/AR.cpp -o build && ./build
-```
-
-**With nix**: `nix develop` bootstraps `./build` and puts it (and the built
-binaries) on `PATH`:
+**With nix**:
 
 ```sh
 nix develop
-build
+cargo build      # the compiler binary is target/debug/thrax
+cargo test       # the frontend, interpreter and backend suites
 ```
 
-After that first bootstrap the build program self-rebuilds whenever `build.cpp`
-changes. See `build help`.
+**Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain works:
+
+```sh
+cargo build --release   # target/release/thrax
+```
 
 ### FFI
 
-FFI (via libffi) is **on by default**. libffi is resolved from `$LIBFFI` /
-`$LIBFFI_DEV` (nix provides these), then `pkg-config`, then a vendored copy. If
-it can't be found the build warns and continues without FFI.
-A leading option overrides this per build: `build no-ffi`
-forces it off, `build ffi` requires it (erroring if libffi is absent). Switching
-modes rebuilds automatically, no `build clean` needed.
+FFI is on by default and needs no configuration. Common libc/libm calls (the `C`
+namespace) are served from a compiled-in table; any other `@extern "C"` symbol is
+resolved at runtime with `dlopen`/`dlsym` and called through libffi, which the
+interpreter builds from `external/libffi`. The compiled C backend links the real
+library directly. See [`doc/platform-abstraction.md`](doc/platform-abstraction.md).
 
 ## Running programs
 
-The compiler is `thrax`. Point it at a `.thx` file or a directory (all `.thx` in
-it form one program):
+The compiler is `thrax` (`target/debug/thrax`). It takes a subcommand and a
+`.thx` file:
 
 ```sh
-thrax examples/FIB.thx          # run under the interpreter
-thrax --ast examples/FIB.thx    # print the parsed AST
-thrax --ir  examples/FIB.thx    # print the closure-converted IR
-thrax --emit-c examples/FIB.thx # print the generated C (the native backend)
-thrax --build examples/io_example   # compile a project to a native executable
+thrax run     examples/FIB.thx   # run under the interpreter
+thrax parse   examples/FIB.thx   # print the parsed AST
+thrax check   examples/FIB.thx   # type-check only
+thrax emit-c  examples/FIB.thx   # print the generated C (the native backend)
+thrax build   examples/FIB.thx   # compile to a native executable beside the source
+thrax --target=wasm32-wasi build examples/FIB.thx   # cross-compile
 ```
 
 ---
@@ -224,11 +222,14 @@ a real FFI program; see its README to run it.
 
 | Directory | Contents |
 | --- | --- |
-| `compiler/` | lexer, parser, type checker, lowering |
-| `engines/` | the interpreter (`IT`) and C backend (`CC`), plus FFI (`FF`) |
-| `platforms/` | the C runtime (`THx*`): machine, memory, values |
-| `utilities/` | shared build/support headers |
+| `crates/frontend` | lexer, parser, type checker, lowering, IR |
+| `crates/interpreter` | the reified-K (CEK) machine and the `@extern` FFI |
+| `crates/ccg` | the C backend (emits standalone C plus its runtime) |
+| `crates/thrax` | the `thrax` driver (CLI) |
+| `crates/utilities` | shared support: arena, target/platform, diagnostics |
+| `core/`, `library/` | the Thrax prelude/`C` namespace and standard library |
 | `examples/` | annotated `.thx` programs (also the test corpus) |
+| `web/` | the browser playground (Rust to wasm) and tour site |
 | `doc/` | language spec and design notes |
 
 More detail lives in [`doc/`](doc/): the [syntax spec](doc/syntax-spec.txt), the

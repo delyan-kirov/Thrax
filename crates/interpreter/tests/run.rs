@@ -195,6 +195,22 @@ fn extern_ffi_file_roundtrip() {
 }
 
 #[test]
+fn extern_ffi_dynamic_dlopen() {
+    // Symbols OUTSIDE the compiled-in host table resolve at runtime via
+    // dlopen/dlsym and call through the hand-rolled SysV trampoline. `abs`,
+    // `strdup` (libc) and `expm1` (libm) are none of them curated, so each
+    // exercises the dynamic path: an integer arg/return, a string arg with a
+    // `char*` return decoded back to bytes, and a floating arg/return in xmm.
+    let src = "@mod M\n\
+        $ iabs   : Int -> Int   = @extern \"C\" \"abs\"    \"libc\"\n\
+        $ dup    : Str -> Str   = @extern \"C\" \"strdup\" \"libc\"\n\
+        $ expm1r : Real -> Real = @extern \"C\" \"expm1\"  \"libm\"\n\
+        $ r : Int = iabs (0 - 7) + array_len (dup \"abcde\") \
+                  + (if expm1r 1.0 ?> 1.7 then 100 else 0)";
+    assert_eq!(run(src, "r"), "112");
+}
+
+#[test]
 fn target_reflects_the_host_consistently() {
     // Host-agnostic invariants: the word and pointer widths agree, and `name` is
     // exactly `arch-os`.

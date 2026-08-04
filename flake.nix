@@ -1,5 +1,5 @@
 {
-  description = "C++ dev environment for Thrax";
+  description = "Dev environment for Thrax";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -21,37 +21,33 @@
         exec ${wasiPkgs.stdenv.cc}/bin/wasm32-unknown-wasi-clang "$@"
       '';
 
-      # The compiler itself, built by the self-contained build.cpp. This is the
-      # same bootstrap the devShell runs; nix just fixes the inputs and captures
-      # artifacts/ into $out.
+      # The compiler, built by the Rust workspace. The interpreter's build.rs
+      # builds the vendored external/libffi from source, so a C toolchain
+      # (cc/make/ar) is a build input; there are no external Rust crates to
+      # fetch, so the build is offline.
       thrax = pkgs.stdenv.mkDerivation {
         pname = "thrax";
         version = "0.1.0";
         src = self;
 
-        # Matches the devShell: -O0 debug builds trip _FORTIFY_SOURCE.
-        hardeningDisable = [ "fortify" ];
-
-        nativeBuildInputs = [ pkgs.clang ];
-        buildInputs = [ pkgs.libffi ];
+        nativeBuildInputs = [
+          pkgs.cargo
+          pkgs.rustc
+          pkgs.gcc
+          pkgs.gnumake
+        ];
 
         buildPhase = ''
           runHook preBuild
-          export THRAX_ROOT=$PWD
-          export LIBFFI=${pkgs.libffi.out}
-          export LIBFFI_DEV=${pkgs.libffi.dev}
-          clang++ -std=c++23 -Iutilities build.cpp \
-            utilities/UTxIO.cpp utilities/AR.cpp -o build
-          ./build ffi
+          export HOME=$TMPDIR
+          export CARGO_HOME=$TMPDIR/.cargo
+          cargo build --release --offline -p thrax
           runHook postBuild
         '';
 
         installPhase = ''
           runHook preInstall
-          install -Dm755 artifacts/thrax $out/bin/thrax
-          install -Dm755 build $out/bin/thrax-build
-          install -Dm644 artifacts/libthrax.a $out/lib/libthrax.a
-          install -Dm755 artifacts/libthrax.so $out/lib/libthrax.so
+          install -Dm755 target/release/thrax $out/bin/thrax
           runHook postInstall
         '';
 
@@ -118,12 +114,10 @@
           export LIBC=${pkgs.libc}
           export WASI_CC=${wasiClang}/bin/wasi-clang
 
-          # Bootstrap the build program (it self-rebuilds thereafter) and put it
-          # + the built binaries on PATH. nix is an accelerator here, not a
-          # requirement: the same `build.cpp` builds without nix (see README).
+          # The workspace builds with a bare `cargo build`; the interpreter's
+          # build.rs builds the vendored external/libffi from source (needs the
+          # cc/make/ar already on PATH here).
           export THRAX_ROOT=$PWD
-          [ -x ./build ] || clang++ -std=c++23 -Iutilities build.cpp utilities/UTxIO.cpp utilities/AR.cpp -o build
-          export PATH=$PWD:$PWD/artifacts:$PATH
         '';
       };
     };

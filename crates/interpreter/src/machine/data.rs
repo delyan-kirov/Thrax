@@ -56,10 +56,13 @@ pub enum Value<'p> {
     /// A partially applied foreign function (`@extern`); it marshals its
     /// arguments across the seam selected by `abi` (`"C"` = a C library symbol,
     /// `"WASM"` = a host import) and calls `symbol` once `args` reaches the arity
-    /// `arg_types.len()`. `ret_type` selects how the result is wrapped.
+    /// `arg_types.len()`. `ret_type` selects how the result is wrapped. `lib` is
+    /// the symbolic library the symbol lives in, resolved to a soname and
+    /// `dlopen`ed when the symbol is not in the compiled-in host table.
     Extern {
         abi: Rc<str>,
         symbol: Rc<str>,
+        lib: Rc<str>,
         arg_types: Rc<[String]>,
         ret_type: Rc<str>,
         args: Vec<PVal<'p>>,
@@ -378,14 +381,15 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
     }
 }
 
-// -- foreign function interface (host table) --------------------------------
+// -- foreign function interface (fast-path host table) ----------------------
 
-// The interpreter serves `@extern` calls from a compiled-in host table of the
-// C/libm namespace, the port of `engines/FF.cpp`'s no-3rd-party build. There is
-// no dynamic loading (that would need libffi/dlopen, forbidden here), so a
-// symbol outside this table fails with a clear message; the C backend, which
-// emits a direct symbol call, still reaches an arbitrary library. Everything is
-// a machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
+// The interpreter serves the common `@extern` calls (the C/libm namespace, the
+// port of `engines/FF.cpp`) directly from this compiled-in table: a symbol here
+// is a linked call with a known signature, no resolution or libffi overhead. A
+// symbol OUTSIDE the table falls through to [`crate::machine::ffi`], which
+// resolves it with `dlopen`/`dlsym` and calls it through libffi, so `thrax run`
+// reaches the same arbitrary library the C backend links. Everything is a
+// machine word: a `Ptr` (and a `FILE*`/allocation) travels as an `Int`.
 
 // The host table calls real libc/libm symbols, so it is compiled only where one
 // is linked. The wasm playground target (`wasm32-unknown-unknown`) has no libc;
@@ -531,7 +535,14 @@ unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
 /// `C` namespace declared in `core/C.thx`; the C backend reaches these same
 /// symbols with a direct linked call, so both engines agree.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+pub(crate) fn run_extern<'p>(
+    abi: &str,
+    symbol: &str,
+    lib: &str,
+    arg_types: &[String],
+    ret_type: &str,
+    args: &[PVal<'p>],
+) -> Result<Value<'p>> {
     if abi == "WASM" {
         return Err(fault(format!(
             "FFI: `{symbol}` is an `@extern \"WASM\"` host import, available only in \
@@ -711,12 +722,10 @@ pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Resu
             }
             "getenv" => ffi_ret_str(getenv(ffi_cstr(args, 0)?.as_ptr() as *const c_char)),
             "time" => Value::Int(time(ffi_word(args, 0)? as *mut c_void) as i64),
-            _ => {
-                return Err(fault(format!(
-                    "FFI: symbol `{symbol}` is not in the interpreter's host table \
-                     (only the C/libm namespace is available without dynamic loading)"
-                )))
-            }
+            // A symbol outside the compiled-in fast-path table: resolve it at
+            // runtime and call it through libffi (see [`crate::machine::ffi`]).
+            // This reaches the same arbitrary library the C backend links.
+            _ => return crate::machine::ffi::call_extern(symbol, lib, arg_types, ret_type, args),
         }
     };
     // Keep foreign stdout (C stdio) ordered against the driver's own output,
@@ -725,73 +734,26 @@ pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Resu
     Ok(v)
 }
 
-// On wasm there is no libc, so `@extern` resolves against the embedder (the
-// JavaScript host) instead. A single generic trampoline carries any call across:
-// the interpreter serialises `(symbol, args)`, the host looks the symbol up in
-// its own registry and answers. The compiler knows nothing about which host
-// functions exist; that is entirely the page's business. See `web/site/host.mjs`
-// for the other side of this contract.
-//
-// Arguments are serialised into one kind-tagged buffer: per argument a tag byte
-// (0 unit, 1 int, 2 real, 3 str) followed by its payload (i64/f64 little-endian,
-// or u32 length then bytes for a string). The call returns the result's kind;
-// the typed getters below read the value the host stashed.
+// On wasm there is no libc: `@extern "WASM"` resolves against the JavaScript
+// embedder instead of a C library. The marshalling and the generic host-call
+// bridge live in [`crate::machine::ffi`] (the `WasmHostFfi` backend); this is
+// just the abi guard and the hand-off.
 #[cfg(target_arch = "wasm32")]
-extern "C" {
-    fn thx_host_call(sym: *const u8, sym_len: usize, args: *const u8, args_len: usize) -> i32;
-    fn thx_host_ret_int() -> i64;
-    fn thx_host_ret_real() -> f64;
-    fn thx_host_ret_len() -> usize;
-    fn thx_host_ret_copy(dst: *mut u8);
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn run_extern<'p>(abi: &str, symbol: &str, args: &[PVal<'p>]) -> Result<Value<'p>> {
+pub(crate) fn run_extern<'p>(
+    abi: &str,
+    symbol: &str,
+    lib: &str,
+    arg_types: &[String],
+    ret_type: &str,
+    args: &[PVal<'p>],
+) -> Result<Value<'p>> {
     if abi != "WASM" {
         return Err(fault(format!(
             "FFI: `{symbol}` is an `@extern \"{abi}\"` foreign call; there is no libc \
              in the browser, only `@extern \"WASM\"` host imports"
         )));
     }
-    let mut buf = Vec::new();
-    for a in args {
-        match &*a.borrow() {
-            Value::Unit => buf.push(0),
-            Value::Int(n) => {
-                buf.push(1);
-                buf.extend_from_slice(&n.to_le_bytes());
-            }
-            Value::Real(r) => {
-                buf.push(2);
-                buf.extend_from_slice(&r.to_le_bytes());
-            }
-            Value::Str(b) => {
-                buf.push(3);
-                buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
-                buf.extend_from_slice(b);
-            }
-            _ => {
-                return Err(fault(format!(
-                    "FFI: `{symbol}` was passed an argument the host bridge cannot marshal"
-                )))
-            }
-        }
-    }
-    unsafe {
-        match thx_host_call(symbol.as_ptr(), symbol.len(), buf.as_ptr(), buf.len()) {
-            0 => Ok(Value::Unit),
-            1 => Ok(Value::Int(thx_host_ret_int())),
-            2 => Ok(Value::Real(thx_host_ret_real())),
-            3 => {
-                let mut out = vec![0u8; thx_host_ret_len()];
-                thx_host_ret_copy(out.as_mut_ptr());
-                Ok(Value::Str(Rc::new(out)))
-            }
-            _ => Err(fault(format!(
-                "FFI: the host registers no function `{symbol}` in this environment"
-            ))),
-        }
-    }
+    crate::machine::ffi::call_extern(symbol, lib, arg_types, ret_type, args)
 }
 
 impl<'p> Value<'p> {
@@ -824,12 +786,14 @@ impl<'p> Value<'p> {
             Value::Extern {
                 abi,
                 symbol,
+                lib,
                 arg_types,
                 ret_type,
                 args,
             } => Value::Extern {
                 abi: abi.clone(),
                 symbol: symbol.clone(),
+                lib: lib.clone(),
                 arg_types: arg_types.clone(),
                 ret_type: ret_type.clone(),
                 args: args.clone(),

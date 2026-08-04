@@ -444,12 +444,36 @@ either interpret (`Run`), emit C (`Generated C`), or dump the IR/AST. The bundle
 standard library is `include_str!`'d, so no filesystem is needed. nixpkgs `rustc`
 ships that target's `std` (allocator included) but not a bundled `rust-lld`, so
 the dev shell provides `wasm-ld` (`pkgs.lld`) and `.cargo/config.toml` points the
-target at it. The `@extern` host table is `#[cfg]`'d out for wasm (no libc), so a
-foreign call reports a clear message and every pure program runs. Serve with
-`node web/serve.mjs` and open `http://localhost:8000/`.
+target at it. On wasm a foreign call resolves against the JavaScript embedder
+instead of libc (see the FFI section below). Serve with `node web/serve.mjs` and
+open `http://localhost:8000/`.
 
-**Not yet ported.** `$ @run` CTFE build directives + `library/BUILD.thx` link-set
-feeding; the `check-platform` boundary gate; native cross targets beyond
-`wasm32-wasi` (Windows, 32-bit natives). `@extern` still resolves fully at link
-time (no
-dlopen), as in the C++ native backend.
+**Foreign function interface (the Rust port).** An `@extern` call is reduced to a
+platform-independent C value model and handed to a [`ForeignCalls`] backend for
+the running host (`crates/interpreter/src/machine/ffi.rs`). Everything above the
+backend, classifying a Thrax value into a C argument and wrapping the result back,
+is shared; a new platform implements only `call`.
+
+- The interpreter serves the common libc/libm surface (the `C` namespace) from a
+  compiled-in fast-path table of direct linked calls, exactly as before. A symbol
+  OUTSIDE that table falls through to the backend.
+- The native backend (`NativeFfi`) resolves the symbol with `dlopen`/`dlsym` (the
+  library name resolved through [`Target::soname`], handles cached per process)
+  and performs the call through **libffi**, so `thrax run` reaches the same
+  arbitrary library the C backend links against (`@extern "C" "SDL_Init" "SDL2"`).
+  libffi handles the calling convention on every target, so there is no
+  hand-written per-ABI trampoline and no arity/`Real32` restriction.
+- libffi is built from the vendored `external/libffi` by the interpreter's
+  `build.rs` (an out-of-tree `configure`/`make` into `OUT_DIR`, cached; skipped on
+  wasm). A thin C shim, `crates/interpreter/src/ffi_shim.c`, exposes one
+  `thx_ffi_call` entry so the Rust side never mirrors libffi's arch-specific
+  `ffi_cif`/`ffi_type` layout or `FFI_DEFAULT_ABI`. Building the workspace
+  therefore needs a C toolchain (cc/make/ar), as the C backend already did.
+- The wasm backend (`WasmHostFfi`) serialises the same value model across a single
+  generic import to the JavaScript embedder, which owns the function registry (the
+  playground). The compiler knows none of the host names.
+
+**Not yet ported / remaining gaps.** The `check-platform` boundary gate; native
+cross targets beyond `wasm32-wasi` (Windows, 32-bit natives); no automated
+corpus-parity check in the Rust test suite (verified by hand). (`$ @run` CTFE and
+`library/BUILD.thx` link-set feeding ARE ported.)

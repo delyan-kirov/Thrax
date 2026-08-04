@@ -15,6 +15,7 @@
 //! takes over.
 
 pub mod data;
+pub mod ffi;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -306,12 +307,13 @@ impl<'p> Machine<'p> {
             Atom::Extern {
                 abi,
                 symbol,
+                lib,
                 arg_types,
                 ret_type,
-                ..
             } => Ok(mk(Value::Extern {
                 abi: Rc::from(abi.as_str()),
                 symbol: Rc::from(symbol.as_str()),
+                lib: Rc::from(lib.as_str()),
                 arg_types: Rc::from(arg_types.as_slice()),
                 ret_type: Rc::from(ret_type.as_str()),
                 args: Vec::new(),
@@ -536,7 +538,7 @@ impl<'p> Machine<'p> {
         enum Kind<'p> {
             Code(usize, Vec<PVal<'p>>),
             Builtin(Rc<str>, usize, Vec<PVal<'p>>),
-            Extern(Rc<str>, Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
+            Extern(Rc<str>, Rc<str>, Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
             Op(Option<String>, String),
             Resump(Rc<RefCell<Resumption<'p>>>),
             Bad,
@@ -549,12 +551,14 @@ impl<'p> Machine<'p> {
             Value::Extern {
                 abi,
                 symbol,
+                lib,
                 arg_types,
                 ret_type,
                 args,
             } => Kind::Extern(
                 abi.clone(),
                 symbol.clone(),
+                lib.clone(),
                 arg_types.clone(),
                 ret_type.clone(),
                 args.clone(),
@@ -601,14 +605,15 @@ impl<'p> Machine<'p> {
                 ex.ret(self, v)
             }
 
-            Kind::Extern(abi, symbol, arg_types, ret_type, mut args) => {
+            Kind::Extern(abi, symbol, lib, arg_types, ret_type, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arg_types.len() {
-                    mk(run_extern(&abi, &symbol, &args)?)
+                    mk(run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, &args)?)
                 } else {
                     mk(Value::Extern {
                         abi,
                         symbol,
+                        lib,
                         arg_types,
                         ret_type,
                         args,

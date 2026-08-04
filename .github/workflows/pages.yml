@@ -1,7 +1,8 @@
 name: Pages
 
-# Build the browser playground (`build wasm`) and publish web/site/ to GitHub
-# Pages. Runs on pushes to the default branch; can also be triggered by hand.
+# Build the browser playground (the Rust compiler crates to wasm) and publish
+# web/site/ to GitHub Pages. Runs on pushes to the default branch; can also be
+# triggered by hand.
 
 on:
   push:
@@ -29,13 +30,14 @@ jobs:
 
       - uses: cachix/install-nix-action@v27
 
-      # Produces web/site/thrax.{js,wasm} beside the tracked index.html, and
+      # Produces web/site/playground.wasm beside the tracked index.html, and
       # proves the build actually runs before we publish it.
       - name: Build the playground
         run: |
           nix develop --command bash -c '
             set -e
-            build wasm
+            cargo build -p playground --target wasm32-unknown-unknown --release
+            cp target/wasm32-unknown-unknown/release/playground.wasm web/site/playground.wasm
             node web/smoke.mjs
           '
 
