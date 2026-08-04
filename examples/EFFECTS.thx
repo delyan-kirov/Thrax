@@ -6,7 +6,7 @@
 # type carries the effects it may perform as a row on the arrow: `A -> <E> B`; a
 # bare arrow is pure, and an unhandled effect is a compile-time error.
 
-$ Exn : @effect = throw : Str -> `a,  # never resumes -> polymorphic result
+$ Exn : @effect = throw : Str -> `A,  # never resumes -> polymorphic result
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 

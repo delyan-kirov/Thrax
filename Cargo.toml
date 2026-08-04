@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/utilities",
+    "crates/frontend",
+    "crates/interpreter",
+    "crates/ccg",
+    "crates/thrax",
+    "web/playground",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# The rewrite forbids external dependencies: everything is in-house, std-only.
+# This is enforced by convention (no [dependencies] on crates.io) rather than a
+# lockfile switch, since cargo has no first-class "std-only" flag.

@@ -116,8 +116,14 @@
 </footer>
 
 <script type="module">
-import createThrax from "./thrax.js";
 import { CELLS } from "./cells.mjs";
+import { createHost } from "./host.mjs";
+
+// Hand-written glue for the Rust compiler wasm (web/playground): a
+// wasm32-unknown-unknown cdylib with a raw C-ABI over linear memory. No
+// wasm-bindgen, no emscripten. `host` owns the `@extern` registry the compiled
+// program calls into; the page is free to register more host functions.
+const host = createHost();
 
 // Minimal inline formatting for prose: escape HTML, then `code` -> <code>.
 function fmt(s) {
@@ -126,8 +132,13 @@ function fmt(s) {
 }
 
 function grow(ta) {
+  // Measuring the natural height needs a momentary collapse to `auto`, which
+  // shortens the document and makes the browser re-anchor the scroll. Restore
+  // the scroll position so the page doesn't jump on every keystroke.
+  const y = window.scrollY;
   ta.style.height = "auto";
   ta.style.height = ta.scrollHeight + "px";
+  window.scrollTo(window.scrollX, y);
 }
 
 // Build every cell's DOM up front; wire behavior once the runtime is ready.
@@ -185,43 +196,43 @@ function setStatus(r, text, cls) {
   r.status.className = "status" + (cls ? " " + cls : "");
 }
 
-// One shared runtime; a mutable sink routes its stdout to the running cell.
-let sink = [];
-let Module;
+// One shared wasm instance; each cell compiles independently.
 try {
-  Module = await createThrax({
-    print:    s => sink.push({ t: s, err: false }),
-    printErr: s => sink.push({ t: s, err: true }),
-  });
+  const res = await fetch("playground.wasm");
+  const { instance } = WebAssembly.instantiateStreaming
+    ? await WebAssembly.instantiateStreaming(res.clone(), host.imports).catch(
+        async () => WebAssembly.instantiate(await res.arrayBuffer(), host.imports))
+    : await WebAssembly.instantiate(await res.arrayBuffer(), host.imports);
+  host.bind(instance.exports);
 } catch (e) {
   document.getElementById("boot").innerHTML =
-    "The Thrax runtime failed to load. Serve this page over http:// with " +
-    "<code>thrax.js</code> + <code>thrax.wasm</code> beside it (run <code>build wasm</code>).";
+    "The Thrax compiler failed to load. Serve this page over http:// with " +
+    "<code>playground.wasm</code> beside it (build it with <code>cargo build -p " +
+    "playground --target wasm32-unknown-unknown --release</code>).";
   throw e;
 }
 
 function runCell(r) {
-  sink = [];
   const m = parseInt(r.mode.value, 10);
   setStatus(r, "running…");
-  let rc;
+  let text;
   try {
-    rc = Module.ccall("thrax_eval", "number", ["string", "number"], [r.ta.value, m]);
+    text = host.compile(r.ta.value, m);
   } catch (e) {
-    r.out.textContent = "the runtime crashed: " + e;
+    r.out.textContent = "the compiler trapped: " + e + " (reload the page)";
     r.out.classList.add("has-out");
-    setStatus(r, "crashed", "bad");
+    setStatus(r, "trapped", "bad");
     return;
   }
+  const isErr = /error|mismatch|unbound|cannot|fault|unavailable|has no `test`/i
+    .test(text.split("\n")[0]);
   r.out.textContent = "";
-  for (const l of sink) {
-    const span = document.createElement("span");
-    if (l.err) span.className = "err";
-    span.textContent = l.t + "\n";
-    r.out.appendChild(span);
-  }
-  r.out.classList.toggle("has-out", sink.length > 0);
-  setStatus(r, rc === 0 ? "exit 0" : "exit " + rc, rc === 0 ? "ok" : "bad");
+  const span = document.createElement("span");
+  if (isErr) span.className = "err";
+  span.textContent = text;
+  r.out.appendChild(span);
+  r.out.classList.toggle("has-out", text.length > 0);
+  setStatus(r, isErr ? "error" : "ok", isErr ? "bad" : "ok");
 }
 
 for (const r of runners) {
@@ -234,8 +245,9 @@ for (const r of runners) {
 }
 
 document.getElementById("boot").innerHTML =
-  "Runtime ready. This whole page is powered by the Thrax compiler running as " +
-  "WebAssembly. <a href=\"https://github.com/delyan-kirov/Thrax\">Read the source</a>.";
+  "Ready. This whole page is powered by the Thrax compiler (the Rust rewrite) " +
+  "running as WebAssembly in your browser. " +
+  "<a href=\"https://github.com/delyan-kirov/Thrax\">Read the source</a>.";
 </script>
 </body>
 </html>

@@ -1,0 +1,12 @@
+[package]
+name = "interpreter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+frontend = { path = "../frontend" }
+utilities = { path = "../utilities" }

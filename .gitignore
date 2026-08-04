@@ -1,4 +1,12 @@
 .*
+# ...but the repo's own dotfiles/dirs must stay tracked (the broad `.*` above
+# would otherwise silently drop new workflow files -- pages.yml was lost this
+# way). Re-include the directory before its contents can be tracked.
+!/.gitignore
+!/.github/
+# build output at any depth: root artifacts/, module scratch, and the vendored
+# libffi in external/artifacts/ (the subtree source under external/libffi/ stays
+# tracked).
 artifacts/
 /build
 /examples/raylib_demo/build
@@ -15,3 +23,4 @@ lib/*
 # local configs/notes
 *.local.*
 result
+target
