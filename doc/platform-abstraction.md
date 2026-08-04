@@ -463,12 +463,17 @@ is shared; a new platform implements only `call`.
   arbitrary library the C backend links against (`@extern "C" "SDL_Init" "SDL2"`).
   libffi handles the calling convention on every target, so there is no
   hand-written per-ABI trampoline and no arity/`Real32` restriction.
-- libffi is built from the vendored `external/libffi` by the interpreter's
-  `build.rs` (an out-of-tree `configure`/`make` into `OUT_DIR`, cached; skipped on
-  wasm). A thin C shim, `crates/interpreter/src/ffi_shim.c`, exposes one
-  `thx_ffi_call` entry so the Rust side never mirrors libffi's arch-specific
-  `ffi_cif`/`ffi_type` layout or `FFI_DEFAULT_ABI`. Building the workspace
-  therefore needs a C toolchain (cc/make/ar), as the C backend already did.
+- The interpreter's `build.rs` LINKS a prebuilt libffi (it does not build one):
+  it prefers the vendored `external/artifacts` (a static archive), else the
+  environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and CI export
+  these), else `pkg-config`, else a system libffi. It compiles a thin C shim,
+  `crates/interpreter/src/ffi_shim.c`, exposing one `thx_ffi_call` entry so the
+  Rust side never mirrors libffi's arch-specific `ffi_cif`/`ffi_type` layout or
+  `FFI_DEFAULT_ABI`; a C toolchain (cc/ar) is therefore a build input, as the C
+  backend already needed. The vendored `external/libffi` subtree is pruned to
+  source only (no generated `configure`); rebuilding its `external/artifacts`
+  from source is a rare manual step in a heavy toolchain shell:
+  `nix develop ./external -c ./external/rebuild-libffi.sh`.
 - The wasm backend (`WasmHostFfi`) serialises the same value model across a single
   generic import to the JavaScript embedder, which owns the function registry (the
   playground). The compiler knows none of the host names.

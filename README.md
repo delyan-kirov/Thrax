@@ -20,8 +20,9 @@ $ answer : Int = fib 10   # 55
 ## Building
 
 Thrax is a Rust workspace (`crates/`) with no external crate dependencies. The
-interpreter builds the vendored `external/libffi` from source for its FFI, so a C
-toolchain (cc/make/ar) must be on `PATH`; nix provides everything.
+interpreter links libffi for its FFI (resolved from `$LIBFFI`/`$LIBFFI_DEV`, a
+vendored prebuilt, or the system) and compiles a small C shim, so a C toolchain
+(cc/ar) must be on `PATH`; nix provides everything.
 
 **With nix**:
 
@@ -41,9 +42,9 @@ cargo build --release   # target/release/thrax
 
 FFI is on by default and needs no configuration. Common libc/libm calls (the `C`
 namespace) are served from a compiled-in table; any other `@extern "C"` symbol is
-resolved at runtime with `dlopen`/`dlsym` and called through libffi, which the
-interpreter builds from `external/libffi`. The compiled C backend links the real
-library directly. See [`doc/platform-abstraction.md`](doc/platform-abstraction.md).
+resolved at runtime with `dlopen`/`dlsym` and called through libffi. The compiled
+C backend links the real library directly. See
+[`doc/platform-abstraction.md`](doc/platform-abstraction.md).
 
 ## Running programs
 

@@ -22,9 +22,9 @@
       '';
 
       # The compiler, built by the Rust workspace. The interpreter's build.rs
-      # builds the vendored external/libffi from source, so a C toolchain
-      # (cc/make/ar) is a build input; there are no external Rust crates to
-      # fetch, so the build is offline.
+      # links libffi (for `@extern`) against $LIBFFI/$LIBFFI_DEV and compiles a
+      # small C shim, so libffi + a C toolchain (cc/ar) are build inputs; there
+      # are no external Rust crates to fetch, so the build is offline.
       thrax = pkgs.stdenv.mkDerivation {
         pname = "thrax";
         version = "0.1.0";
@@ -34,13 +34,15 @@
           pkgs.cargo
           pkgs.rustc
           pkgs.gcc
-          pkgs.gnumake
         ];
+        buildInputs = [ pkgs.libffi ];
 
         buildPhase = ''
           runHook preBuild
           export HOME=$TMPDIR
           export CARGO_HOME=$TMPDIR/.cargo
+          export LIBFFI=${pkgs.libffi.out}
+          export LIBFFI_DEV=${pkgs.libffi.dev}
           cargo build --release --offline -p thrax
           runHook postBuild
         '';

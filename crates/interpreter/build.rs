@@ -1,14 +1,31 @@
-//! Builds the vendored libffi (`external/libffi`) from source and the thin C
-//! shim over it (`src/ffi_shim.c`), then links both into the interpreter. The
-//! interpreter's `@extern` path calls arbitrary C functions through libffi, so
-//! `thrax run` reaches the same libraries the compiled backend links against.
+//! Links libffi (and a thin C shim over it, `src/ffi_shim.c`) into the
+//! interpreter, so `@extern` reaches arbitrary C libraries at runtime, the same
+//! ones the compiled backend links against.
 //!
-//! The wasm playground target has no libc or loader; there `@extern` goes
-//! through the JavaScript host bridge instead, so this build is skipped.
+//! libffi is a rarely-changing native dependency, so this does NOT build it:
+//! it links a PREBUILT one, resolved in order:
+//!   1. the vendored `external/artifacts` (built by `external/rebuild-libffi.sh`
+//!      in the heavy `nix develop ./external` shell), a static archive;
+//!   2. the environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and
+//!      CI export these), linked dynamically;
+//!   3. `pkg-config libffi`;
+//!   4. a system libffi on the default search path.
+//!
+//! The wasm playground has no libc or loader; there `@extern` goes through the
+//! JavaScript host bridge, so this build is skipped.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+enum Link {
+    /// A static `libffi.a` in this directory.
+    Static(PathBuf),
+    /// A shared `libffi` in this directory (rpath it for runtime resolution).
+    Dynamic(PathBuf),
+    /// A libffi already on the linker's default search path.
+    System,
+}
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
@@ -16,52 +33,96 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=src/ffi_shim.c");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=LIBFFI");
+    println!("cargo:rerun-if-env-changed=LIBFFI_DEV");
 
-    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let libffi_src = manifest
-        .join("../../external/libffi")
-        .canonicalize()
-        .expect("vendored external/libffi not found");
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let repo = manifest.join("../..");
 
-    // Out-of-tree (VPATH) build so the vendored source tree is never touched and
-    // the artifacts live under OUT_DIR. libffi builds once and is cached across
-    // incremental compiles (the static archive's presence is the cache key).
-    let build = out.join("libffi-build");
-    let lib_a = build.join(".libs/libffi.a");
-    let inc = build.join("include");
-    if !lib_a.exists() {
-        std::fs::create_dir_all(&build).unwrap();
-        run(Command::new(libffi_src.join("configure"))
-            .args(["--disable-shared", "--enable-static", "--with-pic"])
-            .current_dir(&build));
-        let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".into());
-        run(Command::new("make").arg(format!("-j{jobs}")).current_dir(&build));
-    }
+    let (include, link) = resolve_libffi(&repo);
 
-    // The shim needs libffi's generated headers from the build directory.
+    // Compile the shim against the chosen libffi's headers and archive it.
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
     let shim_o = out.join("thx_ffi_shim.o");
-    run(Command::new(&cc)
-        .args(["-O2", "-fPIC", "-c"])
-        .arg(manifest.join("src/ffi_shim.c"))
-        .arg(format!("-I{}", inc.display()))
-        .arg("-o")
-        .arg(&shim_o));
+    let mut compile = Command::new(&cc);
+    compile.args(["-O2", "-fPIC", "-c"]).arg(manifest.join("src/ffi_shim.c"));
+    if let Some(dir) = &include {
+        compile.arg(format!("-I{}", dir.display()));
+    }
+    compile.arg("-o").arg(&shim_o);
+    run(&mut compile);
+
     let shim_a = out.join("libthxffishim.a");
     let _ = std::fs::remove_file(&shim_a);
     let ar = env::var("AR").unwrap_or_else(|_| "ar".into());
     run(Command::new(&ar).arg("rcs").arg(&shim_a).arg(&shim_o));
 
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!(
-        "cargo:rustc-link-search=native={}",
-        build.join(".libs").display()
-    );
-    // The shim references libffi, so it must be listed before libffi for a
-    // single-pass static linker to resolve the symbols.
+    // The shim references libffi, so it must precede libffi for a single-pass
+    // static linker to resolve the symbols.
     println!("cargo:rustc-link-lib=static=thxffishim");
-    println!("cargo:rustc-link-lib=static=ffi");
+    match link {
+        Link::Static(dir) => {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=static=ffi");
+        }
+        Link::Dynamic(dir) => {
+            println!("cargo:rustc-link-search=native={}", dir.display());
+            println!("cargo:rustc-link-lib=dylib=ffi");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+        }
+        Link::System => {
+            println!("cargo:rustc-link-lib=dylib=ffi");
+        }
+    }
+}
+
+fn resolve_libffi(repo: &Path) -> (Option<PathBuf>, Link) {
+    // 1. The vendored prebuilt (external/rebuild-libffi.sh output).
+    let art = repo.join("external/artifacts");
+    if art.join("lib/libffi.a").exists() && art.join("include/ffi.h").exists() {
+        return (Some(art.join("include")), Link::Static(art.join("lib")));
+    }
+    // 2. A libffi provided by the environment (nix dev shell / CI).
+    if let (Ok(lib), Ok(dev)) = (env::var("LIBFFI"), env::var("LIBFFI_DEV")) {
+        let inc = PathBuf::from(dev).join("include");
+        if inc.join("ffi.h").exists() {
+            return (Some(inc), Link::Dynamic(PathBuf::from(lib).join("lib")));
+        }
+    }
+    // 3. pkg-config.
+    if let Some(paths) = pkg_config_libffi() {
+        return paths;
+    }
+    // 4. A system libffi with <ffi.h> on the default include path.
+    (None, Link::System)
+}
+
+/// Ask `pkg-config` for libffi's include and library directories, if available.
+fn pkg_config_libffi() -> Option<(Option<PathBuf>, Link)> {
+    let out = Command::new("pkg-config")
+        .args(["--cflags-only-I", "--libs-only-L", "libffi"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut include = None;
+    let mut libdir = None;
+    for tok in text.split_whitespace() {
+        if let Some(p) = tok.strip_prefix("-I") {
+            include = Some(PathBuf::from(p));
+        } else if let Some(p) = tok.strip_prefix("-L") {
+            libdir = Some(PathBuf::from(p));
+        }
+    }
+    let link = match libdir {
+        Some(dir) => Link::Dynamic(dir),
+        None => Link::System,
+    };
+    Some((include, link))
 }
 
 fn run(cmd: &mut Command) {
