@@ -7,37 +7,37 @@
 
 # Strip a known prefix, else fall through to the whole string.
 $ route : Str -> Str = \s =
-	when s is "GET " ++ path then path
-	         is "PUT " ++ path then path
+	is s | "GET " ++ path => path
+	         | "PUT " ++ path => path
 	         else s
 
-$ ck_get   : Int = if (route "GET /home") ?= "/home" then 0 else 1
-$ ck_put   : Int = if (route "PUT /x") ?= "/x" then 0 else 1
-$ ck_other : Int = if (route "nope") ?= "nope" then 0 else 1
+$ ck_get   : Int = if (route "GET /home") ?= "/home" => 0 else 1
+$ ck_put   : Int = if (route "PUT /x") ?= "/x" => 0 else 1
+$ ck_other : Int = if (route "nope") ?= "nope" => 0 else 1
 
 # An empty prefix matches everything; a prefix longer than the subject falls
 # through (the slice clamps, so the byte-equality simply fails).
-$ ck_empty_prefix : Int = when "hi" is "" ++ rest then
-	if rest ?= "hi" then 0 else 1 else 1
-$ ck_too_long : Int = when "ab" is "abcd" ++ _ then 1 else 0
+$ ck_empty_prefix : Int = is "hi" | "" ++ rest =>
+	if rest ?= "hi" => 0 else 1 else 1
+$ ck_too_long : Int = is "ab" | "abcd" ++ _ => 1 else 0
 
 # The `rest` sub-pattern can itself be refutable: this arm matches only when
 # the tail is exactly empty, i.e. the whole string equals the prefix.
 $ exactly : Str -> Int = \s =
-	when s is "quit" ++ "" then 1
-	         is "quit" ++ more then 2
+	is s | "quit" ++ "" => 1
+	         | "quit" ++ more => 2
 	         else 0
 
-$ ck_exact   : Int = if (exactly "quit") ?= 1 then 0 else 1
-$ ck_partial : Int = if (exactly "quitting") ?= 2 then 0 else 1
-$ ck_nomatch : Int = if (exactly "stay") ?= 0 then 0 else 1
+$ ck_exact   : Int = if (exactly "quit") ?= 1 => 0 else 1
+$ ck_partial : Int = if (exactly "quitting") ?= 2 => 0 else 1
+$ ck_nomatch : Int = if (exactly "stay") ?= 0 => 0 else 1
 
 # Nested prefixes strip layer by layer.
 $ strip2 : Str -> Str = \s =
-	when s is "a" ++ "b" ++ rest then rest else "?"
+	is s | "a" ++ "b" ++ rest => rest else "?"
 
-$ ck_nested : Int = if (strip2 "abXY") ?= "XY" then 0 else 1
-$ ck_nested_no : Int = if (strip2 "aXY") ?= "?" then 0 else 1
+$ ck_nested : Int = if (strip2 "abXY") ?= "XY" => 0 else 1
+$ ck_nested_no : Int = if (strip2 "aXY") ?= "?" => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_get + ck_put + ck_other + ck_empty_prefix + ck_too_long + ck_exact + ck_partial + ck_nomatch + ck_nested + ck_nested_no

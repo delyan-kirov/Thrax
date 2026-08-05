@@ -10,10 +10,10 @@ $ Config : @effect = ask : {} -> Str,
 
 # Bare `ask` resolves to Reader.ask here: only Reader is handled, so the ambient
 # effect is <Reader> and the perform's effect must fit it.
-$ readEnv : Int = do (ask {}) + 1 ctl k is Reader.ask u = k 10   # 11
+$ readEnv : Int = do (ask {}) + 1 ctl k | Reader.ask u => k 10   # 11
 
 # Fully qualified perform and clause for the other effect's `ask`.
-$ cfg : Str = do Config.ask {} ctl k is Config.ask u = k "hello" # "hello"
+$ cfg : Str = do Config.ask {} ctl k | Config.ask u => k "hello" # "hello"
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : Int = readEnv ; cfg ; 0

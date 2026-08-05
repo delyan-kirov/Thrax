@@ -13,16 +13,16 @@ $ Token : @union =
 $ num_tok: Token = Token.Num.{1}
 
 $ is_num: Token -> Bool = \tok =
-    when tok
-        is Token.Num.{_} then @true
+    is tok
+        | Token.Num.{_} => @true
     else
         @false
 
 # Bool is genuinely built-in: its values are the literals `@true`/`@false`, so
 # matching them uses the `@`-spelling (lowercase `true`/`false` would bind a
 # variable). Since `@bool` has exactly two values, these `when`s are exhaustive.
-$ chk0 : Int = when is_num num_tok is @true then 0 else 1
-$ chk0b : Int = when is_num (Token.Txt.{"x"}) is @false then 0 else 1
+$ chk0 : Int = is is_num num_tok | @true => 0 else 1
+$ chk0b : Int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
 
 # Sum types: constructor matching, payload binding, and lazy (non-strict)
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a
@@ -31,30 +31,30 @@ $ chk0b : Int = when is_num (Token.Txt.{"x"}) is @false then 0 else 1
 # `Maybe` is generic: the free `T in its body is an implicit type parameter, so
 # `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
 $ Maybe : @union =
-    Just: `T,
+    Just: t,
     None: {}
 
 # Match a variant, bind its payload, fall back through `else`. The signature
 # fixes the element type with `Maybe Int` (application is juxtaposition).
 $ get : Int -> Maybe Int -> Int = \d = \m =
-    when m
-        is Maybe.Just.{x} then x
+    is m
+        | Maybe.Just.{x} => x
     else d
 
-$ chk1 : Int = when get 99 (Maybe.Just.{7}) is 7  then 0 else 1
-$ chk2 : Int = when get 99 Maybe.None        is 99 then 0 else 1
+$ chk1 : Int = is get 99 (Maybe.Just.{7}) | 7  => 0 else 1
+$ chk2 : Int = is get 99 Maybe.None        | 99 => 0 else 1
 
 # The same `Maybe` at a different element type, in the same program.
 $ greeting : Maybe Str = Maybe.Just.{ "hi" }
-$ chk2b : Int = when greeting is Maybe.Just.{_} then 0 else 1
+$ chk2b : Int = is greeting | Maybe.Just.{_} => 0 else 1
 
 # Bare constructors: the type name is dropped and inferred from context (the
 # `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
 # payload.
 $ none_i : Maybe Int = .None
 $ some_i : Maybe Int = .Just.{ 5 }
-$ chk2c : Int = when get 0 some_i is 5 then 0 else 1
-$ chk2d : Int = when get 8 none_i is 8 then 0 else 1
+$ chk2c : Int = is get 0 some_i | 5 => 0 else 1
+$ chk2d : Int = is get 8 none_i | 8 => 0 else 1
 
 # The prelude's generic, recursive `List` (its `[..]`/`::` sugar is hardwired to
 # that name). Under STRICT evaluation this builds FINITE lists only; the former
@@ -63,18 +63,18 @@ $ chk2d : Int = when get 8 none_i is 8 then 0 else 1
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
-$ Pair : @union = P: {lhs: `A, rhs: `B}
+$ Pair : @union = P: {lhs: a, rhs: b}
 $ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
-    when mk is Pair.P.{ .lhs = l, .rhs = r } then
-        when r - l is 1 then 0 else 1
+    is mk | Pair.P.{ .lhs = l, .rhs = r } =>
+        is r - l | 1 => 0 else 1
     else 1
 
 # Nested instantiation: a `List` whose element is itself a `Maybe Int`.
 $ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
 $ chk4b : Int =
-    when boxed is List.Cons.{ h, _ } then
-        when h is Maybe.Just.{ v } then (when v is 42 then 0 else 1) else 1
+    is boxed | List.Cons.{ h, _ } =>
+        is h | Maybe.Just.{ v } => (is v | 42 => 0 else 1) else 1
     else 1
 
 # (Removed: a `bomb` payload `1` that strict evaluation would force. Relying

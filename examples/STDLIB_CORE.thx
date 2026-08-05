@@ -12,46 +12,46 @@ $ with MATH
 # ---- Option ----
 $ o : Option Int = Option.Some.{ 41 }
 $ n : Option Int = Option.None
-$ ck_some   : Int = if is_some o then 0 else 1
-$ ck_none   : Int = if is_none n then 0 else 1
-$ ck_unwrap : Int = if (unwrap_or o 0) ?= 41 then 0 else 1
-$ ck_default: Int = if (unwrap_or n 7) ?= 7 then 0 else 1
-$ ck_map    : Int = if (unwrap_or (opt_map (\x = x + 1) o) 0) ?= 42 then 0 else 1
+$ ck_some   : Int = if is_some o => 0 else 1
+$ ck_none   : Int = if is_none n => 0 else 1
+$ ck_unwrap : Int = if (unwrap_or o 0) ?= 41 => 0 else 1
+$ ck_default: Int = if (unwrap_or n 7) ?= 7 => 0 else 1
+$ ck_map    : Int = if (unwrap_or (opt_map (\x = x + 1) o) 0) ?= 42 => 0 else 1
 $ ck_then   : Int =
-	let half = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
-	if (unwrap_or (opt_then half o) 99) ?= 99 then 0 else 1
+	let half = \x = if x % 2 ?= 0 => Option.Some.{ x / 2 } else Option.None in
+	if (unwrap_or (opt_then half o) 99) ?= 99 => 0 else 1
 
 # ---- tuples (the language's anonymous products) ----
 $ p : {Int, Str} = {1, "one"}
-$ ck_fst  : Int = if p.0 ?= 1 then 0 else 1
-$ ck_snd  : Int = if p.1 ?= "one" then 0 else 1
-$ ck_swap : Int = if {p.1, p.0}.1 ?= 1 then 0 else 1
+$ ck_fst  : Int = if p.0 ?= 1 => 0 else 1
+$ ck_snd  : Int = if p.1 ?= "one" => 0 else 1
+$ ck_swap : Int = if {p.1, p.0}.1 ?= 1 => 0 else 1
 
 # ---- MATH ----
-$ ck_min   : Int = if (min 3 5) ?= 3 then 0 else 1
-$ ck_max   : Int = if (max 3 5) ?= 5 then 0 else 1
-$ ck_abs   : Int = if (abs (0 - 9)) ?= 9 then 0 else 1
-$ ck_sign  : Int = if (sign (0 - 2)) + 1 ?= 0 then 0 else 1
-$ ck_clamp : Int = if (clamp 0 10 42) ?= 10 then 0 else 1
-$ ck_even  : Int = if even 4 then 0 else 1
-$ ck_odd   : Int = if odd (0 - 3) then 0 else 1
-$ ck_gcd   : Int = if (gcd 12 18) ?= 6 then 0 else 1
-$ ck_pow   : Int = if (pow 2 10) ?= 1024 then 0 else 1
+$ ck_min   : Int = if (min 3 5) ?= 3 => 0 else 1
+$ ck_max   : Int = if (max 3 5) ?= 5 => 0 else 1
+$ ck_abs   : Int = if (abs (0 - 9)) ?= 9 => 0 else 1
+$ ck_sign  : Int = if (sign (0 - 2)) + 1 ?= 0 => 0 else 1
+$ ck_clamp : Int = if (clamp 0 10 42) ?= 10 => 0 else 1
+$ ck_even  : Int = if even 4 => 0 else 1
+$ ck_odd   : Int = if odd (0 - 3) => 0 else 1
+$ ck_gcd   : Int = if (gcd 12 18) ?= 6 => 0 else 1
+$ ck_pow   : Int = if (pow 2 10) ?= 1024 => 0 else 1
 $ ck_cmp   : Int =
-	if (cmp_int 1 2) ?< 0 then (if (cmp_int 5 5) ?= 0 then 0 else 1) else 1
+	if (cmp_int 1 2) ?< 0 => (if (cmp_int 5 5) ?= 0 => 0 else 1) else 1
 
 # ---- MATH on Reals (libm through the C namespace; exact IEEE results) ----
-$ ck_sqrt  : Int = if (sqrt 9.0) ?= 3.0 then 0 else 1
-$ ck_floor : Int = if (floor 2.7) ?= 2.0 then 0 else 1
-$ ck_ceil  : Int = if (ceil 2.1) ?= 3.0 then 0 else 1
-$ ck_round : Int = if (round 2.5) ?= 3.0 then 0 else 1
-$ ck_rpow  : Int = if (pow 2.0 10.0) ?= 1024.0 then 0 else 1
-$ ck_fmod  : Int = if (fmod 7.5 2.0) ?= 1.5 then 0 else 1
-$ ck_trig  : Int = if (sin 0.0) ?= 0.0 then (if (cos 0.0) ?= 1.0 then 0 else 1) else 1
-$ ck_explog: Int = if (log (exp 1.0)) ?= 1.0 then 0 else 1
-$ ck_rmin  : Int = if (min 1.5 2.5) ?= 1.5 then 0 else 1
-$ ck_rabs  : Int = if (abs (0.0 - 4.5)) ?= 4.5 then 0 else 1
-$ ck_rclamp: Int = if (clamp 0.0 1.0 7.25) ?= 1.0 then 0 else 1
+$ ck_sqrt  : Int = if (sqrt 9.0) ?= 3.0 => 0 else 1
+$ ck_floor : Int = if (floor 2.7) ?= 2.0 => 0 else 1
+$ ck_ceil  : Int = if (ceil 2.1) ?= 3.0 => 0 else 1
+$ ck_round : Int = if (round 2.5) ?= 3.0 => 0 else 1
+$ ck_rpow  : Int = if (pow 2.0 10.0) ?= 1024.0 => 0 else 1
+$ ck_fmod  : Int = if (fmod 7.5 2.0) ?= 1.5 => 0 else 1
+$ ck_trig  : Int = if (sin 0.0) ?= 0.0 => (if (cos 0.0) ?= 1.0 => 0 else 1) else 1
+$ ck_explog: Int = if (log (exp 1.0)) ?= 1.0 => 0 else 1
+$ ck_rmin  : Int = if (min 1.5 2.5) ?= 1.5 => 0 else 1
+$ ck_rabs  : Int = if (abs (0.0 - 4.5)) ?= 4.5 => 0 else 1
+$ ck_rclamp: Int = if (clamp 0.0 1.0 7.25) ?= 1.0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then

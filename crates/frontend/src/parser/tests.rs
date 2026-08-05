@@ -7,19 +7,15 @@ fn prog(src: &str) -> Parsed {
 
 #[test]
 fn type_names_must_be_capitalized() {
-    // A bare lowercase name in type position (a typo for a type variable, which
-    // is the backtick form) is rejected, both in use and in declaration.
+    // A declared type name must be capitalized.
     let err = |src: &str| match parse(src) {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    assert!(err("@mod M\n$ x : foo = 5").contains("capital letter"));
     assert!(err("@mod M\n$ point : @struct = a: Int,").contains("capital letter"));
-    // A lowercase backtick type variable is also rejected: type names are all
-    // capitalized, so a type variable is `` `A ``, not `` `a ``.
-    assert!(err("@mod M\n$ id : `a -> `a = \\x = x").contains("capital letter"));
-    // A capitalized backtick type variable and a capitalized type both parse.
-    assert!(parse("@mod M\n$ id : `A -> `A = \\x = x").is_ok());
+    // A lowercase name in type-use position is a type variable and parses.
+    assert!(parse("@mod M\n$ id : a -> a = \\x = x").is_ok());
+    // A capitalized type also parses.
     assert!(parse("@mod M\n$ n : Int = 5").is_ok());
 }
 
@@ -78,7 +74,7 @@ fn application_is_left_associative_and_tight() {
 
 #[test]
 fn lambda_if_and_comparison() {
-    let p = prog("@mod M\n$ f = \\n = if n ?= 0 then 1 else n");
+    let p = prog("@mod M\n$ f = \\n = if n ?= 0 => 1 else n");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -116,7 +112,7 @@ fn struct_decl_and_literal_and_field() {
 
 #[test]
 fn variant_literal_and_when_match() {
-    let src = "@mod M\n$ f = \\l = when l is List.Nil then 0 is List.Cons.{_, xs} then 1 else 2";
+    let src = "@mod M\n$ f = \\l = is l | List.Nil => 0 | List.Cons.{_, xs} => 1 else 2";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -135,7 +131,7 @@ fn variant_literal_and_when_match() {
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "@mod M\n$ g : List `T -> Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "@mod M\n$ g : List t -> Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     assert!(matches!(
         &p.program.items[0],

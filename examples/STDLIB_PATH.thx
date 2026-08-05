@@ -9,32 +9,32 @@ $ with PATH
 $ with LIST
 $ with STR
 
-$ ck_base   : Int = if (basename "a/b/c.txt") ?= "c.txt" then 0 else 1
-$ ck_base_sl: Int = if (basename "a/b/") ?= "b" then 0 else 1
-$ ck_base_n : Int = if (basename "plain") ?= "plain" then 0 else 1
-$ ck_base_r : Int = if (basename "/") ?= "/" then 0 else 1
+$ ck_base   : Int = if (basename "a/b/c.txt") ?= "c.txt" => 0 else 1
+$ ck_base_sl: Int = if (basename "a/b/") ?= "b" => 0 else 1
+$ ck_base_n : Int = if (basename "plain") ?= "plain" => 0 else 1
+$ ck_base_r : Int = if (basename "/") ?= "/" => 0 else 1
 
-$ ck_dir    : Int = if (dirname "a/b/c.txt") ?= "a/b" then 0 else 1
-$ ck_dir_sl : Int = if (dirname "a/b//") ?= "a" then 0 else 1
-$ ck_dir_n  : Int = if (dirname "plain") ?= "." then 0 else 1
-$ ck_dir_a  : Int = if (dirname "/a") ?= "/" then 0 else 1
-$ ck_dir_r  : Int = if (dirname "/") ?= "/" then 0 else 1
+$ ck_dir    : Int = if (dirname "a/b/c.txt") ?= "a/b" => 0 else 1
+$ ck_dir_sl : Int = if (dirname "a/b//") ?= "a" => 0 else 1
+$ ck_dir_n  : Int = if (dirname "plain") ?= "." => 0 else 1
+$ ck_dir_a  : Int = if (dirname "/a") ?= "/" => 0 else 1
+$ ck_dir_r  : Int = if (dirname "/") ?= "/" => 0 else 1
 
-$ ck_ext    : Int = if (extension "a/b.txt") ?= "txt" then 0 else 1
-$ ck_ext_n  : Int = if (extension "a.b/c") ?= "" then 0 else 1
-$ ck_ext_dot: Int = if (extension ".bashrc") ?= "" then 0 else 1
-$ ck_strip  : Int = if (strip_ext "a/b.txt") ?= "a/b" then 0 else 1
-$ ck_strip_n: Int = if (strip_ext "a/b") ?= "a/b" then 0 else 1
+$ ck_ext    : Int = if (extension "a/b.txt") ?= "txt" => 0 else 1
+$ ck_ext_n  : Int = if (extension "a.b/c") ?= "" => 0 else 1
+$ ck_ext_dot: Int = if (extension ".bashrc") ?= "" => 0 else 1
+$ ck_strip  : Int = if (strip_ext "a/b.txt") ?= "a/b" => 0 else 1
+$ ck_strip_n: Int = if (strip_ext "a/b") ?= "a/b" => 0 else 1
 
-$ ck_join   : Int = if (PATH.join "a" "b") ?= "a/b" then 0 else 1
-$ ck_join_sl: Int = if (PATH.join "a/" "b") ?= "a/b" then 0 else 1
-$ ck_join_r : Int = if (PATH.join "/" "a") ?= "/a" then 0 else 1
-$ ck_join_ab: Int = if (PATH.join "a" "/etc") ?= "/etc" then 0 else 1
-$ ck_join_mt: Int = if (PATH.join "" "b") ?= "b" then 0 else 1
+$ ck_join   : Int = if (PATH.join "a" "b") ?= "a/b" => 0 else 1
+$ ck_join_sl: Int = if (PATH.join "a/" "b") ?= "a/b" => 0 else 1
+$ ck_join_r : Int = if (PATH.join "/" "a") ?= "/a" => 0 else 1
+$ ck_join_ab: Int = if (PATH.join "a" "/etc") ?= "/etc" => 0 else 1
+$ ck_join_mt: Int = if (PATH.join "" "b") ?= "b" => 0 else 1
 
-$ ck_abs    : Int = if is_abs "/etc" then (if is_abs "etc" then 1 else 0) else 1
-$ ck_parts  : Int = if (STR.join "," (parts "/a//b/")) ?= "a,b" then 0 else 1
-$ ck_parts_n: Int = if (length (parts "")) ?= 0 then 0 else 1
+$ ck_abs    : Int = if is_abs "/etc" => (if is_abs "etc" => 1 else 0) else 1
+$ ck_parts  : Int = if (STR.join "," (parts "/a//b/")) ?= "a,b" => 0 else 1
+$ ck_parts_n: Int = if (length (parts "")) ?= 0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_base + ck_base_sl + ck_base_n + ck_base_r

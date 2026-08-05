@@ -21,9 +21,9 @@ $ false : Bool = @false
 # The blessed list type: `[a, b]`, `[]`, `x :: xs` and `[h, ..rest]`
 # patterns are sugar for its constructors.
 $ List : @union =
-	Cons: {`T, List `T},
+	Cons: {t, List t},
 	Nil: {},
 
 # Runtime assertion: no-op on truth, message + exit 1 on falsehood.
 $ assert : Bool -> {} = \b =
-	if b then {} else (C.puts "assertion failed"; C.exit 1)
+	if b => {} else (C.puts "assertion failed"; C.exit 1)

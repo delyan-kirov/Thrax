@@ -21,9 +21,9 @@ $ Point : @struct =
 
 # A literal switch over Int -- doubles as a `case`.
 $ classify : Int -> Str = \n =
-	when n is 0 then "zero"
-	         is 1 then "one"
-	         is 2 then "two"
+	is n | 0 => "zero"
+	         | 1 => "one"
+	         | 2 => "two"
 	         else "many"
 
 $ c0 : Str = classify 0
@@ -32,8 +32,8 @@ $ cN : Str = classify 17
 
 # Guard on a struct's field value, then bind, then a catch-all.
 $ greet : Person -> Str = \p =
-	when p is Person.{ .age = 0 } then "newborn"
-	       is Person.{ .name = who } then who
+	is p | Person.{ .age = 0 } => "newborn"
+	       | Person.{ .name = who } => who
 	       else "?"
 
 $ g_baby  : Str = greet Person.{ .name = "Q", .age = 0 }
@@ -41,15 +41,15 @@ $ g_alice : Str = greet Person.{ .name = "Alice", .age = 41 }
 
 # Bind fields out of the matched value (irrefutable arm: always matches).
 $ sum_xy : Point -> Int = \pt =
-	when pt is Point.{ x, y } then x + y
+	is pt | Point.{ x, y } => x + y
 	        else 0
 
 $ s : Int = sum_xy Point.{ .x = 3, .y = 4 }
 
 # Nested: guard a struct inside a struct, binding from the same arm.
 $ origin_or : Point -> Int = \pt =
-	when pt is Point.{ .x = 0, .y = 0 } then 0
-	        is Point.{ .x = a, .y = b } then a + b
+	is pt | Point.{ .x = 0, .y = 0 } => 0
+	        | Point.{ .x = a, .y = b } => a + b
 	        else 0
 
 $ o0 : Int = origin_or Point.{ .x = 0, .y = 0 }
@@ -57,8 +57,8 @@ $ o7 : Int = origin_or Point.{ .x = 3, .y = 4 }
 
 # A catch-all variable arm binds the whole scrutinee.
 $ describe : Int -> Int = \n =
-	when n is 0 then 100
-	         is m then m + 1
+	is n | 0 => 100
+	         | m => m + 1
 	         else 0
 $ d5 : Int = describe 5
 
@@ -68,9 +68,9 @@ $ d5 : Int = describe 5
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
 
 $ go : Light -> Int = \l =
-	when l is Light.Red then 0
-	       is Light.Yellow then 1
-	       is Light.Green then 2
+	is l | Light.Red => 0
+	       | Light.Yellow => 1
+	       | Light.Green => 2
 
 $ lr : Int = go Light.Red
 $ lg : Int = go Light.Green
@@ -82,9 +82,9 @@ $ Opt  : @union = None: {}, Some: { Int }
 $ Wrap : @union = Empty: {}, W: { Opt }
 
 $ unwrap : Wrap -> Int = \w =
-	when w is Wrap.Empty then 0
-	       is Wrap.W.{ Opt.None } then 1
-	       is Wrap.W.{ Opt.Some.{ n } } then n
+	is w | Wrap.Empty => 0
+	       | Wrap.W.{ Opt.None } => 1
+	       | Wrap.W.{ Opt.Some.{ n } } => n
 
 $ u_none : Int = unwrap Wrap.W.{ Opt.None }
 $ u_some : Int = unwrap Wrap.W.{ Opt.Some.{ 42 } }
@@ -105,11 +105,11 @@ $ u_some : Int = unwrap Wrap.W.{ Opt.Some.{ 42 } }
 $ Peano : @union = Zero: {}, Succ: { Peano }
 
 $ depth : Peano -> Int = \n =
-	when n
-	is Peano.Zero then 0
-	is Peano.Succ.{ Peano.Zero } then 1
-	is Peano.Succ.{ Peano.Succ.{ Peano.Zero } } then 2
-	is Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ _ } } } then 3
+	is n
+	| Peano.Zero => 0
+	| Peano.Succ.{ Peano.Zero } => 1
+	| Peano.Succ.{ Peano.Succ.{ Peano.Zero } } => 2
+	| Peano.Succ.{ Peano.Succ.{ Peano.Succ.{ _ } } } => 3
 
 $ p0 : Peano = Peano.Zero
 $ p2 : Peano = Peano.Succ.{ Peano.Succ.{ Peano.Zero } }
@@ -124,11 +124,11 @@ $ p5 : Peano =
 $ Tree : @union = Tip: {}, Fork: { Tree, Tree }
 
 $ shape : Tree -> Int = \t =
-	when t
-	is Tree.Tip then 0
-	is Tree.Fork.{ Tree.Tip, Tree.Tip } then 1
-	is Tree.Fork.{ Tree.Tip, Tree.Fork.{ _, _ } } then 2
-	is Tree.Fork.{ Tree.Fork.{ _, _ }, _ } then 3
+	is t
+	| Tree.Tip => 0
+	| Tree.Fork.{ Tree.Tip, Tree.Tip } => 1
+	| Tree.Fork.{ Tree.Tip, Tree.Fork.{ _, _ } } => 2
+	| Tree.Fork.{ Tree.Fork.{ _, _ }, _ } => 3
 
 $ tp : Tree = Tree.Tip
 $ t2 : Tree = Tree.Fork.{ Tree.Tip, Tree.Fork.{ Tree.Tip, Tree.Tip } }
@@ -137,14 +137,14 @@ $ t3 : Tree = Tree.Fork.{ Tree.Fork.{ Tree.Tip, Tree.Tip }, Tree.Tip }
 # --- 3. A GENERIC box, nested three deep: `NestingDoll (NestingDoll (NestingDoll Int))`. -------
 # `peel` unwraps each `Skin` down to the `Core` at the bottom; the innermost
 # `Skin.{ n }` binds the payload. Generic + three levels, still exhaustive.
-$ NestingDoll : @union = Core: {}, Skin: { `T }
+$ NestingDoll : @union = Core: {}, Skin: { t }
 
 $ peel : NestingDoll (NestingDoll (NestingDoll Int)) -> Int = \o =
-	when o
-	is NestingDoll.Core then 0
-	is NestingDoll.Skin.{ NestingDoll.Core } then 1
-	is NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Core } } then 2
-	is NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ n } } } then n
+	is o
+	| NestingDoll.Core => 0
+	| NestingDoll.Skin.{ NestingDoll.Core } => 1
+	| NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Core } } => 2
+	| NestingDoll.Skin.{ NestingDoll.Skin.{ NestingDoll.Skin.{ n } } } => n
 
 $ k1 : NestingDoll (NestingDoll (NestingDoll Int)) = NestingDoll.Skin.{ NestingDoll.Core }
 $ k7 : NestingDoll (NestingDoll (NestingDoll Int)) =
@@ -160,12 +160,12 @@ $ Flags : @struct = sign: Sign, bit: Bit
 $ Cell  : @union  = Blank: {}, Set: { Flags }
 
 $ decode : Cell -> Int = \c =
-	when c
-	is Cell.Blank then 0
-	is Cell.Set.{ Flags.{ Sign.Plus, Bit.Off } } then 1
-	is Cell.Set.{ Flags.{ Sign.Plus, Bit.On } } then 2
-	is Cell.Set.{ Flags.{ Sign.Minus, Bit.Off } } then 3
-	is Cell.Set.{ Flags.{ Sign.Minus, Bit.On } } then 4
+	is c
+	| Cell.Blank => 0
+	| Cell.Set.{ Flags.{ Sign.Plus, Bit.Off } } => 1
+	| Cell.Set.{ Flags.{ Sign.Plus, Bit.On } } => 2
+	| Cell.Set.{ Flags.{ Sign.Minus, Bit.Off } } => 3
+	| Cell.Set.{ Flags.{ Sign.Minus, Bit.On } } => 4
 
 $ c_blank : Cell = Cell.Blank
 $ c_po : Cell = Cell.Set.{ Flags.{ .sign = Sign.Plus, .bit = Bit.On } }

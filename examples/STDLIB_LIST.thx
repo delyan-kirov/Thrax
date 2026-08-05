@@ -10,69 +10,69 @@ $ with OPT
 
 $ xs : List Int = range 1 6 # [1, 2, 3, 4, 5]
 
-$ ck_range  : Int = if (length xs) ?= 5 then 0 else 1
-$ ck_sum    : Int = if (sum xs) ?= 15 then 0 else 1
-$ ck_empty  : Int = if is_empty [] then 0 else 1
-$ ck_map    : Int = if (sum (map (\x = x * 2) xs)) ?= 30 then 0 else 1
-$ ck_filter : Int = if (length (filter (\x = x % 2 ?= 1) xs)) ?= 3 then 0 else 1
-$ ck_foldl  : Int = if (foldl (\a x = a * 10 + x) 0 xs) ?= 12345 then 0 else 1
-$ ck_foldr  : Int = if (foldr (\x a = x - a) 0 xs) ?= 3 then 0 else 1
-$ ck_rev    : Int = if (foldl (\a x = a * 10 + x) 0 (reverse xs)) ?= 54321 then 0 else 1
-$ ck_append : Int = if (length (append xs xs)) ?= 10 then 0 else 1
-$ ck_concat : Int = if (sum (concat [xs, [10], []])) ?= 25 then 0 else 1
-$ ck_take   : Int = if (sum (take 2 xs)) ?= 3 then 0 else 1
-$ ck_drop   : Int = if (sum (drop 3 xs)) ?= 9 then 0 else 1
-$ ck_nth    : Int = if (unwrap_or (nth xs 2) 0) ?= 3 then 0 else 1
-$ ck_nth_off: Int = if is_none (nth xs 9) then 0 else 1
-$ ck_set    : Int = if (sum (set_nth xs 0 100)) ?= 114 then 0 else 1
-$ ck_any    : Int = if any (\x = x ?> 4) xs then 0 else 1
-$ ck_all    : Int = if all (\x = x ?> 0) xs then 0 else 1
-$ ck_find   : Int = if (unwrap_or (find (\x = x ?> 3) xs) 0) ?= 4 then 0 else 1
-$ ck_has    : Int = if contains (\a b = a ?= b) 4 xs then 0 else 1
+$ ck_range  : Int = if (length xs) ?= 5 => 0 else 1
+$ ck_sum    : Int = if (sum xs) ?= 15 => 0 else 1
+$ ck_empty  : Int = if is_empty [] => 0 else 1
+$ ck_map    : Int = if (sum (map (\x = x * 2) xs)) ?= 30 => 0 else 1
+$ ck_filter : Int = if (length (filter (\x = x % 2 ?= 1) xs)) ?= 3 => 0 else 1
+$ ck_foldl  : Int = if (foldl (\a x = a * 10 + x) 0 xs) ?= 12345 => 0 else 1
+$ ck_foldr  : Int = if (foldr (\x a = x - a) 0 xs) ?= 3 => 0 else 1
+$ ck_rev    : Int = if (foldl (\a x = a * 10 + x) 0 (reverse xs)) ?= 54321 => 0 else 1
+$ ck_append : Int = if (length (append xs xs)) ?= 10 => 0 else 1
+$ ck_concat : Int = if (sum (concat [xs, [10], []])) ?= 25 => 0 else 1
+$ ck_take   : Int = if (sum (take 2 xs)) ?= 3 => 0 else 1
+$ ck_drop   : Int = if (sum (drop 3 xs)) ?= 9 => 0 else 1
+$ ck_nth    : Int = if (unwrap_or (nth xs 2) 0) ?= 3 => 0 else 1
+$ ck_nth_off: Int = if is_none (nth xs 9) => 0 else 1
+$ ck_set    : Int = if (sum (set_nth xs 0 100)) ?= 114 => 0 else 1
+$ ck_any    : Int = if any (\x = x ?> 4) xs => 0 else 1
+$ ck_all    : Int = if all (\x = x ?> 0) xs => 0 else 1
+$ ck_find   : Int = if (unwrap_or (find (\x = x ?> 3) xs) 0) ?= 4 => 0 else 1
+$ ck_has    : Int = if contains (\a b = a ?= b) 4 xs => 0 else 1
 $ ck_zip    : Int =
-	if (sum (map (\p = p.0 + p.1) (zip xs (reverse xs)))) ?= 30 then 0 else 1
-$ ck_zipw   : Int = if (sum (zip_with (\a b = a * b) xs xs)) ?= 55 then 0 else 1
+	if (sum (map (\p = p.0 + p.1) (zip xs (reverse xs)))) ?= 30 => 0 else 1
+$ ck_zipw   : Int = if (sum (zip_with (\a b = a * b) xs xs)) ?= 55 => 0 else 1
 $ ck_unzip  : Int =
 	let z = unzip (zip xs (reverse xs)) in
-	if (sum z.0) + (sum z.1) ?= 30 then 0 else 1
-$ ck_prod   : Int = if (product xs) ?= 120 then 0 else 1
+	if (sum z.0) + (sum z.1) ?= 30 => 0 else 1
+$ ck_prod   : Int = if (product xs) ?= 120 => 0 else 1
 $ ck_minmax : Int =
-	if (minimum xs 0) ?= 1 then (if (maximum xs 0) ?= 5 then 0 else 1) else 1
-$ ck_min_mt : Int = if (minimum [] 7) ?= 7 then 0 else 1
-$ ck_last   : Int = if (unwrap_or (last xs) 0) ?= 5 then 0 else 1
-$ ck_init   : Int = if (sum (init xs)) ?= 10 then 0 else 1
-$ ck_repl   : Int = if (sum (replicate 4 3)) ?= 12 then 0 else 1
-$ ck_inter  : Int = if (sum (intersperse 0 xs)) ?= 15 then 0 else 1
-$ ck_intern : Int = if (length (intersperse 0 xs)) ?= 9 then 0 else 1
-$ ck_takew  : Int = if (sum (take_while (\x = x ?< 3) xs)) ?= 3 then 0 else 1
-$ ck_dropw  : Int = if (sum (drop_while (\x = x ?< 3) xs)) ?= 12 then 0 else 1
+	if (minimum xs 0) ?= 1 => (if (maximum xs 0) ?= 5 => 0 else 1) else 1
+$ ck_min_mt : Int = if (minimum [] 7) ?= 7 => 0 else 1
+$ ck_last   : Int = if (unwrap_or (last xs) 0) ?= 5 => 0 else 1
+$ ck_init   : Int = if (sum (init xs)) ?= 10 => 0 else 1
+$ ck_repl   : Int = if (sum (replicate 4 3)) ?= 12 => 0 else 1
+$ ck_inter  : Int = if (sum (intersperse 0 xs)) ?= 15 => 0 else 1
+$ ck_intern : Int = if (length (intersperse 0 xs)) ?= 9 => 0 else 1
+$ ck_takew  : Int = if (sum (take_while (\x = x ?< 3) xs)) ?= 3 => 0 else 1
+$ ck_dropw  : Int = if (sum (drop_while (\x = x ?< 3) xs)) ?= 12 => 0 else 1
 $ ck_span   : Int =
 	let s = span (\x = x ?< 4) xs in
-	if (sum s.0) ?= 6 then (if (sum s.1) ?= 9 then 0 else 1) else 1
+	if (sum s.0) ?= 6 => (if (sum s.1) ?= 9 => 0 else 1) else 1
 $ ck_split  : Int =
 	let s = split_at 2 xs in
-	if (length s.0) ?= 2 then (if (sum s.1) ?= 12 then 0 else 1) else 1
+	if (length s.0) ?= 2 => (if (sum s.1) ?= 12 => 0 else 1) else 1
 $ ck_part   : Int =
 	let s = partition (\x = x % 2 ?= 1) xs in
-	if (sum s.0) ?= 9 then (if (sum s.1) ?= 6 then 0 else 1) else 1
+	if (sum s.0) ?= 9 => (if (sum s.1) ?= 6 => 0 else 1) else 1
 $ ck_fmap   : Int =
-	let halve = \x = if x % 2 ?= 0 then Option.Some.{ x / 2 } else Option.None in
-	if (sum (filter_map halve xs)) ?= 3 then 0 else 1
-$ ck_flat   : Int = if (sum (flat_map (\x = [x, x]) xs)) ?= 30 then 0 else 1
-$ ck_rmfst  : Int = if (sum (remove_first (\x = x ?= 3) xs)) ?= 12 then 0 else 1
-$ ck_index  : Int = if (unwrap_or (find_index (\x = x ?= 4) xs) 9) ?= 3 then 0 else 1
+	let halve = \x = if x % 2 ?= 0 => Option.Some.{ x / 2 } else Option.None in
+	if (sum (filter_map halve xs)) ?= 3 => 0 else 1
+$ ck_flat   : Int = if (sum (flat_map (\x = [x, x]) xs)) ?= 30 => 0 else 1
+$ ck_rmfst  : Int = if (sum (remove_first (\x = x ?= 3) xs)) ?= 12 => 0 else 1
+$ ck_index  : Int = if (unwrap_or (find_index (\x = x ?= 4) xs) 9) ?= 3 => 0 else 1
 $ ck_lookup : Int =
 	let eq = \a b = a ?= b in
-	if (unwrap_or (lookup eq 2 (zip xs (reverse xs))) 0) ?= 4 then 0 else 1
+	if (unwrap_or (lookup eq 2 (zip xs (reverse xs))) 0) ?= 4 => 0 else 1
 
 # Sorting: stable merge sort under a three-way comparison.
 $ ck_sort   : Int =
 	let cmp = \a b = a - b in
 	if (foldl (\a x = a * 10 + x) 0 (sort_by cmp [3, 1, 5, 2, 4])) ?= 12345
-	then 0 else 1
+	=> 0 else 1
 $ ck_sortrev: Int =
 	let cmp = \a b = b - a in
-	if (foldl (\a x = a * 10 + x) 0 (sort_by cmp xs)) ?= 54321 then 0 else 1
+	if (foldl (\a x = a * 10 + x) 0 (sort_by cmp xs)) ?= 54321 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck_range + ck_sum + ck_empty + ck_map + ck_filter + ck_foldl

@@ -168,7 +168,6 @@ impl<'a> Lexer<'a> {
         match c {
             b'#' => self.lex_comment(start, line),
             b'"' => self.lex_string(start, line),
-            b'`' => self.lex_tyvar(start, line),
             b'@' => self.lex_intrinsic(start, line),
             _ if crate::lexer::data::is_digit(c) => self.lex_number(start, line),
             _ if crate::lexer::data::is_ident_start(c) => Ok(self.lex_word(start, line)),
@@ -341,23 +340,6 @@ impl<'a> Lexer<'a> {
         out.extend_from_slice(scalar.encode_utf8(&mut buf).as_bytes());
         // Leave the closing '}' as the "selector char" consumed by the caller.
         Ok(())
-    }
-
-    /// `` `T `` type variable: a backtick followed by a capitalized identifier.
-    /// The leading letter must be uppercase, since all type names (constructors
-    /// and variables alike) are capitalized.
-    fn lex_tyvar(&mut self, start: usize, line: Line) -> Result<Token<'a>> {
-        self.cursor += 1; // backtick
-        if !self.cur().is_ascii_uppercase() {
-            return Err(self.err(
-                Code::UnknownSymbol,
-                start,
-                line,
-                "a type variable must start with a capital letter (e.g. `` `A ``)",
-            ));
-        }
-        self.scan_while(crate::lexer::data::is_ident_cont);
-        Ok(self.mk(Kind::TyVar, start, line))
     }
 
     /// `@name` intrinsic: an at-sign followed by an identifier.

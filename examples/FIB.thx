@@ -4,8 +4,8 @@
 # \info The Fibonacci sequence by naive double recursion.
 
 $fib : Int -> Int = \n =
-	if n ?= 0 then 0
-	else if n ?= 1 then 1
+	if n ?= 0 => 0
+	else if n ?= 1 => 1
 	else (fib (n - 1)) + (fib (n - 2))
 
 $ foo =
@@ -22,23 +22,23 @@ $fib15 = fib 15
 # annotated, recursive `let`; the match arms are bare variant patterns (`.Nil`,
 # `.Cons`) whose union is inferred from the constructors. `List` is the prelude
 # type (its `[..]`/`::` sugar is hardwired to that name).
-$ len: List `T -> Int =
-	let helper: List `T -> Int -> Int = \l n =
-		when l
-			is List.Nil then n
-			is List.Cons.{_, xs} then helper xs (n + 1)
+$ len: List t -> Int =
+	let helper: List t -> Int -> Int = \l n =
+		is l
+			| List.Nil => n
+			| List.Cons.{_, xs} => helper xs (n + 1)
 			else n
 	 in \l = helper l 0
 
 $ to: Int -> Int -> List Int = \a b =
 	let helper: Int -> Int -> List Int -> List Int =
 		\a b xs =
-			if a ?< b then helper (a+1) b List.Cons.{a, xs}
+			if a ?< b => helper (a+1) b List.Cons.{a, xs}
 			else xs
 	 in helper a b List.Nil
 
 $ sample : List Int = to 0 3
-$ len3 : Int = when len sample is 3 then 0 else 1
+$ len3 : Int = is len sample | 3 => 0 else 1
 
 $ Point: @struct =
 	x: Int,
@@ -52,6 +52,6 @@ $ add: Point -> Point -> Point = \p1 p2 =
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int =
 	len3
-	+ (if fib5 ?= 5 then 0 else 1)
-	+ (if fib10 ?= 55 then 0 else 1)
-	+ (if fib15 ?= 610 then 0 else 1)
+	+ (if fib5 ?= 5 => 0 else 1)
+	+ (if fib10 ?= 55 => 0 else 1)
+	+ (if fib15 ?= 610 => 0 else 1)
