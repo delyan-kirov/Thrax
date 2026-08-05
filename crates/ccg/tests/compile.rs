@@ -106,7 +106,7 @@ fn arithmetic_and_precedence() {
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : Int -> Int = \\n =\n\
-               \tif n ?= 0 then 0 else if n ?= 1 then 1 else (fib (n-1)) + (fib (n-2))\n\
+               \tif n ?= 0 => 0 else if n ?= 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
                $ test : Int = fib 15\n";
     assert_matches(src, "test");
 }
@@ -137,7 +137,7 @@ fn variants_and_when() {
     let src = "@mod T\n\
                $ Shape : @union = Dot: {}, Seg: { Int }\n\
                $ size : Shape -> Int = \\s =\n\
-               \twhen s is Shape.Dot then 0 is Shape.Seg.{n} then n\n\
+               \tis s | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
                $ test : Int = size (Shape.Seg.{7}) - size Shape.Dot\n";
     assert_matches(src, "test");
 }
@@ -145,9 +145,9 @@ fn variants_and_when() {
 #[test]
 fn lists_and_length() {
     let src = "@mod T\n\
-               $ len : List `T -> Int =\n\
-               \tlet helper : List `T -> Int -> Int = \\l n =\n\
-               \t\twhen l is List.Nil then n is List.Cons.{_, xs} then helper xs (n + 1)\n\
+               $ len : List t -> Int =\n\
+               \tlet helper : List t -> Int -> Int = \\l n =\n\
+               \t\tis l | List.Nil => n | List.Cons.{_, xs} => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
                $ xs : List Int = List.Cons.{1, List.Cons.{2, List.Cons.{3, List.Nil}}}\n\
                $ test : Int = len xs\n";

@@ -6,22 +6,22 @@
 # type carries the effects it may perform as a row on the arrow: `A -> <E> B`; a
 # bare arrow is pure, and an unhandled effect is a compile-time error.
 
-$ Exn : @effect = throw : Str -> `A,  # never resumes -> polymorphic result
+$ Exn : @effect = throw : Str -> a,  # never resumes -> polymorphic result
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
 # Exception: the clause ignores k (resume 0 times). Exn is handled here, so
 # safeDiv is pure at its boundary.
 $ safeDiv : Int -> Int -> Int = \a b =
-    do if b ?= 0 then Exn.throw "div0" else a / b
-    ctl k is Exn.throw msg = 0 - 1
+    do if b ?= 0 => Exn.throw "div0" else a / b
+    ctl k | Exn.throw msg => 0 - 1
 
 # Generator: resume once, summing every yielded value; else is the base case.
 # The argument performs Yield, so its arrow is `{} -> <Yield> {}`.
 $ sumGen : ({} -> <Yield> {}) -> Int = \gen =
     do gen {}
-    ctl k is Yield.yield v = v + k {}
-          else _ = 0
+    ctl k | Yield.yield v => v + k {}
+          else _ => 0
 
 $ gen3 : {} -> <Yield> {} = \u =
     let _ = Yield.yield 10 in let _ = Yield.yield 20 in let _ = Yield.yield 12 in {}
@@ -30,9 +30,9 @@ $ gen3 : {} -> <Yield> {} = \u =
 # The action performs State, so its arrow is `{} -> <State> Int`.
 $ runState : ({} -> <State> Int) -> Int -> Int = \action s0 =
     let h = do action {}
-            ctl k is get u = \s = (k s) s
-                  is put n = \s = (k {}) n
-                  else x = \s = x
+            ctl k | get u => \s = (k s) s
+                  | put n => \s = (k {}) n
+                  else x => \s = x
      in h s0
 
 $ counter : {} -> <State> Int = \u =

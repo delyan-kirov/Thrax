@@ -32,7 +32,7 @@ fn monomorphic_arithmetic() {
 #[test]
 fn identity_is_polymorphic() {
     // The classic let-generalization test: `id` gets `forall a. a -> a`.
-    assert_eq!(type_of("@mod M\n$ id = \\x = x", "id"), "`A -> `A");
+    assert_eq!(type_of("@mod M\n$ id = \\x = x", "id"), "a -> a");
 }
 
 #[test]
@@ -48,20 +48,20 @@ fn polymorphic_id_used_at_two_types() {
 fn function_application_and_arrows() {
     let src = "@mod M\n$ apply = \\f x = f x";
     // `(A -> B) -> A -> B`.
-    assert_eq!(type_of(src, "apply"), "(`A -> `B) -> `A -> `B");
+    assert_eq!(type_of(src, "apply"), "(a -> b) -> a -> b");
 }
 
 #[test]
 fn if_unifies_branches_and_condition() {
     assert_eq!(
-        type_of("@mod M\n$ f = \\n = if n ?= 0 then 1 else n", "f"),
+        type_of("@mod M\n$ f = \\n = if n ?= 0 => 1 else n", "f"),
         "Int -> Int"
     );
 }
 
 #[test]
 fn recursion_through_predeclared_globals() {
-    let src = "@mod M\n$ fib = \\n = if n ?= 0 then 0 else fib (n - 1) + fib (n - 2)";
+    let src = "@mod M\n$ fib = \\n = if n ?= 0 => 0 else fib (n - 1) + fib (n - 2)";
     assert_eq!(type_of(src, "fib"), "Int -> Int");
 }
 
@@ -109,7 +109,7 @@ fn struct_field_access_is_typed() {
 #[test]
 fn generic_struct_instantiates_per_use() {
     let src = "@mod M\n\
-                   $ Box : @struct = val: `T\n\
+                   $ Box : @struct = val: t\n\
                    $ b : Box Str = Box.{ .val = \"hi\" }\n\
                    $ out = b.val";
     assert_eq!(type_of(src, "b"), "Box Str");
@@ -119,18 +119,18 @@ fn generic_struct_instantiates_per_use() {
 #[test]
 fn union_constructor_and_match() {
     let src = "@mod M\n\
-                   $ Maybe : @union = Just: `T, None: {}\n\
+                   $ Maybe : @union = Just: t, None: {}\n\
                    $ m : Maybe Int = Maybe.Just.{ 7 }\n\
-                   $ get = \\d = \\o = when o is Maybe.Just.{x} then x else d";
+                   $ get = \\d = \\o = is o | Maybe.Just.{x} => x else d";
     assert_eq!(type_of(src, "m"), "Maybe Int");
-    assert_eq!(type_of(src, "get"), "`A -> Maybe `A -> `A");
+    assert_eq!(type_of(src, "get"), "a -> Maybe a -> a");
 }
 
 #[test]
 fn mutually_recursive_globals_via_scc() {
     let src = "@mod M\n\
-                   $ is_even : Int -> Int = \\n = if n ?= 0 then 1 else is_odd (n - 1)\n\
-                   $ is_odd  : Int -> Int = \\n = if n ?= 0 then 0 else is_even (n - 1)";
+                   $ is_even : Int -> Int = \\n = if n ?= 0 => 1 else is_odd (n - 1)\n\
+                   $ is_odd  : Int -> Int = \\n = if n ?= 0 => 0 else is_even (n - 1)";
     assert_eq!(type_of(src, "is_even"), "Int -> Int");
     assert_eq!(type_of(src, "is_odd"), "Int -> Int");
 }
@@ -138,7 +138,7 @@ fn mutually_recursive_globals_via_scc() {
 #[test]
 fn recursive_let_binding() {
     let src = "@mod M\n\
-                   $ f = \\m = let go = \\n acc = if n ?= 0 then acc else go (n - 1) (acc + n) \
+                   $ f = \\m = let go = \\n acc = if n ?= 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "Int -> Int");
 }
@@ -184,11 +184,11 @@ fn no_matching_overload_is_reported() {
 #[test]
 fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "@mod OPT\n\
-                       $ Option : @union = Some: `T, None: {}\n\
-                       $ is_some : Option `T -> Bool = \\o = \
-                       when o is Option.Some.{_} then true else false\n\
-                       $ unwrap_or : Option `T -> `T -> `T = \\o d = \
-                       when o is Option.Some.{x} then x else d";
+                       $ Option : @union = Some: t, None: {}\n\
+                       $ is_some : Option t -> Bool = \\o = \
+                       is o | Option.Some.{_} => true else false\n\
+                       $ unwrap_or : Option t -> t -> t = \\o d = \
+                       is o | Option.Some.{x} => x else d";
     let use_src = "@mod U\n\
                        $ with OPT\n\
                        $ o : Option Int = Option.Some.{ 41 }\n\
@@ -254,7 +254,7 @@ fn effect_operation_is_bound_and_handler_types_result() {
     let src = "@mod M\n\
                    $ State : @effect = get : {} -> Int, put : Int -> {},\n\
                    $ tick : {} -> <State> Int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
-                   $ run : Int = do tick {} ctl k is get u = k 0 is put n = k {} else x = x";
+                   $ run : Int = do tick {} ctl k | get u => k 0 | put n => k {} else x => x";
     assert_eq!(type_of(src, "tick"), "{} -> <State> Int");
     assert_eq!(type_of(src, "run"), "Int");
 }
@@ -262,22 +262,22 @@ fn effect_operation_is_bound_and_handler_types_result() {
 #[test]
 fn unknown_type_name_is_rejected() {
     // A bare capitalized name in type position must be a known type; a type
-    // variable is the backtick form. `Itn` is a typo, not a type variable.
+    // variable is a lowercase name. `Itn` is a typo, not a type variable.
     assert!(errors("@mod M\n$ x : Itn = 5").contains("unknown type `Itn`"));
 }
 
 #[test]
 fn type_variable_and_sized_and_declared_types_are_accepted() {
-    // `` `a `` is a type variable; `Int8`/`Ptr` are base types; a declared union
+    // `a` is a type variable; `Int8`/`Ptr` are base types; a declared union
     // name is known. None of these is an "unknown type".
     let src = "@mod M\n\
                $ Box : @union = Wrap: { Int },\n\
-               $ id : `A -> `A = \\x = x\n\
+               $ id : a -> a = \\x = x\n\
                $ n : Int8 = 5\n\
                $ p : Ptr = 0\n\
                $ b : Box = Box.Wrap.{ 1 }";
     assert_eq!(errors(src), "");
-    assert_eq!(type_of(src, "id"), "`A -> `A");
+    assert_eq!(type_of(src, "id"), "a -> a");
     assert_eq!(type_of(src, "n"), "Int8");
 }
 
@@ -316,8 +316,8 @@ fn same_operation_in_two_effects_resolves_by_result_type() {
     let src = "@mod M\n\
                    $ Reader : @effect = ask : {} -> Int,\n\
                    $ Config : @effect = ask : {} -> Str,\n\
-                   $ n : Int = do (ask {}) + 1 ctl k is Reader.ask u = k 10\n\
-                   $ s : Str = do Config.ask {} ctl k is Config.ask u = k \"hi\"";
+                   $ n : Int = do (ask {}) + 1 ctl k | Reader.ask u => k 10\n\
+                   $ s : Str = do Config.ask {} ctl k | Config.ask u => k \"hi\"";
     assert_eq!(type_of(src, "n"), "Int");
     assert_eq!(type_of(src, "s"), "Str");
 }

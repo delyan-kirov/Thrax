@@ -5,24 +5,24 @@
 #       the value, `None` is the absence. Predicates return Bool.
 
 $ Option : @union =
-	Some: `T,
+	Some: t,
 	None: {},
 
-$ is_some : Option `T -> Bool = \o =
-	when o is Option.Some.{_} then true else false
+$ is_some : Option t -> Bool = \o =
+	is o | Option.Some.{_} => true else false
 
-$ is_none : Option `T -> Bool = \o =
-	when o is Option.Some.{_} then false else true
+$ is_none : Option t -> Bool = \o =
+	is o | Option.Some.{_} => false else true
 
 # The value inside, or `d` when absent.
-$ unwrap_or : Option `T -> `T -> `T = \o d =
-	when o is Option.Some.{x} then x else d
+$ unwrap_or : Option t -> t -> t = \o d =
+	is o | Option.Some.{x} => x else d
 
 # Apply `f` to the value inside, if any.
-$ opt_map : (`A -> `B) -> Option `A -> Option `B = \f o =
-	when o is Option.Some.{x} then Option.Some.{ f x } else Option.None
+$ opt_map : (a -> b) -> Option a -> Option b = \f o =
+	is o | Option.Some.{x} => Option.Some.{ f x } else Option.None
 
 # Chain a partial computation: feed the value (if any) to an `f` that may
 # itself decline.
-$ opt_then : (`A -> Option `B) -> Option `A -> Option `B = \f o =
-	when o is Option.Some.{x} then f x else Option.None
+$ opt_then : (a -> Option b) -> Option a -> Option b = \f o =
+	is o | Option.Some.{x} => f x else Option.None

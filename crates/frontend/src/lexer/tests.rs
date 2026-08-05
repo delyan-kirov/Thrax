@@ -79,26 +79,24 @@ fn string_raw_bytes_and_unicode() {
 }
 
 #[test]
-fn intrinsic_and_tyvar_names() {
+fn intrinsic_names() {
     let arena = Arena::new();
-    let toks = Lexer::tokenize("@struct `T", &arena).unwrap();
+    let toks = Lexer::tokenize("@struct t", &arena).unwrap();
     assert_eq!(toks[0].kind, Kind::At);
     assert_eq!(toks[0].intrinsic_name(), "struct");
-    assert_eq!(toks[1].kind, Kind::TyVar);
-    assert_eq!(toks[1].tyvar_name(), "T");
+    assert_eq!(toks[1].kind, Kind::Word);
+    assert_eq!(toks[1].text, "t");
 }
 
 #[test]
 fn keywords_recognized() {
     assert_eq!(
-        kinds("let x in when is then else"),
+        kinds("let x in is else"),
         vec![
             Kind::Let,
             Kind::Word,
             Kind::In,
-            Kind::When,
             Kind::Is,
-            Kind::Then,
             Kind::Else,
             Kind::Eof,
         ]

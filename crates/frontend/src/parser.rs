@@ -88,10 +88,18 @@ impl<'a> Parser<'a> {
         let t = expect!(self, Kind::Word, what);
         Ok(self.intern(t.text))
     }
-    /// Consume a `` `type-var `` token and intern its name.
-    fn bump_tyvar(&mut self) -> Result<StrId> {
-        let t = self.bump()?;
-        Ok(self.intern(t.tyvar_name()))
+    /// Consume a lowercase-initial type variable name and intern it.
+    fn expect_tyvar(&mut self, what: &str) -> Result<StrId> {
+        let t = expect!(self, Kind::Word, what);
+        if !t.text.starts_with(|c: char| c.is_ascii_lowercase()) {
+            return Err(self.unexpected(&t, "a type variable must start with a lowercase letter"));
+        }
+        Ok(self.intern(t.text))
+    }
+    /// Is the next token a lowercase-initial word, i.e. a type variable?
+    fn at_tyvar(&mut self) -> Result<bool> {
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::Word) && t.text.starts_with(|c: char| c.is_ascii_lowercase()))
     }
 
     /// If `base` is a bare, unqualified variable, its interned name.
@@ -137,15 +145,15 @@ impl<'a> Parser<'a> {
     }
 
     /// A type name must start with a capital letter; a lowercase name in type
-    /// position is a type variable only in the backtick form (`` `a ``). `tok` is
-    /// the offending name token, for the error span.
+    /// position is a type variable. `tok` is the offending name token, for the
+    /// error span.
     fn require_type_capital(&self, text: &str, tok: &Token<'a>) -> Result<()> {
         if text.starts_with(|c: char| c.is_ascii_uppercase()) {
             Ok(())
         } else {
             Err(self.unexpected(
                 tok,
-                "a type name must start with a capital letter (a type variable is written with a backtick, e.g. `` `a ``)",
+                "a type name must start with a capital letter (a lowercase name is a type variable)",
             ))
         }
     }
@@ -402,13 +410,20 @@ impl<'a> Parser<'a> {
     }
 
     fn starts_type_atom(&mut self) -> Result<bool> {
+        if self.at_tyvar()? {
+            return Ok(true);
+        }
         Ok(matches!(
             self.peek_kind()?,
-            Kind::Word | Kind::At | Kind::TyVar | Kind::LParen | Kind::LBrace
+            Kind::Word | Kind::At | Kind::LParen | Kind::LBrace
         ))
     }
 
     fn parse_type_atom(&mut self) -> Result<Aol<Ty>> {
+        if self.at_tyvar()? {
+            let name = self.expect_tyvar("expected a type-variable name")?;
+            return Ok(self.ty(Ty::Var(name)));
+        }
         let t = self.peek()?;
         match t.kind {
             Kind::Word => {
@@ -433,11 +448,6 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 let name = self.intern(t.text);
                 Ok(self.ty(Ty::Con { module: None, name }))
-            }
-            Kind::TyVar => {
-                self.bump()?;
-                let name = self.intern(t.tyvar_name());
-                Ok(self.ty(Ty::Var(name)))
             }
             Kind::LParen => {
                 self.bump()?;
@@ -490,8 +500,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// An optional effect row right after `->`: `<>`, `<`e>`, `<A, B>`,
-    /// `<A, B | `e>`, or `<| `e>`.
+    /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
+    /// `<A, B | e>`, or `<| e>`. Effect names are capitalized; a lowercase
+    /// name is the row-polymorphic tail variable.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
@@ -502,12 +513,7 @@ impl<'a> Parser<'a> {
         }
         if self.at_op("<|")? {
             self.bump()?;
-            let tail = expect!(
-                self,
-                Kind::TyVar,
-                "expected a `type variable in the effect row"
-            );
-            let tail = self.intern(tail.tyvar_name());
+            let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
                 names: Box::new([]),
@@ -518,8 +524,8 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         self.bump()?; // '<'
-        if matches!(self.peek_kind()?, Kind::TyVar) {
-            let tail = self.bump_tyvar()?;
+        if self.at_tyvar()? {
+            let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
                 names: Box::new([]),
@@ -536,8 +542,7 @@ impl<'a> Parser<'a> {
         }
         let tail = if self.at_op("|")? {
             self.bump()?;
-            let t = expect!(self, Kind::TyVar, "expected a `type variable after '|'");
-            Some(self.intern(t.tyvar_name()))
+            Some(self.expect_tyvar("expected a type variable after '|'")?)
         } else {
             None
         };
@@ -599,7 +604,7 @@ impl<'a> Parser<'a> {
                 | Kind::LParen
                 | Kind::Let
                 | Kind::If
-                | Kind::When
+                | Kind::Is
                 | Kind::Lambda
                 | Kind::With
                 | Kind::LBrace
@@ -656,7 +661,7 @@ impl<'a> Parser<'a> {
             Kind::Let => self.parse_let(),
             Kind::With => self.parse_with(),
             Kind::If => self.parse_if(),
-            Kind::When => self.parse_when(),
+            Kind::Is => self.parse_match(),
             Kind::Do => self.parse_handle(),
             Kind::Defer => self.parse_defer(),
             Kind::Lambda => self.parse_lambda(),
@@ -988,20 +993,21 @@ impl<'a> Parser<'a> {
     fn parse_if(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'if'
         let cond = self.parse_expr(0)?;
-        expect!(self, Kind::Then, "expected 'then' after the 'if' condition");
+        expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
         let then = self.parse_expr(0)?;
         expect!(self, Kind::Else, "expected 'else' in the 'if' expression");
         let alt = self.parse_expr(0)?;
         Ok(self.expr(Expr::If { cond, then, alt }))
     }
 
-    fn parse_when(&mut self) -> Result<Aol<Expr>> {
-        self.bump()?; // 'when'
+    fn parse_match(&mut self) -> Result<Aol<Expr>> {
+        self.bump()?; // 'is'
         let scrut = self.parse_expr(0)?;
         let mut arms = Vec::new();
-        while matches!(self.peek_kind()?, Kind::Is) {
+        while self.at_op("|")? {
             let mut patterns = Vec::new();
-            while self.eat(|k| matches!(k, Kind::Is))? {
+            while self.at_op("|")? {
+                self.bump()?; // '|'
                 patterns.push(self.parse_pattern()?);
             }
             let guard = if matches!(self.peek_kind()?, Kind::If) {
@@ -1010,7 +1016,7 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            expect!(self, Kind::Then, "expected 'then' after the match pattern");
+            expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
             let body = self.parse_expr(0)?;
             arms.push(Arm {
                 patterns: patterns.into_boxed_slice(),
@@ -1057,7 +1063,8 @@ impl<'a> Parser<'a> {
         self.bump()?; // 'ctl'
         let continuation = self.expect_word("expected a continuation name after 'ctl'")?;
         let mut clauses = Vec::new();
-        while self.eat(|k| matches!(k, Kind::Is))? {
+        while self.at_op("|")? {
+            self.bump()?; // '|'
             let first = self.expect_word("expected an operation name in the handler clause")?;
             let (effect, op) = if matches!(self.peek_kind()?, Kind::Dot) {
                 self.bump()?;
@@ -1067,7 +1074,7 @@ impl<'a> Parser<'a> {
                 (None, first)
             };
             let arg = self.expect_word("expected the operation's argument binder")?;
-            expect!(self, Kind::Eq, "expected '=' in the handler clause");
+            expect!(self, Kind::FatArrow, "expected '=>' in the handler clause");
             let body = self.parse_expr(0)?;
             clauses.push(Clause {
                 effect,
@@ -1079,7 +1086,7 @@ impl<'a> Parser<'a> {
         let default = if matches!(self.peek_kind()?, Kind::Else) {
             self.bump()?;
             let name = self.expect_word("expected a value binder after 'else'")?;
-            expect!(self, Kind::Eq, "expected '=' after the 'else' binder");
+            expect!(self, Kind::FatArrow, "expected '=>' after the 'else' binder");
             Some((name, self.parse_expr(0)?))
         } else {
             None
@@ -1322,8 +1329,7 @@ fn describe(t: &Token<'_>) -> String {
         | Kind::Str(_)
         | Kind::Word
         | Kind::Op
-        | Kind::At
-        | Kind::TyVar => {
+        | Kind::At => {
             format!("'{}'", t.text)
         }
         _ => format!("'{}'", t.text),

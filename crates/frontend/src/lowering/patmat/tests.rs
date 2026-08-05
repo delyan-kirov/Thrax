@@ -8,7 +8,7 @@ use super::Pm;
 #[test]
 fn case_binds_scrutinee_once() {
     let mut pm = Pm { n: 0 };
-    // when x is 1 then 10 is 2 then 20
+    // is x | 1 => 10 | 2 => 20
     let case = Term::Case {
         scrut: Arc::new(Term::var("x")),
         arms: vec![
@@ -38,7 +38,7 @@ fn case_binds_scrutinee_once() {
 #[test]
 fn nested_variant_compiles_without_panic() {
     let mut pm = Pm { n: 0 };
-    // when p is Cons.{a, Cons.{b, _}} then a + b
+    // is p | Cons.{a, Cons.{b, _}} => a + b
     let inner = Pat::Variant {
         tag: "Cons".into(),
         fields: vec![Pat::Var("b".into()), Pat::Wild],

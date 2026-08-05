@@ -35,7 +35,7 @@ $ rec_size   : Int = 100
 
 $ loop : Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int =
 	\ counter color y x y2 x2 c1x c1y c2x c2y c3x c3y c4x c4y =
-	if (window_should_close 0) ?= 0 then
+	if (window_should_close 0) ?= 0 =>
 		let sh = get_screen_height 0 in
 		let sw = get_screen_width 0  in
 		let ncounter = (counter + 1) % 10 in
@@ -54,7 +54,7 @@ $ loop : Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> I
 		let nc4x = (c4x + (sw - 5)) % sw in
 		let nc4y = (c4y + (sh - 5)) % sh in
 		let ncolor =
-			if ncounter ?= 0 then 0 - (get_random_value 10 10000000)
+			if ncounter ?= 0 => 0 - (get_random_value 10 10000000)
 			else color
 		 in let frame
 			= begin_drawing 0

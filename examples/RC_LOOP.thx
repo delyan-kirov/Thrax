@@ -16,7 +16,7 @@ $ Pair : @struct =
 # the sum. The Pair (and the ints inside it) die each iteration -- exactly the
 # per-iteration garbage a long-running program must reclaim.
 $ spin : Int -> Int -> Int = \n acc =
-	if n ?= 0 then acc
+	if n ?= 0 => acc
 	else
 		let p = Pair.{ .fst = n, .snd = acc } in
 		spin (n - 1) (p.fst + p.snd)
@@ -24,7 +24,7 @@ $ spin : Int -> Int -> Int = \n acc =
 # FIXME : check integer size here instead
 # 65_000 * 65_001 / 2 = 2_112_532_500 -- kept under 2^31 so the sum is exact
 # on a 32-bit target too (this loop runs for every target, wasm included).
-$ ck : Int = if (spin 65000 0) ?= 2112532500 then 0 else 1
+$ ck : Int = if (spin 65000 0) ?= 2112532500 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : Int = ck

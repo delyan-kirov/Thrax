@@ -6,18 +6,18 @@
 #       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
 #       Real; overload resolution picks by operand type.
 
-$ min : Int -> Int -> Int = \a b = if a <= b then a else b
-$ max : Int -> Int -> Int = \a b = if a >= b then a else b
+$ min : Int -> Int -> Int = \a b = if a <= b => a else b
+$ max : Int -> Int -> Int = \a b = if a >= b => a else b
 
 # Three-way comparison: negative / 0 / positive (the ordering MAP.new_int
 # uses).
 $ cmp_int : Int -> Int -> Int = \a b =
-	if a ?< b then 0 - 1 else if a ?> b then 1 else 0
+	if a ?< b => 0 - 1 else if a ?> b => 1 else 0
 
-$ abs : Int -> Int = \n = if n ?< 0 then 0 - n else n
+$ abs : Int -> Int = \n = if n ?< 0 => 0 - n else n
 
 $ sign : Int -> Int = \n =
-	if n ?< 0 then 0 - 1 else if n ?> 0 then 1 else 0
+	if n ?< 0 => 0 - 1 else if n ?> 0 => 1 else 0
 
 # `x` forced into [lo, hi].
 $ clamp : Int -> Int -> Int -> Int = \lo hi x = max lo (min hi x)
@@ -26,13 +26,13 @@ $ even : Int -> Bool = \n = (abs n) % 2 ?= 0
 $ odd  : Int -> Bool = \n = !(even n)
 
 $ gcd : Int -> Int -> Int = \a b =
-	if b ?= 0 then abs a else gcd b (a % b)
+	if b ?= 0 => abs a else gcd b (a % b)
 
 # Integer exponentiation; a negative exponent yields 0 (integer division
 # semantics).
 $ pow : Int -> Int -> Int = \base e =
-	if e ?< 0 then 0
-	else if e ?= 0 then 1
+	if e ?< 0 => 0
+	else if e ?= 0 => 1
 	else base * pow base (e - 1)
 
 # ---- Real helpers ----
@@ -40,10 +40,10 @@ $ pow : Int -> Int -> Int = \base e =
 $ pi : Real = 3.141592653589793
 $ euler : Real = 2.718281828459045
 
-$ min : Real -> Real -> Real = \a b = if a <= b then a else b
-$ max : Real -> Real -> Real = \a b = if a >= b then a else b
+$ min : Real -> Real -> Real = \a b = if a <= b => a else b
+$ max : Real -> Real -> Real = \a b = if a >= b => a else b
 
-$ abs : Real -> Real = \x = if x ?< 0.0 then 0.0 - x else x
+$ abs : Real -> Real = \x = if x ?< 0.0 => 0.0 - x else x
 
 $ clamp : Real -> Real -> Real -> Real = \lo hi x = max lo (min hi x)
 

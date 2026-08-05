@@ -14,48 +14,48 @@ $ with MATH
 $ with STR
 
 $ Set : @struct =
-	m: Map `T {},
+	m: Map t {},
 
 # ---- construction ----
 
-$ new : (`T -> `T -> Int) -> Set `T = \c = Set.{ .m = MAP.new c }
+$ new : (t -> t -> Int) -> Set t = \c = Set.{ .m = MAP.new c }
 
 $ new_int : Set Int = Set.{ .m = MAP.new_int }
 
 $ new_str : Set Str = Set.{ .m = MAP.new_str }
 
-$ from_list : (`T -> `T -> Int) -> List `T -> Set `T = \c xs =
+$ from_list : (t -> t -> Int) -> List t -> Set t = \c xs =
 	foldl (\s x = add s x) (new c) xs
 
 # ---- operations ----
 
-$ add : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.insert s.m x {} }
+$ add : Set t -> t -> Set t = \s x = Set.{ .m = MAP.insert s.m x {} }
 
-$ has : Set `T -> `T -> Bool = \s x = MAP.has s.m x
+$ has : Set t -> t -> Bool = \s x = MAP.has s.m x
 
-$ remove : Set `T -> `T -> Set `T = \s x = Set.{ .m = MAP.remove s.m x }
+$ remove : Set t -> t -> Set t = \s x = Set.{ .m = MAP.remove s.m x }
 
-$ size : Set `T -> Int = \s = MAP.size s.m
+$ size : Set t -> Int = \s = MAP.size s.m
 
-$ is_empty : Set `T -> Bool = \s = MAP.is_empty s.m
+$ is_empty : Set t -> Bool = \s = MAP.is_empty s.m
 
 # Elements in ascending order.
-$ to_list : Set `T -> List `T = \s = keys s.m
+$ to_list : Set t -> List t = \s = keys s.m
 
-$ fold : (`A -> `T -> `A) -> `A -> Set `T -> `A = \f acc s =
+$ fold : (a -> t -> a) -> a -> Set t -> a = \f acc s =
 	MAP.fold (\a k u = f a k) acc s.m
 
-$ filter : (`T -> Bool) -> Set `T -> Set `T = \p s =
+$ filter : (t -> Bool) -> Set t -> Set t = \p s =
 	Set.{ .m = MAP.filter (\k u = p k) s.m }
 
 # ---- set algebra ----
 
-$ merge : Set `T -> Set `T -> Set `T = \a b =
+$ merge : Set t -> Set t -> Set t = \a b =
 	Set.{ .m = MAP.merge a.m b.m }
 
-$ inter : Set `T -> Set `T -> Set `T = \a b =
+$ inter : Set t -> Set t -> Set t = \a b =
 	filter (\x = has b x) a
 
 # Elements of `a` not in `b`.
-$ diff : Set `T -> Set `T -> Set `T = \a b =
+$ diff : Set t -> Set t -> Set t = \a b =
 	filter (\x = !(has b x)) a

@@ -108,7 +108,7 @@ fn imported_global_does_not_shadow_a_same_named_effect_op() {
     let b = "@mod B\n\
         $ State : @effect = get : {} -> Int, put : Int -> {},\n\
         $ getit : {} -> <State> Int = \\u = get {}\n\
-        $ run : Int = do getit {} ctl k is State.get u = k 42 is State.put v = k {} else r = r";
+        $ run : Int = do getit {} ctl k | State.get u => k 42 | State.put v => k {} else r => r";
     let root = "@mod M\n$ with A\n$ with B\n$ r : Int = B.run";
     assert_eq!(run_modules(&[a, b, root], "r"), "42");
 }
@@ -124,7 +124,7 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
         $ afst : Int = Pair.{ .fst = 7, .snd = 8 }.fst";
     let b = "@mod B\n\
         $ Pair : @struct = a: Int, b: Int\n\
-        $ first : Pair -> Int = \\p = when p is Pair.{ x, y } then x\n\
+        $ first : Pair -> Int = \\p = is p | Pair.{ x, y } => x\n\
         $ bfst : Int = first Pair.{ .a = 3, .b = 4 }";
     let root = "@mod M\n$ with A\n$ with B\n$ r : Int = B.bfst";
     assert_eq!(run_modules(&[a, b, root], "r"), "3");
@@ -136,9 +136,9 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
     // `Y.yield`, so their effects are observable in the total.
     let prelude = "@mod M\n\
         $ Y : @effect = yield : Int -> {},\n\
-        $ Exn : @effect = throw : Str -> `A,\n\
+        $ Exn : @effect = throw : Str -> a,\n\
         $ sum : ({} -> <Y> Int) -> Int = \
-          \\body = do body {} ctl k is Y.yield v = v + k {} else r = r\n";
+          \\body = do body {} ctl k | Y.yield v => v + k {} else r => r\n";
     // Normal completion: body yields 1 and returns 100, cleanup yields 2 -> 103.
     let normal =
         format!("{prelude}$ r : Int = sum (\\_ = defer Y.yield 2 do (let _ = Y.yield 1 in 100))");
@@ -147,7 +147,7 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
     // still runs under the enclosing `Y` handler -> 9.
     let abort = format!(
         "{prelude}$ r : Int = sum (\\_ = \
-         do (defer Y.yield 9 do (let _ = Exn.throw \"x\" in 100)) ctl k is Exn.throw e = 0)"
+         do (defer Y.yield 9 do (let _ = Exn.throw \"x\" in 100)) ctl k | Exn.throw e => 0)"
     );
     assert_eq!(run(&abort, "r"), "9");
     // Nested defers run innermost-first: 1 + 2 + 3 = 6.
@@ -166,9 +166,9 @@ fn defer_cleanup_runs_when_a_stored_continuation_completes() {
         $ Co : @effect = step : Int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
-          \\t = do t {} ctl k is step v = Task.Susp.{ k } else _ = Task.Fin.{}\n\
+          \\t = do t {} ctl k | step v => Task.Susp.{ k } else _ => Task.Fin.{}\n\
         $ drive : Task -> Int = \
-          \\t = when t is Task.Fin.{} then 0 is Task.Susp.{ k } then 1 + drive (k {}) else 0\n\
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ k } => 1 + drive (k {}) else 0\n\
         $ r : Int = drive (spawn (\\_ = defer step 2 do (let _ = step 1 in {})))";
     assert_eq!(run(src, "r"), "2");
 }
@@ -206,7 +206,7 @@ fn extern_ffi_dynamic_dlopen() {
         $ dup    : Str -> Str   = @extern \"C\" \"strdup\" \"libc\"\n\
         $ expm1r : Real -> Real = @extern \"C\" \"expm1\"  \"libm\"\n\
         $ r : Int = iabs (0 - 7) + array_len (dup \"abcde\") \
-                  + (if expm1r 1.0 ?> 1.7 then 100 else 0)";
+                  + (if expm1r 1.0 ?> 1.7 => 100 else 0)";
     assert_eq!(run(src, "r"), "112");
 }
 
@@ -216,7 +216,7 @@ fn target_reflects_the_host_consistently() {
     // exactly `arch-os`.
     let src = "@mod M\n$ r : Int = \
         if TARGET.int_bits ?= TARGET.ptr_bits \
-        then (if (TARGET.arch ++ \"-\" ++ TARGET.os) ?= TARGET.name then 0 else 1) \
+        => (if (TARGET.arch ++ \"-\" ++ TARGET.os) ?= TARGET.name => 0 else 1) \
         else 1";
     assert_eq!(run(src, "r"), "0");
 }
@@ -233,13 +233,13 @@ fn array_literal_lowers_to_byte_vector() {
 #[test]
 fn array_patterns_destructure_and_guard() {
     let src = "@mod M\n\
-               $ sum2 : Array -> Int = \\a = when a is [x, y] then x + y else 0\n\
+               $ sum2 : Array -> Int = \\a = is a | [x, y] => x + y else 0\n\
                $ r = sum2 [4, 5]\n\
                $ miss = sum2 [1, 2, 3]\n\
-               $ lit : Array -> Int = \\a = when a is [1, y] then y else 0\n\
+               $ lit : Array -> Int = \\a = is a | [1, y] => y else 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : Array -> Int = \\a = when a is [h, ..rest] then h + array_len rest else 0\n\
+               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + array_len rest else 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");
@@ -265,7 +265,7 @@ fn reals_and_mixed() {
 
 #[test]
 fn self_recursion_factorial() {
-    let src = "@mod M\n$ fact : Int -> Int = \\n = if n ?= 0 then 1 else n * fact (n - 1)\n\
+    let src = "@mod M\n$ fact : Int -> Int = \\n = if n ?= 0 => 1 else n * fact (n - 1)\n\
                $ r = fact 5";
     assert_eq!(run(src, "r"), "120");
 }
@@ -273,8 +273,8 @@ fn self_recursion_factorial() {
 #[test]
 fn mutual_recursion() {
     let src = "@mod M\n\
-               $ is_even : Int -> Int = \\n = if n ?= 0 then 1 else is_odd (n - 1)\n\
-               $ is_odd  : Int -> Int = \\n = if n ?= 0 then 0 else is_even (n - 1)\n\
+               $ is_even : Int -> Int = \\n = if n ?= 0 => 1 else is_odd (n - 1)\n\
+               $ is_odd  : Int -> Int = \\n = if n ?= 0 => 0 else is_even (n - 1)\n\
                $ r = is_even 10";
     assert_eq!(run(src, "r"), "1");
 }
@@ -302,11 +302,11 @@ fn tuples_and_indexing() {
 #[test]
 fn list_sum_and_map() {
     let src = "@mod M\n\
-               $ sum : List Int -> Int = \\xs = when xs is [] then 0 is h :: t then h + sum t else 0\n\
+               $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "@mod M\n\
-                $ sum : List Int -> Int = \\xs = when xs is [] then 0 is h :: t then h + sum t else 0\n\
+                $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
@@ -316,9 +316,9 @@ fn union_construction_and_nested_match() {
     let src = "@mod M\n\
                $ Peano : @union = Zero: {}, Succ: { Peano }\n\
                $ depth : Peano -> Int = \\n = \
-                 when n is Peano.Zero then 0 \
-                 is Peano.Succ.{ Peano.Zero } then 1 \
-                 is Peano.Succ.{ Peano.Succ.{ _ } } then 2\n\
+                 is n | Peano.Zero => 0 \
+                 | Peano.Succ.{ Peano.Zero } => 1 \
+                 | Peano.Succ.{ Peano.Succ.{ _ } } => 2\n\
                $ a = depth Peano.Succ.{ Peano.Succ.{ Peano.Zero } }";
     assert_eq!(run(src, "a"), "2");
 }
@@ -332,7 +332,7 @@ fn struct_field_access_and_match() {
     assert_eq!(run(src, "a"), "7");
     let m = "@mod M\n\
              $ Point : @struct = x: Int, y: Int\n\
-             $ sum : Point -> Int = \\pt = when pt is Point.{ x, y } then x + y else 0\n\
+             $ sum : Point -> Int = \\pt = is pt | Point.{ x, y } => x + y else 0\n\
              $ a = sum Point.{ .x = 10, .y = 20 }";
     assert_eq!(run(m, "a"), "30");
 }
@@ -368,7 +368,7 @@ fn higher_order_and_guards() {
                $ a = twice (\\n = n + 3) 1";
     assert_eq!(run(src, "a"), "7");
     let guard = "@mod M\n\
-                 $ classify : Int -> Int = \\n = when n is m if m ?> 0 then 1 is _ then 0\n\
+                 $ classify : Int -> Int = \\n = is n | m if m ?> 0 => 1 | _ => 0\n\
                  $ a = classify 5";
     assert_eq!(run(guard, "a"), "1");
 }
@@ -377,7 +377,7 @@ fn higher_order_and_guards() {
 fn string_concat_and_prefix_match() {
     assert_eq!(run("@mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
     let src = "@mod M\n\
-               $ verb : Str -> Int = \\s = when s is \"GET \" ++ _ then 1 else 0\n\
+               $ verb : Str -> Int = \\s = is s | \"GET \" ++ _ => 1 else 0\n\
                $ a = verb \"GET /\"";
     assert_eq!(run(src, "a"), "1");
 }
@@ -393,7 +393,7 @@ fn sequencing_returns_last() {
 #[test]
 fn deep_tail_recursion_is_constant_stack() {
     let src = "@mod T\n\
-               $ loop : Int -> Int = \\n = if n ?= 0 then 42 else loop (n - 1)\n\
+               $ loop : Int -> Int = \\n = if n ?= 0 => 42 else loop (n - 1)\n\
                $ test : Int = loop 1000000\n";
     assert_eq!(run(src, "test"), "42");
 }

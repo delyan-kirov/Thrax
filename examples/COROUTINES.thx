@@ -13,18 +13,18 @@ $ Task : @union = Fin: {}, Susp: { Int, {} -> Task },
 $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
     ctl k
-       is Co.yield v = Task.Susp.{ v, k }
-       else _ = Task.Fin.{}
+       | Co.yield v => Task.Susp.{ v, k }
+       else _ => Task.Fin.{}
 
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
 $ rr : Task -> Task -> Int = \a b =
-    when a is Task.Fin.{} then
-         (when b is Task.Fin.{} then 0
-               is Task.Susp.{ vb, kb } then vb + rr (Task.Fin.{}) (kb {})
+    is a | Task.Fin.{} =>
+         (is b | Task.Fin.{} => 0
+               | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {})
                else 0)
-         is Task.Susp.{ va, ka } then va + rr b (ka {})
+         | Task.Susp.{ va, ka } => va + rr b (ka {})
          else 0
 
 $ t1 : {} -> <Co> {} =

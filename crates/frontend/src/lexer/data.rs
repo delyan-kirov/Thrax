@@ -10,7 +10,7 @@ use utilities::{Line, Span};
 #[derive(Clone, Copy, Debug)]
 pub struct Token<'a> {
     pub kind: Kind<'a>,
-    /// The verbatim source slice (includes sigils like `@`, `` ` ``, quotes).
+    /// The verbatim source slice (includes sigils like `@` and quotes).
     pub text: &'a str,
     pub span: Span,
     pub line: Line,
@@ -26,14 +26,6 @@ impl<'a> Token<'a> {
         &self.text[1..]
     }
 
-    /// The name of a `` `T `` type variable, past the leading backtick.
-    pub fn tyvar_name(&self) -> &'a str {
-        debug_assert!(
-            matches!(self.kind, Kind::TyVar),
-            "tyvar_name on non-tyvar token"
-        );
-        &self.text[1..]
-    }
 }
 
 /// The lexical category. Textbook name: this is the token's *tag*.
@@ -46,10 +38,9 @@ pub enum Kind<'a> {
     // `Token::text` still holds the quotes
 
     // Names.
-    Word,  // identifier; lexeme in `Token::text`
-    TyVar, // `T
-    At,    // @name intrinsic
-    Op,    // operator lexeme (+ - * / % ! ?= ?< ?> <= >= < > | ; |> :: ++ ...)
+    Word, // identifier; lexeme in `Token::text`
+    At,   // @name intrinsic
+    Op,   // operator lexeme (+ - * / % ! ?= ?< ?> <= >= < > | ; |> :: ++ ...)
 
     // Structural punctuation that carries its own meaning.
     Eq,       // =
@@ -71,9 +62,7 @@ pub enum Kind<'a> {
     Let,
     In,
     If,
-    When,
     Is,
-    Then,
     Else,
     Ext,
     With,
@@ -86,14 +75,12 @@ pub enum Kind<'a> {
     Eof,
 }
 
-/// Keyword table: lexeme -> kind. Linear-searched (twelve entries).
+/// Keyword table: lexeme -> kind. Linear-searched.
 pub const KEYWORDS: &[(&str, Kind<'static>)] = &[
     ("let", Kind::Let),
     ("in", Kind::In),
     ("if", Kind::If),
-    ("when", Kind::When),
     ("is", Kind::Is),
-    ("then", Kind::Then),
     ("else", Kind::Else),
     ("ext", Kind::Ext),
     ("with", Kind::With),

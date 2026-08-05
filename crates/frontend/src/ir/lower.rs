@@ -371,7 +371,7 @@ impl Conv {
                 let alts = arms.iter().map(|a| self.alt(a, ctx)).collect();
                 let default = match default {
                     Some(d) => self.expr(d, ctx, tail),
-                    None => Expr::Fault("no pattern matched (non-exhaustive `when`)".into()),
+                    None => Expr::Fault("no pattern matched (non-exhaustive match)".into()),
                 };
                 Expr::Case {
                     scrut: scrut_atom,

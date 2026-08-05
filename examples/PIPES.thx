@@ -7,7 +7,7 @@
 
 $ Y : @effect = yield : Int -> {},
 $ sum : ({} -> <Y> Int) -> Int =
-    \body = do body {} ctl k is Y.yield v = v + k {} else r = r
+    \body = do body {} ctl k | Y.yield v => v + k {} else r => r
 
 $ inc : Int -> Int        = \x = x + 1
 $ dbl : Int -> Int        = \x = x + x

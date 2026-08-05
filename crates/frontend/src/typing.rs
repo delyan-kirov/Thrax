@@ -130,7 +130,7 @@ pub struct Checker<'a> {
     ambient: Type,
     /// The first unknown type name met while converting a signature (a bare
     /// `Con` that is neither a base type nor a declared struct/union/alias). A
-    /// type variable is the backtick form `` `T ``, so a bare unknown name is a
+    /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
 }
@@ -1835,7 +1835,7 @@ impl<'a> Checker<'a> {
 
     /// Is `name` a usable type: a built-in base type, or a struct/union/alias
     /// declared here or imported? A bare name that is none of these is a typo (a
-    /// type variable is the backtick form).
+    /// type variable is a lowercase name).
     fn is_known_type(&self, name: &str) -> bool {
         is_base_type(name)
             || self.structs.contains_key(name)
@@ -2318,7 +2318,7 @@ fn unbound(name: &str) -> Diagnostic {
 
 /// The built-in scalar and container type names, in both their friendly and
 /// `@`-sigil spellings. A type in source is one of these, a declared type, or a
-/// backtick type variable.
+/// lowercase type variable.
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,
@@ -2340,6 +2340,6 @@ fn unknown_type(name: &str) -> Diagnostic {
         Code::TypeUnbound,
         Span::at(0),
         0,
-        format!("unknown type `{name}`: a type variable is written with a leading backtick (`` `{name} ``); otherwise the type must be declared"),
+        format!("unknown type `{name}`: a type variable is written as a lowercase name; a capitalized type must be declared"),
     )
 }

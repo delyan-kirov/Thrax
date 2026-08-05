@@ -164,7 +164,7 @@ impl Pm {
     fn compile_case(&mut self, scrut: Term, arms: &[Arm], default: Option<Term>) -> Term {
         let s = self.fresh("s");
         let ultimate = default
-            .unwrap_or_else(|| Term::Fault("no pattern matched (non-exhaustive `when`)".into()));
+            .unwrap_or_else(|| Term::Fault("no pattern matched (non-exhaustive match)".into()));
         let chain = self.compile_arms(&s, arms, 0, ultimate);
         Term::Let {
             name: s,

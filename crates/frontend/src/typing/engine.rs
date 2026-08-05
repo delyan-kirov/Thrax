@@ -403,9 +403,9 @@ impl Engine {
             names
                 .entry(id)
                 .or_insert_with(|| {
-                    // Type variables display capitalized (`` `A ``), matching the
-                    // source syntax where every type name starts with a capital.
-                    let name = format!("`{}", (b'A' + (next % 26) as u8) as char);
+                    // Type variables display lowercase (`a`), matching the source
+                    // syntax where a lowercase name in type position is a variable.
+                    let name = ((b'a' + (next % 26) as u8) as char).to_string();
                     next += 1;
                     name
                 })
