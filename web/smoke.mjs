@@ -28,7 +28,7 @@ const CASES = [
     `@mod MAIN\n\n$ with HOST\n\n$ main : Int =\n\tHOST.print "hi"; 0\n`,
     ["hi"]],
   ["fib", 0,
-    `@mod MAIN\n\n$ with STR\n$ with HOST\n\n$ fib : Int -> Int = \\n =\n\tif n ?< 2 then n\n\telse fib (n - 1) + fib (n - 2)\n\n$ main : Int =\n\tHOST.print (STR.from_int (fib 20)); 0\n`,
+    `@mod MAIN\n\n$ with STR\n$ with HOST\n\n$ fib : Int -> Int = \\n =\n\tif n ?< 2 => n\n\telse fib (n - 1) + fib (n - 2)\n\n$ main : Int =\n\tHOST.print (STR.from_int (fib 20)); 0\n`,
     ["6765"]],
   ["target reflection", 0,
     `@mod MAIN\n\n$ with HOST\n\n$ main : Int =\n\tHOST.print TARGET.name; 0\n`,
