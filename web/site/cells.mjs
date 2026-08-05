@@ -27,7 +27,7 @@ $ with STR
 $ with HOST
 
 $ fib : Int -> Int = \\n =
-	if n ?< 2 then n
+	if n ?< 2 => n
 	else fib (n - 1) + fib (n - 2)
 
 $ main : Int =
@@ -39,7 +39,7 @@ $ main : Int =
   {
     id: "unions",
     title: "Sum types and pattern matching",
-    blurb: "A `@union` is a sum type; each variant can carry a payload. `when` tries arms top-to-bottom and binds the payload with `Tag.{..}`. `else` is an optional catch-all. You can drop it when the arms already cover every variant, as here.",
+    blurb: "A `@union` is a sum type; each variant can carry a payload. `is` tries arms top-to-bottom and binds the payload with `Tag.{..}`. `else` is an optional catch-all. You can drop it when the arms already cover every variant, as here.",
     src: `@mod MAIN
 
 $ with STR
@@ -50,9 +50,9 @@ $ Shape : @union =
 	Rect: {Int, Int},
 
 $ area : Shape -> Int = \\s =
-	when s
-		is Shape.Circle.{r} then 3 * r * r
-		is Shape.Rect.{w, h} then w * h
+	is s
+		| Shape.Circle.{r} => 3 * r * r
+		| Shape.Rect.{w, h} => w * h
 
 $ main : Int =
 	HOST.print ("circle r=2: " ++ STR.from_int (area Shape.Circle.{2}));
@@ -63,16 +63,16 @@ $ main : Int =
   {
     id: "guards",
     title: "Guards and the catch-all else",
-    blurb: "An arm may carry a guard: `is <pat> if <cond> then ...`. When the guard fails the match falls through to the next arm, and a final `else` catches everything the arms miss, here the zero case.",
+    blurb: "An arm may carry a guard: `| <pat> if <cond> => ...`. When the guard fails the match falls through to the next arm, and a final `else` catches everything the arms miss, here the zero case.",
     src: `@mod MAIN
 
 $ with STR
 $ with HOST
 
 $ sign : Int -> Str = \\n =
-	when n
-		is m if m ?> 0 then "positive"
-		is m if m ?< 0 then "negative"
+	is n
+		| m if m ?> 0 => "positive"
+		| m if m ?< 0 => "negative"
 	else "zero"
 
 $ main : Int =
@@ -85,13 +85,13 @@ $ main : Int =
   {
     id: "tuples",
     title: "Tuples",
-    blurb: "`{A, B}` is an anonymous product of any arity. Read elements positionally with `.0`/`.1`, and destructure with `{a, b}` patterns in `let`, lambdas and `when` arms. A `let` can bind several names, comma-separated.",
+    blurb: "`{A, B}` is an anonymous product of any arity. Read elements positionally with `.0`/`.1`, and destructure with `{a, b}` patterns in `let`, lambdas and `is` arms. A `let` can bind several names, comma-separated.",
     src: `@mod MAIN
 
 $ with STR
 $ with HOST
 
-$ swap : {\`A, \`B} -> {\`B, \`A} = \\t = {t.1, t.0}
+$ swap : {a, b} -> {b, a} = \\t = {t.1, t.0}
 
 $ main : Int =
 	let
@@ -106,16 +106,16 @@ $ main : Int =
   {
     id: "lists",
     title: "Lists",
-    blurb: "`[a, b, c]` builds a list, `h :: t` conses, `[]` is empty. Patterns mirror the sugar: `is []` and `is h :: t` walk a list one cell at a time.",
+    blurb: "`[a, b, c]` builds a list, `h :: t` conses, `[]` is empty. Patterns mirror the sugar: `| []` and `| h :: t` walk a list one cell at a time.",
     src: `@mod MAIN
 
 $ with STR
 $ with HOST
 
 $ sum : List Int -> Int = \\xs =
-	when xs
-		is [] then 0
-		is h :: t then h + sum t
+	is xs
+		| [] => 0
+		| h :: t => h + sum t
 	else 0
 
 $ main : Int =
@@ -145,7 +145,7 @@ $ main : Int =
   {
     id: "effects-gen",
     title: "Algebraic effects · generators",
-    blurb: "Thrax's headline feature. An operation like `yield` is performed by calling it; a handler `do <body> ctl k is Op a = e` intercepts it, where `k` is the resumable continuation. Resuming `k` and adding the results turns a generator into a sum. No iterator protocol, just a handler.",
+    blurb: "Thrax's headline feature. An operation like `yield` is performed by calling it; a handler `do <body> ctl k | Op a => e` intercepts it, where `k` is the resumable continuation. Resuming `k` and adding the results turns a generator into a sum. No iterator protocol, just a handler.",
     src: `@mod MAIN
 
 $ with STR
@@ -155,8 +155,8 @@ $ Yield : @effect = yield : Int -> {},
 
 $ sumGen : ({} -> <Yield> {}) -> Int = \\gen =
 	do gen {}
-	ctl k is Yield.yield v = v + k {}
-	      else _ = 0
+	ctl k | Yield.yield v => v + k {}
+	      else _ => 0
 
 $ gen3 : {} -> <Yield> {} = \\u =
 	Yield.yield 10 ; Yield.yield 20 ; Yield.yield 12 ; {}
@@ -169,17 +169,17 @@ $ main : Int =
   {
     id: "effects-exn",
     title: "Algebraic effects · exceptions",
-    blurb: "The same machine gives you exceptions: a handler that simply ignores `k` never resumes. `throw`'s result type is polymorphic (`\`A`) because it never returns to the call site. `Exn` is handled inside `safeDiv`, so `safeDiv` is pure. Its type carries no effect.",
+    blurb: "The same machine gives you exceptions: a handler that simply ignores `k` never resumes. `throw`'s result type is polymorphic (`a`) because it never returns to the call site. `Exn` is handled inside `safeDiv`, so `safeDiv` is pure. Its type carries no effect.",
     src: `@mod MAIN
 
 $ with STR
 $ with HOST
 
-$ Exn : @effect = throw : Str -> \`A,
+$ Exn : @effect = throw : Str -> a,
 
 $ safeDiv : Int -> Int -> Int = \\a b =
-	do if b ?= 0 then Exn.throw "divide by zero" else a / b
-	ctl k is Exn.throw msg = 0 - 1
+	do if b ?= 0 => Exn.throw "divide by zero" else a / b
+	ctl k | Exn.throw msg => 0 - 1
 
 $ main : Int =
 	HOST.print ("84 / 2 = " ++ STR.from_int (safeDiv 84 2));
@@ -200,9 +200,9 @@ $ State : @effect = get : {} -> Int, put : Int -> {},
 
 $ runState : ({} -> <State> Int) -> Int -> Int = \\action s0 =
 	let h = do action {}
-	        ctl k is get u = \\s = (k s) s
-	              is put n = \\s = (k {}) n
-	              else x = \\s = x
+	        ctl k | get u => \\s = (k s) s
+	              | put n => \\s = (k {}) n
+	              else x => \\s = x
 	 in h s0
 
 $ counter : {} -> <State> Int = \\u =
@@ -245,10 +245,10 @@ $ color : {} -> Str = \\u =
 
 $ withColor : ({} -> <ChangeColorEffect> {}) -> {} = \\body =
 	do body {}
-	ctl k is ChangeColorEffect.recolor c = (if animate then paint c else {}) ; k {}
+	ctl k | ChangeColorEffect.recolor c => (if animate => paint c else {}) ; k {}
 
 $ spin : Int -> <ChangeColorEffect> {} = \\n =
-	if n ?= 0 then {}
+	if n ?= 0 => {}
 	else
 		let c = color {} in
 		HOST.print c ;
