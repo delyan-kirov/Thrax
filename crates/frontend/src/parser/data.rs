@@ -11,7 +11,7 @@
 //! sugar are kept as explicit nodes ([`Expr::BinOp`], [`Expr::List`], ...) and a
 //! later `core` pass desugars them.
 
-use utilities::{Aol, Interner, Store, StrId};
+use utilities::{Aol, Interner, SecondaryMap, Span, Store, StrId};
 
 /// The stores that back a parsed tree. Every handle in the tree indexes into one
 /// of these; reads go through [`Store::lookup`] / [`Interner::resolve`].
@@ -21,6 +21,11 @@ pub struct Ast {
     pub tys: Store<Ty>,
     pub pats: Store<Pattern>,
     pub strings: Interner,
+    /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
+    /// a node absent here (e.g. one synthesized by a later pass) has no span.
+    pub expr_spans: SecondaryMap<Expr, Span>,
+    /// Source span of each `Ty` node, for diagnostics on type annotations.
+    pub ty_spans: SecondaryMap<Ty, Span>,
 }
 
 impl Ast {
@@ -38,6 +43,14 @@ impl Ast {
     }
     pub fn expr(&self, id: Aol<Expr>) -> &Expr {
         self.exprs.lookup(id)
+    }
+    /// The source span recorded for an `Expr`, if the parser stamped one.
+    pub fn expr_span(&self, id: Aol<Expr>) -> Option<Span> {
+        self.expr_spans.get(id).copied()
+    }
+    /// The source span recorded for a `Ty`, if the parser stamped one.
+    pub fn ty_span(&self, id: Aol<Ty>) -> Option<Span> {
+        self.ty_spans.get(id).copied()
     }
     pub fn ty(&self, id: Aol<Ty>) -> &Ty {
         self.tys.lookup(id)

@@ -35,7 +35,7 @@ use crate::parser::data::{
     Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, Ty,
 };
 use utilities::Aol;
-use utilities::{Code, Diagnostic, Result, Span};
+use utilities::{diag, Code, Diagnostic, Result, Span};
 
 use crate::typing::data::{self as ty, Type, VarId};
 use crate::typing::engine::Engine;
@@ -1065,6 +1065,14 @@ impl<'a> Checker<'a> {
     // -- expression inference ----------------------------------------------
 
     pub fn infer(&mut self, e: Aol<Expr>) -> Result<Type> {
+        let r = self.infer_node(e);
+        r.map_err(|d| match self.ast.expr_span(e) {
+            Some(span) => d.fill_span(span),
+            None => d,
+        })
+    }
+
+    fn infer_node(&mut self, e: Aol<Expr>) -> Result<Type> {
         match self.node(e) {
             Expr::Int(_) => {
                 let t = self.eng.fresh();
@@ -1356,7 +1364,19 @@ impl<'a> Checker<'a> {
                 self.eng.unify(&eb, &result, "in a handler 'else' clause")?;
                 self.leave_scope();
             }
-            None => self.eng.unify(&body_ty, &result, "in a handled body")?,
+            // With no `else` clause the return (value) case defaults to identity,
+            // so the body's result becomes the handler's result. When they differ
+            // the handler needs an `else` clause to convert the body's value.
+            None => {
+                if self.eng.unify(&body_ty, &result, "in a handled body").is_err() {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "the body produces {}, but the handler's clauses produce {}",
+                        self.eng.show(&body_ty), self.eng.show(&result);
+                        note: "with no `else` clause the body's result is returned unchanged; add an `else x => ...` clause to convert it"
+                    ));
+                }
+            }
         }
         Ok(result)
     }
@@ -1546,21 +1566,20 @@ impl<'a> Checker<'a> {
                 let mut mods: Vec<&str> = p.candidates.iter().filter_map(|c| c.module).collect();
                 mods.sort_unstable();
                 mods.dedup();
-                let hint = match mods.as_slice() {
-                    [a, b, ..] => format!(
-                        "; several imported modules define `{name}` with a matching type. \
-                         Qualify just this reference to pick one, e.g. `{a}.{name}` or `{b}.{name}` \
+                let err = diag!(
+                    Code::AmbiguousName, Span::at(0), 0,
+                    "ambiguous overloaded use of `{}`", p.name
+                );
+                let err = match mods.as_slice() {
+                    [a, b, ..] => err.with_note(format!(
+                        "several imported modules define `{name}` with a matching type; \
+                         qualify just this reference to pick one, e.g. `{a}.{name}` or `{b}.{name}` \
                          (the rest of the module keeps using the bare name)",
                         name = p.name
-                    ),
-                    _ => String::new(),
+                    )),
+                    _ => err,
                 };
-                return Err(Diagnostic::error(
-                    Code::AmbiguousName,
-                    Span::at(0),
-                    0,
-                    format!("ambiguous overloaded use of `{}`{hint}", p.name),
-                ));
+                return Err(err);
             }
             return Ok(());
         }
@@ -1581,14 +1600,10 @@ impl<'a> Checker<'a> {
 
     fn no_overload(&self, name: &str, args: &[Type]) -> Diagnostic {
         let shown: Vec<String> = args.iter().map(|a| self.show(a)).collect();
-        Diagnostic::error(
-            Code::TypeMismatch,
-            Span::at(0),
-            0,
-            format!(
-                "no overload of `{name}` matches argument types ({})",
-                shown.join(", ")
-            ),
+        diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "no overload of `{name}` matches argument types ({})",
+            shown.join(", ")
         )
     }
 
@@ -1851,7 +1866,11 @@ impl<'a> Checker<'a> {
                     Some(alias) => self.ty_of_ast(alias, tvars),
                     None => {
                         if !self.is_known_type(name) && self.unknown_type.is_none() {
-                            self.unknown_type = Some(unknown_type(name));
+                            let mut d = unknown_type(name);
+                            if let Some(span) = self.ast.ty_span(ty) {
+                                d = d.fill_span(span);
+                            }
+                            self.unknown_type = Some(d);
                         }
                         Type::con(canonical_con(name))
                     }
@@ -2308,12 +2327,7 @@ fn canonical_con(name: &str) -> &str {
 }
 
 fn unbound(name: &str) -> Diagnostic {
-    Diagnostic::error(
-        Code::TypeUnbound,
-        Span::at(0),
-        0,
-        format!("unbound name `{name}`"),
-    )
+    diag!(Code::TypeUnbound, Span::at(0), 0, "unbound name `{name}`")
 }
 
 /// The built-in scalar and container type names, in both their friendly and
@@ -2336,10 +2350,8 @@ fn is_base_type(name: &str) -> bool {
 }
 
 fn unknown_type(name: &str) -> Diagnostic {
-    Diagnostic::error(
-        Code::TypeUnbound,
-        Span::at(0),
-        0,
-        format!("unknown type `{name}`: a type variable is written as a lowercase name; a capitalized type must be declared"),
+    diag!(
+        Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`";
+        note: "a type variable is written as a lowercase name; a capitalized type must be declared"
     )
 }

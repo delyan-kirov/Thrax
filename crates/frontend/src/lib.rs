@@ -22,7 +22,7 @@ pub use typing::data::Type;
 pub use typing::engine::Engine;
 pub use typing::Checker;
 
-use utilities::{Arena, Result};
+use utilities::Result;
 
 /// A parsed compilation unit: the [`Program`] root and the [`Ast`] stores that
 /// back every handle in it. Reads go through `parsed.ast` (`ast.expr(id)`,
@@ -40,12 +40,10 @@ pub fn parse(source: &str) -> Result<Parsed> {
 
 /// Parse `source`, appending its nodes to `ast` (moved in and returned). Several
 /// modules parsed into one shared `Ast` can reference each other's handles, which
-/// cross-module type imports rely on. The lexer decodes string escapes into a
-/// scratch [`Arena`] that lives only for the parse; every name is interned into
-/// `ast`, so the result owns all its data.
+/// cross-module type imports rely on. Tokens carry only spans and names/strings
+/// are interned into `ast`, so the result borrows nothing from `source`.
 pub fn parse_into(ast: Ast, source: &str) -> Result<(Ast, Program)> {
-    let scratch = Arena::new();
-    let lex = Lexer::new(source, &scratch);
+    let lex = Lexer::new(source);
     let mut parser = Parser::new(lex, ast);
     let program = parser.parse_program()?;
     Ok((parser.into_ast(), program))

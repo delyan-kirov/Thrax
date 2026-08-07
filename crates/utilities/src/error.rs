@@ -136,6 +136,26 @@ impl fmt::Display for Code {
     }
 }
 
+/// Build a [`Diagnostic`] from a code, span, line, and a `format!`-style message,
+/// with an optional trailing `note:` fix hint.
+///
+/// ```ignore
+/// diag!(Code::TypeMismatch, span, line, "expected {}, found {}", a, b)
+/// diag!(Code::TypeMismatch, span, line, "expected {}, found {}", a, b;
+///       note: "add an `else {}` clause", binder)
+/// ```
+#[macro_export]
+macro_rules! diag {
+    ($code:expr, $span:expr, $line:expr, $fmt:literal $(, $arg:expr)*
+     ; note: $nfmt:literal $(, $narg:expr)* $(,)?) => {
+        $crate::Diagnostic::error($code, $span, $line, ::std::format!($fmt $(, $arg)*))
+            .with_note(::std::format!($nfmt $(, $narg)*))
+    };
+    ($code:expr, $span:expr, $line:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        $crate::Diagnostic::error($code, $span, $line, ::std::format!($fmt $(, $arg)*))
+    };
+}
+
 /// One link in a diagnostic's context chain.
 #[derive(Clone, Debug)]
 pub struct Frame {
@@ -152,6 +172,9 @@ pub struct Frame {
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     frames: Vec<Frame>,
+    /// An optional closing hint on how to fix the error. Rendered as a trailing
+    /// `note: ...` line, after the source caret, with no code or location.
+    note: Option<String>,
 }
 
 impl Diagnostic {
@@ -164,7 +187,25 @@ impl Diagnostic {
                 line,
                 msg: msg.into(),
             }],
+            note: None,
         }
+    }
+
+    /// Attach a closing hint on how to fix the error (builder style).
+    pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// Give the root frame a source location if it has none (the [`Span::at(0)`]
+    /// sentinel that span-less passes like the type checker start with). A
+    /// diagnostic that already carries a real span is left untouched, so the
+    /// innermost pass to set a span wins.
+    pub fn fill_span(mut self, span: Span) -> Diagnostic {
+        if self.frames[0].span == Span::at(0) {
+            self.frames[0].span = span;
+        }
+        self
     }
 
     /// Add an outer context frame (builder style, for use on the error path of
@@ -202,16 +243,19 @@ impl Diagnostic {
     pub fn render(&self, source: &str, filename: &str) -> String {
         let mut out = String::new();
         for (depth, frame) in self.frames.iter().enumerate() {
-            let (col, line_text) = locate(source, frame.span.start);
+            let (line, col, line_text) = locate(source, frame.span.start);
             let lead = if depth == 0 { "error" } else { "note " };
             out.push_str(&format!(
                 "{lead}[{}]: {}\n  --> {filename}:{}:{}\n",
-                frame.code, frame.msg, frame.line, col
+                frame.code, frame.msg, line, col
             ));
             out.push_str(&format!("   | {}\n", line_text));
             let caret_pad = " ".repeat(col.saturating_sub(1));
             let caret_len = frame.span.len().max(1);
             out.push_str(&format!("   | {}{}\n", caret_pad, "^".repeat(caret_len)));
+        }
+        if let Some(note) = &self.note {
+            out.push_str(&format!("note: {note}\n"));
         }
         out
     }
@@ -226,15 +270,17 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
-/// Recover the 1-based column and the full text of the line containing `offset`.
-fn locate(source: &str, offset: usize) -> (usize, &str) {
+/// Recover the 1-based line number and column, plus the full text of the line,
+/// for the source position at `offset`.
+fn locate(source: &str, offset: usize) -> (usize, usize, &str) {
     let offset = offset.min(source.len());
     let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
     let line_end = source[offset..]
         .find('\n')
         .map_or(source.len(), |i| offset + i);
     let col = source[line_start..offset].chars().count() + 1;
-    (col, &source[line_start..line_end])
+    let line = source[..line_start].bytes().filter(|&b| b == b'\n').count() + 1;
+    (line, col, &source[line_start..line_end])
 }
 
 #[cfg(test)]

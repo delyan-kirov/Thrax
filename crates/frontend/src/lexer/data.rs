@@ -1,44 +1,32 @@
 //! The token model plus the keyword/operator/delimiter lookup tables.
 //!
-//! Payload-carrying kinds (`Int`, `Real`, `Str`) hold their parsed value inline;
-//! every other kind is fully determined by its tag plus the lexeme text. This
-//! mirrors the C++ lexer's `TokenTag` + payload `variant` split.
+//! A token is pure data: a [`Kind`] tag plus a [`Span`] into the source. It
+//! carries no borrow, so the token stream is `Send` and outlives the source. A
+//! token's lexeme is `source[span]`, resolved on demand by whoever holds the
+//! source (see the parser). `Int`/`Real` keep their parsed value inline; a
+//! string literal's decoded bytes are produced later (the `Str` tag only marks
+//! the literal's extent), so decoding stays out of the lexer.
 
 use utilities::{Line, Span};
 
-/// A lexical token: a [`Kind`], the exact source lexeme, and its position.
-#[derive(Clone, Copy, Debug)]
-pub struct Token<'a> {
-    pub kind: Kind<'a>,
-    /// The verbatim source slice (includes sigils like `@` and quotes).
-    pub text: &'a str,
+/// A lexical token: a [`Kind`] tag and the source [`Span`] it covers.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Token {
+    pub kind: Kind,
     pub span: Span,
     pub line: Line,
 }
 
-impl<'a> Token<'a> {
-    /// The identifier text of a `@name` intrinsic, past the leading `@`.
-    pub fn intrinsic_name(&self) -> &'a str {
-        debug_assert!(
-            matches!(self.kind, Kind::At),
-            "intrinsic_name on non-@ token"
-        );
-        &self.text[1..]
-    }
-
-}
-
 /// The lexical category. Textbook name: this is the token's *tag*.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Kind<'a> {
-    // Literals (payload-carrying).
+pub enum Kind {
+    // Literals.
     Int(i64),
     Real(f64),
-    Str(&'a [u8]), // decoded bytes (Thrax strings are byte vectors, not UTF-8);
-    // `Token::text` still holds the quotes
+    Str, // a string literal; its bytes are decoded from `source[span]` later
 
     // Names.
-    Word, // identifier; lexeme in `Token::text`
+    Word, // identifier; lexeme is `source[span]`
     At,   // @name intrinsic
     Op,   // operator lexeme (+ - * / % ! ?= ?< ?> <= >= < > | ; |> :: ++ ...)
 
@@ -76,7 +64,7 @@ pub enum Kind<'a> {
 }
 
 /// Keyword table: lexeme -> kind. Linear-searched.
-pub const KEYWORDS: &[(&str, Kind<'static>)] = &[
+pub const KEYWORDS: &[(&str, Kind)] = &[
     ("let", Kind::Let),
     ("in", Kind::In),
     ("if", Kind::If),
@@ -93,7 +81,7 @@ pub const KEYWORDS: &[(&str, Kind<'static>)] = &[
 /// The structural operators map to their own kind; every evaluable operator
 /// shares [`Kind::Op`] with the lexeme kept in `Token::text` (the parser turns
 /// each into a variable of that name). A run absent from this table is an error.
-pub const OPERATORS: &[(&str, Kind<'static>)] = &[
+pub const OPERATORS: &[(&str, Kind)] = &[
     // Structural.
     ("\\", Kind::Lambda),
     ("=", Kind::Eq),
@@ -128,7 +116,7 @@ pub const OPERATORS: &[(&str, Kind<'static>)] = &[
 ];
 
 /// Single-character delimiters. Unlike operators these never coalesce.
-pub const DELIMITERS: &[(u8, Kind<'static>)] = &[
+pub const DELIMITERS: &[(u8, Kind)] = &[
     (b'(', Kind::LParen),
     (b')', Kind::RParen),
     (b',', Kind::Comma),
@@ -140,21 +128,21 @@ pub const DELIMITERS: &[(u8, Kind<'static>)] = &[
 ];
 
 /// Look up `s` as a keyword, falling back to [`Kind::Word`].
-pub fn keyword_or_word(s: &str) -> Kind<'static> {
+pub fn keyword_or_word(s: &str) -> Kind {
     lookup_str(KEYWORDS, s).unwrap_or(Kind::Word)
 }
 
 /// Look up a full operator run; `None` means the run is not a valid operator.
-pub fn operator(s: &str) -> Option<Kind<'static>> {
+pub fn operator(s: &str) -> Option<Kind> {
     lookup_str(OPERATORS, s)
 }
 
 /// Look up a single delimiter byte.
-pub fn delimiter(b: u8) -> Option<Kind<'static>> {
+pub fn delimiter(b: u8) -> Option<Kind> {
     DELIMITERS.iter().find(|&&(k, _)| k == b).map(|&(_, v)| v)
 }
 
-fn lookup_str(table: &[(&str, Kind<'static>)], s: &str) -> Option<Kind<'static>> {
+fn lookup_str(table: &[(&str, Kind)], s: &str) -> Option<Kind> {
     table.iter().find(|&&(k, _)| k == s).map(|&(_, v)| v)
 }
 

@@ -7,7 +7,6 @@ use std::process::ExitCode;
 
 use frontend::Lexer;
 use frontend::{Item, Program};
-use utilities::Arena;
 
 /// A module's name and source text, plus the name-to-slot index and the root
 /// module name. Shared by `check` and `run`.
@@ -463,11 +462,11 @@ pub fn cmd_lex(path: &str) -> ExitCode {
         }
     };
 
-    let arena = Arena::new();
-    match Lexer::tokenize(&source, &arena) {
+    match Lexer::tokenize(&source) {
         Ok(tokens) => {
             for tok in &tokens {
-                println!("{:>4}  {:?}  {:?}", tok.line, tok.kind, tok.text);
+                let text = &source[tok.span.start..tok.span.end];
+                println!("{:>4}  {:?}  {:?}", tok.line, tok.kind, text);
             }
             ExitCode::SUCCESS
         }
