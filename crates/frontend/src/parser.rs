@@ -24,7 +24,7 @@ mod tests;
 
 use crate::lexer::data::{Kind, Token};
 use crate::lexer::Lexer;
-use utilities::{Aol, StrId};
+use utilities::{Aol, Span, StrId};
 use utilities::{Code, Diagnostic, Result};
 
 use crate::parser::data::*;
@@ -32,6 +32,12 @@ use crate::parser::data::*;
 pub struct Parser<'a> {
     lex: Lexer<'a>,
     ast: Ast,
+    /// The (read-only) source, so a token's lexeme is `src[token.span]`. Tokens
+    /// themselves carry only spans; this is where they resolve.
+    src: &'a str,
+    /// End offset of the most recently consumed token, so a node's span can run
+    /// from its first token's start to here.
+    last_end: usize,
 }
 
 /// Consume a token of an expected kind, or fail with an `UnexpectedToken`
@@ -51,7 +57,13 @@ impl<'a> Parser<'a> {
     /// modules of one compilation share stores, so a handle minted for one module
     /// resolves in every module (needed for cross-module type imports).
     pub fn new(lex: Lexer<'a>, ast: Ast) -> Parser<'a> {
-        Parser { lex, ast }
+        let src = lex.source();
+        Parser {
+            lex,
+            ast,
+            src,
+            last_end: 0,
+        }
     }
 
     /// Consume the parser, yielding the filled store bundle.
@@ -64,42 +76,72 @@ impl<'a> Parser<'a> {
     fn expr(&mut self, e: Expr) -> Aol<Expr> {
         self.ast.exprs.create(e)
     }
+    /// Record `node`'s source span as running from `start` to the end of the most
+    /// recently consumed token, then return it (builder-style, for diagnostics).
+    fn stamp(&mut self, start: usize, node: Aol<Expr>) -> Aol<Expr> {
+        self.ast.expr_spans.insert(node, Span::new(start, self.last_end));
+        node
+    }
+    /// Like [`stamp`](Self::stamp), for a `Ty` node.
+    fn stamp_ty(&mut self, start: usize, node: Aol<Ty>) -> Aol<Ty> {
+        self.ast.ty_spans.insert(node, Span::new(start, self.last_end));
+        node
+    }
+    /// The start offset of the next token, marking where a node begins.
+    fn here(&mut self) -> Result<usize> {
+        Ok(self.peek()?.span.start)
+    }
     fn ty(&mut self, t: Ty) -> Aol<Ty> {
         self.ast.tys.create(t)
     }
     fn pat(&mut self, p: Pattern) -> Aol<Pattern> {
         self.ast.pats.create(p)
     }
+    /// A token's source lexeme, `src[t.span]`. The returned slice is tied to the
+    /// source (`'a`), not to `&self`, so it can be handed straight to a `&mut
+    /// self` method like [`intern`](Self::intern) without a borrow clash.
+    fn text(&self, t: Token) -> &'a str {
+        let src: &'a str = self.src;
+        &src[t.span.start..t.span.end]
+    }
+    /// The identifier of an `@name` token, past the leading `@`.
+    fn intrinsic_name(&self, t: Token) -> &'a str {
+        debug_assert!(matches!(t.kind, Kind::At), "intrinsic_name on non-@ token");
+        &self.text(t)[1..]
+    }
     fn intern(&mut self, s: &str) -> StrId {
         self.ast.strings.intern(s)
     }
-    fn intern_bytes(&mut self, b: &[u8]) -> StrId {
-        self.ast.strings.intern_bytes(b)
+    /// Decode a `Kind::Str` token's literal (escapes and all) into interned
+    /// bytes. Decoding is deferred to here so the lexer stays borrow-free.
+    fn intern_str(&mut self, t: Token) -> Result<StrId> {
+        let bytes = crate::lexer::decode_string(self.text(t), t.span.start, t.line)?;
+        Ok(self.ast.strings.intern_bytes(&bytes))
     }
     /// Consume the next token and intern its text (the token is a checked word).
     fn bump_word(&mut self) -> Result<StrId> {
         let t = self.bump()?;
-        Ok(self.intern(t.text))
+        Ok(self.intern(self.text(t)))
     }
     /// Expect a `Word` and intern it. Combines `expect!` + `intern` so the token
     /// is bound to a local first (a nested `self.intern(self.bump()?...)` would
     /// mutably borrow `self` twice in one expression).
     fn expect_word(&mut self, what: &str) -> Result<StrId> {
         let t = expect!(self, Kind::Word, what);
-        Ok(self.intern(t.text))
+        Ok(self.intern(self.text(t)))
     }
     /// Consume a lowercase-initial type variable name and intern it.
     fn expect_tyvar(&mut self, what: &str) -> Result<StrId> {
         let t = expect!(self, Kind::Word, what);
-        if !t.text.starts_with(|c: char| c.is_ascii_lowercase()) {
+        if !self.text(t).starts_with(|c: char| c.is_ascii_lowercase()) {
             return Err(self.unexpected(&t, "a type variable must start with a lowercase letter"));
         }
-        Ok(self.intern(t.text))
+        Ok(self.intern(self.text(t)))
     }
     /// Is the next token a lowercase-initial word, i.e. a type variable?
     fn at_tyvar(&mut self) -> Result<bool> {
         let t = self.peek()?;
-        Ok(matches!(t.kind, Kind::Word) && t.text.starts_with(|c: char| c.is_ascii_lowercase()))
+        Ok(matches!(t.kind, Kind::Word) && self.text(t).starts_with(|c: char| c.is_ascii_lowercase()))
     }
 
     /// If `base` is a bare, unqualified variable, its interned name.
@@ -110,20 +152,22 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek(&mut self) -> Result<Token<'a>> {
+    fn peek(&mut self) -> Result<Token> {
         self.lex.peek(0)
     }
-    fn peek_at(&mut self, n: usize) -> Result<Token<'a>> {
+    fn peek_at(&mut self, n: usize) -> Result<Token> {
         self.lex.peek(n)
     }
-    fn peek_kind(&mut self) -> Result<Kind<'a>> {
+    fn peek_kind(&mut self) -> Result<Kind> {
         Ok(self.lex.peek(0)?.kind)
     }
-    fn bump(&mut self) -> Result<Token<'a>> {
-        self.lex.next_token()
+    fn bump(&mut self) -> Result<Token> {
+        let t = self.lex.next_token()?;
+        self.last_end = t.span.end;
+        Ok(t)
     }
     /// Consume the next token if it matches `pred`; report whether it did.
-    fn eat(&mut self, pred: impl Fn(Kind<'a>) -> bool) -> Result<bool> {
+    fn eat(&mut self, pred: impl Fn(Kind) -> bool) -> Result<bool> {
         if pred(self.peek()?.kind) {
             self.bump()?;
             Ok(true)
@@ -133,21 +177,22 @@ impl<'a> Parser<'a> {
     }
     /// Is the next token the operator with lexeme `s`?
     fn at_op(&mut self, s: &str) -> Result<bool> {
-        Ok(matches!(self.peek()?.kind, Kind::Op) && self.peek()?.text == s)
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::Op) && self.text(t) == s)
     }
-    fn unexpected(&self, t: &Token<'a>, what: &str) -> Diagnostic {
+    fn unexpected(&self, t: &Token, what: &str) -> Diagnostic {
         Diagnostic::error(
             Code::UnexpectedToken,
             t.span,
             t.line,
-            format!("{what}, found {}", describe(t)),
+            format!("{what}, found {}", describe(t, self.text(*t))),
         )
     }
 
     /// A type name must start with a capital letter; a lowercase name in type
     /// position is a type variable. `tok` is the offending name token, for the
     /// error span.
-    fn require_type_capital(&self, text: &str, tok: &Token<'a>) -> Result<()> {
+    fn require_type_capital(&self, text: &str, tok: &Token) -> Result<()> {
         if text.starts_with(|c: char| c.is_ascii_uppercase()) {
             Ok(())
         } else {
@@ -163,11 +208,11 @@ impl<'a> Parser<'a> {
     /// Parse a whole compilation unit.
     pub fn parse_program(&mut self) -> Result<Program> {
         let at = expect!(self, Kind::At, "expected '@mod' at the start of the file");
-        if at.intrinsic_name() != "mod" {
+        if self.intrinsic_name(at) != "mod" {
             return Err(self.unexpected(&at, "expected '@mod' at the start of the file"));
         }
         let name = expect!(self, Kind::Word, "expected a module name after '@mod'");
-        let module = self.intern(name.text);
+        let module = self.intern(self.text(name));
 
         let mut items = Vec::new();
         while !matches!(self.peek_kind()?, Kind::Eof) {
@@ -195,8 +240,8 @@ impl<'a> Parser<'a> {
     }
 
     /// A `$ @...` directive: visibility, assert, run, or an operator definition.
-    fn parse_directive(&mut self, at: Token<'a>) -> Result<Item> {
-        match at.intrinsic_name() {
+    fn parse_directive(&mut self, at: Token) -> Result<Item> {
+        match self.intrinsic_name(at) {
             "private" => {
                 self.bump()?;
                 Ok(Item::Visibility(Visibility::Private))
@@ -224,7 +269,7 @@ impl<'a> Parser<'a> {
         expect!(self, Kind::Dot, "expected '.{' after '@operator'");
         expect!(self, Kind::LBrace, "expected '{' after '@operator.'");
         let op_tok = expect!(self, Kind::Op, "expected an operator between the braces");
-        let op = self.intern(op_tok.text);
+        let op = self.intern(self.text(op_tok));
         expect!(self, Kind::RBrace, "expected '}' after the operator");
         expect!(
             self,
@@ -254,12 +299,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_dotted_name(&mut self) -> Result<Box<[StrId]>> {
-        let first = expect!(self, Kind::Word, "expected a module name").text;
-        let mut names = vec![self.intern(first)];
+        let first = expect!(self, Kind::Word, "expected a module name");
+        let mut names = vec![self.intern(self.text(first))];
         while matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?;
-            let part = expect!(self, Kind::Word, "expected a name after '.'").text;
-            names.push(self.intern(part));
+            let part = expect!(self, Kind::Word, "expected a name after '.'");
+            names.push(self.intern(self.text(part)));
         }
         Ok(names.into_boxed_slice())
     }
@@ -267,7 +312,7 @@ impl<'a> Parser<'a> {
     /// `$ name ...`: a value definition, or a struct/union/alias/effect type.
     fn parse_named_global(&mut self) -> Result<Item> {
         let name_tok = self.bump()?;
-        let name = self.intern(name_tok.text);
+        let name = self.intern(self.text(name_tok));
         if !self.eat(|k| matches!(k, Kind::Colon))? {
             expect!(self, Kind::Eq, "expected ':' or '=' after the name");
             return Ok(Item::Def {
@@ -279,9 +324,10 @@ impl<'a> Parser<'a> {
         // After `name :`, an `@struct`/`@union`/`@alias`/`@effect` keyword opens a
         // type declaration; anything else is a type signature on a value.
         if let Kind::At = self.peek_kind()? {
-            let kw = self.peek()?.intrinsic_name();
+            let at_tok = self.peek()?;
+            let kw = self.intrinsic_name(at_tok);
             if matches!(kw, "struct" | "union" | "alias" | "effect") {
-                self.require_type_capital(name_tok.text, &name_tok)?;
+                self.require_type_capital(self.text(name_tok), &name_tok)?;
             }
             match kw {
                 "struct" => {
@@ -383,7 +429,7 @@ impl<'a> Parser<'a> {
         Ok(Payload::Fields(fields.into_boxed_slice()))
     }
 
-    fn peek_kind_at(&mut self, n: usize) -> Result<Kind<'a>> {
+    fn peek_kind_at(&mut self, n: usize) -> Result<Kind> {
         Ok(self.lex.peek(n)?.kind)
     }
 
@@ -420,6 +466,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_atom(&mut self) -> Result<Aol<Ty>> {
+        let start = self.here()?;
+        let node = self.parse_type_atom_inner()?;
+        Ok(self.stamp_ty(start, node))
+    }
+
+    fn parse_type_atom_inner(&mut self) -> Result<Aol<Ty>> {
         if self.at_tyvar()? {
             let name = self.expect_tyvar("expected a type-variable name")?;
             return Ok(self.ty(Ty::Var(name)));
@@ -431,22 +483,22 @@ impl<'a> Parser<'a> {
                 if matches!(self.peek_kind()?, Kind::Dot) {
                     self.bump()?; // '.'
                     let member = expect!(self, Kind::Word, "expected a type name after '.'");
-                    self.require_type_capital(member.text, &member)?;
-                    let module = self.intern(t.text);
-                    let name = self.intern(member.text);
+                    self.require_type_capital(self.text(member), &member)?;
+                    let module = self.intern(self.text(t));
+                    let name = self.intern(self.text(member));
                     Ok(self.ty(Ty::Con {
                         module: Some(module),
                         name,
                     }))
                 } else {
-                    self.require_type_capital(t.text, &t)?;
-                    let name = self.intern(t.text);
+                    self.require_type_capital(self.text(t), &t)?;
+                    let name = self.intern(self.text(t));
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
             Kind::At => {
                 self.bump()?;
-                let name = self.intern(t.text);
+                let name = self.intern(self.text(t));
                 Ok(self.ty(Ty::Con { module: None, name }))
             }
             Kind::LParen => {
@@ -566,16 +618,18 @@ impl<'a> Parser<'a> {
     // -- expressions: the Pratt core ----------------------------------------
 
     fn parse_expr(&mut self, min_bp: u8) -> Result<Aol<Expr>> {
+        let start = self.here()?;
         let mut lhs = self.parse_prefix()?;
         loop {
             let t = self.peek()?;
             match t.kind {
-                Kind::Op => match table::infix(t.text) {
+                Kind::Op => match table::infix(self.text(t)) {
                     Some(bp) if bp.left >= min_bp => {
                         self.bump()?;
-                        let op = self.intern(t.text);
+                        let op = self.intern(self.text(t));
                         let rhs = self.parse_expr(bp.right)?;
-                        lhs = self.expr(Expr::BinOp { op, lhs, rhs });
+                        let node = self.expr(Expr::BinOp { op, lhs, rhs });
+                        lhs = self.stamp(start, node);
                     }
                     _ => break,
                 },
@@ -584,7 +638,8 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     let rhs = self.parse_expr(table::APP.right)?;
-                    lhs = self.expr(Expr::App(lhs, rhs));
+                    let node = self.expr(Expr::App(lhs, rhs));
+                    lhs = self.stamp(start, node);
                 }
                 _ => break,
             }
@@ -594,12 +649,12 @@ impl<'a> Parser<'a> {
 
     /// Tokens that can begin an operand, so juxtaposition means application.
     /// `do` is deliberately excluded (a `do` block is never an argument).
-    fn starts_operand(&self, k: Kind<'a>) -> bool {
+    fn starts_operand(&self, k: Kind) -> bool {
         matches!(
             k,
             Kind::Int(_)
                 | Kind::Real(_)
-                | Kind::Str(_)
+                | Kind::Str
                 | Kind::Word
                 | Kind::LParen
                 | Kind::Let
@@ -616,11 +671,13 @@ impl<'a> Parser<'a> {
     fn parse_prefix(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
         if let Kind::Op = t.kind {
-            if let Some(name) = table::prefix(t.text) {
+            if let Some(name) = table::prefix(self.text(t)) {
+                let start = t.span.start;
                 self.bump()?;
                 let op = self.intern(name);
                 let operand = self.parse_expr(table::PREFIX)?;
-                return Ok(self.expr(Expr::UnOp { op, operand }));
+                let node = self.expr(Expr::UnOp { op, operand });
+                return Ok(self.stamp(start, node));
             }
         }
         self.parse_primary()
@@ -628,15 +685,23 @@ impl<'a> Parser<'a> {
 
     /// One atom followed by a left-associative postfix `.` chain.
     fn parse_primary(&mut self) -> Result<Aol<Expr>> {
+        let start = self.here()?;
         let mut base = self.parse_atom()?;
         while matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?; // '.'
             base = self.parse_postfix(base)?;
+            base = self.stamp(start, base);
         }
         Ok(base)
     }
 
     fn parse_atom(&mut self) -> Result<Aol<Expr>> {
+        let start = self.here()?;
+        let node = self.parse_atom_inner()?;
+        Ok(self.stamp(start, node))
+    }
+
+    fn parse_atom_inner(&mut self) -> Result<Aol<Expr>> {
         let t = self.peek()?;
         match t.kind {
             Kind::Int(v) => {
@@ -647,14 +712,14 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.expr(Expr::Real(v)))
             }
-            Kind::Str(s) => {
+            Kind::Str => {
                 self.bump()?;
-                let s = self.intern_bytes(s);
+                let s = self.intern_str(t)?;
                 Ok(self.expr(Expr::Str(s)))
             }
             Kind::Word => {
                 self.bump()?;
-                let name = self.intern(t.text);
+                let name = self.intern(self.text(t));
                 Ok(self.expr(Expr::Var { module: None, name }))
             }
             Kind::LParen => self.parse_group(),
@@ -686,15 +751,18 @@ impl<'a> Parser<'a> {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
             }
-            Kind::Word if is_upper(ahead.text) => {
+            Kind::Word if is_upper(self.text(ahead)) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;
                 self.bump()?; // the tag / type name
-                let ahead_name = self.intern(ahead.text);
+                let ahead_name = self.intern(self.text(ahead));
                 // `Module.Type.Tag`: another uppercase `.Name` follows.
-                if matches!(self.peek_kind()?, Kind::Dot)
+                let qualifies = matches!(self.peek_kind()?, Kind::Dot)
                     && matches!(self.peek_kind_at(1)?, Kind::Word)
-                    && is_upper(self.peek_at(1)?.text)
-                {
+                    && {
+                        let t1 = self.peek_at(1)?;
+                        is_upper(self.text(t1))
+                    };
+                if qualifies {
                     self.bump()?; // '.'
                     let tag = self.bump_word()?;
                     self.parse_variant_lit(Some(ty), Some(ahead_name), tag)
@@ -707,7 +775,7 @@ impl<'a> Parser<'a> {
                 if let Some(name) = self.bare_var_name(base) {
                     if is_upper(self.ast.text(name)) {
                         self.bump()?;
-                        let member = self.intern(ahead.text);
+                        let member = self.intern(self.text(ahead));
                         return Ok(self.expr(Expr::Var {
                             module: Some(name),
                             name: member,
@@ -715,7 +783,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.bump()?;
-                let name = self.intern(ahead.text);
+                let name = self.intern(self.text(ahead));
                 Ok(self.expr(Expr::Field { record: base, name }))
             }
             _ => Err(self.unexpected(&ahead, "expected a field name, tag, or '{' after '.'")),
@@ -739,9 +807,9 @@ impl<'a> Parser<'a> {
     }
 
     /// Split a `.0` / `.0.1` index token into nested field accesses.
-    fn tuple_indices(&mut self, base: Aol<Expr>, tok: Token<'a>) -> Aol<Expr> {
+    fn tuple_indices(&mut self, base: Aol<Expr>, tok: Token) -> Aol<Expr> {
         let mut record = base;
-        for part in tok.text.split('.') {
+        for part in self.text(tok).split('.') {
             debug_assert!(
                 !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()),
                 "a tuple index token is dot-separated digit runs"
@@ -788,10 +856,10 @@ impl<'a> Parser<'a> {
             Kind::Word,
             "expected '{' or a variant tag after a leading '.'"
         );
-        if !is_upper(tag.text) {
+        if !is_upper(self.text(tag)) {
             return Err(self.unexpected(&tag, "a variant tag must start uppercase"));
         }
-        let tag = self.intern(tag.text);
+        let tag = self.intern(self.text(tag));
         self.parse_variant_lit(None, None, tag)
     }
 
@@ -865,10 +933,13 @@ impl<'a> Parser<'a> {
         // A named field is `.field = e` (lowercase field name). A positional
         // value may itself be a leading-dot literal (`.Tag`, `.{ ... }`), which
         // starts with `.` too, so only a lowercase `.name` is a named field.
-        if matches!(self.peek_kind()?, Kind::Dot)
+        let named = matches!(self.peek_kind()?, Kind::Dot)
             && matches!(self.peek_kind_at(1)?, Kind::Word)
-            && !is_upper(self.peek_at(1)?.text)
-        {
+            && {
+                let t1 = self.peek_at(1)?;
+                !is_upper(self.text(t1))
+            };
+        if named {
             self.bump()?; // '.'
             let name = self.bump_word()?;
             expect!(self, Kind::Eq, "expected '=' after the field name");
@@ -896,7 +967,7 @@ impl<'a> Parser<'a> {
     /// `@extern`.
     fn parse_at_term(&mut self) -> Result<Aol<Expr>> {
         let at = self.peek()?;
-        match at.intrinsic_name() {
+        match self.intrinsic_name(at) {
             "true" => {
                 self.bump()?;
                 Ok(self.expr(Expr::Bool(true)))
@@ -944,9 +1015,9 @@ impl<'a> Parser<'a> {
 
     fn expect_string(&mut self, what: &str) -> Result<StrId> {
         let t = self.peek()?;
-        if let Kind::Str(s) = t.kind {
+        if let Kind::Str = t.kind {
             self.bump()?;
-            Ok(self.intern_bytes(s))
+            Ok(self.intern_str(t)?)
         } else {
             Err(self.unexpected(&t, what))
         }
@@ -1143,24 +1214,24 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.pat(Pattern::Real(v)))
             }
-            Kind::Str(s) => {
+            Kind::Str => {
                 self.bump()?;
-                let s = self.intern_bytes(s);
+                let s = self.intern_str(t)?;
                 Ok(self.pat(Pattern::Str(s)))
             }
-            Kind::Word if t.text == "_" => {
+            Kind::Word if self.text(t) == "_" => {
                 self.bump()?;
                 Ok(self.pat(Pattern::Wild))
             }
-            Kind::Word if is_upper(t.text) => self.parse_qualified_pattern(),
+            Kind::Word if is_upper(self.text(t)) => self.parse_qualified_pattern(),
             Kind::Word => {
                 self.bump()?;
-                let name = self.intern(t.text);
+                let name = self.intern(self.text(t));
                 Ok(self.pat(Pattern::Var(name)))
             }
             Kind::At => {
                 self.bump()?;
-                match t.intrinsic_name() {
+                match self.intrinsic_name(t) {
                     "true" => Ok(self.pat(Pattern::Bool(true))),
                     "false" => Ok(self.pat(Pattern::Bool(false))),
                     other => Err(self.unexpected(&t, &format!("'@{other}' is not a pattern"))),
@@ -1171,10 +1242,10 @@ impl<'a> Parser<'a> {
             Kind::Dot => {
                 self.bump()?; // '.'
                 let tag = expect!(self, Kind::Word, "expected a variant tag after '.'");
-                if !is_upper(tag.text) {
+                if !is_upper(self.text(tag)) {
                     return Err(self.unexpected(&tag, "a variant tag must start uppercase"));
                 }
-                let tag = self.intern(tag.text);
+                let tag = self.intern(self.text(tag));
                 let fields = self.parse_pattern_payload()?;
                 Ok(self.pat(Pattern::Variant {
                     module: None,
@@ -1201,12 +1272,15 @@ impl<'a> Parser<'a> {
             return Ok(self.pat(Pattern::Struct { ty: head, fields }));
         }
         let second = expect!(self, Kind::Word, "expected a variant tag after '.'");
-        let second_name = self.intern(second.text);
+        let second_name = self.intern(self.text(second));
         // `Module.Type.Tag`
-        if matches!(self.peek_kind()?, Kind::Dot)
+        let qualifies = matches!(self.peek_kind()?, Kind::Dot)
             && matches!(self.peek_kind_at(1)?, Kind::Word)
-            && is_upper(self.peek_at(1)?.text)
-        {
+            && {
+                let t1 = self.peek_at(1)?;
+                is_upper(self.text(t1))
+            };
+        if qualifies {
             self.bump()?; // '.'
             let tag = self.bump_word()?;
             let fields = self.parse_pattern_payload()?;
@@ -1320,18 +1394,11 @@ fn is_upper(name: &str) -> bool {
         .is_some_and(|b| b.is_ascii_uppercase())
 }
 
-/// A short human description of a token for diagnostics.
-fn describe(t: &Token<'_>) -> String {
+/// A short human description of a token for diagnostics. `text` is the token's
+/// source lexeme (`source[t.span]`), resolved by the caller.
+fn describe(t: &Token, text: &str) -> String {
     match t.kind {
         Kind::Eof => "end of input".to_string(),
-        Kind::Int(_)
-        | Kind::Real(_)
-        | Kind::Str(_)
-        | Kind::Word
-        | Kind::Op
-        | Kind::At => {
-            format!("'{}'", t.text)
-        }
-        _ => format!("'{}'", t.text),
+        _ => format!("'{text}'"),
     }
 }
