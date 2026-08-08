@@ -19,6 +19,10 @@ const fn bp(left: u8, right: u8) -> Bp {
 /// Application by juxtaposition, the tightest binary form.
 pub const APP: Bp = bp(50, 51);
 
+/// Binding power of the postfix `@ctx` override: tighter than every binary
+/// operator, looser than application, so `f a @ctx c` reads as `(f a) @ctx c`.
+pub const CTX: Bp = bp(45, 46);
+
 /// Binding power of the unary prefix operators (`-`, `!`).
 pub const PREFIX: u8 = 40;
 

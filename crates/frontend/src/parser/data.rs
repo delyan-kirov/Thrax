@@ -72,20 +72,30 @@ pub struct Program {
 /// A top-level `$ ...` declaration.
 #[derive(Debug)]
 pub enum Item {
-    /// `$ name [: ty] = body`
+    /// `$ name [: ty] [@ctx c : T ...] = body`. `implicits` are the `@ctx`
+    /// declarations: implicit parameters resolved by name at each call site and
+    /// passed as leading arguments (dictionary passing). Empty for a normal def.
     Def {
         name: StrId,
         sig: Option<Aol<Ty>>,
+        implicits: Box<[FieldDecl]>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct = field, ...`
+    /// `$ Name : @struct = [with Other, ...] field, ...`. `includes` are struct
+    /// types whose fields are copied in (before the declared ones), in order. This
+    /// is a declaration-time splice for convenience; it creates NO type
+    /// relationship (no subtyping), just a fresh struct that repeats those fields.
     Struct {
         name: StrId,
+        includes: Box<[StrId]>,
         fields: Box<[FieldDecl]>,
     },
-    /// `$ Name : @union = Tag : payload, ...`
+    /// `$ Name : @union = [with Other, ...] Tag : payload, ...`. `includes` are
+    /// union types whose variants are copied in (before the declared ones). As for
+    /// structs this is a splice, not a subtype relationship.
     Union {
         name: StrId,
+        includes: Box<[StrId]>,
         variants: Box<[VariantDecl]>,
     },
     /// `$ Name : @alias = ty`
@@ -338,6 +348,15 @@ pub enum Expr {
         abi: StrId,
         symbol: StrId,
         lib: StrId,
+    },
+    /// `callee @ctx e` / `callee @ctx { .name = e, .. }`: override the implicit
+    /// `@ctx` arguments of `callee`. `overrides` are the given ones (a single
+    /// `Positional` for the one-implicit form, or `.name = e` for the record
+    /// form); `rest` (`..`) fills any unspecified implicits by name from scope.
+    Ctx {
+        callee: Aol<Expr>,
+        overrides: Box<[FieldInit]>,
+        rest: bool,
     },
 }
 

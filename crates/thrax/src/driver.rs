@@ -229,6 +229,9 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         for (&body, key) in checker.def_keys() {
             resolved.def_keys.insert(body, key.clone());
         }
+        for (&site, args) in checker.implicit_calls() {
+            resolved.implicit_args.insert(site, args.clone());
+        }
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }

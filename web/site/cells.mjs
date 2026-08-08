@@ -61,6 +61,24 @@ $ main : Int =
 `,
   },
   {
+    id: "with",
+    title: "Composing types with `with`",
+    blurb: "You can copy a type's fields or variants into another with `with`.",
+    src: `@mod MAIN
+
+$ with STR
+$ with HOST
+
+$ Point : @struct = x: Int, y: Int,
+$ Point3 : @struct = with Point, z: Int,
+
+$ main : Int =
+	let p = Point3.{ .x = 1, .y = 2, .z = 3 } in
+	HOST.print ("x + y + z = " ++ STR.from_int (p.x + p.y + p.z));
+	0
+`,
+  },
+  {
     id: "guards",
     title: "Guards and the catch-all else",
     blurb: "An arm may carry a guard: `| <pat> if <cond> => ...`. When the guard fails the match falls through to the next arm, and a final `else` catches everything the arms miss, here the zero case.",
@@ -139,6 +157,25 @@ $ dbl : Int -> Int = \\x = x + x
 $ main : Int =
 	let r = 5 |> inc |> dbl in
 	HOST.print ("5 |> inc |> dbl = " ++ STR.from_int r);
+	0
+`,
+  },
+  {
+    id: "ctx",
+    title: "Implicit parameters with `@ctx`",
+    blurb: "You can add implicit parameters with `@ctx`.",
+    src: `@mod MAIN
+
+$ with STR
+$ with HOST
+
+$ compare : Int -> Int -> Bool = \\a b = a ?> b
+
+$ max_of : a -> a -> a  @ctx compare : a -> a -> Bool = \\x y =
+	if compare x y => x else y
+
+$ main : Int =
+	HOST.print ("max_of 3 7 = " ++ STR.from_int (max_of 3 7));
 	0
 `,
   },

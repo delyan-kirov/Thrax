@@ -447,6 +447,7 @@ impl<'a> Parser<'a> {
             return Ok(Item::Def {
                 name,
                 sig: None,
+                implicits: Box::from([]),
                 body: self.parse_expr(0)?,
             });
         }
@@ -462,14 +463,22 @@ impl<'a> Parser<'a> {
                 "struct" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
-                    let fields = self.parse_field_decls()?;
-                    return Ok(Item::Struct { name, fields });
+                    let (includes, fields) = self.parse_struct_body()?;
+                    return Ok(Item::Struct {
+                        name,
+                        includes,
+                        fields,
+                    });
                 }
                 "union" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
-                    let variants = self.parse_union_body()?;
-                    return Ok(Item::Union { name, variants });
+                    let (includes, variants) = self.parse_union_body()?;
+                    return Ok(Item::Union {
+                        name,
+                        includes,
+                        variants,
+                    });
                 }
                 "alias" => {
                     self.bump()?;
@@ -487,9 +496,82 @@ impl<'a> Parser<'a> {
             }
         }
         let sig = Some(self.parse_type()?);
+        let implicits = self.parse_ctx_decls()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
-        Ok(Item::Def { name, sig, body })
+        Ok(Item::Def {
+            name,
+            sig,
+            implicits,
+            body,
+        })
+    }
+
+    /// Parse the `@ctx` declarations that may follow a definition's type
+    /// signature: `@ctx name : Type` (repeatable) or `@ctx { a : A, b : B }`.
+    /// Each becomes an implicit parameter resolved by name at the call site.
+    fn parse_ctx_decls(&mut self) -> Result<Box<[FieldDecl]>> {
+        let mut decls = Vec::new();
+        while self.at_ctx()? {
+            self.bump()?; // '@ctx'
+            if self.eat(|k| matches!(k, Kind::LBrace))? {
+                for d in self.parse_field_decls()?.into_vec() {
+                    decls.push(d);
+                }
+                expect!(self, Kind::RBrace, "expected '}' to close the '@ctx' block");
+            } else {
+                let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
+                expect!(self, Kind::Colon, "expected ':' after the '@ctx' name");
+                let ty = self.parse_type()?;
+                decls.push(FieldDecl { name, ty });
+            }
+        }
+        Ok(decls.into_boxed_slice())
+    }
+
+    /// Is the next token the `@ctx` keyword?
+    fn at_ctx(&mut self) -> Result<bool> {
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "ctx")
+    }
+
+    /// Parse a postfix `@ctx` override on `callee`: a single positional value
+    /// (`@ctx e`, an atom) or a record `@ctx { .name = e, ..., .. }` where a
+    /// trailing `..` fills the unmentioned implicits by name.
+    fn parse_ctx_override(&mut self, start: usize, callee: Aol<Expr>) -> Result<Aol<Expr>> {
+        self.bump()?; // '@ctx'
+        let mut overrides = Vec::new();
+        let mut rest = false;
+        if matches!(self.peek_kind()?, Kind::LBrace) {
+            self.bump()?; // '{'
+            while !matches!(self.peek_kind()?, Kind::RBrace) {
+                if matches!(self.peek_kind()?, Kind::Dot)
+                    && matches!(self.peek_kind_at(1)?, Kind::Dot)
+                {
+                    self.bump()?;
+                    self.bump()?; // '..'
+                    rest = true;
+                    break;
+                }
+                overrides.push(self.parse_field_init()?);
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
+            }
+            expect!(
+                self,
+                Kind::RBrace,
+                "expected '}' to close the '@ctx' overrides"
+            );
+        } else {
+            overrides.push(FieldInit::Positional(self.parse_primary()?));
+        }
+        let node = self.expr(Expr::Ctx {
+            callee,
+            overrides: overrides.into_boxed_slice(),
+            rest,
+        });
+        Ok(self.stamp(start, node))
     }
 
     /// Comma-separated `name : Type` declarations (struct fields, effect ops).
@@ -507,21 +589,61 @@ impl<'a> Parser<'a> {
         Ok(fields.into_boxed_slice())
     }
 
-    fn parse_union_body(&mut self) -> Result<Box<[VariantDecl]>> {
-        let mut variants = Vec::new();
-        while matches!(self.peek_kind()?, Kind::Word) {
-            let tag = self.bump_word()?;
-            let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
-                self.parse_payload()?
-            } else {
-                Payload::None
-            };
-            variants.push(VariantDecl { tag, payload });
+    /// A struct body: leading `with Other` clauses (copied-in fields) then the
+    /// declared `name : Type` fields, comma-separated and freely interleaved.
+    fn parse_struct_body(&mut self) -> Result<(Box<[StrId]>, Box<[FieldDecl]>)> {
+        let mut includes = Vec::new();
+        let mut fields = Vec::new();
+        loop {
+            match self.peek_kind()? {
+                Kind::With => includes.push(self.parse_with_include()?),
+                Kind::Word => {
+                    let name = self.bump_word()?;
+                    expect!(self, Kind::Colon, "expected ':' after the field name");
+                    let ty = self.parse_type()?;
+                    fields.push(FieldDecl { name, ty });
+                }
+                _ => break,
+            }
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
-        Ok(variants.into_boxed_slice())
+        Ok((includes.into_boxed_slice(), fields.into_boxed_slice()))
+    }
+
+    fn parse_union_body(&mut self) -> Result<(Box<[StrId]>, Box<[VariantDecl]>)> {
+        let mut includes = Vec::new();
+        let mut variants = Vec::new();
+        loop {
+            match self.peek_kind()? {
+                Kind::With => includes.push(self.parse_with_include()?),
+                Kind::Word => {
+                    let tag = self.bump_word()?;
+                    let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
+                        self.parse_payload()?
+                    } else {
+                        Payload::None
+                    };
+                    variants.push(VariantDecl { tag, payload });
+                }
+                _ => break,
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? {
+                break;
+            }
+        }
+        Ok((includes.into_boxed_slice(), variants.into_boxed_slice()))
+    }
+
+    /// A `with Other` clause inside a type declaration: the (capitalized) name of a
+    /// same-kind type whose fields/variants are copied into the one declared. Pure
+    /// splicing, no type relationship.
+    fn parse_with_include(&mut self) -> Result<StrId> {
+        self.bump()?; // 'with'
+        let t = expect!(self, Kind::Word, "expected a type name after 'with'");
+        self.require_type_capital(self.text(t), &t)?;
+        Ok(self.intern(self.text(t)))
     }
 
     fn parse_payload(&mut self) -> Result<Payload> {
@@ -587,6 +709,11 @@ impl<'a> Parser<'a> {
     fn starts_type_atom(&mut self) -> Result<bool> {
         if self.at_tyvar()? {
             return Ok(true);
+        }
+        // `@ctx` ends a signature and opens its implicit-parameter clauses; it is
+        // not a type atom, so type application must not swallow it.
+        if self.at_ctx()? {
+            return Ok(false);
         }
         Ok(matches!(
             self.peek_kind()?,
@@ -751,6 +878,16 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_prefix()?;
         loop {
             let t = self.peek()?;
+            // A postfix `@ctx` overrides the callee's implicit arguments. Handled
+            // before the operand check because `@ctx` starts with `@` (an operand
+            // starter) but must attach to `lhs`, not be applied as an argument.
+            if self.at_ctx()? {
+                if table::CTX.left < min_bp {
+                    break;
+                }
+                lhs = self.parse_ctx_override(start, lhs)?;
+                continue;
+            }
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
                     Some(bp) if bp.left >= min_bp => {

@@ -24,6 +24,7 @@ $ with FIB = FIB
 $ with FINALLY = FINALLY
 $ with HANOI = HANOI
 $ with HIGHER_ORDER = HIGHER_ORDER
+$ with IMPLICITS = IMPLICITS
 $ with LET_IN = LET_IN
 $ with LISTS = LISTS
 $ with MATCH = MATCH
@@ -57,6 +58,7 @@ $ with STR_OPS = STR_OPS
 $ with STR_PREFIX = STR_PREFIX
 $ with TAIL_CALLS = TAIL_CALLS
 $ with TUPLES = TUPLES
+$ with TYPE_SPLICE = TYPE_SPLICE
 $ with WHEN_GUARDS = WHEN_GUARDS
 $ with WITH_SCOPE = WITH_SCOPE
 
@@ -84,6 +86,7 @@ $ main : Int =
 	+ check "FINALLY" FINALLY.test
 	+ check "HANOI" HANOI.test
 	+ check "HIGHER_ORDER" HIGHER_ORDER.test
+	+ check "IMPLICITS" IMPLICITS.test
 	+ check "LET_IN" LET_IN.test
 	+ check "LISTS" LISTS.test
 	+ check "MATCH" MATCH.test
@@ -117,5 +120,6 @@ $ main : Int =
 	+ check "STR_PREFIX" STR_PREFIX.test
 	+ check "TAIL_CALLS" TAIL_CALLS.test
 	+ check "TUPLES" TUPLES.test
+	+ check "TYPE_SPLICE" TYPE_SPLICE.test
 	+ check "WHEN_GUARDS" WHEN_GUARDS.test
 	+ check "WITH_SCOPE" WITH_SCOPE.test

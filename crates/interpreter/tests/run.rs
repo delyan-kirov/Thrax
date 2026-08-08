@@ -24,6 +24,9 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     for (&body, key) in checker.def_keys() {
         resolved.def_keys.insert(body, key.clone());
     }
+    for (&site, args) in checker.implicit_calls() {
+        resolved.implicit_args.insert(site, args.clone());
+    }
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
@@ -76,6 +79,9 @@ fn run_modules(sources: &[&str], name: &str) -> String {
         for (&body, key) in c.def_keys() {
             resolved.def_keys.insert(body, key.clone());
         }
+        for (&site, args) in c.implicit_calls() {
+            resolved.implicit_args.insert(site, args.clone());
+        }
         for (&site, fields) in c.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }
@@ -120,6 +126,60 @@ fn same_module_overload_dispatches_by_type() {
                $ kind : Bool -> Int = \\b = 2\n\
                $ r : Int = (kind 7) + (kind true) * 10";
     assert_eq!(run(src, "r"), "21");
+}
+
+#[test]
+fn ctx_implicit_resolves_by_name_and_type() {
+    // `max_of` declares an implicit `cmp`, resolved by name from scope (the global
+    // `>`-like `cmp`). The dictionary is injected as a leading argument.
+    let src = "@mod M\n\
+               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               \tif cmp x y => x else y\n\
+               $ r : Int = max_of 3 7";
+    assert_eq!(run(src, "r"), "7");
+}
+
+#[test]
+fn ctx_implicit_chains_and_overrides() {
+    // `max3` passes its own `@ctx cmp` down to `max_of` (local wins), and an
+    // explicit `@ctx lt` override flips `max_of` into a min.
+    let src = "@mod M\n\
+               $ gt : Int -> Int -> Bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               \tif cmp x y => x else y\n\
+               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y z =\n\
+               \tmax_of (max_of x y) z\n\
+               $ chained : Int = max3 3 9 5 @ctx gt\n\
+               $ flipped : Int = max_of 3 7 @ctx lt\n\
+               $ r : Int = chained + flipped";
+    assert_eq!(run(src, "r"), "12");
+}
+
+#[test]
+fn struct_with_splices_included_fields() {
+    // `Point3` copies `Point`'s fields ahead of its own; the positional/field
+    // layout must be x, y, then z.
+    let src = "@mod M\n\
+               $ Point : @struct = x: Int, y: Int\n\
+               $ Point3 : @struct = with Point, z: Int\n\
+               $ r : Int =\n\
+               \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in p.x + p.y + p.z";
+    assert_eq!(run(src, "r"), "6");
+}
+
+#[test]
+fn union_with_splices_included_variants() {
+    // `Color` copies `Base`'s variants; a match over a copied and a new variant
+    // both dispatch by tag.
+    let src = "@mod M\n\
+               $ Base : @union = Red: {}, Green: {}\n\
+               $ Color : @union = with Base, Blue: {}\n\
+               $ rank : Color -> Int = \\c =\n\
+               \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
+               $ r : Int = rank Color.Red + rank Color.Blue";
+    assert_eq!(run(src, "r"), "4");
 }
 
 #[test]

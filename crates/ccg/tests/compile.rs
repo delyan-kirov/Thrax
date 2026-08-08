@@ -30,6 +30,9 @@ fn lower(src: &str) -> Vec<Program> {
     for (&body, key) in checker.def_keys() {
         resolved.def_keys.insert(body, key.clone());
     }
+    for (&site, args) in checker.implicit_calls() {
+        resolved.implicit_args.insert(site, args.clone());
+    }
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
@@ -116,6 +119,36 @@ fn same_module_overload_dispatches_by_type() {
                $ kind : Int -> Int = \\x = 1\n\
                $ kind : Bool -> Int = \\b = 2\n\
                $ test : Int = (kind 7) + (kind true) * 10\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn ctx_implicit_dictionary_passing() {
+    // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
+    // backend must inject them exactly as the interpreter does.
+    let src = "@mod M\n\
+               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               \tif cmp x y => x else y\n\
+               $ test : Int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn type_splice_with() {
+    // `with` copies struct fields and union variants into a new type; the C
+    // backend must lay them out and match them exactly as the interpreter does.
+    let src = "@mod M\n\
+               $ Point : @struct = x: Int, y: Int\n\
+               $ Point3 : @struct = with Point, z: Int\n\
+               $ Base : @union = Red: {}, Green: {}\n\
+               $ Color : @union = with Base, Blue: {}\n\
+               $ rank : Color -> Int = \\c =\n\
+               \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
+               $ test : Int =\n\
+               \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
+               \t(p.x + p.y + p.z) + rank Color.Blue\n";
     assert_matches(src, "test");
 }
 

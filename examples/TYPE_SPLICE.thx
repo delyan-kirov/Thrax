@@ -1,0 +1,32 @@
+@mod TYPE_SPLICE
+
+# \file type_splice.thx
+# \info `with` in a type declaration. A `@struct` or `@union` may begin with
+#       `with Other` clauses that COPY that type's fields (struct) or variants
+#       (union) into the one being declared, ahead of the members written here.
+#       It is a declaration-time convenience, a copy-paste; the type system
+#       records NO relationship between the two types (no subtyping). `with` may
+#       be used several times and transitively; a duplicate member is an error.
+
+$ Point : @struct = x: Int, y: Int
+$ Point3 : @struct = with Point, z: Int          # copies x, y; then z
+$ Located : @struct = with Point3, tag: Int      # x, y, z, tag (transitively)
+
+$ Base : @union = Red: {}, Green: {}
+$ Color : @union = with Base, Blue: {}           # copies Red, Green; then Blue
+
+$ rank : Color -> Int = \c =
+	is c
+	| Color.Red => 1
+	| Color.Green => 2
+	| Color.Blue => 3
+
+$ sum4 : Located -> Int = \p = p.x + p.y + p.z + p.tag
+
+$ ck_struct : Int =
+	if sum4 (Located.{ .x = 1, .y = 2, .z = 3, .tag = 4 }) ?= 10 => 0 else 1
+
+$ ck_union : Int =
+	if (rank Color.Red + rank Color.Blue) ?= 4 => 0 else 2
+
+$ test : Int = ck_struct + ck_union

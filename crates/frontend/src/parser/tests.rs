@@ -34,7 +34,9 @@ fn module_and_simple_def() {
     assert_eq!(p.ast.text(p.program.module), "M");
     assert_eq!(p.program.items.len(), 1);
     match &p.program.items[0] {
-        Item::Def { name, sig, body } => {
+        Item::Def {
+            name, sig, body, ..
+        } => {
             assert_eq!(p.ast.text(*name), "x");
             assert!(sig.is_none());
             assert!(matches!(p.ast.expr(*body), Expr::Int(1)));
@@ -87,7 +89,7 @@ fn struct_decl_and_literal_and_field() {
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
     assert!(
-        matches!(&p.program.items[0], Item::Struct { name, fields } if p.ast.text(*name) == "Person" && fields.len() == 2)
+        matches!(&p.program.items[0], Item::Struct { name, fields, .. } if p.ast.text(*name) == "Person" && fields.len() == 2)
     );
     match &p.program.items[1] {
         Item::Def { body, .. } => {

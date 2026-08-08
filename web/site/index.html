@@ -54,7 +54,7 @@
   }
   .bar .label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; }
   .bar .spacer { flex: 1; }
-  select, button {
+  button {
     font: inherit; font-size: 12.5px; color: var(--ink); background: #262a33;
     border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer;
   }
@@ -158,12 +158,7 @@ CELLS.forEach((cell, i) => {
         <div class="bar">
           <span class="label">program</span>
           <span class="spacer"></span>
-          <select class="mode" title="what to produce">
-            <option value="0">Run</option>
-            <option value="2">IR</option>
-            <option value="1">Generated C</option>
-            <option value="3">AST</option>
-          </select>
+          <button class="clear" title="reset this program to the original">Reset</button>
           <button class="run" disabled>&#9654; Run</button>
         </div>
         <textarea spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
@@ -182,13 +177,13 @@ CELLS.forEach((cell, i) => {
   const ta = sec.querySelector("textarea");
   const out = sec.querySelector(".out");
   const runBtn = sec.querySelector(".run");
-  const mode = sec.querySelector(".mode");
+  const clearBtn = sec.querySelector(".clear");
   const status = sec.querySelector(".status");
   ta.value = cell.src;
   requestAnimationFrame(() => grow(ta));
   ta.addEventListener("input", () => grow(ta));
 
-  runners.push({ ta, out, runBtn, mode, status, module: null });
+  runners.push({ ta, out, runBtn, clearBtn, status, src: cell.src, module: null });
 });
 
 function setStatus(r, text, cls) {
@@ -213,11 +208,10 @@ try {
 }
 
 function runCell(r) {
-  const m = parseInt(r.mode.value, 10);
   setStatus(r, "running…");
   let text;
   try {
-    text = host.compile(r.ta.value, m);
+    text = host.compile(r.ta.value, 0); // 0 = run the program
   } catch (e) {
     r.out.textContent = "the compiler trapped: " + e + " (reload the page)";
     r.out.classList.add("has-out");
@@ -238,6 +232,12 @@ function runCell(r) {
 for (const r of runners) {
   r.runBtn.disabled = false;
   r.runBtn.onclick = () => runCell(r);
+  // Reset restores the original program and re-runs it.
+  r.clearBtn.onclick = () => {
+    r.ta.value = r.src;
+    grow(r.ta);
+    runCell(r);
+  };
   r.ta.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runCell(r); }
   });

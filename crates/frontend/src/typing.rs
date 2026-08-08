@@ -31,8 +31,10 @@ mod tests;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::lowering::ImplicitArg;
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, Ty,
+    Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
+    Ty,
 };
 use utilities::Aol;
 use utilities::{diag, Code, Diagnostic, Result, Span};
@@ -55,6 +57,7 @@ struct UnionInfo<'a> {
     params: Vec<&'a str>,
     variants: Vec<VariantSig<'a>>,
 }
+
 
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
@@ -108,6 +111,36 @@ pub struct Checker<'a> {
     /// Names this module defines more than once (same-module overloads), which
     /// therefore need type-mangling to keep the globals apart.
     overloaded_multi: HashSet<&'a str>,
+    /// Top-level definitions carrying `@ctx` implicit parameters, by name. A use
+    /// site resolves each implicit by name against the current scope and records
+    /// the result in [`Self::implicit_args`]; lowering injects them as leading
+    /// arguments. Populated up front (own module) so resolution is order-independent,
+    /// and extended from imports.
+    global_implicits: HashMap<&'a str, GlobImpl>,
+    /// This module's own `@ctx`-bearing definitions, re-exported to importers.
+    own_implicits: Vec<(&'a str, GlobImpl)>,
+    /// Each use site of an implicit-bearing function, mapped to the resolved
+    /// implicit arguments (declaration order) lowering injects ahead of the
+    /// explicit ones.
+    implicit_args: HashMap<Aol<Expr>, Vec<ImplicitArg>>,
+    /// Implicit-argument slots being assembled: per site, one entry per implicit,
+    /// `Some` once resolved. A local binder or explicit override fills its slot
+    /// immediately; a global/overloaded provider is deferred (its slot stays `None`
+    /// until the requirement type is pinned). Completed sites move to
+    /// [`Self::implicit_args`].
+    implicit_slots: HashMap<Aol<Expr>, Vec<Option<ImplicitArg>>>,
+    /// Deferred global/overload implicit resolutions, solved at each definition
+    /// boundary once inference has pinned the requirement's type variables.
+    implicit_pending: Vec<PendingImpl<'a>>,
+    /// Explicit `@ctx` overrides keyed by the head-function reference site they
+    /// apply to (`callee @ctx ...`). Consumed when that reference resolves its
+    /// implicits, so given values override by-name resolution; `..` (the bool)
+    /// fills the unmentioned implicits from scope.
+    ctx_overrides: HashMap<Aol<Expr>, (Vec<FieldInit>, bool)>,
+    /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
+    /// Drained as each type's members are copied in (see `splice_includes`). This
+    /// is a declaration-time convenience only; no type relationship is recorded.
+    pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -166,6 +199,27 @@ impl<'a> Cand<'a> {
     }
 }
 
+/// A `@ctx`-bearing definition's metadata: its (arrow) signature and the implicit
+/// parameter declarations. Both are AST handles into the shared `Ast`, so they
+/// stay valid across modules. Instantiating the signature and the requirement
+/// types with one shared type-variable map keeps their variables aligned.
+#[derive(Clone)]
+struct GlobImpl {
+    sig: Aol<Ty>,
+    decls: Vec<FieldDecl>,
+}
+
+/// A deferred implicit resolution: one requirement of an implicit-bearing function
+/// whose provider is a global (so it needs the requirement type pinned first). The
+/// `site` and `idx` locate the slot in [`Checker::implicit_slots`] to fill.
+struct PendingImpl<'a> {
+    site: Aol<Expr>,
+    idx: usize,
+    fname: String,
+    implname: &'a str,
+    reqty: Type,
+}
+
 /// A deferred overload use: its candidate set, the argument types, the fresh
 /// result variable standing in for the (not-yet-known) result, and the call site
 /// to annotate once it resolves.
@@ -202,6 +256,13 @@ impl<'a> Checker<'a> {
             overload_calls: HashMap::new(),
             def_keys: HashMap::new(),
             overloaded_multi: HashSet::new(),
+            global_implicits: HashMap::new(),
+            own_implicits: Vec::new(),
+            implicit_args: HashMap::new(),
+            implicit_slots: HashMap::new(),
+            implicit_pending: Vec::new(),
+            ctx_overrides: HashMap::new(),
+            pending_includes: HashMap::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -247,6 +308,12 @@ impl<'a> Checker<'a> {
         &self.def_keys
     }
 
+    /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
+    /// arguments lowering injects as leading arguments.
+    pub fn implicit_calls(&self) -> &HashMap<Aol<Expr>, Vec<ImplicitArg>> {
+        &self.implicit_args
+    }
+
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node. Lowering desugars `with` into a `let` per field using these.
     pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
@@ -284,16 +351,22 @@ impl<'a> Checker<'a> {
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
-        self.register_types(program);
+        self.register_types(program)?;
         self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
             .items
             .iter()
             .filter_map(|item| match item {
-                Item::Def { name, sig, body } => Some(Def {
+                Item::Def {
+                    name,
+                    sig,
+                    implicits,
+                    body,
+                } => Some(Def {
                     name: self.text(*name),
                     sig: *sig,
+                    implicits: implicits.to_vec(),
                     body: *body,
                 }),
                 _ => None,
@@ -323,6 +396,36 @@ impl<'a> Checker<'a> {
             .filter(|d| counts[d.name] > 1)
             .map(|d| d.name)
             .collect();
+
+        // Register `@ctx`-bearing definitions up front so a use anywhere in the
+        // module resolves them regardless of source order. A `@ctx` requires a
+        // signature (the parser only accepts it after one) and is not allowed on an
+        // overloaded name in this version.
+        for d in &defs {
+            if d.implicits.is_empty() {
+                continue;
+            }
+            if is_overloaded(d.name) {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`{}` cannot be both overloaded and carry `@ctx` implicit parameters",
+                    d.name
+                ));
+            }
+            let Some(sig) = d.sig else {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`{}` needs a type signature to declare `@ctx` implicit parameters",
+                    d.name
+                ));
+            };
+            let gi = GlobImpl {
+                sig,
+                decls: d.implicits.clone(),
+            };
+            self.own_implicits.push((d.name, gi.clone()));
+            self.global_implicits.insert(d.name, gi);
+        }
 
         // Seed each overloaded name's candidates from its declared signatures, and
         // record the mangled global name for a same-module overload (so its several
@@ -412,6 +515,12 @@ impl<'a> Checker<'a> {
     }
 
     pub fn import_from(&mut self, other: &Checker<'a>) {
+        // Bring the exporter's `@ctx`-bearing functions in, so a bare use of an
+        // imported one resolves its implicits (the signature/decl handles live in
+        // the shared `Ast`). A qualified use (`MOD.f`) does not yet inject them.
+        for (name, gi) in &other.own_implicits {
+            self.global_implicits.insert(name, gi.clone());
+        }
         for &name in &other.own_type_names {
             if let Some(s) = other.structs.get(name) {
                 self.structs.insert(name, s.clone());
@@ -515,6 +624,7 @@ impl<'a> Checker<'a> {
             inferred
         };
         self.solve_pending()?;
+        self.resolve_pending_implicits()?;
         self.eng.leave_level();
         let mono = self.pending_vars();
         self.eng.generalize_except(&result, &mono);
@@ -554,6 +664,7 @@ impl<'a> Checker<'a> {
             self.check_def_body(&defs[i], decl)?;
         }
         self.solve_pending()?;
+        self.resolve_pending_implicits()?;
         self.eng.leave_level();
         let mono = self.pending_vars();
         for (&i, decl) in component.iter().zip(&declared) {
@@ -573,7 +684,21 @@ impl<'a> Checker<'a> {
                 &sig_ty,
                 &format!("against the signature of `{}`", def.name),
             )?;
-            self.check_body_against_sig(def.body, sig, &sig_ty)
+            if def.implicits.is_empty() {
+                return self.check_body_against_sig(def.body, sig, &sig_ty);
+            }
+            // Bind each `@ctx` implicit as a local while checking the body, sharing
+            // `tvars` with the signature so their type variables line up (a `List a`
+            // signature and a `compare : a -> a -> Ordering` implicit share `a`).
+            self.enter_scope();
+            for d in &def.implicits {
+                let name = self.text(d.name);
+                let ty = self.ty_of_ast(d.ty, &mut tvars);
+                self.bind(name, ty);
+            }
+            let r = self.check_body_against_sig(def.body, sig, &sig_ty);
+            self.leave_scope();
+            r
         } else {
             let inferred = self.infer(def.body)?;
             self.eng.unify(
@@ -737,10 +862,14 @@ impl<'a> Checker<'a> {
 
     // -- type declarations --------------------------------------------------
 
-    fn register_types(&mut self, program: &Program) {
+    fn register_types(&mut self, program: &Program) -> Result<()> {
         for item in program.items.iter() {
             match item {
-                Item::Struct { name, fields } => {
+                Item::Struct {
+                    name,
+                    includes,
+                    fields,
+                } => {
                     let mut params = Vec::new();
                     for f in fields.iter() {
                         collect_tyvars(self.ast, f.ty, &mut params);
@@ -749,8 +878,16 @@ impl<'a> Checker<'a> {
                     let name = self.text(*name);
                     self.structs.insert(name, StructInfo { params, fields });
                     self.own_type_names.push(name);
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        self.pending_includes.insert(name, (true, ps));
+                    }
                 }
-                Item::Union { name, variants } => {
+                Item::Union {
+                    name,
+                    includes,
+                    variants,
+                } => {
                     let mut params = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
@@ -772,6 +909,10 @@ impl<'a> Checker<'a> {
                         },
                     );
                     self.own_type_names.push(name);
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        self.pending_includes.insert(name, (false, ps));
+                    }
                 }
                 Item::Alias { name, ty } => {
                     let name = self.text(*name);
@@ -781,6 +922,92 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+        // Copy in each `with Other` type's members once every type is registered,
+        // so an included type may be declared after (or imported by) the one that
+        // names it.
+        let pending: Vec<&'a str> = self.pending_includes.keys().copied().collect();
+        for name in pending {
+            let mut visiting = HashSet::new();
+            self.splice_includes(name, &mut visiting)?;
+        }
+        Ok(())
+    }
+
+    /// Copy each included type's fields (struct) or variants (union) into `name`,
+    /// ahead of its own, resolving includes recursively (an included type may
+    /// itself splice). Detects cycles, kind mismatches, and duplicate members.
+    /// This copies members; it records no subtype/relationship in the type system.
+    fn splice_includes(&mut self, name: &'a str, visiting: &mut HashSet<&'a str>) -> Result<()> {
+        let (is_struct, includes) = match self.pending_includes.get(name) {
+            Some(entry) => entry.clone(),
+            None => return Ok(()), // already spliced (or never used `with`)
+        };
+        if !visiting.insert(name) {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "type `{name}` includes itself (a `with` cycle)"
+            ));
+        }
+        if is_struct {
+            let mut fields: Vec<(&'a str, Aol<Ty>)> = Vec::new();
+            for p in &includes {
+                self.splice_includes(p, visiting)?;
+                let pinfo = self.structs.get(p).cloned().ok_or_else(|| {
+                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                        "`{name}` does `with {p}`, which is not a known struct")
+                })?;
+                for f in &pinfo.fields {
+                    if fields.iter().any(|(n, _)| n == &f.0) {
+                        return Err(dup_member(name, f.0, "field"));
+                    }
+                    fields.push(*f);
+                }
+            }
+            let own = self.structs.get(name).expect("registered").fields.clone();
+            for f in own {
+                if fields.iter().any(|(n, _)| n == &f.0) {
+                    return Err(dup_member(name, f.0, "field"));
+                }
+                fields.push(f);
+            }
+            let mut params = Vec::new();
+            for (_, ty) in &fields {
+                collect_tyvars(self.ast, *ty, &mut params);
+            }
+            self.structs.insert(name, StructInfo { params, fields });
+        } else {
+            let mut variants: Vec<VariantSig<'a>> = Vec::new();
+            for p in &includes {
+                self.splice_includes(p, visiting)?;
+                let pinfo = self.unions.get(p).cloned().ok_or_else(|| {
+                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                        "`{name}` does `with {p}`, which is not a known union")
+                })?;
+                for v in &pinfo.variants {
+                    if variants.iter().any(|w| w.tag == v.tag) {
+                        return Err(dup_member(name, v.tag, "variant"));
+                    }
+                    variants.push(v.clone());
+                }
+            }
+            let own = self.unions.get(name).expect("registered").variants.clone();
+            for v in own {
+                if variants.iter().any(|w| w.tag == v.tag) {
+                    return Err(dup_member(name, v.tag, "variant"));
+                }
+                variants.push(v);
+            }
+            let mut params = Vec::new();
+            for v in &variants {
+                for (_, ty) in &v.payload {
+                    collect_tyvars(self.ast, *ty, &mut params);
+                }
+            }
+            self.unions.insert(name, UnionInfo { params, variants });
+        }
+        self.pending_includes.remove(name);
+        visiting.remove(name);
+        Ok(())
     }
 
     /// Register every declared effect's operations. An operation `op : Arg -> Res`
@@ -1330,6 +1557,32 @@ impl<'a> Checker<'a> {
                 self.extern_tys.insert(e, v.clone());
                 Ok(v)
             }
+
+            Expr::Ctx {
+                callee,
+                overrides,
+                rest,
+            } => {
+                let (callee, rest) = (*callee, *rest);
+                let overrides = overrides.to_vec();
+                let Some(fsite) = self.head_var_site(callee) else {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`@ctx` must be applied to a function that declares `@ctx` implicit parameters"
+                    ));
+                };
+                self.ctx_overrides.insert(fsite, (overrides, rest));
+                let ty = self.infer(callee)?;
+                // The reference consumes its overrides; a leftover entry means the
+                // callee has no `@ctx` implicits for them to apply to.
+                if self.ctx_overrides.remove(&fsite).is_some() {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "the target of this `@ctx` has no implicit parameters"
+                    ));
+                }
+                Ok(ty)
+            }
         }
     }
 
@@ -1455,6 +1708,24 @@ impl<'a> Checker<'a> {
                 self.resolved_calls.insert(site, m);
             }
         }
+        // A reference to a `@ctx`-bearing global (not shadowed by a local of the
+        // same name): instantiate its signature and requirement types with one
+        // shared variable map, resolve each implicit by name, and record the
+        // arguments for lowering. The returned type is the plain arrow, so callers
+        // apply only the explicit parameters.
+        if !self.shadowed_locally(name) {
+            if let Some(gi) = self.global_implicits.get(name).cloned() {
+                let mut tvars = HashMap::new();
+                let arrow = self.ty_of_ast(gi.sig, &mut tvars);
+                let reqs: Vec<(&'a str, Type)> = gi
+                    .decls
+                    .iter()
+                    .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
+                    .collect();
+                self.plan_implicits(site, name, &reqs)?;
+                return Ok(arrow);
+            }
+        }
         if let Some(scheme) = self.lookup(name) {
             Ok(self.eng.instantiate(&scheme))
         } else if self.overloads.contains_key(name) {
@@ -1474,6 +1745,251 @@ impl<'a> Checker<'a> {
         self.qualified.get(module)?.get(name).cloned()
     }
 
+    // -- implicit (`@ctx`) resolution ---------------------------------------
+
+    /// Plan the implicit arguments of `fname` at use `site`. An explicit override
+    /// or a local binder of the name is resolved immediately; a global/overloaded
+    /// provider is deferred until inference pins the requirement's type variables
+    /// (so `maxOf 3 7` knows the implicit is over `Int`, not a bare variable).
+    fn plan_implicits(
+        &mut self,
+        site: Aol<Expr>,
+        fname: &str,
+        reqs: &[(&'a str, Type)],
+    ) -> Result<()> {
+        let overrides = self.ctx_overrides.remove(&site);
+        let mut slots: Vec<Option<ImplicitArg>> = Vec::with_capacity(reqs.len());
+        for (idx, (implname, reqty)) in reqs.iter().enumerate() {
+            if let Some((ov, rest)) = &overrides {
+                if let Some(value) = self.find_override(ov, implname, reqs.len()) {
+                    self.check(value, reqty)?;
+                    slots.push(Some(ImplicitArg::Expr(value)));
+                    continue;
+                }
+                if !rest {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`@ctx` for `{fname}` does not supply the implicit `{implname}`"
+                    )
+                    .with_note(
+                        "add it to the `@ctx`, or end the `@ctx` with `..` to resolve the rest by name"
+                            .to_string(),
+                    ));
+                }
+            }
+            if self.shadowed_locally(implname) {
+                if let Some(t) = self.lookup(implname) {
+                    let inst = self.eng.instantiate(&t);
+                    self.unify_implicit(fname, implname, &inst, reqty)?;
+                    slots.push(Some(ImplicitArg::Bare(implname.to_string())));
+                    continue;
+                }
+            }
+            slots.push(None);
+            self.implicit_pending.push(PendingImpl {
+                site,
+                idx,
+                fname: fname.to_string(),
+                implname,
+                reqty: reqty.clone(),
+            });
+        }
+        if let Some((ov, _)) = &overrides {
+            self.check_unknown_overrides(fname, ov, reqs)?;
+        }
+        self.implicit_slots.insert(site, slots);
+        Ok(())
+    }
+
+    /// Solve every deferred implicit (called at a definition boundary, after
+    /// overload solving and numeric defaulting have pinned the types), then move
+    /// each fully-resolved site into [`Self::implicit_args`].
+    fn resolve_pending_implicits(&mut self) -> Result<()> {
+        for p in std::mem::take(&mut self.implicit_pending) {
+            let reqty = self.eng.zonk(&p.reqty);
+            let arg = self
+                .resolve_deferred_implicit(&p.fname, p.implname, &reqty)
+                .map_err(|d| match self.ast.expr_span(p.site) {
+                    Some(span) => d.fill_span(span),
+                    None => d,
+                })?;
+            if let Some(slots) = self.implicit_slots.get_mut(&p.site) {
+                slots[p.idx] = Some(arg);
+            }
+        }
+        let sites: Vec<Aol<Expr>> = self.implicit_slots.keys().copied().collect();
+        for site in sites {
+            let complete = self.implicit_slots[&site].iter().all(Option::is_some);
+            if complete {
+                let slots = self.implicit_slots.remove(&site).expect("just checked");
+                let args: Vec<ImplicitArg> = slots.into_iter().map(Option::unwrap).collect();
+                if !args.is_empty() {
+                    self.implicit_args.insert(site, args);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve one implicit whose provider is a global: an overloaded name picked
+    /// by the (now pinned) requirement type, else a single global. The requirement
+    /// still being polymorphic is the v1 limitation, reported here.
+    fn resolve_deferred_implicit(
+        &mut self,
+        fname: &str,
+        implname: &'a str,
+        reqty: &Type,
+    ) -> Result<ImplicitArg> {
+        if let Some(cands) = self.overloads.get(implname).cloned() {
+            return match self.match_implicit_overload(&cands, reqty) {
+                Some(idx) => {
+                    let inst = self.eng.instantiate(&cands[idx].ty);
+                    self.unify_implicit(fname, implname, &inst, reqty)?;
+                    Ok(self.implicit_global_ref(implname, &cands, idx))
+                }
+                None => Err(self.no_implicit(fname, implname, reqty)),
+            };
+        }
+        if let Some(t) = self.lookup(implname) {
+            let inst = self.eng.instantiate(&t);
+            self.unify_implicit(fname, implname, &inst, reqty)?;
+            let module = if self.local_defs.contains(implname) {
+                Some(self.module_name.to_string())
+            } else {
+                self.value_module.get(implname).map(|m| m.to_string())
+            };
+            return Ok(match module {
+                Some(module) => ImplicitArg::Qualified {
+                    module,
+                    name: implname.to_string(),
+                },
+                None => ImplicitArg::Bare(implname.to_string()),
+            });
+        }
+        Err(self.no_implicit(fname, implname, reqty))
+    }
+
+    /// The override expression for implicit `implname`, if the `@ctx` gives one:
+    /// a `.name = e` whose name matches, or the sole positional `@ctx e` when the
+    /// function has exactly one implicit.
+    fn find_override(
+        &self,
+        overrides: &[FieldInit],
+        implname: &str,
+        nreqs: usize,
+    ) -> Option<Aol<Expr>> {
+        for f in overrides {
+            match f {
+                FieldInit::Named { name, value } if self.text(*name) == implname => {
+                    return Some(*value)
+                }
+                FieldInit::Positional(value) if nreqs == 1 => return Some(*value),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Error if a `.name = e` override names an implicit the function does not have.
+    fn check_unknown_overrides(
+        &self,
+        fname: &str,
+        overrides: &[FieldInit],
+        reqs: &[(&'a str, Type)],
+    ) -> Result<()> {
+        for f in overrides {
+            if let FieldInit::Named { name, .. } = f {
+                let n = self.text(*name);
+                if !reqs.iter().any(|(implname, _)| *implname == n) {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`{fname}` has no `@ctx` implicit named `{n}`"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The reference site of an application's head, if it is a plain variable
+    /// (the function whose `@ctx` implicits an override applies to).
+    fn head_var_site(&self, mut e: Aol<Expr>) -> Option<Aol<Expr>> {
+        loop {
+            match self.node(e) {
+                Expr::App(f, _) => e = *f,
+                Expr::Var { .. } => return Some(e),
+                _ => return None,
+            }
+        }
+    }
+
+    /// The unique overload candidate whose type unifies with `reqty`, or `None`
+    /// (no match, or several) so the caller reports it.
+    fn match_implicit_overload(&mut self, cands: &[Cand<'a>], reqty: &Type) -> Option<usize> {
+        let mut found = None;
+        let mut count = 0;
+        for (i, c) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            let inst = self.eng.instantiate(&c.ty);
+            let ok = self.eng.unify(&inst, reqty, "resolving an implicit").is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                found = Some(i);
+            }
+        }
+        if count == 1 {
+            found
+        } else {
+            None
+        }
+    }
+
+    /// Build the global reference for a resolved overloaded implicit, mangling the
+    /// name exactly as a normal overloaded call would (so it reaches the right one
+    /// of several same-module definitions).
+    fn implicit_global_ref(&self, implname: &str, cands: &[Cand<'a>], idx: usize) -> ImplicitArg {
+        let cand = &cands[idx];
+        let name = match cand.module {
+            Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
+                overload_key(implname, &self.eng.zonk(&cand.ty))
+            }
+            _ => implname.to_string(),
+        };
+        match cand.module {
+            Some(m) => ImplicitArg::Qualified {
+                module: m.to_string(),
+                name,
+            },
+            None => ImplicitArg::Bare(name),
+        }
+    }
+
+    fn unify_implicit(
+        &mut self,
+        fname: &str,
+        implname: &str,
+        actual: &Type,
+        reqty: &Type,
+    ) -> Result<()> {
+        self.eng.unify(
+            actual,
+            reqty,
+            &format!("resolving the implicit `{implname}` of `{fname}`"),
+        )
+    }
+
+    fn no_implicit(&self, fname: &str, implname: &str, reqty: &Type) -> Diagnostic {
+        diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "no `{implname}` in scope to satisfy the `@ctx` requirement of `{fname}`"
+        )
+        .with_note(format!(
+            "define or import a `{implname} : {}`, or pass it explicitly with `@ctx`",
+            self.show(reqty)
+        ))
+    }
+
     fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
         let mut args_rev = Vec::new();
         let mut head = e;
@@ -1489,8 +2005,10 @@ impl<'a> Checker<'a> {
             let name = self.text(*name);
             match module {
                 // A bare overloaded call: resolve by argument types and record the
-                // winning module so lowering can qualify it.
-                None => {
+                // winning module so lowering can qualify it. A local binder of the
+                // same name (a lambda/`let`/`@ctx` parameter) shadows the overload
+                // set, so fall through to ordinary inference in that case.
+                None if !self.shadowed_locally(name) => {
                     if let Some(cands) = self.overloads.get(name).cloned() {
                         let arg_tys = args
                             .iter()
@@ -1499,6 +2017,7 @@ impl<'a> Checker<'a> {
                         return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                     }
                 }
+                None => {}
                 // A qualified call already names its module; resolve among that
                 // module's candidates without needing an annotation.
                 Some(m) => {
@@ -2100,10 +2619,11 @@ impl<'a> Checker<'a> {
 }
 
 /// A global `$` definition, extracted from the program for dependency analysis.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Def<'a> {
     name: &'a str,
     sig: Option<Aol<Ty>>,
+    implicits: Vec<FieldDecl>,
     body: Aol<Expr>,
 }
 
@@ -2244,6 +2764,12 @@ fn free_globals<'a>(
         Expr::Defer { cleanup, body } => {
             free_globals(ast, *cleanup, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);
+        }
+        Expr::Ctx {
+            callee, overrides, ..
+        } => {
+            free_globals(ast, *callee, globals, bound, out);
+            free_globals_field_inits(ast, overrides, globals, bound, out);
         }
     }
 }
@@ -2435,6 +2961,15 @@ fn canonical_con(name: &str) -> &str {
         "@bool" => ty::BOOL,
         other => other,
     }
+}
+
+/// A type that would receive a `{kind}` (`"field"`/`"variant"`) twice: one it
+/// declares and one a `with` splice copies in, or one two included types share.
+fn dup_member(ty: &str, member: &str, kind: &str) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "type `{ty}` gets a duplicate {kind} `{member}` from a `with` include"
+    )
 }
 
 fn unbound(name: &str) -> Diagnostic {
