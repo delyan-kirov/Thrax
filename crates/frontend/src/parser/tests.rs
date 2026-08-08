@@ -34,7 +34,9 @@ fn module_and_simple_def() {
     assert_eq!(p.ast.text(p.program.module), "M");
     assert_eq!(p.program.items.len(), 1);
     match &p.program.items[0] {
-        Item::Def { name, sig, body } => {
+        Item::Def {
+            name, sig, body, ..
+        } => {
             assert_eq!(p.ast.text(*name), "x");
             assert!(sig.is_none());
             assert!(matches!(p.ast.expr(*body), Expr::Int(1)));

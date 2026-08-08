@@ -1,8 +1,8 @@
 # Implicit context parameters (`@ctx`) and `to_string` interpolation
 
-Status: feature 1 (`to_string` interpolation) is **DONE**, and the overload
-blocker below is **FIXED**. Feature 2 (`@ctx`) is still **design / TODO**; its
-plan is kept below.
+Status: feature 1 (`to_string` interpolation) is **DONE**, the overload blocker
+below is **FIXED**, and feature 2 (`@ctx`) is **implemented (v1)**. The design and
+the v1 scope/limitations are recorded below.
 
 ## The two features
 
@@ -60,48 +60,74 @@ into every module (checked first, imports nothing). Runtime `assert` is still
 unbound (it lived in the deleted prelude); a future move of `assert` into `CORE`
 would restore it.
 
-## `@ctx` design
+## `@ctx` (implemented, v1)
 
-Pure elaboration to dictionary passing: `@ctx` params become ordinary trailing
-arguments filled at each call site, so backends need no changes.
+Surface syntax:
 
-Reuse map (this is deliberately built from features we already have):
+```
+$ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
+    is compare x y | Ordering.GT => x else y
 
-| `@ctx` piece | reuse |
-|---|---|
-| `@ctx name : T` on an arrow | effect-row `<...>` shape on the arrow type |
-| resolve `name` by name+type in scope | the overload resolver (trial-unify vs expected type) |
-| namespace-stripped wins on a tie | module-resolution rule (strip-by-default, qualify-one-ref) |
-| `@ctx { .bar = f, .baz = g }` | struct/record literal syntax |
-| `@ctx { .baz = g, .. }` (rest implicit) | record-update spread `..base` (base = ambient scope) |
-| ambiguity error | `AmbiguousName` diagnostic + `note:` convention |
+max_of 3 7                 # `compare` resolved by name from scope
+max_of 3 7 @ctx flip       # single explicit override
+foo a b @ctx { .lt = f, .. }   # record override; `..` resolves the rest by name
+```
 
-Resolution rules (as specified):
+A definition may append `@ctx name : Type` clauses after its signature (repeat
+`@ctx`, or a `@ctx { a : A, b : B }` block). The implicit names are in scope in
+the body. See `examples/IMPLICITS.thx`.
 
-- Prefer an **implicit global** of the wanted name; otherwise the nearest thing
-  in scope.
-- Resolution is **order-independent**, like ordinary symbol resolution (forward
-  references already work).
-- On an undecidable tie between two modules, prefer the namespace-stripped
-  (bare/local) candidate; else error.
+**Elaboration: leading dictionary passing.** `lowering::def` prepends one lambda
+per implicit (`f = \c1 = \c2 = <body>`); every use site injects the resolved
+values as leading arguments (`f c1 c2 x`). Backends are unchanged (both engines
+green, byte-identical). The function's *checked* type stays the plain arrow, so
+callers apply only the explicit parameters.
 
-Hard problems (decide before building):
+**Resolution (by name, `typing.rs`).** At a use site, `infer_var` intercepts a
+`@ctx`-bearing global, instantiates its signature and each requirement with one
+shared type-variable map (so `List a` and `compare : a -> a -> Ordering` share
+`a`), and plans the implicits:
 
-1. **Constraint propagation** is the crux. When a `@ctx` requirement cannot be
-   resolved because the type is still polymorphic, it must become a requirement
-   on the enclosing definition (Haskell-style). **v1 scope:** resolve only when
-   the context type is monomorphic at the call site; otherwise require the caller
-   to declare `@ctx` explicitly (no inferred propagation).
-2. **Name-based resolution footgun.** Any in-scope function with the right name
-   and a matching type is silently used. Consider requiring instances to be
-   top-level (not local binders), or a lint. (Scala 3 moved from bare implicits
-   to `given`/`using` for this reason.)
-3. **No global coherence.** By-name + by-scope means the same call can pick
-   different instances in different scopes. Fine for a strategy parameter; state
-   it clearly.
-4. **Type representation.** Arrows must carry `@ctx` requirements (like a
-   `Type::Constrained(reqs, ty)`, Haskell's `=>`), rippling into unification,
-   generalization, and display.
+- an explicit `@ctx` override for that name is type-checked and used;
+- else a **local** binder of the name wins (the caller's own `@ctx` param, so
+  implicits chain: `max3` passes its `compare` down to `max_of`);
+- else a **global** provider, deferred to the definition boundary and resolved
+  once inference has pinned the requirement type (an overload is picked by that
+  type). This is the monomorphic-at-boundary rule; a still-polymorphic
+  requirement with no provider is the "no `name` in scope" error, pointed at the
+  call site with a `note:` to pass it explicitly.
+
+Deferring the global case (via `implicit_pending`, solved in
+`resolve_pending_implicits` after `solve_pending`) is what makes `max_of 3 7`
+know its implicit is over `Int` rather than a bare variable. The resolved
+arguments are recorded per site (`implicit_calls` -> `Resolved::implicit_args`)
+as `Bare` / `Qualified` (mangled if overloaded, reusing `overload_key`) / `Expr`.
+
+Fixed along the way: `infer_app` no longer dispatches an overloaded name when a
+local binder shadows it (a general scoping bug the local `@ctx` param exposed).
+
+**v1 limitations (all documented, none silent):**
+
+1. **No inferred constraint propagation.** A global provider is resolved only when
+   the requirement is monomorphic at the enclosing definition's boundary;
+   otherwise it errors. Propagation works *by name* instead: declare the same
+   `@ctx name` on the caller and it chains (the local param satisfies the callee).
+2. **Not on overloaded names.** A name cannot be both overloaded and `@ctx`-bearing
+   (errors at registration).
+3. **Qualified cross-module use does not inject.** A bare-imported `@ctx` function
+   resolves (its metadata is copied in `import_from`); a `MOD.f` qualified use does
+   not yet. Same gap family as qualified cross-module operators.
+4. **Local (lexical) provider wins over a global**, not the reverse. This is what
+   makes chaining/override authoritative; if a global default should win instead,
+   flip the order in `plan_implicits`.
+5. **No global coherence.** By-name + by-scope means different scopes can pick
+   different providers. Intended (this is a strategy parameter, not a type class).
+
+Not carried out from the original sketch: a `Type::Constrained(reqs, ty)`
+representation. Keeping the requirements in a side table (`global_implicits`) off
+the `Type` was enough for top-level defs and avoided rippling through unify /
+generalize / display. First-class functions carrying implicits would need the
+`Type`-level representation.
 
 ## Suggested order
 
@@ -109,6 +135,7 @@ Hard problems (decide before building):
    overloading, which was silently broken).
 2. ~~Add `to_string` overloads (in the auto-imported `CORE`) and desugar
    interpolation `{e}` to `to_string e`.~~ **DONE.**
-3. Design `@ctx`'s type representation and opt-in rule, then build it v1-scoped.
-   (Still TODO. A known gap on the way: `Real -> Str` has no formatter yet, since
-   there is no float-formatting primitive; `CORE` ships `Int`/`Bool`/`Str` only.)
+3. ~~Build `@ctx` v1 (declaration, by-name resolution, dictionary passing,
+   explicit override).~~ **DONE.** Possible next steps: qualified cross-module
+   injection; inferred constraint propagation (needs `Type::Constrained`); a
+   `Real -> Str` formatter for `CORE` (no float-formatting primitive exists yet).

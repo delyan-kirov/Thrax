@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program as AstProgram,
-    RecField, Ty,
+    Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload,
+    Program as AstProgram, RecField, Ty,
 };
 use utilities::Aol;
 
@@ -173,11 +173,29 @@ type ArmHandles = (Vec<Aol<Pattern>>, Option<Aol<Expr>>, Aol<Expr>);
 /// `Expr::Var` to the module its overload resolved to, so lowering can emit a
 /// qualified `MOD.name`. Empty (the default) means "no resolutions", correct for
 /// callers without a checker (all `[..]` are `List`, all calls stay bare).
+/// One resolved implicit (`@ctx`) argument at a use site, ready for lowering to
+/// inject as a leading argument of the referenced function.
+#[derive(Clone, Debug)]
+pub enum ImplicitArg {
+    /// A bare name: a local binder (the caller's own `@ctx` param) or a builtin;
+    /// De-Bruijn / the runtime resolves it.
+    Bare(String),
+    /// A top-level value `module.name` (already type-mangled if overloaded).
+    Qualified { module: String, name: String },
+    /// An explicit override expression from `@ctx e` / `@ctx { .c = e }`; lowering
+    /// lowers this AST node in place.
+    Expr(Aol<Expr>),
+}
+
 #[derive(Default)]
 pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
+    /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
+    /// arguments lowering injects ahead of the explicit ones (from
+    /// [`crate::typing::Checker::implicit_calls`]).
+    pub implicit_args: HashMap<Aol<Expr>, Vec<ImplicitArg>>,
     /// Overloaded-call `Expr::Var` sites whose target module defines the name more
     /// than once, mapped to the type-mangled bare name lowering emits in place of
     /// the source name (from [`crate::typing::Checker::overload_calls`]). The
@@ -230,8 +248,13 @@ pub fn lower_program(
     let mut globals = Vec::new();
     for item in program.items.iter() {
         match item {
-            Item::Def { name, sig, body } => {
-                let term = lw.def(*sig, *body);
+            Item::Def {
+                name,
+                sig,
+                implicits,
+                body,
+            } => {
+                let term = lw.def(*sig, implicits, *body);
                 let key = resolved
                     .def_keys
                     .get(body)
@@ -321,9 +344,19 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a definition, consuming leading record parameters of its signature.
-    fn def(&mut self, sig: Option<Aol<Ty>>, body: Aol<Expr>) -> Term {
+    /// `@ctx` implicits become leading lambda parameters (dictionary passing): the
+    /// body binds them by name, and each call site injects the resolved values as
+    /// leading arguments (see [`Self::expr`]'s `Var` case).
+    fn def(&mut self, sig: Option<Aol<Ty>>, implicits: &[FieldDecl], body: Aol<Expr>) -> Term {
         let term = self.expr(body);
-        self.record_params(sig, term)
+        let mut inner = self.record_params(sig, term);
+        for f in implicits.iter().rev() {
+            inner = Term::Lam {
+                param: self.text(f.name).to_string(),
+                body: Arc::new(inner),
+            };
+        }
+        inner
     }
 
     fn record_params(&mut self, sig: Option<Aol<Ty>>, body: Term) -> Term {
@@ -406,11 +439,15 @@ impl<'a> Lowerer<'a> {
                             .get(&e)
                             .cloned()
                             .unwrap_or_else(|| name.to_string());
-                        Term::Var {
+                        let base = Term::Var {
                             module,
                             name,
                             idx: 0,
-                        }
+                        };
+                        // A `@ctx`-bearing function takes its implicits as leading
+                        // arguments (dictionary passing); inject the resolved ones
+                        // ahead of the explicit application.
+                        self.apply_implicits(e, base)
                     }
                 }
             }
@@ -612,7 +649,35 @@ impl<'a> Lowerer<'a> {
                     None => Term::Fault(format!("foreign function `{symbol}` has no resolved type")),
                 }
             }
+
+            // `callee @ctx ...` is transparent here: the implicit arguments (given
+            // or resolved) are injected at the head function reference, keyed by its
+            // site in `implicit_args`.
+            Expr::Ctx { callee, .. } => self.expr(*callee),
         }
+    }
+
+    /// Wrap a `@ctx`-bearing function reference in applications of its resolved
+    /// implicit arguments (leading, so they precede the explicit application).
+    fn apply_implicits(&mut self, site: Aol<Expr>, base: Term) -> Term {
+        let Some(args) = self.resolved.implicit_args.get(&site) else {
+            return base;
+        };
+        let args = args.clone();
+        let mut term = base;
+        for a in args {
+            let arg = match a {
+                ImplicitArg::Bare(name) => Term::var(name),
+                ImplicitArg::Qualified { module, name } => Term::Var {
+                    module: Some(module),
+                    name,
+                    idx: 0,
+                },
+                ImplicitArg::Expr(e) => self.expr(e),
+            };
+            term = Term::app(term, arg);
+        }
+        term
     }
 
     fn binop(&mut self, op: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Term {

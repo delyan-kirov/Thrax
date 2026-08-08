@@ -447,6 +447,7 @@ impl<'a> Parser<'a> {
             return Ok(Item::Def {
                 name,
                 sig: None,
+                implicits: Box::from([]),
                 body: self.parse_expr(0)?,
             });
         }
@@ -487,9 +488,82 @@ impl<'a> Parser<'a> {
             }
         }
         let sig = Some(self.parse_type()?);
+        let implicits = self.parse_ctx_decls()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
-        Ok(Item::Def { name, sig, body })
+        Ok(Item::Def {
+            name,
+            sig,
+            implicits,
+            body,
+        })
+    }
+
+    /// Parse the `@ctx` declarations that may follow a definition's type
+    /// signature: `@ctx name : Type` (repeatable) or `@ctx { a : A, b : B }`.
+    /// Each becomes an implicit parameter resolved by name at the call site.
+    fn parse_ctx_decls(&mut self) -> Result<Box<[FieldDecl]>> {
+        let mut decls = Vec::new();
+        while self.at_ctx()? {
+            self.bump()?; // '@ctx'
+            if self.eat(|k| matches!(k, Kind::LBrace))? {
+                for d in self.parse_field_decls()?.into_vec() {
+                    decls.push(d);
+                }
+                expect!(self, Kind::RBrace, "expected '}' to close the '@ctx' block");
+            } else {
+                let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
+                expect!(self, Kind::Colon, "expected ':' after the '@ctx' name");
+                let ty = self.parse_type()?;
+                decls.push(FieldDecl { name, ty });
+            }
+        }
+        Ok(decls.into_boxed_slice())
+    }
+
+    /// Is the next token the `@ctx` keyword?
+    fn at_ctx(&mut self) -> Result<bool> {
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "ctx")
+    }
+
+    /// Parse a postfix `@ctx` override on `callee`: a single positional value
+    /// (`@ctx e`, an atom) or a record `@ctx { .name = e, ..., .. }` where a
+    /// trailing `..` fills the unmentioned implicits by name.
+    fn parse_ctx_override(&mut self, start: usize, callee: Aol<Expr>) -> Result<Aol<Expr>> {
+        self.bump()?; // '@ctx'
+        let mut overrides = Vec::new();
+        let mut rest = false;
+        if matches!(self.peek_kind()?, Kind::LBrace) {
+            self.bump()?; // '{'
+            while !matches!(self.peek_kind()?, Kind::RBrace) {
+                if matches!(self.peek_kind()?, Kind::Dot)
+                    && matches!(self.peek_kind_at(1)?, Kind::Dot)
+                {
+                    self.bump()?;
+                    self.bump()?; // '..'
+                    rest = true;
+                    break;
+                }
+                overrides.push(self.parse_field_init()?);
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
+            }
+            expect!(
+                self,
+                Kind::RBrace,
+                "expected '}' to close the '@ctx' overrides"
+            );
+        } else {
+            overrides.push(FieldInit::Positional(self.parse_primary()?));
+        }
+        let node = self.expr(Expr::Ctx {
+            callee,
+            overrides: overrides.into_boxed_slice(),
+            rest,
+        });
+        Ok(self.stamp(start, node))
     }
 
     /// Comma-separated `name : Type` declarations (struct fields, effect ops).
@@ -587,6 +661,11 @@ impl<'a> Parser<'a> {
     fn starts_type_atom(&mut self) -> Result<bool> {
         if self.at_tyvar()? {
             return Ok(true);
+        }
+        // `@ctx` ends a signature and opens its implicit-parameter clauses; it is
+        // not a type atom, so type application must not swallow it.
+        if self.at_ctx()? {
+            return Ok(false);
         }
         Ok(matches!(
             self.peek_kind()?,
@@ -751,6 +830,16 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_prefix()?;
         loop {
             let t = self.peek()?;
+            // A postfix `@ctx` overrides the callee's implicit arguments. Handled
+            // before the operand check because `@ctx` starts with `@` (an operand
+            // starter) but must attach to `lhs`, not be applied as an argument.
+            if self.at_ctx()? {
+                if table::CTX.left < min_bp {
+                    break;
+                }
+                lhs = self.parse_ctx_override(start, lhs)?;
+                continue;
+            }
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
                     Some(bp) if bp.left >= min_bp => {

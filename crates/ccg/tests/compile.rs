@@ -30,6 +30,9 @@ fn lower(src: &str) -> Vec<Program> {
     for (&body, key) in checker.def_keys() {
         resolved.def_keys.insert(body, key.clone());
     }
+    for (&site, args) in checker.implicit_calls() {
+        resolved.implicit_args.insert(site, args.clone());
+    }
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
@@ -116,6 +119,19 @@ fn same_module_overload_dispatches_by_type() {
                $ kind : Int -> Int = \\x = 1\n\
                $ kind : Bool -> Int = \\b = 2\n\
                $ test : Int = (kind 7) + (kind true) * 10\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn ctx_implicit_dictionary_passing() {
+    // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
+    // backend must inject them exactly as the interpreter does.
+    let src = "@mod M\n\
+               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               \tif cmp x y => x else y\n\
+               $ test : Int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
     assert_matches(src, "test");
 }
 

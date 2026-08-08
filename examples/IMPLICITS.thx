@@ -1,0 +1,34 @@
+@mod IMPLICITS
+
+# \file implicits.thx
+# \info `@ctx` implicit parameters. A definition may declare, after its type
+#       signature, one or more `@ctx name : Type` implicit parameters. Each call
+#       site resolves them BY NAME from the surrounding scope (a local binder
+#       wins, else a global, picking among overloads by type), or the caller
+#       passes them explicitly with `@ctx`. It elaborates to leading dictionary
+#       passing, so the backends need no special support.
+
+$ Ordering : @union = LT: {}, EQ: {}, GT: {}
+
+$ compare : Int -> Int -> Ordering = \a b =
+	if a ?< b => Ordering.LT
+	else if a ?> b => Ordering.GT
+	else Ordering.EQ
+
+# `compare` is resolved implicitly from scope by name and type.
+$ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
+	is compare x y | Ordering.GT => x else y
+
+# Chaining: `max3` declares the same implicit and passes it down to `max_of`
+# (the local `@ctx` parameter wins over any global of the same name).
+$ max3 : a -> a -> a -> a  @ctx compare : a -> a -> Ordering = \x y z =
+	max_of (max_of x y) z
+
+# A reversed comparison, used as an explicit override to turn `max_of` into a min.
+$ flip : Int -> Int -> Ordering = \a b = compare b a
+
+$ ck_implicit : Int = if max_of 3 7 ?= 7 => 0 else 1
+$ ck_chain    : Int = if max3 3 9 5 ?= 9 => 0 else 2
+$ ck_override : Int = if (max_of 3 7 @ctx flip) ?= 3 => 0 else 4
+
+$ test : Int = ck_implicit + ck_chain + ck_override

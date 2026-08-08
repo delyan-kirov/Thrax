@@ -72,10 +72,13 @@ pub struct Program {
 /// A top-level `$ ...` declaration.
 #[derive(Debug)]
 pub enum Item {
-    /// `$ name [: ty] = body`
+    /// `$ name [: ty] [@ctx c : T ...] = body`. `implicits` are the `@ctx`
+    /// declarations: implicit parameters resolved by name at each call site and
+    /// passed as leading arguments (dictionary passing). Empty for a normal def.
     Def {
         name: StrId,
         sig: Option<Aol<Ty>>,
+        implicits: Box<[FieldDecl]>,
         body: Aol<Expr>,
     },
     /// `$ Name : @struct = field, ...`
@@ -338,6 +341,15 @@ pub enum Expr {
         abi: StrId,
         symbol: StrId,
         lib: StrId,
+    },
+    /// `callee @ctx e` / `callee @ctx { .name = e, .. }`: override the implicit
+    /// `@ctx` arguments of `callee`. `overrides` are the given ones (a single
+    /// `Positional` for the one-implicit form, or `.name = e` for the record
+    /// form); `rest` (`..`) fills any unspecified implicits by name from scope.
+    Ctx {
+        callee: Aol<Expr>,
+        overrides: Box<[FieldInit]>,
+        rest: bool,
     },
 }
 
