@@ -301,6 +301,9 @@ pub enum ImplicitArg {
 pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
+    /// Record-literal sites that decayed to a tuple (from
+    /// [`crate::typing::Checker::record_tuples`]); lowered as a tuple value.
+    pub record_tuples: HashSet<Aol<Expr>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
     /// arguments lowering injects ahead of the explicit ones (from
@@ -619,10 +622,29 @@ impl<'a> Lowerer<'a> {
                 with,
                 update,
             } => {
-                // Update (`| base`) and stack (`with base`) both lower to a struct
-                // built over that base with the listed fields overriding/adding;
-                // the type checker already gave update vs stack their distinct
-                // types. An anonymous record has no nominal name (runtime access is
+                // A record that the checker decayed to a pair lowers as a tuple
+                // (written-order values), so the param-sugar's positional
+                // destructuring finds it.
+                if self.resolved.record_tuples.contains(&e) {
+                    let mut items: Vec<Term> = fields
+                        .iter()
+                        .map(|fi| match fi {
+                            FieldInit::Named { value, .. } | FieldInit::Positional(value) => {
+                                self.expr(*value)
+                            }
+                        })
+                        .collect();
+                    // A one-field record decays to the bare value (1-tuple
+                    // transparency), matching the param-sugar collapse.
+                    return if items.len() == 1 {
+                        items.pop().expect("one field")
+                    } else {
+                        Term::Tuple(items.into())
+                    };
+                }
+                // Otherwise a name-keyed record. Update (`| base`) and stack (`with
+                // base`) build over that base with the listed fields overriding /
+                // adding; an anonymous record has no nominal name (access is
                 // name-keyed, so the empty name is fine).
                 let base = (*update).or(*with).map(|b| Arc::new(self.expr(b)));
                 let mut out = Vec::new();

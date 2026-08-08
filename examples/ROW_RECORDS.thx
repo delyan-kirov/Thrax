@@ -3,30 +3,34 @@
 # \file row_records.thx
 # \info Row-polymorphic records. A record type may leave its tail open with a row
 #       variable: `{ x: Int, y: Int | r }` is "any record with (at least) x and y
-#       of type Int". A function over such a type accepts ANY record that has
-#       those fields, nominal struct or anonymous. Anonymous records are written
-#       `{ .field = value, ... }`; `{ .f = v | base }` updates a record (the rest
-#       come from `base`), and `{ .f = v, with base }` stacks fields onto it.
-#       Records are structural rows, like effect rows.
+#       of type Int". A function over such a type accepts ANY record with those
+#       fields, nominal struct or anonymous. Records are structural, like effect
+#       rows, and they stay records only under an open row: a plain `{ .x = 1 }`
+#       elsewhere decays to a pair (or a struct, if the field set matches one).
+#       Inside a function, `{ .x = v | p }` updates an open-row record (its shape
+#       is preserved) and `{ .f = v, with p }` stacks a field on top.
 
 $ area : { x: Int, y: Int | r } -> Int = \p = p.x * p.y
+
+# Update, shape preserved: the tail `r` flows through unchanged.
+$ shift : { x: Int | r } -> { x: Int | r } = \p = { .x = p.x + 10 | p }
+
+# Stack: add a field on top of an open-row record.
+$ tag : { x: Int | r } -> { x: Int, tag: Int | r } = \p = { .tag = 99, with p }
 
 $ Point : @struct = x: Int, y: Int,
 $ Boxed : @struct = x: Int, y: Int, z: Int,
 
-# An anonymous record value; its type is inferred as the structural row.
-$ base = { .x = 3, .y = 4 }
-
-# One open-row function, applied to two different nominal structs and to
-# anonymous records (with an extra field the row variable absorbs).
+# One open-row function, applied to two nominal structs and to an anonymous
+# record (the extra field is absorbed by the row variable).
 $ ck_point : Int = if area Point.{ .x = 3, .y = 4 } ?= 12 => 0 else 1
 $ ck_boxed : Int = if area Boxed.{ .x = 5, .y = 6, .z = 9 } ?= 30 => 0 else 2
 $ ck_anon  : Int = if area { .x = 2, .y = 5, .tag = 7 } ?= 10 => 0 else 4
 
-# Update: override x, keep y from base (`{ x = 10, y = 4 }`).
-$ ck_update : Int = if area { .x = 10 | base } ?= 40 => 0 else 8
+# Update keeps the other fields (y survives), so area sees { x: 11, y: 4 }.
+$ ck_update : Int = if area (shift { .x = 1, .y = 4 }) ?= 44 => 0 else 8
 
-# Stack: add z on top of base (`{ z = 1, x = 3, y = 4 }`), area ignores z.
-$ ck_stack : Int = if area { .z = 1, with base } ?= 12 => 0 else 16
+# Stack adds `tag`, which the result row carries and we read back.
+$ ck_stack : Int = if (tag { .x = 3, .y = 6 }).tag ?= 99 => 0 else 16
 
 $ test : Int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack

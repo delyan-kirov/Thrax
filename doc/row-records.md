@@ -5,26 +5,39 @@ record *values* work end-to-end on both engines:
 
 - `{ x:Int, y:Int | r } -> Int` accepts any struct (nominal or anonymous) with
   those fields; `p.x` resolves through the row; a missing field is a type error.
-- Anonymous literals `{ .x = 1, .y = 2 }` (typed as a structural row), update
-  `{ .x = v | base }` (base's shape preserved), and stack `{ .x = 1, with base }`
-  (fields concatenated). Example `examples/ROW_RECORDS.thx`.
+- Record literals `{ .x = 1, .y = 2 }` are type-directed (a record only under an
+  open row, else a matching struct or a pair -- see "The model" below); on an
+  open-row value, update `{ .x = v | p }` preserves the shape and stack
+  `{ .x = 1, with p }` concatenates. Example `examples/ROW_RECORDS.thx`.
 
-Remaining: **record-rest patterns** `{ .x = a, ..rest }`; **closed record type
-annotations** (`base : { x:Int, y:Int }` still means the tuple param-sugar, see the
-note below); **generic structs** at open rows (only non-generic structs are
-bridged); and the `..base` -> `{ | base }` migration (the old spread still works).
-Records use the same scoped-row discipline as effects.
+Remaining: **record-rest patterns** `{ .x = a, ..rest }`; **generic structs** at
+open rows (only non-generic structs are bridged); and the `..base` -> `{ | base }`
+migration (the old spread still works). Records use the same scoped-row discipline
+as effects.
 
-### Known collision: closed `{ x:A, y:B }` type vs the param-sugar
+### The model: there is no anonymous record TYPE
 
-`{ x:A, y:B }` with no tail is still the named-record **parameter** sugar (erases
-to a tuple + destructuring, #4a), so it does NOT yet denote a closed record type.
-An open row `{ x:A | r }` always does. So annotate record values with an open row
-or leave them inferred (`base = { .x = 3, .y = 4 }` infers the row); a closed
-annotation would be read as a tuple. Unifying the two (making `{ x:A, y:B }` a
-record type everywhere, with a record destructuring pattern replacing the tuple
-erasure) is deferred: it collides with tuple patterns `\{a, b}` and needs the
-tuple/record pattern ambiguity resolved first.
+The only row-record type is the **open row** `{ x:X | r }`. There is deliberately
+no closed anonymous record type: a "fixed" record is just a **pair with named
+construction/destructuring**. So `{ .x = 1, .y = 2 }` is *pair creation plus a
+named binding at once*, and it is **type-directed**:
+
+- against an **open row** `{ x:X | r }` -> a name-keyed record (the only place a
+  record value persists, so `p.x` works polymorphically);
+- against a **pair / param-sugar** `{ x:X, y:Y }` -> the pair `{1, 2}` (written
+  order; a one-field record collapses to the bare value, matching `{x:Int}` = `Int`);
+- **unconstrained** -> a nominal struct if the field set matches one
+  (`struct_by_fields`), else the pair.
+
+So records don't decay so much as they simply *are* pairs (or the matching struct)
+everywhere except under an open row. This is why `base = { .x = 3, .y = 4 }` is a
+pair, not a record: to update/stack a record you operate on an open-row parameter
+(`\p = { .x = n | p }` where `p : { x:Int | r }`), which is where records live.
+
+The named-tuple parameter sugar (`{ x:X, y:Y } -> R`, #4a) is unchanged, and now a
+call may also construct it by name: `foo { .x = 12, .y = 3 }` (declaration order;
+reordering is not remapped). Lowering emits a tuple value for a decayed literal
+(`record_tuples`), so the sugar's positional destructuring still finds it.
 
 Implementation of stage 1: `Type::Record(row)` + `Type::RowField(label, ty, rest)`
 (engine.rs) unified by `unify_record_row`/`rewrite_field` (mirrors the effect
@@ -138,13 +151,14 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
 
 ## Value syntax (locked)
 
-- **Anonymous literal:** `{ .foo = 1, .bar = 2 }` (structural; type is its closed
-  row). Nominal construction `Point.{ .. }` stays for named structs.
-- **Update:** `{ .foo = f | area }` -- these fields override, the rest come from
-  `area`. `|` reads the same as the type tail (`{ x:Int | r }` = these fields,
-  rest is `r`), base/rest on the right. This **replaces** the old `..base` spread
-  (`examples/RECORD_UPDATE.thx` migrates). Update preserves `area`'s row (no new
-  fields).
+- **Anonymous literal:** `{ .foo = 1, .bar = 2 }` -- pair creation with named
+  construction; type-directed (record only under an open row, else a struct or a
+  pair; see "The model" above). Nominal construction `Point.{ .. }` stays.
+- **Update:** `{ .foo = f | base }` -- these fields override, the rest come from
+  `base` (which must be a record, i.e. an open-row value). `|` reads the same as
+  the type tail (`{ x:Int | r }` = these fields, rest is `r`), base/rest on the
+  right. Intended to replace the old `..base` spread (still present until migrated).
+  Update preserves `base`'s row.
 - **Stack:** `{ .foo = 1, with area }` -- row is `{foo} ++ area`. Duplicates
   allowed (head wins), so this can add a field the target's closed row rejects but
   an open row absorbs. This is the value-level mirror of declaration `with`.

@@ -15,6 +15,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    resolved.record_tuples.extend(checker.record_tuples().iter().copied());
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
@@ -196,16 +197,32 @@ fn open_row_param_accepts_any_matching_struct() {
 
 #[test]
 fn anonymous_records_literal_update_stack() {
-    // Anonymous record literal, update (`| base`), and stack (`with base`), all
-    // consumed by one open-row function.
+    // Anonymous literal into an open row; update (`| p`) preserving shape and stack
+    // (`with p`) on an open-row parameter.
     let src = "@mod M\n\
                $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
-               $ base = { .x = 3, .y = 4 }\n\
+               $ shift : { x: Int | r } -> { x: Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ tag : { x: Int | r } -> { x: Int, tag: Int | r } = \\p = { .tag = 99, with p }\n\
                $ r : Int =\n\
                \t(area { .x = 2, .y = 5, .tag = 7 })\n\
-               \t+ (area { .x = 10 | base })\n\
-               \t+ (area { .z = 1, with base })";
-    assert_eq!(run(src, "r"), "62"); // 10 + 40 + 12
+               \t+ (area (shift { .x = 1, .y = 4 }))\n\
+               \t+ (tag { .x = 3, .y = 6 }).tag";
+    assert_eq!(run(src, "r"), "153"); // 10 + 44 + 99
+}
+
+#[test]
+fn record_literal_decays_to_pair_or_struct() {
+    // A one-field record decays to the bare value; a plain literal matching a
+    // struct's fields infers that struct; otherwise it decays to a pair.
+    let src = "@mod M\n\
+               $ add : {x: Int, y: Int} -> Int = x + y\n\
+               $ inc : {x: Int} -> Int = x + 1\n\
+               $ Point : @struct = x: Int, y: Int,\n\
+               $ usept : Point -> Int = \\p = p.x + p.y\n\
+               $ pair = { .a = 1, .b = 2 }\n\
+               $ r : Int =\n\
+               \tadd { .x = 5, .y = 6 } + inc { .x = 20 } + usept { .x = 3, .y = 4 } + pair.0 + pair.1";
+    assert_eq!(run(src, "r"), "42"); // 11 + 21 + 7 + 1 + 2
 }
 
 #[test]

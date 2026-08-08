@@ -21,6 +21,7 @@ fn lower(src: &str) -> Vec<Program> {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    resolved.record_tuples.extend(checker.record_tuples().iter().copied());
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
@@ -166,13 +167,14 @@ fn open_row_record_param() {
 
 #[test]
 fn anonymous_record_values() {
-    // Anonymous record literal / update / stack lower to name-keyed structs; the C
-    // backend must build and read them the same as the interpreter.
+    // Records under an open row (name-keyed) and pair decay (positional) must build
+    // and read the same on the C backend as the interpreter.
     let src = "@mod M\n\
                $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
-               $ base = { .x = 3, .y = 4 }\n\
+               $ shift : { x: Int | r } -> { x: Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ add : {x: Int, y: Int} -> Int = x + y\n\
                $ test : Int =\n\
-               \t(area { .x = 2, .y = 5, .tag = 7 }) + (area { .x = 10 | base }) + (area { .z = 1, with base })\n";
+               \t(area { .x = 2, .y = 5, .tag = 7 }) + (area (shift { .x = 1, .y = 4 })) + add { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
 

@@ -255,6 +255,7 @@ fn pipeline(user_src: &str) -> Result<(Vec<LoweredProgram>, String), String> {
         let (exprs, pats) = checker.array_nodes();
         resolved.array_exprs.extend(exprs.iter().copied());
         resolved.array_pats.extend(pats.iter().copied());
+        resolved.record_tuples.extend(checker.record_tuples().iter().copied());
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }

@@ -158,6 +158,10 @@ pub struct Checker<'a> {
     /// vector) rather than the default `List`. Lowering reads this to emit array
     /// construction / destructuring instead of `Cons`/`Nil`.
     array_exprs: HashSet<Aol<Expr>>,
+    /// Record-literal sites that decayed to a tuple (a "fixed record" used where a
+    /// pair is expected, or an unconstrained literal matching no struct). Lowering
+    /// emits a tuple value for these instead of a name-keyed record.
+    record_tuples: HashSet<Aol<Expr>>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -271,6 +275,7 @@ impl<'a> Checker<'a> {
             qualified: HashMap::new(),
             module_name: "",
             array_exprs: HashSet::new(),
+            record_tuples: HashSet::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -286,6 +291,11 @@ impl<'a> Checker<'a> {
     /// the default `List`.
     pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
         (&self.array_exprs, &self.array_pats)
+    }
+
+    /// Record-literal sites that decayed to a tuple; lowering builds a tuple value.
+    pub fn record_tuples(&self) -> &HashSet<Aol<Expr>> {
+        &self.record_tuples
     }
 
     /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
@@ -827,6 +837,56 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
+            // A record literal is type-directed against the expected type: it stays
+            // a record under an open row / nominal struct, but a plain one DECAYS to
+            // a pair where a tuple is expected (or unconstrained, see `infer_record`).
+            Expr::Record {
+                fields,
+                with: None,
+                update: None,
+            } => {
+                let re = self.eng.resolve(expected);
+                match &re {
+                    // Expected a pair: decay, written-order positional.
+                    Type::Tuple(items) => {
+                        if fields.len() != items.len() {
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "record literal has {} field(s) but a {}-tuple is expected",
+                                fields.len(), items.len()
+                            ));
+                        }
+                        self.record_tuples.insert(e);
+                        let items = items.clone();
+                        for (fi, item) in fields.iter().zip(&items) {
+                            self.check(field_value(fi), item)?;
+                        }
+                        Ok(())
+                    }
+                    // No shape imposed yet: default like an inferred literal (a
+                    // matching struct, else decay to a pair).
+                    Type::Var(_) => {
+                        let got = self.unconstrained_record(e, fields)?;
+                        self.eng.unify(&got, expected, "against the expected type")
+                    }
+                    // An open row / nominal struct: build a record and unify (the
+                    // `Con ~ Record` bridge handles the struct case).
+                    _ if self.is_record_target(&re) => {
+                        let got = self.infer_record(fields, None, None)?;
+                        self.eng.unify(&got, expected, "against the expected type")
+                    }
+                    // A one-field record against a scalar: the param-sugar collapse
+                    // (`{x: Int}` is `Int`), so decay to the single value.
+                    _ if fields.len() == 1 => {
+                        self.record_tuples.insert(e);
+                        self.check(field_value(&fields[0]), expected)
+                    }
+                    _ => {
+                        let got = self.infer_record(fields, None, None)?;
+                        self.eng.unify(&got, expected, "against the expected type")
+                    }
+                }
+            }
             _ => {
                 let got = self.infer(e)?;
                 self.eng.unify(&got, expected, "against the expected type")
@@ -1322,27 +1382,89 @@ impl<'a> Checker<'a> {
             }
         }
         if let Some(base) = update {
+            // Update preserves the base's shape (open or closed): each listed field
+            // must resolve in the base, and the result type is the base's.
             let base_ty = self.infer(base)?;
-            let base_fields = self.record_fields_of(&base_ty)?;
             for (n, got) in &explicit {
-                match base_fields.iter().find(|(fname, _)| fname == n) {
-                    Some((_, want)) => self.eng.unify(got, want, "in a record update")?,
-                    None => {
-                        return Err(diag!(
-                            Code::TypeMismatch, Span::at(0), 0,
-                            "record update sets `{n}`, which the base record does not have"
-                        ))
-                    }
-                }
+                let want = self.field_type_of(&base_ty, n)?;
+                self.eng.unify(got, &want, "in a record update")?;
             }
             return Ok(base_ty);
         }
-        let mut pairs = explicit;
         if let Some(w) = with {
+            // Stack: prepend the explicit fields onto the base's row, keeping the
+            // base's tail (so stacking onto an open row stays open).
             let wty = self.infer(w)?;
-            pairs.extend(self.record_fields_of(&wty)?);
+            let row = self.record_row_of(&wty)?;
+            let full = explicit
+                .into_iter()
+                .rev()
+                .fold(row, |rest, (n, t)| Type::row_field(&n, t, rest));
+            return Ok(Type::record(full));
         }
-        Ok(Type::record_of(pairs.into_iter()))
+        Ok(Type::record_of(explicit.into_iter()))
+    }
+
+    /// The type of field `name` in a record value: through the row for a structural
+    /// record (open tail grows to include it), or the declared field for a struct.
+    fn field_type_of(&mut self, base: &Type, name: &str) -> Result<Type> {
+        if let Type::Record(_) = self.eng.resolve(base) {
+            return self
+                .eng
+                .record_field(base, name, "in a record update");
+        }
+        for (fname, fty) in self.record_fields_of(base)? {
+            if fname == name {
+                return Ok(fty);
+            }
+        }
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "record update sets `{name}`, which the base record does not have"
+        ))
+    }
+
+    /// The record row of a value (the inner row of a structural record, possibly
+    /// open; or a struct's closed row), for stacking fields onto it.
+    fn record_row_of(&mut self, base: &Type) -> Result<Type> {
+        if let Type::Record(row) = self.eng.resolve(base) {
+            return Ok((*row).clone());
+        }
+        let fields = self.record_fields_of(base)?;
+        Ok(fields
+            .into_iter()
+            .rev()
+            .fold(Type::RowEmpty, |rest, (n, t)| Type::row_field(&n, t, rest)))
+    }
+
+    /// Whether `ty` is a record-shaped target: a structural record row, or a
+    /// (possibly applied) nominal struct. Used to decide if a record literal builds
+    /// a record vs decays.
+    fn is_record_target(&self, ty: &Type) -> bool {
+        if matches!(ty, Type::Record(_)) {
+            return true;
+        }
+        let (head, _) = self.spine(ty);
+        matches!(&head, Type::Con(n) if self.structs.contains_key(n.as_str()))
+    }
+
+    /// An unconstrained record literal (inferred, or checked against a bare type
+    /// variable): a nominal struct if the field set matches one, else it decays to
+    /// a pair (recorded so lowering emits a tuple value). This is why records decay
+    /// in most situations, staying records only under an open row.
+    fn unconstrained_record(&mut self, site: Aol<Expr>, fields: &'a [FieldInit]) -> Result<Type> {
+        if let Some((name, _)) = self.resolve_struct_by_fields(fields) {
+            return self.infer_struct_lit(Some(name), fields, None);
+        }
+        self.record_tuples.insert(site);
+        let mut items = Vec::with_capacity(fields.len());
+        for fi in fields {
+            let value = match fi {
+                FieldInit::Named { value, .. } | FieldInit::Positional(value) => *value,
+            };
+            items.push(self.infer(value)?);
+        }
+        Ok(Type::Tuple(items))
     }
 
     /// The `(label, type)` fields of a record value: a structural [`Type::Record`]
@@ -1651,7 +1773,13 @@ impl<'a> Checker<'a> {
                 fields,
                 with,
                 update,
-            } => self.infer_record(fields, *with, *update),
+            } => {
+                if with.is_some() || update.is_some() {
+                    self.infer_record(fields, *with, *update)
+                } else {
+                    self.unconstrained_record(e, fields)
+                }
+            }
             Expr::Variant {
                 ty, tag, fields, ..
             } => {
@@ -2982,6 +3110,13 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
         }
         Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {
         }
+    }
+}
+
+/// The value expression of a record-literal field (named or positional).
+fn field_value(fi: &FieldInit) -> Aol<Expr> {
+    match fi {
+        FieldInit::Named { value, .. } | FieldInit::Positional(value) => *value,
     }
 }
 
