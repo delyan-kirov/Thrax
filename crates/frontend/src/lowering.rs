@@ -45,6 +45,9 @@ pub struct Decls {
     structs: HashMap<String, HashMap<String, Vec<String>>>,
     /// module name -> (variant tag -> its union name and payload field names).
     unions: HashMap<String, HashMap<String, VariantDecl>>,
+    /// `with Other` splices to apply once every module is collected:
+    /// `(module, type, is_struct, included)`. The checker has already validated it.
+    includes: Vec<(String, String, bool, Vec<String>)>,
 }
 
 struct VariantDecl {
@@ -59,6 +62,7 @@ impl Decls {
         for p in programs {
             decls.add(ast, p);
         }
+        decls.resolve_includes();
         decls
     }
 
@@ -66,17 +70,37 @@ impl Decls {
         let module = ast.text(program.module).to_string();
         for item in program.items.iter() {
             match item {
-                Item::Struct { name, fields } => {
+                Item::Struct {
+                    name,
+                    includes,
+                    fields,
+                } => {
                     let names = fields
                         .iter()
                         .map(|f| ast.text(f.name).to_string())
                         .collect();
+                    let name = ast.text(*name).to_string();
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| ast.text(*p).to_string()).collect();
+                        self.includes
+                            .push((module.clone(), name.clone(), true, ps));
+                    }
                     self.structs
                         .entry(module.clone())
                         .or_default()
-                        .insert(ast.text(*name).to_string(), names);
+                        .insert(name, names);
                 }
-                Item::Union { name, variants } => {
+                Item::Union {
+                    name,
+                    includes,
+                    variants,
+                } => {
+                    let uname = ast.text(*name).to_string();
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| ast.text(*p).to_string()).collect();
+                        self.includes
+                            .push((module.clone(), uname.clone(), false, ps));
+                    }
                     for v in variants.iter() {
                         let fields = match &v.payload {
                             Payload::None => Vec::new(),
@@ -89,7 +113,7 @@ impl Decls {
                         self.unions.entry(module.clone()).or_default().insert(
                             ast.text(v.tag).to_string(),
                             VariantDecl {
-                                union: ast.text(*name).to_string(),
+                                union: uname.clone(),
                                 fields,
                             },
                         );
@@ -98,6 +122,92 @@ impl Decls {
                 _ => {}
             }
         }
+    }
+
+    /// Copy `with Other` members into each splicing type's field / variant tables,
+    /// matching the checker. Runs a fixpoint so an included type that itself
+    /// splices is copied first. The checker has already rejected cycles / kind
+    /// mismatches, so anything left unresolved is simply skipped.
+    fn resolve_includes(&mut self) {
+        let mut pending = std::mem::take(&mut self.includes);
+        loop {
+            let waiting: HashSet<String> = pending.iter().map(|(_, c, _, _)| c.clone()).collect();
+            // A type is ready when none of the types it includes is still waiting.
+            let ready = |included: &[String]| included.iter().all(|p| !waiting.contains(p));
+            let (now, later): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|(_, _, _, ps)| ready(ps));
+            if now.is_empty() {
+                break; // nothing more resolvable (a cycle the checker would have caught)
+            }
+            for (module, ty, is_struct, included) in now {
+                if is_struct {
+                    let mut fields = Vec::new();
+                    for p in &included {
+                        if let Some(pf) = self.lookup_struct(&module, p) {
+                            fields.extend(pf.iter().cloned());
+                        }
+                    }
+                    if let Some(own) = self.structs.get(&module).and_then(|m| m.get(&ty)) {
+                        fields.extend(own.iter().cloned());
+                    }
+                    self.structs.entry(module).or_default().insert(ty, fields);
+                } else {
+                    let copied = self.included_variants(&module, &included, &ty);
+                    let map = self.unions.entry(module).or_default();
+                    for (tag, decl) in copied {
+                        map.insert(tag, decl);
+                    }
+                }
+            }
+            pending = later;
+        }
+    }
+
+    /// A struct's field names, resolved from `module` first then any module.
+    fn lookup_struct(&self, module: &str, name: &str) -> Option<Vec<String>> {
+        self.structs
+            .get(module)
+            .and_then(|m| m.get(name))
+            .or_else(|| self.structs.values().find_map(|m| m.get(name)))
+            .cloned()
+    }
+
+    /// The variants each included union contributes to `ty`, retagged to it.
+    fn included_variants(
+        &self,
+        module: &str,
+        included: &[String],
+        ty: &str,
+    ) -> Vec<(String, VariantDecl)> {
+        let mut out = Vec::new();
+        for p in included {
+            // Prefer the included union's own module's variants, else scan globally.
+            let scan = |m: &HashMap<String, VariantDecl>| {
+                m.iter()
+                    .filter(|(_, d)| d.union == *p)
+                    .map(|(tag, d)| {
+                        (
+                            tag.clone(),
+                            VariantDecl {
+                                union: ty.to_string(),
+                                fields: d.fields.clone(),
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut found = self.unions.get(module).map(scan).unwrap_or_default();
+            if found.is_empty() {
+                for m in self.unions.values() {
+                    found = scan(m);
+                    if !found.is_empty() {
+                        break;
+                    }
+                }
+            }
+            out.extend(found);
+        }
+        out
     }
 
     /// Resolve `pick` against `module`'s own declarations, then each imported

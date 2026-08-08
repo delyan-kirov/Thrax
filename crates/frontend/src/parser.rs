@@ -463,14 +463,22 @@ impl<'a> Parser<'a> {
                 "struct" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
-                    let fields = self.parse_field_decls()?;
-                    return Ok(Item::Struct { name, fields });
+                    let (includes, fields) = self.parse_struct_body()?;
+                    return Ok(Item::Struct {
+                        name,
+                        includes,
+                        fields,
+                    });
                 }
                 "union" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
-                    let variants = self.parse_union_body()?;
-                    return Ok(Item::Union { name, variants });
+                    let (includes, variants) = self.parse_union_body()?;
+                    return Ok(Item::Union {
+                        name,
+                        includes,
+                        variants,
+                    });
                 }
                 "alias" => {
                     self.bump()?;
@@ -581,21 +589,61 @@ impl<'a> Parser<'a> {
         Ok(fields.into_boxed_slice())
     }
 
-    fn parse_union_body(&mut self) -> Result<Box<[VariantDecl]>> {
-        let mut variants = Vec::new();
-        while matches!(self.peek_kind()?, Kind::Word) {
-            let tag = self.bump_word()?;
-            let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
-                self.parse_payload()?
-            } else {
-                Payload::None
-            };
-            variants.push(VariantDecl { tag, payload });
+    /// A struct body: leading `with Other` clauses (copied-in fields) then the
+    /// declared `name : Type` fields, comma-separated and freely interleaved.
+    fn parse_struct_body(&mut self) -> Result<(Box<[StrId]>, Box<[FieldDecl]>)> {
+        let mut includes = Vec::new();
+        let mut fields = Vec::new();
+        loop {
+            match self.peek_kind()? {
+                Kind::With => includes.push(self.parse_with_include()?),
+                Kind::Word => {
+                    let name = self.bump_word()?;
+                    expect!(self, Kind::Colon, "expected ':' after the field name");
+                    let ty = self.parse_type()?;
+                    fields.push(FieldDecl { name, ty });
+                }
+                _ => break,
+            }
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
-        Ok(variants.into_boxed_slice())
+        Ok((includes.into_boxed_slice(), fields.into_boxed_slice()))
+    }
+
+    fn parse_union_body(&mut self) -> Result<(Box<[StrId]>, Box<[VariantDecl]>)> {
+        let mut includes = Vec::new();
+        let mut variants = Vec::new();
+        loop {
+            match self.peek_kind()? {
+                Kind::With => includes.push(self.parse_with_include()?),
+                Kind::Word => {
+                    let tag = self.bump_word()?;
+                    let payload = if self.eat(|k| matches!(k, Kind::Colon))? {
+                        self.parse_payload()?
+                    } else {
+                        Payload::None
+                    };
+                    variants.push(VariantDecl { tag, payload });
+                }
+                _ => break,
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? {
+                break;
+            }
+        }
+        Ok((includes.into_boxed_slice(), variants.into_boxed_slice()))
+    }
+
+    /// A `with Other` clause inside a type declaration: the (capitalized) name of a
+    /// same-kind type whose fields/variants are copied into the one declared. Pure
+    /// splicing, no type relationship.
+    fn parse_with_include(&mut self) -> Result<StrId> {
+        self.bump()?; // 'with'
+        let t = expect!(self, Kind::Word, "expected a type name after 'with'");
+        self.require_type_capital(self.text(t), &t)?;
+        Ok(self.intern(self.text(t)))
     }
 
     fn parse_payload(&mut self) -> Result<Payload> {

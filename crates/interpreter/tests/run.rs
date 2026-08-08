@@ -158,6 +158,31 @@ fn ctx_implicit_chains_and_overrides() {
 }
 
 #[test]
+fn struct_with_splices_included_fields() {
+    // `Point3` copies `Point`'s fields ahead of its own; the positional/field
+    // layout must be x, y, then z.
+    let src = "@mod M\n\
+               $ Point : @struct = x: Int, y: Int\n\
+               $ Point3 : @struct = with Point, z: Int\n\
+               $ r : Int =\n\
+               \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in p.x + p.y + p.z";
+    assert_eq!(run(src, "r"), "6");
+}
+
+#[test]
+fn union_with_splices_included_variants() {
+    // `Color` copies `Base`'s variants; a match over a copied and a new variant
+    // both dispatch by tag.
+    let src = "@mod M\n\
+               $ Base : @union = Red: {}, Green: {}\n\
+               $ Color : @union = with Base, Blue: {}\n\
+               $ rank : Color -> Int = \\c =\n\
+               \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
+               $ r : Int = rank Color.Red + rank Color.Blue";
+    assert_eq!(run(src, "r"), "4");
+}
+
+#[test]
 fn imported_global_does_not_shadow_a_same_named_effect_op() {
     // Module A exports a plain global `get`; module B has a `State` effect whose
     // operation is also `get`. In the combined program B's bare `get` must resolve

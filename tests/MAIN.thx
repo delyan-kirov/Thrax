@@ -58,6 +58,7 @@ $ with STR_OPS = STR_OPS
 $ with STR_PREFIX = STR_PREFIX
 $ with TAIL_CALLS = TAIL_CALLS
 $ with TUPLES = TUPLES
+$ with TYPE_SPLICE = TYPE_SPLICE
 $ with WHEN_GUARDS = WHEN_GUARDS
 $ with WITH_SCOPE = WITH_SCOPE
 
@@ -119,5 +120,6 @@ $ main : Int =
 	+ check "STR_PREFIX" STR_PREFIX.test
 	+ check "TAIL_CALLS" TAIL_CALLS.test
 	+ check "TUPLES" TUPLES.test
+	+ check "TYPE_SPLICE" TYPE_SPLICE.test
 	+ check "WHEN_GUARDS" WHEN_GUARDS.test
 	+ check "WITH_SCOPE" WITH_SCOPE.test

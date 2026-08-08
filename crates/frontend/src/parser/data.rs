@@ -81,14 +81,21 @@ pub enum Item {
         implicits: Box<[FieldDecl]>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct = field, ...`
+    /// `$ Name : @struct = [with Other, ...] field, ...`. `includes` are struct
+    /// types whose fields are copied in (before the declared ones), in order. This
+    /// is a declaration-time splice for convenience; it creates NO type
+    /// relationship (no subtyping), just a fresh struct that repeats those fields.
     Struct {
         name: StrId,
+        includes: Box<[StrId]>,
         fields: Box<[FieldDecl]>,
     },
-    /// `$ Name : @union = Tag : payload, ...`
+    /// `$ Name : @union = [with Other, ...] Tag : payload, ...`. `includes` are
+    /// union types whose variants are copied in (before the declared ones). As for
+    /// structs this is a splice, not a subtype relationship.
     Union {
         name: StrId,
+        includes: Box<[StrId]>,
         variants: Box<[VariantDecl]>,
     },
     /// `$ Name : @alias = ty`

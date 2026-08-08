@@ -89,7 +89,7 @@ fn struct_decl_and_literal_and_field() {
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
     assert!(
-        matches!(&p.program.items[0], Item::Struct { name, fields } if p.ast.text(*name) == "Person" && fields.len() == 2)
+        matches!(&p.program.items[0], Item::Struct { name, fields, .. } if p.ast.text(*name) == "Person" && fields.len() == 2)
     );
     match &p.program.items[1] {
         Item::Def { body, .. } => {

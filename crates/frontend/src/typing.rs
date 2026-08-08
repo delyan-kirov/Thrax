@@ -58,6 +58,7 @@ struct UnionInfo<'a> {
     variants: Vec<VariantSig<'a>>,
 }
 
+
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
 #[derive(Clone)]
@@ -136,6 +137,10 @@ pub struct Checker<'a> {
     /// implicits, so given values override by-name resolution; `..` (the bool)
     /// fills the unmentioned implicits from scope.
     ctx_overrides: HashMap<Aol<Expr>, (Vec<FieldInit>, bool)>,
+    /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
+    /// Drained as each type's members are copied in (see `splice_includes`). This
+    /// is a declaration-time convenience only; no type relationship is recorded.
+    pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -257,6 +262,7 @@ impl<'a> Checker<'a> {
             implicit_slots: HashMap::new(),
             implicit_pending: Vec::new(),
             ctx_overrides: HashMap::new(),
+            pending_includes: HashMap::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -345,7 +351,7 @@ impl<'a> Checker<'a> {
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
-        self.register_types(program);
+        self.register_types(program)?;
         self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
@@ -856,10 +862,14 @@ impl<'a> Checker<'a> {
 
     // -- type declarations --------------------------------------------------
 
-    fn register_types(&mut self, program: &Program) {
+    fn register_types(&mut self, program: &Program) -> Result<()> {
         for item in program.items.iter() {
             match item {
-                Item::Struct { name, fields } => {
+                Item::Struct {
+                    name,
+                    includes,
+                    fields,
+                } => {
                     let mut params = Vec::new();
                     for f in fields.iter() {
                         collect_tyvars(self.ast, f.ty, &mut params);
@@ -868,8 +878,16 @@ impl<'a> Checker<'a> {
                     let name = self.text(*name);
                     self.structs.insert(name, StructInfo { params, fields });
                     self.own_type_names.push(name);
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        self.pending_includes.insert(name, (true, ps));
+                    }
                 }
-                Item::Union { name, variants } => {
+                Item::Union {
+                    name,
+                    includes,
+                    variants,
+                } => {
                     let mut params = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
@@ -891,6 +909,10 @@ impl<'a> Checker<'a> {
                         },
                     );
                     self.own_type_names.push(name);
+                    if !includes.is_empty() {
+                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        self.pending_includes.insert(name, (false, ps));
+                    }
                 }
                 Item::Alias { name, ty } => {
                     let name = self.text(*name);
@@ -900,6 +922,92 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+        // Copy in each `with Other` type's members once every type is registered,
+        // so an included type may be declared after (or imported by) the one that
+        // names it.
+        let pending: Vec<&'a str> = self.pending_includes.keys().copied().collect();
+        for name in pending {
+            let mut visiting = HashSet::new();
+            self.splice_includes(name, &mut visiting)?;
+        }
+        Ok(())
+    }
+
+    /// Copy each included type's fields (struct) or variants (union) into `name`,
+    /// ahead of its own, resolving includes recursively (an included type may
+    /// itself splice). Detects cycles, kind mismatches, and duplicate members.
+    /// This copies members; it records no subtype/relationship in the type system.
+    fn splice_includes(&mut self, name: &'a str, visiting: &mut HashSet<&'a str>) -> Result<()> {
+        let (is_struct, includes) = match self.pending_includes.get(name) {
+            Some(entry) => entry.clone(),
+            None => return Ok(()), // already spliced (or never used `with`)
+        };
+        if !visiting.insert(name) {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "type `{name}` includes itself (a `with` cycle)"
+            ));
+        }
+        if is_struct {
+            let mut fields: Vec<(&'a str, Aol<Ty>)> = Vec::new();
+            for p in &includes {
+                self.splice_includes(p, visiting)?;
+                let pinfo = self.structs.get(p).cloned().ok_or_else(|| {
+                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                        "`{name}` does `with {p}`, which is not a known struct")
+                })?;
+                for f in &pinfo.fields {
+                    if fields.iter().any(|(n, _)| n == &f.0) {
+                        return Err(dup_member(name, f.0, "field"));
+                    }
+                    fields.push(*f);
+                }
+            }
+            let own = self.structs.get(name).expect("registered").fields.clone();
+            for f in own {
+                if fields.iter().any(|(n, _)| n == &f.0) {
+                    return Err(dup_member(name, f.0, "field"));
+                }
+                fields.push(f);
+            }
+            let mut params = Vec::new();
+            for (_, ty) in &fields {
+                collect_tyvars(self.ast, *ty, &mut params);
+            }
+            self.structs.insert(name, StructInfo { params, fields });
+        } else {
+            let mut variants: Vec<VariantSig<'a>> = Vec::new();
+            for p in &includes {
+                self.splice_includes(p, visiting)?;
+                let pinfo = self.unions.get(p).cloned().ok_or_else(|| {
+                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                        "`{name}` does `with {p}`, which is not a known union")
+                })?;
+                for v in &pinfo.variants {
+                    if variants.iter().any(|w| w.tag == v.tag) {
+                        return Err(dup_member(name, v.tag, "variant"));
+                    }
+                    variants.push(v.clone());
+                }
+            }
+            let own = self.unions.get(name).expect("registered").variants.clone();
+            for v in own {
+                if variants.iter().any(|w| w.tag == v.tag) {
+                    return Err(dup_member(name, v.tag, "variant"));
+                }
+                variants.push(v);
+            }
+            let mut params = Vec::new();
+            for v in &variants {
+                for (_, ty) in &v.payload {
+                    collect_tyvars(self.ast, *ty, &mut params);
+                }
+            }
+            self.unions.insert(name, UnionInfo { params, variants });
+        }
+        self.pending_includes.remove(name);
+        visiting.remove(name);
+        Ok(())
     }
 
     /// Register every declared effect's operations. An operation `op : Arg -> Res`
@@ -2853,6 +2961,15 @@ fn canonical_con(name: &str) -> &str {
         "@bool" => ty::BOOL,
         other => other,
     }
+}
+
+/// A type that would receive a `{kind}` (`"field"`/`"variant"`) twice: one it
+/// declares and one a `with` splice copies in, or one two included types share.
+fn dup_member(ty: &str, member: &str, kind: &str) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "type `{ty}` gets a duplicate {kind} `{member}` from a `with` include"
+    )
 }
 
 fn unbound(name: &str) -> Diagnostic {
