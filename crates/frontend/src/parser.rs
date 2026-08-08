@@ -779,12 +779,19 @@ impl<'a> Parser<'a> {
                 && matches!(self.peek_kind_at(1)?, Kind::Colon));
         if is_record {
             let mut fields = Vec::new();
+            let mut tail = None;
             loop {
                 let with = self.eat(|k| matches!(k, Kind::With))?;
                 let name = self.expect_word("expected a record field name")?;
                 expect!(self, Kind::Colon, "expected ':' after the field name");
                 let ty = self.parse_type()?;
                 fields.push(RecField { with, name, ty });
+                // `{ x: A, y: B | r }`: `| r` opens the record with a row variable.
+                if self.at_op("|")? {
+                    self.bump()?;
+                    tail = Some(self.expect_tyvar("expected a row variable after '|'")?);
+                    break;
+                }
                 if !self.eat(|k| matches!(k, Kind::Comma))?
                     || matches!(self.peek_kind()?, Kind::RBrace)
                 {
@@ -792,7 +799,10 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the record type");
-            Ok(self.ty(Ty::Record(fields.into_boxed_slice())))
+            Ok(self.ty(Ty::Record {
+                fields: fields.into_boxed_slice(),
+                tail,
+            }))
         } else {
             let mut tys = Vec::new();
             loop {

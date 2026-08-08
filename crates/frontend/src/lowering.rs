@@ -475,7 +475,9 @@ impl<'a> Lowerer<'a> {
             return body;
         };
         let (from, to) = (*from, *to);
-        let Ty::Record(fields) = self.tnode(from) else {
+        // Only a CLOSED record parameter is the destructuring sugar; an open
+        // `{ x | r }` is a real record value, so leave it as a plain parameter.
+        let Ty::Record { fields, tail: None } = self.tnode(from) else {
             return body;
         };
         let inner = self.record_params(Some(to), body);

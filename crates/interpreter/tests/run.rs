@@ -183,6 +183,18 @@ fn union_with_splices_included_variants() {
 }
 
 #[test]
+fn open_row_param_accepts_any_matching_struct() {
+    // One row-polymorphic function `{ x:Int, y:Int | r } -> Int` accepts several
+    // distinct nominal structs, as long as they carry x:Int and y:Int.
+    let src = "@mod M\n\
+               $ Point  : @struct = x: Int, y: Int,\n\
+               $ Point3 : @struct = x: Int, y: Int, z: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ r : Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })";
+    assert_eq!(run(src, "r"), "42");
+}
+
+#[test]
 fn imported_global_does_not_shadow_a_same_named_effect_op() {
     // Module A exports a plain global `get`; module B has a `State` effect whose
     // operation is also `get`. In the combined program B's bare `get` must resolve

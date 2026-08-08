@@ -179,8 +179,14 @@ pub enum Ty {
     Unit,
     /// A tuple type `{ A, B, ... }` (n >= 1).
     Tuple(Box<[Aol<Ty>]>),
-    /// Named-record parameter sugar `{ x: A, y: B }`.
-    Record(Box<[RecField]>),
+    /// A record type `{ x: A, y: B }` (closed) or `{ x: A | r }` (open, `tail` is
+    /// the row variable). A closed record with no `with` fields in parameter
+    /// position is also the named-record parameter sugar; an open one (`tail`
+    /// present) is always a row-polymorphic record type.
+    Record {
+        fields: Box<[RecField]>,
+        tail: Option<StrId>,
+    },
 }
 
 /// A field of the named-record parameter sugar; `with` scopes its fields in.

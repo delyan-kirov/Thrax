@@ -153,6 +153,18 @@ fn type_splice_with() {
 }
 
 #[test]
+fn open_row_record_param() {
+    // Row-polymorphic record param over the C backend: field access resolves the
+    // same by-name as the interpreter, regardless of the concrete struct passed.
+    let src = "@mod M\n\
+               $ Point  : @struct = x: Int, y: Int,\n\
+               $ Point3 : @struct = x: Int, y: Int, z: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ test : Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
+    assert_matches(src, "test");
+}
+
+#[test]
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : Int -> Int = \\n =\n\

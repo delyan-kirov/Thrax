@@ -352,6 +352,7 @@ impl<'a> Checker<'a> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
         self.register_types(program)?;
+        self.register_struct_rows();
         self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
@@ -604,6 +605,12 @@ impl<'a> Checker<'a> {
             Type::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.import_ty(t, map)).collect())
             }
+            Type::Record(row) => Type::record(self.import_ty(row, map)),
+            Type::RowField(label, ty, rest) => Type::RowField(
+                label.clone(),
+                Box::new(self.import_ty(ty, map)),
+                Box::new(self.import_ty(rest, map)),
+            ),
         }
     }
 
@@ -719,8 +726,12 @@ impl<'a> Checker<'a> {
         sig_ty: &Type,
     ) -> Result<()> {
         let fields = match self.tnode(sig) {
-            Ty::Arrow { from, .. } if matches!(self.tnode(*from), Ty::Record(_)) => {
-                let Ty::Record(fields) = self.tnode(*from) else {
+            // Only a CLOSED record parameter is the destructuring sugar; an open
+            // `{ x | r }` is a real row-polymorphic record value, bound as-is.
+            Ty::Arrow { from, .. }
+                if matches!(self.tnode(*from), Ty::Record { tail: None, .. }) =>
+            {
+                let Ty::Record { fields, .. } = self.tnode(*from) else {
                     unreachable!("guarded on a record parameter")
                 };
                 fields
@@ -1015,6 +1026,28 @@ impl<'a> Checker<'a> {
     /// or an overload when several do (resolved by result type at the use site);
     /// always reachable qualified as `Effect.op`. Its `Arg -> Res` scheme is also
     /// kept per effect for handler-clause typing.
+    /// Build the closed record row of every non-generic struct and hand them to
+    /// the engine, so a nominal struct can unify with a structural record row (the
+    /// hybrid bridge). Generic structs are skipped (their row would need per-use
+    /// instantiation); passing one where an open row is expected is a known gap.
+    fn register_struct_rows(&mut self) {
+        let simple: Vec<(&'a str, Vec<(&'a str, Aol<Ty>)>)> = self
+            .structs
+            .iter()
+            .filter(|(_, info)| info.params.is_empty())
+            .map(|(name, info)| (*name, info.fields.clone()))
+            .collect();
+        let mut rows = HashMap::new();
+        for (name, fields) in simple {
+            let mut tvars = HashMap::new();
+            let row = fields.iter().rev().fold(Type::RowEmpty, |rest, (fname, fty)| {
+                Type::row_field(fname, self.ty_of_ast(*fty, &mut tvars), rest)
+            });
+            rows.insert(name.to_string(), row);
+        }
+        self.eng.set_struct_rows(rows);
+    }
+
     fn register_effects(&mut self, program: &Program) {
         let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
         for item in program.items.iter() {
@@ -1117,6 +1150,13 @@ impl<'a> Checker<'a> {
                     return Ok(t.clone());
                 }
             }
+        }
+        // A structural record (an open-row parameter, say): look the field up in
+        // the row, growing an open tail to include it.
+        if let Type::Record(_) = self.eng.resolve(rec_ty) {
+            return self
+                .eng
+                .record_field(rec_ty, field, &format!("accessing field `{field}`"));
         }
         Ok(self.eng.fresh())
     }
@@ -2502,11 +2542,29 @@ impl<'a> Checker<'a> {
             Ty::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect())
             }
-            Ty::Record(fields) => {
-                if let [f] = fields.as_ref() {
-                    self.ty_of_ast(f.ty, tvars)
-                } else {
-                    Type::Tuple(fields.iter().map(|f| self.ty_of_ast(f.ty, tvars)).collect())
+            Ty::Record { fields, tail } => {
+                match tail {
+                    // Open record type `{ x: A | r }`: a row-polymorphic record.
+                    Some(tvar) => {
+                        let name = self.text(*tvar);
+                        let rest = tvars
+                            .entry(name)
+                            .or_insert_with(|| self.eng.fresh())
+                            .clone();
+                        let row = fields.iter().rev().fold(rest, |rest, f| {
+                            Type::row_field(self.text(f.name), self.ty_of_ast(f.ty, tvars), rest)
+                        });
+                        Type::record(row)
+                    }
+                    // Closed `{ x: A, y: B }`: still the named-record parameter
+                    // sugar (erases positionally to a tuple; 1-field collapses).
+                    None => {
+                        if let [f] = fields.as_ref() {
+                            self.ty_of_ast(f.ty, tvars)
+                        } else {
+                            Type::Tuple(fields.iter().map(|f| self.ty_of_ast(f.ty, tvars)).collect())
+                        }
+                    }
                 }
             }
         }
@@ -2867,6 +2925,13 @@ fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
         Type::RowExtend(label, rest) => {
             format!("R{}_{}", label.replace('.', "_"), ty_key(rest, vars))
         }
+        Type::Record(row) => format!("D{}", ty_key(row, vars)),
+        Type::RowField(label, ty, rest) => format!(
+            "{}:{}_{}",
+            label.replace('.', "_"),
+            ty_key(ty, vars),
+            ty_key(rest, vars)
+        ),
     }
 }
 
@@ -2924,7 +2989,15 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *to, out);
         }
         Ty::Tuple(items) => items.iter().for_each(|t| collect_tyvars(ast, *t, out)),
-        Ty::Record(fields) => fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out)),
+        Ty::Record { fields, tail } => {
+            fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out));
+            if let Some(t) = tail {
+                let name = ast.text(*t);
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
         Ty::Con { .. } | Ty::Unit => {}
     }
 }
