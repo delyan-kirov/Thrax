@@ -195,6 +195,20 @@ fn open_row_param_accepts_any_matching_struct() {
 }
 
 #[test]
+fn anonymous_records_literal_update_stack() {
+    // Anonymous record literal, update (`| base`), and stack (`with base`), all
+    // consumed by one open-row function.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ base = { .x = 3, .y = 4 }\n\
+               $ r : Int =\n\
+               \t(area { .x = 2, .y = 5, .tag = 7 })\n\
+               \t+ (area { .x = 10 | base })\n\
+               \t+ (area { .z = 1, with base })";
+    assert_eq!(run(src, "r"), "62"); // 10 + 40 + 12
+}
+
+#[test]
 fn imported_global_does_not_shadow_a_same_named_effect_op() {
     // Module A exports a plain global `get`; module B has a `State` effect whose
     // operation is also `get`. In the combined program B's bare `get` must resolve

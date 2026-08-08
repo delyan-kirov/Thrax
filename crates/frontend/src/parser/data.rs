@@ -305,6 +305,15 @@ pub enum Expr {
         fields: Box<[FieldInit]>,
         spread: Option<Aol<Expr>>,
     },
+    /// An anonymous, structural record value: `{ .foo = 1, .bar = 2 }` (plain),
+    /// `{ .foo = v | base }` (update: the rest come from `base`), or
+    /// `{ .foo = 1, with base }` (stack: this record's fields on top of `base`'s).
+    /// Its type is a [`Type::Record`] row, not a nominal struct.
+    Record {
+        fields: Box<[FieldInit]>,
+        with: Option<Aol<Expr>>,
+        update: Option<Aol<Expr>>,
+    },
     /// `Type.Tag.{ ... }` / `.Tag` variant construction.
     Variant {
         module: Option<StrId>,

@@ -1295,6 +1295,95 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// Infer an anonymous record value. Plain `{ .x = e }` builds a closed row from
+    /// the fields' inferred types; `{ .x = e, with base }` stacks its fields on
+    /// `base`'s (row concat); `{ .x = e | base }` updates `base` (its shape is
+    /// preserved, each listed field must already exist).
+    fn infer_record(
+        &mut self,
+        fields: &'a [FieldInit],
+        with: Option<Aol<Expr>>,
+        update: Option<Aol<Expr>>,
+    ) -> Result<Type> {
+        let mut explicit: Vec<(String, Type)> = Vec::new();
+        for fi in fields {
+            match fi {
+                FieldInit::Named { name, value } => {
+                    let t = self.infer(*value)?;
+                    explicit.push((self.text(*name).to_string(), t));
+                }
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a record field needs a name (`.field = value`)"
+                    ));
+                }
+            }
+        }
+        if let Some(base) = update {
+            let base_ty = self.infer(base)?;
+            let base_fields = self.record_fields_of(&base_ty)?;
+            for (n, got) in &explicit {
+                match base_fields.iter().find(|(fname, _)| fname == n) {
+                    Some((_, want)) => self.eng.unify(got, want, "in a record update")?,
+                    None => {
+                        return Err(diag!(
+                            Code::TypeMismatch, Span::at(0), 0,
+                            "record update sets `{n}`, which the base record does not have"
+                        ))
+                    }
+                }
+            }
+            return Ok(base_ty);
+        }
+        let mut pairs = explicit;
+        if let Some(w) = with {
+            let wty = self.infer(w)?;
+            pairs.extend(self.record_fields_of(&wty)?);
+        }
+        Ok(Type::record_of(pairs.into_iter()))
+    }
+
+    /// The `(label, type)` fields of a record value: a structural [`Type::Record`]
+    /// (its closed row) or a nominal struct (its declared fields, instantiated).
+    fn record_fields_of(&mut self, ty: &Type) -> Result<Vec<(String, Type)>> {
+        if let Type::Record(row) = self.eng.resolve(ty) {
+            let mut out = Vec::new();
+            let mut cur = (*row).clone();
+            loop {
+                match self.eng.resolve(&cur) {
+                    Type::RowField(l, fty, rest) => {
+                        out.push((l, (*fty).clone()));
+                        cur = *rest;
+                    }
+                    Type::RowEmpty => return Ok(out),
+                    _ => {
+                        return Err(diag!(
+                            Code::TypeMismatch, Span::at(0), 0,
+                            "cannot use a record with an unknown (open) row here"
+                        ))
+                    }
+                }
+            }
+        }
+        let (head, args) = self.spine(ty);
+        if let Type::Con(name) = &head {
+            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+                let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                return Ok(info
+                    .fields
+                    .iter()
+                    .map(|(n, fty)| (n.to_string(), self.ty_of_ast(*fty, &mut subst)))
+                    .collect());
+            }
+        }
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "expected a record or struct value here"
+        ))
+    }
+
     fn resolve_struct_by_fields(&self, fields: &[FieldInit]) -> Option<(&'a str, StructInfo<'a>)> {
         let mut names = Vec::with_capacity(fields.len());
         for f in fields {
@@ -1558,6 +1647,11 @@ impl<'a> Checker<'a> {
                 let ty = ty.map(|t| self.text(t));
                 self.infer_struct_lit(ty, fields, *spread)
             }
+            Expr::Record {
+                fields,
+                with,
+                update,
+            } => self.infer_record(fields, *with, *update),
             Expr::Variant {
                 ty, tag, fields, ..
             } => {
@@ -2748,6 +2842,16 @@ fn free_globals<'a>(
             free_globals_field_inits(ast, fields, globals, bound, out);
             if let Some(s) = spread {
                 free_globals(ast, *s, globals, bound, out);
+            }
+        }
+        Expr::Record {
+            fields,
+            with,
+            update,
+        } => {
+            free_globals_field_inits(ast, fields, globals, bound, out);
+            for base in with.iter().chain(update.iter()) {
+                free_globals(ast, *base, globals, bound, out);
             }
         }
         Expr::Variant { fields, .. } => free_globals_field_inits(ast, fields, globals, bound, out),

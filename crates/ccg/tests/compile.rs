@@ -165,6 +165,18 @@ fn open_row_record_param() {
 }
 
 #[test]
+fn anonymous_record_values() {
+    // Anonymous record literal / update / stack lower to name-keyed structs; the C
+    // backend must build and read them the same as the interpreter.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ base = { .x = 3, .y = 4 }\n\
+               $ test : Int =\n\
+               \t(area { .x = 2, .y = 5, .tag = 7 }) + (area { .x = 10 | base }) + (area { .z = 1, with base })\n";
+    assert_matches(src, "test");
+}
+
+#[test]
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : Int -> Int = \\n =\n\

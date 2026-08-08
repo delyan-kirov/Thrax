@@ -1108,6 +1108,15 @@ impl<'a> Parser<'a> {
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.expr(Expr::Unit));
         }
+        // An anonymous record literal starts with a `.field =` entry or `with`;
+        // anything else (including a `.Tag` variant element) is a tuple.
+        let is_record = matches!(self.peek_kind()?, Kind::With)
+            || (matches!(self.peek_kind()?, Kind::Dot)
+                && matches!(self.peek_kind_at(1)?, Kind::Word)
+                && matches!(self.peek_kind_at(2)?, Kind::Eq));
+        if is_record {
+            return self.parse_record_expr();
+        }
         let mut elems = Vec::new();
         loop {
             elems.push(self.parse_expr(0)?);
@@ -1118,6 +1127,37 @@ impl<'a> Parser<'a> {
         }
         expect!(self, Kind::RBrace, "expected '}' to close the tuple");
         Ok(self.expr(Expr::Tuple(elems.into_boxed_slice())))
+    }
+
+    /// A record value body (the `{` is already consumed): `.field = e` entries and
+    /// `with base` splices, optionally ending in `| base` (update). `with` and `|`
+    /// are mutually exclusive.
+    fn parse_record_expr(&mut self) -> Result<Aol<Expr>> {
+        let mut fields = Vec::new();
+        let mut with = None;
+        let mut update = None;
+        loop {
+            if self.eat(|k| matches!(k, Kind::With))? {
+                with = Some(self.parse_expr(0)?);
+            } else {
+                fields.push(self.parse_field_init()?);
+            }
+            if self.at_op("|")? {
+                self.bump()?;
+                update = Some(self.parse_expr(0)?);
+                break;
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
+            {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the record");
+        Ok(self.expr(Expr::Record {
+            fields: fields.into_boxed_slice(),
+            with,
+            update,
+        }))
     }
 
     /// A leading-dot atom: bare struct literal `.{...}` or bare variant `.Tag`.

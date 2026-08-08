@@ -1,12 +1,30 @@
 # Row-polymorphic records (rows for structs)
 
-Status: **stage 1 implemented.** Open-row record *parameters* work end-to-end on
-both engines: `{ x:Int, y:Int | r } -> Int` accepts any struct with those fields,
-structural field access (`p.x`) resolves through the row, and a missing field is a
-type error. Remaining: anonymous record *literals* + the update/stack value
-syntax (`{ .f = v | base }`, `{ .f = v, with base }`) and the `..base` migration;
-record-rest patterns `{ .x = a, ..rest }`. Records use the same scoped-row
-discipline as effects.
+Status: **stages 1 & 2 implemented.** Open-row record *parameters* and anonymous
+record *values* work end-to-end on both engines:
+
+- `{ x:Int, y:Int | r } -> Int` accepts any struct (nominal or anonymous) with
+  those fields; `p.x` resolves through the row; a missing field is a type error.
+- Anonymous literals `{ .x = 1, .y = 2 }` (typed as a structural row), update
+  `{ .x = v | base }` (base's shape preserved), and stack `{ .x = 1, with base }`
+  (fields concatenated). Example `examples/ROW_RECORDS.thx`.
+
+Remaining: **record-rest patterns** `{ .x = a, ..rest }`; **closed record type
+annotations** (`base : { x:Int, y:Int }` still means the tuple param-sugar, see the
+note below); **generic structs** at open rows (only non-generic structs are
+bridged); and the `..base` -> `{ | base }` migration (the old spread still works).
+Records use the same scoped-row discipline as effects.
+
+### Known collision: closed `{ x:A, y:B }` type vs the param-sugar
+
+`{ x:A, y:B }` with no tail is still the named-record **parameter** sugar (erases
+to a tuple + destructuring, #4a), so it does NOT yet denote a closed record type.
+An open row `{ x:A | r }` always does. So annotate record values with an open row
+or leave them inferred (`base = { .x = 3, .y = 4 }` infers the row); a closed
+annotation would be read as a tuple. Unifying the two (making `{ x:A, y:B }` a
+record type everywhere, with a record destructuring pattern replacing the tuple
+erasure) is deferred: it collides with tuple patterns `\{a, b}` and needs the
+tuple/record pattern ambiguity resolved first.
 
 Implementation of stage 1: `Type::Record(row)` + `Type::RowField(label, ty, rest)`
 (engine.rs) unified by `unify_record_row`/`rewrite_field` (mirrors the effect

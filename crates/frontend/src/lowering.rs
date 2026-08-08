@@ -614,6 +614,29 @@ impl<'a> Lowerer<'a> {
                 let spread = *spread;
                 self.struct_lit(ty, fields, spread)
             }
+            Expr::Record {
+                fields,
+                with,
+                update,
+            } => {
+                // Update (`| base`) and stack (`with base`) both lower to a struct
+                // built over that base with the listed fields overriding/adding;
+                // the type checker already gave update vs stack their distinct
+                // types. An anonymous record has no nominal name (runtime access is
+                // name-keyed, so the empty name is fine).
+                let base = (*update).or(*with).map(|b| Arc::new(self.expr(b)));
+                let mut out = Vec::new();
+                for fi in fields.iter() {
+                    if let FieldInit::Named { name, value } = fi {
+                        out.push((self.text(*name).to_string(), self.expr(*value)));
+                    }
+                }
+                Term::Struct {
+                    name: String::new(),
+                    base,
+                    fields: Arc::from(out),
+                }
+            }
             Expr::Variant {
                 ty, tag, fields, ..
             } => {
