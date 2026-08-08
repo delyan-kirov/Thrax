@@ -109,17 +109,23 @@ conflicts, `%expect` unchanged).
   not a contiguous slice). This is its own project with its own plan. Until then,
   reserve `..rest` in struct patterns and expand only `.._` (discard).
 
-### #6 String interpolation `"Hi {a ++ b}, age {p.age}"`
+### #6 String interpolation `"Hi {name}, age {STR.from_int p.age}"` -- DONE
 
-The deepest Tier-B item: lexer **and** parser. `lex_string` emits a sequence of
-segment tokens (or one token carrying parsed pieces): a literal chunk, then a
-`{`...`}` holding raw source to be re-lexed/parsed as an expr, repeating.
-Desugar to `chunk ++ stringify(expr) ++ chunk ...`.
+Pure parser-level desugaring, so the typer, lowering, and both backends are
+untouched. `lex_string` finds only the literal's extent (brace/quote aware, so a
+`"` or `{}` inside an interpolant does not end the literal); the parser splits
+`source[span]` into literal chunks and `{...}` interpolants, re-lexes each
+interpolant with a base-offset `Lexer::sub` (absolute spans, so errors inside
+`{...}` point at the right place), and folds into `chunk ++ expr ++ chunk ...`.
 
-- **Dependency:** a stringify story. Either require every interpolant to already
-  be `Str` in v1 (no coercion), or introduce a `show`/`str` overload as a
-  prerequisite.
-- **Decision:** literal-brace escape (`\{` vs `{{`).
+- **Stringify (decided):** v1 requires each interpolant to already be `Str`; no
+  implicit `show`. A literal chunk seeds the `++` chain so the whole expression
+  types as `Str` and each interpolant is forced to `Str` by `++`. A `show`
+  overload can be layered on later without changing the syntax.
+- **Escape (decided):** `\{` and `\}` are literal braces; a bare `}` is literal
+  too. Interpolants may nest strings and braces.
+
+`examples/STRING_INTERP.thx`; parser tests `string_interpolation_*`.
 
 ---
 
@@ -238,10 +244,14 @@ cost of real grammar ambiguity. Keeping `.{ ... }`. Not revisiting.
 6. **Multi-clause (#3)** -- SCRAPPED (too much sugar for the value).
 7. **#12 and #4b** -- SCRAPPED (see Tier D / #4b).
 
-The surface-syntax backlog is now effectively closed: everything is DONE,
-SCRAPPED, or deferred into the LA subsystem (`.[..]` indexing + ranges #9, see
-doc/ranges-codata-linalg.md). The only still-open surface item is #6, and it is
-gated on a `show`/stringify mechanism. Future work is substantive (LA, `show`,
+The surface-syntax backlog is now closed: everything is DONE, SCRAPPED, or
+deferred into the LA subsystem (`.[..]` indexing + ranges #9, see
+doc/ranges-codata-linalg.md). String interpolation (#6) shipped in its v1 form
+(interpolants must be `Str`); auto-stringify via a `to_string` overload, and the
+larger `@ctx` implicit-parameter feature, are designed in
+doc/implicit-context.md. Both are blocked on a latent bug documented there:
+same-module overloading does not dispatch at runtime (globals collide on
+`Module.name`). Future work is substantive (fix overloading, LA, `@ctx`,
 effects) rather than more syntax.
 
 ## Open decisions (blockers to a build-ready plan)

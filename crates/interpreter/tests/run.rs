@@ -18,6 +18,12 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
+    for (&site, key) in checker.overload_calls() {
+        resolved.overload_calls.insert(site, key.clone());
+    }
+    for (&body, key) in checker.def_keys() {
+        resolved.def_keys.insert(body, key.clone());
+    }
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
@@ -64,6 +70,12 @@ fn run_modules(sources: &[&str], name: &str) -> String {
         for (&site, &module) in c.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }
+        for (&site, key) in c.overload_calls() {
+            resolved.overload_calls.insert(site, key.clone());
+        }
+        for (&body, key) in c.def_keys() {
+            resolved.def_keys.insert(body, key.clone());
+        }
         for (&site, fields) in c.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }
@@ -96,6 +108,18 @@ fn cross_module_overload_dispatches_by_type() {
                 $ with Q\n\
                 $ r : Int = unwrap (make 5)";
     assert_eq!(run_modules(&[p, q, root], "r"), "5");
+}
+
+#[test]
+fn same_module_overload_dispatches_by_type() {
+    // Two overloads of `kind` in ONE module. Before type-mangling the globals both
+    // collided under a single `M.kind` key and every call ran the first body
+    // (giving 11); now `kind true` reaches the Bool body, so the result is 21.
+    let src = "@mod M\n\
+               $ kind : Int -> Int = \\x = 1\n\
+               $ kind : Bool -> Int = \\b = 2\n\
+               $ r : Int = (kind 7) + (kind true) * 10";
+    assert_eq!(run(src, "r"), "21");
 }
 
 #[test]

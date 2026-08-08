@@ -96,6 +96,18 @@ pub struct Checker<'a> {
     /// Bare-call sites resolved to a specific module. Lowering rewrites the
     /// referenced `Expr::Var` to `MOD.name`.
     resolved_calls: HashMap<Aol<Expr>, &'a str>,
+    /// Overloaded-call sites whose winning module defines the name more than once,
+    /// so `MOD.name` alone would collide. Maps the site to the type-mangled bare
+    /// name (`name#sig`) lowering must emit instead. The definition side gets the
+    /// matching key in [`Self::def_keys`].
+    overload_calls: HashMap<Aol<Expr>, String>,
+    /// Overloaded definitions that share their name with another definition in the
+    /// same module, keyed by the def's body handle. The value is the type-mangled
+    /// bare name lowering assigns the global so its several overloads stay distinct.
+    def_keys: HashMap<Aol<Expr>, String>,
+    /// Names this module defines more than once (same-module overloads), which
+    /// therefore need type-mangling to keep the globals apart.
+    overloaded_multi: HashSet<&'a str>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -187,6 +199,9 @@ impl<'a> Checker<'a> {
             local_defs: HashSet::new(),
             value_module: HashMap::new(),
             resolved_calls: HashMap::new(),
+            overload_calls: HashMap::new(),
+            def_keys: HashMap::new(),
+            overloaded_multi: HashSet::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -217,6 +232,19 @@ impl<'a> Checker<'a> {
     /// the intended function rather than a same-named one from another module.
     pub fn call_modules(&self) -> &HashMap<Aol<Expr>, &'a str> {
         &self.resolved_calls
+    }
+
+    /// Overloaded-call sites whose target needs a type-mangled name (its module
+    /// defines the name several times). Lowering emits the mapped bare name in
+    /// place of the source name; the qualifying module comes from `call_modules`.
+    pub fn overload_calls(&self) -> &HashMap<Aol<Expr>, String> {
+        &self.overload_calls
+    }
+
+    /// Same-module overloaded definitions, keyed by body handle, with the mangled
+    /// bare name lowering must give each global so the overloads stay distinct.
+    pub fn def_keys(&self) -> &HashMap<Aol<Expr>, String> {
+        &self.def_keys
     }
 
     /// The ordered field names each `with` expression binds, keyed by the `With`
@@ -288,12 +316,25 @@ impl<'a> Checker<'a> {
         }
         let is_overloaded = |name: &str| overloaded_names.contains(name);
 
-        // Seed each overloaded name's candidates from its declared signatures.
+        // Names defined several times in THIS module need type-mangled globals so
+        // the overloads do not collide under a single `MOD.name` key.
+        self.overloaded_multi = defs
+            .iter()
+            .filter(|d| counts[d.name] > 1)
+            .map(|d| d.name)
+            .collect();
+
+        // Seed each overloaded name's candidates from its declared signatures, and
+        // record the mangled global name for a same-module overload (so its several
+        // definitions stay distinct at runtime).
         for d in &defs {
             if is_overloaded(d.name) {
                 if let Some(sig) = d.sig {
                     let scheme = self.scheme_of_sig(sig);
                     let module = self.module_name;
+                    if counts[d.name] > 1 {
+                        self.def_keys.insert(d.body, overload_key(d.name, &scheme));
+                    }
                     self.overloads
                         .entry(d.name)
                         .or_default()
@@ -477,7 +518,14 @@ impl<'a> Checker<'a> {
         self.eng.leave_level();
         let mono = self.pending_vars();
         self.eng.generalize_except(&result, &mono);
-        Ok(self.eng.zonk(&result))
+        let zonked = self.eng.zonk(&result);
+        // A same-module overload defined without a signature is seeded from its
+        // inferred type; the sig'd case is keyed at seeding time.
+        if def.sig.is_none() && self.overloaded_multi.contains(def.name) {
+            self.def_keys
+                .insert(def.body, overload_key(def.name, &zonked));
+        }
+        Ok(zonked)
     }
 
     fn scheme_of_sig(&mut self, sig: Aol<Ty>) -> Type {
@@ -1493,7 +1541,7 @@ impl<'a> Checker<'a> {
             Match::Unique(idx) => {
                 let cand_ty = candidates[idx].ty.clone();
                 self.apply_overload(&cand_ty, args, &result)?;
-                self.record_call(site, candidates[idx].module);
+                self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
             Match::None => Err(self.no_overload(name, args)),
@@ -1515,6 +1563,28 @@ impl<'a> Checker<'a> {
     fn record_call(&mut self, site: Option<Aol<Expr>>, module: Option<&'a str>) {
         if let (Some(site), Some(module)) = (site, module) {
             self.resolved_calls.insert(site, module);
+        }
+    }
+
+    /// Record a resolved overload use: qualify it to its module (`record_call`),
+    /// and, when that module defines the name several times (so `MOD.name` alone
+    /// would collide), record the type-mangled bare name lowering must emit. The
+    /// mangling matches the definition's key in `def_keys` because both derive
+    /// from the candidate's type.
+    fn record_overload(
+        &mut self,
+        site: Option<Aol<Expr>>,
+        name: &str,
+        candidates: &[Cand<'a>],
+        idx: usize,
+    ) {
+        let module = candidates[idx].module;
+        self.record_call(site, module);
+        if let (Some(site), Some(m)) = (site, module) {
+            if candidates.iter().filter(|c| c.module == Some(m)).count() > 1 {
+                let key = overload_key(name, &self.eng.zonk(&candidates[idx].ty));
+                self.overload_calls.insert(site, key);
+            }
         }
     }
 
@@ -1546,9 +1616,8 @@ impl<'a> Checker<'a> {
                 match self.match_overload(&p.candidates, &p.args, &p.result) {
                     Match::Unique(idx) => {
                         let cand_ty = p.candidates[idx].ty.clone();
-                        let module = p.candidates[idx].module;
                         self.apply_overload(&cand_ty, &p.args, &p.result)?;
-                        self.record_call(p.site, module);
+                        self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
                     Match::None => return Err(self.no_overload(&p.name, &p.args)),
@@ -2231,6 +2300,48 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
 fn applied(name: &str, args: &[Type]) -> Type {
     args.iter()
         .fold(Type::con(name), |acc, a| Type::app(acc, a.clone()))
+}
+
+/// The mangled global name for one overload: `name#<type-key>`. Two overloads of
+/// one name in one module get distinct keys, so their globals no longer collide
+/// under a single `MOD.name`. The definition side and each use site both derive
+/// the key from the candidate's type, so they agree. Effect rows are omitted (a
+/// pair of overloads never differs only by effect), which also keeps the key free
+/// of the noisy row variables that would otherwise vary between the two sides.
+fn overload_key(name: &str, ty: &Type) -> String {
+    let mut vars = Vec::new();
+    format!("{name}#{}", ty_key(ty, &mut vars))
+}
+
+/// A structural, effect-free string for `ty` with variables canonicalized to
+/// `t0`, `t1`, ... by first appearance, so structurally equal schemes (however
+/// their variables happen to be numbered) produce the same string. `.` is
+/// replaced so the key survives the runtime's split-on-`.` bare-name fallback.
+fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
+    match ty {
+        Type::Var(id) => {
+            let i = vars.iter().position(|v| v == id).unwrap_or_else(|| {
+                vars.push(*id);
+                vars.len() - 1
+            });
+            format!("t{i}")
+        }
+        Type::Con(name) => name.replace('.', "_"),
+        Type::App(head, arg) => {
+            format!("A{}_{}", ty_key(head, vars), ty_key(arg, vars))
+        }
+        Type::Arrow(from, to, _) => {
+            format!("F{}_{}", ty_key(from, vars), ty_key(to, vars))
+        }
+        Type::Tuple(items) => {
+            let parts: Vec<String> = items.iter().map(|t| ty_key(t, vars)).collect();
+            format!("T{}", parts.join("_"))
+        }
+        Type::RowEmpty => "R".to_string(),
+        Type::RowExtend(label, rest) => {
+            format!("R{}_{}", label.replace('.', "_"), ty_key(rest, vars))
+        }
+    }
 }
 
 /// Flatten a zonked arrow `A -> B -> ... -> R` into its argument marshalling

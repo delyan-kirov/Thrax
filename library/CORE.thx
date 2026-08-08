@@ -1,0 +1,24 @@
+@mod CORE
+
+# \file CORE.thx
+# \info The implicitly imported core layer. Unlike the rest of the standard
+#       library (imported with `$ with MOD`), every module gets `CORE`'s names
+#       bare, with no import. It holds the pieces the language leans on
+#       everywhere, starting with `to_string`, the stringifier string
+#       interpolation `"{e}"` desugars to. Base types ship an overload here;
+#       a program adds `$ to_string : MyType -> Str` for its own types and the
+#       overload resolver picks it. CORE uses only primitives, so it depends on
+#       no other module (and so cannot be caught in an import cycle with the
+#       modules that implicitly import it).
+
+$ to_string : Str -> Str = \s = s
+
+$ to_string : Bool -> Str = \b = if b => "true" else "false"
+
+$ to_string : Int -> Str = \n =
+	if n ?< 0 => "-" ++ to_string_digits (0 - n) ""
+	else to_string_digits n ""
+
+$ to_string_digits : Int -> Str -> Str = \n acc =
+	if n ?< 10 => (array_push "" (48 + n)) ++ acc
+	else to_string_digits (n / 10) ((array_push "" (48 + n % 10)) ++ acc)

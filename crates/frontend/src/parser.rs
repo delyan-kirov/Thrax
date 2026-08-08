@@ -24,7 +24,7 @@ mod tests;
 
 use crate::lexer::data::{Kind, Token};
 use crate::lexer::Lexer;
-use utilities::{Aol, Span, StrId};
+use utilities::{Aol, Line, Span, StrId};
 use utilities::{Code, Diagnostic, Result};
 
 use crate::parser::data::*;
@@ -113,10 +113,139 @@ impl<'a> Parser<'a> {
         self.ast.strings.intern(s)
     }
     /// Decode a `Kind::Str` token's literal (escapes and all) into interned
-    /// bytes. Decoding is deferred to here so the lexer stays borrow-free.
+    /// bytes. Decoding is deferred to here so the lexer stays borrow-free. Used
+    /// for non-interpolating strings (patterns, `@extern` operands).
     fn intern_str(&mut self, t: Token) -> Result<StrId> {
         let bytes = crate::lexer::decode_string(self.text(t), t.span.start, t.line)?;
         Ok(self.ast.strings.intern_bytes(&bytes))
+    }
+    /// A `Str` literal expression from raw decoded bytes.
+    fn str_expr(&mut self, bytes: &[u8]) -> Aol<Expr> {
+        let s = self.ast.strings.intern_bytes(bytes);
+        self.expr(Expr::Str(s))
+    }
+
+    /// Build a string-literal expression, expanding `{expr}` interpolations. `t`
+    /// is the `Kind::Str` token. `"a {e} b"` desugars to `"a " ++ to_string e ++ " b"`;
+    /// a literal chunk seeds the `++` chain so the whole expression types as `Str`,
+    /// and each interpolant is stringified through the overloaded `to_string`.
+    /// `\{`/`\}` are literal braces; a bare `}` is literal too.
+    fn build_string(&mut self, t: Token) -> Result<Aol<Expr>> {
+        let raw = self.text(t);
+        let bytes = raw.as_bytes();
+        let inner = &bytes[1..bytes.len() - 1];
+        let body_start = t.span.start + 1; // absolute offset of `inner[0]`
+
+        let mut segs: Vec<Aol<Expr>> = Vec::new();
+        let mut chunk: Vec<u8> = Vec::new();
+        let mut interpolated = false;
+        let mut i = 0;
+        while i < inner.len() {
+            match inner[i] {
+                b'\\' => i = crate::lexer::decode_escape(inner, i, body_start, t.line, &mut chunk)?,
+                b'{' => {
+                    interpolated = true;
+                    let seg = self.str_expr(&chunk);
+                    segs.push(seg);
+                    chunk.clear();
+                    // Balance nested `{}` to find this interpolation's close,
+                    // skipping nested strings so their braces don't miscount.
+                    let expr_start = i + 1;
+                    let mut depth = 1usize;
+                    let mut j = expr_start;
+                    while j < inner.len() {
+                        match inner[j] {
+                            b'"' => {
+                                j += 1;
+                                while j < inner.len() && inner[j] != b'"' {
+                                    j += if inner[j] == b'\\' { 2 } else { 1 };
+                                }
+                                j += 1; // past the closing quote
+                            }
+                            b'{' => {
+                                depth += 1;
+                                j += 1;
+                            }
+                            b'}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    if depth != 0 {
+                        let at = body_start + i;
+                        return Err(Diagnostic::error(
+                            Code::UnexpectedToken,
+                            Span::new(at, at + 1),
+                            t.line,
+                            "string interpolation '{' is not closed with '}'".to_string(),
+                        ));
+                    }
+                    let full: &'a str = self.src;
+                    let abs_start = body_start + expr_start;
+                    let slice = &full[abs_start..body_start + j];
+                    let e = self.parse_subexpr(slice, abs_start, t.line)?;
+                    // `{e}` stringifies via the overloaded `to_string`, so an
+                    // interpolant of any type with a `to_string` (base types ship
+                    // one in the auto-imported `CORE`) reads as `Str`. The call
+                    // inherits the interpolant's span so a resolution failure
+                    // points at the interpolant, not a synthetic node.
+                    let span = self.ast.expr_span(e).unwrap_or(t.span);
+                    let to_string = self.intern("to_string");
+                    let f = self.expr(Expr::Var {
+                        module: None,
+                        name: to_string,
+                    });
+                    let call = self.expr(Expr::App(f, e));
+                    self.ast.expr_spans.insert(call, span);
+                    segs.push(call);
+                    i = j + 1; // past '}'
+                }
+                c => {
+                    chunk.push(c);
+                    i += 1;
+                }
+            }
+        }
+        let seg = self.str_expr(&chunk);
+        segs.push(seg);
+
+        if !interpolated {
+            return Ok(segs.pop().expect("at least the whole-string chunk"));
+        }
+        let concat = self.intern("++");
+        let mut acc = segs[0];
+        for &rhs in &segs[1..] {
+            acc = self.expr(Expr::BinOp {
+                op: concat,
+                lhs: acc,
+                rhs,
+            });
+        }
+        Ok(acc)
+    }
+
+    /// Parse a single expression from a sub-slice of the source (a string
+    /// interpolant's `{...}` body), re-lexing it with absolute spans. Restores
+    /// the outer token stream afterwards, even on error.
+    fn parse_subexpr(&mut self, slice: &'a str, base: usize, line: Line) -> Result<Aol<Expr>> {
+        let saved = std::mem::replace(&mut self.lex, Lexer::sub(slice, base, line));
+        let saved_end = self.last_end;
+        let out = self.parse_expr(0).and_then(|e| {
+            if matches!(self.peek_kind()?, Kind::Eof) {
+                Ok(e)
+            } else {
+                let t = self.peek()?;
+                Err(self.unexpected(&t, "expected a single expression in the interpolation"))
+            }
+        });
+        self.lex = saved;
+        self.last_end = saved_end;
+        out
     }
     /// Consume the next token and intern its text (the token is a checked word).
     fn bump_word(&mut self) -> Result<StrId> {
@@ -714,8 +843,7 @@ impl<'a> Parser<'a> {
             }
             Kind::Str => {
                 self.bump()?;
-                let s = self.intern_str(t)?;
-                Ok(self.expr(Expr::Str(s)))
+                self.build_string(t)
             }
             Kind::Word => {
                 self.bump()?;
