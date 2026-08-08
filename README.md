@@ -8,12 +8,16 @@ with handlers** . It compiles to C and can also be interpreted.
 @mod Testing
 
 $ fib : Int -> Int = \n =
-    if n ?= 0 then 0
-    else if n ?= 1 then 1
-    else fib (n - 1) + fib (n - 2)
+    if n ?= 0 => 0
+    else if n ?= 1 => 1
+    else (fib (n - 1)) + (fib (n - 2))
 
 $ answer : Int = fib 10   # 55
 ```
+
+**[Try it in your browser](https://delyan-kirov.github.io/Thrax/)** the whole
+compiler runs client-side as wasm, no install needed. The
+[source is on GitHub](https://github.com/delyan-kirov/Thrax).
 
 ---
 
@@ -68,9 +72,9 @@ Every snippet below is a real file under [`examples/`](examples/).
 
 ### Algebraic data - products (structs)
 
-Structs are named records. A free `` `T `` in a field type is an implicit type
-parameter, so declarations are generic and applied by juxtaposition.
-([`AGTxPRO.thx`](examples/AGTxPRO.thx))
+Structs are named records. A free lowercase name (`t`) in a field type is an
+implicit type parameter, so declarations are generic and applied by
+juxtaposition. ([`AGTxPRO.thx`](examples/AGTxPRO.thx))
 
 ```typescript
 $ Person : @struct =
@@ -82,9 +86,18 @@ $ who    : Str    = person.name
 $ older  : Int    = person.age + 1
 
 # Generic: one declaration, two instantiations.
-$ Box : @struct = val: `T,
+$ Box : @struct = val: t,
 $ ibox : Box Int = Box.{ .val = 7 }
 $ sbox : Box Str = Box.{ .val = "hi" }
+```
+
+A declaration may start with `with Other` to splice in another struct's fields
+(a copy-paste convenience, not subtyping), then add its own.
+([`TYPE_SPLICE.thx`](examples/TYPE_SPLICE.thx))
+
+```typescript
+$ Point  : @struct = x: Int, y: Int,
+$ Point3 : @struct = with Point, z: Int,   # x, y, then z
 ```
 
 ### Algebraic data sums (unions)
@@ -95,48 +108,56 @@ generics work as you'd expect; a payload of `{}` is the unit variant.
 
 ```typescript
 $ Maybe : @union =
-    Just: `T,
+    Just: t,
     None: {}
 
-# Bare constructors: the type name is inferred from context (the annotation).
-$ some_i : Maybe Int = .Just.{ 5 }
-$ none_i : Maybe Int = .None
+# Constructors are qualified by their type; a `{}` payload needs no braces.
+$ some_i : Maybe Int = Maybe.Just.{ 5 }
+$ none_i : Maybe Int = Maybe.None
 
 $ List : @union =
-    Cons: {`T, List `T},
+    Cons: {t, List t},
     Nil: {}
+```
+
+Unions take `with` too, splicing another union's variants in before their own:
+
+```typescript
+$ Base  : @union = Red: {}, Green: {},
+$ Color : @union = with Base, Blue: {}   # Red, Green, then Blue
 ```
 
 ### Pattern matching
 
-`when scrut is pat then e ... else d` matches top to bottom; the first matching arm
-wins and binds its variables. Patterns test literals, destructure structs and
-variants (nested), and each arm can carry an `if <guard>` that falls through to
-the next arm on failure. ([`MATCH.thx`](examples/MATCH.thx),
+`is scrut | pat => e ... else d` matches top to bottom; the first matching arm
+wins and binds its variables. The leading `is` distinguishes it from the boolean
+`if c => t else e`. Patterns test literals, destructure structs and variants
+(nested), and each arm can carry an `if <guard>` that falls through to the next
+arm on failure. ([`MATCH.thx`](examples/MATCH.thx),
 [`WHEN_GUARDS.thx`](examples/WHEN_GUARDS.thx), [`PATTERNS.thx`](examples/PATTERNS.thx))
 
 ```typescript
 $ get : Int -> Maybe Int -> Int = \d = \m =
-    when m
-        is Maybe.Just.{ x } then x
+    is m
+        | Maybe.Just.{ x } => x
     else d
 
 # Guards fall through, even across arms that share a constructor.
-$ grade : Box -> Int = \x =
-    when x
-        is Box.Some.{ v } if v ?> 100 then 3
-        is Box.Some.{ v } if v ?> 0   then 2
-        is Box.Some.{ _ }             then 1
-        is Box.Nil.{}                 then 0
+$ grade : Maybe Int -> Int = \m =
+    is m
+        | Maybe.Just.{ v } if v ?> 100 => 3
+        | Maybe.Just.{ v } if v ?> 0   => 2
+        | Maybe.Just.{ _ }             => 1
+        | Maybe.None                   => 0
         else 0 - 1
 ```
 
 Irrefutable patterns also destructure directly in `let` and lambda parameters,
-positionally or by name:
+by name (`_` ignores a field):
 
 ```typescript
-$ get_name : Person -> Str = \Person.{ n, _ } = n
-$ start_x  : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
+$ get_name : Person -> Str = \Person.{ name, _ } = name
+$ sum_xy   : Point -> Int  = \Point.{ x, y } = x + y
 ```
 
 ### Algebraic effects and handlers
@@ -144,25 +165,25 @@ $ start_x  : Int = let Line.{ .from = Point.{ x, y }, .to = t } = seg in x
 Effects are declared as a set of operations; performing one is just calling it. A
 function's type carries the effects it may perform as a **row** on its arrow
 (`A -> <E> B`); a bare arrow is pure, and an *unhandled* effect is a compile-time
-error. A handler is `do <body> ctl k is op a = e ... [else x = e]`; the captured
+error. A handler is `do <body> ctl k | op a => e ... [else x => e]`; the captured
 continuation `k` is resumed by applying it (affine, **You only get one shot!**).
 ([`EFFECTS.thx`](examples/EFFECTS.thx))
 
 ```typescript
-$ Exn   : @effect = throw : Str -> `a,
+$ Exn   : @effect = throw : Str -> a,
 $ Yield : @effect = yield : Int -> {},
 $ State : @effect = get : {} -> Int, put : Int -> {},
 
 # Exception: the handler ignores k, so it resumes zero times.
 $ safeDiv : Int -> Int -> Int = \a b =
-    do if b ?= 0 then throw "div0" else a / b
-    ctl k is throw msg = 0 - 1
+    do if b ?= 0 => Exn.throw "div0" else a / b
+    ctl k | Exn.throw msg => 0 - 1
 
 # Generator: resume once per yield, summing the results.
 $ sumGen : ({} -> <Yield> {}) -> Int = \gen =
     do gen {}
-    ctl k is yield v = v + k {}
-          else _ = 0
+    ctl k | Yield.yield v => v + k {}
+          else _ => 0
 ```
 
 Because the continuation is first-class it can be *stored* and resumed later,
@@ -176,8 +197,8 @@ $ Task : @union  = Fin: {}, Susp: { Int, {} -> Task },
 # Capture the suspended continuation instead of resuming in place.
 $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
-    ctl k is yield v = .Susp.{ v, k }
-          else _ = .Fin.{}
+    ctl k | Co.yield v => Task.Susp.{ v, k }
+          else _ => Task.Fin.{}
 ```
 
 There's also `defer <cleanup> do <body>` (Go-style): the cleanup runs when the
@@ -203,7 +224,7 @@ interpreter resolves it with dlopen at run time; the native backend emits a
 direct call and a link flag, and the system linker does the rest.
 
 ```sh
-thrax --build examples/io_example   # -> examples/io_example/bin/<name>{.ir,.c,exe}
+thrax build examples/io_example/MAIN.thx   # native executable beside the source
 ```
 
 ## Raylib demo
@@ -228,7 +249,7 @@ a real FFI program; see its README to run it.
 | `crates/ccg` | the C backend (emits standalone C plus its runtime) |
 | `crates/thrax` | the `thrax` driver (CLI) |
 | `crates/utilities` | shared support: arena, target/platform, diagnostics |
-| `core/`, `library/` | the Thrax prelude/`C` namespace and standard library |
+| `core/`, `library/` | the auto-injected `C` (libc) namespace, and the standard library (including the implicitly imported `CORE`) |
 | `examples/` | annotated `.thx` programs (also the test corpus) |
 | `web/` | the browser playground (Rust to wasm) and tour site |
 | `doc/` | language spec and design notes |

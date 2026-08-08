@@ -258,6 +258,15 @@ fn pipeline(user_src: &str) -> Result<(Vec<LoweredProgram>, String), String> {
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }
+        for (&site, key) in checker.overload_calls() {
+            resolved.overload_calls.insert(site, key.clone());
+        }
+        for (&body, key) in checker.def_keys() {
+            resolved.def_keys.insert(body, key.clone());
+        }
+        for (&site, args) in checker.implicit_calls() {
+            resolved.implicit_args.insert(site, args.clone());
+        }
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }
