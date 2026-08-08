@@ -33,4 +33,8 @@ $ ck_update : Int = if area (shift { .x = 1, .y = 4 }) ?= 44 => 0 else 8
 # Stack adds `tag`, which the result row carries and we read back.
 $ ck_stack : Int = if (tag { .x = 3, .y = 6 }).tag ?= 99 => 0 else 16
 
-$ test : Int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack
+# Destructure a record with a pattern; `.._` ignores the remaining fields.
+$ diag : { x: Int, y: Int | r } -> Int = \p = is p | { .x = a, .y = b, .._ } => a + b
+$ ck_pat : Int = if diag { .x = 3, .y = 7, .tag = 1 } ?= 10 => 0 else 32
+
+$ test : Int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack + ck_pat

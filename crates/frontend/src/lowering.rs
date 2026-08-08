@@ -1067,6 +1067,14 @@ impl<'a> Lowerer<'a> {
                     fields: self.field_pats(&fields, names.as_deref()),
                 }
             }
+            // A record pattern matches a name-keyed record/struct by field name,
+            // ignoring the rest (the checker allows only `.._` discard for now).
+            Pattern::Record { fields, .. } => {
+                let fields: Vec<FieldPat> = fields.to_vec();
+                Pat::Struct {
+                    fields: self.field_pats(&fields, None),
+                }
+            }
             Pattern::Variant {
                 ty, tag, fields, ..
             } => {

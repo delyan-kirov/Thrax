@@ -2591,6 +2591,7 @@ impl<'a> Checker<'a> {
                 let ty = self.text(*ty);
                 self.type_struct_pattern(ty, fields, expected)
             }
+            Pattern::Record { fields, rest } => self.type_record_pattern(fields, *rest, expected),
             Pattern::Variant {
                 ty, tag, fields, ..
             } => {
@@ -2599,6 +2600,54 @@ impl<'a> Checker<'a> {
                 self.type_variant_pattern(ty, tag, fields, expected)
             }
         }
+    }
+
+    /// Type a record pattern by building an OPEN row from its fields and unifying
+    /// with the scrutinee (so it matches any record/struct that has them). Binds
+    /// each field's subpattern; the rest may be discarded (`.._`) but not yet bound.
+    fn type_record_pattern(
+        &mut self,
+        fields: &'a [FieldPat],
+        rest: Option<Aol<Pattern>>,
+        expected: &Type,
+    ) -> Result<()> {
+        let tail = self.eng.fresh();
+        let mut entries: Vec<(&'a str, Type, Option<Aol<Pattern>>)> = Vec::new();
+        for f in fields {
+            match f {
+                FieldPat::Named { name, pat } => {
+                    entries.push((self.text(*name), self.eng.fresh(), Some(*pat)))
+                }
+                FieldPat::Shorthand(name) => entries.push((self.text(*name), self.eng.fresh(), None)),
+                FieldPat::Positional(_) => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a record pattern's fields need names (`.field = pat`)"
+                    ))
+                }
+            }
+        }
+        let row = entries
+            .iter()
+            .rev()
+            .fold(tail, |rest, (n, t, _)| Type::row_field(n, t.clone(), rest));
+        self.eng
+            .unify(expected, &Type::record(row), "in a record pattern")?;
+        for (name, t, pat) in entries {
+            match pat {
+                Some(p) => self.type_pattern(p, &t)?,
+                None => self.bind(name, t),
+            }
+        }
+        if let Some(r) = rest {
+            if !matches!(self.pnode(r), Pattern::Wild) {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "binding the record rest (`..name`) is not yet supported; use `.._` to ignore the remaining fields"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn type_struct_pattern(
@@ -3106,6 +3155,18 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                     FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
                     FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
                 }
+            }
+        }
+        Pattern::Record { fields, rest } => {
+            for f in fields.iter() {
+                match f {
+                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
+                }
+            }
+            if let Some(r) = rest {
+                collect_pattern_binders(ast, *r, bound);
             }
         }
         Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {

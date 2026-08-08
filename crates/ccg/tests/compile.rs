@@ -179,6 +179,17 @@ fn anonymous_record_values() {
 }
 
 #[test]
+fn record_destructuring_pattern() {
+    // Record patterns lower to name-keyed struct matches; the C backend must
+    // destructure them the same as the interpreter.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
+               $ test : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
+    assert_matches(src, "test");
+}
+
+#[test]
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : Int -> Int = \\n =\n\

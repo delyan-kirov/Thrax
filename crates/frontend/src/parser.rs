@@ -1684,6 +1684,11 @@ impl<'a> Parser<'a> {
 
     fn parse_tuple_pattern(&mut self) -> Result<Aol<Pattern>> {
         self.bump()?; // '{'
+        // A record pattern starts with a `.field` entry (or `..rest`); anything
+        // else is a positional tuple pattern.
+        if matches!(self.peek_kind()?, Kind::Dot) {
+            return self.parse_record_pattern();
+        }
         let mut elems = Vec::new();
         loop {
             elems.push(self.parse_pattern()?);
@@ -1698,6 +1703,39 @@ impl<'a> Parser<'a> {
             "expected '}' to close the tuple pattern"
         );
         Ok(self.pat(Pattern::Tuple(elems.into_boxed_slice())))
+    }
+
+    /// A record pattern body (the `{` is consumed): `.field = pat` / `.field`
+    /// entries, and an optional trailing `..rest` (`..name` binds, `.._` discards).
+    fn parse_record_pattern(&mut self) -> Result<Aol<Pattern>> {
+        let mut fields = Vec::new();
+        let mut rest = None;
+        loop {
+            // `..rest`: two dots then a binder.
+            if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot) {
+                self.bump()?;
+                self.bump()?;
+                rest = Some(self.parse_pattern()?);
+                break;
+            }
+            expect!(self, Kind::Dot, "expected '.field' in a record pattern");
+            let name = self.expect_word("expected a field name after '.'")?;
+            if self.eat(|k| matches!(k, Kind::Eq))? {
+                let pat = self.parse_pattern()?;
+                fields.push(FieldPat::Named { name, pat });
+            } else {
+                fields.push(FieldPat::Shorthand(name));
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
+            {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the record pattern");
+        Ok(self.pat(Pattern::Record {
+            fields: fields.into_boxed_slice(),
+            rest,
+        }))
     }
 }
 

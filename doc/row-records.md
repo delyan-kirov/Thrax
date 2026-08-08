@@ -10,7 +10,13 @@ record *values* work end-to-end on both engines:
   open-row value, update `{ .x = v | p }` preserves the shape and stack
   `{ .x = 1, with p }` concatenates. Example `examples/ROW_RECORDS.thx`.
 
-Remaining: **record-rest patterns** `{ .x = a, ..rest }`; **generic structs** at
+Record **destructuring patterns** work too: `is p | { .x = a, .y = b, .._ } => ...`
+and lambda/`let` shorthand `\{ .x, .y } = ...`, on open-row values and nominal
+structs. They lower to the existing name-keyed `Pat::Struct` (partial, ignores
+unlisted fields).
+
+Remaining: **`..name` rest-BINDING** in patterns (needs a runtime record-restriction
+op; `.._` discard works, `..name` errors clearly for now); **generic structs** at
 open rows (only non-generic structs are bridged); and the `..base` -> `{ | base }`
 migration (the old spread still works). Records use the same scoped-row discipline
 as effects.

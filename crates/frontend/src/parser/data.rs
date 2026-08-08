@@ -238,6 +238,13 @@ pub enum Pattern {
         ty: StrId,
         fields: Box<[FieldPat]>,
     },
+    /// An anonymous record pattern `{ .x = p, .y = q [, ..rest] }`: match a record
+    /// (open-row value or struct) by field name. `rest` binds the remaining fields
+    /// (`..name`) or discards them (`.._`); absent, the unlisted fields are ignored.
+    Record {
+        fields: Box<[FieldPat]>,
+        rest: Option<Aol<Pattern>>,
+    },
     /// `.Tag`, `Type.Tag`, `Module.Type.Tag`, each with an optional payload.
     Variant {
         module: Option<StrId>,

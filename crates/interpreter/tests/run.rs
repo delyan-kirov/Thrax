@@ -226,6 +226,19 @@ fn record_literal_decays_to_pair_or_struct() {
 }
 
 #[test]
+fn record_destructuring_pattern() {
+    // Destructure a record by field name (match arm, and lambda shorthand), on an
+    // open-row value and a nominal struct; `.._` ignores the rest.
+    let src = "@mod M\n\
+               $ Point : @struct = x: Int, y: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
+               $ nx : Point -> Int = \\p = is p | { .x = a } => a\n\
+               $ r : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 } + nx Point.{ .x = 2, .y = 8 }";
+    assert_eq!(run(src, "r"), "25"); // 12 + 11 + 2
+}
+
+#[test]
 fn imported_global_does_not_shadow_a_same_named_effect_op() {
     // Module A exports a plain global `get`; module B has a `State` effect whose
     // operation is also `get`. In the combined program B's bare `get` must resolve
