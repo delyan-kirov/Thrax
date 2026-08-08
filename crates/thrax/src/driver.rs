@@ -36,6 +36,25 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut queue: Vec<(String, String)> = vec![(root_name.clone(), root_src)];
+
+    // The implicitly imported CORE module (bare names everywhere) is an ordinary
+    // standard-library file, loaded from disk like the rest. Seed it into the load
+    // queue so it is always present, even without an explicit `$ with CORE`.
+    if root_name != "CORE" {
+        match resolve_module_file("CORE", &root_dir) {
+            Some(file) => match std::fs::read_to_string(&file) {
+                Ok(s) => queue.push(("CORE".to_string(), s)),
+                Err(e) => {
+                    eprintln!("thrax: cannot read the CORE module ({}): {e}", file.display());
+                    return Err(ExitCode::FAILURE);
+                }
+            },
+            None => {
+                eprintln!("thrax: cannot find the CORE standard-library module");
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
     while let Some((name, src)) = queue.pop() {
         if index.contains_key(&name) {
             continue;
@@ -122,19 +141,27 @@ fn check_all<'a>(
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
-    // The auto-injected `C` namespace is checked first (it has no dependencies)
-    // and made available qualified-only to every other module.
+    // The auto-injected `C` namespace and the implicitly imported `CORE` module
+    // have no dependencies and are checked first: `C` made available qualified-only
+    // (`C.sqrt`), `CORE` bare (its `to_string` overloads, etc.). `CORE` is checked
+    // after `C` but imports neither, so ordering the two is unconstrained.
     let c_idx = sources.iter().position(|(n, _)| n == "C");
+    let core_idx = sources.iter().position(|(n, _)| n == "CORE");
     let mut order: Vec<usize> = topological_order(graph);
-    if let Some(c) = c_idx {
-        order.retain(|&i| i != c);
-        order.insert(0, c);
+    for &pre in [core_idx, c_idx].iter().flatten() {
+        order.retain(|&i| i != pre);
+        order.insert(0, pre);
     }
     for i in order {
         let mut checker = frontend::Checker::new(ast);
         if let Some(c) = c_idx {
-            if c != i {
+            if c != i && Some(i) != core_idx {
                 checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
+            }
+        }
+        if let Some(core) = core_idx {
+            if core != i && Some(i) != c_idx {
+                checker.import_from(checkers[core].as_ref().expect("CORE checked first"));
             }
         }
         for &dep in &graph[i] {
@@ -195,6 +222,12 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         resolved.array_pats.extend(pats.iter().copied());
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
+        }
+        for (&site, key) in checker.overload_calls() {
+            resolved.overload_calls.insert(site, key.clone());
+        }
+        for (&body, key) in checker.def_keys() {
+            resolved.def_keys.insert(body, key.clone());
         }
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());

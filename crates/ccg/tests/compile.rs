@@ -24,6 +24,12 @@ fn lower(src: &str) -> Vec<Program> {
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
+    for (&site, key) in checker.overload_calls() {
+        resolved.overload_calls.insert(site, key.clone());
+    }
+    for (&body, key) in checker.def_keys() {
+        resolved.def_keys.insert(body, key.clone());
+    }
     for (&site, fields) in checker.with_fields() {
         resolved.with_fields.insert(site, fields.clone());
     }
@@ -99,6 +105,17 @@ fn arithmetic_and_precedence() {
                $ test : Int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
+    assert_matches(src, "test");
+}
+
+#[test]
+fn same_module_overload_dispatches_by_type() {
+    // Two overloads of `kind` in one module (type-mangled globals). The C backend
+    // must dispatch `kind true` to the Bool body just as the interpreter does.
+    let src = "@mod M\n\
+               $ kind : Int -> Int = \\x = 1\n\
+               $ kind : Bool -> Int = \\b = 2\n\
+               $ test : Int = (kind 7) + (kind true) * 10\n";
     assert_matches(src, "test");
 }
 

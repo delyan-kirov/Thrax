@@ -1,8 +1,8 @@
 @mod OPERATORS
 
 # \file operators.thx
-# \info Comparison and logical operators. Comparisons evaluate to Bool (the
-#       core-defined union in core/PRELUDE.thx); `!` negates a Bool.
+# \info Comparison and logical operators. Comparisons evaluate to Bool (a
+#       built-in type); `!` negates a Bool.
 
 $eq_true   = 7 ?= 7
 $eq_false  = 7 ?= 8

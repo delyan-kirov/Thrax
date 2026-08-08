@@ -51,6 +51,7 @@ $ with STDLIB_SET = STDLIB_SET
 $ with STDLIB_STR = STDLIB_STR
 $ with STDLIB_VEC = STDLIB_VEC
 $ with STRINGS = STRINGS
+$ with STRING_INTERP = STRING_INTERP
 $ with STR_MATCH = STR_MATCH
 $ with STR_OPS = STR_OPS
 $ with STR_PREFIX = STR_PREFIX
@@ -110,6 +111,7 @@ $ main : Int =
 	+ check "STDLIB_STR" STDLIB_STR.test
 	+ check "STDLIB_VEC" STDLIB_VEC.test
 	+ check "STRINGS" STRINGS.test
+	+ check "STRING_INTERP" STRING_INTERP.test
 	+ check "STR_MATCH" STR_MATCH.test
 	+ check "STR_OPS" STR_OPS.test
 	+ check "STR_PREFIX" STR_PREFIX.test

@@ -25,6 +25,9 @@ pub use crate::lexer::data::{Kind, Token};
 /// lexeme is recovered from the source on demand (see [`Lexer::source`]).
 pub struct Lexer<'a> {
     src: &'a str,
+    /// Added to every emitted span, so a lexer over a *slice* of a larger source
+    /// (a string interpolant's `{...}`) still reports absolute source offsets.
+    base: usize,
     cursor: usize, // byte offset of the next unlexed character
     line: Line,
     /// Already-lexed, comment-free tokens; the cursor into them is `pos`.
@@ -36,8 +39,23 @@ impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Lexer<'a> {
         Lexer {
             src,
+            base: 0,
             cursor: 0,
             line: 1,
+            buffer: Vec::new(),
+            pos: 0,
+        }
+    }
+
+    /// A lexer over a sub-slice of a larger source, whose spans are offset by
+    /// `base` (the slice's start) and whose lines count from `line`. Used to
+    /// re-lex a string interpolant's expression with absolute source spans.
+    pub fn sub(src: &'a str, base: usize, line: Line) -> Lexer<'a> {
+        Lexer {
+            src,
+            base,
+            cursor: 0,
+            line,
             buffer: Vec::new(),
             pos: 0,
         }
@@ -133,7 +151,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn span_from(&self, start: usize) -> Span {
-        Span::new(start, self.cursor)
+        Span::new(self.base + start, self.base + self.cursor)
     }
 
     fn mk(&self, kind: Kind, start: usize, line: Line) -> Token {
@@ -244,11 +262,54 @@ impl<'a> Lexer<'a> {
         Ok(self.mk(Kind::Comment, start, line))
     }
 
-    /// A double-quoted string literal. The lexer only finds the literal's
-    /// extent (skipping `\"` so an escaped quote doesn't end it); the escapes
-    /// are decoded later from `source[span]` by [`decode_string`], which keeps
-    /// the lexer allocation-free and its tokens borrow-free.
+    /// A double-quoted string literal, possibly with `{expr}` interpolations.
+    /// The lexer only finds the literal's extent; the chunks and interpolants
+    /// are decoded/re-parsed later from `source[span]` (see the parser), which
+    /// keeps the lexer allocation-free and its tokens borrow-free. `depth`
+    /// tracks interpolation braces so a `"` inside `{...}` (a nested string in an
+    /// interpolant) does not end the literal.
     fn lex_string(&mut self, start: usize, line: Line) -> Result<Token> {
+        self.cursor += 1; // opening quote
+        let mut depth = 0usize;
+        loop {
+            if self.cursor >= self.bytes().len() || self.cur() == b'\n' {
+                return Err(self.err(
+                    Code::UnclosedQuote,
+                    start,
+                    line,
+                    "string literal is not closed with a '\"'",
+                ));
+            }
+            match self.cur() {
+                // In literal text, `\` escapes the next char (so `\"`/`\{` are
+                // literal). Inside an interpolant `\` is ordinary Thrax (lambda).
+                b'\\' if depth == 0 => {
+                    self.cursor += 1;
+                    if self.cursor < self.bytes().len() && self.cur() != b'\n' {
+                        self.cursor += 1;
+                    }
+                }
+                b'"' if depth == 0 => {
+                    self.cursor += 1; // closing quote
+                    return Ok(self.mk(Kind::Str, start, line));
+                }
+                b'"' => self.skip_nested_string(start, line)?, // string in an interpolant
+                b'{' => {
+                    depth += 1;
+                    self.cursor += 1;
+                }
+                b'}' if depth > 0 => {
+                    depth -= 1;
+                    self.cursor += 1;
+                }
+                _ => self.cursor += 1,
+            }
+        }
+    }
+
+    /// Skip a string literal nested inside an interpolant, from its opening `"`
+    /// to its closing `"` (respecting `\"`), so it does not end the outer string.
+    fn skip_nested_string(&mut self, start: usize, line: Line) -> Result<()> {
         self.cursor += 1; // opening quote
         loop {
             if self.cursor >= self.bytes().len() || self.cur() == b'\n' {
@@ -260,18 +321,15 @@ impl<'a> Lexer<'a> {
                 ));
             }
             match self.cur() {
-                b'"' => {
-                    self.cursor += 1; // closing quote
-                    return Ok(self.mk(Kind::Str, start, line));
-                }
                 b'\\' => {
-                    // Skip the backslash and its selector, so `\"` doesn't close
-                    // the literal. A trailing backslash at end-of-line/file is
-                    // left for the unterminated check on the next iteration.
                     self.cursor += 1;
                     if self.cursor < self.bytes().len() && self.cur() != b'\n' {
                         self.cursor += 1;
                     }
+                }
+                b'"' => {
+                    self.cursor += 1;
+                    return Ok(());
                 }
                 _ => self.cursor += 1,
             }
@@ -445,10 +503,6 @@ pub fn decode_string(raw: &str, start: usize, line: Line) -> Result<Vec<u8>> {
     );
     let inner = &bytes[1..bytes.len() - 1];
     let body_start = start + 1; // absolute offset of `inner[0]`
-    let bad = |code: Code, at: usize, msg: &str| {
-        Diagnostic::error(code, Span::new(at, at + 1), line, msg.to_string())
-    };
-
     let mut out = Vec::with_capacity(inner.len());
     let mut i = 0;
     while i < inner.len() {
@@ -458,36 +512,48 @@ pub fn decode_string(raw: &str, start: usize, line: Line) -> Result<Vec<u8>> {
             i += 1;
             continue;
         }
-        let esc_at = body_start + i; // offset of the backslash
-        i += 1;
-        let sel = *inner
-            .get(i)
-            .ok_or_else(|| bad(Code::InvalidEscape, esc_at, "dangling escape '\\'"))?;
-        i += 1;
-        match sel {
-            b'n' => out.push(b'\n'),
-            b't' => out.push(b'\t'),
-            b'r' => out.push(b'\r'),
-            b'0' => out.push(b'\0'),
-            b'\\' => out.push(b'\\'),
-            b'"' => out.push(b'"'),
-            b'\'' => out.push(b'\''),
-            b'a' => out.push(0x07), // bell
-            b'b' => out.push(0x08), // backspace
-            b'f' => out.push(0x0C), // form feed
-            b'v' => out.push(0x0B), // vertical tab
-            b'x' => i = decode_hex_byte(inner, i, esc_at, line, &mut out)?,
-            b'u' => i = decode_unicode(inner, i, esc_at, line, &mut out)?,
-            e => {
-                return Err(bad(
-                    Code::InvalidEscape,
-                    esc_at,
-                    &format!("unknown escape '\\{}'", e as char),
-                ))
-            }
-        }
+        i = decode_escape(inner, i, body_start, line, &mut out)?;
     }
     Ok(out)
+}
+
+/// Decode one escape sequence. `i` points at the backslash; `body` is the byte
+/// slice being decoded and `body_start` its absolute source offset (for
+/// diagnostics). Appends the decoded byte(s) to `out` and returns the index just
+/// past the sequence. Shared by plain literals and interpolation chunks.
+pub fn decode_escape(
+    body: &[u8],
+    i: usize,
+    body_start: usize,
+    line: Line,
+    out: &mut Vec<u8>,
+) -> Result<usize> {
+    let esc_at = body_start + i; // offset of the backslash
+    let bad = |at: usize, msg: &str| {
+        Diagnostic::error(Code::InvalidEscape, Span::new(at, at + 1), line, msg.to_string())
+    };
+    let mut i = i + 1; // past the backslash
+    let sel = *body.get(i).ok_or_else(|| bad(esc_at, "dangling escape '\\'"))?;
+    i += 1;
+    match sel {
+        b'n' => out.push(b'\n'),
+        b't' => out.push(b'\t'),
+        b'r' => out.push(b'\r'),
+        b'0' => out.push(b'\0'),
+        b'\\' => out.push(b'\\'),
+        b'"' => out.push(b'"'),
+        b'\'' => out.push(b'\''),
+        b'{' => out.push(b'{'), // literal brace (not a string interpolation)
+        b'}' => out.push(b'}'),
+        b'a' => out.push(0x07), // bell
+        b'b' => out.push(0x08), // backspace
+        b'f' => out.push(0x0C), // form feed
+        b'v' => out.push(0x0B), // vertical tab
+        b'x' => i = decode_hex_byte(body, i, esc_at, line, out)?,
+        b'u' => i = decode_unicode(body, i, esc_at, line, out)?,
+        e => return Err(bad(esc_at, &format!("unknown escape '\\{}'", e as char))),
+    }
+    Ok(i)
 }
 
 /// `\xHH`: exactly two hex digits naming one raw byte. `i` points at the first

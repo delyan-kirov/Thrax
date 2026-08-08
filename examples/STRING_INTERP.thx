@@ -1,0 +1,45 @@
+@mod STRING_INTERP
+
+# \file string_interp.thx
+# \info String interpolation: `"... {expr} ..."` splices an expression into a
+#       string literal. It is surface sugar, desugaring to
+#       `chunk ++ to_string expr ++ chunk`: each interpolant is stringified
+#       through the overloaded `to_string`, so any type with a `to_string`
+#       interpolates. Base types ship one in the implicitly imported `CORE`
+#       module; a program adds `$ to_string : MyType -> Str` for its own types.
+#       A literal chunk seeds the `++` chain, so the whole thing is always `Str`.
+#       `\{` and `\}` are literal braces; a bare `}` is literal too. Interpolants
+#       are full expressions and may nest strings and braces.
+
+$ Point : @struct = x: Int, y: Int
+
+# One interpolant, and interpolation at the very start / end of the literal.
+$ greet : Str -> Str = \who = "hello {who}!"
+$ ck_greet : Int = if (greet "sam") ?= "hello sam!" => 0 else 1
+
+# Base-type interpolants stringify automatically: an `Int`, a `Bool`, and a
+# negative `Int` (its `-` sign) all read through `CORE.to_string`.
+$ ck_base : Int = if "n={42} ok={true} d={0 - 5}" ?= "n=42 ok=true d=-5" => 0 else 1
+
+# A user `to_string` overload lets a program's own type interpolate. It composes
+# with the base overloads by ordinary resolution (the `Int` fields go to
+# `CORE.to_string`, the `Point` to this one).
+$ to_string : Point -> Str = \p = "({p.x}, {p.y})"
+$ ck_user : Int = if "at {Point.{ .x = 3, .y = 4 }}" ?= "at (3, 4)" => 0 else 1
+
+# A nested struct literal (its own braces) inside an interpolant.
+$ nested : Str = "v={(Point.{ .x = 7, .y = 2 }).x}"
+$ ck_nested : Int = if nested ?= "v=7" => 0 else 1
+
+# A nested string literal inside an interpolant.
+$ ck_inner : Int = if "say {greet "sam"}" ?= "say hello sam!" => 0 else 1
+
+# Literal braces via `\{` / `\}` each decode to a single byte (`{` and `}`), so
+# `"\{\}"` is two bytes, not an interpolation.
+$ ck_braces : Int = if array_len "\{\}" ?= 2 => 0 else 1
+
+# A sole interpolant: the seed chunk keeps the result `Str`.
+$ ck_sole : Int = if "{42}" ?= "42" => 0 else 1
+
+$ test : Int =
+	ck_greet + ck_base + ck_user + ck_nested + ck_inner + ck_braces + ck_sole

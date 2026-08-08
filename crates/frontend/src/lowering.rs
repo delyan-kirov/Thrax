@@ -178,6 +178,15 @@ pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
+    /// Overloaded-call `Expr::Var` sites whose target module defines the name more
+    /// than once, mapped to the type-mangled bare name lowering emits in place of
+    /// the source name (from [`crate::typing::Checker::overload_calls`]). The
+    /// qualifying module still comes from `call_modules`.
+    pub overload_calls: HashMap<Aol<Expr>, String>,
+    /// Same-module overloaded definitions, keyed by body handle, mapped to the
+    /// type-mangled bare name lowering gives the global (from
+    /// [`crate::typing::Checker::def_keys`]), so the overloads stay distinct.
+    pub def_keys: HashMap<Aol<Expr>, String>,
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
@@ -223,7 +232,12 @@ pub fn lower_program(
         match item {
             Item::Def { name, sig, body } => {
                 let term = lw.def(*sig, *body);
-                globals.push((ast.text(*name).to_string(), term));
+                let key = resolved
+                    .def_keys
+                    .get(body)
+                    .cloned()
+                    .unwrap_or_else(|| ast.text(*name).to_string());
+                globals.push((key, term));
             }
             Item::Effect { name, ops } => {
                 let effect = ast.text(*name).to_string();
@@ -384,9 +398,17 @@ impl<'a> Lowerer<'a> {
                             Some(m) => Some(self.text(*m).to_string()),
                             None => self.resolved.call_modules.get(&e).cloned(),
                         };
+                        // A same-module overload resolves to a type-mangled global
+                        // name; other references keep the source name.
+                        let name = self
+                            .resolved
+                            .overload_calls
+                            .get(&e)
+                            .cloned()
+                            .unwrap_or_else(|| name.to_string());
                         Term::Var {
                             module,
-                            name: name.to_string(),
+                            name,
                             idx: 0,
                         }
                     }
