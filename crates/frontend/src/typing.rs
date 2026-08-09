@@ -384,6 +384,24 @@ impl<'a> Checker<'a> {
     fn node(&self, e: Aol<Expr>) -> &'a Expr {
         self.ast.expr(e)
     }
+    /// The number of parameters in a signature's arrow spine.
+    fn arrow_arity_ty(&self, mut ty: Aol<Ty>) -> usize {
+        let mut n = 0;
+        while let Ty::Arrow { to, .. } = self.tnode(ty) {
+            n += 1;
+            ty = *to;
+        }
+        n
+    }
+    /// The number of leading lambda parameters a body binds explicitly.
+    fn leading_lam_params(&self, mut e: Aol<Expr>) -> usize {
+        let mut n = 0;
+        while let Expr::Lambda { params, body } = self.node(e) {
+            n += params.len();
+            e = *body;
+        }
+        n
+    }
     fn tnode(&self, t: Aol<Ty>) -> &'a Ty {
         self.ast.ty(t)
     }
@@ -782,17 +800,22 @@ impl<'a> Checker<'a> {
         sig: Aol<Ty>,
         sig_ty: &Type,
     ) -> Result<()> {
-        let fields = match self.tnode(sig) {
-            // Only a CLOSED record parameter is the destructuring sugar; an open
-            // `{ x | r }` is a real row-polymorphic record value, bound as-is.
-            Ty::Arrow { from, .. }
-                if matches!(self.tnode(*from), Ty::Record { tail: None, .. }) =>
-            {
-                let Ty::Record { fields, .. } = self.tnode(*from) else {
-                    unreachable!("guarded on a record parameter")
-                };
-                fields
-            }
+        // The body's leading lambdas bind the last k of the m signature parameters,
+        // so the record-parameter sugar only applies when the lambdas do not reach
+        // this one (`k < m`). `\p = p.x` then names a record parameter itself.
+        if self.leading_lam_params(body) >= self.arrow_arity_ty(sig) {
+            return self.check(body, sig_ty);
+        }
+        let fields: &[RecField] = match self.tnode(sig) {
+            Ty::Arrow { from, .. } => match self.tnode(*from) {
+                // A CLOSED record parameter is the destructuring sugar; an open
+                // `{ x | r }` is a real row-polymorphic record value, bound as-is.
+                Ty::Record { fields, tail: None } => fields,
+                // A unit parameter takes no fields: the sugar just introduces the
+                // (unused) thunk parameter, so `f : {} -> T = <body>` needs no `\u =`.
+                Ty::Unit => &[],
+                _ => return self.check(body, sig_ty),
+            },
             _ => return self.check(body, sig_ty),
         };
         let to = match self.tnode(sig) {
@@ -811,6 +834,10 @@ impl<'a> Checker<'a> {
     }
 
     fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: &Type) -> Result<()> {
+        // A unit parameter (the thunk sugar) binds nothing, so it needs no row.
+        if fields.is_empty() {
+            return Ok(());
+        }
         // The record parameter auto-binds each field name (the "define with an
         // implicit destructuring" sugar). The parameter is a real record type, so
         // look each field up by name in its row.

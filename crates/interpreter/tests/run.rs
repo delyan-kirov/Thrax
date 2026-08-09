@@ -252,6 +252,32 @@ fn nominal_struct_update_with_pipe() {
 }
 
 #[test]
+fn unit_parameter_thunks_without_a_lambda() {
+    // A `{} -> T` definition needs no explicit `\u =`: the unit parameter is
+    // introduced automatically (a thunk), so the body runs when it is applied. An
+    // explicit `\u =` still works (the arity guard leaves it alone).
+    let src = "@mod M\n\
+               $ lazy : {} -> Int = 40 + 2\n\
+               $ also : {} -> Int = \\u = 40 + 3\n\
+               $ r : Int = lazy {} + also {}";
+    assert_eq!(run(src, "r"), "85"); // 42 + 43
+}
+
+#[test]
+fn closed_record_param_named_by_a_lambda() {
+    // A closed-record parameter may be named by an explicit lambda and read with
+    // field access (`\q = q.y`), instead of the auto-bind sugar. The sugar only
+    // fires when the body has fewer leading lambdas than the signature's arity, so
+    // it still auto-binds a record ahead of a later explicit lambda parameter.
+    let src = "@mod M\n\
+               $ label : { y: Int, z: Int } -> Int = \\q = q.y * 100 + q.z\n\
+               $ add : { x: Int, y: Int } -> Int = x + y\n\
+               $ f : { x: Int, y: Int } -> Int -> Int = \\n = x + y + n\n\
+               $ r : Int = label { .y = 2, .z = 3 } + add { .x = 5, .y = 6 } + f {3, 4} 5";
+    assert_eq!(run(src, "r"), "226"); // 203 + 11 + 12
+}
+
+#[test]
 fn record_promotion_and_named_args() {
     // A record parameter can be called positionally (promoted), by name, or by
     // name reordered; a one-field record param accepts a bare scalar.

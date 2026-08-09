@@ -488,13 +488,35 @@ impl<'a> Lowerer<'a> {
             return body;
         };
         let (from, to) = (*from, *to);
-        // Only a CLOSED record parameter is the destructuring sugar; an open
-        // `{ x | r }` is a real record value, so leave it as a plain parameter.
-        let Ty::Record { fields, tail: None } = self.tnode(from) else {
+        // The body's leading lambdas bind the LAST k of the m signature parameters,
+        // so a parameter is only auto-bound when the lambdas do not reach it
+        // (`k < m`). This lets `\p = p.x` name a record parameter explicitly, while
+        // still auto-binding a record ahead of a later explicit lambda parameter.
+        let m = 1 + self.arrow_arity(to);
+        if leading_lams(&body) >= m {
             return body;
+        }
+        // A CLOSED record parameter is the destructuring sugar; an open `{ x | r }`
+        // is a real record value (plain parameter); a unit parameter takes no
+        // fields, so the sugar just introduces the thunk parameter (`f : {} -> T`).
+        let fields: &[RecField] = match self.tnode(from) {
+            Ty::Record { fields, tail: None } => fields,
+            Ty::Unit => &[],
+            _ => return body,
         };
         let inner = self.record_params(Some(to), body);
         self.record_param(fields, inner)
+    }
+
+    /// The number of parameters in a signature's arrow spine.
+    fn arrow_arity(&self, ty: Aol<Ty>) -> usize {
+        let mut n = 0;
+        let mut cur = ty;
+        while let Ty::Arrow { to, .. } = self.tnode(cur) {
+            n += 1;
+            cur = *to;
+        }
+        n
     }
 
     /// Wrap `body` in the lambda binding a record parameter's fields by name. The
@@ -1325,6 +1347,18 @@ fn array_slice(v: &str, from: usize) -> Term {
 /// A binary operator application `l <op> r`.
 fn bin(op: &str, l: Term, r: Term) -> Term {
     Term::app(Term::app(Term::var(op), l), r)
+}
+
+/// The number of leading lambdas a body opens with (the explicit parameters the
+/// user wrote), so the record-parameter sugar knows which parameters are already
+/// bound by hand.
+fn leading_lams(mut t: &Term) -> usize {
+    let mut n = 0;
+    while let Term::Lam { body, .. } = t {
+        n += 1;
+        t = body;
+    }
+    n
 }
 
 /// `if cond then t else e`, lowered like the surface `if`.
