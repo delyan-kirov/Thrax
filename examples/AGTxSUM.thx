@@ -30,7 +30,7 @@ $ chk0b : Int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
 
 # `Maybe` is generic: the free `T in its body is an implicit type parameter, so
 # `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
-$ Maybe : @union =
+$ Maybe : @union t =
     Just: t,
     None: {}
 
@@ -63,7 +63,7 @@ $ chk2d : Int = is get 8 none_i | 8 => 0 else 1
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
-$ Pair : @union = P: {lhs: a, rhs: b}
+$ Pair : @union a b = P: {lhs: a, rhs: b}
 $ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : Int =
     is mk | Pair.P.{ .lhs = l, .rhs = r } =>

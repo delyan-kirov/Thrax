@@ -496,9 +496,10 @@ impl<'a> Parser<'a> {
                 }
                 "alias" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@alias'");
                     let ty = self.parse_type()?;
-                    return Ok(Item::Alias { name, ty });
+                    return Ok(Item::Alias { name, params, ty });
                 }
                 "effect" => {
                     self.bump()?;

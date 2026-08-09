@@ -15,7 +15,7 @@
 
 $ with OPT
 
-$ Result : @union =
+$ Result : @union t e =
 	Ok: t,
 	Err: e,
 

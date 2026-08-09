@@ -196,7 +196,7 @@ fn codata_stream() {
     // Codata desugars to a record of thunks + apply-unit observation; the C
     // backend must drive the lazy infinite stream the same as the interpreter.
     let src = "@mod M\n\
-               $ Stream : @codata = head : t, tail : Stream t,\n\
+               $ Stream : @codata t = head : t, tail : Stream t,\n\
                $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
                $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\

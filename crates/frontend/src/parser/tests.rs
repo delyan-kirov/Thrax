@@ -117,7 +117,8 @@ fn declared_type_params() {
     let src = "@mod M\n\
                $ Weird : @struct a b = fst: a, has: Int, snd: b\n\
                $ Pair : @union a b = Left: a, Right: b\n\
-               $ Stream : @codata t = head: t, tail: Stream t";
+               $ Stream : @codata t = head: t, tail: Stream t\n\
+               $ MapInt : @alias v = Map Int v";
     let p = prog(src);
     let names = |ps: &[utilities::StrId]| ps.iter().map(|s| p.ast.text(*s)).collect::<Vec<_>>();
     match &p.program.items[0] {
@@ -140,6 +141,10 @@ fn declared_type_params() {
             assert_eq!(observations.len(), 2);
         }
         other => panic!("expected a codata, got {other:?}"),
+    }
+    match &p.program.items[3] {
+        Item::Alias { params, .. } => assert_eq!(names(params), ["v"]),
+        other => panic!("expected an alias, got {other:?}"),
     }
 }
 

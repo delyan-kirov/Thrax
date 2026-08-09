@@ -92,7 +92,7 @@ global
   : DOLLAR LIDENT opt_sig EQ body
   | DOLLAR LIDENT COLON AT_STRUCT opt_type_params EQ struct_body
   | DOLLAR LIDENT COLON AT_UNION  opt_type_params EQ union_body
-  | DOLLAR LIDENT COLON AT_ALIAS  EQ type
+  | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ type
   | DOLLAR LIDENT COLON AT_EFFECT EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
@@ -115,8 +115,9 @@ import       : dotted_name | dotted_name EQ dotted_name ;
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 
-/* Type parameters after `@struct`/`@union`: `@struct a b = ...`. Omitted, they
- * are inferred from the free type variables in the body. */
+/* Type parameters after `@struct`/`@union`/`@codata`/`@alias`: `@struct a b = ...`.
+ * They are mandatory: every type variable used in the body must be declared here.
+ * `opt_` only because a non-generic type declares none (an empty list). */
 opt_type_params : /* empty */ | opt_type_params LIDENT ;
 
 struct_body   : field_decls opt_comma ;

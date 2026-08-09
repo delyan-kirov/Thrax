@@ -25,6 +25,23 @@ fn errors(src: &str) -> String {
 }
 
 #[test]
+fn undeclared_type_param_is_error() {
+    // Parameters are mandatory: a free tyvar with no declared list is rejected.
+    let e = errors("@mod M\n$ Box : @struct = val: t\n$ x : Int = 0");
+    assert!(e.contains("declares no type parameters"), "{e}");
+}
+
+#[test]
+fn parameterized_alias_expands() {
+    // `MapInt` fixes the key to Int, so `MapInt Bool` elaborates to `Map Int Bool`.
+    let src = "@mod M\n\
+               $ Map : @struct k v = key: k, val: v\n\
+               $ MapInt : @alias v = Map Int v\n\
+               $ m : MapInt Bool = .{ .key = 1, .val = true }";
+    assert_eq!(type_of(src, "m"), "Map Int Bool");
+}
+
+#[test]
 fn monomorphic_arithmetic() {
     assert_eq!(type_of("@mod M\n$ x = 1 + 2", "x"), "Int");
 }
@@ -109,7 +126,7 @@ fn struct_field_access_is_typed() {
 #[test]
 fn generic_struct_instantiates_per_use() {
     let src = "@mod M\n\
-                   $ Box : @struct = val: t\n\
+                   $ Box : @struct t = val: t\n\
                    $ b : Box Str = Box.{ .val = \"hi\" }\n\
                    $ out = b.val";
     assert_eq!(type_of(src, "b"), "Box Str");
@@ -119,7 +136,7 @@ fn generic_struct_instantiates_per_use() {
 #[test]
 fn union_constructor_and_match() {
     let src = "@mod M\n\
-                   $ Maybe : @union = Just: t, None: {}\n\
+                   $ Maybe : @union t = Just: t, None: {}\n\
                    $ m : Maybe Int = Maybe.Just.{ 7 }\n\
                    $ get = \\d = \\o = is o | Maybe.Just.{x} => x else d";
     assert_eq!(type_of(src, "m"), "Maybe Int");
@@ -184,7 +201,7 @@ fn no_matching_overload_is_reported() {
 #[test]
 fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "@mod OPT\n\
-                       $ Option : @union = Some: t, None: {}\n\
+                       $ Option : @union t = Some: t, None: {}\n\
                        $ is_some : Option t -> Bool = \\o = \
                        is o | Option.Some.{_} => true else false\n\
                        $ unwrap_or : Option t -> t -> t = \\o d = \

@@ -91,7 +91,9 @@ pub struct Checker<'a> {
     /// desugars the former to a record of thunks and the latter to `field {}`.
     codata_lits: HashSet<Aol<Expr>>,
     observations: HashSet<Aol<Expr>>,
-    aliases: HashMap<&'a str, Aol<Ty>>,
+    /// Type aliases: `name -> (declared params, body)`. An applied alias is
+    /// expanded by substituting its arguments for the parameters in the body.
+    aliases: HashMap<&'a str, (Vec<&'a str>, Aol<Ty>)>,
     /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
     /// scheme. Used to type a handler clause head, which cannot be resolved by
     /// inference alone.
@@ -155,10 +157,6 @@ pub struct Checker<'a> {
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
     pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
-    /// Types whose parameters were declared explicitly (`@struct a b = ...`), so a
-    /// later `with` splice keeps the declared order instead of re-deriving it from
-    /// the spliced-in fields.
-    declared_params: HashSet<&'a str>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -293,7 +291,6 @@ impl<'a> Checker<'a> {
             implicit_pending: Vec::new(),
             ctx_overrides: HashMap::new(),
             pending_includes: HashMap::new(),
-            declared_params: HashSet::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -581,7 +578,7 @@ impl<'a> Checker<'a> {
                 self.unions.insert(name, u.clone());
             }
             if let Some(a) = other.aliases.get(name) {
-                self.aliases.insert(name, *a);
+                self.aliases.insert(name, a.clone());
             }
             if let Some(c) = other.codata.get(name) {
                 self.codata.insert(name, c.clone());
@@ -997,43 +994,30 @@ impl<'a> Checker<'a> {
 
     // -- type declarations --------------------------------------------------
 
-    /// Choose a type's parameter list. With no explicit `@struct a b`, the free
-    /// type variables `collected` from the body are the parameters (in order of
-    /// first appearance). With explicit parameters, those set the order, and every
-    /// free variable in the body must be among them (an undeclared one is an
-    /// error). An explicit parameter that appears nowhere is allowed (a phantom).
+    /// A type's parameter list is exactly what it declares after the keyword. Every
+    /// type variable used in the body must be declared (an undeclared one is an
+    /// error: parameters are mandatory, never inferred). A declared parameter that
+    /// appears nowhere is allowed (a phantom). `kind` is the keyword, for the error.
     fn resolve_type_params(
-        &mut self,
+        &self,
+        kind: &str,
         name: &'a str,
         declared: &[utilities::StrId],
         collected: Vec<&'a str>,
     ) -> Result<Vec<&'a str>> {
-        if declared.is_empty() {
-            return Ok(collected);
-        }
         let declared: Vec<&'a str> = declared.iter().map(|p| self.text(*p)).collect();
         for v in &collected {
             if !declared.contains(v) {
-                return Err(diag!(
-                    Code::TypeUnbound, Span::at(0), 0,
-                    "`{name}` uses the type variable `{v}`, which is not one of its declared parameters `{}`",
-                    declared.join(" ")
-                ));
+                return Err(undeclared_param(kind, name, v, &declared, false));
             }
         }
-        self.declared_params.insert(name);
         Ok(declared)
     }
 
-    /// The parameter list for a type after its `with` splices are copied in. A type
-    /// with declared parameters keeps them (so their order is stable), but every
-    /// type variable in the now-complete field/variant set, including spliced-in
-    /// ones, must still be covered. A type with inferred parameters takes the whole
-    /// `collected` set.
-    fn splice_params(&mut self, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
-        if !self.declared_params.contains(name) {
-            return Ok(collected);
-        }
+    /// Re-check a struct/union's parameters after its `with` splices are copied in:
+    /// the parameters stay as declared, but every type variable in the now-complete
+    /// field/variant set, including spliced-in ones, must still be covered.
+    fn splice_params(&self, kind: &str, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
         let declared = self
             .structs
             .get(name)
@@ -1042,11 +1026,7 @@ impl<'a> Checker<'a> {
             .expect("registered");
         for v in &collected {
             if !declared.contains(v) {
-                return Err(diag!(
-                    Code::TypeUnbound, Span::at(0), 0,
-                    "`{name}` splices in a field using the type variable `{v}`, which is not one of its declared parameters `{}`",
-                    declared.join(" ")
-                ));
+                return Err(undeclared_param(kind, name, v, &declared, true));
             }
         }
         Ok(declared)
@@ -1066,7 +1046,7 @@ impl<'a> Checker<'a> {
                         collect_tyvars(self.ast, f.ty, &mut collected);
                     }
                     let name = self.text(*name);
-                    let params = self.resolve_type_params(name, params, collected)?;
+                    let params = self.resolve_type_params("struct", name, params, collected)?;
                     let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     self.structs.insert(name, StructInfo { params, fields });
                     self.own_type_names.push(name);
@@ -1094,7 +1074,7 @@ impl<'a> Checker<'a> {
                         });
                     }
                     let name = self.text(*name);
-                    let params = self.resolve_type_params(name, params, collected)?;
+                    let params = self.resolve_type_params("union", name, params, collected)?;
                     self.unions.insert(
                         name,
                         UnionInfo {
@@ -1108,9 +1088,12 @@ impl<'a> Checker<'a> {
                         self.pending_includes.insert(name, (false, ps));
                     }
                 }
-                Item::Alias { name, ty } => {
+                Item::Alias { name, params, ty } => {
+                    let mut collected = Vec::new();
+                    collect_tyvars(self.ast, *ty, &mut collected);
                     let name = self.text(*name);
-                    self.aliases.insert(name, *ty);
+                    let params = self.resolve_type_params("alias", name, params, collected)?;
+                    self.aliases.insert(name, (params, *ty));
                     self.own_type_names.push(name);
                 }
                 Item::Codata {
@@ -1127,7 +1110,7 @@ impl<'a> Checker<'a> {
                         })
                         .collect();
                     let name = self.text(*name);
-                    let params = self.resolve_type_params(name, params, collected)?;
+                    let params = self.resolve_type_params("codata", name, params, collected)?;
                     self.codata.insert(
                         name,
                         CodataInfo {
@@ -1192,7 +1175,7 @@ impl<'a> Checker<'a> {
             for (_, ty) in &fields {
                 collect_tyvars(self.ast, *ty, &mut collected);
             }
-            let params = self.splice_params(name, collected)?;
+            let params = self.splice_params("struct", name, collected)?;
             self.structs.insert(name, StructInfo { params, fields });
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
@@ -1222,7 +1205,7 @@ impl<'a> Checker<'a> {
                     collect_tyvars(self.ast, *ty, &mut collected);
                 }
             }
-            let params = self.splice_params(name, collected)?;
+            let params = self.splice_params("union", name, collected)?;
             self.unions.insert(name, UnionInfo { params, variants });
         }
         self.pending_includes.remove(name);
@@ -3003,6 +2986,7 @@ impl<'a> Checker<'a> {
             .map(|i| i.params.len())
             .or_else(|| self.unions.get(name).map(|i| i.params.len()))
             .or_else(|| self.codata.get(name).map(|i| i.params.len()))
+            .or_else(|| self.aliases.get(name).map(|(p, _)| p.len()))
     }
 
     /// Flag an over-applied type constructor (`Weirdtype Int Int Int` for a
@@ -3031,23 +3015,52 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// If `ty` is an alias applied to zero or more arguments, expand it: bind the
+    /// alias's parameters to the arguments (a fresh variable for any not supplied,
+    /// so an under-applied alias stays polymorphic, as for structs) and elaborate
+    /// the body under that binding. Returns None when the spine head is not an alias.
+    fn try_expand_alias(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Option<Type> {
+        let mut args = Vec::new();
+        let mut cur = ty;
+        while let Ty::App(h, a) = self.tnode(cur) {
+            args.push(*a);
+            cur = *h;
+        }
+        let name = match self.tnode(cur) {
+            Ty::Con { name, .. } => self.text(*name),
+            _ => return None,
+        };
+        let (params, body) = self.aliases.get(name)?.clone();
+        args.reverse();
+        self.check_type_arity(ty);
+        let mut sub: HashMap<&'a str, Type> = HashMap::new();
+        for (i, p) in params.iter().enumerate() {
+            let t = match args.get(i) {
+                Some(&a) => self.ty_of_ast(a, tvars),
+                None => self.eng.fresh(),
+            };
+            sub.insert(*p, t);
+        }
+        Some(self.ty_of_ast(body, &mut sub))
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        // An alias at the head of an application spine expands first, so `MapInt Bool`
+        // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
+        if let Some(t) = self.try_expand_alias(ty, tvars) {
+            return t;
+        }
         match self.tnode(ty) {
             Ty::Con { name, .. } => {
                 let name = self.text(*name);
-                match self.aliases.get(name).copied() {
-                    Some(alias) => self.ty_of_ast(alias, tvars),
-                    None => {
-                        if !self.is_known_type(name) && self.unknown_type.is_none() {
-                            let mut d = unknown_type(name);
-                            if let Some(span) = self.ast.ty_span(ty) {
-                                d = d.fill_span(span);
-                            }
-                            self.unknown_type = Some(d);
-                        }
-                        Type::con(canonical_con(name))
+                if !self.is_known_type(name) && self.unknown_type.is_none() {
+                    let mut d = unknown_type(name);
+                    if let Some(span) = self.ast.ty_span(ty) {
+                        d = d.fill_span(span);
                     }
+                    self.unknown_type = Some(d);
                 }
+                Type::con(canonical_con(name))
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
@@ -3632,4 +3645,25 @@ fn unknown_type(name: &str) -> Diagnostic {
         Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`";
         note: "a type variable is written as a lowercase name; a capitalized type must be declared"
     )
+}
+
+/// A type declaration (or `with` splice) uses a type variable it does not declare.
+/// Parameters are mandatory, so this reports the fix: list `v` after the keyword.
+fn undeclared_param(kind: &str, name: &str, v: &str, declared: &[&str], spliced: bool) -> Diagnostic {
+    let how = if spliced {
+        format!("`{name}` splices in a field using the type variable `{v}`")
+    } else {
+        format!("`{name}` uses the type variable `{v}`")
+    };
+    let msg = if declared.is_empty() {
+        format!("{how}, but `{name}` declares no type parameters")
+    } else {
+        format!(
+            "{how}, which is not one of `{name}`'s declared parameters `{}`",
+            declared.join(" ")
+        )
+    };
+    Diagnostic::error(Code::TypeUnbound, Span::at(0), 0, msg).with_note(format!(
+        "type parameters are mandatory; declare every one after the keyword, e.g. `@{kind} {v} = ...`"
+    ))
 }

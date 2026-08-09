@@ -4,7 +4,7 @@
 # \info The standard `Option` type: a value that may be absent. `Some` carries
 #       the value, `None` is the absence. Predicates return Bool.
 
-$ Option : @union =
+$ Option : @union t =
 	Some: t,
 	None: {},
 

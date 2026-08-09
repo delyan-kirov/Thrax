@@ -103,8 +103,14 @@ pub enum Item {
         includes: Box<[StrId]>,
         variants: Box<[VariantDecl]>,
     },
-    /// `$ Name : @alias = ty`
-    Alias { name: StrId, ty: Aol<Ty> },
+    /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
+    /// (mandatory: every type variable used in `ty` must be listed). An alias may
+    /// partially instantiate another generic type, e.g. `MapInt : @alias v = Map Int v`.
+    Alias {
+        name: StrId,
+        params: Box<[StrId]>,
+        ty: Aol<Ty>,
+    },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Box<[FieldDecl]> },
     /// `$ Name : @codata [a b ...] = obs : ty, ...` -- a coinductive type defined

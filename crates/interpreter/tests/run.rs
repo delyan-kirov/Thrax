@@ -184,6 +184,20 @@ fn declared_type_params_control_order() {
 }
 
 #[test]
+fn parameterized_alias_picks_which_generic() {
+    // `KeyInt` fixes the first parameter, `ValInt` the second; the alias's own
+    // parameter fills the one left open. Both instantiate the same `Pair`.
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b\n\
+               $ KeyInt : @alias b = Pair Int b\n\
+               $ ValInt : @alias a = Pair a Int\n\
+               $ p : KeyInt Str = .{ .fst = 3, .snd = \"x\" }\n\
+               $ q : ValInt Str = .{ .fst = \"y\", .snd = 9 }\n\
+               $ r : Int = p.fst + q.snd";
+    assert_eq!(run(src, "r"), "12");
+}
+
+#[test]
 fn union_with_splices_included_variants() {
     // `Color` copies `Base`'s variants; a match over a copied and a new variant
     // both dispatch by tag.
@@ -253,7 +267,7 @@ fn codata_stream_is_lazy_and_infinite() {
     // A codata stream: construction is finite (thunks), and observing drives the
     // generative recursion lazily, so an infinite stream is fine.
     let src = "@mod M\n\
-               $ Stream : @codata = head : t, tail : Stream t,\n\
+               $ Stream : @codata t = head : t, tail : Stream t,\n\
                $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
                $ r : Int = (from 10).head + nth 5 (from 10)";
