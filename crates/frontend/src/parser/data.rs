@@ -102,6 +102,13 @@ pub enum Item {
     Alias { name: StrId, ty: Aol<Ty> },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Box<[FieldDecl]> },
+    /// `$ Name : @codata = obs : ty, ...` -- a coinductive type defined by its
+    /// observations (destructors), dual to a struct. Observing is non-memoized:
+    /// each observation is a thunk, run afresh on every look.
+    Codata {
+        name: StrId,
+        observations: Box<[FieldDecl]>,
+    },
     /// `$ with module [= rename]`
     Import {
         module: Box<[StrId]>,

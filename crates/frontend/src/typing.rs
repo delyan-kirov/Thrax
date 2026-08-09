@@ -58,6 +58,14 @@ struct UnionInfo<'a> {
     variants: Vec<VariantSig<'a>>,
 }
 
+/// A declared codata type: implicit `params` and one `(observation, result type)`
+/// per destructor. Dual to a struct; observing runs a thunk.
+#[derive(Clone)]
+struct CodataInfo<'a> {
+    params: Vec<&'a str>,
+    observations: Vec<(&'a str, Aol<Ty>)>,
+}
+
 
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
@@ -77,6 +85,12 @@ pub struct Checker<'a> {
     scopes: Vec<HashMap<&'a str, Type>>,
     structs: HashMap<&'a str, StructInfo<'a>>,
     unions: HashMap<&'a str, UnionInfo<'a>>,
+    codata: HashMap<&'a str, CodataInfo<'a>>,
+    /// `{ .obs = e }` sites the checker resolved to codata construction, and
+    /// `x.obs` field-access sites resolved to a codata observation. Lowering
+    /// desugars the former to a record of thunks and the latter to `field {}`.
+    codata_lits: HashSet<Aol<Expr>>,
+    observations: HashSet<Aol<Expr>>,
     aliases: HashMap<&'a str, Aol<Ty>>,
     /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
     /// scheme. Used to type a handler clause head, which cannot be resolved by
@@ -250,6 +264,9 @@ impl<'a> Checker<'a> {
             scopes: vec![HashMap::new()],
             structs: HashMap::new(),
             unions: HashMap::new(),
+            codata: HashMap::new(),
+            codata_lits: HashSet::new(),
+            observations: HashSet::new(),
             aliases: HashMap::new(),
             effect_ops: HashMap::new(),
             overloads: HashMap::new(),
@@ -297,6 +314,12 @@ impl<'a> Checker<'a> {
     /// lowering wraps the value into a name-keyed record.
     pub fn promotions(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
         &self.promotions
+    }
+
+    /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
+    /// thunks) and `x.obs` observations (lowered to `field {}`).
+    pub fn codata_sites(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>) {
+        (&self.codata_lits, &self.observations)
     }
 
     /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
@@ -542,6 +565,9 @@ impl<'a> Checker<'a> {
             }
             if let Some(a) = other.aliases.get(name) {
                 self.aliases.insert(name, *a);
+            }
+            if let Some(c) = other.codata.get(name) {
+                self.codata.insert(name, c.clone());
             }
         }
         let module = other.module_name;
@@ -831,6 +857,15 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
+            // `{ .obs = e, ... }` where a codata type is expected: construct it (each
+            // clause becomes a thunk). Every observation must be given.
+            Expr::Record {
+                fields,
+                with: None,
+                update: None,
+            } if self.codata_head(expected).is_some() => {
+                self.check_codata_lit(e, fields, expected)
+            }
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
@@ -983,6 +1018,25 @@ impl<'a> Checker<'a> {
                 Item::Alias { name, ty } => {
                     let name = self.text(*name);
                     self.aliases.insert(name, *ty);
+                    self.own_type_names.push(name);
+                }
+                Item::Codata { name, observations } => {
+                    let mut params = Vec::new();
+                    let obs: Vec<(&'a str, Aol<Ty>)> = observations
+                        .iter()
+                        .map(|o| {
+                            collect_tyvars(self.ast, o.ty, &mut params);
+                            (self.text(o.name), o.ty)
+                        })
+                        .collect();
+                    let name = self.text(*name);
+                    self.codata.insert(
+                        name,
+                        CodataInfo {
+                            params,
+                            observations: obs,
+                        },
+                    );
                     self.own_type_names.push(name);
                 }
                 _ => {}
@@ -1433,6 +1487,62 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether `ty` is a record-shaped target: a structural record row, or a
+    /// The head codata type name and its type arguments, if `ty` is a (possibly
+    /// applied) declared codata type.
+    fn codata_head(&self, ty: &Type) -> Option<(&'a str, Vec<Type>)> {
+        let (head, args) = self.spine(ty);
+        if let Type::Con(name) = &head {
+            if let Some((n, _)) = self.codata.get_key_value(name.as_str()) {
+                return Some((n, args));
+            }
+        }
+        None
+    }
+
+    /// Check a codata construction `{ .obs = e, ... }` against `expected`: every
+    /// observation must be supplied and typed at its declared result type.
+    fn check_codata_lit(
+        &mut self,
+        site: Aol<Expr>,
+        fields: &'a [FieldInit],
+        expected: &Type,
+    ) -> Result<()> {
+        let (name, args) = self.codata_head(expected).expect("guarded on a codata type");
+        let info = self.codata[name].clone();
+        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+        for (obs, obs_ty) in &info.observations {
+            let clause = fields.iter().find_map(|f| match f {
+                FieldInit::Named { name, value } if self.text(*name) == *obs => Some(*value),
+                _ => None,
+            });
+            match clause {
+                Some(value) => {
+                    let want = self.ty_of_ast(*obs_ty, &mut subst);
+                    self.check(value, &want)?;
+                }
+                None => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "codata `{name}` construction is missing observation `{obs}`"
+                    ))
+                }
+            }
+        }
+        for f in fields {
+            if let FieldInit::Named { name: fname, .. } = f {
+                let n = self.text(*fname);
+                if !info.observations.iter().any(|(o, _)| *o == n) {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "codata `{name}` has no observation `{n}`"
+                    ));
+                }
+            }
+        }
+        self.codata_lits.insert(site);
+        Ok(())
+    }
+
     /// The `(label, type)` fields of a record value: a structural [`Type::Record`]
     /// (its closed row) or a nominal struct (its declared fields, instantiated).
     fn record_fields_of(&mut self, ty: &Type) -> Result<Vec<(String, Type)>> {
@@ -1729,6 +1839,17 @@ impl<'a> Checker<'a> {
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name));
                 let rec_ty = self.infer(record)?;
+                // `x.obs` on a codata value is an observation (record the site so
+                // lowering runs the thunk); otherwise it is field/tuple access.
+                if let Some((cname, args)) = self.codata_head(&rec_ty) {
+                    let info = self.codata[cname].clone();
+                    if let Some((_, obs_ty)) = info.observations.iter().find(|(o, _)| *o == name) {
+                        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                        let obs_ty = *obs_ty;
+                        self.observations.insert(e);
+                        return Ok(self.ty_of_ast(obs_ty, &mut subst));
+                    }
+                }
                 self.infer_field(&rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
@@ -2737,6 +2858,7 @@ impl<'a> Checker<'a> {
             || self.structs.contains_key(name)
             || self.unions.contains_key(name)
             || self.aliases.contains_key(name)
+            || self.codata.contains_key(name)
     }
 
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {

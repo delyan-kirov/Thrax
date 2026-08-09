@@ -304,6 +304,10 @@ pub struct Resolved {
     /// Argument sites promoted to a record, mapped to the target field names (from
     /// [`crate::typing::Checker::promotions`]); lowering wraps the value.
     pub promotions: HashMap<Aol<Expr>, Vec<String>>,
+    /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
+    pub codata_lits: HashSet<Aol<Expr>>,
+    /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
+    pub observations: HashSet<Aol<Expr>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
     /// arguments lowering injects ahead of the explicit ones (from
@@ -660,7 +664,13 @@ impl<'a> Lowerer<'a> {
 
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name).to_string());
-                Term::Field(Arc::new(self.expr(record)), name)
+                let field = Term::Field(Arc::new(self.expr(record)), name);
+                // A codata observation runs the stored thunk (`field {}`).
+                if self.resolved.observations.contains(&e) {
+                    Term::app(field, Term::Unit)
+                } else {
+                    field
+                }
             }
 
             Expr::StructLit { ty, fields, spread } => {
@@ -673,6 +683,33 @@ impl<'a> Lowerer<'a> {
                 with,
                 update,
             } => {
+                // Codata construction: each observation clause becomes a thunk
+                // (`\%u = clause`), so construction is finite and observing runs the
+                // clause afresh (non-memoized). Observing (see `Expr::Field`) applies
+                // the thunk to unit.
+                if self.resolved.codata_lits.contains(&e) {
+                    let obs: Vec<(String, Term)> = fields
+                        .iter()
+                        .filter_map(|fi| match fi {
+                            FieldInit::Named { name, value } => {
+                                let body = self.expr(*value);
+                                Some((
+                                    self.text(*name).to_string(),
+                                    Term::Lam {
+                                        param: self.fresh(),
+                                        body: Arc::new(body),
+                                    },
+                                ))
+                            }
+                            FieldInit::Positional(_) => None,
+                        })
+                        .collect();
+                    return Term::Struct {
+                        name: String::new(),
+                        base: None,
+                        fields: Arc::from(obs),
+                    };
+                }
                 // A name-keyed record value. Update (`| base`) and stack (`with
                 // base`) build over that base with the listed fields overriding /
                 // adding; an anonymous record has no nominal name (access is

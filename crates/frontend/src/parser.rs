@@ -456,7 +456,7 @@ impl<'a> Parser<'a> {
         if let Kind::At = self.peek_kind()? {
             let at_tok = self.peek()?;
             let kw = self.intrinsic_name(at_tok);
-            if matches!(kw, "struct" | "union" | "alias" | "effect") {
+            if matches!(kw, "struct" | "union" | "alias" | "effect" | "codata") {
                 self.require_type_capital(self.text(name_tok), &name_tok)?;
             }
             match kw {
@@ -491,6 +491,12 @@ impl<'a> Parser<'a> {
                     expect!(self, Kind::Eq, "expected '=' after '@effect'");
                     let ops = self.parse_field_decls()?;
                     return Ok(Item::Effect { name, ops });
+                }
+                "codata" => {
+                    self.bump()?;
+                    expect!(self, Kind::Eq, "expected '=' after '@codata'");
+                    let observations = self.parse_field_decls()?;
+                    return Ok(Item::Codata { name, observations });
                 }
                 _ => {} // an @tycon type signature; fall through
             }

@@ -1,0 +1,31 @@
+@mod CODATA
+
+# \file codata.thx
+# \info Codata: coinductive types defined by their OBSERVATIONS (destructors),
+#       dual to a struct's fields. `@codata` declares the observations; a value
+#       is built by giving each observation `{ .obs = e, ... }` and consumed by
+#       observing it `s.obs`. Observations are non-memoized thunks, so an infinite
+#       structure is fine: construction is finite and each observation runs afresh.
+#       Recursion is generative (through a function call), so reference counting
+#       stays complete (no cycles). See doc/effect-system-design.md 1a.
+
+$ Stream : @codata = head : t, tail : Stream t,
+
+# An infinite stream of ascending integers.
+$ from : Int -> Stream Int = \n = { .head = n, .tail = from (n + 1) }
+
+# The nth element, walking `tail` n times.
+$ nth : Int -> Stream t -> t = \n s =
+	if n ?= 0 => s.head else nth (n - 1) s.tail
+
+# Map over a stream (still infinite, still lazy).
+$ smap : (a -> b) -> Stream a -> Stream b = \f s =
+	{ .head = f s.head, .tail = smap f s.tail }
+
+$ dbl : Int -> Int = \x = x + x
+
+$ ck_head : Int = if (from 10).head ?= 10 => 0 else 1
+$ ck_nth  : Int = if nth 5 (from 10) ?= 15 => 0 else 2
+$ ck_map  : Int = if nth 4 (smap dbl (from 1)) ?= 10 => 0 else 4
+
+$ test : Int = ck_head + ck_nth + ck_map

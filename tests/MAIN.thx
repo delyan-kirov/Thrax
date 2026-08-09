@@ -15,6 +15,7 @@ $ with ARRAY = ARRAY
 $ with ARRAY_PATTERNS = ARRAY_PATTERNS
 $ with ARRAYS_MUT = ARRAYS_MUT
 $ with CONDITIONALS = CONDITIONALS
+$ with CODATA = CODATA
 $ with COROUTINES = COROUTINES
 $ with CT_ASSERT = CT_ASSERT
 $ with CT_RUN = CT_RUN
@@ -78,6 +79,7 @@ $ main : Int =
 	+ check "ARRAY_PATTERNS" ARRAY_PATTERNS.test
 	+ check "ARRAYS_MUT" ARRAYS_MUT.test
 	+ check "CONDITIONALS" CONDITIONALS.test
+	+ check "CODATA" CODATA.test
 	+ check "COROUTINES" COROUTINES.test
 	+ check "CT_ASSERT" CT_ASSERT.test
 	+ check "CT_RUN" CT_RUN.test

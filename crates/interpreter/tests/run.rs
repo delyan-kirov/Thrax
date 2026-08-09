@@ -16,6 +16,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
@@ -233,6 +234,18 @@ fn record_destructuring_pattern() {
                $ nx : Point -> Int = \\p = is p | { .x = a } => a\n\
                $ r : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 } + nx Point.{ .x = 2, .y = 8 }";
     assert_eq!(run(src, "r"), "25"); // 12 + 11 + 2
+}
+
+#[test]
+fn codata_stream_is_lazy_and_infinite() {
+    // A codata stream: construction is finite (thunks), and observing drives the
+    // generative recursion lazily, so an infinite stream is fine.
+    let src = "@mod M\n\
+               $ Stream : @codata = head : t, tail : Stream t,\n\
+               $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ r : Int = (from 10).head + nth 5 (from 10)";
+    assert_eq!(run(src, "r"), "25"); // 10 + 15
 }
 
 #[test]

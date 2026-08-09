@@ -118,12 +118,21 @@ observing `s.tail` = **call** the corresponding closure. Data stays strict and
 untouched; this adds one value kind and two IR forms (copattern construction,
 observation).
 
-**Status:** its own milestone, scheduled **after** the strict transition (M1c);
-see section 10. `AGTxSUM`'s old lazy-data infinite stream is rewritten as `@codata`
-then, not resurrected as lazy data. Deferred sub-decisions: surface syntax for
-copatterns and observation; how `@codata` interacts with the effect rows (an
-observation may carry an effect row, effectful codata, once typed effects
-land); whether to statically forbid self-referential codata bindings.
+**Status: IMPLEMENTED** (both engines; `examples/CODATA.thx`). Surface syntax
+settled: `$ Stream : @codata = head : t, tail : Stream t,` declares the
+observations (type params come from free tyvars, like a struct); a value is built
+`{ .head = e, .tail = e }` (type-directed: a record literal against a codata type)
+and observed `s.head`. It is a **desugaring to existing machinery**, no new value
+kind: construction lowers to a record whose fields are thunks (`\%u = clause`), and
+an observation lowers to `field {}` (run the thunk). Non-memoized (each observation
+reruns) and generative, so RC stays complete. Checker: `CodataInfo` + `codata`
+table, `check_codata_lit` (construction) and the codata case in `Expr::Field`
+(observation), recorded in `codata_lits` / `observations` for lowering.
+
+Deferred sub-decisions: how `@codata` interacts with effect rows (an observation
+carrying an effect row, effectful codata); whether to statically forbid
+self-referential codata bindings (`let s = { .head = 1, .tail = s }`, the one way
+back to a cycle).
 
 ---
 

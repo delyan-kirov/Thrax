@@ -22,6 +22,7 @@ fn lower(src: &str) -> Vec<Program> {
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
@@ -186,6 +187,20 @@ fn record_destructuring_pattern() {
                $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
                $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
                $ test : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn codata_stream() {
+    // Codata desugars to a record of thunks + apply-unit observation; the C
+    // backend must drive the lazy infinite stream the same as the interpreter.
+    let src = "@mod M\n\
+               $ Stream : @codata = head : t, tail : Stream t,\n\
+               $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
+               $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ dbl : Int -> Int = \\x = x + x\n\
+               $ test : Int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
 }
 
