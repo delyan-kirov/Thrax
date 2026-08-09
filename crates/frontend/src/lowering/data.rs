@@ -172,6 +172,12 @@ pub enum Pat {
         prefix: Vec<u8>,
         rest: Box<Pat>,
     },
+    /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. `lo`
+    /// and `hi` are numeric literal terms; compiled to two comparison tests.
+    Range {
+        lo: Term,
+        hi: Term,
+    },
 }
 
 /// A Core effect handler.

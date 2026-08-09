@@ -230,6 +230,21 @@ impl Pm {
                 on_match,
                 on_fail.clone(),
             ),
+            // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive).
+            Pat::Range { lo, hi } => {
+                let upper = case1(
+                    bin("<=", v(sv), hi.clone()),
+                    Pat::Bool(true),
+                    on_match,
+                    on_fail.clone(),
+                );
+                case1(
+                    bin(">=", v(sv), lo.clone()),
+                    Pat::Bool(true),
+                    upper,
+                    on_fail.clone(),
+                )
+            }
             Pat::Tuple(pats) => self.compile_fields(sv, &index_names(pats.len()), pats, on_match, on_fail),
             Pat::Struct { fields, rest } => {
                 let (names, pats): (Vec<String>, Vec<Pat>) =

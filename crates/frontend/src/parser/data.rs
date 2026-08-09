@@ -237,6 +237,12 @@ pub enum Pattern {
     Real(f64),
     Str(StrId),
     Bool(bool),
+    /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. Both
+    /// bounds are numeric literal patterns (`Int`/`Real`). Refutable; binds nothing.
+    Range {
+        lo: Aol<Pattern>,
+        hi: Aol<Pattern>,
+    },
     /// A literal string prefix match: `"GET " ++ rest`.
     StrPrefix {
         prefix: StrId,

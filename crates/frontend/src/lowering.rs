@@ -1116,6 +1116,15 @@ impl<'a> Lowerer<'a> {
 
     // -- patterns -----------------------------------------------------------
 
+    /// A range pattern's bound as a literal term (the parser guarantees numeric).
+    fn range_bound(&self, p: Aol<Pattern>) -> Term {
+        match self.pnode(p) {
+            Pattern::Int(n) => Term::Int(*n),
+            Pattern::Real(r) => Term::Real(*r),
+            _ => Term::Fault("range bound is not a numeric literal".into()),
+        }
+    }
+
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
@@ -1124,6 +1133,10 @@ impl<'a> Lowerer<'a> {
             Pattern::Real(r) => Pat::Real(*r),
             Pattern::Str(s) => Pat::Str(self.ast.bytes(*s).to_vec()),
             Pattern::Bool(b) => Pat::Bool(*b),
+            Pattern::Range { lo, hi } => Pat::Range {
+                lo: self.range_bound(*lo),
+                hi: self.range_bound(*hi),
+            },
             Pattern::StrPrefix { prefix, rest } => Pat::StrPrefix {
                 prefix: self.ast.bytes(*prefix).to_vec(),
                 rest: Box::new(self.pat(*rest)),

@@ -2807,6 +2807,14 @@ impl<'a> Checker<'a> {
                 self.eng
                     .unify(expected, &Type::con(ty::BOOL), "in a boolean pattern")
             }
+            Pattern::Range { lo, hi } => {
+                // Both bounds are typed against the scrutinee, so a range forces its
+                // scalar (`1 ... 5` -> Int, `1.0 ... 5.0` -> Real) and rejects mixed
+                // bounds. It binds nothing.
+                let (lo, hi) = (*lo, *hi);
+                self.type_pattern(lo, expected)?;
+                self.type_pattern(hi, expected)
+            }
             Pattern::StrPrefix { rest, .. } => {
                 let rest = *rest;
                 self.eng
@@ -3493,8 +3501,12 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                 collect_pattern_binders(ast, *r, bound);
             }
         }
-        Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {
-        }
+        Pattern::Range { .. }
+        | Pattern::Wild
+        | Pattern::Int(_)
+        | Pattern::Real(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_) => {}
     }
 }
 

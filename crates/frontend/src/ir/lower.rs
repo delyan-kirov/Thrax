@@ -138,6 +138,7 @@ fn pat_binders(p: &Pat) -> usize {
             fields.iter().map(|(_, p)| pat_binders(p)).sum::<usize>() + rest.is_some() as usize
         }
         Pat::StrPrefix { rest, .. } => pat_binders(rest),
+        Pat::Range { .. } => 0,
     }
 }
 

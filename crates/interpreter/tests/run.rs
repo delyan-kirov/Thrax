@@ -252,6 +252,22 @@ fn nominal_struct_update_with_pipe() {
 }
 
 #[test]
+fn inclusive_range_patterns() {
+    // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
+    // the match needs an `else`. Works on Int and Real.
+    let src = "@mod M\n\
+               $ grade : Int -> Str = \\n =\n\
+               \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" else \"F\"\n\
+               $ band : Real -> Int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
+               $ r : Int =\n\
+               \t(if grade 100 ?= \"A\" => 1 else 0)\n\
+               \t+ (if grade 60 ?= \"C\" => 2 else 0)\n\
+               \t+ (if grade 40 ?= \"F\" => 4 else 0)\n\
+               \t+ (band 0.5) * 8";
+    assert_eq!(run(src, "r"), "15"); // 1 + 2 + 4 + 1*8
+}
+
+#[test]
 fn unit_parameter_thunks_without_a_lambda() {
     // A `{} -> T` definition needs no explicit `\u =`: the unit parameter is
     // introduced automatically (a thunk), so the body runs when it is applied. An

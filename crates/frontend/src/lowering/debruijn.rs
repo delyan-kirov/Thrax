@@ -188,6 +188,7 @@ fn collect_pat_binders(p: &Pat, out: &mut Vec<String>) {
             }
         }
         Pat::StrPrefix { rest, .. } => collect_pat_binders(rest, out),
+        Pat::Range { .. } => {}
     }
 }
 

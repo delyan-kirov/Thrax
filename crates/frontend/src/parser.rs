@@ -1546,6 +1546,20 @@ impl<'a> Parser<'a> {
             let t = self.peek()?;
             return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
         }
+        // `lo ... hi`: an inclusive numeric range. Both bounds are numeric literals.
+        if matches!(self.peek_kind()?, Kind::Ellipsis) {
+            if !matches!(self.ast.pats.lookup(atom), Pattern::Int(_) | Pattern::Real(_)) {
+                let t = self.peek()?;
+                return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
+            }
+            self.bump()?; // '...'
+            let hi_tok = self.peek()?;
+            let hi = self.parse_pattern_atom()?;
+            if !matches!(self.ast.pats.lookup(hi), Pattern::Int(_) | Pattern::Real(_)) {
+                return Err(self.unexpected(&hi_tok, "a range '...' needs a numeric literal on its right"));
+            }
+            return Ok(self.pat(Pattern::Range { lo: atom, hi }));
+        }
         Ok(atom)
     }
 

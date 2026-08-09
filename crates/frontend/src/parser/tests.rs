@@ -149,6 +149,31 @@ fn declared_type_params() {
 }
 
 #[test]
+fn inclusive_range_pattern_parses() {
+    let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 else 1";
+    let p = prog(src);
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
+        panic!("expected a match")
+    };
+    match p.ast.pats.lookup(arms[0].patterns[0]) {
+        Pattern::Range { lo, hi } => {
+            assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(1)));
+            assert!(matches!(p.ast.pats.lookup(*hi), Pattern::Int(5)));
+        }
+        other => panic!("expected a range pattern, got {other:?}"),
+    }
+    // A non-literal bound is a parse error.
+    let msg = parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
+        .err()
+        .expect("expected a parse error")
+        .to_string();
+    assert!(msg.contains("numeric literal"), "{msg}");
+}
+
+#[test]
 fn variant_literal_and_when_match() {
     let src = "@mod M\n$ f = \\l = is l | List.Nil => 0 | List.Cons.{_, xs} => 1 else 2";
     let p = prog(src);

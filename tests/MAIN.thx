@@ -36,6 +36,7 @@ $ with PATTERNS = PATTERNS
 $ with PLATFORM = PLATFORM
 $ with PIPES = PIPES
 $ with POWER = POWER
+$ with RANGES = RANGES
 $ with RC_LOOP = RC_LOOP
 $ with REALS = REALS
 $ with RECORD_PARAMS = RECORD_PARAMS
@@ -100,6 +101,7 @@ $ main : Int =
 	+ check "PLATFORM" PLATFORM.test
 	+ check "PIPES" PIPES.test
 	+ check "POWER" POWER.test
+	+ check "RANGES" RANGES.test
 	+ check "RC_LOOP" RC_LOOP.test
 	+ check "REALS" REALS.test
 	+ check "RECORD_PARAMS" RECORD_PARAMS.test

@@ -79,6 +79,7 @@
 %token BANG QEQ QGT QLT             /* ! ?= ?> ?< */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
+%token ELLIPSIS                     /* ... (inclusive range in patterns) */
 
 %start program
 %%
@@ -337,7 +338,10 @@ pattern
   : pat_atom
   | pat_atom CONS pattern
   | STR CONCAT pattern
+  | num_lit ELLIPSIS num_lit   /* inclusive numeric range `lo ... hi` */
   ;
+
+num_lit : INT | REAL ;
 
 pat_atom
   : UNDERSCORE

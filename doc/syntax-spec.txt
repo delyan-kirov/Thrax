@@ -340,6 +340,7 @@ parameters and `let` bindings (and `when` match arms):
 	pattern  ::= '_'                      # wildcard: matches anything, binds nothing
 	           | var                      # binds the value to this name
 	           | Int | Real | Str         # literal: matches by equality (refutable)
+	           | numlit '...' numlit      # inclusive numeric range (refutable)
 	           | TypeName '.{' fields '}'  # struct pattern (see below)
 	fields   ::= positional | named
 	positional ::= [ pattern (',' pattern)* ','? ]
@@ -358,6 +359,15 @@ a literal, named fields carry a leading-dot `.field`; a pattern is
 	  field is matched unambiguously as `Person.{ .name }`.
 
 The two forms cannot be mixed in one struct pattern.
+
+A RANGE pattern `lo ... hi` matches a number in the inclusive interval
+`lo <= x <= hi`. Both bounds are numeric literals of the scrutinee's type (`Int`
+or `Real`), and both ends are inclusive (there is only the inclusive form). It is
+refutable and binds nothing, so a match over ranges needs an `else`; the scrutinee
+variable stays in scope in the arm when the value itself is wanted.
+
+	$ grade : Int -> Str = \n =
+		is n | 90 ... 100 => "A" | 60 ... 89 => "C" else "F"
 
 Lambda and `let` patterns must be IRREFUTABLE: only `_`, variables, and struct
 patterns built from them. A literal sub-pattern is refutable and is rejected
