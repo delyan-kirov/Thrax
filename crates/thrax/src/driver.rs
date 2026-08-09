@@ -220,7 +220,7 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         let (exprs, pats) = checker.array_nodes();
         resolved.array_exprs.extend(exprs.iter().copied());
         resolved.array_pats.extend(pats.iter().copied());
-        resolved.record_tuples.extend(checker.record_tuples().iter().copied());
+        for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }

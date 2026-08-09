@@ -1,58 +1,55 @@
 # Row-polymorphic records (rows for structs)
 
-Status: **stages 1 & 2 implemented.** Open-row record *parameters* and anonymous
-record *values* work end-to-end on both engines:
+Status: **implemented** end-to-end on both engines. Records are **real,
+first-class, name-keyed types** (an earlier "decay to pairs" model was replaced).
 
-- `{ x:Int, y:Int | r } -> Int` accepts any struct (nominal or anonymous) with
-  those fields; `p.x` resolves through the row; a missing field is a type error.
-- Record literals `{ .x = 1, .y = 2 }` are type-directed (a record only under an
-  open row, else a matching struct or a pair -- see "The model" below); on an
-  open-row value, update `{ .x = v | p }` preserves the shape and stack
-  `{ .x = 1, with p }` concatenates. Example `examples/ROW_RECORDS.thx`.
-
-Record **destructuring patterns** work too: `is p | { .x = a, .y = b, .._ } => ...`
-and lambda/`let` shorthand `\{ .x, .y } = ...`, on open-row values and nominal
-structs. They lower to the existing name-keyed `Pat::Struct` (partial, ignores
-unlisted fields).
+- Record types: closed `{ x:Int, y:Int }` and open `{ x:Int | r }` (row variable
+  tail). Values: `{ .x = 1, .y = 2 }`; access `p.x`; a missing field is a type error.
+- **Order-independent** by construction (rows unify by name), so named arguments
+  can be reordered: `f { .y = 2, .x = 1 }`.
+- **Open rows** accept any record/struct with (at least) the named fields:
+  `{ x:Int, y:Int | r } -> Int` takes `Point`, `{ .x, .y, .tag }`, etc.
+- **Promotion at call arguments**: a bare scalar or a positional tuple passed
+  where a record is expected is wrapped into it -- `foo 1` -> `foo { .x = 1 }`,
+  `foo {1,2}` -> `foo { .x=1, .y=2 }` (declaration order). This keeps positional
+  calls working and gives keyword-argument ergonomics.
+- **Auto-bind parameter sugar** (kept): `add : { x:Int, y:Int } -> Int = x + y`
+  binds `x`, `y` in the body (an implicit record destructuring).
+- **Update / stack** on an open-row value: `{ .x = v | p }` preserves the shape
+  (tail flows through), `{ .x = 1, with p }` concatenates.
+- **Destructuring patterns**: `is p | { .x = a, .y = b, .._ } => ...` and lambda
+  shorthand `\{ .x, .y } = ...`, on open-row values and nominal structs.
 
 Remaining: **`..name` rest-BINDING** in patterns (needs a runtime record-restriction
-op; `.._` discard works, `..name` errors clearly for now); **generic structs** at
-open rows (only non-generic structs are bridged); and the `..base` -> `{ | base }`
-migration (the old spread still works). Records use the same scoped-row discipline
-as effects.
+op; `.._` discard works, `..name` errors clearly); **generic structs** at open rows
+(only non-generic structs are bridged); the `..base` -> `{ | base }` migration (old
+spread still works).
 
-### The model: there is no anonymous record TYPE
+### Model
 
-The only row-record type is the **open row** `{ x:X | r }`. There is deliberately
-no closed anonymous record type: a "fixed" record is just a **pair with named
-construction/destructuring**. So `{ .x = 1, .y = 2 }` is *pair creation plus a
-named binding at once*, and it is **type-directed**:
+Records use the same scoped-row discipline as effects (duplicates stack, head
+wins). There are three product-ish things: **nominal structs** (`Point`),
+**records** (`{ x:Int, y:Int }` / `{ x:Int | r }`), and **tuples** (`{1, 2}`,
+positional). They are distinct types; the only implicit conversion is the
+call-argument **promotion** (scalar/tuple -> record).
 
-- against an **open row** `{ x:X | r }` -> a name-keyed record (the only place a
-  record value persists, so `p.x` works polymorphically);
-- against a **pair / param-sugar** `{ x:X, y:Y }` -> the pair `{1, 2}` (written
-  order; a one-field record collapses to the bare value, matching `{x:Int}` = `Int`);
-- **unconstrained** -> a nominal struct if the field set matches one
-  (`struct_by_fields`), else the pair.
+Promotion is scoped to argument positions and kept out of general unification (to
+preserve principal inference): at a call, the checker tries a direct unification of
+the argument against the record parameter first -- which covers a record value and
+a nominal struct (the `Con ~ Record` bridge) -- and only if that fails wraps a
+scalar / tuple / struct into a **closed** record (an open row has no known field
+names to wrap into, so a mismatch there stays a real error). A numeric literal
+(still an undefaulted variable) is treated as a scalar and promoted rather than
+unified.
 
-So records don't decay so much as they simply *are* pairs (or the matching struct)
-everywhere except under an open row. This is why `base = { .x = 3, .y = 4 }` is a
-pair, not a record: to update/stack a record you operate on an open-row parameter
-(`\p = { .x = n | p }` where `p : { x:Int | r }`), which is where records live.
-
-The named-tuple parameter sugar (`{ x:X, y:Y } -> R`, #4a) is unchanged, and now a
-call may also construct it by name: `foo { .x = 12, .y = 3 }` (declaration order;
-reordering is not remapped). Lowering emits a tuple value for a decayed literal
-(`record_tuples`), so the sugar's positional destructuring still finds it.
-
-Implementation of stage 1: `Type::Record(row)` + `Type::RowField(label, ty, rest)`
-(engine.rs) unified by `unify_record_row`/`rewrite_field` (mirrors the effect
-`unify_row`/`rewrite_row`); the hybrid bridge is `Engine::struct_rows` (non-generic
-structs' closed rows, set by `Checker::register_struct_rows`) so `Con(struct)`
-unifies with an open record row; open-row types parse via `Ty::Record { fields,
-tail }`; `infer_field` does a row lookup. Runtime unchanged (name-keyed). Tests:
-`open_row_param_accepts_any_matching_struct` (interpreter) and
-`open_row_record_param` (ccg).
+Implementation: `Type::Record(row)` + `Type::RowField(label, ty, rest)` (engine.rs)
+unified by `unify_record_row` / `rewrite_field` (mirrors the effect
+`unify_row` / `rewrite_row`); `Engine::struct_rows` (non-generic structs' closed
+rows, from `Checker::register_struct_rows`) is the `Con ~ Record` bridge; open/closed
+record types parse via `Ty::Record { fields, tail }` and `ty_of_ast`; `infer_field`
+is a row lookup; the param sugar auto-binds via field access (`bind_record_param` /
+lowering `record_param`); promotion is recorded in `Checker::promotions` and wrapped
+in lowering `promote_to_record`. Runtime is unchanged (already name-keyed).
 
 ## The core decision: records are scoped rows, exactly like effects
 
@@ -157,9 +154,9 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
 
 ## Value syntax (locked)
 
-- **Anonymous literal:** `{ .foo = 1, .bar = 2 }` -- pair creation with named
-  construction; type-directed (record only under an open row, else a struct or a
-  pair; see "The model" above). Nominal construction `Point.{ .. }` stays.
+- **Anonymous literal:** `{ .foo = 1, .bar = 2 }` -- a record value (name-keyed,
+  order-independent). Positional `{1, 2}` and a bare scalar promote to a record at
+  a call argument (see "The model"). Nominal construction `Point.{ .. }` stays.
 - **Update:** `{ .foo = f | base }` -- these fields override, the rest come from
   `base` (which must be a record, i.e. an open-row value). `|` reads the same as
   the type tail (`{ x:Int | r }` = these fields, rest is `r`), base/rest on the

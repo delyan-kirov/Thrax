@@ -301,9 +301,9 @@ pub enum ImplicitArg {
 pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
-    /// Record-literal sites that decayed to a tuple (from
-    /// [`crate::typing::Checker::record_tuples`]); lowered as a tuple value.
-    pub record_tuples: HashSet<Aol<Expr>>,
+    /// Argument sites promoted to a record, mapped to the target field names (from
+    /// [`crate::typing::Checker::promotions`]); lowering wraps the value.
+    pub promotions: HashMap<Aol<Expr>, Vec<String>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
     /// arguments lowering injects ahead of the explicit ones (from
@@ -487,8 +487,12 @@ impl<'a> Lowerer<'a> {
         self.record_param(fields, inner)
     }
 
-    /// Wrap `body` in the lambda that binds one record parameter's fields.
+    /// Wrap `body` in the lambda binding a record parameter's fields by name. The
+    /// parameter is a name-keyed record value, so each field is bound by field
+    /// access (`param.field`); the field bindings are outermost so a `with` field's
+    /// scoping can reference them.
     fn record_param(&mut self, fields: &[RecField], body: Term) -> Term {
+        let param = self.fresh();
         let mut inner = body;
         for f in fields.iter().rev() {
             if f.with {
@@ -501,34 +505,81 @@ impl<'a> Lowerer<'a> {
                 inner = self.desugar_with(subject, &names, inner);
             }
         }
-        if let [f] = fields {
-            return Term::Lam {
-                param: self.text(f.name).to_string(),
+        for f in fields.iter().rev() {
+            let name = self.text(f.name).to_string();
+            let val = Term::Field(Arc::new(Term::var(param.clone())), name.clone());
+            inner = Term::Let {
+                name,
+                rec: false,
+                val: Arc::new(val),
                 body: Arc::new(inner),
             };
         }
-        let param = self.fresh();
-        let pat = Pat::Tuple(
-            fields
-                .iter()
-                .map(|f| Pat::Var(self.text(f.name).to_string()))
-                .collect(),
-        );
         Term::Lam {
-            param: param.clone(),
-            body: Arc::new(Term::Case {
-                scrut: Arc::new(Term::var(param)),
-                arms: Arc::from([Arm {
-                    pat,
-                    guard: None,
-                    body: Arc::new(inner),
-                }]),
-                default: None,
-            }),
+            param,
+            body: Arc::new(inner),
         }
     }
 
     fn expr(&mut self, e: Aol<Expr>) -> Term {
+        // A promoted argument (scalar or positional tuple passed where a record is
+        // expected) is wrapped into a name-keyed record here.
+        if let Some(names) = self.resolved.promotions.get(&e) {
+            let names = names.clone();
+            return self.promote_to_record(e, &names);
+        }
+        self.expr_core(e)
+    }
+
+    /// Wrap a promoted argument into a record with `names`: a positional tuple
+    /// literal maps its elements to the names; a scalar becomes a one-field record;
+    /// a tuple-typed value is bound once and projected by index.
+    fn promote_to_record(&mut self, e: Aol<Expr>, names: &[String]) -> Term {
+        if let Expr::Tuple(items) = self.node(e) {
+            let items: Vec<Aol<Expr>> = items.to_vec();
+            let fields: Vec<(String, Term)> = names
+                .iter()
+                .cloned()
+                .zip(items.into_iter().map(|it| self.expr(it)))
+                .collect();
+            return Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from(fields),
+            };
+        }
+        let val = self.expr_core(e);
+        if names.len() == 1 {
+            return Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from([(names[0].clone(), val)]),
+            };
+        }
+        let t = self.fresh();
+        let fields: Vec<(String, Term)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    n.clone(),
+                    Term::Field(Arc::new(Term::var(t.clone())), i.to_string()),
+                )
+            })
+            .collect();
+        Term::Let {
+            name: t.clone(),
+            rec: false,
+            val: Arc::new(val),
+            body: Arc::new(Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from(fields),
+            }),
+        }
+    }
+
+    fn expr_core(&mut self, e: Aol<Expr>) -> Term {
         match self.node(e) {
             Expr::Int(n) => Term::Int(*n),
             Expr::Real(r) => Term::Real(*r),
@@ -622,27 +673,7 @@ impl<'a> Lowerer<'a> {
                 with,
                 update,
             } => {
-                // A record that the checker decayed to a pair lowers as a tuple
-                // (written-order values), so the param-sugar's positional
-                // destructuring finds it.
-                if self.resolved.record_tuples.contains(&e) {
-                    let mut items: Vec<Term> = fields
-                        .iter()
-                        .map(|fi| match fi {
-                            FieldInit::Named { value, .. } | FieldInit::Positional(value) => {
-                                self.expr(*value)
-                            }
-                        })
-                        .collect();
-                    // A one-field record decays to the bare value (1-tuple
-                    // transparency), matching the param-sugar collapse.
-                    return if items.len() == 1 {
-                        items.pop().expect("one field")
-                    } else {
-                        Term::Tuple(items.into())
-                    };
-                }
-                // Otherwise a name-keyed record. Update (`| base`) and stack (`with
+                // A name-keyed record value. Update (`| base`) and stack (`with
                 // base`) build over that base with the listed fields overriding /
                 // adding; an anonymous record has no nominal name (access is
                 // name-keyed, so the empty name is fine).

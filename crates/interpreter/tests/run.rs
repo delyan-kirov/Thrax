@@ -15,7 +15,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
-    resolved.record_tuples.extend(checker.record_tuples().iter().copied());
+    for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
@@ -211,18 +211,15 @@ fn anonymous_records_literal_update_stack() {
 }
 
 #[test]
-fn record_literal_decays_to_pair_or_struct() {
-    // A one-field record decays to the bare value; a plain literal matching a
-    // struct's fields infers that struct; otherwise it decays to a pair.
+fn record_promotion_and_named_args() {
+    // A record parameter can be called positionally (promoted), by name, or by
+    // name reordered; a one-field record param accepts a bare scalar.
     let src = "@mod M\n\
                $ add : {x: Int, y: Int} -> Int = x + y\n\
                $ inc : {x: Int} -> Int = x + 1\n\
-               $ Point : @struct = x: Int, y: Int,\n\
-               $ usept : Point -> Int = \\p = p.x + p.y\n\
-               $ pair = { .a = 1, .b = 2 }\n\
                $ r : Int =\n\
-               \tadd { .x = 5, .y = 6 } + inc { .x = 20 } + usept { .x = 3, .y = 4 } + pair.0 + pair.1";
-    assert_eq!(run(src, "r"), "42"); // 11 + 21 + 7 + 1 + 2
+               \tadd {5, 6} + add { .x = 5, .y = 6 } + add { .y = 6, .x = 5 } + inc 20 + inc { .x = 20 }";
+    assert_eq!(run(src, "r"), "75"); // 11 + 11 + 11 + 21 + 21
 }
 
 #[test]

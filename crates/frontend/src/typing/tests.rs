@@ -211,15 +211,16 @@ fn cross_module_import_brings_in_types_and_values() {
 
 #[test]
 fn record_parameters_bind_fields_directly() {
-    // Two-field record: one tuple argument, destructured to x and y.
+    // A record parameter is a real record type; its fields auto-bind in the body.
     assert_eq!(
         type_of("@mod M\n$ add : {x: Int, y: Int} -> Int = x + y", "add"),
-        "{Int, Int} -> Int"
+        "{ x: Int, y: Int } -> Int"
     );
-    // One-field record collapses to a bare parameter.
+    // A one-field record is a one-field record (no collapse); a scalar promotes
+    // to it at the call site.
     assert_eq!(
         type_of("@mod M\n$ inc : {x: Int} -> Int = x + 1", "inc"),
-        "Int -> Int"
+        "{ x: Int } -> Int"
     );
 }
 
