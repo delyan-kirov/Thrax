@@ -272,6 +272,16 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Word) && self.text(t).starts_with(|c: char| c.is_ascii_lowercase()))
     }
+    /// The optional type parameters after a `@struct`/`@union`/`@codata` keyword
+    /// and before `=`: `@struct a b = ...`. Empty when omitted (the parameters are
+    /// then inferred from the free type variables in the body).
+    fn parse_type_params(&mut self) -> Result<Box<[StrId]>> {
+        let mut params = Vec::new();
+        while self.at_tyvar()? {
+            params.push(self.expect_tyvar("expected a type parameter")?);
+        }
+        Ok(params.into_boxed_slice())
+    }
 
     /// If `base` is a bare, unqualified variable, its interned name.
     fn bare_var_name(&self, base: Aol<Expr>) -> Option<StrId> {
@@ -456,41 +466,57 @@ impl<'a> Parser<'a> {
         if let Kind::At = self.peek_kind()? {
             let at_tok = self.peek()?;
             let kw = self.intrinsic_name(at_tok);
-            if matches!(kw, "struct" | "union" | "alias" | "effect") {
+            if matches!(kw, "struct" | "union" | "alias" | "effect" | "codata") {
                 self.require_type_capital(self.text(name_tok), &name_tok)?;
             }
             match kw {
                 "struct" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
                     let (includes, fields) = self.parse_struct_body()?;
                     return Ok(Item::Struct {
                         name,
+                        params,
                         includes,
                         fields,
                     });
                 }
                 "union" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
                     let (includes, variants) = self.parse_union_body()?;
                     return Ok(Item::Union {
                         name,
+                        params,
                         includes,
                         variants,
                     });
                 }
                 "alias" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@alias'");
                     let ty = self.parse_type()?;
-                    return Ok(Item::Alias { name, ty });
+                    return Ok(Item::Alias { name, params, ty });
                 }
                 "effect" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@effect'");
                     let ops = self.parse_field_decls()?;
                     return Ok(Item::Effect { name, ops });
+                }
+                "codata" => {
+                    self.bump()?;
+                    let params = self.parse_type_params()?;
+                    expect!(self, Kind::Eq, "expected '=' after '@codata'");
+                    let observations = self.parse_field_decls()?;
+                    return Ok(Item::Codata {
+                        name,
+                        params,
+                        observations,
+                    });
                 }
                 _ => {} // an @tycon type signature; fall through
             }
@@ -779,12 +805,19 @@ impl<'a> Parser<'a> {
                 && matches!(self.peek_kind_at(1)?, Kind::Colon));
         if is_record {
             let mut fields = Vec::new();
+            let mut tail = None;
             loop {
                 let with = self.eat(|k| matches!(k, Kind::With))?;
                 let name = self.expect_word("expected a record field name")?;
                 expect!(self, Kind::Colon, "expected ':' after the field name");
                 let ty = self.parse_type()?;
                 fields.push(RecField { with, name, ty });
+                // `{ x: A, y: B | r }`: `| r` opens the record with a row variable.
+                if self.at_op("|")? {
+                    self.bump()?;
+                    tail = Some(self.expect_tyvar("expected a row variable after '|'")?);
+                    break;
+                }
                 if !self.eat(|k| matches!(k, Kind::Comma))?
                     || matches!(self.peek_kind()?, Kind::RBrace)
                 {
@@ -792,7 +825,10 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the record type");
-            Ok(self.ty(Ty::Record(fields.into_boxed_slice())))
+            Ok(self.ty(Ty::Record {
+                fields: fields.into_boxed_slice(),
+                tail,
+            }))
         } else {
             let mut tys = Vec::new();
             loop {
@@ -1098,6 +1134,15 @@ impl<'a> Parser<'a> {
         if self.eat(|k| matches!(k, Kind::RBrace))? {
             return Ok(self.expr(Expr::Unit));
         }
+        // An anonymous record literal starts with a `.field =` entry or `with`;
+        // anything else (including a `.Tag` variant element) is a tuple.
+        let is_record = matches!(self.peek_kind()?, Kind::With)
+            || (matches!(self.peek_kind()?, Kind::Dot)
+                && matches!(self.peek_kind_at(1)?, Kind::Word)
+                && matches!(self.peek_kind_at(2)?, Kind::Eq));
+        if is_record {
+            return self.parse_record_expr();
+        }
         let mut elems = Vec::new();
         loop {
             elems.push(self.parse_expr(0)?);
@@ -1108,6 +1153,37 @@ impl<'a> Parser<'a> {
         }
         expect!(self, Kind::RBrace, "expected '}' to close the tuple");
         Ok(self.expr(Expr::Tuple(elems.into_boxed_slice())))
+    }
+
+    /// A record value body (the `{` is already consumed): `.field = e` entries and
+    /// `with base` splices, optionally ending in `| base` (update). `with` and `|`
+    /// are mutually exclusive.
+    fn parse_record_expr(&mut self) -> Result<Aol<Expr>> {
+        let mut fields = Vec::new();
+        let mut with = None;
+        let mut update = None;
+        loop {
+            if self.eat(|k| matches!(k, Kind::With))? {
+                with = Some(self.parse_expr(0)?);
+            } else {
+                fields.push(self.parse_field_init()?);
+            }
+            if self.at_op("|")? {
+                self.bump()?;
+                update = Some(self.parse_expr(0)?);
+                break;
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
+            {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the record");
+        Ok(self.expr(Expr::Record {
+            fields: fields.into_boxed_slice(),
+            with,
+            update,
+        }))
     }
 
     /// A leading-dot atom: bare struct literal `.{...}` or bare variant `.Tag`.
@@ -1634,6 +1710,11 @@ impl<'a> Parser<'a> {
 
     fn parse_tuple_pattern(&mut self) -> Result<Aol<Pattern>> {
         self.bump()?; // '{'
+        // A record pattern starts with a `.field` entry (or `..rest`); anything
+        // else is a positional tuple pattern.
+        if matches!(self.peek_kind()?, Kind::Dot) {
+            return self.parse_record_pattern();
+        }
         let mut elems = Vec::new();
         loop {
             elems.push(self.parse_pattern()?);
@@ -1648,6 +1729,39 @@ impl<'a> Parser<'a> {
             "expected '}' to close the tuple pattern"
         );
         Ok(self.pat(Pattern::Tuple(elems.into_boxed_slice())))
+    }
+
+    /// A record pattern body (the `{` is consumed): `.field = pat` / `.field`
+    /// entries, and an optional trailing `..rest` (`..name` binds, `.._` discards).
+    fn parse_record_pattern(&mut self) -> Result<Aol<Pattern>> {
+        let mut fields = Vec::new();
+        let mut rest = None;
+        loop {
+            // `..rest`: two dots then a binder.
+            if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot) {
+                self.bump()?;
+                self.bump()?;
+                rest = Some(self.parse_pattern()?);
+                break;
+            }
+            expect!(self, Kind::Dot, "expected '.field' in a record pattern");
+            let name = self.expect_word("expected a field name after '.'")?;
+            if self.eat(|k| matches!(k, Kind::Eq))? {
+                let pat = self.parse_pattern()?;
+                fields.push(FieldPat::Named { name, pat });
+            } else {
+                fields.push(FieldPat::Shorthand(name));
+            }
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::RBrace)
+            {
+                break;
+            }
+        }
+        expect!(self, Kind::RBrace, "expected '}' to close the record pattern");
+        Ok(self.pat(Pattern::Record {
+            fields: fields.into_boxed_slice(),
+            rest,
+        }))
     }
 }
 

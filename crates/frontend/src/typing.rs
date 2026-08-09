@@ -58,6 +58,14 @@ struct UnionInfo<'a> {
     variants: Vec<VariantSig<'a>>,
 }
 
+/// A declared codata type: implicit `params` and one `(observation, result type)`
+/// per destructor. Dual to a struct; observing runs a thunk.
+#[derive(Clone)]
+struct CodataInfo<'a> {
+    params: Vec<&'a str>,
+    observations: Vec<(&'a str, Aol<Ty>)>,
+}
+
 
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
@@ -77,7 +85,15 @@ pub struct Checker<'a> {
     scopes: Vec<HashMap<&'a str, Type>>,
     structs: HashMap<&'a str, StructInfo<'a>>,
     unions: HashMap<&'a str, UnionInfo<'a>>,
-    aliases: HashMap<&'a str, Aol<Ty>>,
+    codata: HashMap<&'a str, CodataInfo<'a>>,
+    /// `{ .obs = e }` sites the checker resolved to codata construction, and
+    /// `x.obs` field-access sites resolved to a codata observation. Lowering
+    /// desugars the former to a record of thunks and the latter to `field {}`.
+    codata_lits: HashSet<Aol<Expr>>,
+    observations: HashSet<Aol<Expr>>,
+    /// Type aliases: `name -> (declared params, body)`. An applied alias is
+    /// expanded by substituting its arguments for the parameters in the body.
+    aliases: HashMap<&'a str, (Vec<&'a str>, Aol<Ty>)>,
     /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
     /// scheme. Used to type a handler clause head, which cannot be resolved by
     /// inference alone.
@@ -158,6 +174,15 @@ pub struct Checker<'a> {
     /// vector) rather than the default `List`. Lowering reads this to emit array
     /// construction / destructuring instead of `Cons`/`Nil`.
     array_exprs: HashSet<Aol<Expr>>,
+    /// Argument sites promoted to a record: a bare scalar `1` or a positional
+    /// `{1, 2}` passed where a record is expected, mapped to the target record's
+    /// field names (in order). Lowering wraps the value into a name-keyed record.
+    promotions: HashMap<Aol<Expr>, Vec<String>>,
+    /// `.{ ... }` struct-literal sites, mapped to the nominal struct name the
+    /// checker resolved them to (from a type annotation / expected type, or the
+    /// field set). Lowering reads this so a positional literal gets the right field
+    /// names instead of falling back to positional indices.
+    struct_lit_names: HashMap<Aol<Expr>, String>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -246,6 +271,9 @@ impl<'a> Checker<'a> {
             scopes: vec![HashMap::new()],
             structs: HashMap::new(),
             unions: HashMap::new(),
+            codata: HashMap::new(),
+            codata_lits: HashSet::new(),
+            observations: HashSet::new(),
             aliases: HashMap::new(),
             effect_ops: HashMap::new(),
             overloads: HashMap::new(),
@@ -271,6 +299,8 @@ impl<'a> Checker<'a> {
             qualified: HashMap::new(),
             module_name: "",
             array_exprs: HashSet::new(),
+            promotions: HashMap::new(),
+            struct_lit_names: HashMap::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -286,6 +316,24 @@ impl<'a> Checker<'a> {
     /// the default `List`.
     pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
         (&self.array_exprs, &self.array_pats)
+    }
+
+    /// Argument sites promoted to a record, mapped to the target field names;
+    /// lowering wraps the value into a name-keyed record.
+    pub fn promotions(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
+        &self.promotions
+    }
+
+    /// `.{ ... }` struct-literal sites mapped to the resolved struct name, so
+    /// lowering emits the correct field names (esp. for positional literals).
+    pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, String> {
+        &self.struct_lit_names
+    }
+
+    /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
+    /// thunks) and `x.obs` observations (lowered to `field {}`).
+    pub fn codata_sites(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>) {
+        (&self.codata_lits, &self.observations)
     }
 
     /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
@@ -352,6 +400,7 @@ impl<'a> Checker<'a> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
         self.register_types(program)?;
+        self.register_struct_rows();
         self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
@@ -529,7 +578,10 @@ impl<'a> Checker<'a> {
                 self.unions.insert(name, u.clone());
             }
             if let Some(a) = other.aliases.get(name) {
-                self.aliases.insert(name, *a);
+                self.aliases.insert(name, a.clone());
+            }
+            if let Some(c) = other.codata.get(name) {
+                self.codata.insert(name, c.clone());
             }
         }
         let module = other.module_name;
@@ -604,6 +656,12 @@ impl<'a> Checker<'a> {
             Type::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.import_ty(t, map)).collect())
             }
+            Type::Record(row) => Type::record(self.import_ty(row, map)),
+            Type::RowField(label, ty, rest) => Type::RowField(
+                label.clone(),
+                Box::new(self.import_ty(ty, map)),
+                Box::new(self.import_ty(rest, map)),
+            ),
         }
     }
 
@@ -719,8 +777,12 @@ impl<'a> Checker<'a> {
         sig_ty: &Type,
     ) -> Result<()> {
         let fields = match self.tnode(sig) {
-            Ty::Arrow { from, .. } if matches!(self.tnode(*from), Ty::Record(_)) => {
-                let Ty::Record(fields) = self.tnode(*from) else {
+            // Only a CLOSED record parameter is the destructuring sugar; an open
+            // `{ x | r }` is a real row-polymorphic record value, bound as-is.
+            Ty::Arrow { from, .. }
+                if matches!(self.tnode(*from), Ty::Record { tail: None, .. }) =>
+            {
+                let Ty::Record { fields, .. } = self.tnode(*from) else {
                     unreachable!("guarded on a record parameter")
                 };
                 fields
@@ -743,27 +805,20 @@ impl<'a> Checker<'a> {
     }
 
     fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: &Type) -> Result<()> {
-        if fields.len() == 1 {
-            let f = &fields[0];
-            self.bind(self.text(f.name), param_ty.clone());
+        // The record parameter auto-binds each field name (the "define with an
+        // implicit destructuring" sugar). The parameter is a real record type, so
+        // look each field up by name in its row.
+        let recfields = self.record_fields_of(param_ty)?;
+        for f in fields {
+            let name = self.text(f.name);
+            let t = recfields
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| self.eng.fresh());
+            self.bind(name, t.clone());
             if f.with {
-                self.scope_struct_fields(param_ty)?;
-            }
-            return Ok(());
-        }
-        let comps = match self.eng.resolve(param_ty) {
-            Type::Tuple(v) => v,
-            _ => {
-                let vs: Vec<Type> = fields.iter().map(|_| self.eng.fresh()).collect();
-                self.eng
-                    .unify(param_ty, &Type::Tuple(vs.clone()), "in a record parameter")?;
-                vs
-            }
-        };
-        for (f, comp) in fields.iter().zip(&comps) {
-            self.bind(self.text(f.name), comp.clone());
-            if f.with {
-                self.scope_struct_fields(comp)?;
+                self.scope_struct_fields(&t)?;
             }
         }
         Ok(())
@@ -816,11 +871,88 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
+            // `{ .obs = e, ... }` where a codata type is expected: construct it (each
+            // clause becomes a thunk). Every observation must be given.
+            Expr::Record {
+                fields,
+                with: None,
+                update: None,
+            } if self.codata_head(expected).is_some() => {
+                self.check_codata_lit(e, fields, expected)
+            }
+            // A bare `.{ .. }` literal takes its struct from the expected type (the
+            // checking direction). This is essential for a POSITIONAL literal, which
+            // carries no field names to infer from.
+            Expr::StructLit {
+                ty: None,
+                fields,
+                spread,
+            } => match self.struct_name_of(expected) {
+                Some(name) => {
+                    let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
+                    self.eng.unify(&got, expected, "against the expected type")
+                }
+                None => {
+                    let got = self.infer_struct_lit(e, None, fields, *spread)?;
+                    self.eng.unify(&got, expected, "against the expected type")
+                }
+            },
             _ => {
                 let got = self.infer(e)?;
+                // Promotion at an argument position: a bare scalar or a positional
+                // tuple passed where a record is expected is wrapped into that record
+                // (`foo 1` -> `foo { .x = 1 }`, `foo {1,2}` -> `foo { .x=1, .y=2 }`).
+                if let Type::Record(_) = self.eng.resolve(expected) {
+                    // Try a direct unification first (a record value, or a nominal
+                    // struct via the `Con ~ Record` bridge). Skip it for a numeric
+                    // literal, whose undefaulted variable would wrongly unify with
+                    // the record. If unification fails, promote a scalar / tuple /
+                    // struct into a CLOSED record (an open row has no known fields to
+                    // promote into, so a mismatch there is a real error).
+                    if !self.is_numeric(&got) {
+                        let save = self.eng.save();
+                        if self.eng.unify(&got, expected, "against the expected type").is_ok() {
+                            return Ok(());
+                        }
+                        self.eng.restore(save);
+                    }
+                    if self.record_is_closed(expected) {
+                        let g = self.eng.resolve(&got);
+                        let values: Vec<Type> = match g {
+                            Type::Tuple(items) => items,
+                            _ => vec![got.clone()],
+                        };
+                        return self.promote_to_record(e, &values, expected);
+                    }
+                }
                 self.eng.unify(&got, expected, "against the expected type")
             }
         }
+    }
+
+    /// Promote a scalar or a positional tuple to the expected record type, unifying
+    /// each value with the field in declaration order and recording the site so
+    /// lowering wraps the value into a name-keyed record.
+    fn promote_to_record(
+        &mut self,
+        site: Aol<Expr>,
+        values: &[Type],
+        record_ty: &Type,
+    ) -> Result<()> {
+        let fields = self.record_fields_of(record_ty)?;
+        if fields.len() != values.len() {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "cannot pass {} value(s) as a record with {} field(s)",
+                values.len(), fields.len()
+            ));
+        }
+        for (val, (_, fty)) in values.iter().zip(&fields) {
+            self.eng.unify(val, fty, "promoting an argument to a record")?;
+        }
+        self.promotions
+            .insert(site, fields.into_iter().map(|(n, _)| n).collect());
+        Ok(())
     }
 
     fn is_array(&self, ty: &Type) -> bool {
@@ -862,20 +994,60 @@ impl<'a> Checker<'a> {
 
     // -- type declarations --------------------------------------------------
 
+    /// A type's parameter list is exactly what it declares after the keyword. Every
+    /// type variable used in the body must be declared (an undeclared one is an
+    /// error: parameters are mandatory, never inferred). A declared parameter that
+    /// appears nowhere is allowed (a phantom). `kind` is the keyword, for the error.
+    fn resolve_type_params(
+        &self,
+        kind: &str,
+        name: &'a str,
+        declared: &[utilities::StrId],
+        collected: Vec<&'a str>,
+    ) -> Result<Vec<&'a str>> {
+        let declared: Vec<&'a str> = declared.iter().map(|p| self.text(*p)).collect();
+        for v in &collected {
+            if !declared.contains(v) {
+                return Err(undeclared_param(kind, name, v, &declared, false));
+            }
+        }
+        Ok(declared)
+    }
+
+    /// Re-check a struct/union's parameters after its `with` splices are copied in:
+    /// the parameters stay as declared, but every type variable in the now-complete
+    /// field/variant set, including spliced-in ones, must still be covered.
+    fn splice_params(&self, kind: &str, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
+        let declared = self
+            .structs
+            .get(name)
+            .map(|i| i.params.clone())
+            .or_else(|| self.unions.get(name).map(|i| i.params.clone()))
+            .expect("registered");
+        for v in &collected {
+            if !declared.contains(v) {
+                return Err(undeclared_param(kind, name, v, &declared, true));
+            }
+        }
+        Ok(declared)
+    }
+
     fn register_types(&mut self, program: &Program) -> Result<()> {
         for item in program.items.iter() {
             match item {
                 Item::Struct {
                     name,
+                    params,
                     includes,
                     fields,
                 } => {
-                    let mut params = Vec::new();
+                    let mut collected = Vec::new();
                     for f in fields.iter() {
-                        collect_tyvars(self.ast, f.ty, &mut params);
+                        collect_tyvars(self.ast, f.ty, &mut collected);
                     }
-                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     let name = self.text(*name);
+                    let params = self.resolve_type_params("struct", name, params, collected)?;
+                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     self.structs.insert(name, StructInfo { params, fields });
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
@@ -885,15 +1057,16 @@ impl<'a> Checker<'a> {
                 }
                 Item::Union {
                     name,
+                    params,
                     includes,
                     variants,
                 } => {
-                    let mut params = Vec::new();
+                    let mut collected = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
                         let payload = payload_fields(self.ast, &v.payload);
                         for (_, ty) in &payload {
-                            collect_tyvars(self.ast, *ty, &mut params);
+                            collect_tyvars(self.ast, *ty, &mut collected);
                         }
                         vs.push(VariantSig {
                             tag: self.text(v.tag),
@@ -901,6 +1074,7 @@ impl<'a> Checker<'a> {
                         });
                     }
                     let name = self.text(*name);
+                    let params = self.resolve_type_params("union", name, params, collected)?;
                     self.unions.insert(
                         name,
                         UnionInfo {
@@ -914,9 +1088,36 @@ impl<'a> Checker<'a> {
                         self.pending_includes.insert(name, (false, ps));
                     }
                 }
-                Item::Alias { name, ty } => {
+                Item::Alias { name, params, ty } => {
+                    let mut collected = Vec::new();
+                    collect_tyvars(self.ast, *ty, &mut collected);
                     let name = self.text(*name);
-                    self.aliases.insert(name, *ty);
+                    let params = self.resolve_type_params("alias", name, params, collected)?;
+                    self.aliases.insert(name, (params, *ty));
+                    self.own_type_names.push(name);
+                }
+                Item::Codata {
+                    name,
+                    params,
+                    observations,
+                } => {
+                    let mut collected = Vec::new();
+                    let obs: Vec<(&'a str, Aol<Ty>)> = observations
+                        .iter()
+                        .map(|o| {
+                            collect_tyvars(self.ast, o.ty, &mut collected);
+                            (self.text(o.name), o.ty)
+                        })
+                        .collect();
+                    let name = self.text(*name);
+                    let params = self.resolve_type_params("codata", name, params, collected)?;
+                    self.codata.insert(
+                        name,
+                        CodataInfo {
+                            params,
+                            observations: obs,
+                        },
+                    );
                     self.own_type_names.push(name);
                 }
                 _ => {}
@@ -970,10 +1171,11 @@ impl<'a> Checker<'a> {
                 }
                 fields.push(f);
             }
-            let mut params = Vec::new();
+            let mut collected = Vec::new();
             for (_, ty) in &fields {
-                collect_tyvars(self.ast, *ty, &mut params);
+                collect_tyvars(self.ast, *ty, &mut collected);
             }
+            let params = self.splice_params("struct", name, collected)?;
             self.structs.insert(name, StructInfo { params, fields });
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
@@ -997,12 +1199,13 @@ impl<'a> Checker<'a> {
                 }
                 variants.push(v);
             }
-            let mut params = Vec::new();
+            let mut collected = Vec::new();
             for v in &variants {
                 for (_, ty) in &v.payload {
-                    collect_tyvars(self.ast, *ty, &mut params);
+                    collect_tyvars(self.ast, *ty, &mut collected);
                 }
             }
+            let params = self.splice_params("union", name, collected)?;
             self.unions.insert(name, UnionInfo { params, variants });
         }
         self.pending_includes.remove(name);
@@ -1015,6 +1218,28 @@ impl<'a> Checker<'a> {
     /// or an overload when several do (resolved by result type at the use site);
     /// always reachable qualified as `Effect.op`. Its `Arg -> Res` scheme is also
     /// kept per effect for handler-clause typing.
+    /// Build the closed record row of every non-generic struct and hand them to
+    /// the engine, so a nominal struct can unify with a structural record row (the
+    /// hybrid bridge). Generic structs are skipped (their row would need per-use
+    /// instantiation); passing one where an open row is expected is a known gap.
+    fn register_struct_rows(&mut self) {
+        let simple: Vec<(&'a str, Vec<(&'a str, Aol<Ty>)>)> = self
+            .structs
+            .iter()
+            .filter(|(_, info)| info.params.is_empty())
+            .map(|(name, info)| (*name, info.fields.clone()))
+            .collect();
+        let mut rows = HashMap::new();
+        for (name, fields) in simple {
+            let mut tvars = HashMap::new();
+            let row = fields.iter().rev().fold(Type::RowEmpty, |rest, (fname, fty)| {
+                Type::row_field(fname, self.ty_of_ast(*fty, &mut tvars), rest)
+            });
+            rows.insert(name.to_string(), row);
+        }
+        self.eng.set_struct_rows(rows);
+    }
+
     fn register_effects(&mut self, program: &Program) {
         let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
         for item in program.items.iter() {
@@ -1118,11 +1343,19 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // A structural record (an open-row parameter, say): look the field up in
+        // the row, growing an open tail to include it.
+        if let Type::Record(_) = self.eng.resolve(rec_ty) {
+            return self
+                .eng
+                .record_field(rec_ty, field, &format!("accessing field `{field}`"));
+        }
         Ok(self.eng.fresh())
     }
 
     fn infer_struct_lit(
         &mut self,
+        site: Aol<Expr>,
         ty: Option<&'a str>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
@@ -1132,7 +1365,12 @@ impl<'a> Checker<'a> {
             let (head, args) = self.spine(&base_ty);
             match &head {
                 Type::Con(n) if self.structs.contains_key(n.as_str()) => {
-                    let info = self.structs[n.as_str()].clone();
+                    let (name, info) = self
+                        .structs
+                        .get_key_value(n.as_str())
+                        .map(|(k, v)| (*k, v.clone()))
+                        .expect("struct present");
+                    self.struct_lit_names.insert(site, name.to_string());
                     let subst = subst_from_args(&info.params, &args, &mut self.eng);
                     (info, base_ty, subst)
                 }
@@ -1143,17 +1381,29 @@ impl<'a> Checker<'a> {
             }
         } else {
             let resolved = match ty {
-                Some(n) => self.structs.get(n).cloned().map(|info| (n, info)),
+                Some(n) => self.structs.get_key_value(n).map(|(k, v)| (*k, v.clone())),
                 None => self.resolve_struct_by_fields(fields),
             };
             match resolved {
                 Some((name, info)) => {
+                    self.struct_lit_names.insert(site, name.to_string());
                     let (args, subst) = self.instantiate_params(&info.params);
                     (info, applied(name, &args), subst)
                 }
+                // No fresh() escape hatch: a struct literal whose type cannot be
+                // determined is a compile error, not a silent runtime fault. The
+                // checking direction (an annotation / expected type / qualified
+                // `Type.{..}`) resolves it; a bare positional literal cannot.
                 None => {
                     self.infer_field_inits(fields)?;
-                    return Ok(self.eng.fresh());
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "cannot infer which struct this `.{{ .. }}` builds"
+                    )
+                    .with_note(
+                        "qualify it (`Type.{ .. }`), annotate the binding, or use named fields that match a struct"
+                            .to_string(),
+                    ));
                 }
             }
         };
@@ -1253,6 +1503,195 @@ impl<'a> Checker<'a> {
             "Nil" | "Cons" => Some(ty::LIST),
             _ => None,
         })
+    }
+
+    /// Infer an anonymous record value. Plain `{ .x = e }` builds a closed row from
+    /// the fields' inferred types; `{ .x = e, with base }` stacks its fields on
+    /// `base`'s (row concat); `{ .x = e | base }` updates `base` (its shape is
+    /// preserved, each listed field must already exist).
+    fn infer_record(
+        &mut self,
+        fields: &'a [FieldInit],
+        with: Option<Aol<Expr>>,
+        update: Option<Aol<Expr>>,
+    ) -> Result<Type> {
+        let mut explicit: Vec<(String, Type)> = Vec::new();
+        for fi in fields {
+            match fi {
+                FieldInit::Named { name, value } => {
+                    let t = self.infer(*value)?;
+                    explicit.push((self.text(*name).to_string(), t));
+                }
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a record field needs a name (`.field = value`)"
+                    ));
+                }
+            }
+        }
+        if let Some(base) = update {
+            // Update preserves the base's shape (open or closed): each listed field
+            // must resolve in the base, and the result type is the base's.
+            let base_ty = self.infer(base)?;
+            for (n, got) in &explicit {
+                let want = self.field_type_of(&base_ty, n)?;
+                self.eng.unify(got, &want, "in a record update")?;
+            }
+            return Ok(base_ty);
+        }
+        if let Some(w) = with {
+            // Stack: prepend the explicit fields onto the base's row, keeping the
+            // base's tail (so stacking onto an open row stays open).
+            let wty = self.infer(w)?;
+            let row = self.record_row_of(&wty)?;
+            let full = explicit
+                .into_iter()
+                .rev()
+                .fold(row, |rest, (n, t)| Type::row_field(&n, t, rest));
+            return Ok(Type::record(full));
+        }
+        Ok(Type::record_of(explicit.into_iter()))
+    }
+
+    /// The type of field `name` in a record value: through the row for a structural
+    /// record (open tail grows to include it), or the declared field for a struct.
+    fn field_type_of(&mut self, base: &Type, name: &str) -> Result<Type> {
+        if let Type::Record(_) = self.eng.resolve(base) {
+            return self
+                .eng
+                .record_field(base, name, "in a record update");
+        }
+        for (fname, fty) in self.record_fields_of(base)? {
+            if fname == name {
+                return Ok(fty);
+            }
+        }
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "record update sets `{name}`, which the base record does not have"
+        ))
+    }
+
+    /// The record row of a value (the inner row of a structural record, possibly
+    /// open; or a struct's closed row), for stacking fields onto it.
+    fn record_row_of(&mut self, base: &Type) -> Result<Type> {
+        if let Type::Record(row) = self.eng.resolve(base) {
+            return Ok((*row).clone());
+        }
+        let fields = self.record_fields_of(base)?;
+        Ok(fields
+            .into_iter()
+            .rev()
+            .fold(Type::RowEmpty, |rest, (n, t)| Type::row_field(&n, t, rest)))
+    }
+
+    /// Whether `ty` is a record-shaped target: a structural record row, or a
+    /// The nominal struct name `ty` resolves to (possibly applied), if any.
+    fn struct_name_of(&self, ty: &Type) -> Option<&'a str> {
+        let (head, _) = self.spine(ty);
+        if let Type::Con(n) = &head {
+            if let Some((k, _)) = self.structs.get_key_value(n.as_str()) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    /// The head codata type name and its type arguments, if `ty` is a (possibly
+    /// applied) declared codata type.
+    fn codata_head(&self, ty: &Type) -> Option<(&'a str, Vec<Type>)> {
+        let (head, args) = self.spine(ty);
+        if let Type::Con(name) = &head {
+            if let Some((n, _)) = self.codata.get_key_value(name.as_str()) {
+                return Some((n, args));
+            }
+        }
+        None
+    }
+
+    /// Check a codata construction `{ .obs = e, ... }` against `expected`: every
+    /// observation must be supplied and typed at its declared result type.
+    fn check_codata_lit(
+        &mut self,
+        site: Aol<Expr>,
+        fields: &'a [FieldInit],
+        expected: &Type,
+    ) -> Result<()> {
+        let (name, args) = self.codata_head(expected).expect("guarded on a codata type");
+        let info = self.codata[name].clone();
+        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+        for (obs, obs_ty) in &info.observations {
+            let clause = fields.iter().find_map(|f| match f {
+                FieldInit::Named { name, value } if self.text(*name) == *obs => Some(*value),
+                _ => None,
+            });
+            match clause {
+                Some(value) => {
+                    let want = self.ty_of_ast(*obs_ty, &mut subst);
+                    self.check(value, &want)?;
+                }
+                None => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "codata `{name}` construction is missing observation `{obs}`"
+                    ))
+                }
+            }
+        }
+        for f in fields {
+            if let FieldInit::Named { name: fname, .. } = f {
+                let n = self.text(*fname);
+                if !info.observations.iter().any(|(o, _)| *o == n) {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "codata `{name}` has no observation `{n}`"
+                    ));
+                }
+            }
+        }
+        self.codata_lits.insert(site);
+        Ok(())
+    }
+
+    /// The `(label, type)` fields of a record value: a structural [`Type::Record`]
+    /// (its closed row) or a nominal struct (its declared fields, instantiated).
+    fn record_fields_of(&mut self, ty: &Type) -> Result<Vec<(String, Type)>> {
+        if let Type::Record(row) = self.eng.resolve(ty) {
+            let mut out = Vec::new();
+            let mut cur = (*row).clone();
+            loop {
+                match self.eng.resolve(&cur) {
+                    Type::RowField(l, fty, rest) => {
+                        out.push((l, (*fty).clone()));
+                        cur = *rest;
+                    }
+                    Type::RowEmpty => return Ok(out),
+                    _ => {
+                        return Err(diag!(
+                            Code::TypeMismatch, Span::at(0), 0,
+                            "cannot use a record with an unknown (open) row here"
+                        ))
+                    }
+                }
+            }
+        }
+        let (head, args) = self.spine(ty);
+        if let Type::Con(name) = &head {
+            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+                let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                return Ok(info
+                    .fields
+                    .iter()
+                    .map(|(n, fty)| (n.to_string(), self.ty_of_ast(*fty, &mut subst)))
+                    .collect());
+            }
+        }
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "expected a record or struct value here"
+        ))
     }
 
     fn resolve_struct_by_fields(&self, fields: &[FieldInit]) -> Option<(&'a str, StructInfo<'a>)> {
@@ -1512,12 +1951,28 @@ impl<'a> Checker<'a> {
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name));
                 let rec_ty = self.infer(record)?;
+                // `x.obs` on a codata value is an observation (record the site so
+                // lowering runs the thunk); otherwise it is field/tuple access.
+                if let Some((cname, args)) = self.codata_head(&rec_ty) {
+                    let info = self.codata[cname].clone();
+                    if let Some((_, obs_ty)) = info.observations.iter().find(|(o, _)| *o == name) {
+                        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
+                        let obs_ty = *obs_ty;
+                        self.observations.insert(e);
+                        return Ok(self.ty_of_ast(obs_ty, &mut subst));
+                    }
+                }
                 self.infer_field(&rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
                 let ty = ty.map(|t| self.text(t));
-                self.infer_struct_lit(ty, fields, *spread)
+                self.infer_struct_lit(e, ty, fields, *spread)
             }
+            Expr::Record {
+                fields,
+                with,
+                update,
+            } => self.infer_record(fields, *with, *update),
             Expr::Variant {
                 ty, tag, fields, ..
             } => {
@@ -2173,6 +2628,28 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `ty` is a record whose row is closed (ends in `RowEmpty`, so its
+    /// fields are fully known) rather than open (a tail variable).
+    fn record_is_closed(&self, ty: &Type) -> bool {
+        let Type::Record(row) = self.eng.resolve(ty) else {
+            return false;
+        };
+        let mut cur = (*row).clone();
+        loop {
+            match self.eng.resolve(&cur) {
+                Type::RowField(_, _, rest) => cur = *rest,
+                Type::RowEmpty => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Whether `ty` resolves to a not-yet-defaulted numeric-literal variable.
+    fn is_numeric(&self, ty: &Type) -> bool {
+        let r = self.eng.resolve(ty);
+        matches!(r, Type::Var(_)) && self.numeric.iter().any(|n| self.eng.resolve(n) == r)
+    }
+
     fn default_numerics(&mut self) -> Result<bool> {
         let vars = std::mem::take(&mut self.numeric);
         let mut changed = false;
@@ -2232,13 +2709,18 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         };
-        let value_ty = self.infer(b.value)?;
-        if let Some(sig) = b.sig {
-            let mut tvars = HashMap::new();
-            let sig_ty = self.ty_of_ast(sig, &mut tvars);
-            self.eng
-                .unify(&value_ty, &sig_ty, "against a 'let' signature")?;
-        }
+        // With a signature, CHECK the value against it (bidirectional), so the
+        // expected type reaches constructs that need it -- e.g. a positional
+        // `.{ .. }` literal resolves its struct from the annotation.
+        let value_ty = match b.sig {
+            Some(sig) => {
+                let mut tvars = HashMap::new();
+                let sig_ty = self.ty_of_ast(sig, &mut tvars);
+                self.check(b.value, &sig_ty)?;
+                sig_ty
+            }
+            None => self.infer(b.value)?,
+        };
         if let Some(decl) = &declared {
             self.eng
                 .unify(decl, &value_ty, "in a recursive 'let' binding")?;
@@ -2329,6 +2811,7 @@ impl<'a> Checker<'a> {
                 let ty = self.text(*ty);
                 self.type_struct_pattern(ty, fields, expected)
             }
+            Pattern::Record { fields, rest } => self.type_record_pattern(fields, *rest, expected),
             Pattern::Variant {
                 ty, tag, fields, ..
             } => {
@@ -2337,6 +2820,54 @@ impl<'a> Checker<'a> {
                 self.type_variant_pattern(ty, tag, fields, expected)
             }
         }
+    }
+
+    /// Type a record pattern by building an OPEN row from its fields and unifying
+    /// with the scrutinee (so it matches any record/struct that has them). Binds
+    /// each field's subpattern; the rest may be discarded (`.._`) but not yet bound.
+    fn type_record_pattern(
+        &mut self,
+        fields: &'a [FieldPat],
+        rest: Option<Aol<Pattern>>,
+        expected: &Type,
+    ) -> Result<()> {
+        let tail = self.eng.fresh();
+        let mut entries: Vec<(&'a str, Type, Option<Aol<Pattern>>)> = Vec::new();
+        for f in fields {
+            match f {
+                FieldPat::Named { name, pat } => {
+                    entries.push((self.text(*name), self.eng.fresh(), Some(*pat)))
+                }
+                FieldPat::Shorthand(name) => entries.push((self.text(*name), self.eng.fresh(), None)),
+                FieldPat::Positional(_) => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a record pattern's fields need names (`.field = pat`)"
+                    ))
+                }
+            }
+        }
+        let row = entries
+            .iter()
+            .rev()
+            .fold(tail, |rest, (n, t, _)| Type::row_field(n, t.clone(), rest));
+        self.eng
+            .unify(expected, &Type::record(row), "in a record pattern")?;
+        for (name, t, pat) in entries {
+            match pat {
+                Some(p) => self.type_pattern(p, &t)?,
+                None => self.bind(name, t),
+            }
+        }
+        if let Some(r) = rest {
+            if !matches!(self.pnode(r), Pattern::Wild) {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "binding the record rest (`..name`) is not yet supported; use `.._` to ignore the remaining fields"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn type_struct_pattern(
@@ -2444,25 +2975,92 @@ impl<'a> Checker<'a> {
             || self.structs.contains_key(name)
             || self.unions.contains_key(name)
             || self.aliases.contains_key(name)
+            || self.codata.contains_key(name)
+    }
+
+    /// The number of type parameters a user-declared type constructor takes, if
+    /// `name` is a struct / union / codata (the ones whose arity we track).
+    fn type_arity(&self, name: &str) -> Option<usize> {
+        self.structs
+            .get(name)
+            .map(|i| i.params.len())
+            .or_else(|| self.unions.get(name).map(|i| i.params.len()))
+            .or_else(|| self.codata.get(name).map(|i| i.params.len()))
+            .or_else(|| self.aliases.get(name).map(|(p, _)| p.len()))
+    }
+
+    /// Flag an over-applied type constructor (`Weirdtype Int Int Int` for a
+    /// two-parameter `Weirdtype`). Deferred like other type-name errors.
+    fn check_type_arity(&mut self, ty: Aol<Ty>) {
+        let mut count = 0;
+        let mut cur = ty;
+        while let Ty::App(h, _) = self.tnode(cur) {
+            count += 1;
+            cur = *h;
+        }
+        if let Ty::Con { name, .. } = self.tnode(cur) {
+            let name = self.text(*name);
+            if let Some(arity) = self.type_arity(name) {
+                if count > arity && self.unknown_type.is_none() {
+                    let mut d = diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "type `{name}` takes {arity} parameter(s) but {count} were given"
+                    );
+                    if let Some(span) = self.ast.ty_span(ty) {
+                        d = d.fill_span(span);
+                    }
+                    self.unknown_type = Some(d);
+                }
+            }
+        }
+    }
+
+    /// If `ty` is an alias applied to zero or more arguments, expand it: bind the
+    /// alias's parameters to the arguments (a fresh variable for any not supplied,
+    /// so an under-applied alias stays polymorphic, as for structs) and elaborate
+    /// the body under that binding. Returns None when the spine head is not an alias.
+    fn try_expand_alias(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Option<Type> {
+        let mut args = Vec::new();
+        let mut cur = ty;
+        while let Ty::App(h, a) = self.tnode(cur) {
+            args.push(*a);
+            cur = *h;
+        }
+        let name = match self.tnode(cur) {
+            Ty::Con { name, .. } => self.text(*name),
+            _ => return None,
+        };
+        let (params, body) = self.aliases.get(name)?.clone();
+        args.reverse();
+        self.check_type_arity(ty);
+        let mut sub: HashMap<&'a str, Type> = HashMap::new();
+        for (i, p) in params.iter().enumerate() {
+            let t = match args.get(i) {
+                Some(&a) => self.ty_of_ast(a, tvars),
+                None => self.eng.fresh(),
+            };
+            sub.insert(*p, t);
+        }
+        Some(self.ty_of_ast(body, &mut sub))
     }
 
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        // An alias at the head of an application spine expands first, so `MapInt Bool`
+        // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
+        if let Some(t) = self.try_expand_alias(ty, tvars) {
+            return t;
+        }
         match self.tnode(ty) {
             Ty::Con { name, .. } => {
                 let name = self.text(*name);
-                match self.aliases.get(name).copied() {
-                    Some(alias) => self.ty_of_ast(alias, tvars),
-                    None => {
-                        if !self.is_known_type(name) && self.unknown_type.is_none() {
-                            let mut d = unknown_type(name);
-                            if let Some(span) = self.ast.ty_span(ty) {
-                                d = d.fill_span(span);
-                            }
-                            self.unknown_type = Some(d);
-                        }
-                        Type::con(canonical_con(name))
+                if !self.is_known_type(name) && self.unknown_type.is_none() {
+                    let mut d = unknown_type(name);
+                    if let Some(span) = self.ast.ty_span(ty) {
+                        d = d.fill_span(span);
                     }
+                    self.unknown_type = Some(d);
                 }
+                Type::con(canonical_con(name))
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
@@ -2472,6 +3070,7 @@ impl<'a> Checker<'a> {
                     .clone()
             }
             Ty::App(head, arg) => {
+                self.check_type_arity(ty);
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }
@@ -2502,12 +3101,21 @@ impl<'a> Checker<'a> {
             Ty::Tuple(items) => {
                 Type::Tuple(items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect())
             }
-            Ty::Record(fields) => {
-                if let [f] = fields.as_ref() {
-                    self.ty_of_ast(f.ty, tvars)
-                } else {
-                    Type::Tuple(fields.iter().map(|f| self.ty_of_ast(f.ty, tvars)).collect())
-                }
+            Ty::Record { fields, tail } => {
+                // A record type: `{ x: A | r }` is open (row variable tail), `{ x: A,
+                // y: B }` is closed (empty tail). Records are real, name-keyed types;
+                // positional/scalar values promote to them at call sites.
+                let rest = match tail {
+                    Some(tvar) => {
+                        let name = self.text(*tvar);
+                        tvars.entry(name).or_insert_with(|| self.eng.fresh()).clone()
+                    }
+                    None => Type::RowEmpty,
+                };
+                let row = fields.iter().rev().fold(rest, |rest, f| {
+                    Type::row_field(self.text(f.name), self.ty_of_ast(f.ty, tvars), rest)
+                });
+                Type::record(row)
             }
         }
     }
@@ -2692,6 +3300,16 @@ fn free_globals<'a>(
                 free_globals(ast, *s, globals, bound, out);
             }
         }
+        Expr::Record {
+            fields,
+            with,
+            update,
+        } => {
+            free_globals_field_inits(ast, fields, globals, bound, out);
+            for base in with.iter().chain(update.iter()) {
+                free_globals(ast, *base, globals, bound, out);
+            }
+        }
         Expr::Variant { fields, .. } => free_globals_field_inits(ast, fields, globals, bound, out),
 
         Expr::Let { bindings, body } => {
@@ -2818,6 +3436,18 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                 }
             }
         }
+        Pattern::Record { fields, rest } => {
+            for f in fields.iter() {
+                match f {
+                    FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
+                    FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
+                }
+            }
+            if let Some(r) = rest {
+                collect_pattern_binders(ast, *r, bound);
+            }
+        }
         Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {
         }
     }
@@ -2867,6 +3497,13 @@ fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
         Type::RowExtend(label, rest) => {
             format!("R{}_{}", label.replace('.', "_"), ty_key(rest, vars))
         }
+        Type::Record(row) => format!("D{}", ty_key(row, vars)),
+        Type::RowField(label, ty, rest) => format!(
+            "{}:{}_{}",
+            label.replace('.', "_"),
+            ty_key(ty, vars),
+            ty_key(rest, vars)
+        ),
     }
 }
 
@@ -2924,7 +3561,15 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *to, out);
         }
         Ty::Tuple(items) => items.iter().for_each(|t| collect_tyvars(ast, *t, out)),
-        Ty::Record(fields) => fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out)),
+        Ty::Record { fields, tail } => {
+            fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out));
+            if let Some(t) = tail {
+                let name = ast.text(*t);
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
         Ty::Con { .. } | Ty::Unit => {}
     }
 }
@@ -3000,4 +3645,25 @@ fn unknown_type(name: &str) -> Diagnostic {
         Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`";
         note: "a type variable is written as a lowercase name; a capitalized type must be declared"
     )
+}
+
+/// A type declaration (or `with` splice) uses a type variable it does not declare.
+/// Parameters are mandatory, so this reports the fix: list `v` after the keyword.
+fn undeclared_param(kind: &str, name: &str, v: &str, declared: &[&str], spliced: bool) -> Diagnostic {
+    let how = if spliced {
+        format!("`{name}` splices in a field using the type variable `{v}`")
+    } else {
+        format!("`{name}` uses the type variable `{v}`")
+    };
+    let msg = if declared.is_empty() {
+        format!("{how}, but `{name}` declares no type parameters")
+    } else {
+        format!(
+            "{how}, which is not one of `{name}`'s declared parameters `{}`",
+            declared.join(" ")
+        )
+    };
+    Diagnostic::error(Code::TypeUnbound, Span::at(0), 0, msg).with_note(format!(
+        "type parameters are mandatory; declare every one after the keyword, e.g. `@{kind} {v} = ...`"
+    ))
 }

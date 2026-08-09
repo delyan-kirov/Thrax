@@ -21,6 +21,9 @@ fn lower(src: &str) -> Vec<Program> {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
@@ -149,6 +152,56 @@ fn type_splice_with() {
                $ test : Int =\n\
                \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
                \t(p.x + p.y + p.z) + rank Color.Blue\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn open_row_record_param() {
+    // Row-polymorphic record param over the C backend: field access resolves the
+    // same by-name as the interpreter, regardless of the concrete struct passed.
+    let src = "@mod M\n\
+               $ Point  : @struct = x: Int, y: Int,\n\
+               $ Point3 : @struct = x: Int, y: Int, z: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ test : Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn anonymous_record_values() {
+    // Records under an open row (name-keyed) and pair decay (positional) must build
+    // and read the same on the C backend as the interpreter.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ shift : { x: Int | r } -> { x: Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ add : {x: Int, y: Int} -> Int = x + y\n\
+               $ test : Int =\n\
+               \t(area { .x = 2, .y = 5, .tag = 7 }) + (area (shift { .x = 1, .y = 4 })) + add { .x = 5, .y = 6 }\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn record_destructuring_pattern() {
+    // Record patterns lower to name-keyed struct matches; the C backend must
+    // destructure them the same as the interpreter.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
+               $ test : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn codata_stream() {
+    // Codata desugars to a record of thunks + apply-unit observation; the C
+    // backend must drive the lazy infinite stream the same as the interpreter.
+    let src = "@mod M\n\
+               $ Stream : @codata t = head : t, tail : Stream t,\n\
+               $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
+               $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ dbl : Int -> Int = \\x = x + x\n\
+               $ test : Int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
 }
 

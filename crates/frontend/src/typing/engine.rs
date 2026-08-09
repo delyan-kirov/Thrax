@@ -26,6 +26,10 @@ enum Var {
 pub struct Engine {
     vars: Vec<Var>,
     level: Level,
+    /// Closed record rows of the non-generic declared structs, by name. Lets a
+    /// nominal struct `Con("Point")` unify with a structural record row (the
+    /// hybrid bridge): passing a struct where an open row `{ x | r }` is expected.
+    struct_rows: std::collections::HashMap<String, Type>,
 }
 
 /// A checkpoint of the [`Engine`] state, taken by [`Engine::save`] and rewound by
@@ -46,6 +50,21 @@ impl Engine {
         Engine {
             vars: Vec::new(),
             level: 0,
+            struct_rows: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register the non-generic structs' record rows for the nominal-struct /
+    /// record-row unification bridge (see [`Engine::struct_rows`]).
+    pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, Type>) {
+        self.struct_rows = rows;
+    }
+
+    /// Look up field `label` in a record type, growing an open tail to include it.
+    pub fn record_field(&mut self, record: &Type, label: &str, where_: &str) -> Result<Type> {
+        match self.resolve(record) {
+            Type::Record(row) => Ok(self.rewrite_field(&row, label, where_)?.0),
+            _ => Ok(self.fresh()),
         }
     }
 
@@ -117,6 +136,10 @@ impl Engine {
             }
             Type::Tuple(items) => Type::Tuple(items.iter().map(|t| self.zonk(t)).collect()),
             Type::RowExtend(label, rest) => Type::RowExtend(label, Box::new(self.zonk(&rest))),
+            Type::Record(row) => Type::record(self.zonk(&row)),
+            Type::RowField(label, ty, rest) => {
+                Type::RowField(label, Box::new(self.zonk(&ty)), Box::new(self.zonk(&rest)))
+            }
             other => other, // Var (unbound/generic), Con, or RowEmpty
         }
     }
@@ -150,8 +173,86 @@ impl Engine {
             }
             (Type::RowEmpty, Type::RowEmpty) => Ok(()),
             (Type::RowExtend(..), _) | (_, Type::RowExtend(..)) => self.unify_row(&a, &b, where_),
+            (Type::Record(ra), Type::Record(rb)) => self.unify_record(ra, rb, where_),
+            (Type::RowField(..), _) | (_, Type::RowField(..)) => {
+                self.unify_record_row(&a, &b, where_)
+            }
+            // The hybrid bridge: a nominal struct satisfies a structural record row
+            // by expanding to its (closed) row. Only non-generic structs are
+            // registered, so a generic struct instance still mismatches here.
+            (Type::Con(name), Type::Record(row)) | (Type::Record(row), Type::Con(name)) => {
+                match self.struct_rows.get(name) {
+                    Some(srow) => {
+                        let srow = srow.clone();
+                        let row = (**row).clone();
+                        self.unify_record_row(&srow, &row, where_)
+                    }
+                    None => Err(self.mismatch(&a, &b, where_)),
+                }
+            }
             _ => Err(self.mismatch(&a, &b, where_)),
         }
+    }
+
+    /// Unify two record types by unifying their rows.
+    fn unify_record(&mut self, a: &Type, b: &Type, where_: &str) -> Result<()> {
+        self.unify_record_row(a, b, where_)
+    }
+
+    /// Unify two record rows (Leijen scoped-label discipline, plus field types):
+    /// bring the head field of one row to the head of the other, unify the field
+    /// types, then unify the tails. An open tail (a row variable) grows to accept a
+    /// missing field, which is where row polymorphism comes from.
+    fn unify_record_row(&mut self, a: &Type, b: &Type, where_: &str) -> Result<()> {
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Type::RowEmpty, Type::RowEmpty) => Ok(()),
+            (Type::Var(i), Type::Var(j)) if i == j => Ok(()),
+            (Type::Var(i), _) => self.bind(*i, &b),
+            (_, Type::Var(j)) => self.bind(*j, &a),
+            (Type::RowField(label, fty, a_rest), _) => {
+                let (b_fty, b_rest) = self.rewrite_field(&b, label, where_)?;
+                self.unify(fty, &b_fty, where_)?;
+                self.unify_record_row(a_rest, &b_rest, where_)
+            }
+            // The other side ran out of fields but this one still wants `label`.
+            (Type::RowEmpty, Type::RowField(label, ..)) => Err(self.field_missing(label, where_)),
+            _ => Err(self.mismatch(&a, &b, where_)),
+        }
+    }
+
+    /// Bring an occurrence of field `label` to the head of record `row`, returning
+    /// its field type and the remaining row. An open tail grows to include the
+    /// field (fresh field type); a closed row lacking it is a type error.
+    fn rewrite_field(&mut self, row: &Type, label: &str, where_: &str) -> Result<(Type, Type)> {
+        match self.resolve(row) {
+            Type::RowField(l, fty, rest) => {
+                if l == label {
+                    Ok(((*fty).clone(), (*rest).clone()))
+                } else {
+                    let (found, deeper) = self.rewrite_field(&rest, label, where_)?;
+                    Ok((found, Type::RowField(l, fty, Box::new(deeper))))
+                }
+            }
+            Type::Var(id) => {
+                let fty = self.fresh();
+                let tail = self.fresh();
+                let ext = Type::RowField(label.to_string(), Box::new(fty.clone()), Box::new(tail.clone()));
+                self.bind(id, &ext)?;
+                Ok((fty, tail))
+            }
+            _ => Err(self.field_missing(label, where_)),
+        }
+    }
+
+    fn field_missing(&self, label: &str, where_: &str) -> Diagnostic {
+        Diagnostic::error(
+            Code::TypeMismatch,
+            Span::at(0),
+            0,
+            format!("record has no field `{label}` {where_}"),
+        )
     }
 
     /// Unify two effect rows, at least one a `<label | rest>` extension (Leijen's
@@ -270,6 +371,11 @@ impl Engine {
                 Ok(())
             }
             Type::RowExtend(_, rest) => self.occurs_and_adjust(id, level, &rest),
+            Type::Record(row) => self.occurs_and_adjust(id, level, &row),
+            Type::RowField(_, ty, rest) => {
+                self.occurs_and_adjust(id, level, &ty)?;
+                self.occurs_and_adjust(id, level, &rest)
+            }
         }
     }
 
@@ -321,6 +427,11 @@ impl Engine {
             }
             Type::Tuple(items) => items.iter().for_each(|t| self.generalize_except(t, mono)),
             Type::RowExtend(_, rest) => self.generalize_except(&rest, mono),
+            Type::Record(row) => self.generalize_except(&row, mono),
+            Type::RowField(_, ty, rest) => {
+                self.generalize_except(&ty, mono);
+                self.generalize_except(&rest, mono);
+            }
             Type::Con(_) | Type::RowEmpty => {}
         }
     }
@@ -343,6 +454,11 @@ impl Engine {
             }
             Type::Tuple(items) => items.iter().for_each(|t| self.collect_vars(t, out)),
             Type::RowExtend(_, rest) => self.collect_vars(&rest, out),
+            Type::Record(row) => self.collect_vars(&row, out),
+            Type::RowField(_, ty, rest) => {
+                self.collect_vars(&ty, out);
+                self.collect_vars(&rest, out);
+            }
             Type::Con(_) | Type::RowEmpty => {}
         }
     }
@@ -381,6 +497,12 @@ impl Engine {
             Type::RowExtend(label, rest) => {
                 Type::RowExtend(label, Box::new(self.instantiate_with(&rest, mapping)))
             }
+            Type::Record(row) => Type::record(self.instantiate_with(&row, mapping)),
+            Type::RowField(label, ty, rest) => Type::RowField(
+                label,
+                Box::new(self.instantiate_with(&ty, mapping)),
+                Box::new(self.instantiate_with(&rest, mapping)),
+            ),
             other => other, // Con or RowEmpty
         }
     }

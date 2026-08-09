@@ -31,12 +31,22 @@ pub enum Type {
     Arrow(Box<Type>, Box<Type>, Box<Type>),
     /// A tuple `{ A, B, ... }`; the empty tuple is [`Type::Con`]`("{}")` (unit).
     Tuple(Vec<Type>),
-    /// The empty, closed effect row `<>`: a pure computation.
+    /// The empty, closed effect row `<>`: a pure computation. Also the empty
+    /// record row (the tail of a closed record).
     RowEmpty,
     /// An effect-row extension `<label | rest>`. Rows are unordered up to
     /// reordering (Leijen scoped labels); a row variable in tail position is an
     /// ordinary [`Type::Var`].
     RowExtend(String, Box<Type>),
+    /// A record type `{ label: ty, ... | rest }`, wrapping a record row built from
+    /// [`Type::RowField`] / [`Type::RowEmpty`] / a tail [`Type::Var`]. A declared
+    /// struct is nominal ([`Type::Con`]); this is the structural, row-polymorphic
+    /// form, and a `Con` struct unifies with an open record row structurally.
+    Record(Box<Type>),
+    /// A record-row field `label: ty | rest`. Like [`Type::RowExtend`] but carries
+    /// the field's type; scoped like effect rows (duplicate labels stack, first
+    /// wins). Only appears inside a [`Type::Record`].
+    RowField(String, Box<Type>, Box<Type>),
 }
 
 impl Type {
@@ -54,6 +64,18 @@ impl Type {
     }
     pub fn row_extend(label: &str, rest: Type) -> Type {
         Type::RowExtend(label.to_string(), Box::new(rest))
+    }
+    pub fn record(row: Type) -> Type {
+        Type::Record(Box::new(row))
+    }
+    pub fn row_field(label: &str, ty: Type, rest: Type) -> Type {
+        Type::RowField(label.to_string(), Box::new(ty), Box::new(rest))
+    }
+    /// A closed record row from `(label, ty)` pairs in order.
+    pub fn record_of(fields: impl DoubleEndedIterator<Item = (String, Type)>) -> Type {
+        Type::record(fields.rev().fold(Type::RowEmpty, |rest, (l, t)| {
+            Type::RowField(l, Box::new(t), Box::new(rest))
+        }))
     }
     pub fn app(head: Type, arg: Type) -> Type {
         Type::App(Box::new(head), Box::new(arg))
@@ -132,6 +154,38 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
                     out.push_str(&namer(t));
                 }
                 out.push('>');
+            }
+            Type::Record(row) => {
+                out.push('{');
+                let mut cur = row.as_ref();
+                let mut first = true;
+                loop {
+                    match cur {
+                        Type::RowField(label, fty, rest) => {
+                            out.push_str(if first { " " } else { ", " });
+                            first = false;
+                            out.push_str(label);
+                            out.push_str(": ");
+                            go(fty, namer, out, 0);
+                            cur = rest;
+                        }
+                        Type::Var(id) => {
+                            out.push_str(" | ");
+                            out.push_str(&namer(*id));
+                            break;
+                        }
+                        _ => break, // RowEmpty (closed) or malformed
+                    }
+                }
+                out.push_str(" }");
+            }
+            // A record row seen outside a `Record` wrapper (raw dumps only).
+            Type::RowField(label, fty, rest) => {
+                out.push_str(label);
+                out.push_str(": ");
+                go(fty, namer, out, 0);
+                out.push_str(" | ");
+                go(rest, namer, out, 0);
             }
         }
     }

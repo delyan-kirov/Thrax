@@ -220,6 +220,9 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         let (exprs, pats) = checker.array_nodes();
         resolved.array_exprs.extend(exprs.iter().copied());
         resolved.array_pats.extend(pats.iter().copied());
+        for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }

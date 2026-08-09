@@ -74,6 +74,7 @@ impl Decls {
                     name,
                     includes,
                     fields,
+                    ..
                 } => {
                     let names = fields
                         .iter()
@@ -94,6 +95,7 @@ impl Decls {
                     name,
                     includes,
                     variants,
+                    ..
                 } => {
                     let uname = ast.text(*name).to_string();
                     if !includes.is_empty() {
@@ -301,6 +303,17 @@ pub enum ImplicitArg {
 pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
+    /// Argument sites promoted to a record, mapped to the target field names (from
+    /// [`crate::typing::Checker::promotions`]); lowering wraps the value.
+    pub promotions: HashMap<Aol<Expr>, Vec<String>>,
+    /// `.{ .. }` struct-literal sites mapped to their resolved struct name (from
+    /// [`crate::typing::Checker::struct_lit_names`]); lowering uses it for the
+    /// field-name layout of a positional literal.
+    pub struct_lit_names: HashMap<Aol<Expr>, String>,
+    /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
+    pub codata_lits: HashSet<Aol<Expr>>,
+    /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
+    pub observations: HashSet<Aol<Expr>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
     /// arguments lowering injects ahead of the explicit ones (from
@@ -475,15 +488,21 @@ impl<'a> Lowerer<'a> {
             return body;
         };
         let (from, to) = (*from, *to);
-        let Ty::Record(fields) = self.tnode(from) else {
+        // Only a CLOSED record parameter is the destructuring sugar; an open
+        // `{ x | r }` is a real record value, so leave it as a plain parameter.
+        let Ty::Record { fields, tail: None } = self.tnode(from) else {
             return body;
         };
         let inner = self.record_params(Some(to), body);
         self.record_param(fields, inner)
     }
 
-    /// Wrap `body` in the lambda that binds one record parameter's fields.
+    /// Wrap `body` in the lambda binding a record parameter's fields by name. The
+    /// parameter is a name-keyed record value, so each field is bound by field
+    /// access (`param.field`); the field bindings are outermost so a `with` field's
+    /// scoping can reference them.
     fn record_param(&mut self, fields: &[RecField], body: Term) -> Term {
+        let param = self.fresh();
         let mut inner = body;
         for f in fields.iter().rev() {
             if f.with {
@@ -496,34 +515,81 @@ impl<'a> Lowerer<'a> {
                 inner = self.desugar_with(subject, &names, inner);
             }
         }
-        if let [f] = fields {
-            return Term::Lam {
-                param: self.text(f.name).to_string(),
+        for f in fields.iter().rev() {
+            let name = self.text(f.name).to_string();
+            let val = Term::Field(Arc::new(Term::var(param.clone())), name.clone());
+            inner = Term::Let {
+                name,
+                rec: false,
+                val: Arc::new(val),
                 body: Arc::new(inner),
             };
         }
-        let param = self.fresh();
-        let pat = Pat::Tuple(
-            fields
-                .iter()
-                .map(|f| Pat::Var(self.text(f.name).to_string()))
-                .collect(),
-        );
         Term::Lam {
-            param: param.clone(),
-            body: Arc::new(Term::Case {
-                scrut: Arc::new(Term::var(param)),
-                arms: Arc::from([Arm {
-                    pat,
-                    guard: None,
-                    body: Arc::new(inner),
-                }]),
-                default: None,
-            }),
+            param,
+            body: Arc::new(inner),
         }
     }
 
     fn expr(&mut self, e: Aol<Expr>) -> Term {
+        // A promoted argument (scalar or positional tuple passed where a record is
+        // expected) is wrapped into a name-keyed record here.
+        if let Some(names) = self.resolved.promotions.get(&e) {
+            let names = names.clone();
+            return self.promote_to_record(e, &names);
+        }
+        self.expr_core(e)
+    }
+
+    /// Wrap a promoted argument into a record with `names`: a positional tuple
+    /// literal maps its elements to the names; a scalar becomes a one-field record;
+    /// a tuple-typed value is bound once and projected by index.
+    fn promote_to_record(&mut self, e: Aol<Expr>, names: &[String]) -> Term {
+        if let Expr::Tuple(items) = self.node(e) {
+            let items: Vec<Aol<Expr>> = items.to_vec();
+            let fields: Vec<(String, Term)> = names
+                .iter()
+                .cloned()
+                .zip(items.into_iter().map(|it| self.expr(it)))
+                .collect();
+            return Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from(fields),
+            };
+        }
+        let val = self.expr_core(e);
+        if names.len() == 1 {
+            return Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from([(names[0].clone(), val)]),
+            };
+        }
+        let t = self.fresh();
+        let fields: Vec<(String, Term)> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                (
+                    n.clone(),
+                    Term::Field(Arc::new(Term::var(t.clone())), i.to_string()),
+                )
+            })
+            .collect();
+        Term::Let {
+            name: t.clone(),
+            rec: false,
+            val: Arc::new(val),
+            body: Arc::new(Term::Struct {
+                name: String::new(),
+                base: None,
+                fields: Arc::from(fields),
+            }),
+        }
+    }
+
+    fn expr_core(&mut self, e: Aol<Expr>) -> Term {
         match self.node(e) {
             Expr::Int(n) => Term::Int(*n),
             Expr::Real(r) => Term::Real(*r),
@@ -604,13 +670,73 @@ impl<'a> Lowerer<'a> {
 
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name).to_string());
-                Term::Field(Arc::new(self.expr(record)), name)
+                let field = Term::Field(Arc::new(self.expr(record)), name);
+                // A codata observation runs the stored thunk (`field {}`).
+                if self.resolved.observations.contains(&e) {
+                    Term::app(field, Term::Unit)
+                } else {
+                    field
+                }
             }
 
             Expr::StructLit { ty, fields, spread } => {
-                let ty = ty.map(|t| self.text(t));
+                // The nominal struct name comes from the AST (`Type.{..}`) or, for a
+                // bare `.{..}`, from the checker's resolution -- so a positional
+                // literal gets the right field-name layout.
+                let ty = ty
+                    .map(|t| self.text(t).to_string())
+                    .or_else(|| self.resolved.struct_lit_names.get(&e).cloned());
                 let spread = *spread;
-                self.struct_lit(ty, fields, spread)
+                self.struct_lit(ty.as_deref(), fields, spread)
+            }
+            Expr::Record {
+                fields,
+                with,
+                update,
+            } => {
+                // Codata construction: each observation clause becomes a thunk
+                // (`\%u = clause`), so construction is finite and observing runs the
+                // clause afresh (non-memoized). Observing (see `Expr::Field`) applies
+                // the thunk to unit.
+                if self.resolved.codata_lits.contains(&e) {
+                    let obs: Vec<(String, Term)> = fields
+                        .iter()
+                        .filter_map(|fi| match fi {
+                            FieldInit::Named { name, value } => {
+                                let body = self.expr(*value);
+                                Some((
+                                    self.text(*name).to_string(),
+                                    Term::Lam {
+                                        param: self.fresh(),
+                                        body: Arc::new(body),
+                                    },
+                                ))
+                            }
+                            FieldInit::Positional(_) => None,
+                        })
+                        .collect();
+                    return Term::Struct {
+                        name: String::new(),
+                        base: None,
+                        fields: Arc::from(obs),
+                    };
+                }
+                // A name-keyed record value. Update (`| base`) and stack (`with
+                // base`) build over that base with the listed fields overriding /
+                // adding; an anonymous record has no nominal name (access is
+                // name-keyed, so the empty name is fine).
+                let base = (*update).or(*with).map(|b| Arc::new(self.expr(b)));
+                let mut out = Vec::new();
+                for fi in fields.iter() {
+                    if let FieldInit::Named { name, value } = fi {
+                        out.push((self.text(*name).to_string(), self.expr(*value)));
+                    }
+                }
+                Term::Struct {
+                    name: String::new(),
+                    base,
+                    fields: Arc::from(out),
+                }
             }
             Expr::Variant {
                 ty, tag, fields, ..
@@ -1018,6 +1144,14 @@ impl<'a> Lowerer<'a> {
                 let fields: Vec<FieldPat> = fields.to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, names.as_deref()),
+                }
+            }
+            // A record pattern matches a name-keyed record/struct by field name,
+            // ignoring the rest (the checker allows only `.._` discard for now).
+            Pattern::Record { fields, .. } => {
+                let fields: Vec<FieldPat> = fields.to_vec();
+                Pat::Struct {
+                    fields: self.field_pats(&fields, None),
                 }
             }
             Pattern::Variant {

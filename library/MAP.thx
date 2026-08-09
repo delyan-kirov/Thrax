@@ -16,11 +16,11 @@ $ with LIST
 $ with MATH
 $ with STR
 
-$ Tree : @union =
+$ Tree : @union k v =
 	Leaf: {},
 	Node: {k, v, Tree k v, Tree k v, Int},  # key, value, left, right, height
 
-$ Map : @struct =
+$ Map : @struct k v =
 	cmpf: k -> k -> Int,
 	count: Int,
 	root: Tree k v,

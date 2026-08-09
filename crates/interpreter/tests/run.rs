@@ -15,6 +15,9 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
@@ -170,6 +173,31 @@ fn struct_with_splices_included_fields() {
 }
 
 #[test]
+fn declared_type_params_control_order() {
+    // `@struct b a` declares the parameters explicitly, so `Box Int Str` binds
+    // b = Int and a = Str (the declared order), not the order the fields mention
+    // them. Reading `snd` back (typed `b`, i.e. Int) must give 7.
+    let src = "@mod M\n\
+               $ Box : @struct b a = fst: a, snd: b\n\
+               $ r : Int = let x : Box Int Str = .{ .fst = \"hi\", .snd = 7 } in x.snd";
+    assert_eq!(run(src, "r"), "7");
+}
+
+#[test]
+fn parameterized_alias_picks_which_generic() {
+    // `KeyInt` fixes the first parameter, `ValInt` the second; the alias's own
+    // parameter fills the one left open. Both instantiate the same `Pair`.
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b\n\
+               $ KeyInt : @alias b = Pair Int b\n\
+               $ ValInt : @alias a = Pair a Int\n\
+               $ p : KeyInt Str = .{ .fst = 3, .snd = \"x\" }\n\
+               $ q : ValInt Str = .{ .fst = \"y\", .snd = 9 }\n\
+               $ r : Int = p.fst + q.snd";
+    assert_eq!(run(src, "r"), "12");
+}
+
+#[test]
 fn union_with_splices_included_variants() {
     // `Color` copies `Base`'s variants; a match over a copied and a new variant
     // both dispatch by tag.
@@ -180,6 +208,70 @@ fn union_with_splices_included_variants() {
                \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
                $ r : Int = rank Color.Red + rank Color.Blue";
     assert_eq!(run(src, "r"), "4");
+}
+
+#[test]
+fn open_row_param_accepts_any_matching_struct() {
+    // One row-polymorphic function `{ x:Int, y:Int | r } -> Int` accepts several
+    // distinct nominal structs, as long as they carry x:Int and y:Int.
+    let src = "@mod M\n\
+               $ Point  : @struct = x: Int, y: Int,\n\
+               $ Point3 : @struct = x: Int, y: Int, z: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ r : Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })";
+    assert_eq!(run(src, "r"), "42");
+}
+
+#[test]
+fn anonymous_records_literal_update_stack() {
+    // Anonymous literal into an open row; update (`| p`) preserving shape and stack
+    // (`with p`) on an open-row parameter.
+    let src = "@mod M\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
+               $ shift : { x: Int | r } -> { x: Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ tag : { x: Int | r } -> { x: Int, tag: Int | r } = \\p = { .tag = 99, with p }\n\
+               $ r : Int =\n\
+               \t(area { .x = 2, .y = 5, .tag = 7 })\n\
+               \t+ (area (shift { .x = 1, .y = 4 }))\n\
+               \t+ (tag { .x = 3, .y = 6 }).tag";
+    assert_eq!(run(src, "r"), "153"); // 10 + 44 + 99
+}
+
+#[test]
+fn record_promotion_and_named_args() {
+    // A record parameter can be called positionally (promoted), by name, or by
+    // name reordered; a one-field record param accepts a bare scalar.
+    let src = "@mod M\n\
+               $ add : {x: Int, y: Int} -> Int = x + y\n\
+               $ inc : {x: Int} -> Int = x + 1\n\
+               $ r : Int =\n\
+               \tadd {5, 6} + add { .x = 5, .y = 6 } + add { .y = 6, .x = 5 } + inc 20 + inc { .x = 20 }";
+    assert_eq!(run(src, "r"), "75"); // 11 + 11 + 11 + 21 + 21
+}
+
+#[test]
+fn record_destructuring_pattern() {
+    // Destructure a record by field name (match arm, and lambda shorthand), on an
+    // open-row value and a nominal struct; `.._` ignores the rest.
+    let src = "@mod M\n\
+               $ Point : @struct = x: Int, y: Int,\n\
+               $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
+               $ nx : Point -> Int = \\p = is p | { .x = a } => a\n\
+               $ r : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 } + nx Point.{ .x = 2, .y = 8 }";
+    assert_eq!(run(src, "r"), "25"); // 12 + 11 + 2
+}
+
+#[test]
+fn codata_stream_is_lazy_and_infinite() {
+    // A codata stream: construction is finite (thunks), and observing drives the
+    // generative recursion lazily, so an infinite stream is fine.
+    let src = "@mod M\n\
+               $ Stream : @codata t = head : t, tail : Stream t,\n\
+               $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ r : Int = (from 10).head + nth 5 (from 10)";
+    assert_eq!(run(src, "r"), "25"); // 10 + 15
 }
 
 #[test]

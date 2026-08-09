@@ -137,7 +137,7 @@ $ t3 : Tree = Tree.Fork.{ Tree.Fork.{ Tree.Tip, Tree.Tip }, Tree.Tip }
 # --- 3. A GENERIC box, nested three deep: `NestingDoll (NestingDoll (NestingDoll Int))`. -------
 # `peel` unwraps each `Skin` down to the `Core` at the bottom; the innermost
 # `Skin.{ n }` binds the payload. Generic + three levels, still exhaustive.
-$ NestingDoll : @union = Core: {}, Skin: { t }
+$ NestingDoll : @union t = Core: {}, Skin: { t }
 
 $ peel : NestingDoll (NestingDoll (NestingDoll Int)) -> Int = \o =
 	is o

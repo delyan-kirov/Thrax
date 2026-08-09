@@ -81,27 +81,48 @@ pub enum Item {
         implicits: Box<[FieldDecl]>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct = [with Other, ...] field, ...`. `includes` are struct
-    /// types whose fields are copied in (before the declared ones), in order. This
-    /// is a declaration-time splice for convenience; it creates NO type
-    /// relationship (no subtyping), just a fresh struct that repeats those fields.
+    /// `$ Name : @struct [a b ...] = [with Other, ...] field, ...`. `params` are
+    /// the declared type parameters, in order; when omitted they are inferred from
+    /// the free type variables in the fields. `includes` are struct types whose
+    /// fields are copied in (before the declared ones), in order. This is a
+    /// declaration-time splice for convenience; it creates NO type relationship (no
+    /// subtyping), just a fresh struct that repeats those fields.
     Struct {
         name: StrId,
+        params: Box<[StrId]>,
         includes: Box<[StrId]>,
         fields: Box<[FieldDecl]>,
     },
-    /// `$ Name : @union = [with Other, ...] Tag : payload, ...`. `includes` are
-    /// union types whose variants are copied in (before the declared ones). As for
-    /// structs this is a splice, not a subtype relationship.
+    /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
+    /// are the declared type parameters (inferred from the variants when omitted).
+    /// `includes` are union types whose variants are copied in (before the declared
+    /// ones). As for structs this is a splice, not a subtype relationship.
     Union {
         name: StrId,
+        params: Box<[StrId]>,
         includes: Box<[StrId]>,
         variants: Box<[VariantDecl]>,
     },
-    /// `$ Name : @alias = ty`
-    Alias { name: StrId, ty: Aol<Ty> },
+    /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
+    /// (mandatory: every type variable used in `ty` must be listed). An alias may
+    /// partially instantiate another generic type, e.g. `MapInt : @alias v = Map Int v`.
+    Alias {
+        name: StrId,
+        params: Box<[StrId]>,
+        ty: Aol<Ty>,
+    },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Box<[FieldDecl]> },
+    /// `$ Name : @codata [a b ...] = obs : ty, ...` -- a coinductive type defined
+    /// by its observations (destructors), dual to a struct. `params` are the
+    /// declared type parameters (inferred from the observations when omitted).
+    /// Observing is non-memoized: each observation is a thunk, run afresh on every
+    /// look.
+    Codata {
+        name: StrId,
+        params: Box<[StrId]>,
+        observations: Box<[FieldDecl]>,
+    },
     /// `$ with module [= rename]`
     Import {
         module: Box<[StrId]>,
@@ -179,8 +200,14 @@ pub enum Ty {
     Unit,
     /// A tuple type `{ A, B, ... }` (n >= 1).
     Tuple(Box<[Aol<Ty>]>),
-    /// Named-record parameter sugar `{ x: A, y: B }`.
-    Record(Box<[RecField]>),
+    /// A record type `{ x: A, y: B }` (closed) or `{ x: A | r }` (open, `tail` is
+    /// the row variable). A closed record with no `with` fields in parameter
+    /// position is also the named-record parameter sugar; an open one (`tail`
+    /// present) is always a row-polymorphic record type.
+    Record {
+        fields: Box<[RecField]>,
+        tail: Option<StrId>,
+    },
 }
 
 /// A field of the named-record parameter sugar; `with` scopes its fields in.
@@ -231,6 +258,13 @@ pub enum Pattern {
     Struct {
         ty: StrId,
         fields: Box<[FieldPat]>,
+    },
+    /// An anonymous record pattern `{ .x = p, .y = q [, ..rest] }`: match a record
+    /// (open-row value or struct) by field name. `rest` binds the remaining fields
+    /// (`..name`) or discards them (`.._`); absent, the unlisted fields are ignored.
+    Record {
+        fields: Box<[FieldPat]>,
+        rest: Option<Aol<Pattern>>,
     },
     /// `.Tag`, `Type.Tag`, `Module.Type.Tag`, each with an optional payload.
     Variant {
@@ -298,6 +332,15 @@ pub enum Expr {
         ty: Option<StrId>,
         fields: Box<[FieldInit]>,
         spread: Option<Aol<Expr>>,
+    },
+    /// An anonymous, structural record value: `{ .foo = 1, .bar = 2 }` (plain),
+    /// `{ .foo = v | base }` (update: the rest come from `base`), or
+    /// `{ .foo = 1, with base }` (stack: this record's fields on top of `base`'s).
+    /// Its type is a [`Type::Record`] row, not a nominal struct.
+    Record {
+        fields: Box<[FieldInit]>,
+        with: Option<Aol<Expr>>,
+        update: Option<Aol<Expr>>,
     },
     /// `Type.Tag.{ ... }` / `.Tag` variant construction.
     Variant {
