@@ -272,6 +272,16 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Word) && self.text(t).starts_with(|c: char| c.is_ascii_lowercase()))
     }
+    /// The optional type parameters after a `@struct`/`@union`/`@codata` keyword
+    /// and before `=`: `@struct a b = ...`. Empty when omitted (the parameters are
+    /// then inferred from the free type variables in the body).
+    fn parse_type_params(&mut self) -> Result<Box<[StrId]>> {
+        let mut params = Vec::new();
+        while self.at_tyvar()? {
+            params.push(self.expect_tyvar("expected a type parameter")?);
+        }
+        Ok(params.into_boxed_slice())
+    }
 
     /// If `base` is a bare, unqualified variable, its interned name.
     fn bare_var_name(&self, base: Aol<Expr>) -> Option<StrId> {
@@ -462,20 +472,24 @@ impl<'a> Parser<'a> {
             match kw {
                 "struct" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
                     let (includes, fields) = self.parse_struct_body()?;
                     return Ok(Item::Struct {
                         name,
+                        params,
                         includes,
                         fields,
                     });
                 }
                 "union" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
                     let (includes, variants) = self.parse_union_body()?;
                     return Ok(Item::Union {
                         name,
+                        params,
                         includes,
                         variants,
                     });
@@ -494,9 +508,14 @@ impl<'a> Parser<'a> {
                 }
                 "codata" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@codata'");
                     let observations = self.parse_field_decls()?;
-                    return Ok(Item::Codata { name, observations });
+                    return Ok(Item::Codata {
+                        name,
+                        params,
+                        observations,
+                    });
                 }
                 _ => {} // an @tycon type signature; fall through
             }

@@ -81,20 +81,25 @@ pub enum Item {
         implicits: Box<[FieldDecl]>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct = [with Other, ...] field, ...`. `includes` are struct
-    /// types whose fields are copied in (before the declared ones), in order. This
-    /// is a declaration-time splice for convenience; it creates NO type
-    /// relationship (no subtyping), just a fresh struct that repeats those fields.
+    /// `$ Name : @struct [a b ...] = [with Other, ...] field, ...`. `params` are
+    /// the declared type parameters, in order; when omitted they are inferred from
+    /// the free type variables in the fields. `includes` are struct types whose
+    /// fields are copied in (before the declared ones), in order. This is a
+    /// declaration-time splice for convenience; it creates NO type relationship (no
+    /// subtyping), just a fresh struct that repeats those fields.
     Struct {
         name: StrId,
+        params: Box<[StrId]>,
         includes: Box<[StrId]>,
         fields: Box<[FieldDecl]>,
     },
-    /// `$ Name : @union = [with Other, ...] Tag : payload, ...`. `includes` are
-    /// union types whose variants are copied in (before the declared ones). As for
-    /// structs this is a splice, not a subtype relationship.
+    /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
+    /// are the declared type parameters (inferred from the variants when omitted).
+    /// `includes` are union types whose variants are copied in (before the declared
+    /// ones). As for structs this is a splice, not a subtype relationship.
     Union {
         name: StrId,
+        params: Box<[StrId]>,
         includes: Box<[StrId]>,
         variants: Box<[VariantDecl]>,
     },
@@ -102,11 +107,14 @@ pub enum Item {
     Alias { name: StrId, ty: Aol<Ty> },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Box<[FieldDecl]> },
-    /// `$ Name : @codata = obs : ty, ...` -- a coinductive type defined by its
-    /// observations (destructors), dual to a struct. Observing is non-memoized:
-    /// each observation is a thunk, run afresh on every look.
+    /// `$ Name : @codata [a b ...] = obs : ty, ...` -- a coinductive type defined
+    /// by its observations (destructors), dual to a struct. `params` are the
+    /// declared type parameters (inferred from the observations when omitted).
+    /// Observing is non-memoized: each observation is a thunk, run afresh on every
+    /// look.
     Codata {
         name: StrId,
+        params: Box<[StrId]>,
         observations: Box<[FieldDecl]>,
     },
     /// `$ with module [= rename]`

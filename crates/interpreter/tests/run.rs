@@ -16,6 +16,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
+        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
@@ -169,6 +170,17 @@ fn struct_with_splices_included_fields() {
                $ r : Int =\n\
                \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in p.x + p.y + p.z";
     assert_eq!(run(src, "r"), "6");
+}
+
+#[test]
+fn declared_type_params_control_order() {
+    // `@struct b a` declares the parameters explicitly, so `Box Int Str` binds
+    // b = Int and a = Str (the declared order), not the order the fields mention
+    // them. Reading `snd` back (typed `b`, i.e. Int) must give 7.
+    let src = "@mod M\n\
+               $ Box : @struct b a = fst: a, snd: b\n\
+               $ r : Int = let x : Box Int Str = .{ .fst = \"hi\", .snd = 7 } in x.snd";
+    assert_eq!(run(src, "r"), "7");
 }
 
 #[test]

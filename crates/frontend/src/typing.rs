@@ -155,6 +155,10 @@ pub struct Checker<'a> {
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
     pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
+    /// Types whose parameters were declared explicitly (`@struct a b = ...`), so a
+    /// later `with` splice keeps the declared order instead of re-deriving it from
+    /// the spliced-in fields.
+    declared_params: HashSet<&'a str>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary.
     numeric: Vec<Type>,
@@ -176,6 +180,11 @@ pub struct Checker<'a> {
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
     promotions: HashMap<Aol<Expr>, Vec<String>>,
+    /// `.{ ... }` struct-literal sites, mapped to the nominal struct name the
+    /// checker resolved them to (from a type annotation / expected type, or the
+    /// field set). Lowering reads this so a positional literal gets the right field
+    /// names instead of falling back to positional indices.
+    struct_lit_names: HashMap<Aol<Expr>, String>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -284,6 +293,7 @@ impl<'a> Checker<'a> {
             implicit_pending: Vec::new(),
             ctx_overrides: HashMap::new(),
             pending_includes: HashMap::new(),
+            declared_params: HashSet::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_overloads: Vec::new(),
@@ -293,6 +303,7 @@ impl<'a> Checker<'a> {
             module_name: "",
             array_exprs: HashSet::new(),
             promotions: HashMap::new(),
+            struct_lit_names: HashMap::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -314,6 +325,12 @@ impl<'a> Checker<'a> {
     /// lowering wraps the value into a name-keyed record.
     pub fn promotions(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
         &self.promotions
+    }
+
+    /// `.{ ... }` struct-literal sites mapped to the resolved struct name, so
+    /// lowering emits the correct field names (esp. for positional literals).
+    pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, String> {
+        &self.struct_lit_names
     }
 
     /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
@@ -866,6 +883,23 @@ impl<'a> Checker<'a> {
             } if self.codata_head(expected).is_some() => {
                 self.check_codata_lit(e, fields, expected)
             }
+            // A bare `.{ .. }` literal takes its struct from the expected type (the
+            // checking direction). This is essential for a POSITIONAL literal, which
+            // carries no field names to infer from.
+            Expr::StructLit {
+                ty: None,
+                fields,
+                spread,
+            } => match self.struct_name_of(expected) {
+                Some(name) => {
+                    let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
+                    self.eng.unify(&got, expected, "against the expected type")
+                }
+                None => {
+                    let got = self.infer_struct_lit(e, None, fields, *spread)?;
+                    self.eng.unify(&got, expected, "against the expected type")
+                }
+            },
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
@@ -963,20 +997,77 @@ impl<'a> Checker<'a> {
 
     // -- type declarations --------------------------------------------------
 
+    /// Choose a type's parameter list. With no explicit `@struct a b`, the free
+    /// type variables `collected` from the body are the parameters (in order of
+    /// first appearance). With explicit parameters, those set the order, and every
+    /// free variable in the body must be among them (an undeclared one is an
+    /// error). An explicit parameter that appears nowhere is allowed (a phantom).
+    fn resolve_type_params(
+        &mut self,
+        name: &'a str,
+        declared: &[utilities::StrId],
+        collected: Vec<&'a str>,
+    ) -> Result<Vec<&'a str>> {
+        if declared.is_empty() {
+            return Ok(collected);
+        }
+        let declared: Vec<&'a str> = declared.iter().map(|p| self.text(*p)).collect();
+        for v in &collected {
+            if !declared.contains(v) {
+                return Err(diag!(
+                    Code::TypeUnbound, Span::at(0), 0,
+                    "`{name}` uses the type variable `{v}`, which is not one of its declared parameters `{}`",
+                    declared.join(" ")
+                ));
+            }
+        }
+        self.declared_params.insert(name);
+        Ok(declared)
+    }
+
+    /// The parameter list for a type after its `with` splices are copied in. A type
+    /// with declared parameters keeps them (so their order is stable), but every
+    /// type variable in the now-complete field/variant set, including spliced-in
+    /// ones, must still be covered. A type with inferred parameters takes the whole
+    /// `collected` set.
+    fn splice_params(&mut self, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
+        if !self.declared_params.contains(name) {
+            return Ok(collected);
+        }
+        let declared = self
+            .structs
+            .get(name)
+            .map(|i| i.params.clone())
+            .or_else(|| self.unions.get(name).map(|i| i.params.clone()))
+            .expect("registered");
+        for v in &collected {
+            if !declared.contains(v) {
+                return Err(diag!(
+                    Code::TypeUnbound, Span::at(0), 0,
+                    "`{name}` splices in a field using the type variable `{v}`, which is not one of its declared parameters `{}`",
+                    declared.join(" ")
+                ));
+            }
+        }
+        Ok(declared)
+    }
+
     fn register_types(&mut self, program: &Program) -> Result<()> {
         for item in program.items.iter() {
             match item {
                 Item::Struct {
                     name,
+                    params,
                     includes,
                     fields,
                 } => {
-                    let mut params = Vec::new();
+                    let mut collected = Vec::new();
                     for f in fields.iter() {
-                        collect_tyvars(self.ast, f.ty, &mut params);
+                        collect_tyvars(self.ast, f.ty, &mut collected);
                     }
-                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     let name = self.text(*name);
+                    let params = self.resolve_type_params(name, params, collected)?;
+                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     self.structs.insert(name, StructInfo { params, fields });
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
@@ -986,15 +1077,16 @@ impl<'a> Checker<'a> {
                 }
                 Item::Union {
                     name,
+                    params,
                     includes,
                     variants,
                 } => {
-                    let mut params = Vec::new();
+                    let mut collected = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
                         let payload = payload_fields(self.ast, &v.payload);
                         for (_, ty) in &payload {
-                            collect_tyvars(self.ast, *ty, &mut params);
+                            collect_tyvars(self.ast, *ty, &mut collected);
                         }
                         vs.push(VariantSig {
                             tag: self.text(v.tag),
@@ -1002,6 +1094,7 @@ impl<'a> Checker<'a> {
                         });
                     }
                     let name = self.text(*name);
+                    let params = self.resolve_type_params(name, params, collected)?;
                     self.unions.insert(
                         name,
                         UnionInfo {
@@ -1020,16 +1113,21 @@ impl<'a> Checker<'a> {
                     self.aliases.insert(name, *ty);
                     self.own_type_names.push(name);
                 }
-                Item::Codata { name, observations } => {
-                    let mut params = Vec::new();
+                Item::Codata {
+                    name,
+                    params,
+                    observations,
+                } => {
+                    let mut collected = Vec::new();
                     let obs: Vec<(&'a str, Aol<Ty>)> = observations
                         .iter()
                         .map(|o| {
-                            collect_tyvars(self.ast, o.ty, &mut params);
+                            collect_tyvars(self.ast, o.ty, &mut collected);
                             (self.text(o.name), o.ty)
                         })
                         .collect();
                     let name = self.text(*name);
+                    let params = self.resolve_type_params(name, params, collected)?;
                     self.codata.insert(
                         name,
                         CodataInfo {
@@ -1090,10 +1188,11 @@ impl<'a> Checker<'a> {
                 }
                 fields.push(f);
             }
-            let mut params = Vec::new();
+            let mut collected = Vec::new();
             for (_, ty) in &fields {
-                collect_tyvars(self.ast, *ty, &mut params);
+                collect_tyvars(self.ast, *ty, &mut collected);
             }
+            let params = self.splice_params(name, collected)?;
             self.structs.insert(name, StructInfo { params, fields });
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
@@ -1117,12 +1216,13 @@ impl<'a> Checker<'a> {
                 }
                 variants.push(v);
             }
-            let mut params = Vec::new();
+            let mut collected = Vec::new();
             for v in &variants {
                 for (_, ty) in &v.payload {
-                    collect_tyvars(self.ast, *ty, &mut params);
+                    collect_tyvars(self.ast, *ty, &mut collected);
                 }
             }
+            let params = self.splice_params(name, collected)?;
             self.unions.insert(name, UnionInfo { params, variants });
         }
         self.pending_includes.remove(name);
@@ -1272,6 +1372,7 @@ impl<'a> Checker<'a> {
 
     fn infer_struct_lit(
         &mut self,
+        site: Aol<Expr>,
         ty: Option<&'a str>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
@@ -1281,7 +1382,12 @@ impl<'a> Checker<'a> {
             let (head, args) = self.spine(&base_ty);
             match &head {
                 Type::Con(n) if self.structs.contains_key(n.as_str()) => {
-                    let info = self.structs[n.as_str()].clone();
+                    let (name, info) = self
+                        .structs
+                        .get_key_value(n.as_str())
+                        .map(|(k, v)| (*k, v.clone()))
+                        .expect("struct present");
+                    self.struct_lit_names.insert(site, name.to_string());
                     let subst = subst_from_args(&info.params, &args, &mut self.eng);
                     (info, base_ty, subst)
                 }
@@ -1292,17 +1398,29 @@ impl<'a> Checker<'a> {
             }
         } else {
             let resolved = match ty {
-                Some(n) => self.structs.get(n).cloned().map(|info| (n, info)),
+                Some(n) => self.structs.get_key_value(n).map(|(k, v)| (*k, v.clone())),
                 None => self.resolve_struct_by_fields(fields),
             };
             match resolved {
                 Some((name, info)) => {
+                    self.struct_lit_names.insert(site, name.to_string());
                     let (args, subst) = self.instantiate_params(&info.params);
                     (info, applied(name, &args), subst)
                 }
+                // No fresh() escape hatch: a struct literal whose type cannot be
+                // determined is a compile error, not a silent runtime fault. The
+                // checking direction (an annotation / expected type / qualified
+                // `Type.{..}`) resolves it; a bare positional literal cannot.
                 None => {
                     self.infer_field_inits(fields)?;
-                    return Ok(self.eng.fresh());
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "cannot infer which struct this `.{{ .. }}` builds"
+                    )
+                    .with_note(
+                        "qualify it (`Type.{ .. }`), annotate the binding, or use named fields that match a struct"
+                            .to_string(),
+                    ));
                 }
             }
         };
@@ -1487,6 +1605,17 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether `ty` is a record-shaped target: a structural record row, or a
+    /// The nominal struct name `ty` resolves to (possibly applied), if any.
+    fn struct_name_of(&self, ty: &Type) -> Option<&'a str> {
+        let (head, _) = self.spine(ty);
+        if let Type::Con(n) = &head {
+            if let Some((k, _)) = self.structs.get_key_value(n.as_str()) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
     /// The head codata type name and its type arguments, if `ty` is a (possibly
     /// applied) declared codata type.
     fn codata_head(&self, ty: &Type) -> Option<(&'a str, Vec<Type>)> {
@@ -1854,7 +1983,7 @@ impl<'a> Checker<'a> {
             }
             Expr::StructLit { ty, fields, spread } => {
                 let ty = ty.map(|t| self.text(t));
-                self.infer_struct_lit(ty, fields, *spread)
+                self.infer_struct_lit(e, ty, fields, *spread)
             }
             Expr::Record {
                 fields,
@@ -2597,13 +2726,18 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         };
-        let value_ty = self.infer(b.value)?;
-        if let Some(sig) = b.sig {
-            let mut tvars = HashMap::new();
-            let sig_ty = self.ty_of_ast(sig, &mut tvars);
-            self.eng
-                .unify(&value_ty, &sig_ty, "against a 'let' signature")?;
-        }
+        // With a signature, CHECK the value against it (bidirectional), so the
+        // expected type reaches constructs that need it -- e.g. a positional
+        // `.{ .. }` literal resolves its struct from the annotation.
+        let value_ty = match b.sig {
+            Some(sig) => {
+                let mut tvars = HashMap::new();
+                let sig_ty = self.ty_of_ast(sig, &mut tvars);
+                self.check(b.value, &sig_ty)?;
+                sig_ty
+            }
+            None => self.infer(b.value)?,
+        };
         if let Some(decl) = &declared {
             self.eng
                 .unify(decl, &value_ty, "in a recursive 'let' binding")?;
@@ -2861,6 +2995,42 @@ impl<'a> Checker<'a> {
             || self.codata.contains_key(name)
     }
 
+    /// The number of type parameters a user-declared type constructor takes, if
+    /// `name` is a struct / union / codata (the ones whose arity we track).
+    fn type_arity(&self, name: &str) -> Option<usize> {
+        self.structs
+            .get(name)
+            .map(|i| i.params.len())
+            .or_else(|| self.unions.get(name).map(|i| i.params.len()))
+            .or_else(|| self.codata.get(name).map(|i| i.params.len()))
+    }
+
+    /// Flag an over-applied type constructor (`Weirdtype Int Int Int` for a
+    /// two-parameter `Weirdtype`). Deferred like other type-name errors.
+    fn check_type_arity(&mut self, ty: Aol<Ty>) {
+        let mut count = 0;
+        let mut cur = ty;
+        while let Ty::App(h, _) = self.tnode(cur) {
+            count += 1;
+            cur = *h;
+        }
+        if let Ty::Con { name, .. } = self.tnode(cur) {
+            let name = self.text(*name);
+            if let Some(arity) = self.type_arity(name) {
+                if count > arity && self.unknown_type.is_none() {
+                    let mut d = diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "type `{name}` takes {arity} parameter(s) but {count} were given"
+                    );
+                    if let Some(span) = self.ast.ty_span(ty) {
+                        d = d.fill_span(span);
+                    }
+                    self.unknown_type = Some(d);
+                }
+            }
+        }
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         match self.tnode(ty) {
             Ty::Con { name, .. } => {
@@ -2887,6 +3057,7 @@ impl<'a> Checker<'a> {
                     .clone()
             }
             Ty::App(head, arg) => {
+                self.check_type_arity(ty);
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }

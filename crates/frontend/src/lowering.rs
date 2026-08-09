@@ -74,6 +74,7 @@ impl Decls {
                     name,
                     includes,
                     fields,
+                    ..
                 } => {
                     let names = fields
                         .iter()
@@ -94,6 +95,7 @@ impl Decls {
                     name,
                     includes,
                     variants,
+                    ..
                 } => {
                     let uname = ast.text(*name).to_string();
                     if !includes.is_empty() {
@@ -304,6 +306,10 @@ pub struct Resolved {
     /// Argument sites promoted to a record, mapped to the target field names (from
     /// [`crate::typing::Checker::promotions`]); lowering wraps the value.
     pub promotions: HashMap<Aol<Expr>, Vec<String>>,
+    /// `.{ .. }` struct-literal sites mapped to their resolved struct name (from
+    /// [`crate::typing::Checker::struct_lit_names`]); lowering uses it for the
+    /// field-name layout of a positional literal.
+    pub struct_lit_names: HashMap<Aol<Expr>, String>,
     /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
     pub codata_lits: HashSet<Aol<Expr>>,
     /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
@@ -674,9 +680,14 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::StructLit { ty, fields, spread } => {
-                let ty = ty.map(|t| self.text(t));
+                // The nominal struct name comes from the AST (`Type.{..}`) or, for a
+                // bare `.{..}`, from the checker's resolution -- so a positional
+                // literal gets the right field-name layout.
+                let ty = ty
+                    .map(|t| self.text(t).to_string())
+                    .or_else(|| self.resolved.struct_lit_names.get(&e).cloned());
                 let spread = *spread;
-                self.struct_lit(ty, fields, spread)
+                self.struct_lit(ty.as_deref(), fields, spread)
             }
             Expr::Record {
                 fields,

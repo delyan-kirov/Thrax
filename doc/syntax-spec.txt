@@ -250,7 +250,7 @@ A struct is a named record type. It is declared with the `@struct` annotation in
 place of a type; the body is a comma-separated list of typed fields (a trailing
 comma is allowed). The type name must start uppercase, field names lowercase:
 
-	struct ::= '$' TypeName ':' '@struct' '=' [ field (',' field)* ','? ]
+	struct ::= '$' TypeName ':' '@struct' [ var* ] '=' [ field (',' field)* ','? ]
 	field  ::= var ':' type
 
 	$ Person : @struct =
@@ -279,20 +279,30 @@ chains left-to-right (`a.b.c`):
 Structs are nominal: a struct name is an ordinary type constructor that unifies
 by name.
 
-A struct (like a union) may be GENERIC. There is no separate parameter list: any
-type variable left free in a field type is an implicit parameter of the
+A struct (like a union) may be GENERIC. By default there is no separate parameter
+list: any type variable left free in a field type is an implicit parameter of the
 declaration, quantified in order of first appearance -- the same rule that makes
 a function signature polymorphic. The type is then applied to arguments at use
 sites (see TYPES):
 
-	$ Box : @struct = val: `T,         # Box is generic in `T
-	$ Pair : @struct =                 # Pair is generic in `A then `B
-		fst: `A,
-		snd: `B,
+	$ Box : @struct = val: a,          # Box is generic in a
+	$ Pair : @struct =                 # Pair is generic in a then b
+		fst: a,
+		snd: b,
 
 	$ ibox : Box Int      = Box.{ .val = 7 }
 	$ sbox : Box Str      = Box.{ .val = "hi" }   # a second instantiation
 	$ pair : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
+
+The parameters may instead be declared explicitly, right after the `@struct`
+(or `@union`/`@codata`) keyword. This fixes their order independently of where the
+fields mention them, and documents the type's arity up front. Every type variable
+used in the body must then be among the declared parameters; a declared parameter
+that is used nowhere is allowed (a phantom):
+
+	$ Pair : @struct a b =             # a then b, regardless of field order
+		snd: b,
+		fst: a,
 
 A literal instantiates the parameters fresh from its field values, and field
 access reads a field at the receiver's instantiation, so `ibox.val` is an Int

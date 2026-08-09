@@ -46,15 +46,15 @@ $ pair  : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
 $ left  : Int          = pair.fst
 $ right : Str          = pair.snd
 
-$ Weirdtype : @struct = 
+$ Weirdtype : @struct a b =
 	fst : a,
 	has : Int,
 	snd : b
 
-# FIXME : The following is a bug
-# $ try_weird = let w: Weirdtype Int Int Int = .{1.1, 1, 1.1} in w.fst
-# $ try_weird = let w: Weirdtype Real Real = .{1.1, 1, 1.1} in w.fst
-$ try_weird = let w = Weirdtype.{1.1, 1, 1.1} in w.fst
+# A bare `.{..}` resolves its struct from the expected type (bidirectional).
+$ try_weird : Real = let w : Weirdtype Real Real = .{1.1, 1, 1.1} in w.fst
+# Qualified positional literals name the struct directly.
+$ try_weird2 = let w = Weirdtype.{1.1, 1, 1.1} in w.fst
 
 # Generic field types nest: a struct holding a `Box Int`.
 $ Wrap : @struct =
@@ -64,4 +64,4 @@ $ wrap   : Wrap Int = .{ .inner = ibox }
 $ deep   : Int      = wrap.inner.val
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = who ; yrs ; older ; unboxed ; label ; left ; right ; deep ; try_weird; 0
+$ test : Int = who ; yrs ; older ; unboxed ; label ; left ; right ; deep ; try_weird ; try_weird2 ; 0
