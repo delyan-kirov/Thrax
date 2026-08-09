@@ -238,6 +238,46 @@ fn anonymous_records_literal_update_stack() {
 }
 
 #[test]
+fn nominal_struct_update_with_pipe() {
+    // Record update on a nominal struct literal uses `| base`: listed fields
+    // override, the rest come from `base`. Qualified, bare-inferred, and clone forms.
+    let src = "@mod M\n\
+               $ P : @struct = a: Int, b: Int, c: Int\n\
+               $ base : P = P.{ .a = 1, .b = 2, .c = 3 }\n\
+               $ q : P = P.{ .b = 20 | base }\n\
+               $ r0 : P = .{ .a = 10 | base }\n\
+               $ cl : P = .{ | base }\n\
+               $ r : Int = q.a + q.b + q.c + r0.a + cl.c";
+    assert_eq!(run(src, "r"), "37"); // (1+20+3) + 10 + 3
+}
+
+#[test]
+fn unit_parameter_thunks_without_a_lambda() {
+    // A `{} -> T` definition needs no explicit `\u =`: the unit parameter is
+    // introduced automatically (a thunk), so the body runs when it is applied. An
+    // explicit `\u =` still works (the arity guard leaves it alone).
+    let src = "@mod M\n\
+               $ lazy : {} -> Int = 40 + 2\n\
+               $ also : {} -> Int = \\u = 40 + 3\n\
+               $ r : Int = lazy {} + also {}";
+    assert_eq!(run(src, "r"), "85"); // 42 + 43
+}
+
+#[test]
+fn closed_record_param_named_by_a_lambda() {
+    // A closed-record parameter may be named by an explicit lambda and read with
+    // field access (`\q = q.y`), instead of the auto-bind sugar. The sugar only
+    // fires when the body has fewer leading lambdas than the signature's arity, so
+    // it still auto-binds a record ahead of a later explicit lambda parameter.
+    let src = "@mod M\n\
+               $ label : { y: Int, z: Int } -> Int = \\q = q.y * 100 + q.z\n\
+               $ add : { x: Int, y: Int } -> Int = x + y\n\
+               $ f : { x: Int, y: Int } -> Int -> Int = \\n = x + y + n\n\
+               $ r : Int = label { .y = 2, .z = 3 } + add { .x = 5, .y = 6 } + f {3, 4} 5";
+    assert_eq!(run(src, "r"), "226"); // 203 + 11 + 12
+}
+
+#[test]
 fn record_promotion_and_named_args() {
     // A record parameter can be called positionally (promoted), by name, or by
     // name reordered; a one-field record param accepts a bare scalar.
@@ -260,6 +300,33 @@ fn record_destructuring_pattern() {
                $ nx : Point -> Int = \\p = is p | { .x = a } => a\n\
                $ r : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 } + nx Point.{ .x = 2, .y = 8 }";
     assert_eq!(run(src, "r"), "25"); // 12 + 11 + 2
+}
+
+#[test]
+fn generic_struct_satisfies_an_open_row() {
+    // A generic struct instance (`Box Int`, `Pair Int Str`) bridges to an open
+    // record row by substituting its type arguments for the struct's parameters.
+    let src = "@mod M\n\
+               $ Box : @struct a = val: a\n\
+               $ Pair : @struct a b = fst: a, snd: b\n\
+               $ unwrap : { val: v | r } -> v = \\b = b.val\n\
+               $ getfst : { fst: a | r } -> a = \\p = p.fst\n\
+               $ r : Int = unwrap (Box.{ .val = 42 }) + getfst (Pair.{ .fst = 8, .snd = \"s\" })";
+    assert_eq!(run(src, "r"), "50");
+}
+
+#[test]
+fn record_rest_binds_the_leftover_fields() {
+    // `..rest` binds the record minus the listed labels. Concrete case: matching a
+    // `Point3` and binding `..rest` yields `{ y, z }`, readable and forwardable.
+    // Open case: over `{ x:Int | r }`, `rest` is the polymorphic remainder.
+    let src = "@mod M\n\
+               $ Point3 : @struct = x: Int, y: Int, z: Int\n\
+               $ sum2 : { y:Int, z:Int } -> Int = y + z\n\
+               $ split : Point3 -> Int = \\p = is p | { .x = a, ..rest } => a + sum2 rest\n\
+               $ drop_x : { x:Int, y:Int | r } -> Int = \\p = is p | { .x = a, ..rest } => rest.y + a\n\
+               $ r : Int = split (Point3.{ .x=1, .y=2, .z=3 }) + drop_x (Point3.{ .x=10, .y=20, .z=30 })";
+    assert_eq!(run(src, "r"), "36"); // (1 + (2+3)) + (20 + 10)
 }
 
 #[test]

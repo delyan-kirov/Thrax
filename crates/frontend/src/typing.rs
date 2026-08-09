@@ -384,6 +384,24 @@ impl<'a> Checker<'a> {
     fn node(&self, e: Aol<Expr>) -> &'a Expr {
         self.ast.expr(e)
     }
+    /// The number of parameters in a signature's arrow spine.
+    fn arrow_arity_ty(&self, mut ty: Aol<Ty>) -> usize {
+        let mut n = 0;
+        while let Ty::Arrow { to, .. } = self.tnode(ty) {
+            n += 1;
+            ty = *to;
+        }
+        n
+    }
+    /// The number of leading lambda parameters a body binds explicitly.
+    fn leading_lam_params(&self, mut e: Aol<Expr>) -> usize {
+        let mut n = 0;
+        while let Expr::Lambda { params, body } = self.node(e) {
+            n += params.len();
+            e = *body;
+        }
+        n
+    }
     fn tnode(&self, t: Aol<Ty>) -> &'a Ty {
         self.ast.ty(t)
     }
@@ -400,7 +418,13 @@ impl<'a> Checker<'a> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
         self.register_types(program)?;
+        // Row registration elaborates struct field types only to cache their rows
+        // for the bridge; it must not report type errors (a field may reference a
+        // type not imported into this module, e.g. a re-exported struct's internals).
+        // Real unknown-type errors are still caught when definitions are elaborated.
+        let saved_unknown = self.unknown_type.take();
         self.register_struct_rows();
+        self.unknown_type = saved_unknown;
         self.register_effects(program);
 
         let defs: Vec<Def<'a>> = program
@@ -776,17 +800,22 @@ impl<'a> Checker<'a> {
         sig: Aol<Ty>,
         sig_ty: &Type,
     ) -> Result<()> {
-        let fields = match self.tnode(sig) {
-            // Only a CLOSED record parameter is the destructuring sugar; an open
-            // `{ x | r }` is a real row-polymorphic record value, bound as-is.
-            Ty::Arrow { from, .. }
-                if matches!(self.tnode(*from), Ty::Record { tail: None, .. }) =>
-            {
-                let Ty::Record { fields, .. } = self.tnode(*from) else {
-                    unreachable!("guarded on a record parameter")
-                };
-                fields
-            }
+        // The body's leading lambdas bind the last k of the m signature parameters,
+        // so the record-parameter sugar only applies when the lambdas do not reach
+        // this one (`k < m`). `\p = p.x` then names a record parameter itself.
+        if self.leading_lam_params(body) >= self.arrow_arity_ty(sig) {
+            return self.check(body, sig_ty);
+        }
+        let fields: &[RecField] = match self.tnode(sig) {
+            Ty::Arrow { from, .. } => match self.tnode(*from) {
+                // A CLOSED record parameter is the destructuring sugar; an open
+                // `{ x | r }` is a real row-polymorphic record value, bound as-is.
+                Ty::Record { fields, tail: None } => fields,
+                // A unit parameter takes no fields: the sugar just introduces the
+                // (unused) thunk parameter, so `f : {} -> T = <body>` needs no `\u =`.
+                Ty::Unit => &[],
+                _ => return self.check(body, sig_ty),
+            },
             _ => return self.check(body, sig_ty),
         };
         let to = match self.tnode(sig) {
@@ -805,6 +834,10 @@ impl<'a> Checker<'a> {
     }
 
     fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: &Type) -> Result<()> {
+        // A unit parameter (the thunk sugar) binds nothing, so it needs no row.
+        if fields.is_empty() {
+            return Ok(());
+        }
         // The record parameter auto-binds each field name (the "define with an
         // implicit destructuring" sugar). The parameter is a real record type, so
         // look each field up by name in its row.
@@ -1218,24 +1251,38 @@ impl<'a> Checker<'a> {
     /// or an overload when several do (resolved by result type at the use site);
     /// always reachable qualified as `Effect.op`. Its `Arg -> Res` scheme is also
     /// kept per effect for handler-clause typing.
-    /// Build the closed record row of every non-generic struct and hand them to
-    /// the engine, so a nominal struct can unify with a structural record row (the
-    /// hybrid bridge). Generic structs are skipped (their row would need per-use
-    /// instantiation); passing one where an open row is expected is a known gap.
+    /// Build the record row of every struct and hand them to the engine, so a
+    /// nominal struct can unify with a structural record row (the hybrid bridge).
+    /// Each row is a scheme: its parameters become fresh vars (recorded in
+    /// declaration order), so a generic struct instance `Box Int` bridges by
+    /// substituting its type arguments for those parameter vars per use.
     fn register_struct_rows(&mut self) {
-        let simple: Vec<(&'a str, Vec<(&'a str, Aol<Ty>)>)> = self
+        let decls: Vec<(&'a str, Vec<&'a str>, Vec<(&'a str, Aol<Ty>)>)> = self
             .structs
             .iter()
-            .filter(|(_, info)| info.params.is_empty())
-            .map(|(name, info)| (*name, info.fields.clone()))
+            .map(|(name, info)| (*name, info.params.clone(), info.fields.clone()))
             .collect();
         let mut rows = HashMap::new();
-        for (name, fields) in simple {
+        for (name, params, fields) in decls {
             let mut tvars = HashMap::new();
+            // A fresh var per parameter, in order, so App arguments line up with
+            // them at bridge time (a phantom param still gets a slot, unused).
+            let param_ids: Vec<VarId> = params
+                .iter()
+                .map(|p| {
+                    let v = self.eng.fresh();
+                    let id = match v {
+                        Type::Var(id) => id,
+                        _ => unreachable!("fresh() returns a variable"),
+                    };
+                    tvars.insert(*p, v);
+                    id
+                })
+                .collect();
             let row = fields.iter().rev().fold(Type::RowEmpty, |rest, (fname, fty)| {
                 Type::row_field(fname, self.ty_of_ast(*fty, &mut tvars), rest)
             });
-            rows.insert(name.to_string(), row);
+            rows.insert(name.to_string(), (param_ids, row));
         }
         self.eng.set_struct_rows(rows);
     }
@@ -2824,7 +2871,8 @@ impl<'a> Checker<'a> {
 
     /// Type a record pattern by building an OPEN row from its fields and unifying
     /// with the scrutinee (so it matches any record/struct that has them). Binds
-    /// each field's subpattern; the rest may be discarded (`.._`) but not yet bound.
+    /// each field's subpattern; the rest may be discarded (`.._`) or bound
+    /// (`..name`), in which case the binder gets the leftover row as its record type.
     fn type_record_pattern(
         &mut self,
         fields: &'a [FieldPat],
@@ -2850,7 +2898,7 @@ impl<'a> Checker<'a> {
         let row = entries
             .iter()
             .rev()
-            .fold(tail, |rest, (n, t, _)| Type::row_field(n, t.clone(), rest));
+            .fold(tail.clone(), |rest, (n, t, _)| Type::row_field(n, t.clone(), rest));
         self.eng
             .unify(expected, &Type::record(row), "in a record pattern")?;
         for (name, t, pat) in entries {
@@ -2859,13 +2907,10 @@ impl<'a> Checker<'a> {
                 None => self.bind(name, t),
             }
         }
+        // `..name` binds the leftover fields as a record over the row tail (which
+        // unification has bound to the remaining fields); `.._` is a discard.
         if let Some(r) = rest {
-            if !matches!(self.pnode(r), Pattern::Wild) {
-                return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
-                    "binding the record rest (`..name`) is not yet supported; use `.._` to ignore the remaining fields"
-                ));
-            }
+            self.type_pattern(r, &Type::record(tail))?;
         }
         Ok(())
     }

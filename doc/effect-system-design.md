@@ -76,6 +76,28 @@ an unpredictable lifetime.
 - **CAFs are unaffected** see section 7; a lazy-memoized top-level _binding_ is a
   different mechanism from a lazy _data field_ and does not create cycles.
 
+### An effectful computation is a thunk `{} -> <eff> T`
+
+An effect row lives on an **arrow**, and effects run when a function is *invoked*
+under a handler. So an effectful computation is a function, conventionally taking
+unit: `counter : {} -> <State> Int`. Making it a value (`counter : <State> Int`,
+not even valid syntax since a row needs an arrow) would force it eagerly at its
+definition, where no handler is installed. The handler runs it explicitly, e.g.
+`do action {}` inside `runState`.
+
+The unit parameter is introduced **automatically**, so no `\u =` is needed; write
+the body directly and it becomes the thunk:
+
+```
+$ counter : {} -> <State> Int =
+    let x = get {}, _ = put <| x + 1, y = get {} in x + y
+```
+
+This is the same leading-parameter sugar as the record-parameter destructuring: a
+`{}` (unit) parameter simply binds nothing. An explicit `\u = ...` still works.
+(The one thing the sugar precludes is aliasing an existing thunk directly,
+`f : {} -> T = g`, which now wraps `g`; write `$ f = g` or `\u = g u` instead.)
+
 ---
 
 ## 1a. Codata: a distinct, non-memoized, copattern-defined kind

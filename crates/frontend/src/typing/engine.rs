@@ -26,10 +26,12 @@ enum Var {
 pub struct Engine {
     vars: Vec<Var>,
     level: Level,
-    /// Closed record rows of the non-generic declared structs, by name. Lets a
-    /// nominal struct `Con("Point")` unify with a structural record row (the
-    /// hybrid bridge): passing a struct where an open row `{ x | r }` is expected.
-    struct_rows: std::collections::HashMap<String, Type>,
+    /// Record-row schemes of the declared structs, by name: `(parameter vars in
+    /// declaration order, the row)`. Lets a nominal struct unify with a structural
+    /// record row (the hybrid bridge): passing a struct where an open row
+    /// `{ x | r }` is expected. A generic struct instance `App(Con("Box"), Int)`
+    /// bridges by substituting its arguments for the parameter vars.
+    struct_rows: std::collections::HashMap<String, (Vec<VarId>, Type)>,
 }
 
 /// A checkpoint of the [`Engine`] state, taken by [`Engine::save`] and rewound by
@@ -54,9 +56,9 @@ impl Engine {
         }
     }
 
-    /// Register the non-generic structs' record rows for the nominal-struct /
-    /// record-row unification bridge (see [`Engine::struct_rows`]).
-    pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, Type>) {
+    /// Register the structs' record-row schemes for the nominal-struct / record-row
+    /// unification bridge (see [`Engine::struct_rows`]).
+    pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, (Vec<VarId>, Type)>) {
         self.struct_rows = rows;
     }
 
@@ -177,20 +179,75 @@ impl Engine {
             (Type::RowField(..), _) | (_, Type::RowField(..)) => {
                 self.unify_record_row(&a, &b, where_)
             }
-            // The hybrid bridge: a nominal struct satisfies a structural record row
-            // by expanding to its (closed) row. Only non-generic structs are
-            // registered, so a generic struct instance still mismatches here.
-            (Type::Con(name), Type::Record(row)) | (Type::Record(row), Type::Con(name)) => {
-                match self.struct_rows.get(name) {
-                    Some(srow) => {
-                        let srow = srow.clone();
-                        let row = (**row).clone();
-                        self.unify_record_row(&srow, &row, where_)
-                    }
-                    None => Err(self.mismatch(&a, &b, where_)),
+            // The hybrid bridge: a nominal struct (bare `Con` or a generic instance
+            // `App..(Con)`) satisfies a structural record row by expanding to its
+            // row, with its type arguments substituted for the struct's parameters.
+            _ => match self.struct_row_bridge(&a, &b, where_) {
+                Some(r) => r,
+                None => Err(self.mismatch(&a, &b, where_)),
+            },
+        }
+    }
+
+    /// If one side is a record row and the other a struct type (bare `Con` or an
+    /// applied `App..(Con)`), unify the record against the struct's registered row
+    /// with the struct's type arguments substituted for its parameters. Returns
+    /// `None` when neither side bridges, so the caller reports a plain mismatch.
+    fn struct_row_bridge(&mut self, a: &Type, b: &Type, where_: &str) -> Option<Result<()>> {
+        let (spine, rec) = match (a, b) {
+            (Type::Record(r), other) | (other, Type::Record(r)) => (other.clone(), (**r).clone()),
+            _ => return None,
+        };
+        let mut args = Vec::new();
+        let mut cur = spine;
+        loop {
+            match self.resolve(&cur) {
+                Type::App(head, arg) => {
+                    args.push((*arg).clone());
+                    cur = *head;
                 }
+                Type::Con(name) => {
+                    let (params, row) = self.struct_rows.get(&name)?.clone();
+                    args.reverse();
+                    let mut sub = std::collections::HashMap::new();
+                    for (id, arg) in params.iter().zip(args.iter()) {
+                        sub.insert(*id, arg.clone());
+                    }
+                    let row = self.subst_vars(&row, &sub);
+                    return Some(self.unify_record_row(&row, &rec, where_));
+                }
+                _ => return None,
             }
-            _ => Err(self.mismatch(&a, &b, where_)),
+        }
+    }
+
+    /// A copy of `ty` with each variable in `sub` replaced by its mapped type. Used
+    /// to instantiate a struct-row scheme's parameters at a bridge site; the stored
+    /// scheme is never mutated, so each use is independent.
+    fn subst_vars(&self, ty: &Type, sub: &std::collections::HashMap<VarId, Type>) -> Type {
+        match self.resolve(ty) {
+            Type::Var(id) => sub.get(&id).cloned().unwrap_or(Type::Var(id)),
+            Type::App(head, arg) => {
+                Type::app(self.subst_vars(&head, sub), self.subst_vars(&arg, sub))
+            }
+            Type::Arrow(from, to, eff) => Type::arrow_eff(
+                self.subst_vars(&from, sub),
+                self.subst_vars(&to, sub),
+                self.subst_vars(&eff, sub),
+            ),
+            Type::Tuple(items) => {
+                Type::Tuple(items.iter().map(|t| self.subst_vars(t, sub)).collect())
+            }
+            Type::RowExtend(label, rest) => {
+                Type::RowExtend(label, Box::new(self.subst_vars(&rest, sub)))
+            }
+            Type::Record(row) => Type::record(self.subst_vars(&row, sub)),
+            Type::RowField(label, fty, rest) => Type::RowField(
+                label,
+                Box::new(self.subst_vars(&fty, sub)),
+                Box::new(self.subst_vars(&rest, sub)),
+            ),
+            other => other, // Con or RowEmpty
         }
     }
 

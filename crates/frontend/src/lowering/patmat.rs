@@ -231,9 +231,25 @@ impl Pm {
                 on_fail.clone(),
             ),
             Pat::Tuple(pats) => self.compile_fields(sv, &index_names(pats.len()), pats, on_match, on_fail),
-            Pat::Struct { fields } => {
+            Pat::Struct { fields, rest } => {
                 let (names, pats): (Vec<String>, Vec<Pat>) =
                     fields.iter().map(|(n, p)| (n.clone(), p.clone())).unzip();
+                // `..name` binds the record minus the listed labels: drop each label
+                // from `sv` in turn, then match the fields against the bound record.
+                let on_match = match rest {
+                    Some(name) => {
+                        let restricted = names.iter().fold(v(sv), |rec, label| {
+                            record_without(rec, label)
+                        });
+                        Term::Let {
+                            name: name.clone(),
+                            rec: false,
+                            val: Arc::new(restricted),
+                            body: Arc::new(on_match),
+                        }
+                    }
+                    None => on_match,
+                };
                 self.compile_fields(sv, &names, &pats, on_match, on_fail)
             }
             Pat::Variant { tag, fields } => {
@@ -346,6 +362,15 @@ fn array_len(sv: &str) -> Term {
 /// `array_slice sv beg end`.
 fn array_slice(sv: &str, beg: Term, end: Term) -> Term {
     Term::app(Term::app(Term::app(v("array_slice"), v(sv)), beg), end)
+}
+
+/// `record_without rec "label"`: the record with the head occurrence of `label`
+/// dropped. Folded over the matched labels to build a record pattern's `..rest`.
+fn record_without(rec: Term, label: &str) -> Term {
+    Term::app(
+        Term::app(v("record_without"), rec),
+        Term::Str(label.as_bytes().to_vec()),
+    )
 }
 
 /// Tuple field names are their decimal indices.

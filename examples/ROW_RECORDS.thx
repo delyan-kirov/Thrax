@@ -4,9 +4,8 @@
 # \info Row-polymorphic records. A record type may leave its tail open with a row
 #       variable: `{ x: Int, y: Int | r }` is "any record with (at least) x and y
 #       of type Int". A function over such a type accepts ANY record with those
-#       fields, nominal struct or anonymous. Records are structural, like effect
-#       rows, and they stay records only under an open row: a plain `{ .x = 1 }`
-#       elsewhere decays to a pair (or a struct, if the field set matches one).
+#       fields, nominal struct or anonymous. Record types are structural, like
+#       effect rows: they unify by field name, and an open tail absorbs the extras.
 #       Inside a function, `{ .x = v | p }` updates an open-row record (its shape
 #       is preserved) and `{ .f = v, with p }` stacks a field on top.
 
@@ -37,4 +36,15 @@ $ ck_stack : Int = if (tag { .x = 3, .y = 6 }).tag ?= 99 => 0 else 16
 $ diag : { x: Int, y: Int | r } -> Int = \p = is p | { .x = a, .y = b, .._ } => a + b
 $ ck_pat : Int = if diag { .x = 3, .y = 7, .tag = 1 } ?= 10 => 0 else 32
 
-$ test : Int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack + ck_pat
+# `..rest` BINDS the leftover fields as a record: peel off `x`, forward the rest.
+$ sum2 : { y: Int, z: Int } -> Int = y + z
+$ peel : Boxed -> Int = \p = is p | { .x = a, ..rest } => a + sum2 rest
+$ ck_rest : Int = if peel Boxed.{ .x = 1, .y = 2, .z = 3 } ?= 6 => 0 else 64
+
+# A GENERIC struct also satisfies an open row: its type argument is substituted
+# for the parameter, so `Cell Int` matches `{ val: Int | r }`.
+$ Cell : @struct a = val: a
+$ get_val : { val: v | r } -> v = \c = c.val
+$ ck_gen : Int = if get_val Cell.{ .val = 7 } ?= 7 => 0 else 128
+
+$ test : Int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack + ck_pat + ck_rest + ck_gen

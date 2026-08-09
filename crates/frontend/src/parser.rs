@@ -1204,8 +1204,10 @@ impl<'a> Parser<'a> {
         self.parse_variant_lit(None, None, tag)
     }
 
-    /// A struct literal body `{ .field = e, ..., ..spread }`. Assumes the next
-    /// token is `{`.
+    /// A struct literal body `{ .field = e, ..., | base }`. Assumes the next token
+    /// is `{`. The optional trailing `| base` is a record update: the listed fields
+    /// override, the rest come from `base` (an expression of the same struct type).
+    /// A bare `{ | base }` clones `base`.
     fn parse_struct_lit(&mut self, ty: Option<StrId>) -> Result<Aol<Expr>> {
         expect!(
             self,
@@ -1215,14 +1217,17 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut spread = None;
         while !matches!(self.peek_kind()?, Kind::RBrace) {
-            if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot)
-            {
+            if self.at_op("|")? {
                 self.bump()?;
-                self.bump()?; // '..'
                 spread = Some(self.parse_expr(0)?);
-                break; // a spread is always the final entry
+                break; // the update base is always the final entry
             }
             fields.push(self.parse_field_init()?);
+            if self.at_op("|")? {
+                self.bump()?;
+                spread = Some(self.parse_expr(0)?);
+                break;
+            }
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }

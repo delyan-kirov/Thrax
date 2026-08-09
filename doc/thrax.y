@@ -280,15 +280,15 @@ field_inits : /* empty */ | init_list opt_comma ;
 init_list   : field_init | init_list COMMA field_init ;
 field_init  : DOT LIDENT EQ expr | expr ;
 
-/* A struct literal may end with a record-update spread `..base`: it copies every
+/* A struct literal may end with a record update `| base`: it copies every
    unlisted field from `base` (an expression of the same struct type) and must be
-   the final entry. Works for both the qualified `Person.{ ..base }` and the bare
-   `.{ ..base }` form; the bare form's type is settled at its lit site from
+   the final entry. Works for both the qualified `Person.{ .f = e | base }` and the
+   bare `.{ | base }` form; the bare form's type is settled at its lit site from
    context, like any bare literal. */
 struct_lit_body
   : field_inits
-  | init_list COMMA DOT DOT expr
-  | DOT DOT expr
+  | init_list BAR expr
+  | BAR expr
   ;
 
 variant_payload : /* empty */ | DOT LBRACE field_inits RBRACE ;

@@ -179,9 +179,12 @@ fn collect_pat_binders(p: &Pat, out: &mut Vec<String>) {
                 collect_pat_binders(p, out);
             }
         }
-        Pat::Struct { fields } => {
+        Pat::Struct { fields, rest } => {
             for (_, p) in fields {
                 collect_pat_binders(p, out);
+            }
+            if let Some(name) = rest {
+                out.push(name.clone());
             }
         }
         Pat::StrPrefix { rest, .. } => collect_pat_binders(rest, out),

@@ -728,6 +728,34 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return THxRT_str((const char *)s->u.str.data + beg, end - beg);
   }
 
+  if (strcmp(name, "record_without") == 0) {
+    Value *rec = a[0];
+    if (rec->tag != T_STRUCT) thrax_fault("`record_without` on a non-record");
+    Value *lbl = as_str(a[1]);
+    size_t llen = lbl->u.str.len;
+    const char *ldata = (const char *)lbl->u.str.data;
+    size_t n0 = rec->u.strct.len;
+    Field *fields = THxMEM_alloc((n0 ? n0 : 1) * sizeof(Field));
+    size_t len = 0;
+    int dropped = 0;
+    for (size_t i = 0; i < n0; i++) {
+      const char *fn = rec->u.strct.fields[i].name;
+      if (!dropped && strlen(fn) == llen && memcmp(fn, ldata, llen) == 0) {
+        dropped = 1; /* drop only the head occurrence */
+        continue;
+      }
+      fields[len++] = rec->u.strct.fields[i];
+    }
+    Value *v = alloc_value(T_STRUCT);
+    v->u.strct.name = rec->u.strct.name;
+    v->u.strct.fields = fields;
+    v->u.strct.len = len;
+    for (size_t i = 0; i < len; i++) {
+      THxMEM_retain(fields[i].val); /* the fresh struct owns every field */
+      mark_escape(fields[i].val);
+    }
+    return v;
+  }
   if (strcmp(name, "vec_new") == 0) return mk_vec(NULL, 0);
   if (strcmp(name, "vec_fill") == 0) {
     size_t len = as_index(a[0]);

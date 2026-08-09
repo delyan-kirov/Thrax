@@ -327,7 +327,8 @@ pub enum Expr {
         record: Aol<Expr>,
         name: StrId,
     },
-    /// `Type.{ ... }` / bare `.{ ... }` (type inferred), with optional `..spread`.
+    /// `Type.{ ... }` / bare `.{ ... }` (type inferred), with an optional trailing
+    /// `| base` update: `spread` is `base`, its unlisted fields filling the result.
     StructLit {
         ty: Option<StrId>,
         fields: Box<[FieldInit]>,
