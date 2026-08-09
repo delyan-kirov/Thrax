@@ -31,8 +31,8 @@ $ fib : Int -> Int = \\n =
 	else fib (n - 1) + fib (n - 2)
 
 $ main : Int =
-	HOST.print ("fib 10 = " ++ STR.from_int (fib 10));
-	HOST.print ("fib 20 = " ++ STR.from_int (fib 20));
+	HOST.print <| "fib 10 = " ++ STR.from_int (fib 10);
+	HOST.print <| "fib 20 = " ++ STR.from_int (fib 20);
 	0
 `,
   },
@@ -55,8 +55,8 @@ $ area : Shape -> Int = \\s =
 		| Shape.Rect.{w, h} => w * h
 
 $ main : Int =
-	HOST.print ("circle r=2: " ++ STR.from_int (area Shape.Circle.{2}));
-	HOST.print ("rect 3x4:   " ++ STR.from_int (area Shape.Rect.{3, 4}));
+	HOST.print <| "circle r=2: " ++ STR.from_int (area Shape.Circle.{2});
+	HOST.print <| "rect 3x4:   " ++ STR.from_int (area Shape.Rect.{3, 4});
 	0
 `,
   },
@@ -74,7 +74,7 @@ $ Point3 : @struct = with Point, z: Int,
 
 $ main : Int =
 	let p = Point3.{ .x = 1, .y = 2, .z = 3 } in
-	HOST.print ("x + y + z = " ++ STR.from_int (p.x + p.y + p.z));
+	HOST.print <| "x + y + z = " ++ STR.from_int (p.x + p.y + p.z);
 	0
 `,
   },
@@ -94,9 +94,9 @@ $ sign : Int -> Str = \\n =
 	else "zero"
 
 $ main : Int =
-	HOST.print ("sign  7 = " ++ sign 7);
-	HOST.print ("sign -3 = " ++ sign (0 - 3));
-	HOST.print ("sign  0 = " ++ sign 0);
+	HOST.print <| "sign  7 = " ++ sign 7;
+	HOST.print <| "sign -3 = " ++ sign (0 - 3);
+	HOST.print <| "sign  0 = " ++ sign 0;
 	0
 `,
   },
@@ -124,7 +124,7 @@ $ main : Int =
   {
     id: "lists",
     title: "Lists",
-    blurb: "`[a, b, c]` builds a list, `h :: t` conses, `[]` is empty. Patterns mirror the sugar: `| []` and `| h :: t` walk a list one cell at a time.",
+    blurb: "`[a, b, c]` builds a list, `h :: t` conses, `[]` is empty. Patterns mirror the sugar: `| []` and `| h :: t` walk a list one cell at a time, and together they cover every list, so no `else` is needed.",
     src: `@mod MAIN
 
 $ with STR
@@ -134,11 +134,10 @@ $ sum : List Int -> Int = \\xs =
 	is xs
 		| [] => 0
 		| h :: t => h + sum t
-	else 0
 
 $ main : Int =
 	let xs = [1, 2, 3, 4, 5] in
-	HOST.print ("sum [1..5] = " ++ STR.from_int (sum xs));
+	HOST.print <| "sum [1..5] = " ++ STR.from_int (sum xs);
 	0
 `,
   },
@@ -156,7 +155,7 @@ $ dbl : Int -> Int = \\x = x + x
 
 $ main : Int =
 	let r = 5 |> inc |> dbl in
-	HOST.print ("5 |> inc |> dbl = " ++ STR.from_int r);
+	HOST.print <| "5 |> inc |> dbl = " ++ STR.from_int r;
 	0
 `,
   },
@@ -175,7 +174,7 @@ $ max_of : a -> a -> a  @ctx compare : a -> a -> Bool = \\x y =
 	if compare x y => x else y
 
 $ main : Int =
-	HOST.print ("max_of 3 7 = " ++ STR.from_int (max_of 3 7));
+	HOST.print <| "max_of 3 7 = " ++ STR.from_int (max_of 3 7);
 	0
 `,
   },
@@ -195,11 +194,11 @@ $ sumGen : ({} -> <Yield> {}) -> Int = \\gen =
 	ctl k | Yield.yield v => v + k {}
 	      else _ => 0
 
-$ gen3 : {} -> <Yield> {} = \\u =
+$ gen3 : {} -> <Yield> {} =
 	Yield.yield 10 ; Yield.yield 20 ; Yield.yield 12 ; {}
 
 $ main : Int =
-	HOST.print ("sum of yields = " ++ STR.from_int (sumGen gen3));
+	HOST.print <| "sum of yields = " ++ STR.from_int (sumGen gen3);
 	0
 `,
   },
@@ -219,8 +218,8 @@ $ safeDiv : Int -> Int -> Int = \\a b =
 	ctl k | Exn.throw msg => 0 - 1
 
 $ main : Int =
-	HOST.print ("84 / 2 = " ++ STR.from_int (safeDiv 84 2));
-	HOST.print ("10 / 0 = " ++ STR.from_int (safeDiv 10 0));
+	HOST.print <| "84 / 2 = " ++ STR.from_int (safeDiv 84 2);
+	HOST.print <| "10 / 0 = " ++ STR.from_int (safeDiv 10 0);
 	0
 `,
   },
@@ -237,12 +236,12 @@ $ State : @effect = get : {} -> Int, put : Int -> {},
 
 $ runState : ({} -> <State> Int) -> Int -> Int = \\action s0 =
 	let h = do action {}
-	        ctl k | get u => \\s = (k s) s
-	              | put n => \\s = (k {}) n
+	        ctl k | get u => \\s = k s s
+	              | put n => \\s = k {} n
 	              else x => \\s = x
 	 in h s0
 
-$ counter : {} -> <State> Int = \\u =
+$ counter : {} -> <State> Int =
 	let
 		x = get {},
 		_ = put <| x + 1,
@@ -251,7 +250,7 @@ $ counter : {} -> <State> Int = \\u =
 		x + y
 
 $ main : Int =
-	HOST.print ("counter from 10 = " ++ STR.from_int (runState counter 10));
+	HOST.print <| "counter from 10 = " ++ STR.from_int (runState counter 10);
 	0
 `,
   },
@@ -275,7 +274,7 @@ $ paint  : Str -> {}  = @extern "WASM" "change_color" ""
 $ random : Int -> Int = @extern "WASM" "random" ""
 $ delay  : Int -> {}  = @extern "WASM" "delay" ""
 
-$ color : {} -> Str = \\u =
+$ color : {} -> Str =
 	"rgb(" ++ STR.from_int (random 256)
 	      ++ ", " ++ STR.from_int (random 256)
 	      ++ ", " ++ STR.from_int (random 256) ++ ")"
@@ -294,7 +293,7 @@ $ spin : Int -> <ChangeColorEffect> {} = \\n =
 
 $ main : Int =
 	delay 150 ;
-	let _ = withColor (\\u = spin 12) in
+	withColor (\\u = spin 12) ;
 	0
 `,
   },
