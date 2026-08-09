@@ -161,9 +161,11 @@ pub enum Pat {
         fields: Vec<Pat>,
     },
     /// Match a struct: each `(field, subpattern)` is checked by field name; fields
-    /// not listed are ignored.
+    /// not listed are ignored. `rest`, when set, binds the leftover fields (the
+    /// record minus the listed labels) to that name (`..name` in a record pattern).
     Struct {
         fields: Vec<(String, Pat)>,
+        rest: Option<String>,
     },
     /// A literal byte-string prefix `"GET " ++ rest`.
     StrPrefix {

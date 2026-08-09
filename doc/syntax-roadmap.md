@@ -98,16 +98,12 @@ every omitted field, yielding a complete literal CR/IR handle unchanged.
 `examples/RECORD_UPDATE.thx`; grammar `struct_lit_body` in doc/thrax.y (no new
 conflicts, `%expect` unchanged).
 
-- **TODO (deferred): record-rest binding `.{ .x = a, ..rest }` in *patterns*.**
-  Discarding the rest of a struct pattern needs no new type (see the pattern
-  discussion), but *binding* `rest` requires giving it the type "this struct
-  minus the matched fields", an anonymous structural record. Thrax records are
-  nominal, so that type does not exist today. It needs **row polymorphism**
-  (either scoped labels a la Koka/Leijen, or Remy/PureScript-style rows with a
-  `lacks` constraint; the latter is the cleaner fit for unordered nominal-style
-  records), plus a runtime repack (unlike an array tail, the remaining fields are
-  not a contiguous slice). This is its own project with its own plan. Until then,
-  reserve `..rest` in struct patterns and expand only `.._` (discard).
+- **DONE: record-rest binding `{ .x = a, ..rest }` in *patterns*.** Now that
+  records are row-polymorphic ([[row-records]]), `rest` gets the row-tail type and
+  binds the leftover fields. The runtime repack is a `record_without` primitive in
+  both engines (drop the head occurrence of each matched label). `.._` still
+  discards. Record update also migrated to `| base` (the old `..base` spread is
+  gone) and generic structs now bridge to open rows. See doc/row-records.md.
 
 ### #6 String interpolation `"Hi {name}, age {STR.from_int p.age}"` -- DONE
 

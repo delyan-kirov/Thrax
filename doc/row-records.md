@@ -20,10 +20,16 @@ first-class, name-keyed types** (an earlier "decay to pairs" model was replaced)
 - **Destructuring patterns**: `is p | { .x = a, .y = b, .._ } => ...` and lambda
   shorthand `\{ .x, .y } = ...`, on open-row values and nominal structs.
 
-Remaining: **`..name` rest-BINDING** in patterns (needs a runtime record-restriction
-op; `.._` discard works, `..name` errors clearly); **generic structs** at open rows
-(only non-generic structs are bridged); the `..base` -> `{ | base }` migration (old
-spread still works).
+All three former gaps are now closed:
+- **`..name` rest-BINDING** in patterns: `is p | { .x = a, ..rest } => ...` binds
+  `rest` to the record minus the listed labels (a `record_without` runtime primitive
+  in both engines; `.._` is still the discard). `rest`'s type is the row tail.
+- **Generic structs** at open rows: a generic instance like `Box Int` satisfies
+  `{ val: Int | r }`. Struct rows are registered as schemes (parameter vars in
+  declaration order) and the engine bridges an `App..(Con)` spine by substituting
+  the type arguments (`Engine::struct_row_bridge` / `subst_vars`).
+- **Record update** is spelled `{ .f = v | base }` everywhere, in nominal
+  `Type.{ .. }` / bare `.{ .. }` literals too (the old `..base` spread is gone).
 
 ### Model
 
@@ -158,10 +164,11 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
   order-independent). Positional `{1, 2}` and a bare scalar promote to a record at
   a call argument (see "The model"). Nominal construction `Point.{ .. }` stays.
 - **Update:** `{ .foo = f | base }` -- these fields override, the rest come from
-  `base` (which must be a record, i.e. an open-row value). `|` reads the same as
-  the type tail (`{ x:Int | r }` = these fields, rest is `r`), base/rest on the
-  right. Intended to replace the old `..base` spread (still present until migrated).
-  Update preserves `base`'s row.
+  `base`. `|` reads the same as the type tail (`{ x:Int | r }` = these fields, rest
+  is `r`), base/rest on the right. This is the one update syntax, in anonymous
+  records and in nominal `Type.{ .f = v | base }` / bare `.{ .f = v | base }`
+  literals alike (the old `..base` spread has been removed). Update preserves
+  `base`'s row (or, for a nominal literal, its struct type).
 - **Stack:** `{ .foo = 1, with area }` -- row is `{foo} ++ area`. Duplicates
   allowed (head wins), so this can add a field the target's closed row rejects but
   an open row absorbs. This is the value-level mirror of declaration `with`.
@@ -170,9 +177,6 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
 
 - Restriction operator `rec - x` to reach a shadowed duplicate. Not needed for A.
 - No `lacks`/absence constraints (that was the no-duplicate model we rejected).
-- Reconcile with the existing record-update `T.{ .f = v, ..base }` (base is a
-  closed row; listed fields override -- already "later wins" there, vs "head
-  wins" for `with`; both are consistent since update is closed).
 - Codata (see doc/effect-system-design.md §1a) is separate, but an **observation
   record is itself row-shaped**, so a codata type could reuse this row machinery
   for its observations once both land.

@@ -1144,14 +1144,20 @@ impl<'a> Lowerer<'a> {
                 let fields: Vec<FieldPat> = fields.to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, names.as_deref()),
+                    rest: None,
                 }
             }
-            // A record pattern matches a name-keyed record/struct by field name,
-            // ignoring the rest (the checker allows only `.._` discard for now).
-            Pattern::Record { fields, .. } => {
+            // A record pattern matches a name-keyed record/struct by field name.
+            // `..name` binds the leftover fields; `.._` (a wild rest) discards them.
+            Pattern::Record { fields, rest } => {
+                let rest = rest.and_then(|r| match self.pnode(r) {
+                    Pattern::Var(name) => Some(self.text(*name).to_string()),
+                    _ => None,
+                });
                 let fields: Vec<FieldPat> = fields.to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, None),
+                    rest,
                 }
             }
             Pattern::Variant {

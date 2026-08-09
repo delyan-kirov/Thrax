@@ -148,7 +148,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" => 1,
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
-        | "array_push" | "vec_get" | "vec_push" | "vec_fill" => 2,
+        | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" => 2,
         "array_set" | "array_slice" | "vec_set" => 3,
         _ => return None,
     };
@@ -203,6 +203,27 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             beg = beg.min(bytes.len());
             end = end.clamp(beg, bytes.len());
             Ok(Value::Str(Rc::new(bytes[beg..end].to_vec())))
+        }
+        "record_without" => {
+            let label = as_bytes(&a[1])?;
+            match &*a[0].borrow() {
+                Value::Struct { name, fields } => {
+                    let mut out = Vec::with_capacity(fields.len());
+                    let mut dropped = false;
+                    for (n, val) in fields {
+                        if !dropped && n.as_bytes() == label.as_ref().as_slice() {
+                            dropped = true;
+                            continue;
+                        }
+                        out.push((n.clone(), val.clone()));
+                    }
+                    Ok(Value::Struct {
+                        name: name.clone(),
+                        fields: out,
+                    })
+                }
+                _ => Err(fault("`record_without` on a non-record")),
+            }
         }
         "vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
         "vec_fill" => {

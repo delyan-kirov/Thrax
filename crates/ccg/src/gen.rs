@@ -435,7 +435,7 @@ fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" => 1,
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
-        | "array_push" | "vec_get" | "vec_push" | "vec_fill" => 2,
+        | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" => 2,
         "array_set" | "array_slice" | "vec_set" => 3,
         _ => return None,
     };
