@@ -1,8 +1,35 @@
 # Deferred design: ranges, codata, and the linear-algebra extension
 
-**Status: DEFERRED.** Nothing here is scheduled. This note records how three
-future features must compose, so that the near-term surface work does not
-foreclose them. One decision is settled: positional `.n` (#10) is tuple/struct
+**Status: partially SHIPPED.** Ranges (pattern form) and codata are done (see
+their memories). The LA extension's foundation has landed as **increment 1: sized
+tensors** (2026-08-09):
+
+- `[n]T` is a rank-1 sized vector; `n` is a type-level natural, a **distinct KIND**
+  from ordinary types (`Type::Nat` + a `nat_vars` set in the engine; a size unifies
+  only with a size). Answers the doc's "static shape needs type-level computation
+  Thrax lacks today."
+- The design choice (per the user): **modular everything.** Indexing `t.[i]` is
+  TOTAL and MODULAR (`i mod n`), so no bounds proofs and no partiality; the size
+  arithmetic will be modular (Z/2^64) too when it lands. This keeps the whole thing
+  in decidable equational-ring land, no `<` constraints, no dependent proofs.
+- Frontend-only: `[n]T` erases to the existing `%vec` vector; `t.[i]` lowers to
+  `vec_get t (i % vec_len t)`. No new runtime kind. `[m][n]T` nests as vectors of
+  vectors for now (NOT the flat buffer+strides view yet).
+- **Phase A (nat unification) shipped**: literals and size variables unify
+  (`[3]Int`, `first : [n]a -> a`).
+- **Phase B (modular type-level arithmetic) also shipped** (2026-08-09):
+  `[n+m]T`/`[n*m]T`, modular over Z/2^64. Equality is a canonical polynomial normal
+  form (`Type::NatAdd`/`NatMul`; `normalize_size`/`unify_size` in engine.rs), so
+  `[n+m] == [m+n]` and `[n+n] == [2*n]`. Unification is forward-eval only (ground
+  compare + lone-var bind; no back-solving `n+1 == 5`), which keeps it decidable, no
+  `<`, no SMT. A `concat : [n]a -> [m]a -> [n+m]a` builtin (vector append, both
+  engines) demonstrates it end to end.
+- NOT yet: the flat buffer+view+strides data plane (for O(1) transpose / matmul /
+  slices; today `[m][n]T` is nested vectors), variance axes (Up/Down), and the
+  overloadable `index` generalization of `.[..]`. Those remain as below.
+
+The rest of this note is the still-unbuilt design (data plane, variance, ranges as
+slice descriptors), kept so increment 1 does not foreclose it. One decision is settled: positional `.n` (#10) is tuple/struct
 projection ONLY; sequence/tensor/map indexing is a separate operation, spelled
 `.[..]`, and belongs to this subsystem (see "Indexing surface" below).
 

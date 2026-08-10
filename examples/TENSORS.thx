@@ -1,0 +1,43 @@
+@mod TENSORS
+
+# \file tensors.thx
+# \info Sized tensors: `[n]T` is a vector of `n` elements of type `T`, with the
+#       size `n` tracked at the type level (a distinct KIND from ordinary types).
+#       A `[..]` literal's length fixes the size. Indexing `t.[i]` is TOTAL and
+#       MODULAR: the index is reduced mod the size, so it never goes out of
+#       bounds (`t.[n]` wraps to `t.[0]`). Functions can be polymorphic in the
+#       size: `[n]T -> ...` accepts a tensor of any length, with `n` unified.
+
+$ v : [3]Int = [10, 20, 30]
+
+# Modular indexing wraps: index 3 -> 0, index 7 -> 1.
+$ ck_get  : Int = if v.[1] ?= 20 => 0 else 1
+$ ck_wrap : Int = if v.[3] ?= 10 => 0 else 2
+$ ck_wrap2: Int = if v.[7] ?= 20 => 0 else 4
+
+# Size-polymorphic: `first` takes `[n]Int` for any `n` (the size unifies).
+$ first : [n]Int -> Int = \t = t.[0]
+$ ck_poly : Int = if first v ?= 10 => 0 else 8
+
+# The element type is polymorphic too; `head` works for any `[n]a`.
+$ head : [n]a -> a = \t = t.[0]
+$ ck_elem : Int = if head [7, 8, 9] ?= 7 => 0 else 16
+
+# A tensor of tensors nests: `[m][n]T`. Indexing peels one axis at a time.
+$ grid : [2][2]Int = [ [1, 2], [3, 4] ]
+$ ck_nested : Int = if grid.[1].[0] ?= 3 => 0 else 32
+
+# Type-level size ARITHMETIC (modular, Z/2^64). `concat` joins two tensors and
+# its result size is `n + m`, checked at compile time.
+$ ab : [5]Int = concat v [40, 50]       # 3 + 2 = 5
+$ ck_cat : Int = if ab.[4] ?= 50 => 0 else 64
+
+# The normalizer decides equality: `n + n` is `2 * n`, and `+` commutes.
+$ dup  : [n]a -> [2*n]a = \t = concat t t
+$ flip : [n]a -> [m]a -> [m+n]a = \x y = concat x y
+$ dd : [6]Int = dup v                    # 2 * 3 = 6
+$ ck_dup : Int = if dd.[5] ?= 30 => 0 else 128
+
+$ test : Int =
+	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
+	+ ck_cat + ck_dup

@@ -790,7 +790,64 @@ impl<'a> Parser<'a> {
                 Ok(inner)
             }
             Kind::LBrace => self.parse_brace_type(),
+            // `[size]elem`: a sized tensor type. `size` is a Nat literal or a
+            // lowercase (Nat-kinded) variable; `elem` binds as one atom (nest
+            // `[m][n]T`, parenthesize a compound `[n](List a)`).
+            Kind::LBrack => {
+                self.bump()?; // '['
+                let size = self.parse_size()?;
+                expect!(self, Kind::RBrack, "expected ']' to close the tensor size");
+                let elem = self.parse_type_atom()?;
+                Ok(self.ty(Ty::Sized { size, elem }))
+            }
             _ => Err(self.unexpected(&t, "expected a type")),
+        }
+    }
+
+    /// A tensor size expression: `+` of `*`-terms over Nat literals and size
+    /// variables (`[n+m]`, `[2*n+1]`). `*` binds tighter than `+`; `( )` groups.
+    fn parse_size(&mut self) -> Result<Aol<Ty>> {
+        let mut lhs = self.parse_size_term()?;
+        while self.at_op("+")? {
+            self.bump()?;
+            let rhs = self.parse_size_term()?;
+            lhs = self.ty(Ty::SizeAdd(lhs, rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_size_term(&mut self) -> Result<Aol<Ty>> {
+        let mut lhs = self.parse_size_atom()?;
+        while self.at_op("*")? {
+            self.bump()?;
+            let rhs = self.parse_size_atom()?;
+            lhs = self.ty(Ty::SizeMul(lhs, rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_size_atom(&mut self) -> Result<Aol<Ty>> {
+        let t = self.peek()?;
+        match t.kind {
+            Kind::Int(v) if v >= 0 => {
+                self.bump()?;
+                Ok(self.ty(Ty::Nat(v as u64)))
+            }
+            Kind::Int(_) => Err(self.unexpected(&t, "a tensor size must be non-negative")),
+            Kind::LParen => {
+                self.bump()?;
+                let inner = self.parse_size()?;
+                expect!(self, Kind::RParen, "expected ')' in a tensor size");
+                Ok(inner)
+            }
+            _ if self.at_tyvar()? => {
+                let name = self.expect_tyvar("expected a size variable")?;
+                Ok(self.ty(Ty::Var(name)))
+            }
+            _ => Err(self.unexpected(
+                &t,
+                "expected a size (a Nat literal, a lowercase variable, or `+`/`*` of them)",
+            )),
         }
     }
 
@@ -1051,6 +1108,13 @@ impl<'a> Parser<'a> {
             Kind::Int(_) | Kind::Real(_) => {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
+            }
+            // `recv.[i]`: tensor indexing (modular). Single index for now.
+            Kind::LBrack => {
+                self.bump()?; // '['
+                let index = self.parse_expr(0)?;
+                expect!(self, Kind::RBrack, "expected ']' to close the index");
+                Ok(self.expr(Expr::Index { recv: base, index }))
             }
             Kind::Word if is_upper(self.text(ahead)) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;

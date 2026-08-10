@@ -174,6 +174,12 @@ pub struct Checker<'a> {
     /// vector) rather than the default `List`. Lowering reads this to emit array
     /// construction / destructuring instead of `Cons`/`Nil`.
     array_exprs: HashSet<Aol<Expr>>,
+    /// `[..]` literal sites resolved to a sized tensor `[n]T` (a vector value),
+    /// distinct from the byte-`Array` sites in `array_exprs`. Lowering builds a
+    /// vector; the index `t.[i]` reads it modulo the length.
+    tensor_exprs: HashSet<Aol<Expr>>,
+    /// `t.[i]` index sites, so lowering emits the modular vector read.
+    index_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
@@ -299,6 +305,8 @@ impl<'a> Checker<'a> {
             qualified: HashMap::new(),
             module_name: "",
             array_exprs: HashSet::new(),
+            tensor_exprs: HashSet::new(),
+            index_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             array_pats: HashSet::new(),
@@ -316,6 +324,12 @@ impl<'a> Checker<'a> {
     /// the default `List`.
     pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
         (&self.array_exprs, &self.array_pats)
+    }
+
+    /// The `[..]` literal sites resolved to a sized tensor, and the `t.[i]` index
+    /// sites. Lowering builds a vector for the former and a modular read for the latter.
+    pub fn tensor_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>) {
+        (&self.tensor_exprs, &self.index_exprs)
     }
 
     /// Argument sites promoted to a record, mapped to the target field names;
@@ -667,6 +681,13 @@ impl<'a> Checker<'a> {
                 .or_insert_with(|| self.eng.fresh_generic())
                 .clone(),
             Type::Con(name) => Type::Con(name.clone()),
+            Type::Nat(n) => Type::Nat(*n),
+            Type::NatAdd(a, b) => {
+                Type::NatAdd(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+            }
+            Type::NatMul(a, b) => {
+                Type::NatMul(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+            }
             Type::App(head, arg) => Type::app(self.import_ty(head, map), self.import_ty(arg, map)),
             Type::Arrow(from, to, eff) => Type::arrow_eff(
                 self.import_ty(from, map),
@@ -902,6 +923,22 @@ impl<'a> Checker<'a> {
                     self.eng
                         .unify(&t, &Type::con(ty::INT), "in an array element")?;
                 }
+                Ok(())
+            }
+            // `[..]` where a sized tensor `[n]T` is expected: the literal's length
+            // fixes `n`, and every element is checked against `T`. Lowering builds
+            // a vector.
+            Expr::List(items) if self.tensor_parts(expected).is_some() => {
+                let (size, elem) = self.tensor_parts(expected).expect("guarded");
+                self.eng.unify(
+                    &size,
+                    &Type::Nat(items.len() as u64),
+                    "in a tensor literal (its length fixes the size)",
+                )?;
+                for item in items.iter() {
+                    self.check(*item, &elem)?;
+                }
+                self.tensor_exprs.insert(e);
                 Ok(())
             }
             // `{ .obs = e, ... }` where a codata type is expected: construct it (each
@@ -2011,6 +2048,19 @@ impl<'a> Checker<'a> {
                 }
                 self.infer_field(&rec_ty, name)
             }
+            Expr::Index { recv, index } => {
+                let (recv, index) = (*recv, *index);
+                let rec_ty = self.infer(recv)?;
+                let size = self.eng.fresh_nat();
+                let elem = self.eng.fresh();
+                let tensor = Type::app(Type::app(Type::con(TENSOR), size), elem.clone());
+                self.eng.unify(&rec_ty, &tensor, "indexing a tensor `t.[i]`")?;
+                let idx_ty = self.infer(index)?;
+                self.eng
+                    .unify(&idx_ty, &Type::con(ty::INT), "a tensor index must be an Int")?;
+                self.index_exprs.insert(e);
+                Ok(elem)
+            }
             Expr::StructLit { ty, fields, spread } => {
                 let ty = ty.map(|t| self.text(t));
                 self.infer_struct_lit(e, ty, fields, *spread)
@@ -3097,6 +3147,46 @@ impl<'a> Checker<'a> {
         Some(self.ty_of_ast(body, &mut sub))
     }
 
+    /// Elaborate a tensor size: a `Nat` literal, or a (Nat-kinded) size variable
+    /// bound by name in `tvars` so `[n]T -> [n]U` shares the one size.
+    fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        match self.tnode(ty) {
+            Ty::Nat(n) => Type::Nat(*n),
+            Ty::Var(name) => {
+                let name = self.text(*name);
+                let eng = &mut self.eng;
+                tvars.entry(name).or_insert_with(|| eng.fresh_nat()).clone()
+            }
+            Ty::SizeAdd(a, b) => {
+                let (a, b) = (*a, *b);
+                Type::NatAdd(
+                    Box::new(self.size_ty_of_ast(a, tvars)),
+                    Box::new(self.size_ty_of_ast(b, tvars)),
+                )
+            }
+            Ty::SizeMul(a, b) => {
+                let (a, b) = (*a, *b);
+                Type::NatMul(
+                    Box::new(self.size_ty_of_ast(a, tvars)),
+                    Box::new(self.size_ty_of_ast(b, tvars)),
+                )
+            }
+            _ => self.ty_of_ast(ty, tvars),
+        }
+    }
+
+    /// Peel a sized-tensor type `@tensor size elem` into `(size, elem)`.
+    fn tensor_parts(&self, ty: &Type) -> Option<(Type, Type)> {
+        if let Type::App(head, elem) = self.eng.resolve(ty) {
+            if let Type::App(con, size) = self.eng.resolve(&head) {
+                if matches!(self.eng.resolve(&con), Type::Con(n) if n == TENSOR) {
+                    return Some((*size, *elem));
+                }
+            }
+        }
+        None
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         // An alias at the head of an application spine expands first, so `MapInt Bool`
         // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
@@ -3126,6 +3216,16 @@ impl<'a> Checker<'a> {
                 self.check_type_arity(ty);
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
+            }
+            Ty::Nat(n) => Type::Nat(*n),
+            // A size expression written in type position (only well-formed inside a
+            // `[..]`); elaborate it as a size so kind-checking flags any misuse.
+            Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_ty_of_ast(ty, tvars),
+            Ty::Sized { size, elem } => {
+                let (size, elem) = (*size, *elem);
+                let size_ty = self.size_ty_of_ast(size, tvars);
+                let elem_ty = self.ty_of_ast(elem, tvars);
+                Type::app(Type::app(Type::con(TENSOR), size_ty), elem_ty)
             }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
@@ -3240,6 +3340,20 @@ impl<'a> Checker<'a> {
         let (t, vt) = vec(&mut self.eng);
         self.bind("vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
 
+        // `concat : [n]a -> [m]a -> [n+m]a`: the tensor size arithmetic (Phase B).
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let m = self.eng.fresh_generic_nat();
+            let tensor = |size: Type, elem: Type| {
+                Type::app(Type::app(Type::con(TENSOR), size), elem)
+            };
+            let tn = tensor(n.clone(), a.clone());
+            let tm = tensor(m.clone(), a.clone());
+            let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
+            self.bind("concat", Type::arrow(tn, Type::arrow(tm, tnm)));
+        }
+
         self.bind("true", bool_());
         self.bind("false", bool_());
 
@@ -3336,6 +3450,10 @@ fn free_globals<'a>(
         Expr::App(f, x) => {
             free_globals(ast, *f, globals, bound, out);
             free_globals(ast, *x, globals, bound, out);
+        }
+        Expr::Index { recv, index } => {
+            free_globals(ast, *recv, globals, bound, out);
+            free_globals(ast, *index, globals, bound, out);
         }
         Expr::BinOp { lhs, rhs, .. } => {
             free_globals(ast, *lhs, globals, bound, out);
@@ -3540,6 +3658,9 @@ fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
             format!("t{i}")
         }
         Type::Con(name) => name.replace('.', "_"),
+        Type::Nat(n) => format!("N{n}"),
+        Type::NatAdd(a, b) => format!("P{}_{}", ty_key(a, vars), ty_key(b, vars)),
+        Type::NatMul(a, b) => format!("M{}_{}", ty_key(a, vars), ty_key(b, vars)),
         Type::App(head, arg) => {
             format!("A{}_{}", ty_key(head, vars), ty_key(arg, vars))
         }
@@ -3627,7 +3748,15 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
                 }
             }
         }
-        Ty::Con { .. } | Ty::Unit => {}
+        Ty::Sized { size, elem } => {
+            collect_tyvars(ast, *size, out);
+            collect_tyvars(ast, *elem, out);
+        }
+        Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+            collect_tyvars(ast, *a, out);
+            collect_tyvars(ast, *b, out);
+        }
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit => {}
     }
 }
 
@@ -3696,6 +3825,10 @@ fn is_base_type(name: &str) -> bool {
             | "@str" | "@ptr" | "@bool" | "@array"
     )
 }
+
+/// The internal constructor name of a sized tensor `[n]T` (`@tensor size elem`).
+/// `@`-prefixed so it cannot collide with a user type; erased before runtime.
+const TENSOR: &str = "@tensor";
 
 fn unknown_type(name: &str) -> Diagnostic {
     diag!(

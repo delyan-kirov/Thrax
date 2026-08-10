@@ -303,6 +303,9 @@ pub enum ImplicitArg {
 pub struct Resolved {
     pub array_exprs: HashSet<Aol<Expr>>,
     pub array_pats: HashSet<Aol<Pattern>>,
+    /// `[..]` literal sites resolved to a sized tensor (a vector value), from
+    /// [`crate::typing::Checker::tensor_nodes`]. Lowering builds a vector.
+    pub tensor_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record, mapped to the target field names (from
     /// [`crate::typing::Checker::promotions`]); lowering wraps the value.
     pub promotions: HashMap<Aol<Expr>, Vec<String>>,
@@ -655,6 +658,22 @@ impl<'a> Lowerer<'a> {
                 Term::app(self.expr(f), self.expr(x))
             }
 
+            // `recv.[i]`: read a tensor (vector) at `i` modulo its length. `recv` is
+            // bound once so a compound receiver is not evaluated twice.
+            Expr::Index { recv, index } => {
+                let (recv, index) = (self.expr(*recv), self.expr(*index));
+                let r = self.fresh();
+                let len = Term::app(Term::var("vec_len"), Term::var(r.clone()));
+                let wrapped = bin("%", index, len);
+                let read = Term::app(Term::app(Term::var("vec_get"), Term::var(r.clone())), wrapped);
+                Term::Let {
+                    name: r,
+                    rec: false,
+                    val: Arc::new(recv),
+                    body: Arc::new(read),
+                }
+            }
+
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
                 self.binop(op, lhs, rhs)
@@ -677,6 +696,14 @@ impl<'a> Lowerer<'a> {
                     for it in items {
                         let x = self.expr(it);
                         acc = Term::app(Term::app(Term::var("array_push"), acc), x);
+                    }
+                    acc
+                } else if self.resolved.tensor_exprs.contains(&e) {
+                    // A sized tensor: a vector, pushed left to right onto an empty one.
+                    let mut acc = Term::app(Term::var("vec_new"), Term::Unit);
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("vec_push"), acc), x);
                     }
                     acc
                 } else {

@@ -785,6 +785,18 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
+  if (strcmp(name, "concat") == 0) {
+    if (a[0]->tag != T_VEC || a[1]->tag != T_VEC)
+      thrax_fault("`concat` expects two tensors");
+    size_t la = a[0]->u.seq.len, lb = a[1]->u.seq.len;
+    size_t len = la + lb;
+    Value **items = xmalloc((len ? len : 1) * sizeof(Value *));
+    memcpy(items, a[0]->u.seq.items, la * sizeof(Value *));
+    memcpy(items + la, a[1]->u.seq.items, lb * sizeof(Value *));
+    Value *v = mk_vec(items, len);
+    free(items);
+    return v;
+  }
   if (strcmp(name, "vec_set") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);

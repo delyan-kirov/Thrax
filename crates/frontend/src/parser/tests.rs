@@ -149,6 +149,21 @@ fn declared_type_params() {
 }
 
 #[test]
+fn sized_tensor_type_parses() {
+    let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
+    match &p.program.items[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { size, elem } => {
+                assert!(matches!(p.ast.ty(*size), Ty::Nat(3)));
+                assert!(matches!(p.ast.ty(*elem), Ty::Con { .. }));
+            }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
 fn inclusive_range_pattern_parses() {
     let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 else 1";
     let p = prog(src);

@@ -15,6 +15,10 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    {
+        let (tex, _idx) = checker.tensor_nodes();
+        resolved.tensor_exprs.extend(tex.iter().copied());
+    }
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
@@ -249,6 +253,35 @@ fn nominal_struct_update_with_pipe() {
                $ cl : P = .{ | base }\n\
                $ r : Int = q.a + q.b + q.c + r0.a + cl.c";
     assert_eq!(run(src, "r"), "37"); // (1+20+3) + 10 + 3
+}
+
+#[test]
+fn sized_tensor_construction_and_modular_index() {
+    // `[n]T` is a sized vector; a `[..]` literal's length fixes the size, and
+    // `t.[i]` reads modulo the size (total: `t.[n]` wraps to `t.[0]`). Functions
+    // may be size-polymorphic (`[n]a`), the size unifying at the call.
+    let src = "@mod M\n\
+               $ v : [3]Int = [10, 20, 30]\n\
+               $ head : [n]a -> a = \\t = t.[0]\n\
+               $ grid : [2][2]Int = [ [1, 2], [3, 4] ]\n\
+               $ r : Int = v.[1] + v.[3] + v.[7] + head v + grid.[1].[0]";
+    // 20 + v.[0]=10 + v.[1]=20 + head=10 + grid.[1].[0]=3
+    assert_eq!(run(src, "r"), "63");
+}
+
+#[test]
+fn tensor_size_arithmetic() {
+    // `concat : [n]a -> [m]a -> [n+m]a` computes the result size forward; the
+    // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`.
+    let src = "@mod M\n\
+               $ a : [2]Int = [1, 2]\n\
+               $ b : [3]Int = [3, 4, 5]\n\
+               $ c : [5]Int = concat a b\n\
+               $ dup : [n]x -> [2*n]x = \\t = concat t t\n\
+               $ flip : [n]x -> [m]x -> [m+n]x = \\p q = concat p q\n\
+               $ d : [4]Int = dup a\n\
+               $ r : Int = c.[4] + d.[3]"; // 5 + (dup a = [1,2,1,2]).[3]=2
+    assert_eq!(run(src, "r"), "7");
 }
 
 #[test]

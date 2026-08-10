@@ -23,6 +23,15 @@ pub enum Type {
     /// A nullary type constructor: `Int`, `Real`, `Str`, `Bool`, unit `{}`, or a
     /// user-declared type name.
     Con(String),
+    /// A type-level natural (the size in a sized tensor `[n]T`). A distinct KIND
+    /// from ordinary types: a `Nat` unifies only with another `Nat` or a
+    /// Nat-kinded variable, never with a `Type`. Modular (Z/2^64).
+    Nat(u64),
+    /// A type-level size sum `a + b`, modular (Z/2^64). Both operands are sizes.
+    /// Equality is decided by normalizing to a canonical polynomial.
+    NatAdd(Box<Type>, Box<Type>),
+    /// A type-level size product `a * b`, modular (Z/2^64). Both operands are sizes.
+    NatMul(Box<Type>, Box<Type>),
     /// Type application `Head Arg`, e.g. `List Int` is `App(Con("List"), Int)`.
     App(Box<Type>, Box<Type>),
     /// A function type `From -[eff]-> To`. `eff` is the arrow's latent effect
@@ -52,6 +61,9 @@ pub enum Type {
 impl Type {
     pub fn con(name: &str) -> Type {
         Type::Con(name.to_string())
+    }
+    pub fn nat(n: u64) -> Type {
+        Type::Nat(n)
     }
     /// A pure arrow (empty latent effect). The default for built-ins and for a
     /// written arrow with no `<...>` annotation.
@@ -104,6 +116,17 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
         match ty {
             Type::Var(id) => out.push_str(&namer(*id)),
             Type::Con(name) => out.push_str(name),
+            Type::Nat(n) => out.push_str(&n.to_string()),
+            Type::NatAdd(a, b) => paren(out, prec > 2, |out| {
+                go(a, namer, out, 2);
+                out.push_str(" + ");
+                go(b, namer, out, 2);
+            }),
+            Type::NatMul(a, b) => paren(out, prec > 3, |out| {
+                go(a, namer, out, 3);
+                out.push_str(" * ");
+                go(b, namer, out, 3);
+            }),
             Type::App(head, arg) => {
                 let wrap = prec > 1;
                 paren(out, wrap, |out| {

@@ -188,6 +188,18 @@ pub enum Ty {
     Con { module: Option<StrId>, name: StrId },
     /// A type variable `` `a ``.
     Var(StrId),
+    /// A type-level natural literal (a size inside `[n]T`).
+    Nat(u64),
+    /// A size sum `a + b` inside a tensor size (`[n+m]T`).
+    SizeAdd(Aol<Ty>, Aol<Ty>),
+    /// A size product `a * b` inside a tensor size (`[n*m]T`).
+    SizeMul(Aol<Ty>, Aol<Ty>),
+    /// A sized tensor type `[size]elem`, e.g. `[5]Int` or `[n]a`. `size` is a `Nat`
+    /// literal or a (Nat-kinded) `Var`; `elem` is the element type.
+    Sized {
+        size: Aol<Ty>,
+        elem: Aol<Ty>,
+    },
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
     /// A function type `From -> To`, optionally carrying an effect row.
@@ -309,6 +321,13 @@ pub enum Expr {
     },
     /// Application by juxtaposition `f x`.
     App(Aol<Expr>, Aol<Expr>),
+    /// Tensor indexing `recv.[index]`: reads the element at `index` modulo the
+    /// tensor's length. (Rank-1 for now; multi-axis and overloadable containers
+    /// are a later generalization of `.[..]`.)
+    Index {
+        recv: Aol<Expr>,
+        index: Aol<Expr>,
+    },
     /// A binary operator, keyed by lexeme (`+`, `?=`, `::`, `;`, `|>`, ...).
     BinOp {
         op: StrId,
