@@ -38,6 +38,17 @@ $ flip : [n]a -> [m]a -> [m+n]a = \x y = concat x y
 $ dd : [6]Int = dup v                    # 2 * 3 = 6
 $ ck_dup : Int = if dd.[5] ?= 30 => 0 else 128
 
+# Linear algebra with COMPILE-TIME shape checking. Multi-axis indexing `m.[i, j]`
+# reads an element. `matmul`'s shared inner dimension `k` must unify, so a shape
+# mismatch is a type error, not a runtime one.
+$ mA : [2][3]Int = [ [1, 2, 3], [4, 5, 6] ]
+$ mB : [3][2]Int = [ [1, 0], [0, 1], [1, 1] ]
+$ mC : [2][2]Int = matmul mA mB          # (2x3)(3x2) = 2x2
+$ mT : [3][2]Int = transpose mA          # 2x3 -> 3x2
+$ ck_mm : Int = if mC.[1, 1] ?= 11 => 0 else 256    # 4*0 + 5*1 + 6*1
+$ ck_tr : Int = if mT.[0, 1] ?= 4  => 0 else 512    # mA.[1,0]
+$ ck_dot: Int = if dot [1, 2, 3] [4, 5, 6] ?= 32 => 0 else 1024
+
 $ test : Int =
 	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
-	+ ck_cat + ck_dup
+	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot

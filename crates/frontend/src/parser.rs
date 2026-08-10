@@ -1109,12 +1109,20 @@ impl<'a> Parser<'a> {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
             }
-            // `recv.[i]`: tensor indexing (modular). Single index for now.
+            // `recv.[i]` / `recv.[i, j, ...]`: tensor indexing (modular). A
+            // comma-list folds to nested single-axis indexing (`t.[i].[j]`).
             Kind::LBrack => {
                 self.bump()?; // '['
-                let index = self.parse_expr(0)?;
+                let mut recv = base;
+                loop {
+                    let index = self.parse_expr(0)?;
+                    recv = self.expr(Expr::Index { recv, index });
+                    if !self.eat(|k| matches!(k, Kind::Comma))? {
+                        break;
+                    }
+                }
                 expect!(self, Kind::RBrack, "expected ']' to close the index");
-                Ok(self.expr(Expr::Index { recv: base, index }))
+                Ok(recv)
             }
             Kind::Word if is_upper(self.text(ahead)) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;

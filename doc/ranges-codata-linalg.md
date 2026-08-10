@@ -24,9 +24,17 @@ tensors** (2026-08-09):
   compare + lone-var bind; no back-solving `n+1 == 5`), which keeps it decidable, no
   `<`, no SMT. A `concat : [n]a -> [m]a -> [n+m]a` builtin (vector append, both
   engines) demonstrates it end to end.
-- NOT yet: the flat buffer+view+strides data plane (for O(1) transpose / matmul /
-  slices; today `[m][n]T` is nested vectors), variance axes (Up/Down), and the
-  overloadable `index` generalization of `.[..]`. Those remain as below.
+- **LA operations shipped** (2026-08-09), correctness-first over the nested-vector
+  rep (NOT yet strided): `transpose : [m][n]a -> [n][m]a`, `matmul : [m][k]Int ->
+  [k][n]Int -> [m][n]Int` (shared `k` unifies, so a dimension mismatch is a compile
+  error), `dot : [n]Int -> [n]Int -> Int`, all as built-ins in both engines; plus
+  multi-axis indexing `t.[i, j]` (folds to nested `t.[i].[j]`).
+- NOT yet: the flat buffer+view+strides data plane (O(1) transpose via stride swap,
+  slices-as-VIEWS with COW instead of copies, contiguous storage for BLAS/SIMD;
+  today the ops copy over nested vectors, correct but not stride-optimized); variance
+  axes (Up/Down); Real/element-generic matmul (no Num class); and the overloadable
+  `index` generalization of `.[..]` (Map/ranges). The current ops are a transparent
+  swap target: same types and results once the rep becomes strided.
 
 The rest of this note is the still-unbuilt design (data plane, variance, ranges as
 slice descriptors), kept so increment 1 does not foreclose it. One decision is settled: positional `.n` (#10) is tuple/struct

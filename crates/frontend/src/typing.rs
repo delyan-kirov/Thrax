@@ -3353,6 +3353,32 @@ impl<'a> Checker<'a> {
             let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
             self.bind("concat", Type::arrow(tn, Type::arrow(tm, tnm)));
         }
+        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        // `transpose : [m][n]a -> [n][m]a` (element-polymorphic; swaps the axes).
+        {
+            let a = self.eng.fresh_generic();
+            let m = self.eng.fresh_generic_nat();
+            let n = self.eng.fresh_generic_nat();
+            let mn = tensor(m.clone(), tensor(n.clone(), a.clone()));
+            let nm = tensor(n, tensor(m, a));
+            self.bind("transpose", Type::arrow(mn, nm));
+        }
+        // `dot : [n]Int -> [n]Int -> Int` (element type fixed to Int, no Num class).
+        {
+            let n = self.eng.fresh_generic_nat();
+            let vn = tensor(n, int());
+            self.bind("dot", Type::arrow(vn.clone(), Type::arrow(vn, int())));
+        }
+        // `matmul : [m][k]Int -> [k][n]Int -> [m][n]Int` (the shared `k` unifies).
+        {
+            let m = self.eng.fresh_generic_nat();
+            let k = self.eng.fresh_generic_nat();
+            let n = self.eng.fresh_generic_nat();
+            let mk = tensor(m.clone(), tensor(k.clone(), int()));
+            let kn = tensor(k, tensor(n.clone(), int()));
+            let mn = tensor(m, tensor(n, int()));
+            self.bind("matmul", Type::arrow(mk, Type::arrow(kn, mn)));
+        }
 
         self.bind("true", bool_());
         self.bind("false", bool_());

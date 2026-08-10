@@ -283,8 +283,12 @@ atom
   | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
   | atom DOT UIDENT variant_payload
   | atom DOT LBRACE struct_lit_body RBRACE
-  | atom DOT LBRACK expr RBRACK   /* `t.[i]`: modular tensor indexing */
+  | atom DOT LBRACK index_list RBRACK   /* `t.[i]` / `t.[i, j]`: modular indexing */
   ;
+
+/* `t.[i, j, ...]`: a comma-list of axis indices, folded to nested single-axis
+ * indexing (`t.[i].[j]`). */
+index_list : expr | index_list COMMA expr ;
 
 field_inits : /* empty */ | init_list opt_comma ;
 init_list   : field_init | init_list COMMA field_init ;

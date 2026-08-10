@@ -797,6 +797,69 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
+  if (strcmp(name, "transpose") == 0) {
+    Value *rows = a[0];
+    if (rows->tag != T_VEC) thrax_fault("transpose expects a matrix");
+    size_t m = rows->u.seq.len;
+    size_t n = 0;
+    if (m > 0) {
+      if (rows->u.seq.items[0]->tag != T_VEC) thrax_fault("transpose expects a matrix");
+      n = rows->u.seq.items[0]->u.seq.len;
+    }
+    Value **outer = xmalloc((n ? n : 1) * sizeof(Value *));
+    Value **col = xmalloc((m ? m : 1) * sizeof(Value *));
+    for (size_t j = 0; j < n; j++) {
+      for (size_t i = 0; i < m; i++) {
+        Value *row = rows->u.seq.items[i];
+        if (row->tag != T_VEC || j >= row->u.seq.len)
+          thrax_fault("transpose: ragged matrix");
+        col[i] = row->u.seq.items[j];
+      }
+      outer[j] = mk_vec(col, m);
+    }
+    Value *v = mk_vec(outer, n);
+    free(col);
+    free(outer);
+    return v;
+  }
+  if (strcmp(name, "dot") == 0) {
+    if (a[0]->tag != T_VEC || a[1]->tag != T_VEC) thrax_fault("dot expects two vectors");
+    size_t n = a[0]->u.seq.len < a[1]->u.seq.len ? a[0]->u.seq.len : a[1]->u.seq.len;
+    uint64_t acc = 0;
+    for (size_t i = 0; i < n; i++)
+      acc += (uint64_t)THxVALUE_as_int(a[0]->u.seq.items[i]) *
+             (uint64_t)THxVALUE_as_int(a[1]->u.seq.items[i]);
+    return THxRT_int((int64_t)acc);
+  }
+  if (strcmp(name, "matmul") == 0) {
+    if (a[0]->tag != T_VEC || a[1]->tag != T_VEC) thrax_fault("matmul expects two matrices");
+    size_t m = a[0]->u.seq.len, k = a[1]->u.seq.len;
+    size_t n = (k > 0 && a[1]->u.seq.items[0]->tag == T_VEC)
+                   ? a[1]->u.seq.items[0]->u.seq.len
+                   : 0;
+    Value **outer = xmalloc((m ? m : 1) * sizeof(Value *));
+    Value **orow = xmalloc((n ? n : 1) * sizeof(Value *));
+    for (size_t i = 0; i < m; i++) {
+      Value *arow = a[0]->u.seq.items[i];
+      if (arow->tag != T_VEC) thrax_fault("matmul: not a matrix");
+      for (size_t j = 0; j < n; j++) {
+        uint64_t acc = 0;
+        for (size_t l = 0; l < k; l++) {
+          Value *brow = a[1]->u.seq.items[l];
+          if (brow->tag != T_VEC || j >= brow->u.seq.len || l >= arow->u.seq.len)
+            thrax_fault("matmul: shape mismatch");
+          acc += (uint64_t)THxVALUE_as_int(arow->u.seq.items[l]) *
+                 (uint64_t)THxVALUE_as_int(brow->u.seq.items[j]);
+        }
+        orow[j] = THxRT_int((int64_t)acc);
+      }
+      outer[i] = mk_vec(orow, n);
+    }
+    Value *v = mk_vec(outer, m);
+    free(orow);
+    free(outer);
+    return v;
+  }
   if (strcmp(name, "vec_set") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);

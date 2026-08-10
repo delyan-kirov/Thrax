@@ -285,6 +285,19 @@ fn tensor_size_arithmetic() {
 }
 
 #[test]
+fn shape_checked_linear_algebra() {
+    // matmul/transpose/dot are shape-typed (matmul's shared inner dim `k` unifies);
+    // multi-axis `m.[i, j]` reads an element. Over the nested-vector rep.
+    let src = "@mod M\n\
+               $ a : [2][3]Int = [ [1,2,3], [4,5,6] ]\n\
+               $ b : [3][2]Int = [ [1,0], [0,1], [1,1] ]\n\
+               $ c : [2][2]Int = matmul a b\n\
+               $ t : [3][2]Int = transpose a\n\
+               $ r : Int = c.[1, 1] + t.[0, 1] + dot [1,2,3] [4,5,6]"; // 11 + 4 + 32
+    assert_eq!(run(src, "r"), "47");
+}
+
+#[test]
 fn inclusive_range_patterns() {
     // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
     // the match needs an `else`. Works on Int and Real.

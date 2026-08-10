@@ -168,11 +168,24 @@ back-solve an equation like `n + 1 = 5`.
 A tensor is built from a `[..]` literal whose length fixes the size (a length
 mismatch is a type error), and read with modular indexing `t.[i]`: the index is
 reduced mod the size, so it is TOTAL and never out of bounds (`t.[n]` wraps to
-`t.[0]`). Indexing an empty `[0]T` is the sole fault (reduction mod zero).
+`t.[0]`). Indexing an empty `[0]T` is the sole fault (reduction mod zero). A
+multi-axis index `t.[i, j]` reads one element of a nested tensor (`t.[i].[j]`).
 
 	$ v : [3]Int = [10, 20, 30]
 	$ x : Int    = v.[1]          # 20
 	$ y : Int    = v.[3]          # wraps: 3 mod 3 = 0, so 10
+	$ g : [2][2]Int = [ [1,2], [3,4] ]
+	$ z : Int    = g.[1, 0]       # 3
+
+Shape-checked linear algebra is provided as built-ins over these types:
+
+	transpose : [m][n]a -> [n][m]a           # swaps the axes
+	matmul    : [m][k]Int -> [k][n]Int -> [m][n]Int   # shared k unifies
+	dot       : [n]Int -> [n]Int -> Int
+	concat    : [n]a -> [m]a -> [n+m]a       # size arithmetic
+
+A dimension mismatch (e.g. `matmul` of `[2][3]` and `[2][2]`) is a compile-time
+type error, not a runtime one.
 
 An ALIAS names a type. It may take parameters (declared like any other type, see
 STRUCTS) and its body may partially instantiate another generic type, fixing some
