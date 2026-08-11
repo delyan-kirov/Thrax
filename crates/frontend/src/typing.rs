@@ -178,8 +178,6 @@ pub struct Checker<'a> {
     /// distinct from the byte-`Array` sites in `array_exprs`. Lowering builds a
     /// vector; the index `t.[i]` reads it modulo the length.
     tensor_exprs: HashSet<Aol<Expr>>,
-    /// `t.[i]` index sites, so lowering emits the modular vector read.
-    index_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
@@ -306,7 +304,6 @@ impl<'a> Checker<'a> {
             module_name: "",
             array_exprs: HashSet::new(),
             tensor_exprs: HashSet::new(),
-            index_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             array_pats: HashSet::new(),
@@ -326,10 +323,9 @@ impl<'a> Checker<'a> {
         (&self.array_exprs, &self.array_pats)
     }
 
-    /// The `[..]` literal sites resolved to a sized tensor, and the `t.[i]` index
-    /// sites. Lowering builds a vector for the former and a modular read for the latter.
-    pub fn tensor_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>) {
-        (&self.tensor_exprs, &self.index_exprs)
+    /// The `[..]` literal sites resolved to a sized tensor. Lowering builds a vector.
+    pub fn tensor_nodes(&self) -> &HashSet<Aol<Expr>> {
+        &self.tensor_exprs
     }
 
     /// Argument sites promoted to a record, mapped to the target field names;
@@ -1512,9 +1508,10 @@ impl<'a> Checker<'a> {
                     }
                 },
             };
+            // Check (not infer) so a `[..]` literal field takes its element/size or
+            // Array-ness from the declared field type (bidirectional), like a call arg.
             let want = self.ty_of_ast(decl_ty, &mut subst);
-            let got = self.infer(value)?;
-            self.eng.unify(&got, &want, "in a struct field")?;
+            self.check(value, &want)?;
         }
         Ok(result)
     }
@@ -2047,19 +2044,6 @@ impl<'a> Checker<'a> {
                     }
                 }
                 self.infer_field(&rec_ty, name)
-            }
-            Expr::Index { recv, index } => {
-                let (recv, index) = (*recv, *index);
-                let rec_ty = self.infer(recv)?;
-                let size = self.eng.fresh_nat();
-                let elem = self.eng.fresh();
-                let tensor = Type::app(Type::app(Type::con(TENSOR), size), elem.clone());
-                self.eng.unify(&rec_ty, &tensor, "indexing a tensor `t.[i]`")?;
-                let idx_ty = self.infer(index)?;
-                self.eng
-                    .unify(&idx_ty, &Type::con(ty::INT), "a tensor index must be an Int")?;
-                self.index_exprs.insert(e);
-                Ok(elem)
             }
             Expr::StructLit { ty, fields, spread } => {
                 let ty = ty.map(|t| self.text(t));
@@ -3354,6 +3338,26 @@ impl<'a> Checker<'a> {
             self.bind("concat", Type::arrow(tn, Type::arrow(tm, tnm)));
         }
         let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        // `length : [n]a -> Int`: a tensor's runtime size (untied to `n`, since there
+        // are no dependent values). A primitive that source-level tensor code needs.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let vn = tensor(n, a);
+            self.bind("length", Type::arrow(vn, int()));
+        }
+        // `index : [n]a -> Int -> a` (modular): the built-in candidate of the
+        // OVERLOADABLE `index` that `t.[i]` desugars to. A user can add candidates
+        // (`index : Map k v -> k -> v`, etc.), so custom containers use `.[..]` too.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let vn = tensor(n, a.clone());
+            self.overloads.insert(
+                "index",
+                vec![Cand::local(Type::arrow(vn, Type::arrow(int(), a)))],
+            );
+        }
         // `transpose : [m][n]a -> [n][m]a` (element-polymorphic; swaps the axes).
         {
             let a = self.eng.fresh_generic();
@@ -3363,20 +3367,26 @@ impl<'a> Checker<'a> {
             let nm = tensor(n, tensor(m, a));
             self.bind("transpose", Type::arrow(mn, nm));
         }
-        // `dot : [n]Int -> [n]Int -> Int` (element type fixed to Int, no Num class).
+        // `dot : [n]a -> [n]a -> a`. Element-polymorphic (a single binding, so a
+        // bare `[..]` literal argument checks bidirectionally against `[n]a`); the
+        // runtime does the numeric work and faults on a non-numeric element, since
+        // there is no Num class to constrain `a` to Int/Real at the type level.
         {
+            let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let vn = tensor(n, int());
-            self.bind("dot", Type::arrow(vn.clone(), Type::arrow(vn, int())));
+            let vn = tensor(n, a.clone());
+            self.bind("dot", Type::arrow(vn.clone(), Type::arrow(vn, a)));
         }
-        // `matmul : [m][k]Int -> [k][n]Int -> [m][n]Int` (the shared `k` unifies).
+        // `matmul : [m][k]a -> [k][n]a -> [m][n]a` (shared `k` unifies, so a
+        // dimension mismatch is a compile error; element numeric-ness is runtime).
         {
+            let a = self.eng.fresh_generic();
             let m = self.eng.fresh_generic_nat();
             let k = self.eng.fresh_generic_nat();
             let n = self.eng.fresh_generic_nat();
-            let mk = tensor(m.clone(), tensor(k.clone(), int()));
-            let kn = tensor(k, tensor(n.clone(), int()));
-            let mn = tensor(m, tensor(n, int()));
+            let mk = tensor(m.clone(), tensor(k.clone(), a.clone()));
+            let kn = tensor(k, tensor(n.clone(), a.clone()));
+            let mn = tensor(m, tensor(n, a));
             self.bind("matmul", Type::arrow(mk, Type::arrow(kn, mn)));
         }
 
@@ -3476,10 +3486,6 @@ fn free_globals<'a>(
         Expr::App(f, x) => {
             free_globals(ast, *f, globals, bound, out);
             free_globals(ast, *x, globals, bound, out);
-        }
-        Expr::Index { recv, index } => {
-            free_globals(ast, *recv, globals, bound, out);
-            free_globals(ast, *index, globals, bound, out);
         }
         Expr::BinOp { lhs, rhs, .. } => {
             free_globals(ast, *lhs, globals, bound, out);

@@ -23,9 +23,10 @@ $ ck_poly : Int = if first v ?= 10 => 0 else 8
 $ head : [n]a -> a = \t = t.[0]
 $ ck_elem : Int = if head [7, 8, 9] ?= 7 => 0 else 16
 
-# A tensor of tensors nests: `[m][n]T`. Indexing peels one axis at a time.
-$ grid : [2][2]Int = [ [1, 2], [3, 4] ]
-$ ck_nested : Int = if grid.[1].[0] ?= 3 => 0 else 32
+# A rank-2 tensor is `[m, n]T` (sugar for the nested `[m][n]T`). Multi-axis
+# indexing `grid.[i, j]` reads an element.
+$ grid : [2, 2]Int = [ [1, 2], [3, 4] ]
+$ ck_nested : Int = if grid.[1, 0] ?= 3 => 0 else 32
 
 # Type-level size ARITHMETIC (modular, Z/2^64). `concat` joins two tensors and
 # its result size is `n + m`, checked at compile time.
@@ -41,14 +42,26 @@ $ ck_dup : Int = if dd.[5] ?= 30 => 0 else 128
 # Linear algebra with COMPILE-TIME shape checking. Multi-axis indexing `m.[i, j]`
 # reads an element. `matmul`'s shared inner dimension `k` must unify, so a shape
 # mismatch is a type error, not a runtime one.
-$ mA : [2][3]Int = [ [1, 2, 3], [4, 5, 6] ]
-$ mB : [3][2]Int = [ [1, 0], [0, 1], [1, 1] ]
-$ mC : [2][2]Int = matmul mA mB          # (2x3)(3x2) = 2x2
-$ mT : [3][2]Int = transpose mA          # 2x3 -> 3x2
+$ mA : [2, 3]Int = [ [1, 2, 3], [4, 5, 6] ]
+$ mB : [3, 2]Int = [ [1, 0], [0, 1], [1, 1] ]
+$ mC : [2, 2]Int = matmul mA mB          # (2x3)(3x2) = 2x2
+$ mT : [3, 2]Int = transpose mA          # 2x3 -> 3x2
 $ ck_mm : Int = if mC.[1, 1] ?= 11 => 0 else 256    # 4*0 + 5*1 + 6*1
 $ ck_tr : Int = if mT.[0, 1] ?= 4  => 0 else 512    # mA.[1,0]
 $ ck_dot: Int = if dot [1, 2, 3] [4, 5, 6] ?= 32 => 0 else 1024
 
+# The same ops are element-polymorphic, so Real matrices work too.
+$ rA : [2, 2]Real = [ [1.0, 2.0], [3.0, 4.0] ]
+$ rB : [2, 2]Real = [ [2.0, 0.0], [0.0, 2.0] ]
+$ rC : [2, 2]Real = matmul rA rB           # doubles rA
+$ ck_real : Int = if rC.[1, 1] ?= 8.0 => 0 else 2048
+
+# `.[..]` is OVERLOADABLE: a custom type joins the surface by defining `index`.
+$ Grid : @struct = cells: [9]Int
+$ index : Grid -> Int -> Int = \g i = g.cells.[i]
+$ board : Grid = .{ .cells = [1, 2, 3, 4, 5, 6, 7, 8, 9] }
+$ ck_ext : Int = if board.[4] ?= 5 => 0 else 4096   # user `index` via `.[..]`
+
 $ test : Int =
 	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
-	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot
+	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext

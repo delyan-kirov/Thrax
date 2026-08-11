@@ -153,9 +153,12 @@ only with other sizes, never with a type), so the bracket doubles as the kind
 marker. `n` is a Nat literal (`[3]Int`) or a lowercase size variable (`[n]a`),
 letting a function range over sizes: `sum : [n]Int -> Int`. They nest: `[m][n]T`.
 
-	tensor ::= '[' size ']' type
+	tensor ::= '[' size (',' size)* ']' type   # [n]T, or [m, n]T (nested)
 	size   ::= Nat | var | size '+' size | size '*' size | '(' size ')'
-	index  ::= expr '.[' expr ']'      # read (see below)
+	index  ::= expr '.[' expr (',' expr)* ']'  # read (see below)
+
+A multi-dimensional shape `[m, n]T` is sugar for the nested `[m][n]T` (one axis
+per dimension), and pairs with multi-axis indexing `t.[i, j]` (== `t.[i].[j]`).
 
 The size may be an ARITHMETIC expression, `+` and `*` over literals and size
 variables, evaluated modulo 2^64. This drives size-changing operations:
@@ -179,13 +182,20 @@ multi-axis index `t.[i, j]` reads one element of a nested tensor (`t.[i].[j]`).
 
 Shape-checked linear algebra is provided as built-ins over these types:
 
-	transpose : [m][n]a -> [n][m]a           # swaps the axes
-	matmul    : [m][k]Int -> [k][n]Int -> [m][n]Int   # shared k unifies
-	dot       : [n]Int -> [n]Int -> Int
-	concat    : [n]a -> [m]a -> [n+m]a       # size arithmetic
+	transpose : [m][n]a -> [n][m]a               # swaps the axes
+	matmul    : [m][k]a -> [k][n]a -> [m][n]a     # shared k unifies
+	dot       : [n]a -> [n]a -> a
+	concat    : [n]a -> [m]a -> [n+m]a           # size arithmetic
 
-A dimension mismatch (e.g. `matmul` of `[2][3]` and `[2][2]`) is a compile-time
-type error, not a runtime one.
+A dimension mismatch (e.g. `matmul` of `[2, 3]` and `[2, 2]`) is a compile-time
+type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run on
+`Int` and `Real` tensors (there is no numeric class to constrain the element, so a
+non-numeric element is a runtime fault, not a type error).
+
+Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
+function (`index t i`). A built-in candidate handles tensors; a custom container
+joins the same `.[..]` surface by declaring its own overload, e.g.
+`index : Map k v -> k -> v`.
 
 An ALIAS names a type. It may take parameters (declared like any other type, see
 STRUCTS) and its body may partially instantiate another generic type, fixing some

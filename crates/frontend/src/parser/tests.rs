@@ -164,6 +164,25 @@ fn sized_tensor_type_parses() {
 }
 
 #[test]
+fn shape_sugar_nests() {
+    // `[m, n]T` desugars to the nested `[m][n]T` (`Sized` of `Sized`).
+    let p = prog("@mod M\n$ g : [2, 3]Int = [ [1,2,3], [4,5,6] ]");
+    match &p.program.items[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { size, elem } => {
+                assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
+                match p.ast.ty(*elem) {
+                    Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::Nat(3))),
+                    other => panic!("expected a nested Sized, got {other:?}"),
+                }
+            }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
 fn inclusive_range_pattern_parses() {
     let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 else 1";
     let p = prog(src);

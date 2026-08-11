@@ -153,10 +153,11 @@ fn as_byte(v: &PVal) -> Result<u8> {
 /// The arity of a built-in operator, or `None` if the name is not a built-in.
 pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
-        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" | "transpose" => 1,
+        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" | "transpose"
+        | "length" => 1,
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
         | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" | "concat"
-        | "dot" | "matmul" => 2,
+        | "dot" | "matmul" | "index" => 2,
         "array_set" | "array_slice" | "vec_set" => 3,
         _ => return None,
     };
@@ -238,7 +239,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let n = as_len(&a[0])?;
             Ok(Value::Vector(Rc::new(vec![a[1].clone(); n])))
         }
-        "vec_len" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
+        "vec_len" | "length" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
         "vec_get" => {
             let v = as_vec(&a[0])?;
             let i = as_index(&a[1])?;
@@ -257,6 +258,18 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v.extend(as_vec(&a[1])?.iter().cloned());
             Ok(Value::Vector(Rc::new(v)))
         }
+        "index" => {
+            let v = as_vec(&a[0])?;
+            let len = v.len();
+            if len == 0 {
+                return Err(fault("index into an empty tensor"));
+            }
+            let idx = as_int(&a[1])?.rem_euclid(len as i64) as usize;
+            v.get(idx)
+                .cloned()
+                .map(|p| p.borrow().clone_shallow())
+                .ok_or_else(|| fault("tensor index out of bounds"))
+        }
         "transpose" => {
             let rows = as_vec(&a[0])?;
             let m = rows.len();
@@ -274,27 +287,47 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "dot" => {
             let (x, y) = (as_vec(&a[0])?, as_vec(&a[1])?);
             let n = x.len().min(y.len());
-            let mut acc: i64 = 0;
-            for i in 0..n {
-                acc = acc.wrapping_add(as_int(&x[i])?.wrapping_mul(as_int(&y[i])?));
+            if n > 0 && matches!(&*x[0].borrow(), Value::Real(_)) {
+                let mut acc = 0.0f64;
+                for i in 0..n {
+                    acc += as_f64(&x[i])? * as_f64(&y[i])?;
+                }
+                Ok(Value::Real(acc))
+            } else {
+                let mut acc: i64 = 0;
+                for i in 0..n {
+                    acc = acc.wrapping_add(as_int(&x[i])?.wrapping_mul(as_int(&y[i])?));
+                }
+                Ok(Value::Int(acc))
             }
-            Ok(Value::Int(acc))
         }
         "matmul" => {
             let (aa, bb) = (as_vec(&a[0])?, as_vec(&a[1])?);
             let (m, k) = (aa.len(), bb.len());
             let n = if k == 0 { 0 } else { as_vec(&bb[0])?.len() };
+            let is_real = m > 0 && {
+                let r0 = as_vec(&aa[0])?;
+                !r0.is_empty() && matches!(&*r0[0].borrow(), Value::Real(_))
+            };
             let mut out: Vec<PVal> = Vec::with_capacity(m);
             for arow in aa.iter() {
                 let arow = as_vec(arow)?;
                 let mut orow: Vec<PVal> = Vec::with_capacity(n);
                 for j in 0..n {
-                    let mut acc: i64 = 0;
-                    for l in 0..k {
-                        let brow = as_vec(&bb[l])?;
-                        acc = acc.wrapping_add(as_int(&arow[l])?.wrapping_mul(as_int(&brow[j])?));
+                    if is_real {
+                        let mut acc = 0.0f64;
+                        for l in 0..k {
+                            acc += as_f64(&arow[l])? * as_f64(&as_vec(&bb[l])?[j])?;
+                        }
+                        orow.push(mk(Value::Real(acc)));
+                    } else {
+                        let mut acc: i64 = 0;
+                        for l in 0..k {
+                            let brow = as_vec(&bb[l])?;
+                            acc = acc.wrapping_add(as_int(&arow[l])?.wrapping_mul(as_int(&brow[j])?));
+                        }
+                        orow.push(mk(Value::Int(acc)));
                     }
-                    orow.push(mk(Value::Int(acc)));
                 }
                 out.push(mk(Value::Vector(Rc::new(orow))));
             }

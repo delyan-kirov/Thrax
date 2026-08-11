@@ -181,9 +181,13 @@ type_atom
       a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
       function parameter position. A `with`-prefixed field additionally scopes
       that field's own struct fields into the body, as `with <field> in ..`. */
-  | LBRACK tensor_size RBRACK type_atom  /* sized tensor `[n]T` (n a Nat-kind) */
+  | LBRACK shape RBRACK type_atom  /* sized tensor `[n]T` / `[m, n]T` (Nat-kind) */
   | LPAREN type RPAREN
   ;
+
+/* A tensor shape: one dimension `[n]T`, or several `[m, n, ...]T` which is sugar
+ * for the nested `[m][n]...T`. */
+shape : tensor_size | shape COMMA tensor_size ;
 
 /* A tensor size: a modular (Z/2^64) arithmetic expression over Nat literals and
  * lowercase (Nat-kinded) size variables. `*` binds tighter than `+`. */

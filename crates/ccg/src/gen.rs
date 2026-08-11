@@ -433,10 +433,11 @@ pub fn emit_extern_table(externs: &[ExternSite]) -> String {
 /// the interpreter's `builtin_arity`.
 fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
-        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" | "transpose" => 1,
+        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" | "transpose"
+        | "length" => 1,
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
         | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" | "concat"
-        | "dot" | "matmul" => 2,
+        | "dot" | "matmul" | "index" => 2,
         "array_set" | "array_slice" | "vec_set" => 3,
         _ => return None,
     };

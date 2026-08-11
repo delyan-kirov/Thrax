@@ -793,12 +793,20 @@ impl<'a> Parser<'a> {
             // `[size]elem`: a sized tensor type. `size` is a Nat literal or a
             // lowercase (Nat-kinded) variable; `elem` binds as one atom (nest
             // `[m][n]T`, parenthesize a compound `[n](List a)`).
+            // `[n]T` and the multi-dimensional shape `[m, n, ...]T`, which is sugar
+            // for the nested `[m][n]...T` (one axis per dimension).
             Kind::LBrack => {
                 self.bump()?; // '['
-                let size = self.parse_size()?;
-                expect!(self, Kind::RBrack, "expected ']' to close the tensor size");
-                let elem = self.parse_type_atom()?;
-                Ok(self.ty(Ty::Sized { size, elem }))
+                let mut sizes = vec![self.parse_size()?];
+                while self.eat(|k| matches!(k, Kind::Comma))? {
+                    sizes.push(self.parse_size()?);
+                }
+                expect!(self, Kind::RBrack, "expected ']' to close the tensor shape");
+                let mut elem = self.parse_type_atom()?;
+                for size in sizes.into_iter().rev() {
+                    elem = self.ty(Ty::Sized { size, elem });
+                }
+                Ok(elem)
             }
             _ => Err(self.unexpected(&t, "expected a type")),
         }
@@ -1109,14 +1117,18 @@ impl<'a> Parser<'a> {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
             }
-            // `recv.[i]` / `recv.[i, j, ...]`: tensor indexing (modular). A
-            // comma-list folds to nested single-axis indexing (`t.[i].[j]`).
+            // `recv.[i]` / `recv.[i, j, ...]`: desugars to the OVERLOADABLE `index`
+            // function (`index recv i`), so tensors, maps, and user types all plug
+            // into the same surface. A comma-list nests (`index (index t i) j`).
             Kind::LBrack => {
                 self.bump()?; // '['
                 let mut recv = base;
                 loop {
-                    let index = self.parse_expr(0)?;
-                    recv = self.expr(Expr::Index { recv, index });
+                    let idx = self.parse_expr(0)?;
+                    let index_fn = self.intern("index");
+                    let f = self.expr(Expr::Var { module: None, name: index_fn });
+                    let f = self.expr(Expr::App(f, recv));
+                    recv = self.expr(Expr::App(f, idx));
                     if !self.eat(|k| matches!(k, Kind::Comma))? {
                         break;
                     }

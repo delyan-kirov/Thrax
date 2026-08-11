@@ -658,21 +658,6 @@ impl<'a> Lowerer<'a> {
                 Term::app(self.expr(f), self.expr(x))
             }
 
-            // `recv.[i]`: read a tensor (vector) at `i` modulo its length. `recv` is
-            // bound once so a compound receiver is not evaluated twice.
-            Expr::Index { recv, index } => {
-                let (recv, index) = (self.expr(*recv), self.expr(*index));
-                let r = self.fresh();
-                let len = Term::app(Term::var("vec_len"), Term::var(r.clone()));
-                let wrapped = bin("%", index, len);
-                let read = Term::app(Term::app(Term::var("vec_get"), Term::var(r.clone())), wrapped);
-                Term::Let {
-                    name: r,
-                    rec: false,
-                    val: Arc::new(recv),
-                    body: Arc::new(read),
-                }
-            }
 
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);

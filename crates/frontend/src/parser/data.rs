@@ -321,13 +321,6 @@ pub enum Expr {
     },
     /// Application by juxtaposition `f x`.
     App(Aol<Expr>, Aol<Expr>),
-    /// Tensor indexing `recv.[index]`: reads the element at `index` modulo the
-    /// tensor's length. (Rank-1 for now; multi-axis and overloadable containers
-    /// are a later generalization of `.[..]`.)
-    Index {
-        recv: Aol<Expr>,
-        index: Aol<Expr>,
-    },
     /// A binary operator, keyed by lexeme (`+`, `?=`, `::`, `;`, `|>`, ...).
     BinOp {
         op: StrId,

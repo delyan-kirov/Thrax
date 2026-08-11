@@ -25,10 +25,18 @@ tensors** (2026-08-09):
   `<`, no SMT. A `concat : [n]a -> [m]a -> [n+m]a` builtin (vector append, both
   engines) demonstrates it end to end.
 - **LA operations shipped** (2026-08-09), correctness-first over the nested-vector
-  rep (NOT yet strided): `transpose : [m][n]a -> [n][m]a`, `matmul : [m][k]Int ->
-  [k][n]Int -> [m][n]Int` (shared `k` unifies, so a dimension mismatch is a compile
-  error), `dot : [n]Int -> [n]Int -> Int`, all as built-ins in both engines; plus
-  multi-axis indexing `t.[i, j]` (folds to nested `t.[i].[j]`).
+  rep (NOT yet strided): `transpose : [m][n]a -> [n][m]a`, `matmul : [m][k]a ->
+  [k][n]a -> [m][n]a` (shared `k` unifies, so a dimension mismatch is a compile
+  error), `dot : [n]a -> [n]a -> a`, all as built-ins in both engines; plus
+  multi-axis indexing `t.[i, j]` (folds to nested `t.[i].[j]`). **`.[..]` is now the
+  OVERLOADABLE `index` the doc envisioned**: `t.[i]` desugars to `index t i`, an
+  overloaded function with a built-in tensor candidate and user-addable candidates
+  (`index : Grid -> Int -> Int`, `index : Map k v -> k -> v`), so custom containers
+  use `.[..]` with no compiler change. `[m, n]T` shape sugar (== nested `[m][n]T`).
+  matmul/dot are
+  element-POLYMORPHIC single bindings (so a bare `[..]` literal arg checks
+  bidirectionally, unlike an overload) and run on Int and Real; the runtime does the
+  arithmetic and faults on a non-numeric element (no Num class). Real matrices work.
 - NOT yet: the flat buffer+view+strides data plane (O(1) transpose via stride swap,
   slices-as-VIEWS with COW instead of copies, contiguous storage for BLAS/SIMD;
   today the ops copy over nested vectors, correct but not stride-optimized); variance

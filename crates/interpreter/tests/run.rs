@@ -15,10 +15,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
-    {
-        let (tex, _idx) = checker.tensor_nodes();
-        resolved.tensor_exprs.extend(tex.iter().copied());
-    }
+    resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
@@ -295,6 +292,31 @@ fn shape_checked_linear_algebra() {
                $ t : [3][2]Int = transpose a\n\
                $ r : Int = c.[1, 1] + t.[0, 1] + dot [1,2,3] [4,5,6]"; // 11 + 4 + 32
     assert_eq!(run(src, "r"), "47");
+}
+
+#[test]
+fn overloadable_index_and_shape_sugar() {
+    // `.[..]` desugars to the overloadable `index`: the built-in tensor candidate
+    // handles `[n]a`, and a user type joins the same surface by defining its own
+    // `index`. `[m, n]T` shape sugar (== nested `[m][n]T`) and `t.[i, j]` too.
+    let src = "@mod M\n\
+               $ g : [2, 2]Int = [ [1, 2], [3, 4] ]\n\
+               $ Box : @struct = base: Int\n\
+               $ index : Box -> Int -> Int = \\b i = b.base + i\n\
+               $ bx : Box = .{ .base = 100 }\n\
+               $ r : Int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
+    assert_eq!(run(src, "r"), "112");
+}
+
+#[test]
+fn real_linear_algebra() {
+    // dot/matmul are element-polymorphic: Real tensors work (the runtime does the
+    // numeric work; there is no Num class to constrain the element at the type level).
+    let src = "@mod M\n\
+               $ a : [2][2]Real = [ [1.0, 2.0], [3.0, 4.0] ]\n\
+               $ c : [2][2]Real = matmul a [ [2.0, 0.0], [0.0, 2.0] ]\n\
+               $ r : Real = c.[0, 0] + c.[1, 1] + dot [1.0, 2.0] [3.0, 4.0]"; // 2 + 8 + 11
+    assert_eq!(run(src, "r"), "21");
 }
 
 #[test]
