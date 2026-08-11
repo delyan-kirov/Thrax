@@ -685,21 +685,21 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return compare(name, a[0], a[1]);
   if (strcmp(name, "++") == 0) return concat(a[0], a[1]);
 
-  if (strcmp(name, "array_alloc") == 0) {
+  if (strcmp(name, "@array_alloc") == 0) {
     size_t len = as_index(a[0]);
     uint8_t *data = THxMEM_alloc(len + 1);
     memset(data, 0, len + 1);
     return mk_str_owned(data, len);
   }
-  if (strcmp(name, "array_len") == 0)
+  if (strcmp(name, "@array_len") == 0)
     return THxRT_int((int64_t)as_str(a[0])->u.str.len);
-  if (strcmp(name, "array_get") == 0) {
+  if (strcmp(name, "@array_get") == 0) {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
     if (i >= s->u.str.len) thrax_fault("array index out of bounds");
     return THxRT_int(s->u.str.data[i]);
   }
-  if (strcmp(name, "array_push") == 0) {
+  if (strcmp(name, "@array_push") == 0) {
     Value *s = as_str(a[0]);
     size_t len = s->u.str.len + 1;
     uint8_t *data = THxMEM_alloc(len + 1);
@@ -708,7 +708,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     data[len] = 0;
     return mk_str_owned(data, len);
   }
-  if (strcmp(name, "array_set") == 0) {
+  if (strcmp(name, "@array_set") == 0) {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
     if (i >= s->u.str.len) thrax_fault("array index out of bounds");
@@ -718,7 +718,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     data[s->u.str.len] = 0;
     return mk_str_owned(data, s->u.str.len);
   }
-  if (strcmp(name, "array_slice") == 0) {
+  if (strcmp(name, "@array_slice") == 0) {
     Value *s = as_str(a[0]);
     size_t beg = as_index(a[1]);
     size_t end = as_index(a[2]);
@@ -756,8 +756,8 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     }
     return v;
   }
-  if (strcmp(name, "vec_new") == 0) return mk_vec(NULL, 0);
-  if (strcmp(name, "vec_fill") == 0) {
+  if (strcmp(name, "@vec_new") == 0) return mk_vec(NULL, 0);
+  if (strcmp(name, "@vec_fill") == 0) {
     size_t len = as_index(a[0]);
     Value **items = len ? xmalloc(len * sizeof(Value *)) : NULL;
     for (size_t i = 0; i < len; i++) items[i] = a[1];
@@ -765,17 +765,17 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
-  if (strcmp(name, "vec_len") == 0 || strcmp(name, "length") == 0) {
+  if (strcmp(name, "@vec_len") == 0 || strcmp(name, "@tensor_length") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     return THxRT_int((int64_t)a[0]->u.seq.len);
   }
-  if (strcmp(name, "vec_get") == 0) {
+  if (strcmp(name, "@vec_get") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
     return a[0]->u.seq.items[i]; /* borrowed; the caller (do_ret) retains it */
   }
-  if (strcmp(name, "vec_push") == 0) {
+  if (strcmp(name, "@vec_push") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t len = a[0]->u.seq.len + 1;
     Value **items = xmalloc(len * sizeof(Value *));
@@ -785,7 +785,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
-  if (strcmp(name, "concat") == 0) {
+  if (strcmp(name, "@tensor_concat") == 0) {
     if (a[0]->tag != T_VEC || a[1]->tag != T_VEC)
       thrax_fault("`concat` expects two tensors");
     size_t la = a[0]->u.seq.len, lb = a[1]->u.seq.len;
@@ -797,7 +797,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
-  if (strcmp(name, "index") == 0) {
+  if (strcmp(name, "@tensor_index") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("index expects a tensor");
     size_t len = a[0]->u.seq.len;
     if (len == 0) thrax_fault("index into an empty tensor");
@@ -805,85 +805,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     size_t idx = (size_t)(((i % (int64_t)len) + (int64_t)len) % (int64_t)len);
     return a[0]->u.seq.items[idx]; /* borrowed; do_ret retains it */
   }
-  if (strcmp(name, "transpose") == 0) {
-    Value *rows = a[0];
-    if (rows->tag != T_VEC) thrax_fault("transpose expects a matrix");
-    size_t m = rows->u.seq.len;
-    size_t n = 0;
-    if (m > 0) {
-      if (rows->u.seq.items[0]->tag != T_VEC) thrax_fault("transpose expects a matrix");
-      n = rows->u.seq.items[0]->u.seq.len;
-    }
-    Value **outer = xmalloc((n ? n : 1) * sizeof(Value *));
-    Value **col = xmalloc((m ? m : 1) * sizeof(Value *));
-    for (size_t j = 0; j < n; j++) {
-      for (size_t i = 0; i < m; i++) {
-        Value *row = rows->u.seq.items[i];
-        if (row->tag != T_VEC || j >= row->u.seq.len)
-          thrax_fault("transpose: ragged matrix");
-        col[i] = row->u.seq.items[j];
-      }
-      outer[j] = mk_vec(col, m);
-    }
-    Value *v = mk_vec(outer, n);
-    free(col);
-    free(outer);
-    return v;
-  }
-  if (strcmp(name, "dot") == 0) {
-    if (a[0]->tag != T_VEC || a[1]->tag != T_VEC) thrax_fault("dot expects two vectors");
-    size_t n = a[0]->u.seq.len < a[1]->u.seq.len ? a[0]->u.seq.len : a[1]->u.seq.len;
-    if (n > 0 && a[0]->u.seq.items[0]->tag == T_REAL) {
-      double acc = 0;
-      for (size_t i = 0; i < n; i++)
-        acc += THxVALUE_as_num(a[0]->u.seq.items[i]) *
-               THxVALUE_as_num(a[1]->u.seq.items[i]);
-      return THxRT_real(acc);
-    }
-    uint64_t acc = 0;
-    for (size_t i = 0; i < n; i++)
-      acc += (uint64_t)THxVALUE_as_int(a[0]->u.seq.items[i]) *
-             (uint64_t)THxVALUE_as_int(a[1]->u.seq.items[i]);
-    return THxRT_int((int64_t)acc);
-  }
-  if (strcmp(name, "matmul") == 0) {
-    if (a[0]->tag != T_VEC || a[1]->tag != T_VEC) thrax_fault("matmul expects two matrices");
-    size_t m = a[0]->u.seq.len, k = a[1]->u.seq.len;
-    size_t n = (k > 0 && a[1]->u.seq.items[0]->tag == T_VEC)
-                   ? a[1]->u.seq.items[0]->u.seq.len
-                   : 0;
-    int is_real = m > 0 && a[0]->u.seq.items[0]->tag == T_VEC &&
-                  a[0]->u.seq.items[0]->u.seq.len > 0 &&
-                  a[0]->u.seq.items[0]->u.seq.items[0]->tag == T_REAL;
-    Value **outer = xmalloc((m ? m : 1) * sizeof(Value *));
-    Value **orow = xmalloc((n ? n : 1) * sizeof(Value *));
-    for (size_t i = 0; i < m; i++) {
-      Value *arow = a[0]->u.seq.items[i];
-      if (arow->tag != T_VEC) thrax_fault("matmul: not a matrix");
-      for (size_t j = 0; j < n; j++) {
-        double racc = 0;
-        uint64_t iacc = 0;
-        for (size_t l = 0; l < k; l++) {
-          Value *brow = a[1]->u.seq.items[l];
-          if (brow->tag != T_VEC || j >= brow->u.seq.len || l >= arow->u.seq.len)
-            thrax_fault("matmul: shape mismatch");
-          if (is_real)
-            racc += THxVALUE_as_num(arow->u.seq.items[l]) *
-                    THxVALUE_as_num(brow->u.seq.items[j]);
-          else
-            iacc += (uint64_t)THxVALUE_as_int(arow->u.seq.items[l]) *
-                    (uint64_t)THxVALUE_as_int(brow->u.seq.items[j]);
-        }
-        orow[j] = is_real ? THxRT_real(racc) : THxRT_int((int64_t)iacc);
-      }
-      outer[i] = mk_vec(orow, n);
-    }
-    Value *v = mk_vec(outer, m);
-    free(orow);
-    free(outer);
-    return v;
-  }
-  if (strcmp(name, "vec_set") == 0) {
+  if (strcmp(name, "@vec_set") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
@@ -1375,6 +1297,25 @@ static Value *extern_push(Value *f, Value *arg) {
 /* Apply `fn` to `arg` (the interpreter's App dispatch). Returns 1 to continue,
  * 0 when the run completed. Holds owned in-flight references on `fn` and `arg`
  * across the frame switch (either may live in the dying activation). */
+Value *THxK_call(Value *f, Value *arg); /* synchronous closure application */
+
+/* `generate template f`: build a tensor the same size as `template`, element i =
+ * f(i). Higher-order, so it lives here (not in leaf `run_builtin`) and applies the
+ * closure via THxK_call. Mirrors the interpreter's generate. */
+static Value *rt_generate(Value *tmpl, Value *f) {
+  if (tmpl->tag != T_VEC) thrax_fault("generate expects a tensor template");
+  size_t len = tmpl->u.seq.len;
+  Value **items = xmalloc((len ? len : 1) * sizeof(Value *));
+  for (size_t i = 0; i < len; i++) {
+    Value *iv = THxRT_int((int64_t)i);
+    items[i] = THxK_call(f, iv); /* owned */
+  }
+  Value *v = mk_vec(items, len); /* retains each item */
+  for (size_t i = 0; i < len; i++) THxMEM_release(items[i]); /* drop generate's ref */
+  free(items);
+  return v;
+}
+
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
                     size_t base) {
   if (!fn) thrax_fault("apply: null callee");
@@ -1395,7 +1336,9 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
-        Value *res = run_builtin(fn->u.builtin.name, args, nn + 1);
+        Value *res = strcmp(fn->u.builtin.name, "@tensor_create") == 0
+                         ? rt_generate(args[0], args[1])
+                         : run_builtin(fn->u.builtin.name, args, nn + 1);
         THxMEM_free(args);
         r = do_ret(cur, fr, in, res, base);
       } else {

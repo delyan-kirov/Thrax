@@ -7,6 +7,10 @@
 #       MODULAR: the index is reduced mod the size, so it never goes out of
 #       bounds (`t.[n]` wraps to `t.[0]`). Functions can be polymorphic in the
 #       size: `[n]T -> ...` accepts a tensor of any length, with `n` unified.
+#       The compiler provides only the `@`-primitives; the operations (`index`
+#       that `.[..]` uses, `matmul`, `dot`, `transpose`, `concat`) live in `LA`.
+
+$ with LA
 
 $ v : [3]Int = [10, 20, 30]
 
@@ -62,6 +66,12 @@ $ index : Grid -> Int -> Int = \g i = g.cells.[i]
 $ board : Grid = .{ .cells = [1, 2, 3, 4, 5, 6, 7, 8, 9] }
 $ ck_ext : Int = if board.[4] ?= 5 => 0 else 4096   # user `index` via `.[..]`
 
+# `create template f` builds a tensor the same size as `template` (result size is
+# the template's, so it is sound), applying `f` at each index. With `length` and
+# `index` this is enough to write tensor ops in SOURCE: here, transpose.
+$ myT : [m][n]a -> [n][m]a = \t = create t.[0] (\j = create t (\i = t.[i].[j]))
+$ ck_gen : Int = if (myT mA).[2, 0] ?= 3 => 0 else 8192   # mA.[0,2]
+
 $ test : Int =
 	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
-	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext
+	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext + ck_gen

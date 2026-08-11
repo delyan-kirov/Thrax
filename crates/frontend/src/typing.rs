@@ -112,6 +112,10 @@ pub struct Checker<'a> {
     /// Single imported values, `name -> module`, so a bare use lowers to the
     /// owning module even when another loaded module defines the same name.
     value_module: HashMap<&'a str, &'a str>,
+    /// Single imported values retained as overload candidates, so a LOCAL definition
+    /// of the same name extends the imported one into an overload set (rather than
+    /// shadowing it). This is how a module adds an `index` overload for its own type.
+    imported_singles: HashMap<&'a str, Cand<'a>>,
     /// Bare-call sites resolved to a specific module. Lowering rewrites the
     /// referenced `Expr::Var` to `MOD.name`.
     resolved_calls: HashMap<Aol<Expr>, &'a str>,
@@ -284,6 +288,7 @@ impl<'a> Checker<'a> {
             pending: Vec::new(),
             local_defs: HashSet::new(),
             value_module: HashMap::new(),
+            imported_singles: HashMap::new(),
             resolved_calls: HashMap::new(),
             overload_calls: HashMap::new(),
             def_keys: HashMap::new(),
@@ -466,8 +471,21 @@ impl<'a> Checker<'a> {
         }
         let mut overloaded_names: HashSet<&'a str> = HashSet::new();
         for d in &defs {
-            if counts[d.name] > 1 || self.overloads.contains_key(d.name) {
+            // Overloaded if defined more than once here, adds to an already-imported
+            // overload, or EXTENDS a single imported value of the same name.
+            if counts[d.name] > 1
+                || self.overloads.contains_key(d.name)
+                || self.imported_singles.contains_key(d.name)
+            {
                 overloaded_names.insert(d.name);
+            }
+        }
+        // Seed the overload set of each name that extends a single imported value
+        // with that imported candidate, so both the import and the local definition
+        // become candidates (the local one is added by the seeding loop below).
+        for &name in &overloaded_names {
+            if let Some(cand) = self.imported_singles.get(name).cloned() {
+                self.overloads.entry(name).or_default().push(cand);
             }
         }
         let is_overloaded = |name: &str| overloaded_names.contains(name);
@@ -658,7 +676,10 @@ impl<'a> Checker<'a> {
                 if let Some(module) = cand.module {
                     self.value_module.insert(name, module);
                 }
-                self.bind(name, cand.ty);
+                self.bind(name, cand.ty.clone());
+                // Retained so a local definition of `name` promotes it to an
+                // overload (see the overloaded-name detection in `check_program`).
+                self.imported_singles.insert(name, cand);
             } else {
                 self.overloads.insert(name, cands);
             }
@@ -667,7 +688,11 @@ impl<'a> Checker<'a> {
 
     fn import_scheme(&mut self, ty: &Type) -> Type {
         let mut map = HashMap::new();
-        self.import_ty(ty, &mut map)
+        let imported = self.import_ty(ty, &mut map);
+        // `import_ty` makes fresh plain generics, losing the `Nat` kind; re-mark the
+        // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
+        self.eng.note_tensor_sizes(&imported);
+        imported
     }
 
     fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
@@ -3290,17 +3315,17 @@ impl<'a> Checker<'a> {
             })
         };
         self.overloads
-            .insert("array_len", prim(&[], false).map(Cand::local).into());
+            .insert("@array_len", prim(&[], false).map(Cand::local).into());
         self.overloads
-            .insert("array_get", prim(&[ty::INT], false).map(Cand::local).into());
+            .insert("@array_get", prim(&[ty::INT], false).map(Cand::local).into());
         self.overloads
-            .insert("array_push", prim(&[ty::INT], true).map(Cand::local).into());
+            .insert("@array_push", prim(&[ty::INT], true).map(Cand::local).into());
         self.overloads.insert(
-            "array_set",
+            "@array_set",
             prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
         );
         self.overloads.insert(
-            "array_slice",
+            "@array_slice",
             prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
         );
 
@@ -3309,85 +3334,72 @@ impl<'a> Checker<'a> {
             (t.clone(), Type::app(Type::con(ty::VEC), t))
         };
         let (_t, vt) = vec(&mut self.eng);
-        self.bind("vec_new", Type::arrow(Type::con(ty::UNIT), vt));
+        self.bind("@vec_new", Type::arrow(Type::con(ty::UNIT), vt));
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
+        self.bind("@vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
         let (_t, vt) = vec(&mut self.eng);
-        self.bind("vec_len", Type::arrow(vt, int()));
+        self.bind("@vec_len", Type::arrow(vt, int()));
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_get", Type::arrow(vt, Type::arrow(int(), t)));
+        self.bind("@vec_get", Type::arrow(vt, Type::arrow(int(), t)));
         let (t, vt) = vec(&mut self.eng);
         self.bind(
-            "vec_set",
+            "@vec_set",
             Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(t, vt))),
         );
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+        self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
 
-        // `concat : [n]a -> [m]a -> [n+m]a`: the tensor size arithmetic (Phase B).
+        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
+        // (like `@int64`), the minimal set the runtime provides; every nice name
+        // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
+        // function built from these plus `@ctx`, not a builtin.
+        //
+        // The sized-tensor primitives. `[n]T` and `Vec T` share the runtime vector
+        // rep but are DISTINCT types, so these carry their own tensor-typed
+        // signatures (a `@vec_*` binding is typed for `Vec`, not `[n]a`).
+        //
+        // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
+        // OVERLOADABLE `index` in `library/LA` (its tensor candidate calls `@tensor_index`);
+        // a custom container adds its own `index` overload, the import merge coexists.
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let m = self.eng.fresh_generic_nat();
-            let tensor = |size: Type, elem: Type| {
-                Type::app(Type::app(Type::con(TENSOR), size), elem)
-            };
-            let tn = tensor(n.clone(), a.clone());
-            let tm = tensor(m.clone(), a.clone());
-            let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
-            self.bind("concat", Type::arrow(tn, Type::arrow(tm, tnm)));
+            let vn = tensor(n, a.clone());
+            self.bind("@tensor_index", Type::arrow(vn, Type::arrow(int(), a)));
         }
-        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
-        // `length : [n]a -> Int`: a tensor's runtime size (untied to `n`, since there
-        // are no dependent values). A primitive that source-level tensor code needs.
+        // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let vn = tensor(n, a);
-            self.bind("length", Type::arrow(vn, int()));
+            self.bind("@tensor_length", Type::arrow(vn, int()));
         }
-        // `index : [n]a -> Int -> a` (modular): the built-in candidate of the
-        // OVERLOADABLE `index` that `t.[i]` desugars to. A user can add candidates
-        // (`index : Map k v -> k -> v`, etc.), so custom containers use `.[..]` too.
+        // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
+        // template from an index function (sound: result size = template size). The
+        // constructing primitive that lets `transpose`/`matmul` be library code.
         {
+            let x = self.eng.fresh_generic();
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let vn = tensor(n, a.clone());
-            self.overloads.insert(
-                "index",
-                vec![Cand::local(Type::arrow(vn, Type::arrow(int(), a)))],
+            let template = tensor(n.clone(), x);
+            let idx_fn = Type::arrow(int(), a.clone());
+            let result = tensor(n, a);
+            self.bind(
+                "@tensor_create",
+                Type::arrow(template, Type::arrow(idx_fn, result)),
             );
         }
-        // `transpose : [m][n]a -> [n][m]a` (element-polymorphic; swaps the axes).
+        // `@tensor_concat : [n]a -> [m]a -> [n+m]a`: the size-CHANGING join (which `@tensor_create`,
+        // being size-preserving, cannot express), so it is a primitive.
         {
             let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
             let m = self.eng.fresh_generic_nat();
-            let n = self.eng.fresh_generic_nat();
-            let mn = tensor(m.clone(), tensor(n.clone(), a.clone()));
-            let nm = tensor(n, tensor(m, a));
-            self.bind("transpose", Type::arrow(mn, nm));
-        }
-        // `dot : [n]a -> [n]a -> a`. Element-polymorphic (a single binding, so a
-        // bare `[..]` literal argument checks bidirectionally against `[n]a`); the
-        // runtime does the numeric work and faults on a non-numeric element, since
-        // there is no Num class to constrain `a` to Int/Real at the type level.
-        {
-            let a = self.eng.fresh_generic();
-            let n = self.eng.fresh_generic_nat();
-            let vn = tensor(n, a.clone());
-            self.bind("dot", Type::arrow(vn.clone(), Type::arrow(vn, a)));
-        }
-        // `matmul : [m][k]a -> [k][n]a -> [m][n]a` (shared `k` unifies, so a
-        // dimension mismatch is a compile error; element numeric-ness is runtime).
-        {
-            let a = self.eng.fresh_generic();
-            let m = self.eng.fresh_generic_nat();
-            let k = self.eng.fresh_generic_nat();
-            let n = self.eng.fresh_generic_nat();
-            let mk = tensor(m.clone(), tensor(k.clone(), a.clone()));
-            let kn = tensor(k, tensor(n.clone(), a.clone()));
-            let mn = tensor(m, tensor(n, a));
-            self.bind("matmul", Type::arrow(mk, Type::arrow(kn, mn)));
+            let tn = tensor(n.clone(), a.clone());
+            let tm = tensor(m.clone(), a.clone());
+            let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
+            self.bind("@tensor_concat", Type::arrow(tn, Type::arrow(tm, tnm)));
         }
 
         self.bind("true", bool_());

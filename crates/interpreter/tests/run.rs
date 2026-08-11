@@ -255,68 +255,61 @@ fn nominal_struct_update_with_pipe() {
 #[test]
 fn sized_tensor_construction_and_modular_index() {
     // `[n]T` is a sized vector; a `[..]` literal's length fixes the size, and
-    // `t.[i]` reads modulo the size (total: `t.[n]` wraps to `t.[0]`). Functions
-    // may be size-polymorphic (`[n]a`), the size unifying at the call.
+    // `@tensor_index` reads modulo the size (total: index n wraps to 0). Functions may be
+    // size-polymorphic (`[n]a`), the size unifying at the call. (`.[..]` surface
+    // sugar, which routes through the LA `index`, is covered by the TENSORS corpus.)
     let src = "@mod M\n\
                $ v : [3]Int = [10, 20, 30]\n\
-               $ head : [n]a -> a = \\t = t.[0]\n\
+               $ head : [n]a -> a = \\t = @tensor_index t 0\n\
                $ grid : [2][2]Int = [ [1, 2], [3, 4] ]\n\
-               $ r : Int = v.[1] + v.[3] + v.[7] + head v + grid.[1].[0]";
-    // 20 + v.[0]=10 + v.[1]=20 + head=10 + grid.[1].[0]=3
+               $ r : Int = @tensor_index v 1 + @tensor_index v 3 + @tensor_index v 7 + head v + @tensor_index (@tensor_index grid 1) 0";
+    // 20 + v[0]=10 + v[1]=20 + head=10 + grid[1][0]=3
     assert_eq!(run(src, "r"), "63");
 }
 
 #[test]
 fn tensor_size_arithmetic() {
-    // `concat : [n]a -> [m]a -> [n+m]a` computes the result size forward; the
-    // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`.
+    // `@tensor_concat : [n]a -> [m]a -> [n+m]a` computes the result size forward; the
+    // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`. (Full
+    // library `concat`/`matmul`/`dot`/`transpose` are exercised end-to-end, both
+    // engines, by the TENSORS corpus example, which imports `LA`.)
     let src = "@mod M\n\
                $ a : [2]Int = [1, 2]\n\
                $ b : [3]Int = [3, 4, 5]\n\
-               $ c : [5]Int = concat a b\n\
-               $ dup : [n]x -> [2*n]x = \\t = concat t t\n\
-               $ flip : [n]x -> [m]x -> [m+n]x = \\p q = concat p q\n\
+               $ c : [5]Int = @tensor_concat a b\n\
+               $ dup : [n]x -> [2*n]x = \\t = @tensor_concat t t\n\
+               $ flip : [n]x -> [m]x -> [m+n]x = \\p q = @tensor_concat p q\n\
                $ d : [4]Int = dup a\n\
-               $ r : Int = c.[4] + d.[3]"; // 5 + (dup a = [1,2,1,2]).[3]=2
+               $ r : Int = @tensor_index c 4 + @tensor_index d 3"; // 5 + (dup a = [1,2,1,2])[3]=2
     assert_eq!(run(src, "r"), "7");
 }
 
 #[test]
-fn shape_checked_linear_algebra() {
-    // matmul/transpose/dot are shape-typed (matmul's shared inner dim `k` unifies);
-    // multi-axis `m.[i, j]` reads an element. Over the nested-vector rep.
+fn generate_length_build_tensors_in_source() {
+    // The `@tensor_create`/`@tensor_length` primitives (higher-order: the runtime applies the
+    // closure per index) let a tensor op be written in source: here, transpose.
     let src = "@mod M\n\
+               $ myT : [m][n]a -> [n][m]a = \\t =\n\
+               \t@tensor_create (@tensor_index t 0) (\\j = @tensor_create t (\\i = @tensor_index (@tensor_index t i) j))\n\
                $ a : [2][3]Int = [ [1,2,3], [4,5,6] ]\n\
-               $ b : [3][2]Int = [ [1,0], [0,1], [1,1] ]\n\
-               $ c : [2][2]Int = matmul a b\n\
-               $ t : [3][2]Int = transpose a\n\
-               $ r : Int = c.[1, 1] + t.[0, 1] + dot [1,2,3] [4,5,6]"; // 11 + 4 + 32
-    assert_eq!(run(src, "r"), "47");
+               $ at : [3][2]Int = myT a\n\
+               $ r : Int = @tensor_length a + @tensor_index (@tensor_index at 0) 1 + @tensor_index (@tensor_index at 2) 0"; // 2 + 4 + 3
+    assert_eq!(run(src, "r"), "9");
 }
 
 #[test]
 fn overloadable_index_and_shape_sugar() {
-    // `.[..]` desugars to the overloadable `index`: the built-in tensor candidate
-    // handles `[n]a`, and a user type joins the same surface by defining its own
-    // `index`. `[m, n]T` shape sugar (== nested `[m][n]T`) and `t.[i, j]` too.
+    // `.[..]` desugars to the overloadable `index`, so two local `index` overloads
+    // (a tensor one and a custom-type one) both drive `.[..]`, dispatched by receiver
+    // type. Also exercises `[m, n]T` shape sugar and multi-axis `t.[i, j]`.
     let src = "@mod M\n\
-               $ g : [2, 2]Int = [ [1, 2], [3, 4] ]\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
                $ Box : @struct = base: Int\n\
                $ index : Box -> Int -> Int = \\b i = b.base + i\n\
+               $ g : [2, 2]Int = [ [1, 2], [3, 4] ]\n\
                $ bx : Box = .{ .base = 100 }\n\
                $ r : Int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
     assert_eq!(run(src, "r"), "112");
-}
-
-#[test]
-fn real_linear_algebra() {
-    // dot/matmul are element-polymorphic: Real tensors work (the runtime does the
-    // numeric work; there is no Num class to constrain the element at the type level).
-    let src = "@mod M\n\
-               $ a : [2][2]Real = [ [1.0, 2.0], [3.0, 4.0] ]\n\
-               $ c : [2][2]Real = matmul a [ [2.0, 0.0], [0.0, 2.0] ]\n\
-               $ r : Real = c.[0, 0] + c.[1, 1] + dot [1.0, 2.0] [3.0, 4.0]"; // 2 + 8 + 11
-    assert_eq!(run(src, "r"), "21");
 }
 
 #[test]
@@ -532,7 +525,7 @@ fn extern_ffi_dynamic_dlopen() {
         $ iabs   : Int -> Int   = @extern \"C\" \"abs\"    \"libc\"\n\
         $ dup    : Str -> Str   = @extern \"C\" \"strdup\" \"libc\"\n\
         $ expm1r : Real -> Real = @extern \"C\" \"expm1\"  \"libm\"\n\
-        $ r : Int = iabs (0 - 7) + array_len (dup \"abcde\") \
+        $ r : Int = iabs (0 - 7) + @array_len (dup \"abcde\") \
                   + (if expm1r 1.0 ?> 1.7 => 100 else 0)";
     assert_eq!(run(src, "r"), "112");
 }
@@ -552,7 +545,7 @@ fn target_reflects_the_host_consistently() {
 fn array_literal_lowers_to_byte_vector() {
     // `[..]` in Array context builds a byte vector, so array_* primitives apply.
     let src = "@mod M\n$ a : Array = [10, 20, 30]\n\
-               $ n = array_len a\n$ g = array_get a 1";
+               $ n = @array_len a\n$ g = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
 }
@@ -566,7 +559,7 @@ fn array_patterns_destructure_and_guard() {
                $ lit : Array -> Int = \\a = is a | [1, y] => y else 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + array_len rest else 0\n\
+               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");

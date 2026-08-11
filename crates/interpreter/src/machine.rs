@@ -598,7 +598,23 @@ impl<'p> Machine<'p> {
             Kind::Builtin(name, arity, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arity {
-                    mk(run_builtin(&name, &args)?)
+                    // `generate template f` is HIGHER-ORDER: it applies the closure
+                    // `f` to each index, so it runs here (where `self.apply` can drive
+                    // the machine) rather than in the leaf `run_builtin`.
+                    if &*name == "@tensor_create" {
+                        let len = match &*args[0].borrow() {
+                            Value::Vector(items) => items.len(),
+                            _ => return Err(fault("generate expects a tensor template")),
+                        };
+                        let f = args[1].clone();
+                        let mut out = Vec::with_capacity(len);
+                        for i in 0..len {
+                            out.push(self.apply(f.clone(), mk(Value::Int(i as i64)))?);
+                        }
+                        mk(Value::Vector(Rc::new(out)))
+                    } else {
+                        mk(run_builtin(&name, &args)?)
+                    }
                 } else {
                     mk(Value::Builtin { name, arity, args })
                 };

@@ -86,6 +86,49 @@ impl Engine {
         self.nat_vars.contains(&id)
     }
 
+    /// Mark every variable in a size expression (a `Nat` position) as `Nat`-kinded.
+    fn note_nat(&mut self, ty: &Type) {
+        match self.resolve(ty) {
+            Type::Var(id) => {
+                self.nat_vars.insert(id);
+            }
+            Type::NatAdd(a, b) | Type::NatMul(a, b) => {
+                self.note_nat(&a);
+                self.note_nat(&b);
+            }
+            _ => {}
+        }
+    }
+
+    /// Walk a type and mark every tensor-size variable as `Nat`. Kind is not carried
+    /// in a `Type::Var`, so a scheme imported across modules (fresh plain generics)
+    /// must be re-annotated from its structure, else a size var unifies as a type.
+    pub fn note_tensor_sizes(&mut self, ty: &Type) {
+        match self.resolve(ty) {
+            Type::App(head, elem) => {
+                if let Type::App(con, size) = self.resolve(&head) {
+                    if matches!(self.resolve(&con), Type::Con(n) if n == "@tensor") {
+                        self.note_nat(&size);
+                    }
+                }
+                self.note_tensor_sizes(&head);
+                self.note_tensor_sizes(&elem);
+            }
+            Type::Arrow(from, to, eff) => {
+                self.note_tensor_sizes(&from);
+                self.note_tensor_sizes(&to);
+                self.note_tensor_sizes(&eff);
+            }
+            Type::Tuple(items) => items.iter().for_each(|t| self.note_tensor_sizes(t)),
+            Type::Record(row) => self.note_tensor_sizes(&row),
+            Type::RowField(_, t, rest) => {
+                self.note_tensor_sizes(&t);
+                self.note_tensor_sizes(&rest);
+            }
+            _ => {}
+        }
+    }
+
     /// Register the structs' record-row schemes for the nominal-struct / record-row
     /// unification bridge (see [`Engine::struct_rows`]).
     pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, (Vec<VarId>, Type)>) {

@@ -371,12 +371,12 @@ impl Pm {
 
 /// `array_len sv`.
 fn array_len(sv: &str) -> Term {
-    Term::app(v("array_len"), v(sv))
+    Term::app(v("@array_len"), v(sv))
 }
 
 /// `array_slice sv beg end`.
 fn array_slice(sv: &str, beg: Term, end: Term) -> Term {
-    Term::app(Term::app(Term::app(v("array_slice"), v(sv)), beg), end)
+    Term::app(Term::app(Term::app(v("@array_slice"), v(sv)), beg), end)
 }
 
 /// `record_without rec "label"`: the record with the head occurrence of `label`

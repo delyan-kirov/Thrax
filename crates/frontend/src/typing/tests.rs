@@ -259,7 +259,7 @@ fn sequence_literal_is_type_directed() {
     );
     // An Array-typed parameter directs a `[..]` argument at the call site.
     let src = "@mod M\n\
-                   $ len : Array -> Int = \\a = array_len a\n\
+                   $ len : Array -> Int = \\a = @array_len a\n\
                    $ n = len [1, 2]";
     assert_eq!(type_of(src, "n"), "Int");
 }
@@ -343,9 +343,9 @@ fn same_operation_in_two_effects_resolves_by_result_type() {
 #[test]
 fn array_primitives_overload_on_array_and_str() {
     let src = "@mod M\n\
-                   $ a : Array = array_push (@array.{ 0 }) 65\n\
-                   $ n = array_len a\n\
-                   $ b = array_get \"hi\" 0";
+                   $ a : Array = @array_push (@array.{ 0 }) 65\n\
+                   $ n = @array_len a\n\
+                   $ b = @array_get \"hi\" 0";
     assert_eq!(type_of(src, "a"), "Array");
     assert_eq!(type_of(src, "n"), "Int");
     assert_eq!(type_of(src, "b"), "Int");

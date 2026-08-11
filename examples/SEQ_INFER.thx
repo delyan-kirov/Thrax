@@ -5,8 +5,8 @@
 
 # Array context -> a byte vector.
 $ bytes : Array = [10, 20, 30]
-$ ck_alen : Int = if (array_len bytes) ?= 3 => 0 else 1
-$ ck_a1   : Int = if (array_get bytes 1) ?= 20 => 0 else 1
+$ ck_alen : Int = if (@array_len bytes) ?= 3 => 0 else 1
+$ ck_a1   : Int = if (@array_get bytes 1) ?= 20 => 0 else 1
 
 # List context -> the blessed List.
 $ nums : List Int = [1, 2, 3, 4]
@@ -19,7 +19,7 @@ $ ck_sum : Int = if (sum nums) ?= 10 => 0 else 1
 # Empty literal in each context.
 $ empt_a : Array = []
 $ empt_l : List Int = []
-$ ck_ea : Int = if (array_len empt_a) ?= 0 => 0 else 1
+$ ck_ea : Int = if (@array_len empt_a) ?= 0 => 0 else 1
 $ ck_el : Int = if (sum empt_l) ?= 0 => 0 else 1
 
 # Unannotated defaults to List.

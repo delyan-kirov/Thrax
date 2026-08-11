@@ -193,9 +193,33 @@ type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run 
 non-numeric element is a runtime fault, not a type error).
 
 Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
-function (`index t i`). A built-in candidate handles tensors; a custom container
-joins the same `.[..]` surface by declaring its own overload, e.g.
-`index : Map k v -> k -> v`.
+function (`index t i`). `LA` provides the tensor candidate (`index : [n]a -> Int
+-> a`, so `with LA` is what makes `t.[i]` read a tensor); a custom container joins
+the same `.[..]` surface by declaring its own overload, e.g.
+`index : Map k v -> k -> v`. A local overload and an imported one merge into a
+single dispatch set (extending an imported function is how you add a case).
+
+The compiler provides only the `@`-sigil PRIMITIVES over the tensor buffer; every
+named operation lives in the `LA` library (`$ with LA`), so it is ordinary,
+readable, forkable Thrax:
+
+	@tensor_index  : [n]a -> Int -> a           # modular read (`.[..]` uses this)
+	@tensor_length : [n]a -> Int                # the runtime size
+	@tensor_create : [n]x -> (Int -> a) -> [n]a  # build one the SAME size as a template
+	@tensor_concat : [n]a -> [m]a -> [n+m]a      # the size-changing join
+
+`@tensor_create` is sound because the result size is the template's size `n`, and it
+is higher-order (it applies the index function per element). With these plus `@ctx`
+implicits for the element arithmetic (dictionary passing in place of a numeric
+class), `LA` defines `matmul`/`dot`/`transpose`/`concat` as plain functions. For
+example, `LA`'s transpose is:
+
+	$ transpose : [m][n]a -> [n][m]a = \t =
+		@tensor_create t.[0] (\j = @tensor_create t (\i = t.[i].[j]))
+
+and its dot passes the element ops as a record-style implicit dictionary:
+
+	$ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = ...
 
 An ALIAS names a type. It may take parameters (declared like any other type, see
 STRUCTS) and its body may partially instantiate another generic type, fixing some

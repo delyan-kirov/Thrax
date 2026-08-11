@@ -1408,6 +1408,14 @@ impl<'a> Parser<'a> {
             }
             "array" => self.parse_array(),
             "extern" => self.parse_extern(),
+            // Any other lowercase `@name` is a reference to a compiler intrinsic
+            // (`@tensor_create`, `@tensor_index`, `@vec_get`, ...), usable as a value
+            // function value. The `@` sigil marks it as a primitive, not a library fn.
+            other if other.starts_with(|c: char| c.is_ascii_lowercase()) => {
+                self.bump()?;
+                let name = self.intern(self.text(at));
+                Ok(self.expr(Expr::Var { module: None, name }))
+            }
             other => {
                 Err(self.unexpected(&at, &format!("'@{other}' is not valid in an expression")))
             }

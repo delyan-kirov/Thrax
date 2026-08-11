@@ -20,5 +20,5 @@ $ to_string : Int -> Str = \n =
 	else to_string_digits n ""
 
 $ to_string_digits : Int -> Str -> Str = \n acc =
-	if n ?< 10 => (array_push "" (48 + n)) ++ acc
-	else to_string_digits (n / 10) ((array_push "" (48 + n % 10)) ++ acc)
+	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
+	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)

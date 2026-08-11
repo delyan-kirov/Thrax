@@ -153,12 +153,11 @@ fn as_byte(v: &PVal) -> Result<u8> {
 /// The arity of a built-in operator, or `None` if the name is not a built-in.
 pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
-        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" | "transpose"
-        | "length" => 1,
-        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
-        | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" | "concat"
-        | "dot" | "matmul" | "index" => 2,
-        "array_set" | "array_slice" | "vec_set" => 3,
+        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new" | "@tensor_length" => 1,
+        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
+        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
+        | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
+        "@array_set" | "@array_slice" | "@vec_set" => 3,
         _ => return None,
     };
     Some(n)
@@ -181,9 +180,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "?=" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
         "?<" | "?>" | "<=" | ">=" => compare(name, &a[0], &a[1]),
         "++" => concat(&a[0], &a[1]),
-        "array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
-        "array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
-        "array_get" => {
+        "@array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
+        "@array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
+        "@array_get" => {
             let bytes = as_bytes(&a[0])?;
             let i = as_index(&a[1])?;
             bytes
@@ -191,12 +190,12 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|b| Value::Int(*b as i64))
                 .ok_or_else(|| fault("array index out of bounds"))
         }
-        "array_push" => {
+        "@array_push" => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             bytes.push(as_byte(&a[1])?);
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "array_set" => {
+        "@array_set" => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= bytes.len() {
@@ -205,7 +204,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             bytes[i] = as_byte(&a[2])?;
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "array_slice" => {
+        "@array_slice" => {
             let bytes = as_bytes(&a[0])?;
             let mut beg = as_index(&a[1])?;
             let mut end = as_index(&a[2])?;
@@ -234,13 +233,13 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 _ => Err(fault("`record_without` on a non-record")),
             }
         }
-        "vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
-        "vec_fill" => {
+        "@vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
+        "@vec_fill" => {
             let n = as_len(&a[0])?;
             Ok(Value::Vector(Rc::new(vec![a[1].clone(); n])))
         }
-        "vec_len" | "length" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
-        "vec_get" => {
+        "@vec_len" | "@tensor_length" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
+        "@vec_get" => {
             let v = as_vec(&a[0])?;
             let i = as_index(&a[1])?;
             v.get(i)
@@ -248,17 +247,17 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|p| p.borrow().clone_shallow())
                 .ok_or_else(|| fault("vec index out of bounds"))
         }
-        "vec_push" => {
+        "@vec_push" => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             v.push(a[1].clone());
             Ok(Value::Vector(Rc::new(v)))
         }
-        "concat" => {
+        "@tensor_concat" => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             v.extend(as_vec(&a[1])?.iter().cloned());
             Ok(Value::Vector(Rc::new(v)))
         }
-        "index" => {
+        "@tensor_index" => {
             let v = as_vec(&a[0])?;
             let len = v.len();
             if len == 0 {
@@ -270,70 +269,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|p| p.borrow().clone_shallow())
                 .ok_or_else(|| fault("tensor index out of bounds"))
         }
-        "transpose" => {
-            let rows = as_vec(&a[0])?;
-            let m = rows.len();
-            let n = if m == 0 { 0 } else { as_vec(&rows[0])?.len() };
-            let mut out: Vec<PVal> = Vec::with_capacity(n);
-            for j in 0..n {
-                let mut col: Vec<PVal> = Vec::with_capacity(m);
-                for row in rows.iter() {
-                    col.push(as_vec(row)?[j].clone());
-                }
-                out.push(mk(Value::Vector(Rc::new(col))));
-            }
-            Ok(Value::Vector(Rc::new(out)))
-        }
-        "dot" => {
-            let (x, y) = (as_vec(&a[0])?, as_vec(&a[1])?);
-            let n = x.len().min(y.len());
-            if n > 0 && matches!(&*x[0].borrow(), Value::Real(_)) {
-                let mut acc = 0.0f64;
-                for i in 0..n {
-                    acc += as_f64(&x[i])? * as_f64(&y[i])?;
-                }
-                Ok(Value::Real(acc))
-            } else {
-                let mut acc: i64 = 0;
-                for i in 0..n {
-                    acc = acc.wrapping_add(as_int(&x[i])?.wrapping_mul(as_int(&y[i])?));
-                }
-                Ok(Value::Int(acc))
-            }
-        }
-        "matmul" => {
-            let (aa, bb) = (as_vec(&a[0])?, as_vec(&a[1])?);
-            let (m, k) = (aa.len(), bb.len());
-            let n = if k == 0 { 0 } else { as_vec(&bb[0])?.len() };
-            let is_real = m > 0 && {
-                let r0 = as_vec(&aa[0])?;
-                !r0.is_empty() && matches!(&*r0[0].borrow(), Value::Real(_))
-            };
-            let mut out: Vec<PVal> = Vec::with_capacity(m);
-            for arow in aa.iter() {
-                let arow = as_vec(arow)?;
-                let mut orow: Vec<PVal> = Vec::with_capacity(n);
-                for j in 0..n {
-                    if is_real {
-                        let mut acc = 0.0f64;
-                        for l in 0..k {
-                            acc += as_f64(&arow[l])? * as_f64(&as_vec(&bb[l])?[j])?;
-                        }
-                        orow.push(mk(Value::Real(acc)));
-                    } else {
-                        let mut acc: i64 = 0;
-                        for l in 0..k {
-                            let brow = as_vec(&bb[l])?;
-                            acc = acc.wrapping_add(as_int(&arow[l])?.wrapping_mul(as_int(&brow[j])?));
-                        }
-                        orow.push(mk(Value::Int(acc)));
-                    }
-                }
-                out.push(mk(Value::Vector(Rc::new(orow))));
-            }
-            Ok(Value::Vector(Rc::new(out)))
-        }
-        "vec_set" => {
+        "@vec_set" => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= v.len() {

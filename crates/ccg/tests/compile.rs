@@ -262,8 +262,8 @@ fn lists_and_length() {
 fn strings_and_arrays() {
     let src = "@mod T\n\
                $ s : Str = \"ab\" ++ \"cd\"\n\
-               $ n : Int = array_len s\n\
-               $ g : Int = array_get s 1\n\
+               $ n : Int = @array_len s\n\
+               $ g : Int = @array_get s 1\n\
                $ test : Int = n + g\n";
     assert_matches(src, "s");
     assert_matches(src, "n");

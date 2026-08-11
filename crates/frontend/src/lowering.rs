@@ -677,18 +677,18 @@ impl<'a> Lowerer<'a> {
                 let items: Vec<Aol<Expr>> = items.to_vec();
                 if self.resolved.array_exprs.contains(&e) {
                     // A byte vector: start empty, push each element left to right.
-                    let mut acc = Term::app(Term::var("array_alloc"), Term::Int(0));
+                    let mut acc = Term::app(Term::var("@array_alloc"), Term::Int(0));
                     for it in items {
                         let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("array_push"), acc), x);
+                        acc = Term::app(Term::app(Term::var("@array_push"), acc), x);
                     }
                     acc
                 } else if self.resolved.tensor_exprs.contains(&e) {
                     // A sized tensor: a vector, pushed left to right onto an empty one.
-                    let mut acc = Term::app(Term::var("vec_new"), Term::Unit);
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
                     for it in items {
                         let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("vec_push"), acc), x);
+                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
                     }
                     acc
                 } else {
@@ -700,7 +700,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            Expr::Array { size } => Term::app(Term::var("array_alloc"), self.expr(*size)),
+            Expr::Array { size } => Term::app(Term::var("@array_alloc"), self.expr(*size)),
 
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name).to_string());
@@ -1347,13 +1347,13 @@ impl<'a> Lowerer<'a> {
 
 /// `array_len v`.
 fn array_len(v: &str) -> Term {
-    Term::app(Term::var("array_len"), Term::var(v))
+    Term::app(Term::var("@array_len"), Term::var(v))
 }
 
 /// `array_get v i`.
 fn array_get(v: &str, i: usize) -> Term {
     Term::app(
-        Term::app(Term::var("array_get"), Term::var(v)),
+        Term::app(Term::var("@array_get"), Term::var(v)),
         Term::Int(i as i64),
     )
 }
@@ -1362,7 +1362,7 @@ fn array_get(v: &str, i: usize) -> Term {
 fn array_slice(v: &str, from: usize) -> Term {
     Term::app(
         Term::app(
-            Term::app(Term::var("array_slice"), Term::var(v)),
+            Term::app(Term::var("@array_slice"), Term::var(v)),
             Term::Int(from as i64),
         ),
         array_len(v),
