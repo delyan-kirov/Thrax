@@ -20,6 +20,14 @@ $ length : [n]a -> Int = \t = @tensor_length t
 $ create : [n]x -> (Int -> a) -> [n]a = \t f = @tensor_create t f
 $ concat : [n]a -> [m]a -> [n+m]a = \x y = @tensor_concat x y
 
+# O(1) VIEWS (share the buffer, copy nothing). `slice` takes `[lo, hi)` of the
+# leading axis; `row i` is a row; `col j` is a column (a strided view, via the O(1)
+# transpose). The sliced size is a runtime value, so it is not tracked statically
+# (indexing stays modular/total).
+$ slice : [n]a -> Int -> Int -> [k]a = \t lo hi = @tensor_slice t lo hi
+$ row : [m][n]a -> Int -> [n]a = \t i = t.[i]
+$ col : [m][n]a -> Int -> [m]a = \t j = (transpose t).[j]
+
 # Element arithmetic as a dictionary. Overloaded for Int and Real; a `@ctx add`
 # etc. below resolves to the right one by the element type.
 $ add : Int -> Int -> Int = \a b = a + b
@@ -29,10 +37,9 @@ $ mul : Real -> Real -> Real = \a b = a * b
 $ zero : Int = 0
 $ zero : Real = 0.0
 
-# Transpose swaps the two axes: element-polymorphic, built with `create` (result
-# row j is column j of the input, size m; there are n of them).
-$ transpose : [m][n]a -> [n][m]a = \t =
-	create t.[0] (\j = create t (\i = t.[i].[j]))
+# Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
+# that shares the buffer and only swaps the shape/strides, copying nothing.
+$ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
 
 # Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
 # the element `add`/`mul`/`zero` supplied by `@ctx`.

@@ -1117,24 +1117,64 @@ impl<'a> Parser<'a> {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
             }
-            // `recv.[i]` / `recv.[i, j, ...]`: desugars to the OVERLOADABLE `index`
-            // function (`index recv i`), so tensors, maps, and user types all plug
-            // into the same surface. A comma-list nests (`index (index t i) j`).
+            // `recv.[i]` / `recv.[i, j, ...]`: an all-index access desugars to the
+            // OVERLOADABLE `index` (`index recv i`), so tensors, maps, and user types
+            // share the surface; a comma-list nests (`index (index t i) j`). A `p ... q`
+            // slot is an INCLUSIVE range slice of the leading axis (`@tensor_slice`).
             Kind::LBrack => {
+                let open = self.peek()?;
                 self.bump()?; // '['
-                let mut recv = base;
+                let mut idx_slots: Vec<Aol<Expr>> = Vec::new();
+                let mut range: Option<(Aol<Expr>, Aol<Expr>)> = None;
+                let mut multi = false;
                 loop {
-                    let idx = self.parse_expr(0)?;
-                    let index_fn = self.intern("index");
-                    let f = self.expr(Expr::Var { module: None, name: index_fn });
-                    let f = self.expr(Expr::App(f, recv));
-                    recv = self.expr(Expr::App(f, idx));
+                    let lo = self.parse_expr(0)?;
+                    if matches!(self.peek_kind()?, Kind::Ellipsis) {
+                        self.bump()?; // '...'
+                        let hi = self.parse_expr(0)?;
+                        if range.is_some() || !idx_slots.is_empty() {
+                            multi = true;
+                        }
+                        range = Some((lo, hi));
+                    } else {
+                        if range.is_some() {
+                            multi = true;
+                        }
+                        idx_slots.push(lo);
+                    }
                     if !self.eat(|k| matches!(k, Kind::Comma))? {
                         break;
                     }
                 }
                 expect!(self, Kind::RBrack, "expected ']' to close the index");
-                Ok(recv)
+                match range {
+                    // A lone `p ... q`: inclusive slice of the leading axis. The bound
+                    // is `q + 1` (half-open) since `...` includes `q`.
+                    Some((lo, hi)) if !multi => {
+                        let slice_fn = self.intern("@tensor_slice");
+                        let plus = self.intern("+");
+                        let one = self.expr(Expr::Int(1));
+                        let hi1 = self.expr(Expr::BinOp { op: plus, lhs: hi, rhs: one });
+                        let f = self.expr(Expr::Var { module: None, name: slice_fn });
+                        let f = self.expr(Expr::App(f, base));
+                        let f = self.expr(Expr::App(f, lo));
+                        Ok(self.expr(Expr::App(f, hi1)))
+                    }
+                    Some(_) => Err(self.unexpected(
+                        &open,
+                        "multi-axis range slicing is not supported yet; slice one axis at a time, or use `row`/`col`",
+                    )),
+                    None => {
+                        let mut recv = base;
+                        for idx in idx_slots {
+                            let index_fn = self.intern("index");
+                            let f = self.expr(Expr::Var { module: None, name: index_fn });
+                            let f = self.expr(Expr::App(f, recv));
+                            recv = self.expr(Expr::App(f, idx));
+                        }
+                        Ok(recv)
+                    }
+                }
             }
             Kind::Word if is_upper(self.text(ahead)) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;

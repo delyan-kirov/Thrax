@@ -313,6 +313,33 @@ fn overloadable_index_and_shape_sugar() {
 }
 
 #[test]
+fn inclusive_range_slice_syntax() {
+    // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
+    // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
+    let src = "@mod M\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ v : [5]Int = [10, 20, 30, 40, 50]\n\
+               $ s : [3]Int = v.[1 ... 3]\n\
+               $ r : Int = s.[0] + s.[1] + s.[2]"; // 20+30+40
+    assert_eq!(run(src, "r"), "90");
+}
+
+#[test]
+fn strided_views_transpose_row_col_slice() {
+    // Over the flat strided rep, transpose/index/slice are O(1) VIEWS sharing the
+    // buffer. A transposed column is a strided view; a slice narrows an axis.
+    let src = "@mod M\n\
+               $ mA : [3][3]Int = [ [1,2,3], [4,5,6], [7,8,9] ]\n\
+               $ tA : [3][3]Int = @tensor_transpose mA\n\
+               $ colv : [3]Int = @tensor_index tA 2\n\
+               $ sl : [2]Int = @tensor_slice (@tensor_index mA 0) 1 3\n\
+               $ r : Int = @tensor_index (@tensor_index tA 0) 2\n\
+               \t+ @tensor_index colv 0 + @tensor_index sl 1";
+    // tA[0][2] = mA[2][0] = 7 ; colv = column 2 = [3,6,9], colv[0]=3 ; sl=[2,3], sl[1]=3
+    assert_eq!(run(src, "r"), "13");
+}
+
+#[test]
 fn inclusive_range_patterns() {
     // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
     // the match needs an `else`. Works on Int and Real.

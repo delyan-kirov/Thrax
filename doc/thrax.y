@@ -79,7 +79,7 @@
 %token BANG QEQ QGT QLT             /* ! ?= ?> ?< */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
-%token ELLIPSIS                     /* ... (inclusive range in patterns) */
+%token ELLIPSIS                     /* ... inclusive range (patterns + `t.[p...q]` slices) */
 
 %start program
 %%
@@ -292,7 +292,10 @@ atom
 
 /* `t.[i, j, ...]`: a comma-list of axis indices, folded to nested single-axis
  * indexing (`t.[i].[j]`). */
-index_list : expr | index_list COMMA expr ;
+/* Index slots: `t.[i]` / `t.[i, j]` reduce axes (modular indexing); a lone
+ * `t.[p ... q]` is an INCLUSIVE range slice of the leading axis (a view). */
+index_list : index_slot | index_list COMMA index_slot ;
+index_slot : expr | expr ELLIPSIS expr ;
 
 field_inits : /* empty */ | init_list opt_comma ;
 init_list   : field_init | init_list COMMA field_init ;

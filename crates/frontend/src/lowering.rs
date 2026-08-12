@@ -684,13 +684,15 @@ impl<'a> Lowerer<'a> {
                     }
                     acc
                 } else if self.resolved.tensor_exprs.contains(&e) {
-                    // A sized tensor: a vector, pushed left to right onto an empty one.
+                    // A sized tensor literal: collect the elements into a vector, then
+                    // `@tensor_stack` builds the flat strided tensor (flattening a
+                    // nested literal into one contiguous buffer + shape/strides).
                     let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
                     for it in items {
                         let x = self.expr(it);
                         acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
                     }
-                    acc
+                    Term::app(Term::var("@tensor_stack"), acc)
                 } else {
                     let mut acc = nil();
                     for e in items.into_iter().rev() {

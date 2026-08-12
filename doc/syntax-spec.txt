@@ -180,12 +180,20 @@ multi-axis index `t.[i, j]` reads one element of a nested tensor (`t.[i].[j]`).
 	$ g : [2][2]Int = [ [1,2], [3,4] ]
 	$ z : Int    = g.[1, 0]       # 3
 
-Shape-checked linear algebra is provided as built-ins over these types:
+Shape-checked linear algebra is provided by the `LA` library over these types:
 
-	transpose : [m][n]a -> [n][m]a               # swaps the axes
+	transpose : [m][n]a -> [n][m]a               # swaps the axes (O(1) view)
 	matmul    : [m][k]a -> [k][n]a -> [m][n]a     # shared k unifies
 	dot       : [n]a -> [n]a -> a
 	concat    : [n]a -> [m]a -> [n+m]a           # size arithmetic
+	slice     : [n]a -> Int -> Int -> [k]a       # [lo, hi) of the leading axis (view)
+	row       : [m][n]a -> Int -> [n]a           # a row (view)
+	col       : [m][n]a -> Int -> [m]a           # a column (strided view)
+
+A tensor is a flat buffer with a shape/strides descriptor, so `transpose`, `row`,
+`col`, `slice`, and element indexing return VIEWS that share the buffer and copy
+nothing. The inclusive range-slice syntax `t.[p ... q]` (same `...` as range
+patterns) is sugar for a leading-axis `slice` (`t.[1 ... 3]` keeps indices 1, 2, 3).
 
 A dimension mismatch (e.g. `matmul` of `[2, 3]` and `[2, 2]`) is a compile-time
 type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run on

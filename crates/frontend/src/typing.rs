@@ -3401,6 +3401,31 @@ impl<'a> Checker<'a> {
             let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
             self.bind("@tensor_concat", Type::arrow(tn, Type::arrow(tm, tnm)));
         }
+        // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
+        // so `LA.transpose` copies nothing.
+        {
+            let a = self.eng.fresh_generic();
+            let m = self.eng.fresh_generic_nat();
+            let n = self.eng.fresh_generic_nat();
+            let mn = tensor(m.clone(), tensor(n.clone(), a.clone()));
+            let nm = tensor(n, tensor(m, a));
+            self.bind("@tensor_transpose", Type::arrow(mn, nm));
+        }
+        // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
+        // the leading axis. The result size `k` is a runtime value, so it is a fresh
+        // nat (not `hi - lo`, which are runtime Ints); indexing it is modular/total, so
+        // an unknown static size is consistent with the rest of the tensor design.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let k = self.eng.fresh_generic_nat();
+            let src = tensor(n, a.clone());
+            let out = tensor(k, a);
+            self.bind(
+                "@tensor_slice",
+                Type::arrow(src, Type::arrow(int(), Type::arrow(int(), out))),
+            );
+        }
 
         self.bind("true", bool_());
         self.bind("false", bool_());

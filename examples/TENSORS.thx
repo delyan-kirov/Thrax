@@ -72,6 +72,18 @@ $ ck_ext : Int = if board.[4] ?= 5 => 0 else 4096   # user `index` via `.[..]`
 $ myT : [m][n]a -> [n][m]a = \t = create t.[0] (\j = create t (\i = t.[i].[j]))
 $ ck_gen : Int = if (myT mA).[2, 0] ?= 3 => 0 else 8192   # mA.[0,2]
 
+# O(1) VIEWS over the flat strided buffer: `transpose` swaps strides, `row`/`col`/
+# `slice` are views that copy nothing. `col` is a strided view (stride = row width).
+$ ck_row  : Int = if (row mA 1).[2] ?= 6 => 0 else 16384    # mA[1] = [4,5,6]
+$ ck_col  : Int = if (col mA 2).[0] ?= 3 => 0 else 32768    # column 2 = [3,6,9]
+$ ck_slc  : Int = if (slice v 1 3).[0] ?= 20 => 0 else 65536  # v[1..3] = [20,30]
+
+# Inclusive range-slice syntax `t.[p ... q]` (a leading-axis view). `...` matches
+# the range PATTERN syntax and includes both ends.
+$ sub : [2]Int = v.[1 ... 2]                                # v[1],v[2] = [20,30]
+$ ck_rng : Int = if sub.[0] + sub.[1] ?= 50 => 0 else 131072
+
 $ test : Int =
 	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
 	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext + ck_gen
+	+ ck_row + ck_col + ck_slc + ck_rng
