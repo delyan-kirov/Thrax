@@ -306,6 +306,17 @@ pub enum FieldPat {
 
 // -- expressions -------------------------------------------------------------
 
+/// One axis position in a multi-axis tensor slice `t.[s0, s1, ...]`.
+#[derive(Debug)]
+pub enum SliceSlot {
+    /// `i`: index (reduce) this axis.
+    Index(Aol<Expr>),
+    /// `lo ... hi`: keep this axis, narrowed to the inclusive range `[lo, hi]`.
+    Range(Aol<Expr>, Aol<Expr>),
+    /// `..`: keep this axis whole.
+    Full,
+}
+
 #[derive(Debug)]
 pub enum Expr {
     Int(i64),
@@ -336,6 +347,13 @@ pub enum Expr {
     Tuple(Box<[Aol<Expr>]>),
     /// `[ a, b, ... ]` / `[]`.
     List(Box<[Aol<Expr>]>),
+    /// Multi-axis tensor slice `recv.[s0, s1, ...]` where at least one slot is a
+    /// range or a full `..` (an all-index access desugars to `index` instead). An
+    /// `Index` slot reduces its axis; a `Range`/`Full` slot keeps it (a view).
+    Slice {
+        recv: Aol<Expr>,
+        slots: Box<[SliceSlot]>,
+    },
     /// `@array.{ n }` (size form) or `@array.{ .field = n }`.
     Array {
         size: Aol<Expr>,

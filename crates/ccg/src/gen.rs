@@ -438,7 +438,8 @@ fn builtin_arity(name: &str) -> Option<usize> {
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
-        "@array_set" | "@array_slice" | "@vec_set" | "@tensor_slice" => 3,
+        "@array_set" | "@array_slice" | "@vec_set" | "@tensor_slice" | "@tensor_index_axis" => 3,
+        "@tensor_slice_axis" => 4,
         _ => return None,
     };
     Some(n)

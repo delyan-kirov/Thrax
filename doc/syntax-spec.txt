@@ -192,8 +192,18 @@ Shape-checked linear algebra is provided by the `LA` library over these types:
 
 A tensor is a flat buffer with a shape/strides descriptor, so `transpose`, `row`,
 `col`, `slice`, and element indexing return VIEWS that share the buffer and copy
-nothing. The inclusive range-slice syntax `t.[p ... q]` (same `...` as range
-patterns) is sugar for a leading-axis `slice` (`t.[1 ... 3]` keeps indices 1, 2, 3).
+nothing. Indexing generalizes to MULTI-AXIS slicing, `t.[s0, s1, ...]`, where each
+slot acts on one axis:
+
+	i          index (reduce) the axis
+	p ... q    keep it, narrowed to the inclusive range [p, q]
+	..         keep it whole
+
+So `m.[i]` is a row, `m.[.., j]` a column, `m.[p ... q]` a leading-axis slice,
+`m.[i, p ... q]` a row's sub-range, and `m.[p ... q, r ... s]` a subblock. The
+result shape is computed and checked by the type checker (a lone `..`/index all-Int
+access is the overloadable `index`; any range or `..` slot makes it a tensor slice).
+Everything is an O(1) strided view. `...` matches the range-pattern syntax.
 
 A dimension mismatch (e.g. `matmul` of `[2, 3]` and `[2, 2]`) is a compile-time
 type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run on

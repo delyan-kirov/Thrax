@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload,
-    Program as AstProgram, RecField, Ty,
+    Program as AstProgram, RecField, SliceSlot, Ty,
 };
 use utilities::Aol;
 
@@ -658,6 +658,39 @@ impl<'a> Lowerer<'a> {
                 Term::app(self.expr(f), self.expr(x))
             }
 
+            // A multi-axis slice: apply each slot to the CURRENT axis. An `Index` slot
+            // reduces its axis (so later axis numbers shift down by `dropped`); a
+            // `Range`/`Full` slot keeps it. All ops are O(1) strided views.
+            Expr::Slice { recv, slots } => {
+                let mut t = self.expr(*recv);
+                let mut dropped = 0usize;
+                for (pos, s) in slots.iter().enumerate() {
+                    let axis = Term::Int((pos - dropped) as i64);
+                    match s {
+                        SliceSlot::Index(x) => {
+                            let idx = self.expr(*x);
+                            t = Term::app(
+                                Term::app(Term::app(Term::var("@tensor_index_axis"), t), axis),
+                                idx,
+                            );
+                            dropped += 1;
+                        }
+                        SliceSlot::Range(lo, hi) => {
+                            let lo = self.expr(*lo);
+                            let hi1 = bin("+", self.expr(*hi), Term::Int(1));
+                            t = Term::app(
+                                Term::app(
+                                    Term::app(Term::app(Term::var("@tensor_slice_axis"), t), axis),
+                                    lo,
+                                ),
+                                hi1,
+                            );
+                        }
+                        SliceSlot::Full => {}
+                    }
+                }
+                t
+            }
 
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);

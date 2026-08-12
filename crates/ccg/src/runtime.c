@@ -932,6 +932,51 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
+  if (strcmp(name, "@tensor_index_axis") == 0) {
+    Value *buf;
+    size_t off, *shape, *strides, rank;
+    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
+    size_t axis = as_index(a[1]);
+    if (axis >= rank) { free(shape); free(strides); thrax_fault("index axis out of range"); }
+    if (shape[axis] == 0) { free(shape); free(strides); thrax_fault("index into an empty axis"); }
+    int64_t iw = THxVALUE_as_int(a[2]);
+    int64_t s = (int64_t)shape[axis];
+    size_t i = (size_t)(((iw % s) + s) % s);
+    size_t base = off + i * strides[axis];
+    for (size_t k = axis; k + 1 < rank; k++) { /* drop `axis` */
+      shape[k] = shape[k + 1];
+      strides[k] = strides[k + 1];
+    }
+    rank -= 1;
+    Value *r;
+    if (rank == 0) {
+      if (base >= buf->u.seq.len) thrax_fault("tensor index out of bounds");
+      r = buf->u.seq.items[base]; /* scalar; borrowed */
+    } else {
+      r = mk_tensor(buf, base, shape, strides, rank);
+    }
+    free(shape);
+    free(strides);
+    return r;
+  }
+  if (strcmp(name, "@tensor_slice_axis") == 0) {
+    Value *buf;
+    size_t off, *shape, *strides, rank;
+    tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
+    size_t axis = as_index(a[1]);
+    if (axis >= rank) { free(shape); free(strides); thrax_fault("slice axis out of range"); }
+    size_t lo = as_index(a[2]);
+    size_t hi = as_index(a[3]);
+    if (lo > shape[axis]) lo = shape[axis];
+    if (hi < lo) hi = lo;
+    if (hi > shape[axis]) hi = shape[axis];
+    size_t base = off + lo * strides[axis];
+    shape[axis] = hi - lo;
+    Value *t = mk_tensor(buf, base, shape, strides, rank);
+    free(shape);
+    free(strides);
+    return t;
+  }
   if (strcmp(name, "@vec_get") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);

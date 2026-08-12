@@ -1122,58 +1122,51 @@ impl<'a> Parser<'a> {
             // share the surface; a comma-list nests (`index (index t i) j`). A `p ... q`
             // slot is an INCLUSIVE range slice of the leading axis (`@tensor_slice`).
             Kind::LBrack => {
-                let open = self.peek()?;
                 self.bump()?; // '['
-                let mut idx_slots: Vec<Aol<Expr>> = Vec::new();
-                let mut range: Option<(Aol<Expr>, Aol<Expr>)> = None;
-                let mut multi = false;
+                let mut slots: Vec<SliceSlot> = Vec::new();
                 loop {
-                    let lo = self.parse_expr(0)?;
-                    if matches!(self.peek_kind()?, Kind::Ellipsis) {
-                        self.bump()?; // '...'
-                        let hi = self.parse_expr(0)?;
-                        if range.is_some() || !idx_slots.is_empty() {
-                            multi = true;
-                        }
-                        range = Some((lo, hi));
+                    // A leading `..` (two `Dot`s, not the `...` range token) is a full
+                    // axis; otherwise an expression, optionally `lo ... hi` for a range.
+                    if matches!(self.peek_kind()?, Kind::Dot)
+                        && matches!(self.peek_kind_at(1)?, Kind::Dot)
+                    {
+                        self.bump()?;
+                        self.bump()?;
+                        slots.push(SliceSlot::Full);
                     } else {
-                        if range.is_some() {
-                            multi = true;
+                        let lo = self.parse_expr(0)?;
+                        if matches!(self.peek_kind()?, Kind::Ellipsis) {
+                            self.bump()?;
+                            let hi = self.parse_expr(0)?;
+                            slots.push(SliceSlot::Range(lo, hi));
+                        } else {
+                            slots.push(SliceSlot::Index(lo));
                         }
-                        idx_slots.push(lo);
                     }
                     if !self.eat(|k| matches!(k, Kind::Comma))? {
                         break;
                     }
                 }
                 expect!(self, Kind::RBrack, "expected ']' to close the index");
-                match range {
-                    // A lone `p ... q`: inclusive slice of the leading axis. The bound
-                    // is `q + 1` (half-open) since `...` includes `q`.
-                    Some((lo, hi)) if !multi => {
-                        let slice_fn = self.intern("@tensor_slice");
-                        let plus = self.intern("+");
-                        let one = self.expr(Expr::Int(1));
-                        let hi1 = self.expr(Expr::BinOp { op: plus, lhs: hi, rhs: one });
-                        let f = self.expr(Expr::Var { module: None, name: slice_fn });
-                        let f = self.expr(Expr::App(f, base));
-                        let f = self.expr(Expr::App(f, lo));
-                        Ok(self.expr(Expr::App(f, hi1)))
+                // An all-index access desugars to the OVERLOADABLE `index` (so tensors,
+                // maps, and user types share `.[..]`); if any slot keeps an axis (a
+                // range or `..`), it is a tensor slice whose result shape the checker
+                // computes from the receiver.
+                if slots.iter().all(|s| matches!(s, SliceSlot::Index(_))) {
+                    let mut recv = base;
+                    for s in slots {
+                        let SliceSlot::Index(idx) = s else { unreachable!() };
+                        let index_fn = self.intern("index");
+                        let f = self.expr(Expr::Var { module: None, name: index_fn });
+                        let f = self.expr(Expr::App(f, recv));
+                        recv = self.expr(Expr::App(f, idx));
                     }
-                    Some(_) => Err(self.unexpected(
-                        &open,
-                        "multi-axis range slicing is not supported yet; slice one axis at a time, or use `row`/`col`",
-                    )),
-                    None => {
-                        let mut recv = base;
-                        for idx in idx_slots {
-                            let index_fn = self.intern("index");
-                            let f = self.expr(Expr::Var { module: None, name: index_fn });
-                            let f = self.expr(Expr::App(f, recv));
-                            recv = self.expr(Expr::App(f, idx));
-                        }
-                        Ok(recv)
-                    }
+                    Ok(recv)
+                } else {
+                    Ok(self.expr(Expr::Slice {
+                        recv: base,
+                        slots: slots.into_boxed_slice(),
+                    }))
                 }
             }
             Kind::Word if is_upper(self.text(ahead)) => {

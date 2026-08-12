@@ -282,7 +282,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
-        "@tensor_slice" => 3,
+        "@tensor_slice" | "@tensor_index_axis" => 3,
+        "@tensor_slice_axis" => 4,
         "@array_set" | "@array_slice" | "@vec_set" => 3,
         _ => return None,
     };
@@ -391,6 +392,43 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let hi = as_index(&a[2])?.clamp(lo, shape[0]);
             let base = off + lo * strides[0];
             shape[0] = hi - lo;
+            Ok(mk_tensor(buf, base, shape, strides))
+        }
+        // O(1) index of a GIVEN axis (modular): drop that axis, a VIEW. Reducing the
+        // last remaining axis yields the scalar element.
+        "@tensor_index_axis" => {
+            let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
+            let axis = as_index(&a[1])?;
+            if axis >= shape.len() {
+                return Err(fault("index axis out of range"));
+            }
+            if shape[axis] == 0 {
+                return Err(fault("index into an empty axis"));
+            }
+            let i = as_int(&a[2])?.rem_euclid(shape[axis] as i64) as usize;
+            let base = off + i * strides[axis];
+            shape.remove(axis);
+            strides.remove(axis);
+            if shape.is_empty() {
+                return buf
+                    .get(base)
+                    .cloned()
+                    .map(|p| p.borrow().clone_shallow())
+                    .ok_or_else(|| fault("tensor index out of bounds"));
+            }
+            Ok(mk_tensor(buf, base, shape, strides))
+        }
+        // O(1) slice of a GIVEN axis: a VIEW over `[lo, hi)` of that axis.
+        "@tensor_slice_axis" => {
+            let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
+            let axis = as_index(&a[1])?;
+            if axis >= shape.len() {
+                return Err(fault("slice axis out of range"));
+            }
+            let lo = as_index(&a[2])?.min(shape[axis]);
+            let hi = as_index(&a[3])?.clamp(lo, shape[axis]);
+            let base = off + lo * strides[axis];
+            shape[axis] = hi - lo;
             Ok(mk_tensor(buf, base, shape, strides))
         }
         "@vec_get" => {

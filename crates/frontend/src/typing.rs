@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use crate::lowering::ImplicitArg;
 use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
-    Ty,
+    SliceSlot, Ty,
 };
 use utilities::Aol;
 use utilities::{diag, Code, Diagnostic, Result, Span};
@@ -1912,6 +1912,11 @@ impl<'a> Checker<'a> {
 
             Expr::App(..) => self.infer_app(e),
 
+            Expr::Slice { recv, slots } => {
+                let (recv, slots) = (*recv, slots);
+                self.infer_slice(recv, slots)
+            }
+
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
                 let tl = self.infer(lhs)?;
@@ -2549,6 +2554,42 @@ impl<'a> Checker<'a> {
             "define or import a `{implname} : {}`, or pass it explicitly with `@ctx`",
             self.show(reqty)
         ))
+    }
+
+    /// A multi-axis tensor slice `recv.[s0, ...]`. The receiver must be a tensor of
+    /// rank >= the slot count; each `Index` slot reduces its axis, each `Range`/`Full`
+    /// slot keeps it (a `Range` gets a fresh existential size, modular indexing making
+    /// an unknown static size fine). The result wraps the kept axes around whatever
+    /// remains below the sliced axes.
+    fn infer_slice(&mut self, recv: Aol<Expr>, slots: &'a [SliceSlot]) -> Result<Type> {
+        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        let elem = self.eng.fresh();
+        let dims: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh_nat()).collect();
+        let mut expected = elem.clone();
+        for d in dims.iter().rev() {
+            expected = tensor(d.clone(), expected);
+        }
+        let rt = self.infer(recv)?;
+        self.eng.unify(&rt, &expected, "slicing a tensor")?;
+
+        let int = Type::con(ty::INT);
+        let mut kept: Vec<Type> = Vec::new();
+        for (i, s) in slots.iter().enumerate() {
+            match s {
+                SliceSlot::Index(x) => self.check(*x, &int)?,
+                SliceSlot::Range(lo, hi) => {
+                    self.check(*lo, &int)?;
+                    self.check(*hi, &int)?;
+                    kept.push(self.eng.fresh_nat());
+                }
+                SliceSlot::Full => kept.push(dims[i].clone()),
+            }
+        }
+        let mut result = elem;
+        for d in kept.iter().rev() {
+            result = tensor(d.clone(), result);
+        }
+        Ok(result)
     }
 
     fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
@@ -3533,6 +3574,19 @@ fn free_globals<'a>(
             .iter()
             .for_each(|e| free_globals(ast, *e, globals, bound, out)),
         Expr::Array { size } => free_globals(ast, *size, globals, bound, out),
+        Expr::Slice { recv, slots } => {
+            free_globals(ast, *recv, globals, bound, out);
+            for s in slots.iter() {
+                match s {
+                    SliceSlot::Index(x) => free_globals(ast, *x, globals, bound, out),
+                    SliceSlot::Range(lo, hi) => {
+                        free_globals(ast, *lo, globals, bound, out);
+                        free_globals(ast, *hi, globals, bound, out);
+                    }
+                    SliceSlot::Full => {}
+                }
+            }
+        }
         Expr::Field { record, .. } => free_globals(ast, *record, globals, bound, out),
         Expr::StructLit { fields, spread, .. } => {
             free_globals_field_inits(ast, fields, globals, bound, out);

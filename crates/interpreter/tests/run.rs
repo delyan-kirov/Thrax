@@ -313,6 +313,21 @@ fn overloadable_index_and_shape_sugar() {
 }
 
 #[test]
+fn multi_axis_slice_syntax() {
+    // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
+    // The checker computes the result shape; all are O(1) strided views.
+    let src = "@mod M\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ m : [3, 4]Int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
+               $ colv : [3]Int = m.[.., 1]\n\
+               $ blk : [2, 2]Int = m.[1 ... 2, 1 ... 2]\n\
+               $ r : Int = colv.[2] + blk.[0, 0] + blk.[1, 1] + m.[0, 1 ... 2].[1]";
+    // colv = col1 = [2,6,10], colv[2]=10 ; blk = [[6,7],[10,11]], [0,0]=6, [1,1]=11 ;
+    // m.[0,1...2] = [2,3], [1]=3 -> 10+6+11+3 = 30
+    assert_eq!(run(src, "r"), "30");
+}
+
+#[test]
 fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
