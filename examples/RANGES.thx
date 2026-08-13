@@ -1,0 +1,30 @@
+@mod RANGES
+
+# \file ranges.thx
+# \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
+#       `lo <= x <= hi`. Both bounds are numeric literals and both ends are
+#       inclusive (Jai-style: there is only the inclusive form). A range is
+#       refutable and binds nothing, so a match over ranges needs an `else`. The
+#       scrutinee variable stays in scope in the arm if you need the value.
+
+$ grade : Int -> Str = \n =
+	is n
+		| 90 ... 100 => "A"
+		| 80 ...  89 => "B"
+		| 70 ...  79 => "C"
+		| 60 ...  69 => "D"
+	else "F"
+
+# Inclusive at both ends: 60 is a D, 100 is an A.
+$ ck_a  : Int = if grade 95  ?= "A" => 0 else 1
+$ ck_a2 : Int = if grade 100 ?= "A" => 0 else 2
+$ ck_c  : Int = if grade 70  ?= "C" => 0 else 4
+$ ck_d  : Int = if grade 60  ?= "D" => 0 else 8
+$ ck_f  : Int = if grade 42  ?= "F" => 0 else 16
+
+# Ranges work on Real too; both bounds must share the scrutinee's type.
+$ band : Real -> Int = \x =
+	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
+$ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
+
+$ test : Int = ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r

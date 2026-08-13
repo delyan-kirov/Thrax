@@ -15,6 +15,7 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
@@ -252,6 +253,124 @@ fn nominal_struct_update_with_pipe() {
 }
 
 #[test]
+fn sized_tensor_construction_and_modular_index() {
+    // `[n]T` is a sized vector; a `[..]` literal's length fixes the size, and
+    // `@tensor_index` reads modulo the size (total: index n wraps to 0). Functions may be
+    // size-polymorphic (`[n]a`), the size unifying at the call. (`.[..]` surface
+    // sugar, which routes through the LA `index`, is covered by the TENSORS corpus.)
+    let src = "@mod M\n\
+               $ v : [3]Int = [10, 20, 30]\n\
+               $ head : [n]a -> a = \\t = @tensor_index t 0\n\
+               $ grid : [2][2]Int = [ [1, 2], [3, 4] ]\n\
+               $ r : Int = @tensor_index v 1 + @tensor_index v 3 + @tensor_index v 7 + head v + @tensor_index (@tensor_index grid 1) 0";
+    // 20 + v[0]=10 + v[1]=20 + head=10 + grid[1][0]=3
+    assert_eq!(run(src, "r"), "63");
+}
+
+#[test]
+fn tensor_size_arithmetic() {
+    // `@tensor_concat : [n]a -> [m]a -> [n+m]a` computes the result size forward; the
+    // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`. (Full
+    // library `concat`/`matmul`/`dot`/`transpose` are exercised end-to-end, both
+    // engines, by the TENSORS corpus example, which imports `LA`.)
+    let src = "@mod M\n\
+               $ a : [2]Int = [1, 2]\n\
+               $ b : [3]Int = [3, 4, 5]\n\
+               $ c : [5]Int = @tensor_concat a b\n\
+               $ dup : [n]x -> [2*n]x = \\t = @tensor_concat t t\n\
+               $ flip : [n]x -> [m]x -> [m+n]x = \\p q = @tensor_concat p q\n\
+               $ d : [4]Int = dup a\n\
+               $ r : Int = @tensor_index c 4 + @tensor_index d 3"; // 5 + (dup a = [1,2,1,2])[3]=2
+    assert_eq!(run(src, "r"), "7");
+}
+
+#[test]
+fn generate_length_build_tensors_in_source() {
+    // The `@tensor_create`/`@tensor_length` primitives (higher-order: the runtime applies the
+    // closure per index) let a tensor op be written in source: here, transpose.
+    let src = "@mod M\n\
+               $ myT : [m][n]a -> [n][m]a = \\t =\n\
+               \t@tensor_create (@tensor_index t 0) (\\j = @tensor_create t (\\i = @tensor_index (@tensor_index t i) j))\n\
+               $ a : [2][3]Int = [ [1,2,3], [4,5,6] ]\n\
+               $ at : [3][2]Int = myT a\n\
+               $ r : Int = @tensor_length a + @tensor_index (@tensor_index at 0) 1 + @tensor_index (@tensor_index at 2) 0"; // 2 + 4 + 3
+    assert_eq!(run(src, "r"), "9");
+}
+
+#[test]
+fn overloadable_index_and_shape_sugar() {
+    // `.[..]` desugars to the overloadable `index`, so two local `index` overloads
+    // (a tensor one and a custom-type one) both drive `.[..]`, dispatched by receiver
+    // type. Also exercises `[m, n]T` shape sugar and multi-axis `t.[i, j]`.
+    let src = "@mod M\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ Box : @struct = base: Int\n\
+               $ index : Box -> Int -> Int = \\b i = b.base + i\n\
+               $ g : [2, 2]Int = [ [1, 2], [3, 4] ]\n\
+               $ bx : Box = .{ .base = 100 }\n\
+               $ r : Int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
+    assert_eq!(run(src, "r"), "112");
+}
+
+#[test]
+fn multi_axis_slice_syntax() {
+    // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
+    // The checker computes the result shape; all are O(1) strided views.
+    let src = "@mod M\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ m : [3, 4]Int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
+               $ colv : [3]Int = m.[.., 1]\n\
+               $ blk : [2, 2]Int = m.[1 ... 2, 1 ... 2]\n\
+               $ r : Int = colv.[2] + blk.[0, 0] + blk.[1, 1] + m.[0, 1 ... 2].[1]";
+    // colv = col1 = [2,6,10], colv[2]=10 ; blk = [[6,7],[10,11]], [0,0]=6, [1,1]=11 ;
+    // m.[0,1...2] = [2,3], [1]=3 -> 10+6+11+3 = 30
+    assert_eq!(run(src, "r"), "30");
+}
+
+#[test]
+fn inclusive_range_slice_syntax() {
+    // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
+    // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
+    let src = "@mod M\n\
+               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ v : [5]Int = [10, 20, 30, 40, 50]\n\
+               $ s : [3]Int = v.[1 ... 3]\n\
+               $ r : Int = s.[0] + s.[1] + s.[2]"; // 20+30+40
+    assert_eq!(run(src, "r"), "90");
+}
+
+#[test]
+fn strided_views_transpose_row_col_slice() {
+    // Over the flat strided rep, transpose/index/slice are O(1) VIEWS sharing the
+    // buffer. A transposed column is a strided view; a slice narrows an axis.
+    let src = "@mod M\n\
+               $ mA : [3][3]Int = [ [1,2,3], [4,5,6], [7,8,9] ]\n\
+               $ tA : [3][3]Int = @tensor_transpose mA\n\
+               $ colv : [3]Int = @tensor_index tA 2\n\
+               $ sl : [2]Int = @tensor_slice (@tensor_index mA 0) 1 3\n\
+               $ r : Int = @tensor_index (@tensor_index tA 0) 2\n\
+               \t+ @tensor_index colv 0 + @tensor_index sl 1";
+    // tA[0][2] = mA[2][0] = 7 ; colv = column 2 = [3,6,9], colv[0]=3 ; sl=[2,3], sl[1]=3
+    assert_eq!(run(src, "r"), "13");
+}
+
+#[test]
+fn inclusive_range_patterns() {
+    // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
+    // the match needs an `else`. Works on Int and Real.
+    let src = "@mod M\n\
+               $ grade : Int -> Str = \\n =\n\
+               \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" else \"F\"\n\
+               $ band : Real -> Int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
+               $ r : Int =\n\
+               \t(if grade 100 ?= \"A\" => 1 else 0)\n\
+               \t+ (if grade 60 ?= \"C\" => 2 else 0)\n\
+               \t+ (if grade 40 ?= \"F\" => 4 else 0)\n\
+               \t+ (band 0.5) * 8";
+    assert_eq!(run(src, "r"), "15"); // 1 + 2 + 4 + 1*8
+}
+
+#[test]
 fn unit_parameter_thunks_without_a_lambda() {
     // A `{} -> T` definition needs no explicit `\u =`: the unit parameter is
     // introduced automatically (a thunk), so the body runs when it is applied. An
@@ -448,7 +567,7 @@ fn extern_ffi_dynamic_dlopen() {
         $ iabs   : Int -> Int   = @extern \"C\" \"abs\"    \"libc\"\n\
         $ dup    : Str -> Str   = @extern \"C\" \"strdup\" \"libc\"\n\
         $ expm1r : Real -> Real = @extern \"C\" \"expm1\"  \"libm\"\n\
-        $ r : Int = iabs (0 - 7) + array_len (dup \"abcde\") \
+        $ r : Int = iabs (0 - 7) + @array_len (dup \"abcde\") \
                   + (if expm1r 1.0 ?> 1.7 => 100 else 0)";
     assert_eq!(run(src, "r"), "112");
 }
@@ -468,7 +587,7 @@ fn target_reflects_the_host_consistently() {
 fn array_literal_lowers_to_byte_vector() {
     // `[..]` in Array context builds a byte vector, so array_* primitives apply.
     let src = "@mod M\n$ a : Array = [10, 20, 30]\n\
-               $ n = array_len a\n$ g = array_get a 1";
+               $ n = @array_len a\n$ g = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
 }
@@ -482,7 +601,7 @@ fn array_patterns_destructure_and_guard() {
                $ lit : Array -> Int = \\a = is a | [1, y] => y else 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + array_len rest else 0\n\
+               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");

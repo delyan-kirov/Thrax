@@ -36,6 +36,7 @@ $ with PATTERNS = PATTERNS
 $ with PLATFORM = PLATFORM
 $ with PIPES = PIPES
 $ with POWER = POWER
+$ with RANGES = RANGES
 $ with RC_LOOP = RC_LOOP
 $ with REALS = REALS
 $ with RECORD_PARAMS = RECORD_PARAMS
@@ -59,6 +60,7 @@ $ with STR_MATCH = STR_MATCH
 $ with STR_OPS = STR_OPS
 $ with STR_PREFIX = STR_PREFIX
 $ with TAIL_CALLS = TAIL_CALLS
+$ with TENSORS = TENSORS
 $ with TUPLES = TUPLES
 $ with TYPE_SPLICE = TYPE_SPLICE
 $ with WHEN_GUARDS = WHEN_GUARDS
@@ -100,6 +102,7 @@ $ main : Int =
 	+ check "PLATFORM" PLATFORM.test
 	+ check "PIPES" PIPES.test
 	+ check "POWER" POWER.test
+	+ check "RANGES" RANGES.test
 	+ check "RC_LOOP" RC_LOOP.test
 	+ check "REALS" REALS.test
 	+ check "RECORD_PARAMS" RECORD_PARAMS.test
@@ -123,6 +126,7 @@ $ main : Int =
 	+ check "STR_OPS" STR_OPS.test
 	+ check "STR_PREFIX" STR_PREFIX.test
 	+ check "TAIL_CALLS" TAIL_CALLS.test
+	+ check "TENSORS" TENSORS.test
 	+ check "TUPLES" TUPLES.test
 	+ check "TYPE_SPLICE" TYPE_SPLICE.test
 	+ check "WHEN_GUARDS" WHEN_GUARDS.test

@@ -146,17 +146,23 @@ index type), and axis variance (co/contra) lives in the tensor *type*, not the
 index. See doc/ranges-codata-linalg.md. A brief sequence-indexing prototype on
 `.n` was implemented and then reverted once this split was settled.
 
-### #9 Ranges `[1 ..= 10]`, `[1 ..< 10]`, and range patterns `is 1 ..= 5`
+### #9 Ranges: pattern form DONE (`is lo ... hi`); expression form deferred
 
-New tokens `..=` `..<` `..>` (maximal-munch in LX, sharing the operator path).
-Expression form desugars to a list/array builder. Pattern form `is lo ..= hi` is
-a refutable interval test; the exhaustiveness checker treats it like a literal
-(finite = false, contributes nothing to completeness), which is straightforward.
+**Range PATTERNS shipped** (inclusive only, Jai-style): `is n | 90 ... 100 => ...`.
+Chosen spelling is `...` (a new `Ellipsis` lexer token; `..` stays free for
+`..rest`/`[..]`), inclusive at both ends, numeric-literal bounds, refutable, binds
+nothing. Frontend-only: no IR/runtime/backend change, since a range lowers in
+`patmat` to two comparison tests (`sv >= lo` and `sv <= hi`) reusing the existing
+`<=`/`>=` builtins, exactly like a string-literal pattern lowers to `?=`.
+`Pattern::Range`/`Pat::Range`; `examples/RANGES.thx`. There is no static
+exhaustiveness checker, so a range match falls through to the runtime "no pattern
+matched" fault when no `else` and nothing matches.
 
-- **Decision:** desugar the expression form to a **library** `range`/`range_incl`
-  function (recommended) or a core primitive? Descending `..>` semantics; step /
-  stride (recommend none for v1). `@char "a" ..= @char "f"` already works once
-  chars are Ints.
+- **Deferred: half-open ranges** (`..<`). Patterns almost always want inclusive
+  (Rust `..=`, Zig `...`); revisit `..<` if/when the expression form needs it.
+- **Deferred: the EXPRESSION form** `[1 ... 10]` (a list/array builder). Decision
+  when built: desugar to a **library** `range` function (recommended) or a core
+  primitive; step/stride (recommend none for v1).
 - **Compose with the future:** ranges, `.n` indexing (#10), codata, and a
   linear-algebra layer are entangled (ranges-as-slice-descriptors, type-directed
   indexing, strict-data-vs-codata). If #9/#10 are built as the LA on-ramp, follow

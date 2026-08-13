@@ -22,7 +22,7 @@ fn type_names_must_be_capitalized() {
 /// The single global's body handle, asserting the module has exactly one def.
 fn only_def_body(p: &Parsed) -> Aol<Expr> {
     assert_eq!(p.program.items.len(), 1);
-    match &p.program.items[0] {
+    match &p.ast.slice(p.program.items)[0] {
         Item::Def { body, .. } => *body,
         other => panic!("expected a single def, got {other:?}"),
     }
@@ -33,7 +33,7 @@ fn module_and_simple_def() {
     let p = prog("@mod M\n$ x = 1");
     assert_eq!(p.ast.text(p.program.module), "M");
     assert_eq!(p.program.items.len(), 1);
-    match &p.program.items[0] {
+    match &p.ast.slice(p.program.items)[0] {
         Item::Def {
             name, sig, body, ..
         } => {
@@ -88,10 +88,11 @@ fn struct_decl_and_literal_and_field() {
     let src = "@mod M\n$ Person : @struct =\n name: Str,\n age: Int,\n\
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
+    let items = p.ast.slice(p.program.items);
     assert!(
-        matches!(&p.program.items[0], Item::Struct { name, fields, .. } if p.ast.text(*name) == "Person" && fields.len() == 2)
+        matches!(&items[0], Item::Struct { name, fields, .. } if p.ast.text(*name) == "Person" && fields.len() == 2)
     );
-    match &p.program.items[1] {
+    match &items[1] {
         Item::Def { body, .. } => {
             let Expr::StructLit { ty, fields, .. } = p.ast.expr(*body) else {
                 panic!("expected a struct literal")
@@ -101,7 +102,7 @@ fn struct_decl_and_literal_and_field() {
         }
         other => panic!("expected a def, got {other:?}"),
     }
-    match &p.program.items[2] {
+    match &items[2] {
         Item::Def { body, .. } => {
             let Expr::Field { name, .. } = p.ast.expr(*body) else {
                 panic!("expected a field access")
@@ -120,32 +121,95 @@ fn declared_type_params() {
                $ Stream : @codata t = head: t, tail: Stream t\n\
                $ MapInt : @alias v = Map Int v";
     let p = prog(src);
-    let names = |ps: &[utilities::StrId]| ps.iter().map(|s| p.ast.text(*s)).collect::<Vec<_>>();
-    match &p.program.items[0] {
+    let names = |ps: utilities::Slice<utilities::StrId>| {
+        p.ast.slice(ps).iter().map(|s| p.ast.text(*s)).collect::<Vec<_>>()
+    };
+    let items = p.ast.slice(p.program.items);
+    match &items[0] {
         Item::Struct { params, fields, .. } => {
-            assert_eq!(names(params), ["a", "b"]);
+            assert_eq!(names(*params), ["a", "b"]);
             assert_eq!(fields.len(), 3);
         }
         other => panic!("expected a struct, got {other:?}"),
     }
-    match &p.program.items[1] {
+    match &items[1] {
         Item::Union { params, variants, .. } => {
-            assert_eq!(names(params), ["a", "b"]);
+            assert_eq!(names(*params), ["a", "b"]);
             assert_eq!(variants.len(), 2);
         }
         other => panic!("expected a union, got {other:?}"),
     }
-    match &p.program.items[2] {
+    match &items[2] {
         Item::Codata { params, observations, .. } => {
-            assert_eq!(names(params), ["t"]);
+            assert_eq!(names(*params), ["t"]);
             assert_eq!(observations.len(), 2);
         }
         other => panic!("expected a codata, got {other:?}"),
     }
-    match &p.program.items[3] {
-        Item::Alias { params, .. } => assert_eq!(names(params), ["v"]),
+    match &items[3] {
+        Item::Alias { params, .. } => assert_eq!(names(*params), ["v"]),
         other => panic!("expected an alias, got {other:?}"),
     }
+}
+
+#[test]
+fn sized_tensor_type_parses() {
+    let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { size, elem } => {
+                assert!(matches!(p.ast.ty(*size), Ty::Nat(3)));
+                assert!(matches!(p.ast.ty(*elem), Ty::Con { .. }));
+            }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
+fn shape_sugar_nests() {
+    // `[m, n]T` desugars to the nested `[m][n]T` (`Sized` of `Sized`).
+    let p = prog("@mod M\n$ g : [2, 3]Int = [ [1,2,3], [4,5,6] ]");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { size, elem } => {
+                assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
+                match p.ast.ty(*elem) {
+                    Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::Nat(3))),
+                    other => panic!("expected a nested Sized, got {other:?}"),
+                }
+            }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
+fn inclusive_range_pattern_parses() {
+    let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 else 1";
+    let p = prog(src);
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
+        panic!("expected a match")
+    };
+    let arms = p.ast.slice(*arms);
+    match p.ast.pats.lookup(p.ast.slice(arms[0].patterns)[0]) {
+        Pattern::Range { lo, hi } => {
+            assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(1)));
+            assert!(matches!(p.ast.pats.lookup(*hi), Pattern::Int(5)));
+        }
+        other => panic!("expected a range pattern, got {other:?}"),
+    }
+    // A non-literal bound is a parse error.
+    let msg = parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
+        .err()
+        .expect("expected a parse error")
+        .to_string();
+    assert!(msg.contains("numeric literal"), "{msg}");
 }
 
 #[test]
@@ -160,7 +224,8 @@ fn variant_literal_and_when_match() {
     };
     assert!(default.is_some());
     assert_eq!(arms.len(), 2);
-    let Pattern::Variant { ty, tag, .. } = p.ast.pat(arms[1].patterns[0]) else {
+    let arms = p.ast.slice(*arms);
+    let Pattern::Variant { ty, tag, .. } = p.ast.pat(p.ast.slice(arms[1].patterns)[0]) else {
         panic!("expected a variant pattern")
     };
     assert_eq!(ty.map(|t| p.ast.text(t)), Some("List"));
@@ -171,11 +236,12 @@ fn variant_literal_and_when_match() {
 fn cons_and_list_and_function_type() {
     let src = "@mod M\n$ g : List t -> Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
+    let items = p.ast.slice(p.program.items);
     assert!(matches!(
-        &p.program.items[0],
+        &items[0],
         Item::Def { sig: Some(sig), .. } if matches!(p.ast.ty(*sig), Ty::Arrow { .. })
     ));
-    match &p.program.items[1] {
+    match &items[1] {
         Item::Def { body, .. } => {
             let Expr::BinOp { op, rhs, .. } = p.ast.expr(*body) else {
                 panic!("expected a binop")
@@ -195,14 +261,15 @@ fn union_effect_import_and_directives() {
     let src = "@mod M\n$ with List\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : Int, put : Int -> Int\n$ @assert 1";
     let p = prog(src);
-    assert!(matches!(p.program.items[0], Item::Import { .. }));
+    let items = p.ast.slice(p.program.items);
+    assert!(matches!(items[0], Item::Import { .. }));
     assert!(matches!(
-        p.program.items[1],
+        items[1],
         Item::Visibility(Visibility::Private)
     ));
-    assert!(matches!(&p.program.items[2], Item::Union { variants, .. } if variants.len() == 3));
-    assert!(matches!(&p.program.items[3], Item::Effect { ops, .. } if ops.len() == 2));
-    assert!(matches!(p.program.items[4], Item::Assert(_)));
+    assert!(matches!(&items[2], Item::Union { variants, .. } if variants.len() == 3));
+    assert!(matches!(&items[3], Item::Effect { ops, .. } if ops.len() == 2));
+    assert!(matches!(items[4], Item::Assert(_)));
 }
 
 #[test]

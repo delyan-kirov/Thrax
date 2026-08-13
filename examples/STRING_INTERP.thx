@@ -36,7 +36,7 @@ $ ck_inner : Int = if "say {greet "sam"}" ?= "say hello sam!" => 0 else 1
 
 # Literal braces via `\{` / `\}` each decode to a single byte (`{` and `}`), so
 # `"\{\}"` is two bytes, not an interpolation.
-$ ck_braces : Int = if array_len "\{\}" ?= 2 => 0 else 1
+$ ck_braces : Int = if @array_len "\{\}" ?= 2 => 0 else 1
 
 # A sole interpolant: the seed chunk keeps the result `Str`.
 $ ck_sole : Int = if "{42}" ?= "42" => 0 else 1

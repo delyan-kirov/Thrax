@@ -109,9 +109,9 @@ fn import_graph(
 ) -> Vec<Vec<usize>> {
     let mut graph = vec![Vec::new(); programs.len()];
     for (i, program) in programs.iter().enumerate() {
-        for item in &program.items {
+        for item in ast.slice(program.items) {
             if let Item::Import { module, .. } = item {
-                let name = module
+                let name = ast.slice(*module)
                     .iter()
                     .map(|&part| ast.text(part))
                     .collect::<Vec<_>>()
@@ -220,6 +220,7 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
         let (exprs, pats) = checker.array_nodes();
         resolved.array_exprs.extend(exprs.iter().copied());
         resolved.array_pats.extend(pats.iter().copied());
+    resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
         for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
@@ -439,13 +440,12 @@ fn parse_imports(src: &str) -> Vec<String> {
     let Ok(parsed) = frontend::parse(src) else {
         return Vec::new();
     };
-    parsed
-        .program
-        .items
+    parsed.ast
+        .slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
             Item::Import { module, .. } => Some(
-                module
+                parsed.ast.slice(*module)
                     .iter()
                     .map(|&part| parsed.ast.text(part))
                     .collect::<Vec<_>>()
@@ -480,7 +480,7 @@ pub fn cmd_parse(path: &str) -> ExitCode {
                 parsed.ast.text(parsed.program.module),
                 parsed.program.items.len()
             );
-            for item in parsed.program.items {
+            for item in parsed.ast.slice(parsed.program.items) {
                 println!("  {item:?}");
             }
             ExitCode::SUCCESS

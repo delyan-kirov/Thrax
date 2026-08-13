@@ -79,6 +79,7 @@
 %token BANG QEQ QGT QLT             /* ! ?= ?> ?< */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
+%token ELLIPSIS                     /* ... inclusive range (patterns + `t.[p...q]` slices) */
 
 %start program
 %%
@@ -180,8 +181,20 @@ type_atom
       a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
       function parameter position. A `with`-prefixed field additionally scopes
       that field's own struct fields into the body, as `with <field> in ..`. */
+  | LBRACK shape RBRACK type_atom  /* sized tensor `[n]T` / `[m, n]T` (Nat-kind) */
   | LPAREN type RPAREN
   ;
+
+/* A tensor shape: one dimension `[n]T`, or several `[m, n, ...]T` which is sugar
+ * for the nested `[m][n]...T`. */
+shape : tensor_size | shape COMMA tensor_size ;
+
+/* A tensor size: a modular (Z/2^64) arithmetic expression over Nat literals and
+ * lowercase (Nat-kinded) size variables. `*` binds tighter than `+`. */
+tensor_size : size_sum ;
+size_sum    : size_prod | size_sum PLUS size_prod ;
+size_prod   : size_atom | size_prod STAR size_atom ;
+size_atom   : INT | LIDENT | LPAREN size_sum RPAREN ;
 
 type_list : type | type_list COMMA type ;
 
@@ -274,7 +287,17 @@ atom
   | atom DOT REAL  /* arrives as one REAL token and is split at its '.' */
   | atom DOT UIDENT variant_payload
   | atom DOT LBRACE struct_lit_body RBRACE
+  | atom DOT LBRACK index_list RBRACK   /* `t.[i]` / `t.[i, j]`: modular indexing */
   ;
+
+/* `t.[i, j, ...]`: a comma-list of axis indices, folded to nested single-axis
+ * indexing (`t.[i].[j]`). */
+/* Index slots: an `expr` reduces its axis (modular indexing); `p ... q` keeps it,
+ * narrowed to the inclusive range; `..` keeps it whole. An all-`expr` access is
+ * overloadable `index`; any range/`..` slot makes it a shape-checked tensor slice
+ * (a view). `..` is two `DOT`s (there is no `..` token). */
+index_list : index_slot | index_list COMMA index_slot ;
+index_slot : expr | expr ELLIPSIS expr | DOT DOT ;
 
 field_inits : /* empty */ | init_list opt_comma ;
 init_list   : field_init | init_list COMMA field_init ;
@@ -337,7 +360,10 @@ pattern
   : pat_atom
   | pat_atom CONS pattern
   | STR CONCAT pattern
+  | num_lit ELLIPSIS num_lit   /* inclusive numeric range `lo ... hi` */
   ;
+
+num_lit : INT | REAL ;
 
 pat_atom
   : UNDERSCORE

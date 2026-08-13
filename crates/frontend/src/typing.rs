@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use crate::lowering::ImplicitArg;
 use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
-    Ty,
+    SliceSlot, Ty,
 };
 use utilities::Aol;
 use utilities::{diag, Code, Diagnostic, Result, Span};
@@ -112,6 +112,10 @@ pub struct Checker<'a> {
     /// Single imported values, `name -> module`, so a bare use lowers to the
     /// owning module even when another loaded module defines the same name.
     value_module: HashMap<&'a str, &'a str>,
+    /// Single imported values retained as overload candidates, so a LOCAL definition
+    /// of the same name extends the imported one into an overload set (rather than
+    /// shadowing it). This is how a module adds an `index` overload for its own type.
+    imported_singles: HashMap<&'a str, Cand<'a>>,
     /// Bare-call sites resolved to a specific module. Lowering rewrites the
     /// referenced `Expr::Var` to `MOD.name`.
     resolved_calls: HashMap<Aol<Expr>, &'a str>,
@@ -174,6 +178,10 @@ pub struct Checker<'a> {
     /// vector) rather than the default `List`. Lowering reads this to emit array
     /// construction / destructuring instead of `Cons`/`Nil`.
     array_exprs: HashSet<Aol<Expr>>,
+    /// `[..]` literal sites resolved to a sized tensor `[n]T` (a vector value),
+    /// distinct from the byte-`Array` sites in `array_exprs`. Lowering builds a
+    /// vector; the index `t.[i]` reads it modulo the length.
+    tensor_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
@@ -280,6 +288,7 @@ impl<'a> Checker<'a> {
             pending: Vec::new(),
             local_defs: HashSet::new(),
             value_module: HashMap::new(),
+            imported_singles: HashMap::new(),
             resolved_calls: HashMap::new(),
             overload_calls: HashMap::new(),
             def_keys: HashMap::new(),
@@ -299,6 +308,7 @@ impl<'a> Checker<'a> {
             qualified: HashMap::new(),
             module_name: "",
             array_exprs: HashSet::new(),
+            tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             array_pats: HashSet::new(),
@@ -316,6 +326,11 @@ impl<'a> Checker<'a> {
     /// the default `List`.
     pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
         (&self.array_exprs, &self.array_pats)
+    }
+
+    /// The `[..]` literal sites resolved to a sized tensor. Lowering builds a vector.
+    pub fn tensor_nodes(&self) -> &HashSet<Aol<Expr>> {
+        &self.tensor_exprs
     }
 
     /// Argument sites promoted to a record, mapped to the target field names;
@@ -427,8 +442,9 @@ impl<'a> Checker<'a> {
         self.unknown_type = saved_unknown;
         self.register_effects(program);
 
-        let defs: Vec<Def<'a>> = program
-            .items
+        let defs: Vec<Def<'a>> = self
+            .ast
+            .slice(program.items)
             .iter()
             .filter_map(|item| match item {
                 Item::Def {
@@ -439,7 +455,7 @@ impl<'a> Checker<'a> {
                 } => Some(Def {
                     name: self.text(*name),
                     sig: *sig,
-                    implicits: implicits.to_vec(),
+                    implicits: self.ast.slice(*implicits).to_vec(),
                     body: *body,
                 }),
                 _ => None,
@@ -456,8 +472,21 @@ impl<'a> Checker<'a> {
         }
         let mut overloaded_names: HashSet<&'a str> = HashSet::new();
         for d in &defs {
-            if counts[d.name] > 1 || self.overloads.contains_key(d.name) {
+            // Overloaded if defined more than once here, adds to an already-imported
+            // overload, or EXTENDS a single imported value of the same name.
+            if counts[d.name] > 1
+                || self.overloads.contains_key(d.name)
+                || self.imported_singles.contains_key(d.name)
+            {
                 overloaded_names.insert(d.name);
+            }
+        }
+        // Seed the overload set of each name that extends a single imported value
+        // with that imported candidate, so both the import and the local definition
+        // become candidates (the local one is added by the seeding loop below).
+        for &name in &overloaded_names {
+            if let Some(cand) = self.imported_singles.get(name).cloned() {
+                self.overloads.entry(name).or_default().push(cand);
             }
         }
         let is_overloaded = |name: &str| overloaded_names.contains(name);
@@ -648,7 +677,10 @@ impl<'a> Checker<'a> {
                 if let Some(module) = cand.module {
                     self.value_module.insert(name, module);
                 }
-                self.bind(name, cand.ty);
+                self.bind(name, cand.ty.clone());
+                // Retained so a local definition of `name` promotes it to an
+                // overload (see the overloaded-name detection in `check_program`).
+                self.imported_singles.insert(name, cand);
             } else {
                 self.overloads.insert(name, cands);
             }
@@ -657,7 +689,11 @@ impl<'a> Checker<'a> {
 
     fn import_scheme(&mut self, ty: &Type) -> Type {
         let mut map = HashMap::new();
-        self.import_ty(ty, &mut map)
+        let imported = self.import_ty(ty, &mut map);
+        // `import_ty` makes fresh plain generics, losing the `Nat` kind; re-mark the
+        // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
+        self.eng.note_tensor_sizes(&imported);
+        imported
     }
 
     fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
@@ -667,6 +703,13 @@ impl<'a> Checker<'a> {
                 .or_insert_with(|| self.eng.fresh_generic())
                 .clone(),
             Type::Con(name) => Type::Con(name.clone()),
+            Type::Nat(n) => Type::Nat(*n),
+            Type::NatAdd(a, b) => {
+                Type::NatAdd(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+            }
+            Type::NatMul(a, b) => {
+                Type::NatMul(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+            }
             Type::App(head, arg) => Type::app(self.import_ty(head, map), self.import_ty(arg, map)),
             Type::Arrow(from, to, eff) => Type::arrow_eff(
                 self.import_ty(from, map),
@@ -810,7 +853,7 @@ impl<'a> Checker<'a> {
             Ty::Arrow { from, .. } => match self.tnode(*from) {
                 // A CLOSED record parameter is the destructuring sugar; an open
                 // `{ x | r }` is a real row-polymorphic record value, bound as-is.
-                Ty::Record { fields, tail: None } => fields,
+                Ty::Record { fields, tail: None } => self.ast.slice(*fields),
                 // A unit parameter takes no fields: the sugar just introduces the
                 // (unused) thunk parameter, so `f : {} -> T = <body>` needs no `\u =`.
                 Ty::Unit => &[],
@@ -880,6 +923,7 @@ impl<'a> Checker<'a> {
     fn check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<()> {
         match self.node(e) {
             Expr::Lambda { params, body } => {
+                let params = self.ast.slice(*params);
                 self.enter_scope();
                 let mut exp = expected.clone();
                 let mut body_eff = self.ambient.clone();
@@ -896,12 +940,30 @@ impl<'a> Checker<'a> {
                 out
             }
             Expr::List(items) if self.is_array(expected) => {
+                let items = self.ast.slice(*items);
                 self.array_exprs.insert(e);
                 for item in items.iter() {
                     let t = self.infer(*item)?;
                     self.eng
                         .unify(&t, &Type::con(ty::INT), "in an array element")?;
                 }
+                Ok(())
+            }
+            // `[..]` where a sized tensor `[n]T` is expected: the literal's length
+            // fixes `n`, and every element is checked against `T`. Lowering builds
+            // a vector.
+            Expr::List(items) if self.tensor_parts(expected).is_some() => {
+                let items = self.ast.slice(*items);
+                let (size, elem) = self.tensor_parts(expected).expect("guarded");
+                self.eng.unify(
+                    &size,
+                    &Type::Nat(items.len() as u64),
+                    "in a tensor literal (its length fixes the size)",
+                )?;
+                for item in items.iter() {
+                    self.check(*item, &elem)?;
+                }
+                self.tensor_exprs.insert(e);
                 Ok(())
             }
             // `{ .obs = e, ... }` where a codata type is expected: construct it (each
@@ -911,6 +973,7 @@ impl<'a> Checker<'a> {
                 with: None,
                 update: None,
             } if self.codata_head(expected).is_some() => {
+                let fields = self.ast.slice(*fields);
                 self.check_codata_lit(e, fields, expected)
             }
             // A bare `.{ .. }` literal takes its struct from the expected type (the
@@ -920,16 +983,19 @@ impl<'a> Checker<'a> {
                 ty: None,
                 fields,
                 spread,
-            } => match self.struct_name_of(expected) {
-                Some(name) => {
-                    let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
-                    self.eng.unify(&got, expected, "against the expected type")
+            } => {
+                let fields = self.ast.slice(*fields);
+                match self.struct_name_of(expected) {
+                    Some(name) => {
+                        let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
+                        self.eng.unify(&got, expected, "against the expected type")
+                    }
+                    None => {
+                        let got = self.infer_struct_lit(e, None, fields, *spread)?;
+                        self.eng.unify(&got, expected, "against the expected type")
+                    }
                 }
-                None => {
-                    let got = self.infer_struct_lit(e, None, fields, *spread)?;
-                    self.eng.unify(&got, expected, "against the expected type")
-                }
-            },
+            }
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
@@ -1066,7 +1132,7 @@ impl<'a> Checker<'a> {
     }
 
     fn register_types(&mut self, program: &Program) -> Result<()> {
-        for item in program.items.iter() {
+        for item in self.ast.slice(program.items).iter() {
             match item {
                 Item::Struct {
                     name,
@@ -1074,6 +1140,11 @@ impl<'a> Checker<'a> {
                     includes,
                     fields,
                 } => {
+                    let (params, includes, fields) = (
+                        self.ast.slice(*params),
+                        self.ast.slice(*includes),
+                        self.ast.slice(*fields),
+                    );
                     let mut collected = Vec::new();
                     for f in fields.iter() {
                         collect_tyvars(self.ast, f.ty, &mut collected);
@@ -1094,6 +1165,11 @@ impl<'a> Checker<'a> {
                     includes,
                     variants,
                 } => {
+                    let (params, includes, variants) = (
+                        self.ast.slice(*params),
+                        self.ast.slice(*includes),
+                        self.ast.slice(*variants),
+                    );
                     let mut collected = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
@@ -1122,6 +1198,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Item::Alias { name, params, ty } => {
+                    let params = self.ast.slice(*params);
                     let mut collected = Vec::new();
                     collect_tyvars(self.ast, *ty, &mut collected);
                     let name = self.text(*name);
@@ -1134,6 +1211,8 @@ impl<'a> Checker<'a> {
                     params,
                     observations,
                 } => {
+                    let (params, observations) =
+                        (self.ast.slice(*params), self.ast.slice(*observations));
                     let mut collected = Vec::new();
                     let obs: Vec<(&'a str, Aol<Ty>)> = observations
                         .iter()
@@ -1289,13 +1368,13 @@ impl<'a> Checker<'a> {
 
     fn register_effects(&mut self, program: &Program) {
         let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
-        for item in program.items.iter() {
+        for item in self.ast.slice(program.items).iter() {
             let Item::Effect { name, ops } = item else {
                 continue;
             };
             let effect = self.text(*name);
             let mut op_schemes = HashMap::new();
-            for op in ops.iter() {
+            for op in self.ast.slice(*ops).iter() {
                 let op_name = self.text(op.name);
                 let base = self.scheme_of_sig(op.ty);
                 let scheme = self.with_effect(base, effect);
@@ -1475,9 +1554,10 @@ impl<'a> Checker<'a> {
                     }
                 },
             };
+            // Check (not infer) so a `[..]` literal field takes its element/size or
+            // Array-ness from the declared field type (bidirectional), like a call arg.
             let want = self.ty_of_ast(decl_ty, &mut subst);
-            let got = self.infer(value)?;
-            self.eng.unify(&got, &want, "in a struct field")?;
+            self.check(value, &want)?;
         }
         Ok(result)
     }
@@ -1853,6 +1933,12 @@ impl<'a> Checker<'a> {
 
             Expr::App(..) => self.infer_app(e),
 
+            Expr::Slice { recv, slots } => {
+                let (recv, slots) = (*recv, *slots);
+                let slots = self.ast.slice(slots);
+                self.infer_slice(recv, slots)
+            }
+
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
                 let tl = self.infer(lhs)?;
@@ -1896,6 +1982,7 @@ impl<'a> Checker<'a> {
             }
 
             Expr::Tuple(items) => {
+                let items = self.ast.slice(*items);
                 let mut tys = Vec::with_capacity(items.len());
                 for item in items.iter() {
                     tys.push(self.infer(*item)?);
@@ -1904,6 +1991,7 @@ impl<'a> Checker<'a> {
             }
 
             Expr::List(items) => {
+                let items = self.ast.slice(*items);
                 let elem = self.eng.fresh();
                 for item in items.iter() {
                     let t = self.infer(*item)?;
@@ -1925,7 +2013,7 @@ impl<'a> Checker<'a> {
             }
 
             Expr::Let { bindings, body } => {
-                let body = *body;
+                let (bindings, body) = (self.ast.slice(*bindings), *body);
                 self.enter_scope();
                 self.infer_let_group(bindings)?;
                 let t = self.infer(body);
@@ -1934,7 +2022,7 @@ impl<'a> Checker<'a> {
             }
 
             Expr::Lambda { params, body } => {
-                let body = *body;
+                let (params, body) = (self.ast.slice(*params), *body);
                 self.enter_scope();
                 let mut param_tys = Vec::with_capacity(params.len());
                 for p in params.iter() {
@@ -1974,9 +2062,9 @@ impl<'a> Checker<'a> {
                 let (scrut, default) = (*scrut, *default);
                 let ts = self.infer(scrut)?;
                 let result = self.eng.fresh();
-                for arm in arms.iter() {
+                for arm in self.ast.slice(*arms).iter() {
                     self.enter_scope();
-                    for pat in arm.patterns.iter() {
+                    for pat in self.ast.slice(arm.patterns).iter() {
                         self.type_pattern(*pat, &ts)?;
                     }
                     if let Some(guard) = arm.guard {
@@ -2012,19 +2100,23 @@ impl<'a> Checker<'a> {
                 self.infer_field(&rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
-                let ty = ty.map(|t| self.text(t));
-                self.infer_struct_lit(e, ty, fields, *spread)
+                let (ty, fields, spread) = (ty.map(|t| self.text(t)), self.ast.slice(*fields), *spread);
+                self.infer_struct_lit(e, ty, fields, spread)
             }
             Expr::Record {
                 fields,
                 with,
                 update,
-            } => self.infer_record(fields, *with, *update),
+            } => {
+                let fields = self.ast.slice(*fields);
+                self.infer_record(fields, *with, *update)
+            }
             Expr::Variant {
                 ty, tag, fields, ..
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                let fields = self.ast.slice(*fields);
                 self.infer_variant(ty, tag, fields)
             }
 
@@ -2066,7 +2158,7 @@ impl<'a> Checker<'a> {
                 rest,
             } => {
                 let (callee, rest) = (*callee, *rest);
-                let overrides = overrides.to_vec();
+                let overrides = self.ast.slice(*overrides).to_vec();
                 let Some(fsite) = self.head_var_site(callee) else {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
@@ -2121,7 +2213,7 @@ impl<'a> Checker<'a> {
         // expression itself under the outer ambient.
         let mut inner = self.ambient.clone();
         let mut seen: HashSet<String> = HashSet::new();
-        for clause in handler.clauses.iter() {
+        for clause in self.ast.slice(handler.clauses).iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
             if let Some(eff_name) = self.op_owner(effect, op) {
@@ -2135,7 +2227,7 @@ impl<'a> Checker<'a> {
         self.ambient = saved;
         let body_ty = body_ty?;
 
-        for clause in handler.clauses.iter() {
+        for clause in self.ast.slice(handler.clauses).iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
             let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
@@ -2492,6 +2584,42 @@ impl<'a> Checker<'a> {
         ))
     }
 
+    /// A multi-axis tensor slice `recv.[s0, ...]`. The receiver must be a tensor of
+    /// rank >= the slot count; each `Index` slot reduces its axis, each `Range`/`Full`
+    /// slot keeps it (a `Range` gets a fresh existential size, modular indexing making
+    /// an unknown static size fine). The result wraps the kept axes around whatever
+    /// remains below the sliced axes.
+    fn infer_slice(&mut self, recv: Aol<Expr>, slots: &'a [SliceSlot]) -> Result<Type> {
+        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        let elem = self.eng.fresh();
+        let dims: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh_nat()).collect();
+        let mut expected = elem.clone();
+        for d in dims.iter().rev() {
+            expected = tensor(d.clone(), expected);
+        }
+        let rt = self.infer(recv)?;
+        self.eng.unify(&rt, &expected, "slicing a tensor")?;
+
+        let int = Type::con(ty::INT);
+        let mut kept: Vec<Type> = Vec::new();
+        for (i, s) in slots.iter().enumerate() {
+            match s {
+                SliceSlot::Index(x) => self.check(*x, &int)?,
+                SliceSlot::Range(lo, hi) => {
+                    self.check(*lo, &int)?;
+                    self.check(*hi, &int)?;
+                    kept.push(self.eng.fresh_nat());
+                }
+                SliceSlot::Full => kept.push(dims[i].clone()),
+            }
+        }
+        let mut result = elem;
+        for d in kept.iter().rev() {
+            result = tensor(d.clone(), result);
+        }
+        Ok(result)
+    }
+
     fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
         let mut args_rev = Vec::new();
         let mut head = e;
@@ -2807,6 +2935,14 @@ impl<'a> Checker<'a> {
                 self.eng
                     .unify(expected, &Type::con(ty::BOOL), "in a boolean pattern")
             }
+            Pattern::Range { lo, hi } => {
+                // Both bounds are typed against the scrutinee, so a range forces its
+                // scalar (`1 ... 5` -> Int, `1.0 ... 5.0` -> Real) and rejects mixed
+                // bounds. It binds nothing.
+                let (lo, hi) = (*lo, *hi);
+                self.type_pattern(lo, expected)?;
+                self.type_pattern(hi, expected)
+            }
             Pattern::StrPrefix { rest, .. } => {
                 let rest = *rest;
                 self.eng
@@ -2814,6 +2950,7 @@ impl<'a> Checker<'a> {
                 self.type_pattern(rest, &Type::con(ty::STR))
             }
             Pattern::Tuple(pats) => {
+                let pats = self.ast.slice(*pats);
                 let vars: Vec<Type> = pats.iter().map(|_| self.eng.fresh()).collect();
                 self.eng
                     .unify(expected, &Type::Tuple(vars.clone()), "in a tuple pattern")?;
@@ -2832,7 +2969,7 @@ impl<'a> Checker<'a> {
             }
             Pattern::List { elems, rest } if self.is_array(expected) => {
                 self.array_pats.insert(pat);
-                let rest = *rest;
+                let (elems, rest) = (self.ast.slice(*elems), *rest);
                 for e in elems.iter() {
                     self.type_pattern(*e, &Type::con(ty::INT))?;
                 }
@@ -2842,7 +2979,7 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::List { elems, rest } => {
-                let rest = *rest;
+                let (elems, rest) = (self.ast.slice(*elems), *rest);
                 let elem = self.eng.fresh();
                 let list = Type::app(Type::con(ty::LIST), elem.clone());
                 self.eng.unify(expected, &list, "in a list pattern")?;
@@ -2856,14 +2993,19 @@ impl<'a> Checker<'a> {
             }
             Pattern::Struct { ty, fields } => {
                 let ty = self.text(*ty);
+                let fields = self.ast.slice(*fields);
                 self.type_struct_pattern(ty, fields, expected)
             }
-            Pattern::Record { fields, rest } => self.type_record_pattern(fields, *rest, expected),
+            Pattern::Record { fields, rest } => {
+                let fields = self.ast.slice(*fields);
+                self.type_record_pattern(fields, *rest, expected)
+            }
             Pattern::Variant {
                 ty, tag, fields, ..
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                let fields = self.ast.slice(*fields);
                 self.type_variant_pattern(ty, tag, fields, expected)
             }
         }
@@ -3089,6 +3231,46 @@ impl<'a> Checker<'a> {
         Some(self.ty_of_ast(body, &mut sub))
     }
 
+    /// Elaborate a tensor size: a `Nat` literal, or a (Nat-kinded) size variable
+    /// bound by name in `tvars` so `[n]T -> [n]U` shares the one size.
+    fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        match self.tnode(ty) {
+            Ty::Nat(n) => Type::Nat(*n),
+            Ty::Var(name) => {
+                let name = self.text(*name);
+                let eng = &mut self.eng;
+                tvars.entry(name).or_insert_with(|| eng.fresh_nat()).clone()
+            }
+            Ty::SizeAdd(a, b) => {
+                let (a, b) = (*a, *b);
+                Type::NatAdd(
+                    Box::new(self.size_ty_of_ast(a, tvars)),
+                    Box::new(self.size_ty_of_ast(b, tvars)),
+                )
+            }
+            Ty::SizeMul(a, b) => {
+                let (a, b) = (*a, *b);
+                Type::NatMul(
+                    Box::new(self.size_ty_of_ast(a, tvars)),
+                    Box::new(self.size_ty_of_ast(b, tvars)),
+                )
+            }
+            _ => self.ty_of_ast(ty, tvars),
+        }
+    }
+
+    /// Peel a sized-tensor type `@tensor size elem` into `(size, elem)`.
+    fn tensor_parts(&self, ty: &Type) -> Option<(Type, Type)> {
+        if let Type::App(head, elem) = self.eng.resolve(ty) {
+            if let Type::App(con, size) = self.eng.resolve(&head) {
+                if matches!(self.eng.resolve(&con), Type::Con(n) if n == TENSOR) {
+                    return Some((*size, *elem));
+                }
+            }
+        }
+        None
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         // An alias at the head of an application spine expands first, so `MapInt Bool`
         // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
@@ -3119,6 +3301,16 @@ impl<'a> Checker<'a> {
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }
+            Ty::Nat(n) => Type::Nat(*n),
+            // A size expression written in type position (only well-formed inside a
+            // `[..]`); elaborate it as a size so kind-checking flags any misuse.
+            Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_ty_of_ast(ty, tvars),
+            Ty::Sized { size, elem } => {
+                let (size, elem) = (*size, *elem);
+                let size_ty = self.size_ty_of_ast(size, tvars);
+                let elem_ty = self.ty_of_ast(elem, tvars);
+                Type::app(Type::app(Type::con(TENSOR), size_ty), elem_ty)
+            }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
                 // The row's tail (a shared row variable) or the empty closed row,
@@ -3133,7 +3325,7 @@ impl<'a> Checker<'a> {
                             }
                             None => Type::RowEmpty,
                         };
-                        for &label in row.names.iter() {
+                        for &label in self.ast.slice(row.names).iter() {
                             e = Type::row_extend(self.text(label), e);
                         }
                         e
@@ -3144,6 +3336,7 @@ impl<'a> Checker<'a> {
             }
             Ty::Unit => Type::con(ty::UNIT),
             Ty::Tuple(items) => {
+                let items = self.ast.slice(*items);
                 Type::Tuple(items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect())
             }
             Ty::Record { fields, tail } => {
@@ -3157,7 +3350,7 @@ impl<'a> Checker<'a> {
                     }
                     None => Type::RowEmpty,
                 };
-                let row = fields.iter().rev().fold(rest, |rest, f| {
+                let row = self.ast.slice(*fields).iter().rev().fold(rest, |rest, f| {
                     Type::row_field(self.text(f.name), self.ty_of_ast(f.ty, tvars), rest)
                 });
                 Type::record(row)
@@ -3198,17 +3391,17 @@ impl<'a> Checker<'a> {
             })
         };
         self.overloads
-            .insert("array_len", prim(&[], false).map(Cand::local).into());
+            .insert("@array_len", prim(&[], false).map(Cand::local).into());
         self.overloads
-            .insert("array_get", prim(&[ty::INT], false).map(Cand::local).into());
+            .insert("@array_get", prim(&[ty::INT], false).map(Cand::local).into());
         self.overloads
-            .insert("array_push", prim(&[ty::INT], true).map(Cand::local).into());
+            .insert("@array_push", prim(&[ty::INT], true).map(Cand::local).into());
         self.overloads.insert(
-            "array_set",
+            "@array_set",
             prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
         );
         self.overloads.insert(
-            "array_slice",
+            "@array_slice",
             prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
         );
 
@@ -3217,20 +3410,98 @@ impl<'a> Checker<'a> {
             (t.clone(), Type::app(Type::con(ty::VEC), t))
         };
         let (_t, vt) = vec(&mut self.eng);
-        self.bind("vec_new", Type::arrow(Type::con(ty::UNIT), vt));
+        self.bind("@vec_new", Type::arrow(Type::con(ty::UNIT), vt));
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
+        self.bind("@vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
         let (_t, vt) = vec(&mut self.eng);
-        self.bind("vec_len", Type::arrow(vt, int()));
+        self.bind("@vec_len", Type::arrow(vt, int()));
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_get", Type::arrow(vt, Type::arrow(int(), t)));
+        self.bind("@vec_get", Type::arrow(vt, Type::arrow(int(), t)));
         let (t, vt) = vec(&mut self.eng);
         self.bind(
-            "vec_set",
+            "@vec_set",
             Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(t, vt))),
         );
         let (t, vt) = vec(&mut self.eng);
-        self.bind("vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+        self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+
+        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
+        // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
+        // (like `@int64`), the minimal set the runtime provides; every nice name
+        // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
+        // function built from these plus `@ctx`, not a builtin.
+        //
+        // The sized-tensor primitives. `[n]T` and `Vec T` share the runtime vector
+        // rep but are DISTINCT types, so these carry their own tensor-typed
+        // signatures (a `@vec_*` binding is typed for `Vec`, not `[n]a`).
+        //
+        // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
+        // OVERLOADABLE `index` in `library/LA` (its tensor candidate calls `@tensor_index`);
+        // a custom container adds its own `index` overload, the import merge coexists.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let vn = tensor(n, a.clone());
+            self.bind("@tensor_index", Type::arrow(vn, Type::arrow(int(), a)));
+        }
+        // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let vn = tensor(n, a);
+            self.bind("@tensor_length", Type::arrow(vn, int()));
+        }
+        // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
+        // template from an index function (sound: result size = template size). The
+        // constructing primitive that lets `transpose`/`matmul` be library code.
+        {
+            let x = self.eng.fresh_generic();
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let template = tensor(n.clone(), x);
+            let idx_fn = Type::arrow(int(), a.clone());
+            let result = tensor(n, a);
+            self.bind(
+                "@tensor_create",
+                Type::arrow(template, Type::arrow(idx_fn, result)),
+            );
+        }
+        // `@tensor_concat : [n]a -> [m]a -> [n+m]a`: the size-CHANGING join (which `@tensor_create`,
+        // being size-preserving, cannot express), so it is a primitive.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let m = self.eng.fresh_generic_nat();
+            let tn = tensor(n.clone(), a.clone());
+            let tm = tensor(m.clone(), a.clone());
+            let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
+            self.bind("@tensor_concat", Type::arrow(tn, Type::arrow(tm, tnm)));
+        }
+        // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
+        // so `LA.transpose` copies nothing.
+        {
+            let a = self.eng.fresh_generic();
+            let m = self.eng.fresh_generic_nat();
+            let n = self.eng.fresh_generic_nat();
+            let mn = tensor(m.clone(), tensor(n.clone(), a.clone()));
+            let nm = tensor(n, tensor(m, a));
+            self.bind("@tensor_transpose", Type::arrow(mn, nm));
+        }
+        // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
+        // the leading axis. The result size `k` is a runtime value, so it is a fresh
+        // nat (not `hi - lo`, which are runtime Ints); indexing it is modular/total, so
+        // an unknown static size is consistent with the rest of the tensor design.
+        {
+            let a = self.eng.fresh_generic();
+            let n = self.eng.fresh_generic_nat();
+            let k = self.eng.fresh_generic_nat();
+            let src = tensor(n, a.clone());
+            let out = tensor(k, a);
+            self.bind(
+                "@tensor_slice",
+                Type::arrow(src, Type::arrow(int(), Type::arrow(int(), out))),
+            );
+        }
 
         self.bind("true", bool_());
         self.bind("false", bool_());
@@ -3334,13 +3605,27 @@ fn free_globals<'a>(
             free_globals(ast, *rhs, globals, bound, out);
         }
         Expr::UnOp { operand, .. } => free_globals(ast, *operand, globals, bound, out),
-        Expr::Tuple(items) | Expr::List(items) => items
+        Expr::Tuple(items) | Expr::List(items) => ast
+            .slice(*items)
             .iter()
             .for_each(|e| free_globals(ast, *e, globals, bound, out)),
         Expr::Array { size } => free_globals(ast, *size, globals, bound, out),
+        Expr::Slice { recv, slots } => {
+            free_globals(ast, *recv, globals, bound, out);
+            for s in ast.slice(*slots).iter() {
+                match s {
+                    SliceSlot::Index(x) => free_globals(ast, *x, globals, bound, out),
+                    SliceSlot::Range(lo, hi) => {
+                        free_globals(ast, *lo, globals, bound, out);
+                        free_globals(ast, *hi, globals, bound, out);
+                    }
+                    SliceSlot::Full => {}
+                }
+            }
+        }
         Expr::Field { record, .. } => free_globals(ast, *record, globals, bound, out),
         Expr::StructLit { fields, spread, .. } => {
-            free_globals_field_inits(ast, fields, globals, bound, out);
+            free_globals_field_inits(ast, ast.slice(*fields), globals, bound, out);
             if let Some(s) = spread {
                 free_globals(ast, *s, globals, bound, out);
             }
@@ -3350,19 +3635,19 @@ fn free_globals<'a>(
             with,
             update,
         } => {
-            free_globals_field_inits(ast, fields, globals, bound, out);
+            free_globals_field_inits(ast, ast.slice(*fields), globals, bound, out);
             for base in with.iter().chain(update.iter()) {
                 free_globals(ast, *base, globals, bound, out);
             }
         }
-        Expr::Variant { fields, .. } => free_globals_field_inits(ast, fields, globals, bound, out),
+        Expr::Variant { fields, .. } => free_globals_field_inits(ast, ast.slice(*fields), globals, bound, out),
 
         Expr::Let { bindings, body } => {
             let mark = bound.len();
-            for b in bindings.iter() {
+            for b in ast.slice(*bindings).iter() {
                 collect_pattern_binders(ast, b.pat, bound);
             }
-            for b in bindings.iter() {
+            for b in ast.slice(*bindings).iter() {
                 free_globals(ast, b.value, globals, bound, out);
             }
             free_globals(ast, *body, globals, bound, out);
@@ -3379,9 +3664,9 @@ fn free_globals<'a>(
             default,
         } => {
             free_globals(ast, *scrut, globals, bound, out);
-            for arm in arms.iter() {
+            for arm in ast.slice(*arms).iter() {
                 let mark = bound.len();
-                for pat in arm.patterns.iter() {
+                for pat in ast.slice(arm.patterns).iter() {
                     collect_pattern_binders(ast, *pat, bound);
                 }
                 if let Some(g) = arm.guard {
@@ -3396,7 +3681,7 @@ fn free_globals<'a>(
         }
         Expr::Lambda { params, body } => {
             let mark = bound.len();
-            for p in params.iter() {
+            for p in ast.slice(*params).iter() {
                 collect_pattern_binders(ast, *p, bound);
             }
             free_globals(ast, *body, globals, bound, out);
@@ -3409,7 +3694,7 @@ fn free_globals<'a>(
         Expr::Handle { body, handler } => {
             free_globals(ast, *body, globals, bound, out);
             if let Some(h) = handler {
-                for clause in h.clauses.iter() {
+                for clause in ast.slice(h.clauses).iter() {
                     let mark = bound.len();
                     bound.push(ast.text(clause.arg));
                     bound.push(ast.text(h.continuation));
@@ -3432,7 +3717,7 @@ fn free_globals<'a>(
             callee, overrides, ..
         } => {
             free_globals(ast, *callee, globals, bound, out);
-            free_globals_field_inits(ast, overrides, globals, bound, out);
+            free_globals_field_inits(ast, ast.slice(*overrides), globals, bound, out);
         }
     }
 }
@@ -3462,18 +3747,19 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
             collect_pattern_binders(ast, *tail, bound);
         }
         Pattern::List { elems, rest } => {
-            elems
+            ast.slice(*elems)
                 .iter()
                 .for_each(|p| collect_pattern_binders(ast, *p, bound));
             if let Some(r) = rest {
                 collect_pattern_binders(ast, *r, bound);
             }
         }
-        Pattern::Tuple(pats) => pats
+        Pattern::Tuple(pats) => ast
+            .slice(*pats)
             .iter()
             .for_each(|p| collect_pattern_binders(ast, *p, bound)),
         Pattern::Struct { fields, .. } | Pattern::Variant { fields, .. } => {
-            for f in fields.iter() {
+            for f in ast.slice(*fields).iter() {
                 match f {
                     FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
                     FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
@@ -3482,7 +3768,7 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
             }
         }
         Pattern::Record { fields, rest } => {
-            for f in fields.iter() {
+            for f in ast.slice(*fields).iter() {
                 match f {
                     FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
                     FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
@@ -3493,8 +3779,12 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                 collect_pattern_binders(ast, *r, bound);
             }
         }
-        Pattern::Wild | Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_) | Pattern::Bool(_) => {
-        }
+        Pattern::Range { .. }
+        | Pattern::Wild
+        | Pattern::Int(_)
+        | Pattern::Real(_)
+        | Pattern::Str(_)
+        | Pattern::Bool(_) => {}
     }
 }
 
@@ -3528,6 +3818,9 @@ fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
             format!("t{i}")
         }
         Type::Con(name) => name.replace('.', "_"),
+        Type::Nat(n) => format!("N{n}"),
+        Type::NatAdd(a, b) => format!("P{}_{}", ty_key(a, vars), ty_key(b, vars)),
+        Type::NatMul(a, b) => format!("M{}_{}", ty_key(a, vars), ty_key(b, vars)),
         Type::App(head, arg) => {
             format!("A{}_{}", ty_key(head, vars), ty_key(arg, vars))
         }
@@ -3605,9 +3898,9 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *from, out);
             collect_tyvars(ast, *to, out);
         }
-        Ty::Tuple(items) => items.iter().for_each(|t| collect_tyvars(ast, *t, out)),
+        Ty::Tuple(items) => ast.slice(*items).iter().for_each(|t| collect_tyvars(ast, *t, out)),
         Ty::Record { fields, tail } => {
-            fields.iter().for_each(|f| collect_tyvars(ast, f.ty, out));
+            ast.slice(*fields).iter().for_each(|f| collect_tyvars(ast, f.ty, out));
             if let Some(t) = tail {
                 let name = ast.text(*t);
                 if !out.contains(&name) {
@@ -3615,7 +3908,15 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
                 }
             }
         }
-        Ty::Con { .. } | Ty::Unit => {}
+        Ty::Sized { size, elem } => {
+            collect_tyvars(ast, *size, out);
+            collect_tyvars(ast, *elem, out);
+        }
+        Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+            collect_tyvars(ast, *a, out);
+            collect_tyvars(ast, *b, out);
+        }
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit => {}
     }
 }
 
@@ -3624,7 +3925,8 @@ fn payload_fields<'a>(ast: &'a Ast, p: &Payload) -> Vec<(Option<&'a str>, Aol<Ty
     match p {
         Payload::None => vec![],
         Payload::Bare(ty) => vec![(None, *ty)],
-        Payload::Fields(fs) => fs
+        Payload::Fields(fs) => ast
+            .slice(*fs)
             .iter()
             .map(|f| (f.name.map(|n| ast.text(n)), f.ty))
             .collect(),
@@ -3684,6 +3986,10 @@ fn is_base_type(name: &str) -> bool {
             | "@str" | "@ptr" | "@bool" | "@array"
     )
 }
+
+/// The internal constructor name of a sized tensor `[n]T` (`@tensor size elem`).
+/// `@`-prefixed so it cannot collide with a user type; erased before runtime.
+const TENSOR: &str = "@tensor";
 
 fn unknown_type(name: &str) -> Diagnostic {
     diag!(

@@ -2,7 +2,7 @@
 
 # \info Type-directed `[..]` patterns on an Array (a byte vector). The SAME
 #       bracket syntax as list patterns; the scrutinee's inferred type picks the
-#       lowering -- a length test + `array_get`/`array_slice` here, cons/nil for
+#       lowering -- a length test + `@array_get`/`@array_slice` here, cons/nil for
 #       a List. `::` stays List-only. See doc/strings-and-arrays.md phase 6b.
 
 $ emptA : Array = []
@@ -37,7 +37,7 @@ $ head3 : Array -> Int = \a =
 $ ck_head3 : Int = if (head3 arr3) ?= 1 => 0 else 1
 
 $ rest_len : Array -> Int = \a =
-	is a | [h, ..rest] => array_len rest
+	is a | [h, ..rest] => @array_len rest
 	                   else 0
 $ ck_rest_len : Int = if (rest_len arr3) ?= 2 => 0 else 1
 

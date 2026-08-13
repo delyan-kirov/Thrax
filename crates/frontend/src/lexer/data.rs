@@ -39,6 +39,7 @@ pub enum Kind {
     Dollar,   // $
     Comma,    // ,
     Dot,      // .
+    Ellipsis, // ... (inclusive range in patterns)
     LParen,
     RParen,
     LBrace,

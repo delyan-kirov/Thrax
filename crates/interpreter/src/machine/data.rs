@@ -119,11 +119,142 @@ fn as_vec<'p>(v: &PVal<'p>) -> Result<Rc<Vec<PVal<'p>>>> {
     }
 }
 
+fn as_int(v: &PVal) -> Result<i64> {
+    match &*v.borrow() {
+        Value::Int(n) => Ok(*n),
+        _ => Err(fault("expected an integer element")),
+    }
+}
+
 fn as_index(v: &PVal) -> Result<usize> {
     match &*v.borrow() {
         Value::Int(n) if *n >= 0 => Ok(*n as usize),
         Value::Int(_) => Err(fault("negative index")),
         _ => Err(fault("expected an integer index")),
+    }
+}
+
+// -- strided tensors -----------------------------------------------------
+//
+// A sized tensor `[n]T` is a `@tensor`-named struct over a FLAT buffer plus a
+// shape/strides descriptor: `{ buf: Vec, off: Int, shape: Vec Int, strides: Vec
+// Int }`. Reusing `Value::Struct` means the whole rep gets construction,
+// refcounting, and destruction for free; only the tensor OPERATIONS are bespoke.
+// A view (a row, a transpose, a slice) shares `buf` (an `Rc`) and only changes
+// `off`/`shape`/`strides`, so those are O(1) and copy nothing.
+
+const TENSOR: &str = "@tensor";
+
+fn int_vec_val<'p>(xs: &[usize]) -> Value<'p> {
+    Value::Vector(Rc::new(xs.iter().map(|&x| mk(Value::Int(x as i64))).collect()))
+}
+
+pub(crate) fn mk_tensor<'p>(
+    buf: Rc<Vec<PVal<'p>>>,
+    off: usize,
+    shape: Vec<usize>,
+    strides: Vec<usize>,
+) -> Value<'p> {
+    Value::Struct {
+        name: TENSOR.to_string(),
+        fields: vec![
+            ("buf".to_string(), mk(Value::Vector(buf))),
+            ("off".to_string(), mk(Value::Int(off as i64))),
+            ("shape".to_string(), mk(int_vec_val(&shape))),
+            ("strides".to_string(), mk(int_vec_val(&strides))),
+        ],
+    }
+}
+
+fn usize_vec(v: &PVal) -> Result<Vec<usize>> {
+    as_vec(v)?.iter().map(as_index).collect()
+}
+
+pub(crate) fn is_tensor(v: &PVal) -> bool {
+    matches!(&*v.borrow(), Value::Struct { name, .. } if name == TENSOR)
+}
+
+pub(crate) fn tensor_fields<'p>(
+    v: &PVal<'p>,
+) -> Result<(Rc<Vec<PVal<'p>>>, usize, Vec<usize>, Vec<usize>)> {
+    let (buf, off, shape, strides) = {
+        let b = v.borrow();
+        match &*b {
+            Value::Struct { name, fields } if name == TENSOR => {
+                let g = |n: &str| fields.iter().find(|(f, _)| f == n).map(|(_, x)| x.clone());
+                (g("buf"), g("off"), g("shape"), g("strides"))
+            }
+            _ => return Err(fault("expected a tensor")),
+        }
+    };
+    let want = |o: Option<PVal<'p>>| o.ok_or_else(|| fault("malformed tensor"));
+    Ok((
+        as_vec(&want(buf)?)?,
+        as_index(&want(off)?)?,
+        usize_vec(&want(shape)?)?,
+        usize_vec(&want(strides)?)?,
+    ))
+}
+
+/// Row-major (C-order) strides for a shape.
+fn row_major_strides(shape: &[usize]) -> Vec<usize> {
+    let mut s = vec![1usize; shape.len()];
+    for i in (0..shape.len().saturating_sub(1)).rev() {
+        s[i] = s[i + 1] * shape[i + 1];
+    }
+    s
+}
+
+/// The tensor's scalar elements in row-major logical order (following a view's
+/// offset/strides). A contiguous tensor yields its buffer; a view is gathered.
+pub(crate) fn materialize<'p>(v: &PVal<'p>) -> Result<Vec<PVal<'p>>> {
+    let (buf, off, shape, strides) = tensor_fields(v)?;
+    let total: usize = shape.iter().product();
+    let rank = shape.len();
+    let mut out = Vec::with_capacity(total);
+    let mut idx = vec![0usize; rank];
+    for _ in 0..total {
+        let flat = off + (0..rank).map(|k| idx[k] * strides[k]).sum::<usize>();
+        out.push(
+            buf.get(flat)
+                .cloned()
+                .ok_or_else(|| fault("tensor buffer out of range"))?,
+        );
+        for k in (0..rank).rev() {
+            idx[k] += 1;
+            if idx[k] < shape[k] {
+                break;
+            }
+            idx[k] = 0;
+        }
+    }
+    Ok(out)
+}
+
+/// Build a tensor by stacking `elems` along a new leading axis: scalar elements
+/// give a rank-1 tensor; tensor elements are flattened (equal shapes required)
+/// and get the outer dimension prepended. This is the construction/`create` core.
+pub(crate) fn tensor_stack<'p>(elems: &[PVal<'p>]) -> Result<Value<'p>> {
+    let n = elems.len();
+    if n == 0 {
+        return Ok(mk_tensor(Rc::new(Vec::new()), 0, vec![0], vec![1]));
+    }
+    if is_tensor(&elems[0]) {
+        let (_, _, sub_shape, _) = tensor_fields(&elems[0])?;
+        let mut buf = Vec::new();
+        for e in elems {
+            let (_, _, es, _) = tensor_fields(e)?;
+            if es != sub_shape {
+                return Err(fault("stacking tensors of unequal shape"));
+            }
+            buf.extend(materialize(e)?);
+        }
+        let mut shape = vec![n];
+        shape.extend(sub_shape);
+        let strides = row_major_strides(&shape);
+        Ok(mk_tensor(Rc::new(buf), 0, shape, strides))
+    } else {
+        Ok(mk_tensor(Rc::new(elems.to_vec()), 0, vec![n], vec![1]))
     }
 }
 
@@ -146,10 +277,14 @@ fn as_byte(v: &PVal) -> Result<u8> {
 /// The arity of a built-in operator, or `None` if the name is not a built-in.
 pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
-        "not" | "neg" | "array_len" | "array_alloc" | "vec_len" | "vec_new" => 1,
-        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "array_get"
-        | "array_push" | "vec_get" | "vec_push" | "vec_fill" | "record_without" => 2,
-        "array_set" | "array_slice" | "vec_set" => 3,
+        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
+        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
+        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
+        | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
+        "@tensor_slice" | "@tensor_index_axis" => 3,
+        "@tensor_slice_axis" => 4,
+        "@array_set" | "@array_slice" | "@vec_set" => 3,
         _ => return None,
     };
     Some(n)
@@ -172,9 +307,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "?=" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
         "?<" | "?>" | "<=" | ">=" => compare(name, &a[0], &a[1]),
         "++" => concat(&a[0], &a[1]),
-        "array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
-        "array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
-        "array_get" => {
+        "@array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
+        "@array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
+        "@array_get" => {
             let bytes = as_bytes(&a[0])?;
             let i = as_index(&a[1])?;
             bytes
@@ -182,12 +317,12 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|b| Value::Int(*b as i64))
                 .ok_or_else(|| fault("array index out of bounds"))
         }
-        "array_push" => {
+        "@array_push" => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             bytes.push(as_byte(&a[1])?);
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "array_set" => {
+        "@array_set" => {
             let mut bytes = as_bytes(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= bytes.len() {
@@ -196,7 +331,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             bytes[i] = as_byte(&a[2])?;
             Ok(Value::Str(Rc::new(bytes)))
         }
-        "array_slice" => {
+        "@array_slice" => {
             let bytes = as_bytes(&a[0])?;
             let mut beg = as_index(&a[1])?;
             let mut end = as_index(&a[2])?;
@@ -225,13 +360,78 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 _ => Err(fault("`record_without` on a non-record")),
             }
         }
-        "vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
-        "vec_fill" => {
+        "@vec_new" => Ok(Value::Vector(Rc::new(Vec::new()))),
+        "@vec_fill" => {
             let n = as_len(&a[0])?;
             Ok(Value::Vector(Rc::new(vec![a[1].clone(); n])))
         }
-        "vec_len" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
-        "vec_get" => {
+        "@vec_len" => Ok(Value::Int(as_vec(&a[0])?.len() as i64)),
+        "@tensor_length" => {
+            let (_, _, shape, _) = tensor_fields(&a[0])?;
+            Ok(Value::Int(*shape.first().unwrap_or(&0) as i64))
+        }
+        "@tensor_stack" => {
+            let v = as_vec(&a[0])?;
+            tensor_stack(&v)
+        }
+        // O(1) transpose: a VIEW sharing the buffer with every axis reversed (for a
+        // rank-2 tensor, the matrix transpose). No elements are copied.
+        "@tensor_transpose" => {
+            let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
+            shape.reverse();
+            strides.reverse();
+            Ok(mk_tensor(buf, off, shape, strides))
+        }
+        // O(1) slice along axis 0: a VIEW over `[lo, hi)`.
+        "@tensor_slice" => {
+            let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
+            if shape.is_empty() {
+                return Err(fault("slice of a rank-0 tensor"));
+            }
+            let lo = as_index(&a[1])?.min(shape[0]);
+            let hi = as_index(&a[2])?.clamp(lo, shape[0]);
+            let base = off + lo * strides[0];
+            shape[0] = hi - lo;
+            Ok(mk_tensor(buf, base, shape, strides))
+        }
+        // O(1) index of a GIVEN axis (modular): drop that axis, a VIEW. Reducing the
+        // last remaining axis yields the scalar element.
+        "@tensor_index_axis" => {
+            let (buf, off, mut shape, mut strides) = tensor_fields(&a[0])?;
+            let axis = as_index(&a[1])?;
+            if axis >= shape.len() {
+                return Err(fault("index axis out of range"));
+            }
+            if shape[axis] == 0 {
+                return Err(fault("index into an empty axis"));
+            }
+            let i = as_int(&a[2])?.rem_euclid(shape[axis] as i64) as usize;
+            let base = off + i * strides[axis];
+            shape.remove(axis);
+            strides.remove(axis);
+            if shape.is_empty() {
+                return buf
+                    .get(base)
+                    .cloned()
+                    .map(|p| p.borrow().clone_shallow())
+                    .ok_or_else(|| fault("tensor index out of bounds"));
+            }
+            Ok(mk_tensor(buf, base, shape, strides))
+        }
+        // O(1) slice of a GIVEN axis: a VIEW over `[lo, hi)` of that axis.
+        "@tensor_slice_axis" => {
+            let (buf, off, mut shape, strides) = tensor_fields(&a[0])?;
+            let axis = as_index(&a[1])?;
+            if axis >= shape.len() {
+                return Err(fault("slice axis out of range"));
+            }
+            let lo = as_index(&a[2])?.min(shape[axis]);
+            let hi = as_index(&a[3])?.clamp(lo, shape[axis]);
+            let base = off + lo * strides[axis];
+            shape[axis] = hi - lo;
+            Ok(mk_tensor(buf, base, shape, strides))
+        }
+        "@vec_get" => {
             let v = as_vec(&a[0])?;
             let i = as_index(&a[1])?;
             v.get(i)
@@ -239,12 +439,48 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map(|p| p.borrow().clone_shallow())
                 .ok_or_else(|| fault("vec index out of bounds"))
         }
-        "vec_push" => {
+        "@vec_push" => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             v.push(a[1].clone());
             Ok(Value::Vector(Rc::new(v)))
         }
-        "vec_set" => {
+        "@tensor_concat" => {
+            let (_, _, xs, _) = tensor_fields(&a[0])?;
+            let (_, _, ys, _) = tensor_fields(&a[1])?;
+            if xs.get(1..) != ys.get(1..) {
+                return Err(fault("concat: tensors differ below the first axis"));
+            }
+            let mut buf = materialize(&a[0])?;
+            buf.extend(materialize(&a[1])?);
+            let mut shape = xs.clone();
+            shape[0] = xs[0] + ys[0];
+            let strides = row_major_strides(&shape);
+            Ok(mk_tensor(Rc::new(buf), 0, shape, strides))
+        }
+        "@tensor_index" => {
+            let (buf, off, shape, strides) = tensor_fields(&a[0])?;
+            if shape.is_empty() || shape[0] == 0 {
+                return Err(fault("index into an empty tensor"));
+            }
+            let i = as_int(&a[1])?.rem_euclid(shape[0] as i64) as usize;
+            let base = off + i * strides[0];
+            if shape.len() == 1 {
+                // rank 1: the element is a scalar in the buffer.
+                buf.get(base)
+                    .cloned()
+                    .map(|p| p.borrow().clone_shallow())
+                    .ok_or_else(|| fault("tensor index out of bounds"))
+            } else {
+                // rank > 1: a VIEW that shares the buffer, dropping the first axis.
+                Ok(mk_tensor(
+                    buf,
+                    base,
+                    shape[1..].to_vec(),
+                    strides[1..].to_vec(),
+                ))
+            }
+        }
+        "@vec_set" => {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             let i = as_index(&a[1])?;
             if i >= v.len() {

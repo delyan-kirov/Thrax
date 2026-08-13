@@ -21,6 +21,7 @@ fn lower(src: &str) -> Vec<Program> {
     let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
+    resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
@@ -261,8 +262,8 @@ fn lists_and_length() {
 fn strings_and_arrays() {
     let src = "@mod T\n\
                $ s : Str = \"ab\" ++ \"cd\"\n\
-               $ n : Int = array_len s\n\
-               $ g : Int = array_get s 1\n\
+               $ n : Int = @array_len s\n\
+               $ g : Int = @array_get s 1\n\
                $ test : Int = n + g\n";
     assert_matches(src, "s");
     assert_matches(src, "n");

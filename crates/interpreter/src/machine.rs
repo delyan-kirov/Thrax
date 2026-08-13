@@ -598,7 +598,23 @@ impl<'p> Machine<'p> {
             Kind::Builtin(name, arity, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arity {
-                    mk(run_builtin(&name, &args)?)
+                    // `generate template f` is HIGHER-ORDER: it applies the closure
+                    // `f` to each index, so it runs here (where `self.apply` can drive
+                    // the machine) rather than in the leaf `run_builtin`.
+                    if &*name == "@tensor_create" {
+                        // Build the elements by applying `f` at each index of the
+                        // template's leading axis, then stack them into a tensor.
+                        let (_, _, shape, _) = data::tensor_fields(&args[0])?;
+                        let len = shape.first().copied().unwrap_or(0);
+                        let f = args[1].clone();
+                        let mut out = Vec::with_capacity(len);
+                        for i in 0..len {
+                            out.push(self.apply(f.clone(), mk(Value::Int(i as i64)))?);
+                        }
+                        mk(data::tensor_stack(&out)?)
+                    } else {
+                        mk(run_builtin(&name, &args)?)
+                    }
                 } else {
                     mk(Value::Builtin { name, arity, args })
                 };

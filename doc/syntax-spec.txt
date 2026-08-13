@@ -147,6 +147,98 @@ generic type must be given either all of its arguments or none -- when none are
 written they are inferred (e.g. the element of a bare `Maybe` used in context) --
 and any other count is an arity error.
 
+A SIZED TENSOR type is written `[n]T`: a vector of `n` elements of type `T`. The
+size `n` is a type-level natural, a distinct KIND from ordinary types (`n` unifies
+only with other sizes, never with a type), so the bracket doubles as the kind
+marker. `n` is a Nat literal (`[3]Int`) or a lowercase size variable (`[n]a`),
+letting a function range over sizes: `sum : [n]Int -> Int`. They nest: `[m][n]T`.
+
+	tensor ::= '[' size (',' size)* ']' type   # [n]T, or [m, n]T (nested)
+	size   ::= Nat | var | size '+' size | size '*' size | '(' size ')'
+	index  ::= expr '.[' expr (',' expr)* ']'  # read (see below)
+
+A multi-dimensional shape `[m, n]T` is sugar for the nested `[m][n]T` (one axis
+per dimension), and pairs with multi-axis indexing `t.[i, j]` (== `t.[i].[j]`).
+
+The size may be an ARITHMETIC expression, `+` and `*` over literals and size
+variables, evaluated modulo 2^64. This drives size-changing operations:
+`concat : [n]a -> [m]a -> [n+m]a` joins two tensors, its result size computed at
+compile time. Equality of size expressions is decided by a canonical polynomial
+form, so `[n+m]` and `[m+n]` are the same type, and `[n+n]` is `[2*n]`. Sizes flow
+forward (a result size is computed from argument sizes); the checker does not
+back-solve an equation like `n + 1 = 5`.
+
+A tensor is built from a `[..]` literal whose length fixes the size (a length
+mismatch is a type error), and read with modular indexing `t.[i]`: the index is
+reduced mod the size, so it is TOTAL and never out of bounds (`t.[n]` wraps to
+`t.[0]`). Indexing an empty `[0]T` is the sole fault (reduction mod zero). A
+multi-axis index `t.[i, j]` reads one element of a nested tensor (`t.[i].[j]`).
+
+	$ v : [3]Int = [10, 20, 30]
+	$ x : Int    = v.[1]          # 20
+	$ y : Int    = v.[3]          # wraps: 3 mod 3 = 0, so 10
+	$ g : [2][2]Int = [ [1,2], [3,4] ]
+	$ z : Int    = g.[1, 0]       # 3
+
+Shape-checked linear algebra is provided by the `LA` library over these types:
+
+	transpose : [m][n]a -> [n][m]a               # swaps the axes (O(1) view)
+	matmul    : [m][k]a -> [k][n]a -> [m][n]a     # shared k unifies
+	dot       : [n]a -> [n]a -> a
+	concat    : [n]a -> [m]a -> [n+m]a           # size arithmetic
+	slice     : [n]a -> Int -> Int -> [k]a       # [lo, hi) of the leading axis (view)
+	row       : [m][n]a -> Int -> [n]a           # a row (view)
+	col       : [m][n]a -> Int -> [m]a           # a column (strided view)
+
+A tensor is a flat buffer with a shape/strides descriptor, so `transpose`, `row`,
+`col`, `slice`, and element indexing return VIEWS that share the buffer and copy
+nothing. Indexing generalizes to MULTI-AXIS slicing, `t.[s0, s1, ...]`, where each
+slot acts on one axis:
+
+	i          index (reduce) the axis
+	p ... q    keep it, narrowed to the inclusive range [p, q]
+	..         keep it whole
+
+So `m.[i]` is a row, `m.[.., j]` a column, `m.[p ... q]` a leading-axis slice,
+`m.[i, p ... q]` a row's sub-range, and `m.[p ... q, r ... s]` a subblock. The
+result shape is computed and checked by the type checker (a lone `..`/index all-Int
+access is the overloadable `index`; any range or `..` slot makes it a tensor slice).
+Everything is an O(1) strided view. `...` matches the range-pattern syntax.
+
+A dimension mismatch (e.g. `matmul` of `[2, 3]` and `[2, 2]`) is a compile-time
+type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run on
+`Int` and `Real` tensors (there is no numeric class to constrain the element, so a
+non-numeric element is a runtime fault, not a type error).
+
+Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
+function (`index t i`). `LA` provides the tensor candidate (`index : [n]a -> Int
+-> a`, so `with LA` is what makes `t.[i]` read a tensor); a custom container joins
+the same `.[..]` surface by declaring its own overload, e.g.
+`index : Map k v -> k -> v`. A local overload and an imported one merge into a
+single dispatch set (extending an imported function is how you add a case).
+
+The compiler provides only the `@`-sigil PRIMITIVES over the tensor buffer; every
+named operation lives in the `LA` library (`$ with LA`), so it is ordinary,
+readable, forkable Thrax:
+
+	@tensor_index  : [n]a -> Int -> a           # modular read (`.[..]` uses this)
+	@tensor_length : [n]a -> Int                # the runtime size
+	@tensor_create : [n]x -> (Int -> a) -> [n]a  # build one the SAME size as a template
+	@tensor_concat : [n]a -> [m]a -> [n+m]a      # the size-changing join
+
+`@tensor_create` is sound because the result size is the template's size `n`, and it
+is higher-order (it applies the index function per element). With these plus `@ctx`
+implicits for the element arithmetic (dictionary passing in place of a numeric
+class), `LA` defines `matmul`/`dot`/`transpose`/`concat` as plain functions. For
+example, `LA`'s transpose is:
+
+	$ transpose : [m][n]a -> [n][m]a = \t =
+		@tensor_create t.[0] (\j = @tensor_create t (\i = t.[i].[j]))
+
+and its dot passes the element ops as a record-style implicit dictionary:
+
+	$ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = ...
+
 An ALIAS names a type. It may take parameters (declared like any other type, see
 STRUCTS) and its body may partially instantiate another generic type, fixing some
 arguments and leaving the rest as its own parameters:
@@ -340,6 +432,7 @@ parameters and `let` bindings (and `when` match arms):
 	pattern  ::= '_'                      # wildcard: matches anything, binds nothing
 	           | var                      # binds the value to this name
 	           | Int | Real | Str         # literal: matches by equality (refutable)
+	           | numlit '...' numlit      # inclusive numeric range (refutable)
 	           | TypeName '.{' fields '}'  # struct pattern (see below)
 	fields   ::= positional | named
 	positional ::= [ pattern (',' pattern)* ','? ]
@@ -358,6 +451,15 @@ a literal, named fields carry a leading-dot `.field`; a pattern is
 	  field is matched unambiguously as `Person.{ .name }`.
 
 The two forms cannot be mixed in one struct pattern.
+
+A RANGE pattern `lo ... hi` matches a number in the inclusive interval
+`lo <= x <= hi`. Both bounds are numeric literals of the scrutinee's type (`Int`
+or `Real`), and both ends are inclusive (there is only the inclusive form). It is
+refutable and binds nothing, so a match over ranges needs an `else`; the scrutinee
+variable stays in scope in the arm when the value itself is wanted.
+
+	$ grade : Int -> Str = \n =
+		is n | 90 ... 100 => "A" | 60 ... 89 => "C" else "F"
 
 Lambda and `let` patterns must be IRREFUTABLE: only `_`, variables, and struct
 patterns built from them. A literal sub-pattern is refutable and is rejected

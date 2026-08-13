@@ -1,0 +1,58 @@
+@mod LA
+
+# \file LA.thx
+# \info Linear algebra over sized tensors `[n]T`. The compiler provides only the
+#       `@`-sigil PRIMITIVES over the tensor buffer -- `@tensor_index` (modular read),
+#       `@tensor_length` (size), `@tensor_create` (build one the size of a template from an
+#       index function), `@tensor_concat` (size-changing join). Everything else here is
+#       ordinary Thrax, so this module is readable, forkable, and extensible: a
+#       custom container joins the `.[..]` surface by adding its own `index`
+#       overload, and the element arithmetic is passed as `@ctx` implicits (a
+#       dictionary) rather than requiring a numeric class.
+
+# `t.[i]` desugars to the overloadable `index`. The tensor candidate forwards to
+# the `@tensor_index` primitive; a custom container adds its own `index` overload (the two
+# coexist by the import merge), so any type can join the `.[..]` surface.
+$ index : [n]a -> Int -> a = \t i = @tensor_index t i
+
+# Thin names over the remaining primitives.
+$ length : [n]a -> Int = \t = @tensor_length t
+$ create : [n]x -> (Int -> a) -> [n]a = \t f = @tensor_create t f
+$ concat : [n]a -> [m]a -> [n+m]a = \x y = @tensor_concat x y
+
+# O(1) VIEWS (share the buffer, copy nothing). `slice` takes `[lo, hi)` of the
+# leading axis; `row i` is a row; `col j` is a column (a strided view, via the O(1)
+# transpose). The sliced size is a runtime value, so it is not tracked statically
+# (indexing stays modular/total).
+$ slice : [n]a -> Int -> Int -> [k]a = \t lo hi = @tensor_slice t lo hi
+$ row : [m][n]a -> Int -> [n]a = \t i = t.[i]
+$ col : [m][n]a -> Int -> [m]a = \t j = (transpose t).[j]
+
+# Element arithmetic as a dictionary. Overloaded for Int and Real; a `@ctx add`
+# etc. below resolves to the right one by the element type.
+$ add : Int -> Int -> Int = \a b = a + b
+$ add : Real -> Real -> Real = \a b = a + b
+$ mul : Int -> Int -> Int = \a b = a * b
+$ mul : Real -> Real -> Real = \a b = a * b
+$ zero : Int = 0
+$ zero : Real = 0.0
+
+# Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
+# that shares the buffer and only swaps the shape/strides, copying nothing.
+$ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
+
+# Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
+# the element `add`/`mul`/`zero` supplied by `@ctx`.
+$ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = \x y =
+	let go = \i acc =
+		if i ?= length x => acc
+		else go (i + 1) (add acc (mul x.[i] y.[i]))
+	in go 0 zero
+
+# Matrix multiply: transpose `b` so its columns are rows, then each result cell is
+# the dot of a row of `a` with a column of `b`. The shared inner dimension `k`
+# unifies at the type level, so a shape mismatch is a compile error.
+$ matmul : [m][k]a -> [k][n]a -> [m][n]a
+	@ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = \a b =
+	let bt = transpose b in
+	create a (\i = create (b.[0]) (\j = dot a.[i] bt.[j]))

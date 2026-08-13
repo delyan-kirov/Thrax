@@ -24,7 +24,7 @@ mod tests;
 
 use crate::lexer::data::{Kind, Token};
 use crate::lexer::Lexer;
-use utilities::{Aol, Line, Span, StrId};
+use utilities::{Aol, Line, Slice, Span, StrId};
 use utilities::{Code, Diagnostic, Result};
 
 use crate::parser::data::*;
@@ -275,12 +275,12 @@ impl<'a> Parser<'a> {
     /// The optional type parameters after a `@struct`/`@union`/`@codata` keyword
     /// and before `=`: `@struct a b = ...`. Empty when omitted (the parameters are
     /// then inferred from the free type variables in the body).
-    fn parse_type_params(&mut self) -> Result<Box<[StrId]>> {
+    fn parse_type_params(&mut self) -> Result<Slice<StrId>> {
         let mut params = Vec::new();
         while self.at_tyvar()? {
             params.push(self.expect_tyvar("expected a type parameter")?);
         }
-        Ok(params.into_boxed_slice())
+        Ok(self.ast.make_slice(params))
     }
 
     /// If `base` is a bare, unqualified variable, its interned name.
@@ -359,7 +359,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Program {
             module,
-            items: items.into_boxed_slice(),
+            items: self.ast.make_slice(items),
         })
     }
 
@@ -437,7 +437,7 @@ impl<'a> Parser<'a> {
         Ok(Item::Import { module, rename })
     }
 
-    fn parse_dotted_name(&mut self) -> Result<Box<[StrId]>> {
+    fn parse_dotted_name(&mut self) -> Result<Slice<StrId>> {
         let first = expect!(self, Kind::Word, "expected a module name");
         let mut names = vec![self.intern(self.text(first))];
         while matches!(self.peek_kind()?, Kind::Dot) {
@@ -445,7 +445,7 @@ impl<'a> Parser<'a> {
             let part = expect!(self, Kind::Word, "expected a name after '.'");
             names.push(self.intern(self.text(part)));
         }
-        Ok(names.into_boxed_slice())
+        Ok(self.ast.make_slice(names))
     }
 
     /// `$ name ...`: a value definition, or a struct/union/alias/effect type.
@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
             return Ok(Item::Def {
                 name,
                 sig: None,
-                implicits: Box::from([]),
+                implicits: self.ast.make_slice(Vec::new()),
                 body: self.parse_expr(0)?,
             });
         }
@@ -536,14 +536,13 @@ impl<'a> Parser<'a> {
     /// Parse the `@ctx` declarations that may follow a definition's type
     /// signature: `@ctx name : Type` (repeatable) or `@ctx { a : A, b : B }`.
     /// Each becomes an implicit parameter resolved by name at the call site.
-    fn parse_ctx_decls(&mut self) -> Result<Box<[FieldDecl]>> {
+    fn parse_ctx_decls(&mut self) -> Result<Slice<FieldDecl>> {
         let mut decls = Vec::new();
         while self.at_ctx()? {
             self.bump()?; // '@ctx'
             if self.eat(|k| matches!(k, Kind::LBrace))? {
-                for d in self.parse_field_decls()?.into_vec() {
-                    decls.push(d);
-                }
+                let block = self.parse_field_decls()?;
+                decls.extend_from_slice(self.ast.slice(block));
                 expect!(self, Kind::RBrace, "expected '}' to close the '@ctx' block");
             } else {
                 let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
@@ -552,7 +551,7 @@ impl<'a> Parser<'a> {
                 decls.push(FieldDecl { name, ty });
             }
         }
-        Ok(decls.into_boxed_slice())
+        Ok(self.ast.make_slice(decls))
     }
 
     /// Is the next token the `@ctx` keyword?
@@ -592,16 +591,17 @@ impl<'a> Parser<'a> {
         } else {
             overrides.push(FieldInit::Positional(self.parse_primary()?));
         }
+        let overrides = self.ast.make_slice(overrides);
         let node = self.expr(Expr::Ctx {
             callee,
-            overrides: overrides.into_boxed_slice(),
+            overrides,
             rest,
         });
         Ok(self.stamp(start, node))
     }
 
     /// Comma-separated `name : Type` declarations (struct fields, effect ops).
-    fn parse_field_decls(&mut self) -> Result<Box<[FieldDecl]>> {
+    fn parse_field_decls(&mut self) -> Result<Slice<FieldDecl>> {
         let mut fields = Vec::new();
         while matches!(self.peek_kind()?, Kind::Word) {
             let name = self.bump_word()?;
@@ -612,12 +612,12 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok(fields.into_boxed_slice())
+        Ok(self.ast.make_slice(fields))
     }
 
     /// A struct body: leading `with Other` clauses (copied-in fields) then the
     /// declared `name : Type` fields, comma-separated and freely interleaved.
-    fn parse_struct_body(&mut self) -> Result<(Box<[StrId]>, Box<[FieldDecl]>)> {
+    fn parse_struct_body(&mut self) -> Result<(Slice<StrId>, Slice<FieldDecl>)> {
         let mut includes = Vec::new();
         let mut fields = Vec::new();
         loop {
@@ -635,10 +635,10 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((includes.into_boxed_slice(), fields.into_boxed_slice()))
+        Ok((self.ast.make_slice(includes), self.ast.make_slice(fields)))
     }
 
-    fn parse_union_body(&mut self) -> Result<(Box<[StrId]>, Box<[VariantDecl]>)> {
+    fn parse_union_body(&mut self) -> Result<(Slice<StrId>, Slice<VariantDecl>)> {
         let mut includes = Vec::new();
         let mut variants = Vec::new();
         loop {
@@ -659,7 +659,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((includes.into_boxed_slice(), variants.into_boxed_slice()))
+        Ok((self.ast.make_slice(includes), self.ast.make_slice(variants)))
     }
 
     /// A `with Other` clause inside a type declaration: the (capitalized) name of a
@@ -703,7 +703,7 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the variant payload"
         );
-        Ok(Payload::Fields(fields.into_boxed_slice()))
+        Ok(Payload::Fields(self.ast.make_slice(fields)))
     }
 
     fn peek_kind_at(&mut self, n: usize) -> Result<Kind> {
@@ -790,7 +790,72 @@ impl<'a> Parser<'a> {
                 Ok(inner)
             }
             Kind::LBrace => self.parse_brace_type(),
+            // `[size]elem`: a sized tensor type. `size` is a Nat literal or a
+            // lowercase (Nat-kinded) variable; `elem` binds as one atom (nest
+            // `[m][n]T`, parenthesize a compound `[n](List a)`).
+            // `[n]T` and the multi-dimensional shape `[m, n, ...]T`, which is sugar
+            // for the nested `[m][n]...T` (one axis per dimension).
+            Kind::LBrack => {
+                self.bump()?; // '['
+                let mut sizes = vec![self.parse_size()?];
+                while self.eat(|k| matches!(k, Kind::Comma))? {
+                    sizes.push(self.parse_size()?);
+                }
+                expect!(self, Kind::RBrack, "expected ']' to close the tensor shape");
+                let mut elem = self.parse_type_atom()?;
+                for size in sizes.into_iter().rev() {
+                    elem = self.ty(Ty::Sized { size, elem });
+                }
+                Ok(elem)
+            }
             _ => Err(self.unexpected(&t, "expected a type")),
+        }
+    }
+
+    /// A tensor size expression: `+` of `*`-terms over Nat literals and size
+    /// variables (`[n+m]`, `[2*n+1]`). `*` binds tighter than `+`; `( )` groups.
+    fn parse_size(&mut self) -> Result<Aol<Ty>> {
+        let mut lhs = self.parse_size_term()?;
+        while self.at_op("+")? {
+            self.bump()?;
+            let rhs = self.parse_size_term()?;
+            lhs = self.ty(Ty::SizeAdd(lhs, rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_size_term(&mut self) -> Result<Aol<Ty>> {
+        let mut lhs = self.parse_size_atom()?;
+        while self.at_op("*")? {
+            self.bump()?;
+            let rhs = self.parse_size_atom()?;
+            lhs = self.ty(Ty::SizeMul(lhs, rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_size_atom(&mut self) -> Result<Aol<Ty>> {
+        let t = self.peek()?;
+        match t.kind {
+            Kind::Int(v) if v >= 0 => {
+                self.bump()?;
+                Ok(self.ty(Ty::Nat(v as u64)))
+            }
+            Kind::Int(_) => Err(self.unexpected(&t, "a tensor size must be non-negative")),
+            Kind::LParen => {
+                self.bump()?;
+                let inner = self.parse_size()?;
+                expect!(self, Kind::RParen, "expected ')' in a tensor size");
+                Ok(inner)
+            }
+            _ if self.at_tyvar()? => {
+                let name = self.expect_tyvar("expected a size variable")?;
+                Ok(self.ty(Ty::Var(name)))
+            }
+            _ => Err(self.unexpected(
+                &t,
+                "expected a size (a Nat literal, a lowercase variable, or `+`/`*` of them)",
+            )),
         }
     }
 
@@ -825,10 +890,8 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the record type");
-            Ok(self.ty(Ty::Record {
-                fields: fields.into_boxed_slice(),
-                tail,
-            }))
+            let fields = self.ast.make_slice(fields);
+            Ok(self.ty(Ty::Record { fields, tail }))
         } else {
             let mut tys = Vec::new();
             loop {
@@ -840,7 +903,8 @@ impl<'a> Parser<'a> {
                 }
             }
             expect!(self, Kind::RBrace, "expected '}' to close the tuple type");
-            Ok(self.ty(Ty::Tuple(tys.into_boxed_slice())))
+            let tys = self.ast.make_slice(tys);
+            Ok(self.ty(Ty::Tuple(tys)))
         }
     }
 
@@ -851,7 +915,7 @@ impl<'a> Parser<'a> {
         if self.at_op("<>")? {
             self.bump()?;
             return Ok(Some(EffectRow {
-                names: Box::new([]),
+                names: self.ast.make_slice(Vec::new()),
                 tail: None,
             }));
         }
@@ -860,7 +924,7 @@ impl<'a> Parser<'a> {
             let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: Box::new([]),
+                names: self.ast.make_slice(Vec::new()),
                 tail: Some(tail),
             }));
         }
@@ -872,7 +936,7 @@ impl<'a> Parser<'a> {
             let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: Box::new([]),
+                names: self.ast.make_slice(Vec::new()),
                 tail: Some(tail),
             }));
         }
@@ -892,7 +956,7 @@ impl<'a> Parser<'a> {
         };
         self.expect_op(">", "expected '>' to close the effect row")?;
         Ok(Some(EffectRow {
-            names: names.into_boxed_slice(),
+            names: self.ast.make_slice(names),
             tail,
         }))
     }
@@ -1052,6 +1116,56 @@ impl<'a> Parser<'a> {
                 let tok = self.bump()?;
                 Ok(self.tuple_indices(base, tok))
             }
+            // `recv.[i]` / `recv.[i, j, ...]`: an all-index access desugars to the
+            // OVERLOADABLE `index` (`index recv i`), so tensors, maps, and user types
+            // share the surface; a comma-list nests (`index (index t i) j`). A `p ... q`
+            // slot is an INCLUSIVE range slice of the leading axis (`@tensor_slice`).
+            Kind::LBrack => {
+                self.bump()?; // '['
+                let mut slots: Vec<SliceSlot> = Vec::new();
+                loop {
+                    // A leading `..` (two `Dot`s, not the `...` range token) is a full
+                    // axis; otherwise an expression, optionally `lo ... hi` for a range.
+                    if matches!(self.peek_kind()?, Kind::Dot)
+                        && matches!(self.peek_kind_at(1)?, Kind::Dot)
+                    {
+                        self.bump()?;
+                        self.bump()?;
+                        slots.push(SliceSlot::Full);
+                    } else {
+                        let lo = self.parse_expr(0)?;
+                        if matches!(self.peek_kind()?, Kind::Ellipsis) {
+                            self.bump()?;
+                            let hi = self.parse_expr(0)?;
+                            slots.push(SliceSlot::Range(lo, hi));
+                        } else {
+                            slots.push(SliceSlot::Index(lo));
+                        }
+                    }
+                    if !self.eat(|k| matches!(k, Kind::Comma))? {
+                        break;
+                    }
+                }
+                expect!(self, Kind::RBrack, "expected ']' to close the index");
+                // An all-index access desugars to the OVERLOADABLE `index` (so tensors,
+                // maps, and user types share `.[..]`); if any slot keeps an axis (a
+                // range or `..`), it is a tensor slice whose result shape the checker
+                // computes from the receiver.
+                if slots.iter().all(|s| matches!(s, SliceSlot::Index(_))) {
+                    let mut recv = base;
+                    for s in slots {
+                        let SliceSlot::Index(idx) = s else { unreachable!() };
+                        let index_fn = self.intern("index");
+                        let f = self.expr(Expr::Var { module: None, name: index_fn });
+                        let f = self.expr(Expr::App(f, recv));
+                        recv = self.expr(Expr::App(f, idx));
+                    }
+                    Ok(recv)
+                } else {
+                    let slots = self.ast.make_slice(slots);
+                    Ok(self.expr(Expr::Slice { recv: base, slots }))
+                }
+            }
             Kind::Word if is_upper(self.text(ahead)) => {
                 let ty = self.expect_bare_type_name(base, "a variant constructor")?;
                 self.bump()?; // the tag / type name
@@ -1152,7 +1266,8 @@ impl<'a> Parser<'a> {
             }
         }
         expect!(self, Kind::RBrace, "expected '}' to close the tuple");
-        Ok(self.expr(Expr::Tuple(elems.into_boxed_slice())))
+        let elems = self.ast.make_slice(elems);
+        Ok(self.expr(Expr::Tuple(elems)))
     }
 
     /// A record value body (the `{` is already consumed): `.field = e` entries and
@@ -1179,8 +1294,9 @@ impl<'a> Parser<'a> {
             }
         }
         expect!(self, Kind::RBrace, "expected '}' to close the record");
+        let fields = self.ast.make_slice(fields);
         Ok(self.expr(Expr::Record {
-            fields: fields.into_boxed_slice(),
+            fields,
             with,
             update,
         }))
@@ -1237,11 +1353,8 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the struct literal"
         );
-        Ok(self.expr(Expr::StructLit {
-            ty,
-            fields: fields.into_boxed_slice(),
-            spread,
-        }))
+        let fields = self.ast.make_slice(fields);
+        Ok(self.expr(Expr::StructLit { ty, fields, spread }))
     }
 
     /// A variant constructor with an optional `.{ payload }`.
@@ -1267,11 +1380,12 @@ impl<'a> Parser<'a> {
                 "expected '}' to close the variant payload"
             );
         }
+        let fields = self.ast.make_slice(fields);
         Ok(self.expr(Expr::Variant {
             module,
             ty,
             tag,
-            fields: fields.into_boxed_slice(),
+            fields,
         }))
     }
 
@@ -1306,7 +1420,8 @@ impl<'a> Parser<'a> {
             }
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list");
-        Ok(self.expr(Expr::List(elems.into_boxed_slice())))
+        let elems = self.ast.make_slice(elems);
+        Ok(self.expr(Expr::List(elems)))
     }
 
     /// An `@`-intrinsic in expression position: `@true`, `@false`, `@array`,
@@ -1324,6 +1439,14 @@ impl<'a> Parser<'a> {
             }
             "array" => self.parse_array(),
             "extern" => self.parse_extern(),
+            // Any other lowercase `@name` is a reference to a compiler intrinsic
+            // (`@tensor_create`, `@tensor_index`, `@vec_get`, ...), usable as a value
+            // function value. The `@` sigil marks it as a primitive, not a library fn.
+            other if other.starts_with(|c: char| c.is_ascii_lowercase()) => {
+                self.bump()?;
+                let name = self.intern(self.text(at));
+                Ok(self.expr(Expr::Var { module: None, name }))
+            }
             other => {
                 Err(self.unexpected(&at, &format!("'@{other}' is not valid in an expression")))
             }
@@ -1393,10 +1516,8 @@ impl<'a> Parser<'a> {
         }
         expect!(self, Kind::In, "expected 'in' after the 'let' bindings");
         let body = self.parse_expr(0)?;
-        Ok(self.expr(Expr::Let {
-            bindings: bindings.into_boxed_slice(),
-            body,
-        }))
+        let bindings = self.ast.make_slice(bindings);
+        Ok(self.expr(Expr::Let { bindings, body }))
     }
 
     fn parse_with(&mut self) -> Result<Aol<Expr>> {
@@ -1435,8 +1556,9 @@ impl<'a> Parser<'a> {
             };
             expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
             let body = self.parse_expr(0)?;
+            let patterns = self.ast.make_slice(patterns);
             arms.push(Arm {
-                patterns: patterns.into_boxed_slice(),
+                patterns,
                 guard,
                 body,
             });
@@ -1447,9 +1569,10 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let arms = self.ast.make_slice(arms);
         Ok(self.expr(Expr::Match {
             scrut,
-            arms: arms.into_boxed_slice(),
+            arms,
             default,
         }))
     }
@@ -1462,10 +1585,8 @@ impl<'a> Parser<'a> {
         }
         expect!(self, Kind::Eq, "expected '=' after the lambda parameters");
         let body = self.parse_expr(0)?;
-        Ok(self.expr(Expr::Lambda {
-            params: params.into_boxed_slice(),
-            body,
-        }))
+        let params = self.ast.make_slice(params);
+        Ok(self.expr(Expr::Lambda { params, body }))
     }
 
     fn parse_handle(&mut self) -> Result<Aol<Expr>> {
@@ -1510,7 +1631,7 @@ impl<'a> Parser<'a> {
         };
         let handler = Box::new(Handler {
             continuation,
-            clauses: clauses.into_boxed_slice(),
+            clauses: self.ast.make_slice(clauses),
             default,
         });
         Ok(self.expr(Expr::Handle {
@@ -1545,6 +1666,20 @@ impl<'a> Parser<'a> {
             }
             let t = self.peek()?;
             return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
+        }
+        // `lo ... hi`: an inclusive numeric range. Both bounds are numeric literals.
+        if matches!(self.peek_kind()?, Kind::Ellipsis) {
+            if !matches!(self.ast.pats.lookup(atom), Pattern::Int(_) | Pattern::Real(_)) {
+                let t = self.peek()?;
+                return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
+            }
+            self.bump()?; // '...'
+            let hi_tok = self.peek()?;
+            let hi = self.parse_pattern_atom()?;
+            if !matches!(self.ast.pats.lookup(hi), Pattern::Int(_) | Pattern::Real(_)) {
+                return Err(self.unexpected(&hi_tok, "a range '...' needs a numeric literal on its right"));
+            }
+            return Ok(self.pat(Pattern::Range { lo: atom, hi }));
         }
         Ok(atom)
     }
@@ -1647,17 +1782,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_pattern_payload(&mut self) -> Result<Box<[FieldPat]>> {
+    fn parse_pattern_payload(&mut self) -> Result<Slice<FieldPat>> {
         if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::LBrace) {
             self.bump()?; // '.'
             self.parse_field_pats()
         } else {
-            Ok(Box::new([]))
+            Ok(self.ast.make_slice(Vec::new()))
         }
     }
 
     /// A `{ field-patterns }` body. Assumes the next token is `{`.
-    fn parse_field_pats(&mut self) -> Result<Box<[FieldPat]>> {
+    fn parse_field_pats(&mut self) -> Result<Slice<FieldPat>> {
         expect!(
             self,
             Kind::LBrace,
@@ -1686,7 +1821,7 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the field patterns"
         );
-        Ok(fields.into_boxed_slice())
+        Ok(self.ast.make_slice(fields))
     }
 
     fn parse_list_pattern(&mut self) -> Result<Aol<Pattern>> {
@@ -1707,10 +1842,8 @@ impl<'a> Parser<'a> {
             }
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list pattern");
-        Ok(self.pat(Pattern::List {
-            elems: elems.into_boxed_slice(),
-            rest,
-        }))
+        let elems = self.ast.make_slice(elems);
+        Ok(self.pat(Pattern::List { elems, rest }))
     }
 
     fn parse_tuple_pattern(&mut self) -> Result<Aol<Pattern>> {
@@ -1733,7 +1866,8 @@ impl<'a> Parser<'a> {
             Kind::RBrace,
             "expected '}' to close the tuple pattern"
         );
-        Ok(self.pat(Pattern::Tuple(elems.into_boxed_slice())))
+        let elems = self.ast.make_slice(elems);
+        Ok(self.pat(Pattern::Tuple(elems)))
     }
 
     /// A record pattern body (the `{` is consumed): `.field = pat` / `.field`
@@ -1763,10 +1897,8 @@ impl<'a> Parser<'a> {
             }
         }
         expect!(self, Kind::RBrace, "expected '}' to close the record pattern");
-        Ok(self.pat(Pattern::Record {
-            fields: fields.into_boxed_slice(),
-            rest,
-        }))
+        let fields = self.ast.make_slice(fields);
+        Ok(self.pat(Pattern::Record { fields, rest }))
     }
 }
 

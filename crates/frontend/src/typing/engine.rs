@@ -32,6 +32,11 @@ pub struct Engine {
     /// `{ x | r }` is expected. A generic struct instance `App(Con("Box"), Int)`
     /// bridges by substituting its arguments for the parameter vars.
     struct_rows: std::collections::HashMap<String, (Vec<VarId>, Type)>,
+    /// Variables of the `Nat` kind (a size in `[n]T`). A `Nat` variable unifies
+    /// only with another `Nat` variable or a `Type::Nat`; kind mismatches are
+    /// rejected in [`Engine::bind`]. Snapshotted by save/restore so a rolled-back
+    /// trial cannot leave a stale id that a reused var slot would inherit.
+    nat_vars: HashSet<VarId>,
 }
 
 /// A checkpoint of the [`Engine`] state, taken by [`Engine::save`] and rewound by
@@ -39,6 +44,7 @@ pub struct Engine {
 pub struct Save {
     vars: Vec<Var>,
     level: Level,
+    nat_vars: HashSet<VarId>,
 }
 
 impl Default for Engine {
@@ -53,6 +59,73 @@ impl Engine {
             vars: Vec::new(),
             level: 0,
             struct_rows: std::collections::HashMap::new(),
+            nat_vars: HashSet::new(),
+        }
+    }
+
+    /// A fresh unbound variable of the `Nat` kind (a tensor size).
+    pub fn fresh_nat(&mut self) -> Type {
+        let ty = self.fresh();
+        if let Type::Var(id) = ty {
+            self.nat_vars.insert(id);
+        }
+        ty
+    }
+
+    /// A fresh `Generic` `Nat` variable, for the scheme of a size-polymorphic
+    /// built-in (instantiated, staying Nat-kinded, at each use).
+    pub fn fresh_generic_nat(&mut self) -> Type {
+        let ty = self.fresh_generic();
+        if let Type::Var(id) = ty {
+            self.nat_vars.insert(id);
+        }
+        ty
+    }
+
+    fn is_nat_var(&self, id: VarId) -> bool {
+        self.nat_vars.contains(&id)
+    }
+
+    /// Mark every variable in a size expression (a `Nat` position) as `Nat`-kinded.
+    fn note_nat(&mut self, ty: &Type) {
+        match self.resolve(ty) {
+            Type::Var(id) => {
+                self.nat_vars.insert(id);
+            }
+            Type::NatAdd(a, b) | Type::NatMul(a, b) => {
+                self.note_nat(&a);
+                self.note_nat(&b);
+            }
+            _ => {}
+        }
+    }
+
+    /// Walk a type and mark every tensor-size variable as `Nat`. Kind is not carried
+    /// in a `Type::Var`, so a scheme imported across modules (fresh plain generics)
+    /// must be re-annotated from its structure, else a size var unifies as a type.
+    pub fn note_tensor_sizes(&mut self, ty: &Type) {
+        match self.resolve(ty) {
+            Type::App(head, elem) => {
+                if let Type::App(con, size) = self.resolve(&head) {
+                    if matches!(self.resolve(&con), Type::Con(n) if n == "@tensor") {
+                        self.note_nat(&size);
+                    }
+                }
+                self.note_tensor_sizes(&head);
+                self.note_tensor_sizes(&elem);
+            }
+            Type::Arrow(from, to, eff) => {
+                self.note_tensor_sizes(&from);
+                self.note_tensor_sizes(&to);
+                self.note_tensor_sizes(&eff);
+            }
+            Type::Tuple(items) => items.iter().for_each(|t| self.note_tensor_sizes(t)),
+            Type::Record(row) => self.note_tensor_sizes(&row),
+            Type::RowField(_, t, rest) => {
+                self.note_tensor_sizes(&t);
+                self.note_tensor_sizes(&rest);
+            }
+            _ => {}
         }
     }
 
@@ -108,12 +181,14 @@ impl Engine {
         Save {
             vars: self.vars.clone(),
             level: self.level,
+            nat_vars: self.nat_vars.clone(),
         }
     }
 
     pub fn restore(&mut self, save: Save) {
         self.vars = save.vars;
         self.level = save.level;
+        self.nat_vars = save.nat_vars;
     }
 
     // -- resolution ---------------------------------------------------------
@@ -133,6 +208,8 @@ impl Engine {
     pub fn zonk(&self, ty: &Type) -> Type {
         match self.resolve(ty) {
             Type::App(head, arg) => Type::app(self.zonk(&head), self.zonk(&arg)),
+            Type::NatAdd(a, b) => Type::NatAdd(Box::new(self.zonk(&a)), Box::new(self.zonk(&b))),
+            Type::NatMul(a, b) => Type::NatMul(Box::new(self.zonk(&a)), Box::new(self.zonk(&b))),
             Type::Arrow(from, to, eff) => {
                 Type::arrow_eff(self.zonk(&from), self.zonk(&to), self.zonk(&eff))
             }
@@ -158,6 +235,9 @@ impl Engine {
             (Type::Var(i), _) => self.bind(*i, &b),
             (_, Type::Var(j)) => self.bind(*j, &a),
             (Type::Con(x), Type::Con(y)) if x == y => Ok(()),
+            // Sizes (Nat literals and `+`/`*` expressions) unify by their canonical
+            // polynomial (a bare Nat variable was already handled by the Var arms).
+            _ if self.is_size(&a) || self.is_size(&b) => self.unify_size(&a, &b, where_),
             (Type::Arrow(a1, a2, ae), Type::Arrow(b1, b2, be)) => {
                 self.unify(a1, b1, where_)?;
                 self.unify(a2, b2, where_)?;
@@ -186,6 +266,65 @@ impl Engine {
                 Some(r) => r,
                 None => Err(self.mismatch(&a, &b, where_)),
             },
+        }
+    }
+
+    /// Is `ty` a type-level size (a `Nat` literal or a `+`/`*` expression)? A bare
+    /// size *variable* is handled by unify's `Var` arms, so it is not needed here.
+    fn is_size(&self, ty: &Type) -> bool {
+        matches!(
+            self.resolve(ty),
+            Type::Nat(_) | Type::NatAdd(..) | Type::NatMul(..)
+        )
+    }
+
+    /// Unify two sizes by their canonical polynomial over Z/2^64. Equal polynomials
+    /// unify; otherwise, if one whole side is a lone unbound variable not occurring
+    /// in the other, bind it (the forward-eval rule). No back-solving of embedded
+    /// variables (e.g. `n + 1 == 5` is not solved), which keeps this decidable.
+    fn unify_size(&mut self, a: &Type, b: &Type, where_: &str) -> Result<()> {
+        let pa = self.normalize_size(a);
+        let pb = self.normalize_size(b);
+        if pa == pb {
+            return Ok(());
+        }
+        if let Some(v) = lone_var(&pa) {
+            if !poly_has_var(&pb, v) {
+                return self.bind(v, b);
+            }
+        }
+        if let Some(v) = lone_var(&pb) {
+            if !poly_has_var(&pa, v) {
+                return self.bind(v, a);
+            }
+        }
+        Err(Diagnostic::error(
+            Code::TypeMismatch,
+            Span::at(0),
+            0,
+            format!(
+                "size mismatch {where_}: cannot unify `{}` with `{}`",
+                show_poly(&pa),
+                show_poly(&pb)
+            ),
+        ))
+    }
+
+    /// Normalize a size to a canonical polynomial over Z/2^64: a sorted list of
+    /// `(coefficient, sorted variable monomial)` terms, like terms combined, zero
+    /// terms dropped. Bound variables are followed, so equality is decidable and
+    /// `n + m` and `m + n` share a normal form.
+    fn normalize_size(&self, ty: &Type) -> Poly {
+        match self.resolve(ty) {
+            Type::Nat(k) => canon(vec![(k, vec![])]),
+            Type::Var(id) => vec![(1, vec![id])],
+            Type::NatAdd(a, b) => {
+                let mut t = self.normalize_size(&a);
+                t.extend(self.normalize_size(&b));
+                canon(t)
+            }
+            Type::NatMul(a, b) => poly_mul(&self.normalize_size(&a), &self.normalize_size(&b)),
+            _ => Vec::new(),
         }
     }
 
@@ -229,6 +368,12 @@ impl Engine {
             Type::Var(id) => sub.get(&id).cloned().unwrap_or(Type::Var(id)),
             Type::App(head, arg) => {
                 Type::app(self.subst_vars(&head, sub), self.subst_vars(&arg, sub))
+            }
+            Type::NatAdd(a, b) => {
+                Type::NatAdd(Box::new(self.subst_vars(&a, sub)), Box::new(self.subst_vars(&b, sub)))
+            }
+            Type::NatMul(a, b) => {
+                Type::NatMul(Box::new(self.subst_vars(&a, sub)), Box::new(self.subst_vars(&b, sub)))
             }
             Type::Arrow(from, to, eff) => Type::arrow_eff(
                 self.subst_vars(&from, sub),
@@ -385,9 +530,47 @@ impl Engine {
                 return Ok(());
             }
         };
+        self.check_kind(id, ty)?;
         self.occurs_and_adjust(id, level, ty)?;
         self.vars[id as usize] = Var::Linked(ty.clone());
         Ok(())
+    }
+
+    /// A `Nat`-kinded variable may bind only to a `Nat` literal or another
+    /// `Nat`-kinded variable; a `Type` variable may not bind to a `Nat`. Binding a
+    /// `Nat` variable to a plain variable makes that variable `Nat` too.
+    fn check_kind(&mut self, id: VarId, ty: &Type) -> Result<()> {
+        let want_nat = self.is_nat_var(id);
+        match self.resolve(ty) {
+            Type::Nat(_) | Type::NatAdd(..) | Type::NatMul(..) => {
+                if !want_nat {
+                    return Err(self.kind_mismatch(true));
+                }
+            }
+            Type::Var(other) => {
+                let other_nat = self.is_nat_var(other);
+                if want_nat && !other_nat {
+                    self.nat_vars.insert(other);
+                } else if !want_nat && other_nat {
+                    self.nat_vars.insert(id);
+                }
+            }
+            _ => {
+                if want_nat {
+                    return Err(self.kind_mismatch(false));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn kind_mismatch(&self, found_nat: bool) -> Diagnostic {
+        let msg = if found_nat {
+            "kind mismatch: a size (`Nat`) where a type was expected"
+        } else {
+            "kind mismatch: a type where a size (`Nat`) was expected"
+        };
+        Diagnostic::error(Code::TypeMismatch, Span::at(0), 0, msg)
     }
 
     /// The occurs check, fused with the level-lowering that generalization
@@ -411,10 +594,14 @@ impl Engine {
                 }
                 Ok(())
             }
-            Type::Con(_) | Type::RowEmpty => Ok(()),
+            Type::Con(_) | Type::Nat(_) | Type::RowEmpty => Ok(()),
             Type::App(head, arg) => {
                 self.occurs_and_adjust(id, level, &head)?;
                 self.occurs_and_adjust(id, level, &arg)
+            }
+            Type::NatAdd(a, b) | Type::NatMul(a, b) => {
+                self.occurs_and_adjust(id, level, &a)?;
+                self.occurs_and_adjust(id, level, &b)
             }
             Type::Arrow(from, to, eff) => {
                 self.occurs_and_adjust(id, level, &from)?;
@@ -477,6 +664,10 @@ impl Engine {
                 self.generalize_except(&head, mono);
                 self.generalize_except(&arg, mono);
             }
+            Type::NatAdd(a, b) | Type::NatMul(a, b) => {
+                self.generalize_except(&a, mono);
+                self.generalize_except(&b, mono);
+            }
             Type::Arrow(from, to, eff) => {
                 self.generalize_except(&from, mono);
                 self.generalize_except(&to, mono);
@@ -489,7 +680,7 @@ impl Engine {
                 self.generalize_except(&ty, mono);
                 self.generalize_except(&rest, mono);
             }
-            Type::Con(_) | Type::RowEmpty => {}
+            Type::Con(_) | Type::Nat(_) | Type::RowEmpty => {}
         }
     }
 
@@ -504,6 +695,10 @@ impl Engine {
                 self.collect_vars(&head, out);
                 self.collect_vars(&arg, out);
             }
+            Type::NatAdd(a, b) | Type::NatMul(a, b) => {
+                self.collect_vars(&a, out);
+                self.collect_vars(&b, out);
+            }
             Type::Arrow(from, to, eff) => {
                 self.collect_vars(&from, out);
                 self.collect_vars(&to, out);
@@ -516,7 +711,7 @@ impl Engine {
                 self.collect_vars(&ty, out);
                 self.collect_vars(&rest, out);
             }
-            Type::Con(_) | Type::RowEmpty => {}
+            Type::Con(_) | Type::Nat(_) | Type::RowEmpty => {}
         }
     }
 
@@ -530,15 +725,33 @@ impl Engine {
     fn instantiate_with(&mut self, ty: &Type, mapping: &mut HashMap<VarId, Type>) -> Type {
         match self.resolve(ty) {
             Type::Var(id) => match self.vars[id as usize] {
-                Var::Generic => mapping
-                    .entry(id)
-                    .or_insert_with(|| self.fresh_raw())
-                    .clone(),
+                Var::Generic => {
+                    if let Some(t) = mapping.get(&id) {
+                        return t.clone();
+                    }
+                    let fresh = self.fresh_raw();
+                    // A refreshed size variable stays `Nat`-kinded.
+                    if self.is_nat_var(id) {
+                        if let Type::Var(fid) = fresh {
+                            self.nat_vars.insert(fid);
+                        }
+                    }
+                    mapping.insert(id, fresh.clone());
+                    fresh
+                }
                 _ => Type::Var(id),
             },
             Type::App(head, arg) => Type::app(
                 self.instantiate_with(&head, mapping),
                 self.instantiate_with(&arg, mapping),
+            ),
+            Type::NatAdd(a, b) => Type::NatAdd(
+                Box::new(self.instantiate_with(&a, mapping)),
+                Box::new(self.instantiate_with(&b, mapping)),
+            ),
+            Type::NatMul(a, b) => Type::NatMul(
+                Box::new(self.instantiate_with(&a, mapping)),
+                Box::new(self.instantiate_with(&b, mapping)),
             ),
             Type::Arrow(from, to, eff) => Type::arrow_eff(
                 self.instantiate_with(&from, mapping),
@@ -592,4 +805,72 @@ impl Engine {
         };
         display(&zonked, &mut namer)
     }
+}
+
+/// A size normalized to a polynomial over Z/2^64: `(coefficient, sorted variable
+/// monomial)` terms, canonical (like terms combined, zeros dropped, sorted), so
+/// structural equality decides size equality (`n + m` and `m + n` share a form).
+type Poly = Vec<(u64, Vec<VarId>)>;
+
+/// Canonicalize: sort each monomial, combine like terms (wrapping add), drop zeros.
+fn canon(mut terms: Poly) -> Poly {
+    for (_, m) in terms.iter_mut() {
+        m.sort_unstable();
+    }
+    terms.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut out: Poly = Vec::new();
+    for (c, m) in terms {
+        match out.last_mut() {
+            Some(last) if last.1 == m => last.0 = last.0.wrapping_add(c),
+            _ => out.push((c, m)),
+        }
+    }
+    out.retain(|(c, _)| *c != 0);
+    out
+}
+
+fn poly_mul(a: &Poly, b: &Poly) -> Poly {
+    let mut terms: Poly = Vec::new();
+    for (ca, ma) in a {
+        for (cb, mb) in b {
+            let mut m = ma.clone();
+            m.extend(mb.iter().copied());
+            terms.push((ca.wrapping_mul(*cb), m));
+        }
+    }
+    canon(terms)
+}
+
+/// The single variable of a bare-variable polynomial `1*v`, else None.
+fn lone_var(p: &Poly) -> Option<VarId> {
+    match p.as_slice() {
+        [(1, m)] if m.len() == 1 => Some(m[0]),
+        _ => None,
+    }
+}
+
+fn poly_has_var(p: &Poly, v: VarId) -> bool {
+    p.iter().any(|(_, m)| m.contains(&v))
+}
+
+fn show_poly(p: &Poly) -> String {
+    if p.is_empty() {
+        return "0".to_string();
+    }
+    let mut s = String::new();
+    for (i, (c, m)) in p.iter().enumerate() {
+        if i > 0 {
+            s.push_str(" + ");
+        }
+        if m.is_empty() {
+            s.push_str(&c.to_string());
+        } else {
+            if *c != 1 {
+                s.push_str(&format!("{c}*"));
+            }
+            let vs: Vec<String> = m.iter().map(|v| format!("t{v}")).collect();
+            s.push_str(&vs.join("*"));
+        }
+    }
+    s
 }
