@@ -1,5 +1,6 @@
 @mod RANGES
 $ with LIST
+$ with LA
 
 # \file ranges.thx
 # \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
@@ -29,12 +30,19 @@ $ band : Real -> Int = \x =
 	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 $ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
 
-# EXPRESSION form: `[lo ... hi]` builds the inclusive list of Ints (empty when
-# lo > hi). It is a `List`, since the length is a runtime value (not a sized `[n]T`
-# tensor). Desugars to the auto-imported `range lo hi`.
+# EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
+# same `...`, materialized). By default it is a `List Int` (a runtime-length
+# sequence). Empty when lo > hi.
 $ ns : List Int = [1 ... 4]                         # [1, 2, 3, 4]
 $ ck_build : Int = if sum ns ?= 10 => 0 else 64
 $ ck_len   : Int = if length ns ?= 4 => 0 else 128
 $ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256
 
-$ test : Int = ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty
+# Against a sized tensor `[n]T` it builds the tensor instead: the LITERAL bounds fix
+# `n = hi - lo + 1` at compile time. A non-literal bound to a sized tensor is a
+# compile-time error (its length would not be statically known).
+$ tv : [4]Int = [1 ... 4]                           # the tensor [1, 2, 3, 4]
+$ ck_tens : Int = if tv.[0] + tv.[3] ?= 5 => 0 else 512
+
+$ test : Int =
+	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens

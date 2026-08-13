@@ -427,6 +427,14 @@ pub enum Expr {
     Tuple(Slice<Aol<Expr>>),
     /// `[ a, b, ... ]` / `[]`.
     List(Slice<Aol<Expr>>),
+    /// The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal: it
+    /// materializes into a sized tensor `[n]T` (when a tensor is expected and the
+    /// bounds are literals, so the length is a compile-time constant), otherwise a
+    /// `List Int` (the default). Both bounds are `Int`.
+    Range {
+        lo: Aol<Expr>,
+        hi: Aol<Expr>,
+    },
     /// Multi-axis tensor slice `recv.[s0, s1, ...]` where at least one slot is a
     /// range or a full `..` (an all-index access desugars to `index` instead). An
     /// `Index` slot reduces its axis; a `Range`/`Full` slot keeps it (a view).

@@ -216,10 +216,17 @@ is neutral, compatible with either. Variance governs which operations type-check
 `matmul` contracts a `@co` axis against a `@contra` axis (the Einstein-summation
 rule), so swapping a factor's variance is a type error, not just a shape mismatch.
 
-The EXPRESSION-form range `[lo ... hi]` builds the inclusive list of Ints from `lo`
-to `hi` (empty when `lo > hi`); it is a `List` (the length is a runtime value, not a
-sized `[n]T`). It uses the same `...` as range patterns and slices, and desugars to
-the auto-imported `range lo hi`.
+The EXPRESSION-form range `[lo ... hi]` is a type-directed inclusive-range literal
+(the same `...` as range patterns and slices). Its target is chosen from the expected
+type:
+
+	$ tv : [4]Int   = [1 ... 4]     # a sized tensor (literal bounds fix n = 4)
+	$ ns : List Int = [1 ... 5]     # a List (the default)
+
+Against a sized tensor `[n]T` the bounds must be literals, so the length is a
+compile-time constant (a non-literal bound is a compile-time error); the elements are
+checked against `T`. With no annotation it is a `List Int` (the auto-imported
+inclusive `range lo hi`). Empty when `lo > hi`.
 
 Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
 function (`index t i`). `LA` provides the tensor candidate (`index : [n]a -> Int

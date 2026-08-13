@@ -246,21 +246,14 @@ fn inclusive_range_pattern_parses() {
 }
 
 #[test]
-fn range_builder_desugars_to_range_call() {
-    // `[lo ... hi]` in expression position desugars to `range lo hi`.
+fn range_builder_parses_to_range_node() {
+    // `[lo ... hi]` parses to a type-directed `Expr::Range`, not a desugared call.
     let p = prog("@mod M\n$ r = [1 ... 5]");
-    let Expr::App(f, hi) = p.ast.expr(only_def_body(&p)) else {
-        panic!("expected an application")
-    };
-    assert!(matches!(p.ast.expr(*hi), Expr::Int(5)));
-    let Expr::App(range, lo) = p.ast.expr(*f) else {
-        panic!("expected the inner application")
+    let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a range")
     };
     assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
-    let Expr::Var { name, .. } = p.ast.expr(*range) else {
-        panic!("expected `range`")
-    };
-    assert_eq!(p.ast.text(*name), "range");
+    assert!(matches!(p.ast.expr(*hi), Expr::Int(5)));
     // A comma list is still a plain list, not a range.
     let p = prog("@mod M\n$ r = [1, 2, 3]");
     let Expr::List(elems) = p.ast.expr(only_def_body(&p)) else {

@@ -258,12 +258,19 @@ constraints. Status now:
   PATTERNS (`is lo ... hi`). Element-generic ops via `@ctx` dictionaries. Per-axis
   variance `@contra`/`@co` with a variance-typed `matmul` (increment 4). The LA
   capstone is complete.
-- **Done (separate from LA):** expression-form ranges `[lo ... hi]`, the inclusive
-  Int list. Parser sugar desugaring to the auto-imported `CORE.range`; builds a
-  `List` (runtime length). See [[range-patterns]] and doc/syntax-roadmap.md #9.
+- **Done (separate from LA):** expression-form ranges `[lo ... hi]` as a
+  TYPE-DIRECTED literal (`Expr::Range`): materializes to a sized tensor `[n]T` when a
+  tensor is expected and the bounds are literals (static length), else a `List Int`
+  (default). A non-literal bound against a sized tensor is a compile-time error. See
+  [[range-patterns]] and doc/syntax-roadmap.md #9.
 - **Deferred (separate from LA):**
-  - A first-class `Range` descriptor type (today `[lo ... hi]` eagerly materializes
-    a `List`; a lazy/step-carrying `Range` is future work).
+  - The codata-STREAM default (an unannotated range materializing lazily as a
+    stream) and Array/Vec targets: both ride the same `Expr::Range` node once a
+    canonical `Stream` codata type exists. This is the "first-class lazy Range",
+    subsumed by making the literal target codata (no separate `Range` type needed).
+  - A compile-time-CONSTANT (non-literal) bound against a sized tensor (`let a = 4
+    in [1 ... a]`): needs a const-eval pass; currently errors.
+  - Step/stride and descending ranges.
   - COW value semantics (views alias today; rc>1 writes should copy).
   - Static result-shape typing (fold the index over the axis list).
   - The `data`/`codata` split and its interaction with streams.

@@ -734,6 +734,32 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            Expr::Range { lo, hi } => {
+                let (lo, hi) = (*lo, *hi);
+                if self.resolved.tensor_exprs.contains(&e) {
+                    // Resolved to a sized tensor: the checker proved the bounds are
+                    // literals, so the elements are known here. Push `lo..=hi` into a
+                    // vector, then `@tensor_stack` builds the flat strided tensor.
+                    let lit = |ast: &Ast, x| match ast.expr(x) {
+                        Expr::Int(n) => *n,
+                        _ => unreachable!("a range tensor has literal bounds"),
+                    };
+                    let (l, h) = (lit(self.ast, lo), lit(self.ast, hi));
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                    if h >= l {
+                        for v in l..=h {
+                            acc = Term::app(Term::app(Term::var("@vec_push"), acc), Term::Int(v));
+                        }
+                    }
+                    Term::app(Term::var("@tensor_stack"), acc)
+                } else {
+                    // The default `List Int`: the inclusive `CORE.range lo hi`.
+                    let lo = self.expr(lo);
+                    let hi = self.expr(hi);
+                    Term::app(Term::app(Term::var("range"), lo), hi)
+                }
+            }
+
             Expr::Array { size } => Term::app(Term::var("@array_alloc"), self.expr(*size)),
 
             Expr::Field { record, name } => {

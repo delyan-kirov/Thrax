@@ -1446,17 +1446,14 @@ impl<'a> Parser<'a> {
             return Ok(self.expr(Expr::List(elems)));
         }
         let first = self.parse_expr(0)?;
-        // The range builder `[lo ... hi]`: an inclusive Int sequence. Desugars to a
-        // `range lo hi` call (`range` lives in the auto-imported `CORE`), so its
-        // meaning stays an ordinary resolvable function rather than a core node.
+        // The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal
+        // (`Expr::Range`): the checker resolves it to a sized tensor `[n]T` or, by
+        // default, a `List Int`. It is not desugared here so the target stays open.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
             self.bump()?; // '...'
             let hi = self.parse_expr(0)?;
             expect!(self, Kind::RBrack, "expected ']' to close the range");
-            let name = self.intern("range");
-            let f = self.expr(Expr::Var { module: None, name });
-            let f = self.expr(Expr::App(f, first));
-            return Ok(self.expr(Expr::App(f, hi)));
+            return Ok(self.expr(Expr::Range { lo: first, hi }));
         }
         let mut elems = vec![first];
         if self.eat(|k| matches!(k, Kind::Comma))? {

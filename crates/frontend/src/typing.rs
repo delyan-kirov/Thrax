@@ -966,6 +966,34 @@ impl<'a> Checker<'a> {
                 self.tensor_exprs.insert(e);
                 Ok(())
             }
+            // A range `[lo ... hi]` where a sized tensor `[n]T` is expected. The
+            // length must be a COMPILE-TIME constant, so the bounds must be literals;
+            // it fixes `n = hi - lo + 1` (0 when `hi < lo`). Bounds are checked
+            // against the element type, so `[4]Nat = [1 ... 4]` types the ends as Nat.
+            Expr::Range { lo, hi } if self.tensor_parts(expected).is_some() => {
+                let (lo, hi) = (*lo, *hi);
+                let (size, elem) = self.tensor_parts(expected).expect("guarded");
+                let (Some(l), Some(h)) = (self.int_literal(lo), self.int_literal(hi)) else {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a range building a sized tensor `[n]T` needs literal bounds, \
+                         so its length is known at compile time";
+                        note: "a compile-time-constant bound (e.g. `let a = 4 in [1 ... a]`) \
+                               is not resolved yet; use integer literals, or annotate the \
+                               range as a `List` for a runtime-length sequence"
+                    ));
+                };
+                let n = if h >= l { (h - l + 1) as u64 } else { 0 };
+                self.eng.unify(
+                    &size,
+                    &Type::Nat(n),
+                    "in a range tensor (its bounds fix the length)",
+                )?;
+                self.check(lo, &elem)?;
+                self.check(hi, &elem)?;
+                self.tensor_exprs.insert(e);
+                Ok(())
+            }
             // `{ .obs = e, ... }` where a codata type is expected: construct it (each
             // clause becomes a thunk). Every observation must be given.
             Expr::Record {
@@ -1998,6 +2026,17 @@ impl<'a> Checker<'a> {
                     self.eng.unify(&elem, &t, "in a list literal")?;
                 }
                 Ok(Type::app(Type::con(ty::LIST), elem))
+            }
+
+            // A range `[lo ... hi]` with no expected type defaults to `List Int`
+            // (lowering emits `range lo hi`). The sized-tensor target is reached only
+            // through `check` against a `[n]T`.
+            Expr::Range { lo, hi } => {
+                let (lo, hi) = (*lo, *hi);
+                let int = Type::con(ty::INT);
+                self.check(lo, &int)?;
+                self.check(hi, &int)?;
+                Ok(Type::app(Type::con(ty::LIST), int))
             }
 
             Expr::If { cond, then, alt } => {
@@ -3261,6 +3300,15 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The value of an `Int` literal expression, else `None` (used to read the
+    /// compile-time bounds of a range that builds a sized tensor).
+    fn int_literal(&self, e: Aol<Expr>) -> Option<i64> {
+        match self.node(e) {
+            Expr::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+
     /// Peel a sized-tensor type `@tensor variance size elem` into `(size, elem)`,
     /// discarding the variance (callers here only need the length and element).
     fn tensor_parts(&self, ty: &Type) -> Option<(Type, Type)> {
@@ -3632,6 +3680,10 @@ fn free_globals<'a>(
             .slice(*items)
             .iter()
             .for_each(|e| free_globals(ast, *e, globals, bound, out)),
+        Expr::Range { lo, hi } => {
+            free_globals(ast, *lo, globals, bound, out);
+            free_globals(ast, *hi, globals, bound, out);
+        }
         Expr::Array { size } => free_globals(ast, *size, globals, bound, out),
         Expr::Slice { recv, slots } => {
             free_globals(ast, *recv, globals, bound, out);
