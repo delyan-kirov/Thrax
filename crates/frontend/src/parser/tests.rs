@@ -157,10 +157,43 @@ fn sized_tensor_type_parses() {
     let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem } => {
+            Ty::Sized { size, elem, .. } => {
                 assert!(matches!(p.ast.ty(*size), Ty::Nat(3)));
                 assert!(matches!(p.ast.ty(*elem), Ty::Con { .. }));
             }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
+fn axis_variance_parses() {
+    // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
+    let p = prog("@mod M\n$ f : [@contra 2, @co 3]Int -> Int = \\m = 0");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Arrow { from, .. } => match p.ast.ty(*from) {
+                Ty::Sized {
+                    variance, elem, ..
+                } => {
+                    assert_eq!(*variance, Variance::Contra);
+                    match p.ast.ty(*elem) {
+                        Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Co),
+                        other => panic!("expected a nested Sized, got {other:?}"),
+                    }
+                }
+                other => panic!("expected a sized type, got {other:?}"),
+            },
+            other => panic!("expected an arrow, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+    // A bare axis is Neutral.
+    let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Neutral),
             other => panic!("expected a sized type, got {other:?}"),
         },
         other => panic!("expected a def, got {other:?}"),
@@ -173,7 +206,7 @@ fn shape_sugar_nests() {
     let p = prog("@mod M\n$ g : [2, 3]Int = [ [1,2,3], [4,5,6] ]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem } => {
+            Ty::Sized { size, elem, .. } => {
                 assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
                 match p.ast.ty(*elem) {
                     Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::Nat(3))),
@@ -210,6 +243,30 @@ fn inclusive_range_pattern_parses() {
         .expect("expected a parse error")
         .to_string();
     assert!(msg.contains("numeric literal"), "{msg}");
+}
+
+#[test]
+fn range_builder_desugars_to_range_call() {
+    // `[lo ... hi]` in expression position desugars to `range lo hi`.
+    let p = prog("@mod M\n$ r = [1 ... 5]");
+    let Expr::App(f, hi) = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected an application")
+    };
+    assert!(matches!(p.ast.expr(*hi), Expr::Int(5)));
+    let Expr::App(range, lo) = p.ast.expr(*f) else {
+        panic!("expected the inner application")
+    };
+    assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
+    let Expr::Var { name, .. } = p.ast.expr(*range) else {
+        panic!("expected `range`")
+    };
+    assert_eq!(p.ast.text(*name), "range");
+    // A comma list is still a plain list, not a range.
+    let p = prog("@mod M\n$ r = [1, 2, 3]");
+    let Expr::List(elems) = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a list")
+    };
+    assert_eq!(elems.len(), 3);
 }
 
 #[test]

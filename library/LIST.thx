@@ -73,10 +73,6 @@ $ find : (t -> Bool) -> List t -> Option t = \p xs =
 $ contains : (t -> t -> Bool) -> t -> List t -> Bool = \eqf x xs =
 	any (\y = eqf x y) xs
 
-# [lo, hi): counts up from `lo`, excludes `hi`.
-$ range : Int -> Int -> List Int = \lo hi =
-	if lo >= hi => [] else lo :: range (lo + 1) hi
-
 $ zip : List a -> List b -> List {a, b} = \xs ys =
 	is xs
 		| xh :: xt =>

@@ -8,7 +8,7 @@
 $ with LIST
 $ with OPT
 
-$ xs : List Int = range 1 6 # [1, 2, 3, 4, 5]
+$ xs : List Int = range 1 5 # [1, 2, 3, 4, 5]
 
 $ ck_range  : Int = if (length xs) ?= 5 => 0 else 1
 $ ck_sum    : Int = if (sum xs) ?= 15 => 0 else 1

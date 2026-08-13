@@ -248,6 +248,17 @@ pub struct PayloadField {
 
 // -- types -------------------------------------------------------------------
 
+/// The variance of a tensor axis. `Contra` is an upper (contravariant) index, a
+/// vector/column component living in `V`; `Co` is a lower (covariant) index, a
+/// covector/row living in the dual `V*`. `Neutral` is an unmarked axis, compatible
+/// with either (so plain `[n]T` code interoperates with variance-typed tensors).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Variance {
+    Neutral,
+    Co,
+    Contra,
+}
+
 #[derive(Debug)]
 pub enum Ty {
     /// A type constructor: `Int`, `@int64`, or module-qualified `A.B`.
@@ -261,8 +272,11 @@ pub enum Ty {
     /// A size product `a * b` inside a tensor size (`[n*m]T`).
     SizeMul(Aol<Ty>, Aol<Ty>),
     /// A sized tensor type `[size]elem`, e.g. `[5]Int` or `[n]a`. `size` is a `Nat`
-    /// literal or a (Nat-kinded) `Var`; `elem` is the element type.
+    /// literal or a (Nat-kinded) `Var`; `elem` is the element type. `variance` tags
+    /// the axis: `[@Contra n]`/`[@Co n]` are the two standard tensor-index kinds, a
+    /// bare `[n]` is `Neutral`.
     Sized {
+        variance: Variance,
         size: Aol<Ty>,
         elem: Aol<Ty>,
     },

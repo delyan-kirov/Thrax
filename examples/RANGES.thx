@@ -1,4 +1,5 @@
 @mod RANGES
+$ with LIST
 
 # \file ranges.thx
 # \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
@@ -6,6 +7,7 @@
 #       inclusive (Jai-style: there is only the inclusive form). A range is
 #       refutable and binds nothing, so a match over ranges needs an `else`. The
 #       scrutinee variable stays in scope in the arm if you need the value.
+#       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
 $ grade : Int -> Str = \n =
 	is n
@@ -27,4 +29,12 @@ $ band : Real -> Int = \x =
 	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 $ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
 
-$ test : Int = ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r
+# EXPRESSION form: `[lo ... hi]` builds the inclusive list of Ints (empty when
+# lo > hi). It is a `List`, since the length is a runtime value (not a sized `[n]T`
+# tensor). Desugars to the auto-imported `range lo hi`.
+$ ns : List Int = [1 ... 4]                         # [1, 2, 3, 4]
+$ ck_build : Int = if sum ns ?= 10 => 0 else 64
+$ ck_len   : Int = if length ns ?= 4 => 0 else 128
+$ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256
+
+$ test : Int = ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty

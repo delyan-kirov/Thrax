@@ -89,7 +89,18 @@ $ colB : [2]Int = mA.[.., 1]                # column 1 = [2, 5]
 $ blk  : [2, 2]Int = mA.[0 ... 1, 1 ... 2]  # rows0-1, cols1-2 = [[2,3],[5,6]]
 $ ck_ms : Int = if colB.[1] + blk.[1, 1] ?= 11 => 0 else 262144   # 5 + 6
 
+# VARIANCE: axes carry a co/contra tag. A matrix is `[@contra m, @co n]` (an upper
+# contravariant row index, a lower covariant column index). `matmul` contracts `a`'s
+# `@co k` against `b`'s `@contra k`, the Einstein-summation rule (an upper index
+# pairs with a lower one), so swapping a factor's variance is a type error. A plain
+# `[m, n]` matrix is neutral, compatible with either, which is why the checks above
+# still typed against the variance-typed `matmul`.
+$ vA : [@contra 2, @co 2]Int = [ [1, 2], [3, 4] ]
+$ vB : [@contra 2, @co 2]Int = [ [1, 0], [1, 1] ]
+$ vC : [@contra 2, @co 2]Int = matmul vA vB
+$ ck_var : Int = if vC.[1, 1] ?= 4 => 0 else 524288   # 3*0 + 4*1
+
 $ test : Int =
 	  ck_get + ck_wrap + ck_wrap2 + ck_poly + ck_elem + ck_nested
 	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext + ck_gen
-	+ ck_row + ck_col + ck_slc + ck_rng + ck_ms
+	+ ck_row + ck_col + ck_slc + ck_rng + ck_ms + ck_var

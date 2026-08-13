@@ -146,7 +146,7 @@ index type), and axis variance (co/contra) lives in the tensor *type*, not the
 index. See doc/ranges-codata-linalg.md. A brief sequence-indexing prototype on
 `.n` was implemented and then reverted once this split was settled.
 
-### #9 Ranges: pattern form DONE (`is lo ... hi`); expression form deferred
+### #9 Ranges: pattern form DONE (`is lo ... hi`); expression form DONE (`[lo ... hi]`)
 
 **Range PATTERNS shipped** (inclusive only, Jai-style): `is n | 90 ... 100 => ...`.
 Chosen spelling is `...` (a new `Ellipsis` lexer token; `..` stays free for
@@ -159,10 +159,18 @@ exhaustiveness checker, so a range match falls through to the runtime "no patter
 matched" fault when no `else` and nothing matches.
 
 - **Deferred: half-open ranges** (`..<`). Patterns almost always want inclusive
-  (Rust `..=`, Zig `...`); revisit `..<` if/when the expression form needs it.
-- **Deferred: the EXPRESSION form** `[1 ... 10]` (a list/array builder). Decision
-  when built: desugar to a **library** `range` function (recommended) or a core
-  primitive; step/stride (recommend none for v1).
+  (Rust `..=`, Zig `...`); revisit `..<` if/when a use needs it.
+- **EXPRESSION form `[lo ... hi]` DONE** (2026-08-13): the inclusive Int list. Pure
+  parser sugar: `parse_list` sees `expr ... expr` inside `[..]` and desugars to a
+  `range lo hi` call, so it stays an ordinary resolvable function (the recommended
+  library route, not a core node). `range` is the single canonical INCLUSIVE builder,
+  living in the auto-imported `CORE` (`range lo hi = if lo > hi then [] else lo ::
+  range (lo+1) hi`), so `[lo ... hi]` needs no import and reads consistently with the
+  `...` used by range patterns and tensor slices. The old half-open `LIST.range`
+  `[lo, hi)` was DELETED to remove the name clash (a module doing `with LIST` plus
+  `[..]` sugar would otherwise get an ambiguous `range`); its call sites moved to the
+  inclusive form (`range 0 500` -> `range 0 499`, same list). No step/stride in v1.
+  It builds a `List` (runtime length), not a sized `[n]T` tensor. `examples/RANGES.thx`.
 - **Compose with the future:** ranges, `.n` indexing (#10), codata, and a
   linear-algebra layer are entangled (ranges-as-slice-descriptors, type-directed
   indexing, strict-data-vs-codata). If #9/#10 are built as the LA on-ramp, follow

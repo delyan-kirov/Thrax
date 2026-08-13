@@ -34,7 +34,7 @@ use std::collections::{HashMap, HashSet};
 use crate::lowering::ImplicitArg;
 use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
-    SliceSlot, Ty,
+    SliceSlot, Ty, Variance,
 };
 use utilities::Aol;
 use utilities::{diag, Code, Diagnostic, Result, Span};
@@ -2590,32 +2590,34 @@ impl<'a> Checker<'a> {
     /// an unknown static size fine). The result wraps the kept axes around whatever
     /// remains below the sliced axes.
     fn infer_slice(&mut self, recv: Aol<Expr>, slots: &'a [SliceSlot]) -> Result<Type> {
-        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
         let elem = self.eng.fresh();
         let dims: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh_nat()).collect();
+        // A fresh variance var per sliced axis, so the receiver may have any
+        // variance and each kept axis carries its own variance through unchanged.
+        let vars: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh()).collect();
         let mut expected = elem.clone();
-        for d in dims.iter().rev() {
-            expected = tensor(d.clone(), expected);
+        for i in (0..slots.len()).rev() {
+            expected = tensor_type(vars[i].clone(), dims[i].clone(), expected);
         }
         let rt = self.infer(recv)?;
         self.eng.unify(&rt, &expected, "slicing a tensor")?;
 
         let int = Type::con(ty::INT);
-        let mut kept: Vec<Type> = Vec::new();
+        let mut kept: Vec<(Type, Type)> = Vec::new();
         for (i, s) in slots.iter().enumerate() {
             match s {
                 SliceSlot::Index(x) => self.check(*x, &int)?,
                 SliceSlot::Range(lo, hi) => {
                     self.check(*lo, &int)?;
                     self.check(*hi, &int)?;
-                    kept.push(self.eng.fresh_nat());
+                    kept.push((vars[i].clone(), self.eng.fresh_nat()));
                 }
-                SliceSlot::Full => kept.push(dims[i].clone()),
+                SliceSlot::Full => kept.push((vars[i].clone(), dims[i].clone())),
             }
         }
         let mut result = elem;
-        for d in kept.iter().rev() {
-            result = tensor(d.clone(), result);
+        for (v, d) in kept.iter().rev() {
+            result = tensor_type(v.clone(), d.clone(), result);
         }
         Ok(result)
     }
@@ -3259,12 +3261,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Peel a sized-tensor type `@tensor size elem` into `(size, elem)`.
+    /// Peel a sized-tensor type `@tensor variance size elem` into `(size, elem)`,
+    /// discarding the variance (callers here only need the length and element).
     fn tensor_parts(&self, ty: &Type) -> Option<(Type, Type)> {
         if let Type::App(head, elem) = self.eng.resolve(ty) {
-            if let Type::App(con, size) = self.eng.resolve(&head) {
-                if matches!(self.eng.resolve(&con), Type::Con(n) if n == TENSOR) {
-                    return Some((*size, *elem));
+            if let Type::App(head2, size) = self.eng.resolve(&head) {
+                if let Type::App(con, _variance) = self.eng.resolve(&head2) {
+                    if matches!(self.eng.resolve(&con), Type::Con(n) if n == TENSOR) {
+                        return Some((*size, *elem));
+                    }
                 }
             }
         }
@@ -3305,11 +3310,15 @@ impl<'a> Checker<'a> {
             // A size expression written in type position (only well-formed inside a
             // `[..]`); elaborate it as a size so kind-checking flags any misuse.
             Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_ty_of_ast(ty, tvars),
-            Ty::Sized { size, elem } => {
-                let (size, elem) = (*size, *elem);
+            Ty::Sized {
+                variance,
+                size,
+                elem,
+            } => {
+                let (variance, size, elem) = (*variance, *size, *elem);
                 let size_ty = self.size_ty_of_ast(size, tvars);
                 let elem_ty = self.ty_of_ast(elem, tvars);
-                Type::app(Type::app(Type::con(TENSOR), size_ty), elem_ty)
+                tensor_type(variance_con(variance), size_ty, elem_ty)
             }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
@@ -3425,7 +3434,6 @@ impl<'a> Checker<'a> {
         let (t, vt) = vec(&mut self.eng);
         self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
 
-        let tensor = |size: Type, elem: Type| Type::app(Type::app(Type::con(TENSOR), size), elem);
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
         // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
@@ -3433,7 +3441,10 @@ impl<'a> Checker<'a> {
         //
         // The sized-tensor primitives. `[n]T` and `Vec T` share the runtime vector
         // rep but are DISTINCT types, so these carry their own tensor-typed
-        // signatures (a `@vec_*` binding is typed for `Vec`, not `[n]a`).
+        // signatures (a `@vec_*` binding is typed for `Vec`, not `[n]a`). Each is
+        // VARIANCE-POLYMORPHIC: a fresh generic variance var per axis, so the
+        // primitive works on any `[@Contra n]`/`[@Co n]`/`[n]` axis and preserves it
+        // (`transpose` keeps per-position variance and swaps only the sizes).
         //
         // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
         // OVERLOADABLE `index` in `library/LA` (its tensor candidate calls `@tensor_index`);
@@ -3441,62 +3452,74 @@ impl<'a> Checker<'a> {
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let vn = tensor(n, a.clone());
+            let v = self.eng.fresh_generic();
+            let vn = tensor_type(v, n, a.clone());
             self.bind("@tensor_index", Type::arrow(vn, Type::arrow(int(), a)));
         }
         // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let vn = tensor(n, a);
+            let v = self.eng.fresh_generic();
+            let vn = tensor_type(v, n, a);
             self.bind("@tensor_length", Type::arrow(vn, int()));
         }
         // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
         // template from an index function (sound: result size = template size). The
-        // constructing primitive that lets `transpose`/`matmul` be library code.
+        // constructing primitive that lets `transpose`/`matmul` be library code; it
+        // preserves the template's variance `v` onto the result.
         {
             let x = self.eng.fresh_generic();
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
-            let template = tensor(n.clone(), x);
+            let v = self.eng.fresh_generic();
+            let template = tensor_type(v.clone(), n.clone(), x);
             let idx_fn = Type::arrow(int(), a.clone());
-            let result = tensor(n, a);
+            let result = tensor_type(v, n, a);
             self.bind(
                 "@tensor_create",
                 Type::arrow(template, Type::arrow(idx_fn, result)),
             );
         }
         // `@tensor_concat : [n]a -> [m]a -> [n+m]a`: the size-CHANGING join (which `@tensor_create`,
-        // being size-preserving, cannot express), so it is a primitive.
+        // being size-preserving, cannot express), so it is a primitive. Both operands
+        // and the result share the concatenated axis's variance `v`.
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let m = self.eng.fresh_generic_nat();
-            let tn = tensor(n.clone(), a.clone());
-            let tm = tensor(m.clone(), a.clone());
-            let tnm = tensor(Type::NatAdd(Box::new(n), Box::new(m)), a);
+            let v = self.eng.fresh_generic();
+            let tn = tensor_type(v.clone(), n.clone(), a.clone());
+            let tm = tensor_type(v.clone(), m.clone(), a.clone());
+            let tnm = tensor_type(v, Type::NatAdd(Box::new(n), Box::new(m)), a);
             self.bind("@tensor_concat", Type::arrow(tn, Type::arrow(tm, tnm)));
         }
         // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
-        // so `LA.transpose` copies nothing.
+        // so `LA.transpose` copies nothing. Variance stays per POSITION (outer `vm`,
+        // inner `vn`); only the sizes swap, so a `[@Contra m, @Co n]` matrix
+        // transposes to `[@Contra n, @Co m]`.
         {
             let a = self.eng.fresh_generic();
             let m = self.eng.fresh_generic_nat();
             let n = self.eng.fresh_generic_nat();
-            let mn = tensor(m.clone(), tensor(n.clone(), a.clone()));
-            let nm = tensor(n, tensor(m, a));
+            let vm = self.eng.fresh_generic();
+            let vn = self.eng.fresh_generic();
+            let mn = tensor_type(vm.clone(), m.clone(), tensor_type(vn.clone(), n.clone(), a.clone()));
+            let nm = tensor_type(vm, n, tensor_type(vn, m, a));
             self.bind("@tensor_transpose", Type::arrow(mn, nm));
         }
         // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
         // the leading axis. The result size `k` is a runtime value, so it is a fresh
         // nat (not `hi - lo`, which are runtime Ints); indexing it is modular/total, so
-        // an unknown static size is consistent with the rest of the tensor design.
+        // an unknown static size is consistent with the rest of the tensor design. The
+        // sliced axis keeps its variance `v`.
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let k = self.eng.fresh_generic_nat();
-            let src = tensor(n, a.clone());
-            let out = tensor(k, a);
+            let v = self.eng.fresh_generic();
+            let src = tensor_type(v.clone(), n, a.clone());
+            let out = tensor_type(v, k, a);
             self.bind(
                 "@tensor_slice",
                 Type::arrow(src, Type::arrow(int(), Type::arrow(int(), out))),
@@ -3908,7 +3931,7 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
                 }
             }
         }
-        Ty::Sized { size, elem } => {
+        Ty::Sized { size, elem, .. } => {
             collect_tyvars(ast, *size, out);
             collect_tyvars(ast, *elem, out);
         }
@@ -3987,9 +4010,29 @@ fn is_base_type(name: &str) -> bool {
     )
 }
 
-/// The internal constructor name of a sized tensor `[n]T` (`@tensor size elem`).
-/// `@`-prefixed so it cannot collide with a user type; erased before runtime.
+/// The internal constructor name of a sized tensor. Its type is the application
+/// spine `@tensor variance size elem`, one layer per axis. `@`-prefixed so it
+/// cannot collide with a user type; the whole thing is erased before runtime.
 const TENSOR: &str = "@tensor";
+/// The three axis-variance markers, carried as nullary constructors in the
+/// `variance` position of the `@tensor` spine (see [`Variance`]).
+const VAR_NEUTRAL: &str = "@neutral";
+const VAR_CO: &str = "@co";
+const VAR_CONTRA: &str = "@contra";
+
+/// The `Type` constructor for a source-level axis variance.
+fn variance_con(v: Variance) -> Type {
+    Type::con(match v {
+        Variance::Neutral => VAR_NEUTRAL,
+        Variance::Co => VAR_CO,
+        Variance::Contra => VAR_CONTRA,
+    })
+}
+
+/// Build a sized-tensor type from its axis variance, size, and element type.
+fn tensor_type(variance: Type, size: Type, elem: Type) -> Type {
+    Type::app(Type::app(Type::app(Type::con(TENSOR), variance), size), elem)
+}
 
 fn unknown_type(name: &str) -> Diagnostic {
     diag!(

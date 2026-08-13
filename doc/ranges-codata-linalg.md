@@ -1,8 +1,12 @@
 # Deferred design: ranges, codata, and the linear-algebra extension
 
-**Status: partially SHIPPED.** Ranges (pattern form) and codata are done (see
-their memories). The LA extension's foundation has landed as **increment 1: sized
-tensors** (2026-08-09):
+**Status: SHIPPED.** Ranges (pattern form) and codata are done (see their
+memories). The LA extension has landed through **increment 4**: sized tensors
+(increment 1), a strided data plane (2a), O(1) views (2b), multi-axis slicing with
+inclusive `...` ranges (3), and per-axis variance (4). The ops are library Thrax
+over a small set of `@tensor_*` primitives. No LA item remains open; the deferred
+work below (expression-form ranges, COW, static shape, data/codata) is separate
+future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
 
 - `[n]T` is a rank-1 sized vector; `n` is a type-level natural, a **distinct KIND**
   from ordinary types (`Type::Nat` + a `nat_vars` set in the engine; a size unifies
@@ -24,30 +28,56 @@ tensors** (2026-08-09):
   compare + lone-var bind; no back-solving `n+1 == 5`), which keeps it decidable, no
   `<`, no SMT. A `concat : [n]a -> [m]a -> [n+m]a` builtin (vector append, both
   engines) demonstrates it end to end.
-- **LA operations shipped** (2026-08-09), correctness-first over the nested-vector
-  rep (NOT yet strided): `transpose : [m][n]a -> [n][m]a`, `matmul : [m][k]a ->
-  [k][n]a -> [m][n]a` (shared `k` unifies, so a dimension mismatch is a compile
-  error), `dot : [n]a -> [n]a -> a`, all as built-ins in both engines; plus
-  multi-axis indexing `t.[i, j]` (folds to nested `t.[i].[j]`). **`.[..]` is now the
-  OVERLOADABLE `index` the doc envisioned**: `t.[i]` desugars to `index t i`, an
-  overloaded function with a built-in tensor candidate and user-addable candidates
-  (`index : Grid -> Int -> Int`, `index : Map k v -> k -> v`), so custom containers
-  use `.[..]` with no compiler change. `[m, n]T` shape sugar (== nested `[m][n]T`).
-  matmul/dot are
-  element-POLYMORPHIC single bindings (so a bare `[..]` literal arg checks
-  bidirectionally, unlike an overload) and run on Int and Real; the runtime does the
-  arithmetic and faults on a non-numeric element (no Num class). Real matrices work.
-- NOT yet: the flat buffer+view+strides data plane (O(1) transpose via stride swap,
-  slices-as-VIEWS with COW instead of copies, contiguous storage for BLAS/SIMD;
-  today the ops copy over nested vectors, correct but not stride-optimized); variance
-  axes (Up/Down); Real/element-generic matmul (no Num class); and the overloadable
-  `index` generalization of `.[..]` (Map/ranges). The current ops are a transparent
-  swap target: same types and results once the rep becomes strided.
+- **LA operations shipped** (2026-08-09): `transpose`, `matmul` (shared `k`
+  unifies, so a dimension mismatch is a compile error), `dot`, `concat`, `slice`,
+  `row`/`col`, over Int and Real. **`.[..]` is the OVERLOADABLE `index` the doc
+  envisioned**: `t.[i]` desugars to `index t i`, an overloaded function with a
+  tensor candidate and user-addable candidates (`index : Grid -> Int -> Int`,
+  `index : Map k v -> k -> v`), so custom containers use `.[..]` with no compiler
+  change. `[m, n]T` shape sugar (== nested `[m][n]T`).
+- **De-magicked into the library** (2026-08-12): the ops are NOT built-ins. The
+  compiler keeps only a handful of `@`-primitives over the tensor buffer
+  (`@tensor_index`/`@tensor_length`/`@tensor_create`/`@tensor_concat`/`@tensor_slice`/
+  `@tensor_transpose`, plus `@tensor_index_axis`/`@tensor_slice_axis` for the
+  multi-axis form); `transpose`/`matmul`/`dot`/`concat`/`slice`/`row`/`col` all live
+  in `library/LA.thx` as ordinary Thrax. Element arithmetic is passed as `@ctx`
+  implicits (`@ctx { add, mul, zero }`), not a Num class, so `matmul`/`dot` are
+  element-generic over Int and Real by supplying the dictionary; the runtime does no
+  arithmetic on its own.
+- **Strided data plane shipped** (increment 2a): `[n]T` is a `@tensor`-named struct
+  `{ buf, off, shape, strides }` over a flat, refcounted buffer. Both engines
+  byte-identical and leak-clean.
+- **O(1) views shipped** (increment 2b): `transpose` is a stride swap; `row`/`col`/
+  `slice` share the buffer and copy nothing. Views alias the same buffer (no COW
+  yet; see below).
+- **Multi-axis slicing shipped** (increment 3): `t.[s0, s1, ..]` where each slot is
+  an index `i` (REDUCES its axis), an inclusive range `p ... q` (RETAINS it), or `..`
+  (retains the whole axis). `m.[.., j]` = column, `m.[p...q, r...s]` = subblock,
+  shape-checked (an `Expr::Slice` typed node lowering to `@tensor_index_axis`/
+  `@tensor_slice_axis` O(1) view prims). Range syntax is `...` (inclusive), matching
+  range patterns.
+- **Per-axis variance shipped** (increment 4, 2026-08-13): each tensor axis carries
+  a variance tag, spelled `@contra` (upper/contravariant, a vector index) and `@co`
+  (lower/covariant, a covector index); a bare axis is `Neutral`. Surface:
+  `[@contra m, @co n]Int` (the `@`-sigil matches the other type-level intrinsics).
+  Internally the tag rides the `@tensor` spine as a nullary con (`@tensor <variance>
+  size elem`). Unification is variance-compatible: `Neutral` is a wildcard (so plain
+  `[n]T` code interoperates), `@co` and `@contra` clash. `matmul` is retyped
+  `[@contra m, @co k]a -> [@contra k, @co n]a -> [@contra m, @co n]a`, so it
+  contracts a `@co` axis against a `@contra` axis (the Einstein-summation rule) and
+  a flipped-variance factor is a type error, not just a shape mismatch. The
+  `@tensor_*` primitives are variance-polymorphic; the other library ops stay
+  neutral and still work on any variance. `examples/TENSORS.thx` (the variance
+  block).
+- **Still open (separate from LA):** COW value semantics (views currently alias, no
+  copy-on-write on rc>1 writes), static result-shape typing (rank is checked but not
+  fully folded over the index), and indexed-write/lens spelling.
 
-The rest of this note is the still-unbuilt design (data plane, variance, ranges as
-slice descriptors), kept so increment 1 does not foreclose it. One decision is settled: positional `.n` (#10) is tuple/struct
-projection ONLY; sequence/tensor/map indexing is a separate operation, spelled
-`.[..]`, and belongs to this subsystem (see "Indexing surface" below).
+The rest of this note is now split: the data-plane, indexing, and view design
+below is **as-built** (kept for reference); variance, ranges-as-slice-descriptors,
+and the data/codata split remain unbuilt design. One decision is settled:
+positional `.n` (#10) is tuple/struct projection ONLY; sequence/tensor/map indexing
+is the separate `.[..]` operation and belongs to this subsystem.
 
 ## Why capture this now
 
@@ -67,6 +97,13 @@ built together. Decide the shape now; implement later.
 ## The three pieces
 
 ### 1. Ranges
+
+> **As-built note:** the spelling that shipped is `...` (inclusive), not `..=`.
+> Range PATTERNS (`is lo ... hi`) and index-position ranges (`m.[p ... q]`) both use
+> `...`. The `..=`/`..<`/`..>` design below predates that choice; read `...` for
+> `..=` wherever an inclusive range appears. Exclusive/descending forms remain
+> unbuilt.
+
 - Surface: `..=` (inclusive), `..<` (exclusive), `..>` (descending-inclusive).
   Safe because bare `<`/`>` are type-level-only (effect rows) and `.` is a
   standalone delimiter, so `..` never fuses. One lexical caveat: the trailing
@@ -178,20 +215,23 @@ Scalar`, `index _ {Range/.. ..} -> view`).
 4. COW value semantics via rc keeps read-slicing free without introducing
    aliasing into the functional core.
 
-## What to lock now (cheap forward-compat, even while deferring)
+## What was locked (forward-compat kept while the rest is deferred)
 
-Even before building the subsystem, keep these true so the near-term surface work
-does not foreclose it:
+These were the "keep true so the surface work does not foreclose the subsystem"
+constraints. Status now:
 
-- `Range` is a real small type, not a desugar-to-list. Enumeration to a sequence
-  is an explicit or contextual conversion.
-- Indexing is spelled `.[..]` and desugars to an overloadable `index` call,
-  type-directed on the index type from the start (Int vs Range vs tuple).
-- Keep `.n` for projection only; never route sequence indexing through it.
-- The array view representation carries `offset` + per-axis `(variance, dim,
-  stride)`. Variance is a tag carried even under dynamic-rank typing.
-- `..=` desugars via a library function (not a core primitive), so its meaning
-  can become a resolution target (List / Array / Range / view) later.
+- **DONE.** Indexing is spelled `.[..]` and desugars to an overloadable `index`
+  call, type-directed on the index type (Int reduces an axis, a range/`..` retains
+  it).
+- **DONE.** `.n` stays projection only; sequence indexing never routes through it.
+- **DONE.** Variance is a per-axis tag, but it lives in the TYPE (`@tensor
+  <variance> size elem`), not the runtime view, since it is erased before runtime
+  (the runtime is variance-blind, as intended). The view still carries `offset` +
+  per-axis `(dim, stride)` only.
+- **PARTIAL.** Ranges in index position are lowered directly to the axis-slice
+  prims rather than reified as a first-class `Range` descriptor. A standalone
+  `Range` type (and `[lo ... hi]` materialization via a library function) is still
+  the deferred expression-form ranges feature.
 
 ## Open decisions to settle before implementing the subsystem
 
@@ -211,8 +251,19 @@ does not foreclose it:
 
 ## Sequencing
 
-- Done: positional `.n` projection (#10, tuple/struct only).
-- Deferred, and to be done together for composition: `.[..]` indexing surface +
-  overloadable `index`, first-class `Range` type, buffer/view/stride tensor
-  representation with per-axis variance, type-directed range-indexing, COW, and
-  the `data`/`codata` split.
+- **Done:** positional `.n` projection (#10, tuple/struct only). `.[..]` indexing
+  surface + overloadable `index`. Buffer/view/stride tensor representation
+  (increment 2a). O(1) views: transpose/row/col/slice (increment 2b). Multi-axis
+  slicing with inclusive `...` ranges in index position (increment 3). Range
+  PATTERNS (`is lo ... hi`). Element-generic ops via `@ctx` dictionaries. Per-axis
+  variance `@contra`/`@co` with a variance-typed `matmul` (increment 4). The LA
+  capstone is complete.
+- **Done (separate from LA):** expression-form ranges `[lo ... hi]`, the inclusive
+  Int list. Parser sugar desugaring to the auto-imported `CORE.range`; builds a
+  `List` (runtime length). See [[range-patterns]] and doc/syntax-roadmap.md #9.
+- **Deferred (separate from LA):**
+  - A first-class `Range` descriptor type (today `[lo ... hi]` eagerly materializes
+    a `List`; a lazy/step-carrying `Range` is future work).
+  - COW value semantics (views alias today; rc>1 writes should copy).
+  - Static result-shape typing (fold the index over the axis list).
+  - The `data`/`codata` split and its interaction with streams.

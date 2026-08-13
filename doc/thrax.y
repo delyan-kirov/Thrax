@@ -316,7 +316,11 @@ struct_lit_body
 
 variant_payload : /* empty */ | DOT LBRACE field_inits RBRACE ;
 
-seq_lit   : LBRACK RBRACK | LBRACK elem_list opt_comma RBRACK ;
+seq_lit
+  : LBRACK RBRACK
+  | LBRACK elem_list opt_comma RBRACK
+  | LBRACK expr ELLIPSIS expr RBRACK   /* range builder `[lo ... hi]` -> `range lo hi` */
+  ;
 elem_list : expr | elem_list COMMA expr ;
 
 array_lit

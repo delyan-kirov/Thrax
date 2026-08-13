@@ -106,10 +106,8 @@ impl Engine {
     pub fn note_tensor_sizes(&mut self, ty: &Type) {
         match self.resolve(ty) {
             Type::App(head, elem) => {
-                if let Type::App(con, size) = self.resolve(&head) {
-                    if matches!(self.resolve(&con), Type::Con(n) if n == "@tensor") {
-                        self.note_nat(&size);
-                    }
+                if let Some((_variance, size, _elem)) = self.tensor_spine(ty) {
+                    self.note_nat(&size);
                 }
                 self.note_tensor_sizes(&head);
                 self.note_tensor_sizes(&elem);
@@ -243,6 +241,16 @@ impl Engine {
                 self.unify(a2, b2, where_)?;
                 self.unify(ae, be, where_)
             }
+            // Sized tensors carry a per-axis variance in their spine, unified by the
+            // compatibility rule (Neutral is a wildcard, Co and Contra clash) rather
+            // than plain structural App equality.
+            _ if self.tensor_spine(&a).is_some() && self.tensor_spine(&b).is_some() => {
+                let (va, sa, ea) = self.tensor_spine(&a).expect("checked");
+                let (vb, sb, eb) = self.tensor_spine(&b).expect("checked");
+                self.unify_variance(&va, &vb, where_)?;
+                self.unify(&sa, &sb, where_)?;
+                self.unify(&ea, &eb, where_)
+            }
             (Type::App(a1, a2), Type::App(b1, b2)) => {
                 self.unify(a1, b1, where_)?;
                 self.unify(a2, b2, where_)
@@ -266,6 +274,38 @@ impl Engine {
                 Some(r) => r,
                 None => Err(self.mismatch(&a, &b, where_)),
             },
+        }
+    }
+
+    /// Peel a sized-tensor type `@tensor variance size elem` into its three parts.
+    fn tensor_spine(&self, ty: &Type) -> Option<(Type, Type, Type)> {
+        if let Type::App(head, elem) = self.resolve(ty) {
+            if let Type::App(head2, size) = self.resolve(&head) {
+                if let Type::App(con, variance) = self.resolve(&head2) {
+                    if matches!(self.resolve(&con), Type::Con(n) if n == "@tensor") {
+                        return Some((*variance, *size, *elem));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Unify two axis variances. A variance variable binds like any unification
+    /// variable; `@neutral` is compatible with any concrete variance (so unmarked
+    /// `[n]T` axes interoperate with variance-typed tensors); `@co` and `@contra`
+    /// unify only with themselves, so mixing them is the type error variance exists
+    /// to catch.
+    fn unify_variance(&mut self, a: &Type, b: &Type, where_: &str) -> Result<()> {
+        let a = self.resolve(a);
+        let b = self.resolve(b);
+        match (&a, &b) {
+            (Type::Var(i), Type::Var(j)) if i == j => Ok(()),
+            (Type::Var(i), _) => self.bind(*i, &b),
+            (_, Type::Var(j)) => self.bind(*j, &a),
+            (Type::Con(n), _) | (_, Type::Con(n)) if n == "@neutral" => Ok(()),
+            (Type::Con(x), Type::Con(y)) if x == y => Ok(()),
+            _ => Err(self.mismatch(&a, &b, where_)),
         }
     }
 

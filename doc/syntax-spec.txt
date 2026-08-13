@@ -183,7 +183,7 @@ multi-axis index `t.[i, j]` reads one element of a nested tensor (`t.[i].[j]`).
 Shape-checked linear algebra is provided by the `LA` library over these types:
 
 	transpose : [m][n]a -> [n][m]a               # swaps the axes (O(1) view)
-	matmul    : [m][k]a -> [k][n]a -> [m][n]a     # shared k unifies
+	matmul    : [@contra m, @co k]a -> [@contra k, @co n]a -> [@contra m, @co n]a
 	dot       : [n]a -> [n]a -> a
 	concat    : [n]a -> [m]a -> [n+m]a           # size arithmetic
 	slice     : [n]a -> Int -> Int -> [k]a       # [lo, hi) of the leading axis (view)
@@ -209,6 +209,17 @@ A dimension mismatch (e.g. `matmul` of `[2, 3]` and `[2, 2]`) is a compile-time
 type error, not a runtime one. `matmul`/`dot` are element-polymorphic: they run on
 `Int` and `Real` tensors (there is no numeric class to constrain the element, so a
 non-numeric element is a runtime fault, not a type error).
+
+Each axis may carry a VARIANCE tag: `[@contra n]` is an upper (contravariant) index
+(a vector/column), `[@co n]` a lower (covariant) index (a covector/row); a bare `[n]`
+is neutral, compatible with either. Variance governs which operations type-check:
+`matmul` contracts a `@co` axis against a `@contra` axis (the Einstein-summation
+rule), so swapping a factor's variance is a type error, not just a shape mismatch.
+
+The EXPRESSION-form range `[lo ... hi]` builds the inclusive list of Ints from `lo`
+to `hi` (empty when `lo > hi`); it is a `List` (the length is a runtime value, not a
+sized `[n]T`). It uses the same `...` as range patterns and slices, and desugars to
+the auto-imported `range lo hi`.
 
 Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
 function (`index t i`). `LA` provides the tensor candidate (`index : [n]a -> Int

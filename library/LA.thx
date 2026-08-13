@@ -52,7 +52,14 @@ $ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a
 # Matrix multiply: transpose `b` so its columns are rows, then each result cell is
 # the dot of a row of `a` with a column of `b`. The shared inner dimension `k`
 # unifies at the type level, so a shape mismatch is a compile error.
-$ matmul : [m][k]a -> [k][n]a -> [m][n]a
+#
+# The axes carry VARIANCE. A matrix is `[@contra m, @co n]`: an upper (contra) row
+# index and a lower (co) column index. Matmul contracts `a`'s co `k` against `b`'s
+# contra `k`, exactly the Einstein-summation rule (an upper index pairs with a lower
+# one). So swapping a factor's variance is a type error, not just a shape mismatch.
+# A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
+# either variance.
+$ matmul : [@contra m, @co k]a -> [@contra k, @co n]a -> [@contra m, @co n]a
 	@ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = \a b =
 	let bt = transpose b in
 	create a (\i = create (b.[0]) (\j = dot a.[i] bt.[j]))

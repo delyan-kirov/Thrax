@@ -22,3 +22,10 @@ $ to_string : Int -> Str = \n =
 $ to_string_digits : Int -> Str -> Str = \n acc =
 	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
 	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
+
+# The expression-form range `[lo ... hi]` desugars to `range lo hi`: the inclusive
+# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `List`, since
+# the length is a runtime value (not a statically sized `[n]T` tensor).
+$ range : Int -> Int -> List Int = \lo hi =
+	if lo ?> hi => []
+	else lo :: range (lo + 1) hi
