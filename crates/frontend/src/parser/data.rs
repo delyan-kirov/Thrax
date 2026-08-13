@@ -11,16 +11,38 @@
 //! sugar are kept as explicit nodes ([`Expr::BinOp`], [`Expr::List`], ...) and a
 //! later `core` pass desugars them.
 
-use utilities::{Aol, Interner, SecondaryMap, Span, Store, StrId};
+use utilities::{Aol, Interner, SecondaryMap, Slice, Span, Store, StrId};
 
 /// The stores that back a parsed tree. Every handle in the tree indexes into one
 /// of these; reads go through [`Store::lookup`] / [`Interner::resolve`].
+///
+/// Variable-length child lists are NOT boxed onto the node; they are runs in a
+/// per-element-type [`Store`], addressed by a [`Slice`] handle. Read one with
+/// [`Ast::slice`] and build one with [`Ast::make_slice`] (both generic over the
+/// element type via the [`Sliced`] trait), so the whole tree stays arena-owned and
+/// frees all at once.
 #[derive(Default)]
 pub struct Ast {
     pub exprs: Store<Expr>,
     pub tys: Store<Ty>,
     pub pats: Store<Pattern>,
     pub strings: Interner,
+    // Backing stores for the tree's variable-length runs, one per element type.
+    expr_seqs: Store<Aol<Expr>>,
+    ty_seqs: Store<Aol<Ty>>,
+    pat_seqs: Store<Aol<Pattern>>,
+    str_seqs: Store<StrId>,
+    field_decls: Store<FieldDecl>,
+    rec_fields: Store<RecField>,
+    field_inits: Store<FieldInit>,
+    field_pats: Store<FieldPat>,
+    payload_fields: Store<PayloadField>,
+    variant_decls: Store<VariantDecl>,
+    clauses: Store<Clause>,
+    arms: Store<Arm>,
+    bindings: Store<Binding>,
+    items: Store<Item>,
+    slice_slots: Store<SliceSlot>,
     /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
     /// a node absent here (e.g. one synthesized by a later pass) has no span.
     pub expr_spans: SecondaryMap<Expr, Span>,
@@ -28,9 +50,53 @@ pub struct Ast {
     pub ty_spans: SecondaryMap<Ty, Span>,
 }
 
+/// An element type stored in a run: names the [`Store`] on the [`Ast`] that holds
+/// its runs, so [`Ast::slice`] / [`Ast::make_slice`] work uniformly.
+pub trait Sliced: Sized {
+    fn store(ast: &Ast) -> &Store<Self>;
+    fn store_mut(ast: &mut Ast) -> &mut Store<Self>;
+}
+
+macro_rules! sliced {
+    ($($ty:ty => $field:ident),+ $(,)?) => {$(
+        impl Sliced for $ty {
+            fn store(ast: &Ast) -> &Store<Self> { &ast.$field }
+            fn store_mut(ast: &mut Ast) -> &mut Store<Self> { &mut ast.$field }
+        }
+    )+};
+}
+
+sliced! {
+    Aol<Expr> => expr_seqs,
+    Aol<Ty> => ty_seqs,
+    Aol<Pattern> => pat_seqs,
+    StrId => str_seqs,
+    FieldDecl => field_decls,
+    RecField => rec_fields,
+    FieldInit => field_inits,
+    FieldPat => field_pats,
+    PayloadField => payload_fields,
+    VariantDecl => variant_decls,
+    Clause => clauses,
+    Arm => arms,
+    Binding => bindings,
+    Item => items,
+    SliceSlot => slice_slots,
+}
+
 impl Ast {
     pub fn new() -> Ast {
         Ast::default()
+    }
+
+    /// Read a run's elements.
+    pub fn slice<T: Sliced>(&self, s: Slice<T>) -> &[T] {
+        T::store(self).lookup_slice(s)
+    }
+
+    /// Store a run contiguously and return its handle.
+    pub fn make_slice<T: Sliced>(&mut self, xs: impl IntoIterator<Item = T>) -> Slice<T> {
+        T::store_mut(self).create_slice(xs)
     }
 
     /// Resolve an interned name to text.
@@ -64,7 +130,7 @@ impl Ast {
 #[derive(Debug)]
 pub struct Program {
     pub module: StrId,
-    pub items: Box<[Item]>,
+    pub items: Slice<Item>,
 }
 
 // -- top-level items ---------------------------------------------------------
@@ -78,7 +144,7 @@ pub enum Item {
     Def {
         name: StrId,
         sig: Option<Aol<Ty>>,
-        implicits: Box<[FieldDecl]>,
+        implicits: Slice<FieldDecl>,
         body: Aol<Expr>,
     },
     /// `$ Name : @struct [a b ...] = [with Other, ...] field, ...`. `params` are
@@ -89,9 +155,9 @@ pub enum Item {
     /// subtyping), just a fresh struct that repeats those fields.
     Struct {
         name: StrId,
-        params: Box<[StrId]>,
-        includes: Box<[StrId]>,
-        fields: Box<[FieldDecl]>,
+        params: Slice<StrId>,
+        includes: Slice<StrId>,
+        fields: Slice<FieldDecl>,
     },
     /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
     /// are the declared type parameters (inferred from the variants when omitted).
@@ -99,20 +165,20 @@ pub enum Item {
     /// ones). As for structs this is a splice, not a subtype relationship.
     Union {
         name: StrId,
-        params: Box<[StrId]>,
-        includes: Box<[StrId]>,
-        variants: Box<[VariantDecl]>,
+        params: Slice<StrId>,
+        includes: Slice<StrId>,
+        variants: Slice<VariantDecl>,
     },
     /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
     /// (mandatory: every type variable used in `ty` must be listed). An alias may
     /// partially instantiate another generic type, e.g. `MapInt : @alias v = Map Int v`.
     Alias {
         name: StrId,
-        params: Box<[StrId]>,
+        params: Slice<StrId>,
         ty: Aol<Ty>,
     },
     /// `$ Name : @effect = op : ty, ...`
-    Effect { name: StrId, ops: Box<[FieldDecl]> },
+    Effect { name: StrId, ops: Slice<FieldDecl> },
     /// `$ Name : @codata [a b ...] = obs : ty, ...` -- a coinductive type defined
     /// by its observations (destructors), dual to a struct. `params` are the
     /// declared type parameters (inferred from the observations when omitted).
@@ -120,13 +186,13 @@ pub enum Item {
     /// look.
     Codata {
         name: StrId,
-        params: Box<[StrId]>,
-        observations: Box<[FieldDecl]>,
+        params: Slice<StrId>,
+        observations: Slice<FieldDecl>,
     },
     /// `$ with module [= rename]`
     Import {
-        module: Box<[StrId]>,
-        rename: Option<Box<[StrId]>>,
+        module: Slice<StrId>,
+        rename: Option<Slice<StrId>>,
     },
     /// `$ @private` / `$ @public`
     Visibility(Visibility),
@@ -168,7 +234,7 @@ pub enum Payload {
     /// `Tag` with no payload.
     None,
     /// `Tag : { a, b }` / `Tag : { x: A, y: B }` positional or named fields.
-    Fields(Box<[PayloadField]>),
+    Fields(Slice<PayloadField>),
     /// `Tag : Type` a single bare (non-brace) type.
     Bare(Aol<Ty>),
 }
@@ -211,13 +277,13 @@ pub enum Ty {
     /// The unit type `{}`.
     Unit,
     /// A tuple type `{ A, B, ... }` (n >= 1).
-    Tuple(Box<[Aol<Ty>]>),
+    Tuple(Slice<Aol<Ty>>),
     /// A record type `{ x: A, y: B }` (closed) or `{ x: A | r }` (open, `tail` is
     /// the row variable). A closed record with no `with` fields in parameter
     /// position is also the named-record parameter sugar; an open one (`tail`
     /// present) is always a row-polymorphic record type.
     Record {
-        fields: Box<[RecField]>,
+        fields: Slice<RecField>,
         tail: Option<StrId>,
     },
 }
@@ -233,7 +299,7 @@ pub struct RecField {
 /// An effect row `< A, B | `e >` on a function arrow.
 #[derive(Debug)]
 pub struct EffectRow {
-    pub names: Box<[StrId]>,
+    pub names: Slice<StrId>,
     pub tail: Option<StrId>,
 }
 
@@ -267,21 +333,21 @@ pub enum Pattern {
     },
     /// `[ a, b, ..rest ]` / `[]`
     List {
-        elems: Box<[Aol<Pattern>]>,
+        elems: Slice<Aol<Pattern>>,
         rest: Option<Aol<Pattern>>,
     },
     /// `{ a, b }`
-    Tuple(Box<[Aol<Pattern>]>),
+    Tuple(Slice<Aol<Pattern>>),
     /// `Type.{ field-patterns }`
     Struct {
         ty: StrId,
-        fields: Box<[FieldPat]>,
+        fields: Slice<FieldPat>,
     },
     /// An anonymous record pattern `{ .x = p, .y = q [, ..rest] }`: match a record
     /// (open-row value or struct) by field name. `rest` binds the remaining fields
     /// (`..name`) or discards them (`.._`); absent, the unlisted fields are ignored.
     Record {
-        fields: Box<[FieldPat]>,
+        fields: Slice<FieldPat>,
         rest: Option<Aol<Pattern>>,
     },
     /// `.Tag`, `Type.Tag`, `Module.Type.Tag`, each with an optional payload.
@@ -289,7 +355,7 @@ pub enum Pattern {
         module: Option<StrId>,
         ty: Option<StrId>,
         tag: StrId,
-        fields: Box<[FieldPat]>,
+        fields: Slice<FieldPat>,
     },
 }
 
@@ -344,15 +410,15 @@ pub enum Expr {
         operand: Aol<Expr>,
     },
     /// `{ a, b, ... }` (n >= 1).
-    Tuple(Box<[Aol<Expr>]>),
+    Tuple(Slice<Aol<Expr>>),
     /// `[ a, b, ... ]` / `[]`.
-    List(Box<[Aol<Expr>]>),
+    List(Slice<Aol<Expr>>),
     /// Multi-axis tensor slice `recv.[s0, s1, ...]` where at least one slot is a
     /// range or a full `..` (an all-index access desugars to `index` instead). An
     /// `Index` slot reduces its axis; a `Range`/`Full` slot keeps it (a view).
     Slice {
         recv: Aol<Expr>,
-        slots: Box<[SliceSlot]>,
+        slots: Slice<SliceSlot>,
     },
     /// `@array.{ n }` (size form) or `@array.{ .field = n }`.
     Array {
@@ -367,7 +433,7 @@ pub enum Expr {
     /// `| base` update: `spread` is `base`, its unlisted fields filling the result.
     StructLit {
         ty: Option<StrId>,
-        fields: Box<[FieldInit]>,
+        fields: Slice<FieldInit>,
         spread: Option<Aol<Expr>>,
     },
     /// An anonymous, structural record value: `{ .foo = 1, .bar = 2 }` (plain),
@@ -375,7 +441,7 @@ pub enum Expr {
     /// `{ .foo = 1, with base }` (stack: this record's fields on top of `base`'s).
     /// Its type is a [`Type::Record`] row, not a nominal struct.
     Record {
-        fields: Box<[FieldInit]>,
+        fields: Slice<FieldInit>,
         with: Option<Aol<Expr>>,
         update: Option<Aol<Expr>>,
     },
@@ -384,11 +450,11 @@ pub enum Expr {
         module: Option<StrId>,
         ty: Option<StrId>,
         tag: StrId,
-        fields: Box<[FieldInit]>,
+        fields: Slice<FieldInit>,
     },
     /// `let b1, b2 in body`.
     Let {
-        bindings: Box<[Binding]>,
+        bindings: Slice<Binding>,
         body: Aol<Expr>,
     },
     /// `if cond then a else b`.
@@ -400,12 +466,12 @@ pub enum Expr {
     /// `when scrut is p then e ... [else d]`.
     Match {
         scrut: Aol<Expr>,
-        arms: Box<[Arm]>,
+        arms: Slice<Arm>,
         default: Option<Aol<Expr>>,
     },
     /// `\p1 p2 = body`.
     Lambda {
-        params: Box<[Aol<Pattern>]>,
+        params: Slice<Aol<Pattern>>,
         body: Aol<Expr>,
     },
     /// `with subject in body` field-scoping.
@@ -435,7 +501,7 @@ pub enum Expr {
     /// form); `rest` (`..`) fills any unspecified implicits by name from scope.
     Ctx {
         callee: Aol<Expr>,
-        overrides: Box<[FieldInit]>,
+        overrides: Slice<FieldInit>,
         rest: bool,
     },
 }
@@ -460,7 +526,7 @@ pub struct Binding {
 /// One arm of a `when`. Or-patterns (`is p1 is p2`) share a body and guard.
 #[derive(Debug)]
 pub struct Arm {
-    pub patterns: Box<[Aol<Pattern>]>,
+    pub patterns: Slice<Aol<Pattern>>,
     pub guard: Option<Aol<Expr>>,
     pub body: Aol<Expr>,
 }
@@ -469,7 +535,7 @@ pub struct Arm {
 #[derive(Debug)]
 pub struct Handler {
     pub continuation: StrId,
-    pub clauses: Box<[Clause]>,
+    pub clauses: Slice<Clause>,
     pub default: Option<(StrId, Aol<Expr>)>,
 }
 

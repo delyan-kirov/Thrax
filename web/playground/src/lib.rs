@@ -49,12 +49,14 @@ fn imports_of(src: &str) -> Vec<String> {
         return Vec::new();
     };
     parsed
-        .program
-        .items
+        .ast
+        .slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
             Item::Import { module, .. } => Some(
-                module
+                parsed
+                    .ast
+                    .slice(*module)
                     .iter()
                     .map(|&part| parsed.ast.text(part))
                     .collect::<Vec<_>>()
@@ -170,7 +172,7 @@ fn dump_ast(user_src: &str) -> Result<String, String> {
                 p.ast.text(p.program.module),
                 p.program.items.len()
             );
-            for item in &p.program.items {
+            for item in p.ast.slice(p.program.items) {
                 out.push_str(&format!("  {item:?}\n"));
             }
             Ok(out)
@@ -207,9 +209,10 @@ fn pipeline(user_src: &str) -> Result<(Vec<LoweredProgram>, String), String> {
     // Dependency graph (edges point at imports).
     let mut graph = vec![Vec::new(); programs.len()];
     for (i, program) in programs.iter().enumerate() {
-        for item in &program.items {
+        for item in ast.slice(program.items) {
             if let Item::Import { module, .. } = item {
-                let name = module
+                let name = ast
+                    .slice(*module)
                     .iter()
                     .map(|&part| ast.text(part))
                     .collect::<Vec<_>>()

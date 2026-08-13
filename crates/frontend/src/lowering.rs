@@ -68,7 +68,7 @@ impl Decls {
 
     fn add(&mut self, ast: &Ast, program: &AstProgram) {
         let module = ast.text(program.module).to_string();
-        for item in program.items.iter() {
+        for item in ast.slice(program.items).iter() {
             match item {
                 Item::Struct {
                     name,
@@ -76,13 +76,13 @@ impl Decls {
                     fields,
                     ..
                 } => {
-                    let names = fields
+                    let names = ast.slice(*fields)
                         .iter()
                         .map(|f| ast.text(f.name).to_string())
                         .collect();
                     let name = ast.text(*name).to_string();
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| ast.text(*p).to_string()).collect();
+                        let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
                             .push((module.clone(), name.clone(), true, ps));
                     }
@@ -99,15 +99,15 @@ impl Decls {
                 } => {
                     let uname = ast.text(*name).to_string();
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| ast.text(*p).to_string()).collect();
+                        let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
                             .push((module.clone(), uname.clone(), false, ps));
                     }
-                    for v in variants.iter() {
+                    for v in ast.slice(*variants).iter() {
                         let fields = match &v.payload {
                             Payload::None => Vec::new(),
                             Payload::Bare(_) => vec![None],
-                            Payload::Fields(fs) => fs
+                            Payload::Fields(fs) => ast.slice(*fs)
                                 .iter()
                                 .map(|f| f.name.map(|n| ast.text(n).to_string()))
                                 .collect(),
@@ -348,12 +348,11 @@ pub fn lower_program(
     decls: &Decls,
     resolved: &Resolved,
 ) -> Program {
-    let imports = program
-        .items
+    let imports = ast.slice(program.items)
         .iter()
         .filter_map(|item| match item {
             Item::Import { module, .. } => Some(
-                module
+                ast.slice(*module)
                     .iter()
                     .map(|&p| ast.text(p))
                     .collect::<Vec<_>>()
@@ -372,7 +371,7 @@ pub fn lower_program(
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
-    for item in program.items.iter() {
+    for item in ast.slice(program.items).iter() {
         match item {
             Item::Def {
                 name,
@@ -380,7 +379,7 @@ pub fn lower_program(
                 implicits,
                 body,
             } => {
-                let term = lw.def(*sig, implicits, *body);
+                let term = lw.def(*sig, ast.slice(*implicits), *body);
                 let key = resolved
                     .def_keys
                     .get(body)
@@ -390,7 +389,7 @@ pub fn lower_program(
             }
             Item::Effect { name, ops } => {
                 let effect = ast.text(*name).to_string();
-                for op in ops.iter() {
+                for op in ast.slice(*ops).iter() {
                     effects.push(Effect {
                         effect: effect.clone(),
                         op: ast.text(op.name).to_string(),
@@ -503,7 +502,7 @@ impl<'a> Lowerer<'a> {
         // is a real record value (plain parameter); a unit parameter takes no
         // fields, so the sugar just introduces the thunk parameter (`f : {} -> T`).
         let fields: &[RecField] = match self.tnode(from) {
-            Ty::Record { fields, tail: None } => fields,
+            Ty::Record { fields, tail: None } => self.ast.slice(*fields),
             Ty::Unit => &[],
             _ => return body,
         };
@@ -571,7 +570,7 @@ impl<'a> Lowerer<'a> {
     /// a tuple-typed value is bound once and projected by index.
     fn promote_to_record(&mut self, e: Aol<Expr>, names: &[String]) -> Term {
         if let Expr::Tuple(items) = self.node(e) {
-            let items: Vec<Aol<Expr>> = items.to_vec();
+            let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
             let fields: Vec<(String, Term)> = names
                 .iter()
                 .cloned()
@@ -664,7 +663,7 @@ impl<'a> Lowerer<'a> {
             Expr::Slice { recv, slots } => {
                 let mut t = self.expr(*recv);
                 let mut dropped = 0usize;
-                for (pos, s) in slots.iter().enumerate() {
+                for (pos, s) in self.ast.slice(*slots).iter().enumerate() {
                     let axis = Term::Int((pos - dropped) as i64);
                     match s {
                         SliceSlot::Index(x) => {
@@ -702,12 +701,12 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::Tuple(items) => {
-                let items: Vec<Aol<Expr>> = items.to_vec();
+                let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
                 Term::Tuple(items.into_iter().map(|e| self.expr(e)).collect())
             }
 
             Expr::List(items) => {
-                let items: Vec<Aol<Expr>> = items.to_vec();
+                let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
                 if self.resolved.array_exprs.contains(&e) {
                     // A byte vector: start empty, push each element left to right.
                     let mut acc = Term::app(Term::var("@array_alloc"), Term::Int(0));
@@ -756,7 +755,7 @@ impl<'a> Lowerer<'a> {
                     .map(|t| self.text(t).to_string())
                     .or_else(|| self.resolved.struct_lit_names.get(&e).cloned());
                 let spread = *spread;
-                self.struct_lit(ty.as_deref(), fields, spread)
+                self.struct_lit(ty.as_deref(), self.ast.slice(*fields), spread)
             }
             Expr::Record {
                 fields,
@@ -768,7 +767,7 @@ impl<'a> Lowerer<'a> {
                 // clause afresh (non-memoized). Observing (see `Expr::Field`) applies
                 // the thunk to unit.
                 if self.resolved.codata_lits.contains(&e) {
-                    let obs: Vec<(String, Term)> = fields
+                    let obs: Vec<(String, Term)> = self.ast.slice(*fields)
                         .iter()
                         .filter_map(|fi| match fi {
                             FieldInit::Named { name, value } => {
@@ -796,7 +795,7 @@ impl<'a> Lowerer<'a> {
                 // name-keyed, so the empty name is fine).
                 let base = (*update).or(*with).map(|b| Arc::new(self.expr(b)));
                 let mut out = Vec::new();
-                for fi in fields.iter() {
+                for fi in self.ast.slice(*fields).iter() {
                     if let FieldInit::Named { name, value } = fi {
                         out.push((self.text(*name).to_string(), self.expr(*value)));
                     }
@@ -812,7 +811,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
-                self.variant(ty, tag, fields)
+                self.variant(ty, tag, self.ast.slice(*fields))
             }
 
             Expr::If { cond, then, alt } => {
@@ -838,9 +837,9 @@ impl<'a> Lowerer<'a> {
                 let mut lowered = Vec::new();
                 // Collect handles first so the node borrow does not span the
                 // recursive lowering of children.
-                let arm_data: Vec<ArmHandles> = arms
+                let arm_data: Vec<ArmHandles> = self.ast.slice(*arms)
                     .iter()
-                    .map(|arm| (arm.patterns.to_vec(), arm.guard, arm.body))
+                    .map(|arm| (self.ast.slice(arm.patterns).to_vec(), arm.guard, arm.body))
                     .collect();
                 for (patterns, guard, body) in arm_data {
                     let user_guard = guard.map(|g| self.expr(g));
@@ -865,7 +864,7 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::Lambda { params, body } => {
-                let params: Vec<Aol<Pattern>> = params.to_vec();
+                let params: Vec<Aol<Pattern>> = self.ast.slice(*params).to_vec();
                 let body = *body;
                 let mut term = self.expr(body);
                 for p in params.into_iter().rev() {
@@ -875,7 +874,7 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::Let { bindings, body } => {
-                let bindings: Vec<Binding> = bindings.to_vec();
+                let bindings: Vec<Binding> = self.ast.slice(*bindings).to_vec();
                 let body = *body;
                 let mut term = self.expr(body);
                 for b in bindings.into_iter().rev() {
@@ -898,8 +897,8 @@ impl<'a> Lowerer<'a> {
                     return self.expr(body);
                 };
                 let continuation = self.text(handler.continuation).to_string();
-                let clauses: Vec<(Option<String>, String, String, Aol<Expr>)> = handler
-                    .clauses
+                let clauses: Vec<(Option<String>, String, String, Aol<Expr>)> = self.ast.slice(handler
+                    .clauses)
                     .iter()
                     .map(|clause| {
                         (
@@ -1189,7 +1188,7 @@ impl<'a> Lowerer<'a> {
                 rest: Box::new(self.pat(*rest)),
             },
             Pattern::Tuple(pats) => {
-                let pats: Vec<Aol<Pattern>> = pats.to_vec();
+                let pats: Vec<Aol<Pattern>> = self.ast.slice(*pats).to_vec();
                 Pat::Tuple(pats.into_iter().map(|p| self.pat(p)).collect())
             }
             Pattern::Cons { head, tail } => {
@@ -1200,7 +1199,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Pattern::List { elems, rest } => {
-                let elems: Vec<Aol<Pattern>> = elems.to_vec();
+                let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
                 let rest = *rest;
                 let mut acc = match rest {
                     Some(r) => self.pat(r),
@@ -1223,7 +1222,7 @@ impl<'a> Lowerer<'a> {
                     .decls
                     .fields_of(&self.module, &self.imports, sname)
                     .map(<[String]>::to_vec);
-                let fields: Vec<FieldPat> = fields.to_vec();
+                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, names.as_deref()),
                     rest: None,
@@ -1236,7 +1235,7 @@ impl<'a> Lowerer<'a> {
                     Pattern::Var(name) => Some(self.text(*name).to_string()),
                     _ => None,
                 });
-                let fields: Vec<FieldPat> = fields.to_vec();
+                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, None),
                     rest,
@@ -1255,7 +1254,7 @@ impl<'a> Lowerer<'a> {
                         ty.and_then(|t| self.decls.fields_of(&self.module, &self.imports, t))
                             .map(|ns| ns.iter().cloned().map(Some).collect())
                     });
-                let fields: Vec<FieldPat> = fields.to_vec();
+                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
                 let positional = self.variant_field_pats(&fields, names.as_deref());
                 Pat::Variant {
                     tag,
@@ -1334,7 +1333,7 @@ impl<'a> Lowerer<'a> {
     /// so a user guard (and the literal checks) can see the element names.
     fn array_arm(&mut self, pat: Aol<Pattern>, user_guard: Option<Term>, body: Arc<Term>) -> Arm {
         let (elems, rest) = match self.pnode(pat) {
-            Pattern::List { elems, rest } => (elems.to_vec(), *rest),
+            Pattern::List { elems, rest } => (self.ast.slice(*elems).to_vec(), *rest),
             _ => unreachable!("array_arm on a non-list pattern"),
         };
         let v = self.fresh();
