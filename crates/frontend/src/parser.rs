@@ -1451,7 +1451,11 @@ impl<'a> Parser<'a> {
         // default, a `List Int`. It is not desugared here so the target stays open.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
             self.bump()?; // '...'
-            let hi = self.parse_expr(0)?;
+            let hi = if matches!(self.peek_kind()?, Kind::RBrack) {
+                None
+            } else {
+                Some(self.parse_expr(0)?)
+            };
             expect!(self, Kind::RBrack, "expected ']' to close the range");
             return Ok(self.expr(Expr::Range { lo: first, hi }));
         }
@@ -1712,18 +1716,19 @@ impl<'a> Parser<'a> {
             let t = self.peek()?;
             return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
         }
-        // `lo ... hi`: an inclusive numeric range. Both bounds are numeric literals.
+        // `lo ... hi`: an inclusive numeric range, or `lo ...`: an open range (no
+        // upper bound). Both bounds are numeric literals.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
             if !matches!(self.ast.pats.lookup(atom), Pattern::Int(_) | Pattern::Real(_)) {
                 let t = self.peek()?;
                 return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
             }
             self.bump()?; // '...'
-            let hi_tok = self.peek()?;
-            let hi = self.parse_pattern_atom()?;
-            if !matches!(self.ast.pats.lookup(hi), Pattern::Int(_) | Pattern::Real(_)) {
-                return Err(self.unexpected(&hi_tok, "a range '...' needs a numeric literal on its right"));
-            }
+            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_)) {
+                Some(self.parse_pattern_atom()?)
+            } else {
+                None
+            };
             return Ok(self.pat(Pattern::Range { lo: atom, hi }));
         }
         Ok(atom)

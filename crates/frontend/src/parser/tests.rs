@@ -233,16 +233,36 @@ fn inclusive_range_pattern_parses() {
     match p.ast.pats.lookup(p.ast.slice(arms[0].patterns)[0]) {
         Pattern::Range { lo, hi } => {
             assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(1)));
-            assert!(matches!(p.ast.pats.lookup(*hi), Pattern::Int(5)));
+            let hi = hi.expect("closed range has an upper bound");
+            assert!(matches!(p.ast.pats.lookup(hi), Pattern::Int(5)));
         }
         other => panic!("expected a range pattern, got {other:?}"),
     }
-    // A non-literal bound is a parse error.
-    let msg = parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
+    // A non-literal upper bound is a parse error: `1 ...` closes as an open range,
+    // so the trailing `x` has nowhere to go.
+    parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
         .err()
-        .expect("expected a parse error")
-        .to_string();
-    assert!(msg.contains("numeric literal"), "{msg}");
+        .expect("expected a parse error");
+}
+
+#[test]
+fn open_range_pattern_parses() {
+    // `lo ...` with no upper bound is an open range pattern.
+    let p = prog("@mod M\n$ f = \\n = is n | 0 ... => 0 else 1");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
+        panic!("expected a match")
+    };
+    let arms = p.ast.slice(*arms);
+    match p.ast.pats.lookup(p.ast.slice(arms[0].patterns)[0]) {
+        Pattern::Range { lo, hi } => {
+            assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(0)));
+            assert!(hi.is_none(), "open range has no upper bound");
+        }
+        other => panic!("expected a range pattern, got {other:?}"),
+    }
 }
 
 #[test]
@@ -253,13 +273,21 @@ fn range_builder_parses_to_range_node() {
         panic!("expected a range")
     };
     assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
-    assert!(matches!(p.ast.expr(*hi), Expr::Int(5)));
+    let hi = hi.expect("closed range has an upper bound");
+    assert!(matches!(p.ast.expr(hi), Expr::Int(5)));
     // A comma list is still a plain list, not a range.
     let p = prog("@mod M\n$ r = [1, 2, 3]");
     let Expr::List(elems) = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a list")
     };
     assert_eq!(elems.len(), 3);
+    // An open range `[lo ...]` has no upper bound.
+    let p = prog("@mod M\n$ r = [1 ...]");
+    let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a range")
+    };
+    assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
+    assert!(hi.is_none(), "open range has no upper bound");
 }
 
 #[test]

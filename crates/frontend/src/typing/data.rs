@@ -108,6 +108,9 @@ pub const UNIT: &str = "{}";
 pub const LIST: &str = "List";
 pub const ARRAY: &str = "Array";
 pub const VEC: &str = "Vec";
+/// The canonical infinite codata stream (defined in `CORE`), the target an
+/// open range `[lo ...]` builds.
+pub const STREAM: &str = "Stream";
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.

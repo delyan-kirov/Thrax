@@ -207,6 +207,30 @@ fn codata_stream() {
 }
 
 #[test]
+fn open_range_stream() {
+    // `[lo ...]` lowers to `count_from lo`, an infinite codata stream; the C
+    // backend must observe it lazily just like the interpreter. `[lo ... hi]`
+    // lowers to `range lo hi`, a finite list.
+    let src = "@mod M\n\
+               $ Stream : @codata t = head : t, tail : Stream t,\n\
+               $ count_from : Int -> Stream Int = \\lo = { .head = lo, .tail = count_from (lo + 1) }\n\
+               $ range : Int -> Int -> List Int = \\lo hi = if lo ?> hi => [] else lo :: range (lo + 1) hi\n\
+               $ len : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ s : Stream Int = [3 ...]\n\
+               $ test : Int = s.head + s.tail.head + len [1 ... 4]\n";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn open_range_pattern() {
+    // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
+    let src = "@mod M\n\
+               $ sign : Int -> Str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
+               $ test : Str = sign 3\n";
+    assert_matches(src, "test");
+}
+
+#[test]
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : Int -> Int = \\n =\n\

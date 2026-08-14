@@ -18,6 +18,11 @@ $ grade : Int -> Str = \n =
 		| 60 ...  69 => "D"
 	else "F"
 
+# An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
+$ sign : Int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
+$ ck_open_pat : Int = if sign 3 ?= "nonneg" => 0 else 1024
+$ ck_open_neg : Int = if sign (0 - 3) ?= "neg" => 0 else 2048
+
 # Inclusive at both ends: 60 is a D, 100 is an A.
 $ ck_a  : Int = if grade 95  ?= "A" => 0 else 1
 $ ck_a2 : Int = if grade 100 ?= "A" => 0 else 2
@@ -44,5 +49,11 @@ $ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256
 $ tv : [4]Int = [1 ... 4]                           # the tensor [1, 2, 3, 4]
 $ ck_tens : Int = if tv.[0] + tv.[3] ?= 5 => 0 else 512
 
+# An OPEN range `[lo ...]` has no upper bound, so it is infinite: it builds a
+# `Stream Int` (the only shape that holds an unbounded sequence). Observe it lazily.
+$ evens : Stream Int = [3 ...]
+$ ck_stream : Int = if evens.head + evens.tail.head ?= 7 => 0 else 4096
+
 $ test : Int =
 	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens
+	+ ck_open_pat + ck_open_neg + ck_stream

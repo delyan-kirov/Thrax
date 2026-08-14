@@ -971,7 +971,14 @@ impl<'a> Checker<'a> {
             // it fixes `n = hi - lo + 1` (0 when `hi < lo`). Bounds are checked
             // against the element type, so `[4]Nat = [1 ... 4]` types the ends as Nat.
             Expr::Range { lo, hi } if self.tensor_parts(expected).is_some() => {
-                let (lo, hi) = (*lo, *hi);
+                let lo = *lo;
+                let Some(hi) = *hi else {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "an open range `[lo ...]` is infinite and cannot build a sized \
+                         tensor `[n]T`; it builds a `Stream`"
+                    ));
+                };
                 let (size, elem) = self.tensor_parts(expected).expect("guarded");
                 let (Some(l), Some(h)) = (self.int_literal(lo), self.int_literal(hi)) else {
                     return Err(diag!(
@@ -2028,15 +2035,21 @@ impl<'a> Checker<'a> {
                 Ok(Type::app(Type::con(ty::LIST), elem))
             }
 
-            // A range `[lo ... hi]` with no expected type defaults to `List Int`
-            // (lowering emits `range lo hi`). The sized-tensor target is reached only
-            // through `check` against a `[n]T`.
+            // A closed range `[lo ... hi]` with no expected type defaults to `List Int`
+            // (lowering emits `range lo hi`); the sized-tensor target is reached only
+            // through `check` against a `[n]T`. An open range `[lo ...]` is infinite,
+            // so it is always a `Stream Int` (lowering emits `count_from lo`).
             Expr::Range { lo, hi } => {
-                let (lo, hi) = (*lo, *hi);
+                let lo = *lo;
                 let int = Type::con(ty::INT);
                 self.check(lo, &int)?;
-                self.check(hi, &int)?;
-                Ok(Type::app(Type::con(ty::LIST), int))
+                match *hi {
+                    Some(hi) => {
+                        self.check(hi, &int)?;
+                        Ok(Type::app(Type::con(ty::LIST), int))
+                    }
+                    None => Ok(Type::app(Type::con(ty::STREAM), int)),
+                }
             }
 
             Expr::If { cond, then, alt } => {
@@ -2979,10 +2992,14 @@ impl<'a> Checker<'a> {
             Pattern::Range { lo, hi } => {
                 // Both bounds are typed against the scrutinee, so a range forces its
                 // scalar (`1 ... 5` -> Int, `1.0 ... 5.0` -> Real) and rejects mixed
-                // bounds. It binds nothing.
+                // bounds. An open range `lo ...` types only its lower bound. Binds
+                // nothing.
                 let (lo, hi) = (*lo, *hi);
                 self.type_pattern(lo, expected)?;
-                self.type_pattern(hi, expected)
+                if let Some(hi) = hi {
+                    self.type_pattern(hi, expected)?;
+                }
+                Ok(())
             }
             Pattern::StrPrefix { rest, .. } => {
                 let rest = *rest;
@@ -3682,7 +3699,9 @@ fn free_globals<'a>(
             .for_each(|e| free_globals(ast, *e, globals, bound, out)),
         Expr::Range { lo, hi } => {
             free_globals(ast, *lo, globals, bound, out);
-            free_globals(ast, *hi, globals, bound, out);
+            if let Some(hi) = hi {
+                free_globals(ast, *hi, globals, bound, out);
+            }
         }
         Expr::Array { size } => free_globals(ast, *size, globals, bound, out),
         Expr::Slice { recv, slots } => {

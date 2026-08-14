@@ -220,13 +220,20 @@ The EXPRESSION-form range `[lo ... hi]` is a type-directed inclusive-range liter
 (the same `...` as range patterns and slices). Its target is chosen from the expected
 type:
 
-	$ tv : [4]Int   = [1 ... 4]     # a sized tensor (literal bounds fix n = 4)
-	$ ns : List Int = [1 ... 5]     # a List (the default)
+	$ tv : [4]Int     = [1 ... 4]   # a sized tensor (literal bounds fix n = 4)
+	$ ns : List Int   = [1 ... 5]   # a List (the default)
+	$ s  : Stream Int = [1 ...]     # an infinite Stream (open range, no upper bound)
 
 Against a sized tensor `[n]T` the bounds must be literals, so the length is a
 compile-time constant (a non-literal bound is a compile-time error); the elements are
-checked against `T`. With no annotation it is a `List Int` (the auto-imported
-inclusive `range lo hi`). Empty when `lo > hi`.
+checked against `T`. With no annotation the closed form is a `List Int` (the
+auto-imported inclusive `range lo hi`), empty when `lo > hi`. The OPEN form `[lo ...]`
+has no upper bound, so it is infinite: it builds a `Stream Int` (the auto-imported
+`count_from lo`), the only shape that holds an unbounded sequence. An open range
+against a `List` or a sized tensor is a type error.
+
+A range pattern may also be open: `is n | lo ...` matches when `lo <= n` (one bound),
+the counterpart to the closed `lo ... hi`.
 
 Indexing `t.[i]` is not tied to tensors: it desugars to an OVERLOADABLE `index`
 function (`index t i`). `LA` provides the tensor candidate (`index : [n]a -> Int

@@ -330,10 +330,11 @@ pub enum Pattern {
     Str(StrId),
     Bool(bool),
     /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. Both
-    /// bounds are numeric literal patterns (`Int`/`Real`). Refutable; binds nothing.
+    /// bounds are numeric literal patterns (`Int`/`Real`). An open range `lo ...`
+    /// omits the upper bound and matches when `lo <= x`. Refutable; binds nothing.
     Range {
         lo: Aol<Pattern>,
-        hi: Aol<Pattern>,
+        hi: Option<Aol<Pattern>>,
     },
     /// A literal string prefix match: `"GET " ++ rest`.
     StrPrefix {
@@ -430,10 +431,11 @@ pub enum Expr {
     /// The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal: it
     /// materializes into a sized tensor `[n]T` (when a tensor is expected and the
     /// bounds are literals, so the length is a compile-time constant), otherwise a
-    /// `List Int` (the default). Both bounds are `Int`.
+    /// `List Int` (the default). Both bounds are `Int`. An open range `[lo ...]`
+    /// omits the upper bound and builds an infinite codata `Stream Int`.
     Range {
         lo: Aol<Expr>,
-        hi: Aol<Expr>,
+        hi: Option<Aol<Expr>>,
     },
     /// Multi-axis tensor slice `recv.[s0, s1, ...]` where at least one slot is a
     /// range or a full `..` (an all-index access desugars to `index` instead). An

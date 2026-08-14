@@ -263,11 +263,16 @@ constraints. Status now:
   tensor is expected and the bounds are literals (static length), else a `List Int`
   (default). A non-literal bound against a sized tensor is a compile-time error. See
   [[range-patterns]] and doc/syntax-roadmap.md #9.
+- **Done (separate from LA): OPEN ranges `[lo ...]` as codata streams.** An open
+  range (no upper bound) is infinite, so it always builds a `Stream Int` (lowered to
+  the canonical `CORE.count_from lo`); against a `List` or sized tensor it is a type
+  error. This is the "first-class lazy Range", realized by making the literal target
+  codata: laziness = target a `Stream`, no separate `Range` type. Open range PATTERNS
+  `is n | lo ...` ship too (match `lo <= n`, one comparison). `Stream`/`count_from`
+  are canonical in `CORE`. `Expr::Range.hi`/`Pattern::Range.hi`/`Pat::Range.hi` are
+  optional. See doc/syntax-roadmap.md #9.
 - **Deferred (separate from LA):**
-  - The codata-STREAM default (an unannotated range materializing lazily as a
-    stream) and Array/Vec targets: both ride the same `Expr::Range` node once a
-    canonical `Stream` codata type exists. This is the "first-class lazy Range",
-    subsumed by making the literal target codata (no separate `Range` type needed).
+  - Array/Vec targets for the closed form, riding the same `Expr::Range` node.
   - A compile-time-CONSTANT (non-literal) bound against a sized tensor (`let a = 4
     in [1 ... a]`): needs a const-eval pass; currently errors.
   - Step/stride and descending ranges.

@@ -29,3 +29,12 @@ $ to_string_digits : Int -> Str -> Str = \n acc =
 $ range : Int -> Int -> List Int = \lo hi =
 	if lo ?> hi => []
 	else lo :: range (lo + 1) hi
+
+# The canonical infinite stream: coinductive data observed by `.head` (the current
+# element) and `.tail` (the rest). Non-memoized thunks, so it is genuinely infinite.
+$ Stream : @codata t = head : t, tail : Stream t,
+
+# The open range `[lo ...]` desugars to `count_from lo`: the ascending Ints from
+# `lo` upward, with no end. It builds a `Stream`, the only shape that can hold an
+# unbounded sequence (not a finite `List` or a statically sized `[n]T`).
+$ count_from : Int -> Stream Int = \lo = { .head = lo, .tail = count_from (lo + 1) }

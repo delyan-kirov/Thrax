@@ -16,9 +16,12 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 11`: eleven shift/reduce, all resolve by the default
+ * CONFLICTS. `%expect 13`: thirteen shift/reduce, all resolve by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
  * -- EXPECTED, keep as is:
+ *   - `lo ...`         open range shifts an upper bound when one follows, else
+ *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
+ *                      `[expr ELLIPSIS RBRACK]`); two conflicts
  *   - `f x.y`         postfix `.` binds tighter than application -> `f (x.y)`
  *   - `E.Tag.{...}`   the `.{...}` is the variant payload, not a struct literal
  *   - `A.B.C`         qualified-name chains shift greedily
@@ -43,7 +46,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 11
+%expect 13
 
 %token INT REAL STR
 %token UIDENT       /* Word, uppercase-initial */
@@ -320,6 +323,7 @@ seq_lit
   : LBRACK RBRACK
   | LBRACK elem_list opt_comma RBRACK
   | LBRACK expr ELLIPSIS expr RBRACK   /* range builder `[lo ... hi]` -> `range lo hi` */
+  | LBRACK expr ELLIPSIS RBRACK        /* open range `[lo ...]` -> `count_from lo` (Stream) */
   ;
 elem_list : expr | elem_list COMMA expr ;
 
@@ -365,6 +369,7 @@ pattern
   | pat_atom CONS pattern
   | STR CONCAT pattern
   | num_lit ELLIPSIS num_lit   /* inclusive numeric range `lo ... hi` */
+  | num_lit ELLIPSIS           /* open range `lo ...` (matches `lo <= x`) */
   ;
 
 num_lit : INT | REAL ;

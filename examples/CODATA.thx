@@ -9,10 +9,8 @@
 #       Recursion is generative (through a function call), so reference counting
 #       stays complete (no cycles). See doc/effect-system-design.md 1a.
 
-$ Stream : @codata t = head : t, tail : Stream t,
-
-# An infinite stream of ascending integers.
-$ from : Int -> Stream Int = \n = { .head = n, .tail = from (n + 1) }
+# `Stream` and the ascending-integer generator `count_from` are canonical, defined
+# in CORE (bare everywhere), so this file demonstrates observing and mapping one.
 
 # The nth element, walking `tail` n times.
 $ nth : Int -> Stream t -> t = \n s =
@@ -24,8 +22,11 @@ $ smap : (a -> b) -> Stream a -> Stream b = \f s =
 
 $ dbl : Int -> Int = \x = x + x
 
-$ ck_head : Int = if (from 10).head ?= 10 => 0 else 1
-$ ck_nth  : Int = if nth 5 (from 10) ?= 15 => 0 else 2
-$ ck_map  : Int = if nth 4 (smap dbl (from 1)) ?= 10 => 0 else 4
+$ ck_head : Int = if (count_from 10).head ?= 10 => 0 else 1
+$ ck_nth  : Int = if nth 5 (count_from 10) ?= 15 => 0 else 2
+$ ck_map  : Int = if nth 4 (smap dbl (count_from 1)) ?= 10 => 0 else 4
 
-$ test : Int = ck_head + ck_nth + ck_map
+# The open range `[lo ...]` is sugar for `count_from lo`, an infinite stream.
+$ ck_range : Int = if nth 3 [7 ...] ?= 10 => 0 else 8
+
+$ test : Int = ck_head + ck_nth + ck_map + ck_range
