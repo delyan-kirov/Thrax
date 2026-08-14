@@ -734,6 +734,41 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            Expr::Range { lo, hi } => {
+                let (lo, hi) = (*lo, *hi);
+                match hi {
+                    // An open range `[lo ...]` is the infinite `CORE.count_from lo`.
+                    None => {
+                        let lo = self.expr(lo);
+                        Term::app(Term::var("count_from"), lo)
+                    }
+                    Some(hi) if self.resolved.tensor_exprs.contains(&e) => {
+                        // Resolved to a sized tensor: the checker proved the bounds are
+                        // literals, so the elements are known here. Push `lo..=hi` into
+                        // a vector, then `@tensor_stack` builds the flat strided tensor.
+                        let lit = |ast: &Ast, x| match ast.expr(x) {
+                            Expr::Int(n) => *n,
+                            _ => unreachable!("a range tensor has literal bounds"),
+                        };
+                        let (l, h) = (lit(self.ast, lo), lit(self.ast, hi));
+                        let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                        if h >= l {
+                            for v in l..=h {
+                                acc =
+                                    Term::app(Term::app(Term::var("@vec_push"), acc), Term::Int(v));
+                            }
+                        }
+                        Term::app(Term::var("@tensor_stack"), acc)
+                    }
+                    // The default `List Int`: the inclusive `CORE.range lo hi`.
+                    Some(hi) => {
+                        let lo = self.expr(lo);
+                        let hi = self.expr(hi);
+                        Term::app(Term::app(Term::var("range"), lo), hi)
+                    }
+                }
+            }
+
             Expr::Array { size } => Term::app(Term::var("@array_alloc"), self.expr(*size)),
 
             Expr::Field { record, name } => {
@@ -1181,7 +1216,7 @@ impl<'a> Lowerer<'a> {
             Pattern::Bool(b) => Pat::Bool(*b),
             Pattern::Range { lo, hi } => Pat::Range {
                 lo: self.range_bound(*lo),
-                hi: self.range_bound(*hi),
+                hi: hi.map(|h| self.range_bound(h)),
             },
             Pattern::StrPrefix { prefix, rest } => Pat::StrPrefix {
                 prefix: self.ast.bytes(*prefix).to_vec(),

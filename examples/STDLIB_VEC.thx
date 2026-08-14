@@ -42,7 +42,7 @@ $ ck_tup : Int =
 
 # A larger build loop: the native backend reuses the unique spine in place.
 $ ck_big : Int =
-	let big = LIST.foldl (\a x = push a x) (new {}) (range 0 500) in
+	let big = LIST.foldl (\a x = push a x) (new {}) (range 0 499) in
 	if (len big) ?= 500 =>
 		(if (fold (\a x = a + x) 0 big) ?= 124750 => 0 else 1)
 	else 1

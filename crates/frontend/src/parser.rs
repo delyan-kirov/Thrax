@@ -797,19 +797,47 @@ impl<'a> Parser<'a> {
             // for the nested `[m][n]...T` (one axis per dimension).
             Kind::LBrack => {
                 self.bump()?; // '['
-                let mut sizes = vec![self.parse_size()?];
+                let mut axes = vec![self.parse_axis()?];
                 while self.eat(|k| matches!(k, Kind::Comma))? {
-                    sizes.push(self.parse_size()?);
+                    axes.push(self.parse_axis()?);
                 }
                 expect!(self, Kind::RBrack, "expected ']' to close the tensor shape");
                 let mut elem = self.parse_type_atom()?;
-                for size in sizes.into_iter().rev() {
-                    elem = self.ty(Ty::Sized { size, elem });
+                for (variance, size) in axes.into_iter().rev() {
+                    elem = self.ty(Ty::Sized {
+                        variance,
+                        size,
+                        elem,
+                    });
                 }
                 Ok(elem)
             }
             _ => Err(self.unexpected(&t, "expected a type")),
         }
+    }
+
+    /// One axis of a tensor shape: an optional variance marker (`@contra`/`@co`)
+    /// followed by the size. A bare axis is `Neutral`. The marker is `@`-sigilled
+    /// like the other type-level intrinsics; a leading `@co`/`@contra` cannot clash
+    /// with a size expression (a size never starts with `@`).
+    fn parse_axis(&mut self) -> Result<(Variance, Aol<Ty>)> {
+        let variance = if matches!(self.peek_kind()?, Kind::At) {
+            let t = self.peek()?;
+            match self.intrinsic_name(t) {
+                "contra" => {
+                    self.bump()?;
+                    Variance::Contra
+                }
+                "co" => {
+                    self.bump()?;
+                    Variance::Co
+                }
+                _ => Variance::Neutral,
+            }
+        } else {
+            Variance::Neutral
+        };
+        Ok((variance, self.parse_size()?))
     }
 
     /// A tensor size expression: `+` of `*`-terms over Nat literals and size
@@ -1412,11 +1440,32 @@ impl<'a> Parser<'a> {
 
     fn parse_list(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '['
-        let mut elems = Vec::new();
-        while !matches!(self.peek_kind()?, Kind::RBrack) {
-            elems.push(self.parse_expr(0)?);
-            if !self.eat(|k| matches!(k, Kind::Comma))? {
-                break;
+        if matches!(self.peek_kind()?, Kind::RBrack) {
+            self.bump()?;
+            let elems = self.ast.make_slice(Vec::new());
+            return Ok(self.expr(Expr::List(elems)));
+        }
+        let first = self.parse_expr(0)?;
+        // The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal
+        // (`Expr::Range`): the checker resolves it to a sized tensor `[n]T` or, by
+        // default, a `List Int`. It is not desugared here so the target stays open.
+        if matches!(self.peek_kind()?, Kind::Ellipsis) {
+            self.bump()?; // '...'
+            let hi = if matches!(self.peek_kind()?, Kind::RBrack) {
+                None
+            } else {
+                Some(self.parse_expr(0)?)
+            };
+            expect!(self, Kind::RBrack, "expected ']' to close the range");
+            return Ok(self.expr(Expr::Range { lo: first, hi }));
+        }
+        let mut elems = vec![first];
+        if self.eat(|k| matches!(k, Kind::Comma))? {
+            while !matches!(self.peek_kind()?, Kind::RBrack) {
+                elems.push(self.parse_expr(0)?);
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
             }
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list");
@@ -1667,18 +1716,19 @@ impl<'a> Parser<'a> {
             let t = self.peek()?;
             return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
         }
-        // `lo ... hi`: an inclusive numeric range. Both bounds are numeric literals.
+        // `lo ... hi`: an inclusive numeric range, or `lo ...`: an open range (no
+        // upper bound). Both bounds are numeric literals.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
             if !matches!(self.ast.pats.lookup(atom), Pattern::Int(_) | Pattern::Real(_)) {
                 let t = self.peek()?;
                 return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
             }
             self.bump()?; // '...'
-            let hi_tok = self.peek()?;
-            let hi = self.parse_pattern_atom()?;
-            if !matches!(self.ast.pats.lookup(hi), Pattern::Int(_) | Pattern::Real(_)) {
-                return Err(self.unexpected(&hi_tok, "a range '...' needs a numeric literal on its right"));
-            }
+            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_)) {
+                Some(self.parse_pattern_atom()?)
+            } else {
+                None
+            };
             return Ok(self.pat(Pattern::Range { lo: atom, hi }));
         }
         Ok(atom)

@@ -248,6 +248,17 @@ pub struct PayloadField {
 
 // -- types -------------------------------------------------------------------
 
+/// The variance of a tensor axis. `Contra` is an upper (contravariant) index, a
+/// vector/column component living in `V`; `Co` is a lower (covariant) index, a
+/// covector/row living in the dual `V*`. `Neutral` is an unmarked axis, compatible
+/// with either (so plain `[n]T` code interoperates with variance-typed tensors).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Variance {
+    Neutral,
+    Co,
+    Contra,
+}
+
 #[derive(Debug)]
 pub enum Ty {
     /// A type constructor: `Int`, `@int64`, or module-qualified `A.B`.
@@ -261,8 +272,11 @@ pub enum Ty {
     /// A size product `a * b` inside a tensor size (`[n*m]T`).
     SizeMul(Aol<Ty>, Aol<Ty>),
     /// A sized tensor type `[size]elem`, e.g. `[5]Int` or `[n]a`. `size` is a `Nat`
-    /// literal or a (Nat-kinded) `Var`; `elem` is the element type.
+    /// literal or a (Nat-kinded) `Var`; `elem` is the element type. `variance` tags
+    /// the axis: `[@Contra n]`/`[@Co n]` are the two standard tensor-index kinds, a
+    /// bare `[n]` is `Neutral`.
     Sized {
+        variance: Variance,
         size: Aol<Ty>,
         elem: Aol<Ty>,
     },
@@ -316,10 +330,11 @@ pub enum Pattern {
     Str(StrId),
     Bool(bool),
     /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. Both
-    /// bounds are numeric literal patterns (`Int`/`Real`). Refutable; binds nothing.
+    /// bounds are numeric literal patterns (`Int`/`Real`). An open range `lo ...`
+    /// omits the upper bound and matches when `lo <= x`. Refutable; binds nothing.
     Range {
         lo: Aol<Pattern>,
-        hi: Aol<Pattern>,
+        hi: Option<Aol<Pattern>>,
     },
     /// A literal string prefix match: `"GET " ++ rest`.
     StrPrefix {
@@ -413,6 +428,15 @@ pub enum Expr {
     Tuple(Slice<Aol<Expr>>),
     /// `[ a, b, ... ]` / `[]`.
     List(Slice<Aol<Expr>>),
+    /// The inclusive range builder `[lo ... hi]`. A TYPE-DIRECTED literal: it
+    /// materializes into a sized tensor `[n]T` (when a tensor is expected and the
+    /// bounds are literals, so the length is a compile-time constant), otherwise a
+    /// `List Int` (the default). Both bounds are `Int`. An open range `[lo ...]`
+    /// omits the upper bound and builds an infinite codata `Stream Int`.
+    Range {
+        lo: Aol<Expr>,
+        hi: Option<Aol<Expr>>,
+    },
     /// Multi-axis tensor slice `recv.[s0, s1, ...]` where at least one slot is a
     /// range or a full `..` (an all-index access desugars to `index` instead). An
     /// `Index` slot reduces its axis; a `Range`/`Full` slot keeps it (a view).

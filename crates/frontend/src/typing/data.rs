@@ -108,6 +108,9 @@ pub const UNIT: &str = "{}";
 pub const LIST: &str = "List";
 pub const ARRAY: &str = "Array";
 pub const VEC: &str = "Vec";
+/// The canonical infinite codata stream (defined in `CORE`), the target an
+/// open range `[lo ...]` builds.
+pub const STREAM: &str = "Stream";
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
@@ -115,6 +118,9 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
     fn go(ty: &Type, namer: &mut dyn FnMut(VarId) -> String, out: &mut String, prec: u8) {
         match ty {
             Type::Var(id) => out.push_str(&namer(*id)),
+            // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
+            // their source spelling when they surface on their own (a variance
+            // mismatch); a whole tensor renders via the `[..]` path below.
             Type::Con(name) => out.push_str(name),
             Type::Nat(n) => out.push_str(&n.to_string()),
             Type::NatAdd(a, b) => paren(out, prec > 2, |out| {
@@ -128,12 +134,26 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
                 go(b, namer, out, 3);
             }),
             Type::App(head, arg) => {
-                let wrap = prec > 1;
-                paren(out, wrap, |out| {
-                    go(head, namer, out, 1);
-                    out.push(' ');
-                    go(arg, namer, out, 2);
-                });
+                if let Some((variance, size, elem)) = tensor_spine_raw(ty) {
+                    out.push('[');
+                    if let Type::Con(n) = variance {
+                        if n == "@contra" {
+                            out.push_str("@contra ");
+                        } else if n == "@co" {
+                            out.push_str("@co ");
+                        }
+                    }
+                    go(size, namer, out, 0);
+                    out.push(']');
+                    go(elem, namer, out, 2);
+                } else {
+                    let wrap = prec > 1;
+                    paren(out, wrap, |out| {
+                        go(head, namer, out, 1);
+                        out.push(' ');
+                        go(arg, namer, out, 2);
+                    });
+                }
             }
             Type::Arrow(from, to, eff) => {
                 let wrap = prec > 0;
@@ -227,6 +247,20 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
                 _ => return (labels, None), // RowEmpty or a malformed tail
             }
         }
+    }
+    /// Peel a literal (already-zonked) sized-tensor spine `@tensor variance size
+    /// elem` for pretty-printing as `[..]`.
+    fn tensor_spine_raw(ty: &Type) -> Option<(&Type, &Type, &Type)> {
+        if let Type::App(head, elem) = ty {
+            if let Type::App(head2, size) = head.as_ref() {
+                if let Type::App(con, variance) = head2.as_ref() {
+                    if matches!(con.as_ref(), Type::Con(n) if n == "@tensor") {
+                        return Some((variance, size, elem));
+                    }
+                }
+            }
+        }
+        None
     }
     fn paren(out: &mut String, wrap: bool, f: impl FnOnce(&mut String)) {
         if wrap {

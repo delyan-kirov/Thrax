@@ -1,4 +1,6 @@
 @mod RANGES
+$ with LIST
+$ with LA
 
 # \file ranges.thx
 # \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
@@ -6,6 +8,7 @@
 #       inclusive (Jai-style: there is only the inclusive form). A range is
 #       refutable and binds nothing, so a match over ranges needs an `else`. The
 #       scrutinee variable stays in scope in the arm if you need the value.
+#       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
 $ grade : Int -> Str = \n =
 	is n
@@ -14,6 +17,11 @@ $ grade : Int -> Str = \n =
 		| 70 ...  79 => "C"
 		| 60 ...  69 => "D"
 	else "F"
+
+# An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
+$ sign : Int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
+$ ck_open_pat : Int = if sign 3 ?= "nonneg" => 0 else 1024
+$ ck_open_neg : Int = if sign (0 - 3) ?= "neg" => 0 else 2048
 
 # Inclusive at both ends: 60 is a D, 100 is an A.
 $ ck_a  : Int = if grade 95  ?= "A" => 0 else 1
@@ -27,4 +35,25 @@ $ band : Real -> Int = \x =
 	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 $ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
 
-$ test : Int = ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r
+# EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
+# same `...`, materialized). By default it is a `List Int` (a runtime-length
+# sequence). Empty when lo > hi.
+$ ns : List Int = [1 ... 4]                         # [1, 2, 3, 4]
+$ ck_build : Int = if sum ns ?= 10 => 0 else 64
+$ ck_len   : Int = if length ns ?= 4 => 0 else 128
+$ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256
+
+# Against a sized tensor `[n]T` it builds the tensor instead: the LITERAL bounds fix
+# `n = hi - lo + 1` at compile time. A non-literal bound to a sized tensor is a
+# compile-time error (its length would not be statically known).
+$ tv : [4]Int = [1 ... 4]                           # the tensor [1, 2, 3, 4]
+$ ck_tens : Int = if tv.[0] + tv.[3] ?= 5 => 0 else 512
+
+# An OPEN range `[lo ...]` has no upper bound, so it is infinite: it builds a
+# `Stream Int` (the only shape that holds an unbounded sequence). Observe it lazily.
+$ evens : Stream Int = [3 ...]
+$ ck_stream : Int = if evens.head + evens.tail.head ?= 7 => 0 else 4096
+
+$ test : Int =
+	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens
+	+ ck_open_pat + ck_open_neg + ck_stream

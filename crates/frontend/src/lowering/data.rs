@@ -173,10 +173,11 @@ pub enum Pat {
         rest: Box<Pat>,
     },
     /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. `lo`
-    /// and `hi` are numeric literal terms; compiled to two comparison tests.
+    /// and `hi` are numeric literal terms; compiled to two comparison tests. An open
+    /// range `lo ...` has no `hi` and matches when `lo <= x` (one test).
     Range {
         lo: Term,
-        hi: Term,
+        hi: Option<Term>,
     },
 }
 

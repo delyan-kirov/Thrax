@@ -76,15 +76,15 @@ $ ck_pair2 : Int =
 # Balance stress: 200 ascending inserts (the classic worst case for an
 # unbalanced BST), everything retrievable, ordered iteration intact.
 $ big : Map Int Int =
-	foldl (\m k = insert m k (k * k)) new_int (range 0 200)
+	foldl (\m k = insert m k (k * k)) new_int (range 0 199)
 $ ck_bigsize : Int = if (size big) ?= 200 => 0 else 1
 $ ck_bigget  : Int =
-	if (all (\k = (get_or big k (0 - 1)) ?= k * k) (range 0 200))
+	if (all (\k = (get_or big k (0 - 1)) ?= k * k) (range 0 199))
 	=> 0 else 1
 $ ck_bigmin  : Int =
 	is min_entry big | Option.Some.{p} => (if p.0 ?= 0 => 0 else 1) else 1
 $ ck_bigrm   : Int =
-	let slim = foldl (\m k = remove m k) big (range 0 100) in
+	let slim = foldl (\m k = remove m k) big (range 0 99) in
 	if (size slim) ?= 100 =>
 		(if has slim 99 => 1 else (if (get_or slim 150 0) ?= 22500 => 0 else 1))
 	else 1

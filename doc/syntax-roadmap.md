@@ -146,7 +146,7 @@ index type), and axis variance (co/contra) lives in the tensor *type*, not the
 index. See doc/ranges-codata-linalg.md. A brief sequence-indexing prototype on
 `.n` was implemented and then reverted once this split was settled.
 
-### #9 Ranges: pattern form DONE (`is lo ... hi`); expression form deferred
+### #9 Ranges: pattern form DONE (`is lo ... hi` / `is lo ...`); expression form DONE (`[lo ... hi]` / `[lo ...]`)
 
 **Range PATTERNS shipped** (inclusive only, Jai-style): `is n | 90 ... 100 => ...`.
 Chosen spelling is `...` (a new `Ellipsis` lexer token; `..` stays free for
@@ -156,13 +156,40 @@ nothing. Frontend-only: no IR/runtime/backend change, since a range lowers in
 `<=`/`>=` builtins, exactly like a string-literal pattern lowers to `?=`.
 `Pattern::Range`/`Pat::Range`; `examples/RANGES.thx`. There is no static
 exhaustiveness checker, so a range match falls through to the runtime "no pattern
-matched" fault when no `else` and nothing matches.
+matched" fault when no `else` and nothing matches. An OPEN pattern `is n | lo ...`
+(no upper bound) matches when `lo <= n`, lowering to the single `sv >= lo` test
+(`Pat::Range.hi` is optional).
 
 - **Deferred: half-open ranges** (`..<`). Patterns almost always want inclusive
-  (Rust `..=`, Zig `...`); revisit `..<` if/when the expression form needs it.
-- **Deferred: the EXPRESSION form** `[1 ... 10]` (a list/array builder). Decision
-  when built: desugar to a **library** `range` function (recommended) or a core
-  primitive; step/stride (recommend none for v1).
+  (Rust `..=`, Zig `...`); revisit `..<` if/when a use needs it.
+- **EXPRESSION form `[lo ... hi]` DONE** (2026-08-13): a TYPE-DIRECTED inclusive
+  range literal, `Expr::Range { lo, hi }` (a real node, not a fixed desugar), so the
+  target is chosen by the CHECKER from the expected type, like a numeric literal or
+  the `[a, b, c]` sequence literal:
+  - expected sized tensor `[n]T`: build the tensor. The bounds must be LITERALS so
+    the length `n = hi - lo + 1` is a compile-time constant (checked, `[4]Int = [1
+    ... 4]`, `[0]T` when `hi < lo`); bounds are checked against `T`, so `[4]Nat = [1
+    ... 4]` types the ends as Nat. Lowering expands the literal bounds to element
+    consts and `@tensor_stack`s them.
+  - otherwise / no annotation: `List Int` (the default), lowered to the inclusive
+    `CORE.range lo hi`.
+  - A non-literal bound against a sized tensor is a clean compile-time ERROR (its
+    length would not be statically known).
+  - an OPEN range `[lo ...]` (no upper bound) is infinite, so it always builds a
+    `Stream Int` (lowered to `CORE.count_from lo`); against a `List` or a sized tensor
+    it is a type error (neither can be unbounded). `Expr::Range.hi` is optional.
+
+  `range` is the single canonical INCLUSIVE builder in the auto-imported `CORE`, so
+  the `List` form needs no import and reads consistently with the `...` of range
+  patterns and tensor slices. The old half-open `LIST.range` `[lo, hi)` was DELETED
+  to remove the name clash; its call sites moved to inclusive (`range 0 500` ->
+  `range 0 499`, same list). `Stream` and `count_from` are also canonical in `CORE`.
+  `examples/RANGES.thx`, `examples/CODATA.thx`.
+  - **Deferred (documented):** (a) a compile-time-CONSTANT bound that is not a
+    literal (`let a = 4 in [1 ... a]`, or a global const) against a sized tensor;
+    this needs a small const-eval/propagation pass and currently errors. (b) the
+    Array/Vec targets, riding the same type-directed node. (c) step/stride and
+    descending ranges. The codata-STREAM target is now DONE via the open form.
 - **Compose with the future:** ranges, `.n` indexing (#10), codata, and a
   linear-algebra layer are entangled (ranges-as-slice-descriptors, type-directed
   indexing, strict-data-vs-codata). If #9/#10 are built as the LA on-ramp, follow

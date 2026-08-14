@@ -230,18 +230,22 @@ impl Pm {
                 on_match,
                 on_fail.clone(),
             ),
-            // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive).
+            // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive). An open
+            // range `lo ...` has no upper bound, so only the `sv >= lo` test.
             Pat::Range { lo, hi } => {
-                let upper = case1(
-                    bin("<=", v(sv), hi.clone()),
-                    Pat::Bool(true),
-                    on_match,
-                    on_fail.clone(),
-                );
+                let inner = match hi {
+                    Some(hi) => case1(
+                        bin("<=", v(sv), hi.clone()),
+                        Pat::Bool(true),
+                        on_match,
+                        on_fail.clone(),
+                    ),
+                    None => on_match,
+                };
                 case1(
                     bin(">=", v(sv), lo.clone()),
                     Pat::Bool(true),
-                    upper,
+                    inner,
                     on_fail.clone(),
                 )
             }

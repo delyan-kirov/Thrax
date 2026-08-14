@@ -157,10 +157,43 @@ fn sized_tensor_type_parses() {
     let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem } => {
+            Ty::Sized { size, elem, .. } => {
                 assert!(matches!(p.ast.ty(*size), Ty::Nat(3)));
                 assert!(matches!(p.ast.ty(*elem), Ty::Con { .. }));
             }
+            other => panic!("expected a sized type, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+}
+
+#[test]
+fn axis_variance_parses() {
+    // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
+    let p = prog("@mod M\n$ f : [@contra 2, @co 3]Int -> Int = \\m = 0");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Arrow { from, .. } => match p.ast.ty(*from) {
+                Ty::Sized {
+                    variance, elem, ..
+                } => {
+                    assert_eq!(*variance, Variance::Contra);
+                    match p.ast.ty(*elem) {
+                        Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Co),
+                        other => panic!("expected a nested Sized, got {other:?}"),
+                    }
+                }
+                other => panic!("expected a sized type, got {other:?}"),
+            },
+            other => panic!("expected an arrow, got {other:?}"),
+        },
+        other => panic!("expected a def, got {other:?}"),
+    }
+    // A bare axis is Neutral.
+    let p = prog("@mod M\n$ v : [3]Int = [1, 2, 3]");
+    match &p.ast.slice(p.program.items)[0] {
+        Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
+            Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Neutral),
             other => panic!("expected a sized type, got {other:?}"),
         },
         other => panic!("expected a def, got {other:?}"),
@@ -173,7 +206,7 @@ fn shape_sugar_nests() {
     let p = prog("@mod M\n$ g : [2, 3]Int = [ [1,2,3], [4,5,6] ]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
-            Ty::Sized { size, elem } => {
+            Ty::Sized { size, elem, .. } => {
                 assert!(matches!(p.ast.ty(*size), Ty::Nat(2)));
                 match p.ast.ty(*elem) {
                     Ty::Sized { size, .. } => assert!(matches!(p.ast.ty(*size), Ty::Nat(3))),
@@ -200,16 +233,61 @@ fn inclusive_range_pattern_parses() {
     match p.ast.pats.lookup(p.ast.slice(arms[0].patterns)[0]) {
         Pattern::Range { lo, hi } => {
             assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(1)));
-            assert!(matches!(p.ast.pats.lookup(*hi), Pattern::Int(5)));
+            let hi = hi.expect("closed range has an upper bound");
+            assert!(matches!(p.ast.pats.lookup(hi), Pattern::Int(5)));
         }
         other => panic!("expected a range pattern, got {other:?}"),
     }
-    // A non-literal bound is a parse error.
-    let msg = parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
+    // A non-literal upper bound is a parse error: `1 ...` closes as an open range,
+    // so the trailing `x` has nowhere to go.
+    parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
         .err()
-        .expect("expected a parse error")
-        .to_string();
-    assert!(msg.contains("numeric literal"), "{msg}");
+        .expect("expected a parse error");
+}
+
+#[test]
+fn open_range_pattern_parses() {
+    // `lo ...` with no upper bound is an open range pattern.
+    let p = prog("@mod M\n$ f = \\n = is n | 0 ... => 0 else 1");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
+        panic!("expected a match")
+    };
+    let arms = p.ast.slice(*arms);
+    match p.ast.pats.lookup(p.ast.slice(arms[0].patterns)[0]) {
+        Pattern::Range { lo, hi } => {
+            assert!(matches!(p.ast.pats.lookup(*lo), Pattern::Int(0)));
+            assert!(hi.is_none(), "open range has no upper bound");
+        }
+        other => panic!("expected a range pattern, got {other:?}"),
+    }
+}
+
+#[test]
+fn range_builder_parses_to_range_node() {
+    // `[lo ... hi]` parses to a type-directed `Expr::Range`, not a desugared call.
+    let p = prog("@mod M\n$ r = [1 ... 5]");
+    let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a range")
+    };
+    assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
+    let hi = hi.expect("closed range has an upper bound");
+    assert!(matches!(p.ast.expr(hi), Expr::Int(5)));
+    // A comma list is still a plain list, not a range.
+    let p = prog("@mod M\n$ r = [1, 2, 3]");
+    let Expr::List(elems) = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a list")
+    };
+    assert_eq!(elems.len(), 3);
+    // An open range `[lo ...]` has no upper bound.
+    let p = prog("@mod M\n$ r = [1 ...]");
+    let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a range")
+    };
+    assert!(matches!(p.ast.expr(*lo), Expr::Int(1)));
+    assert!(hi.is_none(), "open range has no upper bound");
 }
 
 #[test]
