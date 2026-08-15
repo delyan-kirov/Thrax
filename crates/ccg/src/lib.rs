@@ -115,7 +115,7 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
 
     // The foreign-function wrappers and their dispatch table (empty table + count
     // 0 when the program has no `@extern`).
-    out.push_str(&emit_extern_table(&externs));
+    out.push_str(&emit_extern_table(&externs, &prog.crepr_layouts));
 
     // The dispatch tables the runtime calls back through: entry block + slot count
     // per lifted Code.

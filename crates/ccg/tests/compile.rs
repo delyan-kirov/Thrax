@@ -41,6 +41,9 @@ fn lower(src: &str) -> Vec<Program> {
         resolved.with_fields.insert(site, fields.clone());
     }
     resolved.extern_sigs.extend(checker.extern_sigs());
+    for (name, layout) in checker.crepr_layouts() {
+        resolved.crepr_layouts.insert(name.to_string(), layout.clone());
+    }
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     vec![lower_program(
         &parsed.ast,
@@ -204,6 +207,188 @@ fn codata_stream() {
                $ dbl : Int -> Int = \\x = x + x\n\
                $ test : Int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
+}
+
+#[test]
+fn ffi_struct_by_value_return() {
+    // libc's `ldiv_t ldiv(long, long)` returns a struct BY VALUE. The C backend
+    // emits a `typedef struct` and rebuilds the Thrax struct from the C result,
+    // byte-identical to the interpreter.
+    let src = "@mod M\n\
+        $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
+        $ ldiv : Int -> Int -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : Int = let d = ldiv 17 5 in d.quot * 100 + d.rem";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn ffi_struct_by_value_argument() {
+    // A struct passed BY VALUE to a C function. Compile a helper `.so`, then check
+    // the C backend builds the C struct from the Thrax value and matches the
+    // interpreter (which dlopens the same library).
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join("thx_ccg_arg_helper.c");
+    let so_path = dir.join("libthx_ccg_arg_helper.so");
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(b"typedef struct { long x, y; } P;\nlong sum_p(P p) { return p.x * 1000 + p.y; }\n")
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    assert!(Command::new(&cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("cc helper")
+        .success());
+
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_p : P -> Int = @extern \"C\" \"sum_p\" \"{}\"\n\
+         $ test : Int = sum_p (P.{{ .x = 40, .y = 2 }})",
+        so_path.display()
+    );
+
+    // Interpreter (dlopens the .so via the path in the @extern).
+    let expected = interp_show(&src, "test");
+    assert_eq!(expected, "40002");
+
+    // C backend: emit, compile linking the helper .so (with an rpath so the
+    // binary finds it at runtime), run, compare.
+    let lowered = lower(&src);
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let cc_path = dir.join("thx_ccg_arg_prog.c");
+    let bin_path = dir.join("thx_ccg_arg_prog.bin");
+    std::fs::write(&cc_path, &code).unwrap();
+    assert!(Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&cc_path)
+        .arg("-lm")
+        .arg(&so_path)
+        .arg(format!("-Wl,-rpath,{}", dir.display()))
+        .status()
+        .expect("cc prog")
+        .success());
+    let out = Command::new(&bin_path).output().expect("run prog");
+    assert!(out.status.success(), "faulted: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 40002");
+}
+
+#[test]
+fn ffi_c_union_by_value() {
+    // A C union: `@union @extern "C"` emits a real C `union`; a value built with
+    // one member packs just that member (presence-guarded), matching the interpreter.
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join("thx_ccg_union_helper.c");
+    let so_path = dir.join("libthx_ccg_union_helper.so");
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(
+            b"typedef union { long i; double d; } U;\n\
+              long u_as_long(U u) { return u.i; }\n\
+              U u_from_long(long v) { U u; u.i = v; return u; }\n",
+        )
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    assert!(Command::new(&cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("cc helper")
+        .success());
+
+    let src = format!(
+        "@mod M\n\
+         $ U : @union @extern \"C\" = i: Int, d: Real,\n\
+         $ u_as_long : U -> Int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
+         $ u_from_long : Int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
+         $ built : Int = u_as_long (U.{{ .i = 42 }})\n\
+         $ back  : Int = (u_from_long 99).i\n\
+         $ test  : Int = built * 1000 + back",
+        lib = so_path.display()
+    );
+    assert_eq!(interp_show(&src, "test"), "42099");
+
+    let lowered = lower(&src);
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let cc_path = dir.join("thx_ccg_union_prog.c");
+    let bin_path = dir.join("thx_ccg_union_prog.bin");
+    std::fs::write(&cc_path, &code).unwrap();
+    assert!(Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&cc_path)
+        .arg("-lm")
+        .arg(&so_path)
+        .arg(format!("-Wl,-rpath,{}", dir.display()))
+        .status()
+        .expect("cc prog")
+        .success());
+    let out = Command::new(&bin_path).output().expect("run prog");
+    assert!(out.status.success(), "faulted: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 42099");
+}
+
+#[test]
+fn ffi_nested_struct_by_value() {
+    // A struct of structs passed and returned by value. The C backend emits nested
+    // typedefs and marshals recursively; must match the interpreter.
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join("thx_ccg_nested_helper.c");
+    let so_path = dir.join("libthx_ccg_nested_helper.so");
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(
+            b"typedef struct { long x, y; } P;\n\
+              typedef struct { P a; P b; } Seg;\n\
+              long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
+              Seg seg_make(long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
+        )
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    assert!(Command::new(&cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("cc helper")
+        .success());
+
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
+         $ seg_sum : Seg -> Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
+         $ seg_make : Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
+         $ test : Int = seg_sum (seg_make 1)",
+        lib = so_path.display()
+    );
+    assert_eq!(interp_show(&src, "test"), "4321");
+
+    let lowered = lower(&src);
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let cc_path = dir.join("thx_ccg_nested_prog.c");
+    let bin_path = dir.join("thx_ccg_nested_prog.bin");
+    std::fs::write(&cc_path, &code).unwrap();
+    assert!(Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&cc_path)
+        .arg("-lm")
+        .arg(&so_path)
+        .arg(format!("-Wl,-rpath,{}", dir.display()))
+        .status()
+        .expect("cc prog")
+        .success());
+    let out = Command::new(&bin_path).output().expect("run prog");
+    assert!(out.status.success(), "faulted: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 4321");
 }
 
 #[test]

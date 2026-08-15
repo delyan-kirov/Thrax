@@ -175,4 +175,7 @@ pub struct Program {
     pub codes: Vec<Code>,
     pub globals: Vec<(String, usize)>,
     pub effects: Vec<Effect>,
+    /// C memory layouts of C-repr structs, keyed by type name. The machine uses
+    /// them to marshal a struct value across the `@extern` boundary by value.
+    pub crepr_layouts: Vec<(String, utilities::CLayout)>,
 }

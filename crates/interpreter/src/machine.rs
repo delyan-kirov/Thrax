@@ -797,6 +797,9 @@ impl<'p> Exec<'p> {
 /// Evaluate a global of `prog` on the machine and render it, for diffing against
 /// the tree-walker.
 pub fn eval(prog: &Program, name: &str) -> Result<String> {
+    // Install the program's C-repr struct layouts so the `@extern` seam can
+    // marshal struct values by value.
+    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let v = m.eval_global(name)?;
     let s = v.borrow().show();

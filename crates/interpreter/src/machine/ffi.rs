@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use utilities::Result;
 
-use crate::machine::data::{fault, PVal, Value};
+use crate::machine::data::{fault, mk, PVal, Value};
 
 /// libffi type-kind codes. Must stay in sync with the enum in `ffi_shim.c`.
 mod kind {
@@ -35,6 +35,94 @@ mod kind {
     pub const FLOAT: c_int = 9;
     pub const DOUBLE: c_int = 10;
     pub const PTR: c_int = 11;
+    /// A by-value aggregate: the shim builds an `ffi_type` from the leaf kinds.
+    pub const STRUCT: c_int = 12;
+}
+
+// The C-repr struct layouts of the running program, keyed by type name, so the
+// marshalling code can find a struct argument's or result's memory image. The
+// machine installs this once at startup (see `set_layouts`). Empty for a program
+// that declares no `@struct @extern` types.
+thread_local! {
+    static LAYOUTS: std::cell::RefCell<std::collections::HashMap<String, utilities::CLayout>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Install the program's C-repr struct layouts before evaluation.
+pub fn set_layouts(map: std::collections::HashMap<String, utilities::CLayout>) {
+    LAYOUTS.with(|l| *l.borrow_mut() = map);
+}
+
+fn layout_of(name: &str) -> Option<utilities::CLayout> {
+    LAYOUTS.with(|l| l.borrow().get(name).cloned())
+}
+
+/// The libffi leaf-kind code for a C scalar. A nested struct is flattened into
+/// its leaves by [`flatten_leaves`], so it never reaches here.
+fn leaf_kind(k: &utilities::CKind) -> std::os::raw::c_int {
+    use utilities::CKind::*;
+    match k {
+        S8 => kind::S8,
+        S16 => kind::S16,
+        S32 => kind::S32,
+        S64 => kind::S64,
+        U8 => kind::U8,
+        U16 => kind::U16,
+        U32 => kind::U32,
+        U64 => kind::U64,
+        F32 => kind::FLOAT,
+        F64 => kind::DOUBLE,
+        Struct(..) => kind::STRUCT, // unreachable after flattening
+    }
+}
+
+/// Flatten a layout to its scalar leaf kinds in memory order. A struct of
+/// scalars and a struct of nested structs with the same leaves classify the
+/// same under the C ABI, so flattening is safe for building the `ffi_type`.
+///
+/// A union's members overlap, so it is modelled by eightbytes covering its size:
+/// integer eightbytes (matching SysV's "INTEGER wins" merge) unless every member
+/// is floating, in which case SSE eightbytes. This is exact for the common
+/// integer-containing unions; an all-float or exotic union may misclassify on the
+/// libffi path (the C backend, which emits a real `union`, is always exact).
+fn flatten_leaves(layout: &utilities::CLayout, out: &mut Vec<std::os::raw::c_int>) {
+    if layout.is_union {
+        union_leaves(layout, out);
+        return;
+    }
+    for f in &layout.fields {
+        match &f.kind {
+            utilities::CKind::Struct(_, inner) => flatten_leaves(inner, out),
+            leaf => out.push(leaf_kind(leaf)),
+        }
+    }
+}
+
+/// Eightbyte cover of a union's size for the libffi aggregate `ffi_type`.
+fn union_leaves(layout: &utilities::CLayout, out: &mut Vec<std::os::raw::c_int>) {
+    use utilities::CKind::{F32, F64};
+    let all_float = layout
+        .fields
+        .iter()
+        .all(|f| matches!(f.kind, F32 | F64));
+    let mut rem = layout.size;
+    let (w8, w4) = if all_float {
+        (kind::DOUBLE, kind::FLOAT)
+    } else {
+        (kind::S64, kind::S32)
+    };
+    while rem >= 8 {
+        out.push(w8);
+        rem -= 8;
+    }
+    if rem >= 4 {
+        out.push(w4);
+        rem -= 4;
+    }
+    while rem > 0 {
+        out.push(kind::S8);
+        rem -= 1;
+    }
 }
 
 /// One extern argument reduced to the C value model. A backend decides how each
@@ -50,24 +138,40 @@ pub enum CArg {
     Bytes(Vec<u8>),
     /// An opaque `Ptr` carried as a machine word.
     Ptr(i64),
+    /// A C-repr struct passed by value: `bytes` is its flat memory image and
+    /// `leaves` its scalar leaf kinds (for the aggregate `ffi_type`).
+    Struct {
+        leaves: Vec<std::os::raw::c_int>,
+        bytes: Vec<u8>,
+    },
+}
+
+/// A struct-typed result: the leaf kinds (for the return `ffi_type`), the layout
+/// and type name (to rebuild the [`Value`]).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct StructRet {
+    leaves: Vec<std::os::raw::c_int>,
+    layout: utilities::CLayout,
+    name: String,
 }
 
 /// How to type and interpret an extern's result. The wasm backend reports its
 /// own result kind and ignores this, so the fields read as dead there.
-#[derive(Clone, Copy)]
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub struct RetPlan {
     /// The libffi return kind handed to `ffi_prep_cif`.
     ffi_kind: std::os::raw::c_int,
     wrap: Wrap,
+    /// Set when the result is a by-value struct.
+    struct_ret: Option<StructRet>,
 }
 
-#[derive(Clone, Copy)]
 enum Wrap {
     Unit,
     Int,
     Real,
     Bytes,
+    Struct,
 }
 
 /// A backend's raw result, before it becomes a [`Value`].
@@ -76,6 +180,8 @@ pub enum Outcome {
     Int(i64),
     Real(f64),
     Bytes(Vec<u8>),
+    /// The flat memory image of a returned by-value struct.
+    Struct(Vec<u8>),
 }
 
 /// A host's implementation of the `@extern` seam: resolve `symbol` in `lib` and
@@ -89,6 +195,15 @@ pub trait ForeignCalls {
 /// Classify a Thrax argument value against its declared type, mirroring the C
 /// backend's `cabi` so both engines marshal identically.
 fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
+    // A C-repr struct is passed by value: pack its fields into a flat memory
+    // image and collect its leaf kinds for the aggregate `ffi_type`.
+    if let Some(layout) = layout_of(ty) {
+        let mut leaves = Vec::new();
+        flatten_leaves(&layout, &mut leaves);
+        let mut bytes = vec![0u8; layout.size];
+        pack_struct(&layout, v, &mut bytes)?;
+        return Ok(CArg::Struct { leaves, bytes });
+    }
     Ok(match ty {
         "@float64" | "Real" | "Real64" => CArg::Double(read_real(v)?),
         "@float32" | "Real32" => CArg::Float(read_real(v)? as f32),
@@ -120,6 +235,19 @@ fn int_arg(k: std::os::raw::c_int, v: &PVal) -> Result<CArg> {
 
 /// Plan the return type/wrapping from the declared result type.
 fn classify_ret(ty: &str) -> RetPlan {
+    if let Some(layout) = layout_of(ty) {
+        let mut leaves = Vec::new();
+        flatten_leaves(&layout, &mut leaves);
+        return RetPlan {
+            ffi_kind: kind::STRUCT,
+            wrap: Wrap::Struct,
+            struct_ret: Some(StructRet {
+                leaves,
+                layout,
+                name: ty.to_string(),
+            }),
+        };
+    }
     let (ffi_kind, wrap) = match ty {
         "@float64" | "Real" | "Real64" => (kind::DOUBLE, Wrap::Real),
         "@float32" | "Real32" => (kind::FLOAT, Wrap::Real),
@@ -135,12 +263,102 @@ fn classify_ret(ty: &str) -> RetPlan {
         "@nat64" | "Nat64" | "Nat" => (kind::U64, Wrap::Int),
         _ => (kind::S64, Wrap::Int),
     };
-    RetPlan { ffi_kind, wrap }
+    RetPlan {
+        ffi_kind,
+        wrap,
+        struct_ret: None,
+    }
+}
+
+/// Pack a C-repr struct value into its flat memory image at the field offsets.
+/// A union writes only the members the value carries (each at offset 0), so a
+/// value built with one member packs just that member; a struct writes them all.
+fn pack_struct(layout: &utilities::CLayout, v: &PVal, bytes: &mut [u8]) -> Result<()> {
+    let borrow = v.borrow();
+    let fields = match &*borrow {
+        Value::Struct { fields, .. } => fields,
+        _ => return Err(fault("FFI: expected a C-repr struct argument")),
+    };
+    if layout.is_union {
+        for (name, fv) in fields {
+            if let Some(cf) = layout.fields.iter().find(|f| &f.name == name) {
+                write_field(&cf.kind, cf.offset, fv, bytes)?;
+            }
+        }
+        return Ok(());
+    }
+    for cf in &layout.fields {
+        let fv = fields
+            .iter()
+            .find(|(n, _)| n == &cf.name)
+            .map(|(_, v)| v.clone())
+            .ok_or_else(|| fault(format!("FFI: struct is missing field `{}`", cf.name)))?;
+        write_field(&cf.kind, cf.offset, &fv, bytes)?;
+    }
+    Ok(())
+}
+
+/// Write one scalar (or nested struct) field into the memory image at `offset`.
+/// Integer widths take the low `n` bytes in native (little-endian) order.
+fn write_field(kind: &utilities::CKind, offset: usize, fv: &PVal, bytes: &mut [u8]) -> Result<()> {
+    use utilities::CKind::*;
+    match kind {
+        Struct(_, inner) => pack_struct(inner, fv, &mut bytes[offset..offset + inner.size]),
+        F32 => {
+            let x = read_real(fv)? as f32;
+            bytes[offset..offset + 4].copy_from_slice(&x.to_ne_bytes());
+            Ok(())
+        }
+        F64 => {
+            let x = read_real(fv)?;
+            bytes[offset..offset + 8].copy_from_slice(&x.to_ne_bytes());
+            Ok(())
+        }
+        leaf => {
+            let n = leaf.size();
+            let word = (read_word(fv)? as u64).to_ne_bytes();
+            bytes[offset..offset + n].copy_from_slice(&word[..n]);
+            Ok(())
+        }
+    }
+}
+
+/// Rebuild a [`Value::Struct`] from a returned struct's memory image.
+fn unpack_struct<'p>(name: &str, layout: &utilities::CLayout, bytes: &[u8]) -> Value<'p> {
+    let fields = layout
+        .fields
+        .iter()
+        .map(|cf| (cf.name.clone(), mk(read_field(&cf.kind, cf.offset, bytes))))
+        .collect();
+    Value::Struct {
+        name: name.to_string(),
+        fields,
+    }
+}
+
+/// Read one scalar (or nested struct) field from a memory image at `offset`.
+fn read_field<'p>(kind: &utilities::CKind, offset: usize, bytes: &[u8]) -> Value<'p> {
+    use utilities::CKind::*;
+    let at = |n: usize| &bytes[offset..offset + n];
+    match kind {
+        Struct(name, inner) => unpack_struct(name, inner, &bytes[offset..offset + inner.size]),
+        F32 => Value::Real(f32::from_ne_bytes(at(4).try_into().unwrap()) as f64),
+        F64 => Value::Real(f64::from_ne_bytes(at(8).try_into().unwrap())),
+        S8 => Value::Int(bytes[offset] as i8 as i64),
+        S16 => Value::Int(i16::from_ne_bytes(at(2).try_into().unwrap()) as i64),
+        S32 => Value::Int(i32::from_ne_bytes(at(4).try_into().unwrap()) as i64),
+        S64 => Value::Int(i64::from_ne_bytes(at(8).try_into().unwrap())),
+        U8 => Value::Int(bytes[offset] as i64),
+        U16 => Value::Int(u16::from_ne_bytes(at(2).try_into().unwrap()) as i64),
+        U32 => Value::Int(u32::from_ne_bytes(at(4).try_into().unwrap()) as i64),
+        U64 => Value::Int(u64::from_ne_bytes(at(8).try_into().unwrap()) as i64),
+    }
 }
 
 fn read_word(v: &PVal) -> Result<i64> {
     match &*v.borrow() {
         Value::Int(n) => Ok(*n),
+        Value::Bool(b) => Ok(*b as i64),
         _ => Err(fault("FFI: expected an integer/pointer argument")),
     }
 }
@@ -175,12 +393,21 @@ pub fn call_extern<'p>(
         cargs.push(classify_arg(ty, &args[i])?);
     }
     let plan = classify_ret(ret_type);
+    // Keep the struct-return layout to rebuild the value after the call.
+    let ret_struct = plan
+        .struct_ret
+        .as_ref()
+        .map(|s| (s.name.clone(), s.layout.clone()));
     let outcome = backend().call(symbol, lib, &cargs, plan)?;
     Ok(match outcome {
         Outcome::Unit => Value::Unit,
         Outcome::Int(n) => Value::Int(n),
         Outcome::Real(r) => Value::Real(r),
         Outcome::Bytes(b) => Value::Str(Rc::new(b)),
+        Outcome::Struct(bytes) => {
+            let (name, layout) = ret_struct.expect("struct outcome implies a struct plan");
+            unpack_struct(&name, &layout, &bytes)
+        }
     })
 }
 
@@ -199,11 +426,16 @@ mod native {
         fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
         fn strlen(s: *const c_char) -> usize;
         fn fflush(f: *mut c_void) -> c_int;
-        fn thx_ffi_call(
+        fn thx_ffi_call_x(
             fun: *mut c_void,
             nargs: c_int,
             kinds: *const c_int,
+            leaf_off: *const c_int,
+            leaf_len: *const c_int,
+            leaves: *const c_int,
             ret_kind: c_int,
+            ret_leaves: *const c_int,
+            ret_nleaves: c_int,
             avalues: *mut *mut c_void,
             rvalue: *mut c_void,
         ) -> c_int;
@@ -259,76 +491,112 @@ mod native {
         Ok(addr)
     }
 
+    /// Where an argument's `avalue` cell lives: a scalar slot, or the bytes of a
+    /// by-value struct argument (a pointer into `args`).
+    enum ArgLoc {
+        Slot(usize),
+        Struct(usize),
+    }
+
     impl ForeignCalls for NativeFfi {
         fn call(&self, symbol: &str, lib: &str, args: &[CArg], ret: RetPlan) -> Result<Outcome> {
             let addr = resolve(symbol, lib)?;
 
             let mut kinds: Vec<c_int> = Vec::with_capacity(args.len());
             let mut slots: Vec<u64> = Vec::with_capacity(args.len());
+            let mut locs: Vec<ArgLoc> = Vec::with_capacity(args.len());
+            // Per struct argument, its leaf kinds concatenated, with each arg's
+            // (offset, length) into that flat buffer.
+            let mut leaves: Vec<c_int> = Vec::new();
+            let mut leaf_off: Vec<c_int> = vec![0; args.len()];
+            let mut leaf_len: Vec<c_int> = vec![0; args.len()];
             // NUL-terminated string copies must outlive the call.
             let mut keepalive: Vec<Vec<u8>> = Vec::new();
-            for a in args {
+            let push_slot = |slots: &mut Vec<u64>, locs: &mut Vec<ArgLoc>, w: u64| {
+                locs.push(ArgLoc::Slot(slots.len()));
+                slots.push(w);
+            };
+            for (i, a) in args.iter().enumerate() {
                 match a {
                     CArg::Int { kind, val } => {
                         kinds.push(*kind);
-                        slots.push(*val as u64);
+                        push_slot(&mut slots, &mut locs, *val as u64);
                     }
                     CArg::Ptr(w) => {
                         kinds.push(kind::PTR);
-                        slots.push(*w as u64);
+                        push_slot(&mut slots, &mut locs, *w as u64);
                     }
                     CArg::Double(d) => {
                         kinds.push(kind::DOUBLE);
-                        slots.push(d.to_bits());
+                        push_slot(&mut slots, &mut locs, d.to_bits());
                     }
                     CArg::Float(f) => {
                         kinds.push(kind::FLOAT);
-                        slots.push(f.to_bits() as u64);
+                        push_slot(&mut slots, &mut locs, f.to_bits() as u64);
                     }
                     CArg::Bytes(b) => {
                         let mut c = b.clone();
                         c.push(0);
                         kinds.push(kind::PTR);
-                        slots.push(c.as_ptr() as u64);
+                        push_slot(&mut slots, &mut locs, c.as_ptr() as u64);
                         keepalive.push(c);
+                    }
+                    CArg::Struct { leaves: ls, .. } => {
+                        kinds.push(kind::STRUCT);
+                        leaf_off[i] = leaves.len() as c_int;
+                        leaf_len[i] = ls.len() as c_int;
+                        leaves.extend_from_slice(ls);
+                        locs.push(ArgLoc::Struct(i));
                     }
                 }
             }
-            // Build the avalue pointers only once `slots` has stopped growing, so
-            // reallocation cannot leave them dangling.
-            let mut avalues: Vec<*mut c_void> = slots
-                .iter_mut()
-                .map(|s| s as *mut u64 as *mut c_void)
+            // Build the avalue pointers once `slots` has stopped growing, so a
+            // reallocation cannot leave them dangling. A struct's cell points at
+            // its (borrowed) bytes; a scalar's at its slot.
+            let slot_base = slots.as_mut_ptr();
+            let mut avalues: Vec<*mut c_void> = locs
+                .iter()
+                .map(|loc| match loc {
+                    ArgLoc::Slot(idx) => unsafe { slot_base.add(*idx) as *mut c_void },
+                    ArgLoc::Struct(i) => match &args[*i] {
+                        CArg::Struct { bytes, .. } => bytes.as_ptr() as *mut c_void,
+                        _ => unreachable!("struct location implies a struct arg"),
+                    },
+                })
                 .collect();
 
-            let mut rvalue: u64 = 0;
+            // The return buffer: 8-aligned (a `u64` vector), sized for a struct
+            // result or one word for a scalar.
+            let ret_size = ret.struct_ret.as_ref().map(|s| s.layout.size).unwrap_or(8);
+            let ret_leaves: &[c_int] = ret.struct_ret.as_ref().map(|s| s.leaves.as_slice()).unwrap_or(&[]);
+            let mut rbuf: Vec<u64> = vec![0; ret_size.max(8).div_ceil(8)];
+
             let rc = unsafe {
-                thx_ffi_call(
+                thx_ffi_call_x(
                     addr,
                     args.len() as c_int,
-                    if kinds.is_empty() {
-                        std::ptr::null()
-                    } else {
-                        kinds.as_ptr()
-                    },
+                    if kinds.is_empty() { std::ptr::null() } else { kinds.as_ptr() },
+                    leaf_off.as_ptr(),
+                    leaf_len.as_ptr(),
+                    if leaves.is_empty() { std::ptr::null() } else { leaves.as_ptr() },
                     ret.ffi_kind,
-                    if avalues.is_empty() {
-                        std::ptr::null_mut()
-                    } else {
-                        avalues.as_mut_ptr()
-                    },
-                    &mut rvalue as *mut u64 as *mut c_void,
+                    if ret_leaves.is_empty() { std::ptr::null() } else { ret_leaves.as_ptr() },
+                    ret_leaves.len() as c_int,
+                    if avalues.is_empty() { std::ptr::null_mut() } else { avalues.as_mut_ptr() },
+                    rbuf.as_mut_ptr() as *mut c_void,
                 )
             };
             drop(keepalive);
             if rc != 0 {
                 return Err(fault(format!(
-                    "FFI: libffi could not prepare the call to `{symbol}` (too many arguments?)"
+                    "FFI: libffi could not prepare the call to `{symbol}` (too many arguments, \
+                     or a struct with too many fields?)"
                 )));
             }
             // Order foreign C stdio against the driver's own output.
             unsafe { fflush(std::ptr::null_mut()) };
 
+            let rvalue = rbuf[0];
             Ok(match ret.wrap {
                 Wrap::Unit => Outcome::Unit,
                 // libffi widens an integer result into the return word, sign- or
@@ -350,6 +618,11 @@ mod native {
                         let bytes = unsafe { std::slice::from_raw_parts(p as *const u8, n) };
                         Outcome::Bytes(bytes.to_vec())
                     }
+                }
+                Wrap::Struct => {
+                    let bytes =
+                        unsafe { std::slice::from_raw_parts(rbuf.as_ptr() as *const u8, ret_size) };
+                    Outcome::Struct(bytes.to_vec())
                 }
             })
         }
@@ -409,6 +682,11 @@ mod wasm {
                         buf.push(3);
                         buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
                         buf.extend_from_slice(b);
+                    }
+                    CArg::Struct { .. } => {
+                        return Err(fault(
+                            "FFI: by-value C structs are not supported over the wasm host seam",
+                        ));
                     }
                 }
             }

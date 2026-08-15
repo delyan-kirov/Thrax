@@ -341,12 +341,154 @@ fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
     }
 }
 
+/// The C scalar type for a leaf kind, and whether it is a floating type (so the
+/// wrapper reads/writes it as a `num` rather than an `int`).
+fn c_leaf(kind: &utilities::CKind) -> (&'static str, bool) {
+    use utilities::CKind::*;
+    match kind {
+        S8 => ("int8_t", false),
+        S16 => ("int16_t", false),
+        S32 => ("int32_t", false),
+        S64 => ("int64_t", false),
+        U8 => ("uint8_t", false),
+        U16 => ("uint16_t", false),
+        U32 => ("uint32_t", false),
+        U64 => ("uint64_t", false),
+        F32 => ("float", true),
+        F64 => ("double", true),
+        Struct(..) => ("void", false), // handled by name via `c_field_type`
+    }
+}
+
+/// The C identifier for a C-repr struct's emitted `typedef`.
+fn cstruct_name(ty: &str) -> String {
+    let safe: String = ty
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("THx_cstruct_{safe}")
+}
+
+/// The C type of a struct field: a scalar leaf's C type, or a nested struct's
+/// emitted typedef name.
+fn c_field_type(kind: &utilities::CKind) -> String {
+    match kind {
+        utilities::CKind::Struct(name, _) => cstruct_name(name),
+        leaf => c_leaf(leaf).0.to_string(),
+    }
+}
+
+/// Emit `typedef struct { ... } THx_cstruct_<name>;`, recursing into nested
+/// struct fields first (a nested typedef must precede its use). `done` dedups.
+fn emit_cstruct_typedef(
+    name: &str,
+    layout: &utilities::CLayout,
+    out: &mut String,
+    done: &mut std::collections::HashSet<String>,
+) {
+    if !done.insert(name.to_string()) {
+        return;
+    }
+    for f in &layout.fields {
+        if let utilities::CKind::Struct(inner_name, inner) = &f.kind {
+            emit_cstruct_typedef(inner_name, inner, out, done);
+        }
+    }
+    let keyword = if layout.is_union { "union" } else { "struct" };
+    out.push_str(&format!("typedef {keyword} {{ "));
+    for f in &layout.fields {
+        out.push_str(&format!("{} {}; ", c_field_type(&f.kind), f.name));
+    }
+    out.push_str(&format!("}} {};\n", cstruct_name(name)));
+}
+
+/// Emit statements filling the C struct lvalue `dst` from the Thrax struct
+/// `Value*` expression `src`, recursing through nested struct fields. For a union
+/// only the members the value actually carries are written (each guarded by a
+/// presence check), so a value built with one member writes just that one.
+fn emit_pack(dst: &str, src: &str, layout: &utilities::CLayout, out: &mut String) {
+    for f in &layout.fields {
+        let fdst = format!("{dst}.{}", f.name);
+        let field = cstr(f.name.as_bytes());
+        if layout.is_union {
+            out.push_str(&format!("  {{ Value* _u = struct_field({src}, {field});\n  if (_u) {{\n"));
+            emit_field_assign(&fdst, "_u", &f.kind, out);
+            out.push_str("  } }\n");
+        } else {
+            let fsrc = format!("THxVALUE_field({src}, {field})");
+            emit_field_assign(&fdst, &fsrc, &f.kind, out);
+        }
+    }
+}
+
+/// Assign one field: recurse for a nested struct, or read a scalar leaf.
+fn emit_field_assign(fdst: &str, fsrc: &str, kind: &utilities::CKind, out: &mut String) {
+    match kind {
+        utilities::CKind::Struct(_, inner) => emit_pack(fdst, fsrc, inner, out),
+        leaf => {
+            let (cty, is_float) = c_leaf(leaf);
+            let read = if is_float { "THxVALUE_as_num" } else { "THxVALUE_as_int" };
+            out.push_str(&format!("  {fdst} = ({cty}){read}({fsrc});\n"));
+        }
+    }
+}
+
+/// Emit statements building a Thrax struct `Value*` from the C struct expression
+/// `src`, recursing through nested struct fields. Returns the temp holding it.
+fn emit_build(
+    src: &str,
+    name: &str,
+    layout: &utilities::CLayout,
+    out: &mut String,
+    ctr: &mut usize,
+) -> String {
+    let vals: Vec<String> = layout
+        .fields
+        .iter()
+        .map(|f| {
+            let cf = format!("{src}.{}", f.name);
+            match &f.kind {
+                utilities::CKind::Struct(inner_name, inner) => {
+                    emit_build(&cf, inner_name, inner, out, ctr)
+                }
+                leaf if c_leaf(leaf).1 => format!("THxRT_real((double){cf})"),
+                _ => format!("THxRT_int((long long){cf})"),
+            }
+        })
+        .collect();
+    let id = *ctr;
+    *ctr += 1;
+    let fnames: Vec<String> = layout.fields.iter().map(|f| cstr(f.name.as_bytes())).collect();
+    out.push_str(&format!("  const char* _fn{id}[] = {{{}}};\n", fnames.join(", ")));
+    out.push_str(&format!("  Value* _fv{id}[] = {{{}}};\n", vals.join(", ")));
+    out.push_str(&format!(
+        "  Value* _t{id} = THxRT_struct({}, {}, _fn{id}, _fv{id});\n",
+        cstr(name.as_bytes()),
+        layout.fields.len()
+    ));
+    format!("_t{id}")
+}
+
 /// Emit the foreign-function wrappers and the `THxRT_extern_table` the runtime
 /// dispatches through. Each wrapper declares the C symbol with an `__asm__`
 /// label (a direct call, resolved by the linker) and marshals the collected
-/// arguments across the seam.
-pub fn emit_extern_table(externs: &[ExternSite]) -> String {
+/// arguments across the seam. C-repr structs (`@struct @extern`) referenced by a
+/// wrapper are emitted as real C `typedef struct`s and passed/returned by value,
+/// so the C compiler applies the platform ABI.
+pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::CLayout)]) -> String {
+    let layout_of = |name: &str| layouts.iter().find(|(n, _)| n == name).map(|(_, l)| l);
     let mut out = String::from("\n/* -- foreign functions (@extern) -- */\n#include <stdint.h>\n");
+
+    // Emit a C typedef for each C-repr struct any wrapper passes or returns
+    // (nested structs first).
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in externs {
+        for ty in e.arg_types.iter().chain(std::iter::once(&e.ret_type)) {
+            if let Some(layout) = layout_of(ty) {
+                emit_cstruct_typedef(ty, layout, &mut out, &mut emitted);
+            }
+        }
+    }
     let libs: Vec<&str> = {
         let mut ls: Vec<&str> = externs
             .iter()
@@ -373,45 +515,59 @@ pub fn emit_extern_table(externs: &[ExternSite]) -> String {
             ));
             continue;
         }
-        let (ret_ty, wrap) = c_ret(&e.ret_type);
+        // The C return type + how to wrap the result back into a `Value*`.
+        let ret_layout = layout_of(&e.ret_type);
+        let ret_ty: String = match ret_layout {
+            Some(_) => cstruct_name(&e.ret_type),
+            None => c_ret(&e.ret_type).0.to_string(),
+        };
+
+        // Each argument's C parameter type and the statements that build `a{i}`.
         // A `{}` parameter carries no C argument (a `void`-taking function like
         // `getchar`); it stays in the Thrax arity but is dropped from the call.
-        let params: Vec<(String, String)> = e
-            .arg_types
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| !matches!(cabi(t), Cabi::Unit))
-            .map(|(i, t)| {
+        let mut sig_types: Vec<String> = Vec::new();
+        let mut setup = String::new();
+        let mut call_args: Vec<String> = Vec::new();
+        for (i, t) in e.arg_types.iter().enumerate() {
+            if matches!(cabi(t), Cabi::Unit) && layout_of(t).is_none() {
+                continue;
+            }
+            if let Some(layout) = layout_of(t) {
+                let cty = cstruct_name(t);
+                sig_types.push(cty.clone());
+                setup.push_str(&format!("  {cty} a{i};\n"));
+                emit_pack(&format!("a{i}"), &format!("args[{i}]"), layout, &mut setup);
+                call_args.push(format!("a{i}"));
+            } else {
                 let (ty, expr) = c_param(t, i);
-                (ty.to_string(), expr)
-            })
-            .collect();
-        let sig = if params.is_empty() {
+                sig_types.push(ty.to_string());
+                setup.push_str(&format!("  {ty} a{i} = {expr};\n"));
+                call_args.push(format!("a{i}"));
+            }
+        }
+        let sig = if sig_types.is_empty() {
             "void".to_string()
         } else {
-            params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>().join(", ")
+            sig_types.join(", ")
         };
         out.push_str(&format!(
             "extern {ret_ty} THx_sym_{n}({sig}) __asm__({});\n",
             cstr(e.symbol.as_bytes())
         ));
         out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
-        let call_args: Vec<String> = params
-            .iter()
-            .enumerate()
-            .map(|(i, (ty, expr))| {
-                out.push_str(&format!("  {ty} a{i} = {expr};\n"));
-                format!("a{i}")
-            })
-            .collect();
+        out.push_str(&setup);
         let call = format!("THx_sym_{n}({})", call_args.join(", "));
-        match wrap {
-            None => {
-                out.push_str(&format!("  {call};\n  return THxRT_unit();\n"));
+        match ret_layout {
+            Some(layout) => {
+                out.push_str(&format!("  {ret_ty} _r = {call};\n"));
+                let mut ctr = 0usize;
+                let tmp = emit_build("_r", &e.ret_type, layout, &mut out, &mut ctr);
+                out.push_str(&format!("  return {tmp};\n"));
             }
-            Some(w) => {
-                out.push_str(&format!("  {ret_ty} _r = {call};\n  return {w};\n"));
-            }
+            None => match c_ret(&e.ret_type).1 {
+                None => out.push_str(&format!("  {call};\n  return THxRT_unit();\n")),
+                Some(w) => out.push_str(&format!("  {ret_ty} _r = {call};\n  return {w};\n")),
+            },
         }
         out.push_str("}\n");
     }

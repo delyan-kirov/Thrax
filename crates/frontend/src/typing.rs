@@ -45,10 +45,17 @@ use crate::typing::engine::Engine;
 /// A declared struct type. `params` are the implicit type parameters (the type
 /// variables appearing in the fields, in order of first appearance); `fields`
 /// keeps declaration order (which is also the positional-constructor order).
+/// `crepr` is set for a C-layout foreign struct (`@struct @extern "abi"`): its
+/// runtime value is a flat, unboxed C struct rather than a boxed record, and it
+/// may cross the `@extern` boundary by value.
 #[derive(Clone)]
 struct StructInfo<'a> {
     params: Vec<&'a str>,
     fields: Vec<(&'a str, Aol<Ty>)>,
+    crepr: bool,
+    /// A C `union` (`@union @extern`): members share offset 0. Handled as a C-repr
+    /// struct otherwise; only its layout and single-member construction differ.
+    c_union: bool,
 }
 
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
@@ -86,6 +93,10 @@ pub struct Checker<'a> {
     structs: HashMap<&'a str, StructInfo<'a>>,
     unions: HashMap<&'a str, UnionInfo<'a>>,
     codata: HashMap<&'a str, CodataInfo<'a>>,
+    /// Computed C memory layout for each `@struct @extern "abi"` (C-repr) struct,
+    /// keyed by type name. Used to marshal a struct value across the `@extern`
+    /// boundary by value.
+    crepr_layouts: HashMap<&'a str, utilities::CLayout>,
     /// `{ .obs = e }` sites the checker resolved to codata construction, and
     /// `x.obs` field-access sites resolved to a codata observation. Lowering
     /// desugars the former to a record of thunks and the latter to `field {}`.
@@ -280,6 +291,7 @@ impl<'a> Checker<'a> {
             structs: HashMap::new(),
             unions: HashMap::new(),
             codata: HashMap::new(),
+            crepr_layouts: HashMap::new(),
             codata_lits: HashSet::new(),
             observations: HashSet::new(),
             aliases: HashMap::new(),
@@ -433,6 +445,7 @@ impl<'a> Checker<'a> {
         self.module_name = self.text(program.module);
         self.finalize_imports();
         self.register_types(program)?;
+        self.validate_crepr_structs()?;
         // Row registration elaborates struct field types only to cache their rows
         // for the bridge; it must not report type errors (a field may reference a
         // type not imported into this module, e.g. a re-exported struct's internals).
@@ -1031,6 +1044,11 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // A `Real` literal takes the expected float width, like an integer
+            // literal takes its width: `1.0` checks against `Real32` as well as
+            // `Real`/`Real64`. The runtime value stays a `Real` and is narrowed to
+            // the field/parameter width at the `@extern` boundary.
+            Expr::Real(_) if self.is_float_type(expected) => Ok(()),
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
@@ -1091,6 +1109,17 @@ impl<'a> Checker<'a> {
 
     fn is_array(&self, ty: &Type) -> bool {
         matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
+    }
+
+    /// Whether `ty` is a floating type (`Real`/`Real64`/`Real32`, either spelling),
+    /// so a `Real` literal may take its width.
+    fn is_float_type(&self, ty: &Type) -> bool {
+        matches!(
+            self.eng.resolve(ty),
+            Type::Con(name)
+                if matches!(name.as_str(),
+                    "Real" | "Real64" | "Real32" | "@float64" | "@float32")
+        )
     }
 
     /// Decompose a function type into (parameter, result, latent effect). If it is
@@ -1174,6 +1203,8 @@ impl<'a> Checker<'a> {
                     params,
                     includes,
                     fields,
+                    abi,
+                    c_union,
                 } => {
                     let (params, includes, fields) = (
                         self.ast.slice(*params),
@@ -1187,7 +1218,16 @@ impl<'a> Checker<'a> {
                     let name = self.text(*name);
                     let params = self.resolve_type_params("struct", name, params, collected)?;
                     let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
-                    self.structs.insert(name, StructInfo { params, fields });
+                    let crepr = abi.is_some();
+                    self.structs.insert(
+                        name,
+                        StructInfo {
+                            params,
+                            fields,
+                            crepr,
+                            c_union: *c_union,
+                        },
+                    );
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
                         let ps = includes.iter().map(|p| self.text(*p)).collect();
@@ -1281,6 +1321,77 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Compute and validate the C memory layout of every C-repr struct. Runs after
+    /// `with` splicing, so a spliced-in field is laid out too. A C-repr struct may
+    /// not be generic (a C type is monomorphic), and each field must be a
+    /// C-representable scalar or a nested C-repr struct.
+    fn validate_crepr_structs(&mut self) -> Result<()> {
+        let names: Vec<&'a str> = self
+            .structs
+            .iter()
+            .filter(|(_, s)| s.crepr)
+            .map(|(n, _)| *n)
+            .collect();
+        for name in names {
+            let mut visiting = HashSet::new();
+            let layout = self.clayout_of(name, &mut visiting)?;
+            self.crepr_layouts.insert(name, layout);
+        }
+        Ok(())
+    }
+
+    /// The C layout of C-repr struct `name`, computed recursively through nested
+    /// C-repr struct fields. `visiting` guards against a struct that (transitively)
+    /// contains itself by value, which has no finite C layout.
+    fn clayout_of(
+        &self,
+        name: &'a str,
+        visiting: &mut HashSet<&'a str>,
+    ) -> Result<utilities::CLayout> {
+        if !visiting.insert(name) {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "C-repr struct `{name}` contains itself by value (an infinite C layout)"
+            ));
+        }
+        let info = self.structs.get(name).expect("crepr struct registered").clone();
+        if !info.params.is_empty() {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "a C-repr struct `{name}` may not be generic; a C type is monomorphic"
+            ));
+        }
+        let ptr_bits = utilities::Target::host().ptr_bits();
+        let mut fields = Vec::with_capacity(info.fields.len());
+        for (fname, fty) in &info.fields {
+            let kind = match self.tnode(*fty) {
+                Ty::Con { name: cn, .. } => {
+                    let cn = self.text(*cn);
+                    if let Some(k) = scalar_ckind(cn, ptr_bits) {
+                        k
+                    } else if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
+                        utilities::CKind::Struct(cn.to_string(), self.clayout_of(cn, visiting)?)
+                    } else {
+                        return Err(crepr_field_error(name, fname, cn));
+                    }
+                }
+                _ => return Err(crepr_field_error(name, fname, "a non-scalar type")),
+            };
+            fields.push((fname.to_string(), kind));
+        }
+        visiting.remove(name);
+        Ok(if info.c_union {
+            utilities::CLayout::of_union(fields)
+        } else {
+            utilities::CLayout::of(fields)
+        })
+    }
+
+    /// The C layouts of this module's C-repr structs, keyed by type name.
+    pub fn crepr_layouts(&self) -> &HashMap<&'a str, utilities::CLayout> {
+        &self.crepr_layouts
+    }
+
     /// Copy each included type's fields (struct) or variants (union) into `name`,
     /// ahead of its own, resolving includes recursively (an included type may
     /// itself splice). Detects cycles, kind mismatches, and duplicate members.
@@ -1323,7 +1434,17 @@ impl<'a> Checker<'a> {
                 collect_tyvars(self.ast, *ty, &mut collected);
             }
             let params = self.splice_params("struct", name, collected)?;
-            self.structs.insert(name, StructInfo { params, fields });
+            let prev = self.structs.get(name).expect("registered");
+            let (crepr, c_union) = (prev.crepr, prev.c_union);
+            self.structs.insert(
+                name,
+                StructInfo {
+                    params,
+                    fields,
+                    crepr,
+                    c_union,
+                },
+            );
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
             for p in &includes {
@@ -4060,6 +4181,42 @@ fn dup_member(ty: &str, member: &str, kind: &str) -> Diagnostic {
 
 fn unbound(name: &str) -> Diagnostic {
     diag!(Code::TypeUnbound, Span::at(0), 0, "unbound name `{name}`")
+}
+
+fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \
+         C-representable; a `@struct @extern \"C\"` field must be a sized number \
+         (`Int8..64`/`Nat8..64`/`Real32`/`Real64`), `Int`/`Nat`/`Real`, `Ptr`, `Bool`, \
+         or another C-repr struct"
+    )
+}
+
+/// Map a scalar type name (friendly or `@`-sigil) to its fixed-width C kind.
+/// `Int`/`Nat`/`Ptr` resolve to the target's word width. Returns `None` for a
+/// non-scalar (a nested struct, a variable, or a non-C type).
+fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
+    use utilities::CKind::*;
+    let word = if ptr_bits == 32 { S32 } else { S64 };
+    let uword = if ptr_bits == 32 { U32 } else { U64 };
+    Some(match name {
+        "@int8" | "Int8" => S8,
+        "@int16" | "Int16" => S16,
+        "@int32" | "Int32" => S32,
+        "@int64" | "Int64" => S64,
+        "@nat8" | "Nat8" => U8,
+        "@nat16" | "Nat16" => U16,
+        "@nat32" | "Nat32" => U32,
+        "@nat64" | "Nat64" => U64,
+        "@float32" | "Real32" => F32,
+        "@float64" | "Real64" | "Real" => F64,
+        "Int" => word,
+        "Nat" => uword,
+        "@ptr" | "Ptr" => uword,
+        "@bool" | "Bool" => U8,
+        _ => return None,
+    })
 }
 
 /// The built-in scalar and container type names, in both their friendly and

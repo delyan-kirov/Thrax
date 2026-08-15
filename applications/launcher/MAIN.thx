@@ -1,0 +1,115 @@
+@mod MAIN
+
+# \file MAIN.thx
+# \info A minimal program launcher, written in Thrax against raylib. Click a
+#       button to spawn the program it names. It showcases the C-struct FFI:
+#       raylib's `Color` is a real `@struct @extern "C"` passed BY VALUE, built
+#       with an ordinary struct literal (no packed-int trick). The rest of the
+#       API is kept integer-only (positions, sizes, mouse) so no floats are
+#       needed. Run it from THIS directory (the flake links `bin/libraylib.so`
+#       and `library/` in for you); see README.md:
+#           nix develop   &&   thrax run MAIN.thx
+
+# -- the one C struct we pass by value ---------------------------------------
+# raylib: `typedef struct { unsigned char r, g, b, a; } Color;`
+$ Color : @struct @extern "C" = r: Nat8, g: Nat8, b: Nat8, a: Nat8,
+
+# -- raylib bindings (integer API + Color by value) --------------------------
+$ set_config_flags    : Nat32 -> {}                             = @extern "C" "SetConfigFlags" "bin/libraylib.so"
+$ init_window         : Int -> Int -> Str -> {}                 = @extern "C" "InitWindow" "bin/libraylib.so"
+$ set_target_fps      : Int -> {}                               = @extern "C" "SetTargetFPS" "bin/libraylib.so"
+$ window_should_close  : {} -> Nat8                             = @extern "C" "WindowShouldClose" "bin/libraylib.so"
+$ close_window        : {} -> {}                                = @extern "C" "CloseWindow" "bin/libraylib.so"
+$ begin_drawing       : {} -> {}                                = @extern "C" "BeginDrawing" "bin/libraylib.so"
+$ end_drawing         : {} -> {}                                = @extern "C" "EndDrawing" "bin/libraylib.so"
+$ clear_background    : Color -> {}                             = @extern "C" "ClearBackground" "bin/libraylib.so"
+$ draw_rectangle      : Int -> Int -> Int -> Int -> Color -> {} = @extern "C" "DrawRectangle" "bin/libraylib.so"
+$ draw_text           : Str -> Int -> Int -> Int -> Color -> {} = @extern "C" "DrawText" "bin/libraylib.so"
+$ get_mouse_x         : {} -> Int                               = @extern "C" "GetMouseX" "bin/libraylib.so"
+$ get_mouse_y         : {} -> Int                               = @extern "C" "GetMouseY" "bin/libraylib.so"
+$ is_mouse_pressed    : Int -> Nat8                             = @extern "C" "IsMouseButtonPressed" "bin/libraylib.so"
+
+# Spawn a program (fire-and-forget) via libc. The `&` returns control at once.
+$ system : Str -> Int = @extern "C" "system" "libc"
+
+# -- palette (ordinary struct literals, passed to raylib by value) -----------
+$ bg        : Color = Color.{ .r = 24,  .g = 24,  .b = 32,  .a = 255 }
+$ btn_col   : Color = Color.{ .r = 45,  .g = 48,  .b = 66,  .a = 255 }
+$ hover_col : Color = Color.{ .r = 70,  .g = 82,  .b = 128, .a = 255 }
+$ text_col  : Color = Color.{ .r = 232, .g = 232, .b = 240, .a = 255 }
+
+# -- the launchable programs (edit this list) --------------------------------
+$ App : @struct = label: Str, cmd: Str,
+
+$ apps : List App =
+	[ App.{ .label = "Terminal", .cmd = "xterm &" }
+	, App.{ .label = "Files",    .cmd = "xdg-open . &" }
+	, App.{ .label = "Browser",  .cmd = "firefox &" } ]
+
+# -- layout ------------------------------------------------------------------
+$ pad   : Int = 20
+$ top   : Int = 56
+$ btn_w : Int = 380
+$ btn_h : Int = 48
+$ gap   : Int = 12
+
+$ button_y : Int -> Int = \i = top + i * (btn_h + gap)
+
+# Is (mx, my) inside the axis-aligned box at (x, y) of size (w, h)?
+$ in_box : Int -> Int -> Int -> Int -> Int -> Int -> Int =
+	\mx my x y w h =
+		if mx >= x =>
+			if mx ?< x + w =>
+				if my >= y =>
+					if my ?< y + h => 1 else 0
+				else 0
+			else 0
+		else 0
+
+# -- rendering ---------------------------------------------------------------
+$ draw_apps : List App -> Int -> Int -> Int -> {} =
+	\apps i mx my =
+		is apps
+			| [] => {}
+			| a :: rest =>
+				let y = button_y i in
+				let hover = in_box mx my pad y btn_w btn_h in
+				let col = if hover ?= 1 => hover_col else btn_col in
+				draw_rectangle pad y btn_w btn_h col ;
+				draw_text a.label (pad + 16) (y + 14) 20 text_col ;
+				draw_apps rest (i + 1) mx my
+
+$ render : Int -> Int -> {} =
+	\mx my =
+		begin_drawing {} ;
+		clear_background bg ;
+		draw_text "Thrax Launcher" pad 18 24 text_col ;
+		draw_apps apps 0 mx my ;
+		end_drawing {}
+
+# On a click, find the button under the cursor and spawn its program.
+$ click : List App -> Int -> Int -> Int -> Int =
+	\apps i mx my =
+		is apps
+			| [] => 0
+			| a :: rest =>
+				let y = button_y i in
+				if in_box mx my pad y btn_w btn_h ?= 1 => system a.cmd
+				else click rest (i + 1) mx my
+
+# -- frame loop --------------------------------------------------------------
+$ loop : {} -> {} =
+	\u =
+		if window_should_close {} ?= 0 =>
+			let mx = get_mouse_x {} in
+			let my = get_mouse_y {} in
+			render mx my ;
+			(if is_mouse_pressed 0 ?= 1 => let _ = click apps 0 mx my in {} else {}) ;
+			loop {}
+		else close_window {}
+
+$ main : {} =
+	set_config_flags 4 ;                          # FLAG_WINDOW_RESIZABLE
+	init_window 420 260 "Thrax Launcher" ;
+	set_target_fps 60 ;
+	loop {}

@@ -240,6 +240,11 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
             resolved.with_fields.insert(site, fields.clone());
         }
         resolved.extern_sigs.extend(checker.extern_sigs());
+        for (name, layout) in checker.crepr_layouts() {
+            resolved
+                .crepr_layouts
+                .insert(name.to_string(), layout.clone());
+        }
     }
 
     // Lower every module; put the root first so its names win when resolving an

@@ -472,6 +472,14 @@ impl<'a> Parser<'a> {
             match kw {
                 "struct" => {
                     self.bump()?;
+                    // An optional `@extern "abi"` marks a C-layout foreign struct.
+                    // Unlike the function form it names only the ABI (no symbol/lib).
+                    let abi = if self.at_intrinsic("extern")? {
+                        self.bump()?; // '@extern'
+                        Some(self.expect_string("expected an ABI string after '@extern'")?)
+                    } else {
+                        None
+                    };
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
                     let (includes, fields) = self.parse_struct_body()?;
@@ -480,10 +488,28 @@ impl<'a> Parser<'a> {
                         params,
                         includes,
                         fields,
+                        abi,
+                        c_union: false,
                     });
                 }
                 "union" => {
                     self.bump()?;
+                    // `@union @extern "abi"` is a C union: struct-like members
+                    // sharing offset 0. It parses and elaborates as a C-repr struct.
+                    if self.at_intrinsic("extern")? {
+                        self.bump()?; // '@extern'
+                        let abi = self.expect_string("expected an ABI string after '@extern'")?;
+                        expect!(self, Kind::Eq, "expected '=' after '@union @extern'");
+                        let (includes, fields) = self.parse_struct_body()?;
+                        return Ok(Item::Struct {
+                            name,
+                            params: self.ast.make_slice(Vec::new()),
+                            includes,
+                            fields,
+                            abi: Some(abi),
+                            c_union: true,
+                        });
+                    }
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
                     let (includes, variants) = self.parse_union_body()?;
@@ -558,6 +584,12 @@ impl<'a> Parser<'a> {
     fn at_ctx(&mut self) -> Result<bool> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "ctx")
+    }
+
+    /// Is the next token the `@name` intrinsic keyword?
+    fn at_intrinsic(&mut self, name: &str) -> Result<bool> {
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == name)
     }
 
     /// Parse a postfix `@ctx` override on `callee`: a single positional value

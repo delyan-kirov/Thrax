@@ -350,3 +350,81 @@ fn array_primitives_overload_on_array_and_str() {
     assert_eq!(type_of(src, "n"), "Int");
     assert_eq!(type_of(src, "b"), "Int");
 }
+
+/// The computed C layout of a named C-repr struct, or a panic with the check error.
+fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
+    let parsed = crate::parse(src).expect("parse");
+    let mut checker = Checker::new(&parsed.ast);
+    checker
+        .check_program(&parsed.program)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+    checker
+        .crepr_layouts()
+        .get(name)
+        .cloned()
+        .expect("crepr layout present")
+}
+
+#[test]
+fn crepr_struct_layout_vector2_and_color() {
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: Real32, y: Real32,\n\
+        $ Color : @struct @extern \"C\" = r: Nat8, g: Nat8, b: Nat8, a: Nat8,\n\
+        $ x : Int = 0";
+    let v = crepr_layout(src, "Vector2");
+    assert_eq!((v.size, v.align), (8, 4));
+    assert_eq!(v.fields[1].offset, 4);
+    let c = crepr_layout(src, "Color");
+    assert_eq!((c.size, c.align), (4, 1));
+    assert_eq!(c.fields[3].offset, 3);
+}
+
+#[test]
+fn c_union_layout_overlaps() {
+    // `@union @extern "C"` is a C union: members share offset 0, size is the largest.
+    let src = "@mod M\n\
+        $ U : @union @extern \"C\" = i: Int32, d: Real64,\n\
+        $ x : Int = 0";
+    let u = crepr_layout(src, "U");
+    assert!(u.is_union);
+    assert_eq!(u.fields[0].offset, 0);
+    assert_eq!(u.fields[1].offset, 0);
+    assert_eq!((u.size, u.align), (8, 8));
+}
+
+#[test]
+fn crepr_struct_rejects_non_c_field() {
+    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" = s: Str,");
+    assert!(e.contains("not C-representable"), "{e}");
+}
+
+#[test]
+fn crepr_struct_rejects_generic() {
+    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" a = v: a,");
+    assert!(e.contains("may not be generic"), "{e}");
+}
+
+#[test]
+fn real_literal_takes_real32_width() {
+    // A `Real` literal checks against a `Real32` expected type (like an integer
+    // literal takes its width), so a float C struct binds with plain literals.
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: Real32, y: Real32,\n\
+        $ v : Vector2 = Vector2.{ .x = 1.0, .y = 2.5 }\n\
+        $ f : Real32 = 3.5\n\
+        $ g : Real = 3.5";
+    assert_eq!(type_of(src, "v"), "Vector2");
+    assert_eq!(type_of(src, "f"), "Real32");
+    assert_eq!(type_of(src, "g"), "Real");
+}
+
+#[test]
+fn crepr_struct_nested() {
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: Real32, y: Real32,\n\
+        $ Line : @struct @extern \"C\" = a: Vector2, b: Vector2,\n\
+        $ x : Int = 0";
+    let l = crepr_layout(src, "Line");
+    assert_eq!((l.size, l.align), (16, 4));
+    assert_eq!(l.fields[1].offset, 8);
+}

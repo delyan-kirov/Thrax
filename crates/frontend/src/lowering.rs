@@ -339,6 +339,11 @@ pub struct Resolved {
     /// and result name) from [`crate::typing::Checker::extern_sigs`]. Lowering
     /// needs the types to build the `Term::Extern` the checker erased into a var.
     pub extern_sigs: HashMap<Aol<Expr>, (Vec<String>, String)>,
+    /// The C memory layout of each C-repr struct (`@struct @extern "abi"`), keyed
+    /// by type name (from [`crate::typing::Checker::crepr_layouts`]). Carried to
+    /// the runtime so a struct value can be marshalled across the `@extern`
+    /// boundary by value.
+    pub crepr_layouts: HashMap<String, utilities::CLayout>,
 }
 
 /// Lower one module's globals to Core.
@@ -403,6 +408,11 @@ pub fn lower_program(
         module: ast.text(program.module).to_string(),
         effects,
         globals,
+        crepr_layouts: resolved
+            .crepr_layouts
+            .iter()
+            .map(|(n, l)| (n.clone(), l.clone()))
+            .collect(),
     }
 }
 

@@ -35,6 +35,9 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
         resolved.with_fields.insert(site, fields.clone());
     }
     resolved.extern_sigs.extend(checker.extern_sigs());
+    for (name, layout) in checker.crepr_layouts() {
+        resolved.crepr_layouts.insert(name.to_string(), layout.clone());
+    }
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
 }
@@ -101,6 +104,109 @@ fn run_modules(sources: &[&str], name: &str) -> String {
         .collect();
     let ir = frontend::ir::lower_modules(&lowered);
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
+}
+
+/// Compile a tiny C source to a shared library in a temp dir, returning its path.
+fn compile_helper_so(basename: &str, c_src: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join(format!("{basename}.c"));
+    let so_path = dir.join(format!("lib{basename}.so"));
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(c_src.as_bytes())
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let status = std::process::Command::new(cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("run cc");
+    assert!(status.success(), "cc failed for {basename}");
+    so_path
+}
+
+#[test]
+fn ffi_struct_by_value_argument() {
+    // A C-repr struct passed BY VALUE to a C function: pack the fields into the
+    // flat memory image, hand it to libffi as an aggregate argument. A helper `.so`
+    // gives a function that takes a small struct by value.
+    let so = compile_helper_so(
+        "thx_ffi_arg_helper",
+        "typedef struct { long x, y; } P;\n\
+         long sum_p(P p) { return p.x * 1000 + p.y; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_p : P -> Int = @extern \"C\" \"sum_p\" \"{}\"\n\
+         $ test : Int = sum_p (P.{{ .x = 40, .y = 2 }})",
+        so.display()
+    );
+    assert_eq!(run(&src, "test"), "40002");
+}
+
+#[test]
+fn ffi_c_union_by_value() {
+    // A C `union` passed and returned by value: build with one member (packed at
+    // offset 0), read a member back from a returned union (reinterpreted bytes).
+    let so = compile_helper_so(
+        "thx_ffi_union_helper",
+        "typedef union { long i; double d; } U;\n\
+         long u_as_long(U u) { return u.i; }\n\
+         U u_from_long(long v) { U u; u.i = v; return u; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ U : @union @extern \"C\" = i: Int, d: Real,\n\
+         $ u_as_long : U -> Int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
+         $ u_from_long : Int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
+         $ built : Int = u_as_long (U.{{ .i = 42 }})\n\
+         $ back  : Int = (u_from_long 99).i\n\
+         $ test  : Int = built * 1000 + back",
+        lib = so.display()
+    );
+    // built = 42, back = 99.
+    assert_eq!(run(&src, "test"), "42099");
+}
+
+#[test]
+fn ffi_nested_struct_by_value() {
+    // A struct with struct fields, passed and returned BY VALUE (raylib's
+    // `Camera2D`/`Rectangle` shape). `seg_make` returns a nested struct; `seg_sum`
+    // takes one; the round-trip exercises nested pack and unpack.
+    let so = compile_helper_so(
+        "thx_ffi_nested_helper",
+        "typedef struct { long x, y; } P;\n\
+         typedef struct { P a; P b; } Seg;\n\
+         long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
+         Seg seg_make(long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
+         $ seg_sum : Seg -> Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
+         $ seg_make : Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
+         $ test : Int = seg_sum (seg_make 1)",
+        lib = so.display()
+    );
+    // seg_make 1 = {{1,2},{3,4}}; seg_sum = 1 + 2*10 + 3*100 + 4*1000 = 4321.
+    assert_eq!(run(&src, "test"), "4321");
+}
+
+#[test]
+fn ffi_struct_by_value_return() {
+    // libc's `div_t div(int, int)` returns a small struct BY VALUE. A C-repr
+    // struct return exercises the whole struct-marshalling path (layout, libffi
+    // aggregate return, unpack back to a Thrax struct value).
+    let src = "@mod M\n\
+        $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
+        $ ldiv : Int -> Int -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : Int = let d = ldiv 17 5 in d.quot * 100 + d.rem";
+    // 17 / 5 = 3 remainder 2 -> 3*100 + 2.
+    assert_eq!(run(src, "test"), "302");
 }
 
 #[test]

@@ -147,17 +147,25 @@ pub enum Item {
         implicits: Slice<FieldDecl>,
         body: Aol<Expr>,
     },
-    /// `$ Name : @struct [a b ...] = [with Other, ...] field, ...`. `params` are
-    /// the declared type parameters, in order; when omitted they are inferred from
-    /// the free type variables in the fields. `includes` are struct types whose
-    /// fields are copied in (before the declared ones), in order. This is a
-    /// declaration-time splice for convenience; it creates NO type relationship (no
-    /// subtyping), just a fresh struct that repeats those fields.
+    /// `$ Name : @struct [@extern "abi"] [a b ...] = [with Other, ...] field, ...`.
+    /// `params` are the declared type parameters, in order; when omitted they are
+    /// inferred from the free type variables in the fields. `includes` are struct
+    /// types whose fields are copied in (before the declared ones), in order. This is
+    /// a declaration-time splice for convenience; it creates NO type relationship (no
+    /// subtyping), just a fresh struct that repeats those fields. `abi` is set when
+    /// the struct is a C-layout foreign type (`@struct @extern "C"`): its runtime
+    /// representation is a flat, unboxed C struct, so it can cross the `@extern`
+    /// boundary by value. The string names the ABI, matching the function form.
     Struct {
         name: StrId,
         params: Slice<StrId>,
         includes: Slice<StrId>,
         fields: Slice<FieldDecl>,
+        abi: Option<StrId>,
+        /// A C `union` (`@union @extern "abi"`): the members share offset 0 and the
+        /// size is the largest. Parsed with the struct-field syntax and otherwise
+        /// handled as a C-repr struct, so it reuses construction and access.
+        c_union: bool,
     },
     /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
     /// are the declared type parameters (inferred from the variants when omitted).

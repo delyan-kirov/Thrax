@@ -24,6 +24,10 @@ pub struct Program {
     pub module: String,
     pub effects: Vec<Effect>,
     pub globals: Vec<(String, Term)>,
+    /// C memory layouts of C-repr structs, keyed by type name, for marshalling
+    /// struct values across the `@extern` boundary. Same across every module (the
+    /// resolver aggregates them); the IR lowering merges duplicates by name.
+    pub crepr_layouts: Vec<(String, utilities::CLayout)>,
 }
 
 /// One effect operation declared by `$ Effect : @effect = op : ...`.
