@@ -144,6 +144,15 @@ pub enum CArg {
         leaves: Vec<std::os::raw::c_int>,
         bytes: Vec<u8>,
     },
+    /// A Thrax closure passed to C as a function pointer. `closure` is one owned
+    /// (leaked) `Rc` reference to the closure value, erased; the native backend
+    /// builds a libffi closure over `arg_kinds`/`ret_kind`, uses its code pointer
+    /// as the argument, and releases the reference after the call.
+    Callback {
+        closure: *const std::ffi::c_void,
+        arg_kinds: Vec<std::os::raw::c_int>,
+        ret_kind: std::os::raw::c_int,
+    },
 }
 
 /// A struct-typed result: the leaf kinds (for the return `ffi_type`), the layout
@@ -192,9 +201,129 @@ pub trait ForeignCalls {
     fn call(&self, symbol: &str, lib: &str, args: &[CArg], ret: RetPlan) -> Result<Outcome>;
 }
 
+// -- callbacks: a Thrax closure passed to C as a function pointer -------------
+
+/// The context handed to the libffi closure (as its user-data): the erased Thrax
+/// closure reference and the callback's scalar signature.
+struct CbCtx {
+    closure: *const std::ffi::c_void,
+    arg_kinds: Vec<std::os::raw::c_int>,
+    ret_kind: std::os::raw::c_int,
+}
+
+/// The machine-provided applier: given the closure, the C argument words and
+/// their kinds, and the result kind, apply the Thrax closure and return the
+/// result's bits. Installed for the duration of an extern call by [`with_applier`].
+type ApplyDyn<'a> =
+    dyn Fn(*const std::ffi::c_void, &[u64], &[std::os::raw::c_int], std::os::raw::c_int) -> Result<u64>
+        + 'a;
+
+thread_local! {
+    /// A lifetime-erased pointer to the current applier (valid only within the
+    /// `with_applier` scope that set it; callbacks fire synchronously inside it).
+    static APPLIER: std::cell::Cell<Option<*const ApplyDyn<'static>>> =
+        const { std::cell::Cell::new(None) };
+    /// An error raised by a callback (which cannot return a `Result` across C);
+    /// drained after the foreign call to become its error.
+    static CB_ERR: std::cell::RefCell<Option<utilities::Diagnostic>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install `f` as the applier while `thunk` runs (an extern call that may fire
+/// callbacks), then restore the previous one.
+pub(crate) fn with_applier<R>(f: &ApplyDyn, thunk: impl FnOnce() -> R) -> R {
+    let erased: *const ApplyDyn<'static> =
+        unsafe { std::mem::transmute::<*const ApplyDyn, *const ApplyDyn<'static>>(f) };
+    let prev = APPLIER.with(|c| c.replace(Some(erased)));
+    let r = thunk();
+    APPLIER.with(|c| c.set(prev));
+    r
+}
+
+/// Take any error a callback stored during the last foreign call.
+fn take_cb_err() -> Option<utilities::Diagnostic> {
+    CB_ERR.with(|c| c.borrow_mut().take())
+}
+
+/// A C argument word (per libffi kind) as a Thrax value: floats read their bits,
+/// everything else (sized ints, pointers) is an integer.
+pub(crate) fn word_to_value<'p>(w: u64, k: std::os::raw::c_int) -> Value<'p> {
+    match k {
+        kind::DOUBLE => Value::Real(f64::from_bits(w)),
+        kind::FLOAT => Value::Real(f32::from_bits(w as u32) as f64),
+        _ => Value::Int(w as i64),
+    }
+}
+
+/// A Thrax value as a C result word (per libffi kind).
+pub(crate) fn value_to_word(v: &Value, k: std::os::raw::c_int) -> u64 {
+    match k {
+        kind::DOUBLE => match v {
+            Value::Real(r) => r.to_bits(),
+            Value::Int(n) => (*n as f64).to_bits(),
+            _ => 0,
+        },
+        kind::FLOAT => match v {
+            Value::Real(r) => (*r as f32).to_bits() as u64,
+            Value::Int(n) => (*n as f32).to_bits() as u64,
+            _ => 0,
+        },
+        kind::VOID => 0,
+        _ => match v {
+            Value::Int(n) => *n as u64,
+            Value::Bool(b) => *b as u64,
+            _ => 0,
+        },
+    }
+}
+
+/// Parse a callback marshal name `@fn(a,b,...)->r` into libffi arg/return kinds.
+fn parse_fn_sig(ty: &str) -> Option<(Vec<std::os::raw::c_int>, std::os::raw::c_int)> {
+    let rest = ty.strip_prefix("@fn(")?;
+    let (args_part, ret_part) = rest.split_once(")->")?;
+    let mut args = Vec::new();
+    if !args_part.is_empty() {
+        for a in args_part.split(',') {
+            args.push(scalar_ffi_kind(a)?);
+        }
+    }
+    Some((args, scalar_ffi_kind(ret_part)?))
+}
+
+/// The libffi kind for a scalar marshal name (both friendly and `@`-sigil forms).
+fn scalar_ffi_kind(name: &str) -> Option<std::os::raw::c_int> {
+    Some(match name {
+        "@float64" | "Real" | "Real64" => kind::DOUBLE,
+        "@float32" | "Real32" => kind::FLOAT,
+        "@ptr" | "Ptr" | "@str" | "@array" | "Str" | "Array" => kind::PTR,
+        "@int8" | "Int8" => kind::S8,
+        "@int16" | "Int16" => kind::S16,
+        "@int32" | "Int32" => kind::S32,
+        "@int64" | "Int64" | "Int" => kind::S64,
+        "@nat8" | "Nat8" => kind::U8,
+        "@nat16" | "Nat16" => kind::U16,
+        "@nat32" | "Nat32" => kind::U32,
+        "@nat64" | "Nat64" | "Nat" => kind::U64,
+        "@bool" | "Bool" => kind::U8,
+        "{}" => kind::VOID,
+        _ => return None,
+    })
+}
+
 /// Classify a Thrax argument value against its declared type, mirroring the C
 /// backend's `cabi` so both engines marshal identically.
 fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
+    // A function-typed parameter (`@fn(a,b)->r`) is a C function pointer: hold one
+    // reference to the Thrax closure so it survives the call; the native backend
+    // builds the libffi closure and releases the reference afterwards.
+    if let Some((arg_kinds, ret_kind)) = parse_fn_sig(ty) {
+        let closure = Rc::into_raw(v.clone()) as *const std::ffi::c_void;
+        return Ok(CArg::Callback {
+            closure,
+            arg_kinds,
+            ret_kind,
+        });
+    }
     // A C-repr struct is passed by value: pack its fields into a flat memory
     // image and collect its leaf kinds for the aggregate `ffi_type`.
     if let Some(layout) = layout_of(ty) {
@@ -398,7 +527,22 @@ pub fn call_extern<'p>(
         .struct_ret
         .as_ref()
         .map(|s| (s.name.clone(), s.layout.clone()));
-    let outcome = backend().call(symbol, lib, &cargs, plan)?;
+    let result = backend().call(symbol, lib, &cargs, plan);
+    // Release the reference each callback arg held on its Thrax closure.
+    for c in &cargs {
+        if let CArg::Callback { closure, .. } = c {
+            unsafe {
+                drop(Rc::from_raw(
+                    *closure as *const std::cell::RefCell<Value<'p>>,
+                ));
+            }
+        }
+    }
+    // A callback that faulted could not return its error across C; surface it now.
+    if let Some(e) = take_cb_err() {
+        return Err(e);
+    }
+    let outcome = result?;
     Ok(match outcome {
         Outcome::Unit => Value::Unit,
         Outcome::Int(n) => Value::Int(n),
@@ -439,6 +583,14 @@ mod native {
             avalues: *mut *mut c_void,
             rvalue: *mut c_void,
         ) -> c_int;
+        fn thx_closure_new(
+            nargs: c_int,
+            kinds: *const c_int,
+            ret_kind: c_int,
+            user: *mut c_void,
+            code_out: *mut *mut c_void,
+        ) -> *mut c_void;
+        fn thx_closure_free(handle: *mut c_void);
     }
 
     const RTLD_NOW: c_int = 2;
@@ -454,6 +606,68 @@ mod native {
     }
 
     pub struct NativeFfi;
+
+    /// Read one C argument (at `p`, of libffi `kind`) into a `u64` bit pattern:
+    /// integers sign/zero-extend, a pointer is its word, a float is its bits.
+    unsafe fn read_arg_word(p: *mut c_void, kind: c_int) -> u64 {
+        match kind {
+            k if k == super::kind::S8 => *(p as *const i8) as i64 as u64,
+            k if k == super::kind::S16 => *(p as *const i16) as i64 as u64,
+            k if k == super::kind::S32 => *(p as *const i32) as i64 as u64,
+            k if k == super::kind::S64 => *(p as *const i64) as u64,
+            k if k == super::kind::U8 => *(p as *const u8) as u64,
+            k if k == super::kind::U16 => *(p as *const u16) as u64,
+            k if k == super::kind::U32 => *(p as *const u32) as u64,
+            k if k == super::kind::U64 => *(p as *const u64),
+            k if k == super::kind::FLOAT => (*(p as *const f32)).to_bits() as u64,
+            k if k == super::kind::DOUBLE => (*(p as *const f64)).to_bits(),
+            _ => *(p as *const usize) as u64, // PTR
+        }
+    }
+
+    /// Write a callback result (`bits`, per libffi `kind`) into libffi's return
+    /// slot `ret` (which is at least `sizeof(ffi_arg)` wide).
+    unsafe fn write_ret_word(ret: *mut c_void, kind: c_int, bits: u64) {
+        match kind {
+            k if k == super::kind::VOID => {}
+            k if k == super::kind::FLOAT => *(ret as *mut f32) = f32::from_bits(bits as u32),
+            k if k == super::kind::DOUBLE => *(ret as *mut f64) = f64::from_bits(bits),
+            _ => *(ret as *mut u64) = bits, // ints and pointers widen to the return word
+        }
+    }
+
+    /// Called by the shim when foreign C invokes a Thrax closure. Reads the C
+    /// arguments, applies the closure through the installed applier, and writes the
+    /// result. An error is stashed (a callback cannot return a `Result` across C)
+    /// and drained after the foreign call.
+    #[no_mangle]
+    pub unsafe extern "C" fn thx_closure_invoke(
+        user: *mut c_void,
+        args: *mut *mut c_void,
+        ret: *mut c_void,
+    ) {
+        let ctx = &*(user as *const super::CbCtx);
+        let mut words: Vec<u64> = Vec::with_capacity(ctx.arg_kinds.len());
+        for (i, &k) in ctx.arg_kinds.iter().enumerate() {
+            words.push(read_arg_word(*args.add(i), k));
+        }
+        let applier = super::APPLIER.with(|c| c.get());
+        let bits = match applier {
+            Some(p) => match (*p)(ctx.closure, &words, &ctx.arg_kinds, ctx.ret_kind) {
+                Ok(b) => b,
+                Err(e) => {
+                    super::CB_ERR.with(|c| *c.borrow_mut() = Some(e));
+                    0
+                }
+            },
+            None => {
+                super::CB_ERR
+                    .with(|c| *c.borrow_mut() = Some(fault("FFI: a callback fired with no applier")));
+                0
+            }
+        };
+        write_ret_word(ret, ctx.ret_kind, bits);
+    }
 
     fn resolve(symbol: &str, lib: &str) -> Result<*mut c_void> {
         use utilities::target::Target;
@@ -512,6 +726,9 @@ mod native {
             let mut leaf_len: Vec<c_int> = vec![0; args.len()];
             // NUL-terminated string copies must outlive the call.
             let mut keepalive: Vec<Vec<u8>> = Vec::new();
+            // Live libffi closures (handle, context) built for callback args, freed
+            // after the call.
+            let mut closures: Vec<(*mut c_void, *mut super::CbCtx)> = Vec::new();
             let push_slot = |slots: &mut Vec<u64>, locs: &mut Vec<ArgLoc>, w: u64| {
                 locs.push(ArgLoc::Slot(slots.len()));
                 slots.push(w);
@@ -547,6 +764,34 @@ mod native {
                         leaf_len[i] = ls.len() as c_int;
                         leaves.extend_from_slice(ls);
                         locs.push(ArgLoc::Struct(i));
+                    }
+                    CArg::Callback {
+                        closure,
+                        arg_kinds,
+                        ret_kind,
+                    } => {
+                        let ctx = Box::into_raw(Box::new(super::CbCtx {
+                            closure: *closure,
+                            arg_kinds: arg_kinds.clone(),
+                            ret_kind: *ret_kind,
+                        }));
+                        let mut code: *mut c_void = std::ptr::null_mut();
+                        let handle = unsafe {
+                            thx_closure_new(
+                                arg_kinds.len() as c_int,
+                                arg_kinds.as_ptr(),
+                                *ret_kind,
+                                ctx as *mut c_void,
+                                &mut code,
+                            )
+                        };
+                        if handle.is_null() {
+                            unsafe { drop(Box::from_raw(ctx)) };
+                            return Err(fault("FFI: could not build a callback closure"));
+                        }
+                        closures.push((handle, ctx));
+                        kinds.push(kind::PTR);
+                        push_slot(&mut slots, &mut locs, code as u64);
                     }
                 }
             }
@@ -587,6 +832,12 @@ mod native {
                 )
             };
             drop(keepalive);
+            for (handle, ctx) in closures {
+                unsafe {
+                    thx_closure_free(handle);
+                    drop(Box::from_raw(ctx));
+                }
+            }
             if rc != 0 {
                 return Err(fault(format!(
                     "FFI: libffi could not prepare the call to `{symbol}` (too many arguments, \
@@ -686,6 +937,11 @@ mod wasm {
                     CArg::Struct { .. } => {
                         return Err(fault(
                             "FFI: by-value C structs are not supported over the wasm host seam",
+                        ));
+                    }
+                    CArg::Callback { .. } => {
+                        return Err(fault(
+                            "FFI: callbacks are not supported over the wasm host seam",
                         ));
                     }
                 }

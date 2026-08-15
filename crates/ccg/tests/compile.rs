@@ -278,6 +278,66 @@ fn ffi_struct_by_value_argument() {
 }
 
 #[test]
+fn ffi_callback() {
+    // A Thrax closure passed to C as a function pointer, via the generated
+    // libffi-closure runtime. The helper calls it twice; the closure captures a
+    // free variable. Must match the interpreter.
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join("thx_ccg_cb_helper.c");
+    let so_path = dir.join("libthx_ccg_cb_helper.so");
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(b"int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n")
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    assert!(Command::new(&cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("cc helper")
+        .success());
+
+    let src = format!(
+        "@mod M\n\
+         $ call_twice : (Int -> Int -> Int) -> Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
+         $ k : Int = 10\n\
+         $ test : Int = call_twice (\\a b = a + b + k)",
+        lib = so_path.display()
+    );
+    assert_eq!(interp_show(&src, "test"), "1317");
+
+    let lowered = lower(&src);
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let cc_path = dir.join("thx_ccg_cb_prog.c");
+    let bin_path = dir.join("thx_ccg_cb_prog.bin");
+    std::fs::write(&cc_path, &code).unwrap();
+    // libffi (headers + lib) from the dev shell, for the generated closure runtime.
+    let ffi_dev = std::env::var("LIBFFI_DEV").unwrap_or_default();
+    let ffi_lib = std::env::var("LIBFFI").unwrap_or_default();
+    let mut cmd = Command::new(&cc);
+    cmd.args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&cc_path);
+    if !ffi_dev.is_empty() {
+        cmd.arg(format!("-I{ffi_dev}/include"));
+    }
+    if !ffi_lib.is_empty() {
+        cmd.arg(format!("-L{ffi_lib}/lib"))
+            .arg(format!("-Wl,-rpath,{ffi_lib}/lib"));
+    }
+    cmd.arg("-lm")
+        .arg("-lffi")
+        .arg(&so_path)
+        .arg(format!("-Wl,-rpath,{}", dir.display()));
+    assert!(cmd.status().expect("cc prog").success());
+    let out = Command::new(&bin_path).output().expect("run prog");
+    assert!(out.status.success(), "faulted: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 1317");
+}
+
+#[test]
 fn ffi_c_union_by_value() {
     // A C union: `@union @extern "C"` emits a real C `union`; a value built with
     // one member packs just that member (presence-guarded), matching the interpreter.

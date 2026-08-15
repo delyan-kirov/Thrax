@@ -332,6 +332,31 @@ impl<'p> Machine<'p> {
         self.run(code, vec![arg], env)
     }
 
+    /// Apply a Thrax closure to C callback arguments and return the result's bits.
+    /// `cl` is a borrowed (not owned) reference to the closure the callback carries;
+    /// the argument words are read per `kinds` and the result written per `rk`.
+    fn callback_apply(
+        &self,
+        cl: *const std::ffi::c_void,
+        words: &[u64],
+        kinds: &[std::os::raw::c_int],
+        rk: std::os::raw::c_int,
+    ) -> Result<u64> {
+        let closure: PVal<'p> = unsafe {
+            let rc = std::mem::ManuallyDrop::new(std::rc::Rc::from_raw(
+                cl as *const std::cell::RefCell<Value<'p>>,
+            ));
+            (*rc).clone()
+        };
+        let mut cur = closure;
+        for (&w, &k) in words.iter().zip(kinds) {
+            cur = self.apply(cur, mk(ffi::word_to_value(w, k)))?;
+        }
+        let out = deref(cur);
+        let bits = ffi::value_to_word(&out.borrow(), rk);
+        Ok(bits)
+    }
+
     /// Run `code` (with the given initial locals and captured env) to a value,
     /// driving the machine loop until the continuation stack empties.
     fn run(&self, code: usize, mut locals: Vec<PVal<'p>>, env: Vec<PVal<'p>>) -> Result<PVal<'p>> {
@@ -624,7 +649,18 @@ impl<'p> Machine<'p> {
             Kind::Extern(abi, symbol, lib, arg_types, ret_type, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arg_types.len() {
-                    mk(run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, &args)?)
+                    // Install a callback applier for the duration of the call, so a
+                    // foreign function can invoke a Thrax closure passed as a pointer.
+                    let apply = |cl: *const std::ffi::c_void,
+                                 words: &[u64],
+                                 kinds: &[std::os::raw::c_int],
+                                 rk: std::os::raw::c_int| {
+                        self.callback_apply(cl, words, kinds, rk)
+                    };
+                    let out = ffi::with_applier(&apply, || {
+                        run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, &args)
+                    });
+                    mk(out?)
                 } else {
                     mk(Value::Extern {
                         abi,

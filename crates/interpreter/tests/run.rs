@@ -148,6 +148,25 @@ fn ffi_struct_by_value_argument() {
 }
 
 #[test]
+fn ffi_callback() {
+    // A Thrax closure passed to C as a function pointer. The helper calls it (twice,
+    // to exercise repeated invocation); the closure captures a free variable.
+    let so = compile_helper_so(
+        "thx_ffi_cb_helper",
+        "int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ call_twice : (Int -> Int -> Int) -> Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
+         $ k : Int = 10\n\
+         $ test : Int = call_twice (\\a b = a + b + k)",
+        lib = so.display()
+    );
+    // f(1,2)=13, f(3,4)=17 -> 13*100 + 17 = 1317.
+    assert_eq!(run(&src, "test"), "1317");
+}
+
+#[test]
 fn ffi_c_union_by_value() {
     // A C `union` passed and returned by value: build with one member (packed at
     // offset 0), read a member back from a returned union (reinterpreted bytes).

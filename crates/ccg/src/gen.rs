@@ -421,6 +421,106 @@ fn emit_pack(dst: &str, src: &str, layout: &utilities::CLayout, out: &mut String
     }
 }
 
+/// Parse a callback marshal name `@fn(a,b,...)->r` into (arg marshal names, ret).
+fn parse_cb(ty: &str) -> Option<(Vec<String>, String)> {
+    let rest = ty.strip_prefix("@fn(")?;
+    let (args, ret) = rest.split_once(")->")?;
+    let args = if args.is_empty() {
+        Vec::new()
+    } else {
+        args.split(',').map(str::to_string).collect()
+    };
+    Some((args, ret.to_string()))
+}
+
+/// The C type for a scalar marshal name (callback arg/return).
+fn cb_ctype(name: &str) -> &'static str {
+    match cabi(name) {
+        Cabi::Bytes => "char*",
+        Cabi::Ptr => "void*",
+        Cabi::F32 => "float",
+        Cabi::F64 => "double",
+        Cabi::Unit => "void",
+        Cabi::Int(t) => t,
+    }
+}
+
+/// The libffi kind code for a scalar marshal name (matches the shim's enum).
+fn cb_kind(name: &str) -> i32 {
+    match cabi(name) {
+        Cabi::Bytes | Cabi::Ptr => 11,
+        Cabi::F32 => 9,
+        Cabi::F64 => 10,
+        Cabi::Unit => 0,
+        Cabi::Int(t) => match t {
+            "int8_t" => 1,
+            "int16_t" => 2,
+            "int32_t" => 3,
+            "uint8_t" => 5,
+            "uint16_t" => 6,
+            "uint32_t" => 7,
+            "uint64_t" => 8,
+            _ => 4,
+        },
+    }
+}
+
+/// The C function-pointer type of a callback, e.g. `int64_t (*)(int64_t, int64_t)`.
+fn cb_fnptr_type(args: &[String], ret: &str) -> String {
+    let params = if args.is_empty() {
+        "void".to_string()
+    } else {
+        args.iter().map(|a| cb_ctype(a)).collect::<Vec<_>>().join(", ")
+    };
+    format!("{} (*)({params})", cb_ctype(ret))
+}
+
+/// The C runtime supporting Thrax closures passed to C as function pointers,
+/// via libffi closures. Emitted only when a program has a callback parameter.
+const CALLBACK_RUNTIME: &str = r#"
+/* -- callbacks: a Thrax closure as a C function pointer (libffi closures) -- */
+#include <ffi.h>
+#include <stdlib.h>
+static ffi_type* thx_cbty(int k){
+  switch(k){case 0:return &ffi_type_void;case 1:return &ffi_type_sint8;case 2:return &ffi_type_sint16;
+  case 3:return &ffi_type_sint32;case 4:return &ffi_type_sint64;case 5:return &ffi_type_uint8;
+  case 6:return &ffi_type_uint16;case 7:return &ffi_type_uint32;case 8:return &ffi_type_uint64;
+  case 9:return &ffi_type_float;case 10:return &ffi_type_double;default:return &ffi_type_pointer;}
+}
+typedef struct { Value* closure; int nargs; int akinds[16]; int rkind; ffi_cif cif; ffi_type* aty[16]; ffi_closure* clo; void* code; } ThxCb;
+static Value* thx_cb_argval(void* p, int k){
+  switch(k){case 9:return THxRT_real((double)*(float*)p);case 10:return THxRT_real(*(double*)p);
+  case 1:return THxRT_int(*(int8_t*)p);case 2:return THxRT_int(*(int16_t*)p);case 3:return THxRT_int(*(int32_t*)p);
+  case 4:return THxRT_int(*(int64_t*)p);case 5:return THxRT_int(*(uint8_t*)p);case 6:return THxRT_int(*(uint16_t*)p);
+  case 7:return THxRT_int(*(uint32_t*)p);case 8:return THxRT_int((long long)*(uint64_t*)p);
+  default:return THxRT_int((long long)(intptr_t)*(void**)p);}
+}
+static void thx_cb_setret(void* ret, int k, Value* v){
+  switch(k){case 0:break;case 9:*(float*)ret=(float)THxVALUE_as_num(v);break;case 10:*(double*)ret=THxVALUE_as_num(v);break;
+  default:*(ffi_arg*)ret=(ffi_arg)THxVALUE_as_int(v);break;}
+}
+static void thx_cb_bind(ffi_cif* cif, void* ret, void** args, void* user){
+  (void)cif; ThxCb* cb=user;
+  Value* r=cb->closure; THxMEM_retain(r);           /* own a starting reference */
+  for(int i=0;i<cb->nargs;i++){
+    Value* nr = THxK_call(r, thx_cb_argval(args[i], cb->akinds[i])); /* owned */
+    THxMEM_release(r);                               /* drop the previous owned value */
+    r = nr;
+  }
+  thx_cb_setret(ret, cb->rkind, r);
+  THxMEM_release(r);                                 /* drop the final result */
+}
+static void* thx_cb_make(Value* closure, int nargs, const int* kinds, int rkind, void** code){
+  ThxCb* cb=calloc(1,sizeof(ThxCb)); cb->closure=closure; THxMEM_retain(closure); cb->nargs=nargs; cb->rkind=rkind;
+  for(int i=0;i<nargs;i++){cb->akinds[i]=kinds[i];cb->aty[i]=thx_cbty(kinds[i]);}
+  ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, nargs, thx_cbty(rkind), cb->aty);
+  cb->clo=ffi_closure_alloc(sizeof(ffi_closure), &cb->code);
+  ffi_prep_closure_loc(cb->clo,&cb->cif,thx_cb_bind,cb,cb->code);
+  *code=cb->code; return cb;
+}
+static void thx_cb_free(void* h){ ThxCb* cb=h; if(cb){ THxMEM_release(cb->closure); ffi_closure_free(cb->clo); free(cb);} }
+"#;
+
 /// Assign one field: recurse for a nested struct, or read a scalar leaf.
 fn emit_field_assign(fdst: &str, fsrc: &str, kind: &utilities::CKind, out: &mut String) {
     match kind {
@@ -489,6 +589,13 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             }
         }
     }
+    // The libffi-closure runtime, only when a program passes a Thrax closure to C.
+    let has_callbacks = externs
+        .iter()
+        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+    if has_callbacks {
+        out.push_str(CALLBACK_RUNTIME);
+    }
     let libs: Vec<&str> = {
         let mut ls: Vec<&str> = externs
             .iter()
@@ -528,11 +635,30 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         let mut sig_types: Vec<String> = Vec::new();
         let mut setup = String::new();
         let mut call_args: Vec<String> = Vec::new();
+        let mut cb_frees: Vec<usize> = Vec::new();
         for (i, t) in e.arg_types.iter().enumerate() {
             if matches!(cabi(t), Cabi::Unit) && layout_of(t).is_none() {
                 continue;
             }
-            if let Some(layout) = layout_of(t) {
+            if let Some((cb_args, cb_ret)) = parse_cb(t) {
+                // A callback: build a libffi closure over the Thrax function value
+                // and pass its code pointer as the C function pointer.
+                let fnptr = cb_fnptr_type(&cb_args, &cb_ret);
+                sig_types.push(fnptr.clone());
+                let kinds = if cb_args.is_empty() {
+                    "0".to_string()
+                } else {
+                    cb_args.iter().map(|a| cb_kind(a).to_string()).collect::<Vec<_>>().join(", ")
+                };
+                setup.push_str(&format!("  int _k{i}[] = {{{kinds}}};\n"));
+                setup.push_str(&format!(
+                    "  void* _cc{i}; void* _cb{i} = thx_cb_make(args[{i}], {}, _k{i}, {}, &_cc{i});\n",
+                    cb_args.len(),
+                    cb_kind(&cb_ret)
+                ));
+                call_args.push(format!("({fnptr})_cc{i}"));
+                cb_frees.push(i);
+            } else if let Some(layout) = layout_of(t) {
                 let cty = cstruct_name(t);
                 sig_types.push(cty.clone());
                 setup.push_str(&format!("  {cty} a{i};\n"));
@@ -545,6 +671,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 call_args.push(format!("a{i}"));
             }
         }
+        let frees: String = cb_frees.iter().map(|i| format!("  thx_cb_free(_cb{i});\n")).collect();
         let sig = if sig_types.is_empty() {
             "void".to_string()
         } else {
@@ -560,13 +687,16 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         match ret_layout {
             Some(layout) => {
                 out.push_str(&format!("  {ret_ty} _r = {call};\n"));
+                out.push_str(&frees);
                 let mut ctr = 0usize;
                 let tmp = emit_build("_r", &e.ret_type, layout, &mut out, &mut ctr);
                 out.push_str(&format!("  return {tmp};\n"));
             }
             None => match c_ret(&e.ret_type).1 {
-                None => out.push_str(&format!("  {call};\n  return THxRT_unit();\n")),
-                Some(w) => out.push_str(&format!("  {ret_ty} _r = {call};\n  return {w};\n")),
+                None => out.push_str(&format!("  {call};\n{frees}  return THxRT_unit();\n")),
+                Some(w) => {
+                    out.push_str(&format!("  {ret_ty} _r = {call};\n{frees}  return {w};\n"))
+                }
             },
         }
         out.push_str("}\n");

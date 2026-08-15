@@ -4079,6 +4079,18 @@ fn marshal_name(ty: &Type) -> String {
     match ty {
         Type::Con(name) => name.clone(),
         Type::Tuple(items) if items.is_empty() => ty::UNIT.to_string(),
+        // A function-typed `@extern` parameter is a C function pointer (callback):
+        // encode its scalar signature as `@fn(a,b,...)->r` so the seam can wrap a
+        // Thrax closure into a C-callable pointer.
+        Type::Arrow(..) => {
+            let mut args = Vec::new();
+            let mut cur = ty;
+            while let Type::Arrow(from, to, _) = cur {
+                args.push(marshal_name(from));
+                cur = to;
+            }
+            format!("@fn({})->{}", args.join(","), marshal_name(cur))
+        }
         _ => ty::INT.to_string(),
     }
 }

@@ -168,6 +168,14 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
             libraries.push(e.lib.clone());
         }
     }
+    // A program that passes a Thrax closure to C uses libffi closures, so it must
+    // link libffi (the generated callback runtime includes `<ffi.h>`).
+    let uses_callbacks = externs
+        .iter()
+        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+    if uses_callbacks && !libraries.iter().any(|l| l == "ffi") {
+        libraries.push("ffi".to_string());
+    }
     Emitted {
         source: out,
         libraries,

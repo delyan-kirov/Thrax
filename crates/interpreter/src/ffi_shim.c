@@ -94,3 +94,66 @@ int thx_ffi_call_x(void *fn, unsigned nargs,
     ffi_call(&cif, FFI_FN(fn), rvalue, nargs ? avalues : NULL);
     return 0;
 }
+
+/* -- closures: a Thrax function passed to C as a function pointer -- */
+
+#include <stdlib.h>
+
+/* The Rust dispatcher, invoked whenever foreign C calls the closure. It reads
+ * the arguments (per the kinds captured at creation), applies the Thrax closure,
+ * and writes the result. `user` is the Rust context pointer given to
+ * `thx_closure_new`. */
+extern void thx_closure_invoke(void *user, void **args, void *ret);
+
+typedef struct {
+    ffi_closure *closure;
+    ffi_cif cif;
+    ffi_type *atypes[MAX_ARGS];
+    void *code;
+    void *user;
+} thx_closure_t;
+
+static void thx_closure_binding(ffi_cif *cif, void *ret, void **args, void *user) {
+    (void)cif;
+    thx_closure_t *h = user;
+    thx_closure_invoke(h->user, args, ret);
+}
+
+/* Allocate and prepare a closure over the scalar `kinds` (leaf codes; structs
+ * are not supported in a callback signature). Writes the C-callable code pointer
+ * to `*code_out` and returns an opaque handle to free with `thx_closure_free`.
+ * `user` is passed back to `thx_closure_invoke`. Returns NULL on failure. */
+void *thx_closure_new(unsigned nargs, const int *kinds, int ret_kind,
+                      void *user, void **code_out) {
+    if (nargs > MAX_ARGS) return NULL;
+    thx_closure_t *h = calloc(1, sizeof(thx_closure_t));
+    if (!h) return NULL;
+    h->user = user;
+    for (unsigned i = 0; i < nargs; i++) h->atypes[i] = ty(kinds[i]);
+    if (ffi_prep_cif(&h->cif, FFI_DEFAULT_ABI, nargs, ty(ret_kind),
+                     nargs ? h->atypes : NULL) != FFI_OK) {
+        free(h);
+        return NULL;
+    }
+    h->closure = ffi_closure_alloc(sizeof(ffi_closure), &h->code);
+    if (!h->closure) {
+        free(h);
+        return NULL;
+    }
+    if (ffi_prep_closure_loc(h->closure, &h->cif, thx_closure_binding, h, h->code)
+        != FFI_OK) {
+        ffi_closure_free(h->closure);
+        free(h);
+        return NULL;
+    }
+    *code_out = h->code;
+    return h;
+}
+
+void thx_closure_free(void *handle) {
+    thx_closure_t *h = handle;
+    if (h) {
+        ffi_closure_free(h->closure);
+        free(h);
+    }
+}
