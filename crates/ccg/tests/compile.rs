@@ -278,6 +278,59 @@ fn ffi_struct_by_value_argument() {
 }
 
 #[test]
+fn ffi_struct_array() {
+    // A `List T` of C-repr structs passed as a contiguous `T*`. The C backend walks
+    // the cons list, packs into a malloc'd buffer, and frees after. Matches interp.
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join("thx_ccg_arr_helper.c");
+    let so_path = dir.join("libthx_ccg_arr_helper.so");
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(
+            b"typedef struct { long x, y; } P;\n\
+              long sum_ps(P* a, int n) { long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
+        )
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    assert!(Command::new(&cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("cc helper")
+        .success());
+
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_ps : List P -> Int -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : Int = sum_ps [P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}] 3",
+        lib = so_path.display()
+    );
+    assert_eq!(interp_show(&src, "test"), "102");
+
+    let lowered = lower(&src);
+    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let cc_path = dir.join("thx_ccg_arr_prog.c");
+    let bin_path = dir.join("thx_ccg_arr_prog.bin");
+    std::fs::write(&cc_path, &code).unwrap();
+    assert!(Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&cc_path)
+        .arg("-lm")
+        .arg(&so_path)
+        .arg(format!("-Wl,-rpath,{}", dir.display()))
+        .status()
+        .expect("cc prog")
+        .success());
+    let out = Command::new(&bin_path).output().expect("run prog");
+    assert!(out.status.success(), "faulted: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 102");
+}
+
+#[test]
 fn ffi_callback() {
     // A Thrax closure passed to C as a function pointer, via the generated
     // libffi-closure runtime. The helper calls it twice; the closure captures a

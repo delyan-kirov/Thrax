@@ -421,6 +421,11 @@ fn emit_pack(dst: &str, src: &str, layout: &utilities::CLayout, out: &mut String
     }
 }
 
+/// The element type of a `List T` array param marshal name `@structs(T)`.
+fn struct_array_elem(ty: &str) -> Option<&str> {
+    ty.strip_prefix("@structs(").and_then(|s| s.strip_suffix(')'))
+}
+
 /// Parse a callback marshal name `@fn(a,b,...)->r` into (arg marshal names, ret).
 fn parse_cb(ty: &str) -> Option<(Vec<String>, String)> {
     let rest = ty.strip_prefix("@fn(")?;
@@ -584,8 +589,10 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in externs {
         for ty in e.arg_types.iter().chain(std::iter::once(&e.ret_type)) {
-            if let Some(layout) = layout_of(ty) {
-                emit_cstruct_typedef(ty, layout, &mut out, &mut emitted);
+            // A direct struct/union type, or the element of a `List T` array param.
+            let sname = struct_array_elem(ty).unwrap_or(ty);
+            if let Some(layout) = layout_of(sname) {
+                emit_cstruct_typedef(sname, layout, &mut out, &mut emitted);
             }
         }
     }
@@ -636,11 +643,34 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
         let mut setup = String::new();
         let mut call_args: Vec<String> = Vec::new();
         let mut cb_frees: Vec<usize> = Vec::new();
+        let mut arr_frees: Vec<usize> = Vec::new();
         for (i, t) in e.arg_types.iter().enumerate() {
             if matches!(cabi(t), Cabi::Unit) && layout_of(t).is_none() {
                 continue;
             }
-            if let Some((cb_args, cb_ret)) = parse_cb(t) {
+            if let Some(elem) = struct_array_elem(t) {
+                // A `List T` array: walk the cons list, pack each element into a
+                // contiguous malloc'd buffer, and pass it as a `T*`.
+                let cty = cstruct_name(elem);
+                let layout = layout_of(elem).expect("struct-array element has a layout");
+                sig_types.push(format!("{cty}*"));
+                setup.push_str(&format!(
+                    "  size_t _n{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
+                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) _n{i}++;\n"
+                ));
+                setup.push_str(&format!(
+                    "  {cty}* _arr{i} = _n{i} ? malloc(_n{i} * sizeof({cty})) : NULL;\n"
+                ));
+                setup.push_str(&format!(
+                    "  {{ size_t _j{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
+                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) {{\n\
+                     \x20   Value* _e = _p->u.variant.fields[0];\n"
+                ));
+                emit_pack(&format!("_arr{i}[_j{i}]"), "_e", layout, &mut setup);
+                setup.push_str(&format!("    _j{i}++;\n  }} }}\n"));
+                call_args.push(format!("_arr{i}"));
+                arr_frees.push(i);
+            } else if let Some((cb_args, cb_ret)) = parse_cb(t) {
                 // A callback: build a libffi closure over the Thrax function value
                 // and pass its code pointer as the C function pointer.
                 let fnptr = cb_fnptr_type(&cb_args, &cb_ret);
@@ -671,7 +701,11 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 call_args.push(format!("a{i}"));
             }
         }
-        let frees: String = cb_frees.iter().map(|i| format!("  thx_cb_free(_cb{i});\n")).collect();
+        let frees: String = cb_frees
+            .iter()
+            .map(|i| format!("  thx_cb_free(_cb{i});\n"))
+            .chain(arr_frees.iter().map(|i| format!("  free(_arr{i});\n")))
+            .collect();
         let sig = if sig_types.is_empty() {
             "void".to_string()
         } else {

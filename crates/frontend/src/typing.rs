@@ -4091,6 +4091,14 @@ fn marshal_name(ty: &Type) -> String {
             }
             format!("@fn({})->{}", args.join(","), marshal_name(cur))
         }
+        // A `List T` parameter is a C array of `T`: passed as a `T*` pointing at a
+        // contiguous packed buffer. Encoded so the seam can find `T`'s layout.
+        Type::App(head, arg) => match (head.as_ref(), arg.as_ref()) {
+            (Type::Con(list), Type::Con(elem)) if list == ty::LIST => {
+                format!("@structs({elem})")
+            }
+            _ => ty::INT.to_string(),
+        },
         _ => ty::INT.to_string(),
     }
 }

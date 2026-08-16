@@ -148,6 +148,26 @@ fn ffi_struct_by_value_argument() {
 }
 
 #[test]
+fn ffi_struct_array() {
+    // A `List T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
+    // separate count), the raylib vertex/point/color-buffer shape.
+    let so = compile_helper_so(
+        "thx_ffi_arr_helper",
+        "typedef struct { long x, y; } P;\n\
+         long sum_ps(P* a, int n) { long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_ps : List P -> Int -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : Int = sum_ps [P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}] 3",
+        lib = so.display()
+    );
+    // (1*10+2) + (3*10+4) + (5*10+6) = 12 + 34 + 56 = 102.
+    assert_eq!(run(&src, "test"), "102");
+}
+
+#[test]
 fn ffi_callback() {
     // A Thrax closure passed to C as a function pointer. The helper calls it (twice,
     // to exercise repeated invocation); the closure captures a free variable.

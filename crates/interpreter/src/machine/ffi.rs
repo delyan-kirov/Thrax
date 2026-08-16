@@ -324,6 +324,33 @@ fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
             ret_kind,
         });
     }
+    // A `List T` (T a C-repr struct) is a C array: pack every element into one
+    // contiguous buffer and pass its address (a `T*`). The trailing NUL that
+    // `Bytes` appends is harmless (C reads a separately-passed count).
+    if let Some(elem) = ty.strip_prefix("@structs(").and_then(|s| s.strip_suffix(')')) {
+        let layout = layout_of(elem)
+            .ok_or_else(|| fault(format!("FFI: `List {elem}` is not a C-repr struct array")))?;
+        let mut bytes = Vec::new();
+        let mut cur = v.clone();
+        loop {
+            let step = match &*cur.borrow() {
+                Value::Variant { tag, fields, .. } if tag == "Cons" => {
+                    Some((fields[0].clone(), fields[1].clone()))
+                }
+                _ => None,
+            };
+            match step {
+                Some((head, tail)) => {
+                    let mut elem_bytes = vec![0u8; layout.size];
+                    pack_struct(&layout, &head, &mut elem_bytes)?;
+                    bytes.extend_from_slice(&elem_bytes);
+                    cur = tail;
+                }
+                None => break,
+            }
+        }
+        return Ok(CArg::Bytes(bytes));
+    }
     // A C-repr struct is passed by value: pack its fields into a flat memory
     // image and collect its leaf kinds for the aggregate `ffi_type`.
     if let Some(layout) = layout_of(ty) {
