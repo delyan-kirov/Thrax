@@ -283,3 +283,44 @@ impl fmt::Display for Type {
         f.write_str(&display(self, &mut namer))
     }
 }
+
+/// How a program entry point is invoked, derived from its declared type. A `main`
+/// like C's: a function that may perform any effect and returns an `Int` exit
+/// code, taking either no arguments (`{} -> Int`) or the argument vector
+/// (`[n]Str -> Int`). A plain value (e.g. the test harness's `test : Int`) is
+/// just forced.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind {
+    /// Not a function: force the value (the result / exit code).
+    Value,
+    /// `{} -> R`: apply to unit.
+    UnitFn,
+    /// `[n]Str -> R`: apply to the argument vector.
+    ArgvFn,
+    /// A function whose parameter is neither `{}` nor `[n]Str`.
+    BadFn,
+}
+
+/// Classify an entry point from its (zonked) type.
+pub fn classify_entry(ty: &Type) -> EntryKind {
+    let Type::Arrow(from, _, _) = ty else {
+        return EntryKind::Value;
+    };
+    match from.as_ref() {
+        Type::Con(n) if n == "{}" => EntryKind::UnitFn,
+        Type::Tuple(items) if items.is_empty() => EntryKind::UnitFn,
+        // `[n]Str`: a `@tensor variance size elem` spine whose element is `Str`.
+        Type::App(head, elem) => {
+            let is_tensor = matches!(head.as_ref(),
+                Type::App(h2, _) if matches!(h2.as_ref(),
+                    Type::App(con, _) if matches!(con.as_ref(),
+                        Type::Con(n) if n == "@tensor")));
+            if is_tensor && matches!(elem.as_ref(), Type::Con(n) if n == "Str") {
+                EntryKind::ArgvFn
+            } else {
+                EntryKind::BadFn
+            }
+        }
+        _ => EntryKind::BadFn,
+    }
+}

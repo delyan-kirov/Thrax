@@ -842,6 +842,32 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
     Ok(s)
 }
 
+/// Run a C-style `main`: apply the entry function to its argument (unit when
+/// `argv` is `None`, else a `[n]Str` sized array of the arguments) and return its
+/// `Int` result as the process exit code.
+pub fn run_entry(prog: &Program, name: &str, argv: Option<Vec<String>>) -> Result<i64> {
+    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let m = Machine::new(prog);
+    let f = m.eval_global(name)?;
+    let arg = match argv {
+        None => mk(Value::Unit),
+        Some(args) => {
+            let n = args.len();
+            let buf: Vec<PVal> = args
+                .into_iter()
+                .map(|s| mk(Value::Str(Rc::new(s.into_bytes()))))
+                .collect();
+            mk(data::mk_tensor(Rc::new(buf), 0, vec![n], vec![1]))
+        }
+    };
+    let r = deref(m.apply(f, arg)?);
+    let out = match &*r.borrow() {
+        Value::Int(code) => Ok(*code),
+        _ => Err(fault("a C-style `main` must return an Int exit code")),
+    };
+    out
+}
+
 /// `TARGET` host reflection, ported from the tree-walker so the machine matches
 /// it byte-for-byte. The `C` libc namespace is no longer served here: it flows
 /// through the single `@extern` FFI path (`run_extern`).

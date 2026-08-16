@@ -894,6 +894,47 @@ fn sequencing_returns_last() {
     assert_eq!(run("@mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
 }
 
+#[test]
+fn short_circuit_and_or() {
+    // `&&`/`||` desugar to a lazy `if`, so the right operand is skipped when the
+    // result is already decided: a `1 / 0` on the skipped side must not fault.
+    // Precedence: `&&`/`||` bind looser than comparison (`a ?< b && c ?< d`).
+    let src = "@mod M\n\
+               $ f : Bool = false\n\
+               $ t : Bool = true\n\
+               $ sc_and : Int = if (f && (1 / 0 ?= 0)) => 1 else 0\n\
+               $ sc_or  : Int = if (t || (1 / 0 ?= 0)) => 0 else 1\n\
+               $ prec   : Int = if (3 ?< 5 && 5 ?< 9) => 0 else 1\n\
+               $ test : Int = sc_and + sc_or + prec";
+    assert_eq!(run(src, "test"), "0");
+}
+
+/// A C-style `main : {} -> <| e> Int` is applied to unit; its `Int` result is the
+/// exit code (no `entry = <value>` print). The open row lets it perform effects.
+#[test]
+fn entry_unit_fn_returns_exit_code() {
+    let src = "@mod MAIN\n$ main : {} -> <| e> Int = \\u = 42\n";
+    let program = lower_checked(src, "main");
+    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
+    let code = interpreter::machine::run_entry(&ir, "main", None)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    assert_eq!(code, 42);
+}
+
+/// A C-style `main : [n]Str -> <| e> Int` receives argv as a sized tensor of
+/// strings; `argv[0]` is the program path, so `main` sees the whole vector.
+#[test]
+fn entry_argv_fn_receives_string_vector() {
+    let src = "@mod MAIN\n\
+               $ main : [n]Str -> <| e> Int = \\args = @tensor_length args\n";
+    let program = lower_checked(src, "main");
+    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
+    let argv = vec!["prog".to_string(), "alpha".to_string(), "beta".to_string()];
+    let code = interpreter::machine::run_entry(&ir, "main", Some(argv))
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    assert_eq!(code, 3);
+}
+
 /// The machine's explicit continuation stack makes deep tail recursion run in
 /// constant host stack (where a stack-recursive evaluator would overflow): a
 /// tail-recursive countdown to a depth that would blow the native stack returns.

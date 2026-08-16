@@ -108,6 +108,9 @@ pub const OPERATORS: &[(&str, Kind)] = &[
     ("|", Kind::Op),
     ("<>", Kind::Op),
     ("<|", Kind::Op),
+    // Short-circuit boolean and/or (desugared to a lazy `if` in the parser).
+    ("&&", Kind::Op),
+    ("||", Kind::Op),
     // Sequencing / pipes (desugared in the parser).
     (";", Kind::Op),
     ("|>", Kind::Op),

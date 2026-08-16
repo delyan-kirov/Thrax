@@ -328,6 +328,37 @@ fn top_level_unhandled_effect_is_rejected() {
 }
 
 #[test]
+fn open_row_entry_may_perform_any_effect() {
+    // The program entry `main` carries an OPEN effect row `<| e>`, so it may
+    // perform any effect without a handler (the runtime is the top handler). A
+    // pure `<>` would reject this (see `unhandled_effect_is_a_compile_error`).
+    let src = "@mod MAIN\n\
+               $ Yell : @effect = shout : Int -> {},\n\
+               $ main : {} -> <| e> Int = \\u = let _ = Yell.shout 5 in 0";
+    assert_eq!(errors(src), "", "open-row main should type-check");
+    assert_eq!(type_of(src, "main"), "{} -> <Yell | a> Int");
+}
+
+#[test]
+fn classify_entry_recognizes_the_entry_forms() {
+    use crate::{classify_entry, EntryKind};
+    let kind = |src: &str| {
+        let parsed = crate::parse(src).expect("parse");
+        let mut checker = Checker::new(&parsed.ast);
+        let results = checker.check_program(&parsed.program).expect("check");
+        let ty = results.iter().find(|(n, _)| *n == "main").expect("main").1.clone();
+        classify_entry(&ty)
+    };
+    assert_eq!(kind("@mod MAIN\n$ main : {} -> <| e> Int = \\u = 0"), EntryKind::UnitFn);
+    assert_eq!(
+        kind("@mod MAIN\n$ main : [n]Str -> <| e> Int = \\a = 0"),
+        EntryKind::ArgvFn
+    );
+    assert_eq!(kind("@mod MAIN\n$ main : Int = 0"), EntryKind::Value);
+    assert_eq!(kind("@mod MAIN\n$ main : Int -> <| e> Int = \\n = n"), EntryKind::BadFn);
+}
+
+#[test]
 fn same_operation_in_two_effects_resolves_by_result_type() {
     // `ask` is declared by two effects (Int and Str result); a bare use is an
     // overload resolved by how the result is used, and `Effect.op` disambiguates.

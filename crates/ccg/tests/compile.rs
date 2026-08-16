@@ -63,7 +63,7 @@ fn interp_show(src: &str, entry: &str) -> String {
 fn c_run(src: &str, entry: &str) -> String {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, entry, utilities::Target::host());
+    let code = ccg::emit(&lowered, entry, frontend::EntryKind::Value, utilities::Target::host());
 
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut c_path = std::env::temp_dir();
@@ -94,6 +94,59 @@ fn c_run(src: &str, entry: &str) -> String {
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
+/// Emit C for a C-style function `main` of the given kind, compile it, run it
+/// with `args` (appended after the program path), and return `(exit_code,
+/// stdout)`.
+fn c_run_entry(src: &str, kind: frontend::EntryKind, args: &[&str]) -> (i32, String) {
+    static SEQ: AtomicUsize = AtomicUsize::new(1_000_000);
+    let lowered = lower(src);
+    let code = ccg::emit(&lowered, "main", kind, utilities::Target::host());
+
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut c_path = std::env::temp_dir();
+    c_path.push(format!("ccg_{}_{}.c", std::process::id(), n));
+    let bin_path: PathBuf = c_path.with_extension("bin");
+    std::fs::write(&c_path, &code).expect("write C");
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let status = Command::new(&cc)
+        .args(["-w", "-O1", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&c_path)
+        .arg("-lm")
+        .status()
+        .expect("run C compiler");
+    assert!(status.success(), "C compile failed for function main");
+
+    let out = Command::new(&bin_path)
+        .args(args)
+        .output()
+        .expect("run compiled program");
+    let _ = std::fs::remove_file(&c_path);
+    let _ = std::fs::remove_file(&bin_path);
+    let exit = out.status.code().expect("exit code");
+    (exit, String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+/// A C-style `main : {} -> <| e> Int` returns its `Int` as the process exit code,
+/// and prints nothing on its own.
+#[test]
+fn entry_unit_fn_exit_code() {
+    let src = "@mod MAIN\n$ main : {} -> <| e> Int = \\u = 42\n";
+    let (exit, stdout) = c_run_entry(src, frontend::EntryKind::UnitFn, &[]);
+    assert_eq!(exit, 42);
+    assert_eq!(stdout, "");
+}
+
+/// A C-style `main : [n]Str -> <| e> Int` receives argv (path first) as a `[n]Str`.
+#[test]
+fn entry_argv_fn_string_vector() {
+    let src = "@mod MAIN\n\
+               $ main : [n]Str -> <| e> Int = \\args = @tensor_length args\n";
+    let (exit, _stdout) = c_run_entry(src, frontend::EntryKind::ArgvFn, &["alpha", "beta"]);
+    assert_eq!(exit, 3);
+}
+
 /// The C program prints `entry = <show>`; assert it equals the interpreter.
 fn assert_matches(src: &str, entry: &str) {
     let expected = format!("{entry} = {}", interp_show(src, entry));
@@ -116,6 +169,19 @@ fn arithmetic_and_precedence() {
     assert_matches(src, "a");
     assert_matches(src, "b");
     assert_matches(src, "test");
+}
+
+#[test]
+fn short_circuit_and_or() {
+    // `&&`/`||` desugar to a lazy `if`; the C backend matches the interpreter.
+    let src = "@mod T\n\
+               $ f : Bool = false\n\
+               $ t : Bool = true\n\
+               $ a : Int = if (t && 3 ?< 5) => 1 else 0\n\
+               $ b : Int = if (f || 5 ?< 3) => 1 else 0\n\
+               $ test : Int = a\n";
+    assert_matches(src, "a");
+    assert_matches(src, "b");
 }
 
 #[test]
@@ -258,7 +324,7 @@ fn ffi_struct_by_value_argument() {
     // C backend: emit, compile linking the helper .so (with an rpath so the
     // binary finds it at runtime), run, compare.
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_arg_prog.c");
     let bin_path = dir.join("thx_ccg_arg_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -311,7 +377,7 @@ fn ffi_struct_array() {
     assert_eq!(interp_show(&src, "test"), "102");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_arr_prog.c");
     let bin_path = dir.join("thx_ccg_arr_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -330,8 +396,51 @@ fn ffi_struct_array() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim_end(), "test = 102");
 }
 
+/// Resolve libffi compile/link flags for the generated closure runtime: prefer
+/// `pkg-config`, else the dev shell's `$LIBFFI_DEV`/`$LIBFFI`. `None` means libffi
+/// is unavailable (a bare `cargo test` outside the dev shell), so the callback C
+/// test skips rather than failing on a missing `ffi.h`.
+fn libffi_flags() -> Option<(Vec<String>, Vec<String>)> {
+    if let Ok(out) = Command::new("pkg-config").args(["--cflags", "libffi"]).output() {
+        if out.status.success() {
+            let cflags = String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .map(String::from)
+                .collect();
+            let libs = Command::new("pkg-config")
+                .args(["--libs", "libffi"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .split_whitespace()
+                        .map(String::from)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["-lffi".to_string()]);
+            return Some((cflags, libs));
+        }
+    }
+    match (std::env::var("LIBFFI_DEV"), std::env::var("LIBFFI")) {
+        (Ok(dev), Ok(lib)) => Some((
+            vec![format!("-I{dev}/include")],
+            vec![
+                format!("-L{lib}/lib"),
+                format!("-Wl,-rpath,{lib}/lib"),
+                "-lffi".to_string(),
+            ],
+        )),
+        _ => None,
+    }
+}
+
 #[test]
 fn ffi_callback() {
+    let Some((ffi_cflags, ffi_libs)) = libffi_flags() else {
+        eprintln!("skipping ffi_callback: libffi not found (need pkg-config or $LIBFFI)");
+        return;
+    };
     // A Thrax closure passed to C as a function pointer, via the generated
     // libffi-closure runtime. The helper calls it twice; the closure captures a
     // free variable. Must match the interpreter.
@@ -362,27 +471,22 @@ fn ffi_callback() {
     assert_eq!(interp_show(&src, "test"), "1317");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_cb_prog.c");
     let bin_path = dir.join("thx_ccg_cb_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
-    // libffi (headers + lib) from the dev shell, for the generated closure runtime.
-    let ffi_dev = std::env::var("LIBFFI_DEV").unwrap_or_default();
-    let ffi_lib = std::env::var("LIBFFI").unwrap_or_default();
     let mut cmd = Command::new(&cc);
     cmd.args(["-w", "-O1", "-pthread", "-o"])
         .arg(&bin_path)
         .arg(&cc_path);
-    if !ffi_dev.is_empty() {
-        cmd.arg(format!("-I{ffi_dev}/include"));
+    for f in &ffi_cflags {
+        cmd.arg(f);
     }
-    if !ffi_lib.is_empty() {
-        cmd.arg(format!("-L{ffi_lib}/lib"))
-            .arg(format!("-Wl,-rpath,{ffi_lib}/lib"));
+    cmd.arg("-lm");
+    for f in &ffi_libs {
+        cmd.arg(f);
     }
-    cmd.arg("-lm")
-        .arg("-lffi")
-        .arg(&so_path)
+    cmd.arg(&so_path)
         .arg(format!("-Wl,-rpath,{}", dir.display()));
     assert!(cmd.status().expect("cc prog").success());
     let out = Command::new(&bin_path).output().expect("run prog");
@@ -428,7 +532,7 @@ fn ffi_c_union_by_value() {
     assert_eq!(interp_show(&src, "test"), "42099");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_union_prog.c");
     let bin_path = dir.join("thx_ccg_union_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -485,7 +589,7 @@ fn ffi_nested_struct_by_value() {
     assert_eq!(interp_show(&src, "test"), "4321");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_nested_prog.c");
     let bin_path = dir.join("thx_ccg_nested_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -653,7 +757,7 @@ fn sized_extern_marshalling() {
                $ f : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = @extern \"C\" \"f\" \"libx\"\n\
                $ test : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = f\n";
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, "test", utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
     let decl = code
         .lines()

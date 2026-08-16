@@ -18,6 +18,9 @@ self-contained.
 
 - **[launcher](launcher/)** -- a raylib program launcher. The first app to use
   the C-struct FFI (`@struct @extern "C"`, structs passed to C by value).
+- **[cbindgen](cbindgen/)** -- a C-header binding generator written in Thrax:
+  reads a `.h`, emits Thrax `@extern` bindings for its enums, structs, unions, and
+  functions.
 
 ## Adding an app as a submodule
 

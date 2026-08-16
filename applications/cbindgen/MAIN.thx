@@ -1,0 +1,265 @@
+@mod MAIN
+
+# \file MAIN.thx
+# \info A C-header binding generator, written in Thrax. It reads a C header,
+#       strips comments and preprocessor lines (no macro support), tokenizes,
+#       and emits Thrax `@extern` bindings:
+#         - `typedef enum { ... } Name;`  -> an `Int32` alias + named constants
+#         - `typedef struct { ... } Name;` -> `Name : @struct @extern "C" = ...`
+#         - `typedef union  { ... } Name;` -> `Name : @union  @extern "C" = ...`
+#         - `Ret name(params);`            -> `name : ... = @extern "C" "name" LIB`
+#       Type mapping: sized ints/floats, `void`->`{}`, `char*`->`Str`, any other
+#       pointer `T*`->`Ptr` (hand-edit to `List T` for an array parameter), a known
+#       type name stays itself. A struct/union with an array or bit-field member is
+#       skipped with a note (those member shapes are not representable yet).
+#       Input path is $HEADER, the shared library name is $LIB, output goes to
+#       $OUT (or stdout). Run from this directory:
+#           HEADER=test.h LIB=libfoo.so thrax run MAIN.thx
+
+# Brace strings. A literal `{` in a Thrax string opens a `{e}` interpolation, so a
+# literal brace is escaped `\{` / `\}`.
+$ s_lbrace : Str = "\{"
+$ s_rbrace : Str = "\}"
+$ s_unit : Str = "\{}"
+
+# -- character classes (ASCII codes) -----------------------------------------
+$ between : Int -> Int -> Int -> Int = \c lo hi =
+	if c >= lo && c <= hi => 1 else 0
+
+$ is_digit : Int -> Int = \c = between c 48 57
+$ is_alpha : Int -> Int = \c =
+	if between c 65 90 ?= 1 || between c 97 122 ?= 1 || c ?= 95 => 1 else 0
+$ is_alnum : Int -> Int = \c = if is_alpha c ?= 1 || is_digit c ?= 1 => 1 else 0
+$ is_space : Int -> Int = \c =
+	if c ?= 32 || c ?= 9 || c ?= 10 || c ?= 13 => 1 else 0
+$ is_upper_start : Str -> Int = \s =
+	if @array_len s ?= 0 => 0 else between (@array_get s 0) 65 90
+
+# -- small list helpers ------------------------------------------------------
+$ rev1 : List Str -> List Str -> List Str = \xs acc =
+	is xs | [] => acc | h :: t => rev1 t (h :: acc)
+$ reverse : List Str -> List Str = \xs = rev1 xs []
+
+$ last1 : List Str -> Str = \xs = is xs | [] => "" | h :: [] => h | h :: t => last1 t
+$ init1 : List Str -> List Str = \xs = is xs | [] => [] | h :: [] => [] | h :: t => h :: init1 t
+
+$ has_tok : List Str -> Str -> Int = \xs t =
+	is xs | [] => 0 | h :: r => if h ?= t => 1 else has_tok r t
+
+$ take_until : List Str -> Str -> List Str = \xs d =
+	is xs | [] => [] | h :: r => if h ?= d => [] else h :: take_until r d
+$ drop_until : List Str -> Str -> List Str = \xs d =
+	is xs | [] => [] | h :: r => if h ?= d => r else drop_until r d
+
+$ split_loop : List Str -> Str -> List Str -> List (List Str) = \xs d cur =
+	is xs
+		| [] => (is cur | [] => [] | _ => [reverse cur])
+		| h :: r =>
+			if h ?= d => (reverse cur) :: split_loop r d []
+			else split_loop r d (h :: cur)
+$ split_on : List Str -> Str -> List (List Str) = \xs d = split_loop xs d []
+
+# -- integers ----------------------------------------------------------------
+$ sti_loop : Str -> Int -> Int -> Int -> Int = \s i n acc =
+	if i >= n => acc
+	else let c = @array_get s i in
+		if is_digit c ?= 1 => sti_loop s (i + 1) n (acc * 10 + (c - 48))
+		else acc
+$ str_to_int : Str -> Int = \s = sti_loop s 0 (@array_len s) 0
+
+# -- read the whole input ----------------------------------------------------
+$ read_all : Int -> Str -> Str = \f acc =
+	let c = C.fgetc f in
+	if c ?< 0 => acc else read_all f (@array_push acc c)
+
+# -- strip comments and `#` preprocessor lines -------------------------------
+# state: 0 normal, 1 line-comment (to newline), 2 block-comment (to `*/`).
+# at_ls: at line start (through leading spaces), for detecting `#` lines.
+$ clean_loop : Str -> Int -> Int -> Str -> Int -> Int -> Str =
+	\s i n out state at_ls =
+	if i >= n => out
+	else
+		let c = @array_get s i in
+		let c2 = if (i + 1) ?< n => @array_get s (i + 1) else 0 in
+		is state
+			| 1 =>
+				if c ?= 10 => clean_loop s (i + 1) n (@array_push out 10) 0 1
+				else clean_loop s (i + 1) n out 1 at_ls
+			| 2 =>
+				if c ?= 42 => (if c2 ?= 47 => clean_loop s (i + 2) n out 0 0
+				               else clean_loop s (i + 1) n out 2 at_ls)
+				else clean_loop s (i + 1) n out 2 at_ls
+			else
+				if c ?= 47 => (if c2 ?= 47 => clean_loop s (i + 2) n out 1 at_ls
+				               else if c2 ?= 42 => clean_loop s (i + 2) n out 2 at_ls
+				               else clean_loop s (i + 1) n (@array_push out c) 0 0)
+				else if c ?= 35 => (if at_ls ?= 1 => clean_loop s (i + 1) n out 1 0
+				                    else clean_loop s (i + 1) n (@array_push out c) 0 0)
+				else
+					let nls = if c ?= 10 => 1 else if is_space c ?= 1 => at_ls else 0 in
+					clean_loop s (i + 1) n (@array_push out c) 0 nls
+$ clean : Str -> Str = \s = clean_loop s 0 (@array_len s) "" 0 1
+
+# -- tokenize ----------------------------------------------------------------
+$ flush : Str -> List Str -> List Str = \cur acc =
+	if @array_len cur ?= 0 => acc else cur :: acc
+$ tok_loop : Str -> Int -> Int -> Str -> List Str -> List Str = \s i n cur acc =
+	if i >= n => reverse (flush cur acc)
+	else
+		let c = @array_get s i in
+		if is_space c ?= 1 => tok_loop s (i + 1) n "" (flush cur acc)
+		else if is_alnum c ?= 1 => tok_loop s (i + 1) n (@array_push cur c) acc
+		else
+			let punct = @array_push "" c in
+			tok_loop s (i + 1) n "" (punct :: flush cur acc)
+$ tokenize : Str -> List Str = \s = tok_loop s 0 (@array_len s) "" []
+
+# -- split the token stream into top-level declarations (by `;` at depth 0) ---
+$ decl_loop : List Str -> Int -> List Str -> List (List Str) = \xs depth cur =
+	is xs
+		| [] => (is cur | [] => [] | _ => [reverse cur])
+		| h :: r =>
+			if h ?= s_lbrace => decl_loop r (depth + 1) (h :: cur)
+			else if h ?= s_rbrace => decl_loop r (depth - 1) (h :: cur)
+			else if h ?= ";" =>
+				if depth ?= 0 => (reverse cur) :: decl_loop r 0 []
+				else decl_loop r depth (h :: cur)
+			else decl_loop r depth (h :: cur)
+$ declarations : List Str -> List (List Str) = \xs = decl_loop xs 0 []
+
+# -- C type -> Thrax type ----------------------------------------------------
+$ is_basekw : Str -> Int = \t =
+	if t ?= "void" => 1 else if t ?= "char" => 1 else if t ?= "short" => 1
+	else if t ?= "int" => 1 else if t ?= "long" => 1 else if t ?= "float" => 1
+	else if t ?= "double" => 1 else if t ?= "bool" => 1 else 0
+$ base_type : List Str -> Str = \xs =
+	is xs | [] => ""
+		| h :: r =>
+			if is_basekw h ?= 1 => h
+			else if is_upper_start h ?= 1 => h
+			else base_type r
+$ map_base : Str -> Int -> Str = \b uns =
+	if b ?= "int" => (if uns ?= 1 => "Nat32" else "Int32")
+	else if b ?= "char" => (if uns ?= 1 => "Nat8" else "Int8")
+	else if b ?= "short" => "Int16"
+	else if b ?= "long" => "Int64"
+	else if b ?= "float" => "Real32"
+	else if b ?= "double" => "Real64"
+	else if b ?= "void" => s_unit
+	else if b ?= "bool" => "Nat8"
+	else if b ?= "" => (if uns ?= 1 => "Nat32" else "Int")
+	else b
+$ c_type_of : List Str -> Str = \toks =
+	let star = has_tok toks "*" in
+	let uns = has_tok toks "unsigned" in
+	let base = base_type toks in
+	if star ?= 1 => (if base ?= "char" => "Str" else "Ptr")
+	else map_base base uns
+
+# -- emit: enum --------------------------------------------------------------
+$ enum_line : Str -> Int -> Str = \name val =
+	"$ " ++ name ++ " : Int32 = " ++ to_string val ++ "\n"
+$ enum_consts : List Str -> Int -> Str -> Str = \toks nextval out =
+	is toks
+		| [] => out
+		| h :: t =>
+			if h ?= "," => enum_consts t nextval out
+			else is t
+				| eq :: v :: rest =>
+					if eq ?= "=" =>
+						let val = str_to_int v in
+						enum_consts rest (val + 1) (out ++ enum_line h val)
+					else enum_consts t (nextval + 1) (out ++ enum_line h nextval)
+				| _ => enum_consts t (nextval + 1) (out ++ enum_line h nextval)
+$ emit_enum : List Str -> Str = \toks =
+	let name = last1 toks in
+	let body = take_until (drop_until toks s_lbrace) s_rbrace in
+	"$ " ++ name ++ " : @alias = Int32\n" ++ enum_consts body 0 ""
+
+# -- emit: struct / union ----------------------------------------------------
+$ field_ok : List Str -> Int = \g =
+	is g | [] => 0 | _ => if has_tok g "[" ?= 1 => 0 else 1
+$ fields_ok : List (List Str) -> Int = \gs =
+	is gs | [] => 1
+		| h :: r =>
+			is h | [] => fields_ok r
+				| _ => if field_ok h ?= 1 => fields_ok r else 0
+$ fields_str : List (List Str) -> Str = \gs =
+	is gs | [] => ""
+		| h :: r =>
+			is h | [] => fields_str r
+				| _ => (last1 h) ++ ": " ++ (c_type_of (init1 h)) ++ ", " ++ fields_str r
+$ emit_record : List Str -> Str -> Str = \toks kw =
+	let name = last1 toks in
+	if has_tok toks s_lbrace ?= 0 => "$ " ++ name ++ " : @alias = Ptr\n"
+	else
+		let body = take_until (drop_until toks s_lbrace) s_rbrace in
+		let fields = split_on body ";" in
+		if fields_ok fields ?= 1 =>
+			"$ " ++ name ++ " : @" ++ kw ++ " @extern \"C\" = " ++ fields_str fields ++ "\n"
+		else "# skipped " ++ kw ++ " " ++ name ++ " (array or bit-field member)\n"
+
+# -- emit: function prototype ------------------------------------------------
+$ keep_types : List (List Str) -> List Str = \ps =
+	is ps | [] => []
+		| h :: r =>
+			is h | [] => keep_types r
+				| _ => let t = c_type_of h in
+					if t ?= s_unit => keep_types r else t :: keep_types r
+$ fold_arrow : List Str -> Str = \ts =
+	is ts | [] => "" | h :: r => h ++ " -> " ++ fold_arrow r
+$ build_sig : List (List Str) -> Str -> Str = \ptoks ret =
+	let types = keep_types ptoks in
+	is types | [] => s_unit ++ " -> " ++ ret | _ => (fold_arrow types) ++ ret
+$ emit_func : List Str -> Str -> Str = \toks lib =
+	let before = take_until toks "(" in
+	let params = take_until (drop_until toks "(") ")" in
+	let name = last1 before in
+	let ret = c_type_of (init1 before) in
+	let sig = build_sig (split_on params ",") ret in
+	"$ " ++ name ++ " : " ++ sig ++ " = @extern \"C\" \"" ++ name ++ "\" \"" ++ lib ++ "\"\n"
+
+# -- dispatch one declaration ------------------------------------------------
+$ emit_typedef : List Str -> Str = \t =
+	is t
+		| k :: rest =>
+			if k ?= "enum" => emit_enum rest
+			else if k ?= "struct" => emit_record rest "struct"
+			else if k ?= "union" => emit_record rest "union"
+			# `typedef <type> Name;` -> an alias
+			else "$ " ++ last1 t ++ " : @alias = " ++ c_type_of (init1 t) ++ "\n"
+		| _ => ""
+
+$ emit_decl : List Str -> Str -> Str = \toks lib =
+	is toks
+		| [] => ""
+		| h :: t =>
+			if h ?= "typedef" => emit_typedef t
+			else if has_tok toks "(" ?= 1 => emit_func toks lib
+			else ""
+
+$ gen : List (List Str) -> Str -> Str -> Str = \decls lib out =
+	is decls | [] => out | d :: r => gen r lib (out ++ emit_decl d lib)
+
+# -- driver ------------------------------------------------------------------
+$ getenv_or : Str -> Str -> Str = \name dflt =
+	let v = C.getenv name in
+	if @array_len v ?= 0 => dflt else v
+
+$ main : {} =
+	let path = getenv_or "HEADER" "test.h" in
+	let lib = getenv_or "LIB" "lib.so" in
+	let f = C.fopen path "r" in
+	if f ?= 0 => let _ = C.puts ("cbindgen: cannot open " ++ path) in {}
+	else
+		let text = read_all f "" in
+		let _ = C.fclose f in
+		let modname = getenv_or "MOD" "BINDINGS" in
+		let header = "@mod " ++ modname ++ "\n\n" in
+		let bindings = header ++ gen (declarations (tokenize (clean text))) lib "" in
+		let outp = C.getenv "OUT" in
+		if @array_len outp ?= 0 => let _ = C.write 1 bindings (@array_len bindings) in {}
+		else
+			let of = C.fopen outp "w" in
+			let _ = C.fputs bindings of in
+			let _ = C.fclose of in {}

@@ -1051,10 +1051,21 @@ impl<'a> Parser<'a> {
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
                     Some(bp) if bp.left >= min_bp => {
+                        let lexeme = self.text(t).to_string();
                         self.bump()?;
-                        let op = self.intern(self.text(t));
                         let rhs = self.parse_expr(bp.right)?;
-                        let node = self.expr(Expr::BinOp { op, lhs, rhs });
+                        // `&&`/`||` are short-circuit: desugar to a lazy `if` so the
+                        // right operand runs only when needed.
+                        let node = if lexeme == "&&" {
+                            let alt = self.expr(Expr::Bool(false));
+                            self.expr(Expr::If { cond: lhs, then: rhs, alt })
+                        } else if lexeme == "||" {
+                            let then = self.expr(Expr::Bool(true));
+                            self.expr(Expr::If { cond: lhs, then, alt: rhs })
+                        } else {
+                            let op = self.intern(&lexeme);
+                            self.expr(Expr::BinOp { op, lhs, rhs })
+                        };
                         lhs = self.stamp(start, node);
                     }
                     _ => break,

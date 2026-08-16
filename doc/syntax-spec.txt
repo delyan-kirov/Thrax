@@ -49,6 +49,8 @@ Definition delimiter token:
 		- `+`  `-`  `*`  `/`  `%`     (arithmetic)
 		- `!`                         (logical not, unary)
 		- `?=`                        (equality test)
+		- `&&`  `||`                  (short-circuit and/or; desugar to a lazy `if`,
+		                               so the right operand runs only when needed)
 		- `$`                         (global marker)
 		- `:`                         (has-type)
 		- `->`                        (function type arrow)
@@ -383,7 +385,18 @@ IMPORTS.  A module pulls in others with `$ with` lines:
 
 It is ALWAYS valid to qualify a symbol with its module, `Module.symbol`, whether
 or not the module was imported. The program entry point is the `main` of module
-`MAIN`; its type must be `Int` or `Str -> Int`.
+`MAIN`. It is a function that returns an `Int` exit code (C-style) and may perform
+any effect, expressed by the OPEN effect row `<| e>` on its arrow:
+
+	$ main : {} -> <| e> Int          # no arguments
+	$ main : [n]Str -> <| e> Int      # the argument vector, argv[0] first
+
+The open row is what lets `main` perform any effect: a closed `<>` (or a bare
+`-> Int`) is pure and would reject an unhandled effect in the body. The `[n]Str`
+form receives the command-line arguments as a sized string tensor, the program
+path in slot 0 (like C's `argv`). A legacy value entry `main : Int` (or any
+value) is still accepted: it is forced and printed as `main = <value>` rather
+than used as an exit code.
 
 VISIBILITY.  Symbols are public (exported) by default. `$ @private` makes every
 symbol after it module-private (visible to the module's own files, hidden from

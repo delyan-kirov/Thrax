@@ -18,7 +18,7 @@ pub use lexer::Lexer;
 pub use lowering::{lower_program, Decls, Resolved};
 pub use parser::data::*;
 pub use parser::Parser;
-pub use typing::data::Type;
+pub use typing::data::{classify_entry, EntryKind, Type};
 pub use typing::engine::Engine;
 pub use typing::Checker;
 

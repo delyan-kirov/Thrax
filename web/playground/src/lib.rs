@@ -156,7 +156,7 @@ fn emit_c(user_src: &str) -> Result<String, String> {
         os: utilities::Os::Linux,
         arch: utilities::Arch::X86_64,
     };
-    Ok(ccg::emit(&lowered, &entry, target))
+    Ok(ccg::emit(&lowered, &entry, frontend::EntryKind::Value, target))
 }
 
 fn dump_ir(user_src: &str) -> Result<String, String> {

@@ -192,7 +192,9 @@ fn check_all<'a>(
 /// The full pipeline up to (but not including) execution: load, parse, check,
 /// and lower every module. Returns the lowered modules (root first) and the
 /// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
-fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, String), ExitCode> {
+fn lower_all(
+    path: &str,
+) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
     let loaded = load_sources(path)?;
 
     let mut ast = frontend::Ast::new();
@@ -211,7 +213,7 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let checkers = check_all(&ast, &programs, &graph, &loaded.sources)?.0;
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)?;
 
     // Collect the checker's resolutions lowering needs: which `[..]` nodes are
     // `Array`, and which bare calls resolved to a specific module.
@@ -261,47 +263,80 @@ fn lower_all(path: &str) -> Result<(Vec<frontend::lowering::data::Program>, Stri
     let entry = ["test", "main"]
         .into_iter()
         .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
-    match entry {
-        Some(e) => Ok((lowered, e.to_string())),
-        None => {
-            eprintln!(
-                "thrax: module `{}` has no `test` or `main` to run",
-                loaded.root_name
-            );
-            Err(ExitCode::FAILURE)
-        }
+    let Some(e) = entry else {
+        eprintln!(
+            "thrax: module `{}` has no `test` or `main` to run",
+            loaded.root_name
+        );
+        return Err(ExitCode::FAILURE);
+    };
+    // The entry's type decides how it is invoked: a value is forced, `{} -> Int`
+    // is applied to unit, `[n]Str -> Int` to the argument vector (C-style `main`).
+    let kind = results[root]
+        .iter()
+        .find(|(n, _)| *n == e)
+        .map(|(_, ty)| frontend::classify_entry(ty))
+        .unwrap_or(frontend::EntryKind::Value);
+    if kind == frontend::EntryKind::BadFn {
+        eprintln!(
+            "thrax: `{e}` must be a value, `{{}} -> Int`, or `[n]Str -> Int` (a C-style main)"
+        );
+        return Err(ExitCode::FAILURE);
     }
+    Ok((lowered, e.to_string(), kind))
 }
 
 /// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
 /// on the reified-K machine. The machine's continuation is an explicit heap
 /// stack, so no large host stack is needed for deep recursion.
-pub fn cmd_run(path: &str) -> ExitCode {
-    let (lowered, entry) = match lower_all(path) {
+pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let ir = frontend::ir::lower_modules(&lowered);
-    match interpreter::machine::eval(&ir, &entry) {
-        Ok(shown) => {
-            println!("{entry} = {shown}");
-            ExitCode::SUCCESS
+    use frontend::EntryKind::*;
+    match kind {
+        // A value: force it and print `entry = <value>` (the test-harness form).
+        Value => match interpreter::machine::eval(&ir, &entry) {
+            Ok(shown) => {
+                println!("{entry} = {shown}");
+                ExitCode::SUCCESS
+            }
+            Err(diag) => {
+                eprint!("{}", diag.render("", &entry));
+                ExitCode::FAILURE
+            }
+        },
+        // A C-style `main`: apply it (to unit, or the argument vector `argv[0]` =
+        // the entry path, then the extra args) and use its `Int` result as the
+        // process exit code.
+        UnitFn | ArgvFn => {
+            let argv = (kind == ArgvFn).then(|| {
+                let mut v = vec![path.to_string()];
+                v.extend(prog_args.iter().cloned());
+                v
+            });
+            match interpreter::machine::run_entry(&ir, &entry, argv) {
+                Ok(code) => ExitCode::from((code & 0xff) as u8),
+                Err(diag) => {
+                    eprint!("{}", diag.render("", &entry));
+                    ExitCode::FAILURE
+                }
+            }
         }
-        Err(diag) => {
-            eprint!("{}", diag.render("", &entry));
-            ExitCode::FAILURE
-        }
+        BadFn => unreachable!("rejected in lower_all"),
     }
 }
 
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry) = match lower_all(path) {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    print!("{}", ccg::emit(&lowered, &entry, target));
+    print!("{}", ccg::emit(&lowered, &entry, kind, target));
     ExitCode::SUCCESS
 }
 
@@ -309,11 +344,11 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// toolchain (`cc` natively, `emcc` for wasm). Writes `<stem>.c` and the
 /// executable next to the source; prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry) = match lower_all(path) {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let emitted = ccg::emit_program(&lowered, &entry, target);
+    let emitted = ccg::emit_program(&lowered, &entry, kind, target);
 
     let tc = utilities::toolchain(target);
     if tc.cc.is_empty() {

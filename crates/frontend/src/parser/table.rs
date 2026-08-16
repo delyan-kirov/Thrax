@@ -35,6 +35,9 @@ pub fn infix(op: &str) -> Option<Bp> {
         ";" => bp(2, 1),
         "<|" => bp(5, 4),
         "|>" => bp(6, 7),
+        // Short-circuit boolean, looser than comparison; `||` looser than `&&`.
+        "||" => bp(8, 9),
+        "&&" => bp(9, 10),
         // Comparison (all one precedence, left-associative).
         "?=" | "?>" | "?<" | "<=" | ">=" => bp(10, 11),
         // Cons: right-associative, looser than +/comparison.

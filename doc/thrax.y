@@ -70,6 +70,8 @@
 %right SEMI                         /* ; */
 %right PIPE_BACK                    /* <| */
 %left  PIPE_FWD                     /* |> */
+%left  OR_OR                        /* || (short-circuit, desugars to a lazy if) */
+%left  AND_AND                      /* && (short-circuit, desugars to a lazy if) */
 %left  EQEQ LT GT LE GE             /* == < > <= >= */
 %right CONS                         /* :: */
 %left  CONCAT                       /* ++ */
@@ -251,6 +253,8 @@ op_expr
   : op_expr SEMI op_expr
   | op_expr PIPE_BACK op_expr
   | op_expr PIPE_FWD op_expr
+  | op_expr OR_OR op_expr            /* || short-circuit -> lazy if */
+  | op_expr AND_AND op_expr          /* && short-circuit -> lazy if */
   | op_expr EQEQ op_expr
   | op_expr LT op_expr
   | op_expr GT op_expr
