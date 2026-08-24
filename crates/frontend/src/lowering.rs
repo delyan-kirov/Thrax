@@ -663,6 +663,11 @@ impl<'a> Lowerer<'a> {
 
             Expr::App(f, x) => {
                 let (f, x) = (*f, *x);
+                // `@cast x` is erased: integers are boxed uniformly, so a width cast
+                // is a no-op at runtime (the `@extern` boundary narrows to the C type).
+                if self.is_cast_head(f) {
+                    return self.expr(x);
+                }
                 // A foreign call flattens the record that groups its C parameters
                 // into positional arguments here, so the record is never built and
                 // the extern node stays a plain N-ary function.
@@ -1066,6 +1071,11 @@ impl<'a> Lowerer<'a> {
             idx: 0,
         };
         self.apply_implicits(site, base)
+    }
+
+    /// Whether `f` is the `@cast` intrinsic in head position (erased at lowering).
+    fn is_cast_head(&self, f: Aol<Expr>) -> bool {
+        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
     }
 
     /// The marshalling plan of the foreign function `site` refers to, if it is a

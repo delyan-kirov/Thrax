@@ -27,16 +27,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "playground"
-version = "0.1.0"
-dependencies = [
- "ccg",
- "frontend",
- "interpreter",
- "utilities",
-]
-
-[[package]]
 name = "thrax"
 version = "0.1.0"
 dependencies = [

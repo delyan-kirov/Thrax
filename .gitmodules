@@ -1,0 +1,3 @@
+[submodule "applications"]
+	path = applications
+	url = git@github.com:delyan-kirov/thrax-applications.git
