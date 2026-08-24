@@ -105,12 +105,28 @@ pub const REAL: &str = "Real";
 pub const STR: &str = "Str";
 pub const BOOL: &str = "Bool";
 pub const UNIT: &str = "{}";
+pub const PTR: &str = "Ptr";
 pub const LIST: &str = "List";
 pub const ARRAY: &str = "Array";
 pub const VEC: &str = "Vec";
 /// The canonical infinite codata stream (defined in `CORE`), the target an
 /// open range `[lo ...]` builds.
 pub const STREAM: &str = "Stream";
+
+/// The source spelling to DISPLAY for a built-in constructor. The canonical
+/// internal names for these are the friendly words, but the only way to write
+/// them in source is the `@`-form, so we display the `@`-form for consistency.
+/// `Int`/`Nat`/`Real`/`Str` keep their friendly spelling (still writable).
+fn display_con(name: &str) -> &str {
+    match name {
+        "Bool" => "@bool",
+        "List" => "@list",
+        "Vec" => "@vec",
+        "Array" => "@array",
+        "Ptr" => "@ptr",
+        other => other,
+    }
+}
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
@@ -121,7 +137,7 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
             // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
             // their source spelling when they surface on their own (a variance
             // mismatch); a whole tensor renders via the `[..]` path below.
-            Type::Con(name) => out.push_str(name),
+            Type::Con(name) => out.push_str(display_con(name)),
             Type::Nat(n) => out.push_str(&n.to_string()),
             Type::NatAdd(a, b) => paren(out, prec > 2, |out| {
                 go(a, namer, out, 2);

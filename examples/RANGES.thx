@@ -36,9 +36,9 @@ $ band : Real -> Int = \x =
 $ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
 
 # EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
-# same `...`, materialized). By default it is a `List Int` (a runtime-length
+# same `...`, materialized). By default it is a `@list Int` (a runtime-length
 # sequence). Empty when lo > hi.
-$ ns : List Int = [1 ... 4]                         # [1, 2, 3, 4]
+$ ns : @list Int = [1 ... 4]                         # [1, 2, 3, 4]
 $ ck_build : Int = if sum ns ?= 10 => 0 else 64
 $ ck_len   : Int = if length ns ?= 4 => 0 else 128
 $ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256

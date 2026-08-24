@@ -57,6 +57,24 @@ pub struct CField {
     pub kind: CKind,
 }
 
+/// How one positional C argument of an `@extern` is sourced from the single
+/// Thrax value the extern is applied to. A C function has no first-class
+/// closures to curry, so a Thrax extern takes exactly ONE argument: unit (no C
+/// arguments), an anonymous record (each field is a positional C argument), or a
+/// single value (used directly). A record field is pulled BY NAME so a reordered
+/// call site still marshals in the declared C order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExternArg {
+    /// The one applied value IS this positional C argument.
+    Whole,
+    /// Pull this named field from the one applied (record) value.
+    Field(String),
+    /// Take this positional element of the one applied (tuple) value. A closed
+    /// record parameter surfaces as a positional tuple in this language, so a
+    /// multi-argument C function reached by position expands its elements here.
+    Elem(usize),
+}
+
 /// A struct's (or C union's) flat C memory image.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CLayout {

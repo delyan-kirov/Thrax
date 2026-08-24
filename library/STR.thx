@@ -15,9 +15,9 @@ $ len : Str -> Int = \s = @array_len s
 
 $ at : Str -> Int -> Int = \s i = @array_get s i
 
-$ is_empty : Str -> Bool = \s = (@array_len s) ?= 0
+$ is_empty : Str -> @bool = \s = (@array_len s) ?= 0
 
-$ eq : Str -> Str -> Bool = \a b = a ?= b
+$ eq : Str -> Str -> @bool = \a b = a ?= b
 
 # Three-way byte-lexicographic comparison: negative / 0 / positive (strcmp
 # convention; this is the ordering MAP.new_str uses).
@@ -39,12 +39,12 @@ $ from_byte : Int -> Str = \c = @array_push "" c
 # The byte range [from, to), clamped to the string.
 $ substr : Str -> Int -> Int -> Str = \s from to = @array_slice s from to
 
-$ starts_with : Str -> Str -> Bool = \s p =
+$ starts_with : Str -> Str -> @bool = \s p =
 	let n = @array_len p in
 	if n ?> @array_len s => false
 	else (@array_slice s 0 n) ?= p
 
-$ ends_with : Str -> Str -> Bool = \s p =
+$ ends_with : Str -> Str -> @bool = \s p =
 	let n  = @array_len p in
 	let sn = @array_len s in
 	if n ?> sn => false
@@ -60,11 +60,11 @@ $ find_from : Str -> Str -> Int -> Option Int = \s needle from =
 
 $ find : Str -> Str -> Option Int = \s needle = find_from s needle 0
 
-$ contains : Str -> Str -> Bool = \s needle = is_some (find s needle)
+$ contains : Str -> Str -> @bool = \s needle = is_some (find s needle)
 
 # Split on a non-empty separator; N separators yield N+1 pieces ("a,,b" on
 # "," is ["a", "", "b"]). An empty separator returns the whole string whole.
-$ split : Str -> Str -> List Str = \s sep =
+$ split : Str -> Str -> @list Str = \s sep =
 	if (@array_len sep) ?= 0 => [s]
 	else is find s sep
 		| Option.Some.{i} =>
@@ -74,13 +74,13 @@ $ split : Str -> Str -> List Str = \s sep =
 
 # The lines of `s`, split on '\n'. A trailing newline does not produce a
 # final empty line.
-$ lines : Str -> List Str = \s =
+$ lines : Str -> @list Str = \s =
 	let n = @array_len s in
 	if n ?= 0 => []
 	else if (@array_get s (n - 1)) ?= 10 => split (@array_slice s 0 (n - 1)) "\n"
 	else split s "\n"
 
-$ join : Str -> List Str -> Str = \sep parts =
+$ join : Str -> @list Str -> Str = \sep parts =
 	is parts
 		| h :: t =>
 			(is t | [] => h else h ++ sep ++ join sep t)
@@ -89,7 +89,7 @@ $ join : Str -> List Str -> Str = \sep parts =
 $ repeat : Str -> Int -> Str = \s n =
 	if n <= 0 => "" else s ++ repeat s (n - 1)
 
-$ concat : List Str -> Str = \parts = join "" parts
+$ concat : @list Str -> Str = \parts = join "" parts
 
 # Pad with spaces to at least `width` bytes (no-op if already wider).
 $ pad_left : Str -> Int -> Str = \s width =
@@ -124,24 +124,24 @@ $ rev_onto : Str -> Int -> Str -> Str = \s i acc =
 
 # ---- character (byte) predicates ----
 
-$ is_space : Int -> Bool = \c =
+$ is_space : Int -> @bool = \c =
 	if c ?= 32 => true else if c >= 9 => c <= 13 else false
 
-$ is_digit : Int -> Bool = \c =
+$ is_digit : Int -> @bool = \c =
 	if c >= 48 => c <= 57 else false
 
-$ is_alpha : Int -> Bool = \c =
+$ is_alpha : Int -> @bool = \c =
 	if c >= 65 =>
 		(if c <= 90 => true else if c >= 97 => c <= 122 else false)
 	else false
 
-$ is_alnum : Int -> Bool = \c =
+$ is_alnum : Int -> @bool = \c =
 	if is_digit c => true else is_alpha c
 
-$ is_upper : Int -> Bool = \c =
+$ is_upper : Int -> @bool = \c =
 	if c >= 65 => c <= 90 else false
 
-$ is_lower : Int -> Bool = \c =
+$ is_lower : Int -> @bool = \c =
 	if c >= 97 => c <= 122 else false
 
 # ---- trimming (ASCII whitespace) ----

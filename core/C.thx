@@ -7,8 +7,14 @@
 #       function, so it flows through the single FFI path: the interpreter's
 #       host table and the C backend's direct symbol call.
 #
+#       A C function has no first-class closure to curry, so a Thrax `@extern`
+#       takes EXACTLY ONE argument: a one-parameter C function is `A -> B`, and a
+#       multi-parameter one groups its C parameters into a record, `{a: A, b: B}
+#       -> R`, whose fields, in declaration order, are the positional C
+#       arguments. A nullary C function takes unit, `{} -> R`.
+#
 #       How values cross the seam: `Int` is a machine word (also an int-typed C
-#       argument, a `FILE*` handle, and a file descriptor), `Ptr` is a raw heap
+#       argument, a `FILE*` handle, and a file descriptor), `@ptr` is a raw heap
 #       pointer (from `C.malloc`), `Str` is a NUL-terminated byte string, `Real`
 #       is a double, and `{}` is unit -- as an argument it means the C function
 #       takes no value there (a `void` parameter, e.g. `C.getchar {}`), as a
@@ -36,39 +42,39 @@ $ floor : Real -> Real         = @extern "C" "floor" "libm"
 $ ceil  : Real -> Real         = @extern "C" "ceil"  "libm"
 $ round : Real -> Real         = @extern "C" "round" "libm"
 $ trunc : Real -> Real         = @extern "C" "trunc" "libm"
-$ pow      : Real -> Real -> Real = @extern "C" "pow"      "libm"
-$ fmod     : Real -> Real -> Real = @extern "C" "fmod"     "libm"
-$ atan2    : Real -> Real -> Real = @extern "C" "atan2"    "libm"
-$ hypot    : Real -> Real -> Real = @extern "C" "hypot"    "libm"
-$ copysign : Real -> Real -> Real = @extern "C" "copysign" "libm"
-$ fmin     : Real -> Real -> Real = @extern "C" "fmin"     "libm"
-$ fmax     : Real -> Real -> Real = @extern "C" "fmax"     "libm"
-$ fdim     : Real -> Real -> Real = @extern "C" "fdim"     "libm"
+$ pow      : {base: Real, exp: Real} -> Real = @extern "C" "pow"      "libm"
+$ fmod     : {x: Real, y: Real}      -> Real = @extern "C" "fmod"     "libm"
+$ atan2    : {y: Real, x: Real}      -> Real = @extern "C" "atan2"    "libm"
+$ hypot    : {x: Real, y: Real}      -> Real = @extern "C" "hypot"    "libm"
+$ copysign : {mag: Real, sgn: Real}  -> Real = @extern "C" "copysign" "libm"
+$ fmin     : {a: Real, b: Real}      -> Real = @extern "C" "fmin"     "libm"
+$ fmax     : {a: Real, b: Real}      -> Real = @extern "C" "fmax"     "libm"
+$ fdim     : {a: Real, b: Real}      -> Real = @extern "C" "fdim"     "libm"
 
 # -- stdlib.h --------------------------------------------------------------
-$ malloc  : Int -> Ptr        = @extern "C" "malloc"  "libc"
-$ calloc  : Int -> Int -> Ptr = @extern "C" "calloc"  "libc"
-$ realloc : Ptr -> Int -> Ptr = @extern "C" "realloc" "libc"
-$ free    : Ptr -> {}         = @extern "C" "free"    "libc"
-$ atoi    : Str -> Int        = @extern "C" "atoi"    "libc"
-$ atof    : Str -> Real       = @extern "C" "atof"    "libc"
-$ rand    : {} -> Int         = @extern "C" "rand"    "libc"
-$ srand   : Int -> {}         = @extern "C" "srand"   "libc"
-$ exit    : Int -> {}         = @extern "C" "exit"    "libc"
-$ abort   : {} -> {}          = @extern "C" "abort"   "libc"
+$ malloc  : Int -> @ptr                        = @extern "C" "malloc"  "libc"
+$ calloc  : {count: Int, size: Int} -> @ptr    = @extern "C" "calloc"  "libc"
+$ realloc : {ptr: @ptr, size: Int}  -> @ptr    = @extern "C" "realloc" "libc"
+$ free    : @ptr -> {}                          = @extern "C" "free"    "libc"
+$ atoi    : Str -> Int                          = @extern "C" "atoi"    "libc"
+$ atof    : Str -> Real                         = @extern "C" "atof"    "libc"
+$ rand    : {} -> Int                           = @extern "C" "rand"    "libc"
+$ srand   : Int -> {}                           = @extern "C" "srand"   "libc"
+$ exit    : Int -> {}                           = @extern "C" "exit"    "libc"
+$ abort   : {} -> {}                            = @extern "C" "abort"   "libc"
 
 # -- string.h --------------------------------------------------------------
-$ strlen  : Str -> Int               = @extern "C" "strlen"  "libc"
-$ strcmp  : Str -> Str -> Int        = @extern "C" "strcmp"  "libc"
-$ strncmp : Str -> Str -> Int -> Int = @extern "C" "strncmp" "libc"
-$ strchr  : Str -> Int -> Ptr        = @extern "C" "strchr"  "libc"
-$ strrchr : Str -> Int -> Ptr        = @extern "C" "strrchr" "libc"
-$ strstr  : Str -> Str -> Ptr        = @extern "C" "strstr"  "libc"
-$ memcpy  : Ptr -> Ptr -> Int -> Ptr = @extern "C" "memcpy"  "libc"
-$ memmove : Ptr -> Ptr -> Int -> Ptr = @extern "C" "memmove" "libc"
-$ memset  : Ptr -> Int -> Int -> Ptr = @extern "C" "memset"  "libc"
-$ memcmp  : Ptr -> Ptr -> Int -> Int = @extern "C" "memcmp"  "libc"
-$ memchr  : Ptr -> Int -> Int -> Ptr = @extern "C" "memchr"  "libc"
+$ strlen  : Str -> Int                              = @extern "C" "strlen"  "libc"
+$ strcmp  : {a: Str, b: Str}            -> Int      = @extern "C" "strcmp"  "libc"
+$ strncmp : {a: Str, b: Str, n: Int}    -> Int      = @extern "C" "strncmp" "libc"
+$ strchr  : {s: Str, c: Int}            -> @ptr     = @extern "C" "strchr"  "libc"
+$ strrchr : {s: Str, c: Int}            -> @ptr     = @extern "C" "strrchr" "libc"
+$ strstr  : {haystack: Str, needle: Str} -> @ptr    = @extern "C" "strstr"  "libc"
+$ memcpy  : {dst: @ptr, src: @ptr, n: Int} -> @ptr  = @extern "C" "memcpy"  "libc"
+$ memmove : {dst: @ptr, src: @ptr, n: Int} -> @ptr  = @extern "C" "memmove" "libc"
+$ memset  : {dst: @ptr, c: Int, n: Int}    -> @ptr  = @extern "C" "memset"  "libc"
+$ memcmp  : {a: @ptr, b: @ptr, n: Int}     -> Int   = @extern "C" "memcmp"  "libc"
+$ memchr  : {s: @ptr, c: Int, n: Int}      -> @ptr  = @extern "C" "memchr"  "libc"
 
 # -- ctype.h ---------------------------------------------------------------
 $ isalpha : Int -> Int = @extern "C" "isalpha" "libc"
@@ -86,21 +92,21 @@ $ tolower : Int -> Int = @extern "C" "tolower" "libc"
 # -- stdio.h ---------------------------------------------------------------
 # A `FILE*` handle travels as an `Int` (the pointer as a word); fopen returns 0
 # on failure. Console/fd I/O uses `C.write` (fd 1 = stdout, 2 = stderr).
-$ puts    : Str -> Int               = @extern "C" "puts"    "libc"
-$ putchar : Int -> Int               = @extern "C" "putchar" "libc"
-$ getchar : {} -> Int                = @extern "C" "getchar" "libc"
-$ fopen   : Str -> Str -> Int        = @extern "C" "fopen"   "libc"
-$ fclose  : Int -> Int               = @extern "C" "fclose"  "libc"
-$ fgetc   : Int -> Int               = @extern "C" "fgetc"   "libc"
-$ fputc   : Int -> Int -> Int        = @extern "C" "fputc"   "libc"
-$ fputs   : Str -> Int -> Int        = @extern "C" "fputs"   "libc"
-$ fflush  : Int -> Int               = @extern "C" "fflush"  "libc"
-$ fseek   : Int -> Int -> Int -> Int = @extern "C" "fseek"   "libc"
-$ ftell   : Int -> Int               = @extern "C" "ftell"   "libc"
-$ remove  : Str -> Int               = @extern "C" "remove"  "libc"
-$ rename  : Str -> Str -> Int        = @extern "C" "rename"  "libc"
+$ puts    : Str -> Int                          = @extern "C" "puts"    "libc"
+$ putchar : Int -> Int                          = @extern "C" "putchar" "libc"
+$ getchar : {} -> Int                           = @extern "C" "getchar" "libc"
+$ fopen   : {path: Str, mode: Str}   -> Int     = @extern "C" "fopen"   "libc"
+$ fclose  : Int -> Int                          = @extern "C" "fclose"  "libc"
+$ fgetc   : Int -> Int                          = @extern "C" "fgetc"   "libc"
+$ fputc   : {c: Int, stream: Int}    -> Int     = @extern "C" "fputc"   "libc"
+$ fputs   : {s: Str, stream: Int}    -> Int     = @extern "C" "fputs"   "libc"
+$ fflush  : Int -> Int                          = @extern "C" "fflush"  "libc"
+$ fseek   : {stream: Int, off: Int, whence: Int} -> Int = @extern "C" "fseek" "libc"
+$ ftell   : Int -> Int                          = @extern "C" "ftell"   "libc"
+$ remove  : Str -> Int                          = @extern "C" "remove"  "libc"
+$ rename  : {from: Str, to: Str}     -> Int     = @extern "C" "rename"  "libc"
 
 # -- unistd.h / time.h -----------------------------------------------------
-$ write  : Int -> Str -> Int -> Int = @extern "C" "write"  "libc"
-$ getenv : Str -> Str               = @extern "C" "getenv" "libc"
-$ time   : Int -> Int               = @extern "C" "time"   "libc"
+$ write  : {fd: Int, buf: Str, n: Int} -> Int   = @extern "C" "write"  "libc"
+$ getenv : Str -> Str                           = @extern "C" "getenv" "libc"
+$ time   : Int -> Int                           = @extern "C" "time"   "libc"

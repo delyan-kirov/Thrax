@@ -17,7 +17,7 @@ $ Point : @struct = x: Int, y: Int
 $ greet : Str -> Str = \who = "hello {who}!"
 $ ck_greet : Int = if (greet "sam") ?= "hello sam!" => 0 else 1
 
-# Base-type interpolants stringify automatically: an `Int`, a `Bool`, and a
+# Base-type interpolants stringify automatically: an `Int`, a `@bool`, and a
 # negative `Int` (its `-` sign) all read through `CORE.to_string`.
 $ ck_base : Int = if "n={42} ok={true} d={0 - 5}" ?= "n=42 ok=true d=-5" => 0 else 1
 

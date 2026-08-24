@@ -335,10 +335,17 @@ pub struct Resolved {
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
     pub with_fields: HashMap<Aol<Expr>, Vec<String>>,
-    /// Each `@extern` node's marshalling signature (flattened argument type names
-    /// and result name) from [`crate::typing::Checker::extern_sigs`]. Lowering
-    /// needs the types to build the `Term::Extern` the checker erased into a var.
-    pub extern_sigs: HashMap<Aol<Expr>, (Vec<String>, String)>,
+    /// Each `@extern` node's marshalling spec (how the single applied value maps
+    /// to positional C args, the flattened C argument type names, and the result
+    /// name) from [`crate::typing::Checker::extern_sigs`]. Lowering needs these to
+    /// build the `Term::Extern` the checker erased into a var.
+    pub extern_sigs: HashMap<Aol<Expr>, crate::typing::ExternSpec>,
+    /// Every foreign function's marshalling spec keyed by its resolved owner
+    /// `(module, name)`, aggregated across all modules' checkers. A call site
+    /// looks its head up here to flatten the record of C parameters into
+    /// positional arguments (so the record is never built), and a first-class
+    /// reference to a multi-argument extern eta-expands against it.
+    pub externs: HashMap<(String, String), crate::typing::ExternSpec>,
     /// The C memory layout of each C-repr struct (`@struct @extern "abi"`), keyed
     /// by type name (from [`crate::typing::Checker::crepr_layouts`]). Carried to
     /// the runtime so a struct value can be marshalled across the `@extern`
@@ -484,7 +491,15 @@ impl<'a> Lowerer<'a> {
     /// leading arguments (see [`Self::expr`]'s `Var` case).
     fn def(&mut self, sig: Option<Aol<Ty>>, implicits: &[FieldDecl], body: Aol<Expr>) -> Term {
         let term = self.expr(body);
-        let mut inner = self.record_params(sig, term);
+        // A bare `@extern` already declares every parameter in its `arg_types`
+        // spine (a `{}` parameter included), so it must NOT be wrapped in the
+        // record/thunk-parameter sugar: a wrapper lambda would swallow the unit
+        // argument and leave the extern under-applied, so it never fires.
+        let mut inner = if matches!(term, Term::Extern { .. }) {
+            term
+        } else {
+            self.record_params(sig, term)
+        };
         for f in implicits.iter().rev() {
             inner = Term::Lam {
                 param: self.text(f.name).to_string(),
@@ -631,39 +646,36 @@ impl<'a> Lowerer<'a> {
             Expr::Bool(b) => Term::Bool(*b),
             Expr::Unit => Term::Unit,
 
-            Expr::Var { module, name } => {
+            Expr::Var { name, .. } => {
                 let name = self.text(*name);
                 match name {
                     "true" => Term::Bool(true),
                     "false" => Term::Bool(false),
                     _ => {
-                        let module = match module {
-                            Some(m) => Some(self.text(*m).to_string()),
-                            None => self.resolved.call_modules.get(&e).cloned(),
-                        };
-                        // A same-module overload resolves to a type-mangled global
-                        // name; other references keep the source name.
-                        let name = self
-                            .resolved
-                            .overload_calls
-                            .get(&e)
-                            .cloned()
-                            .unwrap_or_else(|| name.to_string());
-                        let base = Term::Var {
-                            module,
-                            name,
-                            idx: 0,
-                        };
-                        // A `@ctx`-bearing function takes its implicits as leading
-                        // arguments (dictionary passing); inject the resolved ones
-                        // ahead of the explicit application.
-                        self.apply_implicits(e, base)
+                        let base = self.var_head(e);
+                        // A multi-argument foreign function referenced first-class
+                        // (not the head of an application) presents to Thrax as a
+                        // record-taking function, but its runtime value is N-ary.
+                        // Eta-expand so the record is destructured into the positional
+                        // C arguments when the wrapper is finally called.
+                        if let Some(params) = self.extern_params_of(e) {
+                            if extern_needs_eta(&params) {
+                                return self.eta_extern(base, &params);
+                            }
+                        }
+                        base
                     }
                 }
             }
 
             Expr::App(f, x) => {
                 let (f, x) = (*f, *x);
+                // A foreign call flattens the record that groups its C parameters
+                // into positional arguments here, so the record is never built and
+                // the extern node stays a plain N-ary function.
+                if let Some(params) = self.extern_params_of(f) {
+                    return self.flatten_extern_app(f, &params, x);
+                }
                 Term::app(self.expr(f), self.expr(x))
             }
 
@@ -986,7 +998,7 @@ impl<'a> Lowerer<'a> {
                 let symbol = self.text(*symbol).to_string();
                 let lib = self.text(*lib).to_string();
                 match self.resolved.extern_sigs.get(&e) {
-                    Some((arg_types, ret_type)) => Term::Extern {
+                    Some((_params, arg_types, ret_type)) => Term::Extern {
                         abi,
                         symbol,
                         lib,
@@ -1027,6 +1039,153 @@ impl<'a> Lowerer<'a> {
             term = Term::app(term, arg);
         }
         term
+    }
+
+    /// Resolve an `Expr::Var` to its lowered `(module, name)`: the explicit
+    /// qualifier or the checker's `call_modules` owner, and the overload-mangled
+    /// or source name.
+    fn resolved_var_id(&self, site: Aol<Expr>) -> (Option<String>, String) {
+        let (module, name) = match self.node(site) {
+            Expr::Var { module, name } => (*module, self.text(*name)),
+            _ => unreachable!("resolved_var_id on a non-variable"),
+        };
+        let module = match module {
+            Some(m) => Some(self.text(m).to_string()),
+            None => self.resolved.call_modules.get(&site).cloned(),
+        };
+        let name = self
+            .resolved
+            .overload_calls
+            .get(&site)
+            .cloned()
+            .unwrap_or_else(|| name.to_string());
+        (module, name)
+    }
+
+    /// The lowered head term for an `Expr::Var`: the resolved global reference
+    /// with any `@ctx` implicits applied, but WITHOUT the first-class extern
+    /// eta-wrapper (a call site applies it directly).
+    fn var_head(&mut self, site: Aol<Expr>) -> Term {
+        let (module, name) = self.resolved_var_id(site);
+        let base = Term::Var {
+            module,
+            name,
+            idx: 0,
+        };
+        self.apply_implicits(site, base)
+    }
+
+    /// The marshalling plan of the foreign function `site` refers to, if it is a
+    /// variable naming one.
+    fn extern_params_of(&self, site: Aol<Expr>) -> Option<Vec<utilities::ExternArg>> {
+        if !matches!(self.node(site), Expr::Var { .. }) {
+            return None;
+        }
+        let (module, name) = self.resolved_var_id(site);
+        self.resolved
+            .externs
+            .get(&(module?, name))
+            .map(|(params, _, _)| params.clone())
+    }
+
+    /// Flatten a foreign call `App(ext, arg)`: the record (or tuple) grouping the
+    /// C parameters becomes positional arguments, so it is never allocated.
+    fn flatten_extern_app(
+        &mut self,
+        head: Aol<Expr>,
+        params: &[utilities::ExternArg],
+        arg: Aol<Expr>,
+    ) -> Term {
+        let ext = self.var_head(head);
+        // Unit (a single unit argument) or one whole value: a single application.
+        if params.is_empty() || matches!(params, [utilities::ExternArg::Whole]) {
+            return Term::app(ext, self.expr(arg));
+        }
+        let arg = self.expr(arg);
+        self.spread_extern(ext, params, arg)
+    }
+
+    /// Apply `ext` to each positional C argument pulled from `arg` per `params`. A
+    /// record/tuple literal is deconstructed in place (its fields are already
+    /// lowered terms); any other value is bound once and projected.
+    fn spread_extern(&mut self, ext: Term, params: &[utilities::ExternArg], arg: Term) -> Term {
+        use utilities::ExternArg;
+        if let Term::Struct { fields, base: None, .. } = &arg {
+            if params.iter().all(|p| matches!(p, ExternArg::Field(_))) {
+                let mut acc = ext;
+                for p in params {
+                    let ExternArg::Field(name) = p else {
+                        unreachable!()
+                    };
+                    match fields.iter().find(|(n, _)| n == name) {
+                        Some((_, t)) => acc = Term::app(acc, t.clone()),
+                        None => {
+                            return Term::Fault(format!(
+                                "foreign call is missing the C argument `{name}`"
+                            ))
+                        }
+                    }
+                }
+                return acc;
+            }
+        }
+        if let Term::Tuple(items) = &arg {
+            if params.iter().all(|p| matches!(p, ExternArg::Elem(_))) {
+                let mut acc = ext;
+                for p in params {
+                    let ExternArg::Elem(i) = p else { unreachable!() };
+                    match items.get(*i) {
+                        Some(t) => acc = Term::app(acc, t.clone()),
+                        None => {
+                            return Term::Fault(format!("foreign call has no tuple element {i}"))
+                        }
+                    }
+                }
+                return acc;
+            }
+        }
+        // A record/tuple variable or expression: bind once, then project each C
+        // argument out of the binding.
+        let t = self.fresh();
+        let mut acc = ext;
+        for a in self.project_extern(Term::var(t.clone()), params) {
+            acc = Term::app(acc, a);
+        }
+        Term::Let {
+            name: t,
+            rec: false,
+            val: Arc::new(arg),
+            body: Arc::new(acc),
+        }
+    }
+
+    /// The positional-argument terms projected from `subject` (a bound
+    /// record/tuple value) per `params`.
+    fn project_extern(&self, subject: Term, params: &[utilities::ExternArg]) -> Vec<Term> {
+        use utilities::ExternArg;
+        params
+            .iter()
+            .map(|p| match p {
+                ExternArg::Whole => subject.clone(),
+                ExternArg::Field(name) => Term::Field(Arc::new(subject.clone()), name.clone()),
+                ExternArg::Elem(i) => Term::Field(Arc::new(subject.clone()), i.to_string()),
+            })
+            .collect()
+    }
+
+    /// Eta-expand a first-class multi-argument extern into `\r = ext r.f0 r.f1
+    /// ...`, so it keeps its record-taking Thrax type while feeding the wrapper
+    /// positional arguments.
+    fn eta_extern(&mut self, ext: Term, params: &[utilities::ExternArg]) -> Term {
+        let r = self.fresh();
+        let mut acc = ext;
+        for a in self.project_extern(Term::var(r.clone()), params) {
+            acc = Term::app(acc, a);
+        }
+        Term::Lam {
+            param: r,
+            body: Arc::new(acc),
+        }
     }
 
     fn binop(&mut self, op: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Term {
@@ -1456,6 +1615,17 @@ fn bin(op: &str, l: Term, r: Term) -> Term {
 /// The number of leading lambdas a body opens with (the explicit parameters the
 /// user wrote), so the record-parameter sugar knows which parameters are already
 /// bound by hand.
+/// Whether a foreign function's parameter is a record/tuple whose fields were
+/// flattened into several positional C arguments. Such an extern is N-ary at
+/// runtime but record-taking to Thrax, so a first-class reference must eta-expand
+/// (a `Whole`/unit extern is already a 1-ary function matching its Thrax type).
+fn extern_needs_eta(params: &[utilities::ExternArg]) -> bool {
+    matches!(
+        params.first(),
+        Some(utilities::ExternArg::Field(_) | utilities::ExternArg::Elem(_))
+    )
+}
+
 fn leading_lams(mut t: &Term) -> usize {
     let mut n = 0;
     while let Term::Lam { body, .. } = t {

@@ -242,6 +242,12 @@ fn lower_all(
             resolved.with_fields.insert(site, fields.clone());
         }
         resolved.extern_sigs.extend(checker.extern_sigs());
+        let module = checker.module_name().to_string();
+        for (name, spec) in checker.own_externs() {
+            resolved
+                .externs
+                .insert((module.clone(), name.to_string()), spec.clone());
+        }
         for (name, layout) in checker.crepr_layouts() {
             resolved
                 .crepr_layouts

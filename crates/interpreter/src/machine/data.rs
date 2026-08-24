@@ -53,12 +53,15 @@ pub enum Value<'p> {
         arity: usize,
         args: Vec<PVal<'p>>,
     },
-    /// A partially applied foreign function (`@extern`); it marshals its
-    /// arguments across the seam selected by `abi` (`"C"` = a C library symbol,
-    /// `"WASM"` = a host import) and calls `symbol` once `args` reaches the arity
-    /// `arg_types.len()`. `ret_type` selects how the result is wrapped. `lib` is
-    /// the symbolic library the symbol lives in, resolved to a soname and
-    /// `dlopen`ed when the symbol is not in the compiled-in host table.
+    /// A foreign function (`@extern`) value, before it is saturated. Like a
+    /// built-in, it accumulates its positional C arguments (`arg_types`; a nullary
+    /// C function still takes one unit argument) into `args` and, once saturated,
+    /// marshals them across the seam selected by `abi` (`"C"` = a C library symbol,
+    /// `"WASM"` = a host import) and calls `symbol`. The record grouping several C
+    /// parameters is flattened into positional arguments at the call site during
+    /// lowering, so it never reaches here. `ret_type` selects how the result is
+    /// wrapped. `lib` is the symbolic library the symbol lives in, resolved to a
+    /// soname and `dlopen`ed when the symbol is not in the compiled-in host table.
     Extern {
         abi: Rc<str>,
         symbol: Rc<str>,

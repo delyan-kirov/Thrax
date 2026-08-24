@@ -37,10 +37,16 @@ use crate::parser::data::{
     SliceSlot, Ty, Variance,
 };
 use utilities::Aol;
-use utilities::{diag, Code, Diagnostic, Result, Span};
+use utilities::{diag, Code, Diagnostic, ExternArg, Result, Span};
 
 use crate::typing::data::{self as ty, Type, VarId};
 use crate::typing::engine::Engine;
+
+/// An `@extern`'s marshalling spec: how the single applied Thrax value maps to
+/// positional C arguments (`params`), the flattened C argument type names
+/// (`arg_types`, one per positional C argument), and the result type name. The
+/// three are consumed by lowering to build the extern value both engines call.
+pub type ExternSpec = (Vec<ExternArg>, Vec<String>, String);
 
 /// A declared struct type. `params` are the implicit type parameters (the type
 /// variables appearing in the fields, in order of first appearance); `fields`
@@ -211,6 +217,16 @@ pub struct Checker<'a> {
     /// concrete arrow the declaration constrained it to. Lowering reads the
     /// flattened arg/result marshalling names off this.
     extern_tys: HashMap<Aol<Expr>, Type>,
+    /// Each `@extern` node's marshalling spec, built from `extern_tys` once the
+    /// program is solved (see `build_extern_specs`): how the single applied Thrax
+    /// value maps to positional C arguments, the flattened C argument type names,
+    /// and the result type name.
+    extern_specs: HashMap<Aol<Expr>, ExternSpec>,
+    /// This module's own foreign functions, keyed by the global name bound to the
+    /// bare `@extern`. Aggregated with every dependency's `own_externs` (keyed by
+    /// owner module) so lowering can flatten a foreign call it did not itself
+    /// resolve across modules.
+    own_externs: HashMap<&'a str, ExternSpec>,
     /// The ambient effect row: the effects the expression currently being
     /// inferred is allowed to perform. A call subsumes its callee's latent effect
     /// into this; a lambda body and a handler body run under a fresh/extended
@@ -326,6 +342,8 @@ impl<'a> Checker<'a> {
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
+            extern_specs: HashMap::new(),
+            own_externs: HashMap::new(),
             ambient: Type::RowEmpty,
             unknown_type: None,
         };
@@ -399,11 +417,91 @@ impl<'a> Checker<'a> {
     /// names and the result type name, recovered by zonking the site's inferred
     /// type (the declared arrow constrained it). Lowering builds `Term::Extern`
     /// from these.
-    pub fn extern_sigs(&self) -> HashMap<Aol<Expr>, (Vec<String>, String)> {
-        self.extern_tys
+    pub fn extern_sigs(&self) -> HashMap<Aol<Expr>, ExternSpec> {
+        self.extern_specs.clone()
+    }
+
+    /// This module's foreign functions, keyed by the global name bound to the bare
+    /// `@extern`. The driver aggregates these across modules (keyed by owner
+    /// module) so a call site can flatten a foreign call cross-module.
+    pub fn own_externs(&self) -> &HashMap<&'a str, ExternSpec> {
+        &self.own_externs
+    }
+
+    /// This module's name.
+    pub fn module_name(&self) -> &'a str {
+        self.module_name
+    }
+
+    /// Validate every `@extern`'s shape and record its marshalling spec. A C
+    /// function has no first-class closure to curry, so a Thrax `@extern` must be
+    /// a function of EXACTLY ONE argument: the arrow spine may have only one link.
+    /// A `{a: A, b: B} -> R` record groups multiple C parameters; `A -> B -> R`
+    /// is currying and is rejected here with a diagnostic.
+    fn build_extern_specs(&mut self) -> Result<()> {
+        let sites: Vec<(Aol<Expr>, Type)> = self
+            .extern_tys
             .iter()
-            .map(|(&site, ty)| (site, flatten_extern(&self.eng.zonk(ty))))
-            .collect()
+            .map(|(&e, ty)| (e, self.eng.zonk(ty)))
+            .collect();
+        for (e, ty) in sites {
+            let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
+            let Type::Arrow(param, ret, _) = &ty else {
+                return Err(diag!(
+                    Code::TypeMismatch, span, 0,
+                    "an `@extern` must be a foreign function; declare it `A -> B` (a single \
+                     argument), or `{{a: A, b: B}} -> R` to pass several C parameters"
+                ));
+            };
+            if matches!(self.eng.resolve(ret), Type::Arrow(..)) {
+                return Err(diag!(
+                    Code::TypeMismatch, span, 0,
+                    "a C `@extern` takes a SINGLE argument (C has no first-class functions to \
+                     curry): group the C parameters into one record, `{{a: A, b: B}} -> R`, \
+                     rather than currying as `A -> B -> R`"
+                ));
+            }
+            let param = self.eng.resolve(param);
+            let (params, arg_types) = self.extern_param_spec(&param)?;
+            let ret_name = marshal_name(&self.eng.resolve(ret));
+            self.extern_specs.insert(e, (params, arg_types, ret_name));
+        }
+        Ok(())
+    }
+
+    /// Reduce an extern's single parameter type to its positional C arguments:
+    /// unit takes none; an anonymous record contributes one C argument per field,
+    /// in declared order, pulled by name; any other type is one C argument used
+    /// directly (a scalar, a C-repr struct by value, `@ptr`, `Str`, a callback, or
+    /// a `List T` array).
+    fn extern_param_spec(&mut self, param: &Type) -> Result<(Vec<ExternArg>, Vec<String>)> {
+        if is_unit_ty(param) {
+            return Ok((vec![], vec![]));
+        }
+        // A name-keyed record: one C argument per field, in declared order,
+        // pulled by name (so a reordered call site still marshals in C order).
+        if let Type::Record(_) = param {
+            let fields = self.record_fields_of(param)?;
+            let mut params = Vec::with_capacity(fields.len());
+            let mut arg_types = Vec::with_capacity(fields.len());
+            for (name, fty) in fields {
+                params.push(ExternArg::Field(name));
+                arg_types.push(marshal_name(&self.eng.resolve(&fty)));
+            }
+            return Ok((params, arg_types));
+        }
+        // A closed record parameter surfaces as a positional tuple: one C argument
+        // per element, in order.
+        if let Type::Tuple(items) = param {
+            let mut params = Vec::with_capacity(items.len());
+            let mut arg_types = Vec::with_capacity(items.len());
+            for (i, it) in items.iter().enumerate() {
+                params.push(ExternArg::Elem(i));
+                arg_types.push(marshal_name(&self.eng.resolve(it)));
+            }
+            return Ok((params, arg_types));
+        }
+        Ok((vec![ExternArg::Whole], vec![marshal_name(param)]))
     }
 
     // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
@@ -602,6 +700,14 @@ impl<'a> Checker<'a> {
         out.extend(overloaded_out);
         if let Some(d) = self.unknown_type.take() {
             return Err(d);
+        }
+        self.build_extern_specs()?;
+        for d in &defs {
+            if matches!(self.node(d.body), Expr::Extern { .. }) {
+                if let Some(spec) = self.extern_specs.get(&d.body) {
+                    self.own_externs.insert(d.name, spec.clone());
+                }
+            }
         }
         Ok(out)
     }
@@ -856,6 +962,14 @@ impl<'a> Checker<'a> {
         sig: Aol<Ty>,
         sig_ty: &Type,
     ) -> Result<()> {
+        // A bare `@extern` takes its whole argument opaquely (a record parameter is
+        // marshalled, not destructured into locals), so it is checked against the
+        // FULL signature arrow rather than having its record/unit parameter stripped
+        // by the sugar below. This keeps the extern node's type the complete arrow,
+        // which `build_extern_specs` reads to plan the marshalling.
+        if matches!(self.node(body), Expr::Extern { .. }) {
+            return self.check(body, sig_ty);
+        }
         // The body's leading lambdas bind the last k of the m signature parameters,
         // so the record-parameter sugar only applies when the lambdas do not reach
         // this one (`k < m`). `\p = p.x` then names a record parameter itself.
@@ -1340,6 +1454,20 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// If `name` is a parameterless alias whose body is a bare type constructor,
+    /// the constructor it aliases (`Quaternion` -> `Vector4`), else None. Used to
+    /// see through aliases when deciding whether a C-repr field is representable.
+    fn nullary_alias_target(&self, name: &str) -> Option<&'a str> {
+        let (params, body) = self.aliases.get(name)?;
+        if !params.is_empty() {
+            return None;
+        }
+        match self.tnode(*body) {
+            Ty::Con { name, .. } => Some(self.text(*name)),
+            _ => None,
+        }
+    }
+
     /// The C layout of C-repr struct `name`, computed recursively through nested
     /// C-repr struct fields. `visiting` guards against a struct that (transitively)
     /// contains itself by value, which has no finite C layout.
@@ -1366,14 +1494,27 @@ impl<'a> Checker<'a> {
         for (fname, fty) in &info.fields {
             let kind = match self.tnode(*fty) {
                 Ty::Con { name: cn, .. } => {
-                    let cn = self.text(*cn);
-                    if let Some(k) = scalar_ckind(cn, ptr_bits) {
-                        k
-                    } else if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
-                        utilities::CKind::Struct(cn.to_string(), self.clayout_of(cn, visiting)?)
-                    } else {
-                        return Err(crepr_field_error(name, fname, cn));
-                    }
+                    // A nullary alias to a C-repr type (`typedef Vector4 Quaternion`)
+                    // is C-representable: follow the alias chain when the name is
+                    // itself neither a scalar nor a registered crepr struct.
+                    let mut cn = self.text(*cn);
+                    let mut steps = 0;
+                    let kind = loop {
+                        if let Some(k) = scalar_ckind(cn, ptr_bits) {
+                            break k;
+                        }
+                        if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
+                            break utilities::CKind::Struct(cn.to_string(), self.clayout_of(cn, visiting)?);
+                        }
+                        match self.nullary_alias_target(cn) {
+                            Some(next) if next != cn && steps < 256 => {
+                                cn = next;
+                                steps += 1;
+                            }
+                            _ => return Err(crepr_field_error(name, fname, cn)),
+                        }
+                    };
+                    kind
                 }
                 _ => return Err(crepr_field_error(name, fname, "a non-scalar type")),
             };
@@ -3004,10 +3145,34 @@ impl<'a> Checker<'a> {
         let vars = std::mem::take(&mut self.numeric);
         let mut changed = false;
         for t in &vars {
-            if let Type::Var(_) = self.eng.resolve(t) {
-                self.eng
-                    .unify(t, &Type::con(ty::INT), "defaulting an integer literal")?;
-                changed = true;
+            match self.eng.resolve(t) {
+                // Still unconstrained: default to `Int`.
+                Type::Var(_) => {
+                    self.eng
+                        .unify(t, &Type::con(ty::INT), "defaulting an integer literal")?;
+                    changed = true;
+                }
+                // Pinned to a numeric type by use: fine.
+                Type::Con(name) if is_numeric_type(&name) => {}
+                // Pinned to a genuinely UNKNOWN con (a typo'd type): let that
+                // type's own "unknown type" diagnostic surface instead. The
+                // internal canonical base names (`Bool`/`List`/... spelled `@bool`
+                // etc. in source) are known and must still be rejected below.
+                Type::Con(name)
+                    if !self.is_known_type(&name)
+                        && !matches!(
+                            name.as_str(),
+                            "Bool" | "List" | "Vec" | "Array" | "Ptr" | "Str"
+                        ) => {}
+                // Pinned to a known non-numeric type (e.g. `if 1` wants `@bool`): a
+                // bare literal is a number, so this is a type error, not a coercion.
+                other => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a numeric literal cannot be used where `{}` is expected",
+                        self.show(&other)
+                    ));
+                }
             }
         }
         Ok(changed)
@@ -3557,25 +3722,33 @@ impl<'a> Checker<'a> {
 
     fn install_builtins(&mut self) {
         let int = || Type::con(ty::INT);
-        let real = || Type::con(ty::REAL);
         let bool_ = || Type::con(ty::BOOL);
 
+        // Arithmetic is overloaded over every numeric type: the friendly
+        // `Int`/`Nat`/`Real`, plus each sized `@`-form (which stays a distinct
+        // type for exact C marshalling). `%` is defined for integers only.
+        let ints = [
+            ty::INT, "Nat", "@int8", "@int16", "@int32", "@int64",
+            "@nat8", "@nat16", "@nat32", "@nat64",
+        ];
+        let reals = [ty::REAL, "@float32", "@float64"];
+        let numeric: Vec<&str> = ints.iter().chain(reals.iter()).copied().collect();
         for op in ["+", "-", "*", "/", "%"] {
-            self.overloads.insert(
-                op,
-                vec![
-                    Cand::local(Type::arrow(int(), Type::arrow(int(), int()))),
-                    Cand::local(Type::arrow(real(), Type::arrow(real(), real()))),
-                ],
-            );
+            let cands = numeric
+                .iter()
+                .map(|t| {
+                    let c = || Type::con(t);
+                    Cand::local(Type::arrow(c(), Type::arrow(c(), c())))
+                })
+                .collect();
+            self.overloads.insert(op, cands);
         }
-        self.overloads.insert(
-            "neg",
-            vec![
-                Cand::local(Type::arrow(int(), int())),
-                Cand::local(Type::arrow(real(), real())),
-            ],
-        );
+        let mut negs = Vec::new();
+        for t in ints.iter().chain(reals.iter()) {
+            let c = || Type::con(t);
+            negs.push(Cand::local(Type::arrow(c(), c())));
+        }
+        self.overloads.insert("neg", negs);
         self.bind("not", Type::arrow(bool_(), bool_()));
 
         let prim = |mids: &[&str], returns_self: bool| {
@@ -4060,16 +4233,10 @@ fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
     }
 }
 
-/// Flatten a zonked arrow `A -> B -> ... -> R` into its argument marshalling
-/// names and the result name.
-fn flatten_extern(ty: &Type) -> (Vec<String>, String) {
-    let mut args = Vec::new();
-    let mut cur = ty;
-    while let Type::Arrow(from, to, _) = cur {
-        args.push(marshal_name(from));
-        cur = to;
-    }
-    (args, marshal_name(cur))
+/// Whether a type is unit `{}` (a nullary C function's zero-argument parameter),
+/// as either the `{}` constructor or the empty tuple.
+fn is_unit_ty(ty: &Type) -> bool {
+    matches!(ty, Type::Con(n) if n == ty::UNIT) || matches!(ty, Type::Tuple(v) if v.is_empty())
 }
 
 /// A type's marshalling name for the FFI seam. A type variable or any composite
@@ -4179,13 +4346,23 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
     }
 }
 
-/// Map the sigil/alias type constructors to their canonical built-in name.
+/// Map the sigil/alias type constructors to their canonical built-in name. Every
+/// sized integer width (signed and unsigned, `@`-sigil and friendly alias) is
+/// `Int` at the VALUE level, and every float width is `Real`, so arithmetic,
+/// comparison, and literals work uniformly across them. The exact C width is not
+/// lost: the crepr layout reads a field's RAW type name (`scalar_ckind`), so
+/// `x: @int32`/`x: Int32` still lays out as 4 bytes.
 fn canonical_con(name: &str) -> &str {
+    // Sized numeric `@`-forms stay DISTINCT (so an `@extern` marshals each at its
+    // exact C width and a struct field lays out correctly); arithmetic on them is
+    // provided by per-type operator overloads, not by collapsing to `Int`/`Real`.
     match name {
-        "@int64" | "@int32" | "Nat" => ty::INT,
-        "@float64" | "@float32" => ty::REAL,
         "@str" => ty::STR,
         "@bool" => ty::BOOL,
+        "@ptr" => ty::PTR,
+        "@array" => ty::ARRAY,
+        "@list" => ty::LIST,
+        "@vec" => ty::VEC,
         other => other,
     }
 }
@@ -4208,8 +4385,8 @@ fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
         Code::TypeMismatch, Span::at(0), 0,
         "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \
          C-representable; a `@struct @extern \"C\"` field must be a sized number \
-         (`Int8..64`/`Nat8..64`/`Real32`/`Real64`), `Int`/`Nat`/`Real`, `Ptr`, `Bool`, \
-         or another C-repr struct"
+         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `Int`/`Nat`/`Real`, `@ptr`, \
+         `@bool`, or another C-repr struct"
     )
 }
 
@@ -4221,22 +4398,35 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
     let word = if ptr_bits == 32 { S32 } else { S64 };
     let uword = if ptr_bits == 32 { U32 } else { U64 };
     Some(match name {
-        "@int8" | "Int8" => S8,
-        "@int16" | "Int16" => S16,
-        "@int32" | "Int32" => S32,
-        "@int64" | "Int64" => S64,
-        "@nat8" | "Nat8" => U8,
-        "@nat16" | "Nat16" => U16,
-        "@nat32" | "Nat32" => U32,
-        "@nat64" | "Nat64" => U64,
-        "@float32" | "Real32" => F32,
-        "@float64" | "Real64" | "Real" => F64,
+        "@int8" => S8,
+        "@int16" => S16,
+        "@int32" => S32,
+        "@int64" => S64,
+        "@nat8" => U8,
+        "@nat16" => U16,
+        "@nat32" => U32,
+        "@nat64" => U64,
+        "@float32" => F32,
+        "@float64" | "Real" => F64,
         "Int" => word,
         "Nat" => uword,
-        "@ptr" | "Ptr" => uword,
-        "@bool" | "Bool" => U8,
+        "@ptr" => uword,
+        "@bool" => U8,
         _ => return None,
     })
+}
+
+/// The numeric types a bare integer/real literal may take: the friendly word-size
+/// `Int`/`Nat`/`Real` and every sized `@`-form. A literal used anywhere else (a
+/// `@bool` condition, a `@ptr`, a `Str`) is a type error.
+fn is_numeric_type(name: &str) -> bool {
+    matches!(
+        name,
+        "Int" | "Nat" | "Real"
+            | "@int8" | "@int16" | "@int32" | "@int64"
+            | "@nat8" | "@nat16" | "@nat32" | "@nat64"
+            | "@float32" | "@float64"
+    )
 }
 
 /// The built-in scalar and container type names, in both their friendly and
@@ -4245,16 +4435,11 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Nat" | "Real"
-            | "Int8" | "Int16" | "Int32" | "Int64"
-            | "Nat8" | "Nat16" | "Nat32" | "Nat64"
-            | "Real32" | "Real64"
-            | "Str" | "Ptr" | "Bool"
-            | "Array" | "Vec" | "List"
+        "Int" | "Nat" | "Real" | "Str"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
-            | "@str" | "@ptr" | "@bool" | "@array"
+            | "@str" | "@ptr" | "@bool" | "@array" | "@list" | "@vec"
     )
 }
 

@@ -15,7 +15,7 @@ pub mod scc;
 pub mod target;
 
 pub use arena::Arena;
-pub use cabi::{CField, CKind, CLayout};
+pub use cabi::{CField, CKind, CLayout, ExternArg};
 pub use error::{Code, Diagnostic, Line, Result, Span};
 pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
 pub use target::{toolchain, Arch, Os, Target, Toolchain};

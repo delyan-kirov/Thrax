@@ -41,6 +41,12 @@ fn lower(src: &str) -> Vec<Program> {
         resolved.with_fields.insert(site, fields.clone());
     }
     resolved.extern_sigs.extend(checker.extern_sigs());
+    let module = checker.module_name().to_string();
+    for (name, spec) in checker.own_externs() {
+        resolved
+            .externs
+            .insert((module.clone(), name.to_string()), spec.clone());
+    }
     for (name, layout) in checker.crepr_layouts() {
         resolved.crepr_layouts.insert(name.to_string(), layout.clone());
     }
@@ -175,8 +181,8 @@ fn arithmetic_and_precedence() {
 fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`; the C backend matches the interpreter.
     let src = "@mod T\n\
-               $ f : Bool = false\n\
-               $ t : Bool = true\n\
+               $ f : @bool = false\n\
+               $ t : @bool = true\n\
                $ a : Int = if (t && 3 ?< 5) => 1 else 0\n\
                $ b : Int = if (f || 5 ?< 3) => 1 else 0\n\
                $ test : Int = a\n";
@@ -187,10 +193,10 @@ fn short_circuit_and_or() {
 #[test]
 fn same_module_overload_dispatches_by_type() {
     // Two overloads of `kind` in one module (type-mangled globals). The C backend
-    // must dispatch `kind true` to the Bool body just as the interpreter does.
+    // must dispatch `kind true` to the @bool body just as the interpreter does.
     let src = "@mod M\n\
                $ kind : Int -> Int = \\x = 1\n\
-               $ kind : Bool -> Int = \\b = 2\n\
+               $ kind : @bool -> Int = \\b = 2\n\
                $ test : Int = (kind 7) + (kind true) * 10\n";
     assert_matches(src, "test");
 }
@@ -200,9 +206,9 @@ fn ctx_implicit_dictionary_passing() {
     // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
     // backend must inject them exactly as the interpreter does.
     let src = "@mod M\n\
-               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
-               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               $ cmp : Int -> Int -> @bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> @bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ test : Int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
     assert_matches(src, "test");
@@ -282,8 +288,8 @@ fn ffi_struct_by_value_return() {
     // byte-identical to the interpreter.
     let src = "@mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
-        $ ldiv : Int -> Int -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
-        $ test : Int = let d = ldiv 17 5 in d.quot * 100 + d.rem";
+        $ ldiv : {numer: Int, denom: Int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : Int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
     assert_matches(src, "test");
 }
 
@@ -345,7 +351,7 @@ fn ffi_struct_by_value_argument() {
 
 #[test]
 fn ffi_struct_array() {
-    // A `List T` of C-repr structs passed as a contiguous `T*`. The C backend walks
+    // A `@list T` of C-repr structs passed as a contiguous `T*`. The C backend walks
     // the cons list, packs into a malloc'd buffer, and frees after. Matches interp.
     use std::io::Write;
     let dir = std::env::temp_dir();
@@ -370,8 +376,8 @@ fn ffi_struct_array() {
     let src = format!(
         "@mod M\n\
          $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
-         $ sum_ps : List P -> Int -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
-         $ test : Int = sum_ps [P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}] 3",
+         $ sum_ps : {{ps: @list P, n: Int}} -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "102");
@@ -616,8 +622,8 @@ fn open_range_stream() {
     let src = "@mod M\n\
                $ Stream : @codata t = head : t, tail : Stream t,\n\
                $ count_from : Int -> Stream Int = \\lo = { .head = lo, .tail = count_from (lo + 1) }\n\
-               $ range : Int -> Int -> List Int = \\lo hi = if lo ?> hi => [] else lo :: range (lo + 1) hi\n\
-               $ len : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ range : Int -> Int -> @list Int = \\lo hi = if lo ?> hi => [] else lo :: range (lo + 1) hi\n\
+               $ len : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
                $ s : Stream Int = [3 ...]\n\
                $ test : Int = s.head + s.tail.head + len [1 ... 4]\n";
     assert_matches(src, "test");
@@ -675,11 +681,11 @@ fn variants_and_when() {
 #[test]
 fn lists_and_length() {
     let src = "@mod T\n\
-               $ len : List t -> Int =\n\
-               \tlet helper : List t -> Int -> Int = \\l n =\n\
-               \t\tis l | List.Nil => n | List.Cons.{_, xs} => helper xs (n + 1)\n\
+               $ len : @list t -> Int =\n\
+               \tlet helper : @list t -> Int -> Int = \\l n =\n\
+               \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
-               $ xs : List Int = List.Cons.{1, List.Cons.{2, List.Cons.{3, List.Nil}}}\n\
+               $ xs : @list Int = [1, 2, 3]\n\
                $ test : Int = len xs\n";
     assert_matches(src, "test");
 }
@@ -747,15 +753,15 @@ fn effects_pipes_and_seq() {
     assert_example("PIPES.thx", "test");
 }
 
-// -- FFI marshalling (sized numerics + Ptr) --------------------------------
+// -- FFI marshalling (sized numerics + @ptr) --------------------------------
 
 #[test]
 fn sized_extern_marshalling() {
     // A foreign binding with sized / pointer / float32 arguments emits each
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
     let src = "@mod T\n\
-               $ f : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = @extern \"C\" \"f\" \"libx\"\n\
-               $ test : Int8 -> Int32 -> Nat16 -> Real32 -> Ptr -> Real = f\n";
+               $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> Real = @extern \"C\" \"f\" \"libx\"\n\
+               $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> Real = \\r = f r\n";
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
@@ -767,17 +773,17 @@ fn sized_extern_marshalling() {
         decl.contains("double THx_sym_0(int8_t, int32_t, uint16_t, float, void*)"),
         "wrong C ABI signature: {decl}"
     );
-    // Real32 narrows the double slot to a float; a sized int casts to its width.
+    // @float32 narrows the double slot to a float; a sized int casts to its width.
     assert!(code.contains("float a3 = (float)THxVALUE_as_num(args[3]);"));
     assert!(code.contains("int8_t a0 = (int8_t)THxVALUE_as_int(args[0]);"));
 }
 
 #[test]
 fn sized_extern_runs_and_matches() {
-    // A real libc call through a sized signature (`strlen : Str -> Nat64`, wrapped
+    // A real libc call through a sized signature (`strlen : Str -> @nat64`, wrapped
     // as `uint64_t(char*)`) runs and agrees with the interpreter's host table.
     let src = "@mod T\n\
-               $ strlen : Str -> Nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
-               $ test : Nat64 = strlen \"hello\"\n";
+               $ strlen : Str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
+               $ test : @nat64 = strlen \"hello\"\n";
     assert_matches(src, "test");
 }

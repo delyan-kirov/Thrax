@@ -342,6 +342,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A value or function name must start with a lowercase letter; a capitalized
+    /// name is a type or constructor. Symbolic names (operators) are exempt.
+    fn require_value_lowercase(&self, text: &str, tok: &Token) -> Result<()> {
+        if text.starts_with(|c: char| c.is_ascii_uppercase()) {
+            Err(self.unexpected(
+                tok,
+                "a value or function name must start with a lowercase letter (a capitalized name is a type or constructor)",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     // -- program + globals --------------------------------------------------
 
     /// Parse a whole compilation unit.
@@ -454,6 +467,7 @@ impl<'a> Parser<'a> {
         let name = self.intern(self.text(name_tok));
         if !self.eat(|k| matches!(k, Kind::Colon))? {
             expect!(self, Kind::Eq, "expected ':' or '=' after the name");
+            self.require_value_lowercase(self.text(name_tok), &name_tok)?;
             return Ok(Item::Def {
                 name,
                 sig: None,
@@ -547,6 +561,7 @@ impl<'a> Parser<'a> {
                 _ => {} // an @tycon type signature; fall through
             }
         }
+        self.require_value_lowercase(self.text(name_tok), &name_tok)?;
         let sig = Some(self.parse_type()?);
         let implicits = self.parse_ctx_decls()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");

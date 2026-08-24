@@ -74,8 +74,8 @@ Definition expr:
 	  parameters are curried sugar: `\x y z = e` means `\x = \y = \z = e`. A
 	  parameter may be an irrefutable pattern (see PATTERNS), e.g.
 	  `\Person.{ name, _ } = name`.
-	- `if` e_1 `then` e_2 `else` e_3   is a conditional. The condition e_1 is an
-	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
+	- `if` e_1 `then` e_2 `else` e_3   is a conditional. The condition is a @bool
+	  (`@true`/`@false`); a comparison like `a ?= b` yields one.
 	- `if` e `is` pat `then` e ... `else` e   is a match (note the `is`). See
 	  PATTERNS.
 	- `let` pat [ `:` type ] `=` e_1 `in` e_2     is a local binding; `pat` is a
@@ -114,16 +114,20 @@ Definition type:
 	       | `TypeName             # type variable
 	       | '(' type ')'
 
-The base types are the platform-word numerics Int (signed), Nat (unsigned) and
-Real, the fixed-width numerics Int8/Int16/Int32/Int64, Nat8/Nat16/Nat32/Nat64
-and Real32/Real64, the pointer-shaped Str and Ptr, and Array (a sized,
-contiguous block of bytes). The compiler knows them as distinct nullary type
-constructors (so Int and Int32 do not unify). At runtime every value is an
-ssize_t (Str/Ptr are pointers stored in one, Real a double, an Array a byte
-buffer); the type checker keeps the base types distinct, the runtime does not.
-The sized numerics are presently used mainly to spell C-ABI types in `@extern`
-signatures; there are no sized literals or arithmetic on them yet. A struct type
-name (see STRUCTS) -- or a union (sum) type name -- is also a type constructor.
+The base types have exactly four friendly names -- the platform-word numerics
+Int (signed), Nat (unsigned), Real, and Str. Every other built-in type is spelled
+with an `@`-sigil: the fixed-width numerics @int8/@int16/@int32/@int64,
+@nat8/@nat16/@nat32/@nat64 and @float32/@float64; the pointer @ptr; the boolean
+@bool (its values are @true/@false); the byte block @array; and the prelude
+containers @list and @vec. (There is no `Int32`/`Bool`/`List`/`Ptr` spelling; use
+the `@`-form.) The compiler knows them as distinct nullary type constructors, so
+Int and @int32 do not unify. At runtime every value is an ssize_t (@ptr/Str are
+pointers stored in one, a @float* a double, an @array a byte buffer); the checker
+keeps the types distinct, the runtime does not. Sized numerics carry their exact C
+width across an `@extern` boundary and in a struct field; arithmetic on them is
+overloaded per type (so `@int32 + @int32 : @int32`), and an integer/real literal
+takes the sized type expected of it. A struct type name (see STRUCTS) -- or a
+union (sum) type name -- is also a type constructor.
 
 The empty record `{}` is the UNIT type; its sole value is also written `{}`. It is
 what a function or an effect operation passes or returns when there is no
@@ -304,16 +308,21 @@ other globals; only the result's shape matters.)
 Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
 
-(FFI / IO: a foreign binding is a global whose body is `@extern.{ ... }`, naming
-the symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
-`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required; its
-argument/result types drive C-ABI marshalling (Int/Real/Str and the sized
-numerics; a `{}` parameter means "no C argument", e.g. `getchar : {} -> Int`; a
-`{}` result discards it). Applying the binding calls the C function. Foreign calls
-are typed by the written signature -- IO is NOT yet tracked as an effect. Foreign
-calls require the FFI build (`make THRAX_3RD_PARTY_ON=1`, libffi); without it a
-foreign call aborts at runtime. Example: `$ puts : Str -> Int = @extern.{ "puts",
-"libc.so.6" }` then `puts "hi"` writes to stdout. See examples/MAIN.thx.)
+(FFI / IO: a foreign binding is a global whose body is `@extern "C" "sym" "lib"`,
+naming the symbol and library. A signature is required; its argument/result types
+drive C-ABI marshalling (Int/Real/Str and the sized numerics; a `{}` result is
+`void`). A C function has no first-class closure to curry, so a Thrax `@extern`
+takes EXACTLY ONE argument (its signature has a single arrow): a one-parameter C
+function is `A -> B`; several C parameters group into a record `{a: A, b: B} -> R`,
+whose fields, in declaration order, are the positional C arguments (marshalled by
+name, so a reordered call site is fine); a nullary C function takes unit,
+`{} -> R`. A curried `A -> B -> R` extern is rejected with a diagnostic. Applying
+the binding calls the C function. Foreign calls are typed by the written signature
+-- IO is NOT yet tracked as an effect. Examples: `$ puts : Str -> Int = @extern
+"C" "puts" "libc"` then `puts "hi"`; `$ pow : {base: Real, exp: Real} -> Real =
+@extern "C" "pow" "libm"` then `pow {2.0, 10.0}` or `pow {.base = 2.0, .exp =
+10.0}`; `$ getchar : {} -> Int = @extern "C" "getchar" "libc"` then `getchar {}`.
+See core/C.thx and applications/launcher.)
 
 (C structs by value: a struct declared `Name : @struct @extern "C" = ...` is a
 C-layout (unboxed) foreign type. Its fields must be C-representable (the sized

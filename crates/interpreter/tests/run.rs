@@ -35,6 +35,12 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
         resolved.with_fields.insert(site, fields.clone());
     }
     resolved.extern_sigs.extend(checker.extern_sigs());
+    let module = checker.module_name().to_string();
+    for (name, spec) in checker.own_externs() {
+        resolved
+            .externs
+            .insert((module.clone(), name.to_string()), spec.clone());
+    }
     for (name, layout) in checker.crepr_layouts() {
         resolved.crepr_layouts.insert(name.to_string(), layout.clone());
     }
@@ -149,7 +155,7 @@ fn ffi_struct_by_value_argument() {
 
 #[test]
 fn ffi_struct_array() {
-    // A `List T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
+    // A `@list T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
     // separate count), the raylib vertex/point/color-buffer shape.
     let so = compile_helper_so(
         "thx_ffi_arr_helper",
@@ -159,8 +165,8 @@ fn ffi_struct_array() {
     let src = format!(
         "@mod M\n\
          $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
-         $ sum_ps : List P -> Int -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
-         $ test : Int = sum_ps [P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}] 3",
+         $ sum_ps : {{ps: @list P, n: Int}} -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = so.display()
     );
     // (1*10+2) + (3*10+4) + (5*10+6) = 12 + 34 + 56 = 102.
@@ -242,8 +248,8 @@ fn ffi_struct_by_value_return() {
     // aggregate return, unpack back to a Thrax struct value).
     let src = "@mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
-        $ ldiv : Int -> Int -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
-        $ test : Int = let d = ldiv 17 5 in d.quot * 100 + d.rem";
+        $ ldiv : {numer: Int, denom: Int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : Int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
     // 17 / 5 = 3 remainder 2 -> 3*100 + 2.
     assert_eq!(run(src, "test"), "302");
 }
@@ -269,10 +275,10 @@ fn cross_module_overload_dispatches_by_type() {
 fn same_module_overload_dispatches_by_type() {
     // Two overloads of `kind` in ONE module. Before type-mangling the globals both
     // collided under a single `M.kind` key and every call ran the first body
-    // (giving 11); now `kind true` reaches the Bool body, so the result is 21.
+    // (giving 11); now `kind true` reaches the @bool body, so the result is 21.
     let src = "@mod M\n\
                $ kind : Int -> Int = \\x = 1\n\
-               $ kind : Bool -> Int = \\b = 2\n\
+               $ kind : @bool -> Int = \\b = 2\n\
                $ r : Int = (kind 7) + (kind true) * 10";
     assert_eq!(run(src, "r"), "21");
 }
@@ -282,8 +288,8 @@ fn ctx_implicit_resolves_by_name_and_type() {
     // `max_of` declares an implicit `cmp`, resolved by name from scope (the global
     // `>`-like `cmp`). The dictionary is injected as a leading argument.
     let src = "@mod M\n\
-               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               $ cmp : Int -> Int -> @bool = \\a b = a ?> b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ r : Int = max_of 3 7";
     assert_eq!(run(src, "r"), "7");
@@ -294,11 +300,11 @@ fn ctx_implicit_chains_and_overrides() {
     // `max3` passes its own `@ctx cmp` down to `max_of` (local wins), and an
     // explicit `@ctx lt` override flips `max_of` into a min.
     let src = "@mod M\n\
-               $ gt : Int -> Int -> Bool = \\a b = a ?> b\n\
-               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               $ gt : Int -> Int -> @bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> @bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
-               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y z =\n\
+               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y z =\n\
                \tmax_of (max_of x y) z\n\
                $ chained : Int = max3 3 9 5 @ctx gt\n\
                $ flipped : Int = max_of 3 7 @ctx lt\n\
@@ -686,16 +692,16 @@ fn extern_ffi_file_roundtrip() {
     // same bindings injected by the driver). Open for write, put bytes, close;
     // reopen for read, read them back, then remove the file. "hi" is 104 and 105.
     let src = "@mod M\n\
-        $ fopen : Str -> Str -> Int = @extern \"C\" \"fopen\" \"libc\"\n\
-        $ fputs : Str -> Int -> Int = @extern \"C\" \"fputs\" \"libc\"\n\
+        $ fopen : {path: Str, mode: Str} -> Int = @extern \"C\" \"fopen\" \"libc\"\n\
+        $ fputs : {s: Str, stream: Int} -> Int = @extern \"C\" \"fputs\" \"libc\"\n\
         $ fclose : Int -> Int = @extern \"C\" \"fclose\" \"libc\"\n\
         $ fgetc : Int -> Int = @extern \"C\" \"fgetc\" \"libc\"\n\
         $ remove : Str -> Int = @extern \"C\" \"remove\" \"libc\"\n\
         $ p : Str = \"/tmp/thrax_core_roundtrip.txt\"\n\
         $ r : Int = \
-          let f = fopen p \"wb\" in \
-          fputs \"hi\" f ; fclose f ; \
-          let g = fopen p \"rb\" in \
+          let f = fopen {p, \"wb\"} in \
+          fputs {\"hi\", f} ; fclose f ; \
+          let g = fopen {p, \"rb\"} in \
           let a = fgetc g in let b = fgetc g in \
           fclose g ; remove p ; a + b";
     assert_eq!(run(src, "r"), "209");
@@ -730,8 +736,8 @@ fn target_reflects_the_host_consistently() {
 
 #[test]
 fn array_literal_lowers_to_byte_vector() {
-    // `[..]` in Array context builds a byte vector, so array_* primitives apply.
-    let src = "@mod M\n$ a : Array = [10, 20, 30]\n\
+    // `[..]` in @array context builds a byte vector, so array_* primitives apply.
+    let src = "@mod M\n$ a : @array = [10, 20, 30]\n\
                $ n = @array_len a\n$ g = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
@@ -740,13 +746,13 @@ fn array_literal_lowers_to_byte_vector() {
 #[test]
 fn array_patterns_destructure_and_guard() {
     let src = "@mod M\n\
-               $ sum2 : Array -> Int = \\a = is a | [x, y] => x + y else 0\n\
+               $ sum2 : @array -> Int = \\a = is a | [x, y] => x + y else 0\n\
                $ r = sum2 [4, 5]\n\
                $ miss = sum2 [1, 2, 3]\n\
-               $ lit : Array -> Int = \\a = is a | [1, y] => y else 0\n\
+               $ lit : @array -> Int = \\a = is a | [1, y] => y else 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
+               $ head : @array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");
@@ -809,11 +815,11 @@ fn tuples_and_indexing() {
 #[test]
 fn list_sum_and_map() {
     let src = "@mod M\n\
-               $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+               $ sum : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "@mod M\n\
-                $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+                $ sum : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
@@ -900,8 +906,8 @@ fn short_circuit_and_or() {
     // result is already decided: a `1 / 0` on the skipped side must not fault.
     // Precedence: `&&`/`||` bind looser than comparison (`a ?< b && c ?< d`).
     let src = "@mod M\n\
-               $ f : Bool = false\n\
-               $ t : Bool = true\n\
+               $ f : @bool = false\n\
+               $ t : @bool = true\n\
                $ sc_and : Int = if (f && (1 / 0 ?= 0)) => 1 else 0\n\
                $ sc_or  : Int = if (t || (1 / 0 ?= 0)) => 0 else 1\n\
                $ prec   : Int = if (3 ?< 5 && 5 ?< 9) => 0 else 1\n\

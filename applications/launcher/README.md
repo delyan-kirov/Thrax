@@ -3,19 +3,34 @@
 A tiny program launcher written in Thrax against [raylib](https://www.raylib.com/).
 Click a button to spawn the program it names.
 
-It is the first showcase of Thrax's **C-struct FFI**: raylib's `Color` is a real
-`@struct @extern "C"` passed to raylib **by value**, built with an ordinary
-struct literal:
+The whole raylib API is imported from `RAYLIB.thx`, which is **generated** by the
+cbindgen tool (`applications/cbindgen`) from raylib's header. `MAIN.thx` just does
+`$ with RAYLIB` and calls the bindings. It showcases Thrax's **C-struct FFI**:
+raylib's `Color` is a real `@struct @extern "C"` passed **by value**, built with
+an ordinary struct literal.
+
+A C function is never curried, so a raylib call with several parameters takes a
+**record** of its arguments (fields named `p0`, `p1`, ... in C order); a
+one-parameter call stays `A -> B`, and a `void`-taking call takes unit:
 
 ```
-$ Color : @struct @extern "C" = r: Nat8, g: Nat8, b: Nat8, a: Nat8,
-$ clear_background : Color -> {} = @extern "C" "ClearBackground" "bin/libraylib.so"
+$ with RAYLIB
 ...
-clear_background (Color.{ .r = 24, .g = 24, .b = 32, .a = 255 })
+clearBackground (Color.{ .r = 24, .g = 24, .b = 32, .a = 255 })      # one arg
+drawRectangle { .p0 = x, .p1 = y, .p2 = w, .p3 = h, .p4 = col }      # a record
+beginDrawing {}                                                       # unit
 ```
 
-The rest of the raylib API is kept integer-only (positions, sizes, the mouse via
-`GetMouseX`/`GetMouseY`), so the app needs no floats.
+The generated bindings use the `@`-sigil built-in types (`@int32`, `@nat8`, ...),
+so coordinates are `@int32`; the app stays integer-only (positions, sizes, the
+mouse via `getMouseX`/`getMouseY`), no floats.
+
+Regenerate the bindings after a raylib upgrade:
+
+```
+LIB=bin/libraylib.so MOD=RAYLIB OUT=RAYLIB.thx \
+  thrax run ../cbindgen/MAIN.thx <path-to>/raylib.h
+```
 
 ## Run it
 
@@ -52,7 +67,7 @@ The launchable programs are a plain list of records near the top of `MAIN.thx`:
 
 ```
 $ App : @struct = label: Str, cmd: Str,
-$ apps : List App =
+$ apps : @list App =
     [ App.{ .label = "Terminal", .cmd = "xterm &" }
     , App.{ .label = "Files",    .cmd = "xdg-open . &" }
     , App.{ .label = "Browser",  .cmd = "firefox &" } ]

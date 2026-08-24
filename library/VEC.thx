@@ -1,57 +1,57 @@
 @mod VEC
 
 # \file VEC.thx
-# \info The generic growable vector `Vec `T` of boxed values
+# \info The generic growable vector `@vec `T` of boxed values
 
 $ with OPT
 $ with LIST
 
-$ new : {} -> Vec t = \u = @vec_new {}
+$ new : {} -> @vec t = \u = @vec_new {}
 
 # `n` copies of `x` ("@vec_fill 3 0" = [0, 0, 0]).
-$ fill : Int -> t -> Vec t = \n x = @vec_fill n x
+$ fill : Int -> t -> @vec t = \n x = @vec_fill n x
 
-$ len : Vec t -> Int = \v = @vec_len v
+$ len : @vec t -> Int = \v = @vec_len v
 
-$ is_empty : Vec t -> Bool = \v = (@vec_len v) ?= 0
+$ is_empty : @vec t -> @bool = \v = (@vec_len v) ?= 0
 
 # Bounds-checked element access.
-$ get : Vec t -> Int -> Option t = \v i =
+$ get : @vec t -> Int -> Option t = \v i =
 	if i ?< 0 => Option.None
 	else if i >= @vec_len v => Option.None
 	else Option.Some.{ @vec_get v i }
 
-$ get_or : Vec t -> Int -> t -> t = \v i d = unwrap_or (get v i) d
+$ get_or : @vec t -> Int -> t -> t = \v i d = unwrap_or (get v i) d
 
 # A copy with the element at `i` replaced; out-of-range leaves it unchanged.
-$ set : Vec t -> Int -> t -> Vec t = \v i x =
+$ set : @vec t -> Int -> t -> @vec t = \v i x =
 	if i ?< 0 => v
 	else if i >= @vec_len v => v
 	else @vec_set v i x
 
-$ push : Vec t -> t -> Vec t = \v x = @vec_push v x
+$ push : @vec t -> t -> @vec t = \v x = @vec_push v x
 
-$ last : Vec t -> Option t = \v = get v ((@vec_len v) - 1)
+$ last : @vec t -> Option t = \v = get v ((@vec_len v) - 1)
 
 # ---- whole-vector operations ----
 
-$ from_list : List t -> Vec t = \xs =
+$ from_list : @list t -> @vec t = \xs =
 	LIST.foldl (\v x = @vec_push v x) (@vec_new {}) xs
 
-$ to_list : Vec t -> List t = \v = suffix v 0
+$ to_list : @vec t -> @list t = \v = suffix v 0
 
-$ suffix : Vec t -> Int -> List t = \v i =
+$ suffix : @vec t -> Int -> @list t = \v i =
 	if i >= @vec_len v => [] else @vec_get v i :: suffix v (i + 1)
 
-$ map : (a -> b) -> Vec a -> Vec b = \f v = map_from f v 0 (@vec_new {})
+$ map : (a -> b) -> @vec a -> @vec b = \f v = map_from f v 0 (@vec_new {})
 
-$ map_from : (a -> b) -> Vec a -> Int -> Vec b -> Vec b = \f v i acc =
+$ map_from : (a -> b) -> @vec a -> Int -> @vec b -> @vec b = \f v i acc =
 	if i >= @vec_len v => acc
 	else map_from f v (i + 1) (@vec_push acc (f (@vec_get v i)))
 
-$ fold : (a -> t -> a) -> a -> Vec t -> a = \f acc v =
+$ fold : (a -> t -> a) -> a -> @vec t -> a = \f acc v =
 	fold_from f acc v 0
 
-$ fold_from : (a -> t -> a) -> a -> Vec t -> Int -> a = \f acc v i =
+$ fold_from : (a -> t -> a) -> a -> @vec t -> Int -> a = \f acc v i =
 	if i >= @vec_len v => acc
 	else fold_from f (f acc (@vec_get v i)) v (i + 1)

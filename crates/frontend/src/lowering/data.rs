@@ -118,12 +118,15 @@ pub enum Term {
     },
     /// A foreign function bound by `@extern "abi" "symbol" "lib"`. A curried,
     /// first-class value (like a builtin): applying it accumulates arguments and,
-    /// once saturated to `arg_types.len()`, marshals them across the seam and
-    /// calls `symbol`. `abi` selects the seam: `"C"` is a C library symbol,
-    /// `"wasm"` is a host import supplied by the embedder (the browser
-    /// playground). `arg_types`/`ret_type` are the marshalling type names the
-    /// checker recovered from the declared signature (`Str`/`Ptr`/`Int`/`Real`/
-    /// `{}`/sized), driving how each slot crosses the seam.
+    /// once saturated to `arg_types.len()` (a nullary C function still takes one
+    /// unit argument), marshals them across the seam and calls `symbol`. `abi`
+    /// selects the seam: `"C"` is a C library symbol, `"wasm"` is a host import
+    /// supplied by the embedder (the browser playground). `arg_types`/`ret_type`
+    /// are the marshalling type names the checker recovered from the declared
+    /// signature (`Str`/`Ptr`/`Int`/`Real`/`{}`/sized), driving how each slot
+    /// crosses the seam. The record that groups several C parameters is flattened
+    /// into positional arguments at the call site (see `Lowering::expr`), so this
+    /// node never sees or materializes it.
     Extern {
         abi: String,
         symbol: String,

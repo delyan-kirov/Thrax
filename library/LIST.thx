@@ -1,150 +1,150 @@
 @mod LIST
 
 # \file LIST.thx
-# \info Operations on the prelude's `List` type. Predicates passed in and
-#       returned use Bool. Where an operation needs equality on the element
+# \info Operations on the prelude's `@list` type. Predicates passed in and
+#       returned use @bool. Where an operation needs equality on the element
 #       type, it takes the equality function explicitly (dictionary passing)
 #       as there are no type classes.
 
 $ with OPT
 
-$ length : List t -> Int = \xs =
+$ length : @list t -> Int = \xs =
 	is xs | _ :: t => 1 + length t else 0
 
-$ is_empty : List t -> Bool = \xs =
+$ is_empty : @list t -> @bool = \xs =
 	is xs | [] => true else false
 
-$ map : (a -> b) -> List a -> List b = \f xs =
+$ map : (a -> b) -> @list a -> @list b = \f xs =
 	is xs | h :: t => f h :: map f t else []
 
-$ filter : (t -> Bool) -> List t -> List t = \p xs =
+$ filter : (t -> @bool) -> @list t -> @list t = \p xs =
 	is xs
 		| h :: t => (if p h => h :: filter p t else filter p t)
 	else []
 
-$ foldl : (a -> t -> a) -> a -> List t -> a = \f acc xs =
+$ foldl : (a -> t -> a) -> a -> @list t -> a = \f acc xs =
 	is xs | h :: t => foldl f (f acc h) t else acc
 
-$ foldr : (t -> a -> a) -> a -> List t -> a = \f z xs =
+$ foldr : (t -> a -> a) -> a -> @list t -> a = \f z xs =
 	is xs | h :: t => f h (foldr f z t) else z
 
-$ reverse : List t -> List t = \xs =
+$ reverse : @list t -> @list t = \xs =
 	foldl (\acc x = x :: acc) [] xs
 
-$ append : List t -> List t -> List t = \xs ys =
+$ append : @list t -> @list t -> @list t = \xs ys =
 	is xs | h :: t => h :: append t ys else ys
 
-$ concat : List (List t) -> List t = \xss =
+$ concat : @list (@list t) -> @list t = \xss =
 	is xss | h :: t => append h (concat t) else []
 
-$ take : Int -> List t -> List t = \n xs =
+$ take : Int -> @list t -> @list t = \n xs =
 	if n <= 0 => []
 	else is xs | h :: t => h :: take (n - 1) t else []
 
-$ drop : Int -> List t -> List t = \n xs =
+$ drop : Int -> @list t -> @list t = \n xs =
 	if n <= 0 => xs
 	else is xs | _ :: t => drop (n - 1) t else []
 
 # The element at (0-based) `i`, if the list is that long.
-$ nth : List t -> Int -> Option t = \xs i =
+$ nth : @list t -> Int -> Option t = \xs i =
 	is xs
 		| h :: t => (if i ?= 0 => Option.Some.{ h } else nth t (i - 1))
 	else Option.None
 
 # A copy with the element at `i` replaced; too-short lists come back unchanged.
-$ set_nth : List t -> Int -> t -> List t = \xs i v =
+$ set_nth : @list t -> Int -> t -> @list t = \xs i v =
 	is xs
 		| h :: t => (if i ?= 0 => v :: t else h :: set_nth t (i - 1) v)
 	else []
 
-$ any : (t -> Bool) -> List t -> Bool = \p xs =
+$ any : (t -> @bool) -> @list t -> @bool = \p xs =
 	is xs | h :: t => (if p h => true else any p t) else false
 
-$ all : (t -> Bool) -> List t -> Bool = \p xs =
+$ all : (t -> @bool) -> @list t -> @bool = \p xs =
 	is xs | h :: t => (if p h => all p t else false) else true
 
 # The first element satisfying `p`, if one exists.
-$ find : (t -> Bool) -> List t -> Option t = \p xs =
+$ find : (t -> @bool) -> @list t -> Option t = \p xs =
 	is xs
 		| h :: t => (if p h => Option.Some.{ h } else find p t)
 	else Option.None
 
 # Membership under the given equality.
-$ contains : (t -> t -> Bool) -> t -> List t -> Bool = \eqf x xs =
+$ contains : (t -> t -> @bool) -> t -> @list t -> @bool = \eqf x xs =
 	any (\y = eqf x y) xs
 
-$ zip : List a -> List b -> List {a, b} = \xs ys =
+$ zip : @list a -> @list b -> @list {a, b} = \xs ys =
 	is xs
 		| xh :: xt =>
 			(is ys | yh :: yt => {xh, yh} :: zip xt yt else [])
 	else []
 
-$ zip_with : (a -> b -> c) -> List a -> List b -> List c = \f xs ys =
+$ zip_with : (a -> b -> c) -> @list a -> @list b -> @list c = \f xs ys =
 	is xs
 		| xh :: xt =>
 			(is ys | yh :: yt => f xh yh :: zip_with f xt yt else [])
 	else []
 
-$ unzip : List {a, b} -> {List a, List b} = \ps =
+$ unzip : @list {a, b} -> {@list a, @list b} = \ps =
 	foldr (\p acc = {p.0 :: acc.0, p.1 :: acc.1})
 	      {[], []} ps
 
-$ sum : List Int -> Int = \xs = foldl (\a x = a + x) 0 xs
+$ sum : @list Int -> Int = \xs = foldl (\a x = a + x) 0 xs
 
-$ product : List Int -> Int = \xs = foldl (\a x = a * x) 1 xs
+$ product : @list Int -> Int = \xs = foldl (\a x = a * x) 1 xs
 
 # Smallest / largest element; `d` is the answer for the empty list.
-$ minimum : List Int -> Int -> Int = \xs d =
+$ minimum : @list Int -> Int -> Int = \xs d =
 	is xs | h :: t => foldl (\a x = if x ?< a => x else a) h t else d
 
-$ maximum : List Int -> Int -> Int = \xs d =
+$ maximum : @list Int -> Int -> Int = \xs d =
 	is xs | h :: t => foldl (\a x = if x ?> a => x else a) h t else d
 
-$ last : List t -> Option t = \xs =
+$ last : @list t -> Option t = \xs =
 	is xs
 		| [x] => Option.Some.{ x }
 		| _ :: t => last t
 	else Option.None
 
 # All but the last element ([] for []).
-$ init : List t -> List t = \xs =
+$ init : @list t -> @list t = \xs =
 	is xs
 		| [_] => []
 		| h :: t => h :: init t
 	else []
 
-$ replicate : Int -> t -> List t = \n x =
+$ replicate : Int -> t -> @list t = \n x =
 	if n <= 0 => [] else x :: replicate (n - 1) x
 
-$ intersperse : t -> List t -> List t = \sep xs =
+$ intersperse : t -> @list t -> @list t = \sep xs =
 	is xs
 		| [x] => [x]
 		| h :: t => h :: (sep :: intersperse sep t)
 	else []
 
-$ take_while : (t -> Bool) -> List t -> List t = \p xs =
+$ take_while : (t -> @bool) -> @list t -> @list t = \p xs =
 	is xs
 		| h :: t => (if p h => h :: take_while p t else [])
 	else []
 
-$ drop_while : (t -> Bool) -> List t -> List t = \p xs =
+$ drop_while : (t -> @bool) -> @list t -> @list t = \p xs =
 	is xs
 		| h :: t => (if p h => drop_while p t else xs)
 	else []
 
 # The longest prefix satisfying `p`, and the rest.
-$ span : (t -> Bool) -> List t -> {List t, List t} = \p xs =
+$ span : (t -> @bool) -> @list t -> {@list t, @list t} = \p xs =
 	{take_while p xs, drop_while p xs}
 
-$ split_at : Int -> List t -> {List t, List t} = \n xs =
+$ split_at : Int -> @list t -> {@list t, @list t} = \n xs =
 	{take n xs, drop n xs}
 
 # Elements satisfying `p`, and the elements that don't.
-$ partition : (t -> Bool) -> List t -> {List t, List t} = \p xs =
+$ partition : (t -> @bool) -> @list t -> {@list t, @list t} = \p xs =
 	{filter p xs, filter (\x = !(p x)) xs}
 
 # Map a partial function, keeping the hits.
-$ filter_map : (a -> Option b) -> List a -> List b = \f xs =
+$ filter_map : (a -> Option b) -> @list a -> @list b = \f xs =
 	is xs
 		| h :: t =>
 			(is f h
@@ -152,27 +152,27 @@ $ filter_map : (a -> Option b) -> List a -> List b = \f xs =
 			else filter_map f t)
 	else []
 
-$ flat_map : (a -> List b) -> List a -> List b = \f xs =
+$ flat_map : (a -> @list b) -> @list a -> @list b = \f xs =
 	concat (map f xs)
 
 # Drop the first element satisfying `p` (only the first).
-$ remove_first : (t -> Bool) -> List t -> List t = \p xs =
+$ remove_first : (t -> @bool) -> @list t -> @list t = \p xs =
 	is xs
 		| h :: t => (if p h => t else h :: remove_first p t)
 	else []
 
 # The (0-based) position of the first element satisfying `p`.
-$ find_index : (t -> Bool) -> List t -> Option Int = \p xs =
+$ find_index : (t -> @bool) -> @list t -> Option Int = \p xs =
 	find_index_from p xs 0
 
-$ find_index_from : (t -> Bool) -> List t -> Int -> Option Int = \p xs i =
+$ find_index_from : (t -> @bool) -> @list t -> Int -> Option Int = \p xs i =
 	is xs
 		| h :: t =>
 			(if p h => Option.Some.{ i } else find_index_from p t (i + 1))
 	else Option.None
 
 # Association-list lookup under the given key equality.
-$ lookup : (k -> k -> Bool) -> k -> List {k, v} -> Option v = \eqf k ps =
+$ lookup : (k -> k -> @bool) -> k -> @list {k, v} -> Option v = \eqf k ps =
 	is ps
 		| h :: t => (if eqf k h.0 => Option.Some.{ h.1 } else lookup eqf k t)
 	else Option.None
@@ -181,7 +181,7 @@ $ lookup : (k -> k -> Bool) -> k -> List {k, v} -> Option v = \eqf k ps =
 
 # `c a b` is a three-way comparison: negative / 0 / positive. Equal elements
 # keep their original order.
-$ sort_by : (t -> t -> Int) -> List t -> List t = \c xs =
+$ sort_by : (t -> t -> Int) -> @list t -> @list t = \c xs =
 	is xs
 		| [] => []
 		| [x] => [x]
@@ -189,7 +189,7 @@ $ sort_by : (t -> t -> Int) -> List t -> List t = \c xs =
 		let halves = split_at ((length xs) / 2) xs in
 		merge_by c (sort_by c halves.0) (sort_by c halves.1)
 
-$ merge_by : (t -> t -> Int) -> List t -> List t -> List t = \c xs ys =
+$ merge_by : (t -> t -> Int) -> @list t -> @list t -> @list t = \c xs ys =
 	is xs
 		| xh :: xt =>
 			(is ys

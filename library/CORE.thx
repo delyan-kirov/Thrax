@@ -13,7 +13,7 @@
 
 $ to_string : Str -> Str = \s = s
 
-$ to_string : Bool -> Str = \b = if b => "true" else "false"
+$ to_string : @bool -> Str = \b = if b => "true" else "false"
 
 $ to_string : Int -> Str = \n =
 	if n ?< 0 => "-" ++ to_string_digits (0 - n) ""
@@ -24,9 +24,9 @@ $ to_string_digits : Int -> Str -> Str = \n acc =
 	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 # The expression-form range `[lo ... hi]` desugars to `range lo hi`: the inclusive
-# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `List`, since
+# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `@list`, since
 # the length is a runtime value (not a statically sized `[n]T` tensor).
-$ range : Int -> Int -> List Int = \lo hi =
+$ range : Int -> Int -> @list Int = \lo hi =
 	if lo ?> hi => []
 	else lo :: range (lo + 1) hi
 
@@ -36,5 +36,5 @@ $ Stream : @codata t = head : t, tail : Stream t,
 
 # The open range `[lo ...]` desugars to `count_from lo`: the ascending Ints from
 # `lo` upward, with no end. It builds a `Stream`, the only shape that can hold an
-# unbounded sequence (not a finite `List` or a statically sized `[n]T`).
+# unbounded sequence (not a finite `@list` or a statically sized `[n]T`).
 $ count_from : Int -> Stream Int = \lo = { .head = lo, .tail = count_from (lo + 1) }

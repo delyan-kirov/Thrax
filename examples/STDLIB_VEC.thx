@@ -1,13 +1,13 @@
 @mod STDLIB_VEC
 
 # \file STDLIB_VEC.thx
-# \info The standard library's growable vector, `Vec `T`
+# \info The standard library's growable vector, `@vec `T`
 
 $ with VEC
 $ with OPT
 $ with LIST
 
-$ v : Vec Int = push (push (push (new {}) 10) 20) 30
+$ v : @vec Int = push (push (push (new {}) 10) 20) 30
 
 $ ck_len   : Int = if (len v) ?= 3 => 0 else 1
 $ ck_get   : Int = if (get_or v 1 0) ?= 20 => 0 else 1
@@ -24,7 +24,7 @@ $ ck_setoob : Int = if (len (set v 9 99)) ?= 3 => 0 else 1
 $ ck_push   : Int = if (len (push v 40)) ?= 4 => 0 else 1
 $ ck_pushed : Int = if (len v) ?= 3 => 0 else 1
 
-# fill makes n copies; whole-vector ops round-trip through List.
+# fill makes n copies; whole-vector ops round-trip through @list.
 $ ck_fill  : Int = if (fold (\a x = a + x) 0 (fill 4 7)) ?= 28 => 0 else 1
 $ ck_froml : Int = if (len (from_list [1, 2, 3, 4])) ?= 4 => 0 else 1
 $ ck_tol   : Int = if (sum (to_list (from_list [1, 2, 3, 4]))) ?= 10 => 0 else 1
@@ -33,8 +33,8 @@ $ ck_map   : Int =
 	=> 0 else 1
 $ ck_fold  : Int = if (fold (\a x = a * 10 + x) 0 v) ?= 1230 => 0 else 1
 
-# Vec is generic: elements can be any type, tuples included.
-$ pts : Vec {Int, Int} = push (push (new {}) {1, 2}) {3, 4}
+# @vec is generic: elements can be any type, tuples included.
+$ pts : @vec {Int, Int} = push (push (new {}) {1, 2}) {3, 4}
 $ ck_tup : Int =
 	is get pts 1 | Option.Some.{p} =>
 		(if (p.0 + p.1) ?= 7 => 0 else 1)

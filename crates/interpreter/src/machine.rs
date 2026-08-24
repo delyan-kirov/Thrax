@@ -563,7 +563,14 @@ impl<'p> Machine<'p> {
         enum Kind<'p> {
             Code(usize, Vec<PVal<'p>>),
             Builtin(Rc<str>, usize, Vec<PVal<'p>>),
-            Extern(Rc<str>, Rc<str>, Rc<str>, Rc<[String]>, Rc<str>, Vec<PVal<'p>>),
+            Extern(
+                Rc<str>,
+                Rc<str>,
+                Rc<str>,
+                Rc<[String]>,
+                Rc<str>,
+                Vec<PVal<'p>>,
+            ),
             Op(Option<String>, String),
             Resump(Rc<RefCell<Resumption<'p>>>),
             Bad,
@@ -647,8 +654,14 @@ impl<'p> Machine<'p> {
             }
 
             Kind::Extern(abi, symbol, lib, arg_types, ret_type, mut args) => {
+                // Like a built-in, a foreign function accumulates its positional C
+                // arguments (the grouping record was flattened at the call site) and
+                // fires once saturated. A nullary C function still takes one (unit)
+                // argument, which carries no C value.
                 args.push(argv);
-                let v = if args.len() >= arg_types.len() {
+                let arity = arg_types.len().max(1);
+                let v = if args.len() >= arity {
+                    let positional: &[PVal<'p>] = if arg_types.is_empty() { &[] } else { &args };
                     // Install a callback applier for the duration of the call, so a
                     // foreign function can invoke a Thrax closure passed as a pointer.
                     let apply = |cl: *const std::ffi::c_void,
@@ -658,7 +671,7 @@ impl<'p> Machine<'p> {
                         self.callback_apply(cl, words, kinds, rk)
                     };
                     let out = ffi::with_applier(&apply, || {
-                        run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, &args)
+                        run_extern(&abi, &symbol, &lib, &arg_types, &ret_type, positional)
                     });
                     mk(out?)
                 } else {

@@ -30,7 +30,10 @@ enum Sink {
 
 /// A distinct `@extern` binding the C backend emits a wrapper for. Deduplicated
 /// by symbol + library + signature; a `THxRT_extern(idx, arity)` value points at
-/// its wrapper in the generated `THxRT_extern_table`.
+/// its wrapper in the generated `THxRT_extern_table`. The wrapper is N-ary (one
+/// positional C argument per `arg_types` entry, or one unit argument for a
+/// nullary C function): the record grouping several C parameters is flattened
+/// into positional arguments at the call site during lowering.
 #[derive(Clone)]
 pub struct ExternSite {
     pub abi: String,
@@ -67,8 +70,17 @@ pub struct Emitter<'p> {
 }
 
 /// The dedup key for an extern site.
-fn extern_key(abi: &str, symbol: &str, lib: &str, arg_types: &[String], ret_type: &str) -> String {
-    format!("{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}", arg_types.join(","))
+fn extern_key(
+    abi: &str,
+    symbol: &str,
+    lib: &str,
+    arg_types: &[String],
+    ret_type: &str,
+) -> String {
+    format!(
+        "{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}",
+        arg_types.join(",")
+    )
 }
 
 /// Visit every [`Atom`] occurring in `e` (including those captured inside a
@@ -716,6 +728,9 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             cstr(e.symbol.as_bytes())
         ));
         out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
+        // The wrapper is N-ary: `args[i]` is the i-th positional C argument (the
+        // grouping record was flattened at the call site during lowering). A
+        // nullary C function still receives one unit `args[0]`, dropped below.
         out.push_str(&setup);
         let call = format!("THx_sym_{n}({})", call_args.join(", "));
         match ret_layout {
@@ -910,7 +925,10 @@ impl<'p> Emitter<'p> {
             } => {
                 let key = extern_key(abi, symbol, lib, arg_types, ret_type);
                 let idx = self.extern_idx[&key];
-                format!("THxRT_extern({idx}, {})", arg_types.len())
+                // The extern value is N-ary: one positional C argument per
+                // `arg_types` entry, or one unit argument for a nullary C function.
+                let arity = arg_types.len().max(1);
+                format!("THxRT_extern({idx}, {arity})")
             }
         }
     }
