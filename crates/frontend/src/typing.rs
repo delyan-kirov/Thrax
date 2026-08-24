@@ -1163,6 +1163,12 @@ impl<'a> Checker<'a> {
             // `Real`/`Real64`. The runtime value stays a `Real` and is narrowed to
             // the field/parameter width at the `@extern` boundary.
             Expr::Real(_) if self.is_float_type(expected) => Ok(()),
+            // `@cast x` reinterprets an integer operand at the expected width. It is
+            // type-directed: the target integer type comes from the checking context.
+            Expr::App(f, arg) if self.is_cast_head(*f) => {
+                let arg = *arg;
+                self.check_cast(arg, expected)
+            }
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
@@ -1234,6 +1240,45 @@ impl<'a> Checker<'a> {
                 if matches!(name.as_str(),
                     "Real" | "Real64" | "Real32" | "@float64" | "@float32")
         )
+    }
+
+    /// Whether `ty` is a sized integer type (any width, signed or unsigned). `@cast`
+    /// reinterprets between these; float and non-numeric types are rejected.
+    fn is_int_scalar(&self, ty: &Type) -> bool {
+        matches!(self.eng.resolve(ty),
+            Type::Con(name) if matches!(name.as_str(),
+                "Int" | "Nat"
+                    | "@int8" | "@int16" | "@int32" | "@int64"
+                    | "@nat8" | "@nat16" | "@nat32" | "@nat64"))
+    }
+
+    /// Whether `f` is the `@cast` intrinsic in head position.
+    fn is_cast_head(&self, f: Aol<Expr>) -> bool {
+        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
+    }
+
+    /// Check `@cast x` against the expected integer type. Both engines box integers
+    /// uniformly, so the cast is erased after checking (lowering emits the operand);
+    /// the width matters only at the `@extern` boundary, where marshalling narrows to
+    /// the C type. A numeric literal operand is accepted (it defaults to `Int`).
+    fn check_cast(&mut self, arg: Aol<Expr>, expected: &Type) -> Result<()> {
+        if !self.is_int_scalar(expected) {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "`@cast` converts between integer widths, but the target type here is `{}`, \
+                 not a sized integer",
+                self.show(expected)
+            ));
+        }
+        let src = self.infer(arg)?;
+        if !self.is_int_scalar(&src) && !self.is_numeric(&src) {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "`@cast` expects an integer operand, but got `{}`",
+                self.show(&src)
+            ));
+        }
+        Ok(())
     }
 
     /// Decompose a function type into (parameter, result, latent effect). If it is
@@ -2945,6 +2990,22 @@ impl<'a> Checker<'a> {
         }
         args_rev.reverse();
         let args = args_rev;
+
+        // `@cast` is type-directed: its result width comes from the checking context,
+        // handled in `check`. Reaching it here means it has no expected type.
+        if self.is_cast_head(head) {
+            if args.len() != 1 {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`@cast` takes exactly one argument"
+                ));
+            }
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "the target type of `@cast` must be known from context; annotate it \
+                 (e.g. `let n : Int = @cast x`) or use it where a specific integer type is expected"
+            ));
+        }
 
         if let Expr::Var { module, name } = self.node(head) {
             let module = module.map(|m| self.text(m));

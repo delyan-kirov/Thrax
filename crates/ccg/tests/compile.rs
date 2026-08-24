@@ -167,6 +167,22 @@ fn assert_example(file: &str, entry: &str) {
 }
 
 #[test]
+fn cast_between_integer_widths() {
+    // `@cast` reinterprets an integer at another width. It is erased after type
+    // checking (integers are boxed uniformly), so both engines must agree: widen
+    // `@int32 -> Int`, narrow `Int -> @int32`, and use the results in arithmetic.
+    let src = "@mod T\n\
+               $ small : {} -> @int32 = \\u = 65\n\
+               $ widened : Int = @cast (small {})\n\
+               $ narrowed : @int32 = @cast (widened + 1)\n\
+               $ back : Int = @cast narrowed\n\
+               $ test : Int = widened + back\n";
+    assert_matches(src, "widened");
+    assert_matches(src, "back");
+    assert_matches(src, "test");
+}
+
+#[test]
 fn arithmetic_and_precedence() {
     let src = "@mod T\n\
                $ a = 1 + 2 * 3 - 4\n\
