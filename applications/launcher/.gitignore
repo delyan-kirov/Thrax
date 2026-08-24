@@ -1,0 +1,6 @@
+# Build artifacts and shell-linked deps (recreated by `nix develop`).
+/bin/
+/library
+/MAIN
+/MAIN.c
+*.so*
