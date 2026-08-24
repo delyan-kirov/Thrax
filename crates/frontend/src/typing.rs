@@ -3885,9 +3885,6 @@ impl<'a> Checker<'a> {
             );
         }
 
-        self.bind("true", bool_());
-        self.bind("false", bool_());
-
         for op in ["?=", "?<", "?>", "<=", ">="] {
             let a = self.eng.fresh_generic();
             let t = Type::arrow(a.clone(), Type::arrow(a, bool_()));

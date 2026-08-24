@@ -12,9 +12,9 @@ $geq_false = 2 ?> 4
 $leq_true  = 3 ?< 8
 $leq_equal = 8 ?< 8
 $leq_false = 8 ?< 3
-$not_false = !false
-$not_true  = !true
-$not_not   = !(!true)
+$not_false = !@false
+$not_true  = !@true
+$not_not   = !(!@true)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : Int = eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal ; leq_false ; not_false ; not_true ; not_not ; 0

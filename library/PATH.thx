@@ -34,7 +34,7 @@ $ strip_trailing : Str -> Str = \p =
 # ---- queries ----
 
 $ is_abs : Str -> @bool = \p =
-	if (@array_len p) ?= 0 => false
+	if (@array_len p) ?= 0 => @false
 	else (@array_get p 0) ?= 47
 
 # The component after the last '/': "a/b/c" -> "c", "a/b/" -> "b", "/" -> "/".

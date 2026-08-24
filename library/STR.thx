@@ -41,13 +41,13 @@ $ substr : Str -> Int -> Int -> Str = \s from to = @array_slice s from to
 
 $ starts_with : Str -> Str -> @bool = \s p =
 	let n = @array_len p in
-	if n ?> @array_len s => false
+	if n ?> @array_len s => @false
 	else (@array_slice s 0 n) ?= p
 
 $ ends_with : Str -> Str -> @bool = \s p =
 	let n  = @array_len p in
 	let sn = @array_len s in
-	if n ?> sn => false
+	if n ?> sn => @false
 	else (@array_slice s (sn - n) sn) ?= p
 
 # The byte offset of the first occurrence of `needle` at or after `from`.
@@ -125,24 +125,24 @@ $ rev_onto : Str -> Int -> Str -> Str = \s i acc =
 # ---- character (byte) predicates ----
 
 $ is_space : Int -> @bool = \c =
-	if c ?= 32 => true else if c >= 9 => c <= 13 else false
+	if c ?= 32 => @true else if c >= 9 => c <= 13 else @false
 
 $ is_digit : Int -> @bool = \c =
-	if c >= 48 => c <= 57 else false
+	if c >= 48 => c <= 57 else @false
 
 $ is_alpha : Int -> @bool = \c =
 	if c >= 65 =>
-		(if c <= 90 => true else if c >= 97 => c <= 122 else false)
-	else false
+		(if c <= 90 => @true else if c >= 97 => c <= 122 else @false)
+	else @false
 
 $ is_alnum : Int -> @bool = \c =
-	if is_digit c => true else is_alpha c
+	if is_digit c => @true else is_alpha c
 
 $ is_upper : Int -> @bool = \c =
-	if c >= 65 => c <= 90 else false
+	if c >= 65 => c <= 90 else @false
 
 $ is_lower : Int -> @bool = \c =
-	if c >= 97 => c <= 122 else false
+	if c >= 97 => c <= 122 else @false
 
 # ---- trimming (ASCII whitespace) ----
 

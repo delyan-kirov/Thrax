@@ -16,7 +16,7 @@ use frontend::{Ast, Item, Program};
 /// wasm module needs no filesystem.
 fn stdlib_source(name: &str) -> Option<&'static str> {
     Some(match name {
-        "C" => include_str!("../../../core/C.thx"),
+        "C" => include_str!("../../../library/C.thx"),
         "LIST" => include_str!("../../../library/LIST.thx"),
         "MAP" => include_str!("../../../library/MAP.thx"),
         "SET" => include_str!("../../../library/SET.thx"),

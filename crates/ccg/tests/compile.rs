@@ -181,8 +181,8 @@ fn arithmetic_and_precedence() {
 fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`; the C backend matches the interpreter.
     let src = "@mod T\n\
-               $ f : @bool = false\n\
-               $ t : @bool = true\n\
+               $ f : @bool = @false\n\
+               $ t : @bool = @true\n\
                $ a : Int = if (t && 3 ?< 5) => 1 else 0\n\
                $ b : Int = if (f || 5 ?< 3) => 1 else 0\n\
                $ test : Int = a\n";
@@ -197,7 +197,7 @@ fn same_module_overload_dispatches_by_type() {
     let src = "@mod M\n\
                $ kind : Int -> Int = \\x = 1\n\
                $ kind : @bool -> Int = \\b = 2\n\
-               $ test : Int = (kind 7) + (kind true) * 10\n";
+               $ test : Int = (kind 7) + (kind @true) * 10\n";
     assert_matches(src, "test");
 }
 

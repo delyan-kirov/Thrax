@@ -57,7 +57,7 @@
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_OPERATOR AT_ASSERT
 %token AT_RUN
 %token AT_PRIVATE AT_PUBLIC AT_EXTERN AT_ARRAY
-%token AT_TRUE AT_FALSE /* the two `@bool` literals (`Bool`/true/false alias) */
+%token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
@@ -278,7 +278,7 @@ atom
   : INT
   | REAL
   | STR
-  | AT_TRUE   /* @bool literals; `true`/`false` are prelude aliases */
+  | AT_TRUE   /* @bool literals; the ONLY spelling (no bare `true`/`false`) */
   | AT_FALSE
   | LIDENT
   | UIDENT

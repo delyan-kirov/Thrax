@@ -322,7 +322,7 @@ the binding calls the C function. Foreign calls are typed by the written signatu
 "C" "puts" "libc"` then `puts "hi"`; `$ pow : {base: Real, exp: Real} -> Real =
 @extern "C" "pow" "libm"` then `pow {2.0, 10.0}` or `pow {.base = 2.0, .exp =
 10.0}`; `$ getchar : {} -> Int = @extern "C" "getchar" "libc"` then `getchar {}`.
-See core/C.thx and applications/launcher.)
+See library/C.thx and applications/launcher.)
 
 (C structs by value: a struct declared `Name : @struct @extern "C" = ...` is a
 C-layout (unboxed) foreign type. Its fields must be C-representable (the sized

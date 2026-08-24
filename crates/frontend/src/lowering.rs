@@ -646,26 +646,19 @@ impl<'a> Lowerer<'a> {
             Expr::Bool(b) => Term::Bool(*b),
             Expr::Unit => Term::Unit,
 
-            Expr::Var { name, .. } => {
-                let name = self.text(*name);
-                match name {
-                    "true" => Term::Bool(true),
-                    "false" => Term::Bool(false),
-                    _ => {
-                        let base = self.var_head(e);
-                        // A multi-argument foreign function referenced first-class
-                        // (not the head of an application) presents to Thrax as a
-                        // record-taking function, but its runtime value is N-ary.
-                        // Eta-expand so the record is destructured into the positional
-                        // C arguments when the wrapper is finally called.
-                        if let Some(params) = self.extern_params_of(e) {
-                            if extern_needs_eta(&params) {
-                                return self.eta_extern(base, &params);
-                            }
-                        }
-                        base
+            Expr::Var { .. } => {
+                let base = self.var_head(e);
+                // A multi-argument foreign function referenced first-class (not the
+                // head of an application) presents to Thrax as a record-taking
+                // function, but its runtime value is N-ary. Eta-expand so the record
+                // is destructured into the positional C arguments when the wrapper is
+                // finally called.
+                if let Some(params) = self.extern_params_of(e) {
+                    if extern_needs_eta(&params) {
+                        return self.eta_extern(base, &params);
                     }
                 }
+                base
             }
 
             Expr::App(f, x) => {

@@ -1,6 +1,6 @@
 @mod C
 
-# \file core/C.thx
+# \file library/C.thx
 # \info The auto-injected `C` namespace: the standard C library (libc + libm) as
 #       `@extern` bindings, reachable qualified (`C.sqrt`, `C.malloc`, ...) with
 #       no import, like the prelude. Each binding is an ordinary foreign

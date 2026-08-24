@@ -792,7 +792,7 @@ unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
 /// Call a foreign C function from the host table with the marshalled `args`.
 /// Mirrors `FF.cpp`'s adapter table: each adapter knows its own signature, so
 /// the result is wrapped directly. The set of symbols served here is exactly the
-/// `C` namespace declared in `core/C.thx`; the C backend reaches these same
+/// `C` namespace declared in `library/C.thx`; the C backend reaches these same
 /// symbols with a direct linked call, so both engines agree.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_extern<'p>(

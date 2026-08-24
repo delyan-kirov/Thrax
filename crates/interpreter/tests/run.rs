@@ -279,7 +279,7 @@ fn same_module_overload_dispatches_by_type() {
     let src = "@mod M\n\
                $ kind : Int -> Int = \\x = 1\n\
                $ kind : @bool -> Int = \\b = 2\n\
-               $ r : Int = (kind 7) + (kind true) * 10";
+               $ r : Int = (kind 7) + (kind @true) * 10";
     assert_eq!(run(src, "r"), "21");
 }
 
@@ -906,8 +906,8 @@ fn short_circuit_and_or() {
     // result is already decided: a `1 / 0` on the skipped side must not fault.
     // Precedence: `&&`/`||` bind looser than comparison (`a ?< b && c ?< d`).
     let src = "@mod M\n\
-               $ f : @bool = false\n\
-               $ t : @bool = true\n\
+               $ f : @bool = @false\n\
+               $ t : @bool = @true\n\
                $ sc_and : Int = if (f && (1 / 0 ?= 0)) => 1 else 0\n\
                $ sc_or  : Int = if (t || (1 / 0 ?= 0)) => 0 else 1\n\
                $ prec   : Int = if (3 ?< 5 && 5 ?< 9) => 0 else 1\n\

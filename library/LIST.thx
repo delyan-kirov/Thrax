@@ -12,7 +12,7 @@ $ length : @list t -> Int = \xs =
 	is xs | _ :: t => 1 + length t else 0
 
 $ is_empty : @list t -> @bool = \xs =
-	is xs | [] => true else false
+	is xs | [] => @true else @false
 
 $ map : (a -> b) -> @list a -> @list b = \f xs =
 	is xs | h :: t => f h :: map f t else []
@@ -58,10 +58,10 @@ $ set_nth : @list t -> Int -> t -> @list t = \xs i v =
 	else []
 
 $ any : (t -> @bool) -> @list t -> @bool = \p xs =
-	is xs | h :: t => (if p h => true else any p t) else false
+	is xs | h :: t => (if p h => @true else any p t) else @false
 
 $ all : (t -> @bool) -> @list t -> @bool = \p xs =
-	is xs | h :: t => (if p h => all p t else false) else true
+	is xs | h :: t => (if p h => all p t else @false) else @true
 
 # The first element satisfying `p`, if one exists.
 $ find : (t -> @bool) -> @list t -> Option t = \p xs =

@@ -98,8 +98,8 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     })
 }
 
-/// The auto-injected `C` standard-library namespace (see core/C.thx).
-const C_SOURCE: &str = include_str!("../../../core/C.thx");
+/// The auto-injected `C` standard-library namespace (see library/C.thx).
+const C_SOURCE: &str = include_str!("../../../library/C.thx");
 
 /// The dependency graph over parsed modules (edges point at imports).
 fn import_graph(

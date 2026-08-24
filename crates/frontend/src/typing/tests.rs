@@ -37,7 +37,7 @@ fn parameterized_alias_expands() {
     let src = "@mod M\n\
                $ Map : @struct k v = key: k, val: v\n\
                $ MapInt : @alias v = Map Int v\n\
-               $ m : MapInt @bool = .{ .key = 1, .val = true }";
+               $ m : MapInt @bool = .{ .key = 1, .val = @true }";
     assert_eq!(type_of(src, "m"), "Map Int @bool");
 }
 
@@ -203,7 +203,7 @@ fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "@mod OPT\n\
                        $ Option : @union t = Some: t, None: {}\n\
                        $ is_some : Option t -> @bool = \\o = \
-                       is o | Option.Some.{_} => true else false\n\
+                       is o | Option.Some.{_} => @true else @false\n\
                        $ unwrap_or : Option t -> t -> t = \\o d = \
                        is o | Option.Some.{x} => x else d";
     let use_src = "@mod U\n\

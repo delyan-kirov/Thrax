@@ -9,10 +9,10 @@ $ Option : @union t =
 	None: {},
 
 $ is_some : Option t -> @bool = \o =
-	is o | Option.Some.{_} => true else false
+	is o | Option.Some.{_} => @true else @false
 
 $ is_none : Option t -> @bool = \o =
-	is o | Option.Some.{_} => false else true
+	is o | Option.Some.{_} => @false else @true
 
 # The value inside, or `d` when absent.
 $ unwrap_or : Option t -> t -> t = \o d =

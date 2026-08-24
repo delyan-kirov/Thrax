@@ -43,7 +43,7 @@ $ read_line_acc : Str -> Str = \acc =
 # A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
 # therefore "anything outside 0..255" rather than a negative Int.
 $ is_byte : Int -> @bool = \c =
-	if c ?< 0 => false else c <= 255
+	if c ?< 0 => @false else c <= 255
 
 # ---- files ----
 
@@ -77,7 +77,7 @@ $ append_file : Str -> Str -> @bool = \path content =
 
 $ spill_file : Str -> Str -> Str -> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
-	if f ?= 0 => false
+	if f ?= 0 => @false
 	else
 		C.fputs {content, f};
 		(C.fclose f) ?= 0
