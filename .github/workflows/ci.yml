@@ -14,14 +14,10 @@ jobs:
       - uses: cachix/install-nix-action@v27
 
       # cargo test runs the workspace suites (frontend, interpreter end-to-end,
-      # ccg). Then the compiler crates are built to wasm32-unknown-unknown (the
-      # browser playground) and web/smoke.mjs proves that path under Node.
+      # ccg).
       - name: Build and test in Nix dev shell
         run: |
           nix develop --command bash -c '
             set -e
             cargo test
-            cargo build -p playground --target wasm32-unknown-unknown --release
-            cp target/wasm32-unknown-unknown/release/playground.wasm web/site/playground.wasm
-            node web/smoke.mjs
           '

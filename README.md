@@ -251,7 +251,6 @@ a real FFI program; see its README to run it.
 | `crates/utilities` | shared support: arena, target/platform, diagnostics |
 | `library/` | the standard library: the auto-injected `C` (libc) namespace, the implicitly imported `CORE`, and the rest of the modules |
 | `examples/` | annotated `.thx` programs (also the test corpus) |
-| `web/` | the browser playground (Rust to wasm) and tour site |
 | `doc/` | language spec and design notes |
 
 More detail lives in [`doc/`](doc/): the [syntax spec](doc/syntax-spec.txt), the
