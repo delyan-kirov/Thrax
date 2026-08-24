@@ -249,7 +249,7 @@ a real FFI program; see its README to run it.
 | `crates/ccg` | the C backend (emits standalone C plus its runtime) |
 | `crates/thrax` | the `thrax` driver (CLI) |
 | `crates/utilities` | shared support: arena, target/platform, diagnostics |
-| `core/`, `library/` | the auto-injected `C` (libc) namespace, and the standard library (including the implicitly imported `CORE`) |
+| `library/` | the standard library: the auto-injected `C` (libc) namespace, the implicitly imported `CORE`, and the rest of the modules |
 | `examples/` | annotated `.thx` programs (also the test corpus) |
 | `web/` | the browser playground (Rust to wasm) and tour site |
 | `doc/` | language spec and design notes |

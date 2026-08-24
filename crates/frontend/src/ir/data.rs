@@ -45,11 +45,13 @@ pub enum Atom {
         code: usize,
         captures: Vec<Atom>,
     },
-    /// A foreign function (`@extern`). Produces a curried value that, once
-    /// applied to `arg_types.len()` arguments, marshals them across the seam
-    /// selected by `abi` (`"C"` = a C library symbol, `"WASM"` = a host import
-    /// from the embedder) and calls `symbol`. Both backends key off
-    /// `abi`/`symbol`/`arg_types`/`ret_type`.
+    /// A foreign function (`@extern`). Produces a value that accumulates its
+    /// positional C arguments (`arg_types`, a nullary C function still taking one
+    /// unit argument) and, once saturated, marshals them across the seam selected
+    /// by `abi` (`"C"` = a C library symbol, `"WASM"` = a host import from the
+    /// embedder) and calls `symbol`. The record grouping several C parameters is
+    /// flattened into positional arguments at the call site during lowering, so it
+    /// never reaches here.
     Extern {
         abi: String,
         symbol: String,
@@ -175,4 +177,7 @@ pub struct Program {
     pub codes: Vec<Code>,
     pub globals: Vec<(String, usize)>,
     pub effects: Vec<Effect>,
+    /// C memory layouts of C-repr structs, keyed by type name. The machine uses
+    /// them to marshal a struct value across the `@extern` boundary by value.
+    pub crepr_layouts: Vec<(String, utilities::CLayout)>,
 }

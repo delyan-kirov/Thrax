@@ -30,7 +30,7 @@ $ chk_area : Int = if area {6, 7} 1 ?= 43 => 0 else 1
 
 # A leading named parameter followed by a plain one: the named field binds
 # automatically, the plain parameter is bound by an ordinary lambda.
-$ pick : {x: Int} -> Bool -> Int = \b = if b => x else 0
-$ chk_pick : Int = if pick 9 true ?= 9 => 0 else 1
+$ pick : {x: Int} -> @bool -> Int = \b = if b => x else 0
+$ chk_pick : Int = if pick 9 @true ?= 9 => 0 else 1
 
 $ test : Int = chk_add + chk_label + chk_inc + chk_area + chk_pick

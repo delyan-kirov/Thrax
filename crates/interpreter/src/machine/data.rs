@@ -53,12 +53,15 @@ pub enum Value<'p> {
         arity: usize,
         args: Vec<PVal<'p>>,
     },
-    /// A partially applied foreign function (`@extern`); it marshals its
-    /// arguments across the seam selected by `abi` (`"C"` = a C library symbol,
-    /// `"WASM"` = a host import) and calls `symbol` once `args` reaches the arity
-    /// `arg_types.len()`. `ret_type` selects how the result is wrapped. `lib` is
-    /// the symbolic library the symbol lives in, resolved to a soname and
-    /// `dlopen`ed when the symbol is not in the compiled-in host table.
+    /// A foreign function (`@extern`) value, before it is saturated. Like a
+    /// built-in, it accumulates its positional C arguments (`arg_types`; a nullary
+    /// C function still takes one unit argument) into `args` and, once saturated,
+    /// marshals them across the seam selected by `abi` (`"C"` = a C library symbol,
+    /// `"WASM"` = a host import) and calls `symbol`. The record grouping several C
+    /// parameters is flattened into positional arguments at the call site during
+    /// lowering, so it never reaches here. `ret_type` selects how the result is
+    /// wrapped. `lib` is the symbolic library the symbol lives in, resolved to a
+    /// soname and `dlopen`ed when the symbol is not in the compiled-in host table.
     Extern {
         abi: Rc<str>,
         symbol: Rc<str>,
@@ -789,7 +792,7 @@ unsafe fn ffi_ret_str<'p>(p: *const c_char) -> Value<'p> {
 /// Call a foreign C function from the host table with the marshalled `args`.
 /// Mirrors `FF.cpp`'s adapter table: each adapter knows its own signature, so
 /// the result is wrapped directly. The set of symbols served here is exactly the
-/// `C` namespace declared in `core/C.thx`; the C backend reaches these same
+/// `C` namespace declared in `library/C.thx`; the C backend reaches these same
 /// symbols with a direct linked call, so both engines agree.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_extern<'p>(

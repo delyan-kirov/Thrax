@@ -1,48 +1,48 @@
 @mod ARRAY_PATTERNS
 
-# \info Type-directed `[..]` patterns on an Array (a byte vector). The SAME
+# \info Type-directed `[..]` patterns on an @array (a byte vector). The SAME
 #       bracket syntax as list patterns; the scrutinee's inferred type picks the
 #       lowering -- a length test + `@array_get`/`@array_slice` here, cons/nil for
-#       a List. `::` stays List-only. See doc/strings-and-arrays.md phase 6b.
+#       a @list. `::` stays @list-only. See doc/strings-and-arrays.md phase 6b.
 
-$ emptA : Array = []
-$ arr2  : Array = [10, 20]
-$ arr3  : Array = [1, 2, 3]
+$ emptA : @array = []
+$ arr2  : @array = [10, 20]
+$ arr3  : @array = [1, 2, 3]
 
 # Empty vs non-empty.
-$ is_empty : Array -> Int = \a =
+$ is_empty : @array -> Int = \a =
 	is a | [] => 1
 	         else 0
 $ ck_empty    : Int = if (is_empty emptA) ?= 1 => 0 else 1
 $ ck_nonempty : Int = if (is_empty arr2) ?= 0 => 0 else 1
 
 # Exact-length destructure: [x, y] matches a 2-element array, else falls through.
-$ sum2 : Array -> Int = \a =
+$ sum2 : @array -> Int = \a =
 	is a | [x, y] => x + y
 	              else 0
 $ ck_sum2      : Int = if (sum2 arr2) ?= 30 => 0 else 1
 $ ck_sum2_miss : Int = if (sum2 arr3) ?= 0 => 0 else 1
 
 # A literal element pattern: `[1, y]` only matches when element 0 is 1.
-$ after_one : Array -> Int = \a =
+$ after_one : @array -> Int = \a =
 	is a | [1, y] => y
 	              else 0
 $ ck_after_one : Int = if (after_one [1, 42]) ?= 42 => 0 else 1
 $ ck_after_two : Int = if (after_one [2, 42]) ?= 0 => 0 else 1
 
 # Open pattern `[h, ..rest]`: head plus the remaining slice.
-$ head3 : Array -> Int = \a =
+$ head3 : @array -> Int = \a =
 	is a | [h, ..rest] => h
 	                   else 0
 $ ck_head3 : Int = if (head3 arr3) ?= 1 => 0 else 1
 
-$ rest_len : Array -> Int = \a =
+$ rest_len : @array -> Int = \a =
 	is a | [h, ..rest] => @array_len rest
 	                   else 0
 $ ck_rest_len : Int = if (rest_len arr3) ?= 2 => 0 else 1
 
 # A guard on a sequence arm.
-$ ordered : Array -> Int = \a =
+$ ordered : @array -> Int = \a =
 	is a | [x, y] if (x ?< y) => 1
 	              | [x, y] => 2
 	              else 0

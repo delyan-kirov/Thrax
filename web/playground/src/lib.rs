@@ -16,7 +16,7 @@ use frontend::{Ast, Item, Program};
 /// wasm module needs no filesystem.
 fn stdlib_source(name: &str) -> Option<&'static str> {
     Some(match name {
-        "C" => include_str!("../../../core/C.thx"),
+        "C" => include_str!("../../../library/C.thx"),
         "LIST" => include_str!("../../../library/LIST.thx"),
         "MAP" => include_str!("../../../library/MAP.thx"),
         "SET" => include_str!("../../../library/SET.thx"),
@@ -156,7 +156,7 @@ fn emit_c(user_src: &str) -> Result<String, String> {
         os: utilities::Os::Linux,
         arch: utilities::Arch::X86_64,
     };
-    Ok(ccg::emit(&lowered, &entry, target))
+    Ok(ccg::emit(&lowered, &entry, frontend::EntryKind::Value, target))
 }
 
 fn dump_ir(user_src: &str) -> Result<String, String> {

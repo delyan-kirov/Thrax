@@ -28,6 +28,7 @@ pub fn lower_modules(modules: &[Core]) -> data::Program {
         module: modules.first().map(|m| m.module.clone()).unwrap_or_default(),
         effects: Vec::new(),
         globals: Vec::new(),
+        crepr_layouts: Vec::new(),
     };
     for m in modules {
         for e in &m.effects {
@@ -40,6 +41,11 @@ pub fn lower_modules(modules: &[Core]) -> data::Program {
             merged
                 .globals
                 .push((format!("{}.{}", m.module, name), term.clone()));
+        }
+        for (name, layout) in &m.crepr_layouts {
+            if !merged.crepr_layouts.iter().any(|(n, _)| n == name) {
+                merged.crepr_layouts.push((name.clone(), layout.clone()));
+            }
         }
     }
     crate::lowering::patmat::compile_program(&mut merged);
@@ -76,6 +82,7 @@ pub fn lower(core: &Core) -> data::Program {
                 op: e.op.clone(),
             })
             .collect(),
+        crepr_layouts: core.crepr_layouts.clone(),
     }
 }
 

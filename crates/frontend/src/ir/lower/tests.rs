@@ -10,6 +10,7 @@ fn caf(name: &str, body: Term) -> Program {
         module: "M".into(),
         effects: Vec::new(),
         globals: vec![(name.into(), body)],
+        crepr_layouts: Vec::new(),
     };
     assign_program(&mut p);
     p

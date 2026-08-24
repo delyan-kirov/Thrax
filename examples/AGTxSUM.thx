@@ -12,13 +12,13 @@ $ Token : @union =
 # Basic way to create a token
 $ num_tok: Token = Token.Num.{1}
 
-$ is_num: Token -> Bool = \tok =
+$ is_num: Token -> @bool = \tok =
     is tok
         | Token.Num.{_} => @true
     else
         @false
 
-# Bool is genuinely built-in: its values are the literals `@true`/`@false`, so
+# @bool is genuinely built-in: its values are the literals `@true`/`@false`, so
 # matching them uses the `@`-spelling (lowercase `true`/`false` would bind a
 # variable). Since `@bool` has exactly two values, these `when`s are exhaustive.
 $ chk0 : Int = is is_num num_tok | @true => 0 else 1
@@ -56,7 +56,7 @@ $ some_i : Maybe Int = .Just.{ 5 }
 $ chk2c : Int = is get 0 some_i | 5 => 0 else 1
 $ chk2d : Int = is get 8 none_i | 8 => 0 else 1
 
-# The prelude's generic, recursive `List` (its `[..]`/`::` sugar is hardwired to
+# The prelude's generic, recursive `@list` (its `[..]`/`::` sugar is hardwired to
 # that name). Under STRICT evaluation this builds FINITE lists only; the former
 # infinite stream (`from` / `take3sum`) was lazy data and will return as
 # `@codata` (docs/effect-system-design.md section 1a).
@@ -70,10 +70,10 @@ $ chk4 : Int =
         is r - l | 1 => 0 else 1
     else 1
 
-# Nested instantiation: a `List` whose element is itself a `Maybe Int`.
-$ boxed : List (Maybe Int) = List.Cons.{ .Just.{42}, List.Nil }
+# Nested instantiation: a `@list` whose element is itself a `Maybe Int`.
+$ boxed : @list (Maybe Int) = (.Just.{42}) :: []
 $ chk4b : Int =
-    is boxed | List.Cons.{ h, _ } =>
+    is boxed | h :: _ =>
         is h | Maybe.Just.{ v } => (is v | 42 => 0 else 1) else 1
     else 1
 

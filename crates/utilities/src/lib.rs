@@ -8,12 +8,14 @@
 //!   platform truth: word size, `@extern` library resolution, toolchain).
 
 pub mod arena;
+pub mod cabi;
 pub mod error;
 pub mod handle;
 pub mod scc;
 pub mod target;
 
 pub use arena::Arena;
+pub use cabi::{CField, CKind, CLayout, ExternArg};
 pub use error::{Code, Diagnostic, Line, Result, Span};
 pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
 pub use target::{toolchain, Arch, Os, Target, Toolchain};

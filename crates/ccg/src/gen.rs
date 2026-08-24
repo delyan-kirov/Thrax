@@ -30,7 +30,10 @@ enum Sink {
 
 /// A distinct `@extern` binding the C backend emits a wrapper for. Deduplicated
 /// by symbol + library + signature; a `THxRT_extern(idx, arity)` value points at
-/// its wrapper in the generated `THxRT_extern_table`.
+/// its wrapper in the generated `THxRT_extern_table`. The wrapper is N-ary (one
+/// positional C argument per `arg_types` entry, or one unit argument for a
+/// nullary C function): the record grouping several C parameters is flattened
+/// into positional arguments at the call site during lowering.
 #[derive(Clone)]
 pub struct ExternSite {
     pub abi: String,
@@ -67,8 +70,17 @@ pub struct Emitter<'p> {
 }
 
 /// The dedup key for an extern site.
-fn extern_key(abi: &str, symbol: &str, lib: &str, arg_types: &[String], ret_type: &str) -> String {
-    format!("{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}", arg_types.join(","))
+fn extern_key(
+    abi: &str,
+    symbol: &str,
+    lib: &str,
+    arg_types: &[String],
+    ret_type: &str,
+) -> String {
+    format!(
+        "{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}",
+        arg_types.join(",")
+    )
 }
 
 /// Visit every [`Atom`] occurring in `e` (including those captured inside a
@@ -341,12 +353,268 @@ fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
     }
 }
 
+/// The C scalar type for a leaf kind, and whether it is a floating type (so the
+/// wrapper reads/writes it as a `num` rather than an `int`).
+fn c_leaf(kind: &utilities::CKind) -> (&'static str, bool) {
+    use utilities::CKind::*;
+    match kind {
+        S8 => ("int8_t", false),
+        S16 => ("int16_t", false),
+        S32 => ("int32_t", false),
+        S64 => ("int64_t", false),
+        U8 => ("uint8_t", false),
+        U16 => ("uint16_t", false),
+        U32 => ("uint32_t", false),
+        U64 => ("uint64_t", false),
+        F32 => ("float", true),
+        F64 => ("double", true),
+        Struct(..) => ("void", false), // handled by name via `c_field_type`
+    }
+}
+
+/// The C identifier for a C-repr struct's emitted `typedef`.
+fn cstruct_name(ty: &str) -> String {
+    let safe: String = ty
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("THx_cstruct_{safe}")
+}
+
+/// The C type of a struct field: a scalar leaf's C type, or a nested struct's
+/// emitted typedef name.
+fn c_field_type(kind: &utilities::CKind) -> String {
+    match kind {
+        utilities::CKind::Struct(name, _) => cstruct_name(name),
+        leaf => c_leaf(leaf).0.to_string(),
+    }
+}
+
+/// Emit `typedef struct { ... } THx_cstruct_<name>;`, recursing into nested
+/// struct fields first (a nested typedef must precede its use). `done` dedups.
+fn emit_cstruct_typedef(
+    name: &str,
+    layout: &utilities::CLayout,
+    out: &mut String,
+    done: &mut std::collections::HashSet<String>,
+) {
+    if !done.insert(name.to_string()) {
+        return;
+    }
+    for f in &layout.fields {
+        if let utilities::CKind::Struct(inner_name, inner) = &f.kind {
+            emit_cstruct_typedef(inner_name, inner, out, done);
+        }
+    }
+    let keyword = if layout.is_union { "union" } else { "struct" };
+    out.push_str(&format!("typedef {keyword} {{ "));
+    for f in &layout.fields {
+        out.push_str(&format!("{} {}; ", c_field_type(&f.kind), f.name));
+    }
+    out.push_str(&format!("}} {};\n", cstruct_name(name)));
+}
+
+/// Emit statements filling the C struct lvalue `dst` from the Thrax struct
+/// `Value*` expression `src`, recursing through nested struct fields. For a union
+/// only the members the value actually carries are written (each guarded by a
+/// presence check), so a value built with one member writes just that one.
+fn emit_pack(dst: &str, src: &str, layout: &utilities::CLayout, out: &mut String) {
+    for f in &layout.fields {
+        let fdst = format!("{dst}.{}", f.name);
+        let field = cstr(f.name.as_bytes());
+        if layout.is_union {
+            out.push_str(&format!("  {{ Value* _u = struct_field({src}, {field});\n  if (_u) {{\n"));
+            emit_field_assign(&fdst, "_u", &f.kind, out);
+            out.push_str("  } }\n");
+        } else {
+            let fsrc = format!("THxVALUE_field({src}, {field})");
+            emit_field_assign(&fdst, &fsrc, &f.kind, out);
+        }
+    }
+}
+
+/// The element type of a `List T` array param marshal name `@structs(T)`.
+fn struct_array_elem(ty: &str) -> Option<&str> {
+    ty.strip_prefix("@structs(").and_then(|s| s.strip_suffix(')'))
+}
+
+/// Parse a callback marshal name `@fn(a,b,...)->r` into (arg marshal names, ret).
+fn parse_cb(ty: &str) -> Option<(Vec<String>, String)> {
+    let rest = ty.strip_prefix("@fn(")?;
+    let (args, ret) = rest.split_once(")->")?;
+    let args = if args.is_empty() {
+        Vec::new()
+    } else {
+        args.split(',').map(str::to_string).collect()
+    };
+    Some((args, ret.to_string()))
+}
+
+/// The C type for a scalar marshal name (callback arg/return).
+fn cb_ctype(name: &str) -> &'static str {
+    match cabi(name) {
+        Cabi::Bytes => "char*",
+        Cabi::Ptr => "void*",
+        Cabi::F32 => "float",
+        Cabi::F64 => "double",
+        Cabi::Unit => "void",
+        Cabi::Int(t) => t,
+    }
+}
+
+/// The libffi kind code for a scalar marshal name (matches the shim's enum).
+fn cb_kind(name: &str) -> i32 {
+    match cabi(name) {
+        Cabi::Bytes | Cabi::Ptr => 11,
+        Cabi::F32 => 9,
+        Cabi::F64 => 10,
+        Cabi::Unit => 0,
+        Cabi::Int(t) => match t {
+            "int8_t" => 1,
+            "int16_t" => 2,
+            "int32_t" => 3,
+            "uint8_t" => 5,
+            "uint16_t" => 6,
+            "uint32_t" => 7,
+            "uint64_t" => 8,
+            _ => 4,
+        },
+    }
+}
+
+/// The C function-pointer type of a callback, e.g. `int64_t (*)(int64_t, int64_t)`.
+fn cb_fnptr_type(args: &[String], ret: &str) -> String {
+    let params = if args.is_empty() {
+        "void".to_string()
+    } else {
+        args.iter().map(|a| cb_ctype(a)).collect::<Vec<_>>().join(", ")
+    };
+    format!("{} (*)({params})", cb_ctype(ret))
+}
+
+/// The C runtime supporting Thrax closures passed to C as function pointers,
+/// via libffi closures. Emitted only when a program has a callback parameter.
+const CALLBACK_RUNTIME: &str = r#"
+/* -- callbacks: a Thrax closure as a C function pointer (libffi closures) -- */
+#include <ffi.h>
+#include <stdlib.h>
+static ffi_type* thx_cbty(int k){
+  switch(k){case 0:return &ffi_type_void;case 1:return &ffi_type_sint8;case 2:return &ffi_type_sint16;
+  case 3:return &ffi_type_sint32;case 4:return &ffi_type_sint64;case 5:return &ffi_type_uint8;
+  case 6:return &ffi_type_uint16;case 7:return &ffi_type_uint32;case 8:return &ffi_type_uint64;
+  case 9:return &ffi_type_float;case 10:return &ffi_type_double;default:return &ffi_type_pointer;}
+}
+typedef struct { Value* closure; int nargs; int akinds[16]; int rkind; ffi_cif cif; ffi_type* aty[16]; ffi_closure* clo; void* code; } ThxCb;
+static Value* thx_cb_argval(void* p, int k){
+  switch(k){case 9:return THxRT_real((double)*(float*)p);case 10:return THxRT_real(*(double*)p);
+  case 1:return THxRT_int(*(int8_t*)p);case 2:return THxRT_int(*(int16_t*)p);case 3:return THxRT_int(*(int32_t*)p);
+  case 4:return THxRT_int(*(int64_t*)p);case 5:return THxRT_int(*(uint8_t*)p);case 6:return THxRT_int(*(uint16_t*)p);
+  case 7:return THxRT_int(*(uint32_t*)p);case 8:return THxRT_int((long long)*(uint64_t*)p);
+  default:return THxRT_int((long long)(intptr_t)*(void**)p);}
+}
+static void thx_cb_setret(void* ret, int k, Value* v){
+  switch(k){case 0:break;case 9:*(float*)ret=(float)THxVALUE_as_num(v);break;case 10:*(double*)ret=THxVALUE_as_num(v);break;
+  default:*(ffi_arg*)ret=(ffi_arg)THxVALUE_as_int(v);break;}
+}
+static void thx_cb_bind(ffi_cif* cif, void* ret, void** args, void* user){
+  (void)cif; ThxCb* cb=user;
+  Value* r=cb->closure; THxMEM_retain(r);           /* own a starting reference */
+  for(int i=0;i<cb->nargs;i++){
+    Value* nr = THxK_call(r, thx_cb_argval(args[i], cb->akinds[i])); /* owned */
+    THxMEM_release(r);                               /* drop the previous owned value */
+    r = nr;
+  }
+  thx_cb_setret(ret, cb->rkind, r);
+  THxMEM_release(r);                                 /* drop the final result */
+}
+static void* thx_cb_make(Value* closure, int nargs, const int* kinds, int rkind, void** code){
+  ThxCb* cb=calloc(1,sizeof(ThxCb)); cb->closure=closure; THxMEM_retain(closure); cb->nargs=nargs; cb->rkind=rkind;
+  for(int i=0;i<nargs;i++){cb->akinds[i]=kinds[i];cb->aty[i]=thx_cbty(kinds[i]);}
+  ffi_prep_cif(&cb->cif, FFI_DEFAULT_ABI, nargs, thx_cbty(rkind), cb->aty);
+  cb->clo=ffi_closure_alloc(sizeof(ffi_closure), &cb->code);
+  ffi_prep_closure_loc(cb->clo,&cb->cif,thx_cb_bind,cb,cb->code);
+  *code=cb->code; return cb;
+}
+static void thx_cb_free(void* h){ ThxCb* cb=h; if(cb){ THxMEM_release(cb->closure); ffi_closure_free(cb->clo); free(cb);} }
+"#;
+
+/// Assign one field: recurse for a nested struct, or read a scalar leaf.
+fn emit_field_assign(fdst: &str, fsrc: &str, kind: &utilities::CKind, out: &mut String) {
+    match kind {
+        utilities::CKind::Struct(_, inner) => emit_pack(fdst, fsrc, inner, out),
+        leaf => {
+            let (cty, is_float) = c_leaf(leaf);
+            let read = if is_float { "THxVALUE_as_num" } else { "THxVALUE_as_int" };
+            out.push_str(&format!("  {fdst} = ({cty}){read}({fsrc});\n"));
+        }
+    }
+}
+
+/// Emit statements building a Thrax struct `Value*` from the C struct expression
+/// `src`, recursing through nested struct fields. Returns the temp holding it.
+fn emit_build(
+    src: &str,
+    name: &str,
+    layout: &utilities::CLayout,
+    out: &mut String,
+    ctr: &mut usize,
+) -> String {
+    let vals: Vec<String> = layout
+        .fields
+        .iter()
+        .map(|f| {
+            let cf = format!("{src}.{}", f.name);
+            match &f.kind {
+                utilities::CKind::Struct(inner_name, inner) => {
+                    emit_build(&cf, inner_name, inner, out, ctr)
+                }
+                leaf if c_leaf(leaf).1 => format!("THxRT_real((double){cf})"),
+                _ => format!("THxRT_int((long long){cf})"),
+            }
+        })
+        .collect();
+    let id = *ctr;
+    *ctr += 1;
+    let fnames: Vec<String> = layout.fields.iter().map(|f| cstr(f.name.as_bytes())).collect();
+    out.push_str(&format!("  const char* _fn{id}[] = {{{}}};\n", fnames.join(", ")));
+    out.push_str(&format!("  Value* _fv{id}[] = {{{}}};\n", vals.join(", ")));
+    out.push_str(&format!(
+        "  Value* _t{id} = THxRT_struct({}, {}, _fn{id}, _fv{id});\n",
+        cstr(name.as_bytes()),
+        layout.fields.len()
+    ));
+    format!("_t{id}")
+}
+
 /// Emit the foreign-function wrappers and the `THxRT_extern_table` the runtime
 /// dispatches through. Each wrapper declares the C symbol with an `__asm__`
 /// label (a direct call, resolved by the linker) and marshals the collected
-/// arguments across the seam.
-pub fn emit_extern_table(externs: &[ExternSite]) -> String {
+/// arguments across the seam. C-repr structs (`@struct @extern`) referenced by a
+/// wrapper are emitted as real C `typedef struct`s and passed/returned by value,
+/// so the C compiler applies the platform ABI.
+pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::CLayout)]) -> String {
+    let layout_of = |name: &str| layouts.iter().find(|(n, _)| n == name).map(|(_, l)| l);
     let mut out = String::from("\n/* -- foreign functions (@extern) -- */\n#include <stdint.h>\n");
+
+    // Emit a C typedef for each C-repr struct any wrapper passes or returns
+    // (nested structs first).
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in externs {
+        for ty in e.arg_types.iter().chain(std::iter::once(&e.ret_type)) {
+            // A direct struct/union type, or the element of a `List T` array param.
+            let sname = struct_array_elem(ty).unwrap_or(ty);
+            if let Some(layout) = layout_of(sname) {
+                emit_cstruct_typedef(sname, layout, &mut out, &mut emitted);
+            }
+        }
+    }
+    // The libffi-closure runtime, only when a program passes a Thrax closure to C.
+    let has_callbacks = externs
+        .iter()
+        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+    if has_callbacks {
+        out.push_str(CALLBACK_RUNTIME);
+    }
     let libs: Vec<&str> = {
         let mut ls: Vec<&str> = externs
             .iter()
@@ -373,45 +641,112 @@ pub fn emit_extern_table(externs: &[ExternSite]) -> String {
             ));
             continue;
         }
-        let (ret_ty, wrap) = c_ret(&e.ret_type);
+        // The C return type + how to wrap the result back into a `Value*`.
+        let ret_layout = layout_of(&e.ret_type);
+        let ret_ty: String = match ret_layout {
+            Some(_) => cstruct_name(&e.ret_type),
+            None => c_ret(&e.ret_type).0.to_string(),
+        };
+
+        // Each argument's C parameter type and the statements that build `a{i}`.
         // A `{}` parameter carries no C argument (a `void`-taking function like
         // `getchar`); it stays in the Thrax arity but is dropped from the call.
-        let params: Vec<(String, String)> = e
-            .arg_types
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| !matches!(cabi(t), Cabi::Unit))
-            .map(|(i, t)| {
+        let mut sig_types: Vec<String> = Vec::new();
+        let mut setup = String::new();
+        let mut call_args: Vec<String> = Vec::new();
+        let mut cb_frees: Vec<usize> = Vec::new();
+        let mut arr_frees: Vec<usize> = Vec::new();
+        for (i, t) in e.arg_types.iter().enumerate() {
+            if matches!(cabi(t), Cabi::Unit) && layout_of(t).is_none() {
+                continue;
+            }
+            if let Some(elem) = struct_array_elem(t) {
+                // A `List T` array: walk the cons list, pack each element into a
+                // contiguous malloc'd buffer, and pass it as a `T*`.
+                let cty = cstruct_name(elem);
+                let layout = layout_of(elem).expect("struct-array element has a layout");
+                sig_types.push(format!("{cty}*"));
+                setup.push_str(&format!(
+                    "  size_t _n{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
+                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) _n{i}++;\n"
+                ));
+                setup.push_str(&format!(
+                    "  {cty}* _arr{i} = _n{i} ? malloc(_n{i} * sizeof({cty})) : NULL;\n"
+                ));
+                setup.push_str(&format!(
+                    "  {{ size_t _j{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
+                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) {{\n\
+                     \x20   Value* _e = _p->u.variant.fields[0];\n"
+                ));
+                emit_pack(&format!("_arr{i}[_j{i}]"), "_e", layout, &mut setup);
+                setup.push_str(&format!("    _j{i}++;\n  }} }}\n"));
+                call_args.push(format!("_arr{i}"));
+                arr_frees.push(i);
+            } else if let Some((cb_args, cb_ret)) = parse_cb(t) {
+                // A callback: build a libffi closure over the Thrax function value
+                // and pass its code pointer as the C function pointer.
+                let fnptr = cb_fnptr_type(&cb_args, &cb_ret);
+                sig_types.push(fnptr.clone());
+                let kinds = if cb_args.is_empty() {
+                    "0".to_string()
+                } else {
+                    cb_args.iter().map(|a| cb_kind(a).to_string()).collect::<Vec<_>>().join(", ")
+                };
+                setup.push_str(&format!("  int _k{i}[] = {{{kinds}}};\n"));
+                setup.push_str(&format!(
+                    "  void* _cc{i}; void* _cb{i} = thx_cb_make(args[{i}], {}, _k{i}, {}, &_cc{i});\n",
+                    cb_args.len(),
+                    cb_kind(&cb_ret)
+                ));
+                call_args.push(format!("({fnptr})_cc{i}"));
+                cb_frees.push(i);
+            } else if let Some(layout) = layout_of(t) {
+                let cty = cstruct_name(t);
+                sig_types.push(cty.clone());
+                setup.push_str(&format!("  {cty} a{i};\n"));
+                emit_pack(&format!("a{i}"), &format!("args[{i}]"), layout, &mut setup);
+                call_args.push(format!("a{i}"));
+            } else {
                 let (ty, expr) = c_param(t, i);
-                (ty.to_string(), expr)
-            })
+                sig_types.push(ty.to_string());
+                setup.push_str(&format!("  {ty} a{i} = {expr};\n"));
+                call_args.push(format!("a{i}"));
+            }
+        }
+        let frees: String = cb_frees
+            .iter()
+            .map(|i| format!("  thx_cb_free(_cb{i});\n"))
+            .chain(arr_frees.iter().map(|i| format!("  free(_arr{i});\n")))
             .collect();
-        let sig = if params.is_empty() {
+        let sig = if sig_types.is_empty() {
             "void".to_string()
         } else {
-            params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>().join(", ")
+            sig_types.join(", ")
         };
         out.push_str(&format!(
             "extern {ret_ty} THx_sym_{n}({sig}) __asm__({});\n",
             cstr(e.symbol.as_bytes())
         ));
         out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));
-        let call_args: Vec<String> = params
-            .iter()
-            .enumerate()
-            .map(|(i, (ty, expr))| {
-                out.push_str(&format!("  {ty} a{i} = {expr};\n"));
-                format!("a{i}")
-            })
-            .collect();
+        // The wrapper is N-ary: `args[i]` is the i-th positional C argument (the
+        // grouping record was flattened at the call site during lowering). A
+        // nullary C function still receives one unit `args[0]`, dropped below.
+        out.push_str(&setup);
         let call = format!("THx_sym_{n}({})", call_args.join(", "));
-        match wrap {
-            None => {
-                out.push_str(&format!("  {call};\n  return THxRT_unit();\n"));
+        match ret_layout {
+            Some(layout) => {
+                out.push_str(&format!("  {ret_ty} _r = {call};\n"));
+                out.push_str(&frees);
+                let mut ctr = 0usize;
+                let tmp = emit_build("_r", &e.ret_type, layout, &mut out, &mut ctr);
+                out.push_str(&format!("  return {tmp};\n"));
             }
-            Some(w) => {
-                out.push_str(&format!("  {ret_ty} _r = {call};\n  return {w};\n"));
-            }
+            None => match c_ret(&e.ret_type).1 {
+                None => out.push_str(&format!("  {call};\n{frees}  return THxRT_unit();\n")),
+                Some(w) => {
+                    out.push_str(&format!("  {ret_ty} _r = {call};\n{frees}  return {w};\n"))
+                }
+            },
         }
         out.push_str("}\n");
     }
@@ -590,7 +925,10 @@ impl<'p> Emitter<'p> {
             } => {
                 let key = extern_key(abi, symbol, lib, arg_types, ret_type);
                 let idx = self.extern_idx[&key];
-                format!("THxRT_extern({idx}, {})", arg_types.len())
+                // The extern value is N-ary: one positional C argument per
+                // `arg_types` entry, or one unit argument for a nullary C function.
+                let arity = arg_types.len().max(1);
+                format!("THxRT_extern({idx}, {arity})")
             }
         }
     }

@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         (Some("lex"), Some(path)) => driver::cmd_lex(path),
         (Some("parse"), Some(path)) => driver::cmd_parse(path),
         (Some("check"), Some(path)) => driver::cmd_check(path),
-        (Some("run"), Some(path)) => driver::cmd_run(path),
+        (Some("run"), Some(path)) => driver::cmd_run(path, rest.get(2..).unwrap_or(&[])),
         (Some("emit-c"), Some(path)) => driver::cmd_emit_c(path, target),
         (Some("build"), Some(path)) => driver::cmd_build(path, target),
         _ => {

@@ -24,28 +24,28 @@ $ new_int : Set Int = Set.{ .m = MAP.new_int }
 
 $ new_str : Set Str = Set.{ .m = MAP.new_str }
 
-$ from_list : (t -> t -> Int) -> List t -> Set t = \c xs =
+$ from_list : (t -> t -> Int) -> @list t -> Set t = \c xs =
 	foldl (\s x = add s x) (new c) xs
 
 # ---- operations ----
 
 $ add : Set t -> t -> Set t = \s x = Set.{ .m = MAP.insert s.m x {} }
 
-$ has : Set t -> t -> Bool = \s x = MAP.has s.m x
+$ has : Set t -> t -> @bool = \s x = MAP.has s.m x
 
 $ remove : Set t -> t -> Set t = \s x = Set.{ .m = MAP.remove s.m x }
 
 $ size : Set t -> Int = \s = MAP.size s.m
 
-$ is_empty : Set t -> Bool = \s = MAP.is_empty s.m
+$ is_empty : Set t -> @bool = \s = MAP.is_empty s.m
 
 # Elements in ascending order.
-$ to_list : Set t -> List t = \s = keys s.m
+$ to_list : Set t -> @list t = \s = keys s.m
 
 $ fold : (a -> t -> a) -> a -> Set t -> a = \f acc s =
 	MAP.fold (\a k u = f a k) acc s.m
 
-$ filter : (t -> Bool) -> Set t -> Set t = \p s =
+$ filter : (t -> @bool) -> Set t -> Set t = \p s =
 	Set.{ .m = MAP.filter (\k u = p k) s.m }
 
 # ---- set algebra ----

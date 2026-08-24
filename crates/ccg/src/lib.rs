@@ -32,13 +32,23 @@ pub struct Emitted {
 /// global and prints `entry`, compiled for `target`. The target fixes the
 /// `TARGET.*` reflection baked into the program (word size, os/arch), so a cross
 /// build reports the target it was compiled for rather than the build host.
-pub fn emit(modules: &[Program], entry: &str, target: utilities::Target) -> String {
-    emit_program(modules, entry, target).source
+pub fn emit(
+    modules: &[Program],
+    entry: &str,
+    kind: frontend::EntryKind,
+    target: utilities::Target,
+) -> String {
+    emit_program(modules, entry, kind, target).source
 }
 
 /// Like [`emit`], also returning the symbolic `@extern` libraries the program
 /// links against (deduplicated, in first-seen order).
-pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target) -> Emitted {
+pub fn emit_program(
+    modules: &[Program],
+    entry: &str,
+    kind: frontend::EntryKind,
+    target: utilities::Target,
+) -> Emitted {
     let prog = ir::lower_modules(modules);
     let reachable = reachable_codes(&prog, entry);
     let (blocks, code_entry, externs) = Emitter::new(&prog, reachable.clone()).run();
@@ -115,7 +125,7 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
 
     // The foreign-function wrappers and their dispatch table (empty table + count
     // 0 when the program has no `@extern`).
-    out.push_str(&emit_extern_table(&externs));
+    out.push_str(&emit_extern_table(&externs, &prog.crepr_layouts));
 
     // The dispatch tables the runtime calls back through: entry block + slot count
     // per lifted Code.
@@ -132,10 +142,11 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
     out.push_str("};\n");
     out.push_str(&format!("const size_t THxRT_code_count = {ncodes};\n\n"));
 
-    // Entry: force every global (so a fault in any definition surfaces), print
-    // `entry`, then release the CAF cache and assert the heap drained clean (the
-    // built-in leak check; exit 97 on a leak).
-    out.push_str("int main(void) {\n");
+    // Entry. A value is forced and printed (`entry = <value>`), with the built-in
+    // leak check (exit 97 on a leak). A C-style `main` is applied to unit or to the
+    // argument vector `[n]Str`, and its `Int` result is the process exit code.
+    out.push_str("int main(int argc, char** argv) {\n");
+    out.push_str("  (void)argc; (void)argv;\n");
     for (name, code) in &canon {
         // Force only globals reachable from the entry (the interpreter is entry-
         // lazy; an unreachable global's CAF is a trap stub).
@@ -143,23 +154,44 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
             out.push_str(&format!("  (void)THxRT_glob({});\n", cstr(name.as_bytes())));
         }
     }
-    out.push_str(&format!("  Value* e = THxRT_glob({});\n", cstr(entry.as_bytes())));
-    out.push_str("  char* shown = thrax_show(e);\n");
-    out.push_str(&format!(
-        "  printf(\"%s = %s\\n\", {}, shown);\n",
-        cstr(entry.as_bytes())
-    ));
-    out.push_str("  free(shown);\n");
-    out.push_str("  for (size_t c = 0; c < THxRT_code_count; c++)\n");
-    out.push_str("    if (g_inited[c]) THxMEM_release(g_cache[c]);\n");
-    out.push_str("  THxMEM_pool_drain(0);\n");
-    out.push_str("  size_t live = THxMEM_live();\n");
-    out.push_str("  THxRT_shutdown();\n");
-    out.push_str("  if (live != 0) {\n");
-    out.push_str("    fprintf(stderr, \"thrax: %zu live allocations at exit (leak)\\n\", live);\n");
-    out.push_str("    return 97;\n");
-    out.push_str("  }\n");
-    out.push_str("  return 0;\n");
+    let entry_c = cstr(entry.as_bytes());
+    match kind {
+        frontend::EntryKind::Value => {
+            out.push_str(&format!("  Value* e = THxRT_glob({entry_c});\n"));
+            out.push_str("  char* shown = thrax_show(e);\n");
+            out.push_str(&format!("  printf(\"%s = %s\\n\", {entry_c}, shown);\n"));
+            out.push_str("  free(shown);\n");
+            out.push_str("  for (size_t c = 0; c < THxRT_code_count; c++)\n");
+            out.push_str("    if (g_inited[c]) THxMEM_release(g_cache[c]);\n");
+            out.push_str("  THxMEM_pool_drain(0);\n");
+            out.push_str("  size_t live = THxMEM_live();\n");
+            out.push_str("  THxRT_shutdown();\n");
+            out.push_str("  if (live != 0) {\n");
+            out.push_str(
+                "    fprintf(stderr, \"thrax: %zu live allocations at exit (leak)\\n\", live);\n",
+            );
+            out.push_str("    return 97;\n");
+            out.push_str("  }\n");
+            out.push_str("  return 0;\n");
+        }
+        frontend::EntryKind::UnitFn | frontend::EntryKind::ArgvFn => {
+            if kind == frontend::EntryKind::ArgvFn {
+                // Build a `[n]Str` from the C argument vector.
+                out.push_str("  Value** _items = (Value**)malloc((size_t)(argc>0?argc:1)*sizeof(Value*));\n");
+                out.push_str("  for (int _i = 0; _i < argc; _i++) _items[_i] = THxRT_str(argv[_i], strlen(argv[_i]));\n");
+                out.push_str("  Value* _arg = tensor_stack(_items, (size_t)argc);\n");
+                out.push_str("  free(_items);\n");
+            } else {
+                out.push_str("  Value* _arg = THxRT_unit();\n");
+            }
+            out.push_str(&format!(
+                "  Value* e = THxK_call(THxRT_glob({entry_c}), _arg);\n"
+            ));
+            out.push_str("  int _code = (int)THxVALUE_as_int(e);\n");
+            out.push_str("  return _code;\n");
+        }
+        frontend::EntryKind::BadFn => unreachable!("rejected before emit"),
+    }
     out.push_str("}\n");
 
     let mut libraries: Vec<String> = Vec::new();
@@ -167,6 +199,14 @@ pub fn emit_program(modules: &[Program], entry: &str, target: utilities::Target)
         if !libraries.iter().any(|l| l == &e.lib) {
             libraries.push(e.lib.clone());
         }
+    }
+    // A program that passes a Thrax closure to C uses libffi closures, so it must
+    // link libffi (the generated callback runtime includes `<ffi.h>`).
+    let uses_callbacks = externs
+        .iter()
+        .any(|e| e.arg_types.iter().any(|t| t.starts_with("@fn(")));
+    if uses_callbacks && !libraries.iter().any(|l| l == "ffi") {
+        libraries.push("ffi".to_string());
     }
     Emitted {
         source: out,

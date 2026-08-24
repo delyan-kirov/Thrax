@@ -130,7 +130,7 @@ $ main : Int =
 $ with STR
 $ with HOST
 
-$ sum : List Int -> Int = \\xs =
+$ sum : @list Int -> Int = \\xs =
 	is xs
 		| [] => 0
 		| h :: t => h + sum t
@@ -168,9 +168,9 @@ $ main : Int =
 $ with STR
 $ with HOST
 
-$ compare : Int -> Int -> Bool = \\a b = a ?> b
+$ compare : Int -> Int -> @bool = \\a b = a ?> b
 
-$ max_of : a -> a -> a  @ctx compare : a -> a -> Bool = \\x y =
+$ max_of : a -> a -> a  @ctx compare : a -> a -> @bool = \\x y =
 	if compare x y => x else y
 
 $ main : Int =
@@ -264,7 +264,7 @@ $ with STR
 $ with HOST
 
 # Flip to true and re-run to start seeing the colors.
-$ animate : Bool = false
+$ animate : @bool = @false
 
 # An effect standing for "recolor the scratchpad".
 $ ChangeColorEffect : @effect = recolor : Str -> {},

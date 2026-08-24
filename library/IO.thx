@@ -15,16 +15,16 @@ $ with STR
 # ---- console ----
 
 $ print : Str -> {} = \s =
-	C.write 1 s (@array_len s); {}
+	C.write {1, s, @array_len s}; {}
 
 $ println : Str -> {} = \s =
-	C.write 1 s (@array_len s); C.write 1 "\n" 1; {}
+	C.write {1, s, @array_len s}; C.write {1, "\n", 1}; {}
 
 $ eprint : Str -> {} = \s =
-	C.write 2 s (@array_len s); {}
+	C.write {2, s, @array_len s}; {}
 
 $ eprintln : Str -> {} = \s =
-	C.write 2 s (@array_len s); C.write 2 "\n" 1; {}
+	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
 
 $ print_int : Int -> {} = \n = print (from_int n)
 
@@ -42,20 +42,20 @@ $ read_line_acc : Str -> Str = \acc =
 
 # A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
 # therefore "anything outside 0..255" rather than a negative Int.
-$ is_byte : Int -> Bool = \c =
-	if c ?< 0 => false else c <= 255
+$ is_byte : Int -> @bool = \c =
+	if c ?< 0 => @false else c <= 255
 
 # ---- files ----
 
 # The whole file as a Str; None when it cannot be opened. Reads are counted
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
 $ read_file : Str -> Option Str = \path =
-	let f = C.fopen path "rb" in
+	let f = C.fopen {path, "rb"} in
 	if f ?= 0 => Option.None
 	else
-		C.fseek f 0 2;
+		C.fseek {f, 0, 2};
 		let n = C.ftell f in
-		C.fseek f 0 0;
+		C.fseek {f, 0, 0};
 		let body = read_bytes f n "" in
 		C.fclose f;
 		Option.Some.{ body }
@@ -69,20 +69,20 @@ $ read_bytes : Int -> Int -> Str -> Str = \f n acc =
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : Str -> Str -> Bool = \path content =
+$ write_file : Str -> Str -> @bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : Str -> Str -> Bool = \path content =
+$ append_file : Str -> Str -> @bool = \path content =
 	spill_file path content "ab"
 
-$ spill_file : Str -> Str -> Str -> Bool = \path content mode =
-	let f = C.fopen path mode in
-	if f ?= 0 => false
+$ spill_file : Str -> Str -> Str -> @bool = \path content mode =
+	let f = C.fopen {path, mode} in
+	if f ?= 0 => @false
 	else
-		C.fputs content f;
+		C.fputs {content, f};
 		(C.fclose f) ?= 0
 
-$ remove_file : Str -> Bool = \path =
+$ remove_file : Str -> @bool = \path =
 	(C.remove path) ?= 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes

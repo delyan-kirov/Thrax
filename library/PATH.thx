@@ -33,8 +33,8 @@ $ strip_trailing : Str -> Str = \p =
 
 # ---- queries ----
 
-$ is_abs : Str -> Bool = \p =
-	if (@array_len p) ?= 0 => false
+$ is_abs : Str -> @bool = \p =
+	if (@array_len p) ?= 0 => @false
 	else (@array_get p 0) ?= 47
 
 # The component after the last '/': "a/b/c" -> "c", "a/b/" -> "b", "/" -> "/".
@@ -68,7 +68,7 @@ $ strip_ext : Str -> Str = \p =
 	else @array_slice p 0 ((@array_len p) - ((@array_len b) - i))
 
 # The non-empty components: "/a//b/" -> ["a", "b"].
-$ parts : Str -> List Str = \p =
+$ parts : Str -> @list Str = \p =
 	filter (\c = (@array_len c) ?> 0) (split p "/")
 
 # ---- building ----

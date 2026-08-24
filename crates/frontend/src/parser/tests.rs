@@ -19,6 +19,21 @@ fn type_names_must_be_capitalized() {
     assert!(parse("@mod M\n$ n : Int = 5").is_ok());
 }
 
+#[test]
+fn value_and_function_names_must_be_lowercase() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+    // A capitalized value or function name is a type/constructor spelling, rejected.
+    assert!(err("@mod M\n$ Foo : Int = 3").contains("lowercase letter"));
+    assert!(err("@mod M\n$ Bar = 3").contains("lowercase letter"));
+    assert!(err("@mod M\n$ GetRandomValue : Int -> Int = \\x = x").contains("lowercase letter"));
+    // Lowercase values/functions parse; capitalized names stay for type decls.
+    assert!(parse("@mod M\n$ foo : Int = 3").is_ok());
+    assert!(parse("@mod M\n$ Point : @struct = a: Int,").is_ok());
+}
+
 /// The single global's body handle, asserting the module has exactly one def.
 fn only_def_body(p: &Parsed) -> Aol<Expr> {
     assert_eq!(p.program.items.len(), 1);
@@ -292,7 +307,7 @@ fn range_builder_parses_to_range_node() {
 
 #[test]
 fn variant_literal_and_when_match() {
-    let src = "@mod M\n$ f = \\l = is l | List.Nil => 0 | List.Cons.{_, xs} => 1 else 2";
+    let src = "@mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 else 2";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -306,13 +321,13 @@ fn variant_literal_and_when_match() {
     let Pattern::Variant { ty, tag, .. } = p.ast.pat(p.ast.slice(arms[1].patterns)[0]) else {
         panic!("expected a variant pattern")
     };
-    assert_eq!(ty.map(|t| p.ast.text(t)), Some("List"));
+    assert_eq!(ty.map(|t| p.ast.text(t)), Some("Lst"));
     assert_eq!(p.ast.text(*tag), "Cons");
 }
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "@mod M\n$ g : List t -> Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "@mod M\n$ g : @list t -> Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(
@@ -336,7 +351,7 @@ fn cons_and_list_and_function_type() {
 
 #[test]
 fn union_effect_import_and_directives() {
-    let src = "@mod M\n$ with List\n$ @private\n$ Color : @union = Red, Green, Blue\n\
+    let src = "@mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : Int, put : Int -> Int\n$ @assert 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);

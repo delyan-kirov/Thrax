@@ -2,7 +2,7 @@
 
 # \file MATH.thx
 # \info Integer helpers, Real helpers, and the libm functions (wrapped from
-#       the auto-injected `C` namespace). Predicates return Bool.
+#       the auto-injected `C` namespace). Predicates return @bool.
 #       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
 #       Real; overload resolution picks by operand type.
 
@@ -22,8 +22,8 @@ $ sign : Int -> Int = \n =
 # `x` forced into [lo, hi].
 $ clamp : Int -> Int -> Int -> Int = \lo hi x = max lo (min hi x)
 
-$ even : Int -> Bool = \n = (abs n) % 2 ?= 0
-$ odd  : Int -> Bool = \n = !(even n)
+$ even : Int -> @bool = \n = (abs n) % 2 ?= 0
+$ odd  : Int -> @bool = \n = !(even n)
 
 $ gcd : Int -> Int -> Int = \a b =
 	if b ?= 0 => abs a else gcd b (a % b)
@@ -58,6 +58,6 @@ $ log  : Real -> Real = \x = C.log x
 $ floor : Real -> Real = \x = C.floor x
 $ ceil  : Real -> Real = \x = C.ceil x
 $ round : Real -> Real = \x = C.round x
-$ pow  : Real -> Real -> Real = \b e = C.pow b e
-$ fmod : Real -> Real -> Real = \a b = C.fmod a b
-$ atan2 : Real -> Real -> Real = \y x = C.atan2 y x
+$ pow  : Real -> Real -> Real = \b e = C.pow {b, e}
+$ fmod : Real -> Real -> Real = \a b = C.fmod {a, b}
+$ atan2 : Real -> Real -> Real = \y x = C.atan2 {y, x}

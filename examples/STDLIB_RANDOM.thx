@@ -20,12 +20,12 @@ $ ck_neg  : Int = if (next (new (0 - 7))).0 ?> 0 => 0 else 1
 $ ck_zero : Int = if (next (new 0)).0 ?= 48271 => 0 else 1
 
 # Bounded draws stay in range across a run of draws.
-$ draws : List Int = draw_n (new 42) 50
-$ draw_n : Rng -> Int -> List Int = \g n =
+$ draws : @list Int = draw_n (new 42) 50
+$ draw_n : Rng -> Int -> @list Int = \g n =
 	if n <= 0 => []
 	else let d = next_below g 10 in d.0 :: draw_n d.1 (n - 1)
 $ ck_below : Int =
-	if all (\x = if x >= 0 => x ?< 10 else false) draws
+	if all (\x = if x >= 0 => x ?< 10 else @false) draws
 	=> 0 else 1
 $ ck_spread : Int = if (maximum draws 0) ?> (minimum draws 9) => 0 else 1
 

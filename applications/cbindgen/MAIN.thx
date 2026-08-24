@@ -1,0 +1,451 @@
+@mod MAIN
+
+# \file MAIN.thx
+# \info A C-header binding generator, written in Thrax. It reads a C header,
+#       strips comments and preprocessor lines (no macro support), tokenizes,
+#       and emits Thrax `@extern` bindings:
+#         - `typedef enum { ... } Name;`  -> an `@int32` alias + named constants
+#         - `typedef struct { ... } Name;` -> `Name : @struct @extern "C" = ...`
+#         - `typedef union  { ... } Name;` -> `Name : @union  @extern "C" = ...`
+#         - `Ret name(params);`            -> `name : ... = @extern "C" "name" LIB`
+#       Type mapping: sized ints/floats, `void`->`{}`, `char*`->`Str`, any other
+#       pointer `T*`->`@ptr` (hand-edit to `@list T` for an array parameter), a known
+#       type name stays itself. A struct/union with an array or bit-field member is
+#       skipped with a note (those member shapes are not representable yet).
+#       The header path(s) are the command-line arguments; the shared library
+#       name is $LIB, the module name is $MOD, output goes to $OUT (or stdout).
+#       Run from this directory:
+#           LIB=libfoo.so thrax run MAIN.thx test.h [more.h ...]
+
+# Brace strings. A literal `{` in a Thrax string opens a `{e}` interpolation, so a
+# literal brace is escaped `\{` / `\}`.
+$ s_lbrace : Str = "\{"
+$ s_rbrace : Str = "\}"
+$ s_unit : Str = "\{}"
+
+# -- character classes (ASCII codes) -----------------------------------------
+$ between : Int -> Int -> Int -> Int = \c lo hi =
+	if c >= lo && c <= hi => 1 else 0
+
+$ is_digit : Int -> Int = \c = between c 48 57
+$ is_alpha : Int -> Int = \c =
+	if between c 65 90 ?= 1 || between c 97 122 ?= 1 || c ?= 95 => 1 else 0
+$ is_alnum : Int -> Int = \c = if is_alpha c ?= 1 || is_digit c ?= 1 => 1 else 0
+$ is_space : Int -> Int = \c =
+	if c ?= 32 || c ?= 9 || c ?= 10 || c ?= 13 => 1 else 0
+$ is_upper_start : Str -> Int = \s =
+	if @array_len s ?= 0 => 0 else between (@array_get s 0) 65 90
+$ hl_loop : Str -> Int -> Int -> Int = \s i n =
+	if i >= n => 0
+	else if between (@array_get s i) 97 122 ?= 1 => 1 else hl_loop s (i + 1) n
+$ has_lower : Str -> Int = \s = hl_loop s 0 (@array_len s)
+# A C token names a user type when it is capitalized AND mixed-case (`Vector2`,
+# `Color`), which distinguishes it from an all-caps export macro or qualifier such
+# as raylib's `RLAPI` (those must not be read as the type in a declaration).
+$ is_type_name : Str -> Int = \s = if is_upper_start s ?= 1 && has_lower s ?= 1 => 1 else 0
+# Thrax functions are lowercase; a C function name (PascalCase) is lowercased at
+# its first letter for the binding name (the C symbol keeps its original case).
+$ to_lower_c : Int -> Int = \c = if between c 65 90 ?= 1 => c + 32 else c
+$ lower_first : Str -> Str = \s =
+	let n = @array_len s in
+	if n ?= 0 => s
+	else (@array_push "" (to_lower_c (@array_get s 0))) ++ (@array_slice s 1 n)
+# Enum constants are SCREAMING_CASE in C; lowercase the whole name (RED -> red).
+$ tla_loop : Str -> Int -> Int -> Str -> Str = \s i n acc =
+	if i >= n => acc else tla_loop s (i + 1) n (@array_push acc (to_lower_c (@array_get s i)))
+$ to_lower_all : Str -> Str = \s = tla_loop s 0 (@array_len s) ""
+
+# -- small list helpers ------------------------------------------------------
+$ rev1 : @list Str -> @list Str -> @list Str = \xs acc =
+	is xs | [] => acc | h :: t => rev1 t (h :: acc)
+$ reverse : @list Str -> @list Str = \xs = rev1 xs []
+
+$ last1 : @list Str -> Str = \xs = is xs | [] => "" | h :: [] => h | h :: t => last1 t
+$ init1 : @list Str -> @list Str = \xs = is xs | [] => [] | h :: [] => [] | h :: t => h :: init1 t
+
+$ has_tok : @list Str -> Str -> Int = \xs t =
+	is xs | [] => 0 | h :: r => if h ?= t => 1 else has_tok r t
+$ count_tok : @list Str -> Str -> Int = \xs t =
+	is xs | [] => 0 | h :: r => (if h ?= t => 1 else 0) + count_tok r t
+
+$ take_until : @list Str -> Str -> @list Str = \xs d =
+	is xs | [] => [] | h :: r => if h ?= d => [] else h :: take_until r d
+$ drop_until : @list Str -> Str -> @list Str = \xs d =
+	is xs | [] => [] | h :: r => if h ?= d => r else drop_until r d
+
+$ split_loop : @list Str -> Str -> @list Str -> @list (@list Str) = \xs d cur =
+	is xs
+		| [] => (is cur | [] => [] | _ => [reverse cur])
+		| h :: r =>
+			if h ?= d => (reverse cur) :: split_loop r d []
+			else split_loop r d (h :: cur)
+$ split_on : @list Str -> Str -> @list (@list Str) = \xs d = split_loop xs d []
+
+# -- integers ----------------------------------------------------------------
+$ sti_loop : Str -> Int -> Int -> Int -> Int = \s i n acc =
+	if i >= n => acc
+	else let c = @array_get s i in
+		if is_digit c ?= 1 => sti_loop s (i + 1) n (acc * 10 + (c - 48))
+		else acc
+# A hex digit's value, or -1 for a non-hex byte (loop sentinel).
+$ hex_val : Int -> Int = \c =
+	if is_digit c ?= 1 => c - 48
+	else if between c 97 102 ?= 1 => c - 87
+	else if between c 65 70 ?= 1 => c - 55
+	else 0 - 1
+$ sti_hex : Str -> Int -> Int -> Int -> Int = \s i n acc =
+	if i >= n => acc
+	else let d = hex_val (@array_get s i) in
+		if d ?< 0 => acc else sti_hex s (i + 1) n (acc * 16 + d)
+# Decimal, or hexadecimal for a `0x`/`0X` prefix (raylib's flag enums use hex).
+$ str_to_int : Str -> Int = \s =
+	let n = @array_len s in
+	if n >= 2 && @array_get s 0 ?= 48 && (@array_get s 1 ?= 120 || @array_get s 1 ?= 88) =>
+		sti_hex s 2 n 0
+	else sti_loop s 0 n 0
+
+# -- read the whole input ----------------------------------------------------
+$ read_all : Int -> Str -> Str = \f acc =
+	let c = C.fgetc f in
+	if c ?< 0 => acc else read_all f (@array_push acc c)
+
+# -- strip comments and `#` preprocessor lines -------------------------------
+# state: 0 normal, 1 line-comment (to newline), 2 block-comment (to `*/`).
+# at_ls: at line start (through leading spaces), for detecting `#` lines.
+$ clean_loop : Str -> Int -> Int -> Str -> Int -> Int -> Str =
+	\s i n out state at_ls =
+	if i >= n => out
+	else
+		let c = @array_get s i,
+		    c2 = if (i + 1) ?< n => @array_get s (i + 1) else 0 in
+		is state
+			| 1 =>
+				if c ?= 10 => clean_loop s (i + 1) n (@array_push out 10) 0 1
+				else clean_loop s (i + 1) n out 1 at_ls
+			| 2 =>
+				if c ?= 42 => (if c2 ?= 47 => clean_loop s (i + 2) n out 0 0
+				               else clean_loop s (i + 1) n out 2 at_ls)
+				else clean_loop s (i + 1) n out 2 at_ls
+			else
+				if c ?= 47 => (if c2 ?= 47 => clean_loop s (i + 2) n out 1 at_ls
+				               else if c2 ?= 42 => clean_loop s (i + 2) n out 2 at_ls
+				               else clean_loop s (i + 1) n (@array_push out c) 0 0)
+				else if c ?= 35 => (if at_ls ?= 1 => clean_loop s (i + 1) n out 1 0
+				                    else clean_loop s (i + 1) n (@array_push out c) 0 0)
+				else
+					let nls = if c ?= 10 => 1 else if is_space c ?= 1 => at_ls else 0 in
+					clean_loop s (i + 1) n (@array_push out c) 0 nls
+$ clean : Str -> Str = \s = clean_loop s 0 (@array_len s) "" 0 1
+
+# -- tokenize ----------------------------------------------------------------
+$ flush : Str -> @list Str -> @list Str = \cur acc =
+	if @array_len cur ?= 0 => acc else cur :: acc
+$ tok_loop : Str -> Int -> Int -> Str -> @list Str -> @list Str = \s i n cur acc =
+	if i >= n => reverse (flush cur acc)
+	else
+		let c = @array_get s i in
+		if is_space c ?= 1 => tok_loop s (i + 1) n "" (flush cur acc)
+		else if is_alnum c ?= 1 => tok_loop s (i + 1) n (@array_push cur c) acc
+		else
+			let punct = @array_push "" c in
+			tok_loop s (i + 1) n "" (punct :: flush cur acc)
+$ tokenize : Str -> @list Str = \s = tok_loop s 0 (@array_len s) "" []
+
+# -- normalize the token stream ----------------------------------------------
+# Drop string literals (`"C"` in `extern "C"`, and any others): everything
+# between a pair of `"` tokens, and the quotes.
+$ s_quote : Str = @array_push "" 34
+$ ds_loop : @list Str -> Int -> @list Str -> @list Str = \xs instr acc =
+	is xs | [] => reverse acc
+		| h :: r =>
+			if h ?= s_quote => ds_loop r (if instr ?= 1 => 0 else 1) acc
+			else if instr ?= 1 => ds_loop r 1 acc
+			else ds_loop r 0 (h :: acc)
+$ drop_strings : @list Str -> @list Str = \xs = ds_loop xs 0 []
+
+# Unwrap a C++ linkage block `extern "C" { ... }` (strings already dropped, so it
+# reads `extern {`): drop the `extern`, its opening `{`, and the matching `}`, so
+# the wrapped prototypes sit at brace depth 0. Other braces (struct bodies) and a
+# bare `extern` on a global stay. The brace stack marks each open brace 1=linkage.
+$ dl_loop : @list Str -> @list Int -> @list Str -> @list Str = \xs stack acc =
+	is xs | [] => reverse acc
+		| h :: r =>
+			if h ?= "extern" =>
+				(is r | b :: r2 => if b ?= s_lbrace => dl_loop r2 (1 :: stack) acc
+				                   else dl_loop r stack acc
+				      | [] => reverse acc)
+			else if h ?= s_lbrace => dl_loop r (0 :: stack) (h :: acc)
+			else if h ?= s_rbrace =>
+				(is stack | top :: rest => if top ?= 1 => dl_loop r rest acc
+				                           else dl_loop r rest (h :: acc)
+				          | [] => dl_loop r [] (h :: acc))
+			else dl_loop r stack (h :: acc)
+$ drop_linkage : @list Str -> @list Str = \xs = dl_loop xs [] []
+
+# Drop tokens that never affect a binding: C type qualifiers and storage
+# specifiers. (Macros like raylib's `RLAPI` are handled by `is_type_name`, which
+# only accepts a mixed-case token as a type.)
+$ is_noise : Str -> Int = \t =
+	if t ?= "const" => 1 else if t ?= "volatile" => 1 else if t ?= "restrict" => 1
+	else if t ?= "static" => 1 else if t ?= "inline" => 1 else if t ?= "register" => 1 else 0
+$ sn_loop : @list Str -> @list Str -> @list Str = \xs acc =
+	is xs | [] => reverse acc | h :: r => if is_noise h ?= 1 => sn_loop r acc else sn_loop r (h :: acc)
+$ strip_noise : @list Str -> @list Str = \xs = sn_loop xs []
+
+# -- split the token stream into top-level declarations (by `;` at depth 0) ---
+$ decl_loop : @list Str -> Int -> @list Str -> @list (@list Str) = \xs depth cur =
+	is xs
+		| [] => (is cur | [] => [] | _ => [reverse cur])
+		| h :: r =>
+			if h ?= s_lbrace => decl_loop r (depth + 1) (h :: cur)
+			else if h ?= s_rbrace => decl_loop r (depth - 1) (h :: cur)
+			else if h ?= ";" =>
+				if depth ?= 0 => (reverse cur) :: decl_loop r 0 []
+				else decl_loop r depth (h :: cur)
+			else decl_loop r depth (h :: cur)
+$ declarations : @list Str -> @list (@list Str) = \xs = decl_loop xs 0 []
+
+# -- C type -> Thrax type ----------------------------------------------------
+$ is_basekw : Str -> Int = \t =
+	if t ?= "void" => 1 else if t ?= "char" => 1 else if t ?= "short" => 1
+	else if t ?= "int" => 1 else if t ?= "long" => 1 else if t ?= "float" => 1
+	else if t ?= "double" => 1 else if t ?= "bool" => 1 else 0
+$ base_type : @list Str -> Str = \xs =
+	is xs | [] => ""
+		| h :: r =>
+			if is_basekw h ?= 1 => h
+			else if is_type_name h ?= 1 => h
+			else base_type r
+# Emits the `@`-sigil built-in types (the canonical spellings). The friendly
+# `Int`/`Nat` word-size names are used only for the untyped fallback.
+$ map_base : Str -> Int -> Str = \b uns =
+	if b ?= "int" => (if uns ?= 1 => "@nat32" else "@int32")
+	else if b ?= "char" => (if uns ?= 1 => "@nat8" else "@int8")
+	else if b ?= "short" => "@int16"
+	else if b ?= "long" => "@int64"
+	else if b ?= "float" => "@float32"
+	else if b ?= "double" => "@float64"
+	else if b ?= "void" => s_unit
+	else if b ?= "bool" => "@nat8"
+	else if b ?= "" => (if uns ?= 1 => "Nat" else "Int")
+	else b
+# A single `char *` is a Str; any other pointer (incl `char **`) is a @ptr.
+$ c_type_of : @list Str -> Str = \toks =
+	let stars = count_tok toks "*",
+	    uns = has_tok toks "unsigned",
+	    base = base_type toks in
+	if stars ?= 1 && base ?= "char" => "Str"
+	else if stars >= 1 => "@ptr"
+	else map_base base uns
+
+# The Thrax types `c_type_of` produces that are always available (need no decl).
+# Anything else is a user type that must have been emitted to be referenceable.
+$ is_builtin_ty : Str -> Int = \t =
+	if t ?= s_unit => 1 else if t ?= "Str" => 1 else if t ?= "@ptr" => 1
+	else if t ?= "Int" => 1 else if t ?= "Nat" => 1 else if t ?= "Real" => 1
+	else if t ?= "@int8" => 1 else if t ?= "@int16" => 1 else if t ?= "@int32" => 1 else if t ?= "@int64" => 1
+	else if t ?= "@nat8" => 1 else if t ?= "@nat16" => 1 else if t ?= "@nat32" => 1 else if t ?= "@nat64" => 1
+	else if t ?= "@float32" => 1 else if t ?= "@float64" => 1 else 0
+
+# -- emit: enum --------------------------------------------------------------
+$ enum_line : Str -> Int -> Str = \name val =
+	"$ " ++ to_lower_all name ++ " : @int32 = " ++ to_string val ++ "\n"
+$ enum_consts : @list Str -> Int -> Str -> Str = \toks nextval out =
+	is toks
+		| [] => out
+		| h :: t =>
+			if h ?= "," => enum_consts t nextval out
+			else is t
+				| eq :: v :: rest =>
+					if eq ?= "=" =>
+						let val = str_to_int v in
+						enum_consts rest (val + 1) (out ++ enum_line h val)
+					else enum_consts t (nextval + 1) (out ++ enum_line h nextval)
+				| _ => enum_consts t (nextval + 1) (out ++ enum_line h nextval)
+$ emit_enum : @list Str -> Str = \toks =
+	let name = last1 toks,
+	    body = take_until (drop_until toks s_lbrace) s_rbrace in
+	if is_upper_start name ?= 0 => "# skipped enum " ++ name ++ " (name is not a Thrax type)\n"
+	else "$ " ++ name ++ " : @alias = @int32\n" ++ enum_consts body 0 ""
+
+# -- emit: struct / union ----------------------------------------------------
+$ field_ok : @list Str -> Int = \g =
+	is g | [] => 0 | _ => if has_tok g "[" ?= 1 => 0 else 1
+$ fields_ok : @list (@list Str) -> Int = \gs =
+	is gs | [] => 1
+		| h :: r =>
+			is h | [] => fields_ok r
+				| _ => if field_ok h ?= 1 => fields_ok r else 0
+# One `;`-group may declare several fields that share a base type, e.g.
+# `float m0, m4, m8, m12;`. The base type and `unsigned` are group-wide; each
+# comma-separated declarator supplies its own name and its own `*` (pointer).
+# In a C-repr struct field any pointer is `@ptr` (unlike a function signature,
+# `char *` is not `Str` here: `Str` is not a C-layout-representable field type).
+$ decl_str : Str -> Int -> @list Str -> Str = \base uns sub =
+	let stars = count_tok sub "*",
+	    name = last1 sub,
+	    ty = if stars >= 1 => "@ptr" else map_base base uns in
+	name ++ ": " ++ ty ++ ", "
+$ decls_str : @list (@list Str) -> Str -> Int -> Str = \subs base uns =
+	is subs | [] => "" | s :: r => decl_str base uns s ++ decls_str r base uns
+$ group_str : @list Str -> Str = \h =
+	let base = base_type h,
+	    uns = has_tok h "unsigned" in
+	decls_str (split_on h ",") base uns
+$ fields_str : @list (@list Str) -> Str = \gs =
+	is gs | [] => ""
+		| h :: r =>
+			is h | [] => fields_str r | _ => group_str h ++ fields_str r
+$ emit_record : @list Str -> Str -> Str = \toks kw =
+	let name = last1 toks in
+	if is_upper_start name ?= 0 => "# skipped " ++ kw ++ " " ++ name ++ " (name is not a Thrax type)\n"
+	else if has_tok toks s_lbrace ?= 0 => "$ " ++ name ++ " : @alias = @ptr\n"
+	else
+		let body = take_until (drop_until toks s_lbrace) s_rbrace,
+		    fields = split_on body ";" in
+		if fields_ok fields ?= 1 =>
+			"$ " ++ name ++ " : @" ++ kw ++ " @extern \"C\" = " ++ fields_str fields ++ "\n"
+		else "# skipped " ++ kw ++ " " ++ name ++ " (array or bit-field member)\n"
+
+# -- emit: function prototype ------------------------------------------------
+$ keep_types : @list (@list Str) -> @list Str = \ps =
+	is ps | [] => []
+		| h :: r =>
+			is h | [] => keep_types r
+				| _ => let t = c_type_of h in
+					if t ?= s_unit => keep_types r else t :: keep_types r
+# A C function has no first-class closure to curry, so a Thrax `@extern` takes
+# exactly ONE argument. A one-parameter C function stays `A -> B`; several C
+# parameters group into a record `{p0: T0, p1: T1, ...} -> R` (fields in C order,
+# named positionally); a nullary C function takes unit `{} -> R`.
+$ record_fields : @list Str -> Int -> Str = \ts i =
+	is ts | [] => ""
+		| h :: [] => "p" ++ to_string i ++ ": " ++ h
+		| h :: r => "p" ++ to_string i ++ ": " ++ h ++ ", " ++ record_fields r (i + 1)
+$ build_sig : @list (@list Str) -> Str -> Str = \ptoks ret =
+	let types = keep_types ptoks in
+	is types
+		| [] => s_unit ++ " -> " ++ ret
+		| t :: [] => t ++ " -> " ++ ret
+		| _ => s_lbrace ++ record_fields types 0 ++ s_rbrace ++ " -> " ++ ret
+# Every referenced type must be a builtin or a type we actually emitted; a
+# function that passes/returns an unrepresentable type (a skipped struct) by
+# value is skipped rather than left dangling.
+$ refs_ok : @list Str -> @list Str -> Int = \tys known =
+	is tys | [] => 1
+		| t :: r =>
+			if is_builtin_ty t ?= 1 => refs_ok r known
+			else if has_tok known t ?= 1 => refs_ok r known
+			else 0
+$ emit_func : @list Str -> Str -> @list Str -> Str = \toks lib known =
+	let before = take_until toks "(",
+	    params = take_until (drop_until toks "(") ")",
+	    name = last1 before,
+	    fname = lower_first name,
+	    ret = c_type_of (init1 before),
+	    groups = split_on params ",",
+	    sig = build_sig groups ret in
+	if refs_ok (ret :: keep_types groups) known ?= 0 =>
+		"# skipped fn " ++ fname ++ " (uses an unrepresentable type)\n"
+	else "$ " ++ fname ++ " : " ++ sig ++ " = @extern \"C\" \"" ++ name ++ "\" \"" ++ lib ++ "\"\n"
+
+# The token right after the first occurrence of `t` (for a function-pointer name
+# `(*Name)`, the token after `*`), or "" if there is none.
+$ after_tok : @list Str -> Str -> Str = \xs t =
+	is xs | [] => "" | h :: r => if h ?= t => (is r | [] => "" | x :: _ => x) else after_tok r t
+
+# -- dispatch one declaration ------------------------------------------------
+$ emit_typedef : @list Str -> Str = \t =
+	is t
+		| k :: rest =>
+			if k ?= "enum" => emit_enum rest
+			else if k ?= "struct" => emit_record rest "struct"
+			else if k ?= "union" => emit_record rest "union"
+			# `typedef <ret> (*Name)(params);` -> an opaque callback pointer.
+			else if has_tok t "(" ?= 1 && has_tok t "*" ?= 1 =>
+				let name = after_tok t "*" in
+				if is_type_name name ?= 0 => "# skipped function-pointer typedef\n"
+				else "$ " ++ name ++ " : @alias = @ptr\n"
+			# `typedef <type> Name;` -> an alias
+			else let name = last1 t in
+				if is_upper_start name ?= 0 => "# skipped typedef " ++ name ++ " (name is not a Thrax type)\n"
+				else "$ " ++ name ++ " : @alias = " ++ c_type_of (init1 t) ++ "\n"
+		| _ => ""
+
+$ emit_decl : @list Str -> Str -> @list Str -> Str = \toks lib known =
+	is toks
+		| [] => ""
+		| h :: t =>
+			if h ?= "typedef" => emit_typedef t
+			else if has_tok toks "(" ?= 1 => emit_func toks lib known
+			else ""
+
+# First pass: the type name a declaration DEFINES (for the known-types set), or
+# "" for a function or a declaration we cannot represent. Mirrors the emit
+# dispatch so a type is "known" exactly when its binding is actually emitted.
+$ record_tyname : @list Str -> Str = \toks =
+	let name = last1 toks in
+	if is_upper_start name ?= 0 => ""
+	else if has_tok toks s_lbrace ?= 0 => name
+	else let body = take_until (drop_until toks s_lbrace) s_rbrace,
+	         fields = split_on body ";" in
+		if fields_ok fields ?= 1 => name else ""
+$ decl_tyname : @list Str -> Str = \toks =
+	is toks | [] => ""
+		| h :: t =>
+			if h ?= "typedef" =>
+				(is t | k :: rest =>
+					if k ?= "enum" => (let n = last1 t in if is_upper_start n ?= 1 => n else "")
+					else if k ?= "struct" => record_tyname rest
+					else if k ?= "union" => record_tyname rest
+					else if has_tok t "(" ?= 1 && has_tok t "*" ?= 1 =>
+						(let n = after_tok t "*" in if is_type_name n ?= 1 => n else "")
+					else (let n = last1 t in if is_upper_start n ?= 1 => n else "")
+				 | _ => "")
+			else ""
+$ collect_types : @list (@list Str) -> @list Str -> @list Str = \decls acc =
+	is decls | [] => acc
+		| d :: r =>
+			let n = decl_tyname d in
+			if @array_len n ?= 0 => collect_types r acc else collect_types r (n :: acc)
+
+$ gen : @list (@list Str) -> Str -> @list Str -> Str -> Str = \decls lib known out =
+	is decls | [] => out | d :: r => gen r lib known (out ++ emit_decl d lib known)
+
+# -- driver ------------------------------------------------------------------
+$ getenv_or : Str -> Str -> Str = \name dflt =
+	let v = C.getenv name in
+	if @array_len v ?= 0 => dflt else v
+
+# The header paths are the command-line arguments (argv[0] is the program, so
+# the files start at index 1). With none given, fall back to `test.h`.
+$ collect : [n]Str -> Int -> Int -> @list Str -> @list Str = \args i n acc =
+	if i >= n => reverse acc else collect args (i + 1) n (@tensor_index args i :: acc)
+$ headers : [n]Str -> @list Str = \args =
+	let hs = collect args 1 (@tensor_length args) [] in
+	is hs | [] => ["test.h"] | _ => hs
+
+# Read one header and generate its bindings; a missing file becomes a note so a
+# run over several headers is not aborted by one bad path.
+$ gen_file : Str -> Str -> Str = \path lib =
+	let f = C.fopen {path, "r"} in
+	if f ?= 0 => "# cbindgen: cannot open " ++ path ++ "\n"
+	else
+		let text = read_all f "",
+		    _ = C.fclose f,
+		    decls = declarations (strip_noise (drop_linkage (drop_strings (tokenize (clean text))))),
+		    known = collect_types decls [] in
+		gen decls lib known ""
+$ gen_all : @list Str -> Str -> Str -> Str = \paths lib out =
+	is paths | [] => out | p :: r => gen_all r lib (out ++ gen_file p lib)
+
+$ main : [n]Str -> <| e> Int = \args =
+	let lib = getenv_or "LIB" "lib.so",
+	    modname = getenv_or "MOD" "BINDINGS",
+	    bindings = "@mod " ++ modname ++ "\n\n" ++ gen_all (headers args) lib "",
+	    outp = C.getenv "OUT" in
+	if @array_len outp ?= 0 => let _ = C.write {1, bindings, @array_len bindings} in 0
+	else
+		let of = C.fopen {outp, "w"},
+		    _ = C.fputs {bindings, of},
+		    _ = C.fclose of in 0

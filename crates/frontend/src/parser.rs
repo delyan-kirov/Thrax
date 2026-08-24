@@ -342,6 +342,19 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A value or function name must start with a lowercase letter; a capitalized
+    /// name is a type or constructor. Symbolic names (operators) are exempt.
+    fn require_value_lowercase(&self, text: &str, tok: &Token) -> Result<()> {
+        if text.starts_with(|c: char| c.is_ascii_uppercase()) {
+            Err(self.unexpected(
+                tok,
+                "a value or function name must start with a lowercase letter (a capitalized name is a type or constructor)",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     // -- program + globals --------------------------------------------------
 
     /// Parse a whole compilation unit.
@@ -454,6 +467,7 @@ impl<'a> Parser<'a> {
         let name = self.intern(self.text(name_tok));
         if !self.eat(|k| matches!(k, Kind::Colon))? {
             expect!(self, Kind::Eq, "expected ':' or '=' after the name");
+            self.require_value_lowercase(self.text(name_tok), &name_tok)?;
             return Ok(Item::Def {
                 name,
                 sig: None,
@@ -472,6 +486,14 @@ impl<'a> Parser<'a> {
             match kw {
                 "struct" => {
                     self.bump()?;
+                    // An optional `@extern "abi"` marks a C-layout foreign struct.
+                    // Unlike the function form it names only the ABI (no symbol/lib).
+                    let abi = if self.at_intrinsic("extern")? {
+                        self.bump()?; // '@extern'
+                        Some(self.expect_string("expected an ABI string after '@extern'")?)
+                    } else {
+                        None
+                    };
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
                     let (includes, fields) = self.parse_struct_body()?;
@@ -480,10 +502,28 @@ impl<'a> Parser<'a> {
                         params,
                         includes,
                         fields,
+                        abi,
+                        c_union: false,
                     });
                 }
                 "union" => {
                     self.bump()?;
+                    // `@union @extern "abi"` is a C union: struct-like members
+                    // sharing offset 0. It parses and elaborates as a C-repr struct.
+                    if self.at_intrinsic("extern")? {
+                        self.bump()?; // '@extern'
+                        let abi = self.expect_string("expected an ABI string after '@extern'")?;
+                        expect!(self, Kind::Eq, "expected '=' after '@union @extern'");
+                        let (includes, fields) = self.parse_struct_body()?;
+                        return Ok(Item::Struct {
+                            name,
+                            params: self.ast.make_slice(Vec::new()),
+                            includes,
+                            fields,
+                            abi: Some(abi),
+                            c_union: true,
+                        });
+                    }
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@union'");
                     let (includes, variants) = self.parse_union_body()?;
@@ -521,6 +561,7 @@ impl<'a> Parser<'a> {
                 _ => {} // an @tycon type signature; fall through
             }
         }
+        self.require_value_lowercase(self.text(name_tok), &name_tok)?;
         let sig = Some(self.parse_type()?);
         let implicits = self.parse_ctx_decls()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
@@ -558,6 +599,12 @@ impl<'a> Parser<'a> {
     fn at_ctx(&mut self) -> Result<bool> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == "ctx")
+    }
+
+    /// Is the next token the `@name` intrinsic keyword?
+    fn at_intrinsic(&mut self, name: &str) -> Result<bool> {
+        let t = self.peek()?;
+        Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == name)
     }
 
     /// Parse a postfix `@ctx` override on `callee`: a single positional value
@@ -1019,10 +1066,21 @@ impl<'a> Parser<'a> {
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
                     Some(bp) if bp.left >= min_bp => {
+                        let lexeme = self.text(t).to_string();
                         self.bump()?;
-                        let op = self.intern(self.text(t));
                         let rhs = self.parse_expr(bp.right)?;
-                        let node = self.expr(Expr::BinOp { op, lhs, rhs });
+                        // `&&`/`||` are short-circuit: desugar to a lazy `if` so the
+                        // right operand runs only when needed.
+                        let node = if lexeme == "&&" {
+                            let alt = self.expr(Expr::Bool(false));
+                            self.expr(Expr::If { cond: lhs, then: rhs, alt })
+                        } else if lexeme == "||" {
+                            let then = self.expr(Expr::Bool(true));
+                            self.expr(Expr::If { cond: lhs, then, alt: rhs })
+                        } else {
+                            let op = self.intern(&lexeme);
+                            self.expr(Expr::BinOp { op, lhs, rhs })
+                        };
                         lhs = self.stamp(start, node);
                     }
                     _ => break,

@@ -49,6 +49,8 @@ Definition delimiter token:
 		- `+`  `-`  `*`  `/`  `%`     (arithmetic)
 		- `!`                         (logical not, unary)
 		- `?=`                        (equality test)
+		- `&&`  `||`                  (short-circuit and/or; desugar to a lazy `if`,
+		                               so the right operand runs only when needed)
 		- `$`                         (global marker)
 		- `:`                         (has-type)
 		- `->`                        (function type arrow)
@@ -72,8 +74,8 @@ Definition expr:
 	  parameters are curried sugar: `\x y z = e` means `\x = \y = \z = e`. A
 	  parameter may be an irrefutable pattern (see PATTERNS), e.g.
 	  `\Person.{ name, _ } = name`.
-	- `if` e_1 `then` e_2 `else` e_3   is a conditional. The condition e_1 is an
-	  Int; it takes the then-branch when nonzero. (There is no Bool type yet.)
+	- `if` e_1 `then` e_2 `else` e_3   is a conditional. The condition is a @bool
+	  (`@true`/`@false`); a comparison like `a ?= b` yields one.
 	- `if` e `is` pat `then` e ... `else` e   is a match (note the `is`). See
 	  PATTERNS.
 	- `let` pat [ `:` type ] `=` e_1 `in` e_2     is a local binding; `pat` is a
@@ -112,16 +114,20 @@ Definition type:
 	       | `TypeName             # type variable
 	       | '(' type ')'
 
-The base types are the platform-word numerics Int (signed), Nat (unsigned) and
-Real, the fixed-width numerics Int8/Int16/Int32/Int64, Nat8/Nat16/Nat32/Nat64
-and Real32/Real64, the pointer-shaped Str and Ptr, and Array (a sized,
-contiguous block of bytes). The compiler knows them as distinct nullary type
-constructors (so Int and Int32 do not unify). At runtime every value is an
-ssize_t (Str/Ptr are pointers stored in one, Real a double, an Array a byte
-buffer); the type checker keeps the base types distinct, the runtime does not.
-The sized numerics are presently used mainly to spell C-ABI types in `@extern`
-signatures; there are no sized literals or arithmetic on them yet. A struct type
-name (see STRUCTS) -- or a union (sum) type name -- is also a type constructor.
+The base types have exactly four friendly names -- the platform-word numerics
+Int (signed), Nat (unsigned), Real, and Str. Every other built-in type is spelled
+with an `@`-sigil: the fixed-width numerics @int8/@int16/@int32/@int64,
+@nat8/@nat16/@nat32/@nat64 and @float32/@float64; the pointer @ptr; the boolean
+@bool (its values are @true/@false); the byte block @array; and the prelude
+containers @list and @vec. (There is no `Int32`/`Bool`/`List`/`Ptr` spelling; use
+the `@`-form.) The compiler knows them as distinct nullary type constructors, so
+Int and @int32 do not unify. At runtime every value is an ssize_t (@ptr/Str are
+pointers stored in one, a @float* a double, an @array a byte buffer); the checker
+keeps the types distinct, the runtime does not. Sized numerics carry their exact C
+width across an `@extern` boundary and in a struct field; arithmetic on them is
+overloaded per type (so `@int32 + @int32 : @int32`), and an integer/real literal
+takes the sized type expected of it. A struct type name (see STRUCTS) -- or a
+union (sum) type name -- is also a type constructor.
 
 The empty record `{}` is the UNIT type; its sole value is also written `{}`. It is
 what a function or an effect operation passes or returns when there is no
@@ -302,16 +308,43 @@ other globals; only the result's shape matters.)
 Unannotated globals are non-arrow, hence non-recursive, so they resolve as a
 DAG; a cycle among unannotated globals is an error.
 
-(FFI / IO: a foreign binding is a global whose body is `@extern.{ ... }`, naming
-the symbol and library -- positional `@extern.{ "sym", "lib.so" }` or named
-`@extern.{ .symbol = "sym", .lib = "lib.so" }`. A signature is required; its
-argument/result types drive C-ABI marshalling (Int/Real/Str and the sized
-numerics; a `{}` parameter means "no C argument", e.g. `getchar : {} -> Int`; a
-`{}` result discards it). Applying the binding calls the C function. Foreign calls
-are typed by the written signature -- IO is NOT yet tracked as an effect. Foreign
-calls require the FFI build (`make THRAX_3RD_PARTY_ON=1`, libffi); without it a
-foreign call aborts at runtime. Example: `$ puts : Str -> Int = @extern.{ "puts",
-"libc.so.6" }` then `puts "hi"` writes to stdout. See examples/MAIN.thx.)
+(FFI / IO: a foreign binding is a global whose body is `@extern "C" "sym" "lib"`,
+naming the symbol and library. A signature is required; its argument/result types
+drive C-ABI marshalling (Int/Real/Str and the sized numerics; a `{}` result is
+`void`). A C function has no first-class closure to curry, so a Thrax `@extern`
+takes EXACTLY ONE argument (its signature has a single arrow): a one-parameter C
+function is `A -> B`; several C parameters group into a record `{a: A, b: B} -> R`,
+whose fields, in declaration order, are the positional C arguments (marshalled by
+name, so a reordered call site is fine); a nullary C function takes unit,
+`{} -> R`. A curried `A -> B -> R` extern is rejected with a diagnostic. Applying
+the binding calls the C function. Foreign calls are typed by the written signature
+-- IO is NOT yet tracked as an effect. Examples: `$ puts : Str -> Int = @extern
+"C" "puts" "libc"` then `puts "hi"`; `$ pow : {base: Real, exp: Real} -> Real =
+@extern "C" "pow" "libm"` then `pow {2.0, 10.0}` or `pow {.base = 2.0, .exp =
+10.0}`; `$ getchar : {} -> Int = @extern "C" "getchar" "libc"` then `getchar {}`.
+See library/C.thx and applications/launcher.)
+
+(C structs by value: a struct declared `Name : @struct @extern "C" = ...` is a
+C-layout (unboxed) foreign type. Its fields must be C-representable (the sized
+numerics, Int/Nat/Real, Ptr, Bool, or another such struct); it may not be generic.
+It is built and read with the ordinary struct literal and `.field`, and it may
+cross the `@extern` boundary BY VALUE as an argument or a result. The compiler
+computes its C memory layout and marshals it (libffi aggregates in the interpreter,
+a real emitted `typedef struct` in the C backend), so a C API that passes structs
+by value (e.g. raylib's `Color`/`Vector2`) binds directly. Example:
+`$ Color : @struct @extern "C" = r: Nat8, g: Nat8, b: Nat8, a: Nat8,` then
+`$ clear : Color -> {} = @extern "C" "ClearBackground" "libraylib.so"`. See
+applications/launcher. A C `union` is `Name : @union @extern "C" = m1: T1, m2: T2,`
+(struct-like members sharing offset 0, size = the largest); build it with one member
+`Name.{ .m1 = v }`, and a union result reads any member by reinterpreting the bytes.
+A function-typed `@extern` parameter is a C function pointer (callback): pass a Thrax
+closure and it is called back when the foreign function invokes the pointer, e.g.
+`$ sort : Ptr -> Int -> (Int -> Int -> Int) -> {} = @extern "C" "..." "lib"`. Callback
+argument and result types are C scalars. A `List T` parameter (T a C-repr struct) is
+a C array: it is passed as a `T*` pointing at a contiguous packed buffer, with the
+element count given as a separate argument, e.g.
+`$ draw : List Vector2 -> Int -> {} = @extern "C" "DrawLineStrip" "lib"` called as
+`draw [a, b, c] 3`.)
 
 (Operator overloading: `$ @operator.{ <op> } : type = expr` adds an overload of a
 built-in binary operator (e.g. `+`) for the operand types in its signature; a use
@@ -361,7 +394,18 @@ IMPORTS.  A module pulls in others with `$ with` lines:
 
 It is ALWAYS valid to qualify a symbol with its module, `Module.symbol`, whether
 or not the module was imported. The program entry point is the `main` of module
-`MAIN`; its type must be `Int` or `Str -> Int`.
+`MAIN`. It is a function that returns an `Int` exit code (C-style) and may perform
+any effect, expressed by the OPEN effect row `<| e>` on its arrow:
+
+	$ main : {} -> <| e> Int          # no arguments
+	$ main : [n]Str -> <| e> Int      # the argument vector, argv[0] first
+
+The open row is what lets `main` perform any effect: a closed `<>` (or a bare
+`-> Int`) is pure and would reject an unhandled effect in the body. The `[n]Str`
+form receives the command-line arguments as a sized string tensor, the program
+path in slot 0 (like C's `argv`). A legacy value entry `main : Int` (or any
+value) is still accepted: it is forced and printed as `main = <value>` rather
+than used as an exit code.
 
 VISIBILITY.  Symbols are public (exported) by default. `$ @private` makes every
 symbol after it module-private (visible to the module's own files, hidden from

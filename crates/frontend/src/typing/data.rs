@@ -105,12 +105,28 @@ pub const REAL: &str = "Real";
 pub const STR: &str = "Str";
 pub const BOOL: &str = "Bool";
 pub const UNIT: &str = "{}";
+pub const PTR: &str = "Ptr";
 pub const LIST: &str = "List";
 pub const ARRAY: &str = "Array";
 pub const VEC: &str = "Vec";
 /// The canonical infinite codata stream (defined in `CORE`), the target an
 /// open range `[lo ...]` builds.
 pub const STREAM: &str = "Stream";
+
+/// The source spelling to DISPLAY for a built-in constructor. The canonical
+/// internal names for these are the friendly words, but the only way to write
+/// them in source is the `@`-form, so we display the `@`-form for consistency.
+/// `Int`/`Nat`/`Real`/`Str` keep their friendly spelling (still writable).
+fn display_con(name: &str) -> &str {
+    match name {
+        "Bool" => "@bool",
+        "List" => "@list",
+        "Vec" => "@vec",
+        "Array" => "@array",
+        "Ptr" => "@ptr",
+        other => other,
+    }
+}
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
@@ -121,7 +137,7 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
             // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
             // their source spelling when they surface on their own (a variance
             // mismatch); a whole tensor renders via the `[..]` path below.
-            Type::Con(name) => out.push_str(name),
+            Type::Con(name) => out.push_str(display_con(name)),
             Type::Nat(n) => out.push_str(&n.to_string()),
             Type::NatAdd(a, b) => paren(out, prec > 2, |out| {
                 go(a, namer, out, 2);
@@ -281,5 +297,46 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut namer = |id: VarId| format!("?{id}");
         f.write_str(&display(self, &mut namer))
+    }
+}
+
+/// How a program entry point is invoked, derived from its declared type. A `main`
+/// like C's: a function that may perform any effect and returns an `Int` exit
+/// code, taking either no arguments (`{} -> Int`) or the argument vector
+/// (`[n]Str -> Int`). A plain value (e.g. the test harness's `test : Int`) is
+/// just forced.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EntryKind {
+    /// Not a function: force the value (the result / exit code).
+    Value,
+    /// `{} -> R`: apply to unit.
+    UnitFn,
+    /// `[n]Str -> R`: apply to the argument vector.
+    ArgvFn,
+    /// A function whose parameter is neither `{}` nor `[n]Str`.
+    BadFn,
+}
+
+/// Classify an entry point from its (zonked) type.
+pub fn classify_entry(ty: &Type) -> EntryKind {
+    let Type::Arrow(from, _, _) = ty else {
+        return EntryKind::Value;
+    };
+    match from.as_ref() {
+        Type::Con(n) if n == "{}" => EntryKind::UnitFn,
+        Type::Tuple(items) if items.is_empty() => EntryKind::UnitFn,
+        // `[n]Str`: a `@tensor variance size elem` spine whose element is `Str`.
+        Type::App(head, elem) => {
+            let is_tensor = matches!(head.as_ref(),
+                Type::App(h2, _) if matches!(h2.as_ref(),
+                    Type::App(con, _) if matches!(con.as_ref(),
+                        Type::Con(n) if n == "@tensor")));
+            if is_tensor && matches!(elem.as_ref(), Type::Con(n) if n == "Str") {
+                EntryKind::ArgvFn
+            } else {
+                EntryKind::BadFn
+            }
+        }
+        _ => EntryKind::BadFn,
     }
 }

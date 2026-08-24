@@ -148,6 +148,7 @@ fn global_self_reference_is_global() {
         module: "M".into(),
         effects: Vec::new(),
         globals: vec![("f".into(), lam("x", Term::var("f")))],
+        crepr_layouts: Vec::new(),
     };
     assign_program(&mut prog);
     let Term::Lam { body, .. } = &prog.globals[0].1 else {

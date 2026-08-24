@@ -279,12 +279,13 @@ impl<'a> Lexer<'a> {
         let mut depth = 0usize;
         loop {
             if self.cursor >= self.bytes().len() || self.cur() == b'\n' {
-                return Err(self.err(
-                    Code::UnclosedQuote,
-                    start,
-                    line,
-                    "string literal is not closed with a '\"'",
-                ));
+                let msg = if depth > 0 {
+                    "unterminated `{...}` interpolation in a string \
+                     (write `\\{` for a literal brace)"
+                } else {
+                    "string literal is not closed with a '\"'"
+                };
+                return Err(self.err(Code::UnclosedQuote, start, line, msg));
             }
             match self.cur() {
                 // In literal text, `\` escapes the next char (so `\"`/`\{` are

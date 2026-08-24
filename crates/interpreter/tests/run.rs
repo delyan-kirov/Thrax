@@ -35,6 +35,15 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
         resolved.with_fields.insert(site, fields.clone());
     }
     resolved.extern_sigs.extend(checker.extern_sigs());
+    let module = checker.module_name().to_string();
+    for (name, spec) in checker.own_externs() {
+        resolved
+            .externs
+            .insert((module.clone(), name.to_string()), spec.clone());
+    }
+    for (name, layout) in checker.crepr_layouts() {
+        resolved.crepr_layouts.insert(name.to_string(), layout.clone());
+    }
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
 }
@@ -103,6 +112,148 @@ fn run_modules(sources: &[&str], name: &str) -> String {
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
 }
 
+/// Compile a tiny C source to a shared library in a temp dir, returning its path.
+fn compile_helper_so(basename: &str, c_src: &str) -> std::path::PathBuf {
+    use std::io::Write;
+    let dir = std::env::temp_dir();
+    let c_path = dir.join(format!("{basename}.c"));
+    let so_path = dir.join(format!("lib{basename}.so"));
+    std::fs::File::create(&c_path)
+        .unwrap()
+        .write_all(c_src.as_bytes())
+        .unwrap();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let status = std::process::Command::new(cc)
+        .args(["-shared", "-fPIC", "-O2", "-o"])
+        .arg(&so_path)
+        .arg(&c_path)
+        .status()
+        .expect("run cc");
+    assert!(status.success(), "cc failed for {basename}");
+    so_path
+}
+
+#[test]
+fn ffi_struct_by_value_argument() {
+    // A C-repr struct passed BY VALUE to a C function: pack the fields into the
+    // flat memory image, hand it to libffi as an aggregate argument. A helper `.so`
+    // gives a function that takes a small struct by value.
+    let so = compile_helper_so(
+        "thx_ffi_arg_helper",
+        "typedef struct { long x, y; } P;\n\
+         long sum_p(P p) { return p.x * 1000 + p.y; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_p : P -> Int = @extern \"C\" \"sum_p\" \"{}\"\n\
+         $ test : Int = sum_p (P.{{ .x = 40, .y = 2 }})",
+        so.display()
+    );
+    assert_eq!(run(&src, "test"), "40002");
+}
+
+#[test]
+fn ffi_struct_array() {
+    // A `@list T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
+    // separate count), the raylib vertex/point/color-buffer shape.
+    let so = compile_helper_so(
+        "thx_ffi_arr_helper",
+        "typedef struct { long x, y; } P;\n\
+         long sum_ps(P* a, int n) { long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ sum_ps : {{ps: @list P, n: Int}} -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
+        lib = so.display()
+    );
+    // (1*10+2) + (3*10+4) + (5*10+6) = 12 + 34 + 56 = 102.
+    assert_eq!(run(&src, "test"), "102");
+}
+
+#[test]
+fn ffi_callback() {
+    // A Thrax closure passed to C as a function pointer. The helper calls it (twice,
+    // to exercise repeated invocation); the closure captures a free variable.
+    let so = compile_helper_so(
+        "thx_ffi_cb_helper",
+        "int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ call_twice : (Int -> Int -> Int) -> Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
+         $ k : Int = 10\n\
+         $ test : Int = call_twice (\\a b = a + b + k)",
+        lib = so.display()
+    );
+    // f(1,2)=13, f(3,4)=17 -> 13*100 + 17 = 1317.
+    assert_eq!(run(&src, "test"), "1317");
+}
+
+#[test]
+fn ffi_c_union_by_value() {
+    // A C `union` passed and returned by value: build with one member (packed at
+    // offset 0), read a member back from a returned union (reinterpreted bytes).
+    let so = compile_helper_so(
+        "thx_ffi_union_helper",
+        "typedef union { long i; double d; } U;\n\
+         long u_as_long(U u) { return u.i; }\n\
+         U u_from_long(long v) { U u; u.i = v; return u; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ U : @union @extern \"C\" = i: Int, d: Real,\n\
+         $ u_as_long : U -> Int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
+         $ u_from_long : Int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
+         $ built : Int = u_as_long (U.{{ .i = 42 }})\n\
+         $ back  : Int = (u_from_long 99).i\n\
+         $ test  : Int = built * 1000 + back",
+        lib = so.display()
+    );
+    // built = 42, back = 99.
+    assert_eq!(run(&src, "test"), "42099");
+}
+
+#[test]
+fn ffi_nested_struct_by_value() {
+    // A struct with struct fields, passed and returned BY VALUE (raylib's
+    // `Camera2D`/`Rectangle` shape). `seg_make` returns a nested struct; `seg_sum`
+    // takes one; the round-trip exercises nested pack and unpack.
+    let so = compile_helper_so(
+        "thx_ffi_nested_helper",
+        "typedef struct { long x, y; } P;\n\
+         typedef struct { P a; P b; } Seg;\n\
+         long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
+         Seg seg_make(long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
+    );
+    let src = format!(
+        "@mod M\n\
+         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
+         $ seg_sum : Seg -> Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
+         $ seg_make : Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
+         $ test : Int = seg_sum (seg_make 1)",
+        lib = so.display()
+    );
+    // seg_make 1 = {{1,2},{3,4}}; seg_sum = 1 + 2*10 + 3*100 + 4*1000 = 4321.
+    assert_eq!(run(&src, "test"), "4321");
+}
+
+#[test]
+fn ffi_struct_by_value_return() {
+    // libc's `div_t div(int, int)` returns a small struct BY VALUE. A C-repr
+    // struct return exercises the whole struct-marshalling path (layout, libffi
+    // aggregate return, unpack back to a Thrax struct value).
+    let src = "@mod M\n\
+        $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
+        $ ldiv : {numer: Int, denom: Int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : Int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
+    // 17 / 5 = 3 remainder 2 -> 3*100 + 2.
+    assert_eq!(run(src, "test"), "302");
+}
+
 #[test]
 fn cross_module_overload_dispatches_by_type() {
     // `make` is defined in two modules with different result types. The root's
@@ -124,11 +275,11 @@ fn cross_module_overload_dispatches_by_type() {
 fn same_module_overload_dispatches_by_type() {
     // Two overloads of `kind` in ONE module. Before type-mangling the globals both
     // collided under a single `M.kind` key and every call ran the first body
-    // (giving 11); now `kind true` reaches the Bool body, so the result is 21.
+    // (giving 11); now `kind true` reaches the @bool body, so the result is 21.
     let src = "@mod M\n\
                $ kind : Int -> Int = \\x = 1\n\
-               $ kind : Bool -> Int = \\b = 2\n\
-               $ r : Int = (kind 7) + (kind true) * 10";
+               $ kind : @bool -> Int = \\b = 2\n\
+               $ r : Int = (kind 7) + (kind @true) * 10";
     assert_eq!(run(src, "r"), "21");
 }
 
@@ -137,8 +288,8 @@ fn ctx_implicit_resolves_by_name_and_type() {
     // `max_of` declares an implicit `cmp`, resolved by name from scope (the global
     // `>`-like `cmp`). The dictionary is injected as a leading argument.
     let src = "@mod M\n\
-               $ cmp : Int -> Int -> Bool = \\a b = a ?> b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               $ cmp : Int -> Int -> @bool = \\a b = a ?> b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ r : Int = max_of 3 7";
     assert_eq!(run(src, "r"), "7");
@@ -149,11 +300,11 @@ fn ctx_implicit_chains_and_overrides() {
     // `max3` passes its own `@ctx cmp` down to `max_of` (local wins), and an
     // explicit `@ctx lt` override flips `max_of` into a min.
     let src = "@mod M\n\
-               $ gt : Int -> Int -> Bool = \\a b = a ?> b\n\
-               $ lt : Int -> Int -> Bool = \\a b = a ?< b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y =\n\
+               $ gt : Int -> Int -> @bool = \\a b = a ?> b\n\
+               $ lt : Int -> Int -> @bool = \\a b = a ?< b\n\
+               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
-               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> Bool = \\x y z =\n\
+               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y z =\n\
                \tmax_of (max_of x y) z\n\
                $ chained : Int = max3 3 9 5 @ctx gt\n\
                $ flipped : Int = max_of 3 7 @ctx lt\n\
@@ -541,16 +692,16 @@ fn extern_ffi_file_roundtrip() {
     // same bindings injected by the driver). Open for write, put bytes, close;
     // reopen for read, read them back, then remove the file. "hi" is 104 and 105.
     let src = "@mod M\n\
-        $ fopen : Str -> Str -> Int = @extern \"C\" \"fopen\" \"libc\"\n\
-        $ fputs : Str -> Int -> Int = @extern \"C\" \"fputs\" \"libc\"\n\
+        $ fopen : {path: Str, mode: Str} -> Int = @extern \"C\" \"fopen\" \"libc\"\n\
+        $ fputs : {s: Str, stream: Int} -> Int = @extern \"C\" \"fputs\" \"libc\"\n\
         $ fclose : Int -> Int = @extern \"C\" \"fclose\" \"libc\"\n\
         $ fgetc : Int -> Int = @extern \"C\" \"fgetc\" \"libc\"\n\
         $ remove : Str -> Int = @extern \"C\" \"remove\" \"libc\"\n\
         $ p : Str = \"/tmp/thrax_core_roundtrip.txt\"\n\
         $ r : Int = \
-          let f = fopen p \"wb\" in \
-          fputs \"hi\" f ; fclose f ; \
-          let g = fopen p \"rb\" in \
+          let f = fopen {p, \"wb\"} in \
+          fputs {\"hi\", f} ; fclose f ; \
+          let g = fopen {p, \"rb\"} in \
           let a = fgetc g in let b = fgetc g in \
           fclose g ; remove p ; a + b";
     assert_eq!(run(src, "r"), "209");
@@ -585,8 +736,8 @@ fn target_reflects_the_host_consistently() {
 
 #[test]
 fn array_literal_lowers_to_byte_vector() {
-    // `[..]` in Array context builds a byte vector, so array_* primitives apply.
-    let src = "@mod M\n$ a : Array = [10, 20, 30]\n\
+    // `[..]` in @array context builds a byte vector, so array_* primitives apply.
+    let src = "@mod M\n$ a : @array = [10, 20, 30]\n\
                $ n = @array_len a\n$ g = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
@@ -595,13 +746,13 @@ fn array_literal_lowers_to_byte_vector() {
 #[test]
 fn array_patterns_destructure_and_guard() {
     let src = "@mod M\n\
-               $ sum2 : Array -> Int = \\a = is a | [x, y] => x + y else 0\n\
+               $ sum2 : @array -> Int = \\a = is a | [x, y] => x + y else 0\n\
                $ r = sum2 [4, 5]\n\
                $ miss = sum2 [1, 2, 3]\n\
-               $ lit : Array -> Int = \\a = is a | [1, y] => y else 0\n\
+               $ lit : @array -> Int = \\a = is a | [1, y] => y else 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : Array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
+               $ head : @array -> Int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");
@@ -664,11 +815,11 @@ fn tuples_and_indexing() {
 #[test]
 fn list_sum_and_map() {
     let src = "@mod M\n\
-               $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+               $ sum : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "@mod M\n\
-                $ sum : List Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+                $ sum : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
@@ -747,6 +898,47 @@ fn string_concat_and_prefix_match() {
 #[test]
 fn sequencing_returns_last() {
     assert_eq!(run("@mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
+}
+
+#[test]
+fn short_circuit_and_or() {
+    // `&&`/`||` desugar to a lazy `if`, so the right operand is skipped when the
+    // result is already decided: a `1 / 0` on the skipped side must not fault.
+    // Precedence: `&&`/`||` bind looser than comparison (`a ?< b && c ?< d`).
+    let src = "@mod M\n\
+               $ f : @bool = @false\n\
+               $ t : @bool = @true\n\
+               $ sc_and : Int = if (f && (1 / 0 ?= 0)) => 1 else 0\n\
+               $ sc_or  : Int = if (t || (1 / 0 ?= 0)) => 0 else 1\n\
+               $ prec   : Int = if (3 ?< 5 && 5 ?< 9) => 0 else 1\n\
+               $ test : Int = sc_and + sc_or + prec";
+    assert_eq!(run(src, "test"), "0");
+}
+
+/// A C-style `main : {} -> <| e> Int` is applied to unit; its `Int` result is the
+/// exit code (no `entry = <value>` print). The open row lets it perform effects.
+#[test]
+fn entry_unit_fn_returns_exit_code() {
+    let src = "@mod MAIN\n$ main : {} -> <| e> Int = \\u = 42\n";
+    let program = lower_checked(src, "main");
+    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
+    let code = interpreter::machine::run_entry(&ir, "main", None)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    assert_eq!(code, 42);
+}
+
+/// A C-style `main : [n]Str -> <| e> Int` receives argv as a sized tensor of
+/// strings; `argv[0]` is the program path, so `main` sees the whole vector.
+#[test]
+fn entry_argv_fn_receives_string_vector() {
+    let src = "@mod MAIN\n\
+               $ main : [n]Str -> <| e> Int = \\args = @tensor_length args\n";
+    let program = lower_checked(src, "main");
+    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
+    let argv = vec!["prog".to_string(), "alpha".to_string(), "beta".to_string()];
+    let code = interpreter::machine::run_entry(&ir, "main", Some(argv))
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    assert_eq!(code, 3);
 }
 
 /// The machine's explicit continuation stack makes deep tail recursion run in

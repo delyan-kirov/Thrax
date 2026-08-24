@@ -33,12 +33,12 @@ fn undeclared_type_param_is_error() {
 
 #[test]
 fn parameterized_alias_expands() {
-    // `MapInt` fixes the key to Int, so `MapInt Bool` elaborates to `Map Int Bool`.
+    // `MapInt` fixes the key to Int, so `MapInt @bool` elaborates to `Map Int @bool`.
     let src = "@mod M\n\
                $ Map : @struct k v = key: k, val: v\n\
                $ MapInt : @alias v = Map Int v\n\
-               $ m : MapInt Bool = .{ .key = 1, .val = true }";
-    assert_eq!(type_of(src, "m"), "Map Int Bool");
+               $ m : MapInt @bool = .{ .key = 1, .val = @true }";
+    assert_eq!(type_of(src, "m"), "Map Int @bool");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn recursion_through_predeclared_globals() {
 #[test]
 fn tuples_and_lists() {
     assert_eq!(type_of("@mod M\n$ p = {1, \"a\"}", "p"), "{Int, Str}");
-    assert_eq!(type_of("@mod M\n$ xs = [1, 2, 3]", "xs"), "List Int");
+    assert_eq!(type_of("@mod M\n$ xs = [1, 2, 3]", "xs"), "@list Int");
 }
 
 #[test]
@@ -202,8 +202,8 @@ fn no_matching_overload_is_reported() {
 fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "@mod OPT\n\
                        $ Option : @union t = Some: t, None: {}\n\
-                       $ is_some : Option t -> Bool = \\o = \
-                       is o | Option.Some.{_} => true else false\n\
+                       $ is_some : Option t -> @bool = \\o = \
+                       is o | Option.Some.{_} => @true else @false\n\
                        $ unwrap_or : Option t -> t -> t = \\o d = \
                        is o | Option.Some.{x} => x else d";
     let use_src = "@mod U\n\
@@ -222,7 +222,7 @@ fn cross_module_import_brings_in_types_and_values() {
         .check_program(&program)
         .unwrap_or_else(|e| panic!("{}", e.render(use_src, "U")));
     let ty = |name: &str| checker.show(&results.iter().find(|(n, _)| *n == name).unwrap().1);
-    assert_eq!(ty("present"), "Bool");
+    assert_eq!(ty("present"), "@bool");
     assert_eq!(ty("value"), "Int");
 }
 
@@ -251,15 +251,15 @@ fn with_scopes_struct_fields() {
 
 #[test]
 fn sequence_literal_is_type_directed() {
-    // The same `[..]` is an Array in Array context, a List otherwise.
-    assert_eq!(type_of("@mod M\n$ a : Array = [10, 20]", "a"), "Array");
+    // The same `[..]` is an @array in @array context, a @list otherwise.
+    assert_eq!(type_of("@mod M\n$ a : @array = [10, 20]", "a"), "@array");
     assert_eq!(
-        type_of("@mod M\n$ a : List Int = [1, 2, 3]", "a"),
-        "List Int"
+        type_of("@mod M\n$ a : @list Int = [1, 2, 3]", "a"),
+        "@list Int"
     );
-    // An Array-typed parameter directs a `[..]` argument at the call site.
+    // An @array-typed parameter directs a `[..]` argument at the call site.
     let src = "@mod M\n\
-                   $ len : Array -> Int = \\a = @array_len a\n\
+                   $ len : @array -> Int = \\a = @array_len a\n\
                    $ n = len [1, 2]";
     assert_eq!(type_of(src, "n"), "Int");
 }
@@ -285,18 +285,53 @@ fn unknown_type_name_is_rejected() {
 }
 
 #[test]
+fn numeric_literal_is_not_a_bool_condition() {
+    // `if` wants a `@bool`; a bare integer literal is a number, not a truth value,
+    // so `if 1` is a type error (it used to silently mean "nonzero").
+    assert!(
+        errors("@mod M\n$ x : Int = if 1 => 2 else 3").contains("numeric literal"),
+        "expected `if 1` to be rejected: {:?}",
+        errors("@mod M\n$ x : Int = if 1 => 2 else 3")
+    );
+    // A real condition (a comparison, or a `@bool`) is fine.
+    assert_eq!(errors("@mod M\n$ x : Int = if 1 ?= 1 => 2 else 3"), "");
+    assert_eq!(errors("@mod M\n$ x : Int = if @true => 2 else 3"), "");
+    // A numeric literal cannot masquerade as a pointer either.
+    assert!(errors("@mod M\n$ p : @ptr = 0").contains("numeric literal"));
+}
+
+#[test]
+fn curried_extern_is_rejected() {
+    // A C function has no first-class closure to curry: a multi-parameter extern
+    // must group its C parameters into one record, not curry with several arrows.
+    let e = errors("@mod M\n$ f : Int -> Int -> Int = @extern \"C\" \"f\" \"lib\"");
+    assert!(e.contains("SINGLE argument"), "{e}");
+}
+
+#[test]
+fn single_argument_externs_are_accepted() {
+    // One record groups several C parameters; a lone value and unit are one
+    // argument each, so all three shapes pass the extern-shape check.
+    let src = "@mod M\n\
+               $ f : {a: Int, b: Int} -> Int = @extern \"C\" \"f\" \"lib\"\n\
+               $ g : Str -> Int = @extern \"C\" \"g\" \"lib\"\n\
+               $ h : {} -> Int = @extern \"C\" \"h\" \"lib\"";
+    assert_eq!(errors(src), "");
+}
+
+#[test]
 fn type_variable_and_sized_and_declared_types_are_accepted() {
-    // `a` is a type variable; `Int8`/`Ptr` are base types; a declared union
+    // `a` is a type variable; `@int8`/`@ptr` are base types; a declared union
     // name is known. None of these is an "unknown type".
     let src = "@mod M\n\
                $ Box : @union = Wrap: { Int },\n\
                $ id : a -> a = \\x = x\n\
-               $ n : Int8 = 5\n\
-               $ p : Ptr = 0\n\
+               $ n : @int8 = 5\n\
+               $ p : @ptr -> @ptr = \\x = x\n\
                $ b : Box = Box.Wrap.{ 1 }";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "id"), "a -> a");
-    assert_eq!(type_of(src, "n"), "Int8");
+    assert_eq!(type_of(src, "n"), "@int8");
 }
 
 #[test]
@@ -328,6 +363,37 @@ fn top_level_unhandled_effect_is_rejected() {
 }
 
 #[test]
+fn open_row_entry_may_perform_any_effect() {
+    // The program entry `main` carries an OPEN effect row `<| e>`, so it may
+    // perform any effect without a handler (the runtime is the top handler). A
+    // pure `<>` would reject this (see `unhandled_effect_is_a_compile_error`).
+    let src = "@mod MAIN\n\
+               $ Yell : @effect = shout : Int -> {},\n\
+               $ main : {} -> <| e> Int = \\u = let _ = Yell.shout 5 in 0";
+    assert_eq!(errors(src), "", "open-row main should type-check");
+    assert_eq!(type_of(src, "main"), "{} -> <Yell | a> Int");
+}
+
+#[test]
+fn classify_entry_recognizes_the_entry_forms() {
+    use crate::{classify_entry, EntryKind};
+    let kind = |src: &str| {
+        let parsed = crate::parse(src).expect("parse");
+        let mut checker = Checker::new(&parsed.ast);
+        let results = checker.check_program(&parsed.program).expect("check");
+        let ty = results.iter().find(|(n, _)| *n == "main").expect("main").1.clone();
+        classify_entry(&ty)
+    };
+    assert_eq!(kind("@mod MAIN\n$ main : {} -> <| e> Int = \\u = 0"), EntryKind::UnitFn);
+    assert_eq!(
+        kind("@mod MAIN\n$ main : [n]Str -> <| e> Int = \\a = 0"),
+        EntryKind::ArgvFn
+    );
+    assert_eq!(kind("@mod MAIN\n$ main : Int = 0"), EntryKind::Value);
+    assert_eq!(kind("@mod MAIN\n$ main : Int -> <| e> Int = \\n = n"), EntryKind::BadFn);
+}
+
+#[test]
 fn same_operation_in_two_effects_resolves_by_result_type() {
     // `ask` is declared by two effects (Int and Str result); a bare use is an
     // overload resolved by how the result is used, and `Effect.op` disambiguates.
@@ -343,10 +409,103 @@ fn same_operation_in_two_effects_resolves_by_result_type() {
 #[test]
 fn array_primitives_overload_on_array_and_str() {
     let src = "@mod M\n\
-                   $ a : Array = @array_push (@array.{ 0 }) 65\n\
+                   $ a : @array = @array_push (@array.{ 0 }) 65\n\
                    $ n = @array_len a\n\
                    $ b = @array_get \"hi\" 0";
-    assert_eq!(type_of(src, "a"), "Array");
+    assert_eq!(type_of(src, "a"), "@array");
     assert_eq!(type_of(src, "n"), "Int");
     assert_eq!(type_of(src, "b"), "Int");
+}
+
+/// The computed C layout of a named C-repr struct, or a panic with the check error.
+fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
+    let parsed = crate::parse(src).expect("parse");
+    let mut checker = Checker::new(&parsed.ast);
+    checker
+        .check_program(&parsed.program)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+    checker
+        .crepr_layouts()
+        .get(name)
+        .cloned()
+        .expect("crepr layout present")
+}
+
+#[test]
+fn crepr_struct_layout_vector2_and_color() {
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
+        $ Color : @struct @extern \"C\" = r: @nat8, g: @nat8, b: @nat8, a: @nat8,\n\
+        $ x : Int = 0";
+    let v = crepr_layout(src, "Vector2");
+    assert_eq!((v.size, v.align), (8, 4));
+    assert_eq!(v.fields[1].offset, 4);
+    let c = crepr_layout(src, "Color");
+    assert_eq!((c.size, c.align), (4, 1));
+    assert_eq!(c.fields[3].offset, 3);
+}
+
+#[test]
+fn crepr_field_follows_alias_to_a_struct() {
+    // A nullary alias to a C-repr struct (`Quaternion = Vector4`) is itself
+    // C-representable as a field: the layout follows the alias to the struct.
+    let src = "@mod M\n\
+        $ Vector4 : @struct @extern \"C\" = x: @float32, y: @float32, z: @float32, w: @float32,\n\
+        $ Quaternion : @alias = Vector4\n\
+        $ Transform : @struct @extern \"C\" = rotation: Quaternion, scale: @float32,\n\
+        $ x : Int = 0";
+    let t = crepr_layout(src, "Transform");
+    // rotation is a 16-byte/4-align Vector4, so `scale` starts at offset 16.
+    assert_eq!(t.fields[1].offset, 16);
+    assert_eq!((t.size, t.align), (20, 4));
+}
+
+#[test]
+fn c_union_layout_overlaps() {
+    // `@union @extern "C"` is a C union: members share offset 0, size is the largest.
+    let src = "@mod M\n\
+        $ U : @union @extern \"C\" = i: @int32, d: @float64,\n\
+        $ x : Int = 0";
+    let u = crepr_layout(src, "U");
+    assert!(u.is_union);
+    assert_eq!(u.fields[0].offset, 0);
+    assert_eq!(u.fields[1].offset, 0);
+    assert_eq!((u.size, u.align), (8, 8));
+}
+
+#[test]
+fn crepr_struct_rejects_non_c_field() {
+    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" = s: Str,");
+    assert!(e.contains("not C-representable"), "{e}");
+}
+
+#[test]
+fn crepr_struct_rejects_generic() {
+    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" a = v: a,");
+    assert!(e.contains("may not be generic"), "{e}");
+}
+
+#[test]
+fn real_literal_takes_real32_width() {
+    // A `Real` literal checks against a `@float32` expected type (like an integer
+    // literal takes its width), so a float C struct binds with plain literals.
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
+        $ v : Vector2 = Vector2.{ .x = 1.0, .y = 2.5 }\n\
+        $ f : @float32 = 3.5\n\
+        $ g : Real = 3.5";
+    assert_eq!(type_of(src, "v"), "Vector2");
+    assert_eq!(type_of(src, "f"), "@float32");
+    assert_eq!(type_of(src, "g"), "Real");
+}
+
+#[test]
+fn crepr_struct_nested() {
+    let src = "@mod M\n\
+        $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
+        $ Line : @struct @extern \"C\" = a: Vector2, b: Vector2,\n\
+        $ x : Int = 0";
+    let l = crepr_layout(src, "Line");
+    assert_eq!((l.size, l.align), (16, 4));
+    assert_eq!(l.fields[1].offset, 8);
 }
