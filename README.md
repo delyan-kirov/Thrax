@@ -1,40 +1,34 @@
 # Thrax
 
-Thrax is a functional language with support for algebraic data
-types (structs *and* sum types), pattern matching, and typed **algebraic effects
-with handlers** . It compiles to C and can also be interpreted.
+Thrax is a functional language with algebraic data types (structs *and* sum
+types), pattern matching, and typed **algebraic effects with handlers**. It
+compiles to native C, cross-compiles to WebAssembly, and can also be interpreted.
 
-```typescript
-@mod Testing
+## Links
 
-$ fib : Int -> Int = \n =
-    if n ?= 0 => 0
-    else if n ?= 1 => 1
-    else (fib (n - 1)) + (fib (n - 2))
-
-$ answer : Int = fib 10   # 55
-```
-
-**[Try it in your browser](https://delyan-kirov.github.io/Thrax/)** the whole
-compiler runs client-side as wasm, no install needed. The
-[source is on GitHub](https://github.com/delyan-kirov/Thrax).
+- **[Try it in your browser](https://delyan-kirov.github.io/Thrax/)**:
+  Explore the interactive examples in your browswer.
+- **[Applications](https://github.com/delyan-kirov/thrax-applications)**: Small
+  projects written in Thrax, using the language as an SDK.
+- **[Source on GitHub](https://github.com/delyan-kirov/Thrax)**: The compiler,
+  the standard library, and docs.
+- **[Examples](examples/)**: See how each feature of the language is used in
+  small examples.
 
 ---
 
 ## Building
 
-Thrax is a Rust workspace (`crates/`) with no external crate dependencies. The
-interpreter links libffi for its FFI (resolved from `$LIBFFI`/`$LIBFFI_DEV`, a
-vendored prebuilt, or the system) and compiles a small C shim, so a C toolchain
-(cc/ar) must be on `PATH`; nix provides everything.
-
-**With nix**:
+**With nix** (recommended):
 
 ```sh
-nix develop
-cargo build      # the compiler binary is target/debug/thrax
-cargo test       # the frontend, interpreter and backend suites
+nix develop      # dev shell; `thrax` is already on PATH here
+cargo build      # or build it yourself: target/debug/thrax
+cargo test       # the frontend, interpreter, and backend suites
 ```
+
+Inside the dev shell `thrax` is a wrapper that rebuilds the workspace on demand
+and runs it, so it works from a fresh checkout with nothing compiled yet.
 
 **Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain works:
 
@@ -42,27 +36,77 @@ cargo test       # the frontend, interpreter and backend suites
 cargo build --release   # target/release/thrax
 ```
 
-### FFI
+## Compiling and running
 
-FFI is on by default and needs no configuration. Common libc/libm calls (the `C`
-namespace) are served from a compiled-in table; any other `@extern "C"` symbol is
-resolved at runtime with `dlopen`/`dlsym` and called through libffi. The compiled
-C backend links the real library directly. See
-[`doc/platform-abstraction.md`](doc/platform-abstraction.md).
-
-## Running programs
-
-The compiler is `thrax` (`target/debug/thrax`). It takes a subcommand and a
-`.thx` file:
+`thrax` takes a subcommand and, optionally, a `.thx` file. With no file it uses
+`MAIN.thx` in the current directory (or the sole `.thx` file there), so an app
+directory just runs `thrax run`:
 
 ```sh
 thrax run     examples/FIB.thx   # run under the interpreter
-thrax parse   examples/FIB.thx   # print the parsed AST
-thrax check   examples/FIB.thx   # type-check only
+thrax check   examples/FIB.thx   # type-check only, print inferred types
+thrax parse   examples/FIB.thx   # print the parsed syntax tree
 thrax emit-c  examples/FIB.thx   # print the generated C (the native backend)
 thrax build   examples/FIB.thx   # compile to a native executable beside the source
-thrax --target=wasm32-wasi build examples/FIB.thx   # cross-compile
+thrax --target=wasm32-wasi build examples/FIB.thx   # cross-compile to wasm
+
+thrax run                        # run ./MAIN.thx
+thrax run app.thx a b            # run app.thx, passing `a b` to the program
 ```
+
+Run `thrax --help` for the full list of subcommands and flags.
+
+## A taste: algebraic effects
+
+An effect is a set of operations, and performing one is just a call. A function's
+type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`);
+a plain arrow is pure, and an unhandled effect is a compile-time error. A handler
+runs a body and, for each operation, receives the captured continuation `k` to
+resume (or not).
+
+```typescript
+@mod Demo
+
+$ Yield : @effect = yield : Int -> {},
+
+# `emit` performs the effect; the type says so: {} -> <Yield> {}.
+$ emit : {} -> <Yield> {} = \_ =
+    Yield.yield 1 ; Yield.yield 2 ; Yield.yield 3
+
+# The handler resumes once per yield, summing every value it produces.
+$ main : Int =
+    do emit {}
+    ctl k | Yield.yield v => v + k {}
+          else _ => 0          # 6
+```
+
+Because `k` is a first-class value, generators, coroutines, and state are all
+ordinary library code rather than built-ins. See the
+[tour](#a-tour-of-the-language) below and
+[`examples/EFFECTS.thx`](examples/EFFECTS.thx).
+
+## Features
+
+- **Algebraic data types**: structs and sum types, generic by default, composed
+  with `with`-splicing.
+- **Pattern matching**: `is`-expressions with nested, literal, string, and range
+  patterns, `..rest`, and fall-through guards; irrefutable patterns also
+  destructure in `let` and lambda parameters.
+- **Typed algebraic effects with handlers**: the effect row is part of the type,
+  handlers are deep, and continuations are first-class and resumable (so
+  generators, coroutines, and state are library code), plus Go-style `defer`.
+- **A native C backend**: the whole IR, effects included, lowers to self-contained
+  C through a CEK machine emitted in C, with reference-counted memory.
+- **C FFI with no binding ceremony**: `@extern "C" "sym" "lib"` binds a foreign
+  function; the interpreter resolves it via `dlopen`/libffi and the backend emits
+  a direct call. C structs pass by value in both directions.
+- **WebAssembly**: cross-compile a program with `--target=wasm32-wasi`, or run the
+  entire compiler in the browser as wasm (the playground linked above).
+- **And more**: row-polymorphic records, codata and streams, sized tensors,
+  implicit (`@ctx`) parameters, function overloading, tail-call optimization, and
+  compile-time evaluation (`$ @run`, `@assert`).
+
+The tour below has a runnable snippet for each.
 
 ---
 
@@ -211,8 +255,7 @@ continuation holding it finally completes ([`FINALLY.thx`](examples/FINALLY.thx)
 
 Beyond the interpreter, Thrax lowers the whole IR to self-contained C, including
 algebraic effects, via a CEK-style machine emitted in C, with reference-counted
-memory management. Foreign C functions are bound with `@extern`:
-([`io_example`](examples/io_example/MAIN.thx))
+memory management. Foreign C functions are bound with `@extern`.
 
 ```typescript
 $ puts : Str -> Int = @extern "C" "puts" "libc"
@@ -226,17 +269,6 @@ direct call and a link flag, and the system linker does the rest.
 ```sh
 thrax build examples/io_example/MAIN.thx   # native executable beside the source
 ```
-
-## Raylib demo
-
-The [`examples/raylib_demo`](examples/raylib_demo) project drives
-[raylib](https://www.raylib.com/) entirely through the native backend's FFI,
-eight rectangles sweeping a window, recoloured every tenth frame, in constant
-stack via tail recursion with no loop construct in the language. It's a
-standalone project (its own `build.cpp` and `flake.nix`) meant as a template for
-a real FFI program; see its README to run it.
-
-![Raylib demo](https://raw.githubusercontent.com/delyan-kirov/blobs/main/raylib-demo.gif)
 
 ---
 

@@ -21,6 +21,18 @@
         exec ${wasiPkgs.stdenv.cc}/bin/wasm32-unknown-wasi-clang "$@"
       '';
 
+      # A `thrax` on PATH inside the dev shell that always runs the current
+      # source: it builds the workspace binary (incrementally, silent when up
+      # to date) and execs it. Available before the binary exists, so a fresh
+      # clone can `thrax run` immediately. THRAX_ROOT (set in shellHook) locates
+      # the workspace; "$@" is forwarded with the caller's cwd intact so
+      # relative source paths and the no-argument MAIN.thx default resolve there.
+      thraxDev = pkgs.writeShellScriptBin "thrax" ''
+        root="''${THRAX_ROOT:-$PWD}"
+        cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
+        exec "$root/target/debug/thrax" "$@"
+      '';
+
       # The compiler, built by the Rust workspace. The interpreter's build.rs
       # links libffi (for `@extern`) against $LIBFFI/$LIBFFI_DEV and compiles a
       # small C shim, so libffi + a C toolchain (cc/ar) are build inputs; there
@@ -76,6 +88,10 @@
         hardeningDisable = [ "fortify" ];
 
         buildInputs = [
+          # The dev-shell `thrax`: builds the workspace binary on demand and
+          # execs it, so `thrax run`/`build` work from a fresh checkout.
+          thraxDev
+
           # Tools
           pkgs.clang
           pkgs.clang-tools
