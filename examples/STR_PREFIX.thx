@@ -3,7 +3,7 @@
 # Literal-prefix string patterns: `when s is "lit" ++ rest then ...` matches a
 # string that starts with the literal `"lit"`, binding `rest` to the remainder
 # (a Str). It compiles to a length-safe prefix slice + byte-equality test and a
-# tail slice, threading arm-to-arm fallthrough (see doc/strings-and-arrays.md).
+# tail slice, threading arm-to-arm fallthrough (see documentation/strings-and-arrays.md).
 
 # Strip a known prefix, else fall through to the whole string.
 $ route : Str -> Str = \s =

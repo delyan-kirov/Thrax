@@ -1853,3 +1853,16 @@ static char *thrax_show(Value *v) {
   }
   return s.buf;
 }
+
+/* Integer <-> real conversions for the standard library. `@cast` crosses only
+   integer widths, so these bridge the integer/real boundary. Reached through
+   the normal `@extern` seam (see library/C.thx); the interpreter serves the
+   same symbols from its host table. */
+double thx_i2d(long n) { return (double)n; }
+long thx_d2i(double x) { return (long)(x < 0 ? x - 0.5 : x + 0.5); }
+float thx_i2f(long n) { return (float)n; }
+long thx_f2i(float x) { return (long)(x < 0 ? x - 0.5f : x + 0.5f); }
+
+/* Reinterpret a machine word as a raw pointer (`@ptr` travels as an Int), so
+   the standard library can spell a null pointer as `C.null` (= i2p 0). */
+void *thx_i2p(long n) { return (void *)n; }

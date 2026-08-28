@@ -87,7 +87,7 @@ layer, and "wrap C, don't re-derive" is the rule for all OS-facing modules.
 
 ## 3. Where Thrax stands (this branch)
 
-Done, tested in both engines (see doc/standard-library.md for the per-module
+Done, tested in both engines (see documentation/standard-library.md for the per-module
 function tables): OPT, RESULT (+ `Fail` effect), LIST (Koka core set
 incl. stable `sort_by`), STR (search/split/pad/replace/case/parse), MATH
 (Int + Real, libm via `C`), MAP (immutable AVL tree map, ordered, three-way
@@ -145,7 +145,7 @@ linear/MINSTD probe, resize + rehash at 0.75 load, Jai surface (`new`, `set`,
 `to_list`). Hashing is dictionary-passed like `MAP`'s `cmp` (`new hash_int
 eq_int`, ...); Int + Str hashers to start. Deliverables: `library/TABLE.thx`,
 `examples/STDLIB_TABLE.thx` (a `$ test : Int` summed by `tests/MAIN.thx`), a
-row in doc/standard-library.md.
+row in documentation/standard-library.md.
 
 DECISION TO MAKE FIRST (deliberately deferred): is `Table` a plain VALUE --
 like `Vec`/`Map` today, mutators return a new handle, in-place when rc==1 --
@@ -177,11 +177,11 @@ examples/TUPLES.thx):
   `%tupleN`.
 - One grammar subtlety: after `Tag:` in a union declaration, `{` always
   opens the PAYLOAD's field braces, never a bare tuple type (a single
-  tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); doc/thrax.y
+  tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); documentation/thrax.y
   resolves this structurally (payload_decl / type_nb).
 - `Map {Int, Str}` works today as a type argument; keying a map by a tuple
   just needs a lexicographic comparison (dictionary passing, see
-  STDLIB tests / section 4 of doc/standard-library.md).
+  STDLIB tests / section 4 of documentation/standard-library.md).
 
 The stdlib half is DONE too: PAIR is REMOVED (not sugar -- deleted).
 LIST's `zip`/`unzip`/`span`/`split_at`/`partition`/`lookup`, MAP's
@@ -195,7 +195,7 @@ composition of element orderings) ships the tuple-keyed-map convenience:
 Phase 1 (DONE): the core above. Follow-up landed with it: `SET` (the AVL
 tree keyed by the elements), `PATH` (POSIX paths, pure Str), and the TC
 overload fix that removed the annotated-let workaround (user sites now
-join the resolution fixpoint conservatively; see doc/standard-library.md,
+join the resolution fixpoint conservatively; see documentation/standard-library.md,
 "A note on inference").
 
 ### Agreed sequencing for the rest (decided 2026-07-20)

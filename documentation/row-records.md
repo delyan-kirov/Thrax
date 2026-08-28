@@ -177,6 +177,6 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
 
 - Restriction operator `rec - x` to reach a shadowed duplicate. Not needed for A.
 - No `lacks`/absence constraints (that was the no-duplicate model we rejected).
-- Codata (see doc/effect-system-design.md §1a) is separate, but an **observation
+- Codata (see documentation/effect-system-design.md §1a) is separate, but an **observation
   record is itself row-shaped**, so a codata type could reuse this row machinery
   for its observations once both land.

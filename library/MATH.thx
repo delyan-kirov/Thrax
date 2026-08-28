@@ -35,6 +35,15 @@ $ pow : Int -> Int -> Int = \base e =
 	else if e ?= 0 => 1
 	else base * pow base (e - 1)
 
+# ---- int <-> real conversions ----
+# `@cast` crosses only integer widths; these bridge the integer/real boundary
+# (a plain numeric cast in the engine runtime). `f32`/`int_of_f32` target the
+# 32-bit reals that C graphics APIs use.
+$ real_of_int : Int -> Real     = \n = C.i2d n
+$ int_of_real : Real -> Int     = \x = C.d2i x
+$ f32_of_int  : Int -> @float32 = \n = C.i2f n
+$ int_of_f32  : @float32 -> Int = \x = C.f2i x
+
 # ---- Real helpers ----
 
 $ pi : Real = 3.141592653589793

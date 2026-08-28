@@ -31,9 +31,8 @@ deploy in CI). Remaining: a fuller landing/tour site and `"js"` externs.
 **Date:** 2026-07-23 (originally 2026-07-18).
 **Scope:** how the compiler, the two engines, and the runtime learn what
 platform they are compiling *for* (target) versus running *on* (host), and
-where platform-specific knowledge is allowed to live. Companion to
-`doc/architecture.md` (physical layout) and `doc/stdcore` vision (prelude/`C`
-namespace).
+where platform-specific knowledge is allowed to live. Companion to the
+`documentation/stdcore` vision (prelude/`C` namespace).
 
 **Goal:** if a platform has libc, Thrax programs run on it. Concretely:
 Linux/macOS/Windows x wasm x x86-64/arm64/32-bit, without the compiler binary's
@@ -96,7 +95,7 @@ Contained / already correct (keep as models):
 - `engines/FF.cpp` -- "the only module that touches libffi/dlopen" is the right
   *placement*; only its type table is stale.
 - `external/libffi` vendored + layered resolution -- already the Windows/no-nix
-  lifeline per `doc/architecture.md` section 5.
+  lifeline.
 - `examples/io_example/MAIN.thx:23` FIXME is about effects, not platforms.
 
 ## 2. Prior art, and what we take from each
@@ -171,7 +170,7 @@ Koka's split, enforced:
   for the build tool -- but switches to the same detection header.)
 - **`build.cpp` enforces this as a mechanism**, like the dependency DAG: a
   check target greps for raw platform macros outside `platforms/` and fails
-  the build. Boundaries by mechanism, not discipline (architecture.md section 3).
+  the build. Boundaries by mechanism, not discipline.
 - **The domino check replaces trust.** `CC` knows the target, so it emits into
   every program: `#define THX_INT "@int32|@int64"` (the runtime's `mono`-key
   width -- deleting the `THxRT.c` re-derivation) **and**
@@ -361,7 +360,7 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   workflows/pages.yml` deploys `web/site/` to GitHub Pages. `no-ffi` native
   builds gained the host table too (they used to abort on any FFI). STILL TO
   DO: a fuller site (landing + tour generated from the CI-verified examples +
-  rendered doc/*.md); `"js"` externs (wasm imports via the ABI slot) for
+  rendered documentation/*.md); `"js"` externs (wasm imports via the ABI slot) for
   interactive demos.
 - **Phase 6 -- Windows + 32-bit natives.** `x86_64-windows-gnu` via mingw or
   `zig cc`, wine-run CI; the remaining 32-bit native targets. CI matrix:
@@ -370,8 +369,8 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
 ### Explicitly out of scope (doors left open)
 
 Cross-*interpreting* (IT is host-only by definition); MSVC as a first-class
-toolchain (generated projects remain the Windows-native story per
-architecture.md section 6); endianness (all initial targets little-endian; the
+toolchain (generated projects remain the Windows-native story); endianness
+(all initial targets little-endian; the
 `Target` field exists so byte-order-sensitive code has something to ask);
 per-target `std` beyond `IO` basics.
 

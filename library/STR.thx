@@ -2,7 +2,7 @@
 
 # \file STR.thx
 # \info String operations over the byte-vector `Str` (see
-#       doc/strings-and-arrays.md; indices are 0-based BYTE offsets, `at`
+#       documentation/strings-and-arrays.md; indices are 0-based BYTE offsets, `at`
 #       returns a byte as an Int in 0..255). The primitive layer --
 #       `@array_len` / `@array_get` / `@array_slice` / `@array_push` / `++` /
 #       `?=` -- already works on `Str`; this module builds the searching,
