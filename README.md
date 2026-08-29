@@ -283,11 +283,12 @@ thrax build examples/io_example/MAIN.thx   # native executable beside the source
 | `crates/utilities` | shared support: arena, target/platform, diagnostics |
 | `library/` | the standard library: the auto-injected `C` (libc) namespace, the implicitly imported `CORE`, and the rest of the modules |
 | `examples/` | annotated `.thx` programs (also the test corpus) |
-| `doc/` | language spec and design notes |
+| `documentation/` | language spec and design notes |
 
-More detail lives in [`doc/`](doc/): the [syntax spec](doc/syntax-spec.txt), the
-[effect-system design](doc/effect-system-design.md), and the
-[native backend](doc/native-backend.md).
+More detail lives in [`documentation/`](documentation/): the
+[language reference](documentation/language-reference.md), the
+[effect-system design](documentation/effect-system-design.md), and the
+[native backend](documentation/native-backend.md).
 
 ## License
 

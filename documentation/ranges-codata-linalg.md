@@ -128,7 +128,7 @@ built together. Decide the shape now; implement later.
   coinductive (observations/destructors, projection, potentially infinite,
   lazy-by-construction).
 - Opportunity, not just a new type: Thrax today is "CBV except lazy data
-  constructors" (see doc/effect-system-design.md and the sum-types work), i.e.
+  constructors" (see documentation/effect-system-design.md and the sum-types work), i.e.
   lazy DATA, which is the source of murky cost. The principled cleanup is a
   `data`/`codata` split: make `data` strict (predictable cost, refcount-in-place
   friendly) and confine ALL laziness behind explicit `codata`, visible in the
@@ -182,7 +182,7 @@ Scalar`, `index _ {Range/.. ..} -> view`).
   the same `index` primitive, one overload keyed on the index type.
 - Mechanism: split storage from shape.
   - Buffer: refcounted contiguous storage (already exists: the `%vec` byte-vector
-    with rc and rc==1 in-place, see doc/strings-and-arrays.md).
+    with rc and rc==1 in-place, see documentation/strings-and-arrays.md).
   - Array/Tensor is a view: `{ buffer(strong ref), offset, shape[], strides[] }`.
   - A slice is a new view over the same buffer (rc 1 becomes 2), O(1), no copy.
 - Strides are the LA payoff, all O(1): row, column, transpose (swap
@@ -262,7 +262,7 @@ constraints. Status now:
   TYPE-DIRECTED literal (`Expr::Range`): materializes to a sized tensor `[n]T` when a
   tensor is expected and the bounds are literals (static length), else a `List Int`
   (default). A non-literal bound against a sized tensor is a compile-time error. See
-  [[range-patterns]] and doc/syntax-roadmap.md #9.
+  [[range-patterns]].
 - **Done (separate from LA): OPEN ranges `[lo ...]` as codata streams.** An open
   range (no upper bound) is infinite, so it always builds a `Stream Int` (lowered to
   the canonical `CORE.count_from lo`); against a `List` or sized tensor it is a type
@@ -270,7 +270,7 @@ constraints. Status now:
   codata: laziness = target a `Stream`, no separate `Range` type. Open range PATTERNS
   `is n | lo ...` ship too (match `lo <= n`, one comparison). `Stream`/`count_from`
   are canonical in `CORE`. `Expr::Range.hi`/`Pattern::Range.hi`/`Pat::Range.hi` are
-  optional. See doc/syntax-roadmap.md #9.
+  optional.
 - **Deferred (separate from LA):**
   - Array/Vec targets for the closed form, riding the same `Expr::Range` node.
   - A compile-time-CONSTANT (non-literal) bound against a sized tensor (`let a = 4

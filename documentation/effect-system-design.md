@@ -1,6 +1,9 @@
 # Thrax Effect System Design Decisions
 
-**Status:** design locked except where noted "OPEN". No implementation yet.
+**Status:** design locked; typed effect rows (M3.1) are implemented on both
+engines (see the language reference, documentation/language-reference.md section 8, for the
+surface syntax). The "OPEN" items and M3.2 (evidence passing / tail-resumptive)
+below remain future work.
 **Date:** 2026-06-26.
 **Scope:** the algebraic-effect system and the runtime/IR machinery it requires.
 Records _what_ has been decided, _why_, _rejected_, and _deferred_.
@@ -529,8 +532,8 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     `KAfterClause` markers (no `discontinue` keyword; Koka-style runtime,
     Go-style surface; desugars to the internal `%finally` intrinsic). `initially`
     and the stored-then-dropped case remain unaddressed.
-  - Effect **surface syntax** **DECIDED 2026-06-27**; see section 12 and
-    `doc/syntax-spec.txt` (EFFECTS). `@effect` declaration; `do ... ctl k ... is ... else
+  - Effect **surface syntax** **DECIDED 2026-06-27**; see section 12 and the
+    language reference (documentation/language-reference.md section 8). `@effect` declaration; `do ... ctl k ... is ... else
     ...`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
@@ -574,8 +577,8 @@ Status legend: [X] done, [~] in progress, [ ] planned.
 
 ## 12. Surface syntax (decided 2026-06-27)
 
-The M2 (untyped) surface, recorded in full in `doc/syntax-spec.txt` (EFFECTS).
-Chosen to reuse Thrax's existing grammar and spend as few keywords as possible;
+The M2 (untyped) surface. The current implemented surface is in the language
+reference (documentation/language-reference.md section 8). Chosen to reuse Thrax's existing grammar and spend as few keywords as possible;
 the result is **closest to Flix**.
 
 - **Declaration.** `$ Eff : @effect = op : A -> B, ...` an `@effect` annotation

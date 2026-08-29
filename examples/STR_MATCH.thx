@@ -1,7 +1,7 @@
 @mod STR_MATCH
 
 # Exact string pattern matching: `when s is "lit" then ...` compiles to a
-# byte-equality test, falling through arm to arm (see doc/strings-and-arrays.md).
+# byte-equality test, falling through arm to arm (see documentation/strings-and-arrays.md).
 $ classify : Str -> Int = \s =
 	is s | "yes" => 1
 	         | "no" => 0

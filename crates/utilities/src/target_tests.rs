@@ -49,6 +49,7 @@ fn soname_resolves_symbolic_libraries() {
 #[test]
 fn link_flags_from_symbolic_libraries() {
     let linux = Target { os: Os::Linux, arch: Arch::X86_64 };
+    assert_eq!(linux.link_flag(""), None); // engine-provided (runtime.c) symbol
     assert_eq!(linux.link_flag("libc"), None);
     assert_eq!(linux.link_flag("m"), Some("-lm".to_string()));
     assert_eq!(linux.link_flag("raylib"), Some("-lraylib".to_string()));

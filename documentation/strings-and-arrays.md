@@ -164,7 +164,7 @@ Both engines reuse the existing `List.Cons` nested-pattern machinery.
 emits an `EX::PatSeq` (it no longer folds to `Cons/Nil`); TC types it via a
 seq-pattern lit-site (mirroring `ExSeqLit`, settled in `resolve_lit_sites`,
 writing `PatSeq::is_array`); and `PatLower` -- which now runs *after* inference
-(the `doc/pattern-lowering-after-tc.md` reorder landed) -- lowers a List seq to
+(patterns are typed in TC, then lowered) -- lowers a List seq to
 the cons/nil variant match (rewritten up front so routing/IR match a hand-written
 `List.Cons`/`Nil` match) and an Array seq to a length test (`array_len s ?=@Int
 k`, or `>=@Int k` with a `..rest`), element binds via `array_get s i`, and
@@ -191,8 +191,8 @@ stays List-only.
    sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.thx`.
 6a. **DONE Type-directed `[..]` sequence literals** (List vs Array inferred,
     no `@`). `examples/SEQ_INFER.thx`.
-6b. **DONE Array `[..]` patterns** (symmetric with 6a). The pipeline reorder in
-    `doc/pattern-lowering-after-tc.md` landed (patterns typed in TC, lowered
+6b. **DONE Array `[..]` patterns** (symmetric with 6a). The pipeline reorder
+    landed (patterns typed in TC, lowered
     after), so a new `EX::PatSeq` is typed via a seq-pattern lit-site and
     `PatLower` dispatches List (cons/nil) vs Array (length test + `array_get`/
     `array_slice`). `::` stays List-only. `examples/ARRAY_PATTERNS.thx`.

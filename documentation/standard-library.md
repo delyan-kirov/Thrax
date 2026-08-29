@@ -2,8 +2,8 @@
 
 The standard library is a set of ordinary Thrax modules under `library/`,
 nothing fancy: thin, readable code over the auto-injected `C` libc namespace
-and the byte-vector primitives. It is deliberately separate from the prelude
-(see doc/architecture.md): the prelude is the language's blessed core --
+and the byte-vector primitives. It is deliberately separate from the prelude:
+the prelude is the language's blessed core --
 `Bool`, `List`, `assert` in the readable `core/PRELUDE.thx`, plus the
 generated numeric aliases, while the standard library is a toolbox a
 program opts into with `$ with MOD`.
@@ -54,7 +54,7 @@ there is no Pair type.
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
-| `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see doc/platform-abstraction.md |
+| `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see documentation/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`); importing both is fine -- overloading resolves by type,
@@ -73,7 +73,7 @@ tuples, for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)` orders a
 `Map {Int, Str} \`V`. Maps are values: `insert`/`remove` return an updated
 copy and never disturb the original -- structural sharing makes that cheap
 (path copying only). A MUTABLE hash table (Rust/Jai flavor) is future work,
-now unblocked by `Vec`; see doc/stdlib-design.md.
+now unblocked by `Vec`; see documentation/stdlib-design.md.
 
 ### The vector
 
@@ -166,7 +166,7 @@ built-in). See `Checker::resolve_one_user_site`.
 
 ## Future work
 
-See doc/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
+See documentation/stdlib-design.md for the full inventory-driven roadmap (Koka/Jai
 module surveys, the mutable hash table, tuples, SET/PATH/DIR/PROCESS/...).
 Smaller items:
 

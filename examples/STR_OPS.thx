@@ -2,7 +2,7 @@
 
 # \file str_ops.thx
 # \info Strings and arrays as growable byte vectors (see
-#       doc/strings-and-arrays.md). `++` concatenates; `@array_len`/`@array_get`
+#       documentation/strings-and-arrays.md). `++` concatenates; `@array_len`/`@array_get`
 #       read; `@array_push`/`@array_set`/`@array_slice` produce updated vectors
 #       (opportunistic in-place natively, always fresh in the interpreter). The
 #       byte-vector ops are overloaded to work on both Str and @array.

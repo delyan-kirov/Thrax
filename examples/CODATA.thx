@@ -7,7 +7,7 @@
 #       observing it `s.obs`. Observations are non-memoized thunks, so an infinite
 #       structure is fine: construction is finite and each observation runs afresh.
 #       Recursion is generative (through a function call), so reference counting
-#       stays complete (no cycles). See doc/effect-system-design.md 1a.
+#       stays complete (no cycles). See documentation/effect-system-design.md 1a.
 
 # `Stream` and the ascending-integer generator `count_from` are canonical, defined
 # in CORE (bare everywhere), so this file demonstrates observing and mapping one.

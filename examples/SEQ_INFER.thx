@@ -1,7 +1,7 @@
 @mod SEQ_INFER
 
 # `[..]` infers its container from context: @list by default, @array when the
-# type says so (see doc/strings-and-arrays.md). Same syntax, no `@`.
+# type says so (see documentation/strings-and-arrays.md). Same syntax, no `@`.
 
 # @array context -> a byte vector.
 $ bytes : @array = [10, 20, 30]

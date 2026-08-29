@@ -110,3 +110,22 @@ $ rename  : {from: Str, to: Str}     -> Int     = @extern "C" "rename"  "libc"
 $ write  : {fd: Int, buf: Str, n: Int} -> Int   = @extern "C" "write"  "libc"
 $ getenv : Str -> Str                           = @extern "C" "getenv" "libc"
 $ time   : Int -> Int                           = @extern "C" "time"   "libc"
+
+# -- engine intrinsics -----------------------------------------------------
+# NOT libc: the interpreter serves these from a compiled-in host table, and the
+# native backend defines them in runtime.c, which is INLINED into the one .c it
+# emits (same translation unit, not a separate library). So no external library
+# satisfies these symbols: the name is empty ("" => nothing to dlopen or `-l`).
+# `@cast` crosses only integer widths, so these bridge the int/real and
+# int/pointer boundaries it cannot. MATH re-exports the numeric ones as
+# `real_of_int` / `int_of_real` / ...
+$ i2d : Int -> Real     = @extern "C" "thx_i2d" ""
+$ d2i : Real -> Int     = @extern "C" "thx_d2i" ""
+$ i2f : Int -> @float32 = @extern "C" "thx_i2f" ""
+$ f2i : @float32 -> Int = @extern "C" "thx_f2i" ""
+
+# A pointer travels as a machine word; `i2p` reinterprets one, and `null` is the
+# null pointer (the language has no `@ptr` literal). For C APIs taking an
+# optional `T*` you want to pass as NULL.
+$ i2p  : Int -> @ptr = @extern "C" "thx_i2p" ""
+$ null : @ptr = i2p 0

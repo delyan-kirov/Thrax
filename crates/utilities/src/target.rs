@@ -154,12 +154,14 @@ impl Target {
     }
 
     /// The linker flag that satisfies a symbolic `@extern` library at link time
-    /// (the native backend links rather than dlopens). `libc` is implicit and
-    /// needs none; `libm` becomes `-lm`; an explicit path/soname is passed
-    /// verbatim; anything else becomes `-l<name>` (a leading `lib` stripped).
+    /// (the native backend links rather than dlopens). An empty name (a symbol
+    /// the engine itself provides, e.g. the `runtime.c` intrinsics) and `libc`
+    /// are implicit and need none; `libm` becomes `-lm`; an explicit path/soname
+    /// is passed verbatim; anything else becomes `-l<name>` (a leading `lib`
+    /// stripped).
     pub fn link_flag(self, lib: &str) -> Option<String> {
         match lib {
-            "libc" | "c" => None,
+            "" | "libc" | "c" => None,
             "libm" | "m" => Some("-lm".to_string()),
             _ if lib.contains('/') || lib.contains('.') => Some(lib.to_string()),
             _ => Some(format!("-l{}", lib.strip_prefix("lib").unwrap_or(lib))),

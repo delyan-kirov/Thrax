@@ -833,6 +833,14 @@ pub(crate) fn run_extern<'p>(
             "ceil" => Value::Real(ceil(ffi_real(args, 0)?)),
             "round" => Value::Real(round(ffi_real(args, 0)?)),
             "trunc" => Value::Real(trunc(ffi_real(args, 0)?)),
+            // -- integer <-> real conversions (bridge the int/real boundary that
+            //    `@cast` does not; a plain numeric cast, matching runtime.c) --
+            "thx_i2d" => Value::Real(ffi_word(args, 0)? as f64),
+            "thx_d2i" => Value::Int(ffi_real(args, 0)?.round() as i64),
+            "thx_i2f" => Value::Real(ffi_word(args, 0)? as f32 as f64),
+            "thx_f2i" => Value::Int((ffi_real(args, 0)? as f32).round() as i64),
+            // A pointer travels as a machine word, so Int -> @ptr is identity.
+            "thx_i2p" => Value::Int(ffi_word(args, 0)?),
             // -- math.h (binary) --
             "pow" => Value::Real(pow(ffi_real(args, 0)?, ffi_real(args, 1)?)),
             "fmod" => Value::Real(fmod(ffi_real(args, 0)?, ffi_real(args, 1)?)),

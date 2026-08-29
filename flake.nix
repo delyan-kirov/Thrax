@@ -8,18 +8,6 @@
     let
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
-      wasiPkgs = pkgs.pkgsCross.wasi32; # clang + wasi-libc for wasm32-wasi
-      # nix ships only prefixed binutils (wasm32-unknown-wasi-wasm-ld) but
-      # clang invokes the linker as bare `wasm-ld`, so give it one on PATH.
-      wasiLd = pkgs.runCommand "wasi-ld-shim" { } ''
-        mkdir -p $out/bin
-        ln -s ${wasiPkgs.stdenv.cc.bintools.bintools}/bin/wasm32-unknown-wasi-wasm-ld \
-          $out/bin/wasm-ld
-      '';
-      wasiClang = pkgs.writeShellScriptBin "wasi-clang" ''
-        export PATH=${wasiLd}/bin:$PATH
-        exec ${wasiPkgs.stdenv.cc}/bin/wasm32-unknown-wasi-clang "$@"
-      '';
 
       # A `thrax` on PATH inside the dev shell that always runs the current
       # source: it builds the workspace binary (incrementally, silent when up
@@ -84,7 +72,7 @@
 
       devShells.${system}.default = pkgs.mkShell {
         # -O0 debug builds trip glibc's _FORTIFY_SOURCE warning (which needs -O);
-        # disable that hardening so the makefile stays free of workaround flags.
+        # disable that hardening so the C the build compiles stays warning-free.
         hardeningDisable = [ "fortify" ];
 
         buildInputs = [
@@ -92,49 +80,40 @@
           # execs it, so `thrax run`/`build` work from a fresh checkout.
           thraxDev
 
-          # Tools
-          pkgs.clang
-          pkgs.clang-tools
+          # C toolchain for the interpreter's build.rs (vendored libffi + shim)
+          # and the native backend's `cc`; valgrind for leak-hunting its output.
           pkgs.gcc
-          pkgs.git
           pkgs.valgrind
+          pkgs.git
 
-          # Rust toolchain for the in-progress rewrite (no external crates; a
-          # bare rustc + cargo is all the workspace needs). rustfmt/clippy/
-          # rust-analyzer are dev ergonomics only.
+          # Rust toolchain (no external crates; a bare rustc + cargo is all the
+          # workspace needs). rustfmt/clippy/rust-analyzer are dev ergonomics.
           pkgs.rustc
           pkgs.cargo
           pkgs.rustfmt
           pkgs.clippy
           pkgs.rust-analyzer
-          # wasm-ld for building the Rust compiler crates to wasm32-unknown-
-          # unknown (the browser playground); nixpkgs rustc ships that target's
-          # std but not a bundled rust-lld, so provide the linker on PATH.
-          pkgs.lld
 
-          # Prebuilt deps (consumed via $LIBFFI / $RAYLIB in shellHook)
+          # libffi for `@extern` (consumed via $LIBFFI / $LIBFFI_DEV below).
           pkgs.libffi
 
-          pkgs.tokei
-          pkgs.bear # compile_commands.json via `build compile-commands`
-          pkgs.bison # grammar spec + conflict check (see grammar/)
-          pkgs.wasmtime # runs wasm32-wasi executables (`--target=wasm32-wasi`)
-          pkgs.emscripten # `build wasm`: the compiler itself to wasm (browser)
-          pkgs.nodejs # runs the emscripten output headlessly (tests, CI)
-          pkgs.zig # `build win` / `win-test`: cross-compiles Thrax to Windows
-          pkgs.wineWow64Packages.stable # runs the resulting .exe headlessly
+          # `thrax --target=wasm32-wasi` uses emcc to build and node to run the
+          # output (the target's runner in utilities::target). The web playground
+          # carries its own toolchain (applications/web/flake.nix).
+          pkgs.emscripten
+          pkgs.nodejs
+
+          pkgs.tokei # line counts
+          pkgs.bison # conflict-check the grammar spec (documentation/thrax.y)
         ];
 
         shellHook = ''
-          export RAYLIB=${pkgs.raylib}
           export LIBFFI=${pkgs.libffi.out}
           export LIBFFI_DEV=${pkgs.libffi.dev}
-          export LIBC=${pkgs.libc}
-          export WASI_CC=${wasiClang}/bin/wasi-clang
 
           # The workspace builds with a bare `cargo build`; the interpreter's
           # build.rs builds the vendored external/libffi from source (needs the
-          # cc/make/ar already on PATH here).
+          # cc/make/ar the dev shell's stdenv already provides).
           export THRAX_ROOT=$PWD
         '';
       };
