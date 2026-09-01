@@ -1,24 +1,26 @@
 //! End-to-end tests: parse and type-check a module (or several), lower it to the
 //! IR, and evaluate a named global on the reified-K machine.
 
-use frontend::{lower_program, Decls, Resolved};
+use frontend::{lower_program, Checker, Decls, Resolved};
 
-/// Parse, type-check (resolving type-directed `[..]` nodes, `with` fields, and
-/// cross-module overloads the lowering consumes), and lower a single module.
-fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
-    let parsed = frontend::parse(src).expect("parse");
-    let mut checker = frontend::Checker::new(&parsed.ast);
-    checker
-        .check_program(&parsed.program)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, name)));
+/// The implicitly imported CORE module (defines `to_string`, and now the `+ - *
+/// / %` operator overloads). The driver injects it into every program; the test
+/// harness must do the same, or arithmetic is unbound.
+const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
+
+/// Copy every resolution a checker produced into the shared `resolved` the
+/// lowering consumes (type-directed `[..]` nodes, `with` fields, overload/call
+/// module qualifiers, externs, ...). Mirrors the driver's per-module merge.
+fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     let (exprs, pats) = checker.array_nodes();
-    let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
     resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
-        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
-        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
+    for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+    let (clits, obs) = checker.codata_sites();
+    resolved.codata_lits.extend(clits.iter().copied());
+    resolved.observations.extend(obs.iter().copied());
     for (&site, &module) in checker.call_modules() {
         resolved.call_modules.insert(site, module.to_string());
     }
@@ -44,66 +46,70 @@ fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     for (name, layout) in checker.crepr_layouts() {
         resolved.crepr_layouts.insert(name.to_string(), layout.clone());
     }
+}
+
+/// Parse, check, and lower a single module WITHOUT CORE (for entry-point tests
+/// that use no CORE names). See `run` for the CORE-injecting path.
+fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
+    let parsed = frontend::parse(src).expect("parse");
+    let mut checker = Checker::new(&parsed.ast);
+    checker
+        .check_program(&parsed.program)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, name)));
+    let mut resolved = Resolved::default();
+    collect_resolved(&checker, &mut resolved);
     let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
     lower_program(&parsed.ast, &parsed.program, &decls, &resolved)
 }
 
-/// Lower a single module to the IR (canonical mangling + the middle-end passes)
-/// and evaluate `name` on the machine.
+/// Lower `src` to the IR with CORE injected and evaluate `name` on the machine.
 fn run(src: &str, name: &str) -> String {
-    let program = lower_checked(src, name);
-    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
-    interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render(src, name)))
+    run_modules(&[src], name)
 }
 
-/// Type-check several modules sharing one `Ast` (the last is the root, importing
-/// all earlier ones), lower every module with the merged resolutions, then
-/// evaluate the root's `name` on the machine. Exercises cross-module dispatch.
-fn run_modules(sources: &[&str], name: &str) -> String {
+/// Like [`run`] for several user modules sharing one `Ast`: CORE is imported into
+/// every module, the last user module is the root (also importing the earlier
+/// user deps), and all are lowered with the merged resolutions. Mirrors the
+/// driver so operators (CORE overloads) and cross-module dispatch resolve.
+fn run_modules(user_sources: &[&str], name: &str) -> String {
     let mut ast = frontend::Ast::new();
     let mut programs = Vec::new();
-    for src in sources {
+    for src in std::iter::once(&CORE_SRC).chain(user_sources.iter()) {
         let (next, program) = frontend::parse_into(ast, src).expect("parse");
         ast = next;
         programs.push(program);
     }
-    let (root, deps) = programs.split_last().expect("at least one module");
 
-    let mut dep_checkers = Vec::new();
-    for dep in deps {
-        let mut c = frontend::Checker::new(&ast);
-        c.check_program(dep).expect("check dep");
-        dep_checkers.push(c);
+    let mut core_checker = Checker::new(&ast);
+    core_checker
+        .check_program(&programs[0])
+        .unwrap_or_else(|e| panic!("{}", e.render(CORE_SRC, "CORE")));
+    let user_count = programs.len() - 1;
+    let mut user_checkers: Vec<Checker> = Vec::new();
+    for i in 0..user_count {
+        let mut c = Checker::new(&ast);
+        c.import_from(&core_checker);
+        if i + 1 == user_count {
+            for dep in &user_checkers {
+                c.import_from(dep);
+            }
+        }
+        c.check_program(&programs[i + 1])
+            .unwrap_or_else(|e| panic!("{}", e.render(user_sources[i], name)));
+        user_checkers.push(c);
     }
-    let mut root_checker = frontend::Checker::new(&ast);
-    for dep in &dep_checkers {
-        root_checker.import_from(dep);
-    }
-    root_checker.check_program(root).expect("check root");
 
     let mut resolved = Resolved::default();
-    for c in dep_checkers.iter().chain(std::iter::once(&root_checker)) {
-        for (&site, &module) in c.call_modules() {
-            resolved.call_modules.insert(site, module.to_string());
-        }
-        for (&site, key) in c.overload_calls() {
-            resolved.overload_calls.insert(site, key.clone());
-        }
-        for (&body, key) in c.def_keys() {
-            resolved.def_keys.insert(body, key.clone());
-        }
-        for (&site, args) in c.implicit_calls() {
-            resolved.implicit_args.insert(site, args.clone());
-        }
-        for (&site, fields) in c.with_fields() {
-            resolved.with_fields.insert(site, fields.clone());
-        }
+    collect_resolved(&core_checker, &mut resolved);
+    for c in &user_checkers {
+        collect_resolved(c, &mut resolved);
     }
 
     let decls = Decls::collect(&ast, &programs);
-    // Root first so its bare names win, matching the driver / `lower_modules`.
+    // Root (last) first so its bare names win, matching the driver.
+    let root = programs.len() - 1;
     let mut order: Vec<usize> = (0..programs.len()).collect();
-    order.sort_by_key(|&i| i != programs.len() - 1);
+    order.sort_by_key(|&i| i != root);
     let lowered: Vec<_> = order
         .iter()
         .map(|&i| lower_program(&ast, &programs[i], &decls, &resolved))
@@ -759,6 +765,195 @@ fn array_patterns_destructure_and_guard() {
     assert_eq!(run(src, "hit"), "42");
     assert_eq!(run(src, "no"), "0");
     assert_eq!(run(src, "hd"), "9");
+}
+
+#[test]
+fn arithmetic_intrinsics() {
+    // The monomorphic primitives the operator overloads will be built on.
+    assert_eq!(run("@mod M\n$ a = @iadd 2 3", "a"), "5");
+    assert_eq!(run("@mod M\n$ a = @isub 10 4", "a"), "6");
+    assert_eq!(run("@mod M\n$ a = @imul 6 7", "a"), "42");
+    assert_eq!(run("@mod M\n$ a = @idiv 13 4", "a"), "3");
+    assert_eq!(run("@mod M\n$ a = @imod 13 4", "a"), "1");
+    // Unsigned div/mod agree with signed for small values, but read the all-ones
+    // bit pattern (`@isub 0 1` = every bit set) as u64::MAX, not -1.
+    assert_eq!(run("@mod M\n$ a = @udiv 13 4", "a"), "3");
+    assert_eq!(run("@mod M\n$ a = @umod 13 4", "a"), "1");
+    assert_eq!(
+        run("@mod M\n$ a = @udiv (@isub 0 1) 2", "a"),
+        "9223372036854775807" // (2^64 - 1) / 2
+    );
+    assert_eq!(run("@mod M\n$ a = @umod (@isub 0 1) 3", "a"), "0"); // (2^64 - 1) % 3
+    assert_eq!(run("@mod M\n$ a = @fadd 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("@mod M\n$ a = @fsub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("@mod M\n$ a = @fmul 2.0 3.5", "a"), "7");
+    assert_eq!(run("@mod M\n$ a = @fdiv 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("@mod M\n$ a = @fmod 7.0 3.0", "a"), "1");
+    // The `@f32*` family rounds to single precision. Adding 1 to 2^24 is lost in
+    // f32 (the next representable float is 2^24 + 2), where `@fadd` keeps it.
+    assert_eq!(run("@mod M\n$ a = @f32add 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("@mod M\n$ a = @f32add 16777216.0 1.0", "a"), "16777216");
+    assert_eq!(run("@mod M\n$ a = @fadd 16777216.0 1.0", "a"), "16777217");
+    assert_eq!(run("@mod M\n$ a = @f32sub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("@mod M\n$ a = @f32mul 2.0 3.5", "a"), "7");
+    assert_eq!(run("@mod M\n$ a = @f32div 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("@mod M\n$ a = @f32mod 7.0 3.0", "a"), "1");
+}
+
+#[test]
+fn float32_arithmetic_is_single_precision() {
+    // `+` on `@float32` routes through `@f32*`, so arithmetic rounds to single
+    // precision: 2^24 + 1 is not representable and falls back to 2^24. The `@fadd`
+    // (f64) counterpart in `arithmetic_intrinsics` keeps the extra digit. Operands
+    // are `let`-bound at `@float32` (a bare literal defaults to its width only for
+    // `Int`/`Real`, an unrelated resolution limitation).
+    let f32 = |lhs: &str, rhs: &str| {
+        run(
+            &format!(
+                "@mod M\n$ a : @float32 = \
+                 let x : @float32 = {lhs} in let y : @float32 = {rhs} in x + y"
+            ),
+            "a",
+        )
+    };
+    assert_eq!(f32("16777216.0", "1.0"), "16777216");
+    // A single-precision result displays at f32 precision, not the widened f64
+    // digits a naive narrow-then-store would show (f64 `0.1 + 0.2` is
+    // `0.30000000000000004`).
+    assert_eq!(f32("0.1", "0.2"), "0.3");
+}
+
+#[test]
+fn scalar_serialization_round_trips() {
+    // `to_string` / `from_string` are inverse over the integer, `Nat`, sized
+    // int/nat, and boolean scalars. They are defined entirely in CORE (byte-level
+    // `@array_*` plus arithmetic), not as compiler primitives, so a round trip
+    // through text recovers the original value.
+    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+
+    // Int, including the negative branch.
+    assert_eq!(ok("(from_string (to_string 1234)) ?= 1234"), "true");
+    assert_eq!(ok("(from_string (to_string (0 - 99))) ?= (0 - 99)"), "true");
+    // Nat prints unsigned; round-trip at the same type.
+    assert_eq!(
+        ok("let n : Nat = from_string (to_string (let m : Nat = 250 in m)) in n ?= 250"),
+        "true"
+    );
+    // A sized width (`@int32`), checked by comparing the rendered text.
+    assert_eq!(
+        ok("let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\""),
+        "true"
+    );
+    // Booleans render as `true`/`false` and parse back.
+    assert_eq!(ok("(from_string \"true\") ?= (1 ?= 1)"), "true");
+    assert_eq!(ok("(from_string \"false\") ?= (1 ?= 0)"), "true");
+    // A `Str` serializes as itself.
+    assert_eq!(ok("(from_string (to_string \"hi\")) ?= \"hi\""), "true");
+    // Floats round-trip through their shortest decimal (via the C runtime seam:
+    // `thx_real_to_str`/`thx_f32_to_str` + libc `atof`), at both widths.
+    assert_eq!(
+        ok("let x : @float64 = 3.5 in (from_string (to_string x)) ?= x"),
+        "true"
+    );
+    assert_eq!(
+        ok("let x : @float32 = from_string \"0.5\" in (to_string x) ?= \"0.5\""),
+        "true"
+    );
+}
+
+#[test]
+fn float_mixed_width_widens_to_float64() {
+    // `@float32 + @float64` widens the single-precision operand to double (via the
+    // `thx_f2d` runtime conversion) and yields `@float64`; both argument orders
+    // resolve. `Real` deliberately does NOT mix (target-dependent width, like
+    // `Int + @int32`), so operands are the explicit sized types.
+    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    assert_eq!(
+        ok("let x : @float32 = from_string \"1.5\" in \
+            let y : @float64 = from_string \"2.25\" in \
+            let e : @float64 = 3.75 in (x + y) ?= e"),
+        "true"
+    );
+    assert_eq!(
+        ok("let x : @float32 = from_string \"1.5\" in \
+            let y : @float64 = from_string \"2.25\" in \
+            let e : @float64 = 3.75 in (y + x) ?= e"),
+        "true"
+    );
+}
+
+#[test]
+fn operator_table_every_entry() {
+    // Iterate `lexer::data::OPERATORS` and check each entry: run a snippet and
+    // check the result. Entries with no standalone value can be `Skip`ped
+    // explicitly. An entry with NO arm hits the `_ =>` panic, so a new operator
+    // added to the table without a test fails here, naming the lexeme.
+    use frontend::lexer::data::OPERATORS;
+
+    enum Check {
+        Runs(&'static str),
+        Skip,
+    }
+    use Check::*;
+
+    for d in OPERATORS {
+        // Per-entry snippet (module body after `@mod M\n`), evaluating global `a`.
+        let (body, check): (&str, Check) = match d.lexeme {
+            // Structural punctuation.
+            "\\" => ("$ a = (\\x = x) 5", Runs("5")),
+            "=" => ("$ a = 5", Runs("5")),
+            "=>" => ("$ a = if @true => 1 else 0", Runs("1")),
+            "->" => ("$ f : Int -> Int = \\x = x\n$ a = f 5", Runs("5")),
+            ":" => ("$ a : Int = 5", Runs("5")),
+            "$" => ("$ a = 5", Runs("5")),
+            // Arithmetic and prefix.
+            "+" => ("$ a = 1 + 2", Runs("3")),
+            "-" => ("$ a = 0 - (- 5)", Runs("5")), // infix and prefix `-`
+            "*" => ("$ a = 4 * 3", Runs("12")),
+            "/" => ("$ a = 13 / 4", Runs("3")),
+            "%" => ("$ a = 13 % 5", Runs("3")),
+            "^" => ("$ a = 2 ^ 3", Runs("8")),
+            "!" => ("$ a = if !@false => 1 else 0", Runs("1")),
+            // Comparison.
+            "?=" => ("$ a = if 3 ?= 3 => 1 else 0", Runs("1")),
+            "?>" => ("$ a = if 5 ?> 3 => 1 else 0", Runs("1")),
+            "?<" => ("$ a = if 3 ?< 5 => 1 else 0", Runs("1")),
+            "<=" => ("$ a = if 3 <= 3 => 1 else 0", Runs("1")),
+            ">=" => ("$ a = if 5 >= 4 => 1 else 0", Runs("1")),
+            // Effect-row delimiters. `<`/`>` only mean something inside a `<E>`
+            // row (no standalone value), so skip them; `<>` is the pure row and
+            // `|` also alternates patterns, so those run.
+            "<" | ">" => ("", Skip),
+            "<>" => ("$ f : Int -> <> Int = \\x = x\n$ a = f 5", Runs("5")),
+            "|" => ("$ a = is 1 | 1 => 10 else 0", Runs("10")),
+            // Pipes, short-circuit, sequencing, cons, concat.
+            "<|" => ("$ a = (\\n = n + 1) <| 5", Runs("6")),
+            "&&" => ("$ a = if @true && @true => 1 else 0", Runs("1")),
+            "||" => ("$ a = if @false || @true => 1 else 0", Runs("1")),
+            ";" => ("$ a = 1 ; 2 ; 3", Runs("3")),
+            "|>" => ("$ a = 5 |> (\\n = n + 1)", Runs("6")),
+            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h else 0", Runs("1")),
+            "++" => ("$ a = \"x\" ++ \"y\"", Runs("\"xy\"")),
+            other => panic!("OPERATORS entry `{other}` has no test; add an arm"),
+        };
+        if let Runs(expect) = check {
+            let src = format!("@mod M\n{body}");
+            assert_eq!(run(&src, "a").as_str(), expect, "operator `{}`", d.lexeme);
+        }
+    }
+}
+
+#[test]
+fn user_operator_overload_dispatches_by_type() {
+    // `+` overloaded for a user struct via `$ (+) : …`. `V + V` reaches the user
+    // definition (componentwise); the `Int + Int` inside its body, and in `r`,
+    // still resolves to the builtin. Proves symbolic-name defs join the operator's
+    // overload set and dispatch by type.
+    let src = "@mod M\n\
+               $ V : @struct = x: Int, y: Int\n\
+               $ (+) : V -> V -> V = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y }\n\
+               $ r : Int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
+    assert_eq!(run(src, "r"), "33");
 }
 
 #[test]

@@ -21,6 +21,7 @@
  * closure that captured its own box, is a weak self edge (a child equal to its
  * container is neither retained nor released). */
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -52,6 +53,7 @@ extern const size_t THxRT_extern_count;
 typedef enum {
   T_INT,
   T_REAL,
+  T_REAL32, /* single-precision real (@float32); stored in u.r as a double */
   T_STR, /* byte vector: both Str and Array */
   T_BOOL,
   T_UNIT,
@@ -305,6 +307,13 @@ Value *THxRT_real(double r) {
   v->u.r = r;
   return v;
 }
+/* An @float32 value: the exact f32 is held in the double slot (every float is
+ * representable as a double), so reads are lossless and display rounds to f32. */
+Value *THxRT_real32(float r) {
+  Value *v = alloc_value(T_REAL32);
+  v->u.r = (double)r;
+  return v;
+}
 Value *THxRT_bool(int b) {
   Value *v = alloc_value(T_BOOL);
   v->u.b = b ? true : false;
@@ -459,7 +468,7 @@ long long THxVALUE_as_int(Value *v) {
 }
 double THxVALUE_as_num(Value *v) {
   if (v->tag == T_INT) return (double)v->u.i;
-  if (v->tag == T_REAL) return v->u.r;
+  if (v->tag == T_REAL || v->tag == T_REAL32) return v->u.r;
   thrax_fault("expected a number");
 }
 int THxVALUE_as_bool(Value *v) {
@@ -518,9 +527,11 @@ static int64_t as_i64(Value *v) {
 }
 static double as_f64(Value *v) {
   if (v->tag == T_INT) return (double)v->u.i;
-  if (v->tag == T_REAL) return v->u.r;
+  if (v->tag == T_REAL || v->tag == T_REAL32) return v->u.r;
   thrax_fault("expected a number");
 }
+/* An operand rounded to single precision, for the `@f32*` intrinsics. */
+static float as_f32(Value *v) { return (float)as_f64(v); }
 static size_t as_index(Value *v) {
   if (v->tag != T_INT) thrax_fault("expected an integer index");
   if (v->u.i < 0) thrax_fault("negative index");
@@ -539,8 +550,8 @@ static Value *as_str(Value *v) {
 /* -- structural equality (?=) -------------------------------------------- */
 
 static bool value_eq(Value *x, Value *y) {
-  bool xnum = x->tag == T_INT || x->tag == T_REAL;
-  bool ynum = y->tag == T_INT || y->tag == T_REAL;
+  bool xnum = x->tag == T_INT || x->tag == T_REAL || x->tag == T_REAL32;
+  bool ynum = y->tag == T_INT || y->tag == T_REAL || y->tag == T_REAL32;
   if (xnum && ynum) return as_f64(x) == as_f64(y);
   if (x->tag != y->tag) return false;
   switch (x->tag) {
@@ -580,36 +591,68 @@ static bool value_eq(Value *x, Value *y) {
 
 /* -- built-in operators -------------------------------------------------- */
 
-static Value *arith(const char *op, Value *x, Value *y) {
+/* The `^` (power) operator: integer power (both `Int`) or `pow`. Still a builtin
+ * because it has no single intrinsic (`+ - * / %` moved to CORE.thx). */
+static Value *arith_pow(Value *x, Value *y) {
   if (x->tag == T_INT && y->tag == T_INT) {
-    int64_t a = x->u.i, b = y->u.i, r;
-    switch (op[0]) {
-      case '+': r = a + b; break;
-      case '-': r = a - b; break;
-      case '*': r = a * b; break;
-      case '/':
-        if (b == 0) thrax_fault("division by zero");
-        r = a / b;
-        break;
-      default:
-        if (b == 0) thrax_fault("division by zero");
-        r = a % b;
-        break;
+    int64_t a = x->u.i, b = y->u.i;
+    if (b < 0) thrax_fault("negative exponent");
+    int64_t p = 1;
+    for (int64_t i = 0; i < b; i++) p *= a;
+    return THxRT_int(p);
+  }
+  return THxRT_real(pow(as_f64(x), as_f64(y)));
+}
+
+/* A monomorphic arithmetic intrinsic (`@iadd`, `@fmul`, ...), the primitive the
+ * operator overloads are built on. `@i*` reads two integers, `@f*` two reals;
+ * the type-directed overloads guarantee the tags. Returns NULL if `name` is not
+ * an arithmetic intrinsic, so the caller falls through to other builtins. */
+static Value *arith_intrinsic(const char *name, Value *x, Value *y) {
+  if (name[1] == 'i' || name[1] == 'u') {
+    int64_t a = x->u.i, b = y->u.i;
+    if (strcmp(name, "@iadd") == 0) return THxRT_int(a + b);
+    if (strcmp(name, "@isub") == 0) return THxRT_int(a - b);
+    if (strcmp(name, "@imul") == 0) return THxRT_int(a * b);
+    if (strcmp(name, "@idiv") == 0) {
+      if (b == 0) thrax_fault("division by zero");
+      return THxRT_int(a / b);
     }
-    return THxRT_int(r);
+    if (strcmp(name, "@imod") == 0) {
+      if (b == 0) thrax_fault("division by zero");
+      return THxRT_int(a % b);
+    }
+    /* `@u*` read the same bits as unsigned: a `Nat` past i64::MAX would divide
+     * wrong under signed division. */
+    if (strcmp(name, "@udiv") == 0) {
+      if (b == 0) thrax_fault("division by zero");
+      return THxRT_int((int64_t)((uint64_t)a / (uint64_t)b));
+    }
+    if (strcmp(name, "@umod") == 0) {
+      if (b == 0) thrax_fault("division by zero");
+      return THxRT_int((int64_t)((uint64_t)a % (uint64_t)b));
+    }
+    return NULL;
   }
-  double a = as_f64(x), b = as_f64(y), r;
-  switch (op[0]) {
-    case '+': r = a + b; break;
-    case '-': r = a - b; break;
-    case '*': r = a * b; break;
-    case '/': r = a / b; break;
-    default:
-      /* Rust f64 `%` is C fmod. */
-      r = a - b * (double)(long long)(a / b);
-      break;
+  /* `@f32*` rounds each operand and the result to single precision. */
+  if (name[2] == '3') {
+    float a = as_f32(x), b = as_f32(y);
+    if (strcmp(name, "@f32add") == 0) return THxRT_real32(a + b);
+    if (strcmp(name, "@f32sub") == 0) return THxRT_real32(a - b);
+    if (strcmp(name, "@f32mul") == 0) return THxRT_real32(a * b);
+    if (strcmp(name, "@f32div") == 0) return THxRT_real32(a / b);
+    /* Rust f32 `%` is truncated toward zero, like C fmodf. */
+    if (strcmp(name, "@f32mod") == 0) return THxRT_real32(a - b * (float)(long long)(a / b));
+    return NULL;
   }
-  return THxRT_real(r);
+  double a = as_f64(x), b = as_f64(y);
+  if (strcmp(name, "@fadd") == 0) return THxRT_real(a + b);
+  if (strcmp(name, "@fsub") == 0) return THxRT_real(a - b);
+  if (strcmp(name, "@fmul") == 0) return THxRT_real(a * b);
+  if (strcmp(name, "@fdiv") == 0) return THxRT_real(a / b);
+  /* Rust f64 `%` is C fmod (truncated toward zero). */
+  if (strcmp(name, "@fmod") == 0) return THxRT_real(a - b * (double)(long long)(a / b));
+  return NULL;
 }
 
 static int cmp_bytes(Value *a, Value *b) {
@@ -785,13 +828,15 @@ static Value *tensor_stack(Value **elems, size_t n) {
 
 static Value *run_builtin(const char *name, Value **a, size_t n) {
   (void)n;
-  if (strcmp(name, "+") == 0 || strcmp(name, "-") == 0 ||
-      strcmp(name, "*") == 0 || strcmp(name, "/") == 0 ||
-      strcmp(name, "%") == 0)
-    return arith(name, a[0], a[1]);
+  if (strcmp(name, "^") == 0) return arith_pow(a[0], a[1]);
+  if (name[0] == '@' && (name[1] == 'i' || name[1] == 'u' || name[1] == 'f')) {
+    Value *r = arith_intrinsic(name, a[0], a[1]);
+    if (r) return r;
+  }
   if (strcmp(name, "neg") == 0) {
     if (a[0]->tag == T_INT) return THxRT_int(-a[0]->u.i);
     if (a[0]->tag == T_REAL) return THxRT_real(-a[0]->u.r);
+    if (a[0]->tag == T_REAL32) return THxRT_real32(-(float)a[0]->u.r);
     thrax_fault("`neg` on a non-number");
   }
   if (strcmp(name, "not") == 0) {
@@ -1106,6 +1151,7 @@ static void payload_destroy(Value *v) {
   switch (v->tag) {
     case T_INT:
     case T_REAL:
+    case T_REAL32:
     case T_BOOL:
     case T_UNIT:
     case T_OP: return;
@@ -1158,6 +1204,7 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
   switch (box->tag) {
     case T_INT:
     case T_REAL:
+    case T_REAL32:
     case T_BOOL:
     case T_UNIT:
     case T_OP: break;
@@ -1759,6 +1806,17 @@ static void fmt_real(Str *s, double r) {
   str_puts(s, tmp);
 }
 
+/* The shortest decimal that round-trips through a float, matching Rust's
+ * `f32::to_string` (and so the interpreter's `Value::Real32` display). */
+static void fmt_real32(Str *s, float r) {
+  char tmp[64];
+  for (int prec = 1; prec <= 9; prec++) {
+    snprintf(tmp, sizeof(tmp), "%.*g", prec, (double)r);
+    if (strtof(tmp, NULL) == r) break;
+  }
+  str_puts(s, tmp);
+}
+
 static void show_into(Str *s, Value *v);
 
 static void show_bytes_debug(Str *s, const uint8_t *data, size_t len) {
@@ -1793,6 +1851,7 @@ static void show_into(Str *s, Value *v) {
       str_puts(s, num);
       break;
     case T_REAL: fmt_real(s, v->u.r); break;
+    case T_REAL32: fmt_real32(s, (float)v->u.r); break;
     case T_STR: show_bytes_debug(s, v->u.str.data, v->u.str.len); break;
     case T_BOOL: str_puts(s, v->u.b ? "true" : "false"); break;
     case T_UNIT: str_puts(s, "{}"); break;
@@ -1862,6 +1921,34 @@ double thx_i2d(long n) { return (double)n; }
 long thx_d2i(double x) { return (long)(x < 0 ? x - 0.5 : x + 0.5); }
 float thx_i2f(long n) { return (float)n; }
 long thx_f2i(float x) { return (long)(x < 0 ? x - 0.5f : x + 0.5f); }
+
+/* Float width conversions. `@float32` and `@float64` have distinct runtime
+   representations, so widening/narrowing is real work (unlike the erased `@cast`
+   between integer widths). Reached through the `@extern` seam like the integer
+   bridges above. */
+double thx_f2d(float f) { return (double)f; }
+float thx_d2f(double d) { return (float)d; }
+
+/* Format a real as its shortest decimal that round-trips (the same rule as the
+   `fmt_real`/`fmt_real32` display path). The result lives in a static buffer that
+   the FFI copies into a Thrax `Str` immediately on return, so it need not outlive
+   the call. */
+const char *thx_real_to_str(double r) {
+  static char buf[64];
+  for (int prec = 1; prec <= 17; prec++) {
+    snprintf(buf, sizeof(buf), "%.*g", prec, r);
+    if (strtod(buf, NULL) == r) break;
+  }
+  return buf;
+}
+const char *thx_f32_to_str(float r) {
+  static char buf[64];
+  for (int prec = 1; prec <= 9; prec++) {
+    snprintf(buf, sizeof(buf), "%.*g", prec, (double)r);
+    if (strtof(buf, NULL) == r) break;
+  }
+  return buf;
+}
 
 /* Reinterpret a machine word as a raw pointer (`@ptr` travels as an Int), so
    the standard library can spell a null pointer as `C.null` (= i2p 0). */

@@ -188,6 +188,9 @@ pub enum Outcome {
     Unit,
     Int(i64),
     Real(f64),
+    /// A single-precision result (`@float32`), kept distinct so it wraps to a
+    /// [`Value::Real32`] rather than a widened double.
+    Real32(f32),
     Bytes(Vec<u8>),
     /// The flat memory image of a returned by-value struct.
     Struct(Vec<u8>),
@@ -250,7 +253,7 @@ fn take_cb_err() -> Option<utilities::Diagnostic> {
 pub(crate) fn word_to_value<'p>(w: u64, k: std::os::raw::c_int) -> Value<'p> {
     match k {
         kind::DOUBLE => Value::Real(f64::from_bits(w)),
-        kind::FLOAT => Value::Real(f32::from_bits(w as u32) as f64),
+        kind::FLOAT => Value::Real32(f32::from_bits(w as u32)),
         _ => Value::Int(w as i64),
     }
 }
@@ -260,11 +263,13 @@ pub(crate) fn value_to_word(v: &Value, k: std::os::raw::c_int) -> u64 {
     match k {
         kind::DOUBLE => match v {
             Value::Real(r) => r.to_bits(),
+            Value::Real32(r) => (*r as f64).to_bits(),
             Value::Int(n) => (*n as f64).to_bits(),
             _ => 0,
         },
         kind::FLOAT => match v {
             Value::Real(r) => (*r as f32).to_bits() as u64,
+            Value::Real32(r) => r.to_bits() as u64,
             Value::Int(n) => (*n as f32).to_bits() as u64,
             _ => 0,
         },
@@ -498,7 +503,7 @@ fn read_field<'p>(kind: &utilities::CKind, offset: usize, bytes: &[u8]) -> Value
     let at = |n: usize| &bytes[offset..offset + n];
     match kind {
         Struct(name, inner) => unpack_struct(name, inner, &bytes[offset..offset + inner.size]),
-        F32 => Value::Real(f32::from_ne_bytes(at(4).try_into().unwrap()) as f64),
+        F32 => Value::Real32(f32::from_ne_bytes(at(4).try_into().unwrap())),
         F64 => Value::Real(f64::from_ne_bytes(at(8).try_into().unwrap())),
         S8 => Value::Int(bytes[offset] as i8 as i64),
         S16 => Value::Int(i16::from_ne_bytes(at(2).try_into().unwrap()) as i64),
@@ -523,6 +528,7 @@ fn read_real(v: &PVal) -> Result<f64> {
     match &*v.borrow() {
         Value::Int(n) => Ok(*n as f64),
         Value::Real(r) => Ok(*r),
+        Value::Real32(r) => Ok(*r as f64),
         _ => Err(fault("FFI: expected a Real argument")),
     }
 }
@@ -574,6 +580,7 @@ pub fn call_extern<'p>(
         Outcome::Unit => Value::Unit,
         Outcome::Int(n) => Value::Int(n),
         Outcome::Real(r) => Value::Real(r),
+        Outcome::Real32(r) => Value::Real32(r),
         Outcome::Bytes(b) => Value::Str(Rc::new(b)),
         Outcome::Struct(bytes) => {
             let (name, layout) = ret_struct.expect("struct outcome implies a struct plan");
@@ -882,7 +889,7 @@ mod native {
                 Wrap::Int => Outcome::Int(rvalue as i64),
                 Wrap::Real => {
                     if ret.ffi_kind == kind::FLOAT {
-                        Outcome::Real(f32::from_bits(rvalue as u32) as f64)
+                        Outcome::Real32(f32::from_bits(rvalue as u32))
                     } else {
                         Outcome::Real(f64::from_bits(rvalue))
                     }

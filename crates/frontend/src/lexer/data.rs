@@ -78,45 +78,89 @@ pub const KEYWORDS: &[(&str, Kind)] = &[
     ("defer", Kind::Defer),
 ];
 
+/// The parser role of an operator lexeme, and the single source of truth for it.
+/// Every operator declares exactly one role, so a lexeme cannot lex as a token
+/// yet be unknown to the parser (the class of bug where an operator is added to
+/// the lexer alone). The lexer derives a token's [`Kind`] from the role; the
+/// parser derives binding power and prefix/infix status from the same role.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum OpRole {
+    /// Structural punctuation with its own [`Kind`] (`\`, `=`, `=>`, `->`, `:`,
+    /// `$`). Not [`Kind::Op`]; carries no binding power.
+    Structural(Kind),
+    /// Infix binary operator with `(left, right)` binding power.
+    Infix(u8, u8),
+    /// Both infix and unary prefix (only `-`); the two forms stay distinct so
+    /// prefix `-` never aliases binary `-`.
+    InfixPrefix(u8, u8),
+    /// Unary prefix only (`!`).
+    Prefix,
+    /// A [`Kind::Op`] lexeme that is a grammatical delimiter (`<`, `>`, `|`,
+    /// `<>`): it never folds as an operator, legitimately ends an expression,
+    /// and is consumed by the construct (row type, pattern) that expects it.
+    Delimiter,
+}
+
+/// One operator lexeme paired with its [`OpRole`].
+pub struct OpDef {
+    pub lexeme: &'static str,
+    pub role: OpRole,
+}
+
+impl OpDef {
+    /// The token [`Kind`] the lexer emits for this operator.
+    pub const fn kind(&self) -> Kind {
+        match self.role {
+            OpRole::Structural(k) => k,
+            _ => Kind::Op,
+        }
+    }
+}
+
 /// Operator table: a *maximal* run of operator characters is looked up whole.
-/// The structural operators map to their own kind; every evaluable operator
-/// shares [`Kind::Op`] with the lexeme kept in `Token::text` (the parser turns
-/// each into a variable of that name). A run absent from this table is an error.
-pub const OPERATORS: &[(&str, Kind)] = &[
+/// A structural operator carries its own kind; every other operator is a
+/// [`Kind::Op`] whose lexeme the parser turns into a variable of that name. A
+/// run absent from this table is an error. Binding powers: a left-associative
+/// operator uses `left < right`, a right-associative one `left > right`.
+pub const OPERATORS: &[OpDef] = &[
     // Structural.
-    ("\\", Kind::Lambda),
-    ("=", Kind::Eq),
-    ("=>", Kind::FatArrow),
-    ("->", Kind::Arrow),
-    (":", Kind::Colon),
-    ("$", Kind::Dollar),
-    // Arithmetic / comparison.
-    ("+", Kind::Op),
-    ("-", Kind::Op),
-    ("*", Kind::Op),
-    ("/", Kind::Op),
-    ("%", Kind::Op),
-    ("!", Kind::Op),
-    ("?=", Kind::Op),
-    ("?>", Kind::Op),
-    ("?<", Kind::Op),
-    ("<=", Kind::Op),
-    (">=", Kind::Op),
+    OpDef { lexeme: "\\", role: OpRole::Structural(Kind::Lambda) },
+    OpDef { lexeme: "=", role: OpRole::Structural(Kind::Eq) },
+    OpDef { lexeme: "=>", role: OpRole::Structural(Kind::FatArrow) },
+    OpDef { lexeme: "->", role: OpRole::Structural(Kind::Arrow) },
+    OpDef { lexeme: ":", role: OpRole::Structural(Kind::Colon) },
+    OpDef { lexeme: "$", role: OpRole::Structural(Kind::Dollar) },
+    // Arithmetic. `^` (exponentiation) is right-associative and binds tighter
+    // than `*`; unary prefix still binds tighter than `^`.
+    OpDef { lexeme: "+", role: OpRole::Infix(20, 21) },
+    OpDef { lexeme: "-", role: OpRole::InfixPrefix(20, 21) },
+    OpDef { lexeme: "*", role: OpRole::Infix(30, 31) },
+    OpDef { lexeme: "/", role: OpRole::Infix(30, 31) },
+    OpDef { lexeme: "%", role: OpRole::Infix(30, 31) },
+    OpDef { lexeme: "^", role: OpRole::Infix(35, 34) },
+    OpDef { lexeme: "!", role: OpRole::Prefix },
+    // Comparison (all one precedence, left-associative).
+    OpDef { lexeme: "?=", role: OpRole::Infix(10, 11) },
+    OpDef { lexeme: "?>", role: OpRole::Infix(10, 11) },
+    OpDef { lexeme: "?<", role: OpRole::Infix(10, 11) },
+    OpDef { lexeme: "<=", role: OpRole::Infix(10, 11) },
+    OpDef { lexeme: ">=", role: OpRole::Infix(10, 11) },
     // Effect-row delimiters and their coalesced forms.
-    ("<", Kind::Op),
-    (">", Kind::Op),
-    ("|", Kind::Op),
-    ("<>", Kind::Op),
-    ("<|", Kind::Op),
+    OpDef { lexeme: "<", role: OpRole::Delimiter },
+    OpDef { lexeme: ">", role: OpRole::Delimiter },
+    OpDef { lexeme: "|", role: OpRole::Delimiter },
+    OpDef { lexeme: "<>", role: OpRole::Delimiter },
+    // Pipe into a function on the left; right-associative.
+    OpDef { lexeme: "<|", role: OpRole::Infix(5, 4) },
     // Short-circuit boolean and/or (desugared to a lazy `if` in the parser).
-    ("&&", Kind::Op),
-    ("||", Kind::Op),
-    // Sequencing / pipes (desugared in the parser).
-    (";", Kind::Op),
-    ("|>", Kind::Op),
-    // List cons and Str/Array concatenation.
-    ("::", Kind::Op),
-    ("++", Kind::Op),
+    OpDef { lexeme: "&&", role: OpRole::Infix(9, 10) },
+    OpDef { lexeme: "||", role: OpRole::Infix(8, 9) },
+    // Sequencing / pipe-forward (desugared in the parser).
+    OpDef { lexeme: ";", role: OpRole::Infix(2, 1) },
+    OpDef { lexeme: "|>", role: OpRole::Infix(6, 7) },
+    // List cons (right-associative) and Str/Array concatenation.
+    OpDef { lexeme: "::", role: OpRole::Infix(15, 14) },
+    OpDef { lexeme: "++", role: OpRole::Infix(16, 17) },
 ];
 
 /// Single-character delimiters. Unlike operators these never coalesce.
@@ -138,7 +182,17 @@ pub fn keyword_or_word(s: &str) -> Kind {
 
 /// Look up a full operator run; `None` means the run is not a valid operator.
 pub fn operator(s: &str) -> Option<Kind> {
-    lookup_str(OPERATORS, s)
+    op_def(s).map(OpDef::kind)
+}
+
+/// Look up an operator lexeme's [`OpRole`]; the parser's binding-power tables
+/// read this. `None` means the lexeme is not an operator.
+pub fn op_role(s: &str) -> Option<OpRole> {
+    op_def(s).map(|d| d.role)
+}
+
+fn op_def(s: &str) -> Option<&'static OpDef> {
+    OPERATORS.iter().find(|d| d.lexeme == s)
 }
 
 /// Look up a single delimiter byte.

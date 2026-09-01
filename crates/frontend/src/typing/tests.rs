@@ -1,11 +1,22 @@
 use crate::*;
 
-/// Infer the type of a single global `x`, rendered as a string.
+/// The implicitly imported CORE module (defines `to_string` and the `+ - * / %`
+/// operator overloads). Injected so a test using arithmetic resolves it, as the
+/// driver does for every real program.
+const CORE_SRC: &str = include_str!("../../../../library/CORE.thx");
+
+/// Infer the type of a single global `x`, rendered as a string. CORE is parsed
+/// and imported first (so arithmetic and other CORE names resolve), as the driver
+/// does for every real program.
 fn type_of(src: &str, name: &str) -> String {
-    let parsed = crate::parse(src).expect("parse");
-    let mut checker = Checker::new(&parsed.ast);
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let mut core_checker = Checker::new(&ast);
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast);
+    checker.import_from(&core_checker);
     let results = checker
-        .check_program(&parsed.program)
+        .check_program(&prog)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
     let ty = results
         .iter()
@@ -17,8 +28,13 @@ fn type_of(src: &str, name: &str) -> String {
 }
 
 fn errors(src: &str) -> String {
-    let parsed = crate::parse(src).expect("parse");
-    match Checker::new(&parsed.ast).check_program(&parsed.program) {
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let mut core_checker = Checker::new(&ast);
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast);
+    checker.import_from(&core_checker);
+    match checker.check_program(&prog) {
         Ok(_) => String::new(),
         Err(e) => format!("{e}"),
     }

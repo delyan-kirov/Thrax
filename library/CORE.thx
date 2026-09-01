@@ -1,15 +1,257 @@
 @mod CORE
 
 # \file CORE.thx
-# \info The implicitly imported core layer. Unlike the rest of the standard
-#       library (imported with `$ with MOD`), every module gets `CORE`'s names
-#       bare, with no import. It holds the pieces the language leans on
-#       everywhere, starting with `to_string`, the stringifier string
-#       interpolation `"{e}"` desugars to. Base types ship an overload here;
-#       a program adds `$ to_string : MyType -> Str` for its own types and the
-#       overload resolver picks it. CORE uses only primitives, so it depends on
-#       no other module (and so cannot be caught in an import cycle with the
-#       modules that implicitly import it).
+# \info CORE is implicitly imported in every module with no namespace 
+
+# Arithmetic operators. Each is an overload over a machine intrinsic (`@iadd`,
+# `@fadd`, ...); the resolver picks by operand type. This is why `+ - * / %` are
+# not special-cased in the compiler. Signed integers and Nat share add/sub/mul
+# (two's complement), but Nat divides unsigned (`@udiv`/`@umod`). Floats use the
+# `@f*` family. (`^`, comparisons, and `++` are still compiler builtins, pending
+# their own intrinsics.)
+
+# Int / Nat / Real (the default numeric types).
+$ (+) : Int -> Int -> Int = \a b = @iadd a b
+$ (-) : Int -> Int -> Int = \a b = @isub a b
+$ (*) : Int -> Int -> Int = \a b = @imul a b
+$ (/) : Int -> Int -> Int = \a b = @idiv a b
+$ (%) : Int -> Int -> Int = \a b = @imod a b
+# 
+$ (+) : Nat -> Nat -> Nat = \a b = @iadd a b
+$ (-) : Nat -> Nat -> Nat = \a b = @isub a b
+$ (*) : Nat -> Nat -> Nat = \a b = @imul a b
+$ (/) : Nat -> Nat -> Nat = \a b = @udiv a b
+$ (%) : Nat -> Nat -> Nat = \a b = @umod a b
+# 
+$ (+) : Real -> Real -> Real = \a b = @fadd a b
+$ (-) : Real -> Real -> Real = \a b = @fsub a b
+$ (*) : Real -> Real -> Real = \a b = @fmul a b
+$ (/) : Real -> Real -> Real = \a b = @fdiv a b
+$ (%) : Real -> Real -> Real = \a b = @fmod a b
+# Sized signed integers (same intrinsics as Int; each a DISTINCT type).
+$ (+) : @int8 -> @int8 -> @int8 = \a b = @iadd a b
+$ (-) : @int8 -> @int8 -> @int8 = \a b = @isub a b
+$ (*) : @int8 -> @int8 -> @int8 = \a b = @imul a b
+$ (/) : @int8 -> @int8 -> @int8 = \a b = @idiv a b
+$ (%) : @int8 -> @int8 -> @int8 = \a b = @imod a b
+
+$ (+) : @int16 -> @int16 -> @int16 = \a b = @iadd a b
+$ (-) : @int16 -> @int16 -> @int16 = \a b = @isub a b
+$ (*) : @int16 -> @int16 -> @int16 = \a b = @imul a b
+$ (/) : @int16 -> @int16 -> @int16 = \a b = @idiv a b
+$ (%) : @int16 -> @int16 -> @int16 = \a b = @imod a b
+
+$ (+) : @int32 -> @int32 -> @int32 = \a b = @iadd a b
+$ (-) : @int32 -> @int32 -> @int32 = \a b = @isub a b
+$ (*) : @int32 -> @int32 -> @int32 = \a b = @imul a b
+$ (/) : @int32 -> @int32 -> @int32 = \a b = @idiv a b
+$ (%) : @int32 -> @int32 -> @int32 = \a b = @imod a b
+
+$ (+) : @int64 -> @int64 -> @int64 = \a b = @iadd a b
+$ (-) : @int64 -> @int64 -> @int64 = \a b = @isub a b
+$ (*) : @int64 -> @int64 -> @int64 = \a b = @imul a b
+$ (/) : @int64 -> @int64 -> @int64 = \a b = @idiv a b
+$ (%) : @int64 -> @int64 -> @int64 = \a b = @imod a b
+# Sized nats (unsigned div/mod).
+$ (+) : @nat8 -> @nat8 -> @nat8 = \a b = @iadd a b
+$ (-) : @nat8 -> @nat8 -> @nat8 = \a b = @isub a b
+$ (*) : @nat8 -> @nat8 -> @nat8 = \a b = @imul a b
+$ (/) : @nat8 -> @nat8 -> @nat8 = \a b = @udiv a b
+$ (%) : @nat8 -> @nat8 -> @nat8 = \a b = @umod a b
+
+$ (+) : @nat16 -> @nat16 -> @nat16 = \a b = @iadd a b
+$ (-) : @nat16 -> @nat16 -> @nat16 = \a b = @isub a b
+$ (*) : @nat16 -> @nat16 -> @nat16 = \a b = @imul a b
+$ (/) : @nat16 -> @nat16 -> @nat16 = \a b = @udiv a b
+$ (%) : @nat16 -> @nat16 -> @nat16 = \a b = @umod a b
+
+$ (+) : @nat32 -> @nat32 -> @nat32 = \a b = @iadd a b
+$ (-) : @nat32 -> @nat32 -> @nat32 = \a b = @isub a b
+$ (*) : @nat32 -> @nat32 -> @nat32 = \a b = @imul a b
+$ (/) : @nat32 -> @nat32 -> @nat32 = \a b = @udiv a b
+$ (%) : @nat32 -> @nat32 -> @nat32 = \a b = @umod a b
+
+$ (+) : @nat64 -> @nat64 -> @nat64 = \a b = @iadd a b
+$ (-) : @nat64 -> @nat64 -> @nat64 = \a b = @isub a b
+$ (*) : @nat64 -> @nat64 -> @nat64 = \a b = @imul a b
+$ (/) : @nat64 -> @nat64 -> @nat64 = \a b = @udiv a b
+$ (%) : @nat64 -> @nat64 -> @nat64 = \a b = @umod a b
+# Sized floats.
+$ (+) : @float32 -> @float32 -> @float32 = \a b = @f32add a b
+$ (-) : @float32 -> @float32 -> @float32 = \a b = @f32sub a b
+$ (*) : @float32 -> @float32 -> @float32 = \a b = @f32mul a b
+$ (/) : @float32 -> @float32 -> @float32 = \a b = @f32div a b
+$ (%) : @float32 -> @float32 -> @float32 = \a b = @f32mod a b
+
+$ (+) : @float64 -> @float64 -> @float64 = \a b = @fadd a b
+$ (-) : @float64 -> @float64 -> @float64 = \a b = @fsub a b
+$ (*) : @float64 -> @float64 -> @float64 = \a b = @fmul a b
+$ (/) : @float64 -> @float64 -> @float64 = \a b = @fdiv a b
+$ (%) : @float64 -> @float64 -> @float64 = \a b = @fmod a b
+# Float width conversions. Unlike integers, `@float32` and `@float64` differ in
+# runtime representation, so widening is genuine work: these bind the C runtime
+# helpers (`thx_f2d`/`thx_d2f`) through the same `@extern` seam as `C.i2d`.
+$ f32_to_f64 : @float32 -> @float64 = @extern "C" "thx_f2d" ""
+$ f64_to_f32 : @float64 -> @float32 = @extern "C" "thx_d2f" ""
+# Mixed-width floats: result is the wider `@float64`, the `@float32` operand
+# widened first. (`@cast` cannot do this: it only reinterprets integer widths.)
+$ (+) : @float32 -> @float64 -> @float64 = \a b = @fadd (f32_to_f64 a) b
+$ (-) : @float32 -> @float64 -> @float64 = \a b = @fsub (f32_to_f64 a) b
+$ (*) : @float32 -> @float64 -> @float64 = \a b = @fmul (f32_to_f64 a) b
+$ (/) : @float32 -> @float64 -> @float64 = \a b = @fdiv (f32_to_f64 a) b
+$ (%) : @float32 -> @float64 -> @float64 = \a b = @fmod (f32_to_f64 a) b
+
+$ (+) : @float64 -> @float32 -> @float64 = \a b = @fadd a (f32_to_f64 b)
+$ (-) : @float64 -> @float32 -> @float64 = \a b = @fsub a (f32_to_f64 b)
+$ (*) : @float64 -> @float32 -> @float64 = \a b = @fmul a (f32_to_f64 b)
+$ (/) : @float64 -> @float32 -> @float64 = \a b = @fdiv a (f32_to_f64 b)
+$ (%) : @float64 -> @float32 -> @float64 = \a b = @fmod a (f32_to_f64 b)
+# Mixed-width signed integers: result = the wider operand, narrower cast up.
+# (Int/Nat/Real are NOT auto-widened: target-dependent width. Floats are not
+# here: `@cast` is integer-only.)
+$ (+) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @iadd x b
+$ (-) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @isub x b
+$ (*) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imul x b
+$ (/) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @idiv x b
+$ (%) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imod x b
+
+$ (+) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @iadd x b
+$ (-) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @isub x b
+$ (*) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imul x b
+$ (/) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @idiv x b
+$ (%) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imod x b
+
+$ (+) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
+$ (-) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
+$ (*) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
+$ (/) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
+$ (%) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
+
+$ (+) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @iadd a x
+$ (-) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @isub a x
+$ (*) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @imul a x
+$ (/) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @idiv a x
+$ (%) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @imod a x
+
+$ (+) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @iadd x b
+$ (-) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @isub x b
+$ (*) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imul x b
+$ (/) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @idiv x b
+$ (%) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imod x b
+
+$ (+) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
+$ (-) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
+$ (*) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
+$ (/) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
+$ (%) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
+
+$ (+) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @iadd a x
+$ (-) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @isub a x
+$ (*) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @imul a x
+$ (/) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @idiv a x
+$ (%) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @imod a x
+
+$ (+) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @iadd a x
+$ (-) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @isub a x
+$ (*) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @imul a x
+$ (/) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @idiv a x
+$ (%) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @imod a x
+
+$ (+) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
+$ (-) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
+$ (*) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
+$ (/) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
+$ (%) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
+
+$ (+) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
+$ (-) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
+$ (*) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
+$ (/) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
+$ (%) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
+
+$ (+) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
+$ (-) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
+$ (*) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
+$ (/) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
+$ (%) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
+
+$ (+) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
+$ (-) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
+$ (*) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
+$ (/) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
+$ (%) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
+# Mixed-width nats (unsigned div/mod).
+$ (+) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @iadd x b
+$ (-) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @isub x b
+$ (*) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @imul x b
+$ (/) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @udiv x b
+$ (%) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @umod x b
+
+$ (+) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @iadd x b
+$ (-) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @isub x b
+$ (*) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @imul x b
+$ (/) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @udiv x b
+$ (%) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @umod x b
+
+$ (+) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
+$ (-) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
+$ (*) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
+$ (/) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
+$ (%) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
+
+$ (+) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @iadd a x
+$ (-) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @isub a x
+$ (*) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @imul a x
+$ (/) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @udiv a x
+$ (%) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @umod a x
+
+$ (+) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @iadd x b
+$ (-) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @isub x b
+$ (*) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @imul x b
+$ (/) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @udiv x b
+$ (%) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @umod x b
+
+$ (+) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
+$ (-) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
+$ (*) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
+$ (/) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
+$ (%) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
+
+$ (+) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @iadd a x
+$ (-) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @isub a x
+$ (*) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @imul a x
+$ (/) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @udiv a x
+$ (%) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @umod a x
+
+$ (+) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @iadd a x
+$ (-) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @isub a x
+$ (*) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @imul a x
+$ (/) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @udiv a x
+$ (%) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @umod a x
+
+$ (+) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
+$ (-) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
+$ (*) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
+$ (/) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
+$ (%) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
+
+$ (+) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
+$ (-) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
+$ (*) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
+$ (/) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
+$ (%) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
+
+$ (+) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
+$ (-) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
+$ (*) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
+$ (/) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
+$ (%) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
+
+$ (+) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
+$ (-) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
+$ (*) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
+$ (/) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
+$ (%) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
 
 $ to_string : Str -> Str = \s = s
 
@@ -22,6 +264,65 @@ $ to_string : Int -> Str = \n =
 $ to_string_digits : Int -> Str -> Str = \n acc =
 	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
 	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
+
+# `Nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
+# signed range still renders correctly. A single digit fits an `Int`, so `@cast`
+# each one down before appending it as a byte.
+$ to_string_udigit : Nat -> Int = \n = @cast n
+
+$ to_string_udigits : Nat -> Str -> Str = \n acc =
+	if n ?< 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
+	else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
+
+$ to_string : Nat -> Str = \n = to_string_udigits n ""
+
+# The sized integers reuse the friendly-type printers: `@cast` to `Int` (signed)
+# or `Nat` (unsigned) is an erased width reinterpret, so the value is unchanged.
+$ to_string : @int8  -> Str = \x = to_string (let n : Int = @cast x in n)
+$ to_string : @int16 -> Str = \x = to_string (let n : Int = @cast x in n)
+$ to_string : @int32 -> Str = \x = to_string (let n : Int = @cast x in n)
+$ to_string : @int64 -> Str = \x = to_string (let n : Int = @cast x in n)
+
+$ to_string : @nat8  -> Str = \x = to_string (let n : Nat = @cast x in n)
+$ to_string : @nat16 -> Str = \x = to_string (let n : Nat = @cast x in n)
+$ to_string : @nat32 -> Str = \x = to_string (let n : Nat = @cast x in n)
+$ to_string : @nat64 -> Str = \x = to_string (let n : Nat = @cast x in n)
+
+# `from_string` is the inverse of `to_string`: parse text back into a value. It
+# reads bytes with `@array_get`/`@array_len`, so it stays in the language.
+$ from_string : Str -> Str = \s = s
+
+$ from_string : Str -> @bool = \s = s ?= "true"
+
+$ from_string_digits : Str -> Int -> Int -> Int = \s i acc =
+	if i ?= @array_len s => acc
+	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
+
+$ from_string : Str -> Int = \s =
+	if @array_len s ?= 0 => 0
+	else if @array_get s 0 ?= 45 => 0 - from_string_digits s 1 0
+	else from_string_digits s 0 0
+
+# Floats serialize through the C runtime: `thx_real_to_str`/`thx_f32_to_str`
+# format the shortest round-tripping decimal (the same rule as display), and
+# libc `atof` parses one back. `@float32` widens/narrows via the conversions above.
+$ to_string : Real     -> Str = @extern "C" "thx_real_to_str" ""
+$ to_string : @float64 -> Str = @extern "C" "thx_real_to_str" ""
+$ to_string : @float32 -> Str = @extern "C" "thx_f32_to_str" ""
+
+$ from_string : Str -> Real     = @extern "C" "atof" "libc"
+$ from_string : Str -> @float64 = @extern "C" "atof" "libc"
+$ from_string : Str -> @float32 = \s = let d : @float64 = from_string s in f64_to_f32 d
+
+$ from_string : Str -> Nat    = \s = let n : Int = from_string s in let m : Nat    = @cast n in m
+$ from_string : Str -> @int8  = \s = let n : Int = from_string s in let m : @int8  = @cast n in m
+$ from_string : Str -> @int16 = \s = let n : Int = from_string s in let m : @int16 = @cast n in m
+$ from_string : Str -> @int32 = \s = let n : Int = from_string s in let m : @int32 = @cast n in m
+$ from_string : Str -> @int64 = \s = let n : Int = from_string s in let m : @int64 = @cast n in m
+$ from_string : Str -> @nat8  = \s = let n : Nat = from_string s in let m : @nat8  = @cast n in m
+$ from_string : Str -> @nat16 = \s = let n : Nat = from_string s in let m : @nat16 = @cast n in m
+$ from_string : Str -> @nat32 = \s = let n : Nat = from_string s in let m : @nat32 = @cast n in m
+$ from_string : Str -> @nat64 = \s = let n : Nat = from_string s in let m : @nat64 = @cast n in m
 
 # The expression-form range `[lo ... hi]` desugars to `range lo hi`: the inclusive
 # list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `@list`, since

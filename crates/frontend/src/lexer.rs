@@ -198,8 +198,6 @@ impl<'a> Lexer<'a> {
             _ if crate::lexer::data::is_digit(c) => self.lex_number(start, line),
             _ if crate::lexer::data::is_ident_start(c) => Ok(self.lex_word(start, line)),
             _ if crate::lexer::data::is_operator_char(c) => self.lex_operator(start, line),
-            // `...` is one token (an inclusive range in patterns); a lone or double
-            // `.` stays a `Dot` delimiter, so `..rest` and `[..]` are unaffected.
             b'.' if self.at(self.cursor + 1) == b'.' && self.at(self.cursor + 2) == b'.' => {
                 self.cursor += 3;
                 Ok(self.mk(Kind::Ellipsis, start, line))
@@ -537,10 +535,17 @@ pub fn decode_escape(
 ) -> Result<usize> {
     let esc_at = body_start + i; // offset of the backslash
     let bad = |at: usize, msg: &str| {
-        Diagnostic::error(Code::InvalidEscape, Span::new(at, at + 1), line, msg.to_string())
+        Diagnostic::error(
+            Code::InvalidEscape,
+            Span::new(at, at + 1),
+            line,
+            msg.to_string(),
+        )
     };
     let mut i = i + 1; // past the backslash
-    let sel = *body.get(i).ok_or_else(|| bad(esc_at, "dangling escape '\\'"))?;
+    let sel = *body
+        .get(i)
+        .ok_or_else(|| bad(esc_at, "dangling escape '\\'"))?;
     i += 1;
     match sel {
         b'n' => out.push(b'\n'),
