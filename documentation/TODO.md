@@ -72,3 +72,95 @@ design notes under `documentation/`, linked below.
 - **Effects to std lib functions** why does printing not have an effect?
 - **More operators** for example the map operator `<!>`, exponential `^`
   and potentially more.
+
+
+## Static linking / self-contained binaries (musl)
+
+**Goal.** For a "basic" (non-GUI, no glibc-specific FFI) Thrax program, `thrax
+build` should be able to produce a **fully static, dependency-free executable**,
+no `.so` lookups, no runtime library-path problems at all. Just a file you can
+copy anywhere and run.
+
+**What already landed this session (verify these are committed):**
+- `thrax build` writes artifacts into a `thrax-out/` directory instead of spewing
+  `<stem>.c` + the executable next to the source. (`cmd_build` in
+  `crates/thrax/src/driver.rs`.)
+- For a path-named `@extern` **shared** lib (e.g. `bin/libraylib.so`), the build
+  now bakes an **rpath** so the runtime loader finds the versioned soname (it
+  canonicalizes the symlink to the real dir). Skips `.a` archives. Same file.
+- Static linking of a library **already works today**: point an `@extern` at a
+  static archive, `@extern "C" "sym" "path/libfoo.a"`, and its code is baked in
+  (verified: `nm` shows the symbol `T`, `ldd` is clean, no rpath needed). So the
+  FFI supports both `.so` (dynamic + rpath) and `.a` (static).
+
+**What we found (the investigation):**
+- You **cannot statically link a `.so`**, a `.so` is inherently dynamic; static
+  linking needs the `.a` build of the library. (nixpkgs raylib ships only `.so`.)
+- A **GUI app cannot be fully static**: raylib pulls in `libOpenGL`/`libGLX`/
+  `libX11`, which MUST be dynamic (the real GL implementation is the GPU driver,
+  loaded at run time by the system). This is true on every Linux, not a Thrax
+  limitation. So static only makes sense for basic/compute programs.
+- **glibc is hostile to static linking** (it `dlopen`s NSS/locale even when
+  "static"). The right tool is **musl**, a libc designed for clean static links.
+- **Proven it works:** `thrax emit-c examples/FIB.thx > fib.c`, then compiled with
+  a musl toolchain (`x86_64-unknown-linux-musl-gcc -O2 -static`), gave a **138 KB
+  fully static** binary (`file`: "statically linked"; `ldd`: "not a dynamic
+  executable"; it ran, `test = 0`). So our generated C is already musl-clean.
+
+**The one subtlety (what "link with musl" actually means):**
+It is a **toolchain/sysroot swap**, not "append `libc.a`". libc is two halves
+that must match: the **headers** (the compiler reads glibc's vs musl's struct
+layouts) and the **library** (`libc.a`) + its **crt startup objects**
+(`crt1.o`/`crti.o`/`crtn.o`, the code that runs before `main`). You must compile
+against musl's headers AND link musl's crt + `libc.a`, all consistent; mixing
+glibc headers with musl's lib corrupts. A "sysroot" is just a prefix holding
+`include/` + `lib/` (headers + libc.a + crt) for a target.
+
+**Building musl gives you everything** (this is why the plan is fine): `./configure
+&& make && make install prefix=P` produces `P/include`, `P/lib/libc.a`, the crt
+objects, AND a `musl-gcc` wrapper, all under one prefix (a clean sysroot).
+
+**Compiler note (we use clang, not gcc):**
+- `musl-gcc` is a **gcc**-only wrapper (specs file), it does not drive clang.
+- clang does not need a wrapper: it is natively a cross-compiler. Use
+  `clang --target=x86_64-linux-musl --sysroot=P -static ...`. (clang also needs
+  its own runtime, `compiler-rt`/`libgcc`, plus `crtbegin`/`crtend` from the
+  compiler, in addition to musl's `crt1`/`crti`/`crtn`; a normal clang has these.)
+- So building musl gives the sysroot (useful to BOTH compilers) + a gcc wrapper
+  (only if you use gcc). On clang, point at the sysroot directly.
+
+**Where we wanted to go (the plan, staged):**
+1. **Add a musl build TARGET**, exactly like the existing `wasm32-wasi` one:
+   `thrax build --target=x86_64-linux-musl`, where `utilities::toolchain()`
+   returns the musl cc + `-static`. Honor a `THRAX_MUSL_CC` env (mirroring the
+   existing `THRAX_WASM_CC`), defaulting to `clang --target=... --sysroot=...`.
+   The wasm branch in `crates/utilities/src/target.rs` `toolchain()` is the
+   template. This gets static basic binaries working with ~the wasm target's
+   effort, using an external musl toolchain (nix's `pkgsCross.musl64` cc), no
+   vendoring yet.
+2. **Vendor musl as a git subtree** (like `external/libffi`) and build it locally
+   in a build step, so the sysroot is produced from source and the whole thing
+   works **without nix** (the "nix is an accelerator, not a substrate" ethos).
+   Building it ourselves yields a single-prefix sysroot, which sidesteps the nix
+   friction below. Model: how `crates/interpreter/build.rs` vendors + builds
+   libffi.
+
+**Gotchas discovered (for when you return cold):**
+- nixpkgs **splits musl** into separate outputs, headers in `musl.dev`, libs in
+  `musl.out`. A single `--sysroot` needs both under one prefix, our own build
+  gives that; the split is why a quick clang+nix-musl demo failed with "cannot
+  find -lc".
+- nixpkgs' `clang` is **wrapped for the host target** and warns/misbehaves with a
+  non-host `--target`. Use an unwrapped or musl-targeted clang, or our own sysroot.
+- Scope: static-musl only for basic programs (no GUI/GL; any `@extern` must
+  resolve in musl or be a static `.a`).
+
+**Key files:** `crates/utilities/src/target.rs` (`toolchain()`, the target/cc
+seam; wasm branch is the template), `crates/thrax/src/driver.rs` (`cmd_build`,
+link flags / rpath / output dir), `crates/interpreter/build.rs` (the vendored-
+libffi build, the model for vendoring+building musl
+
+
+**Why is it so difficult to define a stupid ass operator?**, there are no asserts,
+everything is in different files for no reason. It's just impossible to find what
+you want. How is this code good? It's not good, it's trash. 

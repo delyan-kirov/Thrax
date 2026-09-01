@@ -2286,7 +2286,7 @@ impl<'a> Checker<'a> {
                 let tl = self.infer(lhs)?;
                 let tr = self.infer(rhs)?;
                 if let Some(cands) = self.overloads.get(op).cloned() {
-                    return self.resolve_overload(op, &cands, &[tl, tr], None);
+                    return self.resolve_overload(op, &cands, &[tl, tr], Some(e));
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
                 let op_ty = self.eng.instantiate(&scheme);
@@ -3794,7 +3794,10 @@ impl<'a> Checker<'a> {
         ];
         let reals = [ty::REAL, "@float32", "@float64"];
         let numeric: Vec<&str> = ints.iter().chain(reals.iter()).copied().collect();
-        for op in ["+", "-", "*", "/", "%"] {
+        // `+ - * / %` are defined in CORE.thx over the arithmetic intrinsics, not
+        // seeded here. `^` stays a builtin (no intrinsic: int is a mul loop, real
+        // is libm `pow`).
+        for op in ["^"] {
             let cands = numeric
                 .iter()
                 .map(|t| {
@@ -3811,6 +3814,20 @@ impl<'a> Checker<'a> {
         }
         self.overloads.insert("neg", negs);
         self.bind("not", Type::arrow(bool_(), bool_()));
+
+        // Monomorphic arithmetic intrinsics: the primitive floor the operator
+        // overloads are built on. Typed `t -> t -> t` (like the `@vec_*`
+        // primitives): a single width-agnostic op the runtime implements over the
+        // value rep. The `@i*`/`@u*`/`@f*`/`@f32*` split is behavioural, not typed;
+        // callers pass the right numeric type. `@f*` computes at f64 (`@float64`);
+        // `@f32*` rounds each operand and its result to single precision.
+        for name in [
+            "@iadd", "@isub", "@imul", "@idiv", "@imod", "@udiv", "@umod", "@fadd", "@fsub",
+            "@fmul", "@fdiv", "@fmod", "@f32add", "@f32sub", "@f32mul", "@f32div", "@f32mod",
+        ] {
+            let t = self.eng.fresh_generic();
+            self.bind(name, Type::arrow(t.clone(), Type::arrow(t.clone(), t)));
+        }
 
         let prim = |mids: &[&str], returns_self: bool| {
             [ty::ARRAY, ty::STR].map(|recv| {

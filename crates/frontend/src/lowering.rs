@@ -696,7 +696,10 @@ impl<'a> Lowerer<'a> {
                         }
                         SliceSlot::Range(lo, hi) => {
                             let lo = self.expr(*lo);
-                            let hi1 = bin("+", self.expr(*hi), Term::Int(1));
+                            // `@iadd`, not `+`: `+` is now a CORE overload, but this
+                            // is compiler-internal Int arithmetic (inclusive end + 1),
+                            // so it calls the intrinsic directly.
+                            let hi1 = bin("@iadd", self.expr(*hi), Term::Int(1));
                             t = Term::app(
                                 Term::app(
                                     Term::app(Term::app(Term::var("@tensor_slice_axis"), t), axis),
@@ -713,7 +716,7 @@ impl<'a> Lowerer<'a> {
 
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
-                self.binop(op, lhs, rhs)
+                self.binop(e, op, lhs, rhs)
             }
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (self.text(*op).to_string(), *operand);
@@ -1191,7 +1194,7 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn binop(&mut self, op: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Term {
+    fn binop(&mut self, site: Aol<Expr>, op: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Term {
         match op {
             ";" => {
                 let name = self.fresh();
@@ -1205,7 +1208,33 @@ impl<'a> Lowerer<'a> {
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
             "::" => cons(self.expr(lhs), self.expr(rhs)),
-            _ => Term::app(Term::app(Term::var(op), self.expr(lhs)), self.expr(rhs)),
+            // The operator resolves like an overloaded call: a built-in use keeps
+            // the bare name (a runtime builtin), a user overload carries the
+            // resolved module (and mangled name) the checker recorded at this site.
+            _ => {
+                let head = self.operator_head(site, op);
+                let l = self.expr(lhs);
+                let r = self.expr(rhs);
+                Term::app(Term::app(head, l), r)
+            }
+        }
+    }
+
+    /// The lowered head for an operator at `site`: the module the checker resolved
+    /// the overload to (`None` for a builtin) and the overload-mangled or bare
+    /// operator name.
+    fn operator_head(&self, site: Aol<Expr>, op: &str) -> Term {
+        let module = self.resolved.call_modules.get(&site).cloned();
+        let name = self
+            .resolved
+            .overload_calls
+            .get(&site)
+            .cloned()
+            .unwrap_or_else(|| op.to_string());
+        Term::Var {
+            module,
+            name,
+            idx: 0,
         }
     }
 

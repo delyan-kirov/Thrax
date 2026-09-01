@@ -348,7 +348,8 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 
 /// Lower, emit C for `target`, then compile and link it with the target's
 /// toolchain (`cc` natively, `emcc` for wasm). Writes `<stem>.c` and the
-/// executable next to the source; prints the path built.
+/// executable into a `thrax-out/` directory beside the source (kept out of the
+/// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
     let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
@@ -364,7 +365,11 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
 
     let src = Path::new(path);
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
-    let dir = src.parent().unwrap_or_else(|| Path::new("."));
+    let dir = src.parent().unwrap_or_else(|| Path::new(".")).join("thrax-out");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("thrax: cannot create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
     let c_path = dir.join(format!("{stem}.c"));
     let out_path = dir.join(format!("{stem}{}", tc.exe_suffix));
 
@@ -381,6 +386,19 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
     for lib in &emitted.libraries {
         if let Some(flag) = target.link_flag(lib) {
             cmd.arg(flag);
+        }
+        // A path-named SHARED `@extern` library (e.g. "bin/libraylib.so") is
+        // found by the linker at build time, but the runtime loader would not
+        // find its versioned soname later. Bake an rpath (a runtime search path
+        // stored in the binary) pointing at the directory that actually holds
+        // the soname (canonicalize resolves the symlink), so the built program
+        // just runs. A static archive (`.a`) is baked in and needs no rpath.
+        if tc.rpath && !lib.ends_with(".a") && (lib.contains('/') || lib.contains('.')) {
+            if let Ok(real) = std::fs::canonicalize(lib) {
+                if let Some(libdir) = real.parent() {
+                    cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
+                }
+            }
         }
     }
     match cmd.status() {

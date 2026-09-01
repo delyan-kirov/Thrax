@@ -208,12 +208,6 @@ pub enum Item {
     Assert(Aol<Expr>),
     /// `$ @run expr`
     Run(Aol<Expr>),
-    /// `$ @operator.{ op } : ty = expr`
-    OperatorDef {
-        op: StrId,
-        sig: Aol<Ty>,
-        body: Aol<Expr>,
-    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

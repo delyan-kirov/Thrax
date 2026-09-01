@@ -194,7 +194,9 @@ pub fn emit_program(
     }
     out.push_str("}\n");
 
-    let mut libraries: Vec<String> = Vec::new();
+    // The runtime's `arith` calls `pow` (real `^`), so every native binary links
+    // libm. (`link_flag` maps "m" to `-lm`; on emcc it is a harmless no-op.)
+    let mut libraries: Vec<String> = vec!["m".to_string()];
     for e in &externs {
         if !libraries.iter().any(|l| l == &e.lib) {
             libraries.push(e.lib.clone());

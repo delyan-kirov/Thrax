@@ -9,22 +9,25 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use frontend::lowering::data::Program;
-use frontend::{lower_program, Decls, Resolved};
+use frontend::{lower_program, Checker, Decls, Resolved};
 
-/// Parse, check, and lower a single-module source. Mirrors the driver's pipeline
-/// (including the checker resolutions lowering consumes).
-fn lower(src: &str) -> Vec<Program> {
-    let parsed = frontend::parse(src).expect("parse");
-    let mut checker = frontend::Checker::new(&parsed.ast);
-    checker.check_program(&parsed.program).expect("check");
+/// The implicitly imported CORE module (defines `to_string` and the `+ - * / %`
+/// operator overloads). The driver injects it into every program; the harness
+/// must too, or arithmetic is unbound.
+const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
+
+/// Copy every resolution a checker produced into the shared `resolved` the
+/// lowering consumes. Mirrors the driver's per-module merge.
+fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     let (exprs, pats) = checker.array_nodes();
-    let mut resolved = Resolved::default();
     resolved.array_exprs.extend(exprs.iter().copied());
     resolved.array_pats.extend(pats.iter().copied());
     resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
-        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
-        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
+    for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+    let (clits, obs) = checker.codata_sites();
+    resolved.codata_lits.extend(clits.iter().copied());
+    resolved.observations.extend(obs.iter().copied());
     for (&site, &m) in checker.call_modules() {
         resolved.call_modules.insert(site, m.to_string());
     }
@@ -50,13 +53,32 @@ fn lower(src: &str) -> Vec<Program> {
     for (name, layout) in checker.crepr_layouts() {
         resolved.crepr_layouts.insert(name.to_string(), layout.clone());
     }
-    let decls = Decls::collect(&parsed.ast, std::slice::from_ref(&parsed.program));
-    vec![lower_program(
-        &parsed.ast,
-        &parsed.program,
-        &decls,
-        &resolved,
-    )]
+}
+
+/// Parse, check, and lower `src` with CORE injected. Returns the lowered modules
+/// root-first (the user module, then CORE), the order `ccg::emit` expects.
+fn lower(src: &str) -> Vec<Program> {
+    let ast = frontend::Ast::new();
+    let (ast, core_prog) = frontend::parse_into(ast, CORE_SRC).expect("parse CORE");
+    let (ast, user_prog) = frontend::parse_into(ast, src).expect("parse");
+
+    let mut core_checker = Checker::new(&ast);
+    core_checker.check_program(&core_prog).expect("check CORE");
+    let mut user_checker = Checker::new(&ast);
+    user_checker.import_from(&core_checker);
+    user_checker.check_program(&user_prog).expect("check");
+
+    let mut resolved = Resolved::default();
+    collect_resolved(&core_checker, &mut resolved);
+    collect_resolved(&user_checker, &mut resolved);
+
+    let programs = [core_prog, user_prog];
+    let decls = Decls::collect(&ast, &programs);
+    // Root (the user module) first, then CORE.
+    vec![
+        lower_program(&ast, &programs[1], &decls, &resolved),
+        lower_program(&ast, &programs[0], &decls, &resolved),
+    ]
 }
 
 fn interp_show(src: &str, entry: &str) -> String {
@@ -164,6 +186,154 @@ fn assert_example(file: &str, entry: &str) {
     let path = format!("{}/../../examples/{file}", env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(&path).expect("read example");
     assert_matches(&src, entry);
+}
+
+#[test]
+fn runtime_operators_match_interpreter_natively() {
+    // Every operator whose native implementation lives in runtime.c (`arith`,
+    // `compare`, `concat`). A gap in the C backend's builtin dispatch (the class
+    // of bug where `^` was wired for the interpreter but not the C runtime) makes
+    // the compiled program disagree with the interpreter or fail to build.
+    let cases: &[&str] = &[
+        "1 + 2",
+        "7 - 2",
+        "4 * 3",
+        "13 / 4",
+        "13 % 5",
+        "2 ^ 10",
+        "if 3 ?= 3 => 1 else 0",
+        "if 5 ?> 3 => 1 else 0",
+        "if 3 ?< 5 => 1 else 0",
+        "if 3 <= 3 => 1 else 0",
+        "if 5 >= 4 => 1 else 0",
+        "\"a\" ++ \"b\"",
+        // Real `^` goes through libm `pow`; the comparison keeps the result an Int
+        // so no real-formatting difference can enter the comparison.
+        "if 2.0 ^ 3.0 ?> 7.0 => 1 else 0",
+    ];
+    for body in cases {
+        let src = format!("@mod M\n$ a = {body}");
+        assert_matches(&src, "a");
+    }
+}
+
+#[test]
+fn arithmetic_intrinsics_match_interpreter() {
+    // The arithmetic primitives must compute identically in the C backend and the
+    // interpreter. Integer ops yield Int directly; float ops fold to an Int so no
+    // real-formatting difference between the engines can enter the comparison.
+    for body in [
+        "@iadd 2 3",
+        "@isub 10 4",
+        "@imul 6 7",
+        "@idiv 13 4",
+        "@imod 13 4",
+        "@udiv 13 4",
+        "@umod 13 4",
+        "@udiv (@isub 0 1) 2", // unsigned: reads the all-ones bits as u64::MAX
+        "@umod (@isub 0 1) 3",
+        "if @fadd 1.5 2.0 ?= 3.5 => 1 else 0",
+        "if @fsub 5.0 1.5 ?= 3.5 => 1 else 0",
+        "if @fmul 2.0 3.5 ?= 7.0 => 1 else 0",
+        "if @fdiv 3.0 2.0 ?= 1.5 => 1 else 0",
+        "if @fmod 7.0 3.0 ?= 1.0 => 1 else 0",
+    ] {
+        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+    }
+}
+
+#[test]
+fn float32_intrinsics_match_interpreter() {
+    // The `@f32*` family rounds to single precision and yields a Real32. These
+    // return the value directly (not folded to an Int), so the comparison also
+    // pins the native `fmt_real32` shortest-round-trip display to Rust's
+    // `f32::to_string`. `@f32add 16777216.0 1.0` loses the +1 (2^24 + 1 is not an
+    // f32), and `0.1 + 0.2` at f32 is exactly `0.3`, unlike the f64 result.
+    for body in [
+        "@f32add 1.5 2.0",
+        "@f32add 16777216.0 1.0",
+        "@f32add 0.1 0.2",
+        "@f32sub 5.0 1.5",
+        "@f32mul 2.0 3.5",
+        "@f32div 1.0 3.0",
+        "@f32mod 7.0 3.0",
+    ] {
+        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+    }
+}
+
+#[test]
+fn scalar_serialization_matches_interpreter() {
+    // `to_string` / `from_string` are pure CORE (byte-level `@array_*` plus
+    // arithmetic), so the C backend must render and parse scalars identically to
+    // the interpreter. `to_string` cases also pin the shared textual encoding.
+    for (body, entry) in [
+        ("$ a : Str = to_string 1234", "a"),
+        ("$ a : Str = to_string (0 - 42)", "a"),
+        ("$ a : Str = to_string (let n : Nat = 250 in n)", "a"),
+        ("$ a : @bool = (from_string (to_string 1234)) ?= 1234", "a"),
+        (
+            "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\"",
+            "a",
+        ),
+        ("$ a : @bool = (from_string \"true\") ?= (1 ?= 1)", "a"),
+        // Floats serialize via the C runtime seam (`thx_real_to_str` /
+        // `thx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
+        // identically on both engines.
+        ("$ a : Str = to_string (let x : @float64 = 3.5 in x)", "a"),
+        ("$ a : Str = to_string (let x : @float32 = from_string \"0.5\" in x)", "a"),
+        (
+            "$ a : @bool = let x : @float64 = 2.25 in (from_string (to_string x)) ?= x",
+            "a",
+        ),
+    ] {
+        assert_matches(&format!("@mod M\n{body}"), entry);
+    }
+}
+
+#[test]
+fn float_mixed_width_matches_interpreter() {
+    // `@float32 + @float64` widens via the `thx_f2d` runtime conversion and must
+    // produce the same `@float64` result on the C backend as the interpreter.
+    let src = "@mod M\n\
+               $ x : @float32 = from_string \"1.5\"\n\
+               $ y : @float64 = from_string \"2.25\"\n\
+               $ fwd : @float64 = x + y\n\
+               $ rev : @float64 = y + x\n";
+    assert_matches(src, "fwd");
+    assert_matches(src, "rev");
+}
+
+#[test]
+fn user_operator_overload_matches_interpreter() {
+    // A user `+` overload for a struct must lower to the user global on the C
+    // backend too (resolved via the runtime string-keyed global table), while the
+    // builtin `Int + Int` inside stays the builtin.
+    let src = "@mod M\n\
+               $ V : @struct = x: Int, y: Int\n\
+               $ (+) : V -> V -> V = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y }\n\
+               $ r : Int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
+    assert_matches(src, "r");
+}
+
+#[test]
+fn native_program_always_declares_libm() {
+    // runtime.c's `arith` calls `pow` (real `^`), so every native binary must link
+    // libm. The emitter declares it even for a program that uses no math extern;
+    // without it a minimal build fails to link `pow`. This asserts the driver's
+    // link path (which, unlike `c_run` here, does not hardcode `-lm`) stays sound.
+    let lowered = lower("@mod M\n$ main : Int = 1 + 1");
+    let emitted = ccg::emit_program(
+        &lowered,
+        "main",
+        frontend::EntryKind::Value,
+        utilities::Target::host(),
+    );
+    assert!(
+        emitted.libraries.iter().any(|l| l == "m"),
+        "emitted libraries must include libm; got {:?}",
+        emitted.libraries
+    );
 }
 
 #[test]
@@ -635,10 +805,9 @@ fn open_range_stream() {
     // `[lo ...]` lowers to `count_from lo`, an infinite codata stream; the C
     // backend must observe it lazily just like the interpreter. `[lo ... hi]`
     // lowers to `range lo hi`, a finite list.
+    // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
+    // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
     let src = "@mod M\n\
-               $ Stream : @codata t = head : t, tail : Stream t,\n\
-               $ count_from : Int -> Stream Int = \\lo = { .head = lo, .tail = count_from (lo + 1) }\n\
-               $ range : Int -> Int -> @list Int = \\lo hi = if lo ?> hi => [] else lo :: range (lo + 1) hi\n\
                $ len : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
                $ s : Stream Int = [3 ...]\n\
                $ test : Int = s.head + s.tail.head + len [1 ... 4]\n";

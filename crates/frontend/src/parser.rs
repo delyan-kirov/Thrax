@@ -387,6 +387,7 @@ impl<'a> Parser<'a> {
             Kind::With => self.parse_import(),
             Kind::At => self.parse_directive(t),
             Kind::Word => self.parse_named_global(),
+            Kind::LParen => self.parse_operator_global(),
             _ => Err(self.unexpected(&t, "expected a name or directive after '$'")),
         }
     }
@@ -410,32 +411,29 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(Item::Run(self.parse_expr(0)?))
             }
-            "operator" => self.parse_operator_def(),
             other => Err(self.unexpected(&at, &format!("'@{other}' is not a valid '$' directive"))),
         }
     }
 
-    /// `$ @operator.{ op } : ty = expr`
-    fn parse_operator_def(&mut self) -> Result<Item> {
-        self.bump()?; // '@operator'
-        expect!(self, Kind::Dot, "expected '.{' after '@operator'");
-        expect!(self, Kind::LBrace, "expected '{' after '@operator.'");
-        let op_tok = expect!(self, Kind::Op, "expected an operator between the braces");
+    /// `$ (op) : sig = body`: a definition bound under the symbolic operator name
+    /// `op`. It becomes a plain [`Item::Def`], so it flows through the same
+    /// collection, type-checking, and lowering as a `$ name` def and joins `op`'s
+    /// overload set (a use like `a op b` then dispatches to it by type).
+    fn parse_operator_global(&mut self) -> Result<Item> {
+        self.bump()?; // '('
+        let op_tok = expect!(self, Kind::Op, "expected an operator inside '( )'");
         let op = self.intern(self.text(op_tok));
-        expect!(self, Kind::RBrace, "expected '}' after the operator");
-        expect!(
-            self,
-            Kind::Colon,
-            "expected ':' and a type for the operator"
-        );
-        let sig = self.parse_type()?;
-        expect!(
-            self,
-            Kind::Eq,
-            "expected '=' before the operator's definition"
-        );
+        expect!(self, Kind::RParen, "expected ')' after the operator");
+        expect!(self, Kind::Colon, "expected ':' and a type for the operator");
+        let sig = Some(self.parse_type()?);
+        expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
-        Ok(Item::OperatorDef { op, sig, body })
+        Ok(Item::Def {
+            name: op,
+            sig,
+            implicits: self.ast.make_slice(Vec::new()),
+            body,
+        })
     }
 
     /// `$ with module [= rename]`
@@ -1065,7 +1063,20 @@ impl<'a> Parser<'a> {
             }
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
-                    Some(bp) if bp.left >= min_bp => {
+                    // Infix, but binds looser than the caller's floor: stop and
+                    // let the outer level fold it.
+                    Some(bp) if bp.left < min_bp => break,
+                    // Not infix at all. A grammatical delimiter (`<`, `>`, `|`,
+                    // `<>`) legitimately ends the expression; anything else is an
+                    // operator with no infix meaning here, reported at its own
+                    // span rather than surfacing as a confusing error elsewhere.
+                    None => {
+                        if table::ends_expr(self.text(t)) {
+                            break;
+                        }
+                        return Err(self.unexpected(&t, "expected an infix operator"));
+                    }
+                    Some(bp) => {
                         let lexeme = self.text(t).to_string();
                         self.bump()?;
                         let rhs = self.parse_expr(bp.right)?;
@@ -1083,7 +1094,6 @@ impl<'a> Parser<'a> {
                         };
                         lhs = self.stamp(start, node);
                     }
-                    _ => break,
                 },
                 _ if self.starts_operand(t.kind) => {
                     if table::APP.left < min_bp {

@@ -346,7 +346,7 @@ fn c_ret(name: &str) -> (&'static str, Option<&'static str>) {
     match cabi(name) {
         Cabi::Bytes => ("char*", Some("_r ? THxRT_str(_r, strlen(_r)) : THxRT_str(\"\", 0)")),
         Cabi::Ptr => ("void*", Some("THxRT_int((long long)(intptr_t)_r)")),
-        Cabi::F32 => ("float", Some("THxRT_real((double)_r)")),
+        Cabi::F32 => ("float", Some("THxRT_real32(_r)")),
         Cabi::F64 => ("double", Some("THxRT_real(_r)")),
         Cabi::Unit => ("void", None),
         Cabi::Int(t) => (t, Some("THxRT_int((long long)_r)")),
@@ -506,7 +506,7 @@ static ffi_type* thx_cbty(int k){
 }
 typedef struct { Value* closure; int nargs; int akinds[16]; int rkind; ffi_cif cif; ffi_type* aty[16]; ffi_closure* clo; void* code; } ThxCb;
 static Value* thx_cb_argval(void* p, int k){
-  switch(k){case 9:return THxRT_real((double)*(float*)p);case 10:return THxRT_real(*(double*)p);
+  switch(k){case 9:return THxRT_real32(*(float*)p);case 10:return THxRT_real(*(double*)p);
   case 1:return THxRT_int(*(int8_t*)p);case 2:return THxRT_int(*(int16_t*)p);case 3:return THxRT_int(*(int32_t*)p);
   case 4:return THxRT_int(*(int64_t*)p);case 5:return THxRT_int(*(uint8_t*)p);case 6:return THxRT_int(*(uint16_t*)p);
   case 7:return THxRT_int(*(uint32_t*)p);case 8:return THxRT_int((long long)*(uint64_t*)p);
@@ -568,6 +568,7 @@ fn emit_build(
                 utilities::CKind::Struct(inner_name, inner) => {
                     emit_build(&cf, inner_name, inner, out, ctr)
                 }
+                utilities::CKind::F32 => format!("THxRT_real32({cf})"),
                 leaf if c_leaf(leaf).1 => format!("THxRT_real((double){cf})"),
                 _ => format!("THxRT_int((long long){cf})"),
             }
@@ -770,7 +771,10 @@ fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
-        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
+        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
+        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" => 2,
+        "^" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@array_set" | "@array_slice" | "@vec_set" | "@tensor_slice" | "@tensor_index_axis" => 3,

@@ -32,6 +32,10 @@ pub enum Value<'p> {
     Unk,
     Int(i64),
     Real(f64),
+    /// A single-precision real (`@float32`). Held distinct from [`Value::Real`] so
+    /// arithmetic rounds to f32 and display uses f32 precision; it is stored as an
+    /// `f32`, not a narrowed `f64`.
+    Real32(f32),
     /// Byte string, also the representation of an `Array`.
     Str(Rc<Vec<u8>>),
     Bool(bool),
@@ -104,8 +108,14 @@ fn as_f64(v: &PVal) -> Result<f64> {
     match &*v.borrow() {
         Value::Int(n) => Ok(*n as f64),
         Value::Real(r) => Ok(*r),
+        Value::Real32(r) => Ok(*r as f64),
         _ => Err(fault("expected a number")),
     }
+}
+
+/// Read a numeric operand rounded to single precision, for the `@f32*` intrinsics.
+fn as_f32(v: &PVal) -> Result<f32> {
+    as_f64(v).map(|r| r as f32)
 }
 
 fn as_bytes(v: &PVal) -> Result<Rc<Vec<u8>>> {
@@ -282,7 +292,10 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
-        "+" | "-" | "*" | "/" | "%" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
+        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
+        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" => 2,
+        "^" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@tensor_slice" | "@tensor_index_axis" => 3,
@@ -297,10 +310,14 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
 /// argument before pushing it onto a builtin's operand list).
 pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
     match name {
-        "+" | "-" | "*" | "/" | "%" => arith(name, &a[0], &a[1]),
+        "^" => arith(&a[0], &a[1]),
+        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
+        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" => arith_intrinsic(name, &a[0], &a[1]),
         "neg" => match &*a[0].borrow() {
             Value::Int(n) => Ok(Value::Int(-n)),
             Value::Real(r) => Ok(Value::Real(-r)),
+            Value::Real32(r) => Ok(Value::Real32(-r)),
             _ => Err(fault("`neg` on a non-number")),
         },
         "not" => match &*a[0].borrow() {
@@ -496,7 +513,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
     }
 }
 
-fn arith<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+/// The `^` (power) operator: integer power (both operands `Int`) or `powf`. Still
+/// a builtin because it has no single intrinsic (`+ - * / %` moved to CORE.thx).
+fn arith<'p>(x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     let ints = {
         let (bx, by) = (x.borrow(), y.borrow());
         match (&*bx, &*by) {
@@ -505,27 +524,53 @@ fn arith<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
         }
     };
     if let Some((a, b)) = ints {
-        let r = match op {
-            "+" => a + b,
-            "-" => a - b,
-            "*" => a * b,
-            "/" | "%" if b == 0 => return Err(fault("division by zero")),
-            "/" => a / b,
-            "%" => a % b,
-            _ => unreachable!("arith called with a non-arithmetic operator"),
-        };
-        return Ok(Value::Int(r));
+        if b < 0 {
+            return Err(fault("negative exponent"));
+        }
+        return Ok(Value::Int(int_pow(a, b)));
     }
-    let (a, b) = (as_f64(x)?, as_f64(y)?);
-    let r = match op {
-        "+" => a + b,
-        "-" => a - b,
-        "*" => a * b,
-        "/" => a / b,
-        "%" => a % b,
-        _ => unreachable!("arith called with a non-arithmetic operator"),
-    };
-    Ok(Value::Real(r))
+    Ok(Value::Real(as_f64(x)?.powf(as_f64(y)?)))
+}
+
+fn int_pow(base: i64, exp: i64) -> i64 {
+    let mut acc: i64 = 1;
+    for _ in 0..exp {
+        acc = acc.wrapping_mul(base);
+    }
+    acc
+}
+
+/// A monomorphic arithmetic intrinsic (`@iadd`, `@fmul`, ...). Each assumes its
+/// operands already carry the right runtime tag (the operator overloads that
+/// call these are type-directed), so an `@i*` op reads two integers and an `@f*`
+/// op two reals. Integer add/sub/mul wrap on overflow, matching the C backend.
+/// The `@f32*` family rounds both operands and the result to single precision and
+/// yields a [`Value::Real32`], so `@float32` arithmetic is genuinely f32.
+fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+    match name {
+        "@iadd" => Ok(Value::Int(as_int(x)?.wrapping_add(as_int(y)?))),
+        "@isub" => Ok(Value::Int(as_int(x)?.wrapping_sub(as_int(y)?))),
+        "@imul" => Ok(Value::Int(as_int(x)?.wrapping_mul(as_int(y)?))),
+        "@idiv" | "@imod" if as_int(y)? == 0 => Err(fault("division by zero")),
+        "@idiv" => Ok(Value::Int(as_int(x)? / as_int(y)?)),
+        "@imod" => Ok(Value::Int(as_int(x)? % as_int(y)?)),
+        // `@u*` read the same i64 bits as unsigned: for a `Nat` whose value
+        // exceeds `i64::MAX`, signed division would give the wrong result.
+        "@udiv" | "@umod" if as_int(y)? == 0 => Err(fault("division by zero")),
+        "@udiv" => Ok(Value::Int(((as_int(x)? as u64) / (as_int(y)? as u64)) as i64)),
+        "@umod" => Ok(Value::Int(((as_int(x)? as u64) % (as_int(y)? as u64)) as i64)),
+        "@fadd" => Ok(Value::Real(as_f64(x)? + as_f64(y)?)),
+        "@fsub" => Ok(Value::Real(as_f64(x)? - as_f64(y)?)),
+        "@fmul" => Ok(Value::Real(as_f64(x)? * as_f64(y)?)),
+        "@fdiv" => Ok(Value::Real(as_f64(x)? / as_f64(y)?)),
+        "@fmod" => Ok(Value::Real(as_f64(x)? % as_f64(y)?)),
+        "@f32add" => Ok(Value::Real32(as_f32(x)? + as_f32(y)?)),
+        "@f32sub" => Ok(Value::Real32(as_f32(x)? - as_f32(y)?)),
+        "@f32mul" => Ok(Value::Real32(as_f32(x)? * as_f32(y)?)),
+        "@f32div" => Ok(Value::Real32(as_f32(x)? / as_f32(y)?)),
+        "@f32mod" => Ok(Value::Real32(as_f32(x)? % as_f32(y)?)),
+        _ => unreachable!("arith_intrinsic called with `{name}`"),
+    }
 }
 
 fn compare<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
@@ -605,9 +650,10 @@ pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
     let bx = x.borrow();
     let by = y.borrow();
     match (&*bx, &*by) {
-        (Value::Int(_) | Value::Real(_), Value::Int(_) | Value::Real(_)) => {
-            as_f64(x).ok() == as_f64(y).ok()
-        }
+        (
+            Value::Int(_) | Value::Real(_) | Value::Real32(_),
+            Value::Int(_) | Value::Real(_) | Value::Real32(_),
+        ) => as_f64(x).ok() == as_f64(y).ok(),
         (Value::Str(a), Value::Str(b)) => a == b,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Unit, Value::Unit) => true,
@@ -759,6 +805,7 @@ fn ffi_real(args: &[PVal], i: usize) -> Result<f64> {
     match &*args[i].borrow() {
         Value::Int(n) => Ok(*n as f64),
         Value::Real(r) => Ok(*r),
+        Value::Real32(r) => Ok(*r as f64),
         _ => Err(fault("FFI: expected a Real argument")),
     }
 }
@@ -837,8 +884,17 @@ pub(crate) fn run_extern<'p>(
             //    `@cast` does not; a plain numeric cast, matching runtime.c) --
             "thx_i2d" => Value::Real(ffi_word(args, 0)? as f64),
             "thx_d2i" => Value::Int(ffi_real(args, 0)?.round() as i64),
-            "thx_i2f" => Value::Real(ffi_word(args, 0)? as f32 as f64),
+            "thx_i2f" => Value::Real32(ffi_word(args, 0)? as f32),
             "thx_f2i" => Value::Int((ffi_real(args, 0)? as f32).round() as i64),
+            // Float width conversions and real <-> text, matching runtime.c. The
+            // formatters use the same shortest-round-trip rule as `show`, so a
+            // float's `to_string` equals its display, and both engines agree.
+            "thx_f2d" => Value::Real(ffi_real(args, 0)?),
+            "thx_d2f" => Value::Real32(ffi_real(args, 0)? as f32),
+            "thx_real_to_str" => Value::Str(Rc::new(ffi_real(args, 0)?.to_string().into_bytes())),
+            "thx_f32_to_str" => {
+                Value::Str(Rc::new((ffi_real(args, 0)? as f32).to_string().into_bytes()))
+            }
             // A pointer travels as a machine word, so Int -> @ptr is identity.
             "thx_i2p" => Value::Int(ffi_word(args, 0)?),
             // -- math.h (binary) --
@@ -1032,6 +1088,7 @@ impl<'p> Value<'p> {
             Value::Unk => Value::Unk,
             Value::Int(n) => Value::Int(*n),
             Value::Real(r) => Value::Real(*r),
+            Value::Real32(r) => Value::Real32(*r),
             Value::Str(b) => Value::Str(b.clone()),
             Value::Bool(b) => Value::Bool(*b),
             Value::Unit => Value::Unit,
@@ -1086,6 +1143,7 @@ impl<'p> Value<'p> {
             Value::Unk => "{}".into(),
             Value::Int(n) => n.to_string(),
             Value::Real(r) => r.to_string(),
+            Value::Real32(r) => r.to_string(),
             Value::Str(b) => format!("{:?}", String::from_utf8_lossy(b)),
             Value::Bool(b) => b.to_string(),
             Value::Unit => "{}".into(),
