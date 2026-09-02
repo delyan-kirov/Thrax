@@ -865,8 +865,8 @@ fn scalar_serialization_round_trips() {
 fn float_mixed_width_widens_to_float64() {
     // `@float32 + @float64` widens the single-precision operand to double (via the
     // `thx_f2d` runtime conversion) and yields `@float64`; both argument orders
-    // resolve. `Real` deliberately does NOT mix (target-dependent width, like
-    // `Int + @int32`), so operands are the explicit sized types.
+    // resolve. `Real` deliberately does NOT mix (target-dependent width), so
+    // operands are the explicit sized types.
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let x : @float32 = from_string \"1.5\" in \
@@ -878,6 +878,39 @@ fn float_mixed_width_widens_to_float64() {
         ok("let x : @float32 = from_string \"1.5\" in \
             let y : @float64 = from_string \"2.25\" in \
             let e : @float64 = 3.75 in (y + x) ?= e"),
+        "true"
+    );
+}
+
+#[test]
+fn int_word_mixes_with_sized() {
+    // `Int` (the word default) mixes with a sized signed int: the sized type wins
+    // and the word operand casts to it, so a bare literal (which defaults to
+    // `Int`) drops into sized arithmetic. Both argument orders resolve. `Nat`
+    // mirrors this over the unsigned `@nat*` types.
+    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    assert_eq!(
+        ok("let p : @int32 = from_string \"3\" in \
+            let x : Int = 5 in \
+            let r : @int32 = x * p in r ?= from_string \"15\""),
+        "true"
+    );
+    assert_eq!(
+        ok("let p : @int32 = from_string \"3\" in \
+            let x : Int = 5 in \
+            let r : @int32 = p * x in r ?= from_string \"15\""),
+        "true"
+    );
+    // The reported real-world case: a bare literal times a sized value.
+    assert_eq!(
+        ok("let p : @int32 = from_string \"3\" in \
+            let r : @int32 = 2 * p in r ?= from_string \"6\""),
+        "true"
+    );
+    assert_eq!(
+        ok("let n : @nat16 = from_string \"7\" in \
+            let two : Nat = 2 in \
+            let r : @nat16 = two * n in r ?= from_string \"14\""),
         "true"
     );
 }

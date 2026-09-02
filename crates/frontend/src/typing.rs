@@ -1271,7 +1271,14 @@ impl<'a> Checker<'a> {
             ));
         }
         let src = self.infer(arg)?;
-        if !self.is_int_scalar(&src) && !self.is_numeric(&src) {
+        // A still-unresolved operand, e.g. the result of a deferred overload (`a +
+        // b` whose resolution waits on numeric defaulting) or a bare numeric
+        // literal, gets pinned by later solving. The cast is erased, so accept it
+        // here rather than reject on an incomplete type.
+        if matches!(self.eng.resolve(&src), Type::Var(_)) {
+            return Ok(());
+        }
+        if !self.is_int_scalar(&src) {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
                 "`@cast` expects an integer operand, but got `{}`",
@@ -3070,7 +3077,7 @@ impl<'a> Checker<'a> {
                 self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
-            Match::None => Err(self.no_overload(name, args)),
+            Match::None => Err(self.no_overload(name, args, site)),
             Match::Ambiguous => {
                 self.pending.push(Pending {
                     name: name.to_string(),
@@ -3146,7 +3153,7 @@ impl<'a> Checker<'a> {
                         self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
-                    Match::None => return Err(self.no_overload(&p.name, &p.args)),
+                    Match::None => return Err(self.no_overload(&p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }
             }
@@ -3173,6 +3180,10 @@ impl<'a> Checker<'a> {
                         name = p.name
                     )),
                     _ => err,
+                };
+                let err = match p.site.and_then(|s| self.ast.expr_span(s)) {
+                    Some(span) => err.fill_span(span),
+                    None => err,
                 };
                 return Err(err);
             }
@@ -3239,13 +3250,17 @@ impl<'a> Checker<'a> {
         Ok(changed)
     }
 
-    fn no_overload(&self, name: &str, args: &[Type]) -> Diagnostic {
+    fn no_overload(&self, name: &str, args: &[Type], site: Option<Aol<Expr>>) -> Diagnostic {
         let shown: Vec<String> = args.iter().map(|a| self.show(a)).collect();
-        diag!(
+        let mut d = diag!(
             Code::TypeMismatch, Span::at(0), 0,
-            "no overload of `{name}` matches argument types ({})",
+            "no viable overload of `{name}` for argument types ({})",
             shown.join(", ")
-        )
+        );
+        if let Some(span) = site.and_then(|s| self.ast.expr_span(s)) {
+            d = d.fill_span(span);
+        }
+        d
     }
 
     fn apply_overload(&mut self, candidate: &Type, args: &[Type], result: &Type) -> Result<()> {

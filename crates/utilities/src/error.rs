@@ -250,7 +250,15 @@ impl Diagnostic {
                 frame.code, frame.msg, line, col
             ));
             out.push_str(&format!("   | {}\n", line_text));
-            let caret_pad = " ".repeat(col.saturating_sub(1));
+            // Pad the caret with the line's own leading characters (tabs kept as
+            // tabs, everything else blanked to a space) so a tab-indented line
+            // still lines the caret up under the span: both rows hit identical
+            // tab stops.
+            let caret_pad: String = line_text
+                .chars()
+                .take(col.saturating_sub(1))
+                .map(|c| if c == '\t' { '\t' } else { ' ' })
+                .collect();
             let caret_len = frame.span.len().max(1);
             out.push_str(&format!("   | {}{}\n", caret_pad, "^".repeat(caret_len)));
         }
