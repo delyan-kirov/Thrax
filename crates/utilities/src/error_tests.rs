@@ -30,6 +30,19 @@ fn caret_lands_under_the_span() {
 }
 
 #[test]
+fn caret_pad_preserves_leading_tabs() {
+    // A tab-indented line: the caret row must repeat the tab so both rows hit
+    // the same tab stop and the caret still lands under the span.
+    let src = "\tab\n";
+    let d = Diagnostic::error(Code::UnknownSymbol, Span::new(1, 3), 1, "bad");
+    let text = d.render(src, "test.thx");
+    assert!(
+        text.contains("   | \t^^"),
+        "caret pad should keep the leading tab:\n{text}"
+    );
+}
+
+#[test]
 fn column_is_one_based() {
     let src = "ab\ncd";
     let (line_no, col, line) = locate(src, 4);

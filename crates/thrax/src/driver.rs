@@ -11,7 +11,9 @@ use frontend::{Item, Program};
 /// A module's name and source text, plus the name-to-slot index and the root
 /// module name. Shared by `check` and `run`.
 struct Loaded {
-    sources: Vec<(String, String)>,
+    /// One entry per module: `(module name, source path, source text)`. The path
+    /// is what diagnostics render, so it stays a real, clickable file location.
+    sources: Vec<(String, String, String)>,
     index: HashMap<String, usize>,
     root_name: String,
 }
@@ -33,9 +35,10 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     };
     let root_name = parse_mod_name(&root_src).unwrap_or_else(|| file_stem(path));
 
-    let mut sources: Vec<(String, String)> = Vec::new();
+    let mut sources: Vec<(String, String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut queue: Vec<(String, String)> = vec![(root_name.clone(), root_src)];
+    let mut queue: Vec<(String, String, String)> =
+        vec![(root_name.clone(), path.to_string(), root_src)];
 
     // The implicitly imported CORE module (bare names everywhere) is an ordinary
     // standard-library file, loaded from disk like the rest. Seed it into the load
@@ -43,7 +46,7 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     if root_name != "CORE" {
         match resolve_module_file("CORE", &root_dir) {
             Some(file) => match std::fs::read_to_string(&file) {
-                Ok(s) => queue.push(("CORE".to_string(), s)),
+                Ok(s) => queue.push(("CORE".to_string(), file.display().to_string(), s)),
                 Err(e) => {
                     eprintln!("thrax: cannot read the CORE module ({}): {e}", file.display());
                     return Err(ExitCode::FAILURE);
@@ -55,20 +58,20 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
             }
         }
     }
-    while let Some((name, src)) = queue.pop() {
+    while let Some((name, src_path, src)) = queue.pop() {
         if index.contains_key(&name) {
             continue;
         }
         let imports = parse_imports(&src);
         index.insert(name.clone(), sources.len());
-        sources.push((name, src));
+        sources.push((name, src_path, src));
         for imp in imports {
-            if index.contains_key(&imp) || queue.iter().any(|(n, _)| *n == imp) {
+            if index.contains_key(&imp) || queue.iter().any(|(n, _, _)| *n == imp) {
                 continue;
             }
             match resolve_module_file(&imp, &root_dir) {
                 Some(file) => match std::fs::read_to_string(&file) {
-                    Ok(s) => queue.push((imp, s)),
+                    Ok(s) => queue.push((imp, file.display().to_string(), s)),
                     Err(e) => {
                         eprintln!(
                             "thrax: cannot read module `{imp}` ({}): {e}",
@@ -88,7 +91,11 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     // reachable qualified (`C.sqrt`) with no import, like the prelude.
     if !index.contains_key("C") {
         index.insert("C".to_string(), sources.len());
-        sources.push(("C".to_string(), C_SOURCE.to_string()));
+        sources.push((
+            "C".to_string(),
+            "library/C.thx".to_string(),
+            C_SOURCE.to_string(),
+        ));
     }
 
     Ok(Loaded {
@@ -136,7 +143,7 @@ fn check_all<'a>(
     ast: &'a frontend::Ast,
     programs: &[Program],
     graph: &[Vec<usize>],
-    sources: &[(String, String)],
+    sources: &[(String, String, String)],
 ) -> Result<CheckOut<'a>, ExitCode> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
@@ -145,8 +152,8 @@ fn check_all<'a>(
     // have no dependencies and are checked first: `C` made available qualified-only
     // (`C.sqrt`), `CORE` bare (its `to_string` overloads, etc.). `CORE` is checked
     // after `C` but imports neither, so ordering the two is unconstrained.
-    let c_idx = sources.iter().position(|(n, _)| n == "C");
-    let core_idx = sources.iter().position(|(n, _)| n == "CORE");
+    let c_idx = sources.iter().position(|(n, _, _)| n == "C");
+    let core_idx = sources.iter().position(|(n, _, _)| n == "CORE");
     let mut order: Vec<usize> = topological_order(graph);
     for &pre in [core_idx, c_idx].iter().flatten() {
         order.retain(|&i| i != pre);
@@ -174,8 +181,8 @@ fn check_all<'a>(
                 checkers[i] = Some(checker);
             }
             Err(diag) => {
-                let (name, src) = &sources[i];
-                eprint!("{}", diag.render(src, name));
+                let (_name, src_path, src) = &sources[i];
+                eprint!("{}", diag.render(src, src_path));
                 return Err(ExitCode::FAILURE);
             }
         }
@@ -199,14 +206,14 @@ fn lower_all(
 
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (name, src) in &loaded.sources {
+    for (_name, src_path, src) in &loaded.sources {
         match frontend::parse_into(ast, src) {
             Ok((next_ast, p)) => {
                 ast = next_ast;
                 programs.push(p);
             }
             Err(diag) => {
-                eprint!("{}", diag.render(src, name));
+                eprint!("{}", diag.render(src, src_path));
                 return Err(ExitCode::FAILURE);
             }
         }
@@ -426,14 +433,14 @@ pub fn cmd_check(path: &str) -> ExitCode {
     // Parse every module into one shared arena.
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (name, src) in &loaded.sources {
+    for (_name, src_path, src) in &loaded.sources {
         match frontend::parse_into(ast, src) {
             Ok((next_ast, p)) => {
                 ast = next_ast;
                 programs.push(p);
             }
             Err(diag) => {
-                eprint!("{}", diag.render(src, name));
+                eprint!("{}", diag.render(src, src_path));
                 return ExitCode::FAILURE;
             }
         }

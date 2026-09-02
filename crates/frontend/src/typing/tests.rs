@@ -211,7 +211,7 @@ fn no_matching_overload_is_reported() {
                    $ f : Int -> Int = \\x = x\n\
                    $ f : Str -> Str = \\x = x\n\
                    $ bad = f 1.0";
-    assert!(errors(src).contains("no overload"));
+    assert!(errors(src).contains("no viable overload"));
 }
 
 #[test]

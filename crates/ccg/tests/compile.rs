@@ -305,6 +305,21 @@ fn float_mixed_width_matches_interpreter() {
 }
 
 #[test]
+fn int_word_mixed_with_sized_matches_interpreter() {
+    // `Int` mixed with a sized signed int yields the sized type (the word operand
+    // cast to it); the C backend must agree with the interpreter, both orders.
+    let src = "@mod M\n\
+               $ p : @int32 = from_string \"3\"\n\
+               $ x : Int = 5\n\
+               $ fwd : @int32 = x * p\n\
+               $ rev : @int32 = p * x\n\
+               $ lit : @int32 = 2 * p\n";
+    assert_matches(src, "fwd");
+    assert_matches(src, "rev");
+    assert_matches(src, "lit");
+}
+
+#[test]
 fn user_operator_overload_matches_interpreter() {
     // A user `+` overload for a struct must lower to the user global on the C
     // backend too (resolved via the runtime string-keyed global table), while the
