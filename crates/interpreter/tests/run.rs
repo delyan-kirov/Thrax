@@ -916,6 +916,22 @@ fn int_word_mixes_with_sized() {
 }
 
 #[test]
+fn sized_literal_arithmetic_evaluates() {
+    // Two bare literals in a sized-int context resolve to that sized type and
+    // compute the right value (the operand types are pinned to the result type,
+    // not defaulted to `Int`).
+    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    assert_eq!(
+        ok("let r : @int32 = 2 + 3 * 4 in r ?= from_string \"14\""),
+        "true"
+    );
+    assert_eq!(
+        ok("let r : @int64 = 100 - 1 in r ?= from_string \"99\""),
+        "true"
+    );
+}
+
+#[test]
 fn operator_table_every_entry() {
     // Iterate `lexer::data::OPERATORS` and check each entry: run a snippet and
     // check the result. Entries with no standalone value can be `Skip`ped

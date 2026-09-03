@@ -206,6 +206,18 @@ fn overload_deferred_until_signature_pins_operands() {
 }
 
 #[test]
+fn sized_literal_arithmetic_takes_the_result_type() {
+    // Two bare literals in a sized-int context resolve to that sized overload,
+    // not `Int`: the result type is propagated onto the operands before they
+    // would default to `Int` (which has no `Int + Int -> @int32`).
+    assert_eq!(type_of("@mod M\n$ x : @int32 = 2 + 3", "x"), "@int32");
+    assert_eq!(type_of("@mod M\n$ x : @int64 = 2 + 3 * 4", "x"), "@int64");
+    assert_eq!(type_of("@mod M\n$ x : @nat16 = 7 - 1", "x"), "@nat16");
+    // With no sized context, bare literals still default to `Int`.
+    assert_eq!(type_of("@mod M\n$ x = 2 + 3", "x"), "Int");
+}
+
+#[test]
 fn no_matching_overload_is_reported() {
     let src = "@mod M\n\
                    $ f : Int -> Int = \\x = x\n\
