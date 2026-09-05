@@ -18,6 +18,7 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
     for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+    for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -278,6 +279,21 @@ fn cross_module_overload_dispatches_by_type() {
 }
 
 #[test]
+fn literal_hook_from_imported_module() {
+    // A library module provides a user type and its construction hook; a string
+    // literal in the importing module builds that type via the IMPORTED hook.
+    let lib = "@mod LIBSTR\n\
+               $ Text : @struct = bytes: @array\n\
+               $ @compiler_interface_string_literal : @array -> Text = \\b = Text.{ .bytes = b }\n\
+               $ size : Text -> @int = \\t = @array_len t.bytes";
+    let root = "@mod M\n\
+                $ with LIBSTR\n\
+                $ greeting : Text = \"hello\"\n\
+                $ r : @int = size greeting";
+    assert_eq!(run_modules(&[lib, root], "r"), "5");
+}
+
+#[test]
 fn same_module_overload_dispatches_by_type() {
     // Two overloads of `kind` in ONE module. Before type-mangling the globals both
     // collided under a single `M.kind` key and every call ran the first body
@@ -518,6 +534,53 @@ fn indexing_hook_returns_non_element() {
                $ d : Dict = .{ .base = 10 }\n\
                $ r : @int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
     assert_eq!(run(src, "r"), "13");
+}
+
+#[test]
+fn literal_construction_hooks() {
+    // A user type opts into each literal kind by defining the matching
+    // `@compiler_interface_*` hook; the literal (driven by the expected type) then
+    // builds that user type instead of the built-in default.
+    let src = "@mod M\n\
+        $ MyStr : @struct = bytes: @array\n\
+        $ @compiler_interface_string_literal : @array -> MyStr = \\b = MyStr.{ .bytes = b }\n\
+        $ Wrap : @struct = n: @int\n\
+        $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+        $ RWrap : @struct = r: @float64\n\
+        $ @compiler_interface_real_literal : @float64 -> RWrap = \\x = RWrap.{ .r = x }\n\
+        $ Bag : @union a = Items: {@vec a}\n\
+        $ @compiler_interface_sequence_literal : @vec a -> Bag a = \\v = Bag.Items.{ v }\n\
+        $ s : MyStr = \"hi\"\n\
+        $ w : Wrap = 42\n\
+        $ rw : RWrap = 3.5\n\
+        $ bag : Bag @int = [1, 2, 3]\n\
+        $ r : @int = w.n + @array_len s.bytes\n\
+        \t+ (is bag | Bag.Items.{v} => @vec_len v else 0)"; // 42 + 2 + 3
+    assert_eq!(run(src, "r"), "47");
+}
+
+#[test]
+fn literal_hook_via_ascription() {
+    // `(e : T)` also drives a construction hook.
+    let src = "@mod M\n\
+        $ Wrap : @struct = n: @int\n\
+        $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+        $ r : @int = (41 : Wrap).n + 1";
+    assert_eq!(run(src, "r"), "42");
+}
+
+#[test]
+fn literal_hook_does_not_hijack_default() {
+    // A string hook is in scope, but a `Str`-typed literal still builds a plain Str:
+    // the hook fires only when the expected type is the user type, so the default
+    // path (folded to a constant) is untouched.
+    let src = "@mod M\n\
+        $ MyStr : @struct = bytes: @array\n\
+        $ @compiler_interface_string_literal : @array -> MyStr = \\b = MyStr.{ .bytes = b }\n\
+        $ plain  : Str   = \"abc\"\n\
+        $ custom : MyStr = \"xy\"\n\
+        $ r : @int = @array_len plain + @array_len custom.bytes"; // 3 + 2
+    assert_eq!(run(src, "r"), "5");
 }
 
 #[test]

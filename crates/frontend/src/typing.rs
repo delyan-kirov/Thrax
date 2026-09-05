@@ -209,6 +209,12 @@ pub struct Checker<'a> {
     /// field set). Lowering reads this so a positional literal gets the right field
     /// names instead of falling back to positional indices.
     struct_lit_names: HashMap<Aol<Expr>, String>,
+    /// Literal sites (`"..."`, `[..]`, an int, a real) that a `@compiler_interface_*`
+    /// construction hook builds into a user type instead of the built-in default,
+    /// mapped to the resolved hook's `(owning module, emitted name)`. Lowering wraps
+    /// the raw payload term in a call to this hook; an unrecorded literal folds to the
+    /// plain built-in constant (no hook, no conversion).
+    literal_hooks: HashMap<Aol<Expr>, (Option<&'a str>, String)>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -340,6 +346,7 @@ impl<'a> Checker<'a> {
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
+            literal_hooks: HashMap::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -374,6 +381,13 @@ impl<'a> Checker<'a> {
     /// lowering emits the correct field names (esp. for positional literals).
     pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, String> {
         &self.struct_lit_names
+    }
+
+    /// Literal sites a `@compiler_interface_*` construction hook builds into a user
+    /// type, mapped to the hook's `(module, emitted name)`. Lowering wraps the raw
+    /// payload term in a call to this hook.
+    pub fn literal_hooks(&self) -> &HashMap<Aol<Expr>, (Option<&'a str>, String)> {
+        &self.literal_hooks
     }
 
     /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
@@ -585,10 +599,14 @@ impl<'a> Checker<'a> {
         let mut overloaded_names: HashSet<&'a str> = HashSet::new();
         for d in &defs {
             // Overloaded if defined more than once here, adds to an already-imported
-            // overload, or EXTENDS a single imported value of the same name.
+            // overload, or EXTENDS a single imported value of the same name. A
+            // `@compiler_interface_*` construction hook is ALWAYS treated as an
+            // overload set (even a lone definition), so a literal site can find its
+            // candidate uniformly via `hook_candidates` without a separate registry.
             if counts[d.name] > 1
                 || self.overloads.contains_key(d.name)
                 || self.imported_singles.contains_key(d.name)
+                || is_construction_hook(d.name)
             {
                 overloaded_names.insert(d.name);
             }
@@ -1049,6 +1067,11 @@ impl<'a> Checker<'a> {
 
     /// Check an expression against an expected type (the checking direction).
     fn check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<()> {
+        // A literal aimed at a user type may build it through a `@compiler_interface_*`
+        // construction hook; when one applies, that supersedes the built-in default.
+        if self.literal_hook_check(e, expected)? {
+            return Ok(());
+        }
         match self.node(e) {
             Expr::Lambda { params, body } => {
                 let params = self.ast.slice(*params);
@@ -3074,6 +3097,122 @@ impl<'a> Checker<'a> {
         Ok(tf)
     }
 
+    /// Every visible candidate for a construction hook. A locally defined hook is
+    /// forced into `self.overloads` (see the overload-name seeding), and an imported
+    /// single lands in `imported_singles`, so those two cover every case. Empty when
+    /// no hook of this name is in scope (the common case: the literal keeps its
+    /// built-in default).
+    fn hook_candidates(&self, name: &str) -> Vec<Cand<'a>> {
+        if let Some(cs) = self.overloads.get(name) {
+            cs.clone()
+        } else if let Some(c) = self.imported_singles.get(name) {
+            vec![c.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The head constructor of `ty` if it is a user-declared type (struct / union /
+    /// codata / alias), following an application spine (`MyVec Int` -> `MyVec`). A
+    /// builtin, a variable, a tuple, or a function returns `None`, so a construction
+    /// hook only ever intercepts a literal aimed at a user type.
+    fn user_type_head(&self, ty: &Type) -> Option<String> {
+        let mut cur = self.eng.resolve(ty);
+        loop {
+            match cur {
+                Type::App(head, _) => cur = self.eng.resolve(&head),
+                Type::Con(name) => {
+                    let n = name.as_str();
+                    return (self.structs.contains_key(n)
+                        || self.unions.contains_key(n)
+                        || self.codata.contains_key(n)
+                        || self.aliases.contains_key(n))
+                    .then_some(name);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Route a literal (`"..."`, an int, a real, `[..]`) through its
+    /// `@compiler_interface_*` construction hook when the expected type is a user type
+    /// that provides a matching overload. On a unique match it unifies, checks any
+    /// element types, records the hook at `site` for lowering, and returns `true`;
+    /// otherwise it leaves the engine untouched and returns `false`, so the literal
+    /// falls back to its built-in default (which lowering folds to a plain constant).
+    fn literal_hook_check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<bool> {
+        // Only a literal aimed at a user type is a hook candidate.
+        if self.user_type_head(expected).is_none() {
+            return Ok(false);
+        }
+        let (hook, args, elem) = match self.node(e) {
+            Expr::Str(_) => (HOOK_STRING, vec![Type::con(ty::ARRAY)], None),
+            Expr::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)], None),
+            Expr::Real(_) => (HOOK_REAL, vec![Type::con("@float64")], None),
+            Expr::List(_) => {
+                let elem = self.eng.fresh();
+                (
+                    HOOK_SEQUENCE,
+                    vec![Type::app(Type::con(ty::VEC), elem.clone())],
+                    Some(elem),
+                )
+            }
+            _ => return Ok(false),
+        };
+        let cands = self.hook_candidates(hook);
+        if cands.is_empty() {
+            return Ok(false);
+        }
+        // Trial-match each candidate (`payload -> result`, `result ~ expected`),
+        // rolling back after each; commit only a UNIQUE match so a wrong guess never
+        // sticks and an ambiguity falls through rather than silently picking one.
+        let result = self.eng.fresh();
+        let mut chosen = None;
+        let mut count = 0;
+        for (idx, cand) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            let ok = self.apply_overload(&cand.ty, &args, &result).is_ok()
+                && self
+                    .eng
+                    .unify(&result, expected, "in a literal construction hook")
+                    .is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                chosen = Some(idx);
+            }
+        }
+        let Some(idx) = chosen.filter(|_| count == 1) else {
+            return Ok(false);
+        };
+        self.apply_overload(&cands[idx].ty, &args, &result)?;
+        self.eng
+            .unify(&result, expected, "in a literal construction hook")?;
+        // A sequence literal checks each element against the payload's element type.
+        if let (Expr::List(items), Some(elem)) = (self.node(e), elem) {
+            let items = self.ast.slice(*items);
+            for it in items.iter() {
+                self.check(*it, &elem)?;
+            }
+        }
+        self.record_literal_hook(e, hook, &cands, idx);
+        Ok(true)
+    }
+
+    /// Record the resolved construction hook at a literal `site`: its owning module
+    /// and the name lowering emits (type-mangled when that module defines the hook
+    /// several times, matching the definition's `def_keys` entry).
+    fn record_literal_hook(&mut self, site: Aol<Expr>, name: &str, cands: &[Cand<'a>], idx: usize) {
+        let module = cands[idx].module;
+        let emit = match module {
+            Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
+                overload_key(name, &self.eng.zonk(&cands[idx].ty))
+            }
+            _ => name.to_string(),
+        };
+        self.literal_hooks.insert(site, (module, emit));
+    }
+
     fn resolve_overload(
         &mut self,
         name: &str,
@@ -4587,6 +4726,21 @@ fn is_numeric_type(name: &str) -> bool {
 /// The built-in scalar and container type names, in both their friendly and
 /// `@`-sigil spellings. A type in source is one of these, a declared type, or a
 /// lowercase type variable.
+/// The `@compiler_interface_*` construction hook for each literal kind: a literal
+/// whose expected type is a user type providing the matching overload builds that
+/// type instead of the built-in default.
+const HOOK_STRING: &str = "@compiler_interface_string_literal";
+const HOOK_INTEGER: &str = "@compiler_interface_integer_literal";
+const HOOK_REAL: &str = "@compiler_interface_real_literal";
+const HOOK_SEQUENCE: &str = "@compiler_interface_sequence_literal";
+
+fn is_construction_hook(name: &str) -> bool {
+    matches!(
+        name,
+        HOOK_STRING | HOOK_INTEGER | HOOK_REAL | HOOK_SEQUENCE
+    )
+}
+
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,

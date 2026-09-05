@@ -25,6 +25,7 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
     for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
+    for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -986,4 +987,21 @@ fn sized_extern_runs_and_matches() {
                $ strlen : Str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
                $ test : @nat64 = strlen \"hello\"\n";
     assert_matches(src, "test");
+}
+
+#[test]
+fn literal_construction_hooks_match_interpreter() {
+    // Each `@compiler_interface_*` construction hook must lower the same on the C
+    // backend as on the interpreter: the literal builds the user type (wrapped in
+    // the hook), while a default-typed literal stays folded.
+    let src = "@mod M\n\
+               $ Wrap : @struct = n: @int\n\
+               $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+               $ Bag : @union a = Items: {@vec a}\n\
+               $ @compiler_interface_sequence_literal : @vec a -> Bag a = \\v = Bag.Items.{ v }\n\
+               $ w : Wrap = 40\n\
+               $ bag : Bag @int = [1, 2]\n\
+               $ plain : @int = 5\n\
+               $ r : @int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v else 0)"; // 40+5+2
+    assert_matches(src, "r");
 }

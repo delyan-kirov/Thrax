@@ -116,7 +116,24 @@ Touchpoints: `parser.rs` (`parse_group`, `parse_postfix`), `parser/data.rs`
 (new node), `typing.rs` (ascribe check, prefix-rule error), `library/LA.thx`,
 `library/MAP.thx`.
 
-## Stage 1 - literal-hook mechanism, current defaults preserved
+## Stage 1 - literal-hook mechanism, current defaults preserved  [LANDED (hook mechanism); @default defaulting deferred as its own milestone]
+
+Landed: the four construction hooks are overloadable. A literal (`"..."`, an int, a
+real, `[..]`) whose EXPECTED type is a user type providing the matching hook builds
+that type through it (via a signature/argument context or a `(e : T)` ascription);
+otherwise it keeps its built-in default, which lowering folds to a plain constant (no
+payload, no conversion), verified on both the interpreter and the ccg native backend.
+The interception is check-directed (`Checker::literal_hook_check`): it reuses the
+overload resolver's trial-unify/rollback and records the resolved hook per literal site
+(`literal_hooks`) for lowering to wrap. This preserves ALL numeric/sized-int behavior
+(integer/real literals stay numeric unless aimed at a user type).
+
+Deferred (its own milestone, as flagged below): the `@default` overload attribute and
+the unconstrained let-generalization defaulting (a module overriding the core default so
+a bare, unconstrained `[1,2,3]` builds a user type). Not needed for the check-directed
+tests; it is the risk area the plan calls out.
+
+### Original plan text
 
 - Recognize the `@compiler_interface_*` construction hooks; allow user overloads.
 - Add the `@default` overload attribute and the literal-defaulting step.

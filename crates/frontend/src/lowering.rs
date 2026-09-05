@@ -313,6 +313,12 @@ pub struct Resolved {
     /// [`crate::typing::Checker::struct_lit_names`]); lowering uses it for the
     /// field-name layout of a positional literal.
     pub struct_lit_names: HashMap<Aol<Expr>, String>,
+    /// Literal sites (`"..."`, `[..]`, an int, a real) a `@compiler_interface_*`
+    /// construction hook builds into a user type, mapped to the hook's
+    /// `(owning module, emitted name)` (from
+    /// [`crate::typing::Checker::literal_hooks`]). Lowering wraps the raw payload term
+    /// in a call to this global; an unrecorded literal folds to the plain constant.
+    pub literal_hooks: HashMap<Aol<Expr>, (Option<String>, String)>,
     /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
     pub codata_lits: HashSet<Aol<Expr>>,
     /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
@@ -638,11 +644,31 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Wrap a raw literal payload in its `@compiler_interface_*` construction hook
+    /// when the checker recorded one at `site`; otherwise return the payload as-is
+    /// (the folded built-in constant, so the default case builds nothing extra).
+    fn literal_hook_wrap(&self, site: Aol<Expr>, payload: Term) -> Term {
+        match self.resolved.literal_hooks.get(&site) {
+            Some((module, name)) => Term::app(
+                Term::Var {
+                    module: module.clone(),
+                    name: name.clone(),
+                    idx: 0,
+                },
+                payload,
+            ),
+            None => payload,
+        }
+    }
+
     fn expr_core(&mut self, e: Aol<Expr>) -> Term {
         match self.node(e) {
-            Expr::Int(n) => Term::Int(*n),
-            Expr::Real(r) => Term::Real(*r),
-            Expr::Str(s) => Term::Str(self.ast.bytes(*s).to_vec()),
+            Expr::Int(n) => self.literal_hook_wrap(e, Term::Int(*n)),
+            Expr::Real(r) => self.literal_hook_wrap(e, Term::Real(*r)),
+            Expr::Str(s) => {
+                let raw = Term::Str(self.ast.bytes(*s).to_vec());
+                self.literal_hook_wrap(e, raw)
+            }
             Expr::Bool(b) => Term::Bool(*b),
             Expr::Unit => Term::Unit,
 
@@ -730,7 +756,16 @@ impl<'a> Lowerer<'a> {
 
             Expr::List(items) => {
                 let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
-                if self.resolved.array_exprs.contains(&e) {
+                if self.resolved.literal_hooks.contains_key(&e) {
+                    // A sequence construction hook: build the `@vec t` payload the hook
+                    // consumes (push each element left to right), then apply the hook.
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
+                    }
+                    self.literal_hook_wrap(e, acc)
+                } else if self.resolved.array_exprs.contains(&e) {
                     // A byte vector: start empty, push each element left to right.
                     let mut acc = Term::app(Term::var("@array_alloc"), Term::Int(0));
                     for it in items {
