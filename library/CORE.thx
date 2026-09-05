@@ -430,6 +430,11 @@ $ range : @int -> @int -> @list @int = \lo hi =
 	if lo ?> hi => []
 	else lo :: range (lo + 1) hi
 
+# The prelude cons list, an ordinary `@union` (no longer a compiler builtin). `[a,
+# b, c]` / `x :: xs` / `[]` are surface sugar over its `Cons`/`Nil` constructors, and
+# a list PATTERN matches them; both `List a` and `@list a` name this type.
+$ List : @union a = Nil: {}, Cons: {a, List a},
+
 # One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:
 # `Empty` at the end, or `More elem rest` (the head element and the remaining
 # sequence). A user sequence type joins the `[..]`/`::`/`[]` PATTERN surface by

@@ -172,7 +172,30 @@ Touchpoints: `lowering/patmat.rs`, `typing.rs`, `library/CORE.thx`.
 Deferred: general extractors / pattern synonyms via a `@compiler_interface_view`
 returning an arbitrary sum. Same machinery, later.
 
-## Stage 3 - collapse builtins onto the mechanism
+## Stage 3 - collapse builtins onto the mechanism  [List half LANDED; @str half deferred]
+
+Prerequisite LANDED (2026-09-05): type-directed resolution of BARE variant tags. A
+`.Tag` now takes its union from the expected type (`Checker::union_head_with_tag` + a
+`check` arm for `Expr::Variant { ty: None }`), and `infer_variant` CHECKS payloads
+bidirectionally so the expectation flows into nested `.Tag`s. This lets two unions share
+a constructor name without collision.
+
+List half LANDED (2026-09-05): `List` is now an ordinary `@union` declared in CORE.thx
+(`$ List : @union a = Nil: {}, Cons: {a, List a}`), NOT a compiler builtin. Removed the
+hardcoded `List`/`Cons`/`Nil` special-cases from the checker (`variant_sig`,
+`find_union_by_tag`, `union_head_with_tag`) and from lowering (`Decls::variant`,
+`CONS_FIELDS`); they all resolve through the CORE declaration now. The `[..]`/`::`/`[]`
+sugar still names `List`/`Cons`/`Nil` (its surface definition), and `@list` stays a
+spelling alias for `List`. Verified interpreter + ccg (STRINGS, LISTS examples;
+`bare_variant_tag_resolves_by_expected_type` test).
+
+Still deferred (its own milestone): the `@str` -> `@array` fold, which touches C `char*`
+marshalling (`cabi`/`scalar_ckind`), string interpolation, display, and string patterns;
+and the interpreter's runtime `to_string`-of-a-list / FFI list marshalling special-cases
+(`machine/data.rs`, `machine/ffi.rs`), which are display/marshalling, not type-system
+hardcoding.
+
+### Original plan text
 
 - Delete the `@list` builtin; define `List` as a core `@union`; `@compiler_interface_sequence_literal`
   default builds it; rewrite `library/LIST.thx`.

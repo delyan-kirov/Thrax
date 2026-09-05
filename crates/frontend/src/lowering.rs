@@ -228,21 +228,15 @@ impl Decls {
             .or_else(|| table.values().find_map(|m| m.get(key)))
     }
 
-    /// The payload arity and (union, field names) for a variant tag. `List`'s
-    /// `Cons`/`Nil` are prelude, so they are answered directly.
+    /// The payload arity and (union, field names) for a variant tag.
     fn variant(
         &self,
         module: &str,
         imports: &[String],
         tag: &str,
     ) -> Option<(&str, &[Option<String>])> {
-        match tag {
-            "Cons" => Some(("List", CONS_FIELDS)),
-            "Nil" => Some(("List", &[])),
-            _ => self
-                .resolve(&self.unions, module, imports, tag)
-                .map(|v| (v.union.as_str(), v.fields.as_slice())),
-        }
+        self.resolve(&self.unions, module, imports, tag)
+            .map(|v| (v.union.as_str(), v.fields.as_slice()))
     }
 
     /// A struct's field names in declaration order, if `name` is a known struct.
@@ -272,8 +266,6 @@ impl Decls {
             .or_else(|| self.structs.values().find_map(|s| hit(s, names)))
     }
 }
-
-const CONS_FIELDS: &[Option<String>] = &[None, None];
 
 /// One surface match arm's unresolved handles: its patterns (an or-pattern has
 /// several), an optional guard, and the body.

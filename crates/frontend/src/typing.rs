@@ -1210,6 +1210,22 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // A bare `.Tag` takes its union from the expected type (type-directed), so
+            // a constructor name shared by several unions resolves unambiguously.
+            Expr::Variant { module: None, ty: None, tag, fields }
+                if self
+                    .union_head_with_tag(expected, self.text(*tag))
+                    .is_some() =>
+            {
+                let tag = self.text(*tag);
+                let uname = self
+                    .union_head_with_tag(expected, tag)
+                    .expect("guarded above");
+                let fields = self.ast.slice(*fields);
+                let got = self.infer_variant(Some(uname), tag, fields)?;
+                self.eng
+                    .unify(&got, expected, "against the expected type")
+            }
             // A `Real` literal takes the expected float width, like an integer
             // literal takes its width: `1.0` checks against `Real32` as well as
             // `Real`/`Real64`. The runtime value stays a `Real` and is narrowed to
@@ -1990,24 +2006,20 @@ impl<'a> Checker<'a> {
                 ),
                 FieldInit::Positional(value) => (variant_field_ty(&payload, None, i), *value),
             };
-            let got = self.infer(value)?;
-            if let Some(want) = want {
-                self.eng.unify(&got, &want, "in a variant payload")?;
+            // Check (not infer) against the declared payload type when known, so the
+            // expectation flows into a nested value: a bare `.Tag` payload resolves
+            // type-directedly, and a literal takes its construction hook / element type.
+            match want {
+                Some(want) => self.check(value, &want)?,
+                None => {
+                    self.infer(value)?;
+                }
             }
         }
         Ok(result)
     }
 
     fn variant_sig(&mut self, union: &str, tag: &str) -> Option<(Type, VariantPayload<'a>)> {
-        if union == ty::LIST {
-            let elem = self.eng.fresh();
-            let list = Type::app(Type::con(ty::LIST), elem.clone());
-            return match tag {
-                "Nil" => Some((list, vec![])),
-                "Cons" => Some((list.clone(), vec![(None, elem), (None, list)])),
-                _ => None,
-            };
-        }
         let info = self.unions.get(union)?.clone();
         let pos = info.variants.iter().position(|v| v.tag == tag)?;
         let (args, mut subst) = self.instantiate_params(&info.params);
@@ -2023,14 +2035,9 @@ impl<'a> Checker<'a> {
     }
 
     fn find_union_by_tag(&self, tag: &str) -> Option<&'a str> {
-        let user = self
-            .unions
+        self.unions
             .iter()
-            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name));
-        user.or(match tag {
-            "Nil" | "Cons" => Some(ty::LIST),
-            _ => None,
-        })
+            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name))
     }
 
     /// Infer an anonymous record value. Plain `{ .x = e }` builds a closed row from
@@ -2125,6 +2132,17 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+    /// The union `ty`'s head names, if it is a (possibly applied) declared union that
+    /// has a variant `tag`. Lets a BARE `.Tag` resolve type-directedly against the
+    /// expected type, so two unions sharing a constructor name (e.g. a user list and
+    /// the builtin `List`, both with `Cons`/`Nil`) do not collide.
+    fn union_head_with_tag(&self, ty: &Type, tag: &str) -> Option<&'a str> {
+        let (head, _) = self.spine(ty);
+        let Type::Con(n) = &head else { return None };
+        let (k, info) = self.unions.get_key_value(n.as_str())?;
+        info.variants.iter().any(|v| v.tag == tag).then_some(*k)
     }
 
     /// The head codata type name and its type arguments, if `ty` is a (possibly

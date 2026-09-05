@@ -586,6 +586,20 @@ fn literal_hook_does_not_hijack_default() {
 }
 
 #[test]
+fn bare_variant_tag_resolves_by_expected_type() {
+    // A user union reuses the `Cons`/`Nil` tags that the prelude `List` also has. A
+    // BARE `.Nil` resolves type-directedly from the expected payload type (`MyList`),
+    // not by a global tag search, so the two unions coexist without collision.
+    let src = "@mod M\n\
+        $ MyList : @union a = Nil: {}, Cons: {a, MyList a}\n\
+        $ total : MyList @int -> @int = \\xs = is xs | MyList.Cons.{h, t} => h + total t else 0\n\
+        $ a : MyList @int = MyList.Cons.{ 1, MyList.Cons.{ 2, .Nil } }\n\
+        $ b : @list @int = [3, 4, 5]\n\
+        $ r : @int = total a * 100 + (is b | h :: _ => h else 0)"; // 3*100 + 3
+    assert_eq!(run(src, "r"), "303");
+}
+
+#[test]
 fn literal_pattern_via_equality_hook() {
     // A literal PATTERN on a user type routes through its construction + equality
     // hooks: `is s | "hi" => ...` builds "hi" into the user type and compares it with
