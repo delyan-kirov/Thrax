@@ -179,8 +179,9 @@ pub struct Checker<'a> {
     /// is a declaration-time convenience only; no type relationship is recorded.
     pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
     /// Type variables introduced by integer literals, which may be Int or Real;
-    /// leftovers default to Int at the definition boundary.
-    numeric: Vec<Type>,
+    /// leftovers default to Int at the definition boundary. Each carries the
+    /// literal's source span so a defaulting error can point at it.
+    numeric: Vec<(Type, Span)>,
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
     own_overloads: Vec<(&'a str, Vec<Type>)>,
@@ -1315,7 +1316,7 @@ impl<'a> Checker<'a> {
             }
             self.eng.collect_vars(&p.result, &mut out);
         }
-        for t in &self.numeric {
+        for (t, _) in &self.numeric {
             self.eng.collect_vars(t, &mut out);
         }
         out
@@ -2266,7 +2267,8 @@ impl<'a> Checker<'a> {
         match self.node(e) {
             Expr::Int(_) => {
                 let t = self.eng.fresh();
-                self.numeric.push(t.clone());
+                let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
+                self.numeric.push((t.clone(), span));
                 Ok(t)
             }
             Expr::Real(_) => Ok(Type::con(ty::REAL)),
@@ -3161,6 +3163,9 @@ impl<'a> Checker<'a> {
             if progress {
                 continue;
             }
+            if self.propagate_result_to_operands()? {
+                continue;
+            }
             if self.default_numerics()? {
                 continue;
             }
@@ -3191,6 +3196,52 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Break an ambiguity where a pending overload's RESULT is already a concrete
+    /// integer type but its operands are still unconstrained numeric literals. For
+    /// homogeneous arithmetic (`@int32 + @int32 -> @int32`), the operands should
+    /// take the result type, not default to `Int`; e.g. `let x : @int32 = 2 + 3`
+    /// resolves to the `@int32` overload rather than failing because both literals
+    /// became `Int`. Each candidate is tried under that constraint and kept only if
+    /// it makes the overload unique, so a genuinely wrong guess is rolled back.
+    fn propagate_result_to_operands(&mut self) -> Result<bool> {
+        let batch = std::mem::take(&mut self.pending);
+        let mut progress = false;
+        let mut still = Vec::new();
+        for p in batch {
+            let result = self.eng.resolve(&p.result);
+            if !self.is_int_scalar(&result) {
+                still.push(p);
+                continue;
+            }
+            let save = self.eng.save();
+            let mut pinned = true;
+            for a in &p.args {
+                if matches!(self.eng.resolve(a), Type::Var(_))
+                    && self
+                        .eng
+                        .unify(a, &result, "numeric operand adopting result type")
+                        .is_err()
+                {
+                    pinned = false;
+                    break;
+                }
+            }
+            if pinned {
+                if let Match::Unique(idx) = self.match_overload(&p.candidates, &p.args, &p.result) {
+                    let cand_ty = p.candidates[idx].ty.clone();
+                    self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                    self.record_overload(p.site, &p.name, &p.candidates, idx);
+                    progress = true;
+                    continue;
+                }
+            }
+            self.eng.restore(save);
+            still.push(p);
+        }
+        self.pending = still;
+        Ok(progress)
+    }
+
     /// Whether `ty` is a record whose row is closed (ends in `RowEmpty`, so its
     /// fields are fully known) rather than open (a tail variable).
     fn record_is_closed(&self, ty: &Type) -> bool {
@@ -3210,13 +3261,13 @@ impl<'a> Checker<'a> {
     /// Whether `ty` resolves to a not-yet-defaulted numeric-literal variable.
     fn is_numeric(&self, ty: &Type) -> bool {
         let r = self.eng.resolve(ty);
-        matches!(r, Type::Var(_)) && self.numeric.iter().any(|n| self.eng.resolve(n) == r)
+        matches!(r, Type::Var(_)) && self.numeric.iter().any(|(n, _)| self.eng.resolve(n) == r)
     }
 
     fn default_numerics(&mut self) -> Result<bool> {
         let vars = std::mem::take(&mut self.numeric);
         let mut changed = false;
-        for t in &vars {
+        for (t, span) in &vars {
             match self.eng.resolve(t) {
                 // Still unconstrained: default to `Int`.
                 Type::Var(_) => {
@@ -3240,7 +3291,7 @@ impl<'a> Checker<'a> {
                 // bare literal is a number, so this is a type error, not a coercion.
                 other => {
                     return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
+                        Code::TypeMismatch, *span, 0,
                         "a numeric literal cannot be used where `{}` is expected",
                         self.show(&other)
                     ));

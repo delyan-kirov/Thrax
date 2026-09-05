@@ -208,6 +208,7 @@ pub trait ForeignCalls {
 
 /// The context handed to the libffi closure (as its user-data): the erased Thrax
 /// closure reference and the callback's scalar signature.
+#[cfg(not(target_arch = "wasm32"))]
 struct CbCtx {
     closure: *const std::ffi::c_void,
     arg_kinds: Vec<std::os::raw::c_int>,
