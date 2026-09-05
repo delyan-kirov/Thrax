@@ -521,6 +521,12 @@ pub enum Expr {
         symbol: StrId,
         lib: StrId,
     },
+    /// `(e : T)`: an ascription. Checks `e` against `T` and has type `T`. Purely a
+    /// checking hint; lowering emits `e` unchanged.
+    Ascribe {
+        expr: Aol<Expr>,
+        ty: Aol<Ty>,
+    },
     /// `callee @ctx e` / `callee @ctx { .name = e, .. }`: override the implicit
     /// `@ctx` arguments of `callee`. `overrides` are the given ones (a single
     /// `Positional` for the one-implicit form, or `.name = e` for the record

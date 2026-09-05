@@ -6,14 +6,16 @@
 #       `@tensor_length` (size), `@tensor_create` (build one the size of a template from an
 #       index function), `@tensor_concat` (size-changing join). Everything else here is
 #       ordinary Thrax, so this module is readable, forkable, and extensible: a
-#       custom container joins the `.[..]` surface by adding its own `index`
-#       overload, and the element arithmetic is passed as `@ctx` implicits (a
+#       custom container joins the `.[..]` surface by adding its own
+#       `@compiler_interface_indexing` overload, and the element arithmetic is passed
+#       as `@ctx` implicits (a
 #       dictionary) rather than requiring a numeric class.
 
-# `t.[i]` desugars to the overloadable `index`. The tensor candidate forwards to
-# the `@tensor_index` primitive; a custom container adds its own `index` overload (the two
-# coexist by the import merge), so any type can join the `.[..]` surface.
-$ index : [n]a -> Int -> a = \t i = @tensor_index t i
+# `t.[i]` desugars to the overloadable `@compiler_interface_indexing` hook. The
+# tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
+# its own hook overload (the two coexist by the import merge), so any type can join
+# the `.[..]` surface.
+$ @compiler_interface_indexing : [n]a -> Int -> a = \t i = @tensor_index t i
 
 # Thin names over the remaining primitives.
 $ length : [n]a -> Int = \t = @tensor_length t

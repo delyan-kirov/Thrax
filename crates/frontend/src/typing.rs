@@ -2520,6 +2520,16 @@ impl<'a> Checker<'a> {
                 Ok(v)
             }
 
+            // `(inner : T)`: check `inner` against `T` and take `T` as the type. Any
+            // type variable written in `T` is fresh (a local, monomorphic annotation).
+            Expr::Ascribe { expr, ty } => {
+                let (expr, ty) = (*expr, *ty);
+                let mut tvars = HashMap::new();
+                let t = self.ty_of_ast(ty, &mut tvars);
+                self.check(expr, &t)?;
+                Ok(t)
+            }
+
             Expr::Ctx {
                 callee,
                 overrides,
@@ -3950,8 +3960,9 @@ impl<'a> Checker<'a> {
         // (`transpose` keeps per-position variance and swaps only the sizes).
         //
         // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
-        // OVERLOADABLE `index` in `library/LA` (its tensor candidate calls `@tensor_index`);
-        // a custom container adds its own `index` overload, the import merge coexists.
+        // OVERLOADABLE `@compiler_interface_indexing` hook (its tensor candidate in
+        // `library/LA` calls `@tensor_index`); a custom container adds its own hook
+        // overload, the import merge coexists.
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
@@ -4248,6 +4259,7 @@ fn free_globals<'a>(
             free_globals(ast, *callee, globals, bound, out);
             free_globals_field_inits(ast, ast.slice(*overrides), globals, bound, out);
         }
+        Expr::Ascribe { expr, .. } => free_globals(ast, *expr, globals, bound, out),
     }
 }
 

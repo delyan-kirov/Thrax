@@ -408,3 +408,22 @@ fn string_interpolation_nesting_and_escapes() {
     // An unclosed interpolation is an error.
     assert!(parse("@mod M\n$ s = \"bad {1 + \"").is_err());
 }
+
+#[test]
+fn ascription_parses_in_group() {
+    // `(e : T)` inside a group is an ascription node.
+    let p = prog("@mod M\n$ n : Int = (5 : Int)");
+    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Ascribe { .. }));
+}
+
+#[test]
+fn interface_hook_prefix_rule() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+    // A `@compiler_interface_*` hook is a definable `@`-name.
+    assert!(parse("@mod M\n$ @compiler_interface_indexing : a -> Int -> a = \\t i = t").is_ok());
+    // Any other `@`-name is a compiler intrinsic, not extensible in user code.
+    assert!(err("@mod M\n$ @my_hook : Int -> Int = \\x = x").contains("not extensible"));
+}

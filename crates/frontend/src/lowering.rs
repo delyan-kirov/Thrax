@@ -1016,6 +1016,8 @@ impl<'a> Lowerer<'a> {
             // or resolved) are injected at the head function reference, keyed by its
             // site in `implicit_args`.
             Expr::Ctx { callee, .. } => self.expr(*callee),
+
+            Expr::Ascribe { expr, .. } => self.expr(*expr),
         }
     }
 

@@ -61,6 +61,10 @@ $ insert_with : Map k v -> k -> v -> (v -> v -> v) -> Map k v = \m k v f =
 
 $ get : Map k v -> k -> Option v = \m k = tget m.cmpf k m.root
 
+# `m.[k]` joins the `.[..]` surface: an indexing hook overload for maps, returning
+# `Option v` (a missing key is `None`).
+$ @compiler_interface_indexing : Map k v -> k -> Option v = \m k = get m k
+
 $ get_or : Map k v -> k -> v -> v = \m k d = unwrap_or (get m k) d
 
 $ has : Map k v -> k -> @bool = \m k = is_some (get m k)

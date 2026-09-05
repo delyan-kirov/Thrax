@@ -456,13 +456,13 @@ fn generate_length_build_tensors_in_source() {
 
 #[test]
 fn overloadable_index_and_shape_sugar() {
-    // `.[..]` desugars to the overloadable `index`, so two local `index` overloads
-    // (a tensor one and a custom-type one) both drive `.[..]`, dispatched by receiver
-    // type. Also exercises `[m, n]T` shape sugar and multi-axis `t.[i, j]`.
+    // `.[..]` desugars to the overloadable `@compiler_interface_indexing` hook, so two
+    // local overloads (a tensor one and a custom-type one) both drive `.[..]`,
+    // dispatched by receiver type. Also exercises `[m, n]T` shape sugar and `t.[i, j]`.
     let src = "@mod M\n\
-               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ @compiler_interface_indexing : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
                $ Box : @struct = base: Int\n\
-               $ index : Box -> Int -> Int = \\b i = b.base + i\n\
+               $ @compiler_interface_indexing : Box -> Int -> Int = \\b i = b.base + i\n\
                $ g : [2, 2]Int = [ [1, 2], [3, 4] ]\n\
                $ bx : Box = .{ .base = 100 }\n\
                $ r : Int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
@@ -474,7 +474,7 @@ fn multi_axis_slice_syntax() {
     // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
     // The checker computes the result shape; all are O(1) strided views.
     let src = "@mod M\n\
-               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ @compiler_interface_indexing : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
                $ m : [3, 4]Int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
                $ colv : [3]Int = m.[.., 1]\n\
                $ blk : [2, 2]Int = m.[1 ... 2, 1 ... 2]\n\
@@ -489,11 +489,35 @@ fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
     let src = "@mod M\n\
-               $ index : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
+               $ @compiler_interface_indexing : [n]a -> Int -> a = \\t i = @tensor_index t i\n\
                $ v : [5]Int = [10, 20, 30, 40, 50]\n\
                $ s : [3]Int = v.[1 ... 3]\n\
                $ r : Int = s.[0] + s.[1] + s.[2]"; // 20+30+40
     assert_eq!(run(src, "r"), "90");
+}
+
+#[test]
+fn expression_ascription() {
+    // `(e : T)` checks `e` against `T` and passes the value through unchanged; the
+    // annotation pins an otherwise-ambiguous literal.
+    let src = "@mod M\n\
+               $ r : Int = (40 : Int) + 2";
+    assert_eq!(run(src, "r"), "42");
+}
+
+#[test]
+fn indexing_hook_returns_non_element() {
+    // The `.[..]` hook may return any type, not just the element type: a map-style
+    // lookup returns an `Option`-shaped union. Exercises `@compiler_interface_indexing`
+    // with a non-element result, dispatched on the receiver type.
+    let src = "@mod M\n\
+               $ Maybe : @union a = Nada: {}, Just: {a}\n\
+               $ Dict : @struct = base: Int\n\
+               $ @compiler_interface_indexing : Dict -> Int -> Maybe Int =\n\
+               \t\\d k = if k ?< d.base => Maybe.Just.{ d.base + k } else Maybe.Nada\n\
+               $ d : Dict = .{ .base = 10 }\n\
+               $ r : Int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
+    assert_eq!(run(src, "r"), "13");
 }
 
 #[test]
