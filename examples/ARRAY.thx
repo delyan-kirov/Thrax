@@ -10,29 +10,29 @@ $ buf : @array = @array.{ 64 }
 # Named: the same, with the `size` field spelled out.
 $ buf2 : @array = @array.{ .size = 8 }
 
-# The size is an ordinary Int expression, not just a literal.
-$ n : Int = 10
+# The size is an ordinary @int expression, not just a literal.
+$ n : @int = 10
 $ buf3 : @array = @array.{ n * 4 }
 
 # `@array` is an expression, so it nests like any other -- here behind a `let`,
 # and as the body of a function that computes its size from an argument.
-$ make : Int -> @array = \k = let extra = 16 in @array.{ k + extra }
+$ make : @int -> @array = \k = let extra = 16 in @array.{ k + extra }
 $ buf4 : @array = make 32
 
-$ Count: @alias = Int
+$ Count: @alias = @int
 
 # `@list` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
-$ IntList: @alias = @list Int
+$ IntList: @alias = @list @int
 
 $ list: IntList = 1 :: []
 
 # @array is an ordinary type, so it can be a struct field like any other.
 $ Buffer : @struct =
 	bytes: @array,
-	len: Int,
+	len: @int,
 
 $ b    : Buffer = Buffer.{ .bytes = @array.{ 128 }, .len = 128 }
 $ blen : Count    = b.len
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = buf ; buf2 ; buf3 ; buf4 ; list ; b ; blen ; n ; 0
+$ test : @int = buf ; buf2 ; buf3 ; buf4 ; list ; b ; blen ; n ; 0

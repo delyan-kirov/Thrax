@@ -14,11 +14,11 @@ $ with LIST
 # ---- byte scans (47 = '/', 46 = '.') ----
 
 # Index of the last '/', or -1 when there is none.
-$ last_sep : Str -> Int = \p = scan_back p ((@array_len p) - 1) 47
+$ last_sep : Str -> @int = \p = scan_back p ((@array_len p) - 1) 47
 
-$ last_dot : Str -> Int = \p = scan_back p ((@array_len p) - 1) 46
+$ last_dot : Str -> @int = \p = scan_back p ((@array_len p) - 1) 46
 
-$ scan_back : Str -> Int -> Int -> Int = \p i b =
+$ scan_back : Str -> @int -> @int -> @int = \p i b =
 	if i ?< 0 => 0 - 1
 	else if (@array_get p i) ?= b => i
 	else scan_back p (i - 1) b

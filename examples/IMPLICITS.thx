@@ -10,7 +10,7 @@
 
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 
-$ compare : Int -> Int -> Ordering = \a b =
+$ compare : @int -> @int -> Ordering = \a b =
 	if a ?< b => Ordering.LT
 	else if a ?> b => Ordering.GT
 	else Ordering.EQ
@@ -25,10 +25,10 @@ $ max3 : a -> a -> a -> a  @ctx compare : a -> a -> Ordering = \x y z =
 	max_of (max_of x y) z
 
 # A reversed comparison, used as an explicit override to turn `max_of` into a min.
-$ flip : Int -> Int -> Ordering = \a b = compare b a
+$ flip : @int -> @int -> Ordering = \a b = compare b a
 
-$ ck_implicit : Int = if max_of 3 7 ?= 7 => 0 else 1
-$ ck_chain    : Int = if max3 3 9 5 ?= 9 => 0 else 2
-$ ck_override : Int = if (max_of 3 7 @ctx flip) ?= 3 => 0 else 4
+$ ck_implicit : @int = if max_of 3 7 ?= 7 => 0 else 1
+$ ck_chain    : @int = if max3 3 9 5 ?= 9 => 0 else 2
+$ ck_override : @int = if (max_of 3 7 @ctx flip) ?= 3 => 0 else 4
 
-$ test : Int = ck_implicit + ck_chain + ck_override
+$ test : @int = ck_implicit + ck_chain + ck_override

@@ -13,7 +13,7 @@
 #       -> R`, whose fields, in declaration order, are the positional C
 #       arguments. A nullary C function takes unit, `{} -> R`.
 #
-#       How values cross the seam: `Int` is a machine word (also an int-typed C
+#       How values cross the seam: `@int` is a machine word (also an int-typed C
 #       argument, a `FILE*` handle, and a file descriptor), `@ptr` is a raw heap
 #       pointer (from `C.malloc`), `Str` is a NUL-terminated byte string, `Real`
 #       is a double, and `{}` is unit -- as an argument it means the C function
@@ -52,64 +52,64 @@ $ fmax     : {a: Real, b: Real}      -> Real = @extern "C" "fmax"     "libm"
 $ fdim     : {a: Real, b: Real}      -> Real = @extern "C" "fdim"     "libm"
 
 # -- stdlib.h --------------------------------------------------------------
-$ malloc  : Int -> @ptr                        = @extern "C" "malloc"  "libc"
-$ calloc  : {count: Int, size: Int} -> @ptr    = @extern "C" "calloc"  "libc"
-$ realloc : {ptr: @ptr, size: Int}  -> @ptr    = @extern "C" "realloc" "libc"
+$ malloc  : @int -> @ptr                        = @extern "C" "malloc"  "libc"
+$ calloc  : {count: @int, size: @int} -> @ptr    = @extern "C" "calloc"  "libc"
+$ realloc : {ptr: @ptr, size: @int}  -> @ptr    = @extern "C" "realloc" "libc"
 $ free    : @ptr -> {}                          = @extern "C" "free"    "libc"
-$ atoi    : Str -> Int                          = @extern "C" "atoi"    "libc"
+$ atoi    : Str -> @int                          = @extern "C" "atoi"    "libc"
 $ atof    : Str -> Real                         = @extern "C" "atof"    "libc"
-$ rand    : {} -> Int                           = @extern "C" "rand"    "libc"
-$ srand   : Int -> {}                           = @extern "C" "srand"   "libc"
-$ exit    : Int -> {}                           = @extern "C" "exit"    "libc"
+$ rand    : {} -> @int                           = @extern "C" "rand"    "libc"
+$ srand   : @int -> {}                           = @extern "C" "srand"   "libc"
+$ exit    : @int -> {}                           = @extern "C" "exit"    "libc"
 $ abort   : {} -> {}                            = @extern "C" "abort"   "libc"
 
 # -- string.h --------------------------------------------------------------
-$ strlen  : Str -> Int                              = @extern "C" "strlen"  "libc"
-$ strcmp  : {a: Str, b: Str}            -> Int      = @extern "C" "strcmp"  "libc"
-$ strncmp : {a: Str, b: Str, n: Int}    -> Int      = @extern "C" "strncmp" "libc"
-$ strchr  : {s: Str, c: Int}            -> @ptr     = @extern "C" "strchr"  "libc"
-$ strrchr : {s: Str, c: Int}            -> @ptr     = @extern "C" "strrchr" "libc"
+$ strlen  : Str -> @int                              = @extern "C" "strlen"  "libc"
+$ strcmp  : {a: Str, b: Str}            -> @int      = @extern "C" "strcmp"  "libc"
+$ strncmp : {a: Str, b: Str, n: @int}    -> @int      = @extern "C" "strncmp" "libc"
+$ strchr  : {s: Str, c: @int}            -> @ptr     = @extern "C" "strchr"  "libc"
+$ strrchr : {s: Str, c: @int}            -> @ptr     = @extern "C" "strrchr" "libc"
 $ strstr  : {haystack: Str, needle: Str} -> @ptr    = @extern "C" "strstr"  "libc"
-$ memcpy  : {dst: @ptr, src: @ptr, n: Int} -> @ptr  = @extern "C" "memcpy"  "libc"
-$ memmove : {dst: @ptr, src: @ptr, n: Int} -> @ptr  = @extern "C" "memmove" "libc"
-$ memset  : {dst: @ptr, c: Int, n: Int}    -> @ptr  = @extern "C" "memset"  "libc"
-$ memcmp  : {a: @ptr, b: @ptr, n: Int}     -> Int   = @extern "C" "memcmp"  "libc"
-$ memchr  : {s: @ptr, c: Int, n: Int}      -> @ptr  = @extern "C" "memchr"  "libc"
+$ memcpy  : {dst: @ptr, src: @ptr, n: @int} -> @ptr  = @extern "C" "memcpy"  "libc"
+$ memmove : {dst: @ptr, src: @ptr, n: @int} -> @ptr  = @extern "C" "memmove" "libc"
+$ memset  : {dst: @ptr, c: @int, n: @int}    -> @ptr  = @extern "C" "memset"  "libc"
+$ memcmp  : {a: @ptr, b: @ptr, n: @int}     -> @int   = @extern "C" "memcmp"  "libc"
+$ memchr  : {s: @ptr, c: @int, n: @int}      -> @ptr  = @extern "C" "memchr"  "libc"
 
 # -- ctype.h ---------------------------------------------------------------
-$ isalpha : Int -> Int = @extern "C" "isalpha" "libc"
-$ isdigit : Int -> Int = @extern "C" "isdigit" "libc"
-$ isalnum : Int -> Int = @extern "C" "isalnum" "libc"
-$ isspace : Int -> Int = @extern "C" "isspace" "libc"
-$ isupper : Int -> Int = @extern "C" "isupper" "libc"
-$ islower : Int -> Int = @extern "C" "islower" "libc"
-$ ispunct : Int -> Int = @extern "C" "ispunct" "libc"
-$ iscntrl : Int -> Int = @extern "C" "iscntrl" "libc"
-$ isprint : Int -> Int = @extern "C" "isprint" "libc"
-$ toupper : Int -> Int = @extern "C" "toupper" "libc"
-$ tolower : Int -> Int = @extern "C" "tolower" "libc"
+$ isalpha : @int -> @int = @extern "C" "isalpha" "libc"
+$ isdigit : @int -> @int = @extern "C" "isdigit" "libc"
+$ isalnum : @int -> @int = @extern "C" "isalnum" "libc"
+$ isspace : @int -> @int = @extern "C" "isspace" "libc"
+$ isupper : @int -> @int = @extern "C" "isupper" "libc"
+$ islower : @int -> @int = @extern "C" "islower" "libc"
+$ ispunct : @int -> @int = @extern "C" "ispunct" "libc"
+$ iscntrl : @int -> @int = @extern "C" "iscntrl" "libc"
+$ isprint : @int -> @int = @extern "C" "isprint" "libc"
+$ toupper : @int -> @int = @extern "C" "toupper" "libc"
+$ tolower : @int -> @int = @extern "C" "tolower" "libc"
 
 # -- stdio.h ---------------------------------------------------------------
-# A `FILE*` handle travels as an `Int` (the pointer as a word); fopen returns 0
+# A `FILE*` handle travels as an `@int` (the pointer as a word); fopen returns 0
 # on failure. Console/fd I/O uses `C.write` (fd 1 = stdout, 2 = stderr).
-$ puts    : Str -> Int                          = @extern "C" "puts"    "libc"
-$ putchar : Int -> Int                          = @extern "C" "putchar" "libc"
-$ getchar : {} -> Int                           = @extern "C" "getchar" "libc"
-$ fopen   : {path: Str, mode: Str}   -> Int     = @extern "C" "fopen"   "libc"
-$ fclose  : Int -> Int                          = @extern "C" "fclose"  "libc"
-$ fgetc   : Int -> Int                          = @extern "C" "fgetc"   "libc"
-$ fputc   : {c: Int, stream: Int}    -> Int     = @extern "C" "fputc"   "libc"
-$ fputs   : {s: Str, stream: Int}    -> Int     = @extern "C" "fputs"   "libc"
-$ fflush  : Int -> Int                          = @extern "C" "fflush"  "libc"
-$ fseek   : {stream: Int, off: Int, whence: Int} -> Int = @extern "C" "fseek" "libc"
-$ ftell   : Int -> Int                          = @extern "C" "ftell"   "libc"
-$ remove  : Str -> Int                          = @extern "C" "remove"  "libc"
-$ rename  : {from: Str, to: Str}     -> Int     = @extern "C" "rename"  "libc"
+$ puts    : Str -> @int                          = @extern "C" "puts"    "libc"
+$ putchar : @int -> @int                          = @extern "C" "putchar" "libc"
+$ getchar : {} -> @int                           = @extern "C" "getchar" "libc"
+$ fopen   : {path: Str, mode: Str}   -> @int     = @extern "C" "fopen"   "libc"
+$ fclose  : @int -> @int                          = @extern "C" "fclose"  "libc"
+$ fgetc   : @int -> @int                          = @extern "C" "fgetc"   "libc"
+$ fputc   : {c: @int, stream: @int}    -> @int     = @extern "C" "fputc"   "libc"
+$ fputs   : {s: Str, stream: @int}    -> @int     = @extern "C" "fputs"   "libc"
+$ fflush  : @int -> @int                          = @extern "C" "fflush"  "libc"
+$ fseek   : {stream: @int, off: @int, whence: @int} -> @int = @extern "C" "fseek" "libc"
+$ ftell   : @int -> @int                          = @extern "C" "ftell"   "libc"
+$ remove  : Str -> @int                          = @extern "C" "remove"  "libc"
+$ rename  : {from: Str, to: Str}     -> @int     = @extern "C" "rename"  "libc"
 
 # -- unistd.h / time.h -----------------------------------------------------
-$ write  : {fd: Int, buf: Str, n: Int} -> Int   = @extern "C" "write"  "libc"
+$ write  : {fd: @int, buf: Str, n: @int} -> @int   = @extern "C" "write"  "libc"
 $ getenv : Str -> Str                           = @extern "C" "getenv" "libc"
-$ time   : Int -> Int                           = @extern "C" "time"   "libc"
+$ time   : @int -> @int                           = @extern "C" "time"   "libc"
 
 # -- engine intrinsics -----------------------------------------------------
 # NOT libc: the interpreter serves these from a compiled-in host table, and the
@@ -119,13 +119,13 @@ $ time   : Int -> Int                           = @extern "C" "time"   "libc"
 # `@cast` crosses only integer widths, so these bridge the int/real and
 # int/pointer boundaries it cannot. MATH re-exports the numeric ones as
 # `real_of_int` / `int_of_real` / ...
-$ i2d : Int -> Real     = @extern "C" "thx_i2d" ""
-$ d2i : Real -> Int     = @extern "C" "thx_d2i" ""
-$ i2f : Int -> @float32 = @extern "C" "thx_i2f" ""
-$ f2i : @float32 -> Int = @extern "C" "thx_f2i" ""
+$ i2d : @int -> Real     = @extern "C" "thx_i2d" ""
+$ d2i : Real -> @int     = @extern "C" "thx_d2i" ""
+$ i2f : @int -> @float32 = @extern "C" "thx_i2f" ""
+$ f2i : @float32 -> @int = @extern "C" "thx_f2i" ""
 
 # A pointer travels as a machine word; `i2p` reinterprets one, and `null` is the
 # null pointer (the language has no `@ptr` literal). For C APIs taking an
 # optional `T*` you want to pass as NULL.
-$ i2p  : Int -> @ptr = @extern "C" "thx_i2p" ""
+$ i2p  : @int -> @ptr = @extern "C" "thx_i2p" ""
 $ null : @ptr = i2p 0

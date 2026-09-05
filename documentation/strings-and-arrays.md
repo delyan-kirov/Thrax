@@ -3,7 +3,7 @@
 ## Scope decision: `Array` is byte-only; generic vectors come later
 
 `Array` (and `Str`) are **byte vectors** (`Vec<u8>`). A
-generic, element-typed container (`Array Int`, `Array Str`, ...) is a SEPARATE
+generic, element-typed container (`Array @int`, `Array Str`, ...) is a SEPARATE
 future type, tentatively `Vector T`, with a **boxed** runtime rep (one `Value*`
 per element). It is deliberately NOT folded into `Array`: a generic element type
 forces boxing, but `Str`/`Array` must stay byte-packed for UTF-8 and so FFI can
@@ -84,28 +84,28 @@ OVERLOADED on both** via `overload_db` (TCxDATA.cpp), resolved by the first
 operand's type; a mutator returns the same kind it took. Each op needs: an
 overload set (`overload_db`), an impl in IT `impls`, and an arity entry + dispatch
 arm in `platforms/THxRT.c`. `%array` (from `@array.{n}`) stays a `%`-internal
-`m_prim` primitive. All byte-valued args/results are `Int` (a byte is `0..255`;
+`m_prim` primitive. All byte-valued args/results are `@int` (a byte is `0..255`;
 `Nat8` later).
 
 | Built-in       | Type (Array shown; also on Str)      | Meaning                                   |
 |----------------|--------------------------------------|-------------------------------------------|
-| `@array.{n}`   | `Int -> Array`                       | allocate n zeroed bytes (`%array`)        |
-| `array_len`    | `Array -> Int`                       | byte length (`n`)                         |
-| `array_cap`    | `Array -> Int`                       | capacity                                  |
-| `array_get`    | `Array -> Int -> Int`                | byte at index (bounds-checked)            |
-| `array_set`    | `Array -> Int -> Int -> Array`       | set byte i (opportunistic in-place)       |
-| `array_push`   | `Array -> Int -> Array`              | append a byte (opportunistic in-place)    |
-| `array_slice`  | `Array -> Int -> Int -> Array`       | subarray [start, end) (fresh copy)        |
+| `@array.{n}`   | `@int -> Array`                       | allocate n zeroed bytes (`%array`)        |
+| `array_len`    | `Array -> @int`                       | byte length (`n`)                         |
+| `array_cap`    | `Array -> @int`                       | capacity                                  |
+| `array_get`    | `Array -> @int -> @int`                | byte at index (bounds-checked)            |
+| `array_set`    | `Array -> @int -> @int -> Array`       | set byte i (opportunistic in-place)       |
+| `array_push`   | `Array -> @int -> Array`              | append a byte (opportunistic in-place)    |
+| `array_slice`  | `Array -> @int -> @int -> Array`       | subarray [start, end) (fresh copy)        |
 | `++` (`%concat`)| `Array -> Array -> Array` / `StrxStr->Str` | concat; reuse lhs buffer if unique  |
-| `?=@Str`       | `Str -> Str -> Int`                  | byte equality (an `?=` overload)          |
+| `?=@Str`       | `Str -> Str -> @int`                  | byte equality (an `?=` overload)          |
 
 > **Overload resolver change.** Overloading the array ops (and nested `++`)
 > exposed that `resolve_sites` resolved sites in a fixed order and eagerly
-> defaulted unconstrained operands to `Int`. That breaks `a ++ b ++ c` (inner
+> defaulted unconstrained operands to `@int`. That breaks `a ++ b ++ c` (inner
 > must resolve first) *and* `let b = push a .. in push b ..` (outer first),
 > opposite orders. It now runs a **fixpoint**: resolve every site whose operands
 > are already concrete (no defaulting), repeat while progress is made, then
-> Int-default whatever genuinely remains. See `resolve_one_site` /
+> @int-default whatever genuinely remains. See `resolve_one_site` /
 > `resolve_sites` in TC.cpp.
 
 ## `++` concatenation
@@ -132,13 +132,13 @@ Two forms in a `when ... is` arm:
    `%starts_with scrut "GET "` test; on success bind `rest = %slice scrut 4 len`.
    Refutable; falls through like any other refutable arm.
 
-`%starts_with : Array -> Array -> Int` is added alongside the built-ins.
+`%starts_with : Array -> Array -> @int` is added alongside the built-ins.
 
 ## Sequence literals type-directed `[..]`  *(implemented)*
 
 No new glyph: `[e1, .., en]` is one **sequence literal** whose container is
 inferred, a blessed `List` by default (and in a `List`-typed context), an
-`Array` (byte vector, elements must be `Int`) in an `Array`-typed context.
+`Array` (byte vector, elements must be `@int`) in an `Array`-typed context.
 Unannotated defaults to `List` (backward-compatible with the list literals).
 
 Because pattern lowering (LL) runs *before* the type checker, the choice must be
@@ -166,8 +166,8 @@ seq-pattern lit-site (mirroring `ExSeqLit`, settled in `resolve_lit_sites`,
 writing `PatSeq::is_array`); and `PatLower` -- which now runs *after* inference
 (patterns are typed in TC, then lowered) -- lowers a List seq to
 the cons/nil variant match (rewritten up front so routing/IR match a hand-written
-`List.Cons`/`Nil` match) and an Array seq to a length test (`array_len s ?=@Int
-k`, or `>=@Int k` with a `..rest`), element binds via `array_get s i`, and
+`List.Cons`/`Nil` match) and an Array seq to a length test (`array_len s ?=@@int
+k`, or `>=@@int k` with a `..rest`), element binds via `array_get s i`, and
 `rest = array_slice s k (array_len s)`, threaded through the same `match_pat`
 fallthrough as list patterns (`[[list-literals-and-nested-patterns]]`). `::`
 stays List-only.

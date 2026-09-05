@@ -40,4 +40,4 @@ $compose =
 	add1 (square 5)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; 0
+$ test : @int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; 0

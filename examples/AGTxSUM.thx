@@ -5,7 +5,7 @@
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
 $ Token : @union =
-    Num: Int,
+    Num: @int,
     Op: {Token, Token}, # Sum types should support lazy recursion
     Txt: Str, # trailing commas are allowe
 
@@ -21,40 +21,40 @@ $ is_num: Token -> @bool = \tok =
 # @bool is genuinely built-in: its values are the literals `@true`/`@false`, so
 # matching them uses the `@`-spelling (lowercase `true`/`false` would bind a
 # variable). Since `@bool` has exactly two values, these `when`s are exhaustive.
-$ chk0 : Int = is is_num num_tok | @true => 0 else 1
-$ chk0b : Int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
+$ chk0 : @int = is is_num num_tok | @true => 0 else 1
+$ chk0b : @int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
 
 # Sum types: constructor matching, payload binding, and lazy (non-strict)
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a
 # runtime fault) when wrong, so a regression makes this file fail loudly.
 
 # `Maybe` is generic: the free `T in its body is an implicit type parameter, so
-# `Maybe Int` and `Maybe Str` are distinct instantiations of one declaration.
+# `Maybe @int` and `Maybe Str` are distinct instantiations of one declaration.
 $ Maybe : @union t =
     Just: t,
     None: {}
 
 # Match a variant, bind its payload, fall back through `else`. The signature
-# fixes the element type with `Maybe Int` (application is juxtaposition).
-$ get : Int -> Maybe Int -> Int = \d = \m =
+# fixes the element type with `Maybe @int` (application is juxtaposition).
+$ get : @int -> Maybe @int -> @int = \d = \m =
     is m
         | Maybe.Just.{x} => x
     else d
 
-$ chk1 : Int = is get 99 (Maybe.Just.{7}) | 7  => 0 else 1
-$ chk2 : Int = is get 99 Maybe.None        | 99 => 0 else 1
+$ chk1 : @int = is get 99 (Maybe.Just.{7}) | 7  => 0 else 1
+$ chk2 : @int = is get 99 Maybe.None        | 99 => 0 else 1
 
 # The same `Maybe` at a different element type, in the same program.
 $ greeting : Maybe Str = Maybe.Just.{ "hi" }
-$ chk2b : Int = is greeting | Maybe.Just.{_} => 0 else 1
+$ chk2b : @int = is greeting | Maybe.Just.{_} => 0 else 1
 
 # Bare constructors: the type name is dropped and inferred from context (the
-# `Maybe Int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
+# `Maybe @int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
 # payload.
-$ none_i : Maybe Int = .None
-$ some_i : Maybe Int = .Just.{ 5 }
-$ chk2c : Int = is get 0 some_i | 5 => 0 else 1
-$ chk2d : Int = is get 8 none_i | 8 => 0 else 1
+$ none_i : Maybe @int = .None
+$ some_i : Maybe @int = .Just.{ 5 }
+$ chk2c : @int = is get 0 some_i | 5 => 0 else 1
+$ chk2d : @int = is get 8 none_i | 8 => 0 else 1
 
 # The prelude's generic, recursive `@list` (its `[..]`/`::` sugar is hardwired to
 # that name). Under STRICT evaluation this builds FINITE lists only; the former
@@ -64,15 +64,15 @@ $ chk2d : Int = is get 8 none_i | 8 => 0 else 1
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.
 $ Pair : @union a b = P: {lhs: a, rhs: b}
-$ mk : Pair Int Int = Pair.P.{ .rhs = 2, .lhs = 1 }
-$ chk4 : Int =
+$ mk : Pair @int @int = Pair.P.{ .rhs = 2, .lhs = 1 }
+$ chk4 : @int =
     is mk | Pair.P.{ .lhs = l, .rhs = r } =>
         is r - l | 1 => 0 else 1
     else 1
 
-# Nested instantiation: a `@list` whose element is itself a `Maybe Int`.
-$ boxed : @list (Maybe Int) = (.Just.{42}) :: []
-$ chk4b : Int =
+# Nested instantiation: a `@list` whose element is itself a `Maybe @int`.
+$ boxed : @list (Maybe @int) = (.Just.{42}) :: []
+$ chk4b : @int =
     is boxed | h :: _ =>
         is h | Maybe.Just.{ v } => (is v | 42 => 0 else 1) else 1
     else 1
@@ -81,4 +81,4 @@ $ chk4b : Int =
 # on an ignored `_` payload going unevaluated was a lazy-data behaviour.)
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = chk0 + chk0b + chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b
+$ test : @int = chk0 + chk0b + chk1 + chk2 + chk2b + chk2c + chk2d + chk4 + chk4b

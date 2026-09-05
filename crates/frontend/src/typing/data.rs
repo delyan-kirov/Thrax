@@ -116,9 +116,11 @@ pub const STREAM: &str = "Stream";
 /// The source spelling to DISPLAY for a built-in constructor. The canonical
 /// internal names for these are the friendly words, but the only way to write
 /// them in source is the `@`-form, so we display the `@`-form for consistency.
-/// `Int`/`Nat`/`Real`/`Str` keep their friendly spelling (still writable).
+/// `Real`/`Str` keep their friendly spelling (still writable).
 fn display_con(name: &str) -> &str {
     match name {
+        "Int" => "@int",
+        "Nat" => "@nat",
         "Bool" => "@bool",
         "List" => "@list",
         "Vec" => "@vec",

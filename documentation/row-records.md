@@ -3,17 +3,17 @@
 Status: **implemented** end-to-end on both engines. Records are **real,
 first-class, name-keyed types** (an earlier "decay to pairs" model was replaced).
 
-- Record types: closed `{ x:Int, y:Int }` and open `{ x:Int | r }` (row variable
+- Record types: closed `{ x:@int, y:@int }` and open `{ x:@int | r }` (row variable
   tail). Values: `{ .x = 1, .y = 2 }`; access `p.x`; a missing field is a type error.
 - **Order-independent** by construction (rows unify by name), so named arguments
   can be reordered: `f { .y = 2, .x = 1 }`.
 - **Open rows** accept any record/struct with (at least) the named fields:
-  `{ x:Int, y:Int | r } -> Int` takes `Point`, `{ .x, .y, .tag }`, etc.
+  `{ x:@int, y:@int | r } -> @int` takes `Point`, `{ .x, .y, .tag }`, etc.
 - **Promotion at call arguments**: a bare scalar or a positional tuple passed
   where a record is expected is wrapped into it -- `foo 1` -> `foo { .x = 1 }`,
   `foo {1,2}` -> `foo { .x=1, .y=2 }` (declaration order). This keeps positional
   calls working and gives keyword-argument ergonomics.
-- **Auto-bind parameter sugar** (kept): `add : { x:Int, y:Int } -> Int = x + y`
+- **Auto-bind parameter sugar** (kept): `add : { x:@int, y:@int } -> @int = x + y`
   binds `x`, `y` in the body (an implicit record destructuring).
 - **Update / stack** on an open-row value: `{ .x = v | p }` preserves the shape
   (tail flows through), `{ .x = 1, with p }` concatenates.
@@ -24,8 +24,8 @@ All three former gaps are now closed:
 - **`..name` rest-BINDING** in patterns: `is p | { .x = a, ..rest } => ...` binds
   `rest` to the record minus the listed labels (a `record_without` runtime primitive
   in both engines; `.._` is still the discard). `rest`'s type is the row tail.
-- **Generic structs** at open rows: a generic instance like `Box Int` satisfies
-  `{ val: Int | r }`. Struct rows are registered as schemes (parameter vars in
+- **Generic structs** at open rows: a generic instance like `Box @int` satisfies
+  `{ val: @int | r }`. Struct rows are registered as schemes (parameter vars in
   declaration order) and the engine bridges an `App..(Con)` spine by substituting
   the type arguments (`Engine::struct_row_bridge` / `subst_vars`).
 - **Record update** is spelled `{ .f = v | base }` everywhere, in nominal
@@ -35,7 +35,7 @@ All three former gaps are now closed:
 
 Records use the same scoped-row discipline as effects (duplicates stack, head
 wins). There are three product-ish things: **nominal structs** (`Point`),
-**records** (`{ x:Int, y:Int }` / `{ x:Int | r }`), and **tuples** (`{1, 2}`,
+**records** (`{ x:@int, y:@int }` / `{ x:@int | r }`), and **tuples** (`{1, 2}`,
 positional). They are distinct types; the only implicit conversion is the
 call-argument **promotion** (scalar/tuple -> record).
 
@@ -89,14 +89,14 @@ that:
 - keeps **overload dispatch by struct type** and display working,
 - is what `with T` / `T.{ .. }` construction name.
 
-On top of that, **function signatures gain open rows**: `{ x:Int, y:Int | r }`
-is "any record with at least `x:Int`, `y:Int`". A named struct **satisfies** an
+On top of that, **function signatures gain open rows**: `{ x:@int, y:@int | r }`
+is "any record with at least `x:@int`, `y:@int`". A named struct **satisfies** an
 open row it structurally matches (its closed row unifies with the open row,
 binding `r` to the leftover fields). So:
 
 ```
-$ area : { x:Int, y:Int | r } -> Int = \p = p.x * p.y
-area (Point3.{ .x=1, .y=2, .z=3 })   # ok: r = { z:Int }
+$ area : { x:@int, y:@int | r } -> @int = \p = p.x * p.y
+area (Point3.{ .x=1, .y=2, .z=3 })   # ok: r = { z:@int }
 ```
 
 Rejected: **fully structural** (drops nominal identity; same-shape structs
@@ -109,7 +109,7 @@ disruptive.
 They are the same operation (row extension) at two ends:
 
 - `with Other` in a **declaration** is *closed* concatenation by a **known** row.
-  `@struct Point3 = with Point, z: Int` is the closed row `{ x, y, z }`. A
+  `@struct Point3 = with Point, z: @int` is the closed row `{ x, y, z }`. A
   declaration never carries a free row variable.
 - `| r` in a **signature** is extension by an **unknown** tail. `with` does not
   appear there; the open tail does.
@@ -123,7 +123,7 @@ mechanism. `with A with B` stacks both rows (duplicates included).
 Binds the statically-known **head** labels into scope:
 
 - a duplicated label binds its head occurrence (total rule, no ambiguity);
-- an **open tail** `{ x:Int | r }` binds only the known labels (`x`); the
+- an **open tail** `{ x:@int | r }` binds only the known labels (`x`); the
   polymorphic tail `r` contributes nothing to bind, since its labels are unknown.
 
 This resolves the roadmap's note that `with … in` needs the fields known.
@@ -133,7 +133,7 @@ This resolves the roadmap's note that `with … in` needs the fields known.
 - **Record-rest patterns** `is p | { .x = a, ..rest } => ...`, where `rest` has
   the remaining row type (the roadmap's deferred #5 tail-binding, blocked purely
   on this type not existing).
-- Row-polymorphic field-updating helpers: `move : { x:Int | r } -> { x:Int | r }`.
+- Row-polymorphic field-updating helpers: `move : { x:@int | r } -> { x:@int | r }`.
 - Anonymous record literals typed by their row.
 
 ## Representation (implementation sketch)
@@ -164,7 +164,7 @@ Runtime (`Value::Struct`, `Term::Struct`, `Term::Field`, C `THxVALUE_field`) is
   order-independent). Positional `{1, 2}` and a bare scalar promote to a record at
   a call argument (see "The model"). Nominal construction `Point.{ .. }` stays.
 - **Update:** `{ .foo = f | base }` -- these fields override, the rest come from
-  `base`. `|` reads the same as the type tail (`{ x:Int | r }` = these fields, rest
+  `base`. `|` reads the same as the type tail (`{ x:@int | r }` = these fields, rest
   is `r`), base/rest on the right. This is the one update syntax, in anonymous
   records and in nominal `Type.{ .f = v | base }` / bare `.{ .f = v | base }`
   literals alike (the old `..base` spread has been removed). Update preserves

@@ -876,7 +876,7 @@ pub fn run_entry(prog: &Program, name: &str, argv: Option<Vec<String>>) -> Resul
     let r = deref(m.apply(f, arg)?);
     let out = match &*r.borrow() {
         Value::Int(code) => Ok(*code),
-        _ => Err(fault("a C-style `main` must return an Int exit code")),
+        _ => Err(fault("a C-style `main` must return an `@int` exit code")),
     };
     out
 }

@@ -4510,6 +4510,8 @@ fn canonical_con(name: &str) -> &str {
     // exact C width and a struct field lays out correctly); arithmetic on them is
     // provided by per-type operator overloads, not by collapsing to `Int`/`Real`.
     match name {
+        "@int" => ty::INT,
+        "@nat" => "Nat",
         "@str" => ty::STR,
         "@bool" => ty::BOOL,
         "@ptr" => ty::PTR,
@@ -4538,7 +4540,7 @@ fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
         Code::TypeMismatch, Span::at(0), 0,
         "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \
          C-representable; a `@struct @extern \"C\"` field must be a sized number \
-         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `Int`/`Nat`/`Real`, `@ptr`, \
+         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `@int`/`@nat`/`Real`, `@ptr`, \
          `@bool`, or another C-repr struct"
     )
 }
@@ -4561,8 +4563,8 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
         "@nat64" => U64,
         "@float32" => F32,
         "@float64" | "Real" => F64,
-        "Int" => word,
-        "Nat" => uword,
+        "@int" | "Int" => word,
+        "@nat" | "Nat" => uword,
         "@ptr" => uword,
         "@bool" => U8,
         _ => return None,
@@ -4588,7 +4590,8 @@ fn is_numeric_type(name: &str) -> bool {
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Nat" | "Real" | "Str"
+        "Real" | "Str"
+            | "@int" | "@nat"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"

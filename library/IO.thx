@@ -26,9 +26,9 @@ $ eprint : Str -> {} = \s =
 $ eprintln : Str -> {} = \s =
 	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
 
-$ print_int : Int -> {} = \n = print (from_int n)
+$ print_int : @int -> {} = \n = print (from_int n)
 
-$ println_int : Int -> {} = \n = println (from_int n)
+$ println_int : @int -> {} = \n = println (from_int n)
 
 # One line from stdin, without the trailing newline. Returns "" at
 # end-of-input (indistinguishable from an empty line).
@@ -41,8 +41,8 @@ $ read_line_acc : Str -> Str = \acc =
 	else acc
 
 # A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
-# therefore "anything outside 0..255" rather than a negative Int.
-$ is_byte : Int -> @bool = \c =
+# therefore "anything outside 0..255" rather than a negative @int.
+$ is_byte : @int -> @bool = \c =
 	if c ?< 0 => @false else c <= 255
 
 # ---- files ----
@@ -60,7 +60,7 @@ $ read_file : Str -> Option Str = \path =
 		C.fclose f;
 		Option.Some.{ body }
 
-$ read_bytes : Int -> Int -> Str -> Str = \f n acc =
+$ read_bytes : @int -> @int -> Str -> Str = \f n acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
@@ -90,4 +90,4 @@ $ remove_file : Str -> @bool = \path =
 $ env : Str -> Str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
-$ now : {} -> Int = \u = C.time 0
+$ now : {} -> @int = \u = C.time 0

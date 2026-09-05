@@ -153,7 +153,7 @@ returning an arbitrary sum. Same machinery, later.
 Touchpoints: `typing.rs` (drop `@list`/`@str` builtins), `library/CORE.thx`,
 `library/LIST.thx`, `library/STR.thx`, both backends.
 
-## Stage 4 - type-name cleanup
+## Stage 4 - type-name cleanup  [LANDED, done before Stage 1]
 
 - Make `@int`/`@nat` canonical; drop the `Int`/`Nat` aliases entirely.
 - Keep `Real` as a core alias to `@float64`, the single surviving alias (float has

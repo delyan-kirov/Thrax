@@ -9,14 +9,14 @@
 #       0 when correct and 1 otherwise.
 
 # --- Literal alternatives, with an else ---------------------------------------
-$ small : Int -> Int = \n =
+$ small : @int -> @int = \n =
 	is n
 		| 0 | 1 | 2 => 1
 		else 0
 
-$ chk_small_0 : Int = if small 0 ?= 1 => 0 else 1
-$ chk_small_2 : Int = if small 2 ?= 1 => 0 else 1
-$ chk_small_9 : Int = if small 9 ?= 0 => 0 else 1
+$ chk_small_0 : @int = if small 0 ?= 1 => 0 else 1
+$ chk_small_2 : @int = if small 2 ?= 1 => 0 else 1
+$ chk_small_9 : @int = if small 9 ?= 0 => 0 else 1
 
 # --- Variant alternatives, exhaustive WITHOUT an else -------------------------
 $ Color : @union =
@@ -24,23 +24,23 @@ $ Color : @union =
 	Green: {},
 	Blue: {},
 
-$ warm : Color -> Int = \c =
+$ warm : Color -> @int = \c =
 	is c
 		| Color.Red.{} | Color.Green.{} => 1
 		| Color.Blue.{}                  => 0
 
-$ chk_warm_r : Int = if warm Color.Red.{}   ?= 1 => 0 else 1
-$ chk_warm_g : Int = if warm Color.Green.{} ?= 1 => 0 else 1
-$ chk_warm_b : Int = if warm Color.Blue.{}  ?= 0 => 0 else 1
+$ chk_warm_r : @int = if warm Color.Red.{}   ?= 1 => 0 else 1
+$ chk_warm_g : @int = if warm Color.Green.{} ?= 1 => 0 else 1
+$ chk_warm_b : @int = if warm Color.Blue.{}  ?= 0 => 0 else 1
 
 # --- Alternatives combined with a guard (shared across the alternatives) -------
-$ tiny : Int -> Int = \n =
+$ tiny : @int -> @int = \n =
 	is n
 		| 1 | 2 | 3 if n ?< 3 => 1
 		else 0
 
-$ chk_tiny_1 : Int = if tiny 1 ?= 1 => 0 else 1
-$ chk_tiny_3 : Int = if tiny 3 ?= 0 => 0 else 1
+$ chk_tiny_1 : @int = if tiny 1 ?= 1 => 0 else 1
+$ chk_tiny_3 : @int = if tiny 3 ?= 0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = chk_small_0 + chk_small_2 + chk_small_9 + chk_warm_r + chk_warm_g + chk_warm_b + chk_tiny_1 + chk_tiny_3
+$ test : @int = chk_small_0 + chk_small_2 + chk_small_9 + chk_warm_r + chk_warm_g + chk_warm_b + chk_tiny_1 + chk_tiny_3

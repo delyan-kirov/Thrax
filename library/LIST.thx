@@ -8,7 +8,7 @@
 
 $ with OPT
 
-$ length : @list t -> Int = \xs =
+$ length : @list t -> @int = \xs =
 	is xs | _ :: t => 1 + length t else 0
 
 $ is_empty : @list t -> @bool = \xs =
@@ -37,22 +37,22 @@ $ append : @list t -> @list t -> @list t = \xs ys =
 $ concat : @list (@list t) -> @list t = \xss =
 	is xss | h :: t => append h (concat t) else []
 
-$ take : Int -> @list t -> @list t = \n xs =
+$ take : @int -> @list t -> @list t = \n xs =
 	if n <= 0 => []
 	else is xs | h :: t => h :: take (n - 1) t else []
 
-$ drop : Int -> @list t -> @list t = \n xs =
+$ drop : @int -> @list t -> @list t = \n xs =
 	if n <= 0 => xs
 	else is xs | _ :: t => drop (n - 1) t else []
 
 # The element at (0-based) `i`, if the list is that long.
-$ nth : @list t -> Int -> Option t = \xs i =
+$ nth : @list t -> @int -> Option t = \xs i =
 	is xs
 		| h :: t => (if i ?= 0 => Option.Some.{ h } else nth t (i - 1))
 	else Option.None
 
 # A copy with the element at `i` replaced; too-short lists come back unchanged.
-$ set_nth : @list t -> Int -> t -> @list t = \xs i v =
+$ set_nth : @list t -> @int -> t -> @list t = \xs i v =
 	is xs
 		| h :: t => (if i ?= 0 => v :: t else h :: set_nth t (i - 1) v)
 	else []
@@ -89,15 +89,15 @@ $ unzip : @list {a, b} -> {@list a, @list b} = \ps =
 	foldr (\p acc = {p.0 :: acc.0, p.1 :: acc.1})
 	      {[], []} ps
 
-$ sum : @list Int -> Int = \xs = foldl (\a x = a + x) 0 xs
+$ sum : @list @int -> @int = \xs = foldl (\a x = a + x) 0 xs
 
-$ product : @list Int -> Int = \xs = foldl (\a x = a * x) 1 xs
+$ product : @list @int -> @int = \xs = foldl (\a x = a * x) 1 xs
 
 # Smallest / largest element; `d` is the answer for the empty list.
-$ minimum : @list Int -> Int -> Int = \xs d =
+$ minimum : @list @int -> @int -> @int = \xs d =
 	is xs | h :: t => foldl (\a x = if x ?< a => x else a) h t else d
 
-$ maximum : @list Int -> Int -> Int = \xs d =
+$ maximum : @list @int -> @int -> @int = \xs d =
 	is xs | h :: t => foldl (\a x = if x ?> a => x else a) h t else d
 
 $ last : @list t -> Option t = \xs =
@@ -113,7 +113,7 @@ $ init : @list t -> @list t = \xs =
 		| h :: t => h :: init t
 	else []
 
-$ replicate : Int -> t -> @list t = \n x =
+$ replicate : @int -> t -> @list t = \n x =
 	if n <= 0 => [] else x :: replicate (n - 1) x
 
 $ intersperse : t -> @list t -> @list t = \sep xs =
@@ -136,7 +136,7 @@ $ drop_while : (t -> @bool) -> @list t -> @list t = \p xs =
 $ span : (t -> @bool) -> @list t -> {@list t, @list t} = \p xs =
 	{take_while p xs, drop_while p xs}
 
-$ split_at : Int -> @list t -> {@list t, @list t} = \n xs =
+$ split_at : @int -> @list t -> {@list t, @list t} = \n xs =
 	{take n xs, drop n xs}
 
 # Elements satisfying `p`, and the elements that don't.
@@ -162,10 +162,10 @@ $ remove_first : (t -> @bool) -> @list t -> @list t = \p xs =
 	else []
 
 # The (0-based) position of the first element satisfying `p`.
-$ find_index : (t -> @bool) -> @list t -> Option Int = \p xs =
+$ find_index : (t -> @bool) -> @list t -> Option @int = \p xs =
 	find_index_from p xs 0
 
-$ find_index_from : (t -> @bool) -> @list t -> Int -> Option Int = \p xs i =
+$ find_index_from : (t -> @bool) -> @list t -> @int -> Option @int = \p xs i =
 	is xs
 		| h :: t =>
 			(if p h => Option.Some.{ i } else find_index_from p t (i + 1))
@@ -181,7 +181,7 @@ $ lookup : (k -> k -> @bool) -> k -> @list {k, v} -> Option v = \eqf k ps =
 
 # `c a b` is a three-way comparison: negative / 0 / positive. Equal elements
 # keep their original order.
-$ sort_by : (t -> t -> Int) -> @list t -> @list t = \c xs =
+$ sort_by : (t -> t -> @int) -> @list t -> @list t = \c xs =
 	is xs
 		| [] => []
 		| [x] => [x]
@@ -189,7 +189,7 @@ $ sort_by : (t -> t -> Int) -> @list t -> @list t = \c xs =
 		let halves = split_at ((length xs) / 2) xs in
 		merge_by c (sort_by c halves.0) (sort_by c halves.1)
 
-$ merge_by : (t -> t -> Int) -> @list t -> @list t -> @list t = \c xs ys =
+$ merge_by : (t -> t -> @int) -> @list t -> @list t -> @list t = \c xs ys =
 	is xs
 		| xh :: xt =>
 			(is ys

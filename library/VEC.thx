@@ -9,22 +9,22 @@ $ with LIST
 $ new : {} -> @vec t = \u = @vec_new {}
 
 # `n` copies of `x` ("@vec_fill 3 0" = [0, 0, 0]).
-$ fill : Int -> t -> @vec t = \n x = @vec_fill n x
+$ fill : @int -> t -> @vec t = \n x = @vec_fill n x
 
-$ len : @vec t -> Int = \v = @vec_len v
+$ len : @vec t -> @int = \v = @vec_len v
 
 $ is_empty : @vec t -> @bool = \v = (@vec_len v) ?= 0
 
 # Bounds-checked element access.
-$ get : @vec t -> Int -> Option t = \v i =
+$ get : @vec t -> @int -> Option t = \v i =
 	if i ?< 0 => Option.None
 	else if i >= @vec_len v => Option.None
 	else Option.Some.{ @vec_get v i }
 
-$ get_or : @vec t -> Int -> t -> t = \v i d = unwrap_or (get v i) d
+$ get_or : @vec t -> @int -> t -> t = \v i d = unwrap_or (get v i) d
 
 # A copy with the element at `i` replaced; out-of-range leaves it unchanged.
-$ set : @vec t -> Int -> t -> @vec t = \v i x =
+$ set : @vec t -> @int -> t -> @vec t = \v i x =
 	if i ?< 0 => v
 	else if i >= @vec_len v => v
 	else @vec_set v i x
@@ -40,18 +40,18 @@ $ from_list : @list t -> @vec t = \xs =
 
 $ to_list : @vec t -> @list t = \v = suffix v 0
 
-$ suffix : @vec t -> Int -> @list t = \v i =
+$ suffix : @vec t -> @int -> @list t = \v i =
 	if i >= @vec_len v => [] else @vec_get v i :: suffix v (i + 1)
 
 $ map : (a -> b) -> @vec a -> @vec b = \f v = map_from f v 0 (@vec_new {})
 
-$ map_from : (a -> b) -> @vec a -> Int -> @vec b -> @vec b = \f v i acc =
+$ map_from : (a -> b) -> @vec a -> @int -> @vec b -> @vec b = \f v i acc =
 	if i >= @vec_len v => acc
 	else map_from f v (i + 1) (@vec_push acc (f (@vec_get v i)))
 
 $ fold : (a -> t -> a) -> a -> @vec t -> a = \f acc v =
 	fold_from f acc v 0
 
-$ fold_from : (a -> t -> a) -> a -> @vec t -> Int -> a = \f acc v i =
+$ fold_from : (a -> t -> a) -> a -> @vec t -> @int -> a = \f acc v i =
 	if i >= @vec_len v => acc
 	else fold_from f (f acc (@vec_get v i)) v (i + 1)

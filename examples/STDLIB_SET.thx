@@ -10,36 +10,36 @@ $ with LIST
 $ with MATH
 $ with STR
 
-$ s : Set Int = from_list cmp_int [3, 1, 2, 3, 1]
+$ s : Set @int = from_list cmp_int [3, 1, 2, 3, 1]
 
-$ ck_size  : Int = if (size s) ?= 3 => 0 else 1 # duplicates collapse
-$ ck_has   : Int = if has s 2 => 0 else 1
-$ ck_miss  : Int = if has s 9 => 1 else 0
-$ ck_rm    : Int = if has (remove s 2) 2 => 1 else 0
-$ ck_rmsz  : Int = if (size (remove s 2)) ?= 2 => 0 else 1
-$ ck_shared: Int = if (size s) ?= 3 => 0 else 1 # original undisturbed
-$ ck_empty : Int = if is_empty (new cmp_int) => 0 else 1
+$ ck_size  : @int = if (size s) ?= 3 => 0 else 1 # duplicates collapse
+$ ck_has   : @int = if has s 2 => 0 else 1
+$ ck_miss  : @int = if has s 9 => 1 else 0
+$ ck_rm    : @int = if has (remove s 2) 2 => 1 else 0
+$ ck_rmsz  : @int = if (size (remove s 2)) ?= 2 => 0 else 1
+$ ck_shared: @int = if (size s) ?= 3 => 0 else 1 # original undisturbed
+$ ck_empty : @int = if is_empty (new cmp_int) => 0 else 1
 
 # Ascending iteration regardless of insertion order.
-$ ck_order : Int =
+$ ck_order : @int =
 	if (foldl (\a x = a * 10 + x) 0 (to_list s)) ?= 123 => 0 else 1
-$ ck_fold  : Int = if (SET.fold (\a x = a + x) 0 s) ?= 6 => 0 else 1
+$ ck_fold  : @int = if (SET.fold (\a x = a + x) 0 s) ?= 6 => 0 else 1
 
 # Algebra: {1,2,3} vs {2,3,4}.
-$ t : Set Int = from_list cmp_int [2, 3, 4]
-$ ck_merge : Int = if (size (merge s t)) ?= 4 => 0 else 1
-$ ck_inter : Int =
+$ t : Set @int = from_list cmp_int [2, 3, 4]
+$ ck_merge : @int = if (size (merge s t)) ?= 4 => 0 else 1
+$ ck_inter : @int =
 	if (foldl (\a x = a * 10 + x) 0 (to_list (inter s t))) ?= 23 => 0 else 1
-$ ck_diff  : Int =
+$ ck_diff  : @int =
 	if (foldl (\a x = a * 10 + x) 0 (to_list (diff s t))) ?= 1 => 0 else 1
-$ ck_filter: Int = if (size (SET.filter (\x = x % 2 ?= 1) s)) ?= 2 => 0 else 1
+$ ck_filter: @int = if (size (SET.filter (\x = x % 2 ?= 1) s)) ?= 2 => 0 else 1
 
 # String elements via the baked-in ordering.
 $ names : Set Str = add (add (add new_str "bob") "alice") "bob"
-$ ck_str : Int = if (size names) ?= 2 => 0 else 1
-$ ck_strh: Int = if has names "alice" => 0 else 1
+$ ck_str : @int = if (size names) ?= 2 => 0 else 1
+$ ck_strh: @int = if has names "alice" => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_size + ck_has + ck_miss + ck_rm + ck_rmsz + ck_shared
+$ test : @int = ck_size + ck_has + ck_miss + ck_rm + ck_rmsz + ck_shared
 	+ ck_empty + ck_order + ck_fold + ck_merge + ck_inter + ck_diff
 	+ ck_filter + ck_str + ck_strh

@@ -45,7 +45,7 @@ from the candidate's type (effect-free, variables canonicalized, `overload_key` 
 `ty_key` in `typing.rs`), records the mangled name for each definition
 (`def_keys`, by body handle) and each resolved use site (`overload_calls`), and
 lowering emits it on both sides. `lower_modules` still prefixes the module, so
-`M.kind#Int` and `M.kind#Bool` no longer collide. The mangling gate ("this module
+`M.kind#@int` and `M.kind#Bool` no longer collide. The mangling gate ("this module
 contributes >1 candidate to the set") matches the definition-side gate ("declared
 >1 time"), so cross-module-only overloads stay unmangled (the module prefix
 already disambiguates them, as before). Mangled names are only ever string keys in
@@ -99,7 +99,7 @@ shared type-variable map (so `List a` and `compare : a -> a -> Ordering` share
 
 Deferring the global case (via `implicit_pending`, solved in
 `resolve_pending_implicits` after `solve_pending`) is what makes `max_of 3 7`
-know its implicit is over `Int` rather than a bare variable. The resolved
+know its implicit is over `@int` rather than a bare variable. The resolved
 arguments are recorded per site (`implicit_calls` -> `Resolved::implicit_args`)
 as `Bare` / `Qualified` (mangled if overloaded, reusing `overload_key`) / `Expr`.
 

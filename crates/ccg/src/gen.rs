@@ -322,7 +322,8 @@ fn cabi(name: &str) -> Cabi {
         "Nat8" | "@nat8" => Cabi::Int("uint8_t"),
         "Nat16" | "@nat16" => Cabi::Int("uint16_t"),
         "Nat32" | "@nat32" => Cabi::Int("uint32_t"),
-        "Nat64" | "@nat64" | "Nat" => Cabi::Int("uint64_t"),
+        "Nat64" | "@nat64" | "Nat" | "@nat" => Cabi::Int("uint64_t"),
+        "Int" | "@int" => Cabi::Int("int64_t"),
         _ => Cabi::Int("int64_t"),
     }
 }

@@ -17,4 +17,4 @@ $big        = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)
 $exp        = 2 ^ 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0
+$ test : @int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0

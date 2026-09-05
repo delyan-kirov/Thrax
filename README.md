@@ -67,14 +67,14 @@ resume (or not).
 ```typescript
 @mod Demo
 
-$ Yield : @effect = yield : Int -> {},
+$ Yield : @effect = yield : @int -> {},
 
 # `emit` performs the effect; the type says so: {} -> <Yield> {}.
 $ emit : {} -> <Yield> {} = \_ =
     Yield.yield 1 ; Yield.yield 2 ; Yield.yield 3
 
 # The handler resumes once per yield, summing every value it produces.
-$ main : Int =
+$ main : @int =
     do emit {}
     ctl k | Yield.yield v => v + k {}
           else _ => 0          # 6
@@ -123,15 +123,15 @@ juxtaposition. ([`AGTxPRO.thx`](examples/AGTxPRO.thx))
 ```typescript
 $ Person : @struct =
     name: Str,
-    age: Int,
+    age: @int,
 
 $ person : Person = Person.{ .name = "Will", .age = 21 }
 $ who    : Str    = person.name
-$ older  : Int    = person.age + 1
+$ older  : @int    = person.age + 1
 
 # Generic: one declaration, two instantiations.
 $ Box : @struct = val: t,
-$ ibox : Box Int = Box.{ .val = 7 }
+$ ibox : Box @int = Box.{ .val = 7 }
 $ sbox : Box Str = Box.{ .val = "hi" }
 ```
 
@@ -140,8 +140,8 @@ A declaration may start with `with Other` to splice in another struct's fields
 ([`TYPE_SPLICE.thx`](examples/TYPE_SPLICE.thx))
 
 ```typescript
-$ Point  : @struct = x: Int, y: Int,
-$ Point3 : @struct = with Point, z: Int,   # x, y, then z
+$ Point  : @struct = x: @int, y: @int,
+$ Point3 : @struct = with Point, z: @int,   # x, y, then z
 ```
 
 ### Algebraic data sums (unions)
@@ -156,8 +156,8 @@ $ Maybe : @union =
     None: {}
 
 # Constructors are qualified by their type; a `{}` payload needs no braces.
-$ some_i : Maybe Int = Maybe.Just.{ 5 }
-$ none_i : Maybe Int = Maybe.None
+$ some_i : Maybe @int = Maybe.Just.{ 5 }
+$ none_i : Maybe @int = Maybe.None
 
 $ List : @union =
     Cons: {t, List t},
@@ -181,13 +181,13 @@ arm on failure. ([`MATCH.thx`](examples/MATCH.thx),
 [`WHEN_GUARDS.thx`](examples/WHEN_GUARDS.thx), [`PATTERNS.thx`](examples/PATTERNS.thx))
 
 ```typescript
-$ get : Int -> Maybe Int -> Int = \d = \m =
+$ get : @int -> Maybe @int -> @int = \d = \m =
     is m
         | Maybe.Just.{ x } => x
     else d
 
 # Guards fall through, even across arms that share a constructor.
-$ grade : Maybe Int -> Int = \m =
+$ grade : Maybe @int -> @int = \m =
     is m
         | Maybe.Just.{ v } if v ?> 100 => 3
         | Maybe.Just.{ v } if v ?> 0   => 2
@@ -201,7 +201,7 @@ by name (`_` ignores a field):
 
 ```typescript
 $ get_name : Person -> Str = \Person.{ name, _ } = name
-$ sum_xy   : Point -> Int  = \Point.{ x, y } = x + y
+$ sum_xy   : Point -> @int  = \Point.{ x, y } = x + y
 ```
 
 ### Algebraic effects and handlers
@@ -215,16 +215,16 @@ continuation `k` is resumed by applying it (affine, **You only get one shot!**).
 
 ```typescript
 $ Exn   : @effect = throw : Str -> a,
-$ Yield : @effect = yield : Int -> {},
-$ State : @effect = get : {} -> Int, put : Int -> {},
+$ Yield : @effect = yield : @int -> {},
+$ State : @effect = get : {} -> @int, put : @int -> {},
 
 # Exception: the handler ignores k, so it resumes zero times.
-$ safeDiv : Int -> Int -> Int = \a b =
+$ safeDiv : @int -> @int -> @int = \a b =
     do if b ?= 0 => Exn.throw "div0" else a / b
     ctl k | Exn.throw msg => 0 - 1
 
 # Generator: resume once per yield, summing the results.
-$ sumGen : ({} -> <Yield> {}) -> Int = \gen =
+$ sumGen : ({} -> <Yield> {}) -> @int = \gen =
     do gen {}
     ctl k | Yield.yield v => v + k {}
           else _ => 0
@@ -235,8 +235,8 @@ from a different context, that is all coroutines are:
 ([`COROUTINES.thx`](examples/COROUTINES.thx))
 
 ```typescript
-$ Co   : @effect = yield : Int -> {},
-$ Task : @union  = Fin: {}, Susp: { Int, {} -> Task },
+$ Co   : @effect = yield : @int -> {},
+$ Task : @union  = Fin: {}, Susp: { @int, {} -> Task },
 
 # Capture the suspended continuation instead of resuming in place.
 $ spawn : ({} -> <Co> {}) -> Task = \t =
@@ -258,8 +258,8 @@ algebraic effects, via a CEK-style machine emitted in C, with reference-counted
 memory management. Foreign C functions are bound with `@extern`.
 
 ```typescript
-$ puts : Str -> Int = @extern "C" "puts" "libc"
-$ main : Int = puts "Hello world"; 0
+$ puts : Str -> @int = @extern "C" "puts" "libc"
+$ main : @int = puts "Hello world"; 0
 ```
 
 The library name is symbolic -- no path or soname appears in source. The

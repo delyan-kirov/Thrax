@@ -14,83 +14,83 @@ $ with LIST
 $ with STR
 $ with MATH
 
-$ ages : Map Str Int =
+$ ages : Map Str @int =
 	insert (insert (insert new_str "carol" 41) "alice" 30) "bob" 25
 
-$ ck_size   : Int = if (size ages) ?= 3 => 0 else 1
-$ ck_get    : Int = if (get_or ages "bob" 0) ?= 25 => 0 else 1
-$ ck_missing: Int = if has ages "dave" => 1 else 0
-$ ck_update : Int = if (get_or (insert ages "bob" 26) "bob" 0) ?= 26 => 0 else 1
-$ ck_upsize : Int = if (size (insert ages "bob" 26)) ?= 3 => 0 else 1
-$ ck_remove : Int = if (size (remove ages "alice")) ?= 2 => 0 else 1
-$ ck_gone   : Int = if has (remove ages "alice") "alice" => 1 else 0
-$ ck_shared : Int = if (size ages) ?= 3 => 0 else 1 # original undisturbed
-$ ck_values : Int = if (sum (values ages)) ?= 96 => 0 else 1
+$ ck_size   : @int = if (size ages) ?= 3 => 0 else 1
+$ ck_get    : @int = if (get_or ages "bob" 0) ?= 25 => 0 else 1
+$ ck_missing: @int = if has ages "dave" => 1 else 0
+$ ck_update : @int = if (get_or (insert ages "bob" 26) "bob" 0) ?= 26 => 0 else 1
+$ ck_upsize : @int = if (size (insert ages "bob" 26)) ?= 3 => 0 else 1
+$ ck_remove : @int = if (size (remove ages "alice")) ?= 2 => 0 else 1
+$ ck_gone   : @int = if has (remove ages "alice") "alice" => 1 else 0
+$ ck_shared : @int = if (size ages) ?= 3 => 0 else 1 # original undisturbed
+$ ck_values : @int = if (sum (values ages)) ?= 96 => 0 else 1
 
 # Iteration is ordered: keys come back sorted regardless of insert order.
-$ ck_sorted : Int =
+$ ck_sorted : @int =
 	if (join "," (keys ages)) ?= "alice,bob,carol" => 0 else 1
 
 # insert_with combines with the existing value; a fresh key just inserts.
-$ hits : Map Str Int =
+$ hits : Map Str @int =
 	insert_with (insert_with new_str "x" 1 (\old nw = old + nw))
 	            "x" 10 (\old nw = old + nw)
-$ ck_insw : Int = if (get_or hits "x" 0) ?= 11 => 0 else 1
+$ ck_insw : @int = if (get_or hits "x" 0) ?= 11 => 0 else 1
 
 # update touches present keys only.
-$ ck_upd  : Int = if (get_or (update ages "bob" (\v = v + 1)) "bob" 0) ?= 26 => 0 else 1
-$ ck_updno: Int = if (size (update ages "zzz" (\v = v + 1))) ?= 3 => 0 else 1
+$ ck_upd  : @int = if (get_or (update ages "bob" (\v = v + 1)) "bob" 0) ?= 26 => 0 else 1
+$ ck_updno: @int = if (size (update ages "zzz" (\v = v + 1))) ?= 3 => 0 else 1
 
 # fold visits in ascending key order.
-$ ck_fold : Int =
+$ ck_fold : @int =
 	if (fold (\acc k v = acc * 100 + v) 0 ages) ?= 302541 => 0 else 1
 
-$ ck_mapv : Int = if (sum (values (map_values (\v = v * 2) ages))) ?= 192 => 0 else 1
-$ ck_filt : Int = if (size (filter (\k v = v ?< 40) ages)) ?= 2 => 0 else 1
+$ ck_mapv : @int = if (sum (values (map_values (\v = v * 2) ages))) ?= 192 => 0 else 1
+$ ck_filt : @int = if (size (filter (\k v = v ?< 40) ages)) ?= 2 => 0 else 1
 
 # merge is left-biased.
-$ others : Map Str Int = insert (insert new_str "bob" 99) "dave" 50
-$ ck_merge : Int =
+$ others : Map Str @int = insert (insert new_str "bob" 99) "dave" 50
+$ ck_merge : @int =
 	let u = merge ages others in
 	if (size u) ?= 4 => (if (get_or u "bob" 0) ?= 25 => 0 else 1) else 1
 
-$ ck_min : Int =
+$ ck_min : @int =
 	is min_entry ages | Option.Some.{p} => (if p.0 ?= "alice" => 0 else 1) else 1
-$ ck_max : Int =
+$ ck_max : @int =
 	is max_entry ages | Option.Some.{p} => (if p.1 ?= 41 => 0 else 1) else 1
 
-$ ck_froml : Int =
+$ ck_froml : @int =
 	let m = from_list cmp_int [{2, "two"}, {1, "one"}, {2, "II"}] in
 	if (size m) ?= 2 => (if (get_or m 2 "") ?= "II" => 0 else 1) else 1
 
 # cmp_pair composes element orderings lexicographically: tuple-keyed maps.
-$ grid : Map {Int, Str} Int =
+$ grid : Map {@int, Str} @int =
 	from_list (cmp_pair cmp_int cmp_str)
 	          [{{1, "b"}, 12}, {{1, "a"}, 11}, {{2, "a"}, 21}]
-$ ck_pair  : Int = if (get_or grid {1, "a"} 0) ?= 11 => 0 else 1
-$ ck_pair2 : Int =
+$ ck_pair  : @int = if (get_or grid {1, "a"} 0) ?= 11 => 0 else 1
+$ ck_pair2 : @int =
 	is min_entry grid | Option.Some.{p} =>
 		(if p.0.1 ?= "a" => (if p.1 ?= 11 => 0 else 1) else 1)
 	else 1
 
 # Balance stress: 200 ascending inserts (the classic worst case for an
 # unbalanced BST), everything retrievable, ordered iteration intact.
-$ big : Map Int Int =
+$ big : Map @int @int =
 	foldl (\m k = insert m k (k * k)) new_int (range 0 199)
-$ ck_bigsize : Int = if (size big) ?= 200 => 0 else 1
-$ ck_bigget  : Int =
+$ ck_bigsize : @int = if (size big) ?= 200 => 0 else 1
+$ ck_bigget  : @int =
 	if (all (\k = (get_or big k (0 - 1)) ?= k * k) (range 0 199))
 	=> 0 else 1
-$ ck_bigmin  : Int =
+$ ck_bigmin  : @int =
 	is min_entry big | Option.Some.{p} => (if p.0 ?= 0 => 0 else 1) else 1
-$ ck_bigrm   : Int =
+$ ck_bigrm   : @int =
 	let slim = foldl (\m k = remove m k) big (range 0 99) in
 	if (size slim) ?= 100 =>
 		(if has slim 99 => 1 else (if (get_or slim 150 0) ?= 22500 => 0 else 1))
 	else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_size + ck_get + ck_missing + ck_update + ck_upsize
+$ test : @int = ck_size + ck_get + ck_missing + ck_update + ck_upsize
 	+ ck_remove + ck_gone + ck_shared + ck_values + ck_sorted + ck_insw
 	+ ck_upd + ck_updno + ck_fold + ck_mapv + ck_filt + ck_merge
 	+ ck_min + ck_max + ck_froml + ck_pair + ck_pair2

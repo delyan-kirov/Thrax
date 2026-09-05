@@ -156,21 +156,21 @@ fn c_run_entry(src: &str, kind: frontend::EntryKind, args: &[&str]) -> (i32, Str
     (exit, String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// A C-style `main : {} -> <| e> Int` returns its `Int` as the process exit code,
+/// A C-style `main : {} -> <| e> @int` returns its `@int` as the process exit code,
 /// and prints nothing on its own.
 #[test]
 fn entry_unit_fn_exit_code() {
-    let src = "@mod MAIN\n$ main : {} -> <| e> Int = \\u = 42\n";
+    let src = "@mod MAIN\n$ main : {} -> <| e> @int = \\u = 42\n";
     let (exit, stdout) = c_run_entry(src, frontend::EntryKind::UnitFn, &[]);
     assert_eq!(exit, 42);
     assert_eq!(stdout, "");
 }
 
-/// A C-style `main : [n]Str -> <| e> Int` receives argv (path first) as a `[n]Str`.
+/// A C-style `main : [n]Str -> <| e> @int` receives argv (path first) as a `[n]Str`.
 #[test]
 fn entry_argv_fn_string_vector() {
     let src = "@mod MAIN\n\
-               $ main : [n]Str -> <| e> Int = \\args = @tensor_length args\n";
+               $ main : [n]Str -> <| e> @int = \\args = @tensor_length args\n";
     let (exit, _stdout) = c_run_entry(src, frontend::EntryKind::ArgvFn, &["alpha", "beta"]);
     assert_eq!(exit, 3);
 }
@@ -207,7 +207,7 @@ fn runtime_operators_match_interpreter_natively() {
         "if 3 <= 3 => 1 else 0",
         "if 5 >= 4 => 1 else 0",
         "\"a\" ++ \"b\"",
-        // Real `^` goes through libm `pow`; the comparison keeps the result an Int
+        // Real `^` goes through libm `pow`; the comparison keeps the result an @int
         // so no real-formatting difference can enter the comparison.
         "if 2.0 ^ 3.0 ?> 7.0 => 1 else 0",
     ];
@@ -220,7 +220,7 @@ fn runtime_operators_match_interpreter_natively() {
 #[test]
 fn arithmetic_intrinsics_match_interpreter() {
     // The arithmetic primitives must compute identically in the C backend and the
-    // interpreter. Integer ops yield Int directly; float ops fold to an Int so no
+    // interpreter. Integer ops yield @int directly; float ops fold to an @int so no
     // real-formatting difference between the engines can enter the comparison.
     for body in [
         "@iadd 2 3",
@@ -245,7 +245,7 @@ fn arithmetic_intrinsics_match_interpreter() {
 #[test]
 fn float32_intrinsics_match_interpreter() {
     // The `@f32*` family rounds to single precision and yields a Real32. These
-    // return the value directly (not folded to an Int), so the comparison also
+    // return the value directly (not folded to an @int), so the comparison also
     // pins the native `fmt_real32` shortest-round-trip display to Rust's
     // `f32::to_string`. `@f32add 16777216.0 1.0` loses the +1 (2^24 + 1 is not an
     // f32), and `0.1 + 0.2` at f32 is exactly `0.3`, unlike the f64 result.
@@ -270,7 +270,7 @@ fn scalar_serialization_matches_interpreter() {
     for (body, entry) in [
         ("$ a : Str = to_string 1234", "a"),
         ("$ a : Str = to_string (0 - 42)", "a"),
-        ("$ a : Str = to_string (let n : Nat = 250 in n)", "a"),
+        ("$ a : Str = to_string (let n : @nat = 250 in n)", "a"),
         ("$ a : @bool = (from_string (to_string 1234)) ?= 1234", "a"),
         (
             "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\"",
@@ -306,11 +306,11 @@ fn float_mixed_width_matches_interpreter() {
 
 #[test]
 fn int_word_mixed_with_sized_matches_interpreter() {
-    // `Int` mixed with a sized signed int yields the sized type (the word operand
+    // `@int` mixed with a sized signed int yields the sized type (the word operand
     // cast to it); the C backend must agree with the interpreter, both orders.
     let src = "@mod M\n\
                $ p : @int32 = from_string \"3\"\n\
-               $ x : Int = 5\n\
+               $ x : @int = 5\n\
                $ fwd : @int32 = x * p\n\
                $ rev : @int32 = p * x\n\
                $ lit : @int32 = 2 * p\n";
@@ -323,11 +323,11 @@ fn int_word_mixed_with_sized_matches_interpreter() {
 fn user_operator_overload_matches_interpreter() {
     // A user `+` overload for a struct must lower to the user global on the C
     // backend too (resolved via the runtime string-keyed global table), while the
-    // builtin `Int + Int` inside stays the builtin.
+    // builtin `@int + @int` inside stays the builtin.
     let src = "@mod M\n\
-               $ V : @struct = x: Int, y: Int\n\
+               $ V : @struct = x: @int, y: @int\n\
                $ (+) : V -> V -> V = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y }\n\
-               $ r : Int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
+               $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_matches(src, "r");
 }
 
@@ -337,7 +337,7 @@ fn native_program_always_declares_libm() {
     // libm. The emitter declares it even for a program that uses no math extern;
     // without it a minimal build fails to link `pow`. This asserts the driver's
     // link path (which, unlike `c_run` here, does not hardcode `-lm`) stays sound.
-    let lowered = lower("@mod M\n$ main : Int = 1 + 1");
+    let lowered = lower("@mod M\n$ main : @int = 1 + 1");
     let emitted = ccg::emit_program(
         &lowered,
         "main",
@@ -355,13 +355,13 @@ fn native_program_always_declares_libm() {
 fn cast_between_integer_widths() {
     // `@cast` reinterprets an integer at another width. It is erased after type
     // checking (integers are boxed uniformly), so both engines must agree: widen
-    // `@int32 -> Int`, narrow `Int -> @int32`, and use the results in arithmetic.
+    // `@int32 -> @int`, narrow `@int -> @int32`, and use the results in arithmetic.
     let src = "@mod T\n\
                $ small : {} -> @int32 = \\u = 65\n\
-               $ widened : Int = @cast (small {})\n\
+               $ widened : @int = @cast (small {})\n\
                $ narrowed : @int32 = @cast (widened + 1)\n\
-               $ back : Int = @cast narrowed\n\
-               $ test : Int = widened + back\n";
+               $ back : @int = @cast narrowed\n\
+               $ test : @int = widened + back\n";
     assert_matches(src, "widened");
     assert_matches(src, "back");
     assert_matches(src, "test");
@@ -372,7 +372,7 @@ fn arithmetic_and_precedence() {
     let src = "@mod T\n\
                $ a = 1 + 2 * 3 - 4\n\
                $ b : Real = 100.123 % 7\n\
-               $ test : Int = a\n";
+               $ test : @int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
     assert_matches(src, "test");
@@ -384,9 +384,9 @@ fn short_circuit_and_or() {
     let src = "@mod T\n\
                $ f : @bool = @false\n\
                $ t : @bool = @true\n\
-               $ a : Int = if (t && 3 ?< 5) => 1 else 0\n\
-               $ b : Int = if (f || 5 ?< 3) => 1 else 0\n\
-               $ test : Int = a\n";
+               $ a : @int = if (t && 3 ?< 5) => 1 else 0\n\
+               $ b : @int = if (f || 5 ?< 3) => 1 else 0\n\
+               $ test : @int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
 }
@@ -396,9 +396,9 @@ fn same_module_overload_dispatches_by_type() {
     // Two overloads of `kind` in one module (type-mangled globals). The C backend
     // must dispatch `kind true` to the @bool body just as the interpreter does.
     let src = "@mod M\n\
-               $ kind : Int -> Int = \\x = 1\n\
-               $ kind : @bool -> Int = \\b = 2\n\
-               $ test : Int = (kind 7) + (kind @true) * 10\n";
+               $ kind : @int -> @int = \\x = 1\n\
+               $ kind : @bool -> @int = \\b = 2\n\
+               $ test : @int = (kind 7) + (kind @true) * 10\n";
     assert_matches(src, "test");
 }
 
@@ -407,11 +407,11 @@ fn ctx_implicit_dictionary_passing() {
     // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
     // backend must inject them exactly as the interpreter does.
     let src = "@mod M\n\
-               $ cmp : Int -> Int -> @bool = \\a b = a ?> b\n\
-               $ lt : Int -> Int -> @bool = \\a b = a ?< b\n\
+               $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
+               $ lt : @int -> @int -> @bool = \\a b = a ?< b\n\
                $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
-               $ test : Int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
+               $ test : @int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
     assert_matches(src, "test");
 }
 
@@ -420,13 +420,13 @@ fn type_splice_with() {
     // `with` copies struct fields and union variants into a new type; the C
     // backend must lay them out and match them exactly as the interpreter does.
     let src = "@mod M\n\
-               $ Point : @struct = x: Int, y: Int\n\
-               $ Point3 : @struct = with Point, z: Int\n\
+               $ Point : @struct = x: @int, y: @int\n\
+               $ Point3 : @struct = with Point, z: @int\n\
                $ Base : @union = Red: {}, Green: {}\n\
                $ Color : @union = with Base, Blue: {}\n\
-               $ rank : Color -> Int = \\c =\n\
+               $ rank : Color -> @int = \\c =\n\
                \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
-               $ test : Int =\n\
+               $ test : @int =\n\
                \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
                \t(p.x + p.y + p.z) + rank Color.Blue\n";
     assert_matches(src, "test");
@@ -437,10 +437,10 @@ fn open_row_record_param() {
     // Row-polymorphic record param over the C backend: field access resolves the
     // same by-name as the interpreter, regardless of the concrete struct passed.
     let src = "@mod M\n\
-               $ Point  : @struct = x: Int, y: Int,\n\
-               $ Point3 : @struct = x: Int, y: Int, z: Int,\n\
-               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
-               $ test : Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
+               $ Point  : @struct = x: @int, y: @int,\n\
+               $ Point3 : @struct = x: @int, y: @int, z: @int,\n\
+               $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
+               $ test : @int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
     assert_matches(src, "test");
 }
 
@@ -449,10 +449,10 @@ fn anonymous_record_values() {
     // Records under an open row (name-keyed) and pair decay (positional) must build
     // and read the same on the C backend as the interpreter.
     let src = "@mod M\n\
-               $ area : { x: Int, y: Int | r } -> Int = \\p = p.x * p.y\n\
-               $ shift : { x: Int | r } -> { x: Int | r } = \\p = { .x = p.x + 10 | p }\n\
-               $ add : {x: Int, y: Int} -> Int = x + y\n\
-               $ test : Int =\n\
+               $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
+               $ shift : { x: @int | r } -> { x: @int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ add : {x: @int, y: @int} -> @int = x + y\n\
+               $ test : @int =\n\
                \t(area { .x = 2, .y = 5, .tag = 7 }) + (area (shift { .x = 1, .y = 4 })) + add { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
@@ -462,9 +462,9 @@ fn record_destructuring_pattern() {
     // Record patterns lower to name-keyed struct matches; the C backend must
     // destructure them the same as the interpreter.
     let src = "@mod M\n\
-               $ area : { x: Int, y: Int | r } -> Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
-               $ sumxy : { x: Int, y: Int | r } -> Int = \\{ .x, .y } = x + y\n\
-               $ test : Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
+               $ area : { x: @int, y: @int | r } -> @int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: @int, y: @int | r } -> @int = \\{ .x, .y } = x + y\n\
+               $ test : @int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
 
@@ -474,11 +474,11 @@ fn codata_stream() {
     // backend must drive the lazy infinite stream the same as the interpreter.
     let src = "@mod M\n\
                $ Stream : @codata t = head : t, tail : Stream t,\n\
-               $ from : Int -> Stream Int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
-               $ nth : Int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
-               $ dbl : Int -> Int = \\x = x + x\n\
-               $ test : Int = nth 4 (smap dbl (from 1))\n";
+               $ nth : @int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ dbl : @int -> @int = \\x = x + x\n\
+               $ test : @int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
 }
 
@@ -488,9 +488,9 @@ fn ffi_struct_by_value_return() {
     // emits a `typedef struct` and rebuilds the Thrax struct from the C result,
     // byte-identical to the interpreter.
     let src = "@mod M\n\
-        $ LDivT : @struct @extern \"C\" = quot: Int, rem: Int,\n\
-        $ ldiv : {numer: Int, denom: Int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
-        $ test : Int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
+        $ LDivT : @struct @extern \"C\" = quot: @int, rem: @int,\n\
+        $ ldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
+        $ test : @int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
     assert_matches(src, "test");
 }
 
@@ -518,9 +518,9 @@ fn ffi_struct_by_value_argument() {
 
     let src = format!(
         "@mod M\n\
-         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
-         $ sum_p : P -> Int = @extern \"C\" \"sum_p\" \"{}\"\n\
-         $ test : Int = sum_p (P.{{ .x = 40, .y = 2 }})",
+         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
+         $ sum_p : P -> @int = @extern \"C\" \"sum_p\" \"{}\"\n\
+         $ test : @int = sum_p (P.{{ .x = 40, .y = 2 }})",
         so_path.display()
     );
 
@@ -576,9 +576,9 @@ fn ffi_struct_array() {
 
     let src = format!(
         "@mod M\n\
-         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
-         $ sum_ps : {{ps: @list P, n: Int}} -> Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
-         $ test : Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
+         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
+         $ sum_ps : {{ps: @list P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "102");
@@ -670,9 +670,9 @@ fn ffi_callback() {
 
     let src = format!(
         "@mod M\n\
-         $ call_twice : (Int -> Int -> Int) -> Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
-         $ k : Int = 10\n\
-         $ test : Int = call_twice (\\a b = a + b + k)",
+         $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
+         $ k : @int = 10\n\
+         $ test : @int = call_twice (\\a b = a + b + k)",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "1317");
@@ -728,12 +728,12 @@ fn ffi_c_union_by_value() {
 
     let src = format!(
         "@mod M\n\
-         $ U : @union @extern \"C\" = i: Int, d: Real,\n\
-         $ u_as_long : U -> Int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
-         $ u_from_long : Int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
-         $ built : Int = u_as_long (U.{{ .i = 42 }})\n\
-         $ back  : Int = (u_from_long 99).i\n\
-         $ test  : Int = built * 1000 + back",
+         $ U : @union @extern \"C\" = i: @int, d: Real,\n\
+         $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
+         $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
+         $ built : @int = u_as_long (U.{{ .i = 42 }})\n\
+         $ back  : @int = (u_from_long 99).i\n\
+         $ test  : @int = built * 1000 + back",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "42099");
@@ -786,11 +786,11 @@ fn ffi_nested_struct_by_value() {
 
     let src = format!(
         "@mod M\n\
-         $ P : @struct @extern \"C\" = x: Int, y: Int,\n\
+         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
-         $ seg_sum : Seg -> Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
-         $ seg_make : Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
-         $ test : Int = seg_sum (seg_make 1)",
+         $ seg_sum : Seg -> @int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
+         $ seg_make : @int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
+         $ test : @int = seg_sum (seg_make 1)",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "4321");
@@ -823,9 +823,9 @@ fn open_range_stream() {
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
     // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
     let src = "@mod M\n\
-               $ len : @list Int -> Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
-               $ s : Stream Int = [3 ...]\n\
-               $ test : Int = s.head + s.tail.head + len [1 ... 4]\n";
+               $ len : @list @int -> @int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ s : Stream @int = [3 ...]\n\
+               $ test : @int = s.head + s.tail.head + len [1 ... 4]\n";
     assert_matches(src, "test");
 }
 
@@ -833,7 +833,7 @@ fn open_range_stream() {
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
     let src = "@mod M\n\
-               $ sign : Int -> Str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
+               $ sign : @int -> Str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
                $ test : Str = sign 3\n";
     assert_matches(src, "test");
 }
@@ -841,17 +841,17 @@ fn open_range_pattern() {
 #[test]
 fn recursion_fib() {
     let src = "@mod T\n\
-               $ fib : Int -> Int = \\n =\n\
+               $ fib : @int -> @int = \\n =\n\
                \tif n ?= 0 => 0 else if n ?= 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
-               $ test : Int = fib 15\n";
+               $ test : @int = fib 15\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn higher_order_and_let() {
     let src = "@mod T\n\
-               $ apply2 : (Int -> Int) -> Int -> Int = \\f x = f (f x)\n\
-               $ test : Int =\n\
+               $ apply2 : (@int -> @int) -> @int -> @int = \\f x = f (f x)\n\
+               $ test : @int =\n\
                \tlet inc = \\x = x + 1\n\
                \t in apply2 inc 40\n";
     assert_matches(src, "test");
@@ -860,10 +860,10 @@ fn higher_order_and_let() {
 #[test]
 fn structs_and_fields() {
     let src = "@mod T\n\
-               $ Point : @struct = x: Int, y: Int,\n\
+               $ Point : @struct = x: @int, y: @int,\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
-               $ sx : Int = p.x + p.y\n\
-               $ test : Int = sx\n";
+               $ sx : @int = p.x + p.y\n\
+               $ test : @int = sx\n";
     assert_matches(src, "p");
     assert_matches(src, "test");
 }
@@ -871,22 +871,22 @@ fn structs_and_fields() {
 #[test]
 fn variants_and_when() {
     let src = "@mod T\n\
-               $ Shape : @union = Dot: {}, Seg: { Int }\n\
-               $ size : Shape -> Int = \\s =\n\
+               $ Shape : @union = Dot: {}, Seg: { @int }\n\
+               $ size : Shape -> @int = \\s =\n\
                \tis s | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
-               $ test : Int = size (Shape.Seg.{7}) - size Shape.Dot\n";
+               $ test : @int = size (Shape.Seg.{7}) - size Shape.Dot\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn lists_and_length() {
     let src = "@mod T\n\
-               $ len : @list t -> Int =\n\
-               \tlet helper : @list t -> Int -> Int = \\l n =\n\
+               $ len : @list t -> @int =\n\
+               \tlet helper : @list t -> @int -> @int = \\l n =\n\
                \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
-               $ xs : @list Int = [1, 2, 3]\n\
-               $ test : Int = len xs\n";
+               $ xs : @list @int = [1, 2, 3]\n\
+               $ test : @int = len xs\n";
     assert_matches(src, "test");
 }
 
@@ -894,9 +894,9 @@ fn lists_and_length() {
 fn strings_and_arrays() {
     let src = "@mod T\n\
                $ s : Str = \"ab\" ++ \"cd\"\n\
-               $ n : Int = @array_len s\n\
-               $ g : Int = @array_get s 1\n\
-               $ test : Int = n + g\n";
+               $ n : @int = @array_len s\n\
+               $ g : @int = @array_get s 1\n\
+               $ test : @int = n + g\n";
     assert_matches(src, "s");
     assert_matches(src, "n");
     assert_matches(src, "test");
@@ -906,8 +906,8 @@ fn strings_and_arrays() {
 fn tuples() {
     let src = "@mod T\n\
                $ t = {1, 2, 3}\n\
-               $ mid : Int = t.1\n\
-               $ test : Int = mid\n";
+               $ mid : @int = t.1\n\
+               $ test : @int = mid\n";
     assert_matches(src, "t");
     assert_matches(src, "test");
 }
