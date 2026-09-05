@@ -15,10 +15,10 @@
 #
 #       How values cross the seam: `@int` is a machine word (also an int-typed C
 #       argument, a `FILE*` handle, and a file descriptor), `@ptr` is a raw heap
-#       pointer (from `C.malloc`), `Str` is a NUL-terminated byte string, `Real`
-#       is a double, and `{}` is unit -- as an argument it means the C function
-#       takes no value there (a `void` parameter, e.g. `C.getchar {}`), as a
-#       result it is `void`.
+#       pointer (from `C.malloc`), `Str` is a byte string (the FFI copies it and
+#       appends a NUL for the call, so it reaches C as a `char*`), `Real` is a double,
+#       and `{}` is unit -- as an argument it means the C function takes no value there
+#       (a `void` parameter, e.g. `C.getchar {}`), as a result it is `void`.
 
 # -- math.h (libm) ---------------------------------------------------------
 $ sqrt  : Real -> Real         = @extern "C" "sqrt"  "libm"

@@ -164,3 +164,24 @@ libffi build, the model for vendoring+building musl
 **Why is it so difficult to define a stupid ass operator?**, there are no asserts,
 everything is in different files for no reason. It's just impossible to find what
 you want. How is this code good? It's not good, it's trash. 
+
+---
+
+## Str vs C strings (`CStr`) -- revisit
+
+Considered making `C.thx`'s libc bindings take a distinct `CStr` (a NUL-terminated
+`char*`) instead of the prelude `Str`, so a non-NUL-terminated Thrax string can't be
+typed as a C string. Backed out for now: the FFI ALREADY copies a `Str`/`@array` and
+appends a NUL for the duration of a call (`crates/interpreter/src/machine/ffi.rs`, the
+`c.push(0)` path + native `char*` marshalling), so `Str -> char*` is already safe, and
+introducing `CStr` (= a distinct type, e.g. `@alias = @array`) breaks `library/IO.thx`
+(which passes `Str` to `C.write`/`fopen`/`getenv`/...) and needs a `Str`<->`CStr`
+conversion primitive that doesn't exist (`Str` and `@array` don't interconvert). So it's
+type-level clarity, not a correctness fix, at the cost of a new primitive + an IO.thx
+rewrite + conversions at every seam.
+
+It still doesn't feel quite right (a Thrax `Str` isn't guaranteed NUL-terminated, and the
+"append a NUL on marshal" trick hides that from the type system; the return direction --
+C hands you a `char*` you then treat as a `Str` -- is also unmodeled). Revisit: decide
+whether C interop should go through an explicit `CStr` + `to_c_string`/`from_c_string`,
+and how the conversion primitive should work (identity at runtime, but a real type cast).

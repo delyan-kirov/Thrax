@@ -189,27 +189,31 @@ sugar still names `List`/`Cons`/`Nil` (its surface definition), and `@list` stay
 spelling alias for `List`. Verified interpreter + ccg (STRINGS, LISTS examples;
 `bare_variant_tag_resolves_by_expected_type` test).
 
-Newtype unboxing LANDED (2026-09-05), the enabler for `Str`-as-a-library-type: instead
-of folding `@str` into `@array` (which throws away the `Str` vs raw-bytes distinction),
-`@struct @unbox` marks a transparent single-field newtype whose wrapper lowering ERASES
-(construction -> the field value, `x.f` -> `x`, a `T.{ .f = p }` pattern -> `p`). Since
-Thrax dispatches overloads statically, the runtime never needs to tell the newtype from
-its field, so this is sound and zero-cost. It is OPT-IN: an erased struct can no longer
-masquerade as an open record via the `Con ~ Record` bridge (the full suite caught this:
-`Box : @struct a = val: a` is used as `{ val | r }`), so automatic erasure of every
-single-field struct is unsound; `@unbox` is the author opting a type out of the bridge.
-Impl: checker records build/field/pattern sites (`newtype_sites`, gated on the `unbox`
-flag in `StructInfo`); lowering erases them (`newtype_build`/`newtype_pat`); parser takes
-`@struct @unbox`; a non-1-field `@unbox` errors. Verified interpreter + ccg
-(`unbox_newtype_erases_wrapper`, `unbox_newtype_matches_interpreter`).
+`@str` fold / `Str`-as-library-type: NOT DONE, decided AGAINST (2026-09-05). Explored two
+routes and backed out of both:
 
-NEXT (the `Str` migration, its own step): define `Str : @struct @unbox = _buffer : @array`
-in CORE with an identity-shaped `@compiler_interface_string_literal` (which then folds via
-Stage 1) + an `@compiler_interface_equality`; rewrite `STR.thx` / `++` / `to_string` /
-interpolation over it; decide FFI (`Str` is not C-compatible / not null-terminated -- C
-interop goes through an explicit `to_c_string` / `CStr`); then drop the `Str`/`@str`
-builtin from the checker. Runtime list `to_string` / FFI list special-cases
-(`machine/data.rs`, `machine/ffi.rs`) are display/marshalling, tracked separately.
+- An `@struct @unbox` transparent single-field newtype (erase the wrapper at lowering) was
+  built as the enabler, and `Str` was briefly declared `$ Str : @struct @unbox = _buffer :
+  @array`. It worked and was zero-cost, but the whole thing was REMOVED at the user's call:
+  `Str`'s hard parts are genuinely primitive (UTF-8 validation, escape decoding) and it is
+  load-bearing in CORE-less bootstrap contexts (`library/C.thx`'s libc bindings, the
+  `main : [n]Str` argv contract), so making it a library type fights all of that for no
+  real payoff. `@unbox` itself was also removed (its only motivating use was `Str`; a
+  general unboxed-newtype feature can be revisited if a perf need shows up). NOTE for a
+  future attempt: automatic (non-opt-in) unboxing of single-field structs is UNSOUND
+  because of the `Con ~ Record` bridge (a nominal 1-field struct can be used structurally
+  as an open record, e.g. `Box : @struct a = val: a` passed to `{ val | r }`), which needs
+  the boxed rep; the suite catches this immediately.
+- `@str` -> `@array` fold: also not done -- it discards the useful `Str`-vs-raw-bytes
+  distinction, and `Str` handling UTF-8/escapes means it stays a real primitive.
+
+What DID land instead: `Str` stays a built-in primitive, and the string-literal INTERFACE
+takes the built-in `Str`. `@compiler_interface_string_literal` is now `Str -> a` (was
+`@array -> a`): the compiler builds a fully-formed, UTF-8-checked, escape-decoded `Str` and
+the custom type just maps it to its value (default `Str` folds to zero cost). So other
+types can adopt string literals while `Str` itself is not de-builtined. `CStr` for C
+interop was considered and deferred (the FFI already NUL-terminates a `Str` on marshal, so
+`Str -> char*` is already safe); see `documentation/TODO.md` "Str vs C strings".
 
 ### Original plan text
 

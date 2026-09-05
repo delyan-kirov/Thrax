@@ -235,10 +235,6 @@ fn lower_all(
         for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
         for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
         for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
-        let (nl, nf, np) = checker.newtype_sites();
-        resolved.newtype_lits.extend(nl.iter().copied());
-        resolved.newtype_fields.extend(nf.iter().copied());
-        resolved.newtype_pats.extend(np.iter().copied());
         let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
