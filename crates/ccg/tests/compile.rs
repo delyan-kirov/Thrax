@@ -26,6 +26,8 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
     for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
     for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
+    for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
+    for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -1003,5 +1005,22 @@ fn literal_construction_hooks_match_interpreter() {
                $ bag : Bag @int = [1, 2]\n\
                $ plain : @int = 5\n\
                $ r : @int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v else 0)"; // 40+5+2
+    assert_matches(src, "r");
+}
+
+#[test]
+fn pattern_hooks_match_interpreter() {
+    // Literal patterns (equality hook) and sequence patterns (sequence_view hook) on
+    // user types must lower the same on the C backend as on the interpreter.
+    let src = "@mod M\n\
+               $ Stack : @struct a = items: @list a\n\
+               $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
+               \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
+               $ MyStr : @struct = bytes: @array\n\
+               $ @compiler_interface_string_literal : @array -> MyStr = \\b = MyStr.{ .bytes = b }\n\
+               $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
+               $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
+               $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
+               $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
     assert_matches(src, "r");
 }

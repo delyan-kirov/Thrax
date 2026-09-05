@@ -319,6 +319,17 @@ pub struct Resolved {
     /// [`crate::typing::Checker::literal_hooks`]). Lowering wraps the raw payload term
     /// in a call to this global; an unrecorded literal folds to the plain constant.
     pub literal_hooks: HashMap<Aol<Expr>, (Option<String>, String)>,
+    /// Literal PATTERN sites matched through a user type's construction + equality
+    /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`
+    /// (from [`crate::typing::Checker::literal_pattern_hooks`]). Lowering emits a
+    /// `Pat::HookEq` that builds the literal and compares it with the equality hook.
+    pub literal_pattern_hooks:
+        HashMap<Aol<Pattern>, ((Option<String>, String), (Option<String>, String))>,
+    /// Sequence pattern sites matched through a user type's `sequence_view` hook,
+    /// mapped to the hook's `(module, emitted name)` (from
+    /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
+    /// `Pat::SeqView` that unfolds the view.
+    pub sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<String>, String)>,
     /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
     pub codata_lits: HashSet<Aol<Expr>>,
     /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
@@ -1444,13 +1455,37 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A literal pattern on a user type: build the literal into the type (its
+    /// construction hook applied to the raw payload) and compare with the equality
+    /// hook. `None` when the checker recorded no hook for this site (the built-in
+    /// literal pattern applies instead).
+    fn pat_hook_eq(&self, p: Aol<Pattern>, raw: Term) -> Option<Pat> {
+        let ((bm, bn), (em, en)) = self.resolved.literal_pattern_hooks.get(&p)?;
+        let build = Term::Var {
+            module: bm.clone(),
+            name: bn.clone(),
+            idx: 0,
+        };
+        Some(Pat::HookEq {
+            eq: (em.clone(), en.clone()),
+            value: Box::new(Term::app(build, raw)),
+        })
+    }
+
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
             Pattern::Var(name) => Pat::Var(self.text(*name).to_string()),
-            Pattern::Int(n) => Pat::Int(*n),
-            Pattern::Real(r) => Pat::Real(*r),
-            Pattern::Str(s) => Pat::Str(self.ast.bytes(*s).to_vec()),
+            Pattern::Int(n) => self.pat_hook_eq(p, Term::Int(*n)).unwrap_or(Pat::Int(*n)),
+            Pattern::Real(r) => self.pat_hook_eq(p, Term::Real(*r)).unwrap_or(Pat::Real(*r)),
+            Pattern::Str(s) => {
+                let raw = Term::Str(self.ast.bytes(*s).to_vec());
+                self.pat_hook_eq(p, raw.clone())
+                    .unwrap_or_else(|| match raw {
+                        Term::Str(b) => Pat::Str(b),
+                        _ => unreachable!(),
+                    })
+            }
             Pattern::Bool(b) => Pat::Bool(*b),
             Pattern::Range { lo, hi } => Pat::Range {
                 lo: self.range_bound(*lo),
@@ -1466,6 +1501,13 @@ impl<'a> Lowerer<'a> {
             }
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
+                if let Some(view) = self.resolved.sequence_pattern_hooks.get(&p).cloned() {
+                    return Pat::SeqView {
+                        view,
+                        elems: vec![self.pat(head)],
+                        rest: Some(Box::new(self.pat(tail))),
+                    };
+                }
                 Pat::Variant {
                     tag: "Cons".into(),
                     fields: vec![self.pat(head), self.pat(tail)],
@@ -1474,6 +1516,13 @@ impl<'a> Lowerer<'a> {
             Pattern::List { elems, rest } => {
                 let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
                 let rest = *rest;
+                if let Some(view) = self.resolved.sequence_pattern_hooks.get(&p).cloned() {
+                    return Pat::SeqView {
+                        view,
+                        elems: elems.into_iter().map(|e| self.pat(e)).collect(),
+                        rest: rest.map(|r| Box::new(self.pat(r))),
+                    };
+                }
                 let mut acc = match rest {
                     Some(r) => self.pat(r),
                     None => Pat::Variant {

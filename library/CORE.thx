@@ -430,6 +430,13 @@ $ range : @int -> @int -> @list @int = \lo hi =
 	if lo ?> hi => []
 	else lo :: range (lo + 1) hi
 
+# One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:
+# `Empty` at the end, or `More elem rest` (the head element and the remaining
+# sequence). A user sequence type joins the `[..]`/`::`/`[]` PATTERN surface by
+# defining that hook to return this view; the compiler matches sequence patterns by
+# unfolding it.
+$ SeqView : @union s t = Empty: {}, More: {t, s},
+
 # The canonical infinite stream: coinductive data observed by `.head` (the current
 # element) and `.tail` (the rest). Non-memoized thunks, so it is genuinely infinite.
 $ Stream : @codata t = head : t, tail : Stream t,

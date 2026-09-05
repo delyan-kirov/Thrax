@@ -189,6 +189,19 @@ fn collect_pat_binders(p: &Pat, out: &mut Vec<String>) {
         }
         Pat::StrPrefix { rest, .. } => collect_pat_binders(rest, out),
         Pat::Range { .. } => {}
+        // `patmat` expands this to a boolean test before this pass runs, and it binds
+        // nothing regardless.
+        Pat::HookEq { .. } => {}
+        // `patmat` expands this before this pass; its binders are the elements' and
+        // the rest's, in order.
+        Pat::SeqView { elems, rest, .. } => {
+            for p in elems {
+                collect_pat_binders(p, out);
+            }
+            if let Some(r) = rest {
+                collect_pat_binders(r, out);
+            }
+        }
     }
 }
 

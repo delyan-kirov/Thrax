@@ -215,6 +215,16 @@ pub struct Checker<'a> {
     /// the raw payload term in a call to this hook; an unrecorded literal folds to the
     /// plain built-in constant (no hook, no conversion).
     literal_hooks: HashMap<Aol<Expr>, (Option<&'a str>, String)>,
+    /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
+    /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
+    /// building the literal into the user type (build hook) and comparing it against
+    /// the scrutinee (equality hook), instead of the built-in `?=` on a primitive.
+    literal_pattern_hooks:
+        HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))>,
+    /// Sequence PATTERN sites (`is [a, b, ..rest]`, `is h :: t`, `is []`) whose
+    /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
+    /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
+    sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<&'a str>, String)>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -347,6 +357,8 @@ impl<'a> Checker<'a> {
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             literal_hooks: HashMap::new(),
+            literal_pattern_hooks: HashMap::new(),
+            sequence_pattern_hooks: HashMap::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -388,6 +400,21 @@ impl<'a> Checker<'a> {
     /// payload term in a call to this hook.
     pub fn literal_hooks(&self) -> &HashMap<Aol<Expr>, (Option<&'a str>, String)> {
         &self.literal_hooks
+    }
+
+    /// Literal pattern sites matched through a user type's construction + equality
+    /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`.
+    #[allow(clippy::type_complexity)]
+    pub fn literal_pattern_hooks(
+        &self,
+    ) -> &HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))> {
+        &self.literal_pattern_hooks
+    }
+
+    /// Sequence pattern sites matched through a user type's `sequence_view` hook,
+    /// mapped to the hook's `(module, emitted name)`.
+    pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, (Option<&'a str>, String)> {
+        &self.sequence_pattern_hooks
     }
 
     /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
@@ -600,13 +627,14 @@ impl<'a> Checker<'a> {
         for d in &defs {
             // Overloaded if defined more than once here, adds to an already-imported
             // overload, or EXTENDS a single imported value of the same name. A
-            // `@compiler_interface_*` construction hook is ALWAYS treated as an
-            // overload set (even a lone definition), so a literal site can find its
-            // candidate uniformly via `hook_candidates` without a separate registry.
+            // A `@compiler_interface_*` interface hook is ALWAYS treated as an overload
+            // set (even a lone definition), so an implicit use site (a literal, a
+            // pattern, `.[..]`) can find its candidate uniformly via `hook_candidates`
+            // without a separate registry.
             if counts[d.name] > 1
                 || self.overloads.contains_key(d.name)
                 || self.imported_singles.contains_key(d.name)
-                || is_construction_hook(d.name)
+                || is_interface_hook(d.name)
             {
                 overloaded_names.insert(d.name);
             }
@@ -3199,10 +3227,31 @@ impl<'a> Checker<'a> {
         Ok(true)
     }
 
-    /// Record the resolved construction hook at a literal `site`: its owning module
-    /// and the name lowering emits (type-mangled when that module defines the hook
-    /// several times, matching the definition's `def_keys` entry).
-    fn record_literal_hook(&mut self, site: Aol<Expr>, name: &str, cands: &[Cand<'a>], idx: usize) {
+    /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
+    /// committing it (the unification persists) and returning its index; `None` when
+    /// zero or several match. Every trial rolls back, so only the committed unique
+    /// match leaves the engine changed.
+    fn resolve_hook(&mut self, cands: &[Cand<'a>], args: &[Type], result: &Type) -> Option<usize> {
+        let mut chosen = None;
+        let mut count = 0;
+        for (idx, cand) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                chosen = Some(idx);
+            }
+        }
+        let idx = chosen.filter(|_| count == 1)?;
+        self.apply_overload(&cands[idx].ty, args, result).ok()?;
+        Some(idx)
+    }
+
+    /// The `(owning module, emitted name)` a resolved hook candidate lowers to: the
+    /// name is type-mangled when that module defines the hook several times, matching
+    /// the definition's `def_keys` entry.
+    fn hook_use(&self, name: &str, cands: &[Cand<'a>], idx: usize) -> (Option<&'a str>, String) {
         let module = cands[idx].module;
         let emit = match module {
             Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
@@ -3210,7 +3259,103 @@ impl<'a> Checker<'a> {
             }
             _ => name.to_string(),
         };
-        self.literal_hooks.insert(site, (module, emit));
+        (module, emit)
+    }
+
+    /// Record the resolved construction hook at a literal `site`.
+    fn record_literal_hook(&mut self, site: Aol<Expr>, name: &str, cands: &[Cand<'a>], idx: usize) {
+        let used = self.hook_use(name, cands, idx);
+        self.literal_hooks.insert(site, used);
+    }
+
+    /// The construction hook and primitive payload type for a literal PATTERN kind
+    /// (`Str`/`Int`/`Real`), so a literal pattern reuses the same builder a literal
+    /// expression does.
+    fn pattern_literal_hook(&mut self, pat: &Pattern) -> Option<(&'static str, Vec<Type>)> {
+        Some(match pat {
+            Pattern::Str(_) => (HOOK_STRING, vec![Type::con(ty::ARRAY)]),
+            Pattern::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)]),
+            Pattern::Real(_) => (HOOK_REAL, vec![Type::con("@float64")]),
+            _ => return None,
+        })
+    }
+
+    /// Route a sequence pattern (`is [a, b, ..r]`, `is h :: t`, `is []`) whose
+    /// scrutinee is a user type through that type's `@compiler_interface_sequence_view`
+    /// hook. On success records the hook at `pat` and returns `Some(element type)` so
+    /// the caller types the sub-patterns; otherwise returns `None` (built-in typing).
+    fn sequence_pattern_hook_check(
+        &mut self,
+        pat: Aol<Pattern>,
+        expected: &Type,
+    ) -> Result<Option<Type>> {
+        if self.user_type_head(expected).is_none() {
+            return Ok(None);
+        }
+        let cands = self.hook_candidates(HOOK_SEQVIEW);
+        if cands.is_empty() {
+            return Ok(None);
+        }
+        let save = self.eng.save();
+        let result = self.eng.fresh();
+        if let Some(idx) = self.resolve_hook(&cands, &[expected.clone()], &result) {
+            // The hook returns `SeqView <seq> <elem>`; pull the element type out.
+            let elem = self.eng.fresh();
+            let want = Type::app(
+                Type::app(Type::con(SEQVIEW_TYPE), expected.clone()),
+                elem.clone(),
+            );
+            if self
+                .eng
+                .unify(&result, &want, "in a sequence-view hook")
+                .is_ok()
+            {
+                let used = self.hook_use(HOOK_SEQVIEW, &cands, idx);
+                self.sequence_pattern_hooks.insert(pat, used);
+                return Ok(Some(elem));
+            }
+        }
+        self.eng.restore(save);
+        Ok(None)
+    }
+
+    /// Route a literal pattern (`is "foo"`, `is 42`) whose scrutinee is a user type
+    /// through that type's construction + equality hooks: it matches by building the
+    /// literal into the user type and comparing with `@compiler_interface_equality`.
+    /// On success records both hooks at `pat` for lowering and returns `true`;
+    /// otherwise leaves the engine untouched and returns `false` (the caller applies
+    /// the built-in literal-pattern typing).
+    fn literal_pattern_hook_check(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<bool> {
+        if self.user_type_head(expected).is_none() {
+            return Ok(false);
+        }
+        let Some((build_name, args)) = self.pattern_literal_hook(self.pnode(pat)) else {
+            return Ok(false);
+        };
+        let build_cands = self.hook_candidates(build_name);
+        let eq_cands = self.hook_candidates(HOOK_EQUALITY);
+        if build_cands.is_empty() || eq_cands.is_empty() {
+            return Ok(false);
+        }
+        let save = self.eng.save();
+        let build = self.resolve_hook(&build_cands, &args, expected);
+        let eq = self.resolve_hook(
+            &eq_cands,
+            &[expected.clone(), expected.clone()],
+            &Type::con(ty::BOOL),
+        );
+        match (build, eq) {
+            (Some(bi), Some(ei)) => {
+                let build_use = self.hook_use(build_name, &build_cands, bi);
+                let eq_use = self.hook_use(HOOK_EQUALITY, &eq_cands, ei);
+                self.literal_pattern_hooks.insert(pat, (build_use, eq_use));
+                Ok(true)
+            }
+            _ => {
+                self.eng.restore(save);
+                Ok(false)
+            }
+        }
     }
 
     fn resolve_overload(
@@ -3537,6 +3682,9 @@ impl<'a> Checker<'a> {
                 self.bind(self.text(*name), expected.clone());
                 Ok(())
             }
+            Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
+            Pattern::Real(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
+            Pattern::Str(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Int(_) => {
                 self.eng
                     .unify(expected, &Type::con(ty::INT), "in an integer pattern")
@@ -3581,6 +3729,12 @@ impl<'a> Checker<'a> {
             }
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
+                // A user sequence type joins `::` via its `sequence_view` hook; the
+                // tail keeps the scrutinee's type.
+                if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
+                    self.type_pattern(head, &elem)?;
+                    return self.type_pattern(tail, expected);
+                }
                 let elem = self.eng.fresh();
                 let list = Type::app(Type::con(ty::LIST), elem.clone());
                 self.eng.unify(expected, &list, "in a '::' pattern")?;
@@ -3599,6 +3753,18 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::List { elems, rest } => {
+                // A user sequence type joins `[..]` via its `sequence_view` hook; each
+                // element is typed at the view's element type, `..rest` at the seq type.
+                if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
+                    let (elems, rest) = (self.ast.slice(*elems), *rest);
+                    for e in elems.iter() {
+                        self.type_pattern(*e, &elem)?;
+                    }
+                    if let Some(rest) = rest {
+                        self.type_pattern(rest, expected)?;
+                    }
+                    return Ok(());
+                }
                 let (elems, rest) = (self.ast.slice(*elems), *rest);
                 let elem = self.eng.fresh();
                 let list = Type::app(Type::con(ty::LIST), elem.clone());
@@ -4733,12 +4899,16 @@ const HOOK_STRING: &str = "@compiler_interface_string_literal";
 const HOOK_INTEGER: &str = "@compiler_interface_integer_literal";
 const HOOK_REAL: &str = "@compiler_interface_real_literal";
 const HOOK_SEQUENCE: &str = "@compiler_interface_sequence_literal";
+const HOOK_EQUALITY: &str = "@compiler_interface_equality";
+const HOOK_SEQVIEW: &str = "@compiler_interface_sequence_view";
+/// The core union `@compiler_interface_sequence_view` returns: `SeqView s t`.
+const SEQVIEW_TYPE: &str = "SeqView";
 
-fn is_construction_hook(name: &str) -> bool {
-    matches!(
-        name,
-        HOOK_STRING | HOOK_INTEGER | HOOK_REAL | HOOK_SEQUENCE
-    )
+/// An extensible interface hook is any `@compiler_interface_*` name. Each is always
+/// treated as an overload set (even a lone definition) so an implicit use site (a
+/// literal, a pattern, `.[..]`) can find its candidate uniformly.
+fn is_interface_hook(name: &str) -> bool {
+    name.starts_with("@compiler_interface_")
 }
 
 fn is_base_type(name: &str) -> bool {

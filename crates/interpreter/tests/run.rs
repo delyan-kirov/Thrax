@@ -19,6 +19,8 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
     for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
     for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
+    for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
+    for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -581,6 +583,37 @@ fn literal_hook_does_not_hijack_default() {
         $ custom : MyStr = \"xy\"\n\
         $ r : @int = @array_len plain + @array_len custom.bytes"; // 3 + 2
     assert_eq!(run(src, "r"), "5");
+}
+
+#[test]
+fn literal_pattern_via_equality_hook() {
+    // A literal PATTERN on a user type routes through its construction + equality
+    // hooks: `is s | "hi" => ...` builds "hi" into the user type and compares it with
+    // `@compiler_interface_equality`.
+    let src = "@mod M\n\
+        $ MyStr : @struct = bytes: @array\n\
+        $ @compiler_interface_string_literal : @array -> MyStr = \\b = MyStr.{ .bytes = b }\n\
+        $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
+        $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
+        $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
+    assert_eq!(run(src, "r"), "120");
+}
+
+#[test]
+fn sequence_pattern_via_view_hook() {
+    // A sequence PATTERN on a user type unfolds its `@compiler_interface_sequence_view`
+    // hook: `[]`, `[x]` (fixed length: tail must be empty), and `h :: t` all match.
+    let src = "@mod M\n\
+        $ Stack : @struct a = items: @list a\n\
+        $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
+        \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
+        $ classify : Stack @int -> @int = \\s = is s\n\
+        \t| [] => 0 | [x] => x | h :: t => 100 + h else 999\n\
+        $ s0 : Stack @int = Stack.{ .items = [] }\n\
+        $ s1 : Stack @int = Stack.{ .items = [7] }\n\
+        $ s2 : Stack @int = Stack.{ .items = [3, 4] }\n\
+        $ r : @int = classify s0 * 1000 + classify s1 * 100 + classify s2"; // 0+700+103
+    assert_eq!(run(src, "r"), "803");
 }
 
 #[test]

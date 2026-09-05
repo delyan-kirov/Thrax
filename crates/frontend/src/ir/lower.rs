@@ -146,6 +146,14 @@ fn pat_binders(p: &Pat) -> usize {
         }
         Pat::StrPrefix { rest, .. } => pat_binders(rest),
         Pat::Range { .. } => 0,
+        // `patmat` runs before this pass and expands it to a boolean test; it binds
+        // nothing regardless.
+        Pat::HookEq { .. } => 0,
+        // `patmat` expands this before this pass; count its element and rest binders.
+        Pat::SeqView { elems, rest, .. } => {
+            elems.iter().map(pat_binders).sum::<usize>()
+                + rest.as_deref().map(pat_binders).unwrap_or(0)
+        }
     }
 }
 

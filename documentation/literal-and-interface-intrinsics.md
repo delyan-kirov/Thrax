@@ -146,7 +146,20 @@ tests; it is the risk area the plan calls out.
 Touchpoints: `parser.rs`/`typing.rs` (literal lowering + defaulting),
 `lowering.rs`, `ccg/src/gen.rs` (folding), `library/CORE.thx`.
 
-## Stage 2 - pattern intrinsics
+## Stage 2 - pattern intrinsics  [LANDED]
+
+Landed both halves. A literal PATTERN (`is "foo"`, `is 42`) whose scrutinee is a user
+type routes through that type's construction hook (to build the literal into the type)
+plus `@compiler_interface_equality : t -> t -> @bool`, matching by a boolean test. A
+sequence PATTERN (`is [a, b, ..r]`, `is h :: t`, `is []`) on a user type unfolds
+`@compiler_interface_sequence_view : f t -> SeqView (f t) t` (core union
+`$ SeqView s t = Empty | More t s`), stepping `More elem tail` per leading element and
+binding `..rest` (or requiring `Empty` for a fixed length). Check-directed in
+`type_pattern` (only user types route; builtin Str/List keep the fast path); lowering
+emits new core `Pat::HookEq` / `Pat::SeqView`, which `patmat` expands to boolean tests /
+nested `SeqView` matches before the later passes. Verified interpreter + ccg.
+
+### Original plan text
 
 - Add `@compiler_interface_equality` and `@compiler_interface_sequence_view`; core
   `SeqView` union and default overloads for builtin sequences.
