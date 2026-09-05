@@ -21,6 +21,10 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
     for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
+    let (nl, nf, np) = checker.newtype_sites();
+    resolved.newtype_lits.extend(nl.iter().copied());
+    resolved.newtype_fields.extend(nf.iter().copied());
+    resolved.newtype_pats.extend(np.iter().copied());
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -583,6 +587,19 @@ fn literal_hook_does_not_hijack_default() {
         $ custom : MyStr = \"xy\"\n\
         $ r : @int = @array_len plain + @array_len custom.bytes"; // 3 + 2
     assert_eq!(run(src, "r"), "5");
+}
+
+#[test]
+fn unbox_newtype_erases_wrapper() {
+    // `@struct @unbox` is a transparent newtype: construction, field access, and
+    // struct patterns all erase the wrapper (a zero-cost distinct type).
+    let src = "@mod M\n\
+        $ Meters : @struct @unbox = v: @int\n\
+        $ mk : @int -> Meters = \\x = Meters.{ .v = x }\n\
+        $ raw : Meters -> @int = \\m = m.v\n\
+        $ viap : Meters -> @int = \\m = is m | Meters.{ .v = n } => n else 0\n\
+        $ r : @int = raw (mk 5) + viap (mk 37)"; // 42
+    assert_eq!(run(src, "r"), "42");
 }
 
 #[test]

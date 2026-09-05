@@ -189,11 +189,27 @@ sugar still names `List`/`Cons`/`Nil` (its surface definition), and `@list` stay
 spelling alias for `List`. Verified interpreter + ccg (STRINGS, LISTS examples;
 `bare_variant_tag_resolves_by_expected_type` test).
 
-Still deferred (its own milestone): the `@str` -> `@array` fold, which touches C `char*`
-marshalling (`cabi`/`scalar_ckind`), string interpolation, display, and string patterns;
-and the interpreter's runtime `to_string`-of-a-list / FFI list marshalling special-cases
-(`machine/data.rs`, `machine/ffi.rs`), which are display/marshalling, not type-system
-hardcoding.
+Newtype unboxing LANDED (2026-09-05), the enabler for `Str`-as-a-library-type: instead
+of folding `@str` into `@array` (which throws away the `Str` vs raw-bytes distinction),
+`@struct @unbox` marks a transparent single-field newtype whose wrapper lowering ERASES
+(construction -> the field value, `x.f` -> `x`, a `T.{ .f = p }` pattern -> `p`). Since
+Thrax dispatches overloads statically, the runtime never needs to tell the newtype from
+its field, so this is sound and zero-cost. It is OPT-IN: an erased struct can no longer
+masquerade as an open record via the `Con ~ Record` bridge (the full suite caught this:
+`Box : @struct a = val: a` is used as `{ val | r }`), so automatic erasure of every
+single-field struct is unsound; `@unbox` is the author opting a type out of the bridge.
+Impl: checker records build/field/pattern sites (`newtype_sites`, gated on the `unbox`
+flag in `StructInfo`); lowering erases them (`newtype_build`/`newtype_pat`); parser takes
+`@struct @unbox`; a non-1-field `@unbox` errors. Verified interpreter + ccg
+(`unbox_newtype_erases_wrapper`, `unbox_newtype_matches_interpreter`).
+
+NEXT (the `Str` migration, its own step): define `Str : @struct @unbox = _buffer : @array`
+in CORE with an identity-shaped `@compiler_interface_string_literal` (which then folds via
+Stage 1) + an `@compiler_interface_equality`; rewrite `STR.thx` / `++` / `to_string` /
+interpolation over it; decide FFI (`Str` is not C-compatible / not null-terminated -- C
+interop goes through an explicit `to_c_string` / `CStr`); then drop the `Str`/`@str`
+builtin from the checker. Runtime list `to_string` / FFI list special-cases
+(`machine/data.rs`, `machine/ffi.rs`) are display/marshalling, tracked separately.
 
 ### Original plan text
 

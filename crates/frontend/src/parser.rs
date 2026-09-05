@@ -516,6 +516,12 @@ impl<'a> Parser<'a> {
                     } else {
                         None
                     };
+                    // `@struct @unbox` is a transparent single-field newtype: the
+                    // wrapper is erased at lowering, so it is a zero-cost distinct type.
+                    let unbox = self.at_intrinsic("unbox")?;
+                    if unbox {
+                        self.bump()?; // '@unbox'
+                    }
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@struct'");
                     let (includes, fields) = self.parse_struct_body()?;
@@ -526,6 +532,7 @@ impl<'a> Parser<'a> {
                         fields,
                         abi,
                         c_union: false,
+                        unbox,
                     });
                 }
                 "union" => {
@@ -544,6 +551,7 @@ impl<'a> Parser<'a> {
                             fields,
                             abi: Some(abi),
                             c_union: true,
+                            unbox: false,
                         });
                     }
                     let params = self.parse_type_params()?;

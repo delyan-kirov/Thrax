@@ -322,6 +322,13 @@ pub struct Resolved {
     /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
     /// `Pat::SeqView` that unfolds the view.
     pub sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<String>, String)>,
+    /// Single-field (`newtype`) struct sites lowering erases to their sole field:
+    /// builds, field reads, and patterns (from
+    /// [`crate::typing::Checker::newtype_sites`]). The wrapper is isomorphic to its
+    /// field, so it carries no runtime cost.
+    pub newtype_lits: HashSet<Aol<Expr>>,
+    pub newtype_fields: HashSet<Aol<Expr>>,
+    pub newtype_pats: HashSet<Aol<Pattern>>,
     /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
     pub codata_lits: HashSet<Aol<Expr>>,
     /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
@@ -833,6 +840,11 @@ impl<'a> Lowerer<'a> {
             Expr::Array { size } => Term::app(Term::var("@array_alloc"), self.expr(*size)),
 
             Expr::Field { record, name } => {
+                // Reading the sole field of a newtype: the wrapper is erased, so the
+                // access IS the value.
+                if self.resolved.newtype_fields.contains(&e) {
+                    return self.expr(*record);
+                }
                 let (record, name) = (*record, self.text(*name).to_string());
                 let field = Term::Field(Arc::new(self.expr(record)), name);
                 // A codata observation runs the stored thunk (`field {}`).
@@ -844,6 +856,11 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::StructLit { ty, fields, spread } => {
+                // A newtype build erases to its sole field's value (no wrapper).
+                if self.resolved.newtype_lits.contains(&e) {
+                    let fields = self.ast.slice(*fields).to_vec();
+                    return self.newtype_build(&fields, *spread);
+                }
                 // The nominal struct name comes from the AST (`Type.{..}`) or, for a
                 // bare `.{..}`, from the checker's resolution -- so a positional
                 // literal gets the right field-name layout.
@@ -1337,6 +1354,22 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Lower a newtype (single-field struct) build to its sole field's value: the
+    /// given field init if present, else the spread base (already the inner value).
+    fn newtype_build(&mut self, fields: &[FieldInit], spread: Option<Aol<Expr>>) -> Term {
+        if let Some(fi) = fields.first() {
+            let value = match fi {
+                FieldInit::Named { value, .. } => *value,
+                FieldInit::Positional(v) => *v,
+            };
+            self.expr(value)
+        } else if let Some(base) = spread {
+            self.expr(base)
+        } else {
+            Term::Unit
+        }
+    }
+
     fn struct_lit(
         &mut self,
         ty: Option<&str>,
@@ -1531,12 +1564,15 @@ impl<'a> Lowerer<'a> {
                 acc
             }
             Pattern::Struct { ty, fields } => {
+                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
+                if self.resolved.newtype_pats.contains(&p) {
+                    return self.newtype_pat(&fields);
+                }
                 let sname = self.text(*ty);
                 let names = self
                     .decls
                     .fields_of(&self.module, &self.imports, sname)
                     .map(<[String]>::to_vec);
-                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
                 Pat::Struct {
                     fields: self.field_pats(&fields, names.as_deref()),
                     rest: None,
@@ -1545,13 +1581,16 @@ impl<'a> Lowerer<'a> {
             // A record pattern matches a name-keyed record/struct by field name.
             // `..name` binds the leftover fields; `.._` (a wild rest) discards them.
             Pattern::Record { fields, rest } => {
+                let field_pats: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
+                if self.resolved.newtype_pats.contains(&p) {
+                    return self.newtype_pat(&field_pats);
+                }
                 let rest = rest.and_then(|r| match self.pnode(r) {
                     Pattern::Var(name) => Some(self.text(*name).to_string()),
                     _ => None,
                 });
-                let fields: Vec<FieldPat> = self.ast.slice(*fields).to_vec();
                 Pat::Struct {
-                    fields: self.field_pats(&fields, None),
+                    fields: self.field_pats(&field_pats, None),
                     rest,
                 }
             }
@@ -1575,6 +1614,17 @@ impl<'a> Lowerer<'a> {
                     fields: positional,
                 }
             }
+        }
+    }
+
+    /// A newtype (single-field struct) pattern erases to its sole field's subpattern,
+    /// matching the unboxed value directly.
+    fn newtype_pat(&mut self, fields: &[FieldPat]) -> Pat {
+        match fields.first() {
+            Some(FieldPat::Named { pat, .. }) => self.pat(*pat),
+            Some(FieldPat::Positional(pat)) => self.pat(*pat),
+            Some(FieldPat::Shorthand(name)) => Pat::Var(self.text(*name).to_string()),
+            None => Pat::Wild,
         }
     }
 

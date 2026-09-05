@@ -166,6 +166,9 @@ pub enum Item {
         /// size is the largest. Parsed with the struct-field syntax and otherwise
         /// handled as a C-repr struct, so it reuses construction and access.
         c_union: bool,
+        /// `@struct @unbox`: a transparent single-field newtype whose wrapper lowering
+        /// erases (construction / field access / patterns become the field's value).
+        unbox: bool,
     },
     /// `$ Name : @union [a b ...] = [with Other, ...] Tag : payload, ...`. `params`
     /// are the declared type parameters (inferred from the variants when omitted).

@@ -62,6 +62,8 @@ struct StructInfo<'a> {
     /// A C `union` (`@union @extern`): members share offset 0. Handled as a C-repr
     /// struct otherwise; only its layout and single-member construction differ.
     c_union: bool,
+    /// `@struct @unbox`: a transparent single-field newtype lowering erases.
+    unbox: bool,
 }
 
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
@@ -225,6 +227,14 @@ pub struct Checker<'a> {
     /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
     /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
     sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<&'a str>, String)>,
+    /// Single-field (`newtype`) struct sites: a literal that builds one, a field
+    /// access that reads its sole field, and a struct/record pattern that matches
+    /// one. Such a struct is isomorphic to its field, so lowering ERASES the wrapper
+    /// (construction / access / pattern become the field value / subpattern), giving
+    /// a zero-cost distinct type. Recorded here because lowering lacks the types.
+    newtype_lits: HashSet<Aol<Expr>>,
+    newtype_fields: HashSet<Aol<Expr>>,
+    newtype_pats: HashSet<Aol<Pattern>>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -359,6 +369,9 @@ impl<'a> Checker<'a> {
             literal_hooks: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
+            newtype_lits: HashSet::new(),
+            newtype_fields: HashSet::new(),
+            newtype_pats: HashSet::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -415,6 +428,14 @@ impl<'a> Checker<'a> {
     /// mapped to the hook's `(module, emitted name)`.
     pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, (Option<&'a str>, String)> {
         &self.sequence_pattern_hooks
+    }
+
+    /// Single-field (`newtype`) struct sites lowering erases: builds, field reads,
+    /// and patterns respectively.
+    pub fn newtype_sites(
+        &self,
+    ) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
+        (&self.newtype_lits, &self.newtype_fields, &self.newtype_pats)
     }
 
     /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
@@ -1439,6 +1460,7 @@ impl<'a> Checker<'a> {
                     fields,
                     abi,
                     c_union,
+                    unbox,
                 } => {
                     let (params, includes, fields) = (
                         self.ast.slice(*params),
@@ -1451,8 +1473,18 @@ impl<'a> Checker<'a> {
                     }
                     let name = self.text(*name);
                     let params = self.resolve_type_params("struct", name, params, collected)?;
-                    let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
+                    let fields: Vec<(&'a str, Aol<Ty>)> =
+                        fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     let crepr = abi.is_some();
+                    // An `@unbox` newtype is erased to its one field, so it must have
+                    // exactly one (a `with` splice may still add it, checked later).
+                    if *unbox && includes.is_empty() && fields.len() != 1 {
+                        return Err(diag!(
+                            Code::TypeMismatch, Span::at(0), 0,
+                            "an `@unbox` newtype must have exactly one field, but `{name}` has {}",
+                            fields.len()
+                        ));
+                    }
                     self.structs.insert(
                         name,
                         StructInfo {
@@ -1460,6 +1492,7 @@ impl<'a> Checker<'a> {
                             fields,
                             crepr,
                             c_union: *c_union,
+                            unbox: *unbox,
                         },
                     );
                     self.own_type_names.push(name);
@@ -1696,7 +1729,7 @@ impl<'a> Checker<'a> {
             }
             let params = self.splice_params("struct", name, collected)?;
             let prev = self.structs.get(name).expect("registered");
-            let (crepr, c_union) = (prev.crepr, prev.c_union);
+            let (crepr, c_union, unbox) = (prev.crepr, prev.c_union, prev.unbox);
             self.structs.insert(
                 name,
                 StructInfo {
@@ -1704,6 +1737,7 @@ impl<'a> Checker<'a> {
                     fields,
                     crepr,
                     c_union,
+                    unbox,
                 },
             );
         } else {
@@ -1951,6 +1985,11 @@ impl<'a> Checker<'a> {
             }
         };
 
+        // An `@unbox` newtype build erases to its sole field's value at lowering.
+        if info.unbox && info.fields.len() == 1 {
+            self.newtype_lits.insert(site);
+        }
+
         for (i, fi) in fields.iter().enumerate() {
             let (decl_ty, value) = match fi {
                 FieldInit::Named { name, value } => {
@@ -2132,6 +2171,15 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+    /// Whether `name` is an `@unbox` single-field newtype, whose runtime wrapper
+    /// lowering erases (it is isomorphic to its one field). Opt-in, since an erased
+    /// struct can no longer masquerade as an open record via the `Con ~ Record` bridge.
+    fn is_newtype_struct(&self, name: &str) -> bool {
+        self.structs
+            .get(name)
+            .is_some_and(|i| i.unbox && i.fields.len() == 1)
     }
 
     /// The union `ty`'s head names, if it is a (possibly applied) declared union that
@@ -2532,6 +2580,13 @@ impl<'a> Checker<'a> {
                         let obs_ty = *obs_ty;
                         self.observations.insert(e);
                         return Ok(self.ty_of_ast(obs_ty, &mut subst));
+                    }
+                }
+                // Reading the sole field of a newtype struct: lowering erases the
+                // wrapper, so the access is the value itself.
+                if let Some(sname) = self.struct_name_of(&rec_ty) {
+                    if self.is_newtype_struct(sname) {
+                        self.newtype_fields.insert(e);
                     }
                 }
                 self.infer_field(&rec_ty, name)
@@ -3797,10 +3852,22 @@ impl<'a> Checker<'a> {
             }
             Pattern::Struct { ty, fields } => {
                 let ty = self.text(*ty);
+                if self.is_newtype_struct(ty) {
+                    self.newtype_pats.insert(pat);
+                }
                 let fields = self.ast.slice(*fields);
                 self.type_struct_pattern(ty, fields, expected)
             }
             Pattern::Record { fields, rest } => {
+                // A record pattern matching a newtype struct (resolved from the
+                // expected type) erases like a qualified one.
+                if rest.is_none() {
+                    if let Some(sname) = self.struct_name_of(expected) {
+                        if self.is_newtype_struct(sname) {
+                            self.newtype_pats.insert(pat);
+                        }
+                    }
+                }
                 let fields = self.ast.slice(*fields);
                 self.type_record_pattern(fields, *rest, expected)
             }

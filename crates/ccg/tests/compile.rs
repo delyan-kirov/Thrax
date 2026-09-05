@@ -28,6 +28,10 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
     for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
     for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
+    let (nl, nf, np) = checker.newtype_sites();
+    resolved.newtype_lits.extend(nl.iter().copied());
+    resolved.newtype_fields.extend(nf.iter().copied());
+    resolved.newtype_pats.extend(np.iter().copied());
     let (clits, obs) = checker.codata_sites();
     resolved.codata_lits.extend(clits.iter().copied());
     resolved.observations.extend(obs.iter().copied());
@@ -1022,5 +1026,17 @@ fn pattern_hooks_match_interpreter() {
                $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
+    assert_matches(src, "r");
+}
+
+#[test]
+fn unbox_newtype_matches_interpreter() {
+    // An `@unbox` newtype erases identically on the C backend and the interpreter.
+    let src = "@mod M\n\
+               $ Meters : @struct @unbox = v: @int\n\
+               $ mk : @int -> Meters = \\x = Meters.{ .v = x }\n\
+               $ raw : Meters -> @int = \\m = m.v\n\
+               $ viap : Meters -> @int = \\m = is m | Meters.{ .v = n } => n else 0\n\
+               $ r : @int = raw (mk 5) + viap (mk 37)";
     assert_matches(src, "r");
 }
