@@ -10,7 +10,7 @@ $ with IO
 $ with OPT
 $ with STR
 
-$ path : Str = "/tmp/thrax_stdlib_io_test.txt"
+$ path : @str = "/tmp/thrax_stdlib_io_test.txt"
 
 # Write, append, read back, remove -- each step feeding the next.
 $ ck_roundtrip : @int =

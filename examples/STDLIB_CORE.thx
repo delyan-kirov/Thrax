@@ -22,7 +22,7 @@ $ ck_then   : @int =
 	if (unwrap_or (opt_then half o) 99) ?= 99 => 0 else 1
 
 # ---- tuples (the language's anonymous products) ----
-$ p : {@int, Str} = {1, "one"}
+$ p : {@int, @str} = {1, "one"}
 $ ck_fst  : @int = if p.0 ?= 1 => 0 else 1
 $ ck_snd  : @int = if p.1 ?= "one" => 0 else 1
 $ ck_swap : @int = if {p.1, p.0}.1 ?= 1 => 0 else 1

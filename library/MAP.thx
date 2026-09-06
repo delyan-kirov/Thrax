@@ -12,7 +12,7 @@
 #       ascending key order.
 
 $ with OPT
-$ with LIST
+$ with VEC
 $ with MATH
 $ with STR
 
@@ -32,14 +32,14 @@ $ new : (k -> k -> @int) -> Map k v = \c =
 
 $ new_int : Map @int v = new cmp_int
 
-$ new_str : Map Str v = new cmp_str
+$ new_str : Map @str v = new cmp_str
 
-$ from_list : (k -> k -> @int) -> @list {k, v} -> Map k v = \c ps =
+$ from_list : (k -> k -> @int) -> @vec {k, v} -> Map k v = \c ps =
 	foldl (\m p = insert m p.0 p.1) (new c) ps
 
 # Lexicographic ordering on pairs, composed from element orderings the
 # standard comparison for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)`
-# orders a `Map {@int, Str} `V`.
+# orders a `Map {@int, @str} `V`.
 $ cmp_pair : (a -> a -> @int) -> (b -> b -> @int)
              -> {a, b} -> {a, b} -> @int = \ca cb x y =
 	let c = ca x.0 y.0 in
@@ -88,11 +88,11 @@ $ is_empty : Map k v -> @bool = \m = m.count ?= 0
 # ---- whole-map operations ----
 
 # Entries in ascending key order.
-$ to_list : Map k v -> @list {k, v} = \m = tlist m.root []
+$ to_list : Map k v -> @vec {k, v} = \m = tlist m.root []
 
-$ keys : Map k v -> @list k = \m = map (\p = p.0) (to_list m)
+$ keys : Map k v -> @vec k = \m = map (\p = p.0) (to_list m)
 
-$ values : Map k v -> @list v = \m = map (\p = p.1) (to_list m)
+$ values : Map k v -> @vec v = \m = map (\p = p.1) (to_list m)
 
 # Fold entries in ascending key order: `f acc k v`.
 $ fold : (a -> k -> v -> a) -> a -> Map k v -> a = \f acc m =
@@ -190,7 +190,7 @@ $ drop_min : Tree k v -> Tree k v = \t =
 		(is l | Tree.Leaf => r else balance k v (drop_min l) r)
 	else Tree.Leaf
 
-$ tlist : Tree k v -> @list {k, v} -> @list {k, v} = \t acc =
+$ tlist : Tree k v -> @vec {k, v} -> @vec {k, v} = \t acc =
 	is t | Tree.Node.{k, v, l, r, _} =>
 		tlist l ({k, v} :: tlist r acc)
 	else acc

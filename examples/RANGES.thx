@@ -1,5 +1,5 @@
 @mod RANGES
-$ with LIST
+$ with VEC
 $ with LA
 
 # \file ranges.thx
@@ -10,7 +10,7 @@ $ with LA
 #       scrutinee variable stays in scope in the arm if you need the value.
 #       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
-$ grade : @int -> Str = \n =
+$ grade : @int -> @str = \n =
 	is n
 		| 90 ... 100 => "A"
 		| 80 ...  89 => "B"
@@ -19,7 +19,7 @@ $ grade : @int -> Str = \n =
 	else "F"
 
 # An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
-$ sign : @int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
+$ sign : @int -> @str = \n = is n | 0 ... => "nonneg" else "neg"
 $ ck_open_pat : @int = if sign 3 ?= "nonneg" => 0 else 1024
 $ ck_open_neg : @int = if sign (0 - 3) ?= "neg" => 0 else 2048
 
@@ -36,9 +36,9 @@ $ band : Real -> @int = \x =
 $ ck_r : @int = if band 0.25 ?= 1 => 0 else 32
 
 # EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
-# same `...`, materialized). By default it is a `@list @int` (a runtime-length
+# same `...`, materialized). By default it is a `@vec @int` (a runtime-length
 # sequence). Empty when lo > hi.
-$ ns : @list @int = [1 ... 4]                         # [1, 2, 3, 4]
+$ ns : @vec @int = [1 ... 4]                         # [1, 2, 3, 4]
 $ ck_build : @int = if sum ns ?= 10 => 0 else 64
 $ ck_len   : @int = if length ns ?= 4 => 0 else 128
 $ ck_empty : @int = if length [5 ... 2] ?= 0 => 0 else 256

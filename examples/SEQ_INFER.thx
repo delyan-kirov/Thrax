@@ -1,6 +1,6 @@
 @mod SEQ_INFER
 
-# `[..]` infers its container from context: @list by default, @array when the
+# `[..]` infers its container from context: @vec by default, @array when the
 # type says so (see documentation/strings-and-arrays.md). Same syntax, no `@`.
 
 # @array context -> a byte vector.
@@ -8,9 +8,9 @@ $ bytes : @array = [10, 20, 30]
 $ ck_alen : @int = if (@array_len bytes) ?= 3 => 0 else 1
 $ ck_a1   : @int = if (@array_get bytes 1) ?= 20 => 0 else 1
 
-# @list context -> the blessed @list.
-$ nums : @list @int = [1, 2, 3, 4]
-$ sum : @list @int -> @int = \xs =
+# @vec context -> the blessed @vec.
+$ nums : @vec @int = [1, 2, 3, 4]
+$ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
 	           else 0
@@ -18,12 +18,12 @@ $ ck_sum : @int = if (sum nums) ?= 10 => 0 else 1
 
 # Empty literal in each context.
 $ empt_a : @array = []
-$ empt_l : @list @int = []
+$ empt_l : @vec @int = []
 $ ck_ea : @int = if (@array_len empt_a) ?= 0 => 0 else 1
 $ ck_el : @int = if (sum empt_l) ?= 0 => 0 else 1
 
-# Unannotated defaults to @list.
-$ deflist : @list @int = [7, 8]
+# Unannotated defaults to @vec.
+$ deflist : @vec @int = [7, 8]
 $ ck_def : @int = if (sum deflist) ?= 15 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.

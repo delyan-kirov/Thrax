@@ -8,7 +8,7 @@
 # cleanup by performing an effect a handler collects.
 
 $ Y   : @effect = yield : @int -> {},
-$ Exn : @effect = throw : Str -> a,
+$ Exn : @effect = throw : @str -> a,
 
 # Sum every yielded value, plus the body's own result.
 $ sum : ({} -> <Y> @int) -> @int =

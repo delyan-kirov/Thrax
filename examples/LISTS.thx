@@ -1,24 +1,24 @@
 @mod LISTS
 
 # \file lists.thx
-# \info The blessed `@list` type and its literal sugar. `[a, b, c]` builds a
+# \info The blessed `@vec` type and its literal sugar. `[a, b, c]` builds a
 #       list, `h :: t` conses onto one, and `[]` is the empty list -- all
-#       desugaring to the prelude's `@list.Cons` / `@list.Nil` variant
+#       desugaring to the prelude's `@vec.Cons` / `@vec.Nil` variant
 #       constructors. Patterns mirror the sugar: `is []` / `is h :: t` in a
 #       `when` destructure a list one cell at a time, and a fixed-arity
 #       `[a, b]` matches a list of exactly that length.
 
-$ sum : @list @int -> @int = \xs =
+$ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
 	           else 0
 
-$ length : @list @int -> @int = \xs =
+$ length : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | _ :: t => 1 + length t
 	           else 0
 
-$ map_inc : @list @int -> @list @int = \xs =
+$ map_inc : @vec @int -> @vec @int = \xs =
 	is xs | [] => []
 	           | h :: t => (h + 1) :: map_inc t
 	           else []
@@ -27,7 +27,7 @@ $ map_inc : @list @int -> @list @int = \xs =
 # nest freely -- `[a, b]` is `Cons(a, Cons(b, Nil))`, so it binds two cells and
 # checks the third is `Nil`. Two arms may share the `Cons` head (`[a]` and
 # `[a, b]`); a failed inner match falls through to the next arm.
-$ size_class : @list @int -> @int = \xs =
+$ size_class : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | [a] => 1
 	           | [a, b] => 2
@@ -37,11 +37,11 @@ $ size_class : @list @int -> @int = \xs =
 # (the remaining list), so it matches AT LEAST that many elements -- `[a, ..t]`
 # is exactly `a :: t`, and `[a, b, ..t]` is `a :: b :: t`. `[..all]` binds the
 # whole list.
-$ second : @list @int -> @int = \xs =
+$ second : @vec @int -> @int = \xs =
 	is xs | [_, x, ..rest] => x
 	         else 0-1
 
-$ drop2 : @list @int -> @list @int = \xs =
+$ drop2 : @vec @int -> @vec @int = \xs =
 	is xs | [_, _, ..rest] => rest
 	         else []
 
@@ -52,8 +52,8 @@ $ ck_head_tail : @int = is xs | [h, ..t] =>
 	if (h + sum t) ?= 15 => 0 else 1 else 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
-$ xs : @list @int = [1, 2, 3, 4, 5]
-$ ys : @list @int = 1 :: 2 :: 3 :: 4 :: 5 :: []
+$ xs : @vec @int = [1, 2, 3, 4, 5]
+$ ys : @vec @int = 1 :: 2 :: 3 :: 4 :: 5 :: []
 
 $ ck_sum : @int = if (sum xs) ?= 15 => 0 else 1
 $ ck_len : @int = if (length xs) ?= 5 => 0 else 1

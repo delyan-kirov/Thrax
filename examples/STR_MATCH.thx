@@ -2,7 +2,7 @@
 
 # Exact string pattern matching: `when s is "lit" then ...` compiles to a
 # byte-equality test, falling through arm to arm (see documentation/strings-and-arrays.md).
-$ classify : Str -> @int = \s =
+$ classify : @str -> @int = \s =
 	is s | "yes" => 1
 	         | "no" => 0
 	         | "maybe" => 2
@@ -15,7 +15,7 @@ $ ck_other : @int = if (classify "huh") ?= 99 => 0 else 1
 
 # `else` binds the whole scrutinee, so a string arm can fall through to a
 # default that reuses it.
-$ greet : Str -> Str = \name =
+$ greet : @str -> @str = \name =
 	is name | "" => "nobody"
 	           else "hello " ++ name
 

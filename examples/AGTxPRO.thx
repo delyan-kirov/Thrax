@@ -5,7 +5,7 @@
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
 $ Person : @struct =
-	name: Str,
+	name: @str,
 	age: @int,
 
 # A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
@@ -16,7 +16,7 @@ $ person : Person = Person.{
 }
 
 # Field access reads a field out of a struct.
-$ who : Str = person.name
+$ who : @str = person.name
 $ yrs : @int = person.age
 
 # Fields compose like any other expression.
@@ -29,27 +29,27 @@ $ Box : @struct t =
 
 # One declaration, two instantiations in the same program.
 $ ibox : Box @int = Box.{ .val = 7 }
-$ sbox : Box Str = Box.{ .val = "hi" }
+$ sbox : Box @str = Box.{ .val = "hi" }
 
 # Field access returns the field at the receiver's instantiation: `ibox.val` is
-# an @int, `sbox.val` is a Str. The tight annotations make a wrong one a type
+# an @int, `sbox.val` is a @str. The tight annotations make a wrong one a type
 # error.
 $ unboxed : @int = ibox.val
-$ label   : Str = sbox.val
+$ label   : @str = sbox.val
 
 # Two parameters, applied in declared order: `Pair a b`.
 $ Pair : @struct a b =
 	fst: a,
 	snd: b,
 
-$ pair  : Pair @int Str = Pair.{ .fst = 1, .snd = "two" }
+$ pair  : Pair @int @str = Pair.{ .fst = 1, .snd = "two" }
 $ left  : @int          = pair.fst
-$ right : Str          = pair.snd
+$ right : @str          = pair.snd
 
 # An alias may partially instantiate a generic type: `IntPair b` fixes `fst` to
-# @int and keeps `snd` open. `IntPair Str` expands to `Pair @int Str`.
+# @int and keeps `snd` open. `IntPair @str` expands to `Pair @int @str`.
 $ IntPair : @alias b = Pair @int b
-$ ip    : IntPair Str = .{ .fst = 3, .snd = "z" }
+$ ip    : IntPair @str = .{ .fst = 3, .snd = "z" }
 $ ipfst : @int         = ip.fst
 
 $ Weirdtype : @struct a b =

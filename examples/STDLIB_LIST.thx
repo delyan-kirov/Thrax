@@ -1,14 +1,14 @@
 @mod STDLIB_LIST
 
 # \file STDLIB_LIST.thx
-# \info The standard library's LIST module: transformation, folding,
-#       indexing and searching over the prelude's `@list`. Operations that
+# \info The standard library's VEC module: transformation, folding,
+#       indexing and searching over the prelude's `@vec`. Operations that
 #       need equality take it explicitly (dictionary passing).
 
-$ with LIST
+$ with VEC
 $ with OPT
 
-$ xs : @list @int = range 1 5 # [1, 2, 3, 4, 5]
+$ xs : @vec @int = range 1 5 # [1, 2, 3, 4, 5]
 
 $ ck_range  : @int = if (length xs) ?= 5 => 0 else 1
 $ ck_sum    : @int = if (sum xs) ?= 15 => 0 else 1

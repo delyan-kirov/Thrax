@@ -787,9 +787,11 @@ impl<'a> Lowerer<'a> {
                     }
                     Term::app(Term::var("@tensor_stack"), acc)
                 } else {
-                    let mut acc = nil();
-                    for e in items.into_iter().rev() {
-                        acc = cons(self.expr(e), acc);
+                    // The default sequence is a `@vec`: start empty, push each element.
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
                     }
                     acc
                 }
@@ -821,7 +823,7 @@ impl<'a> Lowerer<'a> {
                         }
                         Term::app(Term::var("@tensor_stack"), acc)
                     }
-                    // The default `List Int`: the inclusive `CORE.range lo hi`.
+                    // The default `@vec @int`: the inclusive `CORE.range lo hi`.
                     Some(hi) => {
                         let lo = self.expr(lo);
                         let hi = self.expr(hi);
@@ -1247,7 +1249,8 @@ impl<'a> Lowerer<'a> {
             }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
-            "::" => cons(self.expr(lhs), self.expr(rhs)),
+            // `x :: xs` prepends to a `@vec` (the default sequence), via CORE's `vcons`.
+            "::" => Term::app(Term::app(Term::var("vcons"), self.expr(lhs)), self.expr(rhs)),
             // The operator resolves like an overloaded call: a built-in use keeps
             // the bare name (a runtime builtin), a user overload carries the
             // resolved module (and mangled name) the checker recorded at this site.
@@ -1491,44 +1494,37 @@ impl<'a> Lowerer<'a> {
                 let pats: Vec<Aol<Pattern>> = self.ast.slice(*pats).to_vec();
                 Pat::Tuple(pats.into_iter().map(|p| self.pat(p)).collect())
             }
+            // `h :: t` / `[a, b, ..r]` / `[]` match any sequence by unfolding its
+            // `sequence_view` hook (the default `@vec`, or a user type). The checker
+            // records the resolved hook for every such pattern.
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
-                if let Some(view) = self.resolved.sequence_pattern_hooks.get(&p).cloned() {
-                    return Pat::SeqView {
-                        view,
-                        elems: vec![self.pat(head)],
-                        rest: Some(Box::new(self.pat(tail))),
-                    };
-                }
-                Pat::Variant {
-                    tag: "Cons".into(),
-                    fields: vec![self.pat(head), self.pat(tail)],
+                let view = self
+                    .resolved
+                    .sequence_pattern_hooks
+                    .get(&p)
+                    .cloned()
+                    .expect("a `::` pattern resolves a sequence_view hook");
+                Pat::SeqView {
+                    view,
+                    elems: vec![self.pat(head)],
+                    rest: Some(Box::new(self.pat(tail))),
                 }
             }
             Pattern::List { elems, rest } => {
                 let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
                 let rest = *rest;
-                if let Some(view) = self.resolved.sequence_pattern_hooks.get(&p).cloned() {
-                    return Pat::SeqView {
-                        view,
-                        elems: elems.into_iter().map(|e| self.pat(e)).collect(),
-                        rest: rest.map(|r| Box::new(self.pat(r))),
-                    };
+                let view = self
+                    .resolved
+                    .sequence_pattern_hooks
+                    .get(&p)
+                    .cloned()
+                    .expect("a list pattern resolves a sequence_view hook");
+                Pat::SeqView {
+                    view,
+                    elems: elems.into_iter().map(|e| self.pat(e)).collect(),
+                    rest: rest.map(|r| Box::new(self.pat(r))),
                 }
-                let mut acc = match rest {
-                    Some(r) => self.pat(r),
-                    None => Pat::Variant {
-                        tag: "Nil".into(),
-                        fields: Vec::new(),
-                    },
-                };
-                for e in elems.into_iter().rev() {
-                    acc = Pat::Variant {
-                        tag: "Cons".into(),
-                        fields: vec![self.pat(e), acc],
-                    };
-                }
-                acc
             }
             Pattern::Struct { ty, fields } => {
                 let sname = self.text(*ty);
@@ -1772,18 +1768,3 @@ fn let_chain(binds: &[(String, Term)], inner: Term) -> Term {
     acc
 }
 
-fn nil() -> Term {
-    Term::Variant {
-        ty: "List".into(),
-        tag: "Nil".into(),
-        fields: Arc::from([]),
-    }
-}
-
-fn cons(head: Term, tail: Term) -> Term {
-    Term::Variant {
-        ty: "List".into(),
-        tag: "Cons".into(),
-        fields: Arc::from([head, tail]),
-    }
-}

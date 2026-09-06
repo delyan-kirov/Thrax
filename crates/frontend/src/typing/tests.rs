@@ -70,11 +70,11 @@ fn identity_is_polymorphic() {
 
 #[test]
 fn polymorphic_id_used_at_two_types() {
-    // Using a generalized `id` at @int and Str must not conflict.
+    // Using a generalized `id` at @int and @str must not conflict.
     let src = "@mod M\n\
                    $ id = \\x = x\n\
                    $ pair = let a = id 1, b = id \"s\" in {a, b}";
-    assert_eq!(type_of(src, "pair"), "{@int, Str}");
+    assert_eq!(type_of(src, "pair"), "{@int, @str}");
 }
 
 #[test]
@@ -100,8 +100,8 @@ fn recursion_through_predeclared_globals() {
 
 #[test]
 fn tuples_and_lists() {
-    assert_eq!(type_of("@mod M\n$ p = {1, \"a\"}", "p"), "{@int, Str}");
-    assert_eq!(type_of("@mod M\n$ xs = [1, 2, 3]", "xs"), "@list @int");
+    assert_eq!(type_of("@mod M\n$ p = {1, \"a\"}", "p"), "{@int, @str}");
+    assert_eq!(type_of("@mod M\n$ xs = [1, 2, 3]", "xs"), "@vec @int");
 }
 
 #[test]
@@ -131,22 +131,22 @@ fn unbound_name_is_reported() {
 #[test]
 fn struct_field_access_is_typed() {
     let src = "@mod M\n\
-                   $ P : @struct = x: @int, y: Str\n\
+                   $ P : @struct = x: @int, y: @str\n\
                    $ p : P = P.{ .x = 1, .y = \"s\" }\n\
                    $ gx = p.x\n\
                    $ gy = p.y";
     assert_eq!(type_of(src, "gx"), "@int");
-    assert_eq!(type_of(src, "gy"), "Str");
+    assert_eq!(type_of(src, "gy"), "@str");
 }
 
 #[test]
 fn generic_struct_instantiates_per_use() {
     let src = "@mod M\n\
                    $ Box : @struct t = val: t\n\
-                   $ b : Box Str = Box.{ .val = \"hi\" }\n\
+                   $ b : Box @str = Box.{ .val = \"hi\" }\n\
                    $ out = b.val";
-    assert_eq!(type_of(src, "b"), "Box Str");
-    assert_eq!(type_of(src, "out"), "Str");
+    assert_eq!(type_of(src, "b"), "Box @str");
+    assert_eq!(type_of(src, "out"), "@str");
 }
 
 #[test]
@@ -179,20 +179,21 @@ fn recursive_let_binding() {
 #[test]
 fn arithmetic_is_overloaded_on_int_and_real() {
     assert_eq!(type_of("@mod M\n$ a = 1 + 2", "a"), "@int");
-    assert_eq!(type_of("@mod M\n$ a = 1.0 + 2.0", "a"), "Real");
-    // A real anywhere in the chain makes an integer literal Real.
-    assert_eq!(type_of("@mod M\n$ a = 1 + 2.0", "a"), "Real");
+    assert_eq!(type_of("@mod M\n$ a = 1.0 + 2.0", "a"), "@float64");
+    // An integer literal never adopts a float type: mixing one with a real literal
+    // is an error, not a silent promotion. Write the float literal instead.
+    assert!(errors("@mod M\n$ a = 1 + 2.0").contains("no viable overload"));
 }
 
 #[test]
 fn user_overload_resolves_by_argument_type() {
     let src = "@mod M\n\
                    $ f : @int -> @int = \\x = x + 1\n\
-                   $ f : Str -> Str = \\x = x ++ \"!\"\n\
+                   $ f : @str -> @str = \\x = x ++ \"!\"\n\
                    $ a = f 3\n\
                    $ b = f \"hi\"";
     assert_eq!(type_of(src, "a"), "@int");
-    assert_eq!(type_of(src, "b"), "Str");
+    assert_eq!(type_of(src, "b"), "@str");
 }
 
 #[test]
@@ -221,7 +222,7 @@ fn sized_literal_arithmetic_takes_the_result_type() {
 fn no_matching_overload_is_reported() {
     let src = "@mod M\n\
                    $ f : @int -> @int = \\x = x\n\
-                   $ f : Str -> Str = \\x = x\n\
+                   $ f : @str -> @str = \\x = x\n\
                    $ bad = f 1.0";
     assert!(errors(src).contains("no viable overload"));
 }
@@ -279,11 +280,11 @@ fn with_scopes_struct_fields() {
 
 #[test]
 fn sequence_literal_is_type_directed() {
-    // The same `[..]` is an @array in @array context, a @list otherwise.
+    // The same `[..]` is an @array in @array context, a @vec otherwise.
     assert_eq!(type_of("@mod M\n$ a : @array = [10, 20]", "a"), "@array");
     assert_eq!(
-        type_of("@mod M\n$ a : @list @int = [1, 2, 3]", "a"),
-        "@list @int"
+        type_of("@mod M\n$ a : @vec @int = [1, 2, 3]", "a"),
+        "@vec @int"
     );
     // An @array-typed parameter directs a `[..]` argument at the call site.
     let src = "@mod M\n\
@@ -342,7 +343,7 @@ fn single_argument_externs_are_accepted() {
     // argument each, so all three shapes pass the extern-shape check.
     let src = "@mod M\n\
                $ f : {a: @int, b: @int} -> @int = @extern \"C\" \"f\" \"lib\"\n\
-               $ g : Str -> @int = @extern \"C\" \"g\" \"lib\"\n\
+               $ g : @str -> @int = @extern \"C\" \"g\" \"lib\"\n\
                $ h : {} -> @int = @extern \"C\" \"h\" \"lib\"";
     assert_eq!(errors(src), "");
 }
@@ -414,7 +415,7 @@ fn classify_entry_recognizes_the_entry_forms() {
     };
     assert_eq!(kind("@mod MAIN\n$ main : {} -> <| e> @int = \\u = 0"), EntryKind::UnitFn);
     assert_eq!(
-        kind("@mod MAIN\n$ main : [n]Str -> <| e> @int = \\a = 0"),
+        kind("@mod MAIN\n$ main : [n]@str -> <| e> @int = \\a = 0"),
         EntryKind::ArgvFn
     );
     assert_eq!(kind("@mod MAIN\n$ main : @int = 0"), EntryKind::Value);
@@ -423,15 +424,15 @@ fn classify_entry_recognizes_the_entry_forms() {
 
 #[test]
 fn same_operation_in_two_effects_resolves_by_result_type() {
-    // `ask` is declared by two effects (@int and Str result); a bare use is an
+    // `ask` is declared by two effects (@int and @str result); a bare use is an
     // overload resolved by how the result is used, and `Effect.op` disambiguates.
     let src = "@mod M\n\
                    $ Reader : @effect = ask : {} -> @int,\n\
-                   $ Config : @effect = ask : {} -> Str,\n\
+                   $ Config : @effect = ask : {} -> @str,\n\
                    $ n : @int = do (ask {}) + 1 ctl k | Reader.ask u => k 10\n\
-                   $ s : Str = do Config.ask {} ctl k | Config.ask u => k \"hi\"";
+                   $ s : @str = do Config.ask {} ctl k | Config.ask u => k \"hi\"";
     assert_eq!(type_of(src, "n"), "@int");
-    assert_eq!(type_of(src, "s"), "Str");
+    assert_eq!(type_of(src, "s"), "@str");
 }
 
 #[test]
@@ -503,7 +504,7 @@ fn c_union_layout_overlaps() {
 
 #[test]
 fn crepr_struct_rejects_non_c_field() {
-    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" = s: Str,");
+    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" = s: @str,");
     assert!(e.contains("not C-representable"), "{e}");
 }
 
@@ -515,16 +516,16 @@ fn crepr_struct_rejects_generic() {
 
 #[test]
 fn real_literal_takes_real32_width() {
-    // A `Real` literal checks against a `@float32` expected type (like an integer
+    // A `@float64` literal checks against a `@float32` expected type (like an integer
     // literal takes its width), so a float C struct binds with plain literals.
     let src = "@mod M\n\
         $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
         $ v : Vector2 = Vector2.{ .x = 1.0, .y = 2.5 }\n\
         $ f : @float32 = 3.5\n\
-        $ g : Real = 3.5";
+        $ g : @float64 = 3.5";
     assert_eq!(type_of(src, "v"), "Vector2");
     assert_eq!(type_of(src, "f"), "@float32");
-    assert_eq!(type_of(src, "g"), "Real");
+    assert_eq!(type_of(src, "g"), "@float64");
 }
 
 #[test]

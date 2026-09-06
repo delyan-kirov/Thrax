@@ -21,8 +21,8 @@ $ buf4 : @array = make 32
 
 $ Count: @alias = @int
 
-# `@list` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
-$ IntList: @alias = @list @int
+# `@vec` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
+$ IntList: @alias = @vec @int
 
 $ list: IntList = 1 :: []
 

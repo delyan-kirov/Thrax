@@ -14,16 +14,16 @@ $ with STR
 
 # ---- console ----
 
-$ print : Str -> {} = \s =
+$ print : @str -> {} = \s =
 	C.write {1, s, @array_len s}; {}
 
-$ println : Str -> {} = \s =
+$ println : @str -> {} = \s =
 	C.write {1, s, @array_len s}; C.write {1, "\n", 1}; {}
 
-$ eprint : Str -> {} = \s =
+$ eprint : @str -> {} = \s =
 	C.write {2, s, @array_len s}; {}
 
-$ eprintln : Str -> {} = \s =
+$ eprintln : @str -> {} = \s =
 	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
 
 $ print_int : @int -> {} = \n = print (from_int n)
@@ -32,9 +32,9 @@ $ println_int : @int -> {} = \n = println (from_int n)
 
 # One line from stdin, without the trailing newline. Returns "" at
 # end-of-input (indistinguishable from an empty line).
-$ read_line : {} -> Str = \u = read_line_acc ""
+$ read_line : {} -> @str = \u = read_line_acc ""
 
-$ read_line_acc : Str -> Str = \acc =
+$ read_line_acc : @str -> @str = \acc =
 	let c = C.getchar {} in
 	if c ?= 10 => acc
 	else if is_byte c => read_line_acc (@array_push acc c)
@@ -47,9 +47,9 @@ $ is_byte : @int -> @bool = \c =
 
 # ---- files ----
 
-# The whole file as a Str; None when it cannot be opened. Reads are counted
+# The whole file as a @str; None when it cannot be opened. Reads are counted
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
-$ read_file : Str -> Option Str = \path =
+$ read_file : @str -> Option @str = \path =
 	let f = C.fopen {path, "rb"} in
 	if f ?= 0 => Option.None
 	else
@@ -60,7 +60,7 @@ $ read_file : Str -> Option Str = \path =
 		C.fclose f;
 		Option.Some.{ body }
 
-$ read_bytes : @int -> @int -> Str -> Str = \f n acc =
+$ read_bytes : @int -> @int -> @str -> @str = \f n acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
@@ -69,25 +69,25 @@ $ read_bytes : @int -> @int -> Str -> Str = \f n acc =
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : Str -> Str -> @bool = \path content =
+$ write_file : @str -> @str -> @bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : Str -> Str -> @bool = \path content =
+$ append_file : @str -> @str -> @bool = \path content =
 	spill_file path content "ab"
 
-$ spill_file : Str -> Str -> Str -> @bool = \path content mode =
+$ spill_file : @str -> @str -> @str -> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
 	if f ?= 0 => @false
 	else
 		C.fputs {content, f};
 		(C.fclose f) ?= 0
 
-$ remove_file : Str -> @bool = \path =
+$ remove_file : @str -> @bool = \path =
 	(C.remove path) ?= 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
-$ env : Str -> Str = \name = C.getenv name
+$ env : @str -> @str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
 $ now : {} -> @int = \u = C.time 0

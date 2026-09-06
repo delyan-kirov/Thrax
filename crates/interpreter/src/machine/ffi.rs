@@ -296,21 +296,21 @@ fn parse_fn_sig(ty: &str) -> Option<(Vec<std::os::raw::c_int>, std::os::raw::c_i
     Some((args, scalar_ffi_kind(ret_part)?))
 }
 
-/// The libffi kind for a scalar marshal name (both friendly and `@`-sigil forms).
+/// The libffi kind for a scalar marshal name.
 fn scalar_ffi_kind(name: &str) -> Option<std::os::raw::c_int> {
     Some(match name {
-        "@float64" | "Real" | "Real64" => kind::DOUBLE,
-        "@float32" | "Real32" => kind::FLOAT,
-        "@ptr" | "Ptr" | "@str" | "@array" | "Str" | "Array" => kind::PTR,
-        "@int8" | "Int8" => kind::S8,
-        "@int16" | "Int16" => kind::S16,
-        "@int32" | "Int32" => kind::S32,
-        "@int64" | "Int64" | "Int" => kind::S64,
-        "@nat8" | "Nat8" => kind::U8,
-        "@nat16" | "Nat16" => kind::U16,
-        "@nat32" | "Nat32" => kind::U32,
-        "@nat64" | "Nat64" | "Nat" => kind::U64,
-        "@bool" | "Bool" => kind::U8,
+        "@float64" => kind::DOUBLE,
+        "@float32" => kind::FLOAT,
+        "@ptr" | "@str" | "@array" => kind::PTR,
+        "@int8" => kind::S8,
+        "@int16" => kind::S16,
+        "@int32" => kind::S32,
+        "@int64" | "@int" => kind::S64,
+        "@nat8" => kind::U8,
+        "@nat16" => kind::U16,
+        "@nat32" => kind::U32,
+        "@nat64" | "@nat" => kind::U64,
+        "@bool" => kind::U8,
         "{}" => kind::VOID,
         _ => return None,
     })
@@ -335,25 +335,16 @@ fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
     // `Bytes` appends is harmless (C reads a separately-passed count).
     if let Some(elem) = ty.strip_prefix("@structs(").and_then(|s| s.strip_suffix(')')) {
         let layout = layout_of(elem)
-            .ok_or_else(|| fault(format!("FFI: `List {elem}` is not a C-repr struct array")))?;
+            .ok_or_else(|| fault(format!("FFI: `@vec {elem}` is not a C-repr struct array")))?;
         let mut bytes = Vec::new();
-        let mut cur = v.clone();
-        loop {
-            let step = match &*cur.borrow() {
-                Value::Variant { tag, fields, .. } if tag == "Cons" => {
-                    Some((fields[0].clone(), fields[1].clone()))
-                }
-                _ => None,
-            };
-            match step {
-                Some((head, tail)) => {
-                    let mut elem_bytes = vec![0u8; layout.size];
-                    pack_struct(&layout, &head, &mut elem_bytes)?;
-                    bytes.extend_from_slice(&elem_bytes);
-                    cur = tail;
-                }
-                None => break,
-            }
+        let items = match &*v.borrow() {
+            Value::Vector(items) => items.clone(),
+            _ => return Err(fault("FFI: a C struct array expects a `@vec`")),
+        };
+        for item in items.iter() {
+            let mut elem_bytes = vec![0u8; layout.size];
+            pack_struct(&layout, item, &mut elem_bytes)?;
+            bytes.extend_from_slice(&elem_bytes);
         }
         return Ok(CArg::Bytes(bytes));
     }
@@ -367,23 +358,23 @@ fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
         return Ok(CArg::Struct { leaves, bytes });
     }
     Ok(match ty {
-        "@float64" | "Real" | "Real64" => CArg::Double(read_real(v)?),
-        "@float32" | "Real32" => CArg::Float(read_real(v)? as f32),
-        "@str" | "@array" | "Str" | "Array" => CArg::Bytes(read_bytes(v)?),
-        "@ptr" | "Ptr" => CArg::Ptr(read_word(v)?),
+        "@float64" => CArg::Double(read_real(v)?),
+        "@float32" => CArg::Float(read_real(v)? as f32),
+        "@str" | "@array" => CArg::Bytes(read_bytes(v)?),
+        "@ptr" => CArg::Ptr(read_word(v)?),
         // A `{}` parameter is a nullary C function's placeholder: an ignored word.
         "{}" => CArg::Int {
             kind: kind::S64,
             val: 0,
         },
-        "@int8" | "Int8" => int_arg(kind::S8, v)?,
-        "@int16" | "Int16" => int_arg(kind::S16, v)?,
-        "@int32" | "Int32" => int_arg(kind::S32, v)?,
-        "@int64" | "Int64" => int_arg(kind::S64, v)?,
-        "@nat8" | "Nat8" => int_arg(kind::U8, v)?,
-        "@nat16" | "Nat16" => int_arg(kind::U16, v)?,
-        "@nat32" | "Nat32" => int_arg(kind::U32, v)?,
-        "@nat64" | "Nat64" | "Nat" => int_arg(kind::U64, v)?,
+        "@int8" => int_arg(kind::S8, v)?,
+        "@int16" => int_arg(kind::S16, v)?,
+        "@int32" => int_arg(kind::S32, v)?,
+        "@int64" => int_arg(kind::S64, v)?,
+        "@nat8" => int_arg(kind::U8, v)?,
+        "@nat16" => int_arg(kind::U16, v)?,
+        "@nat32" => int_arg(kind::U32, v)?,
+        "@nat64" | "@nat" => int_arg(kind::U64, v)?,
         _ => int_arg(kind::S64, v)?,
     })
 }
@@ -411,18 +402,18 @@ fn classify_ret(ty: &str) -> RetPlan {
         };
     }
     let (ffi_kind, wrap) = match ty {
-        "@float64" | "Real" | "Real64" => (kind::DOUBLE, Wrap::Real),
-        "@float32" | "Real32" => (kind::FLOAT, Wrap::Real),
-        "@str" | "@array" | "Str" | "Array" => (kind::PTR, Wrap::Bytes),
-        "@ptr" | "Ptr" => (kind::PTR, Wrap::Int),
+        "@float64" => (kind::DOUBLE, Wrap::Real),
+        "@float32" => (kind::FLOAT, Wrap::Real),
+        "@str" | "@array" => (kind::PTR, Wrap::Bytes),
+        "@ptr" => (kind::PTR, Wrap::Int),
         "{}" => (kind::VOID, Wrap::Unit),
-        "@int8" | "Int8" => (kind::S8, Wrap::Int),
-        "@int16" | "Int16" => (kind::S16, Wrap::Int),
-        "@int32" | "Int32" => (kind::S32, Wrap::Int),
-        "@nat8" | "Nat8" => (kind::U8, Wrap::Int),
-        "@nat16" | "Nat16" => (kind::U16, Wrap::Int),
-        "@nat32" | "Nat32" => (kind::U32, Wrap::Int),
-        "@nat64" | "Nat64" | "Nat" => (kind::U64, Wrap::Int),
+        "@int8" => (kind::S8, Wrap::Int),
+        "@int16" => (kind::S16, Wrap::Int),
+        "@int32" => (kind::S32, Wrap::Int),
+        "@nat8" => (kind::U8, Wrap::Int),
+        "@nat16" => (kind::U16, Wrap::Int),
+        "@nat32" => (kind::U32, Wrap::Int),
+        "@nat64" | "@nat" => (kind::U64, Wrap::Int),
         _ => (kind::S64, Wrap::Int),
     };
     RetPlan {

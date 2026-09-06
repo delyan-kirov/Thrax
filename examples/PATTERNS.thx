@@ -10,7 +10,7 @@
 #       literals (see `if .. is`).
 
 $ Person : @struct =
-	name: Str,
+	name: @str,
 	age: @int,
 
 $ Point : @struct =
@@ -24,23 +24,23 @@ $ Line : @struct =
 $ alice : Person = Person.{ .name = "Alice", .age = 30 }
 
 # Positional `let`: sub-patterns bind the fields in declaration order (name, age).
-# The tight `Str`/`@int` annotations make a wrong order a type error.
-$ p_name : Str = let Person.{ n, a } = alice in n
+# The tight `@str`/`@int` annotations make a wrong order a type error.
+$ p_name : @str = let Person.{ n, a } = alice in n
 $ p_age  : @int = let Person.{ n, a } = alice in a
 
 # Named `let`: any order, and fields may be omitted.
 $ n_age  : @int = let Person.{ .age = yrs } = alice in yrs
-$ n_both : Str = let Person.{ .age = yrs, .name = who } = alice in who
+$ n_both : @str = let Person.{ .age = yrs, .name = who } = alice in who
 
 # Punning: a lone `.name` means `.name = name`.
-$ pun    : Str = let Person.{ .name, .age = a } = alice in name
+$ pun    : @str = let Person.{ .name, .age = a } = alice in name
 
 # Wildcard ignores a field.
 $ just_x : @int = let Point.{ x, _ } = Point.{ .x = 7, .y = 9 } in x
 
 # Lambda struct pattern (positional).
-$ get_name : Person -> Str = \Person.{ n, _ } = n
-$ who1     : Str = get_name alice
+$ get_name : Person -> @str = \Person.{ n, _ } = n
+$ who1     : @str = get_name alice
 
 # Lambda struct pattern (named), used with another argument.
 $ older : Person -> @int -> @int = \Person.{ .age = a } y = a + y

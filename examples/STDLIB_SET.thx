@@ -6,7 +6,7 @@
 #       copies), and iterate in ascending order.
 
 $ with SET
-$ with LIST
+$ with VEC
 $ with MATH
 $ with STR
 
@@ -35,7 +35,7 @@ $ ck_diff  : @int =
 $ ck_filter: @int = if (size (SET.filter (\x = x % 2 ?= 1) s)) ?= 2 => 0 else 1
 
 # String elements via the baked-in ordering.
-$ names : Set Str = add (add (add new_str "bob") "alice") "bob"
+$ names : Set @str = add (add (add new_str "bob") "alice") "bob"
 $ ck_str : @int = if (size names) ?= 2 => 0 else 1
 $ ck_strh: @int = if has names "alice" => 0 else 1
 

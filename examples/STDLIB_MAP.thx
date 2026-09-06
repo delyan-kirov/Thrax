@@ -10,11 +10,11 @@
 
 $ with MAP
 $ with OPT
-$ with LIST
+$ with VEC
 $ with STR
 $ with MATH
 
-$ ages : Map Str @int =
+$ ages : Map @str @int =
 	insert (insert (insert new_str "carol" 41) "alice" 30) "bob" 25
 
 $ ck_size   : @int = if (size ages) ?= 3 => 0 else 1
@@ -32,7 +32,7 @@ $ ck_sorted : @int =
 	if (join "," (keys ages)) ?= "alice,bob,carol" => 0 else 1
 
 # insert_with combines with the existing value; a fresh key just inserts.
-$ hits : Map Str @int =
+$ hits : Map @str @int =
 	insert_with (insert_with new_str "x" 1 (\old nw = old + nw))
 	            "x" 10 (\old nw = old + nw)
 $ ck_insw : @int = if (get_or hits "x" 0) ?= 11 => 0 else 1
@@ -49,7 +49,7 @@ $ ck_mapv : @int = if (sum (values (map_values (\v = v * 2) ages))) ?= 192 => 0 
 $ ck_filt : @int = if (size (filter (\k v = v ?< 40) ages)) ?= 2 => 0 else 1
 
 # merge is left-biased.
-$ others : Map Str @int = insert (insert new_str "bob" 99) "dave" 50
+$ others : Map @str @int = insert (insert new_str "bob" 99) "dave" 50
 $ ck_merge : @int =
 	let u = merge ages others in
 	if (size u) ?= 4 => (if (get_or u "bob" 0) ?= 25 => 0 else 1) else 1
@@ -64,7 +64,7 @@ $ ck_froml : @int =
 	if (size m) ?= 2 => (if (get_or m 2 "") ?= "II" => 0 else 1) else 1
 
 # cmp_pair composes element orderings lexicographically: tuple-keyed maps.
-$ grid : Map {@int, Str} @int =
+$ grid : Map {@int, @str} @int =
 	from_list (cmp_pair cmp_int cmp_str)
 	          [{{1, "b"}, 12}, {{1, "a"}, 11}, {{2, "a"}, 21}]
 $ ck_pair  : @int = if (get_or grid {1, "a"} 0) ?= 11 => 0 else 1

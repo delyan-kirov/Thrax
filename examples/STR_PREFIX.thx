@@ -2,11 +2,11 @@
 
 # Literal-prefix string patterns: `when s is "lit" ++ rest then ...` matches a
 # string that starts with the literal `"lit"`, binding `rest` to the remainder
-# (a Str). It compiles to a length-safe prefix slice + byte-equality test and a
+# (a @str). It compiles to a length-safe prefix slice + byte-equality test and a
 # tail slice, threading arm-to-arm fallthrough (see documentation/strings-and-arrays.md).
 
 # Strip a known prefix, else fall through to the whole string.
-$ route : Str -> Str = \s =
+$ route : @str -> @str = \s =
 	is s | "GET " ++ path => path
 	         | "PUT " ++ path => path
 	         else s
@@ -23,7 +23,7 @@ $ ck_too_long : @int = is "ab" | "abcd" ++ _ => 1 else 0
 
 # The `rest` sub-pattern can itself be refutable: this arm matches only when
 # the tail is exactly empty, i.e. the whole string equals the prefix.
-$ exactly : Str -> @int = \s =
+$ exactly : @str -> @int = \s =
 	is s | "quit" ++ "" => 1
 	         | "quit" ++ more => 2
 	         else 0
@@ -33,7 +33,7 @@ $ ck_partial : @int = if (exactly "quitting") ?= 2 => 0 else 1
 $ ck_nomatch : @int = if (exactly "stay") ?= 0 => 0 else 1
 
 # Nested prefixes strip layer by layer.
-$ strip2 : Str -> Str = \s =
+$ strip2 : @str -> @str = \s =
 	is s | "a" ++ "b" ++ rest => rest else "?"
 
 $ ck_nested : @int = if (strip2 "abXY") ?= "XY" => 0 else 1

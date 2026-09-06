@@ -12,8 +12,8 @@ $ with RESULT
 $ with OPT
 $ with STR
 
-$ good : Result @int Str = Result.Ok.{ 42 }
-$ bad  : Result @int Str = Result.Err.{ "boom" }
+$ good : Result @int @str = Result.Ok.{ 42 }
+$ bad  : Result @int @str = Result.Err.{ "boom" }
 
 $ ck_ok    : @int = if is_ok good => 0 else 1
 $ ck_err   : @int = if is_err bad => 0 else 1

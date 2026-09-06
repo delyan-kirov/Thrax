@@ -5,11 +5,11 @@
 #       documentation/strings-and-arrays.md). `++` concatenates; `@array_len`/`@array_get`
 #       read; `@array_push`/`@array_set`/`@array_slice` produce updated vectors
 #       (opportunistic in-place natively, always fresh in the interpreter). The
-#       byte-vector ops are overloaded to work on both Str and @array.
+#       byte-vector ops are overloaded to work on both @str and @array.
 
 # ---- concatenation ----
-$ hello : Str = "hel" ++ "lo"
-$ greet : Str = hello ++ ", " ++ "world"
+$ hello : @str = "hel" ++ "lo"
+$ greet : @str = hello ++ ", " ++ "world"
 $ ck_cat  : @int = if (greet ?= "hello, world") => 0 else 1
 $ ck_len  : @int = if (@array_len greet) ?= 12 => 0 else 1
 

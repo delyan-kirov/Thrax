@@ -32,7 +32,7 @@ pub enum Type {
     NatAdd(Box<Type>, Box<Type>),
     /// A type-level size product `a * b`, modular (Z/2^64). Both operands are sizes.
     NatMul(Box<Type>, Box<Type>),
-    /// Type application `Head Arg`, e.g. `List Int` is `App(Con("List"), Int)`.
+    /// Type application `Head Arg`, e.g. `@vec @int` is `App(Con("@vec"), @int)`.
     App(Box<Type>, Box<Type>),
     /// A function type `From -[eff]-> To`. `eff` is the arrow's latent effect
     /// row: the effects a call may perform. A pure arrow's `eff` is
@@ -100,35 +100,20 @@ impl Type {
 }
 
 // Built-in constructor names, kept as constants so use sites don't stringly-type.
-pub const INT: &str = "Int";
-pub const REAL: &str = "Real";
-pub const STR: &str = "Str";
-pub const BOOL: &str = "Bool";
+// The `@`-sigil builtins' internal name IS their source spelling (no translation
+// layer); only `Real`/`Str` keep a friendly spelling.
+pub const INT: &str = "@int";
+pub const REAL: &str = "@float64";
+pub const STR: &str = "@str";
+pub const BOOL: &str = "@bool";
 pub const UNIT: &str = "{}";
-pub const PTR: &str = "Ptr";
-pub const LIST: &str = "List";
-pub const ARRAY: &str = "Array";
-pub const VEC: &str = "Vec";
+pub const PTR: &str = "@ptr";
+pub const ARRAY: &str = "@array";
+pub const VEC: &str = "@vec";
 /// The canonical infinite codata stream (defined in `CORE`), the target an
 /// open range `[lo ...]` builds.
 pub const STREAM: &str = "Stream";
 
-/// The source spelling to DISPLAY for a built-in constructor. The canonical
-/// internal names for these are the friendly words, but the only way to write
-/// them in source is the `@`-form, so we display the `@`-form for consistency.
-/// `Real`/`Str` keep their friendly spelling (still writable).
-fn display_con(name: &str) -> &str {
-    match name {
-        "Int" => "@int",
-        "Nat" => "@nat",
-        "Bool" => "@bool",
-        "List" => "@list",
-        "Vec" => "@vec",
-        "Array" => "@array",
-        "Ptr" => "@ptr",
-        other => other,
-    }
-}
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
@@ -139,7 +124,7 @@ pub fn display(ty: &Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
             // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
             // their source spelling when they surface on their own (a variance
             // mismatch); a whole tensor renders via the `[..]` path below.
-            Type::Con(name) => out.push_str(display_con(name)),
+            Type::Con(name) => out.push_str(name),
             Type::Nat(n) => out.push_str(&n.to_string()),
             Type::NatAdd(a, b) => paren(out, prec > 2, |out| {
                 go(a, namer, out, 2);
@@ -333,7 +318,7 @@ pub fn classify_entry(ty: &Type) -> EntryKind {
                 Type::App(h2, _) if matches!(h2.as_ref(),
                     Type::App(con, _) if matches!(con.as_ref(),
                         Type::Con(n) if n == "@tensor")));
-            if is_tensor && matches!(elem.as_ref(), Type::Con(n) if n == "Str") {
+            if is_tensor && matches!(elem.as_ref(), Type::Con(n) if n == "@str") {
                 EntryKind::ArgvFn
             } else {
                 EntryKind::BadFn

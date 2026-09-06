@@ -6,7 +6,7 @@
 #       reproducible sequence -- which is exactly what a test wants.
 
 $ with RANDOM
-$ with LIST
+$ with VEC
 
 # The MINSTD sequence from seed 1: 48271, then 48271^2 mod (2^31 - 1).
 $ d1 : {@int, Rng} = next (new 1)
@@ -20,8 +20,8 @@ $ ck_neg  : @int = if (next (new (0 - 7))).0 ?> 0 => 0 else 1
 $ ck_zero : @int = if (next (new 0)).0 ?= 48271 => 0 else 1
 
 # Bounded draws stay in range across a run of draws.
-$ draws : @list @int = draw_n (new 42) 50
-$ draw_n : Rng -> @int -> @list @int = \g n =
+$ draws : @vec @int = draw_n (new 42) 50
+$ draw_n : Rng -> @int -> @vec @int = \g n =
 	if n <= 0 => []
 	else let d = next_below g 10 in d.0 :: draw_n d.1 (n - 1)
 $ ck_below : @int =

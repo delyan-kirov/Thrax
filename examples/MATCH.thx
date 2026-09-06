@@ -12,7 +12,7 @@
 #       WHEN_GUARDS.thx) -- a failed guard falls through to the next arm.
 
 $ Person : @struct =
-	name: Str,
+	name: @str,
 	age: @int,
 
 $ Point : @struct =
@@ -20,24 +20,24 @@ $ Point : @struct =
 	y: @int,
 
 # A literal switch over @int -- doubles as a `case`.
-$ classify : @int -> Str = \n =
+$ classify : @int -> @str = \n =
 	is n | 0 => "zero"
 	         | 1 => "one"
 	         | 2 => "two"
 	         else "many"
 
-$ c0 : Str = classify 0
-$ c2 : Str = classify 2
-$ cN : Str = classify 17
+$ c0 : @str = classify 0
+$ c2 : @str = classify 2
+$ cN : @str = classify 17
 
 # Guard on a struct's field value, then bind, then a catch-all.
-$ greet : Person -> Str = \p =
+$ greet : Person -> @str = \p =
 	is p | Person.{ .age = 0 } => "newborn"
 	       | Person.{ .name = who } => who
 	       else "?"
 
-$ g_baby  : Str = greet Person.{ .name = "Q", .age = 0 }
-$ g_alice : Str = greet Person.{ .name = "Alice", .age = 41 }
+$ g_baby  : @str = greet Person.{ .name = "Q", .age = 0 }
+$ g_alice : @str = greet Person.{ .name = "Alice", .age = 41 }
 
 # Bind fields out of the matched value (irrefutable arm: always matches).
 $ sum_xy : Point -> @int = \pt =

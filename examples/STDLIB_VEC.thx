@@ -5,7 +5,6 @@
 
 $ with VEC
 $ with OPT
-$ with LIST
 
 $ v : @vec @int = push (push (push (new {}) 10) 20) 30
 
@@ -24,12 +23,12 @@ $ ck_setoob : @int = if (len (set v 9 99)) ?= 3 => 0 else 1
 $ ck_push   : @int = if (len (push v 40)) ?= 4 => 0 else 1
 $ ck_pushed : @int = if (len v) ?= 3 => 0 else 1
 
-# fill makes n copies; whole-vector ops round-trip through @list.
+# fill makes n copies; whole-vector ops round-trip through @vec.
 $ ck_fill  : @int = if (fold (\a x = a + x) 0 (fill 4 7)) ?= 28 => 0 else 1
-$ ck_froml : @int = if (len (from_list [1, 2, 3, 4])) ?= 4 => 0 else 1
-$ ck_tol   : @int = if (sum (to_list (from_list [1, 2, 3, 4]))) ?= 10 => 0 else 1
+$ ck_froml : @int = if (len (from_list (to_list [1, 2, 3, 4]))) ?= 4 => 0 else 1
+$ ck_tol   : @int = if (sum (from_list (to_list [1, 2, 3, 4]))) ?= 10 => 0 else 1
 $ ck_map   : @int =
-	if (sum (to_list (map (\x = x * 2) (from_list [1, 2, 3])))) ?= 12
+	if (sum (map (\x = x * 2) [1, 2, 3])) ?= 12
 	=> 0 else 1
 $ ck_fold  : @int = if (fold (\a x = a * 10 + x) 0 v) ?= 1230 => 0 else 1
 
@@ -42,7 +41,7 @@ $ ck_tup : @int =
 
 # A larger build loop: the native backend reuses the unique spine in place.
 $ ck_big : @int =
-	let big = LIST.foldl (\a x = push a x) (new {}) (range 0 499) in
+	let big = VEC.foldl (\a x = push a x) (new {}) (range 0 499) in
 	if (len big) ?= 500 =>
 		(if (fold (\a x = a + x) 0 big) ?= 124750 => 0 else 1)
 	else 1

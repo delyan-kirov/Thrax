@@ -19,11 +19,11 @@
 #       evaluated and discarded (plain compile-time execution).
 
 $ Directive : @union =
-	Lib: {Str},
-	LibPath: {Str},
+	Lib: {@str},
+	LibPath: {@str},
 
 # Link the symbolic library `name` ("m", "curl", "raylib", ...).
-$ lib : Str -> Directive = \name = Directive.Lib.{ name }
+$ lib : @str -> Directive = \name = Directive.Lib.{ name }
 
 # Search `p` when resolving symbolic libraries.
-$ lib_path : Str -> Directive = \p = Directive.LibPath.{ p }
+$ lib_path : @str -> Directive = \p = Directive.LibPath.{ p }

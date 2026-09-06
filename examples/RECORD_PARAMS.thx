@@ -15,7 +15,7 @@ $ add : {x: @int, y: @int} -> @int = x + y
 $ chk_add : @int = if add {3, 4} ?= 7 => 0 else 1
 
 # Fields may differ in type.
-$ label : {n: @int, s: Str} -> Str = s ++ "!"
+$ label : {n: @int, s: @str} -> @str = s ++ "!"
 $ chk_label : @int = if label {1, "hi"} ?= "hi!" => 0 else 1
 
 # One field collapses to a plain parameter: called with a bare @int, and the

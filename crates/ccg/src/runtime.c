@@ -1038,6 +1038,16 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
+  if (strcmp(name, "@vec_slice") == 0) {
+    if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
+    size_t n = a[0]->u.seq.len;
+    size_t lo = as_index(a[1]);
+    size_t hi = as_index(a[2]);
+    if (lo > n) lo = n;
+    if (hi < lo) hi = lo;
+    if (hi > n) hi = n;
+    return mk_vec(a[0]->u.seq.items + lo, hi - lo); /* mk_vec retains each */
+  }
   if (strcmp(name, "@tensor_concat") == 0) {
     Value *bx, *by;
     size_t ox, oy, *shx, *stx, rx, *shy, *sty, ry;

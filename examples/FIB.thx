@@ -20,24 +20,24 @@ $fib15 = fib 15
 
 # A generic list and its length, by a tail-recursive accumulator. `helper` is an
 # annotated, recursive `let`; the match arms are bare variant patterns (`.Nil`,
-# `.Cons`) whose union is inferred from the constructors. `@list` is the prelude
+# `.Cons`) whose union is inferred from the constructors. `@vec` is the prelude
 # type (its `[..]`/`::` sugar is hardwired to that name).
-$ len: @list t -> @int =
-	let helper: @list t -> @int -> @int = \l n =
+$ len: @vec t -> @int =
+	let helper: @vec t -> @int -> @int = \l n =
 		is l
 			| [] => n
 			| _ :: xs => helper xs (n + 1)
 			else n
 	 in \l = helper l 0
 
-$ to: @int -> @int -> @list @int = \a b =
-	let helper: @int -> @int -> @list @int -> @list @int =
+$ to: @int -> @int -> @vec @int = \a b =
+	let helper: @int -> @int -> @vec @int -> @vec @int =
 		\a b xs =
 			if a ?< b => helper (a+1) b (a :: xs)
 			else xs
 	 in helper a b []
 
-$ sample : @list @int = to 0 3
+$ sample : @vec @int = to 0 3
 $ len3 : @int = is len sample | 3 => 0 else 1
 
 $ Point: @struct =

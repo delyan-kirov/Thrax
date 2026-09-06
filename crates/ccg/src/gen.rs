@@ -297,33 +297,32 @@ fn cdbl(v: f64) -> String {
 /// How a Thrax scalar crosses the C ABI in a generated `@extern` wrapper.
 /// `Int(t)` names the exact C integer type; the word-sized fallback (`Int`, a
 /// type variable, or any unrecognized name) is `int64_t`, matching the C++
-/// `desc_of`. Both the friendly (`Int8`) and `@`-sigil (`@int8`) spellings map
-/// to the same ABI.
+/// `desc_of`.
 enum Cabi {
-    Bytes,             // Str/Array: the byte pointer (char*)
-    Ptr,               // Ptr: an opaque pointer carried as a word (void*)
-    F32,               // Real32: float
-    F64,               // Real/Real64: double
+    Bytes,             // @str/@array: the byte pointer (char*)
+    Ptr,               // @ptr: an opaque pointer carried as a word (void*)
+    F32,               // @float32: float
+    F64,               // @float64: double
     Unit,              // {}: a void result
     Int(&'static str), // a sized/word integer: the named C int type
 }
 
 fn cabi(name: &str) -> Cabi {
     match name {
-        "Str" | "Array" | "@str" => Cabi::Bytes,
-        "Ptr" | "@ptr" => Cabi::Ptr,
-        "Real32" | "@float32" => Cabi::F32,
-        "Real" | "Real64" | "@float64" => Cabi::F64,
+        "@str" | "@array" => Cabi::Bytes,
+        "@ptr" => Cabi::Ptr,
+        "@float32" => Cabi::F32,
+        "@float64" => Cabi::F64,
         "{}" => Cabi::Unit,
-        "Int8" | "@int8" => Cabi::Int("int8_t"),
-        "Int16" | "@int16" => Cabi::Int("int16_t"),
-        "Int32" | "@int32" => Cabi::Int("int32_t"),
-        "Int64" | "@int64" => Cabi::Int("int64_t"),
-        "Nat8" | "@nat8" => Cabi::Int("uint8_t"),
-        "Nat16" | "@nat16" => Cabi::Int("uint16_t"),
-        "Nat32" | "@nat32" => Cabi::Int("uint32_t"),
-        "Nat64" | "@nat64" | "Nat" | "@nat" => Cabi::Int("uint64_t"),
-        "Int" | "@int" => Cabi::Int("int64_t"),
+        "@int8" => Cabi::Int("int8_t"),
+        "@int16" => Cabi::Int("int16_t"),
+        "@int32" => Cabi::Int("int32_t"),
+        "@int64" => Cabi::Int("int64_t"),
+        "@nat8" => Cabi::Int("uint8_t"),
+        "@nat16" => Cabi::Int("uint16_t"),
+        "@nat32" => Cabi::Int("uint32_t"),
+        "@nat64" | "@nat" => Cabi::Int("uint64_t"),
+        "@int" => Cabi::Int("int64_t"),
         _ => Cabi::Int("int64_t"),
     }
 }
@@ -663,25 +662,21 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 continue;
             }
             if let Some(elem) = struct_array_elem(t) {
-                // A `List T` array: walk the cons list, pack each element into a
-                // contiguous malloc'd buffer, and pass it as a `T*`.
+                // A `@vec T` array: pack each element of the vector into a contiguous
+                // malloc'd buffer, and pass it as a `T*`.
                 let cty = cstruct_name(elem);
                 let layout = layout_of(elem).expect("struct-array element has a layout");
                 sig_types.push(format!("{cty}*"));
-                setup.push_str(&format!(
-                    "  size_t _n{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
-                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) _n{i}++;\n"
-                ));
+                setup.push_str(&format!("  size_t _n{i} = args[{i}]->u.seq.len;\n"));
                 setup.push_str(&format!(
                     "  {cty}* _arr{i} = _n{i} ? malloc(_n{i} * sizeof({cty})) : NULL;\n"
                 ));
                 setup.push_str(&format!(
-                    "  {{ size_t _j{i} = 0; for (Value* _p = args[{i}]; _p->tag == T_VARIANT && \
-                     strcmp(_p->u.variant.tag, \"Cons\") == 0; _p = _p->u.variant.fields[1]) {{\n\
-                     \x20   Value* _e = _p->u.variant.fields[0];\n"
+                    "  for (size_t _j{i} = 0; _j{i} < _n{i}; _j{i}++) {{\n\
+                     \x20   Value* _e = args[{i}]->u.seq.items[_j{i}];\n"
                 ));
                 emit_pack(&format!("_arr{i}[_j{i}]"), "_e", layout, &mut setup);
-                setup.push_str(&format!("    _j{i}++;\n  }} }}\n"));
+                setup.push_str(&format!("  }}\n"));
                 call_args.push(format!("_arr{i}"));
                 arr_frees.push(i);
             } else if let Some((cb_args, cb_ret)) = parse_cb(t) {
@@ -778,7 +773,8 @@ fn builtin_arity(name: &str) -> Option<usize> {
         "^" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
-        "@array_set" | "@array_slice" | "@vec_set" | "@tensor_slice" | "@tensor_index_axis" => 3,
+        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" | "@tensor_slice"
+        | "@tensor_index_axis" => 3,
         "@tensor_slice_axis" => 4,
         _ => return None,
     };

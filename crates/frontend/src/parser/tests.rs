@@ -100,7 +100,7 @@ fn lambda_if_and_comparison() {
 
 #[test]
 fn struct_decl_and_literal_and_field() {
-    let src = "@mod M\n$ Person : @struct =\n name: Str,\n age: @int,\n\
+    let src = "@mod M\n$ Person : @struct =\n name: @str,\n age: @int,\n\
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
@@ -327,7 +327,7 @@ fn variant_literal_and_when_match() {
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "@mod M\n$ g : @list t -> @int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "@mod M\n$ g : @vec t -> @int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(
@@ -381,7 +381,7 @@ fn pipes_and_sequencing() {
 
 #[test]
 fn string_interpolation_desugars_to_concat() {
-    // A plain string is a single `Str` node.
+    // A plain string is a single `@str` node.
     let p = prog("@mod M\n$ s = \"hi\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Str(_)));
 
@@ -392,7 +392,7 @@ fn string_interpolation_desugars_to_concat() {
     };
     assert_eq!(p.ast.text(*op), "++");
 
-    // A sole interpolant is still `++` (seeded by a chunk), so it types as Str.
+    // A sole interpolant is still `++` (seeded by a chunk), so it types as @str.
     let p = prog("@mod M\n$ s = \"{x}\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
 }

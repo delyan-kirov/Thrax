@@ -15,35 +15,35 @@
 
 # The C-style escapes: newline, tab, carriage return, NUL, backslash, both
 # quotes, and the bell/backspace/formfeed/vtab set.
-$ ctrl  : Str = "tab\tnl\ncr\rnul\0end"
-$ slashes : Str = "back\\slash quote\" apos\'"
-$ bells : Str = "\a\b\f\v"
+$ ctrl  : @str = "tab\tnl\ncr\rnul\0end"
+$ slashes : @str = "back\\slash quote\" apos\'"
+$ bells : @str = "\a\b\f\v"
 
 # \xHH names one raw byte; "AB" via hex.
-$ hex : Str = "\x41\x42"
+$ hex : @str = "\x41\x42"
 
 # Raw UTF-8 in the source is preserved byte for byte.
-$ utf_raw : Str = "héllo → 世界 café"
+$ utf_raw : @str = "héllo → 世界 café"
 
 # \u{...} names a Unicode code point, emitted as UTF-8: an emoji (4-byte),
 # CJK (3-byte), and an accented letter (2-byte).
-$ utf_esc : Str = "\u{1F600} \u{4e16}\u{754c} \u{e9}"
+$ utf_esc : @str = "\u{1F600} \u{4e16}\u{754c} \u{e9}"
 
 # Strings as aggregate fields, so the native backend's constructors retain them
 # and the exit-time leak check must release them.
 $ Tagged : @struct =
-	label: Str,
-	note: Str,
+	label: @str,
+	note: @str,
 
 $ rec : Tagged = Tagged.{ .label = "key\tval", .note = "π \u{2248} 3.14" }
 
 $ StrList : @union =
-	Cons: {Str, StrList},
+	Cons: {@str, StrList},
 	Nil: {},
 
 $ items : StrList = StrList.Cons.{ "one\n", StrList.Cons.{ "two\t", .Nil } }
 
-$ string_concat : Str = "Hello" ++ " " ++ "world" ++ "\n"
+$ string_concat : @str = "Hello" ++ " " ++ "world" ++ "\n"
 $ ck_concat : @int = if (string_concat ?= "Hello world\n") => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.

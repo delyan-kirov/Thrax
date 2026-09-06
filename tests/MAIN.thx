@@ -68,7 +68,7 @@ $ with WITH_SCOPE = WITH_SCOPE
 
 # `\x1b[..m` are ANSI colour codes (decoded to the ESC byte at compile time, so
 # the source stays ASCII): green `[ok]` on pass, red `[FAILED]` on failure.
-$ check : Str -> @int -> @int = \name t =
+$ check : @str -> @int -> @int = \name t =
 	if t ?= 0
 		=> C.puts ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else C.puts ("\x1b[1;31mERR\x1b[0m " ++ name); 1

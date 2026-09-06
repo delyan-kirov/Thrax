@@ -164,7 +164,7 @@ fn ffi_struct_by_value_argument() {
 
 #[test]
 fn ffi_struct_array() {
-    // A `@list T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
+    // A `@vec T` of C-repr structs passed to C as a contiguous `T*` buffer (with a
     // separate count), the raylib vertex/point/color-buffer shape.
     let so = compile_helper_so(
         "thx_ffi_arr_helper",
@@ -174,7 +174,7 @@ fn ffi_struct_array() {
     let src = format!(
         "@mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
-         $ sum_ps : {{ps: @list P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = so.display()
     );
@@ -213,7 +213,7 @@ fn ffi_c_union_by_value() {
     );
     let src = format!(
         "@mod M\n\
-         $ U : @union @extern \"C\" = i: @int, d: Real,\n\
+         $ U : @union @extern \"C\" = i: @int, d: @float64,\n\
          $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
          $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
          $ built : @int = u_as_long (U.{{ .i = 42 }})\n\
@@ -285,8 +285,8 @@ fn literal_hook_from_imported_module() {
     // A library module provides a user type and its construction hook; a string
     // literal in the importing module builds that type via the IMPORTED hook.
     let lib = "@mod LIBSTR\n\
-               $ Text : @struct = bytes: Str\n\
-               $ @compiler_interface_string_literal : Str -> Text = \\s = Text.{ .bytes = s }\n\
+               $ Text : @struct = bytes: @str\n\
+               $ @compiler_interface_string_literal : @str -> Text = \\s = Text.{ .bytes = s }\n\
                $ size : Text -> @int = \\t = @array_len t.bytes";
     let root = "@mod M\n\
                 $ with LIBSTR\n\
@@ -350,12 +350,12 @@ fn struct_with_splices_included_fields() {
 
 #[test]
 fn declared_type_params_control_order() {
-    // `@struct b a` declares the parameters explicitly, so `Box @int Str` binds
-    // b = @int and a = Str (the declared order), not the order the fields mention
+    // `@struct b a` declares the parameters explicitly, so `Box @int @str` binds
+    // b = @int and a = @str (the declared order), not the order the fields mention
     // them. Reading `snd` back (typed `b`, i.e. @int) must give 7.
     let src = "@mod M\n\
                $ Box : @struct b a = fst: a, snd: b\n\
-               $ r : @int = let x : Box @int Str = .{ .fst = \"hi\", .snd = 7 } in x.snd";
+               $ r : @int = let x : Box @int @str = .{ .fst = \"hi\", .snd = 7 } in x.snd";
     assert_eq!(run(src, "r"), "7");
 }
 
@@ -367,8 +367,8 @@ fn parameterized_alias_picks_which_generic() {
                $ Pair : @struct a b = fst: a, snd: b\n\
                $ KeyInt : @alias b = Pair @int b\n\
                $ ValInt : @alias a = Pair a @int\n\
-               $ p : KeyInt Str = .{ .fst = 3, .snd = \"x\" }\n\
-               $ q : ValInt Str = .{ .fst = \"y\", .snd = 9 }\n\
+               $ p : KeyInt @str = .{ .fst = 3, .snd = \"x\" }\n\
+               $ q : ValInt @str = .{ .fst = \"y\", .snd = 9 }\n\
                $ r : @int = p.fst + q.snd";
     assert_eq!(run(src, "r"), "12");
 }
@@ -544,8 +544,8 @@ fn literal_construction_hooks() {
     // `@compiler_interface_*` hook; the literal (driven by the expected type) then
     // builds that user type instead of the built-in default.
     let src = "@mod M\n\
-        $ MyStr : @struct = bytes: Str\n\
-        $ @compiler_interface_string_literal : Str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+        $ MyStr : @struct = bytes: @str\n\
+        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
         $ Wrap : @struct = n: @int\n\
         $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
         $ RWrap : @struct = r: @float64\n\
@@ -573,16 +573,30 @@ fn literal_hook_via_ascription() {
 
 #[test]
 fn literal_hook_does_not_hijack_default() {
-    // A string hook is in scope, but a `Str`-typed literal still builds a plain Str:
+    // A string hook is in scope, but a `@str`-typed literal still builds a plain @str:
     // the hook fires only when the expected type is the user type, so the default
     // path (folded to a constant) is untouched.
     let src = "@mod M\n\
-        $ MyStr : @struct = bytes: Str\n\
-        $ @compiler_interface_string_literal : Str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
-        $ plain  : Str   = \"abc\"\n\
+        $ MyStr : @struct = bytes: @str\n\
+        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+        $ plain  : @str   = \"abc\"\n\
         $ custom : MyStr = \"xy\"\n\
         $ r : @int = @array_len plain + @array_len custom.bytes"; // 3 + 2
     assert_eq!(run(src, "r"), "5");
+}
+
+#[test]
+fn list_literal_defaults_to_vec_with_patterns() {
+    // `[...]` builds the default sequence, a `@vec` (not a linked list). Its
+    // `sequence_view` hook (in CORE) drives `h :: t` / `[a, b, ..rest]` / `[]`
+    // patterns, and `@vec_*` primitives index it directly.
+    let src = "@mod M\n\
+        $ xs : @vec @int = [10, 20, 30]\n\
+        $ len : @int = @vec_len xs\n\
+        $ head : @int = is xs | h :: _ => h else 0\n\
+        $ tak2 : @int = is [1, 2, 3, 4] | [a, b, ..r] => a + b + @vec_len r else 0\n\
+        $ r : @int = len * 100 + head + tak2"; // 300 + 10 + (1+2+2)
+    assert_eq!(run(src, "r"), "315");
 }
 
 #[test]
@@ -594,7 +608,7 @@ fn bare_variant_tag_resolves_by_expected_type() {
         $ MyList : @union a = Nil: {}, Cons: {a, MyList a}\n\
         $ total : MyList @int -> @int = \\xs = is xs | MyList.Cons.{h, t} => h + total t else 0\n\
         $ a : MyList @int = MyList.Cons.{ 1, MyList.Cons.{ 2, .Nil } }\n\
-        $ b : @list @int = [3, 4, 5]\n\
+        $ b : @vec @int = [3, 4, 5]\n\
         $ r : @int = total a * 100 + (is b | h :: _ => h else 0)"; // 3*100 + 3
     assert_eq!(run(src, "r"), "303");
 }
@@ -605,8 +619,8 @@ fn literal_pattern_via_equality_hook() {
     // hooks: `is s | "hi" => ...` builds "hi" into the user type and compares it with
     // `@compiler_interface_equality`.
     let src = "@mod M\n\
-        $ MyStr : @struct = bytes: Str\n\
-        $ @compiler_interface_string_literal : Str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+        $ MyStr : @struct = bytes: @str\n\
+        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
         $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
         $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
         $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
@@ -618,7 +632,7 @@ fn sequence_pattern_via_view_hook() {
     // A sequence PATTERN on a user type unfolds its `@compiler_interface_sequence_view`
     // hook: `[]`, `[x]` (fixed length: tail must be empty), and `h :: t` all match.
     let src = "@mod M\n\
-        $ Stack : @struct a = items: @list a\n\
+        $ Stack : @struct a = items: @vec a\n\
         $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
         \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
         $ classify : Stack @int -> @int = \\s = is s\n\
@@ -648,11 +662,11 @@ fn strided_views_transpose_row_col_slice() {
 #[test]
 fn inclusive_range_patterns() {
     // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
-    // the match needs an `else`. Works on @int and Real.
+    // the match needs an `else`. Works on @int and @float64.
     let src = "@mod M\n\
-               $ grade : @int -> Str = \\n =\n\
+               $ grade : @int -> @str = \\n =\n\
                \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" else \"F\"\n\
-               $ band : Real -> @int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
+               $ band : @float64 -> @int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
                $ r : @int =\n\
                \t(if grade 100 ?= \"A\" => 1 else 0)\n\
                \t+ (if grade 60 ?= \"C\" => 2 else 0)\n\
@@ -714,7 +728,7 @@ fn record_destructuring_pattern() {
 
 #[test]
 fn generic_struct_satisfies_an_open_row() {
-    // A generic struct instance (`Box @int`, `Pair @int Str`) bridges to an open
+    // A generic struct instance (`Box @int`, `Pair @int @str`) bridges to an open
     // record row by substituting its type arguments for the struct's parameters.
     let src = "@mod M\n\
                $ Box : @struct a = val: a\n\
@@ -789,7 +803,7 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
     // `Y.yield`, so their effects are observable in the total.
     let prelude = "@mod M\n\
         $ Y : @effect = yield : @int -> {},\n\
-        $ Exn : @effect = throw : Str -> a,\n\
+        $ Exn : @effect = throw : @str -> a,\n\
         $ sum : ({} -> <Y> @int) -> @int = \
           \\body = do body {} ctl k | Y.yield v => v + k {} else r => r\n";
     // Normal completion: body yields 1 and returns 100, cleanup yields 2 -> 103.
@@ -832,12 +846,12 @@ fn extern_ffi_file_roundtrip() {
     // same bindings injected by the driver). Open for write, put bytes, close;
     // reopen for read, read them back, then remove the file. "hi" is 104 and 105.
     let src = "@mod M\n\
-        $ fopen : {path: Str, mode: Str} -> @int = @extern \"C\" \"fopen\" \"libc\"\n\
-        $ fputs : {s: Str, stream: @int} -> @int = @extern \"C\" \"fputs\" \"libc\"\n\
+        $ fopen : {path: @str, mode: @str} -> @int = @extern \"C\" \"fopen\" \"libc\"\n\
+        $ fputs : {s: @str, stream: @int} -> @int = @extern \"C\" \"fputs\" \"libc\"\n\
         $ fclose : @int -> @int = @extern \"C\" \"fclose\" \"libc\"\n\
         $ fgetc : @int -> @int = @extern \"C\" \"fgetc\" \"libc\"\n\
-        $ remove : Str -> @int = @extern \"C\" \"remove\" \"libc\"\n\
-        $ p : Str = \"/tmp/thrax_core_roundtrip.txt\"\n\
+        $ remove : @str -> @int = @extern \"C\" \"remove\" \"libc\"\n\
+        $ p : @str = \"/tmp/thrax_core_roundtrip.txt\"\n\
         $ r : @int = \
           let f = fopen {p, \"wb\"} in \
           fputs {\"hi\", f} ; fclose f ; \
@@ -856,8 +870,8 @@ fn extern_ffi_dynamic_dlopen() {
     // `char*` return decoded back to bytes, and a floating arg/return in xmm.
     let src = "@mod M\n\
         $ iabs   : @int -> @int   = @extern \"C\" \"abs\"    \"libc\"\n\
-        $ dup    : Str -> Str   = @extern \"C\" \"strdup\" \"libc\"\n\
-        $ expm1r : Real -> Real = @extern \"C\" \"expm1\"  \"libm\"\n\
+        $ dup    : @str -> @str   = @extern \"C\" \"strdup\" \"libc\"\n\
+        $ expm1r : @float64 -> @float64 = @extern \"C\" \"expm1\"  \"libm\"\n\
         $ r : @int = iabs (0 - 7) + @array_len (dup \"abcde\") \
                   + (if expm1r 1.0 ?> 1.7 => 100 else 0)";
     assert_eq!(run(src, "r"), "112");
@@ -940,7 +954,7 @@ fn float32_arithmetic_is_single_precision() {
     // precision: 2^24 + 1 is not representable and falls back to 2^24. The `@fadd`
     // (f64) counterpart in `arithmetic_intrinsics` keeps the extra digit. Operands
     // are `let`-bound at `@float32` (a bare literal defaults to its width only for
-    // `@int`/`Real`, an unrelated resolution limitation).
+    // `@int`/`@float64`, an unrelated resolution limitation).
     let f32 = |lhs: &str, rhs: &str| {
         run(
             &format!(
@@ -981,7 +995,7 @@ fn scalar_serialization_round_trips() {
     // Booleans render as `true`/`false` and parse back.
     assert_eq!(ok("(from_string \"true\") ?= (1 ?= 1)"), "true");
     assert_eq!(ok("(from_string \"false\") ?= (1 ?= 0)"), "true");
-    // A `Str` serializes as itself.
+    // A `@str` serializes as itself.
     assert_eq!(ok("(from_string (to_string \"hi\")) ?= \"hi\""), "true");
     // Floats round-trip through their shortest decimal (via the C runtime seam:
     // `thx_real_to_str`/`thx_f32_to_str` + libc `atof`), at both widths.
@@ -999,7 +1013,7 @@ fn scalar_serialization_round_trips() {
 fn float_mixed_width_widens_to_float64() {
     // `@float32 + @float64` widens the single-precision operand to double (via the
     // `thx_f2d` runtime conversion) and yields `@float64`; both argument orders
-    // resolve. `Real` deliberately does NOT mix (target-dependent width), so
+    // resolve. `@float64` deliberately does NOT mix (target-dependent width), so
     // operands are the explicit sized types.
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
@@ -1151,7 +1165,7 @@ fn arithmetic_and_precedence() {
 #[test]
 fn reals_and_mixed() {
     assert_eq!(run("@mod M\n$ a = 1.0 + 2.0", "a"), "3");
-    assert_eq!(run("@mod M\n$ a : Real = 3.0 / 2.0", "a"), "1.5");
+    assert_eq!(run("@mod M\n$ a : @float64 = 3.0 / 2.0", "a"), "1.5");
 }
 
 #[test]
@@ -1193,11 +1207,11 @@ fn tuples_and_indexing() {
 #[test]
 fn list_sum_and_map() {
     let src = "@mod M\n\
-               $ sum : @list @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+               $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "@mod M\n\
-                $ sum : @list @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+                $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
@@ -1268,7 +1282,7 @@ fn higher_order_and_guards() {
 fn string_concat_and_prefix_match() {
     assert_eq!(run("@mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
     let src = "@mod M\n\
-               $ verb : Str -> @int = \\s = is s | \"GET \" ++ _ => 1 else 0\n\
+               $ verb : @str -> @int = \\s = is s | \"GET \" ++ _ => 1 else 0\n\
                $ a = verb \"GET /\"";
     assert_eq!(run(src, "a"), "1");
 }
@@ -1305,12 +1319,12 @@ fn entry_unit_fn_returns_exit_code() {
     assert_eq!(code, 42);
 }
 
-/// A C-style `main : [n]Str -> <| e> @int` receives argv as a sized tensor of
+/// A C-style `main : [n]@str -> <| e> @int` receives argv as a sized tensor of
 /// strings; `argv[0]` is the program path, so `main` sees the whole vector.
 #[test]
 fn entry_argv_fn_receives_string_vector() {
     let src = "@mod MAIN\n\
-               $ main : [n]Str -> <| e> @int = \\args = @tensor_length args\n";
+               $ main : [n]@str -> <| e> @int = \\args = @tensor_length args\n";
     let program = lower_checked(src, "main");
     let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
     let argv = vec!["prog".to_string(), "alpha".to_string(), "beta".to_string()];

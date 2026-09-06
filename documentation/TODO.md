@@ -185,3 +185,63 @@ It still doesn't feel quite right (a Thrax `Str` isn't guaranteed NUL-terminated
 C hands you a `char*` you then treat as a `Str` -- is also unmodeled). Revisit: decide
 whether C interop should go through an explicit `CStr` + `to_c_string`/`from_c_string`,
 and how the conversion primitive should work (identity at runtime, but a real type cast).
+
+---
+
+## Sequences: `@vec` default, codata `for`, `List` optional (design direction)
+
+Three-way sequence story (being moved toward):
+- `@vec` -- materialized, contiguous, random-access, finite. THE default for `[...]`.
+- `Stream` (`@codata`) -- lazy / possibly infinite / streaming. Already exists in CORE
+  (`Stream : @codata t = head : t, tail : Stream t`; `count_from`; `[lo ...]`).
+- `List` (cons `@union`) -- optional, persistent, O(1) cons. Kept in CORE, no longer the
+  default; keeps `h :: t` patterns via its `@compiler_interface_sequence_view` hook.
+
+Codata `for` combinator (expressible TODAY -- codata + open effect rows already exist):
+```
+$ for : Stream a -> (a -> <e> {}) -> <e> {} = \s body = body s.head ; for s.tail body
+$ forever : Stream {} = { .head = {}, .tail = forever }
+# for (count_from 0) (\i = IO.print i)      -- effectful counted loop
+# for forever |> \_ = ...                    -- unbounded effectful loop
+```
+The effect row `<e>` passes straight through, uncaught. Subtlety: keep "iterate FOR
+effects" (`-> <e> {}`) separate from "pure lazy transform" -- a `for` that RETURNS a
+`Stream b` while running effects would fire those effects lazily at each `.tail`
+observation (codata thunks are non-memoized), which is usually not what you want.
+
+---
+
+## DONE (2026-09-06): `@vec` is the default sequence; `List` removed from the compiler
+
+`[...]` / `[lo...hi]` build a `@vec`; `::` prepends to one; `[]`/`[a,b,..r]`/`h::t`
+patterns match a `@vec` via its `@compiler_interface_sequence_view` hook (in CORE). The
+compiler no longer hardcodes `List`/`Cons`/`Nil` anywhere in literal/pattern lowering --
+sequence patterns all route through the Stage 2 `sequence_view` machinery. `VEC.thx` is
+now the comprehensive sequence module (index/push-based, O(n)); `LIST.thx` was deleted;
+the `List` cons union stays OPTIONAL in CORE (constructed/matched via `List.Cons`/`Nil`,
+bridged with `VEC.from_list`/`to_list`). Added a `@vec_slice` primitive.
+
+Follow-ups worth doing: `x :: xs` (prepend) is O(n) on a vector, so `::`-recursion is
+quadratic -- callers should build with push / index iteration (documented in VEC.thx).
+The codata `for` / streaming direction above is still open.
+
+---
+
+## DONE (2026-09-06): compiler forgets `Str`/`Real`/`Ptr`; strict numeric literals
+
+The compiler no longer knows any friendly scalar name. The type constants are the
+`@`-forms (`@int`/`@nat`/`@float64`/`@str`/`@ptr`/`@bool`/`@array`/`@vec`); `canonical_con`
+and `display_con` are gone, so a type both parses and prints as its source spelling.
+`@str` is the string type and `@ptr` the opaque pointer. `Real` survives only as a CORE
+alias (`$ Real : @alias = @float64`) for readability; `Str`/`Ptr` were migrated to
+`@str`/`@ptr` across the corpus, and `library/C.thx` (CORE-less) uses `@float64` directly.
+The libc-marshalling arms in `machine/ffi.rs` and `ccg/src/gen.rs` dropped their dead
+friendly spellings.
+
+Numeric literals are now STRICT: an untyped integer literal is always an integer and
+never adopts a float type from context. `100.0 % 7`, `1 + 2.0`, and `x + 1` (for
+`x : @float64`) are type errors -- write `7.0` / `1.0` / `1.0`. This falls out of the
+`@`-form change: making real literals `@float64` (which, unlike the old distinct `Real`,
+has mixed-width `%`/`+`/... overloads with `@float32`) turned the old "a real anywhere
+promotes the int literal" behavior into an ambiguity, and the decision was to forbid the
+promotion rather than resurrect it. `propagate_result_to_operands` stays integer-only.

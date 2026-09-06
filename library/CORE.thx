@@ -10,7 +10,12 @@
 # `@f*` family. (`^`, comparisons, and `++` are still compiler builtins, pending
 # their own intrinsics.)
 
-# @int / @nat / Real (the default numeric types).
+# `Real` is a friendly alias for the word-size float `@float64`; the compiler knows
+# only `@float64`, not `Real`.
+$ Real : @alias = @float64
+
+# @int / @nat: the word-size integer types. The word-size float `@float64` (its
+# friendly alias `Real`) is defined below with the other floats.
 $ (+) : @int -> @int -> @int = \a b = @iadd a b
 $ (-) : @int -> @int -> @int = \a b = @isub a b
 $ (*) : @int -> @int -> @int = \a b = @imul a b
@@ -22,12 +27,6 @@ $ (-) : @nat -> @nat -> @nat = \a b = @isub a b
 $ (*) : @nat -> @nat -> @nat = \a b = @imul a b
 $ (/) : @nat -> @nat -> @nat = \a b = @udiv a b
 $ (%) : @nat -> @nat -> @nat = \a b = @umod a b
-# 
-$ (+) : Real -> Real -> Real = \a b = @fadd a b
-$ (-) : Real -> Real -> Real = \a b = @fsub a b
-$ (*) : Real -> Real -> Real = \a b = @fmul a b
-$ (/) : Real -> Real -> Real = \a b = @fdiv a b
-$ (%) : Real -> Real -> Real = \a b = @fmod a b
 # Sized signed integers (same intrinsics as @int; each a DISTINCT type).
 $ (+) : @int8 -> @int8 -> @int8 = \a b = @iadd a b
 $ (-) : @int8 -> @int8 -> @int8 = \a b = @isub a b
@@ -352,15 +351,15 @@ $ (*) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
 $ (/) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
 $ (%) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
 
-$ to_string : Str -> Str = \s = s
+$ to_string : @str -> @str = \s = s
 
-$ to_string : @bool -> Str = \b = if b => "true" else "false"
+$ to_string : @bool -> @str = \b = if b => "true" else "false"
 
-$ to_string : @int -> Str = \n =
+$ to_string : @int -> @str = \n =
 	if n ?< 0 => "-" ++ to_string_digits (0 - n) ""
 	else to_string_digits n ""
 
-$ to_string_digits : @int -> Str -> Str = \n acc =
+$ to_string_digits : @int -> @str -> @str = \n acc =
 	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
 	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
@@ -369,35 +368,35 @@ $ to_string_digits : @int -> Str -> Str = \n acc =
 # each one down before appending it as a byte.
 $ to_string_udigit : @nat -> @int = \n = @cast n
 
-$ to_string_udigits : @nat -> Str -> Str = \n acc =
+$ to_string_udigits : @nat -> @str -> @str = \n acc =
 	if n ?< 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
 	else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
 
-$ to_string : @nat -> Str = \n = to_string_udigits n ""
+$ to_string : @nat -> @str = \n = to_string_udigits n ""
 
 # The sized integers reuse the friendly-type printers: `@cast` to `@int` (signed)
 # or `@nat` (unsigned) is an erased width reinterpret, so the value is unchanged.
-$ to_string : @int8  -> Str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int16 -> Str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int32 -> Str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int64 -> Str = \x = to_string (let n : @int = @cast x in n)
+$ to_string : @int8  -> @str = \x = to_string (let n : @int = @cast x in n)
+$ to_string : @int16 -> @str = \x = to_string (let n : @int = @cast x in n)
+$ to_string : @int32 -> @str = \x = to_string (let n : @int = @cast x in n)
+$ to_string : @int64 -> @str = \x = to_string (let n : @int = @cast x in n)
 
-$ to_string : @nat8  -> Str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat16 -> Str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat32 -> Str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat64 -> Str = \x = to_string (let n : @nat = @cast x in n)
+$ to_string : @nat8  -> @str = \x = to_string (let n : @nat = @cast x in n)
+$ to_string : @nat16 -> @str = \x = to_string (let n : @nat = @cast x in n)
+$ to_string : @nat32 -> @str = \x = to_string (let n : @nat = @cast x in n)
+$ to_string : @nat64 -> @str = \x = to_string (let n : @nat = @cast x in n)
 
 # `from_string` is the inverse of `to_string`: parse text back into a value. It
 # reads bytes with `@array_get`/`@array_len`, so it stays in the language.
-$ from_string : Str -> Str = \s = s
+$ from_string : @str -> @str = \s = s
 
-$ from_string : Str -> @bool = \s = s ?= "true"
+$ from_string : @str -> @bool = \s = s ?= "true"
 
-$ from_string_digits : Str -> @int -> @int -> @int = \s i acc =
+$ from_string_digits : @str -> @int -> @int -> @int = \s i acc =
 	if i ?= @array_len s => acc
 	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
 
-$ from_string : Str -> @int = \s =
+$ from_string : @str -> @int = \s =
 	if @array_len s ?= 0 => 0
 	else if @array_get s 0 ?= 45 => 0 - from_string_digits s 1 0
 	else from_string_digits s 0 0
@@ -405,34 +404,42 @@ $ from_string : Str -> @int = \s =
 # Floats serialize through the C runtime: `thx_real_to_str`/`thx_f32_to_str`
 # format the shortest round-tripping decimal (the same rule as display), and
 # libc `atof` parses one back. `@float32` widens/narrows via the conversions above.
-$ to_string : Real     -> Str = @extern "C" "thx_real_to_str" ""
-$ to_string : @float64 -> Str = @extern "C" "thx_real_to_str" ""
-$ to_string : @float32 -> Str = @extern "C" "thx_f32_to_str" ""
+$ to_string : @float64 -> @str = @extern "C" "thx_real_to_str" ""
+$ to_string : @float32 -> @str = @extern "C" "thx_f32_to_str" ""
 
-$ from_string : Str -> Real     = @extern "C" "atof" "libc"
-$ from_string : Str -> @float64 = @extern "C" "atof" "libc"
-$ from_string : Str -> @float32 = \s = let d : @float64 = from_string s in f64_to_f32 d
+$ from_string : @str -> @float64 = @extern "C" "atof" "libc"
+$ from_string : @str -> @float32 = \s = let d : @float64 = from_string s in f64_to_f32 d
 
-$ from_string : Str -> @nat    = \s = let n : @int = from_string s in let m : @nat    = @cast n in m
-$ from_string : Str -> @int8  = \s = let n : @int = from_string s in let m : @int8  = @cast n in m
-$ from_string : Str -> @int16 = \s = let n : @int = from_string s in let m : @int16 = @cast n in m
-$ from_string : Str -> @int32 = \s = let n : @int = from_string s in let m : @int32 = @cast n in m
-$ from_string : Str -> @int64 = \s = let n : @int = from_string s in let m : @int64 = @cast n in m
-$ from_string : Str -> @nat8  = \s = let n : @nat = from_string s in let m : @nat8  = @cast n in m
-$ from_string : Str -> @nat16 = \s = let n : @nat = from_string s in let m : @nat16 = @cast n in m
-$ from_string : Str -> @nat32 = \s = let n : @nat = from_string s in let m : @nat32 = @cast n in m
-$ from_string : Str -> @nat64 = \s = let n : @nat = from_string s in let m : @nat64 = @cast n in m
+$ from_string : @str -> @nat    = \s = let n : @int = from_string s in let m : @nat    = @cast n in m
+$ from_string : @str -> @int8  = \s = let n : @int = from_string s in let m : @int8  = @cast n in m
+$ from_string : @str -> @int16 = \s = let n : @int = from_string s in let m : @int16 = @cast n in m
+$ from_string : @str -> @int32 = \s = let n : @int = from_string s in let m : @int32 = @cast n in m
+$ from_string : @str -> @int64 = \s = let n : @int = from_string s in let m : @int64 = @cast n in m
+$ from_string : @str -> @nat8  = \s = let n : @nat = from_string s in let m : @nat8  = @cast n in m
+$ from_string : @str -> @nat16 = \s = let n : @nat = from_string s in let m : @nat16 = @cast n in m
+$ from_string : @str -> @nat32 = \s = let n : @nat = from_string s in let m : @nat32 = @cast n in m
+$ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @nat64 = @cast n in m
 
 # The expression-form range `[lo ... hi]` desugars to `range lo hi`: the inclusive
-# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `@list`, since
+# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `@vec`, since
 # the length is a runtime value (not a statically sized `[n]T` tensor).
-$ range : @int -> @int -> @list @int = \lo hi =
-	if lo ?> hi => []
-	else lo :: range (lo + 1) hi
+# `x :: xs` prepends `x` to a `@vec` (the default sequence). O(n): builds a fresh
+# vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
+# the idiomatic way to build a vector.
+$ vcons : t -> @vec t -> @vec t = \x v = vcons_onto (@vec_push (@vec_new {}) x) v 0
+$ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
+	if i >= @vec_len v => acc
+	else vcons_onto (@vec_push acc (@vec_get v i)) v (i + 1)
 
-# The prelude cons list, an ordinary `@union` (no longer a compiler builtin). `[a,
-# b, c]` / `x :: xs` / `[]` are surface sugar over its `Cons`/`Nil` constructors, and
-# a list PATTERN matches them; both `List a` and `@list a` name this type.
+$ range : @int -> @int -> @vec @int = \lo hi = range_onto (@vec_new {}) lo hi
+$ range_onto : @vec @int -> @int -> @int -> @vec @int = \acc lo hi =
+	if lo ?> hi => acc
+	else range_onto (@vec_push acc lo) (lo + 1) hi
+
+# The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
+# and no longer the default). `[...]` / `::` / `[]` build a `@vec`, so a `List` is
+# constructed and matched through its `Cons`/`Nil` constructors explicitly (or bridged
+# with `VEC.from_list` / `VEC.to_list`). Spelled `List a` (or `@list a`).
 $ List : @union a = Nil: {}, Cons: {a, List a},
 
 # One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:
@@ -442,11 +449,18 @@ $ List : @union a = Nil: {}, Cons: {a, List a},
 # unfolding it.
 $ SeqView : @union s t = Empty: {}, More: {t, s},
 
+# The built-in growable vector `@vec` joins the `[..]`/`::`/`[]` PATTERN surface: its
+# view is `Empty` when empty, else the first element and the tail (a slice). `[...]`
+# literals build a `@vec`, so this is what a sequence pattern unfolds by default.
+$ @compiler_interface_sequence_view : @vec t -> SeqView (@vec t) t = \v =
+	if @vec_len v ?= 0 => SeqView.Empty
+	else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) }
+
 # The canonical infinite stream: coinductive data observed by `.head` (the current
 # element) and `.tail` (the rest). Non-memoized thunks, so it is genuinely infinite.
 $ Stream : @codata t = head : t, tail : Stream t,
 
 # The open range `[lo ...]` desugars to `count_from lo`: the ascending Ints from
 # `lo` upward, with no end. It builds a `Stream`, the only shape that can hold an
-# unbounded sequence (not a finite `@list` or a statically sized `[n]T`).
+# unbounded sequence (not a finite `@vec` or a statically sized `[n]T`).
 $ count_from : @int -> Stream @int = \lo = { .head = lo, .tail = count_from (lo + 1) }

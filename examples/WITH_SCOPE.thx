@@ -9,7 +9,7 @@
 #       the same name. Each `chk*` is 0 when correct and 1 otherwise.
 
 $ Point : @struct = x: @int, y: @int
-$ Named : @struct = name: Str, age: @int
+$ Named : @struct = name: @str, age: @int
 
 # The fields of `p` are visible without the `p.` prefix.
 $ p : Point = Point.{ .x = 3, .y = 4 }

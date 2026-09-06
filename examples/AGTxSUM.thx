@@ -7,7 +7,7 @@
 $ Token : @union =
     Num: @int,
     Op: {Token, Token}, # Sum types should support lazy recursion
-    Txt: Str, # trailing commas are allowe
+    Txt: @str, # trailing commas are allowe
 
 # Basic way to create a token
 $ num_tok: Token = Token.Num.{1}
@@ -29,7 +29,7 @@ $ chk0b : @int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
 # runtime fault) when wrong, so a regression makes this file fail loudly.
 
 # `Maybe` is generic: the free `T in its body is an implicit type parameter, so
-# `Maybe @int` and `Maybe Str` are distinct instantiations of one declaration.
+# `Maybe @int` and `Maybe @str` are distinct instantiations of one declaration.
 $ Maybe : @union t =
     Just: t,
     None: {}
@@ -45,7 +45,7 @@ $ chk1 : @int = is get 99 (Maybe.Just.{7}) | 7  => 0 else 1
 $ chk2 : @int = is get 99 Maybe.None        | 99 => 0 else 1
 
 # The same `Maybe` at a different element type, in the same program.
-$ greeting : Maybe Str = Maybe.Just.{ "hi" }
+$ greeting : Maybe @str = Maybe.Just.{ "hi" }
 $ chk2b : @int = is greeting | Maybe.Just.{_} => 0 else 1
 
 # Bare constructors: the type name is dropped and inferred from context (the
@@ -56,7 +56,7 @@ $ some_i : Maybe @int = .Just.{ 5 }
 $ chk2c : @int = is get 0 some_i | 5 => 0 else 1
 $ chk2d : @int = is get 8 none_i | 8 => 0 else 1
 
-# The prelude's generic, recursive `@list` (its `[..]`/`::` sugar is hardwired to
+# The prelude's generic, recursive `@vec` (its `[..]`/`::` sugar is hardwired to
 # that name). Under STRICT evaluation this builds FINITE lists only; the former
 # infinite stream (`from` / `take3sum`) was lazy data and will return as
 # `@codata` (docs/effect-system-design.md section 1a).
@@ -70,8 +70,8 @@ $ chk4 : @int =
         is r - l | 1 => 0 else 1
     else 1
 
-# Nested instantiation: a `@list` whose element is itself a `Maybe @int`.
-$ boxed : @list (Maybe @int) = (.Just.{42}) :: []
+# Nested instantiation: a `@vec` whose element is itself a `Maybe @int`.
+$ boxed : @vec (Maybe @int) = (.Just.{42}) :: []
 $ chk4b : @int =
     is boxed | h :: _ =>
         is h | Maybe.Just.{ v } => (is v | 42 => 0 else 1) else 1

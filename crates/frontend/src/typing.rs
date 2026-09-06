@@ -1300,6 +1300,11 @@ impl<'a> Checker<'a> {
         matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
     }
 
+    /// Whether `ty` is a `@vec _` (the built-in growable vector, the default sequence).
+    fn is_vec(&self, ty: &Type) -> bool {
+        matches!(self.spine(ty).0, Type::Con(n) if n == ty::VEC)
+    }
+
     /// Whether `ty` is a floating type (`Real`/`Real64`/`Real32`, either spelling),
     /// so a `Real` literal may take its width.
     fn is_float_type(&self, ty: &Type) -> bool {
@@ -1307,7 +1312,7 @@ impl<'a> Checker<'a> {
             self.eng.resolve(ty),
             Type::Con(name)
                 if matches!(name.as_str(),
-                    "Real" | "Real64" | "Real32" | "@float64" | "@float32")
+                    "@float64" | "@float32")
         )
     }
 
@@ -1316,7 +1321,7 @@ impl<'a> Checker<'a> {
     fn is_int_scalar(&self, ty: &Type) -> bool {
         matches!(self.eng.resolve(ty),
             Type::Con(name) if matches!(name.as_str(),
-                "Int" | "Nat"
+                "@int" | "@nat"
                     | "@int8" | "@int16" | "@int32" | "@int64"
                     | "@nat8" | "@nat16" | "@nat32" | "@nat64"))
     }
@@ -2417,15 +2422,15 @@ impl<'a> Checker<'a> {
                 let elem = self.eng.fresh();
                 for item in items.iter() {
                     let t = self.infer(*item)?;
-                    self.eng.unify(&elem, &t, "in a list literal")?;
+                    self.eng.unify(&elem, &t, "in a sequence literal")?;
                 }
-                Ok(Type::app(Type::con(ty::LIST), elem))
+                Ok(Type::app(Type::con(ty::VEC), elem))
             }
 
-            // A closed range `[lo ... hi]` with no expected type defaults to `List Int`
-            // (lowering emits `range lo hi`); the sized-tensor target is reached only
-            // through `check` against a `[n]T`. An open range `[lo ...]` is infinite,
-            // so it is always a `Stream Int` (lowering emits `count_from lo`).
+            // A closed range `[lo ... hi]` with no expected type defaults to `@vec @int`
+            // (lowering builds a vector); the sized-tensor target is reached only through
+            // `check` against a `[n]T`. An open range `[lo ...]` is infinite, so it is
+            // always a `Stream @int` (lowering emits `count_from lo`).
             Expr::Range { lo, hi } => {
                 let lo = *lo;
                 let int = Type::con(ty::INT);
@@ -2433,7 +2438,7 @@ impl<'a> Checker<'a> {
                 match *hi {
                     Some(hi) => {
                         self.check(hi, &int)?;
-                        Ok(Type::app(Type::con(ty::LIST), int))
+                        Ok(Type::app(Type::con(ty::VEC), int))
                     }
                     None => Ok(Type::app(Type::con(ty::STREAM), int)),
                 }
@@ -3309,7 +3314,9 @@ impl<'a> Checker<'a> {
         pat: Aol<Pattern>,
         expected: &Type,
     ) -> Result<Option<Type>> {
-        if self.user_type_head(expected).is_none() {
+        // Fires for a user sequence type OR the built-in `@vec` (the default sequence,
+        // whose `sequence_view` lives in CORE).
+        if self.user_type_head(expected).is_none() && !self.is_vec(expected) {
             return Ok(None);
         }
         let cands = self.hook_candidates(HOOK_SEQVIEW);
@@ -3337,6 +3344,23 @@ impl<'a> Checker<'a> {
         }
         self.eng.restore(save);
         Ok(None)
+    }
+
+    /// The element type of a sequence PATTERN's scrutinee. A user sequence type (or a
+    /// scrutinee already fixed to `@vec`) resolves via its `sequence_view` hook;
+    /// otherwise the scrutinee DEFAULTS to `@vec elem` and resolves through `@vec`'s
+    /// view. Records the hook at `pat` either way.
+    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<Type> {
+        if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
+            return Ok(elem);
+        }
+        let elem = self.eng.fresh();
+        self.eng.unify(
+            expected,
+            &Type::app(Type::con(ty::VEC), elem.clone()),
+            "in a sequence pattern",
+        )?;
+        Ok(self.sequence_pattern_hook_check(pat, expected)?.unwrap_or(elem))
     }
 
     /// Route a literal pattern (`is "foo"`, `is 42`) whose scrutinee is a user type
@@ -3513,9 +3537,9 @@ impl<'a> Checker<'a> {
     /// Break an ambiguity where a pending overload's RESULT is already a concrete
     /// integer type but its operands are still unconstrained numeric literals. For
     /// homogeneous arithmetic (`@int32 + @int32 -> @int32`), the operands should
-    /// take the result type, not default to `Int`; e.g. `let x : @int32 = 2 + 3`
+    /// take the result type, not default to `@int`; e.g. `let x : @int32 = 2 + 3`
     /// resolves to the `@int32` overload rather than failing because both literals
-    /// became `Int`. Each candidate is tried under that constraint and kept only if
+    /// became `@int`. Each candidate is tried under that constraint and kept only if
     /// it makes the overload unique, so a genuinely wrong guess is rolled back.
     fn propagate_result_to_operands(&mut self) -> Result<bool> {
         let batch = std::mem::take(&mut self.pending);
@@ -3591,16 +3615,9 @@ impl<'a> Checker<'a> {
                 }
                 // Pinned to a numeric type by use: fine.
                 Type::Con(name) if is_numeric_type(&name) => {}
-                // Pinned to a genuinely UNKNOWN con (a typo'd type): let that
-                // type's own "unknown type" diagnostic surface instead. The
-                // internal canonical base names (`Bool`/`List`/... spelled `@bool`
-                // etc. in source) are known and must still be rejected below.
-                Type::Con(name)
-                    if !self.is_known_type(&name)
-                        && !matches!(
-                            name.as_str(),
-                            "Bool" | "List" | "Vec" | "Array" | "Ptr" | "Str"
-                        ) => {}
+                // Pinned to a genuinely UNKNOWN con (a typo'd type): let that type's
+                // own "unknown type" diagnostic surface instead of the numeric error.
+                Type::Con(name) if !self.is_known_type(&name) => {}
                 // Pinned to a known non-numeric type (e.g. `if 1` wants `@bool`): a
                 // bare literal is a number, so this is a type error, not a coercion.
                 other => {
@@ -3748,18 +3765,12 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::Cons { head, tail } => {
+                // `h :: t` matches any sequence via its `sequence_view` hook (a user
+                // type, else the default `@vec`); the tail keeps the scrutinee's type.
                 let (head, tail) = (*head, *tail);
-                // A user sequence type joins `::` via its `sequence_view` hook; the
-                // tail keeps the scrutinee's type.
-                if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
-                    self.type_pattern(head, &elem)?;
-                    return self.type_pattern(tail, expected);
-                }
-                let elem = self.eng.fresh();
-                let list = Type::app(Type::con(ty::LIST), elem.clone());
-                self.eng.unify(expected, &list, "in a '::' pattern")?;
+                let elem = self.sequence_pattern_elem(pat, expected)?;
                 self.type_pattern(head, &elem)?;
-                self.type_pattern(tail, &list)
+                self.type_pattern(tail, expected)
             }
             Pattern::List { elems, rest } if self.is_array(expected) => {
                 self.array_pats.insert(pat);
@@ -3773,27 +3784,16 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::List { elems, rest } => {
-                // A user sequence type joins `[..]` via its `sequence_view` hook; each
-                // element is typed at the view's element type, `..rest` at the seq type.
-                if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
-                    let (elems, rest) = (self.ast.slice(*elems), *rest);
-                    for e in elems.iter() {
-                        self.type_pattern(*e, &elem)?;
-                    }
-                    if let Some(rest) = rest {
-                        self.type_pattern(rest, expected)?;
-                    }
-                    return Ok(());
-                }
+                // `[a, b, ..r]` / `[]` matches any sequence via its `sequence_view` hook
+                // (a user type, else the default `@vec`): each element at the view's
+                // element type, `..rest` at the sequence type.
+                let elem = self.sequence_pattern_elem(pat, expected)?;
                 let (elems, rest) = (self.ast.slice(*elems), *rest);
-                let elem = self.eng.fresh();
-                let list = Type::app(Type::con(ty::LIST), elem.clone());
-                self.eng.unify(expected, &list, "in a list pattern")?;
                 for e in elems.iter() {
                     self.type_pattern(*e, &elem)?;
                 }
                 if let Some(rest) = rest {
-                    self.type_pattern(rest, &list)?;
+                    self.type_pattern(rest, expected)?;
                 }
                 Ok(())
             }
@@ -4105,7 +4105,7 @@ impl<'a> Checker<'a> {
                     }
                     self.unknown_type = Some(d);
                 }
-                Type::con(canonical_con(name))
+                Type::con(name)
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
@@ -4190,10 +4190,10 @@ impl<'a> Checker<'a> {
         // `Int`/`Nat`/`Real`, plus each sized `@`-form (which stays a distinct
         // type for exact C marshalling). `%` is defined for integers only.
         let ints = [
-            ty::INT, "Nat", "@int8", "@int16", "@int32", "@int64",
+            ty::INT, "@nat", "@int8", "@int16", "@int32", "@int64",
             "@nat8", "@nat16", "@nat32", "@nat64",
         ];
-        let reals = [ty::REAL, "@float32", "@float64"];
+        let reals = ["@float32", "@float64"];
         let numeric: Vec<&str> = ints.iter().chain(reals.iter()).copied().collect();
         // `+ - * / %` are defined in CORE.thx over the arithmetic intrinsics, not
         // seeded here. `^` stays a builtin (no intrinsic: int is a mul loop, real
@@ -4271,6 +4271,11 @@ impl<'a> Checker<'a> {
         );
         let (t, vt) = vec(&mut self.eng);
         self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+        let (_t, vt) = vec(&mut self.eng);
+        self.bind(
+            "@vec_slice",
+            Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(int(), vt))),
+        );
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
@@ -4375,9 +4380,10 @@ impl<'a> Checker<'a> {
             self.bind("++", Type::arrow(a.clone(), Type::arrow(a.clone(), a)));
         }
         {
+            // `x :: xs` prepends to the default sequence, a `@vec`.
             let a = self.eng.fresh_generic();
-            let list = Type::app(Type::con(ty::LIST), a.clone());
-            self.bind("::", Type::arrow(a, Type::arrow(list.clone(), list)));
+            let vec = Type::app(Type::con(ty::VEC), a.clone());
+            self.bind("::", Type::arrow(a, Type::arrow(vec.clone(), vec)));
         }
         {
             let a = self.eng.fresh_generic();
@@ -4736,10 +4742,10 @@ fn marshal_name(ty: &Type) -> String {
             }
             format!("@fn({})->{}", args.join(","), marshal_name(cur))
         }
-        // A `List T` parameter is a C array of `T`: passed as a `T*` pointing at a
+        // A `@vec T` parameter is a C array of `T`: passed as a `T*` pointing at a
         // contiguous packed buffer. Encoded so the seam can find `T`'s layout.
         Type::App(head, arg) => match (head.as_ref(), arg.as_ref()) {
-            (Type::Con(list), Type::Con(elem)) if list == ty::LIST => {
+            (Type::Con(vec), Type::Con(elem)) if vec == ty::VEC => {
                 format!("@structs({elem})")
             }
             _ => ty::INT.to_string(),
@@ -4826,26 +4832,6 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
 
 /// Map the sigil/alias type constructors to their canonical built-in name. Every
 /// sized integer width (signed and unsigned, `@`-sigil and friendly alias) is
-/// `Int` at the VALUE level, and every float width is `Real`, so arithmetic,
-/// comparison, and literals work uniformly across them. The exact C width is not
-/// lost: the crepr layout reads a field's RAW type name (`scalar_ckind`), so
-/// `x: @int32`/`x: Int32` still lays out as 4 bytes.
-fn canonical_con(name: &str) -> &str {
-    // Sized numeric `@`-forms stay DISTINCT (so an `@extern` marshals each at its
-    // exact C width and a struct field lays out correctly); arithmetic on them is
-    // provided by per-type operator overloads, not by collapsing to `Int`/`Real`.
-    match name {
-        "@int" => ty::INT,
-        "@nat" => "Nat",
-        "@str" => ty::STR,
-        "@bool" => ty::BOOL,
-        "@ptr" => ty::PTR,
-        "@array" => ty::ARRAY,
-        "@list" => ty::LIST,
-        "@vec" => ty::VEC,
-        other => other,
-    }
-}
 
 /// A type that would receive a `{kind}` (`"field"`/`"variant"`) twice: one it
 /// declares and one a `with` splice copies in, or one two included types share.
@@ -4887,9 +4873,9 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
         "@nat32" => U32,
         "@nat64" => U64,
         "@float32" => F32,
-        "@float64" | "Real" => F64,
-        "@int" | "Int" => word,
-        "@nat" | "Nat" => uword,
+        "@float64" => F64,
+        "@int" => word,
+        "@nat" => uword,
         "@ptr" => uword,
         "@bool" => U8,
         _ => return None,
@@ -4902,16 +4888,13 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
 fn is_numeric_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Nat" | "Real"
+        "@int" | "@nat" | "@float64"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
-            | "@float32" | "@float64"
+            | "@float32"
     )
 }
 
-/// The built-in scalar and container type names, in both their friendly and
-/// `@`-sigil spellings. A type in source is one of these, a declared type, or a
-/// lowercase type variable.
 /// The `@compiler_interface_*` construction hook for each literal kind: a literal
 /// whose expected type is a user type providing the matching overload builds that
 /// type instead of the built-in default.
@@ -4934,12 +4917,11 @@ fn is_interface_hook(name: &str) -> bool {
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,
-        "Real" | "Str"
-            | "@int" | "@nat"
+        "@int" | "@nat"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
-            | "@str" | "@ptr" | "@bool" | "@array" | "@list" | "@vec"
+            | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
     )
 }
 

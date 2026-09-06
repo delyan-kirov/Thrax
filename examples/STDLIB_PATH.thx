@@ -6,7 +6,7 @@
 #       component splitting. Pure string code; no filesystem involved.
 
 $ with PATH
-$ with LIST
+$ with VEC
 $ with STR
 
 $ ck_base   : @int = if (basename "a/b/c.txt") ?= "c.txt" => 0 else 1

@@ -9,7 +9,7 @@
 #       ascending order. Membership, add and remove are O(log n).
 
 $ with MAP
-$ with LIST
+$ with VEC
 $ with MATH
 $ with STR
 
@@ -22,9 +22,9 @@ $ new : (t -> t -> @int) -> Set t = \c = Set.{ .m = MAP.new c }
 
 $ new_int : Set @int = Set.{ .m = MAP.new_int }
 
-$ new_str : Set Str = Set.{ .m = MAP.new_str }
+$ new_str : Set @str = Set.{ .m = MAP.new_str }
 
-$ from_list : (t -> t -> @int) -> @list t -> Set t = \c xs =
+$ from_list : (t -> t -> @int) -> @vec t -> Set t = \c xs =
 	foldl (\s x = add s x) (new c) xs
 
 # ---- operations ----
@@ -40,7 +40,7 @@ $ size : Set t -> @int = \s = MAP.size s.m
 $ is_empty : Set t -> @bool = \s = MAP.is_empty s.m
 
 # Elements in ascending order.
-$ to_list : Set t -> @list t = \s = keys s.m
+$ to_list : Set t -> @vec t = \s = keys s.m
 
 $ fold : (a -> t -> a) -> a -> Set t -> a = \f acc s =
 	MAP.fold (\a k u = f a k) acc s.m

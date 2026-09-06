@@ -169,11 +169,11 @@ fn entry_unit_fn_exit_code() {
     assert_eq!(stdout, "");
 }
 
-/// A C-style `main : [n]Str -> <| e> @int` receives argv (path first) as a `[n]Str`.
+/// A C-style `main : [n]@str -> <| e> @int` receives argv (path first) as a `[n]@str`.
 #[test]
 fn entry_argv_fn_string_vector() {
     let src = "@mod MAIN\n\
-               $ main : [n]Str -> <| e> @int = \\args = @tensor_length args\n";
+               $ main : [n]@str -> <| e> @int = \\args = @tensor_length args\n";
     let (exit, _stdout) = c_run_entry(src, frontend::EntryKind::ArgvFn, &["alpha", "beta"]);
     assert_eq!(exit, 3);
 }
@@ -210,7 +210,7 @@ fn runtime_operators_match_interpreter_natively() {
         "if 3 <= 3 => 1 else 0",
         "if 5 >= 4 => 1 else 0",
         "\"a\" ++ \"b\"",
-        // Real `^` goes through libm `pow`; the comparison keeps the result an @int
+        // @float64 `^` goes through libm `pow`; the comparison keeps the result an @int
         // so no real-formatting difference can enter the comparison.
         "if 2.0 ^ 3.0 ?> 7.0 => 1 else 0",
     ];
@@ -271,9 +271,9 @@ fn scalar_serialization_matches_interpreter() {
     // arithmetic), so the C backend must render and parse scalars identically to
     // the interpreter. `to_string` cases also pin the shared textual encoding.
     for (body, entry) in [
-        ("$ a : Str = to_string 1234", "a"),
-        ("$ a : Str = to_string (0 - 42)", "a"),
-        ("$ a : Str = to_string (let n : @nat = 250 in n)", "a"),
+        ("$ a : @str = to_string 1234", "a"),
+        ("$ a : @str = to_string (0 - 42)", "a"),
+        ("$ a : @str = to_string (let n : @nat = 250 in n)", "a"),
         ("$ a : @bool = (from_string (to_string 1234)) ?= 1234", "a"),
         (
             "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\"",
@@ -283,8 +283,8 @@ fn scalar_serialization_matches_interpreter() {
         // Floats serialize via the C runtime seam (`thx_real_to_str` /
         // `thx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
         // identically on both engines.
-        ("$ a : Str = to_string (let x : @float64 = 3.5 in x)", "a"),
-        ("$ a : Str = to_string (let x : @float32 = from_string \"0.5\" in x)", "a"),
+        ("$ a : @str = to_string (let x : @float64 = 3.5 in x)", "a"),
+        ("$ a : @str = to_string (let x : @float32 = from_string \"0.5\" in x)", "a"),
         (
             "$ a : @bool = let x : @float64 = 2.25 in (from_string (to_string x)) ?= x",
             "a",
@@ -374,7 +374,7 @@ fn cast_between_integer_widths() {
 fn arithmetic_and_precedence() {
     let src = "@mod T\n\
                $ a = 1 + 2 * 3 - 4\n\
-               $ b : Real = 100.123 % 7\n\
+               $ b : @float64 = 100.123 % 7.0\n\
                $ test : @int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
@@ -555,7 +555,7 @@ fn ffi_struct_by_value_argument() {
 
 #[test]
 fn ffi_struct_array() {
-    // A `@list T` of C-repr structs passed as a contiguous `T*`. The C backend walks
+    // A `@vec T` of C-repr structs passed as a contiguous `T*`. The C backend walks
     // the cons list, packs into a malloc'd buffer, and frees after. Matches interp.
     use std::io::Write;
     let dir = std::env::temp_dir();
@@ -580,7 +580,7 @@ fn ffi_struct_array() {
     let src = format!(
         "@mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
-         $ sum_ps : {{ps: @list P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = so_path.display()
     );
@@ -731,7 +731,7 @@ fn ffi_c_union_by_value() {
 
     let src = format!(
         "@mod M\n\
-         $ U : @union @extern \"C\" = i: @int, d: Real,\n\
+         $ U : @union @extern \"C\" = i: @int, d: @float64,\n\
          $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
          $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
          $ built : @int = u_as_long (U.{{ .i = 42 }})\n\
@@ -826,7 +826,7 @@ fn open_range_stream() {
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
     // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
     let src = "@mod M\n\
-               $ len : @list @int -> @int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ len : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
                $ s : Stream @int = [3 ...]\n\
                $ test : @int = s.head + s.tail.head + len [1 ... 4]\n";
     assert_matches(src, "test");
@@ -836,8 +836,8 @@ fn open_range_stream() {
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
     let src = "@mod M\n\
-               $ sign : @int -> Str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
-               $ test : Str = sign 3\n";
+               $ sign : @int -> @str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
+               $ test : @str = sign 3\n";
     assert_matches(src, "test");
 }
 
@@ -884,11 +884,11 @@ fn variants_and_when() {
 #[test]
 fn lists_and_length() {
     let src = "@mod T\n\
-               $ len : @list t -> @int =\n\
-               \tlet helper : @list t -> @int -> @int = \\l n =\n\
+               $ len : @vec t -> @int =\n\
+               \tlet helper : @vec t -> @int -> @int = \\l n =\n\
                \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
-               $ xs : @list @int = [1, 2, 3]\n\
+               $ xs : @vec @int = [1, 2, 3]\n\
                $ test : @int = len xs\n";
     assert_matches(src, "test");
 }
@@ -896,7 +896,7 @@ fn lists_and_length() {
 #[test]
 fn strings_and_arrays() {
     let src = "@mod T\n\
-               $ s : Str = \"ab\" ++ \"cd\"\n\
+               $ s : @str = \"ab\" ++ \"cd\"\n\
                $ n : @int = @array_len s\n\
                $ g : @int = @array_get s 1\n\
                $ test : @int = n + g\n";
@@ -963,8 +963,8 @@ fn sized_extern_marshalling() {
     // A foreign binding with sized / pointer / float32 arguments emits each
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
     let src = "@mod T\n\
-               $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> Real = @extern \"C\" \"f\" \"libx\"\n\
-               $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> Real = \\r = f r\n";
+               $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = @extern \"C\" \"f\" \"libx\"\n\
+               $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = \\r = f r\n";
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
@@ -983,10 +983,10 @@ fn sized_extern_marshalling() {
 
 #[test]
 fn sized_extern_runs_and_matches() {
-    // A real libc call through a sized signature (`strlen : Str -> @nat64`, wrapped
+    // A real libc call through a sized signature (`strlen : @str -> @nat64`, wrapped
     // as `uint64_t(char*)`) runs and agrees with the interpreter's host table.
     let src = "@mod T\n\
-               $ strlen : Str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
+               $ strlen : @str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
                $ test : @nat64 = strlen \"hello\"\n";
     assert_matches(src, "test");
 }
@@ -1013,11 +1013,11 @@ fn pattern_hooks_match_interpreter() {
     // Literal patterns (equality hook) and sequence patterns (sequence_view hook) on
     // user types must lower the same on the C backend as on the interpreter.
     let src = "@mod M\n\
-               $ Stack : @struct a = items: @list a\n\
+               $ Stack : @struct a = items: @vec a\n\
                $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
                \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
-               $ MyStr : @struct = bytes: Str\n\
-               $ @compiler_interface_string_literal : Str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+               $ MyStr : @struct = bytes: @str\n\
+               $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
                $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
                $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\

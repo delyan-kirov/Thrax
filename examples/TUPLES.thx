@@ -9,8 +9,8 @@
 #       `let` binders and lambda parameters. Under the hood a tuple is an
 #       ordinary anonymous struct, so there is nothing new at runtime.
 
-# The type former, in a signature: a pair of @int and Str.
-$ p : {@int, Str} = {42, "answer"}
+# The type former, in a signature: a pair of @int and @str.
+$ p : {@int, @str} = {42, "answer"}
 
 # Positional access, and chains (`n.1.0` reads through a nested tuple).
 $ chk_access : @int = if p.0 ?= 42 => 0 else 1
@@ -51,7 +51,7 @@ $ chk_triple : @int =
 
 # A one-element tuple is a real (distinct) type, and arity is unbounded --
 # each size is registered by the checker on first use.
-$ single : {Str} = {"alone"}
+$ single : {@str} = {"alone"}
 $ chk_single : @int =
 	is single | {s} => (if s ?= "alone" => 0 else 1) else 1
 

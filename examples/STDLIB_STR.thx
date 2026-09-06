@@ -2,13 +2,13 @@
 
 # \file STDLIB_STR.thx
 # \info The standard library's STR module: searching, splitting, trimming,
-#       ASCII case and number formatting/parsing over the byte-vector `Str`.
-#       `reverse`/`repeat`/`contains`/`find` also exist in LIST, so uses
+#       ASCII case and number formatting/parsing over the byte-vector `@str`.
+#       `reverse`/`repeat`/`contains`/`find` also exist in VEC, so uses
 #       here qualify where both modules are imported.
 
 $ with STR
 $ with OPT
-$ with LIST
+$ with VEC
 
 $ ck_len    : @int = if (len "hello") ?= 5 => 0 else 1
 $ ck_at     : @int = if (at "hello" 1) ?= 101 => 0 else 1
