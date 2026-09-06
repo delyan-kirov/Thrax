@@ -181,7 +181,7 @@ this section predates the rewrite and still cites the C++ names.)
 
 | `lib` | native (`thrax build`) | interpreter (`thrax run`) |
 | --- | --- | --- |
-| `""` (self) | no flag; the symbol is defined in the program's own translation unit (see intrinsics below) | served from the compiled-in host table if present, else `dlsym(RTLD_DEFAULT)` against the already-loaded process |
+| `""` (self) | no flag; the symbol is defined in the program's own translation unit (see intrinsics below) | `dlsym(RTLD_DEFAULT)` against the already-loaded process (which includes the `thraxstd` support functions linked into the interpreter) |
 | `"libc"` / `"libm"` | implicit / `-lm` | already-loaded set (a null dlopen handle, `RTLD_DEFAULT`) |
 | `"raylib"`, `"foo"` | `-lraylib`, `-lfoo` (a leading `lib` is stripped) | `dlopen` the host soname (`libraylib.so`, ...) |
 | a path or soname (`/x/lib.a`, `bin/libraylib.so`) | passed to the linker verbatim | `dlopen`ed by that path |
@@ -189,31 +189,40 @@ this section predates the rewrite and still cites the C++ names.)
 `link_flag` (in `utilities::target`) turns the name into a link flag; `""`,
 `libc`, and `c` produce none. The interpreter's `resolve` (in `machine::ffi`)
 treats `""`, `libc`, `c`, `libm`, `m` as the already-loaded set (a null handle,
-`RTLD_DEFAULT`), so an `""` symbol not served by the host table still resolves
-against the process itself.
+`RTLD_DEFAULT`), so every foreign call, libc/libm and the `thx_*` support
+functions alike, resolves against the process itself. The interpreter has no
+per-symbol host table: `run_extern` (`crates/interpreter/src/machine/data.rs`)
+just guards the `"WASM"` abi, hands off to `machine::ffi::call_extern` (libffi),
+and `fflush`es C stdio. That is why the `thraxstd` support functions must be
+linked into the interpreter and its dynamic symbols exported (see below).
 
 ##### Engine intrinsics (`lib = ""`)
 
 A few conversions the language cannot express with `@cast` (which crosses only
-integer widths) are provided by the engines themselves and bound in
-`library/C.thx` with an EMPTY library name: `C.i2d` / `C.d2i` (@int and Real),
-`C.i2f` / `C.f2i` (@int and `@float32`), `C.i2p` (@int to `@ptr`), and `C.null`
-(the null pointer, `i2p 0`). `MATH` re-exports the numeric ones as
-`real_of_int` / `int_of_real` / `f32_of_int` / `int_of_f32`.
+integer widths) are provided by the standard library's native support functions
+and bound in `library/C.thx` with an EMPTY library name: `C.i2d` / `C.d2i`
+(@int and Real), `C.i2f` / `C.f2i` (@int and `@float32`), `C.i2p` (@int to
+`@ptr`), and `C.null` (the null pointer, `i2p 0`); CORE also binds the float
+width/format helpers (`thx_f2d`/`thx_d2f`/`thx_real_to_str`/`thx_f32_to_str`).
+`MATH` re-exports the numeric ones as `real_of_int` / `int_of_real` /
+`f32_of_int` / `int_of_f32`.
 
-These are not libc symbols. Each engine supplies its own definition, and neither
-loads anything:
+These are not libc symbols. They live in ONE C source of truth,
+`crates/ccg/src/thraxstd.c`, so both engines run identical code (notably the
+shortest-round-trip float formatting):
 
-- **Interpreter**: an arm in the host table (`run_extern`,
-  `crates/interpreter/src/machine/data.rs`), a direct Rust call. Because the
-  symbol is in the table, dlopen is never reached and the `lib` field is unused.
-- **Native**: a C function in `crates/ccg/src/runtime.c`, which the backend
-  INLINES into the single `.c` file it emits (the same translation unit as the
-  generated code), so the linker resolves it locally with no `-l`.
+- **Native**: `thraxstd.c` is appended to the single `.c` file the backend emits
+  (the same translation unit as the generated code), so the linker resolves it
+  locally with no `-l`.
+- **Interpreter**: the same `thraxstd.c` is compiled and linked into the `thrax`
+  binary by `crates/interpreter/build.rs` (`static:+whole-archive`, forced in
+  since no Rust code references it), and the binary is linked with `-rdynamic`
+  (`.cargo/config.toml`) so its symbols land in the dynamic symbol table. A
+  `C.i2d` call then resolves like any `lib = ""` symbol: `dlsym(RTLD_DEFAULT)`
+  finds it in-process, and libffi invokes it.
 
-So `""` is accurate: the symbol lives in the program or interpreter itself, not
-an external library. If the runtime were ever factored into a separately linked
-`libthrax` that programs depend on, the truthful name would become that library.
+So `""` is accurate: the symbol lives in the program (native) or is linked into
+the interpreter binary, not an external library.
 
 ## Algebraic effects (the CEK driver)
 
