@@ -213,17 +213,15 @@ Three-way sequence story (being moved toward):
 - `List` (cons `@union`) -- optional, persistent, O(1) cons. Kept in CORE, no longer the
   default; keeps `h :: t` patterns via its `@compiler_interface_sequence_view` hook.
 
-Codata `for` combinator (expressible TODAY -- codata + open effect rows already exist):
-```
-$ for : Stream a -> (a -> <e> {}) -> <e> {} = \s body = body s.head ; for s.tail body
-$ forever : Stream {} = { .head = {}, .tail = forever }
-# for (count_from 0) (\i = IO.print i)      -- effectful counted loop
-# for forever |> \_ = ...                    -- unbounded effectful loop
-```
-The effect row `<e>` passes straight through, uncaught. Subtlety: keep "iterate FOR
-effects" (`-> <e> {}`) separate from "pure lazy transform" -- a `for` that RETURNS a
-`Stream b` while running effects would fire those effects lazily at each `.tail`
-observation (codata thunks are non-memoized), which is usually not what you want.
+Iteration DONE (2026-09-06, in CORE): two combinators, kept deliberately minimal.
+`for` runs a body FOR ITS EFFECTS (returns `{}`); `formap` TRANSFORMS (returns the
+mapped structure). Both understand the `Loop` effect (`break` stops, `continue`
+skips; value-less). `for` is overloaded for `Stream`, giving an INDEFINITE effectful
+loop ended by `break` (or run forever), with `forever : Stream {}` as a source:
+`for (count_from 0) (\i = if <cond> => break {} else ...)`. `formap` is finite-only
+(collecting an infinite stream doesn't terminate). The effect row `<e>` passes
+through uncaught. See the `Loop`/`for`/`formap` block in CORE.thx. (No dedicated
+example/test module for now, verified on both engines manually.)
 
 ---
 
@@ -239,7 +237,7 @@ bridged with `VEC.from_list`/`to_list`). Added a `@vec_slice` primitive.
 
 Follow-ups worth doing: `x :: xs` (prepend) is O(n) on a vector, so `::`-recursion is
 quadratic -- callers should build with push / index iteration (documented in VEC.thx).
-The codata `for` / streaming direction above is still open.
+The codata iteration direction above is now DONE (`foreach`/`loop` over `Stream`).
 
 ---
 

@@ -26,6 +26,7 @@ $ with FINALLY = FINALLY
 $ with HANOI = HANOI
 $ with HIGHER_ORDER = HIGHER_ORDER
 $ with IMPLICITS = IMPLICITS
+$ with ITER = ITER
 $ with LET_IN = LET_IN
 $ with LISTS = LISTS
 $ with MATCH = MATCH
@@ -92,6 +93,7 @@ $ main : @int =
 	+ check "HANOI" HANOI.test
 	+ check "HIGHER_ORDER" HIGHER_ORDER.test
 	+ check "IMPLICITS" IMPLICITS.test
+	+ check "ITER" ITER.test
 	+ check "LET_IN" LET_IN.test
 	+ check "LISTS" LISTS.test
 	+ check "MATCH" MATCH.test

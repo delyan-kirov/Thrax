@@ -464,3 +464,64 @@ $ Stream : @codata t = head : t, tail : Stream t,
 # `lo` upward, with no end. It builds a `Stream`, the only shape that can hold an
 # unbounded sequence (not a finite `@vec` or a statically sized `[n]T`).
 $ count_from : @int -> Stream @int = \lo = { .head = lo, .tail = count_from (lo + 1) }
+
+# The `Loop` effect gives imperative `break` / `continue` to the iteration
+# combinators below: `break` stops the loop, `continue` skips the rest of the
+# current step. Neither resumes or carries a value (each just aborts the body, like
+# `Exn.throw`). Any OTHER effects the body performs pass through to the outer
+# handler. `break {}` / `continue {}` work anywhere via these prelude wrappers (an
+# effect's ops are unqualified only inside its own module).
+$ Loop : @effect = break : {} -> a, continue : {} -> a,
+$ break    : {} -> <Loop> a = \u = Loop.break u
+$ continue : {} -> <Loop> a = \u = Loop.continue u
+
+# `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`. Overloaded per
+# structure; over a `Stream` it is an INDEFINITE loop (runs until `break`, or
+# forever, `forever` and `count_from` are ready-made infinite sources).
+$ for_go : @vec a -> (a -> <Loop | e> {}) -> @int -> <e> {} = \xs body i =
+	if i >= @vec_len xs => {}
+	else
+		let more = do body (@vec_get xs i)
+			ctl k | Loop.continue u => @true
+			      | Loop.break u => @false
+			      else _ => @true
+		in if more => for_go xs body (i + 1) else {}
+$ for : @vec a -> (a -> <Loop | e> {}) -> <e> {} = \xs body = for_go xs body 0
+
+$ forever : Stream {} = { .head = {}, .tail = forever }
+$ for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
+	let more = do body s.head
+		ctl k | Loop.continue u => @true
+		      | Loop.break u => @false
+		      else _ => @true
+	in if more => for s.tail body else {}
+
+# `formap` TRANSFORMS: it maps `body` over the structure and returns the result
+# (the effectful analogue of `map`, like Haskell's `traverse`). `continue` drops an
+# element, `break` stops early keeping what was collected. Overloaded per structure.
+# The three ways a step can end:
+$ LoopStep : @union b = Keep: {b}, Skip: {}, Stop: {},
+$ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =
+	do let y = f x in LoopStep.Keep.{ y }
+	ctl k | Loop.continue u => LoopStep.Skip
+	      | Loop.break u => LoopStep.Stop
+	      else s => s
+
+$ formap_vec : @vec a -> (a -> <Loop | e> b) -> @int -> @vec b -> <e> @vec b = \xs f i acc =
+	if i >= @vec_len xs => acc
+	else is formap_step (@vec_get xs i) f
+		| LoopStep.Keep.{y} => formap_vec xs f (i + 1) (@vec_push acc y)
+		| LoopStep.Skip => formap_vec xs f (i + 1) acc
+		else acc
+$ formap : @vec a -> (a -> <Loop | e> b) -> <e> @vec b = \xs f = formap_vec xs f 0 (@vec_new {})
+
+# `let`-force each step: a data constructor's fields are lazy, so building the Cons
+# directly would defer the effects until the result were observed.
+$ formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
+	is xs
+	| List.Cons.{h, t} =>
+		is formap_step h f
+		| LoopStep.Keep.{y} => let ys = formap t f in List.Cons.{ y, ys }
+		| LoopStep.Skip => formap t f
+		else List.Nil
+	else List.Nil
