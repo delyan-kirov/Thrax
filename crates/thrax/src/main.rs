@@ -1,6 +1,7 @@
 //! The Thrax executable: argument dispatch over the driver ([`driver`]).
 
 mod driver;
+mod repl;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -33,6 +34,7 @@ fn main() -> ExitCode {
             let (root, prog_args) = split_run(&rest[1..]);
             with_root(root, |path| driver::cmd_run(path, prog_args))
         }
+        Some("repl") | Some("shell") => repl::cmd_repl(),
         Some("emit-c") => with_root(rest.get(1).map(String::as_str), |path| {
             driver::cmd_emit_c(path, target)
         }),
@@ -57,6 +59,7 @@ Usage:
 
 Commands:
   run      Run a program on the interpreter (extra args are passed to it).
+  repl     Start an interactive shell (read-eval-print loop).
   build    Compile a program to a native executable next to the source.
   check    Type-check a program and print the inferred types.
   emit-c   Emit standalone C for a program to stdout.
