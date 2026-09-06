@@ -103,9 +103,12 @@ fn build_thraxstd(manifest: &Path, out: &Path) {
 
     println!("cargo:rustc-link-search=native={}", out.display());
     // No Rust code references these symbols (the interpreter resolves `thx_*`
-    // dynamically, in-process, through the normal `@extern` seam), so force the
-    // whole archive in and let `-rdynamic` (see .cargo/config.toml) export it.
+    // dynamically, in-process, via `dlsym`), so force the whole archive in. Export
+    // it with `-rdynamic` so `dlsym(RTLD_DEFAULT)` finds it; a build-script link
+    // arg is used (not `RUSTFLAGS`/config, which CI overrides). This covers this
+    // crate's own test binaries; `thrax` and `ccg` set it for theirs.
     println!("cargo:rustc-link-lib=static:+whole-archive=thraxstd");
+    println!("cargo:rustc-link-arg-tests=-rdynamic");
 }
 
 fn resolve_libffi(repo: &Path) -> (Option<PathBuf>, Link) {

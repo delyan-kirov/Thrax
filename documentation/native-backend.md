@@ -217,7 +217,9 @@ shortest-round-trip float formatting):
 - **Interpreter**: the same `thraxstd.c` is compiled and linked into the `thrax`
   binary by `crates/interpreter/build.rs` (`static:+whole-archive`, forced in
   since no Rust code references it), and the binary is linked with `-rdynamic`
-  (`.cargo/config.toml`) so its symbols land in the dynamic symbol table. A
+  (emitted from the `thrax`/`ccg`/`interpreter` build scripts as a
+  `rustc-link-arg`, not via `RUSTFLAGS`/`.cargo/config.toml`, which a CI-set
+  `RUSTFLAGS` would override) so its symbols land in the dynamic symbol table. A
   `C.i2d` call then resolves like any `lib = ""` symbol: `dlsym(RTLD_DEFAULT)`
   finds it in-process, and libffi invokes it.
 

@@ -10,8 +10,10 @@ design notes under `documentation/`, linked below.
   `real_to_str`/`f32_to_str`) now live in ONE source, `crates/ccg/src/thraxstd.c`.
   The native backend appends it to every emitted program (removed the duplicate
   defs from `runtime.c`); the interpreter compiles and links it in-process
-  (`crates/interpreter/build.rs`, `static:+whole-archive`, plus `-rdynamic` via
-  `.cargo/config.toml`) and resolves the symbols through the normal
+  (`crates/interpreter/build.rs`, `static:+whole-archive`, plus `-rdynamic`
+  emitted as a `rustc-link-arg` from the `thrax`/`ccg`/`interpreter` build scripts,
+  NOT `RUSTFLAGS`/config, which a CI-set `RUSTFLAGS` overrides) and resolves the
+  symbols through the normal
   `@extern "C" "..." ""` / `dlsym(RTLD_DEFAULT)` seam. The whole per-symbol host
   table in `machine/data.rs` (86 arms of libm/libc/`thx_*` + its `extern "C"`
   block and marshalling helpers) is GONE: native `run_extern` now just guards the
