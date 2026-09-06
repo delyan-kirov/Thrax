@@ -1,0 +1,42 @@
+@mod ITER
+
+# The CORE iteration combinators: `for` (run a body for its effects, returns `{}`)
+# and `formap` (transform, returns the mapped structure). Both understand the
+# `Loop` effect: `break` stops, `continue` skips a step. Other effects the body
+# performs (here `Yield`) pass through to the outer handler.
+
+$ Yield : @effect = yield : @int -> {},
+$ sumY : ({} -> <Yield> {}) -> @int = \a =
+	do a {} ctl k | Yield.yield v => v + k {} else _ => 0
+
+# `for` over a @vec, for effects: yield 1,2,3, then `break` at 4  ->  1+2+3 = 6.
+$ ck_for : @int =
+	if sumY (\u = for [1, 2, 3, 4, 5] (\x = if x ?> 3 => break {} else yield x)) ?= 6
+	=> 0 else 1
+
+# `for` over an infinite `Stream`, an indefinite loop bounded by `break`: yield
+# 0,1,2, then `break` at 3  ->  0+1+2 = 3.
+$ ck_stream : @int =
+	if sumY (\u = for (count_from 0) (\i = if i ?= 3 => break {} else yield i)) ?= 3
+	=> 0 else 1
+
+# `formap` over a @vec: keep odds *10, `continue` past evens  ->  [10, 30, 50].
+$ mapped : @vec @int = formap [1, 2, 3, 4, 5] (\x = if x % 2 ?= 0 => continue {} else x * 10)
+$ ck_formap : @int =
+	if @vec_len mapped ?= 3 && @vec_get mapped 0 ?= 10 && @vec_get mapped 2 ?= 50
+	=> 0 else 1
+
+# `formap` with `break`: stop once an element passes 3  ->  [1, 2, 3].
+$ trunc : @vec @int = formap [1, 2, 3, 4, 5] (\x = if x ?> 3 => break {} else x)
+$ ck_break : @int = if @vec_len trunc ?= 3 && @vec_get trunc 2 ?= 3 => 0 else 1
+
+# `formap` over the cons `List`: [10, 20] -> [11, 21], read back by matching.
+$ listed : List @int = formap (List.Cons.{ 10, List.Cons.{ 20, List.Nil } }) (\x = x + 1)
+$ ck_list : @int =
+	is listed
+	| List.Cons.{h, t} =>
+		is t | List.Cons.{h2, t2} => (if h ?= 11 && h2 ?= 21 => 0 else 1) else 1
+	else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @int = ck_for + ck_stream + ck_formap + ck_break + ck_list
