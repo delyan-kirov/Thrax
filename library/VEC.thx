@@ -1,57 +1,208 @@
 @mod VEC
 
 # \file VEC.thx
-# \info The generic growable vector `@vec `T` of boxed values
+# \info Operations on the default sequence, the growable vector `@vec `T`. A `[...]`
+#       literal builds one, and `[a, b, ..r]` / `h :: t` / `[]` patterns match one
+#       (via its `@compiler_interface_sequence_view` hook in CORE). Everything here is
+#       INDEX-BASED (`@vec_len`/`@vec_get`/`@vec_push`/`@vec_slice`), so it is O(n):
+#       building goes through `@vec_push` (append), never `::` (prepend is O(n)).
+#       Where an operation needs equality it takes the comparison explicitly
+#       (dictionary passing); there are no type classes.
 
 $ with OPT
-$ with LIST
+
+# ---- primitives / access ----
 
 $ new : {} -> @vec t = \u = @vec_new {}
 
-# `n` copies of `x` ("@vec_fill 3 0" = [0, 0, 0]).
-$ fill : Int -> t -> @vec t = \n x = @vec_fill n x
+# `n` copies of `x`.
+$ fill : @int -> t -> @vec t = \n x = @vec_fill n x
 
-$ len : @vec t -> Int = \v = @vec_len v
+$ len : @vec t -> @int = \v = @vec_len v
+
+$ length : @vec t -> @int = \v = @vec_len v
 
 $ is_empty : @vec t -> @bool = \v = (@vec_len v) ?= 0
 
+$ push : @vec t -> t -> @vec t = \v x = @vec_push v x
+
+# The half-open range `[lo, hi)`, clamped.
+$ slice : @vec t -> @int -> @int -> @vec t = \v lo hi = @vec_slice v lo hi
+
 # Bounds-checked element access.
-$ get : @vec t -> Int -> Option t = \v i =
+$ get : @vec t -> @int -> Option t = \v i =
 	if i ?< 0 => Option.None
 	else if i >= @vec_len v => Option.None
 	else Option.Some.{ @vec_get v i }
 
-$ get_or : @vec t -> Int -> t -> t = \v i d = unwrap_or (get v i) d
+$ get_or : @vec t -> @int -> t -> t = \v i d = unwrap_or (get v i) d
 
-# A copy with the element at `i` replaced; out-of-range leaves it unchanged.
-$ set : @vec t -> Int -> t -> @vec t = \v i x =
-	if i ?< 0 => v
-	else if i >= @vec_len v => v
-	else @vec_set v i x
+# The element at (0-based) `i`, if in range.
+$ nth : @vec t -> @int -> Option t = \v i = get v i
 
-$ push : @vec t -> t -> @vec t = \v x = @vec_push v x
+# A copy with element `i` replaced; out-of-range leaves it unchanged.
+$ set : @vec t -> @int -> t -> @vec t = \v i x =
+	if i ?< 0 => v else if i >= @vec_len v => v else @vec_set v i x
+
+$ set_nth : @vec t -> @int -> t -> @vec t = \v i x = set v i x
+
+$ first : @vec t -> Option t = \v = get v 0
 
 $ last : @vec t -> Option t = \v = get v ((@vec_len v) - 1)
 
-# ---- whole-vector operations ----
+# ---- folds (the O(n) index loops the rest build on) ----
 
-$ from_list : @list t -> @vec t = \xs =
-	LIST.foldl (\v x = @vec_push v x) (@vec_new {}) xs
-
-$ to_list : @vec t -> @list t = \v = suffix v 0
-
-$ suffix : @vec t -> Int -> @list t = \v i =
-	if i >= @vec_len v => [] else @vec_get v i :: suffix v (i + 1)
-
-$ map : (a -> b) -> @vec a -> @vec b = \f v = map_from f v 0 (@vec_new {})
-
-$ map_from : (a -> b) -> @vec a -> Int -> @vec b -> @vec b = \f v i acc =
+$ foldl : (a -> t -> a) -> a -> @vec t -> a = \f acc v = foldl_from f acc v 0
+$ foldl_from : (a -> t -> a) -> a -> @vec t -> @int -> a = \f acc v i =
 	if i >= @vec_len v => acc
-	else map_from f v (i + 1) (@vec_push acc (f (@vec_get v i)))
+	else foldl_from f (f acc (@vec_get v i)) v (i + 1)
 
-$ fold : (a -> t -> a) -> a -> @vec t -> a = \f acc v =
-	fold_from f acc v 0
+$ fold : (a -> t -> a) -> a -> @vec t -> a = \f acc v = foldl f acc v
 
-$ fold_from : (a -> t -> a) -> a -> @vec t -> Int -> a = \f acc v i =
-	if i >= @vec_len v => acc
-	else fold_from f (f acc (@vec_get v i)) v (i + 1)
+$ foldr : (t -> a -> a) -> a -> @vec t -> a = \f z v = foldr_from f z v (@vec_len v)
+$ foldr_from : (t -> a -> a) -> a -> @vec t -> @int -> a = \f z v i =
+	if i <= 0 => z
+	else foldr_from f (f (@vec_get v (i - 1)) z) v (i - 1)
+
+# ---- transforms (build via push, so O(n)) ----
+
+$ map : (a -> b) -> @vec a -> @vec b = \f v =
+	foldl (\acc x = @vec_push acc (f x)) (@vec_new {}) v
+
+$ filter : (t -> @bool) -> @vec t -> @vec t = \p v =
+	foldl (\acc x = if p x => @vec_push acc x else acc) (@vec_new {}) v
+
+$ filter_map : (a -> Option b) -> @vec a -> @vec b = \f v =
+	foldl (\acc x = is f x | Option.Some.{y} => @vec_push acc y else acc)
+	      (@vec_new {}) v
+
+$ reverse : @vec t -> @vec t = \v = foldr (\x acc = @vec_push acc x) (@vec_new {}) v
+
+$ append : @vec t -> @vec t -> @vec t = \xs ys =
+	foldl (\acc x = @vec_push acc x) xs ys
+
+$ concat : @vec (@vec t) -> @vec t = \vss =
+	foldl (\acc v = append acc v) (@vec_new {}) vss
+
+$ flat_map : (a -> @vec b) -> @vec a -> @vec b = \f v = concat (map f v)
+
+$ take : @int -> @vec t -> @vec t = \n v =
+	@vec_slice v 0 (if n ?< 0 => 0 else n)
+
+$ drop : @int -> @vec t -> @vec t = \n v =
+	@vec_slice v (if n ?< 0 => 0 else n) (@vec_len v)
+
+# All but the last element.
+$ init : @vec t -> @vec t = \v =
+	let n = @vec_len v in @vec_slice v 0 (if n ?= 0 => 0 else n - 1)
+
+$ replicate : @int -> t -> @vec t = \n x = fill n x
+
+$ intersperse : t -> @vec t -> @vec t = \sep v =
+	if @vec_len v ?= 0 => @vec_new {}
+	else foldl (\acc x = @vec_push (@vec_push acc sep) x)
+	           (@vec_push (@vec_new {}) (@vec_get v 0)) (@vec_slice v 1 (@vec_len v))
+
+# ---- predicates / search ----
+
+$ any : (t -> @bool) -> @vec t -> @bool = \p v = any_from p v 0
+$ any_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
+	if i >= @vec_len v => @false
+	else if p (@vec_get v i) => @true else any_from p v (i + 1)
+
+$ all : (t -> @bool) -> @vec t -> @bool = \p v = all_from p v 0
+$ all_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
+	if i >= @vec_len v => @true
+	else if p (@vec_get v i) => all_from p v (i + 1) else @false
+
+$ find : (t -> @bool) -> @vec t -> Option t = \p v = find_from p v 0
+$ find_from : (t -> @bool) -> @vec t -> @int -> Option t = \p v i =
+	if i >= @vec_len v => Option.None
+	else let x = @vec_get v i in
+		if p x => Option.Some.{ x } else find_from p v (i + 1)
+
+$ find_index : (t -> @bool) -> @vec t -> Option @int = \p v = find_index_from p v 0
+$ find_index_from : (t -> @bool) -> @vec t -> @int -> Option @int = \p v i =
+	if i >= @vec_len v => Option.None
+	else if p (@vec_get v i) => Option.Some.{ i } else find_index_from p v (i + 1)
+
+$ contains : (t -> t -> @bool) -> t -> @vec t -> @bool = \eqf x v =
+	any (\y = eqf x y) v
+
+$ lookup : (k -> k -> @bool) -> k -> @vec {k, v} -> Option v = \eqf k ps =
+	is find (\p = eqf k p.0) ps | Option.Some.{p} => Option.Some.{ p.1 } else Option.None
+
+$ take_while : (t -> @bool) -> @vec t -> @vec t = \p v = @vec_slice v 0 (prefix_len p v 0)
+$ prefix_len : (t -> @bool) -> @vec t -> @int -> @int = \p v i =
+	if i >= @vec_len v => i
+	else if p (@vec_get v i) => prefix_len p v (i + 1) else i
+
+$ drop_while : (t -> @bool) -> @vec t -> @vec t = \p v = @vec_slice v (prefix_len p v 0) (@vec_len v)
+
+$ span : (t -> @bool) -> @vec t -> {@vec t, @vec t} = \p v =
+	let n = prefix_len p v 0 in {@vec_slice v 0 n, @vec_slice v n (@vec_len v)}
+
+$ split_at : @int -> @vec t -> {@vec t, @vec t} = \n v = {take n v, drop n v}
+
+$ partition : (t -> @bool) -> @vec t -> {@vec t, @vec t} = \p v =
+	{filter p v, filter (\x = !(p x)) v}
+
+$ remove_first : (t -> @bool) -> @vec t -> @vec t = \p v =
+	is find_index p v
+		| Option.Some.{i} => append (@vec_slice v 0 i) (@vec_slice v (i + 1) (@vec_len v))
+	else v
+
+# ---- pairs / numeric ----
+
+$ zip_with : (a -> b -> c) -> @vec a -> @vec b -> @vec c = \f xs ys =
+	zip_with_from f xs ys 0 (@vec_new {})
+$ zip_with_from : (a -> b -> c) -> @vec a -> @vec b -> @int -> @vec c -> @vec c = \f xs ys i acc =
+	if i >= @vec_len xs => acc
+	else if i >= @vec_len ys => acc
+	else zip_with_from f xs ys (i + 1) (@vec_push acc (f (@vec_get xs i) (@vec_get ys i)))
+
+$ zip : @vec a -> @vec b -> @vec {a, b} = \xs ys = zip_with (\x y = {x, y}) xs ys
+
+$ unzip : @vec {a, b} -> {@vec a, @vec b} = \ps =
+	foldl (\acc p = {@vec_push acc.0 p.0, @vec_push acc.1 p.1}) {@vec_new {}, @vec_new {}} ps
+
+$ sum : @vec @int -> @int = \v = foldl (\a x = a + x) 0 v
+
+$ product : @vec @int -> @int = \v = foldl (\a x = a * x) 1 v
+
+$ minimum : @vec @int -> @int -> @int = \v d =
+	if @vec_len v ?= 0 => d
+	else foldl (\a x = if x ?< a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+
+$ maximum : @vec @int -> @int -> @int = \v d =
+	if @vec_len v ?= 0 => d
+	else foldl (\a x = if x ?> a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+
+# ---- conversion (bridges to the optional cons `List`) ----
+
+$ from_list : List t -> @vec t = \xs =
+	is xs | List.Cons.{h, t} => @vec_push (from_list t) h else @vec_new {}
+
+$ to_list : @vec t -> List t = \v = foldr (\x acc = List.Cons.{x, acc}) List.Nil v
+
+# ---- sorting (stable merge sort) ----
+
+# `c a b` is a three-way comparison: negative / 0 / positive. Equal elements keep
+# their original order.
+$ sort_by : (t -> t -> @int) -> @vec t -> @vec t = \c v =
+	let n = @vec_len v in
+	if n <= 1 => v
+	else
+		let mid = n / 2 in
+		merge_by c (sort_by c (@vec_slice v 0 mid)) (sort_by c (@vec_slice v mid n))
+
+$ merge_by : (t -> t -> @int) -> @vec t -> @vec t -> @vec t = \c xs ys =
+	merge_from c xs ys 0 0 (@vec_new {})
+$ merge_from : (t -> t -> @int) -> @vec t -> @vec t -> @int -> @int -> @vec t -> @vec t = \c xs ys i j acc =
+	if i >= @vec_len xs => append acc (@vec_slice ys j (@vec_len ys))
+	else if j >= @vec_len ys => append acc (@vec_slice xs i (@vec_len xs))
+	else
+		let x = @vec_get xs i in
+		let y = @vec_get ys j in
+		if (c x y) <= 0 => merge_from c xs ys (i + 1) j (@vec_push acc x)
+		else merge_from c xs ys i (j + 1) (@vec_push acc y)

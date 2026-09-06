@@ -2,7 +2,7 @@
 
 # \file reals.thx
 # \info 64-bit Real literals (decimal and scientific) and Real arithmetic. The
-#       operators are the same as for Int -- overload resolution picks the Real
+#       operators are the same as for @int -- overload resolution picks the Real
 #       implementation from the operand types.
 
 $pi      = 3.14159
@@ -15,13 +15,13 @@ $diff    = 10.0 - 0.5
 $quot    = 7.0 / 2.0
 $negate  = -4.2
 
-# comparisons on Reals still yield an Int (0/1)
+# comparisons on Reals still yield an @int (0/1)
 $lt      = 1.5 ?< 2.5
 $ge      = 3.0 >= 3.0
 $eq      = 0.1 ?= 0.1
 
 # a Real-typed recursive function
-$pow : Real -> Int -> Real = \base n =
+$pow : Real -> @int -> Real = \base n =
 	if n ?= 0 => 1.0
 	else base * (pow base (n - 1))
 
@@ -29,4 +29,4 @@ $two_pow_10 = pow 2.0 10
 $half_cubed = pow 0.5 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = pi ; e ; sci ; small ; sum ; product ; diff ; quot ; negate ; lt ; ge ; eq ; two_pow_10 ; half_cubed ; 0
+$ test : @int = pi ; e ; sci ; small ; sum ; product ; diff ; quot ; negate ; lt ; ge ; eq ; two_pow_10 ; half_cubed ; 0

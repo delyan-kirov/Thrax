@@ -2,25 +2,25 @@
 
 # Exact string pattern matching: `when s is "lit" then ...` compiles to a
 # byte-equality test, falling through arm to arm (see documentation/strings-and-arrays.md).
-$ classify : Str -> Int = \s =
+$ classify : @str -> @int = \s =
 	is s | "yes" => 1
 	         | "no" => 0
 	         | "maybe" => 2
 	         else 99
 
-$ ck_yes   : Int = if (classify "yes") ?= 1 => 0 else 1
-$ ck_no    : Int = if (classify "no") ?= 0 => 0 else 1
-$ ck_maybe : Int = if (classify "maybe") ?= 2 => 0 else 1
-$ ck_other : Int = if (classify "huh") ?= 99 => 0 else 1
+$ ck_yes   : @int = if (classify "yes") ?= 1 => 0 else 1
+$ ck_no    : @int = if (classify "no") ?= 0 => 0 else 1
+$ ck_maybe : @int = if (classify "maybe") ?= 2 => 0 else 1
+$ ck_other : @int = if (classify "huh") ?= 99 => 0 else 1
 
 # `else` binds the whole scrutinee, so a string arm can fall through to a
 # default that reuses it.
-$ greet : Str -> Str = \name =
+$ greet : @str -> @str = \name =
 	is name | "" => "nobody"
 	           else "hello " ++ name
 
-$ ck_empty : Int = if (greet "") ?= "nobody" => 0 else 1
-$ ck_named : Int = if (greet "sam") ?= "hello sam" => 0 else 1
+$ ck_empty : @int = if (greet "") ?= "nobody" => 0 else 1
+$ ck_named : @int = if (greet "sam") ?= "hello sam" => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_yes + ck_no + ck_maybe + ck_other + ck_empty + ck_named
+$ test : @int = ck_yes + ck_no + ck_maybe + ck_other + ck_empty + ck_named

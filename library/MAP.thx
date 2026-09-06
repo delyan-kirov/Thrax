@@ -12,36 +12,36 @@
 #       ascending key order.
 
 $ with OPT
-$ with LIST
+$ with VEC
 $ with MATH
 $ with STR
 
 $ Tree : @union k v =
 	Leaf: {},
-	Node: {k, v, Tree k v, Tree k v, Int},  # key, value, left, right, height
+	Node: {k, v, Tree k v, Tree k v, @int},  # key, value, left, right, height
 
 $ Map : @struct k v =
-	cmpf: k -> k -> Int,
-	count: Int,
+	cmpf: k -> k -> @int,
+	count: @int,
 	root: Tree k v,
 
 # ---- construction ----
 
-$ new : (k -> k -> Int) -> Map k v = \c =
+$ new : (k -> k -> @int) -> Map k v = \c =
 	Map.{ .cmpf = c, .count = 0, .root = Tree.Leaf }
 
-$ new_int : Map Int v = new cmp_int
+$ new_int : Map @int v = new cmp_int
 
-$ new_str : Map Str v = new cmp_str
+$ new_str : Map @str v = new cmp_str
 
-$ from_list : (k -> k -> Int) -> @list {k, v} -> Map k v = \c ps =
+$ from_list : (k -> k -> @int) -> @vec {k, v} -> Map k v = \c ps =
 	foldl (\m p = insert m p.0 p.1) (new c) ps
 
 # Lexicographic ordering on pairs, composed from element orderings the
 # standard comparison for tuple-keyed maps: `new (cmp_pair cmp_int cmp_str)`
-# orders a `Map {Int, Str} `V`.
-$ cmp_pair : (a -> a -> Int) -> (b -> b -> Int)
-             -> {a, b} -> {a, b} -> Int = \ca cb x y =
+# orders a `Map {@int, @str} `V`.
+$ cmp_pair : (a -> a -> @int) -> (b -> b -> @int)
+             -> {a, b} -> {a, b} -> @int = \ca cb x y =
 	let c = ca x.0 y.0 in
 	if c ?= 0 => cb x.1 y.1 else c
 
@@ -61,6 +61,10 @@ $ insert_with : Map k v -> k -> v -> (v -> v -> v) -> Map k v = \m k v f =
 
 $ get : Map k v -> k -> Option v = \m k = tget m.cmpf k m.root
 
+# `m.[k]` joins the `.[..]` surface: an indexing hook overload for maps, returning
+# `Option v` (a missing key is `None`).
+$ @compiler_interface_indexing : Map k v -> k -> Option v = \m k = get m k
+
 $ get_or : Map k v -> k -> v -> v = \m k d = unwrap_or (get m k) d
 
 $ has : Map k v -> k -> @bool = \m k = is_some (get m k)
@@ -77,18 +81,18 @@ $ update : Map k v -> k -> (v -> v) -> Map k v = \m k f =
 		| Option.Some.{old} => insert m k (f old)
 	else m
 
-$ size : Map k v -> Int = \m = m.count
+$ size : Map k v -> @int = \m = m.count
 
 $ is_empty : Map k v -> @bool = \m = m.count ?= 0
 
 # ---- whole-map operations ----
 
 # Entries in ascending key order.
-$ to_list : Map k v -> @list {k, v} = \m = tlist m.root []
+$ to_list : Map k v -> @vec {k, v} = \m = tlist m.root []
 
-$ keys : Map k v -> @list k = \m = map (\p = p.0) (to_list m)
+$ keys : Map k v -> @vec k = \m = map (\p = p.0) (to_list m)
 
-$ values : Map k v -> @list v = \m = map (\p = p.1) (to_list m)
+$ values : Map k v -> @vec v = \m = map (\p = p.1) (to_list m)
 
 # Fold entries in ascending key order: `f acc k v`.
 $ fold : (a -> k -> v -> a) -> a -> Map k v -> a = \f acc m =
@@ -111,7 +115,7 @@ $ max_entry : Map k v -> Option {k, v} = \m = tmax m.root
 
 # ---- AVL internals ----
 
-$ height : Tree k v -> Int = \t =
+$ height : Tree k v -> @int = \t =
 	is t | Tree.Node.{_, _, _, _, h} => h else 0
 
 $ mknode : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
@@ -140,7 +144,7 @@ $ balance : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
 		else mknode k v l r
 	else mknode k v l r
 
-$ tinsert : (k -> k -> Int) -> k -> v -> Tree k v -> Tree k v = \c k v t =
+$ tinsert : (k -> k -> @int) -> k -> v -> Tree k v -> Tree k v = \c k v t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
 		 if o ?< 0 => balance tk tv (tinsert c k v l) r
@@ -148,7 +152,7 @@ $ tinsert : (k -> k -> Int) -> k -> v -> Tree k v -> Tree k v = \c k v t =
 		 else mknode k v l r)
 	else mknode k v Tree.Leaf Tree.Leaf
 
-$ tget : (k -> k -> Int) -> k -> Tree k v -> Option v = \c k t =
+$ tget : (k -> k -> @int) -> k -> Tree k v -> Option v = \c k t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
 		 if o ?< 0 => tget c k l
@@ -156,7 +160,7 @@ $ tget : (k -> k -> Int) -> k -> Tree k v -> Option v = \c k t =
 		 else Option.Some.{ tv })
 	else Option.None
 
-$ tremove : (k -> k -> Int) -> k -> Tree k v -> Tree k v = \c k t =
+$ tremove : (k -> k -> @int) -> k -> Tree k v -> Tree k v = \c k t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
 		 if o ?< 0 => balance tk tv (tremove c k l) r
@@ -186,7 +190,7 @@ $ drop_min : Tree k v -> Tree k v = \t =
 		(is l | Tree.Leaf => r else balance k v (drop_min l) r)
 	else Tree.Leaf
 
-$ tlist : Tree k v -> @list {k, v} -> @list {k, v} = \t acc =
+$ tlist : Tree k v -> @vec {k, v} -> @vec {k, v} = \t acc =
 	is t | Tree.Node.{k, v, l, r, _} =>
 		tlist l ({k, v} :: tlist r acc)
 	else acc

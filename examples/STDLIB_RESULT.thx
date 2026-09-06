@@ -12,46 +12,46 @@ $ with RESULT
 $ with OPT
 $ with STR
 
-$ good : Result Int Str = Result.Ok.{ 42 }
-$ bad  : Result Int Str = Result.Err.{ "boom" }
+$ good : Result @int @str = Result.Ok.{ 42 }
+$ bad  : Result @int @str = Result.Err.{ "boom" }
 
-$ ck_ok    : Int = if is_ok good => 0 else 1
-$ ck_err   : Int = if is_err bad => 0 else 1
-$ ck_unw   : Int = if (unwrap_or good 0) ?= 42 => 0 else 1
-$ ck_unwd  : Int = if (unwrap_or bad 7) ?= 7 => 0 else 1
-$ ck_map   : Int = if (unwrap_or (map_ok (\x = x + 1) good) 0) ?= 43 => 0 else 1
-$ ck_maperr: Int =
+$ ck_ok    : @int = if is_ok good => 0 else 1
+$ ck_err   : @int = if is_err bad => 0 else 1
+$ ck_unw   : @int = if (unwrap_or good 0) ?= 42 => 0 else 1
+$ ck_unwd  : @int = if (unwrap_or bad 7) ?= 7 => 0 else 1
+$ ck_map   : @int = if (unwrap_or (map_ok (\x = x + 1) good) 0) ?= 43 => 0 else 1
+$ ck_maperr: @int =
 	is map_err (\e = e ++ "!") bad
 		| Result.Err.{m} => (if m ?= "boom!" => 0 else 1)
 	else 1
-$ ck_then  : Int =
+$ ck_then  : @int =
 	let checked = \x = if x ?> 0 => Result.Ok.{ x * 2 } else Result.Err.{ "neg" } in
 	if (unwrap_or (and_then checked good) 0) ?= 84 => 0 else 1
-$ ck_opt   : Int = if (unwrap_or (ok_opt good) 0) ?= 42 => 0 else 1
+$ ck_opt   : @int = if (unwrap_or (ok_opt good) 0) ?= 42 => 0 else 1
 
 # ---- the Fail effect ----
 
 # A computation that may fail, with the possibility in its type.
-$ half : Int -> <Fail> Int = \n =
+$ half : @int -> <Fail> @int = \n =
 	if n % 2 ?= 0 => n / 2 else Fail.fail "odd"
 
-$ ck_try_ok : Int =
+$ ck_try_ok : @int =
 	is try (\u = half 84) | Result.Ok.{x} => (if x ?= 42 => 0 else 1) else 1
-$ ck_try_err : Int =
+$ ck_try_err : @int =
 	is try (\u = half 7) | Result.Err.{m} => (if m ?= "odd" => 0 else 1) else 1
 
 # Failures propagate through calls without any plumbing.
-$ pipeline : Int -> <Fail> Int = \n = (half n) + (half (n / 2))
-$ ck_prop : Int = if (try_or (\u = pipeline 84) (0 - 1)) ?= 63 => 0 else 1
-$ ck_prop_fail : Int = if (try_or (\u = pipeline 86) (0 - 1)) + 1 ?= 0 => 0 else 1
+$ pipeline : @int -> <Fail> @int = \n = (half n) + (half (n / 2))
+$ ck_prop : @int = if (try_or (\u = pipeline 84) (0 - 1)) ?= 63 => 0 else 1
+$ ck_prop_fail : @int = if (try_or (\u = pipeline 86) (0 - 1)) + 1 ?= 0 => 0 else 1
 
 # Bridges: a Result re-raised into a Fail computation, an Option required.
-$ ck_untry : Int =
+$ ck_untry : @int =
 	if (try_or (\u = (untry good) + 1) 0) ?= 43 => 0 else 1
-$ ck_expect : Int =
+$ ck_expect : @int =
 	if (try_or (\u = expect Option.None "absent") 9) ?= 9 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_ok + ck_err + ck_unw + ck_unwd + ck_map + ck_maperr
+$ test : @int = ck_ok + ck_err + ck_unw + ck_unwd + ck_map + ck_maperr
 	+ ck_then + ck_opt + ck_try_ok + ck_try_err + ck_prop + ck_prop_fail
 	+ ck_untry + ck_expect

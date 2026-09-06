@@ -20,7 +20,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   `vec_get t (i % vec_len t)`. No new runtime kind. `[m][n]T` nests as vectors of
   vectors for now (NOT the flat buffer+strides view yet).
 - **Phase A (nat unification) shipped**: literals and size variables unify
-  (`[3]Int`, `first : [n]a -> a`).
+  (`[3]@int`, `first : [n]a -> a`).
 - **Phase B (modular type-level arithmetic) also shipped** (2026-08-09):
   `[n+m]T`/`[n*m]T`, modular over Z/2^64. Equality is a canonical polynomial normal
   form (`Type::NatAdd`/`NatMul`; `normalize_size`/`unify_size` in engine.rs), so
@@ -30,9 +30,9 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   engines) demonstrates it end to end.
 - **LA operations shipped** (2026-08-09): `transpose`, `matmul` (shared `k`
   unifies, so a dimension mismatch is a compile error), `dot`, `concat`, `slice`,
-  `row`/`col`, over Int and Real. **`.[..]` is the OVERLOADABLE `index` the doc
+  `row`/`col`, over @int and Real. **`.[..]` is the OVERLOADABLE `index` the doc
   envisioned**: `t.[i]` desugars to `index t i`, an overloaded function with a
-  tensor candidate and user-addable candidates (`index : Grid -> Int -> Int`,
+  tensor candidate and user-addable candidates (`index : Grid -> @int -> @int`,
   `index : Map k v -> k -> v`), so custom containers use `.[..]` with no compiler
   change. `[m, n]T` shape sugar (== nested `[m][n]T`).
 - **De-magicked into the library** (2026-08-12): the ops are NOT built-ins. The
@@ -42,7 +42,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   multi-axis form); `transpose`/`matmul`/`dot`/`concat`/`slice`/`row`/`col` all live
   in `library/LA.thx` as ordinary Thrax. Element arithmetic is passed as `@ctx`
   implicits (`@ctx { add, mul, zero }`), not a Num class, so `matmul`/`dot` are
-  element-generic over Int and Real by supplying the dictionary; the runtime does no
+  element-generic over @int and Real by supplying the dictionary; the runtime does no
   arithmetic on its own.
 - **Strided data plane shipped** (increment 2a): `[n]T` is a `@tensor`-named struct
   `{ buf, off, shape, strides }` over a flat, refcounted buffer. Both engines
@@ -59,7 +59,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
 - **Per-axis variance shipped** (increment 4, 2026-08-13): each tensor axis carries
   a variance tag, spelled `@contra` (upper/contravariant, a vector index) and `@co`
   (lower/covariant, a covector index); a bare axis is `Neutral`. Surface:
-  `[@contra m, @co n]Int` (the `@`-sigil matches the other type-level intrinsics).
+  `[@contra m, @co n]@int` (the `@`-sigil matches the other type-level intrinsics).
   Internally the tag rides the `@tensor` spine as a nullary con (`@tensor <variance>
   size elem`). Unification is variance-compatible: `Neutral` is a wildcard (so plain
   `[n]T` code interoperates), `@co` and `@contra` clash. `matmul` is retyped
@@ -156,11 +156,11 @@ a runtime index, multi-dim, ranges, and user containers.
 `m.[k]` is `index m k`, no 1-tuple). `index` is an OVERLOADABLE call resolved
 type-directionally on (container, index type) via the existing overloading
 machinery (no typeclasses needed) -- this is the "compiler interface custom types
-tap into". Built-in impls: `Array`/`Vec`/`Str` (`index _ Int -> elem`), `Map k v`
-(`index _ k -> v`, so `map.["key"]` just works), `Tensor` (`index _ {Int..} ->
+tap into". Built-in impls: `Array`/`Vec`/`Str` (`index _ @int -> elem`), `Map k v`
+(`index _ k -> v`, so `map.["key"]` just works), `Tensor` (`index _ {@int..} ->
 Scalar`, `index _ {Range/.. ..} -> view`).
 
-- Mixed indexing (`m.[n, p ..= q, ..]`) is allowed and central: an `Int` slot
+- Mixed indexing (`m.[n, p ..= q, ..]`) is allowed and central: an `@int` slot
   REDUCES its axis (dropped from the result), a `Range`/`..` slot RETAINS it, so
   result rank = number of Range/`..` slots. `..` alone = whole axis (full-extent
   range), giving rows (`m.[i, ..]`) and columns (`m.[.., j]`). Inside `.[..]` a
@@ -173,9 +173,9 @@ Scalar`, `index _ {Range/.. ..} -> view`).
   flips; raising/lowering needs a metric). Einstein/named-index summation, where
   variance WOULD appear syntactically, is a separate larger DSL, deferred; the
   variance-in-type baseline is forward-compatible with adding it.
-- Result-shape typing is the expensive part (result rank depends on the Int-vs-
+- Result-shape typing is the expensive part (result rank depends on the @int-vs-
   Range pattern of the index). Baseline: dynamic rank (`index` returns `Tensor`,
-  or `Scalar` when the overload sees an all-`Int` tuple), variance still checked
+  or `Scalar` when the overload sees an all-`@int` tuple), variance still checked
   as a per-axis tag. Static shape (fold the index over the axis list) is an
   additive upgrade needing type-level computation Thrax lacks today.
 - "Slices for free": indexing with a `Range` returns a VIEW, not a copy. It is
@@ -205,7 +205,7 @@ Scalar`, `index _ {Range/.. ..} -> view`).
    (List/Array), stay a `Range` descriptor (as a slice index), or observe as
    codata (infinite range as a stream). The descriptor is the common core.
 2. Indexing is one overloadable, type-directed primitive (`index`, surface
-   `.[..]`) keyed on the index type: Int gives an element (and reduces its axis),
+   `.[..]`) keyed on the index type: @int gives an element (and reduces its axis),
    Range/`..` gives a slice/view (and retains its axis). #9 (ranges) is the
    Range half of it; positional `.n` (#10) is the separate projection operation,
    not part of this.
@@ -221,7 +221,7 @@ These were the "keep true so the surface work does not foreclose the subsystem"
 constraints. Status now:
 
 - **DONE.** Indexing is spelled `.[..]` and desugars to an overloadable `index`
-  call, type-directed on the index type (Int reduces an axis, a range/`..` retains
+  call, type-directed on the index type (@int reduces an axis, a range/`..` retains
   it).
 - **DONE.** `.n` stays projection only; sequence indexing never routes through it.
 - **DONE.** Variance is a per-axis tag, but it lives in the TYPE (`@tensor
@@ -260,11 +260,11 @@ constraints. Status now:
   capstone is complete.
 - **Done (separate from LA):** expression-form ranges `[lo ... hi]` as a
   TYPE-DIRECTED literal (`Expr::Range`): materializes to a sized tensor `[n]T` when a
-  tensor is expected and the bounds are literals (static length), else a `List Int`
+  tensor is expected and the bounds are literals (static length), else a `List @int`
   (default). A non-literal bound against a sized tensor is a compile-time error. See
   [[range-patterns]].
 - **Done (separate from LA): OPEN ranges `[lo ...]` as codata streams.** An open
-  range (no upper bound) is infinite, so it always builds a `Stream Int` (lowered to
+  range (no upper bound) is infinite, so it always builds a `Stream @int` (lowered to
   the canonical `CORE.count_from lo`); against a `List` or sized tensor it is a type
   error. This is the "first-class lazy Range", realized by making the literal target
   codata: laziness = target a `Stream`, no separate `Range` type. Open range PATTERNS

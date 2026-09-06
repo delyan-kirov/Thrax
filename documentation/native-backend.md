@@ -104,7 +104,7 @@ straight-line C and ends by calling exactly one **terminator**; the driver
   (`THxK_run_code`) on first demand and caches it (cyclic value globals abort),
   exactly as `IT::glob`. Unknown names fall through to `THxRT_builtin`.
 - **Entry**: `main` forces every global (mirroring the smoke test) and then, if
-  the program has an entry point, applies it (`THxK_call`) and returns its `Int`
+  the program has an entry point, applies it (`THxK_call`) and returns its `@int`
   as the exit code.
 
 ### Tail calls and deep recursion
@@ -133,9 +133,9 @@ built-in breaks **every** dependent path loudly:
 ## Supported surface (v1)
 
 Atoms `Local`/`Env`/`Glob`/`LitI`/`LitR`/`LitS`/`MkClosure`; expressions `Ret`,
-`Let` (incl. recursive), `App` (with TCO), `Case` (Int/Real/Con + payload bind +
+`Let` (incl. recursive), `App` (with TCO), `Case` (@int/Real/Con + payload bind +
 default), `MkStruct`, `Field`, `MkVariant`, `Unk`; lazy-memoized global CAFs;
-built-in Int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
+built-in @int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
 below); and **algebraic effects** handlers (`do`/`ctl`), operations,
 first-class resumptions, and `defer` (see below).
 
@@ -196,8 +196,8 @@ against the process itself.
 
 A few conversions the language cannot express with `@cast` (which crosses only
 integer widths) are provided by the engines themselves and bound in
-`library/C.thx` with an EMPTY library name: `C.i2d` / `C.d2i` (Int and Real),
-`C.i2f` / `C.f2i` (Int and `@float32`), `C.i2p` (Int to `@ptr`), and `C.null`
+`library/C.thx` with an EMPTY library name: `C.i2d` / `C.d2i` (@int and Real),
+`C.i2f` / `C.f2i` (@int and `@float32`), `C.i2p` (@int to `@ptr`), and `C.null`
 (the null pointer, `i2p 0`). `MATH` re-exports the numeric ones as
 `real_of_int` / `int_of_real` / `f32_of_int` / `int_of_f32`.
 
@@ -300,7 +300,7 @@ example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
 
 ### Unboxing *(optimization)*
 
-Values are pointer-boxed. A later representation pass could keep `Int`/`Real`
+Values are pointer-boxed. A later representation pass could keep `@int`/`Real`
 unboxed in registers for true low-level performance.
 
 ## Known limitations

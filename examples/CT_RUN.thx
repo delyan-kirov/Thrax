@@ -11,7 +11,7 @@
 
 $ with BUILD
 
-$ triple : Int -> Int = \n = n * 3
+$ triple : @int -> @int = \n = n * 3
 
 # A plain expression, forced at build time, value discarded.
 $ @run triple 14
@@ -21,4 +21,4 @@ $ @run triple 14
 # dependency).
 $ @run BUILD.lib "m"
 
-$ test : Int = 0
+$ test : @int = 0

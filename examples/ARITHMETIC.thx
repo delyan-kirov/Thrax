@@ -4,12 +4,12 @@
 # \info Integer arithmetic: operator precedence, grouping, division, modulo,
 #       and unary negation.
 
-$sum        = -1 + 2 + 3 + 4.2
+$sum        = -1.0 + 2.0 + 3.0 + 4.2
 $product    = 2 * 3 * 4
 $precedence = 1 + 2 * 3 - 4
 $grouped    = (1 + 2) * (3 - 4) + 5
 $quotient   = 100 / 7
-$remainder  = 100.123 % 7
+$remainder  = 100.123 % 7.0
 $negate     = -42
 $double_neg = - (-7)
 $chained    = 1 - 2 - 3 - 4
@@ -17,4 +17,4 @@ $big        = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)
 $exp        = 2 ^ 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0
+$ test : @int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0

@@ -1,24 +1,24 @@
 @mod LISTS
 
 # \file lists.thx
-# \info The blessed `@list` type and its literal sugar. `[a, b, c]` builds a
+# \info The blessed `@vec` type and its literal sugar. `[a, b, c]` builds a
 #       list, `h :: t` conses onto one, and `[]` is the empty list -- all
-#       desugaring to the prelude's `@list.Cons` / `@list.Nil` variant
+#       desugaring to the prelude's `@vec.Cons` / `@vec.Nil` variant
 #       constructors. Patterns mirror the sugar: `is []` / `is h :: t` in a
 #       `when` destructure a list one cell at a time, and a fixed-arity
 #       `[a, b]` matches a list of exactly that length.
 
-$ sum : @list Int -> Int = \xs =
+$ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
 	           else 0
 
-$ length : @list Int -> Int = \xs =
+$ length : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | _ :: t => 1 + length t
 	           else 0
 
-$ map_inc : @list Int -> @list Int = \xs =
+$ map_inc : @vec @int -> @vec @int = \xs =
 	is xs | [] => []
 	           | h :: t => (h + 1) :: map_inc t
 	           else []
@@ -27,7 +27,7 @@ $ map_inc : @list Int -> @list Int = \xs =
 # nest freely -- `[a, b]` is `Cons(a, Cons(b, Nil))`, so it binds two cells and
 # checks the third is `Nil`. Two arms may share the `Cons` head (`[a]` and
 # `[a, b]`); a failed inner match falls through to the next arm.
-$ size_class : @list Int -> Int = \xs =
+$ size_class : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | [a] => 1
 	           | [a, b] => 2
@@ -37,33 +37,33 @@ $ size_class : @list Int -> Int = \xs =
 # (the remaining list), so it matches AT LEAST that many elements -- `[a, ..t]`
 # is exactly `a :: t`, and `[a, b, ..t]` is `a :: b :: t`. `[..all]` binds the
 # whole list.
-$ second : @list Int -> Int = \xs =
+$ second : @vec @int -> @int = \xs =
 	is xs | [_, x, ..rest] => x
 	         else 0-1
 
-$ drop2 : @list Int -> @list Int = \xs =
+$ drop2 : @vec @int -> @vec @int = \xs =
 	is xs | [_, _, ..rest] => rest
 	         else []
 
-$ ck_second : Int = if (second xs) ?= 2 => 0 else 1
-$ ck_second_short : Int = if (second [9]) ?= 0-1 => 0 else 1
-$ ck_drop2 : Int = if (sum (drop2 xs)) ?= 12 => 0 else 1
-$ ck_head_tail : Int = is xs | [h, ..t] =>
+$ ck_second : @int = if (second xs) ?= 2 => 0 else 1
+$ ck_second_short : @int = if (second [9]) ?= 0-1 => 0 else 1
+$ ck_drop2 : @int = if (sum (drop2 xs)) ?= 12 => 0 else 1
+$ ck_head_tail : @int = is xs | [h, ..t] =>
 	if (h + sum t) ?= 15 => 0 else 1 else 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
-$ xs : @list Int = [1, 2, 3, 4, 5]
-$ ys : @list Int = 1 :: 2 :: 3 :: 4 :: 5 :: []
+$ xs : @vec @int = [1, 2, 3, 4, 5]
+$ ys : @vec @int = 1 :: 2 :: 3 :: 4 :: 5 :: []
 
-$ ck_sum : Int = if (sum xs) ?= 15 => 0 else 1
-$ ck_len : Int = if (length xs) ?= 5 => 0 else 1
-$ ck_cons : Int = if (sum ys) ?= 15 => 0 else 1
-$ ck_map : Int = if (sum (map_inc xs)) ?= 20 => 0 else 1
-$ ck_empty : Int = if (sum []) ?= 0 => 0 else 1
-$ ck_sc0 : Int = if (size_class []) ?= 0 => 0 else 1
-$ ck_sc1 : Int = if (size_class [7]) ?= 1 => 0 else 1
-$ ck_sc2 : Int = if (size_class [7, 8]) ?= 2 => 0 else 1
-$ ck_scN : Int = if (size_class xs) ?= 9 => 0 else 1
+$ ck_sum : @int = if (sum xs) ?= 15 => 0 else 1
+$ ck_len : @int = if (length xs) ?= 5 => 0 else 1
+$ ck_cons : @int = if (sum ys) ?= 15 => 0 else 1
+$ ck_map : @int = if (sum (map_inc xs)) ?= 20 => 0 else 1
+$ ck_empty : @int = if (sum []) ?= 0 => 0 else 1
+$ ck_sc0 : @int = if (size_class []) ?= 0 => 0 else 1
+$ ck_sc1 : @int = if (size_class [7]) ?= 1 => 0 else 1
+$ ck_sc2 : @int = if (size_class [7, 8]) ?= 2 => 0 else 1
+$ ck_scN : @int = if (size_class xs) ?= 9 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN
+$ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN

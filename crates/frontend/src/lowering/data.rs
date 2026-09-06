@@ -186,6 +186,24 @@ pub enum Pat {
         lo: Term,
         hi: Option<Term>,
     },
+    /// A literal pattern on a USER type (Stage 2): matches when the equality hook
+    /// `eq scrut value` is `@true`, where `value` is the literal built into the user
+    /// type (its construction hook applied to the raw payload). Binds nothing.
+    /// Compiled to a boolean test by `patmat`, so it never reaches the later passes.
+    HookEq {
+        eq: (Option<String>, String),
+        value: Box<Term>,
+    },
+    /// A sequence pattern on a USER type (Stage 2): matches by unfolding the
+    /// `@compiler_interface_sequence_view` hook (`view`) one step at a time. `elems`
+    /// are the leading element patterns; `rest`, when present, binds the remaining
+    /// sequence, else the tail must be `Empty`. Compiled to nested `SeqView`
+    /// (`More`/`Empty`) matches by `patmat`, so it never reaches the later passes.
+    SeqView {
+        view: (Option<String>, String),
+        elems: Vec<Pat>,
+        rest: Option<Box<Pat>>,
+    },
 }
 
 /// A Core effect handler.

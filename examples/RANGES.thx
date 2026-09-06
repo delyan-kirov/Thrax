@@ -1,5 +1,5 @@
 @mod RANGES
-$ with LIST
+$ with VEC
 $ with LA
 
 # \file ranges.thx
@@ -10,7 +10,7 @@ $ with LA
 #       scrutinee variable stays in scope in the arm if you need the value.
 #       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
-$ grade : Int -> Str = \n =
+$ grade : @int -> @str = \n =
 	is n
 		| 90 ... 100 => "A"
 		| 80 ...  89 => "B"
@@ -19,41 +19,41 @@ $ grade : Int -> Str = \n =
 	else "F"
 
 # An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
-$ sign : Int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
-$ ck_open_pat : Int = if sign 3 ?= "nonneg" => 0 else 1024
-$ ck_open_neg : Int = if sign (0 - 3) ?= "neg" => 0 else 2048
+$ sign : @int -> @str = \n = is n | 0 ... => "nonneg" else "neg"
+$ ck_open_pat : @int = if sign 3 ?= "nonneg" => 0 else 1024
+$ ck_open_neg : @int = if sign (0 - 3) ?= "neg" => 0 else 2048
 
 # Inclusive at both ends: 60 is a D, 100 is an A.
-$ ck_a  : Int = if grade 95  ?= "A" => 0 else 1
-$ ck_a2 : Int = if grade 100 ?= "A" => 0 else 2
-$ ck_c  : Int = if grade 70  ?= "C" => 0 else 4
-$ ck_d  : Int = if grade 60  ?= "D" => 0 else 8
-$ ck_f  : Int = if grade 42  ?= "F" => 0 else 16
+$ ck_a  : @int = if grade 95  ?= "A" => 0 else 1
+$ ck_a2 : @int = if grade 100 ?= "A" => 0 else 2
+$ ck_c  : @int = if grade 70  ?= "C" => 0 else 4
+$ ck_d  : @int = if grade 60  ?= "D" => 0 else 8
+$ ck_f  : @int = if grade 42  ?= "F" => 0 else 16
 
 # Ranges work on Real too; both bounds must share the scrutinee's type.
-$ band : Real -> Int = \x =
+$ band : Real -> @int = \x =
 	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
-$ ck_r : Int = if band 0.25 ?= 1 => 0 else 32
+$ ck_r : @int = if band 0.25 ?= 1 => 0 else 32
 
 # EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
-# same `...`, materialized). By default it is a `@list Int` (a runtime-length
+# same `...`, materialized). By default it is a `@vec @int` (a runtime-length
 # sequence). Empty when lo > hi.
-$ ns : @list Int = [1 ... 4]                         # [1, 2, 3, 4]
-$ ck_build : Int = if sum ns ?= 10 => 0 else 64
-$ ck_len   : Int = if length ns ?= 4 => 0 else 128
-$ ck_empty : Int = if length [5 ... 2] ?= 0 => 0 else 256
+$ ns : @vec @int = [1 ... 4]                         # [1, 2, 3, 4]
+$ ck_build : @int = if sum ns ?= 10 => 0 else 64
+$ ck_len   : @int = if length ns ?= 4 => 0 else 128
+$ ck_empty : @int = if length [5 ... 2] ?= 0 => 0 else 256
 
 # Against a sized tensor `[n]T` it builds the tensor instead: the LITERAL bounds fix
 # `n = hi - lo + 1` at compile time. A non-literal bound to a sized tensor is a
 # compile-time error (its length would not be statically known).
-$ tv : [4]Int = [1 ... 4]                           # the tensor [1, 2, 3, 4]
-$ ck_tens : Int = if tv.[0] + tv.[3] ?= 5 => 0 else 512
+$ tv : [4]@int = [1 ... 4]                           # the tensor [1, 2, 3, 4]
+$ ck_tens : @int = if tv.[0] + tv.[3] ?= 5 => 0 else 512
 
 # An OPEN range `[lo ...]` has no upper bound, so it is infinite: it builds a
-# `Stream Int` (the only shape that holds an unbounded sequence). Observe it lazily.
-$ evens : Stream Int = [3 ...]
-$ ck_stream : Int = if evens.head + evens.tail.head ?= 7 => 0 else 4096
+# `Stream @int` (the only shape that holds an unbounded sequence). Observe it lazily.
+$ evens : Stream @int = [3 ...]
+$ ck_stream : @int = if evens.head + evens.tail.head ?= 7 => 0 else 4096
 
-$ test : Int =
+$ test : @int =
 	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens
 	+ ck_open_pat + ck_open_neg + ck_stream

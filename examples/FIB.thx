@@ -3,7 +3,7 @@
 # \file fib.thx
 # \info The Fibonacci sequence by naive double recursion.
 
-$fib : Int -> Int = \n =
+$fib : @int -> @int = \n =
 	if n ?= 0 => 0
 	else if n ?= 1 => 1
 	else (fib (n - 1)) + (fib (n - 2))
@@ -20,37 +20,37 @@ $fib15 = fib 15
 
 # A generic list and its length, by a tail-recursive accumulator. `helper` is an
 # annotated, recursive `let`; the match arms are bare variant patterns (`.Nil`,
-# `.Cons`) whose union is inferred from the constructors. `@list` is the prelude
+# `.Cons`) whose union is inferred from the constructors. `@vec` is the prelude
 # type (its `[..]`/`::` sugar is hardwired to that name).
-$ len: @list t -> Int =
-	let helper: @list t -> Int -> Int = \l n =
+$ len: @vec t -> @int =
+	let helper: @vec t -> @int -> @int = \l n =
 		is l
 			| [] => n
 			| _ :: xs => helper xs (n + 1)
 			else n
 	 in \l = helper l 0
 
-$ to: Int -> Int -> @list Int = \a b =
-	let helper: Int -> Int -> @list Int -> @list Int =
+$ to: @int -> @int -> @vec @int = \a b =
+	let helper: @int -> @int -> @vec @int -> @vec @int =
 		\a b xs =
 			if a ?< b => helper (a+1) b (a :: xs)
 			else xs
 	 in helper a b []
 
-$ sample : @list Int = to 0 3
-$ len3 : Int = is len sample | 3 => 0 else 1
+$ sample : @vec @int = to 0 3
+$ len3 : @int = is len sample | 3 => 0 else 1
 
 $ Point: @struct =
-	x: Int,
-	y: Int,
+	x: @int,
+	y: @int,
 
-$ add: Int -> Int -> Int = \a b = a + b
+$ add: @int -> @int -> @int = \a b = a + b
 $ add: Real -> Real -> Real = \a b = a + b
 $ add: Point -> Point -> Point = \p1 p2 =
 	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int =
+$ test : @int =
 	len3
 	+ (if fib5 ?= 5 => 0 else 1)
 	+ (if fib10 ?= 55 => 0 else 1)

@@ -42,7 +42,7 @@ Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 A `#` starts a comment to end of line. There is no block comment.
 
 ```thrax
-$ x : Int = 1   # trailing comment
+$ x : @int = 1   # trailing comment
 # whole-line comment
 ```
 
@@ -88,7 +88,7 @@ $ greet : Str -> Str = \who = "hello {who}!"
 
 Involved (a user type interpolates by adding a `to_string` overload):
 ```thrax
-$ Point : @struct = x: Int, y: Int
+$ Point : @struct = x: @int, y: @int
 $ to_string : Point -> Str = \p = "({p.x}, {p.y})"
 $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
 ```
@@ -108,19 +108,19 @@ may span several files (repeat the header).
 
 ## 2.2 Global definitions `$`
 `$ name : Type = expr`. The annotation is required unless inference gives the
-body a ground, non-arrow type (a plain `Int`/`Str` constant). Functions and
+body a ground, non-arrow type (a plain `@int`/`Str` constant). Functions and
 anything polymorphic must be annotated. `$a` and `$ a` are the same.
 
 Simple:
 ```thrax
-$ answer = 42                 # inferred Int, no annotation needed
+$ answer = 42                 # inferred @int, no annotation needed
 $ id : t -> t = \x = x        # annotation required (polymorphic)
 ```
 
 Involved (definitions may appear in any order and reference each other):
 ```thrax
-$ even : Int -> @bool = \n = if n ?= 0 => @true else odd (n - 1)
-$ odd  : Int -> @bool = \n = if n ?= 0 => @false else even (n - 1)
+$ even : @int -> @bool = \n = if n ?= 0 => @true else odd (n - 1)
+$ odd  : @int -> @bool = \n = if n ?= 0 => @false else even (n - 1)
 ```
 
 ## 2.3 Imports `$ with`
@@ -140,21 +140,21 @@ Symbols are public by default. `$ @private` hides every symbol after it from
 importers; `$ @public` toggles back. Resets at end of file.
 
 ```thrax
-$ api : Int -> Int = \x = helper x + 1
+$ api : @int -> @int = \x = helper x + 1
 $ @private
-$ helper : Int -> Int = \x = x * x    # module-private
+$ helper : @int -> @int = \x = x * x    # module-private
 ```
 
 ## 2.5 Entry point
 The program entry is `main` of module `MAIN`, a C-style function returning an
-`Int` exit code with an open effect row `<| e>` (so it may perform any effect).
+`@int` exit code with an open effect row `<| e>` (so it may perform any effect).
 A combined test file uses `test`. A bare value entry is forced and printed.
 
 ```thrax
-$ main : {} -> <| e> Int = \u = 0                 # no args
-$ main : [n]Str -> <| e> Int = \argv = 0          # argv[0] is the program path
-$ test : Int = 0                                  # test-harness entry
-$ main : Int = 6                                  # legacy value entry: prints "main = 6"
+$ main : {} -> <| e> @int = \u = 0                 # no args
+$ main : [n]Str -> <| e> @int = \argv = 0          # argv[0] is the program path
+$ test : @int = 0                                  # test-harness entry
+$ main : @int = 6                                  # legacy value entry: prints "main = 6"
 ```
 
 ---
@@ -162,20 +162,21 @@ $ main : Int = 6                                  # legacy value entry: prints "
 # 3. Types
 
 ## 3.1 Base numeric and string types
-The only friendly names are `Int` (signed word), `Nat` (unsigned word), `Real`,
-and `Str`. They are distinct nullary constructors.
+The word-size numbers are `@`-spelled like every other primitive: `@int`
+(signed word), `@nat` (unsigned word). `Real` and `Str` keep friendly names.
+They are distinct nullary constructors.
 
 ```thrax
-$ n : Int  = -5
-$ u : Nat  = 5
+$ n : @int = -5
+$ u : @nat = 5
 $ r : Real = 2.5
 $ s : Str  = "hi"
 ```
 
 ## 3.2 Sized numerics
 Fixed widths are `@`-spelled: `@int8/@int16/@int32/@int64`,
-`@nat8/@nat16/@nat32/@nat64`, `@float32/@float64`. They are distinct from `Int`
-etc. (`Int` and `@int32` do not unify). Arithmetic is overloaded per width; a
+`@nat8/@nat16/@nat32/@nat64`, `@float32/@float64`. They are distinct from `@int`
+etc. (`@int` and `@int32` do not unify). Arithmetic is overloaded per width; a
 literal takes the width expected of it.
 
 ```thrax
@@ -190,7 +191,7 @@ $ z : @int32 = w * 2          # @int32 + @int32 : @int32
 ```thrax
 $ flag : @bool  = @true
 $ bytes: @array = @array.{ 8 }      # 8 zeroed bytes
-$ xs   : @list Int = [1, 2, 3]
+$ xs   : @list @int = [1, 2, 3]
 ```
 
 ## 3.4 Unit `{}`
@@ -199,7 +200,7 @@ position (type vs term).
 
 ```thrax
 $ nothing : {} = {}
-$ ignore : Int -> {} = \x = {}
+$ ignore : @int -> {} = \x = {}
 ```
 
 ## 3.5 Function types and effect rows
@@ -208,9 +209,9 @@ call may perform: `A -> <E> B`. A bare arrow is pure (empty row). `<| e>` is an
 open row (a row variable), which is what makes a function effect-polymorphic.
 
 ```thrax
-$ State : @effect = get : {} -> Int, put : Int -> {},
-$ pure : Int -> Int = \x = x                       # pure (empty row)
-$ act  : {} -> <State> Int = \u = get {}           # may perform State
+$ State : @effect = get : {} -> @int, put : @int -> {},
+$ pure : @int -> @int = \x = x                       # pure (empty row)
+$ act  : {} -> <State> @int = \u = get {}           # may perform State
 $ poly : (a -> <e> b) -> a -> <e> b = \f x = f x   # effect-polymorphic
 ```
 
@@ -230,31 +231,31 @@ one-tuple. Elements read positionally with `.0`, `.1`.
 
 Simple:
 ```thrax
-$ p : {Int, Str} = {42, "answer"}
-$ n : Int = p.0
+$ p : {@int, Str} = {42, "answer"}
+$ n : @int = p.0
 ```
 
 Involved (generic, nested, first-class):
 ```thrax
 $ swap : {a, b} -> {b, a} = \t = {t.1, t.0}
-$ nested : {Int, {Int, Int}} = {1, {2, 3}}
-$ deep : Int = nested.1.0 + nested.1.1        # 5
+$ nested : {@int, {@int, @int}} = {1, {2, 3}}
+$ deep : @int = nested.1.0 + nested.1.1        # 5
 ```
 
 ## 3.8 Records and row polymorphism
 A record type may leave its tail open with a row variable:
-`{ x: Int, y: Int | r }` accepts any record (nominal struct or anonymous) with at
+`{ x: @int, y: @int | r }` accepts any record (nominal struct or anonymous) with at
 least those fields. Records are structural (unify by field name).
 
 Simple:
 ```thrax
-$ area : { x: Int, y: Int | r } -> Int = \p = p.x * p.y
+$ area : { x: @int, y: @int | r } -> @int = \p = p.x * p.y
 ```
 
 Involved (update preserves the open tail; `with` stacks a field):
 ```thrax
-$ shift : { x: Int | r } -> { x: Int | r } = \p = { .x = p.x + 10 | p }
-$ tag   : { x: Int | r } -> { x: Int, t: Int | r } = \p = { .t = 99, with p }
+$ shift : { x: @int | r } -> { x: @int | r } = \p = { .x = p.x + 10 | p }
+$ tag   : { x: @int | r } -> { x: @int, t: @int | r } = \p = { .t = 99, with p }
 ```
 
 ## 3.9 Sized tensors
@@ -263,8 +264,8 @@ $ tag   : { x: Int | r } -> { x: Int, t: Int | r } = \p = { .t = 99, with p }
 (`[n+m]a`), decided by a canonical form. See section 9.
 
 ```thrax
-$ v : [3]Int = [10, 20, 30]
-$ g : [2][2]Int = [ [1,2], [3,4] ]
+$ v : [3]@int = [10, 20, 30]
+$ g : [2][2]@int = [ [1,2], [3,4] ]
 ```
 
 ## 3.10 Type aliases `@alias`
@@ -274,14 +275,14 @@ with its expansion).
 
 Simple:
 ```thrax
-$ Count : @alias = Int
+$ Count : @alias = @int
 ```
 
 Involved (partial instantiation):
 ```thrax
 $ Pair : @struct a b = fst: a, snd: b,
-$ IntPair : @alias b = Pair Int b               # fix the first arg, keep the second open
-$ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair Int Str
+$ IntPair : @alias b = Pair @int b               # fix the first arg, keep the second open
+$ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @int Str
 ```
 
 ---
@@ -293,9 +294,9 @@ $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair Int Str
 irrefutable pattern.
 
 ```thrax
-$ Person : @struct = name: Str, age: Int,
-$ inc : Int -> Int = \x = x + 1
-$ add : Int -> Int -> Int = \a b = a + b            # curried
+$ Person : @struct = name: Str, age: @int,
+$ inc : @int -> @int = \x = x + 1
+$ add : @int -> @int -> @int = \a b = a + b            # curried
 $ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
 ```
 
@@ -303,8 +304,8 @@ $ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
 Juxtaposition, left-associative, binds tighter than any operator.
 
 ```thrax
-$ inc : Int -> Int = \x = x + 1
-$ add : Int -> Int -> Int = \a b = a + b
+$ inc : @int -> @int = \x = x + 1
+$ add : @int -> @int -> @int = \a b = a + b
 $ r = add (inc 2) 3          # (add (inc 2)) 3
 ```
 
@@ -333,14 +334,14 @@ $ ne : @bool = !(3 ?= 4)
 
 ```thrax
 $ s  : Str = "Hello" ++ " " ++ "world"
-$ xs : @list Int = 1 :: 2 :: 3 :: []
+$ xs : @list @int = 1 :: 2 :: 3 :: []
 ```
 
 ## 4.6 Short-circuit `&&` / `||`
 Desugar to a lazy `if`, so the right operand runs only when needed.
 
 ```thrax
-$ safe : Int -> @bool = \n = n ?> 0 && 100 / n ?> 5
+$ safe : @int -> @bool = \n = n ?> 0 && 100 / n ?> 5
 ```
 
 ## 4.7 Conditional `if ... => ... else`
@@ -349,12 +350,12 @@ $ safe : Int -> @bool = \n = n ?> 0 && 100 / n ?> 5
 
 Simple:
 ```thrax
-$ abs : Int -> Int = \n = if n ?> 0 => n else 0 - n
+$ abs : @int -> @int = \n = if n ?> 0 => n else 0 - n
 ```
 
 Involved (else-if chain):
 ```thrax
-$ sign : Int -> Int = \n =
+$ sign : @int -> @int = \n =
 	if n ?= 0 => 0
 	else if n ?> 0 => 1
 	else 0 - 1
@@ -373,8 +374,8 @@ $ x = let a = 6 in a * 7
 Involved (comma chain, destructuring, recursion, annotation):
 ```thrax
 $ r = let {a, b} = {3, 4}, s = a + b in s * 2
-$ len : @list Int -> Int =
-	let go : @list Int -> Int -> Int = \l n =
+$ len : @list @int -> @int =
+	let go : @list @int -> @int -> @int = \l n =
 		is l | _ :: t => go t (n + 1) else n
 	 in \l = go l 0
 ```
@@ -384,10 +385,10 @@ Parser sugar, lowest precedence. `a ; b` = `let _ = a in b`. `x |> f` = `f x`
 (left-assoc). `f <| x` = `f x` (right-assoc).
 
 ```thrax
-$ inc : Int -> Int = \x = x + 1
-$ double : Int -> Int = \x = x * 2
-$ step1 : {} -> Int = \u = 0
-$ step2 : {} -> Int = \u = 0
+$ inc : @int -> @int = \x = x + 1
+$ double : @int -> @int = \x = x * 2
+$ step1 : {} -> @int = \u = 0
+$ step2 : {} -> @int = \u = 0
 $ eff = step1 {} ; step2 {} ; 0            # run for effect, return 0
 $ y   = 5 |> inc |> double                 # double (inc 5)
 $ z   = double <| inc <| 5                 # same
@@ -401,7 +402,7 @@ use `C.i2f` / `C.i2p`).
 ```thrax
 $ big   : @int64 = 300
 $ small : @int32 = @cast big              # reinterpret across integer widths
-$ back  : Int    = @cast small            # and back to the platform word
+$ back  : @int    = @cast small            # and back to the platform word
 ```
 
 ---
@@ -415,33 +416,33 @@ distinguishes it from `if`.
 
 Simple:
 ```thrax
-$ classify : Int -> Str = \n =
+$ classify : @int -> Str = \n =
 	is n | 0 => "zero" | 1 => "one" else "many"
 ```
 
 Involved (nested union patterns, exhaustive so no `else`, see 5.9):
 ```thrax
 $ Wrap : @union = Empty: {}, W: { Opt }
-$ Opt  : @union = None: {}, Some: { Int }
-$ unwrap : Wrap -> Int = \w =
+$ Opt  : @union = None: {}, Some: { @int }
+$ unwrap : Wrap -> @int = \w =
 	is w | Wrap.Empty => 0
 	     | Wrap.W.{ Opt.None } => 1
 	     | Wrap.W.{ Opt.Some.{ n } } => n
 ```
 
 ## 5.2 Literal patterns
-Match Int, Real, and Str by equality (refutable).
+Match @int, Real, and Str by equality (refutable).
 
 ```thrax
-$ describe : Int -> Str = \n = is n | 0 => "z" | 1 => "o" else "m"
-$ yn : Str -> Int = \s = is s | "yes" => 1 | "no" => 0 else 99
+$ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" else "m"
+$ yn : Str -> @int = \s = is s | "yes" => 1 | "no" => 0 else 99
 ```
 
 ## 5.3 Wildcard and variable patterns
 `_` matches anything binding nothing; a lowercase name binds the value.
 
 ```thrax
-$ tag : Int -> Int = \n = is n | 0 => 100 | m => m + 1 else 0
+$ tag : @int -> @int = \n = is n | 0 => 100 | m => m + 1 else 0
 ```
 
 ## 5.4 Struct patterns
@@ -449,9 +450,9 @@ $ tag : Int -> Int = \n = is n | 0 => 100 | m => m + 1 else 0
 or named (dotted, any order, others ignored; a lone `.name` puns).
 
 ```thrax
-$ Point  : @struct = x: Int, y: Int,
-$ Person : @struct = name: Str, age: Int,
-$ sum_xy : Point -> Int = \p = is p | Point.{ x, y } => x + y else 0
+$ Point  : @struct = x: @int, y: @int,
+$ Person : @struct = name: Str, age: @int,
+$ sum_xy : Point -> @int = \p = is p | Point.{ x, y } => x + y else 0
 $ who    : Person -> Str = \p = is p | Person.{ .name } => name else "?"
 ```
 
@@ -461,7 +462,7 @@ the union inferred from the arms. Payloads nest.
 
 ```thrax
 $ Maybe : @union t = Just: t, None: {}
-$ get : Int -> Maybe Int -> Int = \d m = is m | Maybe.Just.{ x } => x else d
+$ get : @int -> Maybe @int -> @int = \d m = is m | Maybe.Just.{ x } => x else d
 $ isJust : Maybe t -> @bool = \m = is m | .Just.{ _ } => @true else @false
 ```
 
@@ -471,13 +472,13 @@ scrutinee's type). Open `lo ...` matches `lo <= x`. Refutable, binds nothing.
 
 Simple:
 ```thrax
-$ grade : Int -> Str = \n = is n | 90 ... 100 => "A" | 60 ... 89 => "C" else "F"
+$ grade : @int -> Str = \n = is n | 90 ... 100 => "A" | 60 ... 89 => "C" else "F"
 ```
 
 Involved (open range, Real):
 ```thrax
-$ sign : Int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
-$ band : Real -> Int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
+$ sign : @int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
+$ band : Real -> @int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 ```
 
 ## 5.7 List and array patterns
@@ -486,13 +487,13 @@ brackets destructure a `@array` (type-directed); `::` stays list-only.
 
 Simple:
 ```thrax
-$ sum : @list Int -> Int = \xs = is xs | [] => 0 | h :: t => h + sum t else 0
+$ sum : @list @int -> @int = \xs = is xs | [] => 0 | h :: t => h + sum t else 0
 ```
 
 Involved (leading cells plus a rest tail, on a list and on an array):
 ```thrax
-$ second : @list Int -> Int = \xs = is xs | [_, x, ..rest] => x else 0 - 1
-$ head_of : @array -> Int = \a = is a | [h, ..rest] => h else 0
+$ second : @list @int -> @int = \xs = is xs | [_, x, ..rest] => x else 0 - 1
+$ head_of : @array -> @int = \a = is a | [h, ..rest] => h else 0
 ```
 
 ## 5.8 Or-patterns and guards
@@ -502,13 +503,13 @@ arm, even one with the same constructor.
 
 Or-pattern:
 ```thrax
-$ small : Int -> Int = \n = is n | 0 | 1 | 2 => 1 else 0
+$ small : @int -> @int = \n = is n | 0 | 1 | 2 => 1 else 0
 ```
 
 Guards falling through the same constructor:
 ```thrax
-$ Box : @union = Some: Int, Nil: {},
-$ grade : Box -> Int = \x =
+$ Box : @union = Some: @int, Nil: {},
+$ grade : Box -> @int = \x =
 	is x | Box.Some.{ v } if v ?> 100 => 3
 	     | Box.Some.{ v } if v ?> 0   => 2
 	     | Box.Some.{ _ }             => 1
@@ -523,7 +524,7 @@ non-exhaustive match with no `else` is a compile error naming the missing shape.
 
 ```thrax
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
-$ go : Light -> Int = \l =
+$ go : Light -> @int = \l =
 	is l | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no else needed
 ```
 
@@ -532,12 +533,12 @@ Only `_`, variables, and struct/tuple patterns built from them (no literals) may
 appear in a `let` binder or a lambda parameter; they desugar to field accesses.
 
 ```thrax
-$ Point  : @struct = x: Int, y: Int,
-$ Person : @struct = name: Str, age: Int,
+$ Point  : @struct = x: @int, y: @int,
+$ Person : @struct = name: Str, age: @int,
 $ Line   : @struct = from: Point, to: Point,
 $ person : Person = Person.{ .name = "A", .age = 30 }
-$ age : Int = let Person.{ .age = a } = person in a
-$ start : Line -> Int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
+$ age : @int = let Person.{ .age = a } = person in a
+$ start : Line -> @int = \Line.{ .from = Point.{ x, _ }, .to = _ } = x
 ```
 
 ---
@@ -551,7 +552,7 @@ read with `.field`. Nominal (unifies by name).
 
 Simple:
 ```thrax
-$ Person : @struct = name: Str, age: Int,
+$ Person : @struct = name: Str, age: @int,
 $ p : Person = Person.{ .name = "Will", .age = 21 }
 $ who : Str = p.name
 ```
@@ -560,8 +561,8 @@ Involved (generic, applied by juxtaposition, nested field types):
 ```thrax
 $ Box : @struct t = val: t,
 $ Wrap : @struct t = inner: Box t,
-$ w : Wrap Int = .{ .inner = Box.{ .val = 7 } }
-$ deep : Int = w.inner.val
+$ w : Wrap @int = .{ .inner = Box.{ .val = 7 } }
+$ deep : @int = w.inner.val
 ```
 
 ## 6.2 Record update
@@ -569,7 +570,7 @@ $ deep : Int = w.inner.val
 comes last; a listed field may read from `base`.
 
 ```thrax
-$ Person : @struct = name: Str, age: Int,
+$ Person : @struct = name: Str, age: @int,
 $ base : Person = Person.{ .name = "A", .age = 30 }
 $ older : Person = Person.{ .age = base.age + 1 | base }
 $ clone : Person = .{ | base }
@@ -583,14 +584,14 @@ payloads).
 Simple:
 ```thrax
 $ Maybe : @union t = Just: t, None: {}
-$ some : Maybe Int = Maybe.Just.{ 5 }
-$ none : Maybe Int = .None
+$ some : Maybe @int = Maybe.Just.{ 5 }
+$ none : Maybe @int = .None
 ```
 
 Involved (recursive, multi-field payload, positional or named):
 ```thrax
 $ Tree : @union a = Leaf: a, Node: { Tree a, Tree a }
-$ t : Tree Int = Tree.Node.{ Tree.Leaf.{ 1 }, Tree.Leaf.{ 2 } }
+$ t : Tree @int = Tree.Node.{ Tree.Leaf.{ 1 }, Tree.Leaf.{ 2 } }
 ```
 
 ## 6.4 Type splice `with`
@@ -599,8 +600,8 @@ variants ahead of its own. A copy-paste convenience with no subtyping
 relationship. Transitive; a duplicate member is an error.
 
 ```thrax
-$ Point  : @struct = x: Int, y: Int
-$ Point3 : @struct = with Point, z: Int          # x, y, then z
+$ Point  : @struct = x: @int, y: @int
+$ Point3 : @struct = with Point, z: @int          # x, y, then z
 $ Base   : @union  = Red: {}, Green: {}
 $ Color  : @union  = with Base, Blue: {}         # Red, Green, then Blue
 ```
@@ -612,15 +613,15 @@ non-memoized thunks, so an infinite structure is fine.
 
 Simple (the prelude `Stream`, observed):
 ```thrax
-$ first : Stream Int -> Int = \s = s.head
-$ next  : Stream Int -> Stream Int = \s = s.tail
+$ first : Stream @int -> @int = \s = s.head
+$ next  : Stream @int -> Stream @int = \s = s.tail
 ```
 
 Involved (map over an infinite stream, still lazy):
 ```thrax
 $ smap : (a -> b) -> Stream a -> Stream b = \f s =
 	{ .head = f s.head, .tail = smap f s.tail }
-$ tenth : Int = (smap (\x = x + x) (count_from 1)).tail.tail.head
+$ tenth : @int = (smap (\x = x + x) (count_from 1)).tail.tail.head
 ```
 
 ---
@@ -632,8 +633,8 @@ Every function of several parameters is curried; partial application yields a
 function.
 
 ```thrax
-$ add : Int -> Int -> Int = \a b = a + b
-$ add5 : Int -> Int = add 5           # partial application
+$ add : @int -> @int -> @int = \a b = a + b
+$ add5 : @int -> @int = add 5           # partial application
 ```
 
 ## 7.2 Higher-order functions
@@ -651,14 +652,14 @@ definition extends an imported one into a merged overload set. This is how
 
 Simple:
 ```thrax
-$ show : Int -> Str = \n = to_string n
+$ show : @int -> Str = \n = to_string n
 $ show : @bool -> Str = \b = if b => "yes" else "no"
 ```
 
 Involved (extend the imported `to_string` for a user type; interpolation then
 picks it up):
 ```thrax
-$ Point : @struct = x: Int, y: Int
+$ Point : @struct = x: @int, y: @int
 $ to_string : Point -> Str = \p = "({p.x}, {p.y})"
 $ line : Str = "p = {Point.{ .x = 1, .y = 2 }}"
 ```
@@ -682,14 +683,14 @@ $ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
 Involved (chaining passes the implicit down; explicit override at the call):
 ```thrax
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
-$ compare : Int -> Int -> Ordering = \a b =
+$ compare : @int -> @int -> Ordering = \a b =
 	if a ?< b => Ordering.LT else if a ?> b => Ordering.GT else Ordering.EQ
-$ flip : Int -> Int -> Ordering = \a b = compare b a
+$ flip : @int -> @int -> Ordering = \a b = compare b a
 $ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
 	is compare x y | Ordering.GT => x else y
 $ max3 : a -> a -> a -> a  @ctx compare : a -> a -> Ordering = \x y z =
 	max_of (max_of x y) z
-$ as_min : Int = max_of 3 7 @ctx flip       # flip reverses the order
+$ as_min : @int = max_of 3 7 @ctx flip       # flip reverses the order
 ```
 
 ## 7.5 Tail-call optimization
@@ -697,7 +698,7 @@ Tail-recursive calls (self, mutual, or through a recursive local `let`) run in
 constant stack.
 
 ```thrax
-$ sum_to : Int -> Int -> Int = \n acc =
+$ sum_to : @int -> @int -> @int = \n acc =
 	if n ?= 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
 ```
 
@@ -711,9 +712,9 @@ and names its resume type. An operation whose handler never resumes (an
 exception) names a type variable as its result.
 
 ```thrax
-$ State : @effect = get : {} -> Int, put : Int -> {},
+$ State : @effect = get : {} -> @int, put : @int -> {},
 $ Exn   : @effect = throw : Str -> a,
-$ Yield : @effect = yield : Int -> {},
+$ Yield : @effect = yield : @int -> {},
 ```
 
 ## 8.2 Performing an operation
@@ -721,8 +722,8 @@ Just call it; there is no `perform` keyword. A use injects the effect into the
 ambient row.
 
 ```thrax
-$ State : @effect = get : {} -> Int, put : Int -> {},
-$ tick : {} -> <State> Int = \u = let x = get {} in let _ = put (x + 1) in x
+$ State : @effect = get : {} -> @int, put : @int -> {},
+$ tick : {} -> <State> @int = \u = let x = get {} in let _ = put (x + 1) in x
 ```
 
 ## 8.3 Handling `do ... ctl`
@@ -733,14 +734,14 @@ qualified in a clause head.
 
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
-$ safeDiv : Int -> Int -> Int = \a b =
+$ safeDiv : @int -> @int -> @int = \a b =
 	do if b ?= 0 => Exn.throw "div0" else a / b
 	ctl k | Exn.throw msg => 0 - 1
 ```
 
 Generator (resume once per yield, summing results):
 ```thrax
-$ sumGen : ({} -> <Yield> {}) -> Int = \gen =
+$ sumGen : ({} -> <Yield> {}) -> @int = \gen =
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
 	      else _ => 0
@@ -753,7 +754,7 @@ stored before use, which is what coroutines need. Handlers are deep (a resumed
 computation is still governed by the same handler).
 
 ```thrax
-$ Task : @union = Fin: {}, Susp: { Int, {} -> Task }
+$ Task : @union = Fin: {}, Susp: { @int, {} -> Task }
 $ spawn : ({} -> <Yield> {}) -> Task = \t =
 	do t {}
 	ctl k | Yield.yield v => Task.Susp.{ v, k }     # store k, resume later
@@ -778,10 +779,10 @@ continuation holding it completes. Nested defers run innermost-first. The
 resource-safe FFI idiom.
 
 ```thrax
-$ open  : Str -> Int = \path = 0         # stand-ins for real handles
-$ close : Int -> Int = \h = h
-$ read  : Int -> Int = \h = h
-$ useFile : Str -> Int = \path =
+$ open  : Str -> @int = \path = 0         # stand-ins for real handles
+$ close : @int -> @int = \h = h
+$ read  : @int -> @int = \h = h
+$ useFile : Str -> @int = \path =
 	let f = open path in
 	defer close f do
 		read f
@@ -799,9 +800,9 @@ fault.
 
 ```thrax
 $ with LA
-$ v : [3]Int = [10, 20, 30]
-$ a : Int = v.[1]        # 20
-$ b : Int = v.[3]        # wraps to v.[0] = 10
+$ v : [3]@int = [10, 20, 30]
+$ a : @int = v.[1]        # 20
+$ b : @int = v.[3]        # wraps to v.[0] = 10
 ```
 
 ## 9.2 Multi-dimensional and multi-axis indexing
@@ -809,8 +810,8 @@ $ b : Int = v.[3]        # wraps to v.[0] = 10
 
 ```thrax
 $ with LA
-$ g : [2][2]Int = [ [1,2], [3,4] ]
-$ z : Int = g.[1, 0]     # 3
+$ g : [2][2]@int = [ [1,2], [3,4] ]
+$ z : @int = g.[1, 0]     # 3
 ```
 
 ## 9.3 Size arithmetic
@@ -822,7 +823,7 @@ drives size-changing operations, whose result size is computed at compile time.
 $ with LA
 # LA provides `concat`, its result size computed at compile time:
 #   concat : [n]a -> [m]a -> [n+m]a
-$ joined : [5]Int = concat [1, 2] [3, 4, 5]      # [2+3] = [5]
+$ joined : [5]@int = concat [1, 2] [3, 4, 5]      # [2+3] = [5]
 ```
 
 ## 9.4 Slicing and variance
@@ -833,9 +834,9 @@ Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
 
 ```thrax
 $ with LA
-$ row : [m][n]a -> Int -> [n]a = \m i = m.[i]
-$ col : [m][n]a -> Int -> [m]a = \m j = m.[.., j]
-$ sub : [8]Int -> [4]Int = \m = m.[2 ... 5]      # inclusive 2..5, four elements
+$ row : [m][n]a -> @int -> [n]a = \m i = m.[i]
+$ col : [m][n]a -> @int -> [m]a = \m j = m.[.., j]
+$ sub : [8]@int -> [4]@int = \m = m.[2 ... 5]      # inclusive 2..5, four elements
 ```
 
 ## 9.5 Tensor primitives and the `LA` library
@@ -855,9 +856,9 @@ the expected type: a sized tensor (literal bounds fix `n`), a `List` (the
 default), or, open, a `Stream`.
 
 ```thrax
-$ tv : [4]Int     = [1 ... 4]     # tensor, n = 4
-$ ns : @list Int  = [1 ... 5]     # list (default)
-$ s  : Stream Int = [1 ...]       # infinite stream (open range)
+$ tv : [4]@int     = [1 ... 4]     # tensor, n = 4
+$ ns : @list @int  = [1 ... 5]     # list (default)
+$ s  : Stream @int = [1 ...]       # infinite stream (open range)
 ```
 
 ---
@@ -870,8 +871,8 @@ signature is required and drives C-ABI marshalling. An extern takes exactly one
 argument (one arrow).
 
 ```thrax
-$ puts : Str -> Int = @extern "C" "puts" "libc"
-$ used : Int = puts "hi"
+$ puts : Str -> @int = @extern "C" "puts" "libc"
+$ used : @int = puts "hi"
 ```
 
 ## 10.2 Multi-parameter C functions
@@ -883,7 +884,7 @@ so a reordered call site is fine). A nullary C function takes `{}`.
 $ pow : {base: Real, exp: Real} -> Real = @extern "C" "pow" "libm"
 $ a : Real = pow {2.0, 10.0}                 # positional
 $ b : Real = pow {.exp = 10.0, .base = 2.0}  # named, reordered
-$ getchar : {} -> Int = @extern "C" "getchar" "libc"
+$ getchar : {} -> @int = @extern "C" "getchar" "libc"
 ```
 
 ## 10.3 C structs and unions by value
@@ -905,15 +906,15 @@ count.
 
 ```thrax
 $ Vector2 : @struct @extern "C" = x: @float32, y: @float32,
-$ sort : {@ptr, Int, (Int -> Int -> Int)} -> {} = @extern "C" "qsort_r" "libc"
-$ draw : {@list Vector2, Int} -> {} = @extern "C" "DrawLineStrip" "lib"
+$ sort : {@ptr, @int, (@int -> @int -> @int)} -> {} = @extern "C" "qsort_r" "libc"
+$ draw : {@list Vector2, @int} -> {} = @extern "C" "DrawLineStrip" "lib"
 ```
 
 ## 10.5 The `C` namespace and engine intrinsics
 `library/C.thx` binds libc/libm as the auto-injected `C` namespace (used
 qualified, `C.sqrt`, no import). It also holds a few conversions the language
 cannot express with `@cast` (which is integer widths only): `C.i2f`/`C.f2i`
-(Int and @float32), `C.i2d`/`C.d2i` (Int and Real), `C.i2p` (Int to @ptr), and
+(@int and @float32), `C.i2d`/`C.d2i` (@int and Real), `C.i2p` (@int to @ptr), and
 `C.null` (the null pointer). These are provided by the engines' runtimes (an
 empty `lib`); see `documentation/native-backend.md`.
 
@@ -961,7 +962,7 @@ The built-in boolean; values are `@true` and `@false` (matched with the
 
 ```thrax
 $ b : @bool = 3 ?< 4
-$ chk : Int = is b | @true => 0 else 1
+$ chk : @int = is b | @true => 0 else 1
 ```
 
 ## 12.2 `@array` (byte block)
@@ -973,12 +974,12 @@ array.
 Simple:
 ```thrax
 $ buf : @array = @array.{ 64 }
-$ n : Int = @array_len "hello"          # 5
+$ n : @int = @array_len "hello"          # 5
 ```
 
 Involved (build a string byte by byte, as CORE's integer stringifier does):
 ```thrax
-$ digit : Int -> Str = \d = @array_push "" (48 + d)   # push a byte onto a Str
+$ digit : @int -> Str = \d = @array_push "" (48 + d)   # push a byte onto a Str
 ```
 
 ## 12.3 `@vec` (growable vector)
@@ -991,7 +992,7 @@ $ v = push (push (new {}) 1) 2          # VEC over @vec_* primitives
 ```
 
 ## 12.4 `to_string` (CORE) and interpolation
-`CORE` (implicitly imported) provides `to_string` for `Str`, `@bool`, and `Int`,
+`CORE` (implicitly imported) provides `to_string` for `Str`, `@bool`, and `@int`,
 and the `Stream`/`range`/`count_from` prelude. String interpolation desugars
 through `to_string`; extend it (7.3) for your own types.
 
@@ -1001,7 +1002,7 @@ $ s : Str = to_string 42 ++ " " ++ to_string @true      # "42 true"
 
 ## 12.5 `TARGET` reflection
 The `TARGET` module (qualified, no import) reflects the compilation target: word
-size, Int bounds, and os/arch names, fixed at compile time.
+size, @int bounds, and os/arch names, fixed at compile time.
 
 ```thrax
 $ wide : @bool = TARGET.int_bits ?= 64
@@ -1069,7 +1070,7 @@ import). A brief map:
 | --- | --- |
 | `CORE` | `to_string`, `Stream`, `range`, `count_from` (implicitly imported) |
 | `C` | libc/libm bindings and engine conversion intrinsics (qualified) |
-| `MATH` | Int/Real helpers, libm wrappers, int/real conversions |
+| `MATH` | @int/Real helpers, libm wrappers, int/real conversions |
 | `STR` | string operations (`from_int`, `substr`, `contains`, `to_lower`, ...) |
 | `LIST` | list operations (`sum`, `length`, `map`, ...) |
 | `VEC` | growable vectors over the `@vec` primitives |

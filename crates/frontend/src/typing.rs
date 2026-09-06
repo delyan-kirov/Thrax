@@ -209,6 +209,22 @@ pub struct Checker<'a> {
     /// field set). Lowering reads this so a positional literal gets the right field
     /// names instead of falling back to positional indices.
     struct_lit_names: HashMap<Aol<Expr>, String>,
+    /// Literal sites (`"..."`, `[..]`, an int, a real) that a `@compiler_interface_*`
+    /// construction hook builds into a user type instead of the built-in default,
+    /// mapped to the resolved hook's `(owning module, emitted name)`. Lowering wraps
+    /// the raw payload term in a call to this hook; an unrecorded literal folds to the
+    /// plain built-in constant (no hook, no conversion).
+    literal_hooks: HashMap<Aol<Expr>, (Option<&'a str>, String)>,
+    /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
+    /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
+    /// building the literal into the user type (build hook) and comparing it against
+    /// the scrutinee (equality hook), instead of the built-in `?=` on a primitive.
+    literal_pattern_hooks:
+        HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))>,
+    /// Sequence PATTERN sites (`is [a, b, ..rest]`, `is h :: t`, `is []`) whose
+    /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
+    /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
+    sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<&'a str>, String)>,
     array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
@@ -340,6 +356,9 @@ impl<'a> Checker<'a> {
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
+            literal_hooks: HashMap::new(),
+            literal_pattern_hooks: HashMap::new(),
+            sequence_pattern_hooks: HashMap::new(),
             array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -375,6 +394,29 @@ impl<'a> Checker<'a> {
     pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, String> {
         &self.struct_lit_names
     }
+
+    /// Literal sites a `@compiler_interface_*` construction hook builds into a user
+    /// type, mapped to the hook's `(module, emitted name)`. Lowering wraps the raw
+    /// payload term in a call to this hook.
+    pub fn literal_hooks(&self) -> &HashMap<Aol<Expr>, (Option<&'a str>, String)> {
+        &self.literal_hooks
+    }
+
+    /// Literal pattern sites matched through a user type's construction + equality
+    /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`.
+    #[allow(clippy::type_complexity)]
+    pub fn literal_pattern_hooks(
+        &self,
+    ) -> &HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))> {
+        &self.literal_pattern_hooks
+    }
+
+    /// Sequence pattern sites matched through a user type's `sequence_view` hook,
+    /// mapped to the hook's `(module, emitted name)`.
+    pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, (Option<&'a str>, String)> {
+        &self.sequence_pattern_hooks
+    }
+
 
     /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
     /// thunks) and `x.obs` observations (lowered to `field {}`).
@@ -585,10 +627,15 @@ impl<'a> Checker<'a> {
         let mut overloaded_names: HashSet<&'a str> = HashSet::new();
         for d in &defs {
             // Overloaded if defined more than once here, adds to an already-imported
-            // overload, or EXTENDS a single imported value of the same name.
+            // overload, or EXTENDS a single imported value of the same name. A
+            // A `@compiler_interface_*` interface hook is ALWAYS treated as an overload
+            // set (even a lone definition), so an implicit use site (a literal, a
+            // pattern, `.[..]`) can find its candidate uniformly via `hook_candidates`
+            // without a separate registry.
             if counts[d.name] > 1
                 || self.overloads.contains_key(d.name)
                 || self.imported_singles.contains_key(d.name)
+                || is_interface_hook(d.name)
             {
                 overloaded_names.insert(d.name);
             }
@@ -1049,6 +1096,11 @@ impl<'a> Checker<'a> {
 
     /// Check an expression against an expected type (the checking direction).
     fn check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<()> {
+        // A literal aimed at a user type may build it through a `@compiler_interface_*`
+        // construction hook; when one applies, that supersedes the built-in default.
+        if self.literal_hook_check(e, expected)? {
+            return Ok(());
+        }
         match self.node(e) {
             Expr::Lambda { params, body } => {
                 let params = self.ast.slice(*params);
@@ -1159,6 +1211,22 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // A bare `.Tag` takes its union from the expected type (type-directed), so
+            // a constructor name shared by several unions resolves unambiguously.
+            Expr::Variant { module: None, ty: None, tag, fields }
+                if self
+                    .union_head_with_tag(expected, self.text(*tag))
+                    .is_some() =>
+            {
+                let tag = self.text(*tag);
+                let uname = self
+                    .union_head_with_tag(expected, tag)
+                    .expect("guarded above");
+                let fields = self.ast.slice(*fields);
+                let got = self.infer_variant(Some(uname), tag, fields)?;
+                self.eng
+                    .unify(&got, expected, "against the expected type")
+            }
             // A `Real` literal takes the expected float width, like an integer
             // literal takes its width: `1.0` checks against `Real32` as well as
             // `Real`/`Real64`. The runtime value stays a `Real` and is narrowed to
@@ -1232,6 +1300,11 @@ impl<'a> Checker<'a> {
         matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
     }
 
+    /// Whether `ty` is a `@vec _` (the built-in growable vector, the default sequence).
+    fn is_vec(&self, ty: &Type) -> bool {
+        matches!(self.spine(ty).0, Type::Con(n) if n == ty::VEC)
+    }
+
     /// Whether `ty` is a floating type (`Real`/`Real64`/`Real32`, either spelling),
     /// so a `Real` literal may take its width.
     fn is_float_type(&self, ty: &Type) -> bool {
@@ -1239,7 +1312,7 @@ impl<'a> Checker<'a> {
             self.eng.resolve(ty),
             Type::Con(name)
                 if matches!(name.as_str(),
-                    "Real" | "Real64" | "Real32" | "@float64" | "@float32")
+                    "@float64" | "@float32")
         )
     }
 
@@ -1248,7 +1321,7 @@ impl<'a> Checker<'a> {
     fn is_int_scalar(&self, ty: &Type) -> bool {
         matches!(self.eng.resolve(ty),
             Type::Con(name) if matches!(name.as_str(),
-                "Int" | "Nat"
+                "@int" | "@nat"
                     | "@int8" | "@int16" | "@int32" | "@int64"
                     | "@nat8" | "@nat16" | "@nat32" | "@nat64"))
     }
@@ -1939,24 +2012,20 @@ impl<'a> Checker<'a> {
                 ),
                 FieldInit::Positional(value) => (variant_field_ty(&payload, None, i), *value),
             };
-            let got = self.infer(value)?;
-            if let Some(want) = want {
-                self.eng.unify(&got, &want, "in a variant payload")?;
+            // Check (not infer) against the declared payload type when known, so the
+            // expectation flows into a nested value: a bare `.Tag` payload resolves
+            // type-directedly, and a literal takes its construction hook / element type.
+            match want {
+                Some(want) => self.check(value, &want)?,
+                None => {
+                    self.infer(value)?;
+                }
             }
         }
         Ok(result)
     }
 
     fn variant_sig(&mut self, union: &str, tag: &str) -> Option<(Type, VariantPayload<'a>)> {
-        if union == ty::LIST {
-            let elem = self.eng.fresh();
-            let list = Type::app(Type::con(ty::LIST), elem.clone());
-            return match tag {
-                "Nil" => Some((list, vec![])),
-                "Cons" => Some((list.clone(), vec![(None, elem), (None, list)])),
-                _ => None,
-            };
-        }
         let info = self.unions.get(union)?.clone();
         let pos = info.variants.iter().position(|v| v.tag == tag)?;
         let (args, mut subst) = self.instantiate_params(&info.params);
@@ -1972,14 +2041,9 @@ impl<'a> Checker<'a> {
     }
 
     fn find_union_by_tag(&self, tag: &str) -> Option<&'a str> {
-        let user = self
-            .unions
+        self.unions
             .iter()
-            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name));
-        user.or(match tag {
-            "Nil" | "Cons" => Some(ty::LIST),
-            _ => None,
-        })
+            .find_map(|(name, info)| info.variants.iter().any(|v| v.tag == tag).then_some(*name))
     }
 
     /// Infer an anonymous record value. Plain `{ .x = e }` builds a closed row from
@@ -2074,6 +2138,18 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+
+    /// The union `ty`'s head names, if it is a (possibly applied) declared union that
+    /// has a variant `tag`. Lets a BARE `.Tag` resolve type-directedly against the
+    /// expected type, so two unions sharing a constructor name (e.g. a user list and
+    /// the builtin `List`, both with `Cons`/`Nil`) do not collide.
+    fn union_head_with_tag(&self, ty: &Type, tag: &str) -> Option<&'a str> {
+        let (head, _) = self.spine(ty);
+        let Type::Con(n) = &head else { return None };
+        let (k, info) = self.unions.get_key_value(n.as_str())?;
+        info.variants.iter().any(|v| v.tag == tag).then_some(*k)
     }
 
     /// The head codata type name and its type arguments, if `ty` is a (possibly
@@ -2346,15 +2422,15 @@ impl<'a> Checker<'a> {
                 let elem = self.eng.fresh();
                 for item in items.iter() {
                     let t = self.infer(*item)?;
-                    self.eng.unify(&elem, &t, "in a list literal")?;
+                    self.eng.unify(&elem, &t, "in a sequence literal")?;
                 }
-                Ok(Type::app(Type::con(ty::LIST), elem))
+                Ok(Type::app(Type::con(ty::VEC), elem))
             }
 
-            // A closed range `[lo ... hi]` with no expected type defaults to `List Int`
-            // (lowering emits `range lo hi`); the sized-tensor target is reached only
-            // through `check` against a `[n]T`. An open range `[lo ...]` is infinite,
-            // so it is always a `Stream Int` (lowering emits `count_from lo`).
+            // A closed range `[lo ... hi]` with no expected type defaults to `@vec @int`
+            // (lowering builds a vector); the sized-tensor target is reached only through
+            // `check` against a `[n]T`. An open range `[lo ...]` is infinite, so it is
+            // always a `Stream @int` (lowering emits `count_from lo`).
             Expr::Range { lo, hi } => {
                 let lo = *lo;
                 let int = Type::con(ty::INT);
@@ -2362,7 +2438,7 @@ impl<'a> Checker<'a> {
                 match *hi {
                     Some(hi) => {
                         self.check(hi, &int)?;
-                        Ok(Type::app(Type::con(ty::LIST), int))
+                        Ok(Type::app(Type::con(ty::VEC), int))
                     }
                     None => Ok(Type::app(Type::con(ty::STREAM), int)),
                 }
@@ -2518,6 +2594,16 @@ impl<'a> Checker<'a> {
                 let v = self.eng.fresh();
                 self.extern_tys.insert(e, v.clone());
                 Ok(v)
+            }
+
+            // `(inner : T)`: check `inner` against `T` and take `T` as the type. Any
+            // type variable written in `T` is fresh (a local, monomorphic annotation).
+            Expr::Ascribe { expr, ty } => {
+                let (expr, ty) = (*expr, *ty);
+                let mut tvars = HashMap::new();
+                let t = self.ty_of_ast(ty, &mut tvars);
+                self.check(expr, &t)?;
+                Ok(t)
             }
 
             Expr::Ctx {
@@ -3064,6 +3150,258 @@ impl<'a> Checker<'a> {
         Ok(tf)
     }
 
+    /// Every visible candidate for a construction hook. A locally defined hook is
+    /// forced into `self.overloads` (see the overload-name seeding), and an imported
+    /// single lands in `imported_singles`, so those two cover every case. Empty when
+    /// no hook of this name is in scope (the common case: the literal keeps its
+    /// built-in default).
+    fn hook_candidates(&self, name: &str) -> Vec<Cand<'a>> {
+        if let Some(cs) = self.overloads.get(name) {
+            cs.clone()
+        } else if let Some(c) = self.imported_singles.get(name) {
+            vec![c.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The head constructor of `ty` if it is a user-declared type (struct / union /
+    /// codata / alias), following an application spine (`MyVec Int` -> `MyVec`). A
+    /// builtin, a variable, a tuple, or a function returns `None`, so a construction
+    /// hook only ever intercepts a literal aimed at a user type.
+    fn user_type_head(&self, ty: &Type) -> Option<String> {
+        let mut cur = self.eng.resolve(ty);
+        loop {
+            match cur {
+                Type::App(head, _) => cur = self.eng.resolve(&head),
+                Type::Con(name) => {
+                    let n = name.as_str();
+                    return (self.structs.contains_key(n)
+                        || self.unions.contains_key(n)
+                        || self.codata.contains_key(n)
+                        || self.aliases.contains_key(n))
+                    .then_some(name);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Route a literal (`"..."`, an int, a real, `[..]`) through its
+    /// `@compiler_interface_*` construction hook when the expected type is a user type
+    /// that provides a matching overload. On a unique match it unifies, checks any
+    /// element types, records the hook at `site` for lowering, and returns `true`;
+    /// otherwise it leaves the engine untouched and returns `false`, so the literal
+    /// falls back to its built-in default (which lowering folds to a plain constant).
+    fn literal_hook_check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<bool> {
+        // Only a literal aimed at a user type is a hook candidate.
+        if self.user_type_head(expected).is_none() {
+            return Ok(false);
+        }
+        let (hook, args, elem) = match self.node(e) {
+            Expr::Str(_) => (HOOK_STRING, vec![Type::con(ty::STR)], None),
+            Expr::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)], None),
+            Expr::Real(_) => (HOOK_REAL, vec![Type::con("@float64")], None),
+            Expr::List(_) => {
+                let elem = self.eng.fresh();
+                (
+                    HOOK_SEQUENCE,
+                    vec![Type::app(Type::con(ty::VEC), elem.clone())],
+                    Some(elem),
+                )
+            }
+            _ => return Ok(false),
+        };
+        let cands = self.hook_candidates(hook);
+        if cands.is_empty() {
+            return Ok(false);
+        }
+        // Trial-match each candidate (`payload -> result`, `result ~ expected`),
+        // rolling back after each; commit only a UNIQUE match so a wrong guess never
+        // sticks and an ambiguity falls through rather than silently picking one.
+        let result = self.eng.fresh();
+        let mut chosen = None;
+        let mut count = 0;
+        for (idx, cand) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            let ok = self.apply_overload(&cand.ty, &args, &result).is_ok()
+                && self
+                    .eng
+                    .unify(&result, expected, "in a literal construction hook")
+                    .is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                chosen = Some(idx);
+            }
+        }
+        let Some(idx) = chosen.filter(|_| count == 1) else {
+            return Ok(false);
+        };
+        self.apply_overload(&cands[idx].ty, &args, &result)?;
+        self.eng
+            .unify(&result, expected, "in a literal construction hook")?;
+        // A sequence literal checks each element against the payload's element type.
+        if let (Expr::List(items), Some(elem)) = (self.node(e), elem) {
+            let items = self.ast.slice(*items);
+            for it in items.iter() {
+                self.check(*it, &elem)?;
+            }
+        }
+        self.record_literal_hook(e, hook, &cands, idx);
+        Ok(true)
+    }
+
+    /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
+    /// committing it (the unification persists) and returning its index; `None` when
+    /// zero or several match. Every trial rolls back, so only the committed unique
+    /// match leaves the engine changed.
+    fn resolve_hook(&mut self, cands: &[Cand<'a>], args: &[Type], result: &Type) -> Option<usize> {
+        let mut chosen = None;
+        let mut count = 0;
+        for (idx, cand) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
+            self.eng.restore(save);
+            if ok {
+                count += 1;
+                chosen = Some(idx);
+            }
+        }
+        let idx = chosen.filter(|_| count == 1)?;
+        self.apply_overload(&cands[idx].ty, args, result).ok()?;
+        Some(idx)
+    }
+
+    /// The `(owning module, emitted name)` a resolved hook candidate lowers to: the
+    /// name is type-mangled when that module defines the hook several times, matching
+    /// the definition's `def_keys` entry.
+    fn hook_use(&self, name: &str, cands: &[Cand<'a>], idx: usize) -> (Option<&'a str>, String) {
+        let module = cands[idx].module;
+        let emit = match module {
+            Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
+                overload_key(name, &self.eng.zonk(&cands[idx].ty))
+            }
+            _ => name.to_string(),
+        };
+        (module, emit)
+    }
+
+    /// Record the resolved construction hook at a literal `site`.
+    fn record_literal_hook(&mut self, site: Aol<Expr>, name: &str, cands: &[Cand<'a>], idx: usize) {
+        let used = self.hook_use(name, cands, idx);
+        self.literal_hooks.insert(site, used);
+    }
+
+    /// The construction hook and primitive payload type for a literal PATTERN kind
+    /// (`Str`/`Int`/`Real`), so a literal pattern reuses the same builder a literal
+    /// expression does.
+    fn pattern_literal_hook(&mut self, pat: &Pattern) -> Option<(&'static str, Vec<Type>)> {
+        Some(match pat {
+            Pattern::Str(_) => (HOOK_STRING, vec![Type::con(ty::STR)]),
+            Pattern::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)]),
+            Pattern::Real(_) => (HOOK_REAL, vec![Type::con("@float64")]),
+            _ => return None,
+        })
+    }
+
+    /// Route a sequence pattern (`is [a, b, ..r]`, `is h :: t`, `is []`) whose
+    /// scrutinee is a user type through that type's `@compiler_interface_sequence_view`
+    /// hook. On success records the hook at `pat` and returns `Some(element type)` so
+    /// the caller types the sub-patterns; otherwise returns `None` (built-in typing).
+    fn sequence_pattern_hook_check(
+        &mut self,
+        pat: Aol<Pattern>,
+        expected: &Type,
+    ) -> Result<Option<Type>> {
+        // Fires for a user sequence type OR the built-in `@vec` (the default sequence,
+        // whose `sequence_view` lives in CORE).
+        if self.user_type_head(expected).is_none() && !self.is_vec(expected) {
+            return Ok(None);
+        }
+        let cands = self.hook_candidates(HOOK_SEQVIEW);
+        if cands.is_empty() {
+            return Ok(None);
+        }
+        let save = self.eng.save();
+        let result = self.eng.fresh();
+        if let Some(idx) = self.resolve_hook(&cands, &[expected.clone()], &result) {
+            // The hook returns `SeqView <seq> <elem>`; pull the element type out.
+            let elem = self.eng.fresh();
+            let want = Type::app(
+                Type::app(Type::con(SEQVIEW_TYPE), expected.clone()),
+                elem.clone(),
+            );
+            if self
+                .eng
+                .unify(&result, &want, "in a sequence-view hook")
+                .is_ok()
+            {
+                let used = self.hook_use(HOOK_SEQVIEW, &cands, idx);
+                self.sequence_pattern_hooks.insert(pat, used);
+                return Ok(Some(elem));
+            }
+        }
+        self.eng.restore(save);
+        Ok(None)
+    }
+
+    /// The element type of a sequence PATTERN's scrutinee. A user sequence type (or a
+    /// scrutinee already fixed to `@vec`) resolves via its `sequence_view` hook;
+    /// otherwise the scrutinee DEFAULTS to `@vec elem` and resolves through `@vec`'s
+    /// view. Records the hook at `pat` either way.
+    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<Type> {
+        if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
+            return Ok(elem);
+        }
+        let elem = self.eng.fresh();
+        self.eng.unify(
+            expected,
+            &Type::app(Type::con(ty::VEC), elem.clone()),
+            "in a sequence pattern",
+        )?;
+        Ok(self.sequence_pattern_hook_check(pat, expected)?.unwrap_or(elem))
+    }
+
+    /// Route a literal pattern (`is "foo"`, `is 42`) whose scrutinee is a user type
+    /// through that type's construction + equality hooks: it matches by building the
+    /// literal into the user type and comparing with `@compiler_interface_equality`.
+    /// On success records both hooks at `pat` for lowering and returns `true`;
+    /// otherwise leaves the engine untouched and returns `false` (the caller applies
+    /// the built-in literal-pattern typing).
+    fn literal_pattern_hook_check(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<bool> {
+        if self.user_type_head(expected).is_none() {
+            return Ok(false);
+        }
+        let Some((build_name, args)) = self.pattern_literal_hook(self.pnode(pat)) else {
+            return Ok(false);
+        };
+        let build_cands = self.hook_candidates(build_name);
+        let eq_cands = self.hook_candidates(HOOK_EQUALITY);
+        if build_cands.is_empty() || eq_cands.is_empty() {
+            return Ok(false);
+        }
+        let save = self.eng.save();
+        let build = self.resolve_hook(&build_cands, &args, expected);
+        let eq = self.resolve_hook(
+            &eq_cands,
+            &[expected.clone(), expected.clone()],
+            &Type::con(ty::BOOL),
+        );
+        match (build, eq) {
+            (Some(bi), Some(ei)) => {
+                let build_use = self.hook_use(build_name, &build_cands, bi);
+                let eq_use = self.hook_use(HOOK_EQUALITY, &eq_cands, ei);
+                self.literal_pattern_hooks.insert(pat, (build_use, eq_use));
+                Ok(true)
+            }
+            _ => {
+                self.eng.restore(save);
+                Ok(false)
+            }
+        }
+    }
+
     fn resolve_overload(
         &mut self,
         name: &str,
@@ -3199,9 +3537,9 @@ impl<'a> Checker<'a> {
     /// Break an ambiguity where a pending overload's RESULT is already a concrete
     /// integer type but its operands are still unconstrained numeric literals. For
     /// homogeneous arithmetic (`@int32 + @int32 -> @int32`), the operands should
-    /// take the result type, not default to `Int`; e.g. `let x : @int32 = 2 + 3`
+    /// take the result type, not default to `@int`; e.g. `let x : @int32 = 2 + 3`
     /// resolves to the `@int32` overload rather than failing because both literals
-    /// became `Int`. Each candidate is tried under that constraint and kept only if
+    /// became `@int`. Each candidate is tried under that constraint and kept only if
     /// it makes the overload unique, so a genuinely wrong guess is rolled back.
     fn propagate_result_to_operands(&mut self) -> Result<bool> {
         let batch = std::mem::take(&mut self.pending);
@@ -3277,16 +3615,9 @@ impl<'a> Checker<'a> {
                 }
                 // Pinned to a numeric type by use: fine.
                 Type::Con(name) if is_numeric_type(&name) => {}
-                // Pinned to a genuinely UNKNOWN con (a typo'd type): let that
-                // type's own "unknown type" diagnostic surface instead. The
-                // internal canonical base names (`Bool`/`List`/... spelled `@bool`
-                // etc. in source) are known and must still be rejected below.
-                Type::Con(name)
-                    if !self.is_known_type(&name)
-                        && !matches!(
-                            name.as_str(),
-                            "Bool" | "List" | "Vec" | "Array" | "Ptr" | "Str"
-                        ) => {}
+                // Pinned to a genuinely UNKNOWN con (a typo'd type): let that type's
+                // own "unknown type" diagnostic surface instead of the numeric error.
+                Type::Con(name) if !self.is_known_type(&name) => {}
                 // Pinned to a known non-numeric type (e.g. `if 1` wants `@bool`): a
                 // bare literal is a number, so this is a type error, not a coercion.
                 other => {
@@ -3388,6 +3719,9 @@ impl<'a> Checker<'a> {
                 self.bind(self.text(*name), expected.clone());
                 Ok(())
             }
+            Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
+            Pattern::Real(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
+            Pattern::Str(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Int(_) => {
                 self.eng
                     .unify(expected, &Type::con(ty::INT), "in an integer pattern")
@@ -3431,12 +3765,12 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::Cons { head, tail } => {
+                // `h :: t` matches any sequence via its `sequence_view` hook (a user
+                // type, else the default `@vec`); the tail keeps the scrutinee's type.
                 let (head, tail) = (*head, *tail);
-                let elem = self.eng.fresh();
-                let list = Type::app(Type::con(ty::LIST), elem.clone());
-                self.eng.unify(expected, &list, "in a '::' pattern")?;
+                let elem = self.sequence_pattern_elem(pat, expected)?;
                 self.type_pattern(head, &elem)?;
-                self.type_pattern(tail, &list)
+                self.type_pattern(tail, expected)
             }
             Pattern::List { elems, rest } if self.is_array(expected) => {
                 self.array_pats.insert(pat);
@@ -3450,15 +3784,16 @@ impl<'a> Checker<'a> {
                 Ok(())
             }
             Pattern::List { elems, rest } => {
+                // `[a, b, ..r]` / `[]` matches any sequence via its `sequence_view` hook
+                // (a user type, else the default `@vec`): each element at the view's
+                // element type, `..rest` at the sequence type.
+                let elem = self.sequence_pattern_elem(pat, expected)?;
                 let (elems, rest) = (self.ast.slice(*elems), *rest);
-                let elem = self.eng.fresh();
-                let list = Type::app(Type::con(ty::LIST), elem.clone());
-                self.eng.unify(expected, &list, "in a list pattern")?;
                 for e in elems.iter() {
                     self.type_pattern(*e, &elem)?;
                 }
                 if let Some(rest) = rest {
-                    self.type_pattern(rest, &list)?;
+                    self.type_pattern(rest, expected)?;
                 }
                 Ok(())
             }
@@ -3770,7 +4105,7 @@ impl<'a> Checker<'a> {
                     }
                     self.unknown_type = Some(d);
                 }
-                Type::con(canonical_con(name))
+                Type::con(name)
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
@@ -3855,10 +4190,10 @@ impl<'a> Checker<'a> {
         // `Int`/`Nat`/`Real`, plus each sized `@`-form (which stays a distinct
         // type for exact C marshalling). `%` is defined for integers only.
         let ints = [
-            ty::INT, "Nat", "@int8", "@int16", "@int32", "@int64",
+            ty::INT, "@nat", "@int8", "@int16", "@int32", "@int64",
             "@nat8", "@nat16", "@nat32", "@nat64",
         ];
-        let reals = [ty::REAL, "@float32", "@float64"];
+        let reals = ["@float32", "@float64"];
         let numeric: Vec<&str> = ints.iter().chain(reals.iter()).copied().collect();
         // `+ - * / %` are defined in CORE.thx over the arithmetic intrinsics, not
         // seeded here. `^` stays a builtin (no intrinsic: int is a mul loop, real
@@ -3936,6 +4271,11 @@ impl<'a> Checker<'a> {
         );
         let (t, vt) = vec(&mut self.eng);
         self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
+        let (_t, vt) = vec(&mut self.eng);
+        self.bind(
+            "@vec_slice",
+            Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(int(), vt))),
+        );
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
@@ -3950,8 +4290,9 @@ impl<'a> Checker<'a> {
         // (`transpose` keeps per-position variance and swaps only the sizes).
         //
         // `@tensor_index : [n]a -> Int -> a` (modular read). `.[..]` desugars to the
-        // OVERLOADABLE `index` in `library/LA` (its tensor candidate calls `@tensor_index`);
-        // a custom container adds its own `index` overload, the import merge coexists.
+        // OVERLOADABLE `@compiler_interface_indexing` hook (its tensor candidate in
+        // `library/LA` calls `@tensor_index`); a custom container adds its own hook
+        // overload, the import merge coexists.
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
@@ -4039,9 +4380,10 @@ impl<'a> Checker<'a> {
             self.bind("++", Type::arrow(a.clone(), Type::arrow(a.clone(), a)));
         }
         {
+            // `x :: xs` prepends to the default sequence, a `@vec`.
             let a = self.eng.fresh_generic();
-            let list = Type::app(Type::con(ty::LIST), a.clone());
-            self.bind("::", Type::arrow(a, Type::arrow(list.clone(), list)));
+            let vec = Type::app(Type::con(ty::VEC), a.clone());
+            self.bind("::", Type::arrow(a, Type::arrow(vec.clone(), vec)));
         }
         {
             let a = self.eng.fresh_generic();
@@ -4248,6 +4590,7 @@ fn free_globals<'a>(
             free_globals(ast, *callee, globals, bound, out);
             free_globals_field_inits(ast, ast.slice(*overrides), globals, bound, out);
         }
+        Expr::Ascribe { expr, .. } => free_globals(ast, *expr, globals, bound, out),
     }
 }
 
@@ -4399,10 +4742,10 @@ fn marshal_name(ty: &Type) -> String {
             }
             format!("@fn({})->{}", args.join(","), marshal_name(cur))
         }
-        // A `List T` parameter is a C array of `T`: passed as a `T*` pointing at a
+        // A `@vec T` parameter is a C array of `T`: passed as a `T*` pointing at a
         // contiguous packed buffer. Encoded so the seam can find `T`'s layout.
         Type::App(head, arg) => match (head.as_ref(), arg.as_ref()) {
-            (Type::Con(list), Type::Con(elem)) if list == ty::LIST => {
+            (Type::Con(vec), Type::Con(elem)) if vec == ty::VEC => {
                 format!("@structs({elem})")
             }
             _ => ty::INT.to_string(),
@@ -4489,24 +4832,6 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
 
 /// Map the sigil/alias type constructors to their canonical built-in name. Every
 /// sized integer width (signed and unsigned, `@`-sigil and friendly alias) is
-/// `Int` at the VALUE level, and every float width is `Real`, so arithmetic,
-/// comparison, and literals work uniformly across them. The exact C width is not
-/// lost: the crepr layout reads a field's RAW type name (`scalar_ckind`), so
-/// `x: @int32`/`x: Int32` still lays out as 4 bytes.
-fn canonical_con(name: &str) -> &str {
-    // Sized numeric `@`-forms stay DISTINCT (so an `@extern` marshals each at its
-    // exact C width and a struct field lays out correctly); arithmetic on them is
-    // provided by per-type operator overloads, not by collapsing to `Int`/`Real`.
-    match name {
-        "@str" => ty::STR,
-        "@bool" => ty::BOOL,
-        "@ptr" => ty::PTR,
-        "@array" => ty::ARRAY,
-        "@list" => ty::LIST,
-        "@vec" => ty::VEC,
-        other => other,
-    }
-}
 
 /// A type that would receive a `{kind}` (`"field"`/`"variant"`) twice: one it
 /// declares and one a `with` splice copies in, or one two included types share.
@@ -4526,7 +4851,7 @@ fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
         Code::TypeMismatch, Span::at(0), 0,
         "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \
          C-representable; a `@struct @extern \"C\"` field must be a sized number \
-         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `Int`/`Nat`/`Real`, `@ptr`, \
+         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `@int`/`@nat`/`Real`, `@ptr`, \
          `@bool`, or another C-repr struct"
     )
 }
@@ -4548,9 +4873,9 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
         "@nat32" => U32,
         "@nat64" => U64,
         "@float32" => F32,
-        "@float64" | "Real" => F64,
-        "Int" => word,
-        "Nat" => uword,
+        "@float64" => F64,
+        "@int" => word,
+        "@nat" => uword,
         "@ptr" => uword,
         "@bool" => U8,
         _ => return None,
@@ -4563,24 +4888,40 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
 fn is_numeric_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Nat" | "Real"
+        "@int" | "@nat" | "@float64"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
-            | "@float32" | "@float64"
+            | "@float32"
     )
 }
 
-/// The built-in scalar and container type names, in both their friendly and
-/// `@`-sigil spellings. A type in source is one of these, a declared type, or a
-/// lowercase type variable.
+/// The `@compiler_interface_*` construction hook for each literal kind: a literal
+/// whose expected type is a user type providing the matching overload builds that
+/// type instead of the built-in default.
+const HOOK_STRING: &str = "@compiler_interface_string_literal";
+const HOOK_INTEGER: &str = "@compiler_interface_integer_literal";
+const HOOK_REAL: &str = "@compiler_interface_real_literal";
+const HOOK_SEQUENCE: &str = "@compiler_interface_sequence_literal";
+const HOOK_EQUALITY: &str = "@compiler_interface_equality";
+const HOOK_SEQVIEW: &str = "@compiler_interface_sequence_view";
+/// The core union `@compiler_interface_sequence_view` returns: `SeqView s t`.
+const SEQVIEW_TYPE: &str = "SeqView";
+
+/// An extensible interface hook is any `@compiler_interface_*` name. Each is always
+/// treated as an overload set (even a lone definition) so an implicit use site (a
+/// literal, a pattern, `.[..]`) can find its candidate uniformly.
+fn is_interface_hook(name: &str) -> bool {
+    name.starts_with("@compiler_interface_")
+}
+
 fn is_base_type(name: &str) -> bool {
     matches!(
         name,
-        "Int" | "Nat" | "Real" | "Str"
+        "@int" | "@nat"
             | "@int8" | "@int16" | "@int32" | "@int64"
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
-            | "@str" | "@ptr" | "@bool" | "@array" | "@list" | "@vec"
+            | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
     )
 }
 

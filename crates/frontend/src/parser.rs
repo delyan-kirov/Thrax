@@ -411,7 +411,31 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(Item::Run(self.parse_expr(0)?))
             }
-            other => Err(self.unexpected(&at, &format!("'@{other}' is not a valid '$' directive"))),
+            // A `@compiler_interface_*` hook is the ONE family of `@`-names a user (or
+            // the core library) may define: `$ @compiler_interface_indexing : sig = body`.
+            // It joins the hook's overload set like any other definition.
+            name if name.starts_with("compiler_interface_") => {
+                let at_tok = self.bump()?; // the '@compiler_interface_*' token
+                let hook = self.intern(self.text(at_tok));
+                expect!(self, Kind::Colon, "expected ':' and a type for the interface hook");
+                let sig = Some(self.parse_type()?);
+                let implicits = self.parse_ctx_decls()?;
+                expect!(self, Kind::Eq, "expected '=' after the type signature");
+                let body = self.parse_expr(0)?;
+                Ok(Item::Def {
+                    name: hook,
+                    sig,
+                    implicits,
+                    body,
+                })
+            }
+            other => Err(self.unexpected(
+                &at,
+                &format!(
+                    "'@{other}' is a compiler intrinsic and is not extensible in user code; \
+                     only '@compiler_interface_*' hooks may be defined"
+                ),
+            )),
         }
     }
 
@@ -1213,9 +1237,9 @@ impl<'a> Parser<'a> {
                 Ok(self.tuple_indices(base, tok))
             }
             // `recv.[i]` / `recv.[i, j, ...]`: an all-index access desugars to the
-            // OVERLOADABLE `index` (`index recv i`), so tensors, maps, and user types
-            // share the surface; a comma-list nests (`index (index t i) j`). A `p ... q`
-            // slot is an INCLUSIVE range slice of the leading axis (`@tensor_slice`).
+            // OVERLOADABLE `@compiler_interface_indexing` hook, so tensors, maps, and
+            // user types share the surface; a comma-list nests. A `p ... q` slot is an
+            // INCLUSIVE range slice of the leading axis (`@tensor_slice`).
             Kind::LBrack => {
                 self.bump()?; // '['
                 let mut slots: Vec<SliceSlot> = Vec::new();
@@ -1243,15 +1267,15 @@ impl<'a> Parser<'a> {
                     }
                 }
                 expect!(self, Kind::RBrack, "expected ']' to close the index");
-                // An all-index access desugars to the OVERLOADABLE `index` (so tensors,
-                // maps, and user types share `.[..]`); if any slot keeps an axis (a
-                // range or `..`), it is a tensor slice whose result shape the checker
-                // computes from the receiver.
+                // An all-index access desugars to the OVERLOADABLE indexing hook (so
+                // tensors, maps, and user types share `.[..]`); if any slot keeps an
+                // axis (a range or `..`), it is a tensor slice whose result shape the
+                // checker computes from the receiver.
                 if slots.iter().all(|s| matches!(s, SliceSlot::Index(_))) {
                     let mut recv = base;
                     for s in slots {
                         let SliceSlot::Index(idx) = s else { unreachable!() };
-                        let index_fn = self.intern("index");
+                        let index_fn = self.intern("@compiler_interface_indexing");
                         let f = self.expr(Expr::Var { module: None, name: index_fn });
                         let f = self.expr(Expr::App(f, recv));
                         recv = self.expr(Expr::App(f, idx));
@@ -1334,6 +1358,14 @@ impl<'a> Parser<'a> {
     fn parse_group(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
         let e = self.parse_expr(0)?;
+        // A trailing `: T` ascribes the group's type, e.g. `([] : List Int)`. The
+        // colon is otherwise free inside a group, so this is unambiguous.
+        let e = if self.eat(|k| matches!(k, Kind::Colon))? {
+            let ty = self.parse_type()?;
+            self.expr(Expr::Ascribe { expr: e, ty })
+        } else {
+            e
+        };
         expect!(self, Kind::RParen, "expected ')' to close the group");
         Ok(e)
     }

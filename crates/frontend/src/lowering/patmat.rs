@@ -230,6 +230,24 @@ impl Pm {
                 on_match,
                 on_fail.clone(),
             ),
+            // A literal pattern on a user type: succeed when its equality hook holds
+            // between the scrutinee and the literal built into that type.
+            Pat::HookEq { eq, value } => {
+                let (module, name) = eq;
+                let eqfn = Term::Var {
+                    module: module.clone(),
+                    name: name.clone(),
+                    idx: 0,
+                };
+                let test = Term::app(Term::app(eqfn, v(sv)), self.go(value));
+                case1(test, Pat::Bool(true), on_match, on_fail.clone())
+            }
+            // A sequence pattern on a user type: unfold the `sequence_view` hook one
+            // step at a time, matching each leading element and (`..rest`) binding or
+            // (no rest) requiring `Empty` at the end.
+            Pat::SeqView { view, elems, rest } => {
+                self.compile_seqview(sv, view, elems, rest.as_deref(), on_match, on_fail)
+            }
             // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive). An open
             // range `lo ...` has no upper bound, so only the `sv >= lo` test.
             Pat::Range { lo, hi } => {
@@ -309,6 +327,66 @@ impl Pm {
         }
     }
 
+    /// Unfold a `sequence_view` sequence pattern: view the current sequence `sv`,
+    /// then for each leading element take a `More head tail` step (matching the
+    /// element pattern and recursing on the tail), and finally either bind `..rest`
+    /// to the remaining sequence or require it to be `Empty`.
+    fn compile_seqview(
+        &mut self,
+        sv: &str,
+        view: &(Option<String>, String),
+        elems: &[Pat],
+        rest: Option<&Pat>,
+        on_match: Term,
+        on_fail: &Term,
+    ) -> Term {
+        if elems.is_empty() {
+            return match rest {
+                // `..rest` binds the whole remaining sequence.
+                Some(pr) => self.compile_pat(sv, pr, on_match, on_fail),
+                // A fixed-length pattern: the tail must view as `Empty`.
+                None => {
+                    let vw = self.fresh("vw");
+                    let body = case1(
+                        v(&vw),
+                        Pat::Variant {
+                            tag: "Empty".into(),
+                            fields: Vec::new(),
+                        },
+                        on_match,
+                        on_fail.clone(),
+                    );
+                    Term::Let {
+                        name: vw,
+                        rec: false,
+                        val: Arc::new(view_call(view, sv)),
+                        body: Arc::new(body),
+                    }
+                }
+            };
+        }
+        let vw = self.fresh("vw");
+        let h = self.fresh("h");
+        let t = self.fresh("t");
+        let recur = self.compile_seqview(&t, view, &elems[1..], rest, on_match, on_fail);
+        let matched = self.compile_pat(&h, &elems[0], recur, on_fail);
+        let body = case1(
+            v(&vw),
+            Pat::Variant {
+                tag: "More".into(),
+                fields: vec![Pat::Var(h.clone()), Pat::Var(t.clone())],
+            },
+            matched,
+            on_fail.clone(),
+        );
+        Term::Let {
+            name: vw,
+            rec: false,
+            val: Arc::new(view_call(view, sv)),
+            body: Arc::new(body),
+        }
+    }
+
     /// Match `pats` against fields of `sv` named `names` (a tuple index or struct
     /// field), each bound to a fresh variable, left-to-right.
     fn compile_fields(
@@ -371,6 +449,19 @@ impl Pm {
         let rest = self.compile_binders_from(binders, pats, i + 1, on_match, on_fail);
         self.compile_pat(&binders[i], &pats[i], rest, on_fail)
     }
+}
+
+/// `view sv`: apply the resolved `sequence_view` hook global to the scrutinee.
+fn view_call(view: &(Option<String>, String), sv: &str) -> Term {
+    let (module, name) = view;
+    Term::app(
+        Term::Var {
+            module: module.clone(),
+            name: name.clone(),
+            idx: 0,
+        },
+        v(sv),
+    )
 }
 
 /// `array_len sv`.

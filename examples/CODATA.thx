@@ -13,20 +13,20 @@
 # in CORE (bare everywhere), so this file demonstrates observing and mapping one.
 
 # The nth element, walking `tail` n times.
-$ nth : Int -> Stream t -> t = \n s =
+$ nth : @int -> Stream t -> t = \n s =
 	if n ?= 0 => s.head else nth (n - 1) s.tail
 
 # Map over a stream (still infinite, still lazy).
 $ smap : (a -> b) -> Stream a -> Stream b = \f s =
 	{ .head = f s.head, .tail = smap f s.tail }
 
-$ dbl : Int -> Int = \x = x + x
+$ dbl : @int -> @int = \x = x + x
 
-$ ck_head : Int = if (count_from 10).head ?= 10 => 0 else 1
-$ ck_nth  : Int = if nth 5 (count_from 10) ?= 15 => 0 else 2
-$ ck_map  : Int = if nth 4 (smap dbl (count_from 1)) ?= 10 => 0 else 4
+$ ck_head : @int = if (count_from 10).head ?= 10 => 0 else 1
+$ ck_nth  : @int = if nth 5 (count_from 10) ?= 15 => 0 else 2
+$ ck_map  : @int = if nth 4 (smap dbl (count_from 1)) ?= 10 => 0 else 4
 
 # The open range `[lo ...]` is sugar for `count_from lo`, an infinite stream.
-$ ck_range : Int = if nth 3 [7 ...] ?= 10 => 0 else 8
+$ ck_range : @int = if nth 3 [7 ...] ?= 10 => 0 else 8
 
-$ test : Int = ck_head + ck_nth + ck_map + ck_range
+$ test : @int = ck_head + ck_nth + ck_map + ck_range

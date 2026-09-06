@@ -5,8 +5,8 @@
 # A struct type declaration. Fields are `name : Type`, comma-separated; a
 # trailing comma is allowed but not required.
 $ Person : @struct =
-	name: Str,
-	age: Int,
+	name: @str,
+	age: @int,
 
 # A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
 # each field is set with a leading-dot `.field = value` (as in C).
@@ -16,11 +16,11 @@ $ person : Person = Person.{
 }
 
 # Field access reads a field out of a struct.
-$ who : Str = person.name
-$ yrs : Int = person.age
+$ who : @str = person.name
+$ yrs : @int = person.age
 
 # Fields compose like any other expression.
-$ older : Int = person.age + 1
+$ older : @int = person.age + 1
 
 # Generic structs declare their type parameters after `@struct`; the type is then
 # applied with juxtaposition at use sites.
@@ -28,33 +28,33 @@ $ Box : @struct t =
 	val: t,
 
 # One declaration, two instantiations in the same program.
-$ ibox : Box Int = Box.{ .val = 7 }
-$ sbox : Box Str = Box.{ .val = "hi" }
+$ ibox : Box @int = Box.{ .val = 7 }
+$ sbox : Box @str = Box.{ .val = "hi" }
 
 # Field access returns the field at the receiver's instantiation: `ibox.val` is
-# an Int, `sbox.val` is a Str. The tight annotations make a wrong one a type
+# an @int, `sbox.val` is a @str. The tight annotations make a wrong one a type
 # error.
-$ unboxed : Int = ibox.val
-$ label   : Str = sbox.val
+$ unboxed : @int = ibox.val
+$ label   : @str = sbox.val
 
 # Two parameters, applied in declared order: `Pair a b`.
 $ Pair : @struct a b =
 	fst: a,
 	snd: b,
 
-$ pair  : Pair Int Str = Pair.{ .fst = 1, .snd = "two" }
-$ left  : Int          = pair.fst
-$ right : Str          = pair.snd
+$ pair  : Pair @int @str = Pair.{ .fst = 1, .snd = "two" }
+$ left  : @int          = pair.fst
+$ right : @str          = pair.snd
 
 # An alias may partially instantiate a generic type: `IntPair b` fixes `fst` to
-# Int and keeps `snd` open. `IntPair Str` expands to `Pair Int Str`.
-$ IntPair : @alias b = Pair Int b
-$ ip    : IntPair Str = .{ .fst = 3, .snd = "z" }
-$ ipfst : Int         = ip.fst
+# @int and keeps `snd` open. `IntPair @str` expands to `Pair @int @str`.
+$ IntPair : @alias b = Pair @int b
+$ ip    : IntPair @str = .{ .fst = 3, .snd = "z" }
+$ ipfst : @int         = ip.fst
 
 $ Weirdtype : @struct a b =
 	fst : a,
-	has : Int,
+	has : @int,
 	snd : b
 
 # A bare `.{..}` resolves its struct from the expected type (bidirectional).
@@ -62,12 +62,12 @@ $ try_weird : Real = let w : Weirdtype Real Real = .{1.1, 1, 1.1} in w.fst
 # Qualified positional literals name the struct directly.
 $ try_weird2 = let w = Weirdtype.{1.1, 1, 1.1} in w.fst
 
-# Generic field types nest: a struct holding a `Box Int`.
+# Generic field types nest: a struct holding a `Box @int`.
 $ Wrap : @struct t =
 	inner: Box t,
 
-$ wrap   : Wrap Int = .{ .inner = ibox }
-$ deep   : Int      = wrap.inner.val
+$ wrap   : Wrap @int = .{ .inner = ibox }
+$ deep   : @int      = wrap.inner.val
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = who ; yrs ; older ; unboxed ; label ; left ; right ; deep ; try_weird ; try_weird2 ; ipfst ; 0
+$ test : @int = who ; yrs ; older ; unboxed ; label ; left ; right ; deep ; try_weird ; try_weird2 ; ipfst ; 0

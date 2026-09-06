@@ -3,50 +3,50 @@
 # \info Type-directed `[..]` patterns on an @array (a byte vector). The SAME
 #       bracket syntax as list patterns; the scrutinee's inferred type picks the
 #       lowering -- a length test + `@array_get`/`@array_slice` here, cons/nil for
-#       a @list. `::` stays @list-only. See documentation/strings-and-arrays.md phase 6b.
+#       a @vec. `::` stays @vec-only. See documentation/strings-and-arrays.md phase 6b.
 
 $ emptA : @array = []
 $ arr2  : @array = [10, 20]
 $ arr3  : @array = [1, 2, 3]
 
 # Empty vs non-empty.
-$ is_empty : @array -> Int = \a =
+$ is_empty : @array -> @int = \a =
 	is a | [] => 1
 	         else 0
-$ ck_empty    : Int = if (is_empty emptA) ?= 1 => 0 else 1
-$ ck_nonempty : Int = if (is_empty arr2) ?= 0 => 0 else 1
+$ ck_empty    : @int = if (is_empty emptA) ?= 1 => 0 else 1
+$ ck_nonempty : @int = if (is_empty arr2) ?= 0 => 0 else 1
 
 # Exact-length destructure: [x, y] matches a 2-element array, else falls through.
-$ sum2 : @array -> Int = \a =
+$ sum2 : @array -> @int = \a =
 	is a | [x, y] => x + y
 	              else 0
-$ ck_sum2      : Int = if (sum2 arr2) ?= 30 => 0 else 1
-$ ck_sum2_miss : Int = if (sum2 arr3) ?= 0 => 0 else 1
+$ ck_sum2      : @int = if (sum2 arr2) ?= 30 => 0 else 1
+$ ck_sum2_miss : @int = if (sum2 arr3) ?= 0 => 0 else 1
 
 # A literal element pattern: `[1, y]` only matches when element 0 is 1.
-$ after_one : @array -> Int = \a =
+$ after_one : @array -> @int = \a =
 	is a | [1, y] => y
 	              else 0
-$ ck_after_one : Int = if (after_one [1, 42]) ?= 42 => 0 else 1
-$ ck_after_two : Int = if (after_one [2, 42]) ?= 0 => 0 else 1
+$ ck_after_one : @int = if (after_one [1, 42]) ?= 42 => 0 else 1
+$ ck_after_two : @int = if (after_one [2, 42]) ?= 0 => 0 else 1
 
 # Open pattern `[h, ..rest]`: head plus the remaining slice.
-$ head3 : @array -> Int = \a =
+$ head3 : @array -> @int = \a =
 	is a | [h, ..rest] => h
 	                   else 0
-$ ck_head3 : Int = if (head3 arr3) ?= 1 => 0 else 1
+$ ck_head3 : @int = if (head3 arr3) ?= 1 => 0 else 1
 
-$ rest_len : @array -> Int = \a =
+$ rest_len : @array -> @int = \a =
 	is a | [h, ..rest] => @array_len rest
 	                   else 0
-$ ck_rest_len : Int = if (rest_len arr3) ?= 2 => 0 else 1
+$ ck_rest_len : @int = if (rest_len arr3) ?= 2 => 0 else 1
 
 # A guard on a sequence arm.
-$ ordered : @array -> Int = \a =
+$ ordered : @array -> @int = \a =
 	is a | [x, y] if (x ?< y) => 1
 	              | [x, y] => 2
 	              else 0
-$ ck_ord_lt : Int = if (ordered arr2) ?= 1 => 0 else 1
+$ ck_ord_lt : @int = if (ordered arr2) ?= 1 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3 + ck_rest_len + ck_ord_lt
+$ test : @int = ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3 + ck_rest_len + ck_ord_lt

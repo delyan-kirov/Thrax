@@ -5,15 +5,15 @@
 # ambiguous it is qualified `Effect.ask`. A handler clause always qualifies a
 # shared operation name, since a clause head cannot be resolved by type.
 
-$ Reader : @effect = ask : {} -> Int,
-$ Config : @effect = ask : {} -> Str,
+$ Reader : @effect = ask : {} -> @int,
+$ Config : @effect = ask : {} -> @str,
 
 # Bare `ask` resolves to Reader.ask here: only Reader is handled, so the ambient
 # effect is <Reader> and the perform's effect must fit it.
-$ readEnv : Int = do (ask {}) + 1 ctl k | Reader.ask u => k 10   # 11
+$ readEnv : @int = do (ask {}) + 1 ctl k | Reader.ask u => k 10   # 11
 
 # Fully qualified perform and clause for the other effect's `ask`.
-$ cfg : Str = do Config.ask {} ctl k | Config.ask u => k "hello" # "hello"
+$ cfg : @str = do Config.ask {} ctl k | Config.ask u => k "hello" # "hello"
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = readEnv ; cfg ; 0
+$ test : @int = readEnv ; cfg ; 0

@@ -67,7 +67,7 @@ to an imported one. A type may also be written qualified (`A.Pair`), including
 its constructors and patterns.
 
 The prelude's built-in-ish global types are the exception and stay bare and
-global everywhere: `Int`/`Nat`/`Real` and the sized numerics, `Str`, `Ptr`,
+global everywhere: `@int`/`@nat`/`Real` and the sized numerics, `Str`, `Ptr`,
 `Bool`, `Array`, `Vec`, and `List` (with its `Cons`/`Nil`). The auto-injected
 `C` libc namespace is likewise reachable only as `C.name`.
 

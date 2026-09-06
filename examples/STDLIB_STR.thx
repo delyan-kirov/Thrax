@@ -2,53 +2,53 @@
 
 # \file STDLIB_STR.thx
 # \info The standard library's STR module: searching, splitting, trimming,
-#       ASCII case and number formatting/parsing over the byte-vector `Str`.
-#       `reverse`/`repeat`/`contains`/`find` also exist in LIST, so uses
+#       ASCII case and number formatting/parsing over the byte-vector `@str`.
+#       `reverse`/`repeat`/`contains`/`find` also exist in VEC, so uses
 #       here qualify where both modules are imported.
 
 $ with STR
 $ with OPT
-$ with LIST
+$ with VEC
 
-$ ck_len    : Int = if (len "hello") ?= 5 => 0 else 1
-$ ck_at     : Int = if (at "hello" 1) ?= 101 => 0 else 1
-$ ck_substr : Int = if (substr "hello world" 6 11) ?= "world" => 0 else 1
-$ ck_starts : Int = if starts_with "hello" "he" => 0 else 1
-$ ck_ends   : Int = if ends_with "hello" "llo" => 0 else 1
-$ ck_find   : Int = if (unwrap_or (STR.find "hello world" "wor") 0) ?= 6 => 0 else 1
-$ ck_miss   : Int = if is_none (STR.find "hello" "xyz") => 0 else 1
-$ ck_split  : Int = if (length (split "a,b,,c" ",")) ?= 4 => 0 else 1
-$ ck_join   : Int = if (join "," (split "a,b,,c" ",")) ?= "a,b,,c" => 0 else 1
-$ ck_lines  : Int = if (length (lines "one\ntwo\nthree\n")) ?= 3 => 0 else 1
-$ ck_trim   : Int = if (trim " \t hi there \n") ?= "hi there" => 0 else 1
-$ ck_upper  : Int = if (to_upper "Hello, World!") ?= "HELLO, WORLD!" => 0 else 1
-$ ck_lower  : Int = if (to_lower "Hello!") ?= "hello!" => 0 else 1
-$ ck_rev    : Int = if (STR.reverse "abcdef") ?= "fedcba" => 0 else 1
-$ ck_rep    : Int = if (STR.repeat "ab" 3) ?= "ababab" => 0 else 1
-$ ck_fmt    : Int = if (from_int (0 - 1042)) ?= "-1042" => 0 else 1
-$ ck_fmt0   : Int = if (from_int 0) ?= "0" => 0 else 1
-$ ck_parse  : Int = if (unwrap_or (to_int "-273") 0) + 273 ?= 0 => 0 else 1
-$ ck_parse_bad : Int = if is_none (to_int "12x") => 0 else 1
-$ ck_digit  : Int = if is_digit (at "a1" 1) => 0 else 1
-$ ck_space  : Int = if is_space (at "\t" 0) => 0 else 1
-$ ck_alnum  : Int = if is_alnum (at "a1" 0) => (if is_alnum (at "!" 0) => 1 else 0) else 1
-$ ck_case   : Int = if is_upper (at "Ab" 0) => (if is_lower (at "Ab" 1) => 0 else 1) else 1
+$ ck_len    : @int = if (len "hello") ?= 5 => 0 else 1
+$ ck_at     : @int = if (at "hello" 1) ?= 101 => 0 else 1
+$ ck_substr : @int = if (substr "hello world" 6 11) ?= "world" => 0 else 1
+$ ck_starts : @int = if starts_with "hello" "he" => 0 else 1
+$ ck_ends   : @int = if ends_with "hello" "llo" => 0 else 1
+$ ck_find   : @int = if (unwrap_or (STR.find "hello world" "wor") 0) ?= 6 => 0 else 1
+$ ck_miss   : @int = if is_none (STR.find "hello" "xyz") => 0 else 1
+$ ck_split  : @int = if (length (split "a,b,,c" ",")) ?= 4 => 0 else 1
+$ ck_join   : @int = if (join "," (split "a,b,,c" ",")) ?= "a,b,,c" => 0 else 1
+$ ck_lines  : @int = if (length (lines "one\ntwo\nthree\n")) ?= 3 => 0 else 1
+$ ck_trim   : @int = if (trim " \t hi there \n") ?= "hi there" => 0 else 1
+$ ck_upper  : @int = if (to_upper "Hello, World!") ?= "HELLO, WORLD!" => 0 else 1
+$ ck_lower  : @int = if (to_lower "Hello!") ?= "hello!" => 0 else 1
+$ ck_rev    : @int = if (STR.reverse "abcdef") ?= "fedcba" => 0 else 1
+$ ck_rep    : @int = if (STR.repeat "ab" 3) ?= "ababab" => 0 else 1
+$ ck_fmt    : @int = if (from_int (0 - 1042)) ?= "-1042" => 0 else 1
+$ ck_fmt0   : @int = if (from_int 0) ?= "0" => 0 else 1
+$ ck_parse  : @int = if (unwrap_or (to_int "-273") 0) + 273 ?= 0 => 0 else 1
+$ ck_parse_bad : @int = if is_none (to_int "12x") => 0 else 1
+$ ck_digit  : @int = if is_digit (at "a1" 1) => 0 else 1
+$ ck_space  : @int = if is_space (at "\t" 0) => 0 else 1
+$ ck_alnum  : @int = if is_alnum (at "a1" 0) => (if is_alnum (at "!" 0) => 1 else 0) else 1
+$ ck_case   : @int = if is_upper (at "Ab" 0) => (if is_lower (at "Ab" 1) => 0 else 1) else 1
 
-$ ck_cmp_lt : Int = if (cmp_str "abc" "abd") ?< 0 => 0 else 1
-$ ck_cmp_eq : Int = if (cmp_str "same" "same") ?= 0 => 0 else 1
-$ ck_cmp_pfx: Int = if (cmp_str "ab" "abc") ?< 0 => 0 else 1
-$ ck_byte   : Int = if (from_byte 65) ?= "A" => 0 else 1
-$ ck_concat : Int = if (STR.concat ["ab", "", "cd"]) ?= "abcd" => 0 else 1
-$ ck_padl   : Int = if (pad_left "7" 3) ?= "  7" => 0 else 1
-$ ck_padr   : Int = if (pad_right "7" 3) ?= "7  " => 0 else 1
-$ ck_padno  : Int = if (pad_left "long" 2) ?= "long" => 0 else 1
-$ ck_repl   : Int = if (replace "a,b,,c" "," ";") ?= "a;b;;c" => 0 else 1
-$ ck_replgrow : Int = if (replace "aa" "a" "aaa") ?= "aaaaaa" => 0 else 1
-$ ck_count  : Int = if (count "banana" "an") ?= 2 => 0 else 1
-$ ck_count0 : Int = if (count "banana" "") ?= 0 => 0 else 1
+$ ck_cmp_lt : @int = if (cmp_str "abc" "abd") ?< 0 => 0 else 1
+$ ck_cmp_eq : @int = if (cmp_str "same" "same") ?= 0 => 0 else 1
+$ ck_cmp_pfx: @int = if (cmp_str "ab" "abc") ?< 0 => 0 else 1
+$ ck_byte   : @int = if (from_byte 65) ?= "A" => 0 else 1
+$ ck_concat : @int = if (STR.concat ["ab", "", "cd"]) ?= "abcd" => 0 else 1
+$ ck_padl   : @int = if (pad_left "7" 3) ?= "  7" => 0 else 1
+$ ck_padr   : @int = if (pad_right "7" 3) ?= "7  " => 0 else 1
+$ ck_padno  : @int = if (pad_left "long" 2) ?= "long" => 0 else 1
+$ ck_repl   : @int = if (replace "a,b,,c" "," ";") ?= "a;b;;c" => 0 else 1
+$ ck_replgrow : @int = if (replace "aa" "a" "aaa") ?= "aaaaaa" => 0 else 1
+$ ck_count  : @int = if (count "banana" "an") ?= 2 => 0 else 1
+$ ck_count0 : @int = if (count "banana" "") ?= 0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_len + ck_at + ck_substr + ck_starts + ck_ends + ck_find
+$ test : @int = ck_len + ck_at + ck_substr + ck_starts + ck_ends + ck_find
 	+ ck_miss + ck_split + ck_join + ck_lines + ck_trim + ck_upper
 	+ ck_lower + ck_rev + ck_rep + ck_fmt + ck_fmt0 + ck_parse
 	+ ck_parse_bad + ck_digit + ck_space + ck_alnum + ck_case

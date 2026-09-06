@@ -228,21 +228,15 @@ impl Decls {
             .or_else(|| table.values().find_map(|m| m.get(key)))
     }
 
-    /// The payload arity and (union, field names) for a variant tag. `List`'s
-    /// `Cons`/`Nil` are prelude, so they are answered directly.
+    /// The payload arity and (union, field names) for a variant tag.
     fn variant(
         &self,
         module: &str,
         imports: &[String],
         tag: &str,
     ) -> Option<(&str, &[Option<String>])> {
-        match tag {
-            "Cons" => Some(("List", CONS_FIELDS)),
-            "Nil" => Some(("List", &[])),
-            _ => self
-                .resolve(&self.unions, module, imports, tag)
-                .map(|v| (v.union.as_str(), v.fields.as_slice())),
-        }
+        self.resolve(&self.unions, module, imports, tag)
+            .map(|v| (v.union.as_str(), v.fields.as_slice()))
     }
 
     /// A struct's field names in declaration order, if `name` is a known struct.
@@ -272,8 +266,6 @@ impl Decls {
             .or_else(|| self.structs.values().find_map(|s| hit(s, names)))
     }
 }
-
-const CONS_FIELDS: &[Option<String>] = &[None, None];
 
 /// One surface match arm's unresolved handles: its patterns (an or-pattern has
 /// several), an optional guard, and the body.
@@ -313,6 +305,23 @@ pub struct Resolved {
     /// [`crate::typing::Checker::struct_lit_names`]); lowering uses it for the
     /// field-name layout of a positional literal.
     pub struct_lit_names: HashMap<Aol<Expr>, String>,
+    /// Literal sites (`"..."`, `[..]`, an int, a real) a `@compiler_interface_*`
+    /// construction hook builds into a user type, mapped to the hook's
+    /// `(owning module, emitted name)` (from
+    /// [`crate::typing::Checker::literal_hooks`]). Lowering wraps the raw payload term
+    /// in a call to this global; an unrecorded literal folds to the plain constant.
+    pub literal_hooks: HashMap<Aol<Expr>, (Option<String>, String)>,
+    /// Literal PATTERN sites matched through a user type's construction + equality
+    /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`
+    /// (from [`crate::typing::Checker::literal_pattern_hooks`]). Lowering emits a
+    /// `Pat::HookEq` that builds the literal and compares it with the equality hook.
+    pub literal_pattern_hooks:
+        HashMap<Aol<Pattern>, ((Option<String>, String), (Option<String>, String))>,
+    /// Sequence pattern sites matched through a user type's `sequence_view` hook,
+    /// mapped to the hook's `(module, emitted name)` (from
+    /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
+    /// `Pat::SeqView` that unfolds the view.
+    pub sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<String>, String)>,
     /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
     pub codata_lits: HashSet<Aol<Expr>>,
     /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
@@ -638,11 +647,31 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Wrap a raw literal payload in its `@compiler_interface_*` construction hook
+    /// when the checker recorded one at `site`; otherwise return the payload as-is
+    /// (the folded built-in constant, so the default case builds nothing extra).
+    fn literal_hook_wrap(&self, site: Aol<Expr>, payload: Term) -> Term {
+        match self.resolved.literal_hooks.get(&site) {
+            Some((module, name)) => Term::app(
+                Term::Var {
+                    module: module.clone(),
+                    name: name.clone(),
+                    idx: 0,
+                },
+                payload,
+            ),
+            None => payload,
+        }
+    }
+
     fn expr_core(&mut self, e: Aol<Expr>) -> Term {
         match self.node(e) {
-            Expr::Int(n) => Term::Int(*n),
-            Expr::Real(r) => Term::Real(*r),
-            Expr::Str(s) => Term::Str(self.ast.bytes(*s).to_vec()),
+            Expr::Int(n) => self.literal_hook_wrap(e, Term::Int(*n)),
+            Expr::Real(r) => self.literal_hook_wrap(e, Term::Real(*r)),
+            Expr::Str(s) => {
+                let raw = Term::Str(self.ast.bytes(*s).to_vec());
+                self.literal_hook_wrap(e, raw)
+            }
             Expr::Bool(b) => Term::Bool(*b),
             Expr::Unit => Term::Unit,
 
@@ -730,7 +759,16 @@ impl<'a> Lowerer<'a> {
 
             Expr::List(items) => {
                 let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
-                if self.resolved.array_exprs.contains(&e) {
+                if self.resolved.literal_hooks.contains_key(&e) {
+                    // A sequence construction hook: build the `@vec t` payload the hook
+                    // consumes (push each element left to right), then apply the hook.
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
+                    }
+                    self.literal_hook_wrap(e, acc)
+                } else if self.resolved.array_exprs.contains(&e) {
                     // A byte vector: start empty, push each element left to right.
                     let mut acc = Term::app(Term::var("@array_alloc"), Term::Int(0));
                     for it in items {
@@ -749,9 +787,11 @@ impl<'a> Lowerer<'a> {
                     }
                     Term::app(Term::var("@tensor_stack"), acc)
                 } else {
-                    let mut acc = nil();
-                    for e in items.into_iter().rev() {
-                        acc = cons(self.expr(e), acc);
+                    // The default sequence is a `@vec`: start empty, push each element.
+                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                    for it in items {
+                        let x = self.expr(it);
+                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
                     }
                     acc
                 }
@@ -783,7 +823,7 @@ impl<'a> Lowerer<'a> {
                         }
                         Term::app(Term::var("@tensor_stack"), acc)
                     }
-                    // The default `List Int`: the inclusive `CORE.range lo hi`.
+                    // The default `@vec @int`: the inclusive `CORE.range lo hi`.
                     Some(hi) => {
                         let lo = self.expr(lo);
                         let hi = self.expr(hi);
@@ -1016,6 +1056,8 @@ impl<'a> Lowerer<'a> {
             // or resolved) are injected at the head function reference, keyed by its
             // site in `implicit_args`.
             Expr::Ctx { callee, .. } => self.expr(*callee),
+
+            Expr::Ascribe { expr, .. } => self.expr(*expr),
         }
     }
 
@@ -1207,7 +1249,8 @@ impl<'a> Lowerer<'a> {
             }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
-            "::" => cons(self.expr(lhs), self.expr(rhs)),
+            // `x :: xs` prepends to a `@vec` (the default sequence), via CORE's `vcons`.
+            "::" => Term::app(Term::app(Term::var("vcons"), self.expr(lhs)), self.expr(rhs)),
             // The operator resolves like an overloaded call: a built-in use keeps
             // the bare name (a runtime builtin), a user overload carries the
             // resolved module (and mangled name) the checker recorded at this site.
@@ -1407,13 +1450,37 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A literal pattern on a user type: build the literal into the type (its
+    /// construction hook applied to the raw payload) and compare with the equality
+    /// hook. `None` when the checker recorded no hook for this site (the built-in
+    /// literal pattern applies instead).
+    fn pat_hook_eq(&self, p: Aol<Pattern>, raw: Term) -> Option<Pat> {
+        let ((bm, bn), (em, en)) = self.resolved.literal_pattern_hooks.get(&p)?;
+        let build = Term::Var {
+            module: bm.clone(),
+            name: bn.clone(),
+            idx: 0,
+        };
+        Some(Pat::HookEq {
+            eq: (em.clone(), en.clone()),
+            value: Box::new(Term::app(build, raw)),
+        })
+    }
+
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
             Pattern::Var(name) => Pat::Var(self.text(*name).to_string()),
-            Pattern::Int(n) => Pat::Int(*n),
-            Pattern::Real(r) => Pat::Real(*r),
-            Pattern::Str(s) => Pat::Str(self.ast.bytes(*s).to_vec()),
+            Pattern::Int(n) => self.pat_hook_eq(p, Term::Int(*n)).unwrap_or(Pat::Int(*n)),
+            Pattern::Real(r) => self.pat_hook_eq(p, Term::Real(*r)).unwrap_or(Pat::Real(*r)),
+            Pattern::Str(s) => {
+                let raw = Term::Str(self.ast.bytes(*s).to_vec());
+                self.pat_hook_eq(p, raw.clone())
+                    .unwrap_or_else(|| match raw {
+                        Term::Str(b) => Pat::Str(b),
+                        _ => unreachable!(),
+                    })
+            }
             Pattern::Bool(b) => Pat::Bool(*b),
             Pattern::Range { lo, hi } => Pat::Range {
                 lo: self.range_bound(*lo),
@@ -1427,30 +1494,37 @@ impl<'a> Lowerer<'a> {
                 let pats: Vec<Aol<Pattern>> = self.ast.slice(*pats).to_vec();
                 Pat::Tuple(pats.into_iter().map(|p| self.pat(p)).collect())
             }
+            // `h :: t` / `[a, b, ..r]` / `[]` match any sequence by unfolding its
+            // `sequence_view` hook (the default `@vec`, or a user type). The checker
+            // records the resolved hook for every such pattern.
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
-                Pat::Variant {
-                    tag: "Cons".into(),
-                    fields: vec![self.pat(head), self.pat(tail)],
+                let view = self
+                    .resolved
+                    .sequence_pattern_hooks
+                    .get(&p)
+                    .cloned()
+                    .expect("a `::` pattern resolves a sequence_view hook");
+                Pat::SeqView {
+                    view,
+                    elems: vec![self.pat(head)],
+                    rest: Some(Box::new(self.pat(tail))),
                 }
             }
             Pattern::List { elems, rest } => {
                 let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
                 let rest = *rest;
-                let mut acc = match rest {
-                    Some(r) => self.pat(r),
-                    None => Pat::Variant {
-                        tag: "Nil".into(),
-                        fields: Vec::new(),
-                    },
-                };
-                for e in elems.into_iter().rev() {
-                    acc = Pat::Variant {
-                        tag: "Cons".into(),
-                        fields: vec![self.pat(e), acc],
-                    };
+                let view = self
+                    .resolved
+                    .sequence_pattern_hooks
+                    .get(&p)
+                    .cloned()
+                    .expect("a list pattern resolves a sequence_view hook");
+                Pat::SeqView {
+                    view,
+                    elems: elems.into_iter().map(|e| self.pat(e)).collect(),
+                    rest: rest.map(|r| Box::new(self.pat(r))),
                 }
-                acc
             }
             Pattern::Struct { ty, fields } => {
                 let sname = self.text(*ty);
@@ -1694,18 +1768,3 @@ fn let_chain(binds: &[(String, Term)], inner: Term) -> Term {
     acc
 }
 
-fn nil() -> Term {
-    Term::Variant {
-        ty: "List".into(),
-        tag: "Nil".into(),
-        fields: Arc::from([]),
-    }
-}
-
-fn cons(head: Term, tail: Term) -> Term {
-    Term::Variant {
-        ty: "List".into(),
-        tag: "Cons".into(),
-        fields: Arc::from([head, tail]),
-    }
-}

@@ -5,22 +5,22 @@
 # `x |> f` = `f x`; `f <| x` = `f x`. They sit at the lowest precedences, so
 # application and arithmetic bind tighter.
 
-$ Y : @effect = yield : Int -> {},
-$ sum : ({} -> <Y> Int) -> Int =
+$ Y : @effect = yield : @int -> {},
+$ sum : ({} -> <Y> @int) -> @int =
     \body = do body {} ctl k | Y.yield v => v + k {} else r => r
 
-$ inc : Int -> Int        = \x = x + 1
-$ dbl : Int -> Int        = \x = x + x
-$ add : Int -> Int -> Int = \a b = a + b
+$ inc : @int -> @int        = \x = x + 1
+$ dbl : @int -> @int        = \x = x + x
+$ add : @int -> @int -> @int = \a b = a + b
 
 # `;` runs the left side for its effect, discards its value, yields the right.
-$ r_seq : Int = sum (\_ = Y.yield 1 ; Y.yield 2 ; 0)   # 1+2+0 = 3
+$ r_seq : @int = sum (\_ = Y.yield 1 ; Y.yield 2 ; 0)   # 1+2+0 = 3
 
 # `|>` is left-associative; `<|` is right-associative; both are just application.
-$ r_fwd  : Int = 5 |> inc |> dbl   # dbl (inc 5)        = 12
-$ r_bwd  : Int = dbl <| inc <| 5   # dbl (inc 5)        = 12
-$ r_part : Int = 5 |> add 3        # add 3 5  (partial)  = 8
-$ r_prec : Int = 2 + 3 |> inc      # inc (2 + 3)         = 6
+$ r_fwd  : @int = 5 |> inc |> dbl   # dbl (inc 5)        = 12
+$ r_bwd  : @int = dbl <| inc <| 5   # dbl (inc 5)        = 12
+$ r_part : @int = 5 |> add 3        # add 3 5  (partial)  = 8
+$ r_prec : @int = 2 + 3 |> inc      # inc (2 + 3)         = 6
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; 0
+$ test : @int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; 0

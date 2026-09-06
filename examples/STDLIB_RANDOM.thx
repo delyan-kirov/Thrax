@@ -6,33 +6,33 @@
 #       reproducible sequence -- which is exactly what a test wants.
 
 $ with RANDOM
-$ with LIST
+$ with VEC
 
 # The MINSTD sequence from seed 1: 48271, then 48271^2 mod (2^31 - 1).
-$ d1 : {Int, Rng} = next (new 1)
-$ d2 : {Int, Rng} = next d1.1
+$ d1 : {@int, Rng} = next (new 1)
+$ d2 : {@int, Rng} = next d1.1
 
-$ ck_first  : Int = if d1.0 ?= 48271 => 0 else 1
-$ ck_second : Int = if d2.0 ?= 182605794 => 0 else 1
+$ ck_first  : @int = if d1.0 ?= 48271 => 0 else 1
+$ ck_second : @int = if d2.0 ?= 182605794 => 0 else 1
 
 # Seeds are normalised: negative and zero seeds still draw.
-$ ck_neg  : Int = if (next (new (0 - 7))).0 ?> 0 => 0 else 1
-$ ck_zero : Int = if (next (new 0)).0 ?= 48271 => 0 else 1
+$ ck_neg  : @int = if (next (new (0 - 7))).0 ?> 0 => 0 else 1
+$ ck_zero : @int = if (next (new 0)).0 ?= 48271 => 0 else 1
 
 # Bounded draws stay in range across a run of draws.
-$ draws : @list Int = draw_n (new 42) 50
-$ draw_n : Rng -> Int -> @list Int = \g n =
+$ draws : @vec @int = draw_n (new 42) 50
+$ draw_n : Rng -> @int -> @vec @int = \g n =
 	if n <= 0 => []
 	else let d = next_below g 10 in d.0 :: draw_n d.1 (n - 1)
-$ ck_below : Int =
+$ ck_below : @int =
 	if all (\x = if x >= 0 => x ?< 10 else @false) draws
 	=> 0 else 1
-$ ck_spread : Int = if (maximum draws 0) ?> (minimum draws 9) => 0 else 1
+$ ck_spread : @int = if (maximum draws 0) ?> (minimum draws 9) => 0 else 1
 
-$ ck_range : Int =
+$ ck_range : @int =
 	let d = next_range (new 7) 5 6 in
 	if d.0 >= 5 => (if d.0 <= 6 => 0 else 1) else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : Int = ck_first + ck_second + ck_neg + ck_zero + ck_below
+$ test : @int = ck_first + ck_second + ck_neg + ck_zero + ck_below
 	+ ck_spread + ck_range

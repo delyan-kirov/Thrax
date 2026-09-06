@@ -11,7 +11,7 @@ $mix   = 0x10 + 0b10 + 8
 $big   = 0xDEADBEEF
 $zero  = 0b0
 $ten   = 0b1010
-$mixer = 1 + 1.0
+$mixer = 1.0 + 1.0
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = dec ; hex ; hex2 ; bin ; mix ; big ; zero ; ten ; mixer ; 0
+$ test : @int = dec ; hex ; hex2 ; bin ; mix ; big ; zero ; ten ; mixer ; 0

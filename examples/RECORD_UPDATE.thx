@@ -10,51 +10,51 @@
 #       read from `base`. Each `chk*` is 0 when correct and 1 otherwise.
 
 $ Person : @struct =
-	name: Str,
-	age: Int,
+	name: @str,
+	age: @int,
 
 $ base : Person = Person.{ .name = "Alice", .age = 30 }
 
 # Override one field; the other is copied from `base`. The type is inferred from
 # the annotation, so no `Person.` prefix is needed.
 $ renamed : Person = .{ .name = "Bob" | base }
-$ chk_renamed_name : Int = if renamed.name ?= "Bob" => 0 else 1
-$ chk_renamed_age  : Int = if renamed.age ?= 30 => 0 else 1
+$ chk_renamed_name : @int = if renamed.name ?= "Bob" => 0 else 1
+$ chk_renamed_age  : @int = if renamed.age ?= 30 => 0 else 1
 
 # The explicit `Person.` prefix still works.
 $ older : Person = Person.{ .age = 31 | base }
-$ chk_older_name : Int = if older.name ?= "Alice" => 0 else 1
-$ chk_older_age  : Int = if older.age ?= 31 => 0 else 1
+$ chk_older_name : @int = if older.name ?= "Alice" => 0 else 1
+$ chk_older_age  : @int = if older.age ?= 31 => 0 else 1
 
 # Update only, inferred type: every field comes from `base`.
 $ clone : Person = .{ | base }
-$ chk_clone_name : Int = if clone.name ?= "Alice" => 0 else 1
-$ chk_clone_age  : Int = if clone.age ?= 30 => 0 else 1
+$ chk_clone_name : @int = if clone.name ?= "Alice" => 0 else 1
+$ chk_clone_age  : @int = if clone.age ?= 30 => 0 else 1
 
 # A listed field may read from the same `base` it updates.
 $ bumped : Person = Person.{ .age = base.age + 1 | base }
-$ chk_bumped_name : Int = if bumped.name ?= "Alice" => 0 else 1
-$ chk_bumped_age  : Int = if bumped.age ?= 31 => 0 else 1
+$ chk_bumped_name : @int = if bumped.name ?= "Alice" => 0 else 1
+$ chk_bumped_age  : @int = if bumped.age ?= 31 => 0 else 1
 
 # Three fields: several unlisted fields fill from the source.
 $ Vec3 : @struct =
-	x: Int,
-	y: Int,
-	z: Int,
+	x: @int,
+	y: @int,
+	z: @int,
 
 $ origin : Vec3 = Vec3.{ .x = 0, .y = 0, .z = 0 }
 $ shifted : Vec3 = .{ .y = 5 | origin }
-$ chk_v_x : Int = if shifted.x ?= 0 => 0 else 1
-$ chk_v_y : Int = if shifted.y ?= 5 => 0 else 1
-$ chk_v_z : Int = if shifted.z ?= 0 => 0 else 1
+$ chk_v_x : @int = if shifted.x ?= 0 => 0 else 1
+$ chk_v_y : @int = if shifted.y ?= 5 => 0 else 1
+$ chk_v_z : @int = if shifted.z ?= 0 => 0 else 1
 
 # The source may be an arbitrary expression, not just a variable.
-$ mkv : Int -> Vec3 = \n = Vec3.{ .x = n, .y = n, .z = n }
+$ mkv : @int -> Vec3 = \n = Vec3.{ .x = n, .y = n, .z = n }
 $ fromcall : Vec3 = Vec3.{ .z = 9 | (mkv 2) }
-$ chk_call_x : Int = if fromcall.x ?= 2 => 0 else 1
-$ chk_call_z : Int = if fromcall.z ?= 9 => 0 else 1
+$ chk_call_x : @int = if fromcall.x ?= 2 => 0 else 1
+$ chk_call_z : @int = if fromcall.z ?= 9 => 0 else 1
 
-$ test : Int =
+$ test : @int =
 	  chk_renamed_name + chk_renamed_age
 	+ chk_older_name + chk_older_age
 	+ chk_clone_name + chk_clone_age

@@ -300,7 +300,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@tensor_slice" | "@tensor_index_axis" => 3,
         "@tensor_slice_axis" => 4,
-        "@array_set" | "@array_slice" | "@vec_set" => 3,
+        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" => 3,
         _ => return None,
     };
     Some(n)
@@ -463,6 +463,13 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let mut v = as_vec(&a[0])?.as_ref().clone();
             v.push(a[1].clone());
             Ok(Value::Vector(Rc::new(v)))
+        }
+        // A copy of the half-open range `[lo, hi)`, clamped to the vector.
+        "@vec_slice" => {
+            let v = as_vec(&a[0])?;
+            let lo = as_index(&a[1])?.min(v.len());
+            let hi = as_index(&a[2])?.clamp(lo, v.len());
+            Ok(Value::Vector(Rc::new(v[lo..hi].to_vec())))
         }
         "@tensor_concat" => {
             let (_, _, xs, _) = tensor_fields(&a[0])?;

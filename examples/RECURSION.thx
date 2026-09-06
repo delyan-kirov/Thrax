@@ -3,15 +3,15 @@
 # \file recursion.thx
 # \info Self-recursive global functions: factorial, summation, and gcd.
 
-$fact : Int -> Int = \n =
+$fact : @int -> @int = \n =
 	if n ?= 0 => 1
 	else n * (fact (n - 1))
 
-$sum_to : Int -> Int = \n =
+$sum_to : @int -> @int = \n =
 	if n ?= 0 => 0
 	else n + (sum_to (n - 1))
 
-$gcd : Int -> Int -> Int = \a b =
+$gcd : @int -> @int -> @int = \a b =
 	if b ?= 0 => a
 	else gcd b (a % b)
 
@@ -23,4 +23,4 @@ $gcd_54_24  = gcd 54 24
 $gcd_100_75 = gcd 100 75
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : Int = fact5 ; fact10 ; sum_to_10 ; sum_to_100 ; gcd_54_24 ; gcd_100_75 ; 0
+$ test : @int = fact5 ; fact10 ; sum_to_10 ; sum_to_100 ; gcd_54_24 ; gcd_100_75 ; 0

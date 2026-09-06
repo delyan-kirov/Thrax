@@ -20,7 +20,7 @@ the no-raw-platform-macros boundary by mechanism (also in pre-push). THxDL
 was DROPPED as obsolete -- phase 2's direct-call design means generated
 programs never dlopen (see section 4). Phase 4 DONE (2026-07-22):
 `wasm32-wasi` is the first cross target -- `TG::Toolchain` as data (wasi-sdk
-clang via `$WASI_CC`, stack placed first + enlarged), 32-bit `Int` end to end
+clang via `$WASI_CC`, stack placed first + enlarged), 32-bit `@int` end to end
 (`@int32` dispatch keys, literal range check, wrap-on-store), a generated
 qualified `TARGET` reflection module, and `build wasm-test` (combined suite
 under wasmtime, in CI). Phase 5 CORE DONE (2026-07-23): `build wasm` compiles
@@ -47,7 +47,7 @@ wrong time:
 
 1. **When the `thrax` binary is compiled** -- `OP.hpp` picks `TY_INT =
    "@int32"/"@int64"` from `__SIZEOF_POINTER__` of the machine building the
-   compiler. The *language's* `Int` is an accident of where the compiler was
+   compiler. The *language's* `@int` is an accident of where the compiler was
    built.
 2. **When the frontend runs** -- `DR.cpp` bakes `"libc.so.6"` (or
    `"msvcrt.dll"`) into every `C.*` extern in the IR. The IR -- and therefore
@@ -82,10 +82,10 @@ Unmarked, found by audit:
 | `engines/CC.cpp` `c_type` | Maps `@int64 -> "long"` via `TY_INT`. On Windows LLP64 `long` is 32-bit -- **wrong-width bug** the moment emitted C meets MSVC/mingw. Must use `<stdint.h>` names. |
 | `engines/CC.cpp` extern glue | Emits `#include <dlfcn.h>` + `dlopen/dlsym` -- POSIX-only generated C; no Win32/wasm story. |
 | `app/DR.cpp:578` | `std::system("cc -O2 ...")` -- host C compiler hardcoded; no cross toolchain, no MSVC, no wasi-sdk/emcc. |
-| `engines/FF.cpp` `desc_of` | Keys on **stale pre-Phase-0 names** (`"Int"`, `"Str"`, ...). Canonical `@`-names all fall through to the word-sized `slong` default -- including `@str`/`@ptr`. Works today only because on x86-64 pointer and slong have identical ABI class. Breaks on 32-bit and wasm. Latent bug. |
+| `engines/FF.cpp` `desc_of` | Keys on **stale pre-Phase-0 names** (`"@int"`, `"Str"`, ...). Canonical `@`-names all fall through to the word-sized `slong` default -- including `@str`/`@ptr`. Works today only because on x86-64 pointer and slong have identical ABI class. Breaks on 32-bit and wasm. Latent bug. |
 | `engines/ITxDATA.cpp:79` | Stale `"Str"`/`"Real"` return-type string compares (same vintage as above). |
 | `engines/ITxDATA.cpp:66` | `Real` argument marshalled by `memcpy(&w,&d,sizeof(w))` into an `ssize_t` word -- on a 32-bit host this copies 4 of the double's 8 bytes. The whole "everything is one machine word" FFI marshalling is a 64-bit-host assumption. |
-| `platforms/THxVALUE.h:59` | `T_INT` payload is `long long` unconditionally -- a 32-bit target's `Int` (`@int32`) would still compute at 64-bit width in the runtime; semantics undefined per target. |
+| `platforms/THxVALUE.h:59` | `T_INT` payload is `long long` unconditionally -- a 32-bit target's `@int` (`@int32`) would still compute at 64-bit width in the runtime; semantics undefined per target. |
 
 Contained / already correct (keep as models):
 
@@ -215,9 +215,9 @@ opened a crack. The ABI slot is where `"js"` externs for wasm imports will
 land (native wasm32: emitted import attributes; browser interpreter: the
 host-table trampolines).
 
-### 3.4 Word size: `Int` is the target word, decided in one place
+### 3.4 Word size: `@int` is the target word, decided in one place
 
-Keep the Jai/Rust-isize policy already chosen in the stdcore vision -- `Int`
+Keep the Jai/Rust-isize policy already chosen in the stdcore vision -- `@int`
 aliases `@int64` or `@int32` by **target** (not compiler-host) word size, via
 `Target::int_ty()` in exactly one call site (`DR`'s prelude generation; TC and
 friends read the resolved alias). Consequences owned deliberately:
@@ -235,10 +235,10 @@ friends read the resolved alias). Consequences owned deliberately:
 No `#ifdef` enters the language. Instead:
 
 - `DR` generates a `TARGET` reflection module from `Target` (like the prelude
-  `Int`/`Nat` aliases and the `C` libc namespace, it is emitted per build
+  `@int`/`@nat` aliases and the `C` libc namespace, it is emitted per build
   because the values are only known once the target is fixed). Accessed
-  qualified, no import: `TARGET.int_bits`/`.ptr_bits : Int` (the target word),
-  `TARGET.int_max`/`.int_min : Int` (the `Int` value range), `TARGET.os`/
+  qualified, no import: `TARGET.int_bits`/`.ptr_bits : @int` (the target word),
+  `TARGET.int_max`/`.int_min : @int` (the `@int` value range), `TARGET.os`/
   `.arch`/`.name : Str`. A qualified module (not bare `TARGET_*` constants)
   keeps the global namespace clean. **DONE** (phase 4).
 - Platform-conditional code is ordinary Thrax (`when TARGET.int_bits is 64
@@ -335,7 +335,7 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   runtime's recursive global-forcing silently corrupted globals until the
   stack was placed first and enlarged) + `runner`/`exe_suffix`; `main.cpp`
   lets a cross target through for `--build`/`--emit-c`/`--ir` (interpreting
-  stays host-only). 32-bit `Int` end to end: `@int32` mono keys registered in
+  stays host-only). 32-bit `@int` end to end: `@int32` mono keys registered in
   ITxDATA (both widths present, TC's target-folded key selects; wasm32 CTFE
   wraps on this host exactly like the emitted program), `THX_INT_T` payload
   wraps on store, and TC rejects integer literals that don't fit the target
@@ -350,7 +350,7 @@ easier to hold in nix than mingw/wine; Windows moves after wasm.
   entry: source is written to a MEMFS file and run through the real
   file-based driver, output flowing to `Module.print`/`printErr`). The
   browser host is wasm32 (`TG::host()` -> wasm32-linux, so programs run with
-  32-bit `Int`), and FF swaps libffi+dlopen for a **compiled-in host table**
+  32-bit `@int`), and FF swaps libffi+dlopen for a **compiled-in host table**
   of the `C`/libm namespace (`engines/FF.cpp`'s `#ifndef THRAX_3RD_PARTY_ON`
   branch: one adapter per symbol calling the real function with its TRUE
   signature -- required because wasm type-checks indirect calls, so casting
@@ -386,7 +386,7 @@ the C++ `TG`. It is dependency-free and shared by every consumer.
 Aarch64, X86, Arm, Wasm32). `Target::host()` is the ONE place that reads the
 build's `cfg!` flags. The policy methods are the whole platform surface:
 
-- word size: `ptr_bits()`, and `int_ty()`/`nat_ty()` (what `Int`/`Nat` alias to,
+- word size: `ptr_bits()`, and `int_ty()`/`nat_ty()` (what `@int`/`@nat` alias to,
   `@int32` on a 32-bit word, `@int64` otherwise), plus `int_max`/`int_min`/
   `lit_max`; `real_bits()` for the real width.
 - `@extern` library resolution: `soname()` maps a symbolic name (`"libc"`,

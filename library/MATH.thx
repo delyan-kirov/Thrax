@@ -3,34 +3,34 @@
 # \file MATH.thx
 # \info Integer helpers, Real helpers, and the libm functions (wrapped from
 #       the auto-injected `C` namespace). Predicates return @bool.
-#       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on Int and
+#       `min`/`max`/`abs`/`clamp`/`pow` are overloaded on @int and
 #       Real; overload resolution picks by operand type.
 
-$ min : Int -> Int -> Int = \a b = if a <= b => a else b
-$ max : Int -> Int -> Int = \a b = if a >= b => a else b
+$ min : @int -> @int -> @int = \a b = if a <= b => a else b
+$ max : @int -> @int -> @int = \a b = if a >= b => a else b
 
 # Three-way comparison: negative / 0 / positive (the ordering MAP.new_int
 # uses).
-$ cmp_int : Int -> Int -> Int = \a b =
+$ cmp_int : @int -> @int -> @int = \a b =
 	if a ?< b => 0 - 1 else if a ?> b => 1 else 0
 
-$ abs : Int -> Int = \n = if n ?< 0 => 0 - n else n
+$ abs : @int -> @int = \n = if n ?< 0 => 0 - n else n
 
-$ sign : Int -> Int = \n =
+$ sign : @int -> @int = \n =
 	if n ?< 0 => 0 - 1 else if n ?> 0 => 1 else 0
 
 # `x` forced into [lo, hi].
-$ clamp : Int -> Int -> Int -> Int = \lo hi x = max lo (min hi x)
+$ clamp : @int -> @int -> @int -> @int = \lo hi x = max lo (min hi x)
 
-$ even : Int -> @bool = \n = (abs n) % 2 ?= 0
-$ odd  : Int -> @bool = \n = !(even n)
+$ even : @int -> @bool = \n = (abs n) % 2 ?= 0
+$ odd  : @int -> @bool = \n = !(even n)
 
-$ gcd : Int -> Int -> Int = \a b =
+$ gcd : @int -> @int -> @int = \a b =
 	if b ?= 0 => abs a else gcd b (a % b)
 
 # Integer exponentiation; a negative exponent yields 0 (integer division
 # semantics).
-$ pow : Int -> Int -> Int = \base e =
+$ pow : @int -> @int -> @int = \base e =
 	if e ?< 0 => 0
 	else if e ?= 0 => 1
 	else base * pow base (e - 1)
@@ -39,10 +39,10 @@ $ pow : Int -> Int -> Int = \base e =
 # `@cast` crosses only integer widths; these bridge the integer/real boundary
 # (a plain numeric cast in the engine runtime). `f32`/`int_of_f32` target the
 # 32-bit reals that C graphics APIs use.
-$ real_of_int : Int -> Real     = \n = C.i2d n
-$ int_of_real : Real -> Int     = \x = C.d2i x
-$ f32_of_int  : Int -> @float32 = \n = C.i2f n
-$ int_of_f32  : @float32 -> Int = \x = C.f2i x
+$ real_of_int : @int -> Real     = \n = C.i2d n
+$ int_of_real : Real -> @int     = \x = C.d2i x
+$ f32_of_int  : @int -> @float32 = \n = C.i2f n
+$ int_of_f32  : @float32 -> @int = \x = C.f2i x
 
 # ---- Real helpers ----
 
