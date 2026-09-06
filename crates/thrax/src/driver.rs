@@ -35,27 +35,43 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     };
     let root_name = parse_mod_name(&root_src).unwrap_or_else(|| file_stem(path));
 
+    load_core(root_name, path.to_string(), root_src, &root_dir).map_err(|msg| {
+        eprintln!("{msg}");
+        ExitCode::FAILURE
+    })
+}
+
+/// Transitively load the standard-library modules a given root module imports,
+/// seeding the always-present `CORE` and auto-injected `C`. The root's name,
+/// diagnostic path, and source are supplied by the caller, so this serves both
+/// an on-disk file (`load_sources`) and an in-memory REPL session. `root_dir` is
+/// where imported modules are resolved from. Returns a plain message on error.
+fn load_core(
+    root_name: String,
+    root_path: String,
+    root_src: String,
+    root_dir: &Path,
+) -> Result<Loaded, String> {
     let mut sources: Vec<(String, String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut queue: Vec<(String, String, String)> =
-        vec![(root_name.clone(), path.to_string(), root_src)];
+        vec![(root_name.clone(), root_path, root_src)];
 
     // The implicitly imported CORE module (bare names everywhere) is an ordinary
     // standard-library file, loaded from disk like the rest. Seed it into the load
     // queue so it is always present, even without an explicit `$ with CORE`.
     if root_name != "CORE" {
-        match resolve_module_file("CORE", &root_dir) {
+        match resolve_module_file("CORE", root_dir) {
             Some(file) => match std::fs::read_to_string(&file) {
                 Ok(s) => queue.push(("CORE".to_string(), file.display().to_string(), s)),
                 Err(e) => {
-                    eprintln!("thrax: cannot read the CORE module ({}): {e}", file.display());
-                    return Err(ExitCode::FAILURE);
+                    return Err(format!(
+                        "thrax: cannot read the CORE module ({}): {e}",
+                        file.display()
+                    ))
                 }
             },
-            None => {
-                eprintln!("thrax: cannot find the CORE standard-library module");
-                return Err(ExitCode::FAILURE);
-            }
+            None => return Err("thrax: cannot find the CORE standard-library module".to_string()),
         }
     }
     while let Some((name, src_path, src)) = queue.pop() {
@@ -69,20 +85,20 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
             if index.contains_key(&imp) || queue.iter().any(|(n, _, _)| *n == imp) {
                 continue;
             }
-            match resolve_module_file(&imp, &root_dir) {
+            match resolve_module_file(&imp, root_dir) {
                 Some(file) => match std::fs::read_to_string(&file) {
                     Ok(s) => queue.push((imp, file.display().to_string(), s)),
                     Err(e) => {
-                        eprintln!(
+                        return Err(format!(
                             "thrax: cannot read module `{imp}` ({}): {e}",
                             file.display()
-                        );
-                        return Err(ExitCode::FAILURE);
+                        ))
                     }
                 },
                 None => {
-                    eprintln!("thrax: cannot find module `{imp}` imported by the program");
-                    return Err(ExitCode::FAILURE);
+                    return Err(format!(
+                        "thrax: cannot find module `{imp}` imported by the program"
+                    ))
                 }
             }
         }
@@ -144,7 +160,7 @@ fn check_all<'a>(
     programs: &[Program],
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
-) -> Result<CheckOut<'a>, ExitCode> {
+) -> Result<CheckOut<'a>, String> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
@@ -182,8 +198,7 @@ fn check_all<'a>(
             }
             Err(diag) => {
                 let (_name, src_path, src) = &sources[i];
-                eprint!("{}", diag.render(src, src_path));
-                return Err(ExitCode::FAILURE);
+                return Err(diag.render(src, src_path));
             }
         }
     }
@@ -196,40 +211,16 @@ fn check_all<'a>(
     ))
 }
 
-/// The full pipeline up to (but not including) execution: load, parse, check,
-/// and lower every module. Returns the lowered modules (root first) and the
-/// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
-fn lower_all(
-    path: &str,
-) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
-    let loaded = load_sources(path)?;
-
-    let mut ast = frontend::Ast::new();
-    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (_name, src_path, src) in &loaded.sources {
-        match frontend::parse_into(ast, src) {
-            Ok((next_ast, p)) => {
-                ast = next_ast;
-                programs.push(p);
-            }
-            Err(diag) => {
-                eprint!("{}", diag.render(src, src_path));
-                return Err(ExitCode::FAILURE);
-            }
-        }
-    }
-
-    let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)?;
-
-    // Collect the checker's resolutions lowering needs: which `[..]` nodes are
-    // `Array`, and which bare calls resolved to a specific module.
+/// Gather the checkers' resolutions that lowering needs (`[..]` array/tensor
+/// nodes, resolved bare calls, overload keys, literal/pattern hooks, extern
+/// specs, C-repr layouts, ...) into one [`frontend::Resolved`].
+fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
     let mut resolved = frontend::Resolved::default();
-    for checker in &checkers {
+    for checker in checkers {
         let (exprs, pats) = checker.array_nodes();
         resolved.array_exprs.extend(exprs.iter().copied());
         resolved.array_pats.extend(pats.iter().copied());
-    resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
+        resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
         for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
         for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
         for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
@@ -264,6 +255,40 @@ fn lower_all(
                 .insert(name.to_string(), layout.clone());
         }
     }
+    resolved
+}
+
+/// The full pipeline up to (but not including) execution: load, parse, check,
+/// and lower every module. Returns the lowered modules (root first) and the
+/// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
+fn lower_all(
+    path: &str,
+) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
+    let loaded = load_sources(path)?;
+
+    let mut ast = frontend::Ast::new();
+    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
+    for (_name, src_path, src) in &loaded.sources {
+        match frontend::parse_into(ast, src) {
+            Ok((next_ast, p)) => {
+                ast = next_ast;
+                programs.push(p);
+            }
+            Err(diag) => {
+                eprint!("{}", diag.render(src, src_path));
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
+
+    let graph = import_graph(&ast, &programs, &loaded.index);
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)
+        .map_err(|rendered| {
+            eprint!("{rendered}");
+            ExitCode::FAILURE
+        })?;
+
+    let resolved = collect_resolved(&checkers);
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
@@ -300,6 +325,60 @@ fn lower_all(
         return Err(ExitCode::FAILURE);
     }
     Ok((lowered, e.to_string(), kind))
+}
+
+/// A compiled REPL session: the lowered modules (root `REPL` first) and the
+/// root module's top-level bindings as `(name, rendered type)`.
+pub(crate) struct Session {
+    pub lowered: Vec<frontend::lowering::data::Program>,
+    pub decls: Vec<(String, String)>,
+}
+
+/// Compile an in-memory `@mod REPL` session `source` against the standard
+/// library (CORE + C + any `$ with` imports resolved from `root_dir`). Returns
+/// the lowered modules and the root's typed bindings, or a rendered diagnostic.
+/// Unlike the file commands this renders errors into a string instead of exiting,
+/// so the shell can print them and keep going.
+pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
+    let loaded = load_core(
+        "REPL".to_string(),
+        "<repl>".to_string(),
+        source.to_string(),
+        root_dir,
+    )?;
+
+    let mut ast = frontend::Ast::new();
+    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
+    for (_name, src_path, src) in &loaded.sources {
+        match frontend::parse_into(ast, src) {
+            Ok((next_ast, p)) => {
+                ast = next_ast;
+                programs.push(p);
+            }
+            Err(diag) => return Err(diag.render(src, src_path)),
+        }
+    }
+
+    let graph = import_graph(&ast, &programs, &loaded.index);
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)?;
+    let resolved = collect_resolved(&checkers);
+
+    let module_decls = frontend::Decls::collect(&ast, &programs);
+    let root = loaded.index[&loaded.root_name];
+    let mut order: Vec<usize> = (0..programs.len()).collect();
+    order.sort_by_key(|&i| i != root);
+    let lowered = order
+        .iter()
+        .map(|&i| frontend::lower_program(&ast, &programs[i], &module_decls, &resolved))
+        .collect();
+
+    let checker = &checkers[root];
+    let decls = results[root]
+        .iter()
+        .map(|(n, ty)| (n.to_string(), checker.show(ty)))
+        .collect();
+
+    Ok(Session { lowered, decls })
 }
 
 /// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
@@ -452,7 +531,10 @@ pub fn cmd_check(path: &str) -> ExitCode {
     let graph = import_graph(&ast, &programs, &loaded.index);
     let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources) {
         Ok(out) => out,
-        Err(code) => return code,
+        Err(rendered) => {
+            eprint!("{rendered}");
+            return ExitCode::FAILURE;
+        }
     };
 
     let root = loaded.index[&loaded.root_name];

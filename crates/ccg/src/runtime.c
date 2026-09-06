@@ -1923,43 +1923,6 @@ static char *thrax_show(Value *v) {
   return s.buf;
 }
 
-/* Integer <-> real conversions for the standard library. `@cast` crosses only
-   integer widths, so these bridge the integer/real boundary. Reached through
-   the normal `@extern` seam (see library/C.thx); the interpreter serves the
-   same symbols from its host table. */
-double thx_i2d(long n) { return (double)n; }
-long thx_d2i(double x) { return (long)(x < 0 ? x - 0.5 : x + 0.5); }
-float thx_i2f(long n) { return (float)n; }
-long thx_f2i(float x) { return (long)(x < 0 ? x - 0.5f : x + 0.5f); }
-
-/* Float width conversions. `@float32` and `@float64` have distinct runtime
-   representations, so widening/narrowing is real work (unlike the erased `@cast`
-   between integer widths). Reached through the `@extern` seam like the integer
-   bridges above. */
-double thx_f2d(float f) { return (double)f; }
-float thx_d2f(double d) { return (float)d; }
-
-/* Format a real as its shortest decimal that round-trips (the same rule as the
-   `fmt_real`/`fmt_real32` display path). The result lives in a static buffer that
-   the FFI copies into a Thrax `Str` immediately on return, so it need not outlive
-   the call. */
-const char *thx_real_to_str(double r) {
-  static char buf[64];
-  for (int prec = 1; prec <= 17; prec++) {
-    snprintf(buf, sizeof(buf), "%.*g", prec, r);
-    if (strtod(buf, NULL) == r) break;
-  }
-  return buf;
-}
-const char *thx_f32_to_str(float r) {
-  static char buf[64];
-  for (int prec = 1; prec <= 9; prec++) {
-    snprintf(buf, sizeof(buf), "%.*g", prec, (double)r);
-    if (strtof(buf, NULL) == r) break;
-  }
-  return buf;
-}
-
-/* Reinterpret a machine word as a raw pointer (`@ptr` travels as an Int), so
-   the standard library can spell a null pointer as `C.null` (= i2p 0). */
-void *thx_i2p(long n) { return (void *)n; }
+/* The standard library's scalar conversions (`thx_i2d`, `thx_real_to_str`, ...)
+   live in the single-source `thraxstd.c`, appended after this runtime by the
+   emitter (crates/ccg/src/lib.rs) and linked into the interpreter in-process. */

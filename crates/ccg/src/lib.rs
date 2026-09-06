@@ -21,6 +21,11 @@ use gen::{cstr, emit_extern_table, reachable_codes, Emitter};
 /// The runtime prelude, emitted verbatim ahead of the generated code.
 const RUNTIME: &str = include_str!("runtime.c");
 
+/// The standard library's native support functions (scalar conversions), the
+/// single source of truth shared with the interpreter's in-process link. Emitted
+/// after the runtime so a generated program is self-contained.
+const THRAXSTD: &str = include_str!("thraxstd.c");
+
 /// A generated C program together with the symbolic `@extern` libraries it uses,
 /// so a build step can turn them into link flags via [`utilities::Target`].
 pub struct Emitted {
@@ -84,6 +89,7 @@ pub fn emit_program(
     out.push_str(&format!("#define THRAX_INT_MAX {int_max}\n"));
     out.push_str(&format!("#define THRAX_INT_MIN {int_min}\n"));
     out.push_str(RUNTIME);
+    out.push_str(THRAXSTD);
 
     // Globals: lazily forced, memoized CAFs (matches the machine's `glob`). Memo
     // is keyed by code index, so a global reached by its canonical and bare names

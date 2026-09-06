@@ -40,6 +40,8 @@ fn main() {
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
     let repo = manifest.join("../..");
 
+    build_thraxstd(&manifest, &out);
+
     let (include, link) = resolve_libffi(&repo);
 
     // Compile the shim against the chosen libffi's headers and archive it.
@@ -76,6 +78,37 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=ffi");
         }
     }
+}
+
+/// Compile and archive the standard library's native support functions
+/// (`crates/ccg/src/thraxstd.c`, the single source shared with the native
+/// backend) into this crate's link, so the interpreter serves `thx_*` in-process
+/// through the same C code rather than reimplementing it.
+fn build_thraxstd(manifest: &Path, out: &Path) {
+    let src = manifest.join("../ccg/src/thraxstd.c");
+    println!("cargo:rerun-if-changed={}", src.display());
+
+    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    let obj = out.join("thraxstd.o");
+    run(Command::new(&cc)
+        .args(["-O2", "-fPIC", "-c"])
+        .arg(&src)
+        .arg("-o")
+        .arg(&obj));
+
+    let lib = out.join("libthraxstd.a");
+    let _ = std::fs::remove_file(&lib);
+    let ar = env::var("AR").unwrap_or_else(|_| "ar".into());
+    run(Command::new(&ar).arg("rcs").arg(&lib).arg(&obj));
+
+    println!("cargo:rustc-link-search=native={}", out.display());
+    // No Rust code references these symbols (the interpreter resolves `thx_*`
+    // dynamically, in-process, via `dlsym`), so force the whole archive in. Export
+    // it with `-rdynamic` so `dlsym(RTLD_DEFAULT)` finds it; a build-script link
+    // arg is used (not `RUSTFLAGS`/config, which CI overrides). This covers this
+    // crate's own test binaries; `thrax` and `ccg` set it for theirs.
+    println!("cargo:rustc-link-lib=static:+whole-archive=thraxstd");
+    println!("cargo:rustc-link-arg-tests=-rdynamic");
 }
 
 fn resolve_libffi(repo: &Path) -> (Option<PathBuf>, Link) {

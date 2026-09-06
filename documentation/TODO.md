@@ -5,22 +5,38 @@ design notes under `documentation/`, linked below.
 
 ## Engine / type system / FFI
 
-- **Standard-library native support lib.** Move the int/float/pointer
-  conversions (`C.i2d`/`d2i`/`i2f`/`f2i`/`i2p`, and `C.null` = `i2p 0`) out of the
-  engine runtimes (the interpreter host table in
-  `crates/interpreter/src/machine/data.rs`, and the `thx_*` C functions in
-  `crates/ccg/src/runtime.c`) into a std-owned native library bound via `@extern`
-  (C now, a Rust cdylib later), so the compiler stops accreting per-symbol special
-  cases. Bindings live in `library/C.thx` (lib `""`), re-exported by
-  `library/MATH.thx` as `real_of_int` / `int_of_real` / `f32_of_int` /
-  `int_of_f32`. Open sub-problem is distribution: the interpreter cannot compile C
-  at runtime, so the lib must be a prebuilt, findable artifact. Recommended: build
-  `library/libthraxstd.so`, add `library/` to the loader path, reference it as
-  `"thraxstd"`; alternative: teach the FFI resolver (`machine::ffi`) to resolve it
-  relative to the stdlib dir. The pure-wasm target has no dlopen, so those symbols
-  need a separate story. Proven feasible: a companion `.so` bound via `@extern`
-  already works in both engines. See `documentation/native-backend.md` ("The
-  `lib` field: where a symbol comes from").
+- **Standard-library native support lib. DONE (native, 2026-09-06).** The
+  `thx_*` scalar conversions (`i2d`/`d2i`/`i2f`/`f2i`/`f2d`/`d2f`/`i2p`,
+  `real_to_str`/`f32_to_str`) now live in ONE source, `crates/ccg/src/thraxstd.c`.
+  The native backend appends it to every emitted program (removed the duplicate
+  defs from `runtime.c`); the interpreter compiles and links it in-process
+  (`crates/interpreter/build.rs`, `static:+whole-archive`, plus `-rdynamic`
+  emitted as a `rustc-link-arg` from the `thrax`/`ccg`/`interpreter` build scripts,
+  NOT `RUSTFLAGS`/config, which a CI-set `RUSTFLAGS` overrides) and resolves the
+  symbols through the normal
+  `@extern "C" "..." ""` / `dlsym(RTLD_DEFAULT)` seam. The whole per-symbol host
+  table in `machine/data.rs` (86 arms of libm/libc/`thx_*` + its `extern "C"`
+  block and marshalling helpers) is GONE: native `run_extern` now just guards the
+  `"WASM"` abi, calls `crate::machine::ffi::call_extern` (libffi), and `fflush`es
+  C stdio. Every foreign call, libc/libm and `thx_*` alike, takes the one libffi
+  path, reaching the same real symbols the compiled backend links. Verified: ccg's
+  cross-check suite runs both engines and diffs their output, so they agree
+  byte-for-byte (float formatting included).
+
+  Follow-ups:
+  - **`dlsym` address caching (perf, optional).** Every libc call now does a
+    `dlsym` (the resolver caches `dlopen` handles but not resolved symbol
+    addresses). Cache the address per `(lib, symbol)` in `machine::ffi::resolve`
+    if it ever matters. Pure optimization; correctness and output are unchanged.
+  - **wasm (blocked, task #11).** Bringing `thx_*` to the wasm playground the same
+    way (compile `thraxstd.c` for wasm against nix's wasi-libc, link into the
+    interpreter cdylib, call via `extern "C"`) is blocked in the current dev shell:
+    there is no wasm linker (`wasm-ld`/`ld.lld`/`lld` all missing, and rustc's
+    self-contained wasm dir is absent), so the playground cdylib cannot be linked
+    or tested here at all. Unblock by adding `lld` (`pkgs.lld` /
+    `llvmPackages.bintools`) to `flake.nix`, which also un-breaks the playground
+    build in general. Note: the playground already stubs every `@extern` on wasm,
+    so floats never worked there; this is net-new, not a regression.
 
 - **Building funcitons** In jai, you can use the
   programming language like a library and even interact with it with an event loop.
