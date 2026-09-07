@@ -482,7 +482,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     heads accept `is Effect.op a` and must qualify a shared name. The old
     `AMBIGUOUS_NAME` up-front rejection is gone. `dat/EFFECT_OVERLOAD.thx` covers
     it.
-  - [X] **`defer` (2026-06-27).** `defer <cleanup> do <body>` keyword (Go-style
+  - [X] **`defer` (2026-06-27).** `defer <cleanup> in <body>` keyword (Go-style
     surface; Koka-style runtime; no `discontinue`). Desugars to an internal
     `%finally` intrinsic (`OP::FINALLY`; not a user identifier). Cleanup runs on
     normal completion (a value returning through a `KDefer` marker), on abort (the
@@ -527,7 +527,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
 ## 11. Deferred
 
 - **M2 (effects):**
-  - `defer` DONE (2026-06-27): `defer <cleanup> do <body>` keyword runs cleanup
+  - `defer` DONE (2026-06-27): `defer <cleanup> in <body>` keyword runs cleanup
     on completion/abort/stored-completion via `KDefer` + clause-boundary
     `KAfterClause` markers (no `discontinue` keyword; Koka-style runtime,
     Go-style surface; desugars to the internal `%finally` intrinsic). `initially`
