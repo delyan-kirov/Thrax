@@ -510,7 +510,7 @@ pub enum Expr {
         body: Aol<Expr>,
         handler: Option<Box<Handler>>,
     },
-    /// `defer cleanup do body`.
+    /// `defer cleanup in body`.
     Defer {
         cleanup: Aol<Expr>,
         body: Aol<Expr>,

@@ -1791,8 +1791,8 @@ impl<'a> Parser<'a> {
 
     fn parse_defer(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'defer'
-        let cleanup = self.parse_expr(0)?; // stops at 'do' (not an operand starter)
-        expect!(self, Kind::Do, "expected 'do' after the 'defer' cleanup");
+        let cleanup = self.parse_expr(0)?; // stops at 'in', as in `let`
+        expect!(self, Kind::In, "expected 'in' after the 'defer' cleanup");
         let body = self.parse_expr(0)?;
         Ok(self.expr(Expr::Defer { cleanup, body }))
     }

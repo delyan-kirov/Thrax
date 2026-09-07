@@ -107,7 +107,7 @@ pub enum Term {
         body: Arc<Term>,
         handler: Arc<Handler>,
     },
-    /// `defer cleanup do body`: run `cleanup` when `body`'s dynamic scope exits.
+    /// `defer cleanup in body`: run `cleanup` when `body`'s dynamic scope exits.
     /// That is on normal completion of `body`, when a continuation capturing it is
     /// resumed to completion, or when a handler abandons such a continuation
     /// (`cleanup` still runs, under the enclosing handlers). Nested defers run

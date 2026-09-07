@@ -140,7 +140,7 @@ pub enum Expr {
         clauses: Vec<HandleClause>,
         els: Atom,
     },
-    /// `defer cleanup do body`: `cleanup` is the closure of a nullary thunk run
+    /// `defer cleanup in body`: `cleanup` is the closure of a nullary thunk run
     /// when `body`'s dynamic scope exits.
     Defer {
         cleanup: Atom,
