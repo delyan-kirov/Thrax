@@ -359,19 +359,6 @@ $ to_string : @int -> @str = \n =
 	if n ?< 0 => "-" ++ to_string_digits (0 - n) ""
 	else to_string_digits n ""
 
-$ to_string_digits : @int -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
-	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
-
-# `@nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
-# signed range still renders correctly. A single digit fits an `@int`, so `@cast`
-# each one down before appending it as a byte.
-$ to_string_udigit : @nat -> @int = \n = @cast n
-
-$ to_string_udigits : @nat -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
-	else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
-
 $ to_string : @nat -> @str = \n = to_string_udigits n ""
 
 # The sized integers reuse the friendly-type printers: `@cast` to `@int` (signed)
@@ -391,10 +378,6 @@ $ to_string : @nat64 -> @str = \x = to_string (let n : @nat = @cast x in n)
 $ from_string : @str -> @str = \s = s
 
 $ from_string : @str -> @bool = \s = s ?= "true"
-
-$ from_string_digits : @str -> @int -> @int -> @int = \s i acc =
-	if i ?= @array_len s => acc
-	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
 
 $ from_string : @str -> @int = \s =
 	if @array_len s ?= 0 => 0
@@ -427,14 +410,8 @@ $ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @n
 # vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
 # the idiomatic way to build a vector.
 $ vcons : t -> @vec t -> @vec t = \x v = vcons_onto (@vec_push (@vec_new {}) x) v 0
-$ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
-	if i >= @vec_len v => acc
-	else vcons_onto (@vec_push acc (@vec_get v i)) v (i + 1)
 
 $ range : @int -> @int -> @vec @int = \lo hi = range_onto (@vec_new {}) lo hi
-$ range_onto : @vec @int -> @int -> @int -> @vec @int = \acc lo hi =
-	if lo ?> hi => acc
-	else range_onto (@vec_push acc lo) (lo + 1) hi
 
 # The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
 # and no longer the default). `[...]` / `::` / `[]` build a `@vec`, so a `List` is
@@ -478,14 +455,6 @@ $ continue : {} -> <Loop> a = \u = Loop.continue u
 # `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`. Overloaded per
 # structure; over a `Stream` it is an INDEFINITE loop (runs until `break`, or
 # forever, `forever` and `count_from` are ready-made infinite sources).
-$ for_go : @vec a -> (a -> <Loop | e> {}) -> @int -> <e> {} = \xs body i =
-	if i >= @vec_len xs => {}
-	else
-		let more = do body (@vec_get xs i)
-			ctl k | Loop.continue u => @true
-			      | Loop.break u => @false
-			      else _ => @true
-		in if more => for_go xs body (i + 1) else {}
 $ for : @vec a -> (a -> <Loop | e> {}) -> <e> {} = \xs body = for_go xs body 0
 
 $ forever : Stream {} = { .head = {}, .tail = forever }
@@ -501,18 +470,6 @@ $ for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
 # element, `break` stops early keeping what was collected. Overloaded per structure.
 # The three ways a step can end:
 $ LoopStep : @union b = Keep: {b}, Skip: {}, Stop: {},
-$ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =
-	do let y = f x in LoopStep.Keep.{ y }
-	ctl k | Loop.continue u => LoopStep.Skip
-	      | Loop.break u => LoopStep.Stop
-	      else s => s
-
-$ formap_vec : @vec a -> (a -> <Loop | e> b) -> @int -> @vec b -> <e> @vec b = \xs f i acc =
-	if i >= @vec_len xs => acc
-	else is formap_step (@vec_get xs i) f
-		| LoopStep.Keep.{y} => formap_vec xs f (i + 1) (@vec_push acc y)
-		| LoopStep.Skip => formap_vec xs f (i + 1) acc
-		else acc
 $ formap : @vec a -> (a -> <Loop | e> b) -> <e> @vec b = \xs f = formap_vec xs f 0 (@vec_new {})
 
 # `let`-force each step: a data constructor's fields are lazy, so building the Cons
@@ -525,3 +482,56 @@ $ formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
 		| LoopStep.Skip => formap t f
 		else List.Nil
 	else List.Nil
+
+# ---- internal recursion workers ----
+# The accumulator loops the public `to_string` / `from_string` / `vcons` / `range`
+# / `for` / `formap` above are built from. Hidden: an importer sees only those.
+
+$ @private
+
+$ to_string_digits : @int -> @str -> @str = \n acc =
+	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
+	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
+
+# `@nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
+# signed range still renders correctly. A single digit fits an `@int`, so `@cast`
+# each one down before appending it as a byte.
+$ to_string_udigit : @nat -> @int = \n = @cast n
+
+$ to_string_udigits : @nat -> @str -> @str = \n acc =
+	if n ?< 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
+	else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
+
+$ from_string_digits : @str -> @int -> @int -> @int = \s i acc =
+	if i ?= @array_len s => acc
+	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
+
+$ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
+	if i >= @vec_len v => acc
+	else vcons_onto (@vec_push acc (@vec_get v i)) v (i + 1)
+
+$ range_onto : @vec @int -> @int -> @int -> @vec @int = \acc lo hi =
+	if lo ?> hi => acc
+	else range_onto (@vec_push acc lo) (lo + 1) hi
+
+$ for_go : @vec a -> (a -> <Loop | e> {}) -> @int -> <e> {} = \xs body i =
+	if i >= @vec_len xs => {}
+	else
+		let more = do body (@vec_get xs i)
+			ctl k | Loop.continue u => @true
+			      | Loop.break u => @false
+			      else _ => @true
+		in if more => for_go xs body (i + 1) else {}
+
+$ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =
+	do let y = f x in LoopStep.Keep.{ y }
+	ctl k | Loop.continue u => LoopStep.Skip
+	      | Loop.break u => LoopStep.Stop
+	      else s => s
+
+$ formap_vec : @vec a -> (a -> <Loop | e> b) -> @int -> @vec b -> <e> @vec b = \xs f i acc =
+	if i >= @vec_len xs => acc
+	else is formap_step (@vec_get xs i) f
+		| LoopStep.Keep.{y} => formap_vec xs f (i + 1) (@vec_push acc y)
+		| LoopStep.Skip => formap_vec xs f (i + 1) acc
+		else acc

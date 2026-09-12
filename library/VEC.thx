@@ -53,16 +53,10 @@ $ last : @vec t -> Option t = \v = get v ((@vec_len v) - 1)
 # ---- folds (the O(n) index loops the rest build on) ----
 
 $ foldl : (a -> t -> a) -> a -> @vec t -> a = \f acc v = foldl_from f acc v 0
-$ foldl_from : (a -> t -> a) -> a -> @vec t -> @int -> a = \f acc v i =
-	if i >= @vec_len v => acc
-	else foldl_from f (f acc (@vec_get v i)) v (i + 1)
 
 $ fold : (a -> t -> a) -> a -> @vec t -> a = \f acc v = foldl f acc v
 
 $ foldr : (t -> a -> a) -> a -> @vec t -> a = \f z v = foldr_from f z v (@vec_len v)
-$ foldr_from : (t -> a -> a) -> a -> @vec t -> @int -> a = \f z v i =
-	if i <= 0 => z
-	else foldr_from f (f (@vec_get v (i - 1)) z) v (i - 1)
 
 # ---- transforms (build via push, so O(n)) ----
 
@@ -106,25 +100,12 @@ $ intersperse : t -> @vec t -> @vec t = \sep v =
 # ---- predicates / search ----
 
 $ any : (t -> @bool) -> @vec t -> @bool = \p v = any_from p v 0
-$ any_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
-	if i >= @vec_len v => @false
-	else if p (@vec_get v i) => @true else any_from p v (i + 1)
 
 $ all : (t -> @bool) -> @vec t -> @bool = \p v = all_from p v 0
-$ all_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
-	if i >= @vec_len v => @true
-	else if p (@vec_get v i) => all_from p v (i + 1) else @false
 
 $ find : (t -> @bool) -> @vec t -> Option t = \p v = find_from p v 0
-$ find_from : (t -> @bool) -> @vec t -> @int -> Option t = \p v i =
-	if i >= @vec_len v => Option.None
-	else let x = @vec_get v i in
-		if p x => Option.Some.{ x } else find_from p v (i + 1)
 
 $ find_index : (t -> @bool) -> @vec t -> Option @int = \p v = find_index_from p v 0
-$ find_index_from : (t -> @bool) -> @vec t -> @int -> Option @int = \p v i =
-	if i >= @vec_len v => Option.None
-	else if p (@vec_get v i) => Option.Some.{ i } else find_index_from p v (i + 1)
 
 $ contains : (t -> t -> @bool) -> t -> @vec t -> @bool = \eqf x v =
 	any (\y = eqf x y) v
@@ -133,9 +114,6 @@ $ lookup : (k -> k -> @bool) -> k -> @vec {k, v} -> Option v = \eqf k ps =
 	is find (\p = eqf k p.0) ps | Option.Some.{p} => Option.Some.{ p.1 } else Option.None
 
 $ take_while : (t -> @bool) -> @vec t -> @vec t = \p v = @vec_slice v 0 (prefix_len p v 0)
-$ prefix_len : (t -> @bool) -> @vec t -> @int -> @int = \p v i =
-	if i >= @vec_len v => i
-	else if p (@vec_get v i) => prefix_len p v (i + 1) else i
 
 $ drop_while : (t -> @bool) -> @vec t -> @vec t = \p v = @vec_slice v (prefix_len p v 0) (@vec_len v)
 
@@ -156,10 +134,6 @@ $ remove_first : (t -> @bool) -> @vec t -> @vec t = \p v =
 
 $ zip_with : (a -> b -> c) -> @vec a -> @vec b -> @vec c = \f xs ys =
 	zip_with_from f xs ys 0 (@vec_new {})
-$ zip_with_from : (a -> b -> c) -> @vec a -> @vec b -> @int -> @vec c -> @vec c = \f xs ys i acc =
-	if i >= @vec_len xs => acc
-	else if i >= @vec_len ys => acc
-	else zip_with_from f xs ys (i + 1) (@vec_push acc (f (@vec_get xs i) (@vec_get ys i)))
 
 $ zip : @vec a -> @vec b -> @vec {a, b} = \xs ys = zip_with (\x y = {x, y}) xs ys
 
@@ -198,6 +172,45 @@ $ sort_by : (t -> t -> @int) -> @vec t -> @vec t = \c v =
 
 $ merge_by : (t -> t -> @int) -> @vec t -> @vec t -> @vec t = \c xs ys =
 	merge_from c xs ys 0 0 (@vec_new {})
+
+# ---- internal index loops (the recursion workers the API above drives) ----
+
+$ @private
+
+$ foldl_from : (a -> t -> a) -> a -> @vec t -> @int -> a = \f acc v i =
+	if i >= @vec_len v => acc
+	else foldl_from f (f acc (@vec_get v i)) v (i + 1)
+
+$ foldr_from : (t -> a -> a) -> a -> @vec t -> @int -> a = \f z v i =
+	if i <= 0 => z
+	else foldr_from f (f (@vec_get v (i - 1)) z) v (i - 1)
+
+$ any_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
+	if i >= @vec_len v => @false
+	else if p (@vec_get v i) => @true else any_from p v (i + 1)
+
+$ all_from : (t -> @bool) -> @vec t -> @int -> @bool = \p v i =
+	if i >= @vec_len v => @true
+	else if p (@vec_get v i) => all_from p v (i + 1) else @false
+
+$ find_from : (t -> @bool) -> @vec t -> @int -> Option t = \p v i =
+	if i >= @vec_len v => Option.None
+	else let x = @vec_get v i in
+		if p x => Option.Some.{ x } else find_from p v (i + 1)
+
+$ find_index_from : (t -> @bool) -> @vec t -> @int -> Option @int = \p v i =
+	if i >= @vec_len v => Option.None
+	else if p (@vec_get v i) => Option.Some.{ i } else find_index_from p v (i + 1)
+
+$ prefix_len : (t -> @bool) -> @vec t -> @int -> @int = \p v i =
+	if i >= @vec_len v => i
+	else if p (@vec_get v i) => prefix_len p v (i + 1) else i
+
+$ zip_with_from : (a -> b -> c) -> @vec a -> @vec b -> @int -> @vec c -> @vec c = \f xs ys i acc =
+	if i >= @vec_len xs => acc
+	else if i >= @vec_len ys => acc
+	else zip_with_from f xs ys (i + 1) (@vec_push acc (f (@vec_get xs i) (@vec_get ys i)))
+
 $ merge_from : (t -> t -> @int) -> @vec t -> @vec t -> @int -> @int -> @vec t -> @vec t = \c xs ys i j acc =
 	if i >= @vec_len xs => append acc (@vec_slice ys j (@vec_len ys))
 	else if j >= @vec_len ys => append acc (@vec_slice xs i (@vec_len xs))

@@ -186,6 +186,13 @@ pub struct Checker<'a> {
     own_values: Vec<(&'a str, Type)>,
     own_overloads: Vec<(&'a str, Vec<Type>)>,
     own_type_names: Vec<&'a str>,
+    /// Names declared after a `$ @private` marker: defined and usable within this
+    /// module, but not exported, so no importer can bind or qualify them.
+    private_names: HashSet<&'a str>,
+    /// Private names of the modules this one imports, `module -> names`. A
+    /// qualified reference (`A.helper`) to one is rejected rather than deferred to
+    /// the runtime, which would otherwise reach the still-present global.
+    imported_private: HashMap<&'a str, HashSet<&'a str>>,
     /// Value schemes pulled in from imports (with their source module), finalized
     /// once.
     imported: HashMap<&'a str, Vec<Cand<'a>>>,
@@ -349,6 +356,8 @@ impl<'a> Checker<'a> {
             own_values: Vec::new(),
             own_overloads: Vec::new(),
             own_type_names: Vec::new(),
+            private_names: HashSet::new(),
+            imported_private: HashMap::new(),
             imported: HashMap::new(),
             qualified: HashMap::new(),
             module_name: "",
@@ -580,10 +589,35 @@ impl<'a> Checker<'a> {
         self.ast.text(id)
     }
 
+    /// Record every name declared under a `$ @private` marker. Symbols are public
+    /// by default; a `$ @private` makes every declaration below it, to the end of
+    /// the file, module-private. A private name is fully usable inside the module;
+    /// it is only withheld from importers.
+    fn collect_private_names(&mut self, program: &Program) {
+        let mut private = false;
+        for item in self.ast.slice(program.items).iter() {
+            let name = match item {
+                Item::Private => {
+                    private = true;
+                    continue;
+                }
+                _ if !private => continue,
+                Item::Def { name, .. }
+                | Item::Struct { name, .. }
+                | Item::Union { name, .. }
+                | Item::Alias { name, .. }
+                | Item::Codata { name, .. } => *name,
+                _ => continue,
+            };
+            self.private_names.insert(self.text(name));
+        }
+    }
+
     /// Check a whole program, returning the inferred (generalized) type of every
     /// global definition, in source order.
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
+        self.collect_private_names(program);
         self.finalize_imports();
         self.register_types(program)?;
         self.validate_crepr_structs()?;
@@ -768,6 +802,9 @@ impl<'a> Checker<'a> {
     pub fn import_qualified(&mut self, other: &Checker<'a>) {
         let module = other.module_name;
         for (name, cands) in &other.own_overloads {
+            if other.private_names.contains(name) {
+                continue;
+            }
             let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c)).collect();
             self.qualified
                 .entry(module)
@@ -775,6 +812,9 @@ impl<'a> Checker<'a> {
                 .insert(name, qualified);
         }
         for (name, scheme) in &other.own_values {
+            if other.private_names.contains(name) {
+                continue;
+            }
             let qualified = self.import_scheme(scheme);
             self.qualified
                 .entry(module)
@@ -784,13 +824,25 @@ impl<'a> Checker<'a> {
     }
 
     pub fn import_from(&mut self, other: &Checker<'a>) {
+        if !other.private_names.is_empty() {
+            self.imported_private
+                .entry(other.module_name)
+                .or_default()
+                .extend(other.private_names.iter().copied());
+        }
         // Bring the exporter's `@ctx`-bearing functions in, so a bare use of an
         // imported one resolves its implicits (the signature/decl handles live in
         // the shared `Ast`). A qualified use (`MOD.f`) does not yet inject them.
         for (name, gi) in &other.own_implicits {
+            if other.private_names.contains(name) {
+                continue;
+            }
             self.global_implicits.insert(name, gi.clone());
         }
         for &name in &other.own_type_names {
+            if other.private_names.contains(name) {
+                continue;
+            }
             if let Some(s) = other.structs.get(name) {
                 self.structs.insert(name, s.clone());
             }
@@ -806,6 +858,9 @@ impl<'a> Checker<'a> {
         }
         let module = other.module_name;
         for (name, cands) in &other.own_overloads {
+            if other.private_names.contains(name) {
+                continue;
+            }
             let mut qualified = Vec::with_capacity(cands.len());
             for c in cands {
                 let unqualified = self.import_scheme(c);
@@ -821,6 +876,9 @@ impl<'a> Checker<'a> {
                 .insert(name, qualified);
         }
         for (name, scheme) in &other.own_values {
+            if other.private_names.contains(name) {
+                continue;
+            }
             let unqualified = self.import_scheme(scheme);
             self.imported.entry(name).or_default().push(Cand {
                 ty: unqualified,
@@ -2739,6 +2797,13 @@ impl<'a> Checker<'a> {
         site: Aol<Expr>,
     ) -> Result<Type> {
         if let Some(m) = module {
+            if self.imported_private.get(m).is_some_and(|s| s.contains(name)) {
+                let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
+                return Err(diag!(
+                    Code::TypeUnbound, span, 0,
+                    "`{m}.{name}` is private to module `{m}` and cannot be used from another module"
+                ));
+            }
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
                 _ => Ok(self.eng.fresh()),

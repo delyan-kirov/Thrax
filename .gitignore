@@ -19,5 +19,6 @@ tmp.*
 lib/*
 # local configs/notes
 *.local.*
+thrax-out
 result
 target

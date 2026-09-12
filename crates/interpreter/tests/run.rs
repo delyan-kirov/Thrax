@@ -281,6 +281,20 @@ fn cross_module_overload_dispatches_by_type() {
 }
 
 #[test]
+fn private_helper_runs_through_public_api() {
+    // `scale` is public and calls a private `double`; the importer reaches `scale`
+    // (double is hidden but still executes as part of scale's body).
+    let lib = "@mod A\n\
+               $ scale : @int -> @int = \\x = double x + 1\n\
+               $ @private\n\
+               $ double : @int -> @int = \\x = x + x";
+    let root = "@mod M\n\
+                $ with A\n\
+                $ r : @int = scale 10";
+    assert_eq!(run_modules(&[lib, root], "r"), "21");
+}
+
+#[test]
 fn literal_hook_from_imported_module() {
     // A library module provides a user type and its construction hook; a string
     // literal in the importing module builds that type via the IMPORTED hook.
