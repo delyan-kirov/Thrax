@@ -259,6 +259,19 @@ impl<'a> Parser<'a> {
         let t = expect!(self, Kind::Word, what);
         Ok(self.intern(self.text(t)))
     }
+    /// An effect-row label: a Capitalized `Word` (a user-declared effect like
+    /// `Fail`) or an `@`-form builtin effect (`@io`). The lexeme is interned as
+    /// written, so `@io` keeps its sigil ("@io"), matching the `@`-type-con
+    /// convention and staying distinct from any user effect.
+    fn expect_effect_label(&mut self) -> Result<StrId> {
+        let t = self.peek()?;
+        if matches!(t.kind, Kind::Word | Kind::At) {
+            self.bump()?;
+            Ok(self.intern(self.text(t)))
+        } else {
+            Err(self.unexpected(&t, "expected an effect name"))
+        }
+    }
     /// Consume a lowercase-initial type variable name and intern it.
     fn expect_tyvar(&mut self, what: &str) -> Result<StrId> {
         let t = expect!(self, Kind::Word, what);
@@ -1007,8 +1020,9 @@ impl<'a> Parser<'a> {
     }
 
     /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
-    /// `<A, B | e>`, or `<| e>`. Effect names are capitalized; a lowercase
-    /// name is the row-polymorphic tail variable.
+    /// `<A, B | e>`, or `<| e>`. Effect names are Capitalized (user effects) or
+    /// `@`-form (builtin effects like `@io`); a lowercase name is the
+    /// row-polymorphic tail variable.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
@@ -1040,7 +1054,7 @@ impl<'a> Parser<'a> {
         }
         let mut names = Vec::new();
         loop {
-            let n = self.expect_word("expected an effect name")?;
+            let n = self.expect_effect_label()?;
             names.push(n);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;

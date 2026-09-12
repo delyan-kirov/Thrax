@@ -14,31 +14,31 @@ $ with STR
 
 # ---- console ----
 
-$ print : @str -> {} = \s =
+$ print : @str -> <@io> {} = \s =
 	C.write {1, s, @array_len s}; {}
 
-$ println : @str -> {} = \s =
+$ println : @str -> <@io> {} = \s =
 	C.write {1, s, @array_len s}; C.write {1, "\n", 1}; {}
 
-$ eprint : @str -> {} = \s =
+$ eprint : @str -> <@io> {} = \s =
 	C.write {2, s, @array_len s}; {}
 
-$ eprintln : @str -> {} = \s =
+$ eprintln : @str -> <@io> {} = \s =
 	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
 
-$ print_int : @int -> {} = \n = print (from_int n)
+$ print_int : @int -> <@io> {} = \n = print (from_int n)
 
-$ println_int : @int -> {} = \n = println (from_int n)
+$ println_int : @int -> <@io> {} = \n = println (from_int n)
 
 # One line from stdin, without the trailing newline. Returns "" at
 # end-of-input (indistinguishable from an empty line).
-$ read_line : {} -> @str = \u = read_line_acc ""
+$ read_line : {} -> <@io> @str = \u = read_line_acc ""
 
 # ---- files ----
 
 # The whole file as a @str; None when it cannot be opened. Reads are counted
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
-$ read_file : @str -> Option @str = \path =
+$ read_file : @str -> <@io> Option @str = \path =
 	let f = C.fopen {path, "rb"} in
 	if f ?= 0 => Option.None
 	else
@@ -51,27 +51,27 @@ $ read_file : @str -> Option @str = \path =
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : @str -> @str -> @bool = \path content =
+$ write_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : @str -> @str -> @bool = \path content =
+$ append_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "ab"
 
-$ remove_file : @str -> @bool = \path =
+$ remove_file : @str -> <@io> @bool = \path =
 	(C.remove path) ?= 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
-$ env : @str -> @str = \name = C.getenv name
+$ env : @str -> <@io> @str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
-$ now : {} -> @int = \u = C.time 0
+$ now : {} -> <@io> @int = \u = C.time 0
 
 # ---- internal helpers ----
 
 $ @private
 
-$ read_line_acc : @str -> @str = \acc =
+$ read_line_acc : @str -> <@io> @str = \acc =
 	let c = C.getchar {} in
 	if c ?= 10 => acc
 	else if is_byte c => read_line_acc (@array_push acc c)
@@ -82,14 +82,14 @@ $ read_line_acc : @str -> @str = \acc =
 $ is_byte : @int -> @bool = \c =
 	if c ?< 0 => @false else c <= 255
 
-$ read_bytes : @int -> @int -> @str -> @str = \f n acc =
+$ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
 		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
 		else acc # stream ended early (unreadable path, truncated file)
 
-$ spill_file : @str -> @str -> @str -> @bool = \path content mode =
+$ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
 	if f ?= 0 => @false
 	else
