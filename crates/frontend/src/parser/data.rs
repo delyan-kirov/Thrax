@@ -202,18 +202,14 @@ pub enum Item {
         module: Slice<StrId>,
         rename: Option<Slice<StrId>>,
     },
-    /// `$ @private` / `$ @public`
-    Visibility(Visibility),
+    /// `$ @private`: marks every following declaration in the file as
+    /// module-private (not exported). Symbols are public by default; there is no
+    /// `@public` counterpart, so a module's public interface sits above the marker.
+    Private,
     /// `$ @assert expr`
     Assert(Aol<Expr>),
     /// `$ @run expr`
     Run(Aol<Expr>),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Visibility {
-    Private,
-    Public,
 }
 
 /// A `name : Type` field (struct fields and effect operations share this shape).

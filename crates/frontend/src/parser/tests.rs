@@ -356,10 +356,7 @@ fn union_effect_import_and_directives() {
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(items[0], Item::Import { .. }));
-    assert!(matches!(
-        items[1],
-        Item::Visibility(Visibility::Private)
-    ));
+    assert!(matches!(items[1], Item::Private));
     assert!(matches!(&items[2], Item::Union { variants, .. } if variants.len() == 3));
     assert!(matches!(&items[3], Item::Effect { ops, .. } if ops.len() == 2));
     assert!(matches!(items[4], Item::Assert(_)));

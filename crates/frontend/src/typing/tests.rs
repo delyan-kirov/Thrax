@@ -255,6 +255,84 @@ fn cross_module_import_brings_in_types_and_values() {
     assert_eq!(ty("value"), "@int");
 }
 
+/// Check `use_src` after importing `dep_src`; returns the rendered error (empty
+/// string on success). Both share one `Ast` so cross-module handles resolve.
+fn cross_module_errors(dep_src: &str, use_src: &str) -> String {
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, dep) = crate::parse_into(ast, dep_src).expect("parse dep");
+    let (ast, program) = crate::parse_into(ast, use_src).expect("parse use");
+    let mut core_checker = Checker::new(&ast);
+    core_checker.check_program(&core).expect("check CORE");
+    let mut dep_checker = Checker::new(&ast);
+    dep_checker.import_from(&core_checker);
+    dep_checker.check_program(&dep).expect("check dep");
+    let mut checker = Checker::new(&ast);
+    checker.import_from(&core_checker);
+    checker.import_from(&dep_checker);
+    match checker.check_program(&program) {
+        Ok(_) => String::new(),
+        Err(e) => format!("{e}"),
+    }
+}
+
+const PRIVATE_DEP: &str = "@mod A\n\
+    $ api : @int -> @int = \\x = helper x + 1\n\
+    $ @private\n\
+    $ helper : @int -> @int = \\x = x * x";
+
+#[test]
+fn public_symbol_above_private_marker_is_importable() {
+    // `api` sits before `$ @private`, so it exports even though its body calls a
+    // private helper.
+    assert_eq!(cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = api 3"), "");
+}
+
+#[test]
+fn private_symbol_is_not_importable_bare() {
+    assert!(cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = helper 3")
+        .contains("TYPE_UNBOUND"));
+}
+
+#[test]
+fn private_symbol_is_not_reachable_qualified() {
+    // A private name is withheld from the qualified namespace too, so `A.helper`
+    // does not resolve either.
+    assert!(!cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = A.helper 3").is_empty());
+}
+
+#[test]
+fn private_type_is_not_importable() {
+    let dep = "@mod A\n\
+        $ mk : @int -> Secret = \\n = Secret.{ .v = n }\n\
+        $ @private\n\
+        $ Secret : @struct = v: @int";
+    // Naming the private type in the importer fails; only its public constructor's
+    // result type leaks (opaquely).
+    assert!(!cross_module_errors(dep, "@mod B\n$ with A\n$ x : Secret = mk 3").is_empty());
+}
+
+#[test]
+fn private_extends_to_end_of_file() {
+    // `$ @private` has no counterpart, so every declaration below it stays hidden.
+    let dep = "@mod A\n\
+        $ @private\n\
+        $ hidden : @int -> @int = \\x = x\n\
+        $ also_hidden : @int -> @int = \\x = x";
+    assert!(cross_module_errors(dep, "@mod B\n$ with A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
+    assert!(cross_module_errors(dep, "@mod B\n$ with A\n$ r = also_hidden 1")
+        .contains("TYPE_UNBOUND"));
+}
+
+#[test]
+fn public_marker_is_rejected() {
+    // There is no `$ @public`; writing one is a parse error.
+    let err = crate::parse_into(Ast::new(), "@mod M\n$ @public\n$ x = 1")
+        .err()
+        .map(|e| format!("{e}"))
+        .unwrap_or_default();
+    assert!(err.contains("no '@public'"), "unexpected error: {err}");
+}
+
 #[test]
 fn record_parameters_bind_fields_directly() {
     // A record parameter is a real record type; its fields auto-bind in the body.

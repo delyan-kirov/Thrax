@@ -397,12 +397,13 @@ impl<'a> Parser<'a> {
         match self.intrinsic_name(at) {
             "private" => {
                 self.bump()?;
-                Ok(Item::Visibility(Visibility::Private))
+                Ok(Item::Private)
             }
-            "public" => {
-                self.bump()?;
-                Ok(Item::Visibility(Visibility::Public))
-            }
+            "public" => Err(self.unexpected(
+                &at,
+                "there is no '@public': symbols are public by default. Use '$ @private' \
+                 to hide the declarations below it",
+            )),
             "assert" => {
                 self.bump()?;
                 Ok(Item::Assert(self.parse_expr(0)?))

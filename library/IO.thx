@@ -34,17 +34,6 @@ $ println_int : @int -> {} = \n = println (from_int n)
 # end-of-input (indistinguishable from an empty line).
 $ read_line : {} -> @str = \u = read_line_acc ""
 
-$ read_line_acc : @str -> @str = \acc =
-	let c = C.getchar {} in
-	if c ?= 10 => acc
-	else if is_byte c => read_line_acc (@array_push acc c)
-	else acc
-
-# A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
-# therefore "anything outside 0..255" rather than a negative @int.
-$ is_byte : @int -> @bool = \c =
-	if c ?< 0 => @false else c <= 255
-
 # ---- files ----
 
 # The whole file as a @str; None when it cannot be opened. Reads are counted
@@ -60,13 +49,6 @@ $ read_file : @str -> Option @str = \path =
 		C.fclose f;
 		Option.Some.{ body }
 
-$ read_bytes : @int -> @int -> @str -> @str = \f n acc =
-	if n <= 0 => acc
-	else
-		let c = C.fgetc f in
-		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
-		else acc # stream ended early (unreadable path, truncated file)
-
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
 $ write_file : @str -> @str -> @bool = \path content =
@@ -74,13 +56,6 @@ $ write_file : @str -> @str -> @bool = \path content =
 
 $ append_file : @str -> @str -> @bool = \path content =
 	spill_file path content "ab"
-
-$ spill_file : @str -> @str -> @str -> @bool = \path content mode =
-	let f = C.fopen {path, mode} in
-	if f ?= 0 => @false
-	else
-		C.fputs {content, f};
-		(C.fclose f) ?= 0
 
 $ remove_file : @str -> @bool = \path =
 	(C.remove path) ?= 0
@@ -91,3 +66,32 @@ $ env : @str -> @str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
 $ now : {} -> @int = \u = C.time 0
+
+# ---- internal helpers ----
+
+$ @private
+
+$ read_line_acc : @str -> @str = \acc =
+	let c = C.getchar {} in
+	if c ?= 10 => acc
+	else if is_byte c => read_line_acc (@array_push acc c)
+	else acc
+
+# A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
+# therefore "anything outside 0..255" rather than a negative @int.
+$ is_byte : @int -> @bool = \c =
+	if c ?< 0 => @false else c <= 255
+
+$ read_bytes : @int -> @int -> @str -> @str = \f n acc =
+	if n <= 0 => acc
+	else
+		let c = C.fgetc f in
+		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
+		else acc # stream ended early (unreadable path, truncated file)
+
+$ spill_file : @str -> @str -> @str -> @bool = \path content mode =
+	let f = C.fopen {path, mode} in
+	if f ?= 0 => @false
+	else
+		C.fputs {content, f};
+		(C.fclose f) ?= 0

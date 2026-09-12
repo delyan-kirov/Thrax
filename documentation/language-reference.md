@@ -135,9 +135,10 @@ $ with V = VEC                 # qualified only: V.push
 $ with from_int = STR.from_int # one symbol, bound bare
 ```
 
-## 2.4 Visibility `$ @private` / `$ @public`
-Symbols are public by default. `$ @private` hides every symbol after it from
-importers; `$ @public` toggles back. Resets at end of file.
+## 2.4 Visibility `$ @private`
+Symbols are public by default. `$ @private` hides every symbol below it, to the
+end of the file, from importers. There is no `@public` counterpart, so a
+module's public interface sits above the marker.
 
 ```thrax
 $ api : @int -> @int = \x = helper x + 1
@@ -1022,7 +1023,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@extern` | foreign binding | 10 |
 | `@ctx` | implicit parameter | 7.4 |
 | `@operator` | operator overload (parsed, not implemented) | 7.3 |
-| `@private` `@public` | visibility | 2.4 |
+| `@private` | visibility | 2.4 |
 | `@run` `@assert` | compile-time evaluation | 11 |
 | `@cast` | integer-width reinterpret | 4.10 |
 | `@true` `@false` `@bool` | boolean | 12.1 |

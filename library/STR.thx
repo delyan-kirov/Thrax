@@ -23,16 +23,6 @@ $ eq : @str -> @str -> @bool = \a b = a ?= b
 # convention; this is the ordering MAP.new_str uses).
 $ cmp_str : @str -> @str -> @int = \a b = cmp_str_from a b 0
 
-$ cmp_str_from : @str -> @str -> @int -> @int = \a b i =
-	if i >= @array_len a => (if i >= @array_len b => 0 else 0 - 1)
-	else if i >= @array_len b => 1
-	else
-		let ca = @array_get a i in
-		let cb = @array_get b i in
-		if ca ?< cb => 0 - 1
-		else if ca ?> cb => 1
-		else cmp_str_from a b (i + 1)
-
 # A one-byte string.
 $ from_byte : @int -> @str = \c = @array_push "" c
 
@@ -118,10 +108,6 @@ $ count : @str -> @str -> @int = \s needle =
 
 $ reverse : @str -> @str = \s = rev_onto s (@array_len s) ""
 
-$ rev_onto : @str -> @int -> @str -> @str = \s i acc =
-	if i ?= 0 => acc
-	else rev_onto s (i - 1) (@array_push acc (@array_get s (i - 1)))
-
 # ---- character (byte) predicates ----
 
 $ is_space : @int -> @bool = \c =
@@ -170,19 +156,11 @@ $ to_lower : @str -> @str = \s =
 
 $ map_bytes : (@int -> @int) -> @str -> @str = \f s = map_bytes_from f s 0 ""
 
-$ map_bytes_from : (@int -> @int) -> @str -> @int -> @str -> @str = \f s i acc =
-	if i ?= @array_len s => acc
-	else map_bytes_from f s (i + 1) (@array_push acc (f (@array_get s i)))
-
 # ---- number formatting / parsing ----
 
 $ from_int : @int -> @str = \n =
 	if n ?< 0 => "-" ++ digits_of (0 - n) ""
 	else digits_of n ""
-
-$ digits_of : @int -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
-	else digits_of (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 # Parse a (possibly '-'-signed) run of decimal digits; anything else is None.
 $ to_int : @str -> Option @int = \s =
@@ -191,6 +169,32 @@ $ to_int : @str -> Option @int = \s =
 		(if (@array_len s) ?= 1 => Option.None
 		 else opt_map (\n = 0 - n) (digits_val s 1 0))
 	else digits_val s 0 0
+
+# ---- internal recursion workers ----
+
+$ @private
+
+$ cmp_str_from : @str -> @str -> @int -> @int = \a b i =
+	if i >= @array_len a => (if i >= @array_len b => 0 else 0 - 1)
+	else if i >= @array_len b => 1
+	else
+		let ca = @array_get a i in
+		let cb = @array_get b i in
+		if ca ?< cb => 0 - 1
+		else if ca ?> cb => 1
+		else cmp_str_from a b (i + 1)
+
+$ rev_onto : @str -> @int -> @str -> @str = \s i acc =
+	if i ?= 0 => acc
+	else rev_onto s (i - 1) (@array_push acc (@array_get s (i - 1)))
+
+$ map_bytes_from : (@int -> @int) -> @str -> @int -> @str -> @str = \f s i acc =
+	if i ?= @array_len s => acc
+	else map_bytes_from f s (i + 1) (@array_push acc (f (@array_get s i)))
+
+$ digits_of : @int -> @str -> @str = \n acc =
+	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
+	else digits_of (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 $ digits_val : @str -> @int -> @int -> Option @int = \s i acc =
 	if i ?= @array_len s => Option.Some.{ acc }

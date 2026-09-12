@@ -16,10 +16,6 @@ $ with VEC
 $ with MATH
 $ with STR
 
-$ Tree : @union k v =
-	Leaf: {},
-	Node: {k, v, Tree k v, Tree k v, @int},  # key, value, left, right, height
-
 $ Map : @struct k v =
 	cmpf: k -> k -> @int,
 	count: @int,
@@ -114,6 +110,14 @@ $ min_entry : Map k v -> Option {k, v} = \m = tmin m.root
 $ max_entry : Map k v -> Option {k, v} = \m = tmax m.root
 
 # ---- AVL internals ----
+# Everything below is the balanced-tree implementation: hidden, so importers see
+# only the `Map` API above and never the `Tree` representation.
+
+$ @private
+
+$ Tree : @union k v =
+	Leaf: {},
+	Node: {k, v, Tree k v, Tree k v, @int},  # key, value, left, right, height
 
 $ height : Tree k v -> @int = \t =
 	is t | Tree.Node.{_, _, _, _, h} => h else 0

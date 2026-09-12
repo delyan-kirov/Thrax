@@ -56,7 +56,7 @@
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_OPERATOR AT_ASSERT
 %token AT_RUN
-%token AT_PRIVATE AT_PUBLIC AT_EXTERN AT_ARRAY
+%token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
@@ -102,7 +102,6 @@ global
   | DOLLAR LIDENT COLON AT_EFFECT EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
-  | DOLLAR AT_PUBLIC
   | DOLLAR AT_ASSERT expr
   | DOLLAR AT_RUN expr
   | DOLLAR AT_OPERATOR DOT LBRACE overloadable_op RBRACE COLON type EQ expr
