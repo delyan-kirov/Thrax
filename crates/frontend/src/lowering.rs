@@ -416,9 +416,10 @@ pub fn lower_program(
             // module, and the driver qualifies the same way to force it.
             Item::Run(expr) => {
                 let name = format!("@e#{}", ct_runs.len());
+                let span = ast.expr_span(*expr).unwrap_or(Span::at(0));
                 let term = lw.expr(*expr);
                 globals.push((name.clone(), term));
-                ct_runs.push(name);
+                ct_runs.push((name, span));
             }
             Item::Effect { name, ops } => {
                 let effect = ast.text(*name).to_string();

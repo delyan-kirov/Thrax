@@ -92,6 +92,9 @@ handler's compiler state):
 `@eval` currently rides a driver-installed thread-local host rather than a full
 `<@meta>` handler; when the handler lands it subsumes this. `@abort`/`@emit`
 take a plain `@str` for now (a richer `@diag` with spans comes with the handler).
+A compile-time `@e`/`@abort` fault is reported at the real `@e` call site
+(`file:line:col` + caret), not a synthetic global, since every `@e` site records
+its source span.
 There is no `@assert` builtin: assert is user code,
 `$ @e (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.thx`).
 

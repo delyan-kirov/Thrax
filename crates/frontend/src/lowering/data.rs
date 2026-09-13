@@ -28,11 +28,11 @@ pub struct Program {
     /// struct values across the `@extern` boundary. Same across every module (the
     /// resolver aggregates them); the IR lowering merges duplicates by name.
     pub crepr_layouts: Vec<(String, utilities::CLayout)>,
-    /// Names of the synthetic globals that back `$ @e <expr>` directives, in
-    /// source order. Each is a normal global (so it flows through IR lowering);
-    /// the driver forces it through the interpreter at compile time and discards
-    /// the value (a trap fails the build). See [`super::lower_program`].
-    pub ct_runs: Vec<String>,
+    /// The synthetic globals that back top-level `$ @e <expr>` directives, as
+    /// `(name, source span of the `@e X`)`, in source order. The driver forces
+    /// each at compile time and discards the value (a trap fails the build, and
+    /// the span points the error at the directive). See [`super::lower_program`].
+    pub ct_runs: Vec<(String, utilities::Span)>,
     /// Expression-position `@e X` sites: `(synthetic global name, source span of
     /// the `@e X`)`. The driver forces the global at compile time, renders the
     /// value/code to source, substitutes it at the span, and re-compiles (the

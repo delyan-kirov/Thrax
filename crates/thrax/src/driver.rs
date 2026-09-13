@@ -386,14 +386,36 @@ fn thrax_str_literal(bytes: &[u8]) -> String {
     out
 }
 
+/// Render a compile-time `@e` fault at its call site: fill the fault's (sentinel)
+/// span with the site's span and render against that module's source, so the
+/// caret lands on the `@e` in the user's file rather than a synthetic global.
+fn render_e_fault(
+    diag: utilities::Diagnostic,
+    module: &str,
+    span: utilities::Span,
+    sources: &[(String, String, String)],
+) -> String {
+    let (src, path) = sources
+        .iter()
+        .find(|(n, _, _)| n == module)
+        .map(|(_, p, s)| (s.as_str(), p.as_str()))
+        .unwrap_or(("", module));
+    diag.fill_span(span).render(src, path)
+}
+
+/// The sources that back a compiled program (`(module, path, text)`), returned by
+/// [`lower_all`] so later passes can render `@e` diagnostics at real locations.
+type Sources = Vec<(String, String, String)>;
+
 /// Compile `path`, iteratively expanding expression-position `@e X`: each round
 /// compiles the current sources, forces every `@e` site, renders the result to
 /// source, and substitutes it in place; it repeats until no `@e` sites remain
 /// (so `@e` that generates more `@e` keeps expanding). Top-level `$ @e`
-/// directives are left for [`compile_and_run_ct`].
+/// directives are left for [`compile_and_run_ct`]. Returns the final sources too.
 fn lower_all(
     path: &str,
-) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
+) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind, Sources), ExitCode>
+{
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
         .parent()
@@ -412,7 +434,7 @@ fn lower_all(
             })
             .collect();
         if sites.is_empty() {
-            return Ok(compiled);
+            return Ok((compiled.0, compiled.1, compiled.2, loaded.sources));
         }
         // Force each site and render its result to a replacement source string.
         let ir = frontend::ir::lower_modules(&compiled.0);
@@ -432,7 +454,7 @@ fn lower_all(
                 Err(diag) => {
                     interpreter::machine::set_meta_eval(None);
                     eprintln!("thrax: a compile-time `@e` failed:");
-                    eprint!("{}", diag.render("", &qualified));
+                    eprint!("{}", render_e_fault(diag, &module, span, &loaded.sources));
                     return Err(ExitCode::FAILURE);
                 }
             };
@@ -583,6 +605,7 @@ fn meta_eval_source(
 fn compile_and_run_ct(
     lowered: &[frontend::lowering::data::Program],
     root_dir: &Path,
+    sources: &[(String, String, String)],
 ) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
     // Install the `@eval` host so a `$ @e` may compile and run generated code.
     let rd = root_dir.to_path_buf();
@@ -590,7 +613,7 @@ fn compile_and_run_ct(
     let ir = frontend::ir::lower_modules(lowered);
     let mut plan = BuildPlan::default();
     for p in lowered {
-        for name in &p.ct_runs {
+        for (name, span) in &p.ct_runs {
             // `lower_modules` prefixes every global with its module; match that.
             let qualified = format!("{}.{}", p.module, name);
             match interpreter::machine::eval_value(&ir, &qualified) {
@@ -598,7 +621,7 @@ fn compile_and_run_ct(
                 Err(diag) => {
                     interpreter::machine::set_meta_eval(None);
                     eprintln!("thrax: a compile-time `@e` failed:");
-                    eprint!("{}", diag.render("", &qualified));
+                    eprint!("{}", render_e_fault(diag, &p.module, *span, sources));
                     return Err(ExitCode::FAILURE);
                 }
             }
@@ -609,12 +632,12 @@ fn compile_and_run_ct(
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind, sources) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir) {
+    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir, &sources) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -655,12 +678,12 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind, sources) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    if let Err(code) = compile_and_run_ct(&lowered, root_dir) {
+    if let Err(code) = compile_and_run_ct(&lowered, root_dir, &sources) {
         return code;
     }
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
@@ -675,12 +698,12 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind, sources) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let plan = match compile_and_run_ct(&lowered, root_dir) {
+    let plan = match compile_and_run_ct(&lowered, root_dir, &sources) {
         Ok((_ir, plan)) => plan,
         Err(code) => return code,
     };
