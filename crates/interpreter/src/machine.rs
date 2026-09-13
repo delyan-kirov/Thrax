@@ -965,6 +965,26 @@ pub fn set_meta_eval(host: Option<Box<dyn Fn(&str) -> std::result::Result<OwnedV
     META_EVAL.with(|c| *c.borrow_mut() = host);
 }
 
+thread_local! {
+    /// Build directives a compile-time `@link` / `@link_path` recorded, as
+    /// `(is_search_path, arg)`. The driver drains them into the link set after
+    /// running `$ @e`; nothing else looks at them (so a stray call at runtime is
+    /// harmless).
+    static LINKS: std::cell::RefCell<Vec<(bool, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a `@link` (`is_path == false`) or `@link_path` (`true`) directive.
+pub fn push_link(is_path: bool, arg: String) {
+    LINKS.with(|c| c.borrow_mut().push((is_path, arg)));
+}
+
+/// Drain the recorded `@link` / `@link_path` directives (the driver applies them
+/// to the link line).
+pub fn take_link_directives() -> Vec<(bool, String)> {
+    LINKS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
 /// Run the installed `@eval` host on `src`, or fault if none is installed.
 pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     META_EVAL.with(|c| match &*c.borrow() {

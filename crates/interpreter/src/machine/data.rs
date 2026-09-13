@@ -293,7 +293,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@parse_items"
-        | "@eval" | "@abort" | "@emit" | "@fresh" => 1,
+        | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -621,6 +621,14 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let mut s = as_bytes(&a[0])?.as_ref().clone();
             s.extend_from_slice(format!("_m{n}").as_bytes());
             Ok(Value::Str(Rc::new(s)))
+        }
+        // Steer the build at compile time (used via `$ @e (@link "curl")`): record
+        // a library / search path for the driver to add to the link line. Returns
+        // unit; the effect is the recorded directive, not the value.
+        "@link" | "@link_path" => {
+            let arg = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            crate::machine::push_link(name == "@link_path", arg);
+            Ok(Value::Unit)
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }

@@ -407,11 +407,11 @@ fn render_e_fault(
 /// [`lower_all`] so later passes can render `@e` diagnostics at real locations.
 type Sources = Vec<(String, String, String)>;
 
-/// Compile `path`, iteratively expanding expression-position `@e X`: each round
-/// compiles the current sources, forces every `@e` site, renders the result to
-/// source, and substitutes it in place; it repeats until no `@e` sites remain
-/// (so `@e` that generates more `@e` keeps expanding). Top-level `$ @e`
-/// directives are left for [`compile_and_run_ct`]. Returns the final sources too.
+/// Compile `path`, iteratively expanding every `$ @e` (compile-time execution,
+/// value-fold, and code injection): each round compiles the current sources,
+/// forces every `@e` site, and substitutes the result in source, repeating until
+/// none remain. `@link`/`@link_path` calls record build directives along the way,
+/// drained into the returned `BuildPlan`. Returns the final sources too.
 fn lower_all(
     path: &str,
 ) -> Result<
@@ -424,6 +424,7 @@ fn lower_all(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let mut plan = BuildPlan::default();
+    let _ = interpreter::machine::take_link_directives(); // drop any stale directives
     loop {
         let compiled = compile_sources(&loaded)?;
         // Gather every `@e` site this round: expression-position (`ct_evals`,
@@ -448,6 +449,13 @@ fn lower_all(
             })
             .collect();
         if expr_sites.is_empty() && item_sites.is_empty() {
+            // Fold in any `@link`/`@link_path` directives recorded while running.
+            for (is_path, arg) in interpreter::machine::take_link_directives() {
+                let set = if is_path { &mut plan.lib_paths } else { &mut plan.libs };
+                if !set.contains(&arg) {
+                    set.push(arg);
+                }
+            }
             return Ok((compiled.0, compiled.1, compiled.2, loaded.sources, plan));
         }
         let ir = frontend::ir::lower_modules(&compiled.0);
@@ -481,14 +489,12 @@ fn lower_all(
             let v = interpreter::machine::eval_value(&ir, &qualified)
                 .map_err(|d| fail(d, &module, span))?;
             // `span` is the whole `$ @e X` directive, so replacing it drops the
-            // directive: an `@code` result becomes its item(s), anything else
-            // (a `BUILD` directive, or a discarded value) becomes nothing.
+            // directive: an `@code` result becomes its item(s), anything else (a
+            // `@link` call, whose effect was already recorded, or a discarded
+            // value) becomes nothing.
             match as_code_src(&v) {
                 Some(items) => edits.push((module, span, items)),
-                None => {
-                    build_directive(&v, &mut plan);
-                    edits.push((module, span, String::new()));
-                }
+                None => edits.push((module, span, String::new())),
             }
         }
         interpreter::machine::set_meta_eval(None);
@@ -595,40 +601,6 @@ struct BuildPlan {
     lib_paths: Vec<String>,
 }
 
-/// The first byte string reachable in a value, drilling through the record/tuple
-/// that wraps a single-field variant payload (a `BUILD` directive's `{@str}`).
-fn first_str(v: &interpreter::machine::data::PVal) -> Option<String> {
-    use interpreter::machine::data::Value;
-    match &*v.borrow() {
-        Value::Str(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Value::Tuple(items) | Value::Variant { fields: items, .. } => {
-            items.iter().find_map(first_str)
-        }
-        Value::Struct { fields, .. } => fields.iter().find_map(|(_, f)| first_str(f)),
-        _ => None,
-    }
-}
-
-/// Read a `BUILD.Directive` value produced by a compile-time `@run`, if that is
-/// what it is. Any other value is plain compile-time execution (discarded).
-fn build_directive(v: &interpreter::machine::data::PVal, plan: &mut BuildPlan) {
-    use interpreter::machine::data::Value;
-    if let Value::Variant { ty, tag, .. } = &*v.borrow() {
-        if ty != "Directive" {
-            return;
-        }
-        if let Some(s) = first_str(v) {
-            let set = match tag.as_str() {
-                "Lib" => &mut plan.libs,
-                "LibPath" => &mut plan.lib_paths,
-                _ => return,
-            };
-            if !set.contains(&s) {
-                set.push(s);
-            }
-        }
-    }
-}
 
 /// Compile and run an `@code` fragment (source text) at build time, reifying its
 /// value. This is the `@eval` host: it re-enters the same pipeline the REPL uses,
@@ -956,52 +928,16 @@ pub fn cmd_lex(path: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use interpreter::machine::data::{mk, Value};
-    use std::rc::Rc;
-
-    fn str_val(s: &str) -> interpreter::machine::data::PVal<'static> {
-        mk(Value::Str(Rc::new(s.as_bytes().to_vec())))
-    }
-
     #[test]
-    fn build_directive_reads_lib_and_lib_path() {
-        // `BUILD.lib "curl"` -> a `Directive.Lib` whose payload holds the name.
-        let lib = mk(Value::Variant {
-            ty: "Directive".into(),
-            tag: "Lib".into(),
-            fields: vec![str_val("curl")],
-        });
-        // `BUILD.lib_path "vendor"` where the payload arrives wrapped in a record,
-        // exercising the drill-through in `first_str`.
-        let path = mk(Value::Variant {
-            ty: "Directive".into(),
-            tag: "LibPath".into(),
-            fields: vec![mk(Value::Struct {
-                name: String::new(),
-                fields: vec![("p".into(), str_val("vendor"))],
-            })],
-        });
-        let mut plan = BuildPlan::default();
-        build_directive(&lib, &mut plan);
-        build_directive(&path, &mut plan);
-        assert_eq!(plan.libs, vec!["curl".to_string()]);
-        assert_eq!(plan.lib_paths, vec!["vendor".to_string()]);
-    }
-
-    #[test]
-    fn build_directive_ignores_non_directive_values() {
-        // A plain compile-time `@run` value (not a `Directive`) steers nothing.
-        let mut plan = BuildPlan::default();
-        build_directive(&mk(Value::Int(42)), &mut plan);
-        build_directive(
-            &mk(Value::Variant {
-                ty: "Option".into(),
-                tag: "Some".into(),
-                fields: vec![str_val("x")],
-            }),
-            &mut plan,
+    fn link_directives_are_collected_in_order_and_drained() {
+        use interpreter::machine::{push_link, take_link_directives};
+        let _ = take_link_directives(); // clear any stale state
+        push_link(false, "curl".to_string());
+        push_link(true, "vendor".to_string());
+        assert_eq!(
+            take_link_directives(),
+            vec![(false, "curl".to_string()), (true, "vendor".to_string())]
         );
-        assert!(plan.libs.is_empty() && plan.lib_paths.is_empty());
+        assert!(take_link_directives().is_empty(), "draining empties the queue");
     }
 }

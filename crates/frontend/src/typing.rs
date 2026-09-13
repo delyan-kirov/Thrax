@@ -4417,6 +4417,11 @@ impl<'a> Checker<'a> {
         // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
         // for generating hygienic, non-colliding binders in compile-time codegen.
         self.bind("@fresh", Type::arrow(str_ty(), str_ty()));
+        // `@link name` / `@link_path p`: steer the build (add a library / search
+        // path to the link line), used at compile time via `$ @e (@link "curl")`.
+        // The effect is the directive; the call returns unit.
+        self.bind("@link", Type::arrow(str_ty(), Type::con(ty::UNIT)));
+        self.bind("@link_path", Type::arrow(str_ty(), Type::con(ty::UNIT)));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name

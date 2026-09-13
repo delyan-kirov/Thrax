@@ -405,13 +405,17 @@ compile time on every backend:
    `emit-c` (`driver.rs`). A user-land `assert` is therefore just an `@e` whose
    expression traps on a false condition; no `@assert` builtin is needed.
 
-**Landed (BUILD directives).** An `@e` whose value is a `BUILD.Directive`
-(`Lib`/`LibPath`) steers the build: `compile_and_run_ct` reads the value via
-`machine::eval_value` (not the string rendering) and collects a `BuildPlan`
-`cmd_build` applies to the native link line (`-l` / `-L` + rpath), deduped
-against the `@extern` libraries. The interpreter's default set already covers
-libc/libm and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no
-preload for the common case (a general preload hook is a later refinement).
+**Landed (build directives).** `@link : @str -> {}` / `@link_path : @str -> {}`
+are `@`-builtins that, run at compile time via `$ @e (@link "curl")`, record a
+library / search path (`machine::push_link`); `lower_all` drains them
+(`take_link_directives`) into a `BuildPlan` that `cmd_build` applies to the native
+link line (`-l` / `-L` + rpath), deduped against the `@extern` libraries. They
+return `{}` (the effect is the directive, not a value) — no `@code`/value
+sniffing, no magic library. (This replaced an earlier `library/BUILD.thx` module
+whose `Directive` values the driver recognized by name, which broke the "compiler
+magic is `@`-named" rule.) The interpreter's default set already covers libc/libm
+and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no preload for
+the common case.
 
 **Still to come (the metaprogramming layer).** `@e` returning `@code` splices
 and re-checks (recurses); `@e` under a `<@meta>` handler with the live `Ast`/
@@ -423,9 +427,9 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
 ## 12. Suggested build order
 
 0. **DONE:** compile-time execution of `$ @e <expr>` (value discarded, trap
-   fails the build; section 11), and a `BUILD.Directive` (`Lib`/`LibPath`) result
-   steering the native link set / search paths (`library/BUILD.thx`,
-   `examples/CT_RUN.thx`). **NEXT:** the typed layer below.
+   fails the build; section 11), and `@link`/`@link_path` builtins steering the
+   native link set / search paths (`examples/CT_RUN.thx`). **NEXT:** the typed
+   layer below.
 1. **DONE:** `@token` as an opaque builtin type, and `@lex : @str -> @vec @token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
    `@e` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
@@ -446,7 +450,7 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    (re-check/recurse) is the remaining consumer.
 2b. **Item-position `$ @e X` injection (PARTIAL).** A top-level `$ @e X` whose
    result is `@code` (build it with `@parse_items`) injects its item(s) in place
-   of the directive, then re-compiles; a `BUILD.Directive` result steers the
+   of the directive, then re-compiles; a `@link`/`@link_path` call steers the
    build; any other value is a discarded compile-time run. The whole `$ @e X`
    directive carries a source span (`Item::Run(expr, span)`) so injection replaces
    it cleanly. **Limitation:** the module must type-check *before* injection to run
