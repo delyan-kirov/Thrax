@@ -293,7 +293,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@eval"
-        | "@abort" | "@emit" => 1,
+        | "@abort" | "@emit" | "@fresh" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -593,6 +593,19 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let msg = as_bytes(&a[0])?;
             eprintln!("thrax: {}", String::from_utf8_lossy(&msg));
             Ok(Value::Unit)
+        }
+        // A unique identifier string `prefix_m<n>` for hygienic compile-time
+        // codegen. The counter is monotonic per process, so names never collide.
+        "@fresh" => {
+            thread_local!(static FRESH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+            let n = FRESH.with(|c| {
+                let v = c.get();
+                c.set(v + 1);
+                v
+            });
+            let mut s = as_bytes(&a[0])?.as_ref().clone();
+            s.extend_from_slice(format!("_m{n}").as_bytes());
+            Ok(Value::Str(Rc::new(s)))
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }

@@ -4411,6 +4411,9 @@ impl<'a> Checker<'a> {
         // happens in lowering + the driver; `@e` must be applied directly.
         let e_ty = self.eng.fresh_generic();
         self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
+        // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
+        // for generating hygienic, non-colliding binders in compile-time codegen.
+        self.bind("@fresh", Type::arrow(str_ty(), str_ty()));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name

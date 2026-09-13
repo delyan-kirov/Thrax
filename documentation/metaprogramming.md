@@ -84,8 +84,8 @@ handler's compiler state):
 @eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @e
 @abort  : @str      -> a               -- LANDED. fail the build with this message
 @emit   : @str      -> {}              -- LANDED. print a message and continue
+@fresh  : @str      -> @str            -- LANDED. a unique identifier (prefix + counter), for hygiene
 @check  : @code     -> <@meta> @code
-@fresh  : @str      -> <@meta> @name
 @here   : ()        -> <@meta> @span
 ```
 

@@ -159,6 +159,12 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 }
 
 #[test]
+fn fresh_mints_distinct_names() {
+    // `@fresh` returns a unique identifier each call, for hygienic codegen.
+    assert_eq!(run("@mod T\n$ ck : @bool = @fresh \"t\" ?= @fresh \"t\"", "T.ck"), "false");
+}
+
+#[test]
 fn expr_position_e_lowers_to_a_synthetic_global() {
     // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
     // (the driver folds it to a constant and patches it; here we force the body
