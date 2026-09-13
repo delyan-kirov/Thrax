@@ -26,7 +26,7 @@ use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload,
     Program as AstProgram, RecField, SliceSlot, Ty,
 };
-use utilities::Aol;
+use utilities::{Aol, Span};
 
 use crate::lowering::data::{
     Arm, Clause as CoreClause, Effect, Handler as CoreHandler, Pat, Program, Term,
@@ -433,9 +433,11 @@ pub fn lower_program(
         }
     }
     // Expression-position `@e X` synthetic globals accumulated while lowering the
-    // bodies above; append them and record their names for the driver to fold.
-    let ct_evals: Vec<String> = lw.meta_evals.iter().map(|(n, _)| n.clone()).collect();
-    globals.extend(lw.meta_evals.drain(..));
+    // bodies above; append them and record (name, source-span) for the driver to
+    // fold/splice.
+    let ct_evals: Vec<(String, Span)> =
+        lw.meta_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
+    globals.extend(lw.meta_evals.drain(..).map(|(n, body, _)| (n, body)));
     Program {
         module: ast.text(program.module).to_string(),
         effects,
@@ -460,10 +462,11 @@ struct Lowerer<'a> {
     imports: Vec<String>,
     fresh: u32,
     /// Synthetic globals for expression-position `@e X`: each `@e X` becomes a
-    /// global `@e_expr#n = X` that the driver forces at compile time and patches
-    /// with the reified value, and the use site references it. Drained by
-    /// [`lower_program`] into `Program.globals` / `Program.ct_evals`.
-    meta_evals: Vec<(String, Term)>,
+    /// global `@e_expr#n = X` that the driver forces at compile time, with the
+    /// source span of the whole `@e X` so the driver can substitute the result's
+    /// source there and re-compile. Drained by [`lower_program`] into
+    /// `Program.globals` / `Program.ct_evals`.
+    meta_evals: Vec<(String, Term, Span)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -723,7 +726,8 @@ impl<'a> Lowerer<'a> {
                 // `@e X` in expression position: run X at compile time and embed
                 // its value here (see `lower_meta_e`).
                 if self.is_meta_e_head(f) {
-                    return self.lower_meta_e(x);
+                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                    return self.lower_meta_e(x, span);
                 }
                 // A foreign call flattens the record that groups its C parameters
                 // into positional arguments here, so the record is never built and
@@ -1155,10 +1159,10 @@ impl<'a> Lowerer<'a> {
     /// driver forces at compile time and patches with the reified constant, and
     /// this site references that global. Shared by direct application and the
     /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` fold too).
-    fn lower_meta_e(&mut self, arg: Aol<Expr>) -> Term {
+    fn lower_meta_e(&mut self, arg: Aol<Expr>, span: Span) -> Term {
         let body = self.expr(arg);
         let name = format!("@e_expr#{}", self.meta_evals.len());
-        self.meta_evals.push((name.clone(), body));
+        self.meta_evals.push((name.clone(), body, span));
         Term::var(&name)
     }
 
@@ -1292,8 +1296,12 @@ impl<'a> Lowerer<'a> {
             }
             // Pipes are application, so they compose with `@e`: `x |> @e` and
             // `@e <| x` fold `x` at compile time just like `@e x`.
-            "|>" if self.is_meta_e_head(rhs) => self.lower_meta_e(lhs),
-            "<|" if self.is_meta_e_head(lhs) => self.lower_meta_e(rhs),
+            "|>" if self.is_meta_e_head(rhs) => {
+                self.lower_meta_e(lhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
+            }
+            "<|" if self.is_meta_e_head(lhs) => {
+                self.lower_meta_e(rhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
+            }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
             // `x :: xs` prepends to a `@vec` (the default sequence), via CORE's `vcons`.

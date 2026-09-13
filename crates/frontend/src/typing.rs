@@ -3185,6 +3185,24 @@ impl<'a> Checker<'a> {
             ));
         }
 
+        // `@e X` runs X at compile time and embeds the result at this site. For a
+        // value it is the identity on X's type; for a `@code` fragment the embedded
+        // type is only known after the driver splices the code and re-checks, so it
+        // is a fresh variable here (which the surrounding context binds).
+        if matches!(self.node(head), Expr::Var { module: None, name } if self.text(*name) == "@e") {
+            if args.len() != 1 {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`@e` takes exactly one argument"
+                ));
+            }
+            let arg_ty = self.infer(args[0])?;
+            return Ok(match self.eng.zonk(&arg_ty) {
+                Type::Con(n) if n == "@code" => self.eng.fresh(),
+                _ => arg_ty,
+            });
+        }
+
         if let Expr::Var { module, name } = self.node(head) {
             let module = module.map(|m| self.text(m));
             let name = self.text(*name);

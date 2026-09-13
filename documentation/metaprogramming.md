@@ -440,14 +440,19 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
    **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
-2a. **DONE: expression-position `@e X` folding a value.** `@e` is a universal
-   compile-time splice usable at any expression site (`let x = @e (fib 10) in …`
-   folds to `55`, calling the module's own functions), composing with `|>`/`<|`.
-   Checker: `@e : a -> a`. Lowering: `@e X` becomes a synthetic global
-   `@e_expr#n = X` the site references. Driver: evaluate it, reify, and patch the
-   global's body with the constant, then re-lower (the iterative compile), so
-   compile-time-only ops (`@lex`) truly fold away. Scalars only for now;
-   aggregates and the `@code`-splice case (X : `@code`) are next.
+2a. **DONE: expression-position `@e X`, value-fold AND code-splice.** `@e` is a
+   universal compile-time splice at any expression site, composing with `|>`/`<|`.
+   `let x = @e (fib 10) in …` folds to `55`; `@e (gen "+")` where `gen` builds a
+   `@code` from data splices `1 + 2 * 3` and yields `7`; `@e` that produces `@e`
+   recurses to a fixpoint. Mechanism (unified on **source substitution**): the
+   checker types `@e X` as `X`'s type for a value, or a fresh var when `X : @code`
+   (deferred until the splice re-checks); `lower_all` is an expand loop that
+   compiles, forces each `@e` site, renders the result to source (a `@code`'s text,
+   or a scalar literal), substitutes it at the site's span, and re-compiles until
+   no `@e` remains. Compile-time-only ops (`@lex`) fold away entirely. Caveats:
+   scalar values or `@code` only (aggregate values not rendered yet); a nested
+   `@e (@e X)` inside one expression is not handled (recursion works across
+   rounds, e.g. generated code containing `@e`).
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

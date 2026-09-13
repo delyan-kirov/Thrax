@@ -261,11 +261,13 @@ fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
 /// The full pipeline up to (but not including) execution: load, parse, check,
 /// and lower every module. Returns the lowered modules (root first) and the
 /// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
-fn lower_all(
-    path: &str,
+/// Parse, check, and lower the loaded modules once, returning the lowered
+/// programs and the entry point. The parse/check state is local (self-borrowing),
+/// so only the owned `lowered` escapes; the expansion loop in [`lower_all`] calls
+/// this repeatedly on progressively `@e`-expanded sources.
+fn compile_sources(
+    loaded: &Loaded,
 ) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
-    let loaded = load_sources(path)?;
-
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
     for (_name, src_path, src) in &loaded.sources {
@@ -325,6 +327,134 @@ fn lower_all(
         return Err(ExitCode::FAILURE);
     }
     Ok((lowered, e.to_string(), kind))
+}
+
+/// Render a forced expression-position `@e X` value back into Thrax source to
+/// splice at the site. A `@code` result contributes the fragment it holds; a
+/// scalar contributes its literal. Aggregates are not renderable yet.
+fn render_meta_value(v: &interpreter::machine::data::PVal) -> std::result::Result<String, String> {
+    use interpreter::machine::data::Value;
+    // A `@code` fragment: splice its source text.
+    if let Value::Struct { name, fields } = &*v.borrow() {
+        if name == "@code" {
+            let src = fields
+                .iter()
+                .find(|(k, _)| k == "src")
+                .and_then(|(_, s)| match &*s.borrow() {
+                    Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                    _ => None,
+                })
+                .ok_or("malformed @code value")?;
+            return Ok(src);
+        }
+    }
+    // Otherwise a first-order value: render its Thrax literal.
+    match interpreter::machine::reify(v)? {
+        interpreter::machine::OwnedValue::Int(n) => Ok(n.to_string()),
+        interpreter::machine::OwnedValue::Real(r) => Ok(format!("{r:?}")),
+        interpreter::machine::OwnedValue::Bool(b) => {
+            Ok(if b { "@true" } else { "@false" }.to_string())
+        }
+        interpreter::machine::OwnedValue::Unit => Ok("{}".to_string()),
+        interpreter::machine::OwnedValue::Str(b) => Ok(thrax_str_literal(&b)),
+        _ => Err(
+            "an expression-position `@e` must currently produce `@code` or a scalar \
+             (@int/@float64/@str/@bool/{}); aggregates are not rendered yet"
+                .to_string(),
+        ),
+    }
+}
+
+/// Render bytes as a Thrax string literal that lexes back to those bytes: quote
+/// it and escape `\`, `"`, and a `?(` interpolation opener.
+fn thrax_str_literal(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let mut out = String::from("\"");
+    let cs: Vec<char> = s.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            // `?(` opens an interpolation; escape the `?` so it stays literal.
+            '?' if cs.get(i + 1) == Some(&'(') => out.push_str("\\?"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Compile `path`, iteratively expanding expression-position `@e X`: each round
+/// compiles the current sources, forces every `@e` site, renders the result to
+/// source, and substitutes it in place; it repeats until no `@e` sites remain
+/// (so `@e` that generates more `@e` keeps expanding). Top-level `$ @e`
+/// directives are left for [`compile_and_run_ct`].
+fn lower_all(
+    path: &str,
+) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
+    let mut loaded = load_sources(path)?;
+    let root_dir = Path::new(path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    loop {
+        let compiled = compile_sources(&loaded)?;
+        // Gather expression-position `@e` sites: (module, qualified global, span).
+        let sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_evals
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        if sites.is_empty() {
+            return Ok(compiled);
+        }
+        // Force each site and render its result to a replacement source string.
+        let ir = frontend::ir::lower_modules(&compiled.0);
+        let rd = root_dir.clone();
+        interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
+        let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
+        for (module, qualified, span) in sites {
+            let text = match interpreter::machine::eval_value(&ir, &qualified) {
+                Ok(v) => match render_meta_value(&v) {
+                    Ok(text) => text,
+                    Err(msg) => {
+                        interpreter::machine::set_meta_eval(None);
+                        eprintln!("thrax: a compile-time `@e` failed: {msg}");
+                        return Err(ExitCode::FAILURE);
+                    }
+                },
+                Err(diag) => {
+                    interpreter::machine::set_meta_eval(None);
+                    eprintln!("thrax: a compile-time `@e` failed:");
+                    eprint!("{}", diag.render("", &qualified));
+                    return Err(ExitCode::FAILURE);
+                }
+            };
+            // Parenthesize so the spliced text keeps its precedence at the site.
+            edits.push((module, span, format!("({text})")));
+        }
+        interpreter::machine::set_meta_eval(None);
+        splice_sources(&mut loaded.sources, edits);
+    }
+}
+
+/// Apply `@e` source substitutions to each module, right-to-left within a module
+/// so earlier spans stay valid as later ones are replaced.
+fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(String, utilities::Span, String)>) {
+    edits.sort_by(|a, b| b.1.start.cmp(&a.1.start));
+    for (module, span, text) in edits {
+        if let Some((_, _, src)) = sources.iter_mut().find(|(n, _, _)| *n == module) {
+            if span.end <= src.len() {
+                src.replace_range(span.start..span.end, &text);
+            }
+        }
+    }
 }
 
 /// A compiled REPL session: the lowered modules (root `REPL` first) and the
@@ -447,98 +577,44 @@ fn meta_eval_source(
     interpreter::machine::reify(&v)
 }
 
-/// Reify a compile-time value into a constant Core [`Term`] to embed at an
-/// expression-position `@e` site. First-order data only for now (a scalar); an
-/// aggregate/opaque result is a clear error (folding those is a later step).
-fn owned_to_term(
-    o: &interpreter::machine::OwnedValue,
-) -> std::result::Result<frontend::lowering::data::Term, String> {
-    use frontend::lowering::data::Term;
-    use interpreter::machine::OwnedValue as O;
-    Ok(match o {
-        O::Int(n) => Term::Int(*n),
-        O::Real(r) => Term::Real(*r),
-        O::Str(b) => Term::Str(b.clone()),
-        O::Bool(b) => Term::Bool(*b),
-        O::Unit => Term::Unit,
-        _ => {
-            return Err(
-                "an expression-position `@e` must currently evaluate to a scalar \
-                 (@int/@float64/@str/@bool/{}); aggregates are not folded yet"
-                    .to_string(),
-            )
-        }
-    })
-}
-
+/// Run the top-level `$ @e` directives at compile time (for their effect or a
+/// `BUILD` directive); the value is discarded. Expression-position `@e` was
+/// already expanded away by [`lower_all`], so only `ct_runs` remain here.
 fn compile_and_run_ct(
-    lowered: &mut [frontend::lowering::data::Program],
+    lowered: &[frontend::lowering::data::Program],
     root_dir: &Path,
 ) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
     // Install the `@eval` host so a `$ @e` may compile and run generated code.
     let rd = root_dir.to_path_buf();
     interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
     let ir = frontend::ir::lower_modules(lowered);
-    let fail = |msg: &str, diag: &utilities::Diagnostic, q: &str| -> ExitCode {
-        interpreter::machine::set_meta_eval(None);
-        eprintln!("thrax: {msg}");
-        eprint!("{}", diag.render("", q));
-        ExitCode::FAILURE
-    };
     let mut plan = BuildPlan::default();
-    // `$ @e` directives: forced for their effect / a `BUILD` directive, discarded.
-    for p in lowered.iter() {
+    for p in lowered {
         for name in &p.ct_runs {
             // `lower_modules` prefixes every global with its module; match that.
             let qualified = format!("{}.{}", p.module, name);
             match interpreter::machine::eval_value(&ir, &qualified) {
                 Ok(v) => build_directive(&v, &mut plan),
-                Err(diag) => return Err(fail("a compile-time `@e` failed:", &diag, &qualified)),
+                Err(diag) => {
+                    interpreter::machine::set_meta_eval(None);
+                    eprintln!("thrax: a compile-time `@e` failed:");
+                    eprint!("{}", diag.render("", &qualified));
+                    return Err(ExitCode::FAILURE);
+                }
             }
         }
     }
-    // Expression-position `@e X`: force, reify to a constant, and remember the
-    // patch. `ir` is owned (not borrowing `lowered`), so we can mutate `lowered`
-    // afterwards.
-    let mut patches: Vec<(usize, String, frontend::lowering::data::Term)> = Vec::new();
-    for (k, p) in lowered.iter().enumerate() {
-        for name in &p.ct_evals {
-            let qualified = format!("{}.{}", p.module, name);
-            let v = match interpreter::machine::eval_value(&ir, &qualified) {
-                Ok(v) => v,
-                Err(diag) => return Err(fail("a compile-time `@e` failed:", &diag, &qualified)),
-            };
-            let term = interpreter::machine::reify(&v)
-                .and_then(|o| owned_to_term(&o))
-                .map_err(|msg| {
-                    interpreter::machine::set_meta_eval(None);
-                    eprintln!("thrax: a compile-time `@e` failed: {msg}");
-                })
-                .map_err(|_| ExitCode::FAILURE)?;
-            patches.push((k, name.clone(), term));
-        }
-    }
     interpreter::machine::set_meta_eval(None);
-    if patches.is_empty() {
-        return Ok((ir, plan));
-    }
-    // Bake each folded constant into its synthetic global, then re-lower so the
-    // use sites (and the native backend) see the compile-time value.
-    for (k, name, term) in patches {
-        if let Some(slot) = lowered[k].globals.iter_mut().find(|(n, _)| *n == name) {
-            slot.1 = term;
-        }
-    }
-    Ok((frontend::ir::lower_modules(lowered), plan))
+    Ok((ir, plan))
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    let (mut lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let (ir, _plan) = match compile_and_run_ct(&mut lowered, root_dir) {
+    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -579,12 +655,12 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (mut lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    if let Err(code) = compile_and_run_ct(&mut lowered, root_dir) {
+    if let Err(code) = compile_and_run_ct(&lowered, root_dir) {
         return code;
     }
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
@@ -599,12 +675,12 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (mut lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let plan = match compile_and_run_ct(&mut lowered, root_dir) {
+    let plan = match compile_and_run_ct(&lowered, root_dir) {
         Ok((_ir, plan)) => plan,
         Err(code) => return code,
     };

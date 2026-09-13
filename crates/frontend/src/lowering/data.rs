@@ -33,11 +33,11 @@ pub struct Program {
     /// the driver forces it through the interpreter at compile time and discards
     /// the value (a trap fails the build). See [`super::lower_program`].
     pub ct_runs: Vec<String>,
-    /// Names of the synthetic globals that back expression-position `@e X`. Like
-    /// `ct_runs`, but the driver reifies the value and patches this global's body
-    /// with the constant (so the use site that references it embeds the compile-
-    /// time value). See [`super::lower_program`].
-    pub ct_evals: Vec<String>,
+    /// Expression-position `@e X` sites: `(synthetic global name, source span of
+    /// the `@e X`)`. The driver forces the global at compile time, renders the
+    /// value/code to source, substitutes it at the span, and re-compiles (the
+    /// iterative expansion). See [`super::lower_program`].
+    pub ct_evals: Vec<(String, utilities::Span)>,
 }
 
 /// One effect operation declared by `$ Effect : @effect = op : ...`.
