@@ -141,8 +141,8 @@ fn lex_tokenizes_a_string_into_opaque_tokens() {
 #[test]
 fn parse_str_produces_opaque_code() {
     // A valid expression parses into an opaque `@code` carrying its source. A
-    // syntax error traps (verified via `thrax run`: a compile-time `@run` of a
-    // bad `@parse_str` fails the build), the same fault path as a `@run` trap.
+    // syntax error traps (verified via `thrax run`: a compile-time `@e` of a
+    // bad `@parse_str` fails the build), the same fault path as a `@e` trap.
     let src = "@mod T\n$ c : @code = @parse_str \"1 + 2\"";
     assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
 }
@@ -160,14 +160,14 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 
 #[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
-    // `$ @run <expr>` becomes a synthetic global (`Module.@run#i`) that the driver
+    // `$ @e <expr>` becomes a synthetic global (`Module.@e#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted
     // and evaluates.
     let src = "@mod T\n\
                $ triple : @int -> @int = \\n = n * 3\n\
-               $ @run triple 14\n\
+               $ @e triple 14\n\
                $ test : @int = 0";
-    assert_eq!(run(src, "T.@run#0"), "42");
+    assert_eq!(run(src, "T.@e#0"), "42");
 }
 
 /// Compile a tiny C source to a shared library in a temp dir, returning its path.

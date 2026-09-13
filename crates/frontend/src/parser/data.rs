@@ -206,7 +206,8 @@ pub enum Item {
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
-    /// `$ @run expr`: run the expression at compile time (see the driver). There
+    /// `$ @e expr`: run the expression at compile time (see the driver). `@e` is
+    /// also an expression intrinsic (`... @e X ...`); this is the item form. There
     /// is no `@assert` builtin; assert is user code (`if ok => {} else @abort ..`).
     Run(Aol<Expr>),
 }

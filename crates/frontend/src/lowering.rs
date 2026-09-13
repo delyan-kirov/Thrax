@@ -409,12 +409,12 @@ pub fn lower_program(
                     .unwrap_or_else(|| ast.text(*name).to_string());
                 globals.push((key, term));
             }
-            // `$ @run <expr>`: back it with a synthetic global, forced at compile
+            // `$ @e <expr>`: back it with a synthetic global, forced at compile
             // time by the driver. The name is bare here (index-tagged so several
-            // `@run`s in one module never collide); `lower_modules` prefixes the
+            // `@e`s in one module never collide); `lower_modules` prefixes the
             // module, and the driver qualifies the same way to force it.
             Item::Run(expr) => {
-                let name = format!("@run#{}", ct_runs.len());
+                let name = format!("@e#{}", ct_runs.len());
                 let term = lw.expr(*expr);
                 globals.push((name.clone(), term));
                 ct_runs.push(name);

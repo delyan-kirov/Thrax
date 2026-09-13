@@ -1,7 +1,7 @@
 @mod CT_RUN
 
 # \file CT_RUN.thx
-# \info Compile-time execution: `$ @run <expr>` forces the expression through
+# \info Compile-time execution: `$ @e <expr>` forces the expression through
 #       the interpreter at build time (Jai's #run). The value is discarded --
 #       except a BUILD directive (`BUILD.lib` / `BUILD.lib_path`), which
 #       steers the compilation itself: the named library joins the link line
@@ -14,11 +14,11 @@ $ with BUILD
 $ triple : @int -> @int = \n = n * 3
 
 # A plain expression, forced at build time, value discarded.
-$ @run triple 14
+$ @e triple 14
 
 # A BUILD directive: link/preload libm (the suite already uses libm via
 # MATH, so this is exercised end to end in both engines without adding a
 # dependency).
-$ @run BUILD.lib "m"
+$ @e BUILD.lib "m"
 
 $ test : @int = 0

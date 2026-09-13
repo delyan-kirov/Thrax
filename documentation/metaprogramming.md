@@ -6,7 +6,7 @@ decisions taken during design, and the intended build order.
 **Scope:** compile-time metaprogramming: exposing the compiler pipeline
 (tokens -> AST -> value) as a library, macro expansion, compiler messages, and
 compile-time IO. Builds directly on the effect system
-(documentation/effect-system-design.md) and CTFE (`$ @run`).
+(documentation/effect-system-design.md) and CTFE (`$ @e`).
 
 ---
 
@@ -52,7 +52,7 @@ Per the base-type convention (no friendly names in the compiler; `@int`,
   node set can evolve without breaking library code.
 - `@span`, `@diag`, `@name`, `@typeinfo` -- supporting builtins.
 
-**Pure intrinsics (no effect; usable inside `$ @run` today).** Lexing and
+**Pure intrinsics (no effect; usable inside `$ @e` today).** Lexing and
 parsing need no compiler state, so they are ordinary intrinsics, not `<@meta>`
 operations:
 
@@ -81,7 +81,7 @@ Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; the rest need the
 handler's compiler state):
 
 ```
-@eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @run
+@eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @e
 @abort  : @str      -> a               -- LANDED. fail the build with this message
 @emit   : @str      -> {}              -- LANDED. print a message and continue
 @check  : @code     -> <@meta> @code
@@ -93,7 +93,7 @@ handler's compiler state):
 `<@meta>` handler; when the handler lands it subsumes this. `@abort`/`@emit`
 take a plain `@str` for now (a richer `@diag` with spans comes with the handler).
 There is no `@assert` builtin: assert is user code,
-`$ @run (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.thx`).
+`$ @e (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.thx`).
 
 Compiler messages, receive (query the accumulated compile state):
 
@@ -129,41 +129,41 @@ curated subset of the internal lexer `Kind` is exposed; internal-only tags
 
 ---
 
-## 2. `@run` is the only eliminator
+## 2. `@e` is the only eliminator
 
 **Decision.** There is no dedicated macro-invocation syntax (`foo!(...)`).
-`$ @run e` is the single construct that runs code at compile time, and it is
+`$ @e e` is the single construct that runs code at compile time, and it is
 the eliminator for `<@meta>`. A macro is just a `<@meta>` computation that
-`@run` discharges.
+`@e` discharges.
 
-**Why.** `$ @run` already exists as CTFE (`Expr::Run` in the parser AST) and
+**Why.** `$ @e` already exists as CTFE (`Expr::Run` in the parser AST) and
 already drives the CEK machine at compile time. Reusing it means no new parser
 state, no token-tree slurping, and one concept instead of two. Macro expansion
-becomes "`@run` returned a fragment."
+becomes "`@e` returned a fragment."
 
 **Arguments are ordinary expressions; raw tokens are opt-in.** Because
-`@run (f a b)` is an application, `a` and `b` parse and check as normal Thrax
+`@e (f a b)` is an application, `a` and `b` parse and check as normal Thrax
 before `f` runs. Raw-token input is requested explicitly by passing a string
 literal through `@lex` (section 7):
 
 ```
-@run (f x)                -- f sees the value / AST of x   (common case)
-@run (f (@lex "x.y z"))   -- f sees []@token               (DSL / not-valid-Thrax case)
+@e (f x)                -- f sees the value / AST of x   (common case)
+@e (f (@lex "x.y z"))   -- f sees []@token               (DSL / not-valid-Thrax case)
 ```
 
 This is more composable than Rust's implicit token slurp: the raw-ness is
 visible at the call site, not hidden in the callee's signature.
 
-**Rejected:** a separate `@splice` keyword alongside a value-only `@run`. One
+**Rejected:** a separate `@splice` keyword alongside a value-only `@e`. One
 eliminator is simpler and the result type disambiguates (section 3).
 
 ---
 
-## 3. `@run` normalizes its body to a residual AST node (fixpoint)
+## 3. `@e` normalizes its body to a residual AST node (fixpoint)
 
-`@run` does not "return a value" or "return code." It reduces its body to an
+`@e` does not "return a value" or "return code." It reduces its body to an
 AST node with no residual `<@meta>` and nothing left unparsed. Elaborating
-`@run e`:
+`@e e`:
 
 1. **Check** `e`. Its residual effect row must be a subset of the effects the
    compile-time world discharges (section 6); its result type is `t`.
@@ -171,12 +171,12 @@ AST node with no residual `<@meta>` and nothing left unparsed. Elaborating
    giving a compile-time value `v`.
 3. **Reify**, dispatching on `t`:
    - `t = []@token` -> `@parse v` to `@code`, then fall into the `@code` case.
-   - `t = @code` -> the fragment may contain further `@run` nodes; expand those
+   - `t = @code` -> the fragment may contain further `@e` nodes; expand those
      (recurse), then splice the resulting typed AST at this site.
    - any other `t` -> emit the AST node that denotes `v` (a literal leaf for a
      primitive, a constructor subtree for an aggregate).
 4. **Re-check** the spliced/embedded AST against the context the original
-   `@run` sat in.
+   `@e` sat in.
 
 Two loops are tangled here and separating them makes the recursion precise:
 
@@ -184,8 +184,8 @@ Two loops are tangled here and separating them makes the recursion precise:
   artifact has one direction toward being embeddable: tokens want parsing, code
   wants splicing, a value wants reifying.
 - The **recursion** iterates, and comes from two places: a returned `@code`
-  fragment containing further `@run` nodes (step 3), or the meta computation
-  calling `@eval`/`@parse`/`@run` internally (step 2). A depth/iteration budget
+  fragment containing further `@e` nodes (step 3), or the meta computation
+  calling `@eval`/`@parse`/`@e` internally (step 2). A depth/iteration budget
   bounds it; exceeding the budget is a diagnostic, not a hang.
 
 **A value is the base case of code.** Reifying a value is producing the AST
@@ -203,7 +203,7 @@ reifiable types and produces a clean diagnostic ("cannot embed a compile-time
 **Escape hatch for code-as-value.** When an author genuinely wants a
 compile-time-computed `@code` *as a runtime constant* (a program shipping
 fragments for its own later use) rather than spliced, they wrap it in a distinct
-`@frozen` type that does not trigger splicing: `@run (@freeze e)` embeds instead
+`@frozen` type that does not trigger splicing: `@e (@freeze e)` embeds instead
 of splicing.
 
 ---
@@ -215,14 +215,14 @@ machine). If it returns `@code`, the spliced result is checked *again* against
 the surrounding context:
 
 ```
-let n : @int = @run (gen ()) in ...
+let n : @int = @e (gen ()) in ...
 --              ^ checked as <@meta> @code to run it,
 --                then the inserted fragment is checked against @int
 ```
 
-So the `@run` node is type-checked twice: once for the generator, once for the
+So the `@e` node is type-checked twice: once for the generator, once for the
 elaborated result. This localizes the "generated code has a type error" story
-to the `@run` site.
+to the `@e` site.
 
 ---
 
@@ -232,10 +232,10 @@ to the `@run` site.
 No new error machinery.
 
 **Why.** `utilities::error::Diagnostic` is already a frame chain (root cause
-first, context frames appended as it unwinds, plus a closing note). The `@run`
+first, context frames appended as it unwinds, plus a closing note). The `@e`
 handler wraps a macro's diagnostic with `.context(EXPANSION, run_site_span, ..)`
 so the rendered chain reads "in expansion of ... : <the macro's message>."
-`@here` returns the `@run` node's span for carets. `@abort` is a value-less
+`@here` returns the `@e` node's span for carets. `@abort` is a value-less
 control operation (same shape as the `Loop` effect) that unwinds expansion.
 
 This is the "send a useful message instead of a weird error" requirement, using
@@ -247,16 +247,16 @@ machinery already shipped.
 
 **Decision.** The compile-time runtime discharges exactly the effects its
 context installs handlers for; a residual effect after the eliminator is a type
-error. Ordinary `@run` installs `<@meta>` only, so it is **hermetic**: a library
+error. Ordinary `@e` installs `<@meta>` only, so it is **hermetic**: a library
 macro can compute, parse, query, and emit, but cannot touch the world.
 Compile-time IO is available only inside `@build` (section 10), the context that
 additionally discharges `<@io>`. Building is inherently IO, so this is where IO
 belongs and nowhere else.
 
 **Why the boundary is the context, not a keyword.** `@build` is a special
-function (like `MAIN.main`), and the difference between it and ordinary `@run`
+function (like `MAIN.main`), and the difference between it and ordinary `@e`
 is purely which handlers the compile-time runtime installs around it: `<@meta>`
-for `@run`, `<@meta>` + `<@io>` for `@build`. Nothing in the surface syntax
+for `@e`, `<@meta>` + `<@io>` for `@build`. Nothing in the surface syntax
 changes; a macro that performs `@io` simply fails to type-check outside `@build`
 because no handler for it is in scope.
 
@@ -329,7 +329,7 @@ provided so the common case is a single call.
 ## 8. Phase ordering
 
 A generator must be fully checked and CTFE-evaluable before its first use. This
-is the constraint `$ @run` already imposes, not a new one.
+is the constraint `$ @e` already imposes, not a new one.
 
 - Cross-module: the generator's module is compiled before modules that use it
   (topological order, already required).
@@ -354,7 +354,7 @@ the surface.
 `MAIN.main`: the compiler recognizes it by name and runs it during compilation.
 It is **not** a separate effect. Everything it does (query the compiler, inject
 definitions, send/receive messages) is expressed through `<@meta>` (section 1);
-its one privilege over ordinary `@run` is that the runtime around it also
+its one privilege over ordinary `@e` is that the runtime around it also
 discharges `<@io>` (section 6), because building is IO.
 
 **Messages flow through `<@meta>`, from anywhere to `@build`.** Any
@@ -371,37 +371,37 @@ consumer in control.
 checked, so `@build` is not a single end-of-run pass. The compiler runs it,
 applies its injections and drains its messages, re-processes the delta, and
 repeats until nothing new is produced, under a budget (the same discipline as
-`@run` expansion in section 3). This is the Jai message-loop model expressed as
+`@e` expansion in section 3). This is the Jai message-loop model expressed as
 a fixpoint rather than a manual `while` over `compiler_get_message`.
 
-Deferred until inline macros (`@run` + quotation) land.
+Deferred until inline macros (`@e` + quotation) land.
 
 ---
 
 ## 11. What changes in the compiler
 
-`@run`/`@assert` are top-level items (`Item::Run`/`Item::Assert`), not
+`@e`/`@assert` are top-level items (`Item::Run`/`Item::Assert`), not
 expressions. In the Rust port they were parsed but inert (the C++ CTFE was never
 ported).
 
-**Landed (compile-time execution of `@run`).** `$ @run <expr>` now runs at
+**Landed (compile-time execution of `@e`).** `$ @e <expr>` now runs at
 compile time on every backend:
 
 1. Checker: after all defs are checked, each `Item::Run` expression is inferred
    under a fresh pure ambient, so it resolves like a top-level body and an effect
    it performs that the compile-time runtime cannot discharge (e.g. `<@io>`) is
    rejected (`typing.rs`).
-2. Lowering: each `@run e` becomes a synthetic global `@run#i` pushed into
+2. Lowering: each `@e e` becomes a synthetic global `@e#i` pushed into
    `Program.globals`, with its bare name recorded in the new `Program.ct_runs`
    (`lowering.rs`, `lowering/data.rs`). It flows through `ir::lower` as an
    ordinary global, so no IR change was needed.
 3. Driver: `compile_and_run_ct` builds the interpreter IR and forces each
-   `Module.@run#i` global via `machine::eval`. The value is discarded; a trap
+   `Module.@e#i` global via `machine::eval`. The value is discarded; a trap
    becomes a build error. Runs before the entry, shared by `run`/`build`/
-   `emit-c` (`driver.rs`). A user-land `assert` is therefore just an `@run` whose
+   `emit-c` (`driver.rs`). A user-land `assert` is therefore just an `@e` whose
    expression traps on a false condition; no `@assert` builtin is needed.
 
-**Landed (BUILD directives).** An `@run` whose value is a `BUILD.Directive`
+**Landed (BUILD directives).** An `@e` whose value is a `BUILD.Directive`
 (`Lib`/`LibPath`) steers the build: `compile_and_run_ct` reads the value via
 `machine::eval_value` (not the string rendering) and collects a `BuildPlan`
 `cmd_build` applies to the native link line (`-l` / `-L` + rpath), deduped
@@ -409,8 +409,8 @@ against the `@extern` libraries. The interpreter's default set already covers
 libc/libm and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no
 preload for the common case (a general preload hook is a later refinement).
 
-**Still to come (the metaprogramming layer).** `@run` returning `@code` splices
-and re-checks (recurses); `@run` under a `<@meta>` handler with the live `Ast`/
+**Still to come (the metaprogramming layer).** `@e` returning `@code` splices
+and re-checks (recurses); `@e` under a `<@meta>` handler with the live `Ast`/
 interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
 `@build` additionally installing `<@io>`.
 
@@ -418,13 +418,13 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
 
 ## 12. Suggested build order
 
-0. **DONE:** compile-time execution of `$ @run <expr>` (value discarded, trap
+0. **DONE:** compile-time execution of `$ @e <expr>` (value discarded, trap
    fails the build; section 11), and a `BUILD.Directive` (`Lib`/`LibPath`) result
    steering the native link set / search paths (`library/BUILD.thx`,
    `examples/CT_RUN.thx`). **NEXT:** the typed layer below.
 1. **DONE:** `@token` as an opaque builtin type, and `@lex : @str -> @vec @token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
-   `@run` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
+   `@e` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
    `@code` = source text, syntax errors trap). **NEXT:** consumers of `@code`.
 2. **DONE: `@eval : @code -> a`** (compile + run a fragment at build time).
    `@code` consumers need the driver's pipeline, but the interpreter crate cannot
@@ -435,10 +435,10 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    tied to its own `Program`; only first-order data (`Int`/`Str`/`Bool`/tuples/
    structs/variants/vectors) crosses, a closure/opaque handle is rejected. The
    host reuses `compile_session` (the REPL's re-entrant compile) via
-   `driver::meta_eval_source`. `@eval` is only usable inside `$ @run` (the host is
+   `driver::meta_eval_source`. `@eval` is only usable inside `$ @e` (the host is
    installed only there; a runtime `@eval` faults). Result type is polymorphic
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
-   **NEXT:** `@run` splicing an `@code` result back into the program
+   **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
@@ -450,5 +450,5 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `@msg`/`@add_code`/query fixpoint.
 
 The load-bearing point: the two hard organs already exist. A compile-time
-evaluator (CEK + `$ @run`) and a chainable diagnostic model. The macro system
+evaluator (CEK + `$ @e`) and a chainable diagnostic model. The macro system
 is mostly *exposing* them, plus one expansion path on `Run` and quotation sugar.
