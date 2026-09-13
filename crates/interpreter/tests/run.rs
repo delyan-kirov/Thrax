@@ -159,6 +159,17 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 }
 
 #[test]
+fn expr_position_e_lowers_to_a_synthetic_global() {
+    // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
+    // (the driver folds it to a constant and patches it; here we force the body
+    // directly to confirm the site was lowered and the callee is in scope).
+    let src = "@mod T\n\
+               $ fib : @int -> @int = \\n = if n ?< 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ x : @int = @e (fib 10)";
+    assert_eq!(run(src, "T.@e_expr#0"), "55");
+}
+
+#[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // `$ @e <expr>` becomes a synthetic global (`Module.@e#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted

@@ -440,6 +440,14 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
    **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
+2a. **DONE: expression-position `@e X` folding a value.** `@e` is a universal
+   compile-time splice usable at any expression site (`let x = @e (fib 10) in …`
+   folds to `55`, calling the module's own functions), composing with `|>`/`<|`.
+   Checker: `@e : a -> a`. Lowering: `@e X` becomes a synthetic global
+   `@e_expr#n = X` the site references. Driver: evaluate it, reify, and patch the
+   global's body with the constant, then re-lower (the iterative compile), so
+   compile-time-only ops (`@lex`) truly fold away. Scalars only for now;
+   aggregates and the `@code`-splice case (X : `@code`) are next.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

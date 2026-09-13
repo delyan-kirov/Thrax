@@ -447,42 +447,98 @@ fn meta_eval_source(
     interpreter::machine::reify(&v)
 }
 
+/// Reify a compile-time value into a constant Core [`Term`] to embed at an
+/// expression-position `@e` site. First-order data only for now (a scalar); an
+/// aggregate/opaque result is a clear error (folding those is a later step).
+fn owned_to_term(
+    o: &interpreter::machine::OwnedValue,
+) -> std::result::Result<frontend::lowering::data::Term, String> {
+    use frontend::lowering::data::Term;
+    use interpreter::machine::OwnedValue as O;
+    Ok(match o {
+        O::Int(n) => Term::Int(*n),
+        O::Real(r) => Term::Real(*r),
+        O::Str(b) => Term::Str(b.clone()),
+        O::Bool(b) => Term::Bool(*b),
+        O::Unit => Term::Unit,
+        _ => {
+            return Err(
+                "an expression-position `@e` must currently evaluate to a scalar \
+                 (@int/@float64/@str/@bool/{}); aggregates are not folded yet"
+                    .to_string(),
+            )
+        }
+    })
+}
+
 fn compile_and_run_ct(
-    lowered: &[frontend::lowering::data::Program],
+    lowered: &mut [frontend::lowering::data::Program],
     root_dir: &Path,
 ) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
-    // Install the `@eval` host so a `$ @run` may compile and run generated code.
+    // Install the `@eval` host so a `$ @e` may compile and run generated code.
     let rd = root_dir.to_path_buf();
     interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
     let ir = frontend::ir::lower_modules(lowered);
+    let fail = |msg: &str, diag: &utilities::Diagnostic, q: &str| -> ExitCode {
+        interpreter::machine::set_meta_eval(None);
+        eprintln!("thrax: {msg}");
+        eprint!("{}", diag.render("", q));
+        ExitCode::FAILURE
+    };
     let mut plan = BuildPlan::default();
-    for p in lowered {
+    // `$ @e` directives: forced for their effect / a `BUILD` directive, discarded.
+    for p in lowered.iter() {
         for name in &p.ct_runs {
-            // `lower_modules` prefixes every global with its module; match that to
-            // force the synthetic `@run` global.
+            // `lower_modules` prefixes every global with its module; match that.
             let qualified = format!("{}.{}", p.module, name);
             match interpreter::machine::eval_value(&ir, &qualified) {
                 Ok(v) => build_directive(&v, &mut plan),
-                Err(diag) => {
-                    interpreter::machine::set_meta_eval(None);
-                    eprintln!("thrax: a compile-time `@run` failed:");
-                    eprint!("{}", diag.render("", &qualified));
-                    return Err(ExitCode::FAILURE);
-                }
+                Err(diag) => return Err(fail("a compile-time `@e` failed:", &diag, &qualified)),
             }
         }
     }
+    // Expression-position `@e X`: force, reify to a constant, and remember the
+    // patch. `ir` is owned (not borrowing `lowered`), so we can mutate `lowered`
+    // afterwards.
+    let mut patches: Vec<(usize, String, frontend::lowering::data::Term)> = Vec::new();
+    for (k, p) in lowered.iter().enumerate() {
+        for name in &p.ct_evals {
+            let qualified = format!("{}.{}", p.module, name);
+            let v = match interpreter::machine::eval_value(&ir, &qualified) {
+                Ok(v) => v,
+                Err(diag) => return Err(fail("a compile-time `@e` failed:", &diag, &qualified)),
+            };
+            let term = interpreter::machine::reify(&v)
+                .and_then(|o| owned_to_term(&o))
+                .map_err(|msg| {
+                    interpreter::machine::set_meta_eval(None);
+                    eprintln!("thrax: a compile-time `@e` failed: {msg}");
+                })
+                .map_err(|_| ExitCode::FAILURE)?;
+            patches.push((k, name.clone(), term));
+        }
+    }
     interpreter::machine::set_meta_eval(None);
-    Ok((ir, plan))
+    if patches.is_empty() {
+        return Ok((ir, plan));
+    }
+    // Bake each folded constant into its synthetic global, then re-lower so the
+    // use sites (and the native backend) see the compile-time value.
+    for (k, name, term) in patches {
+        if let Some(slot) = lowered[k].globals.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = term;
+        }
+    }
+    Ok((frontend::ir::lower_modules(lowered), plan))
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (mut lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir) {
+    let (ir, _plan) = match compile_and_run_ct(&mut lowered, root_dir) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -523,12 +579,12 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (mut lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    if let Err(code) = compile_and_run_ct(&lowered, root_dir) {
+    if let Err(code) = compile_and_run_ct(&mut lowered, root_dir) {
         return code;
     }
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
@@ -543,12 +599,12 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (mut lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let plan = match compile_and_run_ct(&lowered, root_dir) {
+    let plan = match compile_and_run_ct(&mut lowered, root_dir) {
         Ok((_ir, plan)) => plan,
         Err(code) => return code,
     };

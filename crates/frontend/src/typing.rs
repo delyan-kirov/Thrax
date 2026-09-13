@@ -4388,6 +4388,11 @@ impl<'a> Checker<'a> {
         let abort_res = self.eng.fresh_generic();
         self.bind("@abort", Type::arrow(str_ty(), abort_res));
         self.bind("@emit", Type::arrow(str_ty(), Type::con(ty::UNIT)));
+        // `@e X` runs X at compile time and embeds its value at the use site, so
+        // type-wise it is the identity on X's type (the value case). The fold
+        // happens in lowering + the driver; `@e` must be applied directly.
+        let e_ty = self.eng.fresh_generic();
+        self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name

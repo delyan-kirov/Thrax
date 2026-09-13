@@ -389,6 +389,7 @@ pub fn lower_program(
         module: ast.text(program.module).to_string(),
         imports,
         fresh: 0,
+        meta_evals: Vec::new(),
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
@@ -431,6 +432,10 @@ pub fn lower_program(
             _ => {}
         }
     }
+    // Expression-position `@e X` synthetic globals accumulated while lowering the
+    // bodies above; append them and record their names for the driver to fold.
+    let ct_evals: Vec<String> = lw.meta_evals.iter().map(|(n, _)| n.clone()).collect();
+    globals.extend(lw.meta_evals.drain(..));
     Program {
         module: ast.text(program.module).to_string(),
         effects,
@@ -441,6 +446,7 @@ pub fn lower_program(
             .map(|(n, l)| (n.clone(), l.clone()))
             .collect(),
         ct_runs,
+        ct_evals,
     }
 }
 
@@ -453,6 +459,11 @@ struct Lowerer<'a> {
     module: String,
     imports: Vec<String>,
     fresh: u32,
+    /// Synthetic globals for expression-position `@e X`: each `@e X` becomes a
+    /// global `@e_expr#n = X` that the driver forces at compile time and patches
+    /// with the reified value, and the use site references it. Drained by
+    /// [`lower_program`] into `Program.globals` / `Program.ct_evals`.
+    meta_evals: Vec<(String, Term)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -708,6 +719,11 @@ impl<'a> Lowerer<'a> {
                 // is a no-op at runtime (the `@extern` boundary narrows to the C type).
                 if self.is_cast_head(f) {
                     return self.expr(x);
+                }
+                // `@e X` in expression position: run X at compile time and embed
+                // its value here (see `lower_meta_e`).
+                if self.is_meta_e_head(f) {
+                    return self.lower_meta_e(x);
                 }
                 // A foreign call flattens the record that groups its C parameters
                 // into positional arguments here, so the record is never built and
@@ -1131,6 +1147,21 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Whether `f` is the `@cast` intrinsic in head position (erased at lowering).
+    fn is_meta_e_head(&self, f: Aol<Expr>) -> bool {
+        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@e")
+    }
+
+    /// Lower an expression-position `@e arg`: `arg` becomes a synthetic global the
+    /// driver forces at compile time and patches with the reified constant, and
+    /// this site references that global. Shared by direct application and the
+    /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` fold too).
+    fn lower_meta_e(&mut self, arg: Aol<Expr>) -> Term {
+        let body = self.expr(arg);
+        let name = format!("@e_expr#{}", self.meta_evals.len());
+        self.meta_evals.push((name.clone(), body));
+        Term::var(&name)
+    }
+
     fn is_cast_head(&self, f: Aol<Expr>) -> bool {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
     }
@@ -1259,6 +1290,10 @@ impl<'a> Lowerer<'a> {
                     body: Arc::new(self.expr(rhs)),
                 }
             }
+            // Pipes are application, so they compose with `@e`: `x |> @e` and
+            // `@e <| x` fold `x` at compile time just like `@e x`.
+            "|>" if self.is_meta_e_head(rhs) => self.lower_meta_e(lhs),
+            "<|" if self.is_meta_e_head(lhs) => self.lower_meta_e(rhs),
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
             // `x :: xs` prepends to a `@vec` (the default sequence), via CORE's `vcons`.
