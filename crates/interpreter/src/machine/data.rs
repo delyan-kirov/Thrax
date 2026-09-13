@@ -291,7 +291,8 @@ fn as_byte(v: &PVal) -> Result<u8> {
 pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
+        | "@lex" | "@token_kind" | "@token_text" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -516,7 +517,95 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
+        // Metaprogramming: tokenize a string into opaque `@token` values. A lex
+        // error is a `Diagnostic`, which propagates as a fault (fails a `@run`).
+        "@lex" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@lex: the argument is not valid UTF-8"))?;
+            let mut lx = frontend::Lexer::new(src);
+            let mut toks: Vec<PVal> = Vec::new();
+            loop {
+                let t = lx.next_token()?;
+                if matches!(t.kind, frontend::Kind::Eof) {
+                    break;
+                }
+                let kind = token_kind_name(t.kind);
+                let text = src[t.span.start..t.span.end].as_bytes().to_vec();
+                toks.push(mk(Value::Struct {
+                    name: "@token".to_string(),
+                    fields: vec![
+                        ("kind".to_string(), mk(Value::Str(Rc::new(kind.as_bytes().to_vec())))),
+                        ("text".to_string(), mk(Value::Str(Rc::new(text)))),
+                    ],
+                }));
+            }
+            Ok(Value::Vector(Rc::new(toks)))
+        }
+        "@token_kind" => token_field(&a[0], "kind"),
+        "@token_text" => token_field(&a[0], "text"),
         _ => Err(fault(format!("unknown built-in `{name}`"))),
+    }
+}
+
+/// The tag name reported by `@token_kind` for a lexical [`frontend::Kind`]. The
+/// value-carrying literals collapse to a plain tag (`Int(5)` -> "Int"); the
+/// lexeme itself is available via `@token_text`.
+fn token_kind_name(kind: frontend::Kind) -> &'static str {
+    use frontend::Kind::*;
+    match kind {
+        Int(_) => "Int",
+        Real(_) => "Real",
+        Str => "Str",
+        Word => "Word",
+        At => "At",
+        Op => "Op",
+        Eq => "Eq",
+        FatArrow => "FatArrow",
+        Arrow => "Arrow",
+        Lambda => "Lambda",
+        Colon => "Colon",
+        Dollar => "Dollar",
+        Comma => "Comma",
+        Dot => "Dot",
+        Ellipsis => "Ellipsis",
+        LParen => "LParen",
+        RParen => "RParen",
+        LBrace => "LBrace",
+        RBrace => "RBrace",
+        LBrack => "LBrack",
+        RBrack => "RBrack",
+        Let => "Let",
+        In => "In",
+        If => "If",
+        Is => "Is",
+        Else => "Else",
+        Ext => "Ext",
+        With => "With",
+        Do => "Do",
+        Ctl => "Ctl",
+        Defer => "Defer",
+        Comment => "Comment",
+        Eof => "Eof",
+    }
+}
+
+/// Read a named `@str` field of an opaque `@token` struct (`@token_kind` /
+/// `@token_text`).
+fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
+    match &*v.borrow() {
+        Value::Struct { name, fields } if name == "@token" => {
+            for (k, val) in fields {
+                if k == field {
+                    return match &*val.borrow() {
+                        Value::Str(b) => Ok(Value::Str(b.clone())),
+                        _ => Err(fault("@token field is not a string")),
+                    };
+                }
+            }
+            Err(fault(format!("@token has no `{field}` field")))
+        }
+        _ => Err(fault("expected an @token")),
     }
 }
 

@@ -4360,6 +4360,19 @@ impl<'a> Checker<'a> {
             Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(int(), vt))),
         );
 
+        // Metaprogramming primitives (compile-time; usable inside `$ @run`). `@lex`
+        // tokenizes a string into an opaque `@token` vector; a lex error traps
+        // (fails the build). Tokens are inspected via the `@token_*` accessors, not
+        // pattern-matched. `@token` is an opaque builtin type (see `is_base_type`).
+        let token = || Type::con("@token");
+        let str_ty = || Type::con(ty::STR);
+        self.bind(
+            "@lex",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), token())),
+        );
+        self.bind("@token_kind", Type::arrow(token(), str_ty()));
+        self.bind("@token_text", Type::arrow(token(), str_ty()));
+
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
         // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
@@ -5005,6 +5018,7 @@ fn is_base_type(name: &str) -> bool {
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
             | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
+            | "@token"
     )
 }
 

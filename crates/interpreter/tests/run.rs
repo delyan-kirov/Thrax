@@ -122,6 +122,23 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
 }
 
 #[test]
+fn lex_tokenizes_a_string_into_opaque_tokens() {
+    // `@lex` tokenizes a string into `@vec @token`; `@token_kind` / `@token_text`
+    // read a token's tag and lexeme. `foo + 12` is Word "foo", Op "+", Int "12".
+    let src = "@mod T\n\
+               $ toks = @lex \"foo + 12\"\n\
+               $ n : @int = @vec_len toks\n\
+               $ ck : @bool =\n\
+               \t@token_kind (@vec_get toks 0) ?= \"Word\"\n\
+               \t\t&& @token_text (@vec_get toks 0) ?= \"foo\"\n\
+               \t\t&& @token_kind (@vec_get toks 1) ?= \"Op\"\n\
+               \t\t&& @token_kind (@vec_get toks 2) ?= \"Int\"\n\
+               \t\t&& @token_text (@vec_get toks 2) ?= \"12\"";
+    assert_eq!(run(src, "T.n"), "3");
+    assert_eq!(run(src, "T.ck"), "true");
+}
+
+#[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // `$ @run <expr>` becomes a synthetic global (`Module.@run#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted

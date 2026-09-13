@@ -44,10 +44,25 @@ Per the base-type convention (no friendly names in the compiler; `@int`,
 
 **Types**
 
-- `@token` -- a lexical token: a kind tag plus a `@span`.
+- `@token` -- a lexical token. **Opaque** (a distinct builtin type, `is_base_type`);
+  inspected via the `@token_kind`/`@token_text` accessors, not pattern-matched.
+  (A matchable `@union` form was considered and deferred in favour of the smaller
+  opaque surface, consistent with `@code`.)
 - `@code` -- an opaque handle to a typed-AST fragment. Opaque so the internal
   node set can evolve without breaking library code.
 - `@span`, `@diag`, `@name`, `@typeinfo` -- supporting builtins.
+
+**Pure intrinsics (no effect; usable inside `$ @run` today).** Lexing and
+parsing need no compiler state, so they are ordinary intrinsics, not `<@meta>`
+operations:
+
+```
+@lex        : @str      -> @vec @token   -- LANDED. a lex error traps (fails the build)
+@token_kind : @token    -> @str          -- LANDED. "Word" | "Op" | "Int" | ...
+@token_text : @token    -> @str          -- LANDED. the lexeme
+@parse      : @vec @token -> @code       -- planned; a parse error traps
+@parse_str  : @str      -> @code         -- planned; = @parse ∘ @lex
+```
 
 **Effect row**
 
@@ -58,11 +73,10 @@ Per the base-type convention (no friendly names in the compiler; `@int`,
 
 **`<@meta>` operations**
 
-Pipeline and diagnostics:
+Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; the rest need the
+handler's compiler state):
 
 ```
-@lex    : @str      -> <@meta> []@token
-@parse  : []@token  -> <@meta> @code
 @check  : @code     -> <@meta> @code
 @eval   : @code     -> <@meta> a
 @emit   : @diag     -> <@meta> ()      -- non-fatal message
@@ -398,11 +412,13 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    fails the build; section 11), and a `BUILD.Directive` (`Lib`/`LibPath`) result
    steering the native link set / search paths (`library/BUILD.thx`,
    `examples/CT_RUN.thx`). **NEXT:** the typed layer below.
-1. Surface `@token`/kind tags as a Thrax type.
+1. **DONE:** `@token` as an opaque builtin type, and `@lex : @str -> @vec @token`
+   + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
+   `@run` (a lex error traps). **NEXT:** `@parse`/`@parse_str -> @code`.
 2. `@code` opaque handle over `Ast` + the `@run`-splices-`@code` path; prove the
    loop with an identity generator.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
-   literals (section 7); splice is string building (`++` / `{e}`).
+   literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,
    `@here`, `@fresh`; wire `@emit` into the `Diagnostic` chain.
 5. `@check` and `@eval` (staging), plus the `@code_*` constructors.
