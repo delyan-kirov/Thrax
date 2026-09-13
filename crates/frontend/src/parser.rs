@@ -390,7 +390,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_global(&mut self) -> Result<Item> {
-        expect!(
+        let dollar = expect!(
             self,
             Kind::Dollar,
             "expected a global declaration starting with '$'"
@@ -398,7 +398,7 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         match t.kind {
             Kind::With => self.parse_import(),
-            Kind::At => self.parse_directive(t),
+            Kind::At => self.parse_directive(t, dollar.span.start),
             Kind::Word => self.parse_named_global(),
             Kind::LParen => self.parse_operator_global(),
             _ => Err(self.unexpected(&t, "expected a name or directive after '$'")),
@@ -407,7 +407,7 @@ impl<'a> Parser<'a> {
 
     /// A `$ @...` directive: visibility, compile-time run (`@e`), or an operator
     /// definition.
-    fn parse_directive(&mut self, at: Token) -> Result<Item> {
+    fn parse_directive(&mut self, at: Token, start: usize) -> Result<Item> {
         match self.intrinsic_name(at) {
             "private" => {
                 self.bump()?;
@@ -420,7 +420,8 @@ impl<'a> Parser<'a> {
             )),
             "e" => {
                 self.bump()?;
-                Ok(Item::Run(self.parse_expr(0)?))
+                let e = self.parse_expr(0)?;
+                Ok(Item::Run(e, Span::new(start, self.last_end)))
             }
             // A `@compiler_interface_*` hook is the ONE family of `@`-names a user (or
             // the core library) may define: `$ @compiler_interface_indexing : sig = body`.

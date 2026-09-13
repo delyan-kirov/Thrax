@@ -207,9 +207,11 @@ pub enum Item {
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
     /// `$ @e expr`: run the expression at compile time (see the driver). `@e` is
-    /// also an expression intrinsic (`... @e X ...`); this is the item form. There
-    /// is no `@assert` builtin; assert is user code (`if ok => {} else @abort ..`).
-    Run(Aol<Expr>),
+    /// also an expression intrinsic (`... @e X ...`); this is the item form. The
+    /// `Span` is the whole `$ @e expr` directive, so the driver can replace it when
+    /// an `@code` result injects code. There is no `@assert` builtin; assert is
+    /// user code (`if ok => {} else @abort ..`).
+    Run(Aol<Expr>, Span),
 }
 
 /// A `name : Type` field (struct fields and effect operations share this shape).

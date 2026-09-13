@@ -801,7 +801,7 @@ impl<'a> Checker<'a> {
             .slice(program.items)
             .iter()
             .filter_map(|item| match item {
-                Item::Run(e) => Some(*e),
+                Item::Run(e, _) => Some(*e),
                 _ => None,
             })
             .collect();
@@ -4391,8 +4391,11 @@ impl<'a> Checker<'a> {
         self.bind("@token_kind", Type::arrow(token(), str_ty()));
         self.bind("@token_text", Type::arrow(token(), str_ty()));
         // `@parse_str` parses a string as an expression fragment into an opaque
-        // `@code` value; a syntax error traps (fails the build).
+        // `@code` value; a syntax error traps (fails the build). `@parse_items`
+        // validates the string as top-level item(s) instead, for a `$ @e` that
+        // injects definitions.
         self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
+        self.bind("@parse_items", Type::arrow(str_ty(), Type::con("@code")));
         // `@eval` compiles and runs an `@code` fragment at build time and returns
         // its value. Its result type is fully polymorphic (`a`): the produced
         // value is embedded as-is, so a mismatch with the use site is a runtime

@@ -414,17 +414,22 @@ type Sources = Vec<(String, String, String)>;
 /// directives are left for [`compile_and_run_ct`]. Returns the final sources too.
 fn lower_all(
     path: &str,
-) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind, Sources), ExitCode>
-{
+) -> Result<
+    (Vec<frontend::lowering::data::Program>, String, frontend::EntryKind, Sources, BuildPlan),
+    ExitCode,
+> {
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+    let mut plan = BuildPlan::default();
     loop {
         let compiled = compile_sources(&loaded)?;
-        // Gather expression-position `@e` sites: (module, qualified global, span).
-        let sites: Vec<(String, String, utilities::Span)> = compiled
+        // Gather every `@e` site this round: expression-position (`ct_evals`,
+        // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@code`,
+        // apply a `BUILD` directive, or discard).
+        let expr_sites: Vec<(String, String, utilities::Span)> = compiled
             .0
             .iter()
             .flat_map(|p| {
@@ -433,37 +438,78 @@ fn lower_all(
                     .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
-        if sites.is_empty() {
-            return Ok((compiled.0, compiled.1, compiled.2, loaded.sources));
+        let item_sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_runs
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        if expr_sites.is_empty() && item_sites.is_empty() {
+            return Ok((compiled.0, compiled.1, compiled.2, loaded.sources, plan));
         }
-        // Force each site and render its result to a replacement source string.
         let ir = frontend::ir::lower_modules(&compiled.0);
         let rd = root_dir.clone();
         interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
-        for (module, qualified, span) in sites {
-            let text = match interpreter::machine::eval_value(&ir, &qualified) {
-                Ok(v) => match render_meta_value(&v) {
-                    Ok(text) => text,
-                    Err(msg) => {
-                        interpreter::machine::set_meta_eval(None);
-                        eprintln!("thrax: a compile-time `@e` failed: {msg}");
-                        return Err(ExitCode::FAILURE);
-                    }
-                },
-                Err(diag) => {
+        let fail = |diag, module: &str, span| -> ExitCode {
+            interpreter::machine::set_meta_eval(None);
+            eprintln!("thrax: a compile-time `@e` failed:");
+            eprint!("{}", render_e_fault(diag, module, span, &loaded.sources));
+            ExitCode::FAILURE
+        };
+        // Expression-position: replace the `@e X` with its value's source
+        // (parenthesized to keep precedence).
+        for (module, qualified, span) in expr_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            match render_meta_value(&v) {
+                Ok(text) => edits.push((module, span, format!("({text})"))),
+                Err(msg) => {
                     interpreter::machine::set_meta_eval(None);
-                    eprintln!("thrax: a compile-time `@e` failed:");
-                    eprint!("{}", render_e_fault(diag, &module, span, &loaded.sources));
+                    eprintln!("thrax: a compile-time `@e` failed: {msg}");
                     return Err(ExitCode::FAILURE);
                 }
-            };
-            // Parenthesize so the spliced text keeps its precedence at the site.
-            edits.push((module, span, format!("({text})")));
+            }
+        }
+        // Item-position `$ @e X`: an `@code` result injects its item(s) in place;
+        // otherwise apply a `BUILD` directive (a no-op for any other value) and
+        // drop the directive. Either way the whole `$ @e X` item is replaced.
+        for (module, qualified, span) in item_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            // `span` is the whole `$ @e X` directive, so replacing it drops the
+            // directive: an `@code` result becomes its item(s), anything else
+            // (a `BUILD` directive, or a discarded value) becomes nothing.
+            match as_code_src(&v) {
+                Some(items) => edits.push((module, span, items)),
+                None => {
+                    build_directive(&v, &mut plan);
+                    edits.push((module, span, String::new()));
+                }
+            }
         }
         interpreter::machine::set_meta_eval(None);
         splice_sources(&mut loaded.sources, edits);
     }
+}
+
+/// If `v` is a `@code` fragment, its source text.
+fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
+    use interpreter::machine::data::Value;
+    if let Value::Struct { name, fields } = &*v.borrow() {
+        if name == "@code" {
+            return fields.iter().find(|(k, _)| k == "src").and_then(|(_, s)| {
+                match &*s.borrow() {
+                    Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                    _ => None,
+                }
+            });
+        }
+    }
+    None
 }
 
 /// Apply `@e` source substitutions to each module, right-to-left within a module
@@ -599,48 +645,14 @@ fn meta_eval_source(
     interpreter::machine::reify(&v)
 }
 
-/// Run the top-level `$ @e` directives at compile time (for their effect or a
-/// `BUILD` directive); the value is discarded. Expression-position `@e` was
-/// already expanded away by [`lower_all`], so only `ct_runs` remain here.
-fn compile_and_run_ct(
-    lowered: &[frontend::lowering::data::Program],
-    root_dir: &Path,
-    sources: &[(String, String, String)],
-) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
-    // Install the `@eval` host so a `$ @e` may compile and run generated code.
-    let rd = root_dir.to_path_buf();
-    interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
-    let ir = frontend::ir::lower_modules(lowered);
-    let mut plan = BuildPlan::default();
-    for p in lowered {
-        for (name, span) in &p.ct_runs {
-            // `lower_modules` prefixes every global with its module; match that.
-            let qualified = format!("{}.{}", p.module, name);
-            match interpreter::machine::eval_value(&ir, &qualified) {
-                Ok(v) => build_directive(&v, &mut plan),
-                Err(diag) => {
-                    interpreter::machine::set_meta_eval(None);
-                    eprintln!("thrax: a compile-time `@e` failed:");
-                    eprint!("{}", render_e_fault(diag, &p.module, *span, sources));
-                    return Err(ExitCode::FAILURE);
-                }
-            }
-        }
-    }
-    interpreter::machine::set_meta_eval(None);
-    Ok((ir, plan))
-}
-
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    let (lowered, entry, kind, sources) = match lower_all(path) {
+    // `lower_all` has already expanded every `$ @e` (compile-time execution and
+    // code injection); the lowered program is `@e`-free.
+    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir, &sources) {
-        Ok(x) => x,
-        Err(code) => return code,
-    };
+    let ir = frontend::ir::lower_modules(&lowered);
     use frontend::EntryKind::*;
     match kind {
         // A value: force it and print `entry = <value>` (the test-harness form).
@@ -678,14 +690,10 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind, sources) = match lower_all(path) {
+    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    if let Err(code) = compile_and_run_ct(&lowered, root_dir, &sources) {
-        return code;
-    }
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
     // directives (which steer linking) have nothing to apply here beyond the
     // link comment the generated source already carries.
@@ -698,13 +706,8 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind, sources) = match lower_all(path) {
+    let (lowered, entry, kind, _sources, plan) = match lower_all(path) {
         Ok(x) => x,
-        Err(code) => return code,
-    };
-    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
-    let plan = match compile_and_run_ct(&lowered, root_dir, &sources) {
-        Ok((_ir, plan)) => plan,
         Err(code) => return code,
     };
     let emitted = ccg::emit_program(&lowered, &entry, kind, target);

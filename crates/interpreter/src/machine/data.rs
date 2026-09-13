@@ -292,8 +292,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@eval"
-        | "@abort" | "@emit" | "@fresh" => 1,
+        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@parse_items"
+        | "@eval" | "@abort" | "@emit" | "@fresh" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -555,6 +555,21 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault("@parse_str: the argument is not valid UTF-8"))?;
             frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
+        // Like `@parse_str`, but the string is top-level item(s) (`$ foo = ...`),
+        // for a `$ @e` that injects definitions.
+        "@parse_items" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@parse_items: the argument is not valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n{src}"))?;
             Ok(Value::Struct {
                 name: "@code".to_string(),
                 fields: vec![(

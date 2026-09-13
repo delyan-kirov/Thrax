@@ -61,6 +61,7 @@ operations:
 @token_kind : @token    -> @str          -- LANDED. "Word" | "Op" | "Int" | ...
 @token_text : @token    -> @str          -- LANDED. the lexeme
 @parse_str  : @str      -> @code         -- LANDED. parses an expr fragment; a syntax error traps
+@parse_items: @str      -> @code         -- LANDED. parses top-level item(s), for `$ @e` injection
 @parse      : @vec @token -> @code       -- planned (tokens -> code)
 ```
 
@@ -443,6 +444,18 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
    **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
+2b. **Item-position `$ @e X` injection (PARTIAL).** A top-level `$ @e X` whose
+   result is `@code` (build it with `@parse_items`) injects its item(s) in place
+   of the directive, then re-compiles; a `BUILD.Directive` result steers the
+   build; any other value is a discarded compile-time run. The whole `$ @e X`
+   directive carries a source span (`Item::Run(expr, span)`) so injection replaces
+   it cleanly. **Limitation:** the module must type-check *before* injection to run
+   the generator, so injected code that is **forward-referenced** by hand-written
+   code (`$ @e (gen "double")` then a hand-written `test` that calls `double`)
+   fails with an unbound-name error, and a module with no entry until injection
+   fails the entry check. Non-forward-referenced injection works. Lifting this
+   needs a lenient/incremental compile phase (deferred unbound names + a deferred
+   entry check) — a follow-up.
 2a. **DONE: expression-position `@e X`, value-fold AND code-splice.** `@e` is a
    universal compile-time splice at any expression site, composing with `|>`/`<|`.
    `let x = @e (fib 10) in …` folds to `55`; `@e (gen "+")` where `gen` builds a
