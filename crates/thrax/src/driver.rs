@@ -432,9 +432,28 @@ fn build_directive(v: &interpreter::machine::data::PVal, plan: &mut BuildPlan) {
     }
 }
 
+/// Compile and run an `@code` fragment (source text) at build time, reifying its
+/// value. This is the `@eval` host: it re-enters the same pipeline the REPL uses,
+/// wrapping the fragment as a def body of an in-memory module. `root_dir` resolves
+/// the fragment's imports (it sees the same standard library as the root).
+fn meta_eval_source(
+    src: &str,
+    root_dir: &Path,
+) -> std::result::Result<interpreter::machine::OwnedValue, String> {
+    let session = compile_session(&format!("@mod REPL\n$ _thrax_meta =\n{src}"), root_dir)?;
+    let ir = frontend::ir::lower_modules(&session.lowered);
+    let v = interpreter::machine::eval_value(&ir, "REPL._thrax_meta")
+        .map_err(|d| d.render("", "@eval"))?;
+    interpreter::machine::reify(&v)
+}
+
 fn compile_and_run_ct(
     lowered: &[frontend::lowering::data::Program],
+    root_dir: &Path,
 ) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
+    // Install the `@eval` host so a `$ @run` may compile and run generated code.
+    let rd = root_dir.to_path_buf();
+    interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
     let ir = frontend::ir::lower_modules(lowered);
     let mut plan = BuildPlan::default();
     for p in lowered {
@@ -445,6 +464,7 @@ fn compile_and_run_ct(
             match interpreter::machine::eval_value(&ir, &qualified) {
                 Ok(v) => build_directive(&v, &mut plan),
                 Err(diag) => {
+                    interpreter::machine::set_meta_eval(None);
                     eprintln!("thrax: a compile-time `@run` failed:");
                     eprint!("{}", diag.render("", &qualified));
                     return Err(ExitCode::FAILURE);
@@ -452,6 +472,7 @@ fn compile_and_run_ct(
             }
         }
     }
+    interpreter::machine::set_meta_eval(None);
     Ok((ir, plan))
 }
 
@@ -460,7 +481,8 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let (ir, _plan) = match compile_and_run_ct(&lowered) {
+    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+    let (ir, _plan) = match compile_and_run_ct(&lowered, root_dir) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -505,7 +527,8 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    if let Err(code) = compile_and_run_ct(&lowered) {
+    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+    if let Err(code) = compile_and_run_ct(&lowered, root_dir) {
         return code;
     }
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
@@ -524,7 +547,8 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let plan = match compile_and_run_ct(&lowered) {
+    let root_dir = Path::new(path).parent().unwrap_or_else(|| Path::new("."));
+    let plan = match compile_and_run_ct(&lowered, root_dir) {
         Ok((_ir, plan)) => plan,
         Err(code) => return code,
     };

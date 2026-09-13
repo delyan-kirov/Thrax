@@ -148,6 +148,17 @@ fn parse_str_produces_opaque_code() {
 }
 
 #[test]
+fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
+    use interpreter::machine::{set_meta_eval, OwnedValue};
+    // A stub host (the driver installs the real compile+run one) returns 42
+    // regardless of source; `@eval` must call it and embed the reified value.
+    set_meta_eval(Some(Box::new(|_src| Ok(OwnedValue::Int(42)))));
+    let src = "@mod T\n$ n : @int = @eval (@parse_str \"x\")";
+    assert_eq!(run(src, "T.n"), "42");
+    set_meta_eval(None);
+}
+
+#[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // `$ @run <expr>` becomes a synthetic global (`Module.@run#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted

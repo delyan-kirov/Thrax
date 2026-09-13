@@ -864,6 +864,117 @@ pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
     m.eval_global(name)
 }
 
+/// A machine value detached from any [`Program`], so it can cross the re-entrant
+/// compile boundary of `@eval`: the nested compile produces a value tied to its
+/// own program's lifetime, and this is the reified, lifetime-free form embedded
+/// back into the outer machine. Only first-order data reifies; a closure, a
+/// continuation, or an opaque handle cannot become a constant (cross-stage
+/// persistence), so [`reify`] rejects them.
+#[derive(Clone, Debug)]
+pub enum OwnedValue {
+    Int(i64),
+    Real(f64),
+    Real32(f32),
+    Str(Vec<u8>),
+    Bool(bool),
+    Unit,
+    Tuple(Vec<OwnedValue>),
+    Struct { name: String, fields: Vec<(String, OwnedValue)> },
+    Variant { ty: String, tag: String, fields: Vec<OwnedValue> },
+    Vector(Vec<OwnedValue>),
+}
+
+/// Detach a machine value into an [`OwnedValue`], or explain why it cannot be a
+/// compile-time constant (a function, continuation, or opaque runtime handle).
+pub fn reify(v: &PVal) -> std::result::Result<OwnedValue, String> {
+    let v = deref(v.clone());
+    let out = match &*v.borrow() {
+        Value::Int(n) => OwnedValue::Int(*n),
+        Value::Real(r) => OwnedValue::Real(*r),
+        Value::Real32(r) => OwnedValue::Real32(*r),
+        Value::Str(b) => OwnedValue::Str(b.as_ref().clone()),
+        Value::Bool(b) => OwnedValue::Bool(*b),
+        Value::Unit => OwnedValue::Unit,
+        Value::Tuple(items) => {
+            OwnedValue::Tuple(items.iter().map(reify).collect::<std::result::Result<_, _>>()?)
+        }
+        Value::Struct { name, fields } => OwnedValue::Struct {
+            name: name.clone(),
+            fields: fields
+                .iter()
+                .map(|(k, val)| Ok((k.clone(), reify(val)?)))
+                .collect::<std::result::Result<_, String>>()?,
+        },
+        Value::Variant { ty, tag, fields } => OwnedValue::Variant {
+            ty: ty.clone(),
+            tag: tag.clone(),
+            fields: fields.iter().map(reify).collect::<std::result::Result<_, _>>()?,
+        },
+        Value::Vector(items) => {
+            OwnedValue::Vector(items.iter().map(reify).collect::<std::result::Result<_, _>>()?)
+        }
+        _ => {
+            return Err(
+                "@eval produced a function or opaque value, which is not a \
+                 compile-time constant (only first-order data can cross into the \
+                 program)"
+                    .to_string(),
+            )
+        }
+    };
+    Ok(out)
+}
+
+/// Embed an [`OwnedValue`] back into a machine value for the current program.
+pub fn embed<'p>(o: &OwnedValue) -> Value<'p> {
+    match o {
+        OwnedValue::Int(n) => Value::Int(*n),
+        OwnedValue::Real(r) => Value::Real(*r),
+        OwnedValue::Real32(r) => Value::Real32(*r),
+        OwnedValue::Str(b) => Value::Str(Rc::new(b.clone())),
+        OwnedValue::Bool(b) => Value::Bool(*b),
+        OwnedValue::Unit => Value::Unit,
+        OwnedValue::Tuple(items) => Value::Tuple(items.iter().map(|o| mk(embed(o))).collect()),
+        OwnedValue::Struct { name, fields } => Value::Struct {
+            name: name.clone(),
+            fields: fields.iter().map(|(k, o)| (k.clone(), mk(embed(o)))).collect(),
+        },
+        OwnedValue::Variant { ty, tag, fields } => Value::Variant {
+            ty: ty.clone(),
+            tag: tag.clone(),
+            fields: fields.iter().map(|o| mk(embed(o))).collect(),
+        },
+        OwnedValue::Vector(items) => {
+            Value::Vector(Rc::new(items.iter().map(|o| mk(embed(o))).collect()))
+        }
+    }
+}
+
+thread_local! {
+    /// The compile-time `@eval` host: given fragment source, the driver compiles
+    /// and runs it, returning a reified value or a rendered error. Installed by the
+    /// driver around a `$ @run`; absent when the machine runs normal code, so a
+    /// stray `@eval` at runtime faults cleanly.
+    static META_EVAL: std::cell::RefCell<Option<Box<dyn Fn(&str) -> std::result::Result<OwnedValue, String>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install (or clear) the compile-time `@eval` host. The driver sets it before
+/// forcing `$ @run` directives and clears it afterwards.
+pub fn set_meta_eval(host: Option<Box<dyn Fn(&str) -> std::result::Result<OwnedValue, String>>>) {
+    META_EVAL.with(|c| *c.borrow_mut() = host);
+}
+
+/// Run the installed `@eval` host on `src`, or fault if none is installed.
+pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
+    META_EVAL.with(|c| match &*c.borrow() {
+        Some(host) => host(src).map_err(fault),
+        None => Err(fault(
+            "@eval is only available at compile time (inside `$ @run`)",
+        )),
+    })
+}
+
 /// Run a C-style `main`: apply the entry function to its argument (unit when
 /// `argv` is `None`, else a `[n]Str` sized array of the arguments) and return its
 /// `Int` result as the process exit code.

@@ -81,13 +81,16 @@ Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; the rest need the
 handler's compiler state):
 
 ```
+@eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @run
 @check  : @code     -> <@meta> @code
-@eval   : @code     -> <@meta> a
 @emit   : @diag     -> <@meta> ()      -- non-fatal message
 @abort  : @diag     -> <@meta> a       -- fatal message, unwinds
 @fresh  : @str      -> <@meta> @name
 @here   : ()        -> <@meta> @span
 ```
+
+(`@eval` currently rides a driver-installed thread-local host rather than a full
+`<@meta>` handler; when the handler lands it subsumes this.)
 
 Compiler messages, receive (query the accumulated compile state):
 
@@ -420,14 +423,20 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
    `@run` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
    `@code` = source text, syntax errors trap). **NEXT:** consumers of `@code`.
-2. `@code` consumers. These need the driver's pipeline, so they cannot be pure
-   interpreter builtins (the interpreter crate does not depend on the driver);
-   they require a driver-installed `<@meta>` handler the interpreter calls back
-   into, plus reifying a value across the re-entrant compile boundary:
-   - `@eval : @code -> a` (compile + run the fragment at build time), and
-   - `@run` splicing an `@code` result back into the program (re-check/recurse).
-   This callback + cross-`Program` value reification is the architectural crux of
-   the rest of the layer.
+2. **DONE: `@eval : @code -> a`** (compile + run a fragment at build time).
+   `@code` consumers need the driver's pipeline, but the interpreter crate cannot
+   depend on the driver, so the mechanism is a **driver-installed thread-local
+   host** (`machine::set_meta_eval`) the interpreter calls (`meta_eval`), plus
+   **value reification across the re-entrant compile boundary**
+   (`machine::OwnedValue` + `reify`/`embed`): the nested compile yields a value
+   tied to its own `Program`; only first-order data (`Int`/`Str`/`Bool`/tuples/
+   structs/variants/vectors) crosses, a closure/opaque handle is rejected. The
+   host reuses `compile_session` (the REPL's re-entrant compile) via
+   `driver::meta_eval_source`. `@eval` is only usable inside `$ @run` (the host is
+   installed only there; a runtime `@eval` faults). Result type is polymorphic
+   `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
+   **NEXT:** `@run` splicing an `@code` result back into the program
+   (re-check/recurse) is the remaining consumer.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

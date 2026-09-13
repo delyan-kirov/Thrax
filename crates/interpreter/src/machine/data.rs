@@ -292,7 +292,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" => 1,
+        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@eval" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -561,6 +561,26 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                     mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
                 )],
             })
+        }
+        // Compile and run an `@code` fragment at build time, embedding its value.
+        // Needs the driver's pipeline, so it defers to the installed meta host
+        // (see `crate::machine::set_meta_eval`); reachable only inside `$ @run`.
+        "@eval" => {
+            let src = match &*a[0].borrow() {
+                Value::Struct { name, fields } if name == "@code" => fields
+                    .iter()
+                    .find(|(k, _)| k == "src")
+                    .and_then(|(_, v)| match &*v.borrow() {
+                        Value::Str(b) => Some(b.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| fault("@eval: malformed @code value"))?,
+                _ => return Err(fault("@eval expects an @code")),
+            };
+            let s = std::str::from_utf8(&src)
+                .map_err(|_| fault("@eval: the fragment source is not valid UTF-8"))?;
+            let owned = crate::machine::meta_eval(s)?;
+            Ok(crate::machine::embed(&owned))
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }

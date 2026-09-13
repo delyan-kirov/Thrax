@@ -4373,9 +4373,14 @@ impl<'a> Checker<'a> {
         self.bind("@token_kind", Type::arrow(token(), str_ty()));
         self.bind("@token_text", Type::arrow(token(), str_ty()));
         // `@parse_str` parses a string as an expression fragment into an opaque
-        // `@code` value; a syntax error traps (fails the build). Consumers of
-        // `@code` (`@eval`, splicing) need the driver's pipeline and land later.
+        // `@code` value; a syntax error traps (fails the build).
         self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
+        // `@eval` compiles and runs an `@code` fragment at build time and returns
+        // its value. Its result type is fully polymorphic (`a`): the produced
+        // value is embedded as-is, so a mismatch with the use site is a runtime
+        // (compile-time) fault, not a static error. Only available inside `$ @run`.
+        let eval_res = self.eng.fresh_generic();
+        self.bind("@eval", Type::arrow(Type::con("@code"), eval_res));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
