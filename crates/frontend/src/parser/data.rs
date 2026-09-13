@@ -206,9 +206,8 @@ pub enum Item {
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
-    /// `$ @assert expr`
-    Assert(Aol<Expr>),
-    /// `$ @run expr`
+    /// `$ @run expr`: run the expression at compile time (see the driver). There
+    /// is no `@assert` builtin; assert is user code (`if ok => {} else @abort ..`).
     Run(Aol<Expr>),
 }
 

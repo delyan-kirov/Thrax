@@ -292,7 +292,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@eval" => 1,
+        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@eval"
+        | "@abort" | "@emit" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -581,6 +582,17 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .map_err(|_| fault("@eval: the fragment source is not valid UTF-8"))?;
             let owned = crate::machine::meta_eval(s)?;
             Ok(crate::machine::embed(&owned))
+        }
+        // Compile-time diagnostics. `@abort` fails the build with the given
+        // message (a fault the driver renders); `@emit` prints it and continues.
+        "@abort" => {
+            let msg = as_bytes(&a[0])?;
+            Err(fault(String::from_utf8_lossy(&msg).into_owned()))
+        }
+        "@emit" => {
+            let msg = as_bytes(&a[0])?;
+            eprintln!("thrax: {}", String::from_utf8_lossy(&msg));
+            Ok(Value::Unit)
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }

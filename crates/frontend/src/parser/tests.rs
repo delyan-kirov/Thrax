@@ -352,14 +352,14 @@ fn cons_and_list_and_function_type() {
 #[test]
 fn union_effect_import_and_directives() {
     let src = "@mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
-                   $ State : @effect = get : @int, put : @int -> @int\n$ @assert 1";
+                   $ State : @effect = get : @int, put : @int -> @int\n$ @run 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(items[0], Item::Import { .. }));
     assert!(matches!(items[1], Item::Private));
     assert!(matches!(&items[2], Item::Union { variants, .. } if variants.len() == 3));
     assert!(matches!(&items[3], Item::Effect { ops, .. } if ops.len() == 2));
-    assert!(matches!(items[4], Item::Assert(_)));
+    assert!(matches!(items[4], Item::Run(_)));
 }
 
 #[test]

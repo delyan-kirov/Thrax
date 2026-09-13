@@ -82,15 +82,18 @@ handler's compiler state):
 
 ```
 @eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @run
+@abort  : @str      -> a               -- LANDED. fail the build with this message
+@emit   : @str      -> {}              -- LANDED. print a message and continue
 @check  : @code     -> <@meta> @code
-@emit   : @diag     -> <@meta> ()      -- non-fatal message
-@abort  : @diag     -> <@meta> a       -- fatal message, unwinds
 @fresh  : @str      -> <@meta> @name
 @here   : ()        -> <@meta> @span
 ```
 
-(`@eval` currently rides a driver-installed thread-local host rather than a full
-`<@meta>` handler; when the handler lands it subsumes this.)
+`@eval` currently rides a driver-installed thread-local host rather than a full
+`<@meta>` handler; when the handler lands it subsumes this. `@abort`/`@emit`
+take a plain `@str` for now (a richer `@diag` with spans comes with the handler).
+There is no `@assert` builtin: assert is user code,
+`$ @run (if ok => {} else @abort "...")` (see `examples/CT_ASSERT.thx`).
 
 Compiler messages, receive (query the accumulated compile state):
 

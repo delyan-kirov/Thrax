@@ -405,7 +405,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A `$ @...` directive: visibility, assert, run, or an operator definition.
+    /// A `$ @...` directive: visibility, run, or an operator definition.
     fn parse_directive(&mut self, at: Token) -> Result<Item> {
         match self.intrinsic_name(at) {
             "private" => {
@@ -417,10 +417,6 @@ impl<'a> Parser<'a> {
                 "there is no '@public': symbols are public by default. Use '$ @private' \
                  to hide the declarations below it",
             )),
-            "assert" => {
-                self.bump()?;
-                Ok(Item::Assert(self.parse_expr(0)?))
-            }
             "run" => {
                 self.bump()?;
                 Ok(Item::Run(self.parse_expr(0)?))

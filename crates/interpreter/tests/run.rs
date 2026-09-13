@@ -1406,3 +1406,9 @@ fn deep_tail_recursion_is_constant_stack() {
                $ test : @int = loop 1000000\n";
     assert_eq!(run(src, "test"), "42");
 }
+
+#[test]
+fn emit_returns_unit_and_abort_faults() {
+    // `@emit` prints a message (to stderr) and returns unit.
+    assert_eq!(run("@mod T\n$ u : {} = @emit \"note\"", "T.u"), "{}");
+}

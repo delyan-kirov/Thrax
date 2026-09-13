@@ -4381,6 +4381,13 @@ impl<'a> Checker<'a> {
         // (compile-time) fault, not a static error. Only available inside `$ @run`.
         let eval_res = self.eng.fresh_generic();
         self.bind("@eval", Type::arrow(Type::con("@code"), eval_res));
+        // Compile-time diagnostics. `@abort` fails the build with its message (a
+        // clean user-land `assert` is `if ok => {} else @abort "..."`); its result
+        // is polymorphic since it never returns. `@emit` prints a message and
+        // continues. Both are intended for `$ @run` (compile time).
+        let abort_res = self.eng.fresh_generic();
+        self.bind("@abort", Type::arrow(str_ty(), abort_res));
+        self.bind("@emit", Type::arrow(str_ty(), Type::con(ty::UNIT)));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
