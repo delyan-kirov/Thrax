@@ -121,6 +121,18 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
 }
 
+#[test]
+fn ct_run_lowers_to_a_forceable_synthetic_global() {
+    // `$ @run <expr>` becomes a synthetic global (`Module.@run#i`) that the driver
+    // forces at compile time. Here we force it directly to confirm it is emitted
+    // and evaluates.
+    let src = "@mod T\n\
+               $ triple : @int -> @int = \\n = n * 3\n\
+               $ @run triple 14\n\
+               $ test : @int = 0";
+    assert_eq!(run(src, "T.@run#0"), "42");
+}
+
 /// Compile a tiny C source to a shared library in a temp dir, returning its path.
 fn compile_helper_so(basename: &str, c_src: &str) -> std::path::PathBuf {
     use std::io::Write;

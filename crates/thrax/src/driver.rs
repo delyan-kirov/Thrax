@@ -382,14 +382,39 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
 }
 
 /// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
-/// on the reified-K machine. The machine's continuation is an explicit heap
-/// stack, so no large host stack is needed for deep recursion.
+/// on the reified-K machine. 
+/// Build the interpreter IR and force every `$ @run <expr>` directive through it
+/// at compile time (Jai's `#run`). The value is discarded; a trap fails the
+/// build. This runs on every backend, so compile-time execution is
+/// engine-independent, and returns the IR so the interpreter path can reuse it.
+fn compile_and_run_ct(
+    lowered: &[frontend::lowering::data::Program],
+) -> Result<frontend::ir::data::Program, ExitCode> {
+    let ir = frontend::ir::lower_modules(lowered);
+    for p in lowered {
+        for name in &p.ct_runs {
+            // `lower_modules` prefixes every global with its module; match that to
+            // force the synthetic `@run` global.
+            let qualified = format!("{}.{}", p.module, name);
+            if let Err(diag) = interpreter::machine::eval(&ir, &qualified) {
+                eprintln!("thrax: a compile-time `@run` failed:");
+                eprint!("{}", diag.render("", &qualified));
+                return Err(ExitCode::FAILURE);
+            }
+        }
+    }
+    Ok(ir)
+}
+
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
     let (lowered, entry, kind) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let ir = frontend::ir::lower_modules(&lowered);
+    let ir = match compile_and_run_ct(&lowered) {
+        Ok(ir) => ir,
+        Err(code) => return code,
+    };
     use frontend::EntryKind::*;
     match kind {
         // A value: force it and print `entry = <value>` (the test-harness form).
@@ -431,6 +456,9 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
+    if let Err(code) = compile_and_run_ct(&lowered) {
+        return code;
+    }
     print!("{}", ccg::emit(&lowered, &entry, kind, target));
     ExitCode::SUCCESS
 }
@@ -444,6 +472,9 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
+    if let Err(code) = compile_and_run_ct(&lowered) {
+        return code;
+    }
     let emitted = ccg::emit_program(&lowered, &entry, kind, target);
 
     let tc = utilities::toolchain(target);

@@ -29,6 +29,7 @@ pub fn lower_modules(modules: &[Core]) -> data::Program {
         effects: Vec::new(),
         globals: Vec::new(),
         crepr_layouts: Vec::new(),
+        ct_runs: Vec::new(),
     };
     for m in modules {
         for e in &m.effects {

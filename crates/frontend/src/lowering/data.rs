@@ -28,6 +28,11 @@ pub struct Program {
     /// struct values across the `@extern` boundary. Same across every module (the
     /// resolver aggregates them); the IR lowering merges duplicates by name.
     pub crepr_layouts: Vec<(String, utilities::CLayout)>,
+    /// Names of the synthetic globals that back `$ @run <expr>` directives, in
+    /// source order. Each is a normal global (so it flows through IR lowering);
+    /// the driver forces it through the interpreter at compile time and discards
+    /// the value (a trap fails the build). See [`super::lower_program`].
+    pub ct_runs: Vec<String>,
 }
 
 /// One effect operation declared by `$ Effect : @effect = op : ...`.

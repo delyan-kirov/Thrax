@@ -791,6 +791,24 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // Type-check `$ @run <expr>` directives. All globals are in scope now, so
+        // the expression resolves like a top-level body; a fresh pure ambient means
+        // an effect it performs that the compile-time runtime cannot discharge is
+        // rejected here. The value is discarded (the driver forces it at build
+        // time), so its type is not recorded.
+        let runs: Vec<Aol<Expr>> = self
+            .ast
+            .slice(program.items)
+            .iter()
+            .filter_map(|item| match item {
+                Item::Run(e) => Some(*e),
+                _ => None,
+            })
+            .collect();
+        for e in runs {
+            self.ambient = Type::RowEmpty;
+            self.infer(e)?;
+        }
         Ok(out)
     }
 

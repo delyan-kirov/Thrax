@@ -11,6 +11,7 @@ fn caf(name: &str, body: Term) -> Program {
         effects: Vec::new(),
         globals: vec![(name.into(), body)],
         crepr_layouts: Vec::new(),
+        ct_runs: Vec::new(),
     };
     assign_program(&mut p);
     p

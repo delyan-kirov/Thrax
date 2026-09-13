@@ -366,22 +366,40 @@ Deferred until inline macros (`@run` + quotation) land.
 
 ## 11. What changes in the compiler
 
-Centered on the node that already exists. Today `Expr::Run(Aol<Expr>)`
-evaluates and reifies a value. The change:
+`@run`/`@assert` are top-level items (`Item::Run`/`Item::Assert`), not
+expressions. In the Rust port they were parsed but inert (the C++ CTFE was never
+ported).
 
-1. When evaluating a `Run`, install the compile-time handlers (`<@meta>`, later
-   the granted IO effects): the handler holds the live `Ast`, interner, type
-   env, and the diagnostic sink.
-2. Inspect the result type. `[]@token` -> `@parse` -> `@code`. `@code` ->
-   `Store::commit` in place of the `Run` node and re-run check/expand on the
-   result (recurse). Otherwise reify the value as an AST node.
-3. `@emit`/`@abort` push into the diagnostic sink with an expansion context
-   frame; `@here` returns the `Run` node's span.
+**Landed (compile-time execution of `@run`).** `$ @run <expr>` now runs at
+compile time on every backend:
+
+1. Checker: after all defs are checked, each `Item::Run` expression is inferred
+   under a fresh pure ambient, so it resolves like a top-level body and an effect
+   it performs that the compile-time runtime cannot discharge (e.g. `<@io>`) is
+   rejected (`typing.rs`).
+2. Lowering: each `@run e` becomes a synthetic global `@run#i` pushed into
+   `Program.globals`, with its bare name recorded in the new `Program.ct_runs`
+   (`lowering.rs`, `lowering/data.rs`). It flows through `ir::lower` as an
+   ordinary global, so no IR change was needed.
+3. Driver: `compile_and_run_ct` builds the interpreter IR and forces each
+   `Module.@run#i` global via `machine::eval`. The value is discarded; a trap
+   becomes a build error. Runs before the entry, shared by `run`/`build`/
+   `emit-c` (`driver.rs`). A user-land `assert` is therefore just an `@run` whose
+   expression traps on a false condition; no `@assert` builtin is needed.
+
+**Still to come (the metaprogramming layer).** `@run` returning `@code` splices
+and re-checks (recurses); `@run` under a `<@meta>` handler with the live `Ast`/
+interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
+`@build` additionally installing `<@io>`. A `BUILD.Directive` result steering the
+link set (slice 2) is the next increment.
 
 ---
 
 ## 12. Suggested build order
 
+0. **DONE:** compile-time execution of `$ @run <expr>` (value discarded, trap
+   fails the build; section 11). **NEXT:** a `BUILD.Directive` result from `@run`
+   steering the link set / search paths (`library/BUILD.thx`, `examples/CT_RUN.thx`).
 1. Surface `@token`/kind tags as a Thrax type.
 2. `@code` opaque handle over `Ast` + the `@run`-splices-`@code` path; prove the
    loop with an identity generator.
