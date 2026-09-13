@@ -4372,6 +4372,10 @@ impl<'a> Checker<'a> {
         );
         self.bind("@token_kind", Type::arrow(token(), str_ty()));
         self.bind("@token_text", Type::arrow(token(), str_ty()));
+        // `@parse_str` parses a string as an expression fragment into an opaque
+        // `@code` value; a syntax error traps (fails the build). Consumers of
+        // `@code` (`@eval`, splicing) need the driver's pipeline and land later.
+        self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
@@ -5018,7 +5022,7 @@ fn is_base_type(name: &str) -> bool {
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
             | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
-            | "@token"
+            | "@token" | "@code"
     )
 }
 

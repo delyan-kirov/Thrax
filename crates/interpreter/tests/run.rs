@@ -139,6 +139,15 @@ fn lex_tokenizes_a_string_into_opaque_tokens() {
 }
 
 #[test]
+fn parse_str_produces_opaque_code() {
+    // A valid expression parses into an opaque `@code` carrying its source. A
+    // syntax error traps (verified via `thrax run`: a compile-time `@run` of a
+    // bad `@parse_str` fails the build), the same fault path as a `@run` trap.
+    let src = "@mod T\n$ c : @code = @parse_str \"1 + 2\"";
+    assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
+}
+
+#[test]
 fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // `$ @run <expr>` becomes a synthetic global (`Module.@run#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted

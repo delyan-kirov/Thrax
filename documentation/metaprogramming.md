@@ -60,9 +60,13 @@ operations:
 @lex        : @str      -> @vec @token   -- LANDED. a lex error traps (fails the build)
 @token_kind : @token    -> @str          -- LANDED. "Word" | "Op" | "Int" | ...
 @token_text : @token    -> @str          -- LANDED. the lexeme
-@parse      : @vec @token -> @code       -- planned; a parse error traps
-@parse_str  : @str      -> @code         -- planned; = @parse ∘ @lex
+@parse_str  : @str      -> @code         -- LANDED. parses an expr fragment; a syntax error traps
+@parse      : @vec @token -> @code       -- planned (tokens -> code)
 ```
+
+`@code` is opaque; it currently carries the fragment's source text (enough for
+the future `@eval`/splice). `@parse_str` validates syntax now (a bad fragment
+fails the build); type-checking and evaluation come with the consumers below.
 
 **Effect row**
 
@@ -414,9 +418,16 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `examples/CT_RUN.thx`). **NEXT:** the typed layer below.
 1. **DONE:** `@token` as an opaque builtin type, and `@lex : @str -> @vec @token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
-   `@run` (a lex error traps). **NEXT:** `@parse`/`@parse_str -> @code`.
-2. `@code` opaque handle over `Ast` + the `@run`-splices-`@code` path; prove the
-   loop with an identity generator.
+   `@run` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
+   `@code` = source text, syntax errors trap). **NEXT:** consumers of `@code`.
+2. `@code` consumers. These need the driver's pipeline, so they cannot be pure
+   interpreter builtins (the interpreter crate does not depend on the driver);
+   they require a driver-installed `<@meta>` handler the interpreter calls back
+   into, plus reifying a value across the re-entrant compile boundary:
+   - `@eval : @code -> a` (compile + run the fragment at build time), and
+   - `@run` splicing an `@code` result back into the program (re-check/recurse).
+   This callback + cross-`Program` value reification is the architectural crux of
+   the rest of the layer.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

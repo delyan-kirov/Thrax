@@ -292,7 +292,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" => 1,
+        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -544,6 +544,24 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         "@token_kind" => token_field(&a[0], "kind"),
         "@token_text" => token_field(&a[0], "text"),
+        // Parse a string as an expression fragment into opaque `@code`. Validated
+        // by wrapping it as a def body and parsing; a syntax error is a
+        // `Diagnostic`, which propagates as a fault (fails a `@run`). The fragment
+        // is carried as its source text (enough for the future `@eval`/splice,
+        // which re-enter the driver's pipeline).
+        "@parse_str" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@parse_str: the argument is not valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }
 }
