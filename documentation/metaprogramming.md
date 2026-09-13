@@ -119,11 +119,12 @@ becomes "`@run` returned a fragment."
 
 **Arguments are ordinary expressions; raw tokens are opt-in.** Because
 `@run (f a b)` is an application, `a` and `b` parse and check as normal Thrax
-before `f` runs. Raw-token input is requested explicitly with a quote:
+before `f` runs. Raw-token input is requested explicitly by passing a string
+literal through `@lex` (section 7):
 
 ```
-@run (f x)          -- f sees the value / AST of x   (common case)
-@run (f `x.y z`)    -- f sees []@token               (DSL / not-valid-Thrax case)
+@run (f x)                -- f sees the value / AST of x   (common case)
+@run (f (@lex "x.y z"))   -- f sees []@token               (DSL / not-valid-Thrax case)
 ```
 
 This is more composable than Rust's implicit token slurp: the raw-ness is
@@ -256,59 +257,48 @@ are deferred.
 
 ---
 
-## 7. Quotation (surface sugar)
+## 7. Quotation is a string literal
 
-There is **one** quotation primitive: a backtick pair, which produces `[]@token`.
-`@code` is not a quoter, it is `@parse` applied to a token quote. So quotation
-adds only a lexer rule, no new function (`@parse` already exists).
+**Decision.** There is **no dedicated quotation syntax**. Source to be
+metaprogrammed is written as an ordinary **string literal** and fed through the
+pipeline that already exists: `@lex : @str -> []@token` and
+`@parse : []@token -> @code`.
 
 ```
-`let x = ?(body) in x`          : []@token         -- the sole quotation primitive
-@parse `let x = ?(body) in x`   : <@meta> @code     -- code is parse-of-tokens
+@lex   "let x = 1 in x"          : []@token
+@parse (@lex "let x = 1 in x")   : @code       -- or a combined @parse_str
 ```
 
-**Why backticks.** The backtick is free: it is not lexed for anything, and type
-variables are plain lowercase-initial words, not `` `a `` (the `` `a `` in the
-`Ty::Var` doc comment is stale). It carries the universal "quote" meaning (Lisp
-quasiquote, markdown, shell). Unlike braces it collides with none of records /
-codata / blocks / `{e}` string interpolation, and unlike a string container it
-needs no escaping: quoted Thrax freely contains `"`, `{`, and `}` because none of
-them is the delimiter. Tokens keep real source spans (section 5 depends on this),
-and a backtick pair reads verbatim across multiple lines.
+**Why a string, not a backtick quote.** It adds zero surface syntax: a string is
+already the language's source-carrying literal, so quotation is just "lex/parse a
+string." It composes with everything that produces an `@str` (a literal, a file
+read at `@build` time, a string built from data), so the same path serves both
+templating and source-in. This is the maximally small compiler surface, and it
+keeps quotation firmly in the "trust the library" escape-hatch tier.
 
-**Splice is token-level but typed, and parenthesizes to stay structural.** At a
-`?(e)` site inside a quote:
+**Splice is string building.** A hole is filled by building the string: ordinary
+concatenation (`++`) or `?(e)` interpolation (which is `to_string e`). So splicing
+is **textual**, and the library author owns precedence, exactly as in any
+string-based code generator:
 
-- `e : []@token` -> splice the tokens verbatim.
-- `e : @code` -> splice its token form wrapped in `( ... )`, so expression
-  precedence is preserved: `?(a + b)` in `?(x) * 2` yields `(a + b) * 2`, never
-  `a + b * 2`.
-- `e : @value` (int/str/...) -> splice the literal token.
+- Precedence is not automatic: interpolate a parenthesized sub-expression when it
+  matters (`"?(sub) * 2"` may need `"(?(sub)) * 2"`), since the tree cannot do it
+  for you.
+- Interpolation is `?(e)`, **not** `{e}` (that was changed precisely so quoted
+  code stays clean): braces `{` `}` are ordinary literal characters inside a
+  string, so records/blocks in quoted code need no escaping. Only a literal `?(`
+  needs escaping, written `\?(`. A `"` inside the code still needs `\"` (or build
+  with `++`).
 
-`?..(es)` splices a list (matches the `..rest` / `..base` spread convention). The
-residue is non-expression positions (splicing into a pattern, a type, a statement
-list), where blind parens do not apply and the library author is responsible for
-splicing sensible tokens. That residue is acceptable: the token layer is the
-"trust the library" escape hatch by design.
+**Spans.** A parsed string carries spans relative to the string body; `@parse`
+maps a syntax error back to a location within the literal. Mapping that through
+the enclosing file's escapes is best-effort, so a diagnostic in generated code is
+less precise than one in hand-written source. Acceptable for the escape-hatch
+tier; `@emit`/`@abort` (section 5) still let a generator raise a clear message of
+its own.
 
-**Why `?(...)` for splice.** `?` is otherwise free: it appears only in the
-compound operators `?=`/`?<`/`?>`. Parenthesizing (`?(`, never a bare `?<`) keeps
-it clear of those, and `?` will never be used for optional types, so nothing in
-quoted type position collides. It reads as "hole here."
-
-**Cost of the single primitive.** A quote's syntax is checked at *expansion* time
-(when the macro runs `@parse`), not at the macro's own compile time. If early
-checking is wanted, keep an `@code `...`` sugar defined as `@parse `...`` plus
-AST-hole splice; it is sugar, never a second primitive.
-
-**Rejected: strings as the quote container.** `@code "let x = {body}"` is the C
-preprocessor model. `{e}` already means `to_string e`, so splice would be
-textual; code inside `"..."` must escape every `"`; and re-lexed strings lose
-span precision. Strings stay the right tool for *source-in* (`@lex`/`@parse` over
-an `@str` read from a file or built from data), just not for templating.
-
-**Literal backtick in a DSL** (a foreign DSL that itself uses backticks): a
-triple-backtick fenced form is the escape hatch. Not needed for v1.
+A convenience `@parse_str : @str -> <@meta> @code` (= `@parse` of `@lex`) can be
+provided so the common case is a single call.
 
 ---
 
@@ -411,8 +401,8 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
 1. Surface `@token`/kind tags as a Thrax type.
 2. `@code` opaque handle over `Ast` + the `@run`-splices-`@code` path; prove the
    loop with an identity generator.
-3. Quotation: the backtick token quote (pure lex), then `@parse` for `@code`
-   and the typed, parenthesizing `?(...)` splice.
+3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
+   literals (section 7); splice is string building (`++` / `{e}`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,
    `@here`, `@fresh`; wire `@emit` into the `Diagnostic` chain.
 5. `@check` and `@eval` (staging), plus the `@code_*` constructors.

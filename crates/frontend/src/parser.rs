@@ -125,11 +125,11 @@ impl<'a> Parser<'a> {
         self.expr(Expr::Str(s))
     }
 
-    /// Build a string-literal expression, expanding `{expr}` interpolations. `t`
-    /// is the `Kind::Str` token. `"a {e} b"` desugars to `"a " ++ to_string e ++ " b"`;
+    /// Build a string-literal expression, expanding `?(expr)` interpolations. `t`
+    /// is the `Kind::Str` token. `"a ?(e) b"` desugars to `"a " ++ to_string e ++ " b"`;
     /// a literal chunk seeds the `++` chain so the whole expression types as `Str`,
     /// and each interpolant is stringified through the overloaded `to_string`.
-    /// `\{`/`\}` are literal braces; a bare `}` is literal too.
+    /// Braces are ordinary literal characters; `\?` is a literal `?`.
     fn build_string(&mut self, t: Token) -> Result<Aol<Expr>> {
         let raw = self.text(t);
         let bytes = raw.as_bytes();
@@ -143,14 +143,14 @@ impl<'a> Parser<'a> {
         while i < inner.len() {
             match inner[i] {
                 b'\\' => i = crate::lexer::decode_escape(inner, i, body_start, t.line, &mut chunk)?,
-                b'{' => {
+                b'?' if i + 1 < inner.len() && inner[i + 1] == b'(' => {
                     interpolated = true;
                     let seg = self.str_expr(&chunk);
                     segs.push(seg);
                     chunk.clear();
-                    // Balance nested `{}` to find this interpolation's close,
-                    // skipping nested strings so their braces don't miscount.
-                    let expr_start = i + 1;
+                    // Balance the interpolant's `()` to find its close, skipping
+                    // nested strings so their parens don't miscount.
+                    let expr_start = i + 2; // past `?(`
                     let mut depth = 1usize;
                     let mut j = expr_start;
                     while j < inner.len() {
@@ -162,11 +162,11 @@ impl<'a> Parser<'a> {
                                 }
                                 j += 1; // past the closing quote
                             }
-                            b'{' => {
+                            b'(' => {
                                 depth += 1;
                                 j += 1;
                             }
-                            b'}' => {
+                            b')' => {
                                 depth -= 1;
                                 if depth == 0 {
                                     break;
@@ -182,14 +182,14 @@ impl<'a> Parser<'a> {
                             Code::UnexpectedToken,
                             Span::new(at, at + 1),
                             t.line,
-                            "string interpolation '{' is not closed with '}'".to_string(),
+                            "string interpolation '?(' is not closed with ')'".to_string(),
                         ));
                     }
                     let full: &'a str = self.src;
                     let abs_start = body_start + expr_start;
                     let slice = &full[abs_start..body_start + j];
                     let e = self.parse_subexpr(slice, abs_start, t.line)?;
-                    // `{e}` stringifies via the overloaded `to_string`, so an
+                    // `?(e)` stringifies via the overloaded `to_string`, so an
                     // interpolant of any type with a `to_string` (base types ship
                     // one in the auto-imported `CORE`) reads as `Str`. The call
                     // inherits the interpolant's span so a resolution failure
@@ -203,7 +203,7 @@ impl<'a> Parser<'a> {
                     let call = self.expr(Expr::App(f, e));
                     self.ast.expr_spans.insert(call, span);
                     segs.push(call);
-                    i = j + 1; // past '}'
+                    i = j + 1; // past ')'
                 }
                 c => {
                     chunk.push(c);
