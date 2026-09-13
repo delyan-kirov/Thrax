@@ -387,19 +387,27 @@ compile time on every backend:
    `emit-c` (`driver.rs`). A user-land `assert` is therefore just an `@run` whose
    expression traps on a false condition; no `@assert` builtin is needed.
 
+**Landed (BUILD directives).** An `@run` whose value is a `BUILD.Directive`
+(`Lib`/`LibPath`) steers the build: `compile_and_run_ct` reads the value via
+`machine::eval_value` (not the string rendering) and collects a `BuildPlan`
+`cmd_build` applies to the native link line (`-l` / `-L` + rpath), deduped
+against the `@extern` libraries. The interpreter's default set already covers
+libc/libm and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no
+preload for the common case (a general preload hook is a later refinement).
+
 **Still to come (the metaprogramming layer).** `@run` returning `@code` splices
 and re-checks (recurses); `@run` under a `<@meta>` handler with the live `Ast`/
 interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
-`@build` additionally installing `<@io>`. A `BUILD.Directive` result steering the
-link set (slice 2) is the next increment.
+`@build` additionally installing `<@io>`.
 
 ---
 
 ## 12. Suggested build order
 
 0. **DONE:** compile-time execution of `$ @run <expr>` (value discarded, trap
-   fails the build; section 11). **NEXT:** a `BUILD.Directive` result from `@run`
-   steering the link set / search paths (`library/BUILD.thx`, `examples/CT_RUN.thx`).
+   fails the build; section 11), and a `BUILD.Directive` (`Lib`/`LibPath`) result
+   steering the native link set / search paths (`library/BUILD.thx`,
+   `examples/CT_RUN.thx`). **NEXT:** the typed layer below.
 1. Surface `@token`/kind tags as a Thrax type.
 2. `@code` opaque handle over `Ast` + the `@run`-splices-`@code` path; prove the
    loop with an identity generator.

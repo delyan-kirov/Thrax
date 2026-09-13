@@ -855,6 +855,15 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
     Ok(s)
 }
 
+/// Evaluate a global to its structured value (like [`eval`] but without
+/// rendering to a string), so a caller can inspect it, e.g. a compile-time
+/// `$ @run` producing a `BUILD` directive the driver applies.
+pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
+    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let m = Machine::new(prog);
+    m.eval_global(name)
+}
+
 /// Run a C-style `main`: apply the entry function to its argument (unit when
 /// `argv` is `None`, else a `[n]Str` sized array of the arguments) and return its
 /// `Int` result as the process exit code.

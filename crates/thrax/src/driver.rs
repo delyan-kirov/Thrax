@@ -387,23 +387,72 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
 /// at compile time (Jai's `#run`). The value is discarded; a trap fails the
 /// build. This runs on every backend, so compile-time execution is
 /// engine-independent, and returns the IR so the interpreter path can reuse it.
+/// Libraries and search paths a program's `$ @run BUILD.*` directives added to
+/// the build (see library/BUILD.thx). Applied to the native link line; the
+/// interpreter's default set already covers libc/libm and lazily `dlopen`s the
+/// rest per `@extern`.
+#[derive(Default)]
+struct BuildPlan {
+    libs: Vec<String>,
+    lib_paths: Vec<String>,
+}
+
+/// The first byte string reachable in a value, drilling through the record/tuple
+/// that wraps a single-field variant payload (a `BUILD` directive's `{@str}`).
+fn first_str(v: &interpreter::machine::data::PVal) -> Option<String> {
+    use interpreter::machine::data::Value;
+    match &*v.borrow() {
+        Value::Str(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+        Value::Tuple(items) | Value::Variant { fields: items, .. } => {
+            items.iter().find_map(first_str)
+        }
+        Value::Struct { fields, .. } => fields.iter().find_map(|(_, f)| first_str(f)),
+        _ => None,
+    }
+}
+
+/// Read a `BUILD.Directive` value produced by a compile-time `@run`, if that is
+/// what it is. Any other value is plain compile-time execution (discarded).
+fn build_directive(v: &interpreter::machine::data::PVal, plan: &mut BuildPlan) {
+    use interpreter::machine::data::Value;
+    if let Value::Variant { ty, tag, .. } = &*v.borrow() {
+        if ty != "Directive" {
+            return;
+        }
+        if let Some(s) = first_str(v) {
+            let set = match tag.as_str() {
+                "Lib" => &mut plan.libs,
+                "LibPath" => &mut plan.lib_paths,
+                _ => return,
+            };
+            if !set.contains(&s) {
+                set.push(s);
+            }
+        }
+    }
+}
+
 fn compile_and_run_ct(
     lowered: &[frontend::lowering::data::Program],
-) -> Result<frontend::ir::data::Program, ExitCode> {
+) -> Result<(frontend::ir::data::Program, BuildPlan), ExitCode> {
     let ir = frontend::ir::lower_modules(lowered);
+    let mut plan = BuildPlan::default();
     for p in lowered {
         for name in &p.ct_runs {
             // `lower_modules` prefixes every global with its module; match that to
             // force the synthetic `@run` global.
             let qualified = format!("{}.{}", p.module, name);
-            if let Err(diag) = interpreter::machine::eval(&ir, &qualified) {
-                eprintln!("thrax: a compile-time `@run` failed:");
-                eprint!("{}", diag.render("", &qualified));
-                return Err(ExitCode::FAILURE);
+            match interpreter::machine::eval_value(&ir, &qualified) {
+                Ok(v) => build_directive(&v, &mut plan),
+                Err(diag) => {
+                    eprintln!("thrax: a compile-time `@run` failed:");
+                    eprint!("{}", diag.render("", &qualified));
+                    return Err(ExitCode::FAILURE);
+                }
             }
         }
     }
-    Ok(ir)
+    Ok((ir, plan))
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
@@ -411,8 +460,8 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let ir = match compile_and_run_ct(&lowered) {
-        Ok(ir) => ir,
+    let (ir, _plan) = match compile_and_run_ct(&lowered) {
+        Ok(x) => x,
         Err(code) => return code,
     };
     use frontend::EntryKind::*;
@@ -459,6 +508,9 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
     if let Err(code) = compile_and_run_ct(&lowered) {
         return code;
     }
+    // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
+    // directives (which steer linking) have nothing to apply here beyond the
+    // link comment the generated source already carries.
     print!("{}", ccg::emit(&lowered, &entry, kind, target));
     ExitCode::SUCCESS
 }
@@ -472,9 +524,10 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
         Ok(x) => x,
         Err(code) => return code,
     };
-    if let Err(code) = compile_and_run_ct(&lowered) {
-        return code;
-    }
+    let plan = match compile_and_run_ct(&lowered) {
+        Ok((_ir, plan)) => plan,
+        Err(code) => return code,
+    };
     let emitted = ccg::emit_program(&lowered, &entry, kind, target);
 
     let tc = utilities::toolchain(target);
@@ -519,6 +572,22 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
                     cmd.arg(format!("-Wl,-rpath,{}", libdir.display()));
                 }
             }
+        }
+    }
+    // Libraries and search paths declared in Thrax via `$ @run BUILD.lib` /
+    // `BUILD.lib_path`. Skip a lib already linked from an `@extern`.
+    for lib in &plan.libs {
+        if emitted.libraries.iter().any(|l| l == lib) {
+            continue;
+        }
+        if let Some(flag) = target.link_flag(lib) {
+            cmd.arg(flag);
+        }
+    }
+    for dir in &plan.lib_paths {
+        cmd.arg(format!("-L{dir}"));
+        if tc.rpath {
+            cmd.arg(format!("-Wl,-rpath,{dir}"));
         }
     }
     match cmd.status() {
@@ -700,5 +769,57 @@ pub fn cmd_lex(path: &str) -> ExitCode {
             eprint!("{}", diag.render(&source, path));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interpreter::machine::data::{mk, Value};
+    use std::rc::Rc;
+
+    fn str_val(s: &str) -> interpreter::machine::data::PVal<'static> {
+        mk(Value::Str(Rc::new(s.as_bytes().to_vec())))
+    }
+
+    #[test]
+    fn build_directive_reads_lib_and_lib_path() {
+        // `BUILD.lib "curl"` -> a `Directive.Lib` whose payload holds the name.
+        let lib = mk(Value::Variant {
+            ty: "Directive".into(),
+            tag: "Lib".into(),
+            fields: vec![str_val("curl")],
+        });
+        // `BUILD.lib_path "vendor"` where the payload arrives wrapped in a record,
+        // exercising the drill-through in `first_str`.
+        let path = mk(Value::Variant {
+            ty: "Directive".into(),
+            tag: "LibPath".into(),
+            fields: vec![mk(Value::Struct {
+                name: String::new(),
+                fields: vec![("p".into(), str_val("vendor"))],
+            })],
+        });
+        let mut plan = BuildPlan::default();
+        build_directive(&lib, &mut plan);
+        build_directive(&path, &mut plan);
+        assert_eq!(plan.libs, vec!["curl".to_string()]);
+        assert_eq!(plan.lib_paths, vec!["vendor".to_string()]);
+    }
+
+    #[test]
+    fn build_directive_ignores_non_directive_values() {
+        // A plain compile-time `@run` value (not a `Directive`) steers nothing.
+        let mut plan = BuildPlan::default();
+        build_directive(&mk(Value::Int(42)), &mut plan);
+        build_directive(
+            &mk(Value::Variant {
+                ty: "Option".into(),
+                tag: "Some".into(),
+                fields: vec![str_val("x")],
+            }),
+            &mut plan,
+        );
+        assert!(plan.libs.is_empty() && plan.lib_paths.is_empty());
     }
 }
