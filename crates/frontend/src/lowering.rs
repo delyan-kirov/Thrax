@@ -55,6 +55,17 @@ struct VariantDecl {
     fields: Vec<Option<String>>,
 }
 
+/// The declared shape of every user type, for compile-time reflection: each
+/// struct with its `(module, name, field names)`, each union with its
+/// `(module, name, variants)` where a variant is `(tag, arity)`. The driver keys
+/// its reflection host by both the bare `name` and the qualified `module.name`,
+/// so a name shared across modules can be disambiguated. Built by
+/// [`Decls::reflect`], consumed by the driver's `$ @e` type-reflection host.
+pub struct ReflectInfo {
+    pub structs: Vec<(String, String, Vec<String>)>,
+    pub unions: Vec<(String, String, Vec<(String, usize)>)>,
+}
+
 impl Decls {
     /// Gather declarations from every module of one shared [`Ast`].
     pub fn collect(ast: &Ast, programs: &[AstProgram]) -> Decls {
@@ -163,6 +174,40 @@ impl Decls {
             }
             pending = later;
         }
+    }
+
+    /// The declared shape of every struct and union, for compile-time reflection.
+    /// Unions are reconstructed from the tag-keyed table by grouping on the union
+    /// name; a variant's arity is its payload field count (`0` for a unit payload).
+    pub fn reflect(&self) -> ReflectInfo {
+        let mut structs: Vec<(String, String, Vec<String>)> = Vec::new();
+        for (module, fields_by_name) in &self.structs {
+            for (name, fields) in fields_by_name {
+                structs.push((module.clone(), name.clone(), fields.clone()));
+            }
+        }
+        let mut unions: Vec<(String, String, Vec<(String, usize)>)> = Vec::new();
+        for (module, by_tag) in &self.unions {
+            for (tag, decl) in by_tag {
+                let arity = decl.fields.len();
+                match unions
+                    .iter_mut()
+                    .find(|(m, n, _)| m == module && *n == decl.union)
+                {
+                    Some((_, _, variants)) => {
+                        if !variants.iter().any(|(t, _)| t == tag) {
+                            variants.push((tag.clone(), arity));
+                        }
+                    }
+                    None => unions.push((
+                        module.clone(),
+                        decl.union.clone(),
+                        vec![(tag.clone(), arity)],
+                    )),
+                }
+            }
+        }
+        ReflectInfo { structs, unions }
     }
 
     /// A struct's field names, resolved from `module` first then any module.

@@ -293,7 +293,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@parse_items"
-        | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path" => 1,
+        | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
+        | "@type_kind" | "@type_fields" | "@type_variants" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -629,6 +630,52 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let arg = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             crate::machine::push_link(name == "@link_path", arg);
             Ok(Value::Unit)
+        }
+        // Compile-time reflection over a declared type, resolved by the driver's
+        // type host (see `crate::machine::set_type_host`), reachable only inside
+        // `$ @e`. A derive-style macro reads the shape and generates code for it.
+        // `@type_kind` reports `"struct"` / `"union"`; `@type_fields` the struct's
+        // field names; `@type_variants` the union's `(tag, arity)` pairs.
+        "@type_kind" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let kind = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Struct { .. } => "struct",
+                crate::machine::TypeInfo::Union { .. } => "union",
+            };
+            Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
+        }
+        "@type_fields" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let fields = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Struct { fields } => fields,
+                crate::machine::TypeInfo::Union { .. } => {
+                    return Err(fault(format!("@type_fields: `{ty}` is a union, not a struct")))
+                }
+            };
+            let items: Vec<PVal> = fields
+                .into_iter()
+                .map(|f| mk(Value::Str(Rc::new(f.into_bytes()))))
+                .collect();
+            Ok(Value::Vector(Rc::new(items)))
+        }
+        "@type_variants" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let variants = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Union { variants } => variants,
+                crate::machine::TypeInfo::Struct { .. } => {
+                    return Err(fault(format!("@type_variants: `{ty}` is a struct, not a union")))
+                }
+            };
+            let items: Vec<PVal> = variants
+                .into_iter()
+                .map(|(tag, arity)| {
+                    mk(Value::Tuple(vec![
+                        mk(Value::Str(Rc::new(tag.into_bytes()))),
+                        mk(Value::Int(arity as i64)),
+                    ]))
+                })
+                .collect();
+            Ok(Value::Vector(Rc::new(items)))
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
     }

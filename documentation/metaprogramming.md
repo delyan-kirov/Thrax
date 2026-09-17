@@ -121,6 +121,26 @@ sentinel the value carries) rather than a `Maybe`. Callers test it via
 `@typeinfo` predicates; the common case (name resolves) has no wrapper to
 unwrap.
 
+**LANDED (a first cut of type reflection).** Ahead of the full `<@meta>`
+`@lookup`, three effect-less reflection builtins expose a declared type's shape
+to a `$ @e` generator:
+
+```
+@type_kind     : @str -> @str                -- "struct" | "union"
+@type_fields   : @str -> @vec @str           -- a struct's field names
+@type_variants : @str -> @vec {@str, @int}   -- a union's (tag, arity) pairs
+```
+
+The argument is a type name, bare (`"Rgb"`) or qualified (`"MOD.Rgb"`; qualify to
+disambiguate a name shared across modules). They resolve through a driver-installed
+host (`machine::set_type_host`, fed from `Decls::reflect`), available only inside
+`$ @e`; a stray call at runtime faults. Reflection does not yet report a type's
+*parameters*, so a generator over these targets monomorphic types. On top of
+them, `library/DERIVE.thx` derives a default `to_string` for any struct or union
+(`$ @e (DERIVE.derive_show "Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the
+first real derive-style macro, and it exercises reflection + forward-referenced
+injection (2b) + overload extension together.
+
 Plus AST constructors `@code_app`, `@code_var`, `@code_let`, ... for building
 `@code` by hand.
 
@@ -139,6 +159,19 @@ curated subset of the internal lexer `Kind` is exposed; internal-only tags
 `$ @e e` is the single construct that runs code at compile time, and it is
 the eliminator for `<@meta>`. A macro is just a `<@meta>` computation that
 `@e` discharges.
+
+**What `@e X` is, precisely.** `@e` is not an ordinary function and its type is
+not `t1 -> @token`. It is a nullary splice at a fixed site: `X` is a closed
+compile-time expression, run once, now. Two things happen. It discharges
+`<@meta>` (the value case is the identity on `X`'s type, `@e (fib 10) : @int`,
+`@e ([1,2,3]) : @vec @int`; a `@code` result re-checks to whatever the spliced
+source is, a fresh var at the site). And operationally it emits source text,
+which is the real output: the fold renders a value's literal, the splice re-emits
+held source, and an item-position `$ @e X` whose value is discarded emits nothing
+(the empty fragment), running the computation for its build effect alone. `@e`
+discharges `<@meta>` only, never `<@io>`: its operand must be pure + `<@meta>`.
+Compile-time IO lives solely in `@build` (section 6/10), the one context that
+also installs an `<@io>` handler.
 
 **Why.** `$ @e` already exists as CTFE (`Expr::Run` in the parser AST) and
 already drives the CEK machine at compile time. Reusing it means no new parser
@@ -448,18 +481,20 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
    **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
-2b. **Item-position `$ @e X` injection (PARTIAL).** A top-level `$ @e X` whose
-   result is `@code` (build it with `@parse_items`) injects its item(s) in place
-   of the directive, then re-compiles; a `@link`/`@link_path` call steers the
-   build; any other value is a discarded compile-time run. The whole `$ @e X`
-   directive carries a source span (`Item::Run(expr, span)`) so injection replaces
-   it cleanly. **Limitation:** the module must type-check *before* injection to run
-   the generator, so injected code that is **forward-referenced** by hand-written
-   code (`$ @e (gen "double")` then a hand-written `test` that calls `double`)
-   fails with an unbound-name error, and a module with no entry until injection
-   fails the entry check. Non-forward-referenced injection works. Lifting this
-   needs a lenient/incremental compile phase (deferred unbound names + a deferred
-   entry check) — a follow-up.
+2b. **DONE: item-position `$ @e X` injection, including forward references.** A
+   top-level `$ @e X` whose result is `@code` (build it with `@parse_items`)
+   injects its item(s) in place of the directive, then re-compiles; a
+   `@link`/`@link_path` call steers the build; any other value is a discarded
+   compile-time run. The whole `$ @e X` directive carries a source span
+   (`Item::Run(expr, span)`) so injection replaces it cleanly. Forward references
+   now work: `$ @e (gen "double")` followed by a hand-written `test` that calls
+   `double`, or a module whose only entry is injected. The expand loop compiles
+   each round **leniently** (`Checker::set_lenient`): an unbound value name, a
+   no-viable-overload, and the missing-entry check are all deferred (an unbound
+   name becomes a fresh type var) so the generators still run. Once no `@e`
+   remains, one final **strict** compile validates the fully-injected program, so a
+   genuinely unbound name or a bad entry is still reported. This is what makes a
+   derive-style macro (below) callable by hand-written code.
 2a. **DONE: expression-position `@e X`, value-fold AND code-splice.** `@e` is a
    universal compile-time splice at any expression site, composing with `|>`/`<|`.
    `let x = @e (fib 10) in …` folds to `55`; `@e (gen "+")` where `gen` builds a
@@ -468,11 +503,17 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    checker types `@e X` as `X`'s type for a value, or a fresh var when `X : @code`
    (deferred until the splice re-checks); `lower_all` is an expand loop that
    compiles, forces each `@e` site, renders the result to source (a `@code`'s text,
-   or a scalar literal), substitutes it at the site's span, and re-compiles until
-   no `@e` remains. Compile-time-only ops (`@lex`) fold away entirely. Caveats:
-   scalar values or `@code` only (aggregate values not rendered yet); a nested
-   `@e (@e X)` inside one expression is not handled (recursion works across
-   rounds, e.g. generated code containing `@e`).
+   a scalar literal, or an aggregate literal), substitutes it at the site's span,
+   and re-compiles until no `@e` remains. Compile-time-only ops (`@lex`) fold away
+   entirely. Aggregate folding is done: `render_meta_value`/`render_owned`
+   (`crates/thrax/src/driver.rs`) render vectors (`[a, b, c]`), tuples (`{a, b}`),
+   structs (`Name.{ .f = v }`), and variants (`Ty.Tag.{ a, b }`, bare `Ty.Tag`
+   when nullary) recursively, so a compile-time-computed table folds into the
+   program. Because `[..]`/`.{ .. }` literals are type-directed, a rendered
+   aggregate must land where its type is pinned (an annotation or an unambiguous
+   use site); a fully ambiguous position can mis-default (e.g. `[..]` to `List`
+   rather than `@vec`). Caveat: a nested `@e (@e X)` inside one expression is not
+   handled (recursion works across rounds, e.g. generated code containing `@e`).
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

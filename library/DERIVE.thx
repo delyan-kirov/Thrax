@@ -1,0 +1,53 @@
+@mod DERIVE
+
+# \file DERIVE.thx
+# \info A compile-time derive: generate a default `to_string` for any declared
+#       struct or union by reflecting on its shape. `derive_show "T"` returns the
+#       `@code` for `$ to_string : T -> @str = ...`, injected with `$ @e`:
+#
+#           $ @e (DERIVE.derive_show "Color")
+#
+#       after which `to_string` (and `?(...)` interpolation) works on `T`. It uses
+#       the reflection intrinsics `@type_kind` / `@type_fields` / `@type_variants`,
+#       which are available only at compile time (inside `$ @e`). A struct renders
+#       as `T { f = v ... }`; a union as `Tag(a0, a1)` per variant. The target
+#       type must be monomorphic (reflection does not report type parameters yet).
+
+$ with VEC
+
+# Join non-empty pieces with `sep` (the seed "" is skipped, so no leading sep).
+$ join : @str -> @vec @str -> @str = \sep xs =
+	VEC.foldl (\a s = if a ?= "" => s else a ++ sep ++ s) "" xs
+
+# Positional binder names `a0 .. a<n-1>` for a variant of arity `n`.
+$ arg_names : @int -> @vec @str = \n =
+	if n ?= 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
+
+# The body of a struct's `to_string`: interpolate every field. `\?(` emits a
+# literal `?(` so the interpolation happens when the GENERATED code compiles,
+# not now; `\"` / `\\` emit a literal quote / backslash into the generated source.
+$ struct_show : @str -> @str = \ty =
+	let piece = \acc f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
+	let inner = VEC.foldl piece (ty ++ " {") (@type_fields ty) in
+	"$ to_string : " ++ ty ++ " -> @str = \\x = \"" ++ inner ++ " }\""
+
+# One `is` arm for a variant: a nullary tag renders as its name, an n-ary tag as
+# `Tag(?(a0), ...)` matched by the positional pattern `Ty.Tag.{a0, ...}`.
+$ arm_for : @str -> @str -> @int -> @str = \ty tag arity =
+	let vars = arg_names arity in
+	let interps = VEC.map (\v = "\?(" ++ v ++ ")") vars in
+	if arity ?= 0
+		=> " | " ++ ty ++ "." ++ tag ++ " => \"" ++ tag ++ "\""
+		else " | " ++ ty ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
+			++ " => \"" ++ tag ++ "(" ++ join ", " interps ++ ")\""
+
+# The body of a union's `to_string`: one arm per variant.
+$ union_show : @str -> @str = \ty =
+	let arms = VEC.foldl (\acc tv = acc ++ arm_for ty tv.0 tv.1) "" (@type_variants ty) in
+	"$ to_string : " ++ ty ++ " -> @str = \\x = is x" ++ arms
+
+# The derive itself: dispatch on the type's kind and parse the generated item(s).
+$ derive_show : @str -> @code = \ty =
+	if @type_kind ty ?= "struct"
+		=> @parse_items (struct_show ty)
+		else @parse_items (union_show ty)

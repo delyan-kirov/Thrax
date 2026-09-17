@@ -1,0 +1,38 @@
+@mod DERIVE_SHOW
+
+# \file DERIVE_SHOW.thx
+# \info Deriving `to_string` at compile time. `DERIVE.derive_show "T"` reflects on
+#       a declared type's shape (`@type_fields` / `@type_variants`) and generates
+#       the source for `$ to_string : T -> @str`, injected here by `$ @e`. The
+#       hand-written `test` below then calls `to_string` on values of those types,
+#       even though the definitions did not exist until the generator ran (a
+#       forward-referenced injection). One macro, any struct or union.
+
+$ with DERIVE
+
+$ Rgb : @struct =
+	r: @int,
+	g: @int,
+	b: @int,
+
+$ Shape : @union =
+	Dot: {},
+	Circle: {@int},
+	Rect: {@int, @int},
+
+# Generate `to_string` for each type from its declaration alone.
+$ @e (DERIVE.derive_show "Rgb")
+$ @e (DERIVE.derive_show "Shape")
+
+$ ck_struct : @int =
+	if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) ?= "Rgb { r = 1 g = 2 b = 3 }"
+		=> 0 else 1
+
+$ ck_nullary : @int = if to_string Shape.Dot ?= "Dot" => 0 else 2
+$ ck_unary   : @int = if to_string (Shape.Circle.{ 7 }) ?= "Circle(7)" => 0 else 4
+$ ck_nary    : @int = if to_string (Shape.Rect.{ 3, 4 }) ?= "Rect(3, 4)" => 0 else 8
+
+# Interpolation goes through the derived `to_string` too.
+$ ck_interp : @int = if "c=?(Rgb.{ .r = 9, .g = 8, .b = 7 })" ?= "c=Rgb { r = 9 g = 8 b = 7 }" => 0 else 16
+
+$ test : @int = ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp

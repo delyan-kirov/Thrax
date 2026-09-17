@@ -262,6 +262,11 @@ pub struct Checker<'a> {
     /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
+    /// Set during a metaprogram-expansion round (`$ @e` codegen not yet run): an
+    /// unbound value name is treated as a fresh type variable rather than an error,
+    /// so a module that forward-references an about-to-be-injected definition still
+    /// checks well enough to run its generators. The final round checks strictly.
+    lenient: bool,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -375,9 +380,18 @@ impl<'a> Checker<'a> {
             own_externs: HashMap::new(),
             ambient: Type::RowEmpty,
             unknown_type: None,
+            lenient: false,
         };
         c.install_builtins();
         c
+    }
+
+    /// Enable lenient checking for a metaprogram-expansion round: an unbound value
+    /// name becomes a fresh variable instead of an error, so a module that
+    /// forward-references an about-to-be-injected definition still type-checks
+    /// enough to run its `$ @e` generators. The final round leaves this off.
+    pub fn set_lenient(&mut self, lenient: bool) {
+        self.lenient = lenient;
     }
 
     /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
@@ -2861,6 +2875,11 @@ impl<'a> Checker<'a> {
             Ok(self.eng.instantiate(&scheme))
         } else if self.overloads.contains_key(name) {
             Ok(self.eng.fresh())
+        } else if self.lenient {
+            // A metaprogram-expansion round: the name may be injected by a
+            // generator that has not run yet. Defer it as a fresh variable; the
+            // final strict round rejects it if it is still unbound.
+            Ok(self.eng.fresh())
         } else {
             Err(unbound(name))
         }
@@ -3518,6 +3537,10 @@ impl<'a> Checker<'a> {
                 self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
+            // In a lenient expansion round the matching overload may be injected
+            // by a generator that has not run yet (a derived `to_string` for a new
+            // type); leave the result an unresolved variable rather than erroring.
+            Match::None if self.lenient => Ok(result),
             Match::None => Err(self.no_overload(name, args, site)),
             Match::Ambiguous => {
                 self.pending.push(Pending {
@@ -3594,6 +3617,9 @@ impl<'a> Checker<'a> {
                         self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
+                    // Lenient round: a still-unmatched overload may be satisfied by
+                    // an about-to-be-injected definition; drop it rather than error.
+                    Match::None if self.lenient => {}
                     Match::None => return Err(self.no_overload(&p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }
@@ -4422,6 +4448,25 @@ impl<'a> Checker<'a> {
         // The effect is the directive; the call returns unit.
         self.bind("@link", Type::arrow(str_ty(), Type::con(ty::UNIT)));
         self.bind("@link_path", Type::arrow(str_ty(), Type::con(ty::UNIT)));
+        // Compile-time reflection over a declared type (resolved by the driver's
+        // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;
+        // `@type_fields` the struct's field names; `@type_variants` the union's
+        // `(tag, arity)` pairs. A derive-style macro reads these and generates code.
+        self.bind("@type_kind", Type::arrow(str_ty(), str_ty()));
+        self.bind(
+            "@type_fields",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+        );
+        self.bind(
+            "@type_variants",
+            Type::arrow(
+                str_ty(),
+                Type::app(
+                    Type::con(ty::VEC),
+                    Type::Tuple(vec![str_ty(), Type::con(ty::INT)]),
+                ),
+            ),
+        );
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name

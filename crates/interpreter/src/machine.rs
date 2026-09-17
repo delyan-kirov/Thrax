@@ -995,6 +995,41 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     })
 }
 
+/// The declared shape of a user type, as compile-time reflection reports it: a
+/// struct's field names, or a union's variants with each payload's arity.
+#[derive(Clone)]
+pub enum TypeInfo {
+    Struct { fields: Vec<String> },
+    Union { variants: Vec<(String, usize)> },
+}
+
+thread_local! {
+    /// The compile-time reflection host: given a type name, the driver answers its
+    /// declared shape (`@type_kind`/`@type_fields`/`@type_variants`). Installed
+    /// around a `$ @e` like the `@eval` host; absent at runtime, so a stray
+    /// reflection call faults cleanly.
+    static TYPE_HOST: std::cell::RefCell<Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install (or clear) the compile-time reflection host.
+pub fn set_type_host(host: Option<Box<dyn Fn(&str) -> Option<TypeInfo>>>) {
+    TYPE_HOST.with(|c| *c.borrow_mut() = host);
+}
+
+/// Look up a declared type's shape, or fault if reflection is unavailable (called
+/// outside compile time) or the name is unknown.
+pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
+    TYPE_HOST.with(|c| match &*c.borrow() {
+        Some(host) => host(name).ok_or_else(|| {
+            fault(format!("reflection: no declared type named `{name}`"))
+        }),
+        None => Err(fault(
+            "type reflection is only available at compile time (inside `$ @e`)",
+        )),
+    })
+}
+
 /// Run a C-style `main`: apply the entry function to its argument (unit when
 /// `argv` is `None`, else a `[n]Str` sized array of the arguments) and return its
 /// `Int` result as the process exit code.

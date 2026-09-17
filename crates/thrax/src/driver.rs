@@ -160,6 +160,7 @@ fn check_all<'a>(
     programs: &[Program],
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
+    lenient: bool,
 ) -> Result<CheckOut<'a>, String> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
@@ -177,6 +178,7 @@ fn check_all<'a>(
     }
     for i in order {
         let mut checker = frontend::Checker::new(ast);
+        checker.set_lenient(lenient);
         if let Some(c) = c_idx {
             if c != i && Some(i) != core_idx {
                 checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
@@ -265,9 +267,14 @@ fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
 /// programs and the entry point. The parse/check state is local (self-borrowing),
 /// so only the owned `lowered` escapes; the expansion loop in [`lower_all`] calls
 /// this repeatedly on progressively `@e`-expanded sources.
-fn compile_sources(
-    loaded: &Loaded,
-) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
+type Compiled = (
+    Vec<frontend::lowering::data::Program>,
+    String,
+    frontend::EntryKind,
+    frontend::lowering::ReflectInfo,
+);
+
+fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode> {
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
     for (_name, src_path, src) in &loaded.sources {
@@ -284,7 +291,7 @@ fn compile_sources(
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, lenient)
         .map_err(|rendered| {
             eprint!("{rendered}");
             ExitCode::FAILURE
@@ -295,6 +302,7 @@ fn compile_sources(
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
     let decls = frontend::Decls::collect(&ast, &programs);
+    let reflect = decls.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
@@ -307,6 +315,12 @@ fn compile_sources(
         .into_iter()
         .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
     let Some(e) = entry else {
+        // A metaprogram-expansion round only needs the `@e` sites (to run the
+        // generators); the entry may itself be injected. Defer the requirement to
+        // the final strict round.
+        if lenient {
+            return Ok((lowered, String::new(), frontend::EntryKind::Value, reflect));
+        }
         eprintln!(
             "thrax: module `{}` has no `test` or `main` to run",
             loaded.root_name
@@ -320,48 +334,66 @@ fn compile_sources(
         .find(|(n, _)| *n == e)
         .map(|(_, ty)| frontend::classify_entry(ty))
         .unwrap_or(frontend::EntryKind::Value);
-    if kind == frontend::EntryKind::BadFn {
+    if kind == frontend::EntryKind::BadFn && !lenient {
         eprintln!(
             "thrax: `{e}` must be a value, `{{}} -> Int`, or `[n]Str -> Int` (a C-style main)"
         );
         return Err(ExitCode::FAILURE);
     }
-    Ok((lowered, e.to_string(), kind))
+    Ok((lowered, e.to_string(), kind, reflect))
 }
 
 /// Render a forced expression-position `@e X` value back into Thrax source to
 /// splice at the site. A `@code` result contributes the fragment it holds; a
-/// scalar contributes its literal. Aggregates are not renderable yet.
+/// scalar contributes its literal; aggregates (vectors, tuples, structs,
+/// variants) render as their type-directed literals, recursively.
 fn render_meta_value(v: &interpreter::machine::data::PVal) -> std::result::Result<String, String> {
-    use interpreter::machine::data::Value;
-    // A `@code` fragment: splice its source text.
-    if let Value::Struct { name, fields } = &*v.borrow() {
-        if name == "@code" {
-            let src = fields
+    render_owned(&interpreter::machine::reify(v)?)
+}
+
+/// Render a reified compile-time value as the Thrax literal that reconstructs it.
+/// Aggregate literals (`[..]`, `.{ .. }`) are type-directed, so the rendered text
+/// must land where its type is pinned (an annotation or an unambiguous use site).
+fn render_owned(
+    v: &interpreter::machine::OwnedValue,
+) -> std::result::Result<String, String> {
+    use interpreter::machine::OwnedValue;
+    let each = |items: &[OwnedValue]| -> std::result::Result<Vec<String>, String> {
+        items.iter().map(render_owned).collect()
+    };
+    match v {
+        OwnedValue::Int(n) => Ok(n.to_string()),
+        OwnedValue::Real(r) => Ok(format!("{r:?}")),
+        OwnedValue::Real32(r) => Ok(format!("{r:?}")),
+        OwnedValue::Bool(b) => Ok(if *b { "@true" } else { "@false" }.to_string()),
+        OwnedValue::Unit => Ok("{}".to_string()),
+        OwnedValue::Str(b) => Ok(thrax_str_literal(b)),
+        OwnedValue::Vector(items) => Ok(format!("[{}]", each(items)?.join(", "))),
+        OwnedValue::Tuple(items) => Ok(format!("{{{}}}", each(items)?.join(", "))),
+        // A `@code` fragment reifies to a `{ src = "..." }` struct: splice its
+        // held source text rather than rebuilding it as a record literal.
+        OwnedValue::Struct { name, fields } if name == "@code" => fields
+            .iter()
+            .find(|(k, _)| k == "src")
+            .map(|(_, s)| match s {
+                OwnedValue::Str(b) => Ok(String::from_utf8_lossy(b).into_owned()),
+                _ => Err("malformed @code value".to_string()),
+            })
+            .unwrap_or_else(|| Err("malformed @code value".to_string())),
+        OwnedValue::Struct { name, fields } => {
+            let body = fields
                 .iter()
-                .find(|(k, _)| k == "src")
-                .and_then(|(_, s)| match &*s.borrow() {
-                    Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
-                    _ => None,
-                })
-                .ok_or("malformed @code value")?;
-            return Ok(src);
+                .map(|(k, val)| Ok(format!(".{k} = {}", render_owned(val)?)))
+                .collect::<std::result::Result<Vec<_>, String>>()?
+                .join(", ");
+            Ok(format!("{name}.{{ {body} }}"))
         }
-    }
-    // Otherwise a first-order value: render its Thrax literal.
-    match interpreter::machine::reify(v)? {
-        interpreter::machine::OwnedValue::Int(n) => Ok(n.to_string()),
-        interpreter::machine::OwnedValue::Real(r) => Ok(format!("{r:?}")),
-        interpreter::machine::OwnedValue::Bool(b) => {
-            Ok(if b { "@true" } else { "@false" }.to_string())
+        // Variant payloads are positional (`Ty.Tag.{ a, b }`); a nullary
+        // constructor renders bare as `Ty.Tag`.
+        OwnedValue::Variant { ty, tag, fields } if fields.is_empty() => Ok(format!("{ty}.{tag}")),
+        OwnedValue::Variant { ty, tag, fields } => {
+            Ok(format!("{ty}.{tag}.{{ {} }}", each(fields)?.join(", ")))
         }
-        interpreter::machine::OwnedValue::Unit => Ok("{}".to_string()),
-        interpreter::machine::OwnedValue::Str(b) => Ok(thrax_str_literal(&b)),
-        _ => Err(
-            "an expression-position `@e` must currently produce `@code` or a scalar \
-             (@int/@float64/@str/@bool/{}); aggregates are not rendered yet"
-                .to_string(),
-        ),
     }
 }
 
@@ -426,7 +458,11 @@ fn lower_all(
     let mut plan = BuildPlan::default();
     let _ = interpreter::machine::take_link_directives(); // drop any stale directives
     loop {
-        let compiled = compile_sources(&loaded)?;
+        // Compile leniently while `@e` sites remain: a generator may inject a
+        // definition that hand-written code forward-references, which would not
+        // yet resolve. Unbound names are deferred (fresh vars) so the generators
+        // can still run; the final strict compile below validates the result.
+        let compiled = compile_sources(&loaded, true)?;
         // Gather every `@e` site this round: expression-position (`ct_evals`,
         // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@code`,
         // apply a `BUILD` directive, or discard).
@@ -449,6 +485,9 @@ fn lower_all(
             })
             .collect();
         if expr_sites.is_empty() && item_sites.is_empty() {
+            // No `@e` remains: re-check strictly so any name still unbound after
+            // all injection, or a missing/ill-typed entry, is reported now.
+            let final_compiled = compile_sources(&loaded, false)?;
             // Fold in any `@link`/`@link_path` directives recorded while running.
             for (is_path, arg) in interpreter::machine::take_link_directives() {
                 let set = if is_path { &mut plan.lib_paths } else { &mut plan.libs };
@@ -456,14 +495,21 @@ fn lower_all(
                     set.push(arg);
                 }
             }
-            return Ok((compiled.0, compiled.1, compiled.2, loaded.sources, plan));
+            return Ok((
+                final_compiled.0,
+                final_compiled.1,
+                final_compiled.2,
+                loaded.sources,
+                plan,
+            ));
         }
         let ir = frontend::ir::lower_modules(&compiled.0);
         let rd = root_dir.clone();
         interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
+        interpreter::machine::set_type_host(Some(reflect_host(compiled.3)));
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
         let fail = |diag, module: &str, span| -> ExitCode {
-            interpreter::machine::set_meta_eval(None);
+            clear_meta_hosts();
             eprintln!("thrax: a compile-time `@e` failed:");
             eprint!("{}", render_e_fault(diag, module, span, &loaded.sources));
             ExitCode::FAILURE
@@ -476,7 +522,7 @@ fn lower_all(
             match render_meta_value(&v) {
                 Ok(text) => edits.push((module, span, format!("({text})"))),
                 Err(msg) => {
-                    interpreter::machine::set_meta_eval(None);
+                    clear_meta_hosts();
                     eprintln!("thrax: a compile-time `@e` failed: {msg}");
                     return Err(ExitCode::FAILURE);
                 }
@@ -497,9 +543,42 @@ fn lower_all(
                 None => edits.push((module, span, String::new())),
             }
         }
-        interpreter::machine::set_meta_eval(None);
+        clear_meta_hosts();
         splice_sources(&mut loaded.sources, edits);
     }
+}
+
+/// Clear both compile-time hosts (`@eval` and type reflection) installed around a
+/// `$ @e` expansion round, so a stray meta op at runtime faults cleanly.
+fn clear_meta_hosts() {
+    interpreter::machine::set_meta_eval(None);
+    interpreter::machine::set_type_host(None);
+}
+
+/// Build the `$ @e` reflection host from a round's collected type shapes: a
+/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`.
+fn reflect_host(
+    reflect: frontend::lowering::ReflectInfo,
+) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+    use interpreter::machine::TypeInfo;
+    // Register each type under both its bare name and `module.name`. The qualified
+    // key is exact; the bare key resolves to the first-declared type of that name
+    // (an ambiguity a caller disambiguates by qualifying).
+    let mut map: HashMap<String, TypeInfo> = HashMap::new();
+    let mut put = |key: String, info: TypeInfo| {
+        map.entry(key).or_insert(info);
+    };
+    for (module, name, fields) in reflect.structs {
+        let info = TypeInfo::Struct { fields };
+        put(format!("{module}.{name}"), info.clone());
+        put(name, info);
+    }
+    for (module, name, variants) in reflect.unions {
+        let info = TypeInfo::Union { variants };
+        put(format!("{module}.{name}"), info.clone());
+        put(name, info);
+    }
+    Box::new(move |name: &str| map.get(name).cloned())
 }
 
 /// If `v` is a `@code` fragment, its source text.
@@ -564,7 +643,7 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)?;
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, false)?;
     let resolved = collect_resolved(&checkers);
 
     let module_decls = frontend::Decls::collect(&ast, &programs);
@@ -783,7 +862,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources) {
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false) {
         Ok(out) => out,
         Err(rendered) => {
             eprint!("{rendered}");
