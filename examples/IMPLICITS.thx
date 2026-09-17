@@ -2,11 +2,14 @@
 
 # \file implicits.thx
 # \info `@ctx` implicit parameters. A definition may declare, after its type
-#       signature, one or more `@ctx name : Type` implicit parameters. Each call
-#       site resolves them BY NAME from the surrounding scope (a local binder
-#       wins, else a global, picking among overloads by type), or the caller
-#       passes them explicitly with `@ctx`. It elaborates to leading dictionary
-#       passing, so the backends need no special support.
+#       signature, implicit parameters as a flat comma list, repeatable:
+#       `@ctx a : A, b : B`. Each call site resolves them BY NAME from the
+#       surrounding scope (a local binder wins, else a global, picking among
+#       overloads by type), or the caller passes them explicitly with `@ctx`. A
+#       DUPLICATED name declares one dictionary per type parameter (e.g. two
+#       `to_string`), resolved by type in the body (see `DERIVE_SHOW`). It
+#       elaborates to leading dictionary passing, so the backends need no special
+#       support.
 
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 

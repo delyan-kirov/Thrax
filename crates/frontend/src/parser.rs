@@ -609,21 +609,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the `@ctx` declarations that may follow a definition's type
-    /// signature: `@ctx name : Type` (repeatable) or `@ctx { a : A, b : B }`.
-    /// Each becomes an implicit parameter resolved by name at the call site.
+    /// signature: a comma-separated list `@ctx a : A, b : B`, and repeatable
+    /// (`@ctx a : A  @ctx b : B`). A duplicated name declares one dictionary per
+    /// type parameter (`@ctx to_string : a -> @str, to_string : b -> @str`),
+    /// resolved by type in the body. Each becomes an implicit parameter.
     fn parse_ctx_decls(&mut self) -> Result<Slice<FieldDecl>> {
         let mut decls = Vec::new();
         while self.at_ctx()? {
             self.bump()?; // '@ctx'
-            if self.eat(|k| matches!(k, Kind::LBrace))? {
-                let block = self.parse_field_decls()?;
-                decls.extend_from_slice(self.ast.slice(block));
-                expect!(self, Kind::RBrace, "expected '}' to close the '@ctx' block");
-            } else {
+            loop {
                 let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
                 expect!(self, Kind::Colon, "expected ':' after the '@ctx' name");
                 let ty = self.parse_type()?;
                 decls.push(FieldDecl { name, ty });
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
             }
         }
         Ok(self.ast.make_slice(decls))

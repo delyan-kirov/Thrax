@@ -45,7 +45,7 @@ $ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
 
 # Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
 # the element `add`/`mul`/`zero` supplied by `@ctx`.
-$ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = \x y =
+$ dot : [n]a -> [n]a -> a  @ctx add : a -> a -> a, mul : a -> a -> a, zero : a = \x y =
 	let go = \i acc =
 		if i ?= length x => acc
 		else go (i + 1) (add acc (mul x.[i] y.[i]))
@@ -62,6 +62,6 @@ $ dot : [n]a -> [n]a -> a  @ctx { add : a -> a -> a, mul : a -> a -> a, zero : a
 # A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
 # either variance.
 $ matmul : [@contra m, @co k]a -> [@contra k, @co n]a -> [@contra m, @co n]a
-	@ctx { add : a -> a -> a, mul : a -> a -> a, zero : a } = \a b =
+	@ctx add : a -> a -> a, mul : a -> a -> a, zero : a = \a b =
 	let bt = transpose b in
 	create a (\i = create (b.[0]) (\j = dot a.[i] bt.[j]))

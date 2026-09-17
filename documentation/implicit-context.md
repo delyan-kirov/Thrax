@@ -73,9 +73,12 @@ max_of 3 7 @ctx flip       # single explicit override
 foo a b @ctx { .lt = f, .. }   # record override; `..` resolves the rest by name
 ```
 
-A definition may append `@ctx name : Type` clauses after its signature (repeat
-`@ctx`, or a `@ctx { a : A, b : B }` block). The implicit names are in scope in
-the body. See `examples/IMPLICITS.thx`.
+A definition may append `@ctx name : Type` clauses after its signature as a flat
+comma list, repeatable: `@ctx a : A, b : B`. The implicit names are in scope in
+the body. A DUPLICATED name declares one dictionary per type parameter (`@ctx
+to_string : a -> @str, to_string : b -> @str`), resolved by type in the body
+(dictionary selection, `instance (Show a, Show b) => Show (Pair a b)`). See
+`examples/IMPLICITS.thx` and `examples/DERIVE_SHOW.thx`.
 
 **Elaboration: leading dictionary passing.** `lowering::def` prepends one lambda
 per implicit (`f = \c1 = \c2 = <body>`); every use site injects the resolved

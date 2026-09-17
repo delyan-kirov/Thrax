@@ -11,12 +11,12 @@
 #       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
 #       `@type_variants`, available only at compile time (inside `$ @e`).
 #
-#       A GENERIC type (one type parameter, e.g. `Box t`) derives a single generic
-#       instance `$ to_string : Box t -> @str  @ctx to_string : t -> @str`: the
-#       `@ctx` dictionary renders the element, so `to_string` works at every
-#       instantiation (`Box @int`, `Box @bool`, ...). This is `instance Show a =>
-#       Show (Box a)`. Multi-parameter generics are not supported yet (the same
-#       `@ctx to_string` name cannot carry two element types at once).
+#       A GENERIC type derives a single generic instance with one `@ctx to_string`
+#       dictionary per type parameter, e.g. `$ to_string : Pair a b -> @str  @ctx
+#       to_string : a -> @str  @ctx to_string : b -> @str`. Each dictionary renders
+#       its parameter, resolved by type, so `to_string` works at every
+#       instantiation (`Box @int`, `Pair @int @bool`, nesting). This is
+#       `instance (Show a, Show b) => Show (Pair a b)`.
 
 $ with VEC
 
@@ -51,17 +51,16 @@ $ union_show : @str -> @str -> @str -> @str = \base applied ctx =
 	let arms = VEC.foldl (\acc tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
 	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = is x" ++ arms
 
+# One `@ctx to_string` dictionary clause for a type parameter `p`.
+$ ctx_clause : @str -> @str = \p = "  @ctx to_string : " ++ p ++ " -> @str"
+
 # The derive: reflect on the type's parameters and kind, build the applied type
-# (`Box t`) and, for a single parameter, the `@ctx to_string : t -> @str`
-# dictionary clause, then parse the generated item.
+# (`Pair a b`) and one `@ctx to_string : <p> -> @str` dictionary clause per
+# parameter, then parse the generated item.
 $ derive_show : @str -> @code = \ty =
 	let params = @type_params ty in
-	if VEC.len params ?> 1
-		=> @abort ("derive_show: multi-parameter generic `" ++ ty ++ "` is not supported yet")
-		else
 	let applied = if VEC.is_empty params => ty else ty ++ " " ++ join " " params in
-	let ctx = if VEC.is_empty params => ""
-		else "  @ctx to_string : " ++ VEC.get_or params 0 "t" ++ " -> @str" in
+	let ctx = VEC.foldl (\acc p = acc ++ ctx_clause p) "" params in
 	if @type_kind ty ?= "struct"
 		=> @parse_items (struct_show ty applied ctx)
 		else @parse_items (union_show ty applied ctx)

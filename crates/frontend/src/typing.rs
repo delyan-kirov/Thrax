@@ -262,6 +262,15 @@ pub struct Checker<'a> {
     /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
+    /// The `@ctx` implicit dictionaries of the definition currently being checked
+    /// whose name is DUPLICATED (a generic `to_string : a -> @str` and `to_string :
+    /// b -> @str` both), keyed by name to `(leading-param slot, type)`. A body use
+    /// of such a name resolves by type among these (plus any global overloads).
+    /// Distinct-named implicits are ordinary scope binders and are not listed here.
+    current_dicts: HashMap<&'a str, Vec<(usize, Type)>>,
+    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
+    /// leading-parameter slot. Lowering rewrites the reference to that parameter.
+    dict_calls: HashMap<Aol<Expr>, usize>,
     /// Set during a metaprogram-expansion round (`$ @e` codegen not yet run): an
     /// unbound value name is treated as a fresh type variable rather than an error,
     /// so a module that forward-references an about-to-be-injected definition still
@@ -280,19 +289,28 @@ struct Cand<'a> {
     /// overloaded definition with implicits (a generic `to_string : Box t -> @str
     /// @ctx to_string : t -> @str`), so a call resolving to it plans the dictionary.
     implicits: Vec<(&'a str, Type)>,
+    /// For a candidate that is a LOCAL `@ctx` dictionary (a same-named implicit
+    /// parameter of the definition currently being checked, resolved by type),
+    /// the leading-parameter slot it occupies. Lowering references that parameter
+    /// instead of a global. `None` for an ordinary global/imported candidate.
+    dict_slot: Option<usize>,
 }
 
 impl<'a> Cand<'a> {
     /// A built-in or effect-operation candidate, owned by no module (never
     /// rewritten to a qualified reference).
     fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new() }
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None }
     }
     fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
-        Cand { ty, module, implicits: Vec::new() }
+        Cand { ty, module, implicits: Vec::new(), dict_slot: None }
     }
     fn with_implicits(ty: Type, module: Option<&'a str>, implicits: Vec<(&'a str, Type)>) -> Cand<'a> {
-        Cand { ty, module, implicits }
+        Cand { ty, module, implicits, dict_slot: None }
+    }
+    /// A local `@ctx` dictionary candidate at leading-parameter slot `slot`.
+    fn dict(ty: Type, slot: usize) -> Cand<'a> {
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot) }
     }
 }
 
@@ -389,6 +407,8 @@ impl<'a> Checker<'a> {
             ambient: Type::RowEmpty,
             unknown_type: None,
             lenient: false,
+            current_dicts: HashMap::new(),
+            dict_calls: HashMap::new(),
         };
         c.install_builtins();
         c
@@ -473,6 +493,12 @@ impl<'a> Checker<'a> {
     /// bare name lowering must give each global so the overloads stay distinct.
     pub fn def_keys(&self) -> &HashMap<Aol<Expr>, String> {
         &self.def_keys
+    }
+
+    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
+    /// leading-parameter slot. Lowering references that parameter (`@ctx$<slot>`).
+    pub fn dict_calls(&self) -> &HashMap<Aol<Expr>, usize> {
+        &self.dict_calls
     }
 
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
@@ -1118,16 +1144,31 @@ impl<'a> Checker<'a> {
             if def.implicits.is_empty() {
                 return self.check_body_against_sig(def.body, sig, &sig_ty);
             }
-            // Bind each `@ctx` implicit as a local while checking the body, sharing
-            // `tvars` with the signature so their type variables line up (a `List a`
+            // Bind each `@ctx` implicit while checking the body, sharing `tvars`
+            // with the signature so their type variables line up (a `List a`
             // signature and a `compare : a -> a -> Ordering` implicit share `a`).
-            self.enter_scope();
+            // A DISTINCT-named implicit is an ordinary scope binder (resolved by
+            // name). A DUPLICATED name (one dictionary per type parameter, e.g. two
+            // `to_string`) instead joins `current_dicts`, so a body use resolves by
+            // type among the dictionaries plus any global overloads.
+            let mut counts: HashMap<&'a str, usize> = HashMap::new();
             for d in &def.implicits {
+                *counts.entry(self.text(d.name)).or_insert(0) += 1;
+            }
+            self.enter_scope();
+            let mut dicts: HashMap<&'a str, Vec<(usize, Type)>> = HashMap::new();
+            for (slot, d) in def.implicits.iter().enumerate() {
                 let name = self.text(d.name);
                 let ty = self.ty_of_ast(d.ty, &mut tvars);
-                self.bind(name, ty);
+                if counts[name] > 1 {
+                    dicts.entry(name).or_default().push((slot, ty));
+                } else {
+                    self.bind(name, ty);
+                }
             }
+            let saved_dicts = std::mem::replace(&mut self.current_dicts, dicts);
             let r = self.check_body_against_sig(def.body, sig, &sig_ty);
+            self.current_dicts = saved_dicts;
             self.leave_scope();
             r
         } else {
@@ -3280,11 +3321,41 @@ impl<'a> Checker<'a> {
                 // same name (a lambda/`let`/`@ctx` parameter) shadows the overload
                 // set, so fall through to ordinary inference in that case.
                 None if !self.shadowed_locally(name) => {
-                    if let Some(cands) = self.overloads.get(name).cloned() {
+                    // Local `@ctx` dictionaries of this name (a generic instance's
+                    // per-parameter `to_string`) join the global overloads as
+                    // candidates, so the call resolves by type to the right one.
+                    let dicts = self.current_dicts.get(name).cloned();
+                    let overloads = self.overloads.get(name).cloned();
+                    if dicts.is_some() || overloads.is_some() {
+                        let has_dicts = dicts.is_some();
+                        let mut cands = overloads.unwrap_or_default();
+                        if let Some(ds) = dicts {
+                            cands.extend(ds.into_iter().map(|(slot, ty)| Cand::dict(ty, slot)));
+                        }
                         let arg_tys = args
                             .iter()
                             .map(|a| self.infer(*a))
                             .collect::<Result<Vec<_>>>()?;
+                        // When the first argument's type is a bare type variable (a
+                        // generic instance rendering one of its own parameters), the
+                        // dictionaries share that variable but overloads (concrete
+                        // domains) do not. Unification would let any of them match by
+                        // binding the variable, so narrow to the dictionary whose
+                        // first parameter IS that variable, by identity. Only applies
+                        // inside a generic instance body (dictionaries present) and
+                        // only when such a dictionary exists (else defer normally).
+                        if has_dicts {
+                            if let Some(v) = self.bare_var_id(&arg_tys[0]) {
+                                let narrowed: Vec<Cand> = cands
+                                    .iter()
+                                    .filter(|c| self.first_domain_is_var(&c.ty, v))
+                                    .cloned()
+                                    .collect();
+                                if !narrowed.is_empty() {
+                                    cands = narrowed;
+                                }
+                            }
+                        }
                         return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                     }
                 }
@@ -3571,6 +3642,21 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The variable id of `ty` if it is (resolves to) a bare type variable, used to
+    /// narrow local `@ctx` dictionary resolution by identity.
+    fn bare_var_id(&mut self, ty: &Type) -> Option<VarId> {
+        match self.eng.zonk(ty) {
+            Type::Var(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Whether `ty`'s first parameter is exactly the type variable `v` (a `@ctx`
+    /// dictionary `v -> ...`). An overload with a concrete or applied domain is not.
+    fn first_domain_is_var(&mut self, ty: &Type, v: VarId) -> bool {
+        matches!(self.eng.zonk(ty), Type::Arrow(from, _, _) if matches!(self.eng.zonk(&from), Type::Var(id) if id == v))
+    }
+
     fn resolve_overload(
         &mut self,
         name: &str,
@@ -3624,6 +3710,14 @@ impl<'a> Checker<'a> {
         candidates: &[Cand<'a>],
         idx: usize,
     ) {
+        // A resolved LOCAL `@ctx` dictionary lowers to its leading parameter, not a
+        // global; record the slot so lowering references the parameter.
+        if let Some(slot) = candidates[idx].dict_slot {
+            if let Some(site) = site {
+                self.dict_calls.insert(site, slot);
+            }
+            return;
+        }
         let module = candidates[idx].module;
         self.record_call(site, module);
         if let (Some(site), Some(m)) = (site, module) {

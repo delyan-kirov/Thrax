@@ -27,10 +27,17 @@ $ Box : @union t =
 	Empty: {},
 	Full: {t},
 
+# A GENERIC struct with TWO type parameters: one `@ctx to_string` dictionary per
+# parameter, each resolved by type.
+$ Pair : @struct a b =
+	fst: a,
+	snd: b,
+
 # Generate `to_string` for each type from its declaration alone.
 $ @e (DERIVE.derive_show "Rgb")
 $ @e (DERIVE.derive_show "Shape")
 $ @e (DERIVE.derive_show "Box")
+$ @e (DERIVE.derive_show "Pair")
 
 $ ck_struct : @int =
 	if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) ?= "Rgb { r = 1 g = 2 b = 3 }"
@@ -49,6 +56,14 @@ $ ck_gen_int   : @int = if to_string (Box.Full.{ 7 } : Box @int) ?= "Full(7)" =>
 $ ck_gen_empty : @int = if to_string (Box.Empty : Box @int) ?= "Empty" => 0 else 64
 $ ck_gen_nest  : @int = if to_string (Box.Full.{ Shape.Rect.{ 3, 4 } } : Box Shape) ?= "Full(Rect(3, 4))" => 0 else 128
 
+# Two type parameters: each field renders through its own dictionary, by type.
+$ ck_pair : @int =
+	if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) ?= "Pair { fst = 5 snd = true }"
+		=> 0 else 256
+$ ck_pair2 : @int =
+	if to_string (Pair.{ .fst = Shape.Dot, .snd = 9 } : Pair Shape @int) ?= "Pair { fst = Dot snd = 9 }"
+		=> 0 else 512
+
 $ test : @int =
 	ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
-	+ ck_gen_int + ck_gen_empty + ck_gen_nest
+	+ ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2

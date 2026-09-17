@@ -410,6 +410,10 @@ pub struct Resolved {
     /// type-mangled bare name lowering gives the global (from
     /// [`crate::typing::Checker::def_keys`]), so the overloads stay distinct.
     pub def_keys: HashMap<Aol<Expr>, String>,
+    /// `Expr::Var` sites resolved to a local `@ctx` dictionary parameter, mapped to
+    /// its leading-parameter slot (from [`crate::typing::Checker::dict_calls`]).
+    /// Lowering references the parameter `@ctx$<slot>` instead of a global.
+    pub dict_calls: HashMap<Aol<Expr>, usize>,
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
@@ -605,9 +609,24 @@ impl<'a> Lowerer<'a> {
         } else {
             self.record_params(sig, term)
         };
-        for f in implicits.iter().rev() {
+        // A DISTINCT-named implicit binds under its source name (referenced by
+        // name in the body). A DUPLICATED name (one dictionary per type parameter)
+        // binds under a synthetic per-slot name `@ctx$<i>`, because two params of
+        // the same name would shadow; the checker resolved each body use to a slot
+        // (`dict_calls`) that the `Var` lowering turns into the matching `@ctx$<i>`.
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for f in implicits {
+            *counts.entry(self.text(f.name)).or_insert(0) += 1;
+        }
+        for (i, f) in implicits.iter().enumerate().rev() {
+            let name = self.text(f.name);
+            let param = if counts[name] > 1 {
+                dict_param(i)
+            } else {
+                name.to_string()
+            };
             inner = Term::Lam {
-                param: self.text(f.name).to_string(),
+                param,
                 body: Arc::new(inner),
             };
         }
@@ -1194,6 +1213,11 @@ impl<'a> Lowerer<'a> {
             Expr::Var { module, name } => (*module, self.text(*name)),
             _ => unreachable!("resolved_var_id on a non-variable"),
         };
+        // A use resolved to a local `@ctx` dictionary references its leading
+        // parameter `@ctx$<slot>` (a local binder), never a global.
+        if let Some(&slot) = self.resolved.dict_calls.get(&site) {
+            return (None, dict_param(slot));
+        }
         let module = match module {
             Some(m) => Some(self.text(m).to_string()),
             None => self.resolved.call_modules.get(&site).cloned(),
@@ -1815,6 +1839,14 @@ impl<'a> Lowerer<'a> {
 }
 
 /// `array_len v`.
+/// The synthetic binder name for a duplicated `@ctx` dictionary parameter at
+/// leading-parameter slot `slot` (`@ctx$<slot>`). Shared by the definition (which
+/// binds it) and the use-site lowering (which references it), so De-Bruijn
+/// indexing links them.
+fn dict_param(slot: usize) -> String {
+    format!("@ctx${slot}")
+}
+
 fn array_len(v: &str) -> Term {
     Term::app(Term::var("@array_len"), Term::var(v))
 }

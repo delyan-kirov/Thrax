@@ -235,6 +235,9 @@ fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
         for (&site, key) in checker.overload_calls() {
             resolved.overload_calls.insert(site, key.clone());
         }
+        for (&site, &slot) in checker.dict_calls() {
+            resolved.dict_calls.insert(site, slot);
+        }
         for (&body, key) in checker.def_keys() {
             resolved.def_keys.insert(body, key.clone());
         }

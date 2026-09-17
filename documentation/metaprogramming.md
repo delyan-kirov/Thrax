@@ -142,19 +142,30 @@ macro, exercising reflection + forward-referenced injection (2b) + overload
 extension together.
 
 **Generic types.** `@type_params` lets the derive read a type's parameters, so a
-one-parameter generic (`Box t`) derives a single generic instance
-`$ to_string : Box t -> @str  @ctx to_string : t -> @str`: the `@ctx` dictionary
-renders the element, and one instance covers every instantiation (`Box @int`,
-`Box Shape`, nesting through each element's own derived `to_string`). This is
-`instance Show a => Show (Box a)`, and it required lifting the checker's old rule
-that a name could not be *both* overloaded and carry `@ctx` implicits: an overload
-candidate now carries its implicit requirements (sharing the signature's type
-variables), and when a call resolves to that candidate the dictionary is planned
-at the site (`Cand::implicits`, `apply_overload_cand`, `scheme_with_implicits` in
-`typing.rs`; lowering already composed overload-rewrite with implicit-arg
-injection). Multi-parameter generics are not derivable yet (two `@ctx to_string`
-requirements would share the one implicit name); the derive aborts with a clear
-message.
+generic type derives a single generic instance with one `@ctx to_string`
+dictionary per parameter: `$ to_string : Pair a b -> @str  @ctx to_string : a ->
+@str, to_string : b -> @str`. Each dictionary renders its parameter, and one
+instance covers every instantiation (`Box @int`, `Pair @int @bool`, nesting
+through each element's own derived `to_string`). This is `instance (Show a, Show
+b) => Show (Pair a b)`, and it needed two checker changes:
+
+1. Lifting the old rule that a name could not be *both* overloaded and carry
+   `@ctx` implicits: an overload candidate now carries its implicit requirements
+   (sharing the signature's type variables), and a call resolving to it plans the
+   dictionary at the site (`Cand::implicits`, `apply_overload_cand`,
+   `scheme_with_implicits`).
+2. Resolving *same-named* `@ctx` dictionaries **by type**. A body use of
+   `to_string` inside the instance selects the dictionary whose parameter matches
+   the argument's type; when the argument is a bare type variable, resolution is by
+   variable identity (`current_dicts`, `dict_calls`, the `bare_var_id` narrowing in
+   `typing.rs`; lowering binds duplicated dictionaries as `@ctx$<slot>` params).
+   This also fixed a latent bug where two same-named `@ctx` implicits silently
+   shadowed, miscompiling.
+
+The `@ctx` declaration syntax is a flat comma list, repeatable: `@ctx a : A, b :
+B`. (The former `@ctx { ... }` block form was removed.) Lowering already composed
+overload-rewrite with implicit-arg injection, so it needed no change beyond the
+duplicated-dictionary binder naming.
 
 Plus AST constructors `@code_app`, `@code_var`, `@code_let`, ... for building
 `@code` by hand.
