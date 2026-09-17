@@ -3,15 +3,20 @@
 # \file DERIVE.thx
 # \info A compile-time derive: generate a default `to_string` for any declared
 #       struct or union by reflecting on its shape. `derive_show "T"` returns the
-#       `@code` for `$ to_string : T -> @str = ...`, injected with `$ @e`:
+#       `@code` for `$ to_string : T ... -> @str = ...`, injected with `$ @e`:
 #
-#           $ @e (DERIVE.derive_show "Color")
+#           $ @e (DERIVE.derive_show "Box")
 #
 #       after which `to_string` (and `?(...)` interpolation) works on `T`. It uses
-#       the reflection intrinsics `@type_kind` / `@type_fields` / `@type_variants`,
-#       which are available only at compile time (inside `$ @e`). A struct renders
-#       as `T { f = v ... }`; a union as `Tag(a0, a1)` per variant. The target
-#       type must be monomorphic (reflection does not report type parameters yet).
+#       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
+#       `@type_variants`, available only at compile time (inside `$ @e`).
+#
+#       A GENERIC type (one type parameter, e.g. `Box t`) derives a single generic
+#       instance `$ to_string : Box t -> @str  @ctx to_string : t -> @str`: the
+#       `@ctx` dictionary renders the element, so `to_string` works at every
+#       instantiation (`Box @int`, `Box @bool`, ...). This is `instance Show a =>
+#       Show (Box a)`. Multi-parameter generics are not supported yet (the same
+#       `@ctx to_string` name cannot carry two element types at once).
 
 $ with VEC
 
@@ -23,31 +28,40 @@ $ join : @str -> @vec @str -> @str = \sep xs =
 $ arg_names : @int -> @vec @str = \n =
 	if n ?= 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
 
-# The body of a struct's `to_string`: interpolate every field. `\?(` emits a
+# The body of a struct's `to_string`: interpolate each field. `\?(` emits a
 # literal `?(` so the interpolation happens when the GENERATED code compiles,
 # not now; `\"` / `\\` emit a literal quote / backslash into the generated source.
-$ struct_show : @str -> @str = \ty =
+$ struct_show : @str -> @str -> @str -> @str = \base applied ctx =
 	let piece = \acc f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
-	let inner = VEC.foldl piece (ty ++ " {") (@type_fields ty) in
-	"$ to_string : " ++ ty ++ " -> @str = \\x = \"" ++ inner ++ " }\""
+	let inner = VEC.foldl piece (base ++ " {") (@type_fields base) in
+	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = \"" ++ inner ++ " }\""
 
 # One `is` arm for a variant: a nullary tag renders as its name, an n-ary tag as
-# `Tag(?(a0), ...)` matched by the positional pattern `Ty.Tag.{a0, ...}`.
-$ arm_for : @str -> @str -> @int -> @str = \ty tag arity =
+# `Tag(?(a0), ...)` matched by the positional pattern `Base.Tag.{a0, ...}`.
+$ arm_for : @str -> @str -> @int -> @str = \base tag arity =
 	let vars = arg_names arity in
 	let interps = VEC.map (\v = "\?(" ++ v ++ ")") vars in
 	if arity ?= 0
-		=> " | " ++ ty ++ "." ++ tag ++ " => \"" ++ tag ++ "\""
-		else " | " ++ ty ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
+		=> " | " ++ base ++ "." ++ tag ++ " => \"" ++ tag ++ "\""
+		else " | " ++ base ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
 			++ " => \"" ++ tag ++ "(" ++ join ", " interps ++ ")\""
 
 # The body of a union's `to_string`: one arm per variant.
-$ union_show : @str -> @str = \ty =
-	let arms = VEC.foldl (\acc tv = acc ++ arm_for ty tv.0 tv.1) "" (@type_variants ty) in
-	"$ to_string : " ++ ty ++ " -> @str = \\x = is x" ++ arms
+$ union_show : @str -> @str -> @str -> @str = \base applied ctx =
+	let arms = VEC.foldl (\acc tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
+	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = is x" ++ arms
 
-# The derive itself: dispatch on the type's kind and parse the generated item(s).
+# The derive: reflect on the type's parameters and kind, build the applied type
+# (`Box t`) and, for a single parameter, the `@ctx to_string : t -> @str`
+# dictionary clause, then parse the generated item.
 $ derive_show : @str -> @code = \ty =
+	let params = @type_params ty in
+	if VEC.len params ?> 1
+		=> @abort ("derive_show: multi-parameter generic `" ++ ty ++ "` is not supported yet")
+		else
+	let applied = if VEC.is_empty params => ty else ty ++ " " ++ join " " params in
+	let ctx = if VEC.is_empty params => ""
+		else "  @ctx to_string : " ++ VEC.get_or params 0 "t" ++ " -> @str" in
 	if @type_kind ty ?= "struct"
-		=> @parse_items (struct_show ty)
-		else @parse_items (union_show ty)
+		=> @parse_items (struct_show ty applied ctx)
+		else @parse_items (union_show ty applied ctx)

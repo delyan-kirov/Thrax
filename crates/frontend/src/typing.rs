@@ -275,16 +275,24 @@ pub struct Checker<'a> {
 struct Cand<'a> {
     ty: Type,
     module: Option<&'a str>,
+    /// The `@ctx` implicit requirements this candidate carries, each `(name, req
+    /// type)` sharing `ty`'s generalized variables. Non-empty only for an
+    /// overloaded definition with implicits (a generic `to_string : Box t -> @str
+    /// @ctx to_string : t -> @str`), so a call resolving to it plans the dictionary.
+    implicits: Vec<(&'a str, Type)>,
 }
 
 impl<'a> Cand<'a> {
     /// A built-in or effect-operation candidate, owned by no module (never
     /// rewritten to a qualified reference).
     fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None }
+        Cand { ty, module: None, implicits: Vec::new() }
     }
     fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
-        Cand { ty, module }
+        Cand { ty, module, implicits: Vec::new() }
+    }
+    fn with_implicits(ty: Type, module: Option<&'a str>, implicits: Vec<(&'a str, Type)>) -> Cand<'a> {
+        Cand { ty, module, implicits }
     }
 }
 
@@ -714,20 +722,21 @@ impl<'a> Checker<'a> {
             if d.implicits.is_empty() {
                 continue;
             }
-            if is_overloaded(d.name) {
-                return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
-                    "`{}` cannot be both overloaded and carry `@ctx` implicit parameters",
-                    d.name
-                ));
-            }
-            let Some(sig) = d.sig else {
+            if d.sig.is_none() {
                 return Err(diag!(
                     Code::TypeMismatch, Span::at(0), 0,
                     "`{}` needs a type signature to declare `@ctx` implicit parameters",
                     d.name
                 ));
-            };
+            }
+            // An overloaded name carries its implicits on the winning candidate
+            // (planned at the call site once the overload resolves), not in the
+            // by-name `global_implicits` table (which assumes a single provider).
+            // The candidate is built in the overload-seeding loop below.
+            if is_overloaded(d.name) {
+                continue;
+            }
+            let sig = d.sig.expect("checked above");
             let gi = GlobImpl {
                 sig,
                 decls: d.implicits.clone(),
@@ -742,15 +751,19 @@ impl<'a> Checker<'a> {
         for d in &defs {
             if is_overloaded(d.name) {
                 if let Some(sig) = d.sig {
-                    let scheme = self.scheme_of_sig(sig);
                     let module = self.module_name;
+                    // Generalize the signature and any `@ctx` requirement types
+                    // TOGETHER so they share type variables (`Box t` and `t -> @str`
+                    // share `t`); the candidate carries the requirements so a call
+                    // resolving to it plans the dictionary.
+                    let (scheme, implicits) = self.scheme_with_implicits(sig, &d.implicits);
                     if counts[d.name] > 1 {
                         self.def_keys.insert(d.body, overload_key(d.name, &scheme));
                     }
                     self.overloads
                         .entry(d.name)
                         .or_default()
-                        .push(Cand::from(scheme, Some(module)));
+                        .push(Cand::with_implicits(scheme, Some(module), implicits));
                 }
             }
         }
@@ -896,10 +909,10 @@ impl<'a> Checker<'a> {
             let mut qualified = Vec::with_capacity(cands.len());
             for c in cands {
                 let unqualified = self.import_scheme(c);
-                self.imported.entry(name).or_default().push(Cand {
-                    ty: unqualified,
-                    module: Some(module),
-                });
+                self.imported
+                    .entry(name)
+                    .or_default()
+                    .push(Cand::from(unqualified, Some(module)));
                 qualified.push(self.import_scheme(c));
             }
             self.qualified
@@ -912,10 +925,10 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let unqualified = self.import_scheme(scheme);
-            self.imported.entry(name).or_default().push(Cand {
-                ty: unqualified,
-                module: Some(module),
-            });
+            self.imported
+                .entry(name)
+                .or_default()
+                .push(Cand::from(unqualified, Some(module)));
             let qualified = self.import_scheme(scheme);
             self.qualified
                 .entry(module)
@@ -1027,6 +1040,42 @@ impl<'a> Checker<'a> {
         self.eng.leave_level();
         self.eng.generalize(&ty);
         self.eng.zonk(&ty)
+    }
+
+    /// Generalize an overloaded definition's signature together with its `@ctx`
+    /// requirement types, so a variable shared between them (a `Box t` signature
+    /// and a `t -> @str` requirement) stays one `Generic`. Returns the signature
+    /// scheme and each `(implicit name, requirement scheme)`; instantiating them as
+    /// a bundle later keeps the shared variables aligned.
+    fn scheme_with_implicits(
+        &mut self,
+        sig: Aol<Ty>,
+        implicits: &[FieldDecl],
+    ) -> (Type, Vec<(&'a str, Type)>) {
+        self.eng.enter_level();
+        let mut tvars = HashMap::new();
+        let main = self.ty_of_ast(sig, &mut tvars);
+        let reqs: Vec<(&'a str, Type)> = implicits
+            .iter()
+            .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
+            .collect();
+        self.eng.leave_level();
+        // Generalize the whole bundle at once (packed as a tuple) so a shared
+        // variable becomes the same `Generic` in the signature and the requirements.
+        let bundle = Type::Tuple(
+            std::iter::once(main).chain(reqs.iter().map(|(_, t)| t.clone())).collect(),
+        );
+        self.eng.generalize(&bundle);
+        let Type::Tuple(parts) = self.eng.zonk(&bundle) else {
+            unreachable!("packed bundle stays a tuple");
+        };
+        let scheme = parts[0].clone();
+        let reqs = reqs
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| (*n, parts[i + 1].clone()))
+            .collect();
+        (scheme, reqs)
     }
 
     fn check_component(
@@ -3532,8 +3581,8 @@ impl<'a> Checker<'a> {
         let result = self.eng.fresh();
         match self.match_overload(candidates, args, &result) {
             Match::Unique(idx) => {
-                let cand_ty = candidates[idx].ty.clone();
-                self.apply_overload(&cand_ty, args, &result)?;
+                let cand = candidates[idx].clone();
+                self.apply_overload_cand(&cand, args, &result, site, name)?;
                 self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
@@ -3612,8 +3661,8 @@ impl<'a> Checker<'a> {
             for p in batch {
                 match self.match_overload(&p.candidates, &p.args, &p.result) {
                     Match::Unique(idx) => {
-                        let cand_ty = p.candidates[idx].ty.clone();
-                        self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                        let cand = p.candidates[idx].clone();
+                        self.apply_overload_cand(&cand, &p.args, &p.result, p.site, &p.name)?;
                         self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
@@ -3789,6 +3838,53 @@ impl<'a> Checker<'a> {
             f = next;
         }
         self.eng.unify(&f, result, "in an overloaded application")
+    }
+
+    /// Apply a resolved overload candidate to the argument types and, when it
+    /// carries `@ctx` implicits, plan the dictionary at the call site. The
+    /// signature and its requirement types are instantiated as one bundle so their
+    /// shared variables stay aligned; unifying the signature against the args pins
+    /// those variables, and the (now-concrete) requirement types drive implicit
+    /// resolution (a `to_string (Box.Wrap 5)` plans `to_string : @int -> @str`).
+    fn apply_overload_cand(
+        &mut self,
+        cand: &Cand<'a>,
+        args: &[Type],
+        result: &Type,
+        site: Option<Aol<Expr>>,
+        name: &str,
+    ) -> Result<()> {
+        if cand.implicits.is_empty() {
+            return self.apply_overload(&cand.ty, args, result);
+        }
+        let bundle: Vec<Type> = std::iter::once(cand.ty.clone())
+            .chain(cand.implicits.iter().map(|(_, t)| t.clone()))
+            .collect();
+        let inst = self.eng.instantiate_bundle(&bundle);
+        let mut f = inst[0].clone();
+        for a in args {
+            let next = self.eng.fresh();
+            let eff = self.eng.fresh();
+            self.eng.unify(
+                &f,
+                &Type::arrow_eff(a.clone(), next.clone(), eff.clone()),
+                "in an overloaded application",
+            )?;
+            let amb = self.ambient.clone();
+            self.eng.subrow(&eff, &amb, "in an overloaded application")?;
+            f = next;
+        }
+        self.eng.unify(&f, result, "in an overloaded application")?;
+        if let Some(site) = site {
+            let reqs: Vec<(&'a str, Type)> = cand
+                .implicits
+                .iter()
+                .enumerate()
+                .map(|(i, (n, _))| (*n, inst[i + 1].clone()))
+                .collect();
+            self.plan_implicits(site, name, &reqs)?;
+        }
+        Ok(())
     }
 
     fn infer_let_group(&mut self, bindings: &'a [Binding]) -> Result<()> {
@@ -4453,6 +4549,10 @@ impl<'a> Checker<'a> {
         // `@type_fields` the struct's field names; `@type_variants` the union's
         // `(tag, arity)` pairs. A derive-style macro reads these and generates code.
         self.bind("@type_kind", Type::arrow(str_ty(), str_ty()));
+        self.bind(
+            "@type_params",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+        );
         self.bind(
             "@type_fields",
             Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),

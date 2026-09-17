@@ -20,9 +20,17 @@ $ Shape : @union =
 	Circle: {@int},
 	Rect: {@int, @int},
 
+# A GENERIC union: one type parameter. `derive_show` reflects the parameter and
+# generates `$ to_string : Box t -> @str  @ctx to_string : t -> @str`, one generic
+# instance covering every element type.
+$ Box : @union t =
+	Empty: {},
+	Full: {t},
+
 # Generate `to_string` for each type from its declaration alone.
 $ @e (DERIVE.derive_show "Rgb")
 $ @e (DERIVE.derive_show "Shape")
+$ @e (DERIVE.derive_show "Box")
 
 $ ck_struct : @int =
 	if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) ?= "Rgb { r = 1 g = 2 b = 3 }"
@@ -35,4 +43,12 @@ $ ck_nary    : @int = if to_string (Shape.Rect.{ 3, 4 }) ?= "Rect(3, 4)" => 0 el
 # Interpolation goes through the derived `to_string` too.
 $ ck_interp : @int = if "c=?(Rgb.{ .r = 9, .g = 8, .b = 7 })" ?= "c=Rgb { r = 9 g = 8 b = 7 }" => 0 else 16
 
-$ test : @int = ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
+# The generic derive works at any instantiation: the `@ctx to_string` dictionary
+# renders the element (an `@int` here, a `Shape` there, via its own derived one).
+$ ck_gen_int   : @int = if to_string (Box.Full.{ 7 } : Box @int) ?= "Full(7)" => 0 else 32
+$ ck_gen_empty : @int = if to_string (Box.Empty : Box @int) ?= "Empty" => 0 else 64
+$ ck_gen_nest  : @int = if to_string (Box.Full.{ Shape.Rect.{ 3, 4 } } : Box Shape) ?= "Full(Rect(3, 4))" => 0 else 128
+
+$ test : @int =
+	ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
+	+ ck_gen_int + ck_gen_empty + ck_gen_nest

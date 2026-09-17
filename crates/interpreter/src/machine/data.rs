@@ -294,7 +294,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@parse_items"
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
-        | "@type_kind" | "@type_fields" | "@type_variants" => 1,
+        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -644,10 +644,19 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             };
             Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
         }
+        "@type_params" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let params: Vec<PVal> = crate::machine::type_lookup(&ty)?
+                .params()
+                .iter()
+                .map(|p| mk(Value::Str(Rc::new(p.clone().into_bytes()))))
+                .collect();
+            Ok(Value::Vector(Rc::new(params)))
+        }
         "@type_fields" => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let fields = match crate::machine::type_lookup(&ty)? {
-                crate::machine::TypeInfo::Struct { fields } => fields,
+                crate::machine::TypeInfo::Struct { fields, .. } => fields,
                 crate::machine::TypeInfo::Union { .. } => {
                     return Err(fault(format!("@type_fields: `{ty}` is a union, not a struct")))
                 }
@@ -661,7 +670,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "@type_variants" => {
             let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             let variants = match crate::machine::type_lookup(&ty)? {
-                crate::machine::TypeInfo::Union { variants } => variants,
+                crate::machine::TypeInfo::Union { variants, .. } => variants,
                 crate::machine::TypeInfo::Struct { .. } => {
                     return Err(fault(format!("@type_variants: `{ty}` is a struct, not a union")))
                 }

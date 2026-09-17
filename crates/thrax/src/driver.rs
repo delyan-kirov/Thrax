@@ -568,13 +568,13 @@ fn reflect_host(
     let mut put = |key: String, info: TypeInfo| {
         map.entry(key).or_insert(info);
     };
-    for (module, name, fields) in reflect.structs {
-        let info = TypeInfo::Struct { fields };
+    for (module, name, params, fields) in reflect.structs {
+        let info = TypeInfo::Struct { params, fields };
         put(format!("{module}.{name}"), info.clone());
         put(name, info);
     }
-    for (module, name, variants) in reflect.unions {
-        let info = TypeInfo::Union { variants };
+    for (module, name, params, variants) in reflect.unions {
+        let info = TypeInfo::Union { params, variants };
         put(format!("{module}.{name}"), info.clone());
         put(name, info);
     }

@@ -995,12 +995,22 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     })
 }
 
-/// The declared shape of a user type, as compile-time reflection reports it: a
-/// struct's field names, or a union's variants with each payload's arity.
+/// The declared shape of a user type, as compile-time reflection reports it: its
+/// type parameters, plus a struct's field names or a union's variants (each with
+/// its payload arity).
 #[derive(Clone)]
 pub enum TypeInfo {
-    Struct { fields: Vec<String> },
-    Union { variants: Vec<(String, usize)> },
+    Struct { params: Vec<String>, fields: Vec<String> },
+    Union { params: Vec<String>, variants: Vec<(String, usize)> },
+}
+
+impl TypeInfo {
+    /// The type's declared parameter names, in order (empty for a monomorphic type).
+    pub fn params(&self) -> &[String] {
+        match self {
+            TypeInfo::Struct { params, .. } | TypeInfo::Union { params, .. } => params,
+        }
+    }
 }
 
 thread_local! {

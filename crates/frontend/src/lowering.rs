@@ -45,6 +45,9 @@ pub struct Decls {
     structs: HashMap<String, HashMap<String, Vec<String>>>,
     /// module name -> (variant tag -> its union name and payload field names).
     unions: HashMap<String, HashMap<String, VariantDecl>>,
+    /// module name -> (type name -> declared type parameters, in order), for every
+    /// struct and union. Empty for a monomorphic type. Read by reflection.
+    type_params: HashMap<String, HashMap<String, Vec<String>>>,
     /// `with Other` splices to apply once every module is collected:
     /// `(module, type, is_struct, included)`. The checker has already validated it.
     includes: Vec<(String, String, bool, Vec<String>)>,
@@ -62,8 +65,10 @@ struct VariantDecl {
 /// so a name shared across modules can be disambiguated. Built by
 /// [`Decls::reflect`], consumed by the driver's `$ @e` type-reflection host.
 pub struct ReflectInfo {
-    pub structs: Vec<(String, String, Vec<String>)>,
-    pub unions: Vec<(String, String, Vec<(String, usize)>)>,
+    /// `(module, name, type params, field names)` per struct.
+    pub structs: Vec<(String, String, Vec<String>, Vec<String>)>,
+    /// `(module, name, type params, variants)` per union, a variant `(tag, arity)`.
+    pub unions: Vec<(String, String, Vec<String>, Vec<(String, usize)>)>,
 }
 
 impl Decls {
@@ -83,6 +88,7 @@ impl Decls {
             match item {
                 Item::Struct {
                     name,
+                    params,
                     includes,
                     fields,
                     ..
@@ -92,6 +98,11 @@ impl Decls {
                         .map(|f| ast.text(f.name).to_string())
                         .collect();
                     let name = ast.text(*name).to_string();
+                    let tps = ast.slice(*params).iter().map(|p| ast.text(*p).to_string()).collect();
+                    self.type_params
+                        .entry(module.clone())
+                        .or_default()
+                        .insert(name.clone(), tps);
                     if !includes.is_empty() {
                         let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
@@ -104,11 +115,17 @@ impl Decls {
                 }
                 Item::Union {
                     name,
+                    params,
                     includes,
                     variants,
                     ..
                 } => {
                     let uname = ast.text(*name).to_string();
+                    let tps = ast.slice(*params).iter().map(|p| ast.text(*p).to_string()).collect();
+                    self.type_params
+                        .entry(module.clone())
+                        .or_default()
+                        .insert(uname.clone(), tps);
                     if !includes.is_empty() {
                         let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
@@ -180,21 +197,28 @@ impl Decls {
     /// Unions are reconstructed from the tag-keyed table by grouping on the union
     /// name; a variant's arity is its payload field count (`0` for a unit payload).
     pub fn reflect(&self) -> ReflectInfo {
-        let mut structs: Vec<(String, String, Vec<String>)> = Vec::new();
+        let params_of = |module: &str, name: &str| -> Vec<String> {
+            self.type_params
+                .get(module)
+                .and_then(|m| m.get(name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut structs: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
         for (module, fields_by_name) in &self.structs {
             for (name, fields) in fields_by_name {
-                structs.push((module.clone(), name.clone(), fields.clone()));
+                structs.push((module.clone(), name.clone(), params_of(module, name), fields.clone()));
             }
         }
-        let mut unions: Vec<(String, String, Vec<(String, usize)>)> = Vec::new();
+        let mut unions: Vec<(String, String, Vec<String>, Vec<(String, usize)>)> = Vec::new();
         for (module, by_tag) in &self.unions {
             for (tag, decl) in by_tag {
                 let arity = decl.fields.len();
                 match unions
                     .iter_mut()
-                    .find(|(m, n, _)| m == module && *n == decl.union)
+                    .find(|(m, n, _, _)| m == module && *n == decl.union)
                 {
-                    Some((_, _, variants)) => {
+                    Some((_, _, _, variants)) => {
                         if !variants.iter().any(|(t, _)| t == tag) {
                             variants.push((tag.clone(), arity));
                         }
@@ -202,6 +226,7 @@ impl Decls {
                     None => unions.push((
                         module.clone(),
                         decl.union.clone(),
+                        params_of(module, &decl.union),
                         vec![(tag.clone(), arity)],
                     )),
                 }

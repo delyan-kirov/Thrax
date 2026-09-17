@@ -127,6 +127,7 @@ to a `$ @e` generator:
 
 ```
 @type_kind     : @str -> @str                -- "struct" | "union"
+@type_params   : @str -> @vec @str           -- declared type parameters, in order
 @type_fields   : @str -> @vec @str           -- a struct's field names
 @type_variants : @str -> @vec {@str, @int}   -- a union's (tag, arity) pairs
 ```
@@ -134,12 +135,26 @@ to a `$ @e` generator:
 The argument is a type name, bare (`"Rgb"`) or qualified (`"MOD.Rgb"`; qualify to
 disambiguate a name shared across modules). They resolve through a driver-installed
 host (`machine::set_type_host`, fed from `Decls::reflect`), available only inside
-`$ @e`; a stray call at runtime faults. Reflection does not yet report a type's
-*parameters*, so a generator over these targets monomorphic types. On top of
-them, `library/DERIVE.thx` derives a default `to_string` for any struct or union
-(`$ @e (DERIVE.derive_show "Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the
-first real derive-style macro, and it exercises reflection + forward-referenced
-injection (2b) + overload extension together.
+`$ @e`; a stray call at runtime faults. On top of them, `library/DERIVE.thx`
+derives a default `to_string` for any struct or union (`$ @e (DERIVE.derive_show
+"Rgb")`); see `examples/DERIVE_SHOW.thx`. This is the first real derive-style
+macro, exercising reflection + forward-referenced injection (2b) + overload
+extension together.
+
+**Generic types.** `@type_params` lets the derive read a type's parameters, so a
+one-parameter generic (`Box t`) derives a single generic instance
+`$ to_string : Box t -> @str  @ctx to_string : t -> @str`: the `@ctx` dictionary
+renders the element, and one instance covers every instantiation (`Box @int`,
+`Box Shape`, nesting through each element's own derived `to_string`). This is
+`instance Show a => Show (Box a)`, and it required lifting the checker's old rule
+that a name could not be *both* overloaded and carry `@ctx` implicits: an overload
+candidate now carries its implicit requirements (sharing the signature's type
+variables), and when a call resolves to that candidate the dictionary is planned
+at the site (`Cand::implicits`, `apply_overload_cand`, `scheme_with_implicits` in
+`typing.rs`; lowering already composed overload-rewrite with implicit-arg
+injection). Multi-parameter generics are not derivable yet (two `@ctx to_string`
+requirements would share the one implicit name); the derive aborts with a clear
+message.
 
 Plus AST constructors `@code_app`, `@code_var`, `@code_let`, ... for building
 `@code` by hand.
