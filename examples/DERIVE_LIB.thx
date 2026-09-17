@@ -1,0 +1,18 @@
+@mod DERIVE_LIB
+
+# \file DERIVE_LIB.thx
+# \info A generic type whose `to_string` is DERIVED here and then used from another
+#       module (`DERIVE_SHOW`). This exercises cross-module generic instances: the
+#       derived `$ to_string : Wrap t -> @str  @ctx to_string : t -> @str` keeps its
+#       dictionary requirement across the import boundary, so a caller in another
+#       module still plans the element dictionary.
+
+$ with DERIVE
+
+$ Wrap : @union t =
+	Nothing: {},
+	Just: {t},
+
+$ @e (DERIVE.derive_show "Wrap")
+
+$ test : @int = 0

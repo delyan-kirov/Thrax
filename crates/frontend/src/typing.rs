@@ -184,7 +184,7 @@ pub struct Checker<'a> {
     numeric: Vec<(Type, Span)>,
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
-    own_overloads: Vec<(&'a str, Vec<Type>)>,
+    own_overloads: Vec<(&'a str, Vec<OverloadExport<'a>>)>,
     own_type_names: Vec<&'a str>,
     /// Names declared after a `$ @private` marker: defined and usable within this
     /// module, but not exported, so no importer can bind or qualify them.
@@ -312,6 +312,17 @@ impl<'a> Cand<'a> {
     fn dict(ty: Type, slot: usize) -> Cand<'a> {
         Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot) }
     }
+}
+
+/// One overloaded candidate exported for import by other modules: its signature
+/// scheme and any `@ctx` implicit requirements (sharing the scheme's variables).
+/// Carrying the requirements across the import boundary lets a generic instance
+/// (a derived `to_string : Box t -> @str  @ctx to_string : t -> @str`) plan its
+/// dictionary when called from another module.
+#[derive(Clone)]
+struct OverloadExport<'a> {
+    ty: Type,
+    implicits: Vec<(&'a str, Type)>,
 }
 
 /// A `@ctx`-bearing definition's metadata: its (arrow) signature and the implicit
@@ -826,9 +837,21 @@ impl<'a> Checker<'a> {
             .collect();
 
         self.own_values = out.clone();
-        let mut own_ov: HashMap<&'a str, Vec<Type>> = HashMap::new();
-        for (name, ty) in &overloaded_out {
-            own_ov.entry(name).or_default().push(ty.clone());
+        // Export this module's own overloaded candidates WITH their `@ctx` implicit
+        // requirements (from the seeded `Cand`s), so an importer can plan a generic
+        // instance's dictionary. Own candidates carry `module == self.module_name`;
+        // built-in (`None`) and imported (other module) candidates are excluded.
+        let module = self.module_name;
+        let mut own_ov: HashMap<&'a str, Vec<OverloadExport<'a>>> = HashMap::new();
+        for (name, cands) in &self.overloads {
+            for c in cands {
+                if c.module == Some(module) {
+                    own_ov.entry(name).or_default().push(OverloadExport {
+                        ty: c.ty.clone(),
+                        implicits: c.implicits.clone(),
+                    });
+                }
+            }
         }
         self.own_overloads = own_ov.into_iter().collect();
 
@@ -876,7 +899,7 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c)).collect();
+            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(&c.ty)).collect();
             self.qualified
                 .entry(module)
                 .or_default()
@@ -934,12 +957,15 @@ impl<'a> Checker<'a> {
             }
             let mut qualified = Vec::with_capacity(cands.len());
             for c in cands {
-                let unqualified = self.import_scheme(c);
+                // Import the signature and its `@ctx` requirement types with ONE
+                // shared map so their type variables stay aligned; the candidate
+                // keeps its implicits, so a cross-module call plans the dictionary.
+                let (ty, implicits) = self.import_export(c);
                 self.imported
                     .entry(name)
                     .or_default()
-                    .push(Cand::from(unqualified, Some(module)));
-                qualified.push(self.import_scheme(c));
+                    .push(Cand::with_implicits(ty, Some(module), implicits));
+                qualified.push(self.import_scheme(&c.ty));
             }
             self.qualified
                 .entry(module)
@@ -990,6 +1016,26 @@ impl<'a> Checker<'a> {
         // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
         self.eng.note_tensor_sizes(&imported);
         imported
+    }
+
+    /// Import an exported overload candidate: its signature and each `@ctx`
+    /// requirement type, sharing ONE substitution map so a variable common to the
+    /// signature and a requirement (the `t` in `Box t` / `t -> @str`) stays one
+    /// variable after import.
+    fn import_export(&mut self, c: &OverloadExport<'a>) -> (Type, Vec<(&'a str, Type)>) {
+        let mut map = HashMap::new();
+        let ty = self.import_ty(&c.ty, &mut map);
+        self.eng.note_tensor_sizes(&ty);
+        let implicits = c
+            .implicits
+            .iter()
+            .map(|(n, t)| {
+                let it = self.import_ty(t, &mut map);
+                self.eng.note_tensor_sizes(&it);
+                (*n, it)
+            })
+            .collect();
+        (ty, implicits)
     }
 
     fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
@@ -1417,6 +1463,28 @@ impl<'a> Checker<'a> {
             Expr::App(f, arg) if self.is_cast_head(*f) => {
                 let arg = *arg;
                 self.check_cast(arg, expected)
+            }
+            // A bare VALUE use of a duplicated `@ctx` dictionary (a nullary method
+            // like `empty : a` / `empty : b`) resolves by the EXPECTED type: when it
+            // is a bare type variable, select the dictionary whose type is exactly
+            // that variable. The application form is handled in `infer_app`.
+            Expr::Var { module: None, name }
+                if self.current_dicts.contains_key(self.text(*name))
+                    && !self.shadowed_locally(self.text(*name)) =>
+            {
+                let name = self.text(*name);
+                let dicts = self.current_dicts.get(name).cloned().unwrap_or_default();
+                let mut cands: Vec<Cand> = self.overloads.get(name).cloned().unwrap_or_default();
+                cands.extend(dicts.iter().map(|(slot, ty)| Cand::dict(ty.clone(), *slot)));
+                if let Some(v) = self.bare_var_id(expected) {
+                    let narrowed: Vec<Cand> =
+                        cands.iter().filter(|c| self.type_is_var(&c.ty, v)).cloned().collect();
+                    if !narrowed.is_empty() {
+                        cands = narrowed;
+                    }
+                }
+                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
+                self.eng.unify(&got, expected, "against the expected type")
             }
             _ => {
                 let got = self.infer(e)?;
@@ -3655,6 +3723,12 @@ impl<'a> Checker<'a> {
     /// dictionary `v -> ...`). An overload with a concrete or applied domain is not.
     fn first_domain_is_var(&mut self, ty: &Type, v: VarId) -> bool {
         matches!(self.eng.zonk(ty), Type::Arrow(from, _, _) if matches!(self.eng.zonk(&from), Type::Var(id) if id == v))
+    }
+
+    /// Whether `ty` IS exactly the type variable `v` (a nullary `@ctx` dictionary
+    /// `empty : v`), used to select it by the expected type at a value use site.
+    fn type_is_var(&mut self, ty: &Type, v: VarId) -> bool {
+        matches!(self.eng.zonk(ty), Type::Var(id) if id == v)
     }
 
     fn resolve_overload(

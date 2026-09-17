@@ -115,8 +115,19 @@ local binder shadows it (a general scoping bug the local `@ctx` param exposed).
    the requirement is monomorphic at the enclosing definition's boundary;
    otherwise it errors. Propagation works *by name* instead: declare the same
    `@ctx name` on the caller and it chains (the local param satisfies the callee).
-2. **Not on overloaded names.** A name cannot be both overloaded and `@ctx`-bearing
-   (errors at registration).
+2. ~~Not on overloaded names.~~ **LIFTED.** A name can now be both overloaded and
+   carry `@ctx` implicits: the overload candidate carries its requirements
+   (`Cand::implicits`, generalized with the signature via `scheme_with_implicits`)
+   and a call resolving to it plans the dictionary (`apply_overload_cand`). This is
+   what a generic instance `to_string : Box t -> @str  @ctx to_string : t -> @str`
+   needs. Same-named `@ctx` dictionaries (one per type parameter) resolve BY TYPE in
+   the body (`current_dicts`, `dict_calls`; identity-narrowed when the argument is a
+   bare type variable). A candidate's requirements are carried across imports
+   (`own_overloads` exports them, `import_export` re-imports with aligned variables),
+   so a generic instance works cross-module too. Remaining sub-limit: a duplicated
+   dictionary used as a bare VALUE resolves by the expected type only where that type
+   is directly a parameter (a struct-literal field, checked against a fresh-then-
+   unified variable, does not narrow).
 3. **Qualified cross-module use does not inject.** A bare-imported `@ctx` function
    resolves (its metadata is copied in `import_from`); a `MOD.f` qualified use does
    not yet. Same gap family as qualified cross-module operators.

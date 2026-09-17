@@ -9,6 +9,7 @@
 #       forward-referenced injection). One macro, any struct or union.
 
 $ with DERIVE
+$ with DERIVE_LIB
 
 $ Rgb : @struct =
 	r: @int,
@@ -64,6 +65,12 @@ $ ck_pair2 : @int =
 	if to_string (Pair.{ .fst = Shape.Dot, .snd = 9 } : Pair Shape @int) ?= "Pair { fst = Dot snd = 9 }"
 		=> 0 else 512
 
+# A generic instance derived in ANOTHER module (DERIVE_LIB) still works here: the
+# imported `to_string : Wrap t` kept its `@ctx to_string : t` requirement, so this
+# call plans the element dictionary across the module boundary.
+$ ck_xmod : @int =
+	if to_string (DERIVE_LIB.Wrap.Just.{ 5 } : DERIVE_LIB.Wrap @int) ?= "Just(5)" => 0 else 1024
+
 $ test : @int =
 	ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
-	+ ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2
+	+ ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod

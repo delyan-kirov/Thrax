@@ -34,4 +34,17 @@ $ ck_implicit : @int = if max_of 3 7 ?= 7 => 0 else 1
 $ ck_chain    : @int = if max3 3 9 5 ?= 9 => 0 else 2
 $ ck_override : @int = if (max_of 3 7 @ctx flip) ?= 3 => 0 else 4
 
-$ test : @int = ck_implicit + ck_chain + ck_override
+# A DUPLICATED `@ctx` name declares one dictionary PER type parameter, selected by
+# type in the body (dictionary selection, like a typeclass method used at two
+# types). Here `blank` is a nullary method with an `@int` and a `@str` instance;
+# `pick_fst`/`pick_snd` each return `blank` at their own parameter type, and it
+# resolves to the matching dictionary (the value-position case).
+$ Pair : @struct a b = fst: a, snd: b,
+$ blank : @int = 0
+$ blank : @str = ""
+$ pick_fst : Pair a b -> a  @ctx blank : a, blank : b = \p = blank
+$ pick_snd : Pair a b -> b  @ctx blank : a, blank : b = \p = blank
+$ pp : Pair @int @str = Pair.{ .fst = 7, .snd = "z" }
+$ ck_dict : @int = if (pick_fst pp ?= 0) && (pick_snd pp ?= "") => 0 else 8
+
+$ test : @int = ck_implicit + ck_chain + ck_override + ck_dict
