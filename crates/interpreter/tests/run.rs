@@ -30,6 +30,9 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, key) in checker.overload_calls() {
         resolved.overload_calls.insert(site, key.clone());
     }
+    for (&site, &slot) in checker.dict_calls() {
+        resolved.dict_calls.insert(site, slot);
+    }
     for (&body, key) in checker.def_keys() {
         resolved.def_keys.insert(body, key.clone());
     }
@@ -414,6 +417,74 @@ fn ctx_implicit_chains_and_overrides() {
                $ flipped : @int = max_of 3 7 @ctx lt\n\
                $ r : @int = chained + flipped";
     assert_eq!(run(src, "r"), "12");
+}
+
+#[test]
+fn ctx_overloaded_generic_instance_resolves_per_element_type() {
+    // A generic `to_string : Box t` is overloaded AND carries an `@ctx to_string :
+    // t` dictionary; each call plans the dictionary from the argument's element type
+    // (`instance Show a => Show (Box a)`).
+    let src = "@mod M\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"\n\
+               $ r : @int = if (to_string (Box.Wrap.{ 5 } : Box @int) ?= \"W(5)\") && (to_string (Box.Wrap.{ @true } : Box @bool) ?= \"W(true)\") => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_same_named_dictionaries_resolve_by_type() {
+    // Two type parameters, one `@ctx to_string` dictionary each: a field of type `a`
+    // renders through the `a` dictionary and a field of type `b` through the `b` one,
+    // selected by type in the body (dictionary selection).
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b,\n\
+               $ to_string : Pair a b -> @str  @ctx to_string : a -> @str, to_string : b -> @str =\n\
+               \t\\x = \"(\" ++ to_string x.fst ++ \", \" ++ to_string x.snd ++ \")\"\n\
+               $ r : @int = if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) ?= \"(5, true)\" => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_nullary_dictionary_resolves_as_value_by_expected_type() {
+    // A nullary `@ctx` dictionary used as a VALUE (not applied) resolves by the
+    // expected type, including inside a struct-literal field (`.fst = blank` picks
+    // `blank : a`).
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b,\n\
+               $ blank : @int = 0\n\
+               $ blank : @str = \"\"\n\
+               $ mk : {} -> Pair a b  @ctx blank : a, blank : b = \\u = Pair.{ .fst = blank, .snd = blank }\n\
+               $ p : Pair @int @str = mk {}\n\
+               $ r : @int = if (p.fst ?= 0) && (p.snd ?= \"\") => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_generic_instance_works_across_modules() {
+    // A generic instance's `@ctx` requirement survives the import boundary, so a
+    // caller in another module still plans the element dictionary.
+    let lib = "@mod GENM\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
+    let root = "@mod M\n\
+                $ with GENM\n\
+                $ r : @int = if to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+    assert_eq!(run_modules(&[lib, root], "r"), "0");
+}
+
+#[test]
+fn qualified_ctx_call_injects_implicits() {
+    // `MOD.f` (qualified) plans its `@ctx` implicits just like a bare `f`, resolving
+    // the dictionary from the caller's scope.
+    let lib = "@mod LM\n\
+               $ maxf : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y = if cmp x y => x else y";
+    let root = "@mod M\n\
+                $ with LM\n\
+                $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
+                $ r : @int = LM.maxf 3 7";
+    assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
 
 #[test]

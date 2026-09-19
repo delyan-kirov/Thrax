@@ -47,4 +47,13 @@ $ pick_snd : Pair a b -> b  @ctx blank : a, blank : b = \p = blank
 $ pp : Pair @int @str = Pair.{ .fst = 7, .snd = "z" }
 $ ck_dict : @int = if (pick_fst pp ?= 0) && (pick_snd pp ?= "") => 0 else 8
 
-$ test : @int = ck_implicit + ck_chain + ck_override + ck_dict
+# The same selection works when `blank` is used in a STRUCT-LITERAL field: `.fst`
+# expects `a` and `.snd` expects `b`, each picking the matching dictionary.
+$ mk : {} -> Pair a b  @ctx blank : a, blank : b = \u = Pair.{ .fst = blank, .snd = blank }
+$ mkpp : Pair @int @str = mk {}
+$ ck_lit : @int = if (mkpp.fst ?= 0) && (mkpp.snd ?= "") => 0 else 16
+
+# A QUALIFIED call plans its implicits like a bare one (`cmp` from scope here).
+$ ck_qual : @int = if IMPLICITS.max_of 3 7 ?= 7 => 0 else 32
+
+$ test : @int = ck_implicit + ck_chain + ck_override + ck_dict + ck_lit + ck_qual

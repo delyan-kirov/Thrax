@@ -124,13 +124,17 @@ local binder shadows it (a general scoping bug the local `@ctx` param exposed).
    the body (`current_dicts`, `dict_calls`; identity-narrowed when the argument is a
    bare type variable). A candidate's requirements are carried across imports
    (`own_overloads` exports them, `import_export` re-imports with aligned variables),
-   so a generic instance works cross-module too. Remaining sub-limit: a duplicated
-   dictionary used as a bare VALUE resolves by the expected type only where that type
-   is directly a parameter (a struct-literal field, checked against a fresh-then-
-   unified variable, does not narrow).
-3. **Qualified cross-module use does not inject.** A bare-imported `@ctx` function
-   resolves (its metadata is copied in `import_from`); a `MOD.f` qualified use does
-   not yet. Same gap family as qualified cross-module operators.
+   so a generic instance works cross-module too. A duplicated dictionary used as a
+   bare VALUE (a nullary method) resolves by the EXPECTED type, including in a
+   struct-literal field: the checker now pins the literal's parameters to the
+   expected type before checking fields (`infer_struct_lit` takes the expected type;
+   the `check` arm handles `Type.{ .. }` too).
+3. ~~Qualified cross-module use does not inject.~~ **FIXED.** A `MOD.f` qualified use
+   now plans its implicits like a bare `f` (`qualified_implicits` keyed by
+   `(module, name)`, consulted in `infer_var`'s qualified branch). So `LA.dot u v`
+   injects its dictionaries. (A qualified use of an *overloaded* generic instance,
+   `MOD.to_string`, still routes through qualified-overload resolution, which does
+   not yet carry per-candidate implicits; the bare form is the intended path.)
 4. **Local (lexical) provider wins over a global**, not the reverse. This is what
    makes chaining/override authoritative; if a global default should win instead,
    flip the order in `plan_implicits`.

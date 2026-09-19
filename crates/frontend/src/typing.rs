@@ -154,6 +154,11 @@ pub struct Checker<'a> {
     /// arguments. Populated up front (own module) so resolution is order-independent,
     /// and extended from imports.
     global_implicits: HashMap<&'a str, GlobImpl>,
+    /// `@ctx`-bearing definitions keyed by `(module, name)`, so a QUALIFIED use
+    /// (`MOD.f`) can plan its implicits too (the bare-keyed `global_implicits` can
+    /// collide when two modules define the same `@ctx` name). Populated for this
+    /// module's own defs and every import.
+    qualified_implicits: HashMap<(&'a str, &'a str), GlobImpl>,
     /// This module's own `@ctx`-bearing definitions, re-exported to importers.
     own_implicits: Vec<(&'a str, GlobImpl)>,
     /// Each use site of an implicit-bearing function, mapped to the resolved
@@ -388,6 +393,7 @@ impl<'a> Checker<'a> {
             def_keys: HashMap::new(),
             overloaded_multi: HashSet::new(),
             global_implicits: HashMap::new(),
+            qualified_implicits: HashMap::new(),
             own_implicits: Vec::new(),
             implicit_args: HashMap::new(),
             implicit_slots: HashMap::new(),
@@ -779,6 +785,8 @@ impl<'a> Checker<'a> {
                 decls: d.implicits.clone(),
             };
             self.own_implicits.push((d.name, gi.clone()));
+            self.qualified_implicits
+                .insert((self.module_name, d.name), gi.clone());
             self.global_implicits.insert(d.name, gi);
         }
 
@@ -931,6 +939,8 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
+            self.qualified_implicits
+                .insert((other.module_name, name), gi.clone());
             self.global_implicits.insert(name, gi.clone());
         }
         for &name in &other.own_type_names {
@@ -1417,25 +1427,16 @@ impl<'a> Checker<'a> {
                 let fields = self.ast.slice(*fields);
                 self.check_codata_lit(e, fields, expected)
             }
-            // A bare `.{ .. }` literal takes its struct from the expected type (the
-            // checking direction). This is essential for a POSITIONAL literal, which
-            // carries no field names to infer from.
-            Expr::StructLit {
-                ty: None,
-                fields,
-                spread,
-            } => {
+            // A `.{ .. }` literal (bare or `Type.{ .. }`) checked against an expected
+            // type: resolve the struct from the qualifier or the expected type, and
+            // pass the expected type down so the parameters are pinned BEFORE fields
+            // are checked (bidirectional). A bare positional literal, which carries no
+            // field names, depends on this to resolve its struct at all.
+            Expr::StructLit { ty, fields, spread } => {
                 let fields = self.ast.slice(*fields);
-                match self.struct_name_of(expected) {
-                    Some(name) => {
-                        let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
-                        self.eng.unify(&got, expected, "against the expected type")
-                    }
-                    None => {
-                        let got = self.infer_struct_lit(e, None, fields, *spread)?;
-                        self.eng.unify(&got, expected, "against the expected type")
-                    }
-                }
+                let name = ty.map(|t| self.text(t)).or_else(|| self.struct_name_of(expected));
+                let got = self.infer_struct_lit(e, name, fields, *spread, Some(expected))?;
+                self.eng.unify(&got, expected, "against the expected type")
             }
             // A bare `.Tag` takes its union from the expected type (type-directed), so
             // a constructor name shared by several unions resolves unambiguously.
@@ -2156,6 +2157,7 @@ impl<'a> Checker<'a> {
         ty: Option<&'a str>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
+        expected: Option<&Type>,
     ) -> Result<Type> {
         let (info, result, mut subst) = if let Some(base) = spread {
             let base_ty = self.infer(base)?;
@@ -2205,6 +2207,13 @@ impl<'a> Checker<'a> {
             }
         };
 
+        // Pin the instantiated parameters to the expected type BEFORE checking the
+        // fields, so a field's declared type (e.g. `a`) is the actual parameter
+        // variable rather than a fresh placeholder. This lets a value-position `@ctx`
+        // dictionary in a field resolve by type (`.fst = blank` picks `blank : a`).
+        if let Some(exp) = expected {
+            self.eng.unify(&result, exp, "against the expected type")?;
+        }
         for (i, fi) in fields.iter().enumerate() {
             let (decl_ty, value) = match fi {
                 FieldInit::Named { name, value } => {
@@ -2793,7 +2802,7 @@ impl<'a> Checker<'a> {
             }
             Expr::StructLit { ty, fields, spread } => {
                 let (ty, fields, spread) = (ty.map(|t| self.text(t)), self.ast.slice(*fields), *spread);
-                self.infer_struct_lit(e, ty, fields, spread)
+                self.infer_struct_lit(e, ty, fields, spread, None)
             }
             Expr::Record {
                 fields,
@@ -2993,6 +3002,20 @@ impl<'a> Checker<'a> {
                     Code::TypeUnbound, span, 0,
                     "`{m}.{name}` is private to module `{m}` and cannot be used from another module"
                 ));
+            }
+            // A qualified reference to a `@ctx`-bearing function plans its implicits
+            // just like a bare one, so `LA.dot u v` injects its dictionaries rather
+            // than staying an under-applied function.
+            if let Some(gi) = self.qualified_implicits.get(&(m, name)).cloned() {
+                let mut tvars = HashMap::new();
+                let arrow = self.ty_of_ast(gi.sig, &mut tvars);
+                let reqs: Vec<(&'a str, Type)> = gi
+                    .decls
+                    .iter()
+                    .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
+                    .collect();
+                self.plan_implicits(site, name, &reqs)?;
+                return Ok(arrow);
             }
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
