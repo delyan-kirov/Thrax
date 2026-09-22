@@ -281,6 +281,11 @@ pub struct Checker<'a> {
     /// so a module that forward-references an about-to-be-injected definition still
     /// checks well enough to run its generators. The final round checks strictly.
     lenient: bool,
+    /// Set for the interactive shell: a top-level body is checked under an open
+    /// ambient effect row rather than the pure closed row, so an entered expression
+    /// may perform effects (`println`, file IO) the way a `main` body can. A
+    /// batch-compiled file leaves this off, so its top level stays pure.
+    open_effects: bool,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -424,6 +429,7 @@ impl<'a> Checker<'a> {
             ambient: Type::RowEmpty,
             unknown_type: None,
             lenient: false,
+            open_effects: false,
             current_dicts: HashMap::new(),
             dict_calls: HashMap::new(),
         };
@@ -437,6 +443,12 @@ impl<'a> Checker<'a> {
     /// enough to run its `$ @e` generators. The final round leaves this off.
     pub fn set_lenient(&mut self, lenient: bool) {
         self.lenient = lenient;
+    }
+
+    /// Check top-level bodies under an open ambient effect row (see `open_effects`).
+    /// The interactive shell turns this on so an entered expression may perform IO.
+    pub fn set_open_effects(&mut self, open: bool) {
+        self.open_effects = open;
     }
 
     /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
@@ -1092,8 +1104,19 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The ambient a top-level body starts under: the pure closed row normally, or
+    /// a fresh open row for the shell (`open_effects`), so an entered expression may
+    /// perform effects the way a `main` body can without leaking them into its type.
+    fn top_level_ambient(&mut self) -> Type {
+        if self.open_effects {
+            self.eng.fresh()
+        } else {
+            Type::RowEmpty
+        }
+    }
+
     fn check_overloaded_def(&mut self, def: &Def<'a>) -> Result<Type> {
-        self.ambient = Type::RowEmpty; // a top-level body is pure
+        self.ambient = self.top_level_ambient();
         self.eng.enter_level();
         let result = if def.sig.is_some() {
             let fresh = self.eng.fresh();
@@ -1196,7 +1219,7 @@ impl<'a> Checker<'a> {
     }
 
     fn check_def_body(&mut self, def: &Def<'a>, decl: &Type) -> Result<()> {
-        self.ambient = Type::RowEmpty; // a top-level body is pure
+        self.ambient = self.top_level_ambient();
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
             let sig_ty = self.ty_of_ast(sig, &mut tvars);

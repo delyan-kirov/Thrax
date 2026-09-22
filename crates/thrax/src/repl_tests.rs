@@ -61,6 +61,24 @@ fn multibyte_utf8_decodes_to_one_char() {
     assert_eq!(key(b"A"), Some(Key::Char('A')));
 }
 
+#[test]
+fn return_and_ctrl_j_split_into_enter_and_submit() {
+    // With ICRNL off, the Return key is CR and Ctrl-J is LF: Return edits an item,
+    // Ctrl-J evaluates the whole buffer.
+    assert_eq!(key(b"\r"), Some(Key::Enter));
+    assert_eq!(key(b"\n"), Some(Key::SubmitAll)); // Ctrl-J
+}
+
+#[test]
+fn ctrl_j_submits_the_whole_buffer_without_a_terminator() {
+    // A multi-line buffer with no trailing `$` yields the whole thing, trimmed.
+    let ed = editor_with("_= foo\n  + bar");
+    assert_eq!(ed.submit_body(), "_= foo\n  + bar");
+    // A lone trailing `$` terminator is dropped so it is not passed on.
+    let ed = editor_with("_= 1 + 2 $");
+    assert_eq!(ed.submit_body(), "_= 1 + 2");
+}
+
 fn editor_with(buffer: &str) -> Editor {
     let mut ed = Editor::new();
     ed.set_buffer(buffer.to_string());

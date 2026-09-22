@@ -161,6 +161,7 @@ fn check_all<'a>(
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
     lenient: bool,
+    open_effects_module: Option<&str>,
 ) -> Result<CheckOut<'a>, String> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
@@ -179,6 +180,9 @@ fn check_all<'a>(
     for i in order {
         let mut checker = frontend::Checker::new(ast);
         checker.set_lenient(lenient);
+        if open_effects_module == Some(sources[i].0.as_str()) {
+            checker.set_open_effects(true);
+        }
         if let Some(c) = c_idx {
             if c != i && Some(i) != core_idx {
                 checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
@@ -294,7 +298,7 @@ fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode>
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, lenient)
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, lenient, None)
         .map_err(|rendered| {
             eprint!("{rendered}");
             ExitCode::FAILURE
@@ -672,7 +676,16 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, false)?;
+    // The shell forces each entered symbol and permits IO, so the REPL root module is
+    // checked under an open effect row (a file's top level stays pure).
+    let (checkers, results) = check_all(
+        &ast,
+        &programs,
+        &graph,
+        &loaded.sources,
+        false,
+        Some(&loaded.root_name),
+    )?;
     let resolved = collect_resolved(&checkers);
 
     let module_decls = frontend::Decls::collect(&ast, &programs);
@@ -891,7 +904,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false) {
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false, None) {
         Ok(out) => out,
         Err(rendered) => {
             eprint!("{rendered}");
