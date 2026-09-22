@@ -890,7 +890,10 @@ impl<'a> Checker<'a> {
             })
             .collect();
         for e in runs {
-            self.ambient = Type::RowEmpty;
+            // A `$ @e X` runs at compile time under a `<@meta>` handler: the
+            // closed row discharges `@meta` (so meta ops type-check) but nothing
+            // else, so a stray `@io` in a generator is still rejected (hermetic).
+            self.ambient = Type::row_extend("@meta", Type::RowEmpty);
             self.infer(e)?;
         }
         Ok(out)
@@ -3396,7 +3399,13 @@ impl<'a> Checker<'a> {
                     "`@e` takes exactly one argument"
                 ));
             }
-            let arg_ty = self.infer(args[0])?;
+            // `@e` is the eliminator of `<@meta>`: run the operand under a closed
+            // `<@meta>` ambient so meta ops discharge here and the surrounding
+            // (possibly pure) context never sees `@meta`.
+            let saved = std::mem::replace(&mut self.ambient, Type::row_extend("@meta", Type::RowEmpty));
+            let arg_ty = self.infer(args[0]);
+            self.ambient = saved;
+            let arg_ty = arg_ty?;
             return Ok(match self.eng.zonk(&arg_ty) {
                 Type::Con(n) if n == "@code" => self.eng.fresh(),
                 _ => arg_ty,
@@ -4549,9 +4558,12 @@ impl<'a> Checker<'a> {
             // round; the final strict compile sees the substituted concrete type.
             Ty::MetaE(expr) => {
                 let expr = *expr;
+                let saved =
+                    std::mem::replace(&mut self.ambient, Type::row_extend("@meta", Type::RowEmpty));
                 if let Ok(t) = self.infer(expr) {
                     let _ = self.eng.unify(&t, &Type::con("@code"), "in a `@e` type splice");
                 }
+                self.ambient = saved;
                 self.eng.fresh()
             }
             Ty::Nat(n) => Type::Nat(*n),
@@ -4736,19 +4748,27 @@ impl<'a> Checker<'a> {
             "@parse",
             Type::arrow(Type::app(Type::con(ty::VEC), token()), Type::con("@code")),
         );
+        // The metaprogramming ops carry the `<@meta>` effect, so they are usable
+        // only where a `<@meta>` handler is installed: inside `@e` (see the
+        // `@e`-position ambients in `check_program` / `infer_app` / `ty_of_ast`).
+        // A use in ordinary code fails to unify the `<@meta>` latent row into the
+        // pure ambient, giving a clean "effect `@meta` is performed but not
+        // handled" error instead of a runtime no-op/fault. Lexing/parsing
+        // (`@lex`/`@parse`/`@parse_str`/...) stay PURE: they need no compiler state.
+        let meta_row = || Type::row_extend("@meta", Type::RowEmpty);
         // `@eval` compiles and runs an `@code` fragment at build time and returns
         // its value. Its result type is fully polymorphic (`a`): the produced
         // value is embedded as-is, so a mismatch with the use site is a runtime
-        // (compile-time) fault, not a static error. Only available inside `$ @run`.
+        // (compile-time) fault, not a static error.
         let eval_res = self.eng.fresh_generic();
-        self.bind("@eval", Type::arrow(Type::con("@code"), eval_res));
+        self.bind("@eval", Type::arrow_eff(Type::con("@code"), eval_res, meta_row()));
         // Compile-time diagnostics. `@abort` fails the build with its message (a
         // clean user-land `assert` is `if ok => {} else @abort "..."`); its result
         // is polymorphic since it never returns. `@emit` prints a message and
-        // continues. Both are intended for `$ @run` (compile time).
+        // continues.
         let abort_res = self.eng.fresh_generic();
-        self.bind("@abort", Type::arrow(str_ty(), abort_res));
-        self.bind("@emit", Type::arrow(str_ty(), Type::con(ty::UNIT)));
+        self.bind("@abort", Type::arrow_eff(str_ty(), abort_res, meta_row()));
+        self.bind("@emit", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
         // `@e X` runs X at compile time and embeds its value at the use site, so
         // type-wise it is the identity on X's type (the value case). The fold
         // happens in lowering + the driver; `@e` must be applied directly.
@@ -4756,12 +4776,12 @@ impl<'a> Checker<'a> {
         self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
         // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
         // for generating hygienic, non-colliding binders in compile-time codegen.
-        self.bind("@fresh", Type::arrow(str_ty(), str_ty()));
+        self.bind("@fresh", Type::arrow_eff(str_ty(), str_ty(), meta_row()));
         // `@link name` / `@link_path p`: steer the build (add a library / search
         // path to the link line), used at compile time via `$ @e (@link "curl")`.
         // The effect is the directive; the call returns unit.
-        self.bind("@link", Type::arrow(str_ty(), Type::con(ty::UNIT)));
-        self.bind("@link_path", Type::arrow(str_ty(), Type::con(ty::UNIT)));
+        self.bind("@link", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        self.bind("@link_path", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
         // Compile-time reflection over a declared type (resolved by the driver's
         // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;
         // `@type_fields` the struct's field names; `@type_variants` the union's

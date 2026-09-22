@@ -82,13 +82,30 @@ Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; the rest need the
 handler's compiler state):
 
 ```
-@eval   : @code     -> a               -- LANDED (via the driver host, not <@meta> yet); usable in @e
-@abort  : @str      -> a               -- LANDED. fail the build with this message
-@emit   : @str      -> {}              -- LANDED. print a message and continue
-@fresh  : @str      -> @str            -- LANDED. a unique identifier (prefix + counter), for hygiene
-@check  : @code     -> <@meta> @code
-@here   : ()        -> <@meta> @span
+@eval   : @code     -> <@meta> a       -- LANDED. runs a fragment (driver host); typed <@meta>
+@abort  : @str      -> <@meta> a       -- LANDED. fail the build with this message
+@emit   : @str      -> <@meta> {}      -- LANDED. print a message and continue
+@fresh  : @str      -> <@meta> @str    -- LANDED. a unique identifier (prefix + counter), for hygiene
+@link      : @str   -> <@meta> {}      -- LANDED. add a library to the link line
+@link_path : @str   -> <@meta> {}      -- LANDED. add a search path to the link line
+@check  : @code     -> <@meta> @code   -- planned
+@here   : ()        -> <@meta> @span   -- planned
 ```
+
+**LANDED (the `<@meta>` effect, first cut).** The ops above now carry the
+`<@meta>` effect in their types, and every `@e` position (item `$ @e X`,
+expression `@e X`, and type `@e X`) runs its operand under a CLOSED `<@meta>`
+ambient. So `@e` is the handler that discharges `<@meta>`: a meta op inside `@e`
+type-checks and the surrounding context stays pure, while a meta op in ordinary
+code is a clean "effect `@meta` is performed but not handled" error (no more
+runtime no-op/fault). A function that performs a meta op declares `<@meta>` in
+its signature (like `<@io>`); e.g. `examples/CT_ASSERT.thx`'s
+`assert : @bool -> @str -> <@meta> {}`. The ambient is closed (only `@meta`), so
+`@e` stays hermetic: a generator that performs `@io` is still rejected. Lexing
+and parsing (`@lex`/`@parse`/`@parse_str`/`@parse_items`/`@token_*`) remain PURE.
+Still to come: a real handler over the live `Ast`/interner/type-env/diagnostic
+sink (replacing the thread-local host), `@lookup`/`@here`/`@check`, and a richer
+`@diag` (spans) for `@abort`/`@emit`.
 
 `@eval` currently rides a driver-installed thread-local host rather than a full
 `<@meta>` handler; when the handler lands it subsumes this. `@abort`/`@emit`
@@ -555,8 +572,14 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    (struct/union/alias member types are a follow-up). See `examples/META_TYPE.thx`.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
-4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,
-   `@here`, `@fresh`; wire `@emit` into the `Diagnostic` chain.
+4. **PARTIALLY DONE: the `<@meta>` effect.** `@eval`/`@abort`/`@emit`/`@fresh`/
+   `@link`/`@link_path` are now typed `<@meta>`, and every `@e` position runs its
+   operand under a closed `<@meta>` ambient (the eliminator/handler): a meta op
+   outside `@e` is an "effect `@meta` not handled" error, and `@e` stays hermetic
+   (`@io` inside it is still rejected). See section 1 "LANDED (the `<@meta>`
+   effect, first cut)". STILL TO COME: a real handler over the live compiler state
+   (replacing the thread-local host), `@lookup`/`@here`/`@check`, and wiring
+   `@emit`/`@abort` into the `Diagnostic` chain (spans).
 5. `@check` and `@eval` (staging), plus the `@code_*` constructors.
 6. Compile-time IO once IO is effect-tracked (section 6).
 7. Hygiene upgrade (syntax contexts), then the `@build` function and its

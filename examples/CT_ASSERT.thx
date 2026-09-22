@@ -7,7 +7,10 @@
 #       ordinary function, and a wrong result below fails `thrax build`/`run`.
 
 # The reusable assert: at compile time, a false condition aborts the build.
-$ assert : @bool -> @str -> {} = \ok msg = if ok => {} else @abort msg
+# `@abort` carries the `<@meta>` effect, so a function that performs it declares
+# `<@meta>` in its type; the `$ @e` calls below install the handler that discharges
+# it. (A use outside `@e` is a clean "effect `@meta` not handled" error.)
+$ assert : @bool -> @str -> <@meta> {} = \ok msg = if ok => {} else @abort msg
 
 $ fib : @int -> @int = \n =
 	if n ?< 2 => n else fib (n - 1) + fib (n - 2)

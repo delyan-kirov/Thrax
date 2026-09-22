@@ -504,6 +504,35 @@ fn open_row_entry_may_perform_any_effect() {
 }
 
 #[test]
+fn meta_op_outside_e_is_an_unhandled_effect() {
+    // The metaprogramming ops carry `<@meta>`. Used in ordinary code (no `@e`
+    // handler), the latent `<@meta>` cannot be subsumed into the pure ambient, so
+    // it is a clean compile error rather than a runtime no-op/fault.
+    let src = "@mod M\n$ bad : @str = @fresh \"x\"";
+    let e = errors(src);
+    assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
+}
+
+#[test]
+fn meta_op_inside_e_is_discharged() {
+    // `@e` installs the `<@meta>` handler, so a meta op inside it type-checks and
+    // the surrounding context stays pure.
+    let src = "@mod M\n$ ok : @str = @e (@fresh \"x\")";
+    assert_eq!(errors(src), "", "meta op inside @e should type-check");
+}
+
+#[test]
+fn e_is_hermetic_io_stays_unhandled() {
+    // `@e` discharges `<@meta>` ONLY, so a generator that performs `@io` is still
+    // rejected: compile-time code cannot touch the world (that is `@build`'s job).
+    let src = "@mod M\n\
+               $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
+               $ bad : @int = @e (shout \"hi\")";
+    let e = errors(src);
+    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
+}
+
+#[test]
 fn classify_entry_recognizes_the_entry_forms() {
     use crate::{classify_entry, EntryKind};
     let kind = |src: &str| {
