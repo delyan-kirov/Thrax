@@ -282,6 +282,11 @@ pub enum Ty {
     },
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
+    /// A compile-time type splice `@e X`: `X` is a compile-time expression that
+    /// produces an `@code` denoting a type, spliced into this annotation. Erased
+    /// before the final (strict) compile: the driver's expand loop runs `X`,
+    /// substitutes the resulting type source at this node's span, and re-parses.
+    MetaE(Aol<Expr>),
     /// A function type `From -> To`, optionally carrying an effect row.
     Arrow {
         from: Aol<Ty>,

@@ -38,6 +38,11 @@ pub struct Program {
     /// value/code to source, substitutes it at the span, and re-compiles (the
     /// iterative expansion). See [`super::lower_program`].
     pub ct_evals: Vec<(String, utilities::Span)>,
+    /// Type-position `@e X` sites (`Foo : @e X = ...`): `(synthetic global name,
+    /// source span of the `@e X`)`. The driver forces the global at compile time,
+    /// splices the resulting `@code`'s type source at the span, and re-compiles.
+    /// See [`super::lower_program`].
+    pub ct_types: Vec<(String, utilities::Span)>,
 }
 
 /// One effect operation declared by `$ Effect : @effect = op : ...`.

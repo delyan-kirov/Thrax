@@ -542,6 +542,17 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    use site); a fully ambiguous position can mis-default (e.g. `[..]` to `List`
    rather than `@vec`). Caveat: a nested `@e (@e X)` inside one expression is not
    handled (recursion works across rounds, e.g. generated code containing `@e`).
+2c. **DONE: type-position `@e X` (`Foo : @e X = ...`).** `@e` now completes all
+   three positions (expression, item, type). In type position `X` must build an
+   `@code` denoting a type (with `@parse_str`); the expand loop forces it and
+   splices the type source into the annotation. Mechanism: a `Ty::MetaE(expr)` AST
+   node (parsed by `@e` in `parse_type_atom_inner`); `ty_of_ast` infers `expr` (so
+   its calls/overloads resolve for lowering) and stands the unknown type in as a
+   fresh variable; lowering's `collect_meta_types` walks each def signature and
+   emits a synthetic global `@e_type#n` per site (recorded in `Program.ct_types`);
+   the driver evaluates it, requires an `@code`, and splices its source at the
+   node's span. Nests inside larger types (`@vec (@e ...)`). Scope: def signatures
+   (struct/union/alias member types are a follow-up). See `examples/META_TYPE.thx`.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. The `<@meta>` effect + handler: start with `@parse`, `@emit`/`@abort`,

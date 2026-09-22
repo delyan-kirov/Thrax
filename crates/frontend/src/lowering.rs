@@ -481,6 +481,7 @@ pub fn lower_program(
         imports,
         fresh: 0,
         meta_evals: Vec::new(),
+        meta_type_evals: Vec::new(),
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
@@ -493,6 +494,9 @@ pub fn lower_program(
                 implicits,
                 body,
             } => {
+                if let Some(sig) = sig {
+                    lw.collect_meta_types(*sig);
+                }
                 let term = lw.def(*sig, ast.slice(*implicits), *body);
                 let key = resolved
                     .def_keys
@@ -529,6 +533,11 @@ pub fn lower_program(
     let ct_evals: Vec<(String, Span)> =
         lw.meta_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
     globals.extend(lw.meta_evals.drain(..).map(|(n, body, _)| (n, body)));
+    // Type-position `@e X` synthetic globals, same treatment as `ct_evals` but the
+    // driver splices the result as type source rather than a value literal.
+    let ct_types: Vec<(String, Span)> =
+        lw.meta_type_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
+    globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
     Program {
         module: ast.text(program.module).to_string(),
         effects,
@@ -540,6 +549,7 @@ pub fn lower_program(
             .collect(),
         ct_runs,
         ct_evals,
+        ct_types,
     }
 }
 
@@ -558,6 +568,11 @@ struct Lowerer<'a> {
     /// source there and re-compile. Drained by [`lower_program`] into
     /// `Program.globals` / `Program.ct_evals`.
     meta_evals: Vec<(String, Term, Span)>,
+    /// Synthetic globals for type-position `@e X` (`Foo : @e X = ...`), each a
+    /// global `@e_type#n = X` forced at compile time; the driver splices the
+    /// resulting `@code`'s type source at the `@e X` span and re-compiles. Drained
+    /// by [`lower_program`] into `Program.globals` / `Program.ct_types`.
+    meta_type_evals: Vec<(String, Term, Span)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -1279,6 +1294,48 @@ impl<'a> Lowerer<'a> {
 
     fn is_cast_head(&self, f: Aol<Expr>) -> bool {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
+    }
+
+    /// Walk a signature type, turning each type-position `@e X` into a synthetic
+    /// global (`@e_type#n = X`) forced at compile time; the node's span is recorded
+    /// so the driver splices the resulting type source there. Recurses through
+    /// every type sub-position an annotation can nest a `@e` in.
+    fn collect_meta_types(&mut self, ty: Aol<Ty>) {
+        match self.tnode(ty) {
+            Ty::MetaE(expr) => {
+                let expr = *expr;
+                let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
+                let name = format!("@e_type#{}", self.meta_type_evals.len());
+                let term = self.expr(expr);
+                self.meta_type_evals.push((name, term, span));
+            }
+            Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+                let (a, b) = (*a, *b);
+                self.collect_meta_types(a);
+                self.collect_meta_types(b);
+            }
+            Ty::Sized { size, elem, .. } => {
+                let (size, elem) = (*size, *elem);
+                self.collect_meta_types(size);
+                self.collect_meta_types(elem);
+            }
+            Ty::Arrow { from, to, .. } => {
+                let (from, to) = (*from, *to);
+                self.collect_meta_types(from);
+                self.collect_meta_types(to);
+            }
+            Ty::Tuple(items) => {
+                for t in self.ast.slice(*items).to_vec() {
+                    self.collect_meta_types(t);
+                }
+            }
+            Ty::Record { fields, .. } => {
+                for f in self.ast.slice(*fields).to_vec() {
+                    self.collect_meta_types(f.ty);
+                }
+            }
+            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit => {}
+        }
     }
 
     /// The marshalling plan of the foreign function `site` refers to, if it is a

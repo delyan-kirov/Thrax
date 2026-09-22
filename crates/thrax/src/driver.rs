@@ -487,7 +487,16 @@ fn lower_all(
                     .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
-        if expr_sites.is_empty() && item_sites.is_empty() {
+        let type_sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_types
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        if expr_sites.is_empty() && item_sites.is_empty() && type_sites.is_empty() {
             // No `@e` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
             let final_compiled = compile_sources(&loaded, false)?;
@@ -544,6 +553,23 @@ fn lower_all(
             match as_code_src(&v) {
                 Some(items) => edits.push((module, span, items)),
                 None => edits.push((module, span, String::new())),
+            }
+        }
+        // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@code`
+        // denoting a type; splice its source in place of the `@e X`.
+        for (module, qualified, span) in type_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            match as_code_src(&v) {
+                Some(ty_src) => edits.push((module, span, format!("({ty_src})"))),
+                None => {
+                    clear_meta_hosts();
+                    eprintln!(
+                        "thrax: a compile-time `@e` failed: a type-position `@e` must \
+                         produce an `@code` (build one with `@parse_str`)"
+                    );
+                    return Err(ExitCode::FAILURE);
+                }
             }
         }
         clear_meta_hosts();

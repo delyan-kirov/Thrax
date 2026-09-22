@@ -13,6 +13,7 @@ fn caf(name: &str, body: Term) -> Program {
         crepr_layouts: Vec::new(),
         ct_runs: Vec::new(),
         ct_evals: Vec::new(),
+        ct_types: Vec::new(),
     };
     assign_program(&mut p);
     p

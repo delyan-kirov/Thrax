@@ -200,6 +200,18 @@ fn ct_run_lowers_to_a_forceable_synthetic_global() {
     assert_eq!(run(src, "T.@e#0"), "42");
 }
 
+#[test]
+fn type_position_e_lowers_to_a_forceable_synthetic_global() {
+    // `Foo : @e X = ...` records the type-position `@e X` as a synthetic global
+    // (`Module.@e_type#i`) the driver forces at compile time, then splices the
+    // resulting `@code`'s type source into the annotation. Here we force it
+    // directly to confirm it is emitted and yields the type-carrying `@code`.
+    let src = "@mod T\n\
+               $ pick : @str -> @code = \\s = @parse_str \"@int\"\n\
+               $ x : @e (pick \"num\") = 42";
+    assert_eq!(run(src, "T.@e_type#0"), "@code.{ .src = \"@int\" }");
+}
+
 /// Compile a tiny C source to a shared library in a temp dir, returning its path.
 fn compile_helper_so(basename: &str, c_src: &str) -> std::path::PathBuf {
     use std::io::Write;

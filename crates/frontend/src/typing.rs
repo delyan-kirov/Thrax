@@ -4542,6 +4542,18 @@ impl<'a> Checker<'a> {
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }
+            // `@e X` in type position: infer `X` (so its calls/overloads resolve
+            // for lowering) and require it to build `@code`; the spliced-in type is
+            // unknown until the driver's expand loop runs `X`, so it stands as a
+            // fresh variable here. Only reachable in a lenient (pre-expansion)
+            // round; the final strict compile sees the substituted concrete type.
+            Ty::MetaE(expr) => {
+                let expr = *expr;
+                if let Ok(t) = self.infer(expr) {
+                    let _ = self.eng.unify(&t, &Type::con("@code"), "in a `@e` type splice");
+                }
+                self.eng.fresh()
+            }
             Ty::Nat(n) => Type::Nat(*n),
             // A size expression written in type position (only well-formed inside a
             // `[..]`); elaborate it as a size so kind-checking flags any misuse.
@@ -5299,7 +5311,9 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *a, out);
             collect_tyvars(ast, *b, out);
         }
-        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit => {}
+        // A `@e X` type splice contributes no type variables: its type is unknown
+        // until the driver expands it, after which this node no longer exists.
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(_) => {}
     }
 }
 

@@ -860,6 +860,11 @@ impl<'a> Parser<'a> {
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
+            Kind::At if self.intrinsic_name(t) == "e" => {
+                self.bump()?; // '@e'
+                let e = self.parse_expr(0)?;
+                Ok(self.ty(Ty::MetaE(e)))
+            }
             Kind::At => {
                 self.bump()?;
                 let name = self.intern(self.text(t));
