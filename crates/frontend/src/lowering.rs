@@ -56,6 +56,10 @@ pub struct Decls {
 struct VariantDecl {
     union: String,
     fields: Vec<Option<String>>,
+    /// Declaration order within the union (0-based), preserved so reflection reports
+    /// variants in source order. The tag-keyed map loses order; a derived comparison
+    /// (`derive_ord`) orders variants by this.
+    order: usize,
 }
 
 /// The declared shape of every user type, for compile-time reflection: each
@@ -131,7 +135,7 @@ impl Decls {
                         self.includes
                             .push((module.clone(), uname.clone(), false, ps));
                     }
-                    for v in ast.slice(*variants).iter() {
+                    for (order, v) in ast.slice(*variants).iter().enumerate() {
                         let fields = match &v.payload {
                             Payload::None => Vec::new(),
                             Payload::Bare(_) => vec![None],
@@ -145,6 +149,7 @@ impl Decls {
                             VariantDecl {
                                 union: uname.clone(),
                                 fields,
+                                order,
                             },
                         );
                     }
@@ -210,28 +215,39 @@ impl Decls {
                 structs.push((module.clone(), name.clone(), params_of(module, name), fields.clone()));
             }
         }
-        let mut unions: Vec<(String, String, Vec<String>, Vec<(String, usize)>)> = Vec::new();
+        // Group variants per union, carrying each variant's declaration order, then
+        // sort by it so reflection reports variants in SOURCE order (the tag-keyed
+        // map is unordered). A derived comparison orders variants by this.
+        let mut unions_ord: Vec<(String, String, Vec<String>, Vec<(String, usize, usize)>)> =
+            Vec::new();
         for (module, by_tag) in &self.unions {
             for (tag, decl) in by_tag {
                 let arity = decl.fields.len();
-                match unions
+                match unions_ord
                     .iter_mut()
                     .find(|(m, n, _, _)| m == module && *n == decl.union)
                 {
                     Some((_, _, _, variants)) => {
-                        if !variants.iter().any(|(t, _)| t == tag) {
-                            variants.push((tag.clone(), arity));
+                        if !variants.iter().any(|(t, _, _)| t == tag) {
+                            variants.push((tag.clone(), arity, decl.order));
                         }
                     }
-                    None => unions.push((
+                    None => unions_ord.push((
                         module.clone(),
                         decl.union.clone(),
                         params_of(module, &decl.union),
-                        vec![(tag.clone(), arity)],
+                        vec![(tag.clone(), arity, decl.order)],
                     )),
                 }
             }
         }
+        let unions = unions_ord
+            .into_iter()
+            .map(|(m, n, ps, mut vs)| {
+                vs.sort_by_key(|(_, _, order)| *order);
+                (m, n, ps, vs.into_iter().map(|(t, a, _)| (t, a)).collect())
+            })
+            .collect();
         ReflectInfo { structs, unions }
     }
 
@@ -263,6 +279,7 @@ impl Decls {
                             VariantDecl {
                                 union: ty.to_string(),
                                 fields: d.fields.clone(),
+                                order: d.order,
                             },
                         )
                     })
