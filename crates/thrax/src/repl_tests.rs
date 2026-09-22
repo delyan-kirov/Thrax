@@ -61,6 +61,26 @@ fn multibyte_utf8_decodes_to_one_char() {
     assert_eq!(key(b"A"), Some(Key::Char('A')));
 }
 
+#[test]
+fn ctrl_enter_sequences_decode_to_submit_all() {
+    // CSI-u ("fixterms"/kitty) form and the legacy modifyOtherKeys form.
+    assert_eq!(key(b"\x1b[13;5u"), Some(Key::SubmitAll));
+    assert_eq!(key(b"\x1b[27;5;13~"), Some(Key::SubmitAll));
+    // A plain (unmodified) Return in CSI-u form is not Ctrl+Enter, so it is not
+    // hijacked; the sequence is swallowed and the next key surfaces.
+    assert_eq!(key(b"\x1b[13uz"), Some(Key::Char('z')));
+}
+
+#[test]
+fn ctrl_enter_submits_the_whole_buffer_without_a_terminator() {
+    // A multi-line buffer with no trailing `$` yields the whole thing, trimmed.
+    let ed = editor_with("_= foo\n  + bar");
+    assert_eq!(ed.submit_body(), "_= foo\n  + bar");
+    // A lone trailing `$` terminator is dropped so it is not passed on.
+    let ed = editor_with("_= 1 + 2 $");
+    assert_eq!(ed.submit_body(), "_= 1 + 2");
+}
+
 fn editor_with(buffer: &str) -> Editor {
     let mut ed = Editor::new();
     ed.set_buffer(buffer.to_string());

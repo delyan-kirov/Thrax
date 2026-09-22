@@ -539,6 +539,34 @@ fn run_is_hermetic_io_stays_unhandled() {
 }
 
 #[test]
+fn open_effects_permits_io_at_the_shell_top_level() {
+    // A top-level body performing `@io` is rejected in a file (a pure top level)...
+    let src = "@mod M\n\
+               $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
+               $ shown : @int = shout \"hi\"";
+    let e = errors(src);
+    assert!(
+        e.contains("@io") && e.contains("not handled"),
+        "a file top level should reject IO: {e:?}"
+    );
+
+    // ...but accepted once the shell turns on open effect rows, and the discharged
+    // effect does not leak into the binding's type.
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let mut core_checker = Checker::new(&ast);
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast);
+    checker.import_from(&core_checker);
+    checker.set_open_effects(true);
+    let results = checker
+        .check_program(&prog)
+        .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.thx")));
+    let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1.clone();
+    assert_eq!(checker.show(&ty), "@int");
+}
+
+#[test]
 fn classify_entry_recognizes_the_entry_forms() {
     use crate::{classify_entry, EntryKind};
     let kind = |src: &str| {
