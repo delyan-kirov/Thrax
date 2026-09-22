@@ -4718,6 +4718,12 @@ impl<'a> Checker<'a> {
         // injects definitions.
         self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
         self.bind("@parse_items", Type::arrow(str_ty(), Type::con("@code")));
+        // `@parse` consumes a token vector (from `@lex`) into the same opaque
+        // `@code` as `@parse_str`, closing the `@str -> @token -> @code` pipeline.
+        self.bind(
+            "@parse",
+            Type::arrow(Type::app(Type::con(ty::VEC), token()), Type::con("@code")),
+        );
         // `@eval` compiles and runs an `@code` fragment at build time and returns
         // its value. Its result type is fully polymorphic (`a`): the produced
         // value is embedded as-is, so a mismatch with the use site is a runtime

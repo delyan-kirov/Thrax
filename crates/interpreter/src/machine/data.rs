@@ -292,7 +292,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" | "@parse_str" | "@parse_items"
+        | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
         | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
@@ -546,6 +546,31 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         "@token_kind" => token_field(&a[0], "kind"),
         "@token_text" => token_field(&a[0], "text"),
+        // Parse a token vector (from `@lex`) into opaque `@code`. `@code` is
+        // text-backed, so this detokenizes (the lexemes rejoined with a space,
+        // which whitespace-insensitive expression syntax re-lexes identically) and
+        // validates exactly like `@parse_str`. A syntax error traps.
+        "@parse" => {
+            let toks = as_vec(&a[0])?;
+            let mut lexemes: Vec<Vec<u8>> = Vec::with_capacity(toks.len());
+            for t in toks.iter() {
+                match token_field(t, "text")? {
+                    Value::Str(b) => lexemes.push(b.as_ref().clone()),
+                    _ => return Err(fault("@parse: an @token has a non-string lexeme")),
+                }
+            }
+            let joined = lexemes.join(&b' ');
+            let src = std::str::from_utf8(&joined)
+                .map_err(|_| fault("@parse: the tokens do not form valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
         // Parse a string as an expression fragment into opaque `@code`. Validated
         // by wrapping it as a def body and parsing; a syntax error is a
         // `Diagnostic`, which propagates as a fault (fails a `@run`). The fragment

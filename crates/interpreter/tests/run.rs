@@ -151,6 +151,16 @@ fn parse_str_produces_opaque_code() {
 }
 
 #[test]
+fn parse_consumes_tokens_into_code() {
+    // `@parse` consumes a `@lex` token vector into the same opaque `@code` as
+    // `@parse_str`, closing the `@str -> @token -> @code` pipeline. The lexemes
+    // rejoin whitespace-insensitively, so `@parse (@lex s)` yields code equal to
+    // `@parse_str` of the normalized source.
+    let src = "@mod T\n$ c : @code = @parse (@lex \"1+2\")";
+    assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
+}
+
+#[test]
 fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
     use interpreter::machine::{set_meta_eval, OwnedValue};
     // A stub host (the driver installs the real compile+run one) returns 42

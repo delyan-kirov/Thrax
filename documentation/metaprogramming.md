@@ -62,7 +62,7 @@ operations:
 @token_text : @token    -> @str          -- LANDED. the lexeme
 @parse_str  : @str      -> @code         -- LANDED. parses an expr fragment; a syntax error traps
 @parse_items: @str      -> @code         -- LANDED. parses top-level item(s), for `$ @e` injection
-@parse      : @vec @token -> @code       -- planned (tokens -> code)
+@parse      : @vec @token -> @code       -- LANDED. detokenizes + validates like @parse_str
 ```
 
 `@code` is opaque; it currently carries the fragment's source text (enough for
@@ -492,7 +492,9 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
 1. **DONE:** `@token` as an opaque builtin type, and `@lex : @str -> @vec @token`
    + `@token_kind`/`@token_text` accessors, as pure intrinsics runnable inside
    `@e` (a lex error traps). `@parse_str : @str -> @code` also LANDED (opaque
-   `@code` = source text, syntax errors trap). **NEXT:** consumers of `@code`.
+   `@code` = source text, syntax errors trap), and `@parse : @vec @token -> @code`
+   (detokenizes a `@lex` result and validates like `@parse_str`), so the full
+   `@str -> @token -> @code` pipeline is closed. **NEXT:** consumers of `@code`.
 2. **DONE: `@eval : @code -> a`** (compile + run a fragment at build time).
    `@code` consumers need the driver's pipeline, but the interpreter crate cannot
    depend on the driver, so the mechanism is a **driver-installed thread-local
