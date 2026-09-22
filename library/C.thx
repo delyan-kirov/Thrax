@@ -62,6 +62,7 @@ $ rand    : {} -> <@io> @int                           = @extern "C" "rand"    "
 $ srand   : @int -> <@io> {}                           = @extern "C" "srand"   "libc"
 $ exit    : @int -> <@io> {}                           = @extern "C" "exit"    "libc"
 $ abort   : {} -> <@io> {}                            = @extern "C" "abort"   "libc"
+$ system  : @str -> <@io> @int                         = @extern "C" "system"  "libc"
 
 # -- string.h --------------------------------------------------------------
 $ strlen  : @str -> @int                              = @extern "C" "strlen"  "libc"
