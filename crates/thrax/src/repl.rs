@@ -9,9 +9,10 @@
 //! (`$ name = ...` defines silently, `$ with MOD` imports). The auto-inserted
 //! `$ ` opening each prompt cannot be deleted. Typing `$` then Enter defines the
 //! current symbol: it is evaluated, and the `$` is "moved" to the next prompt.
-//! `Ctrl-Enter` submits the whole buffer at once, wherever the cursor sits and
-//! with no trailing `$`, in terminals that report an enhanced Return (others fall
-//! back to the `$` terminator). A line beginning with `:` is a meta-command.
+//! `Ctrl-J` submits the whole buffer at once, wherever the cursor sits and with no
+//! trailing `$` (it arrives as LF, distinct from the Return key's CR; some terminals
+//! also send `Ctrl-Enter` as LF, so it works there too). A line beginning with `:`
+//! is a meta-command.
 //!
 //! The whole session is recompiled against the standard library on each item,
 //! so definitions accumulate and errors just print and leave the session intact.
@@ -219,7 +220,8 @@ enum Key {
     /// Start an incremental reverse history search (`C-r`).
     HistorySearch,
     /// Evaluate the whole current buffer now, wherever the cursor sits and with no
-    /// trailing `$` needed (`Ctrl-Enter`, where the terminal can report it).
+    /// trailing `$` needed (`Ctrl-J`; also `Ctrl-Enter` in terminals that send it as
+    /// LF).
     SubmitAll,
     /// Cancel / quit the current mode (`Esc`, also `C-g`).
     Escape,
@@ -789,7 +791,7 @@ impl Repl {
         // (and its type), keeping that boundary visible.
         match interpreter::machine::eval(&ir, IT) {
             Ok(shown) => match ty {
-                Some(ty) => println!("{RESULT}{shown} :: {ty}"),
+                Some(ty) => println!("{RESULT}{shown} : {ty}"),
                 None => println!("{RESULT}{shown}"),
             },
             Err(diag) => print!("{}", diag.render("", "<repl>")),
@@ -834,12 +836,12 @@ impl Repl {
         false
     }
 
-    /// Print `expr :: <type>` without evaluating it.
+    /// Print `expr : <type>` without evaluating it.
     fn show_type(&self, expr: &str) {
         let src = self.source(&format!("$ {IT} = {expr}\n"));
         match driver::compile_session(&src, &self.root_dir) {
             Ok(session) => match session.decls.iter().find(|(n, _)| n == IT) {
-                Some((_, ty)) => println!("{expr} :: {ty}"),
+                Some((_, ty)) => println!("{expr} : {ty}"),
                 None => eprintln!("thrax: could not determine the type of `{expr}`"),
             },
             Err(e) => print!("{e}"),
@@ -873,8 +875,8 @@ const HELP: &str = "\
 The shell reads Thrax `$` items, like a `.thx` file. Each prompt opens with a
 fixed `$ ` and a deletable `_= ` prefill. Plain Enter starts a new line, so items
 may span lines; type `$` then Enter to submit the item you are editing, or press
-Ctrl-Enter to submit the whole buffer at once (where your terminal supports it).
-An evaluated item's value is reported on a `=>` line, with its type.
+Ctrl-J to submit the whole buffer at once. An evaluated item's value is reported on
+a `=>` line, with its type.
 
   $ _= <expr>       evaluate an expression and print its value and type
   $ name = <expr>   add (or redefine) a binding (silent, like a file)
@@ -894,7 +896,7 @@ Emacs editing keys:
   C-/ undo                         M-/ redo
   C-r reverse history search: type to match, C-r/Up older, C-n/Down newer,
       Enter to accept, Esc (or C-g) to cancel
-  Ctrl-Enter submit the whole buffer now (terminal permitting; else use `$`)
+  C-j submit (evaluate) the whole buffer now, no trailing `$` needed
 ";
 
 #[cfg(test)]
@@ -913,7 +915,8 @@ mod term {
     /// lone `ESC` was a keypress, not the start of one. Terminals emit a whole
     /// sequence in one burst, so this is imperceptible yet unambiguous.
     const ESC_WAIT_MS: c_int = 20;
-    // Linux `c_lflag` bits and `c_cc` indices.
+    // Linux `c_iflag`, `c_lflag` bits and `c_cc` indices.
+    const ICRNL: u32 = 0x0000_0100; // input: translate a received CR to NL
     const ISIG: u32 = 0x0000_0001;
     const ICANON: u32 = 0x0000_0002;
     const ECHO: u32 = 0x0000_0008;
@@ -1044,10 +1047,12 @@ mod term {
 
     /// Puts the terminal into a minimally-raw mode for the editor's lifetime:
     /// echo, canonical line buffering, and signal keys are off, so keys arrive
-    /// one at a time and Ctrl-C/D come through as bytes. Output post-processing
-    /// (`\n` -> CRLF) is left on, so ordinary `println!` still works. The
-    /// original settings are restored on drop. `enable` returns `None` when
-    /// stdin is not a terminal.
+    /// one at a time and Ctrl-C/D come through as bytes. `ICRNL` is cleared too, so
+    /// a received CR is not folded into NL: the Return key arrives as CR (`\r`) and
+    /// `Ctrl-J` as LF (`\n`), letting the editor tell them apart. Output
+    /// post-processing (`\n` -> CRLF) is left on, so ordinary `println!` still
+    /// works. The original settings are restored on drop. `enable` returns `None`
+    /// when stdin is not a terminal.
     pub struct RawMode {
         original: Termios,
     }
@@ -1059,6 +1064,7 @@ mod term {
                 return None;
             }
             let mut raw = original.clone();
+            raw.c_iflag &= !ICRNL;
             raw.c_lflag &= !(ISIG | ICANON | ECHO | IEXTEN);
             raw.c_cc[VMIN] = 1;
             raw.c_cc[VTIME] = 0;
@@ -1109,7 +1115,11 @@ mod term {
                 UNDO => return Some(Key::Undo),
                 CTRL_C => return Some(Key::CtrlC),
                 CTRL_D => return Some(Key::CtrlD),
-                CR | LF => return Some(Key::Enter),
+                // With `ICRNL` off, the Return key is CR and `Ctrl-J` is LF, so the
+                // two split: Return edits/submits an item, `Ctrl-J` evaluates the
+                // whole buffer at once (like `Ctrl-Enter` in editors that can send it).
+                CR => return Some(Key::Enter),
+                LF => return Some(Key::SubmitAll),
                 DEL | CTRL_H => return Some(Key::Backspace),
                 ESC => {
                     if let Some(key) = read_escape(input) {
@@ -1138,14 +1148,12 @@ mod term {
         }
         match input.byte()? {
             b'[' | b'O' => {
-                let mut params = Vec::new();
                 let mut last = 0;
                 while let Some(x) = input.byte() {
                     last = x;
                     if is_csi_final(x) {
                         break;
                     }
-                    params.push(x);
                 }
                 match last {
                     b'C' => Some(Key::Right),
@@ -1154,12 +1162,6 @@ mod term {
                     b'B' => Some(Key::Down),
                     b'H' => Some(Key::Home),
                     b'F' => Some(Key::End),
-                    // Ctrl+Enter: the CSI-u ("fixterms"/kitty) form `ESC [ 13 ; 5 u`
-                    // and the legacy modifyOtherKeys form `ESC [ 27 ; 5 ; 13 ~`.
-                    // Reported only by terminals that send an enhanced Return; the
-                    // trailing-`$` submit remains the portable fallback elsewhere.
-                    b'u' if csi_fields(&params) == ["13", "5"] => Some(Key::SubmitAll),
-                    b'~' if csi_fields(&params) == ["27", "5", "13"] => Some(Key::SubmitAll),
                     _ => None,
                 }
             }
@@ -1178,15 +1180,6 @@ mod term {
     /// A byte that ends a CSI escape sequence (`@`..`~`).
     fn is_csi_final(b: u8) -> bool {
         (0x40..=0x7e).contains(&b)
-    }
-
-    /// The `;`-separated numeric fields of a CSI parameter string (the bytes before
-    /// the final), so an enhanced-key sequence can be matched on its numbers.
-    fn csi_fields(params: &[u8]) -> Vec<&str> {
-        std::str::from_utf8(params)
-            .unwrap_or("")
-            .split(';')
-            .collect()
     }
 
     /// Decode one character from `lead` and, for a multibyte scalar, its

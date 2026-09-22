@@ -62,17 +62,15 @@ fn multibyte_utf8_decodes_to_one_char() {
 }
 
 #[test]
-fn ctrl_enter_sequences_decode_to_submit_all() {
-    // CSI-u ("fixterms"/kitty) form and the legacy modifyOtherKeys form.
-    assert_eq!(key(b"\x1b[13;5u"), Some(Key::SubmitAll));
-    assert_eq!(key(b"\x1b[27;5;13~"), Some(Key::SubmitAll));
-    // A plain (unmodified) Return in CSI-u form is not Ctrl+Enter, so it is not
-    // hijacked; the sequence is swallowed and the next key surfaces.
-    assert_eq!(key(b"\x1b[13uz"), Some(Key::Char('z')));
+fn return_and_ctrl_j_split_into_enter_and_submit() {
+    // With ICRNL off, the Return key is CR and Ctrl-J is LF: Return edits an item,
+    // Ctrl-J evaluates the whole buffer.
+    assert_eq!(key(b"\r"), Some(Key::Enter));
+    assert_eq!(key(b"\n"), Some(Key::SubmitAll)); // Ctrl-J
 }
 
 #[test]
-fn ctrl_enter_submits_the_whole_buffer_without_a_terminator() {
+fn ctrl_j_submits_the_whole_buffer_without_a_terminator() {
     // A multi-line buffer with no trailing `$` yields the whole thing, trimmed.
     let ed = editor_with("_= foo\n  + bar");
     assert_eq!(ed.submit_body(), "_= foo\n  + bar");
