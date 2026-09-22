@@ -34,6 +34,8 @@ $ with ITER = ITER
 $ with LET_IN = LET_IN
 $ with LISTS = LISTS
 $ with MATCH = MATCH
+$ with META_E = META_E
+$ with META_TYPE = META_TYPE
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
 $ with OR_PATTERNS = OR_PATTERNS
@@ -105,6 +107,8 @@ $ main : @int =
 	+ check "LET_IN" LET_IN.test
 	+ check "LISTS" LISTS.test
 	+ check "MATCH" MATCH.test
+	+ check "META_E" META_E.test
+	+ check "META_TYPE" META_TYPE.test
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
 	+ check "OR_PATTERNS" OR_PATTERNS.test

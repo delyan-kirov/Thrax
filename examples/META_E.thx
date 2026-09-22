@@ -1,0 +1,54 @@
+@mod META_E
+
+# \file META_E.thx
+# \info The `@e` compile-time splice, in all its forms. `@e` runs an expression at
+#       build time and places the result at its site. It behaves as a ONE-ARGUMENT
+#       function: its operand is a single primary (an atom or a parenthesized
+#       expression), so it never over-consumes the surrounding syntax. It composes
+#       with the pipes `<|` / `|>` (each folds the WHOLE other side of the pipe),
+#       and it works in expression, type, and item position. A plain value folds to
+#       a literal; an `@code` result splices its SOURCE and re-checks.
+
+$ with VEC
+
+# Ordinary functions, used here only at compile time (run by `@e`).
+$ fib     : @int -> @int = \n = if n ?< 2 => n else fib (n - 1) + fib (n - 2)
+$ dbl     : @int -> @int = \x = x * 2
+$ inc     : @int -> @int = \x = x + 1
+$ compose : (@int -> @int) -> (@int -> @int) -> @int -> @int = \f g x = f (g x)
+
+# --- @e as a one-argument function -----------------------------------------
+# A parenthesized operand, and a bare atom operand (both a single primary).
+$ ten     : @int = 10
+$ fib10   : @int = @e (fib ten)     # value fold: evaluates now, embeds `55`
+$ folded  : @int = @e fib10         # atom operand needs no parens: `55`
+
+# --- composing with the pipes ----------------------------------------------
+# `<|` and `|>` are application; the lowerer folds the whole other side, so these
+# are all equivalent to `@e (fib ten)`.
+$ via_left  : @int = @e <| fib ten          # 55
+$ via_right : @int = fib ten |> @e          # 55
+$ via_chain : @int = @e <| (compose inc dbl) 5   # inc (dbl 5) = 11
+
+# --- code splice: an `@code` result splices SOURCE, not a value -------------
+$ gen_expr : @str -> @code = \s = @parse_str s
+$ spliced  : @int = @e (gen_expr "1 + 2 * 3")    # splices `1 + 2 * 3`, yields 7
+
+# --- type position: `@e` computes the annotation ---------------------------
+$ pick_ty : {} -> @code = \_ = @parse_str "@int"
+$ typed   : @e (pick_ty {}) = 42
+
+# --- item position: `$ @e X` injects top-level definitions -----------------
+$ gen_def : {} -> @code = \_ = @parse_items "$ injected : @int = 99"
+$ @e (gen_def {})
+
+# --- checks ----------------------------------------------------------------
+$ ck1 : @int = if fib10 ?= 55 => 0 else 1
+$ ck2 : @int = if folded ?= 55 => 0 else 2
+$ ck3 : @int = if (via_left + via_right) ?= 110 => 0 else 4
+$ ck4 : @int = if via_chain ?= 11 => 0 else 8
+$ ck5 : @int = if spliced ?= 7 => 0 else 16
+$ ck6 : @int = if typed ?= 42 => 0 else 32
+$ ck7 : @int = if injected ?= 99 => 0 else 64
+
+$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
