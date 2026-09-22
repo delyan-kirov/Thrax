@@ -880,20 +880,25 @@ impl<'a> Checker<'a> {
         // an effect it performs that the compile-time runtime cannot discharge is
         // rejected here. The value is discarded (the driver forces it at build
         // time), so its type is not recorded.
-        let runs: Vec<Aol<Expr>> = self
+        let runs: Vec<(Aol<Expr>, bool)> = self
             .ast
             .slice(program.items)
             .iter()
             .filter_map(|item| match item {
-                Item::Run(e, _) => Some(*e),
+                Item::Run(e, _, meta) => Some((*e, *meta)),
                 _ => None,
             })
             .collect();
-        for e in runs {
-            // A `$ @e X` runs at compile time under a `<@meta>` handler: the
-            // closed row discharges `@meta` (so meta ops type-check) but nothing
-            // else, so a stray `@io` in a generator is still rejected (hermetic).
-            self.ambient = Type::row_extend("@meta", Type::RowEmpty);
+        for (e, meta) in runs {
+            // `$ @run X` runs under a closed `<@meta>` handler: it discharges
+            // `@meta` (so meta ops type-check) but nothing else, so a stray `@io`
+            // in a generator is still rejected (hermetic). `$ @e X` requires a
+            // pure operand (empty ambient), so a meta op in it is an error.
+            self.ambient = if meta {
+                Type::row_extend("@meta", Type::RowEmpty)
+            } else {
+                Type::RowEmpty
+            };
             self.infer(e)?;
         }
         Ok(out)
@@ -3388,28 +3393,37 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        // `@e X` runs X at compile time and embeds the result at this site. For a
-        // value it is the identity on X's type; for a `@code` fragment the embedded
-        // type is only known after the driver splices the code and re-checks, so it
-        // is a fresh variable here (which the surrounding context binds).
-        if matches!(self.node(head), Expr::Var { module: None, name } if self.text(*name) == "@e") {
-            if args.len() != 1 {
-                return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
-                    "`@e` takes exactly one argument"
-                ));
+        // `@e X` / `@run X` runs X at compile time and embeds the result at this
+        // site. For a value it is the identity on X's type; for a `@code` fragment
+        // the embedded type is only known after the driver splices the code and
+        // re-checks, so it is a fresh variable here (which the context binds).
+        if let Expr::Var { module: None, name } = self.node(head) {
+            let n = self.text(*name);
+            if n == "@e" || n == "@run" {
+                if args.len() != 1 {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`{n}` takes exactly one argument"
+                    ));
+                }
+                // `@run` is the eliminator of `<@meta>`: run the operand under a
+                // closed `<@meta>` ambient so meta ops discharge here. `@e` runs
+                // under a pure ambient, so its operand must be pure (a meta op in
+                // it is a "effect `@meta` not handled" error; use `@run`).
+                let ambient = if n == "@run" {
+                    Type::row_extend("@meta", Type::RowEmpty)
+                } else {
+                    Type::RowEmpty
+                };
+                let saved = std::mem::replace(&mut self.ambient, ambient);
+                let arg_ty = self.infer(args[0]);
+                self.ambient = saved;
+                let arg_ty = arg_ty?;
+                return Ok(match self.eng.zonk(&arg_ty) {
+                    Type::Con(cn) if cn == "@code" => self.eng.fresh(),
+                    _ => arg_ty,
+                });
             }
-            // `@e` is the eliminator of `<@meta>`: run the operand under a closed
-            // `<@meta>` ambient so meta ops discharge here and the surrounding
-            // (possibly pure) context never sees `@meta`.
-            let saved = std::mem::replace(&mut self.ambient, Type::row_extend("@meta", Type::RowEmpty));
-            let arg_ty = self.infer(args[0]);
-            self.ambient = saved;
-            let arg_ty = arg_ty?;
-            return Ok(match self.eng.zonk(&arg_ty) {
-                Type::Con(n) if n == "@code" => self.eng.fresh(),
-                _ => arg_ty,
-            });
         }
 
         if let Expr::Var { module, name } = self.node(head) {
@@ -4556,10 +4570,17 @@ impl<'a> Checker<'a> {
             // unknown until the driver's expand loop runs `X`, so it stands as a
             // fresh variable here. Only reachable in a lenient (pre-expansion)
             // round; the final strict compile sees the substituted concrete type.
-            Ty::MetaE(expr) => {
-                let expr = *expr;
-                let saved =
-                    std::mem::replace(&mut self.ambient, Type::row_extend("@meta", Type::RowEmpty));
+            Ty::MetaE(expr, meta) => {
+                let (expr, meta) = (*expr, *meta);
+                // `@run` discharges `<@meta>` (its operand may perform meta ops);
+                // `@e` runs a pure operand. Either way the spliced-in type is
+                // unknown until the driver expands it, so it stands as a fresh var.
+                let ambient = if meta {
+                    Type::row_extend("@meta", Type::RowEmpty)
+                } else {
+                    Type::RowEmpty
+                };
+                let saved = std::mem::replace(&mut self.ambient, ambient);
                 if let Ok(t) = self.infer(expr) {
                     let _ = self.eng.unify(&t, &Type::con("@code"), "in a `@e` type splice");
                 }
@@ -4774,6 +4795,11 @@ impl<'a> Checker<'a> {
         // happens in lowering + the driver; `@e` must be applied directly.
         let e_ty = self.eng.fresh_generic();
         self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
+        // `@run` is the `<@meta>` eliminator: like `@e` (compile-time run + embed)
+        // but its operand may perform `<@meta>` (it is discharged here). Special-
+        // cased in `infer_app`/`ty_of_ast`; this binding is the first-class fallback.
+        let run_ty = self.eng.fresh_generic();
+        self.bind("@run", Type::arrow(run_ty.clone(), run_ty));
         // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
         // for generating hygienic, non-colliding binders in compile-time codegen.
         self.bind("@fresh", Type::arrow_eff(str_ty(), str_ty(), meta_row()));
@@ -5333,7 +5359,7 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
         }
         // A `@e X` type splice contributes no type variables: its type is unknown
         // until the driver expands it, after which this node no longer exists.
-        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(_) => {}
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
     }
 }
 

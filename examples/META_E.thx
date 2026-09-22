@@ -1,13 +1,15 @@
 @mod META_E
 
 # \file META_E.thx
-# \info The `@e` compile-time splice, in all its forms. `@e` runs an expression at
-#       build time and places the result at its site. It behaves as a ONE-ARGUMENT
-#       function: its operand is a single primary (an atom or a parenthesized
-#       expression), so it never over-consumes the surrounding syntax. It composes
-#       with the pipes `<|` / `|>` (each folds the WHOLE other side of the pipe),
-#       and it works in expression, type, and item position. A plain value folds to
-#       a literal; an `@code` result splices its SOURCE and re-checks.
+# \info The compile-time splice. `@e X` runs a PURE X at build time and places the
+#       result at its site; `@run X` is the sibling that discharges the `<@meta>`
+#       effect (so X may use `@emit`/`@abort`/`@eval`/... ), then embeds the same
+#       way. Both behave as a ONE-ARGUMENT function: the operand is a single primary
+#       (an atom or a parenthesized expression), so they never over-consume the
+#       surrounding syntax; both compose with the pipes `<|` / `|>` (each folds the
+#       WHOLE other side) and work in expression, type, and item position. A plain
+#       value folds to a literal; an `@code` result splices its SOURCE and re-checks.
+#       A meta op inside `@e` (not `@run`) is an "effect `@meta` not handled" error.
 
 $ with VEC
 
@@ -42,6 +44,12 @@ $ typed   : @e (pick_ty {}) = 42
 $ gen_def : {} -> @code = \_ = @parse_items "$ injected : @int = 99"
 $ @e (gen_def {})
 
+# --- @run: discharge `<@meta>` (the eliminator) ----------------------------
+# `gen_meta` performs `@emit` (a `<@meta>` op), so it declares `<@meta>` and is
+# run with `@run`, not `@e` (a meta op inside `@e` is a compile error).
+$ gen_meta : @int -> <@meta> @int = \n = @emit "computing at build time"; n * 2
+$ from_meta : @int = @run (gen_meta 21)   # discharges @meta, embeds 42
+
 # --- checks ----------------------------------------------------------------
 $ ck1 : @int = if fib10 ?= 55 => 0 else 1
 $ ck2 : @int = if folded ?= 55 => 0 else 2
@@ -50,5 +58,6 @@ $ ck4 : @int = if via_chain ?= 11 => 0 else 8
 $ ck5 : @int = if spliced ?= 7 => 0 else 16
 $ ck6 : @int = if typed ?= 42 => 0 else 32
 $ ck7 : @int = if injected ?= 99 => 0 else 64
+$ ck8 : @int = if from_meta ?= 42 => 0 else 128
 
-$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
+$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7 + ck8

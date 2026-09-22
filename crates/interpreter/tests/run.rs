@@ -166,8 +166,8 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
     // A stub host (the driver installs the real compile+run one) returns 42
     // regardless of source; `@eval` must call it and embed the reified value.
     set_meta_eval(Some(Box::new(|_src| Ok(OwnedValue::Int(42)))));
-    // `@eval` carries `<@meta>`, so it runs inside `@e`; force the synthetic global.
-    let src = "@mod T\n$ n : @int = @e (@eval (@parse_str \"x\"))";
+    // `@eval` carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
+    let src = "@mod T\n$ n : @int = @run (@eval (@parse_str \"x\"))";
     assert_eq!(run(src, "T.@e_expr#0"), "42");
     set_meta_eval(None);
 }
@@ -175,8 +175,8 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 #[test]
 fn fresh_mints_distinct_names() {
     // `@fresh` returns a unique identifier each call, for hygienic codegen. It
-    // carries `<@meta>`, so it runs inside `@e`; force the synthetic global.
-    let src = "@mod T\n$ ck : @bool = @e (@fresh \"t\" ?= @fresh \"t\")";
+    // carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
+    let src = "@mod T\n$ ck : @bool = @run (@fresh \"t\" ?= @fresh \"t\")";
     assert_eq!(run(src, "T.@e_expr#0"), "false");
 }
 
@@ -1537,8 +1537,8 @@ fn deep_tail_recursion_is_constant_stack() {
 
 #[test]
 fn emit_returns_unit_and_abort_faults() {
-    // `@emit` carries `<@meta>`, so it is used inside `@e` (which discharges the
+    // `@emit` carries `<@meta>`, so it is used inside `@run` (which discharges the
     // effect); forcing the synthetic global runs it, printing and returning unit.
-    let src = "@mod T\n$ u : {} = @e (@emit \"note\")";
+    let src = "@mod T\n$ u : {} = @run (@emit \"note\")";
     assert_eq!(run(src, "T.@e_expr#0"), "{}");
 }

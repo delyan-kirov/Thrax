@@ -418,10 +418,13 @@ impl<'a> Parser<'a> {
                 "there is no '@public': symbols are public by default. Use '$ @private' \
                  to hide the declarations below it",
             )),
-            "e" => {
+            // `$ @e X` embeds a PURE compile-time result; `$ @run X` discharges
+            // `<@meta>` (runs a meta computation for its effect / to inject code).
+            name @ ("e" | "run") => {
+                let meta = name == "run";
                 self.bump()?;
                 let e = self.parse_expr(0)?;
-                Ok(Item::Run(e, Span::new(start, self.last_end)))
+                Ok(Item::Run(e, Span::new(start, self.last_end), meta))
             }
             // A `@compiler_interface_*` hook is the ONE family of `@`-names a user (or
             // the core library) may define: `$ @compiler_interface_indexing : sig = body`.
@@ -860,10 +863,11 @@ impl<'a> Parser<'a> {
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
-            Kind::At if self.intrinsic_name(t) == "e" => {
-                self.bump()?; // '@e'
+            Kind::At if matches!(self.intrinsic_name(t), "e" | "run") => {
+                let meta = self.intrinsic_name(t) == "run";
+                self.bump()?; // '@e' / '@run'
                 let e = self.parse_expr(0)?;
-                Ok(self.ty(Ty::MetaE(e)))
+                Ok(self.ty(Ty::MetaE(e, meta)))
             }
             Kind::At => {
                 self.bump()?;

@@ -509,7 +509,7 @@ pub fn lower_program(
             // time by the driver. The name is bare here (index-tagged so several
             // `@e`s in one module never collide); `lower_modules` prefixes the
             // module, and the driver qualifies the same way to force it.
-            Item::Run(expr, span) => {
+            Item::Run(expr, span, _meta) => {
                 let name = format!("@e#{}", ct_runs.len());
                 let term = lw.expr(*expr);
                 globals.push((name.clone(), term));
@@ -1276,9 +1276,11 @@ impl<'a> Lowerer<'a> {
         self.apply_implicits(site, base)
     }
 
-    /// Whether `f` is the `@cast` intrinsic in head position (erased at lowering).
+    /// Whether `f` is the `@e` / `@run` compile-time splice in head position. Both
+    /// lower identically to a synthetic global the driver forces; they differ only
+    /// in the type-checker's ambient (`@run` discharges `<@meta>`).
     fn is_meta_e_head(&self, f: Aol<Expr>) -> bool {
-        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@e")
+        matches!(self.node(f), Expr::Var { module: None, name } if matches!(self.text(*name), "@e" | "@run"))
     }
 
     /// Lower an expression-position `@e arg`: `arg` becomes a synthetic global the
@@ -1302,7 +1304,7 @@ impl<'a> Lowerer<'a> {
     /// every type sub-position an annotation can nest a `@e` in.
     fn collect_meta_types(&mut self, ty: Aol<Ty>) {
         match self.tnode(ty) {
-            Ty::MetaE(expr) => {
+            Ty::MetaE(expr, _) => {
                 let expr = *expr;
                 let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
                 let name = format!("@e_type#{}", self.meta_type_evals.len());
