@@ -475,6 +475,21 @@ fn ctx_generic_instance_works_across_modules() {
 }
 
 #[test]
+fn qualified_overloaded_generic_instance_injects_implicits() {
+    // A QUALIFIED call to an OVERLOADED generic instance (`GENM.to_string`, a name
+    // CORE also defines) must plan its `@ctx to_string : t` dictionary just like the
+    // bare form, rather than coming out under-applied and faulting at runtime.
+    let lib = "@mod GENM\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
+    let root = "@mod M\n\
+                $ with GENM\n\
+                $ r : @int = if GENM.to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+    assert_eq!(run_modules(&[lib, root], "r"), "0");
+}
+
+#[test]
 fn qualified_ctx_call_injects_implicits() {
     // `MOD.f` (qualified) plans its `@ctx` implicits just like a bare `f`, resolving
     // the dictionary from the caller's scope.

@@ -132,9 +132,13 @@ local binder shadows it (a general scoping bug the local `@ctx` param exposed).
 3. ~~Qualified cross-module use does not inject.~~ **FIXED.** A `MOD.f` qualified use
    now plans its implicits like a bare `f` (`qualified_implicits` keyed by
    `(module, name)`, consulted in `infer_var`'s qualified branch). So `LA.dot u v`
-   injects its dictionaries. (A qualified use of an *overloaded* generic instance,
-   `MOD.to_string`, still routes through qualified-overload resolution, which does
-   not yet carry per-candidate implicits; the bare form is the intended path.)
+   injects its dictionaries. A qualified use of an *overloaded* generic instance
+   (`MOD.to_string`, a name other modules also define) is fixed too: `infer_app`'s
+   qualified branch now resolves among that module's overload candidates (from
+   `self.overloads`, filtered by module), which carry their `@ctx` requirements, and
+   passes the head site so `apply_overload_cand` plans the dictionary. Previously it
+   drew from the type-only `qualified` map and came out under-applied, faulting at
+   runtime.
 4. **Local (lexical) provider wins over a global**, not the reverse. This is what
    makes chaining/override authoritative; if a global default should win instead,
    flip the order in `plan_implicits`.

@@ -3452,16 +3452,25 @@ impl<'a> Checker<'a> {
                 }
                 None => {}
                 // A qualified call already names its module; resolve among that
-                // module's candidates without needing an annotation.
+                // module's candidates without needing an annotation. Draw them
+                // from the overload set (not the `qualified` type-only map) so a
+                // candidate keeps its `@ctx` implicit requirements: a generic
+                // instance (`GENM.to_string : Boxx t -> @str  @ctx to_string : t
+                // -> @str`) then plans its dictionary at the site just like the
+                // bare path, rather than coming out under-applied. Falls through
+                // to `infer_var` for a single non-overloaded qualified value.
                 Some(m) => {
-                    if let Some(cands) = self.qualified_candidates(m, name).filter(|c| c.len() > 1)
-                    {
+                    let cands: Vec<Cand> = self
+                        .overloads
+                        .get(name)
+                        .map(|cs| cs.iter().filter(|c| c.module == Some(m)).cloned().collect())
+                        .unwrap_or_default();
+                    if !cands.is_empty() {
                         let arg_tys = args
                             .iter()
                             .map(|a| self.infer(*a))
                             .collect::<Result<Vec<_>>>()?;
-                        let cands: Vec<Cand> = cands.into_iter().map(Cand::local).collect();
-                        return self.resolve_overload(name, &cands, &arg_tys, None);
+                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                     }
                 }
             }
