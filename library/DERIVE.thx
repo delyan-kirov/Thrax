@@ -1,0 +1,157 @@
+@mod DERIVE
+
+# \file DERIVE.thx
+# \info Compile-time derives that reflect on a declared type and inject code:
+#       `derive_show "T"` generates a default `to_string`, and `derive_ord "T"`
+#       generates a structural three-way `compare` (plus `lt`/`le`/`gt`/`ge`/`eq`),
+#       both usable via `$ @e (DERIVE.derive_* "T")`. See the `derive_ord` section
+#       lower down for comparison.
+#
+#       `derive_show "T"` returns the `@code` for `$ to_string : T ... -> @str = ...`,
+#       injected with `$ @e`:
+#
+#           $ @e (DERIVE.derive_show "Box")
+#
+#       after which `to_string` (and `?(...)` interpolation) works on `T`. It uses
+#       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
+#       `@type_variants`, available only at compile time (inside `$ @e`).
+#
+#       A GENERIC type derives a single generic instance with one `@ctx to_string`
+#       dictionary per type parameter, e.g. `$ to_string : Pair a b -> @str  @ctx
+#       to_string : a -> @str  @ctx to_string : b -> @str`. Each dictionary renders
+#       its parameter, resolved by type, so `to_string` works at every
+#       instantiation (`Box @int`, `Pair @int @bool`, nesting). This is
+#       `instance (Show a, Show b) => Show (Pair a b)`.
+
+$ with VEC
+
+# Join non-empty pieces with `sep` (the seed "" is skipped, so no leading sep).
+$ join : @str -> @vec @str -> @str = \sep xs =
+	VEC.foldl (\a s = if a ?= "" => s else a ++ sep ++ s) "" xs
+
+# Positional binder names `a0 .. a<n-1>` for a variant of arity `n`.
+$ arg_names : @int -> @vec @str = \n =
+	if n ?= 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
+
+# The body of a struct's `to_string`: interpolate each field. `\?(` emits a
+# literal `?(` so the interpolation happens when the GENERATED code compiles,
+# not now; `\"` / `\\` emit a literal quote / backslash into the generated source.
+$ struct_show : @str -> @str -> @str -> @str = \base applied ctx =
+	let piece = \acc f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
+	let inner = VEC.foldl piece (base ++ " {") (@type_fields base) in
+	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = \"" ++ inner ++ " }\""
+
+# One `is` arm for a variant: a nullary tag renders as its name, an n-ary tag as
+# `Tag(?(a0), ...)` matched by the positional pattern `Base.Tag.{a0, ...}`.
+$ arm_for : @str -> @str -> @int -> @str = \base tag arity =
+	let vars = arg_names arity in
+	let interps = VEC.map (\v = "\?(" ++ v ++ ")") vars in
+	if arity ?= 0
+		=> " | " ++ base ++ "." ++ tag ++ " => \"" ++ tag ++ "\""
+		else " | " ++ base ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
+			++ " => \"" ++ tag ++ "(" ++ join ", " interps ++ ")\""
+
+# The body of a union's `to_string`: one arm per variant.
+$ union_show : @str -> @str -> @str -> @str = \base applied ctx =
+	let arms = VEC.foldl (\acc tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
+	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = is x" ++ arms
+
+# One `@ctx to_string` dictionary clause for a type parameter `p`.
+$ ctx_clause : @str -> @str = \p = "  @ctx to_string : " ++ p ++ " -> @str"
+
+# The derive: reflect on the type's parameters and kind, build the applied type
+# (`Pair a b`) and one `@ctx to_string : <p> -> @str` dictionary clause per
+# parameter, then parse the generated item.
+$ derive_show : @str -> @code = \ty =
+	let params = @type_params ty in
+	let applied = if VEC.is_empty params => ty else ty ++ " " ++ join " " params in
+	let ctx = VEC.foldl (\acc p = acc ++ ctx_clause p) "" params in
+	if @type_kind ty ?= "struct"
+		=> @parse_items (struct_show ty applied ctx)
+		else @parse_items (union_show ty applied ctx)
+
+# ---- derive: structural three-way `compare` (Ord) ----
+# The comparison operators `?=`/`?<`/`?>`/`<=`/`>=` are builtins: `?=` is
+# structural (works on any type), but ORDERING (`?<`/`?>`/`<=`/`>=`) only works on
+# numbers and strings and faults on structs/unions. `derive_ord "T"` generates a
+# structural three-way `compare : T -> T -> @int` (-1 / 0 / 1) for a custom type by
+# reflecting on it (like `derive_show`), plus overloadable `lt`/`le`/`gt`/`ge`/`eq`
+# built on it. A struct compares lexicographically by field; a union by variant
+# order, then payload. Underlying primitives (`?<` on the base types) do the work.
+
+$ compare : @int -> @int -> @int = \a b = if a ?< b => (0 - 1) else if a ?> b => 1 else 0
+$ compare : @str -> @str -> @int = \a b = if a ?< b => (0 - 1) else if a ?> b => 1 else 0
+$ compare : @bool -> @bool -> @int = \a b = if a ?= b => 0 else if a => 1 else (0 - 1)
+
+# The five boolean comparisons for `T`, over its `compare` (overloadable, so each
+# custom type gets its own; `eq` mirrors the builtin `?=`).
+$ bool_ops : @str -> @str = \ty =
+	let sig = " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
+	"$ lt" ++ sig ++ "compare a b ?< 0\n"
+	++ "$ le" ++ sig ++ "not (compare a b ?> 0)\n"
+	++ "$ gt" ++ sig ++ "compare a b ?> 0\n"
+	++ "$ ge" ++ sig ++ "not (compare a b ?< 0)\n"
+	++ "$ eq" ++ sig ++ "compare a b ?= 0"
+
+# A struct's `compare`: a lexicographic chain over its fields, short-circuiting on
+# the first non-equal field.
+$ struct_cmp_chain : @vec @str -> @str = \fields =
+	VEC.foldr (\f acc =
+		let v = "c_" ++ f in
+		"let " ++ v ++ " = compare a." ++ f ++ " b." ++ f
+			++ " in if " ++ v ++ " ?= 0 => (" ++ acc ++ ") else " ++ v
+	) "0" fields
+
+$ struct_cmp : @str -> @str = \ty =
+	"$ compare : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = " ++ struct_cmp_chain (@type_fields ty)
+
+# `_, _, ...` (n underscores) and a whole `Base.Tag` / `Base.Tag.{_, _}` pattern
+# that ignores a variant's payload (for the tag-index match).
+$ underscores : @int -> @str = \n = join ", " (VEC.map (\x = "_") (arg_names n))
+$ ignore_pat : @str -> @str -> @int -> @str = \base tag arity =
+	if arity ?= 0 => base ++ "." ++ tag else base ++ "." ++ tag ++ ".{" ++ underscores arity ++ "}"
+
+# `is <var> | Base.Tag... => i | ...`: map each variant to its declaration index,
+# so two values are ordered first by variant.
+$ index_arms : @str -> @vec {@str, @int} -> @int -> @str = \base variants i =
+	if i >= VEC.len variants => ""
+	else
+		let v = VEC.get_or variants i {"", 0} in
+		" | " ++ ignore_pat base v.0 v.1 ++ " => " ++ to_string i
+			++ index_arms base variants (i + 1)
+
+# Lexicographic compare of two parallel payload binder lists.
+$ payload_lex : @vec @str -> @vec @str -> @str = \xs ys =
+	VEC.foldr (\pair acc =
+		let cv = "c_" ++ pair.0 in
+		"let " ++ cv ++ " = compare " ++ pair.0 ++ " " ++ pair.1
+			++ " in if " ++ cv ++ " ?= 0 => (" ++ acc ++ ") else " ++ cv
+	) "0" (VEC.zip xs ys)
+
+# For a payload variant, the arm that (with tags already known equal) destructures
+# both values and compares their payloads; nullary variants need no arm (they are
+# equal, handled by the trailing `else 0`).
+$ payload_arm : @str -> {@str, @int} -> @str = \base v =
+	if v.1 ?= 0 => ""
+	else
+		let xs = VEC.map (\n = "x" ++ n) (arg_names v.1) in
+		let ys = VEC.map (\n = "y" ++ n) (arg_names v.1) in
+		" | " ++ base ++ "." ++ v.0 ++ ".{" ++ join ", " xs ++ "}"
+			++ " => (is b | " ++ base ++ "." ++ v.0 ++ ".{" ++ join ", " ys ++ "}"
+			++ " => " ++ payload_lex xs ys ++ " else 0)"
+
+$ payload_arms : @str -> @vec {@str, @int} -> @str = \base variants =
+	VEC.foldl (\acc v = acc ++ payload_arm base v) "" variants
+
+# A union's `compare`: order by variant index, then (same variant) by payload.
+$ union_cmp : @str -> @str = \ty =
+	let vs = @type_variants ty in
+	"$ compare : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
+		++ "let ta = is a" ++ index_arms ty vs 0 ++ " in "
+		++ "let tb = is b" ++ index_arms ty vs 0 ++ " in "
+		++ "if ta ?= tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
+
+$ derive_ord : @str -> @code = \ty =
+	if @type_kind ty ?= "struct"
+		=> @parse_items (struct_cmp ty ++ "\n" ++ bool_ops ty)
+		else @parse_items (union_cmp ty ++ "\n" ++ bool_ops ty)

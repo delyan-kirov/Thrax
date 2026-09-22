@@ -266,27 +266,27 @@ impl<'a> Lexer<'a> {
         Ok(self.mk(Kind::Comment, start, line))
     }
 
-    /// A double-quoted string literal, possibly with `{expr}` interpolations.
+    /// A double-quoted string literal, possibly with `?(expr)` interpolations.
     /// The lexer only finds the literal's extent; the chunks and interpolants
     /// are decoded/re-parsed later from `source[span]` (see the parser), which
     /// keeps the lexer allocation-free and its tokens borrow-free. `depth`
-    /// tracks interpolation braces so a `"` inside `{...}` (a nested string in an
-    /// interpolant) does not end the literal.
+    /// tracks the interpolant's parentheses so a `"` inside `?(...)` (a nested
+    /// string in an interpolant) does not end the literal. Braces are ordinary
+    /// literal characters, so quoted code (records, blocks) needs no escaping.
     fn lex_string(&mut self, start: usize, line: Line) -> Result<Token> {
         self.cursor += 1; // opening quote
-        let mut depth = 0usize;
+        let mut depth = 0usize; // paren depth inside a `?( … )` interpolant
         loop {
             if self.cursor >= self.bytes().len() || self.cur() == b'\n' {
                 let msg = if depth > 0 {
-                    "unterminated `{...}` interpolation in a string \
-                     (write `\\{` for a literal brace)"
+                    "unterminated `?(...)` interpolation in a string"
                 } else {
                     "string literal is not closed with a '\"'"
                 };
                 return Err(self.err(Code::UnclosedQuote, start, line, msg));
             }
             match self.cur() {
-                // In literal text, `\` escapes the next char (so `\"`/`\{` are
+                // In literal text, `\` escapes the next char (so `\"`/`\?` are
                 // literal). Inside an interpolant `\` is ordinary Thrax (lambda).
                 b'\\' if depth == 0 => {
                     self.cursor += 1;
@@ -299,11 +299,19 @@ impl<'a> Lexer<'a> {
                     return Ok(self.mk(Kind::Str, start, line));
                 }
                 b'"' => self.skip_nested_string(start, line)?, // string in an interpolant
-                b'{' => {
+                // `?(` opens an interpolant; its `(` seeds the paren depth.
+                b'?' if depth == 0
+                    && self.cursor + 1 < self.bytes().len()
+                    && self.bytes()[self.cursor + 1] == b'(' =>
+                {
+                    depth += 1;
+                    self.cursor += 2;
+                }
+                b'(' if depth > 0 => {
                     depth += 1;
                     self.cursor += 1;
                 }
-                b'}' if depth > 0 => {
+                b')' if depth > 0 => {
                     depth -= 1;
                     self.cursor += 1;
                 }
@@ -555,8 +563,9 @@ pub fn decode_escape(
         b'\\' => out.push(b'\\'),
         b'"' => out.push(b'"'),
         b'\'' => out.push(b'\''),
-        b'{' => out.push(b'{'), // literal brace (not a string interpolation)
+        b'{' => out.push(b'{'), // literal brace (harmless; braces are not special)
         b'}' => out.push(b'}'),
+        b'?' => out.push(b'?'), // literal `?` (so `\?(` is not an interpolation)
         b'a' => out.push(0x07), // bell
         b'b' => out.push(0x08), // backspace
         b'f' => out.push(0x0C), // form feed

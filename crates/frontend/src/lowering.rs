@@ -26,7 +26,7 @@ use crate::parser::data::{
     Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload,
     Program as AstProgram, RecField, SliceSlot, Ty,
 };
-use utilities::Aol;
+use utilities::{Aol, Span};
 
 use crate::lowering::data::{
     Arm, Clause as CoreClause, Effect, Handler as CoreHandler, Pat, Program, Term,
@@ -45,6 +45,9 @@ pub struct Decls {
     structs: HashMap<String, HashMap<String, Vec<String>>>,
     /// module name -> (variant tag -> its union name and payload field names).
     unions: HashMap<String, HashMap<String, VariantDecl>>,
+    /// module name -> (type name -> declared type parameters, in order), for every
+    /// struct and union. Empty for a monomorphic type. Read by reflection.
+    type_params: HashMap<String, HashMap<String, Vec<String>>>,
     /// `with Other` splices to apply once every module is collected:
     /// `(module, type, is_struct, included)`. The checker has already validated it.
     includes: Vec<(String, String, bool, Vec<String>)>,
@@ -53,6 +56,23 @@ pub struct Decls {
 struct VariantDecl {
     union: String,
     fields: Vec<Option<String>>,
+    /// Declaration order within the union (0-based), preserved so reflection reports
+    /// variants in source order. The tag-keyed map loses order; a derived comparison
+    /// (`derive_ord`) orders variants by this.
+    order: usize,
+}
+
+/// The declared shape of every user type, for compile-time reflection: each
+/// struct with its `(module, name, field names)`, each union with its
+/// `(module, name, variants)` where a variant is `(tag, arity)`. The driver keys
+/// its reflection host by both the bare `name` and the qualified `module.name`,
+/// so a name shared across modules can be disambiguated. Built by
+/// [`Decls::reflect`], consumed by the driver's `$ @e` type-reflection host.
+pub struct ReflectInfo {
+    /// `(module, name, type params, field names)` per struct.
+    pub structs: Vec<(String, String, Vec<String>, Vec<String>)>,
+    /// `(module, name, type params, variants)` per union, a variant `(tag, arity)`.
+    pub unions: Vec<(String, String, Vec<String>, Vec<(String, usize)>)>,
 }
 
 impl Decls {
@@ -72,6 +92,7 @@ impl Decls {
             match item {
                 Item::Struct {
                     name,
+                    params,
                     includes,
                     fields,
                     ..
@@ -81,6 +102,11 @@ impl Decls {
                         .map(|f| ast.text(f.name).to_string())
                         .collect();
                     let name = ast.text(*name).to_string();
+                    let tps = ast.slice(*params).iter().map(|p| ast.text(*p).to_string()).collect();
+                    self.type_params
+                        .entry(module.clone())
+                        .or_default()
+                        .insert(name.clone(), tps);
                     if !includes.is_empty() {
                         let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
@@ -93,17 +119,23 @@ impl Decls {
                 }
                 Item::Union {
                     name,
+                    params,
                     includes,
                     variants,
                     ..
                 } => {
                     let uname = ast.text(*name).to_string();
+                    let tps = ast.slice(*params).iter().map(|p| ast.text(*p).to_string()).collect();
+                    self.type_params
+                        .entry(module.clone())
+                        .or_default()
+                        .insert(uname.clone(), tps);
                     if !includes.is_empty() {
                         let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
                         self.includes
                             .push((module.clone(), uname.clone(), false, ps));
                     }
-                    for v in ast.slice(*variants).iter() {
+                    for (order, v) in ast.slice(*variants).iter().enumerate() {
                         let fields = match &v.payload {
                             Payload::None => Vec::new(),
                             Payload::Bare(_) => vec![None],
@@ -117,6 +149,7 @@ impl Decls {
                             VariantDecl {
                                 union: uname.clone(),
                                 fields,
+                                order,
                             },
                         );
                     }
@@ -165,6 +198,59 @@ impl Decls {
         }
     }
 
+    /// The declared shape of every struct and union, for compile-time reflection.
+    /// Unions are reconstructed from the tag-keyed table by grouping on the union
+    /// name; a variant's arity is its payload field count (`0` for a unit payload).
+    pub fn reflect(&self) -> ReflectInfo {
+        let params_of = |module: &str, name: &str| -> Vec<String> {
+            self.type_params
+                .get(module)
+                .and_then(|m| m.get(name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let mut structs: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
+        for (module, fields_by_name) in &self.structs {
+            for (name, fields) in fields_by_name {
+                structs.push((module.clone(), name.clone(), params_of(module, name), fields.clone()));
+            }
+        }
+        // Group variants per union, carrying each variant's declaration order, then
+        // sort by it so reflection reports variants in SOURCE order (the tag-keyed
+        // map is unordered). A derived comparison orders variants by this.
+        let mut unions_ord: Vec<(String, String, Vec<String>, Vec<(String, usize, usize)>)> =
+            Vec::new();
+        for (module, by_tag) in &self.unions {
+            for (tag, decl) in by_tag {
+                let arity = decl.fields.len();
+                match unions_ord
+                    .iter_mut()
+                    .find(|(m, n, _, _)| m == module && *n == decl.union)
+                {
+                    Some((_, _, _, variants)) => {
+                        if !variants.iter().any(|(t, _, _)| t == tag) {
+                            variants.push((tag.clone(), arity, decl.order));
+                        }
+                    }
+                    None => unions_ord.push((
+                        module.clone(),
+                        decl.union.clone(),
+                        params_of(module, &decl.union),
+                        vec![(tag.clone(), arity, decl.order)],
+                    )),
+                }
+            }
+        }
+        let unions = unions_ord
+            .into_iter()
+            .map(|(m, n, ps, mut vs)| {
+                vs.sort_by_key(|(_, _, order)| *order);
+                (m, n, ps, vs.into_iter().map(|(t, a, _)| (t, a)).collect())
+            })
+            .collect();
+        ReflectInfo { structs, unions }
+    }
+
     /// A struct's field names, resolved from `module` first then any module.
     fn lookup_struct(&self, module: &str, name: &str) -> Option<Vec<String>> {
         self.structs
@@ -193,6 +279,7 @@ impl Decls {
                             VariantDecl {
                                 union: ty.to_string(),
                                 fields: d.fields.clone(),
+                                order: d.order,
                             },
                         )
                     })
@@ -340,6 +427,10 @@ pub struct Resolved {
     /// type-mangled bare name lowering gives the global (from
     /// [`crate::typing::Checker::def_keys`]), so the overloads stay distinct.
     pub def_keys: HashMap<Aol<Expr>, String>,
+    /// `Expr::Var` sites resolved to a local `@ctx` dictionary parameter, mapped to
+    /// its leading-parameter slot (from [`crate::typing::Checker::dict_calls`]).
+    /// Lowering references the parameter `@ctx$<slot>` instead of a global.
+    pub dict_calls: HashMap<Aol<Expr>, usize>,
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
@@ -389,9 +480,12 @@ pub fn lower_program(
         module: ast.text(program.module).to_string(),
         imports,
         fresh: 0,
+        meta_evals: Vec::new(),
+        meta_type_evals: Vec::new(),
     };
     let mut effects = Vec::new();
     let mut globals = Vec::new();
+    let mut ct_runs = Vec::new();
     for item in ast.slice(program.items).iter() {
         match item {
             Item::Def {
@@ -400,6 +494,9 @@ pub fn lower_program(
                 implicits,
                 body,
             } => {
+                if let Some(sig) = sig {
+                    lw.collect_meta_types(*sig);
+                }
                 let term = lw.def(*sig, ast.slice(*implicits), *body);
                 let key = resolved
                     .def_keys
@@ -407,6 +504,16 @@ pub fn lower_program(
                     .cloned()
                     .unwrap_or_else(|| ast.text(*name).to_string());
                 globals.push((key, term));
+            }
+            // `$ @e <expr>`: back it with a synthetic global, forced at compile
+            // time by the driver. The name is bare here (index-tagged so several
+            // `@e`s in one module never collide); `lower_modules` prefixes the
+            // module, and the driver qualifies the same way to force it.
+            Item::Run(expr, span, _meta) => {
+                let name = format!("@e#{}", ct_runs.len());
+                let term = lw.expr(*expr);
+                globals.push((name.clone(), term));
+                ct_runs.push((name, *span));
             }
             Item::Effect { name, ops } => {
                 let effect = ast.text(*name).to_string();
@@ -420,6 +527,17 @@ pub fn lower_program(
             _ => {}
         }
     }
+    // Expression-position `@e X` synthetic globals accumulated while lowering the
+    // bodies above; append them and record (name, source-span) for the driver to
+    // fold/splice.
+    let ct_evals: Vec<(String, Span)> =
+        lw.meta_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
+    globals.extend(lw.meta_evals.drain(..).map(|(n, body, _)| (n, body)));
+    // Type-position `@e X` synthetic globals, same treatment as `ct_evals` but the
+    // driver splices the result as type source rather than a value literal.
+    let ct_types: Vec<(String, Span)> =
+        lw.meta_type_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
+    globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
     Program {
         module: ast.text(program.module).to_string(),
         effects,
@@ -429,6 +547,9 @@ pub fn lower_program(
             .iter()
             .map(|(n, l)| (n.clone(), l.clone()))
             .collect(),
+        ct_runs,
+        ct_evals,
+        ct_types,
     }
 }
 
@@ -441,6 +562,17 @@ struct Lowerer<'a> {
     module: String,
     imports: Vec<String>,
     fresh: u32,
+    /// Synthetic globals for expression-position `@e X`: each `@e X` becomes a
+    /// global `@e_expr#n = X` that the driver forces at compile time, with the
+    /// source span of the whole `@e X` so the driver can substitute the result's
+    /// source there and re-compile. Drained by [`lower_program`] into
+    /// `Program.globals` / `Program.ct_evals`.
+    meta_evals: Vec<(String, Term, Span)>,
+    /// Synthetic globals for type-position `@e X` (`Foo : @e X = ...`), each a
+    /// global `@e_type#n = X` forced at compile time; the driver splices the
+    /// resulting `@code`'s type source at the `@e X` span and re-compiles. Drained
+    /// by [`lower_program`] into `Program.globals` / `Program.ct_types`.
+    meta_type_evals: Vec<(String, Term, Span)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -509,9 +641,24 @@ impl<'a> Lowerer<'a> {
         } else {
             self.record_params(sig, term)
         };
-        for f in implicits.iter().rev() {
+        // A DISTINCT-named implicit binds under its source name (referenced by
+        // name in the body). A DUPLICATED name (one dictionary per type parameter)
+        // binds under a synthetic per-slot name `@ctx$<i>`, because two params of
+        // the same name would shadow; the checker resolved each body use to a slot
+        // (`dict_calls`) that the `Var` lowering turns into the matching `@ctx$<i>`.
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for f in implicits {
+            *counts.entry(self.text(f.name)).or_insert(0) += 1;
+        }
+        for (i, f) in implicits.iter().enumerate().rev() {
+            let name = self.text(f.name);
+            let param = if counts[name] > 1 {
+                dict_param(i)
+            } else {
+                name.to_string()
+            };
             inner = Term::Lam {
-                param: self.text(f.name).to_string(),
+                param,
                 body: Arc::new(inner),
             };
         }
@@ -696,6 +843,12 @@ impl<'a> Lowerer<'a> {
                 // is a no-op at runtime (the `@extern` boundary narrows to the C type).
                 if self.is_cast_head(f) {
                     return self.expr(x);
+                }
+                // `@e X` in expression position: run X at compile time and embed
+                // its value here (see `lower_meta_e`).
+                if self.is_meta_e_head(f) {
+                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                    return self.lower_meta_e(x, span);
                 }
                 // A foreign call flattens the record that groups its C parameters
                 // into positional arguments here, so the record is never built and
@@ -1092,6 +1245,11 @@ impl<'a> Lowerer<'a> {
             Expr::Var { module, name } => (*module, self.text(*name)),
             _ => unreachable!("resolved_var_id on a non-variable"),
         };
+        // A use resolved to a local `@ctx` dictionary references its leading
+        // parameter `@ctx$<slot>` (a local binder), never a global.
+        if let Some(&slot) = self.resolved.dict_calls.get(&site) {
+            return (None, dict_param(slot));
+        }
         let module = match module {
             Some(m) => Some(self.text(m).to_string()),
             None => self.resolved.call_modules.get(&site).cloned(),
@@ -1118,9 +1276,68 @@ impl<'a> Lowerer<'a> {
         self.apply_implicits(site, base)
     }
 
-    /// Whether `f` is the `@cast` intrinsic in head position (erased at lowering).
+    /// Whether `f` is the `@e` / `@run` compile-time splice in head position. Both
+    /// lower identically to a synthetic global the driver forces; they differ only
+    /// in the type-checker's ambient (`@run` discharges `<@meta>`).
+    fn is_meta_e_head(&self, f: Aol<Expr>) -> bool {
+        matches!(self.node(f), Expr::Var { module: None, name } if matches!(self.text(*name), "@e" | "@run"))
+    }
+
+    /// Lower an expression-position `@e arg`: `arg` becomes a synthetic global the
+    /// driver forces at compile time and patches with the reified constant, and
+    /// this site references that global. Shared by direct application and the
+    /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` fold too).
+    fn lower_meta_e(&mut self, arg: Aol<Expr>, span: Span) -> Term {
+        let body = self.expr(arg);
+        let name = format!("@e_expr#{}", self.meta_evals.len());
+        self.meta_evals.push((name.clone(), body, span));
+        Term::var(&name)
+    }
+
     fn is_cast_head(&self, f: Aol<Expr>) -> bool {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
+    }
+
+    /// Walk a signature type, turning each type-position `@e X` into a synthetic
+    /// global (`@e_type#n = X`) forced at compile time; the node's span is recorded
+    /// so the driver splices the resulting type source there. Recurses through
+    /// every type sub-position an annotation can nest a `@e` in.
+    fn collect_meta_types(&mut self, ty: Aol<Ty>) {
+        match self.tnode(ty) {
+            Ty::MetaE(expr, _) => {
+                let expr = *expr;
+                let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
+                let name = format!("@e_type#{}", self.meta_type_evals.len());
+                let term = self.expr(expr);
+                self.meta_type_evals.push((name, term, span));
+            }
+            Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+                let (a, b) = (*a, *b);
+                self.collect_meta_types(a);
+                self.collect_meta_types(b);
+            }
+            Ty::Sized { size, elem, .. } => {
+                let (size, elem) = (*size, *elem);
+                self.collect_meta_types(size);
+                self.collect_meta_types(elem);
+            }
+            Ty::Arrow { from, to, .. } => {
+                let (from, to) = (*from, *to);
+                self.collect_meta_types(from);
+                self.collect_meta_types(to);
+            }
+            Ty::Tuple(items) => {
+                for t in self.ast.slice(*items).to_vec() {
+                    self.collect_meta_types(t);
+                }
+            }
+            Ty::Record { fields, .. } => {
+                for f in self.ast.slice(*fields).to_vec() {
+                    self.collect_meta_types(f.ty);
+                }
+            }
+            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit => {}
+        }
     }
 
     /// The marshalling plan of the foreign function `site` refers to, if it is a
@@ -1246,6 +1463,14 @@ impl<'a> Lowerer<'a> {
                     val: Arc::new(self.expr(lhs)),
                     body: Arc::new(self.expr(rhs)),
                 }
+            }
+            // Pipes are application, so they compose with `@e`: `x |> @e` and
+            // `@e <| x` fold `x` at compile time just like `@e x`.
+            "|>" if self.is_meta_e_head(rhs) => {
+                self.lower_meta_e(lhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
+            }
+            "<|" if self.is_meta_e_head(lhs) => {
+                self.lower_meta_e(rhs, self.ast.expr_span(site).unwrap_or(Span::at(0)))
             }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
@@ -1690,6 +1915,14 @@ impl<'a> Lowerer<'a> {
 }
 
 /// `array_len v`.
+/// The synthetic binder name for a duplicated `@ctx` dictionary parameter at
+/// leading-parameter slot `slot` (`@ctx$<slot>`). Shared by the definition (which
+/// binds it) and the use-site lowering (which references it), so De-Bruijn
+/// indexing links them.
+fn dict_param(slot: usize) -> String {
+    format!("@ctx${slot}")
+}
+
 fn array_len(v: &str) -> Term {
     Term::app(Term::var("@array_len"), Term::var(v))
 }

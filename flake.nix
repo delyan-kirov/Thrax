@@ -21,6 +21,27 @@
         exec "$root/target/debug/thrax" "$@"
       '';
 
+      # The task runner: `just`, but the tasks are Thrax (see tools/thxdo.thx).
+      # `thxdo <cmd>` runs a NATIVE binary compiled from tools/thxdo.thx, so
+      # `thxdo` / `thxdo help` are instant. The binary is (re)built only when its
+      # source or the compiler changed; otherwise this is a bare exec. New tasks
+      # are arms in tools/thxdo.thx, no wrapper change needed.
+      thxdoDev = pkgs.writeShellScriptBin "thxdo" ''
+        root="''${THRAX_ROOT:-$PWD}"
+        cd "$root"
+        export THRAX_BIN="$root/target/debug/thrax"
+        bin="$root/tools/thrax-out/thxdo"
+        src="$root/tools/thxdo.thx"
+        # Rebuild the task-runner binary when its source changed or is missing, or
+        # when the compiler is absent (e.g. after `thxdo clean`). A mere compiler
+        # recompile does NOT force a rebuild, so the common path stays a bare exec.
+        if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ] || [ ! -x "$THRAX_BIN" ]; then
+          cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
+          "$THRAX_BIN" build "$src" 1>&2 || exit
+        fi
+        exec "$bin" "$@"
+      '';
+
       # The compiler, built by the Rust workspace. The interpreter's build.rs
       # links libffi (for `@extern`) against $LIBFFI/$LIBFFI_DEV and compiles a
       # small C shim, so libffi + a C toolchain (cc/ar) are build inputs; there
@@ -79,6 +100,9 @@
           # The dev-shell `thrax`: builds the workspace binary on demand and
           # execs it, so `thrax run`/`build` work from a fresh checkout.
           thraxDev
+
+          # The dev-shell `thxdo` task runner (tools/thxdo.thx), e.g. `thxdo readme`.
+          thxdoDev
 
           # C toolchain for the interpreter's build.rs (vendored libffi + shim)
           # and the native backend's `cc`; valgrind for leak-hunting its output.

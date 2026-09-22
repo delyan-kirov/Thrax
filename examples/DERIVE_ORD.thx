@@ -1,0 +1,39 @@
+@mod DERIVE_ORD
+
+# \file DERIVE_ORD.thx
+# \info Deriving COMPARISON at compile time. The operators `?=`/`?<`/`?>`/`<=`/`>=`
+#       are builtins: `?=` is structural (works on any type), but ORDERING only
+#       works on numbers and strings and faults on structs/unions. `derive_ord "T"`
+#       reflects on a type (like `derive_show`) and generates a structural three-way
+#       `compare : T -> T -> @int` (-1 / 0 / 1) plus `lt`/`le`/`gt`/`ge`/`eq`, so a
+#       custom struct or union gets a full comparison. A struct compares
+#       lexicographically by field; a union by variant order, then payload.
+
+$ with DERIVE
+
+$ Coord : @struct =
+	x: @int,
+	y: @int,
+
+$ Geom : @union =
+	Dot: {},
+	Circle: {@int},
+	Rect: {@int, @int},
+
+# Generate `compare` + `lt`/`le`/`gt`/`ge`/`eq` for each type from its declaration.
+$ @e (DERIVE.derive_ord "Coord")
+$ @e (DERIVE.derive_ord "Geom")
+
+# Struct: lexicographic by field.
+$ ck_lt   : @int = if lt (Coord.{ .x = 1, .y = 2 }) (Coord.{ .x = 1, .y = 3 }) => 0 else 1
+$ ck_gt   : @int = if gt (Coord.{ .x = 2, .y = 0 }) (Coord.{ .x = 1, .y = 9 }) => 0 else 2
+$ ck_eq   : @int = if eq (Coord.{ .x = 1, .y = 2 }) (Coord.{ .x = 1, .y = 2 }) => 0 else 4
+$ ck_le   : @int = if le (Coord.{ .x = 1, .y = 2 }) (Coord.{ .x = 1, .y = 2 }) => 0 else 8
+$ ck_ge   : @int = if ge (Coord.{ .x = 1, .y = 3 }) (Coord.{ .x = 1, .y = 2 }) => 0 else 16
+
+# Union: ordered by variant (Dot < Circle < Rect), then by payload.
+$ ck_tag  : @int = if lt Geom.Dot (Geom.Circle.{ 0 }) => 0 else 32
+$ ck_pay  : @int = if lt (Geom.Rect.{ 1, 2 }) (Geom.Rect.{ 1, 3 }) => 0 else 64
+$ ck_cmp  : @int = if compare (Geom.Circle.{ 5 }) (Geom.Circle.{ 5 }) ?= 0 => 0 else 128
+
+$ test : @int = ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp

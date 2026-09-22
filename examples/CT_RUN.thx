@@ -1,24 +1,21 @@
 @mod CT_RUN
 
 # \file CT_RUN.thx
-# \info Compile-time execution: `$ @run <expr>` forces the expression through
-#       the interpreter at build time (Jai's #run). The value is discarded --
-#       except a BUILD directive (`BUILD.lib` / `BUILD.lib_path`), which
-#       steers the compilation itself: the named library joins the link line
-#       for the native backend and the dlopen set for the interpreter, so a
-#       project declares its libraries in Thrax. `@assert`, the checking
+# \info Compile-time execution: `$ @e <expr>` forces a PURE expression through
+#       the interpreter at build time (Jai's #run), value discarded. A build
+#       directive `@link` / `@link_path` carries the `<@meta>` effect, so it runs
+#       under `$ @run` (the `<@meta>` eliminator): the named library joins the
+#       link line for the native backend and the dlopen set for the interpreter,
+#       so a project declares its libraries in Thrax. `@abort`, the checking
 #       twin, lives in CT_ASSERT.thx.
-
-$ with BUILD
 
 $ triple : @int -> @int = \n = n * 3
 
 # A plain expression, forced at build time, value discarded.
-$ @run triple 14
+$ @e triple 14
 
-# A BUILD directive: link/preload libm (the suite already uses libm via
-# MATH, so this is exercised end to end in both engines without adding a
-# dependency).
-$ @run BUILD.lib "m"
+# A build directive: link/preload libm (the suite already uses libm via MATH,
+# so this is exercised end to end in both engines without adding a dependency).
+$ @run (@link "m")
 
 $ test : @int = 0

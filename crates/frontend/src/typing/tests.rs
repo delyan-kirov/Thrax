@@ -385,6 +385,28 @@ fn effect_operation_is_bound_and_handler_types_result() {
 }
 
 #[test]
+fn io_is_a_builtin_effect_and_propagates() {
+    // `@io` is a builtin effect, written in `@`-form (unlike Capitalized user
+    // effects like `State`) and needing no declaration. A leaf `@extern` carries
+    // it in its latent row, and a caller that performs it inherits `@io`.
+    let src = "@mod M\n\
+               $ write : @str -> <@io> @int = @extern \"C\" \"write\" \"libc\"\n\
+               $ p = \\s = let _ = write s in {}";
+    assert_eq!(type_of(src, "write"), "@str -> <@io> @int");
+    assert!(type_of(src, "p").contains("<@io"), "{}", type_of(src, "p"));
+}
+
+#[test]
+fn io_in_a_pure_typed_function_is_rejected() {
+    // A function declared pure that performs `@io` is a compile error: the latent
+    // `<@io>` cannot be subsumed into the empty ambient.
+    let src = "@mod M\n\
+               $ write : @str -> <@io> @int = @extern \"C\" \"write\" \"libc\"\n\
+               $ bad : @str -> @int = \\s = write s";
+    assert!(errors(src).contains("@io"), "{}", errors(src));
+}
+
+#[test]
 fn unknown_type_name_is_rejected() {
     // A bare capitalized name in type position must be a known type; a type
     // variable is a lowercase name. `Itn` is a typo, not a type variable.
@@ -479,6 +501,41 @@ fn open_row_entry_may_perform_any_effect() {
                $ main : {} -> <| e> @int = \\u = let _ = Yell.shout 5 in 0";
     assert_eq!(errors(src), "", "open-row main should type-check");
     assert_eq!(type_of(src, "main"), "{} -> <Yell | a> @int");
+}
+
+#[test]
+fn meta_op_outside_run_is_an_unhandled_effect() {
+    // The metaprogramming ops carry `<@meta>`. Used in ordinary code (no `@run`
+    // eliminator), the latent `<@meta>` cannot be subsumed into the pure ambient,
+    // so it is a clean compile error rather than a runtime no-op/fault.
+    let src = "@mod M\n$ bad : @str = @fresh \"x\"";
+    let e = errors(src);
+    assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
+}
+
+#[test]
+fn run_discharges_meta_but_e_requires_pure() {
+    // `@run` is the `<@meta>` eliminator: a meta op inside it type-checks and the
+    // surrounding context stays pure. `@e` embeds PURE results only, so the same
+    // meta op inside `@e` is an unhandled-`@meta` error.
+    assert_eq!(
+        errors("@mod M\n$ ok : @str = @run (@fresh \"x\")"),
+        "",
+        "meta op inside @run should type-check",
+    );
+    let e = errors("@mod M\n$ bad : @str = @e (@fresh \"x\")");
+    assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
+}
+
+#[test]
+fn run_is_hermetic_io_stays_unhandled() {
+    // `@run` discharges `<@meta>` ONLY, so a generator that performs `@io` is still
+    // rejected: compile-time code cannot touch the world (that is `@build`'s job).
+    let src = "@mod M\n\
+               $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
+               $ bad : @int = @run (shout \"hi\")";
+    let e = errors(src);
+    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
 }
 
 #[test]

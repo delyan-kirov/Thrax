@@ -1,0 +1,51 @@
+@mod THXDO
+
+# \file thxdo.thx
+# \info The Thrax task runner: `just`, but the tasks are Thrax. The dev shell puts
+#       a `thxdo` on PATH (see flake.nix) that COMPILES this file to a native
+#       binary (cached, rebuilt only when this file changes) and invokes it, so
+#       `thxdo` / `thxdo help` are instant. Each task shells out with `C.system`,
+#       so adding a task is one arm below. Tasks run from the repo root (the
+#       wrapper `cd`s there).
+
+$ help_text : @str =
+	"thxdo - the Thrax task runner (tasks live in tools/thxdo.thx)\n"
+	++ "\n"
+	++ "Usage: thxdo <command>\n"
+	++ "\n"
+	++ "Commands:\n"
+	++ "  build     clean, then build the compiler workspace\n"
+	++ "  rebuild   build the workspace without cleaning\n"
+	++ "  clean     remove build artifacts\n"
+	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
+	++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
+	++ "  all       build, then regenerate README.md\n"
+	++ "  help      show this help\n"
+
+# `$THRAX_BIN` is the prebuilt compiler exported by the wrapper, so a task that
+# runs another `.thx` skips a redundant build; `:-thrax` falls back to PATH when
+# invoked outside the wrapper.
+$ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
+
+# `args` element 0 is this binary's path; element 1 is the command. With no
+# command, show help. `@tensor_index` is a modular read, so it never faults.
+$ main : [n]@str -> <| e> @int = \args =
+	if @tensor_length args ?< 2
+		=> C.puts help_text; 0
+		else is @tensor_index args 1
+			| "build"   => C.system "cargo clean && cargo build"
+			| "rebuild" => C.system "cargo build"
+			| "clean"   => C.system "cargo clean"
+			| "readme"  =>
+				C.puts "thxdo: regenerating README.md ...";
+				let rc = C.system readme_cmd in
+				C.puts (if rc ?= 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
+				rc
+			| "stats"   => C.system "tokei --exclude external --exclude applications"
+			| "all"     =>
+				C.system ("cargo clean && cargo build && echo 'thxdo: regenerating README.md ...' && "
+					++ readme_cmd)
+			| "help"    => C.puts help_text; 0
+			else
+				C.puts ("thxdo: unknown command\n\n" ++ help_text);
+				1

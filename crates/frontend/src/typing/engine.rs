@@ -762,6 +762,15 @@ impl Engine {
         self.instantiate_with(ty, &mut mapping)
     }
 
+    /// Instantiate several types that share generalized variables with ONE fresh
+    /// mapping, so a `Generic` common to two of them maps to the same fresh var.
+    /// Used to instantiate an overload candidate together with its `@ctx` implicit
+    /// requirements (a `Box t` candidate and its `t -> @str` dictionary share `t`).
+    pub fn instantiate_bundle(&mut self, tys: &[Type]) -> Vec<Type> {
+        let mut mapping = HashMap::new();
+        tys.iter().map(|t| self.instantiate_with(t, &mut mapping)).collect()
+    }
+
     fn instantiate_with(&mut self, ty: &Type, mapping: &mut HashMap<VarId, Type>) -> Type {
         match self.resolve(ty) {
             Type::Var(id) => match self.vars[id as usize] {

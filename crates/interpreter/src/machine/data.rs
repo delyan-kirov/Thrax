@@ -291,7 +291,10 @@ fn as_byte(v: &PVal) -> Result<u8> {
 pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
+        | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
+        | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
+        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => 2,
@@ -516,7 +519,260 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
+        // Metaprogramming: tokenize a string into opaque `@token` values. A lex
+        // error is a `Diagnostic`, which propagates as a fault (fails a `@run`).
+        "@lex" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@lex: the argument is not valid UTF-8"))?;
+            let mut lx = frontend::Lexer::new(src);
+            let mut toks: Vec<PVal> = Vec::new();
+            loop {
+                let t = lx.next_token()?;
+                if matches!(t.kind, frontend::Kind::Eof) {
+                    break;
+                }
+                let kind = token_kind_name(t.kind);
+                let text = src[t.span.start..t.span.end].as_bytes().to_vec();
+                toks.push(mk(Value::Struct {
+                    name: "@token".to_string(),
+                    fields: vec![
+                        ("kind".to_string(), mk(Value::Str(Rc::new(kind.as_bytes().to_vec())))),
+                        ("text".to_string(), mk(Value::Str(Rc::new(text)))),
+                    ],
+                }));
+            }
+            Ok(Value::Vector(Rc::new(toks)))
+        }
+        "@token_kind" => token_field(&a[0], "kind"),
+        "@token_text" => token_field(&a[0], "text"),
+        // Parse a token vector (from `@lex`) into opaque `@code`. `@code` is
+        // text-backed, so this detokenizes (the lexemes rejoined with a space,
+        // which whitespace-insensitive expression syntax re-lexes identically) and
+        // validates exactly like `@parse_str`. A syntax error traps.
+        "@parse" => {
+            let toks = as_vec(&a[0])?;
+            let mut lexemes: Vec<Vec<u8>> = Vec::with_capacity(toks.len());
+            for t in toks.iter() {
+                match token_field(t, "text")? {
+                    Value::Str(b) => lexemes.push(b.as_ref().clone()),
+                    _ => return Err(fault("@parse: an @token has a non-string lexeme")),
+                }
+            }
+            let joined = lexemes.join(&b' ');
+            let src = std::str::from_utf8(&joined)
+                .map_err(|_| fault("@parse: the tokens do not form valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
+        // Parse a string as an expression fragment into opaque `@code`. Validated
+        // by wrapping it as a def body and parsing; a syntax error is a
+        // `Diagnostic`, which propagates as a fault (fails a `@run`). The fragment
+        // is carried as its source text (enough for the future `@eval`/splice,
+        // which re-enter the driver's pipeline).
+        "@parse_str" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@parse_str: the argument is not valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
+        // Like `@parse_str`, but the string is top-level item(s) (`$ foo = ...`),
+        // for a `$ @e` that injects definitions.
+        "@parse_items" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@parse_items: the argument is not valid UTF-8"))?;
+            frontend::parse(&format!("@mod _META\n{src}"))?;
+            Ok(Value::Struct {
+                name: "@code".to_string(),
+                fields: vec![(
+                    "src".to_string(),
+                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
+                )],
+            })
+        }
+        // Compile and run an `@code` fragment at build time, embedding its value.
+        // Needs the driver's pipeline, so it defers to the installed meta host
+        // (see `crate::machine::set_meta_eval`); reachable only inside `$ @run`.
+        "@eval" => {
+            let src = match &*a[0].borrow() {
+                Value::Struct { name, fields } if name == "@code" => fields
+                    .iter()
+                    .find(|(k, _)| k == "src")
+                    .and_then(|(_, v)| match &*v.borrow() {
+                        Value::Str(b) => Some(b.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| fault("@eval: malformed @code value"))?,
+                _ => return Err(fault("@eval expects an @code")),
+            };
+            let s = std::str::from_utf8(&src)
+                .map_err(|_| fault("@eval: the fragment source is not valid UTF-8"))?;
+            let owned = crate::machine::meta_eval(s)?;
+            Ok(crate::machine::embed(&owned))
+        }
+        // Compile-time diagnostics. `@abort` fails the build with the given
+        // message (a fault the driver renders); `@emit` prints it and continues.
+        "@abort" => {
+            let msg = as_bytes(&a[0])?;
+            Err(fault(String::from_utf8_lossy(&msg).into_owned()))
+        }
+        "@emit" => {
+            let msg = as_bytes(&a[0])?;
+            eprintln!("thrax: {}", String::from_utf8_lossy(&msg));
+            Ok(Value::Unit)
+        }
+        // A unique identifier string `prefix_m<n>` for hygienic compile-time
+        // codegen. The counter is monotonic per process, so names never collide.
+        "@fresh" => {
+            thread_local!(static FRESH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) });
+            let n = FRESH.with(|c| {
+                let v = c.get();
+                c.set(v + 1);
+                v
+            });
+            let mut s = as_bytes(&a[0])?.as_ref().clone();
+            s.extend_from_slice(format!("_m{n}").as_bytes());
+            Ok(Value::Str(Rc::new(s)))
+        }
+        // Steer the build at compile time (used via `$ @e (@link "curl")`): record
+        // a library / search path for the driver to add to the link line. Returns
+        // unit; the effect is the recorded directive, not the value.
+        "@link" | "@link_path" => {
+            let arg = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            crate::machine::push_link(name == "@link_path", arg);
+            Ok(Value::Unit)
+        }
+        // Compile-time reflection over a declared type, resolved by the driver's
+        // type host (see `crate::machine::set_type_host`), reachable only inside
+        // `$ @e`. A derive-style macro reads the shape and generates code for it.
+        // `@type_kind` reports `"struct"` / `"union"`; `@type_fields` the struct's
+        // field names; `@type_variants` the union's `(tag, arity)` pairs.
+        "@type_kind" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let kind = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Struct { .. } => "struct",
+                crate::machine::TypeInfo::Union { .. } => "union",
+            };
+            Ok(Value::Str(Rc::new(kind.as_bytes().to_vec())))
+        }
+        "@type_params" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let params: Vec<PVal> = crate::machine::type_lookup(&ty)?
+                .params()
+                .iter()
+                .map(|p| mk(Value::Str(Rc::new(p.clone().into_bytes()))))
+                .collect();
+            Ok(Value::Vector(Rc::new(params)))
+        }
+        "@type_fields" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let fields = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Struct { fields, .. } => fields,
+                crate::machine::TypeInfo::Union { .. } => {
+                    return Err(fault(format!("@type_fields: `{ty}` is a union, not a struct")))
+                }
+            };
+            let items: Vec<PVal> = fields
+                .into_iter()
+                .map(|f| mk(Value::Str(Rc::new(f.into_bytes()))))
+                .collect();
+            Ok(Value::Vector(Rc::new(items)))
+        }
+        "@type_variants" => {
+            let ty = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
+            let variants = match crate::machine::type_lookup(&ty)? {
+                crate::machine::TypeInfo::Union { variants, .. } => variants,
+                crate::machine::TypeInfo::Struct { .. } => {
+                    return Err(fault(format!("@type_variants: `{ty}` is a struct, not a union")))
+                }
+            };
+            let items: Vec<PVal> = variants
+                .into_iter()
+                .map(|(tag, arity)| {
+                    mk(Value::Tuple(vec![
+                        mk(Value::Str(Rc::new(tag.into_bytes()))),
+                        mk(Value::Int(arity as i64)),
+                    ]))
+                })
+                .collect();
+            Ok(Value::Vector(Rc::new(items)))
+        }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
+    }
+}
+
+/// The tag name reported by `@token_kind` for a lexical [`frontend::Kind`]. The
+/// value-carrying literals collapse to a plain tag (`Int(5)` -> "Int"); the
+/// lexeme itself is available via `@token_text`.
+fn token_kind_name(kind: frontend::Kind) -> &'static str {
+    use frontend::Kind::*;
+    match kind {
+        Int(_) => "Int",
+        Real(_) => "Real",
+        Str => "Str",
+        Word => "Word",
+        At => "At",
+        Op => "Op",
+        Eq => "Eq",
+        FatArrow => "FatArrow",
+        Arrow => "Arrow",
+        Lambda => "Lambda",
+        Colon => "Colon",
+        Dollar => "Dollar",
+        Comma => "Comma",
+        Dot => "Dot",
+        Ellipsis => "Ellipsis",
+        LParen => "LParen",
+        RParen => "RParen",
+        LBrace => "LBrace",
+        RBrace => "RBrace",
+        LBrack => "LBrack",
+        RBrack => "RBrack",
+        Let => "Let",
+        In => "In",
+        If => "If",
+        Is => "Is",
+        Else => "Else",
+        Ext => "Ext",
+        With => "With",
+        Do => "Do",
+        Ctl => "Ctl",
+        Defer => "Defer",
+        Comment => "Comment",
+        Eof => "Eof",
+    }
+}
+
+/// Read a named `@str` field of an opaque `@token` struct (`@token_kind` /
+/// `@token_text`).
+fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
+    match &*v.borrow() {
+        Value::Struct { name, fields } if name == "@token" => {
+            for (k, val) in fields {
+                if k == field {
+                    return match &*val.borrow() {
+                        Value::Str(b) => Ok(Value::Str(b.clone())),
+                        _ => Err(fault("@token field is not a string")),
+                    };
+                }
+            }
+            Err(fault(format!("@token has no `{field}` field")))
+        }
+        _ => Err(fault("expected an @token")),
     }
 }
 

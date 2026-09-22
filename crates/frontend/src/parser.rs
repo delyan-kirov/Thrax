@@ -125,11 +125,11 @@ impl<'a> Parser<'a> {
         self.expr(Expr::Str(s))
     }
 
-    /// Build a string-literal expression, expanding `{expr}` interpolations. `t`
-    /// is the `Kind::Str` token. `"a {e} b"` desugars to `"a " ++ to_string e ++ " b"`;
+    /// Build a string-literal expression, expanding `?(expr)` interpolations. `t`
+    /// is the `Kind::Str` token. `"a ?(e) b"` desugars to `"a " ++ to_string e ++ " b"`;
     /// a literal chunk seeds the `++` chain so the whole expression types as `Str`,
     /// and each interpolant is stringified through the overloaded `to_string`.
-    /// `\{`/`\}` are literal braces; a bare `}` is literal too.
+    /// Braces are ordinary literal characters; `\?` is a literal `?`.
     fn build_string(&mut self, t: Token) -> Result<Aol<Expr>> {
         let raw = self.text(t);
         let bytes = raw.as_bytes();
@@ -143,14 +143,14 @@ impl<'a> Parser<'a> {
         while i < inner.len() {
             match inner[i] {
                 b'\\' => i = crate::lexer::decode_escape(inner, i, body_start, t.line, &mut chunk)?,
-                b'{' => {
+                b'?' if i + 1 < inner.len() && inner[i + 1] == b'(' => {
                     interpolated = true;
                     let seg = self.str_expr(&chunk);
                     segs.push(seg);
                     chunk.clear();
-                    // Balance nested `{}` to find this interpolation's close,
-                    // skipping nested strings so their braces don't miscount.
-                    let expr_start = i + 1;
+                    // Balance the interpolant's `()` to find its close, skipping
+                    // nested strings so their parens don't miscount.
+                    let expr_start = i + 2; // past `?(`
                     let mut depth = 1usize;
                     let mut j = expr_start;
                     while j < inner.len() {
@@ -162,11 +162,11 @@ impl<'a> Parser<'a> {
                                 }
                                 j += 1; // past the closing quote
                             }
-                            b'{' => {
+                            b'(' => {
                                 depth += 1;
                                 j += 1;
                             }
-                            b'}' => {
+                            b')' => {
                                 depth -= 1;
                                 if depth == 0 {
                                     break;
@@ -182,14 +182,14 @@ impl<'a> Parser<'a> {
                             Code::UnexpectedToken,
                             Span::new(at, at + 1),
                             t.line,
-                            "string interpolation '{' is not closed with '}'".to_string(),
+                            "string interpolation '?(' is not closed with ')'".to_string(),
                         ));
                     }
                     let full: &'a str = self.src;
                     let abs_start = body_start + expr_start;
                     let slice = &full[abs_start..body_start + j];
                     let e = self.parse_subexpr(slice, abs_start, t.line)?;
-                    // `{e}` stringifies via the overloaded `to_string`, so an
+                    // `?(e)` stringifies via the overloaded `to_string`, so an
                     // interpolant of any type with a `to_string` (base types ship
                     // one in the auto-imported `CORE`) reads as `Str`. The call
                     // inherits the interpolant's span so a resolution failure
@@ -203,7 +203,7 @@ impl<'a> Parser<'a> {
                     let call = self.expr(Expr::App(f, e));
                     self.ast.expr_spans.insert(call, span);
                     segs.push(call);
-                    i = j + 1; // past '}'
+                    i = j + 1; // past ')'
                 }
                 c => {
                     chunk.push(c);
@@ -258,6 +258,19 @@ impl<'a> Parser<'a> {
     fn expect_word(&mut self, what: &str) -> Result<StrId> {
         let t = expect!(self, Kind::Word, what);
         Ok(self.intern(self.text(t)))
+    }
+    /// An effect-row label: a Capitalized `Word` (a user-declared effect like
+    /// `Fail`) or an `@`-form builtin effect (`@io`). The lexeme is interned as
+    /// written, so `@io` keeps its sigil ("@io"), matching the `@`-type-con
+    /// convention and staying distinct from any user effect.
+    fn expect_effect_label(&mut self) -> Result<StrId> {
+        let t = self.peek()?;
+        if matches!(t.kind, Kind::Word | Kind::At) {
+            self.bump()?;
+            Ok(self.intern(self.text(t)))
+        } else {
+            Err(self.unexpected(&t, "expected an effect name"))
+        }
     }
     /// Consume a lowercase-initial type variable name and intern it.
     fn expect_tyvar(&mut self, what: &str) -> Result<StrId> {
@@ -377,7 +390,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_global(&mut self) -> Result<Item> {
-        expect!(
+        let dollar = expect!(
             self,
             Kind::Dollar,
             "expected a global declaration starting with '$'"
@@ -385,15 +398,16 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         match t.kind {
             Kind::With => self.parse_import(),
-            Kind::At => self.parse_directive(t),
+            Kind::At => self.parse_directive(t, dollar.span.start),
             Kind::Word => self.parse_named_global(),
             Kind::LParen => self.parse_operator_global(),
             _ => Err(self.unexpected(&t, "expected a name or directive after '$'")),
         }
     }
 
-    /// A `$ @...` directive: visibility, assert, run, or an operator definition.
-    fn parse_directive(&mut self, at: Token) -> Result<Item> {
+    /// A `$ @...` directive: visibility, compile-time run (`@e`), or an operator
+    /// definition.
+    fn parse_directive(&mut self, at: Token, start: usize) -> Result<Item> {
         match self.intrinsic_name(at) {
             "private" => {
                 self.bump()?;
@@ -404,13 +418,13 @@ impl<'a> Parser<'a> {
                 "there is no '@public': symbols are public by default. Use '$ @private' \
                  to hide the declarations below it",
             )),
-            "assert" => {
+            // `$ @e X` embeds a PURE compile-time result; `$ @run X` discharges
+            // `<@meta>` (runs a meta computation for its effect / to inject code).
+            name @ ("e" | "run") => {
+                let meta = name == "run";
                 self.bump()?;
-                Ok(Item::Assert(self.parse_expr(0)?))
-            }
-            "run" => {
-                self.bump()?;
-                Ok(Item::Run(self.parse_expr(0)?))
+                let e = self.parse_expr(0)?;
+                Ok(Item::Run(e, Span::new(start, self.last_end), meta))
             }
             // A `@compiler_interface_*` hook is the ONE family of `@`-names a user (or
             // the core library) may define: `$ @compiler_interface_indexing : sig = body`.
@@ -598,21 +612,22 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the `@ctx` declarations that may follow a definition's type
-    /// signature: `@ctx name : Type` (repeatable) or `@ctx { a : A, b : B }`.
-    /// Each becomes an implicit parameter resolved by name at the call site.
+    /// signature: a comma-separated list `@ctx a : A, b : B`, and repeatable
+    /// (`@ctx a : A  @ctx b : B`). A duplicated name declares one dictionary per
+    /// type parameter (`@ctx to_string : a -> @str, to_string : b -> @str`),
+    /// resolved by type in the body. Each becomes an implicit parameter.
     fn parse_ctx_decls(&mut self) -> Result<Slice<FieldDecl>> {
         let mut decls = Vec::new();
         while self.at_ctx()? {
             self.bump()?; // '@ctx'
-            if self.eat(|k| matches!(k, Kind::LBrace))? {
-                let block = self.parse_field_decls()?;
-                decls.extend_from_slice(self.ast.slice(block));
-                expect!(self, Kind::RBrace, "expected '}' to close the '@ctx' block");
-            } else {
+            loop {
                 let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
                 expect!(self, Kind::Colon, "expected ':' after the '@ctx' name");
                 let ty = self.parse_type()?;
                 decls.push(FieldDecl { name, ty });
+                if !self.eat(|k| matches!(k, Kind::Comma))? {
+                    break;
+                }
             }
         }
         Ok(self.ast.make_slice(decls))
@@ -848,6 +863,12 @@ impl<'a> Parser<'a> {
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
+            Kind::At if matches!(self.intrinsic_name(t), "e" | "run") => {
+                let meta = self.intrinsic_name(t) == "run";
+                self.bump()?; // '@e' / '@run'
+                let e = self.parse_expr(0)?;
+                Ok(self.ty(Ty::MetaE(e, meta)))
+            }
             Kind::At => {
                 self.bump()?;
                 let name = self.intern(self.text(t));
@@ -1007,8 +1028,9 @@ impl<'a> Parser<'a> {
     }
 
     /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
-    /// `<A, B | e>`, or `<| e>`. Effect names are capitalized; a lowercase
-    /// name is the row-polymorphic tail variable.
+    /// `<A, B | e>`, or `<| e>`. Effect names are Capitalized (user effects) or
+    /// `@`-form (builtin effects like `@io`); a lowercase name is the
+    /// row-polymorphic tail variable.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
@@ -1040,7 +1062,7 @@ impl<'a> Parser<'a> {
         }
         let mut names = Vec::new();
         loop {
-            let n = self.expect_word("expected an effect name")?;
+            let n = self.expect_effect_label()?;
             names.push(n);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;

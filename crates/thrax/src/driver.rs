@@ -160,6 +160,7 @@ fn check_all<'a>(
     programs: &[Program],
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
+    lenient: bool,
 ) -> Result<CheckOut<'a>, String> {
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
@@ -177,6 +178,7 @@ fn check_all<'a>(
     }
     for i in order {
         let mut checker = frontend::Checker::new(ast);
+        checker.set_lenient(lenient);
         if let Some(c) = c_idx {
             if c != i && Some(i) != core_idx {
                 checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
@@ -233,6 +235,9 @@ fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
         for (&site, key) in checker.overload_calls() {
             resolved.overload_calls.insert(site, key.clone());
         }
+        for (&site, &slot) in checker.dict_calls() {
+            resolved.dict_calls.insert(site, slot);
+        }
         for (&body, key) in checker.def_keys() {
             resolved.def_keys.insert(body, key.clone());
         }
@@ -261,11 +266,18 @@ fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
 /// The full pipeline up to (but not including) execution: load, parse, check,
 /// and lower every module. Returns the lowered modules (root first) and the
 /// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
-fn lower_all(
-    path: &str,
-) -> Result<(Vec<frontend::lowering::data::Program>, String, frontend::EntryKind), ExitCode> {
-    let loaded = load_sources(path)?;
+/// Parse, check, and lower the loaded modules once, returning the lowered
+/// programs and the entry point. The parse/check state is local (self-borrowing),
+/// so only the owned `lowered` escapes; the expansion loop in [`lower_all`] calls
+/// this repeatedly on progressively `@e`-expanded sources.
+type Compiled = (
+    Vec<frontend::lowering::data::Program>,
+    String,
+    frontend::EntryKind,
+    frontend::lowering::ReflectInfo,
+);
 
+fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode> {
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
     for (_name, src_path, src) in &loaded.sources {
@@ -282,7 +294,7 @@ fn lower_all(
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, lenient)
         .map_err(|rendered| {
             eprint!("{rendered}");
             ExitCode::FAILURE
@@ -293,6 +305,7 @@ fn lower_all(
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
     let decls = frontend::Decls::collect(&ast, &programs);
+    let reflect = decls.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
@@ -305,6 +318,12 @@ fn lower_all(
         .into_iter()
         .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
     let Some(e) = entry else {
+        // A metaprogram-expansion round only needs the `@e` sites (to run the
+        // generators); the entry may itself be injected. Defer the requirement to
+        // the final strict round.
+        if lenient {
+            return Ok((lowered, String::new(), frontend::EntryKind::Value, reflect));
+        }
         eprintln!(
             "thrax: module `{}` has no `test` or `main` to run",
             loaded.root_name
@@ -318,13 +337,306 @@ fn lower_all(
         .find(|(n, _)| *n == e)
         .map(|(_, ty)| frontend::classify_entry(ty))
         .unwrap_or(frontend::EntryKind::Value);
-    if kind == frontend::EntryKind::BadFn {
+    if kind == frontend::EntryKind::BadFn && !lenient {
         eprintln!(
             "thrax: `{e}` must be a value, `{{}} -> Int`, or `[n]Str -> Int` (a C-style main)"
         );
         return Err(ExitCode::FAILURE);
     }
-    Ok((lowered, e.to_string(), kind))
+    Ok((lowered, e.to_string(), kind, reflect))
+}
+
+/// Render a forced expression-position `@e X` value back into Thrax source to
+/// splice at the site. A `@code` result contributes the fragment it holds; a
+/// scalar contributes its literal; aggregates (vectors, tuples, structs,
+/// variants) render as their type-directed literals, recursively.
+fn render_meta_value(v: &interpreter::machine::data::PVal) -> std::result::Result<String, String> {
+    render_owned(&interpreter::machine::reify(v)?)
+}
+
+/// Render a reified compile-time value as the Thrax literal that reconstructs it.
+/// Aggregate literals (`[..]`, `.{ .. }`) are type-directed, so the rendered text
+/// must land where its type is pinned (an annotation or an unambiguous use site).
+fn render_owned(
+    v: &interpreter::machine::OwnedValue,
+) -> std::result::Result<String, String> {
+    use interpreter::machine::OwnedValue;
+    let each = |items: &[OwnedValue]| -> std::result::Result<Vec<String>, String> {
+        items.iter().map(render_owned).collect()
+    };
+    match v {
+        OwnedValue::Int(n) => Ok(n.to_string()),
+        OwnedValue::Real(r) => Ok(format!("{r:?}")),
+        OwnedValue::Real32(r) => Ok(format!("{r:?}")),
+        OwnedValue::Bool(b) => Ok(if *b { "@true" } else { "@false" }.to_string()),
+        OwnedValue::Unit => Ok("{}".to_string()),
+        OwnedValue::Str(b) => Ok(thrax_str_literal(b)),
+        OwnedValue::Vector(items) => Ok(format!("[{}]", each(items)?.join(", "))),
+        OwnedValue::Tuple(items) => Ok(format!("{{{}}}", each(items)?.join(", "))),
+        // A `@code` fragment reifies to a `{ src = "..." }` struct: splice its
+        // held source text rather than rebuilding it as a record literal.
+        OwnedValue::Struct { name, fields } if name == "@code" => fields
+            .iter()
+            .find(|(k, _)| k == "src")
+            .map(|(_, s)| match s {
+                OwnedValue::Str(b) => Ok(String::from_utf8_lossy(b).into_owned()),
+                _ => Err("malformed @code value".to_string()),
+            })
+            .unwrap_or_else(|| Err("malformed @code value".to_string())),
+        OwnedValue::Struct { name, fields } => {
+            let body = fields
+                .iter()
+                .map(|(k, val)| Ok(format!(".{k} = {}", render_owned(val)?)))
+                .collect::<std::result::Result<Vec<_>, String>>()?
+                .join(", ");
+            Ok(format!("{name}.{{ {body} }}"))
+        }
+        // Variant payloads are positional (`Ty.Tag.{ a, b }`); a nullary
+        // constructor renders bare as `Ty.Tag`.
+        OwnedValue::Variant { ty, tag, fields } if fields.is_empty() => Ok(format!("{ty}.{tag}")),
+        OwnedValue::Variant { ty, tag, fields } => {
+            Ok(format!("{ty}.{tag}.{{ {} }}", each(fields)?.join(", ")))
+        }
+    }
+}
+
+/// Render bytes as a Thrax string literal that lexes back to those bytes: quote
+/// it and escape `\`, `"`, and a `?(` interpolation opener.
+fn thrax_str_literal(bytes: &[u8]) -> String {
+    let s = String::from_utf8_lossy(bytes);
+    let mut out = String::from("\"");
+    let cs: Vec<char> = s.chars().collect();
+    for (i, &c) in cs.iter().enumerate() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            // `?(` opens an interpolation; escape the `?` so it stays literal.
+            '?' if cs.get(i + 1) == Some(&'(') => out.push_str("\\?"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Render a compile-time `@e` fault at its call site: fill the fault's (sentinel)
+/// span with the site's span and render against that module's source, so the
+/// caret lands on the `@e` in the user's file rather than a synthetic global.
+fn render_e_fault(
+    diag: utilities::Diagnostic,
+    module: &str,
+    span: utilities::Span,
+    sources: &[(String, String, String)],
+) -> String {
+    let (src, path) = sources
+        .iter()
+        .find(|(n, _, _)| n == module)
+        .map(|(_, p, s)| (s.as_str(), p.as_str()))
+        .unwrap_or(("", module));
+    diag.fill_span(span).render(src, path)
+}
+
+/// The sources that back a compiled program (`(module, path, text)`), returned by
+/// [`lower_all`] so later passes can render `@e` diagnostics at real locations.
+type Sources = Vec<(String, String, String)>;
+
+/// Compile `path`, iteratively expanding every `$ @e` (compile-time execution,
+/// value-fold, and code injection): each round compiles the current sources,
+/// forces every `@e` site, and substitutes the result in source, repeating until
+/// none remain. `@link`/`@link_path` calls record build directives along the way,
+/// drained into the returned `BuildPlan`. Returns the final sources too.
+fn lower_all(
+    path: &str,
+) -> Result<
+    (Vec<frontend::lowering::data::Program>, String, frontend::EntryKind, Sources, BuildPlan),
+    ExitCode,
+> {
+    let mut loaded = load_sources(path)?;
+    let root_dir = Path::new(path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    let mut plan = BuildPlan::default();
+    let _ = interpreter::machine::take_link_directives(); // drop any stale directives
+    loop {
+        // Compile leniently while `@e` sites remain: a generator may inject a
+        // definition that hand-written code forward-references, which would not
+        // yet resolve. Unbound names are deferred (fresh vars) so the generators
+        // can still run; the final strict compile below validates the result.
+        let compiled = compile_sources(&loaded, true)?;
+        // Gather every `@e` site this round: expression-position (`ct_evals`,
+        // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@code`,
+        // apply a `BUILD` directive, or discard).
+        let expr_sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_evals
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        let item_sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_runs
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        let type_sites: Vec<(String, String, utilities::Span)> = compiled
+            .0
+            .iter()
+            .flat_map(|p| {
+                p.ct_types
+                    .iter()
+                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+            })
+            .collect();
+        if expr_sites.is_empty() && item_sites.is_empty() && type_sites.is_empty() {
+            // No `@e` remains: re-check strictly so any name still unbound after
+            // all injection, or a missing/ill-typed entry, is reported now.
+            let final_compiled = compile_sources(&loaded, false)?;
+            // Fold in any `@link`/`@link_path` directives recorded while running.
+            for (is_path, arg) in interpreter::machine::take_link_directives() {
+                let set = if is_path { &mut plan.lib_paths } else { &mut plan.libs };
+                if !set.contains(&arg) {
+                    set.push(arg);
+                }
+            }
+            return Ok((
+                final_compiled.0,
+                final_compiled.1,
+                final_compiled.2,
+                loaded.sources,
+                plan,
+            ));
+        }
+        let ir = frontend::ir::lower_modules(&compiled.0);
+        let rd = root_dir.clone();
+        interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
+        interpreter::machine::set_type_host(Some(reflect_host(compiled.3)));
+        let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
+        let fail = |diag, module: &str, span| -> ExitCode {
+            clear_meta_hosts();
+            eprintln!("thrax: a compile-time `@e` failed:");
+            eprint!("{}", render_e_fault(diag, module, span, &loaded.sources));
+            ExitCode::FAILURE
+        };
+        // Expression-position: replace the `@e X` with its value's source
+        // (parenthesized to keep precedence).
+        for (module, qualified, span) in expr_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            match render_meta_value(&v) {
+                Ok(text) => edits.push((module, span, format!("({text})"))),
+                Err(msg) => {
+                    clear_meta_hosts();
+                    eprintln!("thrax: a compile-time `@e` failed: {msg}");
+                    return Err(ExitCode::FAILURE);
+                }
+            }
+        }
+        // Item-position `$ @e X`: an `@code` result injects its item(s) in place;
+        // otherwise apply a `BUILD` directive (a no-op for any other value) and
+        // drop the directive. Either way the whole `$ @e X` item is replaced.
+        for (module, qualified, span) in item_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            // `span` is the whole `$ @e X` directive, so replacing it drops the
+            // directive: an `@code` result becomes its item(s), anything else (a
+            // `@link` call, whose effect was already recorded, or a discarded
+            // value) becomes nothing.
+            match as_code_src(&v) {
+                Some(items) => edits.push((module, span, items)),
+                None => edits.push((module, span, String::new())),
+            }
+        }
+        // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@code`
+        // denoting a type; splice its source in place of the `@e X`.
+        for (module, qualified, span) in type_sites {
+            let v = interpreter::machine::eval_value(&ir, &qualified)
+                .map_err(|d| fail(d, &module, span))?;
+            match as_code_src(&v) {
+                Some(ty_src) => edits.push((module, span, format!("({ty_src})"))),
+                None => {
+                    clear_meta_hosts();
+                    eprintln!(
+                        "thrax: a compile-time `@e` failed: a type-position `@e` must \
+                         produce an `@code` (build one with `@parse_str`)"
+                    );
+                    return Err(ExitCode::FAILURE);
+                }
+            }
+        }
+        clear_meta_hosts();
+        splice_sources(&mut loaded.sources, edits);
+    }
+}
+
+/// Clear both compile-time hosts (`@eval` and type reflection) installed around a
+/// `$ @e` expansion round, so a stray meta op at runtime faults cleanly.
+fn clear_meta_hosts() {
+    interpreter::machine::set_meta_eval(None);
+    interpreter::machine::set_type_host(None);
+}
+
+/// Build the `$ @e` reflection host from a round's collected type shapes: a
+/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`.
+fn reflect_host(
+    reflect: frontend::lowering::ReflectInfo,
+) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+    use interpreter::machine::TypeInfo;
+    // Register each type under both its bare name and `module.name`. The qualified
+    // key is exact; the bare key resolves to the first-declared type of that name
+    // (an ambiguity a caller disambiguates by qualifying).
+    let mut map: HashMap<String, TypeInfo> = HashMap::new();
+    let mut put = |key: String, info: TypeInfo| {
+        map.entry(key).or_insert(info);
+    };
+    for (module, name, params, fields) in reflect.structs {
+        let info = TypeInfo::Struct { params, fields };
+        put(format!("{module}.{name}"), info.clone());
+        put(name, info);
+    }
+    for (module, name, params, variants) in reflect.unions {
+        let info = TypeInfo::Union { params, variants };
+        put(format!("{module}.{name}"), info.clone());
+        put(name, info);
+    }
+    Box::new(move |name: &str| map.get(name).cloned())
+}
+
+/// If `v` is a `@code` fragment, its source text.
+fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
+    use interpreter::machine::data::Value;
+    if let Value::Struct { name, fields } = &*v.borrow() {
+        if name == "@code" {
+            return fields.iter().find(|(k, _)| k == "src").and_then(|(_, s)| {
+                match &*s.borrow() {
+                    Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                    _ => None,
+                }
+            });
+        }
+    }
+    None
+}
+
+/// Apply `@e` source substitutions to each module, right-to-left within a module
+/// so earlier spans stay valid as later ones are replaced.
+fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(String, utilities::Span, String)>) {
+    edits.sort_by(|a, b| b.1.start.cmp(&a.1.start));
+    for (module, span, text) in edits {
+        if let Some((_, _, src)) = sources.iter_mut().find(|(n, _, _)| *n == module) {
+            if span.end <= src.len() {
+                src.replace_range(span.start..span.end, &text);
+            }
+        }
+    }
 }
 
 /// A compiled REPL session: the lowered modules (root `REPL` first) and the
@@ -360,7 +672,7 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources)?;
+    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, false)?;
     let resolved = collect_resolved(&checkers);
 
     let module_decls = frontend::Decls::collect(&ast, &programs);
@@ -382,10 +694,41 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
 }
 
 /// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
-/// on the reified-K machine. The machine's continuation is an explicit heap
-/// stack, so no large host stack is needed for deep recursion.
+/// on the reified-K machine. 
+/// Build the interpreter IR and force every `$ @run <expr>` directive through it
+/// at compile time (Jai's `#run`). The value is discarded; a trap fails the
+/// build. This runs on every backend, so compile-time execution is
+/// engine-independent, and returns the IR so the interpreter path can reuse it.
+/// Libraries and search paths a program's `$ @run BUILD.*` directives added to
+/// the build (see library/BUILD.thx). Applied to the native link line; the
+/// interpreter's default set already covers libc/libm and lazily `dlopen`s the
+/// rest per `@extern`.
+#[derive(Default)]
+struct BuildPlan {
+    libs: Vec<String>,
+    lib_paths: Vec<String>,
+}
+
+
+/// Compile and run an `@code` fragment (source text) at build time, reifying its
+/// value. This is the `@eval` host: it re-enters the same pipeline the REPL uses,
+/// wrapping the fragment as a def body of an in-memory module. `root_dir` resolves
+/// the fragment's imports (it sees the same standard library as the root).
+fn meta_eval_source(
+    src: &str,
+    root_dir: &Path,
+) -> std::result::Result<interpreter::machine::OwnedValue, String> {
+    let session = compile_session(&format!("@mod REPL\n$ _thrax_meta =\n{src}"), root_dir)?;
+    let ir = frontend::ir::lower_modules(&session.lowered);
+    let v = interpreter::machine::eval_value(&ir, "REPL._thrax_meta")
+        .map_err(|d| d.render("", "@eval"))?;
+    interpreter::machine::reify(&v)
+}
+
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    // `lower_all` has already expanded every `$ @e` (compile-time execution and
+    // code injection); the lowered program is `@e`-free.
+    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -427,10 +770,13 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
+    // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
+    // directives (which steer linking) have nothing to apply here beyond the
+    // link comment the generated source already carries.
     print!("{}", ccg::emit(&lowered, &entry, kind, target));
     ExitCode::SUCCESS
 }
@@ -440,7 +786,7 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind) = match lower_all(path) {
+    let (lowered, entry, kind, _sources, plan) = match lower_all(path) {
         Ok(x) => x,
         Err(code) => return code,
     };
@@ -490,6 +836,22 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
             }
         }
     }
+    // Libraries and search paths declared in Thrax via `$ @run BUILD.lib` /
+    // `BUILD.lib_path`. Skip a lib already linked from an `@extern`.
+    for lib in &plan.libs {
+        if emitted.libraries.iter().any(|l| l == lib) {
+            continue;
+        }
+        if let Some(flag) = target.link_flag(lib) {
+            cmd.arg(flag);
+        }
+    }
+    for dir in &plan.lib_paths {
+        cmd.arg(format!("-L{dir}"));
+        if tc.rpath {
+            cmd.arg(format!("-Wl,-rpath,{dir}"));
+        }
+    }
     match cmd.status() {
         Ok(status) if status.success() => {
             println!("built {}", out_path.display());
@@ -529,7 +891,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources) {
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false) {
         Ok(out) => out,
         Err(rendered) => {
             eprint!("{rendered}");
@@ -669,5 +1031,21 @@ pub fn cmd_lex(path: &str) -> ExitCode {
             eprint!("{}", diag.render(&source, path));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn link_directives_are_collected_in_order_and_drained() {
+        use interpreter::machine::{push_link, take_link_directives};
+        let _ = take_link_directives(); // clear any stale state
+        push_link(false, "curl".to_string());
+        push_link(true, "vendor".to_string());
+        assert_eq!(
+            take_link_directives(),
+            vec![(false, "curl".to_string()), (true, "vendor".to_string())]
+        );
+        assert!(take_link_directives().is_empty(), "draining empties the queue");
     }
 }

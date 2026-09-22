@@ -352,14 +352,14 @@ fn cons_and_list_and_function_type() {
 #[test]
 fn union_effect_import_and_directives() {
     let src = "@mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
-                   $ State : @effect = get : @int, put : @int -> @int\n$ @assert 1";
+                   $ State : @effect = get : @int, put : @int -> @int\n$ @e 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(items[0], Item::Import { .. }));
     assert!(matches!(items[1], Item::Private));
     assert!(matches!(&items[2], Item::Union { variants, .. } if variants.len() == 3));
     assert!(matches!(&items[3], Item::Effect { ops, .. } if ops.len() == 2));
-    assert!(matches!(items[4], Item::Assert(_)));
+    assert!(matches!(items[4], Item::Run(..)));
 }
 
 #[test]
@@ -383,27 +383,29 @@ fn string_interpolation_desugars_to_concat() {
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Str(_)));
 
     // An interpolated string becomes a `++` chain.
-    let p = prog("@mod M\n$ s = \"a {x} b\"");
+    let p = prog("@mod M\n$ s = \"a ?(x) b\"");
     let Expr::BinOp { op, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a `++` chain");
     };
     assert_eq!(p.ast.text(*op), "++");
 
     // A sole interpolant is still `++` (seeded by a chunk), so it types as @str.
-    let p = prog("@mod M\n$ s = \"{x}\"");
+    let p = prog("@mod M\n$ s = \"?(x)\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
 }
 
 #[test]
 fn string_interpolation_nesting_and_escapes() {
     // A nested string literal inside an interpolant.
-    assert!(parse("@mod M\n$ s = \"x {f \"y\"} z\"").is_ok());
-    // Nested braces (a unit / record literal) inside an interpolant.
-    assert!(parse("@mod M\n$ s = \"p {g {}} q\"").is_ok());
-    // `\{` is a literal brace, not an interpolation.
-    assert!(parse("@mod M\n$ s = \"lit \\{ ok\"").is_ok());
+    assert!(parse("@mod M\n$ s = \"x ?(f \"y\") z\"").is_ok());
+    // Braces (a unit / record literal) inside an interpolant, no escaping.
+    assert!(parse("@mod M\n$ s = \"p ?(g {}) q\"").is_ok());
+    // Braces are ordinary literal characters, never an interpolation.
+    assert!(parse("@mod M\n$ s = \"lit { ok\"").is_ok());
+    // `\?(` is a literal `?(`, not an interpolation.
+    assert!(parse("@mod M\n$ s = \"lit \\?( ok\"").is_ok());
     // An unclosed interpolation is an error.
-    assert!(parse("@mod M\n$ s = \"bad {1 + \"").is_err());
+    assert!(parse("@mod M\n$ s = \"bad ?(1 + \"").is_err());
 }
 
 #[test]

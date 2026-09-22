@@ -18,7 +18,11 @@ $ with CONDITIONALS = CONDITIONALS
 $ with CODATA = CODATA
 $ with COROUTINES = COROUTINES
 $ with CT_ASSERT = CT_ASSERT
+$ with CT_FOLD = CT_FOLD
 $ with CT_RUN = CT_RUN
+$ with DERIVE_LIB = DERIVE_LIB
+$ with DERIVE_ORD = DERIVE_ORD
+$ with DERIVE_SHOW = DERIVE_SHOW
 $ with EFFECT_OVERLOAD = EFFECT_OVERLOAD
 $ with EFFECTS = EFFECTS
 $ with FIB = FIB
@@ -30,6 +34,8 @@ $ with ITER = ITER
 $ with LET_IN = LET_IN
 $ with LISTS = LISTS
 $ with MATCH = MATCH
+$ with META_E = META_E
+$ with META_TYPE = META_TYPE
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
 $ with OR_PATTERNS = OR_PATTERNS
@@ -85,7 +91,11 @@ $ main : @int =
 	+ check "CODATA" CODATA.test
 	+ check "COROUTINES" COROUTINES.test
 	+ check "CT_ASSERT" CT_ASSERT.test
+	+ check "CT_FOLD" CT_FOLD.test
 	+ check "CT_RUN" CT_RUN.test
+	+ check "DERIVE_LIB" DERIVE_LIB.test
+	+ check "DERIVE_ORD" DERIVE_ORD.test
+	+ check "DERIVE_SHOW" DERIVE_SHOW.test
 	+ check "EFFECT_OVERLOAD" EFFECT_OVERLOAD.test
 	+ check "EFFECTS" EFFECTS.test
 	+ check "FIB" FIB.test
@@ -97,6 +107,8 @@ $ main : @int =
 	+ check "LET_IN" LET_IN.test
 	+ check "LISTS" LISTS.test
 	+ check "MATCH" MATCH.test
+	+ check "META_E" META_E.test
+	+ check "META_TYPE" META_TYPE.test
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
 	+ check "OR_PATTERNS" OR_PATTERNS.test

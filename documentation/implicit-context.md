@@ -73,9 +73,12 @@ max_of 3 7 @ctx flip       # single explicit override
 foo a b @ctx { .lt = f, .. }   # record override; `..` resolves the rest by name
 ```
 
-A definition may append `@ctx name : Type` clauses after its signature (repeat
-`@ctx`, or a `@ctx { a : A, b : B }` block). The implicit names are in scope in
-the body. See `examples/IMPLICITS.thx`.
+A definition may append `@ctx name : Type` clauses after its signature as a flat
+comma list, repeatable: `@ctx a : A, b : B`. The implicit names are in scope in
+the body. A DUPLICATED name declares one dictionary per type parameter (`@ctx
+to_string : a -> @str, to_string : b -> @str`), resolved by type in the body
+(dictionary selection, `instance (Show a, Show b) => Show (Pair a b)`). See
+`examples/IMPLICITS.thx` and `examples/DERIVE_SHOW.thx`.
 
 **Elaboration: leading dictionary passing.** `lowering::def` prepends one lambda
 per implicit (`f = \c1 = \c2 = <body>`); every use site injects the resolved
@@ -112,11 +115,30 @@ local binder shadows it (a general scoping bug the local `@ctx` param exposed).
    the requirement is monomorphic at the enclosing definition's boundary;
    otherwise it errors. Propagation works *by name* instead: declare the same
    `@ctx name` on the caller and it chains (the local param satisfies the callee).
-2. **Not on overloaded names.** A name cannot be both overloaded and `@ctx`-bearing
-   (errors at registration).
-3. **Qualified cross-module use does not inject.** A bare-imported `@ctx` function
-   resolves (its metadata is copied in `import_from`); a `MOD.f` qualified use does
-   not yet. Same gap family as qualified cross-module operators.
+2. ~~Not on overloaded names.~~ **LIFTED.** A name can now be both overloaded and
+   carry `@ctx` implicits: the overload candidate carries its requirements
+   (`Cand::implicits`, generalized with the signature via `scheme_with_implicits`)
+   and a call resolving to it plans the dictionary (`apply_overload_cand`). This is
+   what a generic instance `to_string : Box t -> @str  @ctx to_string : t -> @str`
+   needs. Same-named `@ctx` dictionaries (one per type parameter) resolve BY TYPE in
+   the body (`current_dicts`, `dict_calls`; identity-narrowed when the argument is a
+   bare type variable). A candidate's requirements are carried across imports
+   (`own_overloads` exports them, `import_export` re-imports with aligned variables),
+   so a generic instance works cross-module too. A duplicated dictionary used as a
+   bare VALUE (a nullary method) resolves by the EXPECTED type, including in a
+   struct-literal field: the checker now pins the literal's parameters to the
+   expected type before checking fields (`infer_struct_lit` takes the expected type;
+   the `check` arm handles `Type.{ .. }` too).
+3. ~~Qualified cross-module use does not inject.~~ **FIXED.** A `MOD.f` qualified use
+   now plans its implicits like a bare `f` (`qualified_implicits` keyed by
+   `(module, name)`, consulted in `infer_var`'s qualified branch). So `LA.dot u v`
+   injects its dictionaries. A qualified use of an *overloaded* generic instance
+   (`MOD.to_string`, a name other modules also define) is fixed too: `infer_app`'s
+   qualified branch now resolves among that module's overload candidates (from
+   `self.overloads`, filtered by module), which carry their `@ctx` requirements, and
+   passes the head site so `apply_overload_cand` plans the dictionary. Previously it
+   drew from the type-only `qualified` map and came out under-applied, faulting at
+   runtime.
 4. **Local (lexical) provider wins over a global**, not the reverse. This is what
    makes chaining/override authoritative; if a global default should win instead,
    flip the order in `plan_implicits`.

@@ -154,6 +154,11 @@ pub struct Checker<'a> {
     /// arguments. Populated up front (own module) so resolution is order-independent,
     /// and extended from imports.
     global_implicits: HashMap<&'a str, GlobImpl>,
+    /// `@ctx`-bearing definitions keyed by `(module, name)`, so a QUALIFIED use
+    /// (`MOD.f`) can plan its implicits too (the bare-keyed `global_implicits` can
+    /// collide when two modules define the same `@ctx` name). Populated for this
+    /// module's own defs and every import.
+    qualified_implicits: HashMap<(&'a str, &'a str), GlobImpl>,
     /// This module's own `@ctx`-bearing definitions, re-exported to importers.
     own_implicits: Vec<(&'a str, GlobImpl)>,
     /// Each use site of an implicit-bearing function, mapped to the resolved
@@ -184,7 +189,7 @@ pub struct Checker<'a> {
     numeric: Vec<(Type, Span)>,
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
-    own_overloads: Vec<(&'a str, Vec<Type>)>,
+    own_overloads: Vec<(&'a str, Vec<OverloadExport<'a>>)>,
     own_type_names: Vec<&'a str>,
     /// Names declared after a `$ @private` marker: defined and usable within this
     /// module, but not exported, so no importer can bind or qualify them.
@@ -262,6 +267,20 @@ pub struct Checker<'a> {
     /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
+    /// The `@ctx` implicit dictionaries of the definition currently being checked
+    /// whose name is DUPLICATED (a generic `to_string : a -> @str` and `to_string :
+    /// b -> @str` both), keyed by name to `(leading-param slot, type)`. A body use
+    /// of such a name resolves by type among these (plus any global overloads).
+    /// Distinct-named implicits are ordinary scope binders and are not listed here.
+    current_dicts: HashMap<&'a str, Vec<(usize, Type)>>,
+    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
+    /// leading-parameter slot. Lowering rewrites the reference to that parameter.
+    dict_calls: HashMap<Aol<Expr>, usize>,
+    /// Set during a metaprogram-expansion round (`$ @e` codegen not yet run): an
+    /// unbound value name is treated as a fresh type variable rather than an error,
+    /// so a module that forward-references an about-to-be-injected definition still
+    /// checks well enough to run its generators. The final round checks strictly.
+    lenient: bool,
 }
 
 /// One candidate of an overloaded name: its type and, for an imported one, the
@@ -270,17 +289,45 @@ pub struct Checker<'a> {
 struct Cand<'a> {
     ty: Type,
     module: Option<&'a str>,
+    /// The `@ctx` implicit requirements this candidate carries, each `(name, req
+    /// type)` sharing `ty`'s generalized variables. Non-empty only for an
+    /// overloaded definition with implicits (a generic `to_string : Box t -> @str
+    /// @ctx to_string : t -> @str`), so a call resolving to it plans the dictionary.
+    implicits: Vec<(&'a str, Type)>,
+    /// For a candidate that is a LOCAL `@ctx` dictionary (a same-named implicit
+    /// parameter of the definition currently being checked, resolved by type),
+    /// the leading-parameter slot it occupies. Lowering references that parameter
+    /// instead of a global. `None` for an ordinary global/imported candidate.
+    dict_slot: Option<usize>,
 }
 
 impl<'a> Cand<'a> {
     /// A built-in or effect-operation candidate, owned by no module (never
     /// rewritten to a qualified reference).
     fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None }
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None }
     }
     fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
-        Cand { ty, module }
+        Cand { ty, module, implicits: Vec::new(), dict_slot: None }
     }
+    fn with_implicits(ty: Type, module: Option<&'a str>, implicits: Vec<(&'a str, Type)>) -> Cand<'a> {
+        Cand { ty, module, implicits, dict_slot: None }
+    }
+    /// A local `@ctx` dictionary candidate at leading-parameter slot `slot`.
+    fn dict(ty: Type, slot: usize) -> Cand<'a> {
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot) }
+    }
+}
+
+/// One overloaded candidate exported for import by other modules: its signature
+/// scheme and any `@ctx` implicit requirements (sharing the scheme's variables).
+/// Carrying the requirements across the import boundary lets a generic instance
+/// (a derived `to_string : Box t -> @str  @ctx to_string : t -> @str`) plan its
+/// dictionary when called from another module.
+#[derive(Clone)]
+struct OverloadExport<'a> {
+    ty: Type,
+    implicits: Vec<(&'a str, Type)>,
 }
 
 /// A `@ctx`-bearing definition's metadata: its (arrow) signature and the implicit
@@ -346,6 +393,7 @@ impl<'a> Checker<'a> {
             def_keys: HashMap::new(),
             overloaded_multi: HashSet::new(),
             global_implicits: HashMap::new(),
+            qualified_implicits: HashMap::new(),
             own_implicits: Vec::new(),
             implicit_args: HashMap::new(),
             implicit_slots: HashMap::new(),
@@ -375,9 +423,20 @@ impl<'a> Checker<'a> {
             own_externs: HashMap::new(),
             ambient: Type::RowEmpty,
             unknown_type: None,
+            lenient: false,
+            current_dicts: HashMap::new(),
+            dict_calls: HashMap::new(),
         };
         c.install_builtins();
         c
+    }
+
+    /// Enable lenient checking for a metaprogram-expansion round: an unbound value
+    /// name becomes a fresh variable instead of an error, so a module that
+    /// forward-references an about-to-be-injected definition still type-checks
+    /// enough to run its `$ @e` generators. The final round leaves this off.
+    pub fn set_lenient(&mut self, lenient: bool) {
+        self.lenient = lenient;
     }
 
     /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
@@ -451,6 +510,12 @@ impl<'a> Checker<'a> {
     /// bare name lowering must give each global so the overloads stay distinct.
     pub fn def_keys(&self) -> &HashMap<Aol<Expr>, String> {
         &self.def_keys
+    }
+
+    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
+    /// leading-parameter slot. Lowering references that parameter (`@ctx$<slot>`).
+    pub fn dict_calls(&self) -> &HashMap<Aol<Expr>, usize> {
+        &self.dict_calls
     }
 
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
@@ -700,25 +765,28 @@ impl<'a> Checker<'a> {
             if d.implicits.is_empty() {
                 continue;
             }
-            if is_overloaded(d.name) {
-                return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
-                    "`{}` cannot be both overloaded and carry `@ctx` implicit parameters",
-                    d.name
-                ));
-            }
-            let Some(sig) = d.sig else {
+            if d.sig.is_none() {
                 return Err(diag!(
                     Code::TypeMismatch, Span::at(0), 0,
                     "`{}` needs a type signature to declare `@ctx` implicit parameters",
                     d.name
                 ));
-            };
+            }
+            // An overloaded name carries its implicits on the winning candidate
+            // (planned at the call site once the overload resolves), not in the
+            // by-name `global_implicits` table (which assumes a single provider).
+            // The candidate is built in the overload-seeding loop below.
+            if is_overloaded(d.name) {
+                continue;
+            }
+            let sig = d.sig.expect("checked above");
             let gi = GlobImpl {
                 sig,
                 decls: d.implicits.clone(),
             };
             self.own_implicits.push((d.name, gi.clone()));
+            self.qualified_implicits
+                .insert((self.module_name, d.name), gi.clone());
             self.global_implicits.insert(d.name, gi);
         }
 
@@ -728,15 +796,19 @@ impl<'a> Checker<'a> {
         for d in &defs {
             if is_overloaded(d.name) {
                 if let Some(sig) = d.sig {
-                    let scheme = self.scheme_of_sig(sig);
                     let module = self.module_name;
+                    // Generalize the signature and any `@ctx` requirement types
+                    // TOGETHER so they share type variables (`Box t` and `t -> @str`
+                    // share `t`); the candidate carries the requirements so a call
+                    // resolving to it plans the dictionary.
+                    let (scheme, implicits) = self.scheme_with_implicits(sig, &d.implicits);
                     if counts[d.name] > 1 {
                         self.def_keys.insert(d.body, overload_key(d.name, &scheme));
                     }
                     self.overloads
                         .entry(d.name)
                         .or_default()
-                        .push(Cand::from(scheme, Some(module)));
+                        .push(Cand::with_implicits(scheme, Some(module), implicits));
                 }
             }
         }
@@ -773,9 +845,21 @@ impl<'a> Checker<'a> {
             .collect();
 
         self.own_values = out.clone();
-        let mut own_ov: HashMap<&'a str, Vec<Type>> = HashMap::new();
-        for (name, ty) in &overloaded_out {
-            own_ov.entry(name).or_default().push(ty.clone());
+        // Export this module's own overloaded candidates WITH their `@ctx` implicit
+        // requirements (from the seeded `Cand`s), so an importer can plan a generic
+        // instance's dictionary. Own candidates carry `module == self.module_name`;
+        // built-in (`None`) and imported (other module) candidates are excluded.
+        let module = self.module_name;
+        let mut own_ov: HashMap<&'a str, Vec<OverloadExport<'a>>> = HashMap::new();
+        for (name, cands) in &self.overloads {
+            for c in cands {
+                if c.module == Some(module) {
+                    own_ov.entry(name).or_default().push(OverloadExport {
+                        ty: c.ty.clone(),
+                        implicits: c.implicits.clone(),
+                    });
+                }
+            }
         }
         self.own_overloads = own_ov.into_iter().collect();
 
@@ -791,6 +875,32 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // Type-check `$ @run <expr>` directives. All globals are in scope now, so
+        // the expression resolves like a top-level body; a fresh pure ambient means
+        // an effect it performs that the compile-time runtime cannot discharge is
+        // rejected here. The value is discarded (the driver forces it at build
+        // time), so its type is not recorded.
+        let runs: Vec<(Aol<Expr>, bool)> = self
+            .ast
+            .slice(program.items)
+            .iter()
+            .filter_map(|item| match item {
+                Item::Run(e, _, meta) => Some((*e, *meta)),
+                _ => None,
+            })
+            .collect();
+        for (e, meta) in runs {
+            // `$ @run X` runs under a closed `<@meta>` handler: it discharges
+            // `@meta` (so meta ops type-check) but nothing else, so a stray `@io`
+            // in a generator is still rejected (hermetic). `$ @e X` requires a
+            // pure operand (empty ambient), so a meta op in it is an error.
+            self.ambient = if meta {
+                Type::row_extend("@meta", Type::RowEmpty)
+            } else {
+                Type::RowEmpty
+            };
+            self.infer(e)?;
+        }
         Ok(out)
     }
 
@@ -805,7 +915,7 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c)).collect();
+            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(&c.ty)).collect();
             self.qualified
                 .entry(module)
                 .or_default()
@@ -837,6 +947,8 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
+            self.qualified_implicits
+                .insert((other.module_name, name), gi.clone());
             self.global_implicits.insert(name, gi.clone());
         }
         for &name in &other.own_type_names {
@@ -863,12 +975,15 @@ impl<'a> Checker<'a> {
             }
             let mut qualified = Vec::with_capacity(cands.len());
             for c in cands {
-                let unqualified = self.import_scheme(c);
-                self.imported.entry(name).or_default().push(Cand {
-                    ty: unqualified,
-                    module: Some(module),
-                });
-                qualified.push(self.import_scheme(c));
+                // Import the signature and its `@ctx` requirement types with ONE
+                // shared map so their type variables stay aligned; the candidate
+                // keeps its implicits, so a cross-module call plans the dictionary.
+                let (ty, implicits) = self.import_export(c);
+                self.imported
+                    .entry(name)
+                    .or_default()
+                    .push(Cand::with_implicits(ty, Some(module), implicits));
+                qualified.push(self.import_scheme(&c.ty));
             }
             self.qualified
                 .entry(module)
@@ -880,10 +995,10 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let unqualified = self.import_scheme(scheme);
-            self.imported.entry(name).or_default().push(Cand {
-                ty: unqualified,
-                module: Some(module),
-            });
+            self.imported
+                .entry(name)
+                .or_default()
+                .push(Cand::from(unqualified, Some(module)));
             let qualified = self.import_scheme(scheme);
             self.qualified
                 .entry(module)
@@ -919,6 +1034,26 @@ impl<'a> Checker<'a> {
         // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
         self.eng.note_tensor_sizes(&imported);
         imported
+    }
+
+    /// Import an exported overload candidate: its signature and each `@ctx`
+    /// requirement type, sharing ONE substitution map so a variable common to the
+    /// signature and a requirement (the `t` in `Box t` / `t -> @str`) stays one
+    /// variable after import.
+    fn import_export(&mut self, c: &OverloadExport<'a>) -> (Type, Vec<(&'a str, Type)>) {
+        let mut map = HashMap::new();
+        let ty = self.import_ty(&c.ty, &mut map);
+        self.eng.note_tensor_sizes(&ty);
+        let implicits = c
+            .implicits
+            .iter()
+            .map(|(n, t)| {
+                let it = self.import_ty(t, &mut map);
+                self.eng.note_tensor_sizes(&it);
+                (*n, it)
+            })
+            .collect();
+        (ty, implicits)
     }
 
     fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
@@ -997,6 +1132,42 @@ impl<'a> Checker<'a> {
         self.eng.zonk(&ty)
     }
 
+    /// Generalize an overloaded definition's signature together with its `@ctx`
+    /// requirement types, so a variable shared between them (a `Box t` signature
+    /// and a `t -> @str` requirement) stays one `Generic`. Returns the signature
+    /// scheme and each `(implicit name, requirement scheme)`; instantiating them as
+    /// a bundle later keeps the shared variables aligned.
+    fn scheme_with_implicits(
+        &mut self,
+        sig: Aol<Ty>,
+        implicits: &[FieldDecl],
+    ) -> (Type, Vec<(&'a str, Type)>) {
+        self.eng.enter_level();
+        let mut tvars = HashMap::new();
+        let main = self.ty_of_ast(sig, &mut tvars);
+        let reqs: Vec<(&'a str, Type)> = implicits
+            .iter()
+            .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
+            .collect();
+        self.eng.leave_level();
+        // Generalize the whole bundle at once (packed as a tuple) so a shared
+        // variable becomes the same `Generic` in the signature and the requirements.
+        let bundle = Type::Tuple(
+            std::iter::once(main).chain(reqs.iter().map(|(_, t)| t.clone())).collect(),
+        );
+        self.eng.generalize(&bundle);
+        let Type::Tuple(parts) = self.eng.zonk(&bundle) else {
+            unreachable!("packed bundle stays a tuple");
+        };
+        let scheme = parts[0].clone();
+        let reqs = reqs
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| (*n, parts[i + 1].clone()))
+            .collect();
+        (scheme, reqs)
+    }
+
     fn check_component(
         &mut self,
         component: &[usize],
@@ -1037,16 +1208,31 @@ impl<'a> Checker<'a> {
             if def.implicits.is_empty() {
                 return self.check_body_against_sig(def.body, sig, &sig_ty);
             }
-            // Bind each `@ctx` implicit as a local while checking the body, sharing
-            // `tvars` with the signature so their type variables line up (a `List a`
+            // Bind each `@ctx` implicit while checking the body, sharing `tvars`
+            // with the signature so their type variables line up (a `List a`
             // signature and a `compare : a -> a -> Ordering` implicit share `a`).
-            self.enter_scope();
+            // A DISTINCT-named implicit is an ordinary scope binder (resolved by
+            // name). A DUPLICATED name (one dictionary per type parameter, e.g. two
+            // `to_string`) instead joins `current_dicts`, so a body use resolves by
+            // type among the dictionaries plus any global overloads.
+            let mut counts: HashMap<&'a str, usize> = HashMap::new();
             for d in &def.implicits {
+                *counts.entry(self.text(d.name)).or_insert(0) += 1;
+            }
+            self.enter_scope();
+            let mut dicts: HashMap<&'a str, Vec<(usize, Type)>> = HashMap::new();
+            for (slot, d) in def.implicits.iter().enumerate() {
                 let name = self.text(d.name);
                 let ty = self.ty_of_ast(d.ty, &mut tvars);
-                self.bind(name, ty);
+                if counts[name] > 1 {
+                    dicts.entry(name).or_default().push((slot, ty));
+                } else {
+                    self.bind(name, ty);
+                }
             }
+            let saved_dicts = std::mem::replace(&mut self.current_dicts, dicts);
             let r = self.check_body_against_sig(def.body, sig, &sig_ty);
+            self.current_dicts = saved_dicts;
             self.leave_scope();
             r
         } else {
@@ -1249,25 +1435,16 @@ impl<'a> Checker<'a> {
                 let fields = self.ast.slice(*fields);
                 self.check_codata_lit(e, fields, expected)
             }
-            // A bare `.{ .. }` literal takes its struct from the expected type (the
-            // checking direction). This is essential for a POSITIONAL literal, which
-            // carries no field names to infer from.
-            Expr::StructLit {
-                ty: None,
-                fields,
-                spread,
-            } => {
+            // A `.{ .. }` literal (bare or `Type.{ .. }`) checked against an expected
+            // type: resolve the struct from the qualifier or the expected type, and
+            // pass the expected type down so the parameters are pinned BEFORE fields
+            // are checked (bidirectional). A bare positional literal, which carries no
+            // field names, depends on this to resolve its struct at all.
+            Expr::StructLit { ty, fields, spread } => {
                 let fields = self.ast.slice(*fields);
-                match self.struct_name_of(expected) {
-                    Some(name) => {
-                        let got = self.infer_struct_lit(e, Some(name), fields, *spread)?;
-                        self.eng.unify(&got, expected, "against the expected type")
-                    }
-                    None => {
-                        let got = self.infer_struct_lit(e, None, fields, *spread)?;
-                        self.eng.unify(&got, expected, "against the expected type")
-                    }
-                }
+                let name = ty.map(|t| self.text(t)).or_else(|| self.struct_name_of(expected));
+                let got = self.infer_struct_lit(e, name, fields, *spread, Some(expected))?;
+                self.eng.unify(&got, expected, "against the expected type")
             }
             // A bare `.Tag` takes its union from the expected type (type-directed), so
             // a constructor name shared by several unions resolves unambiguously.
@@ -1295,6 +1472,28 @@ impl<'a> Checker<'a> {
             Expr::App(f, arg) if self.is_cast_head(*f) => {
                 let arg = *arg;
                 self.check_cast(arg, expected)
+            }
+            // A bare VALUE use of a duplicated `@ctx` dictionary (a nullary method
+            // like `empty : a` / `empty : b`) resolves by the EXPECTED type: when it
+            // is a bare type variable, select the dictionary whose type is exactly
+            // that variable. The application form is handled in `infer_app`.
+            Expr::Var { module: None, name }
+                if self.current_dicts.contains_key(self.text(*name))
+                    && !self.shadowed_locally(self.text(*name)) =>
+            {
+                let name = self.text(*name);
+                let dicts = self.current_dicts.get(name).cloned().unwrap_or_default();
+                let mut cands: Vec<Cand> = self.overloads.get(name).cloned().unwrap_or_default();
+                cands.extend(dicts.iter().map(|(slot, ty)| Cand::dict(ty.clone(), *slot)));
+                if let Some(v) = self.bare_var_id(expected) {
+                    let narrowed: Vec<Cand> =
+                        cands.iter().filter(|c| self.type_is_var(&c.ty, v)).cloned().collect();
+                    if !narrowed.is_empty() {
+                        cands = narrowed;
+                    }
+                }
+                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
+                self.eng.unify(&got, expected, "against the expected type")
             }
             _ => {
                 let got = self.infer(e)?;
@@ -1966,6 +2165,7 @@ impl<'a> Checker<'a> {
         ty: Option<&'a str>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
+        expected: Option<&Type>,
     ) -> Result<Type> {
         let (info, result, mut subst) = if let Some(base) = spread {
             let base_ty = self.infer(base)?;
@@ -2015,6 +2215,13 @@ impl<'a> Checker<'a> {
             }
         };
 
+        // Pin the instantiated parameters to the expected type BEFORE checking the
+        // fields, so a field's declared type (e.g. `a`) is the actual parameter
+        // variable rather than a fresh placeholder. This lets a value-position `@ctx`
+        // dictionary in a field resolve by type (`.fst = blank` picks `blank : a`).
+        if let Some(exp) = expected {
+            self.eng.unify(&result, exp, "against the expected type")?;
+        }
         for (i, fi) in fields.iter().enumerate() {
             let (decl_ty, value) = match fi {
                 FieldInit::Named { name, value } => {
@@ -2603,7 +2810,7 @@ impl<'a> Checker<'a> {
             }
             Expr::StructLit { ty, fields, spread } => {
                 let (ty, fields, spread) = (ty.map(|t| self.text(t)), self.ast.slice(*fields), *spread);
-                self.infer_struct_lit(e, ty, fields, spread)
+                self.infer_struct_lit(e, ty, fields, spread, None)
             }
             Expr::Record {
                 fields,
@@ -2804,6 +3011,20 @@ impl<'a> Checker<'a> {
                     "`{m}.{name}` is private to module `{m}` and cannot be used from another module"
                 ));
             }
+            // A qualified reference to a `@ctx`-bearing function plans its implicits
+            // just like a bare one, so `LA.dot u v` injects its dictionaries rather
+            // than staying an under-applied function.
+            if let Some(gi) = self.qualified_implicits.get(&(m, name)).cloned() {
+                let mut tvars = HashMap::new();
+                let arrow = self.ty_of_ast(gi.sig, &mut tvars);
+                let reqs: Vec<(&'a str, Type)> = gi
+                    .decls
+                    .iter()
+                    .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
+                    .collect();
+                self.plan_implicits(site, name, &reqs)?;
+                return Ok(arrow);
+            }
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
                 _ => Ok(self.eng.fresh()),
@@ -2842,6 +3063,11 @@ impl<'a> Checker<'a> {
         if let Some(scheme) = self.lookup(name) {
             Ok(self.eng.instantiate(&scheme))
         } else if self.overloads.contains_key(name) {
+            Ok(self.eng.fresh())
+        } else if self.lenient {
+            // A metaprogram-expansion round: the name may be injected by a
+            // generator that has not run yet. Defer it as a fresh variable; the
+            // final strict round rejects it if it is still unbound.
             Ok(self.eng.fresh())
         } else {
             Err(unbound(name))
@@ -3167,6 +3393,39 @@ impl<'a> Checker<'a> {
             ));
         }
 
+        // `@e X` / `@run X` runs X at compile time and embeds the result at this
+        // site. For a value it is the identity on X's type; for a `@code` fragment
+        // the embedded type is only known after the driver splices the code and
+        // re-checks, so it is a fresh variable here (which the context binds).
+        if let Expr::Var { module: None, name } = self.node(head) {
+            let n = self.text(*name);
+            if n == "@e" || n == "@run" {
+                if args.len() != 1 {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`{n}` takes exactly one argument"
+                    ));
+                }
+                // `@run` is the eliminator of `<@meta>`: run the operand under a
+                // closed `<@meta>` ambient so meta ops discharge here. `@e` runs
+                // under a pure ambient, so its operand must be pure (a meta op in
+                // it is a "effect `@meta` not handled" error; use `@run`).
+                let ambient = if n == "@run" {
+                    Type::row_extend("@meta", Type::RowEmpty)
+                } else {
+                    Type::RowEmpty
+                };
+                let saved = std::mem::replace(&mut self.ambient, ambient);
+                let arg_ty = self.infer(args[0]);
+                self.ambient = saved;
+                let arg_ty = arg_ty?;
+                return Ok(match self.eng.zonk(&arg_ty) {
+                    Type::Con(cn) if cn == "@code" => self.eng.fresh(),
+                    _ => arg_ty,
+                });
+            }
+        }
+
         if let Expr::Var { module, name } = self.node(head) {
             let module = module.map(|m| self.text(m));
             let name = self.text(*name);
@@ -3176,26 +3435,65 @@ impl<'a> Checker<'a> {
                 // same name (a lambda/`let`/`@ctx` parameter) shadows the overload
                 // set, so fall through to ordinary inference in that case.
                 None if !self.shadowed_locally(name) => {
-                    if let Some(cands) = self.overloads.get(name).cloned() {
+                    // Local `@ctx` dictionaries of this name (a generic instance's
+                    // per-parameter `to_string`) join the global overloads as
+                    // candidates, so the call resolves by type to the right one.
+                    let dicts = self.current_dicts.get(name).cloned();
+                    let overloads = self.overloads.get(name).cloned();
+                    if dicts.is_some() || overloads.is_some() {
+                        let has_dicts = dicts.is_some();
+                        let mut cands = overloads.unwrap_or_default();
+                        if let Some(ds) = dicts {
+                            cands.extend(ds.into_iter().map(|(slot, ty)| Cand::dict(ty, slot)));
+                        }
                         let arg_tys = args
                             .iter()
                             .map(|a| self.infer(*a))
                             .collect::<Result<Vec<_>>>()?;
+                        // When the first argument's type is a bare type variable (a
+                        // generic instance rendering one of its own parameters), the
+                        // dictionaries share that variable but overloads (concrete
+                        // domains) do not. Unification would let any of them match by
+                        // binding the variable, so narrow to the dictionary whose
+                        // first parameter IS that variable, by identity. Only applies
+                        // inside a generic instance body (dictionaries present) and
+                        // only when such a dictionary exists (else defer normally).
+                        if has_dicts {
+                            if let Some(v) = self.bare_var_id(&arg_tys[0]) {
+                                let narrowed: Vec<Cand> = cands
+                                    .iter()
+                                    .filter(|c| self.first_domain_is_var(&c.ty, v))
+                                    .cloned()
+                                    .collect();
+                                if !narrowed.is_empty() {
+                                    cands = narrowed;
+                                }
+                            }
+                        }
                         return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                     }
                 }
                 None => {}
                 // A qualified call already names its module; resolve among that
-                // module's candidates without needing an annotation.
+                // module's candidates without needing an annotation. Draw them
+                // from the overload set (not the `qualified` type-only map) so a
+                // candidate keeps its `@ctx` implicit requirements: a generic
+                // instance (`GENM.to_string : Boxx t -> @str  @ctx to_string : t
+                // -> @str`) then plans its dictionary at the site just like the
+                // bare path, rather than coming out under-applied. Falls through
+                // to `infer_var` for a single non-overloaded qualified value.
                 Some(m) => {
-                    if let Some(cands) = self.qualified_candidates(m, name).filter(|c| c.len() > 1)
-                    {
+                    let cands: Vec<Cand> = self
+                        .overloads
+                        .get(name)
+                        .map(|cs| cs.iter().filter(|c| c.module == Some(m)).cloned().collect())
+                        .unwrap_or_default();
+                    if !cands.is_empty() {
                         let arg_tys = args
                             .iter()
                             .map(|a| self.infer(*a))
                             .collect::<Result<Vec<_>>>()?;
-                        let cands: Vec<Cand> = cands.into_iter().map(Cand::local).collect();
-                        return self.resolve_overload(name, &cands, &arg_tys, None);
+                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                     }
                 }
             }
@@ -3467,6 +3765,27 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The variable id of `ty` if it is (resolves to) a bare type variable, used to
+    /// narrow local `@ctx` dictionary resolution by identity.
+    fn bare_var_id(&mut self, ty: &Type) -> Option<VarId> {
+        match self.eng.zonk(ty) {
+            Type::Var(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Whether `ty`'s first parameter is exactly the type variable `v` (a `@ctx`
+    /// dictionary `v -> ...`). An overload with a concrete or applied domain is not.
+    fn first_domain_is_var(&mut self, ty: &Type, v: VarId) -> bool {
+        matches!(self.eng.zonk(ty), Type::Arrow(from, _, _) if matches!(self.eng.zonk(&from), Type::Var(id) if id == v))
+    }
+
+    /// Whether `ty` IS exactly the type variable `v` (a nullary `@ctx` dictionary
+    /// `empty : v`), used to select it by the expected type at a value use site.
+    fn type_is_var(&mut self, ty: &Type, v: VarId) -> bool {
+        matches!(self.eng.zonk(ty), Type::Var(id) if id == v)
+    }
+
     fn resolve_overload(
         &mut self,
         name: &str,
@@ -3477,11 +3796,15 @@ impl<'a> Checker<'a> {
         let result = self.eng.fresh();
         match self.match_overload(candidates, args, &result) {
             Match::Unique(idx) => {
-                let cand_ty = candidates[idx].ty.clone();
-                self.apply_overload(&cand_ty, args, &result)?;
+                let cand = candidates[idx].clone();
+                self.apply_overload_cand(&cand, args, &result, site, name)?;
                 self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
+            // In a lenient expansion round the matching overload may be injected
+            // by a generator that has not run yet (a derived `to_string` for a new
+            // type); leave the result an unresolved variable rather than erroring.
+            Match::None if self.lenient => Ok(result),
             Match::None => Err(self.no_overload(name, args, site)),
             Match::Ambiguous => {
                 self.pending.push(Pending {
@@ -3516,6 +3839,14 @@ impl<'a> Checker<'a> {
         candidates: &[Cand<'a>],
         idx: usize,
     ) {
+        // A resolved LOCAL `@ctx` dictionary lowers to its leading parameter, not a
+        // global; record the slot so lowering references the parameter.
+        if let Some(slot) = candidates[idx].dict_slot {
+            if let Some(site) = site {
+                self.dict_calls.insert(site, slot);
+            }
+            return;
+        }
         let module = candidates[idx].module;
         self.record_call(site, module);
         if let (Some(site), Some(m)) = (site, module) {
@@ -3553,11 +3884,14 @@ impl<'a> Checker<'a> {
             for p in batch {
                 match self.match_overload(&p.candidates, &p.args, &p.result) {
                     Match::Unique(idx) => {
-                        let cand_ty = p.candidates[idx].ty.clone();
-                        self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                        let cand = p.candidates[idx].clone();
+                        self.apply_overload_cand(&cand, &p.args, &p.result, p.site, &p.name)?;
                         self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
+                    // Lenient round: a still-unmatched overload may be satisfied by
+                    // an about-to-be-injected definition; drop it rather than error.
+                    Match::None if self.lenient => {}
                     Match::None => return Err(self.no_overload(&p.name, &p.args, p.site)),
                     Match::Ambiguous => still.push(p),
                 }
@@ -3727,6 +4061,53 @@ impl<'a> Checker<'a> {
             f = next;
         }
         self.eng.unify(&f, result, "in an overloaded application")
+    }
+
+    /// Apply a resolved overload candidate to the argument types and, when it
+    /// carries `@ctx` implicits, plan the dictionary at the call site. The
+    /// signature and its requirement types are instantiated as one bundle so their
+    /// shared variables stay aligned; unifying the signature against the args pins
+    /// those variables, and the (now-concrete) requirement types drive implicit
+    /// resolution (a `to_string (Box.Wrap 5)` plans `to_string : @int -> @str`).
+    fn apply_overload_cand(
+        &mut self,
+        cand: &Cand<'a>,
+        args: &[Type],
+        result: &Type,
+        site: Option<Aol<Expr>>,
+        name: &str,
+    ) -> Result<()> {
+        if cand.implicits.is_empty() {
+            return self.apply_overload(&cand.ty, args, result);
+        }
+        let bundle: Vec<Type> = std::iter::once(cand.ty.clone())
+            .chain(cand.implicits.iter().map(|(_, t)| t.clone()))
+            .collect();
+        let inst = self.eng.instantiate_bundle(&bundle);
+        let mut f = inst[0].clone();
+        for a in args {
+            let next = self.eng.fresh();
+            let eff = self.eng.fresh();
+            self.eng.unify(
+                &f,
+                &Type::arrow_eff(a.clone(), next.clone(), eff.clone()),
+                "in an overloaded application",
+            )?;
+            let amb = self.ambient.clone();
+            self.eng.subrow(&eff, &amb, "in an overloaded application")?;
+            f = next;
+        }
+        self.eng.unify(&f, result, "in an overloaded application")?;
+        if let Some(site) = site {
+            let reqs: Vec<(&'a str, Type)> = cand
+                .implicits
+                .iter()
+                .enumerate()
+                .map(|(i, (n, _))| (*n, inst[i + 1].clone()))
+                .collect();
+            self.plan_implicits(site, name, &reqs)?;
+        }
+        Ok(())
     }
 
     fn infer_let_group(&mut self, bindings: &'a [Binding]) -> Result<()> {
@@ -4184,6 +4565,28 @@ impl<'a> Checker<'a> {
                 let (head, arg) = (*head, *arg);
                 Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
             }
+            // `@e X` in type position: infer `X` (so its calls/overloads resolve
+            // for lowering) and require it to build `@code`; the spliced-in type is
+            // unknown until the driver's expand loop runs `X`, so it stands as a
+            // fresh variable here. Only reachable in a lenient (pre-expansion)
+            // round; the final strict compile sees the substituted concrete type.
+            Ty::MetaE(expr, meta) => {
+                let (expr, meta) = (*expr, *meta);
+                // `@run` discharges `<@meta>` (its operand may perform meta ops);
+                // `@e` runs a pure operand. Either way the spliced-in type is
+                // unknown until the driver expands it, so it stands as a fresh var.
+                let ambient = if meta {
+                    Type::row_extend("@meta", Type::RowEmpty)
+                } else {
+                    Type::RowEmpty
+                };
+                let saved = std::mem::replace(&mut self.ambient, ambient);
+                if let Ok(t) = self.infer(expr) {
+                    let _ = self.eng.unify(&t, &Type::con("@code"), "in a `@e` type splice");
+                }
+                self.ambient = saved;
+                self.eng.fresh()
+            }
             Ty::Nat(n) => Type::Nat(*n),
             // A size expression written in type position (only well-formed inside a
             // `[..]`); elaborate it as a size so kind-checking flags any misuse.
@@ -4340,6 +4743,93 @@ impl<'a> Checker<'a> {
         self.bind(
             "@vec_slice",
             Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(int(), vt))),
+        );
+
+        // Metaprogramming primitives (compile-time; usable inside `$ @run`). `@lex`
+        // tokenizes a string into an opaque `@token` vector; a lex error traps
+        // (fails the build). Tokens are inspected via the `@token_*` accessors, not
+        // pattern-matched. `@token` is an opaque builtin type (see `is_base_type`).
+        let token = || Type::con("@token");
+        let str_ty = || Type::con(ty::STR);
+        self.bind(
+            "@lex",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), token())),
+        );
+        self.bind("@token_kind", Type::arrow(token(), str_ty()));
+        self.bind("@token_text", Type::arrow(token(), str_ty()));
+        // `@parse_str` parses a string as an expression fragment into an opaque
+        // `@code` value; a syntax error traps (fails the build). `@parse_items`
+        // validates the string as top-level item(s) instead, for a `$ @e` that
+        // injects definitions.
+        self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
+        self.bind("@parse_items", Type::arrow(str_ty(), Type::con("@code")));
+        // `@parse` consumes a token vector (from `@lex`) into the same opaque
+        // `@code` as `@parse_str`, closing the `@str -> @token -> @code` pipeline.
+        self.bind(
+            "@parse",
+            Type::arrow(Type::app(Type::con(ty::VEC), token()), Type::con("@code")),
+        );
+        // The metaprogramming ops carry the `<@meta>` effect, so they are usable
+        // only where a `<@meta>` handler is installed: inside `@e` (see the
+        // `@e`-position ambients in `check_program` / `infer_app` / `ty_of_ast`).
+        // A use in ordinary code fails to unify the `<@meta>` latent row into the
+        // pure ambient, giving a clean "effect `@meta` is performed but not
+        // handled" error instead of a runtime no-op/fault. Lexing/parsing
+        // (`@lex`/`@parse`/`@parse_str`/...) stay PURE: they need no compiler state.
+        let meta_row = || Type::row_extend("@meta", Type::RowEmpty);
+        // `@eval` compiles and runs an `@code` fragment at build time and returns
+        // its value. Its result type is fully polymorphic (`a`): the produced
+        // value is embedded as-is, so a mismatch with the use site is a runtime
+        // (compile-time) fault, not a static error.
+        let eval_res = self.eng.fresh_generic();
+        self.bind("@eval", Type::arrow_eff(Type::con("@code"), eval_res, meta_row()));
+        // Compile-time diagnostics. `@abort` fails the build with its message (a
+        // clean user-land `assert` is `if ok => {} else @abort "..."`); its result
+        // is polymorphic since it never returns. `@emit` prints a message and
+        // continues.
+        let abort_res = self.eng.fresh_generic();
+        self.bind("@abort", Type::arrow_eff(str_ty(), abort_res, meta_row()));
+        self.bind("@emit", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        // `@e X` runs X at compile time and embeds its value at the use site, so
+        // type-wise it is the identity on X's type (the value case). The fold
+        // happens in lowering + the driver; `@e` must be applied directly.
+        let e_ty = self.eng.fresh_generic();
+        self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
+        // `@run` is the `<@meta>` eliminator: like `@e` (compile-time run + embed)
+        // but its operand may perform `<@meta>` (it is discharged here). Special-
+        // cased in `infer_app`/`ty_of_ast`; this binding is the first-class fallback.
+        let run_ty = self.eng.fresh_generic();
+        self.bind("@run", Type::arrow(run_ty.clone(), run_ty));
+        // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
+        // for generating hygienic, non-colliding binders in compile-time codegen.
+        self.bind("@fresh", Type::arrow_eff(str_ty(), str_ty(), meta_row()));
+        // `@link name` / `@link_path p`: steer the build (add a library / search
+        // path to the link line), used at compile time via `$ @e (@link "curl")`.
+        // The effect is the directive; the call returns unit.
+        self.bind("@link", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        self.bind("@link_path", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        // Compile-time reflection over a declared type (resolved by the driver's
+        // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;
+        // `@type_fields` the struct's field names; `@type_variants` the union's
+        // `(tag, arity)` pairs. A derive-style macro reads these and generates code.
+        self.bind("@type_kind", Type::arrow(str_ty(), str_ty()));
+        self.bind(
+            "@type_params",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+        );
+        self.bind(
+            "@type_fields",
+            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+        );
+        self.bind(
+            "@type_variants",
+            Type::arrow(
+                str_ty(),
+                Type::app(
+                    Type::con(ty::VEC),
+                    Type::Tuple(vec![str_ty(), Type::con(ty::INT)]),
+                ),
+            ),
         );
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
@@ -4867,7 +5357,9 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *a, out);
             collect_tyvars(ast, *b, out);
         }
-        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit => {}
+        // A `@e X` type splice contributes no type variables: its type is unknown
+        // until the driver expands it, after which this node no longer exists.
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
     }
 }
 
@@ -4987,6 +5479,7 @@ fn is_base_type(name: &str) -> bool {
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
             | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
+            | "@token" | "@code"
     )
 }
 

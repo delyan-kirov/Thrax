@@ -1,0 +1,76 @@
+@mod DERIVE_SHOW
+
+# \file DERIVE_SHOW.thx
+# \info Deriving `to_string` at compile time. `DERIVE.derive_show "T"` reflects on
+#       a declared type's shape (`@type_fields` / `@type_variants`) and generates
+#       the source for `$ to_string : T -> @str`, injected here by `$ @e`. The
+#       hand-written `test` below then calls `to_string` on values of those types,
+#       even though the definitions did not exist until the generator ran (a
+#       forward-referenced injection). One macro, any struct or union.
+
+$ with DERIVE
+$ with DERIVE_LIB
+
+$ Rgb : @struct =
+	r: @int,
+	g: @int,
+	b: @int,
+
+$ Shape : @union =
+	Dot: {},
+	Circle: {@int},
+	Rect: {@int, @int},
+
+# A GENERIC union: one type parameter. `derive_show` reflects the parameter and
+# generates `$ to_string : Box t -> @str  @ctx to_string : t -> @str`, one generic
+# instance covering every element type.
+$ Box : @union t =
+	Empty: {},
+	Full: {t},
+
+# A GENERIC struct with TWO type parameters: one `@ctx to_string` dictionary per
+# parameter, each resolved by type.
+$ Pair : @struct a b =
+	fst: a,
+	snd: b,
+
+# Generate `to_string` for each type from its declaration alone.
+$ @e (DERIVE.derive_show "Rgb")
+$ @e (DERIVE.derive_show "Shape")
+$ @e (DERIVE.derive_show "Box")
+$ @e (DERIVE.derive_show "Pair")
+
+$ ck_struct : @int =
+	if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) ?= "Rgb { r = 1 g = 2 b = 3 }"
+		=> 0 else 1
+
+$ ck_nullary : @int = if to_string Shape.Dot ?= "Dot" => 0 else 2
+$ ck_unary   : @int = if to_string (Shape.Circle.{ 7 }) ?= "Circle(7)" => 0 else 4
+$ ck_nary    : @int = if to_string (Shape.Rect.{ 3, 4 }) ?= "Rect(3, 4)" => 0 else 8
+
+# Interpolation goes through the derived `to_string` too.
+$ ck_interp : @int = if "c=?(Rgb.{ .r = 9, .g = 8, .b = 7 })" ?= "c=Rgb { r = 9 g = 8 b = 7 }" => 0 else 16
+
+# The generic derive works at any instantiation: the `@ctx to_string` dictionary
+# renders the element (an `@int` here, a `Shape` there, via its own derived one).
+$ ck_gen_int   : @int = if to_string (Box.Full.{ 7 } : Box @int) ?= "Full(7)" => 0 else 32
+$ ck_gen_empty : @int = if to_string (Box.Empty : Box @int) ?= "Empty" => 0 else 64
+$ ck_gen_nest  : @int = if to_string (Box.Full.{ Shape.Rect.{ 3, 4 } } : Box Shape) ?= "Full(Rect(3, 4))" => 0 else 128
+
+# Two type parameters: each field renders through its own dictionary, by type.
+$ ck_pair : @int =
+	if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) ?= "Pair { fst = 5 snd = true }"
+		=> 0 else 256
+$ ck_pair2 : @int =
+	if to_string (Pair.{ .fst = Shape.Dot, .snd = 9 } : Pair Shape @int) ?= "Pair { fst = Dot snd = 9 }"
+		=> 0 else 512
+
+# A generic instance derived in ANOTHER module (DERIVE_LIB) still works here: the
+# imported `to_string : Wrap t` kept its `@ctx to_string : t` requirement, so this
+# call plans the element dictionary across the module boundary.
+$ ck_xmod : @int =
+	if to_string (DERIVE_LIB.Wrap.Just.{ 5 } : DERIVE_LIB.Wrap @int) ?= "Just(5)" => 0 else 1024
+
+$ test : @int =
+	ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
+	+ ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod

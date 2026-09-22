@@ -30,6 +30,9 @@ fn collect_resolved(checker: &Checker, resolved: &mut Resolved) {
     for (&site, key) in checker.overload_calls() {
         resolved.overload_calls.insert(site, key.clone());
     }
+    for (&site, &slot) in checker.dict_calls() {
+        resolved.dict_calls.insert(site, slot);
+    }
     for (&body, key) in checker.def_keys() {
         resolved.def_keys.insert(body, key.clone());
     }
@@ -119,6 +122,97 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
         .collect();
     let ir = frontend::ir::lower_modules(&lowered);
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
+}
+
+#[test]
+fn lex_tokenizes_a_string_into_opaque_tokens() {
+    // `@lex` tokenizes a string into `@vec @token`; `@token_kind` / `@token_text`
+    // read a token's tag and lexeme. `foo + 12` is Word "foo", Op "+", Int "12".
+    let src = "@mod T\n\
+               $ toks = @lex \"foo + 12\"\n\
+               $ n : @int = @vec_len toks\n\
+               $ ck : @bool =\n\
+               \t@token_kind (@vec_get toks 0) ?= \"Word\"\n\
+               \t\t&& @token_text (@vec_get toks 0) ?= \"foo\"\n\
+               \t\t&& @token_kind (@vec_get toks 1) ?= \"Op\"\n\
+               \t\t&& @token_kind (@vec_get toks 2) ?= \"Int\"\n\
+               \t\t&& @token_text (@vec_get toks 2) ?= \"12\"";
+    assert_eq!(run(src, "T.n"), "3");
+    assert_eq!(run(src, "T.ck"), "true");
+}
+
+#[test]
+fn parse_str_produces_opaque_code() {
+    // A valid expression parses into an opaque `@code` carrying its source. A
+    // syntax error traps (verified via `thrax run`: a compile-time `@e` of a
+    // bad `@parse_str` fails the build), the same fault path as a `@e` trap.
+    let src = "@mod T\n$ c : @code = @parse_str \"1 + 2\"";
+    assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
+}
+
+#[test]
+fn parse_consumes_tokens_into_code() {
+    // `@parse` consumes a `@lex` token vector into the same opaque `@code` as
+    // `@parse_str`, closing the `@str -> @token -> @code` pipeline. The lexemes
+    // rejoin whitespace-insensitively, so `@parse (@lex s)` yields code equal to
+    // `@parse_str` of the normalized source.
+    let src = "@mod T\n$ c : @code = @parse (@lex \"1+2\")";
+    assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
+}
+
+#[test]
+fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
+    use interpreter::machine::{set_meta_eval, OwnedValue};
+    // A stub host (the driver installs the real compile+run one) returns 42
+    // regardless of source; `@eval` must call it and embed the reified value.
+    set_meta_eval(Some(Box::new(|_src| Ok(OwnedValue::Int(42)))));
+    // `@eval` carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
+    let src = "@mod T\n$ n : @int = @run (@eval (@parse_str \"x\"))";
+    assert_eq!(run(src, "T.@e_expr#0"), "42");
+    set_meta_eval(None);
+}
+
+#[test]
+fn fresh_mints_distinct_names() {
+    // `@fresh` returns a unique identifier each call, for hygienic codegen. It
+    // carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
+    let src = "@mod T\n$ ck : @bool = @run (@fresh \"t\" ?= @fresh \"t\")";
+    assert_eq!(run(src, "T.@e_expr#0"), "false");
+}
+
+#[test]
+fn expr_position_e_lowers_to_a_synthetic_global() {
+    // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
+    // (the driver folds it to a constant and patches it; here we force the body
+    // directly to confirm the site was lowered and the callee is in scope).
+    let src = "@mod T\n\
+               $ fib : @int -> @int = \\n = if n ?< 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ x : @int = @e (fib 10)";
+    assert_eq!(run(src, "T.@e_expr#0"), "55");
+}
+
+#[test]
+fn ct_run_lowers_to_a_forceable_synthetic_global() {
+    // `$ @e <expr>` becomes a synthetic global (`Module.@e#i`) that the driver
+    // forces at compile time. Here we force it directly to confirm it is emitted
+    // and evaluates.
+    let src = "@mod T\n\
+               $ triple : @int -> @int = \\n = n * 3\n\
+               $ @e triple 14\n\
+               $ test : @int = 0";
+    assert_eq!(run(src, "T.@e#0"), "42");
+}
+
+#[test]
+fn type_position_e_lowers_to_a_forceable_synthetic_global() {
+    // `Foo : @e X = ...` records the type-position `@e X` as a synthetic global
+    // (`Module.@e_type#i`) the driver forces at compile time, then splices the
+    // resulting `@code`'s type source into the annotation. Here we force it
+    // directly to confirm it is emitted and yields the type-carrying `@code`.
+    let src = "@mod T\n\
+               $ pick : @str -> @code = \\s = @parse_str \"@int\"\n\
+               $ x : @e (pick \"num\") = 42";
+    assert_eq!(run(src, "T.@e_type#0"), "@code.{ .src = \"@int\" }");
 }
 
 /// Compile a tiny C source to a shared library in a temp dir, returning its path.
@@ -348,6 +442,89 @@ fn ctx_implicit_chains_and_overrides() {
                $ flipped : @int = max_of 3 7 @ctx lt\n\
                $ r : @int = chained + flipped";
     assert_eq!(run(src, "r"), "12");
+}
+
+#[test]
+fn ctx_overloaded_generic_instance_resolves_per_element_type() {
+    // A generic `to_string : Box t` is overloaded AND carries an `@ctx to_string :
+    // t` dictionary; each call plans the dictionary from the argument's element type
+    // (`instance Show a => Show (Box a)`).
+    let src = "@mod M\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"\n\
+               $ r : @int = if (to_string (Box.Wrap.{ 5 } : Box @int) ?= \"W(5)\") && (to_string (Box.Wrap.{ @true } : Box @bool) ?= \"W(true)\") => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_same_named_dictionaries_resolve_by_type() {
+    // Two type parameters, one `@ctx to_string` dictionary each: a field of type `a`
+    // renders through the `a` dictionary and a field of type `b` through the `b` one,
+    // selected by type in the body (dictionary selection).
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b,\n\
+               $ to_string : Pair a b -> @str  @ctx to_string : a -> @str, to_string : b -> @str =\n\
+               \t\\x = \"(\" ++ to_string x.fst ++ \", \" ++ to_string x.snd ++ \")\"\n\
+               $ r : @int = if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) ?= \"(5, true)\" => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_nullary_dictionary_resolves_as_value_by_expected_type() {
+    // A nullary `@ctx` dictionary used as a VALUE (not applied) resolves by the
+    // expected type, including inside a struct-literal field (`.fst = blank` picks
+    // `blank : a`).
+    let src = "@mod M\n\
+               $ Pair : @struct a b = fst: a, snd: b,\n\
+               $ blank : @int = 0\n\
+               $ blank : @str = \"\"\n\
+               $ mk : {} -> Pair a b  @ctx blank : a, blank : b = \\u = Pair.{ .fst = blank, .snd = blank }\n\
+               $ p : Pair @int @str = mk {}\n\
+               $ r : @int = if (p.fst ?= 0) && (p.snd ?= \"\") => 0 else 1";
+    assert_eq!(run(src, "r"), "0");
+}
+
+#[test]
+fn ctx_generic_instance_works_across_modules() {
+    // A generic instance's `@ctx` requirement survives the import boundary, so a
+    // caller in another module still plans the element dictionary.
+    let lib = "@mod GENM\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
+    let root = "@mod M\n\
+                $ with GENM\n\
+                $ r : @int = if to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+    assert_eq!(run_modules(&[lib, root], "r"), "0");
+}
+
+#[test]
+fn qualified_overloaded_generic_instance_injects_implicits() {
+    // A QUALIFIED call to an OVERLOADED generic instance (`GENM.to_string`, a name
+    // CORE also defines) must plan its `@ctx to_string : t` dictionary just like the
+    // bare form, rather than coming out under-applied and faulting at runtime.
+    let lib = "@mod GENM\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
+               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
+    let root = "@mod M\n\
+                $ with GENM\n\
+                $ r : @int = if GENM.to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+    assert_eq!(run_modules(&[lib, root], "r"), "0");
+}
+
+#[test]
+fn qualified_ctx_call_injects_implicits() {
+    // `MOD.f` (qualified) plans its `@ctx` implicits just like a bare `f`, resolving
+    // the dictionary from the caller's scope.
+    let lib = "@mod LM\n\
+               $ maxf : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y = if cmp x y => x else y";
+    let root = "@mod M\n\
+                $ with LM\n\
+                $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
+                $ r : @int = LM.maxf 3 7";
+    assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
 
 #[test]
@@ -1356,4 +1533,12 @@ fn deep_tail_recursion_is_constant_stack() {
                $ loop : @int -> @int = \\n = if n ?= 0 => 42 else loop (n - 1)\n\
                $ test : @int = loop 1000000\n";
     assert_eq!(run(src, "test"), "42");
+}
+
+#[test]
+fn emit_returns_unit_and_abort_faults() {
+    // `@emit` carries `<@meta>`, so it is used inside `@run` (which discharges the
+    // effect); forcing the synthetic global runs it, printing and returning unit.
+    let src = "@mod T\n$ u : {} = @run (@emit \"note\")";
+    assert_eq!(run(src, "T.@e_expr#0"), "{}");
 }

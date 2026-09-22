@@ -41,7 +41,7 @@ future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
   `@tensor_transpose`, plus `@tensor_index_axis`/`@tensor_slice_axis` for the
   multi-axis form); `transpose`/`matmul`/`dot`/`concat`/`slice`/`row`/`col` all live
   in `library/LA.thx` as ordinary Thrax. Element arithmetic is passed as `@ctx`
-  implicits (`@ctx { add, mul, zero }`), not a Num class, so `matmul`/`dot` are
+  implicits (`@ctx add, mul, zero`), not a Num class, so `matmul`/`dot` are
   element-generic over @int and Real by supplying the dictionary; the runtime does no
   arithmetic on its own.
 - **Strided data plane shipped** (increment 2a): `[n]T` is a `@tensor`-named struct
