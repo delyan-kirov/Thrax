@@ -42,7 +42,7 @@
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
  *     compiler warning. Here a control form in operand position needs parens.
  *   - LOWER PRIORITY: `defer` cleanup is `op_expr` here (EX.cpp allows a full
- *     expr up to `do`); `ext` and semantic well-formedness (field-case, mixed
+ *     expr up to `,`/`in`); `ext` and semantic well-formedness (field-case, mixed
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
@@ -62,9 +62,9 @@
 
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
 %token LAMBDA       /* \ */
-%token EQ ARROW DOLLAR COLON COMMA DOT
+%token EQ ARROW FATARROW DOLLAR COLON COMMA DOT  /* FATARROW is `=>` */
 
-%token KW_LET KW_IN KW_IF KW_WHEN KW_IS KW_THEN KW_ELSE KW_WITH
+%token KW_LET KW_IN KW_IF KW_WHEN KW_IS KW_ELSE KW_WITH
 %token KW_DO KW_CTL KW_DEFER
 
 %right SEMI                         /* ; */
@@ -222,14 +222,30 @@ expr      : ctrl_expr | op_expr ;
 
 ctrl_expr
   : KW_LET let_bindings opt_comma KW_IN expr
-  | KW_WITH expr KW_IN expr  /* field-scoping: bring the subject struct's fields
-                                into scope unqualified for the body */
-  | KW_IF expr KW_THEN expr KW_ELSE expr
+  | KW_WITH with_subjects opt_comma KW_IN expr  /* field-scoping: bring each
+                                subject struct's fields into scope unqualified
+                                for the body */
+  | KW_IF if_arms opt_comma KW_ELSE expr
   | KW_WHEN expr arms opt_when_else
   | LAMBDA params EQ expr
-  | KW_DEFER op_expr handle
+  | KW_DEFER defer_cleanups opt_comma KW_IN expr
   | handle
   ;
+
+/* One or more `cond => branch` arms, comma-separated (a trailing comma before
+   `else` is allowed). `if a => b, c => d else e` is the same expression as
+   `if a => b else if c => d else e` (right-nested). */
+if_arms
+  : expr FATARROW expr
+  | if_arms COMMA expr FATARROW expr
+  ;
+
+/* One or more subjects / cleanups, comma-separated, nesting right the way
+   `let_bindings` do: `with a, b in e` is `with a in with b in e`, and
+   `defer a, b in e` is `defer a in defer b in e` (so cleanups still run
+   innermost-first). A trailing comma before `in` is allowed. */
+with_subjects   : expr | with_subjects COMMA expr ;
+defer_cleanups  : op_expr | defer_cleanups COMMA op_expr ;
 
 /* One or more bindings, comma-separated (a trailing comma before `in` is
    allowed). `let x = a, y = b in e` desugars to
@@ -360,8 +376,8 @@ opt_when_else : /* empty */ | KW_ELSE expr ;
 alts : KW_IS pattern | alts KW_IS pattern ;
 
 arm
-  : alts KW_THEN expr
-  | alts KW_IF expr KW_THEN expr
+  : alts FATARROW expr
+  | alts KW_IF expr FATARROW expr
   ;
 
 params : pattern | params pattern ;

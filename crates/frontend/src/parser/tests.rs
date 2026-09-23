@@ -99,6 +99,42 @@ fn lambda_if_and_comparison() {
 }
 
 #[test]
+fn comma_arms_nest_if_defer_and_with() {
+    // A comma-separated list is the surface for the nested form: `if` arms nest
+    // as `else if`, `defer` cleanups and `with` subjects nest outward-in. A
+    // trailing comma before `else`/`in` is allowed.
+    let p = prog("@mod M\n$ f = \\n = if n == 0 => 1, n > 0 => 2, else 3");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::If { alt, .. } = p.ast.expr(*body) else {
+        panic!("expected an if")
+    };
+    let Expr::If { alt, .. } = p.ast.expr(*alt) else {
+        panic!("expected the second arm to nest as an if")
+    };
+    assert!(matches!(p.ast.expr(*alt), Expr::Int(3)));
+
+    let p = prog("@mod M\n$ f = \\a b c = defer a, b, in c");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Defer { body, .. } = p.ast.expr(*body) else {
+        panic!("expected a defer")
+    };
+    assert!(matches!(p.ast.expr(*body), Expr::Defer { .. }));
+
+    let p = prog("@mod M\n$ f = \\a b = with a, b in 1");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::With { body, .. } = p.ast.expr(*body) else {
+        panic!("expected a with")
+    };
+    assert!(matches!(p.ast.expr(*body), Expr::With { .. }));
+}
+
+#[test]
 fn struct_decl_and_literal_and_field() {
     let src = "@mod M\n$ Person : @struct =\n name: @str,\n age: @int,\n\
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";

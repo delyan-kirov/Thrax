@@ -980,6 +980,7 @@ fn effects_defer_finalization() {
     assert_example("FINALLY.thx", "r_abort");
     assert_example("FINALLY.thx", "r_nested");
     assert_example("FINALLY.thx", "r_stored");
+    assert_example("FINALLY.thx", "r_commas");
 }
 
 #[test]

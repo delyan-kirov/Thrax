@@ -1694,20 +1694,46 @@ impl<'a> Parser<'a> {
 
     fn parse_with(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'with'
-        let subject = self.parse_expr(0)?;
+        let mut subjects = Vec::new();
+        loop {
+            let start = self.here()?;
+            subjects.push((start, self.parse_expr(0)?));
+            // A trailing comma before `in` is allowed, as in `let`.
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::In) {
+                break;
+            }
+        }
         expect!(self, Kind::In, "expected 'in' after the 'with' subject");
-        let body = self.parse_expr(0)?;
-        Ok(self.expr(Expr::With { subject, body }))
+        let mut node = self.parse_expr(0)?;
+        for (start, subject) in subjects.into_iter().rev() {
+            node = self.expr(Expr::With { subject, body: node });
+            node = self.stamp(start, node);
+        }
+        Ok(node)
     }
 
     fn parse_if(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'if'
-        let cond = self.parse_expr(0)?;
-        expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
-        let then = self.parse_expr(0)?;
+        let mut arms = Vec::new();
+        loop {
+            let start = self.here()?;
+            let cond = self.parse_expr(0)?;
+            expect!(self, Kind::FatArrow, "expected '=>' after the 'if' condition");
+            let then = self.parse_expr(0)?;
+            arms.push((start, cond, then));
+            // A comma chains another `cond => then` arm, spelling what nested
+            // `else if` does; a trailing comma before `else` is allowed.
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::Else) {
+                break;
+            }
+        }
         expect!(self, Kind::Else, "expected 'else' in the 'if' expression");
-        let alt = self.parse_expr(0)?;
-        Ok(self.expr(Expr::If { cond, then, alt }))
+        let mut node = self.parse_expr(0)?;
+        for (start, cond, then) in arms.into_iter().rev() {
+            node = self.expr(Expr::If { cond, then, alt: node });
+            node = self.stamp(start, node);
+        }
+        Ok(node)
     }
 
     fn parse_match(&mut self) -> Result<Aol<Expr>> {
@@ -1814,10 +1840,22 @@ impl<'a> Parser<'a> {
 
     fn parse_defer(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // 'defer'
-        let cleanup = self.parse_expr(0)?; // stops at 'in', as in `let`
+        let mut cleanups = Vec::new();
+        loop {
+            let start = self.here()?;
+            cleanups.push((start, self.parse_expr(0)?)); // stops at ',' / 'in', as in `let`
+            // A trailing comma before `in` is allowed, as in `let`.
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::In) {
+                break;
+            }
+        }
         expect!(self, Kind::In, "expected 'in' after the 'defer' cleanup");
-        let body = self.parse_expr(0)?;
-        Ok(self.expr(Expr::Defer { cleanup, body }))
+        let mut node = self.parse_expr(0)?;
+        for (start, cleanup) in cleanups.into_iter().rev() {
+            node = self.expr(Expr::Defer { cleanup, body: node });
+            node = self.stamp(start, node);
+        }
+        Ok(node)
     }
 
     // -- patterns -----------------------------------------------------------

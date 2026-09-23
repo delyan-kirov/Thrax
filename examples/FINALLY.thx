@@ -41,6 +41,15 @@ $ r_nested : @int = sum <| \_=
     Y.yield 1;
     0
 
+# One `defer` may list several cleanups, separated by commas: the same nesting,
+# so they still run in LIFO order. A trailing comma before `in` is allowed.
+$ r_commas : @int = sum <| \_=
+    defer Y.yield 3,
+          Y.yield 2,
+    in
+    Y.yield 1;
+    0
+
 # A stored continuation (coroutine): cleanup runs once, when the resumed task
 # finally completes -- not when the continuation is first stashed.
 $ Task : @union =
@@ -67,4 +76,4 @@ $ r_stored : @int = drive <| spawn <| \_=
     {}
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = r_normal ; r_abort ; r_nested ; r_stored ; 0
+$ test : @int = r_normal ; r_abort ; r_stored ; r_commas - r_nested

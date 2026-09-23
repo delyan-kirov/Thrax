@@ -32,6 +32,11 @@ $ chk_expr : @int = with mk 10 in (if x + y == 21 => 0 else 1)
 $ chk_nested : @int =
 	with p in with who in (if x + y + age == 48 => 0 else 1)
 
+# One `with` may list several subjects, separated by commas: the same nesting,
+# so a later subject's fields shadow an earlier one's.
+$ chk_commas : @int =
+	with p, who in (if x + y + age == 48 => 0 else 1)
+
 # A bound field shadows an outer local of the same name.
 $ chk_shadow : @int =
 	let x = 1 in
@@ -50,5 +55,5 @@ $ chk_sig_mixed : @int =
 	if tagged {100, Point.{ .x = 3, .y = 4 }} == 107 => 0 else 1
 
 $ test : @int =
-	chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_shadow
-	+ chk_sig + chk_sig_mixed
+	chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_commas
+	+ chk_shadow + chk_sig + chk_sig_mixed
