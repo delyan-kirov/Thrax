@@ -10,8 +10,8 @@ with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.)
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 `\x = e` (curried: `\a b = e`); a branch is `if c => t else e`; a match is
-`is scrut | pat => e ... else d`. The comparison operators are `?=` (equal),
-`?<` (less), `?>` (greater), `<=` (at most), `>=` (at least), each of type
+`is scrut | pat => e ... else d`. The comparison operators are `==` (equal),
+`<` (less), `>` (greater), `<=` (at most), `>=` (at least), each of type
 `a -> a -> @bool`.
 
 ---
@@ -119,8 +119,8 @@ $ id : t -> t = \x = x        # annotation required (polymorphic)
 
 Involved (definitions may appear in any order and reference each other):
 ```thrax
-$ even : @int -> @bool = \n = if n ?= 0 => @true else odd (n - 1)
-$ odd  : @int -> @bool = \n = if n ?= 0 => @false else even (n - 1)
+$ even : @int -> @bool = \n = if n == 0 => @true else odd (n - 1)
+$ odd  : @int -> @bool = \n = if n == 0 => @false else even (n - 1)
 ```
 
 ## 2.3 Imports `$ with`
@@ -322,13 +322,32 @@ $ d = !@true                 # @false
 ```
 
 ## 4.4 Comparisons
-`?=` `?<` `?>` `<=` `>=`, all `a -> a -> @bool`. Use `!(a ?= b)` for inequality.
+`==` `<` `>` `<=` `>=`, all `a -> a -> @bool`. Use `!(a == b)` for inequality.
 
 ```thrax
-$ lt : @bool = 3 ?< 8
+$ lt : @bool = 3 < 8
 $ le : @bool = 8 <= 8
-$ ne : @bool = !(3 ?= 4)
+$ ne : @bool = !(3 == 4)
 ```
+
+Like arithmetic, each one is an overload per base type in `CORE.thx` over the
+comparison intrinsics (`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`),
+so a type of your own joins the set the same way:
+
+```thrax
+$ Money : @struct = cents: @int
+
+$ (<) : Money -> Money -> @bool = \a b = a.cents < b.cents
+$ cheaper : @bool = Money.{ .cents = 150 } < Money.{ .cents = 900 }
+```
+
+What no overload covers falls back to the built-in: `==` compares any two values
+structurally (field by field, variant by variant), and ordering works on numbers
+and strings. A definition of your own is preferred over that fallback wherever it
+applies.
+
+`<` and `>` are also the effect-row brackets (§3.5), but a row only ever appears
+in type position, so the two never collide.
 
 ## 4.5 Concatenation `++` and cons `::`
 `++` joins strings/arrays/vectors of the same type; `::` conses onto a `@list`.
@@ -342,7 +361,7 @@ $ xs : @list @int = 1 :: 2 :: 3 :: []
 Desugar to a lazy `if`, so the right operand runs only when needed.
 
 ```thrax
-$ safe : @int -> @bool = \n = n ?> 0 && 100 / n ?> 5
+$ safe : @int -> @bool = \n = n > 0 && 100 / n > 5
 ```
 
 ## 4.7 Conditional `if ... => ... else`
@@ -351,14 +370,14 @@ $ safe : @int -> @bool = \n = n ?> 0 && 100 / n ?> 5
 
 Simple:
 ```thrax
-$ abs : @int -> @int = \n = if n ?> 0 => n else 0 - n
+$ abs : @int -> @int = \n = if n > 0 => n else 0 - n
 ```
 
 Involved (else-if chain):
 ```thrax
 $ sign : @int -> @int = \n =
-	if n ?= 0 => 0
-	else if n ?> 0 => 1
+	if n == 0 => 0
+	else if n > 0 => 1
 	else 0 - 1
 ```
 
@@ -511,8 +530,8 @@ Guards falling through the same constructor:
 ```thrax
 $ Box : @union = Some: @int, Nil: {},
 $ grade : Box -> @int = \x =
-	is x | Box.Some.{ v } if v ?> 100 => 3
-	     | Box.Some.{ v } if v ?> 0   => 2
+	is x | Box.Some.{ v } if v > 100 => 3
+	     | Box.Some.{ v } if v > 0   => 2
 	     | Box.Some.{ _ }             => 1
 	     | Box.Nil.{}                 => 0
 	     else 0 - 1
@@ -685,7 +704,7 @@ Involved (chaining passes the implicit down; explicit override at the call):
 ```thrax
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ compare : @int -> @int -> Ordering = \a b =
-	if a ?< b => Ordering.LT else if a ?> b => Ordering.GT else Ordering.EQ
+	if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ
 $ flip : @int -> @int -> Ordering = \a b = compare b a
 $ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
 	is compare x y | Ordering.GT => x else y
@@ -700,7 +719,7 @@ constant stack.
 
 ```thrax
 $ sum_to : @int -> @int -> @int = \n acc =
-	if n ?= 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
+	if n == 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
 ```
 
 ---
@@ -736,7 +755,7 @@ qualified in a clause head.
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
 $ safeDiv : @int -> @int -> @int = \a b =
-	do if b ?= 0 => Exn.throw "div0" else a / b
+	do if b == 0 => Exn.throw "div0" else a / b
 	ctl k | Exn.throw msg => 0 - 1
 ```
 
@@ -937,8 +956,8 @@ marker.
 false.
 
 ```thrax
-$ @assert (fib 10 ?= 55)
-$ @assert (fact 5 ?= 120)
+$ @assert (fib 10 == 55)
+$ @assert (fact 5 == 120)
 ```
 
 ## 11.2 `@run` and BUILD directives
@@ -962,7 +981,7 @@ The built-in boolean; values are `@true` and `@false` (matched with the
 `@bool`; `!` negates it.
 
 ```thrax
-$ b : @bool = 3 ?< 4
+$ b : @bool = 3 < 4
 $ chk : @int = is b | @true => 0 else 1
 ```
 
@@ -1006,7 +1025,7 @@ The `TARGET` module (qualified, no import) reflects the compilation target: word
 size, @int bounds, and os/arch names, fixed at compile time.
 
 ```thrax
-$ wide : @bool = TARGET.int_bits ?= 64
+$ wide : @bool = TARGET.int_bits == 64
 $ name : Str = TARGET.arch ++ "-" ++ TARGET.os     # equals TARGET.name
 ```
 

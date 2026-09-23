@@ -7,7 +7,7 @@
 #       the FILE* API, whose handles travel as word-sized Ints (see the C
 #       namespace notes in DR). C functions returning a negative C `int` do
 #       not arrive as negative Ints across the FFI, so end-of-stream is
-#       detected as "not a byte" (outside 0..255) and errors as `not ?= 0`.
+#       detected as "not a byte" (outside 0..255) and errors as `not == 0`.
 
 $ with OPT
 $ with STR
@@ -40,7 +40,7 @@ $ read_line : {} -> <@io> @str = \u = read_line_acc ""
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
 $ read_file : @str -> <@io> Option @str = \path =
 	let f = C.fopen {path, "rb"} in
-	if f ?= 0 => Option.None
+	if f == 0 => Option.None
 	else
 		C.fseek {f, 0, 2};
 		let n = C.ftell f in
@@ -58,7 +58,7 @@ $ append_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "ab"
 
 $ remove_file : @str -> <@io> @bool = \path =
-	(C.remove path) ?= 0
+	(C.remove path) == 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
@@ -73,14 +73,14 @@ $ @private
 
 $ read_line_acc : @str -> <@io> @str = \acc =
 	let c = C.getchar {} in
-	if c ?= 10 => acc
+	if c == 10 => acc
 	else if is_byte c => read_line_acc (@array_push acc c)
 	else acc
 
 # A C `int` return lands in the low 32 bits of the slot; EOF (-1) is
 # therefore "anything outside 0..255" rather than a negative @int.
 $ is_byte : @int -> @bool = \c =
-	if c ?< 0 => @false else c <= 255
+	if c < 0 => @false else c <= 255
 
 $ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
 	if n <= 0 => acc
@@ -91,7 +91,7 @@ $ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
 
 $ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
-	if f ?= 0 => @false
+	if f == 0 => @false
 	else
 		C.fputs {content, f};
-		(C.fclose f) ?= 0
+		(C.fclose f) == 0

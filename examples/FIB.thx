@@ -4,8 +4,8 @@
 # \info The Fibonacci sequence by naive double recursion.
 
 $fib : @int -> @int = \n =
-	if n ?= 0 => 0
-	else if n ?= 1 => 1
+	if n == 0 => 0
+	else if n == 1 => 1
 	else (fib (n - 1)) + (fib (n - 2))
 
 $ foo =
@@ -33,7 +33,7 @@ $ len: @vec t -> @int =
 $ to: @int -> @int -> @vec @int = \a b =
 	let helper: @int -> @int -> @vec @int -> @vec @int =
 		\a b xs =
-			if a ?< b => helper (a+1) b (a :: xs)
+			if a < b => helper (a+1) b (a :: xs)
 			else xs
 	 in helper a b []
 
@@ -52,6 +52,6 @@ $ add: Point -> Point -> Point = \p1 p2 =
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int =
 	len3
-	+ (if fib5 ?= 5 => 0 else 1)
-	+ (if fib10 ?= 55 => 0 else 1)
-	+ (if fib15 ?= 610 => 0 else 1)
+	+ (if fib5 == 5 => 0 else 1)
+	+ (if fib10 == 55 => 0 else 1)
+	+ (if fib15 == 610 => 0 else 1)

@@ -107,11 +107,11 @@ $ Color : @union = with Base, Blue: {}   # Red, Green, then Blue
 ```thrax
 $ grade : Maybe @int -> @int = \m =
 	is m
-		| .Just.{ v } if v ?> 100 => 3
-		| .Just.{ v } if v ?> 0   => 2
+		| .Just.{ v } if v > 100 => 3
+		| .Just.{ v } if v > 0   => 2
 		| .Just.{ _ }             => 1
 		| .None                   => 0
-		else 0 - 1
+		else - 1
 ```
 
 ### Algebraic effects and handlers

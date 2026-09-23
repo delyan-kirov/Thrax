@@ -1113,8 +1113,8 @@ impl<'a> Parser<'a> {
                     // Infix, but binds looser than the caller's floor: stop and
                     // let the outer level fold it.
                     Some(bp) if bp.left < min_bp => break,
-                    // Not infix at all. A grammatical delimiter (`<`, `>`, `|`,
-                    // `<>`) legitimately ends the expression; anything else is an
+                    // Not infix at all. A grammatical delimiter (`|`, `<>`)
+                    // legitimately ends the expression; anything else is an
                     // operator with no infix meaning here, reported at its own
                     // span rather than surfacing as a confusing error elsewhere.
                     None => {

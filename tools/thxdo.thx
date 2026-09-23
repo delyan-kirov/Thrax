@@ -30,7 +30,7 @@ $ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 # `args` element 0 is this binary's path; element 1 is the command. With no
 # command, show help. `@tensor_index` is a modular read, so it never faults.
 $ main : [n]@str -> <| e> @int = \args =
-	if @tensor_length args ?< 2
+	if @tensor_length args < 2
 		=> C.puts help_text; 0
 		else is @tensor_index args 1
 			| "build"   => C.system "cargo clean && cargo build"
@@ -39,7 +39,7 @@ $ main : [n]@str -> <| e> @int = \args =
 			| "readme"  =>
 				C.puts "thxdo: regenerating README.md ...";
 				let rc = C.system readme_cmd in
-				C.puts (if rc ?= 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
+				C.puts (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
 				rc
 			| "stats"   => C.system "tokei --exclude external --exclude applications"
 			| "all"     =>

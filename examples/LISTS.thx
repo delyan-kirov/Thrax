@@ -45,25 +45,25 @@ $ drop2 : @vec @int -> @vec @int = \xs =
 	is xs | [_, _, ..rest] => rest
 	         else []
 
-$ ck_second : @int = if (second xs) ?= 2 => 0 else 1
-$ ck_second_short : @int = if (second [9]) ?= 0-1 => 0 else 1
-$ ck_drop2 : @int = if (sum (drop2 xs)) ?= 12 => 0 else 1
+$ ck_second : @int = if (second xs) == 2 => 0 else 1
+$ ck_second_short : @int = if (second [9]) == 0-1 => 0 else 1
+$ ck_drop2 : @int = if (sum (drop2 xs)) == 12 => 0 else 1
 $ ck_head_tail : @int = is xs | [h, ..t] =>
-	if (h + sum t) ?= 15 => 0 else 1 else 1
+	if (h + sum t) == 15 => 0 else 1 else 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
 $ xs : @vec @int = [1, 2, 3, 4, 5]
 $ ys : @vec @int = 1 :: 2 :: 3 :: 4 :: 5 :: []
 
-$ ck_sum : @int = if (sum xs) ?= 15 => 0 else 1
-$ ck_len : @int = if (length xs) ?= 5 => 0 else 1
-$ ck_cons : @int = if (sum ys) ?= 15 => 0 else 1
-$ ck_map : @int = if (sum (map_inc xs)) ?= 20 => 0 else 1
-$ ck_empty : @int = if (sum []) ?= 0 => 0 else 1
-$ ck_sc0 : @int = if (size_class []) ?= 0 => 0 else 1
-$ ck_sc1 : @int = if (size_class [7]) ?= 1 => 0 else 1
-$ ck_sc2 : @int = if (size_class [7, 8]) ?= 2 => 0 else 1
-$ ck_scN : @int = if (size_class xs) ?= 9 => 0 else 1
+$ ck_sum : @int = if (sum xs) == 15 => 0 else 1
+$ ck_len : @int = if (length xs) == 5 => 0 else 1
+$ ck_cons : @int = if (sum ys) == 15 => 0 else 1
+$ ck_map : @int = if (sum (map_inc xs)) == 20 => 0 else 1
+$ ck_empty : @int = if (sum []) == 0 => 0 else 1
+$ ck_sc0 : @int = if (size_class []) == 0 => 0 else 1
+$ ck_sc1 : @int = if (size_class [7]) == 1 => 0 else 1
+$ ck_sc2 : @int = if (size_class [7, 8]) == 2 => 0 else 1
+$ ck_scN : @int = if (size_class xs) == 9 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN

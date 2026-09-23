@@ -27,11 +27,11 @@ $ with VEC
 
 # Join non-empty pieces with `sep` (the seed "" is skipped, so no leading sep).
 $ join : @str -> @vec @str -> @str = \sep xs =
-	VEC.foldl (\a s = if a ?= "" => s else a ++ sep ++ s) "" xs
+	VEC.foldl (\a s = if a == "" => s else a ++ sep ++ s) "" xs
 
 # Positional binder names `a0 .. a<n-1>` for a variant of arity `n`.
 $ arg_names : @int -> @vec @str = \n =
-	if n ?= 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
+	if n == 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
 
 # The body of a struct's `to_string`: interpolate each field. `\?(` emits a
 # literal `?(` so the interpolation happens when the GENERATED code compiles,
@@ -46,7 +46,7 @@ $ struct_show : @str -> @str -> @str -> @str = \base applied ctx =
 $ arm_for : @str -> @str -> @int -> @str = \base tag arity =
 	let vars = arg_names arity in
 	let interps = VEC.map (\v = "\?(" ++ v ++ ")") vars in
-	if arity ?= 0
+	if arity == 0
 		=> " | " ++ base ++ "." ++ tag ++ " => \"" ++ tag ++ "\""
 		else " | " ++ base ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
 			++ " => \"" ++ tag ++ "(" ++ join ", " interps ++ ")\""
@@ -66,32 +66,40 @@ $ derive_show : @str -> @code = \ty =
 	let params = @type_params ty in
 	let applied = if VEC.is_empty params => ty else ty ++ " " ++ join " " params in
 	let ctx = VEC.foldl (\acc p = acc ++ ctx_clause p) "" params in
-	if @type_kind ty ?= "struct"
+	if @type_kind ty == "struct"
 		=> @parse_items (struct_show ty applied ctx)
 		else @parse_items (union_show ty applied ctx)
 
 # ---- derive: structural three-way `compare` (Ord) ----
-# The comparison operators `?=`/`?<`/`?>`/`<=`/`>=` are builtins: `?=` is
-# structural (works on any type), but ORDERING (`?<`/`?>`/`<=`/`>=`) only works on
-# numbers and strings and faults on structs/unions. `derive_ord "T"` generates a
-# structural three-way `compare : T -> T -> @int` (-1 / 0 / 1) for a custom type by
-# reflecting on it (like `derive_show`), plus overloadable `lt`/`le`/`gt`/`ge`/`eq`
-# built on it. A struct compares lexicographically by field; a union by variant
-# order, then payload. Underlying primitives (`?<` on the base types) do the work.
+# `derive_ord "T"` generates a structural three-way `compare : T -> T -> @int`
+# (-1 / 0 / 1) for a custom type by reflecting on it (like `derive_show`), plus
+# `lt`/`le`/`gt`/`ge`/`eq` and the operators `<`/`<=`/`>`/`>=`/`==` built on it,
+# each joining that name's overload set. A struct compares lexicographically by
+# field; a union by variant order, then payload. Underlying primitives (`<` on
+# the base types) do the work. Ordering is what a custom type most needs: the
+# built-in fallback compares `==` structurally already, but faults on `<` outside
+# numbers and strings.
 
-$ compare : @int -> @int -> @int = \a b = if a ?< b => (0 - 1) else if a ?> b => 1 else 0
-$ compare : @str -> @str -> @int = \a b = if a ?< b => (0 - 1) else if a ?> b => 1 else 0
-$ compare : @bool -> @bool -> @int = \a b = if a ?= b => 0 else if a => 1 else (0 - 1)
+$ compare : @int -> @int -> @int = \a b = if a < b => (0 - 1) else if a > b => 1 else 0
+$ compare : @str -> @str -> @int = \a b = if a < b => (0 - 1) else if a > b => 1 else 0
+$ compare : @bool -> @bool -> @int = \a b = if a == b => 0 else if a => 1 else (0 - 1)
 
-# The five boolean comparisons for `T`, over its `compare` (overloadable, so each
-# custom type gets its own; `eq` mirrors the builtin `?=`).
+# The five boolean comparisons for `T`, over its `compare`, under both spellings:
+# the named `lt`/`le`/`gt`/`ge`/`eq` and the operators themselves. Each joins the
+# overload set of that name, so `a < b` on a derived type dispatches here while
+# `1 < 2` still reaches the `@int` overload.
 $ bool_ops : @str -> @str = \ty =
 	let sig = " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
-	"$ lt" ++ sig ++ "compare a b ?< 0\n"
-	++ "$ le" ++ sig ++ "not (compare a b ?> 0)\n"
-	++ "$ gt" ++ sig ++ "compare a b ?> 0\n"
-	++ "$ ge" ++ sig ++ "not (compare a b ?< 0)\n"
-	++ "$ eq" ++ sig ++ "compare a b ?= 0"
+	"$ lt" ++ sig ++ "compare a b < 0\n"
+	++ "$ le" ++ sig ++ "not (compare a b > 0)\n"
+	++ "$ gt" ++ sig ++ "compare a b > 0\n"
+	++ "$ ge" ++ sig ++ "not (compare a b < 0)\n"
+	++ "$ eq" ++ sig ++ "compare a b == 0\n"
+	++ "$ (<)" ++ sig ++ "compare a b < 0\n"
+	++ "$ (<=)" ++ sig ++ "not (compare a b > 0)\n"
+	++ "$ (>)" ++ sig ++ "compare a b > 0\n"
+	++ "$ (>=)" ++ sig ++ "not (compare a b < 0)\n"
+	++ "$ (==)" ++ sig ++ "compare a b == 0"
 
 # A struct's `compare`: a lexicographic chain over its fields, short-circuiting on
 # the first non-equal field.
@@ -99,7 +107,7 @@ $ struct_cmp_chain : @vec @str -> @str = \fields =
 	VEC.foldr (\f acc =
 		let v = "c_" ++ f in
 		"let " ++ v ++ " = compare a." ++ f ++ " b." ++ f
-			++ " in if " ++ v ++ " ?= 0 => (" ++ acc ++ ") else " ++ v
+			++ " in if " ++ v ++ " == 0 => (" ++ acc ++ ") else " ++ v
 	) "0" fields
 
 $ struct_cmp : @str -> @str = \ty =
@@ -109,7 +117,7 @@ $ struct_cmp : @str -> @str = \ty =
 # that ignores a variant's payload (for the tag-index match).
 $ underscores : @int -> @str = \n = join ", " (VEC.map (\x = "_") (arg_names n))
 $ ignore_pat : @str -> @str -> @int -> @str = \base tag arity =
-	if arity ?= 0 => base ++ "." ++ tag else base ++ "." ++ tag ++ ".{" ++ underscores arity ++ "}"
+	if arity == 0 => base ++ "." ++ tag else base ++ "." ++ tag ++ ".{" ++ underscores arity ++ "}"
 
 # `is <var> | Base.Tag... => i | ...`: map each variant to its declaration index,
 # so two values are ordered first by variant.
@@ -125,14 +133,14 @@ $ payload_lex : @vec @str -> @vec @str -> @str = \xs ys =
 	VEC.foldr (\pair acc =
 		let cv = "c_" ++ pair.0 in
 		"let " ++ cv ++ " = compare " ++ pair.0 ++ " " ++ pair.1
-			++ " in if " ++ cv ++ " ?= 0 => (" ++ acc ++ ") else " ++ cv
+			++ " in if " ++ cv ++ " == 0 => (" ++ acc ++ ") else " ++ cv
 	) "0" (VEC.zip xs ys)
 
 # For a payload variant, the arm that (with tags already known equal) destructures
 # both values and compares their payloads; nullary variants need no arm (they are
 # equal, handled by the trailing `else 0`).
 $ payload_arm : @str -> {@str, @int} -> @str = \base v =
-	if v.1 ?= 0 => ""
+	if v.1 == 0 => ""
 	else
 		let xs = VEC.map (\n = "x" ++ n) (arg_names v.1) in
 		let ys = VEC.map (\n = "y" ++ n) (arg_names v.1) in
@@ -149,9 +157,9 @@ $ union_cmp : @str -> @str = \ty =
 	"$ compare : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
 		++ "let ta = is a" ++ index_arms ty vs 0 ++ " in "
 		++ "let tb = is b" ++ index_arms ty vs 0 ++ " in "
-		++ "if ta ?= tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
+		++ "if ta == tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
 
 $ derive_ord : @str -> @code = \ty =
-	if @type_kind ty ?= "struct"
+	if @type_kind ty == "struct"
 		=> @parse_items (struct_cmp ty ++ "\n" ++ bool_ops ty)
 		else @parse_items (union_cmp ty ++ "\n" ++ bool_ops ty)

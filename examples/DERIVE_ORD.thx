@@ -1,13 +1,12 @@
 @mod DERIVE_ORD
 
 # \file DERIVE_ORD.thx
-# \info Deriving COMPARISON at compile time. The operators `?=`/`?<`/`?>`/`<=`/`>=`
-#       are builtins: `?=` is structural (works on any type), but ORDERING only
-#       works on numbers and strings and faults on structs/unions. `derive_ord "T"`
-#       reflects on a type (like `derive_show`) and generates a structural three-way
-#       `compare : T -> T -> @int` (-1 / 0 / 1) plus `lt`/`le`/`gt`/`ge`/`eq`, so a
-#       custom struct or union gets a full comparison. A struct compares
-#       lexicographically by field; a union by variant order, then payload.
+# \info Deriving COMPARISON at compile time. `derive_ord "T"` reflects on a type
+#       (like `derive_show`) and generates a structural three-way
+#       `compare : T -> T -> @int` (-1 / 0 / 1), plus `lt`/`le`/`gt`/`ge`/`eq` and
+#       the operators `<`/`<=`/`>`/`>=`/`==` over it, so a custom struct or union
+#       gets a full comparison. A struct compares lexicographically by field; a
+#       union by variant order, then payload.
 
 $ with DERIVE
 
@@ -20,7 +19,7 @@ $ Geom : @union =
 	Circle: {@int},
 	Rect: {@int, @int},
 
-# Generate `compare` + `lt`/`le`/`gt`/`ge`/`eq` for each type from its declaration.
+# Generate `compare`, `lt`/`le`/`gt`/`ge`/`eq`, and the operators for each type.
 $ @e (DERIVE.derive_ord "Coord")
 $ @e (DERIVE.derive_ord "Geom")
 
@@ -34,6 +33,15 @@ $ ck_ge   : @int = if ge (Coord.{ .x = 1, .y = 3 }) (Coord.{ .x = 1, .y = 2 }) =
 # Union: ordered by variant (Dot < Circle < Rect), then by payload.
 $ ck_tag  : @int = if lt Geom.Dot (Geom.Circle.{ 0 }) => 0 else 32
 $ ck_pay  : @int = if lt (Geom.Rect.{ 1, 2 }) (Geom.Rect.{ 1, 3 }) => 0 else 64
-$ ck_cmp  : @int = if compare (Geom.Circle.{ 5 }) (Geom.Circle.{ 5 }) ?= 0 => 0 else 128
+$ ck_cmp  : @int = if compare (Geom.Circle.{ 5 }) (Geom.Circle.{ 5 }) == 0 => 0 else 128
 
-$ test : @int = ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp
+# The derived operators, joining the same overload sets the base types use: `<` on
+# a `Coord` dispatches to the derived one, `<` on an `@int` still to CORE's.
+$ ck_op_lt : @int = if Coord.{ .x = 1, .y = 2 } < Coord.{ .x = 1, .y = 3 } => 0 else 256
+$ ck_op_ge : @int = if Geom.Rect.{ 1, 3 } >= Geom.Rect.{ 1, 2 } => 0 else 512
+$ ck_op_eq : @int = if Coord.{ .x = 4, .y = 5 } == Coord.{ .x = 4, .y = 5 } => 0 else 1024
+$ ck_mixed : @int = if (2 < 3) && (Geom.Dot < Geom.Rect.{ 0, 0 }) => 0 else 2048
+
+$ test : @int =
+	ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp
+	+ ck_op_lt + ck_op_ge + ck_op_eq + ck_mixed

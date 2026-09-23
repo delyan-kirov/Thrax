@@ -28,7 +28,7 @@ pub enum Kind {
     // Names.
     Word, // identifier; lexeme is `source[span]`
     At,   // @name intrinsic
-    Op,   // operator lexeme (+ - * / % ! ?= ?< ?> <= >= < > | ; |> :: ++ ...)
+    Op,   // operator lexeme (+ - * / % ! == < > <= >= | ; |> :: ++ ...)
 
     // Structural punctuation that carries its own meaning.
     Eq,       // =
@@ -124,43 +124,124 @@ impl OpDef {
 /// operator uses `left < right`, a right-associative one `left > right`.
 pub const OPERATORS: &[OpDef] = &[
     // Structural.
-    OpDef { lexeme: "\\", role: OpRole::Structural(Kind::Lambda) },
-    OpDef { lexeme: "=", role: OpRole::Structural(Kind::Eq) },
-    OpDef { lexeme: "=>", role: OpRole::Structural(Kind::FatArrow) },
-    OpDef { lexeme: "->", role: OpRole::Structural(Kind::Arrow) },
-    OpDef { lexeme: ":", role: OpRole::Structural(Kind::Colon) },
-    OpDef { lexeme: "$", role: OpRole::Structural(Kind::Dollar) },
+    OpDef {
+        lexeme: "\\",
+        role: OpRole::Structural(Kind::Lambda),
+    },
+    OpDef {
+        lexeme: "=",
+        role: OpRole::Structural(Kind::Eq),
+    },
+    OpDef {
+        lexeme: "=>",
+        role: OpRole::Structural(Kind::FatArrow),
+    },
+    OpDef {
+        lexeme: "->",
+        role: OpRole::Structural(Kind::Arrow),
+    },
+    OpDef {
+        lexeme: ":",
+        role: OpRole::Structural(Kind::Colon),
+    },
+    OpDef {
+        lexeme: "$",
+        role: OpRole::Structural(Kind::Dollar),
+    },
     // Arithmetic. `^` (exponentiation) is right-associative and binds tighter
     // than `*`; unary prefix still binds tighter than `^`.
-    OpDef { lexeme: "+", role: OpRole::Infix(20, 21) },
-    OpDef { lexeme: "-", role: OpRole::InfixPrefix(20, 21) },
-    OpDef { lexeme: "*", role: OpRole::Infix(30, 31) },
-    OpDef { lexeme: "/", role: OpRole::Infix(30, 31) },
-    OpDef { lexeme: "%", role: OpRole::Infix(30, 31) },
-    OpDef { lexeme: "^", role: OpRole::Infix(35, 34) },
-    OpDef { lexeme: "!", role: OpRole::Prefix },
-    // Comparison (all one precedence, left-associative).
-    OpDef { lexeme: "?=", role: OpRole::Infix(10, 11) },
-    OpDef { lexeme: "?>", role: OpRole::Infix(10, 11) },
-    OpDef { lexeme: "?<", role: OpRole::Infix(10, 11) },
-    OpDef { lexeme: "<=", role: OpRole::Infix(10, 11) },
-    OpDef { lexeme: ">=", role: OpRole::Infix(10, 11) },
+    OpDef {
+        lexeme: "+",
+        role: OpRole::Infix(20, 21),
+    },
+    OpDef {
+        lexeme: "-",
+        role: OpRole::InfixPrefix(20, 21),
+    },
+    OpDef {
+        lexeme: "*",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: "/",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: "%",
+        role: OpRole::Infix(30, 31),
+    },
+    OpDef {
+        lexeme: "^",
+        role: OpRole::Infix(35, 34),
+    },
+    OpDef {
+        lexeme: "!",
+        role: OpRole::Prefix,
+    },
+    // Comparison (all one precedence, left-associative). `<` and `>` are also the
+    // effect-row brackets, but a row only ever appears in TYPE position, which is
+    // parsed by lexeme (`parse_effect_row_opt`) and never consults these roles.
+    OpDef {
+        lexeme: "==",
+        role: OpRole::Infix(10, 11),
+    },
+    OpDef {
+        lexeme: ">",
+        role: OpRole::Infix(10, 11),
+    },
+    OpDef {
+        lexeme: "<",
+        role: OpRole::Infix(10, 11),
+    },
+    OpDef {
+        lexeme: "<=",
+        role: OpRole::Infix(10, 11),
+    },
+    OpDef {
+        lexeme: ">=",
+        role: OpRole::Infix(10, 11),
+    },
     // Effect-row delimiters and their coalesced forms.
-    OpDef { lexeme: "<", role: OpRole::Delimiter },
-    OpDef { lexeme: ">", role: OpRole::Delimiter },
-    OpDef { lexeme: "|", role: OpRole::Delimiter },
-    OpDef { lexeme: "<>", role: OpRole::Delimiter },
+    OpDef {
+        lexeme: "|",
+        role: OpRole::Delimiter,
+    },
+    OpDef {
+        lexeme: "<>",
+        role: OpRole::Delimiter,
+    },
     // Pipe into a function on the left; right-associative.
-    OpDef { lexeme: "<|", role: OpRole::Infix(5, 4) },
+    OpDef {
+        lexeme: "<|",
+        role: OpRole::Infix(5, 4),
+    },
     // Short-circuit boolean and/or (desugared to a lazy `if` in the parser).
-    OpDef { lexeme: "&&", role: OpRole::Infix(9, 10) },
-    OpDef { lexeme: "||", role: OpRole::Infix(8, 9) },
+    OpDef {
+        lexeme: "&&",
+        role: OpRole::Infix(9, 10),
+    },
+    OpDef {
+        lexeme: "||",
+        role: OpRole::Infix(8, 9),
+    },
     // Sequencing / pipe-forward (desugared in the parser).
-    OpDef { lexeme: ";", role: OpRole::Infix(2, 1) },
-    OpDef { lexeme: "|>", role: OpRole::Infix(6, 7) },
+    OpDef {
+        lexeme: ";",
+        role: OpRole::Infix(2, 1),
+    },
+    OpDef {
+        lexeme: "|>",
+        role: OpRole::Infix(6, 7),
+    },
     // List cons (right-associative) and Str/Array concatenation.
-    OpDef { lexeme: "::", role: OpRole::Infix(15, 14) },
-    OpDef { lexeme: "++", role: OpRole::Infix(16, 17) },
+    OpDef {
+        lexeme: "::",
+        role: OpRole::Infix(15, 14),
+    },
+    OpDef {
+        lexeme: "++",
+        role: OpRole::Infix(16, 17),
+    },
 ];
 
 /// Single-character delimiters. Unlike operators these never coalesce.
@@ -242,7 +323,6 @@ pub fn is_operator_char(b: u8) -> bool {
             | b'<'
             | b'='
             | b'>'
-            | b'?'
             | b'^'
             | b'|'
             | b'~'

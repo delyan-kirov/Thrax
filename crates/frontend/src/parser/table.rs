@@ -51,9 +51,9 @@ pub fn prefix(op: &str) -> Option<&'static str> {
 }
 
 /// True if `op` is an operator lexeme that legitimately ends an expression: a
-/// grammatical delimiter (`<`, `>`, `|`, `<>`) that a surrounding construct
-/// consumes. Lets the infix loop tell "the expression ended here" apart from
-/// "this operator has no infix meaning here" (a real error).
+/// grammatical delimiter (`|`, `<>`) that a surrounding construct consumes. Lets
+/// the infix loop tell "the expression ended here" apart from "this operator has
+/// no infix meaning here" (a real error).
 pub fn ends_expr(op: &str) -> bool {
     matches!(op_role(op), Some(OpRole::Delimiter))
 }

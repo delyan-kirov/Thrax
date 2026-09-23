@@ -132,11 +132,11 @@ fn lex_tokenizes_a_string_into_opaque_tokens() {
                $ toks = @lex \"foo + 12\"\n\
                $ n : @int = @vec_len toks\n\
                $ ck : @bool =\n\
-               \t@token_kind (@vec_get toks 0) ?= \"Word\"\n\
-               \t\t&& @token_text (@vec_get toks 0) ?= \"foo\"\n\
-               \t\t&& @token_kind (@vec_get toks 1) ?= \"Op\"\n\
-               \t\t&& @token_kind (@vec_get toks 2) ?= \"Int\"\n\
-               \t\t&& @token_text (@vec_get toks 2) ?= \"12\"";
+               \t@token_kind (@vec_get toks 0) == \"Word\"\n\
+               \t\t&& @token_text (@vec_get toks 0) == \"foo\"\n\
+               \t\t&& @token_kind (@vec_get toks 1) == \"Op\"\n\
+               \t\t&& @token_kind (@vec_get toks 2) == \"Int\"\n\
+               \t\t&& @token_text (@vec_get toks 2) == \"12\"";
     assert_eq!(run(src, "T.n"), "3");
     assert_eq!(run(src, "T.ck"), "true");
 }
@@ -176,7 +176,7 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 fn fresh_mints_distinct_names() {
     // `@fresh` returns a unique identifier each call, for hygienic codegen. It
     // carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
-    let src = "@mod T\n$ ck : @bool = @run (@fresh \"t\" ?= @fresh \"t\")";
+    let src = "@mod T\n$ ck : @bool = @run (@fresh \"t\" == @fresh \"t\")";
     assert_eq!(run(src, "T.@e_expr#0"), "false");
 }
 
@@ -186,7 +186,7 @@ fn expr_position_e_lowers_to_a_synthetic_global() {
     // (the driver folds it to a constant and patches it; here we force the body
     // directly to confirm the site was lowered and the callee is in scope).
     let src = "@mod T\n\
-               $ fib : @int -> @int = \\n = if n ?< 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
                $ x : @int = @e (fib 10)";
     assert_eq!(run(src, "T.@e_expr#0"), "55");
 }
@@ -420,7 +420,7 @@ fn ctx_implicit_resolves_by_name_and_type() {
     // `max_of` declares an implicit `cmp`, resolved by name from scope (the global
     // `>`-like `cmp`). The dictionary is injected as a leading argument.
     let src = "@mod M\n\
-               $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
+               $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
                $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ r : @int = max_of 3 7";
@@ -432,8 +432,8 @@ fn ctx_implicit_chains_and_overrides() {
     // `max3` passes its own `@ctx cmp` down to `max_of` (local wins), and an
     // explicit `@ctx lt` override flips `max_of` into a min.
     let src = "@mod M\n\
-               $ gt : @int -> @int -> @bool = \\a b = a ?> b\n\
-               $ lt : @int -> @int -> @bool = \\a b = a ?< b\n\
+               $ gt : @int -> @int -> @bool = \\a b = a > b\n\
+               $ lt : @int -> @int -> @bool = \\a b = a < b\n\
                $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y z =\n\
@@ -453,7 +453,7 @@ fn ctx_overloaded_generic_instance_resolves_per_element_type() {
                $ Box : @union t = Wrap: {t},\n\
                $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
                \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"\n\
-               $ r : @int = if (to_string (Box.Wrap.{ 5 } : Box @int) ?= \"W(5)\") && (to_string (Box.Wrap.{ @true } : Box @bool) ?= \"W(true)\") => 0 else 1";
+               $ r : @int = if (to_string (Box.Wrap.{ 5 } : Box @int) == \"W(5)\") && (to_string (Box.Wrap.{ @true } : Box @bool) == \"W(true)\") => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
@@ -466,7 +466,7 @@ fn ctx_same_named_dictionaries_resolve_by_type() {
                $ Pair : @struct a b = fst: a, snd: b,\n\
                $ to_string : Pair a b -> @str  @ctx to_string : a -> @str, to_string : b -> @str =\n\
                \t\\x = \"(\" ++ to_string x.fst ++ \", \" ++ to_string x.snd ++ \")\"\n\
-               $ r : @int = if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) ?= \"(5, true)\" => 0 else 1";
+               $ r : @int = if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) == \"(5, true)\" => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
@@ -481,7 +481,7 @@ fn ctx_nullary_dictionary_resolves_as_value_by_expected_type() {
                $ blank : @str = \"\"\n\
                $ mk : {} -> Pair a b  @ctx blank : a, blank : b = \\u = Pair.{ .fst = blank, .snd = blank }\n\
                $ p : Pair @int @str = mk {}\n\
-               $ r : @int = if (p.fst ?= 0) && (p.snd ?= \"\") => 0 else 1";
+               $ r : @int = if (p.fst == 0) && (p.snd == \"\") => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
@@ -495,7 +495,7 @@ fn ctx_generic_instance_works_across_modules() {
                \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
     let root = "@mod M\n\
                 $ with GENM\n\
-                $ r : @int = if to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+                $ r : @int = if to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
     assert_eq!(run_modules(&[lib, root], "r"), "0");
 }
 
@@ -510,7 +510,7 @@ fn qualified_overloaded_generic_instance_injects_implicits() {
                \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
     let root = "@mod M\n\
                 $ with GENM\n\
-                $ r : @int = if GENM.to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) ?= \"W(5)\" => 0 else 1";
+                $ r : @int = if GENM.to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
     assert_eq!(run_modules(&[lib, root], "r"), "0");
 }
 
@@ -522,7 +522,7 @@ fn qualified_ctx_call_injects_implicits() {
                $ maxf : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y = if cmp x y => x else y";
     let root = "@mod M\n\
                 $ with LM\n\
-                $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
+                $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
                 $ r : @int = LM.maxf 3 7";
     assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
@@ -723,7 +723,7 @@ fn indexing_hook_returns_non_element() {
                $ Maybe : @union a = Nada: {}, Just: {a}\n\
                $ Dict : @struct = base: @int\n\
                $ @compiler_interface_indexing : Dict -> @int -> Maybe @int =\n\
-               \t\\d k = if k ?< d.base => Maybe.Just.{ d.base + k } else Maybe.Nada\n\
+               \t\\d k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada\n\
                $ d : Dict = .{ .base = 10 }\n\
                $ r : @int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
     assert_eq!(run(src, "r"), "13");
@@ -812,7 +812,7 @@ fn literal_pattern_via_equality_hook() {
     let src = "@mod M\n\
         $ MyStr : @struct = bytes: @str\n\
         $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
-        $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
+        $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes == b.bytes\n\
         $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
         $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
     assert_eq!(run(src, "r"), "120");
@@ -859,9 +859,9 @@ fn inclusive_range_patterns() {
                \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" else \"F\"\n\
                $ band : @float64 -> @int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
                $ r : @int =\n\
-               \t(if grade 100 ?= \"A\" => 1 else 0)\n\
-               \t+ (if grade 60 ?= \"C\" => 2 else 0)\n\
-               \t+ (if grade 40 ?= \"F\" => 4 else 0)\n\
+               \t(if grade 100 == \"A\" => 1 else 0)\n\
+               \t+ (if grade 60 == \"C\" => 2 else 0)\n\
+               \t+ (if grade 40 == \"F\" => 4 else 0)\n\
                \t+ (band 0.5) * 8";
     assert_eq!(run(src, "r"), "15"); // 1 + 2 + 4 + 1*8
 }
@@ -951,7 +951,7 @@ fn codata_stream_is_lazy_and_infinite() {
     let src = "@mod M\n\
                $ Stream : @codata t = head : t, tail : Stream t,\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
-               $ nth : @int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
                $ r : @int = (from 10).head + nth 5 (from 10)";
     assert_eq!(run(src, "r"), "25"); // 10 + 15
 }
@@ -1064,7 +1064,7 @@ fn extern_ffi_dynamic_dlopen() {
         $ dup    : @str -> @str   = @extern \"C\" \"strdup\" \"libc\"\n\
         $ expm1r : @float64 -> @float64 = @extern \"C\" \"expm1\"  \"libm\"\n\
         $ r : @int = iabs (0 - 7) + @array_len (dup \"abcde\") \
-                  + (if expm1r 1.0 ?> 1.7 => 100 else 0)";
+                  + (if expm1r 1.0 > 1.7 => 100 else 0)";
     assert_eq!(run(src, "r"), "112");
 }
 
@@ -1073,8 +1073,8 @@ fn target_reflects_the_host_consistently() {
     // Host-agnostic invariants: the word and pointer widths agree, and `name` is
     // exactly `arch-os`.
     let src = "@mod M\n$ r : @int = \
-        if TARGET.int_bits ?= TARGET.ptr_bits \
-        => (if (TARGET.arch ++ \"-\" ++ TARGET.os) ?= TARGET.name => 0 else 1) \
+        if TARGET.int_bits == TARGET.ptr_bits \
+        => (if (TARGET.arch ++ \"-\" ++ TARGET.os) == TARGET.name => 0 else 1) \
         else 1";
     assert_eq!(run(src, "r"), "0");
 }
@@ -1171,31 +1171,31 @@ fn scalar_serialization_round_trips() {
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
 
     // @int, including the negative branch.
-    assert_eq!(ok("(from_string (to_string 1234)) ?= 1234"), "true");
-    assert_eq!(ok("(from_string (to_string (0 - 99))) ?= (0 - 99)"), "true");
+    assert_eq!(ok("(from_string (to_string 1234)) == 1234"), "true");
+    assert_eq!(ok("(from_string (to_string (0 - 99))) == (0 - 99)"), "true");
     // @nat prints unsigned; round-trip at the same type.
     assert_eq!(
-        ok("let n : @nat = from_string (to_string (let m : @nat = 250 in m)) in n ?= 250"),
+        ok("let n : @nat = from_string (to_string (let m : @nat = 250 in m)) in n == 250"),
         "true"
     );
     // A sized width (`@int32`), checked by comparing the rendered text.
     assert_eq!(
-        ok("let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\""),
+        ok("let n : @int32 = from_string \"77\" in (to_string n) == \"77\""),
         "true"
     );
     // Booleans render as `true`/`false` and parse back.
-    assert_eq!(ok("(from_string \"true\") ?= (1 ?= 1)"), "true");
-    assert_eq!(ok("(from_string \"false\") ?= (1 ?= 0)"), "true");
+    assert_eq!(ok("(from_string \"true\") == (1 == 1)"), "true");
+    assert_eq!(ok("(from_string \"false\") == (1 == 0)"), "true");
     // A `@str` serializes as itself.
-    assert_eq!(ok("(from_string (to_string \"hi\")) ?= \"hi\""), "true");
+    assert_eq!(ok("(from_string (to_string \"hi\")) == \"hi\""), "true");
     // Floats round-trip through their shortest decimal (via the C runtime seam:
     // `thx_real_to_str`/`thx_f32_to_str` + libc `atof`), at both widths.
     assert_eq!(
-        ok("let x : @float64 = 3.5 in (from_string (to_string x)) ?= x"),
+        ok("let x : @float64 = 3.5 in (from_string (to_string x)) == x"),
         "true"
     );
     assert_eq!(
-        ok("let x : @float32 = from_string \"0.5\" in (to_string x) ?= \"0.5\""),
+        ok("let x : @float32 = from_string \"0.5\" in (to_string x) == \"0.5\""),
         "true"
     );
 }
@@ -1210,13 +1210,13 @@ fn float_mixed_width_widens_to_float64() {
     assert_eq!(
         ok("let x : @float32 = from_string \"1.5\" in \
             let y : @float64 = from_string \"2.25\" in \
-            let e : @float64 = 3.75 in (x + y) ?= e"),
+            let e : @float64 = 3.75 in (x + y) == e"),
         "true"
     );
     assert_eq!(
         ok("let x : @float32 = from_string \"1.5\" in \
             let y : @float64 = from_string \"2.25\" in \
-            let e : @float64 = 3.75 in (y + x) ?= e"),
+            let e : @float64 = 3.75 in (y + x) == e"),
         "true"
     );
 }
@@ -1231,25 +1231,25 @@ fn int_word_mixes_with_sized() {
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
             let x : @int = 5 in \
-            let r : @int32 = x * p in r ?= from_string \"15\""),
+            let r : @int32 = x * p in r == from_string \"15\""),
         "true"
     );
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
             let x : @int = 5 in \
-            let r : @int32 = p * x in r ?= from_string \"15\""),
+            let r : @int32 = p * x in r == from_string \"15\""),
         "true"
     );
     // The reported real-world case: a bare literal times a sized value.
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
-            let r : @int32 = 2 * p in r ?= from_string \"6\""),
+            let r : @int32 = 2 * p in r == from_string \"6\""),
         "true"
     );
     assert_eq!(
         ok("let n : @nat16 = from_string \"7\" in \
             let two : @nat = 2 in \
-            let r : @nat16 = two * n in r ?= from_string \"14\""),
+            let r : @nat16 = two * n in r == from_string \"14\""),
         "true"
     );
 }
@@ -1261,11 +1261,11 @@ fn sized_literal_arithmetic_evaluates() {
     // not defaulted to `@int`).
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
-        ok("let r : @int32 = 2 + 3 * 4 in r ?= from_string \"14\""),
+        ok("let r : @int32 = 2 + 3 * 4 in r == from_string \"14\""),
         "true"
     );
     assert_eq!(
-        ok("let r : @int64 = 100 - 1 in r ?= from_string \"99\""),
+        ok("let r : @int64 = 100 - 1 in r == from_string \"99\""),
         "true"
     );
 }
@@ -1303,9 +1303,9 @@ fn operator_table_every_entry() {
             "^" => ("$ a = 2 ^ 3", Runs("8")),
             "!" => ("$ a = if !@false => 1 else 0", Runs("1")),
             // Comparison.
-            "?=" => ("$ a = if 3 ?= 3 => 1 else 0", Runs("1")),
-            "?>" => ("$ a = if 5 ?> 3 => 1 else 0", Runs("1")),
-            "?<" => ("$ a = if 3 ?< 5 => 1 else 0", Runs("1")),
+            "==" => ("$ a = if 3 == 3 => 1 else 0", Runs("1")),
+            ">" => ("$ a = if 5 > 3 => 1 else 0", Runs("1")),
+            "<" => ("$ a = if 3 < 5 => 1 else 0", Runs("1")),
             "<=" => ("$ a = if 3 <= 3 => 1 else 0", Runs("1")),
             ">=" => ("$ a = if 5 >= 4 => 1 else 0", Runs("1")),
             // Effect-row delimiters. `<`/`>` only mean something inside a `<E>`
@@ -1361,7 +1361,7 @@ fn reals_and_mixed() {
 
 #[test]
 fn self_recursion_factorial() {
-    let src = "@mod M\n$ fact : @int -> @int = \\n = if n ?= 0 => 1 else n * fact (n - 1)\n\
+    let src = "@mod M\n$ fact : @int -> @int = \\n = if n == 0 => 1 else n * fact (n - 1)\n\
                $ r = fact 5";
     assert_eq!(run(src, "r"), "120");
 }
@@ -1369,8 +1369,8 @@ fn self_recursion_factorial() {
 #[test]
 fn mutual_recursion() {
     let src = "@mod M\n\
-               $ is_even : @int -> @int = \\n = if n ?= 0 => 1 else is_odd (n - 1)\n\
-               $ is_odd  : @int -> @int = \\n = if n ?= 0 => 0 else is_even (n - 1)\n\
+               $ is_even : @int -> @int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
+               $ is_odd  : @int -> @int = \\n = if n == 0 => 0 else is_even (n - 1)\n\
                $ r = is_even 10";
     assert_eq!(run(src, "r"), "1");
 }
@@ -1464,7 +1464,7 @@ fn higher_order_and_guards() {
                $ a = twice (\\n = n + 3) 1";
     assert_eq!(run(src, "a"), "7");
     let guard = "@mod M\n\
-                 $ classify : @int -> @int = \\n = is n | m if m ?> 0 => 1 | _ => 0\n\
+                 $ classify : @int -> @int = \\n = is n | m if m > 0 => 1 | _ => 0\n\
                  $ a = classify 5";
     assert_eq!(run(guard, "a"), "1");
 }
@@ -1487,13 +1487,13 @@ fn sequencing_returns_last() {
 fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`, so the right operand is skipped when the
     // result is already decided: a `1 / 0` on the skipped side must not fault.
-    // Precedence: `&&`/`||` bind looser than comparison (`a ?< b && c ?< d`).
+    // Precedence: `&&`/`||` bind looser than comparison (`a < b && c < d`).
     let src = "@mod M\n\
                $ f : @bool = @false\n\
                $ t : @bool = @true\n\
-               $ sc_and : @int = if (f && (1 / 0 ?= 0)) => 1 else 0\n\
-               $ sc_or  : @int = if (t || (1 / 0 ?= 0)) => 0 else 1\n\
-               $ prec   : @int = if (3 ?< 5 && 5 ?< 9) => 0 else 1\n\
+               $ sc_and : @int = if (f && (1 / 0 == 0)) => 1 else 0\n\
+               $ sc_or  : @int = if (t || (1 / 0 == 0)) => 0 else 1\n\
+               $ prec   : @int = if (3 < 5 && 5 < 9) => 0 else 1\n\
                $ test : @int = sc_and + sc_or + prec";
     assert_eq!(run(src, "test"), "0");
 }
@@ -1530,7 +1530,7 @@ fn entry_argv_fn_receives_string_vector() {
 #[test]
 fn deep_tail_recursion_is_constant_stack() {
     let src = "@mod T\n\
-               $ loop : @int -> @int = \\n = if n ?= 0 => 42 else loop (n - 1)\n\
+               $ loop : @int -> @int = \\n = if n == 0 => 42 else loop (n - 1)\n\
                $ test : @int = loop 1000000\n";
     assert_eq!(run(src, "test"), "42");
 }

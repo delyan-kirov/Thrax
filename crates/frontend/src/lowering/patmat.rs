@@ -15,7 +15,7 @@
 //! resumes at the next arm.
 //!
 //! The output is ordinary Core (shallow cases, `let` field extractions, and
-//! `?=`/`array_slice` builtin tests for strings), so it still runs on the
+//! `==`/`array_slice` builtin tests for strings), so it still runs on the
 //! tree-walker unchanged, which is how the pass is validated.
 
 use std::sync::Arc;
@@ -225,7 +225,7 @@ impl Pm {
             Pat::Real(r) => case1(v(sv), Pat::Real(*r), on_match, on_fail.clone()),
             Pat::Bool(b) => case1(v(sv), Pat::Bool(*b), on_match, on_fail.clone()),
             Pat::Str(bytes) => case1(
-                bin("?=", v(sv), Term::Str(bytes.clone())),
+                bin("==", v(sv), Term::Str(bytes.clone())),
                 Pat::Bool(true),
                 on_match,
                 on_fail.clone(),
@@ -309,7 +309,7 @@ impl Pm {
                 };
                 let prefix_ok = case1(
                     bin(
-                        "?=",
+                        "==",
                         array_slice(sv, Term::Int(0), Term::Int(plen as i64)),
                         Term::Str(prefix.clone()),
                     ),

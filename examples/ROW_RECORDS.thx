@@ -22,29 +22,29 @@ $ Boxed : @struct = x: @int, y: @int, z: @int,
 
 # One open-row function, applied to two nominal structs and to an anonymous
 # record (the extra field is absorbed by the row variable).
-$ ck_point : @int = if area Point.{ .x = 3, .y = 4 } ?= 12 => 0 else 1
-$ ck_boxed : @int = if area Boxed.{ .x = 5, .y = 6, .z = 9 } ?= 30 => 0 else 2
-$ ck_anon  : @int = if area { .x = 2, .y = 5, .tag = 7 } ?= 10 => 0 else 4
+$ ck_point : @int = if area Point.{ .x = 3, .y = 4 } == 12 => 0 else 1
+$ ck_boxed : @int = if area Boxed.{ .x = 5, .y = 6, .z = 9 } == 30 => 0 else 2
+$ ck_anon  : @int = if area { .x = 2, .y = 5, .tag = 7 } == 10 => 0 else 4
 
 # Update keeps the other fields (y survives), so area sees { x: 11, y: 4 }.
-$ ck_update : @int = if area (shift { .x = 1, .y = 4 }) ?= 44 => 0 else 8
+$ ck_update : @int = if area (shift { .x = 1, .y = 4 }) == 44 => 0 else 8
 
 # Stack adds `tag`, which the result row carries and we read back.
-$ ck_stack : @int = if (tag { .x = 3, .y = 6 }).tag ?= 99 => 0 else 16
+$ ck_stack : @int = if (tag { .x = 3, .y = 6 }).tag == 99 => 0 else 16
 
 # Destructure a record with a pattern; `.._` ignores the remaining fields.
 $ diag : { x: @int, y: @int | r } -> @int = \p = is p | { .x = a, .y = b, .._ } => a + b
-$ ck_pat : @int = if diag { .x = 3, .y = 7, .tag = 1 } ?= 10 => 0 else 32
+$ ck_pat : @int = if diag { .x = 3, .y = 7, .tag = 1 } == 10 => 0 else 32
 
 # `..rest` BINDS the leftover fields as a record: peel off `x`, forward the rest.
 $ sum2 : { y: @int, z: @int } -> @int = y + z
 $ peel : Boxed -> @int = \p = is p | { .x = a, ..rest } => a + sum2 rest
-$ ck_rest : @int = if peel Boxed.{ .x = 1, .y = 2, .z = 3 } ?= 6 => 0 else 64
+$ ck_rest : @int = if peel Boxed.{ .x = 1, .y = 2, .z = 3 } == 6 => 0 else 64
 
 # A GENERIC struct also satisfies an open row: its type argument is substituted
 # for the parameter, so `Cell @int` matches `{ val: @int | r }`.
 $ Cell : @struct a = val: a
 $ get_val : { val: v | r } -> v = \c = c.val
-$ ck_gen : @int = if get_val Cell.{ .val = 7 } ?= 7 => 0 else 128
+$ ck_gen : @int = if get_val Cell.{ .val = 7 } == 7 => 0 else 128
 
 $ test : @int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack + ck_pat + ck_rest + ck_gen

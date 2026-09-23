@@ -547,7 +547,7 @@ static Value *as_str(Value *v) {
   return v;
 }
 
-/* -- structural equality (?=) -------------------------------------------- */
+/* -- structural equality (==) -------------------------------------------- */
 
 static bool value_eq(Value *x, Value *y) {
   bool xnum = x->tag == T_INT || x->tag == T_REAL || x->tag == T_REAL32;
@@ -663,6 +663,24 @@ static int cmp_bytes(Value *a, Value *b) {
   return a->u.str.len < b->u.str.len ? -1 : 1;
 }
 
+/* A monomorphic comparison intrinsic (`@ieq`, `@slt`, ...), the primitive the
+ * comparison overloads are built on. `@u*` reads the same bits as unsigned, so a
+ * `Nat` past i64::MAX orders correctly. Returns NULL if `name` is not one, so the
+ * caller falls through to the other builtins. */
+static Value *compare_intrinsic(const char *name, Value *x, Value *y) {
+  if (strcmp(name, "@ieq") == 0) return THxRT_bool(x->u.i == y->u.i);
+  if (strcmp(name, "@ilt") == 0) return THxRT_bool(x->u.i < y->u.i);
+  if (strcmp(name, "@ult") == 0)
+    return THxRT_bool((uint64_t)x->u.i < (uint64_t)y->u.i);
+  if (strcmp(name, "@feq") == 0) return THxRT_bool(as_f64(x) == as_f64(y));
+  if (strcmp(name, "@flt") == 0) return THxRT_bool(as_f64(x) < as_f64(y));
+  if (strcmp(name, "@seq") == 0)
+    return THxRT_bool(x->u.str.len == y->u.str.len &&
+                      memcmp(x->u.str.data, y->u.str.data, x->u.str.len) == 0);
+  if (strcmp(name, "@slt") == 0) return THxRT_bool(cmp_bytes(x, y) < 0);
+  return NULL;
+}
+
 static Value *compare(const char *op, Value *x, Value *y) {
   int ord;
   if (x->tag == T_STR && y->tag == T_STR) {
@@ -672,9 +690,9 @@ static Value *compare(const char *op, Value *x, Value *y) {
     ord = a < b ? -1 : (a > b ? 1 : 0);
   }
   bool r;
-  if (strcmp(op, "?<") == 0)
+  if (strcmp(op, "<") == 0)
     r = ord < 0;
-  else if (strcmp(op, "?>") == 0)
+  else if (strcmp(op, ">") == 0)
     r = ord > 0;
   else if (strcmp(op, "<=") == 0)
     r = ord <= 0;
@@ -827,10 +845,16 @@ static Value *tensor_stack(Value **elems, size_t n) {
 }
 
 static Value *run_builtin(const char *name, Value **a, size_t n) {
-  (void)n;
   if (strcmp(name, "^") == 0) return arith_pow(a[0], a[1]);
-  if (name[0] == '@' && (name[1] == 'i' || name[1] == 'u' || name[1] == 'f')) {
-    Value *r = arith_intrinsic(name, a[0], a[1]);
+  /* The two-operand intrinsic families. `n >= 2` first: a one-argument builtin
+   * (`@array_len`, ...) must never reach for `a[1]`. `arith_intrinsic` reads its
+   * operands as numbers before matching, so it stays behind its `@i`/`@u`/`@f`
+   * prefix test; `compare_intrinsic` matches the name first and needs none. */
+  if (n >= 2 && name[0] == '@') {
+    Value *r = NULL;
+    if (name[1] == 'i' || name[1] == 'u' || name[1] == 'f')
+      r = arith_intrinsic(name, a[0], a[1]);
+    if (!r) r = compare_intrinsic(name, a[0], a[1]);
     if (r) return r;
   }
   if (strcmp(name, "neg") == 0) {
@@ -843,8 +867,8 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     if (a[0]->tag == T_BOOL) return THxRT_bool(!a[0]->u.b);
     thrax_fault("`not` on a non-boolean");
   }
-  if (strcmp(name, "?=") == 0) return THxRT_bool(value_eq(a[0], a[1]));
-  if (strcmp(name, "?<") == 0 || strcmp(name, "?>") == 0 ||
+  if (strcmp(name, "==") == 0) return THxRT_bool(value_eq(a[0], a[1]));
+  if (strcmp(name, "<") == 0 || strcmp(name, ">") == 0 ||
       strcmp(name, "<=") == 0 || strcmp(name, ">=") == 0)
     return compare(name, a[0], a[1]);
   if (strcmp(name, "++") == 0) return concat(a[0], a[1]);

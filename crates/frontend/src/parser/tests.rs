@@ -91,7 +91,7 @@ fn application_is_left_associative_and_tight() {
 
 #[test]
 fn lambda_if_and_comparison() {
-    let p = prog("@mod M\n$ f = \\n = if n ?= 0 => 1 else n");
+    let p = prog("@mod M\n$ f = \\n = if n == 0 => 1 else n");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -425,4 +425,27 @@ fn interface_hook_prefix_rule() {
     assert!(parse("@mod M\n$ @compiler_interface_indexing : a -> @int -> a = \\t i = t").is_ok());
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
     assert!(err("@mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
+}
+
+/// `<` and `>` are infix comparisons in expression position, where they once
+/// were effect-row delimiters that ended the expression.
+#[test]
+fn angle_brackets_are_comparisons_in_expressions() {
+    for src in ["@mod M\n$ f = \\a b = a < b", "@mod M\n$ f = \\a b = a > b"] {
+        let p = prog(src);
+        let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+            panic!("expected a lambda")
+        };
+        assert!(matches!(p.ast.expr(*body), Expr::BinOp { .. }));
+    }
+}
+
+/// The same lexemes in TYPE position still open and close an effect row, which
+/// `parse_effect_row_opt` reads by lexeme rather than by operator role.
+#[test]
+fn effect_rows_still_parse_in_type_position() {
+    for sig in ["<E> @int", "<E | e> @int", "<| e> @int", "<> @int"] {
+        let src = format!("@mod M\n$ E : @effect = op : @int -> @int\n$ f : @int -> {sig} = \\n = n");
+        assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
+    }
 }

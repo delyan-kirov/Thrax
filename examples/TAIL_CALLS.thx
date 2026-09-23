@@ -8,29 +8,29 @@
 
 # Abort (1 / 0) unless `ok` holds; returns 0 when it does.
 $assert : @int -> @int = \ok =
-	if ok ?= 0 => 1 / 0
+	if ok == 0 => 1 / 0
 	else 0
 
 # Global self-recursion in tail position (accumulator).
 $sum_to : @int -> @int -> @int = \n acc =
-	if n ?= 0 => acc
+	if n == 0 => acc
 	else sum_to (n - 1) (acc + n)
 
 # Tail recursion through a recursive `let` binding -- exercises the weak-Rec
 # closure keep-alive the trampoline relies on.
 $let_sum : @int -> @int = \m =
 	let go = \n acc =
-		if n ?= 0 => acc
+		if n == 0 => acc
 		else go (n - 1) (acc + n)
 	 in go m 0
 
 # Mutually recursive tail calls (even/odd) bounce between two globals.
-$is_even : @int -> @int = \n = if n ?= 0 => 1 else is_odd (n - 1)
-$is_odd  : @int -> @int = \n = if n ?= 0 => 0 else is_even (n - 1)
+$is_even : @int -> @int = \n = if n == 0 => 1 else is_odd (n - 1)
+$is_odd  : @int -> @int = \n = if n == 0 => 0 else is_even (n - 1)
 
 # 1_000_000 * 1_000_001 / 2 = 500_000_500_000
-# $ck_global = assert (sum_to 1000000 0 ?= 500000500000)
-# $ck_let    = assert (let_sum 1000000 ?= 500000500000)
+# $ck_global = assert (sum_to 1000000 0 == 500000500000)
+# $ck_let    = assert (let_sum 1000000 == 500000500000)
 # $ck_even   = assert (is_even 1000000)
 $ck_odd    = is_odd 100
 
@@ -40,7 +40,7 @@ $ck_odd    = is_odd 100
 # a 32-bit target too (this suite runs for every target, wasm included); the
 # depth still proves the trampoline runs it in constant stack.
 $ test : @int =
-	(if sum_to 65000 0 ?= 2112532500 => 0 else 1)
-	+ (if let_sum 65000 ?= 2112532500 => 0 else 1)
-	+ (if is_even 65000 ?= 1 => 0 else 1)
-	+ (if is_odd 65000 ?= 0 => 0 else 1)
+	(if sum_to 65000 0 == 2112532500 => 0 else 1)
+	+ (if let_sum 65000 == 2112532500 => 0 else 1)
+	+ (if is_even 65000 == 1 => 0 else 1)
+	+ (if is_odd 65000 == 0 => 0 else 1)

@@ -1879,9 +1879,9 @@ impl<'a> Lowerer<'a> {
             match self.pnode(*e) {
                 Pattern::Var(name) => binds.push((self.text(*name).to_string(), array_get(&v, i))),
                 Pattern::Wild => {}
-                Pattern::Int(k) => checks.push(bin("?=", array_get(&v, i), Term::Int(*k))),
-                Pattern::Real(r) => checks.push(bin("?=", array_get(&v, i), Term::Real(*r))),
-                Pattern::Bool(b) => checks.push(bin("?=", array_get(&v, i), Term::Bool(*b))),
+                Pattern::Int(k) => checks.push(bin("==", array_get(&v, i), Term::Int(*k))),
+                Pattern::Real(r) => checks.push(bin("==", array_get(&v, i), Term::Real(*r))),
+                Pattern::Bool(b) => checks.push(bin("==", array_get(&v, i), Term::Bool(*b))),
                 _ => {}
             }
         }
@@ -1893,7 +1893,7 @@ impl<'a> Lowerer<'a> {
         let len_check = if rest.is_some() {
             bin(">=", array_len(&v), Term::Int(n as i64))
         } else {
-            bin("?=", array_len(&v), Term::Int(n as i64))
+            bin("==", array_len(&v), Term::Int(n as i64))
         };
         let guard = if checks.is_empty() && user_guard.is_none() {
             len_check
