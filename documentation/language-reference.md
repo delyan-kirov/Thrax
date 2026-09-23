@@ -365,8 +365,9 @@ $ safe : @int -> @bool = \n = n > 0 && 100 / n > 5
 ```
 
 ## 4.7 Conditional `if ... => ... else`
-`if c => t else e`. The condition is a `@bool`. Chains with `else if`. It is lazy
-(only the taken branch runs) and is not a pattern match.
+`if c => t else e`. The condition is a `@bool`. Chains with `else if`, or with a
+comma between arms (one `if`, one `else`); a trailing comma before `else` is
+allowed. It is lazy (only the taken branch runs) and is not a pattern match.
 
 Simple:
 ```thrax
@@ -378,6 +379,15 @@ Involved (else-if chain):
 $ sign : @int -> @int = \n =
 	if n == 0 => 0
 	else if n > 0 => 1
+	else 0 - 1
+```
+
+The same chain with comma-separated arms:
+```thrax
+$ sign2 : @int -> @int = \n =
+	if
+		n == 0 => 0,
+		n > 0  => 1,
 	else 0 - 1
 ```
 
@@ -793,19 +803,31 @@ $ map : (a -> <e> b) -> @list a -> <e> @list b = \f xs =
 ```
 
 ## 8.6 `defer`
-`defer <cleanup> do <body>` runs the cleanup when the body's scope exits, on
+`defer <cleanup> in <body>` runs the cleanup when the body's scope exits, on
 normal completion, on an abort by an outer non-resuming handler, or when a stored
 continuation holding it completes. Nested defers run innermost-first. The
 resource-safe FFI idiom.
 
 ```thrax
-$ open  : Str -> @int = \path = 0         # stand-ins for real handles
+$ open  : @str -> @int = \path = 0        # stand-ins for real handles
 $ close : @int -> @int = \h = h
 $ read  : @int -> @int = \h = h
-$ useFile : Str -> @int = \path =
+$ useFile : @str -> @int = \path =
 	let f = open path in
-	defer close f do
+	defer close f in
 		read f
+```
+
+Several cleanups may share one `defer`, separated by commas (a trailing comma
+before `in` is allowed). They nest exactly as separate `defer`s do, so they still
+run innermost-first:
+```thrax
+$ useTwo : @str -> @str -> @int = \a b =
+	let f = open a, g = open b in
+	defer close f,
+	      close g,
+	in
+	read f + read g
 ```
 
 ---

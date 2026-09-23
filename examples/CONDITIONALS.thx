@@ -1,16 +1,26 @@
 @mod CONDITIONALS
 
 # \file conditionals.thx
-# \info Branching with `if c then e else alt`, including else-if chains.
+# \info Branching with `if c => e else alt`, including else-if chains. A comma
+#       chains further arms inside one `if`, so `if a => b, c => d else e` is the
+#       same expression as `if a => b else if c => d else e`.
 
 $abs : @int -> @int = \n =
 	if n > 0 => n
-	else 0 - n
+	else -n
 
 $sign : @int -> @int = \n =
 	if n == 0 => 0
 	else if n > 0 => 1
-	else 0 - 1
+	else -1
+
+# The same chain written with comma-separated arms; a trailing comma before
+# `else` is allowed.
+$sign2 : @int -> @int = \n =
+	if
+		n == 0 => 0,
+		n > 0  => 1,
+	else -1
 
 $max : @int -> @int -> @int = \a b =
 	if a > b => a
@@ -20,13 +30,14 @@ $min : @int -> @int -> @int = \a b =
 	if a < b => a
 	else b
 
-$abs_neg   = abs (0 - 9)
+$abs_neg   = abs (-9)
 $abs_pos   = abs 9
-$sign_neg  = sign (0 - 3)
+$sign_neg  = sign (-3)
 $sign_zero = sign 0
 $sign_pos  = sign 3
+$sign2_agree = (sign2 (-3) - sign (-3)) + (sign2 0 - sign 0) + (sign2 3 - sign 3)
 $max_ex    = max 3 7
 $min_ex    = min 3 7
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = abs_neg ; abs_pos ; sign_neg ; sign_zero ; sign_pos ; max_ex ; min_ex ; 0
+$ test : @int = abs_neg ; abs_pos ; sign_neg ; sign_zero ; sign_pos ; max_ex ; min_ex ; sign2_agree
