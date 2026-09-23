@@ -5,7 +5,7 @@
 #       documentation/strings-and-arrays.md; indices are 0-based BYTE offsets, `at`
 #       returns a byte as an @int in 0..255). The primitive layer --
 #       `@array_len` / `@array_get` / `@array_slice` / `@array_push` / `++` /
-#       `?=` -- already works on `@str`; this module builds the searching,
+#       `==` -- already works on `@str`; this module builds the searching,
 #       splitting and formatting layer on top of it.
 
 $ with OPT
@@ -15,9 +15,9 @@ $ len : @str -> @int = \s = @array_len s
 
 $ at : @str -> @int -> @int = \s i = @array_get s i
 
-$ is_empty : @str -> @bool = \s = (@array_len s) ?= 0
+$ is_empty : @str -> @bool = \s = (@array_len s) == 0
 
-$ eq : @str -> @str -> @bool = \a b = a ?= b
+$ eq : @str -> @str -> @bool = \a b = a == b
 
 # Three-way byte-lexicographic comparison: negative / 0 / positive (strcmp
 # convention; this is the ordering MAP.new_str uses).
@@ -31,21 +31,21 @@ $ substr : @str -> @int -> @int -> @str = \s from to = @array_slice s from to
 
 $ starts_with : @str -> @str -> @bool = \s p =
 	let n = @array_len p in
-	if n ?> @array_len s => @false
-	else (@array_slice s 0 n) ?= p
+	if n > @array_len s => @false
+	else (@array_slice s 0 n) == p
 
 $ ends_with : @str -> @str -> @bool = \s p =
 	let n  = @array_len p in
 	let sn = @array_len s in
-	if n ?> sn => @false
-	else (@array_slice s (sn - n) sn) ?= p
+	if n > sn => @false
+	else (@array_slice s (sn - n) sn) == p
 
 # The byte offset of the first occurrence of `needle` at or after `from`.
 # An empty needle matches at `from`.
 $ find_from : @str -> @str -> @int -> Option @int = \s needle from =
 	let n = @array_len needle in
-	if from + n ?> @array_len s => Option.None
-	else if (@array_slice s from (from + n)) ?= needle => Option.Some.{ from }
+	if from + n > @array_len s => Option.None
+	else if (@array_slice s from (from + n)) == needle => Option.Some.{ from }
 	else find_from s needle (from + 1)
 
 $ find : @str -> @str -> Option @int = \s needle = find_from s needle 0
@@ -55,7 +55,7 @@ $ contains : @str -> @str -> @bool = \s needle = is_some (find s needle)
 # Split on a non-empty separator; N separators yield N+1 pieces ("a,,b" on
 # "," is ["a", "", "b"]). An empty separator returns the whole string whole.
 $ split : @str -> @str -> @vec @str = \s sep =
-	if (@array_len sep) ?= 0 => [s]
+	if (@array_len sep) == 0 => [s]
 	else is find s sep
 		| Option.Some.{i} =>
 			@array_slice s 0 i
@@ -66,8 +66,8 @@ $ split : @str -> @str -> @vec @str = \s sep =
 # final empty line.
 $ lines : @str -> @vec @str = \s =
 	let n = @array_len s in
-	if n ?= 0 => []
-	else if (@array_get s (n - 1)) ?= 10 => split (@array_slice s 0 (n - 1)) "\n"
+	if n == 0 => []
+	else if (@array_get s (n - 1)) == 10 => split (@array_slice s 0 (n - 1)) "\n"
 	else split s "\n"
 
 $ join : @str -> @vec @str -> @str = \sep parts =
@@ -90,7 +90,7 @@ $ pad_right : @str -> @int -> @str = \s width =
 
 # Replace every (non-overlapping) occurrence; an empty needle returns `s`.
 $ replace : @str -> @str -> @str -> @str = \s needle repl =
-	if (@array_len needle) ?= 0 => s
+	if (@array_len needle) == 0 => s
 	else is find s needle
 		| Option.Some.{i} =>
 			let head : @str = @array_slice s 0 i in
@@ -100,7 +100,7 @@ $ replace : @str -> @str -> @str -> @str = \s needle repl =
 
 # Number of (non-overlapping) occurrences; an empty needle counts 0.
 $ count : @str -> @str -> @int = \s needle =
-	if (@array_len needle) ?= 0 => 0
+	if (@array_len needle) == 0 => 0
 	else is find s needle
 		| Option.Some.{i} =>
 			1 + count (@array_slice s (i + @array_len needle) (@array_len s)) needle
@@ -111,7 +111,7 @@ $ reverse : @str -> @str = \s = rev_onto s (@array_len s) ""
 # ---- character (byte) predicates ----
 
 $ is_space : @int -> @bool = \c =
-	if c ?= 32 => @true else if c >= 9 => c <= 13 else @false
+	if c == 32 => @true else if c >= 9 => c <= 13 else @false
 
 $ is_digit : @int -> @bool = \c =
 	if c >= 48 => c <= 57 else @false
@@ -133,14 +133,14 @@ $ is_lower : @int -> @bool = \c =
 # ---- trimming (ASCII whitespace) ----
 
 $ trim_left : @str -> @str = \s =
-	if (@array_len s) ?= 0 => s
+	if (@array_len s) == 0 => s
 	else if is_space (@array_get s 0)
 		=> trim_left (@array_slice s 1 (@array_len s))
 	else s
 
 $ trim_right : @str -> @str = \s =
 	let n = @array_len s in
-	if n ?= 0 => s
+	if n == 0 => s
 	else if is_space (@array_get s (n - 1)) => trim_right (@array_slice s 0 (n - 1))
 	else s
 
@@ -159,14 +159,14 @@ $ map_bytes : (@int -> @int) -> @str -> @str = \f s = map_bytes_from f s 0 ""
 # ---- number formatting / parsing ----
 
 $ from_int : @int -> @str = \n =
-	if n ?< 0 => "-" ++ digits_of (0 - n) ""
+	if n < 0 => "-" ++ digits_of (0 - n) ""
 	else digits_of n ""
 
 # Parse a (possibly '-'-signed) run of decimal digits; anything else is None.
 $ to_int : @str -> Option @int = \s =
-	if (@array_len s) ?= 0 => Option.None
-	else if (@array_get s 0) ?= 45 =>
-		(if (@array_len s) ?= 1 => Option.None
+	if (@array_len s) == 0 => Option.None
+	else if (@array_get s 0) == 45 =>
+		(if (@array_len s) == 1 => Option.None
 		 else opt_map (\n = 0 - n) (digits_val s 1 0))
 	else digits_val s 0 0
 
@@ -180,24 +180,24 @@ $ cmp_str_from : @str -> @str -> @int -> @int = \a b i =
 	else
 		let ca = @array_get a i in
 		let cb = @array_get b i in
-		if ca ?< cb => 0 - 1
-		else if ca ?> cb => 1
+		if ca < cb => 0 - 1
+		else if ca > cb => 1
 		else cmp_str_from a b (i + 1)
 
 $ rev_onto : @str -> @int -> @str -> @str = \s i acc =
-	if i ?= 0 => acc
+	if i == 0 => acc
 	else rev_onto s (i - 1) (@array_push acc (@array_get s (i - 1)))
 
 $ map_bytes_from : (@int -> @int) -> @str -> @int -> @str -> @str = \f s i acc =
-	if i ?= @array_len s => acc
+	if i == @array_len s => acc
 	else map_bytes_from f s (i + 1) (@array_push acc (f (@array_get s i)))
 
 $ digits_of : @int -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
+	if n < 10 => (@array_push "" (48 + n)) ++ acc
 	else digits_of (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 $ digits_val : @str -> @int -> @int -> Option @int = \s i acc =
-	if i ?= @array_len s => Option.Some.{ acc }
+	if i == @array_len s => Option.Some.{ acc }
 	else
 		let c = @array_get s i in
 		if is_digit c => digits_val s (i + 1) (acc * 10 + (c - 48))

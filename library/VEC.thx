@@ -22,7 +22,7 @@ $ len : @vec t -> @int = \v = @vec_len v
 
 $ length : @vec t -> @int = \v = @vec_len v
 
-$ is_empty : @vec t -> @bool = \v = (@vec_len v) ?= 0
+$ is_empty : @vec t -> @bool = \v = (@vec_len v) == 0
 
 $ push : @vec t -> t -> @vec t = \v x = @vec_push v x
 
@@ -31,7 +31,7 @@ $ slice : @vec t -> @int -> @int -> @vec t = \v lo hi = @vec_slice v lo hi
 
 # Bounds-checked element access.
 $ get : @vec t -> @int -> Option t = \v i =
-	if i ?< 0 => Option.None
+	if i < 0 => Option.None
 	else if i >= @vec_len v => Option.None
 	else Option.Some.{ @vec_get v i }
 
@@ -42,7 +42,7 @@ $ nth : @vec t -> @int -> Option t = \v i = get v i
 
 # A copy with element `i` replaced; out-of-range leaves it unchanged.
 $ set : @vec t -> @int -> t -> @vec t = \v i x =
-	if i ?< 0 => v else if i >= @vec_len v => v else @vec_set v i x
+	if i < 0 => v else if i >= @vec_len v => v else @vec_set v i x
 
 $ set_nth : @vec t -> @int -> t -> @vec t = \v i x = set v i x
 
@@ -81,19 +81,19 @@ $ concat : @vec (@vec t) -> @vec t = \vss =
 $ flat_map : (a -> @vec b) -> @vec a -> @vec b = \f v = concat (map f v)
 
 $ take : @int -> @vec t -> @vec t = \n v =
-	@vec_slice v 0 (if n ?< 0 => 0 else n)
+	@vec_slice v 0 (if n < 0 => 0 else n)
 
 $ drop : @int -> @vec t -> @vec t = \n v =
-	@vec_slice v (if n ?< 0 => 0 else n) (@vec_len v)
+	@vec_slice v (if n < 0 => 0 else n) (@vec_len v)
 
 # All but the last element.
 $ init : @vec t -> @vec t = \v =
-	let n = @vec_len v in @vec_slice v 0 (if n ?= 0 => 0 else n - 1)
+	let n = @vec_len v in @vec_slice v 0 (if n == 0 => 0 else n - 1)
 
 $ replicate : @int -> t -> @vec t = \n x = fill n x
 
 $ intersperse : t -> @vec t -> @vec t = \sep v =
-	if @vec_len v ?= 0 => @vec_new {}
+	if @vec_len v == 0 => @vec_new {}
 	else foldl (\acc x = @vec_push (@vec_push acc sep) x)
 	           (@vec_push (@vec_new {}) (@vec_get v 0)) (@vec_slice v 1 (@vec_len v))
 
@@ -145,12 +145,12 @@ $ sum : @vec @int -> @int = \v = foldl (\a x = a + x) 0 v
 $ product : @vec @int -> @int = \v = foldl (\a x = a * x) 1 v
 
 $ minimum : @vec @int -> @int -> @int = \v d =
-	if @vec_len v ?= 0 => d
-	else foldl (\a x = if x ?< a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+	if @vec_len v == 0 => d
+	else foldl (\a x = if x < a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
 
 $ maximum : @vec @int -> @int -> @int = \v d =
-	if @vec_len v ?= 0 => d
-	else foldl (\a x = if x ?> a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+	if @vec_len v == 0 => d
+	else foldl (\a x = if x > a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
 
 # ---- conversion (bridges to the optional cons `List`) ----
 

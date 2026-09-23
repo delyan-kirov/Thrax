@@ -12,25 +12,25 @@
 
 # Two named fields: one tuple argument, destructured to x and y.
 $ add : {x: @int, y: @int} -> @int = x + y
-$ chk_add : @int = if add {3, 4} ?= 7 => 0 else 1
+$ chk_add : @int = if add {3, 4} == 7 => 0 else 1
 
 # Fields may differ in type.
 $ label : {n: @int, s: @str} -> @str = s ++ "!"
-$ chk_label : @int = if label {1, "hi"} ?= "hi!" => 0 else 1
+$ chk_label : @int = if label {1, "hi"} == "hi!" => 0 else 1
 
 # One field collapses to a plain parameter: called with a bare @int, and the
 # signature is exactly `@int -> @int`.
 $ inc : {x: @int} -> @int = x + 1
-$ chk_inc : @int = if inc 5 ?= 6 => 0 else 1
+$ chk_inc : @int = if inc 5 == 6 => 0 else 1
 
 # Several named parameters in a row, each its own argument. The trailing
 # one-field record collapses, so it takes a bare @int.
 $ area : {w: @int, h: @int} -> {gain: @int} -> @int = w * h + gain
-$ chk_area : @int = if area {6, 7} 1 ?= 43 => 0 else 1
+$ chk_area : @int = if area {6, 7} 1 == 43 => 0 else 1
 
 # A leading named parameter followed by a plain one: the named field binds
 # automatically, the plain parameter is bound by an ordinary lambda.
 $ pick : {x: @int} -> @bool -> @int = \b = if b => x else 0
-$ chk_pick : @int = if pick 9 @true ?= 9 => 0 else 1
+$ chk_pick : @int = if pick 9 @true == 9 => 0 else 1
 
 $ test : @int = chk_add + chk_label + chk_inc + chk_area + chk_pick

@@ -421,7 +421,7 @@ pub enum Expr {
     },
     /// Application by juxtaposition `f x`.
     App(Aol<Expr>, Aol<Expr>),
-    /// A binary operator, keyed by lexeme (`+`, `?=`, `::`, `;`, `|>`, ...).
+    /// A binary operator, keyed by lexeme (`+`, `==`, `::`, `;`, `|>`, ...).
     BinOp {
         op: StrId,
         lhs: Aol<Expr>,

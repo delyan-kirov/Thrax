@@ -39,7 +39,7 @@ $ from_list : (k -> k -> @int) -> @vec {k, v} -> Map k v = \c ps =
 $ cmp_pair : (a -> a -> @int) -> (b -> b -> @int)
              -> {a, b} -> {a, b} -> @int = \ca cb x y =
 	let c = ca x.0 y.0 in
-	if c ?= 0 => cb x.1 y.1 else c
+	if c == 0 => cb x.1 y.1 else c
 
 # ---- operations ----
 
@@ -79,7 +79,7 @@ $ update : Map k v -> k -> (v -> v) -> Map k v = \m k f =
 
 $ size : Map k v -> @int = \m = m.count
 
-$ is_empty : Map k v -> @bool = \m = m.count ?= 0
+$ is_empty : Map k v -> @bool = \m = m.count == 0
 
 # ---- whole-map operations ----
 
@@ -130,7 +130,7 @@ $ mknode : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
 # single / double rotations. The impossible Leaf arms fall back to a plain
 # node.
 $ balance : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
-	if (height l) ?> ((height r) + 1) =>
+	if (height l) > ((height r) + 1) =>
 		is l | Tree.Node.{lk, lv, ll, lr, _} =>
 			(if (height ll) >= (height lr) =>
 				mknode lk lv ll (mknode k v lr r)
@@ -138,7 +138,7 @@ $ balance : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
 				mknode ck cv (mknode lk lv ll cl) (mknode k v cr r)
 			 else mknode k v l r)
 		else mknode k v l r
-	else if (height r) ?> ((height l) + 1) =>
+	else if (height r) > ((height l) + 1) =>
 		is r | Tree.Node.{rk, rv, rl, rr, _} =>
 			(if (height rr) >= (height rl) =>
 				mknode rk rv (mknode k v l rl) rr
@@ -151,24 +151,24 @@ $ balance : k -> v -> Tree k v -> Tree k v -> Tree k v = \k v l r =
 $ tinsert : (k -> k -> @int) -> k -> v -> Tree k v -> Tree k v = \c k v t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
-		 if o ?< 0 => balance tk tv (tinsert c k v l) r
-		 else if o ?> 0 => balance tk tv l (tinsert c k v r)
+		 if o < 0 => balance tk tv (tinsert c k v l) r
+		 else if o > 0 => balance tk tv l (tinsert c k v r)
 		 else mknode k v l r)
 	else mknode k v Tree.Leaf Tree.Leaf
 
 $ tget : (k -> k -> @int) -> k -> Tree k v -> Option v = \c k t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
-		 if o ?< 0 => tget c k l
-		 else if o ?> 0 => tget c k r
+		 if o < 0 => tget c k l
+		 else if o > 0 => tget c k r
 		 else Option.Some.{ tv })
 	else Option.None
 
 $ tremove : (k -> k -> @int) -> k -> Tree k v -> Tree k v = \c k t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
 		(let o = c k tk in
-		 if o ?< 0 => balance tk tv (tremove c k l) r
-		 else if o ?> 0 => balance tk tv l (tremove c k r)
+		 if o < 0 => balance tk tv (tremove c k l) r
+		 else if o > 0 => balance tk tv l (tremove c k r)
 		 else tjoin l r)
 	else Tree.Leaf
 

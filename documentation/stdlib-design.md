@@ -265,7 +265,7 @@ system; predicates returned 1/0 to match. Both halves of the plan landed
   OP::base_aliases. A future `@word`/`@uword` canonical spelling would let
   the whole prelude go static.
 - **Bool is blessed and erased**: `Bool : @union = True: {}, False: {},`
-  lives in core; the compiler makes comparisons/`?=`/`!` return it and
+  lives in core; the compiler makes comparisons/`==`/`!` return it and
   `if`/guards/`@assert` consume it (OP::TY_BOOL; overload RESULT types
   flipped in TCxDATA while the mono impl keys stay operand-derived, so the
   engines' 1/0 impls serve unchanged). It is ERASED after checking:

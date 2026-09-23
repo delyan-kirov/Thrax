@@ -117,13 +117,13 @@ flag for the native backend (generated programs never dlopen). Two
 deliberate compromises, both documented at the declarations in app/DR.cpp:
 
 - **`FILE*` travels as `@int`, not `Ptr`.** The handle is only passed back to
-  the same functions or tested against 0 (NULL), and `?=` is defined on @int
+  the same functions or tested against 0 (NULL), and `==` is defined on @int
   but not Ptr.
 - **A C `int` return does not arrive sign-extended.** The FFI widens returns
   by the DECLARED Thrax type; declaring libc's 32-bit `int` results as the
   64-bit `@int` means a negative return (EOF, error codes) arrives as its
   zero-extended bit pattern, not a negative @int. The stdlib therefore never
-  tests `?< 0`: success is `?= 0` (exact under any extension), and
+  tests `< 0`: success is `== 0` (exact under any extension), and
   end-of-stream is "not a byte", i.e. outside 0..255 (`IO.is_byte`) -- also
   exact under any extension. File reads are counted (`fseek`/`ftell`), not
   EOF-terminated. The principled fix is FFI awareness of C's `int` width
@@ -146,16 +146,16 @@ for an unbalanced BST); the RANDOM test pins the exact MINSTD sequence.
 
 ## A note on inference
 
-Resolving `p.snd ?= "one"` (a polymorphic struct projection feeding an
+Resolving `p.snd == "one"` (a polymorphic struct projection feeding an
 overloaded operator) required letting ready field accesses participate in
 TC's operator-resolution fixpoint -- previously the operator @int-defaulted
 before the projection's type was grounded. See `Checker::resolve_sites` /
 `settle_ready_field_sites` in compiler/TC.cpp.
 
 User overload sites joined the same fixpoint for the same reason:
-`(pow 2.0 10.0) ?= 1024.0` (a USER overload feeding an overloaded operator)
+`(pow 2.0 10.0) == 1024.0` (a USER overload feeding an overloaded operator)
 used to deadlock -- built-in sites resolved (and @int-defaulted) before any
-user site was judged, so `?=` forced `pow`'s result to @int and both sites
+user site was judged, so `==` forced `pow`'s result to @int and both sites
 failed. Inside the fixpoint a user site is resolved CONSERVATIVELY (commit
 only when exactly one candidate fits, wait on open operator operands or
 multiple fits, never default); this is sound because unification only ever

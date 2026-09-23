@@ -24,9 +24,9 @@ $ rank : Color -> @int = \c =
 $ sum4 : Located -> @int = \p = p.x + p.y + p.z + p.tag
 
 $ ck_struct : @int =
-	if sum4 (Located.{ .x = 1, .y = 2, .z = 3, .tag = 4 }) ?= 10 => 0 else 1
+	if sum4 (Located.{ .x = 1, .y = 2, .z = 3, .tag = 4 }) == 10 => 0 else 1
 
 $ ck_union : @int =
-	if (rank Color.Red + rank Color.Blue) ?= 4 => 0 else 2
+	if (rank Color.Red + rank Color.Blue) == 4 => 0 else 2
 
 $ test : @int = ck_struct + ck_union

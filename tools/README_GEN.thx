@@ -51,11 +51,11 @@ $ ex_splice_union : @str =
 $ ex_match : @str =
 	"$ grade : Maybe @int -> @int = \\m =\n"
 	++ "\tis m\n"
-	++ "\t\t| .Just.{ v } if v ?> 100 => 3\n"
-	++ "\t\t| .Just.{ v } if v ?> 0   => 2\n"
+	++ "\t\t| .Just.{ v } if v > 100 => 3\n"
+	++ "\t\t| .Just.{ v } if v > 0   => 2\n"
 	++ "\t\t| .Just.{ _ }             => 1\n"
 	++ "\t\t| .None                   => 0\n"
-	++ "\t\telse 0 - 1"
+	++ "\t\telse - 1"
 
 $ ex_effect : @str =
 	"$ Yield : @effect = yield : @int -> {},\n"
@@ -83,7 +83,7 @@ $ @e (validate (@parse_items ex_splice_union))
 $ @e (validate (@parse_items ex_match))
 $ @e (validate (@parse_items ex_effect))
 $ @e (validate (@parse_items ex_ffi))
-$ @run (assert (@eval (@parse_str ex_expr) ?= 25) "ex_expr should evaluate to 25")
+$ @run (assert (@eval (@parse_str ex_expr) == 25) "ex_expr should evaluate to 25")
 
 # ---- README assembly ------------------------------------------------------
 
@@ -188,11 +188,11 @@ $ readme : @str =
 
 $ write_all : @str -> @str -> <@io> @int = \path content =
 	let f = C.fopen {path, "wb"} in
-	if f ?= 0 => 0 - 1
+	if f == 0 => 0 - 1
 	else
 		C.fputs {content, f};
 		C.fclose f
 
 $ main : {} -> <| e> @int =
 	let rc = write_all "README.md" readme in
-	if rc ?= 0 => 0 else 1
+	if rc == 0 => 0 else 1

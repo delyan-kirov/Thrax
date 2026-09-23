@@ -14,7 +14,7 @@
 $ with VEC
 
 # Ordinary functions, used here only at compile time (run by `@e`).
-$ fib     : @int -> @int = \n = if n ?< 2 => n else fib (n - 1) + fib (n - 2)
+$ fib     : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
 $ dbl     : @int -> @int = \x = x * 2
 $ inc     : @int -> @int = \x = x + 1
 $ compose : (@int -> @int) -> (@int -> @int) -> @int -> @int = \f g x = f (g x)
@@ -51,13 +51,13 @@ $ gen_meta : @int -> <@meta> @int = \n = @emit "computing at build time"; n * 2
 $ from_meta : @int = @run (gen_meta 21)   # discharges @meta, embeds 42
 
 # --- checks ----------------------------------------------------------------
-$ ck1 : @int = if fib10 ?= 55 => 0 else 1
-$ ck2 : @int = if folded ?= 55 => 0 else 2
-$ ck3 : @int = if (via_left + via_right) ?= 110 => 0 else 4
-$ ck4 : @int = if via_chain ?= 11 => 0 else 8
-$ ck5 : @int = if spliced ?= 7 => 0 else 16
-$ ck6 : @int = if typed ?= 42 => 0 else 32
-$ ck7 : @int = if injected ?= 99 => 0 else 64
-$ ck8 : @int = if from_meta ?= 42 => 0 else 128
+$ ck1 : @int = if fib10 == 55 => 0 else 1
+$ ck2 : @int = if folded == 55 => 0 else 2
+$ ck3 : @int = if (via_left + via_right) == 110 => 0 else 4
+$ ck4 : @int = if via_chain == 11 => 0 else 8
+$ ck5 : @int = if spliced == 7 => 0 else 16
+$ ck6 : @int = if typed == 42 => 0 else 32
+$ ck7 : @int = if injected == 99 => 0 else 64
+$ ck8 : @int = if from_meta == 42 => 0 else 128
 
 $ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7 + ck8

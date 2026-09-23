@@ -14,8 +14,8 @@ $ Rng : @struct =
 
 # Any seed works; 0 (a fixed point of the recurrence) is nudged to 1.
 $ new : @int -> Rng = \seed =
-	let s = (if seed ?< 0 => 0 - seed else seed) % 2147483647 in
-	Rng.{ .state = if s ?= 0 => 1 else s }
+	let s = (if seed < 0 => 0 - seed else seed) % 2147483647 in
+	Rng.{ .state = if s == 0 => 1 else s }
 
 # FIXME : this module is not good, also we should check int size isntead. 
 # A draw in [0, 2^31 - 1), and the generator to use for the next draw.

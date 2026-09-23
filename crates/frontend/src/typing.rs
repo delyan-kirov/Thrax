@@ -230,7 +230,7 @@ pub struct Checker<'a> {
     /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
     /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
     /// building the literal into the user type (build hook) and comparing it against
-    /// the scrutinee (equality hook), instead of the built-in `?=` on a primitive.
+    /// the scrutinee (equality hook), instead of the built-in `==` on a primitive.
     literal_pattern_hooks:
         HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))>,
     /// Sequence PATTERN sites (`is [a, b, ..rest]`, `is h :: t`, `is []`) whose
@@ -304,23 +304,34 @@ struct Cand<'a> {
     /// the leading-parameter slot it occupies. Lowering references that parameter
     /// instead of a global. `None` for an ordinary global/imported candidate.
     dict_slot: Option<usize>,
+    /// A last-resort candidate, considered only when no ordinary one resolves.
+    /// The comparison built-ins are the only such candidates: `a == b` prefers a
+    /// per-type overload (CORE's, or a user's own on a custom type) and reaches
+    /// the generic structural built-in only when none matches. Without the
+    /// ranking a generic candidate would simply make every use ambiguous, since
+    /// overload resolution has no most-specific-wins rule.
+    fallback: bool,
 }
 
 impl<'a> Cand<'a> {
     /// A built-in or effect-operation candidate, owned by no module (never
     /// rewritten to a qualified reference).
     fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None }
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None, fallback: false }
+    }
+    /// A built-in candidate that only applies where nothing else does.
+    fn fallback(ty: Type) -> Cand<'a> {
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None, fallback: true }
     }
     fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
-        Cand { ty, module, implicits: Vec::new(), dict_slot: None }
+        Cand { ty, module, implicits: Vec::new(), dict_slot: None, fallback: false }
     }
     fn with_implicits(ty: Type, module: Option<&'a str>, implicits: Vec<(&'a str, Type)>) -> Cand<'a> {
-        Cand { ty, module, implicits, dict_slot: None }
+        Cand { ty, module, implicits, dict_slot: None, fallback: false }
     }
     /// A local `@ctx` dictionary candidate at leading-parameter slot `slot`.
     fn dict(ty: Type, slot: usize) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot) }
+        Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot), fallback: false }
     }
 }
 
@@ -3880,10 +3891,31 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Match the ordinary candidates; only if none of them applies does the
+    /// last-resort tier get a turn (see [`Cand::fallback`]). An *ambiguity* among
+    /// ordinary candidates is not a miss: it is deferred, and `solve_pending`
+    /// reaches for the fallback tier once nothing else can break the tie.
     fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: &Type) -> Match {
+        match self.match_tier(candidates, args, result, false) {
+            Match::None => self.match_tier(candidates, args, result, true),
+            m => m,
+        }
+    }
+
+    /// Match only the candidates in one tier, `fallback` selecting which.
+    fn match_tier(
+        &mut self,
+        candidates: &[Cand<'a>],
+        args: &[Type],
+        result: &Type,
+        fallback: bool,
+    ) -> Match {
         let mut matched = None;
         let mut count = 0;
         for (idx, cand) in candidates.iter().enumerate() {
+            if cand.fallback != fallback {
+                continue;
+            }
             let save = self.eng.save();
             let ok = self.apply_overload(&cand.ty, args, result).is_ok();
             self.eng.restore(save);
@@ -3929,6 +3961,9 @@ impl<'a> Checker<'a> {
             if self.default_numerics()? {
                 continue;
             }
+            if self.resolve_pending_fallbacks()? {
+                continue;
+            }
             if let Some(p) = self.pending.first() {
                 let mut mods: Vec<&str> = p.candidates.iter().filter_map(|c| c.module).collect();
                 mods.sort_unstable();
@@ -3954,6 +3989,28 @@ impl<'a> Checker<'a> {
             }
             return Ok(());
         }
+    }
+
+    /// Last round before an ambiguity is reported: a use whose ordinary candidates
+    /// stayed ambiguous (`x == y` on two still-unconstrained operands matches every
+    /// per-type comparison) settles on its fallback candidate, recovering the
+    /// generic built-in behaviour.
+    fn resolve_pending_fallbacks(&mut self) -> Result<bool> {
+        let batch = std::mem::take(&mut self.pending);
+        let mut progress = false;
+        let mut still = Vec::new();
+        for p in batch {
+            if let Match::Unique(idx) = self.match_tier(&p.candidates, &p.args, &p.result, true) {
+                let cand = p.candidates[idx].clone();
+                self.apply_overload_cand(&cand, &p.args, &p.result, p.site, &p.name)?;
+                self.record_overload(p.site, &p.name, &p.candidates, idx);
+                progress = true;
+                continue;
+            }
+            still.push(p);
+        }
+        self.pending = still;
+        Ok(progress)
     }
 
     /// Break an ambiguity where a pending overload's RESULT is already a concrete
@@ -4721,6 +4778,16 @@ impl<'a> Checker<'a> {
             self.bind(name, Type::arrow(t.clone(), Type::arrow(t.clone(), t)));
         }
 
+        // Comparison intrinsics, the floor under the comparison overloads. Same
+        // shape as the arithmetic ones (`t -> t -> @bool`, the behavioural
+        // `@i`/`@u`/`@f`/`@s` split picked by the overload that calls them). `@ieq`
+        // serves signed and unsigned alike (equality reads the same bits), and the
+        // float pair compares at `@float64`, which is exact for a `@float32` too.
+        for name in ["@ieq", "@ilt", "@ult", "@feq", "@flt", "@seq", "@slt"] {
+            let t = self.eng.fresh_generic();
+            self.bind(name, Type::arrow(t.clone(), Type::arrow(t, bool_())));
+        }
+
         let prim = |mids: &[&str], returns_self: bool| {
             [ty::ARRAY, ty::STR].map(|recv| {
                 let ret = if returns_self { recv } else { ty::INT };
@@ -4948,10 +5015,15 @@ impl<'a> Checker<'a> {
             );
         }
 
-        for op in ["?=", "?<", "?>", "<=", ">="] {
+        // Comparison. Each operator is defined per base type in CORE.thx over the
+        // comparison intrinsics, the way arithmetic is, so a user type can join the
+        // overload set. The generic built-in stays as the FALLBACK tier: `==` is
+        // structural on any value, and ordering works on numbers and strings, for
+        // everything no per-type overload covers.
+        for op in ["==", "<", ">", "<=", ">="] {
             let a = self.eng.fresh_generic();
             let t = Type::arrow(a.clone(), Type::arrow(a, bool_()));
-            self.bind(op, t);
+            self.overloads.insert(op, vec![Cand::fallback(t)]);
         }
         {
             let a = self.eng.fresh_generic();

@@ -81,7 +81,7 @@
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
 
-%token BANG QEQ QGT QLT             /* ! ?= ?> ?< */
+%token BANG                         /* ! */
 %token ANGLE_EMPTY                  /* <> */
 %token BAR                          /* | */
 %token ELLIPSIS                     /* ... inclusive range (patterns + `t.[p...q]` slices) */
@@ -113,7 +113,6 @@ body      : expr | extern_lit ;
 overloadable_op
   : PLUS | MINUS | STAR | SLASH | PERCENT | CONCAT
   | EQEQ | LT | GT | LE | GE
-  | QEQ  | QGT | QLT
   ;
 
 import       : dotted_name | dotted_name EQ dotted_name ;

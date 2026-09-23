@@ -207,15 +207,15 @@ fn runtime_operators_match_interpreter_natively() {
         "13 / 4",
         "13 % 5",
         "2 ^ 10",
-        "if 3 ?= 3 => 1 else 0",
-        "if 5 ?> 3 => 1 else 0",
-        "if 3 ?< 5 => 1 else 0",
+        "if 3 == 3 => 1 else 0",
+        "if 5 > 3 => 1 else 0",
+        "if 3 < 5 => 1 else 0",
         "if 3 <= 3 => 1 else 0",
         "if 5 >= 4 => 1 else 0",
         "\"a\" ++ \"b\"",
         // @float64 `^` goes through libm `pow`; the comparison keeps the result an @int
         // so no real-formatting difference can enter the comparison.
-        "if 2.0 ^ 3.0 ?> 7.0 => 1 else 0",
+        "if 2.0 ^ 3.0 > 7.0 => 1 else 0",
     ];
     for body in cases {
         let src = format!("@mod M\n$ a = {body}");
@@ -238,14 +238,43 @@ fn arithmetic_intrinsics_match_interpreter() {
         "@umod 13 4",
         "@udiv (@isub 0 1) 2", // unsigned: reads the all-ones bits as u64::MAX
         "@umod (@isub 0 1) 3",
-        "if @fadd 1.5 2.0 ?= 3.5 => 1 else 0",
-        "if @fsub 5.0 1.5 ?= 3.5 => 1 else 0",
-        "if @fmul 2.0 3.5 ?= 7.0 => 1 else 0",
-        "if @fdiv 3.0 2.0 ?= 1.5 => 1 else 0",
-        "if @fmod 7.0 3.0 ?= 1.0 => 1 else 0",
+        "if @fadd 1.5 2.0 == 3.5 => 1 else 0",
+        "if @fsub 5.0 1.5 == 3.5 => 1 else 0",
+        "if @fmul 2.0 3.5 == 7.0 => 1 else 0",
+        "if @fdiv 3.0 2.0 == 1.5 => 1 else 0",
+        "if @fmod 7.0 3.0 == 1.0 => 1 else 0",
     ] {
         assert_matches(&format!("@mod M\n$ a = {body}"), "a");
     }
+}
+
+#[test]
+fn comparison_intrinsics_match_interpreter() {
+    // The comparison primitives the operator overloads are built on. `@ult` reads
+    // the same bits as unsigned, so the all-ones pattern is the LARGEST value, not
+    // -1; getting that wrong in one engine only is the bug this catches.
+    for body in [
+        "if @ieq 3 3 => 1 else 0",
+        "if @ilt 3 4 => 1 else 0",
+        "if @ilt (@isub 0 1) 0 => 1 else 0",
+        "if @ult (@isub 0 1) 0 => 1 else 0", // unsigned: all-ones is u64::MAX, so false
+        "if @feq 1.5 1.5 => 1 else 0",
+        "if @flt 1.5 2.5 => 1 else 0",
+        "if @seq \"ab\" \"ab\" => 1 else 0",
+        "if @slt \"ab\" \"b\" => 1 else 0",
+        "if @slt \"ab\" \"ab\" => 1 else 0",
+    ] {
+        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+    }
+}
+
+/// A user overload of a comparison operator on a custom type must dispatch the
+/// same way once compiled: to the definition for that type, and to CORE's
+/// per-type overload for a primitive.
+#[test]
+fn user_comparison_overload_compiles() {
+    let src = "@mod M\n$ T : @struct = v: @int\n               $ (<) : T -> T -> @bool = \\a b = a.v < b.v\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    assert_matches(src, "a");
 }
 
 #[test]
@@ -277,19 +306,19 @@ fn scalar_serialization_matches_interpreter() {
         ("$ a : @str = to_string 1234", "a"),
         ("$ a : @str = to_string (0 - 42)", "a"),
         ("$ a : @str = to_string (let n : @nat = 250 in n)", "a"),
-        ("$ a : @bool = (from_string (to_string 1234)) ?= 1234", "a"),
+        ("$ a : @bool = (from_string (to_string 1234)) == 1234", "a"),
         (
-            "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) ?= \"77\"",
+            "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) == \"77\"",
             "a",
         ),
-        ("$ a : @bool = (from_string \"true\") ?= (1 ?= 1)", "a"),
+        ("$ a : @bool = (from_string \"true\") == (1 == 1)", "a"),
         // Floats serialize via the C runtime seam (`thx_real_to_str` /
         // `thx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
         // identically on both engines.
         ("$ a : @str = to_string (let x : @float64 = 3.5 in x)", "a"),
         ("$ a : @str = to_string (let x : @float32 = from_string \"0.5\" in x)", "a"),
         (
-            "$ a : @bool = let x : @float64 = 2.25 in (from_string (to_string x)) ?= x",
+            "$ a : @bool = let x : @float64 = 2.25 in (from_string (to_string x)) == x",
             "a",
         ),
     ] {
@@ -390,8 +419,8 @@ fn short_circuit_and_or() {
     let src = "@mod T\n\
                $ f : @bool = @false\n\
                $ t : @bool = @true\n\
-               $ a : @int = if (t && 3 ?< 5) => 1 else 0\n\
-               $ b : @int = if (f || 5 ?< 3) => 1 else 0\n\
+               $ a : @int = if (t && 3 < 5) => 1 else 0\n\
+               $ b : @int = if (f || 5 < 3) => 1 else 0\n\
                $ test : @int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
@@ -413,8 +442,8 @@ fn ctx_implicit_dictionary_passing() {
     // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
     // backend must inject them exactly as the interpreter does.
     let src = "@mod M\n\
-               $ cmp : @int -> @int -> @bool = \\a b = a ?> b\n\
-               $ lt : @int -> @int -> @bool = \\a b = a ?< b\n\
+               $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
+               $ lt : @int -> @int -> @bool = \\a b = a < b\n\
                $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
                \tif cmp x y => x else y\n\
                $ test : @int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
@@ -482,7 +511,7 @@ fn codata_stream() {
                $ Stream : @codata t = head : t, tail : Stream t,\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
-               $ nth : @int -> Stream t -> t = \\n s = if n ?= 0 => s.head else nth (n - 1) s.tail\n\
+               $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
                $ dbl : @int -> @int = \\x = x + x\n\
                $ test : @int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
@@ -848,7 +877,7 @@ fn open_range_pattern() {
 fn recursion_fib() {
     let src = "@mod T\n\
                $ fib : @int -> @int = \\n =\n\
-               \tif n ?= 0 => 0 else if n ?= 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
+               \tif n == 0 => 0 else if n == 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
                $ test : @int = fib 15\n";
     assert_matches(src, "test");
 }
@@ -1021,7 +1050,7 @@ fn pattern_hooks_match_interpreter() {
                \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
                $ MyStr : @struct = bytes: @str\n\
                $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
-               $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes ?= b.bytes\n\
+               $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes == b.bytes\n\
                $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9

@@ -297,8 +297,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" => 2,
-        "^" | "?=" | "?<" | "?>" | "<=" | ">=" | "++" | "@array_get"
+        | "@f32mod" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => 2,
+        "^" | "==" | "<" | ">" | "<=" | ">=" | "++" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@tensor_slice" | "@tensor_index_axis" => 3,
@@ -317,6 +317,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" => arith_intrinsic(name, &a[0], &a[1]),
+        "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => {
+            compare_intrinsic(name, &a[0], &a[1])
+        }
         "neg" => match &*a[0].borrow() {
             Value::Int(n) => Ok(Value::Int(-n)),
             Value::Real(r) => Ok(Value::Real(-r)),
@@ -327,8 +330,8 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Value::Bool(b) => Ok(Value::Bool(!b)),
             _ => Err(fault("`not` on a non-boolean")),
         },
-        "?=" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
-        "?<" | "?>" | "<=" | ">=" => compare(name, &a[0], &a[1]),
+        "==" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
+        "<" | ">" | "<=" | ">=" => compare(name, &a[0], &a[1]),
         "++" => concat(&a[0], &a[1]),
         "@array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
         "@array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
@@ -836,6 +839,23 @@ fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'
     }
 }
 
+/// A monomorphic comparison intrinsic, the primitive the comparison overloads are
+/// built on. `@u*` reads the same i64 bits as unsigned, so a `Nat` past
+/// `i64::MAX` orders correctly.
+fn compare_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
+    let r = match name {
+        "@ieq" => as_int(x)? == as_int(y)?,
+        "@ilt" => as_int(x)? < as_int(y)?,
+        "@ult" => (as_int(x)? as u64) < (as_int(y)? as u64),
+        "@feq" => as_f64(x)? == as_f64(y)?,
+        "@flt" => as_f64(x)? < as_f64(y)?,
+        "@seq" => as_bytes(x)? == as_bytes(y)?,
+        "@slt" => as_bytes(x)? < as_bytes(y)?,
+        _ => unreachable!("compare_intrinsic called with `{name}`"),
+    };
+    Ok(Value::Bool(r))
+}
+
 fn compare<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     use std::cmp::Ordering;
     let ord = {
@@ -852,8 +872,8 @@ fn compare<'p>(op: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
         }
     };
     let r = match op {
-        "?<" => ord == Ordering::Less,
-        "?>" => ord == Ordering::Greater,
+        "<" => ord == Ordering::Less,
+        ">" => ord == Ordering::Greater,
         "<=" => ord != Ordering::Greater,
         ">=" => ord != Ordering::Less,
         _ => unreachable!("compare called with a non-comparison operator"),
@@ -907,7 +927,7 @@ fn list_append<'p>(xs: PVal<'p>, ys: PVal<'p>) -> PVal<'p> {
     }
 }
 
-/// Structural equality (`?=`). Numbers compare across Int/Real; functions are not
+/// Structural equality (`==`). Numbers compare across Int/Real; functions are not
 /// comparable.
 pub(crate) fn value_eq(x: &PVal, y: &PVal) -> bool {
     let bx = x.borrow();

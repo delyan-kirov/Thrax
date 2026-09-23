@@ -47,7 +47,7 @@ $ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
 # the element `add`/`mul`/`zero` supplied by `@ctx`.
 $ dot : [n]a -> [n]a -> a  @ctx add : a -> a -> a, mul : a -> a -> a, zero : a = \x y =
 	let go = \i acc =
-		if i ?= length x => acc
+		if i == length x => acc
 		else go (i + 1) (add acc (mul x.[i] y.[i]))
 	in go 0 zero
 

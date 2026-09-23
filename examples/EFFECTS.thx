@@ -13,7 +13,7 @@ $ State : @effect = get : {} -> @int, put : @int -> {},
 # Exception: the clause ignores k (resume 0 times). Exn is handled here, so
 # safeDiv is pure at its boundary.
 $ safeDiv : @int -> @int -> @int = \a b =
-    do if b ?= 0 => Exn.throw "div0" else a / b
+    do if b == 0 => Exn.throw "div0" else a / b
     ctl k | Exn.throw msg => 0 - 1
 
 # Generator: resume once, summing every yielded value; else is the base case.

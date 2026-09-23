@@ -7,8 +7,8 @@
 # `@fadd`, ...); the resolver picks by operand type. This is why `+ - * / %` are
 # not special-cased in the compiler. Signed integers and @nat share add/sub/mul
 # (two's complement), but @nat divides unsigned (`@udiv`/`@umod`). Floats use the
-# `@f*` family. (`^`, comparisons, and `++` are still compiler builtins, pending
-# their own intrinsics.)
+# `@f*` family. Comparison works the same way over `@ieq`/`@ilt`/... (below).
+# (`^` and `++` are still compiler builtins, pending their own intrinsics.)
 
 # `Real` is a friendly alias for the word-size float `@float64`; the compiler knows
 # only `@float64`, not `Real`.
@@ -351,12 +351,103 @@ $ (*) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
 $ (/) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
 $ (%) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
 
+# Comparison operators, built the same way: an overload per base type over the
+# comparison intrinsics. Signed integers order with `@ilt`, @nat and the sized
+# nats with `@ult` (a Nat past the signed range would otherwise order wrong),
+# floats with `@flt` and strings lexicographically with `@slt`. `>` `<=` `>=` are
+# `<` read the other way round, so one intrinsic per type is enough.
+#
+# What no overload here covers (a struct, a union, a tuple, a mixed-width pair)
+# falls back to the generic compiler builtin, which compares `==` structurally and
+# orders numbers and strings. A user type gets its own by joining the overload
+# set: `$ (<) : T -> T -> @bool = ...` extends these rather than hiding them.
+$ (==) : @int -> @int -> @bool = \a b = @ieq a b
+$ (<)  : @int -> @int -> @bool = \a b = @ilt a b
+$ (>)  : @int -> @int -> @bool = \a b = @ilt b a
+$ (<=) : @int -> @int -> @bool = \a b = not (@ilt b a)
+$ (>=) : @int -> @int -> @bool = \a b = not (@ilt a b)
+
+$ (==) : @int8 -> @int8 -> @bool = \a b = @ieq a b
+$ (<)  : @int8 -> @int8 -> @bool = \a b = @ilt a b
+$ (>)  : @int8 -> @int8 -> @bool = \a b = @ilt b a
+$ (<=) : @int8 -> @int8 -> @bool = \a b = not (@ilt b a)
+$ (>=) : @int8 -> @int8 -> @bool = \a b = not (@ilt a b)
+
+$ (==) : @int16 -> @int16 -> @bool = \a b = @ieq a b
+$ (<)  : @int16 -> @int16 -> @bool = \a b = @ilt a b
+$ (>)  : @int16 -> @int16 -> @bool = \a b = @ilt b a
+$ (<=) : @int16 -> @int16 -> @bool = \a b = not (@ilt b a)
+$ (>=) : @int16 -> @int16 -> @bool = \a b = not (@ilt a b)
+
+$ (==) : @int32 -> @int32 -> @bool = \a b = @ieq a b
+$ (<)  : @int32 -> @int32 -> @bool = \a b = @ilt a b
+$ (>)  : @int32 -> @int32 -> @bool = \a b = @ilt b a
+$ (<=) : @int32 -> @int32 -> @bool = \a b = not (@ilt b a)
+$ (>=) : @int32 -> @int32 -> @bool = \a b = not (@ilt a b)
+
+$ (==) : @int64 -> @int64 -> @bool = \a b = @ieq a b
+$ (<)  : @int64 -> @int64 -> @bool = \a b = @ilt a b
+$ (>)  : @int64 -> @int64 -> @bool = \a b = @ilt b a
+$ (<=) : @int64 -> @int64 -> @bool = \a b = not (@ilt b a)
+$ (>=) : @int64 -> @int64 -> @bool = \a b = not (@ilt a b)
+
+$ (==) : @nat -> @nat -> @bool = \a b = @ieq a b
+$ (<)  : @nat -> @nat -> @bool = \a b = @ult a b
+$ (>)  : @nat -> @nat -> @bool = \a b = @ult b a
+$ (<=) : @nat -> @nat -> @bool = \a b = not (@ult b a)
+$ (>=) : @nat -> @nat -> @bool = \a b = not (@ult a b)
+
+$ (==) : @nat8 -> @nat8 -> @bool = \a b = @ieq a b
+$ (<)  : @nat8 -> @nat8 -> @bool = \a b = @ult a b
+$ (>)  : @nat8 -> @nat8 -> @bool = \a b = @ult b a
+$ (<=) : @nat8 -> @nat8 -> @bool = \a b = not (@ult b a)
+$ (>=) : @nat8 -> @nat8 -> @bool = \a b = not (@ult a b)
+
+$ (==) : @nat16 -> @nat16 -> @bool = \a b = @ieq a b
+$ (<)  : @nat16 -> @nat16 -> @bool = \a b = @ult a b
+$ (>)  : @nat16 -> @nat16 -> @bool = \a b = @ult b a
+$ (<=) : @nat16 -> @nat16 -> @bool = \a b = not (@ult b a)
+$ (>=) : @nat16 -> @nat16 -> @bool = \a b = not (@ult a b)
+
+$ (==) : @nat32 -> @nat32 -> @bool = \a b = @ieq a b
+$ (<)  : @nat32 -> @nat32 -> @bool = \a b = @ult a b
+$ (>)  : @nat32 -> @nat32 -> @bool = \a b = @ult b a
+$ (<=) : @nat32 -> @nat32 -> @bool = \a b = not (@ult b a)
+$ (>=) : @nat32 -> @nat32 -> @bool = \a b = not (@ult a b)
+
+$ (==) : @nat64 -> @nat64 -> @bool = \a b = @ieq a b
+$ (<)  : @nat64 -> @nat64 -> @bool = \a b = @ult a b
+$ (>)  : @nat64 -> @nat64 -> @bool = \a b = @ult b a
+$ (<=) : @nat64 -> @nat64 -> @bool = \a b = not (@ult b a)
+$ (>=) : @nat64 -> @nat64 -> @bool = \a b = not (@ult a b)
+
+$ (==) : @float32 -> @float32 -> @bool = \a b = @feq a b
+$ (<)  : @float32 -> @float32 -> @bool = \a b = @flt a b
+$ (>)  : @float32 -> @float32 -> @bool = \a b = @flt b a
+$ (<=) : @float32 -> @float32 -> @bool = \a b = not (@flt b a)
+$ (>=) : @float32 -> @float32 -> @bool = \a b = not (@flt a b)
+
+$ (==) : @float64 -> @float64 -> @bool = \a b = @feq a b
+$ (<)  : @float64 -> @float64 -> @bool = \a b = @flt a b
+$ (>)  : @float64 -> @float64 -> @bool = \a b = @flt b a
+$ (<=) : @float64 -> @float64 -> @bool = \a b = not (@flt b a)
+$ (>=) : @float64 -> @float64 -> @bool = \a b = not (@flt a b)
+
+$ (==) : @str -> @str -> @bool = \a b = @seq a b
+$ (<)  : @str -> @str -> @bool = \a b = @slt a b
+$ (>)  : @str -> @str -> @bool = \a b = @slt b a
+$ (<=) : @str -> @str -> @bool = \a b = not (@slt b a)
+$ (>=) : @str -> @str -> @bool = \a b = not (@slt a b)
+
+# `@bool` has no ordering: equality is a two-case test, no intrinsic needed.
+$ (==) : @bool -> @bool -> @bool = \a b = if a => b else not b
+
 $ to_string : @str -> @str = \s = s
 
 $ to_string : @bool -> @str = \b = if b => "true" else "false"
 
 $ to_string : @int -> @str = \n =
-	if n ?< 0 => "-" ++ to_string_digits (0 - n) ""
+	if n < 0 => "-" ++ to_string_digits (0 - n) ""
 	else to_string_digits n ""
 
 $ to_string : @nat -> @str = \n = to_string_udigits n ""
@@ -377,11 +468,11 @@ $ to_string : @nat64 -> @str = \x = to_string (let n : @nat = @cast x in n)
 # reads bytes with `@array_get`/`@array_len`, so it stays in the language.
 $ from_string : @str -> @str = \s = s
 
-$ from_string : @str -> @bool = \s = s ?= "true"
+$ from_string : @str -> @bool = \s = s == "true"
 
 $ from_string : @str -> @int = \s =
-	if @array_len s ?= 0 => 0
-	else if @array_get s 0 ?= 45 => 0 - from_string_digits s 1 0
+	if @array_len s == 0 => 0
+	else if @array_get s 0 == 45 => 0 - from_string_digits s 1 0
 	else from_string_digits s 0 0
 
 # Floats serialize through the C runtime: `thx_real_to_str`/`thx_f32_to_str`
@@ -430,7 +521,7 @@ $ SeqView : @union s t = Empty: {}, More: {t, s},
 # view is `Empty` when empty, else the first element and the tail (a slice). `[...]`
 # literals build a `@vec`, so this is what a sequence pattern unfolds by default.
 $ @compiler_interface_sequence_view : @vec t -> SeqView (@vec t) t = \v =
-	if @vec_len v ?= 0 => SeqView.Empty
+	if @vec_len v == 0 => SeqView.Empty
 	else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) }
 
 # The canonical infinite stream: coinductive data observed by `.head` (the current
@@ -490,7 +581,7 @@ $ formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
 $ @private
 
 $ to_string_digits : @int -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + n)) ++ acc
+	if n < 10 => (@array_push "" (48 + n)) ++ acc
 	else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 # `@nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
@@ -499,11 +590,11 @@ $ to_string_digits : @int -> @str -> @str = \n acc =
 $ to_string_udigit : @nat -> @int = \n = @cast n
 
 $ to_string_udigits : @nat -> @str -> @str = \n acc =
-	if n ?< 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
+	if n < 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
 	else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
 
 $ from_string_digits : @str -> @int -> @int -> @int = \s i acc =
-	if i ?= @array_len s => acc
+	if i == @array_len s => acc
 	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
 
 $ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
@@ -511,7 +602,7 @@ $ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
 	else vcons_onto (@vec_push acc (@vec_get v i)) v (i + 1)
 
 $ range_onto : @vec @int -> @int -> @int -> @vec @int = \acc lo hi =
-	if lo ?> hi => acc
+	if lo > hi => acc
 	else range_onto (@vec_push acc lo) (lo + 1) hi
 
 $ for_go : @vec a -> (a -> <Loop | e> {}) -> @int -> <e> {} = \xs body i =

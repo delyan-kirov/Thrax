@@ -113,7 +113,7 @@ arm in `platforms/THxRT.c`. `%array` (from `@array.{n}`) stays a `%`-internal
 - Lexer (`LXxDATA.hpp` `operator_db`): add `++`.
 - `OP.hpp`: `CONCAT = "++"`; include in `is_operator`.
 - `EXxDATA.hpp` `infix_db`: `{ "++", { 18, 19 } }`, left-assoc, looser than
-  `+`/`*`, tighter than comparison, so `a ++ b ?= c` groups as `(a ++ b) ?= c`.
+  `+`/`*`, tighter than comparison, so `a ++ b == c` groups as `(a ++ b) == c`.
 - `overload_db` (`TCxDATA.cpp`): `{ CONCAT, { {Str,Str,Str} -> mono(CONCAT,Str),
   {Array,Array,Array} -> mono(CONCAT,Array) } }`. Both resolve to `%concat`.
 - IT `impls` + native dispatch: `%concat`.

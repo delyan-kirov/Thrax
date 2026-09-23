@@ -2,19 +2,63 @@
 
 # \file operators.thx
 # \info Comparison and logical operators. Comparisons evaluate to @bool (a
-#       built-in type); `!` negates a @bool.
+#       built-in type); `!` negates a @bool. Each operator is an overload per
+#       base type in CORE over the comparison intrinsics, so a type of your own
+#       joins the set; whatever no overload covers falls back to the structural
+#       built-in.
 
-$eq_true   = 7 ?= 7
-$eq_false  = 7 ?= 8
-$geq_true  = 9 ?> 4
-$geq_equal = 4 ?> 4
-$geq_false = 2 ?> 4
-$leq_true  = 3 ?< 8
-$leq_equal = 8 ?< 8
-$leq_false = 8 ?< 3
+$eq_true   = 7 == 7
+$eq_false  = 7 == 8
+$geq_true  = 9 > 4
+$geq_equal = 4 > 4
+$geq_false = 2 > 4
+$leq_true  = 3 < 8
+$leq_equal = 8 < 8
+$leq_false = 8 < 3
 $not_false = !@false
 $not_true  = !@true
 $not_not   = !(!@true)
 
+# Dispatch per base type: each of these picks a different CORE overload.
+$ ck_int   : @int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) => 0 else 1
+$ ck_real  : @int = if (1.5 < 2.5) && (2.5 >= 2.5) && (0.5 == 0.5) => 0 else 2
+$ ck_f32   : @int =
+	let a : @float32 = 1.25 in
+	let b : @float32 = 2.5 in
+	if (a < b) && (b > a) && !(a == b) => 0 else 4
+$ ck_str   : @int = if ("abc" < "abd") && ("b" > "abc") && ("x" == "x") => 0 else 8
+$ ck_bool  : @int = if (@true == @true) && !(@true == @false) => 0 else 16
+
+# Unsigned ordering: `@nat*` compares with `@ult`, so a value past the signed
+# range is LARGE, not negative. Read as signed, `big` would be -1.
+$ big : @nat64 = @cast (0 - 1)
+$ ck_unsigned : @int = if (big > 5) && !(big < 5) => 0 else 32
+
+# A type of your own extends the overload set: `<` on a `Money` dispatches here,
+# `<` on an `@int` still reaches CORE's.
+$ Money : @struct = cents: @int
+
+$ (<) : Money -> Money -> @bool = \a b = a.cents < b.cents
+
+$ ck_custom : @int =
+	if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
+
+# No overload covers a struct or a tuple: `==` falls back to the structural
+# built-in, which compares field by field.
+$ ck_structural : @int =
+	if (Money.{ .cents = 7 } == Money.{ .cents = 7 })
+		&& ({1, "a"} == {1, "a"})
+		&& !({1, "a"} == {1, "b"})
+	=> 0 else 128
+
+# `<` and `>` in an expression, in a function whose type carries an effect row:
+# the row is type-level, the operators value-level, so the two never meet.
+$ clamp_pos : @int -> <| e> @int = \n = if n < 0 => 0 else n
+$ ck_row : @int = if (clamp_pos (0 - 3) == 0) && (clamp_pos 5 == 5) => 0 else 256
+
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal ; leq_false ; not_false ; not_true ; not_not ; 0
+$ test : @int =
+	eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal
+	; leq_false ; not_false ; not_true ; not_not
+	; ck_int + ck_real + ck_f32 + ck_str + ck_bool + ck_unsigned + ck_custom
+		+ ck_structural + ck_row

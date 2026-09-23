@@ -33,7 +33,7 @@ fn global_declaration() {
 #[test]
 fn operators_maximal_munch() {
     assert_eq!(
-        kinds("a ?= b :: c ++ d |> e"),
+        kinds("a == b :: c ++ d |> e"),
         vec![
             Kind::Word,
             Kind::Op,
@@ -156,4 +156,12 @@ fn tokens_are_borrow_free_and_send() {
     assert_send_static::<Token>();
     assert_send_static::<Kind>();
     assert_send_static::<Vec<Token>>();
+}
+
+/// `?` is not an operator character: nothing spells one with it any more, so a
+/// bare `?` is an unknown character rather than an unknown operator run.
+#[test]
+fn question_mark_is_not_an_operator() {
+    let err = Lexer::tokenize("@mod M\n$ x = 3 ? 4").expect_err("`?` must not lex");
+    assert!(err.to_string().contains("unknown character"), "{err}");
 }

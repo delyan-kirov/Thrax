@@ -20,7 +20,7 @@ $ Opt : @union t = None: {}, Some: {t},
 
 # A compile-time generator: the first `n` squares, built by recursion.
 $ squares_up_to : @int -> @vec @int = \n =
-	if n ?= 0 => VEC.new {} else VEC.push (squares_up_to (n - 1)) ((n - 1) * (n - 1))
+	if n == 0 => VEC.new {} else VEC.push (squares_up_to (n - 1)) ((n - 1) * (n - 1))
 
 # Folded aggregates: each `@e` result is rendered back as its literal.
 $ squares : @vec @int = @e (squares_up_to 6)          # [0, 1, 4, 9, 16, 25]
@@ -32,9 +32,9 @@ $ none    : Opt @int = @e Opt.None                     # Opt.None
 $ opt_or : @int -> Opt @int -> @int = \d o =
 	is o | Opt.Some.{x} => x else d
 
-$ ck_vec : @int = if VEC.sum squares ?= 55 => 0 else 1
-$ ck_tup : @int = if (bounds.0 + bounds.1) ?= 25 => 0 else 2
-$ ck_str : @int = if (grey.r + grey.g + grey.b) ?= 60 => 0 else 4
-$ ck_var : @int = if (opt_or 0 some7 + opt_or 9 none) ?= 16 => 0 else 8
+$ ck_vec : @int = if VEC.sum squares == 55 => 0 else 1
+$ ck_tup : @int = if (bounds.0 + bounds.1) == 25 => 0 else 2
+$ ck_str : @int = if (grey.r + grey.g + grey.b) == 60 => 0 else 4
+$ ck_var : @int = if (opt_or 0 some7 + opt_or 9 none) == 16 => 0 else 8
 
 $ test : @int = ck_vec + ck_tup + ck_str + ck_var

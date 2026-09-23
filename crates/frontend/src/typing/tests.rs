@@ -87,14 +87,14 @@ fn function_application_and_arrows() {
 #[test]
 fn if_unifies_branches_and_condition() {
     assert_eq!(
-        type_of("@mod M\n$ f = \\n = if n ?= 0 => 1 else n", "f"),
+        type_of("@mod M\n$ f = \\n = if n == 0 => 1 else n", "f"),
         "@int -> @int"
     );
 }
 
 #[test]
 fn recursion_through_predeclared_globals() {
-    let src = "@mod M\n$ fib = \\n = if n ?= 0 => 0 else fib (n - 1) + fib (n - 2)";
+    let src = "@mod M\n$ fib = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
     assert_eq!(type_of(src, "fib"), "@int -> @int");
 }
 
@@ -162,8 +162,8 @@ fn union_constructor_and_match() {
 #[test]
 fn mutually_recursive_globals_via_scc() {
     let src = "@mod M\n\
-                   $ is_even : @int -> @int = \\n = if n ?= 0 => 1 else is_odd (n - 1)\n\
-                   $ is_odd  : @int -> @int = \\n = if n ?= 0 => 0 else is_even (n - 1)";
+                   $ is_even : @int -> @int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
+                   $ is_odd  : @int -> @int = \\n = if n == 0 => 0 else is_even (n - 1)";
     assert_eq!(type_of(src, "is_even"), "@int -> @int");
     assert_eq!(type_of(src, "is_odd"), "@int -> @int");
 }
@@ -171,7 +171,7 @@ fn mutually_recursive_globals_via_scc() {
 #[test]
 fn recursive_let_binding() {
     let src = "@mod M\n\
-                   $ f = \\m = let go = \\n acc = if n ?= 0 => acc else go (n - 1) (acc + n) \
+                   $ f = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "@int -> @int");
 }
@@ -423,7 +423,7 @@ fn numeric_literal_is_not_a_bool_condition() {
         errors("@mod M\n$ x : @int = if 1 => 2 else 3")
     );
     // A real condition (a comparison, or a `@bool`) is fine.
-    assert_eq!(errors("@mod M\n$ x : @int = if 1 ?= 1 => 2 else 3"), "");
+    assert_eq!(errors("@mod M\n$ x : @int = if 1 == 1 => 2 else 3"), "");
     assert_eq!(errors("@mod M\n$ x : @int = if @true => 2 else 3"), "");
     // A numeric literal cannot masquerade as a pointer either.
     assert!(errors("@mod M\n$ p : @ptr = 0").contains("numeric literal"));
@@ -713,4 +713,47 @@ fn int_nat_friendly_spellings_are_dropped() {
     assert_eq!(type_of("@mod M\n$ b : @nat = 5", "b"), "@nat");
     // Inference still displays the word default as `@int`.
     assert_eq!(type_of("@mod M\n$ c = 1 + 2", "c"), "@int");
+}
+
+/// A user definition for a custom type EXTENDS a comparison operator rather than
+/// shadowing the built-in: the custom operands reach it, primitive ones still
+/// reach CORE's per-type overload.
+#[test]
+fn comparison_operator_is_overloadable() {
+    let src = "@mod M\n$ T : @struct = v: @int\n\
+               $ (<) : T -> T -> @bool = \\a b = a.v < b.v\n\
+               $ custom : @bool = T.{ .v = 1 } < T.{ .v = 2 }\n\
+               $ prim : @bool = 1 < 2";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "custom"), "@bool");
+    assert_eq!(type_of(src, "prim"), "@bool");
+}
+
+/// `==` on a type no overload covers falls back to the structural built-in, so
+/// records and tuples stay comparable without a definition of their own.
+#[test]
+fn structural_equality_is_the_fallback() {
+    let src = "@mod M\n$ T : @struct = v: @int\n\
+               $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }\n\
+               $ pair : @bool = {1, \"a\"} == {1, \"a\"}";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "same"), "@bool");
+}
+
+/// Two operands of an unconstrained type leave every per-type overload viable.
+/// The ambiguity resolves onto the fallback, keeping generic comparison generic.
+#[test]
+fn comparison_over_a_type_variable_stays_generic() {
+    assert_eq!(type_of("@mod M\n$ eq = \\x y = x == y", "eq"), "a -> a -> @bool");
+}
+
+/// `<` and `>` are comparison operators in expression position and effect-row
+/// brackets in type position; a signature carrying a row still parses and checks.
+#[test]
+fn comparison_operators_coexist_with_effect_rows() {
+    let src = "@mod M\n$ Fail : @effect = fail : {} -> @int\n\
+               $ f : @int -> <Fail | e> @bool = \\n = n < 3\n\
+               $ g : @int -> <| e> @bool = \\n = n > 3";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "g"), "@int -> @bool");
 }

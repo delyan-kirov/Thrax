@@ -16,13 +16,13 @@ $quot    = 7.0 / 2.0
 $negate  = -4.2
 
 # comparisons on Reals still yield an @int (0/1)
-$lt      = 1.5 ?< 2.5
+$lt      = 1.5 < 2.5
 $ge      = 3.0 >= 3.0
-$eq      = 0.1 ?= 0.1
+$eq      = 0.1 == 0.1
 
 # a Real-typed recursive function
 $pow : Real -> @int -> Real = \base n =
-	if n ?= 0 => 1.0
+	if n == 0 => 1.0
 	else base * (pow base (n - 1))
 
 $two_pow_10 = pow 2.0 10
