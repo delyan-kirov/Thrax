@@ -494,20 +494,52 @@ $ from_string : @str -> @nat16 = \s = let n : @nat = from_string s in let m : @n
 $ from_string : @str -> @nat32 = \s = let n : @nat = from_string s in let m : @nat32 = @cast n in m
 $ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @nat64 = @cast n in m
 
-# The expression-form range `[lo ... hi]` desugars to `range lo hi`: the inclusive
-# list of Ints from `lo` to `hi` (empty when `lo > hi`). It builds a `@vec`, since
-# the length is a runtime value (not a statically sized `[n]T` tensor).
 # `x :: xs` prepends `x` to a `@vec` (the default sequence). O(n): builds a fresh
 # vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
 # the idiomatic way to build a vector.
 $ vcons : t -> @vec t -> @vec t = \x v = vcons_onto (@vec_push (@vec_new {}) x) v 0
 
+$ (::) : t -> @vec t -> @vec t = \x v = vcons x v
+
+# The inclusive Ints from `lo` to `hi` (empty when `lo > hi`), as a `@vec`: its
+# length is a runtime value, not the static size of a `[n]T` tensor.
 $ range : @int -> @int -> @vec @int = \lo hi = range_onto (@vec_new {}) lo hi
 
+# A closed range `[lo ... hi]` builds whatever this hook returns. A sequence type
+# joins the range surface by overloading it; `@vec` is what the bare form builds.
+$ @compiler_interface_range : @int -> @int -> @vec @int = \lo hi = range lo hi
+
 # The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
-# and no longer the default). `[...]` / `::` / `[]` build a `@vec`, so a `List` is
-# constructed and matched through its `Cons`/`Nil` constructors explicitly (or bridged
+# and no longer the default). It is also the worked example of a type joining the
+# whole `[]` surface from user space: the three overloads below give it literals,
+# `::`, and sequence patterns, with no compiler support of its own.
 $ List : @union a = Nil: {}, Cons: {a, List a},
+
+$ @compiler_interface_sequence_literal : @vec t -> List t = \v =
+	list_onto List.Nil v (@vec_len v - 1)
+
+$ (::) : t -> List t -> List t = \x l = List.Cons.{ x, l }
+
+$ @compiler_interface_sequence_view : List t -> SeqView (List t) t = \l =
+	is l | List.Cons.{h, t} => SeqView.More.{ h, t } else SeqView.Empty
+
+# A `[...]` literal builds whatever this hook returns. `@vec` is what an
+# unconstrained literal defaults to, so its overload is the identity on the
+# payload the compiler collects; a sequence type joins the surface by returning
+# itself instead.
+$ @compiler_interface_sequence_literal : @vec t -> @vec t = \v = v
+
+# The packed byte buffer `@array` joins the same two surfaces through its own
+# overloads: `[1, 2, 3] : @array` builds one from the collected payload, and
+# `[a, b, ..r]` matches one by stepping the view below.
+$ @compiler_interface_sequence_literal : @vec @int -> @array = \v = array_onto @array.{ 0 } v 0
+
+# A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. Overload it and a
+# type joins the slice surface; a sized tensor `[n]T` slices by its own rule (its
+# result shape is computed from the bounds, which no signature here can say).
+$ @compiler_interface_slice : @vec t -> @int -> @int -> @vec t = \v lo hi = @vec_slice v lo (hi + 1)
+$ @compiler_interface_slice : @array -> @int -> @int -> @array = \a lo hi = @array_slice a lo (hi + 1)
+$ @compiler_interface_slice : @str -> @int -> @int -> @str = \s lo hi = @array_slice s lo (hi + 1)
 
 # One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:
 # `Empty` at the end, or `More elem rest` (the head element and the remaining
@@ -523,14 +555,20 @@ $ @compiler_interface_sequence_view : @vec t -> SeqView (@vec t) t = \v =
 	if @vec_len v == 0 => SeqView.Empty
 	else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) }
 
+$ @compiler_interface_sequence_view : @array -> SeqView @array @int = \a =
+	if @array_len a == 0 => SeqView.Empty
+	else SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) }
+
 # The canonical infinite stream: coinductive data observed by `.head` (the current
 # element) and `.tail` (the rest). Non-memoized thunks, so it is genuinely infinite.
 $ Stream : @codata t = head : t, tail : Stream t,
 
-# The open range `[lo ...]` desugars to `count_from lo`: the ascending Ints from
-# `lo` upward, with no end. It builds a `Stream`, the only shape that can hold an
-# unbounded sequence (not a finite `@vec` or a statically sized `[n]T`).
+# The ascending Ints from `lo` upward, with no end. A `Stream` is the only shape
+# that can hold an unbounded sequence (not a finite `@vec`, not a `[n]T` tensor).
 $ count_from : @int -> Stream @int = \lo = { .head = lo, .tail = count_from (lo + 1) }
+
+# The open range `[lo ...]` counterpart of the hook above.
+$ @compiler_interface_range_from : @int -> Stream @int = \lo = count_from lo
 
 # The `Loop` effect gives imperative `break` / `continue` to the iteration
 # combinators below: `break` stops the loop, `continue` skips the rest of the
@@ -595,6 +633,15 @@ $ to_string_udigits : @nat -> @str -> @str = \n acc =
 $ from_string_digits : @str -> @int -> @int -> @int = \s i acc =
 	if i == @array_len s => acc
 	else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
+
+$ array_onto : @array -> @vec @int -> @int -> @array = \acc v i =
+	if i >= @vec_len v => acc
+	else array_onto (@array_push acc (@vec_get v i)) v (i + 1)
+
+# Right to left, so the payload's order survives into the cons cells.
+$ list_onto : List t -> @vec t -> @int -> List t = \acc v i =
+	if i < 0 => acc
+	else list_onto (List.Cons.{ @vec_get v i, acc }) v (i - 1)
 
 $ vcons_onto : @vec t -> @vec t -> @int -> @vec t = \acc v i =
 	if i >= @vec_len v => acc

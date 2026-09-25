@@ -359,11 +359,9 @@ impl Decls {
 type ArmHandles = (Vec<Aol<Pattern>>, Option<Aol<Expr>>, Aol<Expr>);
 
 /// The type checker's resolutions that lowering cannot re-derive without types.
-/// `array_exprs`/`array_pats` are the `[..]` nodes resolved to `Array` (a byte
-/// vector) rather than the default `List`; `call_modules` maps a bare-call
-/// `Expr::Var` to the module its overload resolved to, so lowering can emit a
-/// qualified `MOD.name`. Empty (the default) means "no resolutions", correct for
-/// callers without a checker (all `[..]` are `List`, all calls stay bare).
+/// `call_modules`, for instance, maps a bare-call `Expr::Var` to the module its
+/// overload resolved to, so lowering can emit a qualified `MOD.name`. Empty (the
+/// default) means "no resolutions", correct for callers without a checker.
 /// One resolved implicit (`@ctx`) argument at a use site, ready for lowering to
 /// inject as a leading argument of the referenced function.
 #[derive(Clone, Debug)]
@@ -380,8 +378,6 @@ pub enum ImplicitArg {
 
 #[derive(Default)]
 pub struct Resolved {
-    pub array_exprs: HashSet<Aol<Expr>>,
-    pub array_pats: HashSet<Aol<Pattern>>,
     /// `[..]` literal sites resolved to a sized tensor (a vector value), from
     /// [`crate::typing::Checker::tensor_nodes`]. Lowering builds a vector.
     pub tensor_exprs: HashSet<Aol<Expr>>,
@@ -464,9 +460,6 @@ pub struct Resolved {
 pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
     let mut resolved = Resolved::default();
     for checker in checkers {
-        let (exprs, pats) = checker.array_nodes();
-        resolved.array_exprs.extend(exprs.iter().copied());
-        resolved.array_pats.extend(pats.iter().copied());
         resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
         for (&site, names) in checker.promotions() {
             resolved.promotions.insert(site, names.clone());
@@ -868,17 +861,19 @@ impl<'a> Lowerer<'a> {
     /// when the checker recorded one at `site`; otherwise return the payload as-is
     /// (the folded built-in constant, so the default case builds nothing extra).
     fn literal_hook_wrap(&self, site: Aol<Expr>, payload: Term) -> Term {
-        match self.resolved.literal_hooks.get(&site) {
-            Some((module, name)) => Term::app(
-                Term::Var {
-                    module: module.clone(),
-                    name: name.clone(),
-                    idx: 0,
-                },
-                payload,
-            ),
+        match self.hook_fn(site) {
+            Some(f) => Term::app(f, payload),
             None => payload,
         }
+    }
+
+    /// The hook the checker resolved at `site`, as a callable term.
+    fn hook_fn(&self, site: Aol<Expr>) -> Option<Term> {
+        self.resolved.literal_hooks.get(&site).map(|(module, name)| Term::Var {
+            module: module.clone(),
+            name: name.clone(),
+            idx: 0,
+        })
     }
 
     fn expr_core(&mut self, e: Aol<Expr>) -> Term {
@@ -933,6 +928,19 @@ impl<'a> Lowerer<'a> {
             // reduces its axis (so later axis numbers shift down by `dropped`); a
             // `Range`/`Full` slot keeps it. All ops are O(1) strided views.
             Expr::Slice { recv, slots } => {
+                // A single-axis `lo ... hi` slice the checker resolved to the
+                // `@compiler_interface_slice` hook: apply it to the bounds as written
+                // (the overload decides what an inclusive slice means for its type).
+                if let Some(f) = self.hook_fn(e) {
+                    let (lo, hi) = match self.ast.slice(*slots) {
+                        [SliceSlot::Range(lo, hi)] => (*lo, *hi),
+                        _ => unreachable!("only a lone range slot resolves the slice hook"),
+                    };
+                    let recv = self.expr(*recv);
+                    let lo = self.expr(lo);
+                    let hi = self.expr(hi);
+                    return Term::app(Term::app(Term::app(f, recv), lo), hi);
+                }
                 let mut t = self.expr(*recv);
                 let mut dropped = 0usize;
                 for (pos, s) in self.ast.slice(*slots).iter().enumerate() {
@@ -982,51 +990,31 @@ impl<'a> Lowerer<'a> {
 
             Expr::List(items) => {
                 let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
-                if self.resolved.literal_hooks.contains_key(&e) {
-                    // A sequence construction hook: build the `@vec t` payload the hook
-                    // consumes (push each element left to right), then apply the hook.
-                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
-                    for it in items {
-                        let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
-                    }
-                    self.literal_hook_wrap(e, acc)
-                } else if self.resolved.array_exprs.contains(&e) {
-                    // A byte vector: start empty, push each element left to right.
-                    let mut acc = Term::app(Term::var("@array_alloc"), Term::Int(0));
-                    for it in items {
-                        let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("@array_push"), acc), x);
-                    }
-                    acc
-                } else if self.resolved.tensor_exprs.contains(&e) {
-                    // A sized tensor literal: collect the elements into a vector, then
-                    // `@tensor_stack` builds the flat strided tensor (flattening a
-                    // nested literal into one contiguous buffer + shape/strides).
-                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
-                    for it in items {
-                        let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
-                    }
+                // Every other `[...]` collects its elements into the `@vec` payload
+                // (push left to right) that its construction hook consumes. A sized
+                // tensor is the exception the type system forces: its static length
+                // cannot ride along in the payload, so `@tensor_stack` flattens the
+                // vector into the strided buffer instead.
+                let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
+                for it in items {
+                    let x = self.expr(it);
+                    acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
+                }
+                if self.resolved.tensor_exprs.contains(&e) {
                     Term::app(Term::var("@tensor_stack"), acc)
                 } else {
-                    // The default sequence is a `@vec`: start empty, push each element.
-                    let mut acc = Term::app(Term::var("@vec_new"), Term::Unit);
-                    for it in items {
-                        let x = self.expr(it);
-                        acc = Term::app(Term::app(Term::var("@vec_push"), acc), x);
-                    }
-                    acc
+                    self.literal_hook_wrap(e, acc)
                 }
             }
 
             Expr::Range { lo, hi } => {
                 let (lo, hi) = (*lo, *hi);
                 match hi {
-                    // An open range `[lo ...]` is the infinite `CORE.count_from lo`.
+                    // An open range `[lo ...]` applies its `_range_from` hook.
                     None => {
+                        let f = self.hook_fn(e).expect("an open range resolved its hook");
                         let lo = self.expr(lo);
-                        Term::app(Term::var("count_from"), lo)
+                        Term::app(f, lo)
                     }
                     Some(hi) if self.resolved.tensor_exprs.contains(&e) => {
                         // Resolved to a sized tensor: the checker proved the bounds are
@@ -1046,11 +1034,12 @@ impl<'a> Lowerer<'a> {
                         }
                         Term::app(Term::var("@tensor_stack"), acc)
                     }
-                    // The default `@vec @int`: the inclusive `CORE.range lo hi`.
+                    // Any other closed range applies its `_range` hook to the bounds.
                     Some(hi) => {
+                        let f = self.hook_fn(e).expect("a range resolved its hook");
                         let lo = self.expr(lo);
                         let hi = self.expr(hi);
-                        Term::app(Term::app(Term::var("range"), lo), hi)
+                        Term::app(Term::app(f, lo), hi)
                     }
                 }
             }
@@ -1166,15 +1155,11 @@ impl<'a> Lowerer<'a> {
                     let user_guard = guard.map(|g| self.expr(g));
                     let body = Arc::new(self.expr(body));
                     for pat in patterns {
-                        if self.resolved.array_pats.contains(&pat) {
-                            lowered.push(self.array_arm(pat, user_guard.clone(), body.clone()));
-                        } else {
-                            lowered.push(Arm {
-                                pat: self.pat(pat),
-                                guard: user_guard.clone().map(Arc::new),
-                                body: body.clone(),
-                            });
-                        }
+                        lowered.push(Arm {
+                            pat: self.pat(pat),
+                            guard: user_guard.clone().map(Arc::new),
+                            body: body.clone(),
+                        });
                     }
                 }
                 Term::Case {
@@ -1544,8 +1529,6 @@ impl<'a> Lowerer<'a> {
             }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
-            // `x :: xs` prepends to a `@vec` (the default sequence), via CORE's `vcons`.
-            "::" => Term::app(Term::app(Term::var("vcons"), self.expr(lhs)), self.expr(rhs)),
             // The operator resolves like an overloaded call: a built-in use keeps
             // the bare name (a runtime builtin), a user overload carries the
             // resolved module (and mangled name) the checker recorded at this site.
@@ -1929,59 +1912,6 @@ impl<'a> Lowerer<'a> {
         slots
     }
 
-    /// Lower a type-directed array (byte-vector) pattern into a guarded arm. The
-    /// whole scrutinee binds to a fresh `v`; a length test (exact, or `>=` when an
-    /// open `..rest` follows) plus one equality per literal element form the
-    /// guard, and named elements/`rest` are extracted with `array_get` /
-    /// `array_slice`. The extractions run only after the length test passes, so
-    /// they never index out of bounds. The bindings are duplicated into the guard
-    /// so a user guard (and the literal checks) can see the element names.
-    fn array_arm(&mut self, pat: Aol<Pattern>, user_guard: Option<Term>, body: Arc<Term>) -> Arm {
-        let (elems, rest) = match self.pnode(pat) {
-            Pattern::List { elems, rest } => (self.ast.slice(*elems).to_vec(), *rest),
-            _ => unreachable!("array_arm on a non-list pattern"),
-        };
-        let v = self.fresh();
-        let n = elems.len();
-        let mut binds: Vec<(String, Term)> = Vec::new();
-        let mut checks: Vec<Term> = Vec::new();
-        for (i, e) in elems.iter().enumerate() {
-            match self.pnode(*e) {
-                Pattern::Var(name) => binds.push((self.text(*name).to_string(), array_get(&v, i))),
-                Pattern::Wild => {}
-                Pattern::Int(k) => checks.push(bin("==", array_get(&v, i), Term::Int(*k))),
-                Pattern::Real(r) => checks.push(bin("==", array_get(&v, i), Term::Real(*r))),
-                Pattern::Bool(b) => checks.push(bin("==", array_get(&v, i), Term::Bool(*b))),
-                _ => {}
-            }
-        }
-        if let Some(r) = rest {
-            if let Pattern::Var(name) = self.pnode(r) {
-                binds.push((self.text(*name).to_string(), array_slice(&v, n)));
-            }
-        }
-        let len_check = if rest.is_some() {
-            bin(">=", array_len(&v), Term::Int(n as i64))
-        } else {
-            bin("==", array_len(&v), Term::Int(n as i64))
-        };
-        let guard = if checks.is_empty() && user_guard.is_none() {
-            len_check
-        } else {
-            let mut inner = user_guard.unwrap_or(Term::Bool(true));
-            for c in checks.into_iter().rev() {
-                inner = if_then_else(c, inner, Term::Bool(false));
-            }
-            let inner = let_chain(&binds, inner);
-            if_then_else(len_check, inner, Term::Bool(false))
-        };
-        let body = let_chain(&binds, (*body).clone());
-        Arm {
-            pat: Pat::Var(v),
-            guard: Some(Arc::new(guard)),
-            body: Arc::new(body),
-        }
-    }
 }
 
 /// `array_len v`.
@@ -1991,29 +1921,6 @@ impl<'a> Lowerer<'a> {
 /// indexing links them.
 fn dict_param(slot: usize) -> String {
     format!("@ctx${slot}")
-}
-
-fn array_len(v: &str) -> Term {
-    Term::app(Term::var("@array_len"), Term::var(v))
-}
-
-/// `array_get v i`.
-fn array_get(v: &str, i: usize) -> Term {
-    Term::app(
-        Term::app(Term::var("@array_get"), Term::var(v)),
-        Term::Int(i as i64),
-    )
-}
-
-/// `array_slice v from (array_len v)` (the open tail from `from`).
-fn array_slice(v: &str, from: usize) -> Term {
-    Term::app(
-        Term::app(
-            Term::app(Term::var("@array_slice"), Term::var(v)),
-            Term::Int(from as i64),
-        ),
-        array_len(v),
-    )
 }
 
 /// A binary operator application `l <op> r`.
@@ -2044,30 +1951,4 @@ fn leading_lams(mut t: &Term) -> usize {
     n
 }
 
-/// `if cond then t else e`, lowered like the surface `if`.
-fn if_then_else(cond: Term, t: Term, e: Term) -> Term {
-    Term::Case {
-        scrut: Arc::new(cond),
-        arms: Arc::from([Arm {
-            pat: Pat::Bool(true),
-            guard: None,
-            body: Arc::new(t),
-        }]),
-        default: Some(Arc::new(e)),
-    }
-}
-
-/// Wrap `inner` in a nest of non-recursive `let`s binding each `(name, value)`.
-fn let_chain(binds: &[(String, Term)], inner: Term) -> Term {
-    let mut acc = inner;
-    for (name, val) in binds.iter().rev() {
-        acc = Term::Let {
-            name: name.clone(),
-            rec: false,
-            val: Arc::new(val.clone()),
-            body: Arc::new(acc),
-        };
-    }
-    acc
-}
 

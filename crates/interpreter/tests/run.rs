@@ -786,6 +786,60 @@ fn sequence_pattern_via_view_hook() {
 }
 
 #[test]
+fn range_via_hook_on_a_user_type() {
+    // `[lo ... hi]` builds whatever `@compiler_interface_range` returns: a user type
+    // overloads it and takes the range surface, while the bare form stays a `@vec`.
+    let src = "@mod M\n\
+        $ Span : @struct = lo: @int, hi: @int\n\
+        $ @compiler_interface_range : @int -> @int -> Span = \\lo hi = Span.{ lo, hi }\n\
+        $ s : Span = [3 ... 9]\n\
+        $ v : @vec @int = [1 ... 4]\n\
+        $ r : @int = s.hi - s.lo + @vec_len v";
+    assert_eq!(run(src, "r"), "10");
+}
+
+#[test]
+fn open_range_via_hook_on_a_user_type() {
+    // The open `[lo ...]` goes through `@compiler_interface_range_from`; CORE's
+    // overload builds the infinite `Stream`.
+    let src = "@mod M\n\
+        $ From : @struct = start: @int\n\
+        $ @compiler_interface_range_from : @int -> From = \\lo = From.{ lo }\n\
+        $ f : From = [5 ...]\n\
+        $ s : Stream @int = [2 ...]\n\
+        $ r : @int = f.start + s.tail.head";
+    assert_eq!(run(src, "r"), "8");
+}
+
+#[test]
+fn cons_operator_is_overloadable() {
+    // `::` is an ordinary operator defined in CORE over `@vec`, so a user sequence
+    // type joins it with its own overload, as with any other operator.
+    let src = "@mod M\n\
+        $ Stack : @struct a = items: @vec a\n\
+        $ (::) : a -> Stack a -> Stack a = \\x s = Stack.{ .items = x :: s.items }\n\
+        $ s : Stack @int = 1 :: 2 :: Stack.{ .items = [] }\n\
+        $ v : @vec @int = 9 :: [8]\n\
+        $ r : @int = @vec_get s.items 0 * 100 + @vec_len s.items * 10 + @vec_get v 0";
+    assert_eq!(run(src, "r"), "129");
+}
+
+#[test]
+fn slice_hook_covers_sequences_and_user_types() {
+    // `xs.[lo ... hi]` resolves `@compiler_interface_slice`: CORE overloads it for
+    // `@vec` / `@array` / `@str`, and a user type joins with its own.
+    let src = "@mod M\n\
+        $ Tape : @struct = cells: @vec @int\n\
+        $ @compiler_interface_slice : Tape -> @int -> @int -> Tape = \\t lo hi =\n\
+        \tTape.{ .cells = t.cells.[lo ... hi] }\n\
+        $ v : @vec @int = [10, 20, 30, 40]\n\
+        $ s : @str = \"hello\"\n\
+        $ t : Tape = Tape.{ .cells = v }.[1 ... 2]\n\
+        $ r : @int = @vec_get v.[1 ... 2] 0 + @array_len s.[0 ... 2] + @vec_len t.cells";
+    assert_eq!(run(src, "r"), "25"); // 20 + 3 + 2
+}
+
+#[test]
 fn strided_views_transpose_row_col_slice() {
     // Over the flat strided rep, transpose/index/slice are O(1) VIEWS sharing the
     // buffer. A transposed column is a strided view; a slice narrows an axis.

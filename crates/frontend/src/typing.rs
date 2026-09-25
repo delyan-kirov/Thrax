@@ -204,13 +204,9 @@ pub struct Checker<'a> {
     /// Imported names reachable qualified as `MOD.name`.
     qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
     module_name: &'a str,
-    /// `[..]` literal/pattern nodes the checker resolved to `Array` (a byte
-    /// vector) rather than the default `List`. Lowering reads this to emit array
-    /// construction / destructuring instead of `Cons`/`Nil`.
-    array_exprs: HashSet<Aol<Expr>>,
-    /// `[..]` literal sites resolved to a sized tensor `[n]T` (a vector value),
-    /// distinct from the byte-`Array` sites in `array_exprs`. Lowering builds a
-    /// vector; the index `t.[i]` reads it modulo the length.
+    /// `[..]` literal sites resolved to a sized tensor `[n]T`: the one `[...]`
+    /// shape no hook can build, since the payload cannot carry the static size.
+    /// Lowering flattens the collected elements with `@tensor_stack`.
     tensor_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
@@ -237,7 +233,6 @@ pub struct Checker<'a> {
     /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
     /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
     sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<&'a str>, String)>,
-    array_pats: HashSet<Aol<Pattern>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
@@ -425,14 +420,12 @@ impl<'a> Checker<'a> {
             imported: HashMap::new(),
             qualified: HashMap::new(),
             module_name: "",
-            array_exprs: HashSet::new(),
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             literal_hooks: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
-            array_pats: HashSet::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
@@ -460,13 +453,6 @@ impl<'a> Checker<'a> {
     /// The interactive shell turns this on so an entered expression may perform IO.
     pub fn set_open_effects(&mut self, open: bool) {
         self.open_effects = open;
-    }
-
-    /// The `[..]` expression and pattern nodes this checker resolved to `Array`.
-    /// Lowering consults these to choose byte-vector construction/matching over
-    /// the default `List`.
-    pub fn array_nodes(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Pattern>>) {
-        (&self.array_exprs, &self.array_pats)
     }
 
     /// The `[..]` literal sites resolved to a sized tensor. Lowering builds a vector.
@@ -1397,16 +1383,6 @@ impl<'a> Checker<'a> {
                 self.leave_scope();
                 out
             }
-            Expr::List(items) if self.is_array(expected) => {
-                let items = self.ast.slice(*items);
-                self.array_exprs.insert(e);
-                for item in items.iter() {
-                    let t = self.infer(*item)?;
-                    self.eng
-                        .unify(&t, &Type::con(ty::INT), "in an array element")?;
-                }
-                Ok(())
-            }
             // `[..]` where a sized tensor `[n]T` is expected: the literal's length
             // fixes `n`, and every element is checked against `T`. Lowering builds
             // a vector.
@@ -1458,6 +1434,13 @@ impl<'a> Checker<'a> {
                 self.check(hi, &elem)?;
                 self.tensor_exprs.insert(e);
                 Ok(())
+            }
+            // Any other range resolves its hook against the expected type, so a
+            // user sequence's overload is picked by context.
+            Expr::Range { lo, hi } => {
+                let (lo, hi) = (*lo, *hi);
+                let got = self.range_hook(e, lo, hi, Some(expected))?;
+                self.eng.unify(&got, expected, "against the expected type")
             }
             // `{ .obs = e, ... }` where a codata type is expected: construct it (each
             // clause becomes a thunk). Every observation must be given.
@@ -1620,15 +1603,6 @@ impl<'a> Checker<'a> {
         self.promotions
             .insert(site, fields.into_iter().map(|(n, _)| n).collect());
         Ok(())
-    }
-
-    fn is_array(&self, ty: &Type) -> bool {
-        matches!(self.eng.resolve(ty), Type::Con(name) if name == ty::ARRAY)
-    }
-
-    /// Whether `ty` is a `@vec _` (the built-in growable vector, the default sequence).
-    fn is_vec(&self, ty: &Type) -> bool {
-        matches!(self.spine(ty).0, Type::Con(n) if n == ty::VEC)
     }
 
     /// Whether `ty` is a floating type (`Real`/`Real64`/`Real32`, either spelling),
@@ -2697,7 +2671,7 @@ impl<'a> Checker<'a> {
             Expr::Slice { recv, slots } => {
                 let (recv, slots) = (*recv, *slots);
                 let slots = self.ast.slice(slots);
-                self.infer_slice(recv, slots)
+                self.infer_slice(e, recv, slots)
             }
 
             Expr::BinOp { op, lhs, rhs } => {
@@ -2751,6 +2725,9 @@ impl<'a> Checker<'a> {
                 Ok(Type::Tuple(tys))
             }
 
+            // An unconstrained `[...]` DEFAULTS to a `@vec`, then builds it through
+            // the same `@compiler_interface_sequence_literal` hook a user sequence
+            // uses (CORE's overload is the identity on the payload).
             Expr::List(items) => {
                 let items = self.ast.slice(*items);
                 let elem = self.eng.fresh();
@@ -2758,24 +2735,21 @@ impl<'a> Checker<'a> {
                     let t = self.infer(*item)?;
                     self.eng.unify(&elem, &t, "in a sequence literal")?;
                 }
-                Ok(Type::app(Type::con(ty::VEC), elem))
+                let vec = Type::app(Type::con(ty::VEC), elem);
+                let cands = self.hook_candidates(HOOK_SEQUENCE);
+                if let Some(idx) = self.resolve_hook(&cands, &[vec.clone()], &vec) {
+                    self.record_literal_hook(e, HOOK_SEQUENCE, &cands, idx);
+                }
+                Ok(vec)
             }
 
-            // A closed range `[lo ... hi]` with no expected type defaults to `@vec @int`
-            // (lowering builds a vector); the sized-tensor target is reached only through
-            // `check` against a `[n]T`. An open range `[lo ...]` is infinite, so it is
-            // always a `Stream @int` (lowering emits `count_from lo`).
+            // A range builds whatever its `@compiler_interface_range` /
+            // `_range_from` hook returns (CORE: a `@vec` for `[lo ... hi]`, a
+            // `Stream` for the unbounded `[lo ...]`). The sized-tensor target is
+            // reached only through `check` against a `[n]T`.
             Expr::Range { lo, hi } => {
-                let lo = *lo;
-                let int = Type::con(ty::INT);
-                self.check(lo, &int)?;
-                match *hi {
-                    Some(hi) => {
-                        self.check(hi, &int)?;
-                        Ok(Type::app(Type::con(ty::VEC), int))
-                    }
-                    None => Ok(Type::app(Type::con(ty::STREAM), int)),
-                }
+                let (lo, hi) = (*lo, *hi);
+                self.range_hook(e, lo, hi, None)
             }
 
             Expr::If { cond, then, alt } => {
@@ -3403,7 +3377,34 @@ impl<'a> Checker<'a> {
     /// slot keeps it (a `Range` gets a fresh existential size, modular indexing making
     /// an unknown static size fine). The result wraps the kept axes around whatever
     /// remains below the sliced axes.
-    fn infer_slice(&mut self, recv: Aol<Expr>, slots: &'a [SliceSlot]) -> Result<Type> {
+    fn infer_slice(
+        &mut self,
+        site: Aol<Expr>,
+        recv: Aol<Expr>,
+        slots: &'a [SliceSlot],
+    ) -> Result<Type> {
+        let rt = self.infer(recv)?;
+        // A lone `lo ... hi` over a non-tensor receiver is the overloadable
+        // `@compiler_interface_slice`, which `@vec` / `@array` / `@str` and any user
+        // sequence share. A tensor keeps the path below: its result SHAPE is computed
+        // from the slots, which no hook signature can express.
+        if let [SliceSlot::Range(lo, hi)] = slots {
+            if self.tensor_parts(&rt).is_none() {
+                let (lo, hi) = (*lo, *hi);
+                let cands = self.hook_candidates(HOOK_SLICE);
+                let int = Type::con(ty::INT);
+                let result = self.eng.fresh();
+                let save = self.eng.save();
+                let args = [rt.clone(), int.clone(), int.clone()];
+                if let Some(idx) = self.resolve_hook(&cands, &args, &result) {
+                    self.check(lo, &int)?;
+                    self.check(hi, &int)?;
+                    self.record_literal_hook(site, HOOK_SLICE, &cands, idx);
+                    return Ok(result);
+                }
+                self.eng.restore(save);
+            }
+        }
         let elem = self.eng.fresh();
         let dims: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh_nat()).collect();
         // A fresh variance var per sliced axis, so the receiver may have any
@@ -3413,7 +3414,6 @@ impl<'a> Checker<'a> {
         for i in (0..slots.len()).rev() {
             expected = tensor_type(vars[i].clone(), dims[i].clone(), expected);
         }
-        let rt = self.infer(recv)?;
         self.eng.unify(&rt, &expected, "slicing a tensor")?;
 
         let int = Type::con(ty::INT);
@@ -3619,17 +3619,13 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Route a literal (`"..."`, an int, a real, `[..]`) through its
-    /// `@compiler_interface_*` construction hook when the expected type is a user type
-    /// that provides a matching overload. On a unique match it unifies, checks any
-    /// element types, records the hook at `site` for lowering, and returns `true`;
-    /// otherwise it leaves the engine untouched and returns `false`, so the literal
-    /// falls back to its built-in default (which lowering folds to a plain constant).
+    /// Route a literal (`"..."`, an int, a real, `[..]`) through the
+    /// `@compiler_interface_*` construction hook whose result type is the expected
+    /// one. On a unique match it unifies, checks any element types, records the hook
+    /// at `site` for lowering, and returns `true`; otherwise it leaves the engine
+    /// untouched and returns `false`, so the literal falls back to its built-in
+    /// default (which lowering folds to a plain constant).
     fn literal_hook_check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<bool> {
-        // Only a literal aimed at a user type is a hook candidate.
-        if self.user_type_head(expected).is_none() {
-            return Ok(false);
-        }
         let (hook, args, elem) = match self.node(e) {
             Expr::Str(_) => (HOOK_STRING, vec![Type::con(ty::STR)], None),
             Expr::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)], None),
@@ -3682,6 +3678,49 @@ impl<'a> Checker<'a> {
         }
         self.record_literal_hook(e, hook, &cands, idx);
         Ok(true)
+    }
+
+    /// Resolve a range (`[lo ... hi]` / `[lo ...]`) through its
+    /// `@compiler_interface_range` / `@compiler_interface_range_from` hook: the
+    /// bounds are the hook's arguments, and what it returns is the range's type.
+    /// Records the hook at `site` so lowering applies it. `expected`, when known,
+    /// takes part in the resolution, so a second overload is picked by context.
+    fn range_hook(
+        &mut self,
+        site: Aol<Expr>,
+        lo: Aol<Expr>,
+        hi: Option<Aol<Expr>>,
+        expected: Option<&Type>,
+    ) -> Result<Type> {
+        let name = if hi.is_some() { HOOK_RANGE } else { HOOK_RANGE_FROM };
+        let cands = self.hook_candidates(name);
+        if cands.is_empty() {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "a range needs `{name}`, which is not in scope";
+                note: "it is defined in CORE; a range builds whatever that hook returns"
+            ));
+        }
+        let mut args = vec![self.infer(lo)?];
+        if let Some(hi) = hi {
+            args.push(self.infer(hi)?);
+        }
+        let result = self.eng.fresh();
+        if let Some(exp) = expected {
+            let save = self.eng.save();
+            if self.eng.unify(&result, exp, "in a range").is_err() {
+                self.eng.restore(save);
+            }
+        }
+        let Some(idx) = self.resolve_hook(&cands, &args, &result) else {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "no single `{name}` overload fits this range";
+                note: "annotate the range (`([lo ... hi] : T)`) to pick one"
+            ));
+        };
+        self.record_literal_hook(site, name, &cands, idx);
+        Ok(self.eng.zonk(&result))
     }
 
     /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
@@ -3746,11 +3785,6 @@ impl<'a> Checker<'a> {
         pat: Aol<Pattern>,
         expected: &Type,
     ) -> Result<Option<Type>> {
-        // Fires for a user sequence type OR the built-in `@vec` (the default sequence,
-        // whose `sequence_view` lives in CORE).
-        if self.user_type_head(expected).is_none() && !self.is_vec(expected) {
-            return Ok(None);
-        }
         let cands = self.hook_candidates(HOOK_SEQVIEW);
         if cands.is_empty() {
             return Ok(None);
@@ -4332,17 +4366,6 @@ impl<'a> Checker<'a> {
                 let elem = self.sequence_pattern_elem(pat, expected)?;
                 self.type_pattern(head, &elem)?;
                 self.type_pattern(tail, expected)
-            }
-            Pattern::List { elems, rest } if self.is_array(expected) => {
-                self.array_pats.insert(pat);
-                let (elems, rest) = (self.ast.slice(*elems), *rest);
-                for e in elems.iter() {
-                    self.type_pattern(*e, &Type::con(ty::INT))?;
-                }
-                if let Some(rest) = rest {
-                    self.type_pattern(rest, &Type::con(ty::ARRAY))?;
-                }
-                Ok(())
             }
             Pattern::List { elems, rest } => {
                 // `[a, b, ..r]` / `[]` matches any sequence via its `sequence_view` hook
@@ -5065,12 +5088,6 @@ impl<'a> Checker<'a> {
             self.bind("++", Type::arrow(a.clone(), Type::arrow(a.clone(), a)));
         }
         {
-            // `x :: xs` prepends to the default sequence, a `@vec`.
-            let a = self.eng.fresh_generic();
-            let vec = Type::app(Type::con(ty::VEC), a.clone());
-            self.bind("::", Type::arrow(a, Type::arrow(vec.clone(), vec)));
-        }
-        {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
             self.bind(";", Type::arrow(a, Type::arrow(b.clone(), b)));
@@ -5589,6 +5606,9 @@ const HOOK_STRING: &str = "@compiler_interface_string_literal";
 const HOOK_INTEGER: &str = "@compiler_interface_integer_literal";
 const HOOK_REAL: &str = "@compiler_interface_real_literal";
 const HOOK_SEQUENCE: &str = "@compiler_interface_sequence_literal";
+const HOOK_RANGE: &str = "@compiler_interface_range";
+const HOOK_SLICE: &str = "@compiler_interface_slice";
+const HOOK_RANGE_FROM: &str = "@compiler_interface_range_from";
 const HOOK_EQUALITY: &str = "@compiler_interface_equality";
 const HOOK_SEQVIEW: &str = "@compiler_interface_sequence_view";
 /// The core union `@compiler_interface_sequence_view` returns: `SeqView s t`.
