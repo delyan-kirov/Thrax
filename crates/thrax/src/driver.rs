@@ -2,6 +2,7 @@
 //! lowering, and the `lex`/`parse`/`check`/`run` subcommands.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -217,56 +218,6 @@ fn check_all<'a>(
     ))
 }
 
-/// Gather the checkers' resolutions that lowering needs (`[..]` array/tensor
-/// nodes, resolved bare calls, overload keys, literal/pattern hooks, extern
-/// specs, C-repr layouts, ...) into one [`frontend::Resolved`].
-fn collect_resolved(checkers: &[frontend::Checker]) -> frontend::Resolved {
-    let mut resolved = frontend::Resolved::default();
-    for checker in checkers {
-        let (exprs, pats) = checker.array_nodes();
-        resolved.array_exprs.extend(exprs.iter().copied());
-        resolved.array_pats.extend(pats.iter().copied());
-        resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
-        for (&site, names) in checker.promotions() { resolved.promotions.insert(site, names.clone()); }
-        for (&site, n) in checker.struct_lit_names() { resolved.struct_lit_names.insert(site, n.clone()); }
-        for (&site, (m, n)) in checker.literal_hooks() { resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone())); }
-        for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() { resolved.literal_pattern_hooks.insert(site, ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone()))); }
-        for (&site, (m, n)) in checker.sequence_pattern_hooks() { resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone())); }
-        let (clits, obs) = checker.codata_sites(); resolved.codata_lits.extend(clits.iter().copied()); resolved.observations.extend(obs.iter().copied());
-        for (&site, &module) in checker.call_modules() {
-            resolved.call_modules.insert(site, module.to_string());
-        }
-        for (&site, key) in checker.overload_calls() {
-            resolved.overload_calls.insert(site, key.clone());
-        }
-        for (&site, &slot) in checker.dict_calls() {
-            resolved.dict_calls.insert(site, slot);
-        }
-        for (&body, key) in checker.def_keys() {
-            resolved.def_keys.insert(body, key.clone());
-        }
-        for (&site, args) in checker.implicit_calls() {
-            resolved.implicit_args.insert(site, args.clone());
-        }
-        for (&site, fields) in checker.with_fields() {
-            resolved.with_fields.insert(site, fields.clone());
-        }
-        resolved.extern_sigs.extend(checker.extern_sigs());
-        let module = checker.module_name().to_string();
-        for (name, spec) in checker.own_externs() {
-            resolved
-                .externs
-                .insert((module.clone(), name.to_string()), spec.clone());
-        }
-        for (name, layout) in checker.crepr_layouts() {
-            resolved
-                .crepr_layouts
-                .insert(name.to_string(), layout.clone());
-        }
-    }
-    resolved
-}
-
 /// The full pipeline up to (but not including) execution: load, parse, check,
 /// and lower every module. Returns the lowered modules (root first) and the
 /// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
@@ -304,7 +255,7 @@ fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode>
             ExitCode::FAILURE
         })?;
 
-    let resolved = collect_resolved(&checkers);
+    let resolved = frontend::collect_resolved(&checkers);
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
@@ -522,7 +473,7 @@ fn lower_all(
         let ir = frontend::ir::lower_modules(&compiled.0);
         let rd = root_dir.clone();
         interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
-        interpreter::machine::set_type_host(Some(reflect_host(compiled.3)));
+        let reflect = reflect_tables(compiled.3);
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
         let fail = |diag, module: &str, span| -> ExitCode {
             clear_meta_hosts();
@@ -533,6 +484,10 @@ fn lower_all(
         // Expression-position: replace the `@e X` with its value's source
         // (parenthesized to keep precedence).
         for (module, qualified, span) in expr_sites {
+            interpreter::machine::set_type_host(Some(reflect_host(
+                Rc::clone(&reflect),
+                module.clone(),
+            )));
             let v = interpreter::machine::eval_value(&ir, &qualified)
                 .map_err(|d| fail(d, &module, span))?;
             match render_meta_value(&v) {
@@ -548,6 +503,10 @@ fn lower_all(
         // otherwise apply a `BUILD` directive (a no-op for any other value) and
         // drop the directive. Either way the whole `$ @e X` item is replaced.
         for (module, qualified, span) in item_sites {
+            interpreter::machine::set_type_host(Some(reflect_host(
+                Rc::clone(&reflect),
+                module.clone(),
+            )));
             let v = interpreter::machine::eval_value(&ir, &qualified)
                 .map_err(|d| fail(d, &module, span))?;
             // `span` is the whole `$ @e X` directive, so replacing it drops the
@@ -562,6 +521,10 @@ fn lower_all(
         // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@code`
         // denoting a type; splice its source in place of the `@e X`.
         for (module, qualified, span) in type_sites {
+            interpreter::machine::set_type_host(Some(reflect_host(
+                Rc::clone(&reflect),
+                module.clone(),
+            )));
             let v = interpreter::machine::eval_value(&ir, &qualified)
                 .map_err(|d| fail(d, &module, span))?;
             match as_code_src(&v) {
@@ -588,30 +551,62 @@ fn clear_meta_hosts() {
     interpreter::machine::set_type_host(None);
 }
 
-/// Build the `$ @e` reflection host from a round's collected type shapes: a
-/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`.
-fn reflect_host(
-    reflect: frontend::lowering::ReflectInfo,
-) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+/// Every declared type shape a round can reflect on, keyed for both lookup
+/// forms: `qualified` is the exact `module.name`, and `bare` lists every module
+/// declaring a given name, sorted by module so the choice never depends on hash
+/// order. Types are namespaced per module, so a bare name means "mine first".
+struct ReflectTables {
+    qualified: HashMap<(String, String), interpreter::machine::TypeInfo>,
+    bare: HashMap<String, Vec<(String, interpreter::machine::TypeInfo)>>,
+}
+
+/// Index a round's collected type shapes for `$ @e` reflection.
+fn reflect_tables(reflect: frontend::lowering::ReflectInfo) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
-    // Register each type under both its bare name and `module.name`. The qualified
-    // key is exact; the bare key resolves to the first-declared type of that name
-    // (an ambiguity a caller disambiguates by qualifying).
-    let mut map: HashMap<String, TypeInfo> = HashMap::new();
-    let mut put = |key: String, info: TypeInfo| {
-        map.entry(key).or_insert(info);
+    let mut qualified = HashMap::new();
+    let mut bare: HashMap<String, Vec<(String, TypeInfo)>> = HashMap::new();
+    let mut put = |module: String, name: String, info: TypeInfo| {
+        qualified.insert((module.clone(), name.clone()), info.clone());
+        bare.entry(name).or_default().push((module, info));
     };
     for (module, name, params, fields) in reflect.structs {
-        let info = TypeInfo::Struct { params, fields };
-        put(format!("{module}.{name}"), info.clone());
-        put(name, info);
+        put(module, name, TypeInfo::Struct { params, fields });
     }
     for (module, name, params, variants) in reflect.unions {
-        let info = TypeInfo::Union { params, variants };
-        put(format!("{module}.{name}"), info.clone());
-        put(name, info);
+        put(module, name, TypeInfo::Union { params, variants });
     }
-    Box::new(move |name: &str| map.get(name).cloned())
+    for entries in bare.values_mut() {
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    Rc::new(ReflectTables { qualified, bare })
+}
+
+/// The `$ @e` reflection host for the module whose directive is running: a
+/// by-name lookup answering `@type_kind`/`@type_fields`/`@type_variants`.
+///
+/// A bare name resolves to `caller`'s OWN type first. Types are namespaced per
+/// module, so two modules may each declare a `Box`; without this a derive in one
+/// module could reflect the other's shape and generate field accesses that do
+/// not exist on the value it runs against. A name no module of the caller's own
+/// declares falls back to the sole declarer, then to the first by module name.
+fn reflect_host(
+    tables: Rc<ReflectTables>,
+    caller: String,
+) -> Box<dyn Fn(&str) -> Option<interpreter::machine::TypeInfo>> {
+    Box::new(move |name: &str| {
+        if let Some((module, bare)) = name.split_once('.') {
+            return tables
+                .qualified
+                .get(&(module.to_string(), bare.to_string()))
+                .cloned();
+        }
+        let entries = tables.bare.get(name)?;
+        entries
+            .iter()
+            .find(|(m, _)| *m == caller)
+            .or_else(|| entries.first())
+            .map(|(_, info)| info.clone())
+    })
 }
 
 /// If `v` is a `@code` fragment, its source text.
@@ -686,7 +681,7 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
         false,
         Some(&loaded.root_name),
     )?;
-    let resolved = collect_resolved(&checkers);
+    let resolved = frontend::collect_resolved(&checkers);
 
     let module_decls = frontend::Decls::collect(&ast, &programs);
     let root = loaded.index[&loaded.root_name];

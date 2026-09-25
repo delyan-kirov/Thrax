@@ -507,7 +507,6 @@ $ range : @int -> @int -> @vec @int = \lo hi = range_onto (@vec_new {}) lo hi
 # The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
 # and no longer the default). `[...]` / `::` / `[]` build a `@vec`, so a `List` is
 # constructed and matched through its `Cons`/`Nil` constructors explicitly (or bridged
-# with `VEC.from_list` / `VEC.to_list`). Spelled `List a` (or `@list a`).
 $ List : @union a = Nil: {}, Cons: {a, List a},
 
 # One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:

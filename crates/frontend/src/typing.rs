@@ -1475,10 +1475,29 @@ impl<'a> Checker<'a> {
             // are checked (bidirectional). A bare positional literal, which carries no
             // field names, depends on this to resolve its struct at all.
             Expr::StructLit { ty, fields, spread } => {
+                let (ty, spread) = (*ty, *spread);
                 let fields = self.ast.slice(*fields);
+                let save = self.eng.save();
                 let name = ty.map(|t| self.text(t)).or_else(|| self.struct_name_of(expected));
-                let got = self.infer_struct_lit(e, name, fields, *spread, Some(expected))?;
-                self.eng.unify(&got, expected, "against the expected type")
+                let direct = self
+                    .infer_struct_lit(e, name, fields, spread, Some(expected))
+                    .and_then(|got| {
+                        self.eng.unify(&got, expected, "against the expected type")
+                    });
+                let Err(err) = direct else {
+                    return Ok(());
+                };
+                // The literal is not that record itself, so try promoting it INTO the
+                // record the way a struct-typed variable already promotes: `diag
+                // Point.{ .. }` fills a `{with q: Point}` parameter. Only a closed row
+                // has known fields to promote into; anything else keeps the direct
+                // mismatch, which is the more useful error.
+                if !self.record_is_closed(expected) {
+                    return Err(err);
+                }
+                self.eng.restore(save);
+                let got = self.infer_struct_lit(e, ty.map(|t| self.text(t)), fields, spread, None)?;
+                self.promote_to_record(e, &[got], expected).map_err(|_| err)
             }
             // A bare `.Tag` takes its union from the expected type (type-directed), so
             // a constructor name shared by several unions resolves unambiguously.
