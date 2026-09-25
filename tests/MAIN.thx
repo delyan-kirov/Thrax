@@ -38,6 +38,7 @@ $ with META_E = META_E
 $ with META_TYPE = META_TYPE
 $ with NUMBERS = NUMBERS
 $ with OPERATORS = OPERATORS
+$ with OPERATOR_REFS = OPERATOR_REFS
 $ with OR_PATTERNS = OR_PATTERNS
 $ with PATTERNS = PATTERNS
 $ with PLATFORM = PLATFORM
@@ -111,6 +112,7 @@ $ main : @int =
 	+ check "META_TYPE" META_TYPE.test
 	+ check "NUMBERS" NUMBERS.test
 	+ check "OPERATORS" OPERATORS.test
+	+ check "OPERATOR_REFS" OPERATOR_REFS.test
 	+ check "OR_PATTERNS" OR_PATTERNS.test
 	+ check "PATTERNS" PATTERNS.test
 	+ check "PLATFORM" PLATFORM.test

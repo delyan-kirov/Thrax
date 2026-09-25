@@ -58,6 +58,14 @@ pub fn ends_expr(op: &str) -> bool {
     matches!(op_role(op), Some(OpRole::Delimiter))
 }
 
+/// True if `a op b` is rewritten into some other form (a lazy `if`, a `let`, a
+/// bare application, a call to a differently named global) instead of a call to
+/// a global named `op`. Such an operator has no binding to reference, so `(op)`
+/// eta-expands to `\l r = l op r` and reuses the rewrite.
+pub fn desugared(op: &str) -> bool {
+    matches!(op, "&&" | "||" | ";" | "|>" | "<|" | "::")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +88,25 @@ mod tests {
                 "operator `{}` lexes as Kind::Op but has no parser role",
                 d.lexeme
             );
+        }
+    }
+
+    /// Every lexeme [`desugared`] names must still be an infix operator. If this
+    /// fails, the operator was renamed or dropped from
+    /// `lexer::data::OPERATORS` and `(op)` would reference a global that the
+    /// desugar never emits.
+    #[test]
+    fn every_desugared_op_is_infix() {
+        for d in OPERATORS {
+            assert!(
+                !desugared(d.lexeme) || infix(d.lexeme).is_some(),
+                "operator `{}` is listed as desugared but is not infix",
+                d.lexeme
+            );
+        }
+        for op in ["&&", "||", ";", "|>", "<|", "::"] {
+            assert!(desugared(op), "`{op}` should be listed as desugared");
+            assert!(infix(op).is_some(), "`{op}` is no longer an infix operator");
         }
     }
 }

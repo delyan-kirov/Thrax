@@ -1529,6 +1529,22 @@ impl<'a> Checker<'a> {
                 let got = self.resolve_overload(name, &cands, &[], Some(e))?;
                 self.eng.unify(&got, expected, "against the expected type")
             }
+            // A bare reference to an overloaded name, with no argument types to
+            // dispatch on (`(+)` passed as a value, `foldl (+) 0 xs`). The expected
+            // type selects the overload, and the choice is recorded at this site so
+            // lowering emits the resolved global rather than the bare name. An
+            // ambiguity here is deferred like any other, so an expected type that is
+            // still an unpinned variable is settled once inference constrains it.
+            Expr::Var { module: None, name }
+                if self.overloads.contains_key(self.text(*name))
+                    && self.lookup(self.text(*name)).is_none()
+                    && !self.shadowed_locally(self.text(*name)) =>
+            {
+                let name = self.text(*name);
+                let cands = self.overloads.get(name).cloned().expect("guarded above");
+                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
+                self.eng.unify(&got, expected, "against the expected type")
+            }
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional

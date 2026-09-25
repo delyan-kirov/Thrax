@@ -54,7 +54,7 @@
 %token UNDERSCORE   /* _ */
 %token TYVAR        /* `a */
 
-%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_OPERATOR AT_ASSERT
+%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_ASSERT
 %token AT_RUN
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
@@ -77,6 +77,7 @@
 %left  CONCAT                       /* ++ */
 %left  PLUS MINUS
 %left  STAR SLASH PERCENT
+%right CARET                        /* ^ exponentiation */
 %precedence NEG                     /* unary - ! */
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
@@ -104,15 +105,19 @@ global
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_ASSERT expr
   | DOLLAR AT_RUN expr
-  | DOLLAR AT_OPERATOR DOT LBRACE overloadable_op RBRACE COLON type EQ expr
+  | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
   ;
 
 opt_sig   : /* empty */ | COLON type ;
 body      : expr | extern_lit ;
 
-overloadable_op
-  : PLUS | MINUS | STAR | SLASH | PERCENT | CONCAT
+/* Every operator that may stand alone in parens: the name a `$ (op) : T = e`
+ * definition binds, and the function value `(op)` refers to. The grammatical
+ * delimiters (`|`, `<>`) are excluded: they are not operators. */
+operator_name
+  : PLUS | MINUS | STAR | SLASH | PERCENT | CARET | BANG | CONCAT | CONS
   | EQEQ | LT | GT | LE | GE
+  | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK
   ;
 
 import       : dotted_name | dotted_name EQ dotted_name ;
@@ -281,6 +286,7 @@ op_expr
   | op_expr STAR op_expr
   | op_expr SLASH op_expr
   | op_expr PERCENT op_expr
+  | op_expr CARET op_expr
   | MINUS op_expr %prec NEG
   | BANG  op_expr %prec NEG
   | app
@@ -297,6 +303,7 @@ atom
   | LIDENT
   | UIDENT
   | LPAREN expr RPAREN
+  | LPAREN operator_name RPAREN  /* an operator as a function value: `(+) 1 1` */
   | LBRACE RBRACE
   | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
