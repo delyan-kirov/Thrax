@@ -1,12 +1,15 @@
 @mod LISTS
 
 # \file lists.thx
-# \info The blessed `@vec` type and its literal sugar. `[a, b, c]` builds a
-#       list, `h :: t` conses onto one, and `[]` is the empty list -- all
-#       desugaring to the prelude's `@vec.Cons` / `@vec.Nil` variant
-#       constructors. Patterns mirror the sugar: `is []` / `is h :: t` in a
-#       `when` destructure a list one cell at a time, and a fixed-arity
-#       `[a, b]` matches a list of exactly that length.
+# \info The `[]` surface, on the default sequence and on a type that opts in.
+#       `[a, b, c]` builds a `@vec`, `h :: t` conses onto one, and `[]` is the
+#       empty one. Patterns mirror the sugar: `is []` / `is h :: t` destructure
+#       a sequence one cell at a time, and a fixed-arity `[a, b]` matches a
+#       sequence of exactly that length. The second half runs the same surface
+#       on CORE's cons `List`, which is not a compiler type: it gets all of it
+#       from three overloads (`@compiler_interface_sequence_literal`, `(::)`,
+#       `@compiler_interface_sequence_view`), the same three any type of your
+#       own would write.
 
 $ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
@@ -65,5 +68,33 @@ $ ck_sc1 : @int = if (size_class [7]) == 1 => 0 else 1
 $ ck_sc2 : @int = if (size_class [7, 8]) == 2 => 0 else 1
 $ ck_scN : @int = if (size_class xs) == 9 => 0 else 1
 
+# The cons `List` rides the same surface, from user space. Nothing below knows
+# it is a `@union` rather than the built-in sequence.
+$ ls : List @int = [1, 2, 3, 4, 5]
+$ ls2 : List @int = 0 :: ls
+
+$ lsum : List @int -> @int = \l =
+	is l | [] => 0
+	     | h :: t => h + lsum t
+	     else 0
+
+$ lsecond : List @int -> @int = \l =
+	is l | [_, x, ..rest] => x
+	     else 0-1
+
+$ lsize_class : List @int -> @int = \l =
+	is l | [] => 0
+	     | [a] => 1
+	     | [a, b] => 2
+	     else 9
+
+$ ck_lsum : @int = if (lsum ls) == 15 => 0 else 1
+$ ck_lcons : @int = if (lsum ls2) == 15 => 0 else 1
+$ ck_lsecond : @int = if (lsecond ls) == 2 => 0 else 1
+$ ck_lsc0 : @int = if (lsize_class []) == 0 => 0 else 1
+$ ck_lsc2 : @int = if (lsize_class [7, 8]) == 2 => 0 else 1
+$ ck_lscN : @int = if (lsize_class ls) == 9 => 0 else 1
+
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN
+	+ ck_lsum + ck_lcons + ck_lsecond + ck_lsc0 + ck_lsc2 + ck_lscN

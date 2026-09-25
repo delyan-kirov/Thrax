@@ -46,6 +46,9 @@ Construction / access:
 - `@compiler_interface_integer_literal  : @int -> a`
 - `@compiler_interface_real_literal     : @float64 -> a`
 - `@compiler_interface_indexing         : c -> k -> *`   (the `.[..]` hook)
+- `@compiler_interface_range            : t -> t -> f`   (`[lo ... hi]`)
+- `@compiler_interface_range_from       : t -> f`        (`[lo ...]`)
+- `@compiler_interface_slice            : c -> @int -> @int -> c`  (`.[lo ... hi]`)
 
 Matching:
 
@@ -213,7 +216,11 @@ takes the built-in `Str`. `@compiler_interface_string_literal` is now `Str -> a`
 the custom type just maps it to its value (default `Str` folds to zero cost). So other
 types can adopt string literals while `Str` itself is not de-builtined. `CStr` for C
 interop was considered and deferred (the FFI already NUL-terminates a `Str` on marshal, so
-`Str -> char*` is already safe); see `documentation/TODO.md` "Str vs C strings".
+`Str -> char*` is already safe). It is worth revisiting: a Thrax `Str` is not
+guaranteed NUL-terminated, and the append-a-NUL-on-marshal trick hides that from the
+type system, as does the return direction (C hands back a `char*` treated as a `Str`).
+A `CStr` would need a conversion primitive that does not exist and a rewrite of
+`library/IO.thx`, which is why it was deferred.
 
 ### Original plan text
 
@@ -241,3 +248,46 @@ Touchpoints: `typing/data.rs` (`display_con`, base-type set), `library/CORE.thx`
 
 - Exact spelling of the hook names (long descriptive `@compiler_interface_*` agreed;
   final words TBD).
+
+## Stage 5 - the whole `[]` surface, one mechanism  [LANDED 2026-09-25, issue #175]
+
+The remaining hardcoded `[]` jobs became overloads, so every bracket form except the
+`[n]T` type resolves through the same machinery.
+
+- **Ranges.** `[lo ... hi]` resolves `@compiler_interface_range` and `[lo ...]`
+  `@compiler_interface_range_from`; CORE overloads them for `@vec` and `Stream`. The
+  checker no longer knows the con name `Stream`, and lowering no longer names `range`
+  or `count_from`. `Checker::range_hook` resolves against the expected type, so a
+  sequence of your own claims the surface with one overload.
+- **`::`.** An ordinary operator (`$ (::) : t -> @vec t -> @vec t` in CORE) instead of
+  a lowering-time rewrite to `vcons`, so it is overloadable like `+` and construction
+  now agrees with the `h :: t` pattern. Dropped from `parser::table::desugared` and
+  from the checker's built-in bindings.
+- **Sequence literals.** CORE has a `@vec t -> @vec t` overload, the
+  `user_type_head` guard on `literal_hook_check` is gone, and `infer` records the hook
+  for the default case too, so lowering has ONE path: collect the elements into the
+  `@vec` payload and apply the resolved hook.
+- **`@array`.** Joins through its own CORE overloads of `_sequence_literal`
+  (`@vec @int -> @array`) and `_sequence_view`. Deleted: the `is_array` arms in
+  `check` / `type_pattern`, `array_exprs` / `array_pats` and their `Resolved`
+  plumbing, and `lowering::array_arm` with its helpers. Array patterns now nest like
+  any other sequence pattern (the old guarded-arm lowering ignored nested
+  sub-patterns).
+- **Slices.** A lone `recv.[lo ... hi]` over a non-tensor receiver resolves
+  `@compiler_interface_slice`; CORE overloads it for `@vec`, `@array`, and `@str`, so
+  slicing is no longer tensor-private.
+
+CORE's cons `List` is the worked example of the result: it is an ordinary `@union`
+with no compiler support, and three overloads (`_sequence_literal`, `(::)`,
+`_sequence_view`) give it literals, cons, and every sequence pattern. Exercised in
+`examples/LISTS.thx`, whose second half runs the same surface over a `List` that the
+first half runs over a `@vec`.
+
+What stays compiler business, by the type system rather than by convenience: the
+sized tensor `[n]T`. A `[..]` literal, a range, or a multi-axis slice aimed at one
+carries a static length that no hook payload or signature can express, so those three
+keep their type-directed paths (`tensor_exprs`, `infer_slice`'s shape algebra).
+
+Tests: `range_via_hook_on_a_user_type`, `open_range_via_hook_on_a_user_type`,
+`cons_operator_is_overloadable`, `slice_hook_covers_sequences_and_user_types`
+(interpreter), `bracket_hooks_match_interpreter` (ccg parity).

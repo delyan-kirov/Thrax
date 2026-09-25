@@ -63,7 +63,7 @@ pub fn ends_expr(op: &str) -> bool {
 /// a global named `op`. Such an operator has no binding to reference, so `(op)`
 /// eta-expands to `\l r = l op r` and reuses the rewrite.
 pub fn desugared(op: &str) -> bool {
-    matches!(op, "&&" | "||" | ";" | "|>" | "<|" | "::")
+    matches!(op, "&&" | "||" | ";" | "|>" | "<|")
 }
 
 #[cfg(test)]
@@ -104,7 +104,7 @@ mod tests {
                 d.lexeme
             );
         }
-        for op in ["&&", "||", ";", "|>", "<|", "::"] {
+        for op in ["&&", "||", ";", "|>", "<|"] {
             assert!(desugared(op), "`{op}` should be listed as desugared");
             assert!(infix(op).is_some(), "`{op}` is no longer an infix operator");
         }

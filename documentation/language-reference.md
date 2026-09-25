@@ -351,6 +351,8 @@ in type position, so the two never collide.
 
 ## 4.5 Concatenation `++` and cons `::`
 `++` joins strings/arrays/vectors of the same type; `::` prepends to a `@vec`.
+`::` is an ordinary operator defined in `CORE`, so a sequence of your own joins
+it with an overload of its own.
 
 ```thrax
 $ s  : Str = "Hello" ++ " " ++ "world"
@@ -443,7 +445,7 @@ $ total = VEC.foldl (+) 0 [1, 2, 3]        # as an argument
 The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
 `|` and `<>` are grammatical delimiters, not operators, and have no function
 form. An operator the parser rewrites rather than calls (`&&`, `||`, `;`, `|>`,
-`<|`, `::`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
+`<|`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
 `(&&)` therefore evaluates both sides, since short-circuiting is a property of
 the infix form.
 
@@ -535,10 +537,10 @@ $ band : Real -> @int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 ```
 
 ## 5.7 Sequence and array patterns
-Sequence: `[]`, `h :: t`, fixed-arity `[a, b]`, open `[a, ..rest]`. These match a
-`@vec` by default, and any type of your own that defines the
-`@compiler_interface_sequence_view` hook. The same `[..]` brackets
-destructure a `@array` (type-directed); `::` stays sequence-only.
+Sequence: `[]`, `h :: t`, fixed-arity `[a, b]`, open `[a, ..rest]`. Every one of
+them steps the scrutinee's `@compiler_interface_sequence_view` hook, so `@vec`
+(the default), `@array`, `CORE`'s cons `List`, and any type of your own match the
+same way: define the hook and the brackets work.
 
 Simple:
 ```thrax
@@ -913,8 +915,10 @@ $ sub : [8]@int -> [4]@int = \m = m.[2 ... 5]      # inclusive 2..5, four elemen
 
 ## 9.5 Tensor primitives and the `LA` library
 The compiler provides only `@`-primitives over the buffer; every named operation
-lives in `LA`. `t.[i]` desugars to an overloadable `index` function (so a custom
-container joins the `.[..]` surface with its own overload).
+lives in `LA`. `t.[i]` desugars to `@compiler_interface_indexing` and a lone
+`t.[lo ... hi]` to `@compiler_interface_slice`, both overloadable (so a container
+of your own joins the `.[..]` surface with its own overloads). A multi-axis
+slice stays tensor-only: its result shape is computed from the slots.
 
 ```thrax
 $ transpose : [m][n]a -> [n][m]a = \t =
@@ -923,9 +927,11 @@ $ transpose : [m][n]a -> [n][m]a = \t =
 ```
 
 ## 9.6 Expression-form ranges
-`[lo ... hi]` is a type-directed inclusive-range literal. Its target comes from
-the expected type: a sized tensor (literal bounds fix `n`), a `@vec` (the
-default), or, open, a `Stream`.
+`[lo ... hi]` builds whatever `@compiler_interface_range` returns, and the open
+`[lo ...]` whatever `@compiler_interface_range_from` returns; `CORE` overloads
+them for `@vec` and `Stream`. The expected type picks the overload, so a range of
+your own type needs only its own. A sized tensor is the exception: literal bounds
+fix `n`, and the compiler builds it directly.
 
 ```thrax
 $ tv : [4]@int     = [1 ... 4]     # tensor, n = 4
@@ -1040,8 +1046,9 @@ $ chk : @int = is b | @true => 0 else 1
 ## 12.2 `@array` (byte block)
 Allocated with `@array.{ n }` (n zeroed bytes). Primitives: `@array_len`,
 `@array_get`, `@array_set`, `@array_push`, `@array_slice`, `@array_alloc`. `Str`
-is a byte array, so these apply to strings too; `[..]` patterns destructure an
-array.
+is a byte array, so these apply to strings too. An `@array` also joins the `[..]`
+literal, pattern, and slice surfaces through its `CORE` hook overloads, like any
+other sequence.
 
 Simple:
 ```thrax

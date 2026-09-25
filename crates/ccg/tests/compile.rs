@@ -995,6 +995,23 @@ fn literal_construction_hooks_match_interpreter() {
 }
 
 #[test]
+fn bracket_hooks_match_interpreter() {
+    // The rest of the `[..]` surface is hook-driven too: ranges, `::`, slices, and
+    // `@array` literals/patterns must lower the same on the C backend.
+    let src = "@mod M\n\
+               $ Span : @struct = lo: @int, hi: @int\n\
+               $ @compiler_interface_range : @int -> @int -> Span = \\lo hi = Span.{ lo, hi }\n\
+               $ s : Span = [2 ... 6]\n\
+               $ v : @vec @int = [1 ... 4]\n\
+               $ w : @vec @int = 9 :: v.[1 ... 2]\n\
+               $ b : @array = [7, 8, 9]\n\
+               $ head : @array -> @int = \\a = is a | [x, ..r] => x + @array_len r else 0\n\
+               $ r : @int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
+    // 4 + 4 + 9 + (7+2)
+    assert_matches(src, "r");
+}
+
+#[test]
 fn pattern_hooks_match_interpreter() {
     // Literal patterns (equality hook) and sequence patterns (sequence_view hook) on
     // user types must lower the same on the C backend as on the interpreter.

@@ -93,8 +93,8 @@ Both are check-directed in `type_pattern` (only user types route; the built-in
   `Con ~ Record` bridge (a 1-field struct can be used structurally as an open record).
 - **`CStr` for C interop: deferred with a design note.** The FFI already appends a NUL
   when marshalling `Str` → `char*`, so `Str` → C is already safe; a distinct `CStr`
-  is type-level clarity, not a correctness fix, and it ripples into `IO.thx`. Written
-  up in `documentation/TODO.md` ("Str vs C strings") to revisit.
+  is type-level clarity, not a correctness fix, and it ripples into `IO.thx`. Worth
+  revisiting: it needs a `Str` <-> `CStr` conversion primitive that does not exist.
 
 ## Deferred (tracked, not blocking)
 
@@ -102,7 +102,7 @@ Both are check-directed in `type_pattern` (only user types route; the built-in
   (a module making a bare, unconstrained `[1,2,3]` build a user type by default). The
   plan flags this as its own milestone; the check-directed behaviour needs none of it.
 - **`@str` de-builtining** — not pursued (see decisions above).
-- **CStr / explicit C-string interop** — see `documentation/TODO.md`.
+- **CStr / explicit C-string interop** — see the decision above.
 
 ## Verification
 
@@ -129,4 +129,4 @@ resolution coexisting with the prelude `List`.
 - `library/LA.thx`, `library/MAP.thx`, `examples/TENSORS.thx` — indexing-hook
   overloads.
 - `documentation/literal-and-interface-intrinsics.md` — the design + staged plan with
-  per-stage status; `documentation/TODO.md` — the CStr note.
+  per-stage status.
