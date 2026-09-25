@@ -187,12 +187,12 @@ $ z : @int32 = w * 2          # @int32 + @int32 : @int32
 
 ## 3.3 Other `@`-typed built-ins
 `@ptr` (raw pointer), `@bool` (values `@true`/`@false`), `@array` (byte block),
-`@list` and `@vec` (prelude containers).
+`@vec` (the growable vector, and the default sequence).
 
 ```thrax
 $ flag : @bool  = @true
 $ bytes: @array = @array.{ 8 }      # 8 zeroed bytes
-$ xs   : @list @int = [1, 2, 3]
+$ xs   : @vec @int = [1, 2, 3]
 ```
 
 ## 3.4 Unit `{}`
@@ -350,12 +350,15 @@ applies.
 in type position, so the two never collide.
 
 ## 4.5 Concatenation `++` and cons `::`
-`++` joins strings/arrays/vectors of the same type; `::` conses onto a `@list`.
+`++` joins strings/arrays/vectors of the same type; `::` prepends to a `@vec`.
 
 ```thrax
 $ s  : Str = "Hello" ++ " " ++ "world"
-$ xs : @list @int = 1 :: 2 :: 3 :: []
+$ xs : @vec @int = 1 :: 2 :: 3 :: []
 ```
+
+`::` builds a fresh vector, so it is O(n) and a `::`-recursion is quadratic;
+`VEC.push` is the idiomatic way to build one up.
 
 ## 4.6 Short-circuit `&&` / `||`
 Desugar to a lazy `if`, so the right operand runs only when needed.
@@ -371,7 +374,7 @@ allowed. It is lazy (only the taken branch runs) and is not a pattern match.
 
 Simple:
 ```thrax
-$ abs : @int -> @int = \n = if n > 0 => n else 0 - n
+$ abs : @int -> @int = \n = if n > 0 => n else -n
 ```
 
 Involved (else-if chain):
@@ -379,7 +382,7 @@ Involved (else-if chain):
 $ sign : @int -> @int = \n =
 	if n == 0 => 0
 	else if n > 0 => 1
-	else 0 - 1
+	else -1
 ```
 
 The same chain with comma-separated arms:
@@ -388,7 +391,7 @@ $ sign2 : @int -> @int = \n =
 	if
 		n == 0 => 0,
 		n > 0  => 1,
-	else 0 - 1
+	else -1
 ```
 
 ## 4.8 Local bindings `let ... in`
@@ -404,8 +407,8 @@ $ x = let a = 6 in a * 7
 Involved (comma chain, destructuring, recursion, annotation):
 ```thrax
 $ r = let {a, b} = {3, 4}, s = a + b in s * 2
-$ len : @list @int -> @int =
-	let go : @list @int -> @int -> @int = \l n =
+$ len : @vec @int -> @int =
+	let go : @vec @int -> @int -> @int = \l n =
 		is l | _ :: t => go t (n + 1) else n
 	 in \l = go l 0
 ```
@@ -531,18 +534,20 @@ $ sign : @int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
 $ band : Real -> @int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
 ```
 
-## 5.7 List and array patterns
-List: `[]`, `h :: t`, fixed-arity `[a, b]`, open `[a, ..rest]`. The same `[..]`
-brackets destructure a `@array` (type-directed); `::` stays list-only.
+## 5.7 Sequence and array patterns
+Sequence: `[]`, `h :: t`, fixed-arity `[a, b]`, open `[a, ..rest]`. These match a
+`@vec` by default, and any type of your own that defines the
+`@compiler_interface_sequence_view` hook. The same `[..]` brackets
+destructure a `@array` (type-directed); `::` stays sequence-only.
 
 Simple:
 ```thrax
-$ sum : @list @int -> @int = \xs = is xs | [] => 0 | h :: t => h + sum t else 0
+$ sum : @vec @int -> @int = \xs = is xs | [] => 0 | h :: t => h + sum t else 0
 ```
 
-Involved (leading cells plus a rest tail, on a list and on an array):
+Involved (leading elements plus a rest tail, on a vector and on an array):
 ```thrax
-$ second : @list @int -> @int = \xs = is xs | [_, x, ..rest] => x else 0 - 1
+$ second : @vec @int -> @int = \xs = is xs | [_, x, ..rest] => x else -1
 $ head_of : @array -> @int = \a = is a | [h, ..rest] => h else 0
 ```
 
@@ -564,7 +569,7 @@ $ grade : Box -> @int = \x =
 	     | Box.Some.{ v } if v > 0   => 2
 	     | Box.Some.{ _ }             => 1
 	     | Box.Nil.{}                 => 0
-	     else 0 - 1
+	     else -1
 ```
 
 ## 5.9 Exhaustiveness
@@ -791,7 +796,7 @@ Exception (ignores `k`, so it resumes zero times):
 ```thrax
 $ safeDiv : @int -> @int -> @int = \a b =
 	do if b == 0 => Exn.throw "div0" else a / b
-	ctl k | Exn.throw msg => 0 - 1
+	ctl k | Exn.throw msg => -1
 ```
 
 Generator (resume once per yield, summing results):
@@ -823,7 +828,7 @@ discharges the effects it handles. A performed-but-unhandled effect is a compile
 error. Subsumption: a pure function is callable in any effectful context.
 
 ```thrax
-$ map : (a -> <e> b) -> @list a -> <e> @list b = \f xs =
+$ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f xs =
 	is xs | [] => [] | h :: t => f h :: map f t else []
 ```
 
@@ -919,12 +924,12 @@ $ transpose : [m][n]a -> [n][m]a = \t =
 
 ## 9.6 Expression-form ranges
 `[lo ... hi]` is a type-directed inclusive-range literal. Its target comes from
-the expected type: a sized tensor (literal bounds fix `n`), a `List` (the
+the expected type: a sized tensor (literal bounds fix `n`), a `@vec` (the
 default), or, open, a `Stream`.
 
 ```thrax
 $ tv : [4]@int     = [1 ... 4]     # tensor, n = 4
-$ ns : @list @int  = [1 ... 5]     # list (default)
+$ ns : @vec @int   = [1 ... 5]     # vector (default)
 $ s  : Stream @int = [1 ...]       # infinite stream (open range)
 ```
 
@@ -968,13 +973,13 @@ $ go : {} = clear Color.{ .r = 0, .g = 0, .b = 0, .a = 255 }
 
 ## 10.4 Callbacks and array parameters
 A function-typed parameter is a C function pointer: pass a Thrax closure. A
-`@list T` parameter (T a C-repr struct) is passed as a packed `T*` with a separate
+`@vec T` parameter (T a C-repr struct) is passed as a packed `T*` with a separate
 count.
 
 ```thrax
 $ Vector2 : @struct @extern "C" = x: @float32, y: @float32,
 $ sort : {@ptr, @int, (@int -> @int -> @int)} -> {} = @extern "C" "qsort_r" "libc"
-$ draw : {@list Vector2, @int} -> {} = @extern "C" "DrawLineStrip" "lib"
+$ draw : {@vec Vector2, @int} -> {} = @extern "C" "DrawLineStrip" "lib"
 ```
 
 ## 10.5 The `C` namespace and engine intrinsics
@@ -1093,7 +1098,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
-| `@ptr` `@array` `@list` `@vec` | built-in containers/pointer | 3.3, 12 |
+| `@ptr` `@array` `@vec` | built-in containers/pointer | 3.3, 12 |
 | `@co` `@contra` | tensor axis variance | 9.4 |
 | `@array_len/get/set/push/slice/alloc` | array primitives | 12.2 |
 | `@vec_new/push/get/set/len/fill` | vector primitives | 12.3 |

@@ -76,12 +76,15 @@ $ with WITH_SCOPE = WITH_SCOPE
 
 # `\x1b[..m` are ANSI colour codes (decoded to the ESC byte at compile time, so
 # the source stays ASCII): green `[ok]` on pass, red `[FAILED]` on failure.
-$ check : @str -> @int -> @int = \name t =
+$ check : @str -> @int -> <@io> @int = \name t =
 	if t == 0
 		=> C.puts ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else C.puts ("\x1b[1;31mERR\x1b[0m " ++ name); 1
 
-$ main : @int =
+# A C-style entry (`{} -> <| e> Int`): its OPEN effect row lets the `@io` that
+# STDLIB_IO's checks perform escape here, where the runtime discharges it. A
+# value `main` has no arrow to carry that row.
+$ main : {} -> <| e> @int =
 	  check "AGTxPRO" AGTxPRO.test
 	+ check "AGTxSUM" AGTxSUM.test
 	+ check "ARITHMETIC" ARITHMETIC.test
@@ -127,7 +130,7 @@ $ main : @int =
 	+ check "ROW_RECORDS" ROW_RECORDS.test
 	+ check "SEQ_INFER" SEQ_INFER.test
 	+ check "STDLIB_CORE" STDLIB_CORE.test
-	+ check "STDLIB_IO" STDLIB_IO.test
+	+ check "STDLIB_IO" (STDLIB_IO.test {})
 	+ check "STDLIB_LIST" STDLIB_LIST.test
 	+ check "STDLIB_MAP" STDLIB_MAP.test
 	+ check "STDLIB_PATH" STDLIB_PATH.test

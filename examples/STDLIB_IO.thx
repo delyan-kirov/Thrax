@@ -12,8 +12,10 @@ $ with STR
 
 $ path : @str = "/tmp/thrax_stdlib_io_test.txt"
 
-# Write, append, read back, remove -- each step feeding the next.
-$ ck_roundtrip : @int =
+# Write, append, read back, remove -- each step feeding the next. An effect row
+# lives on an arrow, so a check that performs `@io` takes `{}` and declares it;
+# only `ck_fmt` (pure string formatting) stays a plain value.
+$ ck_roundtrip : {} -> <@io> @int =
 	let w = write_file path "line one\nline two\n" in
 	if !w => 1
 	else
@@ -25,21 +27,24 @@ $ ck_roundtrip : @int =
 			if body == "line one\nline two\nline three\n" => (if rm => 0 else 1) else 1
 
 # A second remove fails: the file is gone.
-$ ck_gone : @int = if remove_file path => 1 else 0
+$ ck_gone : {} -> <@io> @int = if remove_file path => 1 else 0
 
 # An unopenable path is None, not a fault.
-$ ck_missing : @int =
+$ ck_missing : {} -> <@io> @int =
 	if is_none (read_file "/tmp/thrax_stdlib/definitely/not/here") => 0 else 1
 
 # The environment: PATH is set on every platform (HOME is POSIX-only, absent on
 # Windows), and unset variables come back "".
-$ ck_env      : @int = if (env "PATH") == "" => 1 else 0
-$ ck_env_none : @int = if (env "THRAX_SURELY_UNSET_VAR_42") == "" => 0 else 1
+$ ck_env      : {} -> <@io> @int = if (env "PATH") == "" => 1 else 0
+$ ck_env_none : {} -> <@io> @int =
+	if (env "THRAX_SURELY_UNSET_VAR_42") == "" => 0 else 1
 
 # Number formatting composes with printing (evaluated for effect-freeness
 # here; the string is checked, the console write is the runner's).
 $ ck_fmt : @int = if (from_int 42) == "42" => 0 else 1
 
-# Aggregate check for the combined test runner: 0 = all pass.
-$ test : @int = ck_roundtrip + ck_gone + ck_missing + ck_env + ck_env_none
+# Aggregate check for the combined test runner: 0 = all pass. It performs `@io`,
+# so it too is a unit-taking function; the runner calls it as `test {}`.
+$ test : {} -> <@io> @int =
+	ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_env {} + ck_env_none {}
 	+ ck_fmt

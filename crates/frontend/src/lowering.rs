@@ -453,6 +453,76 @@ pub struct Resolved {
     pub crepr_layouts: HashMap<String, utilities::CLayout>,
 }
 
+/// Gather every checker resolution lowering needs into one [`Resolved`]: `[..]`
+/// array/tensor nodes, resolved bare calls and overload keys, literal/pattern
+/// hooks, implicit (`@ctx`) arguments, extern specs, C-repr layouts, ...
+///
+/// Lowering `expect`s several of these to be present (a `::` pattern without its
+/// sequence-view hook panics), so every caller that checks a program and then
+/// lowers it must fill `Resolved` the same way. This is that one way: a second
+/// hand-written copy silently loses whichever map it was written before.
+pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
+    let mut resolved = Resolved::default();
+    for checker in checkers {
+        let (exprs, pats) = checker.array_nodes();
+        resolved.array_exprs.extend(exprs.iter().copied());
+        resolved.array_pats.extend(pats.iter().copied());
+        resolved.tensor_exprs.extend(checker.tensor_nodes().iter().copied());
+        for (&site, names) in checker.promotions() {
+            resolved.promotions.insert(site, names.clone());
+        }
+        for (&site, n) in checker.struct_lit_names() {
+            resolved.struct_lit_names.insert(site, n.clone());
+        }
+        for (&site, (m, n)) in checker.literal_hooks() {
+            resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone()));
+        }
+        for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() {
+            resolved.literal_pattern_hooks.insert(
+                site,
+                ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone())),
+            );
+        }
+        for (&site, (m, n)) in checker.sequence_pattern_hooks() {
+            resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone()));
+        }
+        let (clits, obs) = checker.codata_sites();
+        resolved.codata_lits.extend(clits.iter().copied());
+        resolved.observations.extend(obs.iter().copied());
+        for (&site, &module) in checker.call_modules() {
+            resolved.call_modules.insert(site, module.to_string());
+        }
+        for (&site, key) in checker.overload_calls() {
+            resolved.overload_calls.insert(site, key.clone());
+        }
+        for (&site, &slot) in checker.dict_calls() {
+            resolved.dict_calls.insert(site, slot);
+        }
+        for (&body, key) in checker.def_keys() {
+            resolved.def_keys.insert(body, key.clone());
+        }
+        for (&site, args) in checker.implicit_calls() {
+            resolved.implicit_args.insert(site, args.clone());
+        }
+        for (&site, fields) in checker.with_fields() {
+            resolved.with_fields.insert(site, fields.clone());
+        }
+        resolved.extern_sigs.extend(checker.extern_sigs());
+        let module = checker.module_name().to_string();
+        for (name, spec) in checker.own_externs() {
+            resolved
+                .externs
+                .insert((module.clone(), name.to_string()), spec.clone());
+        }
+        for (name, layout) in checker.crepr_layouts() {
+            resolved
+                .crepr_layouts
+                .insert(name.to_string(), layout.clone());
+        }
+    }
+    resolved
+}
+
 /// Lower one module's globals to Core.
 pub fn lower_program(
     ast: &Ast,
