@@ -1127,18 +1127,7 @@ impl<'a> Parser<'a> {
                         let lexeme = self.text(t).to_string();
                         self.bump()?;
                         let rhs = self.parse_expr(bp.right)?;
-                        // `&&`/`||` are short-circuit: desugar to a lazy `if` so the
-                        // right operand runs only when needed.
-                        let node = if lexeme == "&&" {
-                            let alt = self.expr(Expr::Bool(false));
-                            self.expr(Expr::If { cond: lhs, then: rhs, alt })
-                        } else if lexeme == "||" {
-                            let then = self.expr(Expr::Bool(true));
-                            self.expr(Expr::If { cond: lhs, then, alt: rhs })
-                        } else {
-                            let op = self.intern(&lexeme);
-                            self.expr(Expr::BinOp { op, lhs, rhs })
-                        };
+                        let node = self.binop_expr(&lexeme, lhs, rhs);
                         lhs = self.stamp(start, node);
                     }
                 },
@@ -1175,6 +1164,25 @@ impl<'a> Parser<'a> {
                 | Kind::LBrack
                 | Kind::At
         )
+    }
+
+    /// `lhs op rhs`. `&&`/`||` are short-circuit, so they become a lazy `if`
+    /// rather than a call; every other operator keeps its [`Expr::BinOp`] node.
+    fn binop_expr(&mut self, lexeme: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Aol<Expr> {
+        match lexeme {
+            "&&" => {
+                let alt = self.expr(Expr::Bool(false));
+                self.expr(Expr::If { cond: lhs, then: rhs, alt })
+            }
+            "||" => {
+                let then = self.expr(Expr::Bool(true));
+                self.expr(Expr::If { cond: lhs, then, alt: rhs })
+            }
+            _ => {
+                let op = self.intern(lexeme);
+                self.expr(Expr::BinOp { op, lhs, rhs })
+            }
+        }
     }
 
     fn parse_prefix(&mut self) -> Result<Aol<Expr>> {
@@ -1230,6 +1238,7 @@ impl<'a> Parser<'a> {
                 let name = self.intern(self.text(t));
                 Ok(self.expr(Expr::Var { module: None, name }))
             }
+            Kind::LParen if self.at_operator_ref()? => self.parse_operator_ref(),
             Kind::LParen => self.parse_group(),
             Kind::Let => self.parse_let(),
             Kind::With => self.parse_with(),
@@ -1376,6 +1385,63 @@ impl<'a> Parser<'a> {
             record = self.expr(Expr::Field { record, name });
         }
         record
+    }
+
+    /// Whether the upcoming `(` opens an operator reference `(op)` rather than a
+    /// group. The parens must hold exactly one operator token, so `(a + b)` and
+    /// `(-1)` stay groups.
+    fn at_operator_ref(&mut self) -> Result<bool> {
+        Ok(matches!(self.peek_kind_at(1)?, Kind::Op)
+            && matches!(self.peek_kind_at(2)?, Kind::RParen))
+    }
+
+    /// `(op)` in expression position: the operator as a first-class function,
+    /// the same binding `$ (op) : ... = ...` defines. Application and overload
+    /// resolution then treat it like any other function reference.
+    fn parse_operator_ref(&mut self) -> Result<Aol<Expr>> {
+        self.bump()?; // '('
+        let op_tok = self.bump()?;
+        let lexeme = self.text(op_tok);
+        self.bump()?; // ')'
+        if table::ends_expr(lexeme) {
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                op_tok.span,
+                op_tok.line,
+                format!("`{lexeme}` is a grammatical delimiter, not a function"),
+            ));
+        }
+        // An operator the parser or lowering rewrites has no global of its own, so
+        // the reference eta-expands and goes back through that same rewrite.
+        if table::desugared(lexeme) {
+            return Ok(self.eta_operator(lexeme));
+        }
+        // A prefix-only operator names its global by role (`!` is `not`), since no
+        // binary form of the lexeme exists.
+        let name = match table::infix(lexeme) {
+            Some(_) => self.intern(lexeme),
+            None => {
+                let prefix = table::prefix(lexeme)
+                    .ok_or_else(|| self.unexpected(&op_tok, "expected an operator"))?;
+                self.intern(prefix)
+            }
+        };
+        Ok(self.expr(Expr::Var { module: None, name }))
+    }
+
+    /// `\l r = l op r`, the function form of an operator whose infix use is
+    /// desugared rather than lowered to a call. The binder names carry a `#`, a
+    /// comment character, so they cannot collide with a source name.
+    fn eta_operator(&mut self, lexeme: &str) -> Aol<Expr> {
+        let l = self.intern("#l");
+        let r = self.intern("#r");
+        let lhs = self.expr(Expr::Var { module: None, name: l });
+        let rhs = self.expr(Expr::Var { module: None, name: r });
+        let body = self.binop_expr(lexeme, lhs, rhs);
+        let lp = self.pat(Pattern::Var(l));
+        let rp = self.pat(Pattern::Var(r));
+        let params = self.ast.make_slice(vec![lp, rp]);
+        self.expr(Expr::Lambda { params, body })
     }
 
     fn parse_group(&mut self) -> Result<Aol<Expr>> {

@@ -424,7 +424,27 @@ $ y   = 5 |> inc |> double                 # double (inc 5)
 $ z   = double <| inc <| 5                 # same
 ```
 
-## 4.10 `@cast`
+## 4.10 Operators as functions `(op)`
+An operator in parentheses is a plain function value, the same binding a
+`$ (op) : ... = ...` definition binds. It curries, passes as an argument, and
+dispatches across the overload set like any other function reference; the
+expected type picks the overload where there are no arguments to dispatch on.
+
+```thrax
+$ two   = (+) 1 1                          # 1 + 1
+$ add1  : @int -> @int = (+) 1             # curried
+$ plus  : @int -> @int -> @int = (+)       # the overload comes from the type
+$ total = VEC.foldl (+) 0 [1, 2, 3]        # as an argument
+```
+
+The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
+`|` and `<>` are grammatical delimiters, not operators, and have no function
+form. An operator the parser rewrites rather than calls (`&&`, `||`, `;`, `|>`,
+`<|`, `::`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
+`(&&)` therefore evaluates both sides, since short-circuiting is a property of
+the infix form.
+
+## 4.11 `@cast`
 Reinterprets an integer at a different integer width. The target width comes
 from context (annotate if unknown). Integer widths only, not int/real/ptr (those
 use `C.i2f` / `C.i2p`).
@@ -694,9 +714,14 @@ $ to_string : Point -> Str = \p = "({p.x}, {p.y})"
 $ line : Str = "p = {Point.{ .x = 1, .y = 2 }}"
 ```
 
-Note: OPERATOR overloading (`$ @operator.{ + } : ...`) parses but is currently a
-no-op (the definition is dropped after parsing, so a `+` on a user type does not
-resolve). Function overloading on ordinary names does work.
+An operator overloads the same way: `$ (op) : ... = ...` binds a definition under
+the symbolic name, joining that operator's set (§4.4). The parenthesized form is
+also how the operator is referred to as a value (§4.10).
+
+```thrax
+$ Money : @struct = cents: @int
+$ (+) : Money -> Money -> Money = \a b = Money.{ .cents = a.cents + b.cents }
+```
 
 ## 7.4 Implicit parameters `@ctx`
 After a signature, `@ctx name : Type` declares an implicit parameter resolved by
@@ -1063,10 +1088,9 @@ A quick index of the `@`-forms and where each is documented above.
 | `@struct` `@union` `@codata` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding | 10 |
 | `@ctx` | implicit parameter | 7.4 |
-| `@operator` | operator overload (parsed, not implemented) | 7.3 |
 | `@private` | visibility | 2.4 |
 | `@run` `@assert` | compile-time evaluation | 11 |
-| `@cast` | integer-width reinterpret | 4.10 |
+| `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
 | `@ptr` `@array` `@list` `@vec` | built-in containers/pointer | 3.3, 12 |

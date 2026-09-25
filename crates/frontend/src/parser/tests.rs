@@ -485,3 +485,42 @@ fn effect_rows_still_parse_in_type_position() {
         assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
     }
 }
+
+#[test]
+fn operator_in_parens_is_a_function_reference() {
+    // `(+) 1 1` applies the operator's own binding, so the head is a plain var.
+    let p = prog("@mod M\n$ y = (+) 1 1");
+    let Expr::App(f, _) = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected an application")
+    };
+    let Expr::App(head, _) = p.ast.expr(*f) else {
+        panic!("expected a nested application")
+    };
+    let Expr::Var { module: None, name } = p.ast.expr(*head) else {
+        panic!("expected an operator reference")
+    };
+    assert_eq!(p.ast.text(*name), "+");
+
+    // A prefix-only operator references its named global, not its lexeme.
+    let p = prog("@mod M\n$ y = (!)");
+    let Expr::Var { module: None, name } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected an operator reference")
+    };
+    assert_eq!(p.ast.text(*name), "not");
+
+    // An operator the parser rewrites has no binding, so it eta-expands.
+    let p = prog("@mod M\n$ y = (&&)");
+    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Lambda { .. }));
+
+    // Parens holding anything else still group.
+    let p = prog("@mod M\n$ y = (1 + 2)");
+    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
+    let p = prog("@mod M\n$ y = (-1)");
+    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::UnOp { .. }));
+
+    // A grammatical delimiter is not an operator and has no function form.
+    let Err(err) = parse("@mod M\n$ y = (|)") else {
+        panic!("`|` is not a function")
+    };
+    assert!(err.to_string().contains("delimiter"));
+}

@@ -1,0 +1,61 @@
+@mod OPERATOR_REFS
+
+# \file OPERATOR_REFS.thx
+# \info An operator in parentheses is a plain function value: `(+) 1 1` is
+#       `1 + 1`. It refers to the same binding `$ (+) : ... = ...` defines, so it
+#       curries, passes as an argument, and dispatches across the overload set
+#       like any other function reference.
+
+$ with VEC
+
+$ apply2 : (@int -> @int -> @int) -> @int -> @int -> @int = \f a b = f a b
+
+$ added    = (+) 1 1
+$ diff     = (-) 10 4
+$ times    = (*) 6 7
+$ quotient = (/) 84 2
+$ power    = (^) 2 5
+$ less     = (<) 1 2
+$ negated  = (!) @false
+
+# Partial application: an operator reference curries like any other function.
+$ add_one : @int -> @int = (+) 1
+$ curried = add_one 41
+
+# As a value and as an argument. Both sites are bare references with no argument
+# types of their own, so the expected type picks the overload.
+$ plus : @int -> @int -> @int = (+)
+$ bound  = plus 2 3
+$ passed = apply2 (+) 20 22
+$ summed = foldl (+) 0 [1, 2, 3]
+
+# The reference reaches a definition of your own too: `+` on a `Money` dispatches
+# here, `+` on an `@int` still reaches CORE's.
+$ Money : @struct = cents: @int
+
+$ (+) : Money -> Money -> Money = \a b = Money.{ .cents = a.cents + b.cents }
+
+$ pooled : Money = (+) Money.{ .cents = 150 } Money.{ .cents = 900 }
+
+# An operator the parser rewrites rather than calls (`&&`, `||`, `;`, the pipes,
+# `::`) has no binding of its own, so its reference is the function `\l r = l op r`.
+# Referenced this way, `&&` evaluates both sides: short-circuiting is a property
+# of the infix form, not of the function.
+$ both   = (&&) @true @true
+$ either = (||) @false @true
+$ piped  = (|>) 3 add_one
+$ consed = (::) 1 [2, 3]
+
+# Grouping is unaffected: parens hold an operator reference only when that is
+# all they hold.
+$ grouped = (1 + 2) * 3
+$ negative = (-1) + 2
+
+$ test : @int =
+	if added == 2 && diff == 6 && times == 42 && quotient == 42 && power == 32
+		&& less && negated && curried == 42 && bound == 5 && passed == 42
+		&& summed == 6
+		&& pooled.cents == 1050
+		&& both && either && piped == 4 && @vec_len consed == 3
+		&& grouped == 9 && negative == 1
+	=> 0 else 1
