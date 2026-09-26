@@ -3,6 +3,8 @@
 //! * [`arena`] is the bump arena; [`handle`] is the handle-addressed store the
 //!   AST uses to drop its source lifetime.
 //! * [`error`] is the diagnostic model.
+//! * [`interrupt`] is the interrupt flag a signal handler sets and a running
+//!   evaluation polls.
 //! * [`scc`] is a generic strongly-connected-components pass (Tarjan).
 //! * [`target`] is the compilation target as data (the single source of
 //!   platform truth: word size, `@extern` library resolution, toolchain).
@@ -11,6 +13,7 @@ pub mod arena;
 pub mod cabi;
 pub mod error;
 pub mod handle;
+pub mod interrupt;
 pub mod scc;
 pub mod target;
 

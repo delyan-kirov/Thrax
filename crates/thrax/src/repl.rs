@@ -21,6 +21,15 @@
 //! word, and line motion, the usual kill keys, undo/redo, and `C-r` reverse
 //! history search). When stdin is not a terminal the shell falls back to a
 //! plain line reader with the same `$`-terminates-an-item convention.
+//!
+//! Raw mode is for reading keys only: an item is evaluated with the terminal put
+//! back the way it was found, so the evaluated program sees an ordinary terminal
+//! and `Ctrl-C` raises a real `SIGINT`. The handler sets the interrupt flag that
+//! the evaluator polls, so `Ctrl-C` stops a runaway evaluation and returns to the
+//! prompt with the session intact; at the prompt, where raw mode swallows the
+//! signal, `Ctrl-C` still just abandons the item being edited. `Ctrl-Z` suspends
+//! the shell as in any other program, handing the terminal back before stopping
+//! and taking raw mode again on resume.
 
 use std::io::{self, BufRead, Write};
 use std::os::raw::{c_int, c_ulong};
@@ -47,14 +56,17 @@ pub fn cmd_repl() -> ExitCode {
     let mut state = Repl::new(root_dir);
 
     match term::RawMode::enable() {
-        Some(_guard) => run_raw(&mut state),
+        Some(raw) => {
+            term::catch_interrupts();
+            run_raw(&mut state, &raw);
+        }
         None => run_cooked(&mut state),
     }
     ExitCode::SUCCESS
 }
 
 /// The interactive editor used when stdin is a terminal.
-fn run_raw(state: &mut Repl) {
+fn run_raw(state: &mut Repl, raw: &term::RawMode) {
     let mut input = term::FdKeys;
     let mut ed = Editor::new();
     ed.render();
@@ -110,18 +122,28 @@ fn run_raw(state: &mut Repl) {
                 let body = ed.submit_body();
                 print!("\r\n");
                 let _ = io::stdout().flush();
-                state.submit(&body);
+                evaluating(raw, || state.submit(&body));
                 ed = Editor::new();
                 ed.render();
             }
             Some(Key::Escape) => {}
+            // Ctrl-Z is read as a byte here (raw mode keeps `ISIG` off), so the
+            // shell raises the stop itself. The item being edited survives it.
+            Some(Key::Suspend) => {
+                print!("\r\n");
+                let _ = io::stdout().flush();
+                term::suspend(raw);
+                ed.render();
+            }
             Some(Key::Char(c)) => ed.insert(c),
             Some(Key::Enter) => match ed.on_enter() {
                 Enter::Newline => ed.newline(),
                 Enter::Command(cmd) => {
                     print!("\r\n");
                     let _ = io::stdout().flush();
-                    if state.command(&cmd) {
+                    let mut quit = false;
+                    evaluating(raw, || quit = state.command(&cmd));
+                    if quit {
                         break;
                     }
                     ed = Editor::new();
@@ -132,13 +154,27 @@ fn run_raw(state: &mut Repl) {
                     ed.render();
                     print!("\r\n");
                     let _ = io::stdout().flush();
-                    state.submit(&body);
+                    evaluating(raw, || state.submit(&body));
                     ed = Editor::new();
                     ed.render();
                 }
             },
         }
     }
+}
+
+/// Run one submitted item, or one `:command`, with the terminal handed back: the
+/// editor's raw mode is
+/// for reading keys, not for running programs, and an ordinary terminal is also
+/// what lets `Ctrl-C` raise `SIGINT`, which the handler turns into the interrupt
+/// request the evaluator polls. The request is cleared on both sides, so a stale
+/// `Ctrl-C` never stops the next item.
+fn evaluating(raw: &term::RawMode, body: impl FnOnce()) {
+    utilities::interrupt::take();
+    raw.leave();
+    body();
+    raw.enter();
+    utilities::interrupt::take();
 }
 
 /// Lines a page key (`C-v`/`M-v`) moves by: a screenful less a little overlap,
@@ -225,6 +261,8 @@ enum Key {
     SubmitAll,
     /// Cancel / quit the current mode (`Esc`, also `C-g`).
     Escape,
+    /// Suspend the shell and hand the terminal back (`C-z`), resuming on `fg`.
+    Suspend,
 }
 
 /// The kind of the last buffer edit, so a run of same-kind edits coalesces into
@@ -794,6 +832,9 @@ impl Repl {
                 Some(ty) => println!("{RESULT}{shown} : {ty}"),
                 None => println!("{RESULT}{shown}"),
             },
+            // A pending interrupt request means the evaluation was stopped by
+            // Ctrl-C, not that the program failed.
+            Err(_) if utilities::interrupt::requested() => println!("{RESULT}interrupted"),
             Err(diag) => print!("{}", diag.render("", "<repl>")),
         }
     }
@@ -893,6 +934,8 @@ Emacs editing keys:
   C-v/M-v page down/up             C-l clear screen
   C-k kill to end of line          M-d/M-DEL kill next/previous word (C-w = M-DEL)
   C-d delete char (or exit on an empty line)
+  C-c abandon the item being edited (and stop a running evaluation)
+  C-z suspend the shell (resume it with `fg`)
   C-/ undo                         M-/ redo
   C-r reverse history search: type to match, C-r/Up older, C-n/Down newer,
       Enter to accept, Esc (or C-g) to cancel
@@ -923,6 +966,10 @@ mod term {
     const IEXTEN: u32 = 0x0000_8000;
     const VMIN: usize = 6;
     const VTIME: usize = 5;
+    // Signal numbers and `sigaction` flags (Linux).
+    const SIGINT: c_int = 2;
+    const SIGTSTP: c_int = 20;
+    const SA_RESTART: c_int = 0x1000_0000;
 
     // Control bytes the editor acts on. The emacs movement/kill keys arrive as
     // their Ctrl- code points; `Ctrl-<letter>` is the letter's position in the
@@ -942,6 +989,7 @@ mod term {
     const CTRL_R: u8 = 0x12; // reverse history search
     const CTRL_V: u8 = 0x16; // page down
     const CTRL_W: u8 = 0x17; // kill previous word
+    const CTRL_Z: u8 = 0x1a; // suspend the shell (job control)
     const ESC: u8 = 0x1b; // introduces an arrow/cursor escape sequence
     const CR: u8 = b'\r';
     const LF: u8 = b'\n';
@@ -977,12 +1025,55 @@ mod term {
         revents: i16,
     }
 
+    /// The libc `struct sigaction`, in the glibc/Linux field order. `restorer` is
+    /// glibc's business, so it stays null.
+    #[repr(C)]
+    struct Sigaction {
+        handler: Option<extern "C" fn(c_int)>,
+        mask: [u64; 16],
+        flags: c_int,
+        restorer: Option<extern "C" fn()>,
+    }
+
     extern "C" {
         fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
         fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
         fn ioctl(fd: c_int, request: c_ulong, argp: *mut Winsize) -> c_int;
         fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
         fn poll(fds: *mut Pollfd, nfds: c_ulong, timeout: c_int) -> c_int;
+        fn sigaction(sig: c_int, act: *const Sigaction, old: *mut Sigaction) -> c_int;
+        fn raise(sig: c_int) -> c_int;
+    }
+
+    /// All a `SIGINT` handler may safely do: set the flag the evaluator polls.
+    extern "C" fn on_interrupt(_sig: c_int) {
+        utilities::interrupt::request();
+    }
+
+    /// Route `SIGINT` to the interrupt flag instead of killing the shell, for the
+    /// whole session. At the prompt the terminal does not generate it (raw mode
+    /// keeps `ISIG` off, so `Ctrl-C` arrives as a byte); during an evaluation, with
+    /// the terminal handed back, this is what turns `Ctrl-C` into a stopped
+    /// evaluation. `SA_RESTART` keeps a syscall the evaluated program is blocked in
+    /// from failing with `EINTR`.
+    pub fn catch_interrupts() {
+        let act = Sigaction {
+            handler: Some(on_interrupt),
+            mask: [0; 16],
+            flags: SA_RESTART,
+            restorer: None,
+        };
+        unsafe { sigaction(SIGINT, &act, std::ptr::null_mut()) };
+    }
+
+    /// Suspend the shell the way `Ctrl-Z` does in any other program: hand the
+    /// terminal back as it was found, stop, and take raw mode again once the job is
+    /// resumed. Raw mode must not survive the stop, or the parent shell would read a
+    /// terminal with echo and line editing switched off.
+    pub fn suspend(raw: &RawMode) {
+        raw.leave();
+        unsafe { raise(SIGTSTP) };
+        raw.enter();
     }
 
     /// A source of keypresses. Abstracting over the real terminal lets the
@@ -1055,6 +1146,7 @@ mod term {
     /// when stdin is not a terminal.
     pub struct RawMode {
         original: Termios,
+        raw: Termios,
     }
 
     impl RawMode {
@@ -1071,13 +1163,26 @@ mod term {
             if unsafe { tcsetattr(STDIN, TCSANOW, &raw) } != 0 {
                 return None;
             }
-            Some(RawMode { original })
+            Some(RawMode { original, raw })
+        }
+
+        /// Take raw mode (again): the editor is reading keys.
+        pub fn enter(&self) {
+            unsafe { tcsetattr(STDIN, TCSANOW, &self.raw) };
+        }
+
+        /// Put the terminal back the way it was found, for anything that is not the
+        /// editor: a suspend, or an evaluation, which should see an ordinary
+        /// terminal (echo and line editing on, and `ISIG` on so `Ctrl-C` raises
+        /// `SIGINT`).
+        pub fn leave(&self) {
+            unsafe { tcsetattr(STDIN, TCSANOW, &self.original) };
         }
     }
 
     impl Drop for RawMode {
         fn drop(&mut self) {
-            unsafe { tcsetattr(STDIN, TCSANOW, &self.original) };
+            self.leave();
         }
     }
 
@@ -1114,6 +1219,7 @@ mod term {
                 CTRL_G => return Some(Key::Escape),
                 UNDO => return Some(Key::Undo),
                 CTRL_C => return Some(Key::CtrlC),
+                CTRL_Z => return Some(Key::Suspend),
                 CTRL_D => return Some(Key::CtrlD),
                 // With `ICRNL` off, the Return key is CR and `Ctrl-J` is LF, so the
                 // two split: Return edits/submits an item, `Ctrl-J` evaluates the

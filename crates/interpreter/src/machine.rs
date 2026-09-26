@@ -124,6 +124,11 @@ struct Exec<'p> {
     live: Vec<PVal<'p>>,
 }
 
+/// Machine steps between polls of the interrupt flag. A non-terminating program
+/// takes this many steps to notice a `Ctrl-C`, which is imperceptible, while the
+/// shared load stays off the per-step path.
+const INTERRUPT_POLL: u32 = 4096;
+
 /// Collapse a chain of recursive placeholder cells to the underlying value.
 pub fn deref<'p>(mut v: PVal<'p>) -> PVal<'p> {
     loop {
@@ -368,8 +373,16 @@ impl<'p> Machine<'p> {
             kont: Vec::new(),
             live: Vec::new(),
         };
+        let mut until_poll = INTERRUPT_POLL;
 
         loop {
+            until_poll -= 1;
+            if until_poll == 0 {
+                until_poll = INTERRUPT_POLL;
+                if utilities::interrupt::requested() {
+                    return Err(fault("interrupted"));
+                }
+            }
             match ex.ctrl {
                 Expr::Ret(a) => {
                     let v = deref(self.eval_atom(a, &ex.frame)?);

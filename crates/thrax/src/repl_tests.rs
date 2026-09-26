@@ -49,6 +49,7 @@ fn arrow_escapes_decode_and_others_are_skipped() {
     assert_eq!(key(b"\x1b/"), Some(Key::Redo)); // M-/
     assert_eq!(key(&[0x12]), Some(Key::HistorySearch)); // C-r
     assert_eq!(key(&[0x07]), Some(Key::Escape)); // C-g cancels
+    assert_eq!(key(&[0x1a]), Some(Key::Suspend)); // C-z suspends the shell
     // A lone ESC (no byte waiting) is Escape, not the start of a sequence.
     assert_eq!(key(&[0x1b]), Some(Key::Escape));
 }
