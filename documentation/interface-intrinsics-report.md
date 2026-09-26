@@ -87,7 +87,7 @@ Both are check-directed in `type_pattern` (only user types route; the built-in
   single-field newtype (`@struct @unbox`, wrapper erased at lowering, zero-cost) was
   implemented and briefly used for `Str`. It was removed at the maintainer's call:
   `Str` is load-bearing in CORE-less bootstrap contexts (`C.thx`'s libc bindings, the
-  `main : [n]Str` argv contract), so a library `Str` fights that for no payoff. The
+  `@main` argv contract), so a library `Str` fights that for no payoff. The
   `@unbox` feature itself was removed too (its only motivator was `Str`). Recorded
   gotcha: automatic (non-opt-in) single-field unboxing is unsound because of the
   `Con ~ Record` bridge (a 1-field struct can be used structurally as an open record).

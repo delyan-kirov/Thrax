@@ -50,3 +50,5 @@ $ ck_big : @int =
 $ test : @int = ck_len + ck_get + ck_oob + ck_neg + ck_last + ck_empty
 	+ ck_nonem + ck_set + ck_shared + ck_setoob + ck_push + ck_pushed
 	+ ck_fill + ck_froml + ck_tol + ck_map + ck_fold + ck_tup + ck_big
+
+$ @run (assert (test == 0) "STDLIB_VEC: a check failed")

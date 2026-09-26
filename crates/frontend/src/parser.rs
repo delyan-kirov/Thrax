@@ -426,11 +426,12 @@ impl<'a> Parser<'a> {
                 let e = self.parse_expr(0)?;
                 Ok(Item::Run(e, Span::new(start, self.last_end), meta))
             }
-            // A `@compiler_interface_*` hook is the ONE family of `@`-names a user (or
-            // the core library) may define: `$ @compiler_interface_indexing : sig = body`.
-            // It joins the hook's overload set like any other definition.
-            name if name.starts_with("compiler_interface_") => {
-                let at_tok = self.bump()?; // the '@compiler_interface_*' token
+            // The `@`-names a user (or the core library) may define: the program
+            // entry `$ @main : sig = body`, and the `@compiler_interface_*` hooks
+            // (`$ @compiler_interface_indexing : sig = body`), which join the hook's
+            // overload set like any other definition.
+            name if name == "main" || name.starts_with("compiler_interface_") => {
+                let at_tok = self.bump()?; // the '@main' / '@compiler_interface_*' token
                 let hook = self.intern(self.text(at_tok));
                 expect!(self, Kind::Colon, "expected ':' and a type for the interface hook");
                 let sig = Some(self.parse_type()?);
@@ -448,7 +449,7 @@ impl<'a> Parser<'a> {
                 &at,
                 &format!(
                     "'@{other}' is a compiler intrinsic and is not extensible in user code; \
-                     only '@compiler_interface_*' hooks may be defined"
+                     only '@main' and the '@compiler_interface_*' hooks may be defined"
                 ),
             )),
         }

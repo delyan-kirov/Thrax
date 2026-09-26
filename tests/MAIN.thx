@@ -81,10 +81,10 @@ $ check : @str -> @int -> <@io> @int = \name t =
 		=> C.puts ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else C.puts ("\x1b[1;31mERR\x1b[0m " ++ name); 1
 
-# A C-style entry (`{} -> <| e> Int`): its OPEN effect row lets the `@io` that
-# STDLIB_IO's checks perform escape here, where the runtime discharges it. A
-# value `main` has no arrow to carry that row.
-$ main : {} -> <| e> @int =
+# The program entry: the one name the compiler knows, and the one signature it
+# accepts. Its `<@io>` row covers the reporting below and the `@io` that
+# STDLIB_IO's checks perform. Exit code = number of failing modules.
+$ @main : @vec @str -> <@io> @int = \args =
 	  check "AGTxPRO" AGTxPRO.test
 	+ check "AGTxSUM" AGTxSUM.test
 	+ check "ARITHMETIC" ARITHMETIC.test

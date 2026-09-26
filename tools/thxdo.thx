@@ -28,11 +28,11 @@ $ help_text : @str =
 $ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 
 # `args` element 0 is this binary's path; element 1 is the command. With no
-# command, show help. `@tensor_index` is a modular read, so it never faults.
-$ main : [n]@str -> <| e> @int = \args =
-	if @tensor_length args < 2
+# command, show help (the length test guards the `@vec_get`).
+$ @main : @vec @str -> <@io> @int = \args =
+	if @vec_len args < 2
 		=> C.puts help_text; 0
-		else is @tensor_index args 1
+		else is @vec_get args 1
 			| "build"   => C.system "cargo clean && cargo build"
 			| "rebuild" => C.system "cargo build"
 			| "clean"   => C.system "cargo clean"

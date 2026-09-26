@@ -284,43 +284,28 @@ impl fmt::Display for Type {
     }
 }
 
-/// How a program entry point is invoked, derived from its declared type. A `main`
-/// like C's: a function that may perform any effect and returns an `Int` exit
-/// code, taking either no arguments (`{} -> Int`) or the argument vector
-/// (`[n]Str -> Int`). A plain value (e.g. the test harness's `test : Int`) is
-/// just forced.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EntryKind {
-    /// Not a function: force the value (the result / exit code).
-    Value,
-    /// `{} -> R`: apply to unit.
-    UnitFn,
-    /// `[n]Str -> R`: apply to the argument vector.
-    ArgvFn,
-    /// A function whose parameter is neither `{}` nor `[n]Str`.
-    BadFn,
-}
+/// The one name the compiler knows a program by: `$ @main`, a C-style entry that
+/// takes the argument vector and returns an exit code. Nothing else is special;
+/// a test harness is ordinary code (a compile-time check under `$ @run`, or a
+/// global some tool evaluates by name).
+pub const ENTRY: &str = "@main";
 
-/// Classify an entry point from its (zonked) type.
-pub fn classify_entry(ty: &Type) -> EntryKind {
-    let Type::Arrow(from, _, _) = ty else {
-        return EntryKind::Value;
+/// The entry's mandated signature, in source spelling, for diagnostics.
+pub const ENTRY_SIG: &str = "@vec @str -> <@io> @int";
+
+/// Whether a (zonked) type is [`ENTRY_SIG`]: `@vec @str -> <@io> @int`. The one
+/// accepted entry shape, effect row included, so an entry that performs anything
+/// beyond `@io` is a type error at its own signature rather than a surprise at
+/// run time.
+pub fn is_entry_type(ty: &Type) -> bool {
+    let Type::Arrow(from, to, eff) = ty else {
+        return false;
     };
-    match from.as_ref() {
-        Type::Con(n) if n == "{}" => EntryKind::UnitFn,
-        Type::Tuple(items) if items.is_empty() => EntryKind::UnitFn,
-        // `[n]Str`: a `@tensor variance size elem` spine whose element is `Str`.
-        Type::App(head, elem) => {
-            let is_tensor = matches!(head.as_ref(),
-                Type::App(h2, _) if matches!(h2.as_ref(),
-                    Type::App(con, _) if matches!(con.as_ref(),
-                        Type::Con(n) if n == "@tensor")));
-            if is_tensor && matches!(elem.as_ref(), Type::Con(n) if n == "@str") {
-                EntryKind::ArgvFn
-            } else {
-                EntryKind::BadFn
-            }
-        }
-        _ => EntryKind::BadFn,
-    }
+    let argv = matches!(from.as_ref(),
+        Type::App(head, elem) if matches!(head.as_ref(), Type::Con(n) if n == VEC)
+            && matches!(elem.as_ref(), Type::Con(n) if n == STR));
+    let code = matches!(to.as_ref(), Type::Con(n) if n == INT);
+    let io = matches!(eff.as_ref(),
+        Type::RowExtend(label, rest) if label == "@io" && **rest == Type::RowEmpty);
+    argv && code && io
 }

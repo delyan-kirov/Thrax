@@ -57,3 +57,5 @@ $ ck_stream : @int = if evens.head + evens.tail.head == 7 => 0 else 4096
 $ test : @int =
 	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens
 	+ ck_open_pat + ck_open_neg + ck_stream
+
+$ @run (assert (test == 0) "RANGES: a check failed")

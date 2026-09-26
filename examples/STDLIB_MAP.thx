@@ -95,3 +95,5 @@ $ test : @int = ck_size + ck_get + ck_missing + ck_update + ck_upsize
 	+ ck_upd + ck_updno + ck_fold + ck_mapv + ck_filt + ck_merge
 	+ ck_min + ck_max + ck_froml + ck_pair + ck_pair2
 	+ ck_bigsize + ck_bigget + ck_bigmin + ck_bigrm
+
+$ @run (assert (test == 0) "STDLIB_MAP: a check failed")

@@ -3,15 +3,14 @@
 # \file CT_ASSERT.thx
 # \info Compile-time assertions, in USER CODE (no `@assert` builtin needed). A
 #       `$ @e <expr>` forces the expression through the interpreter at build
-#       time; `@abort <msg>` fails the build with that message. So `assert` is an
-#       ordinary function, and a wrong result below fails `thrax build`/`run`.
-
-# The reusable assert: at compile time, a false condition aborts the build.
-# `@abort` carries the `<@meta>` effect, so a function that performs it declares
-# `<@meta>` in its type. `$ @run` (not `$ @e`) is the eliminator that discharges
-# `<@meta>`; `@e` embeds PURE compile-time results only. A meta op outside `@run`
-# is a clean "effect `@meta` not handled" error.
-$ assert : @bool -> @str -> <@meta> {} = \ok msg = if ok => {} else @abort msg
+#       time; `@abort <msg>` fails the build with that message. `assert` is an
+#       ordinary CORE function (`@bool -> @str -> <@meta> {}`, one line of Thrax),
+#       and a wrong result below fails `thrax build`/`run`.
+#
+#       `@abort` carries the `<@meta>` effect, so a function that performs it
+#       declares `<@meta>` in its type. `$ @run` (not `$ @e`) is the eliminator
+#       that discharges `<@meta>`; `@e` embeds PURE compile-time results only. A
+#       meta op outside `@run` is a clean "effect `@meta` not handled" error.
 
 $ fib : @int -> @int = \n =
 	if n < 2 => n else fib (n - 1) + fib (n - 2)
@@ -26,3 +25,5 @@ $ @run (assert (fib 10 + fact 5 == 175) "fib 10 + fact 5 should be 175")
 
 # Runtime side-check (the real test is the compile-time asserts above).
 $ test : @int = if fib 10 == 55 => 0 else 1
+
+$ @run (assert (test == 0) "CT_ASSERT: a check failed")

@@ -40,3 +40,5 @@ $ ck_list : @int =
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_for + ck_stream + ck_formap + ck_break + ck_list
+
+$ @run (assert (test == 0) "ITER: a check failed")

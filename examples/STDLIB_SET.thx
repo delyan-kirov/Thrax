@@ -43,3 +43,5 @@ $ ck_strh: @int = if has names "alice" => 0 else 1
 $ test : @int = ck_size + ck_has + ck_miss + ck_rm + ck_rmsz + ck_shared
 	+ ck_empty + ck_order + ck_fold + ck_merge + ck_inter + ck_diff
 	+ ck_filter + ck_str + ck_strh
+
+$ @run (assert (test == 0) "STDLIB_SET: a check failed")

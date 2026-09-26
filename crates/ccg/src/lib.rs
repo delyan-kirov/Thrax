@@ -33,14 +33,26 @@ pub struct Emitted {
     pub libraries: Vec<String>,
 }
 
+/// What the generated C `main` does with the Thrax global it is given: run it as
+/// the program entry (`@main`: applied to the C argument vector, its `@int` the
+/// exit code), or force it and print `name = value`. `Show` is how the harnesses
+/// evaluate a named global (the differential tests compare it against the
+/// interpreter); a compiled program always uses `Main`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Entry {
+    Main,
+    Show,
+}
+
 /// Emit a complete C program for `modules` (root first) whose `main` forces every
-/// global and prints `entry`, compiled for `target`. The target fixes the
-/// `TARGET.*` reflection baked into the program (word size, os/arch), so a cross
-/// build reports the target it was compiled for rather than the build host.
+/// global reachable from `entry` and then runs or prints it (see [`Entry`]),
+/// compiled for `target`. The target fixes the `TARGET.*` reflection baked into
+/// the program (word size, os/arch), so a cross build reports the target it was
+/// compiled for rather than the build host.
 pub fn emit(
     modules: &[Program],
     entry: &str,
-    kind: frontend::EntryKind,
+    kind: Entry,
     target: utilities::Target,
 ) -> String {
     emit_program(modules, entry, kind, target).source
@@ -51,7 +63,7 @@ pub fn emit(
 pub fn emit_program(
     modules: &[Program],
     entry: &str,
-    kind: frontend::EntryKind,
+    kind: Entry,
     target: utilities::Target,
 ) -> Emitted {
     let prog = ir::lower_modules(modules);
@@ -148,9 +160,10 @@ pub fn emit_program(
     out.push_str("};\n");
     out.push_str(&format!("const size_t THxRT_code_count = {ncodes};\n\n"));
 
-    // Entry. A value is forced and printed (`entry = <value>`), with the built-in
-    // leak check (exit 97 on a leak). A C-style `main` is applied to unit or to the
-    // argument vector `[n]Str`, and its `Int` result is the process exit code.
+    // Entry. `@main` is applied to the argument vector (`@vec @str`) and its
+    // `@int` result is the process exit code. The `Show` harness mode instead
+    // forces the global and prints `entry = <value>`, with the built-in leak check
+    // (exit 97 on a leak).
     out.push_str("int main(int argc, char** argv) {\n");
     out.push_str("  (void)argc; (void)argv;\n");
     for (name, code) in &canon {
@@ -162,7 +175,7 @@ pub fn emit_program(
     }
     let entry_c = cstr(entry.as_bytes());
     match kind {
-        frontend::EntryKind::Value => {
+        Entry::Show => {
             out.push_str(&format!("  Value* e = THxRT_glob({entry_c});\n"));
             out.push_str("  char* shown = thrax_show(e);\n");
             out.push_str(&format!("  printf(\"%s = %s\\n\", {entry_c}, shown);\n"));
@@ -180,23 +193,20 @@ pub fn emit_program(
             out.push_str("  }\n");
             out.push_str("  return 0;\n");
         }
-        frontend::EntryKind::UnitFn | frontend::EntryKind::ArgvFn => {
-            if kind == frontend::EntryKind::ArgvFn {
-                // Build a `[n]Str` from the C argument vector.
-                out.push_str("  Value** _items = (Value**)malloc((size_t)(argc>0?argc:1)*sizeof(Value*));\n");
-                out.push_str("  for (int _i = 0; _i < argc; _i++) _items[_i] = THxRT_str(argv[_i], strlen(argv[_i]));\n");
-                out.push_str("  Value* _arg = tensor_stack(_items, (size_t)argc);\n");
-                out.push_str("  free(_items);\n");
-            } else {
-                out.push_str("  Value* _arg = THxRT_unit();\n");
-            }
+        Entry::Main => {
+            // The argument vector as a `@vec @str`.
+            out.push_str("  Value** _items = (Value**)malloc((size_t)(argc>0?argc:1)*sizeof(Value*));\n");
+            out.push_str("  for (int _i = 0; _i < argc; _i++) _items[_i] = THxRT_str(argv[_i], strlen(argv[_i]));\n");
+            out.push_str("  Value* _arg = mk_vec(_items, (size_t)argc);\n");
+            // `mk_vec` retains what it stores, so the builder's own references go.
+            out.push_str("  for (int _i = 0; _i < argc; _i++) THxMEM_release(_items[_i]);\n");
+            out.push_str("  free(_items);\n");
             out.push_str(&format!(
                 "  Value* e = THxK_call(THxRT_glob({entry_c}), _arg);\n"
             ));
             out.push_str("  int _code = (int)THxVALUE_as_int(e);\n");
             out.push_str("  return _code;\n");
         }
-        frontend::EntryKind::BadFn => unreachable!("rejected before emit"),
     }
     out.push_str("}\n");
 

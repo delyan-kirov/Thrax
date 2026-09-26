@@ -71,7 +71,7 @@ $ ex_expr : @str = "let sq = \\x = x * x in sq 3 + sq 4"
 
 $ ex_ffi : @str =
 	"$ puts : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n"
-	++ "$ main : {} -> <| e> @int = \\_ = puts \"Hello world\"; 0"
+	++ "$ @main : @vec @str -> <@io> @int = \\args = puts \"Hello world\"; 0"
 
 # ---- Compile-time validation ("unit tests") -------------------------------
 # A malformed declaration or a wrong expected value fails the build here.
@@ -83,6 +83,7 @@ $ @e (validate (@parse_items ex_splice_union))
 $ @e (validate (@parse_items ex_match))
 $ @e (validate (@parse_items ex_effect))
 $ @e (validate (@parse_items ex_ffi))
+$ @e (validate (@parse_items ex_entry))
 $ @run (assert (@eval (@parse_str ex_expr) == 25) "ex_expr should evaluate to 25")
 
 # ---- README assembly ------------------------------------------------------
@@ -111,15 +112,27 @@ $ building : @str =
 	++ "\n**Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain:\n\n"
 	++ sh "cargo build --release   # target/release/thrax"
 
+$ ex_entry : @str =
+	"$ @main : @vec @str -> <@io> @int = \\args =\n"
+	++ "\tC.puts \"hello\";\n"
+	++ "\t0"
+
 $ compiling : @str =
 	"\n## Compiling and running\n\n"
 	++ "`thrax` takes a subcommand and, optionally, a `.thx` file. With no file it\n"
 	++ "uses `MAIN.thx` in the current directory.\n\n"
-	++ sh ("thrax run     examples/FIB.thx   # run under the interpreter\n"
-	     ++ "thrax check   examples/FIB.thx   # type-check only, print inferred types\n"
-	     ++ "thrax emit-c  examples/FIB.thx   # print the generated C (native backend)\n"
-	     ++ "thrax build   examples/FIB.thx   # compile to a native executable\n"
-	     ++ "thrax --target=wasm32-wasi build examples/FIB.thx   # cross-compile to wasm")
+	++ "A program is a module with an entry point, and there is exactly one accepted\n"
+	++ "shape: `@main` takes the argument vector (`args[0]` is the program) and\n"
+	++ "returns the exit code. It is the only name the compiler knows.\n\n"
+	++ fence ex_entry
+	++ "\nEvery other module is a library. Checking one runs its compile-time\n"
+	++ "assertions (`$ @run`), so a module states its own invariants and\n"
+	++ "type-checking it is testing it.\n\n"
+	++ sh ("thrax run     MAIN.thx          # run under the interpreter\n"
+	     ++ "thrax check   examples/FIB.thx  # type-check, print types, run `$ @run` checks\n"
+	     ++ "thrax emit-c  MAIN.thx          # print the generated C (native backend)\n"
+	     ++ "thrax build   MAIN.thx          # compile to a native executable\n"
+	     ++ "thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm")
 
 $ features : @str =
 	"\n## Features\n\n"
@@ -193,6 +206,6 @@ $ write_all : @str -> @str -> <@io> @int = \path content =
 		C.fputs {content, f};
 		C.fclose f
 
-$ main : {} -> <| e> @int =
+$ @main : @vec @str -> <@io> @int = \args =
 	let rc = write_all "README.md" readme in
 	if rc == 0 => 0 else 1

@@ -35,12 +35,26 @@ cargo build --release   # target/release/thrax
 `thrax` takes a subcommand and, optionally, a `.thx` file. With no file it
 uses `MAIN.thx` in the current directory.
 
+A program is a module with an entry point, and there is exactly one accepted
+shape: `@main` takes the argument vector (`args[0]` is the program) and
+returns the exit code. It is the only name the compiler knows.
+
+```thrax
+$ @main : @vec @str -> <@io> @int = \args =
+	C.puts "hello";
+	0
+```
+
+Every other module is a library. Checking one runs its compile-time
+assertions (`$ @run`), so a module states its own invariants and
+type-checking it is testing it.
+
 ```sh
-thrax run     examples/FIB.thx   # run under the interpreter
-thrax check   examples/FIB.thx   # type-check only, print inferred types
-thrax emit-c  examples/FIB.thx   # print the generated C (native backend)
-thrax build   examples/FIB.thx   # compile to a native executable
-thrax --target=wasm32-wasi build examples/FIB.thx   # cross-compile to wasm
+thrax run     MAIN.thx          # run under the interpreter
+thrax check   examples/FIB.thx  # type-check, print types, run `$ @run` checks
+thrax emit-c  MAIN.thx          # print the generated C (native backend)
+thrax build   MAIN.thx          # compile to a native executable
+thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
 ```
 
 ## Features
@@ -140,7 +154,7 @@ the library name is symbolic (no path or soname in source).
 
 ```thrax
 $ puts : @str -> <@io> @int = @extern "C" "puts" "libc"
-$ main : {} -> <| e> @int = \_ = puts "Hello world"; 0
+$ @main : @vec @str -> <@io> @int = \args = puts "Hello world"; 0
 ```
 
 ## Project layout

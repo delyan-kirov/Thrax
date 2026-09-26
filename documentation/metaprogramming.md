@@ -346,7 +346,7 @@ additionally discharges `<@io>`. Building is inherently IO, so this is where IO
 belongs and nowhere else.
 
 **Why the boundary is the context, not a keyword.** `@build` is a special
-function (like `MAIN.main`), and the difference between it and ordinary `@e`
+function (like `@main`), and the difference between it and ordinary `@e`
 is purely which handlers the compile-time runtime installs around it: `<@meta>`
 for `@e`, `<@meta>` + `<@io>` for `@build`. Nothing in the surface syntax
 changes; a macro that performs `@io` simply fails to type-check outside `@build`
@@ -360,10 +360,10 @@ Status: `@io` is now a real builtin effect. The effect-row parser accepts
 `@`-form labels, IO primitives (`library/C.thx` OS externs, `library/IO.thx`)
 carry `<@io>`, and the checker enforces it (a pure-typed function that performs
 IO is rejected: "effect `@io` is performed but not handled"). Effects propagate
-through the effect-polymorphic combinators and are absorbed by `main`'s open
-row. What remains for this design is the compile-time side: `@build` installing
+through the effect-polymorphic combinators and reach the entry, whose `<@io>` row
+is what discharges them at run time. What remains for this design is the compile-time side: `@build` installing
 an `<@io>` handler so the effect is *discharged* (performed for real) during
-compilation, rather than only absorbed at runtime by `main`.
+compilation, rather than only reaching the entry's `<@io>` row at run time.
 
 **Hermeticity.** Compile-time IO makes the build depend on the world. The
 `<@io>` handler installed around `@build` records what it touched, so the build
@@ -443,7 +443,7 @@ the surface.
 ## 10. `@build`, the special build function
 
 **Decision.** `@build` is a special function, the compile-time analogue of
-`MAIN.main`: the compiler recognizes it by name and runs it during compilation.
+`@main`: the compiler recognizes it by name and runs it during compilation.
 It is **not** a separate effect. Everything it does (query the compiler, inject
 definitions, send/receive messages) is expressed through `<@meta>` (section 1);
 its one privilege over ordinary `@e` is that the runtime around it also

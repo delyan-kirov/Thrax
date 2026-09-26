@@ -1502,29 +1502,28 @@ fn short_circuit_and_or() {
     assert_eq!(run(src, "test"), "0");
 }
 
-/// A C-style `main : {} -> <| e> @int` is applied to unit; its `@int` result is the
-/// exit code (no `entry = <value>` print). The open row lets it perform effects.
+/// The entry returns its `@int` as the exit code (no `entry = <value>` print).
 #[test]
-fn entry_unit_fn_returns_exit_code() {
-    let src = "@mod MAIN\n$ main : {} -> <| e> @int = \\u = 42\n";
-    let program = lower_checked(src, "main");
+fn entry_returns_exit_code() {
+    let src = "@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
+    let program = lower_checked(src, "@main");
     let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
-    let code = interpreter::machine::run_entry(&ir, "main", None)
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    let code = interpreter::machine::run_entry(&ir, "@main", vec!["prog".to_string()])
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "@main")));
     assert_eq!(code, 42);
 }
 
-/// A C-style `main : [n]@str -> <| e> @int` receives argv as a sized tensor of
-/// strings; `argv[0]` is the program path, so `main` sees the whole vector.
+/// The entry receives argv as a `@vec @str`; `argv[0]` is the program path, so
+/// `@main` sees the whole vector.
 #[test]
-fn entry_argv_fn_receives_string_vector() {
+fn entry_receives_string_vector() {
     let src = "@mod MAIN\n\
-               $ main : [n]@str -> <| e> @int = \\args = @tensor_length args\n";
-    let program = lower_checked(src, "main");
+               $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
+    let program = lower_checked(src, "@main");
     let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
     let argv = vec!["prog".to_string(), "alpha".to_string(), "beta".to_string()];
-    let code = interpreter::machine::run_entry(&ir, "main", Some(argv))
-        .unwrap_or_else(|e| panic!("{}", e.render(src, "main")));
+    let code = interpreter::machine::run_entry(&ir, "@main", argv)
+        .unwrap_or_else(|e| panic!("{}", e.render(src, "@main")));
     assert_eq!(code, 3);
 }
 

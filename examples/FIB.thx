@@ -55,3 +55,5 @@ $ test : @int =
 	+ (if fib5 == 5 => 0 else 1)
 	+ (if fib10 == 55 => 0 else 1)
 	+ (if fib15 == 610 => 0 else 1)
+
+$ @run (assert (test == 0) "FIB: a check failed")

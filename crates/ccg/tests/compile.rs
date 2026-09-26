@@ -50,7 +50,7 @@ fn interp_show(src: &str, entry: &str) -> String {
 fn c_run(src: &str, entry: &str) -> String {
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, entry, frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, entry, ccg::Entry::Show, utilities::Target::host());
 
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut c_path = std::env::temp_dir();
@@ -81,13 +81,12 @@ fn c_run(src: &str, entry: &str) -> String {
     String::from_utf8_lossy(&out.stdout).trim_end().to_string()
 }
 
-/// Emit C for a C-style function `main` of the given kind, compile it, run it
-/// with `args` (appended after the program path), and return `(exit_code,
-/// stdout)`.
-fn c_run_entry(src: &str, kind: frontend::EntryKind, args: &[&str]) -> (i32, String) {
+/// Emit C for a program entry (`@main`), compile it, run it with `args`
+/// (appended after the program path), and return `(exit_code, stdout)`.
+fn c_run_entry(src: &str, args: &[&str]) -> (i32, String) {
     static SEQ: AtomicUsize = AtomicUsize::new(1_000_000);
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, "main", kind, utilities::Target::host());
+    let code = ccg::emit(&lowered, "@main", ccg::Entry::Main, utilities::Target::host());
 
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let mut c_path = std::env::temp_dir();
@@ -115,22 +114,22 @@ fn c_run_entry(src: &str, kind: frontend::EntryKind, args: &[&str]) -> (i32, Str
     (exit, String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// A C-style `main : {} -> <| e> @int` returns its `@int` as the process exit code,
-/// and prints nothing on its own.
+/// The entry returns its `@int` as the process exit code, and prints nothing on
+/// its own.
 #[test]
-fn entry_unit_fn_exit_code() {
-    let src = "@mod MAIN\n$ main : {} -> <| e> @int = \\u = 42\n";
-    let (exit, stdout) = c_run_entry(src, frontend::EntryKind::UnitFn, &[]);
+fn entry_exit_code() {
+    let src = "@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
+    let (exit, stdout) = c_run_entry(src, &[]);
     assert_eq!(exit, 42);
     assert_eq!(stdout, "");
 }
 
-/// A C-style `main : [n]@str -> <| e> @int` receives argv (path first) as a `[n]@str`.
+/// The entry receives argv (path first) as a `@vec @str`.
 #[test]
-fn entry_argv_fn_string_vector() {
+fn entry_receives_string_vector() {
     let src = "@mod MAIN\n\
-               $ main : [n]@str -> <| e> @int = \\args = @tensor_length args\n";
-    let (exit, _stdout) = c_run_entry(src, frontend::EntryKind::ArgvFn, &["alpha", "beta"]);
+               $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
+    let (exit, _stdout) = c_run_entry(src, &["alpha", "beta"]);
     assert_eq!(exit, 3);
 }
 
@@ -329,7 +328,7 @@ fn native_program_always_declares_libm() {
     let emitted = ccg::emit_program(
         &lowered,
         "main",
-        frontend::EntryKind::Value,
+        ccg::Entry::Show,
         utilities::Target::host(),
     );
     assert!(
@@ -519,7 +518,7 @@ fn ffi_struct_by_value_argument() {
     // C backend: emit, compile linking the helper .so (with an rpath so the
     // binary finds it at runtime), run, compare.
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_arg_prog.c");
     let bin_path = dir.join("thx_ccg_arg_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -572,7 +571,7 @@ fn ffi_struct_array() {
     assert_eq!(interp_show(&src, "test"), "102");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_arr_prog.c");
     let bin_path = dir.join("thx_ccg_arr_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -666,7 +665,7 @@ fn ffi_callback() {
     assert_eq!(interp_show(&src, "test"), "1317");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_cb_prog.c");
     let bin_path = dir.join("thx_ccg_cb_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -727,7 +726,7 @@ fn ffi_c_union_by_value() {
     assert_eq!(interp_show(&src, "test"), "42099");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_union_prog.c");
     let bin_path = dir.join("thx_ccg_union_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -784,7 +783,7 @@ fn ffi_nested_struct_by_value() {
     assert_eq!(interp_show(&src, "test"), "4321");
 
     let lowered = lower(&src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     let cc_path = dir.join("thx_ccg_nested_prog.c");
     let bin_path = dir.join("thx_ccg_nested_prog.bin");
     std::fs::write(&cc_path, &code).unwrap();
@@ -952,7 +951,7 @@ fn sized_extern_marshalling() {
                $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = @extern \"C\" \"f\" \"libx\"\n\
                $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = \\r = f r\n";
     let lowered = lower(src);
-    let code = ccg::emit(&lowered, "test", frontend::EntryKind::Value, utilities::Target::host());
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
     let decl = code
         .lines()

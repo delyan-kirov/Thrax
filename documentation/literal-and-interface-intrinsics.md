@@ -200,7 +200,7 @@ routes and backed out of both:
   @array`. It worked and was zero-cost, but the whole thing was REMOVED at the user's call:
   `Str`'s hard parts are genuinely primitive (UTF-8 validation, escape decoding) and it is
   load-bearing in CORE-less bootstrap contexts (`library/C.thx`'s libc bindings, the
-  `main : [n]Str` argv contract), so making it a library type fights all of that for no
+  `@main` argv contract), so making it a library type fights all of that for no
   real payoff. `@unbox` itself was also removed (its only motivating use was `Str`; a
   general unboxed-newtype feature can be revisited if a perf need shows up). NOTE for a
   future attempt: automatic (non-opt-in) unboxing of single-field structs is UNSOUND

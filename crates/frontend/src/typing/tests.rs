@@ -567,22 +567,22 @@ fn open_effects_permits_io_at_the_shell_top_level() {
 }
 
 #[test]
-fn classify_entry_recognizes_the_entry_forms() {
-    use crate::{classify_entry, EntryKind};
-    let kind = |src: &str| {
+fn only_the_one_entry_signature_is_accepted() {
+    use crate::is_entry_type;
+    // The entry is `$ @main : @vec @str -> <@io> @int` and nothing else: no value
+    // entry, no unit parameter, no other effect row.
+    let entry = |src: &str| {
         let parsed = crate::parse(src).expect("parse");
         let mut checker = Checker::new(&parsed.ast);
         let results = checker.check_program(&parsed.program).expect("check");
-        let ty = results.iter().find(|(n, _)| *n == "main").expect("main").1.clone();
-        classify_entry(&ty)
+        let ty = results.iter().find(|(n, _)| *n == "@main").expect("@main").1.clone();
+        is_entry_type(&ty)
     };
-    assert_eq!(kind("@mod MAIN\n$ main : {} -> <| e> @int = \\u = 0"), EntryKind::UnitFn);
-    assert_eq!(
-        kind("@mod MAIN\n$ main : [n]@str -> <| e> @int = \\a = 0"),
-        EntryKind::ArgvFn
-    );
-    assert_eq!(kind("@mod MAIN\n$ main : @int = 0"), EntryKind::Value);
-    assert_eq!(kind("@mod MAIN\n$ main : @int -> <| e> @int = \\n = n"), EntryKind::BadFn);
+    assert!(entry("@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 0"));
+    assert!(!entry("@mod MAIN\n$ @main : {} -> <@io> @int = \\u = 0"));
+    assert!(!entry("@mod MAIN\n$ @main : @vec @str -> @int = \\args = 0"));
+    assert!(!entry("@mod MAIN\n$ @main : @vec @int -> <@io> @int = \\args = 0"));
+    assert!(!entry("@mod MAIN\n$ @main : @vec @str -> <@io> {} = \\args = {}"));
 }
 
 #[test]

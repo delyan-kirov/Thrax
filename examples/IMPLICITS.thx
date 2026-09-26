@@ -57,3 +57,5 @@ $ ck_lit : @int = if (mkpp.fst == 0) && (mkpp.snd == "") => 0 else 16
 $ ck_qual : @int = if IMPLICITS.max_of 3 7 == 7 => 0 else 32
 
 $ test : @int = ck_implicit + ck_chain + ck_override + ck_dict + ck_lit + ck_qual
+
+$ @run (assert (test == 0) "IMPLICITS: a check failed")

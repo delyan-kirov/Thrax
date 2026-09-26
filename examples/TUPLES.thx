@@ -63,3 +63,5 @@ $ chk_wide : @int =
 $ test : @int = chk_access + chk_nested + chk_swap + chk_arg + chk_when
 	+ chk_let + chk_lambda + chk_refutable + chk_triple + chk_single
 	+ chk_wide
+
+$ @run (assert (test == 0) "TUPLES: a check failed")

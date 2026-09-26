@@ -15,3 +15,5 @@ $mixer = 1.0 + 1.0
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = dec ; hex ; hex2 ; bin ; mix ; big ; zero ; ten ; mixer ; 0
+
+$ @run (assert (test == 0) "NUMBERS: a check failed")

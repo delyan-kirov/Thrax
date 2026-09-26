@@ -77,3 +77,5 @@ $ r_stored : @int = drive <| spawn <| \_=
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = r_normal ; r_abort ; r_stored ; r_commas - r_nested
+
+$ @run (assert (test == 0) "FINALLY: a check failed")

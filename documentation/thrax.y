@@ -54,8 +54,8 @@
 %token UNDERSCORE   /* _ */
 %token TYVAR        /* `a */
 
-%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_ASSERT
-%token AT_RUN
+%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN
+%token AT_E AT_RUN AT_HOOK
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
@@ -103,7 +103,9 @@ global
   | DOLLAR LIDENT COLON AT_EFFECT EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
-  | DOLLAR AT_ASSERT expr
+  | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
+  | DOLLAR AT_HOOK COLON type EQ expr  /* `$ @compiler_interface_* : T = e` */
+  | DOLLAR AT_E expr
   | DOLLAR AT_RUN expr
   | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
   ;

@@ -48,3 +48,8 @@ $ ck_fmt : @int = if (from_int 42) == "42" => 0 else 1
 $ test : {} -> <@io> @int =
 	ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_env {} + ck_env_none {}
 	+ ck_fmt
+
+# These checks touch the filesystem, so they run at run time rather than under a
+# `$ @run` compile-time assert like the rest of the corpus: this module is a
+# program, and `$ @main` is what makes it one.
+$ @main : @vec @str -> <@io> @int = \args = test {}

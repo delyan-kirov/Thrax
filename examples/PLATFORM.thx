@@ -29,3 +29,5 @@ $ ck_name : @int =
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_bits + ck_bounds + ck_name
+
+$ @run (assert (test == 0) "PLATFORM: a check failed")

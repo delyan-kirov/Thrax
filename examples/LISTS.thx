@@ -98,3 +98,5 @@ $ ck_lscN : @int = if (lsize_class ls) == 9 => 0 else 1
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN
 	+ ck_lsum + ck_lcons + ck_lsecond + ck_lsc0 + ck_lsc2 + ck_lscN
+
+$ @run (assert (test == 0) "LISTS: a check failed")

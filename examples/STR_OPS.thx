@@ -36,3 +36,5 @@ $ ck_more : @int = if (@array_len more) == 6 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_cat + ck_len + ck_byte + ck_eq + ck_ne + ck_blen + ck_b1 + ck_mid + ck_set + ck_more
+
+$ @run (assert (test == 0) "STR_OPS: a check failed")

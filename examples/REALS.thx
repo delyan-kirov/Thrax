@@ -30,3 +30,5 @@ $half_cubed = pow 0.5 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = pi ; e ; sci ; small ; sum ; product ; diff ; quot ; negate ; lt ; ge ; eq ; two_pow_10 ; half_cubed ; 0
+
+$ @run (assert (test == 0) "REALS: a check failed")

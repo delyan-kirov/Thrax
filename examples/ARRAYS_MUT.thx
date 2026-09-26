@@ -31,3 +31,5 @@ $ ck_ext : @int = if (@array_len grown) == 2 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_len + ck_0 + ck_2 + ck_set + ck_set1 + ck_slice_len + ck_slice_0 + ck_base_unchanged + ck_ext
+
+$ @run (assert (test == 0) "ARRAYS_MUT: a check failed")

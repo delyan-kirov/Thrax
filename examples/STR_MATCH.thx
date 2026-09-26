@@ -24,3 +24,5 @@ $ ck_named : @int = if (greet "sam") == "hello sam" => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_yes + ck_no + ck_maybe + ck_other + ck_empty + ck_named
+
+$ @run (assert (test == 0) "STR_MATCH: a check failed")

@@ -41,3 +41,5 @@ $compose =
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; 0
+
+$ @run (assert (test == 0) "LET_IN: a check failed")

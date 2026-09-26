@@ -185,3 +185,5 @@ $ nested_ok : @int =
 $ test : @int =
 	c0 ; c2 ; cN ; g_baby ; g_alice ; s ; o0 ; o7 ; d5 ; lr ; lg ;
 	u_none ; u_some ; nested_ok
+
+$ @run (assert (test == 0) "MATCH: a check failed")

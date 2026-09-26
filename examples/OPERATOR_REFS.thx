@@ -59,3 +59,5 @@ $ test : @int =
 		&& both && either && piped == 4 && @vec_len consed == 3
 		&& grouped == 9 && negative == 1
 	=> 0 else 1
+
+$ @run (assert (test == 0) "OPERATOR_REFS: a check failed")
