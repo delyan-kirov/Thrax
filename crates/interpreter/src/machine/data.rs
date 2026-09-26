@@ -1,9 +1,9 @@
 //! Runtime values for the reified-K abstract machine: the port of
-//! `engines/ITxDATA.hpp`. Unlike the tree-walker's [`crate::eval::data::Value`]
-//! (which owns its children directly), every machine value is shared through a
-//! `PVal` cell, because the machine mutates a value in place when a recursive
-//! `let` is back-patched (see the `KRet` handling in [`crate::machine`]): a
-//! closure that captured the placeholder weakly must observe the finished value.
+//! `engines/ITxDATA.hpp`. Rather than owning its children directly, every
+//! machine value is shared through a `PVal` cell, because the machine mutates a
+//! value in place when a recursive `let` is back-patched (see the `KRet`
+//! handling in [`crate::machine`]): a closure that captured the placeholder
+//! weakly must observe the finished value.
 //!
 //! The lifetime `'p` is the borrow of the [`Program`](frontend::ir::Program): a
 //! captured continuation ([`Resumption`]) holds `&'p` pointers into the code, and
@@ -1090,8 +1090,8 @@ impl<'p> Value<'p> {
         }
     }
 
-    /// A short human display of a value, matching [`crate::eval::data::Value::show`]
-    /// byte-for-byte (so the machine can be diffed against the tree-walker).
+    /// A short human display of a value, matching the C++ tree-walker's
+    /// `Value::show` byte-for-byte (so the two can be diffed).
     pub fn show(&self) -> String {
         match self {
             Value::Unk => "{}".into(),

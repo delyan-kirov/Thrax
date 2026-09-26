@@ -7,11 +7,11 @@
 //! shared; a new platform only implements `call`.
 //!
 //! Two backends ship:
-//! - [`NativeFfi`] resolves the symbol with `dlopen`/`dlsym` and performs the
+//! - `NativeFfi` resolves the symbol with `dlopen`/`dlsym` and performs the
 //!   call through libffi (built from `external/libffi`; see `build.rs` and
 //!   `ffi_shim.c`). libffi handles the calling convention on every target, so
 //!   there is no hand-written per-ABI trampoline and no arity/`Real32` limit.
-//! - [`WasmHostFfi`] serialises the call across a single generic import to the
+//! - `WasmHostFfi` serialises the call across a single generic import to the
 //!   JavaScript embedder, which owns the function registry (the playground).
 
 use std::rc::Rc;

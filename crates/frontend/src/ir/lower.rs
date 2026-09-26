@@ -4,7 +4,7 @@
 //! [`crate::lowering::debruijn`]) to a [`Local`](data::Atom::Local) slot, an
 //! [`Env`](data::Atom::Env) capture, or a [`Glob`](data::Atom::Glob).
 //!
-//! A per-function [`Ctx`] maps each in-scope Core binder (innermost last,
+//! A per-function `Ctx` maps each in-scope Core binder (innermost last,
 //! parallel to the De-Bruijn stack) to the IR atom that reads it in THIS function,
 //! and hands out activation slots stack-disciplined so independent scopes reuse
 //! them (`nlocals` is the high-water mark). `collect_free` walks a lifted body

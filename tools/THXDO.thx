@@ -1,6 +1,6 @@
 @mod THXDO
 
-# \file thxdo.thx
+# \file THXDO.thx
 # \info The Thrax task runner: `just`, but the tasks are Thrax. The dev shell puts
 #       a `thxdo` on PATH (see flake.nix) that COMPILES this file to a native
 #       binary (cached, rebuilt only when this file changes) and invokes it, so
@@ -8,8 +8,12 @@
 #       so adding a task is one arm below. Tasks run from the repo root (the
 #       wrapper `cd`s there).
 
+# IO's `print`/`println` write fd 1 unbuffered, so a task's own lines keep their
+# place relative to the output of the child processes it spawns.
+$ with IO
+
 $ help_text : @str =
-	"thxdo - the Thrax task runner (tasks live in tools/thxdo.thx)\n"
+	"thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
 	++ "\n"
 	++ "Usage: thxdo <command>\n"
 	++ "\n"
@@ -18,6 +22,8 @@ $ help_text : @str =
 	++ "  rebuild   build the workspace without cleaning\n"
 	++ "  clean     remove build artifacts\n"
 	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
+	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
+	++ "  tosdk     print the repo root (source tools/thxdo.nu to cd there)\n"
 	++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
 	++ "  all       build, then regenerate README.md\n"
 	++ "  help      show this help\n"
@@ -27,25 +33,42 @@ $ help_text : @str =
 # invoked outside the wrapper.
 $ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 
+# `cargo doc` writes no workspace-wide index, so the landing page is the `thrax`
+# crate (the driver, which depends on all the others). `$BROWSER` wins when set;
+# the opener is detached so the task does not wait for the browser to exit.
+$ doc_page : @str = "target/doc/thrax/index.html"
+$ doc_open_cmd : @str =
+	"( ${BROWSER:-xdg-open} \"$PWD/" ++ doc_page ++ "\" >/dev/null 2>&1 & )"
+
 # `args` element 0 is this binary's path; element 1 is the command. With no
 # command, show help (the length test guards the `@vec_get`).
 $ @main : @vec @str -> <@io> @int = \args =
 	if @vec_len args < 2
-		=> C.puts help_text; 0
+		=> print help_text; 0
 		else is @vec_get args 1
 			| "build"   => C.system "cargo clean && cargo build"
 			| "rebuild" => C.system "cargo build"
 			| "clean"   => C.system "cargo clean"
 			| "readme"  =>
-				C.puts "thxdo: regenerating README.md ...";
+				println "thxdo: regenerating README.md ...";
 				let rc = C.system readme_cmd in
-				C.puts (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
+				println (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
 				rc
+			| "doc"     =>
+				println "thxdo: building rustdoc ...";
+				let rc = C.system "cargo doc --workspace --no-deps" in
+				if rc == 0
+					=> (println ("thxdo: opening " ++ doc_page); C.system doc_open_cmd)
+					else (println "thxdo: doc FAILED"; rc)
+			# A process cannot change its parent's directory, so this prints the
+			# root and the shell does the `cd` (tools/thxdo.nu wires that up for
+			# nushell). Nothing else may go to stdout here.
+			| "tosdk"   => println (env "THRAX_ROOT"); 0
 			| "stats"   => C.system "tokei --exclude external --exclude applications"
 			| "all"     =>
 				C.system ("cargo clean && cargo build && echo 'thxdo: regenerating README.md ...' && "
 					++ readme_cmd)
-			| "help"    => C.puts help_text; 0
+			| "help"    => print help_text; 0
 			else
-				C.puts ("thxdo: unknown command\n\n" ++ help_text);
+				print ("thxdo: unknown command\n\n" ++ help_text);
 				1

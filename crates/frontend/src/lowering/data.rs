@@ -4,17 +4,17 @@
 //! sequencing, record parameters) is gone. What remains is variables,
 //! application, single-parameter lambdas, `let`, one branching form ([`Term::Case`]),
 //! literals, and the aggregate constructors/accessors. This is the tree the
-//! interpreter ([`crate::eval`]) walks; a future backend would consume the same
-//! shape.
+//! middle end ([`crate::ir`]) consumes on the way to the `interpreter` and `ccg`
+//! backends.
 //!
-//! Unlike the front-end AST (handle-addressed nodes in a [`syntax::Ast`] store),
-//! the Core owns its data. It is immutable after lowering, and its child pointers
-//! are `Arc<Term>` (the collections the interpreter walks lazily are `Arc<[T]>`).
-//! So it carries no lifetime, a shared subterm is a pointer bump rather than a
-//! deep clone, and the whole program is `Send`: a compiled module can be handed
-//! to another thread. The interpreter's own per-thread value graph
-//! ([`crate::eval`]) uses `Rc` instead, since it is mutable and never crosses a
-//! thread.
+//! Unlike the front-end AST (handle-addressed nodes in a
+//! [`crate::parser::data::Ast`] store), the Core owns its data. It is immutable
+//! after lowering, and its child pointers are `Arc<Term>` (the collections the
+//! backends walk lazily are `Arc<[T]>`). So it carries no lifetime, a shared
+//! subterm is a pointer bump rather than a deep clone, and the whole program is
+//! `Send`: a compiled module can be handed to another thread. The interpreter's
+//! own per-thread value graph uses `Rc` instead, since it is mutable and never
+//! crosses a thread.
 
 use std::sync::Arc;
 
@@ -64,7 +64,7 @@ pub enum Term {
     /// unqualified name resolves through the local environment, then the globals,
     /// then the built-in operators.
     ///
-    /// `idx` is a De-Bruijn index filled by [`super::debruijn::assign_id`] after
+    /// `idx` is a De-Bruijn index filled by [`super::debruijn::assign_program`] after
     /// lowering: `0` marks a global (resolved by `module`/`name`), and a positive
     /// index counts outward through the binder stack to a local. The name-based
     /// tree-walker ignores it; the closure converter reads it to split a variable

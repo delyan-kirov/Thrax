@@ -2,7 +2,7 @@
 //!
 //! This is the classic *bump allocator*: allocation is a pointer increment, and
 //! nothing is freed individually. Memory is handed out from fixed-size
-//! [`Block`]s; when a block fills, a fresh one is allocated. [`Arena::reset`]
+//! `Block`s; when a block fills, a fresh one is allocated. [`Arena::reset`]
 //! rewinds every block's cursor so the whole region can be reused without
 //! re-`malloc`ing, and dropping the arena frees the blocks.
 //!
