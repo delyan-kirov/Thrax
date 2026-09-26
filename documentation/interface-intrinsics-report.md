@@ -40,6 +40,7 @@ Four overloadable construction hooks:
 - `@compiler_interface_string_literal  : Str -> a`
 - `@compiler_interface_integer_literal : @int -> a`
 - `@compiler_interface_real_literal    : @float64 -> a`
+- `@compiler_interface_imaginary_literal : @float64 -> a`
 - `@compiler_interface_sequence_literal : @vec t -> f t`
 
 A literal whose **expected type is a user type** providing the matching hook builds

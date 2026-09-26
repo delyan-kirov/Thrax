@@ -48,7 +48,7 @@
 %define parse.error verbose
 %expect 13
 
-%token INT REAL STR
+%token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
 %token LIDENT       /* Word, lowercase-initial */
 %token UNDERSCORE   /* _ */
@@ -299,6 +299,8 @@ app  : atom | app atom %prec APP ;
 atom
   : INT
   | REAL
+  | IMAG   /* desugars to `@compiler_interface_imaginary_literal <magnitude>`;
+            * deliberately absent from `pat_atom` (a pattern holds no call) */
   | STR
   | AT_TRUE   /* @bool literals; the ONLY spelling (no bare `true`/`false`) */
   | AT_FALSE

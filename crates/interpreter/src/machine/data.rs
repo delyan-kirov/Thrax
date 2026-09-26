@@ -726,6 +726,7 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
     match kind {
         Int(_) => "Int",
         Real(_) => "Real",
+        Imaginary(_) => "Imaginary",
         Str => "Str",
         Word => "Word",
         At => "At",

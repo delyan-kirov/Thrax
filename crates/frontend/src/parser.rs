@@ -1153,6 +1153,7 @@ impl<'a> Parser<'a> {
             k,
             Kind::Int(_)
                 | Kind::Real(_)
+                | Kind::Imaginary(_)
                 | Kind::Str
                 | Kind::Word
                 | Kind::LParen
@@ -1229,6 +1230,16 @@ impl<'a> Parser<'a> {
             Kind::Real(v) => {
                 self.bump()?;
                 Ok(self.expr(Expr::Real(v)))
+            }
+            // `1.2i` desugars to the OVERLOADABLE imaginary-literal hook, the way
+            // `.[..]` desugars to the indexing one: the compiler carries no complex
+            // type of its own, and whatever the hook returns is what `1.2i` means.
+            Kind::Imaginary(v) => {
+                self.bump()?;
+                let hook = self.intern("@compiler_interface_imaginary_literal");
+                let f = self.expr(Expr::Var { module: None, name: hook });
+                let arg = self.expr(Expr::Real(v));
+                Ok(self.expr(Expr::App(f, arg)))
             }
             Kind::Str => {
                 self.bump()?;
@@ -1973,6 +1984,16 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.pat(Pattern::Real(v)))
             }
+            // An imaginary literal builds its value through a hook, and a pattern
+            // holds no application, so it has no pattern form.
+            Kind::Imaginary(_) => Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                t.span,
+                t.line,
+                "an imaginary literal is not a pattern; match the fields \
+                 (`Cpx.{re, im}`) or compare with `==` in a guard"
+                    .to_string(),
+            )),
             Kind::Str => {
                 self.bump()?;
                 let s = self.intern_str(t)?;

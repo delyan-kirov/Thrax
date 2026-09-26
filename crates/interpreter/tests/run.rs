@@ -703,6 +703,46 @@ fn literal_construction_hooks() {
 }
 
 #[test]
+fn imaginary_literal_builds_a_complex_through_its_hook() {
+    // `3.0 + 4.0i` is sugar for the imaginary-literal hook plus an ordinary `+`
+    // overload, so the whole complex surface is CORE's, not the compiler's.
+    let src = "@mod M\n\
+        $ z : Cpx = 3.0 + 4.0i\n\
+        $ r : @str = to_string z";
+    assert_eq!(run(src, "r"), "\"3 + 4i\"");
+}
+
+#[test]
+fn complex_arithmetic_is_core_overloads() {
+    let src = "@mod M\n\
+        $ a : Cpx = 3.0 + 4.0i\n\
+        $ b : Cpx = 1.0 - 2.0i\n\
+        $ r : @str = to_string (a + b) ++ \" \" ++ to_string (a * b)\n\
+        \t++ \" \" ++ to_string (a / b) ++ \" \" ++ to_string (-a)";
+    // (4+2i), (3-6i+4i+8), (3+4i)(1+2i)/5, negation
+    assert_eq!(run(src, "r"), "\"4 + 2i 11 - 2i -1 + 2i -3 - 4i\"");
+}
+
+#[test]
+fn imaginary_literal_takes_every_numeric_form() {
+    let src = "@mod M\n\
+        $ r : @str = to_string (3i) ++ \" \" ++ to_string (1.2i) ++ \" \" ++ to_string (2.5e-2i)";
+    assert_eq!(run(src, "r"), "\"0 + 3i 0 + 1.2i 0 + 0.025i\"");
+}
+
+#[test]
+fn unary_minus_reaches_a_user_overload() {
+    // A user `neg` must be DISPATCHED to, not just type-checked: the unary form
+    // records its resolved module the way the binary operators do, so the call
+    // does not fall through to the numeric built-in.
+    let src = "@mod M\n\
+        $ Money : @struct = cents: @int\n\
+        $ neg : Money -> Money = \\m = Money.{ .cents = 0 - m.cents }\n\
+        $ r : @int = (-Money.{ .cents = 5 }).cents";
+    assert_eq!(run(src, "r"), "-5");
+}
+
+#[test]
 fn literal_hook_via_ascription() {
     // `(e : T)` also drives a construction hook.
     let src = "@mod M\n\

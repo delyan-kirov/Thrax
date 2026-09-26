@@ -45,6 +45,7 @@ Construction / access:
 - `@compiler_interface_sequence_literal : @vec t -> f t`
 - `@compiler_interface_integer_literal  : @int -> a`
 - `@compiler_interface_real_literal     : @float64 -> a`
+- `@compiler_interface_imaginary_literal : @float64 -> a`   (the `3i` suffix)
 - `@compiler_interface_indexing         : c -> k -> *`   (the `.[..]` hook)
 - `@compiler_interface_range            : t -> t -> f`   (`[lo ... hi]`)
 - `@compiler_interface_range_from       : t -> f`        (`[lo ...]`)
@@ -66,6 +67,12 @@ where core defines `$ SeqView : @union s t = Empty | More t s`.
   type-directed build, since a `@vec` payload cannot carry the static length `n`.)
 - `42`               ->  `@compiler_interface_integer_literal 42`
 - `1.5`              ->  `@compiler_interface_real_literal 1.5`
+- `1.5i`             ->  `@compiler_interface_imaginary_literal 1.5`
+
+  (unlike the others this hook has no built-in default: `3i` means whatever the
+  hook in scope returns, and CORE's overload returns the `Cpx` struct. It is the
+  one literal whose whole meaning is library code, which is why the suffix cost
+  the compiler only a token and a desugar.)
 - `m.["k"]`          ->  `@compiler_interface_indexing m "k"`
 - `is "foo"`         ->  `@compiler_interface_equality scrut (@compiler_interface_string_literal <bytes>)`
 - `[a, b, ..rest]`   ->  nested match on `@compiler_interface_sequence_view`:

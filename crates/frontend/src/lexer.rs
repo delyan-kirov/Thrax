@@ -419,8 +419,23 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let lexeme = self.slice_from(start);
-        let cleaned: String = lexeme.chars().filter(|&c| c != '_').collect();
+        // An `i` suffix makes the literal imaginary. It is a suffix only when no
+        // identifier character follows, so `3if` still lexes as `3` then `if`.
+        let is_imaginary = self.cur() == b'i'
+            && !crate::lexer::data::is_ident_cont(self.at(self.cursor + 1));
+        let cleaned: String = self.slice_from(start).chars().filter(|&c| c != '_').collect();
+        if is_imaginary {
+            self.cursor += 1; // the `i`, now that the digits are copied out
+            let value: f64 = cleaned.parse().map_err(|_| {
+                self.err(
+                    Code::NumberParsingFailure,
+                    start,
+                    line,
+                    "malformed imaginary literal",
+                )
+            })?;
+            return Ok(self.mk(Kind::Imaginary(value), start, line));
+        }
         if is_real {
             let value: f64 = cleaned.parse().map_err(|_| {
                 self.err(

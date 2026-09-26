@@ -2703,7 +2703,10 @@ impl<'a> Checker<'a> {
                 let (op, operand) = (self.text(*op), *operand);
                 let t = self.infer(operand)?;
                 if let Some(cands) = self.overloads.get(op).cloned() {
-                    return self.resolve_overload(op, &cands, &[t], None);
+                    // `Some(e)`, like the binary form: a user overload (`neg` on a
+                    // struct) must record its module here or lowering emits the bare
+                    // name and the call lands on the built-in.
+                    return self.resolve_overload(op, &cands, &[t], Some(e));
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
                 let op_ty = self.eng.instantiate(&scheme);

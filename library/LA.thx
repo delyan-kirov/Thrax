@@ -31,7 +31,8 @@ $ row : [m][n]a -> @int -> [n]a = \t i = t.[i]
 $ col : [m][n]a -> @int -> [m]a = \t j = (transpose t).[j]
 
 # Element arithmetic as a dictionary. Overloaded for @int and Real; a `@ctx add`
-# etc. below resolves to the right one by the element type.
+# etc. below resolves to the right one by the element type. Another element type
+# joins by adding its own `add`/`mul`/`zero` (CPX does, for complex tensors).
 $ add : @int -> @int -> @int = \a b = a + b
 $ add : Real -> Real -> Real = \a b = a + b
 $ mul : @int -> @int -> @int = \a b = a * b

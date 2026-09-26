@@ -994,6 +994,31 @@ fn literal_construction_hooks_match_interpreter() {
 }
 
 #[test]
+fn complex_numbers_match_interpreter() {
+    // The `i` suffix, its CORE hook, and the complex operators are all library
+    // code, so the C backend must produce the same values as the interpreter.
+    let src = "@mod M\n\
+               $ a : Cpx = 3.0 + 4.0i\n\
+               $ b : Cpx = 1.0 - 2.0i\n\
+               $ r : @str = to_string (a + b) ++ to_string (a * b)\n\
+               \t++ to_string (a / b) ++ to_string (-a) ++ to_string (2.5e-2i)\n";
+    assert_matches(src, "r");
+}
+
+#[test]
+fn tensor_of_structs_matches_interpreter() {
+    // A tensor element that is a STRUCT is not a nested tensor. The C runtime used
+    // to tell the two apart by tag alone (every struct shares it) and faulted here.
+    let src = "@mod M\n\
+               $ P : @struct = x: @float64, y: @float64,\n\
+               $ ps : [2]P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
+               $ zs : [2]Cpx = [1.0 + 1.0i, 2.0 + 0.0i]\n\
+               $ r : @str = to_string (@tensor_index ps 1).y\n\
+               \t++ to_string (@tensor_length ps) ++ to_string (@tensor_index zs 0)\n";
+    assert_matches(src, "r");
+}
+
+#[test]
 fn bracket_hooks_match_interpreter() {
     // The rest of the `[..]` surface is hook-driven too: ranges, `::`, slices, and
     // `@array` literals/patterns must lower the same on the C backend.

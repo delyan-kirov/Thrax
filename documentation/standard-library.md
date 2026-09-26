@@ -54,6 +54,7 @@ there is no Pair type.
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
+| `CPX`  | complex math over CORE's `Cpx`: `zero`, `one`, `i`, `add`, `mul`, `re`, `im`, `of_real`, `conj`, `abs`, `norm`, `arg`, `is_real`, `is_zero`, `scale`, `recip`, `div_smith`, `polar`, `from_polar`, `exp`, `log`, `sqrt`, `pow`, `powi`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `roots_of_unity`, `roots` |
 | `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see documentation/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
@@ -133,6 +134,27 @@ deliberate compromises, both documented at the declarations in app/DR.cpp:
 Console output uses unbuffered `C.write` throughout (never mixed with C's
 buffered stdout), so ordering is deterministic. `C.puts` remains for the
 prelude's `assert` and quick scripts.
+
+### Complex numbers
+
+The TYPE is CORE's, not this module's: `Cpx` (fields `re`/`im`), the `i` literal
+suffix, `+ - * /` on any mix of `Cpx`/`Real`/`@float32`, and `to_string` all live
+in CORE, so `3.4 + 1.2i` needs no import. `CPX` adds everything else, in ordinary
+Thrax over libm through `C`.
+
+Two notes on the arithmetic. CORE's `/` forms `|b|^2` directly, which is the
+readable quotient but loses range near the float limits; `CPX.div_smith` is
+Smith's algorithm, which scales by the larger component first and keeps it.
+And `CPX.pow` goes through `exp`/`log` (principal branch), so for an integer
+exponent prefer `CPX.powi`, which multiplies and stays exact for small powers
+and at `z = 0`. `z ^ n` picks between them: `^` is a compiler builtin (it has no
+intrinsic of its own), but its overload set takes candidates like any other
+operator, and CPX adds one per exponent type.
+
+`zero`, `one`, `add` and `mul` double as LA's element dictionary, so a `[n]Cpx`
+flows through `dot`/`matmul` with no tensor-side support: importing `CPX` next to
+`LA` is all a complex tensor needs. Equality is the generic structural one (two
+`Real` fields), so no `==` overload is declared.
 
 ## Testing
 
