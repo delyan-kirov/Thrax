@@ -61,6 +61,32 @@ fn numbers_ints_reals_radix() {
 }
 
 #[test]
+fn imaginary_suffix_takes_every_numeric_form() {
+    let toks = Lexer::tokenize("3i 1.2i 2.5e-2i 1_000i").unwrap();
+    let vals: Vec<Kind> = toks.into_iter().map(|t| t.kind).collect();
+    assert_eq!(vals[0], Kind::Imaginary(3.0));
+    assert_eq!(vals[1], Kind::Imaginary(1.2));
+    assert_eq!(vals[2], Kind::Imaginary(0.025));
+    assert_eq!(vals[3], Kind::Imaginary(1000.0));
+}
+
+#[test]
+fn imaginary_suffix_needs_the_i_to_end_the_token() {
+    // `i` is a suffix only when no identifier character follows it, so a number
+    // butted against a word still lexes as the number and then the word.
+    assert_eq!(kinds("3if"), vec![Kind::Int(3), Kind::If, Kind::Eof]);
+    assert_eq!(kinds("3 i"), vec![Kind::Int(3), Kind::Word, Kind::Eof]);
+    assert_eq!(kinds("3in"), vec![Kind::Int(3), Kind::In, Kind::Eof]);
+}
+
+#[test]
+fn imaginary_span_covers_the_suffix() {
+    let toks = Lexer::tokenize("1.2i").unwrap();
+    assert_eq!(toks[0].span.start, 0);
+    assert_eq!(toks[0].span.end, 4);
+}
+
+#[test]
 fn string_literal_lexes_as_str_and_decodes() {
     // The lexer only tags the literal's extent; decoding is deferred.
     let src = r#""a\tb\x41""#;

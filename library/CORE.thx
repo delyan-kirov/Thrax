@@ -494,6 +494,60 @@ $ from_string : @str -> @nat16 = \s = let n : @nat = from_string s in let m : @n
 $ from_string : @str -> @nat32 = \s = let n : @nat = from_string s in let m : @nat32 = @cast n in m
 $ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @nat64 = @cast n in m
 
+# ---- complex numbers ----
+# `Cpx` is an ordinary struct, not a base type: the compiler knows only the `i`
+# suffix, which it desugars to the hook below. Everything else here is the same
+# overloading any user type gets, so a program may swap in its own complex type
+# by defining its own hook.
+$ Cpx : @struct = re: Real, im: Real,
+
+# `1.2i` becomes `@compiler_interface_imaginary_literal 1.2`, so `3.4 + 1.2i` is
+# an ordinary `+` on a Real and a Cpx.
+$ @compiler_interface_imaginary_literal : Real -> Cpx = \x = Cpx.{ 0.0, x }
+
+$ (+) : Cpx -> Cpx -> Cpx = \a b = Cpx.{ a.re + b.re, a.im + b.im }
+$ (-) : Cpx -> Cpx -> Cpx = \a b = Cpx.{ a.re - b.re, a.im - b.im }
+$ (*) : Cpx -> Cpx -> Cpx = \a b =
+	Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re }
+# The textbook quotient. It divides by `|b|^2`, so it loses range for operands
+# near the square root of the float limits; CPX.div_smith trades a branch for
+# that range.
+$ (/) : Cpx -> Cpx -> Cpx = \a b =
+	let d = b.re * b.re + b.im * b.im in
+	Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d }
+
+$ neg : Cpx -> Cpx = \z = Cpx.{ 0.0 - z.re, 0.0 - z.im }
+
+# A real on either side of a complex, and the same pairs for the narrower
+# `@float32` (widened exactly as the mixed-width float operators above do). There
+# are deliberately NO integer pairs: an integer never silently becomes a float
+# anywhere else here, so `1 + 3i` is a type error and `1.0 + 3i` is the spelling.
+$ (+) : Real -> Cpx -> Cpx = \a b = Cpx.{ a + b.re, b.im }
+$ (-) : Real -> Cpx -> Cpx = \a b = Cpx.{ a - b.re, 0.0 - b.im }
+$ (*) : Real -> Cpx -> Cpx = \a b = Cpx.{ a * b.re, a * b.im }
+$ (/) : Real -> Cpx -> Cpx = \a b = Cpx.{ a, 0.0 } / b
+
+$ (+) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re + b, a.im }
+$ (-) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re - b, a.im }
+$ (*) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re * b, a.im * b }
+$ (/) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re / b, a.im / b }
+
+$ (+) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x + b
+$ (-) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x - b
+$ (*) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x * b
+$ (/) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x / b
+
+$ (+) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a + y
+$ (-) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a - y
+$ (*) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a * y
+$ (/) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a / y
+
+# `3.0 - 1.5i` rather than `3.0 + -1.5i`; the imaginary part always shows, so a
+# real-valued Cpx still reads as complex.
+$ to_string : Cpx -> @str = \z =
+	if z.im < 0.0 => "?(z.re) - ?(0.0 - z.im)i"
+	else "?(z.re) + ?(z.im)i"
+
 # `x :: xs` prepends `x` to a `@vec` (the default sequence). O(n): builds a fresh
 # vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
 # the idiomatic way to build a vector.

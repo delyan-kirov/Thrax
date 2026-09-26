@@ -1,0 +1,156 @@
+@mod COMPLEX
+
+# \file COMPLEX.thx
+# \info Complex numbers. `1.2i` is one token, and the compiler knows nothing
+#       more: it desugars to `@compiler_interface_imaginary_literal`, whose CORE
+#       overload builds the `Cpx` struct. So the arithmetic below is ordinary
+#       operator overloading, and CPX holds the math.
+
+$ with CPX
+$ with LA
+$ with MATH
+
+# ---- literals ----
+# The suffix takes any numeric literal form: whole, fractional, or scientific.
+
+$ unit  : Cpx = 1.0i
+$ whole : Cpx = 3i
+$ frac  : Cpx = 1.2i
+$ sci   : Cpx = 2.5e-2i
+
+# The canonical spelling: a real plus an imaginary part.
+$ z : Cpx = 3.4 + 1.2i
+
+# The struct literal is always available too (positional, or bare where the
+# expected type is known). An INTEGER left side is deliberately a type error:
+# write `1.0 + 3i`, not `1 + 3i`.
+$ whole_re : Cpx = 1.0 + 3i
+$ built    : Cpx = Cpx.{ 1.0, 3.0 }
+$ bare     : Cpx = .{ 1.0, 3.0 }
+
+$ ck_lit   : @int = if unit == Cpx.{ 0.0, 1.0 } => 0 else 1
+$ ck_whole : @int = if whole == Cpx.{ 0.0, 3.0 } => 0 else 1
+$ ck_frac  : @int = if frac == Cpx.{ 0.0, 1.2 } => 0 else 1
+$ ck_sci   : @int = if sci == Cpx.{ 0.0, 0.025 } => 0 else 1
+$ ck_sum   : @int = if z == Cpx.{ 3.4, 1.2 } => 0 else 1
+$ ck_int   : @int = if whole_re == built => 0 else 1
+$ ck_bare  : @int = if bare == built => 0 else 1
+
+# ---- arithmetic ----
+
+$ a : Cpx = 3.0 + 4.0i
+$ b : Cpx = 1.0 - 2.0i
+
+$ ck_add : @int = if a + b == Cpx.{ 4.0, 2.0 } => 0 else 1
+$ ck_sub : @int = if a - b == Cpx.{ 2.0, 6.0 } => 0 else 1
+# (3+4i)(1-2i) = 3 - 6i + 4i + 8
+$ ck_mul : @int = if a * b == Cpx.{ 11.0, -2.0 } => 0 else 1
+# (3+4i)/(1-2i) = (3+4i)(1+2i)/5
+$ ck_div : @int = if a / b == Cpx.{ -1.0, 2.0 } => 0 else 1
+$ ck_neg : @int = if -a == Cpx.{ -3.0, -4.0 } => 0 else 1
+
+# Mixed with a real on either side, and with the narrower `@float32`, which
+# widens the same way the mixed-width float operators do.
+$ ck_rl : @int = if 2.0 * a == Cpx.{ 6.0, 8.0 } => 0 else 1
+$ ck_rr : @int = if a * 2.0 == Cpx.{ 6.0, 8.0 } => 0 else 1
+$ half : @float32 = 0.5
+$ ck_fl : @int = if half * a == Cpx.{ 1.5, 2.0 } => 0 else 1
+$ ck_fr : @int = if a - half == Cpx.{ 2.5, 4.0 } => 0 else 1
+
+# Smith's division agrees with the plain one on ordinary operands.
+$ ck_smith : @int = if CPX.div_smith a b == a / b => 0 else 1
+
+# ---- parts ----
+
+$ ck_re   : @int = if CPX.re a == 3.0 => 0 else 1
+$ ck_im   : @int = if CPX.im a == 4.0 => 0 else 1
+$ ck_conj : @int = if CPX.conj a == Cpx.{ 3.0, -4.0 } => 0 else 1
+$ ck_abs  : @int = if CPX.abs a == 5.0 => 0 else 1
+$ ck_norm : @int = if CPX.norm a == 25.0 => 0 else 1
+$ ck_recip : @int = if near (CPX.recip b) (Cpx.{ 0.2, 0.4 }) => 0 else 1
+$ ck_arg  : @int = if near_real (CPX.arg CPX.i) (MATH.pi / 2.0) => 0 else 1
+$ ck_real : @int = if CPX.is_real (Cpx.{ 2.0, 0.0 }) && !(CPX.is_real a) => 0 else 1
+
+$ ck_show  : @int = if to_string a == "3 + 4i" => 0 else 1
+$ ck_show2 : @int = if to_string b == "1 - 2i" => 0 else 1
+
+# ---- transcendentals ----
+
+# e^(i pi) = -1, the identity worth checking first.
+$ ck_euler : @int = if near (CPX.exp (Cpx.{ 0.0, MATH.pi })) (Cpx.{ -1.0, 0.0 }) => 0 else 1
+$ ck_log   : @int = if near (CPX.exp (CPX.log a)) a => 0 else 1
+# sqrt(i) = (1 + i)/sqrt 2
+$ ck_sqrt  : @int = if near (CPX.sqrt CPX.i) (Cpx.{ 0.7071067811865476, 0.7071067811865476 }) => 0 else 1
+$ ck_sqr   : @int = if near (CPX.sqrt a * CPX.sqrt a) a => 0 else 1
+# i^2 = -1, and `^` reaches the complex overloads: an integer exponent takes the
+# exact repeated-multiplication path, a complex one goes through exp/log.
+$ ck_powi  : @int = if near (CPX.powi CPX.i 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
+$ ck_hat   : @int = if near (CPX.i ^ 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
+$ ck_hatc  : @int = if near (a ^ (Cpx.{ 2.0, 0.0 })) (a * a) => 0 else 1
+# The builtin numeric cases are untouched by those overloads.
+$ ck_hatint : @int = if 3 ^ 2 == 9 => 0 else 1
+$ ck_pow   : @int = if near (CPX.pow a (Cpx.{ 2.0, 0.0 })) (a * a) => 0 else 1
+$ ck_powneg : @int = if near (CPX.powi b (0 - 1)) (CPX.recip b) => 0 else 1
+# sin^2 + cos^2 = 1 holds on the complex plane too.
+$ ck_trig  : @int =
+	if near (CPX.sin z * CPX.sin z + CPX.cos z * CPX.cos z) CPX.one => 0 else 1
+$ ck_tan   : @int = if near (CPX.tan z) (CPX.sin z / CPX.cos z) => 0 else 1
+# cosh^2 - sinh^2 = 1.
+$ ck_hyp   : @int =
+	if near (CPX.cosh z * CPX.cosh z - CPX.sinh z * CPX.sinh z) CPX.one => 0 else 1
+$ ck_tanh  : @int = if near (CPX.tanh z) (CPX.sinh z / CPX.cosh z) => 0 else 1
+
+# ---- polar form and roots ----
+
+$ ck_polar : @int =
+	let p = CPX.polar a in
+	if near (CPX.from_polar p.0 p.1) a => 0 else 1
+
+# The fourth roots of unity are 1, i, -1, -i.
+$ fourth : @vec Cpx = CPX.roots_of_unity 4
+$ ck_rou : @int =
+	if @vec_len fourth == 4
+		&& near (@vec_get fourth 0) CPX.one
+		&& near (@vec_get fourth 1) CPX.i
+		&& near (@vec_get fourth 2) (Cpx.{ -1.0, 0.0 })
+		&& near (@vec_get fourth 3) (Cpx.{ 0.0, -1.0 })
+	=> 0 else 1
+
+# Every `n`th root really is one: raising it back gives `z`.
+$ cubes : @vec Cpx = CPX.roots a 3
+$ ck_roots : @int =
+	if @vec_len cubes == 3
+		&& near (CPX.powi (@vec_get cubes 0) 3) a
+		&& near (CPX.powi (@vec_get cubes 2) 3) a
+	=> 0 else 1
+
+# ---- complex tensors ----
+# LA passes the element arithmetic as a `@ctx` dictionary, so a complex tensor
+# reduces with no tensor-side support: the three CORE overloads are enough.
+
+$ xs : [2]Cpx = [Cpx.{ 1.0, 1.0 }, Cpx.{ 2.0, 0.0 }]
+$ ys : [2]Cpx = [Cpx.{ 0.0, 1.0 }, Cpx.{ 1.0, 1.0 }]
+# (1+i)(i) + (2)(1+i) = (-1+i) + (2+2i)
+$ ck_dot : @int = if near (dot xs ys) (Cpx.{ 1.0, 3.0 }) => 0 else 1
+
+# ---- aggregate ----
+
+$ test : @int =
+	  ck_lit + ck_whole + ck_frac + ck_sci + ck_sum + ck_int + ck_bare
+	+ ck_add + ck_sub + ck_mul + ck_div + ck_neg
+	+ ck_rl + ck_rr + ck_fl + ck_fr + ck_smith
+	+ ck_re + ck_im + ck_conj + ck_abs + ck_norm + ck_recip + ck_arg + ck_real
+	+ ck_show + ck_show2
+	+ ck_euler + ck_log + ck_sqrt + ck_sqr + ck_powi + ck_pow + ck_powneg
+	+ ck_hat + ck_hatc + ck_hatint
+	+ ck_trig + ck_tan + ck_hyp + ck_tanh
+	+ ck_polar + ck_rou + ck_roots + ck_dot
+
+$ @run (assert (test == 0) "COMPLEX: a check failed")
+
+$ @private
+
+# Floating-point results need a tolerance, not `==`.
+$ near_real : Real -> Real -> @bool = \x y = MATH.abs (x - y) < 0.000000001
+
+$ near : Cpx -> Cpx -> @bool = \p q = CPX.abs (p - q) < 0.000000001

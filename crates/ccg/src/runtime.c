@@ -763,6 +763,13 @@ static Value *mk_tensor(Value *buf, size_t off, size_t *shape, size_t *strides,
   return THxRT_struct("@tensor", 4, fnames, vals);
 }
 
+/* A tensor is a struct NAMED `@tensor`; the tag alone does not say so, because
+ * every user struct shares it. */
+static int is_tensor(Value *v) {
+  return v->tag == T_STRUCT && v->u.strct.name &&
+         strcmp(v->u.strct.name, "@tensor") == 0;
+}
+
 static void tensor_fields(Value *t, Value **buf, size_t *off, size_t **shape,
                           size_t **strides, size_t *rank) {
   if (t->tag != T_STRUCT) thrax_fault("expected a tensor");
@@ -810,7 +817,7 @@ static Value *tensor_stack(Value **elems, size_t n) {
     size_t sh[1] = {0}, st[1] = {1};
     return mk_tensor(mk_vec(NULL, 0), 0, sh, st, 1);
   }
-  if (elems[0]->tag == T_STRUCT) {
+  if (is_tensor(elems[0])) {
     Value *b0;
     size_t o0, *sub_shape, *sub_strides, sub_rank;
     tensor_fields(elems[0], &b0, &o0, &sub_shape, &sub_strides, &sub_rank);

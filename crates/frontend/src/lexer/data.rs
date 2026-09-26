@@ -3,9 +3,9 @@
 //! A token is pure data: a [`Kind`] tag plus a [`Span`] into the source. It
 //! carries no borrow, so the token stream is `Send` and outlives the source. A
 //! token's lexeme is `source[span]`, resolved on demand by whoever holds the
-//! source (see the parser). `Int`/`Real` keep their parsed value inline; a
-//! string literal's decoded bytes are produced later (the `Str` tag only marks
-//! the literal's extent), so decoding stays out of the lexer.
+//! source (see the parser). `Int`/`Real`/`Imaginary` keep their parsed value
+//! inline; a string literal's decoded bytes are produced later (the `Str` tag
+//! only marks the literal's extent), so decoding stays out of the lexer.
 
 use utilities::{Line, Span};
 
@@ -23,6 +23,10 @@ pub enum Kind {
     // Literals.
     Int(i64),
     Real(f64),
+    /// An imaginary literal (`3i`, `1.2i`, `2.5e-2i`): the `i`-suffixed magnitude,
+    /// always as a real. The parser desugars it to the imaginary-literal hook, so
+    /// the compiler never learns what a complex number is.
+    Imaginary(f64),
     Str, // a string literal; its bytes are decoded from `source[span]` later
 
     // Names.

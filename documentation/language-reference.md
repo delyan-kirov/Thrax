@@ -65,7 +65,26 @@ $ tiny : Real = 12e-3        # 0.012
 $ mixed = 1 + 1.0            # a literal takes the type its context wants
 ```
 
-## 1.4 String literals and escapes
+## 1.4 Imaginary literals
+An `i` suffix on any numeric literal form makes it imaginary. The suffixed
+literal is not a base type: it desugars to the overloadable
+`@compiler_interface_imaginary_literal` hook, whose `CORE` overload builds the
+`Cpx` struct (see 15). The `i` counts as a suffix only when no identifier
+character follows, so `3if` is still `3` then `if`.
+
+```thrax
+$ unit : Cpx = 1.0i
+$ whole: Cpx = 3i              # the magnitude is a Real either way
+$ tiny : Cpx = 2.5e-2i         # scientific notation suffixes too
+$ z    : Cpx = 3.4 + 1.2i      # the canonical spelling: real plus imaginary
+```
+
+A real mixes with a complex on either side (`@float32` widens as elsewhere), but
+an INTEGER does not: `1 + 3i` is a type error, because an integer never silently
+becomes a float. Write `1.0 + 3i`. There is no imaginary PATTERN; match the
+fields (`is z | Cpx.{re, im}`) or compare with `==` in a guard.
+
+## 1.5 String literals and escapes
 A string is a block of bytes; source text must be well-formed UTF-8. Escapes:
 `\n \t \r \0 \\ \" \' \a \b \f \v`, `\xHH` (one raw byte), `\u{...}` (a Unicode
 scalar, UTF-8 encoded).
@@ -76,7 +95,7 @@ $ raw  : Str = "\x41\x42"            # "AB" via hex bytes
 $ emoji: Str = "\u{1F600} café"      # code point + raw UTF-8
 ```
 
-## 1.5 String interpolation
+## 1.6 String interpolation
 `"... {expr} ..."` splices an expression, stringified through the overloaded
 `to_string`. Surface sugar for `chunk ++ to_string expr ++ chunk`. `\{` and `\}`
 are literal braces.
@@ -176,6 +195,10 @@ $ u : @nat = 5
 $ r : Real = 2.5
 $ s : Str  = "hi"
 ```
+
+Complex numbers are NOT a base type: `Cpx` is an ordinary `CORE` struct
+(`re`/`im`), with the `i` literal suffix (1.4) and its operators supplied as
+library overloads. `CPX` holds the math (15).
 
 ## 3.2 Sized numerics
 Fixed widths are `@`-spelled: `@int8/@int16/@int32/@int64`,
@@ -1110,6 +1133,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
+| `@compiler_interface_*` | overloadable literal / indexing hooks | 1.4, 9.5 |
 | `@ptr` `@array` `@vec` | built-in containers/pointer | 3.3, 12 |
 | `@co` `@contra` | tensor axis variance | 9.4 |
 | `@array_len/get/set/push/slice/alloc` | array primitives | 12.2 |
@@ -1164,5 +1188,6 @@ import). A brief map:
 | `RANDOM` | pseudo-random numbers |
 | `IO` | console and file IO over the `C` namespace |
 | `LA` | shape-checked linear algebra over sized tensors |
+| `CPX` | complex math over `CORE`'s `Cpx`: parts, polar form, roots, transcendentals |
 | `BUILD` | compile-time build directives (`@run BUILD.lib ...`) |
 | `TARGET` | compilation-target reflection (qualified) |

@@ -980,7 +980,8 @@ impl<'a> Lowerer<'a> {
             }
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (self.text(*op).to_string(), *operand);
-                Term::app(Term::var(op), self.expr(operand))
+                let head = self.operator_head(e, &op);
+                Term::app(head, self.expr(operand))
             }
 
             Expr::Tuple(items) => {

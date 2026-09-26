@@ -14,6 +14,7 @@ $ with ARITHMETIC = ARITHMETIC
 $ with ARRAY = ARRAY
 $ with ARRAY_PATTERNS = ARRAY_PATTERNS
 $ with ARRAYS_MUT = ARRAYS_MUT
+$ with COMPLEX = COMPLEX
 $ with CONDITIONALS = CONDITIONALS
 $ with CODATA = CODATA
 $ with COROUTINES = COROUTINES
@@ -91,6 +92,7 @@ $ @main : @vec @str -> <@io> @int = \args =
 	+ check "ARRAY" ARRAY.test
 	+ check "ARRAY_PATTERNS" ARRAY_PATTERNS.test
 	+ check "ARRAYS_MUT" ARRAYS_MUT.test
+	+ check "COMPLEX" COMPLEX.test
 	+ check "CONDITIONALS" CONDITIONALS.test
 	+ check "CODATA" CODATA.test
 	+ check "COROUTINES" COROUTINES.test
