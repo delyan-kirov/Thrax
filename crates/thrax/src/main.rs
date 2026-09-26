@@ -1,4 +1,20 @@
 //! The Thrax executable: argument dispatch over the driver ([`driver`]).
+//!
+//! This is also the entry point of the workspace documentation. The compiler is
+//! five crates, in pipeline order:
+//!
+//! * [`utilities`] holds the foundations every phase shares: the bump arena, the
+//!   handle-addressed store, the diagnostic model, and the compilation target as
+//!   data.
+//! * [`frontend`] is the front end and middle end: [`frontend::lexer`],
+//!   [`frontend::parser`], [`frontend::typing`], [`frontend::lowering`] (to the
+//!   Core), and [`frontend::ir`] (pattern-match compilation, A-normalization,
+//!   De-Bruijn indexing, closure conversion).
+//! * [`interpreter`] evaluates that IR with the reified-K (CEK) machine.
+//! * [`ccg`] emits a standalone C program from the same IR.
+//! * `thrax` (this crate) is the CLI: [`driver`] wires the phases together for
+//!   `lex`/`parse`/`check`/`run`/`build`/`emit-c`, and [`repl`] is the
+//!   GHCi-style session.
 
 mod driver;
 mod repl;

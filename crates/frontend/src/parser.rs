@@ -3,10 +3,10 @@
 //! Structure mirrors the grammar so the Rust call stack matches it, which keeps
 //! error context meaningful:
 //!
-//! * [`Parser::parse_expr`] is the precedence-climbing core: it parses a prefix,
+//! * `Parser::parse_expr` is the precedence-climbing core: it parses a prefix,
 //!   then folds infix operators and juxtaposition (application) by binding power
-//!   from [`crate::parser::table`].
-//! * [`Parser::parse_primary`] parses one atom then a left-associative postfix
+//!   from `table`.
+//! * `Parser::parse_primary` parses one atom then a left-associative postfix
 //!   `.` chain (field access, tuple index, struct/variant literals,
 //!   module-qualified names) that binds tighter than application.
 //! * The control forms (`let`, `if`, `when`, `\`, `with`, `do`, `defer`) are

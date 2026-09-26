@@ -3,9 +3,9 @@
 //! Inference is driven by [`Checker::infer`] (expressions) and
 //! [`Checker::type_pattern`] (patterns), threading the [`Engine`] for
 //! unification and the lexical scope stack for variable types. The AST is read
-//! through a borrowed [`Ast`]: a node handle is resolved with [`Checker::node`] /
-//! [`Checker::tnode`] / [`Checker::pnode`], and an interned name with
-//! [`Checker::text`]. Because `ast` is a shared reference, those resolve to
+//! through a borrowed [`Ast`]: a node handle is resolved with `Checker::node` /
+//! `Checker::tnode` / `Checker::pnode`, and an interned name with
+//! `Checker::text`. Because `ast` is a shared reference, those resolve to
 //! `'a`-lived data independent of the `&mut self` borrow, so a node can be read
 //! and its children inferred in the same method.
 //!
@@ -16,7 +16,7 @@
 //! components that depend on it (let-polymorphism).
 //!
 //! Structs, unions, aliases, and their generic parameters are registered up
-//! front by [`Checker::register_types`]. Overloaded names (built-in arithmetic,
+//! front by `Checker::register_types`. Overloaded names (built-in arithmetic,
 //! the `array_*` primitives, and any user name defined several times) are
 //! resolved at each use site by trial unification against the argument and result
 //! types; ambiguous uses are deferred and solved to a fixpoint at the definition

@@ -1,7 +1,7 @@
 //! Monomorphic type representation.
 //!
 //! Types are owned (not arena) because inference mutates type variables in place
-//! via the union-find in [`crate::engine`]. A [`Type::Var`] is an index into
+//! via the union-find in [`crate::typing::engine`]. A [`Type::Var`] is an index into
 //! that store; everything else is structural.
 
 use std::fmt;
@@ -15,7 +15,7 @@ pub type VarId = u32;
 pub type Level = u32;
 
 /// A monomorphic type. Polymorphism is represented by `Generic` variables inside
-/// a type (see [`crate::engine`]); there is no separate scheme constructor.
+/// a type (see [`crate::typing::engine`]); there is no separate scheme constructor.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Type {
     /// A unification variable, resolved through the engine's store.

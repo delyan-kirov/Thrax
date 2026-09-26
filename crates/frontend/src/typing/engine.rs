@@ -128,7 +128,7 @@ impl Engine {
     }
 
     /// Register the structs' record-row schemes for the nominal-struct / record-row
-    /// unification bridge (see [`Engine::struct_rows`]).
+    /// unification bridge (see the `struct_rows` map).
     pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, (Vec<VarId>, Type)>) {
         self.struct_rows = rows;
     }

@@ -80,7 +80,7 @@ impl<T> Aol<T> {
 
 /// A contiguous run of `T`s in a [`Store`], the handle form of `&[T]`. Building
 /// one appends the elements to the store's backing buffer, so a slice's elements
-/// live next to each other and are read back with [`Store::slice`].
+/// live next to each other and are read back with [`Store::lookup_slice`].
 pub struct Slice<T> {
     tag: usize,
     start: usize,

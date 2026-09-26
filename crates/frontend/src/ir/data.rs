@@ -10,7 +10,7 @@
 //! The IR is in A-normal form (from the [`crate::lowering::anf`] pass): every
 //! operator/operand is an [`Atom`], every non-trivial computation is named by a
 //! [`Expr::Let`]. Patterns are already shallow (from
-//! [`crate::lowering::patmat`]), so a [`Case`] alternative matches one
+//! [`crate::lowering::patmat`]), so a [`Expr::Case`] alternative matches one
 //! constructor or literal and binds its payload positionally.
 //!
 //! Differences from the C++ IR, mirroring the Rust Core: `Bool`/`Unit` are their

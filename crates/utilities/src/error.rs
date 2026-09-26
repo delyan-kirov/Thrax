@@ -197,7 +197,7 @@ impl Diagnostic {
         self
     }
 
-    /// Give the root frame a source location if it has none (the [`Span::at(0)`]
+    /// Give the root frame a source location if it has none (the [`Span::at`]`(0)`
     /// sentinel that span-less passes like the type checker start with). A
     /// diagnostic that already carries a real span is left untouched, so the
     /// innermost pass to set a span wins.
