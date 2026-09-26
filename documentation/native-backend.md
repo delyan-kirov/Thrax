@@ -103,9 +103,11 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **Globals** are lazy, memoized CAFs: `THxRT_glob` runs the nullary code
   (`THxK_run_code`) on first demand and caches it (cyclic value globals abort),
   exactly as `IT::glob`. Unknown names fall through to `THxRT_builtin`.
-- **Entry**: `main` forces every global (mirroring the smoke test) and then, if
-  the program has an entry point, applies it (`THxK_call`) and returns its `@int`
-  as the exit code.
+- **Entry**: the generated C `main` forces every global reachable from the entry,
+  then applies `@main` (`THxK_call`) to the argument vector as a `@vec @str` and
+  returns its `@int` as the exit code. A harness mode (`ccg::Entry::Show`) instead
+  forces a named global and prints `name = value`, which is how the differential
+  tests compare the two engines.
 
 ### Tail calls and deep recursion
 
@@ -301,9 +303,10 @@ so those functions carry the ownership rules:
 - **Release is iterative** (a dead-value worklist in `THxMEMRC.c`), so dropping
   a long list does not recurse on the C stack.
 
-**The built-in leak check:** the generated `main` releases the CAF cache and
-the temp pool on exit and then asserts `THxMEM_live() == 0`, exiting **97**
-(with a stderr report) if any allocation survived. Every `build native-test`
+**The built-in leak check:** in the value-printing harness mode the generated
+`main` releases the CAF cache and the temp pool on exit and then asserts
+`THxMEM_live() == 0`, exiting **97** (with a stderr report) if any allocation
+survived. Every `build native-test`
 example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
 `THxMEM_live()` is 0 and the check passes trivially.
 

@@ -19,3 +19,5 @@ $pow_5_3  = pow 5 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = pow2_8 ; pow2_10 ; pow_2_10 ; pow_3_4 ; pow_5_3 ; 0
+
+$ @run (assert (test == 0) "POWER: a check failed")

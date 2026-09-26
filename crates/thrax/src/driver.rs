@@ -219,20 +219,16 @@ fn check_all<'a>(
 }
 
 /// The full pipeline up to (but not including) execution: load, parse, check,
-/// and lower every module. Returns the lowered modules (root first) and the
-/// root's entry-point name (`test`, else `main`). Shared by `run` and `emit-c`.
-/// Parse, check, and lower the loaded modules once, returning the lowered
-/// programs and the entry point. The parse/check state is local (self-borrowing),
-/// so only the owned `lowered` escapes; the expansion loop in [`lower_all`] calls
-/// this repeatedly on progressively `@e`-expanded sources.
+/// and lower every module, returning the lowered modules (root first). The
+/// parse/check state is local (self-borrowing), so only the owned `lowered`
+/// escapes; the expansion loop in [`lower_all`] calls this repeatedly on
+/// progressively `@e`-expanded sources.
 type Compiled = (
     Vec<frontend::lowering::data::Program>,
-    String,
-    frontend::EntryKind,
     frontend::lowering::ReflectInfo,
 );
 
-fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode> {
+fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
     let mut ast = frontend::Ast::new();
     let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
     for (_name, src_path, src) in &loaded.sources {
@@ -269,36 +265,37 @@ fn compile_sources(loaded: &Loaded, lenient: bool) -> Result<Compiled, ExitCode>
         .map(|&i| frontend::lower_program(&ast, &programs[i], &decls, &resolved))
         .collect();
 
-    let entry = ["test", "main"]
-        .into_iter()
-        .find(|name| lowered[0].globals.iter().any(|(n, _)| n == name));
-    let Some(e) = entry else {
-        // A metaprogram-expansion round only needs the `@e` sites (to run the
-        // generators); the entry may itself be injected. Defer the requirement to
-        // the final strict round.
-        if lenient {
-            return Ok((lowered, String::new(), frontend::EntryKind::Value, reflect));
+    // Only a command that RUNS the program needs an entry (`check` type-checks a
+    // library module too), and a metaprogram-expansion round does not: the entry
+    // may itself be injected, so the requirement waits for the final strict round.
+    if want_entry && !lenient {
+        let entry = lowered[0]
+            .globals
+            .iter()
+            .any(|(n, _)| n == frontend::ENTRY);
+        if !entry {
+            eprintln!(
+                "thrax: module `{}` has no `$ {} : {}` to run",
+                loaded.root_name,
+                frontend::ENTRY,
+                frontend::ENTRY_SIG
+            );
+            return Err(ExitCode::FAILURE);
         }
-        eprintln!(
-            "thrax: module `{}` has no `test` or `main` to run",
-            loaded.root_name
-        );
-        return Err(ExitCode::FAILURE);
-    };
-    // The entry's type decides how it is invoked: a value is forced, `{} -> Int`
-    // is applied to unit, `[n]Str -> Int` to the argument vector (C-style `main`).
-    let kind = results[root]
-        .iter()
-        .find(|(n, _)| *n == e)
-        .map(|(_, ty)| frontend::classify_entry(ty))
-        .unwrap_or(frontend::EntryKind::Value);
-    if kind == frontend::EntryKind::BadFn && !lenient {
-        eprintln!(
-            "thrax: `{e}` must be a value, `{{}} -> Int`, or `[n]Str -> Int` (a C-style main)"
-        );
-        return Err(ExitCode::FAILURE);
+        let ok = results[root]
+            .iter()
+            .find(|(n, _)| *n == frontend::ENTRY)
+            .is_some_and(|(_, ty)| frontend::is_entry_type(ty));
+        if !ok {
+            eprintln!(
+                "thrax: `{}` must have the signature `{}`",
+                frontend::ENTRY,
+                frontend::ENTRY_SIG
+            );
+            return Err(ExitCode::FAILURE);
+        }
     }
-    Ok((lowered, e.to_string(), kind, reflect))
+    Ok((lowered, reflect))
 }
 
 /// Render a forced expression-position `@e X` value back into Thrax source to
@@ -393,21 +390,18 @@ fn render_e_fault(
     diag.fill_span(span).render(src, path)
 }
 
-/// The sources that back a compiled program (`(module, path, text)`), returned by
-/// [`lower_all`] so later passes can render `@e` diagnostics at real locations.
-type Sources = Vec<(String, String, String)>;
-
 /// Compile `path`, iteratively expanding every `$ @e` (compile-time execution,
 /// value-fold, and code injection): each round compiles the current sources,
 /// forces every `@e` site, and substitutes the result in source, repeating until
 /// none remain. `@link`/`@link_path` calls record build directives along the way,
-/// drained into the returned `BuildPlan`. Returns the final sources too.
+/// drained into the returned `BuildPlan`. Returns the expanded modules too, so a
+/// caller can report against the sources the checker actually saw. `want_entry`
+/// demands a `$ @main` of the root module: set by the commands that run or build
+/// the program, clear for a plain `check`.
 fn lower_all(
     path: &str,
-) -> Result<
-    (Vec<frontend::lowering::data::Program>, String, frontend::EntryKind, Sources, BuildPlan),
-    ExitCode,
-> {
+    want_entry: bool,
+) -> Result<(Vec<frontend::lowering::data::Program>, Loaded, BuildPlan), ExitCode> {
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
         .parent()
@@ -420,7 +414,7 @@ fn lower_all(
         // definition that hand-written code forward-references, which would not
         // yet resolve. Unbound names are deferred (fresh vars) so the generators
         // can still run; the final strict compile below validates the result.
-        let compiled = compile_sources(&loaded, true)?;
+        let compiled = compile_sources(&loaded, true, want_entry)?;
         // Gather every `@e` site this round: expression-position (`ct_evals`,
         // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@code`,
         // apply a `BUILD` directive, or discard).
@@ -454,7 +448,7 @@ fn lower_all(
         if expr_sites.is_empty() && item_sites.is_empty() && type_sites.is_empty() {
             // No `@e` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
-            let final_compiled = compile_sources(&loaded, false)?;
+            let final_compiled = compile_sources(&loaded, false, want_entry)?;
             // Fold in any `@link`/`@link_path` directives recorded while running.
             for (is_path, arg) in interpreter::machine::take_link_directives() {
                 let set = if is_path { &mut plan.lib_paths } else { &mut plan.libs };
@@ -462,18 +456,12 @@ fn lower_all(
                     set.push(arg);
                 }
             }
-            return Ok((
-                final_compiled.0,
-                final_compiled.1,
-                final_compiled.2,
-                loaded.sources,
-                plan,
-            ));
+            return Ok((final_compiled.0, loaded, plan));
         }
         let ir = frontend::ir::lower_modules(&compiled.0);
         let rd = root_dir.clone();
         interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
-        let reflect = reflect_tables(compiled.3);
+        let reflect = reflect_tables(compiled.1);
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
         let fail = |diag, module: &str, span| -> ExitCode {
             clear_meta_hosts();
@@ -736,56 +724,38 @@ fn meta_eval_source(
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
     // `lower_all` has already expanded every `$ @e` (compile-time execution and
     // code injection); the lowered program is `@e`-free.
-    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
+    let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let ir = frontend::ir::lower_modules(&lowered);
-    use frontend::EntryKind::*;
-    match kind {
-        // A value: force it and print `entry = <value>` (the test-harness form).
-        Value => match interpreter::machine::eval(&ir, &entry) {
-            Ok(shown) => {
-                println!("{entry} = {shown}");
-                ExitCode::SUCCESS
-            }
-            Err(diag) => {
-                eprint!("{}", diag.render("", &entry));
-                ExitCode::FAILURE
-            }
-        },
-        // A C-style `main`: apply it (to unit, or the argument vector `argv[0]` =
-        // the entry path, then the extra args) and use its `Int` result as the
-        // process exit code.
-        UnitFn | ArgvFn => {
-            let argv = (kind == ArgvFn).then(|| {
-                let mut v = vec![path.to_string()];
-                v.extend(prog_args.iter().cloned());
-                v
-            });
-            match interpreter::machine::run_entry(&ir, &entry, argv) {
-                Ok(code) => ExitCode::from((code & 0xff) as u8),
-                Err(diag) => {
-                    eprint!("{}", diag.render("", &entry));
-                    ExitCode::FAILURE
-                }
-            }
+    // `@main` takes the argument vector (`argv[0]` = the entry path, then the
+    // extra args) and its `@int` result is the process exit code.
+    let mut argv = vec![path.to_string()];
+    argv.extend(prog_args.iter().cloned());
+    match interpreter::machine::run_entry(&ir, frontend::ENTRY, argv) {
+        Ok(code) => ExitCode::from((code & 0xff) as u8),
+        Err(diag) => {
+            eprint!("{}", diag.render("", frontend::ENTRY));
+            ExitCode::FAILURE
         }
-        BadFn => unreachable!("rejected in lower_all"),
     }
 }
 
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind, _sources, _plan) = match lower_all(path) {
+    let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
     };
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
     // directives (which steer linking) have nothing to apply here beyond the
     // link comment the generated source already carries.
-    print!("{}", ccg::emit(&lowered, &entry, kind, target));
+    print!(
+        "{}",
+        ccg::emit(&lowered, frontend::ENTRY, ccg::Entry::Main, target)
+    );
     ExitCode::SUCCESS
 }
 
@@ -794,11 +764,11 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
 pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
-    let (lowered, entry, kind, _sources, plan) = match lower_all(path) {
+    let (lowered, _loaded, plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
     };
-    let emitted = ccg::emit_program(&lowered, &entry, kind, target);
+    let emitted = ccg::emit_program(&lowered, frontend::ENTRY, ccg::Entry::Main, target);
 
     let tc = utilities::toolchain(target);
     if tc.cc.is_empty() {
@@ -877,8 +847,11 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {
-    let loaded = match load_sources(path) {
-        Ok(l) => l,
+    // Expanding first means the printed types are the ones the program really has
+    // (a `@e`-injected definition included), and that every `$ @run` directive has
+    // run: a module's compile-time assertions are checked by checking it.
+    let (_lowered, loaded, _plan) = match lower_all(path, false) {
+        Ok(x) => x,
         Err(code) => return code,
     };
 

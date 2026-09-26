@@ -1040,28 +1040,20 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
     })
 }
 
-/// Run a C-style `main`: apply the entry function to its argument (unit when
-/// `argv` is `None`, else a `[n]Str` sized array of the arguments) and return its
-/// `Int` result as the process exit code.
-pub fn run_entry(prog: &Program, name: &str, argv: Option<Vec<String>>) -> Result<i64> {
+/// Run the program entry (`@main`): apply it to `argv` as a `@vec @str` and
+/// return its `@int` result as the process exit code.
+pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
     ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let f = m.eval_global(name)?;
-    let arg = match argv {
-        None => mk(Value::Unit),
-        Some(args) => {
-            let n = args.len();
-            let buf: Vec<PVal> = args
-                .into_iter()
-                .map(|s| mk(Value::Str(Rc::new(s.into_bytes()))))
-                .collect();
-            mk(data::mk_tensor(Rc::new(buf), 0, vec![n], vec![1]))
-        }
-    };
-    let r = deref(m.apply(f, arg)?);
+    let args: Vec<PVal> = argv
+        .into_iter()
+        .map(|s| mk(Value::Str(Rc::new(s.into_bytes()))))
+        .collect();
+    let r = deref(m.apply(f, mk(Value::Vector(Rc::new(args))))?);
     let out = match &*r.borrow() {
         Value::Int(code) => Ok(*code),
-        _ => Err(fault("a C-style `main` must return an `@int` exit code")),
+        _ => Err(fault("the program entry must return an `@int` exit code")),
     };
     out
 }

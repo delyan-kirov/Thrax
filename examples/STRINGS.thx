@@ -48,3 +48,5 @@ $ ck_concat : @int = if (string_concat == "Hello world\n") => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_concat
+
+$ @run (assert (test == 0) "STRINGS: a check failed")

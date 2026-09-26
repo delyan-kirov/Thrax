@@ -46,3 +46,5 @@ $ r_state   : @int = runState counter 10 # 21 (x=10, put 11, y=11)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = r_exn_ok ; r_exn_bad ; r_gen ; r_state ; 0
+
+$ @run (assert (test == 0) "EFFECTS: a check failed")

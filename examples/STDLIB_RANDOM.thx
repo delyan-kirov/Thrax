@@ -36,3 +36,5 @@ $ ck_range : @int =
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_first + ck_second + ck_neg + ck_zero + ck_below
 	+ ck_spread + ck_range
+
+$ @run (assert (test == 0) "STDLIB_RANDOM: a check failed")

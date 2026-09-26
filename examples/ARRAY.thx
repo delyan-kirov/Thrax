@@ -36,3 +36,5 @@ $ blen : Count    = b.len
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = buf ; buf2 ; buf3 ; buf4 ; list ; b ; blen ; n ; 0
+
+$ @run (assert (test == 0) "ARRAY: a check failed")

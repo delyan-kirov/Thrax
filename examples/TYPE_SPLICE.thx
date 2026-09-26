@@ -30,3 +30,5 @@ $ ck_union : @int =
 	if (rank Color.Red + rank Color.Blue) == 4 => 0 else 2
 
 $ test : @int = ck_struct + ck_union
+
+$ @run (assert (test == 0) "TYPE_SPLICE: a check failed")

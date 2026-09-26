@@ -25,3 +25,5 @@ $ ck_scalar : @int = if n == 1024 => 0 else 1
 $ ck_nested : @int = if @vec_len xs == 3 => 0 else 2
 
 $ test : @int = ck_scalar + ck_nested
+
+$ @run (assert (test == 0) "META_TYPE: a check failed")

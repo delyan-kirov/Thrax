@@ -17,3 +17,5 @@ $ cfg : @str = do Config.ask {} ctl k | Config.ask u => k "hello" # "hello"
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = readEnv ; cfg ; 0
+
+$ @run (assert (test == 0) "EFFECT_OVERLOAD: a check failed")

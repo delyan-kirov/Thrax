@@ -19,3 +19,5 @@ $dbl_twice = apply_twice dbl 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = id_five ; const_ab ; inc_twice ; dbl_twice ; 0
+
+$ @run (assert (test == 0) "HIGHER_ORDER: a check failed")

@@ -57,3 +57,5 @@ $ chk_sig_mixed : @int =
 $ test : @int =
 	chk_basic + chk_fields + chk_param + chk_expr + chk_nested + chk_commas
 	+ chk_shadow + chk_sig + chk_sig_mixed
+
+$ @run (assert (test == 0) "WITH_SCOPE: a check failed")

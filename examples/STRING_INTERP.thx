@@ -45,3 +45,5 @@ $ ck_sole : @int = if "?(42)" == "42" => 0 else 1
 
 $ test : @int =
 	ck_greet + ck_base + ck_user + ck_nested + ck_inner + ck_braces + ck_sole
+
+$ @run (assert (test == 0) "STRING_INTERP: a check failed")

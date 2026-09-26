@@ -82,3 +82,5 @@ $ test : @int = ck_range + ck_sum + ck_empty + ck_map + ck_filter + ck_foldl
 	+ ck_last + ck_init + ck_repl + ck_inter + ck_intern + ck_takew
 	+ ck_dropw + ck_span + ck_split + ck_part + ck_fmap + ck_flat
 	+ ck_rmfst + ck_index + ck_lookup + ck_sort + ck_sortrev
+
+$ @run (assert (test == 0) "STDLIB_LIST: a check failed")

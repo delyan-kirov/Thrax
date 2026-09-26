@@ -18,3 +18,5 @@ $exp        = 2 ^ 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = sum ; product ; precedence ; grouped ; quotient ; remainder ; negate ; double_neg ; chained ; big ; 0
+
+$ @run (assert (test == 0) "ARITHMETIC: a check failed")

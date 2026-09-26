@@ -41,3 +41,5 @@ $ ck_nested_no : @int = if (strip2 "aXY") == "?" => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_get + ck_put + ck_other + ck_empty_prefix + ck_too_long + ck_exact + ck_partial + ck_nomatch + ck_nested + ck_nested_no
+
+$ @run (assert (test == 0) "STR_PREFIX: a check failed")

@@ -513,7 +513,7 @@ $ @compiler_interface_range : @int -> @int -> @vec @int = \lo hi = range lo hi
 # and no longer the default). It is also the worked example of a type joining the
 # whole `[]` surface from user space: the three overloads below give it literals,
 # `::`, and sequence patterns, with no compiler support of its own.
-$ List : @union a = Nil: {}, Cons: {a, List a},
+$ List : @codata a = Nil: {}, Cons: {a, List a},
 
 $ @compiler_interface_sequence_literal : @vec t -> List t = \v =
 	list_onto List.Nil v (@vec_len v - 1)
@@ -610,6 +610,12 @@ $ formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
 		| LoopStep.Skip => formap t f
 		else List.Nil
 	else List.Nil
+
+# A compile-time check. Under `$ @run` (the `<@meta>` eliminator) a false
+# condition aborts the build with `msg`, so a module states its own invariants and
+# checking it is testing it. `@abort` carries `<@meta>`, so `assert` does too and
+# cannot run at run time by accident.
+$ assert : @bool -> @str -> <@meta> {} = \ok msg = if ok => {} else @abort msg
 
 # ---- internal recursion workers ----
 # The accumulator loops the public `to_string` / `from_string` / `vcons` / `range`

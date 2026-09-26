@@ -60,3 +60,5 @@ $ test : @int = ck_some + ck_none + ck_unwrap + ck_default + ck_map + ck_then
 	+ ck_gcd + ck_pow + ck_cmp
 	+ ck_sqrt + ck_floor + ck_ceil + ck_round + ck_rpow + ck_fmod
 	+ ck_trig + ck_explog + ck_rmin + ck_rabs + ck_rclamp
+
+$ @run (assert (test == 0) "STDLIB_CORE: a check failed")

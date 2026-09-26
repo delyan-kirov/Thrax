@@ -24,3 +24,5 @@ $gcd_100_75 = gcd 100 75
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = fact5 ; fact10 ; sum_to_10 ; sum_to_100 ; gcd_54_24 ; gcd_100_75 ; 0
+
+$ @run (assert (test == 0) "RECURSION: a check failed")

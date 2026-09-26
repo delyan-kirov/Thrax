@@ -16,3 +16,5 @@ $ Wrap : @union t =
 $ @e (DERIVE.derive_show "Wrap")
 
 $ test : @int = 0
+
+$ @run (assert (test == 0) "DERIVE_LIB: a check failed")

@@ -19,3 +19,5 @@ $ @e triple 14
 $ @run (@link "m")
 
 $ test : @int = 0
+
+$ @run (assert (test == 0) "CT_RUN: a check failed")

@@ -55,3 +55,5 @@ $ ck_expect : @int =
 $ test : @int = ck_ok + ck_err + ck_unw + ck_unwd + ck_map + ck_maperr
 	+ ck_then + ck_opt + ck_try_ok + ck_try_err + ck_prop + ck_prop_fail
 	+ ck_untry + ck_expect
+
+$ @run (assert (test == 0) "STDLIB_RESULT: a check failed")

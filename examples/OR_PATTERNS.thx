@@ -44,3 +44,5 @@ $ chk_tiny_3 : @int = if tiny 3 == 0 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = chk_small_0 + chk_small_2 + chk_small_9 + chk_warm_r + chk_warm_g + chk_warm_b + chk_tiny_1 + chk_tiny_3
+
+$ @run (assert (test == 0) "OR_PATTERNS: a check failed")

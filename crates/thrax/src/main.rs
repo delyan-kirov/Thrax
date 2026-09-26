@@ -52,7 +52,8 @@ const HELP: &str = "\
 thrax - the Thrax compiler and interpreter.
 
 Compiles or runs a Thrax program. With no file, the root is MAIN.thx in the
-current directory (or the sole .thx file there).
+current directory (or the sole .thx file there). A program is a module with an
+entry point: `$ @main : @vec @str -> <@io> @int`.
 
 Usage:
   thrax [--target=ARCH-OS] <command> [file.thx] [args...]
@@ -61,7 +62,7 @@ Commands:
   run      Run a program on the interpreter (extra args are passed to it).
   repl     Start an interactive shell (read-eval-print loop).
   build    Compile a program to a native executable next to the source.
-  check    Type-check a program and print the inferred types.
+  check    Type-check a module, run its compile-time checks, print its types.
   emit-c   Emit standalone C for a program to stdout.
   parse    Parse a program and print its syntax tree.
   lex      Tokenize a program and print its tokens.

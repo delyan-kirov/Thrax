@@ -50,3 +50,5 @@ $ ck_ord_lt : @int = if (ordered arr2) == 1 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3 + ck_rest_len + ck_ord_lt
+
+$ @run (assert (test == 0) "ARRAY_PATTERNS: a check failed")

@@ -30,3 +30,5 @@ $ ck_map  : @int = if nth 4 (smap dbl (count_from 1)) == 10 => 0 else 4
 $ ck_range : @int = if nth 3 [7 ...] == 10 => 0 else 8
 
 $ test : @int = ck_head + ck_nth + ck_map + ck_range
+
+$ @run (assert (test == 0) "CODATA: a check failed")

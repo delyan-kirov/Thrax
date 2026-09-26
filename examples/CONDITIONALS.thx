@@ -41,3 +41,5 @@ $min_ex    = min 3 7
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = abs_neg ; abs_pos ; sign_neg ; sign_zero ; sign_pos ; max_ex ; min_ex ; sign2_agree
+
+$ @run (assert (test == 0) "CONDITIONALS: a check failed")

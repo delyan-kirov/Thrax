@@ -147,16 +147,19 @@ $ helper : @int -> @int = \x = x * x    # module-private
 ```
 
 ## 2.5 Entry point
-The program entry is `main` of module `MAIN`, a C-style function returning an
-`@int` exit code with an open effect row `<| e>` (so it may perform any effect).
-A combined test file uses `test`. A bare value entry is forced and printed.
+The program entry is `@main`, the one name the compiler knows, and it has exactly
+one accepted signature: it takes the argument vector and returns the `@int` exit
+code, performing `@io`. `@main` is also the only `@`-name a program may define
+besides the `@compiler_interface_*` hooks.
 
 ```thrax
-$ main : {} -> <| e> @int = \u = 0                 # no args
-$ main : [n]Str -> <| e> @int = \argv = 0          # argv[0] is the program path
-$ test : @int = 0                                  # test-harness entry
-$ main : @int = 6                                  # legacy value entry: prints "main = 6"
+$ @main : @vec @str -> <@io> @int = \args = 0      # args[0] is the program path
 ```
+
+A module without `@main` is a library: `thrax check` type-checks it and runs its
+compile-time assertions, and `thrax run`/`build` reject it. Nothing else is
+special, so a test harness is ordinary code: a check under `$ @run` (section 11)
+or a global some tool evaluates by name.
 
 ---
 
@@ -1009,13 +1012,14 @@ marker.
 
 # 11. Compile-time evaluation
 
-## 11.1 `@assert`
-`$ @assert (expr)` evaluates a boolean at build time and fails the build if it is
-false.
+## 11.1 Compile-time assertions
+There is no `@assert` builtin. `CORE.assert : @bool -> @str -> <@meta> {}` is one
+line of ordinary Thrax over `@abort`, and `$ @run` is what makes it run at build
+time, so a module states its own invariants and checking it is testing it.
 
 ```thrax
-$ @assert (fib 10 == 55)
-$ @assert (fact 5 == 120)
+$ @run (assert (fib 10 == 55) "fib 10 should be 55")
+$ @run (assert (fact 5 == 120) "fact 5 should be 120")
 ```
 
 ## 11.2 `@run` and BUILD directives
@@ -1097,11 +1101,12 @@ A quick index of the `@`-forms and where each is documented above.
 | Form | Kind | Section |
 | --- | --- | --- |
 | `@mod` | module header | 2.1 |
+| `@main` | program entry | 2.5 |
 | `@struct` `@union` `@codata` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding | 10 |
 | `@ctx` | implicit parameter | 7.4 |
 | `@private` | visibility | 2.4 |
-| `@run` `@assert` | compile-time evaluation | 11 |
+| `@e` `@run` `@abort` | compile-time evaluation | 11 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
@@ -1120,9 +1125,9 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 
 | Command | Effect |
 | --- | --- |
-| `run` | run a program on the interpreter (extra args pass to it) |
-| `build` | compile to a native executable beside the source |
-| `check` | type-check only, print inferred types |
+| `run` | run a program (needs `$ @main`) on the interpreter; extra args pass to it |
+| `build` | compile a program to a native executable beside the source |
+| `check` | expand metaprograms, run `$ @run` checks, print inferred types |
 | `emit-c` | emit standalone C to stdout |
 | `parse` | print the parsed syntax tree |
 | `lex` | print the token stream |
@@ -1133,8 +1138,9 @@ Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);
 ```sh
 thrax run                       # run ./MAIN.thx
 thrax run app.thx a b           # run app.thx with args `a b`
-thrax build examples/FIB.thx
-thrax --target=wasm32-wasi build examples/FIB.thx
+thrax check examples/FIB.thx    # a library module: type-check and run its checks
+thrax build app.thx
+thrax --target=wasm32-wasi build app.thx
 ```
 
 ---
