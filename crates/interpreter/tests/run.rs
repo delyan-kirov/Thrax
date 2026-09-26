@@ -1364,6 +1364,11 @@ fn operator_table_every_entry() {
             "||" => ("$ a = if @false || @true => 1 else 0", Runs("1")),
             ";" => ("$ a = 1 ; 2 ; 3", Runs("3")),
             "|>" => ("$ a = 5 |> (\\n = n + 1)", Runs("6")),
+            // Composition applies the RIGHT function first: 5 * 2, then + 1.
+            "<|>" => (
+                "$ a = ((\\n = n + 1) <|> (\\n = n * 2)) 5",
+                Runs("11"),
+            ),
             "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h else 0", Runs("1")),
             "++" => ("$ a = \"x\" ++ \"y\"", Runs("\"xy\"")),
             other => panic!("OPERATORS entry `{other}` has no test; add an arm"),

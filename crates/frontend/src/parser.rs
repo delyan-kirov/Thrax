@@ -1169,7 +1169,8 @@ impl<'a> Parser<'a> {
     }
 
     /// `lhs op rhs`. `&&`/`||` are short-circuit, so they become a lazy `if`
-    /// rather than a call; every other operator keeps its [`Expr::BinOp`] node.
+    /// rather than a call, and `<|>` becomes the lambda that composes its operands;
+    /// every other operator keeps its [`Expr::BinOp`] node.
     fn binop_expr(&mut self, lexeme: &str, lhs: Aol<Expr>, rhs: Aol<Expr>) -> Aol<Expr> {
         match lexeme {
             "&&" => {
@@ -1179,6 +1180,20 @@ impl<'a> Parser<'a> {
             "||" => {
                 let then = self.expr(Expr::Bool(true));
                 self.expr(Expr::If { cond: lhs, then, alt: rhs })
+            }
+            // Composition becomes the lambda it means, `\x = f (g x)`, so the
+            // composed function's effect row is inferred as the UNION of the two
+            // rows (a definition with one signature could only share one row, and a
+            // row union is not expressible), and an overloaded operand (`to_string
+            // <|> f`) resolves as the head of an ordinary application.
+            "<|>" => {
+                let x = self.intern("#x");
+                let arg = self.expr(Expr::Var { module: None, name: x });
+                let inner = self.expr(Expr::App(rhs, arg));
+                let body = self.expr(Expr::App(lhs, inner));
+                let param = self.pat(Pattern::Var(x));
+                let params = self.ast.make_slice(vec![param]);
+                self.expr(Expr::Lambda { params, body })
             }
             _ => {
                 let op = self.intern(lexeme);
@@ -1423,8 +1438,15 @@ impl<'a> Parser<'a> {
                 format!("`{lexeme}` is a grammatical delimiter, not a function"),
             ));
         }
-        // An operator the parser or lowering rewrites has no global of its own, so
-        // the reference eta-expands and goes back through that same rewrite.
+        // A rewritten operator that names a global instead (`(<|>)` is `compose`):
+        // the reference is that binding, so the function form carries a written,
+        // effect-polymorphic type rather than an inferred (pure) eta-expansion.
+        if let Some(global) = table::infix_global(lexeme) {
+            let name = self.intern(global);
+            return Ok(self.expr(Expr::Var { module: None, name }));
+        }
+        // Any other operator the parser or lowering rewrites has no global of its
+        // own, so the reference eta-expands and goes back through that same rewrite.
         if table::desugared(lexeme) {
             return Ok(self.eta_operator(lexeme));
         }

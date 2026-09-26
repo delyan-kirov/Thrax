@@ -441,9 +441,24 @@ $ len : @vec @int -> @int =
 	 in \l = go l 0
 ```
 
-## 4.9 Sequencing `;` and pipes `|>` `<|`
+## 4.9 Sequencing `;`, pipes `|>` `<|`, composition `<|>`
 Parser sugar, lowest precedence. `a ; b` = `let _ = a in b`. `x |> f` = `f x`
 (left-assoc). `f <| x` = `f x` (right-assoc).
+
+`f <|> g` composes, and is the lambda it means: `\x = f (g x)`. It is
+right-associative and the tightest infix operator, so `f <|> g <|> h` is
+`f <|> (g <|> h)`, and application still binds tighter (`f <|> g x` is
+`f <|> (g x)`). Because it expands to a lambda, it is typed per use site, and the
+composed function's effect row is the UNION of the two steps' rows: `shout <|> show`
+where only `shout` performs `@io` has type `@int -> <@io | r> {}`, and two different
+effects give `<@io, St | r>`.
+
+The FUNCTION form `(<|>)` is CORE's `compose`, which is an ordinary definition and
+so has one written type, `(b -> <e> c) -> (a -> <e> b) -> a -> <e> c`: one row for
+both steps, so it composes two functions that agree on their effects. Taking two
+different rows is a property of the infix form, which has no signature to share,
+the way short-circuiting is a property of infix `&&` (§4.10). A single row that is
+the union of two variables is not expressible today (issue #200).
 
 ```thrax
 $ inc : @int -> @int = \x = x + 1
@@ -453,6 +468,11 @@ $ step2 : {} -> @int = \u = 0
 $ eff = step1 {} ; step2 {} ; 0            # run for effect, return 0
 $ y   = 5 |> inc |> double                 # double (inc 5)
 $ z   = double <| inc <| 5                 # same
+$ f   : @int -> @int = double <|> inc      # \x = double (inc x)
+$ w   = (double <|> inc) 5                 # 12
+$ shout : @str -> <@io> {} = \s = IO.println s
+$ show  : @int -> <@io> {} = shout <|> to_string   # the row is the union
+$ h2    : @int -> @int = (<|>) double inc          # = compose double inc
 ```
 
 ## 4.10 Operators as functions `(op)`
@@ -473,7 +493,8 @@ The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
 form. An operator the parser rewrites rather than calls (`&&`, `||`, `;`, `|>`,
 `<|`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
 `(&&)` therefore evaluates both sides, since short-circuiting is a property of
-the infix form.
+the infix form. `<|>` is rewritten too, but its function form names a binding:
+`(<|>)` is CORE's `compose` (§4.9).
 
 ## 4.11 `@cast`
 Reinterprets an integer at a different integer width. The target width comes
@@ -1176,7 +1197,7 @@ import). A brief map:
 
 | Module | Contents |
 | --- | --- |
-| `CORE` | `to_string`, `Stream`, `range`, `count_from` (implicitly imported) |
+| `CORE` | `to_string`, `compose`, `Stream`, `range`, `count_from` (implicitly imported) |
 | `C` | libc/libm bindings and engine conversion intrinsics (qualified) |
 | `MATH` | @int/Real helpers, libm wrappers, int/real conversions |
 | `STR` | string operations (`from_int`, `substr`, `contains`, `to_lower`, ...) |

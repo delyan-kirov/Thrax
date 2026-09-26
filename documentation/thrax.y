@@ -78,6 +78,7 @@
 %left  PLUS MINUS
 %left  STAR SLASH PERCENT
 %right CARET                        /* ^ exponentiation */
+%right COMPOSE                      /* <|> composition (desugars to `\x = f (g x)`) */
 %precedence NEG                     /* unary - ! */
 %precedence APP                     /* application */
 %left  DOT                          /* postfix . */
@@ -119,7 +120,7 @@ body      : expr | extern_lit ;
 operator_name
   : PLUS | MINUS | STAR | SLASH | PERCENT | CARET | BANG | CONCAT | CONS
   | EQEQ | LT | GT | LE | GE
-  | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK
+  | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
 import       : dotted_name | dotted_name EQ dotted_name ;
@@ -289,6 +290,7 @@ op_expr
   | op_expr SLASH op_expr
   | op_expr PERCENT op_expr
   | op_expr CARET op_expr
+  | op_expr COMPOSE op_expr
   | MINUS op_expr %prec NEG
   | BANG  op_expr %prec NEG
   | app

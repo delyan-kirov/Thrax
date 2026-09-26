@@ -59,11 +59,21 @@ pub fn ends_expr(op: &str) -> bool {
 }
 
 /// True if `a op b` is rewritten into some other form (a lazy `if`, a `let`, a
-/// bare application, a call to a differently named global) instead of a call to
-/// a global named `op`. Such an operator has no binding to reference, so `(op)`
-/// eta-expands to `\l r = l op r` and reuses the rewrite.
+/// bare application, a lambda) instead of a call to a global named `op`. Such an
+/// operator has no binding of its own, so `(op)` eta-expands to `\l r = l op r` and
+/// reuses the rewrite, unless [`infix_global`] names a binding for it.
 pub fn desugared(op: &str) -> bool {
-    matches!(op, "&&" | "||" | ";" | "|>" | "<|")
+    matches!(op, "&&" | "||" | ";" | "|>" | "<|" | "<|>")
+}
+
+/// The global an infix operator's FUNCTION form names, when no binding is spelled
+/// like the operator: `(<|>)` is CORE's `compose`, since the infix form expands to
+/// a lambda. The same indirection prefix `!` uses to name `not`.
+pub fn infix_global(op: &str) -> Option<&'static str> {
+    match op {
+        "<|>" => Some("compose"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -104,7 +114,7 @@ mod tests {
                 d.lexeme
             );
         }
-        for op in ["&&", "||", ";", "|>", "<|"] {
+        for op in ["&&", "||", ";", "|>", "<|", "<|>"] {
             assert!(desugared(op), "`{op}` should be listed as desugared");
             assert!(infix(op).is_some(), "`{op}` is no longer an infix operator");
         }

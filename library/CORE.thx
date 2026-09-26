@@ -442,6 +442,13 @@ $ (>=) : @str -> @str -> @bool = \a b = not (@slt a b)
 # `@bool` has no ordering: equality is a two-case test, no intrinsic needed.
 $ (==) : @bool -> @bool -> @bool = \a b = if a => b else not b
 
+# Function composition as a value: `compose f g` is `\x = f (g x)`, and it is what
+# the operator's function form `(<|>)` refers to (the infix `f <|> g` expands to the
+# lambda instead, so no global is spelled `<|>`). One row `e` covers both steps, so
+# the two must agree on their effects here; the infix form, typed per site, unions
+# two different rows.
+$ compose : (b -> <e> c) -> (a -> <e> b) -> a -> <e> c = \f g x = f (g x)
+
 $ to_string : @str -> @str = \s = s
 
 $ to_string : @bool -> @str = \b = if b => "true" else "false"

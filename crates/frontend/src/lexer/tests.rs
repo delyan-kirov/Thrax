@@ -50,6 +50,19 @@ fn operators_maximal_munch() {
 }
 
 #[test]
+fn compose_is_one_token_not_the_pipe_plus_a_bracket() {
+    // A run of operator characters is looked up whole, so `<|>` is the composition
+    // operator, not `<|` followed by `>`; the pipe still lexes where the run ends.
+    let src = "f <|> g <| h";
+    let toks = Lexer::tokenize(src).expect("lex ok");
+    let lexeme = |i: usize| &src[toks[i].span.start..toks[i].span.end];
+    assert_eq!(toks[1].kind, Kind::Op);
+    assert_eq!(lexeme(1), "<|>");
+    assert_eq!(toks[3].kind, Kind::Op);
+    assert_eq!(lexeme(3), "<|");
+}
+
+#[test]
 fn numbers_ints_reals_radix() {
     let toks = Lexer::tokenize("0xFF 0b1010 1_000 3.5 2e3").unwrap();
     let vals: Vec<Kind> = toks.into_iter().map(|t| t.kind).collect();
