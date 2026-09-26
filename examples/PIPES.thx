@@ -1,9 +1,10 @@
 @mod PIPES
 
-# Sequencing `;` and pipes `|>` / `<|`. All three are parser desugarings, not
-# runtime functions: `a ; b` = `let _ = a in b` (run a for effect, then b);
-# `x |> f` = `f x`; `f <| x` = `f x`. They sit at the lowest precedences, so
-# application and arithmetic bind tighter.
+# Sequencing `;`, pipes `|>` / `<|`, and composition `<|>`. All four are parser
+# desugarings, not runtime functions: `a ; b` = `let _ = a in b` (run a for effect,
+# then b); `x |> f` = `f x`; `f <| x` = `f x`; `f <|> g` = `\x = f (g x)`. The first
+# three sit at the lowest precedences, so application and arithmetic bind tighter;
+# `<|>` is the opposite end, the tightest infix operator.
 
 $ Y : @effect = yield : @int -> {},
 $ sum : ({} -> <Y> @int) -> @int =
@@ -22,7 +23,30 @@ $ r_bwd  : @int = dbl <| inc <| 5   # dbl (inc 5)        = 12
 $ r_part : @int = 5 |> add 3        # add 3 5  (partial)  = 8
 $ r_prec : @int = 2 + 3 |> inc      # inc (2 + 3)         = 6
 
+# `<|>` composes: the RIGHT function runs first, and a chain is right-associative.
+# Typed per site, so the composed function's effect row is the UNION of the two
+# steps' rows: a pure step and an effectful one compose freely.
+$ r_comp  : @int = (dbl <|> inc) 5          # dbl (inc 5)          = 12
+$ r_chain : @int = (dbl <|> inc <|> inc) 5  # dbl (inc (inc 5))    = 14
+$ shown   : @int -> @str = to_string <|> dbl
+$ r_mixed : @int = 5 |> (dbl <|> inc)       # pipe into a composed = 12
+$ bump : @int -> <Y> @int = \n = Y.yield n ; n + 1
+$ r_eff : @int = sum (\_ = (inc <|> bump) 1)   # yields 1, returns inc 2 = 3, so 4
+
+# The FUNCTION form is CORE's `compose`, which carries one written row for both
+# steps: `(b -> <e> c) -> (a -> <e> b) -> a -> <e> c`. So it composes two steps that
+# agree on their effects, where the infix form above also takes two different rows.
+$ r_ref   : @int = (<|>) dbl inc 5          # the reference form   = 12
+$ r_named : @int = compose dbl inc 5        # the same binding     = 12
+$ twice_y : @int -> <Y> @int = compose bump bump
+$ r_both  : @int = sum (\_ = twice_y 1)        # yields 1 then 2, returns 3, so 6
+
+$ ck : @int =
+	if r_comp == 12 && r_chain == 14 && shown 21 == "42" && r_ref == 12
+		&& r_mixed == 12 && r_eff == 4 && r_named == 12 && r_both == 6
+	=> 0 else 1
+
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; 0
+$ test : @int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; ck
 
 $ @run (assert (test == 0) "PIPES: a check failed")

@@ -54,7 +54,7 @@ there is no Pair type.
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
-| `CPX`  | complex math over CORE's `Cpx`: `zero`, `one`, `i`, `add`, `mul`, `re`, `im`, `of_real`, `conj`, `abs`, `norm`, `arg`, `is_real`, `is_zero`, `scale`, `recip`, `div_smith`, `polar`, `from_polar`, `exp`, `log`, `sqrt`, `pow`, `powi`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `roots_of_unity`, `roots` |
+| `CPX`  | complex math over CORE's `Cpx`: `zero`, `one`, `add`, `mul`, `re`, `im`, `of_real`, `conj`, `abs`, `norm`, `arg`, `is_real`, `is_zero`, `scale`, `recip`, `div_smith`, `polar`, `from_polar`, `exp`, `log`, `sqrt`, `pow`, `powi`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `roots_of_unity`, `roots` |
 | `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see documentation/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,

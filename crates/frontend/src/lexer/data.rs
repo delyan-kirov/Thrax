@@ -219,6 +219,14 @@ pub const OPERATORS: &[OpDef] = &[
         lexeme: "<|",
         role: OpRole::Infix(5, 4),
     },
+    // Function composition, right-associative and the tightest infix operator,
+    // like Haskell's `.` (the parser expands it to `\x = f (g x)`). A run of
+    // operator characters is looked up whole, so this longer run wins over `<|`
+    // with no tie-breaking.
+    OpDef {
+        lexeme: "<|>",
+        role: OpRole::Infix(37, 36),
+    },
     // Short-circuit boolean and/or (desugared to a lazy `if` in the parser).
     OpDef {
         lexeme: "&&",

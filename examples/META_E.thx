@@ -13,11 +13,11 @@
 
 $ with VEC
 
-# Ordinary functions, used here only at compile time (run by `@e`).
+# Ordinary functions, used here only at compile time (run by `@e`). The composition
+# below is CORE's `compose`, the function form of `<|>`.
 $ fib     : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
 $ dbl     : @int -> @int = \x = x * 2
 $ inc     : @int -> @int = \x = x + 1
-$ compose : (@int -> @int) -> (@int -> @int) -> @int -> @int = \f g x = f (g x)
 
 # --- @e as a one-argument function -----------------------------------------
 # A parenthesized operand, and a bare atom operand (both a single primary).

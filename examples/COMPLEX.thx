@@ -68,7 +68,7 @@ $ ck_conj : @int = if CPX.conj a == Cpx.{ 3.0, -4.0 } => 0 else 1
 $ ck_abs  : @int = if CPX.abs a == 5.0 => 0 else 1
 $ ck_norm : @int = if CPX.norm a == 25.0 => 0 else 1
 $ ck_recip : @int = if near (CPX.recip b) (Cpx.{ 0.2, 0.4 }) => 0 else 1
-$ ck_arg  : @int = if near_real (CPX.arg CPX.i) (MATH.pi / 2.0) => 0 else 1
+$ ck_arg  : @int = if near_real (CPX.arg 1.0i) (MATH.pi / 2.0) => 0 else 1
 $ ck_real : @int = if CPX.is_real (Cpx.{ 2.0, 0.0 }) && !(CPX.is_real a) => 0 else 1
 
 $ ck_show  : @int = if to_string a == "3 + 4i" => 0 else 1
@@ -80,12 +80,12 @@ $ ck_show2 : @int = if to_string b == "1 - 2i" => 0 else 1
 $ ck_euler : @int = if near (CPX.exp (Cpx.{ 0.0, MATH.pi })) (Cpx.{ -1.0, 0.0 }) => 0 else 1
 $ ck_log   : @int = if near (CPX.exp (CPX.log a)) a => 0 else 1
 # sqrt(i) = (1 + i)/sqrt 2
-$ ck_sqrt  : @int = if near (CPX.sqrt CPX.i) (Cpx.{ 0.7071067811865476, 0.7071067811865476 }) => 0 else 1
+$ ck_sqrt  : @int = if near (CPX.sqrt 1.0i) (Cpx.{ 0.7071067811865476, 0.7071067811865476 }) => 0 else 1
 $ ck_sqr   : @int = if near (CPX.sqrt a * CPX.sqrt a) a => 0 else 1
 # i^2 = -1, and `^` reaches the complex overloads: an integer exponent takes the
 # exact repeated-multiplication path, a complex one goes through exp/log.
-$ ck_powi  : @int = if near (CPX.powi CPX.i 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
-$ ck_hat   : @int = if near (CPX.i ^ 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
+$ ck_powi  : @int = if near (CPX.powi 1.0i 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
+$ ck_hat   : @int = if near (1.0i ^ 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
 $ ck_hatc  : @int = if near (a ^ (Cpx.{ 2.0, 0.0 })) (a * a) => 0 else 1
 # The builtin numeric cases are untouched by those overloads.
 $ ck_hatint : @int = if 3 ^ 2 == 9 => 0 else 1
@@ -111,7 +111,7 @@ $ fourth : @vec Cpx = CPX.roots_of_unity 4
 $ ck_rou : @int =
 	if @vec_len fourth == 4
 		&& near (@vec_get fourth 0) CPX.one
-		&& near (@vec_get fourth 1) CPX.i
+		&& near (@vec_get fourth 1) 1.0i
 		&& near (@vec_get fourth 2) (Cpx.{ -1.0, 0.0 })
 		&& near (@vec_get fourth 3) (Cpx.{ 0.0, -1.0 })
 	=> 0 else 1

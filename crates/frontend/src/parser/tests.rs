@@ -413,6 +413,51 @@ fn pipes_and_sequencing() {
 }
 
 #[test]
+fn composition_becomes_a_lambda_and_binds_tightest() {
+    // `f <|> g` is the lambda `\x = f (g x)`, so the composed function's effect row
+    // is inferred (the union of both) and each operand is an application head.
+    let p = prog("@mod M\n$ h = f <|> g");
+    let Expr::Lambda { params, body } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    assert_eq!(p.ast.slice(*params).len(), 1);
+    let Expr::App(f, inner) = p.ast.expr(*body) else {
+        panic!("expected `f (g x)`")
+    };
+    assert!(matches!(p.ast.expr(*f), Expr::Var { .. }));
+    assert!(matches!(p.ast.expr(*inner), Expr::App(..)));
+
+    // Tighter than arithmetic: `a + (f <|> g)`.
+    let p = prog("@mod M\n$ r = a + f <|> g");
+    let Expr::BinOp { op, rhs, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected `+`")
+    };
+    assert_eq!(p.ast.text(*op), "+");
+    assert!(matches!(p.ast.expr(*rhs), Expr::Lambda { .. }));
+
+    // Right-associative: `f <|> (g <|> h)`, so the inner call applies a lambda.
+    let p = prog("@mod M\n$ c = f <|> g <|> h");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::App(_, inner) = p.ast.expr(*body) else {
+        panic!("expected `f (…)`")
+    };
+    let Expr::App(head, _) = p.ast.expr(*inner) else {
+        panic!("expected the nested composition applied to `x`")
+    };
+    assert!(matches!(p.ast.expr(*head), Expr::Lambda { .. }));
+
+    // The FUNCTION form names CORE's `compose`, so it carries that written,
+    // effect-polymorphic type instead of an inferred (pure) eta-expansion.
+    let p = prog("@mod M\n$ v = (<|>)");
+    let Expr::Var { name, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a variable")
+    };
+    assert_eq!(p.ast.text(*name), "compose");
+}
+
+#[test]
 fn string_interpolation_desugars_to_concat() {
     // A plain string is a single `@str` node.
     let p = prog("@mod M\n$ s = \"hi\"");
