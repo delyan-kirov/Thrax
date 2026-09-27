@@ -58,9 +58,14 @@
           runHook postBuild
         '';
 
+        # The standard library ships beside the binary, which finds it relative
+        # to its own path: `$out/bin/thrax` resolves `$out/library`. The tree is
+        # relocatable and needs no environment variable.
         installPhase = ''
           runHook preInstall
           install -Dm755 target/release/thrax $out/bin/thrax
+          mkdir -p $out/library
+          install -Dm644 library/*.thx $out/library/
           runHook postInstall
         '';
 

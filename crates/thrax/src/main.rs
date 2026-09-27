@@ -13,17 +13,19 @@
 //! * [`interpreter`] evaluates that IR with the reified-K (CEK) machine.
 //! * [`ccg`] emits a standalone C program from the same IR.
 //! * `thrax` (this crate) is the CLI: [`driver`] wires the phases together for
-//!   `lex`/`parse`/`check`/`run`/`build`/`emit-c`, and [`repl`] is the
-//!   GHCi-style session.
+//!   `lex`/`parse`/`check`/`run`/`build`/`emit-c`, [`repl`] is the GHCi-style
+//!   session, and [`stdlib`] is the standard library the binary carries.
 
 mod driver;
 mod repl;
+mod stdlib;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let mut target = utilities::Target::host();
+    let mut import_dirs: Vec<PathBuf> = Vec::new();
     let mut rest: Vec<String> = Vec::new();
     for arg in std::env::args().skip(1) {
         if let Some(spec) = arg.strip_prefix("--target=") {
@@ -34,10 +36,13 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+        } else if let Some(dir) = arg.strip_prefix("--import-dir=") {
+            import_dirs.push(PathBuf::from(dir));
         } else {
             rest.push(arg);
         }
     }
+    driver::set_import_dirs(import_dirs);
     match rest.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
             print!("{HELP}");
@@ -85,6 +90,7 @@ Commands:
 
 Flags:
   --target=ARCH-OS   Cross-compile target (e.g. x86_64-linux, wasm32-wasi).
+  --import-dir=DIR   Resolve `$ with MOD` from DIR first (repeatable).
   -h, --help         Show this help.
 
 Examples:

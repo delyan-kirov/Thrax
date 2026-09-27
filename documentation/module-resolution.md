@@ -6,7 +6,8 @@ the C backend.
 
 **Scope:** how a name written in one module resolves to a definition when many
 modules are linked together, for both terms (functions and values) and types
-(structs, unions, aliases, and effects).
+(structs, unions, aliases, and effects). Section 4 covers the step before that,
+how a module name resolves to a file.
 
 ---
 
@@ -117,7 +118,37 @@ modules it imports, then a global fallback. This is what keeps one module's
 
 ---
 
-## 4. Tests
+## 4. Where a module's source comes from
+
+Sections 1 to 3 are about a name resolving to a definition. This one is about a
+module name resolving to a file, which happens earlier, in `DR::load_module`
+(`crates/thrax/src/driver.rs`).
+
+Every `library/*.thx` is embedded in the binary (`crates/thrax/src/stdlib.rs`),
+and a distribution also ships the same files beside it, found relative to the
+executable: `<prefix>/bin/thrax` resolves `<prefix>/library`. The search runs on
+disk first and falls back to the embedded copy:
+
+1. the `--import-dir=DIR` directories, in the order given;
+2. the program's own neighbourhood: its `library/`, the `examples/` that
+   `tests/MAIN.thx` imports, then a module file sitting beside it;
+3. the standard libraries on disk: one beside the program's own tree, then the
+   ones this executable ships with. A directory counts as a standard library only
+   when it holds `CORE.thx`, so an unrelated `library/` above a program is never
+   mistaken for one;
+4. the embedded copy.
+
+First match wins, so a module a program ships beside itself replaces the
+standard-library module of that name rather than merging with it. `CORE` and `C`
+go through the same path, `CORE` seeded into every compile and `C` auto-injected,
+which is why both are available with no import. Loading is lazy: only the modules
+a program reaches are read at all. Diagnostics carry the path the source came
+from, so an error inside a standard-library module names the file it was read
+from.
+
+---
+
+## 5. Tests
 
 - `crates/interpreter/tests/run.rs`:
   - `cross_module_overload_dispatches_by_type` (1a),
@@ -125,3 +156,8 @@ modules it imports, then a global fallback. This is what keeps one module's
   - `same_named_struct_types_in_two_modules_do_not_collide` (per-module layout).
 - `tests/MAIN.thx` links every example module and is byte-identical between the
   interpreter and the compiled C program.
+- `crates/thrax/src/stdlib.rs`:
+  - `embedded_modules_match_the_library_directory` (the embedded list cannot
+    drift from `library/*.thx`),
+  - `embedded_sources_declare_their_own_module_name` (no mis-paired
+    `include_str!`).

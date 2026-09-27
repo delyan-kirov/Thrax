@@ -10,25 +10,46 @@ program opts into with `$ with MOD`.
 
 ## How it reaches a program
 
-The build bakes `core/*.thx` and `library/*.thx` into the compiler binary
-(`BLD::gen_stdlib_header` -> `artifacts/STDLIBxAMALG.hpp`); DR injects every
-unit into every compile, right after the generated prelude fragment and `C`
-(app/DR.cpp `parse_units`). So:
+A distribution ships the standard library beside the binary, and the binary
+finds it relative to its own path: `<prefix>/bin/thrax` resolves
+`<prefix>/library`, which is what the Nix package installs. The tree is
+relocatable, so moving or copying it keeps working, and nothing reads an
+environment variable. The same files are also embedded in the binary
+(`crates/thrax/src/stdlib.rs`, one `include_str!` per module), so a binary with
+no distribution around it still runs: that is what a bare `cargo build` or
+`cargo install` produces.
 
-- the `thrax` binary is self-contained -- no install path, no environment
-  variable, and the standard library is identically available to the
-  interpreter, `--emit-c` and `--build`;
-- diagnostics point at the real `library/NAME.thx` file;
-- a program pays only for what it reaches: MR's dead-global elimination strips
-  every unreached stdlib global, so `hello world` does not carry the hash map;
-- editing a `library/*.thx` and rerunning `./build` regenerates the header and
-  relinks (the generated header is a tracked amalgam input via
-  `Module::gen_deps`).
+`DR::load_module` puts the two together. It searches on disk first, in this
+order, and falls back to the embedded copy when nothing matches:
 
-Modules are namespaced per module (MR), so stdlib names never collide with a
-program's own -- but a user module named `LIST`, `MAP`, ... would silently
-MERGE with the stdlib module of that name (MR merges same-named fragments).
-Avoid reusing the stdlib module names for now; a guard is future work.
+1. the `--import-dir=DIR` directories, in the order given;
+2. the program's own neighbourhood: its `library/`, the `examples/` the combined
+   test runner imports, then a module file sitting beside it;
+3. the standard libraries on disk: one beside the program's own tree (a
+   checkout's `library/`), then the ones this executable ships with.
+
+So:
+
+- the standard library is identically available to the interpreter, `emit-c` and
+  `build`, inside a checkout and outside one;
+- diagnostics name the file the source was read from, so a span stays a location
+  a reader can open. For an embedded module that is `library/NAME.thx`, the file
+  it was taken from;
+- a program pays only for what it reaches. Loading is lazy: `CORE`, `C`, and the
+  modules a program actually imports, transitively, and nothing else;
+- editing a `library/*.thx` in a checkout takes effect on the next run, because
+  disk beats the embedded copy. `include_str!` is tracked in cargo's dep-info, so
+  the embedded copy refreshes on the next `cargo build` as well;
+- a new standard-library module has to be added to `stdlib::MODULES`. A test
+  compares that list against `library/*.thx` and fails if they drift.
+
+First match wins, so a `library/MOD.thx` a program ships beside itself replaces
+the standard-library module of that name. That is the supported way to patch a
+module without touching the distribution, with one thing to keep in mind:
+replacing a module the rest of the standard library depends on means taking on
+its contract. A partial `STR` breaks `MAP`, which imports it. A directory only
+counts as a standard library when it holds `CORE.thx`, so an unrelated
+`library/` above a program is never mistaken for one.
 
 ## The modules
 
