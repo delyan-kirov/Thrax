@@ -5,9 +5,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 
 use frontend::Lexer;
 use frontend::{Item, Program};
+
+use crate::stdlib;
 
 /// A module's name and source text, plus the name-to-slot index and the root
 /// module name. Shared by `check` and `run`.
@@ -59,21 +62,11 @@ fn load_core(
         vec![(root_name.clone(), root_path, root_src)];
 
     // The implicitly imported CORE module (bare names everywhere) is an ordinary
-    // standard-library file, loaded from disk like the rest. Seed it into the load
-    // queue so it is always present, even without an explicit `$ with CORE`.
+    // standard-library module. Seed it into the load queue so it is always
+    // present, even without an explicit `$ with CORE`.
     if root_name != "CORE" {
-        match resolve_module_file("CORE", root_dir) {
-            Some(file) => match std::fs::read_to_string(&file) {
-                Ok(s) => queue.push(("CORE".to_string(), file.display().to_string(), s)),
-                Err(e) => {
-                    return Err(format!(
-                        "thrax: cannot read the CORE module ({}): {e}",
-                        file.display()
-                    ))
-                }
-            },
-            None => return Err("thrax: cannot find the CORE standard-library module".to_string()),
-        }
+        let (path, src) = load_module("CORE", root_dir)?;
+        queue.push(("CORE".to_string(), path, src));
     }
     while let Some((name, src_path, src)) = queue.pop() {
         if index.contains_key(&name) {
@@ -86,33 +79,16 @@ fn load_core(
             if index.contains_key(&imp) || queue.iter().any(|(n, _, _)| *n == imp) {
                 continue;
             }
-            match resolve_module_file(&imp, root_dir) {
-                Some(file) => match std::fs::read_to_string(&file) {
-                    Ok(s) => queue.push((imp, file.display().to_string(), s)),
-                    Err(e) => {
-                        return Err(format!(
-                            "thrax: cannot read module `{imp}` ({}): {e}",
-                            file.display()
-                        ))
-                    }
-                },
-                None => {
-                    return Err(format!(
-                        "thrax: cannot find module `{imp}` imported by the program"
-                    ))
-                }
-            }
+            let (path, src) = load_module(&imp, root_dir)?;
+            queue.push((imp, path, src));
         }
     }
     // Auto-inject the `C` namespace (libc + libm as `@extern` bindings),
     // reachable qualified (`C.sqrt`) with no import, like the prelude.
     if !index.contains_key("C") {
+        let (path, src) = load_module("C", root_dir)?;
         index.insert("C".to_string(), sources.len());
-        sources.push((
-            "C".to_string(),
-            "library/C.thx".to_string(),
-            C_SOURCE.to_string(),
-        ));
+        sources.push(("C".to_string(), path, src));
     }
 
     Ok(Loaded {
@@ -121,9 +97,6 @@ fn load_core(
         root_name,
     })
 }
-
-/// The auto-injected `C` standard-library namespace (see library/C.thx).
-const C_SOURCE: &str = include_str!("../../../library/C.thx");
 
 /// The dependency graph over parsed modules (edges point at imports).
 fn import_graph(
@@ -909,21 +882,66 @@ fn topological_order(graph: &[Vec<usize>]) -> Vec<usize> {
     order
 }
 
-/// Find the source file for a module, searching the sibling standard-library and
-/// example directories, then a few nearby fallbacks. The combined test runner
-/// imports example modules from `tests/`, while ordinary programs import the
-/// standard library.
+/// Extra module directories, from `--import-dir=DIR`, searched ahead of
+/// everything else. Set once from `main` before any command runs.
+static IMPORT_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+pub fn set_import_dirs(dirs: Vec<PathBuf>) {
+    let _ = IMPORT_DIRS.set(dirs);
+}
+
+fn import_dirs() -> &'static [PathBuf] {
+    IMPORT_DIRS.get().map(Vec::as_slice).unwrap_or_default()
+}
+
+/// Find the source file for a module: the `--import-dir` directories, then the
+/// program's own neighbourhood (its `library/`, the `examples/` the combined test
+/// runner imports, a sibling file), then the standard libraries [`stdlib_dirs`]
+/// found. First match wins, so a module a program ships beside itself shadows the
+/// standard-library module of that name.
 fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
     let file = format!("{name}.thx");
-    let candidates = [
-        root_dir.join("..").join("library").join(&file),
-        root_dir.join("..").join("examples").join(&file),
-        root_dir.join("library").join(&file),
-        root_dir.join("examples").join(&file),
-        PathBuf::from("library").join(&file),
-        root_dir.join(&file),
-    ];
+    let mut candidates: Vec<PathBuf> = import_dirs().iter().map(|d| d.join(&file)).collect();
+    candidates.push(root_dir.join("library").join(&file));
+    candidates.push(root_dir.join("examples").join(&file));
+    if let Some(parent) = root_dir.parent() {
+        candidates.push(parent.join("examples").join(&file));
+    }
+    candidates.push(root_dir.join(&file));
+    candidates.extend(stdlib_dirs(root_dir).iter().map(|d| d.join(&file)));
     candidates.into_iter().find(|p| p.exists())
+}
+
+/// The standard libraries on disk, in search order: one beside the program's own
+/// tree (a checkout's `library/`), then the ones this executable ships with. A
+/// directory qualifies only when it holds `CORE.thx`, so an unrelated `library/`
+/// above a program is never mistaken for the standard library.
+fn stdlib_dirs(root_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = root_dir.parent() {
+        dirs.push(parent.join("library"));
+    }
+    dirs.extend(stdlib::distribution_dirs());
+    dirs.retain(|dir| dir.join("CORE.thx").exists());
+    dirs
+}
+
+/// A module's diagnostic path and its source: the on-disk search first, then the
+/// standard library embedded in this binary.
+fn load_module(name: &str, root_dir: &Path) -> Result<(String, String), String> {
+    if let Some(file) = resolve_module_file(name, root_dir) {
+        return match std::fs::read_to_string(&file) {
+            Ok(src) => Ok((file.display().to_string(), src)),
+            Err(e) => Err(format!(
+                "thrax: cannot read module `{name}` ({}): {e}",
+                file.display()
+            )),
+        };
+    }
+    match stdlib::source(name) {
+        Some(src) => Ok((stdlib::path(name), src.to_string())),
+        None => Err(format!("thrax: cannot find module `{name}`")),
+    }
 }
 
 /// The `@mod` name declared by a source, by parsing it in a scratch arena.
