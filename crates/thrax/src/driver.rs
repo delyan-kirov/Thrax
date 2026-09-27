@@ -137,6 +137,9 @@ fn check_all<'a>(
     lenient: bool,
     open_effects_module: Option<&str>,
 ) -> Result<CheckOut<'a>, String> {
+    // One type store for the whole compilation: a `Type` is a handle into it, so a
+    // type crossing a module boundary has to address the same store.
+    let types = std::rc::Rc::new(frontend::Types::new());
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
     let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
@@ -152,7 +155,7 @@ fn check_all<'a>(
         order.insert(0, pre);
     }
     for i in order {
-        let mut checker = frontend::Checker::new(ast);
+        let mut checker = frontend::Checker::new(ast, types.clone());
         checker.set_lenient(lenient);
         if open_effects_module == Some(sources[i].0.as_str()) {
             checker.set_open_effects(true);
@@ -258,7 +261,7 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
         let ok = results[root]
             .iter()
             .find(|(n, _)| *n == frontend::ENTRY)
-            .is_some_and(|(_, ty)| frontend::is_entry_type(ty));
+            .is_some_and(|(_, ty)| frontend::is_entry_type(checkers[root].types(), *ty));
         if !ok {
             eprintln!(
                 "thrax: `{}` must have the signature `{}`",
@@ -656,7 +659,7 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
     let checker = &checkers[root];
     let decls = results[root]
         .iter()
-        .map(|(n, ty)| (n.to_string(), checker.show(ty)))
+        .map(|(n, ty)| (n.to_string(), checker.show(*ty)))
         .collect();
 
     Ok(Session { lowered, decls })
@@ -856,7 +859,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     let root = loaded.index[&loaded.root_name];
     let checker = &checkers[root];
     for (name, ty) in &results[root] {
-        println!("{name} : {}", checker.show(ty));
+        println!("{name} : {}", checker.show(*ty));
     }
     ExitCode::SUCCESS
 }

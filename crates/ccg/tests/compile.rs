@@ -23,9 +23,10 @@ fn lower(src: &str) -> Vec<Program> {
     let (ast, core_prog) = frontend::parse_into(ast, CORE_SRC).expect("parse CORE");
     let (ast, user_prog) = frontend::parse_into(ast, src).expect("parse");
 
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker.check_program(&core_prog).expect("check CORE");
-    let mut user_checker = Checker::new(&ast);
+    let mut user_checker = Checker::new(&ast, types.clone());
     user_checker.import_from(&core_checker);
     user_checker.check_program(&user_prog).expect("check");
 

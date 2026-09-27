@@ -30,6 +30,7 @@ pub mod engine;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::lowering::ImplicitArg;
 use crate::parser::data::{
@@ -39,7 +40,7 @@ use crate::parser::data::{
 use utilities::Aol;
 use utilities::{diag, Code, Diagnostic, ExternArg, Result, Span};
 
-use crate::typing::data::{self as ty, Type, VarId};
+use crate::typing::data::{self as ty, Type, TypeNode, Types, VarId};
 use crate::typing::engine::Engine;
 
 /// An `@extern`'s marshalling spec: how the single applied Thrax value maps to
@@ -381,10 +382,12 @@ enum Match {
 }
 
 impl<'a> Checker<'a> {
-    pub fn new(ast: &'a Ast) -> Checker<'a> {
+    pub fn new(ast: &'a Ast, types: Rc<Types>) -> Checker<'a> {
+        let eng = Engine::new(types);
+        let ambient = eng.types.row_empty();
         let mut c = Checker {
             ast,
-            eng: Engine::new(),
+            eng,
             scopes: vec![HashMap::new()],
             structs: HashMap::new(),
             unions: HashMap::new(),
@@ -430,7 +433,7 @@ impl<'a> Checker<'a> {
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
             own_externs: HashMap::new(),
-            ambient: Type::RowEmpty,
+            ambient,
             unknown_type: None,
             lenient: false,
             open_effects: false,
@@ -568,18 +571,18 @@ impl<'a> Checker<'a> {
         let sites: Vec<(Aol<Expr>, Type)> = self
             .extern_tys
             .iter()
-            .map(|(&e, ty)| (e, self.eng.zonk(ty)))
+            .map(|(&e, ty)| (e, self.eng.zonk(*ty)))
             .collect();
         for (e, ty) in sites {
             let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
-            let Type::Arrow(param, ret, _) = &ty else {
+            let TypeNode::Arrow(param, ret, _) = self.eng.types.node(ty) else {
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
                     "an `@extern` must be a foreign function; declare it `A -> B` (a single \
                      argument), or `{{a: A, b: B}} -> R` to pass several C parameters"
                 ));
             };
-            if matches!(self.eng.resolve(ret), Type::Arrow(..)) {
+            if matches!(self.eng.head(ret), TypeNode::Arrow(..)) {
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
                     "a C `@extern` takes a SINGLE argument (C has no first-class functions to \
@@ -588,8 +591,8 @@ impl<'a> Checker<'a> {
                 ));
             }
             let param = self.eng.resolve(param);
-            let (params, arg_types) = self.extern_param_spec(&param)?;
-            let ret_name = marshal_name(&self.eng.resolve(ret));
+            let (params, arg_types) = self.extern_param_spec(param)?;
+            let ret_name = marshal_name(&self.eng.types, self.eng.resolve(ret));
             self.extern_specs.insert(e, (params, arg_types, ret_name));
         }
         Ok(())
@@ -600,34 +603,35 @@ impl<'a> Checker<'a> {
     /// in declared order, pulled by name; any other type is one C argument used
     /// directly (a scalar, a C-repr struct by value, `@ptr`, `Str`, a callback, or
     /// a `List T` array).
-    fn extern_param_spec(&mut self, param: &Type) -> Result<(Vec<ExternArg>, Vec<String>)> {
-        if is_unit_ty(param) {
+    fn extern_param_spec(&mut self, param: Type) -> Result<(Vec<ExternArg>, Vec<String>)> {
+        if is_unit_ty(&self.eng.types, param) {
             return Ok((vec![], vec![]));
         }
         // A name-keyed record: one C argument per field, in declared order,
         // pulled by name (so a reordered call site still marshals in C order).
-        if let Type::Record(_) = param {
+        if let TypeNode::Record(_) = self.eng.types.node(param) {
             let fields = self.record_fields_of(param)?;
             let mut params = Vec::with_capacity(fields.len());
             let mut arg_types = Vec::with_capacity(fields.len());
             for (name, fty) in fields {
                 params.push(ExternArg::Field(name));
-                arg_types.push(marshal_name(&self.eng.resolve(&fty)));
+                arg_types.push(marshal_name(&self.eng.types, self.eng.resolve(fty)));
             }
             return Ok((params, arg_types));
         }
         // A closed record parameter surfaces as a positional tuple: one C argument
         // per element, in order.
-        if let Type::Tuple(items) = param {
+        if let TypeNode::Tuple(items) = self.eng.types.node(param) {
             let mut params = Vec::with_capacity(items.len());
             let mut arg_types = Vec::with_capacity(items.len());
-            for (i, it) in items.iter().enumerate() {
+            for (i, it) in self.eng.types.items(items).to_vec().into_iter().enumerate() {
                 params.push(ExternArg::Elem(i));
-                arg_types.push(marshal_name(&self.eng.resolve(it)));
+                let r = self.eng.resolve(it);
+                arg_types.push(marshal_name(&self.eng.types, r));
             }
             return Ok((params, arg_types));
         }
-        Ok((vec![ExternArg::Whole], vec![marshal_name(param)]))
+        Ok((vec![ExternArg::Whole], vec![marshal_name(&self.eng.types, param)]))
     }
 
     // -- AST accessors (resolve to `'a`-lived data, independent of `&self`) --
@@ -812,7 +816,7 @@ impl<'a> Checker<'a> {
                     // resolving to it plans the dictionary.
                     let (scheme, implicits) = self.scheme_with_implicits(sig, &d.implicits);
                     if counts[d.name] > 1 {
-                        self.def_keys.insert(d.body, overload_key(d.name, &scheme));
+                        self.def_keys.insert(d.body, overload_key(&self.eng.types, d.name, scheme));
                     }
                     self.overloads
                         .entry(d.name)
@@ -850,7 +854,7 @@ impl<'a> Checker<'a> {
         let mut out: Vec<(&'a str, Type)> = defs
             .iter()
             .filter(|d| !is_overloaded(d.name))
-            .map(|d| (d.name, types[d.name].clone()))
+            .map(|d| (d.name, types[d.name]))
             .collect();
 
         self.own_values = out.clone();
@@ -864,7 +868,7 @@ impl<'a> Checker<'a> {
             for c in cands {
                 if c.module == Some(module) {
                     own_ov.entry(name).or_default().push(OverloadExport {
-                        ty: c.ty.clone(),
+                        ty: c.ty,
                         implicits: c.implicits.clone(),
                     });
                 }
@@ -904,9 +908,12 @@ impl<'a> Checker<'a> {
             // in a generator is still rejected (hermetic). `$ @e X` requires a
             // pure operand (empty ambient), so a meta op in it is an error.
             self.ambient = if meta {
-                Type::row_extend("@meta", Type::RowEmpty)
+                {
+                        let empty = self.eng.types.row_empty();
+                        self.eng.types.row_extend("@meta", empty)
+                    }
             } else {
-                Type::RowEmpty
+                self.eng.types.row_empty()
             };
             self.infer(e)?;
         }
@@ -924,7 +931,7 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(&c.ty)).collect();
+            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c.ty)).collect();
             self.qualified
                 .entry(module)
                 .or_default()
@@ -934,7 +941,7 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            let qualified = self.import_scheme(scheme);
+            let qualified = self.import_scheme(*scheme);
             self.qualified
                 .entry(module)
                 .or_default()
@@ -992,7 +999,7 @@ impl<'a> Checker<'a> {
                     .entry(name)
                     .or_default()
                     .push(Cand::with_implicits(ty, Some(module), implicits));
-                qualified.push(self.import_scheme(&c.ty));
+                qualified.push(self.import_scheme(c.ty));
             }
             self.qualified
                 .entry(module)
@@ -1003,12 +1010,12 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            let unqualified = self.import_scheme(scheme);
+            let unqualified = self.import_scheme(*scheme);
             self.imported
                 .entry(name)
                 .or_default()
                 .push(Cand::from(unqualified, Some(module)));
-            let qualified = self.import_scheme(scheme);
+            let qualified = self.import_scheme(*scheme);
             self.qualified
                 .entry(module)
                 .or_default()
@@ -1026,7 +1033,7 @@ impl<'a> Checker<'a> {
                 if let Some(module) = cand.module {
                     self.value_module.insert(name, module);
                 }
-                self.bind(name, cand.ty.clone());
+                self.bind(name, cand.ty);
                 // Retained so a local definition of `name` promotes it to an
                 // overload (see the overloaded-name detection in `check_program`).
                 self.imported_singles.insert(name, cand);
@@ -1036,12 +1043,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn import_scheme(&mut self, ty: &Type) -> Type {
+    fn import_scheme(&mut self, ty: Type) -> Type {
         let mut map = HashMap::new();
         let imported = self.import_ty(ty, &mut map);
         // `import_ty` makes fresh plain generics, losing the `Nat` kind; re-mark the
         // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
-        self.eng.note_tensor_sizes(&imported);
+        self.eng.note_tensor_sizes(imported);
         imported
     }
 
@@ -1051,53 +1058,69 @@ impl<'a> Checker<'a> {
     /// variable after import.
     fn import_export(&mut self, c: &OverloadExport<'a>) -> (Type, Vec<(&'a str, Type)>) {
         let mut map = HashMap::new();
-        let ty = self.import_ty(&c.ty, &mut map);
-        self.eng.note_tensor_sizes(&ty);
+        let ty = self.import_ty(c.ty, &mut map);
+        self.eng.note_tensor_sizes(ty);
         let implicits = c
             .implicits
             .iter()
             .map(|(n, t)| {
-                let it = self.import_ty(t, &mut map);
-                self.eng.note_tensor_sizes(&it);
+                let it = self.import_ty(*t, &mut map);
+                self.eng.note_tensor_sizes(it);
                 (*n, it)
             })
             .collect();
         (ty, implicits)
     }
 
-    fn import_ty(&mut self, ty: &Type, map: &mut HashMap<VarId, Type>) -> Type {
-        match ty {
-            Type::Var(id) => map
-                .entry(*id)
-                .or_insert_with(|| self.eng.fresh_generic())
-                .clone(),
-            Type::Con(name) => Type::Con(name.clone()),
-            Type::Nat(n) => Type::Nat(*n),
-            Type::NatAdd(a, b) => {
-                Type::NatAdd(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+    fn import_ty(&mut self, ty: Type, map: &mut HashMap<VarId, Type>) -> Type {
+        match self.eng.types.node(ty) {
+            TypeNode::Var(id) => match map.get(&id) {
+                Some(t) => *t,
+                None => {
+                    let fresh = self.eng.fresh_generic();
+                    map.insert(id, fresh);
+                    fresh
+                }
+            },
+            TypeNode::NatAdd(a, b) => {
+                let (x, y) = (self.import_ty(a, map), self.import_ty(b, map));
+                self.eng.types.add(TypeNode::NatAdd(x, y))
             }
-            Type::NatMul(a, b) => {
-                Type::NatMul(Box::new(self.import_ty(a, map)), Box::new(self.import_ty(b, map)))
+            TypeNode::NatMul(a, b) => {
+                let (x, y) = (self.import_ty(a, map), self.import_ty(b, map));
+                self.eng.types.add(TypeNode::NatMul(x, y))
             }
-            Type::App(head, arg) => Type::app(self.import_ty(head, map), self.import_ty(arg, map)),
-            Type::Arrow(from, to, eff) => Type::arrow_eff(
-                self.import_ty(from, map),
-                self.import_ty(to, map),
-                self.import_ty(eff, map),
-            ),
-            Type::RowEmpty => Type::RowEmpty,
-            Type::RowExtend(label, rest) => {
-                Type::RowExtend(label.clone(), Box::new(self.import_ty(rest, map)))
+            TypeNode::App(head, arg) => {
+                let (h, a) = (self.import_ty(head, map), self.import_ty(arg, map));
+                self.eng.types.app(h, a)
             }
-            Type::Tuple(items) => {
-                Type::Tuple(items.iter().map(|t| self.import_ty(t, map)).collect())
+            TypeNode::Arrow(from, to, eff) => {
+                let (f, t, e) = (
+                    self.import_ty(from, map),
+                    self.import_ty(to, map),
+                    self.import_ty(eff, map),
+                );
+                self.eng.types.arrow_eff(f, t, e)
             }
-            Type::Record(row) => Type::record(self.import_ty(row, map)),
-            Type::RowField(label, ty, rest) => Type::RowField(
-                label.clone(),
-                Box::new(self.import_ty(ty, map)),
-                Box::new(self.import_ty(rest, map)),
-            ),
+            TypeNode::RowExtend(label, rest) => {
+                let r = self.import_ty(rest, map);
+                self.eng.types.add(TypeNode::RowExtend(label, r))
+            }
+            TypeNode::Tuple(items) => {
+                let items = self.eng.types.items(items).to_vec();
+                let mapped: Vec<Type> = items.into_iter().map(|t| self.import_ty(t, map)).collect();
+                self.eng.types.tuple(mapped)
+            }
+            TypeNode::Record(row) => {
+                let r = self.import_ty(row, map);
+                self.eng.types.record(r)
+            }
+            TypeNode::RowField(label, fty, rest) => {
+                let (f, r) = (self.import_ty(fty, map), self.import_ty(rest, map));
+                self.eng.types.add(TypeNode::RowField(label, f, r))
+            }
+            // Con, Nat and RowEmpty are already shared nodes.
+            TypeNode::Con(_) | TypeNode::Nat(_) | TypeNode::RowEmpty => ty,
         }
     }
 
@@ -1108,7 +1131,7 @@ impl<'a> Checker<'a> {
         if self.open_effects {
             self.eng.fresh()
         } else {
-            Type::RowEmpty
+            self.eng.types.row_empty()
         }
     }
 
@@ -1117,7 +1140,7 @@ impl<'a> Checker<'a> {
         self.eng.enter_level();
         let result = if def.sig.is_some() {
             let fresh = self.eng.fresh();
-            self.check_def_body(def, &fresh)?;
+            self.check_def_body(def, fresh)?;
             fresh
         } else {
             let inferred = self.infer(def.body)?;
@@ -1125,20 +1148,20 @@ impl<'a> Checker<'a> {
             self.overloads
                 .entry(def.name)
                 .or_default()
-                .push(Cand::from(inferred.clone(), Some(module)));
+                .push(Cand::from(inferred, Some(module)));
             inferred
         };
         self.solve_pending()?;
         self.resolve_pending_implicits()?;
         self.eng.leave_level();
         let mono = self.pending_vars();
-        self.eng.generalize_except(&result, &mono);
-        let zonked = self.eng.zonk(&result);
+        self.eng.generalize_except(result, &mono);
+        let zonked = self.eng.zonk(result);
         // A same-module overload defined without a signature is seeded from its
         // inferred type; the sig'd case is keyed at seeding time.
         if def.sig.is_none() && self.overloaded_multi.contains(def.name) {
             self.def_keys
-                .insert(def.body, overload_key(def.name, &zonked));
+                .insert(def.body, overload_key(&self.eng.types, def.name, zonked));
         }
         Ok(zonked)
     }
@@ -1148,8 +1171,8 @@ impl<'a> Checker<'a> {
         let mut tvars = HashMap::new();
         let ty = self.ty_of_ast(sig, &mut tvars);
         self.eng.leave_level();
-        self.eng.generalize(&ty);
-        self.eng.zonk(&ty)
+        self.eng.generalize(ty);
+        self.eng.zonk(ty)
     }
 
     /// Generalize an overloaded definition's signature together with its `@ctx`
@@ -1172,18 +1195,21 @@ impl<'a> Checker<'a> {
         self.eng.leave_level();
         // Generalize the whole bundle at once (packed as a tuple) so a shared
         // variable becomes the same `Generic` in the signature and the requirements.
-        let bundle = Type::Tuple(
-            std::iter::once(main).chain(reqs.iter().map(|(_, t)| t.clone())).collect(),
-        );
-        self.eng.generalize(&bundle);
-        let Type::Tuple(parts) = self.eng.zonk(&bundle) else {
+        let items: Vec<Type> = std::iter::once(main)
+            .chain(reqs.iter().map(|(_, t)| *t))
+            .collect();
+        let bundle = self.eng.types.tuple(items);
+        self.eng.generalize(bundle);
+        let zonked = self.eng.zonk(bundle);
+        let TypeNode::Tuple(parts) = self.eng.types.node(zonked) else {
             unreachable!("packed bundle stays a tuple");
         };
-        let scheme = parts[0].clone();
+        let parts = self.eng.types.items(parts).to_vec();
+        let scheme = parts[0];
         let reqs = reqs
             .iter()
             .enumerate()
-            .map(|(i, (n, _))| (*n, parts[i + 1].clone()))
+            .map(|(i, (n, _))| (*n, parts[i + 1]))
             .collect();
         (scheme, reqs)
     }
@@ -1198,35 +1224,35 @@ impl<'a> Checker<'a> {
         let mut declared = Vec::with_capacity(component.len());
         for &i in component {
             let v = self.eng.fresh();
-            self.bind(defs[i].name, v.clone());
+            self.bind(defs[i].name, v);
             declared.push(v);
         }
         for (&i, decl) in component.iter().zip(&declared) {
-            self.check_def_body(&defs[i], decl)?;
+            self.check_def_body(&defs[i], *decl)?;
         }
         self.solve_pending()?;
         self.resolve_pending_implicits()?;
         self.eng.leave_level();
         let mono = self.pending_vars();
         for (&i, decl) in component.iter().zip(&declared) {
-            self.eng.generalize_except(decl, &mono);
-            types.insert(defs[i].name, self.eng.zonk(decl));
+            self.eng.generalize_except(*decl, &mono);
+            types.insert(defs[i].name, self.eng.zonk(*decl));
         }
         Ok(())
     }
 
-    fn check_def_body(&mut self, def: &Def<'a>, decl: &Type) -> Result<()> {
+    fn check_def_body(&mut self, def: &Def<'a>, decl: Type) -> Result<()> {
         self.ambient = self.top_level_ambient();
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
             let sig_ty = self.ty_of_ast(sig, &mut tvars);
             self.eng.unify(
                 decl,
-                &sig_ty,
+                sig_ty,
                 &format!("against the signature of `{}`", def.name),
             )?;
             if def.implicits.is_empty() {
-                return self.check_body_against_sig(def.body, sig, &sig_ty);
+                return self.check_body_against_sig(def.body, sig, sig_ty);
             }
             // Bind each `@ctx` implicit while checking the body, sharing `tvars`
             // with the signature so their type variables line up (a `List a`
@@ -1251,7 +1277,7 @@ impl<'a> Checker<'a> {
                 }
             }
             let saved_dicts = std::mem::replace(&mut self.current_dicts, dicts);
-            let r = self.check_body_against_sig(def.body, sig, &sig_ty);
+            let r = self.check_body_against_sig(def.body, sig, sig_ty);
             self.current_dicts = saved_dicts;
             self.leave_scope();
             r
@@ -1259,7 +1285,7 @@ impl<'a> Checker<'a> {
             let inferred = self.infer(def.body)?;
             self.eng.unify(
                 decl,
-                &inferred,
+                inferred,
                 &format!("in the definition of `{}`", def.name),
             )
         }
@@ -1272,7 +1298,7 @@ impl<'a> Checker<'a> {
         &mut self,
         body: Aol<Expr>,
         sig: Aol<Ty>,
-        sig_ty: &Type,
+        sig_ty: Type,
     ) -> Result<()> {
         // A bare `@extern` takes its whole argument opaquely (a record parameter is
         // marshalled, not destructured into locals), so it is checked against the
@@ -1306,16 +1332,16 @@ impl<'a> Checker<'a> {
         };
         let (param_ty, result_ty, eff) = self.arrow_parts(sig_ty)?;
         self.enter_scope();
-        self.bind_record_param(fields, &param_ty)?;
+        self.bind_record_param(fields, param_ty)?;
         // The body may perform this arrow's latent effect (the declared row).
         let saved = std::mem::replace(&mut self.ambient, eff);
-        let out = self.check_body_against_sig(body, to, &result_ty);
+        let out = self.check_body_against_sig(body, to, result_ty);
         self.ambient = saved;
         self.leave_scope();
         out
     }
 
-    fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: &Type) -> Result<()> {
+    fn bind_record_param(&mut self, fields: &'a [RecField], param_ty: Type) -> Result<()> {
         // A unit parameter (the thunk sugar) binds nothing, so it needs no row.
         if fields.is_empty() {
             return Ok(());
@@ -1329,11 +1355,11 @@ impl<'a> Checker<'a> {
             let t = recfields
                 .iter()
                 .find(|(n, _)| n == name)
-                .map(|(_, t)| t.clone())
+                .map(|(_, t)| *t)
                 .unwrap_or_else(|| self.eng.fresh());
-            self.bind(name, t.clone());
+            self.bind(name, t);
             if f.with {
-                self.scope_struct_fields(&t)?;
+                self.scope_struct_fields(t)?;
             }
         }
         Ok(())
@@ -1342,11 +1368,11 @@ impl<'a> Checker<'a> {
     /// Bring the struct's fields into scope, returning their names in declaration
     /// order (empty if `ty` is not a known struct). Lowering keys the `with`
     /// desugaring off these names.
-    fn scope_struct_fields(&mut self, ty: &Type) -> Result<Vec<String>> {
+    fn scope_struct_fields(&mut self, ty: Type) -> Result<Vec<String>> {
         let (head, args) = self.spine(ty);
         let mut names = Vec::new();
-        if let Type::Con(name) = &head {
-            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+        if let TypeNode::Con(name) = self.eng.types.node(head) {
+            if let Some(info) = self.structs.get(self.eng.types.name(name).as_str()).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
                 for (fname, fty) in &info.fields {
                     let field_ty = self.ty_of_ast(*fty, &mut subst);
@@ -1359,7 +1385,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Check an expression against an expected type (the checking direction).
-    fn check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<()> {
+    fn check(&mut self, e: Aol<Expr>, expected: Type) -> Result<()> {
         // A literal aimed at a user type may build it through a `@compiler_interface_*`
         // construction hook; when one applies, that supersedes the built-in default.
         if self.literal_hook_check(e, expected)? {
@@ -1369,16 +1395,16 @@ impl<'a> Checker<'a> {
             Expr::Lambda { params, body } => {
                 let params = self.ast.slice(*params);
                 self.enter_scope();
-                let mut exp = expected.clone();
-                let mut body_eff = self.ambient.clone();
+                let mut exp = expected;
+                let mut body_eff = self.ambient;
                 for p in params.iter() {
-                    let (param_ty, rest, eff) = self.arrow_parts(&exp)?;
-                    self.type_pattern(*p, &param_ty)?;
+                    let (param_ty, rest, eff) = self.arrow_parts(exp)?;
+                    self.type_pattern(*p, param_ty)?;
                     exp = rest;
                     body_eff = eff; // the innermost arrow's effect: the body's ambient
                 }
                 let saved = std::mem::replace(&mut self.ambient, body_eff);
-                let out = self.check(*body, &exp);
+                let out = self.check(*body, exp);
                 self.ambient = saved;
                 self.leave_scope();
                 out
@@ -1389,13 +1415,14 @@ impl<'a> Checker<'a> {
             Expr::List(items) if self.tensor_parts(expected).is_some() => {
                 let items = self.ast.slice(*items);
                 let (size, elem) = self.tensor_parts(expected).expect("guarded");
+                let n = self.eng.types.nat(items.len() as u64);
                 self.eng.unify(
-                    &size,
-                    &Type::Nat(items.len() as u64),
+                    size,
+                    n,
                     "in a tensor literal (its length fixes the size)",
                 )?;
                 for item in items.iter() {
-                    self.check(*item, &elem)?;
+                    self.check(*item, elem)?;
                 }
                 self.tensor_exprs.insert(e);
                 Ok(())
@@ -1425,13 +1452,14 @@ impl<'a> Checker<'a> {
                     ));
                 };
                 let n = if h >= l { (h - l + 1) as u64 } else { 0 };
+                let n = self.eng.types.nat(n);
                 self.eng.unify(
-                    &size,
-                    &Type::Nat(n),
+                    size,
+                    n,
                     "in a range tensor (its bounds fix the length)",
                 )?;
-                self.check(lo, &elem)?;
-                self.check(hi, &elem)?;
+                self.check(lo, elem)?;
+                self.check(hi, elem)?;
                 self.tensor_exprs.insert(e);
                 Ok(())
             }
@@ -1440,7 +1468,7 @@ impl<'a> Checker<'a> {
             Expr::Range { lo, hi } => {
                 let (lo, hi) = (*lo, *hi);
                 let got = self.range_hook(e, lo, hi, Some(expected))?;
-                self.eng.unify(&got, expected, "against the expected type")
+                self.eng.unify(got, expected, "against the expected type")
             }
             // `{ .obs = e, ... }` where a codata type is expected: construct it (each
             // clause becomes a thunk). Every observation must be given.
@@ -1465,7 +1493,7 @@ impl<'a> Checker<'a> {
                 let direct = self
                     .infer_struct_lit(e, name, fields, spread, Some(expected))
                     .and_then(|got| {
-                        self.eng.unify(&got, expected, "against the expected type")
+                        self.eng.unify(got, expected, "against the expected type")
                     });
                 let Err(err) = direct else {
                     return Ok(());
@@ -1496,7 +1524,7 @@ impl<'a> Checker<'a> {
                 let fields = self.ast.slice(*fields);
                 let got = self.infer_variant(Some(uname), tag, fields)?;
                 self.eng
-                    .unify(&got, expected, "against the expected type")
+                    .unify(got, expected, "against the expected type")
             }
             // A `Real` literal takes the expected float width, like an integer
             // literal takes its width: `1.0` checks against `Real32` as well as
@@ -1520,16 +1548,16 @@ impl<'a> Checker<'a> {
                 let name = self.text(*name);
                 let dicts = self.current_dicts.get(name).cloned().unwrap_or_default();
                 let mut cands: Vec<Cand> = self.overloads.get(name).cloned().unwrap_or_default();
-                cands.extend(dicts.iter().map(|(slot, ty)| Cand::dict(ty.clone(), *slot)));
+                cands.extend(dicts.iter().map(|(slot, ty)| Cand::dict(*ty, *slot)));
                 if let Some(v) = self.bare_var_id(expected) {
                     let narrowed: Vec<Cand> =
-                        cands.iter().filter(|c| self.type_is_var(&c.ty, v)).cloned().collect();
+                        cands.iter().filter(|c| self.type_is_var(c.ty, v)).cloned().collect();
                     if !narrowed.is_empty() {
                         cands = narrowed;
                     }
                 }
                 let got = self.resolve_overload(name, &cands, &[], Some(e))?;
-                self.eng.unify(&got, expected, "against the expected type")
+                self.eng.unify(got, expected, "against the expected type")
             }
             // A bare reference to an overloaded name, with no argument types to
             // dispatch on (`(+)` passed as a value, `foldl (+) 0 xs`). The expected
@@ -1545,37 +1573,37 @@ impl<'a> Checker<'a> {
                 let name = self.text(*name);
                 let cands = self.overloads.get(name).cloned().expect("guarded above");
                 let got = self.resolve_overload(name, &cands, &[], Some(e))?;
-                self.eng.unify(&got, expected, "against the expected type")
+                self.eng.unify(got, expected, "against the expected type")
             }
             _ => {
                 let got = self.infer(e)?;
                 // Promotion at an argument position: a bare scalar or a positional
                 // tuple passed where a record is expected is wrapped into that record
                 // (`foo 1` -> `foo { .x = 1 }`, `foo {1,2}` -> `foo { .x=1, .y=2 }`).
-                if let Type::Record(_) = self.eng.resolve(expected) {
+                if let TypeNode::Record(_) = self.eng.head(expected) {
                     // Try a direct unification first (a record value, or a nominal
                     // struct via the `Con ~ Record` bridge). Skip it for a numeric
                     // literal, whose undefaulted variable would wrongly unify with
                     // the record. If unification fails, promote a scalar / tuple /
                     // struct into a CLOSED record (an open row has no known fields to
                     // promote into, so a mismatch there is a real error).
-                    if !self.is_numeric(&got) {
+                    if !self.is_numeric(got) {
                         let save = self.eng.save();
-                        if self.eng.unify(&got, expected, "against the expected type").is_ok() {
+                        if self.eng.unify(got, expected, "against the expected type").is_ok() {
                             return Ok(());
                         }
                         self.eng.restore(save);
                     }
                     if self.record_is_closed(expected) {
-                        let g = self.eng.resolve(&got);
+                        let g = self.eng.head(got);
                         let values: Vec<Type> = match g {
-                            Type::Tuple(items) => items,
-                            _ => vec![got.clone()],
+                            TypeNode::Tuple(items) => self.eng.types.items(items).to_vec(),
+                            _ => vec![got],
                         };
                         return self.promote_to_record(e, &values, expected);
                     }
                 }
-                self.eng.unify(&got, expected, "against the expected type")
+                self.eng.unify(got, expected, "against the expected type")
             }
         }
     }
@@ -1587,7 +1615,7 @@ impl<'a> Checker<'a> {
         &mut self,
         site: Aol<Expr>,
         values: &[Type],
-        record_ty: &Type,
+        record_ty: Type,
     ) -> Result<()> {
         let fields = self.record_fields_of(record_ty)?;
         if fields.len() != values.len() {
@@ -1597,7 +1625,7 @@ impl<'a> Checker<'a> {
                 values.len(), fields.len()
             ));
         }
-        for (val, (_, fty)) in values.iter().zip(&fields) {
+        for (val, (_, fty)) in values.to_vec().into_iter().zip(fields.clone()) {
             self.eng.unify(val, fty, "promoting an argument to a record")?;
         }
         self.promotions
@@ -1607,20 +1635,19 @@ impl<'a> Checker<'a> {
 
     /// Whether `ty` is a floating type (`Real`/`Real64`/`Real32`, either spelling),
     /// so a `Real` literal may take its width.
-    fn is_float_type(&self, ty: &Type) -> bool {
+    fn is_float_type(&self, ty: Type) -> bool {
         matches!(
-            self.eng.resolve(ty),
-            Type::Con(name)
-                if matches!(name.as_str(),
-                    "@float64" | "@float32")
+            self.eng.head(ty),
+            TypeNode::Con(name)
+                if matches!(self.eng.types.name(name).as_str(), "@float64" | "@float32")
         )
     }
 
     /// Whether `ty` is a sized integer type (any width, signed or unsigned). `@cast`
     /// reinterprets between these; float and non-numeric types are rejected.
-    fn is_int_scalar(&self, ty: &Type) -> bool {
-        matches!(self.eng.resolve(ty),
-            Type::Con(name) if matches!(name.as_str(),
+    fn is_int_scalar(&self, ty: Type) -> bool {
+        matches!(self.eng.head(ty),
+            TypeNode::Con(name) if matches!(self.eng.types.name(name).as_str(),
                 "@int" | "@nat"
                     | "@int8" | "@int16" | "@int32" | "@int64"
                     | "@nat8" | "@nat16" | "@nat32" | "@nat64"))
@@ -1635,7 +1662,7 @@ impl<'a> Checker<'a> {
     /// uniformly, so the cast is erased after checking (lowering emits the operand);
     /// the width matters only at the `@extern` boundary, where marshalling narrows to
     /// the C type. A numeric literal operand is accepted (it defaults to `Int`).
-    fn check_cast(&mut self, arg: Aol<Expr>, expected: &Type) -> Result<()> {
+    fn check_cast(&mut self, arg: Aol<Expr>, expected: Type) -> Result<()> {
         if !self.is_int_scalar(expected) {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
@@ -1649,14 +1676,14 @@ impl<'a> Checker<'a> {
         // b` whose resolution waits on numeric defaulting) or a bare numeric
         // literal, gets pinned by later solving. The cast is erased, so accept it
         // here rather than reject on an incomplete type.
-        if matches!(self.eng.resolve(&src), Type::Var(_)) {
+        if matches!(self.eng.head(src), TypeNode::Var(_)) {
             return Ok(());
         }
-        if !self.is_int_scalar(&src) {
+        if !self.is_int_scalar(src) {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
                 "`@cast` expects an integer operand, but got `{}`",
-                self.show(&src)
+                self.show(src)
             ));
         }
         Ok(())
@@ -1664,18 +1691,15 @@ impl<'a> Checker<'a> {
 
     /// Decompose a function type into (parameter, result, latent effect). If it is
     /// not yet known to be an arrow, force it to one with fresh parts.
-    fn arrow_parts(&mut self, ty: &Type) -> Result<(Type, Type, Type)> {
-        match self.eng.resolve(ty) {
-            Type::Arrow(from, to, eff) => Ok((*from, *to, *eff)),
-            other => {
+    fn arrow_parts(&mut self, ty: Type) -> Result<(Type, Type, Type)> {
+        match self.eng.head(ty) {
+            TypeNode::Arrow(from, to, eff) => Ok((from, to, eff)),
+            _ => {
                 let from = self.eng.fresh();
                 let to = self.eng.fresh();
                 let eff = self.eng.fresh();
-                self.eng.unify(
-                    &other,
-                    &Type::arrow_eff(from.clone(), to.clone(), eff.clone()),
-                    "expected a function",
-                )?;
+                let want = self.eng.types.arrow_eff(from, to, eff);
+                self.eng.unify(ty, want, "expected a function")?;
                 Ok((from, to, eff))
             }
         }
@@ -1685,12 +1709,12 @@ impl<'a> Checker<'a> {
         let mut out = HashSet::new();
         for p in &self.pending {
             for a in &p.args {
-                self.eng.collect_vars(a, &mut out);
+                self.eng.collect_vars(*a, &mut out);
             }
-            self.eng.collect_vars(&p.result, &mut out);
+            self.eng.collect_vars(p.result, &mut out);
         }
         for (t, _) in &self.numeric {
-            self.eng.collect_vars(t, &mut out);
+            self.eng.collect_vars(*t, &mut out);
         }
         out
     }
@@ -2073,17 +2097,19 @@ impl<'a> Checker<'a> {
                 .iter()
                 .map(|p| {
                     let v = self.eng.fresh();
-                    let id = match v {
-                        Type::Var(id) => id,
+                    let id = match self.eng.types.node(v) {
+                        TypeNode::Var(id) => id,
                         _ => unreachable!("fresh() returns a variable"),
                     };
                     tvars.insert(*p, v);
                     id
                 })
                 .collect();
-            let row = fields.iter().rev().fold(Type::RowEmpty, |rest, (fname, fty)| {
-                Type::row_field(fname, self.ty_of_ast(*fty, &mut tvars), rest)
-            });
+            let mut row = self.eng.types.row_empty();
+            for (fname, fty) in fields.iter().rev() {
+                let f = self.ty_of_ast(*fty, &mut tvars);
+                row = self.eng.types.row_field(fname, f, row);
+            }
             rows.insert(name.to_string(), (param_ids, row));
         }
         self.eng.set_struct_rows(rows);
@@ -2101,8 +2127,8 @@ impl<'a> Checker<'a> {
                 let op_name = self.text(op.name);
                 let base = self.scheme_of_sig(op.ty);
                 let scheme = self.with_effect(base, effect);
-                op_schemes.insert(op_name, scheme.clone());
-                per_op.entry(op_name).or_default().push(scheme.clone());
+                op_schemes.insert(op_name, scheme);
+                per_op.entry(op_name).or_default().push(scheme);
                 self.qualified
                     .entry(effect)
                     .or_default()
@@ -2126,12 +2152,13 @@ impl<'a> Checker<'a> {
     /// a fresh quantified row variable), so performing it forces `effect` into the
     /// ambient and fits any ambient already containing more effects.
     fn with_effect(&mut self, scheme: Type, effect: &str) -> Type {
-        match scheme {
-            Type::Arrow(from, to, _) => {
+        match self.eng.types.node(scheme) {
+            TypeNode::Arrow(from, to, _) => {
                 let mu = self.eng.fresh_generic();
-                Type::arrow_eff(*from, *to, Type::row_extend(effect, mu))
+                let eff = self.eng.types.row_extend(effect, mu);
+                self.eng.types.arrow_eff(from, to, eff)
             }
-            other => other,
+            _ => scheme,
         }
     }
 
@@ -2167,7 +2194,7 @@ impl<'a> Checker<'a> {
                 if found.is_some() {
                     return None;
                 }
-                found = Some(scheme.clone());
+                found = Some(*scheme);
             }
         }
         found
@@ -2175,26 +2202,26 @@ impl<'a> Checker<'a> {
 
     // -- struct / union typing ----------------------------------------------
 
-    fn infer_field(&mut self, rec_ty: &Type, field: &str) -> Result<Type> {
+    fn infer_field(&mut self, rec_ty: Type, field: &str) -> Result<Type> {
         let (head, args) = self.spine(rec_ty);
-        if let Type::Con(name) = &head {
-            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+        if let TypeNode::Con(name) = self.eng.types.node(head) {
+            if let Some(info) = self.structs.get(self.eng.types.name(name).as_str()).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
                 if let Some((_, ty)) = info.fields.iter().find(|(n, _)| *n == field) {
                     return Ok(self.ty_of_ast(*ty, &mut subst));
                 }
             }
         }
-        if let Type::Tuple(items) = &head {
+        if let TypeNode::Tuple(items) = self.eng.types.node(head) {
             if let Ok(idx) = field.parse::<usize>() {
-                if let Some(t) = items.get(idx) {
-                    return Ok(t.clone());
+                if let Some(t) = self.eng.types.items(items).get(idx) {
+                    return Ok(*t);
                 }
             }
         }
         // A structural record (an open-row parameter, say): look the field up in
         // the row, growing an open tail to include it.
-        if let Type::Record(_) = self.eng.resolve(rec_ty) {
+        if let TypeNode::Record(_) = self.eng.head(rec_ty) {
             return self
                 .eng
                 .record_field(rec_ty, field, &format!("accessing field `{field}`"));
@@ -2208,16 +2235,16 @@ impl<'a> Checker<'a> {
         ty: Option<&'a str>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> Result<Type> {
         let (info, result, mut subst) = if let Some(base) = spread {
             let base_ty = self.infer(base)?;
-            let (head, args) = self.spine(&base_ty);
-            match &head {
-                Type::Con(n) if self.structs.contains_key(n.as_str()) => {
+            let (head, args) = self.spine(base_ty);
+            match self.eng.types.node(head) {
+                TypeNode::Con(n) if self.structs.contains_key(self.eng.types.name(n).as_str()) => {
                     let (name, info) = self
                         .structs
-                        .get_key_value(n.as_str())
+                        .get_key_value(self.eng.types.name(n).as_str())
                         .map(|(k, v)| (*k, v.clone()))
                         .expect("struct present");
                     self.struct_lit_names.insert(site, name.to_string());
@@ -2238,7 +2265,7 @@ impl<'a> Checker<'a> {
                 Some((name, info)) => {
                     self.struct_lit_names.insert(site, name.to_string());
                     let (args, subst) = self.instantiate_params(&info.params);
-                    (info, applied(name, &args), subst)
+                    (info, applied(&self.eng.types, name, &args), subst)
                 }
                 // No fresh() escape hatch: a struct literal whose type cannot be
                 // determined is a compile error, not a silent runtime fault. The
@@ -2263,7 +2290,7 @@ impl<'a> Checker<'a> {
         // variable rather than a fresh placeholder. This lets a value-position `@ctx`
         // dictionary in a field resolve by type (`.fst = blank` picks `blank : a`).
         if let Some(exp) = expected {
-            self.eng.unify(&result, exp, "against the expected type")?;
+            self.eng.unify(result, exp, "against the expected type")?;
         }
         for (i, fi) in fields.iter().enumerate() {
             let (decl_ty, value) = match fi {
@@ -2288,7 +2315,7 @@ impl<'a> Checker<'a> {
             // Check (not infer) so a `[..]` literal field takes its element/size or
             // Array-ness from the declared field type (bidirectional), like a call arg.
             let want = self.ty_of_ast(decl_ty, &mut subst);
-            self.check(value, &want)?;
+            self.check(value, want)?;
         }
         Ok(result)
     }
@@ -2324,7 +2351,7 @@ impl<'a> Checker<'a> {
             // expectation flows into a nested value: a bare `.Tag` payload resolves
             // type-directedly, and a literal takes its construction hook / element type.
             match want {
-                Some(want) => self.check(value, &want)?,
+                Some(want) => self.check(value, want)?,
                 None => {
                     self.infer(value)?;
                 }
@@ -2337,7 +2364,7 @@ impl<'a> Checker<'a> {
         let info = self.unions.get(union)?.clone();
         let pos = info.variants.iter().position(|v| v.tag == tag)?;
         let (args, mut subst) = self.instantiate_params(&info.params);
-        let result = applied(union, &args);
+        let result = applied(&self.eng.types, union, &args);
         let variant = &info.variants[pos];
         let payload = variant
             .payload
@@ -2385,8 +2412,8 @@ impl<'a> Checker<'a> {
             // must resolve in the base, and the result type is the base's.
             let base_ty = self.infer(base)?;
             for (n, got) in &explicit {
-                let want = self.field_type_of(&base_ty, n)?;
-                self.eng.unify(got, &want, "in a record update")?;
+                let want = self.field_type_of(base_ty, n)?;
+                self.eng.unify(*got, want, "in a record update")?;
             }
             return Ok(base_ty);
         }
@@ -2394,20 +2421,20 @@ impl<'a> Checker<'a> {
             // Stack: prepend the explicit fields onto the base's row, keeping the
             // base's tail (so stacking onto an open row stays open).
             let wty = self.infer(w)?;
-            let row = self.record_row_of(&wty)?;
+            let row = self.record_row_of(wty)?;
             let full = explicit
                 .into_iter()
                 .rev()
-                .fold(row, |rest, (n, t)| Type::row_field(&n, t, rest));
-            return Ok(Type::record(full));
+                .fold(row, |rest, (n, t)| self.eng.types.row_field(&n, t, rest));
+            return Ok(self.eng.types.record(full));
         }
-        Ok(Type::record_of(explicit.into_iter()))
+        Ok(self.eng.types.record_of(explicit.into_iter()))
     }
 
     /// The type of field `name` in a record value: through the row for a structural
     /// record (open tail grows to include it), or the declared field for a struct.
-    fn field_type_of(&mut self, base: &Type, name: &str) -> Result<Type> {
-        if let Type::Record(_) = self.eng.resolve(base) {
+    fn field_type_of(&mut self, base: Type, name: &str) -> Result<Type> {
+        if let TypeNode::Record(_) = self.eng.head(base) {
             return self
                 .eng
                 .record_field(base, name, "in a record update");
@@ -2425,23 +2452,23 @@ impl<'a> Checker<'a> {
 
     /// The record row of a value (the inner row of a structural record, possibly
     /// open; or a struct's closed row), for stacking fields onto it.
-    fn record_row_of(&mut self, base: &Type) -> Result<Type> {
-        if let Type::Record(row) = self.eng.resolve(base) {
-            return Ok((*row).clone());
+    fn record_row_of(&mut self, base: Type) -> Result<Type> {
+        if let TypeNode::Record(row) = self.eng.head(base) {
+            return Ok(row);
         }
         let fields = self.record_fields_of(base)?;
         Ok(fields
             .into_iter()
             .rev()
-            .fold(Type::RowEmpty, |rest, (n, t)| Type::row_field(&n, t, rest)))
+            .fold(self.eng.types.row_empty(), |rest, (n, t)| self.eng.types.row_field(&n, t, rest)))
     }
 
     /// Whether `ty` is a record-shaped target: a structural record row, or a
     /// The nominal struct name `ty` resolves to (possibly applied), if any.
-    fn struct_name_of(&self, ty: &Type) -> Option<&'a str> {
+    fn struct_name_of(&self, ty: Type) -> Option<&'a str> {
         let (head, _) = self.spine(ty);
-        if let Type::Con(n) = &head {
-            if let Some((k, _)) = self.structs.get_key_value(n.as_str()) {
+        if let TypeNode::Con(n) = self.eng.types.node(head) {
+            if let Some((k, _)) = self.structs.get_key_value(self.eng.types.name(n).as_str()) {
                 return Some(k);
             }
         }
@@ -2453,19 +2480,21 @@ impl<'a> Checker<'a> {
     /// has a variant `tag`. Lets a BARE `.Tag` resolve type-directedly against the
     /// expected type, so two unions sharing a constructor name (e.g. a user list and
     /// the builtin `List`, both with `Cons`/`Nil`) do not collide.
-    fn union_head_with_tag(&self, ty: &Type, tag: &str) -> Option<&'a str> {
+    fn union_head_with_tag(&self, ty: Type, tag: &str) -> Option<&'a str> {
         let (head, _) = self.spine(ty);
-        let Type::Con(n) = &head else { return None };
-        let (k, info) = self.unions.get_key_value(n.as_str())?;
+        let TypeNode::Con(n) = self.eng.types.node(head) else {
+            return None;
+        };
+        let (k, info) = self.unions.get_key_value(self.eng.types.name(n).as_str())?;
         info.variants.iter().any(|v| v.tag == tag).then_some(*k)
     }
 
     /// The head codata type name and its type arguments, if `ty` is a (possibly
     /// applied) declared codata type.
-    fn codata_head(&self, ty: &Type) -> Option<(&'a str, Vec<Type>)> {
+    fn codata_head(&self, ty: Type) -> Option<(&'a str, Vec<Type>)> {
         let (head, args) = self.spine(ty);
-        if let Type::Con(name) = &head {
-            if let Some((n, _)) = self.codata.get_key_value(name.as_str()) {
+        if let TypeNode::Con(name) = self.eng.types.node(head) {
+            if let Some((n, _)) = self.codata.get_key_value(self.eng.types.name(name).as_str()) {
                 return Some((n, args));
             }
         }
@@ -2478,7 +2507,7 @@ impl<'a> Checker<'a> {
         &mut self,
         site: Aol<Expr>,
         fields: &'a [FieldInit],
-        expected: &Type,
+        expected: Type,
     ) -> Result<()> {
         let (name, args) = self.codata_head(expected).expect("guarded on a codata type");
         let info = self.codata[name].clone();
@@ -2491,7 +2520,7 @@ impl<'a> Checker<'a> {
             match clause {
                 Some(value) => {
                     let want = self.ty_of_ast(*obs_ty, &mut subst);
-                    self.check(value, &want)?;
+                    self.check(value, want)?;
                 }
                 None => {
                     return Err(diag!(
@@ -2516,19 +2545,19 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// The `(label, type)` fields of a record value: a structural [`Type::Record`]
+    /// The `(label, type)` fields of a record value: a structural [`TypeNode::Record`]
     /// (its closed row) or a nominal struct (its declared fields, instantiated).
-    fn record_fields_of(&mut self, ty: &Type) -> Result<Vec<(String, Type)>> {
-        if let Type::Record(row) = self.eng.resolve(ty) {
+    fn record_fields_of(&mut self, ty: Type) -> Result<Vec<(String, Type)>> {
+        if let TypeNode::Record(row) = self.eng.head(ty) {
             let mut out = Vec::new();
-            let mut cur = (*row).clone();
+            let mut cur = row;
             loop {
-                match self.eng.resolve(&cur) {
-                    Type::RowField(l, fty, rest) => {
-                        out.push((l, (*fty).clone()));
-                        cur = *rest;
+                match self.eng.head(cur) {
+                    TypeNode::RowField(l, fty, rest) => {
+                        out.push((self.eng.types.name(l).to_string(), fty));
+                        cur = rest;
                     }
-                    Type::RowEmpty => return Ok(out),
+                    TypeNode::RowEmpty => return Ok(out),
                     _ => {
                         return Err(diag!(
                             Code::TypeMismatch, Span::at(0), 0,
@@ -2539,8 +2568,8 @@ impl<'a> Checker<'a> {
             }
         }
         let (head, args) = self.spine(ty);
-        if let Type::Con(name) = &head {
-            if let Some(info) = self.structs.get(name.as_str()).cloned() {
+        if let TypeNode::Con(name) = self.eng.types.node(head) {
+            if let Some(info) = self.structs.get(self.eng.types.name(name).as_str()).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
                 return Ok(info
                     .fields
@@ -2595,18 +2624,18 @@ impl<'a> Checker<'a> {
         let mut args = Vec::with_capacity(params.len());
         for p in params {
             let v = self.eng.fresh();
-            subst.insert(*p, v.clone());
+            subst.insert(*p, v);
             args.push(v);
         }
         (args, subst)
     }
 
-    fn spine(&self, ty: &Type) -> (Type, Vec<Type>) {
+    fn spine(&self, ty: Type) -> (Type, Vec<Type>) {
         let mut args = Vec::new();
         let mut cur = self.eng.resolve(ty);
-        while let Type::App(head, arg) = cur {
-            args.push(self.eng.resolve(&arg));
-            cur = self.eng.resolve(&head);
+        while let TypeNode::App(head, arg) = self.eng.types.node(cur) {
+            args.push(self.eng.resolve(arg));
+            cur = self.eng.resolve(head);
         }
         args.reverse();
         (cur, args)
@@ -2614,7 +2643,13 @@ impl<'a> Checker<'a> {
 
     // -- environment --------------------------------------------------------
 
-    pub fn show(&self, ty: &Type) -> String {
+    /// The type store this checker built its types in, so a caller holding a
+    /// `Type` can read it back.
+    pub fn types(&self) -> &Types {
+        &self.eng.types
+    }
+
+    pub fn show(&self, ty: Type) -> String {
         self.eng.show(ty)
     }
 
@@ -2652,13 +2687,13 @@ impl<'a> Checker<'a> {
             Expr::Int(_) => {
                 let t = self.eng.fresh();
                 let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
-                self.numeric.push((t.clone(), span));
+                self.numeric.push((t, span));
                 Ok(t)
             }
-            Expr::Real(_) => Ok(Type::con(ty::REAL)),
-            Expr::Str(_) => Ok(Type::con(ty::STR)),
-            Expr::Bool(_) => Ok(Type::con(ty::BOOL)),
-            Expr::Unit => Ok(Type::con(ty::UNIT)),
+            Expr::Real(_) => Ok(self.eng.types.con(ty::REAL)),
+            Expr::Str(_) => Ok(self.eng.types.con(ty::STR)),
+            Expr::Bool(_) => Ok(self.eng.types.con(ty::BOOL)),
+            Expr::Unit => Ok(self.eng.types.con(ty::UNIT)),
 
             Expr::Var { module, name } => {
                 let module = module.map(|m| self.text(m));
@@ -2682,7 +2717,7 @@ impl<'a> Checker<'a> {
                     return self.resolve_overload(op, &cands, &[tl, tr], Some(e));
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
-                let op_ty = self.eng.instantiate(&scheme);
+                let op_ty = self.eng.instantiate(scheme);
                 let result = self.eng.fresh();
                 // The operator's result arrow may carry a latent effect: `<|` and
                 // `|>` pass one through from their function argument (`f <| x` is a
@@ -2690,12 +2725,13 @@ impl<'a> Checker<'a> {
                 // application would. For every other operator this row is empty and
                 // the subrow is a no-op.
                 let eff = self.eng.fresh();
-                let want = Type::arrow(tl, Type::arrow_eff(tr, result.clone(), eff.clone()));
+                let inner = self.eng.types.arrow_eff(tr, result, eff);
+                let want = self.eng.types.arrow(tl, inner);
                 self.eng
-                    .unify(&op_ty, &want, &format!("in operator `{op}`"))?;
-                let amb = self.ambient.clone();
+                    .unify(op_ty, want, &format!("in operator `{op}`"))?;
+                let amb = self.ambient;
                 self.eng
-                    .subrow(&eff, &amb, &format!("in operator `{op}`"))?;
+                    .subrow(eff, amb, &format!("in operator `{op}`"))?;
                 Ok(result)
             }
 
@@ -2709,11 +2745,12 @@ impl<'a> Checker<'a> {
                     return self.resolve_overload(op, &cands, &[t], Some(e));
                 }
                 let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
-                let op_ty = self.eng.instantiate(&scheme);
+                let op_ty = self.eng.instantiate(scheme);
                 let result = self.eng.fresh();
+                let want = self.eng.types.arrow(t, result);
                 self.eng.unify(
-                    &op_ty,
-                    &Type::arrow(t, result.clone()),
+                    op_ty,
+                    want,
                     &format!("in unary `{op}`"),
                 )?;
                 Ok(result)
@@ -2725,7 +2762,7 @@ impl<'a> Checker<'a> {
                 for item in items.iter() {
                     tys.push(self.infer(*item)?);
                 }
-                Ok(Type::Tuple(tys))
+                Ok(self.eng.types.tuple(tys))
             }
 
             // An unconstrained `[...]` DEFAULTS to a `@vec`, then builds it through
@@ -2736,11 +2773,12 @@ impl<'a> Checker<'a> {
                 let elem = self.eng.fresh();
                 for item in items.iter() {
                     let t = self.infer(*item)?;
-                    self.eng.unify(&elem, &t, "in a sequence literal")?;
+                    self.eng.unify(elem, t, "in a sequence literal")?;
                 }
-                let vec = Type::app(Type::con(ty::VEC), elem);
+                let vec_con = self.eng.types.con(ty::VEC);
+                let vec = self.eng.types.app(vec_con, elem);
                 let cands = self.hook_candidates(HOOK_SEQUENCE);
-                if let Some(idx) = self.resolve_hook(&cands, &[vec.clone()], &vec) {
+                if let Some(idx) = self.resolve_hook(&cands, &[vec], vec) {
                     self.record_literal_hook(e, HOOK_SEQUENCE, &cands, idx);
                 }
                 Ok(vec)
@@ -2758,12 +2796,12 @@ impl<'a> Checker<'a> {
             Expr::If { cond, then, alt } => {
                 let (cond, then, alt) = (*cond, *then, *alt);
                 let tc = self.infer(cond)?;
-                self.eng
-                    .unify(&tc, &Type::con(ty::BOOL), "in an 'if' condition")?;
+                let b = self.eng.types.con(ty::BOOL);
+                self.eng.unify(tc, b, "in an 'if' condition")?;
                 let tt = self.infer(then)?;
                 let ta = self.infer(alt)?;
                 self.eng
-                    .unify(&tt, &ta, "between the branches of an 'if'")?;
+                    .unify(tt, ta, "between the branches of an 'if'")?;
                 Ok(tt)
             }
 
@@ -2782,7 +2820,7 @@ impl<'a> Checker<'a> {
                 let mut param_tys = Vec::with_capacity(params.len());
                 for p in params.iter() {
                     let pv = self.eng.fresh();
-                    self.type_pattern(*p, &pv)?;
+                    self.type_pattern(*p, pv)?;
                     param_tys.push(pv);
                 }
                 // Constructing the closure performs nothing under the current
@@ -2790,7 +2828,7 @@ impl<'a> Checker<'a> {
                 // the innermost arrow's latent effect. Outer (curried, partial-
                 // application) arrows stay pure.
                 let e_body = self.eng.fresh();
-                let saved = std::mem::replace(&mut self.ambient, e_body.clone());
+                let saved = std::mem::replace(&mut self.ambient, e_body);
                 let body_ty = self.infer(body);
                 self.ambient = saved;
                 self.leave_scope();
@@ -2800,9 +2838,9 @@ impl<'a> Checker<'a> {
                     body_ty,
                     |acc, (i, p)| {
                         if i == last {
-                            Type::arrow_eff(p, acc, e_body.clone())
+                            self.eng.types.arrow_eff(p, acc, e_body)
                         } else {
-                            Type::arrow(p, acc)
+                            self.eng.types.arrow(p, acc)
                         }
                     },
                 );
@@ -2820,20 +2858,20 @@ impl<'a> Checker<'a> {
                 for arm in self.ast.slice(*arms).iter() {
                     self.enter_scope();
                     for pat in self.ast.slice(arm.patterns).iter() {
-                        self.type_pattern(*pat, &ts)?;
+                        self.type_pattern(*pat, ts)?;
                     }
                     if let Some(guard) = arm.guard {
                         let tg = self.infer(guard)?;
-                        self.eng
-                            .unify(&tg, &Type::con(ty::BOOL), "in a match guard")?;
+                        let b = self.eng.types.con(ty::BOOL);
+                        self.eng.unify(tg, b, "in a match guard")?;
                     }
                     let tb = self.infer(arm.body)?;
-                    self.eng.unify(&result, &tb, "between match arms")?;
+                    self.eng.unify(result, tb, "between match arms")?;
                     self.leave_scope();
                 }
                 if let Some(d) = default {
                     let td = self.infer(d)?;
-                    self.eng.unify(&result, &td, "in a match 'else' branch")?;
+                    self.eng.unify(result, td, "in a match 'else' branch")?;
                 }
                 Ok(result)
             }
@@ -2843,7 +2881,7 @@ impl<'a> Checker<'a> {
                 let rec_ty = self.infer(record)?;
                 // `x.obs` on a codata value is an observation (record the site so
                 // lowering runs the thunk); otherwise it is field/tuple access.
-                if let Some((cname, args)) = self.codata_head(&rec_ty) {
+                if let Some((cname, args)) = self.codata_head(rec_ty) {
                     let info = self.codata[cname].clone();
                     if let Some((_, obs_ty)) = info.observations.iter().find(|(o, _)| *o == name) {
                         let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
@@ -2852,7 +2890,7 @@ impl<'a> Checker<'a> {
                         return Ok(self.ty_of_ast(obs_ty, &mut subst));
                     }
                 }
-                self.infer_field(&rec_ty, name)
+                self.infer_field(rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
                 let (ty, fields, spread) = (ty.map(|t| self.text(t)), self.ast.slice(*fields), *spread);
@@ -2878,15 +2916,15 @@ impl<'a> Checker<'a> {
             Expr::Array { size } => {
                 let size = *size;
                 let ts = self.infer(size)?;
-                self.eng
-                    .unify(&ts, &Type::con(ty::INT), "in an array size")?;
-                Ok(Type::con(ty::ARRAY))
+                let i = self.eng.types.con(ty::INT);
+                self.eng.unify(ts, i, "in an array size")?;
+                Ok(self.eng.types.con(ty::ARRAY))
             }
             Expr::With { subject, body } => {
                 let (subject, body) = (*subject, *body);
                 let subject_ty = self.infer(subject)?;
                 self.enter_scope();
-                let names = self.scope_struct_fields(&subject_ty)?;
+                let names = self.scope_struct_fields(subject_ty)?;
                 self.with_fields.insert(e, names);
                 let t = self.infer(body);
                 self.leave_scope();
@@ -2903,7 +2941,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Extern { .. } => {
                 let v = self.eng.fresh();
-                self.extern_tys.insert(e, v.clone());
+                self.extern_tys.insert(e, v);
                 Ok(v)
             }
 
@@ -2913,7 +2951,7 @@ impl<'a> Checker<'a> {
                 let (expr, ty) = (*expr, *ty);
                 let mut tvars = HashMap::new();
                 let t = self.ty_of_ast(ty, &mut tvars);
-                self.check(expr, &t)?;
+                self.check(expr, t)?;
                 Ok(t)
             }
 
@@ -2976,14 +3014,14 @@ impl<'a> Checker<'a> {
         // the ambient extended with each DISTINCT handled effect (several clauses
         // may handle one effect, e.g. get/put both belong to State), the handle
         // expression itself under the outer ambient.
-        let mut inner = self.ambient.clone();
+        let mut inner = self.ambient;
         let mut seen: HashSet<String> = HashSet::new();
         for clause in self.ast.slice(handler.clauses).iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
             if let Some(eff_name) = self.op_owner(effect, op) {
                 if seen.insert(eff_name.clone()) {
-                    inner = Type::row_extend(&eff_name, inner);
+                    inner = self.eng.types.row_extend(&eff_name, inner);
                 }
             }
         }
@@ -2997,8 +3035,8 @@ impl<'a> Checker<'a> {
             let op = self.text(clause.op);
             let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
                 Some(scheme) => {
-                    let inst = self.eng.instantiate(&scheme);
-                    let (a, r, _) = self.arrow_parts(&inst)?;
+                    let inst = self.eng.instantiate(scheme);
+                    let (a, r, _) = self.arrow_parts(inst)?;
                     (a, r)
                 }
                 None => (self.eng.fresh(), self.eng.fresh()),
@@ -3007,13 +3045,11 @@ impl<'a> Checker<'a> {
             self.bind(self.text(clause.arg), arg_ty);
             // Deep handler: resuming continues the computation under the outer
             // ambient, so `k : Res -[amb]-> R`.
-            let amb = self.ambient.clone();
-            self.bind(
-                self.text(handler.continuation),
-                Type::arrow_eff(res_ty, result.clone(), amb),
-            );
+            let amb = self.ambient;
+            let k_ty = self.eng.types.arrow_eff(res_ty, result, amb);
+            self.bind(self.text(handler.continuation), k_ty);
             let cb = self.infer(clause.body)?;
-            self.eng.unify(&cb, &result, "in a handler clause")?;
+            self.eng.unify(cb, result, "in a handler clause")?;
             self.leave_scope();
         }
         match &handler.default {
@@ -3021,18 +3057,18 @@ impl<'a> Checker<'a> {
                 self.enter_scope();
                 self.bind(self.text(*name), body_ty);
                 let eb = self.infer(*else_body)?;
-                self.eng.unify(&eb, &result, "in a handler 'else' clause")?;
+                self.eng.unify(eb, result, "in a handler 'else' clause")?;
                 self.leave_scope();
             }
             // With no `else` clause the return (value) case defaults to identity,
             // so the body's result becomes the handler's result. When they differ
             // the handler needs an `else` clause to convert the body's value.
             None => {
-                if self.eng.unify(&body_ty, &result, "in a handled body").is_err() {
+                if self.eng.unify(body_ty, result, "in a handled body").is_err() {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
                         "the body produces {}, but the handler's clauses produce {}",
-                        self.eng.show(&body_ty), self.eng.show(&result);
+                        self.eng.show(body_ty), self.eng.show(result);
                         note: "with no `else` clause the body's result is returned unchanged; add an `else x => ...` clause to convert it"
                     ));
                 }
@@ -3072,7 +3108,7 @@ impl<'a> Checker<'a> {
                 return Ok(arrow);
             }
             return match self.qualified_candidates(m, name) {
-                Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(&cands[0])),
+                Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(cands[0])),
                 _ => Ok(self.eng.fresh()),
             };
         }
@@ -3107,7 +3143,7 @@ impl<'a> Checker<'a> {
             }
         }
         if let Some(scheme) = self.lookup(name) {
-            Ok(self.eng.instantiate(&scheme))
+            Ok(self.eng.instantiate(scheme))
         } else if self.overloads.contains_key(name) {
             Ok(self.eng.fresh())
         } else if self.lenient {
@@ -3147,7 +3183,7 @@ impl<'a> Checker<'a> {
         for (idx, (implname, reqty)) in reqs.iter().enumerate() {
             if let Some((ov, rest)) = &overrides {
                 if let Some(value) = self.find_override(ov, implname, reqs.len()) {
-                    self.check(value, reqty)?;
+                    self.check(value, *reqty)?;
                     slots.push(Some(ImplicitArg::Expr(value)));
                     continue;
                 }
@@ -3164,8 +3200,8 @@ impl<'a> Checker<'a> {
             }
             if self.shadowed_locally(implname) {
                 if let Some(t) = self.lookup(implname) {
-                    let inst = self.eng.instantiate(&t);
-                    self.unify_implicit(fname, implname, &inst, reqty)?;
+                    let inst = self.eng.instantiate(t);
+                    self.unify_implicit(fname, implname, inst, *reqty)?;
                     slots.push(Some(ImplicitArg::Bare(implname.to_string())));
                     continue;
                 }
@@ -3176,7 +3212,7 @@ impl<'a> Checker<'a> {
                 idx,
                 fname: fname.to_string(),
                 implname,
-                reqty: reqty.clone(),
+                reqty: *reqty,
             });
         }
         if let Some((ov, _)) = &overrides {
@@ -3191,9 +3227,9 @@ impl<'a> Checker<'a> {
     /// each fully-resolved site into [`Self::implicit_args`].
     fn resolve_pending_implicits(&mut self) -> Result<()> {
         for p in std::mem::take(&mut self.implicit_pending) {
-            let reqty = self.eng.zonk(&p.reqty);
+            let reqty = self.eng.zonk(p.reqty);
             let arg = self
-                .resolve_deferred_implicit(&p.fname, p.implname, &reqty)
+                .resolve_deferred_implicit(&p.fname, p.implname, reqty)
                 .map_err(|d| match self.ast.expr_span(p.site) {
                     Some(span) => d.fill_span(span),
                     None => d,
@@ -3223,21 +3259,21 @@ impl<'a> Checker<'a> {
         &mut self,
         fname: &str,
         implname: &'a str,
-        reqty: &Type,
+        reqty: Type,
     ) -> Result<ImplicitArg> {
         if let Some(cands) = self.overloads.get(implname).cloned() {
             return match self.match_implicit_overload(&cands, reqty) {
                 Some(idx) => {
-                    let inst = self.eng.instantiate(&cands[idx].ty);
-                    self.unify_implicit(fname, implname, &inst, reqty)?;
+                    let inst = self.eng.instantiate(cands[idx].ty);
+                    self.unify_implicit(fname, implname, inst, reqty)?;
                     Ok(self.implicit_global_ref(implname, &cands, idx))
                 }
                 None => Err(self.no_implicit(fname, implname, reqty)),
             };
         }
         if let Some(t) = self.lookup(implname) {
-            let inst = self.eng.instantiate(&t);
-            self.unify_implicit(fname, implname, &inst, reqty)?;
+            let inst = self.eng.instantiate(t);
+            self.unify_implicit(fname, implname, inst, reqty)?;
             let module = if self.local_defs.contains(implname) {
                 Some(self.module_name.to_string())
             } else {
@@ -3310,13 +3346,13 @@ impl<'a> Checker<'a> {
 
     /// The unique overload candidate whose type unifies with `reqty`, or `None`
     /// (no match, or several) so the caller reports it.
-    fn match_implicit_overload(&mut self, cands: &[Cand<'a>], reqty: &Type) -> Option<usize> {
+    fn match_implicit_overload(&mut self, cands: &[Cand<'a>], reqty: Type) -> Option<usize> {
         let mut found = None;
         let mut count = 0;
         for (i, c) in cands.iter().enumerate() {
             let save = self.eng.save();
-            let inst = self.eng.instantiate(&c.ty);
-            let ok = self.eng.unify(&inst, reqty, "resolving an implicit").is_ok();
+            let inst = self.eng.instantiate(c.ty);
+            let ok = self.eng.unify(inst, reqty, "resolving an implicit").is_ok();
             self.eng.restore(save);
             if ok {
                 count += 1;
@@ -3337,7 +3373,10 @@ impl<'a> Checker<'a> {
         let cand = &cands[idx];
         let name = match cand.module {
             Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
-                overload_key(implname, &self.eng.zonk(&cand.ty))
+                {
+                    let z = self.eng.zonk(cand.ty);
+                    overload_key(&self.eng.types, implname, z)
+                }
             }
             _ => implname.to_string(),
         };
@@ -3354,8 +3393,8 @@ impl<'a> Checker<'a> {
         &mut self,
         fname: &str,
         implname: &str,
-        actual: &Type,
-        reqty: &Type,
+        actual: Type,
+        reqty: Type,
     ) -> Result<()> {
         self.eng.unify(
             actual,
@@ -3364,7 +3403,7 @@ impl<'a> Checker<'a> {
         )
     }
 
-    fn no_implicit(&self, fname: &str, implname: &str, reqty: &Type) -> Diagnostic {
+    fn no_implicit(&self, fname: &str, implname: &str, reqty: Type) -> Diagnostic {
         diag!(
             Code::TypeMismatch, Span::at(0), 0,
             "no `{implname}` in scope to satisfy the `@ctx` requirement of `{fname}`"
@@ -3392,16 +3431,16 @@ impl<'a> Checker<'a> {
         // sequence share. A tensor keeps the path below: its result SHAPE is computed
         // from the slots, which no hook signature can express.
         if let [SliceSlot::Range(lo, hi)] = slots {
-            if self.tensor_parts(&rt).is_none() {
+            if self.tensor_parts(rt).is_none() {
                 let (lo, hi) = (*lo, *hi);
                 let cands = self.hook_candidates(HOOK_SLICE);
-                let int = Type::con(ty::INT);
+                let int = self.eng.types.con(ty::INT);
                 let result = self.eng.fresh();
                 let save = self.eng.save();
-                let args = [rt.clone(), int.clone(), int.clone()];
-                if let Some(idx) = self.resolve_hook(&cands, &args, &result) {
-                    self.check(lo, &int)?;
-                    self.check(hi, &int)?;
+                let args = [rt, int, int];
+                if let Some(idx) = self.resolve_hook(&cands, &args, result) {
+                    self.check(lo, int)?;
+                    self.check(hi, int)?;
                     self.record_literal_hook(site, HOOK_SLICE, &cands, idx);
                     return Ok(result);
                 }
@@ -3413,28 +3452,28 @@ impl<'a> Checker<'a> {
         // A fresh variance var per sliced axis, so the receiver may have any
         // variance and each kept axis carries its own variance through unchanged.
         let vars: Vec<Type> = (0..slots.len()).map(|_| self.eng.fresh()).collect();
-        let mut expected = elem.clone();
+        let mut expected = elem;
         for i in (0..slots.len()).rev() {
-            expected = tensor_type(vars[i].clone(), dims[i].clone(), expected);
+            expected = tensor_type(&self.eng.types, vars[i], dims[i], expected);
         }
-        self.eng.unify(&rt, &expected, "slicing a tensor")?;
+        self.eng.unify(rt, expected, "slicing a tensor")?;
 
-        let int = Type::con(ty::INT);
+        let int = self.eng.types.con(ty::INT);
         let mut kept: Vec<(Type, Type)> = Vec::new();
         for (i, s) in slots.iter().enumerate() {
             match s {
-                SliceSlot::Index(x) => self.check(*x, &int)?,
+                SliceSlot::Index(x) => self.check(*x, int)?,
                 SliceSlot::Range(lo, hi) => {
-                    self.check(*lo, &int)?;
-                    self.check(*hi, &int)?;
-                    kept.push((vars[i].clone(), self.eng.fresh_nat()));
+                    self.check(*lo, int)?;
+                    self.check(*hi, int)?;
+                    kept.push((vars[i], self.eng.fresh_nat()));
                 }
-                SliceSlot::Full => kept.push((vars[i].clone(), dims[i].clone())),
+                SliceSlot::Full => kept.push((vars[i], dims[i])),
             }
         }
         let mut result = elem;
         for (v, d) in kept.iter().rev() {
-            result = tensor_type(v.clone(), d.clone(), result);
+            result = tensor_type(&self.eng.types, *v, *d, result);
         }
         Ok(result)
     }
@@ -3483,18 +3522,23 @@ impl<'a> Checker<'a> {
                 // under a pure ambient, so its operand must be pure (a meta op in
                 // it is a "effect `@meta` not handled" error; use `@run`).
                 let ambient = if n == "@run" {
-                    Type::row_extend("@meta", Type::RowEmpty)
+                    {
+                        let empty = self.eng.types.row_empty();
+                        self.eng.types.row_extend("@meta", empty)
+                    }
                 } else {
-                    Type::RowEmpty
+                    self.eng.types.row_empty()
                 };
                 let saved = std::mem::replace(&mut self.ambient, ambient);
                 let arg_ty = self.infer(args[0]);
                 self.ambient = saved;
                 let arg_ty = arg_ty?;
-                return Ok(match self.eng.zonk(&arg_ty) {
-                    Type::Con(cn) if cn == "@code" => self.eng.fresh(),
-                    _ => arg_ty,
-                });
+                let z = self.eng.zonk(arg_ty);
+                let is_code = matches!(
+                    self.eng.types.node(z),
+                    TypeNode::Con(cn) if self.eng.types.name(cn) == "@code"
+                );
+                return Ok(if is_code { self.eng.fresh() } else { arg_ty });
             }
         }
 
@@ -3531,10 +3575,10 @@ impl<'a> Checker<'a> {
                         // inside a generic instance body (dictionaries present) and
                         // only when such a dictionary exists (else defer normally).
                         if has_dicts {
-                            if let Some(v) = self.bare_var_id(&arg_tys[0]) {
+                            if let Some(v) = self.bare_var_id(arg_tys[0]) {
                                 let narrowed: Vec<Cand> = cands
                                     .iter()
-                                    .filter(|c| self.first_domain_is_var(&c.ty, v))
+                                    .filter(|c| self.first_domain_is_var(c.ty, v))
                                     .cloned()
                                     .collect();
                                 if !narrowed.is_empty() {
@@ -3573,13 +3617,13 @@ impl<'a> Checker<'a> {
 
         let mut tf = self.infer(head)?;
         for a in &args {
-            let (param, result, eff) = self.arrow_parts(&tf)?;
+            let (param, result, eff) = self.arrow_parts(tf)?;
             // The callee may perform at most what the ambient allows; performing
             // an operation (whose latent row is `<Effect | mu>`) forces its effect
             // into the ambient here.
-            let amb = self.ambient.clone();
-            self.eng.subrow(&eff, &amb, "in a function application")?;
-            self.check(*a, &param)?;
+            let amb = self.ambient;
+            self.eng.subrow(eff, amb, "in a function application")?;
+            self.check(*a, param)?;
             tf = result;
         }
         Ok(tf)
@@ -3604,18 +3648,19 @@ impl<'a> Checker<'a> {
     /// codata / alias), following an application spine (`MyVec Int` -> `MyVec`). A
     /// builtin, a variable, a tuple, or a function returns `None`, so a construction
     /// hook only ever intercepts a literal aimed at a user type.
-    fn user_type_head(&self, ty: &Type) -> Option<String> {
+    fn user_type_head(&self, ty: Type) -> Option<String> {
         let mut cur = self.eng.resolve(ty);
         loop {
-            match cur {
-                Type::App(head, _) => cur = self.eng.resolve(&head),
-                Type::Con(name) => {
-                    let n = name.as_str();
-                    return (self.structs.contains_key(n)
-                        || self.unions.contains_key(n)
-                        || self.codata.contains_key(n)
-                        || self.aliases.contains_key(n))
-                    .then_some(name);
+            match self.eng.types.node(cur) {
+                TypeNode::App(head, _) => cur = self.eng.resolve(head),
+                TypeNode::Con(name) => {
+                    let n = self.eng.types.name(name);
+                    let k = n.as_str();
+                    return (self.structs.contains_key(k)
+                        || self.unions.contains_key(k)
+                        || self.codata.contains_key(k)
+                        || self.aliases.contains_key(k))
+                    .then_some(n);
                 }
                 _ => return None,
             }
@@ -3628,16 +3673,19 @@ impl<'a> Checker<'a> {
     /// at `site` for lowering, and returns `true`; otherwise it leaves the engine
     /// untouched and returns `false`, so the literal falls back to its built-in
     /// default (which lowering folds to a plain constant).
-    fn literal_hook_check(&mut self, e: Aol<Expr>, expected: &Type) -> Result<bool> {
+    fn literal_hook_check(&mut self, e: Aol<Expr>, expected: Type) -> Result<bool> {
         let (hook, args, elem) = match self.node(e) {
-            Expr::Str(_) => (HOOK_STRING, vec![Type::con(ty::STR)], None),
-            Expr::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)], None),
-            Expr::Real(_) => (HOOK_REAL, vec![Type::con("@float64")], None),
+            Expr::Str(_) => (HOOK_STRING, vec![self.eng.types.con(ty::STR)], None),
+            Expr::Int(_) => (HOOK_INTEGER, vec![self.eng.types.con(ty::INT)], None),
+            Expr::Real(_) => (HOOK_REAL, vec![self.eng.types.con("@float64")], None),
             Expr::List(_) => {
                 let elem = self.eng.fresh();
                 (
                     HOOK_SEQUENCE,
-                    vec![Type::app(Type::con(ty::VEC), elem.clone())],
+                    vec![{
+                        let c = self.eng.types.con(ty::VEC);
+                        self.eng.types.app(c, elem)
+                    }],
                     Some(elem),
                 )
             }
@@ -3655,10 +3703,10 @@ impl<'a> Checker<'a> {
         let mut count = 0;
         for (idx, cand) in cands.iter().enumerate() {
             let save = self.eng.save();
-            let ok = self.apply_overload(&cand.ty, &args, &result).is_ok()
+            let ok = self.apply_overload(cand.ty, &args, result).is_ok()
                 && self
                     .eng
-                    .unify(&result, expected, "in a literal construction hook")
+                    .unify(result, expected, "in a literal construction hook")
                     .is_ok();
             self.eng.restore(save);
             if ok {
@@ -3669,14 +3717,14 @@ impl<'a> Checker<'a> {
         let Some(idx) = chosen.filter(|_| count == 1) else {
             return Ok(false);
         };
-        self.apply_overload(&cands[idx].ty, &args, &result)?;
+        self.apply_overload(cands[idx].ty, &args, result)?;
         self.eng
-            .unify(&result, expected, "in a literal construction hook")?;
+            .unify(result, expected, "in a literal construction hook")?;
         // A sequence literal checks each element against the payload's element type.
         if let (Expr::List(items), Some(elem)) = (self.node(e), elem) {
             let items = self.ast.slice(*items);
             for it in items.iter() {
-                self.check(*it, &elem)?;
+                self.check(*it, elem)?;
             }
         }
         self.record_literal_hook(e, hook, &cands, idx);
@@ -3693,7 +3741,7 @@ impl<'a> Checker<'a> {
         site: Aol<Expr>,
         lo: Aol<Expr>,
         hi: Option<Aol<Expr>>,
-        expected: Option<&Type>,
+        expected: Option<Type>,
     ) -> Result<Type> {
         let name = if hi.is_some() { HOOK_RANGE } else { HOOK_RANGE_FROM };
         let cands = self.hook_candidates(name);
@@ -3711,11 +3759,11 @@ impl<'a> Checker<'a> {
         let result = self.eng.fresh();
         if let Some(exp) = expected {
             let save = self.eng.save();
-            if self.eng.unify(&result, exp, "in a range").is_err() {
+            if self.eng.unify(result, exp, "in a range").is_err() {
                 self.eng.restore(save);
             }
         }
-        let Some(idx) = self.resolve_hook(&cands, &args, &result) else {
+        let Some(idx) = self.resolve_hook(&cands, &args, result) else {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
                 "no single `{name}` overload fits this range";
@@ -3723,19 +3771,19 @@ impl<'a> Checker<'a> {
             ));
         };
         self.record_literal_hook(site, name, &cands, idx);
-        Ok(self.eng.zonk(&result))
+        Ok(self.eng.zonk(result))
     }
 
     /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
     /// committing it (the unification persists) and returning its index; `None` when
     /// zero or several match. Every trial rolls back, so only the committed unique
     /// match leaves the engine changed.
-    fn resolve_hook(&mut self, cands: &[Cand<'a>], args: &[Type], result: &Type) -> Option<usize> {
+    fn resolve_hook(&mut self, cands: &[Cand<'a>], args: &[Type], result: Type) -> Option<usize> {
         let mut chosen = None;
         let mut count = 0;
         for (idx, cand) in cands.iter().enumerate() {
             let save = self.eng.save();
-            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
+            let ok = self.apply_overload(cand.ty, args, result).is_ok();
             self.eng.restore(save);
             if ok {
                 count += 1;
@@ -3743,7 +3791,7 @@ impl<'a> Checker<'a> {
             }
         }
         let idx = chosen.filter(|_| count == 1)?;
-        self.apply_overload(&cands[idx].ty, args, result).ok()?;
+        self.apply_overload(cands[idx].ty, args, result).ok()?;
         Some(idx)
     }
 
@@ -3754,7 +3802,10 @@ impl<'a> Checker<'a> {
         let module = cands[idx].module;
         let emit = match module {
             Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
-                overload_key(name, &self.eng.zonk(&cands[idx].ty))
+                {
+                    let z = self.eng.zonk(cands[idx].ty);
+                    overload_key(&self.eng.types, name, z)
+                }
             }
             _ => name.to_string(),
         };
@@ -3772,9 +3823,9 @@ impl<'a> Checker<'a> {
     /// expression does.
     fn pattern_literal_hook(&mut self, pat: &Pattern) -> Option<(&'static str, Vec<Type>)> {
         Some(match pat {
-            Pattern::Str(_) => (HOOK_STRING, vec![Type::con(ty::STR)]),
-            Pattern::Int(_) => (HOOK_INTEGER, vec![Type::con(ty::INT)]),
-            Pattern::Real(_) => (HOOK_REAL, vec![Type::con("@float64")]),
+            Pattern::Str(_) => (HOOK_STRING, vec![self.eng.types.con(ty::STR)]),
+            Pattern::Int(_) => (HOOK_INTEGER, vec![self.eng.types.con(ty::INT)]),
+            Pattern::Real(_) => (HOOK_REAL, vec![self.eng.types.con("@float64")]),
             _ => return None,
         })
     }
@@ -3786,7 +3837,7 @@ impl<'a> Checker<'a> {
     fn sequence_pattern_hook_check(
         &mut self,
         pat: Aol<Pattern>,
-        expected: &Type,
+        expected: Type,
     ) -> Result<Option<Type>> {
         let cands = self.hook_candidates(HOOK_SEQVIEW);
         if cands.is_empty() {
@@ -3794,16 +3845,15 @@ impl<'a> Checker<'a> {
         }
         let save = self.eng.save();
         let result = self.eng.fresh();
-        if let Some(idx) = self.resolve_hook(&cands, &[expected.clone()], &result) {
+        if let Some(idx) = self.resolve_hook(&cands, &[expected], result) {
             // The hook returns `SeqView <seq> <elem>`; pull the element type out.
             let elem = self.eng.fresh();
-            let want = Type::app(
-                Type::app(Type::con(SEQVIEW_TYPE), expected.clone()),
-                elem.clone(),
-            );
+            let sv = self.eng.types.con(SEQVIEW_TYPE);
+            let head = self.eng.types.app(sv, expected);
+            let want = self.eng.types.app(head, elem);
             if self
                 .eng
-                .unify(&result, &want, "in a sequence-view hook")
+                .unify(result, want, "in a sequence-view hook")
                 .is_ok()
             {
                 let used = self.hook_use(HOOK_SEQVIEW, &cands, idx);
@@ -3819,16 +3869,14 @@ impl<'a> Checker<'a> {
     /// scrutinee already fixed to `@vec`) resolves via its `sequence_view` hook;
     /// otherwise the scrutinee DEFAULTS to `@vec elem` and resolves through `@vec`'s
     /// view. Records the hook at `pat` either way.
-    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<Type> {
+    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<Type> {
         if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
             return Ok(elem);
         }
         let elem = self.eng.fresh();
-        self.eng.unify(
-            expected,
-            &Type::app(Type::con(ty::VEC), elem.clone()),
-            "in a sequence pattern",
-        )?;
+        let vec_con = self.eng.types.con(ty::VEC);
+        let want = self.eng.types.app(vec_con, elem);
+        self.eng.unify(expected, want, "in a sequence pattern")?;
         Ok(self.sequence_pattern_hook_check(pat, expected)?.unwrap_or(elem))
     }
 
@@ -3838,7 +3886,7 @@ impl<'a> Checker<'a> {
     /// On success records both hooks at `pat` for lowering and returns `true`;
     /// otherwise leaves the engine untouched and returns `false` (the caller applies
     /// the built-in literal-pattern typing).
-    fn literal_pattern_hook_check(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<bool> {
+    fn literal_pattern_hook_check(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<bool> {
         if self.user_type_head(expected).is_none() {
             return Ok(false);
         }
@@ -3851,11 +3899,12 @@ impl<'a> Checker<'a> {
             return Ok(false);
         }
         let save = self.eng.save();
+        let bool_ty = self.eng.types.con(ty::BOOL);
         let build = self.resolve_hook(&build_cands, &args, expected);
         let eq = self.resolve_hook(
             &eq_cands,
-            &[expected.clone(), expected.clone()],
-            &Type::con(ty::BOOL),
+            &[expected, expected],
+            bool_ty,
         );
         match (build, eq) {
             (Some(bi), Some(ei)) => {
@@ -3873,23 +3922,29 @@ impl<'a> Checker<'a> {
 
     /// The variable id of `ty` if it is (resolves to) a bare type variable, used to
     /// narrow local `@ctx` dictionary resolution by identity.
-    fn bare_var_id(&mut self, ty: &Type) -> Option<VarId> {
-        match self.eng.zonk(ty) {
-            Type::Var(id) => Some(id),
+    fn bare_var_id(&mut self, ty: Type) -> Option<VarId> {
+        match self.eng.types.node(self.eng.zonk(ty)) {
+            TypeNode::Var(id) => Some(id),
             _ => None,
         }
     }
 
     /// Whether `ty`'s first parameter is exactly the type variable `v` (a `@ctx`
     /// dictionary `v -> ...`). An overload with a concrete or applied domain is not.
-    fn first_domain_is_var(&mut self, ty: &Type, v: VarId) -> bool {
-        matches!(self.eng.zonk(ty), Type::Arrow(from, _, _) if matches!(self.eng.zonk(&from), Type::Var(id) if id == v))
+    fn first_domain_is_var(&mut self, ty: Type, v: VarId) -> bool {
+        let z = self.eng.zonk(ty);
+        let TypeNode::Arrow(from, _, _) = self.eng.types.node(z) else {
+            return false;
+        };
+        let f = self.eng.zonk(from);
+        matches!(self.eng.types.node(f), TypeNode::Var(id) if id == v)
     }
 
     /// Whether `ty` IS exactly the type variable `v` (a nullary `@ctx` dictionary
     /// `empty : v`), used to select it by the expected type at a value use site.
-    fn type_is_var(&mut self, ty: &Type, v: VarId) -> bool {
-        matches!(self.eng.zonk(ty), Type::Var(id) if id == v)
+    fn type_is_var(&mut self, ty: Type, v: VarId) -> bool {
+        let z = self.eng.zonk(ty);
+        matches!(self.eng.types.node(z), TypeNode::Var(id) if id == v)
     }
 
     fn resolve_overload(
@@ -3900,10 +3955,10 @@ impl<'a> Checker<'a> {
         site: Option<Aol<Expr>>,
     ) -> Result<Type> {
         let result = self.eng.fresh();
-        match self.match_overload(candidates, args, &result) {
+        match self.match_overload(candidates, args, result) {
             Match::Unique(idx) => {
                 let cand = candidates[idx].clone();
-                self.apply_overload_cand(&cand, args, &result, site, name)?;
+                self.apply_overload_cand(&cand, args, result, site, name)?;
                 self.record_overload(site, name, candidates, idx);
                 Ok(result)
             }
@@ -3917,7 +3972,7 @@ impl<'a> Checker<'a> {
                     name: name.to_string(),
                     candidates: candidates.to_vec(),
                     args: args.to_vec(),
-                    result: result.clone(),
+                    result: result,
                     site,
                 });
                 Ok(result)
@@ -3957,7 +4012,10 @@ impl<'a> Checker<'a> {
         self.record_call(site, module);
         if let (Some(site), Some(m)) = (site, module) {
             if candidates.iter().filter(|c| c.module == Some(m)).count() > 1 {
-                let key = overload_key(name, &self.eng.zonk(&candidates[idx].ty));
+                let key = {
+                    let z = self.eng.zonk(candidates[idx].ty);
+                    overload_key(&self.eng.types, name, z)
+                };
                 self.overload_calls.insert(site, key);
             }
         }
@@ -3967,7 +4025,7 @@ impl<'a> Checker<'a> {
     /// last-resort tier get a turn (see [`Cand::fallback`]). An *ambiguity* among
     /// ordinary candidates is not a miss: it is deferred, and `solve_pending`
     /// reaches for the fallback tier once nothing else can break the tie.
-    fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: &Type) -> Match {
+    fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: Type) -> Match {
         match self.match_tier(candidates, args, result, false) {
             Match::None => self.match_tier(candidates, args, result, true),
             m => m,
@@ -3979,7 +4037,7 @@ impl<'a> Checker<'a> {
         &mut self,
         candidates: &[Cand<'a>],
         args: &[Type],
-        result: &Type,
+        result: Type,
         fallback: bool,
     ) -> Match {
         let mut matched = None;
@@ -3989,7 +4047,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             let save = self.eng.save();
-            let ok = self.apply_overload(&cand.ty, args, result).is_ok();
+            let ok = self.apply_overload(cand.ty, args, result).is_ok();
             self.eng.restore(save);
             if ok {
                 count += 1;
@@ -4009,10 +4067,10 @@ impl<'a> Checker<'a> {
             let mut progress = false;
             let mut still = Vec::new();
             for p in batch {
-                match self.match_overload(&p.candidates, &p.args, &p.result) {
+                match self.match_overload(&p.candidates, &p.args, p.result) {
                     Match::Unique(idx) => {
                         let cand = p.candidates[idx].clone();
-                        self.apply_overload_cand(&cand, &p.args, &p.result, p.site, &p.name)?;
+                        self.apply_overload_cand(&cand, &p.args, p.result, p.site, &p.name)?;
                         self.record_overload(p.site, &p.name, &p.candidates, idx);
                         progress = true;
                     }
@@ -4072,9 +4130,9 @@ impl<'a> Checker<'a> {
         let mut progress = false;
         let mut still = Vec::new();
         for p in batch {
-            if let Match::Unique(idx) = self.match_tier(&p.candidates, &p.args, &p.result, true) {
+            if let Match::Unique(idx) = self.match_tier(&p.candidates, &p.args, p.result, true) {
                 let cand = p.candidates[idx].clone();
-                self.apply_overload_cand(&cand, &p.args, &p.result, p.site, &p.name)?;
+                self.apply_overload_cand(&cand, &p.args, p.result, p.site, &p.name)?;
                 self.record_overload(p.site, &p.name, &p.candidates, idx);
                 progress = true;
                 continue;
@@ -4097,18 +4155,18 @@ impl<'a> Checker<'a> {
         let mut progress = false;
         let mut still = Vec::new();
         for p in batch {
-            let result = self.eng.resolve(&p.result);
-            if !self.is_int_scalar(&result) {
+            let result = self.eng.resolve(p.result);
+            if !self.is_int_scalar(result) {
                 still.push(p);
                 continue;
             }
             let save = self.eng.save();
             let mut pinned = true;
             for a in &p.args {
-                if matches!(self.eng.resolve(a), Type::Var(_))
+                if matches!(self.eng.head(*a), TypeNode::Var(_))
                     && self
                         .eng
-                        .unify(a, &result, "numeric operand adopting result type")
+                        .unify(*a, result, "numeric operand adopting result type")
                         .is_err()
                 {
                     pinned = false;
@@ -4116,9 +4174,9 @@ impl<'a> Checker<'a> {
                 }
             }
             if pinned {
-                if let Match::Unique(idx) = self.match_overload(&p.candidates, &p.args, &p.result) {
-                    let cand_ty = p.candidates[idx].ty.clone();
-                    self.apply_overload(&cand_ty, &p.args, &p.result)?;
+                if let Match::Unique(idx) = self.match_overload(&p.candidates, &p.args, p.result) {
+                    let cand_ty = p.candidates[idx].ty;
+                    self.apply_overload(cand_ty, &p.args, p.result)?;
                     self.record_overload(p.site, &p.name, &p.candidates, idx);
                     progress = true;
                     continue;
@@ -4133,49 +4191,51 @@ impl<'a> Checker<'a> {
 
     /// Whether `ty` is a record whose row is closed (ends in `RowEmpty`, so its
     /// fields are fully known) rather than open (a tail variable).
-    fn record_is_closed(&self, ty: &Type) -> bool {
-        let Type::Record(row) = self.eng.resolve(ty) else {
+    fn record_is_closed(&self, ty: Type) -> bool {
+        let TypeNode::Record(row) = self.eng.head(ty) else {
             return false;
         };
-        let mut cur = (*row).clone();
+        let mut cur = row;
         loop {
-            match self.eng.resolve(&cur) {
-                Type::RowField(_, _, rest) => cur = *rest,
-                Type::RowEmpty => return true,
+            match self.eng.head(cur) {
+                TypeNode::RowField(_, _, rest) => cur = rest,
+                TypeNode::RowEmpty => return true,
                 _ => return false,
             }
         }
     }
 
     /// Whether `ty` resolves to a not-yet-defaulted numeric-literal variable.
-    fn is_numeric(&self, ty: &Type) -> bool {
+    fn is_numeric(&self, ty: Type) -> bool {
         let r = self.eng.resolve(ty);
-        matches!(r, Type::Var(_)) && self.numeric.iter().any(|(n, _)| self.eng.resolve(n) == r)
+        matches!(self.eng.types.node(r), TypeNode::Var(_))
+            && self.numeric.iter().any(|(n, _)| self.eng.resolve(*n) == r)
     }
 
     fn default_numerics(&mut self) -> Result<bool> {
         let vars = std::mem::take(&mut self.numeric);
         let mut changed = false;
         for (t, span) in &vars {
-            match self.eng.resolve(t) {
+            match self.eng.head(*t) {
                 // Still unconstrained: default to `Int`.
-                Type::Var(_) => {
+                TypeNode::Var(_) => {
                     self.eng
-                        .unify(t, &Type::con(ty::INT), "defaulting an integer literal")?;
+                        .unify(*t, self.eng.types.con(ty::INT), "defaulting an integer literal")?;
                     changed = true;
                 }
                 // Pinned to a numeric type by use: fine.
-                Type::Con(name) if is_numeric_type(&name) => {}
+                TypeNode::Con(name) if is_numeric_type(&self.eng.types.name(name)) => {}
                 // Pinned to a genuinely UNKNOWN con (a typo'd type): let that type's
                 // own "unknown type" diagnostic surface instead of the numeric error.
-                Type::Con(name) if !self.is_known_type(&name) => {}
+                TypeNode::Con(name) if !self.is_known_type(&self.eng.types.name(name)) => {}
                 // Pinned to a known non-numeric type (e.g. `if 1` wants `@bool`): a
                 // bare literal is a number, so this is a type error, not a coercion.
-                other => {
+                _ => {
+                    let shown = self.show(*t);
                     return Err(diag!(
                         Code::TypeMismatch, *span, 0,
                         "a numeric literal cannot be used where `{}` is expected",
-                        self.show(&other)
+                        shown
                     ));
                 }
             }
@@ -4184,7 +4244,7 @@ impl<'a> Checker<'a> {
     }
 
     fn no_overload(&self, name: &str, args: &[Type], site: Option<Aol<Expr>>) -> Diagnostic {
-        let shown: Vec<String> = args.iter().map(|a| self.show(a)).collect();
+        let shown: Vec<String> = args.iter().map(|a| self.show(*a)).collect();
         let mut d = diag!(
             Code::TypeMismatch, Span::at(0), 0,
             "no viable overload of `{name}` for argument types ({})",
@@ -4196,23 +4256,20 @@ impl<'a> Checker<'a> {
         d
     }
 
-    fn apply_overload(&mut self, candidate: &Type, args: &[Type], result: &Type) -> Result<()> {
+    fn apply_overload(&mut self, candidate: Type, args: &[Type], result: Type) -> Result<()> {
         let mut f = self.eng.instantiate(candidate);
         for a in args {
             let next = self.eng.fresh();
             let eff = self.eng.fresh();
-            self.eng.unify(
-                &f,
-                &Type::arrow_eff(a.clone(), next.clone(), eff.clone()),
-                "in an overloaded application",
-            )?;
+            let want = self.eng.types.arrow_eff(*a, next, eff);
+            self.eng.unify(f, want, "in an overloaded application")?;
             // An effectful operation resolved by overload still injects its effect
             // into the ambient (same as a plain call; see `infer_app`).
-            let amb = self.ambient.clone();
-            self.eng.subrow(&eff, &amb, "in an overloaded application")?;
+            let amb = self.ambient;
+            self.eng.subrow(eff, amb, "in an overloaded application")?;
             f = next;
         }
-        self.eng.unify(&f, result, "in an overloaded application")
+        self.eng.unify(f, result, "in an overloaded application")
     }
 
     /// Apply a resolved overload candidate to the argument types and, when it
@@ -4225,37 +4282,38 @@ impl<'a> Checker<'a> {
         &mut self,
         cand: &Cand<'a>,
         args: &[Type],
-        result: &Type,
+        result: Type,
         site: Option<Aol<Expr>>,
         name: &str,
     ) -> Result<()> {
         if cand.implicits.is_empty() {
-            return self.apply_overload(&cand.ty, args, result);
+            return self.apply_overload(cand.ty, args, result);
         }
-        let bundle: Vec<Type> = std::iter::once(cand.ty.clone())
-            .chain(cand.implicits.iter().map(|(_, t)| t.clone()))
+        let bundle: Vec<Type> = std::iter::once(cand.ty)
+            .chain(cand.implicits.iter().map(|(_, t)| *t))
             .collect();
         let inst = self.eng.instantiate_bundle(&bundle);
-        let mut f = inst[0].clone();
+        let mut f = inst[0];
         for a in args {
             let next = self.eng.fresh();
             let eff = self.eng.fresh();
+            let want = self.eng.types.arrow_eff(*a, next, eff);
             self.eng.unify(
-                &f,
-                &Type::arrow_eff(a.clone(), next.clone(), eff.clone()),
+                f,
+                want,
                 "in an overloaded application",
             )?;
-            let amb = self.ambient.clone();
-            self.eng.subrow(&eff, &amb, "in an overloaded application")?;
+            let amb = self.ambient;
+            self.eng.subrow(eff, amb, "in an overloaded application")?;
             f = next;
         }
-        self.eng.unify(&f, result, "in an overloaded application")?;
+        self.eng.unify(f, result, "in an overloaded application")?;
         if let Some(site) = site {
             let reqs: Vec<(&'a str, Type)> = cand
                 .implicits
                 .iter()
                 .enumerate()
-                .map(|(i, (n, _))| (*n, inst[i + 1].clone()))
+                .map(|(i, (n, _))| (*n, inst[i + 1]))
                 .collect();
             self.plan_implicits(site, name, &reqs)?;
         }
@@ -4275,7 +4333,7 @@ impl<'a> Checker<'a> {
             Pattern::Var(name) => {
                 let name = self.text(*name);
                 let v = self.eng.fresh();
-                self.bind(name, v.clone());
+                self.bind(name, v);
                 Some(v)
             }
             _ => None,
@@ -4287,22 +4345,22 @@ impl<'a> Checker<'a> {
             Some(sig) => {
                 let mut tvars = HashMap::new();
                 let sig_ty = self.ty_of_ast(sig, &mut tvars);
-                self.check(b.value, &sig_ty)?;
+                self.check(b.value, sig_ty)?;
                 sig_ty
             }
             None => self.infer(b.value)?,
         };
         if let Some(decl) = &declared {
             self.eng
-                .unify(decl, &value_ty, "in a recursive 'let' binding")?;
+                .unify(*decl, value_ty, "in a recursive 'let' binding")?;
         }
         self.eng.leave_level();
         let mono = self.pending_vars();
         match declared {
-            Some(decl) => self.eng.generalize_except(&decl, &mono),
+            Some(decl) => self.eng.generalize_except(decl, &mono),
             None => {
-                self.eng.generalize_except(&value_ty, &mono);
-                self.type_pattern(b.pat, &value_ty)?;
+                self.eng.generalize_except(value_ty, &mono);
+                self.type_pattern(b.pat, value_ty)?;
             }
         }
         Ok(())
@@ -4310,11 +4368,11 @@ impl<'a> Checker<'a> {
 
     // -- pattern typing -----------------------------------------------------
 
-    pub fn type_pattern(&mut self, pat: Aol<Pattern>, expected: &Type) -> Result<()> {
+    pub fn type_pattern(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<()> {
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
             Pattern::Var(name) => {
-                self.bind(self.text(*name), expected.clone());
+                self.bind(self.text(*name), expected);
                 Ok(())
             }
             Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
@@ -4322,17 +4380,17 @@ impl<'a> Checker<'a> {
             Pattern::Str(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Int(_) => {
                 self.eng
-                    .unify(expected, &Type::con(ty::INT), "in an integer pattern")
+                    .unify(expected, self.eng.types.con(ty::INT), "in an integer pattern")
             }
             Pattern::Real(_) => self
                 .eng
-                .unify(expected, &Type::con(ty::REAL), "in a real pattern"),
+                .unify(expected, self.eng.types.con(ty::REAL), "in a real pattern"),
             Pattern::Str(_) => self
                 .eng
-                .unify(expected, &Type::con(ty::STR), "in a string pattern"),
+                .unify(expected, self.eng.types.con(ty::STR), "in a string pattern"),
             Pattern::Bool(_) => {
                 self.eng
-                    .unify(expected, &Type::con(ty::BOOL), "in a boolean pattern")
+                    .unify(expected, self.eng.types.con(ty::BOOL), "in a boolean pattern")
             }
             Pattern::Range { lo, hi } => {
                 // Both bounds are typed against the scrutinee, so a range forces its
@@ -4349,16 +4407,16 @@ impl<'a> Checker<'a> {
             Pattern::StrPrefix { rest, .. } => {
                 let rest = *rest;
                 self.eng
-                    .unify(expected, &Type::con(ty::STR), "in a string-prefix pattern")?;
-                self.type_pattern(rest, &Type::con(ty::STR))
+                    .unify(expected, self.eng.types.con(ty::STR), "in a string-prefix pattern")?;
+                self.type_pattern(rest, self.eng.types.con(ty::STR))
             }
             Pattern::Tuple(pats) => {
                 let pats = self.ast.slice(*pats);
                 let vars: Vec<Type> = pats.iter().map(|_| self.eng.fresh()).collect();
-                self.eng
-                    .unify(expected, &Type::Tuple(vars.clone()), "in a tuple pattern")?;
+                let want = self.eng.types.tuple(vars.clone());
+                self.eng.unify(expected, want, "in a tuple pattern")?;
                 for (p, v) in pats.iter().zip(&vars) {
-                    self.type_pattern(*p, v)?;
+                    self.type_pattern(*p, *v)?;
                 }
                 Ok(())
             }
@@ -4367,7 +4425,7 @@ impl<'a> Checker<'a> {
                 // type, else the default `@vec`); the tail keeps the scrutinee's type.
                 let (head, tail) = (*head, *tail);
                 let elem = self.sequence_pattern_elem(pat, expected)?;
-                self.type_pattern(head, &elem)?;
+                self.type_pattern(head, elem)?;
                 self.type_pattern(tail, expected)
             }
             Pattern::List { elems, rest } => {
@@ -4377,7 +4435,7 @@ impl<'a> Checker<'a> {
                 let elem = self.sequence_pattern_elem(pat, expected)?;
                 let (elems, rest) = (self.ast.slice(*elems), *rest);
                 for e in elems.iter() {
-                    self.type_pattern(*e, &elem)?;
+                    self.type_pattern(*e, elem)?;
                 }
                 if let Some(rest) = rest {
                     self.type_pattern(rest, expected)?;
@@ -4412,7 +4470,7 @@ impl<'a> Checker<'a> {
         &mut self,
         fields: &'a [FieldPat],
         rest: Option<Aol<Pattern>>,
-        expected: &Type,
+        expected: Type,
     ) -> Result<()> {
         let tail = self.eng.fresh();
         let mut entries: Vec<(&'a str, Type, Option<Aol<Pattern>>)> = Vec::new();
@@ -4433,19 +4491,20 @@ impl<'a> Checker<'a> {
         let row = entries
             .iter()
             .rev()
-            .fold(tail.clone(), |rest, (n, t, _)| Type::row_field(n, t.clone(), rest));
-        self.eng
-            .unify(expected, &Type::record(row), "in a record pattern")?;
+            .fold(tail, |rest, (n, t, _)| self.eng.types.row_field(n, *t, rest));
+        let want = self.eng.types.record(row);
+        self.eng.unify(expected, want, "in a record pattern")?;
         for (name, t, pat) in entries {
             match pat {
-                Some(p) => self.type_pattern(p, &t)?,
+                Some(p) => self.type_pattern(p, t)?,
                 None => self.bind(name, t),
             }
         }
         // `..name` binds the leftover fields as a record over the row tail (which
         // unification has bound to the remaining fields); `.._` is a discard.
         if let Some(r) = rest {
-            self.type_pattern(r, &Type::record(tail))?;
+            let rec = self.eng.types.record(tail);
+            self.type_pattern(r, rec)?;
         }
         Ok(())
     }
@@ -4454,7 +4513,7 @@ impl<'a> Checker<'a> {
         &mut self,
         ty: &'a str,
         fields: &'a [FieldPat],
-        expected: &Type,
+        expected: Type,
     ) -> Result<()> {
         let info = match self.structs.get(ty).cloned() {
             Some(info) => info,
@@ -4462,7 +4521,7 @@ impl<'a> Checker<'a> {
         };
         let (args, mut subst) = self.instantiate_params(&info.params);
         self.eng
-            .unify(expected, &applied(ty, &args), "in a struct pattern")?;
+            .unify(expected, applied(&self.eng.types, ty, &args), "in a struct pattern")?;
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
@@ -4490,7 +4549,7 @@ impl<'a> Checker<'a> {
         ty: Option<&'a str>,
         tag: &'a str,
         fields: &'a [FieldPat],
-        expected: &Type,
+        expected: Type,
     ) -> Result<()> {
         let resolved = match ty {
             Some(n) => self.variant_sig(n, tag),
@@ -4502,7 +4561,7 @@ impl<'a> Checker<'a> {
             Some(r) => r,
             None => return self.bind_field_patterns_loose(fields),
         };
-        self.eng.unify(expected, &result, "in a variant pattern")?;
+        self.eng.unify(expected, result, "in a variant pattern")?;
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
@@ -4526,7 +4585,7 @@ impl<'a> Checker<'a> {
 
     fn bind_field_pattern(&mut self, pat: Aol<Pattern>, want: Option<Type>) -> Result<()> {
         let want = want.unwrap_or_else(|| self.eng.fresh());
-        self.type_pattern(pat, &want)
+        self.type_pattern(pat, want)
     }
 
     fn bind_field_patterns_loose(&mut self, fields: &'a [FieldPat]) -> Result<()> {
@@ -4534,7 +4593,7 @@ impl<'a> Checker<'a> {
             match f {
                 FieldPat::Named { pat, .. } | FieldPat::Positional(pat) => {
                     let v = self.eng.fresh();
-                    self.type_pattern(*pat, &v)?;
+                    self.type_pattern(*pat, v)?;
                 }
                 FieldPat::Shorthand(name) => {
                     let v = self.eng.fresh();
@@ -4628,25 +4687,27 @@ impl<'a> Checker<'a> {
     /// bound by name in `tvars` so `[n]T -> [n]U` shares the one size.
     fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         match self.tnode(ty) {
-            Ty::Nat(n) => Type::Nat(*n),
+            Ty::Nat(n) => self.eng.types.add(TypeNode::Nat(*n)),
             Ty::Var(name) => {
                 let name = self.text(*name);
                 let eng = &mut self.eng;
-                tvars.entry(name).or_insert_with(|| eng.fresh_nat()).clone()
+                *tvars.entry(name).or_insert_with(|| eng.fresh_nat())
             }
             Ty::SizeAdd(a, b) => {
                 let (a, b) = (*a, *b);
-                Type::NatAdd(
-                    Box::new(self.size_ty_of_ast(a, tvars)),
-                    Box::new(self.size_ty_of_ast(b, tvars)),
-                )
+                let (x, y) = (
+                    self.size_ty_of_ast(a, tvars),
+                    self.size_ty_of_ast(b, tvars),
+                );
+                self.eng.types.add(TypeNode::NatAdd(x, y))
             }
             Ty::SizeMul(a, b) => {
                 let (a, b) = (*a, *b);
-                Type::NatMul(
-                    Box::new(self.size_ty_of_ast(a, tvars)),
-                    Box::new(self.size_ty_of_ast(b, tvars)),
-                )
+                let (x, y) = (
+                    self.size_ty_of_ast(a, tvars),
+                    self.size_ty_of_ast(b, tvars),
+                );
+                self.eng.types.add(TypeNode::NatMul(x, y))
             }
             _ => self.ty_of_ast(ty, tvars),
         }
@@ -4663,12 +4724,13 @@ impl<'a> Checker<'a> {
 
     /// Peel a sized-tensor type `@tensor variance size elem` into `(size, elem)`,
     /// discarding the variance (callers here only need the length and element).
-    fn tensor_parts(&self, ty: &Type) -> Option<(Type, Type)> {
-        if let Type::App(head, elem) = self.eng.resolve(ty) {
-            if let Type::App(head2, size) = self.eng.resolve(&head) {
-                if let Type::App(con, _variance) = self.eng.resolve(&head2) {
-                    if matches!(self.eng.resolve(&con), Type::Con(n) if n == TENSOR) {
-                        return Some((*size, *elem));
+    fn tensor_parts(&self, ty: Type) -> Option<(Type, Type)> {
+        if let TypeNode::App(head, elem) = self.eng.head(ty) {
+            if let TypeNode::App(head2, size) = self.eng.head(head) {
+                if let TypeNode::App(con, _variance) = self.eng.head(head2) {
+                    if matches!(self.eng.head(con), TypeNode::Con(n) if self.eng.types.name(n) == TENSOR)
+                    {
+                        return Some((size, elem));
                     }
                 }
             }
@@ -4692,19 +4754,19 @@ impl<'a> Checker<'a> {
                     }
                     self.unknown_type = Some(d);
                 }
-                Type::con(name)
+                self.eng.types.con(name)
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
-                tvars
+                *tvars
                     .entry(name)
                     .or_insert_with(|| self.eng.fresh())
-                    .clone()
             }
             Ty::App(head, arg) => {
                 self.check_type_arity(ty);
                 let (head, arg) = (*head, *arg);
-                Type::app(self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars))
+                let (h, a) = (self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars));
+                self.eng.types.app(h, a)
             }
             // `@e X` in type position: infer `X` (so its calls/overloads resolve
             // for lowering) and require it to build `@code`; the spliced-in type is
@@ -4717,18 +4779,21 @@ impl<'a> Checker<'a> {
                 // `@e` runs a pure operand. Either way the spliced-in type is
                 // unknown until the driver expands it, so it stands as a fresh var.
                 let ambient = if meta {
-                    Type::row_extend("@meta", Type::RowEmpty)
+                    {
+                        let empty = self.eng.types.row_empty();
+                        self.eng.types.row_extend("@meta", empty)
+                    }
                 } else {
-                    Type::RowEmpty
+                    self.eng.types.row_empty()
                 };
                 let saved = std::mem::replace(&mut self.ambient, ambient);
                 if let Ok(t) = self.infer(expr) {
-                    let _ = self.eng.unify(&t, &Type::con("@code"), "in a `@e` type splice");
+                    let _ = self.eng.unify(t, self.eng.types.con("@code"), "in a `@e` type splice");
                 }
                 self.ambient = saved;
                 self.eng.fresh()
             }
-            Ty::Nat(n) => Type::Nat(*n),
+            Ty::Nat(n) => self.eng.types.add(TypeNode::Nat(*n)),
             // A size expression written in type position (only well-formed inside a
             // `[..]`); elaborate it as a size so kind-checking flags any misuse.
             Ty::SizeAdd(..) | Ty::SizeMul(..) => self.size_ty_of_ast(ty, tvars),
@@ -4740,7 +4805,7 @@ impl<'a> Checker<'a> {
                 let (variance, size, elem) = (*variance, *size, *elem);
                 let size_ty = self.size_ty_of_ast(size, tvars);
                 let elem_ty = self.ty_of_ast(elem, tvars);
-                tensor_type(variance_con(variance), size_ty, elem_ty)
+                tensor_type(&self.eng.types, variance_con(&self.eng.types, variance), size_ty, elem_ty)
             }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
@@ -4752,23 +4817,26 @@ impl<'a> Checker<'a> {
                         let mut e = match row.tail {
                             Some(tail) => {
                                 let name = self.text(tail);
-                                tvars.entry(name).or_insert_with(|| self.eng.fresh()).clone()
+                                *tvars.entry(name).or_insert_with(|| self.eng.fresh())
                             }
-                            None => Type::RowEmpty,
+                            None => self.eng.types.row_empty(),
                         };
                         for &label in self.ast.slice(row.names).iter() {
-                            e = Type::row_extend(self.text(label), e);
+                            e = self.eng.types.row_extend(self.text(label), e);
                         }
                         e
                     }
-                    None => Type::RowEmpty,
+                    None => self.eng.types.row_empty(),
                 };
-                Type::arrow_eff(self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars), eff)
+                let (f, t) = (self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars));
+                self.eng.types.arrow_eff(f, t, eff)
             }
-            Ty::Unit => Type::con(ty::UNIT),
+            Ty::Unit => self.eng.types.con(ty::UNIT),
             Ty::Tuple(items) => {
                 let items = self.ast.slice(*items);
-                Type::Tuple(items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect())
+                let mapped: Vec<Type> =
+                    items.iter().map(|t| self.ty_of_ast(*t, tvars)).collect();
+                self.eng.types.tuple(mapped)
             }
             Ty::Record { fields, tail } => {
                 // A record type: `{ x: A | r }` is open (row variable tail), `{ x: A,
@@ -4777,23 +4845,33 @@ impl<'a> Checker<'a> {
                 let rest = match tail {
                     Some(tvar) => {
                         let name = self.text(*tvar);
-                        tvars.entry(name).or_insert_with(|| self.eng.fresh()).clone()
+                        *tvars.entry(name).or_insert_with(|| self.eng.fresh())
                     }
-                    None => Type::RowEmpty,
+                    None => self.eng.types.row_empty(),
                 };
-                let row = self.ast.slice(*fields).iter().rev().fold(rest, |rest, f| {
-                    Type::row_field(self.text(f.name), self.ty_of_ast(f.ty, tvars), rest)
-                });
-                Type::record(row)
+                let decls: Vec<_> = self.ast.slice(*fields).to_vec();
+                let mut row = rest;
+                for f in decls.iter().rev() {
+                    let fty = self.ty_of_ast(f.ty, tvars);
+                    row = self.eng.types.row_field(self.text(f.name), fty, row);
+                }
+                self.eng.types.record(row)
             }
         }
     }
 
     // -- built-ins ----------------------------------------------------------
 
+    /// A fresh element variable and the `@vec` of it, for a vector built-in.
+    fn fresh_vec(&mut self, vec_con: Type) -> (Type, Type) {
+        let t = self.eng.fresh_generic();
+        let vt = self.eng.types.app(vec_con, t);
+        (t, vt)
+    }
+
     fn install_builtins(&mut self) {
-        let int = || Type::con(ty::INT);
-        let bool_ = || Type::con(ty::BOOL);
+        let int = self.eng.types.con(ty::INT);
+        let bool_ = self.eng.types.con(ty::BOOL);
 
         // Arithmetic is overloaded over every numeric type: the friendly
         // `Int`/`Nat`/`Real`, plus each sized `@`-form (which stays a distinct
@@ -4807,23 +4885,25 @@ impl<'a> Checker<'a> {
         // `+ - * / %` are defined in CORE.thx over the arithmetic intrinsics, not
         // seeded here. `^` stays a builtin (no intrinsic: int is a mul loop, real
         // is libm `pow`).
-        for op in ["^"] {
+        {
+            let op = "^";
             let cands = numeric
                 .iter()
                 .map(|t| {
-                    let c = || Type::con(t);
-                    Cand::local(Type::arrow(c(), Type::arrow(c(), c())))
+                    let c = self.eng.types.con(t);
+                    Cand::local(self.eng.types.arrow(c, self.eng.types.arrow(c, c)))
                 })
                 .collect();
             self.overloads.insert(op, cands);
         }
         let mut negs = Vec::new();
         for t in ints.iter().chain(reals.iter()) {
-            let c = || Type::con(t);
-            negs.push(Cand::local(Type::arrow(c(), c())));
+            let c = self.eng.types.con(t);
+            negs.push(Cand::local(self.eng.types.arrow(c, c)));
         }
         self.overloads.insert("neg", negs);
-        self.bind("not", Type::arrow(bool_(), bool_()));
+        let t = self.eng.types.arrow(bool_, bool_);
+        self.bind("not", t);
 
         // Monomorphic arithmetic intrinsics: the primitive floor the operator
         // overloads are built on. Typed `t -> t -> t` (like the `@vec_*`
@@ -4836,7 +4916,7 @@ impl<'a> Checker<'a> {
             "@fmul", "@fdiv", "@fmod", "@f32add", "@f32sub", "@f32mul", "@f32div", "@f32mod",
         ] {
             let t = self.eng.fresh_generic();
-            self.bind(name, Type::arrow(t.clone(), Type::arrow(t.clone(), t)));
+            self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, t)));
         }
 
         // Comparison intrinsics, the floor under the comparison overloads. Same
@@ -4846,14 +4926,18 @@ impl<'a> Checker<'a> {
         // float pair compares at `@float64`, which is exact for a `@float32` too.
         for name in ["@ieq", "@ilt", "@ult", "@feq", "@flt", "@seq", "@slt"] {
             let t = self.eng.fresh_generic();
-            self.bind(name, Type::arrow(t.clone(), Type::arrow(t, bool_())));
+            self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, bool_)));
         }
 
         let prim = |mids: &[&str], returns_self: bool| {
             [ty::ARRAY, ty::STR].map(|recv| {
                 let ret = if returns_self { recv } else { ty::INT };
-                let params = std::iter::once(recv).chain(mids.iter().copied());
-                Type::arrows(params.map(Type::con), Type::con(ret))
+                let params: Vec<Type> = std::iter::once(recv)
+                    .chain(mids.iter().copied())
+                    .map(|n| self.eng.types.con(n))
+                    .collect();
+                let ret = self.eng.types.con(ret);
+                self.eng.types.arrows(params.into_iter(), ret)
             })
         };
         self.overloads
@@ -4871,54 +4955,60 @@ impl<'a> Checker<'a> {
             prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
         );
 
-        let vec = |eng: &mut Engine| {
-            let t = eng.fresh_generic();
-            (t.clone(), Type::app(Type::con(ty::VEC), t))
-        };
-        let (_t, vt) = vec(&mut self.eng);
-        self.bind("@vec_new", Type::arrow(Type::con(ty::UNIT), vt));
-        let (t, vt) = vec(&mut self.eng);
-        self.bind("@vec_fill", Type::arrow(int(), Type::arrow(t, vt)));
-        let (_t, vt) = vec(&mut self.eng);
-        self.bind("@vec_len", Type::arrow(vt, int()));
-        let (t, vt) = vec(&mut self.eng);
-        self.bind("@vec_get", Type::arrow(vt, Type::arrow(int(), t)));
-        let (t, vt) = vec(&mut self.eng);
+        let vec_con = self.eng.types.con(ty::VEC);
+        let (_t, vt) = self.fresh_vec(vec_con);
+        let t = self.eng.types.arrow(self.eng.types.con(ty::UNIT), vt);
+        self.bind("@vec_new", t);
+        let (t, vt) = self.fresh_vec(vec_con);
+        let t = self.eng.types.arrow(int, self.eng.types.arrow(t, vt));
+        self.bind("@vec_fill", t);
+        let (_t, vt) = self.fresh_vec(vec_con);
+        let t = self.eng.types.arrow(vt, int);
+        self.bind("@vec_len", t);
+        let (t, vt) = self.fresh_vec(vec_con);
+        let t = self.eng.types.arrow(vt, self.eng.types.arrow(int, t));
+        self.bind("@vec_get", t);
+        let (t, vt) = self.fresh_vec(vec_con);
         self.bind(
             "@vec_set",
-            Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(t, vt))),
+            self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(t, vt))),
         );
-        let (t, vt) = vec(&mut self.eng);
-        self.bind("@vec_push", Type::arrow(vt.clone(), Type::arrow(t, vt)));
-        let (_t, vt) = vec(&mut self.eng);
+        let (t, vt) = self.fresh_vec(vec_con);
+        let t = self.eng.types.arrow(vt, self.eng.types.arrow(t, vt));
+        self.bind("@vec_push", t);
+        let (_t, vt) = self.fresh_vec(vec_con);
         self.bind(
             "@vec_slice",
-            Type::arrow(vt.clone(), Type::arrow(int(), Type::arrow(int(), vt))),
+            self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(int, vt))),
         );
 
         // Metaprogramming primitives (compile-time; usable inside `$ @run`). `@lex`
         // tokenizes a string into an opaque `@token` vector; a lex error traps
         // (fails the build). Tokens are inspected via the `@token_*` accessors, not
         // pattern-matched. `@token` is an opaque builtin type (see `is_base_type`).
-        let token = || Type::con("@token");
-        let str_ty = || Type::con(ty::STR);
+        let token = self.eng.types.con("@token");
+        let str_ty = self.eng.types.con(ty::STR);
         self.bind(
             "@lex",
-            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), token())),
+            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), token)),
         );
-        self.bind("@token_kind", Type::arrow(token(), str_ty()));
-        self.bind("@token_text", Type::arrow(token(), str_ty()));
+        let t = self.eng.types.arrow(token, str_ty);
+        self.bind("@token_kind", t);
+        let t = self.eng.types.arrow(token, str_ty);
+        self.bind("@token_text", t);
         // `@parse_str` parses a string as an expression fragment into an opaque
         // `@code` value; a syntax error traps (fails the build). `@parse_items`
         // validates the string as top-level item(s) instead, for a `$ @e` that
         // injects definitions.
-        self.bind("@parse_str", Type::arrow(str_ty(), Type::con("@code")));
-        self.bind("@parse_items", Type::arrow(str_ty(), Type::con("@code")));
+        let t = self.eng.types.arrow(str_ty, self.eng.types.con("@code"));
+        self.bind("@parse_str", t);
+        let t = self.eng.types.arrow(str_ty, self.eng.types.con("@code"));
+        self.bind("@parse_items", t);
         // `@parse` consumes a token vector (from `@lex`) into the same opaque
         // `@code` as `@parse_str`, closing the `@str -> @token -> @code` pipeline.
         self.bind(
             "@parse",
-            Type::arrow(Type::app(Type::con(ty::VEC), token()), Type::con("@code")),
+            self.eng.types.arrow(self.eng.types.app(self.eng.types.con(ty::VEC), token), self.eng.types.con("@code")),
         );
         // The metaprogramming ops carry the `<@meta>` effect, so they are usable
         // only where a `<@meta>` handler is installed: inside `@e` (see the
@@ -4927,59 +5017,73 @@ impl<'a> Checker<'a> {
         // pure ambient, giving a clean "effect `@meta` is performed but not
         // handled" error instead of a runtime no-op/fault. Lexing/parsing
         // (`@lex`/`@parse`/`@parse_str`/...) stay PURE: they need no compiler state.
-        let meta_row = || Type::row_extend("@meta", Type::RowEmpty);
+        let meta_row = {
+            let empty = self.eng.types.row_empty();
+            self.eng.types.row_extend("@meta", empty)
+        };
         // `@eval` compiles and runs an `@code` fragment at build time and returns
         // its value. Its result type is fully polymorphic (`a`): the produced
         // value is embedded as-is, so a mismatch with the use site is a runtime
         // (compile-time) fault, not a static error.
         let eval_res = self.eng.fresh_generic();
-        self.bind("@eval", Type::arrow_eff(Type::con("@code"), eval_res, meta_row()));
+        let t = self.eng.types.arrow_eff(self.eng.types.con("@code"), eval_res, meta_row);
+        self.bind("@eval", t);
         // Compile-time diagnostics. `@abort` fails the build with its message (a
         // clean user-land `assert` is `if ok => {} else @abort "..."`); its result
         // is polymorphic since it never returns. `@emit` prints a message and
         // continues.
         let abort_res = self.eng.fresh_generic();
-        self.bind("@abort", Type::arrow_eff(str_ty(), abort_res, meta_row()));
-        self.bind("@emit", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        let t = self.eng.types.arrow_eff(str_ty, abort_res, meta_row);
+        self.bind("@abort", t);
+        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
+        self.bind("@emit", t);
         // `@e X` runs X at compile time and embeds its value at the use site, so
         // type-wise it is the identity on X's type (the value case). The fold
         // happens in lowering + the driver; `@e` must be applied directly.
         let e_ty = self.eng.fresh_generic();
-        self.bind("@e", Type::arrow(e_ty.clone(), e_ty));
+        let t = self.eng.types.arrow(e_ty, e_ty);
+        self.bind("@e", t);
         // `@run` is the `<@meta>` eliminator: like `@e` (compile-time run + embed)
         // but its operand may perform `<@meta>` (it is discharged here). Special-
         // cased in `infer_app`/`ty_of_ast`; this binding is the first-class fallback.
         let run_ty = self.eng.fresh_generic();
-        self.bind("@run", Type::arrow(run_ty.clone(), run_ty));
+        let t = self.eng.types.arrow(run_ty, run_ty);
+        self.bind("@run", t);
         // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
         // for generating hygienic, non-colliding binders in compile-time codegen.
-        self.bind("@fresh", Type::arrow_eff(str_ty(), str_ty(), meta_row()));
+        let t = self.eng.types.arrow_eff(str_ty, str_ty, meta_row);
+        self.bind("@fresh", t);
         // `@link name` / `@link_path p`: steer the build (add a library / search
         // path to the link line), used at compile time via `$ @e (@link "curl")`.
         // The effect is the directive; the call returns unit.
-        self.bind("@link", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
-        self.bind("@link_path", Type::arrow_eff(str_ty(), Type::con(ty::UNIT), meta_row()));
+        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
+        self.bind("@link", t);
+        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
+        self.bind("@link_path", t);
         // Compile-time reflection over a declared type (resolved by the driver's
         // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;
         // `@type_fields` the struct's field names; `@type_variants` the union's
         // `(tag, arity)` pairs. A derive-style macro reads these and generates code.
-        self.bind("@type_kind", Type::arrow(str_ty(), str_ty()));
+        let t = self.eng.types.arrow(str_ty, str_ty);
+        self.bind("@type_kind", t);
         self.bind(
             "@type_params",
-            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), str_ty)),
         );
         self.bind(
             "@type_fields",
-            Type::arrow(str_ty(), Type::app(Type::con(ty::VEC), str_ty())),
+            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), str_ty)),
         );
         self.bind(
             "@type_variants",
-            Type::arrow(
-                str_ty(),
-                Type::app(
-                    Type::con(ty::VEC),
-                    Type::Tuple(vec![str_ty(), Type::con(ty::INT)]),
-                ),
+            self.eng.types.arrow(
+                str_ty,
+                {
+                    let i = self.eng.types.con(ty::INT);
+                    let pair = self.eng.types.tuple(vec![str_ty, i]);
+                    let v = self.eng.types.con(ty::VEC);
+                    self.eng.types.app(v, pair)
+                },
             ),
         );
 
@@ -5003,16 +5107,18 @@ impl<'a> Checker<'a> {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let v = self.eng.fresh_generic();
-            let vn = tensor_type(v, n, a.clone());
-            self.bind("@tensor_index", Type::arrow(vn, Type::arrow(int(), a)));
+            let vn = tensor_type(&self.eng.types, v, n, a);
+            let t = self.eng.types.arrow(vn, self.eng.types.arrow(int, a));
+        self.bind("@tensor_index", t);
         }
         // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
         {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let v = self.eng.fresh_generic();
-            let vn = tensor_type(v, n, a);
-            self.bind("@tensor_length", Type::arrow(vn, int()));
+            let vn = tensor_type(&self.eng.types, v, n, a);
+            let t = self.eng.types.arrow(vn, int);
+        self.bind("@tensor_length", t);
         }
         // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
         // template from an index function (sound: result size = template size). The
@@ -5023,12 +5129,12 @@ impl<'a> Checker<'a> {
             let a = self.eng.fresh_generic();
             let n = self.eng.fresh_generic_nat();
             let v = self.eng.fresh_generic();
-            let template = tensor_type(v.clone(), n.clone(), x);
-            let idx_fn = Type::arrow(int(), a.clone());
-            let result = tensor_type(v, n, a);
+            let template = tensor_type(&self.eng.types, v, n, x);
+            let idx_fn = self.eng.types.arrow(int, a);
+            let result = tensor_type(&self.eng.types, v, n, a);
             self.bind(
                 "@tensor_create",
-                Type::arrow(template, Type::arrow(idx_fn, result)),
+                self.eng.types.arrow(template, self.eng.types.arrow(idx_fn, result)),
             );
         }
         // `@tensor_concat : [n]a -> [m]a -> [n+m]a`: the size-CHANGING join (which `@tensor_create`,
@@ -5039,10 +5145,11 @@ impl<'a> Checker<'a> {
             let n = self.eng.fresh_generic_nat();
             let m = self.eng.fresh_generic_nat();
             let v = self.eng.fresh_generic();
-            let tn = tensor_type(v.clone(), n.clone(), a.clone());
-            let tm = tensor_type(v.clone(), m.clone(), a.clone());
-            let tnm = tensor_type(v, Type::NatAdd(Box::new(n), Box::new(m)), a);
-            self.bind("@tensor_concat", Type::arrow(tn, Type::arrow(tm, tnm)));
+            let tn = tensor_type(&self.eng.types, v, n, a);
+            let tm = tensor_type(&self.eng.types, v, m, a);
+            let tnm = tensor_type(&self.eng.types, v, self.eng.types.add(TypeNode::NatAdd(n, m)), a);
+            let t = self.eng.types.arrow(tn, self.eng.types.arrow(tm, tnm));
+        self.bind("@tensor_concat", t);
         }
         // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
         // so `LA.transpose` copies nothing. Variance stays per POSITION (outer `vm`,
@@ -5054,9 +5161,10 @@ impl<'a> Checker<'a> {
             let n = self.eng.fresh_generic_nat();
             let vm = self.eng.fresh_generic();
             let vn = self.eng.fresh_generic();
-            let mn = tensor_type(vm.clone(), m.clone(), tensor_type(vn.clone(), n.clone(), a.clone()));
-            let nm = tensor_type(vm, n, tensor_type(vn, m, a));
-            self.bind("@tensor_transpose", Type::arrow(mn, nm));
+            let mn = tensor_type(&self.eng.types, vm, m, tensor_type(&self.eng.types, vn, n, a));
+            let nm = tensor_type(&self.eng.types, vm, n, tensor_type(&self.eng.types, vn, m, a));
+            let t = self.eng.types.arrow(mn, nm);
+        self.bind("@tensor_transpose", t);
         }
         // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
         // the leading axis. The result size `k` is a runtime value, so it is a fresh
@@ -5068,11 +5176,11 @@ impl<'a> Checker<'a> {
             let n = self.eng.fresh_generic_nat();
             let k = self.eng.fresh_generic_nat();
             let v = self.eng.fresh_generic();
-            let src = tensor_type(v.clone(), n, a.clone());
-            let out = tensor_type(v, k, a);
+            let src = tensor_type(&self.eng.types, v, n, a);
+            let out = tensor_type(&self.eng.types, v, k, a);
             self.bind(
                 "@tensor_slice",
-                Type::arrow(src, Type::arrow(int(), Type::arrow(int(), out))),
+                self.eng.types.arrow(src, self.eng.types.arrow(int, self.eng.types.arrow(int, out))),
             );
         }
 
@@ -5083,31 +5191,35 @@ impl<'a> Checker<'a> {
         // everything no per-type overload covers.
         for op in ["==", "<", ">", "<=", ">="] {
             let a = self.eng.fresh_generic();
-            let t = Type::arrow(a.clone(), Type::arrow(a, bool_()));
+            let t = self.eng.types.arrow(a, self.eng.types.arrow(a, bool_));
             self.overloads.insert(op, vec![Cand::fallback(t)]);
         }
         {
             let a = self.eng.fresh_generic();
-            self.bind("++", Type::arrow(a.clone(), Type::arrow(a.clone(), a)));
+            let t = self.eng.types.arrow(a, self.eng.types.arrow(a, a));
+        self.bind("++", t);
         }
         {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
-            self.bind(";", Type::arrow(a, Type::arrow(b.clone(), b)));
-        }
-        {
-            let a = self.eng.fresh_generic();
-            let b = self.eng.fresh_generic();
-            let e = self.eng.fresh_generic();
-            let f = Type::arrow_eff(a.clone(), b.clone(), e.clone());
-            self.bind("|>", Type::arrow(a, Type::arrow_eff(f, b, e)));
+            let t = self.eng.types.arrow(a, self.eng.types.arrow(b, b));
+        self.bind(";", t);
         }
         {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
             let e = self.eng.fresh_generic();
-            let f = Type::arrow_eff(a, b, e);
-            self.bind("<|", Type::arrow(f.clone(), f));
+            let f = self.eng.types.arrow_eff(a, b, e);
+            let t = self.eng.types.arrow(a, self.eng.types.arrow_eff(f, b, e));
+        self.bind("|>", t);
+        }
+        {
+            let a = self.eng.fresh_generic();
+            let b = self.eng.fresh_generic();
+            let e = self.eng.fresh_generic();
+            let f = self.eng.types.arrow_eff(a, b, e);
+            let t = self.eng.types.arrow(f, f);
+        self.bind("<|", t);
         }
     }
 }
@@ -5365,9 +5477,12 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
     }
 }
 
-fn applied(name: &str, args: &[Type]) -> Type {
-    args.iter()
-        .fold(Type::con(name), |acc, a| Type::app(acc, a.clone()))
+fn applied(types: &Types, name: &str, args: &[Type]) -> Type {
+    let mut acc = types.con(name);
+    for a in args {
+        acc = types.app(acc, *a);
+    }
+    acc
 }
 
 /// The mangled global name for one overload: `name#<type-key>`. Two overloads of
@@ -5376,82 +5491,95 @@ fn applied(name: &str, args: &[Type]) -> Type {
 /// the key from the candidate's type, so they agree. Effect rows are omitted (a
 /// pair of overloads never differs only by effect), which also keeps the key free
 /// of the noisy row variables that would otherwise vary between the two sides.
-fn overload_key(name: &str, ty: &Type) -> String {
+fn overload_key(types: &Types, name: &str, ty: Type) -> String {
     let mut vars = Vec::new();
-    format!("{name}#{}", ty_key(ty, &mut vars))
+    format!("{name}#{}", ty_key(types, ty, &mut vars))
 }
 
 /// A structural, effect-free string for `ty` with variables canonicalized to
 /// `t0`, `t1`, ... by first appearance, so structurally equal schemes (however
 /// their variables happen to be numbered) produce the same string. `.` is
 /// replaced so the key survives the runtime's split-on-`.` bare-name fallback.
-fn ty_key(ty: &Type, vars: &mut Vec<VarId>) -> String {
-    match ty {
-        Type::Var(id) => {
-            let i = vars.iter().position(|v| v == id).unwrap_or_else(|| {
-                vars.push(*id);
+fn ty_key(types: &Types, ty: Type, vars: &mut Vec<VarId>) -> String {
+    match types.node(ty) {
+        TypeNode::Var(id) => {
+            let i = vars.iter().position(|v| *v == id).unwrap_or_else(|| {
+                vars.push(id);
                 vars.len() - 1
             });
             format!("t{i}")
         }
-        Type::Con(name) => name.replace('.', "_"),
-        Type::Nat(n) => format!("N{n}"),
-        Type::NatAdd(a, b) => format!("P{}_{}", ty_key(a, vars), ty_key(b, vars)),
-        Type::NatMul(a, b) => format!("M{}_{}", ty_key(a, vars), ty_key(b, vars)),
-        Type::App(head, arg) => {
-            format!("A{}_{}", ty_key(head, vars), ty_key(arg, vars))
+        TypeNode::Con(name) => types.name(name).replace('.', "_"),
+        TypeNode::Nat(n) => format!("N{n}"),
+        TypeNode::NatAdd(a, b) => format!("P{}_{}", ty_key(types, a, vars), ty_key(types, b, vars)),
+        TypeNode::NatMul(a, b) => format!("M{}_{}", ty_key(types, a, vars), ty_key(types, b, vars)),
+        TypeNode::App(head, arg) => {
+            format!("A{}_{}", ty_key(types, head, vars), ty_key(types, arg, vars))
         }
-        Type::Arrow(from, to, _) => {
-            format!("F{}_{}", ty_key(from, vars), ty_key(to, vars))
+        TypeNode::Arrow(from, to, _) => {
+            format!("F{}_{}", ty_key(types, from, vars), ty_key(types, to, vars))
         }
-        Type::Tuple(items) => {
-            let parts: Vec<String> = items.iter().map(|t| ty_key(t, vars)).collect();
+        TypeNode::Tuple(items) => {
+            let parts: Vec<String> = types
+                .items(items)
+                .to_vec()
+                .into_iter()
+                .map(|t| ty_key(types, t, vars))
+                .collect();
             format!("T{}", parts.join("_"))
         }
-        Type::RowEmpty => "R".to_string(),
-        Type::RowExtend(label, rest) => {
-            format!("R{}_{}", label.replace('.', "_"), ty_key(rest, vars))
+        TypeNode::RowEmpty => "R".to_string(),
+        TypeNode::RowExtend(label, rest) => {
+            format!(
+                "R{}_{}",
+                types.name(label).replace('.', "_"),
+                ty_key(types, rest, vars)
+            )
         }
-        Type::Record(row) => format!("D{}", ty_key(row, vars)),
-        Type::RowField(label, ty, rest) => format!(
+        TypeNode::Record(row) => format!("D{}", ty_key(types, row, vars)),
+        TypeNode::RowField(label, ty, rest) => format!(
             "{}:{}_{}",
-            label.replace('.', "_"),
-            ty_key(ty, vars),
-            ty_key(rest, vars)
+            types.name(label).replace('.', "_"),
+            ty_key(types, ty, vars),
+            ty_key(types, rest, vars)
         ),
     }
 }
 
 /// Whether a type is unit `{}` (a nullary C function's zero-argument parameter),
 /// as either the `{}` constructor or the empty tuple.
-fn is_unit_ty(ty: &Type) -> bool {
-    matches!(ty, Type::Con(n) if n == ty::UNIT) || matches!(ty, Type::Tuple(v) if v.is_empty())
+fn is_unit_ty(types: &Types, ty: Type) -> bool {
+    match types.node(ty) {
+        TypeNode::Con(n) => types.name(n) == ty::UNIT,
+        TypeNode::Tuple(v) => v.is_empty(),
+        _ => false,
+    }
 }
 
 /// A type's marshalling name for the FFI seam. A type variable or any composite
 /// (the checker's fallback, matching the C++ `desc_of`) marshals word-sized, so
 /// the backends read it as `Int`.
-fn marshal_name(ty: &Type) -> String {
-    match ty {
-        Type::Con(name) => name.clone(),
-        Type::Tuple(items) if items.is_empty() => ty::UNIT.to_string(),
+fn marshal_name(types: &Types, ty: Type) -> String {
+    match types.node(ty) {
+        TypeNode::Con(name) => types.name(name).to_string(),
+        TypeNode::Tuple(items) if items.is_empty() => ty::UNIT.to_string(),
         // A function-typed `@extern` parameter is a C function pointer (callback):
         // encode its scalar signature as `@fn(a,b,...)->r` so the seam can wrap a
         // Thrax closure into a C-callable pointer.
-        Type::Arrow(..) => {
+        TypeNode::Arrow(..) => {
             let mut args = Vec::new();
             let mut cur = ty;
-            while let Type::Arrow(from, to, _) = cur {
-                args.push(marshal_name(from));
+            while let TypeNode::Arrow(from, to, _) = types.node(cur) {
+                args.push(marshal_name(types, from));
                 cur = to;
             }
-            format!("@fn({})->{}", args.join(","), marshal_name(cur))
+            format!("@fn({})->{}", args.join(","), marshal_name(types, cur))
         }
         // A `@vec T` parameter is a C array of `T`: passed as a `T*` pointing at a
         // contiguous packed buffer. Encoded so the seam can find `T`'s layout.
-        Type::App(head, arg) => match (head.as_ref(), arg.as_ref()) {
-            (Type::Con(vec), Type::Con(elem)) if vec == ty::VEC => {
-                format!("@structs({elem})")
+        TypeNode::App(head, arg) => match (types.node(head), types.node(arg)) {
+            (TypeNode::Con(vec), TypeNode::Con(elem)) if types.name(vec) == ty::VEC => {
+                format!("@structs({})", types.name(elem))
             }
             _ => ty::INT.to_string(),
         },
@@ -5532,8 +5660,8 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
         Some(name) => payload
             .iter()
             .find(|(n, _)| *n == Some(name))
-            .map(|(_, t)| t.clone()),
-        None => payload.get(index).map(|(_, t)| t.clone()),
+            .map(|(_, t)| *t),
+        None => payload.get(index).map(|(_, t)| *t),
     }
 }
 
@@ -5647,8 +5775,8 @@ const VAR_CO: &str = "@co";
 const VAR_CONTRA: &str = "@contra";
 
 /// The `Type` constructor for a source-level axis variance.
-fn variance_con(v: Variance) -> Type {
-    Type::con(match v {
+fn variance_con(types: &Types, v: Variance) -> Type {
+    types.con(match v {
         Variance::Neutral => VAR_NEUTRAL,
         Variance::Co => VAR_CO,
         Variance::Contra => VAR_CONTRA,
@@ -5656,8 +5784,11 @@ fn variance_con(v: Variance) -> Type {
 }
 
 /// Build a sized-tensor type from its axis variance, size, and element type.
-fn tensor_type(variance: Type, size: Type, elem: Type) -> Type {
-    Type::app(Type::app(Type::app(Type::con(TENSOR), variance), size), elem)
+fn tensor_type(types: &Types, variance: Type, size: Type, elem: Type) -> Type {
+    let con = types.con(TENSOR);
+    let a = types.app(con, variance);
+    let b = types.app(a, size);
+    types.app(b, elem)
 }
 
 fn unknown_type(name: &str) -> Diagnostic {

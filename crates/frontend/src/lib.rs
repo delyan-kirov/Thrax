@@ -18,7 +18,7 @@ pub use lexer::Lexer;
 pub use lowering::{collect_resolved, lower_program, Decls, Resolved};
 pub use parser::data::*;
 pub use parser::Parser;
-pub use typing::data::{is_entry_type, Type, ENTRY, ENTRY_SIG};
+pub use typing::data::{is_entry_type, Type, TypeNode, Types, ENTRY, ENTRY_SIG};
 pub use typing::engine::Engine;
 pub use typing::Checker;
 
@@ -51,5 +51,5 @@ pub fn parse_into(ast: Ast, source: &str) -> Result<(Ast, Program)> {
 
 /// Type-check a program, returning each global definition's generalized type.
 pub fn check<'a>(ast: &'a Ast, program: &Program) -> Result<Vec<(&'a str, Type)>> {
-    Checker::new(ast).check_program(program)
+    Checker::new(ast, std::rc::Rc::new(Types::new())).check_program(program)
 }

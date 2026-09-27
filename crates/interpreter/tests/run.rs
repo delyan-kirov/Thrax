@@ -12,7 +12,8 @@ const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
 /// that use no CORE names). See `run` for the CORE-injecting path.
 fn lower_checked(src: &str, name: &str) -> frontend::lowering::data::Program {
     let parsed = frontend::parse(src).expect("parse");
-    let mut checker = Checker::new(&parsed.ast);
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut checker = Checker::new(&parsed.ast, types.clone());
     checker
         .check_program(&parsed.program)
         .unwrap_or_else(|e| panic!("{}", e.render(src, name)));
@@ -39,14 +40,15 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
         programs.push(program);
     }
 
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker
         .check_program(&programs[0])
         .unwrap_or_else(|e| panic!("{}", e.render(CORE_SRC, "CORE")));
     let user_count = programs.len() - 1;
     let mut user_checkers: Vec<Checker> = Vec::new();
     for i in 0..user_count {
-        let mut c = Checker::new(&ast);
+        let mut c = Checker::new(&ast, types.clone());
         c.import_from(&core_checker);
         if i + 1 == user_count {
             for dep in &user_checkers {

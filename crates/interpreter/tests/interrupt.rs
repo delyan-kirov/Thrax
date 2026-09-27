@@ -10,7 +10,8 @@ use frontend::{lower_program, Checker, Decls};
 /// module must stick to intrinsics.
 fn lower(src: &str) -> frontend::ir::data::Program {
     let parsed = frontend::parse(src).expect("parse");
-    let mut checker = Checker::new(&parsed.ast);
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut checker = Checker::new(&parsed.ast, types.clone());
     checker
         .check_program(&parsed.program)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "T")));
