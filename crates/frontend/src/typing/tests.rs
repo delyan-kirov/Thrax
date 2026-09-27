@@ -11,9 +11,10 @@ const CORE_SRC: &str = include_str!("../../../../library/CORE.thx");
 fn type_of(src: &str, name: &str) -> String {
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast);
+    let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
     let results = checker
         .check_program(&prog)
@@ -22,17 +23,17 @@ fn type_of(src: &str, name: &str) -> String {
         .iter()
         .find(|(n, _)| *n == name)
         .expect("name present")
-        .1
-        .clone();
-    checker.show(&ty)
+        .1;
+    checker.show(ty)
 }
 
 fn errors(src: &str) -> String {
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast);
+    let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
     match checker.check_program(&prog) {
         Ok(_) => String::new(),
@@ -243,14 +244,15 @@ fn cross_module_import_brings_in_types_and_values() {
     // Both modules parse into one shared `Ast` so cross-module handles resolve.
     let (ast, dep) = crate::parse_into(crate::Ast::new(), dep_src).expect("parse dep");
     let (ast, program) = crate::parse_into(ast, use_src).expect("parse use");
-    let mut dep_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut dep_checker = Checker::new(&ast, types.clone());
     dep_checker.check_program(&dep).expect("check dep");
-    let mut checker = Checker::new(&ast);
+    let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&dep_checker);
     let results = checker
         .check_program(&program)
         .unwrap_or_else(|e| panic!("{}", e.render(use_src, "U")));
-    let ty = |name: &str| checker.show(&results.iter().find(|(n, _)| *n == name).unwrap().1);
+    let ty = |name: &str| checker.show(results.iter().find(|(n, _)| *n == name).unwrap().1);
     assert_eq!(ty("present"), "@bool");
     assert_eq!(ty("value"), "@int");
 }
@@ -261,12 +263,13 @@ fn cross_module_errors(dep_src: &str, use_src: &str) -> String {
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, dep) = crate::parse_into(ast, dep_src).expect("parse dep");
     let (ast, program) = crate::parse_into(ast, use_src).expect("parse use");
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker.check_program(&core).expect("check CORE");
-    let mut dep_checker = Checker::new(&ast);
+    let mut dep_checker = Checker::new(&ast, types.clone());
     dep_checker.import_from(&core_checker);
     dep_checker.check_program(&dep).expect("check dep");
-    let mut checker = Checker::new(&ast);
+    let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
     checker.import_from(&dep_checker);
     match checker.check_program(&program) {
@@ -554,16 +557,17 @@ fn open_effects_permits_io_at_the_shell_top_level() {
     // effect does not leak into the binding's type.
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, prog) = crate::parse_into(ast, src).expect("parse");
-    let mut core_checker = Checker::new(&ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
     core_checker.check_program(&core).expect("check CORE");
-    let mut checker = Checker::new(&ast);
+    let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
     checker.set_open_effects(true);
     let results = checker
         .check_program(&prog)
         .unwrap_or_else(|e| panic!("open effects should accept IO: {}", e.render(src, "test.thx")));
-    let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1.clone();
-    assert_eq!(checker.show(&ty), "@int");
+    let ty = results.iter().find(|(n, _)| *n == "shown").expect("shown").1;
+    assert_eq!(checker.show(ty), "@int");
 }
 
 #[test]
@@ -573,10 +577,11 @@ fn only_the_one_entry_signature_is_accepted() {
     // entry, no unit parameter, no other effect row.
     let entry = |src: &str| {
         let parsed = crate::parse(src).expect("parse");
-        let mut checker = Checker::new(&parsed.ast);
+        let types = std::rc::Rc::new(crate::Types::new());
+        let mut checker = Checker::new(&parsed.ast, types.clone());
         let results = checker.check_program(&parsed.program).expect("check");
-        let ty = results.iter().find(|(n, _)| *n == "@main").expect("@main").1.clone();
-        is_entry_type(&ty)
+        let ty = results.iter().find(|(n, _)| *n == "@main").expect("@main").1;
+        is_entry_type(checker.types(), ty)
     };
     assert!(entry("@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 0"));
     assert!(!entry("@mod MAIN\n$ @main : {} -> <@io> @int = \\u = 0"));
@@ -612,7 +617,8 @@ fn array_primitives_overload_on_array_and_str() {
 /// The computed C layout of a named C-repr struct, or a panic with the check error.
 fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
     let parsed = crate::parse(src).expect("parse");
-    let mut checker = Checker::new(&parsed.ast);
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut checker = Checker::new(&parsed.ast, types.clone());
     checker
         .check_program(&parsed.program)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
