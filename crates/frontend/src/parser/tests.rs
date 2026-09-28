@@ -169,7 +169,7 @@ fn declared_type_params() {
     let src = "@mod M\n\
                $ Weird : @struct a b = fst: a, has: @int, snd: b\n\
                $ Pair : @union a b = Left: a, Right: b\n\
-               $ Stream : @codata t = head: t, tail: Stream t\n\
+               $ Stream : @struct t = head: t, tail: Stream t\n\
                $ MapInt : @alias v = Map @int v";
     let p = prog(src);
     let names = |ps: utilities::Slice<utilities::StrId>| {
@@ -191,11 +191,11 @@ fn declared_type_params() {
         other => panic!("expected a union, got {other:?}"),
     }
     match &items[2] {
-        Item::Codata { params, observations, .. } => {
+        Item::Struct { params, fields, .. } => {
             assert_eq!(names(*params), ["t"]);
-            assert_eq!(observations.len(), 2);
+            assert_eq!(fields.len(), 2);
         }
-        other => panic!("expected a codata, got {other:?}"),
+        other => panic!("expected a struct, got {other:?}"),
     }
     match &items[3] {
         Item::Alias { params, .. } => assert_eq!(names(*params), ["v"]),

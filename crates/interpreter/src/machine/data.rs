@@ -89,6 +89,54 @@ pub enum Value<'p> {
     },
     /// A captured one-shot continuation (a delimited stack slice).
     Resump(Rc<RefCell<Resumption<'p>>>),
+    /// An unforced lazy slot: the held value is a nullary closure. The machine
+    /// forces it where the value is scrutinised and patches the cell with the
+    /// result, so a recursive structure is built one cell at a time and each cell
+    /// is computed at most once.
+    Thunk(PVal<'p>),
+}
+
+/// Move `v`'s child cells onto `out`, leaving `v` childless.
+fn take_children<'p>(v: &mut Value<'p>, out: &mut Vec<PVal<'p>>) {
+    match v {
+        Value::Tuple(items)
+        | Value::Variant { fields: items, .. }
+        | Value::Builtin { args: items, .. }
+        | Value::Extern { args: items, .. }
+        | Value::Code { env: items, .. } => out.append(items),
+        Value::Struct { fields, .. } => {
+            out.extend(std::mem::take(fields).into_iter().map(|(_, p)| p))
+        }
+        Value::Thunk(inner) => out.push(std::mem::replace(inner, mk(Value::Unit))),
+        // Only the last owner may take the elements; a shared buffer is left to
+        // whoever still holds it.
+        Value::Vector(items) => {
+            if let Some(items) = Rc::get_mut(items) {
+                out.append(items);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Free a value's descendants on an explicit worklist rather than by recursion.
+/// The derived drop would nest once per child, so releasing a list of n cells
+/// would need n host stack frames and abort the process on a long one. Depth
+/// here is bounded by the heap instead.
+///
+/// Draining is what makes this terminate: each `Value` popped off the worklist
+/// has already had its children taken, so the recursive call this `Drop` would
+/// otherwise make finds nothing left to follow.
+impl Drop for Value<'_> {
+    fn drop(&mut self) {
+        let mut work = Vec::new();
+        take_children(self, &mut work);
+        while let Some(cell) = work.pop() {
+            if let Ok(cell) = Rc::try_unwrap(cell) {
+                take_children(&mut cell.into_inner(), &mut work);
+            }
+        }
+    }
 }
 
 /// A captured continuation: the `KFrame` slice from a prompt up to a perform
@@ -294,7 +342,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
-        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" => 1,
+        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => 2,
@@ -333,6 +381,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "==" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
         "<" | ">" | "<=" | ">=" => compare(name, &a[0], &a[1]),
         "++" => concat(&a[0], &a[1]),
+        // Suspend a lazy slot. The argument is the nullary closure lowering built
+        // around the slot's expression; `force` runs it.
+        "@delay" => Ok(Value::Thunk(a[0].clone())),
         "@array_alloc" => Ok(Value::Str(Rc::new(vec![0u8; as_len(&a[0])?]))),
         "@array_len" => Ok(Value::Int(as_bytes(&a[0])?.len() as i64)),
         "@array_get" => {
@@ -466,6 +517,20 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
                 .ok_or_else(|| fault("vec index out of bounds"))
         }
         "@vec_push" => {
+            // Appending by copying the whole buffer makes building a vector
+            // quadratic, so push in place whenever nothing else can observe the
+            // buffer: this operand list must be the cell's only owner, and the
+            // cell the buffer's only owner. Otherwise fall back to the copy.
+            let unshared = Rc::strong_count(&a[0]) == 1 && Rc::weak_count(&a[0]) == 0;
+            if unshared {
+                let mut cell = a[0].borrow_mut();
+                if let Value::Vector(items) = &mut *cell {
+                    if let Some(buf) = Rc::get_mut(items) {
+                        buf.push(a[1].clone());
+                        return Ok(Value::Vector(items.clone()));
+                    }
+                }
+            }
             let mut v = as_vec(&a[0])?.as_ref().clone();
             v.push(a[1].clone());
             Ok(Value::Vector(Rc::new(v)))
@@ -557,7 +622,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let toks = as_vec(&a[0])?;
             let mut lexemes: Vec<Vec<u8>> = Vec::with_capacity(toks.len());
             for t in toks.iter() {
-                match token_field(t, "text")? {
+                match &token_field(t, "text")? {
                     Value::Str(b) => lexemes.push(b.as_ref().clone()),
                     _ => return Err(fault("@parse: an @token has a non-string lexeme")),
                 }
@@ -897,36 +962,9 @@ fn concat<'p>(x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     if let Some(bytes) = strs {
         return Ok(Value::Str(Rc::new(bytes)));
     }
-    let is_list = matches!(&*x.borrow(), Value::Variant { ty, .. } if ty == "List");
-    if is_list {
-        // Lists concatenate by rebuilding the left spine onto the right.
-        return Ok(list_append(x.clone(), y.clone()).borrow().clone_shallow());
-    }
     Err(fault("`++` on unsupported operands"))
 }
 
-fn list_append<'p>(xs: PVal<'p>, ys: PVal<'p>) -> PVal<'p> {
-    let cons = {
-        match &*xs.borrow() {
-            Value::Variant { tag, fields, .. } if tag == "Cons" => {
-                Some((fields[0].clone(), fields[1].clone()))
-            }
-            _ => None,
-        }
-    };
-    match cons {
-        Some((head, tail)) => {
-            let rest = list_append(tail, ys);
-            mk(Value::Variant {
-                ty: "List".into(),
-                tag: "Cons".into(),
-                fields: vec![head, rest],
-            })
-        }
-        // Nil (or any non-cons tail): the right list is the result.
-        None => ys,
-    }
-}
 
 /// Structural equality (`==`). Numbers compare across Int/Real; functions are not
 /// comparable.
@@ -1088,6 +1126,7 @@ impl<'p> Value<'p> {
                 op: op.clone(),
             },
             Value::Resump(r) => Value::Resump(r.clone()),
+            Value::Thunk(f) => Value::Thunk(f.clone()),
         }
     }
 
@@ -1130,6 +1169,7 @@ impl<'p> Value<'p> {
             | Value::Code { .. }
             | Value::Op { .. } => "<function>".into(),
             Value::Resump(_) => "<continuation>".into(),
+            Value::Thunk(_) => "...".into(),
             Value::Rec(_) => "<recursive>".into(),
         }
     }

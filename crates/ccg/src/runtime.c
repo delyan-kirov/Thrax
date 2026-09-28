@@ -65,7 +65,8 @@ typedef enum {
   T_BUILTIN,   /* a (possibly partially applied) built-in operator */
   T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
   T_OP,        /* an effect operation, first-class; performs when applied */
-  T_RESUMP     /* a captured continuation; affine -- resumes once */
+  T_RESUMP,    /* a captured continuation; affine -- resumes once */
+  T_THUNK      /* an unforced lazy slot: a nullary closure, forced in place */
 } Tag;
 
 typedef struct {
@@ -121,6 +122,7 @@ struct Value {
       const char *op;
     } op;
     Resump *resump;
+    Value *thunk; /* the nullary closure an unforced lazy slot holds */
   } u;
 };
 
@@ -402,6 +404,15 @@ Value *THxRT_closure(int code, Value **captures, size_t n) {
   v->u.clos.nenv = n;
   return v;
 }
+/* Suspend a lazy slot. `f` is the nullary closure lowering built around the
+ * slot's expression; THxVALUE_force runs it. */
+Value *THxRT_thunk(Value *f) {
+  Value *v = alloc_value(T_THUNK);
+  v->u.thunk = f;
+  THxMEM_retain(f);
+  mark_escape(f);
+  return v;
+}
 Value *THxRT_builtin(const char *name, size_t arity) {
   Value *v = alloc_value(T_BUILTIN);
   v->u.builtin.name = name;
@@ -493,8 +504,30 @@ static Value *struct_field(Value *v, const char *name) {
       return v->u.strct.fields[i].val;
   return NULL;
 }
+static void THxVALUE_patch_box(Value *box, Value *v);
+Value *THxK_call(Value *f, Value *arg);
+
+/* Run an unforced lazy slot and patch the cell with the result, so the work
+ * happens once however many times the value is looked at: every holder of the
+ * cell sees the forced value. Nesting collapses here, not at each use. */
+Value *THxVALUE_force(Value *v) {
+  while (v && v->tag == T_THUNK) {
+    /* Hold the closure across the call: patching the cell below destroys the
+     * thunk payload, which is what otherwise owns it. */
+    Value *f = v->u.thunk;
+    THxMEM_retain(f);
+    Value *forced = THxK_call(f, THxRT_unit()); /* owned */
+    THxMEM_release(f);
+    if (forced == v) break;
+    THxVALUE_patch_box(v, forced); /* deep-copies, so the result is ours to drop */
+    THxMEM_release(forced);
+  }
+  return v;
+}
+
 /* `record.field`: a struct field by name, or a tuple element by index. */
 Value *THxVALUE_field(Value *v, const char *name) {
+  v = THxVALUE_force(v);
   if (v->tag == T_STRUCT) {
     Value *f = struct_field(v, name);
     if (f) return f;
@@ -701,15 +734,6 @@ static Value *compare(const char *op, Value *x, Value *y) {
   return THxRT_bool(r);
 }
 
-static Value *list_append(Value *xs, Value *ys) {
-  if (xs->tag == T_VARIANT && strcmp(xs->u.variant.tag, "Cons") == 0) {
-    Value *fields[2];
-    fields[0] = xs->u.variant.fields[0];
-    fields[1] = list_append(xs->u.variant.fields[1], ys);
-    return THxRT_variant("List", "Cons", 2, fields);
-  }
-  return ys;
-}
 
 static Value *concat(Value *x, Value *y) {
   if (x->tag == T_STR && y->tag == T_STR) {
@@ -720,8 +744,6 @@ static Value *concat(Value *x, Value *y) {
     data[len] = 0;
     return mk_str_owned(data, len);
   }
-  if (x->tag == T_VARIANT && strcmp(x->u.variant.ty, "List") == 0)
-    return list_append(x, y);
   thrax_fault("`++` on unsupported operands");
 }
 
@@ -1053,6 +1075,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
+  if (strcmp(name, "@delay") == 0) return THxRT_thunk(a[0]);
   if (strcmp(name, "@vec_get") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
@@ -1213,6 +1236,7 @@ static void payload_destroy(Value *v) {
     case T_BUILTIN: release_children(v, v->u.builtin.args, v->u.builtin.nargs); return;
     case T_EXTERN: release_children(v, v->u.ext.args, v->u.ext.nargs); return;
     case T_RESUMP: THxK_resump_release(v->u.resump); return;
+    case T_THUNK: THxMEM_release(v->u.thunk); return;
   }
   thrax_fault("payload_destroy: unhandled tag");
 }
@@ -1291,6 +1315,9 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
       box->u.ext.args = copy_children(box, v->u.ext.args, box->u.ext.nargs);
       break;
     case T_RESUMP: THxK_resump_addref(box->u.resump); break;
+    case T_THUNK:
+      if (box->u.thunk != box) THxMEM_retain(box->u.thunk);
+      break;
   }
 }
 
@@ -1941,6 +1968,7 @@ static void show_into(Str *s, Value *v) {
     case T_EXTERN:
     case T_OP: str_puts(s, "<function>"); break;
     case T_RESUMP: str_puts(s, "<continuation>"); break;
+    case T_THUNK: str_puts(s, "<unforced>"); break;
   }
 }
 

@@ -763,3 +763,119 @@ fn comparison_operators_coexist_with_effect_rows() {
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "g"), "@int -> @bool");
 }
+
+// -- issue #209: the checker must not fabricate a type ---------------------
+//
+// Each of these used to type-check and then fault at run time, because the
+// checker answered "I cannot determine this" with a fresh unification variable,
+// which unifies with anything.
+
+#[test]
+fn concat_on_an_unsupported_type_is_a_type_error() {
+    // `++` was bound as a generic `a -> a -> a`, a signature that claimed a
+    // domain the operator does not have.
+    let e = errors(
+        "@mod M\n\
+         $ P : @struct = x: @int\n\
+         $ h : @int = (P.{.x=1} ++ P.{.x=2}).x",
+    );
+    assert!(e.contains("no viable overload of `++`"), "{e}");
+}
+
+#[test]
+fn a_user_concat_joins_the_overload_set() {
+    // Defining `(++)` used to REPLACE the built-in, breaking `"a" ++ "b"` in the
+    // same module; it must extend it instead.
+    let src = "@mod M\n\
+               $ P : @struct = x: @int\n\
+               $ (++) : P -> P -> P = \\a b = P.{ .x = a.x + b.x }\n\
+               $ s : @str = \"a\" ++ \"b\"\n\
+               $ p : P = P.{.x=1} ++ P.{.x=2}";
+    assert_eq!(errors(src), "");
+}
+
+#[test]
+fn an_unknown_variant_tag_is_a_type_error() {
+    let e = errors(
+        "@mod M\n\
+         $ U : @union = A: {}, B: {@int},\n\
+         $ h : @int = is U.A | .Nope.{q} => q else 0",
+    );
+    assert!(e.contains("no union has a variant `Nope`"), "{e}");
+}
+
+#[test]
+fn a_variant_pattern_on_a_non_union_is_a_type_error() {
+    // The loose fallthrough bound `a` and `b` to fresh variables and never
+    // unified with the scrutinee, so the arm could claim any type.
+    let e = errors(
+        "@mod M\n\
+         $ P : @struct = x: @int\n\
+         $ h : P -> @int = \\p = is p | P.Zzz.{a, b} => a else 0",
+    );
+    assert!(e.contains("`P` is not a union"), "{e}");
+}
+
+#[test]
+fn an_unknown_field_is_a_type_error() {
+    let e = errors(
+        "@mod M\n\
+         $ P : @struct = x: @int\n\
+         $ h : P -> @int = \\v = v.nonexistent",
+    );
+    assert!(e.contains("has no field `nonexistent`"), "{e}");
+}
+
+#[test]
+fn a_struct_literal_with_an_unknown_field_is_a_type_error() {
+    let e = errors(
+        "@mod M\n\
+         $ P : @struct = x: @int, y: @int\n\
+         $ p : P = { .x = 1, .nope = 2 }",
+    );
+    assert!(e.contains("struct `P` has no field `nope`"), "{e}");
+}
+
+#[test]
+fn a_field_on_an_unknown_type_becomes_a_row_constraint() {
+    // Not knowing the record's type yet is a reason to CONSTRAIN it, not to
+    // invent one: the parameter becomes an open row.
+    assert_eq!(type_of("@mod M\n$ f = \\r = r.x", "f"), "{ x: a | b } -> a");
+}
+
+// -- issue #209: laziness is a property of the slot ------------------------
+
+#[test]
+fn a_recursive_slot_is_lazy_and_an_arrow_slot_is_not() {
+    // `List a` leads back to `List`, so that slot is lazy. `{} -> Task` is
+    // already a suspension, so thunking it again would leave callers applying a
+    // thunk instead of the function (this is what `Task.Susp` relies on).
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+               $ S : @struct t = head : t, tail : S t\n\
+               $ P : @struct = x: @int, y: @int\n\
+               $ z : @int = 0";
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast, types.clone());
+    checker.import_from(&core_checker);
+    checker.check_program(&prog).expect("check");
+    let lazy = checker.lazy_slots();
+    assert_eq!(lazy.get(&("L".into(), Some("C".into()))), Some(&vec![false, true]));
+    assert_eq!(lazy.get(&("S".into(), None)), Some(&vec![false, true]));
+    assert_eq!(lazy.get(&("Task".into(), Some("Susp".into()))), None);
+    assert_eq!(lazy.get(&("P".into(), None)), None);
+}
+
+#[test]
+fn codata_is_gone() {
+    let (ast, _) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let e = crate::parse_into(ast, "@mod M\n$ S : @codata t = head: t, tail: S t")
+        .err()
+        .expect("`@codata` must not parse");
+    assert!(format!("{e}").contains("`@codata` no longer exists"), "{e}");
+}

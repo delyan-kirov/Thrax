@@ -187,16 +187,6 @@ pub enum Item {
     },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Slice<FieldDecl> },
-    /// `$ Name : @codata [a b ...] = obs : ty, ...` -- a coinductive type defined
-    /// by its observations (destructors), dual to a struct. `params` are the
-    /// declared type parameters (inferred from the observations when omitted).
-    /// Observing is non-memoized: each observation is a thunk, run afresh on every
-    /// look.
-    Codata {
-        name: StrId,
-        params: Slice<StrId>,
-        observations: Slice<FieldDecl>,
-    },
     /// `$ with module [= rename]`
     Import {
         module: Slice<StrId>,
@@ -440,7 +430,7 @@ pub enum Expr {
     /// materializes into a sized tensor `[n]T` (when a tensor is expected and the
     /// bounds are literals, so the length is a compile-time constant), otherwise a
     /// `List Int` (the default). Both bounds are `Int`. An open range `[lo ...]`
-    /// omits the upper bound and builds an infinite codata `Stream Int`.
+    /// omits the upper bound and builds an unbounded `Stream Int`.
     Range {
         lo: Aol<Expr>,
         hi: Option<Aol<Expr>>,

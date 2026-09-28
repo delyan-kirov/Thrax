@@ -23,7 +23,7 @@ Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 3. Types
 4. Expressions and syntactic sugar
 5. Pattern matching
-6. Algebraic data types (structs, unions, codata)
+6. Algebraic data types (structs, unions, recursion)
 7. Functions (currying, higher-order, overloading, implicits, TCO)
 8. Algebraic effects and handlers
 9. Sized tensors and linear algebra
@@ -710,23 +710,42 @@ $ Base   : @union  = Red: {}, Green: {}
 $ Color  : @union  = with Base, Blue: {}         # Red, Green, then Blue
 ```
 
-## 6.5 Codata `@codata`
-Coinductive types defined by their observations (dual to a struct's fields).
-Built with `{ .obs = e, ... }`, consumed with `s.obs`. Observations are
-non-memoized thunks, so an infinite structure is fine.
+## 6.5 Recursive types are lazy
+A slot whose type leads back to the type that declares it holds its value
+lazily: building one cell does not build the rest, and a cell is computed when
+something looks at it. The forced value replaces the thunk, so a cell costs its
+work once however many times it is read. This makes an unbounded structure an
+ordinary declaration, with no separate kind for it.
 
-Simple (the prelude `Stream`, observed):
+Laziness belongs to the slot, so it does not depend on how the value is written.
+It stops at an arrow: a slot typed `{} -> T` is already a suspension and stays a
+plain function.
+
+Simple (the prelude `Stream`, a recursive `@struct`):
 ```thrax
+$ Stream : @struct t = head : t, tail : Stream t
 $ first : Stream @int -> @int = \s = s.head
 $ next  : Stream @int -> Stream @int = \s = s.tail
 ```
 
-Involved (map over an infinite stream, still lazy):
+Involved (map over an unbounded stream; `tail` is only built when read):
 ```thrax
 $ smap : (a -> b) -> Stream a -> Stream b = \f s =
 	{ .head = f s.head, .tail = smap f s.tail }
 $ tenth : @int = (smap (\x = x + x) (count_from 1)).tail.tail.head
 ```
+
+A recursive `@union` works the same way, which is how a `List` is consumed one
+cons at a time:
+```thrax
+$ from : @int -> List @int = \n = List.Cons.{ n, from (n + 1) }
+$ head : List @int -> @int = \l = is l | List.Cons.{h, t} => h else 0
+```
+
+Evaluation is otherwise call by value, so a slot filled through a function
+argument is evaluated at the call, as any argument is. `List.Cons.{ n, from (n
++ 1) }` suspends the tail; `cons n (from (n + 1))` does not, because `from (n +
+1)` is an argument to `cons`.
 
 ---
 
@@ -976,14 +995,26 @@ $ transpose : [m][n]a -> [n][m]a = \t =
 ## 9.6 Expression-form ranges
 `[lo ... hi]` builds whatever `@compiler_interface_range` returns, and the open
 `[lo ...]` whatever `@compiler_interface_range_from` returns; `CORE` overloads
-them for `@vec` and `Stream`. The expected type picks the overload, so a range of
-your own type needs only its own. A sized tensor is the exception: literal bounds
-fix `n`, and the compiler builds it directly.
+both for `@vec`/`List` and `Stream`/`List`. The expected type picks the overload,
+so a range of your own type needs only its own. When nothing constrains it, the
+**first overload declared** wins, which is how `CORE`'s order (not the compiler)
+sets what a bare range builds. A sized tensor is the exception: literal bounds fix
+`n`, and the compiler builds it directly.
 
 ```thrax
 $ tv : [4]@int     = [1 ... 4]     # tensor, n = 4
-$ ns : @vec @int   = [1 ... 5]     # vector (default)
-$ s  : Stream @int = [1 ...]       # infinite stream (open range)
+$ ns : @vec @int   = [1 ... 5]     # vector (the bare closed range)
+$ s  : Stream @int = [1 ...]       # unbounded (the bare open range)
+```
+
+A `@vec` range materializes every element, so a large bound costs that much work
+up front. The `List` overloads are lazy in the tail, which is what makes a range
+you only walk part of cheap:
+
+```thrax
+$ first5 : <@io> {} =
+	for ([1 ... 100000000000000] : List @int)
+		(\i = if i > 5 => break {} else IO.print "?(i), ")
 ```
 
 ---
@@ -1146,7 +1177,7 @@ A quick index of the `@`-forms and where each is documented above.
 | --- | --- | --- |
 | `@mod` | module header | 2.1 |
 | `@main` | program entry | 2.5 |
-| `@struct` `@union` `@codata` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
+| `@struct` `@union` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding | 10 |
 | `@ctx` | implicit parameter | 7.4 |
 | `@private` | visibility | 2.4 |

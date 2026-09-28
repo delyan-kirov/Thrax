@@ -127,7 +127,7 @@ import       : dotted_name | dotted_name EQ dotted_name ;
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 
-/* Type parameters after `@struct`/`@union`/`@codata`/`@alias`: `@struct a b = ...`.
+/* Type parameters after `@struct`/`@union`/`@alias`: `@struct a b = ...`.
  * They are mandatory: every type variable used in the body must be declared here.
  * `opt_` only because a non-generic type declares none (an empty list). */
 opt_type_params : /* empty */ | opt_type_params LIDENT ;

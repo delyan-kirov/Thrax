@@ -57,9 +57,8 @@ $ chk2c : @int = is get 0 some_i | 5 => 0 else 1
 $ chk2d : @int = is get 8 none_i | 8 => 0 else 1
 
 # The prelude's generic, recursive `@vec` (its `[..]`/`::` sugar is hardwired to
-# that name). Under STRICT evaluation this builds FINITE lists only; the former
-# infinite stream (`from` / `take3sum`) was lazy data and will return as
-# `@codata` (docs/effect-system-design.md section 1a).
+# that name). A `@vec` is a finite buffer; an unbounded sequence is a recursive
+# type, whose recursive slots are lazy (documentation/language-reference.md 6.5).
 
 # Two type parameters, ordered by first appearance: `Pair `A `B`. Named payload
 # written out of declared order; LL normalizes it positionally.

@@ -1,13 +1,13 @@
-@mod CODATA
+@mod STREAMS
 
-# \file codata.thx
-# \info Codata: coinductive types defined by their OBSERVATIONS (destructors),
-#       dual to a struct's fields. `@codata` declares the observations; a value
-#       is built by giving each observation `{ .obs = e, ... }` and consumed by
-#       observing it `s.obs`. Observations are non-memoized thunks, so an infinite
-#       structure is fine: construction is finite and each observation runs afresh.
-#       Recursion is generative (through a function call), so reference counting
-#       stays complete (no cycles). See documentation/effect-system-design.md 1a.
+# \file STREAMS.thx
+# \info Unbounded structures from ordinary recursive types. A field whose type
+#       leads back to the type declaring it holds its value lazily, so `Stream`
+#       is a plain `@struct` (`head : t, tail : Stream t`): building a cell does
+#       not build the rest, and scrutinising one forces exactly the cell looked
+#       at. The forced value replaces the thunk, so a cell costs its work once.
+#       The same rule applies to a recursive `@union`, which is how `List` can be
+#       consumed a cons at a time.
 
 # `Stream` and the ascending-integer generator `count_from` are canonical, defined
 # in CORE (bare everywhere), so this file demonstrates observing and mapping one.
@@ -31,4 +31,4 @@ $ ck_range : @int = if nth 3 [7 ...] == 10 => 0 else 8
 
 $ test : @int = ck_head + ck_nth + ck_map + ck_range
 
-$ @run (assert (test == 0) "CODATA: a check failed")
+$ @run (assert (test == 0) "STREAMS: a check failed")

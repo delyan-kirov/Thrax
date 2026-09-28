@@ -285,7 +285,7 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Word) && self.text(t).starts_with(|c: char| c.is_ascii_lowercase()))
     }
-    /// The optional type parameters after a `@struct`/`@union`/`@codata` keyword
+    /// The optional type parameters after a `@struct`/`@union` keyword
     /// and before `=`: `@struct a b = ...`. Empty when omitted (the parameters are
     /// then inferred from the free type variables in the body).
     fn parse_type_params(&mut self) -> Result<Slice<StrId>> {
@@ -518,7 +518,7 @@ impl<'a> Parser<'a> {
         if let Kind::At = self.peek_kind()? {
             let at_tok = self.peek()?;
             let kw = self.intrinsic_name(at_tok);
-            if matches!(kw, "struct" | "union" | "alias" | "effect" | "codata") {
+            if matches!(kw, "struct" | "union" | "alias" | "effect") {
                 self.require_type_capital(self.text(name_tok), &name_tok)?;
             }
             match kw {
@@ -585,16 +585,20 @@ impl<'a> Parser<'a> {
                     let ops = self.parse_field_decls()?;
                     return Ok(Item::Effect { name, ops });
                 }
+                // `@codata` was removed: a recursive `@struct` or `@union` is lazy in
+                // its recursive slots, which is all the kind ever bought.
                 "codata" => {
-                    self.bump()?;
-                    let params = self.parse_type_params()?;
-                    expect!(self, Kind::Eq, "expected '=' after '@codata'");
-                    let observations = self.parse_field_decls()?;
-                    return Ok(Item::Codata {
-                        name,
-                        params,
-                        observations,
-                    });
+                    return Err(Diagnostic::error(
+                        Code::UnexpectedToken,
+                        at_tok.span,
+                        at_tok.line,
+                        "`@codata` no longer exists".to_string(),
+                    )
+                    .with_note(
+                        "declare it as a `@struct` (observations become fields) or a \
+                         `@union`; a slot whose type leads back to its own type is lazy"
+                            .to_string(),
+                    ))
                 }
                 _ => {} // an @tycon type signature; fall through
             }

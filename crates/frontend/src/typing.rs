@@ -49,6 +49,11 @@ use crate::typing::engine::Engine;
 /// three are consumed by lowering to build the extern value both engines call.
 pub type ExternSpec = (Vec<ExternArg>, Vec<String>, String);
 
+/// Which slots of a declared type are lazy: keyed by `(type name, variant tag)`
+/// with `None` as the tag for a struct, holding one flag per slot in declaration
+/// order. Only types with at least one lazy slot appear.
+pub type LazySlots = HashMap<(String, Option<String>), Vec<bool>>;
+
 /// A declared struct type. `params` are the implicit type parameters (the type
 /// variables appearing in the fields, in order of first appearance); `fields`
 /// keeps declaration order (which is also the positional-constructor order).
@@ -72,14 +77,6 @@ struct UnionInfo<'a> {
     variants: Vec<VariantSig<'a>>,
 }
 
-/// A declared codata type: implicit `params` and one `(observation, result type)`
-/// per destructor. Dual to a struct; observing runs a thunk.
-#[derive(Clone)]
-struct CodataInfo<'a> {
-    params: Vec<&'a str>,
-    observations: Vec<(&'a str, Aol<Ty>)>,
-}
-
 
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
@@ -99,16 +96,14 @@ pub struct Checker<'a> {
     scopes: Vec<HashMap<&'a str, Type>>,
     structs: HashMap<&'a str, StructInfo<'a>>,
     unions: HashMap<&'a str, UnionInfo<'a>>,
-    codata: HashMap<&'a str, CodataInfo<'a>>,
+    /// Which slots of a declared type hold their value lazily, keyed by
+    /// `(type, Some(variant tag))` for a union and `(type, None)` for a struct,
+    /// one flag per slot in declaration order. See [`Self::compute_lazy_slots`].
+    lazy_slots: LazySlots,
     /// Computed C memory layout for each `@struct @extern "abi"` (C-repr) struct,
     /// keyed by type name. Used to marshal a struct value across the `@extern`
     /// boundary by value.
     crepr_layouts: HashMap<&'a str, utilities::CLayout>,
-    /// `{ .obs = e }` sites the checker resolved to codata construction, and
-    /// `x.obs` field-access sites resolved to a codata observation. Lowering
-    /// desugars the former to a record of thunks and the latter to `field {}`.
-    codata_lits: HashSet<Aol<Expr>>,
-    observations: HashSet<Aol<Expr>>,
     /// Type aliases: `name -> (declared params, body)`. An applied alias is
     /// expanded by substituting its arguments for the parameters in the body.
     aliases: HashMap<&'a str, (Vec<&'a str>, Aol<Ty>)>,
@@ -391,10 +386,8 @@ impl<'a> Checker<'a> {
             scopes: vec![HashMap::new()],
             structs: HashMap::new(),
             unions: HashMap::new(),
-            codata: HashMap::new(),
+            lazy_slots: HashMap::new(),
             crepr_layouts: HashMap::new(),
-            codata_lits: HashSet::new(),
-            observations: HashSet::new(),
             aliases: HashMap::new(),
             effect_ops: HashMap::new(),
             overloads: HashMap::new(),
@@ -498,10 +491,11 @@ impl<'a> Checker<'a> {
     }
 
 
-    /// Codata sites: `{ .obs = e }` construction literals (lowered to a record of
-    /// thunks) and `x.obs` observations (lowered to `field {}`).
-    pub fn codata_sites(&self) -> (&HashSet<Aol<Expr>>, &HashSet<Aol<Expr>>) {
-        (&self.codata_lits, &self.observations)
+
+    /// The lazy-slot table, for lowering to consult when it builds and consumes
+    /// values of a declared type.
+    pub fn lazy_slots(&self) -> &LazySlots {
+        &self.lazy_slots
     }
 
     /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
@@ -683,8 +677,7 @@ impl<'a> Checker<'a> {
                 Item::Def { name, .. }
                 | Item::Struct { name, .. }
                 | Item::Union { name, .. }
-                | Item::Alias { name, .. }
-                | Item::Codata { name, .. } => *name,
+                | Item::Alias { name, .. } => *name,
                 _ => continue,
             };
             self.private_names.insert(self.text(name));
@@ -979,9 +972,6 @@ impl<'a> Checker<'a> {
             }
             if let Some(a) = other.aliases.get(name) {
                 self.aliases.insert(name, a.clone());
-            }
-            if let Some(c) = other.codata.get(name) {
-                self.codata.insert(name, c.clone());
             }
         }
         let module = other.module_name;
@@ -1385,7 +1375,19 @@ impl<'a> Checker<'a> {
     }
 
     /// Check an expression against an expected type (the checking direction).
+    ///
+    /// Fills in the expression's span the way [`Self::infer`] does, so a
+    /// diagnostic raised down here points at the offending expression instead of
+    /// the start of the file.
     fn check(&mut self, e: Aol<Expr>, expected: Type) -> Result<()> {
+        let r = self.check_node(e, expected);
+        r.map_err(|d| match self.ast.expr_span(e) {
+            Some(span) => d.fill_span(span),
+            None => d,
+        })
+    }
+
+    fn check_node(&mut self, e: Aol<Expr>, expected: Type) -> Result<()> {
         // A literal aimed at a user type may build it through a `@compiler_interface_*`
         // construction hook; when one applies, that supersedes the built-in default.
         if self.literal_hook_check(e, expected)? {
@@ -1470,16 +1472,6 @@ impl<'a> Checker<'a> {
                 let got = self.range_hook(e, lo, hi, Some(expected))?;
                 self.eng.unify(got, expected, "against the expected type")
             }
-            // `{ .obs = e, ... }` where a codata type is expected: construct it (each
-            // clause becomes a thunk). Every observation must be given.
-            Expr::Record {
-                fields,
-                with: None,
-                update: None,
-            } if self.codata_head(expected).is_some() => {
-                let fields = self.ast.slice(*fields);
-                self.check_codata_lit(e, fields, expected)
-            }
             // A `.{ .. }` literal (bare or `Type.{ .. }`) checked against an expected
             // type: resolve the struct from the qualifier or the expected type, and
             // pass the expected type down so the parameters are pinned BEFORE fields
@@ -1509,6 +1501,62 @@ impl<'a> Checker<'a> {
                 self.eng.restore(save);
                 let got = self.infer_struct_lit(e, ty.map(|t| self.text(t)), fields, spread, None)?;
                 self.promote_to_record(e, &[got], expected).map_err(|_| err)
+            }
+            // A branch does not produce a value of its own, so the expectation
+            // passes THROUGH it to each result. Without this, an arm body is only
+            // ever inferred, which is why a construction that needs its type from
+            // context had to be written `(e : T)` inside `is` or `if`.
+            Expr::If { cond, then, alt } => {
+                let (cond, then, alt) = (*cond, *then, *alt);
+                let tc = self.infer(cond)?;
+                let b = self.eng.types.con(ty::BOOL);
+                self.eng.unify(tc, b, "in an 'if' condition")?;
+                self.check(then, expected)?;
+                self.check(alt, expected)
+            }
+            Expr::Match {
+                scrut,
+                arms,
+                default,
+            } => {
+                let (scrut, default) = (*scrut, *default);
+                let ts = self.infer(scrut)?;
+                for arm in self.ast.slice(*arms).iter() {
+                    self.enter_scope();
+                    let r = (|this: &mut Self| {
+                        for pat in this.ast.slice(arm.patterns).iter() {
+                            this.type_pattern(*pat, ts)?;
+                        }
+                        if let Some(guard) = arm.guard {
+                            let tg = this.infer(guard)?;
+                            let b = this.eng.types.con(ty::BOOL);
+                            this.eng.unify(tg, b, "in a match guard")?;
+                        }
+                        this.check(arm.body, expected)
+                    })(self);
+                    self.leave_scope();
+                    r?;
+                }
+                match default {
+                    Some(d) => self.check(d, expected),
+                    None => Ok(()),
+                }
+            }
+            // A `{ .f = e, ... }` literal checked against a declared struct builds
+            // THAT struct rather than an anonymous row record, so construction
+            // consults the type's own slots. That is what gives a recursive field
+            // its laziness however the value is written.
+            Expr::Record {
+                fields,
+                with: None,
+                update: None,
+            } if self.struct_name_of(expected).is_some()
+                && self.ast.slice(*fields).iter().all(|f| matches!(f, FieldInit::Named { .. })) =>
+            {
+                let name = self.struct_name_of(expected).expect("guarded just above");
+                let fields = self.ast.slice(*fields);
+                self.infer_struct_lit(e, Some(name), fields, None, Some(expected))?;
+                Ok(())
             }
             // A bare `.Tag` takes its union from the expected type (type-directed), so
             // a constructor name shared by several unions resolves unambiguously.
@@ -1845,32 +1893,6 @@ impl<'a> Checker<'a> {
                     self.aliases.insert(name, (params, *ty));
                     self.own_type_names.push(name);
                 }
-                Item::Codata {
-                    name,
-                    params,
-                    observations,
-                } => {
-                    let (params, observations) =
-                        (self.ast.slice(*params), self.ast.slice(*observations));
-                    let mut collected = Vec::new();
-                    let obs: Vec<(&'a str, Aol<Ty>)> = observations
-                        .iter()
-                        .map(|o| {
-                            collect_tyvars(self.ast, o.ty, &mut collected);
-                            (self.text(o.name), o.ty)
-                        })
-                        .collect();
-                    let name = self.text(*name);
-                    let params = self.resolve_type_params("codata", name, params, collected)?;
-                    self.codata.insert(
-                        name,
-                        CodataInfo {
-                            params,
-                            observations: obs,
-                        },
-                    );
-                    self.own_type_names.push(name);
-                }
                 _ => {}
             }
         }
@@ -1882,7 +1904,91 @@ impl<'a> Checker<'a> {
             let mut visiting = HashSet::new();
             self.splice_includes(name, &mut visiting)?;
         }
+        self.compute_lazy_slots();
         Ok(())
+    }
+
+    /// Decide which slots hold their value lazily. A slot is lazy exactly when it
+    /// can lead back to the type that owns it, so a recursive type can be built
+    /// and consumed one cell at a time instead of all at once. Laziness belongs to
+    /// the slot, not to the expression that fills it, so it holds however the
+    /// value was constructed.
+    ///
+    /// A C-repr struct is excluded: its runtime value is a flat C struct, and a
+    /// thunk cannot cross the `@extern` boundary.
+    fn compute_lazy_slots(&mut self) {
+        let mut mentions: HashMap<&'a str, Vec<&'a str>> = HashMap::new();
+        let mut slot_types: Vec<(&'a str, Option<&'a str>, Vec<Aol<Ty>>)> = Vec::new();
+        for (name, info) in &self.structs {
+            if info.crepr {
+                continue;
+            }
+            slot_types.push((name, None, info.fields.iter().map(|(_, t)| *t).collect()));
+        }
+        for (name, info) in &self.unions {
+            for v in &info.variants {
+                slot_types.push((name, Some(v.tag), v.payload.iter().map(|(_, t)| *t).collect()));
+            }
+        }
+        // An alias is transparent here: a slot typed through one still reaches
+        // whatever the alias expands to.
+        for (name, (_, ty)) in &self.aliases {
+            let mut cons = Vec::new();
+            collect_tycons(self.ast, *ty, &mut cons);
+            mentions.entry(name).or_default().extend(cons);
+        }
+        for (owner, _, tys) in &slot_types {
+            let entry = mentions.entry(owner).or_default();
+            for ty in tys {
+                let mut cons = Vec::new();
+                collect_tycons(self.ast, *ty, &mut cons);
+                for c in cons {
+                    if !entry.contains(&c) {
+                        entry.push(c);
+                    }
+                }
+            }
+        }
+        // Transitive closure of "mentions", so a slot typed `B` counts as
+        // recursive when `B` leads back to the owner through any chain.
+        let mut reach: HashMap<&'a str, HashSet<&'a str>> =
+            mentions.iter().map(|(k, v)| (*k, v.iter().copied().collect())).collect();
+        loop {
+            let mut changed = false;
+            let keys: Vec<&'a str> = reach.keys().copied().collect();
+            for k in keys {
+                let grown: HashSet<&'a str> = reach[k]
+                    .iter()
+                    .filter_map(|t| reach.get(t))
+                    .flatten()
+                    .copied()
+                    .collect();
+                let entry = reach.get_mut(k).expect("key came from this map");
+                let before = entry.len();
+                entry.extend(grown);
+                changed |= entry.len() != before;
+            }
+            if !changed {
+                break;
+            }
+        }
+        let leads_back = |c: &'a str, owner: &'a str| {
+            c == owner || reach.get(c).is_some_and(|r| r.contains(owner))
+        };
+        for (owner, tag, tys) in &slot_types {
+            let flags: Vec<bool> = tys
+                .iter()
+                .map(|ty| {
+                    let mut cons = Vec::new();
+                    collect_tycons(self.ast, *ty, &mut cons);
+                    cons.into_iter().any(|c| leads_back(c, owner))
+                })
+                .collect();
+            if flags.iter().any(|f| *f) {
+                self.lazy_slots
+                    .insert((owner.to_string(), tag.map(str::to_string)), flags);
+            }
+        }
     }
 
     /// Compute and validate the C memory layout of every C-repr struct. Runs after
@@ -2226,7 +2332,32 @@ impl<'a> Checker<'a> {
                 .eng
                 .record_field(rec_ty, field, &format!("accessing field `{field}`"));
         }
-        Ok(self.eng.fresh())
+        // The record's type is not known yet, so CONSTRAIN it to have this field
+        // rather than guessing: it becomes an open row, which unification solves
+        // (and the `Con ~ Record` bridge still lets a nominal struct satisfy it).
+        if let TypeNode::Var(_) = self.eng.head(rec_ty) {
+            // A NUMERIC label is ambiguous between a tuple index and a record
+            // field, and nothing here can yet say which, so it stays unconstrained
+            // until the type is known some other way. This is the one place a
+            // field access still fabricates a type.
+            if field.parse::<usize>().is_ok() {
+                return Ok(self.eng.fresh());
+            }
+            let fty = self.eng.fresh();
+            let tail = self.eng.fresh();
+            let row = self.eng.types.row_field(field, fty, tail);
+            let rec = self.eng.types.record(row);
+            self.eng.unify(rec_ty, rec, &format!("accessing field `{field}`"))?;
+            return Ok(fty);
+        }
+        // Otherwise the type is known and has no such field. Returning a fresh
+        // variable here would unify with anything, which is how a typo used to
+        // type-check and fault at run time.
+        let shown = self.show(rec_ty);
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "`{shown}` has no field `{field}`"
+        ))
     }
 
     fn infer_struct_lit(
@@ -2237,6 +2368,7 @@ impl<'a> Checker<'a> {
         spread: Option<Aol<Expr>>,
         expected: Option<Type>,
     ) -> Result<Type> {
+        let mut struct_name = ty.unwrap_or("");
         let (info, result, mut subst) = if let Some(base) = spread {
             let base_ty = self.infer(base)?;
             let (head, args) = self.spine(base_ty);
@@ -2264,6 +2396,7 @@ impl<'a> Checker<'a> {
             match resolved {
                 Some((name, info)) => {
                     self.struct_lit_names.insert(site, name.to_string());
+                    struct_name = name;
                     let (args, subst) = self.instantiate_params(&info.params);
                     (info, applied(&self.eng.types, name, &args), subst)
                 }
@@ -2294,13 +2427,18 @@ impl<'a> Checker<'a> {
         }
         for (i, fi) in fields.iter().enumerate() {
             let (decl_ty, value) = match fi {
+                // A clause the struct has no slot for is an error: skipping it would
+                // let a literal claim a type whose shape it does not have.
                 FieldInit::Named { name, value } => {
                     let name = self.text(*name);
                     match info.fields.iter().find(|(n, _)| *n == name) {
                         Some((_, t)) => (*t, *value),
                         None => {
                             self.infer(*value)?;
-                            continue;
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "struct `{struct_name}` has no field `{name}`"
+                            ));
                         }
                     }
                 }
@@ -2308,7 +2446,11 @@ impl<'a> Checker<'a> {
                     Some((_, t)) => (*t, *value),
                     None => {
                         self.infer(*value)?;
-                        continue;
+                        let n = info.fields.len();
+                        return Err(diag!(
+                            Code::TypeMismatch, Span::at(0), 0,
+                            "struct `{struct_name}` has {n} fields, so there is no field {i}"
+                        ));
                     }
                 },
             };
@@ -2332,12 +2474,26 @@ impl<'a> Checker<'a> {
                 .find_union_by_tag(tag)
                 .and_then(|u| self.variant_sig(u, tag)),
         };
-        let (result, payload) = match resolved {
-            Some(r) => r,
-            None => {
-                self.infer_field_inits(fields)?;
-                return Ok(self.eng.fresh());
-            }
+        // No fresh() escape hatch, for the same reason `infer_struct_lit` has none:
+        // a fresh variable unifies with anything, so an unresolvable constructor
+        // would type-check here and fault at run time.
+        let Some((result, payload)) = resolved else {
+            self.infer_field_inits(fields)?;
+            return Err(match ty {
+                Some(n) if !self.unions.contains_key(n) => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`{n}` is not a union, so it has no constructor `{tag}`"
+                ),
+                Some(n) => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "union `{n}` has no constructor `{tag}`"
+                ),
+                None => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "no union has a constructor `{tag}`";
+                    note: "a `.Tag` builds a variant of some declared `@union`"
+                ),
+            });
         };
         for (i, fi) in fields.iter().enumerate() {
             let (want, value) = match fi {
@@ -2489,61 +2645,6 @@ impl<'a> Checker<'a> {
         info.variants.iter().any(|v| v.tag == tag).then_some(*k)
     }
 
-    /// The head codata type name and its type arguments, if `ty` is a (possibly
-    /// applied) declared codata type.
-    fn codata_head(&self, ty: Type) -> Option<(&'a str, Vec<Type>)> {
-        let (head, args) = self.spine(ty);
-        if let TypeNode::Con(name) = self.eng.types.node(head) {
-            if let Some((n, _)) = self.codata.get_key_value(self.eng.types.name(name).as_str()) {
-                return Some((n, args));
-            }
-        }
-        None
-    }
-
-    /// Check a codata construction `{ .obs = e, ... }` against `expected`: every
-    /// observation must be supplied and typed at its declared result type.
-    fn check_codata_lit(
-        &mut self,
-        site: Aol<Expr>,
-        fields: &'a [FieldInit],
-        expected: Type,
-    ) -> Result<()> {
-        let (name, args) = self.codata_head(expected).expect("guarded on a codata type");
-        let info = self.codata[name].clone();
-        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
-        for (obs, obs_ty) in &info.observations {
-            let clause = fields.iter().find_map(|f| match f {
-                FieldInit::Named { name, value } if self.text(*name) == *obs => Some(*value),
-                _ => None,
-            });
-            match clause {
-                Some(value) => {
-                    let want = self.ty_of_ast(*obs_ty, &mut subst);
-                    self.check(value, want)?;
-                }
-                None => {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "codata `{name}` construction is missing observation `{obs}`"
-                    ))
-                }
-            }
-        }
-        for f in fields {
-            if let FieldInit::Named { name: fname, .. } = f {
-                let n = self.text(*fname);
-                if !info.observations.iter().any(|(o, _)| *o == n) {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "codata `{name}` has no observation `{n}`"
-                    ));
-                }
-            }
-        }
-        self.codata_lits.insert(site);
-        Ok(())
-    }
 
     /// The `(label, type)` fields of a record value: a structural [`TypeNode::Record`]
     /// (its closed row) or a nominal struct (its declared fields, instantiated).
@@ -2879,17 +2980,6 @@ impl<'a> Checker<'a> {
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name));
                 let rec_ty = self.infer(record)?;
-                // `x.obs` on a codata value is an observation (record the site so
-                // lowering runs the thunk); otherwise it is field/tuple access.
-                if let Some((cname, args)) = self.codata_head(rec_ty) {
-                    let info = self.codata[cname].clone();
-                    if let Some((_, obs_ty)) = info.observations.iter().find(|(o, _)| *o == name) {
-                        let mut subst = subst_from_args(&info.params, &args, &mut self.eng);
-                        let obs_ty = *obs_ty;
-                        self.observations.insert(e);
-                        return Ok(self.ty_of_ast(obs_ty, &mut subst));
-                    }
-                }
                 self.infer_field(rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
@@ -3645,7 +3735,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The head constructor of `ty` if it is a user-declared type (struct / union /
-    /// codata / alias), following an application spine (`MyVec Int` -> `MyVec`). A
+    /// alias), following an application spine (`MyVec Int` -> `MyVec`). A
     /// builtin, a variable, a tuple, or a function returns `None`, so a construction
     /// hook only ever intercepts a literal aimed at a user type.
     fn user_type_head(&self, ty: Type) -> Option<String> {
@@ -3658,7 +3748,6 @@ impl<'a> Checker<'a> {
                     let k = n.as_str();
                     return (self.structs.contains_key(k)
                         || self.unions.contains_key(k)
-                        || self.codata.contains_key(k)
                         || self.aliases.contains_key(k))
                     .then_some(n);
                 }
@@ -3763,15 +3852,63 @@ impl<'a> Checker<'a> {
                 self.eng.restore(save);
             }
         }
-        let Some(idx) = self.resolve_hook(&cands, &args, result) else {
+        // With nothing to pin the result, several overloads fit. Rather than call
+        // that ambiguous, the FIRST one declared is the default, so `CORE`'s
+        // declaration order sets what a bare range builds: a `@vec` for `[lo ...
+        // hi]`, a `Stream` for `[lo ...]`. An annotation or a known expected type
+        // still picks any other overload.
+        let idx = self
+            .resolve_hook(&cands, &args, result)
+            .or_else(|| self.resolve_hook_first(&cands, &args, result));
+        let Some(idx) = idx else {
+            let results: Vec<Type> =
+                cands.iter().map(|c| self.result_of(c.ty, args.len())).collect();
+            let offered = results
+                .iter()
+                .map(|t| self.show(*t))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let want = self.show(result);
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
-                "no single `{name}` overload fits this range";
-                note: "annotate the range (`([lo ... hi] : T)`) to pick one"
+                "no `{name}` overload builds a `{want}` from this range";
+                note: "`{name}` is defined for: {offered}"
             ));
         };
         self.record_literal_hook(site, name, &cands, idx);
         Ok(self.eng.zonk(result))
+    }
+
+    /// The FIRST hook candidate that applies, committing it. Used as the default
+    /// when nothing constrains the result and several candidates fit; the strict
+    /// unique-match rule is [`Self::resolve_hook`].
+    fn resolve_hook_first(
+        &mut self,
+        cands: &[Cand<'a>],
+        args: &[Type],
+        result: Type,
+    ) -> Option<usize> {
+        for (idx, cand) in cands.iter().enumerate() {
+            let save = self.eng.save();
+            if self.apply_overload(cand.ty, args, result).is_ok() {
+                return Some(idx);
+            }
+            self.eng.restore(save);
+        }
+        None
+    }
+
+    /// The result type of a hook candidate applied to `n` arguments: walk `n` arrows
+    /// down its type. Used to say, in a diagnostic, which types a hook can build.
+    fn result_of(&mut self, ty: Type, n: usize) -> Type {
+        let mut t = self.eng.zonk(ty);
+        for _ in 0..n {
+            match self.eng.head(t) {
+                TypeNode::Arrow(_, to, _) => t = to,
+                _ => break,
+            }
+        }
+        t
     }
 
     /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
@@ -4515,9 +4652,21 @@ impl<'a> Checker<'a> {
         fields: &'a [FieldPat],
         expected: Type,
     ) -> Result<()> {
-        let info = match self.structs.get(ty).cloned() {
-            Some(info) => info,
-            None => return self.bind_field_patterns_loose(fields),
+        // No loose fallback: binding a pattern's fields to fresh variables without
+        // unifying against the scrutinee would let the arm claim any type it liked,
+        // so an unresolvable pattern is an error, not an unconstrained one.
+        let Some(info) = self.structs.get(ty).cloned() else {
+            let what = if self.unions.contains_key(ty) {
+                "a union, so match its variants (`{ty}.Tag.{{ .. }}`)".to_string()
+            } else if self.is_known_type(ty) {
+                "not a struct".to_string()
+            } else {
+                "not a declared type".to_string()
+            };
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "`{ty}.{{ .. }}` is not a struct pattern: `{ty}` is {what}"
+            ));
         };
         let (args, mut subst) = self.instantiate_params(&info.params);
         self.eng
@@ -4557,9 +4706,24 @@ impl<'a> Checker<'a> {
                 .find_union_by_tag(tag)
                 .and_then(|u| self.variant_sig(u, tag)),
         };
-        let (result, payload) = match resolved {
-            Some(r) => r,
-            None => return self.bind_field_patterns_loose(fields),
+        // As in `type_struct_pattern`, an unresolvable tag is an error rather than
+        // an arm that binds fresh variables and constrains nothing.
+        let Some((result, payload)) = resolved else {
+            return Err(match ty {
+                Some(n) if !self.unions.contains_key(n) => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`{n}` is not a union, so it has no variant `{tag}`"
+                ),
+                Some(n) => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "union `{n}` has no variant `{tag}`"
+                ),
+                None => diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "no union has a variant `{tag}`";
+                    note: "a `.Tag` pattern names a variant of some declared `@union`"
+                ),
+            });
         };
         self.eng.unify(expected, result, "in a variant pattern")?;
         for (i, f) in fields.iter().enumerate() {
@@ -4588,22 +4752,6 @@ impl<'a> Checker<'a> {
         self.type_pattern(pat, want)
     }
 
-    fn bind_field_patterns_loose(&mut self, fields: &'a [FieldPat]) -> Result<()> {
-        for f in fields {
-            match f {
-                FieldPat::Named { pat, .. } | FieldPat::Positional(pat) => {
-                    let v = self.eng.fresh();
-                    self.type_pattern(*pat, v)?;
-                }
-                FieldPat::Shorthand(name) => {
-                    let v = self.eng.fresh();
-                    self.bind(self.text(*name), v);
-                }
-            }
-        }
-        Ok(())
-    }
-
     // -- AST types ----------------------------------------------------------
 
     /// Is `name` a usable type: a built-in base type, or a struct/union/alias
@@ -4614,17 +4762,15 @@ impl<'a> Checker<'a> {
             || self.structs.contains_key(name)
             || self.unions.contains_key(name)
             || self.aliases.contains_key(name)
-            || self.codata.contains_key(name)
     }
 
     /// The number of type parameters a user-declared type constructor takes, if
-    /// `name` is a struct / union / codata (the ones whose arity we track).
+    /// `name` is a struct or union (the ones whose arity we track).
     fn type_arity(&self, name: &str) -> Option<usize> {
         self.structs
             .get(name)
             .map(|i| i.params.len())
             .or_else(|| self.unions.get(name).map(|i| i.params.len()))
-            .or_else(|| self.codata.get(name).map(|i| i.params.len()))
             .or_else(|| self.aliases.get(name).map(|(p, _)| p.len()))
     }
 
@@ -5194,10 +5340,16 @@ impl<'a> Checker<'a> {
             let t = self.eng.types.arrow(a, self.eng.types.arrow(a, bool_));
             self.overloads.insert(op, vec![Cand::fallback(t)]);
         }
+        // `++` is an overload set over the byte-vector types, not a generic
+        // `a -> a -> a`: that signature claimed a domain the operator does not
+        // have, so `p ++ q` on two structs type-checked and then faulted at run
+        // time. A user `$ (++)` now JOINS this set instead of replacing it.
         {
-            let a = self.eng.fresh_generic();
-            let t = self.eng.types.arrow(a, self.eng.types.arrow(a, a));
-        self.bind("++", t);
+            let cat = [ty::STR, ty::ARRAY].map(|n| {
+                let t = self.eng.types.con(n);
+                self.eng.types.arrow(t, self.eng.types.arrow(t, t))
+            });
+            self.overloads.insert("++", cat.map(Cand::local).into());
         }
         {
             let a = self.eng.fresh_generic();
@@ -5638,6 +5790,39 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
         // A `@e X` type splice contributes no type variables: its type is unknown
         // until the driver expands it, after which this node no longer exists.
         Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
+    }
+}
+
+/// Collect the type-constructor names `ty` mentions in a STRICT position: one
+/// that must be built to build a value of `ty`. Used for the type dependency
+/// graph behind the lazy-slot decision.
+///
+/// An arrow is not descended into. A function is already a suspension, so a
+/// recursive occurrence behind one (`Susp: { @int, {} -> Task }`) costs nothing
+/// at construction and must stay a plain function: thunking it again would leave
+/// callers applying a thunk. A type variable contributes nothing either, since a
+/// parameter cannot make its owner recursive on its own.
+fn collect_tycons<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
+    match ast.ty(ty) {
+        Ty::Con { name, .. } => {
+            let name = ast.text(*name);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+            collect_tycons(ast, *a, out);
+            collect_tycons(ast, *b, out);
+        }
+        Ty::Sized { size, elem, .. } => {
+            collect_tycons(ast, *size, out);
+            collect_tycons(ast, *elem, out);
+        }
+        Ty::Tuple(items) => ast.slice(*items).iter().for_each(|t| collect_tycons(ast, *t, out)),
+        Ty::Record { fields, .. } => {
+            ast.slice(*fields).iter().for_each(|f| collect_tycons(ast, f.ty, out))
+        }
+        Ty::Arrow { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
     }
 }
 

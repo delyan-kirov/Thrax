@@ -1,11 +1,14 @@
-# Deferred design: ranges, codata, and the linear-algebra extension
+# Deferred design: ranges, laziness, and the linear-algebra extension
 
-**Status: SHIPPED.** Ranges (pattern form) and codata are done (see their
-memories). The LA extension has landed through **increment 4**: sized tensors
+**Status: SHIPPED.** Ranges (pattern form) are done. The codata discussion below
+is historical: `@codata` was removed on 2026-09-28 and laziness became a property
+of a recursive slot in any declared type (documentation/language-reference.md 6.5,
+effect-system-design.md 1a). Read every "codata" below as "a lazy recursive
+slot"; the design questions it raises are unchanged. The LA extension has landed through **increment 4**: sized tensors
 (increment 1), a strided data plane (2a), O(1) views (2b), multi-axis slicing with
 inclusive `...` ranges (3), and per-axis variance (4). The ops are library Thrax
 over a small set of `@tensor_*` primitives. No LA item remains open; the deferred
-work below (expression-form ranges, COW, static shape, data/codata) is separate
+work below (expression-form ranges, COW, static shape, strict/lazy split) is separate
 future work, not part of the LA capstone. Timeline of increment 1 (2026-08-09):
 
 - `[n]T` is a rank-1 sized vector; `n` is a type-level natural, a **distinct KIND**

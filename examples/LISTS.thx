@@ -95,8 +95,31 @@ $ ck_lsc0 : @int = if (lsize_class []) == 0 => 0 else 1
 $ ck_lsc2 : @int = if (lsize_class [7, 8]) == 2 => 0 else 1
 $ ck_lscN : @int = if (lsize_class ls) == 9 => 0 else 1
 
+# `for` walks a List for effects. `Acc.add` collects what the body saw, so each
+# check below reads off exactly which elements the loop reached.
+$ Acc : @effect = add : @int -> {},
+$ collect : ({} -> <Acc | e> {}) -> <e> @int = \body =
+	do body {} ; 0
+	ctl k | Acc.add n => n + k {}
+	      else r => r
+
+$ ck_for : @int = if collect (\u = for ls (\x = Acc.add x)) == 15 => 0 else 1
+
+# `break` stops the walk, `continue` skips one element.
+$ ck_for_break : @int =
+	if collect (\u = for ls (\x = if x > 3 => break {} else Acc.add x)) == 6 => 0 else 1
+$ ck_for_continue : @int =
+	if collect (\u = for ls (\x = if x % 2 == 1 => continue {} else Acc.add x)) == 6 => 0 else 1
+
+# The tail slot of a `List` is lazy, so an unbounded one is fine as long as the
+# body stops: `for` only ever builds the cells it reaches.
+$ from : @int -> List @int = \n = List.Cons.{ n, from (n + 1) }
+$ ck_for_unbounded : @int =
+	if collect (\u = for (from 1) (\x = if x > 5 => break {} else Acc.add x)) == 15 => 0 else 1
+
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN
 	+ ck_lsum + ck_lcons + ck_lsecond + ck_lsc0 + ck_lsc2 + ck_lscN
+	+ ck_for + ck_for_break + ck_for_continue + ck_for_unbounded
 
 $ @run (assert (test == 0) "LISTS: a check failed")

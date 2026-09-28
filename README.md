@@ -65,7 +65,7 @@ thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
 - **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.
-- **And more**: row-polymorphic records, codata and streams, sized tensors, implicit (`@ctx`) parameters, function overloading, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`).
+- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, implicit (`@ctx`) parameters, function overloading, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`).
 
 ## A tour of the language
 

@@ -26,8 +26,8 @@ substrate every backend shares. The **IR** is a _new_ lowering target below the
 Core; this document is about the IR and the effect system it has to support.
 
 Goal is to have algebraic effects with handlers expressive enough for: **state, async,
-coroutines, exceptions, generators** (and, since we drop lazy data see section 1
-**codata / streaming**).
+coroutines, exceptions, generators** (streaming is also available directly, through
+the lazy recursive slots of section 1a).
 
 Hard constraints:
 
@@ -38,13 +38,14 @@ Hard constraints:
 
 ---
 
-## 1. Evaluation strategy: strict (CBV), no lazy data but codata is its own kind
+## 1. Evaluation strategy: strict (CBV), with lazy recursive slots
 
-**Decision.** Thrax is uniformly **call-by-value and pure**. Data constructors
-are **eager** there are _no_ thunks in data. Coinductive / infinite structures
-are NOT lazy data; they are a **separate kind, `@codata`** (see section 1a), and
-streaming may also be expressed through the **effect system** (a `yield`-style
-generator consumed by a handler).
+**Decision.** Thrax is uniformly **call-by-value and pure**, with one exception
+carved out by the type: a slot whose type leads back to the type declaring it
+holds its value lazily (see section 1a). Every other slot is eager. That is what
+makes an unbounded structure an ordinary declaration; streaming may also be
+expressed through the **effect system** (a `yield`-style generator consumed by a
+handler).
 
 **Why.** Pure **+** strict ==> a cyclic data value cannot be constructed at all
 (cycles need mutation, which we don't have, or laziness, which is dropped).
@@ -53,8 +54,8 @@ Therefore every data value is a finite tree/DAG, every refcount reaches zero, an
 weak references for data.**. I was worried that lazy data could introduce bugs
 and inconsistancies.
 
-**Rejected: lazy recursive (pure) sum data.** It would have given ergonomic
-codata (`ones = Cons 1 ones`), but knot-tied corecursion (`ones` referring back
+**Revisited: lazy recursive (pure) sum data.** Rejected here, adopted in section
+1a for the recursive slot only. Knot-tied corecursion (`ones` referring back
 to itself) builds a genuine **reference cycle**, which plain RC cannot reclaim ->
 a leak. Generative corecursion (`go n = Cons n (go (n+1))`) is acyclic and would
 have been RC-clean, but we cannot statically separate the two, so we cannot
@@ -74,8 +75,8 @@ an unpredictable lifetime.
 - There's no: lazy sharing / dynamic
   programming -> explicit memoization (a `state` effect or table); cyclic
   immutable graphs -> id/index representation instead of direct pointers.
-- The effect system becomes **load-bearing for codata**, not just for IO-like
-  effects. This raises its priority.
+- The effect system remains one way to stream, alongside the lazy recursive
+  slots of section 1a.
 - **CAFs are unaffected** see section 7; a lazy-memoized top-level _binding_ is a
   different mechanism from a lazy _data field_ and does not create cycles.
 
@@ -103,7 +104,53 @@ This is the same leading-parameter sugar as the record-parameter destructuring: 
 
 ---
 
-## 1a. Codata: a distinct, non-memoized, copattern-defined kind
+## 1a. Laziness: a recursive slot holds its value lazily
+
+**Superseded (2026-09-28).** The `@codata` kind below was removed. What it
+actually bought was one thing, laziness in the recursive position, and that is
+now a property of every declared type: **a slot whose type leads back to the
+type that declares it is lazy**, in a `@struct` and in a `@union` alike. A
+`Stream` is an ordinary recursive struct and a `List` an ordinary recursive
+union; neither needs its own kind.
+
+```
+$ Stream : @struct t = head : t, tail : Stream t
+$ from : @int -> Stream @int = \n = { .head = n, .tail = from (n + 1) }
+
+$ List : @union a = Nil: {}, Cons: {a, List a},
+$ count : @int -> List @int = \n = List.Cons.{ n, count (n + 1) }
+```
+
+The rule stops at an arrow: a slot typed `{} -> T` is already a suspension
+(`Task.Susp: { @int, {} -> Task }`), so it stays a plain function. A C-repr
+struct is excluded too, since a thunk cannot cross the `@extern` boundary.
+
+**Why the old kind did not work.** `@codata` was lazy only by accident. ANF
+deliberately left constructor fields unhoisted, but the IR lowering that follows
+hoisted every non-atom field into a `let` evaluated before the constructor.
+Codata escaped because its clauses were wrapped in a lambda, and a lambda is an
+atom. So a recursive `@union` was strict and a `@codata` was not, for a reason
+nothing in the language said, and building the same value through a different
+expression changed its strictness. Laziness is now a table the lowering consults,
+derived from the type's own recursion.
+
+**Memoized, reversing the decision below.** A forced thunk replaces itself with
+its value, so a cell costs its work once however many times it is read. The
+argument for non-memoized applied to streams, where re-observing is the point;
+it does not apply to data, where `len xs + sum xs` would otherwise rebuild the
+spine twice. Forcing happens where a value is scrutinised (a `Case` scrutinee, a
+field access) and where a whole value is consumed (rendering, structural
+equality), never at construction.
+
+**Still open.** Self-reference (`$ ones : Stream @int = { .head = 1, .tail =
+ones }`) works but builds a reference cycle, which refcounting does not collect.
+That is the same stance as cyclic data: accepted as a rare leak.
+
+The original design is kept below for the record.
+
+### Original decision (superseded)
+
+
 
 **Decision (revises the original "codata via effects only" stance, 2026-06-27).**
 Thrax supports **codata** as a first-class kind, declared `@codata` and defined
@@ -452,10 +499,9 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     (`IT::eval`/`force`/`VThunk`/`VClosure`) deleted, machine is the sole runtime.
     Parity gate met: all 17 `dat/` examples pass, valgrind-clean.
 
-- [ ] **Mx codata.** `@codata` kind + copatterns + observation; runtime
-  `VCodata` (record of non-memoized observation-closures); rewrite `AGTxSUM`'s
-  former stream as codata. Needs the strict machine (M1) as substrate;
-  independent of the effect milestones, so it can interleave with M2/M3. See section 1a.
+- [X] **Mx laziness.** Landed as a per-slot property rather than a kind: a
+  recursive slot is a memoized thunk, forced where the value is scrutinised.
+  `@codata` was removed. See section 1a.
 
 - [~] **M2 untyped affine effects.** `Handle` + perform/resume on the K stack:
   deep, affine, first-class resumptions, dynamic handler search. **Mostly landed
@@ -582,7 +628,7 @@ reference (documentation/language-reference.md section 8). Chosen to reuse Thrax
 the result is **closest to Flix**.
 
 - **Declaration.** `$ Eff : @effect = op : A -> B, ...` an `@effect` annotation
-  parallel to `@struct` / `@codata`. Effect = TypeName, operations = lowercase
+  parallel to `@struct` / `@union`. Effect = TypeName, operations = lowercase
   vars. Each op is `arg-type -> resume-type`; every op takes exactly one argument
   and names one result. The new **unit** type/value `{}` (empty record, added to
   the language for this) spells "no argument" / "no result".

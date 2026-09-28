@@ -28,6 +28,11 @@ use crate::parser::data::{
 };
 use utilities::{Aol, Span};
 
+/// The built-in that suspends a value. Construction wraps a lazy slot in
+/// `@delay (\_ = e)`; the machine forces it at the point the value is
+/// scrutinised and patches the cell with the result.
+pub const DELAY: &str = "@delay";
+
 use crate::lowering::data::{
     Arm, Clause as CoreClause, Effect, Handler as CoreHandler, Pat, Program, Term,
 };
@@ -405,10 +410,6 @@ pub struct Resolved {
     /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
     /// `Pat::SeqView` that unfolds the view.
     pub sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<String>, String)>,
-    /// `{ .obs = e }` codata-construction sites (each clause becomes a thunk).
-    pub codata_lits: HashSet<Aol<Expr>>,
-    /// `x.obs` observation sites (lowered to running the thunk: `field {}`).
-    pub observations: HashSet<Aol<Expr>>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
     /// arguments lowering injects ahead of the explicit ones (from
@@ -447,6 +448,11 @@ pub struct Resolved {
     /// the runtime so a struct value can be marshalled across the `@extern`
     /// boundary by value.
     pub crepr_layouts: HashMap<String, utilities::CLayout>,
+    /// Which slots of a declared type are lazy (from
+    /// [`crate::typing::Checker::lazy_slots`]). Construction wraps such a slot in
+    /// a thunk and the machine forces it when the value is scrutinised, so a
+    /// recursive type can be built and consumed a cell at a time.
+    pub lazy_slots: crate::typing::LazySlots,
 }
 
 /// Gather every checker resolution lowering needs into one [`Resolved`]: `[..]`
@@ -479,9 +485,12 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
         for (&site, (m, n)) in checker.sequence_pattern_hooks() {
             resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone()));
         }
-        let (clits, obs) = checker.codata_sites();
-        resolved.codata_lits.extend(clits.iter().copied());
-        resolved.observations.extend(obs.iter().copied());
+        for (key, flags) in checker.lazy_slots() {
+            resolved.lazy_slots.insert(key.clone(), flags.clone());
+        }
+        if std::env::var_os("THX_LAZY_DEBUG").is_some() {
+            for (k, v) in checker.lazy_slots() { eprintln!("LAZY {k:?} -> {v:?}"); }
+        }
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }
@@ -655,6 +664,31 @@ impl<'a> Lowerer<'a> {
     fn fresh(&mut self) -> String {
         self.fresh += 1;
         format!("%{}", self.fresh)
+    }
+
+    /// Suspend `body` in a thunk. The machine forces it when the value is
+    /// scrutinised and patches the cell with the result, so the work happens once
+    /// and only if it is needed. A lambda is an atom, so ANF and the IR lowering
+    /// leave it alone instead of hoisting it into a `let` the way they would a
+    /// bare call.
+    fn delay(&mut self, body: Term) -> Term {
+        let param = self.fresh();
+        Term::app(
+            Term::var(DELAY),
+            Term::Lam {
+                param,
+                body: Arc::new(body),
+            },
+        )
+    }
+
+    /// The lazy flags for a declared type's slots, once the name is resolved the
+    /// way construction resolves it.
+    fn lazy_flags(&self, ty: &str, tag: Option<&str>) -> Option<&[bool]> {
+        self.resolved
+            .lazy_slots
+            .get(&(ty.to_string(), tag.map(str::to_string)))
+            .map(Vec::as_slice)
     }
 
     /// The head type constructor's name, if `t` is a (possibly applied) `Con`.
@@ -1049,13 +1083,7 @@ impl<'a> Lowerer<'a> {
 
             Expr::Field { record, name } => {
                 let (record, name) = (*record, self.text(*name).to_string());
-                let field = Term::Field(Arc::new(self.expr(record)), name);
-                // A codata observation runs the stored thunk (`field {}`).
-                if self.resolved.observations.contains(&e) {
-                    Term::app(field, Term::Unit)
-                } else {
-                    field
-                }
+                Term::Field(Arc::new(self.expr(record)), name)
             }
 
             Expr::StructLit { ty, fields, spread } => {
@@ -1073,32 +1101,10 @@ impl<'a> Lowerer<'a> {
                 with,
                 update,
             } => {
-                // Codata construction: each observation clause becomes a thunk
-                // (`\%u = clause`), so construction is finite and observing runs the
-                // clause afresh (non-memoized). Observing (see `Expr::Field`) applies
-                // the thunk to unit.
-                if self.resolved.codata_lits.contains(&e) {
-                    let obs: Vec<(String, Term)> = self.ast.slice(*fields)
-                        .iter()
-                        .filter_map(|fi| match fi {
-                            FieldInit::Named { name, value } => {
-                                let body = self.expr(*value);
-                                Some((
-                                    self.text(*name).to_string(),
-                                    Term::Lam {
-                                        param: self.fresh(),
-                                        body: Arc::new(body),
-                                    },
-                                ))
-                            }
-                            FieldInit::Positional(_) => None,
-                        })
-                        .collect();
-                    return Term::Struct {
-                        name: String::new(),
-                        base: None,
-                        fields: Arc::from(obs),
-                    };
+                // Checked against a declared struct, the literal builds that
+                // struct (the checker recorded which), so lazy slots apply.
+                if let Some(name) = self.resolved.struct_lit_names.get(&e).cloned() {
+                    return self.struct_lit(Some(&name), self.ast.slice(*fields), None);
                 }
                 // A name-keyed record value. Update (`| base`) and stack (`with
                 // base`) build over that base with the listed fields overriding /
@@ -1657,22 +1663,38 @@ impl<'a> Lowerer<'a> {
             })
             .unwrap_or_default();
 
+        // A field the declaration made lazy is suspended here, whatever expression
+        // fills it, so the property belongs to the type rather than to this site.
+        let lazy: Vec<bool> = self
+            .lazy_flags(&name, None)
+            .map_or_else(Vec::new, <[bool]>::to_vec);
+        let slot_of = |fname: &str, i: usize| {
+            field_names
+                .as_ref()
+                .and_then(|ns| ns.iter().position(|n| n == fname))
+                .unwrap_or(i)
+        };
         let mut out = Vec::with_capacity(fields.len());
         for (i, fi) in fields.iter().enumerate() {
-            match fi {
-                FieldInit::Named { name, value } => {
-                    let fname = self.text(*name).to_string();
-                    out.push((fname, self.expr(*value)));
-                }
-                FieldInit::Positional(value) => {
-                    let fname = field_names
+            let (fname, value) = match fi {
+                FieldInit::Named { name, value } => (self.text(*name).to_string(), *value),
+                FieldInit::Positional(value) => (
+                    field_names
                         .as_ref()
                         .and_then(|ns| ns.get(i))
                         .cloned()
-                        .unwrap_or_else(|| i.to_string());
-                    out.push((fname, self.expr(*value)));
-                }
-            }
+                        .unwrap_or_else(|| i.to_string()),
+                    *value,
+                ),
+            };
+            let slot = slot_of(&fname, i);
+            let term = self.expr(value);
+            let term = if lazy.get(slot).copied().unwrap_or(false) {
+                self.delay(term)
+            } else {
+                term
+            };
+            out.push((fname, term));
         }
         Term::Struct {
             name,
@@ -1706,13 +1728,31 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let out = slots.into_iter().map(|s| s.unwrap_or(Term::Unit)).collect();
+        let ty = if union.is_empty() {
+            ty.unwrap_or_default().to_string()
+        } else {
+            union
+        };
+        // A recursive slot is suspended, so building a cell does not build the
+        // whole structure; the machine forces it when an arm scrutinises it.
+        let lazy: Vec<bool> = self
+            .lazy_flags(&ty, Some(tag))
+            .map_or_else(Vec::new, <[bool]>::to_vec);
+        let out = slots
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let t = s.unwrap_or(Term::Unit);
+                if lazy.get(i).copied().unwrap_or(false) {
+                    self.delay(t)
+                } else {
+                    t
+                }
+            })
+            .collect::<Vec<_>>()
+            .into();
         Term::Variant {
-            ty: if union.is_empty() {
-                ty.unwrap_or_default().to_string()
-            } else {
-                union
-            },
+            ty,
             tag: tag.to_string(),
             fields: out,
         }
