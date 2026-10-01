@@ -457,11 +457,11 @@ fn record_destructuring_pattern() {
 }
 
 #[test]
-fn codata_stream() {
-    // Codata desugars to a record of thunks + apply-unit observation; the C
+fn lazy_recursive_struct_streams() {
+    // A recursive struct field is a thunk the C runtime forces on access; the C
     // backend must drive the lazy infinite stream the same as the interpreter.
     let src = "@mod M\n\
-               $ Stream : @codata t = head : t, tail : Stream t,\n\
+               $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
                $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
@@ -805,7 +805,7 @@ fn ffi_nested_struct_by_value() {
 
 #[test]
 fn open_range_stream() {
-    // `[lo ...]` lowers to `count_from lo`, an infinite codata stream; the C
+    // `[lo ...]` lowers to `count_from lo`, an unbounded stream; the C
     // backend must observe it lazily just like the interpreter. `[lo ... hi]`
     // lowers to `range lo hi`, a finite list.
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
@@ -1051,4 +1051,54 @@ fn pattern_hooks_match_interpreter() {
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
     assert_matches(src, "r");
+}
+
+// -- issue #209: laziness is a property of the slot -----------------------
+
+#[test]
+fn recursive_union_slot_is_lazy() {
+    // The C backend forces a thunk where a value is scrutinised, the same as the
+    // interpreter; without it this diverges.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
+               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h else 0\n\
+               $ test : @int = hd (from 7)";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn a_lazy_slot_is_forced_once() {
+    // Forcing patches the cell in place (THxVALUE_patch_box), so the second walk
+    // finds the spine already built.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ xs : L @int = mk 5\n\
+               $ test : @int = sum xs 0 + sum xs 0";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
+    let src = "@mod M\n\
+               $ S : @struct t = head : t, tail : S t\n\
+               $ ones : S @int = { .head = 1, .tail = ones }\n\
+               $ test : @int = ones.tail.tail.tail.head";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn for_over_a_lazy_list_stops_at_break() {
+    // `for` over a List walks the spine a cons at a time, so an unbounded list is
+    // fine as long as the body breaks: only the cells reached are ever built.
+    let src = "@mod M\n\
+               $ Acc : @effect = add : @int -> {},\n\
+               $ from : @int -> List @int = \\n = List.Cons.{ n, from (n + 1) }\n\
+               $ test : @int =\n\
+               \tdo for (from 1) (\\x = if x > 5 => break {} else Acc.add x)\n\
+               \tctl k | Acc.add n => n + k {}\n\
+               \t      else r => 0\n";
+    assert_matches(src, "test");
 }

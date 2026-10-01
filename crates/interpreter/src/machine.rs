@@ -328,6 +328,63 @@ impl<'p> Machine<'p> {
 
     /// Apply a value to one argument to completion, via a nested `run`. Used for
     /// the program entry point; inside `run`, application is inlined (no nesting).
+    /// Run an unforced lazy slot and patch its cell with the result. Patching is
+    /// what makes a lazy field cost its work once rather than once per look: every
+    /// holder of the cell sees the forced value. A slot whose thunk yields another
+    /// thunk is forced again, so nesting collapses here rather than at each use.
+    /// Force `v` and everything reachable under it, iteratively so the depth is
+    /// bounded by the heap rather than the host stack. Used where a whole value is
+    /// compared, which no lazy slot can be left out of.
+    pub fn force_deep(&self, v: &PVal<'p>) -> Result<()> {
+        self.force_deep_upto(v, usize::MAX)
+    }
+
+    /// As [`Self::force_deep`], but forcing at most `budget` cells. Rendering uses a
+    /// budget because a value may be unbounded: a REPL should print a prefix of an
+    /// infinite stream, not hang on it. What is left unforced shows as `...`.
+    pub fn force_deep_upto(&self, v: &PVal<'p>, budget: usize) -> Result<()> {
+        let mut forced = 0usize;
+        let mut work = vec![v.clone()];
+        let mut seen: Vec<*const RefCell<Value<'p>>> = Vec::new();
+        while let Some(cell) = work.pop() {
+            if forced >= budget {
+                return Ok(());
+            }
+            forced += 1;
+            let cell = self.force_thunk(cell)?;
+            let key = Rc::as_ptr(&cell);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let kids: Vec<PVal<'p>> = match &*cell.borrow() {
+                Value::Tuple(items) | Value::Variant { fields: items, .. } => items.clone(),
+                Value::Struct { fields, .. } => fields.iter().map(|(_, p)| p.clone()).collect(),
+                Value::Vector(items) => items.as_ref().clone(),
+                _ => Vec::new(),
+            };
+            work.extend(kids);
+        }
+        Ok(())
+    }
+
+    pub fn force_thunk(&self, v: PVal<'p>) -> Result<PVal<'p>> {
+        let v = deref(v);
+        loop {
+            let thunk = match &*v.borrow() {
+                Value::Thunk(f) => f.clone(),
+                _ => break,
+            };
+            let forced = deref(self.apply(thunk, mk(Value::Unit))?);
+            if Rc::ptr_eq(&forced, &v) {
+                break;
+            }
+            let replacement = forced.borrow().clone_shallow();
+            *v.borrow_mut() = replacement;
+        }
+        Ok(v)
+    }
+
     pub fn apply(&self, callee: PVal<'p>, arg: PVal<'p>) -> Result<PVal<'p>> {
         let callee = deref(callee);
         let (code, env) = match &*callee.borrow() {
@@ -417,7 +474,10 @@ impl<'p> Machine<'p> {
                     alts,
                     default,
                 } => {
-                    let sv = deref(self.eval_atom(scrut, &ex.frame)?);
+                    // Scrutinising is what forces a lazy slot: a recursive value is
+                    // built a cell at a time and each cell is computed when an arm
+                    // looks at it.
+                    let sv = self.force_thunk(self.eval_atom(scrut, &ex.frame)?)?;
                     let mut next: Option<&'p Expr> = None;
                     for alt in alts {
                         let matched = {
@@ -482,7 +542,7 @@ impl<'p> Machine<'p> {
                 }
 
                 Expr::Field { rec, name } => {
-                    let rv = deref(self.eval_atom(rec, &ex.frame)?);
+                    let rv = self.force_thunk(self.eval_atom(rec, &ex.frame)?)?;
                     let v = {
                         let b = rv.borrow();
                         match &*b {
@@ -646,7 +706,15 @@ impl<'p> Machine<'p> {
                     // `generate template f` is HIGHER-ORDER: it applies the closure
                     // `f` to each index, so it runs here (where `self.apply` can drive
                     // the machine) rather than in the leaf `run_builtin`.
-                    if &*name == "@tensor_create" {
+                    // Structural equality walks the whole value, so both sides are
+                    // forced first: comparing an unforced slot would compare
+                    // representations, not values. Like `@tensor_create` below, this
+                    // needs the machine, so it cannot live in the leaf `run_builtin`.
+                    if &*name == "==" {
+                        self.force_deep(&args[0])?;
+                        self.force_deep(&args[1])?;
+                        mk(run_builtin(&name, &args)?)
+                    } else if &*name == "@tensor_create" {
                         // Build the elements by applying `f` at each index of the
                         // template's leading axis, then stack them into a tensor.
                         let (_, _, shape, _) = data::tensor_fields(&args[0])?;
@@ -856,6 +924,11 @@ impl<'p> Exec<'p> {
     }
 }
 
+/// How many cells rendering forces before giving up and printing `...`. A value
+/// may be unbounded, so the render path is budgeted where structural equality is
+/// not.
+const RENDER_FORCE_BUDGET: usize = 64;
+
 /// Evaluate a global of `prog` on the machine and render it, for diffing against
 /// the tree-walker.
 pub fn eval(prog: &Program, name: &str) -> Result<String> {
@@ -864,6 +937,10 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
     ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let v = m.eval_global(name)?;
+    // Rendering is an observation, so it forces: showing `<unforced>` would report
+    // the representation rather than the value. An unbounded structure does not
+    // terminate here, which is what asking to print one means.
+    m.force_deep_upto(&v, RENDER_FORCE_BUDGET)?;
     let s = v.borrow().show();
     Ok(s)
 }

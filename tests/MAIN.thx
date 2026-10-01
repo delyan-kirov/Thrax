@@ -16,7 +16,7 @@ $ with ARRAY_PATTERNS = ARRAY_PATTERNS
 $ with ARRAYS_MUT = ARRAYS_MUT
 $ with COMPLEX = COMPLEX
 $ with CONDITIONALS = CONDITIONALS
-$ with CODATA = CODATA
+$ with STREAMS = STREAMS
 $ with COROUTINES = COROUTINES
 $ with CT_ASSERT = CT_ASSERT
 $ with CT_FOLD = CT_FOLD
@@ -94,7 +94,7 @@ $ @main : @vec @str -> <@io> @int = \args =
 	+ check "ARRAYS_MUT" ARRAYS_MUT.test
 	+ check "COMPLEX" COMPLEX.test
 	+ check "CONDITIONALS" CONDITIONALS.test
-	+ check "CODATA" CODATA.test
+	+ check "STREAMS" STREAMS.test
 	+ check "COROUTINES" COROUTINES.test
 	+ check "CT_ASSERT" CT_ASSERT.test
 	+ check "CT_FOLD" CT_FOLD.test

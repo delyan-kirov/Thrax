@@ -766,7 +766,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
 fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" => 1,
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => 2,
@@ -1142,7 +1142,8 @@ impl<'p> Emitter<'p> {
             unreachable!()
         };
         let s = self.fresh("scrut");
-        out.push_str(&format!("  Value* {s} = {};\n", self.atom(scrut)));
+        // Scrutinising is what forces a lazy slot.
+        out.push_str(&format!("  Value* {s} = THxVALUE_force({});\n", self.atom(scrut)));
         let mut first = true;
         for al in alts {
             let cond = match &al.kind {

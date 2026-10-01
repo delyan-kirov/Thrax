@@ -8,7 +8,9 @@
 # not special-cased in the compiler. Signed integers and @nat share add/sub/mul
 # (two's complement), but @nat divides unsigned (`@udiv`/`@umod`). Floats use the
 # `@f*` family. Comparison works the same way over `@ieq`/`@ilt`/... (below).
-# (`^` and `++` are still compiler builtins, pending their own intrinsics.)
+# (`^` is still a compiler builtin, pending its own intrinsic. `++` is a real
+# overload set: the built-in tier covers the byte-vector types `@str`/`@array`
+# and the two below extend it, so a user type joins by overloading it too.)
 
 # `Real` is a friendly alias for the word-size float `@float64`; the compiler knows
 # only `@float64`, not `Real`.
@@ -574,12 +576,29 @@ $ @compiler_interface_range : @int -> @int -> @vec @int = \lo hi = range lo hi
 # and no longer the default). It is also the worked example of a type joining the
 # whole `[]` surface from user space: the three overloads below give it literals,
 # `::`, and sequence patterns, with no compiler support of its own.
-$ List : @codata a = Nil: {}, Cons: {a, List a},
+$ List : @union a = Nil: {}, Cons: {a, List a},
 
 $ @compiler_interface_sequence_literal : @vec t -> List t = \v =
 	list_onto List.Nil v (@vec_len v - 1)
 
 $ (::) : t -> List t -> List t = \x l = List.Cons.{ x, l }
+
+# The same closed range as a List. The tail slot is lazy, so this one is built a
+# cell at a time: `[lo ... hi]` over a huge bound costs only what is walked, where
+# the `@vec` overload above materializes every element up front.
+$ range_list : @int -> @int -> List @int = \lo hi =
+	if lo > hi => List.Nil else List.Cons.{ lo, range_list (lo + 1) hi }
+
+$ @compiler_interface_range : @int -> @int -> List @int = \lo hi = range_list lo hi
+
+# `++` over a `@vec`: copy the left, then append the right element by element.
+$ (++) : @vec t -> @vec t -> @vec t = \xs ys =
+	vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0
+
+# `++` over a List: rebuild the left spine onto the right. The tail slot is lazy,
+# so the rest of the join happens only as the result is walked.
+$ (++) : List t -> List t -> List t = \xs ys =
+	is xs | List.Cons.{h, t} => List.Cons.{ h, t ++ ys } else ys
 
 $ @compiler_interface_sequence_view : List t -> SeqView (List t) t = \l =
 	is l | List.Cons.{h, t} => SeqView.More.{ h, t } else SeqView.Empty
@@ -620,9 +639,10 @@ $ @compiler_interface_sequence_view : @array -> SeqView @array @int = \a =
 	if @array_len a == 0 => SeqView.Empty
 	else SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) }
 
-# The canonical infinite stream: coinductive data observed by `.head` (the current
-# element) and `.tail` (the rest). Non-memoized thunks, so it is genuinely infinite.
-$ Stream : @codata t = head : t, tail : Stream t,
+# The canonical infinite stream: `.head` is the current element and `.tail` the
+# rest. `tail` is recursive, so it holds its value lazily and a stream is
+# genuinely unbounded: each cell is built when something looks at it.
+$ Stream : @struct t = head : t, tail : Stream t
 
 # The ascending Ints from `lo` upward, with no end. A `Stream` is the only shape
 # that can hold an unbounded sequence (not a finite `@vec`, not a `[n]T` tensor).
@@ -630,6 +650,11 @@ $ count_from : @int -> Stream @int = \lo = { .head = lo, .tail = count_from (lo 
 
 # The open range `[lo ...]` counterpart of the hook above.
 $ @compiler_interface_range_from : @int -> Stream @int = \lo = count_from lo
+
+# The open range as a List. A `List` tail is lazy, so an unbounded one is just as
+# representable as a `Stream`; this is the overload `([lo ...] : List T)` picks.
+$ count_from_list : @int -> List @int = \lo = List.Cons.{ lo, count_from_list (lo + 1) }
+$ @compiler_interface_range_from : @int -> List @int = \lo = count_from_list lo
 
 # The `Loop` effect gives imperative `break` / `continue` to the iteration
 # combinators below: `break` stops the loop, `continue` skips the rest of the
@@ -653,6 +678,18 @@ $ for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
 		      | Loop.break u => @false
 		      else _ => @true
 	in if more => for s.tail body else {}
+
+# Over a List, `for` walks the spine one cons at a time. The tail slot is lazy,
+# so a list the body stops early on is only ever built as far as the body looked.
+$ for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =
+	is xs
+	| List.Nil => {}
+	| List.Cons.{h, t} =>
+		let more = do body h
+			ctl k | Loop.continue u => @true
+			      | Loop.break u => @false
+			      else _ => @true
+		 in if more => for t body else {}
 
 # `formap` TRANSFORMS: it maps `body` over the structure and returns the result
 # (the effectful analogue of `map`, like Haskell's `traverse`). `continue` drops an

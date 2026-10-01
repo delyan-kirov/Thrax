@@ -991,11 +991,11 @@ fn record_rest_binds_the_leftover_fields() {
 }
 
 #[test]
-fn codata_stream_is_lazy_and_infinite() {
-    // A codata stream: construction is finite (thunks), and observing drives the
+fn recursive_struct_field_is_lazy_and_unbounded() {
+    // A recursive struct field is lazy: construction is finite, and observing drives the
     // generative recursion lazily, so an infinite stream is fine.
     let src = "@mod M\n\
-               $ Stream : @codata t = head : t, tail : Stream t,\n\
+               $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
                $ r : @int = (from 10).head + nth 5 (from 10)";
@@ -1591,4 +1591,79 @@ fn emit_returns_unit_and_abort_faults() {
     // effect); forcing the synthetic global runs it, printing and returning unit.
     let src = "@mod T\n$ u : {} = @run (@emit \"note\")";
     assert_eq!(run(src, "T.@e_expr#0"), "{}");
+}
+
+// -- issue #209: laziness is a property of the slot -----------------------
+
+#[test]
+fn recursive_union_slot_is_lazy() {
+    // This diverged before laziness became a property of the slot: the IR
+    // lowering hoisted every non-atom constructor field into a `let` evaluated
+    // before the constructor, so building one cell built the whole structure.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
+               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h else 0\n\
+               $ r : @int = hd (from 7)";
+    assert_eq!(run(src, "r"), "7");
+}
+
+#[test]
+fn a_lazy_slot_is_forced_once() {
+    // Forcing patches the cell, so walking the same list twice does the spine
+    // work once. `n` counts how many cells the second walk had to build: with a
+    // non-memoized thunk it would rebuild every one.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ xs : L @int = mk 5\n\
+               $ r : @int = sum xs 0 + sum xs 0";
+    assert_eq!(run(src, "r"), "30"); // 15 twice
+}
+
+#[test]
+fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
+    // A strict slot here faults with "a value global refers to itself while
+    // being defined"; under a thunk the reference is not followed until observed.
+    let src = "@mod M\n\
+               $ S : @struct t = head : t, tail : S t\n\
+               $ ones : S @int = { .head = 1, .tail = ones }\n\
+               $ r : @int = ones.tail.tail.tail.head";
+    assert_eq!(run(src, "r"), "1");
+}
+
+#[test]
+fn a_non_recursive_field_stays_strict() {
+    // Only a slot that leads back to its own type is lazy; everything else keeps
+    // call-by-value timing.
+    let src = "@mod M\n\
+               $ P : @struct = x: @int, y: @int\n\
+               $ p : P = P.{ .x = 1 + 1, .y = 3 }\n\
+               $ r : @int = p.x + p.y";
+    assert_eq!(run(src, "r"), "5");
+}
+
+#[test]
+fn equality_forces_lazy_slots() {
+    // Structural equality walks the whole value, so it must force: comparing
+    // unforced slots would compare representations and report two equal lists
+    // as different.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ r : @bool = mk 4 == mk 4";
+    assert_eq!(run(src, "r"), "true");
+}
+
+#[test]
+fn freeing_a_long_list_does_not_recurse_on_the_host_stack() {
+    // `Value`'s derived drop nested once per cell, so releasing a list of this
+    // length aborted the process AFTER the program had produced its answer.
+    let src = "@mod M\n\
+               $ L : @union a = N: {}, C: {a, L a},\n\
+               $ mk : @int -> @int -> L @int = \\lo hi = if lo > hi => L.N else L.C.{ lo, mk (lo + 1) hi }\n\
+               $ len : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => len t (acc + 1) else acc\n\
+               $ r : @int = len (mk 1 200000) 0";
+    assert_eq!(run(src, "r"), "200000");
 }
