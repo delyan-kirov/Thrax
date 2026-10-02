@@ -233,13 +233,7 @@ impl Pm {
             // A literal pattern on a user type: succeed when its equality hook holds
             // between the scrutinee and the literal built into that type.
             Pat::HookEq { eq, value } => {
-                let (module, name) = eq;
-                let eqfn = Term::Var {
-                    module: module.clone(),
-                    name: name.clone(),
-                    idx: 0,
-                };
-                let test = Term::app(Term::app(eqfn, v(sv)), self.go(value));
+                let test = Term::app(Term::app(eq.clone(), v(sv)), self.go(value));
                 case1(test, Pat::Bool(true), on_match, on_fail.clone())
             }
             // A sequence pattern on a user type: unfold the `sequence_view` hook one
@@ -334,7 +328,7 @@ impl Pm {
     fn compile_seqview(
         &mut self,
         sv: &str,
-        view: &(Option<String>, String),
+        view: &Term,
         elems: &[Pat],
         rest: Option<&Pat>,
         on_match: Term,
@@ -452,16 +446,8 @@ impl Pm {
 }
 
 /// `view sv`: apply the resolved `sequence_view` hook global to the scrutinee.
-fn view_call(view: &(Option<String>, String), sv: &str) -> Term {
-    let (module, name) = view;
-    Term::app(
-        Term::Var {
-            module: module.clone(),
-            name: name.clone(),
-            idx: 0,
-        },
-        v(sv),
-    )
+fn view_call(view: &Term, sv: &str) -> Term {
+    Term::app(view.clone(), v(sv))
 }
 
 /// `array_len sv`.

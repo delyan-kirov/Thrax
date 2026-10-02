@@ -44,10 +44,13 @@ $ Point: @struct =
 	x: @int,
 	y: @int,
 
-$ add: @int -> @int -> @int = \a b = a + b
-$ add: Real -> Real -> Real = \a b = a + b
-$ add: Point -> Point -> Point = \p1 p2 =
-	.{.x = p1.x + p2.x, .y = p1.y + p2.y}
+# `+` on a user type comes from an `IAdd` instance. The interface and the operator
+# are CORE's; a module adds the type by defining a value of the interface type.
+$ add_point : IAdd Point = .{
+	.add = \p1 p2 = .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
+}
+
+$ summed : Point = Point.{ 1, 2 } + Point.{ 3, 4 }
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int =
@@ -55,5 +58,6 @@ $ test : @int =
 	+ (if fib5 == 5 => 0 else 1)
 	+ (if fib10 == 55 => 0 else 1)
 	+ (if fib15 == 610 => 0 else 1)
+	+ (if summed.x == 4 && summed.y == 6 => 0 else 1)
 
 $ @run (assert (test == 0) "FIB: a check failed")

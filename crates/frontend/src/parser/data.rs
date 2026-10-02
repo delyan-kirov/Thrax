@@ -138,13 +138,15 @@ pub struct Program {
 /// A top-level `$ ...` declaration.
 #[derive(Debug)]
 pub enum Item {
-    /// `$ name [: ty] [@ctx c : T ...] = body`. `implicits` are the `@ctx`
-    /// declarations: implicit parameters resolved by name at each call site and
-    /// passed as leading arguments (dictionary passing). Empty for a normal def.
+    /// `$ name [: [@ctx C ->] ty] = body`. `ctx` is the context parameter's type
+    /// when the signature declares one: an ordinary first parameter that call
+    /// sites do not write, resolved by type and passed as a leading argument. It
+    /// is the same handle as the signature arrow's first `from`, so `sig` stays
+    /// exactly what the user wrote.
     Def {
         name: StrId,
         sig: Option<Aol<Ty>>,
-        implicits: Slice<FieldDecl>,
+        ctx: Option<Aol<Ty>>,
         body: Aol<Expr>,
     },
     /// `$ Name : @struct [@extern "abi"] [a b ...] = [with Other, ...] field, ...`.
@@ -523,15 +525,10 @@ pub enum Expr {
         expr: Aol<Expr>,
         ty: Aol<Ty>,
     },
-    /// `callee @ctx e` / `callee @ctx { .name = e, .. }`: override the implicit
-    /// `@ctx` arguments of `callee`. `overrides` are the given ones (a single
-    /// `Positional` for the one-implicit form, or `.name = e` for the record
-    /// form); `rest` (`..`) fills any unspecified implicits by name from scope.
-    Ctx {
-        callee: Aol<Expr>,
-        overrides: Slice<FieldInit>,
-        rest: bool,
-    },
+    /// `(@ctx e)` in argument position: supply the callee's context parameter
+    /// explicitly instead of letting it be inferred. Only valid as the FIRST
+    /// argument of an application, which is where the context parameter sits.
+    CtxArg(Aol<Expr>),
 }
 
 /// A field initializer in a struct literal or variant payload.

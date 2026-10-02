@@ -624,22 +624,9 @@ static bool value_eq(Value *x, Value *y) {
 
 /* -- built-in operators -------------------------------------------------- */
 
-/* The `^` (power) operator: integer power (both `Int`) or `pow`. Still a builtin
- * because it has no single intrinsic (`+ - * / %` moved to CORE.thx). */
-static Value *arith_pow(Value *x, Value *y) {
-  if (x->tag == T_INT && y->tag == T_INT) {
-    int64_t a = x->u.i, b = y->u.i;
-    if (b < 0) thrax_fault("negative exponent");
-    int64_t p = 1;
-    for (int64_t i = 0; i < b; i++) p *= a;
-    return THxRT_int(p);
-  }
-  return THxRT_real(pow(as_f64(x), as_f64(y)));
-}
-
 /* A monomorphic arithmetic intrinsic (`@iadd`, `@fmul`, ...), the primitive the
- * operator overloads are built on. `@i*` reads two integers, `@f*` two reals;
- * the type-directed overloads guarantee the tags. Returns NULL if `name` is not
+ * operator instances are built on. `@i*` reads two integers, `@f*` two reals;
+ * the type-directed instances guarantee the tags. Returns NULL if `name` is not
  * an arithmetic intrinsic, so the caller falls through to other builtins. */
 static Value *arith_intrinsic(const char *name, Value *x, Value *y) {
   if (name[1] == 'i' || name[1] == 'u') {
@@ -676,6 +663,7 @@ static Value *arith_intrinsic(const char *name, Value *x, Value *y) {
     if (strcmp(name, "@f32div") == 0) return THxRT_real32(a / b);
     /* Rust f32 `%` is truncated toward zero, like C fmodf. */
     if (strcmp(name, "@f32mod") == 0) return THxRT_real32(a - b * (float)(long long)(a / b));
+    if (strcmp(name, "@f32pow") == 0) return THxRT_real32(powf(a, b));
     return NULL;
   }
   double a = as_f64(x), b = as_f64(y);
@@ -685,6 +673,7 @@ static Value *arith_intrinsic(const char *name, Value *x, Value *y) {
   if (strcmp(name, "@fdiv") == 0) return THxRT_real(a / b);
   /* Rust f64 `%` is C fmod (truncated toward zero). */
   if (strcmp(name, "@fmod") == 0) return THxRT_real(a - b * (double)(long long)(a / b));
+  if (strcmp(name, "@fpow") == 0) return THxRT_real(pow(a, b));
   return NULL;
 }
 
@@ -697,7 +686,7 @@ static int cmp_bytes(Value *a, Value *b) {
 }
 
 /* A monomorphic comparison intrinsic (`@ieq`, `@slt`, ...), the primitive the
- * comparison overloads are built on. `@u*` reads the same bits as unsigned, so a
+ * comparison instances are built on. `@u*` reads the same bits as unsigned, so a
  * `Nat` past i64::MAX orders correctly. Returns NULL if `name` is not one, so the
  * caller falls through to the other builtins. */
 static Value *compare_intrinsic(const char *name, Value *x, Value *y) {
@@ -874,7 +863,6 @@ static Value *tensor_stack(Value **elems, size_t n) {
 }
 
 static Value *run_builtin(const char *name, Value **a, size_t n) {
-  if (strcmp(name, "^") == 0) return arith_pow(a[0], a[1]);
   /* The two-operand intrinsic families. `n >= 2` first: a one-argument builtin
    * (`@array_len`, ...) must never reach for `a[1]`. `arith_intrinsic` reads its
    * operands as numbers before matching, so it stays behind its `@i`/`@u`/`@f`
@@ -901,6 +889,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
       strcmp(name, "<=") == 0 || strcmp(name, ">=") == 0)
     return compare(name, a[0], a[1]);
   if (strcmp(name, "++") == 0) return concat(a[0], a[1]);
+  if (strcmp(name, "@acat") == 0) return concat(a[0], a[1]);
 
   if (strcmp(name, "@array_alloc") == 0) {
     size_t len = as_index(a[0]);

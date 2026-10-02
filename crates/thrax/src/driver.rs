@@ -145,7 +145,7 @@ fn check_all<'a>(
 
     // The auto-injected `C` namespace and the implicitly imported `CORE` module
     // have no dependencies and are checked first: `C` made available qualified-only
-    // (`C.sqrt`), `CORE` bare (its `to_string` overloads, etc.). `CORE` is checked
+    // (`C.sqrt`), `CORE` bare (its `to_string`, its instances, etc.). `CORE` is checked
     // after `C` but imports neither, so ordering the two is unconstrained.
     let c_idx = sources.iter().position(|(n, _, _)| n == "C");
     let core_idx = sources.iter().position(|(n, _, _)| n == "CORE");
@@ -607,6 +607,8 @@ fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(Stri
 pub(crate) struct Session {
     pub lowered: Vec<frontend::lowering::data::Program>,
     pub decls: Vec<(String, String)>,
+    /// The declared type of the name `queried` asked about, when one was asked for.
+    pub queried: Option<String>,
 }
 
 /// Compile an in-memory `@mod REPL` session `source` against the standard
@@ -615,6 +617,16 @@ pub(crate) struct Session {
 /// Unlike the file commands this renders errors into a string instead of exiting,
 /// so the shell can print them and keep going.
 pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
+    compile_session_query(source, root_dir, None)
+}
+
+/// [`compile_session`], additionally reporting the declared type of one global name
+/// (with its `@ctx` prefix, which inferring the name as an expression would lose).
+pub(crate) fn compile_session_query(
+    source: &str,
+    root_dir: &Path,
+    query: Option<&str>,
+) -> Result<Session, String> {
     let loaded = load_core(
         "REPL".to_string(),
         "<repl>".to_string(),
@@ -656,13 +668,19 @@ pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, 
         .map(|&i| frontend::lower_program(&ast, &programs[i], &module_decls, &resolved))
         .collect();
 
-    let checker = &checkers[root];
+    let mut checkers = checkers;
+    let checker = &mut checkers[root];
+    let queried = query.and_then(|n| checker.show_name(n));
     let decls = results[root]
         .iter()
-        .map(|(n, ty)| (n.to_string(), checker.show(*ty)))
+        .map(|(n, ty)| (n.to_string(), checker.show_decl(n, *ty)))
         .collect();
 
-    Ok(Session { lowered, decls })
+    Ok(Session {
+        lowered,
+        decls,
+        queried,
+    })
 }
 
 /// Lower to the IR, then evaluate a module's entry point (`test`, else `main`)
@@ -859,7 +877,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     let root = loaded.index[&loaded.root_name];
     let checker = &checkers[root];
     for (name, ty) in &results[root] {
-        println!("{name} : {}", checker.show(*ty));
+        println!("{name} : {}", checker.show_decl(name, *ty));
     }
     ExitCode::SUCCESS
 }

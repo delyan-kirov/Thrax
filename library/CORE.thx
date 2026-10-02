@@ -3,446 +3,259 @@
 # \file CORE.thx
 # \info CORE is implicitly imported in every module with no namespace 
 
-# Arithmetic operators. Each is an overload over a machine intrinsic (`@iadd`,
-# `@fadd`, ...); the resolver picks by operand type. This is why `+ - * / %` are
-# not special-cased in the compiler. Signed integers and @nat share add/sub/mul
-# (two's complement), but @nat divides unsigned (`@udiv`/`@umod`). Floats use the
-# `@f*` family. Comparison works the same way over `@ieq`/`@ilt`/... (below).
-# (`^` is still a compiler builtin, pending its own intrinsic. `++` is a real
-# overload set: the built-in tier covers the byte-vector types `@str`/`@array`
-# and the two below extend it, so a user type joins by overloading it too.)
+# ---- the blessed interfaces ----
+# These ten interface types are the compiler's own: a desugar site (a literal, a
+# range, `.[i]`, `xs.[lo ... hi]`, a sequence pattern) resolves a value of the
+# applied type and calls its single field. Their names carry the `@` sigil and only
+# CORE declares them, but an implementation is an ordinary value, so a type joins
+# any of these surfaces from user space with no compiler support.
+$ @IIntLit    : @struct t     = of_int: @int -> t,
+$ @IRealLit   : @struct t     = of_real: @float64 -> t,
+$ @IImagLit   : @struct t     = of_imag: @float64 -> t,
+$ @IStrLit    : @struct t     = of_str: @str -> t,
+$ @ISeqLit    : @struct e t   = of_vec: @vec e -> t,
+$ @IRange     : @struct b t   = range: b -> b -> t,
+$ @IRangeFrom : @struct b t   = range_from: b -> t,
+$ @ISlice     : @struct s t   = slice: s -> @int -> @int -> t,
+$ @IIndex     : @struct s i t = index: s -> i -> t,
+$ @ISeqView   : @struct s e   = view: s -> SeqView s e,
+
+# Arithmetic. Each operator has its OWN interface, so a type implements exactly the
+# operations it has: `Money` adds but does not divide. An interface is an ordinary
+# struct whose field is the operation, an implementation is a value of it, and the
+# operator is a function that takes one as its context parameter, found by the
+# operands' type. This is why `+ - * / %` are not special-cased in the compiler.
+# Signed integers and @nat share add/sub/mul (two's complement), but @nat divides
+# unsigned (`@udiv`/`@umod`); floats use the `@f*` family. Instances bottom out at
+# the machine intrinsics, never at the operators themselves. An operator takes ONE
+# type for both operands and the result, so widen explicitly (`@cast`,
+# `f32_to_f64`) rather than relying on a mixed-width overload.
 
 # `Real` is a friendly alias for the word-size float `@float64`; the compiler knows
 # only `@float64`, not `Real`.
 $ Real : @alias = @float64
 
-# @int / @nat: the word-size integer types. The word-size float `@float64` (its
-# friendly alias `Real`) is defined below with the other floats.
-$ (+) : @int -> @int -> @int = \a b = @iadd a b
-$ (-) : @int -> @int -> @int = \a b = @isub a b
-$ (*) : @int -> @int -> @int = \a b = @imul a b
-$ (/) : @int -> @int -> @int = \a b = @idiv a b
-$ (%) : @int -> @int -> @int = \a b = @imod a b
-# 
-$ (+) : @nat -> @nat -> @nat = \a b = @iadd a b
-$ (-) : @nat -> @nat -> @nat = \a b = @isub a b
-$ (*) : @nat -> @nat -> @nat = \a b = @imul a b
-$ (/) : @nat -> @nat -> @nat = \a b = @udiv a b
-$ (%) : @nat -> @nat -> @nat = \a b = @umod a b
-# Sized signed integers (same intrinsics as @int; each a DISTINCT type).
-$ (+) : @int8 -> @int8 -> @int8 = \a b = @iadd a b
-$ (-) : @int8 -> @int8 -> @int8 = \a b = @isub a b
-$ (*) : @int8 -> @int8 -> @int8 = \a b = @imul a b
-$ (/) : @int8 -> @int8 -> @int8 = \a b = @idiv a b
-$ (%) : @int8 -> @int8 -> @int8 = \a b = @imod a b
+$ IAdd : @struct t = add: t -> t -> t,
+$ ISub : @struct t = sub: t -> t -> t,
+$ IMul : @struct t = mul: t -> t -> t,
+$ IDiv : @struct t = div: t -> t -> t,
+$ IMod : @struct t = mod: t -> t -> t,
 
-$ (+) : @int16 -> @int16 -> @int16 = \a b = @iadd a b
-$ (-) : @int16 -> @int16 -> @int16 = \a b = @isub a b
-$ (*) : @int16 -> @int16 -> @int16 = \a b = @imul a b
-$ (/) : @int16 -> @int16 -> @int16 = \a b = @idiv a b
-$ (%) : @int16 -> @int16 -> @int16 = \a b = @imod a b
+# The additive and multiplicative identities, which a reduction needs as its seed
+# (`LA.dot`, a product over an empty range).
+$ IZero : @struct t = zero: t,
+$ IOne : @struct t = one: t,
 
-$ (+) : @int32 -> @int32 -> @int32 = \a b = @iadd a b
-$ (-) : @int32 -> @int32 -> @int32 = \a b = @isub a b
-$ (*) : @int32 -> @int32 -> @int32 = \a b = @imul a b
-$ (/) : @int32 -> @int32 -> @int32 = \a b = @idiv a b
-$ (%) : @int32 -> @int32 -> @int32 = \a b = @imod a b
+# Exponentiation has its own interface, because the algorithms differ by type:
+# integers multiply in a loop, reals go through libm.
+$ IPow : @struct t = raise: t -> t -> t,
 
-$ (+) : @int64 -> @int64 -> @int64 = \a b = @iadd a b
-$ (-) : @int64 -> @int64 -> @int64 = \a b = @isub a b
-$ (*) : @int64 -> @int64 -> @int64 = \a b = @imul a b
-$ (/) : @int64 -> @int64 -> @int64 = \a b = @idiv a b
-$ (%) : @int64 -> @int64 -> @int64 = \a b = @imod a b
-# Sized nats (unsigned div/mod).
-$ (+) : @nat8 -> @nat8 -> @nat8 = \a b = @iadd a b
-$ (-) : @nat8 -> @nat8 -> @nat8 = \a b = @isub a b
-$ (*) : @nat8 -> @nat8 -> @nat8 = \a b = @imul a b
-$ (/) : @nat8 -> @nat8 -> @nat8 = \a b = @udiv a b
-$ (%) : @nat8 -> @nat8 -> @nat8 = \a b = @umod a b
+$ (^) : @ctx IPow t -> t -> t -> t = \d b e = d.raise b e
 
-$ (+) : @nat16 -> @nat16 -> @nat16 = \a b = @iadd a b
-$ (-) : @nat16 -> @nat16 -> @nat16 = \a b = @isub a b
-$ (*) : @nat16 -> @nat16 -> @nat16 = \a b = @imul a b
-$ (/) : @nat16 -> @nat16 -> @nat16 = \a b = @udiv a b
-$ (%) : @nat16 -> @nat16 -> @nat16 = \a b = @umod a b
+# Unary minus is `zero - x`, so a type negates exactly when it can subtract from
+# its zero. One definition covers every numeric type and `Cpx` alike.
+$ neg : @ctx {ISub t, IZero t} -> t -> t = \ds x = ds.0.sub ds.1.zero x
 
-$ (+) : @nat32 -> @nat32 -> @nat32 = \a b = @iadd a b
-$ (-) : @nat32 -> @nat32 -> @nat32 = \a b = @isub a b
-$ (*) : @nat32 -> @nat32 -> @nat32 = \a b = @imul a b
-$ (/) : @nat32 -> @nat32 -> @nat32 = \a b = @udiv a b
-$ (%) : @nat32 -> @nat32 -> @nat32 = \a b = @umod a b
+$ (+) : @ctx IAdd t -> t -> t -> t = \d a b = d.add a b
+$ (-) : @ctx ISub t -> t -> t -> t = \d a b = d.sub a b
+$ (*) : @ctx IMul t -> t -> t -> t = \d a b = d.mul a b
+$ (/) : @ctx IDiv t -> t -> t -> t = \d a b = d.div a b
+$ (%) : @ctx IMod t -> t -> t -> t = \d a b = d.mod a b
 
-$ (+) : @nat64 -> @nat64 -> @nat64 = \a b = @iadd a b
-$ (-) : @nat64 -> @nat64 -> @nat64 = \a b = @isub a b
-$ (*) : @nat64 -> @nat64 -> @nat64 = \a b = @imul a b
-$ (/) : @nat64 -> @nat64 -> @nat64 = \a b = @udiv a b
-$ (%) : @nat64 -> @nat64 -> @nat64 = \a b = @umod a b
-# Sized floats.
-$ (+) : @float32 -> @float32 -> @float32 = \a b = @f32add a b
-$ (-) : @float32 -> @float32 -> @float32 = \a b = @f32sub a b
-$ (*) : @float32 -> @float32 -> @float32 = \a b = @f32mul a b
-$ (/) : @float32 -> @float32 -> @float32 = \a b = @f32div a b
-$ (%) : @float32 -> @float32 -> @float32 = \a b = @f32mod a b
+# Signed integers: `@idiv`/`@imod` truncate toward zero.
+$ add_int : IAdd @int = .{ .add = \a b = @iadd a b }
+$ sub_int : ISub @int = .{ .sub = \a b = @isub a b }
+$ mul_int : IMul @int = .{ .mul = \a b = @imul a b }
+$ div_int : IDiv @int = .{ .div = \a b = @idiv a b }
+$ mod_int : IMod @int = .{ .mod = \a b = @imod a b }
+$ zero_int : IZero @int = .{ .zero = 0 }
+$ one_int : IOne @int = .{ .one = 1 }
 
-$ (+) : @float64 -> @float64 -> @float64 = \a b = @fadd a b
-$ (-) : @float64 -> @float64 -> @float64 = \a b = @fsub a b
-$ (*) : @float64 -> @float64 -> @float64 = \a b = @fmul a b
-$ (/) : @float64 -> @float64 -> @float64 = \a b = @fdiv a b
-$ (%) : @float64 -> @float64 -> @float64 = \a b = @fmod a b
+$ add_int8 : IAdd @int8 = .{ .add = \a b = @iadd a b }
+$ sub_int8 : ISub @int8 = .{ .sub = \a b = @isub a b }
+$ mul_int8 : IMul @int8 = .{ .mul = \a b = @imul a b }
+$ div_int8 : IDiv @int8 = .{ .div = \a b = @idiv a b }
+$ mod_int8 : IMod @int8 = .{ .mod = \a b = @imod a b }
+$ zero_int8 : IZero @int8 = .{ .zero = 0 }
+$ one_int8 : IOne @int8 = .{ .one = 1 }
+
+$ add_int16 : IAdd @int16 = .{ .add = \a b = @iadd a b }
+$ sub_int16 : ISub @int16 = .{ .sub = \a b = @isub a b }
+$ mul_int16 : IMul @int16 = .{ .mul = \a b = @imul a b }
+$ div_int16 : IDiv @int16 = .{ .div = \a b = @idiv a b }
+$ mod_int16 : IMod @int16 = .{ .mod = \a b = @imod a b }
+$ zero_int16 : IZero @int16 = .{ .zero = 0 }
+$ one_int16 : IOne @int16 = .{ .one = 1 }
+
+$ add_int32 : IAdd @int32 = .{ .add = \a b = @iadd a b }
+$ sub_int32 : ISub @int32 = .{ .sub = \a b = @isub a b }
+$ mul_int32 : IMul @int32 = .{ .mul = \a b = @imul a b }
+$ div_int32 : IDiv @int32 = .{ .div = \a b = @idiv a b }
+$ mod_int32 : IMod @int32 = .{ .mod = \a b = @imod a b }
+$ zero_int32 : IZero @int32 = .{ .zero = 0 }
+$ one_int32 : IOne @int32 = .{ .one = 1 }
+
+$ add_int64 : IAdd @int64 = .{ .add = \a b = @iadd a b }
+$ sub_int64 : ISub @int64 = .{ .sub = \a b = @isub a b }
+$ mul_int64 : IMul @int64 = .{ .mul = \a b = @imul a b }
+$ div_int64 : IDiv @int64 = .{ .div = \a b = @idiv a b }
+$ mod_int64 : IMod @int64 = .{ .mod = \a b = @imod a b }
+$ zero_int64 : IZero @int64 = .{ .zero = 0 }
+$ one_int64 : IOne @int64 = .{ .one = 1 }
+
+# Nats: the same add/sub/mul bits, but UNSIGNED division.
+$ add_nat : IAdd @nat = .{ .add = \a b = @iadd a b }
+$ sub_nat : ISub @nat = .{ .sub = \a b = @isub a b }
+$ mul_nat : IMul @nat = .{ .mul = \a b = @imul a b }
+$ div_nat : IDiv @nat = .{ .div = \a b = @udiv a b }
+$ mod_nat : IMod @nat = .{ .mod = \a b = @umod a b }
+$ zero_nat : IZero @nat = .{ .zero = 0 }
+$ one_nat : IOne @nat = .{ .one = 1 }
+
+$ add_nat8 : IAdd @nat8 = .{ .add = \a b = @iadd a b }
+$ sub_nat8 : ISub @nat8 = .{ .sub = \a b = @isub a b }
+$ mul_nat8 : IMul @nat8 = .{ .mul = \a b = @imul a b }
+$ div_nat8 : IDiv @nat8 = .{ .div = \a b = @udiv a b }
+$ mod_nat8 : IMod @nat8 = .{ .mod = \a b = @umod a b }
+$ zero_nat8 : IZero @nat8 = .{ .zero = 0 }
+$ one_nat8 : IOne @nat8 = .{ .one = 1 }
+
+$ add_nat16 : IAdd @nat16 = .{ .add = \a b = @iadd a b }
+$ sub_nat16 : ISub @nat16 = .{ .sub = \a b = @isub a b }
+$ mul_nat16 : IMul @nat16 = .{ .mul = \a b = @imul a b }
+$ div_nat16 : IDiv @nat16 = .{ .div = \a b = @udiv a b }
+$ mod_nat16 : IMod @nat16 = .{ .mod = \a b = @umod a b }
+$ zero_nat16 : IZero @nat16 = .{ .zero = 0 }
+$ one_nat16 : IOne @nat16 = .{ .one = 1 }
+
+$ add_nat32 : IAdd @nat32 = .{ .add = \a b = @iadd a b }
+$ sub_nat32 : ISub @nat32 = .{ .sub = \a b = @isub a b }
+$ mul_nat32 : IMul @nat32 = .{ .mul = \a b = @imul a b }
+$ div_nat32 : IDiv @nat32 = .{ .div = \a b = @udiv a b }
+$ mod_nat32 : IMod @nat32 = .{ .mod = \a b = @umod a b }
+$ zero_nat32 : IZero @nat32 = .{ .zero = 0 }
+$ one_nat32 : IOne @nat32 = .{ .one = 1 }
+
+$ add_nat64 : IAdd @nat64 = .{ .add = \a b = @iadd a b }
+$ sub_nat64 : ISub @nat64 = .{ .sub = \a b = @isub a b }
+$ mul_nat64 : IMul @nat64 = .{ .mul = \a b = @imul a b }
+$ div_nat64 : IDiv @nat64 = .{ .div = \a b = @udiv a b }
+$ mod_nat64 : IMod @nat64 = .{ .mod = \a b = @umod a b }
+$ zero_nat64 : IZero @nat64 = .{ .zero = 0 }
+$ one_nat64 : IOne @nat64 = .{ .one = 1 }
+
+# Floats, each width with its own intrinsic family.
+$ add_float64 : IAdd @float64 = .{ .add = \a b = @fadd a b }
+$ sub_float64 : ISub @float64 = .{ .sub = \a b = @fsub a b }
+$ mul_float64 : IMul @float64 = .{ .mul = \a b = @fmul a b }
+$ div_float64 : IDiv @float64 = .{ .div = \a b = @fdiv a b }
+$ mod_float64 : IMod @float64 = .{ .mod = \a b = @fmod a b }
+$ zero_float64 : IZero @float64 = .{ .zero = 0.0 }
+$ one_float64 : IOne @float64 = .{ .one = 1.0 }
+
+$ add_float32 : IAdd @float32 = .{ .add = \a b = @f32add a b }
+$ sub_float32 : ISub @float32 = .{ .sub = \a b = @f32sub a b }
+$ mul_float32 : IMul @float32 = .{ .mul = \a b = @f32mul a b }
+$ div_float32 : IDiv @float32 = .{ .div = \a b = @f32div a b }
+$ mod_float32 : IMod @float32 = .{ .mod = \a b = @f32mod a b }
+$ zero_float32 : IZero @float32 = .{ .zero = 0.0 }
+$ one_float32 : IOne @float32 = .{ .one = 1.0 }
+
+$ int_pow : @int -> @int -> @int = \base e =
+	if e < 0 => 0
+	else if e == 0 => 1
+	else base * int_pow base (e - 1)
+
+$ pow_int : IPow @int = .{ .raise = int_pow }
+$ real_pow : Real -> Real -> Real = \b e = @fpow b e
+$ pow_float64 : IPow @float64 = .{ .raise = real_pow }
+$ pow_float32 : IPow @float32 = .{ .raise = \b e = @f32pow b e }
+
 # Float width conversions. Unlike integers, `@float32` and `@float64` differ in
 # runtime representation, so widening is genuine work: these bind the C runtime
 # helpers (`thx_f2d`/`thx_d2f`) through the same `@extern` seam as `C.i2d`.
 $ f32_to_f64 : @float32 -> @float64 = @extern "C" "thx_f2d" ""
 $ f64_to_f32 : @float64 -> @float32 = @extern "C" "thx_d2f" ""
-# Mixed-width floats: result is the wider `@float64`, the `@float32` operand
-# widened first. (`@cast` cannot do this: it only reinterprets integer widths.)
-$ (+) : @float32 -> @float64 -> @float64 = \a b = @fadd (f32_to_f64 a) b
-$ (-) : @float32 -> @float64 -> @float64 = \a b = @fsub (f32_to_f64 a) b
-$ (*) : @float32 -> @float64 -> @float64 = \a b = @fmul (f32_to_f64 a) b
-$ (/) : @float32 -> @float64 -> @float64 = \a b = @fdiv (f32_to_f64 a) b
-$ (%) : @float32 -> @float64 -> @float64 = \a b = @fmod (f32_to_f64 a) b
 
-$ (+) : @float64 -> @float32 -> @float64 = \a b = @fadd a (f32_to_f64 b)
-$ (-) : @float64 -> @float32 -> @float64 = \a b = @fsub a (f32_to_f64 b)
-$ (*) : @float64 -> @float32 -> @float64 = \a b = @fmul a (f32_to_f64 b)
-$ (/) : @float64 -> @float32 -> @float64 = \a b = @fdiv a (f32_to_f64 b)
-$ (%) : @float64 -> @float32 -> @float64 = \a b = @fmod a (f32_to_f64 b)
-# Mixed-width signed integers: result = the wider operand, narrower cast up.
-# (@int/@nat/Real are NOT auto-widened: target-dependent width. Floats are not
-# here: `@cast` is integer-only.)
-$ (+) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @iadd x b
-$ (-) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @isub x b
-$ (*) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imul x b
-$ (/) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @idiv x b
-$ (%) : @int8 -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imod x b
 
-$ (+) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @iadd x b
-$ (-) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @isub x b
-$ (*) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imul x b
-$ (/) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @idiv x b
-$ (%) : @int8 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imod x b
 
-$ (+) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
-$ (-) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
-$ (*) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
-$ (/) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
-$ (%) : @int8 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
-
-$ (+) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @iadd a x
-$ (-) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @isub a x
-$ (*) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @imul a x
-$ (/) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @idiv a x
-$ (%) : @int16 -> @int8 -> @int16 = \a b = let x : @int16 = @cast b in @imod a x
-
-$ (+) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @iadd x b
-$ (-) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @isub x b
-$ (*) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imul x b
-$ (/) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @idiv x b
-$ (%) : @int16 -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imod x b
-
-$ (+) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
-$ (-) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
-$ (*) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
-$ (/) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
-$ (%) : @int16 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
-
-$ (+) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @iadd a x
-$ (-) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @isub a x
-$ (*) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @imul a x
-$ (/) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @idiv a x
-$ (%) : @int32 -> @int8 -> @int32 = \a b = let x : @int32 = @cast b in @imod a x
-
-$ (+) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @iadd a x
-$ (-) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @isub a x
-$ (*) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @imul a x
-$ (/) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @idiv a x
-$ (%) : @int32 -> @int16 -> @int32 = \a b = let x : @int32 = @cast b in @imod a x
-
-$ (+) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
-$ (-) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
-$ (*) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
-$ (/) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
-$ (%) : @int32 -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
-
-$ (+) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
-$ (-) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
-$ (*) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
-$ (/) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
-$ (%) : @int64 -> @int8 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
-
-$ (+) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
-$ (-) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
-$ (*) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
-$ (/) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
-$ (%) : @int64 -> @int16 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
-
-$ (+) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
-$ (-) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
-$ (*) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
-$ (/) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
-$ (%) : @int64 -> @int32 -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
-# Mixed-width nats (unsigned div/mod).
-$ (+) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @iadd x b
-$ (-) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @isub x b
-$ (*) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @imul x b
-$ (/) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @udiv x b
-$ (%) : @nat8 -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @umod x b
-
-$ (+) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @iadd x b
-$ (-) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @isub x b
-$ (*) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @imul x b
-$ (/) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @udiv x b
-$ (%) : @nat8 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @umod x b
-
-$ (+) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
-$ (-) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
-$ (*) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
-$ (/) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
-$ (%) : @nat8 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
-
-$ (+) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @iadd a x
-$ (-) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @isub a x
-$ (*) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @imul a x
-$ (/) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @udiv a x
-$ (%) : @nat16 -> @nat8 -> @nat16 = \a b = let x : @nat16 = @cast b in @umod a x
-
-$ (+) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @iadd x b
-$ (-) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @isub x b
-$ (*) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @imul x b
-$ (/) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @udiv x b
-$ (%) : @nat16 -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @umod x b
-
-$ (+) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
-$ (-) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
-$ (*) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
-$ (/) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
-$ (%) : @nat16 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
-
-$ (+) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @iadd a x
-$ (-) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @isub a x
-$ (*) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @imul a x
-$ (/) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @udiv a x
-$ (%) : @nat32 -> @nat8 -> @nat32 = \a b = let x : @nat32 = @cast b in @umod a x
-
-$ (+) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @iadd a x
-$ (-) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @isub a x
-$ (*) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @imul a x
-$ (/) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @udiv a x
-$ (%) : @nat32 -> @nat16 -> @nat32 = \a b = let x : @nat32 = @cast b in @umod a x
-
-$ (+) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
-$ (-) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
-$ (*) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
-$ (/) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
-$ (%) : @nat32 -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
-
-$ (+) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
-$ (-) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
-$ (*) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
-$ (/) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
-$ (%) : @nat64 -> @nat8 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
-
-$ (+) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
-$ (-) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
-$ (*) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
-$ (/) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
-$ (%) : @nat64 -> @nat16 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
-
-$ (+) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
-$ (-) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
-$ (*) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
-$ (/) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
-$ (%) : @nat64 -> @nat32 -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
-# `@int`/`@nat` (the machine-word default integers) mixed with a sized integer:
-# the sized type wins and the word operand casts to it, so a bare literal (which
-# defaults to `@int`/`@nat`) drops into sized arithmetic without widening the
-# result. Signed `@int` pairs with `@int*`, unsigned `@nat` with `@nat*`.
-$ (+) : @int -> @int8 -> @int8 = \a b = let x : @int8 = @cast a in @iadd x b
-$ (-) : @int -> @int8 -> @int8 = \a b = let x : @int8 = @cast a in @isub x b
-$ (*) : @int -> @int8 -> @int8 = \a b = let x : @int8 = @cast a in @imul x b
-$ (/) : @int -> @int8 -> @int8 = \a b = let x : @int8 = @cast a in @idiv x b
-$ (%) : @int -> @int8 -> @int8 = \a b = let x : @int8 = @cast a in @imod x b
-
-$ (+) : @int8 -> @int -> @int8 = \a b = let x : @int8 = @cast b in @iadd a x
-$ (-) : @int8 -> @int -> @int8 = \a b = let x : @int8 = @cast b in @isub a x
-$ (*) : @int8 -> @int -> @int8 = \a b = let x : @int8 = @cast b in @imul a x
-$ (/) : @int8 -> @int -> @int8 = \a b = let x : @int8 = @cast b in @idiv a x
-$ (%) : @int8 -> @int -> @int8 = \a b = let x : @int8 = @cast b in @imod a x
-
-$ (+) : @int -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @iadd x b
-$ (-) : @int -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @isub x b
-$ (*) : @int -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imul x b
-$ (/) : @int -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @idiv x b
-$ (%) : @int -> @int16 -> @int16 = \a b = let x : @int16 = @cast a in @imod x b
-
-$ (+) : @int16 -> @int -> @int16 = \a b = let x : @int16 = @cast b in @iadd a x
-$ (-) : @int16 -> @int -> @int16 = \a b = let x : @int16 = @cast b in @isub a x
-$ (*) : @int16 -> @int -> @int16 = \a b = let x : @int16 = @cast b in @imul a x
-$ (/) : @int16 -> @int -> @int16 = \a b = let x : @int16 = @cast b in @idiv a x
-$ (%) : @int16 -> @int -> @int16 = \a b = let x : @int16 = @cast b in @imod a x
-
-$ (+) : @int -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @iadd x b
-$ (-) : @int -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @isub x b
-$ (*) : @int -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imul x b
-$ (/) : @int -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @idiv x b
-$ (%) : @int -> @int32 -> @int32 = \a b = let x : @int32 = @cast a in @imod x b
-
-$ (+) : @int32 -> @int -> @int32 = \a b = let x : @int32 = @cast b in @iadd a x
-$ (-) : @int32 -> @int -> @int32 = \a b = let x : @int32 = @cast b in @isub a x
-$ (*) : @int32 -> @int -> @int32 = \a b = let x : @int32 = @cast b in @imul a x
-$ (/) : @int32 -> @int -> @int32 = \a b = let x : @int32 = @cast b in @idiv a x
-$ (%) : @int32 -> @int -> @int32 = \a b = let x : @int32 = @cast b in @imod a x
-
-$ (+) : @int -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @iadd x b
-$ (-) : @int -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @isub x b
-$ (*) : @int -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imul x b
-$ (/) : @int -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @idiv x b
-$ (%) : @int -> @int64 -> @int64 = \a b = let x : @int64 = @cast a in @imod x b
-
-$ (+) : @int64 -> @int -> @int64 = \a b = let x : @int64 = @cast b in @iadd a x
-$ (-) : @int64 -> @int -> @int64 = \a b = let x : @int64 = @cast b in @isub a x
-$ (*) : @int64 -> @int -> @int64 = \a b = let x : @int64 = @cast b in @imul a x
-$ (/) : @int64 -> @int -> @int64 = \a b = let x : @int64 = @cast b in @idiv a x
-$ (%) : @int64 -> @int -> @int64 = \a b = let x : @int64 = @cast b in @imod a x
-
-$ (+) : @nat -> @nat8 -> @nat8 = \a b = let x : @nat8 = @cast a in @iadd x b
-$ (-) : @nat -> @nat8 -> @nat8 = \a b = let x : @nat8 = @cast a in @isub x b
-$ (*) : @nat -> @nat8 -> @nat8 = \a b = let x : @nat8 = @cast a in @imul x b
-$ (/) : @nat -> @nat8 -> @nat8 = \a b = let x : @nat8 = @cast a in @udiv x b
-$ (%) : @nat -> @nat8 -> @nat8 = \a b = let x : @nat8 = @cast a in @umod x b
-
-$ (+) : @nat8 -> @nat -> @nat8 = \a b = let x : @nat8 = @cast b in @iadd a x
-$ (-) : @nat8 -> @nat -> @nat8 = \a b = let x : @nat8 = @cast b in @isub a x
-$ (*) : @nat8 -> @nat -> @nat8 = \a b = let x : @nat8 = @cast b in @imul a x
-$ (/) : @nat8 -> @nat -> @nat8 = \a b = let x : @nat8 = @cast b in @udiv a x
-$ (%) : @nat8 -> @nat -> @nat8 = \a b = let x : @nat8 = @cast b in @umod a x
-
-$ (+) : @nat -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @iadd x b
-$ (-) : @nat -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @isub x b
-$ (*) : @nat -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @imul x b
-$ (/) : @nat -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @udiv x b
-$ (%) : @nat -> @nat16 -> @nat16 = \a b = let x : @nat16 = @cast a in @umod x b
-
-$ (+) : @nat16 -> @nat -> @nat16 = \a b = let x : @nat16 = @cast b in @iadd a x
-$ (-) : @nat16 -> @nat -> @nat16 = \a b = let x : @nat16 = @cast b in @isub a x
-$ (*) : @nat16 -> @nat -> @nat16 = \a b = let x : @nat16 = @cast b in @imul a x
-$ (/) : @nat16 -> @nat -> @nat16 = \a b = let x : @nat16 = @cast b in @udiv a x
-$ (%) : @nat16 -> @nat -> @nat16 = \a b = let x : @nat16 = @cast b in @umod a x
-
-$ (+) : @nat -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @iadd x b
-$ (-) : @nat -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @isub x b
-$ (*) : @nat -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @imul x b
-$ (/) : @nat -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @udiv x b
-$ (%) : @nat -> @nat32 -> @nat32 = \a b = let x : @nat32 = @cast a in @umod x b
-
-$ (+) : @nat32 -> @nat -> @nat32 = \a b = let x : @nat32 = @cast b in @iadd a x
-$ (-) : @nat32 -> @nat -> @nat32 = \a b = let x : @nat32 = @cast b in @isub a x
-$ (*) : @nat32 -> @nat -> @nat32 = \a b = let x : @nat32 = @cast b in @imul a x
-$ (/) : @nat32 -> @nat -> @nat32 = \a b = let x : @nat32 = @cast b in @udiv a x
-$ (%) : @nat32 -> @nat -> @nat32 = \a b = let x : @nat32 = @cast b in @umod a x
-
-$ (+) : @nat -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @iadd x b
-$ (-) : @nat -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @isub x b
-$ (*) : @nat -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @imul x b
-$ (/) : @nat -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @udiv x b
-$ (%) : @nat -> @nat64 -> @nat64 = \a b = let x : @nat64 = @cast a in @umod x b
-
-$ (+) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @iadd a x
-$ (-) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @isub a x
-$ (*) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @imul a x
-$ (/) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @udiv a x
-$ (%) : @nat64 -> @nat -> @nat64 = \a b = let x : @nat64 = @cast b in @umod a x
-
-# Comparison operators, built the same way: an overload per base type over the
-# comparison intrinsics. Signed integers order with `@ilt`, @nat and the sized
-# nats with `@ult` (a Nat past the signed range would otherwise order wrong),
-# floats with `@flt` and strings lexicographically with `@slt`. `>` `<=` `>=` are
-# `<` read the other way round, so one intrinsic per type is enough.
+# Comparison, as interfaces. `IEq` is equality and `IOrd` is ordering, each with a
+# single operation, so `>` `<=` `>=` are `<` read the other way round and a type
+# needs only `lt` to be ordered. Signed integers order with `@ilt`, @nat and the
+# sized nats with `@ult` (a Nat past the signed range would otherwise order wrong),
+# floats with `@flt`, strings lexicographically with `@slt`.
 #
-# What no overload here covers (a struct, a union, a tuple, a mixed-width pair)
-# falls back to the generic compiler builtin, which compares `==` structurally and
-# orders numbers and strings. A user type gets its own by joining the overload
-# set: `$ (<) : T -> T -> @bool = ...` extends these rather than hiding them.
-$ (==) : @int -> @int -> @bool = \a b = @ieq a b
-$ (<)  : @int -> @int -> @bool = \a b = @ilt a b
-$ (>)  : @int -> @int -> @bool = \a b = @ilt b a
-$ (<=) : @int -> @int -> @bool = \a b = not (@ilt b a)
-$ (>=) : @int -> @int -> @bool = \a b = not (@ilt a b)
+# There is no structural fallback: a type is comparable when it has an instance.
+# Write one, or let `DERIVE.derive_eq` / `DERIVE.derive_ord` generate it from the
+# declaration. That is the trade for an honest type: `==` means "this type knows
+# how to compare itself", not "the runtime will try something".
+$ IEq : @struct t = eq: t -> t -> @bool,
+$ IOrd : @struct t = lt: t -> t -> @bool,
 
-$ (==) : @int8 -> @int8 -> @bool = \a b = @ieq a b
-$ (<)  : @int8 -> @int8 -> @bool = \a b = @ilt a b
-$ (>)  : @int8 -> @int8 -> @bool = \a b = @ilt b a
-$ (<=) : @int8 -> @int8 -> @bool = \a b = not (@ilt b a)
-$ (>=) : @int8 -> @int8 -> @bool = \a b = not (@ilt a b)
+$ (==) : @ctx IEq t -> t -> t -> @bool = \d a b = d.eq a b
+$ (<) : @ctx IOrd t -> t -> t -> @bool = \d a b = d.lt a b
+$ (>) : @ctx IOrd t -> t -> t -> @bool = \d a b = d.lt b a
+$ (<=) : @ctx IOrd t -> t -> t -> @bool = \d a b = not (d.lt b a)
+$ (>=) : @ctx IOrd t -> t -> t -> @bool = \d a b = not (d.lt a b)
 
-$ (==) : @int16 -> @int16 -> @bool = \a b = @ieq a b
-$ (<)  : @int16 -> @int16 -> @bool = \a b = @ilt a b
-$ (>)  : @int16 -> @int16 -> @bool = \a b = @ilt b a
-$ (<=) : @int16 -> @int16 -> @bool = \a b = not (@ilt b a)
-$ (>=) : @int16 -> @int16 -> @bool = \a b = not (@ilt a b)
+$ eq_int : IEq @int = .{ .eq = \a b = @ieq a b }
+$ ord_int : IOrd @int = .{ .lt = \a b = @ilt a b }
 
-$ (==) : @int32 -> @int32 -> @bool = \a b = @ieq a b
-$ (<)  : @int32 -> @int32 -> @bool = \a b = @ilt a b
-$ (>)  : @int32 -> @int32 -> @bool = \a b = @ilt b a
-$ (<=) : @int32 -> @int32 -> @bool = \a b = not (@ilt b a)
-$ (>=) : @int32 -> @int32 -> @bool = \a b = not (@ilt a b)
+$ eq_int8 : IEq @int8 = .{ .eq = \a b = @ieq a b }
+$ ord_int8 : IOrd @int8 = .{ .lt = \a b = @ilt a b }
 
-$ (==) : @int64 -> @int64 -> @bool = \a b = @ieq a b
-$ (<)  : @int64 -> @int64 -> @bool = \a b = @ilt a b
-$ (>)  : @int64 -> @int64 -> @bool = \a b = @ilt b a
-$ (<=) : @int64 -> @int64 -> @bool = \a b = not (@ilt b a)
-$ (>=) : @int64 -> @int64 -> @bool = \a b = not (@ilt a b)
+$ eq_int16 : IEq @int16 = .{ .eq = \a b = @ieq a b }
+$ ord_int16 : IOrd @int16 = .{ .lt = \a b = @ilt a b }
 
-$ (==) : @nat -> @nat -> @bool = \a b = @ieq a b
-$ (<)  : @nat -> @nat -> @bool = \a b = @ult a b
-$ (>)  : @nat -> @nat -> @bool = \a b = @ult b a
-$ (<=) : @nat -> @nat -> @bool = \a b = not (@ult b a)
-$ (>=) : @nat -> @nat -> @bool = \a b = not (@ult a b)
+$ eq_int32 : IEq @int32 = .{ .eq = \a b = @ieq a b }
+$ ord_int32 : IOrd @int32 = .{ .lt = \a b = @ilt a b }
 
-$ (==) : @nat8 -> @nat8 -> @bool = \a b = @ieq a b
-$ (<)  : @nat8 -> @nat8 -> @bool = \a b = @ult a b
-$ (>)  : @nat8 -> @nat8 -> @bool = \a b = @ult b a
-$ (<=) : @nat8 -> @nat8 -> @bool = \a b = not (@ult b a)
-$ (>=) : @nat8 -> @nat8 -> @bool = \a b = not (@ult a b)
+$ eq_int64 : IEq @int64 = .{ .eq = \a b = @ieq a b }
+$ ord_int64 : IOrd @int64 = .{ .lt = \a b = @ilt a b }
 
-$ (==) : @nat16 -> @nat16 -> @bool = \a b = @ieq a b
-$ (<)  : @nat16 -> @nat16 -> @bool = \a b = @ult a b
-$ (>)  : @nat16 -> @nat16 -> @bool = \a b = @ult b a
-$ (<=) : @nat16 -> @nat16 -> @bool = \a b = not (@ult b a)
-$ (>=) : @nat16 -> @nat16 -> @bool = \a b = not (@ult a b)
+$ eq_nat : IEq @nat = .{ .eq = \a b = @ieq a b }
+$ ord_nat : IOrd @nat = .{ .lt = \a b = @ult a b }
 
-$ (==) : @nat32 -> @nat32 -> @bool = \a b = @ieq a b
-$ (<)  : @nat32 -> @nat32 -> @bool = \a b = @ult a b
-$ (>)  : @nat32 -> @nat32 -> @bool = \a b = @ult b a
-$ (<=) : @nat32 -> @nat32 -> @bool = \a b = not (@ult b a)
-$ (>=) : @nat32 -> @nat32 -> @bool = \a b = not (@ult a b)
+$ eq_nat8 : IEq @nat8 = .{ .eq = \a b = @ieq a b }
+$ ord_nat8 : IOrd @nat8 = .{ .lt = \a b = @ult a b }
 
-$ (==) : @nat64 -> @nat64 -> @bool = \a b = @ieq a b
-$ (<)  : @nat64 -> @nat64 -> @bool = \a b = @ult a b
-$ (>)  : @nat64 -> @nat64 -> @bool = \a b = @ult b a
-$ (<=) : @nat64 -> @nat64 -> @bool = \a b = not (@ult b a)
-$ (>=) : @nat64 -> @nat64 -> @bool = \a b = not (@ult a b)
+$ eq_nat16 : IEq @nat16 = .{ .eq = \a b = @ieq a b }
+$ ord_nat16 : IOrd @nat16 = .{ .lt = \a b = @ult a b }
 
-$ (==) : @float32 -> @float32 -> @bool = \a b = @feq a b
-$ (<)  : @float32 -> @float32 -> @bool = \a b = @flt a b
-$ (>)  : @float32 -> @float32 -> @bool = \a b = @flt b a
-$ (<=) : @float32 -> @float32 -> @bool = \a b = not (@flt b a)
-$ (>=) : @float32 -> @float32 -> @bool = \a b = not (@flt a b)
+$ eq_nat32 : IEq @nat32 = .{ .eq = \a b = @ieq a b }
+$ ord_nat32 : IOrd @nat32 = .{ .lt = \a b = @ult a b }
 
-$ (==) : @float64 -> @float64 -> @bool = \a b = @feq a b
-$ (<)  : @float64 -> @float64 -> @bool = \a b = @flt a b
-$ (>)  : @float64 -> @float64 -> @bool = \a b = @flt b a
-$ (<=) : @float64 -> @float64 -> @bool = \a b = not (@flt b a)
-$ (>=) : @float64 -> @float64 -> @bool = \a b = not (@flt a b)
+$ eq_nat64 : IEq @nat64 = .{ .eq = \a b = @ieq a b }
+$ ord_nat64 : IOrd @nat64 = .{ .lt = \a b = @ult a b }
 
-$ (==) : @str -> @str -> @bool = \a b = @seq a b
-$ (<)  : @str -> @str -> @bool = \a b = @slt a b
-$ (>)  : @str -> @str -> @bool = \a b = @slt b a
-$ (<=) : @str -> @str -> @bool = \a b = not (@slt b a)
-$ (>=) : @str -> @str -> @bool = \a b = not (@slt a b)
+$ eq_float64 : IEq @float64 = .{ .eq = \a b = @feq a b }
+$ ord_float64 : IOrd @float64 = .{ .lt = \a b = @flt a b }
+$ eq_float32 : IEq @float32 = .{ .eq = \a b = @feq a b }
+$ ord_float32 : IOrd @float32 = .{ .lt = \a b = @flt a b }
 
-# `@bool` has no ordering: equality is a two-case test, no intrinsic needed.
-$ (==) : @bool -> @bool -> @bool = \a b = if a => b else not b
+# Strings compare byte-wise (`@seq`) and order lexicographically (`@slt`).
+$ eq_str : IEq @str = .{ .eq = \a b = @seq a b }
+$ ord_str : IOrd @str = .{ .lt = \a b = @slt a b }
+
+# `@bool` has equality but no ordering: a two-case test, no intrinsic needed.
+$ eq_bool : IEq @bool = .{ .eq = \a b = if a => b else not b }
+
+# Aggregates compare through their components', so equality composes without any
+# structural fallback: a tuple needs one instance per arity, a sequence one.
+$ eq_tup2 : @ctx {IEq a, IEq b} -> IEq {a, b} = \ds =
+	.{ .eq = \x y = ds.0.eq x.0 y.0 && ds.1.eq x.1 y.1 }
+$ eq_tup3 : @ctx {IEq a, IEq b, IEq c} -> IEq {a, b, c} = \ds =
+	.{ .eq = \x y = ds.0.eq x.0 y.0 && ds.1.eq x.1 y.1 && ds.2.eq x.2 y.2 }
+
+$ vec_eq_from : @ctx IEq t -> @vec t -> @vec t -> @int -> @bool = \d x y i =
+	if i >= @vec_len x => @true
+	else if d.eq (@vec_get x i) (@vec_get y i) => vec_eq_from (@ctx d) x y (i + 1)
+	else @false
+
+$ eq_vec : @ctx IEq t -> IEq (@vec t) = \d =
+	.{ .eq = \x y = if @vec_len x == @vec_len y => vec_eq_from (@ctx d) x y 0 else @false }
+
+$ eq_array : IEq @array = .{ .eq = \a b = @seq a b }
 
 # Function composition as a value: `compose f g` is `\x = f (g x)`, and it is what
 # the operator's function form `(<|>)` refers to (the infix `f <|> g` expands to the
@@ -451,57 +264,73 @@ $ (==) : @bool -> @bool -> @bool = \a b = if a => b else not b
 # two different rows.
 $ compose : (b -> <e> c) -> (a -> <e> b) -> a -> <e> c = \f g x = f (g x)
 
-$ to_string : @str -> @str = \s = s
+# Rendering and parsing, as interfaces. `to_string` takes the renderer for its
+# argument's type; `from_string` takes the parser for the type the CALLER expects,
+# so `let n : @int = from_string s` picks the `@int` parser by the expected type
+# rather than by an argument. `?(e)` interpolation desugars to `to_string e`, so a
+# type joins string interpolation by having an `IToString` instance (write one, or
+# let `DERIVE.derive_show` generate it).
+$ IToString : @struct t = show: t -> @str,
+$ IFromString : @struct t = parse: @str -> t,
 
-$ to_string : @bool -> @str = \b = if b => "true" else "false"
+$ to_string : @ctx IToString t -> t -> @str = \d x = d.show x
+$ from_string : @ctx IFromString t -> @str -> t = \d s = d.parse s
 
-$ to_string : @int -> @str = \n =
+$ show_str : IToString @str = .{ .show = \s = s }
+$ show_bool : IToString @bool = .{ .show = \b = if b => "true" else "false" }
+
+$ int_to_str : @int -> @str = \n =
 	if n < 0 => "-" ++ to_string_digits (0 - n) ""
 	else to_string_digits n ""
 
-$ to_string : @nat -> @str = \n = to_string_udigits n ""
+$ show_int : IToString @int = .{ .show = int_to_str }
+$ show_nat : IToString @nat = .{ .show = \n = to_string_udigits n "" }
 
-# The sized integers reuse the friendly-type printers: `@cast` to `@int` (signed)
-# or `@nat` (unsigned) is an erased width reinterpret, so the value is unchanged.
-$ to_string : @int8  -> @str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int16 -> @str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int32 -> @str = \x = to_string (let n : @int = @cast x in n)
-$ to_string : @int64 -> @str = \x = to_string (let n : @int = @cast x in n)
+# The sized integers reuse the word-size printers: `@cast` to `@int` (signed) or
+# `@nat` (unsigned) is an erased width reinterpret, so the value is unchanged.
+$ show_int8 : IToString @int8 = .{ .show = \x = int_to_str (let n : @int = @cast x in n) }
+$ show_int16 : IToString @int16 = .{ .show = \x = int_to_str (let n : @int = @cast x in n) }
+$ show_int32 : IToString @int32 = .{ .show = \x = int_to_str (let n : @int = @cast x in n) }
+$ show_int64 : IToString @int64 = .{ .show = \x = int_to_str (let n : @int = @cast x in n) }
 
-$ to_string : @nat8  -> @str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat16 -> @str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat32 -> @str = \x = to_string (let n : @nat = @cast x in n)
-$ to_string : @nat64 -> @str = \x = to_string (let n : @nat = @cast x in n)
+$ nat_to_str : @nat -> @str = \n = to_string_udigits n ""
+$ show_nat8 : IToString @nat8 = .{ .show = \x = nat_to_str (let n : @nat = @cast x in n) }
+$ show_nat16 : IToString @nat16 = .{ .show = \x = nat_to_str (let n : @nat = @cast x in n) }
+$ show_nat32 : IToString @nat32 = .{ .show = \x = nat_to_str (let n : @nat = @cast x in n) }
+$ show_nat64 : IToString @nat64 = .{ .show = \x = nat_to_str (let n : @nat = @cast x in n) }
 
-# `from_string` is the inverse of `to_string`: parse text back into a value. It
-# reads bytes with `@array_get`/`@array_len`, so it stays in the language.
-$ from_string : @str -> @str = \s = s
+# Floats serialize through the C runtime: `thx_real_to_str`/`thx_f32_to_str` format
+# the shortest round-tripping decimal (the same rule as display), and libc `atof`
+# parses one back. `@float32` widens/narrows via the conversions above.
+$ real_to_str : @float64 -> @str = @extern "C" "thx_real_to_str" ""
+$ f32_to_str : @float32 -> @str = @extern "C" "thx_f32_to_str" ""
+$ show_float64 : IToString @float64 = .{ .show = real_to_str }
+$ show_float32 : IToString @float32 = .{ .show = f32_to_str }
 
-$ from_string : @str -> @bool = \s = s == "true"
-
-$ from_string : @str -> @int = \s =
+# `from_string` reads bytes with `@array_get`/`@array_len`, so parsing stays in the
+# language; only the float parser is foreign.
+$ str_to_int : @str -> @int = \s =
 	if @array_len s == 0 => 0
 	else if @array_get s 0 == 45 => 0 - from_string_digits s 1 0
 	else from_string_digits s 0 0
 
-# Floats serialize through the C runtime: `thx_real_to_str`/`thx_f32_to_str`
-# format the shortest round-tripping decimal (the same rule as display), and
-# libc `atof` parses one back. `@float32` widens/narrows via the conversions above.
-$ to_string : @float64 -> @str = @extern "C" "thx_real_to_str" ""
-$ to_string : @float32 -> @str = @extern "C" "thx_f32_to_str" ""
+$ parse_str : IFromString @str = .{ .parse = \s = s }
+$ parse_bool : IFromString @bool = .{ .parse = \s = s == "true" }
+$ parse_int : IFromString @int = .{ .parse = str_to_int }
+$ parse_nat : IFromString @nat = .{ .parse = \s = let n : @nat = @cast (str_to_int s) in n }
 
-$ from_string : @str -> @float64 = @extern "C" "atof" "libc"
-$ from_string : @str -> @float32 = \s = let d : @float64 = from_string s in f64_to_f32 d
+$ str_to_real : @str -> @float64 = @extern "C" "atof" "libc"
+$ parse_float64 : IFromString @float64 = .{ .parse = str_to_real }
+$ parse_float32 : IFromString @float32 = .{ .parse = \s = f64_to_f32 (str_to_real s) }
 
-$ from_string : @str -> @nat    = \s = let n : @int = from_string s in let m : @nat    = @cast n in m
-$ from_string : @str -> @int8  = \s = let n : @int = from_string s in let m : @int8  = @cast n in m
-$ from_string : @str -> @int16 = \s = let n : @int = from_string s in let m : @int16 = @cast n in m
-$ from_string : @str -> @int32 = \s = let n : @int = from_string s in let m : @int32 = @cast n in m
-$ from_string : @str -> @int64 = \s = let n : @int = from_string s in let m : @int64 = @cast n in m
-$ from_string : @str -> @nat8  = \s = let n : @nat = from_string s in let m : @nat8  = @cast n in m
-$ from_string : @str -> @nat16 = \s = let n : @nat = from_string s in let m : @nat16 = @cast n in m
-$ from_string : @str -> @nat32 = \s = let n : @nat = from_string s in let m : @nat32 = @cast n in m
-$ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @nat64 = @cast n in m
+$ parse_int8 : IFromString @int8 = .{ .parse = \s = let n : @int8 = @cast (str_to_int s) in n }
+$ parse_int16 : IFromString @int16 = .{ .parse = \s = let n : @int16 = @cast (str_to_int s) in n }
+$ parse_int32 : IFromString @int32 = .{ .parse = \s = let n : @int32 = @cast (str_to_int s) in n }
+$ parse_int64 : IFromString @int64 = .{ .parse = \s = let n : @int64 = @cast (str_to_int s) in n }
+$ parse_nat8 : IFromString @nat8 = .{ .parse = \s = let n : @nat8 = @cast (str_to_int s) in n }
+$ parse_nat16 : IFromString @nat16 = .{ .parse = \s = let n : @nat16 = @cast (str_to_int s) in n }
+$ parse_nat32 : IFromString @nat32 = .{ .parse = \s = let n : @nat32 = @cast (str_to_int s) in n }
+$ parse_nat64 : IFromString @nat64 = .{ .parse = \s = let n : @nat64 = @cast (str_to_int s) in n }
 
 # ---- complex numbers ----
 # `Cpx` is an ordinary struct, not a base type: the compiler knows only the `i`
@@ -510,67 +339,62 @@ $ from_string : @str -> @nat64 = \s = let n : @nat = from_string s in let m : @n
 # by defining its own hook.
 $ Cpx : @struct = re: Real, im: Real,
 
-# `1.2i` becomes `@compiler_interface_imaginary_literal 1.2`, so `3.4 + 1.2i` is
-# an ordinary `+` on a Real and a Cpx.
-$ @compiler_interface_imaginary_literal : Real -> Cpx = \x = Cpx.{ 0.0, x }
+# `1.2i` resolves `@IImagLit` and calls its single field, so a program that wants
+# its own complex type defines its own instance.
+$ imag_cpx : @IImagLit Cpx = .{ .of_imag = \x = Cpx.{ 0.0, x } }
 
-$ (+) : Cpx -> Cpx -> Cpx = \a b = Cpx.{ a.re + b.re, a.im + b.im }
-$ (-) : Cpx -> Cpx -> Cpx = \a b = Cpx.{ a.re - b.re, a.im - b.im }
-$ (*) : Cpx -> Cpx -> Cpx = \a b =
-	Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re }
-# The textbook quotient. It divides by `|b|^2`, so it loses range for operands
-# near the square root of the float limits; CPX.div_smith trades a branch for
-# that range.
-$ (/) : Cpx -> Cpx -> Cpx = \a b =
-	let d = b.re * b.re + b.im * b.im in
-	Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d }
+$ add_cpx : IAdd Cpx = .{ .add = \a b = Cpx.{ a.re + b.re, a.im + b.im } }
+$ sub_cpx : ISub Cpx = .{ .sub = \a b = Cpx.{ a.re - b.re, a.im - b.im } }
+$ mul_cpx : IMul Cpx = .{
+	.mul = \a b = Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re },
+}
+# The textbook quotient. It divides by `|b|^2`, so it loses range for operands near
+# the square root of the float limits; CPX.div_smith trades a branch for that range.
+$ div_cpx : IDiv Cpx = .{
+	.div = \a b =
+		let d = b.re * b.re + b.im * b.im in
+		Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d },
+}
+$ zero_cpx : IZero Cpx = .{ .zero = Cpx.{ 0.0, 0.0 } }
+$ one_cpx : IOne Cpx = .{ .one = Cpx.{ 1.0, 0.0 } }
 
-$ neg : Cpx -> Cpx = \z = Cpx.{ 0.0 - z.re, 0.0 - z.im }
 
-# A real on either side of a complex, and the same pairs for the narrower
-# `@float32` (widened exactly as the mixed-width float operators above do). There
-# are deliberately NO integer pairs: an integer never silently becomes a float
-# anywhere else here, so `1 + 3i` is a type error and `1.0 + 3i` is the spelling.
-$ (+) : Real -> Cpx -> Cpx = \a b = Cpx.{ a + b.re, b.im }
-$ (-) : Real -> Cpx -> Cpx = \a b = Cpx.{ a - b.re, 0.0 - b.im }
-$ (*) : Real -> Cpx -> Cpx = \a b = Cpx.{ a * b.re, a * b.im }
-$ (/) : Real -> Cpx -> Cpx = \a b = Cpx.{ a, 0.0 } / b
+# An operator takes ONE type for both operands, so a real is not promoted to a
+# complex: write `CPX.of_real x + z`, not `x + z`. (`1 + 3i` was already a type
+# error; now `1.0 + 3i` is too.)
 
-$ (+) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re + b, a.im }
-$ (-) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re - b, a.im }
-$ (*) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re * b, a.im * b }
-$ (/) : Cpx -> Real -> Cpx = \a b = Cpx.{ a.re / b, a.im / b }
-
-$ (+) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x + b
-$ (-) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x - b
-$ (*) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x * b
-$ (/) : @float32 -> Cpx -> Cpx = \a b = let x : Real = f32_to_f64 a in x / b
-
-$ (+) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a + y
-$ (-) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a - y
-$ (*) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a * y
-$ (/) : Cpx -> @float32 -> Cpx = \a b = let y : Real = f32_to_f64 b in a / y
 
 # `3.0 - 1.5i` rather than `3.0 + -1.5i`; the imaginary part always shows, so a
 # real-valued Cpx still reads as complex.
-$ to_string : Cpx -> @str = \z =
+$ cpx_to_str : Cpx -> @str = \z =
 	if z.im < 0.0 => "?(z.re) - ?(0.0 - z.im)i"
 	else "?(z.re) + ?(z.im)i"
+
+$ show_cpx : IToString Cpx = .{ .show = cpx_to_str }
+$ eq_cpx : IEq Cpx = .{ .eq = \a b = a.re == b.re && a.im == b.im }
 
 # `x :: xs` prepends `x` to a `@vec` (the default sequence). O(n): builds a fresh
 # vector, so a `::`-recursion is quadratic -- push (`@vec_push`) / index iteration is
 # the idiomatic way to build a vector.
 $ vcons : t -> @vec t -> @vec t = \x v = vcons_onto (@vec_push (@vec_new {}) x) v 0
 
-$ (::) : t -> @vec t -> @vec t = \x v = vcons x v
+# `x :: xs` prepends through its own interface, so a sequence type joins the
+# surface with an instance. The element and the sequence are separate parameters, so
+# one instance names both.
+$ ICons : @struct t s = cons: t -> s -> s,
+
+$ (::) : @ctx ICons t s -> t -> s -> s = \d x xs = d.cons x xs
+
+$ cons_vec : ICons t (@vec t) = .{ .cons = \x v = vcons x v }
 
 # The inclusive Ints from `lo` to `hi` (empty when `lo > hi`), as a `@vec`: its
 # length is a runtime value, not the static size of a `[n]T` tensor.
 $ range : @int -> @int -> @vec @int = \lo hi = range_onto (@vec_new {}) lo hi
 
-# A closed range `[lo ... hi]` builds whatever this hook returns. A sequence type
-# joins the range surface by overloading it; `@vec` is what the bare form builds.
-$ @compiler_interface_range : @int -> @int -> @vec @int = \lo hi = range lo hi
+# A closed range `[lo ... hi]` builds whatever its `@IRange` instance returns. A
+# sequence type joins the range surface with an instance of its own; `@vec` is what
+# the bare form builds, because this instance is declared FIRST.
+$ range_vec : @IRange @int (@vec @int) = .{ .range = \lo hi = range lo hi }
 
 # The OPTIONAL persistent cons list, an ordinary `@union` (not a compiler builtin,
 # and no longer the default). It is also the worked example of a type joining the
@@ -578,10 +402,11 @@ $ @compiler_interface_range : @int -> @int -> @vec @int = \lo hi = range lo hi
 # `::`, and sequence patterns, with no compiler support of its own.
 $ List : @union a = Nil: {}, Cons: {a, List a},
 
-$ @compiler_interface_sequence_literal : @vec t -> List t = \v =
-	list_onto List.Nil v (@vec_len v - 1)
+$ seqlit_list : @ISeqLit t (List t) = .{
+	.of_vec = \v = list_onto List.Nil v (@vec_len v - 1),
+}
 
-$ (::) : t -> List t -> List t = \x l = List.Cons.{ x, l }
+$ cons_list : ICons t (List t) = .{ .cons = \x l = List.Cons.{ x, l } }
 
 # The same closed range as a List. The tail slot is lazy, so this one is built a
 # cell at a time: `[lo ... hi]` over a huge bound costs only what is walked, where
@@ -589,55 +414,68 @@ $ (::) : t -> List t -> List t = \x l = List.Cons.{ x, l }
 $ range_list : @int -> @int -> List @int = \lo hi =
 	if lo > hi => List.Nil else List.Cons.{ lo, range_list (lo + 1) hi }
 
-$ @compiler_interface_range : @int -> @int -> List @int = \lo hi = range_list lo hi
+$ range_list_of : @IRange @int (List @int) = .{ .range = \lo hi = range_list lo hi }
 
-# `++` over a `@vec`: copy the left, then append the right element by element.
-$ (++) : @vec t -> @vec t -> @vec t = \xs ys =
-	vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0
+# `++` joins two of a kind, through its own interface, so a sequence type of your
+# own joins the surface by having an instance. `@str` and `@array` are the packed
+# byte buffers (`@acat`), `@vec` copies, and a List rebuilds its left spine onto the
+# right with a lazy tail, so the rest of the join happens as the result is walked.
+$ ICat : @struct t = cat: t -> t -> t,
 
-# `++` over a List: rebuild the left spine onto the right. The tail slot is lazy,
-# so the rest of the join happens only as the result is walked.
-$ (++) : List t -> List t -> List t = \xs ys =
-	is xs | List.Cons.{h, t} => List.Cons.{ h, t ++ ys } else ys
+$ (++) : @ctx ICat t -> t -> t -> t = \d a b = d.cat a b
 
-$ @compiler_interface_sequence_view : List t -> SeqView (List t) t = \l =
-	is l | List.Cons.{h, t} => SeqView.More.{ h, t } else SeqView.Empty
+$ cat_str : ICat @str = .{ .cat = \a b = @acat a b }
+$ cat_array : ICat @array = .{ .cat = \a b = @acat a b }
+$ cat_vec : ICat (@vec t) = .{
+	.cat = \xs ys = vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0,
+}
+$ cat_list : ICat (List t) = .{
+	.cat = \xs ys = is xs | List.Cons.{h, t} => List.Cons.{ h, cat_list.cat t ys } else ys,
+}
 
-# A `[...]` literal builds whatever this hook returns. `@vec` is what an
-# unconstrained literal defaults to, so its overload is the identity on the
+$ seqview_list : @ISeqView (List t) t = .{
+	.view = \l = is l | List.Cons.{h, t} => SeqView.More.{ h, t } else SeqView.Empty,
+}
+
+# A `[...]` literal builds whatever its `@ISeqLit` instance returns. `@vec` is what
+# an unconstrained literal defaults to, so its instance is the identity on the
 # payload the compiler collects; a sequence type joins the surface by returning
 # itself instead.
-$ @compiler_interface_sequence_literal : @vec t -> @vec t = \v = v
+$ seqlit_vec : @ISeqLit t (@vec t) = .{ .of_vec = \v = v }
 
 # The packed byte buffer `@array` joins the same two surfaces through its own
-# overloads: `[1, 2, 3] : @array` builds one from the collected payload, and
+# instances: `[1, 2, 3] : @array` builds one from the collected payload, and
 # `[a, b, ..r]` matches one by stepping the view below.
-$ @compiler_interface_sequence_literal : @vec @int -> @array = \v = array_onto @array.{ 0 } v 0
+$ seqlit_array : @ISeqLit @int @array = .{ .of_vec = \v = array_onto @array.{ 0 } v 0 }
 
-# A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. Overload it and a
-# type joins the slice surface; a sized tensor `[n]T` slices by its own rule (its
-# result shape is computed from the bounds, which no signature here can say).
-$ @compiler_interface_slice : @vec t -> @int -> @int -> @vec t = \v lo hi = @vec_slice v lo (hi + 1)
-$ @compiler_interface_slice : @array -> @int -> @int -> @array = \a lo hi = @array_slice a lo (hi + 1)
-$ @compiler_interface_slice : @str -> @int -> @int -> @str = \s lo hi = @array_slice s lo (hi + 1)
+# A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. An `@ISlice`
+# instance joins a type to the slice surface; a sized tensor `[n]T` slices by its
+# own rule (its result shape is computed from the bounds, which no interface
+# method's type can say).
+$ slice_vec : @ISlice (@vec t) (@vec t) = .{ .slice = \v lo hi = @vec_slice v lo (hi + 1) }
+$ slice_array : @ISlice @array @array = .{ .slice = \a lo hi = @array_slice a lo (hi + 1) }
+$ slice_str : @ISlice @str @str = .{ .slice = \s lo hi = @array_slice s lo (hi + 1) }
 
-# One step of a sequence, produced by the `@compiler_interface_sequence_view` hook:
-# `Empty` at the end, or `More elem rest` (the head element and the remaining
-# sequence). A user sequence type joins the `[..]`/`::`/`[]` PATTERN surface by
-# defining that hook to return this view; the compiler matches sequence patterns by
-# unfolding it.
+# One step of a sequence, produced by an `@ISeqView` instance: `Empty` at the end,
+# or `More elem rest` (the head element and the remaining sequence). A user sequence
+# type joins the `[..]`/`::`/`[]` PATTERN surface with an instance returning this
+# view; the compiler matches sequence patterns by unfolding it.
 $ SeqView : @union s t = Empty: {}, More: {t, s},
 
 # The built-in growable vector `@vec` joins the `[..]`/`::`/`[]` PATTERN surface: its
 # view is `Empty` when empty, else the first element and the tail (a slice). `[...]`
 # literals build a `@vec`, so this is what a sequence pattern unfolds by default.
-$ @compiler_interface_sequence_view : @vec t -> SeqView (@vec t) t = \v =
-	if @vec_len v == 0 => SeqView.Empty
-	else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) }
+$ seqview_vec : @ISeqView (@vec t) t = .{
+	.view = \v =
+		if @vec_len v == 0 => SeqView.Empty
+		else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) },
+}
 
-$ @compiler_interface_sequence_view : @array -> SeqView @array @int = \a =
-	if @array_len a == 0 => SeqView.Empty
-	else SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) }
+$ seqview_array : @ISeqView @array @int = .{
+	.view = \a =
+		if @array_len a == 0 => SeqView.Empty
+		else SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) },
+}
 
 # The canonical infinite stream: `.head` is the current element and `.tail` the
 # rest. `tail` is recursive, so it holds its value lazily and a stream is
@@ -648,13 +486,14 @@ $ Stream : @struct t = head : t, tail : Stream t
 # that can hold an unbounded sequence (not a finite `@vec`, not a `[n]T` tensor).
 $ count_from : @int -> Stream @int = \lo = { .head = lo, .tail = count_from (lo + 1) }
 
-# The open range `[lo ...]` counterpart of the hook above.
-$ @compiler_interface_range_from : @int -> Stream @int = \lo = count_from lo
+# The open range `[lo ...]` counterpart of `@IRange`. Declared FIRST, so a bare
+# `[lo ...]` builds a `Stream`.
+$ rangefrom_stream : @IRangeFrom @int (Stream @int) = .{ .range_from = \lo = count_from lo }
 
 # The open range as a List. A `List` tail is lazy, so an unbounded one is just as
-# representable as a `Stream`; this is the overload `([lo ...] : List T)` picks.
+# representable as a `Stream`; this is the instance `([lo ...] : List T)` picks.
 $ count_from_list : @int -> List @int = \lo = List.Cons.{ lo, count_from_list (lo + 1) }
-$ @compiler_interface_range_from : @int -> List @int = \lo = count_from_list lo
+$ rangefrom_list : @IRangeFrom @int (List @int) = .{ .range_from = \lo = count_from_list lo }
 
 # The `Loop` effect gives imperative `break` / `continue` to the iteration
 # combinators below: `break` stops the loop, `continue` skips the rest of the
@@ -666,22 +505,33 @@ $ Loop : @effect = break : {} -> a, continue : {} -> a,
 $ break    : {} -> <Loop> a = \u = Loop.break u
 $ continue : {} -> <Loop> a = \u = Loop.continue u
 
-# `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`. Overloaded per
-# structure; over a `Stream` it is an INDEFINITE loop (runs until `break`, or
-# forever, `forever` and `count_from` are ready-made infinite sources).
-$ for : @vec a -> (a -> <Loop | e> {}) -> <e> {} = \xs body = for_go xs body 0
+# `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`.
+# Iteration is an interface too, and the one whose shape needs the most from the
+# type system: the body's effect row is a PARAMETER of the interface, so an instance
+# stays polymorphic in it and each use site instantiates it (a body that prints runs
+# under `<@io>`, a pure one under `<>`).
+$ IFor : @struct s a e = each: s -> (a -> <Loop | e> {}) -> <e> {},
+
+$ for : @ctx IFor s a e -> s -> (a -> <Loop | e> {}) -> <e> {} = \d xs body = d.each xs body
+
+$ for_vec : IFor (@vec a) a e = .{ .each = \xs body = for_go xs body 0 }
 
 $ forever : Stream {} = { .head = {}, .tail = forever }
-$ for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
+
+# Over a `Stream`, iteration is INDEFINITE: it runs until `break`, or forever
+# (`forever` and `count_from` are ready-made infinite sources).
+$ stream_for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
 	let more = do body s.head
 		ctl k | Loop.continue u => @true
 		      | Loop.break u => @false
 		      else _ => @true
-	in if more => for s.tail body else {}
+	in if more => stream_for s.tail body else {}
 
-# Over a List, `for` walks the spine one cons at a time. The tail slot is lazy,
+$ for_stream : IFor (Stream a) a e = .{ .each = stream_for }
+
+# Over a List, iteration walks the spine one cons at a time. The tail slot is lazy,
 # so a list the body stops early on is only ever built as far as the body looked.
-$ for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =
+$ list_for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =
 	is xs
 	| List.Nil => {}
 	| List.Cons.{h, t} =>
@@ -689,25 +539,39 @@ $ for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =
 			ctl k | Loop.continue u => @true
 			      | Loop.break u => @false
 			      else _ => @true
-		 in if more => for t body else {}
+		 in if more => list_for t body else {}
+
+$ for_list : IFor (List a) a e = .{ .each = list_for }
 
 # `formap` TRANSFORMS: it maps `body` over the structure and returns the result
 # (the effectful analogue of `map`, like Haskell's `traverse`). `continue` drops an
-# element, `break` stops early keeping what was collected. Overloaded per structure.
-# The three ways a step can end:
+# element, `break` stops early keeping what was collected. The three ways a step can
+# end:
 $ LoopStep : @union b = Keep: {b}, Skip: {}, Stop: {},
-$ formap : @vec a -> (a -> <Loop | e> b) -> <e> @vec b = \xs f = formap_vec xs f 0 (@vec_new {})
+
+# `formap`'s interface carries the result structure as well, since mapping changes
+# the element type: `@vec a` goes to `@vec b`, a `List a` to a `List b`.
+$ IFormap : @struct s a t b e = mapping: s -> (a -> <Loop | e> b) -> <e> t,
+
+$ formap : @ctx IFormap s a t b e -> s -> (a -> <Loop | e> b) -> <e> t = \d xs f =
+	d.mapping xs f
+
+$ formap_v : IFormap (@vec a) a (@vec b) b e = .{
+	.mapping = \xs f = formap_vec xs f 0 (@vec_new {}),
+}
 
 # `let`-force each step: a data constructor's fields are lazy, so building the Cons
 # directly would defer the effects until the result were observed.
-$ formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
+$ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
 	is xs
 	| List.Cons.{h, t} =>
 		is formap_step h f
-		| LoopStep.Keep.{y} => let ys = formap t f in List.Cons.{ y, ys }
-		| LoopStep.Skip => formap t f
+		| LoopStep.Keep.{y} => let ys = list_formap t f in List.Cons.{ y, ys }
+		| LoopStep.Skip => list_formap t f
 		else List.Nil
 	else List.Nil
+
+$ formap_l : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
 
 # A compile-time check. Under `$ @run` (the `<@meta>` eliminator) a false
 # condition aborts the build with `msg`, so a module states its own invariants and

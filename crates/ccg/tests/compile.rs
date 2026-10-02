@@ -225,8 +225,8 @@ fn comparison_intrinsics_match_interpreter() {
 /// same way once compiled: to the definition for that type, and to CORE's
 /// per-type overload for a primitive.
 #[test]
-fn user_comparison_overload_compiles() {
-    let src = "@mod M\n$ T : @struct = v: @int\n               $ (<) : T -> T -> @bool = \\a b = a.v < b.v\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+fn user_comparison_instance_compiles() {
+    let src = "@mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
@@ -280,41 +280,39 @@ fn scalar_serialization_matches_interpreter() {
 }
 
 #[test]
-fn float_mixed_width_matches_interpreter() {
-    // `@float32 + @float64` widens via the `thx_f2d` runtime conversion and must
-    // produce the same `@float64` result on the C backend as the interpreter.
+fn float_widening_matches_interpreter() {
+    // Widening is explicit now (`f32_to_f64`, the `thx_f2d` runtime conversion); the
+    // C backend must produce the same `@float64` result as the interpreter.
     let src = "@mod M\n\
                $ x : @float32 = from_string \"1.5\"\n\
                $ y : @float64 = from_string \"2.25\"\n\
-               $ fwd : @float64 = x + y\n\
-               $ rev : @float64 = y + x\n";
+               $ fwd : @float64 = f32_to_f64 x + y\n\
+               $ rev : @float64 = y + f32_to_f64 x\n";
     assert_matches(src, "fwd");
     assert_matches(src, "rev");
 }
 
 #[test]
-fn int_word_mixed_with_sized_matches_interpreter() {
-    // `@int` mixed with a sized signed int yields the sized type (the word operand
-    // cast to it); the C backend must agree with the interpreter, both orders.
+fn sized_arithmetic_matches_interpreter() {
+    // A bare literal drops into sized arithmetic; a word-typed variable is `@cast`
+    // first. The C backend must agree with the interpreter on both.
     let src = "@mod M\n\
                $ p : @int32 = from_string \"3\"\n\
                $ x : @int = 5\n\
-               $ fwd : @int32 = x * p\n\
-               $ rev : @int32 = p * x\n\
+               $ cast : @int32 = (let y : @int32 = @cast x in y) * p\n\
                $ lit : @int32 = 2 * p\n";
-    assert_matches(src, "fwd");
-    assert_matches(src, "rev");
+    assert_matches(src, "cast");
     assert_matches(src, "lit");
 }
 
 #[test]
-fn user_operator_overload_matches_interpreter() {
-    // A user `+` overload for a struct must lower to the user global on the C
+fn user_operator_instance_matches_interpreter() {
+    // A user `IAdd` instance for a struct must lower to the user global on the C
     // backend too (resolved via the runtime string-keyed global table), while the
-    // builtin `@int + @int` inside stays the builtin.
+    // `@int + @int` inside finds CORE's instance.
     let src = "@mod M\n\
                $ V : @struct = x: @int, y: @int\n\
-               $ (+) : V -> V -> V = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y }\n\
+               $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_matches(src, "r");
 }
@@ -380,26 +378,36 @@ fn short_circuit_and_or() {
 }
 
 #[test]
-fn same_module_overload_dispatches_by_type() {
-    // Two overloads of `kind` in one module (type-mangled globals). The C backend
-    // must dispatch `kind true` to the @bool body just as the interpreter does.
+fn one_operation_over_two_types_matches_interpreter() {
+    // One operation covering two types is an interface plus two instances. The C
+    // backend must project and call the same instance the interpreter does.
     let src = "@mod M\n\
-               $ kind : @int -> @int = \\x = 1\n\
-               $ kind : @bool -> @int = \\b = 2\n\
+               $ IKind : @struct t = kind: t -> @int,\n\
+               $ kind : @ctx IKind t -> t -> @int = \\d x = d.kind x\n\
+               $ kind_int : IKind @int = .{ .kind = \\x = 1 }\n\
+               $ kind_bool : IKind @bool = .{ .kind = \\b = 2 }\n\
                $ test : @int = (kind 7) + (kind @true) * 10\n";
     assert_matches(src, "test");
 }
 
 #[test]
-fn ctx_implicit_dictionary_passing() {
-    // `@ctx` implicits elaborate to leading dictionary-passing arguments; the C
-    // backend must inject them exactly as the interpreter does.
+fn ctx_context_parameter_passing() {
+    // A `@ctx` parameter elaborates to a leading argument the call site injects, an
+    // instance built from another instance to a nested one; the C backend must do it
+    // exactly as the interpreter does.
     let src = "@mod M\n\
-               $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
-               $ lt : @int -> @int -> @bool = \\a b = a < b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
-               \tif cmp x y => x else y\n\
-               $ test : @int = (max_of 3 7) + (max_of 3 7 @ctx lt)\n";
+               $ Ord : @struct t = gt: t -> t -> @bool,\n\
+               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               \tif o.gt x y => x else y\n\
+               $ Box : @union t = Wrap: {t},\n\
+               $ ord_box : @ctx Ord t -> Ord (Box t) = \\o =\n\
+               \t.{ .gt = \\p q = is p | Box.Wrap.{a} => (is q | Box.Wrap.{b} => o.gt a b) }\n\
+               $ unbox : Box @int -> @int = \\b = is b | Box.Wrap.{n} => n\n\
+               $ test : @int =\n\
+               \tlet flip : Ord @int = .{ .gt = \\a b = a < b } in\n\
+               \t(max_of 3 7) + (max_of (@ctx flip) 3 7)\n\
+               \t+ unbox (max_of (Box.Wrap.{ 2 } : Box @int) (Box.Wrap.{ 9 } : Box @int))\n";
     assert_matches(src, "test");
 }
 
@@ -979,14 +987,14 @@ fn sized_extern_runs_and_matches() {
 
 #[test]
 fn literal_construction_hooks_match_interpreter() {
-    // Each `@compiler_interface_*` construction hook must lower the same on the C
-    // backend as on the interpreter: the literal builds the user type (wrapped in
-    // the hook), while a default-typed literal stays folded.
+    // Each blessed construction interface must lower the same on the C backend as on
+    // the interpreter: the literal builds the user type (wrapped in the resolved
+    // instance's method), while a default-typed literal stays folded.
     let src = "@mod M\n\
                $ Wrap : @struct = n: @int\n\
-               $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+               $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
                $ Bag : @union a = Items: {@vec a}\n\
-               $ @compiler_interface_sequence_literal : @vec a -> Bag a = \\v = Bag.Items.{ v }\n\
+               $ ql : @ISeqLit a (Bag a) = .{ .of_vec = \\v = Bag.Items.{ v } }\n\
                $ w : Wrap = 40\n\
                $ bag : Bag @int = [1, 2]\n\
                $ plain : @int = 5\n\
@@ -996,11 +1004,11 @@ fn literal_construction_hooks_match_interpreter() {
 
 #[test]
 fn complex_numbers_match_interpreter() {
-    // The `i` suffix, its CORE hook, and the complex operators are all library
+    // The `i` suffix, its CORE instance, and the complex operators are all library
     // code, so the C backend must produce the same values as the interpreter.
     let src = "@mod M\n\
-               $ a : Cpx = 3.0 + 4.0i\n\
-               $ b : Cpx = 1.0 - 2.0i\n\
+               $ a : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
+               $ b : Cpx = Cpx.{ 1.0, 0.0 } - 2.0i\n\
                $ r : @str = to_string (a + b) ++ to_string (a * b)\n\
                \t++ to_string (a / b) ++ to_string (-a) ++ to_string (2.5e-2i)\n";
     assert_matches(src, "r");
@@ -1013,7 +1021,7 @@ fn tensor_of_structs_matches_interpreter() {
     let src = "@mod M\n\
                $ P : @struct = x: @float64, y: @float64,\n\
                $ ps : [2]P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
-               $ zs : [2]Cpx = [1.0 + 1.0i, 2.0 + 0.0i]\n\
+               $ zs : [2]Cpx = [Cpx.{ 1.0, 0.0 } + 1.0i, Cpx.{ 2.0, 0.0 }]\n\
                $ r : @str = to_string (@tensor_index ps 1).y\n\
                \t++ to_string (@tensor_length ps) ++ to_string (@tensor_index zs 0)\n";
     assert_matches(src, "r");
@@ -1021,11 +1029,11 @@ fn tensor_of_structs_matches_interpreter() {
 
 #[test]
 fn bracket_hooks_match_interpreter() {
-    // The rest of the `[..]` surface is hook-driven too: ranges, `::`, slices, and
-    // `@array` literals/patterns must lower the same on the C backend.
+    // The rest of the `[..]` surface is interface-driven too: ranges, `::`, slices,
+    // and `@array` literals/patterns must lower the same on the C backend.
     let src = "@mod M\n\
                $ Span : @struct = lo: @int, hi: @int\n\
-               $ @compiler_interface_range : @int -> @int -> Span = \\lo hi = Span.{ lo, hi }\n\
+               $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
                $ s : Span = [2 ... 6]\n\
                $ v : @vec @int = [1 ... 4]\n\
                $ w : @vec @int = 9 :: v.[1 ... 2]\n\
@@ -1038,15 +1046,16 @@ fn bracket_hooks_match_interpreter() {
 
 #[test]
 fn pattern_hooks_match_interpreter() {
-    // Literal patterns (equality hook) and sequence patterns (sequence_view hook) on
-    // user types must lower the same on the C backend as on the interpreter.
+    // Literal patterns (via `IEq`) and sequence patterns (via `@ISeqView`) on user
+    // types must lower the same on the C backend as on the interpreter.
     let src = "@mod M\n\
                $ Stack : @struct a = items: @vec a\n\
-               $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
-               \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
+               $ sv : @ISeqView (Stack a) a = .{\n\
+               \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty,\n\
+               }\n\
                $ MyStr : @struct = bytes: @str\n\
-               $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
-               $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes == b.bytes\n\
+               $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
+               $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
                $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9

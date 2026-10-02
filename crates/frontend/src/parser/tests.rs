@@ -497,13 +497,15 @@ fn ascription_parses_in_group() {
 }
 
 #[test]
-fn interface_hook_prefix_rule() {
+fn blessed_interface_prefix_rule() {
     let err = |src: &str| match parse(src) {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    // A `@compiler_interface_*` hook is a definable `@`-name.
-    assert!(parse("@mod M\n$ @compiler_interface_indexing : a -> @int -> a = \\t i = t").is_ok());
+    // A blessed interface is a declarable `@`-name, as a one-field `@struct`.
+    assert!(parse("@mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
+    // It is a TYPE, so a value signature on the same name is rejected.
+    assert!(err("@mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
     assert!(err("@mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
 }

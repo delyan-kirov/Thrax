@@ -7,8 +7,8 @@
 #       a sequence one cell at a time, and a fixed-arity `[a, b]` matches a
 #       sequence of exactly that length. The second half runs the same surface
 #       on CORE's cons `List`, which is not a compiler type: it gets all of it
-#       from three overloads (`@compiler_interface_sequence_literal`, `(::)`,
-#       `@compiler_interface_sequence_view`), the same three any type of your
+#       from three instances (`@ISeqLit`, `ICons`, `@ISeqView`), the same three any
+#       type of your
 #       own would write.
 
 $ sum : @vec @int -> @int = \xs =

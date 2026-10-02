@@ -1,5 +1,10 @@
 # Interface intrinsics: work report
 
+> **Superseded spelling.** Issue #213 removed overloading, so this family is now a
+> set of blessed interface TYPES (`@IRange`, `@IIndex`, ...) whose single field the
+> compiler projects. See `documentation/interfaces.md` and Stage 6 of
+> `literal-and-interface-intrinsics.md`. This report is kept as written.
+
 A record of what was built for the `@compiler_interface_*` overloadable-hook effort
 (design in `literal-and-interface-intrinsics.md`), plus the design decisions taken
 along the way. Everything below is landed on the `type-intrinsics` branch, built and

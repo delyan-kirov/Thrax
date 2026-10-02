@@ -344,9 +344,10 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
         | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => 2,
-        "^" | "==" | "<" | ">" | "<=" | ">=" | "++" | "@array_get"
+        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
+        | "@slt" => 2,
+        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@tensor_slice" | "@tensor_index_axis" => 3,
@@ -361,10 +362,9 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
 /// argument before pushing it onto a builtin's operand list).
 pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
     match name {
-        "^" => arith(&a[0], &a[1]),
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" => arith_intrinsic(name, &a[0], &a[1]),
+        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" | "@f32pow" => arith_intrinsic(name, &a[0], &a[1]),
         "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => {
             compare_intrinsic(name, &a[0], &a[1])
         }
@@ -380,7 +380,9 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         },
         "==" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
         "<" | ">" | "<=" | ">=" => compare(name, &a[0], &a[1]),
-        "++" => concat(&a[0], &a[1]),
+        // `++` itself is a CORE function over the `ICat` interface now; `@acat` is the
+        // byte-buffer primitive its `@str` / `@array` instances bottom out on.
+        "++" | "@acat" => concat(&a[0], &a[1]),
         // Suspend a lazy slot. The argument is the nullary closure lowering built
         // around the slot's expression; `force` runs it.
         "@delay" => Ok(Value::Thunk(a[0].clone())),
@@ -845,35 +847,8 @@ fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
     }
 }
 
-/// The `^` (power) operator: integer power (both operands `Int`) or `powf`. Still
-/// a builtin because it has no single intrinsic (`+ - * / %` moved to CORE.thx).
-fn arith<'p>(x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
-    let ints = {
-        let (bx, by) = (x.borrow(), y.borrow());
-        match (&*bx, &*by) {
-            (Value::Int(a), Value::Int(b)) => Some((*a, *b)),
-            _ => None,
-        }
-    };
-    if let Some((a, b)) = ints {
-        if b < 0 {
-            return Err(fault("negative exponent"));
-        }
-        return Ok(Value::Int(int_pow(a, b)));
-    }
-    Ok(Value::Real(as_f64(x)?.powf(as_f64(y)?)))
-}
-
-fn int_pow(base: i64, exp: i64) -> i64 {
-    let mut acc: i64 = 1;
-    for _ in 0..exp {
-        acc = acc.wrapping_mul(base);
-    }
-    acc
-}
-
 /// A monomorphic arithmetic intrinsic (`@iadd`, `@fmul`, ...). Each assumes its
-/// operands already carry the right runtime tag (the operator overloads that
+/// operands already carry the right runtime tag (the operator instances that
 /// call these are type-directed), so an `@i*` op reads two integers and an `@f*`
 /// op two reals. Integer add/sub/mul wrap on overflow, matching the C backend.
 /// The `@f32*` family rounds both operands and the result to single precision and
@@ -896,16 +871,18 @@ fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'
         "@fmul" => Ok(Value::Real(as_f64(x)? * as_f64(y)?)),
         "@fdiv" => Ok(Value::Real(as_f64(x)? / as_f64(y)?)),
         "@fmod" => Ok(Value::Real(as_f64(x)? % as_f64(y)?)),
+        "@fpow" => Ok(Value::Real(as_f64(x)?.powf(as_f64(y)?))),
         "@f32add" => Ok(Value::Real32(as_f32(x)? + as_f32(y)?)),
         "@f32sub" => Ok(Value::Real32(as_f32(x)? - as_f32(y)?)),
         "@f32mul" => Ok(Value::Real32(as_f32(x)? * as_f32(y)?)),
         "@f32div" => Ok(Value::Real32(as_f32(x)? / as_f32(y)?)),
         "@f32mod" => Ok(Value::Real32(as_f32(x)? % as_f32(y)?)),
+        "@f32pow" => Ok(Value::Real32(as_f32(x)?.powf(as_f32(y)?))),
         _ => unreachable!("arith_intrinsic called with `{name}`"),
     }
 }
 
-/// A monomorphic comparison intrinsic, the primitive the comparison overloads are
+/// A monomorphic comparison intrinsic, the primitive the comparison instances are
 /// built on. `@u*` reads the same i64 bits as unsigned, so a `Nat` past
 /// `i64::MAX` orders correctly.
 fn compare_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {

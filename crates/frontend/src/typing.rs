@@ -16,13 +16,14 @@
 //! components that depend on it (let-polymorphism).
 //!
 //! Structs, unions, aliases, and their generic parameters are registered up
-//! front by `Checker::register_types`. Overloaded names (built-in arithmetic,
-//! the `array_*` primitives, and any user name defined several times) are
-//! resolved at each use site by trial unification against the argument and result
-//! types; ambiguous uses are deferred and solved to a fixpoint at the definition
-//! boundary. Definition bodies are checked against their signatures (bidirectional
-//! checking); the monomorphism restriction keeps overload-constrained variables
-//! from being generalized early.
+//! front by `Checker::register_types`. A name has ONE definition, so nothing is
+//! resolved from argument types except an operation name several effects declare.
+//! Polymorphism over types goes through interfaces: a definition's leading `@ctx`
+//! parameter is resolved BY TYPE at the definition boundary, against the locals in
+//! scope and then a flat index of the instances in scope (see
+//! `documentation/interfaces.md`). Definition bodies are checked against their
+//! signatures (bidirectional checking); the monomorphism restriction keeps a
+//! variable a pending requirement still constrains from being generalized early.
 
 pub mod data;
 pub mod engine;
@@ -32,9 +33,9 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::lowering::ImplicitArg;
+use crate::lowering::{CtxVal, HookImpl};
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
+    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
     SliceSlot, Ty, Variance,
 };
 use utilities::Aol;
@@ -111,13 +112,11 @@ pub struct Checker<'a> {
     /// scheme. Used to type a handler clause head, which cannot be resolved by
     /// inference alone.
     effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
-    /// Names with more than one candidate (built-in arithmetic, any user name
-    /// defined several times, and same-named functions imported from several
-    /// modules). Each candidate carries its source module so a resolved use can be
-    /// lowered to a qualified `MOD.name`.
+    /// Operation names several EFFECTS declare, mapped to one candidate per effect.
+    /// The only argument-type-driven selection left (see [`Cand`]).
     overloads: HashMap<&'a str, Vec<Cand<'a>>>,
-    /// Overload uses that were ambiguous when first seen. Solved to a fixpoint at
-    /// each definition boundary.
+    /// Effect-operation uses that were ambiguous when first seen. Solved to a
+    /// fixpoint at each definition boundary.
     pending: Vec<Pending<'a>>,
     /// Names this module defines itself, so a use of one is NOT rewritten to an
     /// imported module's copy.
@@ -125,56 +124,50 @@ pub struct Checker<'a> {
     /// Single imported values, `name -> module`, so a bare use lowers to the
     /// owning module even when another loaded module defines the same name.
     value_module: HashMap<&'a str, &'a str>,
-    /// Single imported values retained as overload candidates, so a LOCAL definition
-    /// of the same name extends the imported one into an overload set (rather than
-    /// shadowing it). This is how a module adds an `index` overload for its own type.
-    imported_singles: HashMap<&'a str, Cand<'a>>,
+    /// Names more than one import brings in, mapped to the modules that export
+    /// them. A bare use is an error naming the owners; `Module.name` still works.
+    ambiguous_imports: HashMap<&'a str, Vec<&'a str>>,
     /// Bare-call sites resolved to a specific module. Lowering rewrites the
     /// referenced `Expr::Var` to `MOD.name`.
     resolved_calls: HashMap<Aol<Expr>, &'a str>,
-    /// Overloaded-call sites whose winning module defines the name more than once,
-    /// so `MOD.name` alone would collide. Maps the site to the type-mangled bare
-    /// name (`name#sig`) lowering must emit instead. The definition side gets the
-    /// matching key in [`Self::def_keys`].
-    overload_calls: HashMap<Aol<Expr>, String>,
-    /// Overloaded definitions that share their name with another definition in the
-    /// same module, keyed by the def's body handle. The value is the type-mangled
-    /// bare name lowering assigns the global so its several overloads stay distinct.
-    def_keys: HashMap<Aol<Expr>, String>,
-    /// Names this module defines more than once (same-module overloads), which
-    /// therefore need type-mangling to keep the globals apart.
-    overloaded_multi: HashSet<&'a str>,
-    /// Top-level definitions carrying `@ctx` implicit parameters, by name. A use
-    /// site resolves each implicit by name against the current scope and records
-    /// the result in [`Self::implicit_args`]; lowering injects them as leading
-    /// arguments. Populated up front (own module) so resolution is order-independent,
-    /// and extended from imports.
-    global_implicits: HashMap<&'a str, GlobImpl>,
-    /// `@ctx`-bearing definitions keyed by `(module, name)`, so a QUALIFIED use
-    /// (`MOD.f`) can plan its implicits too (the bare-keyed `global_implicits` can
-    /// collide when two modules define the same `@ctx` name). Populated for this
-    /// module's own defs and every import.
-    qualified_implicits: HashMap<(&'a str, &'a str), GlobImpl>,
-    /// This module's own `@ctx`-bearing definitions, re-exported to importers.
-    own_implicits: Vec<(&'a str, GlobImpl)>,
-    /// Each use site of an implicit-bearing function, mapped to the resolved
-    /// implicit arguments (declaration order) lowering injects ahead of the
-    /// explicit ones.
-    implicit_args: HashMap<Aol<Expr>, Vec<ImplicitArg>>,
-    /// Implicit-argument slots being assembled: per site, one entry per implicit,
-    /// `Some` once resolved. A local binder or explicit override fills its slot
-    /// immediately; a global/overloaded provider is deferred (its slot stays `None`
-    /// until the requirement type is pinned). Completed sites move to
-    /// [`Self::implicit_args`].
-    implicit_slots: HashMap<Aol<Expr>, Vec<Option<ImplicitArg>>>,
-    /// Deferred global/overload implicit resolutions, solved at each definition
-    /// boundary once inference has pinned the requirement's type variables.
-    implicit_pending: Vec<PendingImpl<'a>>,
-    /// Explicit `@ctx` overrides keyed by the head-function reference site they
-    /// apply to (`callee @ctx ...`). Consumed when that reference resolves its
-    /// implicits, so given values override by-name resolution; `..` (the bool)
-    /// fills the unmentioned implicits from scope.
-    ctx_overrides: HashMap<Aol<Expr>, (Vec<FieldInit>, bool)>,
+    /// The context parameter type of each context-bearing definition in this
+    /// module, sharing its variables with the exposed type, so a printed signature
+    /// can show the `@ctx` prefix.
+    decl_ctx: HashMap<&'a str, Type>,
+    /// Top-level definitions whose signature opens with a `@ctx` context
+    /// parameter, by name, as the signature's AST handle (the context type is its
+    /// first `from`). A use site plans the context from it and records the resolved
+    /// value in [`Self::ctx_args`]; lowering injects it as a leading argument.
+    /// Populated up front (own module) so resolution is order-independent, and
+    /// extended from imports.
+    global_ctx: HashMap<&'a str, Aol<Ty>>,
+    /// The same, keyed by `(module, name)` so a QUALIFIED use (`MOD.f`) plans its
+    /// context too (the bare-keyed map collides when two modules define the name).
+    qualified_ctx: HashMap<(&'a str, &'a str), Aol<Ty>>,
+    /// This module's own context-bearing definitions, re-exported to importers.
+    own_ctx: Vec<(&'a str, Aol<Ty>)>,
+    /// Each use site of a context-bearing function, mapped to the resolved context
+    /// value lowering injects ahead of the explicit arguments.
+    ctx_args: HashMap<Aol<Expr>, CtxVal>,
+    /// Context resolutions deferred to the enclosing definition's boundary, where
+    /// inference has pinned the requirement's type variables.
+    ctx_pending: Vec<PendingCtx<'a>>,
+    /// The elaborated signature of the definition currently being checked. Its type
+    /// variables are the caller's to choose, so context resolution may not bind
+    /// them: a `$ g : a -> @str = \x = show x` must declare the context rather than
+    /// have `a` silently specialized to the one instance that happens to exist. The
+    /// signature is kept as a type (not a variable set) because unification may
+    /// point its variables at others, and zonking at resolution time follows that.
+    current_sig: Option<Type>,
+    /// Explicit `(@ctx e)` arguments, keyed by the head reference site they apply
+    /// to. Consumed when that reference plans its context.
+    ctx_override: HashMap<Aol<Expr>, Aol<Expr>>,
+    /// Every global whose type's head is a declared nominal type, keyed by that
+    /// head's name: the candidates a context requirement searches. Implementing an
+    /// interface is just defining a value of its type, so there is nothing to mark.
+    instances: HashMap<String, Vec<Inst<'a>>>,
+    /// This module's own instances, re-exported to importers.
+    own_instances: Vec<(&'a str, Inst<'a>)>,
     /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
@@ -185,7 +178,6 @@ pub struct Checker<'a> {
     numeric: Vec<(Type, Span)>,
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
-    own_overloads: Vec<(&'a str, Vec<OverloadExport<'a>>)>,
     own_type_names: Vec<&'a str>,
     /// Names declared after a `$ @private` marker: defined and usable within this
     /// module, but not exported, so no importer can bind or qualify them.
@@ -196,7 +188,7 @@ pub struct Checker<'a> {
     imported_private: HashMap<&'a str, HashSet<&'a str>>,
     /// Value schemes pulled in from imports (with their source module), finalized
     /// once.
-    imported: HashMap<&'a str, Vec<Cand<'a>>>,
+    imported: HashMap<&'a str, Vec<(Type, &'a str)>>,
     /// Imported names reachable qualified as `MOD.name`.
     qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
     module_name: &'a str,
@@ -218,17 +210,20 @@ pub struct Checker<'a> {
     /// mapped to the resolved hook's `(owning module, emitted name)`. Lowering wraps
     /// the raw payload term in a call to this hook; an unrecorded literal folds to the
     /// plain built-in constant (no hook, no conversion).
-    literal_hooks: HashMap<Aol<Expr>, (Option<&'a str>, String)>,
+    literal_hooks: HashMap<Aol<Expr>, HookImpl>,
+    /// Blessed-interface VALUE sites (the `@IIndex` / `@IImagLit` head a desugar
+    /// emits), mapped to the single field lowering projects off the instance that
+    /// `ctx_args` records for the same site.
+    blessed_sites: HashMap<Aol<Expr>, String>,
     /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
     /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
     /// building the literal into the user type (build hook) and comparing it against
     /// the scrutinee (equality hook), instead of the built-in `==` on a primitive.
-    literal_pattern_hooks:
-        HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))>,
+    literal_pattern_hooks: HashMap<Aol<Pattern>, (HookImpl, HookImpl)>,
     /// Sequence PATTERN sites (`is [a, b, ..rest]`, `is h :: t`, `is []`) whose
     /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
     /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
-    sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<&'a str>, String)>,
+    sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
@@ -258,15 +253,6 @@ pub struct Checker<'a> {
     /// type variable is a lowercase name, so an unknown capitalized name is a
     /// typo, surfaced at the end of the check.
     unknown_type: Option<Diagnostic>,
-    /// The `@ctx` implicit dictionaries of the definition currently being checked
-    /// whose name is DUPLICATED (a generic `to_string : a -> @str` and `to_string :
-    /// b -> @str` both), keyed by name to `(leading-param slot, type)`. A body use
-    /// of such a name resolves by type among these (plus any global overloads).
-    /// Distinct-named implicits are ordinary scope binders and are not listed here.
-    current_dicts: HashMap<&'a str, Vec<(usize, Type)>>,
-    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
-    /// leading-parameter slot. Lowering rewrites the reference to that parameter.
-    dict_calls: HashMap<Aol<Expr>, usize>,
     /// Set during a metaprogram-expansion round (`$ @e` codegen not yet run): an
     /// unbound value name is treated as a fresh type variable rather than an error,
     /// so a module that forward-references an about-to-be-injected definition still
@@ -279,83 +265,61 @@ pub struct Checker<'a> {
     open_effects: bool,
 }
 
-/// One candidate of an overloaded name: its type and, for an imported one, the
-/// module that owns it (`None` for a built-in or a definition in this module).
+/// One candidate of an operation name that several EFFECTS declare (`ask` in both
+/// `Reader` and `Config`). This is the one place left that picks a definition from
+/// argument types: values are never overloaded, a name has one definition.
 #[derive(Clone)]
 struct Cand<'a> {
     ty: Type,
     module: Option<&'a str>,
-    /// The `@ctx` implicit requirements this candidate carries, each `(name, req
-    /// type)` sharing `ty`'s generalized variables. Non-empty only for an
-    /// overloaded definition with implicits (a generic `to_string : Box t -> @str
-    /// @ctx to_string : t -> @str`), so a call resolving to it plans the dictionary.
-    implicits: Vec<(&'a str, Type)>,
-    /// For a candidate that is a LOCAL `@ctx` dictionary (a same-named implicit
-    /// parameter of the definition currently being checked, resolved by type),
-    /// the leading-parameter slot it occupies. Lowering references that parameter
-    /// instead of a global. `None` for an ordinary global/imported candidate.
-    dict_slot: Option<usize>,
-    /// A last-resort candidate, considered only when no ordinary one resolves.
-    /// The comparison built-ins are the only such candidates: `a == b` prefers a
-    /// per-type overload (CORE's, or a user's own on a custom type) and reaches
-    /// the generic structural built-in only when none matches. Without the
-    /// ranking a generic candidate would simply make every use ambiguous, since
-    /// overload resolution has no most-specific-wins rule.
-    fallback: bool,
+    _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> Cand<'a> {
-    /// A built-in or effect-operation candidate, owned by no module (never
-    /// rewritten to a qualified reference).
+    /// An effect-operation candidate, owned by no module (never rewritten to a
+    /// qualified reference).
     fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None, fallback: false }
-    }
-    /// A built-in candidate that only applies where nothing else does.
-    fn fallback(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new(), dict_slot: None, fallback: true }
-    }
-    fn from(ty: Type, module: Option<&'a str>) -> Cand<'a> {
-        Cand { ty, module, implicits: Vec::new(), dict_slot: None, fallback: false }
-    }
-    fn with_implicits(ty: Type, module: Option<&'a str>, implicits: Vec<(&'a str, Type)>) -> Cand<'a> {
-        Cand { ty, module, implicits, dict_slot: None, fallback: false }
-    }
-    /// A local `@ctx` dictionary candidate at leading-parameter slot `slot`.
-    fn dict(ty: Type, slot: usize) -> Cand<'a> {
-        Cand { ty, module: None, implicits: Vec::new(), dict_slot: Some(slot), fallback: false }
+        Cand { ty, module: None, _marker: std::marker::PhantomData }
     }
 }
 
-/// One overloaded candidate exported for import by other modules: its signature
-/// scheme and any `@ctx` implicit requirements (sharing the scheme's variables).
-/// Carrying the requirements across the import boundary lets a generic instance
-/// (a derived `to_string : Box t -> @str  @ctx to_string : t -> @str`) plan its
-/// dictionary when called from another module.
+/// One candidate value for a context requirement: a global whose type's head is
+/// the requirement's head constructor. `bundle` packs its exposed type and, when
+/// the instance itself takes a context, that requirement, generalized together so
+/// instantiating the bundle keeps their variables aligned.
 #[derive(Clone)]
-struct OverloadExport<'a> {
+struct Inst<'a> {
+    /// The global's emitted name: the source name, or the type-mangled one when it
+    /// shares its name with another definition in the same module.
+    name: String,
+    module: Option<&'a str>,
+    bundle: Type,
+    has_ctx: bool,
+}
+
+/// One binder in scope that could satisfy a context requirement. `index` is set
+/// when the binder holds a BUNDLE of contexts and this is one component of it, so
+/// the resolved value is `name.index`.
+#[derive(Clone)]
+struct CtxLocal<'a> {
+    depth: usize,
+    name: &'a str,
     ty: Type,
-    implicits: Vec<(&'a str, Type)>,
+    index: Option<usize>,
 }
 
-/// A `@ctx`-bearing definition's metadata: its (arrow) signature and the implicit
-/// parameter declarations. Both are AST handles into the shared `Ast`, so they
-/// stay valid across modules. Instantiating the signature and the requirement
-/// types with one shared type-variable map keeps their variables aligned.
-#[derive(Clone)]
-struct GlobImpl {
-    sig: Aol<Ty>,
-    decls: Vec<FieldDecl>,
-}
-
-/// A deferred implicit resolution: one requirement of an implicit-bearing function
-/// whose provider is a global (so it needs the requirement type pinned first). The
-/// `site` and `idx` locate the slot in [`Checker::implicit_slots`] to fill.
-struct PendingImpl<'a> {
+/// A context resolution deferred to the enclosing definition's boundary, where the
+/// requirement's type variables are pinned.
+struct PendingCtx<'a> {
     site: Aol<Expr>,
-    idx: usize,
     fname: String,
-    implname: &'a str,
-    reqty: Type,
+    req: Type,
+    /// The enclosing definition's signature, whose variables resolution may not
+    /// bind (zonked at resolution time, so a variable chain is followed).
+    sig: Option<Type>,
+    /// Binders in scope at the use site that could satisfy the requirement. Captured
+    /// there because the scopes are gone by the time the boundary resolves.
+    locals: Vec<CtxLocal<'a>>,
 }
 
 /// A deferred overload use: its candidate set, the argument types, the fresh
@@ -394,22 +358,21 @@ impl<'a> Checker<'a> {
             pending: Vec::new(),
             local_defs: HashSet::new(),
             value_module: HashMap::new(),
-            imported_singles: HashMap::new(),
+            ambiguous_imports: HashMap::new(),
             resolved_calls: HashMap::new(),
-            overload_calls: HashMap::new(),
-            def_keys: HashMap::new(),
-            overloaded_multi: HashSet::new(),
-            global_implicits: HashMap::new(),
-            qualified_implicits: HashMap::new(),
-            own_implicits: Vec::new(),
-            implicit_args: HashMap::new(),
-            implicit_slots: HashMap::new(),
-            implicit_pending: Vec::new(),
-            ctx_overrides: HashMap::new(),
+            decl_ctx: HashMap::new(),
+            global_ctx: HashMap::new(),
+            qualified_ctx: HashMap::new(),
+            own_ctx: Vec::new(),
+            ctx_args: HashMap::new(),
+            ctx_pending: Vec::new(),
+            current_sig: None,
+            ctx_override: HashMap::new(),
+            instances: HashMap::new(),
+            own_instances: Vec::new(),
             pending_includes: HashMap::new(),
             numeric: Vec::new(),
             own_values: Vec::new(),
-            own_overloads: Vec::new(),
             own_type_names: Vec::new(),
             private_names: HashSet::new(),
             imported_private: HashMap::new(),
@@ -420,6 +383,7 @@ impl<'a> Checker<'a> {
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
             literal_hooks: HashMap::new(),
+            blessed_sites: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
             with_fields: HashMap::new(),
@@ -430,8 +394,6 @@ impl<'a> Checker<'a> {
             unknown_type: None,
             lenient: false,
             open_effects: false,
-            current_dicts: HashMap::new(),
-            dict_calls: HashMap::new(),
         };
         c.install_builtins();
         c
@@ -471,22 +433,24 @@ impl<'a> Checker<'a> {
     /// Literal sites a `@compiler_interface_*` construction hook builds into a user
     /// type, mapped to the hook's `(module, emitted name)`. Lowering wraps the raw
     /// payload term in a call to this hook.
-    pub fn literal_hooks(&self) -> &HashMap<Aol<Expr>, (Option<&'a str>, String)> {
+    pub fn literal_hooks(&self) -> &HashMap<Aol<Expr>, HookImpl> {
         &self.literal_hooks
+    }
+
+    /// Blessed-interface value sites, mapped to the field lowering projects.
+    pub fn blessed_sites(&self) -> &HashMap<Aol<Expr>, String> {
+        &self.blessed_sites
     }
 
     /// Literal pattern sites matched through a user type's construction + equality
     /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`.
-    #[allow(clippy::type_complexity)]
-    pub fn literal_pattern_hooks(
-        &self,
-    ) -> &HashMap<Aol<Pattern>, ((Option<&'a str>, String), (Option<&'a str>, String))> {
+    pub fn literal_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, (HookImpl, HookImpl)> {
         &self.literal_pattern_hooks
     }
 
     /// Sequence pattern sites matched through a user type's `sequence_view` hook,
     /// mapped to the hook's `(module, emitted name)`.
-    pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, (Option<&'a str>, String)> {
+    pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, HookImpl> {
         &self.sequence_pattern_hooks
     }
 
@@ -505,29 +469,11 @@ impl<'a> Checker<'a> {
         &self.resolved_calls
     }
 
-    /// Overloaded-call sites whose target needs a type-mangled name (its module
-    /// defines the name several times). Lowering emits the mapped bare name in
-    /// place of the source name; the qualifying module comes from `call_modules`.
-    pub fn overload_calls(&self) -> &HashMap<Aol<Expr>, String> {
-        &self.overload_calls
-    }
 
-    /// Same-module overloaded definitions, keyed by body handle, with the mangled
-    /// bare name lowering must give each global so the overloads stay distinct.
-    pub fn def_keys(&self) -> &HashMap<Aol<Expr>, String> {
-        &self.def_keys
-    }
-
-    /// Use sites resolved to a local `@ctx` dictionary parameter, mapped to its
-    /// leading-parameter slot. Lowering references that parameter (`@ctx$<slot>`).
-    pub fn dict_calls(&self) -> &HashMap<Aol<Expr>, usize> {
-        &self.dict_calls
-    }
-
-    /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
-    /// arguments lowering injects as leading arguments.
-    pub fn implicit_calls(&self) -> &HashMap<Aol<Expr>, Vec<ImplicitArg>> {
-        &self.implicit_args
+    /// Each use site of a context-bearing function, mapped to the resolved context
+    /// value lowering injects ahead of the explicit arguments.
+    pub fn ctx_calls(&self) -> &HashMap<Aol<Expr>, CtxVal> {
+        &self.ctx_args
     }
 
     /// The ordered field names each `with` expression binds, keyed by the `With`
@@ -709,12 +655,12 @@ impl<'a> Checker<'a> {
                 Item::Def {
                     name,
                     sig,
-                    implicits,
+                    ctx,
                     body,
                 } => Some(Def {
                     name: self.text(*name),
                     sig: *sig,
-                    implicits: self.ast.slice(*implicits).to_vec(),
+                    ctx: *ctx,
                     body: *body,
                 }),
                 _ => None,
@@ -723,153 +669,77 @@ impl<'a> Checker<'a> {
 
         self.local_defs = defs.iter().map(|d| d.name).collect();
 
-        // A name is overloaded if defined more than once here, or if it adds to an
-        // overload already imported.
-        let mut counts: HashMap<&'a str, usize> = HashMap::new();
+        // One name, one definition: a module may not define a name twice, since a
+        // name's type is its contract and two definitions would make it dishonest.
+        let mut seen: HashSet<&'a str> = HashSet::new();
         for d in &defs {
-            *counts.entry(d.name).or_insert(0) += 1;
-        }
-        let mut overloaded_names: HashSet<&'a str> = HashSet::new();
-        for d in &defs {
-            // Overloaded if defined more than once here, adds to an already-imported
-            // overload, or EXTENDS a single imported value of the same name. A
-            // A `@compiler_interface_*` interface hook is ALWAYS treated as an overload
-            // set (even a lone definition), so an implicit use site (a literal, a
-            // pattern, `.[..]`) can find its candidate uniformly via `hook_candidates`
-            // without a separate registry.
-            if counts[d.name] > 1
-                || self.overloads.contains_key(d.name)
-                || self.imported_singles.contains_key(d.name)
-                || is_interface_hook(d.name)
-            {
-                overloaded_names.insert(d.name);
-            }
-        }
-        // Seed the overload set of each name that extends a single imported value
-        // with that imported candidate, so both the import and the local definition
-        // become candidates (the local one is added by the seeding loop below).
-        for &name in &overloaded_names {
-            if let Some(cand) = self.imported_singles.get(name).cloned() {
-                self.overloads.entry(name).or_default().push(cand);
-            }
-        }
-        let is_overloaded = |name: &str| overloaded_names.contains(name);
-
-        // Names defined several times in THIS module need type-mangled globals so
-        // the overloads do not collide under a single `MOD.name` key.
-        self.overloaded_multi = defs
-            .iter()
-            .filter(|d| counts[d.name] > 1)
-            .map(|d| d.name)
-            .collect();
-
-        // Register `@ctx`-bearing definitions up front so a use anywhere in the
-        // module resolves them regardless of source order. A `@ctx` requires a
-        // signature (the parser only accepts it after one) and is not allowed on an
-        // overloaded name in this version.
-        for d in &defs {
-            if d.implicits.is_empty() {
-                continue;
-            }
-            if d.sig.is_none() {
+            if !seen.insert(d.name) {
                 return Err(diag!(
                     Code::TypeMismatch, Span::at(0), 0,
-                    "`{}` needs a type signature to declare `@ctx` implicit parameters",
-                    d.name
+                    "`{}` is defined twice in module `{}`", d.name, self.module_name;
+                    note: "a name has one type; to give an operation several types, \
+                           declare an interface and define one instance per type"
                 ));
             }
-            // An overloaded name carries its implicits on the winning candidate
-            // (planned at the call site once the overload resolves), not in the
-            // by-name `global_implicits` table (which assumes a single provider).
-            // The candidate is built in the overload-seeding loop below.
-            if is_overloaded(d.name) {
+        }
+        // A local definition SHADOWS an imported value of the same name, so the
+        // import's binding, owner, and context registration all give way to it.
+        for d in &defs {
+            self.value_module.remove(d.name);
+            self.global_ctx.remove(d.name);
+            self.ambiguous_imports.remove(d.name);
+        }
+
+        // Register context-bearing definitions up front so a use anywhere in the
+        // module resolves them regardless of source order.
+        for d in &defs {
+            let Some(ctx) = d.ctx else { continue };
+            self.check_ctx_head(d.name, ctx)?;
+            let sig = d.sig.expect("a `@ctx` is parsed as part of a signature");
+            self.own_ctx.push((d.name, sig));
+            self.qualified_ctx.insert((self.module_name, d.name), sig);
+            self.global_ctx.insert(d.name, sig);
+        }
+
+        // Index every global whose type's head is a declared nominal type: these are
+        // the candidates a context requirement searches.
+        for d in &defs {
+            let Some(sig) = d.sig else { continue };
+            let (exposed, ctx) = self.scheme_and_ctx(sig, d.ctx.is_some());
+            let Some(head) = self.ctx_head(self.eng.zonk(exposed)) else {
+                continue;
+            };
+            if !self.is_nominal(head) {
                 continue;
             }
-            let sig = d.sig.expect("checked above");
-            let gi = GlobImpl {
-                sig,
-                decls: d.implicits.clone(),
+            let bundle = self.instance_bundle(exposed, ctx);
+            let inst = Inst {
+                name: d.name.to_string(),
+                module: Some(self.module_name),
+                bundle,
+                has_ctx: ctx.is_some(),
             };
-            self.own_implicits.push((d.name, gi.clone()));
-            self.qualified_implicits
-                .insert((self.module_name, d.name), gi.clone());
-            self.global_implicits.insert(d.name, gi);
+            let key = self.eng.types.name(head).to_string();
+            self.own_instances.push((d.name, inst.clone()));
+            self.instances.entry(key).or_default().push(inst);
         }
 
-        // Seed each overloaded name's candidates from its declared signatures, and
-        // record the mangled global name for a same-module overload (so its several
-        // definitions stay distinct at runtime).
-        for d in &defs {
-            if is_overloaded(d.name) {
-                if let Some(sig) = d.sig {
-                    let module = self.module_name;
-                    // Generalize the signature and any `@ctx` requirement types
-                    // TOGETHER so they share type variables (`Box t` and `t -> @str`
-                    // share `t`); the candidate carries the requirements so a call
-                    // resolving to it plans the dictionary.
-                    let (scheme, implicits) = self.scheme_with_implicits(sig, &d.implicits);
-                    if counts[d.name] > 1 {
-                        self.def_keys.insert(d.body, overload_key(&self.eng.types, d.name, scheme));
-                    }
-                    self.overloads
-                        .entry(d.name)
-                        .or_default()
-                        .push(Cand::with_implicits(scheme, Some(module), implicits));
-                }
-            }
-        }
-
-        let singles: Vec<Def<'a>> = defs
-            .iter()
-            .filter(|d| !is_overloaded(d.name))
-            .cloned()
-            .collect();
-        let single_index: HashMap<&'a str, usize> = singles
+        let single_index: HashMap<&'a str, usize> = defs
             .iter()
             .enumerate()
             .map(|(i, d)| (d.name, i))
             .collect();
-        let graph = dependency_graph(self.ast, &singles, &single_index);
+        let graph = dependency_graph(self.ast, &defs, &single_index);
 
         let mut types: HashMap<&'a str, Type> = HashMap::new();
         for component in utilities::scc::scc(&graph) {
-            self.check_component(&component, &singles, &mut types)?;
+            self.check_component(&component, &defs, &mut types)?;
         }
 
-        let mut overloaded_out = Vec::new();
-        for d in &defs {
-            if is_overloaded(d.name) {
-                let ty = self.check_overloaded_def(d)?;
-                overloaded_out.push((d.name, ty));
-            }
-        }
-
-        let mut out: Vec<(&'a str, Type)> = defs
-            .iter()
-            .filter(|d| !is_overloaded(d.name))
-            .map(|d| (d.name, types[d.name]))
-            .collect();
+        let out: Vec<(&'a str, Type)> =
+            defs.iter().map(|d| (d.name, types[d.name])).collect();
 
         self.own_values = out.clone();
-        // Export this module's own overloaded candidates WITH their `@ctx` implicit
-        // requirements (from the seeded `Cand`s), so an importer can plan a generic
-        // instance's dictionary. Own candidates carry `module == self.module_name`;
-        // built-in (`None`) and imported (other module) candidates are excluded.
-        let module = self.module_name;
-        let mut own_ov: HashMap<&'a str, Vec<OverloadExport<'a>>> = HashMap::new();
-        for (name, cands) in &self.overloads {
-            for c in cands {
-                if c.module == Some(module) {
-                    own_ov.entry(name).or_default().push(OverloadExport {
-                        ty: c.ty,
-                        implicits: c.implicits.clone(),
-                    });
-                }
-            }
-        }
-        self.own_overloads = own_ov.into_iter().collect();
-
-        out.extend(overloaded_out);
         if let Some(d) = self.unknown_type.take() {
             return Err(d);
         }
@@ -909,6 +779,10 @@ impl<'a> Checker<'a> {
                 self.eng.types.row_empty()
             };
             self.infer(e)?;
+            // A directive is its own boundary: whatever it planned (an overload, a
+            // context) is resolved here, since no definition encloses it.
+            self.solve_pending()?;
+            self.resolve_pending_ctx()?;
         }
         Ok(out)
     }
@@ -920,16 +794,6 @@ impl<'a> Checker<'a> {
     /// bare names (a program's own `sqrt` is not libm's).
     pub fn import_qualified(&mut self, other: &Checker<'a>) {
         let module = other.module_name;
-        for (name, cands) in &other.own_overloads {
-            if other.private_names.contains(name) {
-                continue;
-            }
-            let qualified: Vec<Type> = cands.iter().map(|c| self.import_scheme(c.ty)).collect();
-            self.qualified
-                .entry(module)
-                .or_default()
-                .insert(name, qualified);
-        }
         for (name, scheme) in &other.own_values {
             if other.private_names.contains(name) {
                 continue;
@@ -949,16 +813,35 @@ impl<'a> Checker<'a> {
                 .or_default()
                 .extend(other.private_names.iter().copied());
         }
-        // Bring the exporter's `@ctx`-bearing functions in, so a bare use of an
-        // imported one resolves its implicits (the signature/decl handles live in
-        // the shared `Ast`). A qualified use (`MOD.f`) does not yet inject them.
-        for (name, gi) in &other.own_implicits {
+        // Bring the exporter's context-bearing functions in, so a bare or qualified
+        // use of an imported one plans its context (the signature handle lives in
+        // the shared `Ast`).
+        for (name, sig) in &other.own_ctx {
             if other.private_names.contains(name) {
                 continue;
             }
-            self.qualified_implicits
-                .insert((other.module_name, name), gi.clone());
-            self.global_implicits.insert(name, gi.clone());
+            self.qualified_ctx.insert((other.module_name, name), *sig);
+            self.global_ctx.insert(name, *sig);
+        }
+        // Bring the exporter's instances in, translating their packed types into
+        // this module's engine so their variables stay generalized.
+        for (name, inst) in &other.own_instances {
+            if other.private_names.contains(name) {
+                continue;
+            }
+            let mut map = HashMap::new();
+            let bundle = self.import_ty(inst.bundle, &mut map);
+            self.eng.note_tensor_sizes(bundle);
+            let Some(head) = self.ctx_head(self.eng.zonk(self.bundle_parts(bundle).0)) else {
+                continue;
+            };
+            let key = self.eng.types.name(head).to_string();
+            self.instances.entry(key).or_default().push(Inst {
+                name: inst.name.clone(),
+                module: Some(other.module_name),
+                bundle,
+                has_ctx: inst.has_ctx,
+            });
         }
         for &name in &other.own_type_names {
             if other.private_names.contains(name) {
@@ -975,27 +858,6 @@ impl<'a> Checker<'a> {
             }
         }
         let module = other.module_name;
-        for (name, cands) in &other.own_overloads {
-            if other.private_names.contains(name) {
-                continue;
-            }
-            let mut qualified = Vec::with_capacity(cands.len());
-            for c in cands {
-                // Import the signature and its `@ctx` requirement types with ONE
-                // shared map so their type variables stay aligned; the candidate
-                // keeps its implicits, so a cross-module call plans the dictionary.
-                let (ty, implicits) = self.import_export(c);
-                self.imported
-                    .entry(name)
-                    .or_default()
-                    .push(Cand::with_implicits(ty, Some(module), implicits));
-                qualified.push(self.import_scheme(c.ty));
-            }
-            self.qualified
-                .entry(module)
-                .or_default()
-                .insert(name, qualified);
-        }
         for (name, scheme) in &other.own_values {
             if other.private_names.contains(name) {
                 continue;
@@ -1004,7 +866,7 @@ impl<'a> Checker<'a> {
             self.imported
                 .entry(name)
                 .or_default()
-                .push(Cand::from(unqualified, Some(module)));
+                .push((unqualified, module));
             let qualified = self.import_scheme(*scheme);
             self.qualified
                 .entry(module)
@@ -1016,19 +878,18 @@ impl<'a> Checker<'a> {
     fn finalize_imports(&mut self) {
         let imported = std::mem::take(&mut self.imported);
         for (name, mut cands) in imported {
-            if let Some(existing) = self.overloads.get_mut(name) {
-                existing.extend(cands);
-            } else if cands.len() == 1 {
-                let cand = cands.pop().expect("one candidate");
-                if let Some(module) = cand.module {
-                    self.value_module.insert(name, module);
-                }
-                self.bind(name, cand.ty);
-                // Retained so a local definition of `name` promotes it to an
-                // overload (see the overloaded-name detection in `check_program`).
-                self.imported_singles.insert(name, cand);
+            if cands.len() == 1 {
+                let (ty, module) = cands.pop().expect("one candidate");
+                self.value_module.insert(name, module);
+                self.bind(name, ty);
             } else {
-                self.overloads.insert(name, cands);
+                // Two modules export the same name. Global scope is flat, so the bare
+                // name cannot pick one; it is an error at the USE site (with the
+                // qualified form as the escape), not here, because a module may import
+                // both and reference neither bare.
+                let mut owners: Vec<&'a str> = cands.iter().map(|(_, m)| *m).collect();
+                owners.sort_unstable();
+                self.ambiguous_imports.insert(name, owners);
             }
         }
     }
@@ -1040,26 +901,6 @@ impl<'a> Checker<'a> {
         // tensor-size variables so an imported `[n]a -> ...` still kind-checks.
         self.eng.note_tensor_sizes(imported);
         imported
-    }
-
-    /// Import an exported overload candidate: its signature and each `@ctx`
-    /// requirement type, sharing ONE substitution map so a variable common to the
-    /// signature and a requirement (the `t` in `Box t` / `t -> @str`) stays one
-    /// variable after import.
-    fn import_export(&mut self, c: &OverloadExport<'a>) -> (Type, Vec<(&'a str, Type)>) {
-        let mut map = HashMap::new();
-        let ty = self.import_ty(c.ty, &mut map);
-        self.eng.note_tensor_sizes(ty);
-        let implicits = c
-            .implicits
-            .iter()
-            .map(|(n, t)| {
-                let it = self.import_ty(*t, &mut map);
-                self.eng.note_tensor_sizes(it);
-                (*n, it)
-            })
-            .collect();
-        (ty, implicits)
     }
 
     fn import_ty(&mut self, ty: Type, map: &mut HashMap<VarId, Type>) -> Type {
@@ -1125,37 +966,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_overloaded_def(&mut self, def: &Def<'a>) -> Result<Type> {
-        self.ambient = self.top_level_ambient();
-        self.eng.enter_level();
-        let result = if def.sig.is_some() {
-            let fresh = self.eng.fresh();
-            self.check_def_body(def, fresh)?;
-            fresh
-        } else {
-            let inferred = self.infer(def.body)?;
-            let module = self.module_name;
-            self.overloads
-                .entry(def.name)
-                .or_default()
-                .push(Cand::from(inferred, Some(module)));
-            inferred
-        };
-        self.solve_pending()?;
-        self.resolve_pending_implicits()?;
-        self.eng.leave_level();
-        let mono = self.pending_vars();
-        self.eng.generalize_except(result, &mono);
-        let zonked = self.eng.zonk(result);
-        // A same-module overload defined without a signature is seeded from its
-        // inferred type; the sig'd case is keyed at seeding time.
-        if def.sig.is_none() && self.overloaded_multi.contains(def.name) {
-            self.def_keys
-                .insert(def.body, overload_key(&self.eng.types, def.name, zonked));
-        }
-        Ok(zonked)
-    }
-
     fn scheme_of_sig(&mut self, sig: Aol<Ty>) -> Type {
         self.eng.enter_level();
         let mut tvars = HashMap::new();
@@ -1165,29 +975,25 @@ impl<'a> Checker<'a> {
         self.eng.zonk(ty)
     }
 
-    /// Generalize an overloaded definition's signature together with its `@ctx`
-    /// requirement types, so a variable shared between them (a `Box t` signature
-    /// and a `t -> @str` requirement) stays one `Generic`. Returns the signature
-    /// scheme and each `(implicit name, requirement scheme)`; instantiating them as
-    /// a bundle later keeps the shared variables aligned.
-    fn scheme_with_implicits(
-        &mut self,
-        sig: Aol<Ty>,
-        implicits: &[FieldDecl],
-    ) -> (Type, Vec<(&'a str, Type)>) {
+    /// Elaborate a signature into the type callers see and, when it opens with a
+    /// `@ctx` parameter, that parameter's type. Both are generalized together (as
+    /// one tuple) so a variable they share becomes the same `Generic` in each.
+    fn scheme_and_ctx(&mut self, sig: Aol<Ty>, has_ctx: bool) -> (Type, Option<Type>) {
         self.eng.enter_level();
         let mut tvars = HashMap::new();
-        let main = self.ty_of_ast(sig, &mut tvars);
-        let reqs: Vec<(&'a str, Type)> = implicits
-            .iter()
-            .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
-            .collect();
+        let full = self.ty_of_ast(sig, &mut tvars);
         self.eng.leave_level();
-        // Generalize the whole bundle at once (packed as a tuple) so a shared
-        // variable becomes the same `Generic` in the signature and the requirements.
-        let items: Vec<Type> = std::iter::once(main)
-            .chain(reqs.iter().map(|(_, t)| *t))
-            .collect();
+        let (ctx, exposed) = if has_ctx {
+            match self.eng.types.node(full) {
+                TypeNode::Arrow(from, to, _) => (Some(from), to),
+                // A `@ctx` signature is built as an arrow by the parser; an alias
+                // could still hide one, in which case there is nothing to strip.
+                _ => (None, full),
+            }
+        } else {
+            (None, full)
+        };
+        let items: Vec<Type> = std::iter::once(exposed).chain(ctx).collect();
         let bundle = self.eng.types.tuple(items);
         self.eng.generalize(bundle);
         let zonked = self.eng.zonk(bundle);
@@ -1195,13 +1001,85 @@ impl<'a> Checker<'a> {
             unreachable!("packed bundle stays a tuple");
         };
         let parts = self.eng.types.items(parts).to_vec();
-        let scheme = parts[0];
-        let reqs = reqs
-            .iter()
-            .enumerate()
-            .map(|(i, (n, _))| (*n, parts[i + 1]))
-            .collect();
-        (scheme, reqs)
+        (parts[0], parts.get(1).copied())
+    }
+
+    /// Elaborate a context-bearing signature at a USE site: fresh variables for
+    /// its type variables, split into the context requirement and the type the
+    /// caller applies. One map for the whole signature keeps the two aligned, so
+    /// `Ito_string t -> t -> @str` ties the requirement to the argument.
+    fn ctx_use_type(&mut self, sig: Aol<Ty>) -> (Type, Type) {
+        let mut tvars = HashMap::new();
+        let full = self.ty_of_ast(sig, &mut tvars);
+        match self.eng.types.node(full) {
+            TypeNode::Arrow(from, to, _) => (from, to),
+            _ => (full, full),
+        }
+    }
+
+    /// The module that owns a bare global name, so lowering emits a qualified
+    /// reference instead of a bare one (which the runtime would read as a builtin).
+    fn owner_of(&self, name: &str) -> Option<&'a str> {
+        if self.local_defs.contains(name) {
+            return Some(self.module_name);
+        }
+        self.value_module.get(name).copied()
+    }
+
+    /// Whether an expression is a literal whose type its construction hook decides
+    /// (so checking it against an expected type can build a user type instead).
+    fn is_literal(&self, e: Aol<Expr>) -> bool {
+        matches!(
+            self.node(e),
+            Expr::Int(_) | Expr::Real(_) | Expr::Str(_) | Expr::List(_)
+        )
+    }
+
+    /// Pack an instance's exposed type with its own context requirement, so one
+    /// instantiation keeps their variables aligned.
+    fn instance_bundle(&mut self, exposed: Type, ctx: Option<Type>) -> Type {
+        let items: Vec<Type> = std::iter::once(exposed).chain(ctx).collect();
+        self.eng.types.tuple(items)
+    }
+
+    /// A context parameter's type must be a declared nominal type applied to its
+    /// arguments. A bare variable or a base type would turn the search into "any
+    /// value of this type in scope", which is never what is meant, and the error
+    /// belongs at the declaration rather than at every call site.
+    fn check_ctx_head(&mut self, name: &str, ctx: Aol<Ty>) -> Result<()> {
+        let mut tvars = HashMap::new();
+        let ty = self.ty_of_ast(ctx, &mut tvars);
+        let zonked = self.eng.zonk(ty);
+        // A bundle of several contexts travels as a tuple; each component carries
+        // the same requirement.
+        let parts = match self.eng.types.node(zonked) {
+            TypeNode::Tuple(items) => self.eng.types.items(items).to_vec(),
+            _ => vec![zonked],
+        };
+        for part in parts {
+            let ok = self.ctx_head(part).is_some_and(|h| self.is_nominal(h));
+            if !ok {
+                let span = self.ast.ty_span(ctx).unwrap_or_else(|| Span::at(0));
+                return Err(diag!(
+                    Code::TypeMismatch, span, 0,
+                    "the `@ctx` parameter of `{name}` must be a declared type, not `{}`",
+                    self.show(part)
+                )
+                .with_note(
+                    "a context is found by its type, so it needs a named one; wrap it \
+                     in a `@struct` whose fields are the operations"
+                        .to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a type-constructor name is a declared struct or union (as opposed to
+    /// a base type like `@int` or an arrow).
+    fn is_nominal(&self, head: utilities::StrId) -> bool {
+        let name = self.eng.types.name(head).to_string();
+        self.structs.contains_key(name.as_str()) || self.unions.contains_key(name.as_str())
     }
 
     fn check_component(
@@ -1221,7 +1099,7 @@ impl<'a> Checker<'a> {
             self.check_def_body(&defs[i], *decl)?;
         }
         self.solve_pending()?;
-        self.resolve_pending_implicits()?;
+        self.resolve_pending_ctx()?;
         self.eng.leave_level();
         let mono = self.pending_vars();
         for (&i, decl) in component.iter().zip(&declared) {
@@ -1236,40 +1114,24 @@ impl<'a> Checker<'a> {
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
             let sig_ty = self.ty_of_ast(sig, &mut tvars);
+            // The body sees the context parameter (it binds it like any other
+            // leading parameter); callers do not, so the definition's own type is
+            // the signature with that parameter stripped.
+            let exposed = match (def.ctx, self.eng.types.node(sig_ty)) {
+                (Some(_), TypeNode::Arrow(from, to, _)) => {
+                    self.decl_ctx.insert(def.name, from);
+                    to
+                }
+                _ => sig_ty,
+            };
             self.eng.unify(
                 decl,
-                sig_ty,
+                exposed,
                 &format!("against the signature of `{}`", def.name),
             )?;
-            if def.implicits.is_empty() {
-                return self.check_body_against_sig(def.body, sig, sig_ty);
-            }
-            // Bind each `@ctx` implicit while checking the body, sharing `tvars`
-            // with the signature so their type variables line up (a `List a`
-            // signature and a `compare : a -> a -> Ordering` implicit share `a`).
-            // A DISTINCT-named implicit is an ordinary scope binder (resolved by
-            // name). A DUPLICATED name (one dictionary per type parameter, e.g. two
-            // `to_string`) instead joins `current_dicts`, so a body use resolves by
-            // type among the dictionaries plus any global overloads.
-            let mut counts: HashMap<&'a str, usize> = HashMap::new();
-            for d in &def.implicits {
-                *counts.entry(self.text(d.name)).or_insert(0) += 1;
-            }
-            self.enter_scope();
-            let mut dicts: HashMap<&'a str, Vec<(usize, Type)>> = HashMap::new();
-            for (slot, d) in def.implicits.iter().enumerate() {
-                let name = self.text(d.name);
-                let ty = self.ty_of_ast(d.ty, &mut tvars);
-                if counts[name] > 1 {
-                    dicts.entry(name).or_default().push((slot, ty));
-                } else {
-                    self.bind(name, ty);
-                }
-            }
-            let saved_dicts = std::mem::replace(&mut self.current_dicts, dicts);
+            let saved_sig = self.current_sig.replace(sig_ty);
             let r = self.check_body_against_sig(def.body, sig, sig_ty);
-            self.current_dicts = saved_dicts;
-            self.leave_scope();
+            self.current_sig = saved_sig;
             r
         } else {
             let inferred = self.infer(def.body)?;
@@ -1585,28 +1447,6 @@ impl<'a> Checker<'a> {
                 let arg = *arg;
                 self.check_cast(arg, expected)
             }
-            // A bare VALUE use of a duplicated `@ctx` dictionary (a nullary method
-            // like `empty : a` / `empty : b`) resolves by the EXPECTED type: when it
-            // is a bare type variable, select the dictionary whose type is exactly
-            // that variable. The application form is handled in `infer_app`.
-            Expr::Var { module: None, name }
-                if self.current_dicts.contains_key(self.text(*name))
-                    && !self.shadowed_locally(self.text(*name)) =>
-            {
-                let name = self.text(*name);
-                let dicts = self.current_dicts.get(name).cloned().unwrap_or_default();
-                let mut cands: Vec<Cand> = self.overloads.get(name).cloned().unwrap_or_default();
-                cands.extend(dicts.iter().map(|(slot, ty)| Cand::dict(*ty, *slot)));
-                if let Some(v) = self.bare_var_id(expected) {
-                    let narrowed: Vec<Cand> =
-                        cands.iter().filter(|c| self.type_is_var(c.ty, v)).cloned().collect();
-                    if !narrowed.is_empty() {
-                        cands = narrowed;
-                    }
-                }
-                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
-                self.eng.unify(got, expected, "against the expected type")
-            }
             // A bare reference to an overloaded name, with no argument types to
             // dispatch on (`(+)` passed as a value, `foldl (+) 0 xs`). The expected
             // type selects the overload, and the choice is recorded at this site so
@@ -1764,6 +1604,13 @@ impl<'a> Checker<'a> {
         for (t, _) in &self.numeric {
             self.eng.collect_vars(*t, &mut out);
         }
+        // A variable an unresolved context still mentions must stay monomorphic:
+        // generalizing it would quantify the very type the search is waiting for,
+        // and a `let square = \x = x * x` would then resolve `IArith` against a
+        // quantified variable instead of the `@int` its use site supplies.
+        for p in &self.ctx_pending {
+            self.eng.collect_vars(p.req, &mut out);
+        }
         out
     }
 
@@ -1828,6 +1675,26 @@ impl<'a> Checker<'a> {
                         collect_tyvars(self.ast, f.ty, &mut collected);
                     }
                     let name = self.text(*name);
+                    // A blessed interface is the compiler's own: CORE declares it, and
+                    // exactly one field, because a desugar site projects that field
+                    // without knowing its name.
+                    if crate::parser::table::is_blessed_interface(name) {
+                        if self.module_name != "CORE" {
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "`{name}` is a blessed interface and only CORE may declare it";
+                                note: "implement it instead: a value of the applied type \
+                                       (`$ r : @IRange @int Span = .{{ .range = ... }}`)"
+                            ));
+                        }
+                        if fields.len() != 1 {
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "the blessed interface `{name}` must have exactly one field, \
+                                 not {}", fields.len()
+                            ));
+                        }
+                    }
                     let params = self.resolve_type_params("struct", name, params, collected)?;
                     let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     let crepr = abi.is_some();
@@ -2754,6 +2621,34 @@ impl<'a> Checker<'a> {
         self.eng.show(ty)
     }
 
+    /// The declared type of a global `name` in scope, as a user reads it (with any
+    /// `@ctx` prefix). The shell's `:type` uses this for a bare name: inferring the
+    /// name as an expression would have to pick a type for its context, which is
+    /// exactly what the declaration leaves open.
+    pub fn show_name(&mut self, name: &str) -> Option<String> {
+        if let Some(sig) = self.global_ctx.get(name).copied() {
+            let (exposed, ctx) = self.scheme_and_ctx(sig, true);
+            if let Some(ctx) = ctx {
+                let parts = self.eng.show_all(&[ctx, exposed]);
+                return Some(format!("@ctx {} -> {}", parts[0], parts[1]));
+            }
+        }
+        self.lookup(name).map(|ty| self.show(ty))
+    }
+
+    /// How a definition's type reads to a user: its exposed arrow, prefixed with the
+    /// `@ctx` parameter when it declares one. A printed type never hides the context
+    /// a call site has to satisfy, which is the whole point of #213.
+    pub fn show_decl(&self, name: &str, ty: Type) -> String {
+        match self.decl_ctx.get(name) {
+            Some(ctx) => {
+                let parts = self.eng.show_all(&[*ctx, ty]);
+                format!("@ctx {} -> {}", parts[0], parts[1])
+            }
+            None => self.show(ty),
+        }
+    }
+
     fn bind(&mut self, name: &'a str, ty: Type) {
         self.scopes
             .last_mut()
@@ -2789,6 +2684,7 @@ impl<'a> Checker<'a> {
                 let t = self.eng.fresh();
                 let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
                 self.numeric.push((t, span));
+                self.eng.mark_int_literal(t);
                 Ok(t)
             }
             Expr::Real(_) => Ok(self.eng.types.con(ty::REAL)),
@@ -2812,13 +2708,55 @@ impl<'a> Checker<'a> {
 
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
+                // An operator that takes a context (`(+)` over `IArith t`) plans it
+                // at this site, which is where lowering injects it. Its operands
+                // share one type, so the side that is a literal is CHECKED against
+                // the other's type rather than inferred on its own: that is what
+                // lets a literal reach its type-directed construction hook, as in
+                // `3.4 + 1.2i`, where the real literal is built as a `Cpx`.
+                let ctx_sig = self.global_ctx.get(op).copied();
+                if let Some(sig) = ctx_sig {
+                    let (req, exposed) = self.ctx_use_type(sig);
+                    self.plan_ctx(e, op, req)?;
+                    let owner = self.owner_of(op);
+                    self.record_call(Some(e), owner);
+                    // Take the operand types from the OPERATOR's signature rather
+                    // than from each other: that way a literal is checked against
+                    // the parameter the operator declares, which is what lets it
+                    // reach its type-directed construction hook, and it stays right
+                    // for an operator whose operands differ (`x :: xs`).
+                    let (tl, tr) = (self.eng.fresh(), self.eng.fresh());
+                    let result = self.eng.fresh();
+                    let eff = self.eng.fresh();
+                    let inner = self.eng.types.arrow_eff(tr, result, eff);
+                    let want = self.eng.types.arrow(tl, inner);
+                    self.eng
+                        .unify(exposed, want, &format!("in operator `{op}`"))?;
+                    // The operands that FIX types go first, so a literal sees as
+                    // much of the signature as possible.
+                    for (operand, param) in [(lhs, tl), (rhs, tr)] {
+                        if !self.is_literal(operand) {
+                            let t = self.infer(operand)?;
+                            self.eng
+                                .unify(t, param, &format!("in operator `{op}`"))?;
+                        }
+                    }
+                    for (operand, param) in [(lhs, tl), (rhs, tr)] {
+                        if self.is_literal(operand) {
+                            self.check(operand, param)?;
+                        }
+                    }
+                    let amb = self.ambient;
+                    self.eng
+                        .subrow(eff, amb, &format!("in operator `{op}`"))?;
+                    return Ok(result);
+                }
                 let tl = self.infer(lhs)?;
                 let tr = self.infer(rhs)?;
-                if let Some(cands) = self.overloads.get(op).cloned() {
-                    return self.resolve_overload(op, &cands, &[tl, tr], Some(e));
-                }
-                let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
-                let op_ty = self.eng.instantiate(scheme);
+                let op_ty = {
+                    let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
+                    self.eng.instantiate(scheme)
+                };
                 let result = self.eng.fresh();
                 // The operator's result arrow may carry a latent effect: `<|` and
                 // `|>` pass one through from their function argument (`f <| x` is a
@@ -2839,14 +2777,19 @@ impl<'a> Checker<'a> {
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (self.text(*op), *operand);
                 let t = self.infer(operand)?;
-                if let Some(cands) = self.overloads.get(op).cloned() {
-                    // `Some(e)`, like the binary form: a user overload (`neg` on a
-                    // struct) must record its module here or lowering emits the bare
-                    // name and the call lands on the built-in.
-                    return self.resolve_overload(op, &cands, &[t], Some(e));
-                }
-                let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
-                let op_ty = self.eng.instantiate(scheme);
+                let op_ty = match self.global_ctx.get(op).copied() {
+                    Some(sig) => {
+                        let (req, exposed) = self.ctx_use_type(sig);
+                        self.plan_ctx(e, op, req)?;
+                        let owner = self.owner_of(op);
+                        self.record_call(Some(e), owner);
+                        exposed
+                    }
+                    None => {
+                        let scheme = self.lookup(op).ok_or_else(|| unbound(op))?;
+                        self.eng.instantiate(scheme)
+                    }
+                };
                 let result = self.eng.fresh();
                 let want = self.eng.types.arrow(t, result);
                 self.eng.unify(
@@ -2867,8 +2810,8 @@ impl<'a> Checker<'a> {
             }
 
             // An unconstrained `[...]` DEFAULTS to a `@vec`, then builds it through
-            // the same `@compiler_interface_sequence_literal` hook a user sequence
-            // uses (CORE's overload is the identity on the payload).
+            // the same `@ISeqLit` instance a user sequence uses (CORE's `@vec` one is
+            // the identity on the payload).
             Expr::List(items) => {
                 let items = self.ast.slice(*items);
                 let elem = self.eng.fresh();
@@ -2878,9 +2821,8 @@ impl<'a> Checker<'a> {
                 }
                 let vec_con = self.eng.types.con(ty::VEC);
                 let vec = self.eng.types.app(vec_con, elem);
-                let cands = self.hook_candidates(HOOK_SEQUENCE);
-                if let Some(idx) = self.resolve_hook(&cands, &[vec], vec) {
-                    self.record_literal_hook(e, HOOK_SEQUENCE, &cands, idx);
+                if let Some((hook, _)) = self.blessed(IF_SEQ_LIT, &[elem, vec]) {
+                    self.literal_hooks.insert(e, hook);
                 }
                 Ok(vec)
             }
@@ -3045,31 +2987,14 @@ impl<'a> Checker<'a> {
                 Ok(t)
             }
 
-            Expr::Ctx {
-                callee,
-                overrides,
-                rest,
-            } => {
-                let (callee, rest) = (*callee, *rest);
-                let overrides = self.ast.slice(*overrides).to_vec();
-                let Some(fsite) = self.head_var_site(callee) else {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "`@ctx` must be applied to a function that declares `@ctx` implicit parameters"
-                    ));
-                };
-                self.ctx_overrides.insert(fsite, (overrides, rest));
-                let ty = self.infer(callee)?;
-                // The reference consumes its overrides; a leftover entry means the
-                // callee has no `@ctx` implicits for them to apply to.
-                if self.ctx_overrides.remove(&fsite).is_some() {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "the target of this `@ctx` has no implicit parameters"
-                    ));
-                }
-                Ok(ty)
-            }
+            // A `(@ctx e)` reaching inference on its own is misplaced: it is only
+            // meaningful as the first argument of an application, which `infer_app`
+            // peels off before the head is inferred.
+            Expr::CtxArg(_) => Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "`(@ctx ...)` must be the FIRST argument of a call to a function that \
+                 declares a `@ctx` parameter"
+            )),
         }
     }
 
@@ -3175,6 +3100,26 @@ impl<'a> Checker<'a> {
         name: &'a str,
         site: Aol<Expr>,
     ) -> Result<Type> {
+        // A blessed interface in VALUE position is a desugar's reference to the single
+        // method of the instance the compiler resolves here (`.[i]` emits `@IIndex`,
+        // `1.2i` emits `@IImagLit`). Resolution is deferred like any other context, so
+        // the surrounding types pin the instance before the search runs.
+        if module.is_none() && crate::parser::table::is_blessed_interface(name) {
+            let arity = self.structs.get(name).map(|i| i.params.len()).unwrap_or(0);
+            let args: Vec<Type> = (0..arity).map(|_| self.eng.fresh()).collect();
+            let Some((req, field, field_ty)) = self.blessed_req(name, &args) else {
+                let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
+                return Err(diag!(
+                    Code::TypeUnbound, span, 0,
+                    "`{name}` is not declared";
+                    note: "it is a blessed interface the compiler resolves at this site; \
+                           CORE declares it as a one-field `@struct`"
+                ));
+            };
+            self.plan_ctx(site, name, req)?;
+            self.blessed_sites.insert(site, field);
+            return Ok(field_ty);
+        }
         if let Some(m) = module {
             if self.imported_private.get(m).is_some_and(|s| s.contains(name)) {
                 let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
@@ -3183,19 +3128,13 @@ impl<'a> Checker<'a> {
                     "`{m}.{name}` is private to module `{m}` and cannot be used from another module"
                 ));
             }
-            // A qualified reference to a `@ctx`-bearing function plans its implicits
-            // just like a bare one, so `LA.dot u v` injects its dictionaries rather
+            // A qualified reference to a `@ctx`-bearing function plans its context
+            // just like a bare one, so `LA.dot u v` injects its dictionary rather
             // than staying an under-applied function.
-            if let Some(gi) = self.qualified_implicits.get(&(m, name)).cloned() {
-                let mut tvars = HashMap::new();
-                let arrow = self.ty_of_ast(gi.sig, &mut tvars);
-                let reqs: Vec<(&'a str, Type)> = gi
-                    .decls
-                    .iter()
-                    .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
-                    .collect();
-                self.plan_implicits(site, name, &reqs)?;
-                return Ok(arrow);
+            if let Some(sig) = self.qualified_ctx.get(&(m, name)).copied() {
+                let (req, exposed) = self.ctx_use_type(sig);
+                self.plan_ctx(site, name, req)?;
+                return Ok(exposed);
             }
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(cands[0])),
@@ -3215,21 +3154,31 @@ impl<'a> Checker<'a> {
             }
         }
         // A reference to a `@ctx`-bearing global (not shadowed by a local of the
-        // same name): instantiate its signature and requirement types with one
-        // shared variable map, resolve each implicit by name, and record the
-        // arguments for lowering. The returned type is the plain arrow, so callers
-        // apply only the explicit parameters.
+        // same name): instantiate its signature and requirement type with one shared
+        // variable map and plan the context. The returned type is the plain arrow, so
+        // callers apply only the explicit parameters.
         if !self.shadowed_locally(name) {
-            if let Some(gi) = self.global_implicits.get(name).cloned() {
-                let mut tvars = HashMap::new();
-                let arrow = self.ty_of_ast(gi.sig, &mut tvars);
-                let reqs: Vec<(&'a str, Type)> = gi
-                    .decls
+            if let Some(sig) = self.global_ctx.get(name).copied() {
+                let (req, exposed) = self.ctx_use_type(sig);
+                self.plan_ctx(site, name, req)?;
+                return Ok(exposed);
+            }
+        }
+        // Several imports bring this name in. Global scope is flat, so the bare form
+        // names nothing; say which modules have it and let the user qualify.
+        if !self.shadowed_locally(name) && !self.local_defs.contains(name) {
+            if let Some(owners) = self.ambiguous_imports.get(name) {
+                let list = owners
                     .iter()
-                    .map(|d| (self.text(d.name), self.ty_of_ast(d.ty, &mut tvars)))
-                    .collect();
-                self.plan_implicits(site, name, &reqs)?;
-                return Ok(arrow);
+                    .map(|m| format!("`{m}.{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
+                return Err(diag!(
+                    Code::AmbiguousName, span, 0,
+                    "`{name}` is imported from more than one module";
+                    note: "write {list}"
+                ));
             }
         }
         if let Some(scheme) = self.lookup(name) {
@@ -3256,253 +3205,331 @@ impl<'a> Checker<'a> {
         self.qualified.get(module)?.get(name).cloned()
     }
 
-    // -- implicit (`@ctx`) resolution ---------------------------------------
+    // -- context (`@ctx`) resolution ----------------------------------------
 
-    /// Plan the implicit arguments of `fname` at use `site`. An explicit override
-    /// or a local binder of the name is resolved immediately; a global/overloaded
-    /// provider is deferred until inference pins the requirement's type variables
-    /// (so `maxOf 3 7` knows the implicit is over `Int`, not a bare variable).
-    fn plan_implicits(
-        &mut self,
-        site: Aol<Expr>,
-        fname: &str,
-        reqs: &[(&'a str, Type)],
-    ) -> Result<()> {
-        let overrides = self.ctx_overrides.remove(&site);
-        let mut slots: Vec<Option<ImplicitArg>> = Vec::with_capacity(reqs.len());
-        for (idx, (implname, reqty)) in reqs.iter().enumerate() {
-            if let Some((ov, rest)) = &overrides {
-                if let Some(value) = self.find_override(ov, implname, reqs.len()) {
-                    self.check(value, *reqty)?;
-                    slots.push(Some(ImplicitArg::Expr(value)));
-                    continue;
-                }
-                if !rest {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "`@ctx` for `{fname}` does not supply the implicit `{implname}`"
-                    )
-                    .with_note(
-                        "add it to the `@ctx`, or end the `@ctx` with `..` to resolve the rest by name"
-                            .to_string(),
-                    ));
-                }
-            }
-            if self.shadowed_locally(implname) {
-                if let Some(t) = self.lookup(implname) {
-                    let inst = self.eng.instantiate(t);
-                    self.unify_implicit(fname, implname, inst, *reqty)?;
-                    slots.push(Some(ImplicitArg::Bare(implname.to_string())));
-                    continue;
-                }
-            }
-            slots.push(None);
-            self.implicit_pending.push(PendingImpl {
-                site,
-                idx,
-                fname: fname.to_string(),
-                implname,
-                reqty: *reqty,
-            });
+
+    /// Plan the context argument of `fname` at use `site`. An explicit `(@ctx e)`
+    /// is checked and used at once; otherwise resolution is deferred to the
+    /// enclosing definition's boundary, where the requirement's type variables are
+    /// pinned (so `max_of 3 7` searches for a context over `@int` rather than over
+    /// a bare variable). The binders that could satisfy it are captured now,
+    /// because the scopes are gone by then.
+    fn plan_ctx(&mut self, site: Aol<Expr>, fname: &str, req: Type) -> Result<()> {
+        if let Some(value) = self.ctx_override.remove(&site) {
+            self.check(value, req)?;
+            self.ctx_args.insert(site, CtxVal::Expr(value));
+            return Ok(());
         }
-        if let Some((ov, _)) = &overrides {
-            self.check_unknown_overrides(fname, ov, reqs)?;
-        }
-        self.implicit_slots.insert(site, slots);
+        let locals = self.ctx_locals(req);
+        self.ctx_pending.push(PendingCtx {
+            site,
+            fname: fname.to_string(),
+            req,
+            sig: self.current_sig,
+            locals,
+        });
         Ok(())
     }
 
-    /// Solve every deferred implicit (called at a definition boundary, after
-    /// overload solving and numeric defaulting have pinned the types), then move
-    /// each fully-resolved site into [`Self::implicit_args`].
-    fn resolve_pending_implicits(&mut self) -> Result<()> {
-        for p in std::mem::take(&mut self.implicit_pending) {
-            let reqty = self.eng.zonk(p.reqty);
-            let arg = self
-                .resolve_deferred_implicit(&p.fname, p.implname, reqty)
-                .map_err(|d| match self.ast.expr_span(p.site) {
-                    Some(span) => d.fill_span(span),
-                    None => d,
-                })?;
-            if let Some(slots) = self.implicit_slots.get_mut(&p.site) {
-                slots[p.idx] = Some(arg);
-            }
+    /// The binders in scope that could satisfy `req`, innermost scope first. A
+    /// binder qualifies only when its type's head constructor is already the
+    /// requirement's: a binder whose type is still open is not a candidate, because
+    /// matching it would decide its type rather than read it.
+    fn ctx_locals(&mut self, req: Type) -> Vec<CtxLocal<'a>> {
+        let entries: Vec<(usize, &'a str, Type)> = self
+            .scopes
+            .iter()
+            .enumerate()
+            .skip(1)
+            .flat_map(|(d, s)| s.iter().map(move |(n, t)| (d, *n, *t)))
+            .collect();
+        let zonked = self.eng.zonk(req);
+        let want = self.ctx_head(zonked);
+        if want.is_none() {
+            return Vec::new();
         }
-        let sites: Vec<Aol<Expr>> = self.implicit_slots.keys().copied().collect();
-        for site in sites {
-            let complete = self.implicit_slots[&site].iter().all(Option::is_some);
-            if complete {
-                let slots = self.implicit_slots.remove(&site).expect("just checked");
-                let args: Vec<ImplicitArg> = slots.into_iter().map(Option::unwrap).collect();
-                if !args.is_empty() {
-                    self.implicit_args.insert(site, args);
+        let mut out = Vec::new();
+        for (depth, name, ty) in entries {
+            let z = self.eng.zonk(ty);
+            if self.ctx_head(z) == want {
+                out.push(CtxLocal { depth, name, ty, index: None });
+                continue;
+            }
+            // A binder holding a BUNDLE offers each of its components, so a function
+            // that received several contexts at once can pass one of them onward.
+            if let TypeNode::Tuple(items) = self.eng.types.node(z) {
+                let parts = self.eng.types.items(items).to_vec();
+                for (i, part) in parts.into_iter().enumerate() {
+                    if self.ctx_head(part) == want {
+                        out.push(CtxLocal { depth, name, ty: part, index: Some(i) });
+                    }
                 }
             }
         }
-        Ok(())
+        out.sort_by(|a, b| b.depth.cmp(&a.depth));
+        out
     }
 
-    /// Resolve one implicit whose provider is a global: an overloaded name picked
-    /// by the (now pinned) requirement type, else a single global. The requirement
-    /// still being polymorphic is the v1 limitation, reported here.
-    fn resolve_deferred_implicit(
-        &mut self,
-        fname: &str,
-        implname: &'a str,
-        reqty: Type,
-    ) -> Result<ImplicitArg> {
-        if let Some(cands) = self.overloads.get(implname).cloned() {
-            return match self.match_implicit_overload(&cands, reqty) {
-                Some(idx) => {
-                    let inst = self.eng.instantiate(cands[idx].ty);
-                    self.unify_implicit(fname, implname, inst, reqty)?;
-                    Ok(self.implicit_global_ref(implname, &cands, idx))
-                }
-                None => Err(self.no_implicit(fname, implname, reqty)),
-            };
-        }
-        if let Some(t) = self.lookup(implname) {
-            let inst = self.eng.instantiate(t);
-            self.unify_implicit(fname, implname, inst, reqty)?;
-            let module = if self.local_defs.contains(implname) {
-                Some(self.module_name.to_string())
-            } else {
-                self.value_module.get(implname).map(|m| m.to_string())
-            };
-            return Ok(match module {
-                Some(module) => ImplicitArg::Qualified {
-                    module,
-                    name: implname.to_string(),
-                },
-                None => ImplicitArg::Bare(implname.to_string()),
-            });
-        }
-        Err(self.no_implicit(fname, implname, reqty))
-    }
-
-    /// The override expression for implicit `implname`, if the `@ctx` gives one:
-    /// a `.name = e` whose name matches, or the sole positional `@ctx e` when the
-    /// function has exactly one implicit.
-    fn find_override(
-        &self,
-        overrides: &[FieldInit],
-        implname: &str,
-        nreqs: usize,
-    ) -> Option<Aol<Expr>> {
-        for f in overrides {
-            match f {
-                FieldInit::Named { name, value } if self.text(*name) == implname => {
-                    return Some(*value)
-                }
-                FieldInit::Positional(value) if nreqs == 1 => return Some(*value),
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// Error if a `.name = e` override names an implicit the function does not have.
-    fn check_unknown_overrides(
-        &self,
-        fname: &str,
-        overrides: &[FieldInit],
-        reqs: &[(&'a str, Type)],
-    ) -> Result<()> {
-        for f in overrides {
-            if let FieldInit::Named { name, .. } = f {
-                let n = self.text(*name);
-                if !reqs.iter().any(|(implname, _)| *implname == n) {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "`{fname}` has no `@ctx` implicit named `{n}`"
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The reference site of an application's head, if it is a plain variable
-    /// (the function whose `@ctx` implicits an override applies to).
-    fn head_var_site(&self, mut e: Aol<Expr>) -> Option<Aol<Expr>> {
+    /// The head constructor of a zonked type: `Ito_string (List t)` has head
+    /// `Ito_string`. `None` when the head is not a constructor.
+    fn ctx_head(&self, ty: Type) -> Option<utilities::StrId> {
+        let mut cur = ty;
         loop {
-            match self.node(e) {
-                Expr::App(f, _) => e = *f,
-                Expr::Var { .. } => return Some(e),
+            match self.eng.types.node(cur) {
+                TypeNode::App(h, _) => cur = h,
+                TypeNode::Con(n) => return Some(n),
                 _ => return None,
             }
         }
     }
 
-    /// The unique overload candidate whose type unifies with `reqty`, or `None`
-    /// (no match, or several) so the caller reports it.
-    fn match_implicit_overload(&mut self, cands: &[Cand<'a>], reqty: Type) -> Option<usize> {
-        let mut found = None;
-        let mut count = 0;
-        for (i, c) in cands.iter().enumerate() {
-            let save = self.eng.save();
-            let inst = self.eng.instantiate(c.ty);
-            let ok = self.eng.unify(inst, reqty, "resolving an implicit").is_ok();
-            self.eng.restore(save);
-            if ok {
-                count += 1;
-                found = Some(i);
-            }
-        }
-        if count == 1 {
-            found
-        } else {
-            None
-        }
-    }
-
-    /// Build the global reference for a resolved overloaded implicit, mangling the
-    /// name exactly as a normal overloaded call would (so it reaches the right one
-    /// of several same-module definitions).
-    fn implicit_global_ref(&self, implname: &str, cands: &[Cand<'a>], idx: usize) -> ImplicitArg {
-        let cand = &cands[idx];
-        let name = match cand.module {
-            Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
-                {
-                    let z = self.eng.zonk(cand.ty);
-                    overload_key(&self.eng.types, implname, z)
+    /// Solve every deferred context, at a definition boundary after overload
+    /// solving and numeric defaulting have pinned the types.
+    fn resolve_pending_ctx(&mut self) -> Result<()> {
+        for p in std::mem::take(&mut self.ctx_pending) {
+            let req = self.eng.zonk(p.req);
+            let rigid: HashSet<VarId> = match p.sig {
+                Some(sig) => {
+                    let mut vs = HashSet::new();
+                    self.eng.collect_vars(self.eng.zonk(sig), &mut vs);
+                    vs
                 }
-            }
-            _ => implname.to_string(),
-        };
-        match cand.module {
-            Some(m) => ImplicitArg::Qualified {
-                module: m.to_string(),
-                name,
-            },
-            None => ImplicitArg::Bare(name),
+                None => HashSet::new(),
+            };
+            let resolved = self.resolve_ctx(&p.fname, req, &p.locals, &rigid, 0);
+            // A metaprogram-expansion round: the instance may be injected by a
+            // generator that has not run yet, so leave the site unresolved rather
+            // than failing. The final strict round rejects it if it is still missing.
+            let val = match resolved {
+                Ok(val) => val,
+                Err(_) if self.lenient => continue,
+                Err(d) => {
+                    return Err(match self.ast.expr_span(p.site) {
+                        Some(span) => d.fill_span(span),
+                        None => d,
+                    })
+                }
+            };
+            self.ctx_args.insert(p.site, val);
         }
+        Ok(())
     }
 
-    fn unify_implicit(
+    /// Resolve one context requirement. A tuple requirement splits into its
+    /// components (several contexts travel as one bundle, built here so no global
+    /// of the bundled type has to exist). Otherwise the innermost scope offering
+    /// exactly one binder of the type wins, then the instances in scope, of which
+    /// exactly one must match because global scope is flat. An instance that itself
+    /// takes a context has it resolved here too, bounded by [`CTX_DEPTH`].
+    fn resolve_ctx(
         &mut self,
         fname: &str,
-        implname: &str,
-        actual: Type,
-        reqty: Type,
-    ) -> Result<()> {
+        req: Type,
+        locals: &[CtxLocal<'a>],
+        rigid: &HashSet<VarId>,
+        depth: usize,
+    ) -> Result<CtxVal> {
+        if depth > CTX_DEPTH {
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "resolving the context of `{fname}` did not terminate within {CTX_DEPTH} steps"
+            )
+            .with_note(
+                "an instance whose own context leads back to itself cannot be built; \
+                 pass the context explicitly instead"
+                    .to_string(),
+            ));
+        }
+        if let TypeNode::Tuple(parts) = self.eng.types.node(req) {
+            let parts = self.eng.types.items(parts).to_vec();
+            let mut vals = Vec::with_capacity(parts.len());
+            for part in parts {
+                let part = self.eng.zonk(part);
+                vals.push(self.resolve_ctx(fname, part, locals, rigid, depth + 1)?);
+            }
+            return Ok(CtxVal::Tuple(vals));
+        }
+        let Some(head) = self.ctx_head(req) else {
+            return Err(self.ctx_unresolved(fname, req));
+        };
+        // The requirement's own rigid variables: a candidate may not bind these, so
+        // only something that mentions the same variables (the enclosing
+        // definition's context parameter) can satisfy a still-open requirement.
+        // Which of the requirement's variables a candidate may not bind. For a LOCAL
+        // binder that is all of them: a dictionary in scope must satisfy the
+        // requirement as written, never specialize it, or an unrelated operator
+        // whose type is not pinned yet (`i + 1` inside a function that takes a
+        // dictionary) would silently adopt it. The instance search is allowed to
+        // pin a flexible variable, which is how a unique instance decides the type
+        // of a literal; it may still never touch a variable of the enclosing
+        // signature, which belongs to the caller.
+        let all: HashSet<VarId> = {
+            let mut vs = HashSet::new();
+            self.eng.collect_vars(req, &mut vs);
+            vs
+        };
+        let open: HashSet<VarId> = all.intersection(rigid).copied().collect();
+        let req_vars = all.len();
+        let local_closed: HashSet<VarId> = all.union(rigid).copied().collect();
+        let depths: Vec<usize> = {
+            let mut ds: Vec<usize> = locals.iter().map(|l| l.depth).collect();
+            ds.dedup();
+            ds
+        };
+        for d in depths {
+            let hits: Vec<CtxLocal<'a>> = locals
+                .iter()
+                .filter(|l| l.depth == d)
+                .filter(|l| self.ctx_matches(l.ty, req, &local_closed))
+                .cloned()
+                .collect();
+            if hits.len() > 1 {
+                let names: Vec<String> = hits.iter().map(|l| l.name.to_string()).collect();
+                return Err(self.ctx_ambiguous(fname, req, &names));
+            }
+            if let Some(l) = hits.first() {
+                let (name, ty, index) = (l.name, l.ty, l.index);
+                let inst = self.eng.instantiate(ty);
+                self.eng.unify(
+                    inst,
+                    req,
+                    &format!("resolving the context of `{fname}`"),
+                )?;
+                let base = CtxVal::Bare(name.to_string());
+                return Ok(match index {
+                    Some(i) => CtxVal::Proj(Box::new(base), i),
+                    None => base,
+                });
+            }
+        }
+        let key = self.eng.types.name(head).to_string();
+        let cands = self.instances.get(&key).cloned().unwrap_or_default();
+        let mut hits: Vec<Inst<'a>> = Vec::new();
+        for c in &cands {
+            let save = self.eng.save();
+            let inst = self.eng.instantiate(c.bundle);
+            let exposed = self.bundle_parts(inst).0;
+            let mut ok = self.eng.unify(exposed, req, "resolving a context").is_ok();
+            if ok {
+                ok = self.keeps_open(&open);
+            }
+            self.eng.restore(save);
+            if ok {
+                hits.push(c.clone());
+            }
+        }
+        // With the requirement still open, neither "none in scope" nor "several in
+        // scope" is the user's problem: the type is not pinned, so say that instead.
+        if req_vars > 0 && hits.len() != 1 {
+            return Err(self.ctx_unresolved(fname, req));
+        }
+        if hits.len() > 1 {
+            let names: Vec<String> = hits.iter().map(|c| c.name.clone()).collect();
+            return Err(self.ctx_ambiguous(fname, req, &names));
+        }
+        let Some(c) = hits.first().cloned() else {
+            return Err(self.ctx_missing(fname, req));
+        };
+        let inst = self.eng.instantiate(c.bundle);
+        let (exposed, own) = self.bundle_parts(inst);
         self.eng.unify(
-            actual,
-            reqty,
-            &format!("resolving the implicit `{implname}` of `{fname}`"),
+            exposed,
+            req,
+            &format!("resolving the context of `{fname}`"),
+        )?;
+        let base = match c.module {
+            Some(m) => CtxVal::Qualified {
+                module: m.to_string(),
+                name: c.name.clone(),
+            },
+            None => CtxVal::Bare(c.name.clone()),
+        };
+        if !c.has_ctx {
+            return Ok(base);
+        }
+        let own = self.eng.zonk(own.expect("an instance with a context packs it"));
+        let arg = self.resolve_ctx(&c.name.clone(), own, locals, rigid, depth + 1)?;
+        Ok(CtxVal::App(Box::new(base), Box::new(arg)))
+    }
+
+    /// Whether a candidate of type `ty` satisfies `req` without binding any variable
+    /// in `closed`. The trial unification is rolled back either way.
+    fn ctx_matches(&mut self, ty: Type, req: Type, closed: &HashSet<VarId>) -> bool {
+        let save = self.eng.save();
+        let inst = self.eng.instantiate(ty);
+        let mut ok = self.eng.unify(inst, req, "resolving a context").is_ok();
+        if ok {
+            ok = self.keeps_open(closed);
+        }
+        self.eng.restore(save);
+        ok
+    }
+
+    /// Whether every variable in `closed` is still unbound after a trial
+    /// unification. One that has been bound was specialized by the candidate, which
+    /// is not this resolution's business: the variable belongs to the caller (a
+    /// signature's) or to the requirement itself.
+    fn keeps_open(&self, closed: &HashSet<VarId>) -> bool {
+        closed.iter().all(|v| self.eng.is_free(*v))
+    }
+
+    /// Split an instantiated instance bundle into its exposed type and, when the
+    /// instance takes a context of its own, that requirement.
+    fn bundle_parts(&self, bundle: Type) -> (Type, Option<Type>) {
+        match self.eng.types.node(bundle) {
+            TypeNode::Tuple(parts) => {
+                let items = self.eng.types.items(parts);
+                (items[0], items.get(1).copied())
+            }
+            _ => (bundle, None),
+        }
+    }
+
+    /// No value of the requirement's type is in scope.
+    fn ctx_missing(&self, fname: &str, req: Type) -> Diagnostic {
+        diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "no value of type `{}` in scope to satisfy the context of `{fname}`",
+            self.show(req)
+        )
+        .with_note(format!(
+            "define or import a value of type `{}`, or pass one explicitly as \
+             `{fname} (@ctx value) ...`",
+            self.show(req)
+        ))
+    }
+
+    /// The requirement is still open, so there is nothing to search for. Reported
+    /// with both escapes, because neither is obvious from the call alone.
+    fn ctx_unresolved(&self, fname: &str, req: Type) -> Diagnostic {
+        diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "the context `{}` of `{fname}` is not determined here",
+            self.show(req)
+        )
+        .with_note(
+            "annotate the call so its type is known, or declare the same `@ctx` parameter on \
+             the enclosing definition so the context is passed in"
+                .to_string(),
         )
     }
 
-    fn no_implicit(&self, fname: &str, implname: &str, reqty: Type) -> Diagnostic {
+    /// Several values of the requirement's type are in scope. An annotation cannot
+    /// break this tie, since the candidates share a type, so the note offers the
+    /// explicit form instead.
+    fn ctx_ambiguous(&self, fname: &str, req: Type, names: &[String]) -> Diagnostic {
         diag!(
             Code::TypeMismatch, Span::at(0), 0,
-            "no `{implname}` in scope to satisfy the `@ctx` requirement of `{fname}`"
+            "several values of type `{}` satisfy the context of `{fname}`: {}",
+            self.show(req),
+            names.join(", ")
         )
         .with_note(format!(
-            "define or import a `{implname} : {}`, or pass it explicitly with `@ctx`",
-            self.show(reqty)
+            "pass the one you mean explicitly as `{fname} (@ctx {}) ...`",
+            names.first().map(String::as_str).unwrap_or("value")
         ))
     }
+
 
     /// A multi-axis tensor slice `recv.[s0, ...]`. The receiver must be a tensor of
     /// rank >= the slot count; each `Index` slot reduces its axis, each `Range`/`Full`
@@ -3516,25 +3543,21 @@ impl<'a> Checker<'a> {
         slots: &'a [SliceSlot],
     ) -> Result<Type> {
         let rt = self.infer(recv)?;
-        // A lone `lo ... hi` over a non-tensor receiver is the overloadable
-        // `@compiler_interface_slice`, which `@vec` / `@array` / `@str` and any user
-        // sequence share. A tensor keeps the path below: its result SHAPE is computed
-        // from the slots, which no hook signature can express.
+        // A lone `lo ... hi` over a non-tensor receiver is the `@ISlice` interface,
+        // which `@vec` / `@array` / `@str` and any user sequence share. A tensor keeps
+        // the path below: its result SHAPE is computed from the slots, which no
+        // interface method's type can express.
         if let [SliceSlot::Range(lo, hi)] = slots {
             if self.tensor_parts(rt).is_none() {
                 let (lo, hi) = (*lo, *hi);
-                let cands = self.hook_candidates(HOOK_SLICE);
-                let int = self.eng.types.con(ty::INT);
                 let result = self.eng.fresh();
-                let save = self.eng.save();
-                let args = [rt, int, int];
-                if let Some(idx) = self.resolve_hook(&cands, &args, result) {
+                if let Some((hook, _)) = self.blessed(IF_SLICE, &[rt, result]) {
+                    let int = self.eng.types.con(ty::INT);
                     self.check(lo, int)?;
                     self.check(hi, int)?;
-                    self.record_literal_hook(site, HOOK_SLICE, &cands, idx);
+                    self.literal_hooks.insert(site, hook);
                     return Ok(result);
                 }
-                self.eng.restore(save);
             }
         }
         let elem = self.eng.fresh();
@@ -3576,7 +3599,26 @@ impl<'a> Checker<'a> {
             head = *f;
         }
         args_rev.reverse();
-        let args = args_rev;
+        let mut args = args_rev;
+
+        // An explicit `(@ctx e)` is the first argument. Peel it off and register it
+        // against the head's reference site, which is where the context is planned,
+        // then let the rest of the call proceed as an ordinary application.
+        if let Some(first) = args.first().copied() {
+            if let Expr::CtxArg(value) = self.node(first) {
+                let value = *value;
+                args.remove(0);
+                self.ctx_override.insert(head, value);
+            }
+        }
+        if let Some(stray) = args.iter().find(|a| matches!(self.node(**a), Expr::CtxArg(_))) {
+            let span = self.ast.expr_span(*stray).unwrap_or_else(|| Span::at(0));
+            return Err(diag!(
+                Code::TypeMismatch, span, 0,
+                "`(@ctx ...)` must be the FIRST argument of the call"
+            ));
+        }
+        let args = args;
 
         // `@cast` is type-directed: its result width comes from the checking context,
         // handled in `check`. Reaching it here means it has no expected type.
@@ -3632,75 +3674,25 @@ impl<'a> Checker<'a> {
             }
         }
 
-        if let Expr::Var { module, name } = self.node(head) {
-            let module = module.map(|m| self.text(m));
+        if let Expr::Var { module: None, name } = self.node(head) {
             let name = self.text(*name);
-            match module {
-                // A bare overloaded call: resolve by argument types and record the
-                // winning module so lowering can qualify it. A local binder of the
-                // same name (a lambda/`let`/`@ctx` parameter) shadows the overload
-                // set, so fall through to ordinary inference in that case.
-                None if !self.shadowed_locally(name) => {
-                    // Local `@ctx` dictionaries of this name (a generic instance's
-                    // per-parameter `to_string`) join the global overloads as
-                    // candidates, so the call resolves by type to the right one.
-                    let dicts = self.current_dicts.get(name).cloned();
-                    let overloads = self.overloads.get(name).cloned();
-                    if dicts.is_some() || overloads.is_some() {
-                        let has_dicts = dicts.is_some();
-                        let mut cands = overloads.unwrap_or_default();
-                        if let Some(ds) = dicts {
-                            cands.extend(ds.into_iter().map(|(slot, ty)| Cand::dict(ty, slot)));
-                        }
-                        let arg_tys = args
-                            .iter()
-                            .map(|a| self.infer(*a))
-                            .collect::<Result<Vec<_>>>()?;
-                        // When the first argument's type is a bare type variable (a
-                        // generic instance rendering one of its own parameters), the
-                        // dictionaries share that variable but overloads (concrete
-                        // domains) do not. Unification would let any of them match by
-                        // binding the variable, so narrow to the dictionary whose
-                        // first parameter IS that variable, by identity. Only applies
-                        // inside a generic instance body (dictionaries present) and
-                        // only when such a dictionary exists (else defer normally).
-                        if has_dicts {
-                            if let Some(v) = self.bare_var_id(arg_tys[0]) {
-                                let narrowed: Vec<Cand> = cands
-                                    .iter()
-                                    .filter(|c| self.first_domain_is_var(c.ty, v))
-                                    .cloned()
-                                    .collect();
-                                if !narrowed.is_empty() {
-                                    cands = narrowed;
-                                }
-                            }
-                        }
-                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
-                    }
-                }
-                None => {}
-                // A qualified call already names its module; resolve among that
-                // module's candidates without needing an annotation. Draw them
-                // from the overload set (not the `qualified` type-only map) so a
-                // candidate keeps its `@ctx` implicit requirements: a generic
-                // instance (`GENM.to_string : Boxx t -> @str  @ctx to_string : t
-                // -> @str`) then plans its dictionary at the site just like the
-                // bare path, rather than coming out under-applied. Falls through
-                // to `infer_var` for a single non-overloaded qualified value.
-                Some(m) => {
-                    let cands: Vec<Cand> = self
-                        .overloads
-                        .get(name)
-                        .map(|cs| cs.iter().filter(|c| c.module == Some(m)).cloned().collect())
-                        .unwrap_or_default();
-                    if !cands.is_empty() {
-                        let arg_tys = args
-                            .iter()
-                            .map(|a| self.infer(*a))
-                            .collect::<Result<Vec<_>>>()?;
-                        return self.resolve_overload(name, &cands, &arg_tys, Some(head));
-                    }
+            if crate::parser::table::is_blessed_interface(name) {
+                return self.infer_blessed_app(head, name, &args);
+            }
+        }
+
+        // An effect operation whose name several effects declare still needs the
+        // argument types to pick one (`ask {}` under a `<Reader>` ambient); nothing
+        // else dispatches by argument type any more.
+        if let Expr::Var { module: None, name } = self.node(head) {
+            let name = self.text(*name);
+            if !self.shadowed_locally(name) {
+                if let Some(cands) = self.overloads.get(name).cloned() {
+                    let arg_tys = args
+                        .iter()
+                        .map(|a| self.infer(*a))
+                        .collect::<Result<Vec<_>>>()?;
+                    return self.resolve_overload(name, &cands, &arg_tys, Some(head));
                 }
             }
         }
@@ -3719,19 +3711,113 @@ impl<'a> Checker<'a> {
         Ok(tf)
     }
 
-    /// Every visible candidate for a construction hook. A locally defined hook is
-    /// forced into `self.overloads` (see the overload-name seeding), and an imported
-    /// single lands in `imported_singles`, so those two cover every case. Empty when
-    /// no hook of this name is in scope (the common case: the literal keeps its
-    /// built-in default).
-    fn hook_candidates(&self, name: &str) -> Vec<Cand<'a>> {
-        if let Some(cs) = self.overloads.get(name) {
-            cs.clone()
-        } else if let Some(c) = self.imported_singles.get(name) {
-            vec![c.clone()]
-        } else {
-            Vec::new()
+    /// The requirement type, single field name, and field type of blessed interface
+    /// `name` applied to `args`. `None` when the interface is not declared in scope,
+    /// so a desugar site keeps its built-in meaning.
+    fn blessed_req(&mut self, name: &str, args: &[Type]) -> Option<(Type, String, Type)> {
+        let info = self.structs.get(name)?.clone();
+        if info.params.len() != args.len() || info.fields.len() != 1 {
+            return None;
         }
+        let mut tvars: HashMap<&'a str, Type> = info
+            .params
+            .iter()
+            .copied()
+            .zip(args.iter().copied())
+            .collect();
+        let (field, field_ty) = info.fields[0];
+        let field_ty = self.ty_of_ast(field_ty, &mut tvars);
+        let mut req = self.eng.types.con(name);
+        for a in args {
+            req = self.eng.types.app(req, *a);
+        }
+        Some((req, field.to_string(), field_ty))
+    }
+
+    /// Resolve blessed interface `name` applied to `args` at a desugar site: the
+    /// instance found by type, plus the type of its single field (what the site's
+    /// operands are checked against). A failure leaves the engine untouched and
+    /// returns `None`, so the site falls back to its built-in meaning.
+    fn blessed(&mut self, name: &str, args: &[Type]) -> Option<(HookImpl, Type)> {
+        let save = self.eng.save();
+        let Some((req, field, field_ty)) = self.blessed_req(name, args) else {
+            self.eng.restore(save);
+            return None;
+        };
+        match self.resolve_blessed(name, req, field) {
+            Some(hook) => Some((hook, field_ty)),
+            None => {
+                self.eng.restore(save);
+                None
+            }
+        }
+    }
+
+    /// The instance satisfying an already-built blessed requirement. Unlike
+    /// [`Self::blessed`] a failure is NOT rolled back, so callers that have already
+    /// committed unifications probe with their own `save`/`restore` first.
+    fn resolve_blessed(&mut self, name: &str, req: Type, field: String) -> Option<HookImpl> {
+        let locals = self.ctx_locals(req);
+        let rigid = HashSet::new();
+        self.resolve_ctx(name, req, &locals, &rigid, 0)
+            .ok()
+            .map(|ctx| HookImpl { ctx, field })
+    }
+
+    /// A desugar's blessed-interface call (`.[i]` emits `@IIndex`, `1.2i` emits
+    /// `@IImagLit`). The arguments pin the interface's parameters through its
+    /// method's declared type; the instance resolves here when that is enough, and
+    /// otherwise at the enclosing definition's boundary, once the surrounding types
+    /// pin what is left.
+    fn infer_blessed_app(
+        &mut self,
+        head: Aol<Expr>,
+        name: &'a str,
+        args: &[Aol<Expr>],
+    ) -> Result<Type> {
+        let arity = self.structs.get(name).map(|i| i.params.len()).unwrap_or(0);
+        let vars: Vec<Type> = (0..arity).map(|_| self.eng.fresh()).collect();
+        let Some((req, field, method)) = self.blessed_req(name, &vars) else {
+            let span = self.ast.expr_span(head).unwrap_or_else(|| Span::at(0));
+            return Err(diag!(
+                Code::TypeUnbound, span, 0,
+                "`{name}` is not declared";
+                note: "it is a blessed interface the compiler resolves at this site; \
+                       CORE declares it as a one-field `@struct`"
+            ));
+        };
+        let mut rest = method;
+        for a in args {
+            let (param, next, eff) = self.arrow_parts(rest)?;
+            let amb = self.ambient;
+            self.eng.subrow(eff, amb, "in a function application")?;
+            self.check(*a, param)?;
+            rest = next;
+        }
+        let probe = self.eng.save();
+        let zonked = self.eng.zonk(req);
+        let resolvable = self
+            .resolve_blessed(name, zonked, field.clone())
+            .is_some();
+        self.eng.restore(probe);
+        if resolvable {
+            let zonked = self.eng.zonk(req);
+            let hook = self
+                .resolve_blessed(name, zonked, field)
+                .expect("the probe above resolved it");
+            self.ctx_args.insert(head, hook.ctx);
+            self.blessed_sites.insert(head, hook.field);
+            return Ok(self.eng.zonk(rest));
+        }
+        self.plan_ctx(head, name, req)?;
+        self.blessed_sites.insert(head, field);
+        Ok(rest)
+    }
+
+    /// Every instance of blessed interface `name` in scope, as the diagnostic that
+    /// lists what a range can build needs them.
+    fn blessed_instances(&self, name: &str) -> Vec<Inst<'a>> {
+        self.instances.get(name).cloned().unwrap_or_default()
     }
 
     /// The head constructor of `ty` if it is a user-declared type (struct / union /
@@ -3763,68 +3849,41 @@ impl<'a> Checker<'a> {
     /// untouched and returns `false`, so the literal falls back to its built-in
     /// default (which lowering folds to a plain constant).
     fn literal_hook_check(&mut self, e: Aol<Expr>, expected: Type) -> Result<bool> {
-        let (hook, args, elem) = match self.node(e) {
-            Expr::Str(_) => (HOOK_STRING, vec![self.eng.types.con(ty::STR)], None),
-            Expr::Int(_) => (HOOK_INTEGER, vec![self.eng.types.con(ty::INT)], None),
-            Expr::Real(_) => (HOOK_REAL, vec![self.eng.types.con("@float64")], None),
+        // The target type must already have a constructor head: with it still open,
+        // resolving would DECIDE what the literal is rather than read it.
+        let zonked = self.eng.zonk(expected);
+        if self.ctx_head(zonked).is_none() {
+            return Ok(false);
+        }
+        let (name, args, elem) = match self.node(e) {
+            Expr::Str(_) => (IF_STR_LIT, vec![expected], None),
+            Expr::Int(_) => (IF_INT_LIT, vec![expected], None),
+            Expr::Real(_) => (IF_REAL_LIT, vec![expected], None),
             Expr::List(_) => {
                 let elem = self.eng.fresh();
-                (
-                    HOOK_SEQUENCE,
-                    vec![{
-                        let c = self.eng.types.con(ty::VEC);
-                        self.eng.types.app(c, elem)
-                    }],
-                    Some(elem),
-                )
+                (IF_SEQ_LIT, vec![elem, expected], Some(elem))
             }
             _ => return Ok(false),
         };
-        let cands = self.hook_candidates(hook);
-        if cands.is_empty() {
-            return Ok(false);
-        }
-        // Trial-match each candidate (`payload -> result`, `result ~ expected`),
-        // rolling back after each; commit only a UNIQUE match so a wrong guess never
-        // sticks and an ambiguity falls through rather than silently picking one.
-        let result = self.eng.fresh();
-        let mut chosen = None;
-        let mut count = 0;
-        for (idx, cand) in cands.iter().enumerate() {
-            let save = self.eng.save();
-            let ok = self.apply_overload(cand.ty, &args, result).is_ok()
-                && self
-                    .eng
-                    .unify(result, expected, "in a literal construction hook")
-                    .is_ok();
-            self.eng.restore(save);
-            if ok {
-                count += 1;
-                chosen = Some(idx);
-            }
-        }
-        let Some(idx) = chosen.filter(|_| count == 1) else {
+        let Some((hook, _)) = self.blessed(name, &args) else {
             return Ok(false);
         };
-        self.apply_overload(cands[idx].ty, &args, result)?;
-        self.eng
-            .unify(result, expected, "in a literal construction hook")?;
-        // A sequence literal checks each element against the payload's element type.
+        // A sequence literal checks each element against the instance's element type.
         if let (Expr::List(items), Some(elem)) = (self.node(e), elem) {
-            let items = self.ast.slice(*items);
-            for it in items.iter() {
-                self.check(*it, elem)?;
+            let items = self.ast.slice(*items).to_vec();
+            for it in items {
+                self.check(it, elem)?;
             }
         }
-        self.record_literal_hook(e, hook, &cands, idx);
+        self.literal_hooks.insert(e, hook);
         Ok(true)
     }
 
-    /// Resolve a range (`[lo ... hi]` / `[lo ...]`) through its
-    /// `@compiler_interface_range` / `@compiler_interface_range_from` hook: the
-    /// bounds are the hook's arguments, and what it returns is the range's type.
-    /// Records the hook at `site` so lowering applies it. `expected`, when known,
-    /// takes part in the resolution, so a second overload is picked by context.
+    /// Resolve a range (`[lo ... hi]` / `[lo ...]`) through its `@IRange` /
+    /// `@IRangeFrom` instance: the bounds are the instance method's arguments, and
+    /// what it returns is the range's type. Records the instance at `site` so
+    /// lowering projects and applies it. `expected`, when known, takes part in the
+    /// resolution, so a second instance is picked by context.
     fn range_hook(
         &mut self,
         site: Aol<Expr>,
@@ -3832,18 +3891,11 @@ impl<'a> Checker<'a> {
         hi: Option<Aol<Expr>>,
         expected: Option<Type>,
     ) -> Result<Type> {
-        let name = if hi.is_some() { HOOK_RANGE } else { HOOK_RANGE_FROM };
-        let cands = self.hook_candidates(name);
-        if cands.is_empty() {
-            return Err(diag!(
-                Code::TypeMismatch, Span::at(0), 0,
-                "a range needs `{name}`, which is not in scope";
-                note: "it is defined in CORE; a range builds whatever that hook returns"
-            ));
-        }
-        let mut args = vec![self.infer(lo)?];
+        let name = if hi.is_some() { IF_RANGE } else { IF_RANGE_FROM };
+        let bound = self.infer(lo)?;
         if let Some(hi) = hi {
-            args.push(self.infer(hi)?);
+            let t = self.infer(hi)?;
+            self.eng.unify(bound, t, "between a range's bounds")?;
         }
         let result = self.eng.fresh();
         if let Some(exp) = expected {
@@ -3852,117 +3904,94 @@ impl<'a> Checker<'a> {
                 self.eng.restore(save);
             }
         }
-        // With nothing to pin the result, several overloads fit. Rather than call
-        // that ambiguous, the FIRST one declared is the default, so `CORE`'s
-        // declaration order sets what a bare range builds: a `@vec` for `[lo ...
-        // hi]`, a `Stream` for `[lo ...]`. An annotation or a known expected type
-        // still picks any other overload.
-        let idx = self
-            .resolve_hook(&cands, &args, result)
-            .or_else(|| self.resolve_hook_first(&cands, &args, result));
-        let Some(idx) = idx else {
-            let results: Vec<Type> =
-                cands.iter().map(|c| self.result_of(c.ty, args.len())).collect();
-            let offered = results
+        // With nothing to pin the result, several instances fit. Rather than call that
+        // ambiguous, the FIRST one declared is the default, so CORE's declaration
+        // order sets what a bare range builds: a `@vec` for `[lo ... hi]`, a `Stream`
+        // for `[lo ...]`. An annotation or a known expected type still picks another.
+        let hook = self
+            .blessed(name, &[bound, result])
+            .or_else(|| self.blessed_first(name, &[bound, result]));
+        let Some((hook, field_ty)) = hook else {
+            let offered = self
+                .blessed_instances(name)
                 .iter()
-                .map(|t| self.show(*t))
+                .map(|i| i.name.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
             let want = self.show(result);
+            let note = if offered.is_empty() {
+                format!("`{name}` is declared in CORE; a range builds whatever its instance returns")
+            } else {
+                format!("the `{name}` instances in scope are: {offered}")
+            };
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
-                "no `{name}` overload builds a `{want}` from this range";
-                note: "`{name}` is defined for: {offered}"
+                "no `{name}` instance builds a `{want}` from this range";
+                note: "{note}"
             ));
         };
-        self.record_literal_hook(site, name, &cands, idx);
+        // The method's own type decides how the bounds are typed, so a range over a
+        // non-`@int` bound works exactly as the instance declares it.
+        let mut rest = field_ty;
+        for arg in std::iter::once(lo).chain(hi) {
+            let (param, next, _) = self.arrow_parts(rest)?;
+            self.check(arg, param)?;
+            rest = next;
+        }
+        self.eng.unify(rest, result, "in a range")?;
+        self.literal_hooks.insert(site, hook);
         Ok(self.eng.zonk(result))
     }
 
-    /// The FIRST hook candidate that applies, committing it. Used as the default
-    /// when nothing constrains the result and several candidates fit; the strict
-    /// unique-match rule is [`Self::resolve_hook`].
-    fn resolve_hook_first(
-        &mut self,
-        cands: &[Cand<'a>],
-        args: &[Type],
-        result: Type,
-    ) -> Option<usize> {
-        for (idx, cand) in cands.iter().enumerate() {
+    /// The FIRST blessed instance of `name` that satisfies the requirement,
+    /// committing it. Used as the default when nothing constrains the result and
+    /// several instances fit; the strict unique-match rule is [`Self::blessed`].
+    fn blessed_first(&mut self, name: &str, args: &[Type]) -> Option<(HookImpl, Type)> {
+        for inst in self.blessed_instances(name) {
             let save = self.eng.save();
-            if self.apply_overload(cand.ty, args, result).is_ok() {
-                return Some(idx);
+            let Some((req, field, field_ty)) = self.blessed_req(name, args) else {
+                self.eng.restore(save);
+                return None;
+            };
+            let packed = self.eng.instantiate(inst.bundle);
+            let (exposed, own) = self.bundle_parts(packed);
+            if self.eng.unify(exposed, req, "resolving a range").is_err() {
+                self.eng.restore(save);
+                continue;
             }
-            self.eng.restore(save);
+            let base = match inst.module {
+                Some(m) => CtxVal::Qualified {
+                    module: m.to_string(),
+                    name: inst.name.clone(),
+                },
+                None => CtxVal::Bare(inst.name.clone()),
+            };
+            let ctx = if inst.has_ctx {
+                let own = self.eng.zonk(own.expect("an instance with a context packs it"));
+                let locals = self.ctx_locals(own);
+                match self.resolve_ctx(&inst.name, own, &locals, &HashSet::new(), 0) {
+                    Ok(arg) => CtxVal::App(Box::new(base), Box::new(arg)),
+                    Err(_) => {
+                        self.eng.restore(save);
+                        continue;
+                    }
+                }
+            } else {
+                base
+            };
+            return Some((HookImpl { ctx, field }, field_ty));
         }
         None
     }
 
-    /// The result type of a hook candidate applied to `n` arguments: walk `n` arrows
-    /// down its type. Used to say, in a diagnostic, which types a hook can build.
-    fn result_of(&mut self, ty: Type, n: usize) -> Type {
-        let mut t = self.eng.zonk(ty);
-        for _ in 0..n {
-            match self.eng.head(t) {
-                TypeNode::Arrow(_, to, _) => t = to,
-                _ => break,
-            }
-        }
-        t
-    }
-
-    /// Find the UNIQUE hook candidate whose type unifies with `args -> result`,
-    /// committing it (the unification persists) and returning its index; `None` when
-    /// zero or several match. Every trial rolls back, so only the committed unique
-    /// match leaves the engine changed.
-    fn resolve_hook(&mut self, cands: &[Cand<'a>], args: &[Type], result: Type) -> Option<usize> {
-        let mut chosen = None;
-        let mut count = 0;
-        for (idx, cand) in cands.iter().enumerate() {
-            let save = self.eng.save();
-            let ok = self.apply_overload(cand.ty, args, result).is_ok();
-            self.eng.restore(save);
-            if ok {
-                count += 1;
-                chosen = Some(idx);
-            }
-        }
-        let idx = chosen.filter(|_| count == 1)?;
-        self.apply_overload(cands[idx].ty, args, result).ok()?;
-        Some(idx)
-    }
-
-    /// The `(owning module, emitted name)` a resolved hook candidate lowers to: the
-    /// name is type-mangled when that module defines the hook several times, matching
-    /// the definition's `def_keys` entry.
-    fn hook_use(&self, name: &str, cands: &[Cand<'a>], idx: usize) -> (Option<&'a str>, String) {
-        let module = cands[idx].module;
-        let emit = match module {
-            Some(m) if cands.iter().filter(|c| c.module == Some(m)).count() > 1 => {
-                {
-                    let z = self.eng.zonk(cands[idx].ty);
-                    overload_key(&self.eng.types, name, z)
-                }
-            }
-            _ => name.to_string(),
-        };
-        (module, emit)
-    }
-
-    /// Record the resolved construction hook at a literal `site`.
-    fn record_literal_hook(&mut self, site: Aol<Expr>, name: &str, cands: &[Cand<'a>], idx: usize) {
-        let used = self.hook_use(name, cands, idx);
-        self.literal_hooks.insert(site, used);
-    }
-
-    /// The construction hook and primitive payload type for a literal PATTERN kind
+    /// The blessed construction interface for a literal PATTERN kind
     /// (`Str`/`Int`/`Real`), so a literal pattern reuses the same builder a literal
     /// expression does.
-    fn pattern_literal_hook(&mut self, pat: &Pattern) -> Option<(&'static str, Vec<Type>)> {
+    fn pattern_literal_hook(pat: &Pattern) -> Option<&'static str> {
         Some(match pat {
-            Pattern::Str(_) => (HOOK_STRING, vec![self.eng.types.con(ty::STR)]),
-            Pattern::Int(_) => (HOOK_INTEGER, vec![self.eng.types.con(ty::INT)]),
-            Pattern::Real(_) => (HOOK_REAL, vec![self.eng.types.con("@float64")]),
+            Pattern::Str(_) => IF_STR_LIT,
+            Pattern::Int(_) => IF_INT_LIT,
+            Pattern::Real(_) => IF_REAL_LIT,
             _ => return None,
         })
     }
@@ -3976,30 +4005,12 @@ impl<'a> Checker<'a> {
         pat: Aol<Pattern>,
         expected: Type,
     ) -> Result<Option<Type>> {
-        let cands = self.hook_candidates(HOOK_SEQVIEW);
-        if cands.is_empty() {
+        let elem = self.eng.fresh();
+        let Some((hook, _)) = self.blessed(IF_SEQ_VIEW, &[expected, elem]) else {
             return Ok(None);
-        }
-        let save = self.eng.save();
-        let result = self.eng.fresh();
-        if let Some(idx) = self.resolve_hook(&cands, &[expected], result) {
-            // The hook returns `SeqView <seq> <elem>`; pull the element type out.
-            let elem = self.eng.fresh();
-            let sv = self.eng.types.con(SEQVIEW_TYPE);
-            let head = self.eng.types.app(sv, expected);
-            let want = self.eng.types.app(head, elem);
-            if self
-                .eng
-                .unify(result, want, "in a sequence-view hook")
-                .is_ok()
-            {
-                let used = self.hook_use(HOOK_SEQVIEW, &cands, idx);
-                self.sequence_pattern_hooks.insert(pat, used);
-                return Ok(Some(elem));
-            }
-        }
-        self.eng.restore(save);
-        Ok(None)
+        };
+        self.sequence_pattern_hooks.insert(pat, hook);
+        Ok(Some(elem))
     }
 
     /// The element type of a sequence PATTERN's scrutinee. A user sequence type (or a
@@ -4027,27 +4038,15 @@ impl<'a> Checker<'a> {
         if self.user_type_head(expected).is_none() {
             return Ok(false);
         }
-        let Some((build_name, args)) = self.pattern_literal_hook(self.pnode(pat)) else {
+        let Some(build_name) = Self::pattern_literal_hook(self.pnode(pat)) else {
             return Ok(false);
         };
-        let build_cands = self.hook_candidates(build_name);
-        let eq_cands = self.hook_candidates(HOOK_EQUALITY);
-        if build_cands.is_empty() || eq_cands.is_empty() {
-            return Ok(false);
-        }
         let save = self.eng.save();
-        let bool_ty = self.eng.types.con(ty::BOOL);
-        let build = self.resolve_hook(&build_cands, &args, expected);
-        let eq = self.resolve_hook(
-            &eq_cands,
-            &[expected, expected],
-            bool_ty,
-        );
+        let build = self.blessed(build_name, &[expected]);
+        let eq = self.blessed(IF_EQ, &[expected]);
         match (build, eq) {
-            (Some(bi), Some(ei)) => {
-                let build_use = self.hook_use(build_name, &build_cands, bi);
-                let eq_use = self.hook_use(HOOK_EQUALITY, &eq_cands, ei);
-                self.literal_pattern_hooks.insert(pat, (build_use, eq_use));
+            (Some((build, _)), Some((eq, _))) => {
+                self.literal_pattern_hooks.insert(pat, (build, eq));
                 Ok(true)
             }
             _ => {
@@ -4057,32 +4056,8 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// The variable id of `ty` if it is (resolves to) a bare type variable, used to
-    /// narrow local `@ctx` dictionary resolution by identity.
-    fn bare_var_id(&mut self, ty: Type) -> Option<VarId> {
-        match self.eng.types.node(self.eng.zonk(ty)) {
-            TypeNode::Var(id) => Some(id),
-            _ => None,
-        }
-    }
 
-    /// Whether `ty`'s first parameter is exactly the type variable `v` (a `@ctx`
-    /// dictionary `v -> ...`). An overload with a concrete or applied domain is not.
-    fn first_domain_is_var(&mut self, ty: Type, v: VarId) -> bool {
-        let z = self.eng.zonk(ty);
-        let TypeNode::Arrow(from, _, _) = self.eng.types.node(z) else {
-            return false;
-        };
-        let f = self.eng.zonk(from);
-        matches!(self.eng.types.node(f), TypeNode::Var(id) if id == v)
-    }
 
-    /// Whether `ty` IS exactly the type variable `v` (a nullary `@ctx` dictionary
-    /// `empty : v`), used to select it by the expected type at a value use site.
-    fn type_is_var(&mut self, ty: Type, v: VarId) -> bool {
-        let z = self.eng.zonk(ty);
-        matches!(self.eng.types.node(z), TypeNode::Var(id) if id == v)
-    }
 
     fn resolve_overload(
         &mut self,
@@ -4095,8 +4070,9 @@ impl<'a> Checker<'a> {
         match self.match_overload(candidates, args, result) {
             Match::Unique(idx) => {
                 let cand = candidates[idx].clone();
-                self.apply_overload_cand(&cand, args, result, site, name)?;
-                self.record_overload(site, name, candidates, idx);
+                self.apply_overload(cand.ty, args, result)?;
+                let module = candidates[idx].module;
+                self.record_call(site, module);
                 Ok(result)
             }
             // In a lenient expansion round the matching overload may be injected
@@ -4125,64 +4101,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Record a resolved overload use: qualify it to its module (`record_call`),
-    /// and, when that module defines the name several times (so `MOD.name` alone
-    /// would collide), record the type-mangled bare name lowering must emit. The
-    /// mangling matches the definition's key in `def_keys` because both derive
-    /// from the candidate's type.
-    fn record_overload(
-        &mut self,
-        site: Option<Aol<Expr>>,
-        name: &str,
-        candidates: &[Cand<'a>],
-        idx: usize,
-    ) {
-        // A resolved LOCAL `@ctx` dictionary lowers to its leading parameter, not a
-        // global; record the slot so lowering references the parameter.
-        if let Some(slot) = candidates[idx].dict_slot {
-            if let Some(site) = site {
-                self.dict_calls.insert(site, slot);
-            }
-            return;
-        }
-        let module = candidates[idx].module;
-        self.record_call(site, module);
-        if let (Some(site), Some(m)) = (site, module) {
-            if candidates.iter().filter(|c| c.module == Some(m)).count() > 1 {
-                let key = {
-                    let z = self.eng.zonk(candidates[idx].ty);
-                    overload_key(&self.eng.types, name, z)
-                };
-                self.overload_calls.insert(site, key);
-            }
-        }
-    }
-
-    /// Match the ordinary candidates; only if none of them applies does the
-    /// last-resort tier get a turn (see [`Cand::fallback`]). An *ambiguity* among
-    /// ordinary candidates is not a miss: it is deferred, and `solve_pending`
-    /// reaches for the fallback tier once nothing else can break the tie.
+    /// Which candidate the argument types select: exactly one is a match, none is a
+    /// miss, several is an ambiguity the caller defers.
     fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: Type) -> Match {
-        match self.match_tier(candidates, args, result, false) {
-            Match::None => self.match_tier(candidates, args, result, true),
-            m => m,
-        }
-    }
-
-    /// Match only the candidates in one tier, `fallback` selecting which.
-    fn match_tier(
-        &mut self,
-        candidates: &[Cand<'a>],
-        args: &[Type],
-        result: Type,
-        fallback: bool,
-    ) -> Match {
         let mut matched = None;
         let mut count = 0;
         for (idx, cand) in candidates.iter().enumerate() {
-            if cand.fallback != fallback {
-                continue;
-            }
             let save = self.eng.save();
             let ok = self.apply_overload(cand.ty, args, result).is_ok();
             self.eng.restore(save);
@@ -4207,8 +4131,9 @@ impl<'a> Checker<'a> {
                 match self.match_overload(&p.candidates, &p.args, p.result) {
                     Match::Unique(idx) => {
                         let cand = p.candidates[idx].clone();
-                        self.apply_overload_cand(&cand, &p.args, p.result, p.site, &p.name)?;
-                        self.record_overload(p.site, &p.name, &p.candidates, idx);
+                        self.apply_overload(cand.ty, &p.args, p.result)?;
+                        let module = p.candidates[idx].module;
+                        self.record_call(p.site, module);
                         progress = true;
                     }
                     // Lenient round: a still-unmatched overload may be satisfied by
@@ -4226,9 +4151,6 @@ impl<'a> Checker<'a> {
                 continue;
             }
             if self.default_numerics()? {
-                continue;
-            }
-            if self.resolve_pending_fallbacks()? {
                 continue;
             }
             if let Some(p) = self.pending.first() {
@@ -4256,28 +4178,6 @@ impl<'a> Checker<'a> {
             }
             return Ok(());
         }
-    }
-
-    /// Last round before an ambiguity is reported: a use whose ordinary candidates
-    /// stayed ambiguous (`x == y` on two still-unconstrained operands matches every
-    /// per-type comparison) settles on its fallback candidate, recovering the
-    /// generic built-in behaviour.
-    fn resolve_pending_fallbacks(&mut self) -> Result<bool> {
-        let batch = std::mem::take(&mut self.pending);
-        let mut progress = false;
-        let mut still = Vec::new();
-        for p in batch {
-            if let Match::Unique(idx) = self.match_tier(&p.candidates, &p.args, p.result, true) {
-                let cand = p.candidates[idx].clone();
-                self.apply_overload_cand(&cand, &p.args, p.result, p.site, &p.name)?;
-                self.record_overload(p.site, &p.name, &p.candidates, idx);
-                progress = true;
-                continue;
-            }
-            still.push(p);
-        }
-        self.pending = still;
-        Ok(progress)
     }
 
     /// Break an ambiguity where a pending overload's RESULT is already a concrete
@@ -4314,7 +4214,8 @@ impl<'a> Checker<'a> {
                 if let Match::Unique(idx) = self.match_overload(&p.candidates, &p.args, p.result) {
                     let cand_ty = p.candidates[idx].ty;
                     self.apply_overload(cand_ty, &p.args, p.result)?;
-                    self.record_overload(p.site, &p.name, &p.candidates, idx);
+                    let module = p.candidates[idx].module;
+                    self.record_call(p.site, module);
                     progress = true;
                     continue;
                 }
@@ -4409,53 +4310,6 @@ impl<'a> Checker<'a> {
         self.eng.unify(f, result, "in an overloaded application")
     }
 
-    /// Apply a resolved overload candidate to the argument types and, when it
-    /// carries `@ctx` implicits, plan the dictionary at the call site. The
-    /// signature and its requirement types are instantiated as one bundle so their
-    /// shared variables stay aligned; unifying the signature against the args pins
-    /// those variables, and the (now-concrete) requirement types drive implicit
-    /// resolution (a `to_string (Box.Wrap 5)` plans `to_string : @int -> @str`).
-    fn apply_overload_cand(
-        &mut self,
-        cand: &Cand<'a>,
-        args: &[Type],
-        result: Type,
-        site: Option<Aol<Expr>>,
-        name: &str,
-    ) -> Result<()> {
-        if cand.implicits.is_empty() {
-            return self.apply_overload(cand.ty, args, result);
-        }
-        let bundle: Vec<Type> = std::iter::once(cand.ty)
-            .chain(cand.implicits.iter().map(|(_, t)| *t))
-            .collect();
-        let inst = self.eng.instantiate_bundle(&bundle);
-        let mut f = inst[0];
-        for a in args {
-            let next = self.eng.fresh();
-            let eff = self.eng.fresh();
-            let want = self.eng.types.arrow_eff(*a, next, eff);
-            self.eng.unify(
-                f,
-                want,
-                "in an overloaded application",
-            )?;
-            let amb = self.ambient;
-            self.eng.subrow(eff, amb, "in an overloaded application")?;
-            f = next;
-        }
-        self.eng.unify(f, result, "in an overloaded application")?;
-        if let Some(site) = site {
-            let reqs: Vec<(&'a str, Type)> = cand
-                .implicits
-                .iter()
-                .enumerate()
-                .map(|(i, (n, _))| (*n, inst[i + 1]))
-                .collect();
-            self.plan_implicits(site, name, &reqs)?;
-        }
-        Ok(())
-    }
 
     fn infer_let_group(&mut self, bindings: &'a [Binding]) -> Result<()> {
         for b in bindings {
@@ -5019,35 +4873,9 @@ impl<'a> Checker<'a> {
         let int = self.eng.types.con(ty::INT);
         let bool_ = self.eng.types.con(ty::BOOL);
 
-        // Arithmetic is overloaded over every numeric type: the friendly
-        // `Int`/`Nat`/`Real`, plus each sized `@`-form (which stays a distinct
-        // type for exact C marshalling). `%` is defined for integers only.
-        let ints = [
-            ty::INT, "@nat", "@int8", "@int16", "@int32", "@int64",
-            "@nat8", "@nat16", "@nat32", "@nat64",
-        ];
-        let reals = ["@float32", "@float64"];
-        let numeric: Vec<&str> = ints.iter().chain(reals.iter()).copied().collect();
-        // `+ - * / %` are defined in CORE.thx over the arithmetic intrinsics, not
-        // seeded here. `^` stays a builtin (no intrinsic: int is a mul loop, real
-        // is libm `pow`).
-        {
-            let op = "^";
-            let cands = numeric
-                .iter()
-                .map(|t| {
-                    let c = self.eng.types.con(t);
-                    Cand::local(self.eng.types.arrow(c, self.eng.types.arrow(c, c)))
-                })
-                .collect();
-            self.overloads.insert(op, cands);
-        }
-        let mut negs = Vec::new();
-        for t in ints.iter().chain(reals.iter()) {
-            let c = self.eng.types.con(t);
-            negs.push(Cand::local(self.eng.types.arrow(c, c)));
-        }
-        self.overloads.insert("neg", negs);
+        // `+ - * / % ^`, the comparisons, and the unary `neg` are all defined in
+        // CORE.thx over their interfaces, not seeded here. `!` is the one operator
+        // with a single type, so it stays a plain binding.
         let t = self.eng.types.arrow(bool_, bool_);
         self.bind("not", t);
 
@@ -5059,7 +4887,8 @@ impl<'a> Checker<'a> {
         // `@f32*` rounds each operand and its result to single precision.
         for name in [
             "@iadd", "@isub", "@imul", "@idiv", "@imod", "@udiv", "@umod", "@fadd", "@fsub",
-            "@fmul", "@fdiv", "@fmod", "@f32add", "@f32sub", "@f32mul", "@f32div", "@f32mod",
+            "@fmul", "@fdiv", "@fmod", "@fpow", "@f32add", "@f32sub", "@f32mul", "@f32div",
+            "@f32mod", "@f32pow",
         ] {
             let t = self.eng.fresh_generic();
             self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, t)));
@@ -5075,31 +4904,30 @@ impl<'a> Checker<'a> {
             self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, bool_)));
         }
 
-        let prim = |mids: &[&str], returns_self: bool| {
-            [ty::ARRAY, ty::STR].map(|recv| {
-                let ret = if returns_self { recv } else { ty::INT };
-                let params: Vec<Type> = std::iter::once(recv)
-                    .chain(mids.iter().copied())
-                    .map(|n| self.eng.types.con(n))
-                    .collect();
-                let ret = self.eng.types.con(ret);
-                self.eng.types.arrows(params.into_iter(), ret)
-            })
-        };
-        self.overloads
-            .insert("@array_len", prim(&[], false).map(Cand::local).into());
-        self.overloads
-            .insert("@array_get", prim(&[ty::INT], false).map(Cand::local).into());
-        self.overloads
-            .insert("@array_push", prim(&[ty::INT], true).map(Cand::local).into());
-        self.overloads.insert(
-            "@array_set",
-            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
-        );
-        self.overloads.insert(
-            "@array_slice",
-            prim(&[ty::INT, ty::INT], true).map(Cand::local).into(),
-        );
+        // `@acat` joins two byte buffers of the same kind: the primitive CORE's
+        // `ICat @str` / `ICat @array` instances are built on, now that `++` is an
+        // ordinary function. Typed like the arithmetic intrinsics (`t -> t -> t`),
+        // since the runtime reads the kind off the values.
+        {
+            let t = self.eng.fresh_generic();
+            self.bind("@acat", self.eng.types.arrow(t, self.eng.types.arrow(t, t)));
+        }
+        // The byte-buffer primitives serve `@array` and `@str` alike (one runtime rep,
+        // two types), so they are typed with a single receiver variable like the
+        // `@vec_*` family: the runtime reads the kind off the value.
+        for (name, mids, returns_self) in [
+            ("@array_len", 0, false),
+            ("@array_get", 1, false),
+            ("@array_push", 1, true),
+            ("@array_set", 2, true),
+            ("@array_slice", 2, true),
+        ] {
+            let recv = self.eng.fresh_generic();
+            let ret = if returns_self { recv } else { int };
+            let params = std::iter::once(recv).chain((0..mids).map(|_| int));
+            let t = self.eng.types.arrows(params, ret);
+            self.bind(name, t);
+        }
 
         let vec_con = self.eng.types.con(ty::VEC);
         let (_t, vt) = self.fresh_vec(vec_con);
@@ -5330,27 +5158,10 @@ impl<'a> Checker<'a> {
             );
         }
 
-        // Comparison. Each operator is defined per base type in CORE.thx over the
-        // comparison intrinsics, the way arithmetic is, so a user type can join the
-        // overload set. The generic built-in stays as the FALLBACK tier: `==` is
-        // structural on any value, and ordering works on numbers and strings, for
-        // everything no per-type overload covers.
-        for op in ["==", "<", ">", "<=", ">="] {
-            let a = self.eng.fresh_generic();
-            let t = self.eng.types.arrow(a, self.eng.types.arrow(a, bool_));
-            self.overloads.insert(op, vec![Cand::fallback(t)]);
-        }
-        // `++` is an overload set over the byte-vector types, not a generic
-        // `a -> a -> a`: that signature claimed a domain the operator does not
-        // have, so `p ++ q` on two structs type-checked and then faulted at run
-        // time. A user `$ (++)` now JOINS this set instead of replacing it.
-        {
-            let cat = [ty::STR, ty::ARRAY].map(|n| {
-                let t = self.eng.types.con(n);
-                self.eng.types.arrow(t, self.eng.types.arrow(t, t))
-            });
-            self.overloads.insert("++", cat.map(Cand::local).into());
-        }
+        // Comparison has no built-in tier: `==` and `<` are CORE functions over the
+        // `IEq` / `IOrd` interfaces, so a type is comparable exactly when it has an
+        // instance. The structural built-in that used to catch everything else is
+        // gone, because it made `==` type-check on values it could not compare.
         {
             let a = self.eng.fresh_generic();
             let b = self.eng.fresh_generic();
@@ -5381,7 +5192,9 @@ impl<'a> Checker<'a> {
 struct Def<'a> {
     name: &'a str,
     sig: Option<Aol<Ty>>,
-    implicits: Vec<FieldDecl>,
+    /// The context parameter's type when the signature declares one. It is also
+    /// `sig`'s first `from`, so the signature stays what the user wrote.
+    ctx: Option<Aol<Ty>>,
     body: Aol<Expr>,
 }
 
@@ -5553,12 +5366,7 @@ fn free_globals<'a>(
             free_globals(ast, *cleanup, globals, bound, out);
             free_globals(ast, *body, globals, bound, out);
         }
-        Expr::Ctx {
-            callee, overrides, ..
-        } => {
-            free_globals(ast, *callee, globals, bound, out);
-            free_globals_field_inits(ast, ast.slice(*overrides), globals, bound, out);
-        }
+        Expr::CtxArg(value) => free_globals(ast, *value, globals, bound, out),
         Expr::Ascribe { expr, .. } => free_globals(ast, *expr, globals, bound, out),
     }
 }
@@ -5639,66 +5447,7 @@ fn applied(types: &Types, name: &str, args: &[Type]) -> Type {
 
 /// The mangled global name for one overload: `name#<type-key>`. Two overloads of
 /// one name in one module get distinct keys, so their globals no longer collide
-/// under a single `MOD.name`. The definition side and each use site both derive
-/// the key from the candidate's type, so they agree. Effect rows are omitted (a
-/// pair of overloads never differs only by effect), which also keeps the key free
-/// of the noisy row variables that would otherwise vary between the two sides.
-fn overload_key(types: &Types, name: &str, ty: Type) -> String {
-    let mut vars = Vec::new();
-    format!("{name}#{}", ty_key(types, ty, &mut vars))
-}
-
-/// A structural, effect-free string for `ty` with variables canonicalized to
-/// `t0`, `t1`, ... by first appearance, so structurally equal schemes (however
-/// their variables happen to be numbered) produce the same string. `.` is
-/// replaced so the key survives the runtime's split-on-`.` bare-name fallback.
-fn ty_key(types: &Types, ty: Type, vars: &mut Vec<VarId>) -> String {
-    match types.node(ty) {
-        TypeNode::Var(id) => {
-            let i = vars.iter().position(|v| *v == id).unwrap_or_else(|| {
-                vars.push(id);
-                vars.len() - 1
-            });
-            format!("t{i}")
-        }
-        TypeNode::Con(name) => types.name(name).replace('.', "_"),
-        TypeNode::Nat(n) => format!("N{n}"),
-        TypeNode::NatAdd(a, b) => format!("P{}_{}", ty_key(types, a, vars), ty_key(types, b, vars)),
-        TypeNode::NatMul(a, b) => format!("M{}_{}", ty_key(types, a, vars), ty_key(types, b, vars)),
-        TypeNode::App(head, arg) => {
-            format!("A{}_{}", ty_key(types, head, vars), ty_key(types, arg, vars))
-        }
-        TypeNode::Arrow(from, to, _) => {
-            format!("F{}_{}", ty_key(types, from, vars), ty_key(types, to, vars))
-        }
-        TypeNode::Tuple(items) => {
-            let parts: Vec<String> = types
-                .items(items)
-                .to_vec()
-                .into_iter()
-                .map(|t| ty_key(types, t, vars))
-                .collect();
-            format!("T{}", parts.join("_"))
-        }
-        TypeNode::RowEmpty => "R".to_string(),
-        TypeNode::RowExtend(label, rest) => {
-            format!(
-                "R{}_{}",
-                types.name(label).replace('.', "_"),
-                ty_key(types, rest, vars)
-            )
-        }
-        TypeNode::Record(row) => format!("D{}", ty_key(types, row, vars)),
-        TypeNode::RowField(label, ty, rest) => format!(
-            "{}:{}_{}",
-            types.name(label).replace('.', "_"),
-            ty_key(types, ty, vars),
-            ty_key(types, rest, vars)
-        ),
-    }
-}
-
-/// Whether a type is unit `{}` (a nullary C function's zero-argument parameter),
+//// Whether a type is unit `{}` (a nullary C function's zero-argument parameter),
 /// as either the `{}` constructor or the empty tuple.
 fn is_unit_ty(types: &Types, ty: Type) -> bool {
     match types.node(ty) {
@@ -5915,27 +5664,24 @@ fn is_numeric_type(name: &str) -> bool {
     )
 }
 
-/// The `@compiler_interface_*` construction hook for each literal kind: a literal
-/// whose expected type is a user type providing the matching overload builds that
-/// type instead of the built-in default.
-const HOOK_STRING: &str = "@compiler_interface_string_literal";
-const HOOK_INTEGER: &str = "@compiler_interface_integer_literal";
-const HOOK_REAL: &str = "@compiler_interface_real_literal";
-const HOOK_SEQUENCE: &str = "@compiler_interface_sequence_literal";
-const HOOK_RANGE: &str = "@compiler_interface_range";
-const HOOK_SLICE: &str = "@compiler_interface_slice";
-const HOOK_RANGE_FROM: &str = "@compiler_interface_range_from";
-const HOOK_EQUALITY: &str = "@compiler_interface_equality";
-const HOOK_SEQVIEW: &str = "@compiler_interface_sequence_view";
-/// The core union `@compiler_interface_sequence_view` returns: `SeqView s t`.
-const SEQVIEW_TYPE: &str = "SeqView";
+/// How deep context resolution may chain instances (an instance whose own context
+/// is satisfied by another instance) before it is reported as non-terminating.
+const CTX_DEPTH: usize = 32;
 
-/// An extensible interface hook is any `@compiler_interface_*` name. Each is always
-/// treated as an overload set (even a lone definition) so an implicit use site (a
-/// literal, a pattern, `.[..]`) can find its candidate uniformly.
-fn is_interface_hook(name: &str) -> bool {
-    name.starts_with("@compiler_interface_")
-}
+/// The blessed interface each desugar site resolves. CORE declares them as
+/// one-field `@struct`s (see `parser::table::BLESSED_INTERFACES`); the compiler
+/// resolves a value of the applied type and projects that field.
+const IF_STR_LIT: &str = "@IStrLit";
+const IF_INT_LIT: &str = "@IIntLit";
+const IF_REAL_LIT: &str = "@IRealLit";
+const IF_SEQ_LIT: &str = "@ISeqLit";
+const IF_RANGE: &str = "@IRange";
+const IF_RANGE_FROM: &str = "@IRangeFrom";
+const IF_SLICE: &str = "@ISlice";
+const IF_SEQ_VIEW: &str = "@ISeqView";
+/// The equality a literal PATTERN on a user type compares with: CORE's ordinary
+/// `IEq`, the same interface `==` wraps, so a type needs no second instance.
+const IF_EQ: &str = "IEq";
 
 fn is_base_type(name: &str) -> bool {
     matches!(

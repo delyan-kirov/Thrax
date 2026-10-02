@@ -24,7 +24,7 @@ Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 4. Expressions and syntactic sugar
 5. Pattern matching
 6. Algebraic data types (structs, unions, recursion)
-7. Functions (currying, higher-order, overloading, implicits, TCO)
+7. Functions (currying, higher-order, interfaces, TCO)
 8. Algebraic effects and handlers
 9. Sized tensors and linear algebra
 10. Foreign function interface
@@ -67,10 +67,9 @@ $ mixed = 1 + 1.0            # a literal takes the type its context wants
 
 ## 1.4 Imaginary literals
 An `i` suffix on any numeric literal form makes it imaginary. The suffixed
-literal is not a base type: it desugars to the overloadable
-`@compiler_interface_imaginary_literal` hook, whose `CORE` overload builds the
-`Cpx` struct (see 15). The `i` counts as a suffix only when no identifier
-character follows, so `3if` is still `3` then `if`.
+literal is not a base type: it desugars to the `@IImagLit` interface, whose `CORE`
+instance builds the `Cpx` struct (see 15). The `i` counts as a suffix only when no
+identifier character follows, so `3if` is still `3` then `if`.
 
 ```thrax
 $ unit : Cpx = 1.0i
@@ -79,10 +78,10 @@ $ tiny : Cpx = 2.5e-2i         # scientific notation suffixes too
 $ z    : Cpx = 3.4 + 1.2i      # the canonical spelling: real plus imaginary
 ```
 
-A real mixes with a complex on either side (`@float32` widens as elsewhere), but
-an INTEGER does not: `1 + 3i` is a type error, because an integer never silently
-becomes a float. Write `1.0 + 3i`. There is no imaginary PATTERN; match the
-fields (`is z | Cpx.{re, im}`) or compare with `==` in a guard.
+An operator takes ONE type for both operands, so a real joins a complex only by
+being made one: `CPX.of_real 3.4 + 1.2i`. Nothing is promoted silently, in either
+direction. There is no imaginary PATTERN; match the fields (`is z | Cpx.{re, im}`)
+or compare with `==` in a guard.
 
 ## 1.5 String literals and escapes
 A string is a block of bytes; source text must be well-formed UTF-8. Escapes:
@@ -96,19 +95,19 @@ $ emoji: Str = "\u{1F600} café"      # code point + raw UTF-8
 ```
 
 ## 1.6 String interpolation
-`"... {expr} ..."` splices an expression, stringified through the overloaded
-`to_string`. Surface sugar for `chunk ++ to_string expr ++ chunk`. `\{` and `\}`
-are literal braces.
+`"... {expr} ..."` splices an expression, stringified through `to_string` over its
+`Ito_string` instance. Surface sugar for `chunk ++ to_string expr ++ chunk`. `\{`
+and `\}` are literal braces.
 
 Simple:
 ```thrax
 $ greet : Str -> Str = \who = "hello {who}!"
 ```
 
-Involved (a user type interpolates by adding a `to_string` overload):
+Involved (a user type interpolates by defining an `Ito_string` instance):
 ```thrax
 $ Point : @struct = x: @int, y: @int
-$ to_string : Point -> Str = \p = "({p.x}, {p.y})"
+$ show_point : Ito_string Point = .{ .show = \p = "({p.x}, {p.y})" }
 $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
 ```
 
@@ -169,7 +168,7 @@ $ helper : @int -> @int = \x = x * x    # module-private
 The program entry is `@main`, the one name the compiler knows, and it has exactly
 one accepted signature: it takes the argument vector and returns the `@int` exit
 code, performing `@io`. `@main` is also the only `@`-name a program may define
-besides the `@compiler_interface_*` hooks.
+besides the blessed `@I*` interface types, which only `CORE` declares.
 
 ```thrax
 $ @main : @vec @str -> <@io> @int = \args = 0      # args[0] is the program path
@@ -198,13 +197,14 @@ $ s : Str  = "hi"
 
 Complex numbers are NOT a base type: `Cpx` is an ordinary `CORE` struct
 (`re`/`im`), with the `i` literal suffix (1.4) and its operators supplied as
-library overloads. `CPX` holds the math (15).
+library instances. `CPX` holds the math (15).
 
 ## 3.2 Sized numerics
 Fixed widths are `@`-spelled: `@int8/@int16/@int32/@int64`,
 `@nat8/@nat16/@nat32/@nat64`, `@float32/@float64`. They are distinct from `@int`
-etc. (`@int` and `@int32` do not unify). Arithmetic is overloaded per width; a
-literal takes the width expected of it.
+etc. (`@int` and `@int32` do not unify). Each width has its own arithmetic
+instances; a literal takes the width expected of it. An operator takes ONE type for
+both operands, so crossing a width is explicit (`@cast`, `f32_to_f64`).
 
 ```thrax
 $ w : @int32 = 1000
@@ -356,29 +356,29 @@ $ le : @bool = 8 <= 8
 $ ne : @bool = !(3 == 4)
 ```
 
-Like arithmetic, each one is an overload per base type in `CORE.thx` over the
-comparison intrinsics (`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`),
-so a type of your own joins the set the same way:
+Like arithmetic, these are `CORE` functions over interfaces: `==` over `IEq`, the
+four orderings over `IOrd`, whose instances bottom out at the comparison intrinsics
+(`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`). A type of your own joins
+them with an instance:
 
 ```thrax
 $ Money : @struct = cents: @int
 
-$ (<) : Money -> Money -> @bool = \a b = a.cents < b.cents
+$ ord_money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
 $ cheaper : @bool = Money.{ .cents = 150 } < Money.{ .cents = 900 }
 ```
 
-What no overload covers falls back to the built-in: `==` compares any two values
-structurally (field by field, variant by variant), and ordering works on numbers
-and strings. A definition of your own is preferred over that fallback wherever it
-applies.
+There is NO structural fallback: a type with no `IEq` instance cannot be compared
+with `==`, which is an error at the comparison rather than a surprise at run time.
+`DERIVE.derive_eq` / `derive_ord` generate the instances for a declared type.
 
 `<` and `>` are also the effect-row brackets (§3.5), but a row only ever appears
 in type position, so the two never collide.
 
 ## 4.5 Concatenation `++` and cons `::`
-`++` joins strings/arrays/vectors of the same type; `::` prepends to a `@vec`.
-`::` is an ordinary operator defined in `CORE`, so a sequence of your own joins
-it with an overload of its own.
+`++` joins strings/arrays/vectors of the same type; `::` prepends to a `@vec`. Both
+are `CORE` functions over interfaces (`ICat`, `ICons`), so a sequence of your own
+joins them with instances of its own.
 
 ```thrax
 $ s  : Str = "Hello" ++ " " ++ "world"
@@ -477,14 +477,14 @@ $ h2    : @int -> @int = (<|>) double inc          # = compose double inc
 
 ## 4.10 Operators as functions `(op)`
 An operator in parentheses is a plain function value, the same binding a
-`$ (op) : ... = ...` definition binds. It curries, passes as an argument, and
-dispatches across the overload set like any other function reference; the
-expected type picks the overload where there are no arguments to dispatch on.
+`$ (op) : ... = ...` definition binds. It curries and passes as an argument; since
+it takes a context parameter, the type it is used at decides which instance is
+injected, so a bare `(+)` with nothing to pin its type is an error that says so.
 
 ```thrax
 $ two   = (+) 1 1                          # 1 + 1
 $ add1  : @int -> @int = (+) 1             # curried
-$ plus  : @int -> @int -> @int = (+)       # the overload comes from the type
+$ plus  : @int -> @int -> @int = (+)       # the instance comes from the type
 $ total = VEC.foldl (+) 0 [1, 2, 3]        # as an argument
 ```
 
@@ -768,58 +768,67 @@ $ apply_twice : (t -> t) -> t -> t = \f x = f (f x)
 $ compose : (b -> c) -> (a -> b) -> a -> c = \f g x = f (g x)
 ```
 
-## 7.3 Function overloading
-Several definitions may share a name; a use resolves by argument type. A local
-definition extends an imported one into a merged overload set. This is how
-`to_string` (in `CORE`) is extended for new types.
+## 7.3 One name, one definition
+A name has one definition and one type. Two definitions of a name in one module is
+an error; a local definition shadows an imported one of the same name; and a name
+two imports bring in has no bare meaning, so a use of it says so and names the
+owners (`A.name` and `B.name` still reach either). An operation that covers several
+types is an interface (§7.4), not several definitions.
+
+## 7.4 Interfaces and the context parameter `@ctx`
+An interface is an ordinary `@struct` whose fields are its operations; implementing
+it is defining a value of that type. A function that needs one declares it as a
+`@ctx` FIRST parameter: ordinary in every respect, except that call sites do not
+write it. The compiler finds it BY TYPE, taking the nearest binder in scope and
+otherwise the one instance in scope (two would be an error, since global scope is
+flat). It elaborates to a leading argument, so the backends need no support.
 
 Simple:
 ```thrax
-$ show : @int -> Str = \n = to_string n
-$ show : @bool -> Str = \b = if b => "yes" else "no"
+$ Ordering : @union = LT: {}, EQ: {}, GT: {}
+$ IOrder : @struct t = compare: t -> t -> Ordering,
+$ order_int : IOrder @int = .{
+	.compare = \a b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
+}
+$ max_of : @ctx IOrder t -> t -> t -> t = \d x y =
+	is d.compare x y | Ordering.GT => x else y
+$ biggest : @int = max_of 3 7
 ```
 
-Involved (extend the imported `to_string` for a user type; interpolation then
-picks it up):
+A definition has at most ONE context parameter and it is first; its type's head
+must be a declared struct or union. Several requirements travel as one tuple, which
+the call site builds:
+
 ```thrax
-$ Point : @struct = x: @int, y: @int
-$ to_string : Point -> Str = \p = "({p.x}, {p.y})"
-$ line : Str = "p = {Point.{ .x = 1, .y = 2 }}"
+$ abs : @ctx {IOrd t, ISub t, IZero t} -> t -> t = \ds x =
+	if ds.0.lt x ds.2.zero => ds.1.sub ds.2.zero x else x
 ```
 
-An operator overloads the same way: `$ (op) : ... = ...` binds a definition under
-the symbolic name, joining that operator's set (§4.4). The parenthesized form is
-also how the operator is referred to as a value (§4.10).
+Chaining and the explicit form (`f (@ctx e) x`, first argument, where the `@ctx`
+keyword is needed because the parameter is otherwise not addressable):
+
+```thrax
+$ max3 : @ctx IOrder t -> t -> t -> t -> t = \d x y z =
+	max_of (max_of x y) z          # d satisfies max_of's requirement, so it passes down
+$ as_min : @int =
+	let flip : IOrder @int = .{ .compare = \a b = order_int.compare b a } in
+	max_of (@ctx flip) 3 7
+```
+
+An instance may itself take a context, which resolution fills in recursively, so
+`IEq (@vec t)` is built from `IEq t`. `CORE`'s operators are all ordinary functions
+over such interfaces: `+ - * / %` over `IAdd`/`ISub`/`IMul`/`IDiv`/`IMod`, `^` over
+`IPow`, `== < > <= >=` over `IEq`/`IOrd`, `++` over `ICat`, `::` over `ICons`, and
+`to_string` over `Ito_string`. A type joins any of them by defining an instance:
 
 ```thrax
 $ Money : @struct = cents: @int
-$ (+) : Money -> Money -> Money = \a b = Money.{ .cents = a.cents + b.cents }
+$ add_money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
 ```
 
-## 7.4 Implicit parameters `@ctx`
-After a signature, `@ctx name : Type` declares an implicit parameter resolved by
-name from the surrounding scope (a local binder wins, else a global picked by
-type), or passed explicitly with `@ctx e`. Elaborates to dictionary passing.
-
-Simple:
-```thrax
-$ Ordering : @union = LT: {}, EQ: {}, GT: {}
-$ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
-	is compare x y | Ordering.GT => x else y
-```
-
-Involved (chaining passes the implicit down; explicit override at the call):
-```thrax
-$ Ordering : @union = LT: {}, EQ: {}, GT: {}
-$ compare : @int -> @int -> Ordering = \a b =
-	if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ
-$ flip : @int -> @int -> Ordering = \a b = compare b a
-$ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
-	is compare x y | Ordering.GT => x else y
-$ max3 : a -> a -> a -> a  @ctx compare : a -> a -> Ordering = \x y z =
-	max_of (max_of x y) z
-$ as_min : @int = max_of 3 7 @ctx flip       # flip reverses the order
-```
+See `documentation/interfaces.md` for the full rules, the diagnostics, and the
+blessed `@I*` interfaces the compiler's own desugars resolve.
 
 ## 7.5 Tail-call optimization
 Tail-recursive calls (self, mutual, or through a recursive local `let`) run in
@@ -981,10 +990,10 @@ $ sub : [8]@int -> [4]@int = \m = m.[2 ... 5]      # inclusive 2..5, four elemen
 
 ## 9.5 Tensor primitives and the `LA` library
 The compiler provides only `@`-primitives over the buffer; every named operation
-lives in `LA`. `t.[i]` desugars to `@compiler_interface_indexing` and a lone
-`t.[lo ... hi]` to `@compiler_interface_slice`, both overloadable (so a container
-of your own joins the `.[..]` surface with its own overloads). A multi-axis
-slice stays tensor-only: its result shape is computed from the slots.
+lives in `LA`. `t.[i]` desugars to the `@IIndex` interface and a lone
+`t.[lo ... hi]` to `@ISlice`, so a container of your own joins the `.[..]` surface
+by defining an instance. A multi-axis slice stays tensor-only: its result shape is
+computed from the slots.
 
 ```thrax
 $ transpose : [m][n]a -> [n][m]a = \t =
@@ -993,13 +1002,13 @@ $ transpose : [m][n]a -> [n][m]a = \t =
 ```
 
 ## 9.6 Expression-form ranges
-`[lo ... hi]` builds whatever `@compiler_interface_range` returns, and the open
-`[lo ...]` whatever `@compiler_interface_range_from` returns; `CORE` overloads
-both for `@vec`/`List` and `Stream`/`List`. The expected type picks the overload,
-so a range of your own type needs only its own. When nothing constrains it, the
-**first overload declared** wins, which is how `CORE`'s order (not the compiler)
-sets what a bare range builds. A sized tensor is the exception: literal bounds fix
-`n`, and the compiler builds it directly.
+`[lo ... hi]` builds whatever the resolved `@IRange` instance returns, and the open
+`[lo ...]` whatever `@IRangeFrom` returns; `CORE` has instances for `@vec`/`List`
+and `Stream`/`List`. The expected type picks one, so a range of your own type needs
+only its own instance. When nothing constrains it, the **first instance declared**
+wins, which is how `CORE`'s order (not the compiler) sets what a bare range builds.
+A sized tensor is the exception: literal bounds fix `n`, and the compiler builds it
+directly.
 
 ```thrax
 $ tv : [4]@int     = [1 ... 4]     # tensor, n = 4
@@ -1008,7 +1017,7 @@ $ s  : Stream @int = [1 ...]       # unbounded (the bare open range)
 ```
 
 A `@vec` range materializes every element, so a large bound costs that much work
-up front. The `List` overloads are lazy in the tail, which is what makes a range
+up front. The `List` instances are lazy in the tail, which is what makes a range
 you only walk part of cheap:
 
 ```thrax
@@ -1126,8 +1135,8 @@ $ chk : @int = is b | @true => 0 else 1
 Allocated with `@array.{ n }` (n zeroed bytes). Primitives: `@array_len`,
 `@array_get`, `@array_set`, `@array_push`, `@array_slice`, `@array_alloc`. `Str`
 is a byte array, so these apply to strings too. An `@array` also joins the `[..]`
-literal, pattern, and slice surfaces through its `CORE` hook overloads, like any
-other sequence.
+literal, pattern, and slice surfaces through its `CORE` instances of the blessed
+interfaces, like any other sequence.
 
 Simple:
 ```thrax
@@ -1179,13 +1188,13 @@ A quick index of the `@`-forms and where each is documented above.
 | `@main` | program entry | 2.5 |
 | `@struct` `@union` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding | 10 |
-| `@ctx` | implicit parameter | 7.4 |
+| `@ctx` | context (interface) parameter | 7.4 |
 | `@private` | visibility | 2.4 |
 | `@e` `@run` `@abort` | compile-time evaluation | 11 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
-| `@compiler_interface_*` | overloadable literal / indexing hooks | 1.4, 9.5 |
+| `@I*` | blessed literal / indexing / range interfaces | 1.4, 9.5 |
 | `@ptr` `@array` `@vec` | built-in containers/pointer | 3.3, 12 |
 | `@co` `@contra` | tensor axis variance | 9.4 |
 | `@array_len/get/set/push/slice/alloc` | array primitives | 12.2 |

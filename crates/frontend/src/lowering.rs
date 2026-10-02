@@ -17,13 +17,14 @@
 pub mod anf;
 pub mod data;
 pub mod debruijn;
+pub mod inline;
 pub mod patmat;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldDecl, FieldInit, FieldPat, Item, Pattern, Payload,
+    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload,
     Program as AstProgram, RecField, SliceSlot, Ty,
 };
 use utilities::{Aol, Span};
@@ -56,6 +57,56 @@ pub struct Decls {
     /// `with Other` splices to apply once every module is collected:
     /// `(module, type, is_struct, included)`. The checker has already validated it.
     includes: Vec<(String, String, bool, Vec<String>)>,
+    /// Interface WRAPPERS: `(module, name) -> field`, for a context-bearing global
+    /// whose body is exactly `\d p1 .. pn = d.field p1 .. pn` (every CORE operator).
+    /// A call site then projects the resolved instance's field directly instead of
+    /// calling through the wrapper, which is three closure applications per use.
+    wrappers: HashMap<(String, String), String>,
+}
+
+/// The field an interface wrapper projects: `body` must be exactly
+/// `\d p1 .. pn = d.field p1 .. pn`, with `d` and the parameters distinct variable
+/// patterns applied in order. Anything else (`neg`'s `ds.0.sub ds.1.zero x`, a
+/// wrapper that reorders or transforms) returns `None`.
+fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<String> {
+    let Expr::Lambda { params, body } = ast.expr(body) else {
+        return None;
+    };
+    let params = ast.slice(*params);
+    let names: Vec<&str> = params
+        .iter()
+        .map(|p| match ast.pat(*p) {
+            Pattern::Var(n) => Some(ast.text(*n)),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let (ctx, rest) = names.split_first()?;
+    // Peel the applications off the spine; they must be the parameters in order.
+    let mut args = Vec::new();
+    let mut head = *body;
+    while let Expr::App(f, x) = ast.expr(head) {
+        args.push(*x);
+        head = *f;
+    }
+    args.reverse();
+    if args.len() != rest.len() {
+        return None;
+    }
+    for (arg, want) in args.iter().zip(rest) {
+        match ast.expr(*arg) {
+            Expr::Var { module: None, name } if ast.text(*name) == *want => {}
+            _ => return None,
+        }
+    }
+    let Expr::Field { record, name } = ast.expr(head) else {
+        return None;
+    };
+    match ast.expr(*record) {
+        Expr::Var { module: None, name: r } if ast.text(*r) == *ctx => {
+            Some(ast.text(*name).to_string())
+        }
+        _ => None,
+    }
 }
 
 struct VariantDecl {
@@ -159,9 +210,28 @@ impl Decls {
                         );
                     }
                 }
+                Item::Def {
+                    name,
+                    ctx: Some(_),
+                    body,
+                    ..
+                } => {
+                    if let Some(field) = wrapper_field(ast, *body) {
+                        self.wrappers
+                            .insert((module.clone(), ast.text(*name).to_string()), field);
+                    }
+                }
                 _ => {}
             }
         }
+    }
+
+    /// The field an interface wrapper projects, when `body` is exactly
+    /// `\d p1 .. pn = d.field p1 .. pn` over distinct variable patterns.
+    fn wrapper_field_of(&self, module: &str, name: &str) -> Option<&str> {
+        self.wrappers
+            .get(&(module.to_string(), name.to_string()))
+            .map(String::as_str)
     }
 
     /// Copy `with Other` members into each splicing type's field / variant tables,
@@ -365,20 +435,37 @@ type ArmHandles = (Vec<Aol<Pattern>>, Option<Aol<Expr>>, Aol<Expr>);
 
 /// The type checker's resolutions that lowering cannot re-derive without types.
 /// `call_modules`, for instance, maps a bare-call `Expr::Var` to the module its
-/// overload resolved to, so lowering can emit a qualified `MOD.name`. Empty (the
+/// checker resolved to, so lowering can emit a qualified `MOD.name`. Empty (the
 /// default) means "no resolutions", correct for callers without a checker.
-/// One resolved implicit (`@ctx`) argument at a use site, ready for lowering to
-/// inject as a leading argument of the referenced function.
+/// One resolved context (`@ctx`) value at a use site, ready for lowering to inject
+/// as a leading argument of the referenced function.
 #[derive(Clone, Debug)]
-pub enum ImplicitArg {
-    /// A bare name: a local binder (the caller's own `@ctx` param) or a builtin;
-    /// De-Bruijn / the runtime resolves it.
+pub enum CtxVal {
+    /// A bare name: a local binder (the caller's own context parameter) or a
+    /// builtin; De-Bruijn / the runtime resolves it.
     Bare(String),
-    /// A top-level value `module.name` (already type-mangled if overloaded).
+    /// A top-level value `module.name`.
     Qualified { module: String, name: String },
-    /// An explicit override expression from `@ctx e` / `@ctx { .c = e }`; lowering
-    /// lowers this AST node in place.
+    /// An instance that itself takes a context, applied to the context resolved
+    /// for it (`ts_list ts_int`).
+    App(Box<CtxVal>, Box<CtxVal>),
+    /// A bundle for a tuple requirement, built at the use site so no global of the
+    /// bundled type has to exist.
+    Tuple(Vec<CtxVal>),
+    /// One component of a bundle already in scope, as `base.index`: a function that
+    /// received several contexts as one tuple passes a single one onward.
+    Proj(Box<CtxVal>, usize),
+    /// An explicit `(@ctx e)` argument; lowering lowers this AST node in place.
     Expr(Aol<Expr>),
+}
+
+/// A desugar site's resolved blessed interface: the instance found by type and the
+/// single field holding its implementation. Lowering projects the field and applies
+/// it to the site's operands.
+#[derive(Clone, Debug)]
+pub struct HookImpl {
+    pub ctx: CtxVal,
+    pub field: String,
 }
 
 #[derive(Default)]
@@ -398,36 +485,26 @@ pub struct Resolved {
     /// `(owning module, emitted name)` (from
     /// [`crate::typing::Checker::literal_hooks`]). Lowering wraps the raw payload term
     /// in a call to this global; an unrecorded literal folds to the plain constant.
-    pub literal_hooks: HashMap<Aol<Expr>, (Option<String>, String)>,
+    pub literal_hooks: HashMap<Aol<Expr>, HookImpl>,
+    /// Blessed-interface value sites (`@IIndex`, `@IImagLit`) mapped to the field
+    /// lowering projects off the instance `ctx_args` records for the same site (from
+    /// [`crate::typing::Checker::blessed_sites`]).
+    pub blessed_sites: HashMap<Aol<Expr>, String>,
     /// Literal PATTERN sites matched through a user type's construction + equality
     /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`
     /// (from [`crate::typing::Checker::literal_pattern_hooks`]). Lowering emits a
     /// `Pat::HookEq` that builds the literal and compares it with the equality hook.
-    pub literal_pattern_hooks:
-        HashMap<Aol<Pattern>, ((Option<String>, String), (Option<String>, String))>,
+    pub literal_pattern_hooks: HashMap<Aol<Pattern>, (HookImpl, HookImpl)>,
     /// Sequence pattern sites matched through a user type's `sequence_view` hook,
     /// mapped to the hook's `(module, emitted name)` (from
     /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
     /// `Pat::SeqView` that unfolds the view.
-    pub sequence_pattern_hooks: HashMap<Aol<Pattern>, (Option<String>, String)>,
+    pub sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
     pub call_modules: HashMap<Aol<Expr>, String>,
-    /// Each use site of a `@ctx`-bearing function, mapped to the ordered implicit
-    /// arguments lowering injects ahead of the explicit ones (from
-    /// [`crate::typing::Checker::implicit_calls`]).
-    pub implicit_args: HashMap<Aol<Expr>, Vec<ImplicitArg>>,
-    /// Overloaded-call `Expr::Var` sites whose target module defines the name more
-    /// than once, mapped to the type-mangled bare name lowering emits in place of
-    /// the source name (from [`crate::typing::Checker::overload_calls`]). The
-    /// qualifying module still comes from `call_modules`.
-    pub overload_calls: HashMap<Aol<Expr>, String>,
-    /// Same-module overloaded definitions, keyed by body handle, mapped to the
-    /// type-mangled bare name lowering gives the global (from
-    /// [`crate::typing::Checker::def_keys`]), so the overloads stay distinct.
-    pub def_keys: HashMap<Aol<Expr>, String>,
-    /// `Expr::Var` sites resolved to a local `@ctx` dictionary parameter, mapped to
-    /// its leading-parameter slot (from [`crate::typing::Checker::dict_calls`]).
-    /// Lowering references the parameter `@ctx$<slot>` instead of a global.
-    pub dict_calls: HashMap<Aol<Expr>, usize>,
+    /// Each use site of a `@ctx`-bearing function, mapped to the context value
+    /// lowering injects ahead of the explicit arguments (from
+    /// [`crate::typing::Checker::ctx_calls`]).
+    pub ctx_args: HashMap<Aol<Expr>, CtxVal>,
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
@@ -456,8 +533,8 @@ pub struct Resolved {
 }
 
 /// Gather every checker resolution lowering needs into one [`Resolved`]: `[..]`
-/// array/tensor nodes, resolved bare calls and overload keys, literal/pattern
-/// hooks, implicit (`@ctx`) arguments, extern specs, C-repr layouts, ...
+/// array/tensor nodes, resolved bare calls, literal/pattern
+/// hooks, context (`@ctx`) values, extern specs, C-repr layouts, ...
 ///
 /// Lowering `expect`s several of these to be present (a `::` pattern without its
 /// sequence-view hook panics), so every caller that checks a program and then
@@ -473,17 +550,17 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
         for (&site, n) in checker.struct_lit_names() {
             resolved.struct_lit_names.insert(site, n.clone());
         }
-        for (&site, (m, n)) in checker.literal_hooks() {
-            resolved.literal_hooks.insert(site, (m.map(str::to_string), n.clone()));
+        for (&site, hook) in checker.literal_hooks() {
+            resolved.literal_hooks.insert(site, hook.clone());
         }
-        for (&site, ((bm, bn), (em, en))) in checker.literal_pattern_hooks() {
-            resolved.literal_pattern_hooks.insert(
-                site,
-                ((bm.map(str::to_string), bn.clone()), (em.map(str::to_string), en.clone())),
-            );
+        for (&site, field) in checker.blessed_sites() {
+            resolved.blessed_sites.insert(site, field.clone());
         }
-        for (&site, (m, n)) in checker.sequence_pattern_hooks() {
-            resolved.sequence_pattern_hooks.insert(site, (m.map(str::to_string), n.clone()));
+        for (&site, pair) in checker.literal_pattern_hooks() {
+            resolved.literal_pattern_hooks.insert(site, pair.clone());
+        }
+        for (&site, hook) in checker.sequence_pattern_hooks() {
+            resolved.sequence_pattern_hooks.insert(site, hook.clone());
         }
         for (key, flags) in checker.lazy_slots() {
             resolved.lazy_slots.insert(key.clone(), flags.clone());
@@ -494,17 +571,8 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
         for (&site, &module) in checker.call_modules() {
             resolved.call_modules.insert(site, module.to_string());
         }
-        for (&site, key) in checker.overload_calls() {
-            resolved.overload_calls.insert(site, key.clone());
-        }
-        for (&site, &slot) in checker.dict_calls() {
-            resolved.dict_calls.insert(site, slot);
-        }
-        for (&body, key) in checker.def_keys() {
-            resolved.def_keys.insert(body, key.clone());
-        }
-        for (&site, args) in checker.implicit_calls() {
-            resolved.implicit_args.insert(site, args.clone());
+        for (&site, val) in checker.ctx_calls() {
+            resolved.ctx_args.insert(site, val.clone());
         }
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
@@ -561,21 +629,13 @@ pub fn lower_program(
     for item in ast.slice(program.items).iter() {
         match item {
             Item::Def {
-                name,
-                sig,
-                implicits,
-                body,
+                name, sig, body, ..
             } => {
                 if let Some(sig) = sig {
                     lw.collect_meta_types(*sig);
                 }
-                let term = lw.def(*sig, ast.slice(*implicits), *body);
-                let key = resolved
-                    .def_keys
-                    .get(body)
-                    .cloned()
-                    .unwrap_or_else(|| ast.text(*name).to_string());
-                globals.push((key, term));
+                let term = lw.def(*sig, *body);
+                globals.push((ast.text(*name).to_string(), term));
             }
             // `$ @e <expr>`: back it with a synthetic global, forced at compile
             // time by the driver. The name is bare here (index-tagged so several
@@ -723,43 +783,21 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Lower a definition, consuming leading record parameters of its signature.
-    /// `@ctx` implicits become leading lambda parameters (dictionary passing): the
-    /// body binds them by name, and each call site injects the resolved values as
-    /// leading arguments (see [`Self::expr`]'s `Var` case).
-    fn def(&mut self, sig: Option<Aol<Ty>>, implicits: &[FieldDecl], body: Aol<Expr>) -> Term {
+    /// Lower a definition, consuming leading record parameters of its signature. A
+    /// `@ctx` parameter needs nothing here: the body binds it like any other first
+    /// parameter, and each call site injects the resolved value as a leading
+    /// argument (see [`Self::apply_ctx`]).
+    fn def(&mut self, sig: Option<Aol<Ty>>, body: Aol<Expr>) -> Term {
         let term = self.expr(body);
         // A bare `@extern` already declares every parameter in its `arg_types`
         // spine (a `{}` parameter included), so it must NOT be wrapped in the
         // record/thunk-parameter sugar: a wrapper lambda would swallow the unit
         // argument and leave the extern under-applied, so it never fires.
-        let mut inner = if matches!(term, Term::Extern { .. }) {
+        if matches!(term, Term::Extern { .. }) {
             term
         } else {
             self.record_params(sig, term)
-        };
-        // A DISTINCT-named implicit binds under its source name (referenced by
-        // name in the body). A DUPLICATED name (one dictionary per type parameter)
-        // binds under a synthetic per-slot name `@ctx$<i>`, because two params of
-        // the same name would shadow; the checker resolved each body use to a slot
-        // (`dict_calls`) that the `Var` lowering turns into the matching `@ctx$<i>`.
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for f in implicits {
-            *counts.entry(self.text(f.name)).or_insert(0) += 1;
         }
-        for (i, f) in implicits.iter().enumerate().rev() {
-            let name = self.text(f.name);
-            let param = if counts[name] > 1 {
-                dict_param(i)
-            } else {
-                name.to_string()
-            };
-            inner = Term::Lam {
-                param,
-                body: Arc::new(inner),
-            };
-        }
-        inner
     }
 
     fn record_params(&mut self, sig: Option<Aol<Ty>>, body: Term) -> Term {
@@ -891,23 +929,27 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Wrap a raw literal payload in its `@compiler_interface_*` construction hook
-    /// when the checker recorded one at `site`; otherwise return the payload as-is
-    /// (the folded built-in constant, so the default case builds nothing extra).
-    fn literal_hook_wrap(&self, site: Aol<Expr>, payload: Term) -> Term {
+    /// Wrap a raw literal payload in its blessed construction interface when the
+    /// checker recorded one at `site`; otherwise return the payload as-is (the folded
+    /// built-in constant, so the default case builds nothing extra).
+    fn literal_hook_wrap(&mut self, site: Aol<Expr>, payload: Term) -> Term {
         match self.hook_fn(site) {
             Some(f) => Term::app(f, payload),
             None => payload,
         }
     }
 
-    /// The hook the checker resolved at `site`, as a callable term.
-    fn hook_fn(&self, site: Aol<Expr>) -> Option<Term> {
-        self.resolved.literal_hooks.get(&site).map(|(module, name)| Term::Var {
-            module: module.clone(),
-            name: name.clone(),
-            idx: 0,
-        })
+    /// The interface method the checker resolved at `site`, as a callable term: the
+    /// single field of the resolved instance.
+    fn hook_fn(&mut self, site: Aol<Expr>) -> Option<Term> {
+        let hook = self.resolved.literal_hooks.get(&site).cloned()?;
+        Some(self.hook_term(&hook))
+    }
+
+    /// A resolved blessed interface as a callable term: project its single field off
+    /// the instance value.
+    fn hook_term(&mut self, hook: &HookImpl) -> Term {
+        Term::Field(Arc::new(self.ctx_term(&hook.ctx)), hook.field.clone())
     }
 
     fn expr_core(&mut self, e: Aol<Expr>) -> Term {
@@ -938,6 +980,12 @@ impl<'a> Lowerer<'a> {
 
             Expr::App(f, x) => {
                 let (f, x) = (*f, *x);
+                // An explicit `(@ctx e)` argument is not applied here: the checker
+                // took it off the spine and recorded it as the head's resolved
+                // context, which `apply_ctx` injects at the head reference.
+                if matches!(self.node(x), Expr::CtxArg(_)) {
+                    return self.expr(f);
+                }
                 // `@cast x` is erased: integers are boxed uniformly, so a width cast
                 // is a no-op at runtime (the `@extern` boundary narrows to the C type).
                 if self.is_cast_head(f) {
@@ -964,7 +1012,7 @@ impl<'a> Lowerer<'a> {
             Expr::Slice { recv, slots } => {
                 // A single-axis `lo ... hi` slice the checker resolved to the
                 // `@compiler_interface_slice` hook: apply it to the bounds as written
-                // (the overload decides what an inclusive slice means for its type).
+                // (the instance decides what an inclusive slice means for its type).
                 if let Some(f) = self.hook_fn(e) {
                     let (lo, hi) = match self.ast.slice(*slots) {
                         [SliceSlot::Range(lo, hi)] => (*lo, *hi),
@@ -990,7 +1038,7 @@ impl<'a> Lowerer<'a> {
                         }
                         SliceSlot::Range(lo, hi) => {
                             let lo = self.expr(*lo);
-                            // `@iadd`, not `+`: `+` is now a CORE overload, but this
+                            // `@iadd`, not `+`: `+` is now a CORE function, but this
                             // is compiler-internal Int arithmetic (inclusive end + 1),
                             // so it calls the intrinsic directly.
                             let hi1 = bin("@iadd", self.expr(*hi), Term::Int(1));
@@ -1267,75 +1315,108 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // `callee @ctx ...` is transparent here: the implicit arguments (given
-            // or resolved) are injected at the head function reference, keyed by its
-            // site in `implicit_args`.
-            Expr::Ctx { callee, .. } => self.expr(*callee),
+            // A `(@ctx e)` argument is consumed at the head reference it applies to
+            // (`ctx_args` holds it as the resolved value), so reaching it here means
+            // the checker let a stray one through.
+            Expr::CtxArg(_) => Term::Fault("a `(@ctx ...)` argument out of place".to_string()),
 
             Expr::Ascribe { expr, .. } => self.expr(*expr),
         }
     }
 
-    /// Wrap a `@ctx`-bearing function reference in applications of its resolved
-    /// implicit arguments (leading, so they precede the explicit application).
-    fn apply_implicits(&mut self, site: Aol<Expr>, base: Term) -> Term {
-        let Some(args) = self.resolved.implicit_args.get(&site) else {
+    /// Wrap a context-bearing function reference in the application of its resolved
+    /// context, which leads the explicit arguments.
+    fn apply_ctx(&mut self, site: Aol<Expr>, base: Term) -> Term {
+        let Some(val) = self.resolved.ctx_args.get(&site).cloned() else {
             return base;
         };
-        let args = args.clone();
-        let mut term = base;
-        for a in args {
-            let arg = match a {
-                ImplicitArg::Bare(name) => Term::var(name),
-                ImplicitArg::Qualified { module, name } => Term::Var {
-                    module: Some(module),
-                    name,
-                    idx: 0,
-                },
-                ImplicitArg::Expr(e) => self.expr(e),
-            };
-            term = Term::app(term, arg);
+        let arg = self.ctx_term(&val);
+        Term::app(base, arg)
+    }
+
+    /// Build the term for a resolved context value.
+    fn ctx_term(&mut self, val: &CtxVal) -> Term {
+        match val {
+            CtxVal::Bare(name) => Term::var(name.clone()),
+            CtxVal::Qualified { module, name } => Term::Var {
+                module: Some(module.clone()),
+                name: name.clone(),
+                idx: 0,
+            },
+            CtxVal::App(f, x) => {
+                let f = self.ctx_term(f);
+                let x = self.ctx_term(x);
+                Term::app(f, x)
+            }
+            CtxVal::Tuple(parts) => {
+                let items = parts.iter().map(|p| self.ctx_term(p)).collect();
+                Term::Tuple(items)
+            }
+            CtxVal::Proj(base, index) => {
+                let base = self.ctx_term(base);
+                Term::Field(Arc::new(base), index.to_string())
+            }
+            CtxVal::Expr(e) => self.expr(*e),
         }
-        term
     }
 
     /// Resolve an `Expr::Var` to its lowered `(module, name)`: the explicit
-    /// qualifier or the checker's `call_modules` owner, and the overload-mangled
-    /// or source name.
+    /// qualifier, else the checker's `call_modules` owner.
     fn resolved_var_id(&self, site: Aol<Expr>) -> (Option<String>, String) {
         let (module, name) = match self.node(site) {
             Expr::Var { module, name } => (*module, self.text(*name)),
             _ => unreachable!("resolved_var_id on a non-variable"),
         };
-        // A use resolved to a local `@ctx` dictionary references its leading
-        // parameter `@ctx$<slot>` (a local binder), never a global.
-        if let Some(&slot) = self.resolved.dict_calls.get(&site) {
-            return (None, dict_param(slot));
-        }
         let module = match module {
             Some(m) => Some(self.text(m).to_string()),
             None => self.resolved.call_modules.get(&site).cloned(),
         };
-        let name = self
-            .resolved
-            .overload_calls
-            .get(&site)
-            .cloned()
-            .unwrap_or_else(|| name.to_string());
-        (module, name)
+        (module, name.to_string())
     }
 
     /// The lowered head term for an `Expr::Var`: the resolved global reference
-    /// with any `@ctx` implicits applied, but WITHOUT the first-class extern
+    /// with any `@ctx` context applied, but WITHOUT the first-class extern
     /// eta-wrapper (a call site applies it directly).
     fn var_head(&mut self, site: Aol<Expr>) -> Term {
+        // A blessed interface in head position is not a global at all: the checker
+        // resolved an instance for this site, and the reference IS that instance's
+        // single field.
+        if let Some(field) = self.resolved.blessed_sites.get(&site).cloned() {
+            let ctx = self
+                .resolved
+                .ctx_args
+                .get(&site)
+                .cloned()
+                .expect("a blessed interface site resolves its instance");
+            return Term::Field(Arc::new(self.ctx_term(&ctx)), field);
+        }
         let (module, name) = self.resolved_var_id(site);
+        if let Some(t) = self.wrapper_projection(site, module.as_deref(), &name) {
+            return t;
+        }
         let base = Term::Var {
             module,
             name,
             idx: 0,
         };
-        self.apply_implicits(site, base)
+        self.apply_ctx(site, base)
+    }
+
+    /// An interface wrapper applied to its resolved instance IS that instance's
+    /// field, so emit the projection and skip the wrapper's three closure
+    /// applications. `None` when the global is not a wrapper or the site resolved no
+    /// context (a wrapper referenced where its context is passed in explicitly still
+    /// goes through `apply_ctx`, which handles every `CtxVal` shape).
+    fn wrapper_projection(
+        &mut self,
+        site: Aol<Expr>,
+        module: Option<&str>,
+        name: &str,
+    ) -> Option<Term> {
+        let field = self.decls.wrapper_field_of(module?, name)?.to_string();
+        let ctx = self.resolved.ctx_args.get(&site).cloned()?;
+        let base = self.ctx_term(&ctx);
+        Some(Term::Field(Arc::new(base), field))
     }
 
     /// Whether `f` is the `@e` / `@run` compile-time splice in head position. Both
@@ -1536,9 +1617,9 @@ impl<'a> Lowerer<'a> {
             }
             "|>" => Term::app(self.expr(rhs), self.expr(lhs)),
             "<|" => Term::app(self.expr(lhs), self.expr(rhs)),
-            // The operator resolves like an overloaded call: a built-in use keeps
-            // the bare name (a runtime builtin), a user overload carries the
-            // resolved module (and mangled name) the checker recorded at this site.
+            // The operator resolves like a named call: a built-in use keeps the bare
+            // name (a runtime builtin), a CORE or user one carries the module the
+            // checker recorded at this site.
             _ => {
                 let head = self.operator_head(site, op);
                 let l = self.expr(lhs);
@@ -1549,21 +1630,21 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The lowered head for an operator at `site`: the module the checker resolved
-    /// the overload to (`None` for a builtin) and the overload-mangled or bare
-    /// operator name.
-    fn operator_head(&self, site: Aol<Expr>, op: &str) -> Term {
+    /// it to (`None` for a builtin) and the operator's name.
+    fn operator_head(&mut self, site: Aol<Expr>, op: &str) -> Term {
         let module = self.resolved.call_modules.get(&site).cloned();
-        let name = self
-            .resolved
-            .overload_calls
-            .get(&site)
-            .cloned()
-            .unwrap_or_else(|| op.to_string());
-        Term::Var {
+        if let Some(t) = self.wrapper_projection(site, module.as_deref(), op) {
+            return t;
+        }
+        let name = op.to_string();
+        let head = Term::Var {
             module,
             name,
             idx: 0,
-        }
+        };
+        // An operator that takes a context is applied to it first, exactly as a
+        // named call is.
+        self.apply_ctx(site, head)
     }
 
     fn lambda_param(&mut self, pat: Aol<Pattern>, body: Term) -> Term {
@@ -1773,15 +1854,12 @@ impl<'a> Lowerer<'a> {
     /// construction hook applied to the raw payload) and compare with the equality
     /// hook. `None` when the checker recorded no hook for this site (the built-in
     /// literal pattern applies instead).
-    fn pat_hook_eq(&self, p: Aol<Pattern>, raw: Term) -> Option<Pat> {
-        let ((bm, bn), (em, en)) = self.resolved.literal_pattern_hooks.get(&p)?;
-        let build = Term::Var {
-            module: bm.clone(),
-            name: bn.clone(),
-            idx: 0,
-        };
+    fn pat_hook_eq(&mut self, p: Aol<Pattern>, raw: Term) -> Option<Pat> {
+        let (build, eq) = self.resolved.literal_pattern_hooks.get(&p).cloned()?;
+        let build = self.hook_term(&build);
+        let eq = self.hook_term(&eq);
         Some(Pat::HookEq {
-            eq: (em.clone(), en.clone()),
+            eq,
             value: Box::new(Term::app(build, raw)),
         })
     }
@@ -1818,12 +1896,13 @@ impl<'a> Lowerer<'a> {
             // records the resolved hook for every such pattern.
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
-                let view = self
+                let hook = self
                     .resolved
                     .sequence_pattern_hooks
                     .get(&p)
                     .cloned()
                     .expect("a `::` pattern resolves a sequence_view hook");
+                let view = self.hook_term(&hook);
                 Pat::SeqView {
                     view,
                     elems: vec![self.pat(head)],
@@ -1833,12 +1912,13 @@ impl<'a> Lowerer<'a> {
             Pattern::List { elems, rest } => {
                 let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
                 let rest = *rest;
-                let view = self
+                let hook = self
                     .resolved
                     .sequence_pattern_hooks
                     .get(&p)
                     .cloned()
                     .expect("a list pattern resolves a sequence_view hook");
+                let view = self.hook_term(&hook);
                 Pat::SeqView {
                     view,
                     elems: elems.into_iter().map(|e| self.pat(e)).collect(),
@@ -1956,14 +2036,6 @@ impl<'a> Lowerer<'a> {
 }
 
 /// `array_len v`.
-/// The synthetic binder name for a duplicated `@ctx` dictionary parameter at
-/// leading-parameter slot `slot` (`@ctx$<slot>`). Shared by the definition (which
-/// binds it) and the use-site lowering (which references it), so De-Bruijn
-/// indexing links them.
-fn dict_param(slot: usize) -> String {
-    format!("@ctx${slot}")
-}
-
 /// A binary operator application `l <op> r`.
 fn bin(op: &str, l: Term, r: Term) -> Term {
     Term::app(Term::app(Term::var(op), l), r)

@@ -65,7 +65,8 @@ thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
 - **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.
-- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, implicit (`@ctx`) parameters, function overloading, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`).
+- **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as an inferred `@ctx` parameter. One mechanism; no overloading, so a name's printed type is its contract.
+- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`).
 
 ## A tour of the language
 
@@ -144,6 +145,39 @@ $ sumGen : ({} -> <Yield> {}) -> @int = \gen =
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
 	      else _ => 0
+```
+
+### Interfaces
+
+An interface is an ordinary struct whose fields are its operations;
+implementing it is defining a value of that type. A function that needs one
+declares it as a `@ctx` FIRST parameter, which call sites do not write: the
+compiler finds it by type, taking the nearest binder in scope and otherwise
+the one instance in scope.
+
+```thrax
+$ IArea : @struct t = area: t -> Real,
+
+$ Rect : @struct = w: Real, h: Real,
+$ area_rect : IArea Rect = .{ .area = \r = r.w * r.h }
+
+# `d` is the CONTEXT parameter: ordinary in every respect, except that call
+# sites do not write it. The compiler finds it by type.
+$ total : @ctx IArea t -> @vec t -> Real = \d xs =
+	VEC.foldl (\acc x = acc + d.area x) 0.0 xs
+
+$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }]   # 10.0
+```
+
+Every operator works this way, so there is nothing special about `+`: it is a
+function over `IAdd`, and a type joins it by defining an instance.
+
+```thrax
+$ Money : @struct = cents: @int,
+
+# `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
+$ add_money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }
 ```
 
 ## Native backend and FFI

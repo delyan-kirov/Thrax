@@ -27,10 +27,56 @@ fn run(src: &str, name: &str) -> String {
     run_modules(&[src], name)
 }
 
+/// The checker's rendered error for `src`, for a test that pins a REJECTION.
+fn errors(src: &str) -> String {
+    let ast = frontend::Ast::new();
+    let (ast, core) = frontend::parse_into(ast, CORE_SRC).expect("parse CORE");
+    let (ast, user) = frontend::parse_into(ast, src).expect("parse");
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast, types);
+    checker.import_from(&core_checker);
+    match checker.check_program(&user) {
+        Ok(_) => String::new(),
+        Err(d) => d.render(src, "M"),
+    }
+}
+
 /// Like [`run`] for several user modules sharing one `Ast`: CORE is imported into
 /// every module, the last user module is the root (also importing the earlier
 /// user deps), and all are lowered with the merged resolutions. Mirrors the
 /// driver so operators (CORE overloads) and cross-module dispatch resolve.
+/// Like [`run_modules`], but returns the checker's first error (empty on success).
+fn errors_modules(user_sources: &[&str], name: &str) -> String {
+    let mut ast = frontend::Ast::new();
+    let mut programs = Vec::new();
+    for src in std::iter::once(&CORE_SRC).chain(user_sources.iter()) {
+        let (next, program) = frontend::parse_into(ast, src).expect("parse");
+        ast = next;
+        programs.push(program);
+    }
+    let types = std::rc::Rc::new(frontend::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&programs[0]).expect("check CORE");
+    let user_count = programs.len() - 1;
+    let mut user_checkers: Vec<Checker> = Vec::new();
+    for i in 0..user_count {
+        let mut c = Checker::new(&ast, types.clone());
+        c.import_from(&core_checker);
+        if i + 1 == user_count {
+            for dep in &user_checkers {
+                c.import_from(dep);
+            }
+        }
+        match c.check_program(&programs[i + 1]) {
+            Ok(_) => user_checkers.push(c),
+            Err(d) => return d.render(user_sources[i], name),
+        }
+    }
+    String::new()
+}
+
 fn run_modules(user_sources: &[&str], name: &str) -> String {
     let mut ast = frontend::Ast::new();
     let mut programs = Vec::new();
@@ -310,10 +356,9 @@ fn ffi_struct_by_value_return() {
 }
 
 #[test]
-fn cross_module_overload_dispatches_by_type() {
-    // `make` is defined in two modules with different result types. The root's
-    // `make 5` must reach P.make (a Box, so `unwrap` reads its field), not Q.make
-    // (an @int); the checker resolves it and the canonical `P.make` name carries it.
+fn a_name_two_imports_share_is_qualified() {
+    // `make` is defined in two modules. Global scope is flat, so the bare name picks
+    // neither: the qualified form names the one wanted, and both stay reachable.
     let p = "@mod P\n\
              $ Box : @struct = v: @int\n\
              $ make : @int -> Box = \\n = Box.{ .v = n }\n\
@@ -322,8 +367,26 @@ fn cross_module_overload_dispatches_by_type() {
     let root = "@mod M\n\
                 $ with P\n\
                 $ with Q\n\
+                $ r : @int = unwrap (P.make 5) + Q.make 1";
+    assert_eq!(run_modules(&[p, q, root], "r"), "106");
+    let bare = "@mod M\n\
+                $ with P\n\
+                $ with Q\n\
                 $ r : @int = unwrap (make 5)";
-    assert_eq!(run_modules(&[p, q, root], "r"), "5");
+    let e = errors_modules(&[p, q, bare], "r");
+    assert!(e.contains("imported from more than one module"), "{e}");
+}
+
+#[test]
+fn a_local_definition_shadows_an_import() {
+    // The module's own `make` wins over the imported one of the same name, so a
+    // library name never has to be avoided just because it is in scope.
+    let p = "@mod P\n$ make : @int -> @int = \\n = n + 100";
+    let root = "@mod M\n\
+                $ with P\n\
+                $ make : @int -> @int = \\n = n + 1\n\
+                $ r : @int = make 5 + P.make 5";
+    assert_eq!(run_modules(&[p, root], "r"), "111");
 }
 
 #[test]
@@ -342,11 +405,11 @@ fn private_helper_runs_through_public_api() {
 
 #[test]
 fn literal_hook_from_imported_module() {
-    // A library module provides a user type and its construction hook; a string
-    // literal in the importing module builds that type via the IMPORTED hook.
+    // A library module provides a user type and its construction instance; a string
+    // literal in the importing module builds that type via the IMPORTED instance.
     let lib = "@mod LIBSTR\n\
                $ Text : @struct = bytes: @str\n\
-               $ @compiler_interface_string_literal : @str -> Text = \\s = Text.{ .bytes = s }\n\
+               $ strlit_text : @IStrLit Text = .{ .of_str = \\s = Text.{ .bytes = s } }\n\
                $ size : Text -> @int = \\t = @array_len t.bytes";
     let root = "@mod M\n\
                 $ with LIBSTR\n\
@@ -356,125 +419,125 @@ fn literal_hook_from_imported_module() {
 }
 
 #[test]
-fn same_module_overload_dispatches_by_type() {
-    // Two overloads of `kind` in ONE module. Before type-mangling the globals both
-    // collided under a single `M.kind` key and every call ran the first body
-    // (giving 11); now `kind true` reaches the @bool body, so the result is 21.
+fn a_name_defined_twice_is_rejected() {
+    // One name, one type: the module cannot define `kind` twice, so nothing about
+    // `kind` can be resolved at a call site instead of at the declaration.
     let src = "@mod M\n\
                $ kind : @int -> @int = \\x = 1\n\
                $ kind : @bool -> @int = \\b = 2\n\
-               $ r : @int = (kind 7) + (kind @true) * 10";
-    assert_eq!(run(src, "r"), "21");
+               $ r : @int = kind 7";
+    assert!(errors(src).contains("`kind` is defined twice"), "{}", errors(src));
 }
 
 #[test]
-fn ctx_implicit_resolves_by_name_and_type() {
-    // `max_of` declares an implicit `cmp`, resolved by name from scope (the global
-    // `>`-like `cmp`). The dictionary is injected as a leading argument.
+fn ctx_resolves_by_type() {
+    // `max_of` takes a context parameter: an ordinary first parameter that the call
+    // site does not write. It is found by its type (`Ord @int`), and injected as a
+    // leading argument.
     let src = "@mod M\n\
-               $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
-               \tif cmp x y => x else y\n\
+               $ Ord : @struct t = gt: t -> t -> @bool,\n\
+               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               \tif o.gt x y => x else y\n\
                $ r : @int = max_of 3 7";
     assert_eq!(run(src, "r"), "7");
 }
 
 #[test]
-fn ctx_implicit_chains_and_overrides() {
-    // `max3` passes its own `@ctx cmp` down to `max_of` (local wins), and an
-    // explicit `@ctx lt` override flips `max_of` into a min.
+fn ctx_chains_and_is_overridden() {
+    // `max3` declares the same context and passes it down to `max_of` (its own
+    // parameter is nearer than any global), and an explicit `(@ctx flip)` turns
+    // `max_of` into a min. The flipped instance is local, so global scope keeps one
+    // value per type.
     let src = "@mod M\n\
-               $ gt : @int -> @int -> @bool = \\a b = a > b\n\
-               $ lt : @int -> @int -> @bool = \\a b = a < b\n\
-               $ max_of : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y =\n\
-               \tif cmp x y => x else y\n\
-               $ max3 : a -> a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y z =\n\
+               $ Ord : @struct t = gt: t -> t -> @bool,\n\
+               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               \tif o.gt x y => x else y\n\
+               $ max3 : @ctx Ord t -> t -> t -> t -> t = \\o x y z =\n\
                \tmax_of (max_of x y) z\n\
-               $ chained : @int = max3 3 9 5 @ctx gt\n\
-               $ flipped : @int = max_of 3 7 @ctx lt\n\
+               $ chained : @int = max3 3 9 5\n\
+               $ flipped : @int =\n\
+               \tlet flip : Ord @int = .{ .gt = \\a b = a < b } in max_of (@ctx flip) 3 7\n\
                $ r : @int = chained + flipped";
     assert_eq!(run(src, "r"), "12");
 }
 
 #[test]
-fn ctx_overloaded_generic_instance_resolves_per_element_type() {
-    // A generic `to_string : Box t` is overloaded AND carries an `@ctx to_string :
-    // t` dictionary; each call plans the dictionary from the argument's element type
-    // (`instance Show a => Show (Box a)`).
+fn ctx_generic_instance_resolves_per_element_type() {
+    // A generic instance `Show (Box t)` is built from `Show t`: resolving the outer
+    // context recursively resolves the instance's own one, per element type.
     let src = "@mod M\n\
+               $ Show : @struct t = show: t -> @str,\n\
+               $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
+               $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
+               $ sh_bool : Show @bool = .{ .show = \\b = to_string b }\n\
                $ Box : @union t = Wrap: {t},\n\
-               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
-               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"\n\
-               $ r : @int = if (to_string (Box.Wrap.{ 5 } : Box @int) == \"W(5)\") && (to_string (Box.Wrap.{ @true } : Box @bool) == \"W(true)\") => 0 else 1";
+               $ sh_box : @ctx Show t -> Show (Box t) = \\d =\n\
+               \t.{ .show = \\x = is x | Box.Wrap.{a} => \"W(\" ++ d.show a ++ \")\" }\n\
+               $ r : @int = if (show (Box.Wrap.{ 5 } : Box @int) == \"W(5)\") && (show (Box.Wrap.{ @true } : Box @bool) == \"W(true)\") => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
 #[test]
-fn ctx_same_named_dictionaries_resolve_by_type() {
-    // Two type parameters, one `@ctx to_string` dictionary each: a field of type `a`
-    // renders through the `a` dictionary and a field of type `b` through the `b` one,
-    // selected by type in the body (dictionary selection).
+fn ctx_bundle_resolves_each_component() {
+    // Two dictionaries travel as one tuple context: each component is resolved by its
+    // own type and the bundle is built at the call site, so no global of the bundled
+    // type has to exist.
     let src = "@mod M\n\
+               $ Show : @struct t = show: t -> @str,\n\
+               $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
+               $ sh_bool : Show @bool = .{ .show = \\b = to_string b }\n\
                $ Pair : @struct a b = fst: a, snd: b,\n\
-               $ to_string : Pair a b -> @str  @ctx to_string : a -> @str, to_string : b -> @str =\n\
-               \t\\x = \"(\" ++ to_string x.fst ++ \", \" ++ to_string x.snd ++ \")\"\n\
-               $ r : @int = if to_string (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) == \"(5, true)\" => 0 else 1";
+               $ show_pair : @ctx {Show a, Show b} -> Pair a b -> @str = \\ds x =\n\
+               \t\"(\" ++ ds.0.show x.fst ++ \", \" ++ ds.1.show x.snd ++ \")\"\n\
+               $ r : @int = if show_pair (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) == \"(5, true)\" => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
 #[test]
-fn ctx_nullary_dictionary_resolves_as_value_by_expected_type() {
-    // A nullary `@ctx` dictionary used as a VALUE (not applied) resolves by the
-    // expected type, including inside a struct-literal field (`.fst = blank` picks
-    // `blank : a`).
+fn ctx_nullary_instance_resolves_by_expected_type() {
+    // A context whose field is a value rather than a function still resolves by type,
+    // including where the expected type comes from a struct-literal field.
     let src = "@mod M\n\
+               $ Blank : @struct t = blank: t,\n\
+               $ bl_int : Blank @int = .{ .blank = 0 }\n\
+               $ bl_str : Blank @str = .{ .blank = \"\" }\n\
                $ Pair : @struct a b = fst: a, snd: b,\n\
-               $ blank : @int = 0\n\
-               $ blank : @str = \"\"\n\
-               $ mk : {} -> Pair a b  @ctx blank : a, blank : b = \\u = Pair.{ .fst = blank, .snd = blank }\n\
+               $ mk : @ctx {Blank a, Blank b} -> {} -> Pair a b = \\ds u =\n\
+               \tPair.{ .fst = ds.0.blank, .snd = ds.1.blank }\n\
                $ p : Pair @int @str = mk {}\n\
                $ r : @int = if (p.fst == 0) && (p.snd == \"\") => 0 else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
 #[test]
-fn ctx_generic_instance_works_across_modules() {
-    // A generic instance's `@ctx` requirement survives the import boundary, so a
-    // caller in another module still plans the element dictionary.
+fn ctx_instance_crosses_module_boundary() {
+    // An imported instance is found by type like a local one, and an imported generic
+    // instance keeps its own context requirement across the boundary.
     let lib = "@mod GENM\n\
+               $ Show : @struct t = show: t -> @str,\n\
+               $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
                $ Box : @union t = Wrap: {t},\n\
-               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
-               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
+               $ sh_box : @ctx Show t -> Show (Box t) = \\d =\n\
+               \t.{ .show = \\x = is x | Box.Wrap.{a} => \"W(\" ++ d.show a ++ \")\" }";
     let root = "@mod M\n\
                 $ with GENM\n\
-                $ r : @int = if to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
+                $ sh_int : GENM.Show @int = .{ .show = \\n = to_string n }\n\
+                $ r : @int = if show (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
     assert_eq!(run_modules(&[lib, root], "r"), "0");
 }
 
 #[test]
-fn qualified_overloaded_generic_instance_injects_implicits() {
-    // A QUALIFIED call to an OVERLOADED generic instance (`GENM.to_string`, a name
-    // CORE also defines) must plan its `@ctx to_string : t` dictionary just like the
-    // bare form, rather than coming out under-applied and faulting at runtime.
-    let lib = "@mod GENM\n\
-               $ Box : @union t = Wrap: {t},\n\
-               $ to_string : Box t -> @str  @ctx to_string : t -> @str =\n\
-               \t\\x = is x | Box.Wrap.{a} => \"W(\" ++ to_string a ++ \")\"";
-    let root = "@mod M\n\
-                $ with GENM\n\
-                $ r : @int = if GENM.to_string (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
-    assert_eq!(run_modules(&[lib, root], "r"), "0");
-}
-
-#[test]
-fn qualified_ctx_call_injects_implicits() {
-    // `MOD.f` (qualified) plans its `@ctx` implicits just like a bare `f`, resolving
-    // the dictionary from the caller's scope.
+fn qualified_ctx_call_injects_its_context() {
+    // `MOD.f` (qualified) plans its context just like a bare `f`, resolving the
+    // instance from the caller's scope.
     let lib = "@mod LM\n\
-               $ maxf : a -> a -> a  @ctx cmp : a -> a -> @bool = \\x y = if cmp x y => x else y";
+               $ Ord : @struct t = gt: t -> t -> @bool,\n\
+               $ maxf : @ctx Ord t -> t -> t -> t = \\o x y = if o.gt x y => x else y";
     let root = "@mod M\n\
                 $ with LM\n\
-                $ cmp : @int -> @int -> @bool = \\a b = a > b\n\
+                $ ord_int : LM.Ord @int = .{ .gt = \\a b = a > b }\n\
                 $ r : @int = LM.maxf 3 7";
     assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
@@ -617,13 +680,13 @@ fn generate_length_build_tensors_in_source() {
 
 #[test]
 fn overloadable_index_and_shape_sugar() {
-    // `.[..]` desugars to the overloadable `@compiler_interface_indexing` hook, so two
-    // local overloads (a tensor one and a custom-type one) both drive `.[..]`,
-    // dispatched by receiver type. Also exercises `[m, n]T` shape sugar and `t.[i, j]`.
+    // `.[..]` desugars to the `@IIndex` interface, so two local instances (a tensor
+    // one and a custom-type one) both drive `.[..]`, resolved by receiver type. Also
+    // exercises `[m, n]T` shape sugar and `t.[i, j]`.
     let src = "@mod M\n\
-               $ @compiler_interface_indexing : [n]a -> @int -> a = \\t i = @tensor_index t i\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ Box : @struct = base: @int\n\
-               $ @compiler_interface_indexing : Box -> @int -> @int = \\b i = b.base + i\n\
+               $ ix_box : @IIndex Box @int @int = .{ .index = \\b i = b.base + i }\n\
                $ g : [2, 2]@int = [ [1, 2], [3, 4] ]\n\
                $ bx : Box = .{ .base = 100 }\n\
                $ r : @int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
@@ -635,7 +698,7 @@ fn multi_axis_slice_syntax() {
     // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
     // The checker computes the result shape; all are O(1) strided views.
     let src = "@mod M\n\
-               $ @compiler_interface_indexing : [n]a -> @int -> a = \\t i = @tensor_index t i\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ m : [3, 4]@int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
                $ colv : [3]@int = m.[.., 1]\n\
                $ blk : [2, 2]@int = m.[1 ... 2, 1 ... 2]\n\
@@ -650,7 +713,7 @@ fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
     let src = "@mod M\n\
-               $ @compiler_interface_indexing : [n]a -> @int -> a = \\t i = @tensor_index t i\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ v : [5]@int = [10, 20, 30, 40, 50]\n\
                $ s : [3]@int = v.[1 ... 3]\n\
                $ r : @int = s.[0] + s.[1] + s.[2]"; // 20+30+40
@@ -668,14 +731,15 @@ fn expression_ascription() {
 
 #[test]
 fn indexing_hook_returns_non_element() {
-    // The `.[..]` hook may return any type, not just the element type: a map-style
-    // lookup returns an `Option`-shaped union. Exercises `@compiler_interface_indexing`
-    // with a non-element result, dispatched on the receiver type.
+    // `@IIndex` may return any type, not just the element type: a map-style lookup
+    // returns an `Option`-shaped union. Exercises a non-element result, resolved on
+    // the receiver type.
     let src = "@mod M\n\
                $ Maybe : @union a = Nada: {}, Just: {a}\n\
                $ Dict : @struct = base: @int\n\
-               $ @compiler_interface_indexing : Dict -> @int -> Maybe @int =\n\
-               \t\\d k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada\n\
+               $ ix_dict : @IIndex Dict @int (Maybe @int) = .{\n\
+               \t.index = \\d k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada,\n\
+               }\n\
                $ d : Dict = .{ .base = 10 }\n\
                $ r : @int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
     assert_eq!(run(src, "r"), "13");
@@ -683,18 +747,18 @@ fn indexing_hook_returns_non_element() {
 
 #[test]
 fn literal_construction_hooks() {
-    // A user type opts into each literal kind by defining the matching
-    // `@compiler_interface_*` hook; the literal (driven by the expected type) then
-    // builds that user type instead of the built-in default.
+    // A user type opts into each literal kind with an instance of the matching
+    // blessed interface; the literal (driven by the expected type) then builds that
+    // user type instead of the built-in default.
     let src = "@mod M\n\
         $ MyStr : @struct = bytes: @str\n\
-        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+        $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ Wrap : @struct = n: @int\n\
-        $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+        $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
         $ RWrap : @struct = r: @float64\n\
-        $ @compiler_interface_real_literal : @float64 -> RWrap = \\x = RWrap.{ .r = x }\n\
+        $ rl : @IRealLit RWrap = .{ .of_real = \\x = RWrap.{ .r = x } }\n\
         $ Bag : @union a = Items: {@vec a}\n\
-        $ @compiler_interface_sequence_literal : @vec a -> Bag a = \\v = Bag.Items.{ v }\n\
+        $ ql : @ISeqLit a (Bag a) = .{ .of_vec = \\v = Bag.Items.{ v } }\n\
         $ s : MyStr = \"hi\"\n\
         $ w : Wrap = 42\n\
         $ rw : RWrap = 3.5\n\
@@ -706,19 +770,20 @@ fn literal_construction_hooks() {
 
 #[test]
 fn imaginary_literal_builds_a_complex_through_its_hook() {
-    // `3.0 + 4.0i` is sugar for the imaginary-literal hook plus an ordinary `+`
-    // overload, so the whole complex surface is CORE's, not the compiler's.
+    // `4.0i` is sugar for the `@IImagLit` interface, and the `+` is CORE's `IAdd
+    // Cpx` instance, so the whole complex surface is library code. A real joins a
+    // complex only by being made one (one operator, one type).
     let src = "@mod M\n\
-        $ z : Cpx = 3.0 + 4.0i\n\
+        $ z : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
         $ r : @str = to_string z";
     assert_eq!(run(src, "r"), "\"3 + 4i\"");
 }
 
 #[test]
-fn complex_arithmetic_is_core_overloads() {
+fn complex_arithmetic_is_core_instances() {
     let src = "@mod M\n\
-        $ a : Cpx = 3.0 + 4.0i\n\
-        $ b : Cpx = 1.0 - 2.0i\n\
+        $ a : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
+        $ b : Cpx = Cpx.{ 1.0, 0.0 } - 2.0i\n\
         $ r : @str = to_string (a + b) ++ \" \" ++ to_string (a * b)\n\
         \t++ \" \" ++ to_string (a / b) ++ \" \" ++ to_string (-a)";
     // (4+2i), (3-6i+4i+8), (3+4i)(1+2i)/5, negation
@@ -733,35 +798,36 @@ fn imaginary_literal_takes_every_numeric_form() {
 }
 
 #[test]
-fn unary_minus_reaches_a_user_overload() {
-    // A user `neg` must be DISPATCHED to, not just type-checked: the unary form
-    // records its resolved module the way the binary operators do, so the call
-    // does not fall through to the numeric built-in.
+fn unary_minus_reaches_a_user_instance() {
+    // Unary minus is CORE's `neg`, `zero - x` over `ISub` and `IZero`, so a user type
+    // negates exactly when it has both. The call must reach those instances, not fall
+    // through to a numeric built-in.
     let src = "@mod M\n\
         $ Money : @struct = cents: @int\n\
-        $ neg : Money -> Money = \\m = Money.{ .cents = 0 - m.cents }\n\
+        $ sub_money : ISub Money = .{ .sub = \\a b = Money.{ .cents = a.cents - b.cents } }\n\
+        $ zero_money : IZero Money = .{ .zero = Money.{ .cents = 0 } }\n\
         $ r : @int = (-Money.{ .cents = 5 }).cents";
     assert_eq!(run(src, "r"), "-5");
 }
 
 #[test]
 fn literal_hook_via_ascription() {
-    // `(e : T)` also drives a construction hook.
+    // `(e : T)` also drives a construction interface.
     let src = "@mod M\n\
         $ Wrap : @struct = n: @int\n\
-        $ @compiler_interface_integer_literal : @int -> Wrap = \\x = Wrap.{ .n = x }\n\
+        $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
         $ r : @int = (41 : Wrap).n + 1";
     assert_eq!(run(src, "r"), "42");
 }
 
 #[test]
 fn literal_hook_does_not_hijack_default() {
-    // A string hook is in scope, but a `@str`-typed literal still builds a plain @str:
-    // the hook fires only when the expected type is the user type, so the default
-    // path (folded to a constant) is untouched.
+    // A `@IStrLit` instance is in scope, but a `@str`-typed literal still builds a
+    // plain @str: resolution fires only when the expected type is the user type, so
+    // the default path (folded to a constant) is untouched.
     let src = "@mod M\n\
         $ MyStr : @struct = bytes: @str\n\
-        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
+        $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ plain  : @str   = \"abc\"\n\
         $ custom : MyStr = \"xy\"\n\
         $ r : @int = @array_len plain + @array_len custom.bytes"; // 3 + 2
@@ -771,7 +837,7 @@ fn literal_hook_does_not_hijack_default() {
 #[test]
 fn list_literal_defaults_to_vec_with_patterns() {
     // `[...]` builds the default sequence, a `@vec` (not a linked list). Its
-    // `sequence_view` hook (in CORE) drives `h :: t` / `[a, b, ..rest]` / `[]`
+    // `@ISeqView` instance (in CORE) drives `h :: t` / `[a, b, ..rest]` / `[]`
     // patterns, and `@vec_*` primitives index it directly.
     let src = "@mod M\n\
         $ xs : @vec @int = [10, 20, 30]\n\
@@ -798,13 +864,13 @@ fn bare_variant_tag_resolves_by_expected_type() {
 
 #[test]
 fn literal_pattern_via_equality_hook() {
-    // A literal PATTERN on a user type routes through its construction + equality
-    // hooks: `is s | "hi" => ...` builds "hi" into the user type and compares it with
-    // `@compiler_interface_equality`.
+    // A literal PATTERN on a user type routes through its construction interface and
+    // its `IEq` instance: `is s | "hi" => ...` builds "hi" into the user type and
+    // compares it with `IEq`, the same interface `==` wraps.
     let src = "@mod M\n\
         $ MyStr : @struct = bytes: @str\n\
-        $ @compiler_interface_string_literal : @str -> MyStr = \\s = MyStr.{ .bytes = s }\n\
-        $ @compiler_interface_equality : MyStr -> MyStr -> @bool = \\a b = a.bytes == b.bytes\n\
+        $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
+        $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
         $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
         $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
     assert_eq!(run(src, "r"), "120");
@@ -812,12 +878,13 @@ fn literal_pattern_via_equality_hook() {
 
 #[test]
 fn sequence_pattern_via_view_hook() {
-    // A sequence PATTERN on a user type unfolds its `@compiler_interface_sequence_view`
-    // hook: `[]`, `[x]` (fixed length: tail must be empty), and `h :: t` all match.
+    // A sequence PATTERN on a user type unfolds its `@ISeqView` instance: `[]`, `[x]`
+    // (fixed length: tail must be empty), and `h :: t` all match.
     let src = "@mod M\n\
         $ Stack : @struct a = items: @vec a\n\
-        $ @compiler_interface_sequence_view : Stack a -> SeqView (Stack a) a = \\s =\n\
-        \tis s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty\n\
+        $ sv : @ISeqView (Stack a) a = .{\n\
+        \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty,\n\
+        }\n\
         $ classify : Stack @int -> @int = \\s = is s\n\
         \t| [] => 0 | [x] => x | h :: t => 100 + h else 999\n\
         $ s0 : Stack @int = Stack.{ .items = [] }\n\
@@ -829,11 +896,11 @@ fn sequence_pattern_via_view_hook() {
 
 #[test]
 fn range_via_hook_on_a_user_type() {
-    // `[lo ... hi]` builds whatever `@compiler_interface_range` returns: a user type
-    // overloads it and takes the range surface, while the bare form stays a `@vec`.
+    // `[lo ... hi]` builds whatever the resolved `@IRange` instance returns: a user
+    // type takes the range surface with one, while the bare form stays a `@vec`.
     let src = "@mod M\n\
         $ Span : @struct = lo: @int, hi: @int\n\
-        $ @compiler_interface_range : @int -> @int -> Span = \\lo hi = Span.{ lo, hi }\n\
+        $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
         $ s : Span = [3 ... 9]\n\
         $ v : @vec @int = [1 ... 4]\n\
         $ r : @int = s.hi - s.lo + @vec_len v";
@@ -842,11 +909,11 @@ fn range_via_hook_on_a_user_type() {
 
 #[test]
 fn open_range_via_hook_on_a_user_type() {
-    // The open `[lo ...]` goes through `@compiler_interface_range_from`; CORE's
-    // overload builds the infinite `Stream`.
+    // The open `[lo ...]` goes through `@IRangeFrom`; CORE's instance builds the
+    // infinite `Stream`.
     let src = "@mod M\n\
         $ From : @struct = start: @int\n\
-        $ @compiler_interface_range_from : @int -> From = \\lo = From.{ lo }\n\
+        $ rf : @IRangeFrom @int From = .{ .range_from = \\lo = From.{ lo } }\n\
         $ f : From = [5 ...]\n\
         $ s : Stream @int = [2 ...]\n\
         $ r : @int = f.start + s.tail.head";
@@ -854,12 +921,12 @@ fn open_range_via_hook_on_a_user_type() {
 }
 
 #[test]
-fn cons_operator_is_overloadable() {
-    // `::` is an ordinary operator defined in CORE over `@vec`, so a user sequence
-    // type joins it with its own overload, as with any other operator.
+fn cons_operator_takes_an_instance() {
+    // `::` is CORE's wrapper over `ICons`, so a user sequence type joins it by
+    // defining an instance, as with any other interface.
     let src = "@mod M\n\
         $ Stack : @struct a = items: @vec a\n\
-        $ (::) : a -> Stack a -> Stack a = \\x s = Stack.{ .items = x :: s.items }\n\
+        $ cons_stack : ICons a (Stack a) = .{ .cons = \\x s = Stack.{ .items = x :: s.items } }\n\
         $ s : Stack @int = 1 :: 2 :: Stack.{ .items = [] }\n\
         $ v : @vec @int = 9 :: [8]\n\
         $ r : @int = @vec_get s.items 0 * 100 + @vec_len s.items * 10 + @vec_get v 0";
@@ -868,12 +935,13 @@ fn cons_operator_is_overloadable() {
 
 #[test]
 fn slice_hook_covers_sequences_and_user_types() {
-    // `xs.[lo ... hi]` resolves `@compiler_interface_slice`: CORE overloads it for
-    // `@vec` / `@array` / `@str`, and a user type joins with its own.
+    // `xs.[lo ... hi]` resolves `@ISlice`: CORE has instances for `@vec` / `@array` /
+    // `@str`, and a user type joins with its own.
     let src = "@mod M\n\
         $ Tape : @struct = cells: @vec @int\n\
-        $ @compiler_interface_slice : Tape -> @int -> @int -> Tape = \\t lo hi =\n\
-        \tTape.{ .cells = t.cells.[lo ... hi] }\n\
+        $ sl : @ISlice Tape Tape = .{\n\
+        \t.slice = \\t lo hi = Tape.{ .cells = t.cells.[lo ... hi] },\n\
+        }\n\
         $ v : @vec @int = [10, 20, 30, 40]\n\
         $ s : @str = \"hello\"\n\
         $ t : Tape = Tape.{ .cells = v }.[1 ... 2]\n\
@@ -1118,10 +1186,15 @@ fn extern_ffi_dynamic_dlopen() {
 fn target_reflects_the_host_consistently() {
     // Host-agnostic invariants: the word and pointer widths agree, and `name` is
     // exactly `arch-os`.
+    // The widths are annotated because this harness injects CORE alone, so the
+    // `TARGET` module's types are not known here; the driver supplies them.
     let src = "@mod M\n$ r : @int = \
-        if TARGET.int_bits == TARGET.ptr_bits \
-        => (if (TARGET.arch ++ \"-\" ++ TARGET.os) == TARGET.name => 0 else 1) \
-        else 1";
+        let bits : @int = TARGET.int_bits in \
+        let ptr : @int = TARGET.ptr_bits in \
+        let name : @str = TARGET.name in \
+        let arch : @str = TARGET.arch in \
+        let os : @str = TARGET.os in \
+        if bits == ptr => (if (arch ++ \"-\" ++ os) == name => 0 else 1) else 1";
     assert_eq!(run(src, "r"), "0");
 }
 
@@ -1247,45 +1320,44 @@ fn scalar_serialization_round_trips() {
 }
 
 #[test]
-fn float_mixed_width_widens_to_float64() {
-    // `@float32 + @float64` widens the single-precision operand to double (via the
-    // `thx_f2d` runtime conversion) and yields `@float64`; both argument orders
-    // resolve. `@float64` deliberately does NOT mix (target-dependent width), so
-    // operands are the explicit sized types.
+fn float_widths_mix_only_by_explicit_conversion() {
+    // An operator takes one type for both operands, so `@float32 + @float64` is a
+    // type error rather than a silent widening: `f32_to_f64` says where the
+    // conversion happens.
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let x : @float32 = from_string \"1.5\" in \
             let y : @float64 = from_string \"2.25\" in \
-            let e : @float64 = 3.75 in (x + y) == e"),
+            let e : @float64 = 3.75 in (f32_to_f64 x + y) == e"),
         "true"
     );
-    assert_eq!(
-        ok("let x : @float32 = from_string \"1.5\" in \
-            let y : @float64 = from_string \"2.25\" in \
-            let e : @float64 = 3.75 in (y + x) == e"),
-        "true"
+    let err = errors(
+        "@mod M\n$ a : @bool = \
+         let x : @float32 = from_string \"1.5\" in \
+         let y : @float64 = from_string \"2.25\" in (x + y) == y",
     );
+    assert!(err.contains("type mismatch"), "{err}");
 }
 
 #[test]
-fn int_word_mixes_with_sized() {
-    // `@int` (the word default) mixes with a sized signed int: the sized type wins
-    // and the word operand casts to it, so a bare literal (which defaults to
-    // `@int`) drops into sized arithmetic. Both argument orders resolve. `@nat`
-    // mirrors this over the unsigned `@nat*` types.
+fn sized_arithmetic_takes_literals_but_not_word_variables() {
+    // A bare LITERAL drops into sized arithmetic, because it is checked against the
+    // other operand's type rather than inferred on its own. A word-typed VARIABLE
+    // does not: one operator, one type, so `@cast` says where the conversion is.
     let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
             let x : @int = 5 in \
-            let r : @int32 = x * p in r == from_string \"15\""),
+            let y : @int32 = @cast x in \
+            let r : @int32 = y * p in r == from_string \"15\""),
         "true"
     );
-    assert_eq!(
-        ok("let p : @int32 = from_string \"3\" in \
-            let x : @int = 5 in \
-            let r : @int32 = p * x in r == from_string \"15\""),
-        "true"
+    let err = errors(
+        "@mod M\n$ a : @bool = \
+         let p : @int32 = from_string \"3\" in \
+         let x : @int = 5 in (x * p) == p",
     );
+    assert!(err.contains("type mismatch"), "{err}");
     // The reported real-world case: a bare literal times a sized value.
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
@@ -1295,7 +1367,8 @@ fn int_word_mixes_with_sized() {
     assert_eq!(
         ok("let n : @nat16 = from_string \"7\" in \
             let two : @nat = 2 in \
-            let r : @nat16 = two * n in r == from_string \"14\""),
+            let t : @nat16 = @cast two in \
+            let r : @nat16 = t * n in r == from_string \"14\""),
         "true"
     );
 }
@@ -1383,14 +1456,13 @@ fn operator_table_every_entry() {
 }
 
 #[test]
-fn user_operator_overload_dispatches_by_type() {
-    // `+` overloaded for a user struct via `$ (+) : …`. `V + V` reaches the user
-    // definition (componentwise); the `@int + @int` inside its body, and in `r`,
-    // still resolves to the builtin. Proves symbolic-name defs join the operator's
-    // overload set and dispatch by type.
+fn user_type_joins_an_operator_by_instance() {
+    // A user struct joins `+` by implementing its interface. `V + V` goes through
+    // that instance (componentwise); the `@int + @int` inside its body, and in `r`,
+    // finds CORE's. Proves an operator dispatches through the context it resolves.
     let src = "@mod M\n\
                $ V : @struct = x: @int, y: @int\n\
-               $ (+) : V -> V -> V = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y }\n\
+               $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_eq!(run(src, "r"), "33");
 }
@@ -1646,12 +1718,15 @@ fn a_non_recursive_field_stays_strict() {
 
 #[test]
 fn equality_forces_lazy_slots() {
-    // Structural equality walks the whole value, so it must force: comparing
-    // unforced slots would compare representations and report two equal lists
-    // as different.
+    // An equality instance walks the whole value, so it must force: comparing
+    // unforced slots would compare representations and report two equal lists as
+    // different. The instance is recursive, and resolving it resolves itself.
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ eq_l : @ctx IEq a -> IEq (L a) = \\d = .{ .eq = \\x y =\n\
+               \tis x | L.N => (is y | L.N => @true else @false)\n\
+               \t| L.C.{ h, t } => (is y | L.C.{ h2, t2 } => d.eq h h2 && eq_l.eq t t2 else @false) }\n\
                $ r : @bool = mk 4 == mk 4";
     assert_eq!(run(src, "r"), "true");
 }

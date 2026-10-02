@@ -40,8 +40,8 @@ $ ck_r : @int = if band 0.25 == 1 => 0 else 32
 # sequence). Empty when lo > hi.
 $ ns : @vec @int = [1 ... 4]                         # [1, 2, 3, 4]
 $ ck_build : @int = if sum ns == 10 => 0 else 64
-$ ck_len   : @int = if length ns == 4 => 0 else 128
-$ ck_empty : @int = if length [5 ... 2] == 0 => 0 else 256
+$ ck_len   : @int = if VEC.length ns == 4 => 0 else 128
+$ ck_empty : @int = if VEC.length [5 ... 2] == 0 => 0 else 256
 
 # Against a sized tensor `[n]T` it builds the tensor instead: the LITERAL bounds fix
 # `n = hi - lo + 1` at compile time. A non-literal bound to a sized tensor is a

@@ -877,8 +877,25 @@ impl Repl {
         false
     }
 
-    /// Print `expr : <type>` without evaluating it.
+    /// Print `expr : <type>` without evaluating it. A bare NAME prints its
+    /// DECLARATION, `@ctx` prefix and all: inferring it as an expression would have
+    /// to pick a type for its context, which is what the declaration leaves open.
     fn show_type(&self, expr: &str) {
+        if let Some(name) = bare_global_name(expr) {
+            let src = self.source("");
+            match driver::compile_session_query(&src, &self.root_dir, Some(&name)) {
+                Ok(session) => {
+                    if let Some(ty) = session.queried {
+                        println!("{expr} : {ty}");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    print!("{e}");
+                    return;
+                }
+            }
+        }
         let src = self.source(&format!("$ {IT} = {expr}\n"));
         match driver::compile_session(&src, &self.root_dir) {
             Ok(session) => match session.decls.iter().find(|(n, _)| n == IT) {
@@ -1306,4 +1323,23 @@ mod term {
         }
         std::str::from_utf8(&bytes).ok()?.chars().next()
     }
+}
+
+/// The global a `:type` argument names, when it is just a name: an identifier, or an
+/// operator in parentheses (`(+)` names the global `+`). `None` for anything with
+/// structure, which is typed as an expression instead.
+fn bare_global_name(expr: &str) -> Option<String> {
+    let t = expr.trim();
+    if let Some(inner) = t.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let op = inner.trim();
+        let symbolic = !op.is_empty()
+            && op
+                .chars()
+                .all(|c| !c.is_alphanumeric() && !c.is_whitespace() && c != '_');
+        return symbolic.then(|| op.to_string());
+    }
+    let ident = !t.is_empty()
+        && t.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && t.chars().all(|c| c.is_alphanumeric() || c == '_');
+    ident.then(|| t.to_string())
 }

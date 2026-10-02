@@ -51,6 +51,7 @@ pub fn lower_modules(modules: &[Core]) -> data::Program {
             }
         }
     }
+    crate::lowering::inline::fold_primitive_methods(&mut merged);
     crate::lowering::patmat::compile_program(&mut merged);
     crate::lowering::anf::normalize_program(&mut merged);
     crate::lowering::debruijn::assign_program(&mut merged);
