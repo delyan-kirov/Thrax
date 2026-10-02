@@ -3,7 +3,7 @@
 # \file VEC.thx
 # \info Operations on the default sequence, the growable vector `@vec `T`. A `[...]`
 #       literal builds one, and `[a, b, ..r]` / `h :: t` / `[]` patterns match one
-#       (via its `@compiler_interface_sequence_view` hook in CORE). Everything here is
+#       (via its `@ISeqView` instance in CORE). Everything here is
 #       INDEX-BASED (`@vec_len`/`@vec_get`/`@vec_push`/`@vec_slice`), so it is O(n):
 #       building goes through `@vec_push` (append), never `::` (prepend is O(n)).
 #       Where an operation needs equality it takes the comparison explicitly

@@ -79,8 +79,8 @@ there is no Pair type.
 | `BUILD` | the compiler API: `Directive`, `lib`, `lib_path` -- returned from a `$ @run` global, they add libraries / search paths to the compilation (both engines); see documentation/platform-abstraction.md |
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
-`repeat`, `concat`); importing both is fine -- overloading resolves by type,
-and the qualified `STR.reverse` / `LIST.find` forms always work.
+`repeat`, `concat`). A name two imports share has no bare meaning, so use the
+qualified `STR.reverse` / `LIST.find` forms where both modules are imported.
 
 ### The map
 
@@ -159,23 +159,23 @@ prelude's `assert` and quick scripts.
 ### Complex numbers
 
 The TYPE is CORE's, not this module's: `Cpx` (fields `re`/`im`), the `i` literal
-suffix, `+ - * /` on any mix of `Cpx`/`Real`/`@float32`, and `to_string` all live
-in CORE, so `3.4 + 1.2i` needs no import. `CPX` adds everything else, in ordinary
-Thrax over libm through `C`.
+suffix, `+ - * /` on `Cpx`, and `to_string` all live in CORE, so `3.4 + 1.2i`
+needs no import. An operator takes ONE type for both operands, so a real joins a
+complex only through `CPX.of_real`. `CPX` adds everything else, in ordinary Thrax
+over libm through `C`.
 
 Two notes on the arithmetic. CORE's `/` forms `|b|^2` directly, which is the
 readable quotient but loses range near the float limits; `CPX.div_smith` is
 Smith's algorithm, which scales by the larger component first and keeps it.
 And `CPX.pow` goes through `exp`/`log` (principal branch), so for an integer
 exponent prefer `CPX.powi`, which multiplies and stays exact for small powers
-and at `z = 0`. `z ^ n` picks between them: `^` is a compiler builtin (it has no
-intrinsic of its own), but its overload set takes candidates like any other
-operator, and CPX adds one per exponent type.
+and at `z = 0`. `z ^ w` on two complexes is `CPX.pow` through CORE's `IPow`
+instance; an INTEGER exponent is `CPX.powi` by name, since one operator takes one
+type for both operands.
 
-`zero`, `one`, `add` and `mul` double as LA's element dictionary, so a `[n]Cpx`
-flows through `dot`/`matmul` with no tensor-side support: importing `CPX` next to
-`LA` is all a complex tensor needs. Equality is the generic structural one (two
-`Real` fields), so no `==` overload is declared.
+CORE's `IAdd Cpx` / `IMul Cpx` / `IZero Cpx` instances are what `LA.dot` and
+`matmul` resolve, so a `[n]Cpx` flows through them with no tensor-side support.
+`IEq Cpx` is in CORE too, so `==` works on a complex without a definition here.
 
 ## Testing
 
@@ -189,23 +189,12 @@ for an unbalanced BST); the RANDOM test pins the exact MINSTD sequence.
 
 ## A note on inference
 
-Resolving `p.snd == "one"` (a polymorphic struct projection feeding an
-overloaded operator) required letting ready field accesses participate in
-TC's operator-resolution fixpoint -- previously the operator @int-defaulted
-before the projection's type was grounded. See `Checker::resolve_sites` /
-`settle_ready_field_sites` in compiler/TC.cpp.
-
-User overload sites joined the same fixpoint for the same reason:
-`(pow 2.0 10.0) == 1024.0` (a USER overload feeding an overloaded operator)
-used to deadlock -- built-in sites resolved (and @int-defaulted) before any
-user site was judged, so `==` forced `pow`'s result to @int and both sites
-failed. Inside the fixpoint a user site is resolved CONSERVATIVELY (commit
-only when exactly one candidate fits, wait on open operator operands or
-multiple fits, never default); this is sound because unification only ever
-shrinks a site's fit set, so an early single-fit commit is the same commit a
-later pass would make. `resolve_user_sites` afterwards forces whatever is
-left, with the old @int-defaulting (`\x = x + x` still picks the @int
-built-in). See `Checker::resolve_one_user_site`.
+A context requirement is resolved at the enclosing definition's BOUNDARY, after
+numeric defaulting, not at the call site: that is what lets `p.snd == "one"` (a
+polymorphic struct projection feeding `==`) find `IEq @str` rather than defaulting
+to `@int` first. Everything that used to need an operator-resolution fixpoint over
+competing candidates is gone with overloading; what remains is one search per
+requirement, by type, over a flat instance index.
 
 ## Future work
 

@@ -6,11 +6,6 @@
 #       result is checked against its closed form; a wrong answer divides by
 #       zero and aborts, so the test fails loudly rather than silently.
 
-# Abort (1 / 0) unless `ok` holds; returns 0 when it does.
-$assert : @int -> @int = \ok =
-	if ok == 0 => 1 / 0
-	else 0
-
 # Global self-recursion in tail position (accumulator).
 $sum_to : @int -> @int -> @int = \n acc =
 	if n == 0 => acc
@@ -28,11 +23,7 @@ $let_sum : @int -> @int = \m =
 $is_even : @int -> @int = \n = if n == 0 => 1 else is_odd (n - 1)
 $is_odd  : @int -> @int = \n = if n == 0 => 0 else is_even (n - 1)
 
-# 1_000_000 * 1_000_001 / 2 = 500_000_500_000
-# $ck_global = assert (sum_to 1000000 0 == 500000500000)
-# $ck_let    = assert (let_sum 1000000 == 500000500000)
-# $ck_even   = assert (is_even 1000000)
-$ck_odd    = is_odd 100
+$ck_odd = is_odd 100
 
 # FIXME : Check int size here instead
 # Deep tail recursion (constant stack) checked against closed forms.

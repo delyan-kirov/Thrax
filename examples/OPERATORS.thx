@@ -34,17 +34,18 @@ $ ck_bool  : @int = if (@true == @true) && !(@true == @false) => 0 else 16
 $ big : @nat64 = @cast (0 - 1)
 $ ck_unsigned : @int = if (big > 5) && !(big < 5) => 0 else 32
 
-# A type of your own extends the overload set: `<` on a `Money` dispatches here,
-# `<` on an `@int` still reaches CORE's.
+# A type of your own becomes comparable by implementing the interface: `<` on a
+# `Money` goes through this instance, `<` on an `@int` through CORE's.
 $ Money : @struct = cents: @int
 
-$ (<) : Money -> Money -> @bool = \a b = a.cents < b.cents
+$ ord_money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
+$ eq_money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
 
 $ ck_custom : @int =
 	if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
 
-# No overload covers a struct or a tuple: `==` falls back to the structural
-# built-in, which compares field by field.
+# There is no structural fallback: a struct is equatable because of the instance
+# above, and a tuple because CORE has one per arity (built from its components').
 $ ck_structural : @int =
 	if (Money.{ .cents = 7 } == Money.{ .cents = 7 })
 		&& ({1, "a"} == {1, "a"})

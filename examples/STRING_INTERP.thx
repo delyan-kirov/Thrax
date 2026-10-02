@@ -22,10 +22,10 @@ $ ck_greet : @int = if (greet "sam") == "hello sam!" => 0 else 1
 # negative `@int` (its `-` sign) all read through `CORE.to_string`.
 $ ck_base : @int = if "n=?(42) ok=?(@true) d=?(0 - 5)" == "n=42 ok=true d=-5" => 0 else 1
 
-# A user `to_string` overload lets a program's own type interpolate. It composes
-# with the base overloads by ordinary resolution (the `@int` fields go to
-# `CORE.to_string`, the `Point` to this one).
-$ to_string : Point -> @str = \p = "(?(p.x), ?(p.y))"
+# An `Ito_string` instance lets a program's own type interpolate. It composes with
+# the base instances by ordinary resolution (the `@int` fields find CORE's, the
+# `Point` finds this one).
+$ show_point : Ito_string Point = .{ .show = \p = "(?(p.x), ?(p.y))" }
 $ ck_user : @int = if "at ?(Point.{ .x = 3, .y = 4 })" == "at (3, 4)" => 0 else 1
 
 # A nested struct literal (its own braces) inside an interpolant.

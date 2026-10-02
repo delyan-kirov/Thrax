@@ -42,6 +42,12 @@ pub struct Engine {
     /// rejected in [`Engine::bind`]. Snapshotted by save/restore so a rolled-back
     /// trial cannot leave a stale id that a reused var slot would inherit.
     nat_vars: HashSet<VarId>,
+    /// Variables introduced by an INTEGER literal. An integer literal never adopts a
+    /// float type, so these refuse to bind to one: `1 + 2.0` and `x : @float64 = 1`
+    /// are errors, and the float literal (`1.0`) is the spelling. Tracked here
+    /// rather than in the checker because the restriction has to hold wherever
+    /// unification reaches, and it travels through variable chains.
+    int_vars: HashSet<VarId>,
     /// The undo log behind [`Engine::save`] / [`Engine::restore`].
     trail: Vec<Undo>,
 }
@@ -52,11 +58,13 @@ enum Undo {
     Var(VarId, Var),
     /// Drop this id from the `Nat`-kinded set again.
     NatVar(VarId),
+    /// Drop this id from the integer-literal set again.
+    IntVar(VarId),
 }
 
 /// A checkpoint of the [`Engine`] state, taken by [`Engine::save`] and rewound by
 /// [`Engine::restore`]. A mark into the undo trail, not a copy of the var store:
-/// overload resolution takes one per candidate, and copying the store made that
+/// a trial unification takes one per candidate, and copying the store made that
 /// cost grow with every variable the program had introduced so far.
 pub struct Save {
     trail: usize,
@@ -72,6 +80,7 @@ impl Engine {
             level: 0,
             struct_rows: std::collections::HashMap::new(),
             nat_vars: HashSet::new(),
+            int_vars: HashSet::new(),
             trail: Vec::new(),
         }
     }
@@ -184,6 +193,19 @@ impl Engine {
         }
     }
 
+    /// Mark a variable as an integer literal's, so it refuses to become a float.
+    pub fn mark_int_literal(&mut self, ty: Type) {
+        if let TypeNode::Var(id) = self.types.node(ty) {
+            if self.int_vars.insert(id) {
+                self.trail.push(Undo::IntVar(id));
+            }
+        }
+    }
+
+    fn is_int_var(&self, id: VarId) -> bool {
+        self.int_vars.contains(&id)
+    }
+
     /// A fresh unbound variable at the current level.
     pub fn fresh(&mut self) -> Type {
         let id = self.vars.len() as VarId;
@@ -202,7 +224,7 @@ impl Engine {
     // -- checkpointing ------------------------------------------------------
 
     /// Snapshot the whole variable store for trial unification. Restoring undoes
-    /// every binding made since the snapshot, so a failed overload attempt leaves
+    /// every binding made since the snapshot, so a failed trial leaves
     /// no trace. (A clone of the store is simplest and fine at these sizes; a
     /// change trail would be the optimization.)
     pub fn save(&self) -> Save {
@@ -222,6 +244,9 @@ impl Engine {
                 Undo::NatVar(id) => {
                     self.nat_vars.remove(&id);
                 }
+                Undo::IntVar(id) => {
+                    self.int_vars.remove(&id);
+                }
             }
         }
         self.vars.truncate(save.vars);
@@ -239,6 +264,13 @@ impl Engine {
             },
             _ => ty,
         }
+    }
+
+    /// Whether a variable is still unbound (not linked to another type). Context
+    /// resolution asks this to tell a candidate that READS a type from one that
+    /// would decide it.
+    pub fn is_free(&self, id: VarId) -> bool {
+        !matches!(self.vars[id as usize], Var::Linked(_))
     }
 
     /// The node a type resolves to: [`Engine::resolve`] then a store read. What
@@ -698,6 +730,24 @@ impl Engine {
                 } else if !want_nat && other_nat {
                     self.mark_nat(id);
                 }
+                // The integer-literal restriction travels with the chain, so
+                // `1 + x` keeps `x` from being a float too.
+                if self.is_int_var(id) {
+                    let ty = self.types.add(TypeNode::Var(other));
+                    self.mark_int_literal(ty);
+                }
+            }
+            TypeNode::Con(name) if self.is_int_var(id) && is_float_name(&self.types.name(name)) => {
+                return Err(Diagnostic::error(
+                    Code::TypeMismatch,
+                    Span::at(0),
+                    0,
+                    format!(
+                        "an integer literal cannot be a `{}`: write the float literal instead \
+                         (`1.0`, not `1`)",
+                        self.types.name(name)
+                    ),
+                ));
             }
             _ => {
                 if want_nat {
@@ -790,7 +840,7 @@ impl Engine {
 
     /// Generalize as [`Engine::generalize`], but leave any variable in `mono`
     /// ungeneralized. This is the monomorphism restriction: a variable still
-    /// constrained by an unresolved overload must stay a unification variable so
+    /// constrained by an unresolved requirement must stay a unification variable so
     /// a later use can pin it, rather than becoming spuriously polymorphic.
     pub fn generalize_except(&mut self, ty: Type, mono: &HashSet<VarId>) {
         match self.head(ty) {
@@ -833,7 +883,7 @@ impl Engine {
     }
 
     /// Collect the unbound variables reachable from `ty` (after resolution) into
-    /// `out`. Used to protect an overload's operands from generalization.
+    /// `out`. Used to protect a pending requirement's variables from generalization.
     pub fn collect_vars(&self, ty: Type, out: &mut HashSet<VarId>) {
         match self.head(ty) {
             TypeNode::Var(id) => {
@@ -876,8 +926,8 @@ impl Engine {
 
     /// Instantiate several types that share generalized variables with ONE fresh
     /// mapping, so a `Generic` common to two of them maps to the same fresh var.
-    /// Used to instantiate an overload candidate together with its `@ctx` implicit
-    /// requirements (a `Box t` candidate and its `t -> @str` dictionary share `t`).
+    /// Used to instantiate an instance's exposed type together with the context it
+    /// requires (an `Ito_string (Box t)` instance and its `Ito_string t` share `t`).
     pub fn instantiate_bundle(&mut self, tys: &[Type]) -> Vec<Type> {
         let mut mapping = HashMap::new();
         tys.to_vec()
@@ -973,7 +1023,12 @@ impl Engine {
 
     /// Render a type with variables named `` `a ``, `` `b ``, ... in order.
     pub fn show(&self, ty: Type) -> String {
-        let zonked = self.zonk(ty);
+        self.show_all(&[ty]).pop().expect("one rendering")
+    }
+
+    /// Render several types under ONE variable naming, so a context requirement and
+    /// the signature it belongs to agree on their variable names.
+    pub fn show_all(&self, tys: &[Type]) -> Vec<String> {
         let mut names: HashMap<VarId, String> = HashMap::new();
         let mut next = 0u32;
         let mut namer = |id: VarId| {
@@ -988,7 +1043,12 @@ impl Engine {
                 })
                 .clone()
         };
-        display(&self.types, zonked, &mut namer)
+        tys.iter()
+            .map(|t| {
+                let zonked = self.zonk(*t);
+                display(&self.types, zonked, &mut namer)
+            })
+            .collect()
     }
 }
 
@@ -1058,4 +1118,10 @@ fn show_poly(p: &Poly) -> String {
         }
     }
     s
+}
+
+/// Whether a type-constructor name is one of the float types, which an integer
+/// literal may not become.
+fn is_float_name(name: &str) -> bool {
+    matches!(name, "@float64" | "@float32")
 }

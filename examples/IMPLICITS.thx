@@ -1,61 +1,75 @@
 @mod IMPLICITS
 
-# \file implicits.thx
-# \info `@ctx` implicit parameters. A definition may declare, after its type
-#       signature, implicit parameters as a flat comma list, repeatable:
-#       `@ctx a : A, b : B`. Each call site resolves them BY NAME from the
-#       surrounding scope (a local binder wins, else a global, picking among
-#       overloads by type), or the caller passes them explicitly with `@ctx`. A
-#       DUPLICATED name declares one dictionary per type parameter (e.g. two
-#       `to_string`), resolved by type in the body (see `DERIVE_SHOW`). It
-#       elaborates to leading dictionary passing, so the backends need no special
-#       support.
+# \file IMPLICITS.thx
+# \info Interfaces, through the `@ctx` context parameter. An interface is an
+#       ordinary `@struct` whose fields are its operations; implementing it is
+#       defining a value of that type. A function that needs one declares it as a
+#       `@ctx` FIRST parameter: ordinary in every respect, except that call sites do
+#       not write it. The compiler finds it BY TYPE, taking the nearest binder in
+#       scope and otherwise the one instance in scope (two would be an error, since
+#       global scope is flat). `f (@ctx value) x` supplies one by hand. It elaborates
+#       to a leading argument, so the backends need no special support.
 
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 
-$ compare : @int -> @int -> Ordering = \a b =
-	if a < b => Ordering.LT
-	else if a > b => Ordering.GT
-	else Ordering.EQ
+# The interface, and one implementation for `@int`.
+$ IOrder : @struct t = compare: t -> t -> Ordering,
 
-# `compare` is resolved implicitly from scope by name and type.
-$ max_of : a -> a -> a  @ctx compare : a -> a -> Ordering = \x y =
-	is compare x y | Ordering.GT => x else y
+$ order_int : IOrder @int = .{
+	.compare = \a b =
+		if a < b => Ordering.LT
+		else if a > b => Ordering.GT
+		else Ordering.EQ,
+}
 
-# Chaining: `max3` declares the same implicit and passes it down to `max_of`
-# (the local `@ctx` parameter wins over any global of the same name).
-$ max3 : a -> a -> a -> a  @ctx compare : a -> a -> Ordering = \x y z =
+# `max_of` works for any type with an `IOrder`, which it receives as its context.
+$ max_of : @ctx IOrder t -> t -> t -> t = \ord x y =
+	is ord.compare x y | Ordering.GT => x else y
+
+# CHAINING: `max3` declares the same context and calls `max_of` without writing it.
+# `max_of`'s requirement is satisfied by `max3`'s own parameter, which is nearer
+# than any global, so the context is passed down rather than resolved again.
+$ max3 : @ctx IOrder t -> t -> t -> t -> t = \ord x y z =
 	max_of (max_of x y) z
 
-# A reversed comparison, used as an explicit override to turn `max_of` into a min.
-$ flip : @int -> @int -> Ordering = \a b = compare b a
+$ ck_ctx   : @int = if max_of 3 7 == 7 => 0 else 1
+$ ck_chain : @int = if max3 3 9 5 == 9 => 0 else 2
 
-$ ck_implicit : @int = if max_of 3 7 == 7 => 0 else 1
-$ ck_chain    : @int = if max3 3 9 5 == 9 => 0 else 2
-$ ck_override : @int = if (max_of 3 7 @ctx flip) == 3 => 0 else 4
+# PASSING ONE BY HAND: `(@ctx e)` is the first argument. The reversed instance
+# turns `max_of` into a min. It is a local, because two values of one type in
+# global scope would make every inferred use of that type ambiguous.
+$ ck_by_hand : @int =
+	let flip : IOrder @int = .{ .compare = \a b = order_int.compare b a } in
+	if max_of (@ctx flip) 3 7 == 3 => 0 else 4
 
-# A DUPLICATED `@ctx` name declares one dictionary PER type parameter, selected by
-# type in the body (dictionary selection, like a typeclass method used at two
-# types). Here `blank` is a nullary method with an `@int` and a `@str` instance;
-# `pick_fst`/`pick_snd` each return `blank` at their own parameter type, and it
-# resolves to the matching dictionary (the value-position case).
+# A GENERIC INSTANCE: `IOrder (Pair a b)` is built from the orders of its parts, so
+# resolving it resolves them too, recursively. Two requirements travel as one tuple,
+# which the call site builds; nothing of the bundled type has to exist.
 $ Pair : @struct a b = fst: a, snd: b,
-$ blank : @int = 0
-$ blank : @str = ""
-$ pick_fst : Pair a b -> a  @ctx blank : a, blank : b = \p = blank
-$ pick_snd : Pair a b -> b  @ctx blank : a, blank : b = \p = blank
-$ pp : Pair @int @str = Pair.{ .fst = 7, .snd = "z" }
-$ ck_dict : @int = if (pick_fst pp == 0) && (pick_snd pp == "") => 0 else 8
 
-# The same selection works when `blank` is used in a STRUCT-LITERAL field: `.fst`
-# expects `a` and `.snd` expects `b`, each picking the matching dictionary.
-$ mk : {} -> Pair a b  @ctx blank : a, blank : b = \u = Pair.{ .fst = blank, .snd = blank }
-$ mkpp : Pair @int @str = mk {}
-$ ck_lit : @int = if (mkpp.fst == 0) && (mkpp.snd == "") => 0 else 16
+$ order_pair : @ctx {IOrder a, IOrder b} -> IOrder (Pair a b) = \ords = .{
+	.compare = \p q =
+		is ords.0.compare p.fst q.fst
+			| Ordering.EQ => ords.1.compare p.snd q.snd
+			else ords.0.compare p.fst q.fst,
+}
 
-# A QUALIFIED call plans its implicits like a bare one (`cmp` from scope here).
-$ ck_qual : @int = if IMPLICITS.max_of 3 7 == 7 => 0 else 32
+$ order_str : IOrder @str = .{
+	.compare = \a b =
+		if a < b => Ordering.LT
+		else if a > b => Ordering.GT
+		else Ordering.EQ,
+}
 
-$ test : @int = ck_implicit + ck_chain + ck_override + ck_dict + ck_lit + ck_qual
+$ p1 : Pair @int @str = Pair.{ .fst = 1, .snd = "b" }
+$ p2 : Pair @int @str = Pair.{ .fst = 1, .snd = "a" }
+
+$ bigger : Pair @int @str = max_of p1 p2
+$ ck_generic : @int = if bigger.snd == "b" => 0 else 8
+
+# A QUALIFIED call plans its context like a bare one.
+$ ck_qual : @int = if IMPLICITS.max_of 3 7 == 7 => 0 else 16
+
+$ test : @int = ck_ctx + ck_chain + ck_by_hand + ck_generic + ck_qual
 
 $ @run (assert (test == 0) "IMPLICITS: a check failed")

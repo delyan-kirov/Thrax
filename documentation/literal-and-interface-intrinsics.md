@@ -1,26 +1,31 @@
 # Literal and interface intrinsics
 
+> **Current spelling.** Stages 0-5 below built this family as overloadable
+> `@compiler_interface_*` FUNCTIONS. Issue #213 removed overloading, so each one is
+> now a blessed interface TYPE whose single field the compiler projects; Stage 6 at
+> the bottom records the migration and `documentation/interfaces.md` has the rules.
+> The stage history is kept as written, with the old names, because it is a log.
+
 ## Goal
 
 Remove hardcoded literal/type machinery from the compiler and replace it with a
-small family of overloadable `@compiler_interface_*` functions. Literals (`"..."`,
-`[...]`, integers, floats), indexing (`.[..]`), and the structural side of pattern
-matching all desugar to these functions. The compiler knows only a few irreducible
-primitives; every friendly type (`Str`, `List`, `Real`) moves to core and can be
-substituted by user types.
+small family of blessed interfaces. Literals (`"..."`, `[...]`, integers, floats),
+indexing (`.[..]`), ranges, slices, and the structural side of pattern matching all
+resolve one of them by type. The compiler knows only a few irreducible primitives;
+every friendly type (`List`, `Real`) moves to core and can be substituted by user
+types.
 
 ## Principles
 
-- `@`-names are compiler-blessed. A `@`-name is user-extensible **iff** it starts
-  with `@compiler_interface_`. Defining any other `@`-name in user code errors:
-  "this compiler intrinsic is not extensible in user code".
-- Each interface intrinsic has a default overload in core. A module may define its
-  own overload; a local default beats core's when a literal is otherwise
-  unconstrained.
-- Reuse the existing overload resolver (trial-unify + rollback) and type-directed
-  `check`. The only new inference machinery is literal defaulting.
+- `@`-names are compiler-blessed. The only `@`-names a module may write are `@main`
+  and, in CORE alone, the blessed interface types. Any other `@`-name in a
+  definition errors: "this compiler intrinsic is not extensible in user code".
+- Each blessed interface has an instance in CORE for the built-in types. A module
+  adds an instance for its own type; the expected type picks between them.
+- Reuse the context resolver (trial-unify + rollback over a flat instance index)
+  and type-directed `check`. No separate machinery.
 - Patterns lower after type checking (unchanged architecture): once inference knows
-  the scrutinee type, a non-builtin type routes through its interface overload.
+  the scrutinee type, a non-builtin type routes through its instance.
 
 ## Irreducible primitives (after this work)
 
@@ -37,53 +42,62 @@ Scalars stay primitive: `@int`, `@nat`, `@float64` (and the sized `@intN`/`@natN
 `@float32`), `@bool` (control flow needs a concrete branch value; `Bool` is out of
 scope for literal work).
 
-## The interface-intrinsic family
+## The blessed-interface family
+
+CORE declares each as a one-field `@struct`; an implementation is an ordinary value.
 
 Construction / access:
 
-- `@compiler_interface_string_literal  : @array -> a`
-- `@compiler_interface_sequence_literal : @vec t -> f t`
-- `@compiler_interface_integer_literal  : @int -> a`
-- `@compiler_interface_real_literal     : @float64 -> a`
-- `@compiler_interface_imaginary_literal : @float64 -> a`   (the `3i` suffix)
-- `@compiler_interface_indexing         : c -> k -> *`   (the `.[..]` hook)
-- `@compiler_interface_range            : t -> t -> f`   (`[lo ... hi]`)
-- `@compiler_interface_range_from       : t -> f`        (`[lo ...]`)
-- `@compiler_interface_slice            : c -> @int -> @int -> c`  (`.[lo ... hi]`)
+- `@IStrLit t   = of_str: @str -> t,`
+- `@ISeqLit e t = of_vec: @vec e -> t,`
+- `@IIntLit t   = of_int: @int -> t,`
+- `@IRealLit t  = of_real: @float64 -> t,`
+- `@IImagLit t  = of_imag: @float64 -> t,`      (the `3i` suffix)
+- `@IIndex s i t = index: s -> i -> t,`         (the `.[..]` surface)
+- `@IRange b t  = range: b -> b -> t,`          (`[lo ... hi]`)
+- `@IRangeFrom b t = range_from: b -> t,`       (`[lo ...]`)
+- `@ISlice s t  = slice: s -> @int -> @int -> t,`  (`.[lo ... hi]`)
 
 Matching:
 
-- `@compiler_interface_equality      : t -> t -> @bool`
-- `@compiler_interface_sequence_view : f t -> SeqView (f t) t`
+- `@ISeqView s e = view: s -> SeqView s e,`
+- equality is CORE's ordinary `IEq t`, the same interface `==` wraps, so a type
+  needs no second instance for its literal patterns.
 
-where core defines `$ SeqView : @union s t = Empty | More t s`.
+where core defines `$ SeqView : @union s t = Empty: {}, More: {t, s},`.
 
 ## Desugarings
 
-- `"foo"`            ->  `@compiler_interface_string_literal <bytes:@array>`
-- `[a, b, c]`        ->  `@compiler_interface_sequence_literal <@vec t payload>`
+Each writes `I.m` for "the single field of the instance resolved for `I` here".
+
+- `"foo"`            ->  `@IStrLit.of_str <bytes:@str>`
+- `[a, b, c]`        ->  `@ISeqLit.of_vec <@vec t payload>`
 
   (except when the expected type is a sized tensor `[n]T`: that stays the existing
   type-directed build, since a `@vec` payload cannot carry the static length `n`.)
-- `42`               ->  `@compiler_interface_integer_literal 42`
-- `1.5`              ->  `@compiler_interface_real_literal 1.5`
-- `1.5i`             ->  `@compiler_interface_imaginary_literal 1.5`
+- `42`               ->  `@IIntLit.of_int 42`
+- `1.5`              ->  `@IRealLit.of_real 1.5`
+- `1.5i`             ->  `@IImagLit.of_imag 1.5`
 
-  (unlike the others this hook has no built-in default: `3i` means whatever the
-  hook in scope returns, and CORE's overload returns the `Cpx` struct. It is the
-  one literal whose whole meaning is library code, which is why the suffix cost
-  the compiler only a token and a desugar.)
-- `m.["k"]`          ->  `@compiler_interface_indexing m "k"`
-- `is "foo"`         ->  `@compiler_interface_equality scrut (@compiler_interface_string_literal <bytes>)`
-- `[a, b, ..rest]`   ->  nested match on `@compiler_interface_sequence_view`:
+  (unlike the others this one has no built-in default: `3i` means whatever the
+  instance in scope builds, and CORE's returns the `Cpx` struct. It is the one
+  literal whose whole meaning is library code, which is why the suffix cost the
+  compiler only a token and a desugar.)
+- `m.["k"]`          ->  `@IIndex.index m "k"`
+- `is "foo"`         ->  `IEq.eq scrut (@IStrLit.of_str <bytes>)`
+- `[a, b, ..rest]`   ->  nested match on `@ISeqView.view`:
 
 ```
-when @compiler_interface_sequence_view scrut is
-  More a t1 => when @compiler_interface_sequence_view t1 is
+when @ISeqView.view scrut is
+  More a t1 => when @ISeqView.view t1 is
     More b rest => <bind a, b, rest; success>
     _           => <fail>
   _ => <fail>
 ```
+
+A construction interface is resolved only where the expected type already has a
+constructor head: with it still open, resolving would DECIDE what the literal is
+rather than read it, so the literal keeps its built-in default instead.
 
 ## Type annotation (disambiguation)
 
@@ -298,3 +312,35 @@ keep their type-directed paths (`tensor_exprs`, `infer_slice`'s shape algebra).
 Tests: `range_via_hook_on_a_user_type`, `open_range_via_hook_on_a_user_type`,
 `cons_operator_is_overloadable`, `slice_hook_covers_sequences_and_user_types`
 (interpreter), `bracket_hooks_match_interpreter` (ccg parity).
+
+## Stage 6 - blessed interfaces, no overloading  [LANDED, issue #213]
+
+Overloading is gone, so the family could not stay a set of overloaded functions.
+Each hook became a blessed interface TYPE carrying the `@` sigil, declarable only in
+CORE and validated to have exactly ONE field, and the compiler projects field 0 of
+the instance it resolves. There is no longer an intermediate global whose only job
+is to be an overload candidate.
+
+What changed:
+
+- `parser::table::BLESSED_INTERFACES` is the fixed name table; `$ @IRange : @struct
+  b t = ...` parses as a type declaration, and the `$ @compiler_interface_*`
+  definition allowance is deleted. The checker rejects a blessed declaration outside
+  CORE and one without exactly one field.
+- `Checker::blessed` / `blessed_req` build the requirement from the interface's
+  declared parameters and resolve it with the same `resolve_ctx` a `@ctx` parameter
+  uses. Resolution is EAGER at a literal / pattern / range / slice site (the
+  expected type is known there), and DEFERRED at the `@IIndex` / `@IImagLit` head a
+  desugar emits, so the surrounding types pin the instance first.
+- `@compiler_interface_equality` is gone: a literal pattern compares with the
+  type's ordinary `IEq` instance.
+- A resolved site records a `HookImpl` (the instance value plus the field name);
+  lowering emits `Term::Field(instance, field)` and applies it to the operands, so
+  `Pat::HookEq` / `Pat::SeqView` now carry a `Term` rather than a global's name.
+- Where nothing constrains a range's result the FIRST instance declared still wins
+  (`blessed_first`), so CORE's declaration order keeps deciding that a bare
+  `[lo ... hi]` is a `@vec` and a bare `[lo ...]` is a `Stream`.
+
+`LA`'s tensor indexing is `$ index_tensor : @IIndex ([n]a) @int a`, `MAP`'s is
+`@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.thx` shows a user type
+joining with `@IIndex Grid @int @int`.

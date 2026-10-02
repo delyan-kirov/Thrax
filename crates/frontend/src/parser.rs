@@ -18,7 +18,7 @@
 //! nodes; a later pass desugars it.
 
 pub mod data;
-mod table;
+pub(crate) mod table;
 #[cfg(test)]
 mod tests;
 
@@ -128,7 +128,7 @@ impl<'a> Parser<'a> {
     /// Build a string-literal expression, expanding `?(expr)` interpolations. `t`
     /// is the `Kind::Str` token. `"a ?(e) b"` desugars to `"a " ++ to_string e ++ " b"`;
     /// a literal chunk seeds the `++` chain so the whole expression types as `Str`,
-    /// and each interpolant is stringified through the overloaded `to_string`.
+    /// and each interpolant is stringified through `to_string` over its instance.
     /// Braces are ordinary literal characters; `\?` is a literal `?`.
     fn build_string(&mut self, t: Token) -> Result<Aol<Expr>> {
         let raw = self.text(t);
@@ -189,9 +189,9 @@ impl<'a> Parser<'a> {
                     let abs_start = body_start + expr_start;
                     let slice = &full[abs_start..body_start + j];
                     let e = self.parse_subexpr(slice, abs_start, t.line)?;
-                    // `?(e)` stringifies via the overloaded `to_string`, so an
-                    // interpolant of any type with a `to_string` (base types ship
-                    // one in the auto-imported `CORE`) reads as `Str`. The call
+                    // `?(e)` stringifies via `to_string`, so an interpolant of any
+                    // type with an `Ito_string` instance (base types ship one in the
+                    // auto-imported `CORE`) reads as `Str`. The call
                     // inherits the interpolant's span so a resolution failure
                     // points at the interpolant, not a synthetic node.
                     let span = self.ast.expr_span(e).unwrap_or(t.span);
@@ -426,30 +426,54 @@ impl<'a> Parser<'a> {
                 let e = self.parse_expr(0)?;
                 Ok(Item::Run(e, Span::new(start, self.last_end), meta))
             }
-            // The `@`-names a user (or the core library) may define: the program
-            // entry `$ @main : sig = body`, and the `@compiler_interface_*` hooks
-            // (`$ @compiler_interface_indexing : sig = body`), which join the hook's
-            // overload set like any other definition.
-            name if name == "main" || name.starts_with("compiler_interface_") => {
-                let at_tok = self.bump()?; // the '@main' / '@compiler_interface_*' token
-                let hook = self.intern(self.text(at_tok));
-                expect!(self, Kind::Colon, "expected ':' and a type for the interface hook");
-                let sig = Some(self.parse_type()?);
-                let implicits = self.parse_ctx_decls()?;
+            // The program entry, the only `@`-name bound to a VALUE.
+            "main" => {
+                let at_tok = self.bump()?; // '@main'
+                let name = self.intern(self.text(at_tok));
+                expect!(self, Kind::Colon, "expected ':' and a type for '@main'");
+                let (sig, ctx) = self.parse_signature()?;
                 expect!(self, Kind::Eq, "expected '=' after the type signature");
                 let body = self.parse_expr(0)?;
                 Ok(Item::Def {
-                    name: hook,
-                    sig,
-                    implicits,
+                    name,
+                    sig: Some(sig),
+                    ctx,
                     body,
+                })
+            }
+            // A blessed interface TYPE (`$ @IRange : @struct b t = range: b -> b -> t,`).
+            // The compiler resolves a value of it at the matching desugar site and
+            // projects its single field, so the name is fixed and only CORE declares
+            // it; an implementation is an ordinary value (`$ r : @IRange @int (@vec
+            // @int) = .{ .range = ... }`).
+            name if table::is_blessed_interface(&format!("@{name}")) => {
+                let at_tok = self.bump()?; // the '@I...' token
+                let iname = self.intern(self.text(at_tok));
+                expect!(self, Kind::Colon, "expected ':' and '@struct' for the interface type");
+                if !self.at_intrinsic("struct")? {
+                    return Err(self.unexpected(
+                        &at_tok,
+                        "a blessed interface is declared as a one-field '@struct'",
+                    ));
+                }
+                self.bump()?; // '@struct'
+                let params = self.parse_type_params()?;
+                expect!(self, Kind::Eq, "expected '=' after '@struct'");
+                let (includes, fields) = self.parse_struct_body()?;
+                Ok(Item::Struct {
+                    name: iname,
+                    params,
+                    includes,
+                    fields,
+                    abi: None,
+                    c_union: false,
                 })
             }
             other => Err(self.unexpected(
                 &at,
                 &format!(
                     "'@{other}' is a compiler intrinsic and is not extensible in user code; \
-                     only '@main' and the '@compiler_interface_*' hooks may be defined"
+                     only '@main' and the blessed interface types may be declared"
                 ),
             )),
         }
@@ -458,20 +482,20 @@ impl<'a> Parser<'a> {
     /// `$ (op) : sig = body`: a definition bound under the symbolic operator name
     /// `op`. It becomes a plain [`Item::Def`], so it flows through the same
     /// collection, type-checking, and lowering as a `$ name` def and joins `op`'s
-    /// overload set (a use like `a op b` then dispatches to it by type).
+    /// name (a use like `a op b` then references it).
     fn parse_operator_global(&mut self) -> Result<Item> {
         self.bump()?; // '('
         let op_tok = expect!(self, Kind::Op, "expected an operator inside '( )'");
         let op = self.intern(self.text(op_tok));
         expect!(self, Kind::RParen, "expected ')' after the operator");
         expect!(self, Kind::Colon, "expected ':' and a type for the operator");
-        let sig = Some(self.parse_type()?);
+        let (sig, ctx) = self.parse_signature()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
         Ok(Item::Def {
             name: op,
-            sig,
-            implicits: self.ast.make_slice(Vec::new()),
+            sig: Some(sig),
+            ctx,
             body,
         })
     }
@@ -509,7 +533,7 @@ impl<'a> Parser<'a> {
             return Ok(Item::Def {
                 name,
                 sig: None,
-                implicits: self.ast.make_slice(Vec::new()),
+                ctx: None,
                 body: self.parse_expr(0)?,
             });
         }
@@ -604,38 +628,39 @@ impl<'a> Parser<'a> {
             }
         }
         self.require_value_lowercase(self.text(name_tok), &name_tok)?;
-        let sig = Some(self.parse_type()?);
-        let implicits = self.parse_ctx_decls()?;
+        let (sig, ctx) = self.parse_signature()?;
         expect!(self, Kind::Eq, "expected '=' after the type signature");
         let body = self.parse_expr(0)?;
         Ok(Item::Def {
             name,
-            sig,
-            implicits,
+            sig: Some(sig),
+            ctx,
             body,
         })
     }
 
-    /// Parse the `@ctx` declarations that may follow a definition's type
-    /// signature: a comma-separated list `@ctx a : A, b : B`, and repeatable
-    /// (`@ctx a : A  @ctx b : B`). A duplicated name declares one dictionary per
-    /// type parameter (`@ctx to_string : a -> @str, to_string : b -> @str`),
-    /// resolved by type in the body. Each becomes an implicit parameter.
-    fn parse_ctx_decls(&mut self) -> Result<Slice<FieldDecl>> {
-        let mut decls = Vec::new();
-        while self.at_ctx()? {
-            self.bump()?; // '@ctx'
-            loop {
-                let name = self.expect_word("expected an implicit parameter name after '@ctx'")?;
-                expect!(self, Kind::Colon, "expected ':' after the '@ctx' name");
-                let ty = self.parse_type()?;
-                decls.push(FieldDecl { name, ty });
-                if !self.eat(|k| matches!(k, Kind::Comma))? {
-                    break;
-                }
-            }
+    /// Parse a definition's type signature, which may open with a context
+    /// parameter: `@ctx C -> rest`. A context parameter is an ordinary first
+    /// parameter that call sites do not write; it is returned alongside the full
+    /// signature (of which it is the first `from`), so the signature stays exactly
+    /// what the user wrote.
+    fn parse_signature(&mut self) -> Result<(Aol<Ty>, Option<Aol<Ty>>)> {
+        if !self.at_ctx()? {
+            return Ok((self.parse_type()?, None));
         }
-        Ok(self.ast.make_slice(decls))
+        let at = self.bump()?; // '@ctx'
+        let ctx = self.parse_type_app()?;
+        if !matches!(self.peek_kind()?, Kind::Arrow) {
+            return Err(self.unexpected(
+                &at,
+                "expected '->' after the '@ctx' parameter type: a context parameter is the \
+                 function's first parameter, as in `@ctx Ito_string t -> t -> @str`",
+            ));
+        }
+        self.bump()?; // '->'
+        let effect = self.parse_effect_row_opt()?;
+        let to = self.parse_type()?;
+        Ok((self.ty(Ty::Arrow { from: ctx, effect, to }), Some(ctx)))
     }
 
     /// Is the next token the `@ctx` keyword?
@@ -650,45 +675,6 @@ impl<'a> Parser<'a> {
         Ok(matches!(t.kind, Kind::At) && self.intrinsic_name(t) == name)
     }
 
-    /// Parse a postfix `@ctx` override on `callee`: a single positional value
-    /// (`@ctx e`, an atom) or a record `@ctx { .name = e, ..., .. }` where a
-    /// trailing `..` fills the unmentioned implicits by name.
-    fn parse_ctx_override(&mut self, start: usize, callee: Aol<Expr>) -> Result<Aol<Expr>> {
-        self.bump()?; // '@ctx'
-        let mut overrides = Vec::new();
-        let mut rest = false;
-        if matches!(self.peek_kind()?, Kind::LBrace) {
-            self.bump()?; // '{'
-            while !matches!(self.peek_kind()?, Kind::RBrace) {
-                if matches!(self.peek_kind()?, Kind::Dot)
-                    && matches!(self.peek_kind_at(1)?, Kind::Dot)
-                {
-                    self.bump()?;
-                    self.bump()?; // '..'
-                    rest = true;
-                    break;
-                }
-                overrides.push(self.parse_field_init()?);
-                if !self.eat(|k| matches!(k, Kind::Comma))? {
-                    break;
-                }
-            }
-            expect!(
-                self,
-                Kind::RBrace,
-                "expected '}' to close the '@ctx' overrides"
-            );
-        } else {
-            overrides.push(FieldInit::Positional(self.parse_primary()?));
-        }
-        let overrides = self.ast.make_slice(overrides);
-        let node = self.expr(Expr::Ctx {
-            callee,
-            overrides,
-            rest,
-        });
-        Ok(self.stamp(start, node))
-    }
 
     /// Comma-separated `name : Type` declarations (struct fields, effect ops).
     fn parse_field_decls(&mut self) -> Result<Slice<FieldDecl>> {
@@ -803,6 +789,14 @@ impl<'a> Parser<'a> {
     // -- types --------------------------------------------------------------
 
     fn parse_type(&mut self) -> Result<Aol<Ty>> {
+        if self.at_ctx()? {
+            let at = self.peek()?;
+            return Err(self.unexpected(
+                &at,
+                "a '@ctx' context parameter may only be the FIRST parameter of a definition's \
+                 signature, and there may be only one",
+            ));
+        }
         let from = self.parse_type_app()?;
         if !matches!(self.peek_kind()?, Kind::Arrow) {
             return Ok(from);
@@ -826,8 +820,8 @@ impl<'a> Parser<'a> {
         if self.at_tyvar()? {
             return Ok(true);
         }
-        // `@ctx` ends a signature and opens its implicit-parameter clauses; it is
-        // not a type atom, so type application must not swallow it.
+        // `@ctx` opens a definition's context parameter; it is not a type atom, so
+        // type application must not swallow it.
         if self.at_ctx()? {
             return Ok(false);
         }
@@ -1103,16 +1097,6 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_prefix()?;
         loop {
             let t = self.peek()?;
-            // A postfix `@ctx` overrides the callee's implicit arguments. Handled
-            // before the operand check because `@ctx` starts with `@` (an operand
-            // starter) but must attach to `lhs`, not be applied as an argument.
-            if self.at_ctx()? {
-                if table::CTX.left < min_bp {
-                    break;
-                }
-                lhs = self.parse_ctx_override(start, lhs)?;
-                continue;
-            }
             match t.kind {
                 Kind::Op => match table::infix(self.text(t)) {
                     // Infix, but binds looser than the caller's floor: stop and
@@ -1188,8 +1172,8 @@ impl<'a> Parser<'a> {
             // Composition becomes the lambda it means, `\x = f (g x)`, so the
             // composed function's effect row is inferred as the UNION of the two
             // rows (a definition with one signature could only share one row, and a
-            // row union is not expressible), and an overloaded operand (`to_string
-            // <|> f`) resolves as the head of an ordinary application.
+            // row union is not expressible), and a context-bearing operand
+            // (`to_string <|> f`) resolves as the head of an ordinary application.
             "<|>" => {
                 let x = self.intern("#x");
                 let arg = self.expr(Expr::Var { module: None, name: x });
@@ -1250,12 +1234,12 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.expr(Expr::Real(v)))
             }
-            // `1.2i` desugars to the OVERLOADABLE imaginary-literal hook, the way
-            // `.[..]` desugars to the indexing one: the compiler carries no complex
-            // type of its own, and whatever the hook returns is what `1.2i` means.
+            // `1.2i` desugars to the `@IImagLit` interface, the way `.[..]` desugars
+            // to `@IIndex`: the compiler carries no complex type of its own, and
+            // whatever the resolved instance builds is what `1.2i` means.
             Kind::Imaginary(v) => {
                 self.bump()?;
-                let hook = self.intern("@compiler_interface_imaginary_literal");
+                let hook = self.intern("@IImagLit");
                 let f = self.expr(Expr::Var { module: None, name: hook });
                 let arg = self.expr(Expr::Real(v));
                 Ok(self.expr(Expr::App(f, arg)))
@@ -1300,9 +1284,9 @@ impl<'a> Parser<'a> {
                 Ok(self.tuple_indices(base, tok))
             }
             // `recv.[i]` / `recv.[i, j, ...]`: an all-index access desugars to the
-            // OVERLOADABLE `@compiler_interface_indexing` hook, so tensors, maps, and
-            // user types share the surface; a comma-list nests. A `p ... q` slot is an
-            // INCLUSIVE range slice of the leading axis (`@tensor_slice`).
+            // `@IIndex` interface, so tensors, maps, and user types share the
+            // surface; a comma-list nests. A `p ... q` slot is an INCLUSIVE range
+            // slice of the leading axis (`@tensor_slice`).
             Kind::LBrack => {
                 self.bump()?; // '['
                 let mut slots: Vec<SliceSlot> = Vec::new();
@@ -1330,7 +1314,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 expect!(self, Kind::RBrack, "expected ']' to close the index");
-                // An all-index access desugars to the OVERLOADABLE indexing hook (so
+                // An all-index access desugars to the `@IIndex` interface (so
                 // tensors, maps, and user types share `.[..]`); if any slot keeps an
                 // axis (a range or `..`), it is a tensor slice whose result shape the
                 // checker computes from the receiver.
@@ -1338,7 +1322,7 @@ impl<'a> Parser<'a> {
                     let mut recv = base;
                     for s in slots {
                         let SliceSlot::Index(idx) = s else { unreachable!() };
-                        let index_fn = self.intern("@compiler_interface_indexing");
+                        let index_fn = self.intern("@IIndex");
                         let f = self.expr(Expr::Var { module: None, name: index_fn });
                         let f = self.expr(Expr::App(f, recv));
                         recv = self.expr(Expr::App(f, idx));
@@ -1427,7 +1411,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `(op)` in expression position: the operator as a first-class function,
-    /// the same binding `$ (op) : ... = ...` defines. Application and overload
+    /// the same binding `$ (op) : ... = ...` defines. Application and context
     /// resolution then treat it like any other function reference.
     fn parse_operator_ref(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
@@ -1484,6 +1468,17 @@ impl<'a> Parser<'a> {
 
     fn parse_group(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '('
+        // `(@ctx e)`: an explicit value for the callee's context parameter.
+        if self.at_ctx()? {
+            self.bump()?; // '@ctx'
+            let value = self.parse_expr(0)?;
+            expect!(
+                self,
+                Kind::RParen,
+                "expected ')' to close the '@ctx' argument"
+            );
+            return Ok(self.expr(Expr::CtxArg(value)));
+        }
         let e = self.parse_expr(0)?;
         // A trailing `: T` ascribes the group's type, e.g. `([] : List Int)`. The
         // colon is otherwise free inside a group, so this is unambiguous.

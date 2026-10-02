@@ -29,11 +29,11 @@ $ bound  = plus 2 3
 $ passed = apply2 (+) 20 22
 $ summed = foldl (+) 0 [1, 2, 3]
 
-# The reference reaches a definition of your own too: `+` on a `Money` dispatches
-# here, `+` on an `@int` still reaches CORE's.
+# A type of your own joins `+` by implementing its interface: `+` on a `Money` goes
+# through this instance, `+` on an `@int` through CORE's.
 $ Money : @struct = cents: @int
 
-$ (+) : Money -> Money -> Money = \a b = Money.{ .cents = a.cents + b.cents }
+$ add_money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
 
 $ pooled : Money = (+) Money.{ .cents = 150 } Money.{ .cents = 900 }
 

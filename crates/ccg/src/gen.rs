@@ -768,9 +768,10 @@ fn builtin_arity(name: &str) -> Option<usize> {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => 2,
-        "^" | "==" | "<" | ">" | "<=" | ">=" | "++" | "@array_get"
+        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
+        | "@slt" => 2,
+        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
         "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" | "@tensor_slice"

@@ -3,11 +3,11 @@
 # \file DERIVE.thx
 # \info Compile-time derives that reflect on a declared type and inject code:
 #       `derive_show "T"` generates a default `to_string`, and `derive_ord "T"`
-#       generates a structural three-way `compare` (plus `lt`/`le`/`gt`/`ge`/`eq`),
-#       both usable via `$ @e (DERIVE.derive_* "T")`. See the `derive_ord` section
-#       lower down for comparison.
+#       generates a structural three-way `cmp_T` (plus the `ICmp`/`IOrd`/`IEq`
+#       instances and `lt_T`/`le_T`/`gt_T`/`ge_T`/`eq_T`), both usable via
+#       `$ @e (DERIVE.derive_* "T")`. See the `derive_ord` section lower down.
 #
-#       `derive_show "T"` returns the `@code` for `$ to_string : T ... -> @str = ...`,
+#       `derive_show "T"` returns the `@code` for an `Ito_string T` instance,
 #       injected with `$ @e`:
 #
 #           $ @e (DERIVE.derive_show "Box")
@@ -16,12 +16,11 @@
 #       the reflection intrinsics `@type_kind` / `@type_params` / `@type_fields` /
 #       `@type_variants`, available only at compile time (inside `$ @e`).
 #
-#       A GENERIC type derives a single generic instance with one `@ctx to_string`
-#       dictionary per type parameter, e.g. `$ to_string : Pair a b -> @str  @ctx
-#       to_string : a -> @str  @ctx to_string : b -> @str`. Each dictionary renders
-#       its parameter, resolved by type, so `to_string` works at every
-#       instantiation (`Box @int`, `Pair @int @bool`, nesting). This is
-#       `instance (Show a, Show b) => Show (Pair a b)`.
+#       A GENERIC type derives one GENERIC instance, which takes the renderers of
+#       its parameters as its own context: `$ show_Pair : @ctx {Ito_string a,
+#       Ito_string b} -> Ito_string (Pair a b)`. Resolving it resolves those too, so
+#       `to_string` works at every instantiation (`Box @int`, `Pair @int @bool`,
+#       nesting). This is `instance (Show a, Show b) => Show (Pair a b)`.
 
 $ with VEC
 
@@ -33,13 +32,13 @@ $ join : @str -> @vec @str -> @str = \sep xs =
 $ arg_names : @int -> @vec @str = \n =
 	if n == 0 => VEC.new {} else VEC.push (arg_names (n - 1)) ("a" ++ to_string (n - 1))
 
-# The body of a struct's `to_string`: interpolate each field. `\?(` emits a
-# literal `?(` so the interpolation happens when the GENERATED code compiles,
-# not now; `\"` / `\\` emit a literal quote / backslash into the generated source.
-$ struct_show : @str -> @str -> @str -> @str = \base applied ctx =
+# The rendering body for a struct: interpolate each field. `\?(` emits a literal
+# `?(` so the interpolation happens when the GENERATED code compiles, not now; `\"`
+# / `\\` emit a literal quote / backslash into the generated source.
+$ struct_show : @str -> @str = \base =
 	let piece = \acc f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
 	let inner = VEC.foldl piece (base ++ " {") (@type_fields base) in
-	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = \"" ++ inner ++ " }\""
+	"\\x = \"" ++ inner ++ " }\""
 
 # One `is` arm for a variant: a nullary tag renders as its name, an n-ary tag as
 # `Tag(?(a0), ...)` matched by the positional pattern `Base.Tag.{a0, ...}`.
@@ -51,55 +50,66 @@ $ arm_for : @str -> @str -> @int -> @str = \base tag arity =
 		else " | " ++ base ++ "." ++ tag ++ ".{" ++ join ", " vars ++ "}"
 			++ " => \"" ++ tag ++ "(" ++ join ", " interps ++ ")\""
 
-# The body of a union's `to_string`: one arm per variant.
-$ union_show : @str -> @str -> @str -> @str = \base applied ctx =
+# The rendering body for a union: one arm per variant.
+$ union_show : @str -> @str = \base =
 	let arms = VEC.foldl (\acc tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
-	"$ to_string : " ++ applied ++ " -> @str" ++ ctx ++ " = \\x = is x" ++ arms
+	"\\x = is x" ++ arms
 
-# One `@ctx to_string` dictionary clause for a type parameter `p`.
-$ ctx_clause : @str -> @str = \p = "  @ctx to_string : " ++ p ++ " -> @str"
+# The context an instance for a GENERIC type needs: the renderer of each parameter.
+# One parameter travels alone, several as one bundle the call site builds.
+$ show_ctx : @vec @str -> @str = \params =
+	let reqs = VEC.map (\p = "Ito_string " ++ p) params in
+	if VEC.is_empty params => ""
+	else if VEC.len params == 1 => "@ctx " ++ join ", " reqs ++ " -> "
+	else "@ctx {" ++ join ", " reqs ++ "} -> "
 
-# The derive: reflect on the type's parameters and kind, build the applied type
-# (`Pair a b`) and one `@ctx to_string : <p> -> @str` dictionary clause per
-# parameter, then parse the generated item.
+# The derive: reflect on the type's parameters and kind, then build the instance.
+# A generic type's instance takes its parameters' renderers as its own context, so
+# the body's `?(...)` interpolation resolves each one by type.
 $ derive_show : @str -> @code = \ty =
 	let params = @type_params ty in
-	let applied = if VEC.is_empty params => ty else ty ++ " " ++ join " " params in
-	let ctx = VEC.foldl (\acc p = acc ++ ctx_clause p) "" params in
-	if @type_kind ty == "struct"
-		=> @parse_items (struct_show ty applied ctx)
-		else @parse_items (union_show ty applied ctx)
+	let applied = if VEC.is_empty params => ty else "(" ++ ty ++ " " ++ join " " params ++ ")" in
+	let body = if @type_kind ty == "struct" => struct_show ty else union_show ty in
+	let lam = if VEC.is_empty params => "" else "\\ds = " in
+	@parse_items (
+		"$ show_" ++ ty ++ " : " ++ show_ctx params ++ "Ito_string " ++ applied
+			++ " = " ++ lam ++ ".{ .show = " ++ body ++ " }"
+	)
 
 # ---- derive: structural three-way `compare` (Ord) ----
-# `derive_ord "T"` generates a structural three-way `compare : T -> T -> @int`
-# (-1 / 0 / 1) for a custom type by reflecting on it (like `derive_show`), plus
-# `lt`/`le`/`gt`/`ge`/`eq` and the operators `<`/`<=`/`>`/`>=`/`==` built on it,
-# each joining that name's overload set. A struct compares lexicographically by
-# field; a union by variant order, then payload. Underlying primitives (`<` on
-# the base types) do the work. Ordering is what a custom type most needs: the
-# built-in fallback compares `==` structurally already, but faults on `<` outside
-# numbers and strings.
+# `derive_ord "T"` generates a structural three-way `cmp_T : T -> T -> @int`
+# (-1 / 0 / 1) for a custom type by reflecting on it (like `derive_show`), plus the
+# `IOrd T` and `IEq T` instances over it and the named `lt_T`/`le_T`/`gt_T`/`ge_T`/
+# `eq_T`, so
+# a custom struct or union becomes comparable and `<` `==` work on it. A struct
+# compares lexicographically by field; a union by variant order, then payload.
+# `derive_eq "T"` generates equality alone, for a type with no sensible order.
 
-$ compare : @int -> @int -> @int = \a b = if a < b => (0 - 1) else if a > b => 1 else 0
-$ compare : @str -> @str -> @int = \a b = if a < b => (0 - 1) else if a > b => 1 else 0
-$ compare : @bool -> @bool -> @int = \a b = if a == b => 0 else if a => 1 else (0 - 1)
+# Three-way comparison as an interface, so the generated chains below reach any
+# type that has one. A derived `cmp_T` registers its own instance (see
+# `struct_cmp` / `union_cmp`), which is what makes a field of a derived type
+# comparable inside an enclosing derived type.
+$ ICmp : @struct t = cmp: t -> t -> @int,
 
-# The five boolean comparisons for `T`, over its `compare`, under both spellings:
-# the named `lt`/`le`/`gt`/`ge`/`eq` and the operators themselves. Each joins the
-# overload set of that name, so `a < b` on a derived type dispatches here while
-# `1 < 2` still reaches the `@int` overload.
+$ compare : @ctx ICmp t -> t -> t -> @int = \d a b = d.cmp a b
+
+$ icmp_int  : ICmp @int  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ icmp_str  : ICmp @str  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ icmp_bool : ICmp @bool = .{ .cmp = \a b = if a == b => 0 else if a => 1 else (0 - 1) }
+
+# The instances and the named comparisons for `T`, over its generated `cmp_T`. The
+# named forms carry the type in their name (`lt_Coord`), since a module may derive
+# several types and one name holds one definition.
 $ bool_ops : @str -> @str = \ty =
-	let sig = " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
-	"$ lt" ++ sig ++ "compare a b < 0\n"
-	++ "$ le" ++ sig ++ "not (compare a b > 0)\n"
-	++ "$ gt" ++ sig ++ "compare a b > 0\n"
-	++ "$ ge" ++ sig ++ "not (compare a b < 0)\n"
-	++ "$ eq" ++ sig ++ "compare a b == 0\n"
-	++ "$ (<)" ++ sig ++ "compare a b < 0\n"
-	++ "$ (<=)" ++ sig ++ "not (compare a b > 0)\n"
-	++ "$ (>)" ++ sig ++ "compare a b > 0\n"
-	++ "$ (>=)" ++ sig ++ "not (compare a b < 0)\n"
-	++ "$ (==)" ++ sig ++ "compare a b == 0"
+	let c = "cmp_" ++ ty ++ " a b" in
+	let sig = \n = "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
+	"$ iord_" ++ ty ++ " : IOrd " ++ ty ++ " = .{ .lt = \\a b = " ++ c ++ " < 0 }\n"
+	++ "$ ieq_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = " ++ c ++ " == 0 }\n"
+	++ sig "lt" ++ c ++ " < 0\n"
+	++ sig "le" ++ "not (" ++ c ++ " > 0)\n"
+	++ sig "gt" ++ c ++ " > 0\n"
+	++ sig "ge" ++ "not (" ++ c ++ " < 0)\n"
+	++ sig "eq" ++ c ++ " == 0"
 
 # A struct's `compare`: a lexicographic chain over its fields, short-circuiting on
 # the first non-equal field.
@@ -110,8 +120,15 @@ $ struct_cmp_chain : @vec @str -> @str = \fields =
 			++ " in if " ++ v ++ " == 0 => (" ++ acc ++ ") else " ++ v
 	) "0" fields
 
+# `cmp_T` plus its `ICmp T` instance: a derived type is then itself a comparable
+# field, so deriving the enclosing type works without a hand-written instance.
+$ icmp_decl : @str -> @str = \ty =
+	"$ icmp_" ++ ty ++ " : ICmp " ++ ty ++ " = .{ .cmp = cmp_" ++ ty ++ " }"
+
 $ struct_cmp : @str -> @str = \ty =
-	"$ compare : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = " ++ struct_cmp_chain (@type_fields ty)
+	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
+		++ struct_cmp_chain (@type_fields ty)
+		++ "\n" ++ icmp_decl ty
 
 # `_, _, ...` (n underscores) and a whole `Base.Tag` / `Base.Tag.{_, _}` pattern
 # that ignores a variant's payload (for the tag-index match).
@@ -154,12 +171,23 @@ $ payload_arms : @str -> @vec {@str, @int} -> @str = \base variants =
 # A union's `compare`: order by variant index, then (same variant) by payload.
 $ union_cmp : @str -> @str = \ty =
 	let vs = @type_variants ty in
-	"$ compare : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
+	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
 		++ "let ta = is a" ++ index_arms ty vs 0 ++ " in "
 		++ "let tb = is b" ++ index_arms ty vs 0 ++ " in "
 		++ "if ta == tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
+		++ "\n" ++ icmp_decl ty
 
 $ derive_ord : @str -> @code = \ty =
 	if @type_kind ty == "struct"
 		=> @parse_items (struct_cmp ty ++ "\n" ++ bool_ops ty)
 		else @parse_items (union_cmp ty ++ "\n" ++ bool_ops ty)
+
+# Equality alone, for a type that has no sensible order. The comparison function is
+# the same structural one; only the `IEq` instance is emitted over it.
+$ eq_only : @str -> @str = \ty =
+	"$ ieq_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = cmp_" ++ ty ++ " a b == 0 }"
+
+$ derive_eq : @str -> @code = \ty =
+	if @type_kind ty == "struct"
+		=> @parse_items (struct_cmp ty ++ "\n" ++ eq_only ty)
+		else @parse_items (union_cmp ty ++ "\n" ++ eq_only ty)

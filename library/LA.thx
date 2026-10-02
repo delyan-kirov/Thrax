@@ -7,15 +7,15 @@
 #       index function), `@tensor_concat` (size-changing join). Everything else here is
 #       ordinary Thrax, so this module is readable, forkable, and extensible: a
 #       custom container joins the `.[..]` surface by adding its own
-#       `@compiler_interface_indexing` overload, and the element arithmetic is passed
-#       as `@ctx` implicits (a
-#       dictionary) rather than requiring a numeric class.
+#       `@IIndex` instance, and the element arithmetic arrives
+#       as a `@ctx` context parameter (CORE's `IAdd`/`IMul`/`IZero`) rather than as
+#       a built-in numeric class.
 
-# `t.[i]` desugars to the overloadable `@compiler_interface_indexing` hook. The
+# `t.[i]` desugars to the `@IIndex` interface. The
 # tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
 # its own hook overload (the two coexist by the import merge), so any type can join
 # the `.[..]` surface.
-$ @compiler_interface_indexing : [n]a -> @int -> a = \t i = @tensor_index t i
+$ index_tensor : @IIndex ([n]a) @int a = .{ .index = \t i = @tensor_index t i }
 
 # Thin names over the remaining primitives.
 $ length : [n]a -> @int = \t = @tensor_length t
@@ -30,27 +30,18 @@ $ slice : [n]a -> @int -> @int -> [k]a = \t lo hi = @tensor_slice t lo hi
 $ row : [m][n]a -> @int -> [n]a = \t i = t.[i]
 $ col : [m][n]a -> @int -> [m]a = \t j = (transpose t).[j]
 
-# Element arithmetic as a dictionary. Overloaded for @int and Real; a `@ctx add`
-# etc. below resolves to the right one by the element type. Another element type
-# joins by adding its own `add`/`mul`/`zero` (CPX does, for complex tensors).
-$ add : @int -> @int -> @int = \a b = a + b
-$ add : Real -> Real -> Real = \a b = a + b
-$ mul : @int -> @int -> @int = \a b = a * b
-$ mul : Real -> Real -> Real = \a b = a * b
-$ zero : @int = 0
-$ zero : Real = 0.0
-
 # Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
 # that shares the buffer and only swaps the shape/strides, copying nothing.
 $ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
 
 # Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
-# the element `add`/`mul`/`zero` supplied by `@ctx`.
-$ dot : [n]a -> [n]a -> a  @ctx add : a -> a -> a, mul : a -> a -> a, zero : a = \x y =
+# the element arithmetic arriving as the context: the three operations it needs,
+# bundled. Any element type with them works, CORE's numbers and `Cpx` included.
+$ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e x y =
 	let go = \i acc =
 		if i == length x => acc
-		else go (i + 1) (add acc (mul x.[i] y.[i]))
-	in go 0 zero
+		else go (i + 1) (e.0.add acc (e.1.mul x.[i] y.[i]))
+	in go 0 e.2.zero
 
 # Matrix multiply: transpose `b` so its columns are rows, then each result cell is
 # the dot of a row of `a` with a column of `b`. The shared inner dimension `k`
@@ -62,7 +53,7 @@ $ dot : [n]a -> [n]a -> a  @ctx add : a -> a -> a, mul : a -> a -> a, zero : a =
 # one). So swapping a factor's variance is a type error, not just a shape mismatch.
 # A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
 # either variance.
-$ matmul : [@contra m, @co k]a -> [@contra k, @co n]a -> [@contra m, @co n]a
-	@ctx add : a -> a -> a, mul : a -> a -> a, zero : a = \a b =
+$ matmul : @ctx {IAdd t, IMul t, IZero t} -> [@contra m, @co k]t -> [@contra k, @co n]t -> [@contra m, @co n]t
+	= \e a b =
 	let bt = transpose b in
-	create a (\i = create (b.[0]) (\j = dot a.[i] bt.[j]))
+	create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))

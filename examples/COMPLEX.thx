@@ -2,9 +2,9 @@
 
 # \file COMPLEX.thx
 # \info Complex numbers. `1.2i` is one token, and the compiler knows nothing
-#       more: it desugars to `@compiler_interface_imaginary_literal`, whose CORE
-#       overload builds the `Cpx` struct. So the arithmetic below is ordinary
-#       operator overloading, and CPX holds the math.
+#       more: it desugars to the `@IImagLit` interface, whose CORE instance builds
+#       the `Cpx` struct. So the arithmetic below is ordinary interface resolution,
+#       and CPX holds the math.
 
 $ with CPX
 $ with LA
@@ -19,12 +19,12 @@ $ frac  : Cpx = 1.2i
 $ sci   : Cpx = 2.5e-2i
 
 # The canonical spelling: a real plus an imaginary part.
-$ z : Cpx = 3.4 + 1.2i
+$ z : Cpx = CPX.of_real 3.4 + 1.2i
 
 # The struct literal is always available too (positional, or bare where the
 # expected type is known). An INTEGER left side is deliberately a type error:
 # write `1.0 + 3i`, not `1 + 3i`.
-$ whole_re : Cpx = 1.0 + 3i
+$ whole_re : Cpx = CPX.of_real 1.0 + 3i
 $ built    : Cpx = Cpx.{ 1.0, 3.0 }
 $ bare     : Cpx = .{ 1.0, 3.0 }
 
@@ -38,8 +38,8 @@ $ ck_bare  : @int = if bare == built => 0 else 1
 
 # ---- arithmetic ----
 
-$ a : Cpx = 3.0 + 4.0i
-$ b : Cpx = 1.0 - 2.0i
+$ a : Cpx = CPX.of_real 3.0 + 4.0i
+$ b : Cpx = CPX.of_real 1.0 - 2.0i
 
 $ ck_add : @int = if a + b == Cpx.{ 4.0, 2.0 } => 0 else 1
 $ ck_sub : @int = if a - b == Cpx.{ 2.0, 6.0 } => 0 else 1
@@ -49,13 +49,15 @@ $ ck_mul : @int = if a * b == Cpx.{ 11.0, -2.0 } => 0 else 1
 $ ck_div : @int = if a / b == Cpx.{ -1.0, 2.0 } => 0 else 1
 $ ck_neg : @int = if -a == Cpx.{ -3.0, -4.0 } => 0 else 1
 
-# Mixed with a real on either side, and with the narrower `@float32`, which
-# widens the same way the mixed-width float operators do.
-$ ck_rl : @int = if 2.0 * a == Cpx.{ 6.0, 8.0 } => 0 else 1
-$ ck_rr : @int = if a * 2.0 == Cpx.{ 6.0, 8.0 } => 0 else 1
+# An operator takes ONE type for both operands, so a real joins a complex only by
+# being made one: `CPX.of_real` on a real, `f32_to_f64` first on a `@float32`.
+# Nothing is promoted silently, in either direction.
+$ ck_rl : @int = if CPX.of_real 2.0 * a == Cpx.{ 6.0, 8.0 } => 0 else 1
+$ ck_rr : @int = if a * CPX.of_real 2.0 == Cpx.{ 6.0, 8.0 } => 0 else 1
 $ half : @float32 = 0.5
-$ ck_fl : @int = if half * a == Cpx.{ 1.5, 2.0 } => 0 else 1
-$ ck_fr : @int = if a - half == Cpx.{ 2.5, 4.0 } => 0 else 1
+$ wide : Cpx = CPX.of_real (f32_to_f64 half)
+$ ck_fl : @int = if wide * a == Cpx.{ 1.5, 2.0 } => 0 else 1
+$ ck_fr : @int = if a - wide == Cpx.{ 2.5, 4.0 } => 0 else 1
 
 # Smith's division agrees with the plain one on ordinary operands.
 $ ck_smith : @int = if CPX.div_smith a b == a / b => 0 else 1
@@ -82,12 +84,12 @@ $ ck_log   : @int = if near (CPX.exp (CPX.log a)) a => 0 else 1
 # sqrt(i) = (1 + i)/sqrt 2
 $ ck_sqrt  : @int = if near (CPX.sqrt 1.0i) (Cpx.{ 0.7071067811865476, 0.7071067811865476 }) => 0 else 1
 $ ck_sqr   : @int = if near (CPX.sqrt a * CPX.sqrt a) a => 0 else 1
-# i^2 = -1, and `^` reaches the complex overloads: an integer exponent takes the
-# exact repeated-multiplication path, a complex one goes through exp/log.
+# i^2 = -1. `^` takes ONE type for both operands, so a complex exponent is `^`
+# (through `exp`/`log`) and an INTEGER exponent is `CPX.powi` by name, the exact
+# repeated-multiplication path.
 $ ck_powi  : @int = if near (CPX.powi 1.0i 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
-$ ck_hat   : @int = if near (1.0i ^ 2) (Cpx.{ -1.0, 0.0 }) => 0 else 1
 $ ck_hatc  : @int = if near (a ^ (Cpx.{ 2.0, 0.0 })) (a * a) => 0 else 1
-# The builtin numeric cases are untouched by those overloads.
+# The numeric cases reach their own instances, untouched by the complex one.
 $ ck_hatint : @int = if 3 ^ 2 == 9 => 0 else 1
 $ ck_pow   : @int = if near (CPX.pow a (Cpx.{ 2.0, 0.0 })) (a * a) => 0 else 1
 $ ck_powneg : @int = if near (CPX.powi b (0 - 1)) (CPX.recip b) => 0 else 1
@@ -142,7 +144,7 @@ $ test : @int =
 	+ ck_re + ck_im + ck_conj + ck_abs + ck_norm + ck_recip + ck_arg + ck_real
 	+ ck_show + ck_show2
 	+ ck_euler + ck_log + ck_sqrt + ck_sqr + ck_powi + ck_pow + ck_powneg
-	+ ck_hat + ck_hatc + ck_hatint
+	+ ck_hatc + ck_hatint
 	+ ck_trig + ck_tan + ck_hyp + ck_tanh
 	+ ck_polar + ck_rou + ck_roots + ck_dot
 

@@ -61,9 +61,9 @@ $ rC : [2, 2]Real = matmul rA rB           # doubles rA
 $ ck_real : @int = if rC.[1, 1] == 8.0 => 0 else 2048
 
 # `.[..]` is OVERLOADABLE: a custom type joins the surface by defining
-# `@compiler_interface_indexing`.
+# `@IIndex`.
 $ Grid : @struct = cells: [9]@int
-$ @compiler_interface_indexing : Grid -> @int -> @int = \g i = g.cells.[i]
+$ index_grid : @IIndex Grid @int @int = .{ .index = \g i = g.cells.[i] }
 $ board : Grid = .{ .cells = [1, 2, 3, 4, 5, 6, 7, 8, 9] }
 $ ck_ext : @int = if board.[4] == 5 => 0 else 4096   # user indexing hook via `.[..]`
 

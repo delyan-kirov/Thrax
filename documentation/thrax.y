@@ -55,7 +55,7 @@
 %token TYVAR        /* `a */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN
-%token AT_E AT_RUN AT_HOOK
+%token AT_E AT_RUN AT_CTX AT_IFACE
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
@@ -105,14 +105,29 @@ global
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
-  | DOLLAR AT_HOOK COLON type EQ expr  /* `$ @compiler_interface_* : T = e` */
+  /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
+   * value of it at a desugar site and calls its single field. AT_IFACE is one of
+   * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex
+   * @ISlice @ISeqView`. */
+  | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
   | DOLLAR AT_E expr
   | DOLLAR AT_RUN expr
   | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
   ;
 
-opt_sig   : /* empty */ | COLON type ;
+opt_sig   : /* empty */ | COLON sig ;
 body      : expr | extern_lit ;
+
+/* A definition's signature may open with a CONTEXT parameter: `@ctx C -> rest`.
+ * It is an ordinary first parameter (typed, bound by the body, printed by
+ * `:type`) that call sites do not write; the compiler finds it by type. At most
+ * ONE, always first, and `C`'s head must be a declared struct or union. Several
+ * requirements travel as one tuple: `@ctx {IOrd t, ISub t} -> t -> t`. */
+sig
+  : type
+  | AT_CTX type_app ARROW type
+  | AT_CTX type_app ARROW eff_row type
+  ;
 
 /* Every operator that may stand alone in parens: the name a `$ (op) : T = e`
  * definition binds, and the function value `(op)` refers to. The grammatical
@@ -301,7 +316,7 @@ app  : atom | app atom %prec APP ;
 atom
   : INT
   | REAL
-  | IMAG   /* desugars to `@compiler_interface_imaginary_literal <magnitude>`;
+  | IMAG   /* resolves `@IImagLit <type>` and calls its field on the magnitude;
             * deliberately absent from `pat_atom` (a pattern holds no call) */
   | STR
   | AT_TRUE   /* @bool literals; the ONLY spelling (no bare `true`/`false`) */
@@ -310,6 +325,8 @@ atom
   | UIDENT
   | LPAREN expr RPAREN
   | LPAREN operator_name RPAREN  /* an operator as a function value: `(+) 1 1` */
+  | LPAREN AT_CTX expr RPAREN    /* an explicit context, the FIRST argument of a
+                                  * call: `max_of (@ctx flip) 3 7` */
   | LBRACE RBRACE
   | LBRACE elem_list opt_comma RBRACE  /* tuple literal; n >= 1 ({} is unit) */
   | seq_lit
@@ -328,7 +345,7 @@ atom
  * indexing (`t.[i].[j]`). */
 /* Index slots: an `expr` reduces its axis (modular indexing); `p ... q` keeps it,
  * narrowed to the inclusive range; `..` keeps it whole. An all-`expr` access is
- * overloadable `index`; any range/`..` slot makes it a shape-checked tensor slice
+ * the `@IIndex` interface; any range/`..` slot makes it a shape-checked tensor slice
  * (a view). `..` is two `DOT`s (there is no `..` token). */
 index_list : index_slot | index_list COMMA index_slot ;
 index_slot : expr | expr ELLIPSIS expr | DOT DOT ;

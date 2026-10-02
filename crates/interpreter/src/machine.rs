@@ -8,7 +8,7 @@
 //! [`PVal`]; a closure is a [`Value::Code`] (an IR code index plus its captured
 //! environment); globals are lazy-memoized CAFs. Built-ins dispatch dynamically
 //! by name on the value kinds, exactly as the tree-walker does, so no resolved
-//! overload keys are needed.
+//! name keys are needed.
 //!
 //! The machine coexists with the tree-walker ([`crate::eval`]); a test diffs the
 //! two so this port can be validated against the proven interpreter before it

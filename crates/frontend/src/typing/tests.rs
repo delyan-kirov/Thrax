@@ -178,23 +178,40 @@ fn recursive_let_binding() {
 }
 
 #[test]
-fn arithmetic_is_overloaded_on_int_and_real() {
+fn arithmetic_resolves_its_interface_per_type() {
     assert_eq!(type_of("@mod M\n$ a = 1 + 2", "a"), "@int");
     assert_eq!(type_of("@mod M\n$ a = 1.0 + 2.0", "a"), "@float64");
-    // An integer literal never adopts a float type: mixing one with a real literal
-    // is an error, not a silent promotion. Write the float literal instead.
-    assert!(errors("@mod M\n$ a = 1 + 2.0").contains("no viable overload"));
+    // An operator takes ONE type for both operands, and an integer literal never
+    // adopts a float type, so mixing the two is an error rather than a silent
+    // promotion. Write the float literal instead.
+    assert!(errors("@mod M\n$ a = 1 + 2.0").contains("an integer literal cannot be a"));
 }
 
+/// One name, one type. Two definitions of a name are rejected where they are
+/// written, rather than making the name's printed type a lie.
 #[test]
-fn user_overload_resolves_by_argument_type() {
+fn a_name_defined_twice_is_an_error() {
     let src = "@mod M\n\
                    $ f : @int -> @int = \\x = x + 1\n\
-                   $ f : @str -> @str = \\x = x ++ \"!\"\n\
-                   $ a = f 3\n\
-                   $ b = f \"hi\"";
+                   $ f : @str -> @str = \\x = x ++ \"!\"";
+    assert!(errors(src).contains("`f` is defined twice"), "{}", errors(src));
+}
+
+/// An interface is how one operation covers several types: the wrapper has ONE
+/// honest type and each instance carries its own.
+#[test]
+fn an_interface_covers_several_types() {
+    let src = "@mod M\n\
+                   $ IBump : @struct t = bump: t -> t,\n\
+                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
+                   $ bump_int : IBump @int = .{ .bump = \\x = x + 1 }\n\
+                   $ bump_str : IBump @str = .{ .bump = \\x = x ++ \"!\" }\n\
+                   $ a = bump 3\n\
+                   $ b = bump \"hi\"";
+    assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "a"), "@int");
     assert_eq!(type_of(src, "b"), "@str");
+    assert_eq!(type_of(src, "bump"), "a -> a");
 }
 
 #[test]
@@ -220,12 +237,13 @@ fn sized_literal_arithmetic_takes_the_result_type() {
 }
 
 #[test]
-fn no_matching_overload_is_reported() {
+fn a_type_with_no_instance_is_reported() {
     let src = "@mod M\n\
-                   $ f : @int -> @int = \\x = x\n\
-                   $ f : @str -> @str = \\x = x\n\
-                   $ bad = f 1.0";
-    assert!(errors(src).contains("no viable overload"));
+                   $ IBump : @struct t = bump: t -> t,\n\
+                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
+                   $ bump_int : IBump @int = .{ .bump = \\x = x }\n\
+                   $ bad = bump 1.0";
+    assert!(errors(src).contains("no value of type `IBump @float64`"), "{}", errors(src));
 }
 
 #[test]
@@ -725,9 +743,9 @@ fn int_nat_friendly_spellings_are_dropped() {
 /// shadowing the built-in: the custom operands reach it, primitive ones still
 /// reach CORE's per-type overload.
 #[test]
-fn comparison_operator_is_overloadable() {
+fn comparison_is_extended_by_an_instance() {
     let src = "@mod M\n$ T : @struct = v: @int\n\
-               $ (<) : T -> T -> @bool = \\a b = a.v < b.v\n\
+               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n\
                $ custom : @bool = T.{ .v = 1 } < T.{ .v = 2 }\n\
                $ prim : @bool = 1 < 2";
     assert_eq!(errors(src), "");
@@ -735,22 +753,34 @@ fn comparison_operator_is_overloadable() {
     assert_eq!(type_of(src, "prim"), "@bool");
 }
 
-/// `==` on a type no overload covers falls back to the structural built-in, so
-/// records and tuples stay comparable without a definition of their own.
+/// There is no structural fallback: `==` on a type with no `IEq` instance is an
+/// error, while a tuple composes from its components' instances (CORE has one per
+/// arity), so the aggregates stay comparable without a definition of their own.
 #[test]
-fn structural_equality_is_the_fallback() {
+fn equality_needs_an_instance() {
+    let bare = "@mod M\n$ T : @struct = v: @int\n\
+                $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }";
+    assert!(errors(bare).contains("no value of type `IEq T`"), "{}", errors(bare));
+
     let src = "@mod M\n$ T : @struct = v: @int\n\
+               $ eq_t : IEq T = .{ .eq = \\a b = a.v == b.v }\n\
                $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }\n\
                $ pair : @bool = {1, \"a\"} == {1, \"a\"}";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "same"), "@bool");
+    assert_eq!(type_of(src, "pair"), "@bool");
 }
 
-/// Two operands of an unconstrained type leave every per-type overload viable.
-/// The ambiguity resolves onto the fallback, keeping generic comparison generic.
+/// A generic comparison DECLARES its context, which is what makes it generic: an
+/// undeclared one has nothing to resolve, and says so instead of inventing a type.
 #[test]
-fn comparison_over_a_type_variable_stays_generic() {
-    assert_eq!(type_of("@mod M\n$ eq = \\x y = x == y", "eq"), "a -> a -> @bool");
+fn generic_comparison_declares_its_context() {
+    let src = "@mod M\n$ eq : @ctx IEq a -> a -> a -> @bool = \\d x y = d.eq x y";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "eq"), "a -> a -> @bool");
+
+    let undeclared = errors("@mod M\n$ eq = \\x y = x == y");
+    assert!(undeclared.contains("is not determined here"), "{undeclared}");
 }
 
 /// `<` and `>` are comparison operators in expression position and effect-row
@@ -779,16 +809,16 @@ fn concat_on_an_unsupported_type_is_a_type_error() {
          $ P : @struct = x: @int\n\
          $ h : @int = (P.{.x=1} ++ P.{.x=2}).x",
     );
-    assert!(e.contains("no viable overload of `++`"), "{e}");
+    assert!(e.contains("no value of type `ICat P`"), "{e}");
 }
 
 #[test]
-fn a_user_concat_joins_the_overload_set() {
-    // Defining `(++)` used to REPLACE the built-in, breaking `"a" ++ "b"` in the
-    // same module; it must extend it instead.
+fn a_user_concat_instance_joins_the_existing_ones() {
+    // An instance EXTENDS the interface, so `"a" ++ "b"` keeps working in the
+    // module that adds one for its own type.
     let src = "@mod M\n\
                $ P : @struct = x: @int\n\
-               $ (++) : P -> P -> P = \\a b = P.{ .x = a.x + b.x }\n\
+               $ cat_p : ICat P = .{ .cat = \\a b = P.{ .x = a.x + b.x } }\n\
                $ s : @str = \"a\" ++ \"b\"\n\
                $ p : P = P.{.x=1} ++ P.{.x=2}";
     assert_eq!(errors(src), "");

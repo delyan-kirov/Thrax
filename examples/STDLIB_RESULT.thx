@@ -17,17 +17,17 @@ $ bad  : Result @int @str = Result.Err.{ "boom" }
 
 $ ck_ok    : @int = if is_ok good => 0 else 1
 $ ck_err   : @int = if is_err bad => 0 else 1
-$ ck_unw   : @int = if (unwrap_or good 0) == 42 => 0 else 1
-$ ck_unwd  : @int = if (unwrap_or bad 7) == 7 => 0 else 1
-$ ck_map   : @int = if (unwrap_or (map_ok (\x = x + 1) good) 0) == 43 => 0 else 1
+$ ck_unw   : @int = if (RESULT.unwrap_or good 0) == 42 => 0 else 1
+$ ck_unwd  : @int = if (RESULT.unwrap_or bad 7) == 7 => 0 else 1
+$ ck_map   : @int = if (RESULT.unwrap_or (map_ok (\x = x + 1) good) 0) == 43 => 0 else 1
 $ ck_maperr: @int =
 	is map_err (\e = e ++ "!") bad
 		| Result.Err.{m} => (if m == "boom!" => 0 else 1)
 	else 1
 $ ck_then  : @int =
 	let checked = \x = if x > 0 => Result.Ok.{ x * 2 } else Result.Err.{ "neg" } in
-	if (unwrap_or (and_then checked good) 0) == 84 => 0 else 1
-$ ck_opt   : @int = if (unwrap_or (ok_opt good) 0) == 42 => 0 else 1
+	if (RESULT.unwrap_or (and_then checked good) 0) == 84 => 0 else 1
+$ ck_opt   : @int = if (OPT.unwrap_or (ok_opt good) 0) == 42 => 0 else 1
 
 # ---- the Fail effect ----
 
