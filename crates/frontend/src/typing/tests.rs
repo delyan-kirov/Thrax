@@ -80,7 +80,7 @@ fn polymorphic_id_used_at_two_types() {
 
 #[test]
 fn function_application_and_arrows() {
-    let src = "@mod M\n$ apply = \\f x = f x";
+    let src = "@mod M\n$ apply = \\f, x = f x";
     // `(A -> B) -> A -> B`.
     assert_eq!(type_of(src, "apply"), "(a -> b) -> a -> b");
 }
@@ -172,7 +172,7 @@ fn mutually_recursive_globals_via_scc() {
 #[test]
 fn recursive_let_binding() {
     let src = "@mod M\n\
-                   $ f = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
+                   $ f = \\m = let go = \\n, acc = if n == 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "@int -> @int");
 }
@@ -203,7 +203,7 @@ fn a_name_defined_twice_is_an_error() {
 fn an_interface_covers_several_types() {
     let src = "@mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
-                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
+                   $ bump : @ctx IBump t -> t -> t = \\d, x = d.bump x\n\
                    $ bump_int : IBump @int = .{ .bump = \\x = x + 1 }\n\
                    $ bump_str : IBump @str = .{ .bump = \\x = x ++ \"!\" }\n\
                    $ a = bump 3\n\
@@ -220,7 +220,7 @@ fn overload_deferred_until_signature_pins_operands() {
     // structs; bidirectional checking + the pending fixpoint handle it.
     let src = "@mod M\n\
                    $ P : @struct = x: @int, y: @int\n\
-                   $ add : P -> P -> P = \\p1 p2 = P.{ .x = p1.x + p2.x, .y = p1.y + p2.y }";
+                   $ add : P -> P -> P = \\p1, p2 = P.{ .x = p1.x + p2.x, .y = p1.y + p2.y }";
     assert_eq!(type_of(src, "add"), "P -> P -> P");
 }
 
@@ -240,7 +240,7 @@ fn sized_literal_arithmetic_takes_the_result_type() {
 fn a_type_with_no_instance_is_reported() {
     let src = "@mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
-                   $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
+                   $ bump : @ctx IBump t -> t -> t = \\d, x = d.bump x\n\
                    $ bump_int : IBump @int = .{ .bump = \\x = x }\n\
                    $ bad = bump 1.0";
     assert!(errors(src).contains("no value of type `IBump @float64`"), "{}", errors(src));
@@ -252,7 +252,7 @@ fn cross_module_import_brings_in_types_and_values() {
                        $ Option : @union t = Some: t, None: {}\n\
                        $ is_some : Option t -> @bool = \\o = \
                        is o | Option.Some.{_} => @true else @false\n\
-                       $ unwrap_or : Option t -> t -> t = \\o d = \
+                       $ unwrap_or : Option t -> t -> t = \\o, d = \
                        is o | Option.Some.{x} => x else d";
     let use_src = "@mod U\n\
                        $ with OPT\n\
@@ -745,7 +745,7 @@ fn int_nat_friendly_spellings_are_dropped() {
 #[test]
 fn comparison_is_extended_by_an_instance() {
     let src = "@mod M\n$ T : @struct = v: @int\n\
-               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n\
+               $ ord_t : IOrd T = .{ .lt = \\a, b = a.v < b.v }\n\
                $ custom : @bool = T.{ .v = 1 } < T.{ .v = 2 }\n\
                $ prim : @bool = 1 < 2";
     assert_eq!(errors(src), "");
@@ -763,7 +763,7 @@ fn equality_needs_an_instance() {
     assert!(errors(bare).contains("no value of type `IEq T`"), "{}", errors(bare));
 
     let src = "@mod M\n$ T : @struct = v: @int\n\
-               $ eq_t : IEq T = .{ .eq = \\a b = a.v == b.v }\n\
+               $ eq_t : IEq T = .{ .eq = \\a, b = a.v == b.v }\n\
                $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }\n\
                $ pair : @bool = {1, \"a\"} == {1, \"a\"}";
     assert_eq!(errors(src), "");
@@ -775,11 +775,11 @@ fn equality_needs_an_instance() {
 /// undeclared one has nothing to resolve, and says so instead of inventing a type.
 #[test]
 fn generic_comparison_declares_its_context() {
-    let src = "@mod M\n$ eq : @ctx IEq a -> a -> a -> @bool = \\d x y = d.eq x y";
+    let src = "@mod M\n$ eq : @ctx IEq a -> a -> a -> @bool = \\d, x, y = d.eq x y";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "eq"), "a -> a -> @bool");
 
-    let undeclared = errors("@mod M\n$ eq = \\x y = x == y");
+    let undeclared = errors("@mod M\n$ eq = \\x, y = x == y");
     assert!(undeclared.contains("is not determined here"), "{undeclared}");
 }
 
@@ -818,7 +818,7 @@ fn a_user_concat_instance_joins_the_existing_ones() {
     // module that adds one for its own type.
     let src = "@mod M\n\
                $ P : @struct = x: @int\n\
-               $ cat_p : ICat P = .{ .cat = \\a b = P.{ .x = a.x + b.x } }\n\
+               $ cat_p : ICat P = .{ .cat = \\a, b = P.{ .x = a.x + b.x } }\n\
                $ s : @str = \"a\" ++ \"b\"\n\
                $ p : P = P.{.x=1} ++ P.{.x=2}";
     assert_eq!(errors(src), "");

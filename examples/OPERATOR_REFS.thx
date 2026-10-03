@@ -8,7 +8,7 @@
 
 $ with VEC
 
-$ apply2 : (@int -> @int -> @int) -> @int -> @int -> @int = \f a b = f a b
+$ apply2 : (@int -> @int -> @int) -> @int -> @int -> @int = \f, a, b = f a b
 
 $ added    = (+) 1 1
 $ diff     = (-) 10 4
@@ -33,7 +33,7 @@ $ summed = foldl (+) 0 [1, 2, 3]
 # through this instance, `+` on an `@int` through CORE's.
 $ Money : @struct = cents: @int
 
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a, b = Money.{ .cents = a.cents + b.cents } }
 
 $ pooled : Money = (+) Money.{ .cents = 150 } Money.{ .cents = 900 }
 

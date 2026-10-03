@@ -19,7 +19,7 @@ it, `:type` prints it), except that call sites do not write it.
 ```
 $ Ito_string : @struct t = show: t -> @str,
 
-$ to_string : @ctx Ito_string t -> t -> @str = \d x = d.show x
+$ to_string : @ctx Ito_string t -> t -> @str = \d, x = d.show x
 
 $ impl_IToString_for_int : Ito_string @int = .{ .show = int_to_str }
 
@@ -107,7 +107,7 @@ the compiler needs the type name and never the method name.
 ```
 $ @IRange : @struct b t = range: b -> b -> t,          # in CORE
 
-$ range_span : @IRange @int Span = .{ .range = \lo hi = Span.{ lo, hi } }
+$ range_span : @IRange @int Span = .{ .range = \lo, hi = Span.{ lo, hi } }
 ```
 
 The set and what reaches it:

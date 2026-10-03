@@ -1877,40 +1877,42 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// `\p1, p2 = body`. Parameters are comma-separated, so a parameter's `: T`
+    /// annotation ends at the comma (`\i: @int, j: @float32 = ...`). Juxtaposition
+    /// would leave the annotation's extent ambiguous, since a lowercase name in a
+    /// type is a type variable and would read as an argument of the annotation.
     fn parse_lambda(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '\'
         let mut params = Vec::new();
-        while !matches!(self.peek_kind()?, Kind::Eq) {
+        loop {
             params.push(self.parse_lambda_param()?);
+            // A trailing comma before `=` is allowed, as in `let`.
+            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::Eq) {
+                break;
+            }
         }
-        expect!(self, Kind::Eq, "expected '=' after the lambda parameters");
+        if !matches!(self.peek_kind()?, Kind::Eq) {
+            let t = self.peek()?;
+            return Err(self.unexpected(
+                &t,
+                "expected '=' after the lambda parameters (which are comma-separated, \
+                 as in `\\a, b = ...`)",
+            ));
+        }
+        self.bump()?; // '='
         let body = self.parse_expr(0)?;
         let params = self.ast.make_slice(params);
         Ok(self.expr(Expr::Lambda { params, body }))
     }
 
-    /// One lambda parameter: a pattern with an optional `: T` annotation. A bare
-    /// `p: T` only reads as intended on the LAST parameter, since type application
-    /// would swallow the pattern after it; the parenthesized `(p: T)` annotates any.
+    /// One lambda parameter: a pattern with an optional `: T` annotation.
     fn parse_lambda_param(&mut self) -> Result<LamParam> {
-        let paren = self.eat(|k| matches!(k, Kind::LParen))?;
         let pat = self.parse_pattern_atom()?;
         let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
             Some(self.parse_type()?)
         } else {
             None
         };
-        if paren {
-            expect!(self, Kind::RParen, "expected ')' to close the parameter");
-        } else if sig.is_some() && !matches!(self.peek_kind()?, Kind::Eq) {
-            // A bare annotation runs to the `=`, so it would swallow any parameter
-            // written after it.
-            let t = self.peek()?;
-            return Err(self.unexpected(
-                &t,
-                "expected '=' after the annotated parameter; parenthesize an                  annotated parameter that is not the last one, as in `\\(x: Int) y = ...`",
-            ));
-        }
         Ok(LamParam { pat, sig })
     }
 

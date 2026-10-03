@@ -18,8 +18,8 @@ $ one  : Cpx = Cpx.{ 1.0, 0.0 }
 
 # The rest of LA's element dictionary. The operators do the work; these only give
 # the arithmetic the names `@ctx` resolves by.
-$ add : Cpx -> Cpx -> Cpx = \a b = a + b
-$ mul : Cpx -> Cpx -> Cpx = \a b = a * b
+$ add : Cpx -> Cpx -> Cpx = \a, b = a + b
+$ mul : Cpx -> Cpx -> Cpx = \a, b = a * b
 
 # ---- parts and predicates ----
 
@@ -45,13 +45,13 @@ $ is_zero : Cpx -> @bool = \z = z.re == 0.0 && z.im == 0.0
 
 # ---- scaling and inversion ----
 
-$ scale : Real -> Cpx -> Cpx = \k z = Cpx.{ k * z.re, k * z.im }
+$ scale : Real -> Cpx -> Cpx = \k, z = Cpx.{ k * z.re, k * z.im }
 
 $ recip : Cpx -> Cpx = \z = let d = norm z in Cpx.{ z.re / d, (0.0 - z.im) / d }
 
 # Smith's division: it scales by the smaller of the divisor's parts, so it keeps
 # its range where CORE's `/` (which forms `|b|^2` directly) would overflow.
-$ div_smith : Cpx -> Cpx -> Cpx = \a b =
+$ div_smith : Cpx -> Cpx -> Cpx = \a, b =
 	if MATH.abs b.re >= MATH.abs b.im
 		=> let r = b.im / b.re,
 		       d = b.re + b.im * r
@@ -64,7 +64,7 @@ $ div_smith : Cpx -> Cpx -> Cpx = \a b =
 
 $ polar : Cpx -> {Real, Real} = \z = {abs z, arg z}
 
-$ from_polar : Real -> Real -> Cpx = \r theta =
+$ from_polar : Real -> Real -> Cpx = \r, theta =
 	Cpx.{ r * MATH.cos theta, r * MATH.sin theta }
 
 # ---- transcendentals ----
@@ -84,11 +84,11 @@ $ sqrt : Cpx -> Cpx = \z =
 	Cpx.{ r * MATH.cos half, r * MATH.sin half }
 
 # `z^w = exp (w * log z)`, principal branch. `0^0` is 1, as for reals.
-$ pow : Cpx -> Cpx -> Cpx = \z w =
+$ pow : Cpx -> Cpx -> Cpx = \z, w =
 	if is_zero z => (if is_zero w => one else zero)
 	else exp (w * log z)
 
-$ powi : Cpx -> @int -> Cpx = \z n =
+$ powi : Cpx -> @int -> Cpx = \z, n =
 	if n < 0 => recip (powi z (0 - n))
 	else if n == 0 => one
 	else z * powi z (n - 1)
@@ -121,7 +121,7 @@ $ roots_of_unity : @int -> @vec Cpx = \n = roots_onto (@vec_new {}) 1.0 0.0 n 0
 
 # The `n` `n`th roots of `z`, counter-clockwise from the principal one. Empty for
 # `n <= 0`.
-$ roots : Cpx -> @int -> @vec Cpx = \z n =
+$ roots : Cpx -> @int -> @vec Cpx = \z, n =
 	let r = MATH.pow (abs z) (1.0 / C.i2d n) in
 	roots_onto (@vec_new {}) r (arg z / C.i2d n) n 0
 
@@ -129,7 +129,7 @@ $ @private
 
 # The roots share one loop: `n` points on the circle of radius `r`, starting at
 # `base` and stepping by a full turn over `n`.
-$ roots_onto : @vec Cpx -> Real -> Real -> @int -> @int -> @vec Cpx = \acc r base n k =
+$ roots_onto : @vec Cpx -> Real -> Real -> @int -> @int -> @vec Cpx = \acc, r, base, n, k =
 	if k >= n => acc
 	else
 		let step = 2.0 * MATH.pi * C.i2d k / C.i2d n in

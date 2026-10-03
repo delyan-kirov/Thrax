@@ -226,7 +226,7 @@ fn comparison_intrinsics_match_interpreter() {
 /// per-type overload for a primitive.
 #[test]
 fn user_comparison_instance_compiles() {
-    let src = "@mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    let src = "@mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a, b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
@@ -312,7 +312,7 @@ fn user_operator_instance_matches_interpreter() {
     // `@int + @int` inside finds CORE's instance.
     let src = "@mod M\n\
                $ V : @struct = x: @int, y: @int\n\
-               $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
+               $ add_v : IAdd V = .{ .add = \\a, b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_matches(src, "r");
 }
@@ -383,7 +383,7 @@ fn one_operation_over_two_types_matches_interpreter() {
     // backend must project and call the same instance the interpreter does.
     let src = "@mod M\n\
                $ IKind : @struct t = kind: t -> @int,\n\
-               $ kind : @ctx IKind t -> t -> @int = \\d x = d.kind x\n\
+               $ kind : @ctx IKind t -> t -> @int = \\d, x = d.kind x\n\
                $ kind_int : IKind @int = .{ .kind = \\x = 1 }\n\
                $ kind_bool : IKind @bool = .{ .kind = \\b = 2 }\n\
                $ test : @int = (kind 7) + (kind @true) * 10\n";
@@ -397,15 +397,15 @@ fn ctx_context_parameter_passing() {
     // exactly as the interpreter does.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
-               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a, b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o, x, y =\n\
                \tif o.gt x y => x else y\n\
                $ Box : @union t = Wrap: {t},\n\
                $ ord_box : @ctx Ord t -> Ord (Box t) = \\o =\n\
-               \t.{ .gt = \\p q = is p | Box.Wrap.{a} => (is q | Box.Wrap.{b} => o.gt a b) }\n\
+               \t.{ .gt = \\p, q = is p | Box.Wrap.{a} => (is q | Box.Wrap.{b} => o.gt a b) }\n\
                $ unbox : Box @int -> @int = \\b = is b | Box.Wrap.{n} => n\n\
                $ test : @int =\n\
-               \tlet flip : Ord @int = .{ .gt = \\a b = a < b } in\n\
+               \tlet flip : Ord @int = .{ .gt = \\a, b = a < b } in\n\
                \t(max_of 3 7) + (max_of (@ctx flip) 3 7)\n\
                \t+ unbox (max_of (Box.Wrap.{ 2 } : Box @int) (Box.Wrap.{ 9 } : Box @int))\n";
     assert_matches(src, "test");
@@ -471,8 +471,8 @@ fn lazy_recursive_struct_streams() {
     let src = "@mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
-               $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
-               $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
+               $ smap : (a -> b) -> Stream a -> Stream b = \\f, s = { .head = f s.head, .tail = smap f s.tail }\n\
+               $ nth : @int -> Stream t -> t = \\n, s = if n == 0 => s.head else nth (n - 1) s.tail\n\
                $ dbl : @int -> @int = \\x = x + x\n\
                $ test : @int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
@@ -668,7 +668,7 @@ fn ffi_callback() {
         "@mod M\n\
          $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @int = 10\n\
-         $ test : @int = call_twice (\\a b = a + b + k)",
+         $ test : @int = call_twice (\\a, b = a + b + k)",
         lib = so_path.display()
     );
     assert_eq!(interp_show(&src, "test"), "1317");
@@ -846,7 +846,7 @@ fn recursion_fib() {
 #[test]
 fn higher_order_and_let() {
     let src = "@mod T\n\
-               $ apply2 : (@int -> @int) -> @int -> @int = \\f x = f (f x)\n\
+               $ apply2 : (@int -> @int) -> @int -> @int = \\f, x = f (f x)\n\
                $ test : @int =\n\
                \tlet inc = \\x = x + 1\n\
                \t in apply2 inc 40\n";
@@ -878,7 +878,7 @@ fn variants_and_when() {
 fn lists_and_length() {
     let src = "@mod T\n\
                $ len : @vec t -> @int =\n\
-               \tlet helper : @vec t -> @int -> @int = \\l n =\n\
+               \tlet helper : @vec t -> @int -> @int = \\l, n =\n\
                \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
                $ xs : @vec @int = [1, 2, 3]\n\
@@ -1033,7 +1033,7 @@ fn bracket_hooks_match_interpreter() {
     // and `@array` literals/patterns must lower the same on the C backend.
     let src = "@mod M\n\
                $ Span : @struct = lo: @int, hi: @int\n\
-               $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
+               $ rg : @IRange @int Span = .{ .range = \\lo, hi = Span.{ lo, hi } }\n\
                $ s : Span = [2 ... 6]\n\
                $ v : @vec @int = [1 ... 4]\n\
                $ w : @vec @int = 9 :: v.[1 ... 2]\n\
@@ -1055,7 +1055,7 @@ fn pattern_hooks_match_interpreter() {
                }\n\
                $ MyStr : @struct = bytes: @str\n\
                $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
-               $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
+               $ eq_mystr : IEq MyStr = .{ .eq = \\a, b = a.bytes == b.bytes }\n\
                $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
                $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
@@ -1083,7 +1083,7 @@ fn a_lazy_slot_is_forced_once() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
                $ xs : L @int = mk 5\n\
                $ test : @int = sum xs 0 + sum xs 0";
     assert_matches(src, "test");

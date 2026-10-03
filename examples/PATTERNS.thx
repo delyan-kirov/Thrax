@@ -43,7 +43,7 @@ $ get_name : Person -> @str = \Person.{ n, _ } = n
 $ who1     : @str = get_name alice
 
 # Lambda struct pattern (named), used with another argument.
-$ older : Person -> @int -> @int = \Person.{ .age = a } y = a + y
+$ older : Person -> @int -> @int = \Person.{ .age = a }, y = a + y
 $ a1    : @int = older alice 5
 
 # Nested patterns: destructure a struct inside a struct.

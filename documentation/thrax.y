@@ -250,7 +250,7 @@ ctrl_expr
                                 for the body */
   | KW_IF if_arms opt_comma KW_ELSE expr
   | KW_WHEN expr arms opt_when_else
-  | LAMBDA params EQ expr
+  | LAMBDA params opt_comma EQ expr
   | KW_DEFER defer_cleanups opt_comma KW_IN expr
   | handle
   ;
@@ -411,17 +411,13 @@ arm
   | alts KW_IF expr FATARROW expr
   ;
 
-/* A lambda's parameters. A parameter may carry a `: type` annotation; bare, the
-   annotation runs to the `=`, so only the last parameter can take that form, and
-   the parenthesized `(p: T)` annotates any position. */
-params : param | params param ;
+/* A lambda's parameters, comma-separated (a trailing comma before `=` is
+   allowed). A parameter may carry a `: type` annotation, which the comma ends;
+   juxtaposed parameters would leave its extent ambiguous, since a lowercase name
+   in a type is a type variable and would read as an argument of the annotation. */
+params : param | params COMMA param ;
 
-param
-  : pattern
-  | pattern COLON type
-  | LPAREN pattern RPAREN
-  | LPAREN pattern COLON type RPAREN
-  ;
+param : pattern | pattern COLON type ;
 
 pattern
   : pat_atom

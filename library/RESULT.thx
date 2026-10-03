@@ -28,25 +28,25 @@ $ is_err : Result t e -> @bool = \r =
 	is r | Result.Ok.{_} => @false else @true
 
 # The answer, or `d` when the computation failed.
-$ unwrap_or : Result t e -> t -> t = \r d =
+$ unwrap_or : Result t e -> t -> t = \r, d =
 	is r | Result.Ok.{x} => x else d
 
 # The arms below are exhaustive; the required `else` recurses, which is
 # unreachable (a Result is always Ok or Err) but well-typed.
-$ map_ok : (a -> b) -> Result a e -> Result b e = \f r =
+$ map_ok : (a -> b) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ f x }
 		| Result.Err.{e} => Result.Err.{ e }
 	else map_ok f r
 
-$ map_err : (e -> f) -> Result t e -> Result t f = \f r =
+$ map_err : (e -> f) -> Result t e -> Result t f = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ x }
 		| Result.Err.{e} => Result.Err.{ f e }
 	else map_err f r
 
 # Chain a fallible step onto an earlier result (monadic bind).
-$ and_then : (a -> Result b e) -> Result a e -> Result b e = \f r =
+$ and_then : (a -> Result b e) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => f x
 		| Result.Err.{e} => Result.Err.{ e }
@@ -65,7 +65,7 @@ $ try : ({} -> <Fail> t) -> Result t @str = \action =
 	ctl k | Fail.fail msg => Result.Err.{ msg }
 
 # Run a computation that may Fail; a failure just yields the default.
-$ try_or : ({} -> <Fail> t) -> t -> t = \action d =
+$ try_or : ({} -> <Fail> t) -> t -> t = \action, d =
 	do action {}
 	ctl k | Fail.fail _ => d
 
@@ -80,5 +80,5 @@ $ untry : Result t @str -> <Fail> t = \r =
 	else Fail.fail "unreachable"
 
 # The Option bridge: absence becomes a failure carrying `msg`.
-$ expect : Option t -> @str -> <Fail> t = \o msg =
+$ expect : Option t -> @str -> <Fail> t = \o, msg =
 	is o | Option.Some.{x} => x else Fail.fail msg

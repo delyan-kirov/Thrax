@@ -9,7 +9,7 @@ $fib : @int -> @int = \n =
 	else (fib (n - 1)) + (fib (n - 2))
 
 $ foo =
-	let bar = \x y = x + y
+	let bar = \x, y = x + y
 	 in bar 2 3
 
 $fib0  = fib 0
@@ -23,16 +23,16 @@ $fib15 = fib 15
 # `.Cons`) whose union is inferred from the constructors. `@vec` is the prelude
 # type (its `[..]`/`::` sugar is hardwired to that name).
 $ len: @vec t -> @int =
-	let helper: @vec t -> @int -> @int = \l n =
+	let helper: @vec t -> @int -> @int = \l, n =
 		is l
 			| [] => n
 			| _ :: xs => helper xs (n + 1)
 			else n
 	 in \l = helper l 0
 
-$ to: @int -> @int -> @vec @int = \a b =
+$ to: @int -> @int -> @vec @int = \a, b =
 	let helper: @int -> @int -> @vec @int -> @vec @int =
-		\a b xs =
+		\a, b, xs =
 			if a < b => helper (a+1) b (a :: xs)
 			else xs
 	 in helper a b []
@@ -47,7 +47,7 @@ $ Point: @struct =
 # `+` on a user type comes from an `IAdd` instance. The interface and the operator
 # are CORE's; a module adds the type by defining a value of the interface type.
 $ impl_IAdd_for_Point : IAdd Point = .{
-	.add = \p1 p2 = .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
+	.add = \p1, p2 = .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
 }
 
 $ summed : Point = Point.{ 1, 2 } + Point.{ 3, 4 }

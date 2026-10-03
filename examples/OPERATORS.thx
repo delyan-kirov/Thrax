@@ -40,8 +40,8 @@ $ ck_unsigned : @int = if (big > 5) && !(big < 5) => 0 else 32
 # `Money` goes through this instance, `<` on an `@int` through CORE's.
 $ Money : @struct = cents: @int
 
-$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
-$ impl_IEq_for_Money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a, b = a.cents < b.cents }
+$ impl_IEq_for_Money : IEq Money = .{ .eq = \a, b = a.cents == b.cents }
 
 $ ck_custom : @int =
 	if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64

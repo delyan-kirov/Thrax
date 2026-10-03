@@ -15,20 +15,20 @@
 # tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
 # its own hook overload (the two coexist by the import merge), so any type can join
 # the `.[..]` surface.
-$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a = .{ .index = \t i = @tensor_index t i }
+$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a = .{ .index = \t, i = @tensor_index t i }
 
 # Thin names over the remaining primitives.
 $ length : [n]a -> @int = \t = @tensor_length t
-$ create : [n]x -> (@int -> a) -> [n]a = \t f = @tensor_create t f
-$ concat : [n]a -> [m]a -> [n+m]a = \x y = @tensor_concat x y
+$ create : [n]x -> (@int -> a) -> [n]a = \t, f = @tensor_create t f
+$ concat : [n]a -> [m]a -> [n+m]a = \x, y = @tensor_concat x y
 
 # O(1) VIEWS (share the buffer, copy nothing). `slice` takes `[lo, hi)` of the
 # leading axis; `row i` is a row; `col j` is a column (a strided view, via the O(1)
 # transpose). The sliced size is a runtime value, so it is not tracked statically
 # (indexing stays modular/total).
-$ slice : [n]a -> @int -> @int -> [k]a = \t lo hi = @tensor_slice t lo hi
-$ row : [m][n]a -> @int -> [n]a = \t i = t.[i]
-$ col : [m][n]a -> @int -> [m]a = \t j = (transpose t).[j]
+$ slice : [n]a -> @int -> @int -> [k]a = \t, lo, hi = @tensor_slice t lo hi
+$ row : [m][n]a -> @int -> [n]a = \t, i = t.[i]
+$ col : [m][n]a -> @int -> [m]a = \t, j = (transpose t).[j]
 
 # Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
 # that shares the buffer and only swaps the shape/strides, copying nothing.
@@ -37,8 +37,8 @@ $ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
 # Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
 # the element arithmetic arriving as the context: the three operations it needs,
 # bundled. Any element type with them works, CORE's numbers and `Cpx` included.
-$ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e x y =
-	let go = \i acc =
+$ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e, x, y =
+	let go = \i, acc =
 		if i == length x => acc
 		else go (i + 1) (e.0.add acc (e.1.mul x.[i] y.[i]))
 	in go 0 e.2.zero
@@ -54,6 +54,6 @@ $ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e x y =
 # A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
 # either variance.
 $ matmul : @ctx {IAdd t, IMul t, IZero t} -> [@contra m, @co k]t -> [@contra k, @co n]t -> [@contra m, @co n]t
-	= \e a b =
+	= \e, a, b =
 	let bt = transpose b in
 	create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))

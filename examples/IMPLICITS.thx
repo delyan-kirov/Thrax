@@ -16,20 +16,20 @@ $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 
 $ impl_IOrder_for_int : IOrder @int = .{
-	.compare = \a b =
+	.compare = \a, b =
 		if a < b => Ordering.LT
 		else if a > b => Ordering.GT
 		else Ordering.EQ,
 }
 
 # `max_of` works for any type with an `IOrder`, which it receives as its context.
-$ max_of : @ctx IOrder t -> t -> t -> t = \ord x y =
+$ max_of : @ctx IOrder t -> t -> t -> t = \ord, x, y =
 	is ord.compare x y | Ordering.GT => x else y
 
 # CHAINING: `max3` declares the same context and calls `max_of` without writing it.
 # `max_of`'s requirement is satisfied by `max3`'s own parameter, which is nearer
 # than any global, so the context is passed down rather than resolved again.
-$ max3 : @ctx IOrder t -> t -> t -> t -> t = \ord x y z =
+$ max3 : @ctx IOrder t -> t -> t -> t -> t = \ord, x, y, z =
 	max_of (max_of x y) z
 
 $ ck_ctx   : @int = if max_of 3 7 == 7 => 0 else 1
@@ -39,7 +39,7 @@ $ ck_chain : @int = if max3 3 9 5 == 9 => 0 else 2
 # turns `max_of` into a min. It is a local, because two values of one type in
 # global scope would make every inferred use of that type ambiguous.
 $ ck_by_hand : @int =
-	let flip : IOrder @int = .{ .compare = \a b = impl_IOrder_for_int.compare b a } in
+	let flip : IOrder @int = .{ .compare = \a, b = impl_IOrder_for_int.compare b a } in
 	if max_of (@ctx flip) 3 7 == 3 => 0 else 4
 
 # A GENERIC INSTANCE: `IOrder (Pair a b)` is built from the orders of its parts, so
@@ -48,14 +48,14 @@ $ ck_by_hand : @int =
 $ Pair : @struct a b = fst: a, snd: b,
 
 $ impl_IOrder_for_Pair : @ctx {IOrder a, IOrder b} -> IOrder (Pair a b) = \ords = .{
-	.compare = \p q =
+	.compare = \p, q =
 		is ords.0.compare p.fst q.fst
 			| Ordering.EQ => ords.1.compare p.snd q.snd
 			else ords.0.compare p.fst q.fst,
 }
 
 $ impl_IOrder_for_str : IOrder @str = .{
-	.compare = \a b =
+	.compare = \a, b =
 		if a < b => Ordering.LT
 		else if a > b => Ordering.GT
 		else Ordering.EQ,

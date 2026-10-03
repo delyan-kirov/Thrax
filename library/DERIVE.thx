@@ -25,8 +25,8 @@
 $ with VEC
 
 # Join non-empty pieces with `sep` (the seed "" is skipped, so no leading sep).
-$ join : @str -> @vec @str -> @str = \sep xs =
-	VEC.foldl (\a s = if a == "" => s else a ++ sep ++ s) "" xs
+$ join : @str -> @vec @str -> @str = \sep, xs =
+	VEC.foldl (\a, s = if a == "" => s else a ++ sep ++ s) "" xs
 
 # Positional binder names `a0 .. a<n-1>` for a variant of arity `n`.
 $ arg_names : @int -> @vec @str = \n =
@@ -36,13 +36,13 @@ $ arg_names : @int -> @vec @str = \n =
 # `?(` so the interpolation happens when the GENERATED code compiles, not now; `\"`
 # / `\\` emit a literal quote / backslash into the generated source.
 $ struct_show : @str -> @str = \base =
-	let piece = \acc f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
+	let piece = \acc, f = acc ++ " " ++ f ++ " = \?(x." ++ f ++ ")" in
 	let inner = VEC.foldl piece (base ++ " {") (@type_fields base) in
 	"\\x = \"" ++ inner ++ " }\""
 
 # One `is` arm for a variant: a nullary tag renders as its name, an n-ary tag as
 # `Tag(?(a0), ...)` matched by the positional pattern `Base.Tag.{a0, ...}`.
-$ arm_for : @str -> @str -> @int -> @str = \base tag arity =
+$ arm_for : @str -> @str -> @int -> @str = \base, tag, arity =
 	let vars = arg_names arity in
 	let interps = VEC.map (\v = "\?(" ++ v ++ ")") vars in
 	if arity == 0
@@ -52,7 +52,7 @@ $ arm_for : @str -> @str -> @int -> @str = \base tag arity =
 
 # The rendering body for a union: one arm per variant.
 $ union_show : @str -> @str = \base =
-	let arms = VEC.foldl (\acc tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
+	let arms = VEC.foldl (\acc, tv = acc ++ arm_for base tv.0 tv.1) "" (@type_variants base) in
 	"\\x = is x" ++ arms
 
 # The context an instance for a GENERIC type needs: the renderer of each parameter.
@@ -91,20 +91,20 @@ $ derive_show : @str -> @code = \ty =
 # comparable inside an enclosing derived type.
 $ ICmp : @struct t = cmp: t -> t -> @int,
 
-$ compare : @ctx ICmp t -> t -> t -> @int = \d a b = d.cmp a b
+$ compare : @ctx ICmp t -> t -> t -> @int = \d, a, b = d.cmp a b
 
-$ impl_ICmp_for_int  : ICmp @int  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
-$ impl_ICmp_for_str  : ICmp @str  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
-$ impl_ICmp_for_bool : ICmp @bool = .{ .cmp = \a b = if a == b => 0 else if a => 1 else (0 - 1) }
+$ impl_ICmp_for_int  : ICmp @int  = .{ .cmp = \a, b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ impl_ICmp_for_str  : ICmp @str  = .{ .cmp = \a, b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ impl_ICmp_for_bool : ICmp @bool = .{ .cmp = \a, b = if a == b => 0 else if a => 1 else (0 - 1) }
 
 # The instances and the named comparisons for `T`, over its generated `cmp_T`. The
 # named forms carry the type in their name (`lt_Coord`), since a module may derive
 # several types and one name holds one definition.
 $ bool_ops : @str -> @str = \ty =
 	let c = "cmp_" ++ ty ++ " a b" in
-	let sig = \n = "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
-	"$ impl_IOrd_for_" ++ ty ++ " : IOrd " ++ ty ++ " = .{ .lt = \\a b = " ++ c ++ " < 0 }\n"
-	++ "$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = " ++ c ++ " == 0 }\n"
+	let sig = \n = "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a, b = " in
+	"$ impl_IOrd_for_" ++ ty ++ " : IOrd " ++ ty ++ " = .{ .lt = \\a, b = " ++ c ++ " < 0 }\n"
+	++ "$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a, b = " ++ c ++ " == 0 }\n"
 	++ sig "lt" ++ c ++ " < 0\n"
 	++ sig "le" ++ "not (" ++ c ++ " > 0)\n"
 	++ sig "gt" ++ c ++ " > 0\n"
@@ -114,7 +114,7 @@ $ bool_ops : @str -> @str = \ty =
 # A struct's `compare`: a lexicographic chain over its fields, short-circuiting on
 # the first non-equal field.
 $ struct_cmp_chain : @vec @str -> @str = \fields =
-	VEC.foldr (\f acc =
+	VEC.foldr (\f, acc =
 		let v = "c_" ++ f in
 		"let " ++ v ++ " = compare a." ++ f ++ " b." ++ f
 			++ " in if " ++ v ++ " == 0 => (" ++ acc ++ ") else " ++ v
@@ -126,19 +126,19 @@ $ icmp_decl : @str -> @str = \ty =
 	"$ impl_ICmp_for_" ++ ty ++ " : ICmp " ++ ty ++ " = .{ .cmp = cmp_" ++ ty ++ " }"
 
 $ struct_cmp : @str -> @str = \ty =
-	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
+	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a, b = "
 		++ struct_cmp_chain (@type_fields ty)
 		++ "\n" ++ icmp_decl ty
 
 # `_, _, ...` (n underscores) and a whole `Base.Tag` / `Base.Tag.{_, _}` pattern
 # that ignores a variant's payload (for the tag-index match).
 $ underscores : @int -> @str = \n = join ", " (VEC.map (\x = "_") (arg_names n))
-$ ignore_pat : @str -> @str -> @int -> @str = \base tag arity =
+$ ignore_pat : @str -> @str -> @int -> @str = \base, tag, arity =
 	if arity == 0 => base ++ "." ++ tag else base ++ "." ++ tag ++ ".{" ++ underscores arity ++ "}"
 
 # `is <var> | Base.Tag... => i | ...`: map each variant to its declaration index,
 # so two values are ordered first by variant.
-$ index_arms : @str -> @vec {@str, @int} -> @int -> @str = \base variants i =
+$ index_arms : @str -> @vec {@str, @int} -> @int -> @str = \base, variants, i =
 	if i >= VEC.len variants => ""
 	else
 		let v = VEC.get_or variants i {"", 0} in
@@ -146,8 +146,8 @@ $ index_arms : @str -> @vec {@str, @int} -> @int -> @str = \base variants i =
 			++ index_arms base variants (i + 1)
 
 # Lexicographic compare of two parallel payload binder lists.
-$ payload_lex : @vec @str -> @vec @str -> @str = \xs ys =
-	VEC.foldr (\pair acc =
+$ payload_lex : @vec @str -> @vec @str -> @str = \xs, ys =
+	VEC.foldr (\pair, acc =
 		let cv = "c_" ++ pair.0 in
 		"let " ++ cv ++ " = compare " ++ pair.0 ++ " " ++ pair.1
 			++ " in if " ++ cv ++ " == 0 => (" ++ acc ++ ") else " ++ cv
@@ -156,7 +156,7 @@ $ payload_lex : @vec @str -> @vec @str -> @str = \xs ys =
 # For a payload variant, the arm that (with tags already known equal) destructures
 # both values and compares their payloads; nullary variants need no arm (they are
 # equal, handled by the trailing `else 0`).
-$ payload_arm : @str -> {@str, @int} -> @str = \base v =
+$ payload_arm : @str -> {@str, @int} -> @str = \base, v =
 	if v.1 == 0 => ""
 	else
 		let xs = VEC.map (\n = "x" ++ n) (arg_names v.1) in
@@ -165,13 +165,13 @@ $ payload_arm : @str -> {@str, @int} -> @str = \base v =
 			++ " => (is b | " ++ base ++ "." ++ v.0 ++ ".{" ++ join ", " ys ++ "}"
 			++ " => " ++ payload_lex xs ys ++ " else 0)"
 
-$ payload_arms : @str -> @vec {@str, @int} -> @str = \base variants =
-	VEC.foldl (\acc v = acc ++ payload_arm base v) "" variants
+$ payload_arms : @str -> @vec {@str, @int} -> @str = \base, variants =
+	VEC.foldl (\acc, v = acc ++ payload_arm base v) "" variants
 
 # A union's `compare`: order by variant index, then (same variant) by payload.
 $ union_cmp : @str -> @str = \ty =
 	let vs = @type_variants ty in
-	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
+	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a, b = "
 		++ "let ta = is a" ++ index_arms ty vs 0 ++ " in "
 		++ "let tb = is b" ++ index_arms ty vs 0 ++ " in "
 		++ "if ta == tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
@@ -185,7 +185,7 @@ $ derive_ord : @str -> @code = \ty =
 # Equality alone, for a type that has no sensible order. The comparison function is
 # the same structural one; only the `IEq` instance is emitted over it.
 $ eq_only : @str -> @str = \ty =
-	"$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = cmp_" ++ ty ++ " a b == 0 }"
+	"$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a, b = cmp_" ++ ty ++ " a b == 0 }"
 
 $ derive_eq : @str -> @code = \ty =
 	if @type_kind ty == "struct"

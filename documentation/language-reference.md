@@ -9,7 +9,7 @@ Every code block below is self-contained and type-checks on its own (verified
 with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.).
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
-`\x = e` (curried: `\a b = e`); a branch is `if c => t else e`; a match is
+`\x = e` (curried: `\a, b = e`); a branch is `if c => t else e`; a match is
 `is scrut | pat => e ... else d`. The comparison operators are `==` (equal),
 `!=` (not equal), `<` (less), `>` (greater), `<=` (at most), `>=` (at least),
 each of type `a -> a -> @bool`.
@@ -239,7 +239,7 @@ open row (a row variable), which is what makes a function effect-polymorphic.
 $ State : @effect = get : {} -> @int, put : @int -> {},
 $ pure : @int -> @int = \x = x                       # pure (empty row)
 $ act  : {} -> <State> @int = \u = get {}           # may perform State
-$ poly : (a -> <e> b) -> a -> <e> b = \f x = f x   # effect-polymorphic
+$ poly : (a -> <e> b) -> a -> <e> b = \f, x = f x   # effect-polymorphic
 ```
 
 ## 3.6 Type variables
@@ -249,7 +249,7 @@ there is no separate backtick spelling.
 
 ```thrax
 $ fst : {a, b} -> a = \t = t.0
-$ const : t -> u -> t = \x y = x
+$ const : t -> u -> t = \x, y = x
 ```
 
 ## 3.7 Tuples
@@ -317,17 +317,18 @@ $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @int Str
 # 4. Expressions and syntactic sugar
 
 ## 4.1 Lambdas
-`\pat+ = e`. Multiple parameters are curried sugar. A parameter may be an
-irrefutable pattern, and may carry a `: Type` annotation. A bare annotation runs
-to the `=`, so it fits only the last parameter; `(pat : Type)` annotates any.
+`\pat, ... = e`. Parameters are comma-separated and curried sugar. A parameter
+may be an irrefutable pattern, and may carry a `: Type` annotation; the comma
+ends the annotation, so every parameter can take one. A trailing comma before
+`=` is allowed.
 
 ```thrax
 $ Person : @struct = name: Str, age: @int,
 $ inc : @int -> @int = \x = x + 1
-$ add : @int -> @int -> @int = \a b = a + b            # curried
+$ add : @int -> @int -> @int = \a, b = a + b            # curried
 $ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
 $ dec = \x: @int = x - 1                            # annotated parameter
-$ sub = \(a: @int) (b: @int) = a - b                # annotated, parenthesized
+$ sub = \a: @int, b: @int = a - b                   # one annotation per parameter
 ```
 
 ## 4.2 Application
@@ -335,7 +336,7 @@ Juxtaposition, left-associative, binds tighter than any operator.
 
 ```thrax
 $ inc : @int -> @int = \x = x + 1
-$ add : @int -> @int -> @int = \a b = a + b
+$ add : @int -> @int -> @int = \a, b = a + b
 $ r = add (inc 2) 3          # (add (inc 2)) 3
 ```
 
@@ -367,7 +368,7 @@ A type of your own joins them with an instance:
 ```thrax
 $ Money : @struct = cents: @int
 
-$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a, b = a.cents < b.cents }
 $ cheaper : @bool = Money.{ .cents = 150 } < Money.{ .cents = 900 }
 ```
 
@@ -439,7 +440,7 @@ Involved (comma chain, destructuring, recursion, annotation):
 ```thrax
 $ r = let {a, b} = {3, 4}, s = a + b in s * 2
 $ len : @vec @int -> @int =
-	let go : @vec @int -> @int -> @int = \l n =
+	let go : @vec @int -> @int -> @int = \l, n =
 		is l | _ :: t => go t (n + 1) else n
 	 in \l = go l 0
 ```
@@ -494,7 +495,7 @@ $ total = VEC.foldl (+) 0 [1, 2, 3]        # as an argument
 The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
 `|` and `<>` are grammatical delimiters, not operators, and have no function
 form. An operator the parser rewrites rather than calls (`&&`, `||`, `;`, `|>`,
-`<|`) has no binding of its own, so `(op)` is the function `\l r = l op r`;
+`<|`) has no binding of its own, so `(op)` is the function `\l, r = l op r`;
 `(&&)` therefore evaluates both sides, since short-circuiting is a property of
 the infix form. `<|>` is rewritten too, but its function form names a binding:
 `(<|>)` is CORE's `compose` (§4.9).
@@ -567,7 +568,7 @@ the union inferred from the arms. Payloads nest.
 
 ```thrax
 $ Maybe : @union t = Just: t, None: {}
-$ get : @int -> Maybe @int -> @int = \d m = is m | Maybe.Just.{ x } => x else d
+$ get : @int -> Maybe @int -> @int = \d, m = is m | Maybe.Just.{ x } => x else d
 $ isJust : Maybe t -> @bool = \m = is m | .Just.{ _ } => @true else @false
 ```
 
@@ -733,7 +734,7 @@ $ next  : Stream @int -> Stream @int = \s = s.tail
 
 Involved (map over an unbounded stream; `tail` is only built when read):
 ```thrax
-$ smap : (a -> b) -> Stream a -> Stream b = \f s =
+$ smap : (a -> b) -> Stream a -> Stream b = \f, s =
 	{ .head = f s.head, .tail = smap f s.tail }
 $ tenth : @int = (smap (\x = x + x) (count_from 1)).tail.tail.head
 ```
@@ -759,7 +760,7 @@ Every function of several parameters is curried; partial application yields a
 function.
 
 ```thrax
-$ add : @int -> @int -> @int = \a b = a + b
+$ add : @int -> @int -> @int = \a, b = a + b
 $ add5 : @int -> @int = add 5           # partial application
 ```
 
@@ -767,8 +768,8 @@ $ add5 : @int -> @int = add 5           # partial application
 Functions are first-class values.
 
 ```thrax
-$ apply_twice : (t -> t) -> t -> t = \f x = f (f x)
-$ compose : (b -> c) -> (a -> b) -> a -> c = \f g x = f (g x)
+$ apply_twice : (t -> t) -> t -> t = \f, x = f (f x)
+$ compose : (b -> c) -> (a -> b) -> a -> c = \f, g, x = f (g x)
 ```
 
 ## 7.3 One name, one definition
@@ -791,9 +792,9 @@ Simple:
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 $ impl_IOrder_for_int : IOrder @int = .{
-	.compare = \a b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
+	.compare = \a, b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
 }
-$ max_of : @ctx IOrder t -> t -> t -> t = \d x y =
+$ max_of : @ctx IOrder t -> t -> t -> t = \d, x, y =
 	is d.compare x y | Ordering.GT => x else y
 $ biggest : @int = max_of 3 7
 ```
@@ -803,7 +804,7 @@ must be a declared struct or union. Several requirements travel as one tuple, wh
 the call site builds:
 
 ```thrax
-$ abs : @ctx {IOrd t, ISub t, IZero t} -> t -> t = \ds x =
+$ abs : @ctx {IOrd t, ISub t, IZero t} -> t -> t = \ds, x =
 	if ds.0.lt x ds.2.zero => ds.1.sub ds.2.zero x else x
 ```
 
@@ -811,10 +812,10 @@ Chaining and the explicit form (`f (@ctx e) x`, first argument, where the `@ctx`
 keyword is needed because the parameter is otherwise not addressable):
 
 ```thrax
-$ max3 : @ctx IOrder t -> t -> t -> t -> t = \d x y z =
+$ max3 : @ctx IOrder t -> t -> t -> t -> t = \d, x, y, z =
 	max_of (max_of x y) z          # d satisfies max_of's requirement, so it passes down
 $ as_min : @int =
-	let flip : IOrder @int = .{ .compare = \a b = impl_IOrder_for_int.compare b a } in
+	let flip : IOrder @int = .{ .compare = \a, b = impl_IOrder_for_int.compare b a } in
 	max_of (@ctx flip) 3 7
 ```
 
@@ -826,7 +827,7 @@ over such interfaces: `+ - * / %` over `IAdd`/`ISub`/`IMul`/`IDiv`/`IMod`, `^` o
 
 ```thrax
 $ Money : @struct = cents: @int
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a, b = Money.{ .cents = a.cents + b.cents } }
 $ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
 ```
 
@@ -838,7 +839,7 @@ Tail-recursive calls (self, mutual, or through a recursive local `let`) run in
 constant stack.
 
 ```thrax
-$ sum_to : @int -> @int -> @int = \n acc =
+$ sum_to : @int -> @int -> @int = \n, acc =
 	if n == 0 => acc else sum_to (n - 1) (acc + n)      # constant stack at any depth
 ```
 
@@ -874,7 +875,7 @@ qualified in a clause head.
 
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
-$ safeDiv : @int -> @int -> @int = \a b =
+$ safeDiv : @int -> @int -> @int = \a, b =
 	do if b == 0 => Exn.throw "div0" else a / b
 	ctl k | Exn.throw msg => -1
 ```
@@ -908,7 +909,7 @@ discharges the effects it handles. A performed-but-unhandled effect is a compile
 error. Subsumption: a pure function is callable in any effectful context.
 
 ```thrax
-$ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f xs =
+$ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f, xs =
 	is xs | [] => [] | h :: t => f h :: map f t else []
 ```
 
@@ -932,7 +933,7 @@ Several cleanups may share one `defer`, separated by commas (a trailing comma
 before `in` is allowed). They nest exactly as separate `defer`s do, so they still
 run innermost-first:
 ```thrax
-$ useTwo : @str -> @str -> @int = \a b =
+$ useTwo : @str -> @str -> @int = \a, b =
 	let f = open a, g = open b in
 	defer close f,
 	      close g,
@@ -986,8 +987,8 @@ Each axis may carry a variance tag `@contra` (upper index / column) or `@co`
 
 ```thrax
 $ with LA
-$ row : [m][n]a -> @int -> [n]a = \m i = m.[i]
-$ col : [m][n]a -> @int -> [m]a = \m j = m.[.., j]
+$ row : [m][n]a -> @int -> [n]a = \m, i = m.[i]
+$ col : [m][n]a -> @int -> [m]a = \m, j = m.[.., j]
 $ sub : [8]@int -> [4]@int = \m = m.[2 ... 5]      # inclusive 2..5, four elements
 ```
 

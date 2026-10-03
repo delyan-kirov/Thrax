@@ -22,11 +22,11 @@ $sign2 : @int -> @int = \n =
 		n > 0  => 1,
 	else -1
 
-$max : @int -> @int -> @int = \a b =
+$max : @int -> @int -> @int = \a, b =
 	if a > b => a
 	else b
 
-$min : @int -> @int -> @int = \a b =
+$min : @int -> @int -> @int = \a, b =
 	if a < b => a
 	else b
 

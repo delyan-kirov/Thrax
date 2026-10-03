@@ -51,10 +51,10 @@ $ read_file : @str -> <@io> Option @str = \path =
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : @str -> @str -> <@io> @bool = \path content =
+$ write_file : @str -> @str -> <@io> @bool = \path, content =
 	spill_file path content "wb"
 
-$ append_file : @str -> @str -> <@io> @bool = \path content =
+$ append_file : @str -> @str -> <@io> @bool = \path, content =
 	spill_file path content "ab"
 
 $ remove_file : @str -> <@io> @bool = \path =
@@ -82,14 +82,14 @@ $ read_line_acc : @str -> <@io> @str = \acc =
 $ is_byte : @int -> @bool = \c =
 	if c < 0 => @false else c <= 255
 
-$ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
+$ read_bytes : @int -> @int -> @str -> <@io> @str = \f, n, acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
 		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
 		else acc # stream ended early (unreadable path, truncated file)
 
-$ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
+$ spill_file : @str -> @str -> @str -> <@io> @bool = \path, content, mode =
 	let f = C.fopen {path, mode} in
 	if f == 0 => @false
 	else

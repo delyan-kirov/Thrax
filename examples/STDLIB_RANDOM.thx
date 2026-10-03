@@ -21,7 +21,7 @@ $ ck_zero : @int = if (next (RANDOM.new 0)).0 == 48271 => 0 else 1
 
 # Bounded draws stay in range across a run of draws.
 $ draws : @vec @int = draw_n (RANDOM.new 42) 50
-$ draw_n : Rng -> @int -> @vec @int = \g n =
+$ draw_n : Rng -> @int -> @vec @int = \g, n =
 	if n <= 0 => []
 	else let d = next_below g 10 in d.0 :: draw_n d.1 (n - 1)
 $ ck_below : @int =

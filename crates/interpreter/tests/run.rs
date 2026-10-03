@@ -286,7 +286,7 @@ fn ffi_callback() {
         "@mod M\n\
          $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @int = 10\n\
-         $ test : @int = call_twice (\\a b = a + b + k)",
+         $ test : @int = call_twice (\\a, b = a + b + k)",
         lib = so.display()
     );
     // f(1,2)=13, f(3,4)=17 -> 13*100 + 17 = 1317.
@@ -436,8 +436,8 @@ fn ctx_resolves_by_type() {
     // leading argument.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
-               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a, b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o, x, y =\n\
                \tif o.gt x y => x else y\n\
                $ r : @int = max_of 3 7";
     assert_eq!(run(src, "r"), "7");
@@ -451,14 +451,14 @@ fn ctx_chains_and_is_overridden() {
     // value per type.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
-               $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a, b = a > b }\n\
+               $ max_of : @ctx Ord t -> t -> t -> t = \\o, x, y =\n\
                \tif o.gt x y => x else y\n\
-               $ max3 : @ctx Ord t -> t -> t -> t -> t = \\o x y z =\n\
+               $ max3 : @ctx Ord t -> t -> t -> t -> t = \\o, x, y, z =\n\
                \tmax_of (max_of x y) z\n\
                $ chained : @int = max3 3 9 5\n\
                $ flipped : @int =\n\
-               \tlet flip : Ord @int = .{ .gt = \\a b = a < b } in max_of (@ctx flip) 3 7\n\
+               \tlet flip : Ord @int = .{ .gt = \\a, b = a < b } in max_of (@ctx flip) 3 7\n\
                $ r : @int = chained + flipped";
     assert_eq!(run(src, "r"), "12");
 }
@@ -469,7 +469,7 @@ fn ctx_generic_instance_resolves_per_element_type() {
     // context recursively resolves the instance's own one, per element type.
     let src = "@mod M\n\
                $ Show : @struct t = show: t -> @str,\n\
-               $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
+               $ show : @ctx Show t -> t -> @str = \\d, x = d.show x\n\
                $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
                $ sh_bool : Show @bool = .{ .show = \\b = to_string b }\n\
                $ Box : @union t = Wrap: {t},\n\
@@ -489,7 +489,7 @@ fn ctx_bundle_resolves_each_component() {
                $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
                $ sh_bool : Show @bool = .{ .show = \\b = to_string b }\n\
                $ Pair : @struct a b = fst: a, snd: b,\n\
-               $ show_pair : @ctx {Show a, Show b} -> Pair a b -> @str = \\ds x =\n\
+               $ show_pair : @ctx {Show a, Show b} -> Pair a b -> @str = \\ds, x =\n\
                \t\"(\" ++ ds.0.show x.fst ++ \", \" ++ ds.1.show x.snd ++ \")\"\n\
                $ r : @int = if show_pair (Pair.{ .fst = 5, .snd = @true } : Pair @int @bool) == \"(5, true)\" => 0 else 1";
     assert_eq!(run(src, "r"), "0");
@@ -504,7 +504,7 @@ fn ctx_nullary_instance_resolves_by_expected_type() {
                $ bl_int : Blank @int = .{ .blank = 0 }\n\
                $ bl_str : Blank @str = .{ .blank = \"\" }\n\
                $ Pair : @struct a b = fst: a, snd: b,\n\
-               $ mk : @ctx {Blank a, Blank b} -> {} -> Pair a b = \\ds u =\n\
+               $ mk : @ctx {Blank a, Blank b} -> {} -> Pair a b = \\ds, u =\n\
                \tPair.{ .fst = ds.0.blank, .snd = ds.1.blank }\n\
                $ p : Pair @int @str = mk {}\n\
                $ r : @int = if (p.fst == 0) && (p.snd == \"\") => 0 else 1";
@@ -517,7 +517,7 @@ fn ctx_instance_crosses_module_boundary() {
     // instance keeps its own context requirement across the boundary.
     let lib = "@mod GENM\n\
                $ Show : @struct t = show: t -> @str,\n\
-               $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
+               $ show : @ctx Show t -> t -> @str = \\d, x = d.show x\n\
                $ Box : @union t = Wrap: {t},\n\
                $ sh_box : @ctx Show t -> Show (Box t) = \\d =\n\
                \t.{ .show = \\x = is x | Box.Wrap.{a} => \"W(\" ++ d.show a ++ \")\" }";
@@ -534,10 +534,10 @@ fn qualified_ctx_call_injects_its_context() {
     // instance from the caller's scope.
     let lib = "@mod LM\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ maxf : @ctx Ord t -> t -> t -> t = \\o x y = if o.gt x y => x else y";
+               $ maxf : @ctx Ord t -> t -> t -> t = \\o, x, y = if o.gt x y => x else y";
     let root = "@mod M\n\
                 $ with LM\n\
-                $ impl_Ord_for_int : LM.Ord @int = .{ .gt = \\a b = a > b }\n\
+                $ impl_Ord_for_int : LM.Ord @int = .{ .gt = \\a, b = a > b }\n\
                 $ r : @int = LM.maxf 3 7";
     assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
@@ -659,7 +659,7 @@ fn tensor_size_arithmetic() {
                $ b : [3]@int = [3, 4, 5]\n\
                $ c : [5]@int = @tensor_concat a b\n\
                $ dup : [n]x -> [2*n]x = \\t = @tensor_concat t t\n\
-               $ flip : [n]x -> [m]x -> [m+n]x = \\p q = @tensor_concat p q\n\
+               $ flip : [n]x -> [m]x -> [m+n]x = \\p, q = @tensor_concat p q\n\
                $ d : [4]@int = dup a\n\
                $ r : @int = @tensor_index c 4 + @tensor_index d 3"; // 5 + (dup a = [1,2,1,2])[3]=2
     assert_eq!(run(src, "r"), "7");
@@ -684,9 +684,9 @@ fn overloadable_index_and_shape_sugar() {
     // one and a custom-type one) both drive `.[..]`, resolved by receiver type. Also
     // exercises `[m, n]T` shape sugar and `t.[i, j]`.
     let src = "@mod M\n\
-               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t, i = @tensor_index t i }\n\
                $ Box : @struct = base: @int\n\
-               $ ix_box : @IIndex Box @int @int = .{ .index = \\b i = b.base + i }\n\
+               $ ix_box : @IIndex Box @int @int = .{ .index = \\b, i = b.base + i }\n\
                $ g : [2, 2]@int = [ [1, 2], [3, 4] ]\n\
                $ bx : Box = .{ .base = 100 }\n\
                $ r : @int = g.[1, 0] + g.[1].[1] + bx.[5]"; // 3 + 4 + 105
@@ -698,7 +698,7 @@ fn multi_axis_slice_syntax() {
     // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
     // The checker computes the result shape; all are O(1) strided views.
     let src = "@mod M\n\
-               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t, i = @tensor_index t i }\n\
                $ m : [3, 4]@int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
                $ colv : [3]@int = m.[.., 1]\n\
                $ blk : [2, 2]@int = m.[1 ... 2, 1 ... 2]\n\
@@ -713,7 +713,7 @@ fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
     let src = "@mod M\n\
-               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
+               $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t, i = @tensor_index t i }\n\
                $ v : [5]@int = [10, 20, 30, 40, 50]\n\
                $ s : [3]@int = v.[1 ... 3]\n\
                $ r : @int = s.[0] + s.[1] + s.[2]"; // 20+30+40
@@ -738,7 +738,7 @@ fn indexing_hook_returns_non_element() {
                $ Maybe : @union a = Nada: {}, Just: {a}\n\
                $ Dict : @struct = base: @int\n\
                $ ix_dict : @IIndex Dict @int (Maybe @int) = .{\n\
-               \t.index = \\d k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada,\n\
+               \t.index = \\d, k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada,\n\
                }\n\
                $ d : Dict = .{ .base = 10 }\n\
                $ r : @int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
@@ -804,7 +804,7 @@ fn unary_minus_reaches_a_user_instance() {
     // through to a numeric built-in.
     let src = "@mod M\n\
         $ Money : @struct = cents: @int\n\
-        $ sub_money : ISub Money = .{ .sub = \\a b = Money.{ .cents = a.cents - b.cents } }\n\
+        $ sub_money : ISub Money = .{ .sub = \\a, b = Money.{ .cents = a.cents - b.cents } }\n\
         $ zero_money : IZero Money = .{ .zero = Money.{ .cents = 0 } }\n\
         $ r : @int = (-Money.{ .cents = 5 }).cents";
     assert_eq!(run(src, "r"), "-5");
@@ -870,7 +870,7 @@ fn literal_pattern_via_equality_hook() {
     let src = "@mod M\n\
         $ MyStr : @struct = bytes: @str\n\
         $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
-        $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
+        $ eq_mystr : IEq MyStr = .{ .eq = \\a, b = a.bytes == b.bytes }\n\
         $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
         $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
     assert_eq!(run(src, "r"), "120");
@@ -900,7 +900,7 @@ fn range_via_hook_on_a_user_type() {
     // type takes the range surface with one, while the bare form stays a `@vec`.
     let src = "@mod M\n\
         $ Span : @struct = lo: @int, hi: @int\n\
-        $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
+        $ rg : @IRange @int Span = .{ .range = \\lo, hi = Span.{ lo, hi } }\n\
         $ s : Span = [3 ... 9]\n\
         $ v : @vec @int = [1 ... 4]\n\
         $ r : @int = s.hi - s.lo + @vec_len v";
@@ -926,7 +926,7 @@ fn cons_operator_takes_an_instance() {
     // defining an instance, as with any other interface.
     let src = "@mod M\n\
         $ Stack : @struct a = items: @vec a\n\
-        $ cons_stack : ICons a (Stack a) = .{ .cons = \\x s = Stack.{ .items = x :: s.items } }\n\
+        $ cons_stack : ICons a (Stack a) = .{ .cons = \\x, s = Stack.{ .items = x :: s.items } }\n\
         $ s : Stack @int = 1 :: 2 :: Stack.{ .items = [] }\n\
         $ v : @vec @int = 9 :: [8]\n\
         $ r : @int = @vec_get s.items 0 * 100 + @vec_len s.items * 10 + @vec_get v 0";
@@ -940,7 +940,7 @@ fn slice_hook_covers_sequences_and_user_types() {
     let src = "@mod M\n\
         $ Tape : @struct = cells: @vec @int\n\
         $ sl : @ISlice Tape Tape = .{\n\
-        \t.slice = \\t lo hi = Tape.{ .cells = t.cells.[lo ... hi] },\n\
+        \t.slice = \\t, lo, hi = Tape.{ .cells = t.cells.[lo ... hi] },\n\
         }\n\
         $ v : @vec @int = [10, 20, 30, 40]\n\
         $ s : @str = \"hello\"\n\
@@ -1065,7 +1065,7 @@ fn recursive_struct_field_is_lazy_and_unbounded() {
     let src = "@mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
-               $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
+               $ nth : @int -> Stream t -> t = \\n, s = if n == 0 => s.head else nth (n - 1) s.tail\n\
                $ r : @int = (from 10).head + nth 5 (from 10)";
     assert_eq!(run(src, "r"), "25"); // 10 + 15
 }
@@ -1463,7 +1463,7 @@ fn user_type_joins_an_operator_by_instance() {
     // finds CORE's. Proves an operator dispatches through the context it resolves.
     let src = "@mod M\n\
                $ V : @struct = x: @int, y: @int\n\
-               $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
+               $ add_v : IAdd V = .{ .add = \\a, b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_eq!(run(src, "r"), "33");
 }
@@ -1584,7 +1584,7 @@ fn record_parameter_destructures() {
 #[test]
 fn higher_order_and_guards() {
     let src = "@mod M\n\
-               $ twice = \\f x = f (f x)\n\
+               $ twice = \\f, x = f (f x)\n\
                $ a = twice (\\n = n + 3) 1";
     assert_eq!(run(src, "a"), "7");
     let guard = "@mod M\n\
@@ -1689,7 +1689,7 @@ fn a_lazy_slot_is_forced_once() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
                $ xs : L @int = mk 5\n\
                $ r : @int = sum xs 0 + sum xs 0";
     assert_eq!(run(src, "r"), "30"); // 15 twice
@@ -1725,7 +1725,7 @@ fn equality_forces_lazy_slots() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ eq_l : @ctx IEq a -> IEq (L a) = \\d = .{ .eq = \\x y =\n\
+               $ eq_l : @ctx IEq a -> IEq (L a) = \\d = .{ .eq = \\x, y =\n\
                \tis x | L.N => (is y | L.N => @true else @false)\n\
                \t| L.C.{ h, t } => (is y | L.C.{ h2, t2 } => d.eq h h2 && eq_l.eq t t2 else @false) }\n\
                $ r : @bool = mk 4 == mk 4";
@@ -1738,8 +1738,8 @@ fn freeing_a_long_list_does_not_recurse_on_the_host_stack() {
     // length aborted the process AFTER the program had produced its answer.
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
-               $ mk : @int -> @int -> L @int = \\lo hi = if lo > hi => L.N else L.C.{ lo, mk (lo + 1) hi }\n\
-               $ len : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => len t (acc + 1) else acc\n\
+               $ mk : @int -> @int -> L @int = \\lo, hi = if lo > hi => L.N else L.C.{ lo, mk (lo + 1) hi }\n\
+               $ len : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => len t (acc + 1) else acc\n\
                $ r : @int = len (mk 1 200000) 0";
     assert_eq!(run(src, "r"), "200000");
 }

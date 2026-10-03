@@ -12,7 +12,7 @@ $ sum : ({} -> <Y> @int) -> @int =
 
 $ inc : @int -> @int        = \x = x + 1
 $ dbl : @int -> @int        = \x = x + x
-$ add : @int -> @int -> @int = \a b = a + b
+$ add : @int -> @int -> @int = \a, b = a + b
 
 # `;` runs the left side for its effect, discards its value, yields the right.
 $ r_seq : @int = sum (\_ = Y.yield 1 ; Y.yield 2 ; 0)   # 1+2+0 = 3

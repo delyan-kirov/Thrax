@@ -29,7 +29,7 @@ $ grey    : Color = @e (Color.{ .r = 20, .g = 20, .b = 20 })
 $ some7   : Opt @int = @e (Opt.Some.{ 3 + 4 })         # Opt.Some.{ 7 }
 $ none    : Opt @int = @e Opt.None                     # Opt.None
 
-$ opt_or : @int -> Opt @int -> @int = \d o =
+$ opt_or : @int -> Opt @int -> @int = \d, o =
 	is o | Opt.Some.{x} => x else d
 
 $ ck_vec : @int = if VEC.sum squares == 55 => 0 else 1
