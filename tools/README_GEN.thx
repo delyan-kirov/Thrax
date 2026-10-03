@@ -70,7 +70,7 @@ $ ex_interface : @str =
 	"$ IArea : @struct t = area: t -> Real,\n"
 	++ "\n"
 	++ "$ Rect : @struct = w: Real, h: Real,\n"
-	++ "$ area_rect : IArea Rect = .{ .area = \\r = r.w * r.h }\n"
+	++ "$ impl_IArea_for_Rect : IArea Rect = .{ .area = \\r = r.w * r.h }\n"
 	++ "\n"
 	++ "# `d` is the CONTEXT parameter: ordinary in every respect, except that call\n"
 	++ "# sites do not write it. The compiler finds it by type.\n"
@@ -83,7 +83,7 @@ $ ex_operator : @str =
 	"$ Money : @struct = cents: @int,\n"
 	++ "\n"
 	++ "# `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.\n"
-	++ "$ add_money : IAdd Money = .{ .add = \\a b = Money.{ .cents = a.cents + b.cents } }\n"
+	++ "$ impl_IAdd_for_Money : IAdd Money = .{ .add = \\a b = Money.{ .cents = a.cents + b.cents } }\n"
 	++ "$ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }"
 
 # A self-contained expression we can actually RUN and check at build time.

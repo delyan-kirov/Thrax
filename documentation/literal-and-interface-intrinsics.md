@@ -341,6 +341,6 @@ What changed:
   (`blessed_first`), so CORE's declaration order keeps deciding that a bare
   `[lo ... hi]` is a `@vec` and a bare `[lo ...]` is a `Stream`.
 
-`LA`'s tensor indexing is `$ index_tensor : @IIndex ([n]a) @int a`, `MAP`'s is
-`@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.thx` shows a user type
+`LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a`,
+`MAP`'s is `@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.thx` shows a user type
 joining with `@IIndex Grid @int @int`.

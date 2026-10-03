@@ -11,8 +11,8 @@ with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.)
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 `\x = e` (curried: `\a b = e`); a branch is `if c => t else e`; a match is
 `is scrut | pat => e ... else d`. The comparison operators are `==` (equal),
-`<` (less), `>` (greater), `<=` (at most), `>=` (at least), each of type
-`a -> a -> @bool`.
+`!=` (not equal), `<` (less), `>` (greater), `<=` (at most), `>=` (at least),
+each of type `a -> a -> @bool`.
 
 ---
 
@@ -107,7 +107,7 @@ $ greet : Str -> Str = \who = "hello {who}!"
 Involved (a user type interpolates by defining an `Ito_string` instance):
 ```thrax
 $ Point : @struct = x: @int, y: @int
-$ show_point : Ito_string Point = .{ .show = \p = "({p.x}, {p.y})" }
+$ impl_IToString_for_Point : Ito_string Point = .{ .show = \p = "({p.x}, {p.y})" }
 $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
 ```
 
@@ -348,23 +348,23 @@ $ d = !@true                 # @false
 ```
 
 ## 4.4 Comparisons
-`==` `<` `>` `<=` `>=`, all `a -> a -> @bool`. Use `!(a == b)` for inequality.
+`==` `!=` `<` `>` `<=` `>=`, all `a -> a -> @bool`.
 
 ```thrax
 $ lt : @bool = 3 < 8
 $ le : @bool = 8 <= 8
-$ ne : @bool = !(3 == 4)
+$ ne : @bool = 3 != 4
 ```
 
-Like arithmetic, these are `CORE` functions over interfaces: `==` over `IEq`, the
-four orderings over `IOrd`, whose instances bottom out at the comparison intrinsics
-(`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`). A type of your own joins
-them with an instance:
+Like arithmetic, these are `CORE` functions over interfaces: `==` and `!=` over
+`IEq`, the four orderings over `IOrd`, whose instances bottom out at the
+comparison intrinsics (`@ieq`, `@ilt`, `@ult`, `@feq`, `@flt`, `@seq`, `@slt`).
+A type of your own joins them with an instance:
 
 ```thrax
 $ Money : @struct = cents: @int
 
-$ ord_money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
 $ cheaper : @bool = Money.{ .cents = 150 } < Money.{ .cents = 900 }
 ```
 
@@ -787,7 +787,7 @@ Simple:
 ```thrax
 $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 $ IOrder : @struct t = compare: t -> t -> Ordering,
-$ order_int : IOrder @int = .{
+$ impl_IOrder_for_int : IOrder @int = .{
 	.compare = \a b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
 }
 $ max_of : @ctx IOrder t -> t -> t -> t = \d x y =
@@ -811,19 +811,19 @@ keyword is needed because the parameter is otherwise not addressable):
 $ max3 : @ctx IOrder t -> t -> t -> t -> t = \d x y z =
 	max_of (max_of x y) z          # d satisfies max_of's requirement, so it passes down
 $ as_min : @int =
-	let flip : IOrder @int = .{ .compare = \a b = order_int.compare b a } in
+	let flip : IOrder @int = .{ .compare = \a b = impl_IOrder_for_int.compare b a } in
 	max_of (@ctx flip) 3 7
 ```
 
 An instance may itself take a context, which resolution fills in recursively, so
 `IEq (@vec t)` is built from `IEq t`. `CORE`'s operators are all ordinary functions
 over such interfaces: `+ - * / %` over `IAdd`/`ISub`/`IMul`/`IDiv`/`IMod`, `^` over
-`IPow`, `== < > <= >=` over `IEq`/`IOrd`, `++` over `ICat`, `::` over `ICons`, and
+`IPow`, `== != < > <= >=` over `IEq`/`IOrd`, `++` over `ICat`, `::` over `ICons`, and
 `to_string` over `Ito_string`. A type joins any of them by defining an instance:
 
 ```thrax
 $ Money : @struct = cents: @int
-$ add_money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
 $ total : Money = Money.{ .cents = 1 } + Money.{ .cents = 2 }
 ```
 

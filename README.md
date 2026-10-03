@@ -159,7 +159,7 @@ the one instance in scope.
 $ IArea : @struct t = area: t -> Real,
 
 $ Rect : @struct = w: Real, h: Real,
-$ area_rect : IArea Rect = .{ .area = \r = r.w * r.h }
+$ impl_IArea_for_Rect : IArea Rect = .{ .area = \r = r.w * r.h }
 
 # `d` is the CONTEXT parameter: ordinary in every respect, except that call
 # sites do not write it. The compiler finds it by type.
@@ -176,7 +176,7 @@ function over `IAdd`, and a type joins it by defining an instance.
 $ Money : @struct = cents: @int,
 
 # `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
-$ add_money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
 $ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }
 ```
 

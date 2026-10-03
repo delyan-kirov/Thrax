@@ -436,7 +436,7 @@ fn ctx_resolves_by_type() {
     // leading argument.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
                \tif o.gt x y => x else y\n\
                $ r : @int = max_of 3 7";
@@ -451,7 +451,7 @@ fn ctx_chains_and_is_overridden() {
     // value per type.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
                \tif o.gt x y => x else y\n\
                $ max3 : @ctx Ord t -> t -> t -> t -> t = \\o x y z =\n\
@@ -537,7 +537,7 @@ fn qualified_ctx_call_injects_its_context() {
                $ maxf : @ctx Ord t -> t -> t -> t = \\o x y = if o.gt x y => x else y";
     let root = "@mod M\n\
                 $ with LM\n\
-                $ ord_int : LM.Ord @int = .{ .gt = \\a b = a > b }\n\
+                $ impl_Ord_for_int : LM.Ord @int = .{ .gt = \\a b = a > b }\n\
                 $ r : @int = LM.maxf 3 7";
     assert_eq!(run_modules(&[lib, root], "r"), "7");
 }
@@ -1423,6 +1423,7 @@ fn operator_table_every_entry() {
             "!" => ("$ a = if !@false => 1 else 0", Runs("1")),
             // Comparison.
             "==" => ("$ a = if 3 == 3 => 1 else 0", Runs("1")),
+            "!=" => ("$ a = if 3 != 4 => 1 else 0", Runs("1")),
             ">" => ("$ a = if 5 > 3 => 1 else 0", Runs("1")),
             "<" => ("$ a = if 3 < 5 => 1 else 0", Runs("1")),
             "<=" => ("$ a = if 3 <= 3 => 1 else 0", Runs("1")),

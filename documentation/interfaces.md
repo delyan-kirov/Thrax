@@ -21,7 +21,7 @@ $ Ito_string : @struct t = show: t -> @str,
 
 $ to_string : @ctx Ito_string t -> t -> @str = \d x = d.show x
 
-$ show_int : Ito_string @int = .{ .show = int_to_str }
+$ impl_IToString_for_int : Ito_string @int = .{ .show = int_to_str }
 
 $ a : @str = to_string 1                 # the context is found by type
 $ b : @str = to_string (@ctx show_hex) 255   # or written by hand
@@ -47,8 +47,8 @@ Rules, all of them:
    chain), then the instances in scope. Exactly one must match: zero and two are
    both errors, because global scope is flat.
 5. **Recursive resolution.** A matching instance may itself carry a context
-   (`$ eq_vec : @ctx IEq t -> IEq (@vec t)`), so resolution recurses into its
-   requirement, bounded at 32 steps.
+   (`$ impl_IEq_for_vec : @ctx IEq t -> IEq (@vec t)`), so resolution recurses
+   into its requirement, bounded at 32 steps.
 6. **No overlapping instances.** A ground instance and a generic one that both
    match is an ambiguity error, not most-specific-wins.
 7. **Partial grounding is allowed.** The search unifies, so a unique match may pin

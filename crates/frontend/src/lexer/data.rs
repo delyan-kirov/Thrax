@@ -190,6 +190,10 @@ pub const OPERATORS: &[OpDef] = &[
         role: OpRole::Infix(10, 11),
     },
     OpDef {
+        lexeme: "!=",
+        role: OpRole::Infix(10, 11),
+    },
+    OpDef {
         lexeme: ">",
         role: OpRole::Infix(10, 11),
     },

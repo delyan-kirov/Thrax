@@ -2,13 +2,15 @@
 
 # \file operators.thx
 # \info Comparison and logical operators. Comparisons evaluate to @bool (a
-#       built-in type); `!` negates a @bool. Each operator is an overload per
-#       base type in CORE over the comparison intrinsics, so a type of your own
-#       joins the set; whatever no overload covers falls back to the structural
-#       built-in.
+#       built-in type); `!` negates a @bool. Each operator is a CORE function
+#       over `IEq` / `IOrd`, whose instances bottom out at the comparison
+#       intrinsics, so a type of your own joins the set by writing an instance.
+#       There is no structural fallback.
 
 $eq_true   = 7 == 7
 $eq_false  = 7 == 8
+$neq_true  = 7 != 8
+$neq_false = 7 != 7
 $geq_true  = 9 > 4
 $geq_equal = 4 > 4
 $geq_false = 2 > 4
@@ -20,12 +22,12 @@ $not_true  = !@true
 $not_not   = !(!@true)
 
 # Dispatch per base type: each of these picks a different CORE overload.
-$ ck_int   : @int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) => 0 else 1
+$ ck_int   : @int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) && (3 != 4) => 0 else 1
 $ ck_real  : @int = if (1.5 < 2.5) && (2.5 >= 2.5) && (0.5 == 0.5) => 0 else 2
 $ ck_f32   : @int =
 	let a : @float32 = 1.25 in
 	let b : @float32 = 2.5 in
-	if (a < b) && (b > a) && !(a == b) => 0 else 4
+	if (a < b) && (b > a) && (a != b) => 0 else 4
 $ ck_str   : @int = if ("abc" < "abd") && ("b" > "abc") && ("x" == "x") => 0 else 8
 $ ck_bool  : @int = if (@true == @true) && !(@true == @false) => 0 else 16
 
@@ -38,8 +40,8 @@ $ ck_unsigned : @int = if (big > 5) && !(big < 5) => 0 else 32
 # `Money` goes through this instance, `<` on an `@int` through CORE's.
 $ Money : @struct = cents: @int
 
-$ ord_money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
-$ eq_money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
+$ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
+$ impl_IEq_for_Money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
 
 $ ck_custom : @int =
 	if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
@@ -49,7 +51,7 @@ $ ck_custom : @int =
 $ ck_structural : @int =
 	if (Money.{ .cents = 7 } == Money.{ .cents = 7 })
 		&& ({1, "a"} == {1, "a"})
-		&& !({1, "a"} == {1, "b"})
+		&& ({1, "a"} != {1, "b"})
 	=> 0 else 128
 
 # `<` and `>` in an expression, in a function whose type carries an effect row:
@@ -59,8 +61,8 @@ $ ck_row : @int = if (clamp_pos (0 - 3) == 0) && (clamp_pos 5 == 5) => 0 else 25
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int =
-	eq_true ; eq_false ; geq_true ; geq_equal ; geq_false ; leq_true ; leq_equal
-	; leq_false ; not_false ; not_true ; not_not
+	eq_true ; eq_false ; neq_true ; neq_false ; geq_true ; geq_equal ; geq_false
+	; leq_true ; leq_equal ; leq_false ; not_false ; not_true ; not_not
 	; ck_int + ck_real + ck_f32 + ck_str + ck_bool + ck_unsigned + ck_custom
 		+ ck_structural + ck_row
 

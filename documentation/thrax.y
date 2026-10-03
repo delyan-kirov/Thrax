@@ -72,7 +72,7 @@
 %left  PIPE_FWD                     /* |> */
 %left  OR_OR                        /* || (short-circuit, desugars to a lazy if) */
 %left  AND_AND                      /* && (short-circuit, desugars to a lazy if) */
-%left  EQEQ LT GT LE GE             /* == < > <= >= */
+%left  EQEQ NEQ LT GT LE GE         /* == != < > <= >= */
 %right CONS                         /* :: */
 %left  CONCAT                       /* ++ */
 %left  PLUS MINUS
@@ -134,7 +134,7 @@ sig
  * delimiters (`|`, `<>`) are excluded: they are not operators. */
 operator_name
   : PLUS | MINUS | STAR | SLASH | PERCENT | CARET | BANG | CONCAT | CONS
-  | EQEQ | LT | GT | LE | GE
+  | EQEQ | NEQ | LT | GT | LE | GE
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
@@ -293,6 +293,7 @@ op_expr
   | op_expr OR_OR op_expr            /* || short-circuit -> lazy if */
   | op_expr AND_AND op_expr          /* && short-circuit -> lazy if */
   | op_expr EQEQ op_expr
+  | op_expr NEQ op_expr
   | op_expr LT op_expr
   | op_expr GT op_expr
   | op_expr LE op_expr
