@@ -411,7 +411,17 @@ arm
   | alts KW_IF expr FATARROW expr
   ;
 
-params : pattern | params pattern ;
+/* A lambda's parameters. A parameter may carry a `: type` annotation; bare, the
+   annotation runs to the `=`, so only the last parameter can take that form, and
+   the parenthesized `(p: T)` annotates any position. */
+params : param | params param ;
+
+param
+  : pattern
+  | pattern COLON type
+  | LPAREN pattern RPAREN
+  | LPAREN pattern COLON type RPAREN
+  ;
 
 pattern
   : pat_atom

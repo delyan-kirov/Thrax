@@ -571,3 +571,30 @@ fn operator_in_parens_is_a_function_reference() {
     };
     assert!(err.to_string().contains("delimiter"));
 }
+
+#[test]
+fn lambda_parameters_take_type_annotations() {
+    let p = prog("@mod M\n$ f = \\i: @int = i");
+    let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let params = p.ast.slice(*params);
+    assert_eq!(params.len(), 1);
+    assert!(params[0].sig.is_some());
+
+    // A parenthesized parameter annotates any position, not just the last.
+    let p = prog("@mod M\n$ g = \\(x: @int) y (z: @str) = x");
+    let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let sigs: Vec<bool> = p.ast.slice(*params).iter().map(|q| q.sig.is_some()).collect();
+    assert_eq!(sigs, vec![true, false, true]);
+
+    // Unannotated parameters still parse, and a bare annotation must end at `=`.
+    assert!(parse("@mod M\n$ h = \\a b = a").is_ok());
+    let err = match parse("@mod M\n$ k = \\a: @int 1 = a") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error"),
+    };
+    assert!(err.contains("parenthesize"), "{err}");
+}

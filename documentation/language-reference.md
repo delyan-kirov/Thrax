@@ -318,13 +318,16 @@ $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @int Str
 
 ## 4.1 Lambdas
 `\pat+ = e`. Multiple parameters are curried sugar. A parameter may be an
-irrefutable pattern.
+irrefutable pattern, and may carry a `: Type` annotation. A bare annotation runs
+to the `=`, so it fits only the last parameter; `(pat : Type)` annotates any.
 
 ```thrax
 $ Person : @struct = name: Str, age: @int,
 $ inc : @int -> @int = \x = x + 1
 $ add : @int -> @int -> @int = \a b = a + b            # curried
 $ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
+$ dec = \x: @int = x - 1                            # annotated parameter
+$ sub = \(a: @int) (b: @int) = a - b                # annotated, parenthesized
 ```
 
 ## 4.2 Application

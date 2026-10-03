@@ -41,6 +41,7 @@ pub struct Ast {
     clauses: Store<Clause>,
     arms: Store<Arm>,
     bindings: Store<Binding>,
+    lam_params: Store<LamParam>,
     items: Store<Item>,
     slice_slots: Store<SliceSlot>,
     /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
@@ -80,6 +81,7 @@ sliced! {
     Clause => clauses,
     Arm => arms,
     Binding => bindings,
+    LamParam => lam_params,
     Item => items,
     SliceSlot => slice_slots,
 }
@@ -495,7 +497,7 @@ pub enum Expr {
     },
     /// `\p1 p2 = body`.
     Lambda {
-        params: Slice<Aol<Pattern>>,
+        params: Slice<LamParam>,
         body: Aol<Expr>,
     },
     /// `with subject in body` field-scoping.
@@ -546,6 +548,14 @@ pub struct Binding {
     pub pat: Aol<Pattern>,
     pub sig: Option<Aol<Ty>>,
     pub value: Aol<Expr>,
+}
+
+/// One parameter of a lambda: its pattern and an optional `: T` annotation
+/// (`\x: Int = x`, `\(x: Int) y = x`).
+#[derive(Clone, Copy, Debug)]
+pub struct LamParam {
+    pub pat: Aol<Pattern>,
+    pub sig: Option<Aol<Ty>>,
 }
 
 /// One arm of a `when`. Or-patterns (`is p1 is p2`) share a body and guard.

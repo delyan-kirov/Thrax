@@ -24,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload,
+    Ast, Binding, Expr, FieldInit, FieldPat, Item, LamParam, Pattern, Payload,
     Program as AstProgram, RecField, SliceSlot, Ty,
 };
 use utilities::{Aol, Span};
@@ -75,7 +75,7 @@ fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<String> {
     let params = ast.slice(*params);
     let names: Vec<&str> = params
         .iter()
-        .map(|p| match ast.pat(*p) {
+        .map(|p| match ast.pat(p.pat) {
             Pattern::Var(n) => Some(ast.text(*n)),
             _ => None,
         })
@@ -1225,11 +1225,11 @@ impl<'a> Lowerer<'a> {
             }
 
             Expr::Lambda { params, body } => {
-                let params: Vec<Aol<Pattern>> = self.ast.slice(*params).to_vec();
+                let params: Vec<LamParam> = self.ast.slice(*params).to_vec();
                 let body = *body;
                 let mut term = self.expr(body);
                 for p in params.into_iter().rev() {
-                    term = self.lambda_param(p, term);
+                    term = self.lambda_param(p.pat, term);
                 }
                 term
             }
