@@ -51,6 +51,13 @@ fn main() -> ExitCode {
         Some("lex") => with_root(rest.get(1).map(String::as_str), driver::cmd_lex),
         Some("parse") => with_root(rest.get(1).map(String::as_str), driver::cmd_parse),
         Some("check") => with_root(rest.get(1).map(String::as_str), driver::cmd_check),
+        Some("expand") => {
+            // `expand [file] [MODULE]`: the second positional narrows to one module.
+            let module = rest.get(2).cloned();
+            with_root(rest.get(1).map(String::as_str), |path| {
+                driver::cmd_expand(path, module.as_deref())
+            })
+        }
         Some("run") => {
             let (root, prog_args) = split_run(&rest[1..]);
             with_root(root, |path| driver::cmd_run(path, prog_args))
@@ -84,6 +91,7 @@ Commands:
   repl     Start an interactive shell (read-eval-print loop).
   build    Compile a program to a native executable next to the source.
   check    Type-check a module, run its compile-time checks, print its types.
+  expand   Print the source after metaprogram expansion (`$ @e`, `@build`).
   emit-c   Emit standalone C for a program to stdout.
   parse    Parse a program and print its syntax tree.
   lex      Tokenize a program and print its tokens.
@@ -97,6 +105,7 @@ Examples:
   thrax run                    Run MAIN.thx in the current directory.
   thrax run app.thx a b        Run app.thx, passing `a b` as its arguments.
   thrax build --target=wasm32-wasi
+  thrax expand tests/MAIN.thx MAIN   Show what MAIN's `@build` generated.
 ";
 
 /// Resolve the root file (explicit, else inferred from the current directory)

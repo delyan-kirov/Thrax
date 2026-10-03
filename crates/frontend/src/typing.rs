@@ -775,7 +775,8 @@ impl<'a> Checker<'a> {
             // `$ @run X` runs under a closed `<@meta>` handler: it discharges
             // `@meta` (so meta ops type-check) but nothing else, so a stray `@io`
             // in a generator is still rejected (hermetic). `$ @e X` requires a
-            // pure operand (empty ambient), so a meta op in it is an error.
+            // pure operand (empty ambient), so a meta op in it is an error. The
+            // context that discharges `<@io>` as well is the `@build` function.
             self.ambient = if meta {
                 {
                         let empty = self.eng.types.row_empty();

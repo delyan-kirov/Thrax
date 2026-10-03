@@ -107,6 +107,14 @@ $ ftell   : @int -> <@io> @int                          = @extern "C" "ftell"   
 $ remove  : @str -> <@io> @int                          = @extern "C" "remove"  "libc"
 $ rename  : {from: @str, to: @str}     -> <@io> @int     = @extern "C" "rename"  "libc"
 
+# A command's pipe, as the same `@int` FILE* handle; mode is "r" or "w", 0 on
+# failure. `pclose` (not `fclose`) closes one, and returns the command's wait
+# status. This is how a program reads something libc exposes only through a
+# `T*` the FFI cannot dereference, a directory listing being the case that
+# matters (see `IO.read_dir`).
+$ popen   : {cmd: @str, mode: @str}    -> <@io> @int     = @extern "C" "popen"   "libc"
+$ pclose  : @int -> <@io> @int                          = @extern "C" "pclose"  "libc"
+
 # -- unistd.h / time.h -----------------------------------------------------
 $ write  : {fd: @int, buf: @str, n: @int} -> <@io> @int   = @extern "C" "write"  "libc"
 $ getenv : @str -> <@io> @str                           = @extern "C" "getenv" "libc"

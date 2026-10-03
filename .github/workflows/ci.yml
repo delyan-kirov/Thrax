@@ -14,10 +14,32 @@ jobs:
       - uses: cachix/install-nix-action@v27
 
       # cargo test runs the workspace suites (frontend, interpreter end-to-end,
-      # ccg).
+      # ccg). The corpus and the grammar are separate: neither is reachable from
+      # cargo, so without these steps a break in the examples, the standard
+      # library, or the syntax spec reaches master unnoticed.
       - name: Build and test in Nix dev shell
         run: |
           nix develop --command bash -c '
             set -e
             cargo test
+          '
+
+      # tests/MAIN.thx links every examples/*.thx (its `$ @build` reads the
+      # directory, so the list cannot drift) and must give identical output on the
+      # interpreter and the compiled C program.
+      - name: Corpus on both engines
+        run: |
+          nix develop --command bash -c '
+            set -e
+            cargo build --release
+            THRAX_BIN=./target/release/thrax ./target/release/thrax run tools/THXDO.thx corpus
+          '
+
+      # documentation/thrax.y is the written syntax standard; `%expect` fails the
+      # check when the conflict count moves.
+      - name: Grammar spec
+        run: |
+          nix develop --command bash -c '
+            set -e
+            bison -o /dev/null documentation/thrax.y
           '

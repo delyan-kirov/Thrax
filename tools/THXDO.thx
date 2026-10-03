@@ -17,6 +17,8 @@ $ help_text : @str
 	++ "  rebuild   build the workspace without cleaning\n"
 	++ "  clean     remove build artifacts\n"
 	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
+	++ "  corpus    run tests/MAIN.thx on both engines (interpreter + native C)\n"
+	++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
 	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
 	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
 	++ "  sdk_path  print the repo root (source tools/thxdo.nu to cd there)\n"
@@ -25,6 +27,25 @@ $ help_text : @str
 	++ "  help      show this help\n"
 
 $ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
+
+$ thrax_bin : @str = "${THRAX_BIN:-thrax}"
+
+# The combined corpus. `cargo test` does not cover it, so this is the only thing
+# that catches a break in the examples or the standard library. Both engines, and
+# their output must match: the C backend is only correct if it agrees.
+$ corpus_cmd : @str =
+	thrax_bin ++ " run tests/MAIN.thx > /tmp/thx-corpus-interp.txt && "
+	++ thrax_bin ++ " build tests/MAIN.thx >/dev/null && "
+	++ "./tests/thrax-out/MAIN > /tmp/thx-corpus-native.txt && "
+	++ "diff /tmp/thx-corpus-interp.txt /tmp/thx-corpus-native.txt && "
+	++ "cat /tmp/thx-corpus-interp.txt"
+
+# `%expect` in the grammar is a tripwire: bison fails when the conflict count
+# moves, so a syntax change has to be accounted for in the spec.
+$ grammar_cmd : @str = "bison -o /dev/null documentation/thrax.y"
+
+$ grammar_verbose_cmd : @str =
+	"bison -Wcounterexamples -o /dev/null documentation/thrax.y"
 
 $ doc_page : @str = "target/doc/thrax/index.html"
 
@@ -58,6 +79,19 @@ $ run_command: @str -> <@io> bool = \cmd =
 			let rc = C.system readme_cmd in
 			println (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
 			if 0 == rc => @true else @false
+		| "corpus"  =>
+			println "thxdo: running tests/MAIN.thx on both engines ...";
+			let rc = C.system corpus_cmd in
+				if rc == 0 => println "thxdo: corpus OK (engines agree)"; @true
+				else println "thxdo: corpus FAILED"; @false
+		| "grammar" =>
+			println "thxdo: checking documentation/thrax.y ...";
+			let rc = C.system grammar_cmd in
+				if rc == 0 => println "thxdo: grammar OK"; @true
+				else
+					println "thxdo: grammar FAILED (counterexamples below)";
+					C.system grammar_verbose_cmd;
+					@false
 		| "doc"     =>
 			println "thxdo: building rustdoc ...";
 			let rc = C.system "cargo doc --workspace --no-deps" in

@@ -1392,67 +1392,57 @@ fn sized_literal_arithmetic_evaluates() {
 #[test]
 fn operator_table_every_entry() {
     // Iterate `lexer::data::OPERATORS` and check each entry: run a snippet and
-    // check the result. Entries with no standalone value can be `Skip`ped
-    // explicitly. An entry with NO arm hits the `_ =>` panic, so a new operator
-    // added to the table without a test fails here, naming the lexeme.
+    // check the result. An entry with NO arm hits the `_ =>` panic, so a new
+    // operator added to the table without a test fails here, naming the lexeme.
+    // Every operator currently has a standalone value to evaluate; one that does
+    // not would need a way to opt out of the run.
     use frontend::lexer::data::OPERATORS;
 
-    enum Check {
-        Runs(&'static str),
-        Skip,
-    }
-    use Check::*;
-
     for d in OPERATORS {
-        // Per-entry snippet (module body after `@mod M\n`), evaluating global `a`.
-        let (body, check): (&str, Check) = match d.lexeme {
+        // Per-entry snippet (module body after `@mod M\n`) and the value of its
+        // global `a`.
+        let (body, expect): (&str, &str) = match d.lexeme {
             // Structural punctuation.
-            "\\" => ("$ a = (\\x = x) 5", Runs("5")),
-            "=" => ("$ a = 5", Runs("5")),
-            "=>" => ("$ a = if @true => 1 else 0", Runs("1")),
-            "->" => ("$ f : @int -> @int = \\x = x\n$ a = f 5", Runs("5")),
-            ":" => ("$ a : @int = 5", Runs("5")),
-            "$" => ("$ a = 5", Runs("5")),
+            "\\" => ("$ a = (\\x = x) 5", "5"),
+            "=" => ("$ a = 5", "5"),
+            "=>" => ("$ a = if @true => 1 else 0", "1"),
+            "->" => ("$ f : @int -> @int = \\x = x\n$ a = f 5", "5"),
+            ":" => ("$ a : @int = 5", "5"),
+            "$" => ("$ a = 5", "5"),
             // Arithmetic and prefix.
-            "+" => ("$ a = 1 + 2", Runs("3")),
-            "-" => ("$ a = 0 - (- 5)", Runs("5")), // infix and prefix `-`
-            "*" => ("$ a = 4 * 3", Runs("12")),
-            "/" => ("$ a = 13 / 4", Runs("3")),
-            "%" => ("$ a = 13 % 5", Runs("3")),
-            "^" => ("$ a = 2 ^ 3", Runs("8")),
-            "!" => ("$ a = if !@false => 1 else 0", Runs("1")),
+            "+" => ("$ a = 1 + 2", "3"),
+            "-" => ("$ a = 0 - (- 5)", "5"), // infix and prefix `-`
+            "*" => ("$ a = 4 * 3", "12"),
+            "/" => ("$ a = 13 / 4", "3"),
+            "%" => ("$ a = 13 % 5", "3"),
+            "^" => ("$ a = 2 ^ 3", "8"),
+            "!" => ("$ a = if !@false => 1 else 0", "1"),
             // Comparison.
-            "==" => ("$ a = if 3 == 3 => 1 else 0", Runs("1")),
-            "!=" => ("$ a = if 3 != 4 => 1 else 0", Runs("1")),
-            ">" => ("$ a = if 5 > 3 => 1 else 0", Runs("1")),
-            "<" => ("$ a = if 3 < 5 => 1 else 0", Runs("1")),
-            "<=" => ("$ a = if 3 <= 3 => 1 else 0", Runs("1")),
-            ">=" => ("$ a = if 5 >= 4 => 1 else 0", Runs("1")),
-            // Effect-row delimiters. `<`/`>` only mean something inside a `<E>`
-            // row (no standalone value), so skip them; `<>` is the pure row and
-            // `|` also alternates patterns, so those run.
-            "<" | ">" => ("", Skip),
-            "<>" => ("$ f : @int -> <> @int = \\x = x\n$ a = f 5", Runs("5")),
-            "|" => ("$ a = is 1 | 1 => 10 else 0", Runs("10")),
+            "==" => ("$ a = if 3 == 3 => 1 else 0", "1"),
+            "!=" => ("$ a = if 3 != 4 => 1 else 0", "1"),
+            ">" => ("$ a = if 5 > 3 => 1 else 0", "1"),
+            "<" => ("$ a = if 3 < 5 => 1 else 0", "1"),
+            "<=" => ("$ a = if 3 <= 3 => 1 else 0", "1"),
+            ">=" => ("$ a = if 5 >= 4 => 1 else 0", "1"),
+            // Effect rows. `<` and `>` double as the row delimiters, but they are
+            // tested above as the comparisons they also are; `<>` is the pure row.
+            "<>" => ("$ f : @int -> <> @int = \\x = x\n$ a = f 5", "5"),
+            // `|` both alternates patterns and separates union variants.
+            "|" => ("$ a = is 1 | 1 => 10 else 0", "10"),
             // Pipes, short-circuit, sequencing, cons, concat.
-            "<|" => ("$ a = (\\n = n + 1) <| 5", Runs("6")),
-            "&&" => ("$ a = if @true && @true => 1 else 0", Runs("1")),
-            "||" => ("$ a = if @false || @true => 1 else 0", Runs("1")),
-            ";" => ("$ a = 1 ; 2 ; 3", Runs("3")),
-            "|>" => ("$ a = 5 |> (\\n = n + 1)", Runs("6")),
+            "<|" => ("$ a = (\\n = n + 1) <| 5", "6"),
+            "&&" => ("$ a = if @true && @true => 1 else 0", "1"),
+            "||" => ("$ a = if @false || @true => 1 else 0", "1"),
+            ";" => ("$ a = 1 ; 2 ; 3", "3"),
+            "|>" => ("$ a = 5 |> (\\n = n + 1)", "6"),
             // Composition applies the RIGHT function first: 5 * 2, then + 1.
-            "<|>" => (
-                "$ a = ((\\n = n + 1) <|> (\\n = n * 2)) 5",
-                Runs("11"),
-            ),
-            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h else 0", Runs("1")),
-            "++" => ("$ a = \"x\" ++ \"y\"", Runs("\"xy\"")),
+            "<|>" => ("$ a = ((\\n = n + 1) <|> (\\n = n * 2)) 5", "11"),
+            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h else 0", "1"),
+            "++" => ("$ a = \"x\" ++ \"y\"", "\"xy\""),
             other => panic!("OPERATORS entry `{other}` has no test; add an arm"),
         };
-        if let Runs(expect) = check {
-            let src = format!("@mod M\n{body}");
-            assert_eq!(run(&src, "a").as_str(), expect, "operator `{}`", d.lexeme);
-        }
+        let src = format!("@mod M\n{body}");
+        assert_eq!(run(&src, "a").as_str(), expect, "operator `{}`", d.lexeme);
     }
 }
 

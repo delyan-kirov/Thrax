@@ -356,14 +356,37 @@ An IO result reifies into the AST by the section 3 rules: inside `@build`,
 `read_file "x.sql"` genuinely reads during compilation and its bytes embed as a
 literal.
 
-Status: `@io` is now a real builtin effect. The effect-row parser accepts
+Status: **LANDED.** `@io` is a real builtin effect: the effect-row parser accepts
 `@`-form labels, IO primitives (`library/C.thx` OS externs, `library/IO.thx`)
 carry `<@io>`, and the checker enforces it (a pure-typed function that performs
 IO is rejected: "effect `@io` is performed but not handled"). Effects propagate
 through the effect-polymorphic combinators and reach the entry, whose `<@io>` row
-is what discharges them at run time. What remains for this design is the compile-time side: `@build` installing
-an `<@io>` handler so the effect is *discharged* (performed for real) during
-compilation, rather than only reaching the entry's `<@io>` row at run time.
+is what discharges them at run time.
+
+The compile-time side is in too, and it needed no handler installation: `@build`
+*declares* `<@meta, @io>` in its own signature (section 10), so its body
+type-checks against that row like any other function, and the compile-time
+interpreter performs the IO for real (its FFI is the same one the program uses).
+`$ @e` and `$ @run` keep their hermetic ambients, so the boundary holds:
+
+```
+$ @run (IO.read_dir ".")    # error: effect `@io` is performed but not handled
+$ @e   (IO.read_dir ".")    # error: effect `@io` is performed but not handled
+$ @build : {} -> <@meta, @io> @code = \_ = ... IO.read_dir "." ...   # fine
+```
+
+**There is no compile-time IO primitive, and deliberately so.** Compile-time IO
+is the *same* IO a program does at run time: `library/IO.thx` over the `C`
+namespace, performed by the compile-time interpreter through the ordinary FFI.
+Nothing in the compiler is marked "build-time only", so a function is usable at
+both times and the only thing deciding which is the effect row of the context
+that calls it. The one addition this needed was `IO.read_dir` (a directory's
+entry names, sorted), which goes through `ls` over `C.popen` because `readdir`
+returns a `struct dirent *` and the FFI cannot dereference a C pointer.
+
+A consequence worth stating: compile-time paths are relative to the **working
+directory**, like every other path a program opens, not to the source file. A
+`@build` that reads the tree beside its own module is the caller's business.
 
 **Hermeticity.** Compile-time IO makes the build depend on the world. The
 `<@io>` handler installed around `@build` records what it touched, so the build
@@ -466,7 +489,55 @@ repeats until nothing new is produced, under a budget (the same discipline as
 `@e` expansion in section 3). This is the Jai message-loop model expressed as
 a fixpoint rather than a manual `while` over `compiler_get_message`.
 
-Deferred until inline macros (`@e` + quotation) land.
+### Status: the function has LANDED; the message loop has not
+
+```
+$ @build : {} -> <@meta, @io> @code = \_ = @parse_items "$ answer : @int = 42"
+```
+
+**One name, one signature**, exactly as for `@main`: `{} -> <@meta, @io> @code`
+(`BUILD` / `BUILD_SIG` / `is_build_type` in `typing/data.rs`, beside the entry's).
+A `@build` of any other shape is rejected by name before it is ever run.
+
+- **It is a definition, not a directive.** The parser treats `$ @build : T = e`
+  like `$ @main : T = e` (one branch in `parse_directive` handles both): an
+  ordinary `Item::Def` whose name happens to be one the compiler knows. Nothing
+  about the declaration is special-cased in the checker, because the `<@meta,
+  @io>` row is in its *signature*, so its body is checked against that row the way
+  any annotated function's body is.
+- **How its result gets in.** `lower_program` notices the `@build` global and
+  appends a synthetic `@build#call = @build {}` beside it, recorded in
+  `Program.ct_build`. The driver's expansion loop forces that global and
+  **appends** the items of the returned `@code` to its module's source, then
+  recompiles. Appending (rather than replacing a span, which is what an `$ @e`
+  directive gets) is the mechanical form of "a definition that stays put and
+  contributes items to its module".
+- **Where it runs in the loop.** `@build` runs **first and alone** in its round:
+  it contributes the definitions other compile-time code may read, so a `$ @e`
+  that references them must not run before it. Each module's `@build` is forced
+  **once** (nothing consumes it, so the `built` set is what terminates the loop);
+  whatever it injects is expanded by the rounds that follow, so a generated `$ @e`
+  still folds, and a generated `$ with M` loads M (the loop reopens the module
+  set each round).
+- **Any module may have one**, not just the root, unlike `@main`. The entry is
+  singular because a program has one way in; a build has as many contributors as
+  it has modules, and a library that generates part of itself is the point. A
+  library's `@build` therefore runs when a program imports it, which also means
+  importing a module grants it IO at *your* build time: the same trust an
+  imported `build.rs` or `setup.py` carries.
+- **Inspecting it.** `thrax expand <file> [MODULE]` prints each module's source
+  after the expansion loop finishes, so the generated text is readable: `$ @e`
+  sites appear as the value or code they folded to, and a `@build`'s items appear
+  appended to its module. Without it the only windows on a metaprogram are
+  `check`'s inferred types and the emitted C.
+- `tests/MAIN.thx` is the real use: it reads `examples/` at compile time and
+  generates its own `$ with` imports and `@main` from what is there, so adding an
+  example is adding a file. `examples/META_BUILD.thx` is the small demonstration.
+
+**Still deferred:** the message loop. `@msg`/`@add_code` from arbitrary
+metaprogramming code, the `@modules`/`@functions`/`@flags` queries, and draining
+a queue to a fixpoint are not implemented; `@build` currently returns its code
+rather than sending it, and `@type_*` (section 11) is the only reflection in.
 
 ---
 
@@ -505,10 +576,18 @@ magic is `@`-named" rule.) The interpreter's default set already covers libc/lib
 and lazily `dlopen`s the rest per `@extern`, so `thrax run` needs no preload for
 the common case.
 
+**Landed (`@build`).** `$ @build : {} -> <@meta, @io> @code` parses as a definition
+(`parser.rs`, the `@main` branch), is shape-checked by name (`is_build_type` via
+the driver), is backed by a synthetic `@build#call` global (`Program.ct_build` in
+`lowering.rs`), and is forced first in each expansion round by `lower_all`, which
+appends its items to the module's source (`driver.rs`). It needed no new
+intrinsic: the IO is `library/IO.thx` over the `C` namespace, run by the
+compile-time interpreter through the normal FFI. Section 10 has the details.
+
 **Still to come (the metaprogramming layer).** `@e` returning `@code` splices
 and re-checks (recurses); `@e` under a `<@meta>` handler with the live `Ast`/
 interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
-`@build` additionally installing `<@io>`.
+the `@build` message loop (`@msg`/`@add_code`/`@modules`).
 
 ---
 
@@ -594,9 +673,16 @@ interner/type-env/diagnostic sink; `@emit`/`@abort` into the `Diagnostic` chain;
    state (replacing the thread-local host), `@lookup`/`@here`/`@check`, and wiring
    `@emit`/`@abort` into the `Diagnostic` chain (spans).
 5. `@check` and `@eval` (staging), plus the `@code_*` constructors.
-6. Compile-time IO once IO is effect-tracked (section 6).
-7. Hygiene upgrade (syntax contexts), then the `@build` function and its
-   `@msg`/`@add_code`/query fixpoint.
+6. **DONE: compile-time IO, and the `@build` function that holds it.**
+   `$ @build : {} -> <@meta, @io> @code` is a definition whose `@code` result is
+   appended to its module, run first in each expansion round, once per module, in
+   any module (sections 6 and 10). No compile-time IO primitive came with it: the
+   IO is ordinary `library/IO.thx` over the `C` namespace, so paths are relative
+   to the working directory. `IO.read_dir` (a sorted directory listing, over
+   `C.popen`) was the one library addition. `tests/MAIN.thx` generates its imports
+   and `@main` from `examples/`; `examples/META_BUILD.thx` demonstrates it.
+7. Hygiene upgrade (syntax contexts), then `@build`'s `@msg`/`@add_code`/query
+   fixpoint (the function itself is in; the message loop is not).
 
 The load-bearing point: the two hard organs already exist. A compile-time
 evaluator (CEK + `$ @e`) and a chainable diagnostic model. The macro system

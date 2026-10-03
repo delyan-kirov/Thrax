@@ -1,0 +1,46 @@
+@mod META_BUILD
+
+# \file META_BUILD.thx
+# \info `@build`, the compile-time entry. Where `@main : @vec @str -> <@io> @int`
+#       is the one name the RUN of a program starts from, `@build : {} -> <@meta,
+#       @io> @code` is the one name its BUILD starts from: the compiler runs it
+#       during compilation and adds the items of the `@code` it returns to this
+#       module. One name, one signature, like the entry.
+#       Its privilege over `$ @run` is the `<@io>` in that row. `$ @e` installs
+#       nothing and `$ @run` installs `<@meta>` alone, so both are hermetic: a
+#       generator there can compute, parse and inject, but not touch the world.
+#       Building IS IO, so `@build` is the one context that discharges it.
+#       The IO itself is ORDINARY: `IO.read_dir` is library code over `C.popen`,
+#       not a compiler intrinsic, so compile-time IO is the same IO a program
+#       does at run time, and its paths are relative to the WORKING directory
+#       (this module is checked from the repo root, like the rest of the corpus).
+#       `tests/MAIN.thx` is the real use: it reads `examples/` and generates its
+#       own imports and `@main` from what is there.
+
+$ with IO
+$ with STR
+$ with VEC
+
+$ thx_files : {} -> <@meta, @io> @vec @str = \_ =
+	VEC.filter (\f = STR.ends_with f ".thx") (IO.read_dir "examples")
+
+# `@build` returns the items to add, as `@code`. Here: a count of the example
+# files (so the number is baked in, never computed at run time) and the name of
+# the first of them, which the sorted listing makes deterministic.
+$ @build : {} -> <@meta, @io> @code = \_ =
+	let files = thx_files {} in
+	@parse_items
+		( "$ file_count : @int = " ++ STR.from_int (VEC.len files) ++ "\n"
+		++ "$ first_file : @str = \"" ++ VEC.get_or files 0 "" ++ "\"\n" )
+
+# `file_count` and `first_file` exist only because `@build` produced them.
+$ ck_count : @int = if file_count > 0 => 0 else 1
+$ ck_first : @int = if STR.ends_with first_file ".thx" => 0 else 2
+
+# This file is one of the files it counted, and the listing is sorted, so the
+# first name cannot sort after this module's own.
+$ ck_self : @int = if STR.cmp_str first_file "META_BUILD.thx" <= 0 => 0 else 4
+
+$ test : @int = ck_count + ck_first + ck_self
+
+$ @run (assert (test == 0) "META_BUILD: a check failed")

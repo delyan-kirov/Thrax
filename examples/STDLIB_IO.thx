@@ -9,6 +9,7 @@
 $ with IO
 $ with OPT
 $ with STR
+$ with VEC
 
 $ path : @str = "/tmp/thrax_stdlib_io_test.txt"
 
@@ -33,6 +34,20 @@ $ ck_gone : {} -> <@io> @int = if remove_file path => 1 else 0
 $ ck_missing : {} -> <@io> @int =
 	if is_none (read_file "/tmp/thrax_stdlib/definitely/not/here") => 0 else 1
 
+# A directory listing: `examples/` holds this very file, the names come back
+# sorted, and `.`/`..` are not among them. Run from the repo root, like the rest
+# of the corpus.
+$ ck_dir : {} -> <@io> @int =
+	let names = read_dir "examples" in
+	if !(VEC.contains STR.eq "STDLIB_IO.thx" names) => 1
+	else if VEC.contains STR.eq "." names => 1
+	else if VEC.is_empty names => 1
+	else sorted_from names 1
+
+# An unreadable directory is empty, not a fault.
+$ ck_dir_missing : {} -> <@io> @int =
+	if VEC.is_empty (read_dir "/tmp/thrax_stdlib/definitely/not/here") => 0 else 1
+
 # The environment: PATH is set on every platform (HOME is POSIX-only, absent on
 # Windows), and unset variables come back "".
 $ ck_env      : {} -> <@io> @int = if (env "PATH") == "" => 1 else 0
@@ -46,8 +61,14 @@ $ ck_fmt : @int = if (from_int 42) == "42" => 0 else 1
 # Aggregate check for the combined test runner: 0 = all pass. It performs `@io`,
 # so it too is a unit-taking function; the runner calls it as `test {}`.
 $ test : {} -> <@io> @int =
-	ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_env {} + ck_env_none {}
-	+ ck_fmt
+	ck_roundtrip {} + ck_gone {} + ck_missing {} + ck_dir {} + ck_dir_missing {}
+	+ ck_env {} + ck_env_none {} + ck_fmt
+
+# Every adjacent pair in order, from index `i`; 0 when the whole vector is.
+$ sorted_from : @vec @str -> @int -> @int = \names, i =
+	if i >= VEC.len names => 0
+	else if STR.cmp_str (VEC.get_or names (i - 1) "") (VEC.get_or names i "") > 0 => 1
+	else sorted_from names (i + 1)
 
 # These checks touch the filesystem, so they run at run time rather than under a
 # `$ @run` compile-time assert like the rest of the corpus: this module is a

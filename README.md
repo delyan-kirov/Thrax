@@ -52,6 +52,7 @@ type-checking it is testing it.
 ```sh
 thrax run     MAIN.thx          # run under the interpreter
 thrax check   examples/FIB.thx  # type-check, print types, run `$ @run` checks
+thrax expand  MAIN.thx          # the source after metaprogram expansion
 thrax emit-c  MAIN.thx          # print the generated C (native backend)
 thrax build   MAIN.thx          # compile to a native executable
 thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
@@ -66,7 +67,7 @@ thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
 - **WebAssembly**: cross-compile with `--target=wasm32-wasi`, or run the whole compiler in the browser.
 - **Interfaces resolved by type**: an interface is a struct, an implementation is a value of it, and a function takes one as an inferred `@ctx` parameter. One mechanism; no overloading, so a name's printed type is its contract.
-- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`).
+- **And more**: row-polymorphic records, lazy recursive types and streams, sized tensors, tail-call optimization, and compile-time metaprogramming (`@e` / `@run`, plus a `@build` entry that generates part of a module from what is on disk).
 
 ## A tour of the language
 

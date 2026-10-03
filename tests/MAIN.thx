@@ -1,154 +1,47 @@
 @mod MAIN
 
-# Combined test runner: import every example module (qualified) and run its
-# $ test (0 = pass). `check` prints "<mod> ok" / "<mod> FAILED" for every module
-# as it runs; every test runs regardless of earlier failures (no abort). Exit
-# code = number of failing modules.
-# Types and effects are namespaced per module (MR mangles them to `MOD/Name`),
-# so examples freely reuse natural names -- `Point`, `Pair`, `Task`, the `Exn`
-# and `Co` effects, ... -- across modules without clashing here.
+#-
+ - \info Combined test runner: import every example module (qualified) and run its
+		$ test (0 = pass). `check` prints "<mod> ok" / "<mod> FAILED" for every module
+		as it runs; every test runs regardless of earlier failures (no abort). Exit
+		code = number of failing modules.
+ -#
 
-$ with AGTxPRO = AGTxPRO
-$ with AGTxSUM = AGTxSUM
-$ with ARITHMETIC = ARITHMETIC
-$ with ARRAY = ARRAY
-$ with ARRAY_PATTERNS = ARRAY_PATTERNS
-$ with ARRAYS_MUT = ARRAYS_MUT
-$ with COMPLEX = COMPLEX
-$ with CONDITIONALS = CONDITIONALS
-$ with STREAMS = STREAMS
-$ with COROUTINES = COROUTINES
-$ with CT_ASSERT = CT_ASSERT
-$ with CT_FOLD = CT_FOLD
-$ with CT_RUN = CT_RUN
-$ with DERIVE_LIB = DERIVE_LIB
-$ with DERIVE_ORD = DERIVE_ORD
-$ with DERIVE_SHOW = DERIVE_SHOW
-$ with EFFECT_OVERLOAD = EFFECT_OVERLOAD
-$ with EFFECTS = EFFECTS
-$ with FIB = FIB
-$ with FINALLY = FINALLY
-$ with HANOI = HANOI
-$ with HIGHER_ORDER = HIGHER_ORDER
-$ with IMPLICITS = IMPLICITS
-$ with ITER = ITER
-$ with LET_IN = LET_IN
-$ with LISTS = LISTS
-$ with MATCH = MATCH
-$ with META_E = META_E
-$ with META_TYPE = META_TYPE
-$ with NUMBERS = NUMBERS
-$ with OPERATORS = OPERATORS
-$ with OPERATOR_REFS = OPERATOR_REFS
-$ with OR_PATTERNS = OR_PATTERNS
-$ with PATTERNS = PATTERNS
-$ with PLATFORM = PLATFORM
-$ with PIPES = PIPES
-$ with POWER = POWER
-$ with RANGES = RANGES
-$ with RC_LOOP = RC_LOOP
-$ with REALS = REALS
-$ with RECORD_PARAMS = RECORD_PARAMS
-$ with RECORD_UPDATE = RECORD_UPDATE
-$ with RECURSION = RECURSION
-$ with ROW_RECORDS = ROW_RECORDS
-$ with SEQ_INFER = SEQ_INFER
-$ with STDLIB_CORE = STDLIB_CORE
-$ with STDLIB_IO = STDLIB_IO
-$ with STDLIB_LIST = STDLIB_LIST
-$ with STDLIB_MAP = STDLIB_MAP
-$ with STDLIB_PATH = STDLIB_PATH
-$ with STDLIB_RANDOM = STDLIB_RANDOM
-$ with STDLIB_RESULT = STDLIB_RESULT
-$ with STDLIB_SET = STDLIB_SET
-$ with STDLIB_STR = STDLIB_STR
-$ with STDLIB_VEC = STDLIB_VEC
-$ with STRINGS = STRINGS
-$ with STRING_INTERP = STRING_INTERP
-$ with STR_MATCH = STR_MATCH
-$ with STR_OPS = STR_OPS
-$ with STR_PREFIX = STR_PREFIX
-$ with TAIL_CALLS = TAIL_CALLS
-$ with TENSORS = TENSORS
-$ with TUPLES = TUPLES
-$ with TYPE_SPLICE = TYPE_SPLICE
-$ with WHEN_GUARDS = WHEN_GUARDS
-$ with WITH_SCOPE = WITH_SCOPE
+#- Imports -#
 
-# `\x1b[..m` are ANSI colour codes (decoded to the ESC byte at compile time, so
-# the source stays ASCII): green `[ok]` on pass, red `[FAILED]` on failure.
+$ with IO
+$ with PATH
+$ with STR
+$ with VEC
+
+#- Utils -#
+
 $ check : @str -> @int -> <@io> @int = \name, t =
 	if t == 0
-		=> C.puts ("\x1b[1;32mOK\x1b[0m " ++ name); 0
-		else C.puts ("\x1b[1;31mERR\x1b[0m " ++ name); 1
+		  => println ("\x1b[1;32mOK\x1b[0m " ++ name); 0
+		else println ("\x1b[1;31mERR\x1b[0m " ++ name); 1
 
-# The program entry: the one name the compiler knows, and the one signature it
-# accepts. Its `<@io>` row covers the reporting below and the `@io` that
-# STDLIB_IO's checks perform. Exit code = number of failing modules.
-$ @main : @vec @str -> <@io> @int = \args =
-	  check "AGTxPRO" AGTxPRO.test
-	+ check "AGTxSUM" AGTxSUM.test
-	+ check "ARITHMETIC" ARITHMETIC.test
-	+ check "ARRAY" ARRAY.test
-	+ check "ARRAY_PATTERNS" ARRAY_PATTERNS.test
-	+ check "ARRAYS_MUT" ARRAYS_MUT.test
-	+ check "COMPLEX" COMPLEX.test
-	+ check "CONDITIONALS" CONDITIONALS.test
-	+ check "STREAMS" STREAMS.test
-	+ check "COROUTINES" COROUTINES.test
-	+ check "CT_ASSERT" CT_ASSERT.test
-	+ check "CT_FOLD" CT_FOLD.test
-	+ check "CT_RUN" CT_RUN.test
-	+ check "DERIVE_LIB" DERIVE_LIB.test
-	+ check "DERIVE_ORD" DERIVE_ORD.test
-	+ check "DERIVE_SHOW" DERIVE_SHOW.test
-	+ check "EFFECT_OVERLOAD" EFFECT_OVERLOAD.test
-	+ check "EFFECTS" EFFECTS.test
-	+ check "FIB" FIB.test
-	+ check "FINALLY" FINALLY.test
-	+ check "HANOI" HANOI.test
-	+ check "HIGHER_ORDER" HIGHER_ORDER.test
-	+ check "IMPLICITS" IMPLICITS.test
-	+ check "ITER" ITER.test
-	+ check "LET_IN" LET_IN.test
-	+ check "LISTS" LISTS.test
-	+ check "MATCH" MATCH.test
-	+ check "META_E" META_E.test
-	+ check "META_TYPE" META_TYPE.test
-	+ check "NUMBERS" NUMBERS.test
-	+ check "OPERATORS" OPERATORS.test
-	+ check "OPERATOR_REFS" OPERATOR_REFS.test
-	+ check "OR_PATTERNS" OR_PATTERNS.test
-	+ check "PATTERNS" PATTERNS.test
-	+ check "PLATFORM" PLATFORM.test
-	+ check "PIPES" PIPES.test
-	+ check "POWER" POWER.test
-	+ check "RANGES" RANGES.test
-	+ check "RC_LOOP" RC_LOOP.test
-	+ check "REALS" REALS.test
-	+ check "RECORD_PARAMS" RECORD_PARAMS.test
-	+ check "RECORD_UPDATE" RECORD_UPDATE.test
-	+ check "RECURSION" RECURSION.test
-	+ check "ROW_RECORDS" ROW_RECORDS.test
-	+ check "SEQ_INFER" SEQ_INFER.test
-	+ check "STDLIB_CORE" STDLIB_CORE.test
-	+ check "STDLIB_IO" (STDLIB_IO.test {})
-	+ check "STDLIB_LIST" STDLIB_LIST.test
-	+ check "STDLIB_MAP" STDLIB_MAP.test
-	+ check "STDLIB_PATH" STDLIB_PATH.test
-	+ check "STDLIB_RANDOM" STDLIB_RANDOM.test
-	+ check "STDLIB_RESULT" STDLIB_RESULT.test
-	+ check "STDLIB_SET" STDLIB_SET.test
-	+ check "STDLIB_STR" STDLIB_STR.test
-	+ check "STDLIB_VEC" STDLIB_VEC.test
-	+ check "STRINGS" STRINGS.test
-	+ check "STRING_INTERP" STRING_INTERP.test
-	+ check "STR_MATCH" STR_MATCH.test
-	+ check "STR_OPS" STR_OPS.test
-	+ check "STR_PREFIX" STR_PREFIX.test
-	+ check "TAIL_CALLS" TAIL_CALLS.test
-	+ check "TENSORS" TENSORS.test
-	+ check "TUPLES" TUPLES.test
-	+ check "TYPE_SPLICE" TYPE_SPLICE.test
-	+ check "WHEN_GUARDS" WHEN_GUARDS.test
-	+ check "WITH_SCOPE" WITH_SCOPE.test
+$ excluded_tests : @vec @str = ["STDLIB_IO"]
+
+$ modules : {} -> <@meta, @io> @vec @str =
+	VEC.map PATH.strip_ext
+		(filter (\f = ends_with f ".thx") (read_dir "examples"))
+
+$ check_call : @str -> @str = \m =
+	if VEC.contains STR.eq m excluded_tests
+	    # check "whatever" whatever.test
+		  => "check \"?(m)\" (?(m).test {})"
+		else "check \"?(m)\" ?(m).test"  
+
+$ concat : @vec @str -> @str = STR.concat
+
+#- Build -#
+
+$ @build : {} -> <@meta, @io> @code = \_ =
+	let
+		ms = modules {},
+		includes = concat (map (\m = "$ with ?(m)\n") ms),
+		main = "$ @main : @vec @str -> <@io> @int = \\args = 0" ++
+			concat (map (\m = " + \n\t" ++ check_call m) ms)
+	 in
+		@parse_items <| includes ++ "\n" ++ main

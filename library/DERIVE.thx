@@ -7,7 +7,7 @@
 #       instances and `lt_T`/`le_T`/`gt_T`/`ge_T`/`eq_T`), both usable via
 #       `$ @e (DERIVE.derive_* "T")`. See the `derive_ord` section lower down.
 #
-#       `derive_show "T"` returns the `@code` for an `Ito_string T` instance,
+#       `derive_show "T"` returns the `@code` for an `IToString T` instance,
 #       injected with `$ @e`:
 #
 #           $ @e (DERIVE.derive_show "Box")
@@ -17,8 +17,8 @@
 #       `@type_variants`, available only at compile time (inside `$ @e`).
 #
 #       A GENERIC type derives one GENERIC instance, which takes the renderers of
-#       its parameters as its own context: `$ impl_IToString_for_Pair : @ctx {Ito_string a,
-#       Ito_string b} -> Ito_string (Pair a b)`. Resolving it resolves those too, so
+#       its parameters as its own context: `$ impl_IToString_for_Pair : @ctx {IToString a,
+#       IToString b} -> IToString (Pair a b)`. Resolving it resolves those too, so
 #       `to_string` works at every instantiation (`Box @int`, `Pair @int @bool`,
 #       nesting). This is `instance (Show a, Show b) => Show (Pair a b)`.
 
@@ -58,7 +58,7 @@ $ union_show : @str -> @str = \base =
 # The context an instance for a GENERIC type needs: the renderer of each parameter.
 # One parameter travels alone, several as one bundle the call site builds.
 $ show_ctx : @vec @str -> @str = \params =
-	let reqs = VEC.map (\p = "Ito_string " ++ p) params in
+	let reqs = VEC.map (\p = "IToString " ++ p) params in
 	if VEC.is_empty params => ""
 	else if VEC.len params == 1 => "@ctx " ++ join ", " reqs ++ " -> "
 	else "@ctx {" ++ join ", " reqs ++ "} -> "
@@ -72,7 +72,7 @@ $ derive_show : @str -> @code = \ty =
 	let body = if @type_kind ty == "struct" => struct_show ty else union_show ty in
 	let lam = if VEC.is_empty params => "" else "\\ds = " in
 	@parse_items (
-		"$ impl_IToString_for_" ++ ty ++ " : " ++ show_ctx params ++ "Ito_string " ++ applied
+		"$ impl_IToString_for_" ++ ty ++ " : " ++ show_ctx params ++ "IToString " ++ applied
 			++ " = " ++ lam ++ ".{ .show = " ++ body ++ " }"
 	)
 
