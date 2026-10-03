@@ -240,6 +240,7 @@ mod tests {
                 .collect(),
             crepr_layouts: Vec::new(),
             ct_runs: Vec::new(),
+            ct_build: None,
             ct_evals: Vec::new(),
             ct_types: Vec::new(),
         }

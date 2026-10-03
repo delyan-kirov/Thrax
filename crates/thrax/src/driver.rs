@@ -1,7 +1,7 @@
 //! The Thrax driver (`DR`): module loading, dependency ordering, type-checking,
 //! lowering, and the `lex`/`parse`/`check`/`run` subcommands.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -96,6 +96,28 @@ fn load_core(
         index,
         root_name,
     })
+}
+
+/// Load every module an import names that is not loaded yet, transitively. The
+/// initial set comes from [`load_core`]; this reopens it after an expansion round,
+/// where a `@build` or a `$ @e` may have injected `$ with M` for a module no
+/// hand-written source mentions.
+fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), String> {
+    let mut queue: Vec<String> = loaded
+        .sources
+        .iter()
+        .flat_map(|(_, _, src)| parse_imports(src))
+        .collect();
+    while let Some(name) = queue.pop() {
+        if loaded.index.contains_key(&name) {
+            continue;
+        }
+        let (path, src) = load_module(&name, root_dir)?;
+        queue.extend(parse_imports(&src));
+        loaded.index.insert(name.clone(), loaded.sources.len());
+        loaded.sources.push((name, path, src));
+    }
+    Ok(())
 }
 
 /// The dependency graph over parsed modules (edges point at imports).
@@ -241,6 +263,24 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
         .map(|&i| frontend::lower_program(&ast, &programs[i], &decls, &resolved))
         .collect();
 
+    // `$ @build` has one signature, like the entry: one name, one shape. Its own
+    // annotation is known even in a lenient round, so this is checked every round
+    // and a wrong shape is reported before the build function is ever run.
+    for (i, defs) in results.iter().enumerate() {
+        let Some((_, ty)) = defs.iter().find(|(n, _)| *n == frontend::BUILD) else {
+            continue;
+        };
+        if !frontend::is_build_type(checkers[i].types(), *ty) {
+            eprintln!(
+                "thrax: `{}` of module `{}` must have the signature `{}`",
+                frontend::BUILD,
+                loaded.sources[i].0,
+                frontend::BUILD_SIG
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    }
+
     // Only a command that RUNS the program needs an entry (`check` type-checks a
     // library module too), and a metaprogram-expansion round does not: the entry
     // may itself be injected, so the requirement waits for the final strict round.
@@ -384,8 +424,18 @@ fn lower_all(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let mut plan = BuildPlan::default();
+    // The modules whose `$ @build` has already run. A `@build` is a definition, not
+    // a directive, so nothing consumes it: this is what stops the expansion loop
+    // from running it again every round.
+    let mut built: HashSet<String> = HashSet::new();
     let _ = interpreter::machine::take_link_directives(); // drop any stale directives
     loop {
+        // A generator can inject `$ with M` for a module nothing imported yet, so
+        // the load set is reopened every round rather than fixed before the first.
+        if let Err(msg) = load_injected_imports(&mut loaded, &root_dir) {
+            eprintln!("{msg}");
+            return Err(ExitCode::FAILURE);
+        }
         // Compile leniently while `@e` sites remain: a generator may inject a
         // definition that hand-written code forward-references, which would not
         // yet resolve. Unbound names are deferred (fresh vars) so the generators
@@ -421,7 +471,23 @@ fn lower_all(
                     .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
-        if expr_sites.is_empty() && item_sites.is_empty() && type_sites.is_empty() {
+        // `$ @build` sites: the synthetic `@build {}` call of every module whose
+        // build function has not run yet, as `(module, qualified global)`.
+        let build_sites: Vec<(String, String)> = compiled
+            .0
+            .iter()
+            .filter(|p| !built.contains(&p.module))
+            .filter_map(|p| {
+                p.ct_build
+                    .as_ref()
+                    .map(|name| (p.module.clone(), format!("{}.{}", p.module, name)))
+            })
+            .collect();
+        if expr_sites.is_empty()
+            && item_sites.is_empty()
+            && type_sites.is_empty()
+            && build_sites.is_empty()
+        {
             // No `@e` remains: re-check strictly so any name still unbound after
             // all injection, or a missing/ill-typed entry, is reported now.
             let final_compiled = compile_sources(&loaded, false, want_entry)?;
@@ -438,6 +504,53 @@ fn lower_all(
         let rd = root_dir.clone();
         interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
         let reflect = reflect_tables(compiled.1);
+        // `@build` first, and alone in its round: it contributes the definitions
+        // the rest of the compile-time code may depend on, so its items have to
+        // land before any `$ @e` that reads them runs. Each `@build` is forced
+        // once, and the items of the `@code` it returns are APPENDED to its
+        // module's source. Appending (rather than replacing a span, as an `$ @e`
+        // directive does) is what makes `@build` a definition that stays put: it
+        // contributes items to its module instead of becoming them. Whatever it
+        // injects is expanded by the rounds that follow, so a generated `$ @e`
+        // still folds.
+        let ran_builds = !build_sites.is_empty();
+        for (module, qualified) in build_sites {
+            interpreter::machine::set_type_host(Some(reflect_host(
+                Rc::clone(&reflect),
+                module.clone(),
+            )));
+            let v = match interpreter::machine::eval_value(&ir, &qualified) {
+                Ok(v) => v,
+                Err(d) => {
+                    clear_meta_hosts();
+                    eprintln!("thrax: `{}` of module `{module}` failed:", frontend::BUILD);
+                    eprint!("{}", render_e_fault(d, &module, utilities::Span::at(0), &loaded.sources));
+                    return Err(ExitCode::FAILURE);
+                }
+            };
+            // The signature check in `compile_sources` already pinned the result
+            // type, so this guards only a malformed `@code` value.
+            let Some(items) = as_code_src(&v) else {
+                clear_meta_hosts();
+                eprintln!(
+                    "thrax: `{}` of module `{module}` did not produce an `@code` of \
+                     top-level items (build one with `@parse_items`)",
+                    frontend::BUILD
+                );
+                return Err(ExitCode::FAILURE);
+            };
+            built.insert(module.clone());
+            if let Some(i) = loaded.index.get(&module) {
+                let src = &mut loaded.sources[*i].2;
+                src.push('\n');
+                src.push_str(&items);
+                src.push('\n');
+            }
+        }
+        if ran_builds {
+            clear_meta_hosts();
+            continue;
+        }
         let mut edits: Vec<(String, utilities::Span, String)> = Vec::new();
         let fail = |diag, module: &str, span| -> ExitCode {
             clear_meta_hosts();
@@ -508,8 +621,8 @@ fn lower_all(
     }
 }
 
-/// Clear both compile-time hosts (`@eval` and type reflection) installed around a
-/// `$ @e` expansion round, so a stray meta op at runtime faults cleanly.
+/// Clear both compile-time hosts (`@eval` and type reflection) installed around an
+/// expansion round, so a stray meta op at runtime faults cleanly.
 fn clear_meta_hosts() {
     interpreter::machine::set_meta_eval(None);
     interpreter::machine::set_type_host(None);
@@ -838,6 +951,51 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Print the source as the checker finally saw it: every `$ @e` folded or spliced
+/// and every `@build`'s items appended. This is the only view of what a
+/// metaprogram actually produced, so it is how a generator is debugged.
+///
+/// `only` restricts the output to one module (by `@mod` name); without it every
+/// module of the program is printed, root first, each under a `# ==== NAME` banner.
+/// The standard library is skipped unless asked for by name, since a program's own
+/// modules are the interesting ones.
+pub fn cmd_expand(path: &str, only: Option<&str>) -> ExitCode {
+    let (_lowered, loaded, _plan) = match lower_all(path, false) {
+        Ok(x) => x,
+        Err(code) => return code,
+    };
+    if let Some(name) = only {
+        match loaded.index.get(name) {
+            Some(&i) => {
+                print!("{}", loaded.sources[i].2);
+                return ExitCode::SUCCESS;
+            }
+            None => {
+                eprintln!("thrax: no module `{name}` in this program");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    for (name, src_path, src) in &loaded.sources {
+        // A stdlib module is read from the distribution or embedded, never written
+        // by the author of the program being inspected.
+        if is_stdlib_module(name) {
+            continue;
+        }
+        println!("# ==== {name}  ({src_path})");
+        print!("{src}");
+        println!();
+    }
+    ExitCode::SUCCESS
+}
+
+/// Whether `name` is a standard-library module (so `expand` leaves it out by
+/// default). `CORE` and `C` are seeded into every program, the rest arrive by
+/// import; all of them ship with the compiler.
+fn is_stdlib_module(name: &str) -> bool {
+    stdlib::source(name).is_some()
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {

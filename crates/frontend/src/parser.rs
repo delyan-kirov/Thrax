@@ -426,11 +426,19 @@ impl<'a> Parser<'a> {
                 let e = self.parse_expr(0)?;
                 Ok(Item::Run(e, Span::new(start, self.last_end), meta))
             }
-            // The program entry, the only `@`-name bound to a VALUE.
-            "main" => {
-                let at_tok = self.bump()?; // '@main'
+            // The two `@`-names bound to a VALUE: `@main`, the program entry, and
+            // `@build`, the compile-time entry, whose `@code` result the driver adds
+            // to this module. Both are ordinary definitions with a mandatory
+            // signature; the compiler knows nothing about them but their names.
+            which @ ("main" | "build") => {
+                let at_tok = self.bump()?; // '@main' / '@build'
                 let name = self.intern(self.text(at_tok));
-                expect!(self, Kind::Colon, "expected ':' and a type for '@main'");
+                let want_sig = if which == "main" {
+                    "expected ':' and a type for '@main'"
+                } else {
+                    "expected ':' and a type for '@build'"
+                };
+                expect!(self, Kind::Colon, want_sig);
                 let (sig, ctx) = self.parse_signature()?;
                 expect!(self, Kind::Eq, "expected '=' after the type signature");
                 let body = self.parse_expr(0)?;

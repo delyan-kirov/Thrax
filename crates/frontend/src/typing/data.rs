@@ -432,3 +432,42 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
     };
     argv && code && io
 }
+
+/// The compile-time analogue of [`ENTRY`]: `$ @build`, the function the compiler
+/// runs *during* compilation. Its `@code` result is injected in place of its own
+/// definition, so a module generates part of itself from whatever the build can
+/// see. It is the only context whose effect row discharges `<@io>` at compile
+/// time, which is what separates it from `$ @run`: building is IO.
+pub const BUILD: &str = "@build";
+
+/// The build function's mandated signature, in source spelling, for diagnostics.
+pub const BUILD_SIG: &str = "{} -> <@meta, @io> @code";
+
+/// Whether a (zonked) type is [`BUILD_SIG`]: `{} -> <@meta, @io> @code`. As with
+/// the entry, one name means one signature, so a `@build` that performs anything
+/// beyond `@meta`/`@io` is a type error at its own signature.
+pub fn is_build_type(types: &Types, ty: Type) -> bool {
+    let TypeNode::Arrow(from, to, eff) = types.node(ty) else {
+        return false;
+    };
+    let is_con = |t: Type, want: &str| {
+        matches!(types.node(t), TypeNode::Con(n) if types.name(n) == want)
+    };
+    // The row is order-insensitive, so collect its labels rather than matching a
+    // fixed spelling: `<@meta, @io>` and `<@io, @meta>` are the same row.
+    let mut labels: Vec<String> = Vec::new();
+    let mut row = eff;
+    loop {
+        match types.node(row) {
+            TypeNode::RowExtend(label, rest) => {
+                labels.push(types.name(label));
+                row = rest;
+            }
+            TypeNode::RowEmpty => break,
+            _ => return false,
+        }
+    }
+    labels.sort_unstable();
+    labels.dedup();
+    is_con(from, UNIT) && is_con(to, "@code") && labels == ["@io", "@meta"]
+}

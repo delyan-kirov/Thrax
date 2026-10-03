@@ -670,8 +670,28 @@ pub fn lower_program(
     let ct_types: Vec<(String, Span)> =
         lw.meta_type_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
     globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
+    // `$ @build : {} -> <@meta, @io> @code`: back the call `@build {}` with a
+    // synthetic global so the driver can force it exactly as it forces an `$ @e`.
+    // The reference is module-qualified because several modules may each define
+    // their own `@build`, and a bare global lookup resolves root-first.
+    let module = ast.text(program.module).to_string();
+    let ct_build = if globals.iter().any(|(n, _)| n == crate::BUILD) {
+        let name = "@build#call".to_string();
+        let call = Term::App(
+            Arc::new(Term::Var {
+                module: Some(module.clone()),
+                name: crate::BUILD.to_string(),
+                idx: 0,
+            }),
+            Arc::new(Term::Unit),
+        );
+        globals.push((name.clone(), call));
+        Some(name)
+    } else {
+        None
+    };
     Program {
-        module: ast.text(program.module).to_string(),
+        module,
         effects,
         globals,
         crepr_layouts: resolved
@@ -682,6 +702,7 @@ pub fn lower_program(
         ct_runs,
         ct_evals,
         ct_types,
+        ct_build,
     }
 }
 

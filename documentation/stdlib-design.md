@@ -144,8 +144,9 @@ linear/MINSTD probe, resize + rehash at 0.75 load, Jai surface (`new`, `set`,
 `find` -> Option, `remove`, `has`, `len`, `is_empty`, `fold`, `from_list`/
 `to_list`). Hashing is dictionary-passed like `MAP`'s `cmp` (`new hash_int
 impl_IEq_for_int`, ...); @int + Str hashers to start. Deliverables:
-`library/TABLE.thx`, `examples/STDLIB_TABLE.thx` (a `$ test : @int` summed by
-`tests/MAIN.thx`), a row in documentation/standard-library.md.
+`library/TABLE.thx`, `examples/STDLIB_TABLE.thx` (a `$ test : @int` that
+`tests/MAIN.thx` picks up from the directory on its own), a row in
+documentation/standard-library.md.
 
 DECISION TO MAKE FIRST (deliberately deferred): is `Table` a plain VALUE --
 like `Vec`/`Map` today, mutators return a new handle, in-place when rc==1 --

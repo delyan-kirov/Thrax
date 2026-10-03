@@ -1,8 +1,10 @@
 # Thrax Module Resolution
 
-**Status:** implemented (Rust port). Combined corpus (`tests/MAIN.thx`) links all
-50 example modules into one program and runs green on both the interpreter and
-the C backend.
+**Status:** implemented (Rust port). Combined corpus (`tests/MAIN.thx`) links
+every `examples/*.thx` into one program and runs green on both the interpreter
+and the C backend. It names none of them: its `$ @build` reads the directory at
+compile time and generates the imports (see documentation/metaprogramming.md
+section 10), so section 4's search runs on module names a metaprogram produced.
 
 **Scope:** how a name written in one module resolves to a definition when many
 modules are linked together, for both terms (functions and values) and types
@@ -155,7 +157,9 @@ from.
   - `imported_global_does_not_shadow_a_same_named_effect_op` (the glob order),
   - `same_named_struct_types_in_two_modules_do_not_collide` (per-module layout).
 - `tests/MAIN.thx` links every example module and is byte-identical between the
-  interpreter and the compiled C program.
+  interpreter and the compiled C program. Its imports are injected by `$ @build`,
+  so it also covers loading a module that only a metaprogram names: the expansion
+  loop reopens the load set each round (`load_injected_imports`).
 - `crates/thrax/src/stdlib.rs`:
   - `embedded_modules_match_the_library_directory` (the embedded list cannot
     drift from `library/*.thx`),

@@ -627,6 +627,58 @@ fn run_is_hermetic_io_stays_unhandled() {
 }
 
 #[test]
+fn build_is_the_only_io_capable_compile_time_context() {
+    // `$ @e` discharges nothing and `$ @run` discharges `<@meta>` only, so neither
+    // can perform IO: that is what makes them hermetic, and what leaves `@build`
+    // (whose own signature carries `<@io>`) as the only place a generator may
+    // touch the world.
+    let io_fn = "$ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n";
+    let e = errors(&format!("@mod M\n{io_fn}$ bad : @int = @run (shout \"hi\")"));
+    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
+    let e = errors(&format!("@mod M\n{io_fn}$ bad : @int = @e (shout \"hi\")"));
+    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
+    // A `@build`-shaped row handles both `@meta` and `@io`.
+    assert_eq!(
+        errors(&format!(
+            "@mod M\n{io_fn}$ b : {{}} -> <@meta, @io> @code = \\_ = \
+             shout \"hi\"; @parse_items \"$ x : @int = 1\""
+        )),
+        "",
+        "a <@meta, @io> row should accept both IO and meta ops",
+    );
+}
+
+#[test]
+fn build_has_one_signature() {
+    // `@build` is a definition like any other, so the checker only has to agree
+    // with its annotation; `is_build_type` is what pins the shape (see the driver).
+    let types = Types::new();
+    let unit = types.con(crate::typing::data::UNIT);
+    let code = types.con("@code");
+    let row = {
+        let empty = types.row_empty();
+        let io = types.row_extend("@io", empty);
+        types.row_extend("@meta", io)
+    };
+    assert!(crate::is_build_type(&types, types.arrow_eff(unit, code, row)));
+    // The row is a row: the other spelling is the same type.
+    let flipped = {
+        let empty = types.row_empty();
+        let meta = types.row_extend("@meta", empty);
+        types.row_extend("@io", meta)
+    };
+    assert!(crate::is_build_type(&types, types.arrow_eff(unit, code, flipped)));
+    // Too few effects, or the wrong result, is not the build function.
+    let meta_only = {
+        let empty = types.row_empty();
+        types.row_extend("@meta", empty)
+    };
+    assert!(!crate::is_build_type(&types, types.arrow_eff(unit, code, meta_only)));
+    let int = types.con(crate::typing::data::INT);
+    assert!(!crate::is_build_type(&types, types.arrow_eff(unit, int, row)));
+}
+
+#[test]
 fn open_effects_permits_io_at_the_shell_top_level() {
     // A top-level body performing `@io` is rejected in a file (a pure top level)...
     let src = "@mod M\n\

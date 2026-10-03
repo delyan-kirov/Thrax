@@ -1,11 +1,11 @@
 /* Bison grammar for Thrax's surface syntax: a written standard and an LALR(1)
  * ambiguity check. NOT wired into the compiler -- the real parser is the
- * hand-written Pratt parser in compiler/EX.cpp. A Pratt parser resolves
+ * hand-written Pratt parser in crates/frontend/src/parser.rs. A Pratt parser resolves
  * ambiguity silently through binding powers; Bison reports it.
  *
- * Check with `build grammar-check` (silent pass; fails if the conflict count
- * changes) or `build grammar-check -v` (counterexamples). Pure grammar
- * analysis, no lexer/codegen; uses bison off PATH, else `nix shell`.
+ * Check with `thxdo grammar` (silent pass; fails if the conflict count changes)
+ * or `thxdo grammar -v` (counterexamples). Pure grammar analysis, no
+ * lexer/codegen; bison comes from the dev shell (flake.nix).
  *
  * TOKEN CONVENTIONS. This models the token stream, so two spellings the lexer
  * folds together are split, matching how EX.cpp branches on a token's first
@@ -16,9 +16,11 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 13`: thirteen shift/reduce, all resolve by the default
+ * CONFLICTS. `%expect 8`: bison's summary count, all resolving by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is:
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates thirteen
+ * (state, token) warnings over the same classes: 8 on DOT, 2 on KW_ELSE, 2 on
+ * KW_IS, 1 on KW_CTL. The summary number is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
  *                      `[expr ELLIPSIS RBRACK]`); two conflicts
@@ -46,7 +48,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 13
+%expect 8
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -54,7 +56,7 @@
 %token UNDERSCORE   /* _ */
 %token TYVAR        /* `a */
 
-%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN
+%token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_CTX AT_IFACE
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
@@ -105,6 +107,9 @@ global
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
+  /* The compile-time entry, run during compilation; its `@code` result adds
+   * items to this module. Signature: `{} -> <@meta, @io> @code`. */
+  | DOLLAR AT_BUILD COLON type EQ expr
   /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
    * value of it at a desugar site and calls its single field. AT_IFACE is one of
    * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex

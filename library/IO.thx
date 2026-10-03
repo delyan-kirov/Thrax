@@ -11,6 +11,7 @@
 
 $ with OPT
 $ with STR
+$ with VEC
 
 # ---- console ----
 
@@ -48,6 +49,23 @@ $ read_file : @str -> <@io> Option @str = \path =
 		let body = read_bytes f n "" in
 		C.fclose f;
 		Option.Some.{ body }
+
+# The names (not paths) of a directory's entries, `.` and `..` excluded, sorted
+# byte-wise so the result never depends on the filesystem's or the locale's
+# order. Empty when the directory cannot be read.
+#
+# This goes through `ls` over `C.popen` rather than `opendir`/`readdir`, because
+# `readdir` hands back a `struct dirent *` and the FFI has no way to dereference
+# a C pointer (the `d_name` offset is also per-platform). `popen` keeps the
+# listing in portable libc with no magic numbers; the cost is a shell.
+$ read_dir : @str -> <@io> @vec @str = \dir =
+	let f = C.popen {"LC_ALL=C ls -1 -A -- '" ++ dir ++ "' 2>/dev/null", "r"} in
+	if f == 0 => VEC.new {}
+	else
+		let out = drain f "" in
+		C.pclose f;
+		VEC.sort_by STR.cmp_str
+			(VEC.filter (\name = !(STR.is_empty name)) (STR.lines out))
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
@@ -88,6 +106,12 @@ $ read_bytes : @int -> @int -> @str -> <@io> @str = \f, n, acc =
 		let c = C.fgetc f in
 		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
 		else acc # stream ended early (unreadable path, truncated file)
+
+# Every byte of a stream until it ends, for a `popen` pipe whose length is not
+# known up front (so `read_bytes`, which is given a count, does not fit).
+$ drain : @int -> @str -> <@io> @str = \f, acc =
+	let c = C.fgetc f in
+	if is_byte c => drain f (@array_push acc c) else acc
 
 $ spill_file : @str -> @str -> @str -> <@io> @bool = \path, content, mode =
 	let f = C.fopen {path, mode} in

@@ -167,8 +167,9 @@ $ helper : @int -> @int = \x = x * x    # module-private
 ## 2.5 Entry point
 The program entry is `@main`, the one name the compiler knows, and it has exactly
 one accepted signature: it takes the argument vector and returns the `@int` exit
-code, performing `@io`. `@main` is also the only `@`-name a program may define
-besides the blessed `@I*` interface types, which only `CORE` declares.
+code, performing `@io`. Together with `@build` (section 11.3), the compile-time
+entry, those are the only `@`-names a program may define, besides the blessed
+`@I*` interface types, which only `CORE` declares.
 
 ```thrax
 $ @main : @vec @str -> <@io> @int = \args = 0      # args[0] is the program path
@@ -1110,16 +1111,58 @@ $ @run (assert (fib 10 == 55) "fib 10 should be 55")
 $ @run (assert (fact 5 == 120) "fact 5 should be 120")
 ```
 
-## 11.2 `@run` and BUILD directives
+## 11.2 `@run` and build directives
 `$ @run expr` forces an expression through the interpreter at build time (the
-value is discarded). A `BUILD` directive value steers the compilation itself
-(e.g. adds a library to the link line and the dlopen set).
+value is discarded). `@link` / `@link_path` steer the compilation itself: they add
+a library to the link line and the dlopen set, or a directory to the search path.
 
 ```thrax
-$ with BUILD
-$ @run triple 14              # run for effect at build time
-$ @run BUILD.lib "m"          # link/preload libm
+$ @e triple 14                # run a PURE expression for effect at build time
+$ @run (@link "m")            # link/preload libm
+$ @run (@link_path "/opt/lib")
 ```
+
+`$ @e` and `$ @run` are both **hermetic**: `@e` discharges nothing (its operand
+must be pure) and `@run` discharges `<@meta>` only, so neither can perform
+`@io`. Compile-time IO lives in `@build` alone.
+
+## 11.3 `@build`, the compile-time entry
+`@build` is to compiling what `@main` is to running: the one name the *build*
+starts from. The compiler runs it during compilation and adds the items of the
+`@code` it returns to the module that declared it. Like the entry, it has exactly
+one accepted signature.
+
+```thrax
+$ @build : {} -> <@meta, @io> @code = \_ =
+	@parse_items "$ answer : @int = 42"
+
+$ @main : @vec @str -> <@io> @int = \args = answer      # 42
+```
+
+The `<@io>` in that row is its whole privilege: `@build` is the one context where
+a generator may read the world. The IO itself is not special, and there is no
+compile-time IO primitive: it is `library/IO.thx` over the `C` namespace, the
+same code a program runs, performed by the compile-time interpreter. So a
+compile-time path is relative to the **working directory**, exactly like a path a
+running program opens. `IO.read_dir` (a directory's entry names, sorted) is the
+listing a `@build` usually wants.
+
+Rules: every module may have one (not just the root, unlike `@main`), it runs
+once, and it runs before any `$ @e` of that round, so code it generates is
+available to the rest of the compile-time code. Anything it injects is itself
+expanded, so a generated `$ @e` still folds and a generated `$ with M` loads M.
+Note what "every module" implies: importing a module lets its `@build` perform IO
+during *your* build, the same trust an imported `build.rs` carries.
+
+`tests/MAIN.thx` is the worked example: it reads `examples/` at compile time and
+generates its own imports and `@main`, so adding an example to the corpus is
+adding a file. See `examples/META_BUILD.thx` and
+documentation/metaprogramming.md.
+
+To see what a metaprogram produced, `thrax expand <file> [MODULE]` prints the
+source as the checker finally saw it: every `$ @e` folded or spliced and every
+`@build`'s items appended. That is the view to debug a generator from, since
+nothing else shows the generated text.
 
 ---
 
@@ -1190,11 +1233,13 @@ A quick index of the `@`-forms and where each is documented above.
 | --- | --- | --- |
 | `@mod` | module header | 2.1 |
 | `@main` | program entry | 2.5 |
+| `@build` | compile-time entry | 11.3 |
 | `@struct` `@union` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
 | `@extern` | foreign binding | 10 |
 | `@ctx` | context (interface) parameter | 7.4 |
 | `@private` | visibility | 2.4 |
 | `@e` `@run` `@abort` | compile-time evaluation | 11 |
+| `@link` `@link_path` | build directives | 11.2 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
 | `@int8..64` `@nat8..64` `@float32/64` | sized numerics | 3.2 |
@@ -1216,7 +1261,8 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 | --- | --- |
 | `run` | run a program (needs `$ @main`) on the interpreter; extra args pass to it |
 | `build` | compile a program to a native executable beside the source |
-| `check` | expand metaprograms, run `$ @run` checks, print inferred types |
+| `check` | run `@build`, expand metaprograms, run `$ @run` checks, print inferred types |
+| `expand` | print the source after expansion, to inspect what a metaprogram made |
 | `emit-c` | emit standalone C to stdout |
 | `parse` | print the parsed syntax tree |
 | `lex` | print the token stream |
@@ -1228,6 +1274,7 @@ Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);
 thrax run                       # run ./MAIN.thx
 thrax run app.thx a b           # run app.thx with args `a b`
 thrax check examples/FIB.thx    # a library module: type-check and run its checks
+thrax expand app.thx APP        # the source as the checker saw it, one module
 thrax build app.thx
 thrax --target=wasm32-wasi build app.thx
 ```
@@ -1251,8 +1298,7 @@ import). A brief map:
 | `OPT` `RESULT` | optional and result types |
 | `PATH` | path manipulation |
 | `RANDOM` | pseudo-random numbers |
-| `IO` | console and file IO over the `C` namespace |
+| `IO` | console, file, and directory IO over the `C` namespace |
 | `LA` | shape-checked linear algebra over sized tensors |
 | `CPX` | complex math over `CORE`'s `Cpx`: parts, polar form, roots, transcendentals |
-| `BUILD` | compile-time build directives (`@run BUILD.lib ...`) |
 | `TARGET` | compilation-target reflection (qualified) |

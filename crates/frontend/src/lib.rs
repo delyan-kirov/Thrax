@@ -18,7 +18,9 @@ pub use lexer::Lexer;
 pub use lowering::{collect_resolved, lower_program, Decls, Resolved};
 pub use parser::data::*;
 pub use parser::Parser;
-pub use typing::data::{is_entry_type, Type, TypeNode, Types, ENTRY, ENTRY_SIG};
+pub use typing::data::{
+    is_build_type, is_entry_type, Type, TypeNode, Types, BUILD, BUILD_SIG, ENTRY, ENTRY_SIG,
+};
 pub use typing::engine::Engine;
 pub use typing::Checker;
 
