@@ -15,7 +15,7 @@ $ Ordering : @union = LT: {}, EQ: {}, GT: {}
 # The interface, and one implementation for `@int`.
 $ IOrder : @struct t = compare: t -> t -> Ordering,
 
-$ order_int : IOrder @int = .{
+$ impl_IOrder_for_int : IOrder @int = .{
 	.compare = \a b =
 		if a < b => Ordering.LT
 		else if a > b => Ordering.GT
@@ -39,7 +39,7 @@ $ ck_chain : @int = if max3 3 9 5 == 9 => 0 else 2
 # turns `max_of` into a min. It is a local, because two values of one type in
 # global scope would make every inferred use of that type ambiguous.
 $ ck_by_hand : @int =
-	let flip : IOrder @int = .{ .compare = \a b = order_int.compare b a } in
+	let flip : IOrder @int = .{ .compare = \a b = impl_IOrder_for_int.compare b a } in
 	if max_of (@ctx flip) 3 7 == 3 => 0 else 4
 
 # A GENERIC INSTANCE: `IOrder (Pair a b)` is built from the orders of its parts, so
@@ -47,14 +47,14 @@ $ ck_by_hand : @int =
 # which the call site builds; nothing of the bundled type has to exist.
 $ Pair : @struct a b = fst: a, snd: b,
 
-$ order_pair : @ctx {IOrder a, IOrder b} -> IOrder (Pair a b) = \ords = .{
+$ impl_IOrder_for_Pair : @ctx {IOrder a, IOrder b} -> IOrder (Pair a b) = \ords = .{
 	.compare = \p q =
 		is ords.0.compare p.fst q.fst
 			| Ordering.EQ => ords.1.compare p.snd q.snd
 			else ords.0.compare p.fst q.fst,
 }
 
-$ order_str : IOrder @str = .{
+$ impl_IOrder_for_str : IOrder @str = .{
 	.compare = \a b =
 		if a < b => Ordering.LT
 		else if a > b => Ordering.GT

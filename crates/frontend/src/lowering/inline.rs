@@ -1,6 +1,6 @@
 //! Fold a saturated interface projection whose method is an eta-expanded
 //! primitive. Every `CORE` arithmetic and comparison instance has that shape
-//! (`$ add_int : IAdd @int = .{ .add = \a b = @iadd a b }`), so `x + y` can cost
+//! (`$ impl_IAdd_for_int : IAdd @int = .{ .add = \a b = @iadd a b }`), so `x + y` can cost
 //! one builtin call again instead of a global lookup, a field read, and two
 //! closure applications. Runs over the MERGED program, where a global's key is
 //! already `MOD.name`, so a qualified projection matches by name.
@@ -271,7 +271,7 @@ mod tests {
         Term::Field(
             Arc::new(Term::Var {
                 module: Some("CORE".into()),
-                name: "add_int".into(),
+                name: "impl_IAdd_for_int".into(),
                 idx: 0,
             }),
             "add".into(),
@@ -282,7 +282,7 @@ mod tests {
     fn a_saturated_projection_of_an_eta_primitive_folds() {
         let use_site = Term::app(Term::app(projection(), Term::Int(1)), Term::Int(2));
         let mut p = prog(vec![
-            ("CORE.add_int", instance(eta_add())),
+            ("CORE.impl_IAdd_for_int", instance(eta_add())),
             ("M.sum", use_site),
         ]);
         fold_primitive_methods(&mut p);
@@ -297,7 +297,7 @@ mod tests {
     fn an_under_applied_projection_is_left_alone() {
         let use_site = Term::app(projection(), Term::Int(1));
         let mut p = prog(vec![
-            ("CORE.add_int", instance(eta_add())),
+            ("CORE.impl_IAdd_for_int", instance(eta_add())),
             ("M.add1", use_site),
         ]);
         fold_primitive_methods(&mut p);
@@ -321,7 +321,7 @@ mod tests {
         };
         let use_site = Term::app(Term::app(projection(), Term::Int(1)), Term::Int(2));
         let mut p = prog(vec![
-            ("CORE.add_int", instance(flipped)),
+            ("CORE.impl_IAdd_for_int", instance(flipped)),
             ("M.sum", use_site),
         ]);
         fold_primitive_methods(&mut p);

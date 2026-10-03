@@ -59,7 +59,7 @@ $ get : Map k v -> k -> Option v = \m k = tget m.cmpf k m.root
 
 # `m.[k]` joins the `.[..]` surface: an indexing hook overload for maps, returning
 # `Option v` (a missing key is `None`).
-$ index_map : @IIndex (Map k v) k (Option v) = .{ .index = \m k = get m k }
+$ impl_IIndex_for_Map : @IIndex (Map k v) k (Option v) = .{ .index = \m k = get m k }
 
 $ get_or : Map k v -> k -> v -> v = \m k d = unwrap_or (get m k) d
 

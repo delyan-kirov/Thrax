@@ -15,7 +15,7 @@
 # tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
 # its own hook overload (the two coexist by the import merge), so any type can join
 # the `.[..]` surface.
-$ index_tensor : @IIndex ([n]a) @int a = .{ .index = \t i = @tensor_index t i }
+$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a = .{ .index = \t i = @tensor_index t i }
 
 # Thin names over the remaining primitives.
 $ length : [n]a -> @int = \t = @tensor_length t

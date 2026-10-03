@@ -17,7 +17,7 @@
 #       `@type_variants`, available only at compile time (inside `$ @e`).
 #
 #       A GENERIC type derives one GENERIC instance, which takes the renderers of
-#       its parameters as its own context: `$ show_Pair : @ctx {Ito_string a,
+#       its parameters as its own context: `$ impl_IToString_for_Pair : @ctx {Ito_string a,
 #       Ito_string b} -> Ito_string (Pair a b)`. Resolving it resolves those too, so
 #       `to_string` works at every instantiation (`Box @int`, `Pair @int @bool`,
 #       nesting). This is `instance (Show a, Show b) => Show (Pair a b)`.
@@ -72,7 +72,7 @@ $ derive_show : @str -> @code = \ty =
 	let body = if @type_kind ty == "struct" => struct_show ty else union_show ty in
 	let lam = if VEC.is_empty params => "" else "\\ds = " in
 	@parse_items (
-		"$ show_" ++ ty ++ " : " ++ show_ctx params ++ "Ito_string " ++ applied
+		"$ impl_IToString_for_" ++ ty ++ " : " ++ show_ctx params ++ "Ito_string " ++ applied
 			++ " = " ++ lam ++ ".{ .show = " ++ body ++ " }"
 	)
 
@@ -93,9 +93,9 @@ $ ICmp : @struct t = cmp: t -> t -> @int,
 
 $ compare : @ctx ICmp t -> t -> t -> @int = \d a b = d.cmp a b
 
-$ icmp_int  : ICmp @int  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
-$ icmp_str  : ICmp @str  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
-$ icmp_bool : ICmp @bool = .{ .cmp = \a b = if a == b => 0 else if a => 1 else (0 - 1) }
+$ impl_ICmp_for_int  : ICmp @int  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ impl_ICmp_for_str  : ICmp @str  = .{ .cmp = \a b = if a < b => (0 - 1) else if a > b => 1 else 0 }
+$ impl_ICmp_for_bool : ICmp @bool = .{ .cmp = \a b = if a == b => 0 else if a => 1 else (0 - 1) }
 
 # The instances and the named comparisons for `T`, over its generated `cmp_T`. The
 # named forms carry the type in their name (`lt_Coord`), since a module may derive
@@ -103,8 +103,8 @@ $ icmp_bool : ICmp @bool = .{ .cmp = \a b = if a == b => 0 else if a => 1 else (
 $ bool_ops : @str -> @str = \ty =
 	let c = "cmp_" ++ ty ++ " a b" in
 	let sig = \n = "$ " ++ n ++ "_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @bool = \\a b = " in
-	"$ iord_" ++ ty ++ " : IOrd " ++ ty ++ " = .{ .lt = \\a b = " ++ c ++ " < 0 }\n"
-	++ "$ ieq_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = " ++ c ++ " == 0 }\n"
+	"$ impl_IOrd_for_" ++ ty ++ " : IOrd " ++ ty ++ " = .{ .lt = \\a b = " ++ c ++ " < 0 }\n"
+	++ "$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = " ++ c ++ " == 0 }\n"
 	++ sig "lt" ++ c ++ " < 0\n"
 	++ sig "le" ++ "not (" ++ c ++ " > 0)\n"
 	++ sig "gt" ++ c ++ " > 0\n"
@@ -123,7 +123,7 @@ $ struct_cmp_chain : @vec @str -> @str = \fields =
 # `cmp_T` plus its `ICmp T` instance: a derived type is then itself a comparable
 # field, so deriving the enclosing type works without a hand-written instance.
 $ icmp_decl : @str -> @str = \ty =
-	"$ icmp_" ++ ty ++ " : ICmp " ++ ty ++ " = .{ .cmp = cmp_" ++ ty ++ " }"
+	"$ impl_ICmp_for_" ++ ty ++ " : ICmp " ++ ty ++ " = .{ .cmp = cmp_" ++ ty ++ " }"
 
 $ struct_cmp : @str -> @str = \ty =
 	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a b = "
@@ -185,7 +185,7 @@ $ derive_ord : @str -> @code = \ty =
 # Equality alone, for a type that has no sensible order. The comparison function is
 # the same structural one; only the `IEq` instance is emitted over it.
 $ eq_only : @str -> @str = \ty =
-	"$ ieq_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = cmp_" ++ ty ++ " a b == 0 }"
+	"$ impl_IEq_for_" ++ ty ++ " : IEq " ++ ty ++ " = .{ .eq = \\a b = cmp_" ++ ty ++ " a b == 0 }"
 
 $ derive_eq : @str -> @code = \ty =
 	if @type_kind ty == "struct"

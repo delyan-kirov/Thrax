@@ -46,7 +46,7 @@ $ Point: @struct =
 
 # `+` on a user type comes from an `IAdd` instance. The interface and the operator
 # are CORE's; a module adds the type by defining a value of the interface type.
-$ add_point : IAdd Point = .{
+$ impl_IAdd_for_Point : IAdd Point = .{
 	.add = \p1 p2 = .{ .x = p1.x + p2.x, .y = p1.y + p2.y },
 }
 

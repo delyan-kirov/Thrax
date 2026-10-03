@@ -397,7 +397,7 @@ fn ctx_context_parameter_passing() {
     // exactly as the interpreter does.
     let src = "@mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ ord_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
                \tif o.gt x y => x else y\n\
                $ Box : @union t = Wrap: {t},\n\

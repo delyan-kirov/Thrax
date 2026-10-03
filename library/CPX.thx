@@ -96,7 +96,7 @@ $ powi : Cpx -> @int -> Cpx = \z n =
 # `z ^ w` on two complexes goes through CORE's `IPow`. An INTEGER exponent is
 # `powi` by name: one operator takes one type for both operands, so a mixed pair is
 # not expressible (and `powi` is the faster algorithm anyway).
-$ pow_cpx : IPow Cpx = .{ .raise = CPX.pow }
+$ impl_IPow_for_Cpx : IPow Cpx = .{ .raise = CPX.pow }
 
 $ sin : Cpx -> Cpx = \z =
 	Cpx.{ MATH.sin z.re * C.cosh z.im, MATH.cos z.re * C.sinh z.im }
