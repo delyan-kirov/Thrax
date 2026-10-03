@@ -13,28 +13,28 @@ $ with VEC
 
 $ len : @str -> @int = \s = @array_len s
 
-$ at : @str -> @int -> @int = \s i = @array_get s i
+$ at : @str -> @int -> @int = \s, i = @array_get s i
 
 $ is_empty : @str -> @bool = \s = (@array_len s) == 0
 
-$ eq : @str -> @str -> @bool = \a b = a == b
+$ eq : @str -> @str -> @bool = \a, b = a == b
 
 # Three-way byte-lexicographic comparison: negative / 0 / positive (strcmp
 # convention; this is the ordering MAP.new_str uses).
-$ cmp_str : @str -> @str -> @int = \a b = cmp_str_from a b 0
+$ cmp_str : @str -> @str -> @int = \a, b = cmp_str_from a b 0
 
 # A one-byte string.
 $ from_byte : @int -> @str = \c = @array_push "" c
 
 # The byte range [from, to), clamped to the string.
-$ substr : @str -> @int -> @int -> @str = \s from to = @array_slice s from to
+$ substr : @str -> @int -> @int -> @str = \s, from, to = @array_slice s from to
 
-$ starts_with : @str -> @str -> @bool = \s p =
+$ starts_with : @str -> @str -> @bool = \s, p =
 	let n = @array_len p in
 	if n > @array_len s => @false
 	else (@array_slice s 0 n) == p
 
-$ ends_with : @str -> @str -> @bool = \s p =
+$ ends_with : @str -> @str -> @bool = \s, p =
 	let n  = @array_len p in
 	let sn = @array_len s in
 	if n > sn => @false
@@ -42,19 +42,19 @@ $ ends_with : @str -> @str -> @bool = \s p =
 
 # The byte offset of the first occurrence of `needle` at or after `from`.
 # An empty needle matches at `from`.
-$ find_from : @str -> @str -> @int -> Option @int = \s needle from =
+$ find_from : @str -> @str -> @int -> Option @int = \s, needle, from =
 	let n = @array_len needle in
 	if from + n > @array_len s => Option.None
 	else if (@array_slice s from (from + n)) == needle => Option.Some.{ from }
 	else find_from s needle (from + 1)
 
-$ find : @str -> @str -> Option @int = \s needle = find_from s needle 0
+$ find : @str -> @str -> Option @int = \s, needle = find_from s needle 0
 
-$ contains : @str -> @str -> @bool = \s needle = is_some (find s needle)
+$ contains : @str -> @str -> @bool = \s, needle = is_some (find s needle)
 
 # Split on a non-empty separator; N separators yield N+1 pieces ("a,,b" on
 # "," is ["a", "", "b"]). An empty separator returns the whole string whole.
-$ split : @str -> @str -> @vec @str = \s sep =
+$ split : @str -> @str -> @vec @str = \s, sep =
 	if (@array_len sep) == 0 => [s]
 	else is find s sep
 		| Option.Some.{i} =>
@@ -70,26 +70,26 @@ $ lines : @str -> @vec @str = \s =
 	else if (@array_get s (n - 1)) == 10 => split (@array_slice s 0 (n - 1)) "\n"
 	else split s "\n"
 
-$ join : @str -> @vec @str -> @str = \sep parts =
+$ join : @str -> @vec @str -> @str = \sep, parts =
 	is parts
 		| h :: t =>
 			(is t | [] => h else h ++ sep ++ join sep t)
 	else ""
 
-$ repeat : @str -> @int -> @str = \s n =
+$ repeat : @str -> @int -> @str = \s, n =
 	if n <= 0 => "" else s ++ repeat s (n - 1)
 
 $ concat : @vec @str -> @str = \parts = join "" parts
 
 # Pad with spaces to at least `width` bytes (no-op if already wider).
-$ pad_left : @str -> @int -> @str = \s width =
+$ pad_left : @str -> @int -> @str = \s, width =
 	repeat " " (width - @array_len s) ++ s
 
-$ pad_right : @str -> @int -> @str = \s width =
+$ pad_right : @str -> @int -> @str = \s, width =
 	s ++ repeat " " (width - @array_len s)
 
 # Replace every (non-overlapping) occurrence; an empty needle returns `s`.
-$ replace : @str -> @str -> @str -> @str = \s needle repl =
+$ replace : @str -> @str -> @str -> @str = \s, needle, repl =
 	if (@array_len needle) == 0 => s
 	else is find s needle
 		| Option.Some.{i} =>
@@ -99,7 +99,7 @@ $ replace : @str -> @str -> @str -> @str = \s needle repl =
 	else s
 
 # Number of (non-overlapping) occurrences; an empty needle counts 0.
-$ count : @str -> @str -> @int = \s needle =
+$ count : @str -> @str -> @int = \s, needle =
 	if (@array_len needle) == 0 => 0
 	else is find s needle
 		| Option.Some.{i} =>
@@ -154,7 +154,7 @@ $ to_upper : @str -> @str = \s =
 $ to_lower : @str -> @str = \s =
 	map_bytes (\c = if c >= 65 => (if c <= 90 => c + 32 else c) else c) s
 
-$ map_bytes : (@int -> @int) -> @str -> @str = \f s = map_bytes_from f s 0 ""
+$ map_bytes : (@int -> @int) -> @str -> @str = \f, s = map_bytes_from f s 0 ""
 
 # ---- number formatting / parsing ----
 
@@ -174,7 +174,7 @@ $ to_int : @str -> Option @int = \s =
 
 $ @private
 
-$ cmp_str_from : @str -> @str -> @int -> @int = \a b i =
+$ cmp_str_from : @str -> @str -> @int -> @int = \a, b, i =
 	if i >= @array_len a => (if i >= @array_len b => 0 else 0 - 1)
 	else if i >= @array_len b => 1
 	else
@@ -184,19 +184,19 @@ $ cmp_str_from : @str -> @str -> @int -> @int = \a b i =
 		else if ca > cb => 1
 		else cmp_str_from a b (i + 1)
 
-$ rev_onto : @str -> @int -> @str -> @str = \s i acc =
+$ rev_onto : @str -> @int -> @str -> @str = \s, i, acc =
 	if i == 0 => acc
 	else rev_onto s (i - 1) (@array_push acc (@array_get s (i - 1)))
 
-$ map_bytes_from : (@int -> @int) -> @str -> @int -> @str -> @str = \f s i acc =
+$ map_bytes_from : (@int -> @int) -> @str -> @int -> @str -> @str = \f, s, i, acc =
 	if i == @array_len s => acc
 	else map_bytes_from f s (i + 1) (@array_push acc (f (@array_get s i)))
 
-$ digits_of : @int -> @str -> @str = \n acc =
+$ digits_of : @int -> @str -> @str = \n, acc =
 	if n < 10 => (@array_push "" (48 + n)) ++ acc
 	else digits_of (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
-$ digits_val : @str -> @int -> @int -> Option @int = \s i acc =
+$ digits_val : @str -> @int -> @int -> Option @int = \s, i, acc =
 	if i == @array_len s => Option.Some.{ acc }
 	else
 		let c = @array_get s i in

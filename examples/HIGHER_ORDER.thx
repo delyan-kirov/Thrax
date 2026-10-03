@@ -5,9 +5,9 @@
 
 $id : t -> t = \x = x
 
-$const : t -> u -> t = \x y = x
+$const : t -> u -> t = \x, y = x
 
-$apply_twice : (t -> t) -> t -> t = \f x = f (f x)
+$apply_twice : (t -> t) -> t -> t = \f, x = f (f x)
 
 $inc : @int -> @int = \x = x + 1
 $dbl : @int -> @int = \x = x * 2

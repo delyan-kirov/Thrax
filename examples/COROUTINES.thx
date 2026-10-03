@@ -19,7 +19,7 @@ $ spawn : ({} -> <Co> {}) -> Task = \t =
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
-$ rr : Task -> Task -> @int = \a b =
+$ rr : Task -> Task -> @int = \a, b =
     is a | Task.Fin.{} =>
          (is b | Task.Fin.{} => 0
                | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {})

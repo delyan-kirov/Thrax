@@ -1261,9 +1261,18 @@ impl<'a> Checker<'a> {
                 self.enter_scope();
                 let mut exp = expected;
                 let mut body_eff = self.ambient;
+                let mut tvars = HashMap::new();
                 for p in params.iter() {
                     let (param_ty, rest, eff) = self.arrow_parts(exp)?;
-                    self.type_pattern(*p, param_ty)?;
+                    if let Some(sig) = p.sig {
+                        let sig_ty = self.ty_of_ast(sig, &mut tvars);
+                        self.eng.unify(
+                            param_ty,
+                            sig_ty,
+                            "in a parameter's type annotation",
+                        )?;
+                    }
+                    self.type_pattern(p.pat, param_ty)?;
                     exp = rest;
                     body_eff = eff; // the innermost arrow's effect: the body's ambient
                 }
@@ -2861,9 +2870,13 @@ impl<'a> Checker<'a> {
                 let (params, body) = (self.ast.slice(*params), *body);
                 self.enter_scope();
                 let mut param_tys = Vec::with_capacity(params.len());
+                let mut tvars = HashMap::new();
                 for p in params.iter() {
-                    let pv = self.eng.fresh();
-                    self.type_pattern(*p, pv)?;
+                    let pv = match p.sig {
+                        Some(sig) => self.ty_of_ast(sig, &mut tvars),
+                        None => self.eng.fresh(),
+                    };
+                    self.type_pattern(p.pat, pv)?;
                     param_tys.push(pv);
                 }
                 // Constructing the closure performs nothing under the current
@@ -5335,7 +5348,7 @@ fn free_globals<'a>(
         Expr::Lambda { params, body } => {
             let mark = bound.len();
             for p in ast.slice(*params).iter() {
-                collect_pattern_binders(ast, *p, bound);
+                collect_pattern_binders(ast, p.pat, bound);
             }
             free_globals(ast, *body, globals, bound, out);
             bound.truncate(mark);

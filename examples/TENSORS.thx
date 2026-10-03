@@ -39,7 +39,7 @@ $ ck_cat : @int = if ab.[4] == 50 => 0 else 64
 
 # The normalizer decides equality: `n + n` is `2 * n`, and `+` commutes.
 $ dup  : [n]a -> [2*n]a = \t = concat t t
-$ flip : [n]a -> [m]a -> [m+n]a = \x y = concat x y
+$ flip : [n]a -> [m]a -> [m+n]a = \x, y = concat x y
 $ dd : [6]@int = dup v                    # 2 * 3 = 6
 $ ck_dup : @int = if dd.[5] == 30 => 0 else 128
 
@@ -63,7 +63,7 @@ $ ck_real : @int = if rC.[1, 1] == 8.0 => 0 else 2048
 # `.[..]` is OVERLOADABLE: a custom type joins the surface by defining
 # `@IIndex`.
 $ Grid : @struct = cells: [9]@int
-$ impl_IIndex_for_Grid : @IIndex Grid @int @int = .{ .index = \g i = g.cells.[i] }
+$ impl_IIndex_for_Grid : @IIndex Grid @int @int = .{ .index = \g, i = g.cells.[i] }
 $ board : Grid = .{ .cells = [1, 2, 3, 4, 5, 6, 7, 8, 9] }
 $ ck_ext : @int = if board.[4] == 5 => 0 else 4096   # user indexing hook via `.[..]`
 

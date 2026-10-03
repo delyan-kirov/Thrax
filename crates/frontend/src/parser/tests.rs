@@ -115,7 +115,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*alt), Expr::Int(3)));
 
-    let p = prog("@mod M\n$ f = \\a b c = defer a, b, in c");
+    let p = prog("@mod M\n$ f = \\a, b, c = defer a, b, in c");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -124,7 +124,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*body), Expr::Defer { .. }));
 
-    let p = prog("@mod M\n$ f = \\a b = with a, b in 1");
+    let p = prog("@mod M\n$ f = \\a, b = with a, b in 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -505,7 +505,7 @@ fn blessed_interface_prefix_rule() {
     // A blessed interface is a declarable `@`-name, as a one-field `@struct`.
     assert!(parse("@mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
     // It is a TYPE, so a value signature on the same name is rejected.
-    assert!(err("@mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
+    assert!(err("@mod M\n$ @IIndex : a -> @int -> a = \\t, i = t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
     assert!(err("@mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
 }
@@ -514,7 +514,7 @@ fn blessed_interface_prefix_rule() {
 /// were effect-row delimiters that ended the expression.
 #[test]
 fn angle_brackets_are_comparisons_in_expressions() {
-    for src in ["@mod M\n$ f = \\a b = a < b", "@mod M\n$ f = \\a b = a > b"] {
+    for src in ["@mod M\n$ f = \\a, b = a < b", "@mod M\n$ f = \\a, b = a > b"] {
         let p = prog(src);
         let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
             panic!("expected a lambda")
@@ -570,4 +570,33 @@ fn operator_in_parens_is_a_function_reference() {
         panic!("`|` is not a function")
     };
     assert!(err.to_string().contains("delimiter"));
+}
+
+#[test]
+fn lambda_parameters_are_comma_separated_and_take_annotations() {
+    let p = prog("@mod M\n$ f = \\i: @int = i");
+    let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let params = p.ast.slice(*params);
+    assert_eq!(params.len(), 1);
+    assert!(params[0].sig.is_some());
+
+    // A comma ends a parameter's type, so any parameter may be annotated.
+    let p = prog("@mod M\n$ g = \\i: @int, y, s: @str = i");
+    let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let sigs: Vec<bool> = p.ast.slice(*params).iter().map(|q| q.sig.is_some()).collect();
+    assert_eq!(sigs, vec![true, false, true]);
+
+    // A trailing comma before `=` is allowed, as in `let`.
+    assert!(parse("@mod M\n$ h = \\a, b, = a").is_ok());
+
+    // Juxtaposed parameters are the old spelling, and the error teaches the new one.
+    let err = match parse("@mod M\n$ k = \\a b = a") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error"),
+    };
+    assert!(err.contains("comma-separated"), "{err}");
 }

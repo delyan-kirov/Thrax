@@ -163,8 +163,8 @@ $ impl_IArea_for_Rect : IArea Rect = .{ .area = \r = r.w * r.h }
 
 # `d` is the CONTEXT parameter: ordinary in every respect, except that call
 # sites do not write it. The compiler finds it by type.
-$ total : @ctx IArea t -> @vec t -> Real = \d xs =
-	VEC.foldl (\acc x = acc + d.area x) 0.0 xs
+$ total : @ctx IArea t -> @vec t -> Real = \d, xs =
+	VEC.foldl (\acc, x = acc + d.area x) 0.0 xs
 
 $ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }]   # 10.0
 ```
@@ -176,7 +176,7 @@ function over `IAdd`, and a type joins it by defining an instance.
 $ Money : @struct = cents: @int,
 
 # `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
-$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a, b = Money.{ .cents = a.cents + b.cents } }
 $ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }
 ```
 

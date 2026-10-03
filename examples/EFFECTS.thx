@@ -12,7 +12,7 @@ $ State : @effect = get : {} -> @int, put : @int -> {},
 
 # Exception: the clause ignores k (resume 0 times). Exn is handled here, so
 # safeDiv is pure at its boundary.
-$ safeDiv : @int -> @int -> @int = \a b =
+$ safeDiv : @int -> @int -> @int = \a, b =
     do if b == 0 => Exn.throw "div0" else a / b
     ctl k | Exn.throw msg => 0 - 1
 
@@ -28,7 +28,7 @@ $ gen3 : {} -> <Yield> {} = \u =
 
 # State via parameter-passing: each clause returns a state-transforming function.
 # The action performs State, so its arrow is `{} -> <State> @int`.
-$ runState : ({} -> <State> @int) -> @int -> @int = \action s0 =
+$ runState : ({} -> <State> @int) -> @int -> @int = \action, s0 =
     let h = do action {}
             ctl k | get u => \s = (k s) s
                   | put n => \s = (k {}) n

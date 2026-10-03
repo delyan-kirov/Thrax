@@ -13,11 +13,11 @@
 # in CORE (bare everywhere), so this file demonstrates observing and mapping one.
 
 # The nth element, walking `tail` n times.
-$ nth : @int -> Stream t -> t = \n s =
+$ nth : @int -> Stream t -> t = \n, s =
 	if n == 0 => s.head else nth (n - 1) s.tail
 
 # Map over a stream (still infinite, still lazy).
-$ smap : (a -> b) -> Stream a -> Stream b = \f s =
+$ smap : (a -> b) -> Stream a -> Stream b = \f, s =
 	{ .head = f s.head, .tail = smap f s.tail }
 
 $ dbl : @int -> @int = \x = x + x

@@ -15,7 +15,7 @@ $ Pair : @struct =
 # A tail-recursive loop: every step builds a Pair, reads it back, and carries
 # the sum. The Pair (and the ints inside it) die each iteration -- exactly the
 # per-iteration garbage a long-running program must reclaim.
-$ spin : @int -> @int -> @int = \n acc =
+$ spin : @int -> @int -> @int = \n, acc =
 	if n == 0 => acc
 	else
 		let p = Pair.{ .fst = n, .snd = acc } in

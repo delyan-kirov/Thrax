@@ -5,7 +5,7 @@
 
 # A compile-time assertion (see examples/CT_ASSERT.thx): performs `<@meta>`, so it
 # is discharged by `$ @run`. A false condition aborts the build with the message.
-$ assert : @bool -> @str -> <@meta> {} = \ok msg = if ok => {} else @abort msg
+$ assert : @bool -> @str -> <@meta> {} = \ok, msg = if ok => {} else @abort msg
 
 # Force an already-parsed `@code` and discard it, returning `{}`. Parsing happens
 # inside `@parse_items`/`@parse_str` (which trap on a syntax error); wrapping the
@@ -74,8 +74,8 @@ $ ex_interface : @str =
 	++ "\n"
 	++ "# `d` is the CONTEXT parameter: ordinary in every respect, except that call\n"
 	++ "# sites do not write it. The compiler finds it by type.\n"
-	++ "$ total : @ctx IArea t -> @vec t -> Real = \\d xs =\n"
-	++ "\tVEC.foldl (\\acc x = acc + d.area x) 0.0 xs\n"
+	++ "$ total : @ctx IArea t -> @vec t -> Real = \\d, xs =\n"
+	++ "\tVEC.foldl (\\acc, x = acc + d.area x) 0.0 xs\n"
 	++ "\n"
 	++ "$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }]   # 10.0"
 
@@ -83,7 +83,7 @@ $ ex_operator : @str =
 	"$ Money : @struct = cents: @int,\n"
 	++ "\n"
 	++ "# `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.\n"
-	++ "$ impl_IAdd_for_Money : IAdd Money = .{ .add = \\a b = Money.{ .cents = a.cents + b.cents } }\n"
+	++ "$ impl_IAdd_for_Money : IAdd Money = .{ .add = \\a, b = Money.{ .cents = a.cents + b.cents } }\n"
 	++ "$ paid : Money = Money.{ .cents = 150 } + Money.{ .cents = 99 }"
 
 # A self-contained expression we can actually RUN and check at build time.
@@ -232,7 +232,7 @@ $ readme : @str =
 
 # ---- Write the file via the C library (fopen/fputs/fclose) ----------------
 
-$ write_all : @str -> @str -> <@io> @int = \path content =
+$ write_all : @str -> @str -> <@io> @int = \path, content =
 	let f = C.fopen {path, "wb"} in
 	if f == 0 => 0 - 1
 	else

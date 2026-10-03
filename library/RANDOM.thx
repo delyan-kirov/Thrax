@@ -31,11 +31,11 @@ $ next : Rng -> {@int, Rng} = \g =
 	{s, Rng.{ .state = s }}
 
 # A draw in [0, n) (n <= 0 yields 0), and the advanced generator.
-$ next_below : Rng -> @int -> {@int, Rng} = \g n =
+$ next_below : Rng -> @int -> {@int, Rng} = \g, n =
 	let d = next g in
 	if n <= 0 => {0, d.1} else {d.0 % n, d.1}
 
 # A draw in [lo, hi] inclusive, and the advanced generator.
-$ next_range : Rng -> @int -> @int -> {@int, Rng} = \g lo hi =
+$ next_range : Rng -> @int -> @int -> {@int, Rng} = \g, lo, hi =
 	let d = next_below g ((hi - lo) + 1) in
 	{lo + d.0, d.1}

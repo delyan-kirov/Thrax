@@ -11,7 +11,7 @@ $sum_to : @int -> @int = \n =
 	if n == 0 => 0
 	else n + (sum_to (n - 1))
 
-$gcd : @int -> @int -> @int = \a b =
+$gcd : @int -> @int -> @int = \a, b =
 	if b == 0 => a
 	else gcd b (a % b)
 
