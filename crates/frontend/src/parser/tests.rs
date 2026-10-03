@@ -600,3 +600,72 @@ fn lambda_parameters_are_comma_separated_and_take_annotations() {
     };
     assert!(err.contains("comma-separated"), "{err}");
 }
+
+#[test]
+fn a_misqualified_literal_points_at_the_expression() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.render(src, "t.thx"),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+
+    // A type applied to arguments is how a reader asks for a constructor at a
+    // fixed instantiation; the error names the ascription that does that job.
+    let text = err("@mod M\n$ y = (List @int32).Cons.{1}");
+    assert!(text.contains("applied to arguments"), "{text}");
+    assert!(text.contains("ascribe"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("   |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
+
+    // A lowercase head is a value name, not a type.
+    let text = err("@mod M\n$ y = (list @int32).Cons.{1}");
+    assert!(text.contains("`list` names a value"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+
+    // A struct literal on an arbitrary expression carets that expression, not
+    // the first line of the file.
+    let text = err("@mod M\n$ y = (1 + 2).{3}");
+    assert!(text.contains("a struct literal must be qualified"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("   |       ^^^^^^^^^\n"), "{text}");
+}
+
+#[test]
+fn a_binding_site_annotation_takes_any_pattern() {
+    // The type describes the whole binding, so `let` accepts it on a destructuring
+    // pattern exactly as a lambda parameter does.
+    assert!(parse("@mod M\n$ y = let {a, b} : {@int, @int} = {1, 2} in a").is_ok());
+    assert!(parse("@mod M\n$ y = \\{a, b}: {@int, @int} = a").is_ok());
+    assert!(parse("@mod M\n$ y = let x : @int = 1 in x").is_ok());
+    // Several bindings still separate on the comma; a type runs only to the `=`.
+    assert!(parse("@mod M\n$ y = let a : @int = 1, b : @int = 2 in a").is_ok());
+
+    // A match arm takes no annotation: the scrutinee fixes the pattern's type.
+    let err = match parse("@mod M\n$ y = is 1 | n: @int => n else 0") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error"),
+    };
+    assert!(err.contains("'=>'"), "{err}");
+}
+
+#[test]
+fn a_stray_annotation_names_where_the_type_goes() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.render(src, "t.thx"),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+
+    let text = err("@mod M\n$ y = [1: @int32, 2, 3]");
+    assert!(text.contains("[(1 : @int32), 2, 3]"), "{text}");
+
+    let text = err("@mod M\n$ y = .Cons.{ 1: @int32 }");
+    assert!(text.contains("ascribed in a group"), "{text}");
+
+    let text = err("@mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
+    assert!(text.contains("a pattern carries no types"), "{text}");
+
+    // The note is for a stray `:` only; an ordinary unclosed delimiter keeps the
+    // plain message.
+    let text = err("@mod M\n$ y = [1, 2");
+    assert!(text.contains("to close the list"), "{text}");
+    assert!(!text.contains("note:"), "{text}");
+}

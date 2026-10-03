@@ -71,6 +71,11 @@ struct StructInfo<'a> {
     c_union: bool,
 }
 
+/// Pending `with Other` splices, keyed by the type that wrote them: whether it
+/// is a struct (rather than a union), and each included name with the span it
+/// was written at, so a bad include carets its own `with`.
+type PendingIncludes<'a> = HashMap<&'a str, (bool, Vec<(&'a str, Span)>)>;
+
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
 #[derive(Clone)]
 struct UnionInfo<'a> {
@@ -171,7 +176,7 @@ pub struct Checker<'a> {
     /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
-    pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
+    pending_includes: PendingIncludes<'a>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary. Each carries the
     /// literal's source span so a defaulting error can point at it.
@@ -674,8 +679,9 @@ impl<'a> Checker<'a> {
         let mut seen: HashSet<&'a str> = HashSet::new();
         for d in &defs {
             if !seen.insert(d.name) {
+                let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
                 return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
+                    Code::TypeMismatch, span, 0,
                     "`{}` is defined twice in module `{}`", d.name, self.module_name;
                     note: "a name has one type; to give an operation several types, \
                            declare an interface and define one instance per type"
@@ -1634,30 +1640,58 @@ impl<'a> Checker<'a> {
         kind: &str,
         name: &'a str,
         declared: &[utilities::StrId],
-        collected: Vec<&'a str>,
+        collected: Vec<(&'a str, Span)>,
     ) -> Result<Vec<&'a str>> {
         let declared: Vec<&'a str> = declared.iter().map(|p| self.text(*p)).collect();
-        for v in &collected {
+        for (v, span) in &collected {
             if !declared.contains(v) {
-                return Err(undeclared_param(kind, name, v, &declared, false));
+                return Err(undeclared_param(kind, name, v, &declared, false).fill_span(*span));
             }
         }
         Ok(declared)
     }
 
+    /// A declared type's recorded span, or the no-location sentinel.
+    fn ty_span_or_none(&self, ty: Aol<Ty>) -> Span {
+        self.ast.ty_span(ty).unwrap_or(Span::at(0))
+    }
+
+    /// Every type variable used across `tys`, each paired with the span of the
+    /// type it was found in, so an undeclared one carets that field or payload
+    /// rather than the whole declaration.
+    fn tyvars_with_spans(&self, tys: impl IntoIterator<Item = Aol<Ty>>) -> Vec<(&'a str, Span)> {
+        let mut out: Vec<(&'a str, Span)> = Vec::new();
+        for ty in tys {
+            let mut vs = Vec::new();
+            collect_tyvars(self.ast, ty, &mut vs);
+            let span = self.ty_span_or_none(ty);
+            for v in vs {
+                if !out.iter().any(|(n, _)| *n == v) {
+                    out.push((v, span));
+                }
+            }
+        }
+        out
+    }
+
     /// Re-check a struct/union's parameters after its `with` splices are copied in:
     /// the parameters stay as declared, but every type variable in the now-complete
     /// field/variant set, including spliced-in ones, must still be covered.
-    fn splice_params(&self, kind: &str, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
+    fn splice_params(
+        &self,
+        kind: &str,
+        name: &'a str,
+        collected: Vec<(&'a str, Span)>,
+    ) -> Result<Vec<&'a str>> {
         let declared = self
             .structs
             .get(name)
             .map(|i| i.params.clone())
             .or_else(|| self.unions.get(name).map(|i| i.params.clone()))
             .expect("registered");
-        for v in &collected {
+        for (v, span) in &collected {
             if !declared.contains(v) {
-                return Err(undeclared_param(kind, name, v, &declared, true));
+                return Err(undeclared_param(kind, name, v, &declared, true).fill_span(*span));
             }
         }
         Ok(declared)
@@ -1679,18 +1713,18 @@ impl<'a> Checker<'a> {
                         self.ast.slice(*includes),
                         self.ast.slice(*fields),
                     );
-                    let mut collected = Vec::new();
-                    for f in fields.iter() {
-                        collect_tyvars(self.ast, f.ty, &mut collected);
-                    }
+                    let collected = self.tyvars_with_spans(fields.iter().map(|f| f.ty));
                     let name = self.text(*name);
                     // A blessed interface is the compiler's own: CORE declares it, and
                     // exactly one field, because a desugar site projects that field
                     // without knowing its name.
                     if crate::parser::table::is_blessed_interface(name) {
+                        let at = fields
+                            .first()
+                            .map_or(Span::at(0), |f| self.ty_span_or_none(f.ty));
                         if self.module_name != "CORE" {
                             return Err(diag!(
-                                Code::TypeMismatch, Span::at(0), 0,
+                                Code::TypeMismatch, at, 0,
                                 "`{name}` is a blessed interface and only CORE may declare it";
                                 note: "implement it instead: a value of the applied type \
                                        (`$ r : @IRange @int Span = .{{ .range = ... }}`)"
@@ -1698,7 +1732,7 @@ impl<'a> Checker<'a> {
                         }
                         if fields.len() != 1 {
                             return Err(diag!(
-                                Code::TypeMismatch, Span::at(0), 0,
+                                Code::TypeMismatch, at, 0,
                                 "the blessed interface `{name}` must have exactly one field, \
                                  not {}", fields.len()
                             ));
@@ -1718,7 +1752,7 @@ impl<'a> Checker<'a> {
                     );
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        let ps = includes.iter().map(|p| (self.text(p.name), p.span)).collect();
                         self.pending_includes.insert(name, (true, ps));
                     }
                 }
@@ -1733,18 +1767,17 @@ impl<'a> Checker<'a> {
                         self.ast.slice(*includes),
                         self.ast.slice(*variants),
                     );
-                    let mut collected = Vec::new();
+                    let mut payload_tys = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
                         let payload = payload_fields(self.ast, &v.payload);
-                        for (_, ty) in &payload {
-                            collect_tyvars(self.ast, *ty, &mut collected);
-                        }
+                        payload_tys.extend(payload.iter().map(|(_, ty)| *ty));
                         vs.push(VariantSig {
                             tag: self.text(v.tag),
                             payload,
                         });
                     }
+                    let collected = self.tyvars_with_spans(payload_tys);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("union", name, params, collected)?;
                     self.unions.insert(
@@ -1756,14 +1789,13 @@ impl<'a> Checker<'a> {
                     );
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        let ps = includes.iter().map(|p| (self.text(p.name), p.span)).collect();
                         self.pending_includes.insert(name, (false, ps));
                     }
                 }
                 Item::Alias { name, params, ty } => {
                     let params = self.ast.slice(*params);
-                    let mut collected = Vec::new();
-                    collect_tyvars(self.ast, *ty, &mut collected);
+                    let collected = self.tyvars_with_spans([*ty]);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("alias", name, params, collected)?;
                     self.aliases.insert(name, (params, *ty));
@@ -1936,19 +1968,28 @@ impl<'a> Checker<'a> {
                             break k;
                         }
                         if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
-                            break utilities::CKind::Struct(cn.to_string(), self.clayout_of(cn, visiting)?);
+                            let layout = self
+                                .clayout_of(cn, visiting)
+                                .map_err(|d| d.fill_span(self.ty_span_or_none(*fty)))?;
+                            break utilities::CKind::Struct(cn.to_string(), layout);
                         }
                         match self.nullary_alias_target(cn) {
                             Some(next) if next != cn && steps < 256 => {
                                 cn = next;
                                 steps += 1;
                             }
-                            _ => return Err(crepr_field_error(name, fname, cn)),
+                            _ => {
+                                return Err(crepr_field_error(name, fname, cn)
+                                    .fill_span(self.ty_span_or_none(*fty)))
+                            }
                         }
                     };
                     kind
                 }
-                _ => return Err(crepr_field_error(name, fname, "a non-scalar type")),
+                _ => {
+                    return Err(crepr_field_error(name, fname, "a non-scalar type")
+                        .fill_span(self.ty_span_or_none(*fty)))
+                }
             };
             fields.push((fname.to_string(), kind));
         }
@@ -1974,23 +2015,27 @@ impl<'a> Checker<'a> {
             Some(entry) => entry.clone(),
             None => return Ok(()), // already spliced (or never used `with`)
         };
+        // Every failure below is about what a `with` dragged in, so the first
+        // include is the fallback caret when the member itself has no span.
+        let at_with = includes.first().map_or(Span::at(0), |(_, s)| *s);
         if !visiting.insert(name) {
+            let span = at_with;
             return Err(diag!(
-                Code::TypeMismatch, Span::at(0), 0,
+                Code::TypeMismatch, span, 0,
                 "type `{name}` includes itself (a `with` cycle)"
             ));
         }
         if is_struct {
             let mut fields: Vec<(&'a str, Aol<Ty>)> = Vec::new();
-            for p in &includes {
+            for (p, span) in &includes {
                 self.splice_includes(p, visiting)?;
                 let pinfo = self.structs.get(p).cloned().ok_or_else(|| {
-                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                    diag!(Code::TypeMismatch, *span, 0,
                         "`{name}` does `with {p}`, which is not a known struct")
                 })?;
                 for f in &pinfo.fields {
                     if fields.iter().any(|(n, _)| n == &f.0) {
-                        return Err(dup_member(name, f.0, "field"));
+                        return Err(dup_member(name, f.0, "field").fill_span(*span));
                     }
                     fields.push(*f);
                 }
@@ -1998,14 +2043,11 @@ impl<'a> Checker<'a> {
             let own = self.structs.get(name).expect("registered").fields.clone();
             for f in own {
                 if fields.iter().any(|(n, _)| n == &f.0) {
-                    return Err(dup_member(name, f.0, "field"));
+                    return Err(dup_member(name, f.0, "field").fill_span(self.ty_span_or_none(f.1)));
                 }
                 fields.push(f);
             }
-            let mut collected = Vec::new();
-            for (_, ty) in &fields {
-                collect_tyvars(self.ast, *ty, &mut collected);
-            }
+            let collected = self.tyvars_with_spans(fields.iter().map(|(_, ty)| *ty));
             let params = self.splice_params("struct", name, collected)?;
             let prev = self.structs.get(name).expect("registered");
             let (crepr, c_union) = (prev.crepr, prev.c_union);
@@ -2020,15 +2062,15 @@ impl<'a> Checker<'a> {
             );
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
-            for p in &includes {
+            for (p, span) in &includes {
                 self.splice_includes(p, visiting)?;
                 let pinfo = self.unions.get(p).cloned().ok_or_else(|| {
-                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                    diag!(Code::TypeMismatch, *span, 0,
                         "`{name}` does `with {p}`, which is not a known union")
                 })?;
                 for v in &pinfo.variants {
                     if variants.iter().any(|w| w.tag == v.tag) {
-                        return Err(dup_member(name, v.tag, "variant"));
+                        return Err(dup_member(name, v.tag, "variant").fill_span(*span));
                     }
                     variants.push(v.clone());
                 }
@@ -2036,16 +2078,19 @@ impl<'a> Checker<'a> {
             let own = self.unions.get(name).expect("registered").variants.clone();
             for v in own {
                 if variants.iter().any(|w| w.tag == v.tag) {
-                    return Err(dup_member(name, v.tag, "variant"));
+                    let span = v
+                        .payload
+                        .first()
+                        .map_or(at_with, |(_, ty)| self.ty_span_or_none(*ty));
+                    return Err(dup_member(name, v.tag, "variant").fill_span(span));
                 }
                 variants.push(v);
             }
-            let mut collected = Vec::new();
-            for v in &variants {
-                for (_, ty) in &v.payload {
-                    collect_tyvars(self.ast, *ty, &mut collected);
-                }
-            }
+            let payload_tys: Vec<Aol<Ty>> = variants
+                .iter()
+                .flat_map(|v| v.payload.iter().map(|(_, ty)| *ty))
+                .collect();
+            let collected = self.tyvars_with_spans(payload_tys);
             let params = self.splice_params("union", name, collected)?;
             self.unions.insert(name, UnionInfo { params, variants });
         }
@@ -2301,14 +2346,15 @@ impl<'a> Checker<'a> {
         if let Some(exp) = expected {
             self.eng.unify(result, exp, "against the expected type")?;
         }
+        let mut covered = vec![false; info.fields.len()];
         for (i, fi) in fields.iter().enumerate() {
-            let (decl_ty, value) = match fi {
+            let (slot, value) = match fi {
                 // A clause the struct has no slot for is an error: skipping it would
                 // let a literal claim a type whose shape it does not have.
                 FieldInit::Named { name, value } => {
                     let name = self.text(*name);
-                    match info.fields.iter().find(|(n, _)| *n == name) {
-                        Some((_, t)) => (*t, *value),
+                    match info.fields.iter().position(|(n, _)| *n == name) {
+                        Some(slot) => (slot, *value),
                         None => {
                             self.infer(*value)?;
                             return Err(diag!(
@@ -2318,22 +2364,43 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                FieldInit::Positional(value) => match info.fields.get(i) {
-                    Some((_, t)) => (*t, *value),
-                    None => {
-                        self.infer(*value)?;
-                        let n = info.fields.len();
-                        return Err(diag!(
-                            Code::TypeMismatch, Span::at(0), 0,
-                            "struct `{struct_name}` has {n} fields, so there is no field {i}"
-                        ));
-                    }
-                },
+                FieldInit::Positional(value) if i < info.fields.len() => (i, *value),
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    let n = info.fields.len();
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "struct `{struct_name}` has {n} fields, so there is no field {i}"
+                    ));
+                }
             };
+            covered[slot] = true;
             // Check (not infer) so a `[..]` literal field takes its element/size or
             // Array-ness from the declared field type (bidirectional), like a call arg.
-            let want = self.ty_of_ast(decl_ty, &mut subst);
+            let want = self.ty_of_ast(info.fields[slot].1, &mut subst);
             self.check(value, want)?;
+        }
+        // A C union's members share offset 0, so a literal picks exactly one of
+        // them; every other literal stands for a whole value and must give every
+        // field. An update (`.{ .. | base }`) takes the rest from its base.
+        if spread.is_none() {
+            if info.c_union {
+                let n = fields.len();
+                if n != 1 {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "C union `{struct_name}` is built from exactly one member, not {n}"
+                    ));
+                }
+            } else if let Some(slot) = covered.iter().position(|c| !c) {
+                let missing = info.fields[slot].0;
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "struct `{struct_name}` literal is missing field `{missing}`";
+                    note: "a literal gives every field; to change only some, \
+                           update another value with `.{{ .field = v | base }}`"
+                ));
+            }
         }
         Ok(result)
     }
@@ -2344,12 +2411,11 @@ impl<'a> Checker<'a> {
         tag: &'a str,
         fields: &'a [FieldInit],
     ) -> Result<Type> {
-        let resolved = match ty {
-            Some(n) => self.variant_sig(n, tag),
-            None => self
-                .find_union_by_tag(tag)
-                .and_then(|u| self.variant_sig(u, tag)),
+        let union = match ty {
+            Some(n) => Some(n),
+            None => self.find_union_by_tag(tag),
         };
+        let resolved = union.and_then(|u| self.variant_sig(u, tag));
         // No fresh() escape hatch, for the same reason `infer_struct_lit` has none:
         // a fresh variable unifies with anything, so an unresolvable constructor
         // would type-check here and fault at run time.
@@ -2371,23 +2437,51 @@ impl<'a> Checker<'a> {
                 ),
             });
         };
+        let label = variant_label(union, tag);
+        let mut covered = vec![false; payload.len()];
         for (i, fi) in fields.iter().enumerate() {
-            let (want, value) = match fi {
-                FieldInit::Named { name, value } => (
-                    variant_field_ty(&payload, Some(self.text(*name)), i),
-                    *value,
-                ),
-                FieldInit::Positional(value) => (variant_field_ty(&payload, None, i), *value),
+            let (slot, value) = match fi {
+                FieldInit::Named { name, value } => {
+                    let name = self.text(*name);
+                    match payload.iter().position(|(n, _)| *n == Some(name)) {
+                        Some(slot) => (slot, *value),
+                        None => {
+                            self.infer(*value)?;
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "constructor `{label}` has no field `{name}`"
+                            ));
+                        }
+                    }
+                }
+                FieldInit::Positional(value) if i < payload.len() => (i, *value),
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    let n = payload.len();
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "constructor `{label}` takes {n} field(s), so there is no field {i}"
+                    ));
+                }
             };
-            // Check (not infer) against the declared payload type when known, so the
+            covered[slot] = true;
+            // Check (not infer) against the declared payload type, so the
             // expectation flows into a nested value: a bare `.Tag` payload resolves
             // type-directedly, and a literal takes its construction hook / element type.
-            match want {
-                Some(want) => self.check(value, want)?,
-                None => {
-                    self.infer(value)?;
-                }
-            }
+            self.check(value, payload[slot].1)?;
+        }
+        // Every payload slot must be given: a constructor builds a whole value, and
+        // a missing slot would leave the variant holding something its type denies.
+        if let Some(slot) = covered.iter().position(|c| !c) {
+            let n = payload.len();
+            let which = match payload[slot].0 {
+                Some(name) => format!("`{name}`"),
+                None => format!("at index {slot}"),
+            };
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "constructor `{label}` takes {n} field(s) and is missing the one {which}"
+            ));
         }
         Ok(result)
     }
@@ -4538,27 +4632,34 @@ impl<'a> Checker<'a> {
         let (args, mut subst) = self.instantiate_params(&info.params);
         self.eng
             .unify(expected, applied(&self.eng.types, ty, &args), "in a struct pattern")?;
+        // A pattern may bind fewer fields than the struct has, but never more: a
+        // binder with no field behind it names nothing and faults when read.
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let want = self.struct_field_ty(&info, &mut subst, Some(self.text(*name)), i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let name = self.text(*name);
+                    let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
+                    let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Positional(pat) => {
                     let want = self.struct_field_ty(&info, &mut subst, None, i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let n = info.fields.len();
+                    let want = want.ok_or_else(|| no_field_at("struct", ty, i, n))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
                     let name = self.text(*name);
-                    let want = self
-                        .struct_field_ty(&info, &mut subst, Some(name), i)
-                        .unwrap_or_else(|| self.eng.fresh());
+                    let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
+                    let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
                     self.bind(name, want);
                 }
             }
         }
         Ok(())
     }
+
+
 
     fn type_variant_pattern(
         &mut self,
@@ -4567,12 +4668,11 @@ impl<'a> Checker<'a> {
         fields: &'a [FieldPat],
         expected: Type,
     ) -> Result<()> {
-        let resolved = match ty {
-            Some(n) => self.variant_sig(n, tag),
-            None => self
-                .find_union_by_tag(tag)
-                .and_then(|u| self.variant_sig(u, tag)),
+        let union = match ty {
+            Some(n) => Some(n),
+            None => self.find_union_by_tag(tag),
         };
+        let resolved = union.and_then(|u| self.variant_sig(u, tag));
         // As in `type_struct_pattern`, an unresolvable tag is an error rather than
         // an arm that binds fresh variables and constrains nothing.
         let Some((result, payload)) = resolved else {
@@ -4593,30 +4693,33 @@ impl<'a> Checker<'a> {
             });
         };
         self.eng.unify(expected, result, "in a variant pattern")?;
+        let label = variant_label(union, tag);
+        // As for a struct pattern: fewer binders than slots is fine, more is not.
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let want = variant_field_ty(&payload, Some(self.text(*name)), i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let name = self.text(*name);
+                    let want = variant_field_ty(&payload, Some(name), i);
+                    let want =
+                        want.ok_or_else(|| no_such_field("constructor", &label, name))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Positional(pat) => {
                     let want = variant_field_ty(&payload, None, i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let n = payload.len();
+                    let want = want.ok_or_else(|| no_field_at("constructor", &label, i, n))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
                     let name = self.text(*name);
-                    let want = variant_field_ty(&payload, Some(name), i)
-                        .unwrap_or_else(|| self.eng.fresh());
+                    let want = variant_field_ty(&payload, Some(name), i);
+                    let want =
+                        want.ok_or_else(|| no_such_field("constructor", &label, name))?;
                     self.bind(name, want);
                 }
             }
         }
         Ok(())
-    }
-
-    fn bind_field_pattern(&mut self, pat: Aol<Pattern>, want: Option<Type>) -> Result<()> {
-        let want = want.unwrap_or_else(|| self.eng.fresh());
-        self.type_pattern(pat, want)
     }
 
     // -- AST types ----------------------------------------------------------
@@ -5602,6 +5705,32 @@ fn payload_fields<'a>(ast: &'a Ast, p: &Payload) -> Vec<(Option<&'a str>, Aol<Ty
 }
 
 /// Select a payload field's type by name (if named) or by position.
+/// A pattern names a field the type does not declare. `what` is "struct" or
+/// "constructor"; `owner` is its name (`Union.Tag` for a constructor).
+fn no_such_field(what: &str, owner: &str, field: &str) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "{what} `{owner}` has no field `{field}`"
+    )
+}
+
+/// A pattern binds more positional fields than the type has.
+fn no_field_at(what: &str, owner: &str, index: usize, n: usize) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "{what} `{owner}` has {n} field(s), so there is no field {index}"
+    )
+}
+
+/// How a constructor is named in a diagnostic: `Union.Tag` when the union is
+/// known, otherwise the bare tag (a `.Tag` whose union never resolved).
+fn variant_label(union: Option<&str>, tag: &str) -> String {
+    match union {
+        Some(u) => format!("{u}.{tag}"),
+        None => tag.to_string(),
+    }
+}
+
 fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) -> Option<Type> {
     match name {
         Some(name) => payload

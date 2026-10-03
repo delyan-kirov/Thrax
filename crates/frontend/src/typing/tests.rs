@@ -41,6 +41,73 @@ fn errors(src: &str) -> String {
     }
 }
 
+/// Like [`errors`], but rendered with a caret against `src`, so a test can
+/// assert where the diagnostic points.
+fn rendered_errors(src: &str) -> String {
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast, types.clone());
+    checker.import_from(&core_checker);
+    match checker.check_program(&prog) {
+        Ok(_) => String::new(),
+        Err(e) => e.render(src, "test.thx"),
+    }
+}
+
+#[test]
+fn declaration_errors_carry_a_location() {
+    // These are raised outside the `infer`/`check` frames that fill a span, so
+    // each one has to supply its own; without it they all caret `1:1`, blaming
+    // the `@mod` line for an error somewhere else entirely.
+    let cases = [
+        // a `with` include that names no such type
+        "@mod M
+$ P : @struct = with Nope, a: @int,
+$ x : @int = 1",
+        // a `with` cycle
+        "@mod M
+$ A : @struct = with B, a: @int,
+$ B : @struct = with A, b: @int,
+$ x : @int = 1",
+        // a member a `with` splices in twice
+        "@mod M
+$ A : @struct = a: @int,
+$ B : @struct = with A, a: @int,
+$ x : @int = 1",
+        // an undeclared type parameter
+        "@mod M
+$ P : @struct = v: a,
+$ x : @int = 1",
+        // one name defined twice
+        "@mod M
+$ f : @int = 1
+$ f : @int = 2",
+        // a C-repr field that has no C representation
+        "@mod M
+$ P : @struct @extern \"C\" = v: List @int,
+$ x : @int = 1",
+        // a C-repr struct that contains itself by value
+        "@mod M
+$ P : @struct @extern \"C\" = v: P,
+$ x : @int = 1",
+        // a blessed interface declared outside CORE
+        "@mod M
+$ @IRange : @struct a b = range: a -> a -> b,
+$ x : @int = 1",
+    ];
+    for src in cases {
+        let text = rendered_errors(src);
+        assert!(!text.is_empty(), "expected an error for {src:?}");
+        assert!(
+            text.contains("--> test.thx:2:") || text.contains("--> test.thx:3:"),
+            "the error should caret the declaration, not the module header:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn undeclared_type_param_is_error() {
     // Parameters are mandatory: a free tyvar with no declared list is rejected.
@@ -908,4 +975,62 @@ fn codata_is_gone() {
         .err()
         .expect("`@codata` must not parse");
     assert!(format!("{e}").contains("`@codata` no longer exists"), "{e}");
+}
+
+#[test]
+fn a_literal_must_give_every_field() {
+    let err = |src: &str| {
+        let text = rendered_errors(src);
+        assert!(!text.is_empty(), "expected an error for {src:?}");
+        assert!(text.contains("--> test.thx:"), "no caret:\n{text}");
+        text
+    };
+    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+
+    // Too few: the value would be missing a field its type promises, and reading
+    // that field faults at run time.
+    assert!(err(&format!("{p}$ y = P.{{1}}")).contains("missing field `b`"));
+    assert!(err("@mod M\n$ y = List.Cons.{1}").contains("missing the one at index 1"));
+    assert!(err("@mod M\n$ y = List.Cons.{}").contains("missing the one at index 0"));
+    // Too many.
+    assert!(err(&format!("{p}$ y = P.{{1, 2, 3}}")).contains("no field 2"));
+    assert!(err("@mod M\n$ y = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
+    assert!(err(&format!("{p}$ y = P.{{ .c = 1 }}")).contains("has no field `c`"));
+
+    // A complete literal, a named one, and an update are all fine.
+    assert!(rendered_errors(&format!("{p}$ y = P.{{1, 2}}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 1, .b = 2 }}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 9 | P.{{1, 2}} }}")).is_empty());
+    assert!(rendered_errors("@mod M\n$ y = List.Cons.{1, List.Nil}").is_empty());
+}
+
+#[test]
+fn a_c_union_literal_picks_one_member() {
+    let u = "@mod M\n$ U : @union @extern \"C\" = i: @int, d: @float64,\n";
+    // Members share offset 0, so a literal names exactly one; completeness would
+    // be wrong here, and two members would be nonsense.
+    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 42 }}")).is_empty());
+    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 1, .d = 2.0 }}"))
+        .contains("exactly one member"));
+}
+
+#[test]
+fn a_pattern_may_bind_fewer_fields_but_never_more() {
+    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+    // Fewer is the point of a pattern.
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x else 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v else 0")).is_empty());
+    assert!(
+        rendered_errors("@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h else 0")
+            .is_empty()
+    );
+    // More binds a name with no field behind it, which faults when read.
+    let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x else 0"));
+    assert!(surplus.contains("no field 2"), "{surplus}");
+    let surplus = rendered_errors(
+        "@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h else 0",
+    );
+    assert!(surplus.contains("no field 2"), "{surplus}");
+    let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v else 0"));
+    assert!(unknown.contains("has no field `c`"), "{unknown}");
 }

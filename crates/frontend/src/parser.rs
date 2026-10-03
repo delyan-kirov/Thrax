@@ -693,7 +693,7 @@ impl<'a> Parser<'a> {
 
     /// A struct body: leading `with Other` clauses (copied-in fields) then the
     /// declared `name : Type` fields, comma-separated and freely interleaved.
-    fn parse_struct_body(&mut self) -> Result<(Slice<StrId>, Slice<FieldDecl>)> {
+    fn parse_struct_body(&mut self) -> Result<(Slice<Include>, Slice<FieldDecl>)> {
         let mut includes = Vec::new();
         let mut fields = Vec::new();
         loop {
@@ -714,7 +714,7 @@ impl<'a> Parser<'a> {
         Ok((self.ast.make_slice(includes), self.ast.make_slice(fields)))
     }
 
-    fn parse_union_body(&mut self) -> Result<(Slice<StrId>, Slice<VariantDecl>)> {
+    fn parse_union_body(&mut self) -> Result<(Slice<Include>, Slice<VariantDecl>)> {
         let mut includes = Vec::new();
         let mut variants = Vec::new();
         loop {
@@ -741,11 +741,14 @@ impl<'a> Parser<'a> {
     /// A `with Other` clause inside a type declaration: the (capitalized) name of a
     /// same-kind type whose fields/variants are copied into the one declared. Pure
     /// splicing, no type relationship.
-    fn parse_with_include(&mut self) -> Result<StrId> {
+    fn parse_with_include(&mut self) -> Result<Include> {
         self.bump()?; // 'with'
         let t = expect!(self, Kind::Word, "expected a type name after 'with'");
         self.require_type_capital(self.text(t), &t)?;
-        Ok(self.intern(self.text(t)))
+        Ok(Include {
+            name: self.intern(self.text(t)),
+            span: t.span,
+        })
     }
 
     fn parse_payload(&mut self) -> Result<Payload> {
@@ -797,6 +800,7 @@ impl<'a> Parser<'a> {
                  signature, and there may be only one",
             ));
         }
+        let start = self.here()?;
         let from = self.parse_type_app()?;
         if !matches!(self.peek_kind()?, Kind::Arrow) {
             return Ok(from);
@@ -804,14 +808,17 @@ impl<'a> Parser<'a> {
         self.bump()?; // '->'
         let effect = self.parse_effect_row_opt()?;
         let to = self.parse_type()?; // right-associative
-        Ok(self.ty(Ty::Arrow { from, effect, to }))
+        let node = self.ty(Ty::Arrow { from, effect, to });
+        Ok(self.stamp_ty(start, node))
     }
 
     fn parse_type_app(&mut self) -> Result<Aol<Ty>> {
+        let start = self.here()?;
         let mut head = self.parse_type_atom()?;
         while self.starts_type_atom()? {
             let arg = self.parse_type_atom()?;
             head = self.ty(Ty::App(head, arg));
+            head = self.stamp_ty(start, head);
         }
         Ok(head)
     }
@@ -1276,7 +1283,7 @@ impl<'a> Parser<'a> {
         let ahead = self.peek()?;
         match ahead.kind {
             Kind::LBrace => {
-                let ty = self.expect_bare_type_name(base, "a struct literal")?;
+                let ty = self.expect_bare_type_name(base, &ahead, "a struct literal")?;
                 self.parse_struct_lit(Some(ty))
             }
             Kind::Int(_) | Kind::Real(_) => {
@@ -1334,7 +1341,7 @@ impl<'a> Parser<'a> {
                 }
             }
             Kind::Word if is_upper(self.text(ahead)) => {
-                let ty = self.expect_bare_type_name(base, "a variant constructor")?;
+                let ty = self.expect_bare_type_name(base, &ahead, "a variant constructor")?;
                 self.bump()?; // the tag / type name
                 let ahead_name = self.intern(self.text(ahead));
                 // `Module.Type.Tag`: another uppercase `.Name` follows.
@@ -1372,20 +1379,76 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A `:` where a closing delimiter was due: the writer tried to annotate an
+    /// element in place. Ascription lives in a group, so say where to put it.
+    /// Returns `None` when the next token is something else, leaving the ordinary
+    /// "expected X" error to speak for itself.
+    fn stray_annotation(&mut self, what: &str, hint: &str) -> Result<Option<Diagnostic>> {
+        if !matches!(self.peek_kind()?, Kind::Colon) {
+            return Ok(None);
+        }
+        let t = self.peek()?;
+        Ok(Some(self.unexpected(&t, what).with_note(hint.to_string())))
+    }
+
     /// Require that `base` is a bare, uppercase-initial type name and return it.
-    fn expect_bare_type_name(&self, base: Aol<Expr>, what: &str) -> Result<StrId> {
+    /// `at` is the token after the `.` (the `{` or the tag); the error spans the
+    /// base, whose span `parse_atom` always stamps, through that token.
+    fn expect_bare_type_name(&self, base: Aol<Expr>, at: &Token, what: &str) -> Result<StrId> {
         if let Some(name) = self.bare_var_name(base) {
             if is_upper(self.ast.text(name)) {
                 return Ok(name);
             }
         }
-        // No token to point at cheaply here; anchor at a synthetic message.
+        let span = match self.ast.expr_span(base) {
+            Some(s) => Span::new(s.start, at.span.end),
+            None => at.span,
+        };
+        let Some(head) = self.spine_head_name(base) else {
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                span,
+                at.line,
+                format!(
+                    "{what} must be qualified with an uppercase type name, e.g. Type.{{ ... }}"
+                ),
+            ));
+        };
+        let head = self.ast.text(head);
+        if !is_upper(head) {
+            return Err(Diagnostic::error(
+                Code::UnexpectedToken,
+                span,
+                at.line,
+                format!(
+                    "{what} must be qualified with an uppercase type name, and `{head}` names \
+                     a value, not a type"
+                ),
+            ));
+        }
+        // `(List @int32).Cons`: a type applied to its arguments, which is how a
+        // reader asks for a constructor at a fixed instantiation. Thrax infers
+        // those arguments instead, so an ascription is where the types go.
         Err(Diagnostic::error(
             Code::UnexpectedToken,
-            utilities::Span::at(0),
-            0,
-            format!("{what} must be qualified with an uppercase type name, e.g. Type.{{ ... }}"),
-        ))
+            span,
+            at.line,
+            format!("{what} is qualified by a bare type name, not by a type applied to arguments"),
+        )
+        .with_note(format!(
+            "the type arguments are inferred; drop them here and ascribe the whole expression \
+             instead, as in `(e : {head} @int32)`"
+        )))
+    }
+
+    /// The head of an application spine, when it is a bare unqualified name:
+    /// `List` for `List @int32 @str`, and for a bare `List` itself.
+    fn spine_head_name(&self, base: Aol<Expr>) -> Option<StrId> {
+        let mut head = base;
+        while let Expr::App(f, _) = self.ast.exprs.lookup(head) {
+            head = *f;
+        }
+        self.bare_var_name(head)
     }
 
     /// Split a `.0` / `.0.1` index token into nested field accesses.
@@ -1627,6 +1690,13 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+            if let Some(d) = self.stray_annotation(
+                "expected '}' to close the variant payload",
+                "a payload field is ascribed in a group, `.Cons.{ (1 : @int32), rest }`; to fix \
+                 the whole value, write `(.Cons.{ .. } : List @int32)`",
+            )? {
+                return Err(d);
+            }
             expect!(
                 self,
                 Kind::RBrace,
@@ -1692,6 +1762,13 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+        }
+        if let Some(d) = self.stray_annotation(
+            "expected ']' to close the list",
+            "an element is ascribed in a group, `[(1 : @int32), 2, 3]`; to fix the whole \
+             literal and its sequence type, write `([1, 2, 3] : List @int32)`",
+        )? {
+            return Err(d);
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list");
         let elems = self.ast.make_slice(elems);
@@ -1773,9 +1850,10 @@ impl<'a> Parser<'a> {
         let mut bindings = Vec::new();
         loop {
             let pat = self.parse_pattern()?;
-            let is_var = matches!(self.ast.pats.lookup(pat), Pattern::Var(_));
-            let sig = if is_var && matches!(self.peek_kind()?, Kind::Colon) {
-                self.bump()?;
+            // Any pattern may carry the annotation, as a lambda parameter does: the
+            // type describes the whole binding, not one of its binders. A type runs
+            // to the `=`, so the comma that separates bindings is never swallowed.
+            let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
                 Some(self.parse_type()?)
             } else {
                 None
@@ -1854,6 +1932,8 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
+            // No `: T` here, unlike `let` and a lambda parameter: the scrutinee's
+            // type already fixes every arm's pattern, so there is nothing to pin.
             expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
             let body = self.parse_expr(0)?;
             let patterns = self.ast.make_slice(patterns);
@@ -2210,6 +2290,13 @@ impl<'a> Parser<'a> {
             {
                 break;
             }
+        }
+        if let Some(d) = self.stray_annotation(
+            "expected '}' to close the tuple pattern",
+            "a pattern carries no types; annotate the binding instead, as in \
+             `let {a, b} : {@int32, @int32} = ...` or `\\{a, b}: {@int32, @int32} = ...`",
+        )? {
+            return Err(d);
         }
         expect!(
             self,
