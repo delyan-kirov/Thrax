@@ -18,6 +18,7 @@ $ help_text : @str
 	++ "  clean     remove build artifacts\n"
 	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
 	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
+	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
 	++ "  sdk_path  print the repo root (source tools/thxdo.nu to cd there)\n"
 	++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
 	++ "  all       build, then regenerate README.md\n"
@@ -29,6 +30,20 @@ $ doc_page : @str = "target/doc/thrax/index.html"
 
 $ doc_open_cmd : @str =
 	"( ${BROWSER:-xdg-open} \"$PWD/" ++ doc_page ++ "\" >/dev/null 2>&1 & )"
+
+$ site_url : @str = "http://localhost:8000"
+
+# The playground links with wasm-ld, which only the web app's own dev shell
+# carries (applications/web/flake.nix), so the build runs inside it.
+$ site_build_cmd : @str =
+	"nix develop ./applications/web --command node applications/web/build.mjs"
+
+$ site_serve_cmd : @str = "node applications/web/serve.mjs"
+
+# The server holds the terminal, so the browser has to be launched before it,
+# and after a moment so it does not beat the listen.
+$ site_open_cmd : @str =
+	"( sleep 1; ${BROWSER:-xdg-open} \"" ++ site_url ++ "\" >/dev/null 2>&1 & )"
 
 $ run_command: @str -> <@io> bool = \cmd =
 	is cmd
@@ -51,6 +66,17 @@ $ run_command: @str -> <@io> bool = \cmd =
 					@true
 				else
 					println "thxdo: doc FAILED";
+					@false
+		| "site"     =>
+			println "thxdo: rebuilding the playground wasm ...";
+			let rc = C.system site_build_cmd in
+				if rc == 0 =>
+					println ("thxdo: serving " ++ site_url ++ " (Ctrl-C to stop)");
+					C.system site_open_cmd;
+					C.system site_serve_cmd;
+					@true
+				else
+					println "thxdo: site build FAILED";
 					@false
 		| "sdk_path" => println (env "THRAX_ROOT"); @true
 		| "stats"    => C.system "tokei --exclude external --exclude applications"; @true
