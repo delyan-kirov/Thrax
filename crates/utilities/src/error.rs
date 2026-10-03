@@ -239,12 +239,22 @@ impl Diagnostic {
         &self.frames
     }
 
-    /// Render the diagnostic with a source caret, root cause first.
+    /// Render the diagnostic with a source caret, root cause first. A frame that
+    /// still carries the [`Span::at`]`(0)` sentinel has no location, so it gets
+    /// the bare filename and no caret: pointing it at `1:1` would blame the
+    /// file's first line for an error raised somewhere unknown.
     pub fn render(&self, source: &str, filename: &str) -> String {
         let mut out = String::new();
         for (depth, frame) in self.frames.iter().enumerate() {
-            let (line, col, line_text) = locate(source, frame.span.start);
             let lead = if depth == 0 { "error" } else { "note " };
+            if frame.span == Span::at(0) {
+                out.push_str(&format!(
+                    "{lead}[{}]: {}\n  --> {filename}\n",
+                    frame.code, frame.msg
+                ));
+                continue;
+            }
+            let (line, col, line_text) = locate(source, frame.span.start);
             out.push_str(&format!(
                 "{lead}[{}]: {}\n  --> {filename}:{}:{}\n",
                 frame.code, frame.msg, line, col
@@ -272,6 +282,9 @@ impl Diagnostic {
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let r = self.root();
+        if r.line == 0 {
+            return write!(f, "{}: {}", r.code, r.msg);
+        }
         write!(f, "{}: {} (line {})", r.code, r.msg, r.line)
     }
 }

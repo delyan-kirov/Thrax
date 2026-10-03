@@ -41,6 +41,73 @@ fn errors(src: &str) -> String {
     }
 }
 
+/// Like [`errors`], but rendered with a caret against `src`, so a test can
+/// assert where the diagnostic points.
+fn rendered_errors(src: &str) -> String {
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast, types.clone());
+    checker.import_from(&core_checker);
+    match checker.check_program(&prog) {
+        Ok(_) => String::new(),
+        Err(e) => e.render(src, "test.thx"),
+    }
+}
+
+#[test]
+fn declaration_errors_carry_a_location() {
+    // These are raised outside the `infer`/`check` frames that fill a span, so
+    // each one has to supply its own; without it they all caret `1:1`, blaming
+    // the `@mod` line for an error somewhere else entirely.
+    let cases = [
+        // a `with` include that names no such type
+        "@mod M
+$ P : @struct = with Nope, a: @int,
+$ x : @int = 1",
+        // a `with` cycle
+        "@mod M
+$ A : @struct = with B, a: @int,
+$ B : @struct = with A, b: @int,
+$ x : @int = 1",
+        // a member a `with` splices in twice
+        "@mod M
+$ A : @struct = a: @int,
+$ B : @struct = with A, a: @int,
+$ x : @int = 1",
+        // an undeclared type parameter
+        "@mod M
+$ P : @struct = v: a,
+$ x : @int = 1",
+        // one name defined twice
+        "@mod M
+$ f : @int = 1
+$ f : @int = 2",
+        // a C-repr field that has no C representation
+        "@mod M
+$ P : @struct @extern \"C\" = v: List @int,
+$ x : @int = 1",
+        // a C-repr struct that contains itself by value
+        "@mod M
+$ P : @struct @extern \"C\" = v: P,
+$ x : @int = 1",
+        // a blessed interface declared outside CORE
+        "@mod M
+$ @IRange : @struct a b = range: a -> a -> b,
+$ x : @int = 1",
+    ];
+    for src in cases {
+        let text = rendered_errors(src);
+        assert!(!text.is_empty(), "expected an error for {src:?}");
+        assert!(
+            text.contains("--> test.thx:2:") || text.contains("--> test.thx:3:"),
+            "the error should caret the declaration, not the module header:\n{text}"
+        );
+    }
+}
+
 #[test]
 fn undeclared_type_param_is_error() {
     // Parameters are mandatory: a free tyvar with no declared list is rejected.

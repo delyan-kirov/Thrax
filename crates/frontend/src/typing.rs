@@ -71,6 +71,11 @@ struct StructInfo<'a> {
     c_union: bool,
 }
 
+/// Pending `with Other` splices, keyed by the type that wrote them: whether it
+/// is a struct (rather than a union), and each included name with the span it
+/// was written at, so a bad include carets its own `with`.
+type PendingIncludes<'a> = HashMap<&'a str, (bool, Vec<(&'a str, Span)>)>;
+
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
 #[derive(Clone)]
 struct UnionInfo<'a> {
@@ -171,7 +176,7 @@ pub struct Checker<'a> {
     /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
-    pending_includes: HashMap<&'a str, (bool, Vec<&'a str>)>,
+    pending_includes: PendingIncludes<'a>,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary. Each carries the
     /// literal's source span so a defaulting error can point at it.
@@ -674,8 +679,9 @@ impl<'a> Checker<'a> {
         let mut seen: HashSet<&'a str> = HashSet::new();
         for d in &defs {
             if !seen.insert(d.name) {
+                let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
                 return Err(diag!(
-                    Code::TypeMismatch, Span::at(0), 0,
+                    Code::TypeMismatch, span, 0,
                     "`{}` is defined twice in module `{}`", d.name, self.module_name;
                     note: "a name has one type; to give an operation several types, \
                            declare an interface and define one instance per type"
@@ -1634,30 +1640,58 @@ impl<'a> Checker<'a> {
         kind: &str,
         name: &'a str,
         declared: &[utilities::StrId],
-        collected: Vec<&'a str>,
+        collected: Vec<(&'a str, Span)>,
     ) -> Result<Vec<&'a str>> {
         let declared: Vec<&'a str> = declared.iter().map(|p| self.text(*p)).collect();
-        for v in &collected {
+        for (v, span) in &collected {
             if !declared.contains(v) {
-                return Err(undeclared_param(kind, name, v, &declared, false));
+                return Err(undeclared_param(kind, name, v, &declared, false).fill_span(*span));
             }
         }
         Ok(declared)
     }
 
+    /// A declared type's recorded span, or the no-location sentinel.
+    fn ty_span_or_none(&self, ty: Aol<Ty>) -> Span {
+        self.ast.ty_span(ty).unwrap_or(Span::at(0))
+    }
+
+    /// Every type variable used across `tys`, each paired with the span of the
+    /// type it was found in, so an undeclared one carets that field or payload
+    /// rather than the whole declaration.
+    fn tyvars_with_spans(&self, tys: impl IntoIterator<Item = Aol<Ty>>) -> Vec<(&'a str, Span)> {
+        let mut out: Vec<(&'a str, Span)> = Vec::new();
+        for ty in tys {
+            let mut vs = Vec::new();
+            collect_tyvars(self.ast, ty, &mut vs);
+            let span = self.ty_span_or_none(ty);
+            for v in vs {
+                if !out.iter().any(|(n, _)| *n == v) {
+                    out.push((v, span));
+                }
+            }
+        }
+        out
+    }
+
     /// Re-check a struct/union's parameters after its `with` splices are copied in:
     /// the parameters stay as declared, but every type variable in the now-complete
     /// field/variant set, including spliced-in ones, must still be covered.
-    fn splice_params(&self, kind: &str, name: &'a str, collected: Vec<&'a str>) -> Result<Vec<&'a str>> {
+    fn splice_params(
+        &self,
+        kind: &str,
+        name: &'a str,
+        collected: Vec<(&'a str, Span)>,
+    ) -> Result<Vec<&'a str>> {
         let declared = self
             .structs
             .get(name)
             .map(|i| i.params.clone())
             .or_else(|| self.unions.get(name).map(|i| i.params.clone()))
             .expect("registered");
-        for v in &collected {
+        for (v, span) in &collected {
             if !declared.contains(v) {
-                return Err(undeclared_param(kind, name, v, &declared, true));
+                return Err(undeclared_param(kind, name, v, &declared, true).fill_span(*span));
             }
         }
         Ok(declared)
@@ -1679,18 +1713,18 @@ impl<'a> Checker<'a> {
                         self.ast.slice(*includes),
                         self.ast.slice(*fields),
                     );
-                    let mut collected = Vec::new();
-                    for f in fields.iter() {
-                        collect_tyvars(self.ast, f.ty, &mut collected);
-                    }
+                    let collected = self.tyvars_with_spans(fields.iter().map(|f| f.ty));
                     let name = self.text(*name);
                     // A blessed interface is the compiler's own: CORE declares it, and
                     // exactly one field, because a desugar site projects that field
                     // without knowing its name.
                     if crate::parser::table::is_blessed_interface(name) {
+                        let at = fields
+                            .first()
+                            .map_or(Span::at(0), |f| self.ty_span_or_none(f.ty));
                         if self.module_name != "CORE" {
                             return Err(diag!(
-                                Code::TypeMismatch, Span::at(0), 0,
+                                Code::TypeMismatch, at, 0,
                                 "`{name}` is a blessed interface and only CORE may declare it";
                                 note: "implement it instead: a value of the applied type \
                                        (`$ r : @IRange @int Span = .{{ .range = ... }}`)"
@@ -1698,7 +1732,7 @@ impl<'a> Checker<'a> {
                         }
                         if fields.len() != 1 {
                             return Err(diag!(
-                                Code::TypeMismatch, Span::at(0), 0,
+                                Code::TypeMismatch, at, 0,
                                 "the blessed interface `{name}` must have exactly one field, \
                                  not {}", fields.len()
                             ));
@@ -1718,7 +1752,7 @@ impl<'a> Checker<'a> {
                     );
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        let ps = includes.iter().map(|p| (self.text(p.name), p.span)).collect();
                         self.pending_includes.insert(name, (true, ps));
                     }
                 }
@@ -1733,18 +1767,17 @@ impl<'a> Checker<'a> {
                         self.ast.slice(*includes),
                         self.ast.slice(*variants),
                     );
-                    let mut collected = Vec::new();
+                    let mut payload_tys = Vec::new();
                     let mut vs = Vec::with_capacity(variants.len());
                     for v in variants.iter() {
                         let payload = payload_fields(self.ast, &v.payload);
-                        for (_, ty) in &payload {
-                            collect_tyvars(self.ast, *ty, &mut collected);
-                        }
+                        payload_tys.extend(payload.iter().map(|(_, ty)| *ty));
                         vs.push(VariantSig {
                             tag: self.text(v.tag),
                             payload,
                         });
                     }
+                    let collected = self.tyvars_with_spans(payload_tys);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("union", name, params, collected)?;
                     self.unions.insert(
@@ -1756,14 +1789,13 @@ impl<'a> Checker<'a> {
                     );
                     self.own_type_names.push(name);
                     if !includes.is_empty() {
-                        let ps = includes.iter().map(|p| self.text(*p)).collect();
+                        let ps = includes.iter().map(|p| (self.text(p.name), p.span)).collect();
                         self.pending_includes.insert(name, (false, ps));
                     }
                 }
                 Item::Alias { name, params, ty } => {
                     let params = self.ast.slice(*params);
-                    let mut collected = Vec::new();
-                    collect_tyvars(self.ast, *ty, &mut collected);
+                    let collected = self.tyvars_with_spans([*ty]);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("alias", name, params, collected)?;
                     self.aliases.insert(name, (params, *ty));
@@ -1936,19 +1968,28 @@ impl<'a> Checker<'a> {
                             break k;
                         }
                         if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
-                            break utilities::CKind::Struct(cn.to_string(), self.clayout_of(cn, visiting)?);
+                            let layout = self
+                                .clayout_of(cn, visiting)
+                                .map_err(|d| d.fill_span(self.ty_span_or_none(*fty)))?;
+                            break utilities::CKind::Struct(cn.to_string(), layout);
                         }
                         match self.nullary_alias_target(cn) {
                             Some(next) if next != cn && steps < 256 => {
                                 cn = next;
                                 steps += 1;
                             }
-                            _ => return Err(crepr_field_error(name, fname, cn)),
+                            _ => {
+                                return Err(crepr_field_error(name, fname, cn)
+                                    .fill_span(self.ty_span_or_none(*fty)))
+                            }
                         }
                     };
                     kind
                 }
-                _ => return Err(crepr_field_error(name, fname, "a non-scalar type")),
+                _ => {
+                    return Err(crepr_field_error(name, fname, "a non-scalar type")
+                        .fill_span(self.ty_span_or_none(*fty)))
+                }
             };
             fields.push((fname.to_string(), kind));
         }
@@ -1974,23 +2015,27 @@ impl<'a> Checker<'a> {
             Some(entry) => entry.clone(),
             None => return Ok(()), // already spliced (or never used `with`)
         };
+        // Every failure below is about what a `with` dragged in, so the first
+        // include is the fallback caret when the member itself has no span.
+        let at_with = includes.first().map_or(Span::at(0), |(_, s)| *s);
         if !visiting.insert(name) {
+            let span = at_with;
             return Err(diag!(
-                Code::TypeMismatch, Span::at(0), 0,
+                Code::TypeMismatch, span, 0,
                 "type `{name}` includes itself (a `with` cycle)"
             ));
         }
         if is_struct {
             let mut fields: Vec<(&'a str, Aol<Ty>)> = Vec::new();
-            for p in &includes {
+            for (p, span) in &includes {
                 self.splice_includes(p, visiting)?;
                 let pinfo = self.structs.get(p).cloned().ok_or_else(|| {
-                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                    diag!(Code::TypeMismatch, *span, 0,
                         "`{name}` does `with {p}`, which is not a known struct")
                 })?;
                 for f in &pinfo.fields {
                     if fields.iter().any(|(n, _)| n == &f.0) {
-                        return Err(dup_member(name, f.0, "field"));
+                        return Err(dup_member(name, f.0, "field").fill_span(*span));
                     }
                     fields.push(*f);
                 }
@@ -1998,14 +2043,11 @@ impl<'a> Checker<'a> {
             let own = self.structs.get(name).expect("registered").fields.clone();
             for f in own {
                 if fields.iter().any(|(n, _)| n == &f.0) {
-                    return Err(dup_member(name, f.0, "field"));
+                    return Err(dup_member(name, f.0, "field").fill_span(self.ty_span_or_none(f.1)));
                 }
                 fields.push(f);
             }
-            let mut collected = Vec::new();
-            for (_, ty) in &fields {
-                collect_tyvars(self.ast, *ty, &mut collected);
-            }
+            let collected = self.tyvars_with_spans(fields.iter().map(|(_, ty)| *ty));
             let params = self.splice_params("struct", name, collected)?;
             let prev = self.structs.get(name).expect("registered");
             let (crepr, c_union) = (prev.crepr, prev.c_union);
@@ -2020,15 +2062,15 @@ impl<'a> Checker<'a> {
             );
         } else {
             let mut variants: Vec<VariantSig<'a>> = Vec::new();
-            for p in &includes {
+            for (p, span) in &includes {
                 self.splice_includes(p, visiting)?;
                 let pinfo = self.unions.get(p).cloned().ok_or_else(|| {
-                    diag!(Code::TypeMismatch, Span::at(0), 0,
+                    diag!(Code::TypeMismatch, *span, 0,
                         "`{name}` does `with {p}`, which is not a known union")
                 })?;
                 for v in &pinfo.variants {
                     if variants.iter().any(|w| w.tag == v.tag) {
-                        return Err(dup_member(name, v.tag, "variant"));
+                        return Err(dup_member(name, v.tag, "variant").fill_span(*span));
                     }
                     variants.push(v.clone());
                 }
@@ -2036,16 +2078,19 @@ impl<'a> Checker<'a> {
             let own = self.unions.get(name).expect("registered").variants.clone();
             for v in own {
                 if variants.iter().any(|w| w.tag == v.tag) {
-                    return Err(dup_member(name, v.tag, "variant"));
+                    let span = v
+                        .payload
+                        .first()
+                        .map_or(at_with, |(_, ty)| self.ty_span_or_none(*ty));
+                    return Err(dup_member(name, v.tag, "variant").fill_span(span));
                 }
                 variants.push(v);
             }
-            let mut collected = Vec::new();
-            for v in &variants {
-                for (_, ty) in &v.payload {
-                    collect_tyvars(self.ast, *ty, &mut collected);
-                }
-            }
+            let payload_tys: Vec<Aol<Ty>> = variants
+                .iter()
+                .flat_map(|v| v.payload.iter().map(|(_, ty)| *ty))
+                .collect();
+            let collected = self.tyvars_with_spans(payload_tys);
             let params = self.splice_params("union", name, collected)?;
             self.unions.insert(name, UnionInfo { params, variants });
         }

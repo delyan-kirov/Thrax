@@ -164,7 +164,7 @@ impl Decls {
                         .or_default()
                         .insert(name.clone(), tps);
                     if !includes.is_empty() {
-                        let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
+                        let ps = ast.slice(*includes).iter().map(|p| ast.text(p.name).to_string()).collect();
                         self.includes
                             .push((module.clone(), name.clone(), true, ps));
                     }
@@ -187,7 +187,7 @@ impl Decls {
                         .or_default()
                         .insert(uname.clone(), tps);
                     if !includes.is_empty() {
-                        let ps = ast.slice(*includes).iter().map(|p| ast.text(*p).to_string()).collect();
+                        let ps = ast.slice(*includes).iter().map(|p| ast.text(p.name).to_string()).collect();
                         self.includes
                             .push((module.clone(), uname.clone(), false, ps));
                     }

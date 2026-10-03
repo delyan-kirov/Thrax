@@ -600,3 +600,31 @@ fn lambda_parameters_are_comma_separated_and_take_annotations() {
     };
     assert!(err.contains("comma-separated"), "{err}");
 }
+
+#[test]
+fn a_misqualified_literal_points_at_the_expression() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.render(src, "t.thx"),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+
+    // A type applied to arguments is how a reader asks for a constructor at a
+    // fixed instantiation; the error names the ascription that does that job.
+    let text = err("@mod M\n$ y = (List @int32).Cons.{1}");
+    assert!(text.contains("applied to arguments"), "{text}");
+    assert!(text.contains("ascribe"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("   |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
+
+    // A lowercase head is a value name, not a type.
+    let text = err("@mod M\n$ y = (list @int32).Cons.{1}");
+    assert!(text.contains("`list` names a value"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+
+    // A struct literal on an arbitrary expression carets that expression, not
+    // the first line of the file.
+    let text = err("@mod M\n$ y = (1 + 2).{3}");
+    assert!(text.contains("a struct literal must be qualified"), "{text}");
+    assert!(text.contains("--> t.thx:2:7"), "{text}");
+    assert!(text.contains("   |       ^^^^^^^^^\n"), "{text}");
+}

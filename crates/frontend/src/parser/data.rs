@@ -33,6 +33,7 @@ pub struct Ast {
     pat_seqs: Store<Aol<Pattern>>,
     str_seqs: Store<StrId>,
     field_decls: Store<FieldDecl>,
+    includes: Store<Include>,
     rec_fields: Store<RecField>,
     field_inits: Store<FieldInit>,
     field_pats: Store<FieldPat>,
@@ -73,6 +74,7 @@ sliced! {
     Aol<Pattern> => pat_seqs,
     StrId => str_seqs,
     FieldDecl => field_decls,
+    Include => includes,
     RecField => rec_fields,
     FieldInit => field_inits,
     FieldPat => field_pats,
@@ -163,7 +165,7 @@ pub enum Item {
     Struct {
         name: StrId,
         params: Slice<StrId>,
-        includes: Slice<StrId>,
+        includes: Slice<Include>,
         fields: Slice<FieldDecl>,
         abi: Option<StrId>,
         /// A C `union` (`@union @extern "abi"`): the members share offset 0 and the
@@ -178,7 +180,7 @@ pub enum Item {
     Union {
         name: StrId,
         params: Slice<StrId>,
-        includes: Slice<StrId>,
+        includes: Slice<Include>,
         variants: Slice<VariantDecl>,
     },
     /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
@@ -214,6 +216,15 @@ pub enum Item {
 pub struct FieldDecl {
     pub name: StrId,
     pub ty: Aol<Ty>,
+}
+
+/// One `with Other` splice in a struct or union declaration. The span is the
+/// type name's, so an unknown or cyclic include carets the `with` that asked
+/// for it.
+#[derive(Clone, Copy, Debug)]
+pub struct Include {
+    pub name: StrId,
+    pub span: Span,
 }
 
 /// One `Tag : payload` arm of a union declaration.
