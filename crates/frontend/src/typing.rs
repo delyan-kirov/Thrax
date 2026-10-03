@@ -2346,14 +2346,15 @@ impl<'a> Checker<'a> {
         if let Some(exp) = expected {
             self.eng.unify(result, exp, "against the expected type")?;
         }
+        let mut covered = vec![false; info.fields.len()];
         for (i, fi) in fields.iter().enumerate() {
-            let (decl_ty, value) = match fi {
+            let (slot, value) = match fi {
                 // A clause the struct has no slot for is an error: skipping it would
                 // let a literal claim a type whose shape it does not have.
                 FieldInit::Named { name, value } => {
                     let name = self.text(*name);
-                    match info.fields.iter().find(|(n, _)| *n == name) {
-                        Some((_, t)) => (*t, *value),
+                    match info.fields.iter().position(|(n, _)| *n == name) {
+                        Some(slot) => (slot, *value),
                         None => {
                             self.infer(*value)?;
                             return Err(diag!(
@@ -2363,22 +2364,43 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                FieldInit::Positional(value) => match info.fields.get(i) {
-                    Some((_, t)) => (*t, *value),
-                    None => {
-                        self.infer(*value)?;
-                        let n = info.fields.len();
-                        return Err(diag!(
-                            Code::TypeMismatch, Span::at(0), 0,
-                            "struct `{struct_name}` has {n} fields, so there is no field {i}"
-                        ));
-                    }
-                },
+                FieldInit::Positional(value) if i < info.fields.len() => (i, *value),
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    let n = info.fields.len();
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "struct `{struct_name}` has {n} fields, so there is no field {i}"
+                    ));
+                }
             };
+            covered[slot] = true;
             // Check (not infer) so a `[..]` literal field takes its element/size or
             // Array-ness from the declared field type (bidirectional), like a call arg.
-            let want = self.ty_of_ast(decl_ty, &mut subst);
+            let want = self.ty_of_ast(info.fields[slot].1, &mut subst);
             self.check(value, want)?;
+        }
+        // A C union's members share offset 0, so a literal picks exactly one of
+        // them; every other literal stands for a whole value and must give every
+        // field. An update (`.{ .. | base }`) takes the rest from its base.
+        if spread.is_none() {
+            if info.c_union {
+                let n = fields.len();
+                if n != 1 {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "C union `{struct_name}` is built from exactly one member, not {n}"
+                    ));
+                }
+            } else if let Some(slot) = covered.iter().position(|c| !c) {
+                let missing = info.fields[slot].0;
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "struct `{struct_name}` literal is missing field `{missing}`";
+                    note: "a literal gives every field; to change only some, \
+                           update another value with `.{{ .field = v | base }}`"
+                ));
+            }
         }
         Ok(result)
     }
@@ -2389,12 +2411,11 @@ impl<'a> Checker<'a> {
         tag: &'a str,
         fields: &'a [FieldInit],
     ) -> Result<Type> {
-        let resolved = match ty {
-            Some(n) => self.variant_sig(n, tag),
-            None => self
-                .find_union_by_tag(tag)
-                .and_then(|u| self.variant_sig(u, tag)),
+        let union = match ty {
+            Some(n) => Some(n),
+            None => self.find_union_by_tag(tag),
         };
+        let resolved = union.and_then(|u| self.variant_sig(u, tag));
         // No fresh() escape hatch, for the same reason `infer_struct_lit` has none:
         // a fresh variable unifies with anything, so an unresolvable constructor
         // would type-check here and fault at run time.
@@ -2416,23 +2437,51 @@ impl<'a> Checker<'a> {
                 ),
             });
         };
+        let label = variant_label(union, tag);
+        let mut covered = vec![false; payload.len()];
         for (i, fi) in fields.iter().enumerate() {
-            let (want, value) = match fi {
-                FieldInit::Named { name, value } => (
-                    variant_field_ty(&payload, Some(self.text(*name)), i),
-                    *value,
-                ),
-                FieldInit::Positional(value) => (variant_field_ty(&payload, None, i), *value),
+            let (slot, value) = match fi {
+                FieldInit::Named { name, value } => {
+                    let name = self.text(*name);
+                    match payload.iter().position(|(n, _)| *n == Some(name)) {
+                        Some(slot) => (slot, *value),
+                        None => {
+                            self.infer(*value)?;
+                            return Err(diag!(
+                                Code::TypeMismatch, Span::at(0), 0,
+                                "constructor `{label}` has no field `{name}`"
+                            ));
+                        }
+                    }
+                }
+                FieldInit::Positional(value) if i < payload.len() => (i, *value),
+                FieldInit::Positional(value) => {
+                    self.infer(*value)?;
+                    let n = payload.len();
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "constructor `{label}` takes {n} field(s), so there is no field {i}"
+                    ));
+                }
             };
-            // Check (not infer) against the declared payload type when known, so the
+            covered[slot] = true;
+            // Check (not infer) against the declared payload type, so the
             // expectation flows into a nested value: a bare `.Tag` payload resolves
             // type-directedly, and a literal takes its construction hook / element type.
-            match want {
-                Some(want) => self.check(value, want)?,
-                None => {
-                    self.infer(value)?;
-                }
-            }
+            self.check(value, payload[slot].1)?;
+        }
+        // Every payload slot must be given: a constructor builds a whole value, and
+        // a missing slot would leave the variant holding something its type denies.
+        if let Some(slot) = covered.iter().position(|c| !c) {
+            let n = payload.len();
+            let which = match payload[slot].0 {
+                Some(name) => format!("`{name}`"),
+                None => format!("at index {slot}"),
+            };
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "constructor `{label}` takes {n} field(s) and is missing the one {which}"
+            ));
         }
         Ok(result)
     }
@@ -4583,27 +4632,34 @@ impl<'a> Checker<'a> {
         let (args, mut subst) = self.instantiate_params(&info.params);
         self.eng
             .unify(expected, applied(&self.eng.types, ty, &args), "in a struct pattern")?;
+        // A pattern may bind fewer fields than the struct has, but never more: a
+        // binder with no field behind it names nothing and faults when read.
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let want = self.struct_field_ty(&info, &mut subst, Some(self.text(*name)), i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let name = self.text(*name);
+                    let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
+                    let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Positional(pat) => {
                     let want = self.struct_field_ty(&info, &mut subst, None, i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let n = info.fields.len();
+                    let want = want.ok_or_else(|| no_field_at("struct", ty, i, n))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
                     let name = self.text(*name);
-                    let want = self
-                        .struct_field_ty(&info, &mut subst, Some(name), i)
-                        .unwrap_or_else(|| self.eng.fresh());
+                    let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
+                    let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
                     self.bind(name, want);
                 }
             }
         }
         Ok(())
     }
+
+
 
     fn type_variant_pattern(
         &mut self,
@@ -4612,12 +4668,11 @@ impl<'a> Checker<'a> {
         fields: &'a [FieldPat],
         expected: Type,
     ) -> Result<()> {
-        let resolved = match ty {
-            Some(n) => self.variant_sig(n, tag),
-            None => self
-                .find_union_by_tag(tag)
-                .and_then(|u| self.variant_sig(u, tag)),
+        let union = match ty {
+            Some(n) => Some(n),
+            None => self.find_union_by_tag(tag),
         };
+        let resolved = union.and_then(|u| self.variant_sig(u, tag));
         // As in `type_struct_pattern`, an unresolvable tag is an error rather than
         // an arm that binds fresh variables and constrains nothing.
         let Some((result, payload)) = resolved else {
@@ -4638,30 +4693,33 @@ impl<'a> Checker<'a> {
             });
         };
         self.eng.unify(expected, result, "in a variant pattern")?;
+        let label = variant_label(union, tag);
+        // As for a struct pattern: fewer binders than slots is fine, more is not.
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let want = variant_field_ty(&payload, Some(self.text(*name)), i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let name = self.text(*name);
+                    let want = variant_field_ty(&payload, Some(name), i);
+                    let want =
+                        want.ok_or_else(|| no_such_field("constructor", &label, name))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Positional(pat) => {
                     let want = variant_field_ty(&payload, None, i);
-                    self.bind_field_pattern(*pat, want)?;
+                    let n = payload.len();
+                    let want = want.ok_or_else(|| no_field_at("constructor", &label, i, n))?;
+                    self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
                     let name = self.text(*name);
-                    let want = variant_field_ty(&payload, Some(name), i)
-                        .unwrap_or_else(|| self.eng.fresh());
+                    let want = variant_field_ty(&payload, Some(name), i);
+                    let want =
+                        want.ok_or_else(|| no_such_field("constructor", &label, name))?;
                     self.bind(name, want);
                 }
             }
         }
         Ok(())
-    }
-
-    fn bind_field_pattern(&mut self, pat: Aol<Pattern>, want: Option<Type>) -> Result<()> {
-        let want = want.unwrap_or_else(|| self.eng.fresh());
-        self.type_pattern(pat, want)
     }
 
     // -- AST types ----------------------------------------------------------
@@ -5647,6 +5705,32 @@ fn payload_fields<'a>(ast: &'a Ast, p: &Payload) -> Vec<(Option<&'a str>, Aol<Ty
 }
 
 /// Select a payload field's type by name (if named) or by position.
+/// A pattern names a field the type does not declare. `what` is "struct" or
+/// "constructor"; `owner` is its name (`Union.Tag` for a constructor).
+fn no_such_field(what: &str, owner: &str, field: &str) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "{what} `{owner}` has no field `{field}`"
+    )
+}
+
+/// A pattern binds more positional fields than the type has.
+fn no_field_at(what: &str, owner: &str, index: usize, n: usize) -> Diagnostic {
+    diag!(
+        Code::TypeMismatch, Span::at(0), 0,
+        "{what} `{owner}` has {n} field(s), so there is no field {index}"
+    )
+}
+
+/// How a constructor is named in a diagnostic: `Union.Tag` when the union is
+/// known, otherwise the bare tag (a `.Tag` whose union never resolved).
+fn variant_label(union: Option<&str>, tag: &str) -> String {
+    match union {
+        Some(u) => format!("{u}.{tag}"),
+        None => tag.to_string(),
+    }
+}
+
 fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) -> Option<Type> {
     match name {
         Some(name) => payload

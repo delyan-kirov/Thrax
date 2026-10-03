@@ -976,3 +976,61 @@ fn codata_is_gone() {
         .expect("`@codata` must not parse");
     assert!(format!("{e}").contains("`@codata` no longer exists"), "{e}");
 }
+
+#[test]
+fn a_literal_must_give_every_field() {
+    let err = |src: &str| {
+        let text = rendered_errors(src);
+        assert!(!text.is_empty(), "expected an error for {src:?}");
+        assert!(text.contains("--> test.thx:"), "no caret:\n{text}");
+        text
+    };
+    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+
+    // Too few: the value would be missing a field its type promises, and reading
+    // that field faults at run time.
+    assert!(err(&format!("{p}$ y = P.{{1}}")).contains("missing field `b`"));
+    assert!(err("@mod M\n$ y = List.Cons.{1}").contains("missing the one at index 1"));
+    assert!(err("@mod M\n$ y = List.Cons.{}").contains("missing the one at index 0"));
+    // Too many.
+    assert!(err(&format!("{p}$ y = P.{{1, 2, 3}}")).contains("no field 2"));
+    assert!(err("@mod M\n$ y = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
+    assert!(err(&format!("{p}$ y = P.{{ .c = 1 }}")).contains("has no field `c`"));
+
+    // A complete literal, a named one, and an update are all fine.
+    assert!(rendered_errors(&format!("{p}$ y = P.{{1, 2}}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 1, .b = 2 }}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 9 | P.{{1, 2}} }}")).is_empty());
+    assert!(rendered_errors("@mod M\n$ y = List.Cons.{1, List.Nil}").is_empty());
+}
+
+#[test]
+fn a_c_union_literal_picks_one_member() {
+    let u = "@mod M\n$ U : @union @extern \"C\" = i: @int, d: @float64,\n";
+    // Members share offset 0, so a literal names exactly one; completeness would
+    // be wrong here, and two members would be nonsense.
+    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 42 }}")).is_empty());
+    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 1, .d = 2.0 }}"))
+        .contains("exactly one member"));
+}
+
+#[test]
+fn a_pattern_may_bind_fewer_fields_but_never_more() {
+    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+    // Fewer is the point of a pattern.
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x else 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v else 0")).is_empty());
+    assert!(
+        rendered_errors("@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h else 0")
+            .is_empty()
+    );
+    // More binds a name with no field behind it, which faults when read.
+    let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x else 0"));
+    assert!(surplus.contains("no field 2"), "{surplus}");
+    let surplus = rendered_errors(
+        "@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h else 0",
+    );
+    assert!(surplus.contains("no field 2"), "{surplus}");
+    let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v else 0"));
+    assert!(unknown.contains("has no field `c`"), "{unknown}");
+}

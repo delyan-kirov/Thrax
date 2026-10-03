@@ -1379,6 +1379,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// A `:` where a closing delimiter was due: the writer tried to annotate an
+    /// element in place. Ascription lives in a group, so say where to put it.
+    /// Returns `None` when the next token is something else, leaving the ordinary
+    /// "expected X" error to speak for itself.
+    fn stray_annotation(&mut self, what: &str, hint: &str) -> Result<Option<Diagnostic>> {
+        if !matches!(self.peek_kind()?, Kind::Colon) {
+            return Ok(None);
+        }
+        let t = self.peek()?;
+        Ok(Some(self.unexpected(&t, what).with_note(hint.to_string())))
+    }
+
     /// Require that `base` is a bare, uppercase-initial type name and return it.
     /// `at` is the token after the `.` (the `{` or the tag); the error spans the
     /// base, whose span `parse_atom` always stamps, through that token.
@@ -1678,6 +1690,13 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+            if let Some(d) = self.stray_annotation(
+                "expected '}' to close the variant payload",
+                "a payload field is ascribed in a group, `.Cons.{ (1 : @int32), rest }`; to fix \
+                 the whole value, write `(.Cons.{ .. } : List @int32)`",
+            )? {
+                return Err(d);
+            }
             expect!(
                 self,
                 Kind::RBrace,
@@ -1743,6 +1762,13 @@ impl<'a> Parser<'a> {
                     break;
                 }
             }
+        }
+        if let Some(d) = self.stray_annotation(
+            "expected ']' to close the list",
+            "an element is ascribed in a group, `[(1 : @int32), 2, 3]`; to fix the whole \
+             literal and its sequence type, write `([1, 2, 3] : List @int32)`",
+        )? {
+            return Err(d);
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list");
         let elems = self.ast.make_slice(elems);
@@ -1824,9 +1850,10 @@ impl<'a> Parser<'a> {
         let mut bindings = Vec::new();
         loop {
             let pat = self.parse_pattern()?;
-            let is_var = matches!(self.ast.pats.lookup(pat), Pattern::Var(_));
-            let sig = if is_var && matches!(self.peek_kind()?, Kind::Colon) {
-                self.bump()?;
+            // Any pattern may carry the annotation, as a lambda parameter does: the
+            // type describes the whole binding, not one of its binders. A type runs
+            // to the `=`, so the comma that separates bindings is never swallowed.
+            let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
                 Some(self.parse_type()?)
             } else {
                 None
@@ -1905,6 +1932,8 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
+            // No `: T` here, unlike `let` and a lambda parameter: the scrutinee's
+            // type already fixes every arm's pattern, so there is nothing to pin.
             expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
             let body = self.parse_expr(0)?;
             let patterns = self.ast.make_slice(patterns);
@@ -2261,6 +2290,13 @@ impl<'a> Parser<'a> {
             {
                 break;
             }
+        }
+        if let Some(d) = self.stray_annotation(
+            "expected '}' to close the tuple pattern",
+            "a pattern carries no types; annotate the binding instead, as in \
+             `let {a, b} : {@int32, @int32} = ...` or `\\{a, b}: {@int32, @int32} = ...`",
+        )? {
+            return Err(d);
         }
         expect!(
             self,

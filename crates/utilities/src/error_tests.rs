@@ -45,7 +45,7 @@ fn caret_pad_preserves_leading_tabs() {
 #[test]
 fn column_is_one_based() {
     let src = "ab\ncd";
-    let (line_no, col, line) = locate(src, 4);
+    let (line_no, col, line, _) = locate(src, 4);
     assert_eq!(line_no, 2);
     assert_eq!(col, 2);
     assert_eq!(line, "cd");
@@ -109,4 +109,24 @@ fn a_located_frame_still_renders_when_the_root_has_no_span() {
         "{text}"
     );
     assert!(text.contains("   | cd\n   | ^^\n"), "{text}");
+}
+
+#[test]
+fn caret_stops_at_the_end_of_the_line() {
+    // A span may run past the newline (an application spanning two lines). The
+    // caret row is drawn against one line, so it must not outrun it.
+    let src = "\"aaa\"\n\t\"bbb\"\n";
+    let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 12), 1, "not a function");
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("   | ^^^^^\n"), "{text}");
+}
+
+#[test]
+fn caret_counts_characters_not_bytes() {
+    // The span is a byte range; the caret row is characters, so a multi-byte
+    // span must not draw one caret per byte.
+    let src = "\"héllo\"\n";
+    let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 8), 1, "bad");
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("   | ^^^^^^^\n"), "{text}");
 }

@@ -254,7 +254,7 @@ impl Diagnostic {
                 ));
                 continue;
             }
-            let (line, col, line_text) = locate(source, frame.span.start);
+            let (line, col, line_text, line_start) = locate(source, frame.span.start);
             out.push_str(&format!(
                 "{lead}[{}]: {}\n  --> {filename}:{}:{}\n",
                 frame.code, frame.msg, line, col
@@ -269,7 +269,12 @@ impl Diagnostic {
                 .take(col.saturating_sub(1))
                 .map(|c| if c == '\t' { '\t' } else { ' ' })
                 .collect();
-            let caret_len = frame.span.len().max(1);
+            // Measure the caret in characters over the part of the span that this
+            // line actually shows: a span is a byte range and may run past the
+            // newline, which would otherwise draw carets off the end of the line.
+            let line_end = line_start + line_text.len();
+            let visible = frame.span.end.clamp(frame.span.start, line_end);
+            let caret_len = source[frame.span.start..visible].chars().count().max(1);
             out.push_str(&format!("   | {}{}\n", caret_pad, "^".repeat(caret_len)));
         }
         if let Some(note) = &self.note {
@@ -291,9 +296,9 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
-/// Recover the 1-based line number and column, plus the full text of the line,
-/// for the source position at `offset`.
-fn locate(source: &str, offset: usize) -> (usize, usize, &str) {
+/// Recover the 1-based line number and column, the full text of the line, and
+/// the line's start offset, for the source position at `offset`.
+fn locate(source: &str, offset: usize) -> (usize, usize, &str, usize) {
     let offset = offset.min(source.len());
     let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
     let line_end = source[offset..]
@@ -301,7 +306,7 @@ fn locate(source: &str, offset: usize) -> (usize, usize, &str) {
         .map_or(source.len(), |i| offset + i);
     let col = source[line_start..offset].chars().count() + 1;
     let line = source[..line_start].bytes().filter(|&b| b == b'\n').count() + 1;
-    (line, col, &source[line_start..line_end])
+    (line, col, &source[line_start..line_end], line_start)
 }
 
 #[cfg(test)]
