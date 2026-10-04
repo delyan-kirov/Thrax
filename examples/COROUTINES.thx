@@ -10,9 +10,15 @@ $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },
 
 # Run a task one step: it either finishes (`Fin`) or yields a value and suspends,
 # in which case we capture its continuation `k` in `Susp` for the scheduler.
+# `k` leaves the clause inside the `Susp`, so nothing in the clause bounds how
+# often the scheduler resumes it, and a resume would have to copy the captured
+# slice to stay safe. `@oneshot` is the promise that it is resumed at most once
+# (here: `rr` consumes each `Susp` exactly once), which buys back the move.
+# Dropping the annotation still runs, it just copies per resume; resuming twice
+# under it is a runtime fault.
 $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
-    ctl k
+    ctl @oneshot k
        | Co.yield v => Task.Susp.{ v, k }
        else _ => Task.Fin.{}
 

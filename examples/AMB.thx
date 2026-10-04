@@ -1,0 +1,65 @@
+@mod AMB
+
+# Nondeterminism: effects whose handler resumes the SAME continuation MORE THAN
+# ONCE, so the rest of the computation runs once per branch. `flip` is the
+# two-way choice, `choose n` the n-way one. A clause that may resume again gets a
+# private copy of the captured slice per resume, so one branch never observes
+# another's bindings; a clause that resumes at most once still hands the slice
+# over, at no cost. Neither is written differently: `ctl k` is just applied as
+# often as the handler needs.
+
+$ Amb    : @effect = flip : {} -> @bool,
+$ Choose : @effect = choose : @int -> @int,
+
+# Every path's result, summed: the clause resumes `k` twice, once per branch.
+$ sum_all : ({} -> <Amb> @int) -> @int = \body =
+	do body {}
+	ctl k | Amb.flip u => k @true + k @false
+	      else x => x
+
+$ one_flip : @int = sum_all <| \u = if flip {} => 10 else 1
+
+# The second `flip` is performed INSIDE a resumed copy, and captures again from
+# there: 11 + 1 + 10 + 0.
+$ two_flips : @int = sum_all <| \u =
+	let a = if flip {} => 1 else 0 in
+	let b = if flip {} => 10 else 0 in
+	a + b
+
+# Every path's result, collected rather than summed. The branches' lists are
+# concatenated in the order the clause resumes.
+$ all_paths : ({} -> <Amb> a) -> List a = \body =
+	do body {}
+	ctl k | Amb.flip u => k @true ++ k @false
+	      else x => List.Cons.{ x, List.Nil }
+
+$ list_sum : List @int -> @int = \xs =
+	is xs | List.Cons.{h, t} => h + list_sum t else 0
+
+$ collected : List @int = all_paths <| \u = if flip {} => 10 else 1
+
+# `k` handed to a helper that resumes it once per candidate: the clause body
+# cannot bound its own resumes, so every one of them copies.
+$ resume_each : (@int -> @int) -> @int -> @int -> @int = \k, i, n =
+	if i > n => 0 else k i + resume_each k (i + 1) n
+
+$ search : ({} -> <Choose> @int) -> @int = \body =
+	do body {}
+	ctl k | Choose.choose n => resume_each k 1 n
+	      else x => x
+
+# Backtracking search over three nested choices: the pythagorean triples with
+# a <= b and every side at most 15 (3-4-5, 5-12-13, 6-8-10, 9-12-15).
+$ triples : @int = search <| \u =
+	let a = choose 15 in
+	let b = choose 15 in
+	let c = choose 15 in
+	if a <= b && a * a + b * b == c * c => 1 else 0
+
+$ test : @int =
+	(if one_flip == 11 => 0 else 1)
+	+ (if two_flips == 22 => 0 else 2)
+	+ (if list_sum collected == 11 => 0 else 4)
+	+ (if triples == 4 => 0 else 8)
+
+$ @run (assert (test == 0) "AMB: a check failed")

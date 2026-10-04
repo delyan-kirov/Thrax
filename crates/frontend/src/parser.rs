@@ -2014,7 +2014,14 @@ impl<'a> Parser<'a> {
             }));
         }
         self.bump()?; // 'ctl'
-        let continuation = self.expect_word("expected a continuation name after 'ctl'")?;
+        let oneshot = self.at_intrinsic("oneshot")?;
+        if oneshot {
+            self.bump()?; // '@oneshot'
+        }
+        let continuation = self.expect_word(
+            "expected a continuation name after 'ctl' (optionally preceded by '@oneshot', \
+             which asserts that no clause resumes it more than once)",
+        )?;
         let mut clauses = Vec::new();
         while self.at_op("|")? {
             self.bump()?; // '|'
@@ -2048,6 +2055,7 @@ impl<'a> Parser<'a> {
             continuation,
             clauses: self.ast.make_slice(clauses),
             default,
+            oneshot,
         });
         Ok(self.expr(Expr::Handle {
             body,

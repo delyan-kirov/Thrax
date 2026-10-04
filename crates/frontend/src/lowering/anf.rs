@@ -225,6 +225,7 @@ impl Anf {
                         continuation: handler.continuation.clone(),
                         clauses,
                         default,
+                        oneshot: handler.oneshot,
                     }),
                 })
             }

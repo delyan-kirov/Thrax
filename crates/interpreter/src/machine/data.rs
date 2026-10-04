@@ -87,7 +87,7 @@ pub enum Value<'p> {
         effect: Option<String>,
         op: String,
     },
-    /// A captured one-shot continuation (a delimited stack slice).
+    /// A captured continuation (a delimited stack slice).
     Resump(Rc<RefCell<Resumption<'p>>>),
     /// An unforced lazy slot: the held value is a nullary closure. The machine
     /// forces it where the value is scrutinised and patches the cell with the
@@ -140,10 +140,18 @@ impl Drop for Value<'_> {
 }
 
 /// A captured continuation: the `KFrame` slice from a prompt up to a perform
-/// point. Affine: `used` guards against resuming twice.
+/// point.
+///
+/// `multi` is the clause's verdict (see `frontend::ir::data::ResumeUse`): a
+/// clause that may resume more than once gets a resumption whose every resume
+/// splices a private COPY of the slice, leaving this one resumable; one that
+/// resumes at most once hands the slice over, which costs nothing. `used` means
+/// "resumed at least once", which is what the clause boundary consults to decide
+/// whether an abandoned slice's `defer` cleanups still have to run.
 pub struct Resumption<'p> {
     pub(crate) seg: Vec<KFrame<'p>>,
     pub(crate) used: bool,
+    pub(crate) multi: bool,
 }
 
 pub(crate) fn fault(msg: impl Into<String>) -> Diagnostic {

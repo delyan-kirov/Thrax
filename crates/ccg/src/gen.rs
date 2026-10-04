@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ir::data::{Atom, AltKind, Expr, Program};
+use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
 
 /// Where a computed value goes.
 #[derive(Clone, Copy)]
@@ -1197,8 +1197,13 @@ impl<'p> Emitter<'p> {
             unreachable!()
         };
         let hbody = self.reserve_block();
-        let (effs, ops, cls) = if clauses.is_empty() {
-            ("NULL".to_string(), "NULL".to_string(), "NULL".to_string())
+        let (effs, ops, uses, cls) = if clauses.is_empty() {
+            (
+                "NULL".to_string(),
+                "NULL".to_string(),
+                "NULL".to_string(),
+                "NULL".to_string(),
+            )
         } else {
             let effs: Vec<String> = clauses
                 .iter()
@@ -1208,10 +1213,23 @@ impl<'p> Emitter<'p> {
                 })
                 .collect();
             let ops: Vec<String> = clauses.iter().map(|c| cstr(c.op.as_bytes())).collect();
+            // Matches the runtime's `ResumeUse` enum.
+            let uses: Vec<String> = clauses
+                .iter()
+                .map(|c| {
+                    match c.resume {
+                        ResumeUse::Never => "RESUME_NEVER",
+                        ResumeUse::Once => "RESUME_ONCE",
+                        ResumeUse::Many => "RESUME_MANY",
+                    }
+                    .to_string()
+                })
+                .collect();
             let cls: Vec<String> = clauses.iter().map(|c| self.atom(&c.fun)).collect();
             (
                 format!("(const char*[]){{ {} }}", effs.join(", ")),
                 format!("(const char*[]){{ {} }}", ops.join(", ")),
+                format!("(const int[]){{ {} }}", uses.join(", ")),
                 format!("(Value*[]){{ {} }}", cls.join(", ")),
             )
         };
@@ -1224,7 +1242,8 @@ impl<'p> Emitter<'p> {
             }
         };
         out.push_str(&format!(
-            "  THxK_handle(fr, {cont}, {slot}, {effs}, {ops}, {cls}, {}, {els}, blk_{hbody});\n",
+            "  THxK_handle(fr, {cont}, {slot}, {effs}, {ops}, {uses}, {cls}, {}, {els}, \
+             blk_{hbody});\n",
             clauses.len()
         ));
         let mut body_out = String::new();

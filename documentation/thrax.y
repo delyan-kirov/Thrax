@@ -58,7 +58,7 @@
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_CTX AT_IFACE
-%token AT_PRIVATE AT_EXTERN AT_ARRAY
+%token AT_PRIVATE AT_EXTERN AT_ARRAY AT_ONESHOT
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
@@ -391,10 +391,15 @@ array_lit
  * the interpreter, link line in the native backend). */
 extern_lit : AT_EXTERN STR STR STR ;
 
+/* `@oneshot` asserts that every clause resumes the continuation at most once,
+ * which lets the engines hand the captured slice over instead of copying it.
+ * Without it a clause may resume as often as it likes. */
 handle
   : KW_DO expr
-  | KW_DO expr KW_CTL LIDENT clauses opt_else_clause
+  | KW_DO expr KW_CTL opt_oneshot LIDENT clauses opt_else_clause
   ;
+
+opt_oneshot : /* empty */ | AT_ONESHOT ;
 
 clauses         : clause | clauses clause ;
 clause          : KW_IS op_ref LIDENT EQ expr ;

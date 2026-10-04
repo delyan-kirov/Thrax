@@ -77,7 +77,22 @@ fn errors_modules(user_sources: &[&str], name: &str) -> String {
     String::new()
 }
 
+/// Evaluate `name` and return the machine's rendered error, for a test that pins
+/// a runtime FAULT rather than a value.
+fn run_fault(src: &str, name: &str) -> String {
+    let ir = lower_to_ir(&[src], name);
+    match interpreter::machine::eval(&ir, name) {
+        Ok(v) => panic!("expected a fault, got {v}"),
+        Err(e) => e.render("", name),
+    }
+}
+
 fn run_modules(user_sources: &[&str], name: &str) -> String {
+    let ir = lower_to_ir(user_sources, name);
+    interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
+}
+
+fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::Program {
     let mut ast = frontend::Ast::new();
     let mut programs = Vec::new();
     for src in std::iter::once(&CORE_SRC).chain(user_sources.iter()) {
@@ -118,8 +133,7 @@ fn run_modules(user_sources: &[&str], name: &str) -> String {
         .iter()
         .map(|&i| lower_program(&ast, &programs[i], &decls, &resolved))
         .collect();
-    let ir = frontend::ir::lower_modules(&lowered);
-    interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
+    frontend::ir::lower_modules(&lowered)
 }
 
 #[test]
@@ -1128,6 +1142,71 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
          defer Y.yield 3 in (defer Y.yield 2 in (let _ = Y.yield 1 in 0)))"
     );
     assert_eq!(run(&nested, "r"), "6");
+}
+
+#[test]
+fn a_clause_may_resume_its_continuation_more_than_once() {
+    // Nondeterminism: the clause resumes `k` once per branch, so the rest of the
+    // body runs twice and each resume works on its own copy of the captured
+    // slice. The second `flip` is performed inside a resumed copy and captures
+    // again from there: 11 + 1 + 10 + 0.
+    let src = "@mod M\n\
+        $ Amb : @effect = flip : {} -> @bool,\n\
+        $ sum_all : ({} -> <Amb> @int) -> @int = \
+          \\body = do body {} ctl k | Amb.flip u => k @true + k @false else x => x\n\
+        $ one : @int = sum_all (\\_ = if flip {} => 10 else 1)\n\
+        $ two : @int = sum_all (\\_ = \
+          let a = if flip {} => 1 else 0 in \
+          let b = if flip {} => 10 else 0 in a + b)";
+    assert_eq!(run(src, "one"), "11");
+    assert_eq!(run(src, "two"), "22");
+}
+
+#[test]
+fn a_stored_continuation_may_be_resumed_more_than_once() {
+    // The clause stashes `k` rather than resuming it, so nothing in the clause
+    // bounds its uses; driving the SAME suspension twice must run the task's
+    // remainder twice (1 + 2 + 2), not fault.
+    let src = "@mod M\n\
+        $ Co : @effect = step : @int -> {},\n\
+        $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+        $ spawn : ({} -> <Co> {}) -> Task = \
+          \\t = do t {} ctl k | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+        $ drive : Task -> @int = \
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+        $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
+          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0";
+    assert_eq!(run(src, "twice"), "5");
+}
+
+#[test]
+fn oneshot_handler_faults_on_a_second_resume() {
+    // `ctl @oneshot k` asserts at most one resume, which lets the engine hand the
+    // slice over instead of copying it. Resuming the stored continuation twice
+    // then faults, where the unannotated handler above returns 5.
+    let src = "@mod M\n\
+        $ Co : @effect = step : @int -> {},\n\
+        $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+        $ spawn : ({} -> <Co> {}) -> Task = \
+          \\t = do t {} ctl @oneshot k \
+          | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+        $ drive : Task -> @int = \
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+        $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
+          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0";
+    assert!(run_fault(src, "twice").contains("resumed more than once"));
+}
+
+#[test]
+fn oneshot_does_not_override_a_clause_that_provably_resumes_twice() {
+    // The annotation cannot make a wrong program out of a right one: the clause
+    // applies `k` twice where the walk can see it, so the slice is still copied
+    // and the handler sums both branches.
+    let src = "@mod M\n\
+        $ Amb : @effect = flip : {} -> @bool,\n\
+        $ r : @int = do (if flip {} => 10 else 1) \
+          ctl @oneshot k | Amb.flip u => k @true + k @false else x => x";
+    assert_eq!(run(src, "r"), "11");
 }
 
 #[test]

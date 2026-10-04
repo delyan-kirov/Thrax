@@ -189,9 +189,10 @@ $ tour : @str =
 	++ "\n### Algebraic effects and handlers\n\n"
 	++ "An effect is a set of operations; performing one is just a call. A function's\n"
 	++ "type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`);\n"
-	++ "a plain arrow is pure, and an unhandled effect is a compile-time error. Because\n"
-	++ "the continuation `k` is first-class, generators, coroutines, and state are\n"
-	++ "ordinary library code.\n\n"
+	++ "a plain arrow is pure, and an unhandled effect is a compile-time error. The\n"
+	++ "continuation `k` is first-class and may be resumed any number of times, so\n"
+	++ "generators, coroutines, state and backtracking search are all ordinary\n"
+	++ "library code.\n\n"
 	++ fence ex_effect
 	++ "\n### Interfaces\n\n"
 	++ "An interface is an ordinary struct whose fields are its operations;\n"

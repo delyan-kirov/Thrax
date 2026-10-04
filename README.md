@@ -134,9 +134,10 @@ $ grade : Maybe @int -> @int = \m =
 
 An effect is a set of operations; performing one is just a call. A function's
 type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`);
-a plain arrow is pure, and an unhandled effect is a compile-time error. Because
-the continuation `k` is first-class, generators, coroutines, and state are
-ordinary library code.
+a plain arrow is pure, and an unhandled effect is a compile-time error. The
+continuation `k` is first-class and may be resumed any number of times, so
+generators, coroutines, state and backtracking search are all ordinary
+library code.
 
 ```thrax
 $ Yield : @effect = yield : @int -> {},

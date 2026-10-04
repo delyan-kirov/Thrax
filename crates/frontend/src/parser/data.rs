@@ -577,12 +577,16 @@ pub struct Arm {
     pub body: Aol<Expr>,
 }
 
-/// A `ctl k ...` handler attached to a `do` block.
+/// A `ctl k ...` handler attached to a `do` block. `oneshot` records the
+/// `ctl @oneshot k` annotation: the programmer asserts that every clause resumes
+/// at most once, which lets the engines move the captured slice instead of
+/// copying it (see the IR's `ResumeUse`).
 #[derive(Debug)]
 pub struct Handler {
     pub continuation: StrId,
     pub clauses: Slice<Clause>,
     pub default: Option<(StrId, Aol<Expr>)>,
+    pub oneshot: bool,
 }
 
 /// One `is Effect.op arg = body` handler clause.

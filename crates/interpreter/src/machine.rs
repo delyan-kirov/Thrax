@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ir::data::{Atom, AltKind, Expr, Program};
+use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
 use utilities::Result;
 
 use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Value};
@@ -51,12 +51,15 @@ struct Handler<'p> {
     els: PVal<'p>,
 }
 
-/// One evaluated handler clause: its operation (optionally effect-qualified) and
-/// the 2-parameter closure `\arg = \k = body`.
+/// One evaluated handler clause: its operation (optionally effect-qualified),
+/// the 2-parameter closure `\arg = \k = body`, and how that body uses its
+/// continuation (which decides whether a perform captures the stack slice at all,
+/// and whether resuming moves or copies it).
 struct HClause<'p> {
     effect: Option<String>,
     op: String,
     fun: PVal<'p>,
+    resume: ResumeUse,
 }
 
 /// A prompt delimiter: where a handler is installed. `perform` searches down for
@@ -86,6 +89,14 @@ pub(crate) struct KAfterClause<'p> {
     kval: PVal<'p>,
 }
 
+/// The cleanups of a slice that was abandoned without being captured: a clause
+/// that never mentions its continuation ([`ResumeUse::Never`]) cannot resume, so
+/// the slice is dropped at the perform point and only its `defer` thunks are
+/// kept, to run once the clause body has produced its value.
+pub(crate) struct KCleanups<'p> {
+    cleanups: Vec<PVal<'p>>,
+}
+
 /// One frame of the reified continuation stack.
 pub(crate) enum KFrame<'p> {
     Ret(KRet<'p>),
@@ -93,6 +104,7 @@ pub(crate) enum KFrame<'p> {
     Defer(KDefer<'p>),
     ThunkRet(KThunkRet<'p>),
     AfterClause(KAfterClause<'p>),
+    Cleanups(KCleanups<'p>),
 }
 
 /// The machine: the program plus the global (CAF) memo table. One instance runs a
@@ -597,6 +609,7 @@ impl<'p> Machine<'p> {
                     for c in clauses {
                         let fun = deref(self.eval_atom(&c.fun, &ex.frame)?);
                         hclauses.push(HClause {
+                            resume: c.resume,
                             effect: c.effect.clone(),
                             op: c.op.clone(),
                             fun,
@@ -769,7 +782,7 @@ impl<'p> Machine<'p> {
             }
 
             Kind::Op(effect, op) => {
-                let mut found: Option<(usize, PVal<'p>)> = None;
+                let mut found: Option<(usize, PVal<'p>, ResumeUse)> = None;
                 for i in (0..ex.kont.len()).rev() {
                     if let KFrame::Prompt(kp) = &ex.kont[i] {
                         for cl in &kp.handler.clauses {
@@ -779,7 +792,7 @@ impl<'p> Machine<'p> {
                                 effect.as_deref(),
                                 &op,
                             ) {
-                                found = Some((i, cl.fun.clone()));
+                                found = Some((i, cl.fun.clone(), cl.resume));
                                 break;
                             }
                         }
@@ -788,19 +801,40 @@ impl<'p> Machine<'p> {
                         }
                     }
                 }
-                let (p, clause) = found.ok_or_else(|| {
+                let (p, clause, resume) = found.ok_or_else(|| {
                     fault(format!(
                         "unhandled effect operation `{}`",
                         format_op(effect.as_deref(), &op)
                     ))
                 })?;
-                // Capture the slice from the prompt (inclusive: a deep handler) up
-                // to here; the clause runs below the prompt (outside it).
+                // Take the slice from the prompt (inclusive: a deep handler) up to
+                // here; the clause runs below the prompt (outside it).
                 let seg = ex.kont.split_off(p);
-                let res = Rc::new(RefCell::new(Resumption { seg, used: false }));
-                let kval = mk(Value::Resump(res));
-                ex.kont
-                    .push(KFrame::AfterClause(KAfterClause { kval: kval.clone() }));
+                // A clause that cannot resume gets no resumption: keep the slice's
+                // cleanups (they still run after the clause body, see `KCleanups`)
+                // and drop the rest here rather than at the clause boundary.
+                let kval = match resume {
+                    ResumeUse::Never => {
+                        let cleanups = segment_cleanups(&seg);
+                        drop(seg);
+                        if !cleanups.is_empty() {
+                            ex.kont.push(KFrame::Cleanups(KCleanups { cleanups }));
+                        }
+                        mk(Value::Unit)
+                    }
+                    _ => {
+                        let multi = resume == ResumeUse::Many;
+                        let res = Rc::new(RefCell::new(Resumption {
+                            seg,
+                            used: false,
+                            multi,
+                        }));
+                        let kval = mk(Value::Resump(res));
+                        ex.kont
+                            .push(KFrame::AfterClause(KAfterClause { kval: kval.clone() }));
+                        kval
+                    }
+                };
                 // Enter the clause inline: a 2-slot code with the operation argument
                 // in slot 0 and the resumption in slot 1. Its body runs on the now-
                 // truncated stack, so perform/resume chains stay constant-stack.
@@ -809,20 +843,27 @@ impl<'p> Machine<'p> {
                 Ok(None)
             }
 
+            // Resume: splice the captured slice back on (re-installing its prompt:
+            // deep) and deliver the value to the suspended point. A clause that
+            // resumes at most once hands the slice over; a multi-shot one splices a
+            // private copy and keeps the original resumable.
             Kind::Resump(res) => {
-                {
-                    let r = res.borrow();
-                    if r.used {
-                        return Err(fault("continuation already resumed"));
-                    }
-                }
                 let seg = {
                     let mut r = res.borrow_mut();
-                    r.used = true;
-                    std::mem::take(&mut r.seg)
+                    if r.multi {
+                        r.used = true;
+                        copy_segment(&r.seg)
+                    } else {
+                        if r.used {
+                            return Err(fault(
+                                "continuation resumed more than once (its handler is \
+                                 declared `ctl @oneshot`)",
+                            ));
+                        }
+                        r.used = true;
+                        std::mem::take(&mut r.seg)
+                    }
                 };
-                // Splice the captured slice back on (re-installing its prompt: deep)
-                // and deliver the value to the suspended point.
                 ex.kont.extend(seg);
                 ex.ret(self, argv)
             }
@@ -830,6 +871,106 @@ impl<'p> Machine<'p> {
             Kind::Bad => Err(fault("applied a non-function value")),
         }
     }
+}
+
+/// The `defer` cleanups a slice holds, in slice order (so pushing them in turn
+/// leaves the innermost on top, to run first).
+fn segment_cleanups<'p>(seg: &[KFrame<'p>]) -> Vec<PVal<'p>> {
+    seg.iter()
+        .filter_map(|f| match f {
+            KFrame::Defer(d) => Some(d.cleanup.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One activation of a slice being copied, keyed by identity so a frame two
+/// continuation frames share stays ONE activation in the copy.
+type FrameCopies<'p> = Vec<(*const RefCell<Frame<'p>>, FrameP<'p>)>;
+
+fn clone_frame<'p>(f: &FrameP<'p>, seen: &mut FrameCopies<'p>) -> FrameP<'p> {
+    let key = Rc::as_ptr(f);
+    if let Some((_, copy)) = seen.iter().find(|(k, _)| *k == key) {
+        return copy.clone();
+    }
+    let b = f.borrow();
+    let copy = Rc::new(RefCell::new(Frame {
+        locals: b.locals.clone(),
+        env: b.env.clone(),
+    }));
+    seen.push((key, copy.clone()));
+    copy
+}
+
+/// A private copy of a captured slice, for a resume that may not be the last.
+/// Values are immutable, so they are shared; what gets copied is the mutable
+/// machinery the resumption would otherwise write through twice: the activations
+/// (a resumed block fills its binder slots) and the let placeholders (a return
+/// patches the box in place).
+///
+/// Two things stay shared, as in Koka and OCaml: a resumption stored in a copied
+/// frame's locals, and the handler clauses a nested prompt holds. A nested clause
+/// boundary's own resumption is shared too, so it is promoted to multi-shot here;
+/// otherwise resuming this copy twice would resume that inner continuation twice.
+fn copy_segment<'p>(seg: &[KFrame<'p>]) -> Vec<KFrame<'p>> {
+    let mut seen: FrameCopies<'p> = Vec::new();
+    seg.iter()
+        .map(|kf| match kf {
+            KFrame::Ret(kr) => {
+                let frame = clone_frame(&kr.frame, &mut seen);
+                let boxed = mk(kr.boxed.borrow().clone_shallow());
+                // The slot holds a weak cell pointing at the box while the right-
+                // hand side runs (so a recursive binding can reach itself); point
+                // the copy's at the copy's box, so no copy outlives the other's.
+                let rebind = match &*frame.borrow().locals[kr.slot].borrow() {
+                    Value::Rec(w) => w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, &kr.boxed)),
+                    _ => false,
+                };
+                if rebind {
+                    frame.borrow_mut().locals[kr.slot] = mk(Value::Rec(Rc::downgrade(&boxed)));
+                }
+                KFrame::Ret(KRet {
+                    boxed,
+                    slot: kr.slot,
+                    cont: kr.cont,
+                    frame,
+                })
+            }
+            KFrame::Prompt(kp) => KFrame::Prompt(KPrompt {
+                handler: Handler {
+                    clauses: kp
+                        .handler
+                        .clauses
+                        .iter()
+                        .map(|c| HClause {
+                            effect: c.effect.clone(),
+                            op: c.op.clone(),
+                            fun: c.fun.clone(),
+                            resume: c.resume,
+                        })
+                        .collect(),
+                    els: kp.handler.els.clone(),
+                },
+            }),
+            KFrame::Defer(kd) => KFrame::Defer(KDefer {
+                cleanup: kd.cleanup.clone(),
+            }),
+            KFrame::ThunkRet(kt) => KFrame::ThunkRet(KThunkRet {
+                saved: kt.saved.clone(),
+            }),
+            KFrame::AfterClause(ka) => {
+                if let Value::Resump(r) = &*ka.kval.borrow() {
+                    r.borrow_mut().multi = true;
+                }
+                KFrame::AfterClause(KAfterClause {
+                    kval: ka.kval.clone(),
+                })
+            }
+            KFrame::Cleanups(kc) => KFrame::Cleanups(KCleanups {
+                cleanups: kc.cleanups.clone(),
+            }),
+        })
+        .collect()
 }
 
 impl<'p> Exec<'p> {
@@ -851,6 +992,15 @@ impl<'p> Exec<'p> {
         }));
         self.ctrl = &cc.body;
         Ok(())
+    }
+
+    /// Queue the cleanups of an abandoned slice, innermost first, and arrange for
+    /// `saved` to be delivered once they have all run.
+    fn run_cleanups(&mut self, cleanups: Vec<PVal<'p>>, saved: PVal<'p>) {
+        self.kont.push(KFrame::ThunkRet(KThunkRet { saved }));
+        for cleanup in cleanups {
+            self.kont.push(KFrame::Defer(KDefer { cleanup }));
+        }
     }
 
     /// Hand a finished value to the top continuation frame (or finish the run,
@@ -895,15 +1045,7 @@ impl<'p> Exec<'p> {
                             return Err(fault("machine: KAfterClause without a resumption"));
                         };
                         let r = res.borrow();
-                        let defers: Vec<PVal<'p>> = r
-                            .seg
-                            .iter()
-                            .filter_map(|f| match f {
-                                KFrame::Defer(d) => Some(d.cleanup.clone()),
-                                _ => None,
-                            })
-                            .collect();
-                        (r.used, defers)
+                        (r.used, segment_cleanups(&r.seg))
                     };
                     let stored = Rc::strong_count(&ka.kval) > 2;
                     if used || stored {
@@ -912,10 +1054,15 @@ impl<'p> Exec<'p> {
                     // Discarded (abort): run the captured cleanups now, innermost
                     // first (LIFO: seg order pushed => topmost runs first), then re-
                     // deliver the clause's value `v`.
-                    self.kont.push(KFrame::ThunkRet(KThunkRet { saved: v }));
-                    for cleanup in seg_defers {
-                        self.kont.push(KFrame::Defer(KDefer { cleanup }));
-                    }
+                    self.run_cleanups(seg_defers, v);
+                    v = mk(Value::Unk);
+                    continue;
+                }
+                // The clause could not resume, so its slice was dropped at the
+                // perform point; its cleanups still run here, after the clause body,
+                // with the enclosing handlers installed.
+                KFrame::Cleanups(kc) => {
+                    self.run_cleanups(kc.cleanups, v);
                     v = mk(Value::Unk);
                     continue;
                 }

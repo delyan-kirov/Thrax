@@ -65,7 +65,7 @@ typedef enum {
   T_BUILTIN,   /* a (possibly partially applied) built-in operator */
   T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
   T_OP,        /* an effect operation, first-class; performs when applied */
-  T_RESUMP,    /* a captured continuation; affine -- resumes once */
+  T_RESUMP,    /* a captured continuation (a delimited stack slice) */
   T_THUNK      /* an unforced lazy slot: a nullary closure, forced in place */
 } Tag;
 
@@ -146,8 +146,15 @@ typedef enum {
   K_PROMPT,     /* a handler delimiter */
   K_DEFER,      /* a deferred cleanup marker */
   K_THUNKRET,   /* deliver `saved`, discarding the incoming value */
-  K_AFTERCLAUSE /* clause boundary: decides a captured k's defer fate */
+  K_AFTERCLAUSE, /* clause boundary: decides a captured k's defer fate */
+  K_CLEANUPS    /* cleanups of a slice abandoned without being captured */
 } KTag;
+
+/* How a handler clause uses its continuation (the frontend's ResumeUse): a
+ * clause that cannot resume needs no capture at all, one that resumes at most
+ * once MOVES the captured slice, and one that may resume again resumes a COPY
+ * and leaves the original usable. */
+typedef enum { RESUME_NEVER = 0, RESUME_ONCE = 1, RESUME_MANY = 2 } ResumeUse;
 
 typedef struct {
   KTag tag;
@@ -160,6 +167,7 @@ typedef struct {
     struct {
       const char **effs;
       const char **ops;
+      const int *uses; /* ResumeUse per clause */
       Value **clauses;
       size_t n;
       Value *els;
@@ -173,19 +181,28 @@ typedef struct {
     struct {
       Value *kval;
     } afterclause;
+    struct {
+      Value **cleanups;
+      size_t n;
+    } cleanups;
   } u;
 } KFrame;
 
-/* A captured continuation slice. Affine (`used`); `escaped` records a stored
- * resumption (the C analog of the interpreter's shared_ptr use-count test).
- * `rc` counts the T_RESUMP values that own the segment (a resumption
- * content-copied into a let box aliases it). */
+/* A captured continuation slice. `multi` is the clause's verdict: a multi-shot
+ * clause resumes a COPY of the slice (`segment_copy`) and keeps this one usable,
+ * while a once-only clause hands the frames over and leaves `seg` NULL behind.
+ * `used` means "resumed at least once" and `escaped` records a stored
+ * resumption (the C analog of the interpreter's shared_ptr use-count test);
+ * together they tell the clause boundary whether an abandoned slice's `defer`
+ * cleanups still have to run. `rc` counts the T_RESUMP values that own the
+ * segment (a resumption content-copied into a let box aliases it). */
 struct Resump {
   unsigned rc;
   KFrame *seg;
   size_t n;
   int used;
   int escaped;
+  int multi;
 };
 
 /* Uncounted scratch allocation (transient buffers, FFI C-strings): not part of
@@ -1372,12 +1389,18 @@ static void kframe_release(KFrame *kf) {
         THxMEM_release(kf->u.prompt.clauses[j]);
       THxMEM_free((void *)kf->u.prompt.effs);
       THxMEM_free((void *)kf->u.prompt.ops);
+      THxMEM_free((void *)kf->u.prompt.uses);
       THxMEM_free(kf->u.prompt.clauses);
       THxMEM_release(kf->u.prompt.els);
       return;
     case K_DEFER: THxMEM_release(kf->u.defer.cleanup); return;
     case K_THUNKRET: THxMEM_release(kf->u.thunkret.saved); return;
     case K_AFTERCLAUSE: THxMEM_release(kf->u.afterclause.kval); return;
+    case K_CLEANUPS:
+      for (size_t j = 0; j < kf->u.cleanups.n; j++)
+        THxMEM_release(kf->u.cleanups.cleanups[j]);
+      THxMEM_free(kf->u.cleanups.cleanups);
+      return;
   }
   thrax_fault("kframe_release: unhandled continuation frame");
 }
@@ -1392,10 +1415,147 @@ static void THxK_resump_release(Resump *seg) {
   if (!seg) return;
   if (seg->rc == 0) thrax_fault("resump_release: releasing a freed slice");
   if (--seg->rc > 0) return;
-  if (!seg->used)
+  /* The frames are still here unless a resume moved them out (which leaves
+   * `seg` NULL), so a multi-shot slice releases them however often it ran. */
+  if (seg->seg)
     for (size_t i = 0; i < seg->n; i++) kframe_release(&seg->seg[i]);
-  THxMEM_free(seg->seg); /* NULL after a resume: a no-op */
+  THxMEM_free(seg->seg);
   THxMEM_free(seg);
+}
+
+/* -- slice copying (multi-shot resumption) ------------------------------- */
+
+/* A fresh activation holding the same values as `f`. The locals are retained,
+ * not copied: a value is immutable, so only the slot array has to be private. */
+static Frame *frame_clone(Frame *f) {
+  Frame *c = THxMEM_alloc(sizeof(Frame));
+  c->rc = 1;
+  c->clos = f->clos;
+  THxMEM_retain(c->clos);
+  c->env = f->env;
+  c->nenv = f->nenv;
+  c->nlocals = f->nlocals;
+  c->locals = f->nlocals ? THxMEM_alloc(f->nlocals * sizeof(Value *)) : NULL;
+  for (size_t i = 0; i < f->nlocals; i++) {
+    c->locals[i] = f->locals[i];
+    THxMEM_retain(c->locals[i]);
+  }
+  return c;
+}
+
+/* One activation of the slice being copied, so a frame two continuation frames
+ * share stays ONE activation in the copy. */
+typedef struct {
+  Frame **orig;
+  Frame **copy;
+  size_t n;
+} FrameMap;
+
+static Frame *frame_copy_of(FrameMap *m, Frame *f) {
+  for (size_t i = 0; i < m->n; i++)
+    if (m->orig[i] == f) {
+      frame_retain(m->copy[i]);
+      return m->copy[i];
+    }
+  Frame *c = frame_clone(f);
+  m->orig[m->n] = f;
+  m->copy[m->n] = c;
+  ++m->n;
+  frame_retain(c); /* the map's own reference, dropped by frame_map_free */
+  return c;
+}
+
+static void frame_map_free(FrameMap *m) {
+  for (size_t i = 0; i < m->n; i++) frame_release(m->copy[i]);
+  free(m->orig);
+  free(m->copy);
+}
+
+/* A private copy of a captured slice, for a resume that may not be the last.
+ * Values are immutable, so they are shared; what is copied is the machinery a
+ * second resume would otherwise write through twice: the activations, and the
+ * let box each K_RET patches in place.
+ *
+ * Two things stay shared, as in Koka and OCaml: a resumption stored in a copied
+ * frame's locals, and the clauses a nested prompt holds. A nested clause
+ * boundary's own resumption is shared too, so it is promoted to multi-shot here;
+ * otherwise resuming this copy twice would resume that one twice. */
+static void segment_copy(Resump *src, KFrame *out) {
+  FrameMap map;
+  map.orig = xmalloc((src->n ? src->n : 1) * sizeof(Frame *));
+  map.copy = xmalloc((src->n ? src->n : 1) * sizeof(Frame *));
+  map.n = 0;
+  for (size_t i = 0; i < src->n; i++) {
+    KFrame kf = src->seg[i];
+    switch (kf.tag) {
+      case K_RET: {
+        Frame *c = frame_copy_of(&map, kf.u.ret.frame);
+        /* The slot holds the box this frame's return patches in place, so the
+         * copy needs its own; a closure built by the right-hand side still
+         * reads the original's (it captured that very value). */
+        Value *box = THxRT_unit();
+        THxMEM_retain(box);
+        THxMEM_release(c->locals[kf.u.ret.slot]);
+        c->locals[kf.u.ret.slot] = box;
+        kf.u.ret.frame = c;
+        break;
+      }
+      case K_PROMPT: {
+        size_t n = kf.u.prompt.n;
+        const char **effs = THxMEM_alloc((n ? n : 1) * sizeof(char *));
+        const char **ops = THxMEM_alloc((n ? n : 1) * sizeof(char *));
+        int *uses = THxMEM_alloc((n ? n : 1) * sizeof(int));
+        Value **cls = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+        for (size_t j = 0; j < n; j++) {
+          effs[j] = kf.u.prompt.effs[j];
+          ops[j] = kf.u.prompt.ops[j];
+          uses[j] = kf.u.prompt.uses[j];
+          cls[j] = kf.u.prompt.clauses[j];
+          THxMEM_retain(cls[j]);
+        }
+        kf.u.prompt.effs = effs;
+        kf.u.prompt.ops = ops;
+        kf.u.prompt.uses = uses;
+        kf.u.prompt.clauses = cls;
+        THxMEM_retain(kf.u.prompt.els);
+        break;
+      }
+      case K_DEFER: THxMEM_retain(kf.u.defer.cleanup); break;
+      case K_THUNKRET: THxMEM_retain(kf.u.thunkret.saved); break;
+      case K_AFTERCLAUSE:
+        kf.u.afterclause.kval->u.resump->multi = 1;
+        THxMEM_retain(kf.u.afterclause.kval);
+        break;
+      case K_CLEANUPS: {
+        size_t n = kf.u.cleanups.n;
+        Value **cl = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+        for (size_t j = 0; j < n; j++) {
+          cl[j] = kf.u.cleanups.cleanups[j];
+          THxMEM_retain(cl[j]);
+        }
+        kf.u.cleanups.cleanups = cl;
+        break;
+      }
+    }
+    out[i] = kf;
+  }
+  frame_map_free(&map);
+}
+
+/* The `defer` cleanups a slice holds, in slice order, as a K_CLEANUPS frame:
+ * what a clause that cannot resume keeps of its abandoned slice. */
+static KFrame segment_cleanups(KFrame *seg, size_t n) {
+  KFrame kf;
+  kf.tag = K_CLEANUPS;
+  kf.u.cleanups.cleanups = THxMEM_alloc((n ? n : 1) * sizeof(Value *));
+  kf.u.cleanups.n = 0;
+  for (size_t i = 0; i < n; i++)
+    if (seg[i].tag == K_DEFER) {
+      Value *c = seg[i].u.defer.cleanup;
+      THxMEM_retain(c);
+      kf.u.cleanups.cleanups[kf.u.cleanups.n++] = c;
+    }
+  return kf;
 }
 
 /* -- next-action registers ----------------------------------------------- */
@@ -1434,8 +1594,8 @@ void THxK_jump(BlockFn cont) {
   g_blk = cont;
 }
 void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
-                 const char **ops, Value **clauses, size_t nclauses, Value *els,
-                 BlockFn body) {
+                 const char **ops, const int *uses, Value **clauses,
+                 size_t nclauses, Value *els, BlockFn body) {
   if (cont) {
     KFrame kr;
     kr.tag = K_RET;
@@ -1449,10 +1609,12 @@ void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
    * copy them into runtime-lifetime memory the prompt owns. */
   const char **effs2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
   const char **ops2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(char *));
+  int *uses2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(int));
   Value **claus2 = THxMEM_alloc((nclauses ? nclauses : 1) * sizeof(Value *));
   for (size_t i = 0; i < nclauses; i++) {
     effs2[i] = effs[i];
     ops2[i] = ops[i];
+    uses2[i] = uses[i];
     claus2[i] = clauses[i];
     THxMEM_retain(claus2[i]);
   }
@@ -1460,6 +1622,7 @@ void THxK_handle(Frame *fr, BlockFn cont, size_t slot, const char **effs,
   kp.tag = K_PROMPT;
   kp.u.prompt.effs = effs2;
   kp.u.prompt.ops = ops2;
+  kp.u.prompt.uses = uses2;
   kp.u.prompt.clauses = claus2;
   kp.u.prompt.n = nclauses;
   kp.u.prompt.els = els;
@@ -1602,6 +1765,26 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         THxMEM_retain(v);    /* the new in-flight reference */
         continue;
       }
+      case K_CLEANUPS: {
+        /* The clause could not resume, so its slice went at the perform point;
+         * its cleanups run here, after the clause body, exactly as the
+         * discarded-continuation path above runs them. */
+        KFrame tr;
+        tr.tag = K_THUNKRET;
+        tr.u.thunkret.saved = v;
+        kont_push(tr);
+        for (size_t i = 0; i < kf.u.cleanups.n; i++) {
+          KFrame kd;
+          kd.tag = K_DEFER;
+          kd.u.defer.cleanup = kf.u.cleanups.cleanups[i];
+          THxMEM_retain(kd.u.defer.cleanup);
+          kont_push(kd);
+        }
+        kframe_release(&kf);
+        v = unit();
+        THxMEM_retain(v);
+        continue;
+      }
     }
     thrax_fault("do_ret: unhandled continuation frame");
   }
@@ -1718,6 +1901,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       const char *op = fn->u.op.op;
       size_t p = g_kn;
       Value *clause = NULL;
+      int uses = RESUME_MANY;
       for (size_t i = g_kn; i-- > base;) {
         if (g_kont[i].tag != K_PROMPT) continue;
         for (size_t j = 0; j < g_kont[i].u.prompt.n; j++) {
@@ -1727,6 +1911,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
                    (!(eff && ceff) || strcmp(eff, ceff) == 0);
           if (m) {
             clause = g_kont[i].u.prompt.clauses[j];
+            uses = g_kont[i].u.prompt.uses[j];
             p = i;
             break;
           }
@@ -1735,43 +1920,76 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       }
       if (!clause) thrax_fault("unhandled effect operation");
 
-      /* The slice's kont frames MOVE into the segment (their owned references
-       * move with them; no counts change). */
       size_t n = g_kn - p;
-      Resump *seg = THxMEM_alloc(sizeof(Resump));
-      seg->rc = 1; /* owned by the kval below */
-      seg->seg = THxMEM_alloc((n ? n : 1) * sizeof(KFrame));
-      memcpy(seg->seg, &g_kont[p], n * sizeof(KFrame));
-      seg->n = n;
-      seg->used = 0;
-      seg->escaped = 0;
-      g_kn = p; /* the clause runs below the prompt (outside it) */
+      Value *kval;
+      if (uses == RESUME_NEVER) {
+        /* The clause cannot resume: keep the slice's cleanups (they still run
+         * after the clause body) and release the frames here, rather than
+         * capturing a slice only to discover at the boundary that it was
+         * abandoned. The prompt being released owns the clause closure, so hold
+         * a reference across it. */
+        THxMEM_retain(clause);
+        KFrame cl = segment_cleanups(&g_kont[p], n);
+        for (size_t i = 0; i < n; i++) kframe_release(&g_kont[p + i]);
+        g_kn = p;
+        if (cl.u.cleanups.n)
+          kont_push(cl);
+        else
+          kframe_release(&cl); /* nothing deferred: just the empty array */
+        kval = unit();
+      } else {
+        /* The slice's kont frames MOVE into the segment (their owned references
+         * move with them; no counts change). */
+        Resump *seg = THxMEM_alloc(sizeof(Resump));
+        seg->rc = 1; /* owned by the kval below */
+        seg->seg = THxMEM_alloc((n ? n : 1) * sizeof(KFrame));
+        memcpy(seg->seg, &g_kont[p], n * sizeof(KFrame));
+        seg->n = n;
+        seg->used = 0;
+        seg->escaped = 0;
+        seg->multi = uses == RESUME_MANY;
+        g_kn = p; /* the clause runs below the prompt (outside it) */
 
-      Value *kval = alloc_value(T_RESUMP);
-      kval->u.resump = seg; /* the value owns the segment's single reference */
-      KFrame ac;
-      ac.tag = K_AFTERCLAUSE;
-      ac.u.afterclause.kval = kval;
-      THxMEM_retain(kval); /* the kont stores it */
-      kont_push(ac);
+        kval = alloc_value(T_RESUMP);
+        kval->u.resump = seg; /* the value owns the segment's single reference */
+        KFrame ac;
+        ac.tag = K_AFTERCLAUSE;
+        ac.u.afterclause.kval = kval;
+        THxMEM_retain(kval); /* the kont stores it */
+        kont_push(ac);
+      }
 
       Value *args[2];
       args[0] = arg;
       args[1] = kval;
       enter_clo(cur, fr, in, clause, args, 2);
+      if (uses == RESUME_NEVER) THxMEM_release(clause); /* the frame holds it now */
       r = 1;
       break;
     }
     case T_RESUMP: {
-      /* resume: splice the captured slice back on, deliver arg. Affine. The
-       * kont frames MOVE back; the emptied segment stays behind as a husk. */
+      /* resume: splice the captured slice back on and deliver arg. A clause
+       * that resumes at most once hands the frames over (they MOVE back, and
+       * the emptied segment stays behind as a husk); a multi-shot one splices a
+       * private copy and stays resumable. */
       Resump *seg = fn->u.resump;
-      if (seg->used) thrax_fault("resumption used more than once (affine)");
-      seg->used = 1;
-      for (size_t i = 0; i < seg->n; i++) kont_push(seg->seg[i]);
-      THxMEM_free(seg->seg);
-      seg->seg = NULL;
-      seg->n = 0;
+      if (seg->multi) {
+        seg->used = 1;
+        KFrame *copy = xmalloc((seg->n ? seg->n : 1) * sizeof(KFrame));
+        segment_copy(seg, copy);
+        for (size_t i = 0; i < seg->n; i++) kont_push(copy[i]);
+        free(copy);
+      } else {
+        if (seg->used)
+          thrax_fault(
+              "continuation resumed more than once (its handler is declared "
+              "`ctl @oneshot`)");
+        seg->used = 1;
+        for (size_t i = 0; i < seg->n; i++) kont_push(seg->seg[i]);
+        THxMEM_free(seg->seg);
+        seg->seg = NULL;
+        seg->n = 0;
+      }
       r = do_ret(cur, fr, in, arg, base);
       break;
     }

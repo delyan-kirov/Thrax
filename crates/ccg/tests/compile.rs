@@ -927,6 +927,33 @@ fn effects_same_op_name_overload() {
 }
 
 #[test]
+fn effects_multi_shot_resumption() {
+    // Every path summed and collected (the clause resumes twice), and a
+    // backtracking search whose `k` is resumed once per candidate by a helper:
+    // each resume runs on its own copy of the captured slice.
+    assert_example("AMB.thx", "one_flip");
+    assert_example("AMB.thx", "two_flips");
+    assert_example("AMB.thx", "triples");
+    assert_example("AMB.thx", "test");
+}
+
+#[test]
+fn effects_multi_shot_through_a_stored_continuation() {
+    // Nothing in the clause bounds the uses of a stashed `k`, so driving the same
+    // suspension twice must run the remainder twice (1 + 2 + 2).
+    let src = "@mod M\n\
+               $ Co : @effect = step : @int -> {},\n\
+               $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+               $ spawn : ({} -> <Co> {}) -> Task =\n\
+               \t\\t = do t {} ctl k | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+               $ drive : Task -> @int =\n\
+               \t\\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+               $ test : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {}))\n\
+               \t| Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0\n";
+    assert_matches(src, "test");
+}
+
+#[test]
 fn effects_coroutines_cross_context_resume() {
     // A continuation captured in `spawn`'s handler, stored in `Susp`, and resumed
     // later from `rr` (a different dynamic context).

@@ -37,8 +37,9 @@ Why this and not unconditional in-place:
 - **It composes with effects for free.** When a continuation captures an array,
   the captured environment retains it -> refcount > 1 -> the uniqueness check
   fails -> the op copies. The same reference counting that manages memory makes
-  mutation safe across `ctl`/resume boundaries. (Resumptions here are affine, so
-  even the multi-shot hazard is bounded, but we do not rely on that.)
+  mutation safe across `ctl`/resume boundaries, and it is what makes multi-shot
+  resumption safe too: a resumed copy shares the array, so the refcount rises and
+  the next mutation copies.
 - **We already have the substrate.** RC is in place; opportunistic mutation is
   its payoff. In the common linear case (build a string with repeated `push`,
   never alias it) every op is genuinely in-place.
