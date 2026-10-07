@@ -2,9 +2,10 @@
 
 **Status:** design locked; typed effect rows (M3.1) are implemented on both
 engines (see the language reference, documentation/language-reference.md section 8, for the
-surface syntax). The "OPEN" items and M3.2 (evidence passing / tail-resumptive)
-below remain future work.
-**Date:** 2026-06-26.
+surface syntax). Resumptions are **general** (multi-shot) since 2026-10-04, which
+revised section 2. The "OPEN" items and the rest of M3.2 (evidence passing /
+tail-resumptive) below remain future work.
+**Date:** 2026-06-26, section 2 revised 2026-10-04.
 **Scope:** the algebraic-effect system and the runtime/IR machinery it requires.
 Records _what_ has been decided, _why_, _rejected_, and _deferred_.
 
@@ -208,7 +209,73 @@ back to a cycle).
 
 ---
 
-## 2. Continuation discipline: affine (resume 0 or 1)
+## 2. Continuation discipline: general (resume 0, 1 or many)
+
+**Decision (2026-10-04, revising the affine decision kept below).** A resumption
+may be invoked **any number of times**. Nothing in the surface language or the
+type system says how often: `ctl k` is applied as often as the handler needs, so
+nondeterminism, backtracking and probabilistic search are ordinary handlers.
+`ctl @oneshot k` is an optional performance assertion, not a different feature.
+
+**Why the affine argument did not hold.** It rested on the premise that
+multi-shot would force "deep-dups of captured state" that affine sidesteps. Two
+things were wrong with that. First, the implementation never had the O(1)
+unlink/relink the section below claims: a capture `memcpy`s the slice into a
+`Resump` and a resume pushes every frame back, so both are already O(slice).
+Second, Koka, whose reasoning this document follows elsewhere, supports
+multi-shot at no extra cost precisely because its captured continuation is an
+immutable chain of closures built while the stack unwinds ("yield bubbling",
+Xie & Leijen 2021): re-applying it is just applying it again. What keeps everyday
+effects fast there is not the continuation but the **clause kind** (`fun`/`val`
+clauses never capture). Koka's resume is itself O(depth), since it re-applies one
+closure per frame.
+
+**How it works here.** The continuation stays a slice of the reified-K stack. The
+mutable parts of a slice are the activations (a resumed block fills its binder
+slots) and the let boxes (a return patches one in place), so a resume that may not
+be the last splices a **copy**: frames cloned with their locals retained, a fresh
+box per `K_RET`, and aliased frames mapped to one copy. Values are immutable and
+shared. Per resume that is one allocation per frame on a path that already walks
+every frame, which is Koka's cost model.
+
+**What keeps the everyday effects at their old cost** is a walk over the clause
+body during IR lowering, classifying how it uses `k` (`ResumeUse`, in
+`crates/frontend/src/ir/lower.rs`). The engines read the class off the matched
+clause at the moment they capture:
+
+| Class | Clause body | At the perform point | At a resume |
+| --- | --- | --- | --- |
+| `Never` | never mentions `k` | keep only the slice's `defer` cleanups, release the frames | n/a |
+| `Once` | `k` applied at most once, in call position, under no lambda (the worst branch of a `Case`, not the sum) | capture the slice | move it, as before |
+| `Many` | two or more applications, or `k` escapes (stored, captured, passed on, returned) | capture the slice | splice a copy, stay resumable |
+
+`Once` is sound because a clause body cannot reach an occurrence twice without
+going through a closure or a global, and both of those are escapes that
+disqualify it. `Never` is the hottest case in the language, since `for`/`formap`
+install a prompt per iteration and their `Loop.break`/`continue` clauses ignore
+`k`; it is now strictly less work than before, which captured a slice only to
+discover at the clause boundary that it had been abandoned.
+
+**`@oneshot`.** A `k` that escapes cannot be classified, which is exactly
+parameter-passing state (`\s = (k s) s`) and the coroutine idiom (`k` stashed in
+a `Susp`), both dynamically one-shot. `ctl @oneshot k` asserts it and buys back
+the move; a second resume then faults. The annotation is **ignored** where the
+walk proves two or more applications, so it can never turn a working program into
+a broken one, only a fast one into a slow one. There is deliberately no "resumes
+many times" annotation: copying is already the fallback, and the one win a count
+would offer (handing the slice over on the final resume) needs last-use
+information, which belongs with Perceus-style drop insertion (issue #230).
+
+**Known sharing.** A copy shares what it cannot rewrite: a resumption stored in a
+copied frame's locals, and the clauses a nested prompt holds. A nested clause
+boundary's own resumption is shared too, so copying promotes it to multi-shot
+rather than leaving a once-only continuation to be resumed twice. Koka and
+OCaml 5 share the same limitation.
+
+**Each resumed copy runs its own `defer` cleanups**, when that copy completes.
+A resumption never resumed still finalizes at the clause boundary, as before.
+
+### Original decision: affine (kept for the record)
 
 **Decision.** A resumption may be invoked **at most once** (affine). Multi-shot
 is **not** in the base language; if ever needed it arrives as an explicit,
@@ -278,14 +345,18 @@ explicit escape hatches Koka provides. Not needed for the first cut.
 ## 4. Resumptions: first-class, typed
 
 **Decision.** A resumption `k` is a **first-class value** (storable in data
-structures), of a real type `resume : (a) -> e b`. Affine still holds: you may
-_store_ `k` freely but _resume_ it <= once.
+structures), of a real type `resume : (a) -> e b`. Since section 2 was revised it
+may be stored freely AND resumed any number of times; a stored `k` is the case no
+static walk can classify, so it copies per resume unless the handler is declared
+`ctl @oneshot`.
 
 **Why first-class is required.** Schedulers/coroutines store suspended fibers in
 a run-queue and resume later; a generator object holds its suspended `k` between
 `next()` calls. Scoped-only resumptions cannot express either. (State/exceptions
-use `k` immediately and don't need it, but it costs nothing.) This is exactly
-OCaml 5's first-class `continuation`, restricted to affine.
+use `k` immediately and don't need it, but it costs nothing.) This is OCaml 5's
+first-class `continuation`, without the one-shot restriction: OCaml moves a
+captured fiber, which is why its continuations are affine, and copying the slice
+(section 2) is what lifts that here.
 
 **Consequence (RC lifetime).** A stored, never-resumed `k` keeps its whole
 captured segment (and everything it closes over) alive until dropped /
@@ -362,18 +433,22 @@ Ret v  @ KRet            : restore saved locals/env; locals[slot]=v; run term
 Ret v  @ KPrompt P       : run P.ret_clause(v); pop P; continue below
 ```
 
-**Effect rules (deep, affine):**
+**Effect rules (deep):**
 
 ```
 Handle h body : push KPrompt{h, locals, env}; run body
 Perform op a  : walk K down to nearest KPrompt P whose handler set has `op`
                 split K into  captured = [frames above P ... , P]   (INCLUDE P => deep)
                               K_rest   = everything below P
-                k := Resumption(captured)        -- move-only segment (affine)
                 set K := K_rest
+                k := Resumption(captured)        -- see P.handlers[op].resume_use:
+                                                 --   Never: no resumption; keep the
+                                                 --     captured defers, drop the rest
+                                                 --   Once:  move-only segment
+                                                 --   Many:  copied per resume
                 run P.handlers[op] with (a, k)   -- clause runs OUTSIDE its own prompt
-Resume k v    : require k unused (affine); mark used
-                K := k.segment ++ K              -- splice the saved stack back on
+Resume k v    : Once: mark used; K := k.segment ++ K     -- the segment MOVES
+                Many: mark used; K := copy(k.segment) ++ K
                 deliver v at the original perform point
 Discontinue k : drop k unresumed; unwind its segment running cleanup (finally)
                 -- the resume-0 path (exceptions); semantics DEFERRED, see section 11
@@ -455,7 +530,7 @@ is acyclic by construction.
 
 ## 9. Worked examples (model validation)
 
-**State (deep, affine):**
+**State (deep, resumes once):**
 
 ```
 handle body
@@ -464,17 +539,17 @@ handle body
   return x      -> \s -> (x, s)
 ```
 
-Each clause resumes once ==> affine OK; deep keeps get/put handled across the
-resume OK.
+Each clause resumes once; deep keeps get/put handled across the resume OK.
 
 - **Exceptions:** the handler resumes **0** times (drops `k` ==> `discontinue`).
 - **Generators:** `yield v` performs; the consumer is the handler; the suspended
   `k` lives in the generator value (needs first-class `k`).
 - **Coroutines / scheduler:** suspended `k`s sit in a run-queue (first-class),
-  each resumed once (affine).
+  each resumed once.
 - **Async/await:** the continuation after `await` is resumed once on resolve.
-
-All four fit affine + deep + first-class `k`.
+- **Nondeterminism / backtracking:** the clause resumes the SAME `k` once per
+  choice (`k @true ++ k @false`), each resume on its own copy. This is the one
+  that needs section 2's general discipline; the four above do not.
 
 ---
 
@@ -503,9 +578,9 @@ Status legend: [X] done, [~] in progress, [ ] planned.
   recursive slot is a memoized thunk, forced where the value is scrutinised.
   `@codata` was removed. See section 1a.
 
-- [~] **M2 untyped affine effects.** `Handle` + perform/resume on the K stack:
-  deep, affine, first-class resumptions, dynamic handler search. **Mostly landed
-  (2026-06-27).** Surface is keyword-frugal (section 12): no `perform`/`resume` calling
+- [~] **M2 untyped effects.** `Handle` + perform/resume on the K stack: deep,
+  first-class resumptions (affine at first, general since 2026-10-04), dynamic
+  handler search. **Mostly landed (2026-06-27).** Surface is keyword-frugal (section 12): no `perform`/`resume` calling
   an operation performs, applying `k` resumes; unit `{}` added. Done in substeps:
   - [X] **3a** parse `do <body> ctl k  is op a = e ...  [else x = e]` into
     `ExHandle` (new `do`/`ctl` keywords; `is`/`else` reused).
@@ -538,7 +613,17 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     refcount ("stored") check -- NOT a destructor, so timing is correct. Also made
     `do <body>` (no `ctl`) a plain block. `dat/FINALLY.thx`. Limitation: a stored
     continuation dropped without ever being resumed does not run its `defer`.
-  - Not yet: coroutine scheduler example, async.
+  - [X] **Multi-shot resumptions (2026-10-04, issue #228).** A resumption may be
+    resumed any number of times; each resume after the last splices a COPY of the
+    captured slice (frames cloned, a fresh let box per `K_RET`, aliased frames
+    mapped to one copy). The per-clause `ResumeUse` walk keeps the old cost:
+    `Never` skips the capture entirely (and so is faster than before for
+    `for`/`formap` and exceptions), `Once` still moves, only `Many` copies.
+    `ctl @oneshot k` restores the move where `k` escapes and nothing can be
+    proved. No typing or surface change otherwise. Both engines; `examples/AMB.thx`
+    (two-way choice, collected paths, a backtracking triple search) agrees across
+    them and is valgrind-clean. See section 2.
+  - Not yet: async.
 
 - [~] **M3 effect-row type system.** Rows in TC, effect polymorphism +
   inference, handler typing; **evidence passing** + the tail-resumptive
@@ -583,6 +668,11 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     ...`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
+  - **Exact one-shot detection**, which would make `@oneshot` unnecessary: with
+    Perceus-style drop insertion the runtime can test whether a resumption is
+    uniquely owned at the resume point and move instead of copying, and the same
+    last-use information lets a `Many` clause move on its final resume (n uses
+    costing n-1 copies). Issue #230.
   - **Machine notes (3d/3b, 2026-06-27):**
     - **Constant host stack DONE.** A clause lowers to a single 2-slot `Code`
       (`a`=Local 0, `k`=Local 1) and `perform` jumps into it inline on the single

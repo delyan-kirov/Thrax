@@ -874,6 +874,12 @@ shared by every clause. Each `| op a => e` handles an operation; `else x => e`
 runs on normal completion (defaults to identity). A shared operation name is
 qualified in a clause head.
 
+`ctl @oneshot k` asserts that no clause resumes `k` more than once. It changes no
+semantics, only the cost: the engine hands the captured computation over instead
+of copying it. Resuming twice under it is a runtime error, and the annotation is
+ignored where a clause visibly resumes twice, so it can never turn a working
+program into a broken one.
+
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
 $ safeDiv : @int -> @int -> @int = \a, b =
@@ -891,8 +897,8 @@ $ sumGen : ({} -> <Yield> {}) -> @int = \gen =
 
 ## 8.4 Resuming
 Resuming is applying `k`. `k v` splices the suspended computation back and
-delivers `v`. `k` is affine (at most once; twice is a runtime error) and may be
-stored before use, which is what coroutines need. Handlers are deep (a resumed
+delivers `v`. `k` may be resumed **any number of times**, and may be stored
+before use, which is what coroutines need. Handlers are deep (a resumed
 computation is still governed by the same handler).
 
 ```thrax
@@ -902,6 +908,22 @@ $ spawn : ({} -> <Yield> {}) -> Task = \t =
 	ctl k | Yield.yield v => Task.Susp.{ v, k }     # store k, resume later
 	      else _ => Task.Fin.{}
 ```
+
+Resuming more than once runs the rest of the computation once per resume, each on
+its own copy, which is what nondeterminism and backtracking are:
+
+```thrax
+$ sum_all : ({} -> <Amb> @int) -> @int = \body =
+	do body {}
+	ctl k | Amb.flip u => k @true + k @false        # both branches
+	      else x => x
+```
+
+Each resume costs a copy of the captured computation, so a clause that resumes at
+most once pays nothing: the engine recognises that from the clause body (`k`
+applied once, or never, as in an exception) and hands the computation over
+instead. Where the clause cannot show it, because `k` is stored or passed on,
+`ctl @oneshot k` says it (section 8.3).
 
 ## 8.5 Effect rows in types
 A function's type carries the effects it may perform as a row on the arrow.

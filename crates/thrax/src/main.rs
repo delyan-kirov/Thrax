@@ -48,25 +48,25 @@ fn main() -> ExitCode {
             print!("{HELP}");
             ExitCode::SUCCESS
         }
-        Some("lex") => with_root(rest.get(1).map(String::as_str), driver::cmd_lex),
-        Some("parse") => with_root(rest.get(1).map(String::as_str), driver::cmd_parse),
-        Some("check") => with_root(rest.get(1).map(String::as_str), driver::cmd_check),
+        Some("lex") => with_root(root_arg(&rest[1..]), driver::cmd_lex),
+        Some("parse") => with_root(root_arg(&rest[1..]), driver::cmd_parse),
+        Some("check") => with_root(root_arg(&rest[1..]), driver::cmd_check),
         Some("expand") => {
-            // `expand [file] [MODULE]`: the second positional narrows to one module.
-            let module = rest.get(2).cloned();
-            with_root(rest.get(1).map(String::as_str), |path| {
-                driver::cmd_expand(path, module.as_deref())
-            })
+            // `expand [file] [MODULE]`: the positional after the root narrows to
+            // one module, so `expand MAIN` infers the root and names the module.
+            let (root, after) = split_root(&rest[1..]);
+            let module = after.first().cloned();
+            with_root(root, |path| driver::cmd_expand(path, module.as_deref()))
         }
         Some("run") => {
-            let (root, prog_args) = split_run(&rest[1..]);
+            let (root, prog_args) = split_root(&rest[1..]);
             with_root(root, |path| driver::cmd_run(path, prog_args))
         }
         Some("repl") | Some("shell") => repl::cmd_repl(),
-        Some("emit-c") => with_root(rest.get(1).map(String::as_str), |path| {
+        Some("emit-c") => with_root(root_arg(&rest[1..]), |path| {
             driver::cmd_emit_c(path, target)
         }),
-        Some("build") => with_root(rest.get(1).map(String::as_str), |path| {
+        Some("build") => with_root(root_arg(&rest[1..]), |path| {
             driver::cmd_build(path, target)
         }),
         Some(other) => {
@@ -86,6 +86,9 @@ entry point: `$ @main : @vec @str -> <@io> @int`.
 Usage:
   thrax [--target=ARCH-OS] <command> [file.thx] [args...]
 
+With no file.thx, `--` says so explicitly, which is how a first argument that
+itself names a file reaches the program: `thrax run -- data.xml`.
+
 Commands:
   run      Run a program on the interpreter (extra args are passed to it).
   repl     Start an interactive shell (read-eval-print loop).
@@ -104,6 +107,7 @@ Flags:
 Examples:
   thrax run                    Run MAIN.thx in the current directory.
   thrax run app.thx a b        Run app.thx, passing `a b` as its arguments.
+  thrax run -- sample.xml      Run MAIN.thx, passing sample.xml to it.
   thrax build --target=wasm32-wasi
   thrax expand tests/MAIN.thx MAIN   Show what MAIN's `@build` generated.
 ";
@@ -120,13 +124,34 @@ fn with_root(explicit: Option<&str>, f: impl FnOnce(&str) -> ExitCode) -> ExitCo
     }
 }
 
-/// Split `run`'s tokens into the root file and the program's own arguments. The
-/// first token is the root only when it names one (an existing path or a `.thx`
-/// name); otherwise the root is inferred and every token is a program argument.
-fn split_run(tokens: &[String]) -> (Option<&str>, &[String]) {
+/// Split a command's tokens into the root file and the rest. The first token is
+/// the root when it names one (an existing path or a `.thx` name), and a leading
+/// `--` says the root is NOT named here, which is the only way to pass a first
+/// argument that happens to name a file. One `--` directly after a named root is
+/// the same separator and is dropped; a second one reaches the program.
+fn split_root(tokens: &[String]) -> (Option<&str>, &[String]) {
     match tokens.first() {
-        Some(t) if t.ends_with(".thx") || Path::new(t).exists() => (Some(t), &tokens[1..]),
+        Some(t) if t == "--" => (None, &tokens[1..]),
+        Some(t) if t.ends_with(".thx") || Path::new(t).exists() => {
+            (Some(t), skip_separator(&tokens[1..]))
+        }
         _ => (None, tokens),
+    }
+}
+
+/// The root argument of a command that takes nothing else: the token itself,
+/// unless it is the `--` separator, which leaves the root to be inferred.
+fn root_arg(tokens: &[String]) -> Option<&str> {
+    match tokens.first().map(String::as_str) {
+        None | Some("--") => None,
+        Some(t) => Some(t),
+    }
+}
+
+fn skip_separator(tokens: &[String]) -> &[String] {
+    match tokens.first() {
+        Some(t) if t == "--" => &tokens[1..],
+        _ => tokens,
     }
 }
 
@@ -167,5 +192,67 @@ fn resolve_root(explicit: Option<&str>) -> Result<String, String> {
             many.len(),
             many[0]
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{root_arg, split_root};
+
+    fn toks(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_leading_separator_leaves_the_root_to_be_inferred() {
+        // The point of the separator: an argument that names an existing file
+        // reaches the program instead of being taken as the root source.
+        let t = toks(&["--", "Cargo.toml"]);
+        let (root, rest) = split_root(&t);
+        assert_eq!(root, None);
+        assert_eq!(rest, &t[1..]);
+    }
+
+    #[test]
+    fn a_named_root_takes_its_arguments_with_or_without_a_separator() {
+        let plain = toks(&["app.thx", "a", "b"]);
+        let (root, rest) = split_root(&plain);
+        assert_eq!(root, Some("app.thx"));
+        assert_eq!(rest, &plain[1..]);
+
+        let sep = toks(&["app.thx", "--", "a"]);
+        let (root, rest) = split_root(&sep);
+        assert_eq!(root, Some("app.thx"));
+        assert_eq!(rest, &sep[2..], "the separator itself is not an argument");
+    }
+
+    #[test]
+    fn a_second_separator_reaches_the_program() {
+        let t = toks(&["app.thx", "--", "--", "a"]);
+        let (_, rest) = split_root(&t);
+        assert_eq!(rest, &t[2..]);
+    }
+
+    #[test]
+    fn a_bare_argument_is_not_mistaken_for_a_root() {
+        let t = toks(&["not-a-file", "x"]);
+        let (root, rest) = split_root(&t);
+        assert_eq!(root, None);
+        assert_eq!(rest, &t[..]);
+    }
+
+    #[test]
+    fn an_existing_path_is_still_the_root() {
+        // Unchanged behaviour: a path that exists is the root even without the
+        // `.thx` suffix, which is how an extensionless script runs.
+        let t = toks(&["Cargo.toml"]);
+        assert_eq!(split_root(&t).0, Some("Cargo.toml"));
+    }
+
+    #[test]
+    fn a_single_root_command_ignores_a_lone_separator() {
+        assert_eq!(root_arg(&toks(&["--"])), None);
+        assert_eq!(root_arg(&toks(&[])), None);
+        assert_eq!(root_arg(&toks(&["app.thx"])), Some("app.thx"));
     }
 }

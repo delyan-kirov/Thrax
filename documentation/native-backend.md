@@ -246,8 +246,12 @@ the generated block functions:
   here (**including** the prompt -> deep handler) into a `THxK_Resump`, truncates
   `kont`, pushes a `K_AFTERCLAUSE`, and runs the clause below the prompt.
 - **Resuming** (`do_apply` on a `T_RESUMP`) splices the captured slice back and
-  delivers the value. Resumptions are **affine**: a second use aborts
-  (`seg->used`).
+  delivers the value. A clause that resumes at most once hands the frames over
+  (they move; `seg->seg` is left NULL); one that may resume again splices a
+  `segment_copy` and stays resumable. Which it is comes from the clause's
+  `ResumeUse`, carried in the prompt's `uses` table; a clause that never mentions
+  `k` gets no resumption at all, just a `K_CLEANUPS` frame holding the abandoned
+  slice's `defer` thunks.
 - **`defer cleanup do body`** lowers to the `%finally` intrinsic (`T_DEFER`,
   curried over two thunks); it installs a `K_DEFER` marker that runs the cleanup
   on normal completion, on abort (the captured continuation is discarded the
@@ -319,9 +323,11 @@ unboxed in registers for true low-level performance.
 
 ## Known limitations
 
-- Resumptions are **affine** (resume at most once); a second use aborts at
-  runtime. A stored continuation dropped without ever resuming never runs its
-  `defer` (inherited from the interpreter) though its memory *is* reclaimed.
+- A stored continuation dropped without ever resuming never runs its `defer`
+  (inherited from the interpreter) though its memory *is* reclaimed.
+- A resumed copy shares the resumptions reachable from the frames it copied, so
+  `ctl @oneshot` on a handler whose continuation is itself captured inside a
+  multi-shot one can still fault (see the effect design doc, section 2).
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).

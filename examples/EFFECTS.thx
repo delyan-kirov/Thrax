@@ -2,9 +2,10 @@
 
 # Algebraic effects + handlers (typed, M3). Operations are performed by calling
 # them; a handler is `do <body> ctl k  is op a = e ...  [else x = e]`; the
-# continuation `k` is resumed by applying it (affine: at most once). A function's
-# type carries the effects it may perform as a row on the arrow: `A -> <E> B`; a
-# bare arrow is pure, and an unhandled effect is a compile-time error.
+# continuation `k` is resumed by applying it, as often as the handler needs (see
+# AMB.thx for one that resumes twice). A function's type carries the effects it
+# may perform as a row on the arrow: `A -> <E> B`; a bare arrow is pure, and an
+# unhandled effect is a compile-time error.
 
 $ Exn : @effect = throw : @str -> a,  # never resumes -> polymorphic result
 $ Yield : @effect = yield : @int -> {},

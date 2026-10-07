@@ -90,6 +90,24 @@ pub struct HandleClause {
     pub effect: Option<String>,
     pub op: String,
     pub fun: Atom,
+    pub resume: ResumeUse,
+}
+
+/// How a handler clause uses its continuation, read by the engines at the moment
+/// they capture one (the perform point already holds the clause that matched).
+/// Derived from the clause body by `resume_use` in the IR lowering.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResumeUse {
+    /// The clause never mentions `k` (an exception, `break`/`continue`): there is
+    /// nothing to resume, so the slice is never captured. Only its `defer`
+    /// cleanups are kept, to run after the clause body.
+    Never,
+    /// `k` is applied at most once, so resuming MOVES the slice (no copy). Also
+    /// what `ctl @oneshot k` asserts for a clause the analysis cannot prove.
+    Once,
+    /// `k` may be resumed more than once, or it escapes the clause and nothing
+    /// can be proved: resuming copies the slice, leaving the original resumable.
+    Many,
 }
 
 /// A computation: each takes an evaluation step.

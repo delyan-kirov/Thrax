@@ -150,6 +150,7 @@ impl Pm {
                         .default
                         .as_ref()
                         .map(|(x, b)| (x.clone(), self.go(b))),
+                    oneshot: handler.oneshot,
                 }),
             },
 

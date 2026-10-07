@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use super::super::data::{Atom, Expr};
-use super::lower;
+use super::super::data::{Alt, AltKind, Atom, Expr, ResumeUse};
+use super::{lower, resume_use};
 use crate::lowering::data::{Program, Term};
 use crate::lowering::debruijn::assign_program;
 
@@ -77,4 +77,86 @@ fn nested_lambda_captures_free_var() {
     };
     assert_eq!(captures.len(), 1);
     assert!(matches!(captures[0], Atom::Local(0)));
+}
+
+// -- clause continuation classification (ResumeUse) -------------------------
+
+/// `k` is `Local(1)` of a clause's code, so these are clause bodies.
+fn app_k() -> Expr {
+    Expr::App {
+        fun: Atom::Local(1),
+        arg: Atom::Unit,
+        tail: false,
+    }
+}
+
+#[test]
+fn a_clause_that_ignores_its_continuation_needs_no_capture() {
+    assert_eq!(resume_use(&Expr::Ret(Atom::LitI(0)), false), ResumeUse::Never);
+    // The operation argument is Local 0, and a body binder is 2 or above.
+    assert_eq!(resume_use(&Expr::Ret(Atom::Local(0)), false), ResumeUse::Never);
+}
+
+#[test]
+fn one_application_of_the_continuation_still_moves() {
+    assert_eq!(resume_use(&app_k(), false), ResumeUse::Once);
+    // Exclusive alternatives: the worst branch, not the sum.
+    let case = Expr::Case {
+        scrut: Atom::Local(0),
+        alts: vec![Alt {
+            kind: AltKind::Bool(true),
+            binder_base: 2,
+            binders: Vec::new(),
+            body: app_k(),
+        }],
+        default: Box::new(app_k()),
+    };
+    assert_eq!(resume_use(&case, false), ResumeUse::Once);
+}
+
+#[test]
+fn two_applications_or_an_escape_mean_a_copy_per_resume() {
+    let twice = Expr::Let {
+        slot: 2,
+        rhs: Box::new(app_k()),
+        body: Box::new(app_k()),
+    };
+    assert_eq!(resume_use(&twice, false), ResumeUse::Many);
+
+    // Stored in a constructor, captured by a closure, or passed as an argument:
+    // the uses happen where the walk cannot see them.
+    let stored = Expr::MkVariant {
+        ty: "Task".into(),
+        tag: "Susp".into(),
+        fields: vec![Atom::Local(1)],
+    };
+    let captured = Expr::Ret(Atom::Clos {
+        code: 0,
+        captures: vec![Atom::Local(1)],
+    });
+    let passed = Expr::App {
+        fun: Atom::Glob { name: "M.go".into() },
+        arg: Atom::Local(1),
+        tail: false,
+    };
+    for e in [&stored, &captured, &passed] {
+        assert_eq!(resume_use(e, false), ResumeUse::Many);
+    }
+}
+
+#[test]
+fn oneshot_covers_an_escape_but_not_a_visible_double_resume() {
+    let stored = Expr::MkVariant {
+        ty: "Task".into(),
+        tag: "Susp".into(),
+        fields: vec![Atom::Local(1)],
+    };
+    assert_eq!(resume_use(&stored, true), ResumeUse::Once);
+
+    let twice = Expr::Let {
+        slot: 2,
+        rhs: Box::new(app_k()),
+        body: Box::new(app_k()),
+    };
+    assert_eq!(resume_use(&twice, true), ResumeUse::Many);
 }

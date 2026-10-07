@@ -177,6 +177,7 @@ fn rewrite(term: &Term, prims: &Prims) -> Term {
                     .default
                     .as_ref()
                     .map(|(n, t)| (n.clone(), rewrite(t, prims))),
+                oneshot: handler.oneshot,
             }),
         },
         Term::Defer { cleanup, body } => Term::Defer {

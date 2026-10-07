@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 
-use super::data::{self, Alt, AltKind, Code, Expr, HandleClause};
+use super::data::{self, Alt, AltKind, Atom, Code, Expr, HandleClause, ResumeUse};
 use crate::lowering::data::{Clause, Effect, Handler, Pat, Program as Core, Term};
 
 /// Lower a whole program (root module first) to the IR, the way the C++ pipeline
@@ -515,7 +515,7 @@ impl Conv {
         let clauses = handler
             .clauses
             .iter()
-            .map(|c| self.clause(c, &handler.continuation, ctx))
+            .map(|c| self.clause(c, &handler.continuation, handler.oneshot, ctx))
             .collect();
         let els = match &handler.default {
             Some((x, b)) => self.lift(b, 1, &[x.clone()], ctx),
@@ -539,13 +539,138 @@ impl Conv {
 
     /// A handler clause `\arg = \k = body` becomes a single 2-parameter code: the
     /// operation argument is `Local 0`, the continuation `Local 1`.
-    fn clause(&mut self, c: &Clause, continuation: &str, ctx: &mut Ctx) -> HandleClause {
+    fn clause(
+        &mut self,
+        c: &Clause,
+        continuation: &str,
+        oneshot: bool,
+        ctx: &mut Ctx,
+    ) -> HandleClause {
         let fun = self.lift(&c.body, 2, &[c.arg.clone(), continuation.to_string()], ctx);
+        let resume = match &fun {
+            Atom::Clos { code, .. } => resume_use(&self.codes[*code].body, oneshot),
+            _ => ResumeUse::Many,
+        };
         HandleClause {
             effect: c.effect.clone(),
             op: c.op.clone(),
             fun,
+            resume,
         }
+    }
+}
+
+/// How often a clause body applies its continuation, and whether the
+/// continuation gets out of the clause by any other route. The count saturates
+/// at two: beyond that the engines behave the same.
+struct Resumes {
+    uses: usize,
+    escaped: bool,
+}
+
+impl Resumes {
+    const NONE: Resumes = Resumes { uses: 0, escaped: false };
+
+    fn then(self, other: Resumes) -> Resumes {
+        Resumes {
+            uses: (self.uses + other.uses).min(2),
+            escaped: self.escaped || other.escaped,
+        }
+    }
+
+    /// Exclusive alternatives: at most one of them runs, so the count is the
+    /// worst branch rather than the total.
+    fn or(self, other: Resumes) -> Resumes {
+        Resumes {
+            uses: self.uses.max(other.uses),
+            escaped: self.escaped || other.escaped,
+        }
+    }
+}
+
+/// Classify a lifted clause body by how it uses `k`, which is `Local(1)` there
+/// (slot 0 is the operation argument, and the slot allocator hands out 2 and up
+/// to the body's own binders, so no other binder can alias it).
+///
+/// `oneshot` is the `ctl @oneshot k` assertion. It upgrades the cases the walk
+/// cannot see through (the continuation escapes into a closure, a constructor or
+/// a call, so its uses happen elsewhere) but never overrides a clause that
+/// provably applies `k` twice: a wrong annotation then costs performance, not
+/// correctness.
+fn resume_use(body: &Expr, oneshot: bool) -> ResumeUse {
+    let r = resumes(body);
+    match (r.uses, r.escaped) {
+        (0, false) => ResumeUse::Never,
+        (0..=1, true) if oneshot => ResumeUse::Once,
+        (0..=1, false) => ResumeUse::Once,
+        _ => ResumeUse::Many,
+    }
+}
+
+/// `k` appearing anywhere other than as the callee of an application is an
+/// escape: it is stored, captured or passed on, and the clause body no longer
+/// bounds how often it is resumed.
+fn atom_escapes(a: &Atom) -> bool {
+    match a {
+        Atom::Local(slot) => *slot == 1,
+        Atom::Clos { captures, .. } => captures.iter().any(atom_escapes),
+        Atom::Env(_)
+        | Atom::Glob { .. }
+        | Atom::LitI(_)
+        | Atom::LitR(_)
+        | Atom::LitS(_)
+        | Atom::LitB(_)
+        | Atom::Unit
+        | Atom::Extern { .. } => false,
+    }
+}
+
+fn atoms_escape<'a>(atoms: impl IntoIterator<Item = &'a Atom>) -> Resumes {
+    Resumes {
+        uses: 0,
+        escaped: atoms.into_iter().any(atom_escapes),
+    }
+}
+
+fn resumes(e: &Expr) -> Resumes {
+    match e {
+        Expr::Ret(a) => atoms_escape([a]),
+
+        Expr::Let { rhs, body, .. } => resumes(rhs).then(resumes(body)),
+
+        // `k arg` is the one shape that resumes; `k` in any other position (the
+        // argument, or a callee that passes it on) escapes instead.
+        Expr::App { fun, arg, .. } => {
+            let applied = matches!(fun, Atom::Local(1));
+            Resumes {
+                uses: usize::from(applied),
+                escaped: atom_escapes(arg) || (!applied && atom_escapes(fun)),
+            }
+        }
+
+        Expr::Case {
+            scrut,
+            alts,
+            default,
+        } => alts
+            .iter()
+            .fold(resumes(default), |acc, alt| acc.or(resumes(&alt.body)))
+            .then(atoms_escape([scrut])),
+
+        Expr::MkStruct { base, fields, .. } => {
+            atoms_escape(base.iter().chain(fields.iter().map(|(_, a)| a)))
+        }
+        Expr::Field { rec, .. } => atoms_escape([rec]),
+        Expr::MkVariant { fields, .. } => atoms_escape(fields),
+        Expr::MkTuple(items) => atoms_escape(items),
+
+        Expr::Handle { body, clauses, els } => resumes(body)
+            .then(atoms_escape(clauses.iter().map(|c| &c.fun)))
+            .then(atoms_escape([els])),
+
+        Expr::Defer { cleanup, body } => atoms_escape([cleanup]).then(resumes(body)),
+
+        Expr::Fault(_) => Resumes::NONE,
     }
 }
 
