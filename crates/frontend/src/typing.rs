@@ -1392,13 +1392,8 @@ impl<'a> Checker<'a> {
                 self.check(then, expected)?;
                 self.check(alt, expected)
             }
-            Expr::Match {
-                scrut,
-                arms,
-                default,
-            } => {
-                let (scrut, default) = (*scrut, *default);
-                let ts = self.infer(scrut)?;
+            Expr::Match { scrut, arms } => {
+                let ts = self.infer(*scrut)?;
                 for arm in self.ast.slice(*arms).iter() {
                     self.enter_scope();
                     let r = (|this: &mut Self| {
@@ -1415,10 +1410,7 @@ impl<'a> Checker<'a> {
                     self.leave_scope();
                     r?;
                 }
-                match default {
-                    Some(d) => self.check(d, expected),
-                    None => Ok(()),
-                }
+                Ok(())
             }
             // A `{ .f = e, ... }` literal checked against a declared struct builds
             // THAT struct rather than an anonymous row record, so construction
@@ -2998,13 +2990,8 @@ impl<'a> Checker<'a> {
                 Ok(ty)
             }
 
-            Expr::Match {
-                scrut,
-                arms,
-                default,
-            } => {
-                let (scrut, default) = (*scrut, *default);
-                let ts = self.infer(scrut)?;
+            Expr::Match { scrut, arms } => {
+                let ts = self.infer(*scrut)?;
                 let result = self.eng.fresh();
                 for arm in self.ast.slice(*arms).iter() {
                     self.enter_scope();
@@ -3019,10 +3006,6 @@ impl<'a> Checker<'a> {
                     let tb = self.infer(arm.body)?;
                     self.eng.unify(result, tb, "between match arms")?;
                     self.leave_scope();
-                }
-                if let Some(d) = default {
-                    let td = self.infer(d)?;
-                    self.eng.unify(result, td, "in a match 'else' branch")?;
                 }
                 Ok(result)
             }
@@ -3120,10 +3103,10 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// Type a `do body ctl k <clauses> [else x = e]` handler. `R` is the result
-    /// of the whole handled computation: every clause body and the `else` body has
-    /// type `R`, and with no `else` the body's own value passes through (`R` is the
-    /// body type). In a clause handling `op : Arg -> Res`, the payload `arg` has
+    /// Type a `do body ctl k <clauses> <value arms>` handler. `R` is the result
+    /// of the whole handled computation: every clause body and the value arms have
+    /// type `R`, and with no value arm the body's own value passes through (`R` is
+    /// the body type). In a clause handling `op : Arg -> Res`, the payload `arg` has
     /// type `Arg` and the continuation `k` has type `Res -> R` (a deep handler:
     /// resuming yields the final result).
     fn infer_handle(
@@ -3175,24 +3158,23 @@ impl<'a> Checker<'a> {
             self.eng.unify(cb, result, "in a handler clause")?;
             self.leave_scope();
         }
-        match &handler.default {
-            Some((name, else_body)) => {
+        match &handler.value {
+            Some((name, value_body)) => {
                 self.enter_scope();
                 self.bind(self.text(*name), body_ty);
-                let eb = self.infer(*else_body)?;
-                self.eng.unify(eb, result, "in a handler 'else' clause")?;
+                let vb = self.infer(*value_body)?;
+                self.eng.unify(vb, result, "in a handler value arm")?;
                 self.leave_scope();
             }
-            // With no `else` clause the return (value) case defaults to identity,
-            // so the body's result becomes the handler's result. When they differ
-            // the handler needs an `else` clause to convert the body's value.
+            // With no value arm the body's result becomes the handler's result.
+            // When they differ the handler needs a value arm to convert it.
             None => {
                 if self.eng.unify(body_ty, result, "in a handled body").is_err() {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
                         "the body produces {}, but the handler's clauses produce {}",
                         self.eng.show(body_ty), self.eng.show(result);
-                        note: "with no `else` clause the body's result is returned unchanged; add an `else x => ...` clause to convert it"
+                        note: "with no value arm the body's result is returned unchanged; add a `| x => ...` arm to convert it"
                     ));
                 }
             }
@@ -5428,11 +5410,7 @@ fn free_globals<'a>(
             free_globals(ast, *then, globals, bound, out);
             free_globals(ast, *alt, globals, bound, out);
         }
-        Expr::Match {
-            scrut,
-            arms,
-            default,
-        } => {
+        Expr::Match { scrut, arms } => {
             free_globals(ast, *scrut, globals, bound, out);
             for arm in ast.slice(*arms).iter() {
                 let mark = bound.len();
@@ -5444,9 +5422,6 @@ fn free_globals<'a>(
                 }
                 free_globals(ast, arm.body, globals, bound, out);
                 bound.truncate(mark);
-            }
-            if let Some(d) = default {
-                free_globals(ast, *d, globals, bound, out);
             }
         }
         Expr::Lambda { params, body } => {
@@ -5471,10 +5446,10 @@ fn free_globals<'a>(
                     free_globals(ast, clause.body, globals, bound, out);
                     bound.truncate(mark);
                 }
-                if let Some((name, else_body)) = &h.default {
+                if let Some((name, value_body)) = &h.value {
                     let mark = bound.len();
                     bound.push(ast.text(*name));
-                    free_globals(ast, *else_body, globals, bound, out);
+                    free_globals(ast, *value_body, globals, bound, out);
                     bound.truncate(mark);
                 }
             }

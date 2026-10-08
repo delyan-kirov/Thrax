@@ -10,7 +10,7 @@ with `thrax check`); a block that needs a library imports it (`$ with LA`, etc.)
 
 Conventions used throughout: a global is `$ name : Type = expr`; a lambda is
 `\x = e` (curried: `\a, b = e`); a branch is `if c => t else e`; a match is
-`is scrut | pat => e ... else d`. The comparison operators are `==` (equal),
+`is scrut | pat => e ...`. The comparison operators are `==` (equal),
 `!=` (not equal), `<` (less), `>` (greater), `<=` (at most), `>=` (at least),
 each of type `a -> a -> @bool`.
 
@@ -442,7 +442,7 @@ Involved (comma chain, destructuring, recursion, annotation):
 $ r = let {a, b} = {3, 4}, s = a + b in s * 2
 $ len : @vec @int -> @int =
 	let go : @vec @int -> @int -> @int = \l, n =
-		is l | _ :: t => go t (n + 1) else n
+		is l | _ :: t => go t (n + 1) | _ => n
 	 in \l = go l 0
 ```
 
@@ -517,17 +517,18 @@ $ back  : @int    = @cast small            # and back to the platform word
 # 5. Pattern matching
 
 ## 5.1 The match form `is`
-`is scrut | pat => e | pat => e ... else d`. Arms are tried top to bottom; the
-first matching pattern wins and binds its variables. The leading `is`
-distinguishes it from `if`.
+`is scrut | pat => e | pat => e ...`. Arms are tried top to bottom; the first
+matching pattern wins and binds its variables. The leading `is` distinguishes it
+from `if`. There is no default branch: a catch-all is an ordinary arm whose
+pattern matches anything, `| _ => d` (or `| x => d` to use the value).
 
 Simple:
 ```thrax
 $ classify : @int -> Str = \n =
-	is n | 0 => "zero" | 1 => "one" else "many"
+	is n | 0 => "zero" | 1 => "one" | _ => "many"
 ```
 
-Involved (nested union patterns, exhaustive so no `else`, see 5.9):
+Involved (nested union patterns, exhaustive so no catch-all, see 5.9):
 ```thrax
 $ Wrap : @union = Empty: {}, W: { Opt }
 $ Opt  : @union = None: {}, Some: { @int }
@@ -541,15 +542,15 @@ $ unwrap : Wrap -> @int = \w =
 Match @int, Real, and Str by equality (refutable).
 
 ```thrax
-$ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" else "m"
-$ yn : Str -> @int = \s = is s | "yes" => 1 | "no" => 0 else 99
+$ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" | _ => "m"
+$ yn : Str -> @int = \s = is s | "yes" => 1 | "no" => 0 | _ => 99
 ```
 
 ## 5.3 Wildcard and variable patterns
 `_` matches anything binding nothing; a lowercase name binds the value.
 
 ```thrax
-$ tag : @int -> @int = \n = is n | 0 => 100 | m => m + 1 else 0
+$ tag : @int -> @int = \n = is n | 0 => 100 | m => m + 1
 ```
 
 ## 5.4 Struct patterns
@@ -559,8 +560,8 @@ or named (dotted, any order, others ignored; a lone `.name` puns).
 ```thrax
 $ Point  : @struct = x: @int, y: @int,
 $ Person : @struct = name: Str, age: @int,
-$ sum_xy : Point -> @int = \p = is p | Point.{ x, y } => x + y else 0
-$ who    : Person -> Str = \p = is p | Person.{ .name } => name else "?"
+$ sum_xy : Point -> @int = \p = is p | Point.{ x, y } => x + y | _ => 0
+$ who    : Person -> Str = \p = is p | Person.{ .name } => name | _ => "?"
 ```
 
 ## 5.5 Variant patterns
@@ -569,8 +570,8 @@ the union inferred from the arms. Payloads nest.
 
 ```thrax
 $ Maybe : @union t = Just: t, None: {}
-$ get : @int -> Maybe @int -> @int = \d, m = is m | Maybe.Just.{ x } => x else d
-$ isJust : Maybe t -> @bool = \m = is m | .Just.{ _ } => @true else @false
+$ get : @int -> Maybe @int -> @int = \d, m = is m | Maybe.Just.{ x } => x | _ => d
+$ isJust : Maybe t -> @bool = \m = is m | .Just.{ _ } => @true | _ => @false
 ```
 
 ## 5.6 Range patterns
@@ -579,13 +580,13 @@ scrutinee's type). Open `lo ...` matches `lo <= x`. Refutable, binds nothing.
 
 Simple:
 ```thrax
-$ grade : @int -> Str = \n = is n | 90 ... 100 => "A" | 60 ... 89 => "C" else "F"
+$ grade : @int -> Str = \n = is n | 90 ... 100 => "A" | 60 ... 89 => "C" | _ => "F"
 ```
 
 Involved (open range, Real):
 ```thrax
-$ sign : @int -> Str = \n = is n | 0 ... => "nonneg" else "neg"
-$ band : Real -> @int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
+$ sign : @int -> Str = \n = is n | 0 ... => "nonneg" | _ => "neg"
+$ band : Real -> @int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
 ```
 
 ## 5.7 Sequence and array patterns
@@ -596,13 +597,13 @@ same way: define the hook and the brackets work.
 
 Simple:
 ```thrax
-$ sum : @vec @int -> @int = \xs = is xs | [] => 0 | h :: t => h + sum t else 0
+$ sum : @vec @int -> @int = \xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0
 ```
 
 Involved (leading elements plus a rest tail, on a vector and on an array):
 ```thrax
-$ second : @vec @int -> @int = \xs = is xs | [_, x, ..rest] => x else -1
-$ head_of : @array -> @int = \a = is a | [h, ..rest] => h else 0
+$ second : @vec @int -> @int = \xs = is xs | [_, x, ..rest] => x | _ => -1
+$ head_of : @array -> @int = \a = is a | [h, ..rest] => h | _ => 0
 ```
 
 ## 5.8 Or-patterns and guards
@@ -612,7 +613,7 @@ arm, even one with the same constructor.
 
 Or-pattern:
 ```thrax
-$ small : @int -> @int = \n = is n | 0 | 1 | 2 => 1 else 0
+$ small : @int -> @int = \n = is n | 0 | 1 | 2 => 1 | _ => 0
 ```
 
 Guards falling through the same constructor:
@@ -623,18 +624,17 @@ $ grade : Box -> @int = \x =
 	     | Box.Some.{ v } if v > 0   => 2
 	     | Box.Some.{ _ }             => 1
 	     | Box.Nil.{}                 => 0
-	     else -1
 ```
 
 ## 5.9 Exhaustiveness
-`else` is optional when the arms cover every constructor of a union; the checker
-runs a usefulness algorithm reasoning recursively through nested payloads. A
-non-exhaustive match with no `else` is a compile error naming the missing shape.
+A match needs no catch-all when its arms cover every constructor of a union. A
+value no arm matches is a runtime fault (`no pattern matched`); it is not yet
+reported at compile time.
 
 ```thrax
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
 $ go : Light -> @int = \l =
-	is l | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no else needed
+	is l | Light.Red => 0 | Light.Yellow => 1 | Light.Green => 2   # no catch-all needed
 ```
 
 ## 5.10 Irrefutable patterns in `let` and lambda
@@ -744,7 +744,7 @@ A recursive `@union` works the same way, which is how a `List` is consumed one
 cons at a time:
 ```thrax
 $ from : @int -> List @int = \n = List.Cons.{ n, from (n + 1) }
-$ head : List @int -> @int = \l = is l | List.Cons.{h, t} => h else 0
+$ head : List @int -> @int = \l = is l | List.Cons.{h, t} => h | _ => 0
 ```
 
 Evaluation is otherwise call by value, so a slot filled through a function
@@ -796,7 +796,7 @@ $ impl_IOrder_for_int : IOrder @int = .{
 	.compare = \a, b = if a < b => Ordering.LT else if a > b => Ordering.GT else Ordering.EQ,
 }
 $ max_of : @ctx IOrder t -> t -> t -> t = \d, x, y =
-	is d.compare x y | Ordering.GT => x else y
+	is d.compare x y | Ordering.GT => x | _ => y
 $ biggest : @int = max_of 3 7
 ```
 
@@ -869,10 +869,13 @@ $ tick : {} -> <State> @int = \u = let x = get {} in let _ = put (x + 1) in x
 ```
 
 ## 8.3 Handling `do ... ctl`
-`do body ctl k | op a => e ... else x => e`. `k` is the captured continuation,
-shared by every clause. Each `| op a => e` handles an operation; `else x => e`
-runs on normal completion (defaults to identity). A shared operation name is
-qualified in a clause head.
+`do body ctl k | op a => e ... | pat => e ...`. `k` is the captured
+continuation, shared by every clause. Each `| op a => e` handles an operation. A
+value arm `| pat => e` runs on normal completion, matching the body's final value
+like an `is` arm; with none, that value is the handler's result. An operation
+clause always names an operation and its argument (`| op a`, `| Eff.op a`),
+which no pattern can look like, so the two kinds of arm need no marker. A shared
+operation name is qualified in a clause head.
 
 `ctl @oneshot k` asserts that no clause resumes `k` more than once. It changes no
 semantics, only the cost: the engine hands the captured computation over instead
@@ -892,7 +895,7 @@ Generator (resume once per yield, summing results):
 $ sumGen : ({} -> <Yield> {}) -> @int = \gen =
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
-	      else _ => 0
+	      | _ => 0
 ```
 
 ## 8.4 Resuming
@@ -906,7 +909,7 @@ $ Task : @union = Fin: {}, Susp: { @int, {} -> Task }
 $ spawn : ({} -> <Yield> {}) -> Task = \t =
 	do t {}
 	ctl k | Yield.yield v => Task.Susp.{ v, k }     # store k, resume later
-	      else _ => Task.Fin.{}
+	      | _ => Task.Fin.{}
 ```
 
 Resuming more than once runs the rest of the computation once per resume, each on
@@ -916,7 +919,7 @@ its own copy, which is what nondeterminism and backtracking are:
 $ sum_all : ({} -> <Amb> @int) -> @int = \body =
 	do body {}
 	ctl k | Amb.flip u => k @true + k @false        # both branches
-	      else x => x
+	      | x => x
 ```
 
 Each resume costs a copy of the captured computation, so a clause that resumes at
@@ -933,7 +936,7 @@ error. Subsumption: a pure function is callable in any effectful context.
 
 ```thrax
 $ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f, xs =
-	is xs | [] => [] | h :: t => f h :: map f t else []
+	is xs | [] => [] | h :: t => f h :: map f t | _ => []
 ```
 
 ## 8.6 `defer`
@@ -1197,7 +1200,7 @@ The built-in boolean; values are `@true` and `@false` (matched with the
 
 ```thrax
 $ b : @bool = 3 < 4
-$ chk : @int = is b | @true => 0 else 1
+$ chk : @int = is b | @true => 0 | _ => 1
 ```
 
 ## 12.2 `@array` (byte block)

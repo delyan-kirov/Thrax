@@ -53,7 +53,7 @@ $ insert : Map k v -> k -> v -> Map k v = \m, k, v =
 $ insert_with : Map k v -> k -> v -> (v -> v -> v) -> Map k v = \m, k, v, f =
 	is get m k
 		| Option.Some.{old} => insert m k (f old v)
-	else insert m k v
+		| _ => insert m k v
 
 $ get : Map k v -> k -> Option v = \m, k = tget m.cmpf k m.root
 
@@ -75,7 +75,7 @@ $ remove : Map k v -> k -> Map k v = \m, k =
 $ update : Map k v -> k -> (v -> v) -> Map k v = \m, k, f =
 	is get m k
 		| Option.Some.{old} => insert m k (f old)
-	else m
+		| _ => m
 
 $ size : Map k v -> @int = \m = m.count
 
@@ -120,7 +120,7 @@ $ Tree : @union k v =
 	Node: {k, v, Tree k v, Tree k v, @int},  # key, value, left, right, height
 
 $ height : Tree k v -> @int = \t =
-	is t | Tree.Node.{_, _, _, _, h} => h else 0
+	is t | Tree.Node.{_, _, _, _, h} => h | _ => 0
 
 $ mknode : k -> v -> Tree k v -> Tree k v -> Tree k v = \k, v, l, r =
 	Tree.Node.{ k, v, l, r, 1 + max (height l) (height r) }
@@ -131,21 +131,21 @@ $ mknode : k -> v -> Tree k v -> Tree k v -> Tree k v = \k, v, l, r =
 # node.
 $ balance : k -> v -> Tree k v -> Tree k v -> Tree k v = \k, v, l, r =
 	if (height l) > ((height r) + 1) =>
-		is l | Tree.Node.{lk, lv, ll, lr, _} =>
+		(is l | Tree.Node.{lk, lv, ll, lr, _} =>
 			(if (height ll) >= (height lr) =>
 				mknode lk lv ll (mknode k v lr r)
 			 else is lr | Tree.Node.{ck, cv, cl, cr, _} =>
 				mknode ck cv (mknode lk lv ll cl) (mknode k v cr r)
-			 else mknode k v l r)
-		else mknode k v l r
+			 | _ => mknode k v l r)
+			 | _ => mknode k v l r)
 	else if (height r) > ((height l) + 1) =>
-		is r | Tree.Node.{rk, rv, rl, rr, _} =>
+		(is r | Tree.Node.{rk, rv, rl, rr, _} =>
 			(if (height rr) >= (height rl) =>
 				mknode rk rv (mknode k v l rl) rr
 			 else is rl | Tree.Node.{ck, cv, cl, cr, _} =>
 				mknode ck cv (mknode k v l cl) (mknode rk rv cr rr)
-			 else mknode k v l r)
-		else mknode k v l r
+			 | _ => mknode k v l r)
+			 | _ => mknode k v l r)
 	else mknode k v l r
 
 $ tinsert : (k -> k -> @int) -> k -> v -> Tree k v -> Tree k v = \c, k, v, t =
@@ -154,7 +154,7 @@ $ tinsert : (k -> k -> @int) -> k -> v -> Tree k v -> Tree k v = \c, k, v, t =
 		 if o < 0 => balance tk tv (tinsert c k v l) r
 		 else if o > 0 => balance tk tv l (tinsert c k v r)
 		 else mknode k v l r)
-	else mknode k v Tree.Leaf Tree.Leaf
+	| _ => mknode k v Tree.Leaf Tree.Leaf
 
 $ tget : (k -> k -> @int) -> k -> Tree k v -> Option v = \c, k, t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
@@ -162,7 +162,7 @@ $ tget : (k -> k -> @int) -> k -> Tree k v -> Option v = \c, k, t =
 		 if o < 0 => tget c k l
 		 else if o > 0 => tget c k r
 		 else Option.Some.{ tv })
-	else Option.None
+	| _ => Option.None
 
 $ tremove : (k -> k -> @int) -> k -> Tree k v -> Tree k v = \c, k, t =
 	is t | Tree.Node.{tk, tv, l, r, _} =>
@@ -170,41 +170,41 @@ $ tremove : (k -> k -> @int) -> k -> Tree k v -> Tree k v = \c, k, t =
 		 if o < 0 => balance tk tv (tremove c k l) r
 		 else if o > 0 => balance tk tv l (tremove c k r)
 		 else tjoin l r)
-	else Tree.Leaf
+	| _ => Tree.Leaf
 
 # Join two subtrees already ordered left < right: the right side's minimum
 # becomes the new root.
 $ tjoin : Tree k v -> Tree k v -> Tree k v = \l, r =
 	is tmin r
 		| Option.Some.{p} => balance p.0 p.1 l (drop_min r)
-	else l
+		| _ => l
 
 $ tmin : Tree k v -> Option {k, v} = \t =
 	is t | Tree.Node.{k, v, l, _, _} =>
-		(is l | Tree.Leaf => Option.Some.{ {k, v} } else tmin l)
-	else Option.None
+		(is l | Tree.Leaf => Option.Some.{ {k, v} } | _ => tmin l)
+	| _ => Option.None
 
 $ tmax : Tree k v -> Option {k, v} = \t =
 	is t | Tree.Node.{k, v, _, r, _} =>
-		(is r | Tree.Leaf => Option.Some.{ {k, v} } else tmax r)
-	else Option.None
+		(is r | Tree.Leaf => Option.Some.{ {k, v} } | _ => tmax r)
+	| _ => Option.None
 
 $ drop_min : Tree k v -> Tree k v = \t =
 	is t | Tree.Node.{k, v, l, r, _} =>
-		(is l | Tree.Leaf => r else balance k v (drop_min l) r)
-	else Tree.Leaf
+		(is l | Tree.Leaf => r | _ => balance k v (drop_min l) r)
+	| _ => Tree.Leaf
 
 $ tlist : Tree k v -> @vec {k, v} -> @vec {k, v} = \t, acc =
 	is t | Tree.Node.{k, v, l, r, _} =>
 		tlist l ({k, v} :: tlist r acc)
-	else acc
+	| _ => acc
 
 $ tfold : (a -> k -> v -> a) -> a -> Tree k v -> a = \f, acc, t =
 	is t | Tree.Node.{k, v, l, r, _} =>
 		tfold f (f (tfold f acc l) k v) r
-	else acc
+	| _ => acc
 
 $ tmapv : (v -> w) -> Tree k v -> Tree k w = \f, t =
 	is t | Tree.Node.{k, v, l, r, h} =>
 		Tree.Node.{ k, f v, tmapv f l, tmapv f r, h }
-	else Tree.Leaf
+	| _ => Tree.Leaf

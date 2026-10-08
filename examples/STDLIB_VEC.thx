@@ -37,7 +37,7 @@ $ pts : @vec {@int, @int} = push (push (new {}) {1, 2}) {3, 4}
 $ ck_tup : @int =
 	is get pts 1 | Option.Some.{p} =>
 		(if (p.0 + p.1) == 7 => 0 else 1)
-	else 1
+	| _ => 1
 
 # A larger build loop: the native backend reuses the unique spine in place.
 $ ck_big : @int =

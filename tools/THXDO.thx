@@ -120,7 +120,7 @@ $ run_command: @str -> <@io> bool = \cmd =
 					++ readme_cmd;
 			@true
 		| "help"     => print help_text; @true
-		else
+		| _ =>
 			print ("thxdo: unknown command\n\n" ++ help_text);
 			@false
 

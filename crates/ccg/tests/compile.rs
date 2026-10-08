@@ -829,7 +829,7 @@ fn open_range_stream() {
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
     let src = "@mod M\n\
-               $ sign : @int -> @str = \\n = is n | 0 ... => \"nonneg\" else \"neg\"\n\
+               $ sign : @int -> @str = \\n = is n | 0 ... => \"nonneg\" | _ => \"neg\"\n\
                $ test : @str = sign 3\n";
     assert_matches(src, "test");
 }
@@ -945,11 +945,11 @@ fn effects_multi_shot_through_a_stored_continuation() {
                $ Co : @effect = step : @int -> {},\n\
                $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
                $ spawn : ({} -> <Co> {}) -> Task =\n\
-               \t\\t = do t {} ctl k | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+               \t\\t = do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
                $ drive : Task -> @int =\n\
-               \t\\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+               \t\\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
                $ test : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {}))\n\
-               \t| Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0\n";
+               \t| Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0\n";
     assert_matches(src, "test");
 }
 
@@ -1025,7 +1025,7 @@ fn literal_construction_hooks_match_interpreter() {
                $ w : Wrap = 40\n\
                $ bag : Bag @int = [1, 2]\n\
                $ plain : @int = 5\n\
-               $ r : @int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v else 0)"; // 40+5+2
+               $ r : @int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v | _ => 0)"; // 40+5+2
     assert_matches(src, "r");
 }
 
@@ -1065,7 +1065,7 @@ fn bracket_hooks_match_interpreter() {
                $ v : @vec @int = [1 ... 4]\n\
                $ w : @vec @int = 9 :: v.[1 ... 2]\n\
                $ b : @array = [7, 8, 9]\n\
-               $ head : @array -> @int = \\a = is a | [x, ..r] => x + @array_len r else 0\n\
+               $ head : @array -> @int = \\a = is a | [x, ..r] => x + @array_len r | _ => 0\n\
                $ r : @int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
     // 4 + 4 + 9 + (7+2)
     assert_matches(src, "r");
@@ -1078,13 +1078,13 @@ fn pattern_hooks_match_interpreter() {
     let src = "@mod M\n\
                $ Stack : @struct a = items: @vec a\n\
                $ sv : @ISeqView (Stack a) a = .{\n\
-               \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty,\n\
+               \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
                }\n\
                $ MyStr : @struct = bytes: @str\n\
                $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
                $ eq_mystr : IEq MyStr = .{ .eq = \\a, b = a.bytes == b.bytes }\n\
-               $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 else 0\n\
-               $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h else 0\n\
+               $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 | _ => 0\n\
+               $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h | _ => 0\n\
                $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
     assert_matches(src, "r");
 }
@@ -1098,7 +1098,7 @@ fn recursive_union_slot_is_lazy() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
-               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h else 0\n\
+               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
                $ test : @int = hd (from 7)";
     assert_matches(src, "test");
 }
@@ -1110,7 +1110,7 @@ fn a_lazy_slot_is_forced_once() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
                $ xs : L @int = mk 5\n\
                $ test : @int = sum xs 0 + sum xs 0";
     assert_matches(src, "test");
@@ -1135,6 +1135,6 @@ fn for_over_a_lazy_list_stops_at_break() {
                $ test : @int =\n\
                \tdo for (from 1) (\\x = if x > 5 => break {} else Acc.add x)\n\
                \tctl k | Acc.add n => n + k {}\n\
-               \t      else r => 0\n";
+               \t      | r => 0\n";
     assert_matches(src, "test");
 }

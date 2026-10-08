@@ -9,7 +9,7 @@
 $ route : @str -> @str = \s =
 	is s | "GET " ++ path => path
 	         | "PUT " ++ path => path
-	         else s
+	         | _ => s
 
 $ ck_get   : @int = if (route "GET /home") == "/home" => 0 else 1
 $ ck_put   : @int = if (route "PUT /x") == "/x" => 0 else 1
@@ -18,15 +18,15 @@ $ ck_other : @int = if (route "nope") == "nope" => 0 else 1
 # An empty prefix matches everything; a prefix longer than the subject falls
 # through (the slice clamps, so the byte-equality simply fails).
 $ ck_empty_prefix : @int = is "hi" | "" ++ rest =>
-	if rest == "hi" => 0 else 1 else 1
-$ ck_too_long : @int = is "ab" | "abcd" ++ _ => 1 else 0
+	if rest == "hi" => 0 else 1 | _ => 1
+$ ck_too_long : @int = is "ab" | "abcd" ++ _ => 1 | _ => 0
 
 # The `rest` sub-pattern can itself be refutable: this arm matches only when
 # the tail is exactly empty, i.e. the whole string equals the prefix.
 $ exactly : @str -> @int = \s =
 	is s | "quit" ++ "" => 1
 	         | "quit" ++ more => 2
-	         else 0
+	         | _ => 0
 
 $ ck_exact   : @int = if (exactly "quit") == 1 => 0 else 1
 $ ck_partial : @int = if (exactly "quitting") == 2 => 0 else 1
@@ -34,7 +34,7 @@ $ ck_nomatch : @int = if (exactly "stay") == 0 => 0 else 1
 
 # Nested prefixes strip layer by layer.
 $ strip2 : @str -> @str = \s =
-	is s | "a" ++ "b" ++ rest => rest else "?"
+	is s | "a" ++ "b" ++ rest => rest | _ => "?"
 
 $ ck_nested : @int = if (strip2 "abXY") == "XY" => 0 else 1
 $ ck_nested_no : @int = if (strip2 "aXY") == "?" => 0 else 1

@@ -54,8 +54,7 @@ $ ex_match : @str =
 	++ "\t\t| .Just.{ v } if v > 100 => 3\n"
 	++ "\t\t| .Just.{ v } if v > 0   => 2\n"
 	++ "\t\t| .Just.{ _ }             => 1\n"
-	++ "\t\t| .None                   => 0\n"
-	++ "\t\telse - 1"
+	++ "\t\t| .None                   => 0"
 
 $ ex_effect : @str =
 	"$ Yield : @effect = yield : @int -> {},\n"
@@ -64,7 +63,7 @@ $ ex_effect : @str =
 	++ "$ sumGen : ({} -> <Yield> {}) -> @int = \\gen =\n"
 	++ "\tdo gen {}\n"
 	++ "\tctl k | Yield.yield v => v + k {}\n"
-	++ "\t      else _ => 0"
+	++ "\t      | _ => 0"
 
 $ ex_interface : @str =
 	"$ IArea : @struct t = area: t -> Real,\n"
@@ -183,8 +182,9 @@ $ tour : @str =
 	++ "the unit variant. Unions take `with` too.\n\n"
 	++ fence ex_union
 	++ nl ++ fence ex_splice_union
-	++ "\n`is scrut | pat => e ... else d` matches top to bottom; each arm may carry an\n"
-	++ "`if <guard>` that falls through to the next arm on failure.\n\n"
+	++ "\n`is scrut | pat => e ...` matches top to bottom; each arm may carry an\n"
+	++ "`if <guard>` that falls through to the next arm on failure. There is no\n"
+	++ "default branch: a catch-all is just an arm, `| _ => d`.\n\n"
 	++ fence ex_match
 	++ "\n### Algebraic effects and handlers\n\n"
 	++ "An effect is a set of operations; performing one is just a call. A function's\n"
@@ -192,7 +192,9 @@ $ tour : @str =
 	++ "a plain arrow is pure, and an unhandled effect is a compile-time error. The\n"
 	++ "continuation `k` is first-class and may be resumed any number of times, so\n"
 	++ "generators, coroutines, state and backtracking search are all ordinary\n"
-	++ "library code.\n\n"
+	++ "library code. Besides its operation clauses, a handler may have value arms:\n"
+	++ "ordinary patterns over the body's final value, like `| _ => 0` below. Without\n"
+	++ "one, that value is the handler's result.\n\n"
 	++ fence ex_effect
 	++ "\n### Interfaces\n\n"
 	++ "An interface is an ordinary struct whose fields are its operations;\n"

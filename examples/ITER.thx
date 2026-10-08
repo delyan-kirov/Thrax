@@ -7,7 +7,7 @@
 
 $ Yield : @effect = yield : @int -> {},
 $ sumY : ({} -> <Yield> {}) -> @int = \a =
-	do a {} ctl k | Yield.yield v => v + k {} else _ => 0
+	do a {} ctl k | Yield.yield v => v + k {} | _ => 0
 
 # `for` over a @vec, for effects: yield 1,2,3, then `break` at 4  ->  1+2+3 = 6.
 $ ck_for : @int =
@@ -35,8 +35,8 @@ $ listed : List @int = formap (List.Cons.{ 10, List.Cons.{ 20, List.Nil } }) (\x
 $ ck_list : @int =
 	is listed
 	| List.Cons.{h, t} =>
-		is t | List.Cons.{h2, t2} => (if h == 11 && h2 == 21 => 0 else 1) else 1
-	else 1
+		(is t | List.Cons.{h2, t2} => (if h == 11 && h2 == 21 => 0 else 1) | _ => 1)
+	| _ => 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @int = ck_for + ck_stream + ck_formap + ck_break + ck_list

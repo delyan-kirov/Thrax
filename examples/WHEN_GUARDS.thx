@@ -10,12 +10,12 @@
 
 # --- Guards over a bound variable (literal-free) ------------------------------
 # `is m if <guard>` binds the whole scrutinee, then tests it; two guarded arms
-# fall through to each other and finally to `else`.
+# fall through to each other and finally to the `| _` arm.
 $ sgn : @int -> @int = \n =
 	is n
 		| m if m > 0 => 1
 		| m if m < 0 => 0 - 1
-		else 0
+		| _ => 0
 
 $ chk_sgn_p : @int = if sgn 7       == 1       => 0 else 1
 $ chk_sgn_n : @int = if sgn (0 - 4) == (0 - 1) => 0 else 1
@@ -30,7 +30,7 @@ $ cmp : Pair -> @int = \p =
 	is p
 		| Pair.{ a, b } if a > b => 0
 		| Pair.{ a, b } if a == b => 1
-		else 2
+		| _ => 2
 
 $ chk_cmp_gt : @int = if cmp Pair.{ .a = 3, .b = 1 } == 0 => 0 else 1
 $ chk_cmp_eq : @int = if cmp Pair.{ .a = 2, .b = 2 } == 1 => 0 else 1
@@ -47,7 +47,7 @@ $ grade : Box -> @int = \x =
 		| Box.Some.{ v } if v > 0   => 2
 		| Box.Some.{ _ }             => 1
 		| Box.Nil.{}                 => 0
-		else 0 - 1
+		| _ => 0 - 1
 
 $ chk_grade_big  : @int = if grade Box.Some.{ 500 }    == 3       => 0 else 1
 $ chk_grade_pos  : @int = if grade Box.Some.{ 7 }      == 2       => 0 else 1

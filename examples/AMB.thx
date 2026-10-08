@@ -15,7 +15,7 @@ $ Choose : @effect = choose : @int -> @int,
 $ sum_all : ({} -> <Amb> @int) -> @int = \body =
 	do body {}
 	ctl k | Amb.flip u => k @true + k @false
-	      else x => x
+	      | x => x
 
 $ one_flip : @int = sum_all <| \u = if flip {} => 10 else 1
 
@@ -31,10 +31,10 @@ $ two_flips : @int = sum_all <| \u =
 $ all_paths : ({} -> <Amb> a) -> List a = \body =
 	do body {}
 	ctl k | Amb.flip u => k @true ++ k @false
-	      else x => List.Cons.{ x, List.Nil }
+	      | x => List.Cons.{ x, List.Nil }
 
 $ list_sum : List @int -> @int = \xs =
-	is xs | List.Cons.{h, t} => h + list_sum t else 0
+	is xs | List.Cons.{h, t} => h + list_sum t | _ => 0
 
 $ collected : List @int = all_paths <| \u = if flip {} => 10 else 1
 
@@ -46,7 +46,7 @@ $ resume_each : (@int -> @int) -> @int -> @int -> @int = \k, i, n =
 $ search : ({} -> <Choose> @int) -> @int = \body =
 	do body {}
 	ctl k | Choose.choose n => resume_each k 1 n
-	      else x => x
+	      | x => x
 
 # Backtracking search over three nested choices: the pythagorean triples with
 # a <= b and every side at most 15 (3-4-5, 5-12-13, 6-8-10, 9-12-15).

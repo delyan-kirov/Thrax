@@ -12,7 +12,7 @@
 $ small : @int -> @int = \n =
 	is n
 		| 0 | 1 | 2 => 1
-		else 0
+		| _ => 0
 
 $ chk_small_0 : @int = if small 0 == 1 => 0 else 1
 $ chk_small_2 : @int = if small 2 == 1 => 0 else 1
@@ -37,7 +37,7 @@ $ chk_warm_b : @int = if warm Color.Blue.{}  == 0 => 0 else 1
 $ tiny : @int -> @int = \n =
 	is n
 		| 1 | 2 | 3 if n < 3 => 1
-		else 0
+		| _ => 0
 
 $ chk_tiny_1 : @int = if tiny 1 == 1 => 0 else 1
 $ chk_tiny_3 : @int = if tiny 3 == 0 => 0 else 1

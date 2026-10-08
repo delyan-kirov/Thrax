@@ -614,7 +614,7 @@ impl<'a> Parser<'a> {
                 "effect" => {
                     self.bump()?;
                     expect!(self, Kind::Eq, "expected '=' after '@effect'");
-                    let ops = self.parse_field_decls()?;
+                    let ops = self.parse_effect_ops()?;
                     return Ok(Item::Effect { name, ops });
                 }
                 // `@codata` was removed: a recursive `@struct` or `@union` is lazy in
@@ -684,19 +684,25 @@ impl<'a> Parser<'a> {
     }
 
 
-    /// Comma-separated `name : Type` declarations (struct fields, effect ops).
-    fn parse_field_decls(&mut self) -> Result<Slice<FieldDecl>> {
-        let mut fields = Vec::new();
+    /// An `@effect`'s operations, `name : Type` like struct fields. A name must
+    /// start lowercase: a handler arm `| Name x` would otherwise read as a value
+    /// pattern rather than an operation clause.
+    fn parse_effect_ops(&mut self) -> Result<Slice<FieldDecl>> {
+        let mut ops = Vec::new();
         while matches!(self.peek_kind()?, Kind::Word) {
+            let t = self.peek()?;
+            if is_upper(self.text(t)) {
+                return Err(self.unexpected(&t, "an effect operation name must start lowercase"));
+            }
             let name = self.bump_word()?;
-            expect!(self, Kind::Colon, "expected ':' after the field name");
+            expect!(self, Kind::Colon, "expected ':' after the operation name");
             let ty = self.parse_type()?;
-            fields.push(FieldDecl { name, ty });
+            ops.push(FieldDecl { name, ty });
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
         }
-        Ok(self.ast.make_slice(fields))
+        Ok(self.ast.make_slice(ops))
     }
 
     /// A struct body: leading `with Other` clauses (copied-in fields) then the
@@ -1928,41 +1934,57 @@ impl<'a> Parser<'a> {
         self.bump()?; // 'is'
         let scrut = self.parse_expr(0)?;
         let mut arms = Vec::new();
-        while self.at_op("|")? {
-            let mut patterns = Vec::new();
-            while self.at_op("|")? {
-                self.bump()?; // '|'
-                patterns.push(self.parse_pattern()?);
-            }
-            let guard = if matches!(self.peek_kind()?, Kind::If) {
-                self.bump()?;
-                Some(self.parse_expr(0)?)
-            } else {
-                None
-            };
-            // No `: T` here, unlike `let` and a lambda parameter: the scrutinee's
-            // type already fixes every arm's pattern, so there is nothing to pin.
-            expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
-            let body = self.parse_expr(0)?;
-            let patterns = self.ast.make_slice(patterns);
-            arms.push(Arm {
-                patterns,
-                guard,
-                body,
-            });
+        // An `is` nested in a handler clause ends at the next operation clause.
+        while self.at_op("|")? && !self.at_op_clause()? {
+            arms.push(self.parse_arm()?);
         }
-        let default = if matches!(self.peek_kind()?, Kind::Else) {
+        let arms = self.ast.make_slice(arms);
+        Ok(self.expr(Expr::Match { scrut, arms }))
+    }
+
+    /// One `| p1 | p2 if guard => body` arm, shared by `is` and a handler's value
+    /// arms.
+    fn parse_arm(&mut self) -> Result<Arm> {
+        let mut patterns = Vec::new();
+        while self.at_op("|")? {
+            self.bump()?; // '|'
+            patterns.push(self.parse_pattern()?);
+        }
+        let guard = if matches!(self.peek_kind()?, Kind::If) {
             self.bump()?;
             Some(self.parse_expr(0)?)
         } else {
             None
         };
-        let arms = self.ast.make_slice(arms);
-        Ok(self.expr(Expr::Match {
-            scrut,
-            arms,
-            default,
-        }))
+        // No `: T` here, unlike `let` and a lambda parameter: the scrutinee's
+        // type already fixes every arm's pattern, so there is nothing to pin.
+        expect!(self, Kind::FatArrow, "expected '=>' after the match pattern");
+        let body = self.parse_expr(0)?;
+        let patterns = self.ast.make_slice(patterns);
+        Ok(Arm {
+            patterns,
+            guard,
+            body,
+        })
+    }
+
+    /// Whether the next tokens open a handler operation clause, `| op x` or
+    /// `| Eff.op x`, rather than a value arm. A pattern never juxtaposes two
+    /// names, and a qualified pattern's second segment is an uppercase tag, so
+    /// the two shapes cannot collide.
+    fn at_op_clause(&mut self) -> Result<bool> {
+        if !self.at_op("|")? || !matches!(self.peek_kind_at(1)?, Kind::Word) {
+            return Ok(false);
+        }
+        let first = self.peek_at(1)?;
+        if !is_upper(self.text(first)) {
+            return Ok(matches!(self.peek_kind_at(2)?, Kind::Word));
+        }
+        if !matches!(self.peek_kind_at(2)?, Kind::Dot) || !matches!(self.peek_kind_at(3)?, Kind::Word) {
+            return Ok(false);
+        }
+        let op = self.peek_at(3)?;
+        Ok(!is_upper(self.text(op)))
     }
 
     /// `\p1, p2 = body`. Parameters are comma-separated, so a parameter's `: T`
@@ -2022,8 +2044,14 @@ impl<'a> Parser<'a> {
             "expected a continuation name after 'ctl' (optionally preceded by '@oneshot', \
              which asserts that no clause resumes it more than once)",
         )?;
+        let start = self.here()?;
         let mut clauses = Vec::new();
+        let mut value_arms = Vec::new();
         while self.at_op("|")? {
+            if !self.at_op_clause()? {
+                value_arms.push(self.parse_arm()?);
+                continue;
+            }
             self.bump()?; // '|'
             let first = self.expect_word("expected an operation name in the handler clause")?;
             let (effect, op) = if matches!(self.peek_kind()?, Kind::Dot) {
@@ -2043,24 +2071,41 @@ impl<'a> Parser<'a> {
                 body,
             });
         }
-        let default = if matches!(self.peek_kind()?, Kind::Else) {
-            self.bump()?;
-            let name = self.expect_word("expected a value binder after 'else'")?;
-            expect!(self, Kind::FatArrow, "expected '=>' after the 'else' binder");
-            Some((name, self.parse_expr(0)?))
-        } else {
-            None
-        };
+        let value = self.value_clause(start, value_arms);
         let handler = Box::new(Handler {
             continuation,
             clauses: self.ast.make_slice(clauses),
-            default,
+            value,
             oneshot,
         });
         Ok(self.expr(Expr::Handle {
             body,
             handler: Some(handler),
         }))
+    }
+
+    /// Fold a handler's value arms into its return clause. A lone unguarded
+    /// binder or `_` binds the value directly; anything else matches on a fresh
+    /// binder, exactly as `is` would.
+    fn value_clause(&mut self, start: usize, arms: Vec<Arm>) -> Option<(StrId, Aol<Expr>)> {
+        if let [arm] = arms.as_slice() {
+            let pats = self.ast.slice(arm.patterns);
+            if arm.guard.is_none() && pats.len() == 1 {
+                match self.ast.pats.lookup(pats[0]) {
+                    Pattern::Var(name) => return Some((*name, arm.body)),
+                    Pattern::Wild => return Some((self.intern("_"), arm.body)),
+                    _ => {}
+                }
+            }
+        }
+        if arms.is_empty() {
+            return None;
+        }
+        let name = self.intern("%ret");
+        let scrut = self.expr(Expr::Var { module: None, name });
+        let arms = self.ast.make_slice(arms);
+        let node = self.expr(Expr::Match { scrut, arms });
+        Some((name, self.stamp(start, node)))
     }
 
     fn parse_defer(&mut self) -> Result<Aol<Expr>> {

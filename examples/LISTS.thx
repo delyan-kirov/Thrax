@@ -14,17 +14,17 @@
 $ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
-	           else 0
+	           | _ => 0
 
 $ length : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | _ :: t => 1 + length t
-	           else 0
+	           | _ => 0
 
 $ map_inc : @vec @int -> @vec @int = \xs =
 	is xs | [] => []
 	           | h :: t => (h + 1) :: map_inc t
-	           else []
+	           | _ => []
 
 # Fixed-arity list patterns match a list of exactly that many elements, and
 # nest freely -- `[a, b]` is `Cons(a, Cons(b, Nil))`, so it binds two cells and
@@ -34,7 +34,7 @@ $ size_class : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | [a] => 1
 	           | [a, b] => 2
-	           else 9
+	           | _ => 9
 
 # An open list pattern `[a, ..rest]` binds leading cells and a `rest` tail
 # (the remaining list), so it matches AT LEAST that many elements -- `[a, ..t]`
@@ -42,17 +42,17 @@ $ size_class : @vec @int -> @int = \xs =
 # whole list.
 $ second : @vec @int -> @int = \xs =
 	is xs | [_, x, ..rest] => x
-	         else 0-1
+	         | _ => 0-1
 
 $ drop2 : @vec @int -> @vec @int = \xs =
 	is xs | [_, _, ..rest] => rest
-	         else []
+	         | _ => []
 
 $ ck_second : @int = if (second xs) == 2 => 0 else 1
 $ ck_second_short : @int = if (second [9]) == 0-1 => 0 else 1
 $ ck_drop2 : @int = if (sum (drop2 xs)) == 12 => 0 else 1
 $ ck_head_tail : @int = is xs | [h, ..t] =>
-	if (h + sum t) == 15 => 0 else 1 else 1
+	if (h + sum t) == 15 => 0 else 1 | _ => 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
 $ xs : @vec @int = [1, 2, 3, 4, 5]
@@ -76,17 +76,17 @@ $ ls2 : List @int = 0 :: ls
 $ lsum : List @int -> @int = \l =
 	is l | [] => 0
 	     | h :: t => h + lsum t
-	     else 0
+	     | _ => 0
 
 $ lsecond : List @int -> @int = \l =
 	is l | [_, x, ..rest] => x
-	     else 0-1
+	     | _ => 0-1
 
 $ lsize_class : List @int -> @int = \l =
 	is l | [] => 0
 	     | [a] => 1
 	     | [a, b] => 2
-	     else 9
+	     | _ => 9
 
 $ ck_lsum : @int = if (lsum ls) == 15 => 0 else 1
 $ ck_lcons : @int = if (lsum ls2) == 15 => 0 else 1
@@ -101,7 +101,7 @@ $ Acc : @effect = add : @int -> {},
 $ collect : ({} -> <Acc | e> {}) -> <e> @int = \body =
 	do body {} ; 0
 	ctl k | Acc.add n => n + k {}
-	      else r => r
+	      | r => r
 
 $ ck_for : @int = if collect (\u = for ls (\x = Acc.add x)) == 15 => 0 else 1
 

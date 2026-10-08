@@ -732,14 +732,16 @@ the result is **closest to Flix**.
   (runtime-checked), droppable (= the exception case), storable (= generators /
   coroutines).
 
-- **Handling.** `do <body> ctl k  <is-clauses>  [else x = e]`. `do` takes the body
-  (no parens `ctl` delimits it). `ctl k` binds the one continuation, shared by
-  all clauses (exactly one `k` per performed op). `is op a = e` handles `op`,
-  binding its argument `a`. `else x = e` is the value clause (normal completion),
-  binding the result; optional, identity by default. `is` / `else` are reused from
-  `match`; handlers are deep (section 3).
+- **Handling.** `do <body> ctl k  | op a => e ...  | pat => e ...`. `do` takes
+  the body (no parens, `ctl` delimits it). `ctl k` binds the one continuation,
+  shared by all clauses (exactly one `k` per performed op). `| op a => e` handles
+  `op`, binding its argument `a`. A value arm `| pat => e` is the value clause
+  (normal completion), matching the body's result like an `is` arm; optional,
+  identity by default. An operation clause always juxtaposes two names (`op a`,
+  `Eff.op a`), which no pattern does, so the parser tells the two apart without a
+  marker (#232 replaced the earlier `else x => e`). Handlers are deep (section 3).
 
-Net new keywords: `@effect`, `do`, `ctl` (plus reused `is` / `else`); all
+Net new keywords: `@effect`, `do`, `ctl`; all
 contextual. `ctl` is borrowed from Koka and reserved as the slot for a future
 `fun` (tail-resumptive, no-capture) clause kind see section 6.
 

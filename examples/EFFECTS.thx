@@ -1,8 +1,8 @@
 @mod EFFECTS
 
 # Algebraic effects + handlers (typed, M3). Operations are performed by calling
-# them; a handler is `do <body> ctl k  is op a = e ...  [else x = e]`; the
-# continuation `k` is resumed by applying it, as often as the handler needs (see
+# them; a handler is `do <body> ctl k | op a => e ... | pat => e ...`, where the
+# value arms match the body's final value like `is` arms do; the continuation `k` is resumed by applying it, as often as the handler needs (see
 # AMB.thx for one that resumes twice). A function's type carries the effects it
 # may perform as a row on the arrow: `A -> <E> B`; a bare arrow is pure, and an
 # unhandled effect is a compile-time error.
@@ -17,12 +17,13 @@ $ safeDiv : @int -> @int -> @int = \a, b =
     do if b == 0 => Exn.throw "div0" else a / b
     ctl k | Exn.throw msg => 0 - 1
 
-# Generator: resume once, summing every yielded value; else is the base case.
+# Generator: resume once, summing every yielded value; the value arm is the base
+# case.
 # The argument performs Yield, so its arrow is `{} -> <Yield> {}`.
 $ sumGen : ({} -> <Yield> {}) -> @int = \gen =
     do gen {}
     ctl k | Yield.yield v => v + k {}
-          else _ => 0
+          | _ => 0
 
 $ gen3 : {} -> <Yield> {} = \u =
     let _ = Yield.yield 10 in let _ = Yield.yield 20 in let _ = Yield.yield 12 in {}
@@ -33,19 +34,30 @@ $ runState : ({} -> <State> @int) -> @int -> @int = \action, s0 =
     let h = do action {}
             ctl k | get u => \s = (k s) s
                   | put n => \s = (k {}) n
-                  else x => \s = x
+                  | x => \s = x
      in h s0
 
 $ counter : {} -> <State> @int = \u =
     let x = get {} in let _ = put (x + 1) in let y = get {} in x + y
+
+# Value arms are patterns, with guards, over the body's result. A throw skips
+# them: the clause's value is the handler's result.
+$ Found : @union = Hit: @int, Miss: {},
+$ lookup : @int -> @int = \key =
+    do (if key < 0 => Exn.throw "negative", key == 0 => Found.Miss else Found.Hit.{ key * 2 })
+    ctl k | Exn.throw msg => 0 - 2
+          | .Hit.{ v } if v > 100 => 100
+          | .Hit.{ v } => v
+          | .Miss => 0 - 1
 
 # Top-level results force the handlers to run under the test harness.
 $ r_exn_ok  : @int = safeDiv 84 2       # 42  (no throw)
 $ r_exn_bad : @int = safeDiv 10 0       # -1  (throw, no resume)
 $ r_gen     : @int = sumGen gen3        # 42  (10 + 20 + 12)
 $ r_state   : @int = runState counter 10 # 21 (x=10, put 11, y=11)
+$ r_lookup  : @int = lookup 21 + lookup 500 + lookup 0 + lookup (0 - 5)  # 42 + 100 - 1 - 2
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = r_exn_ok ; r_exn_bad ; r_gen ; r_state ; 0
+$ test : @int = r_exn_ok ; r_exn_bad ; r_gen ; r_state ; if r_lookup == 139 => 0 else 1
 
 $ @run (assert (test == 0) "EFFECTS: a check failed")

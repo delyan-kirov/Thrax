@@ -16,7 +16,7 @@ $ sum : ({} -> <Y> @int) -> @int =
         do body {}
         ctl k
             | Y.yield v => v + k {}
-            else r      => r
+            | r => r
 
 # Normal completion: body yields 1 and returns 100; cleanup yields 2.       -> 103
 $ r_normal : @int =
@@ -62,13 +62,13 @@ $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
     ctl k
         | step v => .Susp.{ k }
-        else _   => .Fin.{}
+        | _ => .Fin.{}
 
 $ drive : Task -> @int = \t =
     is t
         | .Fin.{} => 0
         | .Susp.{ k } => 1 + drive (k {})
-        else 0
+        | _ => 0
 
 $ r_stored : @int = drive <| spawn <| \_=
     defer step 2 in

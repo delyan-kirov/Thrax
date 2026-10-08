@@ -117,8 +117,9 @@ $ Base  : @union = Red: {}, Green: {},
 $ Color : @union = with Base, Blue: {}   # Red, Green, then Blue
 ```
 
-`is scrut | pat => e ... else d` matches top to bottom; each arm may carry an
-`if <guard>` that falls through to the next arm on failure.
+`is scrut | pat => e ...` matches top to bottom; each arm may carry an
+`if <guard>` that falls through to the next arm on failure. There is no
+default branch: a catch-all is just an arm, `| _ => d`.
 
 ```thrax
 $ grade : Maybe @int -> @int = \m =
@@ -127,7 +128,6 @@ $ grade : Maybe @int -> @int = \m =
 		| .Just.{ v } if v > 0   => 2
 		| .Just.{ _ }             => 1
 		| .None                   => 0
-		else - 1
 ```
 
 ### Algebraic effects and handlers
@@ -137,7 +137,9 @@ type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`)
 a plain arrow is pure, and an unhandled effect is a compile-time error. The
 continuation `k` is first-class and may be resumed any number of times, so
 generators, coroutines, state and backtracking search are all ordinary
-library code.
+library code. Besides its operation clauses, a handler may have value arms:
+ordinary patterns over the body's final value, like `| _ => 0` below. Without
+one, that value is the handler's result.
 
 ```thrax
 $ Yield : @effect = yield : @int -> {},
@@ -146,7 +148,7 @@ $ Yield : @effect = yield : @int -> {},
 $ sumGen : ({} -> <Yield> {}) -> @int = \gen =
 	do gen {}
 	ctl k | Yield.yield v => v + k {}
-	      else _ => 0
+	      | _ => 0
 ```
 
 ### Interfaces

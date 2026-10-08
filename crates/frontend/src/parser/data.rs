@@ -500,11 +500,11 @@ pub enum Expr {
         then: Aol<Expr>,
         alt: Aol<Expr>,
     },
-    /// `when scrut is p then e ... [else d]`.
+    /// `is scrut | p => e ...`. There is no default arm; a catch-all is written
+    /// as an ordinary `| _ => d` or `| x => d` arm.
     Match {
         scrut: Aol<Expr>,
         arms: Slice<Arm>,
-        default: Option<Aol<Expr>>,
     },
     /// `\p1 p2 = body`.
     Lambda {
@@ -569,7 +569,8 @@ pub struct LamParam {
     pub sig: Option<Aol<Ty>>,
 }
 
-/// One arm of a `when`. Or-patterns (`is p1 is p2`) share a body and guard.
+/// One arm of an `is`, or a value arm of a handler. Or-patterns (`| p1 | p2 => e`)
+/// share a body and guard.
 #[derive(Debug)]
 pub struct Arm {
     pub patterns: Slice<Aol<Pattern>>,
@@ -585,11 +586,14 @@ pub struct Arm {
 pub struct Handler {
     pub continuation: StrId,
     pub clauses: Slice<Clause>,
-    pub default: Option<(StrId, Aol<Expr>)>,
+    /// The return clause, run when the body finishes normally: a binder for the
+    /// body's value and the result expression. The parser builds it from the
+    /// handler's value arms (`| p => e`); `None` means the identity.
+    pub value: Option<(StrId, Aol<Expr>)>,
     pub oneshot: bool,
 }
 
-/// One `is Effect.op arg = body` handler clause.
+/// One `| Effect.op arg => body` handler clause.
 #[derive(Clone, Copy, Debug)]
 pub struct Clause {
     pub effect: Option<StrId>,

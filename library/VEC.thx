@@ -67,7 +67,7 @@ $ filter : (t -> @bool) -> @vec t -> @vec t = \p, v =
 	foldl (\acc, x = if p x => @vec_push acc x else acc) (@vec_new {}) v
 
 $ filter_map : (a -> Option b) -> @vec a -> @vec b = \f, v =
-	foldl (\acc, x = is f x | Option.Some.{y} => @vec_push acc y else acc)
+	foldl (\acc, x = is f x | Option.Some.{y} => @vec_push acc y | _ => acc)
 	      (@vec_new {}) v
 
 $ reverse : @vec t -> @vec t = \v = foldr (\x, acc = @vec_push acc x) (@vec_new {}) v
@@ -111,7 +111,7 @@ $ contains : (t -> t -> @bool) -> t -> @vec t -> @bool = \eqf, x, v =
 	any (\y = eqf x y) v
 
 $ lookup : (k -> k -> @bool) -> k -> @vec {k, v} -> Option v = \eqf, k, ps =
-	is find (\p = eqf k p.0) ps | Option.Some.{p} => Option.Some.{ p.1 } else Option.None
+	is find (\p = eqf k p.0) ps | Option.Some.{p} => Option.Some.{ p.1 } | _ => Option.None
 
 $ take_while : (t -> @bool) -> @vec t -> @vec t = \p, v = @vec_slice v 0 (prefix_len p v 0)
 
@@ -128,7 +128,7 @@ $ partition : (t -> @bool) -> @vec t -> {@vec t, @vec t} = \p, v =
 $ remove_first : (t -> @bool) -> @vec t -> @vec t = \p, v =
 	is find_index p v
 		| Option.Some.{i} => append (@vec_slice v 0 i) (@vec_slice v (i + 1) (@vec_len v))
-	else v
+		| _ => v
 
 # ---- pairs / numeric ----
 
@@ -155,7 +155,7 @@ $ maximum : @vec @int -> @int -> @int = \v, d =
 # ---- conversion (bridges to the optional cons `List`) ----
 
 $ from_list : List t -> @vec t = \xs =
-	is xs | List.Cons.{h, t} => @vec_push (from_list t) h else @vec_new {}
+	is xs | List.Cons.{h, t} => @vec_push (from_list t) h | _ => @vec_new {}
 
 $ to_list : @vec t -> List t = \v = foldr (\x, acc = List.Cons.{x, acc}) List.Nil v
 

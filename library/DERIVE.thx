@@ -155,7 +155,7 @@ $ payload_lex : @vec @str -> @vec @str -> @str = \xs, ys =
 
 # For a payload variant, the arm that (with tags already known equal) destructures
 # both values and compares their payloads; nullary variants need no arm (they are
-# equal, handled by the trailing `else 0`).
+# equal, handled by the trailing `| _ => 0`).
 $ payload_arm : @str -> {@str, @int} -> @str = \base, v =
 	if v.1 == 0 => ""
 	else
@@ -163,7 +163,7 @@ $ payload_arm : @str -> {@str, @int} -> @str = \base, v =
 		let ys = VEC.map (\n = "y" ++ n) (arg_names v.1) in
 		" | " ++ base ++ "." ++ v.0 ++ ".{" ++ join ", " xs ++ "}"
 			++ " => (is b | " ++ base ++ "." ++ v.0 ++ ".{" ++ join ", " ys ++ "}"
-			++ " => " ++ payload_lex xs ys ++ " else 0)"
+			++ " => " ++ payload_lex xs ys ++ " | _ => 0)"
 
 $ payload_arms : @str -> @vec {@str, @int} -> @str = \base, variants =
 	VEC.foldl (\acc, v = acc ++ payload_arm base v) "" variants
@@ -174,7 +174,7 @@ $ union_cmp : @str -> @str = \ty =
 	"$ cmp_" ++ ty ++ " : " ++ ty ++ " -> " ++ ty ++ " -> @int = \\a, b = "
 		++ "let ta = is a" ++ index_arms ty vs 0 ++ " in "
 		++ "let tb = is b" ++ index_arms ty vs 0 ++ " in "
-		++ "if ta == tb => (is a" ++ payload_arms ty vs ++ " else 0) else compare ta tb"
+		++ "if ta == tb => (is a" ++ payload_arms ty vs ++ " | _ => 0) else compare ta tb"
 		++ "\n" ++ icmp_decl ty
 
 $ derive_ord : @str -> @code = \ty =

@@ -6,7 +6,7 @@ $ with LA
 # \info Inclusive range patterns in `is` arms: `lo ... hi` matches when
 #       `lo <= x <= hi`. Both bounds are numeric literals and both ends are
 #       inclusive (Jai-style: there is only the inclusive form). A range is
-#       refutable and binds nothing, so a match over ranges needs an `else`. The
+#       refutable and binds nothing, so a match over ranges needs a catch-all arm. The
 #       scrutinee variable stays in scope in the arm if you need the value.
 #       The EXPRESSION form `[lo ... hi]` (below) is the same `...`, materialized.
 
@@ -16,10 +16,10 @@ $ grade : @int -> @str = \n =
 		| 80 ...  89 => "B"
 		| 70 ...  79 => "C"
 		| 60 ...  69 => "D"
-	else "F"
+		| _ => "F"
 
 # An OPEN range pattern `lo ...` omits the upper bound: it matches when `lo <= x`.
-$ sign : @int -> @str = \n = is n | 0 ... => "nonneg" else "neg"
+$ sign : @int -> @str = \n = is n | 0 ... => "nonneg" | _ => "neg"
 $ ck_open_pat : @int = if sign 3 == "nonneg" => 0 else 1024
 $ ck_open_neg : @int = if sign (0 - 3) == "neg" => 0 else 2048
 
@@ -32,7 +32,7 @@ $ ck_f  : @int = if grade 42  == "F" => 0 else 16
 
 # Ranges work on Real too; both bounds must share the scrutinee's type.
 $ band : Real -> @int = \x =
-	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 else 0
+	is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
 $ ck_r : @int = if band 0.25 == 1 => 0 else 32
 
 # EXPRESSION form: `[lo ... hi]` is a TYPE-DIRECTED inclusive-range literal (the
@@ -61,12 +61,12 @@ $ Seen : @effect = saw : @int -> {},
 $ walked : @int =
 	do for ([1 ... 100000000000000] : List @int) (\i = if i > 5 => break {} else Seen.saw i)
 	ctl k | Seen.saw n => n + k {}
-	      else r => 0
+	      | r => 0
 $ ck_lazy_range : @int = if walked == 15 => 0 else 512
 
 # The open range has the same two overloads; `Stream` is what the bare form takes.
 $ ck_lazy_open : @int =
-	if (is ([7 ...] : List @int) | List.Cons.{h, t} => h else 0) == 7 => 0 else 1024
+	if (is ([7 ...] : List @int) | List.Cons.{h, t} => h | _ => 0) == 7 => 0 else 1024
 
 $ test : @int =
 	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens

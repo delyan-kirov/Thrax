@@ -6,18 +6,18 @@ $ classify : @str -> @int = \s =
 	is s | "yes" => 1
 	         | "no" => 0
 	         | "maybe" => 2
-	         else 99
+	         | _ => 99
 
 $ ck_yes   : @int = if (classify "yes") == 1 => 0 else 1
 $ ck_no    : @int = if (classify "no") == 0 => 0 else 1
 $ ck_maybe : @int = if (classify "maybe") == 2 => 0 else 1
 $ ck_other : @int = if (classify "huh") == 99 => 0 else 1
 
-# `else` binds the whole scrutinee, so a string arm can fall through to a
-# default that reuses it.
+# A string arm can fall through to a catch-all arm whose body still reuses the
+# scrutinee.
 $ greet : @str -> @str = \name =
 	is name | "" => "nobody"
-	           else "hello " ++ name
+	           | _ => "hello " ++ name
 
 $ ck_empty : @int = if (greet "") == "nobody" => 0 else 1
 $ ck_named : @int = if (greet "sam") == "hello sam" => 0 else 1
