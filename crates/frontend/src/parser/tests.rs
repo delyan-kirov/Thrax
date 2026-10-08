@@ -272,7 +272,7 @@ fn shape_sugar_nests() {
 
 #[test]
 fn inclusive_range_pattern_parses() {
-    let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 else 1";
+    let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 | _ => 1";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -291,7 +291,7 @@ fn inclusive_range_pattern_parses() {
     }
     // A non-literal upper bound is a parse error: `1 ...` closes as an open range,
     // so the trailing `x` has nowhere to go.
-    parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 else 1")
+    parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 | _ => 1")
         .err()
         .expect("expected a parse error");
 }
@@ -299,7 +299,7 @@ fn inclusive_range_pattern_parses() {
 #[test]
 fn open_range_pattern_parses() {
     // `lo ...` with no upper bound is an open range pattern.
-    let p = prog("@mod M\n$ f = \\n = is n | 0 ... => 0 else 1");
+    let p = prog("@mod M\n$ f = \\n = is n | 0 ... => 0 | _ => 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -343,16 +343,15 @@ fn range_builder_parses_to_range_node() {
 
 #[test]
 fn variant_literal_and_when_match() {
-    let src = "@mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 else 2";
+    let src = "@mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 | _ => 2";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
-    let Expr::Match { arms, default, .. } = p.ast.expr(*body) else {
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
         panic!("expected a match")
     };
-    assert!(default.is_some());
-    assert_eq!(arms.len(), 2);
+    assert_eq!(arms.len(), 3);
     let arms = p.ast.slice(*arms);
     let Pattern::Variant { ty, tag, .. } = p.ast.pat(p.ast.slice(arms[1].patterns)[0]) else {
         panic!("expected a variant pattern")
@@ -640,7 +639,7 @@ fn a_binding_site_annotation_takes_any_pattern() {
     assert!(parse("@mod M\n$ y = let a : @int = 1, b : @int = 2 in a").is_ok());
 
     // A match arm takes no annotation: the scrutinee fixes the pattern's type.
-    let err = match parse("@mod M\n$ y = is 1 | n: @int => n else 0") {
+    let err = match parse("@mod M\n$ y = is 1 | n: @int => n | _ => 0") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -668,4 +667,64 @@ fn a_stray_annotation_names_where_the_type_goes() {
     let text = err("@mod M\n$ y = [1, 2");
     assert!(text.contains("to close the list"), "{text}");
     assert!(!text.contains("note:"), "{text}");
+}
+
+/// The handler of the single global's `do ... ctl` body.
+fn only_handler(p: &Parsed) -> &Handler {
+    let Expr::Handle { handler: Some(h), .. } = p.ast.expr(only_def_body(p)) else {
+        panic!("expected a handled `do`")
+    };
+    h
+}
+
+#[test]
+fn handler_value_arms_match_the_body_result() {
+    let p = prog("@mod M\n$ f = do g {} ctl k | E.op x => 0 | .A => 1 | .B.{ n } if n > 0 => n | _ => 2");
+    let h = only_handler(&p);
+    assert_eq!(h.clauses.len(), 1);
+    let (name, body) = h.value.expect("a value clause");
+    let Expr::Match { scrut, arms } = p.ast.expr(body) else {
+        panic!("several value arms fold into a match")
+    };
+    assert_eq!(arms.len(), 3);
+    assert!(matches!(p.ast.expr(*scrut), Expr::Var { name: n, .. } if *n == name));
+}
+
+#[test]
+fn a_lone_binder_value_arm_binds_directly() {
+    let p = prog("@mod M\n$ f = do g {} ctl k | op x => 0 | r => r");
+    let (name, body) = only_handler(&p).value.expect("a value clause");
+    assert_eq!(p.ast.text(name), "r");
+    assert!(matches!(p.ast.expr(body), Expr::Var { .. }));
+
+    let p = prog("@mod M\n$ f = do g {} ctl k | op x => 0");
+    assert!(only_handler(&p).value.is_none());
+}
+
+#[test]
+fn an_is_in_a_clause_ends_at_the_next_operation_clause() {
+    let p = prog("@mod M\n$ f = do g {} ctl k | E.op x => is x | 1 => 0 | _ => 1 | E.other y => 2 | put n => 3");
+    let h = only_handler(&p);
+    assert_eq!(h.clauses.len(), 3);
+    assert!(h.value.is_none());
+    let first = p.ast.slice(h.clauses)[0].body;
+    let Expr::Match { arms, .. } = p.ast.expr(first) else {
+        panic!("expected the first clause body to be a match")
+    };
+    assert_eq!(arms.len(), 2);
+}
+
+#[test]
+fn else_no_longer_ends_a_match_or_a_handler() {
+    assert!(parse("@mod M\n$ f = \\n = is n | 1 => 0 else 1").is_err());
+    assert!(parse("@mod M\n$ f = do g {} ctl k | op x => 0 else r => r").is_err());
+}
+
+#[test]
+fn effect_operation_names_must_be_lowercase() {
+    let err = match parse("@mod M\n$ E : @effect = Op : @int -> {},") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("expected a parse error"),
+    };
+    assert!(err.contains("must start lowercase"), "{err}");
 }

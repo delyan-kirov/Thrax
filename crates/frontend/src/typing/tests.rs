@@ -222,7 +222,7 @@ fn union_constructor_and_match() {
     let src = "@mod M\n\
                    $ Maybe : @union t = Just: t, None: {}\n\
                    $ m : Maybe @int = Maybe.Just.{ 7 }\n\
-                   $ get = \\d = \\o = is o | Maybe.Just.{x} => x else d";
+                   $ get = \\d = \\o = is o | Maybe.Just.{x} => x | _ => d";
     assert_eq!(type_of(src, "m"), "Maybe @int");
     assert_eq!(type_of(src, "get"), "a -> Maybe a -> a");
 }
@@ -318,9 +318,9 @@ fn cross_module_import_brings_in_types_and_values() {
     let dep_src = "@mod OPT\n\
                        $ Option : @union t = Some: t, None: {}\n\
                        $ is_some : Option t -> @bool = \\o = \
-                       is o | Option.Some.{_} => @true else @false\n\
+                       is o | Option.Some.{_} => @true | _ => @false\n\
                        $ unwrap_or : Option t -> t -> t = \\o, d = \
-                       is o | Option.Some.{x} => x else d";
+                       is o | Option.Some.{x} => x | _ => d";
     let use_src = "@mod U\n\
                        $ with OPT\n\
                        $ o : Option @int = Option.Some.{ 41 }\n\
@@ -467,7 +467,7 @@ fn effect_operation_is_bound_and_handler_types_result() {
     let src = "@mod M\n\
                    $ State : @effect = get : {} -> @int, put : @int -> {},\n\
                    $ tick : {} -> <State> @int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
-                   $ run : @int = do tick {} ctl k | get u => k 0 | put n => k {} else x => x";
+                   $ run : @int = do tick {} ctl k | get u => k 0 | put n => k {} | x => x";
     assert_eq!(type_of(src, "tick"), "{} -> <State> @int");
     assert_eq!(type_of(src, "run"), "@int");
 }
@@ -948,7 +948,7 @@ fn an_unknown_variant_tag_is_a_type_error() {
     let e = errors(
         "@mod M\n\
          $ U : @union = A: {}, B: {@int},\n\
-         $ h : @int = is U.A | .Nope.{q} => q else 0",
+         $ h : @int = is U.A | .Nope.{q} => q | _ => 0",
     );
     assert!(e.contains("no union has a variant `Nope`"), "{e}");
 }
@@ -960,7 +960,7 @@ fn a_variant_pattern_on_a_non_union_is_a_type_error() {
     let e = errors(
         "@mod M\n\
          $ P : @struct = x: @int\n\
-         $ h : P -> @int = \\p = is p | P.Zzz.{a, b} => a else 0",
+         $ h : P -> @int = \\p = is p | P.Zzz.{a, b} => a | _ => 0",
     );
     assert!(e.contains("`P` is not a union"), "{e}");
 }
@@ -1070,19 +1070,19 @@ fn a_c_union_literal_picks_one_member() {
 fn a_pattern_may_bind_fewer_fields_but_never_more() {
     let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
     // Fewer is the point of a pattern.
-    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x else 0")).is_empty());
-    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v else 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x | _ => 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v | _ => 0")).is_empty());
     assert!(
-        rendered_errors("@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h else 0")
+        rendered_errors("@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
             .is_empty()
     );
     // More binds a name with no field behind it, which faults when read.
-    let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x else 0"));
+    let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x | _ => 0"));
     assert!(surplus.contains("no field 2"), "{surplus}");
     let surplus = rendered_errors(
-        "@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h else 0",
+        "@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
     );
     assert!(surplus.contains("no field 2"), "{surplus}");
-    let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v else 0"));
+    let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
     assert!(unknown.contains("has no field `c`"), "{unknown}");
 }

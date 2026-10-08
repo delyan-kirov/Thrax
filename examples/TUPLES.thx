@@ -30,7 +30,7 @@ $ chk_arg : @int = if area {6, 7} == 42 => 0 else 1
 $ chk_when : @int =
 	is p
 		| {n, s} => (if n == 42 => (if s == "answer" => 0 else 1) else 1)
-	else 1
+		| _ => 1
 
 $ chk_let : @int =
 	let {x, y} = {40, 2} in
@@ -42,7 +42,7 @@ $ chk_refutable : @int =
 	is {0, 7}
 		| {0, x} => (if x == 7 => 0 else 1)
 		| {_, _} => 1
-	else 1
+		| _ => 1
 
 # A triple, mixing element types.
 $ chk_triple : @int =
@@ -53,7 +53,7 @@ $ chk_triple : @int =
 # each size is registered by the checker on first use.
 $ single : {@str} = {"alone"}
 $ chk_single : @int =
-	is single | {s} => (if s == "alone" => 0 else 1) else 1
+	is single | {s} => (if s == "alone" => 0 else 1) | _ => 1
 
 $ chk_wide : @int =
 	let w = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18} in

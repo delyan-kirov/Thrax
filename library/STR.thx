@@ -60,7 +60,7 @@ $ split : @str -> @str -> @vec @str = \s, sep =
 		| Option.Some.{i} =>
 			@array_slice s 0 i
 				:: split (@array_slice s (i + @array_len sep) (@array_len s)) sep
-	else [s]
+		| _ => [s]
 
 # The lines of `s`, split on '\n'. A trailing newline does not produce a
 # final empty line.
@@ -73,8 +73,8 @@ $ lines : @str -> @vec @str = \s =
 $ join : @str -> @vec @str -> @str = \sep, parts =
 	is parts
 		| h :: t =>
-			(is t | [] => h else h ++ sep ++ join sep t)
-	else ""
+			(is t | [] => h | _ => h ++ sep ++ join sep t)
+		| _ => ""
 
 $ repeat : @str -> @int -> @str = \s, n =
 	if n <= 0 => "" else s ++ repeat s (n - 1)
@@ -96,7 +96,7 @@ $ replace : @str -> @str -> @str -> @str = \s, needle, repl =
 			let head : @str = @array_slice s 0 i in
 			let rest : @str = @array_slice s (i + @array_len needle) (@array_len s) in
 			head ++ repl ++ replace rest needle repl
-	else s
+		| _ => s
 
 # Number of (non-overlapping) occurrences; an empty needle counts 0.
 $ count : @str -> @str -> @int = \s, needle =
@@ -104,7 +104,7 @@ $ count : @str -> @str -> @int = \s, needle =
 	else is find s needle
 		| Option.Some.{i} =>
 			1 + count (@array_slice s (i + @array_len needle) (@array_len s)) needle
-	else 0
+		| _ => 0
 
 $ reverse : @str -> @str = \s = rev_onto s (@array_len s) ""
 

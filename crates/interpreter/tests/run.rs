@@ -755,7 +755,7 @@ fn indexing_hook_returns_non_element() {
                \t.index = \\d, k = if k < d.base => Maybe.Just.{ d.base + k } else Maybe.Nada,\n\
                }\n\
                $ d : Dict = .{ .base = 10 }\n\
-               $ r : @int = is d.[3] | Maybe.Just.{v} => v else 0"; // 10 + 3
+               $ r : @int = is d.[3] | Maybe.Just.{v} => v | _ => 0"; // 10 + 3
     assert_eq!(run(src, "r"), "13");
 }
 
@@ -778,7 +778,7 @@ fn literal_construction_hooks() {
         $ rw : RWrap = 3.5\n\
         $ bag : Bag @int = [1, 2, 3]\n\
         $ r : @int = w.n + @array_len s.bytes\n\
-        \t+ (is bag | Bag.Items.{v} => @vec_len v else 0)"; // 42 + 2 + 3
+        \t+ (is bag | Bag.Items.{v} => @vec_len v | _ => 0)"; // 42 + 2 + 3
     assert_eq!(run(src, "r"), "47");
 }
 
@@ -856,8 +856,8 @@ fn list_literal_defaults_to_vec_with_patterns() {
     let src = "@mod M\n\
         $ xs : @vec @int = [10, 20, 30]\n\
         $ len : @int = @vec_len xs\n\
-        $ head : @int = is xs | h :: _ => h else 0\n\
-        $ tak2 : @int = is [1, 2, 3, 4] | [a, b, ..r] => a + b + @vec_len r else 0\n\
+        $ head : @int = is xs | h :: _ => h | _ => 0\n\
+        $ tak2 : @int = is [1, 2, 3, 4] | [a, b, ..r] => a + b + @vec_len r | _ => 0\n\
         $ r : @int = len * 100 + head + tak2"; // 300 + 10 + (1+2+2)
     assert_eq!(run(src, "r"), "315");
 }
@@ -869,10 +869,10 @@ fn bare_variant_tag_resolves_by_expected_type() {
     // not by a global tag search, so the two unions coexist without collision.
     let src = "@mod M\n\
         $ MyList : @union a = Nil: {}, Cons: {a, MyList a}\n\
-        $ total : MyList @int -> @int = \\xs = is xs | MyList.Cons.{h, t} => h + total t else 0\n\
+        $ total : MyList @int -> @int = \\xs = is xs | MyList.Cons.{h, t} => h + total t | _ => 0\n\
         $ a : MyList @int = MyList.Cons.{ 1, MyList.Cons.{ 2, .Nil } }\n\
         $ b : @vec @int = [3, 4, 5]\n\
-        $ r : @int = total a * 100 + (is b | h :: _ => h else 0)"; // 3*100 + 3
+        $ r : @int = total a * 100 + (is b | h :: _ => h | _ => 0)"; // 3*100 + 3
     assert_eq!(run(src, "r"), "303");
 }
 
@@ -885,7 +885,7 @@ fn literal_pattern_via_equality_hook() {
         $ MyStr : @struct = bytes: @str\n\
         $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ eq_mystr : IEq MyStr = .{ .eq = \\a, b = a.bytes == b.bytes }\n\
-        $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 else 0\n\
+        $ classify : MyStr -> @int = \\s = is s | \"hi\" => 1 | \"bye\" => 2 | _ => 0\n\
         $ r : @int = classify \"hi\" * 100 + classify \"bye\" * 10 + classify \"x\""; // 120
     assert_eq!(run(src, "r"), "120");
 }
@@ -897,10 +897,10 @@ fn sequence_pattern_via_view_hook() {
     let src = "@mod M\n\
         $ Stack : @struct a = items: @vec a\n\
         $ sv : @ISeqView (Stack a) a = .{\n\
-        \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } else SeqView.Empty,\n\
+        \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
         }\n\
         $ classify : Stack @int -> @int = \\s = is s\n\
-        \t| [] => 0 | [x] => x | h :: t => 100 + h else 999\n\
+        \t| [] => 0 | [x] => x | h :: t => 100 + h | _ => 999\n\
         $ s0 : Stack @int = Stack.{ .items = [] }\n\
         $ s1 : Stack @int = Stack.{ .items = [7] }\n\
         $ s2 : Stack @int = Stack.{ .items = [3, 4] }\n\
@@ -981,11 +981,11 @@ fn strided_views_transpose_row_col_slice() {
 #[test]
 fn inclusive_range_patterns() {
     // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
-    // the match needs an `else`. Works on @int and @float64.
+    // the match needs a catch-all arm. Works on @int and @float64.
     let src = "@mod M\n\
                $ grade : @int -> @str = \\n =\n\
-               \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" else \"F\"\n\
-               $ band : @float64 -> @int = \\x = is x | 0.0 ... 1.0 => 1 else 0\n\
+               \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" | _ => \"F\"\n\
+               $ band : @float64 -> @int = \\x = is x | 0.0 ... 1.0 => 1 | _ => 0\n\
                $ r : @int =\n\
                \t(if grade 100 == \"A\" => 1 else 0)\n\
                \t+ (if grade 60 == \"C\" => 2 else 0)\n\
@@ -1094,7 +1094,7 @@ fn imported_global_does_not_shadow_a_same_named_effect_op() {
     let b = "@mod B\n\
         $ State : @effect = get : {} -> @int, put : @int -> {},\n\
         $ getit : {} -> <State> @int = \\u = get {}\n\
-        $ run : @int = do getit {} ctl k | State.get u => k 42 | State.put v => k {} else r => r";
+        $ run : @int = do getit {} ctl k | State.get u => k 42 | State.put v => k {} | r => r";
     let root = "@mod M\n$ with A\n$ with B\n$ r : @int = B.run";
     assert_eq!(run_modules(&[a, b, root], "r"), "42");
 }
@@ -1124,7 +1124,7 @@ fn defer_runs_cleanup_on_completion_abort_and_nesting() {
         $ Y : @effect = yield : @int -> {},\n\
         $ Exn : @effect = throw : @str -> a,\n\
         $ sum : ({} -> <Y> @int) -> @int = \
-          \\body = do body {} ctl k | Y.yield v => v + k {} else r => r\n";
+          \\body = do body {} ctl k | Y.yield v => v + k {} | r => r\n";
     // Normal completion: body yields 1 and returns 100, cleanup yields 2 -> 103.
     let normal =
         format!("{prelude}$ r : @int = sum (\\_ = defer Y.yield 2 in (let _ = Y.yield 1 in 100))");
@@ -1153,7 +1153,7 @@ fn a_clause_may_resume_its_continuation_more_than_once() {
     let src = "@mod M\n\
         $ Amb : @effect = flip : {} -> @bool,\n\
         $ sum_all : ({} -> <Amb> @int) -> @int = \
-          \\body = do body {} ctl k | Amb.flip u => k @true + k @false else x => x\n\
+          \\body = do body {} ctl k | Amb.flip u => k @true + k @false | x => x\n\
         $ one : @int = sum_all (\\_ = if flip {} => 10 else 1)\n\
         $ two : @int = sum_all (\\_ = \
           let a = if flip {} => 1 else 0 in \
@@ -1171,11 +1171,11 @@ fn a_stored_continuation_may_be_resumed_more_than_once() {
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
-          \\t = do t {} ctl k | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+          \\t = do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
         $ drive : Task -> @int = \
-          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
         $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
-          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0";
+          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0";
     assert_eq!(run(src, "twice"), "5");
 }
 
@@ -1189,11 +1189,11 @@ fn oneshot_handler_faults_on_a_second_resume() {
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
           \\t = do t {} ctl @oneshot k \
-          | step v => Task.Susp.{ v, k } else _ => Task.Fin.{}\n\
+          | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
         $ drive : Task -> @int = \
-          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) else 0\n\
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
         $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
-          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) else 0";
+          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0";
     assert!(run_fault(src, "twice").contains("resumed more than once"));
 }
 
@@ -1205,7 +1205,7 @@ fn oneshot_does_not_override_a_clause_that_provably_resumes_twice() {
     let src = "@mod M\n\
         $ Amb : @effect = flip : {} -> @bool,\n\
         $ r : @int = do (if flip {} => 10 else 1) \
-          ctl @oneshot k | Amb.flip u => k @true + k @false else x => x";
+          ctl @oneshot k | Amb.flip u => k @true + k @false | x => x";
     assert_eq!(run(src, "r"), "11");
 }
 
@@ -1217,9 +1217,9 @@ fn defer_cleanup_runs_when_a_stored_continuation_completes() {
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
-          \\t = do t {} ctl k | step v => Task.Susp.{ k } else _ => Task.Fin.{}\n\
+          \\t = do t {} ctl k | step v => Task.Susp.{ k } | _ => Task.Fin.{}\n\
         $ drive : Task -> @int = \
-          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ k } => 1 + drive (k {}) else 0\n\
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ k } => 1 + drive (k {}) | _ => 0\n\
         $ r : @int = drive (spawn (\\_ = defer step 2 in (let _ = step 1 in {})))";
     assert_eq!(run(src, "r"), "2");
 }
@@ -1289,13 +1289,13 @@ fn array_literal_lowers_to_byte_vector() {
 #[test]
 fn array_patterns_destructure_and_guard() {
     let src = "@mod M\n\
-               $ sum2 : @array -> @int = \\a = is a | [x, y] => x + y else 0\n\
+               $ sum2 : @array -> @int = \\a = is a | [x, y] => x + y | _ => 0\n\
                $ r = sum2 [4, 5]\n\
                $ miss = sum2 [1, 2, 3]\n\
-               $ lit : @array -> @int = \\a = is a | [1, y] => y else 0\n\
+               $ lit : @array -> @int = \\a = is a | [1, y] => y | _ => 0\n\
                $ hit = lit [1, 42]\n\
                $ no = lit [2, 42]\n\
-               $ head : @array -> @int = \\a = is a | [h, ..rest] => h + @array_len rest else 0\n\
+               $ head : @array -> @int = \\a = is a | [h, ..rest] => h + @array_len rest | _ => 0\n\
                $ hd = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");
@@ -1507,7 +1507,7 @@ fn operator_table_every_entry() {
             // tested above as the comparisons they also are; `<>` is the pure row.
             "<>" => ("$ f : @int -> <> @int = \\x = x\n$ a = f 5", "5"),
             // `|` both alternates patterns and separates union variants.
-            "|" => ("$ a = is 1 | 1 => 10 else 0", "10"),
+            "|" => ("$ a = is 1 | 1 => 10 | _ => 0", "10"),
             // Pipes, short-circuit, sequencing, cons, concat.
             "<|" => ("$ a = (\\n = n + 1) <| 5", "6"),
             "&&" => ("$ a = if @true && @true => 1 else 0", "1"),
@@ -1516,7 +1516,7 @@ fn operator_table_every_entry() {
             "|>" => ("$ a = 5 |> (\\n = n + 1)", "6"),
             // Composition applies the RIGHT function first: 5 * 2, then + 1.
             "<|>" => ("$ a = ((\\n = n + 1) <|> (\\n = n * 2)) 5", "11"),
-            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h else 0", "1"),
+            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h | _ => 0", "1"),
             "++" => ("$ a = \"x\" ++ \"y\"", "\"xy\""),
             other => panic!("OPERATORS entry `{other}` has no test; add an arm"),
         };
@@ -1591,11 +1591,11 @@ fn tuples_and_indexing() {
 #[test]
 fn list_sum_and_map() {
     let src = "@mod M\n\
-               $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+               $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "@mod M\n\
-                $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t else 0\n\
+                $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
@@ -1621,7 +1621,7 @@ fn struct_field_access_and_match() {
     assert_eq!(run(src, "a"), "7");
     let m = "@mod M\n\
              $ Point : @struct = x: @int, y: @int\n\
-             $ sum : Point -> @int = \\pt = is pt | Point.{ x, y } => x + y else 0\n\
+             $ sum : Point -> @int = \\pt = is pt | Point.{ x, y } => x + y | _ => 0\n\
              $ a = sum Point.{ .x = 10, .y = 20 }";
     assert_eq!(run(m, "a"), "30");
 }
@@ -1666,7 +1666,7 @@ fn higher_order_and_guards() {
 fn string_concat_and_prefix_match() {
     assert_eq!(run("@mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
     let src = "@mod M\n\
-               $ verb : @str -> @int = \\s = is s | \"GET \" ++ _ => 1 else 0\n\
+               $ verb : @str -> @int = \\s = is s | \"GET \" ++ _ => 1 | _ => 0\n\
                $ a = verb \"GET /\"";
     assert_eq!(run(src, "a"), "1");
 }
@@ -1745,7 +1745,7 @@ fn recursive_union_slot_is_lazy() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
-               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h else 0\n\
+               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
                $ r : @int = hd (from 7)";
     assert_eq!(run(src, "r"), "7");
 }
@@ -1758,7 +1758,7 @@ fn a_lazy_slot_is_forced_once() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) else acc\n\
+               $ sum : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
                $ xs : L @int = mk 5\n\
                $ r : @int = sum xs 0 + sum xs 0";
     assert_eq!(run(src, "r"), "30"); // 15 twice
@@ -1795,8 +1795,8 @@ fn equality_forces_lazy_slots() {
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
                $ eq_l : @ctx IEq a -> IEq (L a) = \\d = .{ .eq = \\x, y =\n\
-               \tis x | L.N => (is y | L.N => @true else @false)\n\
-               \t| L.C.{ h, t } => (is y | L.C.{ h2, t2 } => d.eq h h2 && eq_l.eq t t2 else @false) }\n\
+               \tis x | L.N => (is y | L.N => @true | _ => @false)\n\
+               \t| L.C.{ h, t } => (is y | L.C.{ h2, t2 } => d.eq h h2 && eq_l.eq t t2 | _ => @false) }\n\
                $ r : @bool = mk 4 == mk 4";
     assert_eq!(run(src, "r"), "true");
 }
@@ -1808,7 +1808,7 @@ fn freeing_a_long_list_does_not_recurse_on_the_host_stack() {
     let src = "@mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> @int -> L @int = \\lo, hi = if lo > hi => L.N else L.C.{ lo, mk (lo + 1) hi }\n\
-               $ len : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => len t (acc + 1) else acc\n\
+               $ len : L @int -> @int -> @int = \\l, acc = is l | L.C.{h, t} => len t (acc + 1) | _ => acc\n\
                $ r : @int = len (mk 1 200000) 0";
     assert_eq!(run(src, "r"), "200000");
 }

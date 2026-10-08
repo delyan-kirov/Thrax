@@ -450,11 +450,11 @@ $ impl_ICat_for_vec : ICat (@vec t) = .{
 	.cat = \xs, ys = vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0,
 }
 $ impl_ICat_for_List : ICat (List t) = .{
-	.cat = \xs, ys = is xs | List.Cons.{h, t} => List.Cons.{ h, impl_ICat_for_List.cat t ys } else ys,
+	.cat = \xs, ys = is xs | List.Cons.{h, t} => List.Cons.{ h, impl_ICat_for_List.cat t ys } | _ => ys,
 }
 
 $ impl_ISeqView_for_List : @ISeqView (List t) t = .{
-	.view = \l = is l | List.Cons.{h, t} => SeqView.More.{ h, t } else SeqView.Empty,
+	.view = \l = is l | List.Cons.{h, t} => SeqView.More.{ h, t } | _ => SeqView.Empty,
 }
 
 # A `[...]` literal builds whatever its `@ISeqLit` instance returns. `@vec` is what
@@ -548,7 +548,7 @@ $ stream_for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s, body =
 	let more = do body s.head
 		ctl k | Loop.continue u => @true
 		      | Loop.break u => @false
-		      else _ => @true
+		      | _ => @true
 	in if more => stream_for s.tail body else {}
 
 $ impl_IFor_for_Stream : IFor (Stream a) a e = .{ .each = stream_for }
@@ -562,7 +562,7 @@ $ list_for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs, body =
 		let more = do body h
 			ctl k | Loop.continue u => @true
 			      | Loop.break u => @false
-			      else _ => @true
+			      | _ => @true
 		 in if more => list_for t body else {}
 
 $ impl_IFor_for_List : IFor (List a) a e = .{ .each = list_for }
@@ -589,11 +589,11 @@ $ impl_IFormap_for_vec : IFormap (@vec a) a (@vec b) b e = .{
 $ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs, f =
 	is xs
 	| List.Cons.{h, t} =>
-		is formap_step h f
+		(is formap_step h f
 		| LoopStep.Keep.{y} => let ys = list_formap t f in List.Cons.{ y, ys }
 		| LoopStep.Skip => list_formap t f
-		else List.Nil
-	else List.Nil
+		| _ => List.Nil)
+	| _ => List.Nil
 
 $ impl_IFormap_for_List : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
 
@@ -649,18 +649,18 @@ $ for_go : @vec a -> (a -> <Loop | e> {}) -> @int -> <e> {} = \xs, body, i =
 		let more = do body (@vec_get xs i)
 			ctl k | Loop.continue u => @true
 			      | Loop.break u => @false
-			      else _ => @true
+			      | _ => @true
 		in if more => for_go xs body (i + 1) else {}
 
 $ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x, f =
 	do let y = f x in LoopStep.Keep.{ y }
 	ctl k | Loop.continue u => LoopStep.Skip
 	      | Loop.break u => LoopStep.Stop
-	      else s => s
+	      | s => s
 
 $ formap_vec : @vec a -> (a -> <Loop | e> b) -> @int -> @vec b -> <e> @vec b = \xs, f, i, acc =
 	if i >= @vec_len xs => acc
 	else is formap_step (@vec_get xs i) f
 		| LoopStep.Keep.{y} => formap_vec xs f (i + 1) (@vec_push acc y)
 		| LoopStep.Skip => formap_vec xs f (i + 1) acc
-		else acc
+		| _ => acc

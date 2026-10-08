@@ -22,14 +22,14 @@ $ Result : @union t e =
 # ---- the value shape ----
 
 $ is_ok : Result t e -> @bool = \r =
-	is r | Result.Ok.{_} => @true else @false
+	is r | Result.Ok.{_} => @true | _ => @false
 
 $ is_err : Result t e -> @bool = \r =
-	is r | Result.Ok.{_} => @false else @true
+	is r | Result.Ok.{_} => @false | _ => @true
 
 # The answer, or `d` when the computation failed.
 $ unwrap_or : Result t e -> t -> t = \r, d =
-	is r | Result.Ok.{x} => x else d
+	is r | Result.Ok.{x} => x | _ => d
 
 # The arms below are exhaustive; the required `else` recurses, which is
 # unreachable (a Result is always Ok or Err) but well-typed.
@@ -37,23 +37,23 @@ $ map_ok : (a -> b) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ f x }
 		| Result.Err.{e} => Result.Err.{ e }
-	else map_ok f r
+		| _ => map_ok f r
 
 $ map_err : (e -> f) -> Result t e -> Result t f = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ x }
 		| Result.Err.{e} => Result.Err.{ f e }
-	else map_err f r
+		| _ => map_err f r
 
 # Chain a fallible step onto an earlier result (monadic bind).
 $ and_then : (a -> Result b e) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => f x
 		| Result.Err.{e} => Result.Err.{ e }
-	else and_then f r
+		| _ => and_then f r
 
 $ ok_opt : Result t e -> Option t = \r =
-	is r | Result.Ok.{x} => Option.Some.{ x } else Option.None
+	is r | Result.Ok.{x} => Option.Some.{ x } | _ => Option.None
 
 # ---- the effect shape ----
 
@@ -77,8 +77,8 @@ $ untry : Result t @str -> <Fail> t = \r =
 	is r
 		| Result.Ok.{x} => x
 		| Result.Err.{m} => Fail.fail m
-	else Fail.fail "unreachable"
+		| _ => Fail.fail "unreachable"
 
 # The Option bridge: absence becomes a failure carrying `msg`.
 $ expect : Option t -> @str -> <Fail> t = \o, msg =
-	is o | Option.Some.{x} => x else Fail.fail msg
+	is o | Option.Some.{x} => x | _ => Fail.fail msg

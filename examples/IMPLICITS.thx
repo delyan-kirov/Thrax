@@ -24,7 +24,7 @@ $ impl_IOrder_for_int : IOrder @int = .{
 
 # `max_of` works for any type with an `IOrder`, which it receives as its context.
 $ max_of : @ctx IOrder t -> t -> t -> t = \ord, x, y =
-	is ord.compare x y | Ordering.GT => x else y
+	is ord.compare x y | Ordering.GT => x | _ => y
 
 # CHAINING: `max3` declares the same context and calls `max_of` without writing it.
 # `max_of`'s requirement is satisfied by `max3`'s own parameter, which is nearer
@@ -51,7 +51,7 @@ $ impl_IOrder_for_Pair : @ctx {IOrder a, IOrder b} -> IOrder (Pair a b) = \ords 
 	.compare = \p, q =
 		is ords.0.compare p.fst q.fst
 			| Ordering.EQ => ords.1.compare p.snd q.snd
-			else ords.0.compare p.fst q.fst,
+			| _ => ords.0.compare p.fst q.fst,
 }
 
 $ impl_IOrder_for_str : IOrder @str = .{

@@ -13,7 +13,7 @@ $ nums : @vec @int = [1, 2, 3, 4]
 $ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
-	           else 0
+	           | _ => 0
 $ ck_sum : @int = if (sum nums) == 10 => 0 else 1
 
 # Empty literal in each context.

@@ -1213,13 +1213,8 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            Expr::Match {
-                scrut,
-                arms,
-                default,
-            } => {
+            Expr::Match { scrut, arms } => {
                 let scrut = *scrut;
-                let default = *default;
                 let mut lowered = Vec::new();
                 // Collect handles first so the node borrow does not span the
                 // recursive lowering of children.
@@ -1241,7 +1236,7 @@ impl<'a> Lowerer<'a> {
                 Term::Case {
                     scrut: Arc::new(self.expr(scrut)),
                     arms: lowered.into(),
-                    default: default.map(|d| Arc::new(self.expr(d))),
+                    default: None,
                 }
             }
 
@@ -1292,7 +1287,7 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect();
                 let default = handler
-                    .default
+                    .value
                     .map(|(name, body)| (self.text(name).to_string(), body));
                 Term::Handle {
                     body: Arc::new(self.expr(body)),

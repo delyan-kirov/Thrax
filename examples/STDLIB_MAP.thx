@@ -55,9 +55,9 @@ $ ck_merge : @int =
 	if (size u) == 4 => (if (MAP.get_or u "bob" 0) == 25 => 0 else 1) else 1
 
 $ ck_min : @int =
-	is min_entry ages | Option.Some.{p} => (if p.0 == "alice" => 0 else 1) else 1
+	is min_entry ages | Option.Some.{p} => (if p.0 == "alice" => 0 else 1) | _ => 1
 $ ck_max : @int =
-	is max_entry ages | Option.Some.{p} => (if p.1 == 41 => 0 else 1) else 1
+	is max_entry ages | Option.Some.{p} => (if p.1 == 41 => 0 else 1) | _ => 1
 
 $ ck_froml : @int =
 	let m = MAP.from_list cmp_int [{2, "two"}, {1, "one"}, {2, "II"}] in
@@ -71,7 +71,7 @@ $ ck_pair  : @int = if (MAP.get_or grid {1, "a"} 0) == 11 => 0 else 1
 $ ck_pair2 : @int =
 	is min_entry grid | Option.Some.{p} =>
 		(if p.0.1 == "a" => (if p.1 == 11 => 0 else 1) else 1)
-	else 1
+	| _ => 1
 
 # Balance stress: 200 ascending inserts (the classic worst case for an
 # unbalanced BST), everything retrievable, ordered iteration intact.
@@ -82,7 +82,7 @@ $ ck_bigget  : @int =
 	if (all (\k = (MAP.get_or big k (0 - 1)) == k * k) (range 0 199))
 	=> 0 else 1
 $ ck_bigmin  : @int =
-	is min_entry big | Option.Some.{p} => (if p.0 == 0 => 0 else 1) else 1
+	is min_entry big | Option.Some.{p} => (if p.0 == 0 => 0 else 1) | _ => 1
 $ ck_bigrm   : @int =
 	let slim = foldl (\m, k = remove m k) big (range 0 99) in
 	if (size slim) == 100 =>

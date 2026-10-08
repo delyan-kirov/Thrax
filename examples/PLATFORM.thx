@@ -15,7 +15,7 @@ $ ck_bits : @int =
 	is TARGET.int_bits
 		| 64 => (if TARGET.ptr_bits == 64 => 0 else 1)
 		| 32 => (if TARGET.ptr_bits == 32 => 0 else 1)
-		else 1
+		| _ => 1
 
 # The @int bounds bracket zero (a signed two's-complement word).
 $ ck_bounds : @int =

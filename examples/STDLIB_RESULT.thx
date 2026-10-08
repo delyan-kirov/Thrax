@@ -23,7 +23,7 @@ $ ck_map   : @int = if (RESULT.unwrap_or (map_ok (\x = x + 1) good) 0) == 43 => 
 $ ck_maperr: @int =
 	is map_err (\e = e ++ "!") bad
 		| Result.Err.{m} => (if m == "boom!" => 0 else 1)
-	else 1
+		| _ => 1
 $ ck_then  : @int =
 	let checked = \x = if x > 0 => Result.Ok.{ x * 2 } else Result.Err.{ "neg" } in
 	if (RESULT.unwrap_or (and_then checked good) 0) == 84 => 0 else 1
@@ -36,9 +36,9 @@ $ half : @int -> <Fail> @int = \n =
 	if n % 2 == 0 => n / 2 else Fail.fail "odd"
 
 $ ck_try_ok : @int =
-	is try (\u = half 84) | Result.Ok.{x} => (if x == 42 => 0 else 1) else 1
+	is try (\u = half 84) | Result.Ok.{x} => (if x == 42 => 0 else 1) | _ => 1
 $ ck_try_err : @int =
-	is try (\u = half 7) | Result.Err.{m} => (if m == "odd" => 0 else 1) else 1
+	is try (\u = half 7) | Result.Err.{m} => (if m == "odd" => 0 else 1) | _ => 1
 
 # Failures propagate through calls without any plumbing.
 $ pipeline : @int -> <Fail> @int = \n = (half n) + (half (n / 2))

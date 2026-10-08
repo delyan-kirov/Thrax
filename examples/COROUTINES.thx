@@ -20,7 +20,7 @@ $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
     ctl @oneshot k
        | Co.yield v => Task.Susp.{ v, k }
-       else _ => Task.Fin.{}
+       | _ => Task.Fin.{}
 
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
@@ -29,9 +29,9 @@ $ rr : Task -> Task -> @int = \a, b =
     is a | Task.Fin.{} =>
          (is b | Task.Fin.{} => 0
                | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {})
-               else 0)
+               | _ => 0)
          | Task.Susp.{ va, ka } => va + rr b (ka {})
-         else 0
+         | _ => 0
 
 $ t1 : {} -> <Co> {} =
 	\u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}

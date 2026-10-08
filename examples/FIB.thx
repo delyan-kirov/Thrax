@@ -27,7 +27,7 @@ $ len: @vec t -> @int =
 		is l
 			| [] => n
 			| _ :: xs => helper xs (n + 1)
-			else n
+			| _ => n
 	 in \l = helper l 0
 
 $ to: @int -> @int -> @vec @int = \a, b =
@@ -38,7 +38,7 @@ $ to: @int -> @int -> @vec @int = \a, b =
 	 in helper a b []
 
 $ sample : @vec @int = to 0 3
-$ len3 : @int = is len sample | 3 => 0 else 1
+$ len3 : @int = is len sample | 3 => 0 | _ => 1
 
 $ Point: @struct =
 	x: @int,

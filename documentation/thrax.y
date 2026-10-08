@@ -16,11 +16,11 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 8`: bison's summary count, all resolving by the default
+ * CONFLICTS. `%expect 6`: bison's summary count, all resolving by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates thirteen
- * (state, token) warnings over the same classes: 8 on DOT, 2 on KW_ELSE, 2 on
- * KW_IS, 1 on KW_CTL. The summary number is what `%expect` compares against.)
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates twelve
+ * (state, token) warnings over the same classes: 8 on DOT, 3 on BAR, 1 on
+ * KW_CTL. The summary number is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
  *                      `[expr ELLIPSIS RBRACK]`); two conflicts
@@ -28,10 +28,9 @@
  *   - `E.Tag.{...}`   the `.{...}` is the variant payload, not a struct literal
  *   - `A.B.C`         qualified-name chains shift greedily
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
- *   - `if`/`when`     `else` attaches to the nearest opener
- *   - nested `when`   arms belong to the innermost `when`
- *   - optional `when` `else`  its `else` is optional (exhaustive matches omit
- *                     it), so a dangling `else` shifts to the nearest `when`
+ *   - nested `is`     arms belong to the innermost `is` or handler; the real
+ *                     parser also ends an `is` at a `| op x` operation clause,
+ *                     which this grammar does not model
  * The one brace overlap tuples introduced -- `Tag: {A, B}` is the variant's
  * positional PAYLOAD fields, never a bare tuple type is resolved
  * structurally (payload_decl's bare-type alternative is non-brace-initial,
@@ -48,7 +47,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 8
+%expect 6
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -66,7 +65,7 @@
 %token LAMBDA       /* \ */
 %token EQ ARROW FATARROW DOLLAR COLON COMMA DOT  /* FATARROW is `=>` */
 
-%token KW_LET KW_IN KW_IF KW_WHEN KW_IS KW_ELSE KW_WITH
+%token KW_LET KW_IN KW_IF KW_IS KW_ELSE KW_WITH
 %token KW_DO KW_CTL KW_DEFER
 
 %right SEMI                         /* ; */
@@ -254,7 +253,7 @@ ctrl_expr
                                 subject struct's fields into scope unqualified
                                 for the body */
   | KW_IF if_arms opt_comma KW_ELSE expr
-  | KW_WHEN expr arms opt_when_else
+  | KW_IS expr arms
   | LAMBDA params opt_comma EQ expr
   | KW_DEFER defer_cleanups opt_comma KW_IN expr
   | handle
@@ -396,25 +395,26 @@ extern_lit : AT_EXTERN STR STR STR ;
  * Without it a clause may resume as often as it likes. */
 handle
   : KW_DO expr
-  | KW_DO expr KW_CTL opt_oneshot LIDENT clauses opt_else_clause
+  | KW_DO expr KW_CTL opt_oneshot LIDENT handler_arms
   ;
 
 opt_oneshot : /* empty */ | AT_ONESHOT ;
 
-clauses         : clause | clauses clause ;
-clause          : KW_IS op_ref LIDENT EQ expr ;
-op_ref          : LIDENT | UIDENT DOT LIDENT ;
-opt_else_clause : /* empty */ | KW_ELSE LIDENT EQ expr ;
+/* A handler mixes operation clauses `| op x => e` with value arms `| pat => e`
+ * over the body's final value. A pattern never juxtaposes two names and a
+ * qualified pattern's second segment is an uppercase tag, so `BAR LIDENT LIDENT`
+ * and `BAR UIDENT DOT LIDENT` always open a clause. */
+handler_arms : handler_arm | handler_arms handler_arm ;
+handler_arm  : clause | arm ;
+clause       : BAR op_ref LIDENT FATARROW expr ;
+op_ref       : LIDENT | UIDENT DOT LIDENT ;
 
+/* There is no default branch: a catch-all is an ordinary `| _ => e` arm. */
 arms : arm | arms arm ;
 
-/* `else` is optional: omit it when the arms are exhaustive (TC enforces this;
-   see check_exhaustive in compiler/TC.cpp). */
-opt_when_else : /* empty */ | KW_ELSE expr ;
-
-/* An arm's `is pat` alternatives (or-patterns) share the body; EX.cpp collects
-   them and emits one arm per alternative. */
-alts : KW_IS pattern | alts KW_IS pattern ;
+/* An arm's `| pat` alternatives (or-patterns) share the body; the parser
+   emits one arm per alternative. */
+alts : BAR pattern | alts BAR pattern ;
 
 arm
   : alts FATARROW expr

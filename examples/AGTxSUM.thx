@@ -15,14 +15,14 @@ $ num_tok: Token = Token.Num.{1}
 $ is_num: Token -> @bool = \tok =
     is tok
         | Token.Num.{_} => @true
-    else
+        | _ =>
         @false
 
 # @bool is genuinely built-in: its values are the literals `@true`/`@false`, so
 # matching them uses the `@`-spelling (lowercase `true`/`false` would bind a
 # variable). Since `@bool` has exactly two values, these `when`s are exhaustive.
-$ chk0 : @int = is is_num num_tok | @true => 0 else 1
-$ chk0b : @int = is is_num (Token.Txt.{"x"}) | @false => 0 else 1
+$ chk0 : @int = is is_num num_tok | @true => 0 | _ => 1
+$ chk0b : @int = is is_num (Token.Txt.{"x"}) | @false => 0 | _ => 1
 
 # Sum types: constructor matching, payload binding, and lazy (non-strict)
 # data constructors. Each `chk*` is 0 when correct and divides by zero (a
@@ -34,27 +34,27 @@ $ Maybe : @union t =
     Just: t,
     None: {}
 
-# Match a variant, bind its payload, fall back through `else`. The signature
+# Match a variant, bind its payload, fall back through a `| _` arm. The signature
 # fixes the element type with `Maybe @int` (application is juxtaposition).
 $ get : @int -> Maybe @int -> @int = \d = \m =
     is m
         | Maybe.Just.{x} => x
-    else d
+        | _ => d
 
-$ chk1 : @int = is get 99 (Maybe.Just.{7}) | 7  => 0 else 1
-$ chk2 : @int = is get 99 Maybe.None        | 99 => 0 else 1
+$ chk1 : @int = is get 99 (Maybe.Just.{7}) | 7  => 0 | _ => 1
+$ chk2 : @int = is get 99 Maybe.None        | 99 => 0 | _ => 1
 
 # The same `Maybe` at a different element type, in the same program.
 $ greeting : Maybe @str = Maybe.Just.{ "hi" }
-$ chk2b : @int = is greeting | Maybe.Just.{_} => 0 else 1
+$ chk2b : @int = is greeting | Maybe.Just.{_} => 0 | _ => 1
 
 # Bare constructors: the type name is dropped and inferred from context (the
 # `Maybe @int` annotation). `.None` is the unit variant, `.Just.{...}` carries a
 # payload.
 $ none_i : Maybe @int = .None
 $ some_i : Maybe @int = .Just.{ 5 }
-$ chk2c : @int = is get 0 some_i | 5 => 0 else 1
-$ chk2d : @int = is get 8 none_i | 8 => 0 else 1
+$ chk2c : @int = is get 0 some_i | 5 => 0 | _ => 1
+$ chk2d : @int = is get 8 none_i | 8 => 0 | _ => 1
 
 # The prelude's generic, recursive `@vec` (its `[..]`/`::` sugar is hardwired to
 # that name). A `@vec` is a finite buffer; an unbounded sequence is a recursive
@@ -66,15 +66,15 @@ $ Pair : @union a b = P: {lhs: a, rhs: b}
 $ mk : Pair @int @int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : @int =
     is mk | Pair.P.{ .lhs = l, .rhs = r } =>
-        is r - l | 1 => 0 else 1
-    else 1
+        (is r - l | 1 => 0 | _ => 1)
+    | _ => 1
 
 # Nested instantiation: a `@vec` whose element is itself a `Maybe @int`.
 $ boxed : @vec (Maybe @int) = (.Just.{42}) :: []
 $ chk4b : @int =
     is boxed | h :: _ =>
-        is h | Maybe.Just.{ v } => (is v | 42 => 0 else 1) else 1
-    else 1
+        (is h | Maybe.Just.{ v } => (is v | 42 => 0 | _ => 1) | _ => 1)
+    | _ => 1
 
 # (Removed: a `bomb` payload `1` that strict evaluation would force. Relying
 # on an ignored `_` payload going unevaluated was a lazy-data behaviour.)
