@@ -37,7 +37,7 @@ use std::os::raw::{c_int, c_ulong};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crate::driver;
+use thrax::driver;
 
 /// The reserved binding an evaluated expression is compiled under.
 const IT: &str = "__it";
@@ -54,6 +54,7 @@ const RESULT: &str = "  # ";
 
 pub fn cmd_repl() -> ExitCode {
     let root_dir = std::env::current_dir().unwrap_or_default();
+    driver::install_eval_host(root_dir.clone());
     let mut state = Repl::new(root_dir);
 
     match term::RawMode::enable() {

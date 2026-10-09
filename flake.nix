@@ -60,10 +60,15 @@
 
         # The standard library ships beside the binary, which finds it relative
         # to its own path: `$out/bin/thrax` resolves `$out/library`. The tree is
-        # relocatable and needs no environment variable.
+        # relocatable and needs no environment variable. The compiler library
+        # goes to `$out/lib`, where `thrax build` finds it for a program that runs
+        # the compiler (`@eval`, `@lex`, ...), with its C header in `$out/include`.
         installPhase = ''
           runHook preInstall
           install -Dm755 target/release/thrax $out/bin/thrax
+          install -Dm755 target/release/libthrax.so $out/lib/libthrax.so
+          install -Dm644 target/release/libthrax.a $out/lib/libthrax.a
+          install -Dm644 crates/thrax/include/thrax.h $out/include/thrax.h
           mkdir -p $out/library
           install -Dm644 library/*.thx $out/library/
           runHook postInstall

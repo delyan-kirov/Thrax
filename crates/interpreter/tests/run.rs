@@ -178,9 +178,8 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
     // A stub host (the driver installs the real compile+run one) returns 42
     // regardless of source; `@eval` must call it and embed the reified value.
     set_meta_eval(Some(Box::new(|_src| Ok(OwnedValue::Int(42)))));
-    // `@eval` carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
-    let src = "@mod T\n$ n : @int = @run (@eval (@parse_str \"x\"))";
-    assert_eq!(run(src, "T.@e_expr#0"), "42");
+    let src = "@mod T\n$ n : @int = @eval (@parse_str \"x\")";
+    assert_eq!(run(src, "T.n"), "42");
     set_meta_eval(None);
 }
 

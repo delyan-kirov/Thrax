@@ -517,7 +517,7 @@ fn lower_all(
         }
         let ir = frontend::ir::lower_modules(&compiled.0);
         let rd = root_dir.clone();
-        interpreter::machine::set_meta_eval(Some(Box::new(move |src| meta_eval_source(src, &rd))));
+        interpreter::machine::set_meta_eval(Some(Box::new(move |src| eval_fragment(src, &rd))));
         let reflect = reflect_tables(compiled.1);
         // `@build` first, and alone in its round: it contributes the definitions
         // the rest of the compile-time code may depend on, so its items have to
@@ -732,7 +732,7 @@ fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(Stri
 
 /// A compiled REPL session: the lowered modules (root `REPL` first) and the
 /// root module's top-level bindings as `(name, rendered type)`.
-pub(crate) struct Session {
+pub struct Session {
     pub lowered: Vec<frontend::lowering::data::Program>,
     pub decls: Vec<(String, String)>,
     /// The declared type of the name `queried` asked about, when one was asked for.
@@ -744,16 +744,28 @@ pub(crate) struct Session {
 /// the lowered modules and the root's typed bindings, or a rendered diagnostic.
 /// Unlike the file commands this renders errors into a string instead of exiting,
 /// so the shell can print them and keep going.
-pub(crate) fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
+pub fn compile_session(source: &str, root_dir: &Path) -> Result<Session, String> {
     compile_session_query(source, root_dir, None)
 }
 
 /// [`compile_session`], additionally reporting the declared type of one global name
 /// (with its `@ctx` prefix, which inferring the name as an expression would lose).
-pub(crate) fn compile_session_query(
+pub fn compile_session_query(
     source: &str,
     root_dir: &Path,
     query: Option<&str>,
+) -> Result<Session, String> {
+    compile_in_memory(source, root_dir, query, true)
+}
+
+/// Compile an in-memory `@mod REPL` module. `open_effects` checks its top level
+/// under an open effect row, as the shell needs to run IO; without it the module
+/// must be pure, like a file's top level.
+fn compile_in_memory(
+    source: &str,
+    root_dir: &Path,
+    query: Option<&str>,
+    open_effects: bool,
 ) -> Result<Session, String> {
     let loaded = load_core(
         "REPL".to_string(),
@@ -775,15 +787,13 @@ pub(crate) fn compile_session_query(
     }
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    // The shell forces each entered symbol and permits IO, so the REPL root module is
-    // checked under an open effect row (a file's top level stays pure).
     let (checkers, results) = check_all(
         &ast,
         &programs,
         &graph,
         &loaded.sources,
         false,
-        Some(&loaded.root_name),
+        open_effects.then_some(loaded.root_name.as_str()),
     )?;
     let resolved = frontend::collect_resolved(&checkers);
 
@@ -828,19 +838,33 @@ struct BuildPlan {
 }
 
 
-/// Compile and run an `@code` fragment (source text) at build time, reifying its
-/// value. This is the `@eval` host: it re-enters the same pipeline the REPL uses,
-/// wrapping the fragment as a def body of an in-memory module. `root_dir` resolves
-/// the fragment's imports (it sees the same standard library as the root).
-fn meta_eval_source(
+/// Compile and run an `@code` fragment (source text), reifying its value. This
+/// is the `@eval` host, at build time and at run time alike: it re-enters the same
+/// pipeline the REPL uses, wrapping the fragment as a def body of an in-memory
+/// module. The fragment must be pure, which is what lets `@eval` be typed pure.
+/// `root_dir` resolves the fragment's imports (it sees the same standard library
+/// as the root).
+pub fn eval_fragment(
     src: &str,
     root_dir: &Path,
 ) -> std::result::Result<interpreter::machine::OwnedValue, String> {
-    let session = compile_session(&format!("@mod REPL\n$ _thrax_meta =\n{src}"), root_dir)?;
+    let session = compile_in_memory(
+        &format!("@mod REPL\n$ _thrax_meta =\n{src}"),
+        root_dir,
+        None,
+        false,
+    )?;
     let ir = frontend::ir::lower_modules(&session.lowered);
     let v = interpreter::machine::eval_value(&ir, "REPL._thrax_meta")
         .map_err(|d| d.render("", "@eval"))?;
     interpreter::machine::reify(&v)
+}
+
+/// Install the `@eval` host for code that runs after compilation (`thrax run`,
+/// the shell, a native program calling into `libthrax`). The compile-time
+/// expansion installs and clears its own around each round.
+pub fn install_eval_host(root_dir: PathBuf) {
+    interpreter::machine::set_meta_eval(Some(Box::new(move |src| eval_fragment(src, &root_dir))));
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
@@ -851,6 +875,9 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let ir = frontend::ir::lower_modules(&lowered);
+    install_eval_host(
+        Path::new(path).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
+    );
     // `@main` takes the argument vector (`argv[0]` = the entry path, then the
     // extra args) and its `@int` result is the process exit code.
     let mut argv = vec![path.to_string()];
@@ -897,6 +924,27 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
         eprintln!("thrax: {}", tc.hint);
         return ExitCode::FAILURE;
     }
+    let compiler_lib = if emitted.uses_compiler {
+        if target != utilities::Target::host() {
+            eprintln!(
+                "thrax: this program runs the compiler (`@lex`, `@parse_str`, `@eval`, ...), \
+                 and libthrax is only available for the host target"
+            );
+            return ExitCode::FAILURE;
+        }
+        match libthrax_dir() {
+            Some(dir) => Some(dir),
+            None => {
+                eprintln!(
+                    "thrax: this program runs the compiler (`@lex`, `@parse_str`, `@eval`, ...), \
+                     but libthrax.so was not found beside the thrax executable or in its lib/"
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
 
     let src = Path::new(path);
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
@@ -952,6 +1000,13 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
             cmd.arg(format!("-Wl,-rpath,{dir}"));
         }
     }
+    // The shared library, not `libthrax.a`: it carries its own dependencies
+    // (libffi among them, which a static link would have to name and find).
+    if let Some(dir) = &compiler_lib {
+        cmd.arg(format!("-L{}", dir.display()))
+            .arg(format!("-Wl,-rpath,{}", dir.display()))
+            .arg("-lthrax");
+    }
     match cmd.status() {
         Ok(status) if status.success() => {
             println!("built {}", out_path.display());
@@ -966,6 +1021,19 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The directory holding `libthrax.so`: beside this executable (a cargo build,
+/// `target/<profile>/`), or `<prefix>/lib` for `<prefix>/bin/thrax` (the Nix
+/// package).
+fn libthrax_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let bin = exe.parent()?;
+    let mut dirs = vec![bin.to_path_buf()];
+    if let Some(prefix) = bin.parent() {
+        dirs.push(prefix.join("lib"));
+    }
+    dirs.into_iter().find(|d| d.join("libthrax.so").exists())
 }
 
 /// Print the source as the checker finally saw it: every `$ @e` folded or spliced

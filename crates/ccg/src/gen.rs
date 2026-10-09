@@ -67,7 +67,15 @@ pub struct Emitter<'p> {
     /// trap stubs and their `@extern` sites are not collected.
     reachable: HashSet<usize>,
     tmp: usize,
+    /// Whether an emitted block names a [`COMPILER_BUILTINS`] entry, so the
+    /// program must link `libthrax`.
+    uses_compiler: std::cell::Cell<bool>,
 }
+
+/// The builtins a native program runs by calling into the compiler library
+/// (`libthrax`, see `crates/thrax/include/thrax.h`).
+pub const COMPILER_BUILTINS: &[&str] =
+    &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
 
 /// The dedup key for an extern site.
 fn extern_key(
@@ -767,6 +775,7 @@ fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" => 1,
+        _ if COMPILER_BUILTINS.contains(&name) => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
@@ -825,16 +834,18 @@ impl<'p> Emitter<'p> {
             code_entry: vec![0; prog.codes.len()],
             reachable,
             tmp: 0,
+            uses_compiler: std::cell::Cell::new(false),
         }
     }
 
     /// Emit every code, then return the finished block function texts, the code
-    /// index -> entry block map, and the foreign-function table.
-    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>) {
+    /// index -> entry block map, the foreign-function table, and whether the
+    /// program uses a [`COMPILER_BUILTINS`] entry.
+    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>, bool) {
         for id in 0..self.prog.codes.len() {
             self.emit_code(id);
         }
-        (self.blocks, self.code_entry, self.externs)
+        (self.blocks, self.code_entry, self.externs, self.uses_compiler.get())
     }
 
     fn fresh(&mut self, p: &str) -> String {
@@ -866,6 +877,9 @@ impl<'p> Emitter<'p> {
             return format!("THxRT_glob({})", cstr(name.as_bytes()));
         }
         if let Some(arity) = builtin_arity(name) {
+            if COMPILER_BUILTINS.contains(&name) {
+                self.uses_compiler.set(true);
+            }
             return format!("THxRT_builtin({}, {arity})", cstr(name.as_bytes()));
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {

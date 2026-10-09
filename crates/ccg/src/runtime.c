@@ -879,6 +879,140 @@ static Value *tensor_stack(Value **elems, size_t n) {
   return mk_tensor(buf, 0, sh, st, 1);
 }
 
+#ifdef THRAX_WITH_COMPILER
+/*------------------------------------------------------------------------------
+ *\THE COMPILER BRIDGE: `@lex`, `@parse*` and `@eval` call into libthrax
+ * (thrax.h, emitted above). Defined only for a program that uses them, so every
+ * other program links without the library.
+ *-----------------------------------------------------------------------------*/
+
+/* Struct, variant and field names are borrowed `const char*` for a value's whole
+ * life, so names arriving from the library are interned for the process. */
+static const char **g_names = NULL;
+static size_t g_nn = 0, g_ncap = 0;
+
+static const char *intern_name(const char *s) {
+  for (size_t i = 0; i < g_nn; i++)
+    if (strcmp(g_names[i], s) == 0) return g_names[i];
+  if (g_nn == g_ncap) {
+    g_ncap = g_ncap ? g_ncap * 2 : 16;
+    g_names = realloc(g_names, g_ncap * sizeof(char *));
+    if (!g_names) thrax_fault("name table allocation failed");
+  }
+  size_t len = strlen(s);
+  char *copy = xmalloc(len + 1);
+  memcpy(copy, s, len + 1);
+  return g_names[g_nn++] = copy;
+}
+
+static Value *from_thrax(const thrax_value *v) {
+  switch (v->kind) {
+    case THRAX_UNIT: return THxRT_unit();
+    case THRAX_INT: return THxRT_int(v->int_);
+    case THRAX_FLOAT64: return THxRT_real(v->real);
+    case THRAX_FLOAT32: return THxRT_real32((float)v->real);
+    case THRAX_BOOL: return THxRT_bool((int)v->int_);
+    case THRAX_STR: return THxRT_str((const char *)v->bytes, v->len);
+    case THRAX_TUPLE:
+    case THRAX_VEC:
+    case THRAX_STRUCT:
+    case THRAX_VARIANT: break;
+  }
+  Value **items = xmalloc(v->len * sizeof(Value *));
+  for (size_t i = 0; i < v->len; i++) items[i] = from_thrax(&v->items[i]);
+  Value *r;
+  if (v->kind == THRAX_TUPLE) {
+    r = THxRT_tuple(items, v->len);
+  } else if (v->kind == THRAX_VEC) {
+    r = mk_vec(items, v->len);
+  } else if (v->kind == THRAX_VARIANT) {
+    r = THxRT_variant(intern_name(v->name), intern_name(v->tag), v->len, items);
+  } else {
+    const char **keys = xmalloc(v->len * sizeof(char *));
+    for (size_t i = 0; i < v->len; i++) keys[i] = intern_name(v->keys[i]);
+    r = THxRT_struct(intern_name(v->name), v->len, keys, items);
+    free(keys);
+  }
+  free(items);
+  return r;
+}
+
+_Noreturn static void compiler_fault(const char *builtin, char *err) {
+  fprintf(stderr, "thrax: runtime fault in %s:\n%s\n", builtin,
+          err ? err : "(no message)");
+  thrax_string_free(err);
+  exit(1);
+}
+
+static Value *code_value(const char *src, size_t len) {
+  const char *key = "src";
+  Value *text = THxRT_str(src, len);
+  return THxRT_struct("@code", 1, &key, &text);
+}
+
+static Value *token_field(Value *tok, const char *field) {
+  tok = THxVALUE_force(tok);
+  if (tok->tag != T_STRUCT || strcmp(tok->u.strct.name, "@token") != 0)
+    thrax_fault("expected an @token");
+  Value *f = struct_field(tok, field);
+  if (!f || f->tag != T_STR) thrax_fault("malformed @token");
+  return f;
+}
+
+/* Run a compiler builtin, or return NULL when `name` is not one. */
+static Value *compiler_builtin(const char *name, Value **a) {
+  char *err = NULL;
+  if (strcmp(name, "@token_kind") == 0) return token_field(a[0], "kind");
+  if (strcmp(name, "@token_text") == 0) return token_field(a[0], "text");
+  if (strcmp(name, "@lex") == 0 || strcmp(name, "@eval") == 0) {
+    int lexing = name[1] == 'l';
+    Value *arg = THxVALUE_force(a[0]);
+    if (!lexing) {
+      if (arg->tag != T_STRUCT || strcmp(arg->u.strct.name, "@code") != 0)
+        thrax_fault("@eval expects an @code");
+      arg = struct_field(arg, "src");
+    }
+    if (!arg || arg->tag != T_STR) thrax_fault("expected a string");
+    thrax_value *v = lexing ? thrax_lex(arg->u.str.data, arg->u.str.len, &err)
+                            : thrax_eval(arg->u.str.data, arg->u.str.len, &err);
+    if (!v) compiler_fault(name, err);
+    Value *r = from_thrax(v);
+    thrax_value_free(v);
+    return r;
+  }
+  if (strcmp(name, "@parse_str") == 0 || strcmp(name, "@parse_items") == 0) {
+    Value *s = THxVALUE_force(a[0]);
+    if (s->tag != T_STR) thrax_fault("expected a string");
+    if (thrax_parse(s->u.str.data, s->u.str.len, name[7] == 'i', &err) != 0)
+      compiler_fault(name, err);
+    return code_value((const char *)s->u.str.data, s->u.str.len);
+  }
+  if (strcmp(name, "@parse") == 0) {
+    /* `@code` is text-backed: the lexemes rejoined with a space, as the
+     * interpreter's `@parse` does. */
+    Value *toks = THxVALUE_force(a[0]);
+    if (toks->tag != T_VEC) thrax_fault("expected a vector");
+    size_t len = 0;
+    for (size_t i = 0; i < toks->u.seq.len; i++)
+      len += token_field(toks->u.seq.items[i], "text")->u.str.len + 1;
+    char *buf = xmalloc(len);
+    size_t at = 0;
+    for (size_t i = 0; i < toks->u.seq.len; i++) {
+      Value *t = token_field(toks->u.seq.items[i], "text");
+      if (i > 0) buf[at++] = ' ';
+      memcpy(buf + at, t->u.str.data, t->u.str.len);
+      at += t->u.str.len;
+    }
+    if (thrax_parse((const uint8_t *)buf, at, 0, &err) != 0)
+      compiler_fault(name, err);
+    Value *r = code_value(buf, at);
+    free(buf);
+    return r;
+  }
+  return NULL;
+}
+#endif
+
 static Value *run_builtin(const char *name, Value **a, size_t n) {
   /* The two-operand intrinsic families. `n >= 2` first: a one-argument builtin
    * (`@array_len`, ...) must never reach for `a[1]`. `arith_intrinsic` reads its
@@ -1180,6 +1314,12 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return v;
   }
 
+#ifdef THRAX_WITH_COMPILER
+  if (n == 1) {
+    Value *r = compiler_builtin(name, a);
+    if (r) return r;
+  }
+#endif
   thrax_fault("unknown built-in");
 }
 
