@@ -47,7 +47,6 @@ $ grade : Box -> @int = \x =
 		| Box.Some.{ v } if v > 0   => 2
 		| Box.Some.{ _ }             => 1
 		| Box.Nil.{}                 => 0
-		| _ => 0 - 1
 
 $ chk_grade_big  : @int = if grade Box.Some.{ 500 }    == 3       => 0 else 1
 $ chk_grade_pos  : @int = if grade Box.Some.{ 7 }      == 2       => 0 else 1

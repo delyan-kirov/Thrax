@@ -1086,3 +1086,114 @@ fn a_pattern_may_bind_fewer_fields_but_never_more() {
     let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
     assert!(unknown.contains("has no field `c`"), "{unknown}");
 }
+
+/// The rendered root of the check's error (empty when it passes) and the
+/// messages-with-location of its warnings, for the exhaustiveness tests.
+fn coverage(src: &str) -> (String, Vec<String>) {
+    let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
+    let (ast, prog) = crate::parse_into(ast, src).expect("parse");
+    let types = std::rc::Rc::new(crate::Types::new());
+    let mut core_checker = Checker::new(&ast, types.clone());
+    core_checker.check_program(&core).expect("check CORE");
+    let mut checker = Checker::new(&ast, types.clone());
+    checker.import_from(&core_checker);
+    let err = match checker.check_program(&prog) {
+        Ok(_) => String::new(),
+        Err(e) => format!("{e}"),
+    };
+    let warnings = checker
+        .warnings()
+        .iter()
+        .map(|w| w.render_warning(src, "test.thx").lines().nth(1).unwrap_or("").trim().to_string())
+        .collect();
+    (err, warnings)
+}
+
+const L: &str = "@mod T\n$ L : @union = A, B, C,\n";
+
+#[test]
+fn missing_variant_is_an_error() {
+    let (err, _) = coverage(&format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | L.B => 1\n"));
+    assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
+    assert!(err.contains("`L.C`"), "{err}");
+}
+
+#[test]
+fn every_variant_or_a_catch_all_is_exhaustive() {
+    let all = format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | L.B => 1 | .C => 2\n");
+    assert_eq!(coverage(&all), (String::new(), vec![]));
+    let wild = format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | x => 1\n");
+    assert_eq!(coverage(&wild), (String::new(), vec![]));
+    let or = format!("{L}$ f : L -> @int = \\l = is l | L.A | L.B | L.C => 0\n");
+    assert_eq!(coverage(&or), (String::new(), vec![]));
+}
+
+#[test]
+fn guarded_arms_do_not_cover() {
+    let src = format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | L.B => 1 | L.C if @true => 2\n");
+    assert!(coverage(&src).0.contains("`L.C`"));
+    let src = format!("{L}$ f : L -> @int = \\l = is l | x if @true => 0 | L.A => 1 | L.B => 1 | L.C => 2\n");
+    assert_eq!(coverage(&src), (String::new(), vec![]));
+}
+
+#[test]
+fn nested_witness_is_named() {
+    let src = "@mod T\n$ M : @union a = No, Yes: {a},\n\
+               $ f : M @bool -> @int = \\m = is m | .No => 0 | .Yes.{ @true } => 1\n";
+    let (err, _) = coverage(src);
+    assert!(err.contains("`M.Yes.{ false }`"), "{err}");
+}
+
+#[test]
+fn infinite_domains_need_a_catch_all() {
+    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 => 1 | 1 => 2\n");
+    assert!(err.contains("`_`"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @str -> @int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
+    assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
+    assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
+}
+
+#[test]
+fn bools_tuples_and_structs() {
+    let ok = "@mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1 | {@false, @false} => 2\n";
+    assert_eq!(coverage(ok), (String::new(), vec![]));
+    let (err, _) = coverage("@mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1\n");
+    assert!(err.contains("`{ false, false }`"), "{err}");
+    let (err, _) = coverage(
+        "@mod T\n$ P : @struct = x: @bool, y: @int,\n$ f : P -> @int = \\p = is p | P.{ .x = @true } => 0\n",
+    );
+    assert!(err.contains("`P.{ .x = false }`"), "{err}");
+}
+
+#[test]
+fn sequence_patterns_reduce_to_the_view() {
+    let ok = "@mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x] => x | x :: y :: r => y\n";
+    assert_eq!(coverage(ok), (String::new(), vec![]));
+    let (err, _) = coverage("@mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x, y, ..r] => y\n");
+    assert!(err.contains("`[_]`"), "{err}");
+    let list = "@mod T\n$ f : List @int -> @int = \\l = is l | List.Nil => 0 | h :: t => h\n";
+    assert_eq!(coverage(list), (String::new(), vec![]));
+}
+
+#[test]
+fn unreachable_arms_warn() {
+    let (err, w) = coverage(&format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | m => 1 | _ => 2\n"));
+    assert_eq!(err, "");
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(w[0].contains("test.thx:3:"), "{w:?}");
+    let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 => 0 | 1 => 1 | _ => 2\n");
+    assert_eq!(w.len(), 1, "{w:?}");
+    let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn handler_value_arms_are_checked() {
+    let src = "@mod T\n$ Exn : @effect = throw : @str -> a,\n$ M : @union = Hit: {@int}, Miss,\n\
+               $ g : {} -> <Exn> M = \\u = M.Miss\n\
+               $ f : @int = do g {} ctl k | Exn.throw m => 0 | .Hit.{ v } => v\n";
+    let (err, _) = coverage(src);
+    assert!(err.contains("value arms do not cover `M.Miss`"), "{err}");
+    assert!(!err.contains("%ret"), "{err}");
+}

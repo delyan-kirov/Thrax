@@ -6,7 +6,8 @@
 #       to bottom; the first matching pattern wins and binds its variables.
 #       There is no default branch: a catch-all is an ordinary `| _ => d` arm,
 #       unneeded when the arms are exhaustive (cover every constructor of a
-#       union). A value no arm matches is a runtime fault. Patterns may test
+#       union). A match that misses a value is a compile error naming it, and
+#       an arm the earlier arms already cover is warned about. Patterns may test
 #       literals (@int/Real) and destructure structs; an irrefutable arm (only
 #       variables / wildcards) always matches. An arm may add an `if <guard>`
 #       after its pattern (see WHEN_GUARDS.thx); a failed guard falls through to
@@ -31,11 +32,10 @@ $ c0 : @str = classify 0
 $ c2 : @str = classify 2
 $ cN : @str = classify 17
 
-# Guard on a struct's field value, then bind, then a catch-all.
+# Guard on a struct's field value, then bind.
 $ greet : Person -> @str = \p =
 	is p | Person.{ .age = 0 } => "newborn"
 	       | Person.{ .name = who } => who
-	       | _ => "?"
 
 $ g_baby  : @str = greet Person.{ .name = "Q", .age = 0 }
 $ g_alice : @str = greet Person.{ .name = "Alice", .age = 41 }
@@ -43,7 +43,6 @@ $ g_alice : @str = greet Person.{ .name = "Alice", .age = 41 }
 # Bind fields out of the matched value (irrefutable arm: always matches).
 $ sum_xy : Point -> @int = \pt =
 	is pt | Point.{ x, y } => x + y
-	        | _ => 0
 
 $ s : @int = sum_xy Point.{ .x = 3, .y = 4 }
 
@@ -51,7 +50,6 @@ $ s : @int = sum_xy Point.{ .x = 3, .y = 4 }
 $ origin_or : Point -> @int = \pt =
 	is pt | Point.{ .x = 0, .y = 0 } => 0
 	        | Point.{ .x = a, .y = b } => a + b
-	        | _ => 0
 
 $ o0 : @int = origin_or Point.{ .x = 0, .y = 0 }
 $ o7 : @int = origin_or Point.{ .x = 3, .y = 4 }
@@ -60,12 +58,11 @@ $ o7 : @int = origin_or Point.{ .x = 3, .y = 4 }
 $ describe : @int -> @int = \n =
 	is n | 0 => 100
 	         | m => m + 1
-	         | _ => 0
 $ d5 : @int = describe 5
 
 # An exhaustive union match needs no catch-all: the three constructors cover the
-# type, so TC accepts the `when` with no fallthrough. Adding a fourth variant
-# without extending this `when` would then be a compile error.
+# type, so TC accepts the `is` with no fallthrough. Adding a fourth variant
+# without extending this `is` would then be a compile error.
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
 
 $ go : Light -> @int = \l =

@@ -27,6 +27,7 @@
 
 pub mod data;
 pub mod engine;
+pub mod exhaustive;
 #[cfg(test)]
 mod tests;
 
@@ -229,6 +230,11 @@ pub struct Checker<'a> {
     /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
     /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
     sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
+    /// The union each variant pattern resolved to, so the exhaustiveness check
+    /// reads the same union a bare `.Tag` was typed against.
+    variant_pattern_unions: HashMap<Aol<Pattern>, &'a str>,
+    /// Non-fatal diagnostics (unreachable match arms), in source order.
+    warnings: Vec<Diagnostic>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
@@ -391,6 +397,8 @@ impl<'a> Checker<'a> {
             blessed_sites: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
+            variant_pattern_unions: HashMap::new(),
+            warnings: Vec::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
@@ -1410,7 +1418,7 @@ impl<'a> Checker<'a> {
                     self.leave_scope();
                     r?;
                 }
-                Ok(())
+                self.check_coverage(e, *arms)
             }
             // A `{ .f = e, ... }` literal checked against a declared struct builds
             // THAT struct rather than an anonymous row record, so construction
@@ -3007,6 +3015,7 @@ impl<'a> Checker<'a> {
                     self.eng.unify(result, tb, "between match arms")?;
                     self.leave_scope();
                 }
+                self.check_coverage(e, *arms)?;
                 Ok(result)
             }
 
@@ -4538,7 +4547,7 @@ impl<'a> Checker<'a> {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
                 let fields = self.ast.slice(*fields);
-                self.type_variant_pattern(ty, tag, fields, expected)
+                self.type_variant_pattern(pat, ty, tag, fields, expected)
             }
         }
     }
@@ -4646,6 +4655,7 @@ impl<'a> Checker<'a> {
 
     fn type_variant_pattern(
         &mut self,
+        pat: Aol<Pattern>,
         ty: Option<&'a str>,
         tag: &'a str,
         fields: &'a [FieldPat],
@@ -4676,6 +4686,9 @@ impl<'a> Checker<'a> {
             });
         };
         self.eng.unify(expected, result, "in a variant pattern")?;
+        if let Some(u) = union {
+            self.variant_pattern_unions.insert(pat, u);
+        }
         let label = variant_label(union, tag);
         // As for a struct pattern: fewer binders than slots is fine, more is not.
         for (i, f) in fields.iter().enumerate() {
@@ -4703,6 +4716,162 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Check that the typed match `e` covers every value of its scrutinee (an
+    /// error otherwise) and record a warning for each arm no value can reach. A
+    /// handler's value arms are parsed into such a match on `%ret`; its
+    /// diagnostics speak of the value arms, never of that name.
+    fn check_coverage(&mut self, e: Aol<Expr>, arms: utilities::Slice<crate::parser::data::Arm>) -> Result<()> {
+        let arms = self.ast.slice(arms);
+        let rows: Vec<(Vec<exhaustive::DPat>, bool)> = arms
+            .iter()
+            .map(|arm| {
+                let alts = self.ast.slice(arm.patterns).iter().map(|p| self.dpat(*p)).collect();
+                (alts, arm.guard.is_some())
+            })
+            .collect();
+        let report = exhaustive::check(&rows);
+        let handler = matches!(
+            self.node(e),
+            Expr::Match { scrut, .. }
+                if matches!(self.node(*scrut), Expr::Var { module: None, name } if self.text(*name) == "%ret")
+        );
+        for i in report.unreachable {
+            let span = self.ast.expr_span(arms[i].body).unwrap_or(Span::at(0));
+            if self.warnings.iter().any(|w| w.root().span == span) {
+                continue;
+            }
+            self.warnings.push(diag!(
+                Code::UnreachableArm, span, 0,
+                "unreachable arm: the arms before it already match every value it matches"
+            ));
+        }
+        let Some(missing) = report.missing else {
+            return Ok(());
+        };
+        let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+        let what = if handler { "the handler's value arms do" } else { "this `is` does" };
+        Err(diag!(
+            Code::NonExhaustiveMatch, span, 0,
+            "non-exhaustive match: {what} not cover `{}`", exhaustive::show(&missing);
+            note: "add an arm for it, or a catch-all `| _ => ...`"
+        ))
+    }
+
+    /// Translate a typed pattern for [`exhaustive::check`].
+    fn dpat(&self, pat: Aol<Pattern>) -> exhaustive::DPat {
+        use exhaustive::{Ctor, DPat, ProductKind};
+        match self.pnode(pat) {
+            Pattern::Wild | Pattern::Var(_) => DPat::Wild,
+            Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_)
+                if self.literal_pattern_hooks.contains_key(&pat) =>
+            {
+                DPat::Opaque
+            }
+            Pattern::Int(n) => DPat::Ctor(Ctor::Lit(n.to_string()), Vec::new()),
+            Pattern::Real(x) => DPat::Ctor(Ctor::Lit(format!("{x:?}")), Vec::new()),
+            Pattern::Str(s) => {
+                let text = String::from_utf8_lossy(self.ast.bytes(*s));
+                DPat::Ctor(Ctor::Lit(format!("{text:?}")), Vec::new())
+            }
+            Pattern::Bool(b) => DPat::Ctor(Ctor::Bool(*b), Vec::new()),
+            Pattern::Range { .. } | Pattern::StrPrefix { .. } => DPat::Opaque,
+            Pattern::Cons { head, tail } => {
+                DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*head), self.dpat(*tail)])
+            }
+            Pattern::List { elems, rest } => {
+                let end = match rest {
+                    Some(r) => self.dpat(*r),
+                    None => DPat::Ctor(Ctor::SeqEmpty, Vec::new()),
+                };
+                self.ast.slice(*elems).iter().rev().fold(end, |tail, e| {
+                    DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*e), tail])
+                })
+            }
+            Pattern::Tuple(pats) => {
+                let pats = self.ast.slice(*pats);
+                if pats.is_empty() {
+                    return DPat::Wild;
+                }
+                let fields = pats.iter().enumerate().map(|(i, p)| (i.to_string(), self.dpat(*p)));
+                DPat::Product(ProductKind::Tuple, fields.collect())
+            }
+            Pattern::Struct { ty, fields } => {
+                let ty = self.text(*ty);
+                let Some(info) = self.structs.get(ty) else {
+                    return DPat::Opaque;
+                };
+                let mut out = Vec::new();
+                for (i, f) in self.ast.slice(*fields).iter().enumerate() {
+                    match f {
+                        FieldPat::Named { name, pat } => {
+                            out.push((self.text(*name).to_string(), self.dpat(*pat)))
+                        }
+                        FieldPat::Positional(pat) => match info.fields.get(i) {
+                            Some((name, _)) => out.push((name.to_string(), self.dpat(*pat))),
+                            None => return DPat::Opaque,
+                        },
+                        FieldPat::Shorthand(_) => {}
+                    }
+                }
+                DPat::Product(ProductKind::Struct(ty.into()), out)
+            }
+            Pattern::Record { fields, .. } => {
+                let fields = self.ast.slice(*fields).iter().filter_map(|f| match f {
+                    FieldPat::Named { name, pat } => {
+                        Some((self.text(*name).to_string(), self.dpat(*pat)))
+                    }
+                    _ => None,
+                });
+                DPat::Product(ProductKind::Record, fields.collect())
+            }
+            Pattern::Variant { ty, tag, fields, .. } => {
+                let tag = self.text(*tag);
+                let union = self
+                    .variant_pattern_unions
+                    .get(&pat)
+                    .copied()
+                    .or_else(|| ty.map(|t| self.text(t)))
+                    .or_else(|| self.find_union_by_tag(tag));
+                let Some((union, info)) = union.and_then(|u| Some((u, self.unions.get(u)?))) else {
+                    return DPat::Opaque;
+                };
+                let Some(index) = info.variants.iter().position(|v| v.tag == tag) else {
+                    return DPat::Opaque;
+                };
+                let payload = &info.variants[index].payload;
+                let mut args = vec![DPat::Wild; payload.len()];
+                for (i, f) in self.ast.slice(*fields).iter().enumerate() {
+                    let (slot, p) = match f {
+                        FieldPat::Named { name, pat } => {
+                            let name = self.text(*name);
+                            (payload.iter().position(|(n, _)| *n == Some(name)), *pat)
+                        }
+                        FieldPat::Positional(pat) => (Some(i), *pat),
+                        FieldPat::Shorthand(_) => continue,
+                    };
+                    match slot.and_then(|s| args.get_mut(s)) {
+                        Some(a) => *a = self.dpat(p),
+                        None => return DPat::Opaque,
+                    }
+                }
+                let siblings: Vec<(String, usize)> = info
+                    .variants
+                    .iter()
+                    .map(|v| (v.tag.to_string(), v.payload.len()))
+                    .collect();
+                DPat::Ctor(
+                    Ctor::Variant { union: union.into(), index, siblings: siblings.into() },
+                    args,
+                )
+            }
+        }
+    }
+
+    /// The non-fatal diagnostics this check produced (unreachable match arms).
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.warnings
     }
 
     // -- AST types ----------------------------------------------------------

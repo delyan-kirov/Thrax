@@ -27,7 +27,6 @@ $ len: @vec t -> @int =
 		is l
 			| [] => n
 			| _ :: xs => helper xs (n + 1)
-			| _ => n
 	 in \l = helper l 0
 
 $ to: @int -> @int -> @vec @int = \a, b =

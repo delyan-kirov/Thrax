@@ -67,7 +67,6 @@ $ mk : Pair @int @int = Pair.P.{ .rhs = 2, .lhs = 1 }
 $ chk4 : @int =
     is mk | Pair.P.{ .lhs = l, .rhs = r } =>
         (is r - l | 1 => 0 | _ => 1)
-    | _ => 1
 
 # Nested instantiation: a `@vec` whose element is itself a `Maybe @int`.
 $ boxed : @vec (Maybe @int) = (.Just.{42}) :: []

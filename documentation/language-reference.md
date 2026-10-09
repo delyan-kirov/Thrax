@@ -627,9 +627,19 @@ $ grade : Box -> @int = \x =
 ```
 
 ## 5.9 Exhaustiveness
-A match needs no catch-all when its arms cover every constructor of a union. A
-value no arm matches is a runtime fault (`no pattern matched`); it is not yet
-reported at compile time.
+Every `is` match, and every set of handler value arms, is checked after type
+inference. A match that misses a value is a compile error
+(`NON_EXHAUSTIVE_MATCH`) that names a missing shape, such as `Light.Green` or
+`Opt.Some.{ _ }`. An arm the earlier arms already cover is a warning
+(`UNREACHABLE_ARM`).
+
+- A match needs no catch-all when its arms cover every constructor of a union.
+  Booleans, tuples, and structs are covered the same way, nested to any depth.
+- A guarded arm covers nothing for exhaustiveness, since its guard can fail.
+- `@int`, `@float64`, `@str`, and the other infinite domains need a `_` or
+  binder arm. Range and string-prefix patterns never cover a whole domain.
+- A sequence pattern (`[]`, `h :: t`, `[a, ..r]`) is checked through the
+  sequence view, so `[]` and `_ :: _` together cover any sequence.
 
 ```thrax
 $ Light : @union = Red: {}, Yellow: {}, Green: {}
