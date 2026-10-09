@@ -6,6 +6,8 @@
  -#
 
 $ with IO
+$ with OPT
+$ with STR
 
 $ help_text : @str
      = "thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
@@ -21,6 +23,9 @@ $ help_text : @str
 	++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
 	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
 	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
+	++ "  start N   branch N-<slug> off origin/master for issue N (or switch to it)\n"
+	++ "  done      switch to master, pull, delete the branch if its PR merged\n"
+	++ "  issue     create a GitHub issue (extra args go to `gh issue create`)\n"
 	++ "  sdk_path  print the repo root (source tools/thxdo.nu to cd there)\n"
 	++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
 	++ "  all       build, then regenerate README.md\n"
@@ -66,14 +71,58 @@ $ site_serve_cmd : @str = "node applications/web/serve.mjs"
 $ site_open_cmd : @str =
 	"( sleep 1; ${BROWSER:-xdg-open} \"" ++ site_url ++ "\" >/dev/null 2>&1 & )"
 
-$ run_command: @str -> <@io> bool = \cmd =
-	is cmd
+# Uncommitted changes would silently ride along to the other branch.
+$ clean_tree_check : @str =
+	"if ! git diff --quiet || ! git diff --cached --quiet; then "
+	++ "echo 'thxdo: uncommitted changes, commit or stash them first' >&2; exit 1; fi; "
+
+# An existing branch for the issue is reused, so `start N` also means "go back
+# to N". `--no-track` keeps the branch from adopting origin/master as upstream.
+$ start_cmd : @str -> @str = \n =
+	"set -e; n=" ++ n ++ "; "
+	++ clean_tree_check
+	++ "b=$(git for-each-ref --format='%(refname:short)' \"refs/heads/$n-*\" | head -n 1); "
+	++ "if [ -n \"$b\" ]; then git switch \"$b\"; exit 0; fi; "
+	++ "title=$(gh issue view \"$n\" --json title -q .title); "
+	++ "slug=$(printf '%s' \"$title\" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' "
+	++ "| cut -c 1-40 | sed 's/^-*//; s/-*$//'); "
+	++ "git fetch --quiet origin master; "
+	++ "git switch --no-track -c \"$n-$slug\" origin/master; "
+	++ "echo \"thxdo: on $n-$slug ($title)\""
+
+# PRs are squash-merged, so a merged branch is never an ancestor of master and
+# `git branch -d` refuses it. GitHub's PR state is the merge signal instead.
+$ done_cmd : @str =
+	"set -e; b=$(git branch --show-current); "
+	++ "if [ \"$b\" != master ]; then " ++ clean_tree_check ++ "git switch master; fi; "
+	++ "git pull --ff-only; "
+	++ "if [ -n \"$b\" ] && [ \"$b\" != master ]; then "
+	++ "state=$(gh pr view \"$b\" --json state -q .state 2>/dev/null || echo NONE); "
+	++ "if [ \"$state\" = MERGED ]; then git branch -D \"$b\"; "
+	++ "else echo \"thxdo: kept $b (PR: $state)\"; fi; fi"
+
+$ sh_quote : @str -> @str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
+
+$ quoted_from : @vec @str -> @int -> @str = \args, i =
+	if @vec_len args <= i => ""
+	else " " ++ sh_quote (@vec_get args i) ++ quoted_from args (i + 1)
+
+$ arg_or : @vec @str -> @int -> @str -> @str = \args, i, d =
+	if @vec_len args <= i => d else @vec_get args i
+
+$ run_command: @vec @str -> <@io> bool = \args =
+	is @vec_get args 1
 		| "build"   => C.system "cargo clean && cargo build"; @true
 		| "test"    => C.system "cargo clean"; C.system "cargo test"; @true 
 		| "rebuild" => C.system "cargo build"; @true
 		| "clean"   => C.system "cargo clean"; @true
 		| "install" => C.system "nix profile remove Thrax"; C.system "nix profile add"; @true
-		| "issue"   => C.system "TODO: Command should create a new gh issue"; @true
+		| "issue"   => C.system ("gh issue create" ++ quoted_from args 2) == 0
+		| "start"   =>
+			(is STR.to_int (arg_or args 2 "")
+				| Option.Some.{n} if n > 0 => C.system (start_cmd (int_to_str n)) == 0
+				| _ => print "thxdo: usage: thxdo start <issue-number>\n"; @false)
+		| "done"    => C.system done_cmd == 0
 		| "readme"  =>
 			println "thxdo: regenerating README.md ...";
 			let rc = C.system readme_cmd in
@@ -132,5 +181,5 @@ $ @main : @vec @str -> <@io> @int = \args =
 	if @vec_len args < 2 =>
 		print help_text; 0
 	else
-		if run_command (@vec_get args 1) => 0
+		if run_command args => 0
 		else 1
