@@ -50,6 +50,8 @@ pub struct Ast {
     pub expr_spans: SecondaryMap<Expr, Span>,
     /// Source span of each `Ty` node, for diagnostics on type annotations.
     pub ty_spans: SecondaryMap<Ty, Span>,
+    /// Source span of each `Pattern` node, for diagnostics on match arms.
+    pub pat_spans: SecondaryMap<Pattern, Span>,
 }
 
 /// An element type stored in a run: names the [`Store`] on the [`Ast`] that holds
@@ -124,6 +126,10 @@ impl Ast {
     }
     pub fn ty(&self, id: Aol<Ty>) -> &Ty {
         self.tys.lookup(id)
+    }
+    /// The source span recorded for a `Pattern`, if the parser stamped one.
+    pub fn pat_span(&self, id: Aol<Pattern>) -> Option<Span> {
+        self.pat_spans.get(id).copied()
     }
     pub fn pat(&self, id: Aol<Pattern>) -> &Pattern {
         self.pats.lookup(id)

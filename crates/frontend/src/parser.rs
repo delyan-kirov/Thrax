@@ -87,6 +87,11 @@ impl<'a> Parser<'a> {
         self.ast.ty_spans.insert(node, Span::new(start, self.last_end));
         node
     }
+    /// Like [`stamp`](Self::stamp), for a `Pattern` node.
+    fn stamp_pat(&mut self, start: usize, node: Aol<Pattern>) -> Aol<Pattern> {
+        self.ast.pat_spans.insert(node, Span::new(start, self.last_end));
+        node
+    }
     /// The start offset of the next token, marking where a node begins.
     fn here(&mut self) -> Result<usize> {
         Ok(self.peek()?.span.start)
@@ -2131,6 +2136,12 @@ impl<'a> Parser<'a> {
     // -- patterns -----------------------------------------------------------
 
     fn parse_pattern(&mut self) -> Result<Aol<Pattern>> {
+        let start = self.here()?;
+        let node = self.parse_pattern_unstamped()?;
+        Ok(self.stamp_pat(start, node))
+    }
+
+    fn parse_pattern_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let atom = self.parse_pattern_atom()?;
         if self.at_op("::")? {
             self.bump()?;
@@ -2166,6 +2177,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern_atom(&mut self) -> Result<Aol<Pattern>> {
+        let start = self.here()?;
+        let node = self.parse_pattern_atom_unstamped()?;
+        Ok(self.stamp_pat(start, node))
+    }
+
+    fn parse_pattern_atom_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let t = self.peek()?;
         match t.kind {
             Kind::Int(v) => {

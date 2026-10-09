@@ -1147,11 +1147,13 @@ fn nested_witness_is_named() {
 #[test]
 fn infinite_domains_need_a_catch_all() {
     let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 => 1 | 1 => 2\n");
+    assert!(err.contains("`-9223372036854775808 ... -1`"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @float64 -> @int = \\n = is n | 0.0 => 1 | 1.0 => 2\n");
     assert!(err.contains("`_`"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @str -> @int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
-    assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
+    assert!(err.contains("`-9223372036854775808 ... -1`"), "{err}");
 }
 
 #[test]
@@ -1185,6 +1187,8 @@ fn unreachable_arms_warn() {
     let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 => 0 | 1 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
     let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
+    assert_eq!(w.len(), 1, "{w:?}");
+    let (_, w) = coverage("@mod T\n$ f : @float64 -> @int = \\n = is n | 1.0 ... 3.0 => 0 | 2.0 => 1 | _ => 2\n");
     assert!(w.is_empty(), "{w:?}");
 }
 
@@ -1196,4 +1200,67 @@ fn handler_value_arms_are_checked() {
     let (err, _) = coverage(src);
     assert!(err.contains("value arms do not cover `M.Miss`"), "{err}");
     assert!(!err.contains("%ret"), "{err}");
+}
+
+#[test]
+fn unreachable_warnings_point_at_the_pattern() {
+    let src = format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | m => 1 | _ => 2\n");
+    let (_, w) = coverage(&src);
+    let col = src.lines().nth(2).unwrap().find("| _").unwrap() + 3;
+    assert_eq!(w, vec![format!("--> test.thx:3:{col}")]);
+}
+
+#[test]
+fn dead_alternatives_warn_separately() {
+    let (err, w) = coverage(&format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | L.B | L.A | L.C => 1\n"));
+    assert_eq!(err, "");
+    assert_eq!(w.len(), 1, "{w:?}");
+    let (_, w) = coverage(&format!("{L}$ f : L -> @int = \\l = is l | L.A | L.B | L.C => 0 | L.A | L.B => 1\n"));
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+#[test]
+fn refutable_let_and_lambda_patterns_are_errors() {
+    let m = "@mod T\n$ M : @union a = No, Yes: {a},\n";
+    let (err, _) = coverage(&format!("{m}$ f : M @int -> @int = \\.Yes.{{ x }} = x\n"));
+    assert!(err.contains("refutable pattern in a lambda parameter") && err.contains("`M.No`"), "{err}");
+    let (err, _) = coverage(&format!("{m}$ g : M @int -> @int = \\m = let .Yes.{{ x }} = m in x\n"));
+    assert!(err.contains("refutable pattern in a `let` binding"), "{err}");
+    let (err, _) = coverage("@mod T\n$ h : @nat8 -> @int = \\0 = 1\n");
+    assert!(err.contains("`1 ...`"), "{err}");
+    let ok = "@mod T\n$ P : @struct = x: @int, y: @int,\n\
+              $ f : P -> {@int, @int} -> @int = \\P.{ x, _ }, {a, b} = let {c, _} = {a, b} in x + c\n";
+    assert_eq!(coverage(ok), (String::new(), vec![]));
+}
+
+const ROPE: &str = "@mod T\n$ Rope : @union = Leaf: {@int}, Node: {Rope, Rope},\n\
+    $ impl_ISeqView_for_Rope : @ISeqView Rope @int = .{\n\
+    \t.view = \\r = is r | Rope.Leaf.{ n } => SeqView.More.{ n, Rope.Node.{ r, r } } | _ => SeqView.Empty,\n}\n";
+
+#[test]
+fn mixing_variant_and_sequence_patterns_is_reported() {
+    let (err, _) = coverage(&format!("{ROPE}$ f : Rope -> @int = \\r = is r | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ :: _ => 2\n"));
+    assert!(err.contains("both its variants and sequence patterns") && err.contains("`Rope`"), "{err}");
+    let only_seq = format!("{ROPE}$ f : Rope -> @int = \\r = is r | [] => 1 | _ :: _ => 2\n");
+    assert_eq!(coverage(&only_seq), (String::new(), vec![]));
+    let catch_all = format!("{ROPE}$ f : Rope -> @int = \\r = is r | Rope.Leaf.{{ n }} => 0 | [] => 1 | _ => 2\n");
+    assert_eq!(coverage(&catch_all), (String::new(), vec![]));
+    let apart = format!("{ROPE}$ f : {{Rope, Rope}} -> @int = \\p = is p | {{Rope.Leaf.{{ n }}, _}} => 0 | {{Rope.Node.{{ a, b }}, []}} => 1 | {{_, _ :: _}} => 2\n");
+    assert_eq!(coverage(&apart), (String::new(), vec![]));
+}
+
+#[test]
+fn integer_ranges_cover_bounded_types() {
+    let ok = "@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 127 => 0 | 128 ... 255 => 1\n";
+    assert_eq!(coverage(ok), (String::new(), vec![]));
+    let (err, _) = coverage("@mod T\n$ f : @int8 -> @int = \\n = is n | 0 ... => 0\n");
+    assert!(err.contains("`-128 ... -1`"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 99 => 0 | 101 ... => 1\n");
+    assert!(err.contains("does not cover `100`"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 => 0 | 1 ... 9 => 1\n");
+    assert!(err.contains("`10 ...`"), "{err}");
+    let (_, w) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 200 => 0 | 100 ... 150 => 1 | _ => 2\n");
+    assert_eq!(w.len(), 1, "{w:?}");
+    let (_, w) = coverage("@mod T\n$ f : {@nat8, @bool} -> @int = \\p = is p | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
+    assert!(w.is_empty(), "{w:?}");
 }

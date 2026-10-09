@@ -539,7 +539,7 @@ $ unwrap : Wrap -> @int = \w =
 ```
 
 ## 5.2 Literal patterns
-Match @int, Real, and Str by equality (refutable).
+Match integers (any width), Real, and Str by equality (refutable).
 
 ```thrax
 $ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" | _ => "m"
@@ -560,8 +560,8 @@ or named (dotted, any order, others ignored; a lone `.name` puns).
 ```thrax
 $ Point  : @struct = x: @int, y: @int,
 $ Person : @struct = name: Str, age: @int,
-$ sum_xy : Point -> @int = \p = is p | Point.{ x, y } => x + y | _ => 0
-$ who    : Person -> Str = \p = is p | Person.{ .name } => name | _ => "?"
+$ sum_xy : Point -> @int = \p = is p | Point.{ x, y } => x + y
+$ who    : Person -> Str = \p = is p | Person.{ .name } => name
 ```
 
 ## 5.5 Variant patterns
@@ -636,8 +636,14 @@ inference. A match that misses a value is a compile error
 - A match needs no catch-all when its arms cover every constructor of a union.
   Booleans, tuples, and structs are covered the same way, nested to any depth.
 - A guarded arm covers nothing for exhaustiveness, since its guard can fail.
-- `@int`, `@float64`, `@str`, and the other infinite domains need a `_` or
-  binder arm. Range and string-prefix patterns never cover a whole domain.
+- Integer literals and ranges are checked as intervals of their type's values,
+  so `| 0 ... 127 => a | 128 ... => b` covers a `@nat8`, and an arm whose range
+  earlier arms already cover is unreachable. `@int` and `@nat` are taken at 64
+  bits. A missing interval is named, such as `100` or `10 ...`.
+- `@float64`, `@str`, and the other infinite domains need a `_` or binder arm.
+  Real ranges and string-prefix patterns never cover a whole domain.
+- A union with its own `@ISeqView` cannot be matched with both its variants and
+  sequence patterns in one position (only `List` can); that is reported.
 - A sequence pattern (`[]`, `h :: t`, `[a, ..r]`) is checked through the
   sequence view, so `[]` and `_ :: _` together cover any sequence.
 
@@ -648,8 +654,12 @@ $ go : Light -> @int = \l =
 ```
 
 ## 5.10 Irrefutable patterns in `let` and lambda
-Only `_`, variables, and struct/tuple patterns built from them (no literals) may
-appear in a `let` binder or a lambda parameter; they desugar to field accesses.
+A `let` binder or a lambda parameter has no next arm to fall through to, so its
+pattern must match every value of its type. `_`, variables, and struct, tuple,
+and record patterns built from them always do. A pattern that can fail, such as
+a literal or a variant of a union with several, is a compile error
+(`NON_EXHAUSTIVE_MATCH`) naming a value it misses; bind a variable and match it
+with `is` instead.
 
 ```thrax
 $ Point  : @struct = x: @int, y: @int,
@@ -946,7 +956,7 @@ error. Subsumption: a pure function is callable in any effectful context.
 
 ```thrax
 $ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f, xs =
-	is xs | [] => [] | h :: t => f h :: map f t | _ => []
+	is xs | [] => [] | h :: t => f h :: map f t
 ```
 
 ## 8.6 `defer`
