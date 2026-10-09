@@ -71,26 +71,26 @@ $ impl_IMod_for_int : IMod @int = .{ .mod = \a, b = @imod a b }
 $ impl_IZero_for_int : IZero @int = .{ .zero = 0 }
 $ impl_IOne_for_int : IOne @int = .{ .one = 1 }
 
-$ impl_IAdd_for_int8 : IAdd @int8 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_int8 : ISub @int8 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_int8 : IMul @int8 = .{ .mul = \a, b = @imul a b }
-$ impl_IDiv_for_int8 : IDiv @int8 = .{ .div = \a, b = @idiv a b }
+$ impl_IAdd_for_int8 : IAdd @int8 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_int8 : ISub @int8 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_int8 : IMul @int8 = .{ .mul = \a, b = @cast (@imul a b) }
+$ impl_IDiv_for_int8 : IDiv @int8 = .{ .div = \a, b = @cast (@idiv a b) }
 $ impl_IMod_for_int8 : IMod @int8 = .{ .mod = \a, b = @imod a b }
 $ impl_IZero_for_int8 : IZero @int8 = .{ .zero = 0 }
 $ impl_IOne_for_int8 : IOne @int8 = .{ .one = 1 }
 
-$ impl_IAdd_for_int16 : IAdd @int16 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_int16 : ISub @int16 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_int16 : IMul @int16 = .{ .mul = \a, b = @imul a b }
-$ impl_IDiv_for_int16 : IDiv @int16 = .{ .div = \a, b = @idiv a b }
+$ impl_IAdd_for_int16 : IAdd @int16 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_int16 : ISub @int16 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_int16 : IMul @int16 = .{ .mul = \a, b = @cast (@imul a b) }
+$ impl_IDiv_for_int16 : IDiv @int16 = .{ .div = \a, b = @cast (@idiv a b) }
 $ impl_IMod_for_int16 : IMod @int16 = .{ .mod = \a, b = @imod a b }
 $ impl_IZero_for_int16 : IZero @int16 = .{ .zero = 0 }
 $ impl_IOne_for_int16 : IOne @int16 = .{ .one = 1 }
 
-$ impl_IAdd_for_int32 : IAdd @int32 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_int32 : ISub @int32 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_int32 : IMul @int32 = .{ .mul = \a, b = @imul a b }
-$ impl_IDiv_for_int32 : IDiv @int32 = .{ .div = \a, b = @idiv a b }
+$ impl_IAdd_for_int32 : IAdd @int32 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_int32 : ISub @int32 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_int32 : IMul @int32 = .{ .mul = \a, b = @cast (@imul a b) }
+$ impl_IDiv_for_int32 : IDiv @int32 = .{ .div = \a, b = @cast (@idiv a b) }
 $ impl_IMod_for_int32 : IMod @int32 = .{ .mod = \a, b = @imod a b }
 $ impl_IZero_for_int32 : IZero @int32 = .{ .zero = 0 }
 $ impl_IOne_for_int32 : IOne @int32 = .{ .one = 1 }
@@ -112,25 +112,25 @@ $ impl_IMod_for_nat : IMod @nat = .{ .mod = \a, b = @umod a b }
 $ impl_IZero_for_nat : IZero @nat = .{ .zero = 0 }
 $ impl_IOne_for_nat : IOne @nat = .{ .one = 1 }
 
-$ impl_IAdd_for_nat8 : IAdd @nat8 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_nat8 : ISub @nat8 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_nat8 : IMul @nat8 = .{ .mul = \a, b = @imul a b }
+$ impl_IAdd_for_nat8 : IAdd @nat8 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_nat8 : ISub @nat8 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_nat8 : IMul @nat8 = .{ .mul = \a, b = @cast (@imul a b) }
 $ impl_IDiv_for_nat8 : IDiv @nat8 = .{ .div = \a, b = @udiv a b }
 $ impl_IMod_for_nat8 : IMod @nat8 = .{ .mod = \a, b = @umod a b }
 $ impl_IZero_for_nat8 : IZero @nat8 = .{ .zero = 0 }
 $ impl_IOne_for_nat8 : IOne @nat8 = .{ .one = 1 }
 
-$ impl_IAdd_for_nat16 : IAdd @nat16 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_nat16 : ISub @nat16 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_nat16 : IMul @nat16 = .{ .mul = \a, b = @imul a b }
+$ impl_IAdd_for_nat16 : IAdd @nat16 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_nat16 : ISub @nat16 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_nat16 : IMul @nat16 = .{ .mul = \a, b = @cast (@imul a b) }
 $ impl_IDiv_for_nat16 : IDiv @nat16 = .{ .div = \a, b = @udiv a b }
 $ impl_IMod_for_nat16 : IMod @nat16 = .{ .mod = \a, b = @umod a b }
 $ impl_IZero_for_nat16 : IZero @nat16 = .{ .zero = 0 }
 $ impl_IOne_for_nat16 : IOne @nat16 = .{ .one = 1 }
 
-$ impl_IAdd_for_nat32 : IAdd @nat32 = .{ .add = \a, b = @iadd a b }
-$ impl_ISub_for_nat32 : ISub @nat32 = .{ .sub = \a, b = @isub a b }
-$ impl_IMul_for_nat32 : IMul @nat32 = .{ .mul = \a, b = @imul a b }
+$ impl_IAdd_for_nat32 : IAdd @nat32 = .{ .add = \a, b = @cast (@iadd a b) }
+$ impl_ISub_for_nat32 : ISub @nat32 = .{ .sub = \a, b = @cast (@isub a b) }
+$ impl_IMul_for_nat32 : IMul @nat32 = .{ .mul = \a, b = @cast (@imul a b) }
 $ impl_IDiv_for_nat32 : IDiv @nat32 = .{ .div = \a, b = @udiv a b }
 $ impl_IMod_for_nat32 : IMod @nat32 = .{ .mod = \a, b = @umod a b }
 $ impl_IZero_for_nat32 : IZero @nat32 = .{ .zero = 0 }

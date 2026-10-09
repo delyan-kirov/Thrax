@@ -236,6 +236,12 @@ pub struct Checker<'a> {
     /// The scrutinee type of each integer literal and range pattern, read once the
     /// match is typed to give the exhaustiveness check the type's value range.
     int_pattern_tys: HashMap<Aol<Pattern>, Type>,
+    /// Each `@cast` application under 64 bits, mapped to its target's signedness
+    /// and width. Lowering wraps the operand into that range.
+    cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
+    /// Every integer literal's type, value, and span, range-checked against its
+    /// type once the module is solved (see [`Self::check_int_literals`]).
+    int_literals: Vec<(Type, i64, Span)>,
     /// Non-fatal diagnostics (unreachable match arms), in source order.
     warnings: Vec<Diagnostic>,
     /// The ordered field names each `with subject in body` brings into scope,
@@ -402,6 +408,8 @@ impl<'a> Checker<'a> {
             sequence_pattern_hooks: HashMap::new(),
             variant_pattern_unions: HashMap::new(),
             int_pattern_tys: HashMap::new(),
+            cast_widths: HashMap::new(),
+            int_literals: Vec::new(),
             warnings: Vec::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
@@ -761,6 +769,7 @@ impl<'a> Checker<'a> {
         if let Some(d) = self.unknown_type.take() {
             return Err(d);
         }
+        self.check_int_literals()?;
         self.build_extern_specs()?;
         for d in &defs {
             if matches!(self.node(d.body), Expr::Extern { .. }) {
@@ -1466,7 +1475,11 @@ impl<'a> Checker<'a> {
             // type-directed: the target integer type comes from the checking context.
             Expr::App(f, arg) if self.is_cast_head(*f) => {
                 let arg = *arg;
-                self.check_cast(arg, expected)
+                self.check_cast(arg, expected)?;
+                if let Some(width) = self.sized_width(expected) {
+                    self.cast_widths.insert(e, width);
+                }
+                Ok(())
             }
             // A bare reference to an overloaded name, with no argument types to
             // dispatch on (`(+)` passed as a value, `foldl (+) 0 xs`). The expected
@@ -1567,10 +1580,10 @@ impl<'a> Checker<'a> {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
     }
 
-    /// Check `@cast x` against the expected integer type. Both engines box integers
-    /// uniformly, so the cast is erased after checking (lowering emits the operand);
-    /// the width matters only at the `@extern` boundary, where marshalling narrows to
-    /// the C type. A numeric literal operand is accepted (it defaults to `Int`).
+    /// Check `@cast x` against the expected integer type. Both engines hold every
+    /// integer as one 64-bit value, so lowering wraps `x` into a narrower target's
+    /// range (see `cast_widths`) and emits a 64-bit target's operand unchanged. A
+    /// numeric literal operand is accepted (it defaults to `@int`).
     fn check_cast(&mut self, arg: Aol<Expr>, expected: Type) -> Result<()> {
         if !self.is_int_scalar(expected) {
             return Err(diag!(
@@ -1583,8 +1596,8 @@ impl<'a> Checker<'a> {
         let src = self.infer(arg)?;
         // A still-unresolved operand, e.g. the result of a deferred overload (`a +
         // b` whose resolution waits on numeric defaulting) or a bare numeric
-        // literal, gets pinned by later solving. The cast is erased, so accept it
-        // here rather than reject on an incomplete type.
+        // literal, gets pinned by later solving. Only the target's width matters,
+        // so accept it here rather than reject on an incomplete type.
         if matches!(self.eng.head(src), TypeNode::Var(_)) {
             return Ok(());
         }
@@ -2789,10 +2802,11 @@ impl<'a> Checker<'a> {
 
     fn infer_node(&mut self, e: Aol<Expr>) -> Result<Type> {
         match self.node(e) {
-            Expr::Int(_) => {
+            Expr::Int(n) => {
                 let t = self.eng.fresh();
                 let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
                 self.numeric.push((t, span));
+                self.int_literals.push((t, *n, span));
                 self.eng.mark_int_literal(t);
                 Ok(t)
             }
@@ -2886,6 +2900,12 @@ impl<'a> Checker<'a> {
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (self.text(*op), *operand);
                 let t = self.infer(operand)?;
+                // `-128` is `neg 128`: range-check the literal as the value it denotes.
+                if op == "neg" && matches!(self.node(operand), Expr::Int(_)) {
+                    if let Some(lit) = self.int_literals.last_mut() {
+                        lit.1 = lit.1.wrapping_neg();
+                    }
+                }
                 let op_ty = match self.global_ctx.get(op).copied() {
                     Some(sig) => {
                         let (req, exposed) = self.ctx_use_type(sig);
@@ -4817,7 +4837,12 @@ impl<'a> Checker<'a> {
     /// built-in integer. `@int` and `@nat` take the widest target's range, which
     /// is conservative on a narrower one: covering it covers the narrower range.
     fn int_domain(&self, pat: Aol<Pattern>) -> Option<(i128, i128)> {
-        let ty = self.eng.zonk(*self.int_pattern_tys.get(&pat)?);
+        self.int_type_domain(*self.int_pattern_tys.get(&pat)?)
+    }
+
+    /// The value range of a built-in integer type (see [`Self::int_domain`]).
+    fn int_type_domain(&self, ty: Type) -> Option<(i128, i128)> {
+        let ty = self.eng.zonk(ty);
         let TypeNode::Con(name) = self.eng.head(ty) else {
             return None;
         };
@@ -4970,6 +4995,47 @@ impl<'a> Checker<'a> {
                 )
             }
         }
+    }
+
+    /// Reject an integer literal outside its resolved type's range, such as `300`
+    /// as a `@nat8`. A value that does not fit is not one of the type's values.
+    fn check_int_literals(&mut self) -> Result<()> {
+        for (t, n, span) in std::mem::take(&mut self.int_literals) {
+            let Some(dom) = self.int_type_domain(t) else {
+                continue;
+            };
+            let v = int_in(n, dom);
+            if v < dom.0 || dom.1 < v {
+                let ty = self.show(t);
+                return Err(diag!(
+                    Code::IntLiteralRange, span, 0,
+                    "integer literal {v} is out of range for `{ty}` ({} to {})", dom.0, dom.1;
+                    note: "use a wider type, or `@cast` to wrap a wider value into `{ty}`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a built-in integer type under 64 bits is signed, and its width.
+    fn sized_width(&self, ty: Type) -> Option<(bool, u32)> {
+        let TypeNode::Con(name) = self.eng.head(ty) else {
+            return None;
+        };
+        Some(match self.eng.types.name(name).as_str() {
+            "@int8" => (true, 8),
+            "@int16" => (true, 16),
+            "@int32" => (true, 32),
+            "@nat8" => (false, 8),
+            "@nat16" => (false, 16),
+            "@nat32" => (false, 32),
+            _ => return None,
+        })
+    }
+
+    /// Each sub-64-bit `@cast` site's target signedness and width.
+    pub fn cast_widths(&self) -> &HashMap<Aol<Expr>, (bool, u32)> {
+        &self.cast_widths
     }
 
     /// The non-fatal diagnostics this check produced (unreachable match arms).

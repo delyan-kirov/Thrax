@@ -337,6 +337,10 @@ impl<'a> Parser<'a> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Op) && self.text(t) == s)
     }
+    /// A `-` directly before a numeric literal: a negative literal pattern.
+    fn at_negative_literal(&mut self) -> Result<bool> {
+        Ok(self.at_op("-")? && matches!(self.peek_kind_at(1)?, Kind::Int(_) | Kind::Real(_)))
+    }
     fn unexpected(&self, t: &Token, what: &str) -> Diagnostic {
         Diagnostic::error(
             Code::UnexpectedToken,
@@ -2166,7 +2170,9 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
             }
             self.bump()?; // '...'
-            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_)) {
+            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_))
+                || self.at_negative_literal()?
+            {
                 Some(self.parse_pattern_atom()?)
             } else {
                 None
@@ -2184,6 +2190,16 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern_atom_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let t = self.peek()?;
+        if self.at_negative_literal()? {
+            self.bump()?; // '-'
+            let n = self.peek()?;
+            self.bump()?;
+            return Ok(match n.kind {
+                Kind::Int(v) => self.pat(Pattern::Int(v.wrapping_neg())),
+                Kind::Real(v) => self.pat(Pattern::Real(-v)),
+                _ => unreachable!("at_negative_literal saw a number"),
+            });
+        }
         match t.kind {
             Kind::Int(v) => {
                 self.bump()?;

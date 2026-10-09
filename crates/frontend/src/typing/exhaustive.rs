@@ -215,7 +215,15 @@ fn useful_ints(
         DPat::Ctor(Ctor::Int { lo, hi, .. }, _) => Some((*lo, *hi)),
         _ => None,
     });
-    for (a, b) in segments((lo, hi), ranges) {
+    // Any uncovered segment is a witness. Trying interior gaps first, then the
+    // top, then the bottom of the domain names the gap a reader expects.
+    let mut segs = segments((lo, hi), ranges);
+    segs.sort_by_key(|&(a, b)| match (a == dom.0, b == dom.1) {
+        (false, false) => 0,
+        (false, true) => 1,
+        _ => 2,
+    });
+    for (a, b) in segs {
         let spec: Vec<Vec<DPat>> = rows
             .iter()
             .filter(|r| match &r[0] {
@@ -389,8 +397,11 @@ pub fn show(p: &DPat) -> String {
             }
             Ctor::Bool(b) => b.to_string(),
             Ctor::Lit(k) => k.clone(),
+            // A gap reaching down to a 64-bit type's minimum is named by its top
+            // value alone: any uncovered value is a witness, and that bound is noise.
             Ctor::Int { lo, hi, dom } => match (lo == hi, hi == &dom.1) {
                 (true, _) => lo.to_string(),
+                _ if *lo == i64::MIN as i128 => hi.to_string(),
                 (false, true) => format!("{lo} ..."),
                 (false, false) => format!("{lo} ... {hi}"),
             },

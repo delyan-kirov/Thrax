@@ -1138,3 +1138,27 @@ fn for_over_a_lazy_list_stops_at_break() {
                \t      | r => 0\n";
     assert_matches(src, "test");
 }
+
+#[test]
+fn sized_integers_wrap_into_their_range() {
+    // Both engines hold an integer as one 64-bit value, so sized arithmetic and
+    // `@cast` must wrap the result into the type's range, identically.
+    let src = "@mod T\n\
+               $ add8 : @int = let x : @nat8 = 200 in let y : @nat8 = x + 100 in let r : @int = @cast y in r\n\
+               $ sadd8 : @int = let x : @int8 = 100 in let y : @int8 = x + 100 in let r : @int = @cast y in r\n\
+               $ narrow : @int = let m : @int8 = @cast 250 in let r : @int = @cast m in r\n\
+               $ unarrow : @int = let m : @nat16 = @cast (0 - 1) in let r : @int = @cast m in r\n\
+               $ sdiv : @int = let a : @int8 = -128 in let b : @int8 = -1 in let q : @int8 = a / b in let r : @int = @cast q in r\n\
+               $ ranged : @int = let m : @int8 = @cast 250 in is m | -128 ... -1 => 1 | 0 ... => 2\n";
+    for (entry, want) in [
+        ("add8", "44"),
+        ("sadd8", "-56"),
+        ("narrow", "-6"),
+        ("unarrow", "65535"),
+        ("sdiv", "-128"),
+        ("ranged", "1"),
+    ] {
+        assert_matches(src, entry);
+        assert_eq!(interp_show(src, entry), want, "{entry}");
+    }
+}

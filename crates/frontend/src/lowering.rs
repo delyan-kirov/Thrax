@@ -509,6 +509,9 @@ pub struct Resolved {
     /// node (from [`crate::typing::Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
     pub with_fields: HashMap<Aol<Expr>, Vec<String>>,
+    /// Each `@cast` to a type under 64 bits, mapped to the target's signedness
+    /// and width (from [`crate::typing::Checker::cast_widths`]).
+    pub cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
     /// Each `@extern` node's marshalling spec (how the single applied value maps
     /// to positional C args, the flattened C argument type names, and the result
     /// name) from [`crate::typing::Checker::extern_sigs`]. Lowering needs these to
@@ -577,6 +580,7 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
         for (&site, fields) in checker.with_fields() {
             resolved.with_fields.insert(site, fields.clone());
         }
+        resolved.cast_widths.extend(checker.cast_widths());
         resolved.extern_sigs.extend(checker.extern_sigs());
         let module = checker.module_name().to_string();
         for (name, spec) in checker.own_externs() {
@@ -1007,10 +1011,18 @@ impl<'a> Lowerer<'a> {
                 if matches!(self.node(x), Expr::CtxArg(_)) {
                     return self.expr(f);
                 }
-                // `@cast x` is erased: integers are boxed uniformly, so a width cast
-                // is a no-op at runtime (the `@extern` boundary narrows to the C type).
+                // Integers are one 64-bit value at runtime, so `@cast x` to a narrower
+                // type wraps `x` into its range (`@swrap`/`@uwrap`, engine builtins the
+                // checker does not expose); a 64-bit target is the operand itself.
                 if self.is_cast_head(f) {
-                    return self.expr(x);
+                    let x = self.expr(x);
+                    return match self.resolved.cast_widths.get(&e) {
+                        Some(&(signed, bits)) => {
+                            let wrap = if signed { "@swrap" } else { "@uwrap" };
+                            bin(wrap, Term::Int(bits as i64), x)
+                        }
+                        None => x,
+                    };
                 }
                 // `@e X` in expression position: run X at compile time and embed
                 // its value here (see `lower_meta_e`).

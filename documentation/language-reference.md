@@ -502,9 +502,15 @@ the infix form. `<|>` is rewritten too, but its function form names a binding:
 `(<|>)` is CORE's `compose` (§4.9).
 
 ## 4.11 `@cast`
-Reinterprets an integer at a different integer width. The target width comes
-from context (annotate if unknown). Integer widths only, not int/real/ptr (those
-use `C.i2f` / `C.i2p`).
+Converts an integer to another integer type, wrapping it into the target's
+range: the value is truncated to the target's width, then sign-extended for
+`@intN` or zero-extended for `@natN` (so `@cast 250` as an `@int8` is `-6`). The
+target type comes from context (annotate if unknown). Integer widths only, not
+int/real/ptr (those use `C.i2f` / `C.i2p`).
+
+Every value of a sized type stays in its range: arithmetic on `@int8` .. `@int32`
+and `@nat8` .. `@nat32` wraps the same way, and a literal that does not fit its
+type (`300` as a `@nat8`) is a compile error (`INT_LITERAL_RANGE`).
 
 ```thrax
 $ big   : @int64 = 300
@@ -539,10 +545,11 @@ $ unwrap : Wrap -> @int = \w =
 ```
 
 ## 5.2 Literal patterns
-Match integers (any width), Real, and Str by equality (refutable).
+Match integers (any width), Real, and Str by equality (refutable). A numeric
+literal may be negative (`-1`, `-0.5`), also as a range bound (`-10 ... -1`).
 
 ```thrax
-$ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" | _ => "m"
+$ describe : @int -> Str = \n = is n | 0 => "z" | 1 => "o" | -1 => "m1" | _ => "m"
 $ yn : Str -> @int = \s = is s | "yes" => 1 | "no" => 0 | _ => 99
 ```
 

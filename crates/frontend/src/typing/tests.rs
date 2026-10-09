@@ -1147,13 +1147,15 @@ fn nested_witness_is_named() {
 #[test]
 fn infinite_domains_need_a_catch_all() {
     let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 => 1 | 1 => 2\n");
-    assert!(err.contains("`-9223372036854775808 ... -1`"), "{err}");
+    assert!(err.contains("`2 ...`"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @float64 -> @int = \\n = is n | 0.0 => 1 | 1.0 => 2\n");
     assert!(err.contains("`_`"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @str -> @int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
-    assert!(err.contains("`-9223372036854775808 ... -1`"), "{err}");
+    assert!(err.contains("does not cover `-1`"), "{err}");
+    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 20 ... => 2\n");
+    assert!(err.contains("`10 ... 19`"), "{err}");
 }
 
 #[test]
@@ -1255,6 +1257,8 @@ fn integer_ranges_cover_bounded_types() {
     assert_eq!(coverage(ok), (String::new(), vec![]));
     let (err, _) = coverage("@mod T\n$ f : @int8 -> @int = \\n = is n | 0 ... => 0\n");
     assert!(err.contains("`-128 ... -1`"), "{err}");
+    let signed = "@mod T\n$ f : @int8 -> @int = \\n = is n | -128 ... -1 => 1 | 0 ... => 2\n";
+    assert_eq!(coverage(signed), (String::new(), vec![]));
     let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 99 => 0 | 101 ... => 1\n");
     assert!(err.contains("does not cover `100`"), "{err}");
     let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 => 0 | 1 ... 9 => 1\n");
@@ -1263,4 +1267,14 @@ fn integer_ranges_cover_bounded_types() {
     assert_eq!(w.len(), 1, "{w:?}");
     let (_, w) = coverage("@mod T\n$ f : {@nat8, @bool} -> @int = \\p = is p | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
     assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn sized_literals_must_fit_their_type() {
+    let (err, _) = coverage("@mod T\n$ x : @nat8 = 300\n");
+    assert!(err.contains("INT_LITERAL_RANGE") && err.contains("300"), "{err}");
+    let (err, _) = coverage("@mod T\n$ x : @int8 = -129\n");
+    assert!(err.contains("-129"), "{err}");
+    let ok = "@mod T\n$ a : @int8 = -128\n$ b : @nat8 = 255\n$ c : @nat8 = @cast 300\n";
+    assert_eq!(coverage(ok), (String::new(), vec![]));
 }
