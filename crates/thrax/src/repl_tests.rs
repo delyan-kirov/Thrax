@@ -63,15 +63,28 @@ fn multibyte_utf8_decodes_to_one_char() {
 }
 
 #[test]
-fn return_and_ctrl_j_split_into_enter_and_submit() {
-    // With ICRNL off, the Return key is CR and Ctrl-J is LF: Return edits an item,
-    // Ctrl-J evaluates the whole buffer.
+fn return_and_ctrl_j_split_into_enter_and_newline() {
+    // With ICRNL off, the Return key is CR and Ctrl-J is LF.
     assert_eq!(key(b"\r"), Some(Key::Enter));
-    assert_eq!(key(b"\n"), Some(Key::SubmitAll)); // Ctrl-J
+    assert_eq!(key(b"\n"), Some(Key::Newline)); // Ctrl-J
 }
 
 #[test]
-fn ctrl_j_submits_the_whole_buffer_without_a_terminator() {
+fn enter_submits_and_ctrl_j_continues() {
+    let ed = editor_with("_= 1 +");
+    assert!(matches!(ed.on_enter(), Action::Submit(b) if b == "_= 1 +"));
+    assert!(matches!(ed.on_newline(), Action::Newline));
+
+    let ed = editor_with("_= 1 + 2 $");
+    assert!(matches!(ed.on_newline(), Action::Submit(b) if b == "_= 1 + 2 "));
+
+    let ed = editor_with(":t 1");
+    assert!(matches!(ed.on_enter(), Action::Command(c) if c == "t 1"));
+    assert!(matches!(ed.on_newline(), Action::Command(c) if c == "t 1"));
+}
+
+#[test]
+fn enter_submits_the_whole_buffer_without_a_terminator() {
     // A multi-line buffer with no trailing `$` yields the whole thing, trimmed.
     let ed = editor_with("_= foo\n  + bar");
     assert_eq!(ed.submit_body(), "_= foo\n  + bar");
