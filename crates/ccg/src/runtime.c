@@ -884,6 +884,13 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
    * (`@array_len`, ...) must never reach for `a[1]`. `arith_intrinsic` reads its
    * operands as numbers before matching, so it stays behind its `@i`/`@u`/`@f`
    * prefix test; `compare_intrinsic` matches the name first and needs none. */
+  if (n >= 2 && (strcmp(name, "@swrap") == 0 || strcmp(name, "@uwrap") == 0)) {
+    int64_t bits = a[0]->u.i, x = a[1]->u.i;
+    if (bits < 1 || bits >= 64) return THxRT_int(x);
+    unsigned shift = (unsigned)(64 - bits);
+    if (name[1] == 's') return THxRT_int((int64_t)((uint64_t)x << shift) >> shift);
+    return THxRT_int((int64_t)(((uint64_t)x << shift) >> shift));
+  }
   if (n >= 2 && name[0] == '@') {
     Value *r = NULL;
     if (name[1] == 'i' || name[1] == 'u' || name[1] == 'f')

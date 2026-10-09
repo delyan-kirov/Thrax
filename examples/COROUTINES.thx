@@ -28,10 +28,8 @@ $ spawn : ({} -> <Co> {}) -> Task = \t =
 $ rr : Task -> Task -> @int = \a, b =
     is a | Task.Fin.{} =>
          (is b | Task.Fin.{} => 0
-               | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {})
-               | _ => 0)
+               | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {}))
          | Task.Susp.{ va, ka } => va + rr b (ka {})
-         | _ => 0
 
 $ t1 : {} -> <Co> {} =
 	\u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}

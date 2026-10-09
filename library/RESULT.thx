@@ -37,20 +37,17 @@ $ map_ok : (a -> b) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ f x }
 		| Result.Err.{e} => Result.Err.{ e }
-		| _ => map_ok f r
 
 $ map_err : (e -> f) -> Result t e -> Result t f = \f, r =
 	is r
 		| Result.Ok.{x} => Result.Ok.{ x }
 		| Result.Err.{e} => Result.Err.{ f e }
-		| _ => map_err f r
 
 # Chain a fallible step onto an earlier result (monadic bind).
 $ and_then : (a -> Result b e) -> Result a e -> Result b e = \f, r =
 	is r
 		| Result.Ok.{x} => f x
 		| Result.Err.{e} => Result.Err.{ e }
-		| _ => and_then f r
 
 $ ok_opt : Result t e -> Option t = \r =
 	is r | Result.Ok.{x} => Option.Some.{ x } | _ => Option.None
@@ -77,7 +74,6 @@ $ untry : Result t @str -> <Fail> t = \r =
 	is r
 		| Result.Ok.{x} => x
 		| Result.Err.{m} => Fail.fail m
-		| _ => Fail.fail "unreachable"
 
 # The Option bridge: absence becomes a failure carrying `msg`.
 $ expect : Option t -> @str -> <Fail> t = \o, msg =

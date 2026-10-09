@@ -27,6 +27,7 @@
 
 pub mod data;
 pub mod engine;
+pub mod exhaustive;
 #[cfg(test)]
 mod tests;
 
@@ -229,6 +230,20 @@ pub struct Checker<'a> {
     /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
     /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
     sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
+    /// The union each variant pattern resolved to, so the exhaustiveness check
+    /// reads the same union a bare `.Tag` was typed against.
+    variant_pattern_unions: HashMap<Aol<Pattern>, &'a str>,
+    /// The scrutinee type of each integer literal and range pattern, read once the
+    /// match is typed to give the exhaustiveness check the type's value range.
+    int_pattern_tys: HashMap<Aol<Pattern>, Type>,
+    /// Each `@cast` application under 64 bits, mapped to its target's signedness
+    /// and width. Lowering wraps the operand into that range.
+    cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
+    /// Every integer literal's type, value, and span, range-checked against its
+    /// type once the module is solved (see [`Self::check_int_literals`]).
+    int_literals: Vec<(Type, i64, Span)>,
+    /// Non-fatal diagnostics (unreachable match arms), in source order.
+    warnings: Vec<Diagnostic>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
@@ -391,6 +406,11 @@ impl<'a> Checker<'a> {
             blessed_sites: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
+            variant_pattern_unions: HashMap::new(),
+            int_pattern_tys: HashMap::new(),
+            cast_widths: HashMap::new(),
+            int_literals: Vec::new(),
+            warnings: Vec::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
@@ -749,6 +769,7 @@ impl<'a> Checker<'a> {
         if let Some(d) = self.unknown_type.take() {
             return Err(d);
         }
+        self.check_int_literals()?;
         self.build_extern_specs()?;
         for d in &defs {
             if matches!(self.node(d.body), Expr::Extern { .. }) {
@@ -1280,6 +1301,7 @@ impl<'a> Checker<'a> {
                         )?;
                     }
                     self.type_pattern(p.pat, param_ty)?;
+                    self.check_irrefutable(p.pat, "a lambda parameter")?;
                     exp = rest;
                     body_eff = eff; // the innermost arrow's effect: the body's ambient
                 }
@@ -1410,7 +1432,7 @@ impl<'a> Checker<'a> {
                     self.leave_scope();
                     r?;
                 }
-                Ok(())
+                self.check_coverage(e, *arms)
             }
             // A `{ .f = e, ... }` literal checked against a declared struct builds
             // THAT struct rather than an anonymous row record, so construction
@@ -1453,7 +1475,11 @@ impl<'a> Checker<'a> {
             // type-directed: the target integer type comes from the checking context.
             Expr::App(f, arg) if self.is_cast_head(*f) => {
                 let arg = *arg;
-                self.check_cast(arg, expected)
+                self.check_cast(arg, expected)?;
+                if let Some(width) = self.sized_width(expected) {
+                    self.cast_widths.insert(e, width);
+                }
+                Ok(())
             }
             // A bare reference to an overloaded name, with no argument types to
             // dispatch on (`(+)` passed as a value, `foldl (+) 0 xs`). The expected
@@ -1554,10 +1580,10 @@ impl<'a> Checker<'a> {
         matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
     }
 
-    /// Check `@cast x` against the expected integer type. Both engines box integers
-    /// uniformly, so the cast is erased after checking (lowering emits the operand);
-    /// the width matters only at the `@extern` boundary, where marshalling narrows to
-    /// the C type. A numeric literal operand is accepted (it defaults to `Int`).
+    /// Check `@cast x` against the expected integer type. Both engines hold every
+    /// integer as one 64-bit value, so lowering wraps `x` into a narrower target's
+    /// range (see `cast_widths`) and emits a 64-bit target's operand unchanged. A
+    /// numeric literal operand is accepted (it defaults to `@int`).
     fn check_cast(&mut self, arg: Aol<Expr>, expected: Type) -> Result<()> {
         if !self.is_int_scalar(expected) {
             return Err(diag!(
@@ -1570,8 +1596,8 @@ impl<'a> Checker<'a> {
         let src = self.infer(arg)?;
         // A still-unresolved operand, e.g. the result of a deferred overload (`a +
         // b` whose resolution waits on numeric defaulting) or a bare numeric
-        // literal, gets pinned by later solving. The cast is erased, so accept it
-        // here rather than reject on an incomplete type.
+        // literal, gets pinned by later solving. Only the target's width matters,
+        // so accept it here rather than reject on an incomplete type.
         if matches!(self.eng.head(src), TypeNode::Var(_)) {
             return Ok(());
         }
@@ -2776,10 +2802,11 @@ impl<'a> Checker<'a> {
 
     fn infer_node(&mut self, e: Aol<Expr>) -> Result<Type> {
         match self.node(e) {
-            Expr::Int(_) => {
+            Expr::Int(n) => {
                 let t = self.eng.fresh();
                 let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
                 self.numeric.push((t, span));
+                self.int_literals.push((t, *n, span));
                 self.eng.mark_int_literal(t);
                 Ok(t)
             }
@@ -2873,6 +2900,12 @@ impl<'a> Checker<'a> {
             Expr::UnOp { op, operand } => {
                 let (op, operand) = (self.text(*op), *operand);
                 let t = self.infer(operand)?;
+                // `-128` is `neg 128`: range-check the literal as the value it denotes.
+                if op == "neg" && matches!(self.node(operand), Expr::Int(_)) {
+                    if let Some(lit) = self.int_literals.last_mut() {
+                        lit.1 = lit.1.wrapping_neg();
+                    }
+                }
                 let op_ty = match self.global_ctx.get(op).copied() {
                     Some(sig) => {
                         let (req, exposed) = self.ctx_use_type(sig);
@@ -2964,6 +2997,7 @@ impl<'a> Checker<'a> {
                         None => self.eng.fresh(),
                     };
                     self.type_pattern(p.pat, pv)?;
+                    self.check_irrefutable(p.pat, "a lambda parameter")?;
                     param_tys.push(pv);
                 }
                 // Constructing the closure performs nothing under the current
@@ -3007,6 +3041,7 @@ impl<'a> Checker<'a> {
                     self.eng.unify(result, tb, "between match arms")?;
                     self.leave_scope();
                 }
+                self.check_coverage(e, *arms)?;
                 Ok(result)
             }
 
@@ -4442,6 +4477,7 @@ impl<'a> Checker<'a> {
             None => {
                 self.eng.generalize_except(value_ty, &mono);
                 self.type_pattern(b.pat, value_ty)?;
+                self.check_irrefutable(b.pat, "a `let` binding")?;
             }
         }
         Ok(())
@@ -4450,6 +4486,17 @@ impl<'a> Checker<'a> {
     // -- pattern typing -----------------------------------------------------
 
     pub fn type_pattern(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<()> {
+        let r = self.type_pattern_node(pat, expected);
+        match self.ast.pat_span(pat) {
+            Some(span) => r.map_err(|d| d.fill_span(span)),
+            None => r,
+        }
+    }
+
+    fn type_pattern_node(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<()> {
+        if matches!(self.pnode(pat), Pattern::Int(_) | Pattern::Range { .. }) {
+            self.int_pattern_tys.insert(pat, expected);
+        }
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
             Pattern::Var(name) => {
@@ -4459,6 +4506,7 @@ impl<'a> Checker<'a> {
             Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Real(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
             Pattern::Str(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
+            Pattern::Int(_) if self.is_int_scalar(expected) => Ok(()),
             Pattern::Int(_) => {
                 self.eng
                     .unify(expected, self.eng.types.con(ty::INT), "in an integer pattern")
@@ -4538,7 +4586,7 @@ impl<'a> Checker<'a> {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
                 let fields = self.ast.slice(*fields);
-                self.type_variant_pattern(ty, tag, fields, expected)
+                self.type_variant_pattern(pat, ty, tag, fields, expected)
             }
         }
     }
@@ -4646,6 +4694,7 @@ impl<'a> Checker<'a> {
 
     fn type_variant_pattern(
         &mut self,
+        pat: Aol<Pattern>,
         ty: Option<&'a str>,
         tag: &'a str,
         fields: &'a [FieldPat],
@@ -4676,6 +4725,9 @@ impl<'a> Checker<'a> {
             });
         };
         self.eng.unify(expected, result, "in a variant pattern")?;
+        if let Some(u) = union {
+            self.variant_pattern_unions.insert(pat, u);
+        }
         let label = variant_label(union, tag);
         // As for a struct pattern: fewer binders than slots is fine, more is not.
         for (i, f) in fields.iter().enumerate() {
@@ -4703,6 +4755,292 @@ impl<'a> Checker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Check that the typed match `e` covers every value of its scrutinee (an
+    /// error otherwise) and record a warning for each arm no value can reach. A
+    /// handler's value arms are parsed into such a match on `%ret`; its
+    /// diagnostics speak of the value arms, never of that name.
+    fn check_coverage(&mut self, e: Aol<Expr>, arms: utilities::Slice<crate::parser::data::Arm>) -> Result<()> {
+        let arms = self.ast.slice(arms);
+        let rows: Vec<(Vec<exhaustive::DPat>, bool)> = arms
+            .iter()
+            .map(|arm| {
+                let alts = self.ast.slice(arm.patterns).iter().map(|p| self.dpat(*p)).collect();
+                (alts, arm.guard.is_some())
+            })
+            .collect();
+        let report = exhaustive::check(&rows);
+        let handler = matches!(
+            self.node(e),
+            Expr::Match { scrut, .. }
+                if matches!(self.node(*scrut), Expr::Var { module: None, name } if self.text(*name) == "%ret")
+        );
+        for dead in report.unreachable {
+            let (msg, pats) = match dead {
+                exhaustive::Dead::Arm(i) => (
+                    "unreachable arm: the arms before it already match every value it matches",
+                    self.ast.slice(arms[i].patterns),
+                ),
+                exhaustive::Dead::Alt(i, j) => (
+                    "unreachable alternative: the patterns before it already match every value it matches",
+                    &self.ast.slice(arms[i].patterns)[j..=j],
+                ),
+            };
+            let first = pats.first().and_then(|p| self.ast.pat_span(*p));
+            let last = pats.last().and_then(|p| self.ast.pat_span(*p));
+            let span = match (first, last) {
+                (Some(a), Some(b)) => Span::new(a.start, b.end),
+                _ => Span::at(0),
+            };
+            if span != Span::at(0) && self.warnings.iter().any(|w| w.root().span == span) {
+                continue;
+            }
+            self.warnings.push(diag!(Code::UnreachableArm, span, 0, "{msg}"));
+        }
+        let Some(missing) = report.missing else {
+            return Ok(());
+        };
+        let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+        if let Some(union) = report.mixed {
+            return Err(diag!(
+                Code::NonExhaustiveMatch, span, 0,
+                "cannot check coverage: the arms match `{union}` with both its variants and \
+                 sequence patterns, which go through its `@ISeqView` instead";
+                note: "match with only one kind of pattern, or add a catch-all `| _ => ...`"
+            ));
+        }
+        let what = if handler { "the handler's value arms do" } else { "this `is` does" };
+        Err(diag!(
+            Code::NonExhaustiveMatch, span, 0,
+            "non-exhaustive match: {what} not cover `{}`", exhaustive::show(&missing);
+            note: "add an arm for it, or a catch-all `| _ => ...`"
+        ))
+    }
+
+    /// Reject a typed `let` or lambda-parameter pattern that some value of its
+    /// type fails to match: there is no next arm to fall through to.
+    fn check_irrefutable(&mut self, pat: Aol<Pattern>, site: &str) -> Result<()> {
+        let report = exhaustive::check(&[(vec![self.dpat(pat)], false)]);
+        let Some(missing) = report.missing else {
+            return Ok(());
+        };
+        let span = self.ast.pat_span(pat).unwrap_or(Span::at(0));
+        Err(diag!(
+            Code::NonExhaustiveMatch, span, 0,
+            "refutable pattern in {site}: it does not match `{}`", exhaustive::show(&missing);
+            note: "bind a variable and match it with `is`, which can handle every case"
+        ))
+    }
+
+    /// The value range of an integer pattern's type, or `None` when it is not a
+    /// built-in integer. `@int` and `@nat` take the widest target's range, which
+    /// is conservative on a narrower one: covering it covers the narrower range.
+    fn int_domain(&self, pat: Aol<Pattern>) -> Option<(i128, i128)> {
+        self.int_type_domain(*self.int_pattern_tys.get(&pat)?)
+    }
+
+    /// The value range of a built-in integer type (see [`Self::int_domain`]).
+    fn int_type_domain(&self, ty: Type) -> Option<(i128, i128)> {
+        let ty = self.eng.zonk(ty);
+        let TypeNode::Con(name) = self.eng.head(ty) else {
+            return None;
+        };
+        let signed = |bits: u32| (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
+        let unsigned = |bits: u32| (0, (1i128 << bits) - 1);
+        Some(match self.eng.types.name(name).as_str() {
+            "@int8" => signed(8),
+            "@int16" => signed(16),
+            "@int32" => signed(32),
+            "@int64" | "@int" => signed(64),
+            "@nat8" => unsigned(8),
+            "@nat16" => unsigned(16),
+            "@nat32" => unsigned(32),
+            "@nat64" | "@nat" => unsigned(64),
+            _ => return None,
+        })
+    }
+
+    /// Translate a typed pattern for [`exhaustive::check`].
+    fn dpat(&self, pat: Aol<Pattern>) -> exhaustive::DPat {
+        use exhaustive::{Ctor, DPat, ProductKind};
+        match self.pnode(pat) {
+            Pattern::Wild | Pattern::Var(_) => DPat::Wild,
+            Pattern::Int(_) | Pattern::Real(_) | Pattern::Str(_)
+                if self.literal_pattern_hooks.contains_key(&pat) =>
+            {
+                DPat::Opaque
+            }
+            Pattern::Int(n) => match self.int_domain(pat) {
+                Some(dom) => {
+                    let n = int_in(*n, dom);
+                    DPat::Ctor(Ctor::Int { lo: n, hi: n, dom }, Vec::new())
+                }
+                None => DPat::Ctor(Ctor::Lit(n.to_string()), Vec::new()),
+            },
+            Pattern::Real(x) => DPat::Ctor(Ctor::Lit(format!("{x:?}")), Vec::new()),
+            Pattern::Str(s) => {
+                let text = String::from_utf8_lossy(self.ast.bytes(*s));
+                DPat::Ctor(Ctor::Lit(format!("{text:?}")), Vec::new())
+            }
+            Pattern::Bool(b) => DPat::Ctor(Ctor::Bool(*b), Vec::new()),
+            Pattern::Range { lo, hi } => {
+                let Some(dom) = self.int_domain(pat) else {
+                    return DPat::Opaque;
+                };
+                let bound = |p: Aol<Pattern>| match self.pnode(p) {
+                    Pattern::Int(n) => Some(int_in(*n, dom)),
+                    _ => None,
+                };
+                let lo = bound(*lo);
+                let hi = match hi {
+                    Some(h) => bound(*h),
+                    None => Some(dom.1),
+                };
+                match (lo, hi) {
+                    (Some(lo), Some(hi)) if lo <= hi => {
+                        DPat::Ctor(Ctor::Int { lo: lo.max(dom.0), hi: hi.min(dom.1), dom }, Vec::new())
+                    }
+                    _ => DPat::Opaque,
+                }
+            }
+            Pattern::StrPrefix { .. } => DPat::Opaque,
+            Pattern::Cons { head, tail } => {
+                DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*head), self.dpat(*tail)])
+            }
+            Pattern::List { elems, rest } => {
+                let end = match rest {
+                    Some(r) => self.dpat(*r),
+                    None => DPat::Ctor(Ctor::SeqEmpty, Vec::new()),
+                };
+                self.ast.slice(*elems).iter().rev().fold(end, |tail, e| {
+                    DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*e), tail])
+                })
+            }
+            Pattern::Tuple(pats) => {
+                let pats = self.ast.slice(*pats);
+                if pats.is_empty() {
+                    return DPat::Wild;
+                }
+                let fields = pats.iter().enumerate().map(|(i, p)| (i.to_string(), self.dpat(*p)));
+                DPat::Product(ProductKind::Tuple, fields.collect())
+            }
+            Pattern::Struct { ty, fields } => {
+                let ty = self.text(*ty);
+                let Some(info) = self.structs.get(ty) else {
+                    return DPat::Opaque;
+                };
+                let mut out = Vec::new();
+                for (i, f) in self.ast.slice(*fields).iter().enumerate() {
+                    match f {
+                        FieldPat::Named { name, pat } => {
+                            out.push((self.text(*name).to_string(), self.dpat(*pat)))
+                        }
+                        FieldPat::Positional(pat) => match info.fields.get(i) {
+                            Some((name, _)) => out.push((name.to_string(), self.dpat(*pat))),
+                            None => return DPat::Opaque,
+                        },
+                        FieldPat::Shorthand(_) => {}
+                    }
+                }
+                DPat::Product(ProductKind::Struct(ty.into()), out)
+            }
+            Pattern::Record { fields, .. } => {
+                let fields = self.ast.slice(*fields).iter().filter_map(|f| match f {
+                    FieldPat::Named { name, pat } => {
+                        Some((self.text(*name).to_string(), self.dpat(*pat)))
+                    }
+                    _ => None,
+                });
+                DPat::Product(ProductKind::Record, fields.collect())
+            }
+            Pattern::Variant { ty, tag, fields, .. } => {
+                let tag = self.text(*tag);
+                let union = self
+                    .variant_pattern_unions
+                    .get(&pat)
+                    .copied()
+                    .or_else(|| ty.map(|t| self.text(t)))
+                    .or_else(|| self.find_union_by_tag(tag));
+                let Some((union, info)) = union.and_then(|u| Some((u, self.unions.get(u)?))) else {
+                    return DPat::Opaque;
+                };
+                let Some(index) = info.variants.iter().position(|v| v.tag == tag) else {
+                    return DPat::Opaque;
+                };
+                let payload = &info.variants[index].payload;
+                let mut args = vec![DPat::Wild; payload.len()];
+                for (i, f) in self.ast.slice(*fields).iter().enumerate() {
+                    let (slot, p) = match f {
+                        FieldPat::Named { name, pat } => {
+                            let name = self.text(*name);
+                            (payload.iter().position(|(n, _)| *n == Some(name)), *pat)
+                        }
+                        FieldPat::Positional(pat) => (Some(i), *pat),
+                        FieldPat::Shorthand(_) => continue,
+                    };
+                    match slot.and_then(|s| args.get_mut(s)) {
+                        Some(a) => *a = self.dpat(p),
+                        None => return DPat::Opaque,
+                    }
+                }
+                let siblings: Vec<(String, usize)> = info
+                    .variants
+                    .iter()
+                    .map(|v| (v.tag.to_string(), v.payload.len()))
+                    .collect();
+                DPat::Ctor(
+                    Ctor::Variant { union: union.into(), index, siblings: siblings.into() },
+                    args,
+                )
+            }
+        }
+    }
+
+    /// Reject an integer literal outside its resolved type's range, such as `300`
+    /// as a `@nat8`. A value that does not fit is not one of the type's values.
+    fn check_int_literals(&mut self) -> Result<()> {
+        for (t, n, span) in std::mem::take(&mut self.int_literals) {
+            let Some(dom) = self.int_type_domain(t) else {
+                continue;
+            };
+            let v = int_in(n, dom);
+            if v < dom.0 || dom.1 < v {
+                let ty = self.show(t);
+                return Err(diag!(
+                    Code::IntLiteralRange, span, 0,
+                    "integer literal {v} is out of range for `{ty}` ({} to {})", dom.0, dom.1;
+                    note: "use a wider type, or `@cast` to wrap a wider value into `{ty}`"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a built-in integer type under 64 bits is signed, and its width.
+    fn sized_width(&self, ty: Type) -> Option<(bool, u32)> {
+        let TypeNode::Con(name) = self.eng.head(ty) else {
+            return None;
+        };
+        Some(match self.eng.types.name(name).as_str() {
+            "@int8" => (true, 8),
+            "@int16" => (true, 16),
+            "@int32" => (true, 32),
+            "@nat8" => (false, 8),
+            "@nat16" => (false, 16),
+            "@nat32" => (false, 32),
+            _ => return None,
+        })
+    }
+
+    /// Each sub-64-bit `@cast` site's target signedness and width.
+    pub fn cast_widths(&self) -> &HashMap<Aol<Expr>, (bool, u32)> {
+        &self.cast_widths
+    }
+
+    /// The non-fatal diagnostics this check produced (unreachable match arms).
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.warnings
     }
 
     // -- AST types ----------------------------------------------------------
@@ -5719,6 +6057,17 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
 
 /// Map the sigil/alias type constructors to their canonical built-in name. Every
 /// sized integer width (signed and unsigned, `@`-sigil and friendly alias) is
+
+/// An integer literal's value in a type with value range `dom`. The literal is
+/// stored as an `i64`, so a value of an unsigned 64-bit type above `i64::MAX` is
+/// its two's-complement bits.
+fn int_in(n: i64, dom: (i128, i128)) -> i128 {
+    if n < 0 && dom.0 == 0 {
+        n as u64 as i128
+    } else {
+        n as i128
+    }
+}
 
 /// A type that would receive a `{kind}` (`"field"`/`"variant"`) twice: one it
 /// declares and one a `with` splice copies in, or one two included types share.

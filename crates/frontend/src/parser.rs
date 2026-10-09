@@ -87,6 +87,11 @@ impl<'a> Parser<'a> {
         self.ast.ty_spans.insert(node, Span::new(start, self.last_end));
         node
     }
+    /// Like [`stamp`](Self::stamp), for a `Pattern` node.
+    fn stamp_pat(&mut self, start: usize, node: Aol<Pattern>) -> Aol<Pattern> {
+        self.ast.pat_spans.insert(node, Span::new(start, self.last_end));
+        node
+    }
     /// The start offset of the next token, marking where a node begins.
     fn here(&mut self) -> Result<usize> {
         Ok(self.peek()?.span.start)
@@ -331,6 +336,10 @@ impl<'a> Parser<'a> {
     fn at_op(&mut self, s: &str) -> Result<bool> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Op) && self.text(t) == s)
+    }
+    /// A `-` directly before a numeric literal: a negative literal pattern.
+    fn at_negative_literal(&mut self) -> Result<bool> {
+        Ok(self.at_op("-")? && matches!(self.peek_kind_at(1)?, Kind::Int(_) | Kind::Real(_)))
     }
     fn unexpected(&self, t: &Token, what: &str) -> Diagnostic {
         Diagnostic::error(
@@ -2131,6 +2140,12 @@ impl<'a> Parser<'a> {
     // -- patterns -----------------------------------------------------------
 
     fn parse_pattern(&mut self) -> Result<Aol<Pattern>> {
+        let start = self.here()?;
+        let node = self.parse_pattern_unstamped()?;
+        Ok(self.stamp_pat(start, node))
+    }
+
+    fn parse_pattern_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let atom = self.parse_pattern_atom()?;
         if self.at_op("::")? {
             self.bump()?;
@@ -2155,7 +2170,9 @@ impl<'a> Parser<'a> {
                 return Err(self.unexpected(&t, "a range '...' needs a numeric literal on its left"));
             }
             self.bump()?; // '...'
-            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_)) {
+            let hi = if matches!(self.peek_kind()?, Kind::Int(_) | Kind::Real(_))
+                || self.at_negative_literal()?
+            {
                 Some(self.parse_pattern_atom()?)
             } else {
                 None
@@ -2166,7 +2183,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pattern_atom(&mut self) -> Result<Aol<Pattern>> {
+        let start = self.here()?;
+        let node = self.parse_pattern_atom_unstamped()?;
+        Ok(self.stamp_pat(start, node))
+    }
+
+    fn parse_pattern_atom_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let t = self.peek()?;
+        if self.at_negative_literal()? {
+            self.bump()?; // '-'
+            let n = self.peek()?;
+            self.bump()?;
+            return Ok(match n.kind {
+                Kind::Int(v) => self.pat(Pattern::Int(v.wrapping_neg())),
+                Kind::Real(v) => self.pat(Pattern::Real(-v)),
+                _ => unreachable!("at_negative_literal saw a number"),
+            });
+        }
         match t.kind {
             Kind::Int(v) => {
                 self.bump()?;

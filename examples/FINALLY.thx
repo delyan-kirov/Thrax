@@ -68,7 +68,6 @@ $ drive : Task -> @int = \t =
     is t
         | .Fin.{} => 0
         | .Susp.{ k } => 1 + drive (k {})
-        | _ => 0
 
 $ r_stored : @int = drive <| spawn <| \_=
     defer step 2 in

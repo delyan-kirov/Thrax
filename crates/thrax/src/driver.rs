@@ -151,6 +151,17 @@ type CheckOut<'a> = (
     Vec<Vec<(&'a str, frontend::Type)>>,
 );
 
+/// Print a rendered warning once per process. A module is checked again on
+/// every metaprogram-expansion round and every REPL entry, and would otherwise
+/// repeat the same warning each time.
+fn report_warning(rendered: String) {
+    static SEEN: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.get_or_insert_with(HashSet::new).insert(rendered.clone()) {
+        eprint!("{rendered}");
+    }
+}
+
 fn check_all<'a>(
     ast: &'a frontend::Ast,
     programs: &[Program],
@@ -198,6 +209,10 @@ fn check_all<'a>(
         }
         match checker.check_program(&programs[i]) {
             Ok(defs) => {
+                let (_name, src_path, src) = &sources[i];
+                for w in checker.warnings() {
+                    report_warning(w.render_warning(src, src_path));
+                }
                 results[i] = defs;
                 checkers[i] = Some(checker);
             }

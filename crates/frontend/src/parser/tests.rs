@@ -728,3 +728,22 @@ fn effect_operation_names_must_be_lowercase() {
     };
     assert!(err.contains("must start lowercase"), "{err}");
 }
+
+#[test]
+fn negative_literal_patterns() {
+    let p = prog("@mod M\n$ f = \\n = is n | -1 => 0 | -5 ... -2 => 1 | -1.5 => 2 | 3 ... => 3");
+    let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
+        panic!("expected a lambda")
+    };
+    let Expr::Match { arms, .. } = p.ast.expr(*body) else {
+        panic!("expected a match")
+    };
+    let first = |i: usize| p.ast.pat(p.ast.slice(p.ast.slice(*arms)[i].patterns)[0]);
+    assert!(matches!(first(0), Pattern::Int(-1)));
+    let Pattern::Range { lo, hi: Some(hi) } = first(1) else {
+        panic!("expected a closed range")
+    };
+    assert!(matches!(p.ast.pat(*lo), Pattern::Int(-5)));
+    assert!(matches!(p.ast.pat(*hi), Pattern::Int(-2)));
+    assert!(matches!(first(2), Pattern::Real(x) if *x == -1.5));
+}

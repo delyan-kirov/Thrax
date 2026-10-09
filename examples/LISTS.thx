@@ -14,17 +14,14 @@
 $ sum : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | h :: t => h + sum t
-	           | _ => 0
 
 $ length : @vec @int -> @int = \xs =
 	is xs | [] => 0
 	           | _ :: t => 1 + length t
-	           | _ => 0
 
 $ map_inc : @vec @int -> @vec @int = \xs =
 	is xs | [] => []
 	           | h :: t => (h + 1) :: map_inc t
-	           | _ => []
 
 # Fixed-arity list patterns match a list of exactly that many elements, and
 # nest freely -- `[a, b]` is `Cons(a, Cons(b, Nil))`, so it binds two cells and
@@ -76,7 +73,6 @@ $ ls2 : List @int = 0 :: ls
 $ lsum : List @int -> @int = \l =
 	is l | [] => 0
 	     | h :: t => h + lsum t
-	     | _ => 0
 
 $ lsecond : List @int -> @int = \l =
 	is l | [_, x, ..rest] => x

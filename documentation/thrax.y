@@ -437,13 +437,12 @@ pattern
   | num_lit ELLIPSIS           /* open range `lo ...` (matches `lo <= x`) */
   ;
 
-num_lit : INT | REAL ;
+num_lit : INT | REAL | MINUS INT | MINUS REAL ;  /* `-` only directly before a literal */
 
 pat_atom
   : UNDERSCORE
   | LIDENT
-  | INT
-  | REAL
+  | num_lit
   | STR
   | AT_TRUE   /* @bool literal patterns; lowercase true/false would bind */
   | AT_FALSE

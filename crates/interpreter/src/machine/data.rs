@@ -354,7 +354,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
-        | "@slt" => 2,
+        | "@slt" | "@swrap" | "@uwrap" => 2,
         "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
         | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
@@ -375,6 +375,18 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         | "@f32mod" | "@f32pow" => arith_intrinsic(name, &a[0], &a[1]),
         "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq" | "@slt" => {
             compare_intrinsic(name, &a[0], &a[1])
+        }
+        "@swrap" | "@uwrap" => {
+            let (bits, x) = (as_int(&a[0])?, as_int(&a[1])?);
+            if !(1..64).contains(&bits) {
+                return Ok(Value::Int(x));
+            }
+            let shift = 64 - bits as u32;
+            Ok(Value::Int(if name == "@swrap" {
+                (x << shift) >> shift
+            } else {
+                ((x as u64) << shift >> shift) as i64
+            }))
         }
         "neg" => match &*a[0].borrow() {
             Value::Int(n) => Ok(Value::Int(-n)),

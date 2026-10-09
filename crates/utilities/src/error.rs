@@ -88,6 +88,8 @@ pub enum Code {
     EntrySignature,
     AssertFailed,
     IntLiteralRange,
+    NonExhaustiveMatch,
+    UnreachableArm,
     RuntimeFault,
 }
 
@@ -125,6 +127,8 @@ impl Code {
             EntrySignature => "ENTRY_SIGNATURE",
             AssertFailed => "ASSERT_FAILED",
             IntLiteralRange => "INT_LITERAL_RANGE",
+            NonExhaustiveMatch => "NON_EXHAUSTIVE_MATCH",
+            UnreachableArm => "UNREACHABLE_ARM",
             RuntimeFault => "RUNTIME_FAULT",
         }
     }
@@ -244,9 +248,19 @@ impl Diagnostic {
     /// the bare filename and no caret: pointing it at `1:1` would blame the
     /// file's first line for an error raised somewhere unknown.
     pub fn render(&self, source: &str, filename: &str) -> String {
+        self.render_as("error", source, filename)
+    }
+
+    /// [`Self::render`] for a non-fatal diagnostic: the root frame leads with
+    /// `warning` instead of `error`.
+    pub fn render_warning(&self, source: &str, filename: &str) -> String {
+        self.render_as("warning", source, filename)
+    }
+
+    fn render_as(&self, root_lead: &str, source: &str, filename: &str) -> String {
         let mut out = String::new();
         for (depth, frame) in self.frames.iter().enumerate() {
-            let lead = if depth == 0 { "error" } else { "note " };
+            let lead = if depth == 0 { root_lead } else { "note " };
             if frame.span == Span::at(0) {
                 out.push_str(&format!(
                     "{lead}[{}]: {}\n  --> {filename}\n",
