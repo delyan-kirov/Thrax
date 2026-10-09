@@ -26,11 +26,18 @@ const RUNTIME: &str = include_str!("runtime.c");
 /// after the runtime so a generated program is self-contained.
 const THRAXSTD: &str = include_str!("thraxstd.c");
 
+/// The C API of the compiler library, emitted ahead of the runtime when a
+/// program runs a compiler builtin (see [`gen::COMPILER_BUILTINS`]).
+const THRAX_H: &str = include_str!("../../thrax/include/thrax.h");
+
 /// A generated C program together with the symbolic `@extern` libraries it uses,
 /// so a build step can turn them into link flags via [`utilities::Target`].
+/// `uses_compiler` says the program calls into the compiler library at run time
+/// (`@lex`, `@parse_str`, `@eval`, ...), so it must also link `libthrax`.
 pub struct Emitted {
     pub source: String,
     pub libraries: Vec<String>,
+    pub uses_compiler: bool,
 }
 
 /// What the generated C `main` does with the Thrax global it is given: run it as
@@ -68,7 +75,8 @@ pub fn emit_program(
 ) -> Emitted {
     let prog = ir::lower_modules(modules);
     let reachable = reachable_codes(&prog, entry);
-    let (blocks, code_entry, externs) = Emitter::new(&prog, reachable.clone()).run();
+    let (blocks, code_entry, externs, uses_compiler) =
+        Emitter::new(&prog, reachable.clone()).run();
 
     // Two resolution chains, mirroring the machine's `glob`: canonical
     // `Module.name` keys (exact), and bare last-segment names (first definition
@@ -100,6 +108,11 @@ pub fn emit_program(
     out.push_str(&format!("#define THRAX_INT_BITS {}\n", target.ptr_bits()));
     out.push_str(&format!("#define THRAX_INT_MAX {int_max}\n"));
     out.push_str(&format!("#define THRAX_INT_MIN {int_min}\n"));
+    if uses_compiler {
+        out.push_str("/* Runs the compiler at run time: link with -lthrax (libthrax). */\n");
+        out.push_str("#define THRAX_WITH_COMPILER 1\n");
+        out.push_str(THRAX_H);
+    }
     out.push_str(RUNTIME);
     out.push_str(THRAXSTD);
 
@@ -229,5 +242,6 @@ pub fn emit_program(
     Emitted {
         source: out,
         libraries,
+        uses_compiler,
     }
 }

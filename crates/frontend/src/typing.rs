@@ -5426,18 +5426,21 @@ impl<'a> Checker<'a> {
         // `@e`-position ambients in `check_program` / `infer_app` / `ty_of_ast`).
         // A use in ordinary code fails to unify the `<@meta>` latent row into the
         // pure ambient, giving a clean "effect `@meta` is performed but not
-        // handled" error instead of a runtime no-op/fault. Lexing/parsing
-        // (`@lex`/`@parse`/`@parse_str`/...) stay PURE: they need no compiler state.
+        // handled" error instead of a runtime no-op/fault. Lexing, parsing and
+        // `@eval` stay PURE: they need no compile-time state, so they also run in
+        // a built program.
         let meta_row = {
             let empty = self.eng.types.row_empty();
             self.eng.types.row_extend("@meta", empty)
         };
-        // `@eval` compiles and runs an `@code` fragment at build time and returns
-        // its value. Its result type is fully polymorphic (`a`): the produced
-        // value is embedded as-is, so a mismatch with the use site is a runtime
-        // (compile-time) fault, not a static error.
+        // `@eval` compiles and runs an `@code` fragment and returns its value, at
+        // build time or at run time (a native program calls into `libthrax`). The
+        // fragment is checked as a pure def body, so `@eval` is pure like
+        // `@parse_str`. Its result type is fully polymorphic (`a`): the produced
+        // value is embedded as-is, so a mismatch with the use site is a fault when
+        // it runs, not a static error.
         let eval_res = self.eng.fresh_generic();
-        let t = self.eng.types.arrow_eff(self.eng.types.con("@code"), eval_res, meta_row);
+        let t = self.eng.types.arrow(self.eng.types.con("@code"), eval_res);
         self.bind("@eval", t);
         // Compile-time diagnostics. `@abort` fails the build with its message (a
         // clean user-land `assert` is `if ok => {} else @abort "..."`); its result

@@ -1,0 +1,36 @@
+@mod META_RUNTIME
+
+# \file META_RUNTIME.thx
+# \info The compiler at run time. `@lex`, `@parse`, `@parse_str`, `@parse_items`
+#       and `@eval` are pure, so they work in ordinary code as well as inside
+#       `@e`. The interpreter runs them in-process; a native build links the
+#       compiler as a library (`libthrax`) and calls into it. `@eval` compiles
+#       its fragment against the standard library and returns the value, which
+#       must be first-order data (no functions). The result type is whatever the
+#       use site says, so annotate it.
+
+$ with STR
+
+# The source is only known when the program runs.
+$ source : @str = STR.concat ["6", " * ", "7"]
+
+# --- lexing ----------------------------------------------------------------
+$ toks : @vec @token = @lex "1 + foo"
+$ third_kind : @str = @token_kind (@vec_get toks 2)
+$ third_text : @str = @token_text (@vec_get toks 2)
+
+# --- parsing and evaluating --------------------------------------------------
+$ product : @int = @eval (@parse_str source)
+$ from_tokens : @int = @eval (@parse (@lex source))
+$ greeting : @str = @eval (@parse_str "\"he\" ++ \"llo\"")
+$ pair : {@int, @bool} = @eval (@parse_str "{20, 1 < 2}")
+
+# --- checks ----------------------------------------------------------------
+$ ck1 : @int = if @vec_len toks == 3 => 0 else 1
+$ ck2 : @int = if STR.eq third_kind "Word" && STR.eq third_text "foo" => 0 else 2
+$ ck3 : @int = if product == 42 => 0 else 4
+$ ck4 : @int = if from_tokens == 42 => 0 else 8
+$ ck5 : @int = if STR.eq greeting "hello" => 0 else 16
+$ ck6 : @int = if pair.0 == 20 && pair.1 => 0 else 32
+
+$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6

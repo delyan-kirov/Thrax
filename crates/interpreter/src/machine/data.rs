@@ -615,24 +615,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
                 .map_err(|_| fault("@lex: the argument is not valid UTF-8"))?;
-            let mut lx = frontend::Lexer::new(src);
-            let mut toks: Vec<PVal> = Vec::new();
-            loop {
-                let t = lx.next_token()?;
-                if matches!(t.kind, frontend::Kind::Eof) {
-                    break;
-                }
-                let kind = token_kind_name(t.kind);
-                let text = src[t.span.start..t.span.end].as_bytes().to_vec();
-                toks.push(mk(Value::Struct {
-                    name: "@token".to_string(),
-                    fields: vec![
-                        ("kind".to_string(), mk(Value::Str(Rc::new(kind.as_bytes().to_vec())))),
-                        ("text".to_string(), mk(Value::Str(Rc::new(text)))),
-                    ],
-                }));
-            }
-            Ok(Value::Vector(Rc::new(toks)))
+            Ok(crate::machine::embed(&lex(src)?))
         }
         "@token_kind" => token_field(&a[0], "kind"),
         "@token_text" => token_field(&a[0], "text"),
@@ -652,51 +635,24 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             let joined = lexemes.join(&b' ');
             let src = std::str::from_utf8(&joined)
                 .map_err(|_| fault("@parse: the tokens do not form valid UTF-8"))?;
-            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
-            Ok(Value::Struct {
-                name: "@code".to_string(),
-                fields: vec![(
-                    "src".to_string(),
-                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
-                )],
-            })
+            check_fragment(src, Fragment::Expr)?;
+            Ok(code_value(src))
         }
-        // Parse a string as an expression fragment into opaque `@code`. Validated
-        // by wrapping it as a def body and parsing; a syntax error is a
-        // `Diagnostic`, which propagates as a fault (fails a `@run`). The fragment
-        // is carried as its source text (enough for the future `@eval`/splice,
-        // which re-enter the driver's pipeline).
-        "@parse_str" => {
+        // Parse a string as an expression fragment into opaque `@code`. A syntax
+        // error is a `Diagnostic`, which propagates as a fault (fails a `@run`).
+        // The fragment is carried as its source text, which `@eval` and splicing
+        // re-enter the driver's pipeline with.
+        "@parse_str" | "@parse_items" => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
-                .map_err(|_| fault("@parse_str: the argument is not valid UTF-8"))?;
-            frontend::parse(&format!("@mod _META\n$ _e =\n{src}"))?;
-            Ok(Value::Struct {
-                name: "@code".to_string(),
-                fields: vec![(
-                    "src".to_string(),
-                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
-                )],
-            })
+                .map_err(|_| fault(format!("{name}: the argument is not valid UTF-8")))?;
+            let kind = if name == "@parse_str" { Fragment::Expr } else { Fragment::Items };
+            check_fragment(src, kind)?;
+            Ok(code_value(src))
         }
-        // Like `@parse_str`, but the string is top-level item(s) (`$ foo = ...`),
-        // for a `$ @e` that injects definitions.
-        "@parse_items" => {
-            let bytes = as_bytes(&a[0])?;
-            let src = std::str::from_utf8(&bytes)
-                .map_err(|_| fault("@parse_items: the argument is not valid UTF-8"))?;
-            frontend::parse(&format!("@mod _META\n{src}"))?;
-            Ok(Value::Struct {
-                name: "@code".to_string(),
-                fields: vec![(
-                    "src".to_string(),
-                    mk(Value::Str(Rc::new(src.as_bytes().to_vec()))),
-                )],
-            })
-        }
-        // Compile and run an `@code` fragment at build time, embedding its value.
-        // Needs the driver's pipeline, so it defers to the installed meta host
-        // (see `crate::machine::set_meta_eval`); reachable only inside `$ @run`.
+        // Compile and run an `@code` fragment, embedding its value. Needs the
+        // driver's pipeline, so it defers to the installed host (see
+        // `crate::machine::set_meta_eval`).
         "@eval" => {
             let src = match &*a[0].borrow() {
                 Value::Struct { name, fields } if name == "@code" => fields
@@ -802,6 +758,53 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(items)))
         }
         _ => Err(fault(format!("unknown built-in `{name}`"))),
+    }
+}
+
+/// Tokenize `src` as `@lex` does: a vector of `@token` structs, each holding its
+/// `kind` (the tag `@token_kind` reports) and its lexeme `text`.
+pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
+    use crate::machine::OwnedValue;
+    let mut lx = frontend::Lexer::new(src);
+    let mut toks = Vec::new();
+    loop {
+        let t = lx.next_token()?;
+        if matches!(t.kind, frontend::Kind::Eof) {
+            break;
+        }
+        toks.push(OwnedValue::Struct {
+            name: "@token".to_string(),
+            fields: vec![
+                ("kind".to_string(), OwnedValue::Str(token_kind_name(t.kind).as_bytes().to_vec())),
+                ("text".to_string(), OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())),
+            ],
+        });
+    }
+    Ok(OwnedValue::Vector(toks))
+}
+
+/// What a source fragment must parse as: an expression (`@parse_str`) or
+/// top-level items (`@parse_items`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fragment {
+    Expr,
+    Items,
+}
+
+/// Check that `src` parses as `kind`, by wrapping it in a scratch module.
+pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
+    let wrapped = match kind {
+        Fragment::Expr => format!("@mod _META\n$ _e =\n{src}"),
+        Fragment::Items => format!("@mod _META\n{src}"),
+    };
+    frontend::parse(&wrapped).map(|_| ())
+}
+
+/// An opaque `@code` value carrying `src`.
+fn code_value<'p>(src: &str) -> Value<'p> {
+    Value::Struct {
+        name: "@code".to_string(),
+        fields: vec![("src".to_string(), mk(Value::Str(Rc::new(src.as_bytes().to_vec()))))],
     }
 }
 

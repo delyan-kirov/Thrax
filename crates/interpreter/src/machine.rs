@@ -1188,16 +1188,16 @@ pub fn embed<'p>(o: &OwnedValue) -> Value<'p> {
 }
 
 thread_local! {
-    /// The compile-time `@eval` host: given fragment source, the driver compiles
-    /// and runs it, returning a reified value or a rendered error. Installed by the
-    /// driver around a `$ @run`; absent when the machine runs normal code, so a
-    /// stray `@eval` at runtime faults cleanly.
+    /// The `@eval` host: given fragment source, the driver compiles and runs it,
+    /// returning a reified value or a rendered error. The machine cannot compile
+    /// on its own (the pipeline lives in the driver), so with no host installed an
+    /// `@eval` faults cleanly.
     static META_EVAL: std::cell::RefCell<Option<Box<dyn Fn(&str) -> std::result::Result<OwnedValue, String>>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Install (or clear) the compile-time `@eval` host. The driver sets it before
-/// forcing `$ @run` directives and clears it afterwards.
+/// Install (or clear) the `@eval` host. The driver sets it around each
+/// compile-time expansion round, and for the whole run of a program or shell.
 pub fn set_meta_eval(host: Option<Box<dyn Fn(&str) -> std::result::Result<OwnedValue, String>>>) {
     META_EVAL.with(|c| *c.borrow_mut() = host);
 }
@@ -1227,7 +1227,7 @@ pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     META_EVAL.with(|c| match &*c.borrow() {
         Some(host) => host(src).map_err(fault),
         None => Err(fault(
-            "@eval is only available at compile time (inside `$ @run`)",
+            "@eval needs the compiler, and none is installed here",
         )),
     })
 }

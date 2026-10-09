@@ -78,11 +78,11 @@ fails the build); type-checking and evaluation come with the consumers below.
 
 **`<@meta>` operations**
 
-Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; the rest need the
-handler's compiler state):
+Pipeline and diagnostics (`@lex`/`@parse` are pure, see above; `@eval` is pure
+too, see "Runtime use" below; the rest need the handler's compiler state):
 
 ```
-@eval   : @code     -> <@meta> a       -- LANDED. runs a fragment (driver host); typed <@meta>
+@eval   : @code     -> a               -- LANDED. compiles and runs a pure fragment; also at run time
 @abort  : @str      -> <@meta> a       -- LANDED. fail the build with this message
 @emit   : @str      -> <@meta> {}      -- LANDED. print a message and continue
 @fresh  : @str      -> <@meta> @str    -- LANDED. a unique identifier (prefix + counter), for hygiene
@@ -108,8 +108,31 @@ under a plain `@e`. Still to come: a real handler over the live
 `Ast`/interner/type-env/diagnostic sink (replacing the thread-local host),
 `@lookup`/`@here`/`@check`, and a richer `@diag` (spans) for `@abort`/`@emit`.
 
-`@eval` currently rides a driver-installed thread-local host rather than a full
-`<@meta>` handler; when the handler lands it subsumes this. `@abort`/`@emit`
+`@eval` rides a driver-installed thread-local host rather than a `<@meta>`
+handler.
+
+**Runtime use (#187).** `@lex`, `@token_kind`/`@token_text`, `@parse`,
+`@parse_str`, `@parse_items` and `@eval` are pure, so ordinary code may call them
+(`examples/META_RUNTIME.thx`). `@eval` is pure because its fragment is checked as
+a pure def body (a closed effect row, unlike the shell's open one), so it computes
+a value from its source and nothing else. Each engine needs the compiler at run
+time to serve them:
+
+- The interpreter links the compiler, so `thrax run` and the shell install the
+  `@eval` host for the whole run (`driver::install_eval_host`).
+- A native program calls the compiler as a C library. The `thrax` crate builds as
+  `libthrax.a` and `libthrax.so` too, with the C API in
+  `crates/thrax/include/thrax.h` (`thrax_lex`, `thrax_parse`, `thrax_eval`, values
+  as an owned `thrax_value` tree). `ccg` notes when a reachable block names one of
+  these builtins (`gen::COMPILER_BUILTINS`), emits the header and
+  `THRAX_WITH_COMPILER` ahead of `runtime.c` (whose bridge converts the tree into
+  runtime `Value`s), and `thrax build` links `libthrax.so` with an rpath. It
+  uses the shared library because that one carries its own dependencies (libffi).
+  Only the host target has the library; a cross build that needs it is an error.
+
+As at compile time, only first-order data crosses (a function, or a `List` whose
+lazy constructor fields are still unforced, is rejected), and the result type is
+whatever the use site says, so a mismatch is a fault when it runs. `@abort`/`@emit`
 take a plain `@str` for now (a richer `@diag` with spans comes with the handler).
 A compile-time `@e`/`@abort` fault is reported at the real `@e` call site
 (`file:line:col` + caret), not a synthetic global, since every `@e` site records
@@ -612,8 +635,8 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    tied to its own `Program`; only first-order data (`Int`/`Str`/`Bool`/tuples/
    structs/variants/vectors) crosses, a closure/opaque handle is rejected. The
    host reuses `compile_session` (the REPL's re-entrant compile) via
-   `driver::meta_eval_source`. `@eval` is only usable inside `$ @e` (the host is
-   installed only there; a runtime `@eval` faults). Result type is polymorphic
+   `driver::eval_fragment`. Since #187 `@eval` is pure and also runs at run time
+   (see "Runtime use" in section 1). Result type is polymorphic
    `a` (embedded as-is; a mismatch is a compile-time fault, not a static error).
    **NEXT:** `@e` splicing an `@code` result back into the program
    (re-check/recurse) is the remaining consumer.
@@ -664,7 +687,8 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
 4. **PARTIALLY DONE: the `<@meta>` effect + the `@e`/`@run` split.**
-   `@eval`/`@abort`/`@emit`/`@fresh`/`@link`/`@link_path` are typed `<@meta>`, and
+   `@abort`/`@emit`/`@fresh`/`@link`/`@link_path` are typed `<@meta>` (`@eval` was
+   too, until #187 made it pure), and
    **`@run`** (item/expression/type position) is the eliminator: it runs its
    operand under a closed `<@meta>` ambient. `@e` stays PURE. A meta op outside
    `@run` (including inside `@e`) is an "effect `@meta` not handled" error, and

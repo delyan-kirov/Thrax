@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The compiler is also a C library: `libthrax.a` and `libthrax.so` (C API in
+# `include/thrax.h`), which a native program links when it uses the compiler's
+# builtins at run time.
+[lib]
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
 [[bin]]
 name = "thrax"
 path = "src/main.rs"
