@@ -138,9 +138,7 @@ struct Frame {
   size_t nenv;
 };
 
-/* Continuation frames (the reified-K stack) and captured resumptions. Defined
- * up here so a resumption's `escaped` flag is reachable from the value
- * constructors (which mark a stored resumption). */
+/* Continuation frames (the reified-K stack) and captured resumptions. */
 typedef enum {
   K_RET,        /* resume a suspended activation with the returned value */
   K_PROMPT,     /* a handler delimiter */
@@ -150,11 +148,9 @@ typedef enum {
   K_CLEANUPS    /* cleanups of a slice abandoned without being captured */
 } KTag;
 
-/* How a handler clause uses its continuation (the frontend's ResumeUse): a
- * clause that cannot resume needs no capture at all, one that resumes at most
- * once MOVES the captured slice, and one that may resume again resumes a COPY
- * and leaves the original usable. */
-typedef enum { RESUME_NEVER = 0, RESUME_ONCE = 1, RESUME_MANY = 2 } ResumeUse;
+/* Whether a handler clause needs its continuation (the frontend's ResumeUse): a
+ * clause that cannot resume needs no capture at all. */
+typedef enum { RESUME_NEVER = 0, RESUME_CAPTURED = 1 } ResumeUse;
 
 typedef struct {
   KTag tag;
@@ -179,7 +175,7 @@ typedef struct {
       Value *saved;
     } thunkret;
     struct {
-      Value *kval;
+      Resump *res;
     } afterclause;
     struct {
       Value **cleanups;
@@ -188,21 +184,21 @@ typedef struct {
   } u;
 } KFrame;
 
-/* A captured continuation slice. `multi` is the clause's verdict: a multi-shot
- * clause resumes a COPY of the slice (`segment_copy`) and keeps this one usable,
- * while a once-only clause hands the frames over and leaves `seg` NULL behind.
- * `used` means "resumed at least once" and `escaped` records a stored
- * resumption (the C analog of the interpreter's shared_ptr use-count test);
- * together they tell the clause boundary whether an abandoned slice's `defer`
- * cleanups still have to run. `rc` counts the T_RESUMP values that own the
- * segment (a resumption content-copied into a let box aliases it). */
+/* A captured continuation slice. `rc` counts its owners: the T_RESUMP values
+ * holding it (a resumption content-copied into a let box aliases it) plus the
+ * K_AFTERCLAUSE frames of its clause boundary, of which there are `nbound`. A
+ * boundary never resumes, so the slice is uniquely owned when exactly one value
+ * holds it (`rc == nbound + 1`); a resume through that value then moves the
+ * frames out and leaves `seg` NULL behind, and any other resume splices a COPY
+ * (`segment_copy`). `used` means "resumed at least once", which the boundary
+ * consults to decide whether an abandoned slice's `defer` cleanups still have
+ * to run. */
 struct Resump {
   unsigned rc;
+  unsigned nbound;
   KFrame *seg;
   size_t n;
   int used;
-  int escaped;
-  int multi;
 };
 
 /* Uncounted scratch allocation (transient buffers, FFI C-strings): not part of
@@ -253,16 +249,21 @@ static size_t g_pn = 0, g_pcap = 0;
 
 static void THxMEM_release(Value *v);
 
-static Value *alloc_value(Tag t) {
-  Value *v = THxMEM_alloc(sizeof(Value));
-  v->tag = t;
-  v->rc = 1; /* the pool's reference */
+/* Hand one reference on `v` to the pool, which releases it at the next drain. */
+static void pool_adopt(Value *v) {
   if (g_pn == g_pcap) {
     g_pcap = g_pcap ? g_pcap * 2 : 256;
     g_pool = realloc(g_pool, g_pcap * sizeof(Value *));
     if (!g_pool) thrax_fault("temp pool allocation failed");
   }
   g_pool[g_pn++] = v;
+}
+
+static Value *alloc_value(Tag t) {
+  Value *v = THxMEM_alloc(sizeof(Value));
+  v->tag = t;
+  v->rc = 1; /* the pool's reference */
+  pool_adopt(v);
   return v;
 }
 
@@ -314,8 +315,6 @@ static size_t THxMEM_live(void) { return g_live; }
 
 /* -- constructors -------------------------------------------------------- */
 
-static void mark_escape(Value *v);
-
 Value *THxRT_int(long long n) {
   Value *v = alloc_value(T_INT);
   v->u.i = (int64_t)n;
@@ -365,7 +364,6 @@ Value *THxRT_tuple(Value **items, size_t len) {
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
     THxMEM_retain(items[i]);
-    mark_escape(items[i]);
   }
   v->u.seq.len = len;
   return v;
@@ -376,7 +374,6 @@ static Value *mk_vec(Value **items, size_t len) {
   for (size_t i = 0; i < len; i++) {
     v->u.seq.items[i] = items[i];
     THxMEM_retain(items[i]);
-    mark_escape(items[i]);
   }
   v->u.seq.len = len;
   return v;
@@ -390,7 +387,6 @@ Value *THxRT_struct(const char *name, size_t len, const char **fnames,
     v->u.strct.fields[i].name = fnames[i];
     v->u.strct.fields[i].val = vals[i];
     THxMEM_retain(vals[i]);
-    mark_escape(vals[i]);
   }
   v->u.strct.len = len;
   return v;
@@ -404,7 +400,6 @@ Value *THxRT_variant(const char *ty, const char *tag, size_t len,
   for (size_t i = 0; i < len; i++) {
     v->u.variant.fields[i] = fields[i];
     THxMEM_retain(fields[i]);
-    mark_escape(fields[i]);
   }
   v->u.variant.len = len;
   return v;
@@ -416,7 +411,6 @@ Value *THxRT_closure(int code, Value **captures, size_t n) {
   for (size_t i = 0; i < n; i++) {
     v->u.clos.env[i] = captures[i];
     THxMEM_retain(captures[i]);
-    mark_escape(captures[i]);
   }
   v->u.clos.nenv = n;
   return v;
@@ -427,7 +421,6 @@ Value *THxRT_thunk(Value *f) {
   Value *v = alloc_value(T_THUNK);
   v->u.thunk = f;
   THxMEM_retain(f);
-  mark_escape(f);
   return v;
 }
 Value *THxRT_builtin(const char *name, size_t arity) {
@@ -445,13 +438,6 @@ Value *THxRT_extern(int idx, size_t arity) {
   v->u.ext.args = NULL;
   v->u.ext.nargs = 0;
   return v;
-}
-
-/* Note a stored resumption: reachable from a heap structure means the clause
- * stashed it (to resume later) rather than abandoning it, so its `defer`
- * cleanups must not be finalized at the clause boundary. */
-static void mark_escape(Value *v) {
-  if (v && v->tag == T_RESUMP) v->u.resump->escaped = 1;
 }
 
 /* A struct built from a base (record update): base's fields seeded, then the
@@ -483,7 +469,6 @@ Value *THxRT_struct_update(Value *base, const char *name, size_t nextra,
   v->u.strct.len = len;
   for (size_t i = 0; i < len; i++) {
     THxMEM_retain(fields[i].val); /* the fresh struct owns every field */
-    mark_escape(fields[i].val);
   }
   return v;
 }
@@ -505,11 +490,35 @@ int THxVALUE_as_bool(Value *v) {
 }
 Value *THxVALUE_local(Value **locals, size_t n, size_t i) {
   if (i >= n) thrax_fault("local slot out of range");
+  if (!locals[i]) thrax_fault("read of an empty local slot");
   return locals[i];
 }
 Value *THxVALUE_env(Value **env, size_t n, size_t i) {
   if (i >= n) thrax_fault("env field out of range");
+  if (!env[i]) thrax_fault("read of an empty env field");
   return env[i];
+}
+/* A local's last use: its reference moves to the temp pool, so the value lives
+ * out this bounce while the slot no longer counts as an owner. */
+Value *THxVALUE_take(Frame *fr, size_t i) {
+  Value *v = THxVALUE_local(fr->locals, fr->nlocals, i);
+  fr->locals[i] = NULL;
+  pool_adopt(v);
+  return v;
+}
+/* A captured field's last use. The field moves out only when this activation
+ * is the closure's sole owner and the closure cannot reach itself (a recursive
+ * closure's weak self edge would let the body enter it again, and the next
+ * activation would find the field gone); otherwise it is read as a borrow. */
+Value *THxVALUE_take_env(Frame *fr, size_t i) {
+  Value *v = THxVALUE_env(fr->env, fr->nenv, i);
+  Value *clos = fr->clos;
+  if (!clos || clos->rc != 1) return v;
+  for (size_t j = 0; j < fr->nenv; j++)
+    if (fr->env[j] == clos) return v;
+  fr->env[i] = NULL;
+  pool_adopt(v);
+  return v;
 }
 char *THxVALUE_str(Value *v) {
   if (v->tag != T_STR) thrax_fault("expected a byte vector");
@@ -1116,7 +1125,6 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     v->u.strct.len = len;
     for (size_t i = 0; i < len; i++) {
       THxMEM_retain(fields[i].val); /* the fresh struct owns every field */
-      mark_escape(fields[i].val);
     }
     return v;
   }
@@ -1542,7 +1550,10 @@ static void kframe_release(KFrame *kf) {
       return;
     case K_DEFER: THxMEM_release(kf->u.defer.cleanup); return;
     case K_THUNKRET: THxMEM_release(kf->u.thunkret.saved); return;
-    case K_AFTERCLAUSE: THxMEM_release(kf->u.afterclause.kval); return;
+    case K_AFTERCLAUSE:
+      kf->u.afterclause.res->nbound--;
+      THxK_resump_release(kf->u.afterclause.res);
+      return;
     case K_CLEANUPS:
       for (size_t j = 0; j < kf->u.cleanups.n; j++)
         THxMEM_release(kf->u.cleanups.cleanups[j]);
@@ -1553,9 +1564,7 @@ static void kframe_release(KFrame *kf) {
 }
 
 static void THxK_resump_addref(Resump *seg) {
-  if (!seg) return;
-  ++seg->rc;
-  seg->escaped = 1;
+  if (seg) ++seg->rc;
 }
 
 static void THxK_resump_release(Resump *seg) {
@@ -1563,14 +1572,15 @@ static void THxK_resump_release(Resump *seg) {
   if (seg->rc == 0) thrax_fault("resump_release: releasing a freed slice");
   if (--seg->rc > 0) return;
   /* The frames are still here unless a resume moved them out (which leaves
-   * `seg` NULL), so a multi-shot slice releases them however often it ran. */
+   * `seg` NULL), so a slice resumed by copying releases them however often it
+   * ran. */
   if (seg->seg)
     for (size_t i = 0; i < seg->n; i++) kframe_release(&seg->seg[i]);
   THxMEM_free(seg->seg);
   THxMEM_free(seg);
 }
 
-/* -- slice copying (multi-shot resumption) ------------------------------- */
+/* -- slice copying (a resume that may not be the last) ------------------- */
 
 /* A fresh activation holding the same values as `f`. The locals are retained,
  * not copied: a value is immutable, so only the slot array has to be private. */
@@ -1624,9 +1634,9 @@ static void frame_map_free(FrameMap *m) {
  * let box each K_RET patches in place.
  *
  * Two things stay shared, as in Koka and OCaml: a resumption stored in a copied
- * frame's locals, and the clauses a nested prompt holds. A nested clause
- * boundary's own resumption is shared too, so it is promoted to multi-shot here;
- * otherwise resuming this copy twice would resume that one twice. */
+ * frame's locals, and the clauses a nested prompt holds. Sharing is what keeps
+ * them correct: the copy holds another reference to a nested resumption, so
+ * that one is no longer uniquely owned and its own resumes copy too. */
 static void segment_copy(Resump *src, KFrame *out) {
   FrameMap map;
   map.orig = xmalloc((src->n ? src->n : 1) * sizeof(Frame *));
@@ -1670,8 +1680,8 @@ static void segment_copy(Resump *src, KFrame *out) {
       case K_DEFER: THxMEM_retain(kf.u.defer.cleanup); break;
       case K_THUNKRET: THxMEM_retain(kf.u.thunkret.saved); break;
       case K_AFTERCLAUSE:
-        kf.u.afterclause.kval->u.resump->multi = 1;
-        THxMEM_retain(kf.u.afterclause.kval);
+        THxK_resump_addref(kf.u.afterclause.res);
+        kf.u.afterclause.res->nbound++;
         break;
       case K_CLEANUPS: {
         size_t n = kf.u.cleanups.n;
@@ -1808,6 +1818,11 @@ void THxK_setlocal(Frame *fr, size_t slot, Value *v) {
   THxMEM_release(fr->locals[slot]);
   fr->locals[slot] = v;
 }
+void THxK_drop(Frame *fr, size_t slot) {
+  if (slot >= fr->nlocals) thrax_fault("drop: slot out of range");
+  THxMEM_release(fr->locals[slot]);
+  fr->locals[slot] = NULL;
+}
 void THxK_setbox(Frame *fr, size_t slot) {
   THxK_setlocal(fr, slot, THxRT_unit());
 }
@@ -1842,13 +1857,17 @@ static Value *unit(void) { return THxRT_unit(); }
 /* Hand a finished value to the continuation stack (the interpreter's `ret`).
  * Returns 1 to continue the driver loop, 0 when the run's base is reached.
  * Maintains exactly one owned in-flight reference on the value being delivered
- * until a store (box, slot, kont) has taken its own. */
+ * until a store (box, slot, kont) has taken its own.
+ *
+ * The returning activation is finished, so it is released first: whatever it
+ * still held must not look like a live owner to the clause boundary below. An
+ * activation that continues afterwards is held by its own K_RET. */
 static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
   THxMEM_retain(v); /* the in-flight reference */
+  frame_release(*fr);
+  *fr = NULL;
   for (;;) {
     if (g_kn == base) {
-      frame_release(*fr);
-      *fr = NULL;
       g_result = v; /* transfer the in-flight reference to the caller */
       return 0;
     }
@@ -1859,7 +1878,6 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         if (!box) thrax_fault("ret: no box in resumed slot");
         THxVALUE_patch_box(box, v);
         *cur = kf.u.ret.cont;
-        frame_release(*fr);
         *fr = kf.u.ret.frame; /* adopt the KRet's frame reference */
         *in = v;
         THxMEM_release(v); /* delivered: the box owns copies of v's children */
@@ -1888,9 +1906,12 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
         v = kf.u.thunkret.saved; /* adopt the kont's reference as in-flight */
         continue;
       case K_AFTERCLAUSE: {
-        Resump *res = kf.u.afterclause.kval->u.resump;
-        if (res->used || res->escaped) {
-          kframe_release(&kf); /* drop the kval edge; deliver v unchanged */
+        /* Resumed, or still owned by something other than its boundaries (the
+         * clause stored it, captured it, or is returning it): its cleanups run
+         * wherever it ends up running. */
+        Resump *res = kf.u.afterclause.res;
+        if (res->used || res->rc > res->nbound) {
+          kframe_release(&kf); /* drop the boundary edge; deliver v unchanged */
           continue;
         }
         /* discarded (abort): run the captured defer cleanups now, on the live
@@ -1907,7 +1928,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
             THxMEM_retain(kd.u.defer.cleanup); /* the kont stores it */
             kont_push(kd);
           }
-        kframe_release(&kf); /* drop kval: may free the discarded segment */
+        kframe_release(&kf); /* the last owner: frees the discarded segment */
         v = unit();          /* start unwinding the freshly pushed KDefers */
         THxMEM_retain(v);    /* the new in-flight reference */
         continue;
@@ -1970,7 +1991,9 @@ static Value *extern_push(Value *f, Value *arg) {
 
 /* Apply `fn` to `arg` (the interpreter's App dispatch). Returns 1 to continue,
  * 0 when the run completed. Holds owned in-flight references on `fn` and `arg`
- * across the frame switch (either may live in the dying activation). */
+ * across the frame switch (either may live in the dying activation): `owned`
+ * means the caller handed its own references over, otherwise they are taken
+ * here. Only an owned callee can be judged uniquely held. */
 Value *THxK_call(Value *f, Value *arg); /* synchronous closure application */
 
 /* `generate template f`: build a tensor the same size as `template`, element i =
@@ -1995,10 +2018,12 @@ static Value *rt_generate(Value *tmpl, Value *f) {
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
-                    size_t base) {
+                    size_t base, int owned) {
   if (!fn) thrax_fault("apply: null callee");
-  THxMEM_retain(fn);
-  THxMEM_retain(arg);
+  if (!owned) {
+    THxMEM_retain(fn);
+    THxMEM_retain(arg);
+  }
   int r = 0;
   switch (fn->tag) {
     case T_CLOS:
@@ -2048,7 +2073,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       const char *op = fn->u.op.op;
       size_t p = g_kn;
       Value *clause = NULL;
-      int uses = RESUME_MANY;
+      int uses = RESUME_CAPTURED;
       for (size_t i = g_kn; i-- > base;) {
         if (g_kont[i].tag != K_PROMPT) continue;
         for (size_t j = 0; j < g_kont[i].u.prompt.n; j++) {
@@ -2088,21 +2113,19 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         /* The slice's kont frames MOVE into the segment (their owned references
          * move with them; no counts change). */
         Resump *seg = THxMEM_alloc(sizeof(Resump));
-        seg->rc = 1; /* owned by the kval below */
+        seg->rc = 2; /* the kval below, and the clause boundary */
+        seg->nbound = 1;
         seg->seg = THxMEM_alloc((n ? n : 1) * sizeof(KFrame));
         memcpy(seg->seg, &g_kont[p], n * sizeof(KFrame));
         seg->n = n;
         seg->used = 0;
-        seg->escaped = 0;
-        seg->multi = uses == RESUME_MANY;
         g_kn = p; /* the clause runs below the prompt (outside it) */
 
         kval = alloc_value(T_RESUMP);
-        kval->u.resump = seg; /* the value owns the segment's single reference */
+        kval->u.resump = seg;
         KFrame ac;
         ac.tag = K_AFTERCLAUSE;
-        ac.u.afterclause.kval = kval;
-        THxMEM_retain(kval); /* the kont stores it */
+        ac.u.afterclause.res = seg;
         kont_push(ac);
       }
 
@@ -2115,27 +2138,24 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
       break;
     }
     case T_RESUMP: {
-      /* resume: splice the captured slice back on and deliver arg. A clause
-       * that resumes at most once hands the frames over (they MOVE back, and
-       * the emptied segment stays behind as a husk); a multi-shot one splices a
-       * private copy and stays resumable. */
+      /* resume: splice the captured slice back on and deliver arg. When this
+       * call holds the only reference to the resumption, nothing can resume
+       * it again, so the frames MOVE back and the emptied segment stays behind
+       * as a husk for its boundary; otherwise splice a private copy, leaving
+       * the slice resumable by its other owners. */
       Resump *seg = fn->u.resump;
-      if (seg->multi) {
-        seg->used = 1;
-        KFrame *copy = xmalloc((seg->n ? seg->n : 1) * sizeof(KFrame));
-        segment_copy(seg, copy);
-        for (size_t i = 0; i < seg->n; i++) kont_push(copy[i]);
-        free(copy);
-      } else {
-        if (seg->used)
-          thrax_fault(
-              "continuation resumed more than once (its handler is declared "
-              "`ctl @oneshot`)");
-        seg->used = 1;
+      if (!seg->seg) thrax_fault("resumed a continuation that was moved out");
+      seg->used = 1;
+      if (owned && fn->rc == 1 && seg->rc == seg->nbound + 1) {
         for (size_t i = 0; i < seg->n; i++) kont_push(seg->seg[i]);
         THxMEM_free(seg->seg);
         seg->seg = NULL;
         seg->n = 0;
+      } else {
+        KFrame *copy = xmalloc((seg->n ? seg->n : 1) * sizeof(KFrame));
+        segment_copy(seg, copy);
+        for (size_t i = 0; i < seg->n; i++) kont_push(copy[i]);
+        free(copy);
       }
       r = do_ret(cur, fr, in, arg, base);
       break;
@@ -2154,11 +2174,22 @@ static Value *run_loop(BlockFn cur, Frame *fr, Value *in, size_t base) {
     g_act = ACT_NONE;
     cur(fr, in);
     int cont = 1;
+    /* The block is done, so its temporaries die before the terminator acts:
+     * the counts the terminator reads (a resumption's uniqueness, a clause
+     * boundary's liveness test) then see only real owners. */
     switch (g_act) {
       case ACT_JUMP: cur = g_blk; break;
-      case ACT_RET: cont = do_ret(&cur, &fr, &in, g_v, base); break;
+      case ACT_RET:
+        THxMEM_retain(g_v);
+        THxMEM_pool_drain(pm);
+        cont = do_ret(&cur, &fr, &in, g_v, base);
+        THxMEM_release(g_v);
+        break;
       case ACT_APPLY:
-        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base);
+        THxMEM_retain(g_fn);
+        THxMEM_retain(g_arg);
+        THxMEM_pool_drain(pm);
+        cont = do_apply(&cur, &fr, &in, g_fn, g_arg, base, 1);
         break;
       case ACT_NONE: thrax_fault("block set no terminator");
     }
@@ -2181,7 +2212,7 @@ Value *THxK_call(Value *f, Value *arg) {
   BlockFn cur = NULL;
   Frame *fr = NULL;
   Value *in = NULL;
-  if (!do_apply(&cur, &fr, &in, f, arg, base)) return g_result;
+  if (!do_apply(&cur, &fr, &in, f, arg, base, 0)) return g_result;
   return run_loop(cur, fr, in, base);
 }
 

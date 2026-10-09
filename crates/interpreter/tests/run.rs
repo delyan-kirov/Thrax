@@ -77,16 +77,6 @@ fn errors_modules(user_sources: &[&str], name: &str) -> String {
     String::new()
 }
 
-/// Evaluate `name` and return the machine's rendered error, for a test that pins
-/// a runtime FAULT rather than a value.
-fn run_fault(src: &str, name: &str) -> String {
-    let ir = lower_to_ir(&[src], name);
-    match interpreter::machine::eval(&ir, name) {
-        Ok(v) => panic!("expected a fault, got {v}"),
-        Err(e) => e.render("", name),
-    }
-}
-
 fn run_modules(user_sources: &[&str], name: &str) -> String {
     let ir = lower_to_ir(user_sources, name);
     interpreter::machine::eval(&ir, name).unwrap_or_else(|e| panic!("{}", e.render("", name)))
@@ -1178,11 +1168,79 @@ fn a_stored_continuation_may_be_resumed_more_than_once() {
     assert_eq!(run(src, "twice"), "5");
 }
 
+/// Evaluate `name` and count the resumes that copied their slice instead of
+/// moving it.
+fn copies_while(src: &str, name: &str) -> (String, usize) {
+    let before = interpreter::machine::slice_copies();
+    let v = run(src, name);
+    (v, interpreter::machine::slice_copies() - before)
+}
+
 #[test]
-fn oneshot_handler_faults_on_a_second_resume() {
-    // `ctl @oneshot k` asserts at most one resume, which lets the engine hand the
-    // slice over instead of copying it. Resuming the stored continuation twice
-    // then faults, where the unannotated handler above returns 5.
+fn n_resumes_of_one_continuation_cost_n_minus_one_copies() {
+    // The first `k` is not its last use, so that resume copies; the second is,
+    // so it takes the slice itself.
+    let src = "@mod M\n\
+        $ Amb : @effect = flip : {} -> @bool,\n\
+        $ r : @int = do (if flip {} => 10 else 1) \
+          ctl k | Amb.flip u => k @true + k @false | x => x";
+    assert_eq!(copies_while(src, "r"), ("11".into(), 1));
+}
+
+#[test]
+fn parameter_passing_state_moves_without_an_annotation() {
+    // `k` escapes into a lambda in every clause, so nothing static bounds its
+    // uses, yet each resumption is uniquely owned when the lambda resumes it.
+    let src = "@mod M\n\
+        $ St : @effect = get : {} -> @int, put : @int -> {},\n\
+        $ count : @int -> <St> @int = \\n = \
+          if n == 0 => get {} else (let s = get {} in let _ = put (s + 1) in count (n - 1))\n\
+        $ r : @int = \
+          let run = do count 50 ctl k \
+            | St.get u => (\\s = (k s) s) \
+            | St.put v => (\\s = (k {}) v) \
+            | x => (\\s = x) \
+          in run 0";
+    assert_eq!(copies_while(src, "r"), ("50".into(), 0));
+}
+
+#[test]
+fn a_stashed_coroutine_continuation_moves_when_driven_once() {
+    let src = "@mod M\n\
+        $ Co : @effect = step : @int -> {},\n\
+        $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+        $ spawn : ({} -> <Co> {}) -> Task = \
+          \\t = do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
+        $ drive : Task -> @int = \
+          \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
+        $ once : @int = drive (spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})))\n\
+        $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
+          | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0";
+    assert_eq!(copies_while(src, "once"), ("3".into(), 0));
+    // The same suspension driven twice: only the first resume, while the second
+    // reference is still alive, has to copy.
+    assert_eq!(copies_while(src, "twice"), ("5".into(), 1));
+}
+
+#[test]
+fn a_partial_push_applied_twice_does_not_share_its_buffer() {
+    // The vector moves into the partial application, so the partial is its only
+    // owner; pushing in place is allowed only once the partial itself is
+    // consumed, or the second push would see the first.
+    let src = "@mod M\n\
+        $ r : @int = \
+          let v = @vec_fill 2 0 in \
+          let f = @vec_push v in \
+          let a = f 1 in \
+          let b = f 2 in \
+          @vec_len a * 1000 + @vec_len b * 100 + @vec_get a 2 * 10 + @vec_get b 2";
+    assert_eq!(run(src, "r"), "3312");
+}
+
+#[test]
+fn oneshot_is_accepted_and_ignored() {
+    // A resume moves whenever ownership allows it, so the annotation adds
+    // nothing, and a second resume copies like any other.
     let src = "@mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
@@ -1193,14 +1251,11 @@ fn oneshot_handler_faults_on_a_second_resume() {
           \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
         $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
           | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0";
-    assert!(run_fault(src, "twice").contains("resumed more than once"));
+    assert_eq!(run(src, "twice"), "5");
 }
 
 #[test]
 fn oneshot_does_not_override_a_clause_that_provably_resumes_twice() {
-    // The annotation cannot make a wrong program out of a right one: the clause
-    // applies `k` twice where the walk can see it, so the slice is still copied
-    // and the handler sums both branches.
     let src = "@mod M\n\
         $ Amb : @effect = flip : {} -> @bool,\n\
         $ r : @int = do (if flip {} => 10 else 1) \

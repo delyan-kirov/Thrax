@@ -215,7 +215,7 @@ back to a cycle).
 may be invoked **any number of times**. Nothing in the surface language or the
 type system says how often: `ctl k` is applied as often as the handler needs, so
 nondeterminism, backtracking and probabilistic search are ordinary handlers.
-`ctl @oneshot k` is an optional performance assertion, not a different feature.
+(`ctl @oneshot k` is still accepted but no longer does anything; see below.)
 
 **Why the affine argument did not hold.** It rested on the premise that
 multi-shot would force "deep-dups of captured state" that affine sidesteps. Two
@@ -238,39 +238,54 @@ box per `K_RET`, and aliased frames mapped to one copy. Values are immutable and
 shared. Per resume that is one allocation per frame on a path that already walks
 every frame, which is Koka's cost model.
 
-**What keeps the everyday effects at their old cost** is a walk over the clause
-body during IR lowering, classifying how it uses `k` (`ResumeUse`, in
-`crates/frontend/src/ir/lower.rs`). The engines read the class off the matched
-clause at the moment they capture:
+**What keeps the everyday effects at their old cost** is that a resume copies
+only when it has to, and the runtime knows exactly when that is (issue #230).
+An ownership pass over the IR (`crates/frontend/src/ir/ownership.rs`, in the
+spirit of Perceus) marks the last use of every local as a MOVE and drops a value
+where it dies unread, so a reference count read at runtime is exact. At a resume
+the engine asks one question: is this call the resumption's only owner, apart
+from the clause boundaries that watch it (which never resume)? If so nothing can
+ever resume it again, and the slice is handed over; otherwise the resume splices
+a copy and the original stays resumable for its other owners.
 
-| Class | Clause body | At the perform point | At a resume |
-| --- | --- | --- | --- |
-| `Never` | never mentions `k` | keep only the slice's `defer` cleanups, release the frames | n/a |
-| `Once` | `k` applied at most once, in call position, under no lambda (the worst branch of a `Case`, not the sum) | capture the slice | move it, as before |
-| `Many` | two or more applications, or `k` escapes (stored, captured, passed on, returned) | capture the slice | splice a copy, stay resumable |
+| Clause | At the perform point | At a resume |
+| --- | --- | --- |
+| never mentions `k` (`ResumeUse::Never`) | keep only the slice's `defer` cleanups, release the frames | n/a |
+| mentions `k` (`ResumeUse::Captured`) | capture the slice | move it if the resumption is uniquely owned, else splice a copy |
 
-`Once` is sound because a clause body cannot reach an occurrence twice without
-going through a closure or a global, and both of those are escapes that
-disqualify it. `Never` is the hottest case in the language, since `for`/`formap`
-install a prompt per iteration and their `Loop.break`/`continue` clauses ignore
-`k`; it is now strictly less work than before, which captured a slice only to
-discover at the clause boundary that it had been abandoned.
+What this buys over the static per-clause walk it replaced:
 
-**`@oneshot`.** A `k` that escapes cannot be classified, which is exactly
-parameter-passing state (`\s = (k s) s`) and the coroutine idiom (`k` stashed in
-a `Susp`), both dynamically one-shot. `ctl @oneshot k` asserts it and buys back
-the move; a second resume then faults. The annotation is **ignored** where the
-walk proves two or more applications, so it can never turn a working program into
-a broken one, only a fast one into a slow one. There is deliberately no "resumes
-many times" annotation: copying is already the fallback, and the one win a count
-would offer (handing the slice over on the final resume) needs last-use
-information, which belongs with Perceus-style drop insertion (issue #230).
+- **Escaping continuations move.** Parameter-passing state
+  (`ctl k | get u => \s = (k s) s`, `k` captured by a lambda) and the
+  coroutine idiom (`ctl k | yield v => Task.Susp.{ v, k }`, `k` stashed and
+  resumed elsewhere) are dynamically one-shot, and the runtime now sees it. The
+  walk had to copy both per resume.
+- **The final resume of a multi-shot clause moves.** In `k @true + k @false` the
+  first `k` is not its last use, so that resume copies; the second is, so it
+  takes the slice. n resumes cost n-1 copies.
+- **`Never` is unchanged.** It is still decided statically, so `for`/`formap`
+  (a prompt per iteration, whose `Loop.break`/`continue` clauses ignore `k`)
+  never capture at all.
+
+Two runtime details make the counts exact. A returning activation is released
+before its value is handed on, so a clause's own frame does not look like an
+owner at its boundary; and the native backend frees a block's temporaries before
+acting on its terminator, so a value built and discarded in the same block does
+not either. A uniquely owned callee has its contents taken rather than shared on
+entry (a closure's environment, a partial application's operands), which is what
+lets a resumption captured in a lambda arrive unshared.
+
+**`@oneshot`.** The annotation existed to buy back the move where `k` escaped
+the clause, by asserting at most one resume. Exact ownership finds the move on
+its own wherever the annotation was correct, so it is accepted and ignored: an
+annotated clause behaves exactly like an unannotated one, and a second resume
+copies rather than faults.
 
 **Known sharing.** A copy shares what it cannot rewrite: a resumption stored in a
-copied frame's locals, and the clauses a nested prompt holds. A nested clause
-boundary's own resumption is shared too, so copying promotes it to multi-shot
-rather than leaving a once-only continuation to be resumed twice. Koka and
-OCaml 5 share the same limitation.
+copied frame's locals, and the clauses a nested prompt holds. Sharing keeps them
+correct: the copy is one more owner of a nested resumption, so that one is no
+longer unique and its own resumes copy too. Koka and OCaml 5 share the same
+limitation.
 
 **Each resumed copy runs its own `defer` cleanups**, when that copy completes.
 A resumption never resumed still finalizes at the clause boundary, as before.
@@ -346,9 +361,8 @@ explicit escape hatches Koka provides. Not needed for the first cut.
 
 **Decision.** A resumption `k` is a **first-class value** (storable in data
 structures), of a real type `resume : (a) -> e b`. Since section 2 was revised it
-may be stored freely AND resumed any number of times; a stored `k` is the case no
-static walk can classify, so it copies per resume unless the handler is declared
-`ctl @oneshot`.
+may be stored freely AND resumed any number of times; a stored `k` resumed once
+still moves its slice, since it is uniquely owned when it is resumed.
 
 **Why first-class is required.** Schedulers/coroutines store suspended fibers in
 a run-queue and resume later; a generator object holds its suspended `k` between
@@ -441,14 +455,13 @@ Perform op a  : walk K down to nearest KPrompt P whose handler set has `op`
                 split K into  captured = [frames above P ... , P]   (INCLUDE P => deep)
                               K_rest   = everything below P
                 set K := K_rest
-                k := Resumption(captured)        -- see P.handlers[op].resume_use:
-                                                 --   Never: no resumption; keep the
-                                                 --     captured defers, drop the rest
-                                                 --   Once:  move-only segment
-                                                 --   Many:  copied per resume
+                k := Resumption(captured)        -- unless P.handlers[op] is Never:
+                                                 --   no resumption; keep the captured
+                                                 --   defers, drop the rest
                 run P.handlers[op] with (a, k)   -- clause runs OUTSIDE its own prompt
-Resume k v    : Once: mark used; K := k.segment ++ K     -- the segment MOVES
-                Many: mark used; K := copy(k.segment) ++ K
+Resume k v    : mark used
+                k uniquely owned: K := k.segment ++ K        -- the segment MOVES
+                otherwise:        K := copy(k.segment) ++ K
                 deliver v at the original perform point
 Discontinue k : drop k unresumed; unwind its segment running cleanup (finally)
                 -- the resume-0 path (exceptions); semantics DEFERRED, see section 11
@@ -510,10 +523,12 @@ cycle**. Function globals are closures with an empty captured record.
 ## 8. Memory management
 
 **Decision.** **Reference counting, no GC.** For now the interpreter uses host RC
-(`shared_ptr<Value>` / the existing `VRec` cell). Later, a **Perceus-like** pass
-inserts explicit `dup`/`drop`/`free` over the IR for the C backend; the IR is
-already ANF with explicit binds, the form Perceus wants. RC stays a _pass over_
-the IR, not part of the IR's primitive meaning.
+(`shared_ptr<Value>` / the existing `VRec` cell). A **Perceus-like** ownership
+pass (`crates/frontend/src/ir/ownership.rs`, issue #230) marks each local's last
+use as a move and inserts drops where values die unread, which both engines
+honour, so counts read at runtime are exact; the IR being ANF with explicit binds
+is what makes that a simple backwards walk. RC stays a _pass over_ the IR, not
+part of the IR's primitive meaning.
 
 **Cycle analysis:**
 
@@ -623,6 +638,14 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     proved. No typing or surface change otherwise. Both engines; `examples/AMB.thx`
     (two-way choice, collected paths, a backtracking triple search) agrees across
     them and is valgrind-clean. See section 2.
+  - [X] **Exact resumption ownership (2026-10-10, issue #230).** The `Once`/`Many`
+    walk is gone: an ownership pass over the IR marks last uses as moves and
+    inserts drops, and a resume moves its slice whenever the resumption is
+    uniquely owned. Stored and lambda-captured continuations move without
+    `@oneshot` (now accepted and ignored), and n resumes cost n-1 copies. The
+    clause boundary's "stored?" test reads the same exact counts, replacing the
+    interpreter's refcount heuristic and the C backend's `escaped` flag. See
+    section 2.
   - Not yet: async.
 
 - [~] **M3 effect-row type system.** Rows in TC, effect polymorphism +
@@ -650,8 +673,19 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     - [ ] Evidence passing (O(1) dispatch), the tail-resumptive optimization;
       exhaustiveness policy; parametric effects (effects with type arguments).
 
-- [ ] **M4 Perceus + C backend.** Explicit `dup`/`drop` over the IR; uniform
+- [~] **M4 Perceus + C backend.** Explicit `dup`/`drop` over the IR; uniform
   boxed value representation with RC headers; C emission.
+  - [X] C emission (`crates/ccg`).
+  - [X] **Ownership pass (2026-10-10, issue #230).** Borrow by default, with a
+    MOVE at each local's last use (`Atom::Move`, `Atom::MoveEnv`) and an
+    `Expr::Drop` where a value dies unread, which gives the same precision as
+    Perceus' owned-by-default `dup`/`drop` for locals. Used for exact resumption
+    uniqueness (section 2) and, in the interpreter, in-place `@vec_push` on a
+    uniquely owned vector (a push loop went from quadratic to linear).
+  - [ ] Reuse in the C backend. Moves already make values unique there, but a
+    `let` box takes a deep copy of an aggregate's payload
+    (`THxVALUE_patch_box`), so every binding of a vector costs O(n) whatever
+    the push does. Boxes that share instead of copy come first.
 
 ---
 
@@ -668,11 +702,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     ...`; no `perform` (call the operation), no `resume` (apply the first-class `k`);
     unit `{}`.
   - **Named handlers** vs pure effect-label dispatch; `mask`.
-  - **Exact one-shot detection**, which would make `@oneshot` unnecessary: with
-    Perceus-style drop insertion the runtime can test whether a resumption is
-    uniquely owned at the resume point and move instead of copying, and the same
-    last-use information lets a `Many` clause move on its final resume (n uses
-    costing n-1 copies). Issue #230.
+  - **Exact one-shot detection** DONE (2026-10-10, issue #230); see section 2.
   - **Machine notes (3d/3b, 2026-06-27):**
     - **Constant host stack DONE.** A clause lowers to a single 2-slot `Code`
       (`a`=Local 0, `k`=Local 1) and `perform` jumps into it inline on the single

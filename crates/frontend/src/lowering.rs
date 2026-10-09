@@ -1315,7 +1315,6 @@ impl<'a> Lowerer<'a> {
                             })
                             .collect(),
                         default: default.map(|(name, body)| (name, self.expr(body))),
-                        oneshot: handler.oneshot,
                     }),
                 }
             }

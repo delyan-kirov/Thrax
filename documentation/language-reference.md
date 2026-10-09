@@ -904,11 +904,9 @@ clause always names an operation and its argument (`| op a`, `| Eff.op a`),
 which no pattern can look like, so the two kinds of arm need no marker. A shared
 operation name is qualified in a clause head.
 
-`ctl @oneshot k` asserts that no clause resumes `k` more than once. It changes no
-semantics, only the cost: the engine hands the captured computation over instead
-of copying it. Resuming twice under it is a runtime error, and the annotation is
-ignored where a clause visibly resumes twice, so it can never turn a working
-program into a broken one.
+`ctl @oneshot k` is accepted and has no effect. It once asserted that no clause
+resumes `k` more than once, to save a copy the engine can now avoid on its own
+(section 8.4).
 
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
@@ -949,11 +947,12 @@ $ sum_all : ({} -> <Amb> @int) -> @int = \body =
 	      | x => x
 ```
 
-Each resume costs a copy of the captured computation, so a clause that resumes at
-most once pays nothing: the engine recognises that from the clause body (`k`
-applied once, or never, as in an exception) and hands the computation over
-instead. Where the clause cannot show it, because `k` is stored or passed on,
-`ctl @oneshot k` says it (section 8.3).
+A resume copies the captured computation only when something else could still
+resume it: when nothing else holds `k`, the engine hands the computation over
+instead. So a continuation resumed once costs nothing, whether it is applied in
+the clause, captured by a lambda, or stored and resumed later, and n resumes of
+one continuation cost n-1 copies, the last taking the original. A clause that
+never mentions `k`, as in an exception, captures nothing at all.
 
 ## 8.5 Effect rows in types
 A function's type carries the effects it may perform as a row on the arrow.

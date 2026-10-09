@@ -10,7 +10,7 @@
 //! a resumption can be stored in a value and resumed later, so the value type
 //! carries the program's lifetime.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use utilities::{Code, Diagnostic, Result, Span};
@@ -88,7 +88,7 @@ pub enum Value<'p> {
         op: String,
     },
     /// A captured continuation (a delimited stack slice).
-    Resump(Rc<RefCell<Resumption<'p>>>),
+    Resump(Rc<Resumption<'p>>),
     /// An unforced lazy slot: the held value is a nullary closure. The machine
     /// forces it where the value is scrutinised and patches the cell with the
     /// result, so a recursive structure is built one cell at a time and each cell
@@ -142,16 +142,18 @@ impl Drop for Value<'_> {
 /// A captured continuation: the `KFrame` slice from a prompt up to a perform
 /// point.
 ///
-/// `multi` is the clause's verdict (see `frontend::ir::data::ResumeUse`): a
-/// clause that may resume more than once gets a resumption whose every resume
-/// splices a private COPY of the slice, leaving this one resumable; one that
-/// resumes at most once hands the slice over, which costs nothing. `used` means
-/// "resumed at least once", which is what the clause boundary consults to decide
-/// whether an abandoned slice's `defer` cleanups still have to run.
+/// Its owners are the [`Value::Resump`] cells holding it plus the clause
+/// boundaries (`KAfterClause` frames) watching it, of which there are `bound`. A
+/// boundary never resumes, so the resumption is uniquely owned when one cell
+/// holds it and that cell is held once: a resume through it then moves the slice
+/// out, and any other resume splices a private COPY, leaving it resumable.
+/// `used` means "resumed at least once", which is what the clause boundary
+/// consults to decide whether an abandoned slice's `defer` cleanups still have to
+/// run.
 pub struct Resumption<'p> {
-    pub(crate) seg: Vec<KFrame<'p>>,
-    pub(crate) used: bool,
-    pub(crate) multi: bool,
+    pub(crate) seg: RefCell<Vec<KFrame<'p>>>,
+    pub(crate) used: Cell<bool>,
+    pub(crate) bound: Cell<usize>,
 }
 
 pub(crate) fn fault(msg: impl Into<String>) -> Diagnostic {

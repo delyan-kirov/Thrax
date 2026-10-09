@@ -76,8 +76,10 @@ pub fn lower(core: &Core) -> data::Program {
         });
         globals.push((name.clone(), id));
     }
+    let mut codes = conv.codes;
+    super::ownership::annotate(&mut codes);
     data::Program {
-        codes: conv.codes,
+        codes,
         globals,
         effects: core
             .effects
@@ -515,7 +517,7 @@ impl Conv {
         let clauses = handler
             .clauses
             .iter()
-            .map(|c| self.clause(c, &handler.continuation, handler.oneshot, ctx))
+            .map(|c| self.clause(c, &handler.continuation, ctx))
             .collect();
         let els = match &handler.default {
             Some((x, b)) => self.lift(b, 1, &[x.clone()], ctx),
@@ -539,17 +541,11 @@ impl Conv {
 
     /// A handler clause `\arg = \k = body` becomes a single 2-parameter code: the
     /// operation argument is `Local 0`, the continuation `Local 1`.
-    fn clause(
-        &mut self,
-        c: &Clause,
-        continuation: &str,
-        oneshot: bool,
-        ctx: &mut Ctx,
-    ) -> HandleClause {
+    fn clause(&mut self, c: &Clause, continuation: &str, ctx: &mut Ctx) -> HandleClause {
         let fun = self.lift(&c.body, 2, &[c.arg.clone(), continuation.to_string()], ctx);
         let resume = match &fun {
-            Atom::Clos { code, .. } => resume_use(&self.codes[*code].body, oneshot),
-            _ => ResumeUse::Many,
+            Atom::Clos { code, .. } => resume_use(&self.codes[*code].body),
+            _ => ResumeUse::Captured,
         };
         HandleClause {
             effect: c.effect.clone(),
@@ -560,61 +556,28 @@ impl Conv {
     }
 }
 
-/// How often a clause body applies its continuation, and whether the
-/// continuation gets out of the clause by any other route. The count saturates
-/// at two: beyond that the engines behave the same.
-struct Resumes {
-    uses: usize,
-    escaped: bool,
-}
-
-impl Resumes {
-    const NONE: Resumes = Resumes { uses: 0, escaped: false };
-
-    fn then(self, other: Resumes) -> Resumes {
-        Resumes {
-            uses: (self.uses + other.uses).min(2),
-            escaped: self.escaped || other.escaped,
-        }
-    }
-
-    /// Exclusive alternatives: at most one of them runs, so the count is the
-    /// worst branch rather than the total.
-    fn or(self, other: Resumes) -> Resumes {
-        Resumes {
-            uses: self.uses.max(other.uses),
-            escaped: self.escaped || other.escaped,
-        }
-    }
-}
-
-/// Classify a lifted clause body by how it uses `k`, which is `Local(1)` there
-/// (slot 0 is the operation argument, and the slot allocator hands out 2 and up
-/// to the body's own binders, so no other binder can alias it).
+/// Classify a lifted clause body by whether it mentions `k`, which is `Local(1)`
+/// there (slot 0 is the operation argument, and the slot allocator hands out 2
+/// and up to the body's own binders, so no other binder can alias it). Any
+/// mention counts, including a capture or a store: only a clause that cannot
+/// reach `k` at all may skip capturing the slice.
 ///
-/// `oneshot` is the `ctl @oneshot k` assertion. It upgrades the cases the walk
-/// cannot see through (the continuation escapes into a closure, a constructor or
-/// a call, so its uses happen elsewhere) but never overrides a clause that
-/// provably applies `k` twice: a wrong annotation then costs performance, not
-/// correctness.
-fn resume_use(body: &Expr, oneshot: bool) -> ResumeUse {
-    let r = resumes(body);
-    match (r.uses, r.escaped) {
-        (0, false) => ResumeUse::Never,
-        (0..=1, true) if oneshot => ResumeUse::Once,
-        (0..=1, false) => ResumeUse::Once,
-        _ => ResumeUse::Many,
+/// `ctl @oneshot k` plays no part: whether a resume may move the slice is decided
+/// when it happens, from whether the resumption is uniquely owned.
+fn resume_use(body: &Expr) -> ResumeUse {
+    if mentions(body, 1) {
+        ResumeUse::Captured
+    } else {
+        ResumeUse::Never
     }
 }
 
-/// `k` appearing anywhere other than as the callee of an application is an
-/// escape: it is stored, captured or passed on, and the clause body no longer
-/// bounds how often it is resumed.
-fn atom_escapes(a: &Atom) -> bool {
+fn atom_mentions(a: &Atom, slot: usize) -> bool {
     match a {
-        Atom::Local(slot) => *slot == 1,
-        Atom::Clos { captures, .. } => captures.iter().any(atom_escapes),
+        Atom::Local(s) | Atom::Move(s) => *s == slot,
+        Atom::Clos { captures, .. } => captures.iter().any(|c| atom_mentions(c, slot)),
         Atom::Env(_)
+        | Atom::MoveEnv(_)
         | Atom::Glob { .. }
         | Atom::LitI(_)
         | Atom::LitR(_)
@@ -625,52 +588,38 @@ fn atom_escapes(a: &Atom) -> bool {
     }
 }
 
-fn atoms_escape<'a>(atoms: impl IntoIterator<Item = &'a Atom>) -> Resumes {
-    Resumes {
-        uses: 0,
-        escaped: atoms.into_iter().any(atom_escapes),
-    }
+fn any_mentions<'a>(atoms: impl IntoIterator<Item = &'a Atom>, slot: usize) -> bool {
+    atoms.into_iter().any(|a| atom_mentions(a, slot))
 }
 
-fn resumes(e: &Expr) -> Resumes {
+/// Does `e` read local `slot` anywhere, including inside a closure it builds?
+pub(super) fn mentions(e: &Expr, slot: usize) -> bool {
     match e {
-        Expr::Ret(a) => atoms_escape([a]),
-
-        Expr::Let { rhs, body, .. } => resumes(rhs).then(resumes(body)),
-
-        // `k arg` is the one shape that resumes; `k` in any other position (the
-        // argument, or a callee that passes it on) escapes instead.
-        Expr::App { fun, arg, .. } => {
-            let applied = matches!(fun, Atom::Local(1));
-            Resumes {
-                uses: usize::from(applied),
-                escaped: atom_escapes(arg) || (!applied && atom_escapes(fun)),
-            }
-        }
-
+        Expr::Ret(a) => atom_mentions(a, slot),
+        Expr::Let { rhs, body, .. } => mentions(rhs, slot) || mentions(body, slot),
+        Expr::App { fun, arg, .. } => atom_mentions(fun, slot) || atom_mentions(arg, slot),
         Expr::Case {
             scrut,
             alts,
             default,
-        } => alts
-            .iter()
-            .fold(resumes(default), |acc, alt| acc.or(resumes(&alt.body)))
-            .then(atoms_escape([scrut])),
-
-        Expr::MkStruct { base, fields, .. } => {
-            atoms_escape(base.iter().chain(fields.iter().map(|(_, a)| a)))
+        } => {
+            atom_mentions(scrut, slot)
+                || alts.iter().any(|alt| mentions(&alt.body, slot))
+                || mentions(default, slot)
         }
-        Expr::Field { rec, .. } => atoms_escape([rec]),
-        Expr::MkVariant { fields, .. } => atoms_escape(fields),
-        Expr::MkTuple(items) => atoms_escape(items),
-
-        Expr::Handle { body, clauses, els } => resumes(body)
-            .then(atoms_escape(clauses.iter().map(|c| &c.fun)))
-            .then(atoms_escape([els])),
-
-        Expr::Defer { cleanup, body } => atoms_escape([cleanup]).then(resumes(body)),
-
-        Expr::Fault(_) => Resumes::NONE,
+        Expr::MkStruct { base, fields, .. } => {
+            any_mentions(base.iter().chain(fields.iter().map(|(_, a)| a)), slot)
+        }
+        Expr::Field { rec, .. } => atom_mentions(rec, slot),
+        Expr::MkVariant { fields, .. } => any_mentions(fields, slot),
+        Expr::MkTuple(items) => any_mentions(items, slot),
+        Expr::Handle { body, clauses, els } => {
+            any_mentions(clauses.iter().map(|c| &c.fun).chain([els]), slot)
+                || mentions(body, slot)
+        }
+        Expr::Defer { cleanup, body } => atom_mentions(cleanup, slot) || mentions(body, slot),
+        Expr::Drop { slots, body } => slots.contains(&slot) || mentions(body, slot),
+        Expr::Fault(_) => false,
     }
 }
 
