@@ -235,7 +235,6 @@ fn assign_handler(h: &Handler, names: &mut Vec<String>) -> Handler {
         continuation: h.continuation.clone(),
         clauses,
         default,
-        oneshot: h.oneshot,
     }
 }
 

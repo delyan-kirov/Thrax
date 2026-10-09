@@ -390,9 +390,9 @@ array_lit
  * the interpreter, link line in the native backend). */
 extern_lit : AT_EXTERN STR STR STR ;
 
-/* `@oneshot` asserts that every clause resumes the continuation at most once,
- * which lets the engines hand the captured slice over instead of copying it.
- * Without it a clause may resume as often as it likes. */
+/* `@oneshot` is accepted and ignored: a resume moves the captured slice
+ * whenever the continuation is uniquely owned, which made the assertion that
+ * every clause resumes at most once redundant. */
 handle
   : KW_DO expr
   | KW_DO expr KW_CTL opt_oneshot LIDENT handler_arms

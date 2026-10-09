@@ -325,9 +325,11 @@ unboxed in registers for true low-level performance.
 
 - A stored continuation dropped without ever resuming never runs its `defer`
   (inherited from the interpreter) though its memory *is* reclaimed.
-- A resumed copy shares the resumptions reachable from the frames it copied, so
-  `ctl @oneshot` on a handler whose continuation is itself captured inside a
-  multi-shot one can still fault (see the effect design doc, section 2).
+- A `let` box takes a deep copy of an aggregate's payload
+  (`THxVALUE_patch_box`), so binding a vector costs O(n). The ownership pass
+  makes such values uniquely owned often enough for in-place reuse (the
+  interpreter's `@vec_push` uses it), but here the copy at the next binding
+  would undo it.
 - FFI marshals the base scalar/pointer types; aggregates (struct/variant) are
   not passed across the boundary, and only libc-resolvable libraries are
   exercised (others just need the right `-l`/path).

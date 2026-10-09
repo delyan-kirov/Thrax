@@ -17,7 +17,7 @@
 pub mod data;
 pub mod ffi;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -81,12 +81,27 @@ pub(crate) struct KThunkRet<'p> {
     saved: PVal<'p>,
 }
 
-/// Marks a handler clause boundary, holding the clause's resumption `kval`. When
-/// the clause finishes, this decides the fate of any `defer` cleanups captured in
-/// `kval`: if it was resumed or stored they run elsewhere; if it was discarded
-/// (the abort case) they run HERE, with the enclosing handlers still installed.
+/// Marks a handler clause boundary, watching the clause's resumption. When the
+/// clause finishes, this decides the fate of any `defer` cleanups captured in it:
+/// if it was resumed or is still owned elsewhere they run elsewhere; if it was
+/// discarded (the abort case) they run HERE, with the enclosing handlers still
+/// installed. A boundary is an owner that never resumes, which the resumption
+/// counts in `bound` so a resume can discount it.
 pub(crate) struct KAfterClause<'p> {
-    kval: PVal<'p>,
+    res: Rc<Resumption<'p>>,
+}
+
+impl<'p> KAfterClause<'p> {
+    fn new(res: Rc<Resumption<'p>>) -> KAfterClause<'p> {
+        res.bound.set(res.bound.get() + 1);
+        KAfterClause { res }
+    }
+}
+
+impl Drop for KAfterClause<'_> {
+    fn drop(&mut self) {
+        self.res.bound.set(self.res.bound.get() - 1);
+    }
 }
 
 /// The cleanups of a slice that was abandoned without being captured: a clause
@@ -122,6 +137,8 @@ pub struct Machine<'p> {
     in_progress: RefCell<HashSet<usize>>,
     ops_by_effect: HashMap<String, Vec<String>>,
     ops_by_name: HashMap<String, Vec<String>>,
+    /// What a slot holds once its value has moved out or been dropped.
+    unk: PVal<'p>,
 }
 
 /// The mutable state of one `run`: the current activation, the reified
@@ -134,6 +151,9 @@ struct Exec<'p> {
     /// calls trampolined (no host-stack pinning), keep each one alive here for the
     /// run's duration. Dedup against the back keeps self-recursion O(1).
     live: Vec<PVal<'p>>,
+    /// The empty activation `frame` points at between a return and the frame
+    /// that continues.
+    idle: FrameP<'p>,
 }
 
 /// Machine steps between polls of the interrupt flag. A non-terminating program
@@ -208,6 +228,7 @@ impl<'p> Machine<'p> {
             in_progress: RefCell::new(HashSet::new()),
             ops_by_effect,
             ops_by_name,
+            unk: mk(Value::Unk),
         }
     }
 
@@ -302,11 +323,26 @@ impl<'p> Machine<'p> {
                 .get(*i)
                 .cloned()
                 .ok_or_else(|| fault("machine: local index out of range")),
+            Atom::Move(i) => frame
+                .borrow_mut()
+                .locals
+                .get_mut(*i)
+                .map(|slot| std::mem::replace(slot, self.unk.clone()))
+                .ok_or_else(|| fault("machine: local index out of range")),
             Atom::Env(i) => frame
                 .borrow()
                 .env
                 .get(*i)
                 .cloned()
+                .ok_or_else(|| fault("machine: env index out of range")),
+            // An activation's env is its own copy of the closure's (see
+            // `apply_inline`), so moving out of it never disturbs another
+            // activation of the same closure.
+            Atom::MoveEnv(i) => frame
+                .borrow_mut()
+                .env
+                .get_mut(*i)
+                .map(|field| std::mem::replace(field, self.unk.clone()))
                 .ok_or_else(|| fault("machine: env index out of range")),
             Atom::Glob { name } => self.glob(name),
             Atom::LitI(n) => Ok(mk(Value::Int(*n))),
@@ -441,6 +477,10 @@ impl<'p> Machine<'p> {
             ctrl: &entry.body,
             kont: Vec::new(),
             live: Vec::new(),
+            idle: Rc::new(RefCell::new(Frame {
+                locals: Vec::new(),
+                env: Vec::new(),
+            })),
         };
         let mut until_poll = INTERRUPT_POLL;
 
@@ -510,7 +550,9 @@ impl<'p> Machine<'p> {
                                 };
                                 let mut f = ex.frame.borrow_mut();
                                 for (i, val) in fields.into_iter().enumerate() {
-                                    f.locals[alt.binder_base + i] = val;
+                                    if alt.binders.get(i).is_some_and(Option::is_some) {
+                                        f.locals[alt.binder_base + i] = val;
+                                    }
                                 }
                             }
                             next = Some(&alt.body);
@@ -631,6 +673,15 @@ impl<'p> Machine<'p> {
                     ex.ctrl = body.as_ref();
                 }
 
+                Expr::Drop { slots, body } => {
+                    let mut f = ex.frame.borrow_mut();
+                    for &s in slots {
+                        f.locals[s] = self.unk.clone();
+                    }
+                    drop(f);
+                    ex.ctrl = body.as_ref();
+                }
+
                 Expr::Fault(s) => return Err(fault(s.clone())),
             }
         }
@@ -658,11 +709,21 @@ impl<'p> Machine<'p> {
                 Vec<PVal<'p>>,
             ),
             Op(Option<String>, String),
-            Resump(Rc<RefCell<Resumption<'p>>>),
+            /// The resumption, and whether this call is its sole owner.
+            Resump(Rc<Resumption<'p>>, bool),
             Bad,
         }
-        let kind = match &*callee.borrow() {
+        // Held by this call alone (the ownership pass moved the last reference
+        // here), and no recursive binding reaches it weakly: then the callee's
+        // contents can be taken rather than shared, since nothing will look at
+        // it again.
+        let sole = Rc::strong_count(&callee) == 1 && Rc::weak_count(&callee) == 0;
+        let kind = match &mut *callee.borrow_mut() {
+            Value::Code { code, env } if sole => Kind::Code(*code, std::mem::take(env)),
             Value::Code { code, env } => Kind::Code(*code, env.clone()),
+            Value::Builtin { name, arity, args } if sole => {
+                Kind::Builtin(name.clone(), *arity, std::mem::take(args))
+            }
             Value::Builtin { name, arity, args } => {
                 Kind::Builtin(name.clone(), *arity, args.clone())
             }
@@ -682,7 +743,11 @@ impl<'p> Machine<'p> {
                 args.clone(),
             ),
             Value::Op { effect, op } => Kind::Op(effect.clone(), op.clone()),
-            Value::Resump(r) => Kind::Resump(r.clone()),
+            // Every owner but this call's cell would be a boundary.
+            Value::Resump(r) => {
+                let unique = sole && Rc::strong_count(r) == 1 + r.bound.get();
+                Kind::Resump(r.clone(), unique)
+            }
             _ => Kind::Bad,
         };
 
@@ -822,17 +887,15 @@ impl<'p> Machine<'p> {
                         }
                         mk(Value::Unit)
                     }
-                    _ => {
-                        let multi = resume == ResumeUse::Many;
-                        let res = Rc::new(RefCell::new(Resumption {
-                            seg,
-                            used: false,
-                            multi,
-                        }));
-                        let kval = mk(Value::Resump(res));
+                    ResumeUse::Captured => {
+                        let res = Rc::new(Resumption {
+                            seg: RefCell::new(seg),
+                            used: Cell::new(false),
+                            bound: Cell::new(0),
+                        });
                         ex.kont
-                            .push(KFrame::AfterClause(KAfterClause { kval: kval.clone() }));
-                        kval
+                            .push(KFrame::AfterClause(KAfterClause::new(res.clone())));
+                        mk(Value::Resump(res))
                     }
                 };
                 // Enter the clause inline: a 2-slot code with the operation argument
@@ -844,25 +907,17 @@ impl<'p> Machine<'p> {
             }
 
             // Resume: splice the captured slice back on (re-installing its prompt:
-            // deep) and deliver the value to the suspended point. A clause that
-            // resumes at most once hands the slice over; a multi-shot one splices a
-            // private copy and keeps the original resumable.
-            Kind::Resump(res) => {
-                let seg = {
-                    let mut r = res.borrow_mut();
-                    if r.multi {
-                        r.used = true;
-                        copy_segment(&r.seg)
-                    } else {
-                        if r.used {
-                            return Err(fault(
-                                "continuation resumed more than once (its handler is \
-                                 declared `ctl @oneshot`)",
-                            ));
-                        }
-                        r.used = true;
-                        std::mem::take(&mut r.seg)
-                    }
+            // deep) and deliver the value to the suspended point. A resumption
+            // this call solely owns can never be resumed again, so its slice is
+            // handed over; otherwise a private copy is spliced and the original
+            // stays resumable by its other owners.
+            Kind::Resump(res, unique) => {
+                drop(callee);
+                res.used.set(true);
+                let seg = if unique {
+                    std::mem::take(&mut *res.seg.borrow_mut())
+                } else {
+                    copy_segment(&res.seg.borrow())
                 };
                 ex.kont.extend(seg);
                 ex.ret(self, argv)
@@ -882,6 +937,17 @@ fn segment_cleanups<'p>(seg: &[KFrame<'p>]) -> Vec<PVal<'p>> {
             _ => None,
         })
         .collect()
+}
+
+thread_local! {
+    static SLICE_COPIES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// How many resumes on this thread have spliced a copy of their slice rather
+/// than moving it. A resume moves only when its resumption is uniquely owned, so
+/// this is how a test pins that ownership stays exact.
+pub fn slice_copies() -> usize {
+    SLICE_COPIES.with(Cell::get)
 }
 
 /// One activation of a slice being copied, keyed by identity so a frame two
@@ -909,10 +975,11 @@ fn clone_frame<'p>(f: &FrameP<'p>, seen: &mut FrameCopies<'p>) -> FrameP<'p> {
 /// patches the box in place).
 ///
 /// Two things stay shared, as in Koka and OCaml: a resumption stored in a copied
-/// frame's locals, and the handler clauses a nested prompt holds. A nested clause
-/// boundary's own resumption is shared too, so it is promoted to multi-shot here;
-/// otherwise resuming this copy twice would resume that inner continuation twice.
+/// frame's locals, and the handler clauses a nested prompt holds. Sharing is what
+/// keeps them correct: the copy holds another reference to a nested resumption,
+/// so that one is no longer uniquely owned and its own resumes copy too.
 fn copy_segment<'p>(seg: &[KFrame<'p>]) -> Vec<KFrame<'p>> {
+    SLICE_COPIES.with(|c| c.set(c.get() + 1));
     let mut seen: FrameCopies<'p> = Vec::new();
     seg.iter()
         .map(|kf| match kf {
@@ -958,14 +1025,7 @@ fn copy_segment<'p>(seg: &[KFrame<'p>]) -> Vec<KFrame<'p>> {
             KFrame::ThunkRet(kt) => KFrame::ThunkRet(KThunkRet {
                 saved: kt.saved.clone(),
             }),
-            KFrame::AfterClause(ka) => {
-                if let Value::Resump(r) = &*ka.kval.borrow() {
-                    r.borrow_mut().multi = true;
-                }
-                KFrame::AfterClause(KAfterClause {
-                    kval: ka.kval.clone(),
-                })
-            }
+            KFrame::AfterClause(ka) => KFrame::AfterClause(KAfterClause::new(ka.res.clone())),
             KFrame::Cleanups(kc) => KFrame::Cleanups(KCleanups {
                 cleanups: kc.cleanups.clone(),
             }),
@@ -1006,7 +1066,12 @@ impl<'p> Exec<'p> {
     /// Hand a finished value to the top continuation frame (or finish the run,
     /// returning `Some`). Loops for the frames that resolve without a control jump
     /// (`ThunkRet`, a resumed/stored `AfterClause`).
+    ///
+    /// The returning activation is finished, so it is released first: whatever it
+    /// still held must not look like a live owner to a clause boundary. One that
+    /// continues afterwards is held by its own `KRet`.
     fn ret(&mut self, m: &Machine<'p>, mut v: PVal<'p>) -> Result<Option<PVal<'p>>> {
+        self.frame = self.idle.clone();
         loop {
             let Some(kf) = self.kont.pop() else {
                 return Ok(Some(v));
@@ -1036,21 +1101,14 @@ impl<'p> Exec<'p> {
                     continue;
                 }
                 KFrame::AfterClause(ka) => {
-                    // Baseline references to kval: this popped frame's, and the
-                    // clause's slot 1 (the clause frame is still current). Any beyond
-                    // that means the clause stashed `k` (a generator / scheduler).
-                    let (used, seg_defers) = {
-                        let b = ka.kval.borrow();
-                        let Value::Resump(res) = &*b else {
-                            return Err(fault("machine: KAfterClause without a resumption"));
-                        };
-                        let r = res.borrow();
-                        (r.used, segment_cleanups(&r.seg))
-                    };
-                    let stored = Rc::strong_count(&ka.kval) > 2;
-                    if used || stored {
+                    // Resumed, or still owned by something other than its
+                    // boundaries (the clause stored it, captured it, or is returning
+                    // it): its cleanups run wherever it ends up running.
+                    let res = &ka.res;
+                    if res.used.get() || Rc::strong_count(res) > res.bound.get() {
                         continue;
                     }
+                    let seg_defers = segment_cleanups(&res.seg.borrow());
                     // Discarded (abort): run the captured cleanups now, innermost
                     // first (LIFO: seg order pushed => topmost runs first), then re-
                     // deliver the clause's value `v`.

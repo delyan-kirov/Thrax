@@ -141,6 +141,13 @@ fn for_each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
             visit_atom(cleanup, f);
             for_each_atom(body, f);
         }
+        Expr::Drop { body, .. } => for_each_atom(body, f),
+    }
+}
+
+fn emit_drops(slots: &[usize], out: &mut String) {
+    for s in slots {
+        out.push_str(&format!("  THxK_drop(fr, {s});\n"));
     }
 }
 
@@ -238,6 +245,7 @@ fn collect_externs(
             collect_extern_atom(cleanup, externs, idx);
             collect_externs(body, externs, idx);
         }
+        Expr::Drop { body, .. } => collect_externs(body, externs, idx),
     }
 }
 
@@ -913,7 +921,9 @@ impl<'p> Emitter<'p> {
     fn atom(&self, a: &Atom) -> String {
         match a {
             Atom::Local(i) => format!("THxVALUE_local(fr->locals, fr->nlocals, {i})"),
+            Atom::Move(i) => format!("THxVALUE_take(fr, {i})"),
             Atom::Env(i) => format!("THxVALUE_env(fr->env, fr->nenv, {i})"),
+            Atom::MoveEnv(i) => format!("THxVALUE_take_env(fr, {i})"),
             Atom::Glob { name } => self.glob_atom(name),
             Atom::LitI(n) => format!("THxRT_int({n}LL)"),
             Atom::LitR(r) => format!("THxRT_real({})", cdbl(*r)),
@@ -1010,7 +1020,8 @@ impl<'p> Emitter<'p> {
             | Expr::App { .. }
             | Expr::Case { .. }
             | Expr::Handle { .. }
-            | Expr::Defer { .. } => unreachable!("value_expr on a non-value expression"),
+            | Expr::Defer { .. }
+            | Expr::Drop { .. } => unreachable!("value_expr on a non-value expression"),
             Expr::Fault(_) => unreachable!("Fault is emitted structurally, not as a value"),
         }
     }
@@ -1028,6 +1039,7 @@ impl<'p> Emitter<'p> {
             | Expr::Fault(_) => false,
             Expr::App { .. } | Expr::Handle { .. } | Expr::Defer { .. } => true,
             Expr::Let { rhs, body, .. } => self.has_call(rhs) || self.has_call(body),
+            Expr::Drop { body, .. } => self.has_call(body),
             Expr::Case { alts, default, .. } => {
                 alts.iter().any(|a| self.has_call(&a.body)) || self.has_call(default)
             }
@@ -1070,6 +1082,10 @@ impl<'p> Emitter<'p> {
             } => {
                 out.push_str(&format!("  THxK_setbox(fr, {inner});\n"));
                 self.emit_pure_into(rhs, *inner, out);
+                self.emit_pure_into(body, slot, out);
+            }
+            Expr::Drop { slots, body } => {
+                emit_drops(slots, out);
                 self.emit_pure_into(body, slot, out);
             }
             Expr::App { .. } | Expr::Handle { .. } | Expr::Defer { .. } => {
@@ -1116,6 +1132,10 @@ impl<'p> Emitter<'p> {
             Expr::Case { .. } => self.emit_case(e, sink, out),
             Expr::Handle { .. } => self.emit_handle(e, sink, out),
             Expr::Defer { .. } => self.emit_defer(e, sink, out),
+            Expr::Drop { slots, body } => {
+                emit_drops(slots, out);
+                self.emit_expr(body, sink, out);
+            }
         }
     }
 
@@ -1176,11 +1196,13 @@ impl<'p> Emitter<'p> {
                 if first { "if" } else { "else if" }
             ));
             if let AltKind::Con(_) = &al.kind {
-                for i in 0..al.binders.len() {
-                    out.push_str(&format!(
-                        "  THxK_setlocal(fr, {}, THxVALUE_variant_field({s}, {i}));\n",
-                        al.binder_base + i
-                    ));
+                for (i, b) in al.binders.iter().enumerate() {
+                    if b.is_some() {
+                        out.push_str(&format!(
+                            "  THxK_setlocal(fr, {}, THxVALUE_variant_field({s}, {i}));\n",
+                            al.binder_base + i
+                        ));
+                    }
                 }
             }
             self.emit_branch(&al.body, sink, out);
@@ -1233,8 +1255,7 @@ impl<'p> Emitter<'p> {
                 .map(|c| {
                     match c.resume {
                         ResumeUse::Never => "RESUME_NEVER",
-                        ResumeUse::Once => "RESUME_ONCE",
-                        ResumeUse::Many => "RESUME_MANY",
+                        ResumeUse::Captured => "RESUME_CAPTURED",
                     }
                     .to_string()
                 })

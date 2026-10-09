@@ -22,9 +22,18 @@
 #[derive(Clone, Debug)]
 pub enum Atom {
     /// A slot in the current activation's local array (params + let/case binders).
+    /// Reading it borrows: the slot keeps its reference.
     Local(usize),
+    /// The last use of a local slot on this path (see [`super::ownership`]): the
+    /// reference moves out and leaves the slot empty, so whatever consumes the
+    /// value can be its only owner.
+    Move(usize),
     /// A field of the current closure's captured record.
     Env(usize),
+    /// The last use of a captured field. It moves out only when the activation is
+    /// the closure's sole owner (nothing else can enter it again); otherwise the
+    /// engines read it as a borrow, like [`Atom::Env`].
+    MoveEnv(usize),
     /// A top-level binding, by its single canonical name: a user global is
     /// `Module.name`; a built-in operator is bare (`+`); the auto-injected
     /// namespaces keep their prefix (`C.fopen`, `TARGET.os`); an effect operation
@@ -63,8 +72,8 @@ pub enum Atom {
 
 /// A Case alternative: matched when the scrutinee's head agrees with `kind`. A
 /// `Con` alternative binds its payload positionally into local slots
-/// `[binder_base .. binder_base + binders.len())`, where a `None` binder ignores
-/// its slot.
+/// `[binder_base .. binder_base + binders.len())`, where a `None` binder (a
+/// wildcard, or a binder the body never reads) leaves its slot untouched.
 #[derive(Clone, Debug)]
 pub struct Alt {
     pub kind: AltKind,
@@ -93,21 +102,21 @@ pub struct HandleClause {
     pub resume: ResumeUse,
 }
 
-/// How a handler clause uses its continuation, read by the engines at the moment
-/// they capture one (the perform point already holds the clause that matched).
-/// Derived from the clause body by `resume_use` in the IR lowering.
+/// Whether a handler clause needs its continuation at all, read by the engines at
+/// the moment they capture one (the perform point already holds the clause that
+/// matched). Derived from the clause body by `resume_use` in the IR lowering.
+///
+/// How often a captured continuation is resumed is not decided here: a resume
+/// moves the slice when the resumption is uniquely owned at that moment and
+/// copies it otherwise, which the ownership pass makes exact.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResumeUse {
     /// The clause never mentions `k` (an exception, `break`/`continue`): there is
     /// nothing to resume, so the slice is never captured. Only its `defer`
     /// cleanups are kept, to run after the clause body.
     Never,
-    /// `k` is applied at most once, so resuming MOVES the slice (no copy). Also
-    /// what `ctl @oneshot k` asserts for a clause the analysis cannot prove.
-    Once,
-    /// `k` may be resumed more than once, or it escapes the clause and nothing
-    /// can be proved: resuming copies the slice, leaving the original resumable.
-    Many,
+    /// The clause mentions `k`, so a perform captures the slice.
+    Captured,
 }
 
 /// A computation: each takes an evaluation step.
@@ -162,6 +171,14 @@ pub enum Expr {
     /// when `body`'s dynamic scope exits.
     Defer {
         cleanup: Atom,
+        body: Box<Expr>,
+    },
+    /// Release the listed local slots, then continue with `body`. Inserted by the
+    /// ownership pass where a slot's value dies without a last use to move it: a
+    /// binder that is never read, or a value one branch of a `Case` no longer
+    /// needs.
+    Drop {
+        slots: Vec<usize>,
         body: Box<Expr>,
     },
     /// A form unsupported at runtime (raised only if forced).

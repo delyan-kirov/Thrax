@@ -227,14 +227,12 @@ pub enum Pat {
     },
 }
 
-/// A Core effect handler. `oneshot` carries the `ctl @oneshot k` assertion
-/// through to the IR, where it forces the clause's `ResumeUse`.
+/// A Core effect handler.
 #[derive(Clone, Debug)]
 pub struct Handler {
     pub continuation: String,
     pub clauses: Vec<Clause>,
     pub default: Option<(String, Term)>,
-    pub oneshot: bool,
 }
 
 /// One `is Effect.op arg = body` handler clause.

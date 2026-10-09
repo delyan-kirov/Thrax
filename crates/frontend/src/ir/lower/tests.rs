@@ -21,7 +21,8 @@ fn caf(name: &str, body: Term) -> Program {
 }
 
 /// `$ id = \x = x` lifts the lambda to its own code; the global is a CAF whose
-/// body returns a closure to it; the lifted code returns its `Local 0` parameter.
+/// body returns a closure to it; the lifted code returns its `Local 0` parameter,
+/// the parameter's last use, so it moves out.
 #[test]
 fn identity_lifts_a_code() {
     let core = caf(
@@ -40,11 +41,12 @@ fn identity_lifts_a_code() {
     assert!(captures.is_empty());
     let lam = &ir.codes[*code];
     assert_eq!(lam.nparams, 1);
-    assert!(matches!(lam.body, Expr::Ret(Atom::Local(0))));
+    assert!(matches!(lam.body, Expr::Ret(Atom::Move(0))));
 }
 
 /// `\x = \y = x` captures `x` into the inner closure's environment: the inner
 /// code reads `Env 0`, and the outer closure's capture list passes its `Local 0`.
+/// Both are last uses, so both move.
 #[test]
 fn nested_lambda_captures_free_var() {
     let core = caf(
@@ -58,12 +60,18 @@ fn nested_lambda_captures_free_var() {
         },
     );
     let ir = lower(&core);
-    // Find the inner code: the one whose body reads an Env.
+    // Find the inner code: the one whose body reads an Env. Its own parameter `y`
+    // is never read, so it is dropped on entry.
     let inner = ir
         .codes
         .iter()
-        .find(|c| matches!(c.body, Expr::Ret(Atom::Env(0))))
-        .expect("inner code should read Env 0");
+        .find(|c| match &c.body {
+            Expr::Drop { slots, body } => {
+                slots == &[0] && matches!(**body, Expr::Ret(Atom::MoveEnv(0)))
+            }
+            _ => false,
+        })
+        .expect("inner code should drop y and read Env 0");
     assert_eq!(inner.nparams, 1);
 
     // The outer lambda builds the inner closure capturing its own Local 0 (x).
@@ -76,7 +84,7 @@ fn nested_lambda_captures_free_var() {
         unreachable!()
     };
     assert_eq!(captures.len(), 1);
-    assert!(matches!(captures[0], Atom::Local(0)));
+    assert!(matches!(captures[0], Atom::Move(0)));
 }
 
 // -- clause continuation classification (ResumeUse) -------------------------
@@ -92,16 +100,19 @@ fn app_k() -> Expr {
 
 #[test]
 fn a_clause_that_ignores_its_continuation_needs_no_capture() {
-    assert_eq!(resume_use(&Expr::Ret(Atom::LitI(0)), false), ResumeUse::Never);
+    assert_eq!(resume_use(&Expr::Ret(Atom::LitI(0))), ResumeUse::Never);
     // The operation argument is Local 0, and a body binder is 2 or above.
-    assert_eq!(resume_use(&Expr::Ret(Atom::Local(0)), false), ResumeUse::Never);
+    assert_eq!(resume_use(&Expr::Ret(Atom::Local(0))), ResumeUse::Never);
 }
 
 #[test]
-fn one_application_of_the_continuation_still_moves() {
-    assert_eq!(resume_use(&app_k(), false), ResumeUse::Once);
-    // Exclusive alternatives: the worst branch, not the sum.
-    let case = Expr::Case {
+fn any_mention_of_the_continuation_captures_the_slice() {
+    let twice = Expr::Let {
+        slot: 2,
+        rhs: Box::new(app_k()),
+        body: Box::new(app_k()),
+    };
+    let in_one_branch = Expr::Case {
         scrut: Atom::Local(0),
         alts: vec![Alt {
             kind: AltKind::Bool(true),
@@ -109,22 +120,9 @@ fn one_application_of_the_continuation_still_moves() {
             binders: Vec::new(),
             body: app_k(),
         }],
-        default: Box::new(app_k()),
+        default: Box::new(Expr::Ret(Atom::LitI(0))),
     };
-    assert_eq!(resume_use(&case, false), ResumeUse::Once);
-}
-
-#[test]
-fn two_applications_or_an_escape_mean_a_copy_per_resume() {
-    let twice = Expr::Let {
-        slot: 2,
-        rhs: Box::new(app_k()),
-        body: Box::new(app_k()),
-    };
-    assert_eq!(resume_use(&twice, false), ResumeUse::Many);
-
-    // Stored in a constructor, captured by a closure, or passed as an argument:
-    // the uses happen where the walk cannot see them.
+    // Stored in a constructor, captured by a closure, or passed as an argument.
     let stored = Expr::MkVariant {
         ty: "Task".into(),
         tag: "Susp".into(),
@@ -139,24 +137,7 @@ fn two_applications_or_an_escape_mean_a_copy_per_resume() {
         arg: Atom::Local(1),
         tail: false,
     };
-    for e in [&stored, &captured, &passed] {
-        assert_eq!(resume_use(e, false), ResumeUse::Many);
+    for e in [&app_k(), &twice, &in_one_branch, &stored, &captured, &passed] {
+        assert_eq!(resume_use(e), ResumeUse::Captured);
     }
-}
-
-#[test]
-fn oneshot_covers_an_escape_but_not_a_visible_double_resume() {
-    let stored = Expr::MkVariant {
-        ty: "Task".into(),
-        tag: "Susp".into(),
-        fields: vec![Atom::Local(1)],
-    };
-    assert_eq!(resume_use(&stored, true), ResumeUse::Once);
-
-    let twice = Expr::Let {
-        slot: 2,
-        rhs: Box::new(app_k()),
-        body: Box::new(app_k()),
-    };
-    assert_eq!(resume_use(&twice, true), ResumeUse::Many);
 }

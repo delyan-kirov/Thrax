@@ -2045,14 +2045,12 @@ impl<'a> Parser<'a> {
             }));
         }
         self.bump()?; // 'ctl'
-        let oneshot = self.at_intrinsic("oneshot")?;
-        if oneshot {
+        // `@oneshot` is accepted and ignored: a resume moves its slice whenever
+        // the continuation is uniquely owned, which the annotation cannot add to.
+        if self.at_intrinsic("oneshot")? {
             self.bump()?; // '@oneshot'
         }
-        let continuation = self.expect_word(
-            "expected a continuation name after 'ctl' (optionally preceded by '@oneshot', \
-             which asserts that no clause resumes it more than once)",
-        )?;
+        let continuation = self.expect_word("expected a continuation name after 'ctl'")?;
         let start = self.here()?;
         let mut clauses = Vec::new();
         let mut value_arms = Vec::new();
@@ -2085,7 +2083,6 @@ impl<'a> Parser<'a> {
             continuation,
             clauses: self.ast.make_slice(clauses),
             value,
-            oneshot,
         });
         Ok(self.expr(Expr::Handle {
             body,
