@@ -7,11 +7,12 @@
 //! That prefill is inserted at the start of every prompt by default and can be
 //! deleted, so the user can instead define a named global symbol they can reuse
 //! (`$ name = ...` defines silently, `$ with MOD` imports). The auto-inserted
-//! `$ ` opening each prompt cannot be deleted. Typing `$` then Enter defines the
-//! current symbol: it is evaluated, and the `$` is "moved" to the next prompt.
-//! `Ctrl-J` submits the whole buffer at once, wherever the cursor sits and with no
-//! trailing `$` (it arrives as LF, distinct from the Return key's CR; some terminals
-//! also send `Ctrl-Enter` as LF, so it works there too). A line beginning with `:`
+//! `$ ` opening each prompt cannot be deleted. Enter submits the whole buffer at
+//! once, wherever the cursor sits and with no trailing `$` needed. `Ctrl-J` starts
+//! a new line instead (it arrives as LF, distinct from the Return key's CR; some
+//! terminals also send `Ctrl-Enter` as LF, so it works there too), so an item can
+//! span lines; typing `$` then `Ctrl-J` defines the current symbol: it is
+//! evaluated, and the `$` is "moved" to the next prompt. A line beginning with `:`
 //! is a meta-command.
 //!
 //! The whole session is recompiled against the standard library on each item,
@@ -47,9 +48,9 @@ const PROMPT: &str = "$ ";
 /// The deletable text seeded into every fresh prompt after the `$ `.
 const PREFILL: &str = "_= ";
 
-/// Marks the line reporting an evaluated item's value, echoing the `-->` arrow
-/// diagnostics use so a result reads as the success analogue of an error.
-const RESULT: &str = "  => ";
+/// Marks the line reporting an evaluated item's value. `#` opens a Thrax line
+/// comment, so a transcript pasted back into a `.thx` file still parses.
+const RESULT: &str = "  # ";
 
 pub fn cmd_repl() -> ExitCode {
     let root_dir = std::env::current_dir().unwrap_or_default();
@@ -118,14 +119,6 @@ fn run_raw(state: &mut Repl, raw: &term::RawMode) {
                 }
                 ed.render();
             }
-            Some(Key::SubmitAll) => {
-                let body = ed.submit_body();
-                print!("\r\n");
-                let _ = io::stdout().flush();
-                evaluating(raw, || state.submit(&body));
-                ed = Editor::new();
-                ed.render();
-            }
             Some(Key::Escape) => {}
             // Ctrl-Z is read as a byte here (raw mode keeps `ISIG` off), so the
             // shell raises the stop itself. The item being edited survives it.
@@ -136,29 +129,38 @@ fn run_raw(state: &mut Repl, raw: &term::RawMode) {
                 ed.render();
             }
             Some(Key::Char(c)) => ed.insert(c),
-            Some(Key::Enter) => match ed.on_enter() {
-                Enter::Newline => ed.newline(),
-                Enter::Command(cmd) => {
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
-                    let mut quit = false;
-                    evaluating(raw, || quit = state.command(&cmd));
-                    if quit {
-                        break;
+            Some(key @ (Key::Enter | Key::Newline)) => {
+                let action = if key == Key::Enter {
+                    ed.on_enter()
+                } else {
+                    ed.on_newline()
+                };
+                match action {
+                    Action::Newline => ed.newline(),
+                    Action::Command(cmd) => {
+                        print!("\r\n");
+                        let _ = io::stdout().flush();
+                        let mut quit = false;
+                        evaluating(raw, || quit = state.command(&cmd));
+                        if quit {
+                            break;
+                        }
+                        ed = Editor::new();
+                        ed.render();
                     }
-                    ed = Editor::new();
-                    ed.render();
+                    Action::Submit(body) => {
+                        ed.set_buffer(body.clone());
+                        ed.render();
+                        print!("\r\n");
+                        let _ = io::stdout().flush();
+                        if !body.is_empty() && body != PREFILL.trim_end() {
+                            evaluating(raw, || state.submit(&body));
+                        }
+                        ed = Editor::new();
+                        ed.render();
+                    }
                 }
-                Enter::Submit(body) => {
-                    ed.set_buffer(body.clone());
-                    ed.render();
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
-                    evaluating(raw, || state.submit(&body));
-                    ed = Editor::new();
-                    ed.render();
-                }
-            },
+            }
         }
     }
 }
@@ -255,10 +257,9 @@ enum Key {
     Redo,
     /// Start an incremental reverse history search (`C-r`).
     HistorySearch,
-    /// Evaluate the whole current buffer now, wherever the cursor sits and with no
-    /// trailing `$` needed (`Ctrl-J`; also `Ctrl-Enter` in terminals that send it as
-    /// LF).
-    SubmitAll,
+    /// Start a new line in the current item, or submit it when it ends in a `$`
+    /// terminator (`Ctrl-J`; also `Ctrl-Enter` in terminals that send it as LF).
+    Newline,
     /// Cancel / quit the current mode (`Esc`, also `C-g`).
     Escape,
     /// Suspend the shell and hand the terminal back (`C-z`), resuming on `fg`.
@@ -273,8 +274,8 @@ enum Edit {
     Delete,
 }
 
-/// What pressing Enter means for the item currently being edited.
-enum Enter {
+/// What pressing Enter or `Ctrl-J` means for the item currently being edited.
+enum Action {
     /// Continue the item on a new line.
     Newline,
     /// Submit this source (the trailing `$` terminator already removed).
@@ -606,25 +607,40 @@ impl Editor {
     }
 
     /// The whole buffer as a submittable item: trimmed, with a single optional
-    /// trailing `$` terminator removed. Used by `Ctrl-Enter`, which submits the
-    /// buffer outright rather than on the trailing-`$` convention.
+    /// trailing `$` terminator removed. Used by Enter, which submits the buffer
+    /// outright rather than on the trailing-`$` convention.
     fn submit_body(&self) -> String {
         let trimmed = self.buffer.trim_end();
         trimmed.strip_suffix('$').unwrap_or(trimmed).trim().to_string()
     }
 
-    /// Decide what this Enter does: a line beginning with `:` is a command, a
-    /// trailing `$` submits, anything else extends the item.
-    fn on_enter(&self) -> Enter {
-        let trimmed = self.buffer.trim_end();
-        if !self.buffer.contains('\n') {
-            if let Some(cmd) = trimmed.trim_start().strip_prefix(':') {
-                return Enter::Command(cmd.trim().trim_end_matches('$').trim().to_string());
-            }
+    /// The `:command` the buffer holds, when it is a single line beginning with `:`.
+    fn command(&self) -> Option<String> {
+        if self.buffer.contains('\n') {
+            return None;
         }
-        match trimmed.strip_suffix('$') {
-            Some(body) => Enter::Submit(body.to_string()),
-            None => Enter::Newline,
+        let cmd = self.buffer.trim().strip_prefix(':')?;
+        Some(cmd.trim().trim_end_matches('$').trim().to_string())
+    }
+
+    /// Decide what Enter does: a `:command` runs, anything else submits the whole
+    /// buffer.
+    fn on_enter(&self) -> Action {
+        match self.command() {
+            Some(cmd) => Action::Command(cmd),
+            None => Action::Submit(self.submit_body()),
+        }
+    }
+
+    /// Decide what `Ctrl-J` does: a `:command` runs, a trailing `$` submits,
+    /// anything else extends the item.
+    fn on_newline(&self) -> Action {
+        if let Some(cmd) = self.command() {
+            return Action::Command(cmd);
+        }
+        match self.buffer.trim_end().strip_suffix('$') {
+            Some(body) => Action::Submit(body.to_string()),
+            None => Action::Newline,
         }
     }
 
@@ -931,10 +947,10 @@ fn def_name(after: &str) -> Option<String> {
 
 const HELP: &str = "\
 The shell reads Thrax `$` items, like a `.thx` file. Each prompt opens with a
-fixed `$ ` and a deletable `_= ` prefill. Plain Enter starts a new line, so items
-may span lines; type `$` then Enter to submit the item you are editing, or press
-Ctrl-J to submit the whole buffer at once. An evaluated item's value is reported on
-a `=>` line, with its type.
+fixed `$ ` and a deletable `_= ` prefill. Enter submits the whole buffer at once.
+Ctrl-J starts a new line, so items may span lines; type `$` then Ctrl-J to submit
+the item you are editing. An evaluated item's value is reported on a `#` comment
+line, with its type.
 
   $ _= <expr>       evaluate an expression and print its value and type
   $ name = <expr>   add (or redefine) a binding (silent, like a file)
@@ -956,7 +972,7 @@ Emacs editing keys:
   C-/ undo                         M-/ redo
   C-r reverse history search: type to match, C-r/Up older, C-n/Down newer,
       Enter to accept, Esc (or C-g) to cancel
-  C-j submit (evaluate) the whole buffer now, no trailing `$` needed
+  C-j new line (or submit the item when it ends in `$`)
 ";
 
 #[cfg(test)]
@@ -1239,10 +1255,10 @@ mod term {
                 CTRL_Z => return Some(Key::Suspend),
                 CTRL_D => return Some(Key::CtrlD),
                 // With `ICRNL` off, the Return key is CR and `Ctrl-J` is LF, so the
-                // two split: Return edits/submits an item, `Ctrl-J` evaluates the
-                // whole buffer at once (like `Ctrl-Enter` in editors that can send it).
+                // two split: Return evaluates the whole buffer, `Ctrl-J` continues
+                // the item on a new line.
                 CR => return Some(Key::Enter),
-                LF => return Some(Key::SubmitAll),
+                LF => return Some(Key::Newline),
                 DEL | CTRL_H => return Some(Key::Backspace),
                 ESC => {
                     if let Some(key) = read_escape(input) {
