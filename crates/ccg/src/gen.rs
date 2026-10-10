@@ -45,11 +45,12 @@ pub struct ExternSite {
 
 pub struct Emitter<'p> {
     prog: &'p Program,
-    /// Canonical names of every global (`Module.name`); a `Glob` naming one
-    /// resolves to a CAF.
-    globals: HashSet<&'p str>,
-    /// Bare last segments of the global names, the unqualified/entry fallback.
-    bare: HashSet<&'p str>,
+    /// Canonical names of every global (`Module.name`) -> its code; a `Glob`
+    /// naming one resolves to that CAF.
+    globals: HashMap<&'p str, usize>,
+    /// Bare last segments of the global names -> code (first definition wins),
+    /// the unqualified/entry fallback.
+    bare: HashMap<&'p str, usize>,
     /// Effect name -> the operations it declares (for qualified resolution).
     ops_by_effect: HashMap<&'p str, Vec<&'p str>>,
     /// Operation name -> the effects declaring it (for bare resolution).
@@ -801,12 +802,12 @@ fn builtin_arity(name: &str) -> Option<usize> {
 
 impl<'p> Emitter<'p> {
     pub fn new(prog: &'p Program, reachable: HashSet<usize>) -> Emitter<'p> {
-        let globals: HashSet<&str> = prog.globals.iter().map(|(n, _)| n.as_str()).collect();
-        let bare = prog
-            .globals
-            .iter()
-            .map(|(n, _)| n.rsplit('.').next().unwrap_or(n))
-            .collect();
+        let mut globals: HashMap<&str, usize> = HashMap::new();
+        let mut bare: HashMap<&str, usize> = HashMap::new();
+        for (name, code) in &prog.globals {
+            globals.entry(name.as_str()).or_insert(*code);
+            bare.entry(name.rsplit('.').next().unwrap_or(name)).or_insert(*code);
+        }
         let mut ops_by_effect: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut ops_by_name: HashMap<&str, Vec<&str>> = HashMap::new();
         for e in &prog.effects {
@@ -881,8 +882,8 @@ impl<'p> Emitter<'p> {
     /// global whose last segment aliases into `bare` cannot shadow a same-named
     /// operation. The `C` libc namespace resolves as exact `@extern` globals.
     fn glob_atom(&self, name: &str) -> String {
-        if self.globals.contains(name) {
-            return format!("THxRT_glob({})", cstr(name.as_bytes()));
+        if let Some(code) = self.globals.get(name) {
+            return format!("force_code({code})");
         }
         if let Some(arity) = builtin_arity(name) {
             if COMPILER_BUILTINS.contains(&name) {
@@ -910,8 +911,8 @@ impl<'p> Emitter<'p> {
         }
         // The unqualified fallback: a reference the codegen left bare (the entry
         // point, or a name not resolved to a module), matched by last segment.
-        if self.bare.contains(name) {
-            return format!("THxRT_glob({})", cstr(name.as_bytes()));
+        if let Some(code) = self.bare.get(name) {
+            return format!("force_code({code})");
         }
         // An unknown bare name: an ambient effect operation, resolved by a handler.
         format!("THxK_op(NULL, {})", cstr(name.as_bytes()))

@@ -1,0 +1,42 @@
+@mod WHEN
+
+# `when c <| \_ = body` is an `if` without an `else`: the body runs for its
+# effects, and any effects pass through to the caller. The condition goes through
+# the `IToResult` interface, so a `@bool` gives the body `{}`, and an `Option` or a
+# `Result` gives it the payload.
+
+$ with OPT
+
+$ Yield : @effect = yield : @int -> {},
+$ sumY : ({} -> <Yield> {}) -> @int = \a =
+	do a {} ctl k | Yield.yield v => v + k {} | _ => 0
+
+# Only the odd values reach `yield`: 1 + 3 + 5 = 9.
+$ ck_bool : @int =
+	if sumY (\u = for [1, 2, 3, 4, 5] <| \x = when (x % 2 == 1) <| \_ = yield x) == 9
+	=> 0 else 1
+
+# `Some 40` hands 40 to the body and `None` skips it: 40 + 2 = 42.
+$ ck_option : @int =
+	let found = sumY <| \u =
+		when (Option.Some.{ 40 }) (\x = yield x) ;
+		when (Option.None : Option @int) (\x = yield 1000) ;
+		yield 2 in
+	if found == 42 => 0 else 1
+
+# `Ok 7` hands 7 to the body and `Err` skips it: 7 + 2 = 9.
+$ ck_result : @int =
+	let found = sumY <| \u =
+		when (Result.Ok.{ 7 } : Result @int @str) (\x = yield x) ;
+		when (Result.Err.{ "no" } : Result @int @str) (\x = yield 1000) ;
+		yield 2 in
+	if found == 9 => 0 else 1
+
+# Another effect entirely: `when` inside a `for` body can `break` the loop.
+$ ck_break : @int =
+	if sumY (\u = for [1, 2, 3, 4] <| \x = (when (x == 3) <| \_ = break {}) ; yield x) == 3
+	=> 0 else 1
+
+$ test : @int = ck_bool + ck_option + ck_result + ck_break
+
+$ @run (assert (test == 0) "WHEN: a check failed")

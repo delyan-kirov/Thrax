@@ -1,26 +1,3 @@
-/* Thrax C-backend runtime. Emitted verbatim ahead of the generated program by
- * the `ccg` crate. It is the C port of the reified-K abstract machine
- * (crates/interpreter/src/machine.rs, itself the port of engines/IT.cpp): the
- * continuation is an EXPLICIT heap stack of frames, so a handler can capture and
- * splice the delimited continuation between a prompt and a `perform`, and deep
- * non-tail recursion grows the heap rather than the C stack.
- *
- * Generated code is compiled to BLOCK FUNCTIONS. A block runs straight-line C
- * (atoms, pure lets, case branching) and ends by calling exactly one TERMINATOR
- * (THxK_ret / THxK_tailcall / THxK_apply / THxK_jump / THxK_handle /
- * THxK_defer_run); the driver acts on it. An activation's locals/env live in a
- * heap Frame, so a block can be re-entered after a suspension.
- *
- * Memory is precise reference counting, the port of platforms/THxMEMRC.c +
- * THxVALUE.c + THxK.c. Values, frames and resumption segments carry a count;
- * every heap store retains and every un-store releases, freeing at zero and
- * releasing children iteratively (a dead-value worklist, never the C stack).
- * Fresh values are registered in a temp pool that the driver drains after each
- * block bounce, reclaiming per-iteration garbage. A live-allocation counter lets
- * the generated main assert it exits clean. The one cycle, a recursive-let
- * closure that captured its own box, is a weak self edge (a child equal to its
- * container is neither retained nor released). */
-
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
