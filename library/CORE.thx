@@ -529,6 +529,29 @@ $ Loop : @effect = break : {} -> a, continue : {} -> a,
 $ break    : {} -> <Loop> a = \u = Loop.break u
 $ continue : {} -> <Loop> a = \u = Loop.continue u
 
+# The outcome of a computation that can go wrong: `Ok` with the answer or `Err`
+# with what went wrong. RESULT holds the functions over it.
+$ Result : @union t e =
+	Ok: t,
+	Err: e,
+
+# A type whose values count as good or bad joins with an instance mapping each
+# value to a `Result`: the good case and what it carries become `Ok`, the bad case
+# `Err`. A `@bool` is `Ok {}` or `Err {}`; OPT's `Option` is `Ok` its payload or
+# `Err {}`.
+$ IToResult : @struct c t e = to_result: c -> Result t e,
+
+$ impl_IToResult_for_bool : IToResult @bool {} {} =
+	.{ .to_result = \c = if c => Result.Ok.{ {} } else Result.Err.{ {} } }
+
+$ impl_IToResult_for_Result : IToResult (Result t e) t e = .{ .to_result = \r = r }
+
+# `when c <| \x = body` is an `if` with no `else`: it runs `body` for its effects
+# on what `c` carries when `c` is good, and is `{}` otherwise. The body's effect
+# row is a parameter, so one `when` serves any effects.
+$ when : @ctx IToResult c t e -> c -> (t -> <r> {}) -> <r> {} = \d, c, body =
+	is d.to_result c | Result.Ok.{x} => body x | _ => {}
+
 # `for` runs `body` on each element FOR ITS EFFECTS, returning `{}`.
 # Iteration is an interface too, and the one whose shape needs the most from the
 # type system: the body's effect row is a PARAMETER of the interface, so an instance

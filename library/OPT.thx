@@ -14,6 +14,11 @@ $ is_some : Option t -> @bool = \o =
 $ is_none : Option t -> @bool = \o =
 	is o | Option.Some.{_} => @false | _ => @true
 
+# A present value is good: `Ok` with the value inside, and absence is `Err {}`.
+$ impl_IToResult_for_Option : IToResult (Option t) t {} = .{
+	.to_result = \o = is o | Option.Some.{x} => Result.Ok.{ x } | _ => Result.Err.{ {} },
+}
+
 # The value inside, or `d` when absent.
 $ unwrap_or : Option t -> t -> t = \o, d =
 	is o | Option.Some.{x} => x | _ => d

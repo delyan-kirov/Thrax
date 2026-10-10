@@ -3,7 +3,7 @@
 # \file RESULT.thx
 # \info Fallible computation, in two interchangeable shapes (the Koka
 #       exn/error pattern):
-#         - `Result `T `E` is the VALUE shape: an `Ok` carrying the answer or
+#         - `Result `T `E` (declared in CORE) is the VALUE shape: an `Ok` carrying the answer or
 #           an `Err` carrying what went wrong.
 #         - `Fail` is the EFFECT shape: `Fail.fail msg` aborts the current
 #           computation, the effect row (`-> <Fail> T`) propagates the
@@ -14,10 +14,6 @@
 #       freely between "return a Result" and "perform Fail".
 
 $ with OPT
-
-$ Result : @union t e =
-	Ok: t,
-	Err: e,
 
 # ---- the value shape ----
 

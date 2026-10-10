@@ -45,7 +45,7 @@ $ ends_with : @str -> @str -> @bool = \s, p =
 $ find_from : @str -> @str -> @int -> Option @int = \s, needle, from =
 	let n = @array_len needle in
 	if from + n > @array_len s => Option.None
-	else if (@array_slice s from (from + n)) == needle => Option.Some.{ from }
+	else if matches_at s needle from 0 => Option.Some.{ from }
 	else find_from s needle (from + 1)
 
 $ find : @str -> @str -> Option @int = \s, needle = find_from s needle 0
@@ -56,11 +56,7 @@ $ contains : @str -> @str -> @bool = \s, needle = is_some (find s needle)
 # "," is ["a", "", "b"]). An empty separator returns the whole string whole.
 $ split : @str -> @str -> @vec @str = \s, sep =
 	if (@array_len sep) == 0 => [s]
-	else is find s sep
-		| Option.Some.{i} =>
-			@array_slice s 0 i
-				:: split (@array_slice s (i + @array_len sep) (@array_len s)) sep
-		| _ => [s]
+	else split_onto (@vec_new {}) s sep 0 0
 
 # The lines of `s`, split on '\n'. A trailing newline does not produce a
 # final empty line.
@@ -202,3 +198,18 @@ $ digits_val : @str -> @int -> @int -> Option @int = \s, i, acc =
 		let c = @array_get s i in
 		if is_digit c => digits_val s (i + 1) (acc * 10 + (c - 48))
 		else Option.None
+
+# Does `needle` occur in `s` at byte `at`, from needle byte `j` on? Compares in
+# place, so a search allocates nothing per position.
+$ matches_at : @str -> @str -> @int -> @int -> @bool = \s, needle, at, j =
+	if j >= @array_len needle => @true
+	else if (@array_get s (at + j)) == (@array_get needle j) => matches_at s needle at (j + 1)
+	else @false
+
+# The pieces of `s` cut at each `sep` (non-empty), pushed onto `acc` in order.
+# `start` is where the current piece began; `i` is the next offset to test.
+$ split_onto : @vec @str -> @str -> @str -> @int -> @int -> @vec @str = \acc, s, sep, start, i =
+	let n = @array_len sep in
+	if i + n > @array_len s => @vec_push acc (@array_slice s start (@array_len s))
+	else if matches_at s sep i 0 => split_onto (@vec_push acc (@array_slice s start i)) s sep (i + n) (i + n)
+	else split_onto acc s sep start (i + 1)
