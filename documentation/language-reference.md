@@ -904,10 +904,6 @@ clause always names an operation and its argument (`| op a`, `| Eff.op a`),
 which no pattern can look like, so the two kinds of arm need no marker. A shared
 operation name is qualified in a clause head.
 
-`ctl @oneshot k` is accepted and has no effect. It once asserted that no clause
-resumes `k` more than once, to save a copy the engine can now avoid on its own
-(section 8.4).
-
 Exception (ignores `k`, so it resumes zero times):
 ```thrax
 $ safeDiv : @int -> @int -> @int = \a, b =

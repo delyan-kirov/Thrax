@@ -215,7 +215,6 @@ back to a cycle).
 may be invoked **any number of times**. Nothing in the surface language or the
 type system says how often: `ctl k` is applied as often as the handler needs, so
 nondeterminism, backtracking and probabilistic search are ordinary handlers.
-(`ctl @oneshot k` is still accepted but no longer does anything; see below.)
 
 **Why the affine argument did not hold.** It rested on the premise that
 multi-shot would force "deep-dups of captured state" that affine sidesteps. Two
@@ -275,11 +274,10 @@ not either. A uniquely owned callee has its contents taken rather than shared on
 entry (a closure's environment, a partial application's operands), which is what
 lets a resumption captured in a lambda arrive unshared.
 
-**`@oneshot`.** The annotation existed to buy back the move where `k` escaped
-the clause, by asserting at most one resume. Exact ownership finds the move on
-its own wherever the annotation was correct, so it is accepted and ignored: an
-annotated clause behaves exactly like an unannotated one, and a second resume
-copies rather than faults.
+**`@oneshot` (removed, #249).** `ctl @oneshot k` existed to buy back the move
+where `k` escaped the clause, by asserting at most one resume. Exact ownership
+finds the move on its own wherever the annotation was correct, so it was removed
+from the syntax.
 
 **Known sharing.** A copy shares what it cannot rewrite: a resumption stored in a
 copied frame's locals, and the clauses a nested prompt holds. Sharing keeps them
@@ -642,7 +640,7 @@ Status legend: [X] done, [~] in progress, [ ] planned.
     walk is gone: an ownership pass over the IR marks last uses as moves and
     inserts drops, and a resume moves its slice whenever the resumption is
     uniquely owned. Stored and lambda-captured continuations move without
-    `@oneshot` (now accepted and ignored), and n resumes cost n-1 copies. The
+    `@oneshot` (since removed from the syntax, #249), and n resumes cost n-1 copies. The
     clause boundary's "stored?" test reads the same exact counts, replacing the
     interpreter's refcount heuristic and the C backend's `escaped` flag. See
     section 2.

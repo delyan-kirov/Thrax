@@ -561,9 +561,6 @@ impl Conv {
 /// and up to the body's own binders, so no other binder can alias it). Any
 /// mention counts, including a capture or a store: only a clause that cannot
 /// reach `k` at all may skip capturing the slice.
-///
-/// `ctl @oneshot k` plays no part: whether a resume may move the slice is decided
-/// when it happens, from whether the resumption is uniquely owned.
 fn resume_use(body: &Expr) -> ResumeUse {
     if mentions(body, 1) {
         ResumeUse::Captured

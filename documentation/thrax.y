@@ -57,7 +57,7 @@
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_CTX AT_IFACE
-%token AT_PRIVATE AT_EXTERN AT_ARRAY AT_ONESHOT
+%token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
 %token AT_TYCON     /* @int64 / @float64 / @str ... */
 
@@ -390,15 +390,10 @@ array_lit
  * the interpreter, link line in the native backend). */
 extern_lit : AT_EXTERN STR STR STR ;
 
-/* `@oneshot` is accepted and ignored: a resume moves the captured slice
- * whenever the continuation is uniquely owned, which made the assertion that
- * every clause resumes at most once redundant. */
 handle
   : KW_DO expr
-  | KW_DO expr KW_CTL opt_oneshot LIDENT handler_arms
+  | KW_DO expr KW_CTL LIDENT handler_arms
   ;
-
-opt_oneshot : /* empty */ | AT_ONESHOT ;
 
 /* A handler mixes operation clauses `| op x => e` with value arms `| pat => e`
  * over the body's final value. A pattern never juxtaposes two names and a

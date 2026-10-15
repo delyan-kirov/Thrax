@@ -1021,15 +1021,6 @@ fn a_recursive_slot_is_lazy_and_an_arrow_slot_is_not() {
 }
 
 #[test]
-fn codata_is_gone() {
-    let (ast, _) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
-    let e = crate::parse_into(ast, "@mod M\n$ S : @codata t = head: t, tail: S t")
-        .err()
-        .expect("`@codata` must not parse");
-    assert!(format!("{e}").contains("`@codata` no longer exists"), "{e}");
-}
-
-#[test]
 fn a_literal_must_give_every_field() {
     let err = |src: &str| {
         let text = rendered_errors(src);

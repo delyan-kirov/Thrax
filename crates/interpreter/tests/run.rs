@@ -1238,29 +1238,18 @@ fn a_partial_push_applied_twice_does_not_share_its_buffer() {
 }
 
 #[test]
-fn oneshot_is_accepted_and_ignored() {
-    // A resume moves whenever ownership allows it, so the annotation adds
-    // nothing, and a second resume copies like any other.
+fn a_stored_continuation_resumed_twice_copies() {
     let src = "@mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
-          \\t = do t {} ctl @oneshot k \
+          \\t = do t {} ctl k \
           | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
         $ drive : Task -> @int = \
           \\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
         $ twice : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {})) \
           | Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0";
     assert_eq!(run(src, "twice"), "5");
-}
-
-#[test]
-fn oneshot_does_not_override_a_clause_that_provably_resumes_twice() {
-    let src = "@mod M\n\
-        $ Amb : @effect = flip : {} -> @bool,\n\
-        $ r : @int = do (if flip {} => 10 else 1) \
-          ctl @oneshot k | Amb.flip u => k @true + k @false | x => x";
-    assert_eq!(run(src, "r"), "11");
 }
 
 #[test]
