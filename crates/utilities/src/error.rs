@@ -91,6 +91,7 @@ pub enum Code {
     NonExhaustiveMatch,
     UnreachableArm,
     RuntimeFault,
+    ExpansionLimit,
 }
 
 impl Code {
@@ -130,6 +131,7 @@ impl Code {
             NonExhaustiveMatch => "NON_EXHAUSTIVE_MATCH",
             UnreachableArm => "UNREACHABLE_ARM",
             RuntimeFault => "RUNTIME_FAULT",
+            ExpansionLimit => "EXPANSION_LIMIT",
         }
     }
 }

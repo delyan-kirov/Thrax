@@ -36,4 +36,4 @@ $ test : @int =
 	+ (if is_even 65000 == 1 => 0 else 1)
 	+ (if is_odd 65000 == 0 => 0 else 1)
 
-$ @run (assert (test == 0) "TAIL_CALLS: a check failed")
+$ @e <| assert (test == 0) "TAIL_CALLS: a check failed"

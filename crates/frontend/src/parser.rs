@@ -333,6 +333,14 @@ impl<'a> Parser<'a> {
         }
     }
     /// Is the next token the operator with lexeme `s`?
+    /// The operand of an item- or type-position `@e`, which reads like the
+    /// expression form: `@e X` or `@e <| X`.
+    fn parse_meta_operand(&mut self) -> Result<Aol<Expr>> {
+        if self.at_op("<|")? {
+            self.bump()?;
+        }
+        self.parse_expr(0)
+    }
     fn at_op(&mut self, s: &str) -> Result<bool> {
         let t = self.peek()?;
         Ok(matches!(t.kind, Kind::Op) && self.text(t) == s)
@@ -428,14 +436,16 @@ impl<'a> Parser<'a> {
                 "there is no '@public': symbols are public by default. Use '$ @private' \
                  to hide the declarations below it",
             )),
-            // `$ @e X` embeds a PURE compile-time result; `$ @run X` discharges
-            // `<@meta>` (runs a meta computation for its effect / to inject code).
-            name @ ("e" | "run") => {
-                let meta = name == "run";
+            "e" => {
                 self.bump()?;
-                let e = self.parse_expr(0)?;
-                Ok(Item::Run(e, Span::new(start, self.last_end), meta))
+                let e = self.parse_meta_operand()?;
+                Ok(Item::Run(e, Span::new(start, self.last_end)))
             }
+            "run" => Err(self.unexpected(
+                &at,
+                "there is no '@run': '$ @e X' runs X at compile time and inserts the \
+                 '@code' it returns",
+            )),
             // The two `@`-names bound to a VALUE: `@main`, the program entry, and
             // `@build`, the compile-time entry, whose `@code` result the driver adds
             // to this module. Both are ordinary definitions with a mandatory
@@ -878,11 +888,10 @@ impl<'a> Parser<'a> {
                     Ok(self.ty(Ty::Con { module: None, name }))
                 }
             }
-            Kind::At if matches!(self.intrinsic_name(t), "e" | "run") => {
-                let meta = self.intrinsic_name(t) == "run";
-                self.bump()?; // '@e' / '@run'
-                let e = self.parse_expr(0)?;
-                Ok(self.ty(Ty::MetaE(e, meta)))
+            Kind::At if self.intrinsic_name(t) == "e" => {
+                self.bump()?;
+                let e = self.parse_meta_operand()?;
+                Ok(self.ty(Ty::MetaE(e)))
             }
             Kind::At => {
                 self.bump()?;

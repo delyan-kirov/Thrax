@@ -6,9 +6,9 @@ $ @mod META_BUILD
 #       @io> @code` is the one name its BUILD starts from: the compiler runs it
 #       during compilation and adds the items of the `@code` it returns to this
 #       module. One name, one signature, like the entry.
-#       Its privilege over `$ @run` is the `<@io>` in that row. `$ @e` installs
-#       nothing and `$ @run` installs `<@meta>` alone, so both are hermetic: a
-#       generator there can compute, parse and inject, but not touch the world.
+#       Its privilege over `$ @e` is the `<@io>` in that row. `$ @e` installs
+#       `<@meta>` alone, so it is hermetic: a generator there can compute, parse
+#       and inject, but not touch the world.
 #       Building IS IO, so `@build` is the one context that discharges it.
 #       The IO itself is ORDINARY: `IO.read_dir` is library code over `C.popen`,
 #       not a compiler intrinsic, so compile-time IO is the same IO a program
@@ -43,4 +43,4 @@ $ ck_self : @int = if STR.cmp_str first_file "META_BUILD.thx" <= 0 => 0 else 4
 
 $ test : @int = ck_count + ck_first + ck_self
 
-$ @run (assert (test == 0) "META_BUILD: a check failed")
+$ @e <| assert (test == 0) "META_BUILD: a check failed"

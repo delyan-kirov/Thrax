@@ -401,7 +401,7 @@ pub fn dump(types: &Types, ty: Type) -> String {
 
 /// The one name the compiler knows a program by: `$ @main`, a C-style entry that
 /// takes the argument vector and returns an exit code. Nothing else is special;
-/// a test harness is ordinary code (a compile-time check under `$ @run`, or a
+/// a test harness is ordinary code (a compile-time check under `$ @e`, or a
 /// global some tool evaluates by name).
 pub const ENTRY: &str = "@main";
 
@@ -437,7 +437,7 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
 /// runs *during* compilation. Its `@code` result is injected in place of its own
 /// definition, so a module generates part of itself from whatever the build can
 /// see. It is the only context whose effect row discharges `<@io>` at compile
-/// time, which is what separates it from `$ @run`: building is IO.
+/// time, which is what separates it from `$ @e`: building is IO.
 pub const BUILD: &str = "@build";
 
 /// The build function's mandated signature, in source spelling, for diagnostics.

@@ -20,8 +20,8 @@ $ Geom : @union =
 	Rect: {@int, @int},
 
 # Generate `cmp_T`, the `IOrd`/`IEq` instances, and the named comparisons.
-$ @e (DERIVE.derive_ord "Coord")
-$ @e (DERIVE.derive_ord "Geom")
+$ @e <| DERIVE.derive_ord "Coord"
+$ @e <| DERIVE.derive_ord "Geom"
 
 # Struct: lexicographic by field.
 $ ck_lt   : @int = if lt_Coord (Coord.{ .x = 1, .y = 2 }) (Coord.{ .x = 1, .y = 3 }) => 0 else 1
@@ -45,3 +45,5 @@ $ ck_mixed : @int = if (2 < 3) && (Geom.Dot < Geom.Rect.{ 0, 0 }) => 0 else 2048
 $ test : @int =
 	ck_lt + ck_gt + ck_eq + ck_le + ck_ge + ck_tag + ck_pay + ck_cmp
 	+ ck_op_lt + ck_op_ge + ck_op_eq + ck_mixed
+
+$ @e <| assert (test == 0) "DERIVE_ORD: a check failed"

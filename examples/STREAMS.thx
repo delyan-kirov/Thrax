@@ -31,4 +31,4 @@ $ ck_range : @int = if nth 3 [7 ...] == 10 => 0 else 8
 
 $ test : @int = ck_head + ck_nth + ck_map + ck_range
 
-$ @run (assert (test == 0) "STREAMS: a check failed")
+$ @e <| assert (test == 0) "STREAMS: a check failed"

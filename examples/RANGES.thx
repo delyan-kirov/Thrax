@@ -72,5 +72,5 @@ $ test : @int =
 	ck_a + ck_a2 + ck_c + ck_d + ck_f + ck_r + ck_build + ck_len + ck_empty + ck_tens
 	+ ck_open_pat + ck_open_neg + ck_stream + ck_lazy_range + ck_lazy_open
 
-$ @run (assert (test == 0) "RANGES: a check failed")
+$ @e <| assert (test == 0) "RANGES: a check failed"
 

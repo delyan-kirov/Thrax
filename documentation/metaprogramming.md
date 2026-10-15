@@ -86,25 +86,24 @@ too, see "Runtime use" below; the rest need the handler's compiler state):
 @abort  : @str      -> <@meta> a       -- LANDED. fail the build with this message
 @emit   : @str      -> <@meta> {}      -- LANDED. print a message and continue
 @fresh  : @str      -> <@meta> @str    -- LANDED. a unique identifier (prefix + counter), for hygiene
-@link      : @str   -> <@meta> {}      -- LANDED. add a library to the link line
-@link_path : @str   -> <@meta> {}      -- LANDED. add a search path to the link line
+@link      : @str   -> <@meta> @code   -- LANDED. add a library to the link line (empty code)
+@link_path : @str   -> <@meta> @code   -- LANDED. add a search path to the link line (empty code)
 @check  : @code     -> <@meta> @code   -- planned
 @here   : ()        -> <@meta> @span   -- planned
 ```
 
 **LANDED (the `<@meta>` effect, first cut).** The ops above carry the `<@meta>`
-effect in their types, and **`@run` is the eliminator that discharges it** (see
-section 2). Every `@run` position (item `$ @run X`, expression `@run X`, type
-`@run X`) runs its operand under a CLOSED `<@meta>` ambient: a meta op inside
-`@run` type-checks and the surrounding context stays pure, while a meta op in
-ordinary code (or inside a PURE `@e`) is a clean "effect `@meta` is performed but
-not handled" error (no more runtime no-op/fault). A function that performs a meta
-op declares `<@meta>` in its signature (like `<@io>`); e.g.
-`examples/CT_ASSERT.thx`'s `assert : @bool -> @str -> <@meta> {}`, discharged by
-`$ @run (assert ...)`. The ambient is closed (only `@meta`), so `@run` stays
-hermetic: a generator that performs `@io` is still rejected. Lexing and parsing
-(`@lex`/`@parse`/`@parse_str`/`@parse_items`/`@token_*`) remain PURE, so they run
-under a plain `@e`. Still to come: a real handler over the live
+effect in their types, and **`@e` discharges it** (see section 2). Every `@e`
+position (item `$ @e X`, expression `@e X`, type `@e X`) runs its operand under
+a CLOSED `<@meta>` ambient: a meta op inside `@e` type-checks and the
+surrounding context stays pure, while a meta op in ordinary code is a clean
+"effect `@meta` is performed but not handled" error (no more runtime
+no-op/fault). A function that performs a meta op declares `<@meta>` in its
+signature (like `<@io>`); e.g. CORE's
+`assert : @bool -> @str -> <@meta> @code`, run by `$ @e <| assert ...`. The
+ambient is closed (only `@meta`), so `@e` stays hermetic: a generator that
+performs `@io` is still rejected. Lexing and parsing
+(`@lex`/`@parse`/`@parse_str`/`@parse_items`/`@token_*`) remain PURE. Still to come: a real handler over the live
 `Ast`/interner/type-env/diagnostic sink (replacing the thread-local host),
 `@lookup`/`@here`/`@check`, and a richer `@diag` (spans) for `@abort`/`@emit`.
 
@@ -220,36 +219,35 @@ curated subset of the internal lexer `Kind` is exposed; internal-only tags
 
 ---
 
-## 2. `@e` embeds; `@run` discharges `<@meta>`
+## 2. `@e` inserts code
 
-**Decision (revised, see #159).** There is no dedicated macro-invocation syntax
-(`foo!(...)`). Two sibling constructs run code at compile time and embed the
-result at their site; they differ only in the effect they permit:
+**Decision (revised again, reverting #159).** There is no dedicated
+macro-invocation syntax (`foo!(...)`) and there is one compile-time construct:
+**`@e X` runs `X` at build time and inserts the code it returns at its site.**
+`X` must be an `@code`; any other operand is a type error.
+Computing at build time is not a feature of its own: a generator computes
+whatever it likes, then renders the result to code (`@parse_str (to_string n)`)
+or builds code from data. `X` runs under a closed `<@meta>` ambient, so the meta
+ops (`@abort`, `@emit`, `@fresh`, `@link`, `@link_path`) discharge there and any
+other effect, `@io` included, is rejected. Compile-time IO lives solely in
+`@build` (sections 6 and 10).
 
-- **`@e X`** runs a **pure** `X` and embeds the result. It is NOT a `<@meta>`
-  handler: a meta op in `X` is an "effect `@meta` not handled" error.
-- **`@run X`** is the **eliminator for `<@meta>`**: it runs `X` under a closed
-  `<@meta>` ambient (discharging the meta ops) and embeds the result. A macro is a
-  `<@meta>` computation that `@run` discharges.
+Empty code inserts nothing, and that is the escape hatch for a site run only for
+its effect. `CORE.assert` and `@link`/`@link_path` return empty code, so
+`$ @e <| assert ok msg` and `$ @e <| @link "m"` are statements that vanish once
+they have run.
 
-To embed the output of a metaprogram you use `@run` (not `@e`); there is no need
-to nest `@e (@run …)`. Both work in expression, type, and item position; both
-lower identically (a synthetic global the driver forces) and differ only in the
-type-checker's ambient. Earlier drafts folded both jobs into a single `@e`; the
-split keeps "embed a pure value" and "discharge a meta effect" distinct.
+A short-lived split (#159) had `@e` run a PURE operand and embed its value, and a
+sibling `@run` discharge `<@meta>`. Both did the same thing apart from the
+ambient, and value embedding duplicated what a generator already does by
+returning code, so `@run` is gone and `@e` no longer folds values. `$ @run` is a
+parse error that points at `$ @e`.
 
-**What `@e X` is, precisely.** `@e` is not an ordinary function and its type is
-not `t1 -> @token`. It is a nullary splice at a fixed site: `X` is a closed
-compile-time expression, run once, now. Two things happen. It discharges
-`<@meta>` (the value case is the identity on `X`'s type, `@e (fib 10) : @int`,
-`@e ([1,2,3]) : @vec @int`; a `@code` result re-checks to whatever the spliced
-source is, a fresh var at the site). And operationally it emits source text,
-which is the real output: the fold renders a value's literal, the splice re-emits
-held source, and an item-position `$ @e X` whose value is discarded emits nothing
-(the empty fragment), running the computation for its build effect alone. `@e`
-discharges `<@meta>` only, never `<@io>`: its operand must be pure + `<@meta>`.
-Compile-time IO lives solely in `@build` (section 6/10), the one context that
-also installs an `<@io>` handler.
+**What `@e X` is, precisely.** `@e` is not an ordinary function. It is a splice
+at a fixed site: `X` is a closed compile-time expression, run once, now, whose
+`@code` result replaces the site in source. What the code denotes is known only
+once it is spliced and re-checked, so the site types as a fresh variable until
+then. In item position the code holds top-level items; in type position, a type.
 
 **Why.** `$ @e` already exists as CTFE (`Expr::Run` in the parser AST) and
 already drives the CEK machine at compile time. Reusing it means no new parser
@@ -269,8 +267,9 @@ literal through `@lex` (section 7):
 This is more composable than Rust's implicit token slurp: the raw-ness is
 visible at the call site, not hidden in the callee's signature.
 
-**Rejected:** a separate `@splice` keyword alongside a value-only `@e`. One
-eliminator is simpler and the result type disambiguates (section 3).
+**Rejected:** a separate `@splice` keyword alongside a value-only `@e`, and a
+separate `@run` alongside a pure `@e` (#159, reverted). One construct that
+inserts code is enough.
 
 ---
 
@@ -284,14 +283,10 @@ AST node with no residual `<@meta>` and nothing left unparsed. Elaborating
    compile-time world discharges (section 6); its result type is `t`.
 2. **Eval** `e` on the CEK machine with the compile-time handlers installed,
    giving a compile-time value `v`.
-3. **Reify**, dispatching on `t`:
-   - `t = []@token` -> `@parse v` to `@code`, then fall into the `@code` case.
-   - `t = @code` -> the fragment may contain further `@e` nodes; expand those
-     (recurse), then splice the resulting typed AST at this site.
-   - any other `t` -> emit the AST node that denotes `v` (a literal leaf for a
-     primitive, a constructor subtree for an aggregate).
-4. **Re-check** the spliced/embedded AST against the context the original
-   `@e` sat in.
+3. **Splice**: `t` is `@code` (the checker requires it). The fragment may
+   contain further `@e` nodes; the next round expands those (recurse), and the
+   fragment's source replaces this site.
+4. **Re-check** the spliced AST against the context the original `@e` sat in.
 
 Two loops are tangled here and separating them makes the recursion precise:
 
@@ -303,13 +298,14 @@ Two loops are tangled here and separating them makes the recursion precise:
   calling `@eval`/`@parse`/`@e` internally (step 2). A depth/iteration budget
   bounds it; exceeding the budget is a diagnostic, not a hang.
 
-**A value is the base case of code.** Reifying a value is producing the AST
-subtree that denotes it, so `value` is not a separate outcome from `@code`, it
-is where `@code` bottoms out.
+**A value is not inserted directly.** A generator that computes a value renders
+it to code itself (`@parse_str (to_string n)`), so `@e` has exactly one outcome.
 
 ### 3a. Cross-stage persistence
 
-Not every compile-time value has an AST denotation. Primitives, strings, and
+This applies to `@eval`, whose fragment's value crosses back into the running
+program; `@e` itself only ever inserts code. Not every compile-time value has
+an AST denotation. Primitives, strings, and
 aggregates of them reify fine. A closure, a live file handle, or an opaque
 `@meta`/`@code` handle cannot become source. Reification is total on the
 reifiable types and produces a clean diagnostic ("cannot embed a compile-time
@@ -390,11 +386,10 @@ The compile-time side is in too, and it needed no handler installation: `@build`
 *declares* `<@meta, @io>` in its own signature (section 10), so its body
 type-checks against that row like any other function, and the compile-time
 interpreter performs the IO for real (its FFI is the same one the program uses).
-`$ @e` and `$ @run` keep their hermetic ambients, so the boundary holds:
+`$ @e` keeps its hermetic ambient, so the boundary holds:
 
 ```
-$ @run (IO.read_dir ".")    # error: effect `@io` is performed but not handled
-$ @e   (IO.read_dir ".")    # error: effect `@io` is performed but not handled
+$ @e <| IO.read_dir "."     # error: effect `@io` is performed but not handled
 $ @build : {} -> <@meta, @io> @code = \_ = ... IO.read_dir "." ...   # fine
 ```
 
@@ -540,7 +535,7 @@ A `@build` of any other shape is rejected by name before it is ever run.
   that references them must not run before it. Each module's `@build` is forced
   **once** (nothing consumes it, so the `built` set is what terminates the loop);
   whatever it injects is expanded by the rounds that follow, so a generated `$ @e`
-  still folds, and a generated `$ with M` loads M (the loop reopens the module
+  still runs, and a generated `$ with M` loads M (the loop reopens the module
   set each round).
 - **Any module may have one**, not just the root, unlike `@main`. The entry is
   singular because a program has one way in; a build has as many contributors as
@@ -550,7 +545,7 @@ A `@build` of any other shape is rejected by name before it is ever run.
   imported `build.rs` or `setup.py` carries.
 - **Inspecting it.** `thrax expand <file> [MODULE]` prints each module's source
   after the expansion loop finishes, so the generated text is readable: `$ @e`
-  sites appear as the value or code they folded to, and a `@build`'s items appear
+  sites appear as the code they inserted, and a `@build`'s items appear
   appended to its module. Without it the only windows on a metaprogram are
   `check`'s inferred types and the emitted C.
 - `tests/MAIN.thx` is the real use: it reads `examples/` at compile time and
@@ -653,26 +648,27 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    name becomes a fresh type var) so the generators still run. Once no `@e`
    remains, one final **strict** compile validates the fully-injected program, so a
    genuinely unbound name or a bad entry is still reported. This is what makes a
-   derive-style macro (below) callable by hand-written code.
-2a. **DONE: expression-position `@e X`, value-fold AND code-splice.** `@e` is a
-   universal compile-time splice at any expression site, composing with `|>`/`<|`.
-   `let x = @e (fib 10) in …` folds to `55`; `@e (gen "+")` where `gen` builds a
-   `@code` from data splices `1 + 2 * 3` and yields `7`; `@e` that produces `@e`
-   recurses to a fixpoint. Mechanism (unified on **source substitution**): the
-   checker types `@e X` as `X`'s type for a value, or a fresh var when `X : @code`
-   (deferred until the splice re-checks); `lower_all` is an expand loop that
-   compiles, forces each `@e` site, renders the result to source (a `@code`'s text,
-   a scalar literal, or an aggregate literal), substitutes it at the site's span,
-   and re-compiles until no `@e` remains. Compile-time-only ops (`@lex`) fold away
-   entirely. Aggregate folding is done: `render_meta_value`/`render_owned`
-   (`crates/thrax/src/driver.rs`) render vectors (`[a, b, c]`), tuples (`{a, b}`),
-   structs (`Name.{ .f = v }`), and variants (`Ty.Tag.{ a, b }`, bare `Ty.Tag`
-   when nullary) recursively, so a compile-time-computed table folds into the
-   program. Because `[..]`/`.{ .. }` literals are type-directed, a rendered
-   aggregate must land where its type is pinned (an annotation or an unambiguous
-   use site); a fully ambiguous position can mis-default (e.g. `[..]` to `List`
-   rather than `@vec`). Caveat: a nested `@e (@e X)` inside one expression is not
-   handled (recursion works across rounds, e.g. generated code containing `@e`).
+   derive-style macro (below) callable by hand-written code. A site that faults
+   stays in the source and runs again next round, so a `$ @e <| assert ...` over
+   operators a `$ @e` derives in the same round sees them once they land; faults
+   are reported only when a round makes no progress. The loop gives up after
+   `MAX_META_ROUNDS` (100) rounds with an `EXPANSION_LIMIT` error naming every
+   site still pending, so a generator that injects a fresh `@e` each round
+   cannot hang the build. An `@eval` fragment run during expansion sees the
+   `$ with` imports of the module whose directive runs it, and compiles against
+   the sources the round already holds rather than re-reading them from disk.
+2a. **DONE: expression-position `@e X`.** `@e` is a universal compile-time
+   splice at any expression site, composing with `|>`/`<|`. `@e (gen "+")` where
+   `gen` builds a `@code` from data splices `1 + 2 * 3` and yields `7`; `@e` that
+   produces `@e` recurses to a fixpoint. Mechanism (unified on **source
+   substitution**): the checker requires `X : @code` and types the site as a
+   fresh var (deferred until the splice re-checks); `lower_all` is an expand loop
+   that compiles, forces each `@e` site, substitutes the code's source at the
+   site's span, and re-compiles until no `@e` remains. Value folding (rendering a
+   scalar or aggregate result back to a literal) existed briefly and was removed
+   with `@run`: a generator renders its own values to code. Caveat: a nested
+   `@e (@e X)` inside one expression is not handled (recursion works across
+   rounds, e.g. generated code containing `@e`).
 2c. **DONE: type-position `@e X` (`Foo : @e X = ...`).** `@e` now completes all
    three positions (expression, item, type). In type position `X` must build an
    `@code` denoting a type (with `@parse_str`); the expand loop forces it and
@@ -686,14 +682,15 @@ the `@build` message loop (`@msg`/`@add_code`/`@modules`).
    (struct/union/alias member types are a follow-up). See `examples/META_TYPE.thx`.
 3. Quotation: none needed as syntax. `@lex`/`@parse`/`@parse_str` over string
    literals (section 7); splice is string building (`++` / `?(e)`).
-4. **PARTIALLY DONE: the `<@meta>` effect + the `@e`/`@run` split.**
+4. **PARTIALLY DONE: the `<@meta>` effect.**
    `@abort`/`@emit`/`@fresh`/`@link`/`@link_path` are typed `<@meta>` (`@eval` was
-   too, until #187 made it pure), and
-   **`@run`** (item/expression/type position) is the eliminator: it runs its
-   operand under a closed `<@meta>` ambient. `@e` stays PURE. A meta op outside
-   `@run` (including inside `@e`) is an "effect `@meta` not handled" error, and
-   `@run` is hermetic (`@io` inside it is still rejected). See section 2 and
-   section 1's "LANDED" note. STILL TO COME: a real handler over the live compiler
+   too, until #187 made it pure), and `@e` (item/expression/type position)
+   discharges it: it runs its operand under a closed `<@meta>` ambient. A meta op
+   outside `@e` is an "effect `@meta` not handled" error, and `@e` is hermetic
+   (`@io` inside it is still rejected). A brief `@e`/`@run` split (#159), with
+   `@e` pure and `@run` the eliminator, was reverted: computing is not the
+   point of `@e`, inserting code is, so one construct does it. See section 2
+   and section 1's "LANDED" note. STILL TO COME: a real handler over the live compiler
    state (replacing the thread-local host), `@lookup`/`@here`/`@check`, and wiring
    `@emit`/`@abort` into the `Diagnostic` chain (spans).
 5. `@check` and `@eval` (staging), plus the `@code_*` constructors.

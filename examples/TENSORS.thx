@@ -106,4 +106,4 @@ $ test : @int =
 	+ ck_cat + ck_dup + ck_mm + ck_tr + ck_dot + ck_real + ck_ext + ck_gen
 	+ ck_row + ck_col + ck_slc + ck_rng + ck_ms + ck_var
 
-$ @run (assert (test == 0) "TENSORS: a check failed")
+$ @e <| assert (test == 0) "TENSORS: a check failed"
