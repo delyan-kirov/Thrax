@@ -65,7 +65,7 @@ $ test : {} -> <@io> @int =
 	+ ck_env {} + ck_env_none {} + ck_fmt
 
 # Every adjacent pair in order, from index `i`; 0 when the whole vector is.
-$ sorted_from : @vec @str -> @int -> @int = \names, i =
+$ sorted_from : @vec @str -> @int -> @int = \names i =
 	if i >= VEC.len names => 0
 	else if STR.cmp_str (VEC.get_or names (i - 1) "") (VEC.get_or names i "") > 0 => 1
 	else sorted_from names (i + 1)

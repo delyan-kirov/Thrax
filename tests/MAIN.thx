@@ -16,7 +16,7 @@ $ with VEC
 
 #- Utils -#
 
-$ check : @str -> @int -> <@io> @int = \name, t =
+$ check : @str -> @int -> <@io> @int = \name t =
 	if t == 0
 		  => println ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else println ("\x1b[1;31mERR\x1b[0m " ++ name); 1

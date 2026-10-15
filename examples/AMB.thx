@@ -40,7 +40,7 @@ $ collected : List @int = all_paths <| \u = if flip {} => 10 else 1
 
 # `k` handed to a helper that resumes it once per candidate: the clause body
 # cannot bound its own resumes, so every one of them copies.
-$ resume_each : (@int -> @int) -> @int -> @int -> @int = \k, i, n =
+$ resume_each : (@int -> @int) -> @int -> @int -> @int = \k i n =
 	if i > n => 0 else k i + resume_each k (i + 1) n
 
 $ search : ({} -> <Choose> @int) -> @int = \body =

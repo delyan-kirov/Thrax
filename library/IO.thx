@@ -69,10 +69,10 @@ $ read_dir : @str -> <@io> @vec @str = \dir =
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : @str -> @str -> <@io> @bool = \path, content =
+$ write_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : @str -> @str -> <@io> @bool = \path, content =
+$ append_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "ab"
 
 $ remove_file : @str -> <@io> @bool = \path =
@@ -100,7 +100,7 @@ $ read_line_acc : @str -> <@io> @str = \acc =
 $ is_byte : @int -> @bool = \c =
 	if c < 0 => @false else c <= 255
 
-$ read_bytes : @int -> @int -> @str -> <@io> @str = \f, n, acc =
+$ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
@@ -109,11 +109,11 @@ $ read_bytes : @int -> @int -> @str -> <@io> @str = \f, n, acc =
 
 # Every byte of a stream until it ends, for a `popen` pipe whose length is not
 # known up front (so `read_bytes`, which is given a count, does not fit).
-$ drain : @int -> @str -> <@io> @str = \f, acc =
+$ drain : @int -> @str -> <@io> @str = \f acc =
 	let c = C.fgetc f in
 	if is_byte c => drain f (@array_push acc c) else acc
 
-$ spill_file : @str -> @str -> @str -> <@io> @bool = \path, content, mode =
+$ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
 	if f == 0 => @false
 	else

@@ -16,16 +16,18 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 6`: bison's summary count, all resolving by the default
+ * CONFLICTS. `%expect 9`: bison's summary count, all resolving by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates twelve
- * (state, token) warnings over the same classes: 8 on DOT, 3 on BAR, 1 on
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates sixteen
+ * (state, token) warnings over the same classes: 12 on DOT, 3 on BAR, 1 on
  * KW_CTL. The summary number is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
  *                      `[expr ELLIPSIS RBRACK]`); two conflicts
  *   - `f x.y`         postfix `.` binds tighter than application -> `f (x.y)`
- *   - `E.Tag.{...}`   the `.{...}` is the variant payload, not a struct literal
+ *   - `E.Tag.{...}`   the `.{...}` is the variant payload, not a struct literal;
+ *                     in juxtaposed lambda parameters (`\.Tag .{..}`) too,
+ *                     three conflicts
  *   - `A.B.C`         qualified-name chains shift greedily
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
  *   - nested `is`     arms belong to the innermost `is` or handler; the real
@@ -47,7 +49,7 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 6
+%expect 9
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
@@ -254,7 +256,8 @@ ctrl_expr
                                 for the body */
   | KW_IF if_arms opt_comma KW_ELSE expr
   | KW_IS expr arms
-  | LAMBDA params opt_comma EQ expr
+  | LAMBDA params EQ expr
+  | LAMBDA pat_atom COLON type EQ expr
   | KW_DEFER defer_cleanups opt_comma KW_IN expr
   | handle
   ;
@@ -421,13 +424,13 @@ arm
   | alts KW_IF expr FATARROW expr
   ;
 
-/* A lambda's parameters, comma-separated (a trailing comma before `=` is
-   allowed). A parameter may carry a `: type` annotation, which the comma ends;
-   juxtaposed parameters would leave its extent ambiguous, since a lowercase name
-   in a type is a type variable and would read as an argument of the annotation. */
-params : param | params COMMA param ;
+/* A lambda's parameters, juxtaposed. An annotated parameter is parenthesized,
+   since a lowercase name in a type is a type variable and a bare annotation
+   would read the next parameter as its argument. A lone parameter may carry a
+   bare annotation (the LAMBDA rule above), as `=` ends its type. */
+params : param | params param ;
 
-param : pattern | pattern COLON type ;
+param : pat_atom | LPAREN pattern RPAREN | LPAREN pattern COLON type RPAREN ;
 
 pattern
   : pat_atom
