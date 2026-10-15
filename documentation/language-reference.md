@@ -177,7 +177,7 @@ $ @main : @vec @str -> <@io> @int = \args = 0      # args[0] is the program path
 
 A module without `@main` is a library: `thrax check` type-checks it and runs its
 compile-time assertions, and `thrax run`/`build` reject it. Nothing else is
-special, so a test harness is ordinary code: a check under `$ @run` (section 11)
+special, so a test harness is ordinary code: a check under `$ @e` (section 11)
 or a global some tool evaluates by name.
 
 ---
@@ -1149,30 +1149,47 @@ marker.
 
 # 11. Compile-time evaluation
 
-## 11.1 Compile-time assertions
-There is no `@assert` builtin. `CORE.assert : @bool -> @str -> <@meta> {}` is one
-line of ordinary Thrax over `@abort`, and `$ @run` is what makes it run at build
-time, so a module states its own invariants and checking it is testing it.
+## 11.1 `@e`, compile-time code insertion
+`@e X` runs `X` at build time and inserts the code it returns in its place. `X`
+must be an `@code`: `@parse_str` builds an expression and `@parse_items` builds
+top-level items from a string. The inserted source is then checked like
+hand-written code. `@e` works in expression, type, and item position, and
+composes with the pipes like any one-argument function.
 
 ```thrax
-$ @run (assert (fib 10 == 55) "fib 10 should be 55")
-$ @run (assert (fact 5 == 120) "fact 5 should be 120")
+$ lit : @int -> @code = \n = @parse_str <| to_string n
+
+$ fib10 : @int = @e <| lit <| fib 10                    # inserts `55`
+$ n     : @e <| @parse_str "@int64" = 1024              # inserts the type
+$ @e <| @parse_items "$ injected : @int = 99"           # inserts an item
 ```
 
-## 11.2 `@run` and build directives
-`$ @run expr` forces an expression through the interpreter at build time (the
-value is discarded). `@link` / `@link_path` steer the compilation itself: they add
-a library to the link line and the dlopen set, or a directory to the search path.
+`X` may perform the compile-time operations (`@emit`, `@abort`, `@fresh`,
+`@link`, `@link_path`). They carry the `<@meta>` effect, which `@e`
+discharges. It discharges nothing else, so `@e` is **hermetic**: a generator
+cannot perform `@io`. Compile-time IO lives in `@build` alone (section 11.3).
+
+Empty code inserts nothing. A site that runs only for its effect returns it, so
+the directive disappears once it has run.
+
+## 11.2 Compile-time assertions and build directives
+There is no `@assert` builtin. `CORE.assert : @bool -> @str -> <@meta> @code` is
+one line of ordinary Thrax over `@abort` that returns empty code, so a module
+states its own invariants and checking it is testing it.
 
 ```thrax
-$ @e triple 14                # run a PURE expression for effect at build time
-$ @run (@link "m")            # link/preload libm
-$ @run (@link_path "/opt/lib")
+$ @e <| assert (fib 10 == 55) "fib 10 should be 55"
+$ @e <| assert (fact 5 == 120) "fact 5 should be 120"
 ```
 
-`$ @e` and `$ @run` are both **hermetic**: `@e` discharges nothing (its operand
-must be pure) and `@run` discharges `<@meta>` only, so neither can perform
-`@io`. Compile-time IO lives in `@build` alone.
+`@link` / `@link_path` steer the compilation itself: they add a library to the
+link line and the dlopen set, or a directory to the search path. Both return
+empty code.
+
+```thrax
+$ @e <| @link "m"             # link/preload libm
+$ @e <| @link_path "/opt/lib"
+```
 
 ## 11.3 `@build`, the compile-time entry
 `@build` is to compiling what `@main` is to running: the one name the *build*
@@ -1198,7 +1215,7 @@ listing a `@build` usually wants.
 Rules: every module may have one (not just the root, unlike `@main`), it runs
 once, and it runs before any `$ @e` of that round, so code it generates is
 available to the rest of the compile-time code. Anything it injects is itself
-expanded, so a generated `$ @e` still folds and a generated `$ with M` loads M.
+expanded, so a generated `$ @e` still runs and a generated `$ with M` loads M.
 Note what "every module" implies: importing a module lets its `@build` perform IO
 during *your* build, the same trust an imported `build.rs` carries.
 
@@ -1208,7 +1225,7 @@ adding a file. See `examples/META_BUILD.thx` and
 documentation/metaprogramming.md.
 
 To see what a metaprogram produced, `thrax expand <file> [MODULE]` prints the
-source as the checker finally saw it: every `$ @e` folded or spliced and every
+source as the checker finally saw it: every `@e` spliced and every
 `@build`'s items appended. That is the view to debug a generator from, since
 nothing else shows the generated text.
 
@@ -1286,7 +1303,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@extern` | foreign binding | 10 |
 | `@ctx` | context (interface) parameter | 7.4 |
 | `@private` | visibility | 2.4 |
-| `@e` `@run` `@abort` | compile-time evaluation | 11 |
+| `@e` `@abort` | compile-time code insertion | 11 |
 | `@link` `@link_path` | build directives | 11.2 |
 | `@cast` | integer-width reinterpret | 4.11 |
 | `@true` `@false` `@bool` | boolean | 12.1 |
@@ -1309,7 +1326,7 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 | --- | --- |
 | `run` | run a program (needs `$ @main`) on the interpreter; extra args pass to it |
 | `build` | compile a program to a native executable beside the source |
-| `check` | run `@build`, expand metaprograms, run `$ @run` checks, print inferred types |
+| `check` | run `@build`, expand metaprograms, run `$ @e` checks, print inferred types |
 | `expand` | print the source after expansion, to inspect what a metaprogram made |
 | `emit-c` | emit standalone C to stdout |
 | `parse` | print the parsed syntax tree |

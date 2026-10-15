@@ -208,13 +208,11 @@ pub enum Item {
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
-    /// `$ @e expr` / `$ @run expr`: run the expression at compile time (see the
-    /// driver). Also expression/type intrinsics; this is the item form. The `Span`
-    /// is the whole directive, so the driver can replace it when an `@code` result
-    /// injects code. The `bool` is whether it discharges `<@meta>`: `@run` (true)
-    /// runs a meta computation, `@e` (false) requires a pure operand. There is no
-    /// `@assert` builtin; assert is user code (`if ok => {} else @abort ..`).
-    Run(Aol<Expr>, Span, bool),
+    /// `$ @e expr`: run the `@code`-valued expression at compile time and insert
+    /// the code it returns in place of the directive (see the driver). Also an
+    /// expression/type intrinsic; this is the item form. The `Span` is the whole
+    /// directive, which the driver replaces.
+    Run(Aol<Expr>, Span),
 }
 
 /// A `name : Type` field (struct fields and effect operations share this shape).
@@ -294,13 +292,11 @@ pub enum Ty {
     },
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
-    /// A compile-time type splice `@e X` / `@run X`: `X` is a compile-time
-    /// expression that produces an `@code` denoting a type, spliced into this
-    /// annotation. The `bool` is whether it discharges `<@meta>` (`@run`) or
-    /// requires a pure operand (`@e`). Erased before the final (strict) compile:
-    /// the driver's expand loop runs `X`, substitutes the resulting type source at
-    /// this node's span, and re-parses.
-    MetaE(Aol<Expr>, bool),
+    /// A compile-time type splice `@e X`: `X` is a compile-time expression that
+    /// produces an `@code` denoting a type, spliced into this annotation. Erased
+    /// before the final (strict) compile: the driver's expand loop runs `X`,
+    /// substitutes the resulting type source at this node's span, and re-parses.
+    MetaE(Aol<Expr>),
     /// A function type `From -> To`, optionally carrying an effect row.
     Arrow {
         from: Aol<Ty>,

@@ -612,7 +612,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(Value::Vector(Rc::new(v)))
         }
         // Metaprogramming: tokenize a string into opaque `@token` values. A lex
-        // error is a `Diagnostic`, which propagates as a fault (fails a `@run`).
+        // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         "@lex" => {
             let bytes = as_bytes(&a[0])?;
             let src = std::str::from_utf8(&bytes)
@@ -641,7 +641,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(code_value(src))
         }
         // Parse a string as an expression fragment into opaque `@code`. A syntax
-        // error is a `Diagnostic`, which propagates as a fault (fails a `@run`).
+        // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
         "@parse_str" | "@parse_items" => {
@@ -696,13 +696,13 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             s.extend_from_slice(format!("_m{n}").as_bytes());
             Ok(Value::Str(Rc::new(s)))
         }
-        // Steer the build at compile time (used via `$ @e (@link "curl")`): record
+        // Steer the build at compile time (used as `$ @e <| @link "curl"`): record
         // a library / search path for the driver to add to the link line. Returns
-        // unit; the effect is the recorded directive, not the value.
+        // empty code, so the directive inserts nothing.
         "@link" | "@link_path" => {
             let arg = String::from_utf8_lossy(&as_bytes(&a[0])?).into_owned();
             crate::machine::push_link(name == "@link_path", arg);
-            Ok(Value::Unit)
+            Ok(code_value(""))
         }
         // Compile-time reflection over a declared type, resolved by the driver's
         // type host (see `crate::machine::set_type_host`), reachable only inside

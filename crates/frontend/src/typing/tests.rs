@@ -592,9 +592,9 @@ fn open_row_entry_may_perform_any_effect() {
 }
 
 #[test]
-fn meta_op_outside_run_is_an_unhandled_effect() {
-    // The metaprogramming ops carry `<@meta>`. Used in ordinary code (no `@run`
-    // eliminator), the latent `<@meta>` cannot be subsumed into the pure ambient,
+fn meta_op_outside_e_is_an_unhandled_effect() {
+    // The metaprogramming ops carry `<@meta>`. Used in ordinary code (outside an
+    // `@e`), the latent `<@meta>` cannot be subsumed into the pure ambient,
     // so it is a clean compile error rather than a runtime no-op/fault.
     let src = "$ @mod M\n$ bad : @str = @fresh \"x\"";
     let e = errors(src);
@@ -602,40 +602,35 @@ fn meta_op_outside_run_is_an_unhandled_effect() {
 }
 
 #[test]
-fn run_discharges_meta_but_e_requires_pure() {
-    // `@run` is the `<@meta>` eliminator: a meta op inside it type-checks and the
-    // surrounding context stays pure. `@e` embeds PURE results only, so the same
-    // meta op inside `@e` is an unhandled-`@meta` error.
+fn e_discharges_meta_and_requires_code() {
+    // `@e` handles `<@meta>`: a meta op inside it type-checks and the surrounding
+    // context stays pure. It inserts code, so a non-`@code` operand is an error.
     assert_eq!(
-        errors("$ @mod M\n$ ok : @str = @run (@fresh \"x\")"),
+        errors("$ @mod M\n$ ok : @str = @e <| @parse_str <| @fresh \"x\""),
         "",
-        "meta op inside @run should type-check",
+        "meta op inside @e should type-check",
     );
-    let e = errors("$ @mod M\n$ bad : @str = @e (@fresh \"x\")");
-    assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
+    let e = errors("$ @mod M\n$ bad : @str = @e <| @fresh \"x\"");
+    assert!(e.contains("inserts code") && e.contains("`@str`"), "got: {e:?}");
+    let e = errors("$ @mod M\n$ bad : @int = @e 1");
+    assert!(e.contains("`@code`"), "got: {e:?}");
 }
 
 #[test]
-fn run_is_hermetic_io_stays_unhandled() {
-    // `@run` discharges `<@meta>` ONLY, so a generator that performs `@io` is still
-    // rejected: compile-time code cannot touch the world (that is `@build`'s job).
-    let src = "$ @mod M\n\
-               $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
-               $ bad : @int = @run (shout \"hi\")";
-    let e = errors(src);
-    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
+fn run_is_gone() {
+    let e = crate::parse("$ @mod M\n$ @run (@parse_items \"\")\n").err().expect("`@run` is rejected");
+    assert!(format!("{e}").contains("there is no '@run'"), "got: {e}");
 }
 
 #[test]
 fn build_is_the_only_io_capable_compile_time_context() {
-    // `$ @e` discharges nothing and `$ @run` discharges `<@meta>` only, so neither
-    // can perform IO: that is what makes them hermetic, and what leaves `@build`
-    // (whose own signature carries `<@io>`) as the only place a generator may
-    // touch the world.
+    // `@e` discharges `<@meta>` only, so it cannot perform IO: that is what makes
+    // it hermetic, and what leaves `@build` (whose own signature carries `<@io>`)
+    // as the only place a generator may touch the world.
     let io_fn = "$ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n";
-    let e = errors(&format!("$ @mod M\n{io_fn}$ bad : @int = @run (shout \"hi\")"));
-    assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
-    let e = errors(&format!("$ @mod M\n{io_fn}$ bad : @int = @e (shout \"hi\")"));
+    let e = errors(&format!(
+        "$ @mod M\n{io_fn}$ bad : @int = @e <| (shout \"hi\"; @parse_str \"1\")"
+    ));
     assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
     // A `@build`-shaped row handles both `@meta` and `@io`.
     assert_eq!(

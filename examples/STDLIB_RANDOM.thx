@@ -37,4 +37,4 @@ $ ck_range : @int =
 $ test : @int = ck_first + ck_second + ck_neg + ck_zero + ck_below
 	+ ck_spread + ck_range
 
-$ @run (assert (test == 0) "STDLIB_RANDOM: a check failed")
+$ @e <| assert (test == 0) "STDLIB_RANDOM: a check failed"

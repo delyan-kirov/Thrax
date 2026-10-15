@@ -71,6 +71,6 @@ $ sorted_from : @vec @str -> @int -> @int = \names i =
 	else sorted_from names (i + 1)
 
 # These checks touch the filesystem, so they run at run time rather than under a
-# `$ @run` compile-time assert like the rest of the corpus: this module is a
+# `$ @e` compile-time assert like the rest of the corpus: this module is a
 # program, and `$ @main` is what makes it one.
 $ @main : @vec @str -> <@io> @int = \args = test {}

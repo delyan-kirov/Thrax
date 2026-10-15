@@ -60,4 +60,4 @@ $ r_lookup  : @int = lookup 21 + lookup 500 + lookup 0 + lookup (0 - 5)  # 42 + 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = r_exn_ok ; r_exn_bad ; r_gen ; r_state ; if r_lookup == 139 => 0 else 1
 
-$ @run (assert (test == 0) "EFFECTS: a check failed")
+$ @e <| assert (test == 0) "EFFECTS: a check failed"

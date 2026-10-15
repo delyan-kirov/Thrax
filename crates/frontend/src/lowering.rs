@@ -645,7 +645,7 @@ pub fn lower_program(
             // time by the driver. The name is bare here (index-tagged so several
             // `@e`s in one module never collide); `lower_modules` prefixes the
             // module, and the driver qualifies the same way to force it.
-            Item::Run(expr, span, _meta) => {
+            Item::Run(expr, span) => {
                 let name = format!("@e#{}", ct_runs.len());
                 let term = lw.expr(*expr);
                 globals.push((name.clone(), term));
@@ -1447,17 +1447,15 @@ impl<'a> Lowerer<'a> {
         Some(Term::Field(Arc::new(base), field))
     }
 
-    /// Whether `f` is the `@e` / `@run` compile-time splice in head position. Both
-    /// lower identically to a synthetic global the driver forces; they differ only
-    /// in the type-checker's ambient (`@run` discharges `<@meta>`).
+    /// Whether `f` is the `@e` compile-time splice in head position.
     fn is_meta_e_head(&self, f: Aol<Expr>) -> bool {
-        matches!(self.node(f), Expr::Var { module: None, name } if matches!(self.text(*name), "@e" | "@run"))
+        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@e")
     }
 
     /// Lower an expression-position `@e arg`: `arg` becomes a synthetic global the
-    /// driver forces at compile time and patches with the reified constant, and
+    /// driver forces at compile time and splices the returned code in for, and
     /// this site references that global. Shared by direct application and the
-    /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` fold too).
+    /// `|>` / `<|` pipes (so `x |> @e` and `@e <| x` splice too).
     fn lower_meta_e(&mut self, arg: Aol<Expr>, span: Span) -> Term {
         let body = self.expr(arg);
         let name = format!("@e_expr#{}", self.meta_evals.len());
@@ -1475,7 +1473,7 @@ impl<'a> Lowerer<'a> {
     /// every type sub-position an annotation can nest a `@e` in.
     fn collect_meta_types(&mut self, ty: Aol<Ty>) {
         match self.tnode(ty) {
-            Ty::MetaE(expr, _) => {
+            Ty::MetaE(expr) => {
                 let expr = *expr;
                 let span = self.ast.ty_span(ty).unwrap_or_else(|| Span::at(0));
                 let name = format!("@e_type#{}", self.meta_type_evals.len());

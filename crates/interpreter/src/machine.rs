@@ -1152,7 +1152,7 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
 
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
-/// `$ @run` producing a `BUILD` directive the driver applies.
+/// `$ @e` whose `@code` result the driver splices.
 pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
     ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);

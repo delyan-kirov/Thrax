@@ -118,4 +118,4 @@ $ test : @int = ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum +
 	+ ck_lsum + ck_lcons + ck_lsecond + ck_lsc0 + ck_lsc2 + ck_lscN
 	+ ck_for + ck_for_break + ck_for_continue + ck_for_unbounded
 
-$ @run (assert (test == 0) "LISTS: a check failed")
+$ @e <| assert (test == 0) "LISTS: a check failed"

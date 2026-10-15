@@ -630,11 +630,11 @@ $ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
 
 $ impl_IFormap_for_List : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
 
-# A compile-time check. Under `$ @run` (the `<@meta>` eliminator) a false
-# condition aborts the build with `msg`, so a module states its own invariants and
-# checking it is testing it. `@abort` carries `<@meta>`, so `assert` does too and
-# cannot run at run time by accident.
-$ assert : @bool -> @str -> <@meta> {} = \ok msg = if ok => {} else @abort msg
+# A compile-time check, run as `$ @e <| assert ok msg`. A false condition aborts
+# the build with `msg`, so a module states its own invariants and checking it is
+# testing it. It returns empty code, so the directive inserts nothing. `@abort`
+# carries `<@meta>`, so `assert` does too and cannot run at run time by accident.
+$ assert : @bool -> @str -> <@meta> @code = \ok msg = if ok => @parse_items "" else @abort msg
 
 # ---- internal recursion workers ----
 # The accumulator loops the public `to_string` / `from_string` / `vcons` / `range`
