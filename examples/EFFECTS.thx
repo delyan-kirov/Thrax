@@ -1,4 +1,4 @@
-@mod EFFECTS
+$ @mod EFFECTS
 
 # Algebraic effects + handlers (typed, M3). Operations are performed by calling
 # them; a handler is `do <body> ctl k | op a => e ... | pat => e ...`, where the

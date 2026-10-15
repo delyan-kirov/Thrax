@@ -1,4 +1,4 @@
-@mod C
+$ @mod C
 
 # \file library/C.thx
 # \info The auto-injected `C` namespace: the standard C library (libc + libm) as

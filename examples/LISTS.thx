@@ -1,4 +1,4 @@
-@mod LISTS
+$ @mod LISTS
 
 # \file lists.thx
 # \info The `[]` surface, on the default sequence and on a type that opts in.

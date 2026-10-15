@@ -1,4 +1,4 @@
-@mod PATTERNS
+$ @mod PATTERNS
 
 # \file patterns.thx
 # \info Destructuring patterns in `let` bindings and lambda parameters. A struct

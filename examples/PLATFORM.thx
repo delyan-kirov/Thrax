@@ -1,4 +1,4 @@
-@mod PLATFORM
+$ @mod PLATFORM
 
 # \file PLATFORM.thx
 # \info The compilation-target reflection module `TARGET`: the word size,

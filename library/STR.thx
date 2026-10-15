@@ -1,4 +1,4 @@
-@mod STR
+$ @mod STR
 
 # \file STR.thx
 # \info String operations over the byte-vector `@str` (see

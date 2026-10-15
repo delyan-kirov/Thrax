@@ -1,4 +1,4 @@
-@mod OPT
+$ @mod OPT
 
 # \file OPT.thx
 # \info The standard `Option` type: a value that may be absent. `Some` carries

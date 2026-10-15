@@ -76,13 +76,13 @@ fn spanless_diagnostic_renders_without_a_location() {
     // `Span::at(0)` is the "no location" sentinel. Rendering it as `1:1` would
     // blame the first line of the file, which is what a runtime fault (the IR
     // carries no spans) used to do in the shell.
-    let src = "@mod M\n$ x = 1\n";
+    let src = "$ @mod M\n$ x = 1\n";
     let d = Diagnostic::error(Code::RuntimeFault, Span::at(0), 0, "division by zero");
     let text = d.render(src, "<repl>");
     assert!(text.contains("  --> <repl>\n"), "{text}");
     assert!(!text.contains(":1:1"), "{text}");
     assert!(!text.contains('^'), "{text}");
-    assert!(!text.contains("@mod M"), "{text}");
+    assert!(!text.contains("$ @mod M"), "{text}");
 }
 
 #[test]

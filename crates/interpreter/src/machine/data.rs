@@ -796,8 +796,8 @@ pub enum Fragment {
 /// Check that `src` parses as `kind`, by wrapping it in a scratch module.
 pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
     let wrapped = match kind {
-        Fragment::Expr => format!("@mod _META\n$ _e =\n{src}"),
-        Fragment::Items => format!("@mod _META\n{src}"),
+        Fragment::Expr => format!("$ @mod _META\n$ _e =\n{src}"),
+        Fragment::Items => format!("$ @mod _META\n{src}"),
     };
     frontend::parse(&wrapped).map(|_| ())
 }

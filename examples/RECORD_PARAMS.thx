@@ -1,4 +1,4 @@
-@mod RECORD_PARAMS
+$ @mod RECORD_PARAMS
 
 # \file RECORD_PARAMS.thx
 # \info Named-record parameter sugar. A parameter type written with field names,

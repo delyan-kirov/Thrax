@@ -201,6 +201,6 @@ fn tokens_are_borrow_free_and_send() {
 /// bare `?` is an unknown character rather than an unknown operator run.
 #[test]
 fn question_mark_is_not_an_operator() {
-    let err = Lexer::tokenize("@mod M\n$ x = 3 ? 4").expect_err("`?` must not lex");
+    let err = Lexer::tokenize("$ @mod M\n$ x = 3 ? 4").expect_err("`?` must not lex");
     assert!(err.to_string().contains("unknown character"), "{err}");
 }

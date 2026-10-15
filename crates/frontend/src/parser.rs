@@ -381,9 +381,10 @@ impl<'a> Parser<'a> {
 
     /// Parse a whole compilation unit.
     pub fn parse_program(&mut self) -> Result<Program> {
-        let at = expect!(self, Kind::At, "expected '@mod' at the start of the file");
+        expect!(self, Kind::Dollar, "expected '$ @mod' at the start of the file");
+        let at = expect!(self, Kind::At, "expected '@mod' after '$' at the start of the file");
         if self.intrinsic_name(at) != "mod" {
-            return Err(self.unexpected(&at, "expected '@mod' at the start of the file"));
+            return Err(self.unexpected(&at, "expected '@mod' after '$' at the start of the file"));
         }
         let name = expect!(self, Kind::Word, "expected a module name after '@mod'");
         let module = self.intern(self.text(name));

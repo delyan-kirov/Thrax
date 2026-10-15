@@ -130,7 +130,7 @@ fn lower_to_ir(user_sources: &[&str], name: &str) -> frontend::ir::data::Program
 fn lex_tokenizes_a_string_into_opaque_tokens() {
     // `@lex` tokenizes a string into `@vec @token`; `@token_kind` / `@token_text`
     // read a token's tag and lexeme. `foo + 12` is Word "foo", Op "+", Int "12".
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ toks = @lex \"foo + 12\"\n\
                $ n : @int = @vec_len toks\n\
                $ ck : @bool =\n\
@@ -148,7 +148,7 @@ fn parse_str_produces_opaque_code() {
     // A valid expression parses into an opaque `@code` carrying its source. A
     // syntax error traps (verified via `thrax run`: a compile-time `@e` of a
     // bad `@parse_str` fails the build), the same fault path as a `@e` trap.
-    let src = "@mod T\n$ c : @code = @parse_str \"1 + 2\"";
+    let src = "$ @mod T\n$ c : @code = @parse_str \"1 + 2\"";
     assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
 }
 
@@ -158,7 +158,7 @@ fn parse_consumes_tokens_into_code() {
     // `@parse_str`, closing the `@str -> @token -> @code` pipeline. The lexemes
     // rejoin whitespace-insensitively, so `@parse (@lex s)` yields code equal to
     // `@parse_str` of the normalized source.
-    let src = "@mod T\n$ c : @code = @parse (@lex \"1+2\")";
+    let src = "$ @mod T\n$ c : @code = @parse (@lex \"1+2\")";
     assert_eq!(run(src, "T.c"), "@code.{ .src = \"1 + 2\" }");
 }
 
@@ -168,7 +168,7 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
     // A stub host (the driver installs the real compile+run one) returns 42
     // regardless of source; `@eval` must call it and embed the reified value.
     set_meta_eval(Some(Box::new(|_src| Ok(OwnedValue::Int(42)))));
-    let src = "@mod T\n$ n : @int = @eval (@parse_str \"x\")";
+    let src = "$ @mod T\n$ n : @int = @eval (@parse_str \"x\")";
     assert_eq!(run(src, "T.n"), "42");
     set_meta_eval(None);
 }
@@ -177,7 +177,7 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 fn fresh_mints_distinct_names() {
     // `@fresh` returns a unique identifier each call, for hygienic codegen. It
     // carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
-    let src = "@mod T\n$ ck : @bool = @run (@fresh \"t\" == @fresh \"t\")";
+    let src = "$ @mod T\n$ ck : @bool = @run (@fresh \"t\" == @fresh \"t\")";
     assert_eq!(run(src, "T.@e_expr#0"), "false");
 }
 
@@ -186,7 +186,7 @@ fn expr_position_e_lowers_to_a_synthetic_global() {
     // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
     // (the driver folds it to a constant and patches it; here we force the body
     // directly to confirm the site was lowered and the callee is in scope).
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
                $ x : @int = @e (fib 10)";
     assert_eq!(run(src, "T.@e_expr#0"), "55");
@@ -197,7 +197,7 @@ fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // `$ @e <expr>` becomes a synthetic global (`Module.@e#i`) that the driver
     // forces at compile time. Here we force it directly to confirm it is emitted
     // and evaluates.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ triple : @int -> @int = \\n = n * 3\n\
                $ @e triple 14\n\
                $ test : @int = 0";
@@ -210,7 +210,7 @@ fn type_position_e_lowers_to_a_forceable_synthetic_global() {
     // (`Module.@e_type#i`) the driver forces at compile time, then splices the
     // resulting `@code`'s type source into the annotation. Here we force it
     // directly to confirm it is emitted and yields the type-carrying `@code`.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ pick : @str -> @code = \\s = @parse_str \"@int\"\n\
                $ x : @e (pick \"num\") = 42";
     assert_eq!(run(src, "T.@e_type#0"), "@code.{ .src = \"@int\" }");
@@ -248,7 +248,7 @@ fn ffi_struct_by_value_argument() {
          long sum_p(P p) { return p.x * 1000 + p.y; }\n",
     );
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_p : P -> @int = @extern \"C\" \"sum_p\" \"{}\"\n\
          $ test : @int = sum_p (P.{{ .x = 40, .y = 2 }})",
@@ -267,7 +267,7 @@ fn ffi_struct_array() {
          long sum_ps(P* a, int n) { long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
     );
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
@@ -286,7 +286,7 @@ fn ffi_callback() {
         "int call_twice(int (*f)(int, int)) { return f(1, 2) * 100 + f(3, 4); }\n",
     );
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @int = 10\n\
          $ test : @int = call_twice (\\a b = a + b + k)",
@@ -307,7 +307,7 @@ fn ffi_c_union_by_value() {
          U u_from_long(long v) { U u; u.i = v; return u; }\n",
     );
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ U : @union @extern \"C\" = i: @int, d: @float64,\n\
          $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
          $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
@@ -333,7 +333,7 @@ fn ffi_nested_struct_by_value() {
          Seg seg_make(long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
     );
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
          $ seg_sum : Seg -> @int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
@@ -350,7 +350,7 @@ fn ffi_struct_by_value_return() {
     // libc's `div_t div(int, int)` returns a small struct BY VALUE. A C-repr
     // struct return exercises the whole struct-marshalling path (layout, libffi
     // aggregate return, unpack back to a Thrax struct value).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: @int, rem: @int,\n\
         $ ldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
         $ test : @int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
@@ -362,17 +362,17 @@ fn ffi_struct_by_value_return() {
 fn a_name_two_imports_share_is_qualified() {
     // `make` is defined in two modules. Global scope is flat, so the bare name picks
     // neither: the qualified form names the one wanted, and both stay reachable.
-    let p = "@mod P\n\
+    let p = "$ @mod P\n\
              $ Box : @struct = v: @int\n\
              $ make : @int -> Box = \\n = Box.{ .v = n }\n\
              $ unwrap : Box -> @int = \\b = b.v";
-    let q = "@mod Q\n$ make : @int -> @int = \\n = n + 100";
-    let root = "@mod M\n\
+    let q = "$ @mod Q\n$ make : @int -> @int = \\n = n + 100";
+    let root = "$ @mod M\n\
                 $ with P\n\
                 $ with Q\n\
                 $ r : @int = unwrap (P.make 5) + Q.make 1";
     assert_eq!(run_modules(&[p, q, root], "r"), "106");
-    let bare = "@mod M\n\
+    let bare = "$ @mod M\n\
                 $ with P\n\
                 $ with Q\n\
                 $ r : @int = unwrap (make 5)";
@@ -384,8 +384,8 @@ fn a_name_two_imports_share_is_qualified() {
 fn a_local_definition_shadows_an_import() {
     // The module's own `make` wins over the imported one of the same name, so a
     // library name never has to be avoided just because it is in scope.
-    let p = "@mod P\n$ make : @int -> @int = \\n = n + 100";
-    let root = "@mod M\n\
+    let p = "$ @mod P\n$ make : @int -> @int = \\n = n + 100";
+    let root = "$ @mod M\n\
                 $ with P\n\
                 $ make : @int -> @int = \\n = n + 1\n\
                 $ r : @int = make 5 + P.make 5";
@@ -396,11 +396,11 @@ fn a_local_definition_shadows_an_import() {
 fn private_helper_runs_through_public_api() {
     // `scale` is public and calls a private `double`; the importer reaches `scale`
     // (double is hidden but still executes as part of scale's body).
-    let lib = "@mod A\n\
+    let lib = "$ @mod A\n\
                $ scale : @int -> @int = \\x = double x + 1\n\
                $ @private\n\
                $ double : @int -> @int = \\x = x + x";
-    let root = "@mod M\n\
+    let root = "$ @mod M\n\
                 $ with A\n\
                 $ r : @int = scale 10";
     assert_eq!(run_modules(&[lib, root], "r"), "21");
@@ -410,11 +410,11 @@ fn private_helper_runs_through_public_api() {
 fn literal_hook_from_imported_module() {
     // A library module provides a user type and its construction instance; a string
     // literal in the importing module builds that type via the IMPORTED instance.
-    let lib = "@mod LIBSTR\n\
+    let lib = "$ @mod LIBSTR\n\
                $ Text : @struct = bytes: @str\n\
                $ strlit_text : @IStrLit Text = .{ .of_str = \\s = Text.{ .bytes = s } }\n\
                $ size : Text -> @int = \\t = @array_len t.bytes";
-    let root = "@mod M\n\
+    let root = "$ @mod M\n\
                 $ with LIBSTR\n\
                 $ greeting : Text = \"hello\"\n\
                 $ r : @int = size greeting";
@@ -425,7 +425,7 @@ fn literal_hook_from_imported_module() {
 fn a_name_defined_twice_is_rejected() {
     // One name, one type: the module cannot define `kind` twice, so nothing about
     // `kind` can be resolved at a call site instead of at the declaration.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ kind : @int -> @int = \\x = 1\n\
                $ kind : @bool -> @int = \\b = 2\n\
                $ r : @int = kind 7";
@@ -437,7 +437,7 @@ fn ctx_resolves_by_type() {
     // `max_of` takes a context parameter: an ordinary first parameter that the call
     // site does not write. It is found by its type (`Ord @int`), and injected as a
     // leading argument.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
                $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
@@ -452,7 +452,7 @@ fn ctx_chains_and_is_overridden() {
     // parameter is nearer than any global), and an explicit `(@ctx flip)` turns
     // `max_of` into a min. The flipped instance is local, so global scope keeps one
     // value per type.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
                $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
@@ -470,7 +470,7 @@ fn ctx_chains_and_is_overridden() {
 fn ctx_generic_instance_resolves_per_element_type() {
     // A generic instance `Show (Box t)` is built from `Show t`: resolving the outer
     // context recursively resolves the instance's own one, per element type.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Show : @struct t = show: t -> @str,\n\
                $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
                $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
@@ -487,7 +487,7 @@ fn ctx_bundle_resolves_each_component() {
     // Two dictionaries travel as one tuple context: each component is resolved by its
     // own type and the bundle is built at the call site, so no global of the bundled
     // type has to exist.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Show : @struct t = show: t -> @str,\n\
                $ sh_int : Show @int = .{ .show = \\n = to_string n }\n\
                $ sh_bool : Show @bool = .{ .show = \\b = to_string b }\n\
@@ -502,7 +502,7 @@ fn ctx_bundle_resolves_each_component() {
 fn ctx_nullary_instance_resolves_by_expected_type() {
     // A context whose field is a value rather than a function still resolves by type,
     // including where the expected type comes from a struct-literal field.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Blank : @struct t = blank: t,\n\
                $ bl_int : Blank @int = .{ .blank = 0 }\n\
                $ bl_str : Blank @str = .{ .blank = \"\" }\n\
@@ -518,13 +518,13 @@ fn ctx_nullary_instance_resolves_by_expected_type() {
 fn ctx_instance_crosses_module_boundary() {
     // An imported instance is found by type like a local one, and an imported generic
     // instance keeps its own context requirement across the boundary.
-    let lib = "@mod GENM\n\
+    let lib = "$ @mod GENM\n\
                $ Show : @struct t = show: t -> @str,\n\
                $ show : @ctx Show t -> t -> @str = \\d x = d.show x\n\
                $ Box : @union t = Wrap: {t},\n\
                $ sh_box : @ctx Show t -> Show (Box t) = \\d =\n\
                \t.{ .show = \\x = is x | Box.Wrap.{a} => \"W(\" ++ d.show a ++ \")\" }";
-    let root = "@mod M\n\
+    let root = "$ @mod M\n\
                 $ with GENM\n\
                 $ sh_int : GENM.Show @int = .{ .show = \\n = to_string n }\n\
                 $ r : @int = if show (GENM.Box.Wrap.{ 5 } : GENM.Box @int) == \"W(5)\" => 0 else 1";
@@ -535,10 +535,10 @@ fn ctx_instance_crosses_module_boundary() {
 fn qualified_ctx_call_injects_its_context() {
     // `MOD.f` (qualified) plans its context just like a bare `f`, resolving the
     // instance from the caller's scope.
-    let lib = "@mod LM\n\
+    let lib = "$ @mod LM\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
                $ maxf : @ctx Ord t -> t -> t -> t = \\o x y = if o.gt x y => x else y";
-    let root = "@mod M\n\
+    let root = "$ @mod M\n\
                 $ with LM\n\
                 $ impl_Ord_for_int : LM.Ord @int = .{ .gt = \\a b = a > b }\n\
                 $ r : @int = LM.maxf 3 7";
@@ -549,7 +549,7 @@ fn qualified_ctx_call_injects_its_context() {
 fn struct_with_splices_included_fields() {
     // `Point3` copies `Point`'s fields ahead of its own; the positional/field
     // layout must be x, y, then z.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point : @struct = x: @int, y: @int\n\
                $ Point3 : @struct = with Point, z: @int\n\
                $ r : @int =\n\
@@ -562,7 +562,7 @@ fn declared_type_params_control_order() {
     // `@struct b a` declares the parameters explicitly, so `Box @int @str` binds
     // b = @int and a = @str (the declared order), not the order the fields mention
     // them. Reading `snd` back (typed `b`, i.e. @int) must give 7.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Box : @struct b a = fst: a, snd: b\n\
                $ r : @int = let x : Box @int @str = .{ .fst = \"hi\", .snd = 7 } in x.snd";
     assert_eq!(run(src, "r"), "7");
@@ -572,7 +572,7 @@ fn declared_type_params_control_order() {
 fn parameterized_alias_picks_which_generic() {
     // `KeyInt` fixes the first parameter, `ValInt` the second; the alias's own
     // parameter fills the one left open. Both instantiate the same `Pair`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Pair : @struct a b = fst: a, snd: b\n\
                $ KeyInt : @alias b = Pair @int b\n\
                $ ValInt : @alias a = Pair a @int\n\
@@ -586,7 +586,7 @@ fn parameterized_alias_picks_which_generic() {
 fn union_with_splices_included_variants() {
     // `Color` copies `Base`'s variants; a match over a copied and a new variant
     // both dispatch by tag.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Base : @union = Red: {}, Green: {}\n\
                $ Color : @union = with Base, Blue: {}\n\
                $ rank : Color -> @int = \\c =\n\
@@ -599,7 +599,7 @@ fn union_with_splices_included_variants() {
 fn open_row_param_accepts_any_matching_struct() {
     // One row-polymorphic function `{ x:@int, y:@int | r } -> @int` accepts several
     // distinct nominal structs, as long as they carry x:@int and y:@int.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point  : @struct = x: @int, y: @int,\n\
                $ Point3 : @struct = x: @int, y: @int, z: @int,\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
@@ -611,7 +611,7 @@ fn open_row_param_accepts_any_matching_struct() {
 fn anonymous_records_literal_update_stack() {
     // Anonymous literal into an open row; update (`| p`) preserving shape and stack
     // (`with p`) on an open-row parameter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
                $ shift : { x: @int | r } -> { x: @int | r } = \\p = { .x = p.x + 10 | p }\n\
                $ tag : { x: @int | r } -> { x: @int, tag: @int | r } = \\p = { .tag = 99, with p }\n\
@@ -626,7 +626,7 @@ fn anonymous_records_literal_update_stack() {
 fn nominal_struct_update_with_pipe() {
     // Record update on a nominal struct literal uses `| base`: listed fields
     // override, the rest come from `base`. Qualified, bare-inferred, and clone forms.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ P : @struct = a: @int, b: @int, c: @int\n\
                $ base : P = P.{ .a = 1, .b = 2, .c = 3 }\n\
                $ q : P = P.{ .b = 20 | base }\n\
@@ -642,7 +642,7 @@ fn sized_tensor_construction_and_modular_index() {
     // `@tensor_index` reads modulo the size (total: index n wraps to 0). Functions may be
     // size-polymorphic (`[n]a`), the size unifying at the call. (`.[..]` surface
     // sugar, which routes through the LA `index`, is covered by the TENSORS corpus.)
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ v : [3]@int = [10, 20, 30]\n\
                $ head : [n]a -> a = \\t = @tensor_index t 0\n\
                $ grid : [2][2]@int = [ [1, 2], [3, 4] ]\n\
@@ -657,7 +657,7 @@ fn tensor_size_arithmetic() {
     // Z/2^64 polynomial normalizer decides `n+n == 2*n` and `n+m == m+n`. (Full
     // library `concat`/`matmul`/`dot`/`transpose` are exercised end-to-end, both
     // engines, by the TENSORS corpus example, which imports `LA`.)
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ a : [2]@int = [1, 2]\n\
                $ b : [3]@int = [3, 4, 5]\n\
                $ c : [5]@int = @tensor_concat a b\n\
@@ -672,7 +672,7 @@ fn tensor_size_arithmetic() {
 fn generate_length_build_tensors_in_source() {
     // The `@tensor_create`/`@tensor_length` primitives (higher-order: the runtime applies the
     // closure per index) let a tensor op be written in source: here, transpose.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ myT : [m][n]a -> [n][m]a = \\t =\n\
                \t@tensor_create (@tensor_index t 0) (\\j = @tensor_create t (\\i = @tensor_index (@tensor_index t i) j))\n\
                $ a : [2][3]@int = [ [1,2,3], [4,5,6] ]\n\
@@ -686,7 +686,7 @@ fn overloadable_index_and_shape_sugar() {
     // `.[..]` desugars to the `@IIndex` interface, so two local instances (a tensor
     // one and a custom-type one) both drive `.[..]`, resolved by receiver type. Also
     // exercises `[m, n]T` shape sugar and `t.[i, j]`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ Box : @struct = base: @int\n\
                $ ix_box : @IIndex Box @int @int = .{ .index = \\b i = b.base + i }\n\
@@ -700,7 +700,7 @@ fn overloadable_index_and_shape_sugar() {
 fn multi_axis_slice_syntax() {
     // `..` keeps an axis, a range narrows it, an index reduces it, mixed freely.
     // The checker computes the result shape; all are O(1) strided views.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ m : [3, 4]@int = [ [1,2,3,4], [5,6,7,8], [9,10,11,12] ]\n\
                $ colv : [3]@int = m.[.., 1]\n\
@@ -715,7 +715,7 @@ fn multi_axis_slice_syntax() {
 fn inclusive_range_slice_syntax() {
     // `t.[p ... q]` is an INCLUSIVE leading-axis slice (a view), matching the range
     // pattern syntax `...`. `v.[1 ... 3]` keeps v[1], v[2], v[3].
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ ix_t : @IIndex ([n]a) @int a = .{ .index = \\t i = @tensor_index t i }\n\
                $ v : [5]@int = [10, 20, 30, 40, 50]\n\
                $ s : [3]@int = v.[1 ... 3]\n\
@@ -727,7 +727,7 @@ fn inclusive_range_slice_syntax() {
 fn expression_ascription() {
     // `(e : T)` checks `e` against `T` and passes the value through unchanged; the
     // annotation pins an otherwise-ambiguous literal.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ r : @int = (40 : @int) + 2";
     assert_eq!(run(src, "r"), "42");
 }
@@ -737,7 +737,7 @@ fn indexing_hook_returns_non_element() {
     // `@IIndex` may return any type, not just the element type: a map-style lookup
     // returns an `Option`-shaped union. Exercises a non-element result, resolved on
     // the receiver type.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Maybe : @union a = Nada: {}, Just: {a}\n\
                $ Dict : @struct = base: @int\n\
                $ ix_dict : @IIndex Dict @int (Maybe @int) = .{\n\
@@ -753,7 +753,7 @@ fn literal_construction_hooks() {
     // A user type opts into each literal kind with an instance of the matching
     // blessed interface; the literal (driven by the expected type) then builds that
     // user type instead of the built-in default.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ MyStr : @struct = bytes: @str\n\
         $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ Wrap : @struct = n: @int\n\
@@ -776,7 +776,7 @@ fn imaginary_literal_builds_a_complex_through_its_hook() {
     // `4.0i` is sugar for the `@IImagLit` interface, and the `+` is CORE's `IAdd
     // Cpx` instance, so the whole complex surface is library code. A real joins a
     // complex only by being made one (one operator, one type).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ z : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
         $ r : @str = to_string z";
     assert_eq!(run(src, "r"), "\"3 + 4i\"");
@@ -784,7 +784,7 @@ fn imaginary_literal_builds_a_complex_through_its_hook() {
 
 #[test]
 fn complex_arithmetic_is_core_instances() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ a : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
         $ b : Cpx = Cpx.{ 1.0, 0.0 } - 2.0i\n\
         $ r : @str = to_string (a + b) ++ \" \" ++ to_string (a * b)\n\
@@ -795,7 +795,7 @@ fn complex_arithmetic_is_core_instances() {
 
 #[test]
 fn imaginary_literal_takes_every_numeric_form() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ r : @str = to_string (3i) ++ \" \" ++ to_string (1.2i) ++ \" \" ++ to_string (2.5e-2i)";
     assert_eq!(run(src, "r"), "\"0 + 3i 0 + 1.2i 0 + 0.025i\"");
 }
@@ -805,7 +805,7 @@ fn unary_minus_reaches_a_user_instance() {
     // Unary minus is CORE's `neg`, `zero - x` over `ISub` and `IZero`, so a user type
     // negates exactly when it has both. The call must reach those instances, not fall
     // through to a numeric built-in.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Money : @struct = cents: @int\n\
         $ sub_money : ISub Money = .{ .sub = \\a b = Money.{ .cents = a.cents - b.cents } }\n\
         $ zero_money : IZero Money = .{ .zero = Money.{ .cents = 0 } }\n\
@@ -816,7 +816,7 @@ fn unary_minus_reaches_a_user_instance() {
 #[test]
 fn literal_hook_via_ascription() {
     // `(e : T)` also drives a construction interface.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Wrap : @struct = n: @int\n\
         $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
         $ r : @int = (41 : Wrap).n + 1";
@@ -828,7 +828,7 @@ fn literal_hook_does_not_hijack_default() {
     // A `@IStrLit` instance is in scope, but a `@str`-typed literal still builds a
     // plain @str: resolution fires only when the expected type is the user type, so
     // the default path (folded to a constant) is untouched.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ MyStr : @struct = bytes: @str\n\
         $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ plain  : @str   = \"abc\"\n\
@@ -842,7 +842,7 @@ fn list_literal_defaults_to_vec_with_patterns() {
     // `[...]` builds the default sequence, a `@vec` (not a linked list). Its
     // `@ISeqView` instance (in CORE) drives `h :: t` / `[a, b, ..rest]` / `[]`
     // patterns, and `@vec_*` primitives index it directly.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ xs : @vec @int = [10, 20, 30]\n\
         $ len : @int = @vec_len xs\n\
         $ head : @int = is xs | h :: _ => h | _ => 0\n\
@@ -856,7 +856,7 @@ fn bare_variant_tag_resolves_by_expected_type() {
     // A user union reuses the `Cons`/`Nil` tags that the prelude `List` also has. A
     // BARE `.Nil` resolves type-directedly from the expected payload type (`MyList`),
     // not by a global tag search, so the two unions coexist without collision.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ MyList : @union a = Nil: {}, Cons: {a, MyList a}\n\
         $ total : MyList @int -> @int = \\xs = is xs | MyList.Cons.{h, t} => h + total t | _ => 0\n\
         $ a : MyList @int = MyList.Cons.{ 1, MyList.Cons.{ 2, .Nil } }\n\
@@ -870,7 +870,7 @@ fn literal_pattern_via_equality_hook() {
     // A literal PATTERN on a user type routes through its construction interface and
     // its `IEq` instance: `is s | "hi" => ...` builds "hi" into the user type and
     // compares it with `IEq`, the same interface `==` wraps.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ MyStr : @struct = bytes: @str\n\
         $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
         $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
@@ -883,7 +883,7 @@ fn literal_pattern_via_equality_hook() {
 fn sequence_pattern_via_view_hook() {
     // A sequence PATTERN on a user type unfolds its `@ISeqView` instance: `[]`, `[x]`
     // (fixed length: tail must be empty), and `h :: t` all match.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Stack : @struct a = items: @vec a\n\
         $ sv : @ISeqView (Stack a) a = .{\n\
         \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
@@ -901,7 +901,7 @@ fn sequence_pattern_via_view_hook() {
 fn range_via_hook_on_a_user_type() {
     // `[lo ... hi]` builds whatever the resolved `@IRange` instance returns: a user
     // type takes the range surface with one, while the bare form stays a `@vec`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Span : @struct = lo: @int, hi: @int\n\
         $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
         $ s : Span = [3 ... 9]\n\
@@ -914,7 +914,7 @@ fn range_via_hook_on_a_user_type() {
 fn open_range_via_hook_on_a_user_type() {
     // The open `[lo ...]` goes through `@IRangeFrom`; CORE's instance builds the
     // infinite `Stream`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ From : @struct = start: @int\n\
         $ rf : @IRangeFrom @int From = .{ .range_from = \\lo = From.{ lo } }\n\
         $ f : From = [5 ...]\n\
@@ -927,7 +927,7 @@ fn open_range_via_hook_on_a_user_type() {
 fn cons_operator_takes_an_instance() {
     // `::` is CORE's wrapper over `ICons`, so a user sequence type joins it by
     // defining an instance, as with any other interface.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Stack : @struct a = items: @vec a\n\
         $ cons_stack : ICons a (Stack a) = .{ .cons = \\x s = Stack.{ .items = x :: s.items } }\n\
         $ s : Stack @int = 1 :: 2 :: Stack.{ .items = [] }\n\
@@ -940,7 +940,7 @@ fn cons_operator_takes_an_instance() {
 fn slice_hook_covers_sequences_and_user_types() {
     // `xs.[lo ... hi]` resolves `@ISlice`: CORE has instances for `@vec` / `@array` /
     // `@str`, and a user type joins with its own.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Tape : @struct = cells: @vec @int\n\
         $ sl : @ISlice Tape Tape = .{\n\
         \t.slice = \\t lo hi = Tape.{ .cells = t.cells.[lo ... hi] },\n\
@@ -956,7 +956,7 @@ fn slice_hook_covers_sequences_and_user_types() {
 fn strided_views_transpose_row_col_slice() {
     // Over the flat strided rep, transpose/index/slice are O(1) VIEWS sharing the
     // buffer. A transposed column is a strided view; a slice narrows an axis.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ mA : [3][3]@int = [ [1,2,3], [4,5,6], [7,8,9] ]\n\
                $ tA : [3][3]@int = @tensor_transpose mA\n\
                $ colv : [3]@int = @tensor_index tA 2\n\
@@ -971,7 +971,7 @@ fn strided_views_transpose_row_col_slice() {
 fn inclusive_range_patterns() {
     // `lo ... hi` matches when lo <= x <= hi, inclusive at both ends. Refutable, so
     // the match needs a catch-all arm. Works on @int and @float64.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ grade : @int -> @str = \\n =\n\
                \tis n | 90 ... 100 => \"A\" | 60 ... 89 => \"C\" | _ => \"F\"\n\
                $ band : @float64 -> @int = \\x = is x | 0.0 ... 1.0 => 1 | _ => 0\n\
@@ -988,7 +988,7 @@ fn unit_parameter_thunks_without_a_lambda() {
     // A `{} -> T` definition needs no explicit `\u =`: the unit parameter is
     // introduced automatically (a thunk), so the body runs when it is applied. An
     // explicit `\u =` still works (the arity guard leaves it alone).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ lazy : {} -> @int = 40 + 2\n\
                $ also : {} -> @int = \\u = 40 + 3\n\
                $ r : @int = lazy {} + also {}";
@@ -1001,7 +1001,7 @@ fn closed_record_param_named_by_a_lambda() {
     // field access (`\q = q.y`), instead of the auto-bind sugar. The sugar only
     // fires when the body has fewer leading lambdas than the signature's arity, so
     // it still auto-binds a record ahead of a later explicit lambda parameter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ label : { y: @int, z: @int } -> @int = \\q = q.y * 100 + q.z\n\
                $ add : { x: @int, y: @int } -> @int = x + y\n\
                $ f : { x: @int, y: @int } -> @int -> @int = \\n = x + y + n\n\
@@ -1013,7 +1013,7 @@ fn closed_record_param_named_by_a_lambda() {
 fn record_promotion_and_named_args() {
     // A record parameter can be called positionally (promoted), by name, or by
     // name reordered; a one-field record param accepts a bare scalar.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ add : {x: @int, y: @int} -> @int = x + y\n\
                $ inc : {x: @int} -> @int = x + 1\n\
                $ r : @int =\n\
@@ -1025,7 +1025,7 @@ fn record_promotion_and_named_args() {
 fn record_destructuring_pattern() {
     // Destructure a record by field name (match arm, and lambda shorthand), on an
     // open-row value and a nominal struct; `.._` ignores the rest.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point : @struct = x: @int, y: @int,\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
                $ sumxy : { x: @int, y: @int | r } -> @int = \\{ .x, .y } = x + y\n\
@@ -1038,7 +1038,7 @@ fn record_destructuring_pattern() {
 fn generic_struct_satisfies_an_open_row() {
     // A generic struct instance (`Box @int`, `Pair @int @str`) bridges to an open
     // record row by substituting its type arguments for the struct's parameters.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Box : @struct a = val: a\n\
                $ Pair : @struct a b = fst: a, snd: b\n\
                $ unwrap : { val: v | r } -> v = \\b = b.val\n\
@@ -1052,7 +1052,7 @@ fn record_rest_binds_the_leftover_fields() {
     // `..rest` binds the record minus the listed labels. Concrete case: matching a
     // `Point3` and binding `..rest` yields `{ y, z }`, readable and forwardable.
     // Open case: over `{ x:@int | r }`, `rest` is the polymorphic remainder.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point3 : @struct = x: @int, y: @int, z: @int\n\
                $ sum2 : { y:@int, z:@int } -> @int = y + z\n\
                $ split : Point3 -> @int = \\p = is p | { .x = a, ..rest } => a + sum2 rest\n\
@@ -1065,7 +1065,7 @@ fn record_rest_binds_the_leftover_fields() {
 fn recursive_struct_field_is_lazy_and_unbounded() {
     // A recursive struct field is lazy: construction is finite, and observing drives the
     // generative recursion lazily, so an infinite stream is fine.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
@@ -1079,12 +1079,12 @@ fn imported_global_does_not_shadow_a_same_named_effect_op() {
     // operation is also `get`. In the combined program B's bare `get` must resolve
     // to the operation, not A's imported global (which aliases into the bare-name
     // fallback). Regression for the cross-module glob-resolution gap.
-    let a = "@mod A\n$ get : @int -> @int = \\x = x + 1000";
-    let b = "@mod B\n\
+    let a = "$ @mod A\n$ get : @int -> @int = \\x = x + 1000";
+    let b = "$ @mod B\n\
         $ State : @effect = get : {} -> @int, put : @int -> {},\n\
         $ getit : {} -> <State> @int = \\u = get {}\n\
         $ run : @int = do getit {} ctl k | State.get u => k 42 | State.put v => k {} | r => r";
-    let root = "@mod M\n$ with A\n$ with B\n$ r : @int = B.run";
+    let root = "$ @mod M\n$ with A\n$ with B\n$ r : @int = B.run";
     assert_eq!(run_modules(&[a, b, root], "r"), "42");
 }
 
@@ -1094,14 +1094,14 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
     // struct pattern in B must be lowered against B's own layout, not A's (whose
     // fields differ), which otherwise faults with "no field ...". Regression for
     // the shared-`Decls` type collision.
-    let a = "@mod A\n\
+    let a = "$ @mod A\n\
         $ Pair : @struct = fst: @int, snd: @int\n\
         $ afst : @int = Pair.{ .fst = 7, .snd = 8 }.fst";
-    let b = "@mod B\n\
+    let b = "$ @mod B\n\
         $ Pair : @struct = a: @int, b: @int\n\
         $ first : Pair -> @int = \\p = is p | Pair.{ x, y } => x\n\
         $ bfst : @int = first Pair.{ .a = 3, .b = 4 }";
-    let root = "@mod M\n$ with A\n$ with B\n$ r : @int = B.bfst";
+    let root = "$ @mod M\n$ with A\n$ with B\n$ r : @int = B.bfst";
     assert_eq!(run_modules(&[a, b, root], "r"), "3");
 }
 
@@ -1109,7 +1109,7 @@ fn same_named_struct_types_in_two_modules_do_not_collide() {
 fn defer_runs_cleanup_on_completion_abort_and_nesting() {
     // A `Y` handler that sums every yielded value; the deferred cleanups perform
     // `Y.yield`, so their effects are observable in the total.
-    let prelude = "@mod M\n\
+    let prelude = "$ @mod M\n\
         $ Y : @effect = yield : @int -> {},\n\
         $ Exn : @effect = throw : @str -> a,\n\
         $ sum : ({} -> <Y> @int) -> @int = \
@@ -1139,7 +1139,7 @@ fn a_clause_may_resume_its_continuation_more_than_once() {
     // body runs twice and each resume works on its own copy of the captured
     // slice. The second `flip` is performed inside a resumed copy and captures
     // again from there: 11 + 1 + 10 + 0.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Amb : @effect = flip : {} -> @bool,\n\
         $ sum_all : ({} -> <Amb> @int) -> @int = \
           \\body = do body {} ctl k | Amb.flip u => k @true + k @false | x => x\n\
@@ -1156,7 +1156,7 @@ fn a_stored_continuation_may_be_resumed_more_than_once() {
     // The clause stashes `k` rather than resuming it, so nothing in the clause
     // bounds its uses; driving the SAME suspension twice must run the task's
     // remainder twice (1 + 2 + 2), not fault.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
@@ -1180,7 +1180,7 @@ fn copies_while(src: &str, name: &str) -> (String, usize) {
 fn n_resumes_of_one_continuation_cost_n_minus_one_copies() {
     // The first `k` is not its last use, so that resume copies; the second is,
     // so it takes the slice itself.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Amb : @effect = flip : {} -> @bool,\n\
         $ r : @int = do (if flip {} => 10 else 1) \
           ctl k | Amb.flip u => k @true + k @false | x => x";
@@ -1191,7 +1191,7 @@ fn n_resumes_of_one_continuation_cost_n_minus_one_copies() {
 fn parameter_passing_state_moves_without_an_annotation() {
     // `k` escapes into a lambda in every clause, so nothing static bounds its
     // uses, yet each resumption is uniquely owned when the lambda resumes it.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ St : @effect = get : {} -> @int, put : @int -> {},\n\
         $ count : @int -> <St> @int = \\n = \
           if n == 0 => get {} else (let s = get {} in let _ = put (s + 1) in count (n - 1))\n\
@@ -1206,7 +1206,7 @@ fn parameter_passing_state_moves_without_an_annotation() {
 
 #[test]
 fn a_stashed_coroutine_continuation_moves_when_driven_once() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
@@ -1227,7 +1227,7 @@ fn a_partial_push_applied_twice_does_not_share_its_buffer() {
     // The vector moves into the partial application, so the partial is its only
     // owner; pushing in place is allowed only once the partial itself is
     // consumed, or the second push would see the first.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ r : @int = \
           let v = @vec_fill 2 0 in \
           let f = @vec_push v in \
@@ -1239,7 +1239,7 @@ fn a_partial_push_applied_twice_does_not_share_its_buffer() {
 
 #[test]
 fn a_stored_continuation_resumed_twice_copies() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
@@ -1256,7 +1256,7 @@ fn a_stored_continuation_resumed_twice_copies() {
 fn defer_cleanup_runs_when_a_stored_continuation_completes() {
     // The handler stores the continuation instead of resuming; the cleanup runs
     // only when that continuation is later driven to completion (two steps).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Co : @effect = step : @int -> {},\n\
         $ Task : @union = Fin: {}, Susp: { {} -> Task },\n\
         $ spawn : ({} -> <Co> {}) -> Task = \
@@ -1272,7 +1272,7 @@ fn extern_ffi_file_roundtrip() {
     // The `@extern` FFI host table, exercised directly (the `C` namespace is the
     // same bindings injected by the driver). Open for write, put bytes, close;
     // reopen for read, read them back, then remove the file. "hi" is 104 and 105.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ fopen : {path: @str, mode: @str} -> @int = @extern \"C\" \"fopen\" \"libc\"\n\
         $ fputs : {s: @str, stream: @int} -> @int = @extern \"C\" \"fputs\" \"libc\"\n\
         $ fclose : @int -> @int = @extern \"C\" \"fclose\" \"libc\"\n\
@@ -1295,7 +1295,7 @@ fn extern_ffi_dynamic_dlopen() {
     // `strdup` (libc) and `expm1` (libm) are none of them curated, so each
     // exercises the dynamic path: an integer arg/return, a string arg with a
     // `char*` return decoded back to bytes, and a floating arg/return in xmm.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ iabs   : @int -> @int   = @extern \"C\" \"abs\"    \"libc\"\n\
         $ dup    : @str -> @str   = @extern \"C\" \"strdup\" \"libc\"\n\
         $ expm1r : @float64 -> @float64 = @extern \"C\" \"expm1\"  \"libm\"\n\
@@ -1310,7 +1310,7 @@ fn target_reflects_the_host_consistently() {
     // exactly `arch-os`.
     // The widths are annotated because this harness injects CORE alone, so the
     // `TARGET` module's types are not known here; the driver supplies them.
-    let src = "@mod M\n$ r : @int = \
+    let src = "$ @mod M\n$ r : @int = \
         let bits : @int = TARGET.int_bits in \
         let ptr : @int = TARGET.ptr_bits in \
         let name : @str = TARGET.name in \
@@ -1323,7 +1323,7 @@ fn target_reflects_the_host_consistently() {
 #[test]
 fn array_literal_lowers_to_byte_vector() {
     // `[..]` in @array context builds a byte vector, so array_* primitives apply.
-    let src = "@mod M\n$ a : @array = [10, 20, 30]\n\
+    let src = "$ @mod M\n$ a : @array = [10, 20, 30]\n\
                $ n = @array_len a\n$ g = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
@@ -1331,7 +1331,7 @@ fn array_literal_lowers_to_byte_vector() {
 
 #[test]
 fn array_patterns_destructure_and_guard() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ sum2 : @array -> @int = \\a = is a | [x, y] => x + y | _ => 0\n\
                $ r = sum2 [4, 5]\n\
                $ miss = sum2 [1, 2, 3]\n\
@@ -1350,34 +1350,34 @@ fn array_patterns_destructure_and_guard() {
 #[test]
 fn arithmetic_intrinsics() {
     // The monomorphic primitives the operator overloads will be built on.
-    assert_eq!(run("@mod M\n$ a = @iadd 2 3", "a"), "5");
-    assert_eq!(run("@mod M\n$ a = @isub 10 4", "a"), "6");
-    assert_eq!(run("@mod M\n$ a = @imul 6 7", "a"), "42");
-    assert_eq!(run("@mod M\n$ a = @idiv 13 4", "a"), "3");
-    assert_eq!(run("@mod M\n$ a = @imod 13 4", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a = @iadd 2 3", "a"), "5");
+    assert_eq!(run("$ @mod M\n$ a = @isub 10 4", "a"), "6");
+    assert_eq!(run("$ @mod M\n$ a = @imul 6 7", "a"), "42");
+    assert_eq!(run("$ @mod M\n$ a = @idiv 13 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a = @imod 13 4", "a"), "1");
     // Unsigned div/mod agree with signed for small values, but read the all-ones
     // bit pattern (`@isub 0 1` = every bit set) as u64::MAX, not -1.
-    assert_eq!(run("@mod M\n$ a = @udiv 13 4", "a"), "3");
-    assert_eq!(run("@mod M\n$ a = @umod 13 4", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a = @udiv 13 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a = @umod 13 4", "a"), "1");
     assert_eq!(
-        run("@mod M\n$ a = @udiv (@isub 0 1) 2", "a"),
+        run("$ @mod M\n$ a = @udiv (@isub 0 1) 2", "a"),
         "9223372036854775807" // (2^64 - 1) / 2
     );
-    assert_eq!(run("@mod M\n$ a = @umod (@isub 0 1) 3", "a"), "0"); // (2^64 - 1) % 3
-    assert_eq!(run("@mod M\n$ a = @fadd 1.5 2.0", "a"), "3.5");
-    assert_eq!(run("@mod M\n$ a = @fsub 5.0 1.5", "a"), "3.5");
-    assert_eq!(run("@mod M\n$ a = @fmul 2.0 3.5", "a"), "7");
-    assert_eq!(run("@mod M\n$ a = @fdiv 3.0 2.0", "a"), "1.5");
-    assert_eq!(run("@mod M\n$ a = @fmod 7.0 3.0", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a = @umod (@isub 0 1) 3", "a"), "0"); // (2^64 - 1) % 3
+    assert_eq!(run("$ @mod M\n$ a = @fadd 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a = @fsub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a = @fmul 2.0 3.5", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a = @fdiv 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("$ @mod M\n$ a = @fmod 7.0 3.0", "a"), "1");
     // The `@f32*` family rounds to single precision. Adding 1 to 2^24 is lost in
     // f32 (the next representable float is 2^24 + 2), where `@fadd` keeps it.
-    assert_eq!(run("@mod M\n$ a = @f32add 1.5 2.0", "a"), "3.5");
-    assert_eq!(run("@mod M\n$ a = @f32add 16777216.0 1.0", "a"), "16777216");
-    assert_eq!(run("@mod M\n$ a = @fadd 16777216.0 1.0", "a"), "16777217");
-    assert_eq!(run("@mod M\n$ a = @f32sub 5.0 1.5", "a"), "3.5");
-    assert_eq!(run("@mod M\n$ a = @f32mul 2.0 3.5", "a"), "7");
-    assert_eq!(run("@mod M\n$ a = @f32div 3.0 2.0", "a"), "1.5");
-    assert_eq!(run("@mod M\n$ a = @f32mod 7.0 3.0", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a = @f32add 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a = @f32add 16777216.0 1.0", "a"), "16777216");
+    assert_eq!(run("$ @mod M\n$ a = @fadd 16777216.0 1.0", "a"), "16777217");
+    assert_eq!(run("$ @mod M\n$ a = @f32sub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a = @f32mul 2.0 3.5", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a = @f32div 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("$ @mod M\n$ a = @f32mod 7.0 3.0", "a"), "1");
 }
 
 #[test]
@@ -1390,7 +1390,7 @@ fn float32_arithmetic_is_single_precision() {
     let f32 = |lhs: &str, rhs: &str| {
         run(
             &format!(
-                "@mod M\n$ a : @float32 = \
+                "$ @mod M\n$ a : @float32 = \
                  let x : @float32 = {lhs} in let y : @float32 = {rhs} in x + y"
             ),
             "a",
@@ -1409,7 +1409,7 @@ fn scalar_serialization_round_trips() {
     // int/nat, and boolean scalars. They are defined entirely in CORE (byte-level
     // `@array_*` plus arithmetic), not as compiler primitives, so a round trip
     // through text recovers the original value.
-    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    let ok = |src: &str| run(&format!("$ @mod M\n$ a : @bool = {src}"), "a");
 
     // @int, including the negative branch.
     assert_eq!(ok("(from_string (to_string 1234)) == 1234"), "true");
@@ -1446,7 +1446,7 @@ fn float_widths_mix_only_by_explicit_conversion() {
     // An operator takes one type for both operands, so `@float32 + @float64` is a
     // type error rather than a silent widening: `f32_to_f64` says where the
     // conversion happens.
-    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    let ok = |src: &str| run(&format!("$ @mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let x : @float32 = from_string \"1.5\" in \
             let y : @float64 = from_string \"2.25\" in \
@@ -1454,7 +1454,7 @@ fn float_widths_mix_only_by_explicit_conversion() {
         "true"
     );
     let err = errors(
-        "@mod M\n$ a : @bool = \
+        "$ @mod M\n$ a : @bool = \
          let x : @float32 = from_string \"1.5\" in \
          let y : @float64 = from_string \"2.25\" in (x + y) == y",
     );
@@ -1466,7 +1466,7 @@ fn sized_arithmetic_takes_literals_but_not_word_variables() {
     // A bare LITERAL drops into sized arithmetic, because it is checked against the
     // other operand's type rather than inferred on its own. A word-typed VARIABLE
     // does not: one operator, one type, so `@cast` says where the conversion is.
-    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    let ok = |src: &str| run(&format!("$ @mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let p : @int32 = from_string \"3\" in \
             let x : @int = 5 in \
@@ -1475,7 +1475,7 @@ fn sized_arithmetic_takes_literals_but_not_word_variables() {
         "true"
     );
     let err = errors(
-        "@mod M\n$ a : @bool = \
+        "$ @mod M\n$ a : @bool = \
          let p : @int32 = from_string \"3\" in \
          let x : @int = 5 in (x * p) == p",
     );
@@ -1500,7 +1500,7 @@ fn sized_literal_arithmetic_evaluates() {
     // Two bare literals in a sized-int context resolve to that sized type and
     // compute the right value (the operand types are pinned to the result type,
     // not defaulted to `@int`).
-    let ok = |src: &str| run(&format!("@mod M\n$ a : @bool = {src}"), "a");
+    let ok = |src: &str| run(&format!("$ @mod M\n$ a : @bool = {src}"), "a");
     assert_eq!(
         ok("let r : @int32 = 2 + 3 * 4 in r == from_string \"14\""),
         "true"
@@ -1521,7 +1521,7 @@ fn operator_table_every_entry() {
     use frontend::lexer::data::OPERATORS;
 
     for d in OPERATORS {
-        // Per-entry snippet (module body after `@mod M\n`) and the value of its
+        // Per-entry snippet (module body after `$ @mod M\n`) and the value of its
         // global `a`.
         let (body, expect): (&str, &str) = match d.lexeme {
             // Structural punctuation.
@@ -1563,7 +1563,7 @@ fn operator_table_every_entry() {
             "++" => ("$ a = \"x\" ++ \"y\"", "\"xy\""),
             other => panic!("OPERATORS entry `{other}` has no test; add an arm"),
         };
-        let src = format!("@mod M\n{body}");
+        let src = format!("$ @mod M\n{body}");
         assert_eq!(run(&src, "a").as_str(), expect, "operator `{}`", d.lexeme);
     }
 }
@@ -1573,7 +1573,7 @@ fn user_type_joins_an_operator_by_instance() {
     // A user struct joins `+` by implementing its interface. `V + V` goes through
     // that instance (componentwise); the `@int + @int` inside its body, and in `r`,
     // finds CORE's. Proves an operator dispatches through the context it resolves.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ V : @struct = x: @int, y: @int\n\
                $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
@@ -1582,29 +1582,29 @@ fn user_type_joins_an_operator_by_instance() {
 
 #[test]
 fn arithmetic_and_precedence() {
-    assert_eq!(run("@mod M\n$ a = 1 + 2 * 3 - 4", "a"), "3");
-    assert_eq!(run("@mod M\n$ a = (1 + 2) * (3 - 4)", "a"), "-3");
-    assert_eq!(run("@mod M\n$ a = 100 / 7", "a"), "14");
-    assert_eq!(run("@mod M\n$ a = 100 % 7", "a"), "2");
-    assert_eq!(run("@mod M\n$ a = - (-7)", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a = 1 + 2 * 3 - 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a = (1 + 2) * (3 - 4)", "a"), "-3");
+    assert_eq!(run("$ @mod M\n$ a = 100 / 7", "a"), "14");
+    assert_eq!(run("$ @mod M\n$ a = 100 % 7", "a"), "2");
+    assert_eq!(run("$ @mod M\n$ a = - (-7)", "a"), "7");
 }
 
 #[test]
 fn reals_and_mixed() {
-    assert_eq!(run("@mod M\n$ a = 1.0 + 2.0", "a"), "3");
-    assert_eq!(run("@mod M\n$ a : @float64 = 3.0 / 2.0", "a"), "1.5");
+    assert_eq!(run("$ @mod M\n$ a = 1.0 + 2.0", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @float64 = 3.0 / 2.0", "a"), "1.5");
 }
 
 #[test]
 fn self_recursion_factorial() {
-    let src = "@mod M\n$ fact : @int -> @int = \\n = if n == 0 => 1 else n * fact (n - 1)\n\
+    let src = "$ @mod M\n$ fact : @int -> @int = \\n = if n == 0 => 1 else n * fact (n - 1)\n\
                $ r = fact 5";
     assert_eq!(run(src, "r"), "120");
 }
 
 #[test]
 fn mutual_recursion() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ is_even : @int -> @int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
                $ is_odd  : @int -> @int = \\n = if n == 0 => 0 else is_even (n - 1)\n\
                $ r = is_even 10";
@@ -1613,31 +1613,31 @@ fn mutual_recursion() {
 
 #[test]
 fn let_bindings_chain_and_destructure() {
-    assert_eq!(run("@mod M\n$ a = let x = 6 in x * 7", "a"), "42");
+    assert_eq!(run("$ @mod M\n$ a = let x = 6 in x * 7", "a"), "42");
     assert_eq!(
         run(
-            "@mod M\n$ a = let x = 1, y = x + 10, z = y * 2 in x + y + z",
+            "$ @mod M\n$ a = let x = 1, y = x + 10, z = y * 2 in x + y + z",
             "a"
         ),
         "34"
     );
-    assert_eq!(run("@mod M\n$ a = let {p, q} = {3, 4} in p + q", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a = let {p, q} = {3, 4} in p + q", "a"), "7");
 }
 
 #[test]
 fn tuples_and_indexing() {
-    assert_eq!(run("@mod M\n$ a = {1, {2, 3}}.1.0", "a"), "2");
-    let swap = "@mod M\n$ swap = \\t = {t.1, t.0}\n$ a = (swap {1, 2}).0";
+    assert_eq!(run("$ @mod M\n$ a = {1, {2, 3}}.1.0", "a"), "2");
+    let swap = "$ @mod M\n$ swap = \\t = {t.1, t.0}\n$ a = (swap {1, 2}).0";
     assert_eq!(run(swap, "a"), "2");
 }
 
 #[test]
 fn list_sum_and_map() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
                $ a = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
-    let cons = "@mod M\n\
+    let cons = "$ @mod M\n\
                 $ sum : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
                 $ a = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
@@ -1645,7 +1645,7 @@ fn list_sum_and_map() {
 
 #[test]
 fn union_construction_and_nested_match() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Peano : @union = Zero: {}, Succ: { Peano }\n\
                $ depth : Peano -> @int = \\n = \
                  is n | Peano.Zero => 0 \
@@ -1657,12 +1657,12 @@ fn union_construction_and_nested_match() {
 
 #[test]
 fn struct_field_access_and_match() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point : @struct = x: @int, y: @int\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
                $ a = p.x + p.y";
     assert_eq!(run(src, "a"), "7");
-    let m = "@mod M\n\
+    let m = "$ @mod M\n\
              $ Point : @struct = x: @int, y: @int\n\
              $ sum : Point -> @int = \\pt = is pt | Point.{ x, y } => x + y | _ => 0\n\
              $ a = sum Point.{ .x = 10, .y = 20 }";
@@ -1671,7 +1671,7 @@ fn struct_field_access_and_match() {
 
 #[test]
 fn with_scopes_struct_fields() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point : @struct = x: @int, y: @int\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
                $ a = with p in x + y";
@@ -1682,24 +1682,24 @@ fn with_scopes_struct_fields() {
 fn record_parameter_destructures() {
     assert_eq!(
         run(
-            "@mod M\n$ add : {x: @int, y: @int} -> @int = x + y\n$ a = add {3, 4}",
+            "$ @mod M\n$ add : {x: @int, y: @int} -> @int = x + y\n$ a = add {3, 4}",
             "a"
         ),
         "7"
     );
     assert_eq!(
-        run("@mod M\n$ inc : {x: @int} -> @int = x + 1\n$ a = inc 5", "a"),
+        run("$ @mod M\n$ inc : {x: @int} -> @int = x + 1\n$ a = inc 5", "a"),
         "6"
     );
 }
 
 #[test]
 fn higher_order_and_guards() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ twice = \\f x = f (f x)\n\
                $ a = twice (\\n = n + 3) 1";
     assert_eq!(run(src, "a"), "7");
-    let guard = "@mod M\n\
+    let guard = "$ @mod M\n\
                  $ classify : @int -> @int = \\n = is n | m if m > 0 => 1 | _ => 0\n\
                  $ a = classify 5";
     assert_eq!(run(guard, "a"), "1");
@@ -1707,8 +1707,8 @@ fn higher_order_and_guards() {
 
 #[test]
 fn string_concat_and_prefix_match() {
-    assert_eq!(run("@mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
-    let src = "@mod M\n\
+    assert_eq!(run("$ @mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
+    let src = "$ @mod M\n\
                $ verb : @str -> @int = \\s = is s | \"GET \" ++ _ => 1 | _ => 0\n\
                $ a = verb \"GET /\"";
     assert_eq!(run(src, "a"), "1");
@@ -1716,7 +1716,7 @@ fn string_concat_and_prefix_match() {
 
 #[test]
 fn sequencing_returns_last() {
-    assert_eq!(run("@mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
 }
 
 #[test]
@@ -1724,7 +1724,7 @@ fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`, so the right operand is skipped when the
     // result is already decided: a `1 / 0` on the skipped side must not fault.
     // Precedence: `&&`/`||` bind looser than comparison (`a < b && c < d`).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ f : @bool = @false\n\
                $ t : @bool = @true\n\
                $ sc_and : @int = if (f && (1 / 0 == 0)) => 1 else 0\n\
@@ -1737,7 +1737,7 @@ fn short_circuit_and_or() {
 /// The entry returns its `@int` as the exit code (no `entry = <value>` print).
 #[test]
 fn entry_returns_exit_code() {
-    let src = "@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
+    let src = "$ @mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
     let program = lower_checked(src, "@main");
     let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
     let code = interpreter::machine::run_entry(&ir, "@main", vec!["prog".to_string()])
@@ -1749,7 +1749,7 @@ fn entry_returns_exit_code() {
 /// `@main` sees the whole vector.
 #[test]
 fn entry_receives_string_vector() {
-    let src = "@mod MAIN\n\
+    let src = "$ @mod MAIN\n\
                $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
     let program = lower_checked(src, "@main");
     let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
@@ -1764,7 +1764,7 @@ fn entry_receives_string_vector() {
 /// tail-recursive countdown to a depth that would blow the native stack returns.
 #[test]
 fn deep_tail_recursion_is_constant_stack() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ loop : @int -> @int = \\n = if n == 0 => 42 else loop (n - 1)\n\
                $ test : @int = loop 1000000\n";
     assert_eq!(run(src, "test"), "42");
@@ -1774,7 +1774,7 @@ fn deep_tail_recursion_is_constant_stack() {
 fn emit_returns_unit_and_abort_faults() {
     // `@emit` carries `<@meta>`, so it is used inside `@run` (which discharges the
     // effect); forcing the synthetic global runs it, printing and returning unit.
-    let src = "@mod T\n$ u : {} = @run (@emit \"note\")";
+    let src = "$ @mod T\n$ u : {} = @run (@emit \"note\")";
     assert_eq!(run(src, "T.@e_expr#0"), "{}");
 }
 
@@ -1785,7 +1785,7 @@ fn recursive_union_slot_is_lazy() {
     // This diverged before laziness became a property of the slot: the IR
     // lowering hoisted every non-atom constructor field into a `let` evaluated
     // before the constructor, so building one cell built the whole structure.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
                $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
@@ -1798,7 +1798,7 @@ fn a_lazy_slot_is_forced_once() {
     // Forcing patches the cell, so walking the same list twice does the spine
     // work once. `n` counts how many cells the second walk had to build: with a
     // non-memoized thunk it would rebuild every one.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
                $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
@@ -1811,7 +1811,7 @@ fn a_lazy_slot_is_forced_once() {
 fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
     // A strict slot here faults with "a value global refers to itself while
     // being defined"; under a thunk the reference is not followed until observed.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ S : @struct t = head : t, tail : S t\n\
                $ ones : S @int = { .head = 1, .tail = ones }\n\
                $ r : @int = ones.tail.tail.tail.head";
@@ -1822,7 +1822,7 @@ fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
 fn a_non_recursive_field_stays_strict() {
     // Only a slot that leads back to its own type is lazy; everything else keeps
     // call-by-value timing.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ P : @struct = x: @int, y: @int\n\
                $ p : P = P.{ .x = 1 + 1, .y = 3 }\n\
                $ r : @int = p.x + p.y";
@@ -1834,7 +1834,7 @@ fn equality_forces_lazy_slots() {
     // An equality instance walks the whole value, so it must force: comparing
     // unforced slots would compare representations and report two equal lists as
     // different. The instance is recursive, and resolving it resolves itself.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
                $ eq_l : @ctx IEq a -> IEq (L a) = \\d = .{ .eq = \\x y =\n\
@@ -1848,7 +1848,7 @@ fn equality_forces_lazy_slots() {
 fn freeing_a_long_list_does_not_recurse_on_the_host_stack() {
     // `Value`'s derived drop nested once per cell, so releasing a list of this
     // length aborted the process AFTER the program had produced its answer.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> @int -> L @int = \\lo hi = if lo > hi => L.N else L.C.{ lo, mk (lo + 1) hi }\n\
                $ len : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => len t (acc + 1) | _ => acc\n\

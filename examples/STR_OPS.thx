@@ -1,4 +1,4 @@
-@mod STR_OPS
+$ @mod STR_OPS
 
 # \file str_ops.thx
 # \info Strings and arrays as growable byte vectors (see

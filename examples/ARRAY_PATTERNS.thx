@@ -1,4 +1,4 @@
-@mod ARRAY_PATTERNS
+$ @mod ARRAY_PATTERNS
 
 # \info Type-directed `[..]` patterns on an @array (a byte vector). The SAME
 #       bracket syntax as list patterns; the scrutinee's inferred type picks the

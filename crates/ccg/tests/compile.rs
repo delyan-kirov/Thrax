@@ -119,7 +119,7 @@ fn c_run_entry(src: &str, args: &[&str]) -> (i32, String) {
 /// its own.
 #[test]
 fn entry_exit_code() {
-    let src = "@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
+    let src = "$ @mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
     let (exit, stdout) = c_run_entry(src, &[]);
     assert_eq!(exit, 42);
     assert_eq!(stdout, "");
@@ -128,7 +128,7 @@ fn entry_exit_code() {
 /// The entry receives argv (path first) as a `@vec @str`.
 #[test]
 fn entry_receives_string_vector() {
-    let src = "@mod MAIN\n\
+    let src = "$ @mod MAIN\n\
                $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
     let (exit, _stdout) = c_run_entry(src, &["alpha", "beta"]);
     assert_eq!(exit, 3);
@@ -171,7 +171,7 @@ fn runtime_operators_match_interpreter_natively() {
         "if 2.0 ^ 3.0 > 7.0 => 1 else 0",
     ];
     for body in cases {
-        let src = format!("@mod M\n$ a = {body}");
+        let src = format!("$ @mod M\n$ a = {body}");
         assert_matches(&src, "a");
     }
 }
@@ -197,7 +197,7 @@ fn arithmetic_intrinsics_match_interpreter() {
         "if @fdiv 3.0 2.0 == 1.5 => 1 else 0",
         "if @fmod 7.0 3.0 == 1.0 => 1 else 0",
     ] {
-        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
     }
 }
 
@@ -217,7 +217,7 @@ fn comparison_intrinsics_match_interpreter() {
         "if @slt \"ab\" \"b\" => 1 else 0",
         "if @slt \"ab\" \"ab\" => 1 else 0",
     ] {
-        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
     }
 }
 
@@ -226,7 +226,7 @@ fn comparison_intrinsics_match_interpreter() {
 /// per-type overload for a primitive.
 #[test]
 fn user_comparison_instance_compiles() {
-    let src = "@mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    let src = "$ @mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
@@ -246,7 +246,7 @@ fn float32_intrinsics_match_interpreter() {
         "@f32div 1.0 3.0",
         "@f32mod 7.0 3.0",
     ] {
-        assert_matches(&format!("@mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
     }
 }
 
@@ -275,7 +275,7 @@ fn scalar_serialization_matches_interpreter() {
             "a",
         ),
     ] {
-        assert_matches(&format!("@mod M\n{body}"), entry);
+        assert_matches(&format!("$ @mod M\n{body}"), entry);
     }
 }
 
@@ -283,7 +283,7 @@ fn scalar_serialization_matches_interpreter() {
 fn float_widening_matches_interpreter() {
     // Widening is explicit now (`f32_to_f64`, the `thx_f2d` runtime conversion); the
     // C backend must produce the same `@float64` result as the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ x : @float32 = from_string \"1.5\"\n\
                $ y : @float64 = from_string \"2.25\"\n\
                $ fwd : @float64 = f32_to_f64 x + y\n\
@@ -296,7 +296,7 @@ fn float_widening_matches_interpreter() {
 fn sized_arithmetic_matches_interpreter() {
     // A bare literal drops into sized arithmetic; a word-typed variable is `@cast`
     // first. The C backend must agree with the interpreter on both.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ p : @int32 = from_string \"3\"\n\
                $ x : @int = 5\n\
                $ cast : @int32 = (let y : @int32 = @cast x in y) * p\n\
@@ -310,7 +310,7 @@ fn user_operator_instance_matches_interpreter() {
     // A user `IAdd` instance for a struct must lower to the user global on the C
     // backend too (resolved via the runtime string-keyed global table), while the
     // `@int + @int` inside finds CORE's instance.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ V : @struct = x: @int, y: @int\n\
                $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
                $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
@@ -323,7 +323,7 @@ fn native_program_always_declares_libm() {
     // libm. The emitter declares it even for a program that uses no math extern;
     // without it a minimal build fails to link `pow`. This asserts the driver's
     // link path (which, unlike `c_run` here, does not hardcode `-lm`) stays sound.
-    let lowered = lower("@mod M\n$ main : @int = 1 + 1");
+    let lowered = lower("$ @mod M\n$ main : @int = 1 + 1");
     let emitted = ccg::emit_program(
         &lowered,
         "main",
@@ -342,7 +342,7 @@ fn cast_between_integer_widths() {
     // `@cast` reinterprets an integer at another width. It is erased after type
     // checking (integers are boxed uniformly), so both engines must agree: widen
     // `@int32 -> @int`, narrow `@int -> @int32`, and use the results in arithmetic.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ small : {} -> @int32 = \\u = 65\n\
                $ widened : @int = @cast (small {})\n\
                $ narrowed : @int32 = @cast (widened + 1)\n\
@@ -355,7 +355,7 @@ fn cast_between_integer_widths() {
 
 #[test]
 fn arithmetic_and_precedence() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ a = 1 + 2 * 3 - 4\n\
                $ b : @float64 = 100.123 % 7.0\n\
                $ test : @int = a\n";
@@ -367,7 +367,7 @@ fn arithmetic_and_precedence() {
 #[test]
 fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`; the C backend matches the interpreter.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ f : @bool = @false\n\
                $ t : @bool = @true\n\
                $ a : @int = if (t && 3 < 5) => 1 else 0\n\
@@ -381,7 +381,7 @@ fn short_circuit_and_or() {
 fn one_operation_over_two_types_matches_interpreter() {
     // One operation covering two types is an interface plus two instances. The C
     // backend must project and call the same instance the interpreter does.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ IKind : @struct t = kind: t -> @int,\n\
                $ kind : @ctx IKind t -> t -> @int = \\d x = d.kind x\n\
                $ kind_int : IKind @int = .{ .kind = \\x = 1 }\n\
@@ -395,7 +395,7 @@ fn ctx_context_parameter_passing() {
     // A `@ctx` parameter elaborates to a leading argument the call site injects, an
     // instance built from another instance to a nested one; the C backend must do it
     // exactly as the interpreter does.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Ord : @struct t = gt: t -> t -> @bool,\n\
                $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
@@ -415,7 +415,7 @@ fn ctx_context_parameter_passing() {
 fn type_splice_with() {
     // `with` copies struct fields and union variants into a new type; the C
     // backend must lay them out and match them exactly as the interpreter does.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point : @struct = x: @int, y: @int\n\
                $ Point3 : @struct = with Point, z: @int\n\
                $ Base : @union = Red: {}, Green: {}\n\
@@ -432,7 +432,7 @@ fn type_splice_with() {
 fn open_row_record_param() {
     // Row-polymorphic record param over the C backend: field access resolves the
     // same by-name as the interpreter, regardless of the concrete struct passed.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Point  : @struct = x: @int, y: @int,\n\
                $ Point3 : @struct = x: @int, y: @int, z: @int,\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
@@ -444,7 +444,7 @@ fn open_row_record_param() {
 fn anonymous_record_values() {
     // Records under an open row (name-keyed) and pair decay (positional) must build
     // and read the same on the C backend as the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
                $ shift : { x: @int | r } -> { x: @int | r } = \\p = { .x = p.x + 10 | p }\n\
                $ add : {x: @int, y: @int} -> @int = x + y\n\
@@ -457,7 +457,7 @@ fn anonymous_record_values() {
 fn record_destructuring_pattern() {
     // Record patterns lower to name-keyed struct matches; the C backend must
     // destructure them the same as the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ area : { x: @int, y: @int | r } -> @int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
                $ sumxy : { x: @int, y: @int | r } -> @int = \\{ .x, .y } = x + y\n\
                $ test : @int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
@@ -468,7 +468,7 @@ fn record_destructuring_pattern() {
 fn lazy_recursive_struct_streams() {
     // A recursive struct field is a thunk the C runtime forces on access; the C
     // backend must drive the lazy infinite stream the same as the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
                $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
@@ -483,7 +483,7 @@ fn ffi_struct_by_value_return() {
     // libc's `ldiv_t ldiv(long, long)` returns a struct BY VALUE. The C backend
     // emits a `typedef struct` and rebuilds the Thrax struct from the C result,
     // byte-identical to the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: @int, rem: @int,\n\
         $ ldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
         $ test : @int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
@@ -513,7 +513,7 @@ fn ffi_struct_by_value_argument() {
         .success());
 
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_p : P -> @int = @extern \"C\" \"sum_p\" \"{}\"\n\
          $ test : @int = sum_p (P.{{ .x = 40, .y = 2 }})",
@@ -571,7 +571,7 @@ fn ffi_struct_array() {
         .success());
 
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
@@ -665,7 +665,7 @@ fn ffi_callback() {
         .success());
 
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @int = 10\n\
          $ test : @int = call_twice (\\a b = a + b + k)",
@@ -723,7 +723,7 @@ fn ffi_c_union_by_value() {
         .success());
 
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ U : @union @extern \"C\" = i: @int, d: @float64,\n\
          $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
          $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
@@ -781,7 +781,7 @@ fn ffi_nested_struct_by_value() {
         .success());
 
     let src = format!(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
          $ seg_sum : Seg -> @int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
@@ -818,7 +818,7 @@ fn open_range_stream() {
     // lowers to `range lo hi`, a finite list.
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
     // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ len : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
                $ s : Stream @int = [3 ...]\n\
                $ test : @int = s.head + s.tail.head + len [1 ... 4]\n";
@@ -828,7 +828,7 @@ fn open_range_stream() {
 #[test]
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ sign : @int -> @str = \\n = is n | 0 ... => \"nonneg\" | _ => \"neg\"\n\
                $ test : @str = sign 3\n";
     assert_matches(src, "test");
@@ -836,7 +836,7 @@ fn open_range_pattern() {
 
 #[test]
 fn recursion_fib() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ fib : @int -> @int = \\n =\n\
                \tif n == 0 => 0 else if n == 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
                $ test : @int = fib 15\n";
@@ -845,7 +845,7 @@ fn recursion_fib() {
 
 #[test]
 fn higher_order_and_let() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ apply2 : (@int -> @int) -> @int -> @int = \\f x = f (f x)\n\
                $ test : @int =\n\
                \tlet inc = \\x = x + 1\n\
@@ -855,7 +855,7 @@ fn higher_order_and_let() {
 
 #[test]
 fn structs_and_fields() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ Point : @struct = x: @int, y: @int,\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
                $ sx : @int = p.x + p.y\n\
@@ -866,7 +866,7 @@ fn structs_and_fields() {
 
 #[test]
 fn variants_and_when() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ Shape : @union = Dot: {}, Seg: { @int }\n\
                $ size : Shape -> @int = \\s =\n\
                \tis s | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
@@ -876,7 +876,7 @@ fn variants_and_when() {
 
 #[test]
 fn lists_and_length() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ len : @vec t -> @int =\n\
                \tlet helper : @vec t -> @int -> @int = \\l n =\n\
                \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
@@ -888,7 +888,7 @@ fn lists_and_length() {
 
 #[test]
 fn strings_and_arrays() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ s : @str = \"ab\" ++ \"cd\"\n\
                $ n : @int = @array_len s\n\
                $ g : @int = @array_get s 1\n\
@@ -900,7 +900,7 @@ fn strings_and_arrays() {
 
 #[test]
 fn tuples() {
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ t = {1, 2, 3}\n\
                $ mid : @int = t.1\n\
                $ test : @int = mid\n";
@@ -941,7 +941,7 @@ fn effects_multi_shot_resumption() {
 fn effects_multi_shot_through_a_stored_continuation() {
     // Nothing in the clause bounds the uses of a stashed `k`, so driving the same
     // suspension twice must run the remainder twice (1 + 2 + 2).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Co : @effect = step : @int -> {},\n\
                $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
                $ spawn : ({} -> <Co> {}) -> Task =\n\
@@ -983,7 +983,7 @@ fn effects_pipes_and_seq() {
 fn sized_extern_marshalling() {
     // A foreign binding with sized / pointer / float32 arguments emits each
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = @extern \"C\" \"f\" \"libx\"\n\
                $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = \\r = f r\n";
     let lowered = lower(src);
@@ -1006,7 +1006,7 @@ fn sized_extern_marshalling() {
 fn sized_extern_runs_and_matches() {
     // A real libc call through a sized signature (`strlen : @str -> @nat64`, wrapped
     // as `uint64_t(char*)`) runs and agrees with the interpreter's host table.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ strlen : @str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
                $ test : @nat64 = strlen \"hello\"\n";
     assert_matches(src, "test");
@@ -1017,7 +1017,7 @@ fn literal_construction_hooks_match_interpreter() {
     // Each blessed construction interface must lower the same on the C backend as on
     // the interpreter: the literal builds the user type (wrapped in the resolved
     // instance's method), while a default-typed literal stays folded.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Wrap : @struct = n: @int\n\
                $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
                $ Bag : @union a = Items: {@vec a}\n\
@@ -1033,7 +1033,7 @@ fn literal_construction_hooks_match_interpreter() {
 fn complex_numbers_match_interpreter() {
     // The `i` suffix, its CORE instance, and the complex operators are all library
     // code, so the C backend must produce the same values as the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ a : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
                $ b : Cpx = Cpx.{ 1.0, 0.0 } - 2.0i\n\
                $ r : @str = to_string (a + b) ++ to_string (a * b)\n\
@@ -1045,7 +1045,7 @@ fn complex_numbers_match_interpreter() {
 fn tensor_of_structs_matches_interpreter() {
     // A tensor element that is a STRUCT is not a nested tensor. The C runtime used
     // to tell the two apart by tag alone (every struct shares it) and faulted here.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ P : @struct = x: @float64, y: @float64,\n\
                $ ps : [2]P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
                $ zs : [2]Cpx = [Cpx.{ 1.0, 0.0 } + 1.0i, Cpx.{ 2.0, 0.0 }]\n\
@@ -1058,7 +1058,7 @@ fn tensor_of_structs_matches_interpreter() {
 fn bracket_hooks_match_interpreter() {
     // The rest of the `[..]` surface is interface-driven too: ranges, `::`, slices,
     // and `@array` literals/patterns must lower the same on the C backend.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Span : @struct = lo: @int, hi: @int\n\
                $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
                $ s : Span = [2 ... 6]\n\
@@ -1075,7 +1075,7 @@ fn bracket_hooks_match_interpreter() {
 fn pattern_hooks_match_interpreter() {
     // Literal patterns (via `IEq`) and sequence patterns (via `@ISeqView`) on user
     // types must lower the same on the C backend as on the interpreter.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Stack : @struct a = items: @vec a\n\
                $ sv : @ISeqView (Stack a) a = .{\n\
                \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
@@ -1095,7 +1095,7 @@ fn pattern_hooks_match_interpreter() {
 fn recursive_union_slot_is_lazy() {
     // The C backend forces a thunk where a value is scrutinised, the same as the
     // interpreter; without it this diverges.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
                $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
@@ -1107,7 +1107,7 @@ fn recursive_union_slot_is_lazy() {
 fn a_lazy_slot_is_forced_once() {
     // Forcing patches the cell in place (THxVALUE_patch_box), so the second walk
     // finds the spine already built.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
                $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
@@ -1118,7 +1118,7 @@ fn a_lazy_slot_is_forced_once() {
 
 #[test]
 fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ S : @struct t = head : t, tail : S t\n\
                $ ones : S @int = { .head = 1, .tail = ones }\n\
                $ test : @int = ones.tail.tail.tail.head";
@@ -1129,7 +1129,7 @@ fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
 fn for_over_a_lazy_list_stops_at_break() {
     // `for` over a List walks the spine a cons at a time, so an unbounded list is
     // fine as long as the body breaks: only the cells reached are ever built.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Acc : @effect = add : @int -> {},\n\
                $ from : @int -> List @int = \\n = List.Cons.{ n, from (n + 1) }\n\
                $ test : @int =\n\
@@ -1143,7 +1143,7 @@ fn for_over_a_lazy_list_stops_at_break() {
 fn sized_integers_wrap_into_their_range() {
     // Both engines hold an integer as one 64-bit value, so sized arithmetic and
     // `@cast` must wrap the result into the type's range, identically.
-    let src = "@mod T\n\
+    let src = "$ @mod T\n\
                $ add8 : @int = let x : @nat8 = 200 in let y : @nat8 = x + 100 in let r : @int = @cast y in r\n\
                $ sadd8 : @int = let x : @int8 = 100 in let y : @int8 = x + 100 in let r : @int = @cast y in r\n\
                $ narrow : @int = let m : @int8 = @cast 250 in let r : @int = @cast m in r\n\

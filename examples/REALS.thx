@@ -1,4 +1,4 @@
-@mod REALS
+$ @mod REALS
 
 # \file reals.thx
 # \info 64-bit Real literals (decimal and scientific) and Real arithmetic. The

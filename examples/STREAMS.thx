@@ -1,4 +1,4 @@
-@mod STREAMS
+$ @mod STREAMS
 
 # \file STREAMS.thx
 # \info Unbounded structures from ordinary recursive types. A field whose type

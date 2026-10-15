@@ -1,4 +1,4 @@
-@mod STR_PREFIX
+$ @mod STR_PREFIX
 
 # Literal-prefix string patterns: `when s is "lit" ++ rest then ...` matches a
 # string that starts with the literal `"lit"`, binding `rest` to the remainder

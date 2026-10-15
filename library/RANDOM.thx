@@ -1,4 +1,4 @@
-@mod RANDOM
+$ @mod RANDOM
 
 # \file RANDOM.thx
 # \info A deterministic pseudo-random generator (Lehmer / MINSTD: the Park &

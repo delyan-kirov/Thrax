@@ -26,7 +26,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // A non-terminating global: without the step loop's interrupt poll, forcing it
     // would never return.
     let spin = lower(
-        "@mod T\n\
+        "$ @mod T\n\
          $ spin : @int -> @int = \\n = spin (@iadd n 1)\n\
          $ test : @int = spin 0\n",
     );
@@ -37,7 +37,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // Taking the request clears it, so the next evaluation runs to completion.
     assert!(utilities::interrupt::take());
     assert!(!utilities::interrupt::requested());
-    let sum = lower("@mod T\n$ test : @int = @iadd 1 2\n");
+    let sum = lower("$ @mod T\n$ test : @int = @iadd 1 2\n");
     assert_eq!(
         interpreter::machine::eval(&sum, "test").expect("no request pending"),
         "3"

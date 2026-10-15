@@ -1,4 +1,4 @@
-@mod MAP
+$ @mod MAP
 
 # \file MAP.thx
 # \info An immutable ordered map, `Map `K `V`, backed by an AVL tree -- the

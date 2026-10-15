@@ -1,4 +1,4 @@
-@mod OPERATORS
+$ @mod OPERATORS
 
 # \file operators.thx
 # \info Comparison and logical operators. Comparisons evaluate to @bool (a

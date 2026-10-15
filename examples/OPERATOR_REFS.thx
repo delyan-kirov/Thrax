@@ -1,4 +1,4 @@
-@mod OPERATOR_REFS
+$ @mod OPERATOR_REFS
 
 # \file OPERATOR_REFS.thx
 # \info An operator in parentheses is a plain function value: `(+) 1 1` is

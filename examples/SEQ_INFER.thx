@@ -1,4 +1,4 @@
-@mod SEQ_INFER
+$ @mod SEQ_INFER
 
 # `[..]` infers its container from context: @vec by default, @array when the
 # type says so (see documentation/strings-and-arrays.md). Same syntax, no `@`.

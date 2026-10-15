@@ -1,4 +1,4 @@
-@mod HIGHER_ORDER
+$ @mod HIGHER_ORDER
 
 # \file higher_order.thx
 # \info Functions as values: parametric identity/const and repeated application.

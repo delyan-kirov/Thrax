@@ -1,4 +1,4 @@
-@mod POWER
+$ @mod POWER
 
 # \file power.thx
 # \info Exponentiation by recursion: powers of two, and a general base^exp.

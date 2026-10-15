@@ -1,4 +1,4 @@
-@mod STDLIB_RESULT
+$ @mod STDLIB_RESULT
 
 # \file STDLIB_RESULT.thx
 # \info Fallible computation both ways: `Result` as a value (Ok/Err plus the

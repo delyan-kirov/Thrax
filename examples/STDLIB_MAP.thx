@@ -1,4 +1,4 @@
-@mod STDLIB_MAP
+$ @mod STDLIB_MAP
 
 # \file STDLIB_MAP.thx
 # \info The standard library's ordered map (an immutable AVL tree). A map

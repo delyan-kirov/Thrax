@@ -1,4 +1,4 @@
-@mod EFFECT_OVERLOAD
+$ @mod EFFECT_OVERLOAD
 
 # Two effects declaring the SAME operation name `ask` coexist (3b). A bare use
 # resolves by the ambient effect (the handler in scope); where genuinely

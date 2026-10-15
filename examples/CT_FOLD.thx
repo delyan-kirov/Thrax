@@ -1,4 +1,4 @@
-@mod CT_FOLD
+$ @mod CT_FOLD
 
 # \file CT_FOLD.thx
 # \info Aggregate value-folding at compile time. `$ x : T = @e X` runs X through

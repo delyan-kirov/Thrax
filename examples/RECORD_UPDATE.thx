@@ -1,4 +1,4 @@
-@mod RECORD_UPDATE
+$ @mod RECORD_UPDATE
 
 # \file record_update.thx
 # \info Record update: `Type.{ .field = e | base }` builds a new struct of the

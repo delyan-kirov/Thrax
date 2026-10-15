@@ -739,7 +739,7 @@ pub struct Session {
     pub queried: Option<String>,
 }
 
-/// Compile an in-memory `@mod REPL` session `source` against the standard
+/// Compile an in-memory `$ @mod REPL` session `source` against the standard
 /// library (CORE + C + any `$ with` imports resolved from `root_dir`). Returns
 /// the lowered modules and the root's typed bindings, or a rendered diagnostic.
 /// Unlike the file commands this renders errors into a string instead of exiting,
@@ -758,7 +758,7 @@ pub fn compile_session_query(
     compile_in_memory(source, root_dir, query, true)
 }
 
-/// Compile an in-memory `@mod REPL` module. `open_effects` checks its top level
+/// Compile an in-memory `$ @mod REPL` module. `open_effects` checks its top level
 /// under an open effect row, as the shell needs to run IO; without it the module
 /// must be pure, like a file's top level.
 fn compile_in_memory(
@@ -849,7 +849,7 @@ pub fn eval_fragment(
     root_dir: &Path,
 ) -> std::result::Result<interpreter::machine::OwnedValue, String> {
     let session = compile_in_memory(
-        &format!("@mod REPL\n$ _thrax_meta =\n{src}"),
+        &format!("$ @mod REPL\n$ _thrax_meta =\n{src}"),
         root_dir,
         None,
         false,

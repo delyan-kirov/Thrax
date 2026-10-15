@@ -5,7 +5,7 @@
 #       each binding scopes the ones after it -- one `in`, no nesting. A
 #       trailing `,` before `in` is allowed (`let x = a, in e`).
 
-@mod LET_IN
+$ @mod LET_IN
 
 $simple = let x = 6 in x * 7
 

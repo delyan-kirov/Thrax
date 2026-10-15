@@ -1,4 +1,4 @@
-@mod COMPLEX
+$ @mod COMPLEX
 
 # \file COMPLEX.thx
 # \info Complex numbers. `1.2i` is one token, and the compiler knows nothing

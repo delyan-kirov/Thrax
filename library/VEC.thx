@@ -1,4 +1,4 @@
-@mod VEC
+$ @mod VEC
 
 # \file VEC.thx
 # \info Operations on the default sequence, the growable vector `@vec `T`. A `[...]`

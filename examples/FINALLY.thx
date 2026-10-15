@@ -1,4 +1,4 @@
-@mod FINALLY
+$ @mod FINALLY
 
 # `defer <cleanup> in <body>` (Go-style) runs `cleanup` when the body's scope
 # exits: on normal completion, on abort (an effect handled by an outer handler

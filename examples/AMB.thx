@@ -1,4 +1,4 @@
-@mod AMB
+$ @mod AMB
 
 # Nondeterminism: effects whose handler resumes the SAME continuation MORE THAN
 # ONCE, so the rest of the computation runs once per branch. `flip` is the

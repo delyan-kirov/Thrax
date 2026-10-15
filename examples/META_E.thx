@@ -1,4 +1,4 @@
-@mod META_E
+$ @mod META_E
 
 # \file META_E.thx
 # \info The compile-time splice. `@e X` runs a PURE X at build time and places the

@@ -1,4 +1,4 @@
-@mod STDLIB_CORE
+$ @mod STDLIB_CORE
 
 # \file STDLIB_CORE.thx
 # \info The standard library's small core: `Option` (OPT), tuples and

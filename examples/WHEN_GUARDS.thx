@@ -1,4 +1,4 @@
-@mod WHEN_GUARDS
+$ @mod WHEN_GUARDS
 
 # \file when_guards.thx
 # \info Guarded match arms: `is <pattern> if <guard> then <body>`. The guard is

@@ -1,4 +1,4 @@
-@mod DERIVE
+$ @mod DERIVE
 
 # \file DERIVE.thx
 # \info Compile-time derives that reflect on a declared type and inject code:

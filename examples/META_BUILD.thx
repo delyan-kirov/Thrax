@@ -1,4 +1,4 @@
-@mod META_BUILD
+$ @mod META_BUILD
 
 # \file META_BUILD.thx
 # \info `@build`, the compile-time entry. Where `@main : @vec @str -> <@io> @int`

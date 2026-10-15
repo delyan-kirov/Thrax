@@ -1,4 +1,4 @@
-@mod OR_PATTERNS
+$ @mod OR_PATTERNS
 
 # \file or_patterns.thx
 # \info Or-patterns: an arm may list several `is <pattern>` alternatives before

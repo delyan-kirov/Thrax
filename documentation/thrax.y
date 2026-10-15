@@ -95,7 +95,7 @@
 %%
 
 program   : mod_decl globals ;
-mod_decl  : AT_MOD UIDENT ;
+mod_decl  : DOLLAR AT_MOD UIDENT ;
 
 globals   : /* empty */ | globals global ;
 

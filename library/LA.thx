@@ -1,4 +1,4 @@
-@mod LA
+$ @mod LA
 
 # \file LA.thx
 # \info Linear algebra over sized tensors `[n]T`. The compiler provides only the

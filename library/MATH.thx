@@ -1,4 +1,4 @@
-@mod MATH
+$ @mod MATH
 
 # \file MATH.thx
 # \info Integer helpers, Real helpers, and the libm functions (wrapped from

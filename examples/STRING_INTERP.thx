@@ -1,4 +1,4 @@
-@mod STRING_INTERP
+$ @mod STRING_INTERP
 
 # \file string_interp.thx
 # \info String interpolation: `"... ?(expr) ..."` splices an expression into a

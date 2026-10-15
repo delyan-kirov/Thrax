@@ -1,4 +1,4 @@
-@mod WHEN
+$ @mod WHEN
 
 # `when c <| \_ = body` is an `if` without an `else`: the body runs for its
 # effects, and any effects pass through to the caller. The condition goes through

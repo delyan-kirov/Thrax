@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn embedded_sources_declare_their_own_module_name() {
         for (name, src) in MODULES {
-            assert_eq!(src.lines().next(), Some(format!("@mod {name}").as_str()));
+            assert_eq!(src.lines().next(), Some(format!("$ @mod {name}").as_str()));
         }
     }
 }

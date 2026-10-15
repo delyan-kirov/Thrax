@@ -1,4 +1,4 @@
-@mod COROUTINES
+$ @mod COROUTINES
 
 # Cooperative coroutines from effects: a `yield` operation whose handler does NOT
 # resume immediately but hands the suspended continuation back (a first-class,
