@@ -791,35 +791,24 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        // Type-check `$ @run <expr>` directives. All globals are in scope now, so
-        // the expression resolves like a top-level body; a fresh pure ambient means
-        // an effect it performs that the compile-time runtime cannot discharge is
-        // rejected here. The value is discarded (the driver forces it at build
-        // time), so its type is not recorded.
-        let runs: Vec<(Aol<Expr>, bool)> = self
+        // Type-check `$ @e <expr>` directives. All globals are in scope now, so
+        // the expression resolves like a top-level body. The directive runs under
+        // a closed `<@meta>` handler and nothing else, so a stray `@io` in a
+        // generator is rejected (hermetic); `@build` is the one context that also
+        // discharges `<@io>`.
+        let runs: Vec<Aol<Expr>> = self
             .ast
             .slice(program.items)
             .iter()
             .filter_map(|item| match item {
-                Item::Run(e, _, meta) => Some((*e, *meta)),
+                Item::Run(e, _) => Some(*e),
                 _ => None,
             })
             .collect();
-        for (e, meta) in runs {
-            // `$ @run X` runs under a closed `<@meta>` handler: it discharges
-            // `@meta` (so meta ops type-check) but nothing else, so a stray `@io`
-            // in a generator is still rejected (hermetic). `$ @e X` requires a
-            // pure operand (empty ambient), so a meta op in it is an error. The
-            // context that discharges `<@io>` as well is the `@build` function.
-            self.ambient = if meta {
-                {
-                        let empty = self.eng.types.row_empty();
-                        self.eng.types.row_extend("@meta", empty)
-                    }
-            } else {
-                self.eng.types.row_empty()
-            };
-            self.infer(e)?;
+        for e in runs {
+            self.ambient = self.meta_ambient();
+            let t = self.infer(e)?;
+            self.require_code(t)?;
             // A directive is its own boundary: whatever it planned (an overload, a
             // context) is resolved here, since no definition encloses it.
             self.solve_pending()?;
@@ -2893,6 +2882,11 @@ impl<'a> Checker<'a> {
 
             Expr::BinOp { op, lhs, rhs } => {
                 let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
+                match op {
+                    "<|" if self.is_meta_e(lhs) => return self.infer_meta_e(rhs),
+                    "|>" if self.is_meta_e(rhs) => return self.infer_meta_e(lhs),
+                    _ => {}
+                }
                 // An operator that takes a context (`(+)` over `IArith t`) plans it
                 // at this site, which is where lowering injects it. Its operands
                 // share one type, so the side that is a literal is CHECKED against
@@ -3405,6 +3399,45 @@ impl<'a> Checker<'a> {
             Some(n) => unbound(name).with_help(format!("did you mean `{n}`?")),
             None => unbound(name),
         }
+    }
+
+    fn is_meta_e(&self, e: Aol<Expr>) -> bool {
+        matches!(self.node(e), Expr::Var { module: None, name } if self.text(*name) == "@e")
+    }
+
+    /// `@e X` runs the `@code`-valued X at compile time and splices the code in
+    /// at this site. What the code denotes is only known once the driver has
+    /// spliced it and re-checked, so the site is a fresh variable here (which
+    /// the context binds).
+    fn infer_meta_e(&mut self, arg: Aol<Expr>) -> Result<Type> {
+        let ambient = self.meta_ambient();
+        let saved = std::mem::replace(&mut self.ambient, ambient);
+        let arg_ty = self.infer(arg);
+        self.ambient = saved;
+        self.require_code(arg_ty?)?;
+        Ok(self.eng.fresh())
+    }
+
+    /// The ambient an `@e` operand runs under: a closed `<@meta>`, so meta ops
+    /// discharge there and any other effect is rejected.
+    fn meta_ambient(&mut self) -> Type {
+        let empty = self.eng.types.row_empty();
+        self.eng.types.row_extend("@meta", empty)
+    }
+
+    /// Require an `@e` operand to be `@code`: `@e` inserts code and nothing else.
+    fn require_code(&mut self, found: Type) -> Result<()> {
+        let code = self.eng.types.con("@code");
+        if self.eng.unify(found, code, "in an `@e` operand").is_ok() {
+            return Ok(());
+        }
+        let shown = self.eng.show(found);
+        Err(diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "`@e` inserts code, but its operand is `{shown}`, not `@code`";
+            help: "build the code with `@parse_str`/`@parse_items`; a site run only for \
+                   its effect returns empty code (`@parse_items \"\"`)"
+        ))
     }
 
     /// Whether `name` is bound by an inner scope (a lambda/`let`/pattern binder),
@@ -3936,42 +3969,14 @@ impl<'a> Checker<'a> {
             ));
         }
 
-        // `@e X` / `@run X` runs X at compile time and embeds the result at this
-        // site. For a value it is the identity on X's type; for a `@code` fragment
-        // the embedded type is only known after the driver splices the code and
-        // re-checks, so it is a fresh variable here (which the context binds).
-        if let Expr::Var { module: None, name } = self.node(head) {
-            let n = self.text(*name);
-            if n == "@e" || n == "@run" {
-                if args.len() != 1 {
-                    return Err(diag!(
-                        Code::TypeMismatch, Span::at(0), 0,
-                        "`{n}` takes exactly one argument"
-                    ));
-                }
-                // `@run` is the eliminator of `<@meta>`: run the operand under a
-                // closed `<@meta>` ambient so meta ops discharge here. `@e` runs
-                // under a pure ambient, so its operand must be pure (a meta op in
-                // it is a "effect `@meta` not handled" error; use `@run`).
-                let ambient = if n == "@run" {
-                    {
-                        let empty = self.eng.types.row_empty();
-                        self.eng.types.row_extend("@meta", empty)
-                    }
-                } else {
-                    self.eng.types.row_empty()
-                };
-                let saved = std::mem::replace(&mut self.ambient, ambient);
-                let arg_ty = self.infer(args[0]);
-                self.ambient = saved;
-                let arg_ty = arg_ty?;
-                let z = self.eng.zonk(arg_ty);
-                let is_code = matches!(
-                    self.eng.types.node(z),
-                    TypeNode::Con(cn) if self.eng.types.name(cn) == "@code"
-                );
-                return Ok(if is_code { self.eng.fresh() } else { arg_ty });
+        if self.is_meta_e(head) {
+            if args.len() != 1 {
+                return Err(diag!(
+                    Code::TypeMismatch, Span::at(0), 0,
+                    "`@e` takes exactly one argument"
+                ));
             }
+            return self.infer_meta_e(args[0]);
         }
 
         if let Expr::Var { module: None, name } = self.node(head) {
@@ -5420,19 +5425,9 @@ impl<'a> Checker<'a> {
             // unknown until the driver's expand loop runs `X`, so it stands as a
             // fresh variable here. Only reachable in a lenient (pre-expansion)
             // round; the final strict compile sees the substituted concrete type.
-            Ty::MetaE(expr, meta) => {
-                let (expr, meta) = (*expr, *meta);
-                // `@run` discharges `<@meta>` (its operand may perform meta ops);
-                // `@e` runs a pure operand. Either way the spliced-in type is
-                // unknown until the driver expands it, so it stands as a fresh var.
-                let ambient = if meta {
-                    {
-                        let empty = self.eng.types.row_empty();
-                        self.eng.types.row_extend("@meta", empty)
-                    }
-                } else {
-                    self.eng.types.row_empty()
-                };
+            Ty::MetaE(expr) => {
+                let expr = *expr;
+                let ambient = self.meta_ambient();
                 let saved = std::mem::replace(&mut self.ambient, ambient);
                 if let Ok(t) = self.infer(expr) {
                     let _ = self.eng.unify(t, self.eng.types.con("@code"), "in a `@e` type splice");
@@ -5603,7 +5598,7 @@ impl<'a> Checker<'a> {
             self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(int, vt))),
         );
 
-        // Metaprogramming primitives (compile-time; usable inside `$ @run`). `@lex`
+        // Metaprogramming primitives (compile-time; usable inside `$ @e`). `@lex`
         // tokenizes a string into an opaque `@token` vector; a lex error traps
         // (fails the build). Tokens are inspected via the `@token_*` accessors, not
         // pattern-matched. `@token` is an opaque builtin type (see `is_base_type`).
@@ -5661,28 +5656,23 @@ impl<'a> Checker<'a> {
         self.bind("@abort", t);
         let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
         self.bind("@emit", t);
-        // `@e X` runs X at compile time and embeds its value at the use site, so
-        // type-wise it is the identity on X's type (the value case). The fold
-        // happens in lowering + the driver; `@e` must be applied directly.
+        // `@e X` runs the `@code` X at compile time and splices the code in.
+        // Special-cased in `infer_app`/`ty_of_ast`; this binding is the
+        // first-class fallback.
         let e_ty = self.eng.fresh_generic();
-        let t = self.eng.types.arrow(e_ty, e_ty);
+        let t = self.eng.types.arrow(self.eng.types.con("@code"), e_ty);
         self.bind("@e", t);
-        // `@run` is the `<@meta>` eliminator: like `@e` (compile-time run + embed)
-        // but its operand may perform `<@meta>` (it is discharged here). Special-
-        // cased in `infer_app`/`ty_of_ast`; this binding is the first-class fallback.
-        let run_ty = self.eng.fresh_generic();
-        let t = self.eng.types.arrow(run_ty, run_ty);
-        self.bind("@run", t);
         // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
         // for generating hygienic, non-colliding binders in compile-time codegen.
         let t = self.eng.types.arrow_eff(str_ty, str_ty, meta_row);
         self.bind("@fresh", t);
         // `@link name` / `@link_path p`: steer the build (add a library / search
-        // path to the link line), used at compile time via `$ @e (@link "curl")`.
-        // The effect is the directive; the call returns unit.
-        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
+        // path to the link line), used at compile time as `$ @e <| @link "curl"`.
+        // The effect is the directive; the call returns empty code, so the
+        // directive inserts nothing.
+        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con("@code"), meta_row);
         self.bind("@link", t);
-        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
+        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con("@code"), meta_row);
         self.bind("@link_path", t);
         // Compile-time reflection over a declared type (resolved by the driver's
         // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;

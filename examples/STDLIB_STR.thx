@@ -56,4 +56,4 @@ $ test : @int = ck_len + ck_at + ck_substr + ck_starts + ck_ends + ck_find
 	+ ck_padl + ck_padr + ck_padno + ck_repl + ck_replgrow
 	+ ck_count + ck_count0
 
-$ @run (assert (test == 0) "STDLIB_STR: a check failed")
+$ @e <| assert (test == 0) "STDLIB_STR: a check failed"

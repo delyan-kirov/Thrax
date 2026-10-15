@@ -35,10 +35,10 @@ $ Pair : @struct a b =
 	snd: b,
 
 # Generate `to_string` for each type from its declaration alone.
-$ @e (DERIVE.derive_show "Rgb")
-$ @e (DERIVE.derive_show "Shape")
-$ @e (DERIVE.derive_show "Box")
-$ @e (DERIVE.derive_show "Pair")
+$ @e <| DERIVE.derive_show "Rgb"
+$ @e <| DERIVE.derive_show "Shape"
+$ @e <| DERIVE.derive_show "Box"
+$ @e <| DERIVE.derive_show "Pair"
 
 $ ck_struct : @int =
 	if to_string (Rgb.{ .r = 1, .g = 2, .b = 3 }) == "Rgb { r = 1 g = 2 b = 3 }"
@@ -74,3 +74,5 @@ $ ck_xmod : @int =
 $ test : @int =
 	ck_struct + ck_nullary + ck_unary + ck_nary + ck_interp
 	+ ck_gen_int + ck_gen_empty + ck_gen_nest + ck_pair + ck_pair2 + ck_xmod
+
+$ @e <| assert (test == 0) "DERIVE_SHOW: a check failed"

@@ -49,4 +49,4 @@ $ ck : @int =
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; ck
 
-$ @run (assert (test == 0) "PIPES: a check failed")
+$ @e <| assert (test == 0) "PIPES: a check failed"

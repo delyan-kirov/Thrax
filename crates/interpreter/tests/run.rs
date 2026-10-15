@@ -176,20 +176,21 @@ fn eval_dispatches_to_the_meta_host_and_embeds_the_result() {
 #[test]
 fn fresh_mints_distinct_names() {
     // `@fresh` returns a unique identifier each call, for hygienic codegen. It
-    // carries `<@meta>`, so it runs inside `@run`; force the synthetic global.
-    let src = "$ @mod T\n$ ck : @bool = @run (@fresh \"t\" == @fresh \"t\")";
-    assert_eq!(run(src, "T.@e_expr#0"), "false");
+    // carries `<@meta>`, so it runs inside `@e`; force the synthetic global.
+    let src = "$ @mod T\n\
+               $ ck : @bool = @e <| @parse_str (if @fresh \"t\" == @fresh \"t\" => \"@true\" else \"@false\")";
+    assert_eq!(run(src, "T.@e_expr#0"), "@code.{ .src = \"@false\" }");
 }
 
 #[test]
 fn expr_position_e_lowers_to_a_synthetic_global() {
     // `@e X` in expression position becomes a synthetic global `@e_expr#i = X`
-    // (the driver folds it to a constant and patches it; here we force the body
-    // directly to confirm the site was lowered and the callee is in scope).
+    // (the driver splices the code it returns; here we force the body directly
+    // to confirm the site was lowered and the callee is in scope).
     let src = "$ @mod T\n\
                $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ x : @int = @e (fib 10)";
-    assert_eq!(run(src, "T.@e_expr#0"), "55");
+               $ x : @int = @e <| @parse_str <| to_string <| fib 10";
+    assert_eq!(run(src, "T.@e_expr#0"), "@code.{ .src = \"55\" }");
 }
 
 #[test]
@@ -199,9 +200,9 @@ fn ct_run_lowers_to_a_forceable_synthetic_global() {
     // and evaluates.
     let src = "$ @mod T\n\
                $ triple : @int -> @int = \\n = n * 3\n\
-               $ @e triple 14\n\
+               $ @e <| @parse_items <| \"$ k : @int = \" ++ to_string (triple 14)\n\
                $ test : @int = 0";
-    assert_eq!(run(src, "T.@e#0"), "42");
+    assert_eq!(run(src, "T.@e#0"), "@code.{ .src = \"$ k : @int = 42\" }");
 }
 
 #[test]
@@ -212,7 +213,7 @@ fn type_position_e_lowers_to_a_forceable_synthetic_global() {
     // directly to confirm it is emitted and yields the type-carrying `@code`.
     let src = "$ @mod T\n\
                $ pick : @str -> @code = \\s = @parse_str \"@int\"\n\
-               $ x : @e (pick \"num\") = 42";
+               $ x : @e <| pick \"num\" = 42";
     assert_eq!(run(src, "T.@e_type#0"), "@code.{ .src = \"@int\" }");
 }
 
@@ -1772,10 +1773,10 @@ fn deep_tail_recursion_is_constant_stack() {
 
 #[test]
 fn emit_returns_unit_and_abort_faults() {
-    // `@emit` carries `<@meta>`, so it is used inside `@run` (which discharges the
+    // `@emit` carries `<@meta>`, so it is used inside `@e` (which discharges the
     // effect); forcing the synthetic global runs it, printing and returning unit.
-    let src = "$ @mod T\n$ u : {} = @run (@emit \"note\")";
-    assert_eq!(run(src, "T.@e_expr#0"), "{}");
+    let src = "$ @mod T\n$ u : {} = @e <| (@emit \"note\"; @parse_str \"{}\")";
+    assert_eq!(run(src, "T.@e_expr#0"), "@code.{ .src = \"{}\" }");
 }
 
 // -- issue #209: laziness is a property of the slot -----------------------

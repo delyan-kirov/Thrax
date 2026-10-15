@@ -49,4 +49,4 @@ $ ck_gen : @int = if get_val Cell.{ .val = 7 } == 7 => 0 else 128
 
 $ test : @int = ck_point + ck_boxed + ck_anon + ck_update + ck_stack + ck_pat + ck_rest + ck_gen
 
-$ @run (assert (test == 0) "ROW_RECORDS: a check failed")
+$ @e <| assert (test == 0) "ROW_RECORDS: a check failed"

@@ -60,4 +60,4 @@ $ test : @int =
 		&& grouped == 9 && negative == 1
 	=> 0 else 1
 
-$ @run (assert (test == 0) "OPERATOR_REFS: a check failed")
+$ @e <| assert (test == 0) "OPERATOR_REFS: a check failed"

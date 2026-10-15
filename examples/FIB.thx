@@ -59,4 +59,4 @@ $ test : @int =
 	+ (if fib15 == 610 => 0 else 1)
 	+ (if summed.x == 4 && summed.y == 6 => 0 else 1)
 
-$ @run (assert (test == 0) "FIB: a check failed")
+$ @e <| assert (test == 0) "FIB: a check failed"

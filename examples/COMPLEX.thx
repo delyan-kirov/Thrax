@@ -148,7 +148,7 @@ $ test : @int =
 	+ ck_trig + ck_tan + ck_hyp + ck_tanh
 	+ ck_polar + ck_rou + ck_roots + ck_dot
 
-$ @run (assert (test == 0) "COMPLEX: a check failed")
+$ @e <| assert (test == 0) "COMPLEX: a check failed"
 
 $ @private
 

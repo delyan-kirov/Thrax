@@ -1,63 +1,56 @@
 $ @mod META_E
 
 # \file META_E.thx
-# \info The compile-time splice. `@e X` runs a PURE X at build time and places the
-#       result at its site; `@run X` is the sibling that discharges the `<@meta>`
-#       effect (so X may use `@emit`/`@abort`/`@eval`/... ), then embeds the same
-#       way. Both behave as a ONE-ARGUMENT function: the operand is a single primary
-#       (an atom or a parenthesized expression), so they never over-consume the
-#       surrounding syntax; both compose with the pipes `<|` / `|>` (each folds the
-#       WHOLE other side) and work in expression, type, and item position. A plain
-#       value folds to a literal; an `@code` result splices its SOURCE and re-checks.
-#       A meta op inside `@e` (not `@run`) is an "effect `@meta` not handled" error.
+# \info The compile-time splice. `@e X` runs X at build time and inserts the code
+#       it returns at its site: X must be an `@code`, which `@parse_str` (an
+#       expression) and `@parse_items` (top-level items) build from a string. The
+#       inserted source is then checked like hand-written code. `@e` works in
+#       expression, type, and item position, and composes with the pipes `<|` /
+#       `|>` like any one-argument function. X may perform the compile-time
+#       operations (`@emit`, `@abort`, `@fresh`, `@link`), which carry the
+#       `<@meta>` effect that `@e` discharges; any other effect is an error.
+#       Empty code inserts nothing, so a site run only for its effect (a check, a
+#       link directive) returns `@parse_items ""`.
 
-$ with VEC
+# Ordinary functions, run here at compile time by the generators below.
+$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ dbl : @int -> @int = \x = x * 2
+$ inc : @int -> @int = \x = x + 1
 
-# Ordinary functions, used here only at compile time (run by `@e`). The composition
-# below is CORE's `compose`, the function form of `<|>`.
-$ fib     : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
-$ dbl     : @int -> @int = \x = x * 2
-$ inc     : @int -> @int = \x = x + 1
+# A generator that computes at build time and inserts the result as a literal.
+$ lit : @int -> @code = \n = @parse_str <| to_string n
 
-# --- @e as a one-argument function -----------------------------------------
-# A parenthesized operand, and a bare atom operand (both a single primary).
-$ ten     : @int = 10
-$ fib10   : @int = @e (fib ten)     # value fold: evaluates now, embeds `55`
-$ folded  : @int = @e fib10         # atom operand needs no parens: `55`
+# --- expression position ---------------------------------------------------
+$ ten      : @int = 10
+$ fib10    : @int = @e <| lit <| fib ten              # inserts `55`
+$ via_pipe : @int = fib ten |> lit |> @e              # the same, left to right
+$ chained  : @int = @e <| lit <| (compose inc dbl) 5  # inc (dbl 5): inserts `11`
 
-# --- composing with the pipes ----------------------------------------------
-# `<|` and `|>` are application; the lowerer folds the whole other side, so these
-# are all equivalent to `@e (fib ten)`.
-$ via_left  : @int = @e <| fib ten          # 55
-$ via_right : @int = fib ten |> @e          # 55
-$ via_chain : @int = @e <| (compose inc dbl) 5   # inc (dbl 5) = 11
-
-# --- code splice: an `@code` result splices SOURCE, not a value -------------
-$ gen_expr : @str -> @code = \s = @parse_str s
-$ spliced  : @int = @e (gen_expr "1 + 2 * 3")    # splices `1 + 2 * 3`, yields 7
+# The code is source, not a value: this inserts `1 + 2 * 3`, which yields 7.
+$ spliced : @int = @e <| @parse_str "1 + 2 * 3"
 
 # --- type position: `@e` computes the annotation ---------------------------
 $ pick_ty : {} -> @code = \_ = @parse_str "@int"
-$ typed   : @e (pick_ty {}) = 42
+$ typed   : @e <| pick_ty {} = 42
 
-# --- item position: `$ @e X` injects top-level definitions -----------------
+# --- item position: `$ @e X` inserts top-level definitions -----------------
 $ gen_def : {} -> @code = \_ = @parse_items "$ injected : @int = 99"
-$ @e (gen_def {})
+$ @e <| gen_def {}
 
-# --- @run: discharge `<@meta>` (the eliminator) ----------------------------
-# `gen_meta` performs `@emit` (a `<@meta>` op), so it declares `<@meta>` and is
-# run with `@run`, not `@e` (a meta op inside `@e` is a compile error).
-$ gen_meta : @int -> <@meta> @int = \n = @emit "computing at build time"; n * 2
-$ from_meta : @int = @run (gen_meta 21)   # discharges @meta, embeds 42
+# --- compile-time operations -------------------------------------------------
+# `gen_meta` performs `@emit`, a `<@meta>` op, so it declares `<@meta>`.
+$ gen_meta : @int -> <@meta> @code = \n = @emit "computing at build time"; lit (n * 2)
+$ from_meta : @int = @e <| gen_meta 21              # inserts `42`
 
 # --- checks ----------------------------------------------------------------
 $ ck1 : @int = if fib10 == 55 => 0 else 1
-$ ck2 : @int = if folded == 55 => 0 else 2
-$ ck3 : @int = if (via_left + via_right) == 110 => 0 else 4
-$ ck4 : @int = if via_chain == 11 => 0 else 8
-$ ck5 : @int = if spliced == 7 => 0 else 16
-$ ck6 : @int = if typed == 42 => 0 else 32
-$ ck7 : @int = if injected == 99 => 0 else 64
-$ ck8 : @int = if from_meta == 42 => 0 else 128
+$ ck2 : @int = if via_pipe == 55 => 0 else 2
+$ ck3 : @int = if chained == 11 => 0 else 4
+$ ck4 : @int = if spliced == 7 => 0 else 8
+$ ck5 : @int = if typed == 42 => 0 else 16
+$ ck6 : @int = if injected == 99 => 0 else 32
+$ ck7 : @int = if from_meta == 42 => 0 else 64
 
-$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7 + ck8
+$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
+
+$ @e <| assert (test == 0) "META_E: a check failed"

@@ -31,4 +31,4 @@ $ ck_union : @int =
 
 $ test : @int = ck_struct + ck_union
 
-$ @run (assert (test == 0) "TYPE_SPLICE: a check failed")
+$ @e <| assert (test == 0) "TYPE_SPLICE: a check failed"

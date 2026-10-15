@@ -62,4 +62,4 @@ $ test : @int =
 	+ (if list_sum collected == 11 => 0 else 4)
 	+ (if triples == 4 => 0 else 8)
 
-$ @run (assert (test == 0) "AMB: a check failed")
+$ @e <| assert (test == 0) "AMB: a check failed"
