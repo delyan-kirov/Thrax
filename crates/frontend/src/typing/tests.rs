@@ -1120,6 +1120,14 @@ fn every_variant_or_a_catch_all_is_exhaustive() {
 }
 
 #[test]
+fn no_arms_cover_only_a_variantless_union() {
+    let empty = "@mod T\n$ E : @union =\n$ f : E -> @int = \\e = is e\n";
+    assert_eq!(coverage(empty), (String::new(), vec![]));
+    let (err, _) = coverage(&format!("{L}$ f : L -> @int = \\l = is l\n"));
+    assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
+}
+
+#[test]
 fn guarded_arms_do_not_cover() {
     let src = format!("{L}$ f : L -> @int = \\l = is l | L.A => 0 | L.B => 1 | L.C if @true => 2\n");
     assert!(coverage(&src).0.contains("`L.C`"));

@@ -529,6 +529,16 @@ $ Loop : @effect = break : {} -> a, continue : {} -> a,
 $ break    : {} -> <Loop> a = \u = Loop.break u
 $ continue : {} -> <Loop> a = \u = Loop.continue u
 
+# A union with no variants, so no expression builds one and no value has this
+# type. A function that never returns needs no such type (its result is a type
+# variable, like `@abort`'s); this marks an input that cannot exist, such as the
+# `Err` side of a `Result t InconstructibleUnion`.
+$ InconstructibleUnion : @union =
+
+# Turn an impossible value into any type. The match has no arms because there is
+# nothing to match.
+$ absurd : InconstructibleUnion -> a = \n = is n
+
 # The outcome of a computation that can go wrong: `Ok` with the answer or `Err`
 # with what went wrong. RESULT holds the functions over it.
 $ Result : @union t e =

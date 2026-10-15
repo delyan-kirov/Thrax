@@ -1475,7 +1475,7 @@ impl<'a> Checker<'a> {
                     self.leave_scope();
                     r?;
                 }
-                self.check_coverage(e, *arms)
+                self.check_coverage(e, ts, *arms)
             }
             // A `{ .f = e, ... }` literal checked against a declared struct builds
             // THAT struct rather than an anonymous row record, so construction
@@ -2688,6 +2688,15 @@ impl<'a> Checker<'a> {
     }
 
 
+    /// Whether `ty` is a declared union with no variants, so no value has it.
+    fn is_variantless_union(&self, ty: Type) -> bool {
+        let (head, _) = self.spine(ty);
+        let TypeNode::Con(n) = self.eng.types.node(head) else {
+            return false;
+        };
+        self.unions.get(self.eng.types.name(n).as_str()).is_some_and(|u| u.variants.is_empty())
+    }
+
     /// The `(label, type)` fields of a record value: a structural [`TypeNode::Record`]
     /// (its closed row) or a nominal struct (its declared fields, instantiated).
     fn record_fields_of(&mut self, ty: Type) -> Result<Vec<(String, Type)>> {
@@ -3094,7 +3103,7 @@ impl<'a> Checker<'a> {
                     self.eng.unify(result, tb, "between match arms")?;
                     self.leave_scope();
                 }
-                self.check_coverage(e, *arms)?;
+                self.check_coverage(e, ts, *arms)?;
                 Ok(result)
             }
 
@@ -4936,8 +4945,18 @@ impl<'a> Checker<'a> {
     /// error otherwise) and record a warning for each arm no value can reach. A
     /// handler's value arms are parsed into such a match on `%ret`; its
     /// diagnostics speak of the value arms, never of that name.
-    fn check_coverage(&mut self, e: Aol<Expr>, arms: utilities::Slice<crate::parser::data::Arm>) -> Result<()> {
+    fn check_coverage(
+        &mut self,
+        e: Aol<Expr>,
+        scrut: Type,
+        arms: utilities::Slice<crate::parser::data::Arm>,
+    ) -> Result<()> {
         let arms = self.ast.slice(arms);
+        // The checker reads a column's constructors off its rows, so with no arms
+        // it cannot see that a variantless union has no values to cover.
+        if arms.is_empty() && self.is_variantless_union(scrut) {
+            return Ok(());
+        }
         let rows: Vec<(Vec<exhaustive::DPat>, bool)> = arms
             .iter()
             .map(|arm| {
