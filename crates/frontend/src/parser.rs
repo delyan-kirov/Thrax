@@ -1996,42 +1996,55 @@ impl<'a> Parser<'a> {
         Ok(!is_upper(self.text(op)))
     }
 
-    /// `\p1, p2 = body`. Parameters are comma-separated, so a parameter's `: T`
-    /// annotation ends at the comma (`\i: @int, j: @float32 = ...`). Juxtaposition
-    /// would leave the annotation's extent ambiguous, since a lowercase name in a
-    /// type is a type variable and would read as an argument of the annotation.
+    /// `\p1 p2 = body`. Parameters are juxtaposed pattern atoms. An annotated
+    /// parameter is parenthesized, `\(i: @int) (j: @float32) = ...`, because a
+    /// lowercase name in a type is a type variable and a bare annotation would
+    /// swallow the next parameter as its argument. A lone parameter may drop the
+    /// parens (`\x: @int = ...`), since `=` ends its type.
     fn parse_lambda(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '\'
-        let mut params = Vec::new();
-        loop {
-            params.push(self.parse_lambda_param()?);
-            // A trailing comma before `=` is allowed, as in `let`.
-            if !self.eat(|k| matches!(k, Kind::Comma))? || matches!(self.peek_kind()?, Kind::Eq) {
-                break;
+        let mut params = vec![self.parse_lambda_param()?];
+        if params[0].sig.is_none() && self.eat(|k| matches!(k, Kind::Colon))? {
+            params[0].sig = Some(self.parse_type()?);
+        } else {
+            while !matches!(self.peek_kind()?, Kind::Eq) {
+                if matches!(self.peek_kind()?, Kind::Colon) {
+                    let t = self.peek()?;
+                    return Err(self.unexpected(
+                        &t,
+                        "only a lone lambda parameter takes a bare `: T`; \
+                         parenthesize each annotated one, as in `\\(a: T) b = ...`",
+                    ));
+                }
+                if matches!(self.peek_kind()?, Kind::Comma) {
+                    let t = self.peek()?;
+                    return Err(self.unexpected(
+                        &t,
+                        "lambda parameters are juxtaposed, as in `\\a b = ...`",
+                    ));
+                }
+                params.push(self.parse_lambda_param()?);
             }
         }
-        if !matches!(self.peek_kind()?, Kind::Eq) {
-            let t = self.peek()?;
-            return Err(self.unexpected(
-                &t,
-                "expected '=' after the lambda parameters (which are comma-separated, \
-                 as in `\\a, b = ...`)",
-            ));
-        }
-        self.bump()?; // '='
+        expect!(self, Kind::Eq, "expected '=' after the lambda parameters");
         let body = self.parse_expr(0)?;
         let params = self.ast.make_slice(params);
         Ok(self.expr(Expr::Lambda { params, body }))
     }
 
-    /// One lambda parameter: a pattern with an optional `: T` annotation.
+    /// One lambda parameter: a pattern atom, or `(pat)` / `(pat: T)`.
     fn parse_lambda_param(&mut self) -> Result<LamParam> {
-        let pat = self.parse_pattern_atom()?;
+        if !self.eat(|k| matches!(k, Kind::LParen))? {
+            let pat = self.parse_pattern_atom()?;
+            return Ok(LamParam { pat, sig: None });
+        }
+        let pat = self.parse_pattern()?;
         let sig = if self.eat(|k| matches!(k, Kind::Colon))? {
             Some(self.parse_type()?)
         } else {
             None
         };
+        expect!(self, Kind::RParen, "expected ')' after the lambda parameter");
         Ok(LamParam { pat, sig })
     }
 

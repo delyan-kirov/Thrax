@@ -20,14 +20,14 @@ $ impl_IToResult_for_Option : IToResult (Option t) t {} = .{
 }
 
 # The value inside, or `d` when absent.
-$ unwrap_or : Option t -> t -> t = \o, d =
+$ unwrap_or : Option t -> t -> t = \o d =
 	is o | Option.Some.{x} => x | _ => d
 
 # Apply `f` to the value inside, if any.
-$ opt_map : (a -> b) -> Option a -> Option b = \f, o =
+$ opt_map : (a -> b) -> Option a -> Option b = \f o =
 	is o | Option.Some.{x} => Option.Some.{ f x } | _ => Option.None
 
 # Chain a partial computation: feed the value (if any) to an `f` that may
 # itself decline.
-$ opt_then : (a -> Option b) -> Option a -> Option b = \f, o =
+$ opt_then : (a -> Option b) -> Option a -> Option b = \f o =
 	is o | Option.Some.{x} => f x | _ => Option.None

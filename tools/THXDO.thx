@@ -103,11 +103,11 @@ $ done_cmd : @str =
 
 $ sh_quote : @str -> @str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
 
-$ quoted_from : @vec @str -> @int -> @str = \args, i =
+$ quoted_from : @vec @str -> @int -> @str = \args i =
 	if @vec_len args <= i => ""
 	else " " ++ sh_quote (@vec_get args i) ++ quoted_from args (i + 1)
 
-$ arg_or : @vec @str -> @int -> @str -> @str = \args, i, d =
+$ arg_or : @vec @str -> @int -> @str -> @str = \args i d =
 	if @vec_len args <= i => d else @vec_get args i
 
 $ run_command: @vec @str -> <@io> bool = \args =
