@@ -1,0 +1,4 @@
+$ @mod TYPE_CTOR_UNDER_APPLIED
+
+$ Pair : @struct a b = fst: a, snd: b,
+$ b : Pair @int = Pair.{ .fst = 1, .snd = 2 }  #~ error[TYPE_MISMATCH]: type `Pair` takes 2 parameter(s) but 1 was given

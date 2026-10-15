@@ -1,0 +1,3 @@
+$ @mod LEX_INVALID_ESCAPE
+
+$ f : @str = "\q"  #~ error[INVALID_ESCAPE]: unknown escape '\q'

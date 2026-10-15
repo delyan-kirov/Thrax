@@ -1,0 +1,4 @@
+$ @mod STRUCT_NAMED_UNKNOWN
+
+$ P : @struct = x: @int, y: @int,
+$ p : P = P.{ .x = 1, .z = 2 }  #~ error[TYPE_MISMATCH]: struct `P` has no field `z`

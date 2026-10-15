@@ -1,0 +1,3 @@
+$ @mod UNKNOWN_IMPORT
+
+$ with STRR  #~ error[UNKNOWN_MODULE]: cannot find module `STRR`

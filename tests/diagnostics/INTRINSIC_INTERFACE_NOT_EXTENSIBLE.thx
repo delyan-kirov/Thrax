@@ -1,0 +1,4 @@
+$ @mod INTRINSIC_INTERFACE_NOT_EXTENSIBLE
+
+# Only CORE declares the blessed `@I*` interfaces.
+$ @IMine : @struct t = f: t,  #~ error[UNEXPECTED_TOKEN]: '@IMine' is a compiler intrinsic and is not extensible in user code

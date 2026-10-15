@@ -1,0 +1,4 @@
+$ @mod STRUCT_NAMED_MISSING
+
+$ P : @struct = x: @int, y: @int,
+$ p : P = P.{ .x = 1 }  #~ error[TYPE_MISMATCH]: struct `P` literal is missing field `y`

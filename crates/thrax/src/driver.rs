@@ -40,7 +40,7 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     let root_name = parse_mod_name(&root_src).unwrap_or_else(|| file_stem(path));
 
     load_core(root_name, path.to_string(), root_src, &|name| load_module(name, &root_dir)).map_err(|msg| {
-        eprintln!("{msg}");
+        eprintln!("{}", msg.trim_end());
         ExitCode::FAILURE
     })
 }
@@ -73,15 +73,19 @@ fn load_core(
             continue;
         }
         let imports = parse_imports(&src);
-        index.insert(name.clone(), sources.len());
-        sources.push((name, src_path, src));
-        for imp in imports {
-            if index.contains_key(&imp) || queue.iter().any(|(n, _, _)| *n == imp) {
+        for (imp, span) in imports {
+            if index.contains_key(&imp)
+                || imp == name
+                || queue.iter().any(|(n, _, _)| *n == imp)
+            {
                 continue;
             }
-            let (path, src) = fetch(&imp)?;
-            queue.push((imp, path, src));
+            let (path, imp_src) =
+                fetch(&imp).map_err(|msg| import_failure(&msg, &imp, span, &src, &src_path))?;
+            queue.push((imp, path, imp_src));
         }
+        index.insert(name.clone(), sources.len());
+        sources.push((name, src_path, src));
     }
     // Auto-inject the `C` namespace (libc + libm as `@extern` bindings),
     // reachable qualified (`C.sqrt`) with no import, like the prelude.
@@ -103,21 +107,35 @@ fn load_core(
 /// where a `@build` or a `$ @e` may have injected `$ with M` for a module no
 /// hand-written source mentions.
 fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), String> {
-    let mut queue: Vec<String> = loaded
-        .sources
-        .iter()
-        .flat_map(|(_, _, src)| parse_imports(src))
-        .collect();
-    while let Some(name) = queue.pop() {
+    let mut queue: Vec<(String, utilities::Span, usize)> = Vec::new();
+    for (i, (_, _, src)) in loaded.sources.iter().enumerate() {
+        queue.extend(parse_imports(src).into_iter().map(|(name, span)| (name, span, i)));
+    }
+    while let Some((name, span, importer)) = queue.pop() {
         if loaded.index.contains_key(&name) {
             continue;
         }
-        let (path, src) = load_module(&name, root_dir)?;
-        queue.extend(parse_imports(&src));
-        loaded.index.insert(name.clone(), loaded.sources.len());
+        let (path, src) = load_module(&name, root_dir).map_err(|msg| {
+            let (_, imp_path, imp_src) = &loaded.sources[importer];
+            import_failure(&msg, &name, span, imp_src, imp_path)
+        })?;
+        let me = loaded.sources.len();
+        queue.extend(parse_imports(&src).into_iter().map(|(name, span)| (name, span, me)));
+        loaded.index.insert(name.clone(), me);
         loaded.sources.push((name, path, src));
     }
     Ok(())
+}
+
+/// A module that could not be loaded, reported at the `$ with` that names it.
+fn import_failure(msg: &str, name: &str, span: utilities::Span, src: &str, path: &str) -> String {
+    let msg = msg.strip_prefix("thrax: ").unwrap_or(msg);
+    let mut d = utilities::Diagnostic::error(utilities::Code::UnknownModule, span, 0, msg);
+    let known = stdlib::MODULES.iter().map(|(n, _)| *n);
+    if let Some(near) = utilities::error::closest(name, known) {
+        d = d.with_help(format!("did you mean `{near}`?"));
+    }
+    d.render(src, path)
 }
 
 /// The dependency graph over parsed modules (edges point at imports).
@@ -379,7 +397,7 @@ fn lower_all(
         // A generator can inject `$ with M` for a module nothing imported yet, so
         // the load set is reopened every round rather than fixed before the first.
         if let Err(msg) = load_injected_imports(&mut loaded, &root_dir) {
-            eprintln!("{msg}");
+            eprintln!("{}", msg.trim_end());
             return Err(ExitCode::FAILURE);
         }
         // Compile leniently while `@e` sites remain: a generator may inject a
@@ -1194,9 +1212,10 @@ fn parse_mod_name(src: &str) -> Option<String> {
         .map(|p| p.ast.text(p.program.module).to_string())
 }
 
-/// The module names a source imports (`$ with MOD`), or empty if it does not
-/// parse (the parse error is reported later, against the shared arena).
-fn parse_imports(src: &str) -> Vec<String> {
+/// The module names a source imports (`$ with MOD`) with the span of each, or
+/// empty if it does not parse (the parse error is reported later, against the
+/// shared arena).
+fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
     let Ok(parsed) = frontend::parse(src) else {
         return Vec::new();
     };
@@ -1204,13 +1223,14 @@ fn parse_imports(src: &str) -> Vec<String> {
         .slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, .. } => Some(
+            Item::Import { module, span, .. } => Some((
                 parsed.ast.slice(*module)
                     .iter()
                     .map(|&part| parsed.ast.text(part))
                     .collect::<Vec<_>>()
                     .join("."),
-            ),
+                *span,
+            )),
             _ => None,
         })
         .collect()
@@ -1233,7 +1253,7 @@ fn import_lines(src: &str) -> Vec<String> {
         .slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, rename } => Some(match rename {
+            Item::Import { module, rename, .. } => Some(match rename {
                 Some(r) => format!("$ with {} = {}", dotted(*module), dotted(*r)),
                 None => format!("$ with {}", dotted(*module)),
             }),

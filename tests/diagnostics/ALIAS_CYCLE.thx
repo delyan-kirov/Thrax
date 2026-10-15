@@ -1,0 +1,6 @@
+$ @mod ALIAS_CYCLE
+
+# An alias is expanded in place, so a cycle through aliases alone never finishes.
+$ T1 : @alias = T2  #~ error[TYPE_CYCLE]: type alias `T1` expands to itself
+$ T2 : @alias = T1
+$ x : T1 = 1

@@ -1409,14 +1409,12 @@ impl<'a> Lowerer<'a> {
         // A blessed interface in head position is not a global at all: the checker
         // resolved an instance for this site, and the reference IS that instance's
         // single field.
+        // Only a lenient expansion round leaves the instance unresolved, and the
+        // strict round rejects the site, so the bare reference below never runs.
         if let Some(field) = self.resolved.blessed_sites.get(&site).cloned() {
-            let ctx = self
-                .resolved
-                .ctx_args
-                .get(&site)
-                .cloned()
-                .expect("a blessed interface site resolves its instance");
-            return Term::Field(Arc::new(self.ctx_term(&ctx)), field);
+            if let Some(ctx) = self.resolved.ctx_args.get(&site).cloned() {
+                return Term::Field(Arc::new(self.ctx_term(&ctx)), field);
+            }
         }
         let (module, name) = self.resolved_var_id(site);
         if let Some(t) = self.wrapper_projection(site, module.as_deref(), &name) {

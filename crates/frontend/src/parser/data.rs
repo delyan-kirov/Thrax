@@ -199,10 +199,11 @@ pub enum Item {
     },
     /// `$ Name : @effect = op : ty, ...`
     Effect { name: StrId, ops: Slice<FieldDecl> },
-    /// `$ with module [= rename]`
+    /// `$ with module [= rename]`. `span` covers the module path.
     Import {
         module: Slice<StrId>,
         rename: Option<Slice<StrId>>,
+        span: Span,
     },
     /// `$ @private`: marks every following declaration in the file as
     /// module-private (not exported). Symbols are public by default; there is no

@@ -1,0 +1,5 @@
+$ @mod PROMOTE_SCALAR_ARITY
+
+# A scalar promotes only into a record with exactly one field.
+$ add : {x: @int, y: @int} -> @int = x + y
+$ a : @int = add 1  #~ error[TYPE_MISMATCH]: cannot pass 1 value(s) as a record with 2 field(s)

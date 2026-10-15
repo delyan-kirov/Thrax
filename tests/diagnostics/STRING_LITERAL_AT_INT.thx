@@ -1,0 +1,3 @@
+$ @mod STRING_LITERAL_AT_INT
+
+$ s : @int = "hi"  #~ error[TYPE_MISMATCH]: expected @int, found @str

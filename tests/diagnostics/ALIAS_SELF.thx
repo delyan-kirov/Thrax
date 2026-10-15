@@ -1,0 +1,3 @@
+$ @mod ALIAS_SELF
+
+$ L : @alias a = { head: a, tail: L a }  #~ error[TYPE_CYCLE]: type alias `L` expands to itself
