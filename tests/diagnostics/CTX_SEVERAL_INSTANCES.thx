@@ -1,0 +1,6 @@
+$ @mod CTX_SEVERAL_INSTANCES
+
+$ Money : @struct = c: @int,
+$ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ a.c + b.c } }
+$ impl_IAdd_for_Money2 : IAdd Money = .{ .add = \a b = a }
+$ m : Money = Money.{1} + Money.{2}  #~ error[TYPE_MISMATCH]: several values of type `IAdd Money` satisfy the context of `+`

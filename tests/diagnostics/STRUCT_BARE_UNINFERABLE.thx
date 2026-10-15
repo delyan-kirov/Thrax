@@ -1,0 +1,4 @@
+$ @mod STRUCT_BARE_UNINFERABLE
+
+# A bare positional `.{ .. }` names no struct, and nothing around it does either.
+$ p = .{ 1, 2 }  #~ error[TYPE_MISMATCH]: cannot infer which struct this `.{ .. }` builds

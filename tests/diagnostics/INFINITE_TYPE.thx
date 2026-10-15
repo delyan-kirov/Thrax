@@ -1,0 +1,3 @@
+$ @mod INFINITE_TYPE
+
+$ f = \x = x x  #~ error[TYPE_CYCLE]: cannot construct an infinite type

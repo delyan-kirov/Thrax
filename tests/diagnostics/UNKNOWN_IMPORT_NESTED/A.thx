@@ -1,0 +1,5 @@
+$ @mod A
+
+$ with NOPE  #~ error[UNKNOWN_MODULE]: cannot find module `NOPE`
+
+$ a : @int = 1

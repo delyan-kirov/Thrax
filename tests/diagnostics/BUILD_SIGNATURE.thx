@@ -1,0 +1,4 @@
+$ @mod BUILD_SIGNATURE
+
+$ @build : @int = 1
+#~ error: `@build` of module `BUILD_SIGNATURE` must have the signature

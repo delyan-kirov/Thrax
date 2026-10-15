@@ -1,0 +1,4 @@
+$ @mod CTX_NO_INSTANCE
+
+$ Money : @struct = c: @int,
+$ m : Money = Money.{1} + Money.{2}  #~ error[TYPE_MISMATCH]: no value of type `IAdd Money` in scope to satisfy the context of `+`

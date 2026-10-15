@@ -1,0 +1,3 @@
+$ @mod LEX_UNKNOWN_CHAR
+
+$ f : @int = 1 ` 2  #~ error[UNKNOWN_SYMBOL]: (byte 0x60)

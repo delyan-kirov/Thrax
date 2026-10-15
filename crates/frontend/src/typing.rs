@@ -1855,6 +1855,7 @@ impl<'a> Checker<'a> {
                 _ => {}
             }
         }
+        self.check_alias_cycles()?;
         // Copy in each `with Other` type's members once every type is registered,
         // so an included type may be declared after (or imported by) the one that
         // names it.
@@ -1864,6 +1865,52 @@ impl<'a> Checker<'a> {
             self.splice_includes(name, &mut visiting)?;
         }
         self.compute_lazy_slots();
+        Ok(())
+    }
+
+    /// Reject an alias that reaches itself through aliases alone (`T = T`, or
+    /// `A = B` with `B = A`). A struct or union in the chain is nominal and stops
+    /// the expansion, but an alias is expanded in place and would never finish.
+    fn check_alias_cycles(&self) -> Result<()> {
+        fn visit<'a>(
+            checker: &Checker<'a>,
+            name: &'a str,
+            path: &mut Vec<&'a str>,
+            done: &mut HashSet<&'a str>,
+        ) -> Result<()> {
+            if done.contains(name) {
+                return Ok(());
+            }
+            let Some((_, body)) = checker.aliases.get(name) else {
+                return Ok(());
+            };
+            if let Some(at) = path.iter().position(|n| *n == name) {
+                let mut chain: Vec<&str> = path[at..].to_vec();
+                chain.push(name);
+                let span = checker.ast.ty_span(*body).unwrap_or_else(|| Span::at(0));
+                return Err(diag!(
+                    Code::TypeCycle, span, 0,
+                    "type alias `{name}` expands to itself";
+                    note: "{}", chain.join(" -> ");
+                    help: "an alias only renames a type; make one of them a `@struct` or `@union`"
+                ));
+            }
+            path.push(name);
+            let mut cons = Vec::new();
+            collect_tycons(checker.ast, *body, &mut cons);
+            for c in cons {
+                visit(checker, c, path, done)?;
+            }
+            path.pop();
+            done.insert(name);
+            Ok(())
+        }
+        let mut names: Vec<&'a str> = self.aliases.keys().copied().collect();
+        names.sort_unstable();
+        let mut done = HashSet::new();
+        for name in names {
+            visit(self, name, &mut Vec::new(), &mut done)?;
+        }
         Ok(())
     }
 
@@ -3802,6 +3849,16 @@ impl<'a> Checker<'a> {
 
     /// No value of the requirement's type is in scope.
     fn ctx_missing(&self, fname: &str, req: Type) -> Diagnostic {
+        // A blessed interface comes from a desugar (`.[i]`, `1.2i`), so the site
+        // has no call to pass a context to.
+        if crate::parser::table::is_blessed_interface(fname) {
+            return diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "no `{fname}` instance of type `{}` is in scope",
+                self.show(req);
+                help: "define or import a value of type `{}`", self.show(req)
+            );
+        }
         diag!(
             Code::TypeMismatch, Span::at(0), 0,
             "no value of type `{}` in scope to satisfy the context of `{fname}`",
@@ -5270,19 +5327,23 @@ impl<'a> Checker<'a> {
             || self.aliases.contains_key(name)
     }
 
-    /// The number of type parameters a user-declared type constructor takes, if
-    /// `name` is a struct or union (the ones whose arity we track).
-    fn type_arity(&self, name: &str) -> Option<usize> {
+    /// The type parameters a user-declared type constructor takes, if `name` is
+    /// a struct, union, or alias (the ones whose arity we track).
+    fn type_params(&self, name: &str) -> Option<&[&'a str]> {
         self.structs
             .get(name)
-            .map(|i| i.params.len())
-            .or_else(|| self.unions.get(name).map(|i| i.params.len()))
-            .or_else(|| self.aliases.get(name).map(|(p, _)| p.len()))
+            .map(|i| i.params.as_slice())
+            .or_else(|| self.unions.get(name).map(|i| i.params.as_slice()))
+            .or_else(|| self.aliases.get(name).map(|(p, _)| p.as_slice()))
     }
 
-    /// Flag an over-applied type constructor (`Weirdtype Int Int Int` for a
-    /// two-parameter `Weirdtype`). Deferred like other type-name errors.
-    fn check_type_arity(&mut self, ty: Aol<Ty>) {
+    /// Flag a type constructor applied to the wrong number of arguments
+    /// (`Weirdtype Int Int Int` for a two-parameter `Weirdtype`). Under-application
+    /// is flagged only when `exact`: there are no higher-kinded parameters, so a
+    /// struct or union is only ever a type once fully applied, but an alias may be
+    /// left under-applied (its missing parameters become fresh variables).
+    /// Deferred like other type-name errors.
+    fn check_type_arity(&mut self, ty: Aol<Ty>, exact: bool) {
         let mut count = 0;
         let mut cur = ty;
         while let Ty::App(h, _) = self.tnode(cur) {
@@ -5291,7 +5352,21 @@ impl<'a> Checker<'a> {
         }
         if let Ty::Con { name, .. } = self.tnode(cur) {
             let name = self.text(*name);
-            if let Some(arity) = self.type_arity(name) {
+            if let Some(params) = self.type_params(name) {
+                let arity = params.len();
+                if count < arity && exact && self.unknown_type.is_none() {
+                    let mut d = diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "type `{name}` takes {arity} parameter(s) but {count} {} given",
+                        if count == 1 { "was" } else { "were" };
+                        note: "a type constructor is a type only once it is applied to every parameter";
+                        help: "write `{name} {}`, with a type for each parameter", params.join(" ")
+                    );
+                    if let Some(span) = self.ast.ty_span(ty) {
+                        d = d.fill_span(span);
+                    }
+                    self.unknown_type = Some(d);
+                }
                 if count > arity && self.unknown_type.is_none() {
                     let mut d = diag!(
                         Code::TypeMismatch, Span::at(0), 0,
@@ -5323,7 +5398,7 @@ impl<'a> Checker<'a> {
         };
         let (params, body) = self.aliases.get(name)?.clone();
         args.reverse();
-        self.check_type_arity(ty);
+        self.check_type_arity(ty, false);
         let mut sub: HashMap<&'a str, Type> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
             let t = match args.get(i) {
@@ -5390,6 +5465,37 @@ impl<'a> Checker<'a> {
         None
     }
 
+    /// An application spine whose arity the caller has already checked: the
+    /// partial applications inside it (`Pair @int` in `Pair @int @str`) are not
+    /// types of their own, so they are not checked again.
+    fn spine_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+        match self.tnode(ty) {
+            Ty::App(head, arg) => {
+                let (head, arg) = (*head, *arg);
+                let h = self.spine_of_ast(head, tvars);
+                let a = self.ty_of_ast(arg, tvars);
+                self.eng.types.app(h, a)
+            }
+            Ty::Con { .. } => self.con_of_ast(ty),
+            _ => self.ty_of_ast(ty, tvars),
+        }
+    }
+
+    fn con_of_ast(&mut self, ty: Aol<Ty>) -> Type {
+        let Ty::Con { name, .. } = self.tnode(ty) else {
+            unreachable!("con_of_ast on a non-constructor");
+        };
+        let name = self.text(*name);
+        if !self.is_known_type(name) && self.unknown_type.is_none() {
+            let mut d = self.unknown_type(name);
+            if let Some(span) = self.ast.ty_span(ty) {
+                d = d.fill_span(span);
+            }
+            self.unknown_type = Some(d);
+        }
+        self.eng.types.con(name)
+    }
+
     fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         // An alias at the head of an application spine expands first, so `MapInt Bool`
         // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
@@ -5397,16 +5503,9 @@ impl<'a> Checker<'a> {
             return t;
         }
         match self.tnode(ty) {
-            Ty::Con { name, .. } => {
-                let name = self.text(*name);
-                if !self.is_known_type(name) && self.unknown_type.is_none() {
-                    let mut d = self.unknown_type(name);
-                    if let Some(span) = self.ast.ty_span(ty) {
-                        d = d.fill_span(span);
-                    }
-                    self.unknown_type = Some(d);
-                }
-                self.eng.types.con(name)
+            Ty::Con { .. } => {
+                self.check_type_arity(ty, true);
+                self.con_of_ast(ty)
             }
             Ty::Var(name) => {
                 let name = self.text(*name);
@@ -5414,11 +5513,9 @@ impl<'a> Checker<'a> {
                     .entry(name)
                     .or_insert_with(|| self.eng.fresh())
             }
-            Ty::App(head, arg) => {
-                self.check_type_arity(ty);
-                let (head, arg) = (*head, *arg);
-                let (h, a) = (self.ty_of_ast(head, tvars), self.ty_of_ast(arg, tvars));
-                self.eng.types.app(h, a)
+            Ty::App(..) => {
+                self.check_type_arity(ty, true);
+                self.spine_of_ast(ty, tvars)
             }
             // `@e X` in type position: infer `X` (so its calls/overloads resolve
             // for lowering) and require it to build `@code`; the spliced-in type is

@@ -388,7 +388,10 @@ impl std::error::Error for Diagnostic {}
 /// enough to be a plausible typo. Ties go to the alphabetically first
 /// candidate, so the hint does not depend on iteration order.
 pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    let limit = (name.chars().count() / 3).max(1);
+    let len = name.chars().count();
+    // Replacing every character is not a typo, so a one-letter name only ever
+    // matches another case of itself.
+    let limit = (len / 3).max(1).min(len.saturating_sub(1));
     let lower = name.to_lowercase();
     let mut best: Option<(usize, &'a str)> = None;
     for c in candidates {

@@ -173,6 +173,8 @@ fn closest_suggests_only_plausible_typos() {
     assert_eq!(closest("Mytype", ["MyTyp", "Other"]), Some("MyTyp"));
     assert_eq!(closest("xyz", ["println", "map"]), None);
     assert_eq!(closest("map", ["map"]), None);
+    assert_eq!(closest("y", ["%", "x"]), None);
+    assert_eq!(closest("y", ["Y"]), Some("Y"));
 }
 
 #[test]

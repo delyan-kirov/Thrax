@@ -1,0 +1,5 @@
+$ @mod DUPLICATE_DEFINITION
+
+# One name, one definition: overloading is gone.
+$ f : @int = 1
+$ f : @int = 2  #~ error[TYPE_MISMATCH]: `f` is defined twice in module `DUPLICATE_DEFINITION`

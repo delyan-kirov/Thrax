@@ -531,13 +531,15 @@ impl<'a> Parser<'a> {
     /// `$ with module [= rename]`
     fn parse_import(&mut self) -> Result<Item> {
         self.bump()?; // 'with'
+        let start = self.here()?;
         let module = self.parse_dotted_name()?;
+        let span = Span::new(start, self.last_end);
         let rename = if self.eat(|k| matches!(k, Kind::Eq))? {
             Some(self.parse_dotted_name()?)
         } else {
             None
         };
-        Ok(Item::Import { module, rename })
+        Ok(Item::Import { module, rename, span })
     }
 
     fn parse_dotted_name(&mut self) -> Result<Slice<StrId>> {
@@ -1369,11 +1371,15 @@ impl<'a> Parser<'a> {
                 // axis (a range or `..`), it is a tensor slice whose result shape the
                 // checker computes from the receiver.
                 if slots.iter().all(|s| matches!(s, SliceSlot::Index(_))) {
+                    // The synthetic head carries the whole access's span, because
+                    // that is where a failure to resolve its instance is reported.
+                    let start = self.ast.expr_span(base).map_or(ahead.span.start, |s| s.start);
                     let mut recv = base;
                     for s in slots {
                         let SliceSlot::Index(idx) = s else { unreachable!() };
                         let index_fn = self.intern("@IIndex");
                         let f = self.expr(Expr::Var { module: None, name: index_fn });
+                        let f = self.stamp(start, f);
                         let f = self.expr(Expr::App(f, recv));
                         recv = self.expr(Expr::App(f, idx));
                     }

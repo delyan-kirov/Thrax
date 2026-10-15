@@ -1,0 +1,3 @@
+$ @mod STRUCT_LIT_ON_SCALAR
+
+$ f : @int = @int.{ 1 }  #~ error[UNEXPECTED_TOKEN]: a struct literal must be qualified with an uppercase type name

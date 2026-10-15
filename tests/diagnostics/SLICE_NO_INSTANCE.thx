@@ -1,0 +1,4 @@
+$ @mod SLICE_NO_INSTANCE
+
+$ P : @struct = x: @int,
+$ s : P -> P = \p = p.[0 ... 1]  #~ error[TYPE_MISMATCH]: expected P, found [a]b

@@ -1,0 +1,3 @@
+$ @mod UNBOUND_NAME
+
+$ f : @int = lenght 1  #~ error[TYPE_UNBOUND]: unbound name `lenght`

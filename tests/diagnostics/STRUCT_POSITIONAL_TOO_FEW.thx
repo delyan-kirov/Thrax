@@ -1,0 +1,5 @@
+$ @mod STRUCT_POSITIONAL_TOO_FEW
+
+# A positional literal gives every field; one value short is not a partial build.
+$ P : @struct = x: @int, y: @int,
+$ p : P = P.{ 1 }  #~ error[TYPE_MISMATCH]: struct `P` literal is missing field `y`

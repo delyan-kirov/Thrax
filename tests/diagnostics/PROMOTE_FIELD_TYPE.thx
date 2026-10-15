@@ -1,0 +1,4 @@
+$ @mod PROMOTE_FIELD_TYPE
+
+$ add : {x: @int, y: @int} -> @int = x + y
+$ a : @int = add {1, "two"}  #~ error[TYPE_MISMATCH]: promoting an argument to a record: expected @str, found @int
