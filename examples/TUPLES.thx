@@ -1,4 +1,4 @@
-@mod TUPLES
+$ @mod TUPLES
 
 # \file TUPLES.thx
 # \info Anonymous product types (tuples) of any size. `{A, B, ...}` is a

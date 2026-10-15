@@ -1,4 +1,4 @@
-@mod RC_LOOP
+$ @mod RC_LOOP
 
 # \file rc_loop.thx
 # \info Memory-recycling regression for the native backend's reference-counting

@@ -1,4 +1,4 @@
-@mod MAIN
+$ @mod MAIN
 
 #-
  - \info Combined test runner: import every example module (qualified) and run its

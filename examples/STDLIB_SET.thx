@@ -1,4 +1,4 @@
-@mod STDLIB_SET
+$ @mod STDLIB_SET
 
 # \file STDLIB_SET.thx
 # \info The standard library's ordered set (the AVL map with unit values).

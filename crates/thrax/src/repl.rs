@@ -753,9 +753,9 @@ impl Repl {
         }
     }
 
-    /// The `@mod REPL` source for the current session, with `extra` appended.
+    /// The `$ @mod REPL` source for the current session, with `extra` appended.
     fn source(&self, extra: &str) -> String {
-        let mut s = String::from("@mod REPL\n");
+        let mut s = String::from("$ @mod REPL\n");
         for imp in &self.imports {
             s.push_str(imp);
             s.push('\n');

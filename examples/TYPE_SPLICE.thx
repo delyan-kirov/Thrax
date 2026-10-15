@@ -1,4 +1,4 @@
-@mod TYPE_SPLICE
+$ @mod TYPE_SPLICE
 
 # \file type_splice.thx
 # \info `with` in a type declaration. A `@struct` or `@union` may begin with

@@ -1,4 +1,4 @@
-@mod DERIVE_ORD
+$ @mod DERIVE_ORD
 
 # \file DERIVE_ORD.thx
 # \info Deriving COMPARISON at compile time. `derive_ord "T"` reflects on a type

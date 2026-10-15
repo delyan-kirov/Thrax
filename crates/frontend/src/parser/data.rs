@@ -136,7 +136,7 @@ impl Ast {
     }
 }
 
-/// A whole compilation unit: `@mod NAME` followed by top-level items.
+/// A whole compilation unit: `$ @mod NAME` followed by top-level items.
 #[derive(Debug)]
 pub struct Program {
     pub module: StrId,

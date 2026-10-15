@@ -15,7 +15,7 @@ how a module name resolves to a file.
 
 ## 1. The model
 
-Every source file opens with `@mod NAME`. Files that share a name are one
+Every source file opens with `$ @mod NAME`. Files that share a name are one
 module. A module exposes its public names to any module that imports it with
 `$ with NAME`. The guiding rule for a name that an importer uses:
 

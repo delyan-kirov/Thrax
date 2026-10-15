@@ -1,4 +1,4 @@
-@mod PATH
+$ @mod PATH
 
 # \file PATH.thx
 # \info POSIX-style path manipulation, pure byte-string code (no filesystem

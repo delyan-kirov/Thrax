@@ -1,4 +1,4 @@
-@mod WITH_SCOPE
+$ @mod WITH_SCOPE
 
 # \file WITH_SCOPE.thx
 # \info `with p in body` brings every field of `p`'s struct into scope

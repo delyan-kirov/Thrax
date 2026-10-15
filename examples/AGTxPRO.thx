@@ -1,4 +1,4 @@
-@mod AGTxPRO
+$ @mod AGTxPRO
 
 # Product types (structs): a named record type, a literal, and field access.
 

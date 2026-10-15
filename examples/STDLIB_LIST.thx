@@ -1,4 +1,4 @@
-@mod STDLIB_LIST
+$ @mod STDLIB_LIST
 
 # \file STDLIB_LIST.thx
 # \info The standard library's VEC module: transformation, folding,

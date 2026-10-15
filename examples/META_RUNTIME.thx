@@ -1,4 +1,4 @@
-@mod META_RUNTIME
+$ @mod META_RUNTIME
 
 # \file META_RUNTIME.thx
 # \info The compiler at run time. `@lex`, `@parse`, `@parse_str`, `@parse_items`

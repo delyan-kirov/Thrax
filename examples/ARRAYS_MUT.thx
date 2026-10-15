@@ -1,4 +1,4 @@
-@mod ARRAYS_MUT
+$ @mod ARRAYS_MUT
 
 # Build a byte buffer by pushing; @array_push grows it (opportunistic in-place
 # natively, copy-on-write when shared; the interpreter always copies).

@@ -1,4 +1,4 @@
-@mod README_GEN
+$ @mod README_GEN
 
 # \file README_GEN.thx
 # \info Parse and test examples in readme and generate the README file

@@ -116,12 +116,12 @@ $ msg : Str = "at {Point.{ .x = 3, .y = 4 }}, n={40 + 2}"   # "at (3, 4), n=42"
 # 2. Program structure
 
 ## 2.1 Module header `@mod`
-Every file begins with `@mod NAME`. A module name is uppercase with digits, `_`,
+Every file begins with `$ @mod NAME`. A module name is uppercase with digits, `_`,
 and the inert lowercase `x` allowed (so `MAIN`, `LIST_UTIL`, `MODxA`). A module
 may span several files (repeat the header).
 
 ```thrax
-@mod MAIN
+$ @mod MAIN
 ```
 
 ## 2.2 Global definitions `$`

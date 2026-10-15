@@ -1,4 +1,4 @@
-@mod CT_RUN
+$ @mod CT_RUN
 
 # \file CT_RUN.thx
 # \info Compile-time execution: `$ @e <expr>` forces a PURE expression through

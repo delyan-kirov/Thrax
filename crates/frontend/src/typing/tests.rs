@@ -64,37 +64,37 @@ fn declaration_errors_carry_a_location() {
     // the `@mod` line for an error somewhere else entirely.
     let cases = [
         // a `with` include that names no such type
-        "@mod M
+        "$ @mod M
 $ P : @struct = with Nope, a: @int,
 $ x : @int = 1",
         // a `with` cycle
-        "@mod M
+        "$ @mod M
 $ A : @struct = with B, a: @int,
 $ B : @struct = with A, b: @int,
 $ x : @int = 1",
         // a member a `with` splices in twice
-        "@mod M
+        "$ @mod M
 $ A : @struct = a: @int,
 $ B : @struct = with A, a: @int,
 $ x : @int = 1",
         // an undeclared type parameter
-        "@mod M
+        "$ @mod M
 $ P : @struct = v: a,
 $ x : @int = 1",
         // one name defined twice
-        "@mod M
+        "$ @mod M
 $ f : @int = 1
 $ f : @int = 2",
         // a C-repr field that has no C representation
-        "@mod M
+        "$ @mod M
 $ P : @struct @extern \"C\" = v: List @int,
 $ x : @int = 1",
         // a C-repr struct that contains itself by value
-        "@mod M
+        "$ @mod M
 $ P : @struct @extern \"C\" = v: P,
 $ x : @int = 1",
         // a blessed interface declared outside CORE
-        "@mod M
+        "$ @mod M
 $ @IRange : @struct a b = range: a -> a -> b,
 $ x : @int = 1",
     ];
@@ -111,14 +111,14 @@ $ x : @int = 1",
 #[test]
 fn undeclared_type_param_is_error() {
     // Parameters are mandatory: a free tyvar with no declared list is rejected.
-    let e = errors("@mod M\n$ Box : @struct = val: t\n$ x : @int = 0");
+    let e = errors("$ @mod M\n$ Box : @struct = val: t\n$ x : @int = 0");
     assert!(e.contains("declares no type parameters"), "{e}");
 }
 
 #[test]
 fn parameterized_alias_expands() {
     // `MapInt` fixes the key to @int, so `MapInt @bool` elaborates to `Map @int @bool`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Map : @struct k v = key: k, val: v\n\
                $ MapInt : @alias v = Map @int v\n\
                $ m : MapInt @bool = .{ .key = 1, .val = @true }";
@@ -127,19 +127,19 @@ fn parameterized_alias_expands() {
 
 #[test]
 fn monomorphic_arithmetic() {
-    assert_eq!(type_of("@mod M\n$ x = 1 + 2", "x"), "@int");
+    assert_eq!(type_of("$ @mod M\n$ x = 1 + 2", "x"), "@int");
 }
 
 #[test]
 fn identity_is_polymorphic() {
     // The classic let-generalization test: `id` gets `forall a. a -> a`.
-    assert_eq!(type_of("@mod M\n$ id = \\x = x", "id"), "a -> a");
+    assert_eq!(type_of("$ @mod M\n$ id = \\x = x", "id"), "a -> a");
 }
 
 #[test]
 fn polymorphic_id_used_at_two_types() {
     // Using a generalized `id` at @int and @str must not conflict.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ id = \\x = x\n\
                    $ pair = let a = id 1, b = id \"s\" in {a, b}";
     assert_eq!(type_of(src, "pair"), "{@int, @str}");
@@ -147,7 +147,7 @@ fn polymorphic_id_used_at_two_types() {
 
 #[test]
 fn function_application_and_arrows() {
-    let src = "@mod M\n$ apply = \\f x = f x";
+    let src = "$ @mod M\n$ apply = \\f x = f x";
     // `(A -> B) -> A -> B`.
     assert_eq!(type_of(src, "apply"), "(a -> b) -> a -> b");
 }
@@ -155,27 +155,27 @@ fn function_application_and_arrows() {
 #[test]
 fn if_unifies_branches_and_condition() {
     assert_eq!(
-        type_of("@mod M\n$ f = \\n = if n == 0 => 1 else n", "f"),
+        type_of("$ @mod M\n$ f = \\n = if n == 0 => 1 else n", "f"),
         "@int -> @int"
     );
 }
 
 #[test]
 fn recursion_through_predeclared_globals() {
-    let src = "@mod M\n$ fib = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
+    let src = "$ @mod M\n$ fib = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
     assert_eq!(type_of(src, "fib"), "@int -> @int");
 }
 
 #[test]
 fn tuples_and_lists() {
-    assert_eq!(type_of("@mod M\n$ p = {1, \"a\"}", "p"), "{@int, @str}");
-    assert_eq!(type_of("@mod M\n$ xs = [1, 2, 3]", "xs"), "@vec @int");
+    assert_eq!(type_of("$ @mod M\n$ p = {1, \"a\"}", "p"), "{@int, @str}");
+    assert_eq!(type_of("$ @mod M\n$ xs = [1, 2, 3]", "xs"), "@vec @int");
 }
 
 #[test]
 fn signature_is_checked() {
     assert_eq!(
-        type_of("@mod M\n$ f : @int -> @int = \\x = x + 1", "f"),
+        type_of("$ @mod M\n$ f : @int -> @int = \\x = x + 1", "f"),
         "@int -> @int"
     );
 }
@@ -183,22 +183,22 @@ fn signature_is_checked() {
 #[test]
 fn occurs_check_rejects_self_application() {
     // `\x = x x` has no finite type.
-    assert!(errors("@mod M\n$ bad = \\x = x x").contains("infinite type"));
+    assert!(errors("$ @mod M\n$ bad = \\x = x x").contains("infinite type"));
 }
 
 #[test]
 fn type_mismatch_is_reported() {
-    assert!(errors("@mod M\n$ bad = 1 + \"s\"").contains("TYPE_MISMATCH"));
+    assert!(errors("$ @mod M\n$ bad = 1 + \"s\"").contains("TYPE_MISMATCH"));
 }
 
 #[test]
 fn unbound_name_is_reported() {
-    assert!(errors("@mod M\n$ bad = nope 1").contains("TYPE_UNBOUND"));
+    assert!(errors("$ @mod M\n$ bad = nope 1").contains("TYPE_UNBOUND"));
 }
 
 #[test]
 fn struct_field_access_is_typed() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ P : @struct = x: @int, y: @str\n\
                    $ p : P = P.{ .x = 1, .y = \"s\" }\n\
                    $ gx = p.x\n\
@@ -209,7 +209,7 @@ fn struct_field_access_is_typed() {
 
 #[test]
 fn generic_struct_instantiates_per_use() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ Box : @struct t = val: t\n\
                    $ b : Box @str = Box.{ .val = \"hi\" }\n\
                    $ out = b.val";
@@ -219,7 +219,7 @@ fn generic_struct_instantiates_per_use() {
 
 #[test]
 fn union_constructor_and_match() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ Maybe : @union t = Just: t, None: {}\n\
                    $ m : Maybe @int = Maybe.Just.{ 7 }\n\
                    $ get = \\d = \\o = is o | Maybe.Just.{x} => x | _ => d";
@@ -229,7 +229,7 @@ fn union_constructor_and_match() {
 
 #[test]
 fn mutually_recursive_globals_via_scc() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ is_even : @int -> @int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
                    $ is_odd  : @int -> @int = \\n = if n == 0 => 0 else is_even (n - 1)";
     assert_eq!(type_of(src, "is_even"), "@int -> @int");
@@ -238,7 +238,7 @@ fn mutually_recursive_globals_via_scc() {
 
 #[test]
 fn recursive_let_binding() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ f = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "@int -> @int");
@@ -246,19 +246,19 @@ fn recursive_let_binding() {
 
 #[test]
 fn arithmetic_resolves_its_interface_per_type() {
-    assert_eq!(type_of("@mod M\n$ a = 1 + 2", "a"), "@int");
-    assert_eq!(type_of("@mod M\n$ a = 1.0 + 2.0", "a"), "@float64");
+    assert_eq!(type_of("$ @mod M\n$ a = 1 + 2", "a"), "@int");
+    assert_eq!(type_of("$ @mod M\n$ a = 1.0 + 2.0", "a"), "@float64");
     // An operator takes ONE type for both operands, and an integer literal never
     // adopts a float type, so mixing the two is an error rather than a silent
     // promotion. Write the float literal instead.
-    assert!(errors("@mod M\n$ a = 1 + 2.0").contains("an integer literal cannot be a"));
+    assert!(errors("$ @mod M\n$ a = 1 + 2.0").contains("an integer literal cannot be a"));
 }
 
 /// One name, one type. Two definitions of a name are rejected where they are
 /// written, rather than making the name's printed type a lie.
 #[test]
 fn a_name_defined_twice_is_an_error() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ f : @int -> @int = \\x = x + 1\n\
                    $ f : @str -> @str = \\x = x ++ \"!\"";
     assert!(errors(src).contains("`f` is defined twice"), "{}", errors(src));
@@ -268,7 +268,7 @@ fn a_name_defined_twice_is_an_error() {
 /// honest type and each instance carries its own.
 #[test]
 fn an_interface_covers_several_types() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
                    $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
                    $ bump_int : IBump @int = .{ .bump = \\x = x + 1 }\n\
@@ -285,7 +285,7 @@ fn an_interface_covers_several_types() {
 fn overload_deferred_until_signature_pins_operands() {
     // `p1.x + p2.x` cannot resolve until the signature makes the params
     // structs; bidirectional checking + the pending fixpoint handle it.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ P : @struct = x: @int, y: @int\n\
                    $ add : P -> P -> P = \\p1 p2 = P.{ .x = p1.x + p2.x, .y = p1.y + p2.y }";
     assert_eq!(type_of(src, "add"), "P -> P -> P");
@@ -296,16 +296,16 @@ fn sized_literal_arithmetic_takes_the_result_type() {
     // Two bare literals in a sized-int context resolve to that sized overload,
     // not `@int`: the result type is propagated onto the operands before they
     // would default to `@int` (which has no `@int + @int -> @int32`).
-    assert_eq!(type_of("@mod M\n$ x : @int32 = 2 + 3", "x"), "@int32");
-    assert_eq!(type_of("@mod M\n$ x : @int64 = 2 + 3 * 4", "x"), "@int64");
-    assert_eq!(type_of("@mod M\n$ x : @nat16 = 7 - 1", "x"), "@nat16");
+    assert_eq!(type_of("$ @mod M\n$ x : @int32 = 2 + 3", "x"), "@int32");
+    assert_eq!(type_of("$ @mod M\n$ x : @int64 = 2 + 3 * 4", "x"), "@int64");
+    assert_eq!(type_of("$ @mod M\n$ x : @nat16 = 7 - 1", "x"), "@nat16");
     // With no sized context, bare literals still default to `@int`.
-    assert_eq!(type_of("@mod M\n$ x = 2 + 3", "x"), "@int");
+    assert_eq!(type_of("$ @mod M\n$ x = 2 + 3", "x"), "@int");
 }
 
 #[test]
 fn a_type_with_no_instance_is_reported() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ IBump : @struct t = bump: t -> t,\n\
                    $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
                    $ bump_int : IBump @int = .{ .bump = \\x = x }\n\
@@ -315,13 +315,13 @@ fn a_type_with_no_instance_is_reported() {
 
 #[test]
 fn cross_module_import_brings_in_types_and_values() {
-    let dep_src = "@mod OPT\n\
+    let dep_src = "$ @mod OPT\n\
                        $ Option : @union t = Some: t, None: {}\n\
                        $ is_some : Option t -> @bool = \\o = \
                        is o | Option.Some.{_} => @true | _ => @false\n\
                        $ unwrap_or : Option t -> t -> t = \\o d = \
                        is o | Option.Some.{x} => x | _ => d";
-    let use_src = "@mod U\n\
+    let use_src = "$ @mod U\n\
                        $ with OPT\n\
                        $ o : Option @int = Option.Some.{ 41 }\n\
                        $ present = is_some o\n\
@@ -363,7 +363,7 @@ fn cross_module_errors(dep_src: &str, use_src: &str) -> String {
     }
 }
 
-const PRIVATE_DEP: &str = "@mod A\n\
+const PRIVATE_DEP: &str = "$ @mod A\n\
     $ api : @int -> @int = \\x = helper x + 1\n\
     $ @private\n\
     $ helper : @int -> @int = \\x = x * x";
@@ -372,12 +372,12 @@ const PRIVATE_DEP: &str = "@mod A\n\
 fn public_symbol_above_private_marker_is_importable() {
     // `api` sits before `$ @private`, so it exports even though its body calls a
     // private helper.
-    assert_eq!(cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = api 3"), "");
+    assert_eq!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = api 3"), "");
 }
 
 #[test]
 fn private_symbol_is_not_importable_bare() {
-    assert!(cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = helper 3")
+    assert!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = helper 3")
         .contains("TYPE_UNBOUND"));
 }
 
@@ -385,36 +385,36 @@ fn private_symbol_is_not_importable_bare() {
 fn private_symbol_is_not_reachable_qualified() {
     // A private name is withheld from the qualified namespace too, so `A.helper`
     // does not resolve either.
-    assert!(!cross_module_errors(PRIVATE_DEP, "@mod B\n$ with A\n$ r = A.helper 3").is_empty());
+    assert!(!cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = A.helper 3").is_empty());
 }
 
 #[test]
 fn private_type_is_not_importable() {
-    let dep = "@mod A\n\
+    let dep = "$ @mod A\n\
         $ mk : @int -> Secret = \\n = Secret.{ .v = n }\n\
         $ @private\n\
         $ Secret : @struct = v: @int";
     // Naming the private type in the importer fails; only its public constructor's
     // result type leaks (opaquely).
-    assert!(!cross_module_errors(dep, "@mod B\n$ with A\n$ x : Secret = mk 3").is_empty());
+    assert!(!cross_module_errors(dep, "$ @mod B\n$ with A\n$ x : Secret = mk 3").is_empty());
 }
 
 #[test]
 fn private_extends_to_end_of_file() {
     // `$ @private` has no counterpart, so every declaration below it stays hidden.
-    let dep = "@mod A\n\
+    let dep = "$ @mod A\n\
         $ @private\n\
         $ hidden : @int -> @int = \\x = x\n\
         $ also_hidden : @int -> @int = \\x = x";
-    assert!(cross_module_errors(dep, "@mod B\n$ with A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
-    assert!(cross_module_errors(dep, "@mod B\n$ with A\n$ r = also_hidden 1")
+    assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = hidden 1").contains("TYPE_UNBOUND"));
+    assert!(cross_module_errors(dep, "$ @mod B\n$ with A\n$ r = also_hidden 1")
         .contains("TYPE_UNBOUND"));
 }
 
 #[test]
 fn public_marker_is_rejected() {
     // There is no `$ @public`; writing one is a parse error.
-    let err = crate::parse_into(Ast::new(), "@mod M\n$ @public\n$ x = 1")
+    let err = crate::parse_into(Ast::new(), "$ @mod M\n$ @public\n$ x = 1")
         .err()
         .map(|e| format!("{e}"))
         .unwrap_or_default();
@@ -425,20 +425,20 @@ fn public_marker_is_rejected() {
 fn record_parameters_bind_fields_directly() {
     // A record parameter is a real record type; its fields auto-bind in the body.
     assert_eq!(
-        type_of("@mod M\n$ add : {x: @int, y: @int} -> @int = x + y", "add"),
+        type_of("$ @mod M\n$ add : {x: @int, y: @int} -> @int = x + y", "add"),
         "{ x: @int, y: @int } -> @int"
     );
     // A one-field record is a one-field record (no collapse); a scalar promotes
     // to it at the call site.
     assert_eq!(
-        type_of("@mod M\n$ inc : {x: @int} -> @int = x + 1", "inc"),
+        type_of("$ @mod M\n$ inc : {x: @int} -> @int = x + 1", "inc"),
         "{ x: @int } -> @int"
     );
 }
 
 #[test]
 fn with_scopes_struct_fields() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ P : @struct = x: @int, y: @int\n\
                    $ sum : P -> @int = \\p = with p in x + y";
     assert_eq!(type_of(src, "sum"), "P -> @int");
@@ -447,13 +447,13 @@ fn with_scopes_struct_fields() {
 #[test]
 fn sequence_literal_is_type_directed() {
     // The same `[..]` is an @array in @array context, a @vec otherwise.
-    assert_eq!(type_of("@mod M\n$ a : @array = [10, 20]", "a"), "@array");
+    assert_eq!(type_of("$ @mod M\n$ a : @array = [10, 20]", "a"), "@array");
     assert_eq!(
-        type_of("@mod M\n$ a : @vec @int = [1, 2, 3]", "a"),
+        type_of("$ @mod M\n$ a : @vec @int = [1, 2, 3]", "a"),
         "@vec @int"
     );
     // An @array-typed parameter directs a `[..]` argument at the call site.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ len : @array -> @int = \\a = @array_len a\n\
                    $ n = len [1, 2]";
     assert_eq!(type_of(src, "n"), "@int");
@@ -464,7 +464,7 @@ fn effect_operation_is_bound_and_handler_types_result() {
     // `get`/`put` are bound from the effect declaration; `tick` performs State, so
     // its arrow carries the `<State>` row; the `do/ctl` handler discharges it and
     // types to the clause/`else` bodies' common type.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ State : @effect = get : {} -> @int, put : @int -> {},\n\
                    $ tick : {} -> <State> @int = \\u = let x = get {} in let _ = put (x + 1) in x\n\
                    $ run : @int = do tick {} ctl k | get u => k 0 | put n => k {} | x => x";
@@ -477,7 +477,7 @@ fn io_is_a_builtin_effect_and_propagates() {
     // `@io` is a builtin effect, written in `@`-form (unlike Capitalized user
     // effects like `State`) and needing no declaration. A leaf `@extern` carries
     // it in its latent row, and a caller that performs it inherits `@io`.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ write : @str -> <@io> @int = @extern \"C\" \"write\" \"libc\"\n\
                $ p = \\s = let _ = write s in {}";
     assert_eq!(type_of(src, "write"), "@str -> <@io> @int");
@@ -488,7 +488,7 @@ fn io_is_a_builtin_effect_and_propagates() {
 fn io_in_a_pure_typed_function_is_rejected() {
     // A function declared pure that performs `@io` is a compile error: the latent
     // `<@io>` cannot be subsumed into the empty ambient.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ write : @str -> <@io> @int = @extern \"C\" \"write\" \"libc\"\n\
                $ bad : @str -> @int = \\s = write s";
     assert!(errors(src).contains("@io"), "{}", errors(src));
@@ -498,7 +498,7 @@ fn io_in_a_pure_typed_function_is_rejected() {
 fn unknown_type_name_is_rejected() {
     // A bare capitalized name in type position must be a known type; a type
     // variable is a lowercase name. `Itn` is a typo, not a type variable.
-    assert!(errors("@mod M\n$ x : Itn = 5").contains("unknown type `Itn`"));
+    assert!(errors("$ @mod M\n$ x : Itn = 5").contains("unknown type `Itn`"));
 }
 
 #[test]
@@ -506,22 +506,22 @@ fn numeric_literal_is_not_a_bool_condition() {
     // `if` wants a `@bool`; a bare integer literal is a number, not a truth value,
     // so `if 1` is a type error (it used to silently mean "nonzero").
     assert!(
-        errors("@mod M\n$ x : @int = if 1 => 2 else 3").contains("numeric literal"),
+        errors("$ @mod M\n$ x : @int = if 1 => 2 else 3").contains("numeric literal"),
         "expected `if 1` to be rejected: {:?}",
-        errors("@mod M\n$ x : @int = if 1 => 2 else 3")
+        errors("$ @mod M\n$ x : @int = if 1 => 2 else 3")
     );
     // A real condition (a comparison, or a `@bool`) is fine.
-    assert_eq!(errors("@mod M\n$ x : @int = if 1 == 1 => 2 else 3"), "");
-    assert_eq!(errors("@mod M\n$ x : @int = if @true => 2 else 3"), "");
+    assert_eq!(errors("$ @mod M\n$ x : @int = if 1 == 1 => 2 else 3"), "");
+    assert_eq!(errors("$ @mod M\n$ x : @int = if @true => 2 else 3"), "");
     // A numeric literal cannot masquerade as a pointer either.
-    assert!(errors("@mod M\n$ p : @ptr = 0").contains("numeric literal"));
+    assert!(errors("$ @mod M\n$ p : @ptr = 0").contains("numeric literal"));
 }
 
 #[test]
 fn curried_extern_is_rejected() {
     // A C function has no first-class closure to curry: a multi-parameter extern
     // must group its C parameters into one record, not curry with several arrows.
-    let e = errors("@mod M\n$ f : @int -> @int -> @int = @extern \"C\" \"f\" \"lib\"");
+    let e = errors("$ @mod M\n$ f : @int -> @int -> @int = @extern \"C\" \"f\" \"lib\"");
     assert!(e.contains("takes a single argument"), "{e}");
 }
 
@@ -529,7 +529,7 @@ fn curried_extern_is_rejected() {
 fn single_argument_externs_are_accepted() {
     // One record groups several C parameters; a lone value and unit are one
     // argument each, so all three shapes pass the extern-shape check.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ f : {a: @int, b: @int} -> @int = @extern \"C\" \"f\" \"lib\"\n\
                $ g : @str -> @int = @extern \"C\" \"g\" \"lib\"\n\
                $ h : {} -> @int = @extern \"C\" \"h\" \"lib\"";
@@ -540,7 +540,7 @@ fn single_argument_externs_are_accepted() {
 fn type_variable_and_sized_and_declared_types_are_accepted() {
     // `a` is a type variable; `@int8`/`@ptr` are base types; a declared union
     // name is known. None of these is an "unknown type".
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Box : @union = Wrap: { @int },\n\
                $ id : a -> a = \\x = x\n\
                $ n : @int8 = 5\n\
@@ -555,7 +555,7 @@ fn type_variable_and_sized_and_declared_types_are_accepted() {
 fn unhandled_effect_is_a_compile_error() {
     // A function that performs an effect but declares a pure (or too-small) type
     // is rejected: the latent `<State>` cannot be subsumed into the empty ambient.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ State : @effect = get : {} -> @int, put : @int -> {},\n\
                    $ bad : {} -> @int = \\u = get {}";
     assert!(
@@ -569,7 +569,7 @@ fn unhandled_effect_is_a_compile_error() {
 fn top_level_unhandled_effect_is_rejected() {
     // Performing an effect at the top level (no handler in scope) is a compile
     // error, since a top-level body is typed under the empty closed row.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ Yield : @effect = yield : @int -> {},\n\
                    $ oops : {} = yield 1";
     assert!(
@@ -584,7 +584,7 @@ fn open_row_entry_may_perform_any_effect() {
     // The program entry `main` carries an OPEN effect row `<| e>`, so it may
     // perform any effect without a handler (the runtime is the top handler). A
     // pure `<>` would reject this (see `unhandled_effect_is_a_compile_error`).
-    let src = "@mod MAIN\n\
+    let src = "$ @mod MAIN\n\
                $ Yell : @effect = shout : @int -> {},\n\
                $ main : {} -> <| e> @int = \\u = let _ = Yell.shout 5 in 0";
     assert_eq!(errors(src), "", "open-row main should type-check");
@@ -596,7 +596,7 @@ fn meta_op_outside_run_is_an_unhandled_effect() {
     // The metaprogramming ops carry `<@meta>`. Used in ordinary code (no `@run`
     // eliminator), the latent `<@meta>` cannot be subsumed into the pure ambient,
     // so it is a clean compile error rather than a runtime no-op/fault.
-    let src = "@mod M\n$ bad : @str = @fresh \"x\"";
+    let src = "$ @mod M\n$ bad : @str = @fresh \"x\"";
     let e = errors(src);
     assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
 }
@@ -607,11 +607,11 @@ fn run_discharges_meta_but_e_requires_pure() {
     // surrounding context stays pure. `@e` embeds PURE results only, so the same
     // meta op inside `@e` is an unhandled-`@meta` error.
     assert_eq!(
-        errors("@mod M\n$ ok : @str = @run (@fresh \"x\")"),
+        errors("$ @mod M\n$ ok : @str = @run (@fresh \"x\")"),
         "",
         "meta op inside @run should type-check",
     );
-    let e = errors("@mod M\n$ bad : @str = @e (@fresh \"x\")");
+    let e = errors("$ @mod M\n$ bad : @str = @e (@fresh \"x\")");
     assert!(e.contains("@meta") && e.contains("not handled"), "got: {e:?}");
 }
 
@@ -619,7 +619,7 @@ fn run_discharges_meta_but_e_requires_pure() {
 fn run_is_hermetic_io_stays_unhandled() {
     // `@run` discharges `<@meta>` ONLY, so a generator that performs `@io` is still
     // rejected: compile-time code cannot touch the world (that is `@build`'s job).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
                $ bad : @int = @run (shout \"hi\")";
     let e = errors(src);
@@ -633,14 +633,14 @@ fn build_is_the_only_io_capable_compile_time_context() {
     // (whose own signature carries `<@io>`) as the only place a generator may
     // touch the world.
     let io_fn = "$ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n";
-    let e = errors(&format!("@mod M\n{io_fn}$ bad : @int = @run (shout \"hi\")"));
+    let e = errors(&format!("$ @mod M\n{io_fn}$ bad : @int = @run (shout \"hi\")"));
     assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
-    let e = errors(&format!("@mod M\n{io_fn}$ bad : @int = @e (shout \"hi\")"));
+    let e = errors(&format!("$ @mod M\n{io_fn}$ bad : @int = @e (shout \"hi\")"));
     assert!(e.contains("@io") && e.contains("not handled"), "got: {e:?}");
     // A `@build`-shaped row handles both `@meta` and `@io`.
     assert_eq!(
         errors(&format!(
-            "@mod M\n{io_fn}$ b : {{}} -> <@meta, @io> @code = \\_ = \
+            "$ @mod M\n{io_fn}$ b : {{}} -> <@meta, @io> @code = \\_ = \
              shout \"hi\"; @parse_items \"$ x : @int = 1\""
         )),
         "",
@@ -681,7 +681,7 @@ fn build_has_one_signature() {
 #[test]
 fn open_effects_permits_io_at_the_shell_top_level() {
     // A top-level body performing `@io` is rejected in a file (a pure top level)...
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ shout : @str -> <@io> @int = @extern \"C\" \"puts\" \"libc\"\n\
                $ shown : @int = shout \"hi\"";
     let e = errors(src);
@@ -720,18 +720,18 @@ fn only_the_one_entry_signature_is_accepted() {
         let ty = results.iter().find(|(n, _)| *n == "@main").expect("@main").1;
         is_entry_type(checker.types(), ty)
     };
-    assert!(entry("@mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 0"));
-    assert!(!entry("@mod MAIN\n$ @main : {} -> <@io> @int = \\u = 0"));
-    assert!(!entry("@mod MAIN\n$ @main : @vec @str -> @int = \\args = 0"));
-    assert!(!entry("@mod MAIN\n$ @main : @vec @int -> <@io> @int = \\args = 0"));
-    assert!(!entry("@mod MAIN\n$ @main : @vec @str -> <@io> {} = \\args = {}"));
+    assert!(entry("$ @mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : {} -> <@io> @int = \\u = 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @vec @str -> @int = \\args = 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @vec @int -> <@io> @int = \\args = 0"));
+    assert!(!entry("$ @mod MAIN\n$ @main : @vec @str -> <@io> {} = \\args = {}"));
 }
 
 #[test]
 fn same_operation_in_two_effects_resolves_by_result_type() {
     // `ask` is declared by two effects (@int and @str result); a bare use is an
     // overload resolved by how the result is used, and `Effect.op` disambiguates.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ Reader : @effect = ask : {} -> @int,\n\
                    $ Config : @effect = ask : {} -> @str,\n\
                    $ n : @int = do (ask {}) + 1 ctl k | Reader.ask u => k 10\n\
@@ -742,7 +742,7 @@ fn same_operation_in_two_effects_resolves_by_result_type() {
 
 #[test]
 fn array_primitives_overload_on_array_and_str() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                    $ a : @array = @array_push (@array.{ 0 }) 65\n\
                    $ n = @array_len a\n\
                    $ b = @array_get \"hi\" 0";
@@ -768,7 +768,7 @@ fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
 
 #[test]
 fn crepr_struct_layout_vector2_and_color() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
         $ Color : @struct @extern \"C\" = r: @nat8, g: @nat8, b: @nat8, a: @nat8,\n\
         $ x : @int = 0";
@@ -784,7 +784,7 @@ fn crepr_struct_layout_vector2_and_color() {
 fn crepr_field_follows_alias_to_a_struct() {
     // A nullary alias to a C-repr struct (`Quaternion = Vector4`) is itself
     // C-representable as a field: the layout follows the alias to the struct.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Vector4 : @struct @extern \"C\" = x: @float32, y: @float32, z: @float32, w: @float32,\n\
         $ Quaternion : @alias = Vector4\n\
         $ Transform : @struct @extern \"C\" = rotation: Quaternion, scale: @float32,\n\
@@ -798,7 +798,7 @@ fn crepr_field_follows_alias_to_a_struct() {
 #[test]
 fn c_union_layout_overlaps() {
     // `@union @extern "C"` is a C union: members share offset 0, size is the largest.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ U : @union @extern \"C\" = i: @int32, d: @float64,\n\
         $ x : @int = 0";
     let u = crepr_layout(src, "U");
@@ -810,13 +810,13 @@ fn c_union_layout_overlaps() {
 
 #[test]
 fn crepr_struct_rejects_non_c_field() {
-    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" = s: @str,");
+    let e = errors("$ @mod M\n$ Bad : @struct @extern \"C\" = s: @str,");
     assert!(e.contains("not C-representable"), "{e}");
 }
 
 #[test]
 fn crepr_struct_rejects_generic() {
-    let e = errors("@mod M\n$ Bad : @struct @extern \"C\" a = v: a,");
+    let e = errors("$ @mod M\n$ Bad : @struct @extern \"C\" a = v: a,");
     assert!(e.contains("may not be generic"), "{e}");
 }
 
@@ -824,7 +824,7 @@ fn crepr_struct_rejects_generic() {
 fn real_literal_takes_real32_width() {
     // A `@float64` literal checks against a `@float32` expected type (like an integer
     // literal takes its width), so a float C struct binds with plain literals.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
         $ v : Vector2 = Vector2.{ .x = 1.0, .y = 2.5 }\n\
         $ f : @float32 = 3.5\n\
@@ -836,7 +836,7 @@ fn real_literal_takes_real32_width() {
 
 #[test]
 fn crepr_struct_nested() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
         $ Vector2 : @struct @extern \"C\" = x: @float32, y: @float32,\n\
         $ Line : @struct @extern \"C\" = a: Vector2, b: Vector2,\n\
         $ x : @int = 0";
@@ -849,13 +849,13 @@ fn crepr_struct_nested() {
 fn int_nat_friendly_spellings_are_dropped() {
     // Stage 4: word-size integers are spelled `@int`/`@nat`; the old friendly
     // `Int`/`Nat` are no longer type names and read as unknown types.
-    assert!(errors("@mod M\n$ x : Int = 5").contains("unknown type `Int`"));
-    assert!(errors("@mod M\n$ y : Nat = 5").contains("unknown type `Nat`"));
+    assert!(errors("$ @mod M\n$ x : Int = 5").contains("unknown type `Int`"));
+    assert!(errors("$ @mod M\n$ y : Nat = 5").contains("unknown type `Nat`"));
     // The `@`-spellings type and display canonically.
-    assert_eq!(type_of("@mod M\n$ a : @int = 5", "a"), "@int");
-    assert_eq!(type_of("@mod M\n$ b : @nat = 5", "b"), "@nat");
+    assert_eq!(type_of("$ @mod M\n$ a : @int = 5", "a"), "@int");
+    assert_eq!(type_of("$ @mod M\n$ b : @nat = 5", "b"), "@nat");
     // Inference still displays the word default as `@int`.
-    assert_eq!(type_of("@mod M\n$ c = 1 + 2", "c"), "@int");
+    assert_eq!(type_of("$ @mod M\n$ c = 1 + 2", "c"), "@int");
 }
 
 /// A user definition for a custom type EXTENDS a comparison operator rather than
@@ -863,7 +863,7 @@ fn int_nat_friendly_spellings_are_dropped() {
 /// reach CORE's per-type overload.
 #[test]
 fn comparison_is_extended_by_an_instance() {
-    let src = "@mod M\n$ T : @struct = v: @int\n\
+    let src = "$ @mod M\n$ T : @struct = v: @int\n\
                $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n\
                $ custom : @bool = T.{ .v = 1 } < T.{ .v = 2 }\n\
                $ prim : @bool = 1 < 2";
@@ -877,11 +877,11 @@ fn comparison_is_extended_by_an_instance() {
 /// arity), so the aggregates stay comparable without a definition of their own.
 #[test]
 fn equality_needs_an_instance() {
-    let bare = "@mod M\n$ T : @struct = v: @int\n\
+    let bare = "$ @mod M\n$ T : @struct = v: @int\n\
                 $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }";
     assert!(errors(bare).contains("no value of type `IEq T`"), "{}", errors(bare));
 
-    let src = "@mod M\n$ T : @struct = v: @int\n\
+    let src = "$ @mod M\n$ T : @struct = v: @int\n\
                $ eq_t : IEq T = .{ .eq = \\a b = a.v == b.v }\n\
                $ same : @bool = T.{ .v = 1 } == T.{ .v = 1 }\n\
                $ pair : @bool = {1, \"a\"} == {1, \"a\"}";
@@ -894,11 +894,11 @@ fn equality_needs_an_instance() {
 /// undeclared one has nothing to resolve, and says so instead of inventing a type.
 #[test]
 fn generic_comparison_declares_its_context() {
-    let src = "@mod M\n$ eq : @ctx IEq a -> a -> a -> @bool = \\d x y = d.eq x y";
+    let src = "$ @mod M\n$ eq : @ctx IEq a -> a -> a -> @bool = \\d x y = d.eq x y";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "eq"), "a -> a -> @bool");
 
-    let undeclared = errors("@mod M\n$ eq = \\x y = x == y");
+    let undeclared = errors("$ @mod M\n$ eq = \\x y = x == y");
     assert!(undeclared.contains("is not determined here"), "{undeclared}");
 }
 
@@ -906,7 +906,7 @@ fn generic_comparison_declares_its_context() {
 /// brackets in type position; a signature carrying a row still parses and checks.
 #[test]
 fn comparison_operators_coexist_with_effect_rows() {
-    let src = "@mod M\n$ Fail : @effect = fail : {} -> @int\n\
+    let src = "$ @mod M\n$ Fail : @effect = fail : {} -> @int\n\
                $ f : @int -> <Fail | e> @bool = \\n = n < 3\n\
                $ g : @int -> <| e> @bool = \\n = n > 3";
     assert_eq!(errors(src), "");
@@ -924,7 +924,7 @@ fn concat_on_an_unsupported_type_is_a_type_error() {
     // `++` was bound as a generic `a -> a -> a`, a signature that claimed a
     // domain the operator does not have.
     let e = errors(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct = x: @int\n\
          $ h : @int = (P.{.x=1} ++ P.{.x=2}).x",
     );
@@ -935,7 +935,7 @@ fn concat_on_an_unsupported_type_is_a_type_error() {
 fn a_user_concat_instance_joins_the_existing_ones() {
     // An instance EXTENDS the interface, so `"a" ++ "b"` keeps working in the
     // module that adds one for its own type.
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ P : @struct = x: @int\n\
                $ cat_p : ICat P = .{ .cat = \\a b = P.{ .x = a.x + b.x } }\n\
                $ s : @str = \"a\" ++ \"b\"\n\
@@ -946,7 +946,7 @@ fn a_user_concat_instance_joins_the_existing_ones() {
 #[test]
 fn an_unknown_variant_tag_is_a_type_error() {
     let e = errors(
-        "@mod M\n\
+        "$ @mod M\n\
          $ U : @union = A: {}, B: {@int},\n\
          $ h : @int = is U.A | .Nope.{q} => q | _ => 0",
     );
@@ -958,7 +958,7 @@ fn a_variant_pattern_on_a_non_union_is_a_type_error() {
     // The loose fallthrough bound `a` and `b` to fresh variables and never
     // unified with the scrutinee, so the arm could claim any type.
     let e = errors(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct = x: @int\n\
          $ h : P -> @int = \\p = is p | P.Zzz.{a, b} => a | _ => 0",
     );
@@ -968,7 +968,7 @@ fn a_variant_pattern_on_a_non_union_is_a_type_error() {
 #[test]
 fn an_unknown_field_is_a_type_error() {
     let e = errors(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct = x: @int\n\
          $ h : P -> @int = \\v = v.nonexistent",
     );
@@ -978,7 +978,7 @@ fn an_unknown_field_is_a_type_error() {
 #[test]
 fn a_struct_literal_with_an_unknown_field_is_a_type_error() {
     let e = errors(
-        "@mod M\n\
+        "$ @mod M\n\
          $ P : @struct = x: @int, y: @int\n\
          $ p : P = { .x = 1, .nope = 2 }",
     );
@@ -989,7 +989,7 @@ fn a_struct_literal_with_an_unknown_field_is_a_type_error() {
 fn a_field_on_an_unknown_type_becomes_a_row_constraint() {
     // Not knowing the record's type yet is a reason to CONSTRAIN it, not to
     // invent one: the parameter becomes an open row.
-    assert_eq!(type_of("@mod M\n$ f = \\r = r.x", "f"), "{ x: a | b } -> a");
+    assert_eq!(type_of("$ @mod M\n$ f = \\r = r.x", "f"), "{ x: a | b } -> a");
 }
 
 // -- issue #209: laziness is a property of the slot ------------------------
@@ -999,7 +999,7 @@ fn a_recursive_slot_is_lazy_and_an_arrow_slot_is_not() {
     // `List a` leads back to `List`, so that slot is lazy. `{} -> Task` is
     // already a suspension, so thunking it again would leave callers applying a
     // thunk instead of the function (this is what `Task.Susp` relies on).
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
                $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
                $ S : @struct t = head : t, tail : S t\n\
@@ -1028,28 +1028,28 @@ fn a_literal_must_give_every_field() {
         assert!(text.contains("--> test.thx:"), "no caret:\n{text}");
         text
     };
-    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+    let p = "$ @mod M\n$ P : @struct = a: @int, b: @int,\n";
 
     // Too few: the value would be missing a field its type promises, and reading
     // that field faults at run time.
     assert!(err(&format!("{p}$ y = P.{{1}}")).contains("missing field `b`"));
-    assert!(err("@mod M\n$ y = List.Cons.{1}").contains("missing the one at index 1"));
-    assert!(err("@mod M\n$ y = List.Cons.{}").contains("missing the one at index 0"));
+    assert!(err("$ @mod M\n$ y = List.Cons.{1}").contains("missing the one at index 1"));
+    assert!(err("$ @mod M\n$ y = List.Cons.{}").contains("missing the one at index 0"));
     // Too many.
     assert!(err(&format!("{p}$ y = P.{{1, 2, 3}}")).contains("no field 2"));
-    assert!(err("@mod M\n$ y = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
+    assert!(err("$ @mod M\n$ y = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
     assert!(err(&format!("{p}$ y = P.{{ .c = 1 }}")).contains("has no field `c`"));
 
     // A complete literal, a named one, and an update are all fine.
     assert!(rendered_errors(&format!("{p}$ y = P.{{1, 2}}")).is_empty());
     assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 1, .b = 2 }}")).is_empty());
     assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 9 | P.{{1, 2}} }}")).is_empty());
-    assert!(rendered_errors("@mod M\n$ y = List.Cons.{1, List.Nil}").is_empty());
+    assert!(rendered_errors("$ @mod M\n$ y = List.Cons.{1, List.Nil}").is_empty());
 }
 
 #[test]
 fn a_c_union_literal_picks_one_member() {
-    let u = "@mod M\n$ U : @union @extern \"C\" = i: @int, d: @float64,\n";
+    let u = "$ @mod M\n$ U : @union @extern \"C\" = i: @int, d: @float64,\n";
     // Members share offset 0, so a literal names exactly one; completeness would
     // be wrong here, and two members would be nonsense.
     assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 42 }}")).is_empty());
@@ -1059,19 +1059,19 @@ fn a_c_union_literal_picks_one_member() {
 
 #[test]
 fn a_pattern_may_bind_fewer_fields_but_never_more() {
-    let p = "@mod M\n$ P : @struct = a: @int, b: @int,\n";
+    let p = "$ @mod M\n$ P : @struct = a: @int, b: @int,\n";
     // Fewer is the point of a pattern.
     assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x | _ => 0")).is_empty());
     assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v | _ => 0")).is_empty());
     assert!(
-        rendered_errors("@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
+        rendered_errors("$ @mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
             .is_empty()
     );
     // More binds a name with no field behind it, which faults when read.
     let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x | _ => 0"));
     assert!(surplus.contains("no field 2"), "{surplus}");
     let surplus = rendered_errors(
-        "@mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
+        "$ @mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
     );
     assert!(surplus.contains("no field 2"), "{surplus}");
     let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
@@ -1100,7 +1100,7 @@ fn coverage(src: &str) -> (String, Vec<String>) {
     (err, warnings)
 }
 
-const L: &str = "@mod T\n$ L : @union = A, B, C,\n";
+const L: &str = "$ @mod T\n$ L : @union = A, B, C,\n";
 
 #[test]
 fn missing_variant_is_an_error() {
@@ -1121,7 +1121,7 @@ fn every_variant_or_a_catch_all_is_exhaustive() {
 
 #[test]
 fn no_arms_cover_only_a_variantless_union() {
-    let empty = "@mod T\n$ E : @union =\n$ f : E -> @int = \\e = is e\n";
+    let empty = "$ @mod T\n$ E : @union =\n$ f : E -> @int = \\e = is e\n";
     assert_eq!(coverage(empty), (String::new(), vec![]));
     let (err, _) = coverage(&format!("{L}$ f : L -> @int = \\l = is l\n"));
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
@@ -1137,7 +1137,7 @@ fn guarded_arms_do_not_cover() {
 
 #[test]
 fn nested_witness_is_named() {
-    let src = "@mod T\n$ M : @union a = No, Yes: {a},\n\
+    let src = "$ @mod T\n$ M : @union a = No, Yes: {a},\n\
                $ f : M @bool -> @int = \\m = is m | .No => 0 | .Yes.{ @true } => 1\n";
     let (err, _) = coverage(src);
     assert!(err.contains("`M.Yes.{ false }`"), "{err}");
@@ -1145,37 +1145,37 @@ fn nested_witness_is_named() {
 
 #[test]
 fn infinite_domains_need_a_catch_all() {
-    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 => 1 | 1 => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @int -> @int = \\n = is n | 0 => 1 | 1 => 2\n");
     assert!(err.contains("`2 ...`"), "{err}");
-    let (err, _) = coverage("@mod T\n$ f : @float64 -> @int = \\n = is n | 0.0 => 1 | 1.0 => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @float64 -> @int = \\n = is n | 0.0 => 1 | 1.0 => 2\n");
     assert!(err.contains("`_`"), "{err}");
-    let (err, _) = coverage("@mod T\n$ f : @str -> @int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @str -> @int = \\s = is s | \"a\" => 1 | \"b\" ++ r => 2\n");
     assert!(err.contains("NON_EXHAUSTIVE_MATCH"), "{err}");
-    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 10 ... => 2\n");
     assert!(err.contains("does not cover `-1`"), "{err}");
-    let (err, _) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 20 ... => 2\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @int -> @int = \\n = is n | 0 ... 9 => 1 | 20 ... => 2\n");
     assert!(err.contains("`10 ... 19`"), "{err}");
 }
 
 #[test]
 fn bools_tuples_and_structs() {
-    let ok = "@mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1 | {@false, @false} => 2\n";
+    let ok = "$ @mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1 | {@false, @false} => 2\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("@mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : {@bool, @bool} -> @int = \\p = is p | {@true, _} => 0 | {_, @true} => 1\n");
     assert!(err.contains("`{ false, false }`"), "{err}");
     let (err, _) = coverage(
-        "@mod T\n$ P : @struct = x: @bool, y: @int,\n$ f : P -> @int = \\p = is p | P.{ .x = @true } => 0\n",
+        "$ @mod T\n$ P : @struct = x: @bool, y: @int,\n$ f : P -> @int = \\p = is p | P.{ .x = @true } => 0\n",
     );
     assert!(err.contains("`P.{ .x = false }`"), "{err}");
 }
 
 #[test]
 fn sequence_patterns_reduce_to_the_view() {
-    let ok = "@mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x] => x | x :: y :: r => y\n";
+    let ok = "$ @mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x] => x | x :: y :: r => y\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("@mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x, y, ..r] => y\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @vec @int -> @int = \\v = is v | [] => 0 | [x, y, ..r] => y\n");
     assert!(err.contains("`[_]`"), "{err}");
-    let list = "@mod T\n$ f : List @int -> @int = \\l = is l | List.Nil => 0 | h :: t => h\n";
+    let list = "$ @mod T\n$ f : List @int -> @int = \\l = is l | List.Nil => 0 | h :: t => h\n";
     assert_eq!(coverage(list), (String::new(), vec![]));
 }
 
@@ -1185,17 +1185,17 @@ fn unreachable_arms_warn() {
     assert_eq!(err, "");
     assert_eq!(w.len(), 1, "{w:?}");
     assert!(w[0].contains("test.thx:3:"), "{w:?}");
-    let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 => 0 | 1 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @int -> @int = \\n = is n | 1 => 0 | 1 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("@mod T\n$ f : @int -> @int = \\n = is n | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @int -> @int = \\n = is n | 1 ... 3 => 0 | 2 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("@mod T\n$ f : @float64 -> @int = \\n = is n | 1.0 ... 3.0 => 0 | 2.0 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @float64 -> @int = \\n = is n | 1.0 ... 3.0 => 0 | 2.0 => 1 | _ => 2\n");
     assert!(w.is_empty(), "{w:?}");
 }
 
 #[test]
 fn handler_value_arms_are_checked() {
-    let src = "@mod T\n$ Exn : @effect = throw : @str -> a,\n$ M : @union = Hit: {@int}, Miss,\n\
+    let src = "$ @mod T\n$ Exn : @effect = throw : @str -> a,\n$ M : @union = Hit: {@int}, Miss,\n\
                $ g : {} -> <Exn> M = \\u = M.Miss\n\
                $ f : @int = do g {} ctl k | Exn.throw m => 0 | .Hit.{ v } => v\n";
     let (err, _) = coverage(src);
@@ -1222,19 +1222,19 @@ fn dead_alternatives_warn_separately() {
 
 #[test]
 fn refutable_let_and_lambda_patterns_are_errors() {
-    let m = "@mod T\n$ M : @union a = No, Yes: {a},\n";
+    let m = "$ @mod T\n$ M : @union a = No, Yes: {a},\n";
     let (err, _) = coverage(&format!("{m}$ f : M @int -> @int = \\.Yes.{{ x }} = x\n"));
     assert!(err.contains("refutable pattern in a lambda parameter") && err.contains("`M.No`"), "{err}");
     let (err, _) = coverage(&format!("{m}$ g : M @int -> @int = \\m = let .Yes.{{ x }} = m in x\n"));
     assert!(err.contains("refutable pattern in a `let` binding"), "{err}");
-    let (err, _) = coverage("@mod T\n$ h : @nat8 -> @int = \\0 = 1\n");
+    let (err, _) = coverage("$ @mod T\n$ h : @nat8 -> @int = \\0 = 1\n");
     assert!(err.contains("`1 ...`"), "{err}");
-    let ok = "@mod T\n$ P : @struct = x: @int, y: @int,\n\
+    let ok = "$ @mod T\n$ P : @struct = x: @int, y: @int,\n\
               $ f : P -> {@int, @int} -> @int = \\P.{ x, _ } {a, b} = let {c, _} = {a, b} in x + c\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
 }
 
-const ROPE: &str = "@mod T\n$ Rope : @union = Leaf: {@int}, Node: {Rope, Rope},\n\
+const ROPE: &str = "$ @mod T\n$ Rope : @union = Leaf: {@int}, Node: {Rope, Rope},\n\
     $ impl_ISeqView_for_Rope : @ISeqView Rope @int = .{\n\
     \t.view = \\r = is r | Rope.Leaf.{ n } => SeqView.More.{ n, Rope.Node.{ r, r } } | _ => SeqView.Empty,\n}\n";
 
@@ -1252,37 +1252,37 @@ fn mixing_variant_and_sequence_patterns_is_reported() {
 
 #[test]
 fn integer_ranges_cover_bounded_types() {
-    let ok = "@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 127 => 0 | 128 ... 255 => 1\n";
+    let ok = "$ @mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 127 => 0 | 128 ... 255 => 1\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("@mod T\n$ f : @int8 -> @int = \\n = is n | 0 ... => 0\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @int8 -> @int = \\n = is n | 0 ... => 0\n");
     assert!(err.contains("`-128 ... -1`"), "{err}");
-    let signed = "@mod T\n$ f : @int8 -> @int = \\n = is n | -128 ... -1 => 1 | 0 ... => 2\n";
+    let signed = "$ @mod T\n$ f : @int8 -> @int = \\n = is n | -128 ... -1 => 1 | 0 ... => 2\n";
     assert_eq!(coverage(signed), (String::new(), vec![]));
-    let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 99 => 0 | 101 ... => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 99 => 0 | 101 ... => 1\n");
     assert!(err.contains("does not cover `100`"), "{err}");
-    let (err, _) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 => 0 | 1 ... 9 => 1\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @nat8 -> @int = \\n = is n | 0 => 0 | 1 ... 9 => 1\n");
     assert!(err.contains("`10 ...`"), "{err}");
-    let (_, w) = coverage("@mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 200 => 0 | 100 ... 150 => 1 | _ => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : @nat8 -> @int = \\n = is n | 0 ... 200 => 0 | 100 ... 150 => 1 | _ => 2\n");
     assert_eq!(w.len(), 1, "{w:?}");
-    let (_, w) = coverage("@mod T\n$ f : {@nat8, @bool} -> @int = \\p = is p | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
+    let (_, w) = coverage("$ @mod T\n$ f : {@nat8, @bool} -> @int = \\p = is p | {0 ... 9, @true} => 0 | {5, _} => 1 | {_, _} => 2\n");
     assert!(w.is_empty(), "{w:?}");
 }
 
 #[test]
 fn sized_literals_must_fit_their_type() {
-    let (err, _) = coverage("@mod T\n$ x : @nat8 = 300\n");
+    let (err, _) = coverage("$ @mod T\n$ x : @nat8 = 300\n");
     assert!(err.contains("INT_LITERAL_RANGE") && err.contains("300"), "{err}");
-    let (err, _) = coverage("@mod T\n$ x : @int8 = -129\n");
+    let (err, _) = coverage("$ @mod T\n$ x : @int8 = -129\n");
     assert!(err.contains("-129"), "{err}");
-    let ok = "@mod T\n$ a : @int8 = -128\n$ b : @nat8 = 255\n$ c : @nat8 = @cast 300\n";
+    let ok = "$ @mod T\n$ a : @int8 = -128\n$ b : @nat8 = 255\n$ c : @nat8 = @cast 300\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
 }
 
 #[test]
 fn a_mismatch_names_expected_and_found_the_right_way_round() {
-    let text = rendered_errors("@mod M\n$ x : @int = \"s\"\n");
+    let text = rendered_errors("$ @mod M\n$ x : @int = \"s\"\n");
     assert!(text.contains("expected @int, found @str"), "{text}");
-    let text = rendered_errors("@mod M\n$ x = ((>): @int -> @int -> @int)\n");
+    let text = rendered_errors("$ @mod M\n$ x = ((>): @int -> @int -> @int)\n");
     assert!(text.contains("expected @int, found @bool"), "{text}");
     assert!(text.contains("expected because of this annotation"), "{text}");
     assert!(text.contains("found type `@int -> @int -> @bool`"), "{text}");
@@ -1290,7 +1290,7 @@ fn a_mismatch_names_expected_and_found_the_right_way_round() {
 
 #[test]
 fn an_unknown_type_is_reported_before_the_errors_it_causes() {
-    let ty = "@mod M\n$ MyTyp : @struct = a: @int, b: @int\n";
+    let ty = "$ @mod M\n$ MyTyp : @struct = a: @int, b: @int\n";
     for body in ["$ x = Mytype.{1, 2}\n", "$ foo : MyType = .{1, 2}\n", "$ foo : MyType = .{.a = 1, .b = 2}\n"] {
         let text = rendered_errors(&format!("{ty}{body}"));
         assert!(text.contains("unknown type `My"), "{text}");
@@ -1300,17 +1300,17 @@ fn an_unknown_type_is_reported_before_the_errors_it_causes() {
 
 #[test]
 fn an_unknown_qualified_name_is_a_check_error() {
-    let text = rendered_errors("@mod M\n$ x = CORE.no_such_function 1\n");
+    let text = rendered_errors("$ @mod M\n$ x = CORE.no_such_function 1\n");
     assert!(text.contains("`CORE` has no value named `no_such_function`"), "{text}");
-    let text = rendered_errors("@mod M\n$ x = NOWHERE.f 1\n");
+    let text = rendered_errors("$ @mod M\n$ x = NOWHERE.f 1\n");
     assert!(text.contains("no module or effect `NOWHERE`"), "{text}");
-    assert_eq!(errors("@mod M\n$ x : @int = TARGET.int_bits\n"), "");
-    assert!(errors("@mod M\n$ x : @str = TARGET.int_bits\n").contains("expected @str"));
+    assert_eq!(errors("$ @mod M\n$ x : @int = TARGET.int_bits\n"), "");
+    assert!(errors("$ @mod M\n$ x : @str = TARGET.int_bits\n").contains("expected @str"));
 }
 
 #[test]
 fn applying_a_non_function_names_the_argument() {
-    let src = "@mod M\n$ f : @int -> @int = \\x =\n    x\n    1\n";
+    let src = "$ @mod M\n$ f : @int -> @int = \\x =\n    x\n    1\n";
     let text = rendered_errors(src);
     assert!(text.contains("its type `@int` is not a function"), "{text}");
     assert!(text.contains("- the argument"), "{text}");
@@ -1319,13 +1319,13 @@ fn applying_a_non_function_names_the_argument() {
 
 #[test]
 fn an_unbound_name_suggests_a_near_miss() {
-    let text = rendered_errors("@mod M\n$ length : @int = 1\n$ x = lenght\n");
+    let text = rendered_errors("$ @mod M\n$ length : @int = 1\n$ x = lenght\n");
     assert!(text.contains("help: did you mean `length`?"), "{text}");
 }
 
 #[test]
 fn a_near_miss_instance_is_named_instead_of_none_in_scope() {
-    let text = rendered_errors("@mod M\n$ x = for ([0 ... 100] : List @int) \\i = i\n");
+    let text = rendered_errors("$ @mod M\n$ x = for ([0 ... 100] : List @int) \\i = i\n");
     assert!(text.contains("`impl_IFor_for_List` does not fit this use of `for`"), "{text}");
     assert!(text.contains("its second type parameter is `@int`, but this use needs `{}`"), "{text}");
     assert!(!text.contains("in scope"), "{text}");

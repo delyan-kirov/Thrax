@@ -1,4 +1,4 @@
-@mod CORE
+$ @mod CORE
 
 # \file CORE.thx
 # \info CORE is implicitly imported in every module with no namespace 

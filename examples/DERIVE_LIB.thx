@@ -1,4 +1,4 @@
-@mod DERIVE_LIB
+$ @mod DERIVE_LIB
 
 # \file DERIVE_LIB.thx
 # \info A generic type whose `to_string` is DERIVED here and then used from another

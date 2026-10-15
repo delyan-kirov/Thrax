@@ -1,4 +1,4 @@
-@mod HANOI
+$ @mod HANOI
 
 # \file hanoi.thx
 # \info Tower of Hanoi. Without I/O we count the moves instead of printing them:

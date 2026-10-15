@@ -1,4 +1,4 @@
-@mod CONDITIONALS
+$ @mod CONDITIONALS
 
 # \file conditionals.thx
 # \info Branching with `if c => e else alt`, including else-if chains. A comma

@@ -1,4 +1,4 @@
-@mod PIPES
+$ @mod PIPES
 
 # Sequencing `;`, pipes `|>` / `<|`, and composition `<|>`. All four are parser
 # desugarings, not runtime functions: `a ; b` = `let _ = a in b` (run a for effect,

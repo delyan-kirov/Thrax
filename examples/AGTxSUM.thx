@@ -1,4 +1,4 @@
-@mod AGTxSUM
+$ @mod AGTxSUM
 
 # Sum types (unions): create an enumeration of a tag and a payload
 

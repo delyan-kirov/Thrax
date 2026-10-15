@@ -1,4 +1,4 @@
-@mod CT_ASSERT
+$ @mod CT_ASSERT
 
 # \file CT_ASSERT.thx
 # \info Compile-time assertions, in USER CODE (no `@assert` builtin needed). A

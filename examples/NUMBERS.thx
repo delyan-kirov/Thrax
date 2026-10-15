@@ -1,4 +1,4 @@
-@mod NUMBERS
+$ @mod NUMBERS
 
 # \file numbers.thx
 # \info Integer literal forms: decimal, hexadecimal (0x), and binary (0b).

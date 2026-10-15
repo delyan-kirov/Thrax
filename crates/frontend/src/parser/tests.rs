@@ -12,11 +12,11 @@ fn type_names_must_be_capitalized() {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    assert!(err("@mod M\n$ point : @struct = a: @int,").contains("capital letter"));
+    assert!(err("$ @mod M\n$ point : @struct = a: @int,").contains("capital letter"));
     // A lowercase name in type-use position is a type variable and parses.
-    assert!(parse("@mod M\n$ id : a -> a = \\x = x").is_ok());
+    assert!(parse("$ @mod M\n$ id : a -> a = \\x = x").is_ok());
     // A capitalized type also parses.
-    assert!(parse("@mod M\n$ n : @int = 5").is_ok());
+    assert!(parse("$ @mod M\n$ n : @int = 5").is_ok());
 }
 
 #[test]
@@ -26,12 +26,22 @@ fn value_and_function_names_must_be_lowercase() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     // A capitalized value or function name is a type/constructor spelling, rejected.
-    assert!(err("@mod M\n$ Foo : @int = 3").contains("lowercase letter"));
-    assert!(err("@mod M\n$ Bar = 3").contains("lowercase letter"));
-    assert!(err("@mod M\n$ GetRandomValue : @int -> @int = \\x = x").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ Foo : @int = 3").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ Bar = 3").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ GetRandomValue : @int -> @int = \\x = x").contains("lowercase letter"));
     // Lowercase values/functions parse; capitalized names stay for type decls.
-    assert!(parse("@mod M\n$ foo : @int = 3").is_ok());
-    assert!(parse("@mod M\n$ Point : @struct = a: @int,").is_ok());
+    assert!(parse("$ @mod M\n$ foo : @int = 3").is_ok());
+    assert!(parse("$ @mod M\n$ Point : @struct = a: @int,").is_ok());
+}
+
+#[test]
+fn module_header_requires_dollar() {
+    let err = match parse("@mod M\n$ x = 1") {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a bare '@mod' header must not parse"),
+    };
+    assert!(err.contains("expected '$ @mod'"), "{err}");
+    assert!(parse("$ @mod M\n$ x = 1").is_ok());
 }
 
 /// The single global's body handle, asserting the module has exactly one def.
@@ -45,7 +55,7 @@ fn only_def_body(p: &Parsed) -> Aol<Expr> {
 
 #[test]
 fn module_and_simple_def() {
-    let p = prog("@mod M\n$ x = 1");
+    let p = prog("$ @mod M\n$ x = 1");
     assert_eq!(p.ast.text(p.program.module), "M");
     assert_eq!(p.program.items.len(), 1);
     match &p.ast.slice(p.program.items)[0] {
@@ -62,7 +72,7 @@ fn module_and_simple_def() {
 
 #[test]
 fn precedence_and_associativity() {
-    let p = prog("@mod M\n$ y = 1 + 2 * 3");
+    let p = prog("$ @mod M\n$ y = 1 + 2 * 3");
     // `1 + (2 * 3)`: top node is `+`, its rhs is `*`.
     let Expr::BinOp { op, lhs, rhs } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a binop")
@@ -77,7 +87,7 @@ fn precedence_and_associativity() {
 
 #[test]
 fn application_is_left_associative_and_tight() {
-    let p = prog("@mod M\n$ z = f a b + 1");
+    let p = prog("$ @mod M\n$ z = f a b + 1");
     // `((f a) b) + 1`.
     let Expr::BinOp { op, lhs, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected `+`")
@@ -91,7 +101,7 @@ fn application_is_left_associative_and_tight() {
 
 #[test]
 fn lambda_if_and_comparison() {
-    let p = prog("@mod M\n$ f = \\n = if n == 0 => 1 else n");
+    let p = prog("$ @mod M\n$ f = \\n = if n == 0 => 1 else n");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -103,7 +113,7 @@ fn comma_arms_nest_if_defer_and_with() {
     // A comma-separated list is the surface for the nested form: `if` arms nest
     // as `else if`, `defer` cleanups and `with` subjects nest outward-in. A
     // trailing comma before `else`/`in` is allowed.
-    let p = prog("@mod M\n$ f = \\n = if n == 0 => 1, n > 0 => 2, else 3");
+    let p = prog("$ @mod M\n$ f = \\n = if n == 0 => 1, n > 0 => 2, else 3");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -115,7 +125,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*alt), Expr::Int(3)));
 
-    let p = prog("@mod M\n$ f = \\a b c = defer a, b, in c");
+    let p = prog("$ @mod M\n$ f = \\a b c = defer a, b, in c");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -124,7 +134,7 @@ fn comma_arms_nest_if_defer_and_with() {
     };
     assert!(matches!(p.ast.expr(*body), Expr::Defer { .. }));
 
-    let p = prog("@mod M\n$ f = \\a b = with a, b in 1");
+    let p = prog("$ @mod M\n$ f = \\a b = with a, b in 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -136,7 +146,7 @@ fn comma_arms_nest_if_defer_and_with() {
 
 #[test]
 fn struct_decl_and_literal_and_field() {
-    let src = "@mod M\n$ Person : @struct =\n name: @str,\n age: @int,\n\
+    let src = "$ @mod M\n$ Person : @struct =\n name: @str,\n age: @int,\n\
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
@@ -166,7 +176,7 @@ fn struct_decl_and_literal_and_field() {
 
 #[test]
 fn declared_type_params() {
-    let src = "@mod M\n\
+    let src = "$ @mod M\n\
                $ Weird : @struct a b = fst: a, has: @int, snd: b\n\
                $ Pair : @union a b = Left: a, Right: b\n\
                $ Stream : @struct t = head: t, tail: Stream t\n\
@@ -205,7 +215,7 @@ fn declared_type_params() {
 
 #[test]
 fn sized_tensor_type_parses() {
-    let p = prog("@mod M\n$ v : [3]@int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
+    let p = prog("$ @mod M\n$ v : [3]@int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { size, elem, .. } => {
@@ -221,7 +231,7 @@ fn sized_tensor_type_parses() {
 #[test]
 fn axis_variance_parses() {
     // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
-    let p = prog("@mod M\n$ f : [@contra 2, @co 3]@int -> @int = \\m = 0");
+    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@int -> @int = \\m = 0");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Arrow { from, .. } => match p.ast.ty(*from) {
@@ -241,7 +251,7 @@ fn axis_variance_parses() {
         other => panic!("expected a def, got {other:?}"),
     }
     // A bare axis is Neutral.
-    let p = prog("@mod M\n$ v : [3]@int = [1, 2, 3]");
+    let p = prog("$ @mod M\n$ v : [3]@int = [1, 2, 3]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Neutral),
@@ -254,7 +264,7 @@ fn axis_variance_parses() {
 #[test]
 fn shape_sugar_nests() {
     // `[m, n]T` desugars to the nested `[m][n]T` (`Sized` of `Sized`).
-    let p = prog("@mod M\n$ g : [2, 3]@int = [ [1,2,3], [4,5,6] ]");
+    let p = prog("$ @mod M\n$ g : [2, 3]@int = [ [1,2,3], [4,5,6] ]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { size, elem, .. } => {
@@ -272,7 +282,7 @@ fn shape_sugar_nests() {
 
 #[test]
 fn inclusive_range_pattern_parses() {
-    let src = "@mod M\n$ f = \\n = is n | 1 ... 5 => 0 | _ => 1";
+    let src = "$ @mod M\n$ f = \\n = is n | 1 ... 5 => 0 | _ => 1";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -291,7 +301,7 @@ fn inclusive_range_pattern_parses() {
     }
     // A non-literal upper bound is a parse error: `1 ...` closes as an open range,
     // so the trailing `x` has nowhere to go.
-    parse("@mod M\n$ f = \\n = is n | 1 ... x => 0 | _ => 1")
+    parse("$ @mod M\n$ f = \\n = is n | 1 ... x => 0 | _ => 1")
         .err()
         .expect("expected a parse error");
 }
@@ -299,7 +309,7 @@ fn inclusive_range_pattern_parses() {
 #[test]
 fn open_range_pattern_parses() {
     // `lo ...` with no upper bound is an open range pattern.
-    let p = prog("@mod M\n$ f = \\n = is n | 0 ... => 0 | _ => 1");
+    let p = prog("$ @mod M\n$ f = \\n = is n | 0 ... => 0 | _ => 1");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -319,7 +329,7 @@ fn open_range_pattern_parses() {
 #[test]
 fn range_builder_parses_to_range_node() {
     // `[lo ... hi]` parses to a type-directed `Expr::Range`, not a desugared call.
-    let p = prog("@mod M\n$ r = [1 ... 5]");
+    let p = prog("$ @mod M\n$ r = [1 ... 5]");
     let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a range")
     };
@@ -327,13 +337,13 @@ fn range_builder_parses_to_range_node() {
     let hi = hi.expect("closed range has an upper bound");
     assert!(matches!(p.ast.expr(hi), Expr::Int(5)));
     // A comma list is still a plain list, not a range.
-    let p = prog("@mod M\n$ r = [1, 2, 3]");
+    let p = prog("$ @mod M\n$ r = [1, 2, 3]");
     let Expr::List(elems) = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a list")
     };
     assert_eq!(elems.len(), 3);
     // An open range `[lo ...]` has no upper bound.
-    let p = prog("@mod M\n$ r = [1 ...]");
+    let p = prog("$ @mod M\n$ r = [1 ...]");
     let Expr::Range { lo, hi } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a range")
     };
@@ -343,7 +353,7 @@ fn range_builder_parses_to_range_node() {
 
 #[test]
 fn variant_literal_and_when_match() {
-    let src = "@mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 | _ => 2";
+    let src = "$ @mod M\n$ f = \\l = is l | Lst.Nil => 0 | Lst.Cons.{_, xs} => 1 | _ => 2";
     let p = prog(src);
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
@@ -362,7 +372,7 @@ fn variant_literal_and_when_match() {
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "@mod M\n$ g : @vec t -> @int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "$ @mod M\n$ g : @vec t -> @int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(
@@ -386,7 +396,7 @@ fn cons_and_list_and_function_type() {
 
 #[test]
 fn union_effect_import_and_directives() {
-    let src = "@mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
+    let src = "$ @mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : @int, put : @int -> @int\n$ @e 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
@@ -399,7 +409,7 @@ fn union_effect_import_and_directives() {
 
 #[test]
 fn pipes_and_sequencing() {
-    let p = prog("@mod M\n$ r = a ; b |> f");
+    let p = prog("$ @mod M\n$ r = a ; b |> f");
     // `;` is loosest and right-assoc: `a ; (b |> f)`.
     let Expr::BinOp { op, rhs, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a binop")
@@ -415,7 +425,7 @@ fn pipes_and_sequencing() {
 fn composition_becomes_a_lambda_and_binds_tightest() {
     // `f <|> g` is the lambda `\x = f (g x)`, so the composed function's effect row
     // is inferred (the union of both) and each operand is an application head.
-    let p = prog("@mod M\n$ h = f <|> g");
+    let p = prog("$ @mod M\n$ h = f <|> g");
     let Expr::Lambda { params, body } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -427,7 +437,7 @@ fn composition_becomes_a_lambda_and_binds_tightest() {
     assert!(matches!(p.ast.expr(*inner), Expr::App(..)));
 
     // Tighter than arithmetic: `a + (f <|> g)`.
-    let p = prog("@mod M\n$ r = a + f <|> g");
+    let p = prog("$ @mod M\n$ r = a + f <|> g");
     let Expr::BinOp { op, rhs, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected `+`")
     };
@@ -435,7 +445,7 @@ fn composition_becomes_a_lambda_and_binds_tightest() {
     assert!(matches!(p.ast.expr(*rhs), Expr::Lambda { .. }));
 
     // Right-associative: `f <|> (g <|> h)`, so the inner call applies a lambda.
-    let p = prog("@mod M\n$ c = f <|> g <|> h");
+    let p = prog("$ @mod M\n$ c = f <|> g <|> h");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -449,7 +459,7 @@ fn composition_becomes_a_lambda_and_binds_tightest() {
 
     // The FUNCTION form names CORE's `compose`, so it carries that written,
     // effect-polymorphic type instead of an inferred (pure) eta-expansion.
-    let p = prog("@mod M\n$ v = (<|>)");
+    let p = prog("$ @mod M\n$ v = (<|>)");
     let Expr::Var { name, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a variable")
     };
@@ -459,39 +469,39 @@ fn composition_becomes_a_lambda_and_binds_tightest() {
 #[test]
 fn string_interpolation_desugars_to_concat() {
     // A plain string is a single `@str` node.
-    let p = prog("@mod M\n$ s = \"hi\"");
+    let p = prog("$ @mod M\n$ s = \"hi\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Str(_)));
 
     // An interpolated string becomes a `++` chain.
-    let p = prog("@mod M\n$ s = \"a ?(x) b\"");
+    let p = prog("$ @mod M\n$ s = \"a ?(x) b\"");
     let Expr::BinOp { op, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a `++` chain");
     };
     assert_eq!(p.ast.text(*op), "++");
 
     // A sole interpolant is still `++` (seeded by a chunk), so it types as @str.
-    let p = prog("@mod M\n$ s = \"?(x)\"");
+    let p = prog("$ @mod M\n$ s = \"?(x)\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
 }
 
 #[test]
 fn string_interpolation_nesting_and_escapes() {
     // A nested string literal inside an interpolant.
-    assert!(parse("@mod M\n$ s = \"x ?(f \"y\") z\"").is_ok());
+    assert!(parse("$ @mod M\n$ s = \"x ?(f \"y\") z\"").is_ok());
     // Braces (a unit / record literal) inside an interpolant, no escaping.
-    assert!(parse("@mod M\n$ s = \"p ?(g {}) q\"").is_ok());
+    assert!(parse("$ @mod M\n$ s = \"p ?(g {}) q\"").is_ok());
     // Braces are ordinary literal characters, never an interpolation.
-    assert!(parse("@mod M\n$ s = \"lit { ok\"").is_ok());
+    assert!(parse("$ @mod M\n$ s = \"lit { ok\"").is_ok());
     // `\?(` is a literal `?(`, not an interpolation.
-    assert!(parse("@mod M\n$ s = \"lit \\?( ok\"").is_ok());
+    assert!(parse("$ @mod M\n$ s = \"lit \\?( ok\"").is_ok());
     // An unclosed interpolation is an error.
-    assert!(parse("@mod M\n$ s = \"bad ?(1 + \"").is_err());
+    assert!(parse("$ @mod M\n$ s = \"bad ?(1 + \"").is_err());
 }
 
 #[test]
 fn ascription_parses_in_group() {
     // `(e : T)` inside a group is an ascription node.
-    let p = prog("@mod M\n$ n : @int = (5 : @int)");
+    let p = prog("$ @mod M\n$ n : @int = (5 : @int)");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Ascribe { .. }));
 }
 
@@ -502,18 +512,18 @@ fn blessed_interface_prefix_rule() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     // A blessed interface is a declarable `@`-name, as a one-field `@struct`.
-    assert!(parse("@mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
+    assert!(parse("$ @mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
     // It is a TYPE, so a value signature on the same name is rejected.
-    assert!(err("@mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
+    assert!(err("$ @mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
-    assert!(err("@mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
+    assert!(err("$ @mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
 }
 
 /// `<` and `>` are infix comparisons in expression position, where they once
 /// were effect-row delimiters that ended the expression.
 #[test]
 fn angle_brackets_are_comparisons_in_expressions() {
-    for src in ["@mod M\n$ f = \\a b = a < b", "@mod M\n$ f = \\a b = a > b"] {
+    for src in ["$ @mod M\n$ f = \\a b = a < b", "$ @mod M\n$ f = \\a b = a > b"] {
         let p = prog(src);
         let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
             panic!("expected a lambda")
@@ -527,7 +537,7 @@ fn angle_brackets_are_comparisons_in_expressions() {
 #[test]
 fn effect_rows_still_parse_in_type_position() {
     for sig in ["<E> @int", "<E | e> @int", "<| e> @int", "<> @int"] {
-        let src = format!("@mod M\n$ E : @effect = op : @int -> @int\n$ f : @int -> {sig} = \\n = n");
+        let src = format!("$ @mod M\n$ E : @effect = op : @int -> @int\n$ f : @int -> {sig} = \\n = n");
         assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
     }
 }
@@ -535,7 +545,7 @@ fn effect_rows_still_parse_in_type_position() {
 #[test]
 fn operator_in_parens_is_a_function_reference() {
     // `(+) 1 1` applies the operator's own binding, so the head is a plain var.
-    let p = prog("@mod M\n$ y = (+) 1 1");
+    let p = prog("$ @mod M\n$ y = (+) 1 1");
     let Expr::App(f, _) = p.ast.expr(only_def_body(&p)) else {
         panic!("expected an application")
     };
@@ -548,24 +558,24 @@ fn operator_in_parens_is_a_function_reference() {
     assert_eq!(p.ast.text(*name), "+");
 
     // A prefix-only operator references its named global, not its lexeme.
-    let p = prog("@mod M\n$ y = (!)");
+    let p = prog("$ @mod M\n$ y = (!)");
     let Expr::Var { module: None, name } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected an operator reference")
     };
     assert_eq!(p.ast.text(*name), "not");
 
     // An operator the parser rewrites has no binding, so it eta-expands.
-    let p = prog("@mod M\n$ y = (&&)");
+    let p = prog("$ @mod M\n$ y = (&&)");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Lambda { .. }));
 
     // Parens holding anything else still group.
-    let p = prog("@mod M\n$ y = (1 + 2)");
+    let p = prog("$ @mod M\n$ y = (1 + 2)");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
-    let p = prog("@mod M\n$ y = (-1)");
+    let p = prog("$ @mod M\n$ y = (-1)");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::UnOp { .. }));
 
     // A grammatical delimiter is not an operator and has no function form.
-    let Err(err) = parse("@mod M\n$ y = (|)") else {
+    let Err(err) = parse("$ @mod M\n$ y = (|)") else {
         panic!("`|` is not a function")
     };
     assert!(err.to_string().contains("delimiter"));
@@ -573,7 +583,7 @@ fn operator_in_parens_is_a_function_reference() {
 
 #[test]
 fn lambda_parameters_are_juxtaposed_and_take_annotations() {
-    let p = prog("@mod M\n$ f = \\i: @int = i");
+    let p = prog("$ @mod M\n$ f = \\i: @int = i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -581,7 +591,7 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
     assert_eq!(params.len(), 1);
     assert!(params[0].sig.is_some());
 
-    let p = prog("@mod M\n$ g = \\(i: @int) y (s: @str) {a, b} = i");
+    let p = prog("$ @mod M\n$ g = \\(i: @int) y (s: @str) {a, b} = i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -593,9 +603,9 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     // A bare annotation would swallow the next parameter as a type argument.
-    let e = err("@mod M\n$ k = \\a b: @int = a");
+    let e = err("$ @mod M\n$ k = \\a b: @int = a");
     assert!(e.contains("parenthesize"), "{e}");
-    let e = err("@mod M\n$ k = \\a, b = a");
+    let e = err("$ @mod M\n$ k = \\a, b = a");
     assert!(e.contains("juxtaposed"), "{e}");
 }
 
@@ -608,20 +618,20 @@ fn a_misqualified_literal_points_at_the_expression() {
 
     // A type applied to arguments is how a reader asks for a constructor at a
     // fixed instantiation; the error names the ascription that does that job.
-    let text = err("@mod M\n$ y = (List @int32).Cons.{1}");
+    let text = err("$ @mod M\n$ y = (List @int32).Cons.{1}");
     assert!(text.contains("applied to arguments"), "{text}");
     assert!(text.contains("ascribe"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
     assert!(text.contains("  |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
 
     // A lowercase head is a value name, not a type.
-    let text = err("@mod M\n$ y = (list @int32).Cons.{1}");
+    let text = err("$ @mod M\n$ y = (list @int32).Cons.{1}");
     assert!(text.contains("`list` names a value"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
 
     // A struct literal on an arbitrary expression carets that expression, not
     // the first line of the file.
-    let text = err("@mod M\n$ y = (1 + 2).{3}");
+    let text = err("$ @mod M\n$ y = (1 + 2).{3}");
     assert!(text.contains("a struct literal must be qualified"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
     assert!(text.contains("  |       ^^^^^^^^^\n"), "{text}");
@@ -631,14 +641,14 @@ fn a_misqualified_literal_points_at_the_expression() {
 fn a_binding_site_annotation_takes_any_pattern() {
     // The type describes the whole binding, so `let` accepts it on a destructuring
     // pattern exactly as a lambda parameter does.
-    assert!(parse("@mod M\n$ y = let {a, b} : {@int, @int} = {1, 2} in a").is_ok());
-    assert!(parse("@mod M\n$ y = \\{a, b}: {@int, @int} = a").is_ok());
-    assert!(parse("@mod M\n$ y = let x : @int = 1 in x").is_ok());
+    assert!(parse("$ @mod M\n$ y = let {a, b} : {@int, @int} = {1, 2} in a").is_ok());
+    assert!(parse("$ @mod M\n$ y = \\{a, b}: {@int, @int} = a").is_ok());
+    assert!(parse("$ @mod M\n$ y = let x : @int = 1 in x").is_ok());
     // Several bindings still separate on the comma; a type runs only to the `=`.
-    assert!(parse("@mod M\n$ y = let a : @int = 1, b : @int = 2 in a").is_ok());
+    assert!(parse("$ @mod M\n$ y = let a : @int = 1, b : @int = 2 in a").is_ok());
 
     // A match arm takes no annotation: the scrutinee fixes the pattern's type.
-    let err = match parse("@mod M\n$ y = is 1 | n: @int => n | _ => 0") {
+    let err = match parse("$ @mod M\n$ y = is 1 | n: @int => n | _ => 0") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -652,18 +662,18 @@ fn a_stray_annotation_names_where_the_type_goes() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
 
-    let text = err("@mod M\n$ y = [1: @int32, 2, 3]");
+    let text = err("$ @mod M\n$ y = [1: @int32, 2, 3]");
     assert!(text.contains("[(1 : @int32), 2, 3]"), "{text}");
 
-    let text = err("@mod M\n$ y = .Cons.{ 1: @int32 }");
+    let text = err("$ @mod M\n$ y = .Cons.{ 1: @int32 }");
     assert!(text.contains("ascribe a payload field in a group"), "{text}");
 
-    let text = err("@mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
+    let text = err("$ @mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
     assert!(text.contains("a pattern carries no types"), "{text}");
 
     // The help is for a stray `:` only; an ordinary unclosed delimiter keeps the
     // plain message.
-    let text = err("@mod M\n$ y = [1, 2");
+    let text = err("$ @mod M\n$ y = [1, 2");
     assert!(text.contains("to close the list"), "{text}");
     assert!(!text.contains("help:"), "{text}");
 }
@@ -678,7 +688,7 @@ fn only_handler(p: &Parsed) -> &Handler {
 
 #[test]
 fn handler_value_arms_match_the_body_result() {
-    let p = prog("@mod M\n$ f = do g {} ctl k | E.op x => 0 | .A => 1 | .B.{ n } if n > 0 => n | _ => 2");
+    let p = prog("$ @mod M\n$ f = do g {} ctl k | E.op x => 0 | .A => 1 | .B.{ n } if n > 0 => n | _ => 2");
     let h = only_handler(&p);
     assert_eq!(h.clauses.len(), 1);
     let (name, body) = h.value.expect("a value clause");
@@ -691,18 +701,18 @@ fn handler_value_arms_match_the_body_result() {
 
 #[test]
 fn a_lone_binder_value_arm_binds_directly() {
-    let p = prog("@mod M\n$ f = do g {} ctl k | op x => 0 | r => r");
+    let p = prog("$ @mod M\n$ f = do g {} ctl k | op x => 0 | r => r");
     let (name, body) = only_handler(&p).value.expect("a value clause");
     assert_eq!(p.ast.text(name), "r");
     assert!(matches!(p.ast.expr(body), Expr::Var { .. }));
 
-    let p = prog("@mod M\n$ f = do g {} ctl k | op x => 0");
+    let p = prog("$ @mod M\n$ f = do g {} ctl k | op x => 0");
     assert!(only_handler(&p).value.is_none());
 }
 
 #[test]
 fn an_is_in_a_clause_ends_at_the_next_operation_clause() {
-    let p = prog("@mod M\n$ f = do g {} ctl k | E.op x => is x | 1 => 0 | _ => 1 | E.other y => 2 | put n => 3");
+    let p = prog("$ @mod M\n$ f = do g {} ctl k | E.op x => is x | 1 => 0 | _ => 1 | E.other y => 2 | put n => 3");
     let h = only_handler(&p);
     assert_eq!(h.clauses.len(), 3);
     assert!(h.value.is_none());
@@ -715,13 +725,13 @@ fn an_is_in_a_clause_ends_at_the_next_operation_clause() {
 
 #[test]
 fn else_no_longer_ends_a_match_or_a_handler() {
-    assert!(parse("@mod M\n$ f = \\n = is n | 1 => 0 else 1").is_err());
-    assert!(parse("@mod M\n$ f = do g {} ctl k | op x => 0 else r => r").is_err());
+    assert!(parse("$ @mod M\n$ f = \\n = is n | 1 => 0 else 1").is_err());
+    assert!(parse("$ @mod M\n$ f = do g {} ctl k | op x => 0 else r => r").is_err());
 }
 
 #[test]
 fn effect_operation_names_must_be_lowercase() {
-    let err = match parse("@mod M\n$ E : @effect = Op : @int -> {},") {
+    let err = match parse("$ @mod M\n$ E : @effect = Op : @int -> {},") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -730,7 +740,7 @@ fn effect_operation_names_must_be_lowercase() {
 
 #[test]
 fn negative_literal_patterns() {
-    let p = prog("@mod M\n$ f = \\n = is n | -1 => 0 | -5 ... -2 => 1 | -1.5 => 2 | 3 ... => 3");
+    let p = prog("$ @mod M\n$ f = \\n = is n | -1 => 0 | -5 ... -2 => 1 | -1.5 => 2 | 3 ... => 3");
     let Expr::Lambda { body, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -753,13 +763,13 @@ fn a_dot_after_a_number_is_an_unfinished_decimal() {
         Err(e) => e.render(src, "t.thx"),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    let text = err("@mod M\n$ x = 1.1 / 2.\n");
+    let text = err("$ @mod M\n$ x = 1.1 / 2.\n");
     assert!(text.contains("unfinished decimal literal `2.`"), "{text}");
     assert!(text.contains("help: write the fractional part: `2.0`"), "{text}");
     // `1. 2.2` used to parse as the tuple index `(1).2.2` and fault at run time.
-    let text = err("@mod M\n$ x = f 1. 2.2\n");
+    let text = err("$ @mod M\n$ x = f 1. 2.2\n");
     assert!(text.contains("unfinished decimal literal `1.`"), "{text}");
-    let text = err("@mod M\n$ x = 1 .foo\n");
+    let text = err("$ @mod M\n$ x = 1 .foo\n");
     assert!(text.contains("a number has no fields"), "{text}");
-    assert!(parse("@mod M\n$ x = t.0.1\n").is_ok());
+    assert!(parse("$ @mod M\n$ x = t.0.1\n").is_ok());
 }

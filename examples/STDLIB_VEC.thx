@@ -1,4 +1,4 @@
-@mod STDLIB_VEC
+$ @mod STDLIB_VEC
 
 # \file STDLIB_VEC.thx
 # \info The standard library's growable vector, `@vec `T`

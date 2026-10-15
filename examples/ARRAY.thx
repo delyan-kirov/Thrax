@@ -1,4 +1,4 @@
-@mod ARRAY
+$ @mod ARRAY
 
 # @array: a builtin type -- a sized, contiguous block of bytes. It is allocated
 # with the `@array` form, an expression that yields a fresh block of that many

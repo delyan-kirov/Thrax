@@ -1,4 +1,4 @@
-@mod STRINGS
+$ @mod STRINGS
 
 # \file strings.thx
 # \info String-literal escapes and UTF-8. The lexer decodes backslash escapes

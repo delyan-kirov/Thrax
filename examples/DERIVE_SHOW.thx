@@ -1,4 +1,4 @@
-@mod DERIVE_SHOW
+$ @mod DERIVE_SHOW
 
 # \file DERIVE_SHOW.thx
 # \info Deriving `to_string` at compile time. `DERIVE.derive_show "T"` reflects on

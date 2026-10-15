@@ -1,4 +1,4 @@
-@mod ITER
+$ @mod ITER
 
 # The CORE iteration combinators: `for` (run a body for its effects, returns `{}`)
 # and `formap` (transform, returns the mapped structure). Both understand the

@@ -1,4 +1,4 @@
-@mod META_TYPE
+$ @mod META_TYPE
 
 # \file META_TYPE.thx
 # \info Type-position `@e`. `Foo : @e X = ...` runs X at build time; X must build an

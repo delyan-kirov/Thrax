@@ -1,4 +1,4 @@
-@mod STDLIB_PATH
+$ @mod STDLIB_PATH
 
 # \file STDLIB_PATH.thx
 # \info POSIX path manipulation: basename/dirname (trailing slashes ignored,

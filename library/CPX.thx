@@ -1,4 +1,4 @@
-@mod CPX
+$ @mod CPX
 
 # \file CPX.thx
 # \info Complex-number math over CORE's `Cpx`. The type, the `i` literal and

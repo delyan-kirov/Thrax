@@ -1,4 +1,4 @@
-@mod STDLIB_RANDOM
+$ @mod STDLIB_RANDOM
 
 # \file STDLIB_RANDOM.thx
 # \info The standard library's pseudo-random generator (Lehmer / MINSTD). The
