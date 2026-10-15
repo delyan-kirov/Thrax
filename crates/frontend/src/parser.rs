@@ -626,21 +626,6 @@ impl<'a> Parser<'a> {
                     let ops = self.parse_effect_ops()?;
                     return Ok(Item::Effect { name, ops });
                 }
-                // `@codata` was removed: a recursive `@struct` or `@union` is lazy in
-                // its recursive slots, which is all the kind ever bought.
-                "codata" => {
-                    return Err(Diagnostic::error(
-                        Code::UnexpectedToken,
-                        at_tok.span,
-                        at_tok.line,
-                        "`@codata` no longer exists".to_string(),
-                    )
-                    .with_note(
-                        "declare it as a `@struct` (observations become fields) or a \
-                         `@union`; a slot whose type leads back to its own type is lazy"
-                            .to_string(),
-                    ))
-                }
                 _ => {} // an @tycon type signature; fall through
             }
         }
@@ -2058,11 +2043,6 @@ impl<'a> Parser<'a> {
             }));
         }
         self.bump()?; // 'ctl'
-        // `@oneshot` is accepted and ignored: a resume moves its slice whenever
-        // the continuation is uniquely owned, which the annotation cannot add to.
-        if self.at_intrinsic("oneshot")? {
-            self.bump()?; // '@oneshot'
-        }
         let continuation = self.expect_word("expected a continuation name after 'ctl'")?;
         let start = self.here()?;
         let mut clauses = Vec::new();
