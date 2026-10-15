@@ -185,6 +185,9 @@ pub struct Checker<'a> {
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
     own_type_names: Vec<&'a str>,
+    /// The effects this module declares, exported so an importer can type a
+    /// qualified `Effect.op` reference.
+    own_effects: Vec<&'a str>,
     /// Names declared after a `$ @private` marker: defined and usable within this
     /// module, but not exported, so no importer can bind or qualify them.
     private_names: HashSet<&'a str>,
@@ -394,6 +397,7 @@ impl<'a> Checker<'a> {
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_type_names: Vec::new(),
+            own_effects: Vec::new(),
             private_names: HashSet::new(),
             imported_private: HashMap::new(),
             imported: HashMap::new(),
@@ -543,16 +547,18 @@ impl<'a> Checker<'a> {
             let TypeNode::Arrow(param, ret, _) = self.eng.types.node(ty) else {
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
-                    "an `@extern` must be a foreign function; declare it `A -> B` (a single \
-                     argument), or `{{a: A, b: B}} -> R` to pass several C parameters"
+                    "an `@extern` must be a foreign function";
+                    help: "declare it `A -> B` (a single argument), or `{{a: A, b: B}} -> R` \
+                           to pass several C parameters"
                 ));
             };
             if matches!(self.eng.head(ret), TypeNode::Arrow(..)) {
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
-                    "a C `@extern` takes a SINGLE argument (C has no first-class functions to \
-                     curry): group the C parameters into one record, `{{a: A, b: B}} -> R`, \
-                     rather than currying as `A -> B -> R`"
+                    "a C `@extern` takes a single argument";
+                    note: "C has no first-class functions to curry";
+                    help: "group the C parameters into one record, `{{a: A, b: B}} -> R`, \
+                           rather than currying as `A -> B -> R`"
                 ));
             }
             let param = self.eng.resolve(param);
@@ -659,6 +665,7 @@ impl<'a> Checker<'a> {
     /// global definition, in source order.
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
+        self.register_target_namespace();
         self.collect_private_names(program);
         self.finalize_imports();
         self.register_types(program)?;
@@ -703,8 +710,9 @@ impl<'a> Checker<'a> {
                 return Err(diag!(
                     Code::TypeMismatch, span, 0,
                     "`{}` is defined twice in module `{}`", d.name, self.module_name;
-                    note: "a name has one type; to give an operation several types, \
-                           declare an interface and define one instance per type"
+                    note: "a name has one type";
+                    help: "to give an operation several types, declare an interface and \
+                           define one instance per type"
                 ));
             }
         }
@@ -759,7 +767,12 @@ impl<'a> Checker<'a> {
 
         let mut types: HashMap<&'a str, Type> = HashMap::new();
         for component in utilities::scc::scc(&graph) {
-            self.check_component(&component, &defs, &mut types)?;
+            // An unknown type name met along the way is the likelier root cause
+            // of whatever went wrong after it (`foo : MyTyp = .{..}` fails to
+            // build a struct because `MyTyp` does not exist), so it wins.
+            if let Err(d) = self.check_component(&component, &defs, &mut types) {
+                return Err(self.unknown_type.take().unwrap_or(d));
+            }
         }
 
         let out: Vec<(&'a str, Type)> =
@@ -813,6 +826,26 @@ impl<'a> Checker<'a> {
             self.resolve_pending_ctx()?;
         }
         Ok(out)
+    }
+
+    /// The built-in `TARGET` namespace: facts about the compilation target that
+    /// both engines supply as constants (see the machine's `target_value`).
+    fn register_target_namespace(&mut self) {
+        let int = self.eng.types.con("@int");
+        let str_ = self.eng.types.con("@str");
+        let members = [
+            ("int_bits", int),
+            ("ptr_bits", int),
+            ("int_max", int),
+            ("int_min", int),
+            ("arch", str_),
+            ("os", str_),
+            ("name", str_),
+        ];
+        let table = self.qualified.entry("TARGET").or_default();
+        for (name, ty) in members {
+            table.insert(name, vec![ty]);
+        }
     }
 
     /// Import another module's public exports into this checker.
@@ -883,6 +916,18 @@ impl<'a> Checker<'a> {
             }
             if let Some(a) = other.aliases.get(name) {
                 self.aliases.insert(name, a.clone());
+            }
+        }
+        for &effect in &other.own_effects {
+            if other.private_names.contains(effect) {
+                continue;
+            }
+            for (&op, &scheme) in &other.effect_ops[effect] {
+                let qualified = self.import_scheme(scheme);
+                self.qualified
+                    .entry(effect)
+                    .or_default()
+                    .insert(op, vec![qualified]);
             }
         }
         let module = other.module_name;
@@ -1093,11 +1138,8 @@ impl<'a> Checker<'a> {
                     "the `@ctx` parameter of `{name}` must be a declared type, not `{}`",
                     self.show(part)
                 )
-                .with_note(
-                    "a context is found by its type, so it needs a named one; wrap it \
-                     in a `@struct` whose fields are the operations"
-                        .to_string(),
-                ));
+                .with_note("a context is found by its type, so it needs a named one")
+                .with_help("wrap it in a `@struct` whose fields are the operations"));
             }
         }
         Ok(())
@@ -1349,7 +1391,8 @@ impl<'a> Checker<'a> {
                         "a range building a sized tensor `[n]T` needs literal bounds, \
                          so its length is known at compile time";
                         note: "a compile-time-constant bound (e.g. `let a = 4 in [1 ... a]`) \
-                               is not resolved yet; use integer literals, or annotate the \
+                               is not resolved yet";
+                        help: "use integer literals, or annotate the \
                                range as a `List` for a runtime-length sequence"
                     ));
                 };
@@ -1370,7 +1413,7 @@ impl<'a> Checker<'a> {
             Expr::Range { lo, hi } => {
                 let (lo, hi) = (*lo, *hi);
                 let got = self.range_hook(e, lo, hi, Some(expected))?;
-                self.eng.unify(got, expected, "against the expected type")
+                self.eng.unify_expected(got, expected, "against the expected type")
             }
             // A `.{ .. }` literal (bare or `Type.{ .. }`) checked against an expected
             // type: resolve the struct from the qualifier or the expected type, and
@@ -1385,7 +1428,7 @@ impl<'a> Checker<'a> {
                 let direct = self
                     .infer_struct_lit(e, name, fields, spread, Some(expected))
                     .and_then(|got| {
-                        self.eng.unify(got, expected, "against the expected type")
+                        self.eng.unify_expected(got, expected, "against the expected type")
                     });
                 let Err(err) = direct else {
                     return Ok(());
@@ -1464,7 +1507,7 @@ impl<'a> Checker<'a> {
                 let fields = self.ast.slice(*fields);
                 let got = self.infer_variant(Some(uname), tag, fields)?;
                 self.eng
-                    .unify(got, expected, "against the expected type")
+                    .unify_expected(got, expected, "against the expected type")
             }
             // A `Real` literal takes the expected float width, like an integer
             // literal takes its width: `1.0` checks against `Real32` as well as
@@ -1495,7 +1538,7 @@ impl<'a> Checker<'a> {
                 let name = self.text(*name);
                 let cands = self.overloads.get(name).cloned().expect("guarded above");
                 let got = self.resolve_overload(name, &cands, &[], Some(e))?;
-                self.eng.unify(got, expected, "against the expected type")
+                self.eng.unify_expected(got, expected, "against the expected type")
             }
             _ => {
                 let got = self.infer(e)?;
@@ -1511,7 +1554,7 @@ impl<'a> Checker<'a> {
                     // promote into, so a mismatch there is a real error).
                     if !self.is_numeric(got) {
                         let save = self.eng.save();
-                        if self.eng.unify(got, expected, "against the expected type").is_ok() {
+                        if self.eng.unify_expected(got, expected, "against the expected type").is_ok() {
                             return Ok(());
                         }
                         self.eng.restore(save);
@@ -1525,7 +1568,7 @@ impl<'a> Checker<'a> {
                         return self.promote_to_record(e, &values, expected);
                     }
                 }
-                self.eng.unify(got, expected, "against the expected type")
+                self.eng.unify_expected(got, expected, "against the expected type")
             }
         }
     }
@@ -1745,7 +1788,7 @@ impl<'a> Checker<'a> {
                             return Err(diag!(
                                 Code::TypeMismatch, at, 0,
                                 "`{name}` is a blessed interface and only CORE may declare it";
-                                note: "implement it instead: a value of the applied type \
+                                help: "implement it instead: a value of the applied type \
                                        (`$ r : @IRange @int Span = .{{ .range = ... }}`)"
                             ));
                         }
@@ -2181,6 +2224,7 @@ impl<'a> Checker<'a> {
                     .insert(op_name, vec![scheme]);
             }
             self.effect_ops.insert(effect, op_schemes);
+            self.own_effects.push(effect);
         }
         for (op_name, mut schemes) in per_op {
             if schemes.len() == 1 {
@@ -2344,15 +2388,23 @@ impl<'a> Checker<'a> {
                 // determined is a compile error, not a silent runtime fault. The
                 // checking direction (an annotation / expected type / qualified
                 // `Type.{..}`) resolves it; a bare positional literal cannot.
+                None if ty.is_some_and(|n| !self.is_known_type(n)) => {
+                    return Err(self.unknown_type(struct_name));
+                }
+                None if ty.is_some() => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "`{struct_name}` is not a struct, so `{struct_name}.{{ .. }}` cannot build it"
+                    ));
+                }
                 None => {
                     self.infer_field_inits(fields)?;
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
                         "cannot infer which struct this `.{{ .. }}` builds"
                     )
-                    .with_note(
-                        "qualify it (`Type.{ .. }`), annotate the binding, or use named fields that match a struct"
-                            .to_string(),
+                    .with_help(
+                        "qualify it (`Type.{ .. }`), annotate the binding, or use named fields that match a struct",
                     ));
                 }
             }
@@ -2363,7 +2415,7 @@ impl<'a> Checker<'a> {
         // variable rather than a fresh placeholder. This lets a value-position `@ctx`
         // dictionary in a field resolve by type (`.fst = blank` picks `blank : a`).
         if let Some(exp) = expected {
-            self.eng.unify(result, exp, "against the expected type")?;
+            self.eng.unify_expected(result, exp, "against the expected type")?;
         }
         let mut covered = vec![false; info.fields.len()];
         for (i, fi) in fields.iter().enumerate() {
@@ -2416,8 +2468,9 @@ impl<'a> Checker<'a> {
                 return Err(diag!(
                     Code::TypeMismatch, Span::at(0), 0,
                     "struct `{struct_name}` literal is missing field `{missing}`";
-                    note: "a literal gives every field; to change only some, \
-                           update another value with `.{{ .field = v | base }}`"
+                    note: "a literal gives every field";
+                    help: "to change only some, update another value with \
+                           `.{{ .field = v | base }}`"
                 ));
             }
         }
@@ -3109,7 +3162,12 @@ impl<'a> Checker<'a> {
                 let (expr, ty) = (*expr, *ty);
                 let mut tvars = HashMap::new();
                 let t = self.ty_of_ast(ty, &mut tvars);
-                self.check(expr, t)?;
+                self.check(expr, t).map_err(|d| match self.ast.ty_span(ty) {
+                    Some(span) if d.root().code == Code::TypeMismatch => {
+                        d.with_label(span, "expected because of this annotation")
+                    }
+                    _ => d,
+                })?;
                 Ok(t)
             }
 
@@ -3209,7 +3267,8 @@ impl<'a> Checker<'a> {
                         Code::TypeMismatch, Span::at(0), 0,
                         "the body produces {}, but the handler's clauses produce {}",
                         self.eng.show(body_ty), self.eng.show(result);
-                        note: "with no value arm the body's result is returned unchanged; add a `| x => ...` arm to convert it"
+                        note: "with no value arm the body's result is returned unchanged";
+                        help: "add a `| x => ...` arm to convert it"
                     ));
                 }
             }
@@ -3263,7 +3322,12 @@ impl<'a> Checker<'a> {
             }
             return match self.qualified_candidates(m, name) {
                 Some(cands) if cands.len() == 1 => Ok(self.eng.instantiate(cands[0])),
-                _ => Ok(self.eng.fresh()),
+                Some(_) => Ok(self.eng.fresh()),
+                None if self.lenient || m == self.module_name => Ok(self.eng.fresh()),
+                None => {
+                    let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
+                    Err(self.unknown_qualified(m, name).fill_span(span))
+                }
             };
         }
         // Qualify a reference to a global so the interpreter reaches the intended
@@ -3297,12 +3361,12 @@ impl<'a> Checker<'a> {
                     .iter()
                     .map(|m| format!("`{m}.{name}`"))
                     .collect::<Vec<_>>()
-                    .join(" and ");
+                    .join(" or ");
                 let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
                 return Err(diag!(
                     Code::AmbiguousName, span, 0,
                     "`{name}` is imported from more than one module";
-                    note: "write {list}"
+                    help: "qualify it as {list}"
                 ));
             }
         }
@@ -3316,7 +3380,21 @@ impl<'a> Checker<'a> {
             // final strict round rejects it if it is still unbound.
             Ok(self.eng.fresh())
         } else {
-            Err(unbound(name))
+            Err(self.unbound_name(name))
+        }
+    }
+
+    /// `name` is bound nowhere; suggest a near miss among the visible names.
+    fn unbound_name(&self, name: &str) -> Diagnostic {
+        let visible = self
+            .scopes
+            .iter()
+            .flat_map(|s| s.keys().copied())
+            .chain(self.overloads.keys().copied())
+            .chain(self.global_ctx.keys().copied());
+        match utilities::error::closest(name, visible) {
+            Some(n) => unbound(name).with_help(format!("did you mean `{n}`?")),
+            None => unbound(name),
         }
     }
 
@@ -3328,6 +3406,23 @@ impl<'a> Checker<'a> {
 
     fn qualified_candidates(&self, module: &str, name: &str) -> Option<Vec<Type>> {
         self.qualified.get(module)?.get(name).cloned()
+    }
+
+    /// `module.name` names nothing: either the module exports no such value or
+    /// no module or effect of that name is in scope.
+    fn unknown_qualified(&self, module: &str, name: &str) -> Diagnostic {
+        let Some(members) = self.qualified.get(module) else {
+            let d = diag!(Code::UnknownModule, Span::at(0), 0, "no module or effect `{module}` is in scope");
+            return match utilities::error::closest(module, self.qualified.keys().copied()) {
+                Some(m) => d.with_help(format!("did you mean `{m}.{name}`?")),
+                None => d.with_help(format!("import it with `$ with {module}`")),
+            };
+        };
+        let d = diag!(Code::TypeUnbound, Span::at(0), 0, "`{module}` has no value named `{name}`");
+        match utilities::error::closest(name, members.keys().copied()) {
+            Some(n) => d.with_help(format!("did you mean `{module}.{n}`?")),
+            None => d,
+        }
     }
 
     // -- context (`@ctx`) resolution ----------------------------------------
@@ -3459,11 +3554,8 @@ impl<'a> Checker<'a> {
                 Code::TypeMismatch, Span::at(0), 0,
                 "resolving the context of `{fname}` did not terminate within {CTX_DEPTH} steps"
             )
-            .with_note(
-                "an instance whose own context leads back to itself cannot be built; \
-                 pass the context explicitly instead"
-                    .to_string(),
-            ));
+            .with_note("an instance whose own context leads back to itself cannot be built")
+            .with_help("pass the context explicitly instead"));
         }
         if let TypeNode::Tuple(parts) = self.eng.types.node(req) {
             let parts = self.eng.types.items(parts).to_vec();
@@ -3553,7 +3645,8 @@ impl<'a> Checker<'a> {
             return Err(self.ctx_ambiguous(fname, req, &names));
         }
         let Some(c) = hits.first().cloned() else {
-            return Err(self.ctx_missing(fname, req));
+            let d = self.ctx_missing(fname, req);
+            return Err(self.explain_near_miss(d, fname, &cands, req));
         };
         let inst = self.eng.instantiate(c.bundle);
         let (exposed, own) = self.bundle_parts(inst);
@@ -3610,6 +3703,61 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// No instance matched `req`, but one may agree on its first parameter (the
+    /// type the interface is "for") and disagree on another, typically one the
+    /// call fixed indirectly, e.g. `for xs \\i = i` pins `IFor`'s element type
+    /// through the body's result. Then the context IS determined and simply does
+    /// not fit, so say that, naming the instance and the parameter that differs,
+    /// rather than claim none is in scope.
+    fn explain_near_miss(&mut self, d: Diagnostic, fname: &str, cands: &[Inst<'a>], req: Type) -> Diagnostic {
+        let (_, want) = self.spine(req);
+        let Some(&first) = want.first() else {
+            return d;
+        };
+        for c in cands {
+            let save = self.eng.save();
+            let inst = self.eng.instantiate(c.bundle);
+            let exposed = self.bundle_parts(inst).0;
+            let (_, has) = self.spine(exposed);
+            let mut differs = Vec::new();
+            if has.len() == want.len() && self.eng.unify(has[0], first, "").is_ok() {
+                for i in 1..has.len() {
+                    let probe = self.eng.save();
+                    if self.eng.unify(has[i], want[i], "").is_err() {
+                        differs.push(i);
+                    }
+                    self.eng.restore(probe);
+                }
+            }
+            if differs.is_empty() {
+                self.eng.restore(save);
+                continue;
+            }
+            let mut out = diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "`{}` does not fit this use of `{fname}`", c.name;
+                note: "`{fname}` needs `{}` here, and `{}` has type `{}`",
+                    self.show(req), c.name, self.show(self.eng.zonk(exposed))
+            );
+            for i in differs {
+                let (h, w) = (self.show(self.eng.zonk(has[i])), self.show(self.eng.zonk(want[i])));
+                out = out.with_note(format!(
+                    "its {} type parameter is `{h}`, but this use needs `{w}`",
+                    ordinal(i + 1)
+                ));
+            }
+            self.eng.restore(save);
+            if let Some(sig) = self.show_name(fname) {
+                out = out.with_note(format!("`{fname} : {sig}`"));
+            }
+            return out.with_help(format!(
+                "make the arguments of `{fname}` agree with `{}`",
+                c.name
+            ));
+        }
+        d
+    }
+
     /// No value of the requirement's type is in scope.
     fn ctx_missing(&self, fname: &str, req: Type) -> Diagnostic {
         diag!(
@@ -3617,7 +3765,7 @@ impl<'a> Checker<'a> {
             "no value of type `{}` in scope to satisfy the context of `{fname}`",
             self.show(req)
         )
-        .with_note(format!(
+        .with_help(format!(
             "define or import a value of type `{}`, or pass one explicitly as \
              `{fname} (@ctx value) ...`",
             self.show(req)
@@ -3632,10 +3780,9 @@ impl<'a> Checker<'a> {
             "the context `{}` of `{fname}` is not determined here",
             self.show(req)
         )
-        .with_note(
+        .with_help(
             "annotate the call so its type is known, or declare the same `@ctx` parameter on \
-             the enclosing definition so the context is passed in"
-                .to_string(),
+             the enclosing definition so the context is passed in",
         )
     }
 
@@ -3649,7 +3796,7 @@ impl<'a> Checker<'a> {
             self.show(req),
             names.join(", ")
         )
-        .with_note(format!(
+        .with_help(format!(
             "pass the one you mean explicitly as `{fname} (@ctx {}) ...`",
             names.first().map(String::as_str).unwrap_or("value")
         ))
@@ -3716,6 +3863,24 @@ impl<'a> Checker<'a> {
         Ok(result)
     }
 
+    /// An application whose callee (`head` through `last`, everything left of
+    /// `arg`) has the non-function type `ty`.
+    fn not_a_function(&self, head: Aol<Expr>, last: Aol<Expr>, arg: Aol<Expr>, ty: Type) -> Diagnostic {
+        let mut d = diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "this is applied to an argument, but its type `{}` is not a function",
+            self.show(ty);
+            help: "if the argument is meant as a separate step, put `;` between the two"
+        );
+        if let (Some(h), Some(l)) = (self.ast.expr_span(head), self.ast.expr_span(last)) {
+            d = d.fill_span(Span::new(h.start, l.end.max(h.start)));
+        }
+        if let Some(x) = self.ast.expr_span(arg) {
+            d = d.with_label(x, "the argument");
+        }
+        d
+    }
+
     fn infer_app(&mut self, e: Aol<Expr>) -> Result<Type> {
         let mut args_rev = Vec::new();
         let mut head = e;
@@ -3756,8 +3921,9 @@ impl<'a> Checker<'a> {
             }
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
-                "the target type of `@cast` must be known from context; annotate it \
-                 (e.g. `let n : Int = @cast x`) or use it where a specific integer type is expected"
+                "the target type of `@cast` must be known from context";
+                help: "annotate it (e.g. `let n : @int = @cast x`) or use it where a specific \
+                       integer type is expected"
             ));
         }
 
@@ -3823,7 +3989,12 @@ impl<'a> Checker<'a> {
         }
 
         let mut tf = self.infer(head)?;
+        let mut callee = head;
         for a in &args {
+            if !matches!(self.eng.head(tf), TypeNode::Var(_) | TypeNode::Arrow(..)) {
+                return Err(self.not_a_function(head, callee, *a, tf));
+            }
+            callee = *a;
             let (param, result, eff) = self.arrow_parts(tf)?;
             // The callee may perform at most what the ambient allows; performing
             // an operation (whose latent row is `<Effect | mu>`) forces its effect
@@ -4287,9 +4458,13 @@ impl<'a> Checker<'a> {
                     "ambiguous overloaded use of `{}`", p.name
                 );
                 let err = match mods.as_slice() {
-                    [a, b, ..] => err.with_note(format!(
-                        "several imported modules define `{name}` with a matching type; \
-                         qualify just this reference to pick one, e.g. `{a}.{name}` or `{b}.{name}` \
+                    [a, b, ..] => err
+                        .with_note(format!(
+                            "several imported modules define `{name}` with a matching type",
+                            name = p.name
+                        ))
+                        .with_help(format!(
+                        "qualify just this reference to pick one, e.g. `{a}.{name}` or `{b}.{name}` \
                          (the rest of the module keeps using the bare name)",
                         name = p.name
                     )),
@@ -4807,14 +4982,14 @@ impl<'a> Checker<'a> {
                 Code::NonExhaustiveMatch, span, 0,
                 "cannot check coverage: the arms match `{union}` with both its variants and \
                  sequence patterns, which go through its `@ISeqView` instead";
-                note: "match with only one kind of pattern, or add a catch-all `| _ => ...`"
+                help: "match with only one kind of pattern, or add a catch-all `| _ => ...`"
             ));
         }
         let what = if handler { "the handler's value arms do" } else { "this `is` does" };
         Err(diag!(
             Code::NonExhaustiveMatch, span, 0,
             "non-exhaustive match: {what} not cover `{}`", exhaustive::show(&missing);
-            note: "add an arm for it, or a catch-all `| _ => ...`"
+            help: "add an arm for it, or a catch-all `| _ => ...`"
         ))
     }
 
@@ -4829,7 +5004,7 @@ impl<'a> Checker<'a> {
         Err(diag!(
             Code::NonExhaustiveMatch, span, 0,
             "refutable pattern in {site}: it does not match `{}`", exhaustive::show(&missing);
-            note: "bind a variable and match it with `is`, which can handle every case"
+            help: "bind a variable and match it with `is`, which can handle every case"
         ))
     }
 
@@ -5010,7 +5185,7 @@ impl<'a> Checker<'a> {
                 return Err(diag!(
                     Code::IntLiteralRange, span, 0,
                     "integer literal {v} is out of range for `{ty}` ({} to {})", dom.0, dom.1;
-                    note: "use a wider type, or `@cast` to wrap a wider value into `{ty}`"
+                    help: "use a wider type, or `@cast` to wrap a wider value into `{ty}`"
                 ));
             }
         }
@@ -5048,6 +5223,22 @@ impl<'a> Checker<'a> {
     /// Is `name` a usable type: a built-in base type, or a struct/union/alias
     /// declared here or imported? A bare name that is none of these is a typo (a
     /// type variable is a lowercase name).
+    fn unknown_type(&self, name: &str) -> Diagnostic {
+        let d = diag!(Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`");
+        let known = self
+            .structs
+            .keys()
+            .chain(self.unions.keys())
+            .chain(self.aliases.keys())
+            .copied();
+        match utilities::error::closest(name, known) {
+            Some(n) => d.with_help(format!("did you mean `{n}`?")),
+            None => d.with_note(
+                "a type variable is written as a lowercase name; a capitalized type must be declared",
+            ),
+        }
+    }
+
     fn is_known_type(&self, name: &str) -> bool {
         is_base_type(name)
             || self.structs.contains_key(name)
@@ -5185,7 +5376,7 @@ impl<'a> Checker<'a> {
             Ty::Con { name, .. } => {
                 let name = self.text(*name);
                 if !self.is_known_type(name) && self.unknown_type.is_none() {
-                    let mut d = unknown_type(name);
+                    let mut d = self.unknown_type(name);
                     if let Some(span) = self.ast.ty_span(ty) {
                         d = d.fill_span(span);
                     }
@@ -6081,6 +6272,17 @@ fn dup_member(ty: &str, member: &str, kind: &str) -> Diagnostic {
     )
 }
 
+/// `1` -> `first`, for a diagnostic naming a position.
+fn ordinal(n: usize) -> String {
+    match n {
+        1 => "first".to_string(),
+        2 => "second".to_string(),
+        3 => "third".to_string(),
+        4 => "fourth".to_string(),
+        _ => format!("#{n}"),
+    }
+}
+
 fn unbound(name: &str) -> Diagnostic {
     diag!(Code::TypeUnbound, Span::at(0), 0, "unbound name `{name}`")
 }
@@ -6192,12 +6394,6 @@ fn tensor_type(types: &Types, variance: Type, size: Type, elem: Type) -> Type {
     types.app(b, elem)
 }
 
-fn unknown_type(name: &str) -> Diagnostic {
-    diag!(
-        Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`";
-        note: "a type variable is written as a lowercase name; a capitalized type must be declared"
-    )
-}
 
 /// A type declaration (or `with` splice) uses a type variable it does not declare.
 /// Parameters are mandatory, so this reports the fix: list `v` after the keyword.
@@ -6215,7 +6411,7 @@ fn undeclared_param(kind: &str, name: &str, v: &str, declared: &[&str], spliced:
             declared.join(" ")
         )
     };
-    Diagnostic::error(Code::TypeUnbound, Span::at(0), 0, msg).with_note(format!(
-        "type parameters are mandatory; declare every one after the keyword, e.g. `@{kind} {v} = ...`"
-    ))
+    Diagnostic::error(Code::TypeUnbound, Span::at(0), 0, msg)
+        .with_note("type parameters are mandatory")
+        .with_help(format!("declare every one after the keyword, e.g. `@{kind} {v} = ...`"))
 }

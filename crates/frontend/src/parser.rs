@@ -1223,13 +1223,38 @@ impl<'a> Parser<'a> {
     /// One atom followed by a left-associative postfix `.` chain.
     fn parse_primary(&mut self) -> Result<Aol<Expr>> {
         let start = self.here()?;
+        let lit = self.peek()?;
         let mut base = self.parse_atom()?;
+        if matches!(lit.kind, Kind::Int(_) | Kind::Real(_)) && matches!(self.peek_kind()?, Kind::Dot)
+        {
+            return Err(self.dot_after_number(lit)?);
+        }
         while matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?; // '.'
             base = self.parse_postfix(base)?;
             base = self.stamp(start, base);
         }
         Ok(base)
+    }
+
+    /// A `.` after the number literal `lit`. A number has no fields, so this is
+    /// either an unfinished decimal (`2.`, which would otherwise read the next
+    /// number as a tuple index: `1. 2.2` is `(1).2.2`) or a stray dot.
+    fn dot_after_number(&mut self, lit: Token) -> Result<Diagnostic> {
+        let dot = self.peek()?;
+        let digits = self.text(lit);
+        if matches!(lit.kind, Kind::Int(_)) && dot.span.start == lit.span.end {
+            let span = Span::new(lit.span.start, dot.span.end);
+            return Ok(utilities::diag!(
+                Code::NumberParsingFailure, span, lit.line,
+                "unfinished decimal literal `{digits}.`";
+                help: "write the fractional part: `{digits}.0`"
+            ));
+        }
+        Ok(utilities::diag!(
+            Code::UnexpectedToken, dot.span, dot.line,
+            "a number has no fields, so a `.` cannot follow `{digits}`"
+        ))
     }
 
     fn parse_atom(&mut self) -> Result<Aol<Expr>> {
@@ -1396,7 +1421,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let t = self.peek()?;
-        Ok(Some(self.unexpected(&t, what).with_note(hint.to_string())))
+        Ok(Some(self.unexpected(&t, what).with_help(hint.to_string())))
     }
 
     /// Require that `base` is a bare, uppercase-initial type name and return it.
@@ -1417,10 +1442,9 @@ impl<'a> Parser<'a> {
                 Code::UnexpectedToken,
                 span,
                 at.line,
-                format!(
-                    "{what} must be qualified with an uppercase type name, e.g. Type.{{ ... }}"
-                ),
-            ));
+                format!("{what} must be qualified with an uppercase type name"),
+            )
+            .with_help("write `Type.{ ... }`"));
         };
         let head = self.ast.text(head);
         if !is_upper(head) {
@@ -1443,9 +1467,9 @@ impl<'a> Parser<'a> {
             at.line,
             format!("{what} is qualified by a bare type name, not by a type applied to arguments"),
         )
-        .with_note(format!(
-            "the type arguments are inferred; drop them here and ascribe the whole expression \
-             instead, as in `(e : {head} @int32)`"
+        .with_note("the type arguments are inferred")
+        .with_help(format!(
+            "drop them here and ascribe the whole expression instead, as in `(e : {head} @int32)`"
         )))
     }
 
@@ -1700,8 +1724,8 @@ impl<'a> Parser<'a> {
             }
             if let Some(d) = self.stray_annotation(
                 "expected '}' to close the variant payload",
-                "a payload field is ascribed in a group, `.Cons.{ (1 : @int32), rest }`; to fix \
-                 the whole value, write `(.Cons.{ .. } : List @int32)`",
+                "ascribe a payload field in a group, `.Cons.{ (1 : @int32), rest }`, or the \
+                 whole value, `(.Cons.{ .. } : List @int32)`",
             )? {
                 return Err(d);
             }
@@ -1773,8 +1797,8 @@ impl<'a> Parser<'a> {
         }
         if let Some(d) = self.stray_annotation(
             "expected ']' to close the list",
-            "an element is ascribed in a group, `[(1 : @int32), 2, 3]`; to fix the whole \
-             literal and its sequence type, write `([1, 2, 3] : List @int32)`",
+            "ascribe an element in a group, `[(1 : @int32), 2, 3]`, or the whole literal and \
+             its sequence type, `([1, 2, 3] : List @int32)`",
         )? {
             return Err(d);
         }
@@ -2377,7 +2401,7 @@ impl<'a> Parser<'a> {
         }
         if let Some(d) = self.stray_annotation(
             "expected '}' to close the tuple pattern",
-            "a pattern carries no types; annotate the binding instead, as in \
+            "a pattern carries no types, so annotate the binding instead, as in \
              `let {a, b} : {@int32, @int32} = ...` or `\\{a, b}: {@int32, @int32} = ...`",
         )? {
             return Err(d);

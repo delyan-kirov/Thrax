@@ -50,6 +50,9 @@ pub struct Engine {
     int_vars: HashSet<VarId>,
     /// The undo log behind [`Engine::save`] / [`Engine::restore`].
     trail: Vec<Undo>,
+    /// Set while [`Engine::unify_expected`] runs: its first operand is the type
+    /// found, not the one expected, so a mismatch names them the other way round.
+    found_first: bool,
 }
 
 /// One reversible mutation, recorded so [`Engine::restore`] can rewind a trial.
@@ -82,6 +85,7 @@ impl Engine {
             nat_vars: HashSet::new(),
             int_vars: HashSet::new(),
             trail: Vec::new(),
+            found_first: false,
         }
     }
 
@@ -321,6 +325,29 @@ impl Engine {
     }
 
     // -- unification --------------------------------------------------------
+
+    /// Unify the type `found` of an expression with the type `expected` of its
+    /// position. A mismatch says "expected E, found F" the right way round, and
+    /// when it lies inside a larger type, a note shows both whole types.
+    pub fn unify_expected(&mut self, found: Type, expected: Type, where_: &str) -> Result<()> {
+        let saved = std::mem::replace(&mut self.found_first, true);
+        let r = self.unify(found, expected, where_);
+        self.found_first = saved;
+        r.map_err(|d| {
+            if d.root().code != Code::TypeMismatch {
+                return d;
+            }
+            let (e, f) = (self.show(expected), self.show(found));
+            let whole_is_news = d.root().msg.contains(", found ")
+                && !d.root().msg.ends_with(&format!("expected {e}, found {f}"))
+                && !matches!(self.head(expected), TypeNode::Var(_))
+                && !matches!(self.head(found), TypeNode::Var(_));
+            if !whole_is_news {
+                return d;
+            }
+            d.with_note(format!("expected type `{e}`\n         found type `{f}`"))
+        })
+    }
 
     /// Unify two types, mutating variables in place. `where_` names the context
     /// for diagnostics.
@@ -742,12 +769,10 @@ impl Engine {
                     Code::TypeMismatch,
                     Span::at(0),
                     0,
-                    format!(
-                        "an integer literal cannot be a `{}`: write the float literal instead \
-                         (`1.0`, not `1`)",
-                        self.types.name(name)
-                    ),
-                ));
+                    format!("an integer literal cannot be a `{}`", self.types.name(name)),
+                )
+                .with_note("an integer literal never becomes a float")
+                .with_help("write a float literal instead (`1.0`, not `1`)"));
             }
             _ => {
                 if want_nat {
@@ -818,6 +843,7 @@ impl Engine {
     }
 
     fn mismatch(&self, a: Type, b: Type, where_: &str) -> Diagnostic {
+        let (a, b) = if self.found_first { (b, a) } else { (a, b) };
         Diagnostic::error(
             Code::TypeMismatch,
             Span::at(0),

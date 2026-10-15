@@ -522,7 +522,7 @@ fn curried_extern_is_rejected() {
     // A C function has no first-class closure to curry: a multi-parameter extern
     // must group its C parameters into one record, not curry with several arrows.
     let e = errors("@mod M\n$ f : @int -> @int -> @int = @extern \"C\" \"f\" \"lib\"");
-    assert!(e.contains("SINGLE argument"), "{e}");
+    assert!(e.contains("takes a single argument"), "{e}");
 }
 
 #[test]
@@ -1268,4 +1268,57 @@ fn sized_literals_must_fit_their_type() {
     assert!(err.contains("-129"), "{err}");
     let ok = "@mod T\n$ a : @int8 = -128\n$ b : @nat8 = 255\n$ c : @nat8 = @cast 300\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
+}
+
+#[test]
+fn a_mismatch_names_expected_and_found_the_right_way_round() {
+    let text = rendered_errors("@mod M\n$ x : @int = \"s\"\n");
+    assert!(text.contains("expected @int, found @str"), "{text}");
+    let text = rendered_errors("@mod M\n$ x = ((>): @int -> @int -> @int)\n");
+    assert!(text.contains("expected @int, found @bool"), "{text}");
+    assert!(text.contains("expected because of this annotation"), "{text}");
+    assert!(text.contains("found type `@int -> @int -> @bool`"), "{text}");
+}
+
+#[test]
+fn an_unknown_type_is_reported_before_the_errors_it_causes() {
+    let ty = "@mod M\n$ MyTyp : @struct = a: @int, b: @int\n";
+    for body in ["$ x = Mytype.{1, 2}\n", "$ foo : MyType = .{1, 2}\n", "$ foo : MyType = .{.a = 1, .b = 2}\n"] {
+        let text = rendered_errors(&format!("{ty}{body}"));
+        assert!(text.contains("unknown type `My"), "{text}");
+        assert!(text.contains("help: did you mean `MyTyp`?"), "{text}");
+    }
+}
+
+#[test]
+fn an_unknown_qualified_name_is_a_check_error() {
+    let text = rendered_errors("@mod M\n$ x = CORE.no_such_function 1\n");
+    assert!(text.contains("`CORE` has no value named `no_such_function`"), "{text}");
+    let text = rendered_errors("@mod M\n$ x = NOWHERE.f 1\n");
+    assert!(text.contains("no module or effect `NOWHERE`"), "{text}");
+    assert_eq!(errors("@mod M\n$ x : @int = TARGET.int_bits\n"), "");
+    assert!(errors("@mod M\n$ x : @str = TARGET.int_bits\n").contains("expected @str"));
+}
+
+#[test]
+fn applying_a_non_function_names_the_argument() {
+    let src = "@mod M\n$ f : @int -> @int = \\x =\n    x\n    1\n";
+    let text = rendered_errors(src);
+    assert!(text.contains("its type `@int` is not a function"), "{text}");
+    assert!(text.contains("- the argument"), "{text}");
+    assert!(text.contains("help: if the argument is meant as a separate step"), "{text}");
+}
+
+#[test]
+fn an_unbound_name_suggests_a_near_miss() {
+    let text = rendered_errors("@mod M\n$ length : @int = 1\n$ x = lenght\n");
+    assert!(text.contains("help: did you mean `length`?"), "{text}");
+}
+
+#[test]
+fn a_near_miss_instance_is_named_instead_of_none_in_scope() {
+    let text = rendered_errors("@mod M\n$ x = for ([0 ... 100] : List @int) \\i = i\n");
+    assert!(text.contains("`impl_IFor_for_List` does not fit this use of `for`"), "{text}");
+    assert!(text.contains("its second type parameter is `@int`, but this use needs `{}`"), "{text}");
+    assert!(!text.contains("in scope"), "{text}");
 }
