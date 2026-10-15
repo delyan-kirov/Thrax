@@ -141,19 +141,21 @@ impl fmt::Display for Code {
 }
 
 /// Build a [`Diagnostic`] from a code, span, line, and a `format!`-style message,
-/// with an optional trailing `note:` fix hint.
+/// followed by any number of `note:` (more information) and `help:` (how to fix
+/// it) asides.
 ///
 /// ```ignore
 /// diag!(Code::TypeMismatch, span, line, "expected {}, found {}", a, b)
 /// diag!(Code::TypeMismatch, span, line, "expected {}, found {}", a, b;
-///       note: "add an `else {}` clause", binder)
+///       help: "add an `else {}` clause", binder)
 /// ```
 #[macro_export]
 macro_rules! diag {
     ($code:expr, $span:expr, $line:expr, $fmt:literal $(, $arg:expr)*
-     ; note: $nfmt:literal $(, $narg:expr)* $(,)?) => {
+     $(; $kind:ident : $nfmt:literal $(, $narg:expr)* )+ $(,)?) => {
         $crate::Diagnostic::error($code, $span, $line, ::std::format!($fmt $(, $arg)*))
-            .with_note(::std::format!($nfmt $(, $narg)*))
+            $(.aside($crate::Aside::keyword(::std::stringify!($kind)),
+                     ::std::format!($nfmt $(, $narg)*)))+
     };
     ($code:expr, $span:expr, $line:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
         $crate::Diagnostic::error($code, $span, $line, ::std::format!($fmt $(, $arg)*))
@@ -169,6 +171,42 @@ pub struct Frame {
     pub msg: String,
 }
 
+/// A trailing line printed after the source excerpt. The message says what is
+/// wrong; an aside carries everything else, so the two never run together.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Aside {
+    /// Extra information: why the error arose, what the compiler saw.
+    Note,
+    /// A concrete way to fix it.
+    Help,
+}
+
+impl Aside {
+    /// The `diag!` keyword spelling (`note` / `help`).
+    pub fn keyword(word: &str) -> Aside {
+        match word {
+            "note" => Aside::Note,
+            "help" => Aside::Help,
+            other => panic!("unknown diagnostic aside `{other}:` (expected `note:` or `help:`)"),
+        }
+    }
+
+    fn lead(self) -> &'static str {
+        match self {
+            Aside::Note => "note",
+            Aside::Help => "help",
+        }
+    }
+}
+
+/// A secondary source location, underlined with `-` and annotated with `msg`
+/// (e.g. the annotation a mismatched expression was checked against).
+#[derive(Clone, Debug)]
+pub struct Label {
+    pub span: Span,
+    pub msg: String,
+}
+
 /// A diagnostic: a non-empty chain of frames, root cause first.
 ///
 /// Context frames are appended as the error unwinds, so `frames[0]` is always
@@ -176,9 +214,11 @@ pub struct Frame {
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     frames: Vec<Frame>,
-    /// An optional closing hint on how to fix the error. Rendered as a trailing
-    /// `note: ...` line, after the source caret, with no code or location.
-    note: Option<String>,
+    /// Secondary spans drawn in the root frame's excerpt.
+    labels: Vec<Label>,
+    /// Trailing `note:` / `help:` lines. Rendered notes first, then helps, each
+    /// kind in the order attached.
+    asides: Vec<(Aside, String)>,
 }
 
 impl Diagnostic {
@@ -191,14 +231,45 @@ impl Diagnostic {
                 line,
                 msg: msg.into(),
             }],
-            note: None,
+            labels: Vec::new(),
+            asides: Vec::new(),
         }
     }
 
-    /// Attach a closing hint on how to fix the error (builder style).
-    pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
-        self.note = Some(note.into());
+    /// Attach a trailing `note:` or `help:` line (builder style).
+    pub fn aside(mut self, kind: Aside, text: impl Into<String>) -> Diagnostic {
+        self.asides.push((kind, text.into()));
         self
+    }
+
+    /// Attach a `note:` line: more information about the error.
+    pub fn with_note(self, note: impl Into<String>) -> Diagnostic {
+        self.aside(Aside::Note, note)
+    }
+
+    /// Attach a `help:` line: how to fix the error.
+    pub fn with_help(self, help: impl Into<String>) -> Diagnostic {
+        self.aside(Aside::Help, help)
+    }
+
+    /// Underline a secondary span in the root excerpt. A span-less label
+    /// (the [`Span::at`]`(0)` sentinel) is dropped: it has nothing to point at.
+    pub fn with_label(mut self, span: Span, msg: impl Into<String>) -> Diagnostic {
+        if span != Span::at(0) {
+            self.labels.push(Label {
+                span,
+                msg: msg.into(),
+            });
+        }
+        self
+    }
+
+    pub fn asides(&self) -> &[(Aside, String)] {
+        &self.asides
+    }
+
+    pub fn labels(&self) -> &[Label] {
+        &self.labels
     }
 
     /// Give the root frame a source location if it has none (the [`Span::at`]`(0)`
@@ -243,10 +314,10 @@ impl Diagnostic {
         &self.frames
     }
 
-    /// Render the diagnostic with a source caret, root cause first. A frame that
-    /// still carries the [`Span::at`]`(0)` sentinel has no location, so it gets
-    /// the bare filename and no caret: pointing it at `1:1` would blame the
-    /// file's first line for an error raised somewhere unknown.
+    /// Render the diagnostic with a source excerpt, root cause first. A frame
+    /// that still carries the [`Span::at`]`(0)` sentinel has no location, so it
+    /// gets the bare filename and no excerpt: pointing it at `1:1` would blame
+    /// the file's first line for an error raised somewhere unknown.
     pub fn render(&self, source: &str, filename: &str) -> String {
         self.render_as("error", source, filename)
     }
@@ -268,31 +339,31 @@ impl Diagnostic {
                 ));
                 continue;
             }
-            let (line, col, line_text, line_start) = locate(source, frame.span.start);
+            let span = anchor(source, frame.span);
+            let (line, col, _, _) = locate(source, span.start);
             out.push_str(&format!(
                 "{lead}[{}]: {}\n  --> {filename}:{}:{}\n",
                 frame.code, frame.msg, line, col
             ));
-            out.push_str(&format!("   | {}\n", line_text));
-            // Pad the caret with the line's own leading characters (tabs kept as
-            // tabs, everything else blanked to a space) so a tab-indented line
-            // still lines the caret up under the span: both rows hit identical
-            // tab stops.
-            let caret_pad: String = line_text
-                .chars()
-                .take(col.saturating_sub(1))
-                .map(|c| if c == '\t' { '\t' } else { ' ' })
-                .collect();
-            // Measure the caret in characters over the part of the span that this
-            // line actually shows: a span is a byte range and may run past the
-            // newline, which would otherwise draw carets off the end of the line.
-            let line_end = line_start + line_text.len();
-            let visible = frame.span.end.clamp(frame.span.start, line_end);
-            let caret_len = source[frame.span.start..visible].chars().count().max(1);
-            out.push_str(&format!("   | {}{}\n", caret_pad, "^".repeat(caret_len)));
+            let mut marks = vec![Mark {
+                span,
+                glyph: '^',
+                msg: None,
+            }];
+            if depth == 0 {
+                marks.extend(self.labels.iter().map(|l| Mark {
+                    span: anchor(source, l.span),
+                    glyph: '-',
+                    msg: Some(l.msg.as_str()),
+                }));
+            }
+            out.push_str(&excerpt(source, &marks));
         }
-        if let Some(note) = &self.note {
-            out.push_str(&format!("note: {note}\n"));
+        // Information first, then what to do about it.
+        for want in [Aside::Note, Aside::Help] {
+            for (kind, text) in self.asides.iter().filter(|(k, _)| *k == want) {
+                out.push_str(&format!("{}: {text}\n", kind.lead()));
+            }
         }
         out
     }
@@ -310,6 +381,42 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
+/// The candidate most likely meant by a misspelled `name`, for a "did you
+/// mean" hint: the nearest by edit distance (ignoring case), if it is close
+/// enough to be a plausible typo. Ties go to the alphabetically first
+/// candidate, so the hint does not depend on iteration order.
+pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let limit = (name.chars().count() / 3).max(1);
+    let lower = name.to_lowercase();
+    let mut best: Option<(usize, &'a str)> = None;
+    for c in candidates {
+        if c == name {
+            continue;
+        }
+        let d = edit_distance(&lower, &c.to_lowercase());
+        if d <= limit && best.is_none_or(|(bd, bc)| (d, c) < (bd, bc)) {
+            best = Some((d, c));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Levenshtein distance over characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diag = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let next = (diag + usize::from(ca != cb)).min(row[j] + 1).min(row[j + 1] + 1);
+            diag = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
+}
+
 /// Recover the 1-based line number and column, the full text of the line, and
 /// the line's start offset, for the source position at `offset`.
 fn locate(source: &str, offset: usize) -> (usize, usize, &str, usize) {
@@ -321,6 +428,123 @@ fn locate(source: &str, offset: usize) -> (usize, usize, &str, usize) {
     let col = source[line_start..offset].chars().count() + 1;
     let line = source[..line_start].bytes().filter(|&b| b == b'\n').count() + 1;
     (line, col, &source[line_start..line_end], line_start)
+}
+
+/// Clamp `span` into `source`, and pull a point span that sits in trailing
+/// whitespace (an "end of input" error) back to just after the last real
+/// character, so the caret lands where the text stopped instead of on an empty
+/// line past it.
+fn anchor(source: &str, span: Span) -> Span {
+    let end = span.end.min(source.len());
+    let start = span.start.min(end);
+    let text_end = source.trim_end().len();
+    if start == end && start > text_end {
+        return Span::at(text_end);
+    }
+    Span::new(start, end)
+}
+
+/// A span to underline in an excerpt: `^` for the primary, `-` for a label.
+struct Mark<'a> {
+    span: Span,
+    glyph: char,
+    msg: Option<&'a str>,
+}
+
+/// The most lines of one multi-line span to show before eliding its middle.
+const MAX_SPAN_LINES: usize = 4;
+
+/// The source lines the marks touch, each followed by one underline row per
+/// mark segment on it. A mark's message sits after its last segment. Gaps
+/// between shown lines collapse to a `...` row.
+fn excerpt(source: &str, marks: &[Mark]) -> String {
+    let starts = line_starts(source);
+    // (line index, start byte, end byte, mark index, is the mark's last segment)
+    let mut segments: Vec<(usize, usize, usize, usize, bool)> = Vec::new();
+    for (m, mark) in marks.iter().enumerate() {
+        let first = line_of(&starts, mark.span.start);
+        // A span ending exactly at a line start covers nothing on that line.
+        let last = if mark.span.end > mark.span.start {
+            line_of(&starts, mark.span.end - 1)
+        } else {
+            first
+        };
+        let mut lines: Vec<usize> = (first..=last)
+            .filter(|&l| {
+                l == first || l == last || !line_text(source, &starts, l).trim().is_empty()
+            })
+            .collect();
+        if lines.len() > MAX_SPAN_LINES {
+            let tail = lines.split_off(lines.len() - 1);
+            lines.truncate(MAX_SPAN_LINES - 1);
+            lines.extend(tail);
+        }
+        let n = lines.len();
+        for (k, &l) in lines.iter().enumerate() {
+            let text = line_text(source, &starts, l);
+            let (ls, le) = (starts[l], starts[l] + text.len());
+            let indent = text.len() - text.trim_start().len();
+            let s = if l == first { mark.span.start } else { ls + indent };
+            let e = if l == last { mark.span.end.min(le) } else { le };
+            segments.push((l, s, e.max(s), m, k + 1 == n));
+        }
+    }
+    segments.sort_by_key(|&(l, _, _, m, _)| (l, m));
+
+    let widest = segments.iter().map(|s| s.0 + 1).max().unwrap_or(1);
+    let width = widest.to_string().len();
+    let blank = " ".repeat(width);
+    let mut out = format!("{blank} |\n");
+    let mut shown: Option<usize> = None;
+    for &(l, s, e, m, is_last) in &segments {
+        let text = line_text(source, &starts, l);
+        if shown != Some(l) {
+            if shown.is_some_and(|p| l > p + 1) {
+                out.push_str(&format!("{blank} ...\n"));
+            }
+            out.push_str(&format!("{:>width$} | {text}\n", l + 1));
+            shown = Some(l);
+        }
+        // Pad with the line's own leading characters (tabs kept as tabs,
+        // everything else blanked) so a tab-indented line still lines the
+        // underline up: both rows hit identical tab stops.
+        let col = source[starts[l]..s].chars().count();
+        let pad: String = text
+            .chars()
+            .take(col)
+            .map(|c| if c == '\t' { '\t' } else { ' ' })
+            .collect();
+        let len = source[s..e].chars().count().max(1);
+        let mut row = format!("{blank} | {pad}{}", marks[m].glyph.to_string().repeat(len));
+        if is_last {
+            if let Some(msg) = marks[m].msg {
+                row.push(' ');
+                row.push_str(msg);
+            }
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Byte offsets where each line of `source` begins.
+fn line_starts(source: &str) -> Vec<usize> {
+    std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect()
+}
+
+/// The 0-based line containing byte `offset`.
+fn line_of(starts: &[usize], offset: usize) -> usize {
+    starts.partition_point(|&s| s <= offset).saturating_sub(1)
+}
+
+/// Line `l`'s text, without its newline.
+fn line_text<'a>(source: &'a str, starts: &[usize], l: usize) -> &'a str {
+    let s = starts[l];
+    let e = source[s..].find('\n').map_or(source.len(), |i| s + i);
+    &source[s..e]
 }
 
 #[cfg(test)]

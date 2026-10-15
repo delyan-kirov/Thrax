@@ -37,7 +37,7 @@ fn caret_pad_preserves_leading_tabs() {
     let d = Diagnostic::error(Code::UnknownSymbol, Span::new(1, 3), 1, "bad");
     let text = d.render(src, "test.thx");
     assert!(
-        text.contains("   | \t^^"),
+        text.contains("  | \t^^"),
         "caret pad should keep the leading tab:\n{text}"
     );
 }
@@ -108,17 +108,71 @@ fn a_located_frame_still_renders_when_the_root_has_no_span() {
         text.contains("note [UNEXPECTED_TOKEN]: while checking\n  --> t.thx:2:1\n"),
         "{text}"
     );
-    assert!(text.contains("   | cd\n   | ^^\n"), "{text}");
+    assert!(text.contains("2 | cd\n  | ^^\n"), "{text}");
 }
 
 #[test]
-fn caret_stops_at_the_end_of_the_line() {
-    // A span may run past the newline (an application spanning two lines). The
-    // caret row is drawn against one line, so it must not outrun it.
+fn a_multi_line_span_underlines_each_line() {
+    // A span may run past the newline (an application spanning two lines). Each
+    // line gets its own underline, from its first non-blank character, so no
+    // row outruns the line above it.
     let src = "\"aaa\"\n\t\"bbb\"\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 12), 1, "not a function");
     let text = d.render(src, "t.thx");
-    assert!(text.contains("   | ^^^^^\n"), "{text}");
+    assert!(text.contains("1 | \"aaa\"\n  | ^^^^^\n"), "{text}");
+    assert!(text.contains("2 | \t\"bbb\"\n  | \t^^^^^\n"), "{text}");
+}
+
+#[test]
+fn a_long_span_elides_its_middle() {
+    let src = "a\nb\nc\nd\ne\nf\n";
+    let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 11), 1, "long");
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("3 | c\n"), "{text}");
+    assert!(!text.contains("4 | d\n"), "{text}");
+    assert!(text.contains("  ...\n6 | f\n"), "{text}");
+}
+
+#[test]
+fn end_of_input_points_after_the_last_character() {
+    // A parser error at EOF carries a point span past the trailing newline. It
+    // must caret where the text stopped, not an empty line after it.
+    let src = "x = 2.\n\n";
+    let d = Diagnostic::error(Code::UnexpectedToken, Span::at(src.len()), 3, "eof");
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("--> t.thx:1:7\n"), "{text}");
+    assert!(text.contains("1 | x = 2.\n  |       ^\n"), "{text}");
+}
+
+#[test]
+fn a_label_underlines_a_secondary_span() {
+    let src = "f (\"s\" : @int)\n";
+    let d = Diagnostic::error(Code::TypeMismatch, Span::new(3, 6), 1, "mismatch")
+        .with_label(Span::new(9, 13), "expected because of this");
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("  |    ^^^\n"), "{text}");
+    assert!(text.contains("  |          ---- expected because of this\n"), "{text}");
+}
+
+#[test]
+fn asides_keep_their_kind_and_order() {
+    let src = "x\n";
+    let d = diag!(
+        Code::TypeMismatch, Span::new(0, 1), 1, "bad";
+        note: "why {}", 1;
+        help: "fix {}", 2
+    );
+    let text = d.render(src, "t.thx");
+    assert!(text.ends_with("note: why 1\nhelp: fix 2\n"), "{text}");
+    assert!(!d.root().msg.contains("fix"), "{text}");
+}
+
+#[test]
+fn closest_suggests_only_plausible_typos() {
+    assert_eq!(closest("prinln", ["print", "println", "map"]), Some("println"));
+    assert_eq!(closest("Mytype", ["MyTyp", "Other"]), Some("MyTyp"));
+    assert_eq!(closest("xyz", ["println", "map"]), None);
+    assert_eq!(closest("map", ["map"]), None);
 }
 
 #[test]
@@ -128,5 +182,5 @@ fn caret_counts_characters_not_bytes() {
     let src = "\"héllo\"\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 8), 1, "bad");
     let text = d.render(src, "t.thx");
-    assert!(text.contains("   | ^^^^^^^\n"), "{text}");
+    assert!(text.contains("  | ^^^^^^^\n"), "{text}");
 }

@@ -612,7 +612,7 @@ fn a_misqualified_literal_points_at_the_expression() {
     assert!(text.contains("applied to arguments"), "{text}");
     assert!(text.contains("ascribe"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
-    assert!(text.contains("   |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
+    assert!(text.contains("  |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
 
     // A lowercase head is a value name, not a type.
     let text = err("@mod M\n$ y = (list @int32).Cons.{1}");
@@ -624,7 +624,7 @@ fn a_misqualified_literal_points_at_the_expression() {
     let text = err("@mod M\n$ y = (1 + 2).{3}");
     assert!(text.contains("a struct literal must be qualified"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
-    assert!(text.contains("   |       ^^^^^^^^^\n"), "{text}");
+    assert!(text.contains("  |       ^^^^^^^^^\n"), "{text}");
 }
 
 #[test]
@@ -656,16 +656,16 @@ fn a_stray_annotation_names_where_the_type_goes() {
     assert!(text.contains("[(1 : @int32), 2, 3]"), "{text}");
 
     let text = err("@mod M\n$ y = .Cons.{ 1: @int32 }");
-    assert!(text.contains("ascribed in a group"), "{text}");
+    assert!(text.contains("ascribe a payload field in a group"), "{text}");
 
     let text = err("@mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
     assert!(text.contains("a pattern carries no types"), "{text}");
 
-    // The note is for a stray `:` only; an ordinary unclosed delimiter keeps the
+    // The help is for a stray `:` only; an ordinary unclosed delimiter keeps the
     // plain message.
     let text = err("@mod M\n$ y = [1, 2");
     assert!(text.contains("to close the list"), "{text}");
-    assert!(!text.contains("note:"), "{text}");
+    assert!(!text.contains("help:"), "{text}");
 }
 
 /// The handler of the single global's `do ... ctl` body.
@@ -745,4 +745,21 @@ fn negative_literal_patterns() {
     assert!(matches!(p.ast.pat(*lo), Pattern::Int(-5)));
     assert!(matches!(p.ast.pat(*hi), Pattern::Int(-2)));
     assert!(matches!(first(2), Pattern::Real(x) if *x == -1.5));
+}
+
+#[test]
+fn a_dot_after_a_number_is_an_unfinished_decimal() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.render(src, "t.thx"),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+    let text = err("@mod M\n$ x = 1.1 / 2.\n");
+    assert!(text.contains("unfinished decimal literal `2.`"), "{text}");
+    assert!(text.contains("help: write the fractional part: `2.0`"), "{text}");
+    // `1. 2.2` used to parse as the tuple index `(1).2.2` and fault at run time.
+    let text = err("@mod M\n$ x = f 1. 2.2\n");
+    assert!(text.contains("unfinished decimal literal `1.`"), "{text}");
+    let text = err("@mod M\n$ x = 1 .foo\n");
+    assert!(text.contains("a number has no fields"), "{text}");
+    assert!(parse("@mod M\n$ x = t.0.1\n").is_ok());
 }
