@@ -1,0 +1,92 @@
+$ @mod STDLIB_ASYNC
+
+# \file STDLIB_ASYNC.thx
+# \info Concurrency on one thread with the standard library's `ASYNC`: tasks
+#       spawned into a `run_async` group, interleaved by `yield`, and talking
+#       over bounded channels. A producer and a consumer share a channel of
+#       capacity 2, so the producer is parked whenever it gets two values ahead.
+
+$ with ASYNC
+$ with OPT
+
+# ---- producer / consumer ----
+
+# Send 1..n, then 0 to say it is done.
+$ produce : @int -> @int -> @int -> <Async> {} = \c i n =
+	if i > n => Async.send {c, 0}
+	else (Async.send {c, i}; produce c (i + 1) n)
+
+# Sum what arrives until the 0, then report the sum on `out`.
+$ consume : @int -> @int -> @int -> <Async> {} = \c out acc =
+	let v = Async.recv c in
+	if v == 0 => Async.send {out, acc}
+	else consume c out (acc + v)
+
+$ pipeline : @int -> {} -> <Async> @int = \n u =
+	let c = Async.chan 2 in
+	let out = Async.chan 1 in
+	Async.spawn (\w = produce c 1 n);
+	Async.spawn (\w = consume c out 0);
+	Async.recv out
+
+$ ck_pipeline : @int = if unwrap_or (run_async (pipeline 100)) 0 == 5050 => 0 else 1
+
+# Several producers into one channel: every value arrives exactly once.
+$ fan_in : {} -> <Async> @int = \u =
+	let c = Async.chan 0 in
+	let out = Async.chan 1 in
+	Async.spawn (\w = produce c 1 10);
+	Async.spawn (\w = produce c 11 20);
+	Async.spawn (\w = produce c 21 30);
+	Async.spawn (\w = Async.send {out, collect c 3 0});
+	Async.recv out
+
+# Add up values until `ends` producers have said they are done.
+$ collect : @int -> @int -> @int -> <Async> @int = \c ends acc =
+	if ends == 0 => acc
+	else
+		let v = Async.recv c in
+		if v == 0 => collect c (ends - 1) acc else collect c ends (acc + v)
+
+$ ck_fan_in : @int = if unwrap_or (run_async fan_in) 0 == 465 => 0 else 1
+
+# ---- interleaving ----
+
+# Two tasks log to one channel, yielding after each entry: round-robin puts
+# their entries in alternating order (each digit is a task, then its step).
+$ logger : @int -> @int -> @int -> <Async> {} = \log tag i =
+	if i > 3 => {}
+	else (Async.send {log, tag * 10 + i}; Async.yield {}; logger log tag (i + 1))
+
+$ read_n : @int -> @int -> @int -> <Async> @int = \log n acc =
+	if n == 0 => acc else read_n log (n - 1) (acc * 100 + Async.recv log)
+
+$ interleaved : {} -> <Async> @int = \u =
+	let log = Async.chan 6 in
+	Async.spawn (\w = logger log 1 1);
+	Async.spawn (\w = logger log 2 1);
+	Async.yield {}; Async.yield {}; Async.yield {}; Async.yield {};
+	read_n log 6 0
+
+$ ck_interleaved : @int =
+	if unwrap_or (run_async interleaved) 0 == 112112221323 => 0 else 1
+
+# ---- structure ----
+
+# `main` parks on the channel until the child it spawned has sent.
+$ child_runs : {} -> <Async> @int = \u =
+	let c = Async.chan 1 in
+	Async.spawn (\w = Async.send {c, 7});
+	Async.recv c
+
+$ ck_child : @int = if unwrap_or (run_async child_runs) 0 == 7 => 0 else 1
+
+# Waiting on a channel nobody sends to is a deadlock: `main` never finishes.
+$ stuck : {} -> <Async> @int = \u = let c = Async.chan 1 in Async.recv c
+
+$ ck_deadlock : @int = if is_none (run_async stuck) => 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @int = ck_pipeline + ck_fan_in + ck_interleaved + ck_child + ck_deadlock
+
+$ @e <| assert (test == 0) "STDLIB_ASYNC: a check failed"

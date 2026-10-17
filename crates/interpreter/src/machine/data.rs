@@ -352,7 +352,8 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
-        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" => 1,
+        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" | "@par"
+        | "@spawn" | "@await" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"

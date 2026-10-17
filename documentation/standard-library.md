@@ -68,14 +68,22 @@ there is no Pair type.
 | `LIST` | `length`, `is_empty`, `map`, `filter`, `foldl`, `foldr`, `reverse`, `append`, `concat`, `take`, `drop`, `nth`, `set_nth`, `any`, `all`, `find`, `contains`, `range`, `zip`, `zip_with`, `unzip`, `sum`, `product`, `minimum`, `maximum`, `last`, `init`, `replicate`, `intersperse`, `take_while`, `drop_while`, `span`, `split_at`, `partition`, `filter_map`, `flat_map`, `remove_first`, `find_index`, `lookup`, `sort_by`, `merge_by` |
 | `STR`  | `len`, `at`, `substr`, `eq`, `cmp_str`, `from_byte`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `concat`, `trim`(`_left`/`_right`), `repeat`, `pad_left`, `pad_right`, `replace`, `count`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`/`is_alnum`/`is_upper`/`is_lower`, `from_int`, `to_int` |
 | `MATH` | @int: `min`, `max`, `cmp_int`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow`; Real: `pi`, `euler`, `min`, `max`, `abs`, `clamp`, `sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod` (libm via `C`) |
-| `IO`   | `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`, `read_file`, `write_file`, `append_file`, `remove_file`, `read_dir`, `env`, `now` |
+| `IO`   | `<@console>`: `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`; `<@fs>`: `read_file`, `write_file`, `append_file`, `remove_file`, `read_dir`; `<@env>`: `env`; `<@time>`: `now` |
 | `MAP`  | `Map \`K \`V` (immutable AVL tree); `new`, `new_str`, `new_int`, `from_list`, `cmp_pair`, `insert`, `insert_with`, `get`, `get_or`, `has`, `remove`, `update`, `size`, `is_empty`, `to_list`, `keys`, `values`, `fold`, `map_values`, `filter`, `merge`, `min_entry`, `max_entry` |
 | `RESULT` | `Result` (`Ok`/`Err`), `is_ok`, `is_err`, `unwrap_or`, `map_ok`, `map_err`, `and_then`, `ok_opt`; the `Fail` effect, `try`, `try_or`, `untry`, `expect` |
 | `RANDOM` | `Rng` (Lehmer / MINSTD), `new`, `next`, `next_below`, `next_range` |
 | `SET`  | `Set \`T` (ordered, over MAP); `new`, `new_int`, `new_str`, `from_list`, `add`, `has`, `remove`, `size`, `is_empty`, `to_list`, `fold`, `filter`, `merge`, `inter`, `diff` |
 | `PATH` | POSIX paths, pure Str: `basename`, `dirname`, `extension`, `strip_ext`, `join`, `parts`, `is_abs` |
 | `VEC`  | `Vec \`T` (growable vector, O(1) access); `new`, `fill`, `len`, `is_empty`, `get`, `get_or`, `set`, `push`, `last`, `from_list`, `to_list`, `map`, `fold` |
+| `ASYNC` | concurrency on one thread: the `Async` effect (`spawn`, `yield`, `chan`, `send`, `recv`; channels carry `@int`) and `run_async`, a structured round-robin scheduler returning `Option` of `main`'s result (`None` on deadlock) |
+| `PAR`  | parallel tasks: `Future \`B`, `par` (pure task), `spawn` (task that may perform `@io`), `get`, `both`; over `@vec`: `map`, `formap`, `map_chunks`, `reduce` (see documentation/concurrency-design.md) |
 | `CPX`  | complex math over CORE's `Cpx`: `zero`, `one`, `add`, `mul`, `re`, `im`, `of_real`, `conj`, `abs`, `norm`, `arg`, `is_real`, `is_zero`, `scale`, `recip`, `div_smith`, `polar`, `from_polar`, `exp`, `log`, `sqrt`, `pow`, `powi`, `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `roots_of_unity`, `roots` |
+
+`@io` is a row alias for the resource effects `@console`, `@fs`, `@net`,
+`@env`, `@time`, `@random` and `@ffi`, so each IO function names what it
+touches and a `<@io>` caller (such as `@main`) still admits all of them. The
+`C` namespace annotates each binding the same way; `C.write`, `C.popen` and
+`C.system` stay `<@io>`, since a descriptor or a command can reach anything.
 
 `STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
 `repeat`, `concat`). A name two imports share has no bare meaning, so use the
@@ -178,7 +186,7 @@ CORE's `IAdd Cpx` / `IMul Cpx` / `IZero Cpx` instances are what `LA.dot` and
 
 ## Testing
 
-`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO,SET,PATH,VEC}.thx`
+`examples/STDLIB_{CORE,LIST,STR,MAP,RESULT,RANDOM,IO,SET,PATH,VEC,PAR,ASYNC}.thx`
 exercise the
 library and run in BOTH engines via the combined runner (tests/MAIN.thx):
 `thxdo corpus` (both engines, output diffed). The IO

@@ -1,7 +1,7 @@
 # Thrax Concurrency and Parallelism Design
 
-**Status:** proposal. Nothing here is implemented. Tracked by the GitHub issues
-labelled `multi-threading`.
+**Status:** sections 2.1, 2.2, 2.3 and 2.5 implemented, with the gaps listed
+in section 6; STM (2.4) is a proposal. Tracked by the GitHub issues labelled `multi-threading`.
 **Date:** 2026-10-17.
 **Scope:** how Thrax programs run work concurrently (interleaved) and in
 parallel (on several cores), what the runtime must change to allow it, and how
@@ -37,7 +37,7 @@ with locks everywhere. This design treats them separately.
   `THxMEM_unique` (`rc == 1`) drives in-place reuse, and the ownership pass
   (#230) emits moves and drops, so many values are provably uniquely owned.
 
-### What blocks OS threads today
+### What blocked OS threads (before section 6)
 
 - `rc` is a plain `unsigned`, incremented and decremented without atomics.
 - Machine state is global: `g_kont`, `g_act`, `g_v`, `g_fn`, `g_arg`,
@@ -281,3 +281,109 @@ match its literal name (`crates/frontend/src/typing/data.rs`: `ENTRY_SIG`,
 4. Effect rows as the thread-safety check (section 2.3).
 5. Channels, then STM (section 2.4).
 6. Independently: split `@io` (section 2.5).
+
+---
+
+## 6. Implementation status
+
+### Runtime (#280)
+
+All of it lives in `crates/ccg/src/runtime.c` behind `THRAX_THREADS`. The
+emitter defines it only for a program that names `@par`, `@spawn` or `@await`
+and targets a platform with threads (not wasm), and then links `-lpthread`. A
+sequential program compiles exactly as before, so its timings are unchanged.
+
+- **Per-thread machine state.** The continuation stack, the next-action
+  registers, the temp pool, the dead list and the leak counter are
+  `_Thread_local` with the local-exec model (the general-dynamic model a PIC
+  default picks would call `__tls_get_addr` on every machine step).
+- **Three sharing levels** in a byte of the value header (`shared`, beside the
+  tag): `SH_LOCAL` (plain counts), `SH_SHARED` (atomic counts) and
+  `SH_IMMORTAL` (no counting at all). The closure given to `@par` is marked
+  shared with everything it reaches before it is queued; a task's result is
+  marked before it is published. Every global is marked immortal when the pool
+  starts (and a CAF forced later is immortal at birth): it lives until exit
+  anyway, and counting a hot global closure such as a recursive function from
+  several cores made the cache line bounce. An immortal value is freed by one
+  sweep at exit, so the Show-mode leak check stays exact.
+- **Thunks.** Forcing a shared lazy slot swaps `T_THUNK` for `T_BLACKHOLE`
+  with a compare-and-swap; the winner evaluates, writes the payload, and
+  publishes the new tag with release order. Other threads wait for the tag.
+- **Globals.** A CAF is claimed by compare-and-swap. A thread that finds a CAF
+  claimed by another thread helps with queued tasks until it lands, because the
+  claimant may itself be awaiting one of them. A holding lock deadlocked here.
+- **Leak check.** `g_live` is per thread and signed (a block can be freed by a
+  thread other than the one that allocated it); each worker folds its count
+  into a global at exit.
+- **Pool.** One mutex-guarded deque per thread, `THRAX_THREADS` threads in all
+  (default: online cores), started on the first `@par`. The owner works
+  newest-first, thieves take oldest-first. `@await` runs a task nobody has
+  started yet in place, and otherwise helps with queued work, so a pool whose
+  every thread awaits cannot deadlock.
+- **Continuations do not cross threads.** Marking a captured continuation
+  faults: a resume writes its frames and slot boxes in place.
+
+Measured on a 12-thread machine: a CPU-bound parallel reduction scales about
+5.8x. A parallel-enabled program run with `THRAX_THREADS=1` is about 5 to 19
+percent slower than the same program without `THRAX_THREADS`, depending on the
+workload (the extra branch in every retain and release). The tests compile a
+parallel program with `-fsanitize=thread` at 2, 4 and 8 threads and require a
+clean report.
+
+### Surface (#281, #282)
+
+- Builtins: `@par : ({} -> b) -> @future b` (a pure task),
+  `@spawn : ({} -> <@io> b) -> <@io> @future b`, and
+  `@await : @future b -> b`. `@future` is an opaque base type.
+- `library/PAR.thx`: `Future`, `par`, `spawn`, `get`, `both`, and over
+  `@vec` the parallel `map`, `formap` (pure body: a task has no `Loop` to break
+  out of its siblings), `map_chunks` and `reduce`.
+- The interpreter runs a task where it is spawned and its future is its
+  result. It stays the reference semantics.
+- **The thread-safety check is the task's row (section 2.3).** For now the only
+  thread-safe effect is the builtin `@io`, the one effect no handler on the
+  spawning thread serves. Every handled effect must be discharged inside the
+  task. Cross-thread handlers (declaring a user handler thread-safe) remain open
+  (section 4). A task that performs a handled effect is reported as such, with
+  `help:` to handle it inside the task (`tests/diagnostics/TASK_*.thx`).
+
+### Splitting `@io` (#284)
+
+- `@io` is a builtin row alias: `Types::row_extend("@io")` extends with every
+  resource (`@console`, `@fs`, `@net`, `@env`, `@time`, `@random`, `@ffi`), so
+  no row ever holds `@io` itself and `<@io>` is the same type as the full
+  resource row. A row naming the full set prints as `<@io>`.
+- `ENTRY_SIG` and `BUILD_SIG` compare label sets, so `@main` accepts `<@io>`
+  however it is spelled.
+- An unhandled resource is reported by name, noting it is part of `@io`; a callee
+  whose whole `<@io>` row is unhandled is reported as `@io`.
+- `library/C.thx` annotates each binding with the resource it touches;
+  `library/IO.thx` signatures are narrowed (`print` is `<@console>`,
+  `read_file` is `<@fs>`), binding the generic `write`/`popen` privately for
+  the one use made of each.
+- Not done: user-declared row aliases (`$ Io : @alias = <...>`). `@io` is the
+  only row alias, and it is known to the compiler. `spawn` still admits the
+  whole of `@io`; narrowing it to the thread-safe resources needs a decision
+  on which those are.
+
+### `Async` on one thread (#279)
+
+- `library/ASYNC.thx`: the `Async` effect (`spawn`, `yield`, `chan`, `send`,
+  `recv`) and `run_async : ({} -> <Async> a) -> Option a`. A deep handler turns
+  each task into a `Step` (finished, or stopped at an operation with its
+  continuation), and a pure round-robin loop serves the steps. An operation
+  that can complete at once resumes the same task; `yield` requeues it; a full
+  channel parks its sender and an empty one its receiver (capacity 0 is a
+  rendezvous).
+- Structured: `run_async` returns once no task in the group can run. `None`
+  means `main` never finished, which is a deadlock (every remaining task is
+  parked).
+- Deterministic, so both engines agree (`examples/STDLIB_ASYNC.thx`:
+  producer/consumer, fan-in, interleaving, deadlock).
+- Not done: IO readiness through `poll(2)`. A task's row is `<Async>` only,
+  because an operation's type cannot carry a row variable, so a task cannot
+  perform `@io`; an IO-capable scheduler needs effect declarations that take
+  parameters. For the same reason channels carry `@int`. (An operation type
+  with a free type variable, `recv : @int -> a`, is accepted today and
+  generalized at each use, which is unsound for this purpose.)
+

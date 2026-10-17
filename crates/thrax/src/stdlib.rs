@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 /// Module name to source text, one entry per `library/*.thx`. A new
 /// standard-library module must be added here too; the tests below enforce it.
 pub(crate) const MODULES: &[(&str, &str)] = &[
+    ("ASYNC", include_str!("../../../library/ASYNC.thx")),
     ("C", include_str!("../../../library/C.thx")),
     ("CORE", include_str!("../../../library/CORE.thx")),
     ("CPX", include_str!("../../../library/CPX.thx")),
@@ -20,6 +21,7 @@ pub(crate) const MODULES: &[(&str, &str)] = &[
     ("MAP", include_str!("../../../library/MAP.thx")),
     ("MATH", include_str!("../../../library/MATH.thx")),
     ("OPT", include_str!("../../../library/OPT.thx")),
+    ("PAR", include_str!("../../../library/PAR.thx")),
     ("PATH", include_str!("../../../library/PATH.thx")),
     ("RANDOM", include_str!("../../../library/RANDOM.thx")),
     ("RESULT", include_str!("../../../library/RESULT.thx")),

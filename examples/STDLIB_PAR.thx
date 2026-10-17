@@ -1,0 +1,54 @@
+$ @mod STDLIB_PAR
+
+# \file STDLIB_PAR.thx
+# \info Pure parallelism with the standard library's `PAR`: `par` starts a pure
+#       task and returns its `Future`, `get` joins it, and `PAR.map` /
+#       `PAR.reduce` split a vector over parallel tasks. Natively the tasks run
+#       on a pool of threads; the interpreter runs each one on the spot. A task
+#       is pure, so both give the same answers.
+
+$ with PAR
+$ with VEC
+
+$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+
+$ xs : @vec @int = VEC.map (\i = 6 + (i % 5)) (range 0 99)
+
+# One task, joined.
+$ ck_one : @int = if PAR.get (par (\u = fib 16)) == 987 => 0 else 1
+
+# Two at once.
+$ ck_both : @int =
+	let p = both (\u = fib 15) (\u = "fifteen") in
+	if p.0 == 610 && p.1 == "fifteen" => 0 else 1
+
+# A parallel map equals the sequential one, element for element.
+$ ck_map : @int =
+	let par_v = PAR.map fib xs in
+	let seq_v = VEC.map fib xs in
+	if VEC.len par_v == VEC.len seq_v
+	   && VEC.fold (\a x = a + x) 0 par_v == VEC.fold (\a x = a + x) 0 seq_v
+	   && VEC.get_or par_v 57 0 == fib (6 + (57 % 5))
+	=> 0 else 1
+
+# Fewer chunks than elements, more chunks than elements, and an empty vector.
+$ ck_chunks : @int =
+	let a = VEC.fold (\s x = s + x) 0 (map_chunks 3 fib xs) in
+	let b = VEC.fold (\s x = s + x) 0 (map_chunks 1000 fib xs) in
+	let c = VEC.len (map_chunks 4 fib (VEC.new {})) in
+	if a == b && c == 0 => 0 else 1
+
+# A parallel reduction with an associative combine.
+$ ck_reduce : @int =
+	if PAR.reduce (\a b = a + b) 0 fib xs == VEC.fold (\a x = a + fib x) 0 xs
+	=> 0 else 1
+
+# Tasks that spawn tasks.
+$ ck_nested : @int =
+	let outer = par (\u = PAR.get (par (\w = fib 12)) + PAR.get (par (\w = fib 11))) in
+	if PAR.get outer == fib 13 => 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @int = ck_one + ck_both + ck_map + ck_chunks + ck_reduce + ck_nested
+
+$ @e <| assert (test == 0) "STDLIB_PAR: a check failed"
