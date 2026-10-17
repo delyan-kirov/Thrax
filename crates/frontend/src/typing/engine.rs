@@ -702,37 +702,14 @@ impl Engine {
 
     /// Effect subsumption: require `sub` to be a subrow of `super_`. Every effect
     /// the callee performs (`sub`) must be permitted by the ambient (`super_`).
-    /// A `sub` holding the whole of `@io` that fails on one of its resources is
-    /// reported as `@io`, the effect its signature wrote.
     pub fn subrow(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
-        let r = self.subrow_go(sub, super_, where_);
-        if r.is_err() && self.row_holds_all_io(sub) {
-            let missing_io = r.as_ref().err().is_some_and(|d| d.root().msg.contains("(part of `@io`)"));
-            if missing_io {
-                return Err(self.effect_not_handled(super::data::IO, where_));
-            }
-        }
-        r
-    }
-
-    fn row_holds_all_io(&mut self, row: Type) -> bool {
-        let mut labels: Vec<String> = Vec::new();
-        let mut cur = row;
-        while let TypeNode::RowExtend(label, rest) = self.head(cur) {
-            labels.push(self.types.name(label).to_string());
-            cur = rest;
-        }
-        super::data::IO_RESOURCES.iter().all(|r| labels.iter().any(|l| l == r))
-    }
-
-    fn subrow_go(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
         match self.head(sub) {
             TypeNode::RowEmpty => Ok(()),
             TypeNode::Var(_) => self.unify(sub, super_, where_),
             TypeNode::RowExtend(label, rest) => {
                 let label = self.types.name(label).to_string();
                 let super_rest = self.rewrite_row(super_, &label, where_)?;
-                self.subrow_go(rest, super_rest, where_)
+                self.subrow(rest, super_rest, where_)
             }
             _ => self.unify(sub, super_, where_),
         }
@@ -743,11 +720,7 @@ impl Engine {
             Code::TypeMismatch,
             Span::at(0),
             0,
-            if super::data::is_io_resource(label) {
-                format!("effect `{label}` (part of `@io`) is performed but not handled {where_}")
-            } else {
-                format!("effect `{label}` is performed but not handled {where_}")
-            },
+            format!("effect `{label}` is performed but not handled {where_}"),
         )
     }
 

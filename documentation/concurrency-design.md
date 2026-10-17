@@ -209,30 +209,47 @@ case `e = <>`.
 STM is not the foundation: it solves contention on shared mutable state, which
 Thrax does not have until it adds mutable cells.
 
-### 2.5 Splitting `@io`
+### 2.5 `@io` stays one effect
 
-Today `@io` is one builtin label, and the entry and build signature checks
-match its literal name (`crates/frontend/src/typing/data.rs`: `ENTRY_SIG`,
-`BUILD_SIG`).
+`@io` is the one builtin effect: the outside world, handled by the runtime
+around `@main` and around each `@spawn` task. The entry and build signature
+checks match its literal name (`crates/frontend/src/typing/data.rs`:
+`ENTRY_SIG`, `BUILD_SIG`). A split by resource (`@console`, `@fs`, `@net`,
+`@env`, `@time`, `@random`, `@ffi`, with `@io` as a row alias for all of them)
+was implemented under #284 and reverted under #297:
 
-- **Split by resource first**: `@console`, `@fs`, `@net`, `@env`, `@time`,
-  `@random` (nondeterminism), `@ffi`. Keep `@io` as a row alias for all of
-  them, so existing signatures keep working. A read/write axis per resource
-  can be added later if a use appears.
-- A global read versus global write split is the weaker option. Thrax memory is
-  already immutable, so race freedom never involves the outside world. Two
-  readers of the world still see changing answers (files change, clocks move),
-  and two writers to stdout interleave rather than corrupt memory. Koka's
-  read/write split is about its mutable reference heap, not about the world.
-- What the resource split buys: signatures say what they touch, and section 2.3
-  can be applied at finer grain (`@time` thread-safe, a user `Console`
-  handler thread-local).
-- **Not a prerequisite** for any other part of this design: section 2.3 can
-  treat `@io` as one thread-safe effect at first.
-- Requirements: row aliases (`$ Io : @alias = <@console, @fs, ...>`), the
-  entry and build checks comparing expanded rows instead of a literal label,
-  and an effect annotation on each `@extern` in `core/C.thx` (today every
-  extern performs `@io`).
+- The resources were arbitrary. They followed libc's grouping, and nothing in
+  the compiler or runtime treated one differently from another, so they were
+  unchecked documentation.
+- They were only as accurate as the bindings, which work at the level of C:
+  `C.fputs` to stdout counted as `@fs`, while `C.write` and `C.popen` had to
+  stay `<@io>`.
+- Only the runtime author can add a builtin label, so the set could never
+  cover a GPU, audio or sockets.
+
+The extensible route is an ordinary effect whose handler discharges into
+`@io`:
+
+```thrax
+$ Gpu : @effect = draw : Mesh -> {}, present : {} -> {}
+
+$ run_gpu : ({} -> <Gpu | e> a) -> <@io | e> a = \body =
+	do body {}
+	ctl k
+	| Gpu.draw m => (raylib_draw m; k {})
+	| Gpu.present u => (raylib_present {}; k {})
+	| r => r
+```
+
+It is precise (`<Gpu>` code can only draw), handleable (a test swaps the
+handler), and needs no special rule for `@main`. Aliases of `@io` such as
+`$ Console : @alias = <@io>` are rejected for the library: an alias is
+transparent, so `<Console>` would check nothing while reading as a
+restriction.
+
+A builtin label comes back only when the compiler or runtime consumes it, for
+example `@build` rejecting nondeterminism, or `@spawn` rejecting thread-unsafe
+C state such as `rand`.
 
 ---
 
@@ -347,24 +364,13 @@ clean report.
   (section 4). A task that performs a handled effect is reported as such, with
   `help:` to handle it inside the task (`tests/diagnostics/TASK_*.thx`).
 
-### Splitting `@io` (#284)
+### `@io` stays one effect (#297)
 
-- `@io` is a builtin row alias: `Types::row_extend("@io")` extends with every
-  resource (`@console`, `@fs`, `@net`, `@env`, `@time`, `@random`, `@ffi`), so
-  no row ever holds `@io` itself and `<@io>` is the same type as the full
-  resource row. A row naming the full set prints as `<@io>`.
-- `ENTRY_SIG` and `BUILD_SIG` compare label sets, so `@main` accepts `<@io>`
-  however it is spelled.
-- An unhandled resource is reported by name, noting it is part of `@io`; a callee
-  whose whole `<@io>` row is unhandled is reported as `@io`.
-- `library/C.thx` annotates each binding with the resource it touches;
-  `library/IO.thx` signatures are narrowed (`print` is `<@console>`,
-  `read_file` is `<@fs>`), binding the generic `write`/`popen` privately for
-  the one use made of each.
-- Not done: user-declared row aliases (`$ Io : @alias = <...>`). `@io` is the
-  only row alias, and it is known to the compiler. `spawn` still admits the
-  whole of `@io`; narrowing it to the thread-safe resources needs a decision
-  on which those are.
+- The resource split of #284 is reverted (section 2.5). `@io` is a plain
+  builtin label again, every `library/C.thx` and `library/IO.thx` binding is
+  `<@io>`, and the entry and build checks compare label sets over `@io` itself.
+- A `par` task that performs `@io` is reported as "a pure parallel task
+  performs effect `@io`", with `help:` to start it with `spawn`.
 
 ### `Async` on one thread (#279)
 

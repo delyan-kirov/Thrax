@@ -1,7 +1,0 @@
-$ @mod RESOURCE_EFFECT
-
-# `@io` is a row of resources. A signature that names only the terminal cannot
-# touch the file system.
-$ with IO
-$ greet : @str -> <@console> {} = \s = println s
-$ save : @str -> <@console> @bool = \s = write_file "out.txt" s  #~ error[TYPE_MISMATCH]: effect `@fs` (part of `@io`) is performed but not handled
