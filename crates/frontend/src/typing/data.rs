@@ -169,7 +169,13 @@ impl Types {
         self.add(TypeNode::Arrow(from, to, eff))
     }
 
+    /// Extend a row with an effect label. [`IO`] is a row alias, so it extends
+    /// with every one of [`IO_RESOURCES`] instead: no row ever holds `@io`
+    /// itself, and `<@io>` and the full resource row are one type.
     pub fn row_extend(&self, label: &str, rest: Type) -> Type {
+        if label == IO {
+            return IO_RESOURCES.iter().rev().fold(rest, |row, r| self.row_extend(r, row));
+        }
         let l = self.intern(label);
         self.add(TypeNode::RowExtend(l, rest))
     }
@@ -362,19 +368,26 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
 
 /// Flatten a row into its concrete labels and its tail variable (if the row is
 /// open). An empty or bare-variable row yields no labels.
+/// A row holding every [`IO_RESOURCES`] effect shows them as the one `@io`.
 fn row_parts(types: &Types, row: Type) -> (Vec<String>, Option<VarId>) {
     let mut labels = Vec::new();
     let mut cur = row;
-    loop {
+    let tail = loop {
         match types.node(cur) {
             TypeNode::RowExtend(label, rest) => {
                 labels.push(types.name(label).to_string());
                 cur = rest;
             }
-            TypeNode::Var(id) => return (labels, Some(id)),
-            _ => return (labels, None), // RowEmpty or a malformed tail
+            TypeNode::Var(id) => break Some(id),
+            _ => break None, // RowEmpty or a malformed tail
         }
+    };
+    if IO_RESOURCES.iter().all(|r| labels.iter().any(|l| l == r)) {
+        let at = labels.iter().position(|l| is_io_resource(l)).unwrap_or(0);
+        labels.retain(|l| !is_io_resource(l));
+        labels.insert(at.min(labels.len()), IO.to_string());
     }
+    (labels, tail)
 }
 
 /// Peel a literal (already-zonked) sized-tensor spine `@tensor variance size elem`
@@ -397,6 +410,50 @@ fn tensor_spine_raw(types: &Types, ty: Type) -> Option<(Type, Type, Type)> {
 pub fn dump(types: &Types, ty: Type) -> String {
     let mut namer = |id: VarId| format!("?{id}");
     display(types, ty, &mut namer)
+}
+
+/// The builtin effect of the outside world, as a row alias: `<@io>` is the row
+/// of every [`IO_RESOURCES`] effect. A signature names what it touches
+/// (`print` is `<@console>`) and `<@io>` still admits all of it.
+pub const IO: &str = "@io";
+
+/// The builtin effects `@io` stands for, one per resource: the terminal, the
+/// file system, the network, the process environment, the clock, randomness
+/// (nondeterminism), and foreign code with effects no other label names
+/// (process control, raw memory, a C library of the program's own).
+pub const IO_RESOURCES: &[&str] =
+    &["@console", "@fs", "@net", "@env", "@time", "@random", "@ffi"];
+
+/// Whether `label` is one of the effects `@io` stands for.
+pub fn is_io_resource(label: &str) -> bool {
+    IO_RESOURCES.contains(&label)
+}
+
+/// The labels of a closed row as a sorted set, or `None` for an open row.
+fn closed_row_labels(types: &Types, row: Type) -> Option<Vec<String>> {
+    let mut labels: Vec<String> = Vec::new();
+    let mut cur = row;
+    loop {
+        match types.node(cur) {
+            TypeNode::RowExtend(label, rest) => {
+                labels.push(types.name(label).to_string());
+                cur = rest;
+            }
+            TypeNode::RowEmpty => break,
+            _ => return None,
+        }
+    }
+    labels.sort_unstable();
+    labels.dedup();
+    Some(labels)
+}
+
+/// The sorted label set of `<@io>` plus `extra`.
+fn io_row_labels(extra: &[&str]) -> Vec<String> {
+    let mut want: Vec<String> =
+        IO_RESOURCES.iter().chain(extra).map(|s| s.to_string()).collect();
+    want.sort_unstable();
+    want
 }
 
 /// The one name the compiler knows a program by: `$ @main`, a C-style entry that
@@ -424,12 +481,7 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
         _ => false,
     };
     let code = is_con(to, INT);
-    let io = match types.node(eff) {
-        TypeNode::RowExtend(label, rest) => {
-            types.name(label) == "@io" && matches!(types.node(rest), TypeNode::RowEmpty)
-        }
-        _ => false,
-    };
+    let io = closed_row_labels(types, eff) == Some(io_row_labels(&[]));
     argv && code && io
 }
 
@@ -453,21 +505,8 @@ pub fn is_build_type(types: &Types, ty: Type) -> bool {
     let is_con = |t: Type, want: &str| {
         matches!(types.node(t), TypeNode::Con(n) if types.name(n) == want)
     };
-    // The row is order-insensitive, so collect its labels rather than matching a
-    // fixed spelling: `<@meta, @io>` and `<@io, @meta>` are the same row.
-    let mut labels: Vec<String> = Vec::new();
-    let mut row = eff;
-    loop {
-        match types.node(row) {
-            TypeNode::RowExtend(label, rest) => {
-                labels.push(types.name(label));
-                row = rest;
-            }
-            TypeNode::RowEmpty => break,
-            _ => return false,
-        }
-    }
-    labels.sort_unstable();
-    labels.dedup();
-    is_con(from, UNIT) && is_con(to, "@code") && labels == ["@io", "@meta"]
+    // The row is order-insensitive, so compare label sets rather than a fixed
+    // spelling: `<@meta, @io>` and `<@io, @meta>` are the same row.
+    let io_meta = closed_row_labels(types, eff) == Some(io_row_labels(&["@meta"]));
+    is_con(from, UNIT) && is_con(to, "@code") && io_meta
 }

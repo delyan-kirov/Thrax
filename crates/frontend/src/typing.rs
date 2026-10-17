@@ -4072,10 +4072,52 @@ impl<'a> Checker<'a> {
             // into the ambient here.
             let amb = self.ambient;
             self.eng.subrow(eff, amb, "in a function application")?;
-            self.check(*a, param)?;
+            if let Err(d) = self.check(*a, param) {
+                return Err(self.explain_task_effect(d, result));
+            }
             tf = result;
         }
         Ok(tf)
+    }
+
+    /// An argument whose effect is not handled, where the call returns a
+    /// `@future`, is a parallel task performing an effect that cannot cross to
+    /// the worker thread: say so, rather than the bare row mismatch.
+    fn explain_task_effect(&mut self, d: Diagnostic, result: Type) -> Diagnostic {
+        let msg = &d.root().msg;
+        let Some(label) = msg
+            .strip_prefix("effect `")
+            .and_then(|m| m.split_once('`'))
+            .filter(|(_, rest)| rest.contains("is performed but not handled"))
+            .map(|(l, _)| l.to_string())
+        else {
+            return d;
+        };
+        let is_future = match self.eng.head(result) {
+            TypeNode::App(head, _) => {
+                matches!(self.eng.head(head), TypeNode::Con(c) if self.eng.types.name(c) == "@future")
+            }
+            _ => false,
+        };
+        if !is_future {
+            return d;
+        }
+        let io = ty::is_io_resource(&label);
+        let what = if io {
+            format!("a pure parallel task performs effect `{label}`")
+        } else {
+            format!("a parallel task performs effect `{label}`, which cannot cross to another thread")
+        };
+        d.retitle(what)
+        .with_note(
+            "a task runs on a worker thread, away from the handlers of the thread that \
+             spawned it; `par` takes a pure task, and `spawn` also allows `@io`",
+        )
+        .with_help(if io {
+            "start it with `spawn`, which allows `@io`".to_string()
+        } else {
+            format!("handle `{label}` inside the task, around the code that performs it")
+        })
     }
 
     /// The requirement type, single field name, and field type of blessed interface
@@ -5550,7 +5592,9 @@ impl<'a> Checker<'a> {
                 let (from, to) = (*from, *to);
                 // The row's tail (a shared row variable) or the empty closed row,
                 // then each written label extended onto it. An unannotated arrow is
-                // pure. Labels are validated as declared effects elsewhere.
+                // pure. Labels are validated as declared effects elsewhere. `@io`
+                // stands for its resources, so `<@io, @console>` names `@console`
+                // once.
                 let eff = match effect {
                     Some(row) => {
                         let mut e = match row.tail {
@@ -5560,8 +5604,19 @@ impl<'a> Checker<'a> {
                             }
                             None => self.eng.types.row_empty(),
                         };
+                        let mut seen: Vec<&str> = Vec::new();
                         for &label in self.ast.slice(row.names).iter() {
-                            e = self.eng.types.row_extend(self.text(label), e);
+                            let label = self.text(label);
+                            let parts: &[&str] =
+                                if label == ty::IO { ty::IO_RESOURCES } else { &[label] };
+                            for &p in parts {
+                                if !seen.contains(&p) {
+                                    seen.push(p);
+                                }
+                            }
+                        }
+                        for &p in seen.iter().rev() {
+                            e = self.eng.types.row_extend(p, e);
                         }
                         e
                     }
@@ -5694,6 +5749,33 @@ impl<'a> Checker<'a> {
             "@vec_slice",
             self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(int, vt))),
         );
+
+        // Parallel tasks. `@par f` starts `f {}` as a task and `@await` joins it.
+        // The task's row is the thread-safety check: an effect may cross to the
+        // worker thread only if no handler on the spawning thread's stack serves
+        // it. `@par` takes a PURE task (the empty row), which gives the same
+        // answer on any core in any order, so the interpreter may run it on the
+        // spot. `@spawn` also admits `@io`, the builtin effect that has no handler
+        // (the C library serves it on whichever thread calls); its own arrow
+        // carries `<@io>`, since the task's IO is the spawner's. A task that
+        // performs a handled effect is rejected (see `explain_task_effect`).
+        // `@future` is opaque.
+        let future_con = self.eng.types.con("@future");
+        let b = self.eng.fresh_generic();
+        let task = self.eng.types.arrow(self.eng.types.con(ty::UNIT), b);
+        let fut = self.eng.types.app(future_con, b);
+        self.bind("@par", self.eng.types.arrow(task, fut));
+        let io_row = {
+            let empty = self.eng.types.row_empty();
+            self.eng.types.row_extend(ty::IO, empty)
+        };
+        let b = self.eng.fresh_generic();
+        let task = self.eng.types.arrow_eff(self.eng.types.con(ty::UNIT), b, io_row);
+        let fut = self.eng.types.app(future_con, b);
+        self.bind("@spawn", self.eng.types.arrow_eff(task, fut, io_row));
+        let b = self.eng.fresh_generic();
+        let fut = self.eng.types.app(future_con, b);
+        self.bind("@await", self.eng.types.arrow(fut, b));
 
         // Metaprogramming primitives (compile-time; usable inside `$ @e`). `@lex`
         // tokenizes a string into an opaque `@token` vector; a lex error traps
@@ -6469,7 +6551,7 @@ fn is_base_type(name: &str) -> bool {
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
             | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
-            | "@token" | "@code"
+            | "@token" | "@code" | "@future"
     )
 }
 

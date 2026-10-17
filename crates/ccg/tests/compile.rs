@@ -1162,3 +1162,133 @@ fn sized_integers_wrap_into_their_range() {
         assert_eq!(interp_show(src, entry), want, "{entry}");
     }
 }
+
+// -- parallel tasks (#280, #281) ------------------------------------------
+
+/// Tasks over global data (immortal), over local data (marked shared), nested
+/// tasks, a structured result, and a lazy list several tasks force at once.
+const PAR_SRC: &str = "$ @mod M\n\
+    $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+    $ build : @int -> @int -> @vec @int -> @vec @int = \\i n acc =\n\
+    \tif i >= n => acc else build (i + 1) n (@vec_push acc (fib (i % 15)))\n\
+    $ table : @vec @int = build 0 200 (@vec_new {})\n\
+    $ sum_from : @vec @int -> @int -> @int -> @int -> @int = \\v i hi acc =\n\
+    \tif i >= hi => acc else sum_from v (i + 1) hi (acc + @vec_get v i)\n\
+    $ chunk : @int -> @future @int = \\k = @par (\\u = sum_from table (k * 20) (k * 20 + 20) 0)\n\
+    $ spawn_all : @int -> @vec (@future @int) -> @vec (@future @int) = \\k acc =\n\
+    \tif k >= 10 => acc else spawn_all (k + 1) (@vec_push acc (chunk k))\n\
+    $ join : @vec (@future @int) -> @int -> @int -> @int = \\fs i acc =\n\
+    \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
+    $ nested : @int = @await (@par (\\u = @await (@par (\\w = fib 18)) + @await (@par (\\w = fib 17))))\n\
+    $ local_par : @int -> @int = \\n =\n\
+    \tlet v = build 0 n (@vec_new {}) in\n\
+    \tlet a = @par (\\u = sum_from v 0 (n / 2) 0) in\n\
+    \tlet b = @par (\\u = sum_from v (n / 2) n 0) in\n\
+    \t@await a + @await b\n\
+    $ L : @union a = N: {}, C: {a, L a},\n\
+    $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+    $ lsum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => lsum t (acc + h) | _ => acc\n\
+    $ shared_list : @int -> @int = \\n =\n\
+    \tlet l = mk n in\n\
+    \tlet a = @par (\\u = lsum l 0) in\n\
+    \tlet b = @par (\\u = lsum l 1) in\n\
+    \t@await a + @await b + lsum l 0\n\
+    $ pair : {@int, @str} = @await (@par (\\u = {fib 10, \"ten\"}))\n\
+    $ test : {@int, @int, @int, @int, {@int, @str}} =\n\
+    \t{join (spawn_all 0 (@vec_new {})) 0 0, nested, local_par 300, shared_list 400, pair}\n";
+
+#[test]
+fn parallel_tasks_match_interpreter() {
+    // The interpreter runs each task on the spot; the native pool runs them on
+    // worker threads. Pure tasks give the same answer either way, and `c_run`
+    // fails on the leak check (exit 97) if a shared value is miscounted.
+    assert_matches(PAR_SRC, "test");
+}
+
+#[test]
+fn parallel_tasks_are_clean_under_thread_sanitizer() {
+    let lowered = lower(PAR_SRC);
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
+    assert!(code.contains("#define THRAX_THREADS 1"));
+    let mut c_path = std::env::temp_dir();
+    c_path.push(format!("ccg_{}_tsan.c", std::process::id()));
+    let bin_path: PathBuf = c_path.with_extension("bin");
+    std::fs::write(&c_path, &code).expect("write C");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let status = Command::new(&cc)
+        .args(["-w", "-O1", "-g", "-fsanitize=thread", "-pthread", "-o"])
+        .arg(&bin_path)
+        .arg(&c_path)
+        .arg("-lm")
+        .status()
+        .expect("run C compiler");
+    assert!(status.success(), "C compile with -fsanitize=thread failed");
+    for threads in ["2", "4", "8"] {
+        let out = Command::new(&bin_path)
+            .env("THRAX_THREADS", threads)
+            .env("TSAN_OPTIONS", "halt_on_error=1")
+            .output()
+            .expect("run compiled program");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && !stderr.contains("ThreadSanitizer"),
+            "THRAX_THREADS={threads}: {stderr}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            format!("test = {}", interp_show(PAR_SRC, "test"))
+        );
+    }
+    let _ = std::fs::remove_file(&c_path);
+    let _ = std::fs::remove_file(&bin_path);
+}
+
+#[test]
+fn a_sequential_program_gets_the_single_threaded_runtime() {
+    let lowered = lower("$ @mod M\n$ test : @int = 1 + 2\n");
+    let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
+    assert!(!code.contains("#define THRAX_THREADS"));
+}
+
+#[test]
+fn an_unawaited_task_is_dropped_cleanly() {
+    // The future dies unawaited: whichever thread finishes with the task last
+    // frees it, and the leak check still balances.
+    let src = "$ @mod M\n\
+               $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ spin : @int -> @int -> @int = \\k acc =\n\
+               \tif k == 0 => acc else let f = @par (\\u = fib 15) in spin (k - 1) (acc + 1)\n\
+               $ test : @int = spin 50 0";
+    assert_matches(src, "test");
+}
+
+#[test]
+fn spawned_tasks_perform_io_on_worker_threads() {
+    // `@spawn` admits `@io`: each task prints from whichever thread runs it. The
+    // lines come out in any order, so they are compared as a set.
+    let src = "$ @mod MAIN\n\
+               $ puts : @str -> @int32 = @extern \"C\" \"puts\" \"libc\"\n\
+               $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ work : @int -> {} -> <@io> @int = \\k u =\n\
+               \tlet r = fib (15 + k % 3) in puts (\"task \" ++ to_string k); r\n\
+               $ spawn_n : @int -> @vec (@future @int) -> <@io> @vec (@future @int) = \\k acc =\n\
+               \tif k == 0 => acc else spawn_n (k - 1) (@vec_push acc (@spawn (work k)))\n\
+               $ join : @vec (@future @int) -> @int -> @int -> @int = \\fs i acc =\n\
+               \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
+               $ @main : @vec @str -> <@io> @int = \\args = join (spawn_n 8 (@vec_new {})) 0 0 % 251\n";
+    let (exit, stdout) = c_run_entry(src, &[]);
+    let fib = |n: i64| -> i64 {
+        let (mut a, mut b) = (0i64, 1i64);
+        for _ in 0..n {
+            (a, b) = (b, a + b);
+        }
+        a
+    };
+    let expected: i64 = (1..=8).map(|k| fib(15 + k % 3)).sum();
+    assert_eq!(exit as i64, expected % 251);
+    let mut lines: Vec<&str> = stdout.lines().collect();
+    lines.sort_unstable();
+    let mut want: Vec<String> = (1..=8).map(|k| format!("task {k}")).collect();
+    want.sort_unstable();
+    assert_eq!(lines, want);
+}

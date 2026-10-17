@@ -1,0 +1,165 @@
+$ @mod ASYNC
+
+# \file ASYNC.thx
+# \info Concurrency on one thread: the `Async` effect and a structured,
+#       round-robin scheduler written over stored continuations. A task
+#       `spawn`s siblings, `yield`s its turn, and talks to other tasks over
+#       bounded channels (`chan` makes one, `send` and `recv` use it; a full
+#       channel parks its sender, an empty one its receiver). `run_async main`
+#       is a task group: it returns once no task in it can run, with `main`'s
+#       result, or `None` when `main` never finished (every remaining task is
+#       blocked: a deadlock). Scheduling is deterministic, so both engines run
+#       it identically.
+#
+#       Channels carry `@int` for now: an effect takes no type parameters, so
+#       an operation cannot be generic over the message type.
+
+$ with OPT
+
+$ Async : @effect =
+	spawn : ({} -> <Async> {}) -> {},
+	yield : {} -> {},
+	chan : @int -> @int,
+	send : {@int, @int} -> {},
+	recv : @int -> @int,
+
+# Run `main` and every task it spawns to completion (see the module notes).
+$ run_async : ({} -> <Async> a) -> Option a = \main =
+	schedule (Sched.{
+		.ready = q_push (q_empty {}) (\u = step_main main),
+		.chans = @vec_new {},
+		.result = Option.None,
+	})
+
+# ---- internals ----
+
+$ @private
+
+# What a task did when it stopped: finished (with `main`'s result, if it is
+# `main`), or performed an operation, which the scheduler serves with the
+# continuation `k` it hands over.
+$ Step : @union a =
+	Done: Option a,
+	Yielded: ({} -> Step a),
+	Spawned: {{} -> <Async> {}, {} -> Step a},
+	Made: {@int, @int -> Step a},
+	Sent: {@int, @int, {} -> Step a},
+	Wants: {@int, @int -> Step a},
+
+$ step_main : ({} -> <Async> a) -> Step a = \t =
+	do t {}
+	ctl k
+	| Async.spawn c => Step.Spawned.{ c, k }
+	| Async.yield u => Step.Yielded.{ k }
+	| Async.chan n => Step.Made.{ n, k }
+	| Async.send m => Step.Sent.{ m.0, m.1, k }
+	| Async.recv c => Step.Wants.{ c, k }
+	| r => Step.Done.{ Option.Some.{ r } }
+
+$ step_child : ({} -> <Async> {}) -> Step a = \t =
+	do t {}
+	ctl k
+	| Async.spawn c => Step.Spawned.{ c, k }
+	| Async.yield u => Step.Yielded.{ k }
+	| Async.chan n => Step.Made.{ n, k }
+	| Async.send m => Step.Sent.{ m.0, m.1, k }
+	| Async.recv c => Step.Wants.{ c, k }
+	| _ => Step.Done.{ Option.None }
+
+# A FIFO queue: pushed onto `back`, popped from `front`, `back` reversed into
+# `front` when it runs dry.
+$ Queue : @struct t =
+	front: List t,
+	back: List t,
+
+$ q_empty : {} -> Queue t = \u = Queue.{ .front = List.Nil, .back = List.Nil }
+
+$ q_push : Queue t -> t -> Queue t = \q x = Queue.{ .back = List.Cons.{ x, q.back } | q }
+
+$ q_pop : Queue t -> Option {t, Queue t} = \q =
+	is q.front
+	| List.Cons.{ x, rest } => Option.Some.{ {x, Queue.{ .front = rest, .back = q.back }} }
+	| _ =>
+		is rev_onto q.back List.Nil
+		| List.Cons.{ x, rest } => Option.Some.{ {x, Queue.{ .front = rest, .back = List.Nil }} }
+		| _ => Option.None
+
+$ rev_onto : List t -> List t -> List t = \l acc =
+	is l | List.Cons.{ h, t } => rev_onto t (List.Cons.{ h, acc }) | _ => acc
+
+# A channel: its buffered values (at most `cap`), and the tasks parked on it.
+$ Channel : @struct a =
+	cap: @int,
+	size: @int,
+	buf: Queue @int,
+	senders: Queue {@int, {} -> Step a},
+	receivers: Queue (@int -> Step a),
+
+$ Sched : @struct a =
+	ready: Queue ({} -> Step a),
+	chans: @vec (Channel a),
+	result: Option a,
+
+# Run the next ready task; with none left, the group is over.
+$ schedule : Sched a -> Option a = \s =
+	is q_pop s.ready
+	| Option.Some.{ p } => serve (p.0 {}) Sched.{ .ready = p.1 | s }
+	| _ => s.result
+
+# Serve what a task stopped for. An operation that can complete at once resumes
+# the same task right away; one that cannot parks it on its channel.
+$ serve : Step a -> Sched a -> Option a = \st s =
+	is st
+	| Step.Done.{ r } =>
+		schedule (is r | Option.Some.{ _ } => Sched.{ .result = r | s } | _ => s)
+	| Step.Yielded.{ k } => schedule Sched.{ .ready = q_push s.ready k | s }
+	| Step.Spawned.{ c, k } =>
+		serve (k {}) Sched.{ .ready = q_push s.ready (\u = step_child c) | s }
+	| Step.Made.{ cap, k } =>
+		let id = @vec_len s.chans in
+		let ch = Channel.{
+			.cap = if cap < 0 => 0 else cap,
+			.size = 0,
+			.buf = q_empty {},
+			.senders = q_empty {},
+			.receivers = q_empty {},
+		} in
+		serve (k id) Sched.{ .chans = @vec_push s.chans ch | s }
+	| Step.Sent.{ c, v, k } => send_to c v k s
+	| Step.Wants.{ c, k } => recv_from c k s
+
+$ set_chan : Sched a -> @int -> Channel a -> Sched a = \s c ch =
+	Sched.{ .chans = @vec_set s.chans c ch | s }
+
+# A waiting receiver takes the value directly; otherwise it is buffered if
+# there is room, and the sender parks if there is not.
+$ send_to : @int -> @int -> ({} -> Step a) -> Sched a -> Option a = \c v k s =
+	let ch = @vec_get s.chans c in
+	is q_pop ch.receivers
+	| Option.Some.{ p } =>
+		let s2 = set_chan s c Channel.{ .receivers = p.1 | ch } in
+		serve (k {}) Sched.{ .ready = q_push s2.ready (\u = p.0 v) | s2 }
+	| _ =>
+		if ch.size < ch.cap =>
+			serve (k {}) (set_chan s c Channel.{ .buf = q_push ch.buf v, .size = ch.size + 1 | ch })
+		else schedule (set_chan s c Channel.{ .senders = q_push ch.senders {v, k} | ch })
+
+# A buffered value is taken first (and a parked sender's value moves into the
+# freed slot); with an empty buffer a parked sender hands over directly (the
+# zero-capacity rendezvous); otherwise the receiver parks.
+$ recv_from : @int -> (@int -> Step a) -> Sched a -> Option a = \c k s =
+	let ch = @vec_get s.chans c in
+	is q_pop ch.buf
+	| Option.Some.{ b } =>
+		(is q_pop ch.senders
+		| Option.Some.{ p } =>
+			let ch2 = Channel.{ .buf = q_push b.1 p.0.0, .senders = p.1 | ch } in
+			let s2 = set_chan s c ch2 in
+			serve (k b.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
+		| _ => serve (k b.0) (set_chan s c Channel.{ .buf = b.1, .size = ch.size - 1 | ch }))
+	| _ =>
+		is q_pop ch.senders
+		| Option.Some.{ p } =>
+			let s2 = set_chan s c Channel.{ .senders = p.1 | ch } in
+			serve (k p.0.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
+		| _ => schedule (set_chan s c Channel.{ .receivers = q_push ch.receivers k | ch })

@@ -285,6 +285,13 @@ impl Diagnostic {
         self
     }
 
+    /// Replace the root cause's message, keeping its code, location, labels and
+    /// asides: for a caller that knows better what an inner error means.
+    pub fn retitle(mut self, msg: impl Into<String>) -> Diagnostic {
+        self.frames[0].msg = msg.into();
+        self
+    }
+
     /// Add an outer context frame (builder style, for use on the error path of
     /// `map_err`). Mirrors the C++ `CTX` macro.
     pub fn context(

@@ -71,12 +71,20 @@ pub struct Emitter<'p> {
     /// Whether an emitted block names a [`COMPILER_BUILTINS`] entry, so the
     /// program must link `libthrax`.
     uses_compiler: std::cell::Cell<bool>,
+    /// Whether an emitted block names a [`PARALLEL_BUILTINS`] entry, so the
+    /// runtime must be built thread-ready.
+    uses_threads: std::cell::Cell<bool>,
 }
 
 /// The builtins a native program runs by calling into the compiler library
 /// (`libthrax`, see `crates/thrax/include/thrax.h`).
 pub const COMPILER_BUILTINS: &[&str] =
     &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
+
+/// The builtins that start or join parallel tasks. A program naming one gets the
+/// thread-ready runtime (`THRAX_THREADS`); every other program keeps plain,
+/// non-atomic counts.
+pub const PARALLEL_BUILTINS: &[&str] = &["@par", "@spawn", "@await"];
 
 /// The dedup key for an extern site.
 fn extern_key(
@@ -783,7 +791,8 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
 fn builtin_arity(name: &str) -> Option<usize> {
     let n = match name {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" => 1,
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" | "@par"
+        | "@spawn" | "@await" => 1,
         _ if COMPILER_BUILTINS.contains(&name) => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
@@ -844,17 +853,24 @@ impl<'p> Emitter<'p> {
             reachable,
             tmp: 0,
             uses_compiler: std::cell::Cell::new(false),
+            uses_threads: std::cell::Cell::new(false),
         }
     }
 
     /// Emit every code, then return the finished block function texts, the code
     /// index -> entry block map, the foreign-function table, and whether the
-    /// program uses a [`COMPILER_BUILTINS`] entry.
-    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>, bool) {
+    /// program uses a [`COMPILER_BUILTINS`] entry and a [`PARALLEL_BUILTINS`] one.
+    pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>, bool, bool) {
         for id in 0..self.prog.codes.len() {
             self.emit_code(id);
         }
-        (self.blocks, self.code_entry, self.externs, self.uses_compiler.get())
+        (
+            self.blocks,
+            self.code_entry,
+            self.externs,
+            self.uses_compiler.get(),
+            self.uses_threads.get(),
+        )
     }
 
     fn fresh(&mut self, p: &str) -> String {
@@ -888,6 +904,9 @@ impl<'p> Emitter<'p> {
         if let Some(arity) = builtin_arity(name) {
             if COMPILER_BUILTINS.contains(&name) {
                 self.uses_compiler.set(true);
+            }
+            if PARALLEL_BUILTINS.contains(&name) {
+                self.uses_threads.set(true);
             }
             return format!("THxRT_builtin({}, {arity})", cstr(name.as_bytes()));
         }

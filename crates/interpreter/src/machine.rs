@@ -792,6 +792,12 @@ impl<'p> Machine<'p> {
                         self.force_deep(&args[0])?;
                         self.force_deep(&args[1])?;
                         mk(run_builtin(&name, &args)?)
+                    } else if &*name == "@par" || &*name == "@spawn" {
+                        // The reference semantics of a parallel task: run it now.
+                        // Its future is its result, which `@await` hands back.
+                        self.apply(args[0].clone(), mk(Value::Unit))?
+                    } else if &*name == "@await" {
+                        args[0].clone()
                     } else if &*name == "@tensor_create" {
                         // Build the elements by applying `f` at each index of the
                         // template's leading axis, then stack them into a tensor.

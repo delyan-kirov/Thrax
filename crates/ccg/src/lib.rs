@@ -38,6 +38,7 @@ pub struct Emitted {
     pub source: String,
     pub libraries: Vec<String>,
     pub uses_compiler: bool,
+    pub uses_threads: bool,
 }
 
 /// What the generated C `main` does with the Thrax global it is given: run it as
@@ -75,8 +76,11 @@ pub fn emit_program(
 ) -> Emitted {
     let prog = ir::lower_modules(modules);
     let reachable = reachable_codes(&prog, entry);
-    let (blocks, code_entry, externs, uses_compiler) =
+    let (blocks, code_entry, externs, uses_compiler, uses_par) =
         Emitter::new(&prog, reachable.clone()).run();
+    // Without OS threads (wasm) a parallel program still runs: each task runs
+    // where it is spawned, exactly as in the interpreter.
+    let uses_threads = uses_par && target.arch != utilities::Arch::Wasm32;
 
     // Two resolution chains, mirroring the machine's `glob`: canonical
     // `Module.name` keys (exact), and bare last-segment names (first definition
@@ -113,6 +117,10 @@ pub fn emit_program(
         out.push_str("#define THRAX_WITH_COMPILER 1\n");
         out.push_str(THRAX_H);
     }
+    if uses_threads {
+        out.push_str("/* Spawns parallel tasks: build with -pthread. */\n");
+        out.push_str("#define THRAX_THREADS 1\n");
+    }
     out.push_str(RUNTIME);
     out.push_str(THRAXSTD);
 
@@ -124,15 +132,60 @@ pub fn emit_program(
     out.push_str(&format!("static Value* g_cache[{}];\n", ncodes.max(1)));
     out.push_str(&format!("static char g_inited[{}];\n", ncodes.max(1)));
     out.push_str(&format!("static char g_inprog[{}];\n", ncodes.max(1)));
-    out.push_str("static Value* force_code(size_t code) {\n");
-    out.push_str("  if (g_inited[code]) return g_cache[code];\n");
-    out.push_str("  if (g_inprog[code]) thrax_fault(\"cyclic value global\");\n");
-    out.push_str("  g_inprog[code] = 1;\n");
-    out.push_str("  g_cache[code] = THxK_run_code(code);\n");
-    out.push_str("  g_inited[code] = 1;\n");
-    out.push_str("  g_inprog[code] = 0;\n");
-    out.push_str("  return g_cache[code];\n");
-    out.push_str("}\n");
+    if uses_threads {
+        // Another thread may reach a global first. One thread claims a CAF (CAS
+        // on `g_inprog`) and publishes it with release order; a thread finding it
+        // claimed by ANOTHER thread helps with queued tasks until it lands, since
+        // the claimant may itself be awaiting one of them. A CAF forced after the
+        // pool started is immortal at birth.
+        out.push_str(&format!(
+            "static void THxRT_share_globals(void) {{\n  \
+             for (size_t c = 0; c < {}; c++) if (g_inited[c]) mark_immortal(g_cache[c]);\n}}\n",
+            ncodes
+        ));
+        out.push_str(&format!("static void* g_owner[{}];\n", ncodes.max(1)));
+        out.push_str("__attribute__((noinline)) static Value* force_code_slow(size_t code) {\n");
+        out.push_str("  char expect = 0;\n");
+        out.push_str(
+            "  if (__atomic_compare_exchange_n(&g_inprog[code], &expect, 1, 0, \
+             __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {\n",
+        );
+        out.push_str("    __atomic_store_n(&g_owner[code], THxPAR_self(), __ATOMIC_RELAXED);\n");
+        out.push_str("    Value* v = THxK_run_code(code);\n");
+        out.push_str(
+            "    if (__atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE)) mark_immortal(v);\n",
+        );
+        out.push_str("    g_cache[code] = v;\n");
+        out.push_str("    __atomic_store_n(&g_inited[code], 1, __ATOMIC_RELEASE);\n");
+        out.push_str("    return v;\n");
+        out.push_str("  }\n");
+        out.push_str(
+            "  if (__atomic_load_n(&g_owner[code], __ATOMIC_RELAXED) == THxPAR_self())\n    \
+             thrax_fault(\"cyclic value global\");\n",
+        );
+        out.push_str(
+            "  while (!__atomic_load_n(&g_inited[code], __ATOMIC_ACQUIRE)) THxPAR_help();\n",
+        );
+        out.push_str("  return g_cache[code];\n");
+        out.push_str("}\n");
+        out.push_str("static inline Value* force_code(size_t code) {\n");
+        out.push_str(
+            "  if (__builtin_expect(__atomic_load_n(&g_inited[code], __ATOMIC_ACQUIRE), 1))\n    \
+             return g_cache[code];\n",
+        );
+        out.push_str("  return force_code_slow(code);\n");
+        out.push_str("}\n");
+    } else {
+        out.push_str("static Value* force_code(size_t code) {\n");
+        out.push_str("  if (g_inited[code]) return g_cache[code];\n");
+        out.push_str("  if (g_inprog[code]) thrax_fault(\"cyclic value global\");\n");
+        out.push_str("  g_inprog[code] = 1;\n");
+        out.push_str("  g_cache[code] = THxK_run_code(code);\n");
+        out.push_str("  g_inited[code] = 1;\n");
+        out.push_str("  g_inprog[code] = 0;\n");
+        out.push_str("  return g_cache[code];\n");
+        out.push_str("}\n");
+    }
     out.push_str("Value* THxRT_glob(const char* name) {\n");
     for (name, code) in canon.iter().chain(bare.iter()) {
         out.push_str(&format!(
@@ -193,9 +246,11 @@ pub fn emit_program(
             out.push_str("  char* shown = thrax_show(e);\n");
             out.push_str(&format!("  printf(\"%s = %s\\n\", {entry_c}, shown);\n"));
             out.push_str("  free(shown);\n");
+            out.push_str("  THxPAR_shutdown();\n");
             out.push_str("  for (size_t c = 0; c < THxRT_code_count; c++)\n");
             out.push_str("    if (g_inited[c]) THxMEM_release(g_cache[c]);\n");
             out.push_str("  THxMEM_pool_drain(0);\n");
+            out.push_str("  THxPAR_free_immortals();\n");
             out.push_str("  size_t live = THxMEM_live();\n");
             out.push_str("  THxRT_shutdown();\n");
             out.push_str("  if (live != 0) {\n");
@@ -239,9 +294,13 @@ pub fn emit_program(
     if uses_callbacks && !libraries.iter().any(|l| l == "ffi") {
         libraries.push("ffi".to_string());
     }
+    if uses_threads {
+        libraries.push("pthread".to_string());
+    }
     Emitted {
         source: out,
         libraries,
         uses_compiler,
+        uses_threads,
     }
 }

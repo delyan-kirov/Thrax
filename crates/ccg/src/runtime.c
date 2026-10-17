@@ -7,9 +7,24 @@
 #include <string.h>
 #include <time.h>
 
+/* THRAX_THREADS is defined by the emitter for a program that spawns parallel
+ * tasks (`@par`) on a target with threads. Without it the machine state is plain
+ * globals and every count is non-atomic, so a sequential program pays nothing. */
+#ifdef THRAX_THREADS
+#include <pthread.h>
+#include <sched.h>
+#include <unistd.h>
+/* local-exec: the program is an executable, and under a PIC default the
+ * general-dynamic model would call __tls_get_addr on every machine step. */
+#define THX_TLS _Thread_local __attribute__((tls_model("local-exec")))
+#else
+#define THX_TLS
+#endif
+
 typedef struct Value Value;
 typedef struct Frame Frame;
 typedef struct Resump Resump;
+typedef struct Task Task;
 
 /* A compiled basic block. `in` is the value delivered to a resumed block; blocks
  * re-read their live variables from `fr`, so `in` is usually unused. */
@@ -43,7 +58,9 @@ typedef enum {
   T_EXTERN,    /* a (possibly partially applied) foreign C function (@extern) */
   T_OP,        /* an effect operation, first-class; performs when applied */
   T_RESUMP,    /* a captured continuation (a delimited stack slice) */
-  T_THUNK      /* an unforced lazy slot: a nullary closure, forced in place */
+  T_THUNK,     /* an unforced lazy slot: a nullary closure, forced in place */
+  T_FUTURE,    /* a parallel task's handle (`@par`); only with THRAX_THREADS */
+  T_BLACKHOLE  /* a shared thunk another thread is forcing right now */
 } Tag;
 
 typedef struct {
@@ -51,8 +68,16 @@ typedef struct {
   Value *val;
 } Field;
 
+/* `shared` says who can reach a value. SH_LOCAL: one thread, plain counts.
+ * SH_SHARED: several threads, atomic counts. SH_IMMORTAL: reachable from a
+ * global, so alive until exit: no counting at all (a hot global closure would
+ * otherwise bounce its count between cores), and freed by one sweep at exit. A
+ * value starts local and is marked, with everything it reaches, when it crosses
+ * to another thread; marking only ever raises the level. */
+enum { SH_LOCAL = 0, SH_SHARED = 1, SH_IMMORTAL = 2 };
 struct Value {
-  Tag tag;
+  uint8_t tag;
+  uint8_t shared;
   unsigned rc;
   union {
     int64_t i;
@@ -100,6 +125,7 @@ struct Value {
     } op;
     Resump *resump;
     Value *thunk; /* the nullary closure an unforced lazy slot holds */
+    Task *future;
   } u;
 };
 
@@ -178,6 +204,18 @@ struct Resump {
   int used;
 };
 
+enum { TASK_PENDING, TASK_RUNNING, TASK_DONE };
+
+/* A parallel task, owned by the T_FUTURE cells naming it (`rc`, atomic). `fn`
+ * is the pure nullary closure until the task has run; `result` is written once,
+ * before `state` turns TASK_DONE with release order. */
+struct Task {
+  unsigned rc;
+  int state;
+  Value *fn;
+  Value *result;
+};
+
 /* Uncounted scratch allocation (transient buffers, FFI C-strings): not part of
  * a value's lifetime, so not tracked by the leak check. */
 static void *xmalloc(size_t n) {
@@ -202,7 +240,14 @@ _Noreturn static void thrax_fault(const char *msg) {
  * when v's count reaches zero. */
 static void THxVALUE_destroy(Value *v);
 
-static size_t g_live = 0; /* live allocations: values + raw blocks */
+/* Live allocations (values + raw blocks) made minus freed by this thread. A
+ * block may be freed by a thread other than the one that allocated it, so one
+ * thread's count can go negative; a worker folds its count into
+ * `g_live_folded` when it exits, and the sum stays exact. */
+static THX_TLS long g_live = 0;
+#ifdef THRAX_THREADS
+static long g_live_folded = 0;
+#endif
 
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
 static void *THxMEM_alloc(size_t size) {
@@ -214,15 +259,17 @@ static void *THxMEM_alloc(size_t size) {
 
 static void THxMEM_free(void *p) {
   if (!p) return;
+#ifndef THRAX_THREADS
   if (g_live == 0) thrax_fault("THxMEM_free: more frees than allocations");
+#endif
   --g_live;
   free(p);
 }
 
 /* The temp pool: every fresh value is registered here holding the pool's
  * initial reference; the driver drains to a mark after each block bounce. */
-static Value **g_pool = NULL;
-static size_t g_pn = 0, g_pcap = 0;
+static THX_TLS Value **g_pool = NULL;
+static THX_TLS size_t g_pn = 0, g_pcap = 0;
 
 static void THxMEM_release(Value *v);
 
@@ -251,18 +298,51 @@ static void THxMEM_pool_drain(size_t mark) {
   while (g_pn > mark) THxMEM_release(g_pool[--g_pn]);
 }
 
-static void THxMEM_retain(Value *v) {
+#ifdef THRAX_THREADS
+/* The counting of a value other threads can reach, kept out of line so the
+ * thread-local fast path stays small enough to inline. */
+__attribute__((noinline)) static void retain_shared(Value *v) {
+  if (v->shared == SH_IMMORTAL) return;
+  if (__atomic_fetch_add(&v->rc, 1, __ATOMIC_RELAXED) == 0)
+    thrax_fault("retain: retaining a freed value");
+}
+
+/* Whether this release dropped the last reference. */
+__attribute__((noinline)) static int release_shared(Value *v) {
+  if (v->shared == SH_IMMORTAL) return 0;
+  unsigned old = __atomic_fetch_sub(&v->rc, 1, __ATOMIC_ACQ_REL);
+  if (old == 0) thrax_fault("release: releasing a freed value");
+  return old == 1;
+}
+#endif
+
+static inline void THxMEM_retain(Value *v) {
   if (!v) return;
+#ifdef THRAX_THREADS
+  if (__builtin_expect(v->shared, 0)) {
+    retain_shared(v);
+    return;
+  }
+#endif
   if (v->rc == 0) thrax_fault("retain: retaining a freed value");
   ++v->rc;
 }
 
-static int THxMEM_unique(Value *v) { return v && v->rc == 1; }
+/* The acquire load pairs with the releasing decrement of every other owner, so
+ * an in-place update after this test sees their last writes. */
+static int THxMEM_unique(Value *v) {
+  if (!v) return 0;
+#ifdef THRAX_THREADS
+  if (v->shared == SH_IMMORTAL) return 0;
+  if (v->shared) return __atomic_load_n(&v->rc, __ATOMIC_ACQUIRE) == 1;
+#endif
+  return v->rc == 1;
+}
 
 /* Dead-value worklist: destruction never recurses on the C stack. */
-static Value **g_dead = NULL;
-static size_t g_dn = 0, g_dcap = 0;
-static int g_draining = 0;
+static THX_TLS Value **g_dead = NULL;
+static THX_TLS size_t g_dn = 0, g_dcap = 0;
+static THX_TLS int g_draining = 0;
 
 static void dead_push(Value *v) {
   if (g_dn == g_dcap) {
@@ -275,8 +355,15 @@ static void dead_push(Value *v) {
 
 static void THxMEM_release(Value *v) {
   if (!v) return;
-  if (v->rc == 0) thrax_fault("release: releasing a freed value");
-  if (--v->rc > 0) return;
+#ifdef THRAX_THREADS
+  if (__builtin_expect(v->shared, 0)) {
+    if (!release_shared(v)) return;
+  } else
+#endif
+  {
+    if (v->rc == 0) thrax_fault("release: releasing a freed value");
+    if (--v->rc > 0) return;
+  }
   dead_push(v);
   if (g_draining) return; /* an outer drain loop will get to it */
   g_draining = 1;
@@ -288,7 +375,13 @@ static void THxMEM_release(Value *v) {
   g_draining = 0;
 }
 
-static size_t THxMEM_live(void) { return g_live; }
+static size_t THxMEM_live(void) {
+#ifdef THRAX_THREADS
+  return (size_t)(g_live + __atomic_load_n(&g_live_folded, __ATOMIC_ACQUIRE));
+#else
+  return (size_t)g_live;
+#endif
+}
 
 /* -- constructors -------------------------------------------------------- */
 
@@ -490,7 +583,7 @@ Value *THxVALUE_take(Frame *fr, size_t i) {
 Value *THxVALUE_take_env(Frame *fr, size_t i) {
   Value *v = THxVALUE_env(fr->env, fr->nenv, i);
   Value *clos = fr->clos;
-  if (!clos || clos->rc != 1) return v;
+  if (!THxMEM_unique(clos)) return v;
   for (size_t j = 0; j < fr->nenv; j++)
     if (fr->env[j] == clos) return v;
   fr->env[i] = NULL;
@@ -513,7 +606,13 @@ Value *THxK_call(Value *f, Value *arg);
 /* Run an unforced lazy slot and patch the cell with the result, so the work
  * happens once however many times the value is looked at: every holder of the
  * cell sees the forced value. Nesting collapses here, not at each use. */
+#ifdef THRAX_THREADS
+static Value *force_shared(Value *v);
+#endif
 Value *THxVALUE_force(Value *v) {
+#ifdef THRAX_THREADS
+  if (v && v->shared) return force_shared(v);
+#endif
   while (v && v->tag == T_THUNK) {
     /* Hold the closure across the call: patching the cell below destroys the
      * thunk payload, which is what otherwise owns it. */
@@ -877,7 +976,19 @@ static Value *tensor_stack(Value **elems, size_t n) {
 static const char **g_names = NULL;
 static size_t g_nn = 0, g_ncap = 0;
 
+#ifdef THRAX_THREADS
+static pthread_mutex_t g_names_mu = PTHREAD_MUTEX_INITIALIZER;
+static const char *intern_name_locked(const char *s);
 static const char *intern_name(const char *s) {
+  pthread_mutex_lock(&g_names_mu);
+  const char *r = intern_name_locked(s);
+  pthread_mutex_unlock(&g_names_mu);
+  return r;
+}
+static const char *intern_name_locked(const char *s) {
+#else
+static const char *intern_name(const char *s) {
+#endif
   for (size_t i = 0; i < g_nn; i++)
     if (strcmp(g_names[i], s) == 0) return g_names[i];
   if (g_nn == g_ncap) {
@@ -997,6 +1108,23 @@ static Value *compiler_builtin(const char *name, Value **a) {
   }
   return NULL;
 }
+#endif
+
+/* `@par f` (and `@spawn f`, whose task may also perform `@io`) starts the task
+ * `f {}` and returns its future; `@await` blocks until the result is in and
+ * returns it (borrowed: the future owns it). Without threads a task runs on the
+ * spot and its future is its result itself, which is also how the interpreter,
+ * the reference semantics, runs it. */
+#ifdef THRAX_THREADS
+static Value *THxPAR_spawn(Value *f);
+static Value *THxPAR_await(Value *fut);
+#else
+static Value *THxPAR_spawn(Value *f) {
+  Value *r = THxK_call(f, THxRT_unit());
+  pool_adopt(r);
+  return r;
+}
+static Value *THxPAR_await(Value *fut) { return THxVALUE_force(fut); }
 #endif
 
 static Value *run_builtin(const char *name, Value **a, size_t n) {
@@ -1208,6 +1336,9 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return t;
   }
   if (strcmp(name, "@delay") == 0) return THxRT_thunk(a[0]);
+  if (strcmp(name, "@par") == 0 || strcmp(name, "@spawn") == 0)
+    return THxPAR_spawn(a[0]);
+  if (strcmp(name, "@await") == 0) return THxPAR_await(a[0]);
   if (strcmp(name, "@vec_get") == 0) {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
@@ -1336,6 +1467,11 @@ Value *THxK_op(const char *effect, const char *op) {
 
 static void THxK_resump_addref(Resump *seg);
 static void THxK_resump_release(Resump *seg);
+#ifdef THRAX_THREADS
+static void task_destroy(Task *t);
+static void mark_shared(Value *v);
+static void mark_immortal(Value *v);
+#endif
 
 /* Release the pointer children in `f[0..n)` (skipping the weak self edge,
  * child == v) and free the array itself. */
@@ -1374,7 +1510,11 @@ static void payload_destroy(Value *v) {
     case T_BUILTIN: release_children(v, v->u.builtin.args, v->u.builtin.nargs); return;
     case T_EXTERN: release_children(v, v->u.ext.args, v->u.ext.nargs); return;
     case T_RESUMP: THxK_resump_release(v->u.resump); return;
-    case T_THUNK: THxMEM_release(v->u.thunk); return;
+    case T_THUNK:
+    case T_BLACKHOLE: THxMEM_release(v->u.thunk); return;
+#ifdef THRAX_THREADS
+    case T_FUTURE: task_destroy(v->u.future); return;
+#endif
   }
   thrax_fault("payload_destroy: unhandled tag");
 }
@@ -1393,18 +1533,16 @@ static Value **copy_children(Value *self, Value **f, size_t n) {
   return c;
 }
 
-/* Back-patch a let box: make `box` a copy of `v`, preserving box's own count.
- * Pointer-array payloads and string bytes are DEEP-copied into fresh blocks and
- * the children retained, so box and v afterwards have independent lifetimes; a
- * resumption's segment is shared via its own count. A child equal to `box` is
- * left unretained (the weak self edge of a recursive-let closure). */
-static void THxVALUE_patch_box(Value *box, Value *v) {
-  if (box == v) return;
-  payload_destroy(box); /* a box is normally T_UNIT: a no-op */
-  unsigned saved = box->rc;
-  *box = *v;
-  box->rc = saved;
-  switch (box->tag) {
+/* Make `dst` a copy of `v`'s payload (tag and union; never the count or the
+ * shared mark). Pointer-array payloads and string bytes are DEEP-copied into
+ * fresh blocks and the children retained, so `dst` and `v` afterwards have
+ * independent lifetimes; a resumption's segment is shared via its own count. A
+ * child equal to `self` (the cell that will hold the payload) is left
+ * unretained: the weak self edge of a recursive-let closure. */
+static void copy_payload(Value *dst, Value *self, Value *v) {
+  dst->tag = v->tag;
+  dst->u = v->u;
+  switch (dst->tag) {
     case T_INT:
     case T_REAL:
     case T_REAL32:
@@ -1412,51 +1550,74 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
     case T_UNIT:
     case T_OP: break;
     case T_STR: {
-      size_t len = box->u.str.len;
+      size_t len = dst->u.str.len;
       uint8_t *b = THxMEM_alloc(len + 1);
       if (len) memcpy(b, v->u.str.data, len);
       b[len] = 0;
-      box->u.str.data = b;
+      dst->u.str.data = b;
       break;
     }
     case T_TUPLE:
     case T_VEC:
-      box->u.seq.items = copy_children(box, v->u.seq.items, box->u.seq.len);
+      dst->u.seq.items = copy_children(self, v->u.seq.items, dst->u.seq.len);
       break;
     case T_STRUCT: {
-      size_t n = box->u.strct.len;
+      size_t n = dst->u.strct.len;
       if (n == 0) {
-        box->u.strct.fields = NULL;
+        dst->u.strct.fields = NULL;
         break;
       }
       Field *fs = THxMEM_alloc(n * sizeof(Field));
       for (size_t i = 0; i < n; i++) {
         fs[i].name = v->u.strct.fields[i].name;
         fs[i].val = v->u.strct.fields[i].val;
-        if (fs[i].val != box) THxMEM_retain(fs[i].val);
+        if (fs[i].val != self) THxMEM_retain(fs[i].val);
       }
-      box->u.strct.fields = fs;
+      dst->u.strct.fields = fs;
       break;
     }
     case T_VARIANT:
-      box->u.variant.fields =
-          copy_children(box, v->u.variant.fields, box->u.variant.len);
+      dst->u.variant.fields =
+          copy_children(self, v->u.variant.fields, dst->u.variant.len);
       break;
     case T_CLOS:
-      box->u.clos.env = copy_children(box, v->u.clos.env, box->u.clos.nenv);
+      dst->u.clos.env = copy_children(self, v->u.clos.env, dst->u.clos.nenv);
       break;
     case T_BUILTIN:
-      box->u.builtin.args =
-          copy_children(box, v->u.builtin.args, box->u.builtin.nargs);
+      dst->u.builtin.args =
+          copy_children(self, v->u.builtin.args, dst->u.builtin.nargs);
       break;
     case T_EXTERN:
-      box->u.ext.args = copy_children(box, v->u.ext.args, box->u.ext.nargs);
+      dst->u.ext.args = copy_children(self, v->u.ext.args, dst->u.ext.nargs);
       break;
-    case T_RESUMP: THxK_resump_addref(box->u.resump); break;
+    case T_RESUMP: THxK_resump_addref(dst->u.resump); break;
     case T_THUNK:
-      if (box->u.thunk != box) THxMEM_retain(box->u.thunk);
+    case T_BLACKHOLE:
+      if (dst->u.thunk != self) THxMEM_retain(dst->u.thunk);
       break;
+#ifdef THRAX_THREADS
+    case T_FUTURE:
+      /* The handle is one task; a copy is another owner of the same task, so
+       * both cells observe one result. */
+      __atomic_fetch_add(&dst->u.future->rc, 1, __ATOMIC_RELAXED);
+      break;
+#endif
   }
+}
+
+/* Back-patch a let box: make `box` a copy of `v` (see `copy_payload`),
+ * preserving box's own count and shared mark. A box other threads can reach
+ * must not take in a thread-local value, so `v` is marked first. */
+static void THxVALUE_patch_box(Value *box, Value *v) {
+  if (box == v) return;
+  payload_destroy(box); /* a box is normally T_UNIT: a no-op */
+#ifdef THRAX_THREADS
+  if (box->shared == SH_IMMORTAL)
+    mark_immortal(v);
+  else if (box->shared)
+    mark_shared(v);
+#endif
+  copy_payload(box, box, v);
 }
 
 /*------------------------------------------------------------------------------
@@ -1465,8 +1626,8 @@ static void THxVALUE_patch_box(Value *box, Value *v) {
 
 /* The single, shared continuation stack; re-entrant runs share it via a base
  * marker (THxK_run_code / THxK_call record the current height). */
-static KFrame *g_kont = NULL;
-static size_t g_kn = 0, g_kcap = 0;
+static THX_TLS KFrame *g_kont = NULL;
+static THX_TLS size_t g_kn = 0, g_kcap = 0;
 
 static void kont_push(KFrame f) {
   if (g_kn == g_kcap) {
@@ -1695,10 +1856,10 @@ static KFrame segment_cleanups(KFrame *seg, size_t n) {
 /* -- next-action registers ----------------------------------------------- */
 
 typedef enum { ACT_NONE, ACT_RET, ACT_APPLY, ACT_JUMP } Act;
-static Act g_act;
-static Value *g_v, *g_fn, *g_arg;
-static BlockFn g_blk;
-static Value *g_result;
+static THX_TLS Act g_act;
+static THX_TLS Value *g_v, *g_fn, *g_arg;
+static THX_TLS BlockFn g_blk;
+static THX_TLS Value *g_result;
 
 /* -- block terminators --------------------------------------------------- */
 
@@ -2208,6 +2369,374 @@ void THxRT_shutdown(void) {
   g_dcap = g_dn = 0;
 }
 
+#ifdef THRAX_THREADS
+/*------------------------------------------------------------------------------
+ *\PARALLEL TASKS: shared marking, blackholed thunks, a work-stealing pool
+ *-----------------------------------------------------------------------------*/
+
+/* Every immortal value, for the sweep at exit. */
+static Value **g_immortal = NULL;
+static size_t g_imn = 0, g_imcap = 0;
+static pthread_mutex_t g_immortal_mu = PTHREAD_MUTEX_INITIALIZER;
+
+/* Raise `root` and everything it reaches to `level` (Koka / Lean 4 style),
+ * before it becomes reachable from another thread. A local value is held by
+ * this thread alone until then, so the plain writes here are published by
+ * whatever hands it over (a deque lock, a release store). A value already at
+ * `level` ends the walk: everything below it is at least there too. */
+static void mark_level(Value *root, uint8_t level) {
+  if (!root || root->shared >= level) return;
+  size_t n = 0, cap = 64;
+  Value **work = xmalloc(cap * sizeof(Value *));
+  work[n++] = root;
+#define THX_MARK_PUSH(c)                                         \
+  do {                                                           \
+    Value *c_ = (c);                                             \
+    if (c_ && c_->shared < level) {                              \
+      if (n == cap) {                                            \
+        cap *= 2;                                                \
+        work = realloc(work, cap * sizeof(Value *));             \
+        if (!work) thrax_fault("mark worklist allocation failed"); \
+      }                                                          \
+      work[n++] = c_;                                            \
+    }                                                            \
+  } while (0)
+  if (level == SH_IMMORTAL) pthread_mutex_lock(&g_immortal_mu);
+  while (n > 0) {
+    Value *v = work[--n];
+    if (v->shared >= level) continue;
+    v->shared = level;
+    if (level == SH_IMMORTAL) {
+      if (g_imn == g_imcap) {
+        g_imcap = g_imcap ? g_imcap * 2 : 256;
+        g_immortal = realloc(g_immortal, g_imcap * sizeof(Value *));
+        if (!g_immortal) thrax_fault("immortal table allocation failed");
+      }
+      g_immortal[g_imn++] = v;
+    }
+    switch (v->tag) {
+      case T_TUPLE:
+      case T_VEC:
+        for (size_t i = 0; i < v->u.seq.len; i++) THX_MARK_PUSH(v->u.seq.items[i]);
+        break;
+      case T_STRUCT:
+        for (size_t i = 0; i < v->u.strct.len; i++)
+          THX_MARK_PUSH(v->u.strct.fields[i].val);
+        break;
+      case T_VARIANT:
+        for (size_t i = 0; i < v->u.variant.len; i++)
+          THX_MARK_PUSH(v->u.variant.fields[i]);
+        break;
+      case T_CLOS:
+        for (size_t i = 0; i < v->u.clos.nenv; i++) THX_MARK_PUSH(v->u.clos.env[i]);
+        break;
+      case T_BUILTIN:
+        for (size_t i = 0; i < v->u.builtin.nargs; i++)
+          THX_MARK_PUSH(v->u.builtin.args[i]);
+        break;
+      case T_EXTERN:
+        for (size_t i = 0; i < v->u.ext.nargs; i++) THX_MARK_PUSH(v->u.ext.args[i]);
+        break;
+      case T_THUNK:
+      case T_BLACKHOLE: THX_MARK_PUSH(v->u.thunk); break;
+      /* Its frames and slot boxes are written in place by a resume, which
+       * would race; continuations stay on the thread that captured them. */
+      case T_RESUMP:
+        thrax_fault("a captured continuation cannot cross to another thread");
+      /* A future's task is counted on its own and its result is shared when
+       * it lands, so the walk stops at the handle. */
+      default: break;
+    }
+  }
+  if (level == SH_IMMORTAL) pthread_mutex_unlock(&g_immortal_mu);
+#undef THX_MARK_PUSH
+  free(work);
+}
+
+static void mark_shared(Value *v) { mark_level(v, SH_SHARED); }
+static void mark_immortal(Value *v) { mark_level(v, SH_IMMORTAL); }
+
+/* Free every immortal value, once nothing else can reach them: after the
+ * workers are joined and every counted value is gone. All payloads are
+ * released before any cell is freed, since immortal values point at each
+ * other (releasing an immortal child is a no-op, but it reads the child). */
+static void THxPAR_free_immortals(void) {
+  for (size_t i = 0; i < g_imn; i++) payload_destroy(g_immortal[i]);
+  for (size_t i = 0; i < g_imn; i++) THxMEM_free(g_immortal[i]);
+  free(g_immortal);
+  g_immortal = NULL;
+  g_imn = g_imcap = 0;
+}
+
+/* Force a shared lazy slot. The first thread to see T_THUNK swaps in
+ * T_BLACKHOLE and evaluates; the others wait for the tag to change. The payload
+ * is written before the tag (release), so a reader that sees the new tag (its
+ * acquire load) sees the value. */
+static Value *force_shared(Value *v) {
+  for (;;) {
+    uint8_t tag = __atomic_load_n(&v->tag, __ATOMIC_ACQUIRE);
+    if (tag == T_BLACKHOLE) {
+      sched_yield();
+      continue;
+    }
+    if (tag != T_THUNK) return v;
+    uint8_t expect = T_THUNK;
+    if (!__atomic_compare_exchange_n(&v->tag, &expect, (uint8_t)T_BLACKHOLE, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      continue;
+    Value *f = v->u.thunk; /* the cell's reference, dropped once replaced */
+    Value *forced = THxK_call(f, THxRT_unit()); /* owned */
+    if (forced == v) {
+      __atomic_store_n(&v->tag, (uint8_t)T_THUNK, __ATOMIC_RELEASE);
+      THxMEM_release(forced);
+      return v;
+    }
+    /* An immortal cell's old closure stays in the immortal table, which
+     * frees it at exit. */
+    if (v->shared == SH_IMMORTAL)
+      mark_immortal(forced);
+    else
+      mark_shared(forced);
+    Value tmp;
+    copy_payload(&tmp, v, forced);
+    v->u = tmp.u;
+    __atomic_store_n(&v->tag, tmp.tag, __ATOMIC_RELEASE);
+    THxMEM_release(f);
+    THxMEM_release(forced);
+  }
+}
+
+static void task_destroy(Task *t) {
+  if (__atomic_sub_fetch(&t->rc, 1, __ATOMIC_ACQ_REL) > 0) return;
+  THxMEM_release(t->fn);
+  THxMEM_release(t->result);
+  THxMEM_free(t);
+}
+
+/* One deque per thread, `[0]` for the main thread (and any thread the pool did
+ * not start). The owner pushes and pops at `bot` (newest first); thieves take
+ * from `top` (oldest first). Entries are futures, each holding a reference. */
+typedef struct {
+  pthread_mutex_t mu;
+  Value **buf;
+  size_t top, bot, cap; /* live entries buf[i % cap] for top <= i < bot */
+} Deque;
+
+static Deque *g_deques = NULL;
+static int g_nthreads = 0;
+static pthread_t *g_workers = NULL;
+static int g_mt_started = 0;
+static int g_mt_stop = 0;
+/* Entries across all deques, possibly stale (already claimed). Sleepers test it
+ * under `g_mt_mu`, and every push or completion broadcasts under it, so no
+ * wakeup is lost. */
+static size_t g_queued = 0;
+static pthread_mutex_t g_mt_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_mt_cv = PTHREAD_COND_INITIALIZER;
+static THX_TLS int t_self = 0;
+
+static void mt_wake_all(void) {
+  pthread_mutex_lock(&g_mt_mu);
+  pthread_cond_broadcast(&g_mt_cv);
+  pthread_mutex_unlock(&g_mt_mu);
+}
+
+static void deque_push(Deque *d, Value *fut) {
+  pthread_mutex_lock(&d->mu);
+  if (d->bot - d->top == d->cap) {
+    size_t ncap = d->cap ? d->cap * 2 : 64;
+    Value **nb = xmalloc(ncap * sizeof(Value *));
+    for (size_t i = d->top; i < d->bot; i++) nb[i - d->top] = d->buf[i % d->cap];
+    free(d->buf);
+    d->bot -= d->top;
+    d->top = 0;
+    d->buf = nb;
+    d->cap = ncap;
+  }
+  d->buf[d->bot++ % d->cap] = fut;
+  pthread_mutex_unlock(&d->mu);
+}
+
+static Value *deque_take(Deque *d, int steal) {
+  Value *w = NULL;
+  pthread_mutex_lock(&d->mu);
+  if (d->bot > d->top) w = steal ? d->buf[d->top++ % d->cap] : d->buf[--d->bot % d->cap];
+  pthread_mutex_unlock(&d->mu);
+  return w;
+}
+
+static Value *mt_find_work(void) {
+  Value *w = deque_take(&g_deques[t_self], 0);
+  for (int i = 1; !w && i < g_nthreads; i++)
+    w = deque_take(&g_deques[(t_self + i) % g_nthreads], 1);
+  if (w) __atomic_fetch_sub(&g_queued, 1, __ATOMIC_ACQ_REL);
+  return w;
+}
+
+static int task_claim(Task *t) {
+  int expect = TASK_PENDING;
+  return __atomic_compare_exchange_n(&t->state, &expect, TASK_RUNNING, 0,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+/* Run a claimed task. The result is marked before it is published: every
+ * thread awaiting the future takes references on it. */
+static void task_exec(Task *t) {
+  Value *fn = t->fn;
+  Value *r = THxK_call(fn, THxRT_unit()); /* owned, now by the task */
+  mark_shared(r);
+  t->result = r;
+  t->fn = NULL;
+  __atomic_store_n(&t->state, TASK_DONE, __ATOMIC_RELEASE);
+  mt_wake_all();
+  THxMEM_release(fn);
+}
+
+/* A deque entry: run it unless its awaiter already claimed it, then drop the
+ * deque's reference. */
+static void mt_run_entry(Value *fut) {
+  Task *t = fut->u.future;
+  if (task_claim(t)) task_exec(t);
+  THxMEM_release(fut);
+}
+
+static void *worker_main(void *arg) {
+  t_self = (int)(intptr_t)arg;
+  for (;;) {
+    Value *w = mt_find_work();
+    if (w) {
+      mt_run_entry(w);
+      THxMEM_pool_drain(0);
+      continue;
+    }
+    pthread_mutex_lock(&g_mt_mu);
+    while (!g_mt_stop && __atomic_load_n(&g_queued, __ATOMIC_ACQUIRE) == 0)
+      pthread_cond_wait(&g_mt_cv, &g_mt_mu);
+    int stop = g_mt_stop;
+    pthread_mutex_unlock(&g_mt_mu);
+    if (stop) break;
+  }
+  THxRT_shutdown();
+  __atomic_fetch_add(&g_live_folded, g_live, __ATOMIC_ACQ_REL);
+  return NULL;
+}
+
+/* Provided by the generated program: marks every forced global immortal. */
+static void THxRT_share_globals(void);
+
+/* Start the pool on the first `@par`: `THRAX_THREADS` threads in all (default:
+ * one per online core), the calling thread being one of them. Until then no
+ * other thread exists, so marking the globals here cannot race. */
+static void mt_start(void) {
+  if (__atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE)) return;
+  pthread_mutex_lock(&g_mt_mu);
+  if (!g_mt_started) {
+    const char *env = getenv("THRAX_THREADS");
+    int n = env ? atoi(env) : 0;
+    if (n <= 0) n = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (n <= 0) n = 1;
+    g_nthreads = n;
+    g_deques = xmalloc((size_t)n * sizeof(Deque));
+    for (int i = 0; i < n; i++) {
+      pthread_mutex_init(&g_deques[i].mu, NULL);
+      g_deques[i].buf = NULL;
+      g_deques[i].top = g_deques[i].bot = g_deques[i].cap = 0;
+    }
+    THxRT_share_globals();
+    g_workers = xmalloc((size_t)n * sizeof(pthread_t));
+    for (int i = 1; i < n; i++)
+      if (pthread_create(&g_workers[i], NULL, worker_main, (void *)(intptr_t)i) != 0)
+        thrax_fault("cannot start a worker thread");
+    __atomic_store_n(&g_mt_started, 1, __ATOMIC_RELEASE);
+  }
+  pthread_mutex_unlock(&g_mt_mu);
+}
+
+static Value *THxPAR_spawn(Value *f) {
+  mt_start();
+  Task *t = THxMEM_alloc(sizeof(Task));
+  t->rc = 1;
+  t->state = TASK_PENDING;
+  mark_shared(f);
+  THxMEM_retain(f);
+  t->fn = f;
+  Value *fut = alloc_value(T_FUTURE);
+  fut->u.future = t;
+  fut->shared = SH_SHARED;
+  THxMEM_retain(fut); /* the deque's reference */
+  deque_push(&g_deques[t_self], fut);
+  __atomic_fetch_add(&g_queued, 1, __ATOMIC_ACQ_REL);
+  mt_wake_all();
+  return fut;
+}
+
+/* Wait for a future. A task nobody has started yet runs right here; otherwise
+ * the waiter helps with queued work until its task is done, so a pool whose
+ * every thread awaits cannot deadlock. */
+static Value *THxPAR_await(Value *fut) {
+  fut = THxVALUE_force(fut);
+  if (fut->tag != T_FUTURE) thrax_fault("@await expects a future");
+  Task *t = fut->u.future;
+  for (;;) {
+    int st = __atomic_load_n(&t->state, __ATOMIC_ACQUIRE);
+    if (st == TASK_DONE) return t->result;
+    if (st == TASK_PENDING && task_claim(t)) {
+      task_exec(t);
+      continue;
+    }
+    Value *w = mt_find_work();
+    if (w) {
+      mt_run_entry(w);
+      continue;
+    }
+    pthread_mutex_lock(&g_mt_mu);
+    while (__atomic_load_n(&t->state, __ATOMIC_ACQUIRE) != TASK_DONE &&
+           __atomic_load_n(&g_queued, __ATOMIC_ACQUIRE) == 0)
+      pthread_cond_wait(&g_mt_cv, &g_mt_mu);
+    pthread_mutex_unlock(&g_mt_mu);
+  }
+}
+
+/* A token unique to the calling thread. */
+static void *THxPAR_self(void) { return (void *)&t_self; }
+
+/* One step of waiting on another thread: run a queued task, or yield. */
+static void THxPAR_help(void) {
+  Value *w = __atomic_load_n(&g_mt_started, __ATOMIC_ACQUIRE) ? mt_find_work() : NULL;
+  if (w)
+    mt_run_entry(w);
+  else
+    sched_yield();
+}
+
+/* Stop and join the workers, then drop the tasks nobody ran (pure, so their
+ * results were unobservable). Runs on the main thread before the leak check. */
+static void THxPAR_shutdown(void) {
+  if (!g_mt_started) return;
+  pthread_mutex_lock(&g_mt_mu);
+  g_mt_stop = 1;
+  pthread_cond_broadcast(&g_mt_cv);
+  pthread_mutex_unlock(&g_mt_mu);
+  for (int i = 1; i < g_nthreads; i++) pthread_join(g_workers[i], NULL);
+  for (int i = 0; i < g_nthreads; i++) {
+    Value *w;
+    while ((w = deque_take(&g_deques[i], 1))) THxMEM_release(w);
+    free(g_deques[i].buf);
+    pthread_mutex_destroy(&g_deques[i].mu);
+  }
+  free(g_deques);
+  free(g_workers);
+  g_deques = NULL;
+  g_workers = NULL;
+  g_queued = 0;
+  g_mt_started = 0;
+  g_mt_stop = 0;
+}
+#else
+static void THxPAR_shutdown(void) {}
+static void THxPAR_free_immortals(void) {}
+#endif
+
 /* -- show (matches interpreter Value::show) ------------------------------ */
 
 typedef struct {
@@ -2330,7 +2859,11 @@ static void show_into(Str *s, Value *v) {
     case T_EXTERN:
     case T_OP: str_puts(s, "<function>"); break;
     case T_RESUMP: str_puts(s, "<continuation>"); break;
-    case T_THUNK: str_puts(s, "<unforced>"); break;
+    case T_THUNK:
+    case T_BLACKHOLE: str_puts(s, "<unforced>"); break;
+#ifdef THRAX_THREADS
+    case T_FUTURE: show_into(s, THxPAR_await(v)); break;
+#endif
   }
 }
 
