@@ -3,4 +3,4 @@ $ @mod TASK_PURE_IO
 # A `par` task must be pure; IO needs `spawn`.
 $ with IO
 $ with PAR
-$ f : {} -> <@io> Future @int = \u = par (\w = println "hi"; 1)  #~ error[TYPE_MISMATCH]: a pure parallel task performs effect `@console`
+$ f : {} -> <@io> Future @int = \u = par (\w = println "hi"; 1)  #~ error[TYPE_MISMATCH]: a pure parallel task performs effect `@io`

@@ -15,31 +15,31 @@ $ with VEC
 
 # ---- console ----
 
-$ print : @str -> <@console> {} = \s =
-	console_write {1, s, @array_len s}; {}
+$ print : @str -> <@io> {} = \s =
+	C.write {1, s, @array_len s}; {}
 
-$ println : @str -> <@console> {} = \s =
-	console_write {1, s, @array_len s}; console_write {1, "\n", 1}; {}
+$ println : @str -> <@io> {} = \s =
+	C.write {1, s, @array_len s}; C.write {1, "\n", 1}; {}
 
-$ eprint : @str -> <@console> {} = \s =
-	console_write {2, s, @array_len s}; {}
+$ eprint : @str -> <@io> {} = \s =
+	C.write {2, s, @array_len s}; {}
 
-$ eprintln : @str -> <@console> {} = \s =
-	console_write {2, s, @array_len s}; console_write {2, "\n", 1}; {}
+$ eprintln : @str -> <@io> {} = \s =
+	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
 
-$ print_int : @int -> <@console> {} = \n = print (from_int n)
+$ print_int : @int -> <@io> {} = \n = print (from_int n)
 
-$ println_int : @int -> <@console> {} = \n = println (from_int n)
+$ println_int : @int -> <@io> {} = \n = println (from_int n)
 
 # One line from stdin, without the trailing newline. Returns "" at
 # end-of-input (indistinguishable from an empty line).
-$ read_line : {} -> <@console> @str = \u = read_line_acc ""
+$ read_line : {} -> <@io> @str = \u = read_line_acc ""
 
 # ---- files ----
 
 # The whole file as a @str; None when it cannot be opened. Reads are counted
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
-$ read_file : @str -> <@fs> Option @str = \path =
+$ read_file : @str -> <@io> Option @str = \path =
 	let f = C.fopen {path, "rb"} in
 	if f == 0 => Option.None
 	else
@@ -58,45 +58,38 @@ $ read_file : @str -> <@fs> Option @str = \path =
 # `readdir` hands back a `struct dirent *` and the FFI has no way to dereference
 # a C pointer (the `d_name` offset is also per-platform). `popen` keeps the
 # listing in portable libc with no magic numbers; the cost is a shell.
-$ read_dir : @str -> <@fs> @vec @str = \dir =
-	let f = ls_open {"LC_ALL=C ls -1 -A -- '" ++ dir ++ "' 2>/dev/null", "r"} in
+$ read_dir : @str -> <@io> @vec @str = \dir =
+	let f = C.popen {"LC_ALL=C ls -1 -A -- '" ++ dir ++ "' 2>/dev/null", "r"} in
 	if f == 0 => VEC.new {}
 	else
 		let out = drain f "" in
-		ls_close f;
+		C.pclose f;
 		VEC.sort_by STR.cmp_str
 			(VEC.filter (\name = !(STR.is_empty name)) (STR.lines out))
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : @str -> @str -> <@fs> @bool = \path content =
+$ write_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "wb"
 
-$ append_file : @str -> @str -> <@fs> @bool = \path content =
+$ append_file : @str -> @str -> <@io> @bool = \path content =
 	spill_file path content "ab"
 
-$ remove_file : @str -> <@fs> @bool = \path =
+$ remove_file : @str -> <@io> @bool = \path =
 	(C.remove path) == 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
-$ env : @str -> <@env> @str = \name = C.getenv name
+$ env : @str -> <@io> @str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
-$ now : {} -> <@time> @int = \u = C.time 0
+$ now : {} -> <@io> @int = \u = C.time 0
 
 # ---- internal helpers ----
 
 $ @private
 
-# `C.write` and `C.popen` serve any descriptor or command, so they are `<@io>`;
-# these are the same C functions bound for the one use made of each here: a
-# write to the terminal, and the `ls` pipe that reads a directory.
-$ console_write : {fd: @int, buf: @str, n: @int} -> <@console> @int = @extern "C" "write" "libc"
-$ ls_open : {cmd: @str, mode: @str} -> <@fs> @int = @extern "C" "popen" "libc"
-$ ls_close : @int -> <@fs> @int = @extern "C" "pclose" "libc"
-
-$ read_line_acc : @str -> <@console> @str = \acc =
+$ read_line_acc : @str -> <@io> @str = \acc =
 	let c = C.getchar {} in
 	if c == 10 => acc
 	else if is_byte c => read_line_acc (@array_push acc c)
@@ -107,7 +100,7 @@ $ read_line_acc : @str -> <@console> @str = \acc =
 $ is_byte : @int -> @bool = \c =
 	if c < 0 => @false else c <= 255
 
-$ read_bytes : @int -> @int -> @str -> <@fs> @str = \f n acc =
+$ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
 	if n <= 0 => acc
 	else
 		let c = C.fgetc f in
@@ -116,11 +109,11 @@ $ read_bytes : @int -> @int -> @str -> <@fs> @str = \f n acc =
 
 # Every byte of a stream until it ends, for a `popen` pipe whose length is not
 # known up front (so `read_bytes`, which is given a count, does not fit).
-$ drain : @int -> @str -> <@fs> @str = \f acc =
+$ drain : @int -> @str -> <@io> @str = \f acc =
 	let c = C.fgetc f in
 	if is_byte c => drain f (@array_push acc c) else acc
 
-$ spill_file : @str -> @str -> @str -> <@fs> @bool = \path content mode =
+$ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
 	if f == 0 => @false
 	else

@@ -4102,7 +4102,7 @@ impl<'a> Checker<'a> {
         if !is_future {
             return d;
         }
-        let io = ty::is_io_resource(&label);
+        let io = label == ty::IO;
         let what = if io {
             format!("a pure parallel task performs effect `{label}`")
         } else {
@@ -5592,9 +5592,7 @@ impl<'a> Checker<'a> {
                 let (from, to) = (*from, *to);
                 // The row's tail (a shared row variable) or the empty closed row,
                 // then each written label extended onto it. An unannotated arrow is
-                // pure. Labels are validated as declared effects elsewhere. `@io`
-                // stands for its resources, so `<@io, @console>` names `@console`
-                // once.
+                // pure. Labels are validated as declared effects elsewhere.
                 let eff = match effect {
                     Some(row) => {
                         let mut e = match row.tail {
@@ -5604,19 +5602,9 @@ impl<'a> Checker<'a> {
                             }
                             None => self.eng.types.row_empty(),
                         };
-                        let mut seen: Vec<&str> = Vec::new();
-                        for &label in self.ast.slice(row.names).iter() {
+                        for &label in self.ast.slice(row.names).iter().rev() {
                             let label = self.text(label);
-                            let parts: &[&str] =
-                                if label == ty::IO { ty::IO_RESOURCES } else { &[label] };
-                            for &p in parts {
-                                if !seen.contains(&p) {
-                                    seen.push(p);
-                                }
-                            }
-                        }
-                        for &p in seen.iter().rev() {
-                            e = self.eng.types.row_extend(p, e);
+                            e = self.eng.types.row_extend(label, e);
                         }
                         e
                     }
