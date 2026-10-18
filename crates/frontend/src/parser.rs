@@ -630,7 +630,14 @@ impl<'a> Parser<'a> {
                     self.bump()?;
                     let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@alias'");
-                    let ty = self.parse_type()?;
+                    let start = self.here()?;
+                    let ty = match self.parse_effect_row_opt()? {
+                        Some(row) => {
+                            let node = self.ty(Ty::Row(row));
+                            self.stamp_ty(start, node)
+                        }
+                        None => self.parse_type()?,
+                    };
                     return Ok(Item::Alias { name, params, ty });
                 }
                 "effect" => {
@@ -1056,12 +1063,13 @@ impl<'a> Parser<'a> {
     /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
     /// `<A, B | e>`, or `<| e>`. Effect names are Capitalized (user effects) or
     /// `@`-form (builtin effects like `@io`); a lowercase name is the
-    /// row-polymorphic tail variable.
+    /// row-polymorphic tail variable. An entry may be a row alias applied to row
+    /// variables, `<WithLog e, @io>`; what each name denotes is the checker's call.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
             return Ok(Some(EffectRow {
-                names: self.ast.make_slice(Vec::new()),
+                entries: self.ast.make_slice(Vec::new()),
                 tail: None,
             }));
         }
@@ -1070,7 +1078,7 @@ impl<'a> Parser<'a> {
             let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: self.ast.make_slice(Vec::new()),
+                entries: self.ast.make_slice(Vec::new()),
                 tail: Some(tail),
             }));
         }
@@ -1082,14 +1090,24 @@ impl<'a> Parser<'a> {
             let tail = self.expect_tyvar("expected a type variable in the effect row")?;
             self.expect_op(">", "expected '>' to close the effect row")?;
             return Ok(Some(EffectRow {
-                names: self.ast.make_slice(Vec::new()),
+                entries: self.ast.make_slice(Vec::new()),
                 tail: Some(tail),
             }));
         }
-        let mut names = Vec::new();
+        let mut entries = Vec::new();
         loop {
-            let n = self.expect_effect_label()?;
-            names.push(n);
+            let start = self.here()?;
+            let name = self.expect_effect_label()?;
+            let mut args = Vec::new();
+            while self.at_tyvar()? {
+                args.push(self.expect_tyvar("expected a row variable")?);
+            }
+            let args = self.ast.make_slice(args);
+            entries.push(RowEntry {
+                name,
+                args,
+                span: Span::new(start, self.last_end),
+            });
             if !self.eat(|k| matches!(k, Kind::Comma))? {
                 break;
             }
@@ -1102,7 +1120,7 @@ impl<'a> Parser<'a> {
         };
         self.expect_op(">", "expected '>' to close the effect row")?;
         Ok(Some(EffectRow {
-            names: self.ast.make_slice(names),
+            entries: self.ast.make_slice(entries),
             tail,
         }))
     }

@@ -104,6 +104,7 @@ global
   | DOLLAR LIDENT COLON AT_STRUCT opt_type_params EQ struct_body
   | DOLLAR LIDENT COLON AT_UNION  opt_type_params EQ union_body
   | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ type
+  | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
   | DOLLAR LIDENT COLON AT_EFFECT EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
@@ -245,7 +246,9 @@ eff_row
   | PIPE_BACK TYVAR GT
   ;
 
-eff_names : UIDENT | eff_names COMMA UIDENT ;
+/* An entry is an effect, or a row alias applied to row variables (`WithLog e`). */
+eff_names : eff_entry | eff_names COMMA eff_entry ;
+eff_entry : UIDENT | eff_entry TYVAR ;
 
 expr      : ctrl_expr | op_expr ;
 

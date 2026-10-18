@@ -36,10 +36,10 @@ use std::rc::Rc;
 
 use crate::lowering::{CtxVal, HookImpl};
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
+    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, RowEntry,
     SliceSlot, Ty, Variance,
 };
-use utilities::Aol;
+use utilities::{Aol, Slice, StrId};
 use utilities::{diag, Code, Diagnostic, ExternArg, Result, Span};
 
 use crate::typing::data::{self as ty, Type, TypeNode, Types, VarId};
@@ -669,6 +669,7 @@ impl<'a> Checker<'a> {
         self.collect_private_names(program);
         self.finalize_imports();
         self.register_types(program)?;
+        self.register_row_folds();
         self.validate_crepr_structs()?;
         // Row registration elaborates struct field types only to cache their rows
         // for the bridge; it must not report type errors (a field may reference a
@@ -1888,6 +1889,14 @@ impl<'a> Checker<'a> {
                 let mut chain: Vec<&str> = path[at..].to_vec();
                 chain.push(name);
                 let span = checker.ast.ty_span(*body).unwrap_or_else(|| Span::at(0));
+                if matches!(checker.ast.ty(*body), Ty::Row(_)) {
+                    return Err(diag!(
+                        Code::TypeCycle, span, 0,
+                        "row alias `{name}` expands to itself";
+                        note: "{}", chain.join(" -> ");
+                        help: "a row alias names a set of effects; list the effects in one of them"
+                    ));
+                }
                 return Err(diag!(
                     Code::TypeCycle, span, 0,
                     "type alias `{name}` expands to itself";
@@ -1897,7 +1906,12 @@ impl<'a> Checker<'a> {
             }
             path.push(name);
             let mut cons = Vec::new();
-            collect_tycons(checker.ast, *body, &mut cons);
+            match checker.ast.ty(*body) {
+                Ty::Row(row) => cons.extend(
+                    checker.ast.slice(row.entries).iter().map(|e| checker.ast.text(e.name)),
+                ),
+                _ => collect_tycons(checker.ast, *body, &mut cons),
+            }
             for c in cons {
                 visit(checker, c, path, done)?;
             }
@@ -5439,6 +5453,15 @@ impl<'a> Checker<'a> {
             _ => return None,
         };
         let (params, body) = self.aliases.get(name)?.clone();
+        if matches!(self.tnode(body), Ty::Row(_)) {
+            let span = self.ty_span_or_none(ty);
+            self.defer_type_error(diag!(
+                Code::TypeMismatch, span, 0,
+                "`{name}` is an effect row alias, not a type";
+                help: "use it inside an effect row, as in `A -> <{name}> B`"
+            ));
+            return Some(self.eng.fresh());
+        }
         args.reverse();
         self.check_type_arity(ty, false);
         let mut sub: HashMap<&'a str, Type> = HashMap::new();
@@ -5450,6 +5473,158 @@ impl<'a> Checker<'a> {
             sub.insert(*p, t);
         }
         Some(self.ty_of_ast(body, &mut sub))
+    }
+
+    /// Keep the first type error met while elaborating a type, reported once the
+    /// definition is checked (see `unknown_type`).
+    fn defer_type_error(&mut self, d: Diagnostic) {
+        if self.unknown_type.is_none() {
+            self.unknown_type = Some(d);
+        }
+    }
+
+    /// Elaborate an effect row: each entry's label, or a row alias's labels in its
+    /// place, extended onto the tail. A label occurs once when an alias brings it,
+    /// since an alias names a set. The tail is the written one together with any
+    /// an alias brings (all one row variable), or the closed row when there is none.
+    fn row_of_ast(
+        &mut self,
+        entries: Slice<RowEntry>,
+        tail: Option<StrId>,
+        tvars: &mut HashMap<&'a str, Type>,
+    ) -> Type {
+        let mut labels: Vec<(&'a str, bool)> = Vec::new();
+        let mut tails: Vec<Type> = Vec::new();
+        if let Some(t) = tail {
+            let name = self.text(t);
+            tails.push(*tvars.entry(name).or_insert_with(|| self.eng.fresh()));
+        }
+        self.expand_row_entries(entries, tvars, false, &mut labels, &mut tails);
+        let mut row = match tails.split_first() {
+            None => self.eng.types.row_empty(),
+            Some((&first, rest)) => {
+                for &other in rest {
+                    if let Err(d) = self.eng.unify(first, other, "in an effect row") {
+                        self.defer_type_error(d);
+                    }
+                }
+                first
+            }
+        };
+        for &(label, _) in labels.iter().rev() {
+            row = self.eng.types.row_extend(label, row);
+        }
+        row
+    }
+
+    /// Append a row's entries to `labels` (each tagged with whether an alias
+    /// brought it) and the tails its aliases bring to `tails`.
+    fn expand_row_entries(
+        &mut self,
+        entries: Slice<RowEntry>,
+        tvars: &mut HashMap<&'a str, Type>,
+        in_alias: bool,
+        labels: &mut Vec<(&'a str, bool)>,
+        tails: &mut Vec<Type>,
+    ) {
+        let ast = self.ast;
+        for entry in ast.slice(entries) {
+            let name = self.text(entry.name);
+            let args = ast.slice(entry.args);
+            let Some((params, body)) = self.aliases.get(name).cloned() else {
+                if !args.is_empty() {
+                    self.defer_type_error(diag!(
+                        Code::TypeMismatch, entry.span, 0,
+                        "effect `{name}` takes no parameters";
+                        note: "only a row alias declared with parameters is applied in a row"
+                    ));
+                }
+                let dup = labels.iter().any(|&(l, from)| l == name && (from || in_alias));
+                if !dup {
+                    labels.push((name, in_alias));
+                }
+                continue;
+            };
+            let Ty::Row(row) = ast.ty(body) else {
+                self.defer_type_error(diag!(
+                    Code::TypeMismatch, entry.span, 0,
+                    "type alias `{name}` is not an effect row";
+                    help: "an effect row names effects, or row aliases declared as \
+                           `$ {name} : @alias = <...>`"
+                ));
+                continue;
+            };
+            if args.len() > params.len() {
+                self.defer_type_error(diag!(
+                    Code::TypeMismatch, entry.span, 0,
+                    "row alias `{name}` takes {} parameter(s) but {} were given",
+                    params.len(), args.len()
+                ));
+                continue;
+            }
+            let mut sub: HashMap<&'a str, Type> = HashMap::new();
+            for (i, p) in params.iter().enumerate() {
+                let t = match args.get(i) {
+                    Some(&a) => {
+                        let a = self.text(a);
+                        *tvars.entry(a).or_insert_with(|| self.eng.fresh())
+                    }
+                    None => self.eng.fresh(),
+                };
+                sub.insert(*p, t);
+            }
+            self.expand_row_entries(row.entries, &mut sub, true, labels, tails);
+            if let Some(t) = row.tail {
+                let t = self.text(t);
+                tails.push(*sub.entry(t).or_insert_with(|| self.eng.fresh()));
+            }
+        }
+    }
+
+    /// The labels a parameterless, closed row alias stands for, through any
+    /// aliases it names, or None when it is not one (or names something else).
+    fn closed_row_alias_labels(&self, name: &str) -> Option<Vec<String>> {
+        let (params, body) = self.aliases.get(name)?;
+        let Ty::Row(row) = self.ast.ty(*body) else {
+            return None;
+        };
+        if !params.is_empty() || row.tail.is_some() {
+            return None;
+        }
+        let mut out: Vec<String> = Vec::new();
+        for entry in self.ast.slice(row.entries) {
+            let label = self.text(entry.name);
+            let more = if self.aliases.contains_key(label) {
+                if !self.ast.slice(entry.args).is_empty() {
+                    return None;
+                }
+                self.closed_row_alias_labels(label)?
+            } else {
+                vec![label.to_string()]
+            };
+            for l in more {
+                if !out.contains(&l) {
+                    out.push(l);
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// Hand the engine the row aliases a printed row folds back to: every closed,
+    /// parameterless one of at least two labels (a one-label alias is a mere
+    /// rename, and printing it would hide the effect's own name), largest first.
+    fn register_row_folds(&mut self) {
+        let mut folds: Vec<(String, Vec<String>)> = self
+            .aliases
+            .keys()
+            .filter_map(|name| {
+                let labels = self.closed_row_alias_labels(name)?;
+                (labels.len() >= 2).then(|| (name.to_string(), labels))
+            })
+            .collect();
+        folds.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+        self.eng.row_folds = folds;
     }
 
     /// Elaborate a tensor size: a `Nat` literal, or a (Nat-kinded) size variable
@@ -5590,29 +5765,15 @@ impl<'a> Checker<'a> {
             }
             Ty::Arrow { from, effect, to } => {
                 let (from, to) = (*from, *to);
-                // The row's tail (a shared row variable) or the empty closed row,
-                // then each written label extended onto it. An unannotated arrow is
-                // pure. Labels are validated as declared effects elsewhere.
+                // An unannotated arrow is pure.
                 let eff = match effect {
-                    Some(row) => {
-                        let mut e = match row.tail {
-                            Some(tail) => {
-                                let name = self.text(tail);
-                                *tvars.entry(name).or_insert_with(|| self.eng.fresh())
-                            }
-                            None => self.eng.types.row_empty(),
-                        };
-                        for &label in self.ast.slice(row.names).iter().rev() {
-                            let label = self.text(label);
-                            e = self.eng.types.row_extend(label, e);
-                        }
-                        e
-                    }
+                    Some(row) => self.row_of_ast(row.entries, row.tail, tvars),
                     None => self.eng.types.row_empty(),
                 };
                 let (f, t) = (self.ty_of_ast(from, tvars), self.ty_of_ast(to, tvars));
                 self.eng.types.arrow_eff(f, t, eff)
             }
+            Ty::Row(_) => self.eng.fresh(),
             Ty::Unit => self.eng.types.con(ty::UNIT),
             Ty::Tuple(items) => {
                 let items = self.ast.slice(*items);
@@ -6336,6 +6497,15 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *a, out);
             collect_tyvars(ast, *b, out);
         }
+        Ty::Row(row) => {
+            let args = ast.slice(row.entries).iter().flat_map(|e| ast.slice(e.args));
+            for &v in args.chain(row.tail.iter()) {
+                let name = ast.text(v);
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
         // A `@e X` type splice contributes no type variables: its type is unknown
         // until the driver expands it, after which this node no longer exists.
         Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
@@ -6371,7 +6541,7 @@ fn collect_tycons<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
         Ty::Record { fields, .. } => {
             ast.slice(*fields).iter().for_each(|f| collect_tycons(ast, f.ty, out))
         }
-        Ty::Arrow { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
+        Ty::Arrow { .. } | Ty::Row(_) | Ty::Var(_) | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
     }
 }
 

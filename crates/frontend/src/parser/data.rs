@@ -43,6 +43,7 @@ pub struct Ast {
     arms: Store<Arm>,
     bindings: Store<Binding>,
     lam_params: Store<LamParam>,
+    row_entries: Store<RowEntry>,
     items: Store<Item>,
     slice_slots: Store<SliceSlot>,
     /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
@@ -86,6 +87,7 @@ sliced! {
     Arm => arms,
     Binding => bindings,
     LamParam => lam_params,
+    RowEntry => row_entries,
     Item => items,
     SliceSlot => slice_slots,
 }
@@ -192,6 +194,8 @@ pub enum Item {
     /// `$ Name : @alias [a b ...] = ty`. `params` are the declared type parameters
     /// (mandatory: every type variable used in `ty` must be listed). An alias may
     /// partially instantiate another generic type, e.g. `MapInt : @alias v = Map Int v`.
+    /// A row alias has a [`Ty::Row`] body (`App : @alias = <Gpu, Log>`) and is
+    /// usable only inside another effect row.
     Alias {
         name: StrId,
         params: Slice<StrId>,
@@ -304,6 +308,8 @@ pub enum Ty {
         effect: Option<EffectRow>,
         to: Aol<Ty>,
     },
+    /// An effect row standing alone: only the body of a row alias.
+    Row(EffectRow),
     /// The unit type `{}`.
     Unit,
     /// A tuple type `{ A, B, ... }` (n >= 1).
@@ -329,8 +335,17 @@ pub struct RecField {
 /// An effect row `< A, B | `e >` on a function arrow.
 #[derive(Debug)]
 pub struct EffectRow {
-    pub names: Slice<StrId>,
+    pub entries: Slice<RowEntry>,
     pub tail: Option<StrId>,
+}
+
+/// One comma-separated entry of an effect row: an effect label, or a row alias
+/// applied to row variables (`<WithLog e, @io>`). `args` is empty for a label.
+#[derive(Clone, Copy, Debug)]
+pub struct RowEntry {
+    pub name: StrId,
+    pub args: Slice<StrId>,
+    pub span: Span,
 }
 
 // -- patterns ----------------------------------------------------------------

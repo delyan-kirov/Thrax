@@ -1325,3 +1325,91 @@ fn a_near_miss_instance_is_named_instead_of_none_in_scope() {
     assert!(text.contains("its second type parameter is `@int`, but this use needs `{}`"), "{text}");
     assert!(!text.contains("in scope"), "{text}");
 }
+
+const ROW_ALIAS_EFFECTS: &str = "$ @mod M\n\
+     $ Log : @effect = log : @int -> {},\n\
+     $ Gpu : @effect = draw : @int -> {},\n\
+     $ Net : @effect = fetch : @int -> @int,\n\
+     $ App : @alias = <Gpu, Log>\n";
+
+#[test]
+fn row_alias_expands_to_its_labels_and_prints_folded() {
+    let src = format!(
+        "{ROW_ALIAS_EFFECTS}\
+         $ frame : @int -> <App> @int = \\x = log x; draw x; x\n\
+         $ wide : @int -> <Log, Gpu, Net> @int = \\x = fetch (frame x)\n\
+         $ one : @int -> <Log> @int = \\x = log x; x\n"
+    );
+    assert_eq!(type_of(&src, "frame"), "@int -> <App> @int");
+    // Every label of `App` is present, so the row prints with the alias.
+    assert_eq!(type_of(&src, "wide"), "@int -> <App, Net> @int");
+    // Not all of them: the labels print as written.
+    assert_eq!(type_of(&src, "one"), "@int -> <Log> @int");
+}
+
+#[test]
+fn row_alias_nests_and_keeps_a_label_once() {
+    let src = format!(
+        "{ROW_ALIAS_EFFECTS}\
+         $ Big : @alias = <App, Net>\n\
+         $ f : @int -> <Big> @int = \\x = fetch x; log x; x\n\
+         $ g : @int -> <App, Log> @int = \\x = draw x; x\n"
+    );
+    assert_eq!(errors(&src), "");
+    assert_eq!(type_of(&src, "f"), "@int -> <Big> @int");
+    assert_eq!(type_of(&src, "g"), "@int -> <App> @int");
+}
+
+#[test]
+fn parameterized_row_alias_takes_the_tail() {
+    let src = format!(
+        "{ROW_ALIAS_EFFECTS}\
+         $ WithLog : @alias e = <Log | e>\n\
+         $ f : @int -> <WithLog e> @int = \\x = log x; x\n\
+         $ g : @int -> <WithLog e, Net | e> @int = \\x = fetch x\n\
+         $ closed : @int -> <WithLog> @int = \\x = log x; x\n"
+    );
+    assert_eq!(type_of(&src, "f"), "@int -> <Log | a> @int");
+    assert_eq!(type_of(&src, "g"), "@int -> <Log, Net | a> @int");
+    // Under-applied, the tail is a fresh variable, as for a type alias.
+    assert_eq!(type_of(&src, "closed"), "@int -> <Log | a> @int");
+}
+
+#[test]
+fn row_alias_rejects_a_label_outside_it() {
+    let src = format!("{ROW_ALIAS_EFFECTS}$ f : @int -> <App> @int = \\x = fetch x\n");
+    let e = errors(&src);
+    assert!(e.contains("effect `Net` is performed but not handled"), "got: {e:?}");
+}
+
+#[test]
+fn unhandled_label_names_the_alias_it_came_from() {
+    let src = format!(
+        "{ROW_ALIAS_EFFECTS}\
+         $ frame : @int -> <App> @int = \\x = log x; draw x; x\n\
+         $ g : @int -> <Gpu> @int = \\x = frame x\n"
+    );
+    let e = errors(&src);
+    assert!(
+        e.contains("effect `Log` (part of `App`) is performed but not handled"),
+        "got: {e:?}"
+    );
+}
+
+#[test]
+fn row_alias_misuse_is_reported() {
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ x : App = 3\n"));
+    assert!(e.contains("`App` is an effect row alias, not a type"), "got: {e:?}");
+    let e = errors(&format!(
+        "{ROW_ALIAS_EFFECTS}$ N : @alias = @int\n$ f : @int -> <N> @int = \\x = x\n"
+    ));
+    assert!(e.contains("type alias `N` is not an effect row"), "got: {e:?}");
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @int -> <App e> @int = \\x = x\n"));
+    assert!(e.contains("row alias `App` takes 0 parameter(s) but 1 were given"), "got: {e:?}");
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ f : @int -> <Log e> @int = \\x = x\n"));
+    assert!(e.contains("effect `Log` takes no parameters"), "got: {e:?}");
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ W : @alias = <Log | e>\n"));
+    assert!(e.contains("declares no type parameters"), "got: {e:?}");
+    let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ A1 : @alias = <A2>\n$ A2 : @alias = <A1>\n"));
+    assert!(e.contains("row alias `A1` expands to itself"), "got: {e:?}");
+}

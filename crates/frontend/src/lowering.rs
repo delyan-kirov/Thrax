@@ -1503,7 +1503,7 @@ impl<'a> Lowerer<'a> {
                     self.collect_meta_types(f.ty);
                 }
             }
-            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit => {}
+            Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::Unit | Ty::Row(_) => {}
         }
     }
 
