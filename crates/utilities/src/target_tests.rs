@@ -82,3 +82,30 @@ fn wasm_toolchain_targets_node() {
     assert_eq!(tc.exe_suffix, ".js");
     assert!(!tc.rpath);
 }
+
+#[test]
+fn only_linux_offers_a_libc_choice() {
+    assert_eq!(Libc::parse("musl"), Some(Libc::Musl));
+    assert_eq!(Libc::parse("gnu"), Some(Libc::Gnu));
+    assert_eq!(Libc::parse("glibc"), None);
+    let linux = Target { os: Os::Linux, arch: Arch::X86_64 };
+    assert_eq!(linux.default_libc(), Some(Libc::Musl));
+    for os in [Os::Macos, Os::Windows, Os::Wasi] {
+        assert_eq!(Target { os, arch: Arch::X86_64 }.default_libc(), None);
+    }
+}
+
+#[test]
+fn musl_toolchain_links_statically_through_the_specs_file() {
+    let sysroot = std::path::Path::new("/opt/musl");
+    let specs = std::path::Path::new("/tmp/out/musl.specs");
+    let text = musl_specs(sysroot);
+    assert!(text.contains("-isystem /opt/musl/include"));
+    assert!(text.contains("/opt/musl/lib/crti.o"));
+    if std::env::var_os("THRAX_MUSL_CC").is_none() {
+        let tc = musl_toolchain(sysroot, specs);
+        assert!(tc.cflags.iter().any(|f| f == "-static"));
+        assert!(tc.cflags.iter().any(|f| f == "-specs=/tmp/out/musl.specs"));
+        assert!(!tc.rpath);
+    }
+}

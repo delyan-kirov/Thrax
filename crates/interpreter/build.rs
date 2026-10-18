@@ -4,8 +4,9 @@
 //!
 //! libffi is a rarely-changing native dependency, so this does NOT build it:
 //! it links a PREBUILT one, resolved in order:
-//!   1. the vendored `external/artifacts` (built by `external/rebuild-libffi.sh`
-//!      in the heavy `nix develop ./external` shell), a static archive;
+//!   1. `$THRAX_LIBFFI`, a prefix holding `lib/libffi.a` and `include/ffi.h`,
+//!      linked statically. `thxdo build release` builds the vendored
+//!      `external/libffi` into `external/artifacts/libffi` and points this at it;
 //!   2. the environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and
 //!      CI export these), linked dynamically;
 //!   3. `pkg-config libffi`;
@@ -33,16 +34,16 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=src/ffi_shim.c");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=THRAX_LIBFFI");
     println!("cargo:rerun-if-env-changed=LIBFFI");
     println!("cargo:rerun-if-env-changed=LIBFFI_DEV");
 
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let repo = manifest.join("../..");
 
     build_thraxstd(&manifest, &out);
 
-    let (include, link) = resolve_libffi(&repo);
+    let (include, link) = resolve_libffi();
 
     // Compile the shim against the chosen libffi's headers and archive it.
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
@@ -111,11 +112,18 @@ fn build_thraxstd(manifest: &Path, out: &Path) {
     println!("cargo:rustc-link-arg-tests=-rdynamic");
 }
 
-fn resolve_libffi(repo: &Path) -> (Option<PathBuf>, Link) {
-    // 1. The vendored prebuilt (external/rebuild-libffi.sh output).
-    let art = repo.join("external/artifacts");
-    if art.join("lib/libffi.a").exists() && art.join("include/ffi.h").exists() {
-        return (Some(art.join("include")), Link::Static(art.join("lib")));
+fn resolve_libffi() -> (Option<PathBuf>, Link) {
+    // 1. An explicitly named static libffi (the release build's vendored one).
+    if let Some(prefix) = env::var_os("THRAX_LIBFFI") {
+        let prefix = PathBuf::from(prefix);
+        let archive = prefix.join("lib/libffi.a");
+        assert!(
+            archive.exists() && prefix.join("include/ffi.h").exists(),
+            "THRAX_LIBFFI={} holds no lib/libffi.a and include/ffi.h",
+            prefix.display()
+        );
+        println!("cargo:rerun-if-changed={}", archive.display());
+        return (Some(prefix.join("include")), Link::Static(prefix.join("lib")));
     }
     // 2. A libffi provided by the environment (nix dev shell / CI).
     if let (Ok(lib), Ok(dev)) = (env::var("LIBFFI"), env::var("LIBFFI_DEV")) {

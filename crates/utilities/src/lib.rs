@@ -21,7 +21,7 @@ pub use arena::Arena;
 pub use cabi::{CField, CKind, CLayout, ExternArg};
 pub use error::{Aside, Code, Diagnostic, Label, Line, Result, Span};
 pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
-pub use target::{toolchain, Arch, Os, Target, Toolchain};
+pub use target::{musl_specs, musl_toolchain, toolchain, Arch, Libc, Os, Target, Toolchain};
 
 #[cfg(test)]
 mod target_tests;

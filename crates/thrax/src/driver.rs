@@ -911,14 +911,49 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
 /// toolchain (`cc` natively, `emcc` for wasm). Writes `<stem>.c` and the
 /// executable into a `thrax-out/` directory beside the source (kept out of the
 /// source tree, gitignore-friendly); prints the path built.
-pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
+///
+/// `libc` is the `--libc=` choice; `None` takes the target's default, which on
+/// Linux is musl when a sysroot ships with this compiler and nothing shared is
+/// linked.
+pub fn cmd_build(
+    path: &str,
+    target: utilities::Target,
+    libc: Option<utilities::Libc>,
+) -> ExitCode {
     let (lowered, _loaded, plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
     };
     let emitted = ccg::emit_program(&lowered, frontend::ENTRY, ccg::Entry::Main, target);
 
-    let tc = utilities::toolchain(target);
+    let src = Path::new(path);
+    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let dir = src.parent().unwrap_or_else(|| Path::new(".")).join("thrax-out");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("thrax: cannot create {}: {e}", dir.display());
+        return ExitCode::FAILURE;
+    }
+
+    let mut libs: Vec<&str> = emitted.libraries.iter().map(String::as_str).collect();
+    libs.extend(plan.libs.iter().map(String::as_str));
+    let musl = match choose_libc(target, libc, &libs, emitted.uses_compiler) {
+        Ok(musl) => musl,
+        Err(msg) => {
+            eprintln!("thrax: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let tc = match &musl {
+        Some(sysroot) => {
+            let specs = dir.join("musl.specs");
+            if let Err(e) = std::fs::write(&specs, utilities::musl_specs(sysroot)) {
+                eprintln!("thrax: cannot write {}: {e}", specs.display());
+                return ExitCode::FAILURE;
+            }
+            utilities::musl_toolchain(sysroot, &specs)
+        }
+        None => utilities::toolchain(target),
+    };
     if tc.cc.is_empty() {
         eprintln!("thrax: {}", tc.hint);
         return ExitCode::FAILURE;
@@ -945,13 +980,6 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
         None
     };
 
-    let src = Path::new(path);
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
-    let dir = src.parent().unwrap_or_else(|| Path::new(".")).join("thrax-out");
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("thrax: cannot create {}: {e}", dir.display());
-        return ExitCode::FAILURE;
-    }
     let c_path = dir.join(format!("{stem}.c"));
     let out_path = dir.join(format!("{stem}{}", tc.exe_suffix));
 
@@ -1025,6 +1053,87 @@ pub fn cmd_build(path: &str, target: utilities::Target) -> ExitCode {
 /// The directory holding `libthrax.so`: beside this executable (a cargo build,
 /// `target/<profile>/`), or `<prefix>/lib` for `<prefix>/bin/thrax` (the Nix
 /// package).
+/// Pick the C library for a build: `Some(sysroot)` links statically against
+/// the musl there, `None` uses the target's own toolchain.
+///
+/// An explicit `--libc` is honoured or refused with the reason. Without one,
+/// Linux defaults to musl, but only when a musl sysroot is installed with this
+/// compiler and the program links nothing shared; otherwise the build quietly
+/// uses glibc. A development compiler (`target/debug`) ships no sysroot, so it
+/// always builds against the system libraries.
+fn choose_libc(
+    target: utilities::Target,
+    libc: Option<utilities::Libc>,
+    libs: &[&str],
+    uses_compiler: bool,
+) -> Result<Option<PathBuf>, String> {
+    let static_ok = !uses_compiler && libs.iter().all(|l| links_statically(l));
+    match libc {
+        None => {
+            let wants_musl = target.default_libc() == Some(utilities::Libc::Musl);
+            if wants_musl && target == utilities::Target::host() && static_ok {
+                Ok(musl_sysroot())
+            } else {
+                Ok(None)
+            }
+        }
+        Some(_) if target.default_libc().is_none() => Err(format!(
+            "`--libc` does not apply to {}, which has one C library",
+            target.name()
+        )),
+        Some(utilities::Libc::Gnu) => Ok(None),
+        Some(utilities::Libc::Musl) => {
+            if target != utilities::Target::host() {
+                return Err(format!(
+                    "the musl sysroot is built for the host ({}), not {}",
+                    utilities::Target::host().name(),
+                    target.name()
+                ));
+            }
+            if uses_compiler {
+                return Err("this program runs the compiler (`@lex`, `@parse_str`, \
+                     `@eval`, ...), which links the shared libthrax, so it cannot \
+                     be linked statically against musl; use --libc=gnu"
+                    .to_string());
+            }
+            if let Some(lib) = libs.iter().find(|l| !links_statically(l)) {
+                return Err(format!(
+                    "`{lib}` is linked as a shared library, which a static musl \
+                     build cannot do; point the `@extern` at its `.a` archive, \
+                     or use --libc=gnu"
+                ));
+            }
+            match musl_sysroot() {
+                Some(sysroot) => Ok(Some(sysroot)),
+                None => Err("no musl sysroot found: set THRAX_MUSL to one (a prefix \
+                     holding include/ and lib/libc.a), or use a compiler built by \
+                     `thxdo build release`, which ships one in its lib/musl"
+                    .to_string()),
+            }
+        }
+    }
+}
+
+/// Whether a library a program links can go into a static musl executable:
+/// the C library's own parts, which musl provides, or a `.a` archive.
+fn links_statically(lib: &str) -> bool {
+    matches!(lib, "" | "libc" | "c" | "libm" | "m" | "pthread" | "libpthread")
+        || lib.ends_with(".a")
+}
+
+/// The musl sysroot to link against: `$THRAX_MUSL`, else the `lib/musl` a
+/// release compiler ships beside its `bin/`.
+fn musl_sysroot() -> Option<PathBuf> {
+    let is_sysroot = |d: &Path| d.join("lib/libc.a").exists() && d.join("include").is_dir();
+    if let Some(dir) = std::env::var_os("THRAX_MUSL") {
+        let dir = PathBuf::from(dir);
+        return is_sysroot(&dir).then_some(dir);
+    }
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let dir = exe.parent()?.parent()?.join("lib/musl");
+    is_sysroot(&dir).then_some(dir)
+}
+
 fn libthrax_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let bin = exe.parent()?;
@@ -1324,6 +1433,28 @@ pub fn cmd_lex(path: &str) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use super::choose_libc;
+    use utilities::{Libc, Target};
+
+    #[test]
+    fn a_shared_library_keeps_the_default_build_on_glibc() {
+        let linux = Target::host();
+        assert_eq!(choose_libc(linux, None, &["raylib"], false), Ok(None));
+        assert_eq!(choose_libc(linux, None, &["m", "pthread"], true), Ok(None));
+        assert_eq!(choose_libc(linux, Some(Libc::Gnu), &["m"], false), Ok(None));
+    }
+
+    #[test]
+    fn explicit_musl_refuses_what_it_cannot_link() {
+        let host = Target::host();
+        let shared = choose_libc(host, Some(Libc::Musl), &["m", "raylib"], false);
+        assert!(shared.unwrap_err().contains("`raylib`"));
+        let compiler = choose_libc(host, Some(Libc::Musl), &[], true);
+        assert!(compiler.unwrap_err().contains("libthrax"));
+        let wasm = Target::parse("wasm32-wasi").unwrap();
+        assert!(choose_libc(wasm, Some(Libc::Gnu), &[], false).is_err());
+    }
+
     #[test]
     fn link_directives_are_collected_in_order_and_drained() {
         use interpreter::machine::{push_link, take_link_directives};
