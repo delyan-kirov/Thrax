@@ -48,9 +48,13 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// Install the program's C-repr struct layouts before evaluation.
-pub fn set_layouts(map: std::collections::HashMap<String, utilities::CLayout>) {
-    LAYOUTS.with(|l| *l.borrow_mut() = map);
+/// Install the program's C-repr struct layouts before evaluation, returning
+/// the ones they replace. A program that evaluates another at run time (`@eval`)
+/// nests a machine, so the caller puts the outer layouts back afterwards.
+pub fn set_layouts(
+    map: std::collections::HashMap<String, utilities::CLayout>,
+) -> std::collections::HashMap<String, utilities::CLayout> {
+    LAYOUTS.with(|l| std::mem::replace(&mut *l.borrow_mut(), map))
 }
 
 fn layout_of(name: &str) -> Option<utilities::CLayout> {

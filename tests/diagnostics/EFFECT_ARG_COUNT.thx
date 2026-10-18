@@ -1,0 +1,6 @@
+$ @mod EFFECT_ARG_COUNT
+
+$ Box : @effect a = take : @int -> a,
+$ Log : @effect = log : @str -> {},
+
+$ f : {} -> <Box @int @str> @int = \u = Box.take 1  #~ error[TYPE_MISMATCH]: effect `Box` takes 1 parameter(s) but 2 were given

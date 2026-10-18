@@ -3,12 +3,14 @@ $ @mod STDLIB_PAR
 # \file STDLIB_PAR.thx
 # \info Pure parallelism with the standard library's `PAR`: `par` starts a pure
 #       task and returns its `Future`, `get` joins it, and `PAR.map` /
-#       `PAR.reduce` split a vector over parallel tasks. Natively the tasks run
+#       `PAR.reduce` split a vector over parallel tasks, `LA.par_map` a tensor
+#       along its leading axis. Natively the tasks run
 #       on a pool of threads; the interpreter runs each one on the spot. A task
 #       is pure, so both give the same answers.
 
 $ with PAR
 $ with VEC
+$ with LA
 
 $ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
 
@@ -48,7 +50,46 @@ $ ck_nested : @int =
 	let outer = par (\u = PAR.get (par (\w = fib 12)) + PAR.get (par (\w = fib 11))) in
 	if PAR.get outer == fib 13 => 0 else 1
 
+# Over a tensor, the leading axis is split into O(1) slices, one task each:
+# rows of a matrix, elements of a vector. Equal to the sequential `LA.map`.
+$ tv : [12]@int = [3, 9, 4, 12, 7, 5, 10, 8, 6, 11, 2, 13]
+$ tm : [3, 2]@int = [ [1, 2], [3, 4], [5, 6] ]
+
+$ same : [n]@int -> [n]@int -> @int -> @int = \x y i =
+	if i == LA.length x => 0
+	else if x.[i] == y.[i] => same x y (i + 1)
+	else 1
+
+$ ck_tensor : @int =
+	let seq_v = LA.map fib tv in
+	let row_sum = \r = r.[0] + r.[1] in
+	let m = par_map row_sum tm in
+	same (par_map fib tv) seq_v 0
+	+ same (par_map_chunks 5 fib tv) seq_v 0
+	+ same (par_map_chunks 100 fib tv) seq_v 0
+	+ same m (LA.map row_sum tm) 0
+	+ (if m.[2] == 11 && seq_v.[3] == 144 => 0 else 1)
+
+# A task that performs an effect takes its handler along (`par_with`): the
+# handler runs on the task's thread, so the effect never crosses threads.
+$ Emit : @effect = emit : @int -> {},
+
+$ total : ({} -> <Emit> {}) -> @int = \body =
+	let run =
+		do body {}
+		ctl k
+		| Emit.emit n => \acc = k {} (acc + n)
+		| u => \acc = acc
+	in run 0
+
+$ emit_fibs : @int -> <Emit> {} = \n = if n < 0 => {} else (Emit.emit (fib n); emit_fibs (n - 1))
+
+$ ck_with : @int =
+	let a = par_with total (\u = emit_fibs 10) in
+	let b = par_with total (\u = emit_fibs 12) in
+	if PAR.get a == 143 && PAR.get b == 376 => 0 else 1
+
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : @int = ck_one + ck_both + ck_map + ck_chunks + ck_reduce + ck_nested
+$ test : @int = ck_one + ck_both + ck_map + ck_chunks + ck_reduce + ck_nested + ck_tensor + ck_with
 
 $ @e <| assert (test == 0) "STDLIB_PAR: a check failed"

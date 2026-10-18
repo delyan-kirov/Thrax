@@ -272,6 +272,8 @@ pub fn emit_program(
             out.push_str(&format!(
                 "  Value* e = THxK_call(THxRT_glob({entry_c}), _arg);\n"
             ));
+            // A program ends after the `@spawn` tasks it started.
+            out.push_str("  THxPAR_join_io();\n");
             out.push_str("  int _code = (int)THxVALUE_as_int(e);\n");
             out.push_str("  return _code;\n");
         }

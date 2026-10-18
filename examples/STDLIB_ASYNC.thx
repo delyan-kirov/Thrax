@@ -5,6 +5,9 @@ $ @mod STDLIB_ASYNC
 #       spawned into a `run_async` group, interleaved by `yield`, and talking
 #       over bounded channels. A producer and a consumer share a channel of
 #       capacity 2, so the producer is parked whenever it gets two values ahead.
+#       Channels are typed by their messages (`Chan @int`, `Chan @str`), and a
+#       task may perform effects of its own, served by a handler outside the
+#       group.
 
 $ with ASYNC
 $ with OPT
@@ -12,12 +15,12 @@ $ with OPT
 # ---- producer / consumer ----
 
 # Send 1..n, then 0 to say it is done.
-$ produce : @int -> @int -> @int -> <Async> {} = \c i n =
+$ produce : Chan @int -> @int -> @int -> <Async> {} = \c i n =
 	if i > n => Async.send {c, 0}
 	else (Async.send {c, i}; produce c (i + 1) n)
 
 # Sum what arrives until the 0, then report the sum on `out`.
-$ consume : @int -> @int -> @int -> <Async> {} = \c out acc =
+$ consume : Chan @int -> Chan @int -> @int -> <Async> {} = \c out acc =
 	let v = Async.recv c in
 	if v == 0 => Async.send {out, acc}
 	else consume c out (acc + v)
@@ -42,7 +45,7 @@ $ fan_in : {} -> <Async> @int = \u =
 	Async.recv out
 
 # Add up values until `ends` producers have said they are done.
-$ collect : @int -> @int -> @int -> <Async> @int = \c ends acc =
+$ collect : Chan @int -> @int -> @int -> <Async> @int = \c ends acc =
 	if ends == 0 => acc
 	else
 		let v = Async.recv c in
@@ -54,11 +57,11 @@ $ ck_fan_in : @int = if unwrap_or (run_async fan_in) 0 == 465 => 0 else 1
 
 # Two tasks log to one channel, yielding after each entry: round-robin puts
 # their entries in alternating order (each digit is a task, then its step).
-$ logger : @int -> @int -> @int -> <Async> {} = \log tag i =
+$ logger : Chan @int -> @int -> @int -> <Async> {} = \log tag i =
 	if i > 3 => {}
 	else (Async.send {log, tag * 10 + i}; Async.yield {}; logger log tag (i + 1))
 
-$ read_n : @int -> @int -> @int -> <Async> @int = \log n acc =
+$ read_n : Chan @int -> @int -> @int -> <Async> @int = \log n acc =
 	if n == 0 => acc else read_n log (n - 1) (acc * 100 + Async.recv log)
 
 $ interleaved : {} -> <Async> @int = \u =
@@ -86,7 +89,56 @@ $ stuck : {} -> <Async> @int = \u = let c = Async.chan 1 in Async.recv c
 
 $ ck_deadlock : @int = if is_none (run_async stuck) => 0 else 1
 
+# ---- typed messages ----
+
+# The group's channels carry strings here: `Async`'s message type is fixed by
+# the handler for the whole group.
+$ shout : Chan @str -> @str -> <Async> {} = \c word = Async.send {c, word ++ "!"}
+
+$ words : {} -> <Async> @str = \u =
+	let c = Async.chan 2 in
+	Async.spawn (\w = shout c "hey");
+	Async.spawn (\w = shout c "ho");
+	let a = Async.recv c in
+	a ++ " " ++ Async.recv c
+
+$ ck_words : @int = if unwrap_or (run_async words) "" == "hey! ho!" => 0 else 1
+
+# ---- effectful tasks ----
+
+# Tasks perform `Tally` besides `Async`: the handler around the group serves
+# it, so every task's `bump` lands in one count.
+$ Tally : @effect = bump : @int -> {},
+
+$ worker : Chan @int -> @int -> <Async, Tally> {} = \done n =
+	Tally.bump n; Async.yield {}; Tally.bump n; Async.send {done, n}
+
+$ tallied : {} -> <Async, Tally> @int = \u =
+	let done = Async.chan 0 in
+	Async.spawn (\w = worker done 1);
+	Async.spawn (\w = worker done 10);
+	Async.recv done + Async.recv done
+
+# A count of every `bump`, the handler threading it as a parameter.
+$ count : ({} -> <Tally> a) -> {a, @int} = \body =
+	let run =
+		do body {}
+		ctl k
+		| Tally.bump n => \acc = k {} (acc + n)
+		| r => \acc = {r, acc}
+	in run 0
+
+$ ck_tally : @int =
+	let r = count (\u = unwrap_or (run_async tallied) 0) in
+	if r.0 == 11 && r.1 == 22 => 0 else 1
+
+# `run_async` polls no descriptors, so a task waiting on one stays blocked
+# (`ASYNC.run_io` would sleep in poll(2) instead).
+$ ck_wait_blocked : @int =
+	if is_none (run_async (\u = Async.wait_fd {0, pollin}; 1)) => 0 else 1
+
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : @int = ck_pipeline + ck_fan_in + ck_interleaved + ck_child + ck_deadlock
+$ test : @int = ck_pipeline + ck_fan_in + ck_interleaved + ck_child + ck_deadlock + ck_words + ck_tally
+	+ ck_wait_blocked
 
 $ @e <| assert (test == 0) "STDLIB_ASYNC: a check failed"

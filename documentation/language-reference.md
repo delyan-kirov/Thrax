@@ -890,6 +890,32 @@ $ Exn   : @effect = throw : Str -> a,
 $ Yield : @effect = yield : @int -> {},
 ```
 
+An effect may take type parameters, written after `@effect` like a struct's.
+In a row the effect is applied to its arguments, `<State @str>`. One handler
+serves every operation the body performs on it, so it fixes the parameters for
+all of them: under one `State` handler every `get` and `put` is at one type. A
+parameter may be a row variable, for an operation that takes an effectful
+function, and a bare mention of the effect inside its own declaration stands for
+its parameters. Arguments left out of a row (`<State>`) are inferred.
+
+```thrax
+$ State : @effect s = get : {} -> s, put : s -> {},
+$ Async : @effect m e = spawn : ({} -> <Async m e | e> {}) -> {}, send : m -> {},
+$ count : {} -> <State @int> @int = \u = let n = get {} in put (n + 1); n
+```
+
+An operation's type may also use variables the effect does not declare, like
+`throw` above. Each use chooses those types, so a handler clause sees them as
+opaque: it can pass such a value along (resume with the argument it was given,
+store it), but it cannot make one up or inspect it. A clause that needs a
+concrete type takes it from an effect parameter instead.
+
+```thrax
+$ Exn : @effect = throw : @str -> a,
+$ safe : @int = do 1 + Exn.throw "no" ctl k | Exn.throw m => 0     # aborts: fine
+# `| Exn.throw m => k 0` is an error: `k` wants `a` of `Exn.throw`, not @int
+```
+
 ## 8.2 Performing an operation
 Just call it; there is no `perform` keyword. A use injects the effect into the
 ambient row.

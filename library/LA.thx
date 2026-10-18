@@ -57,3 +57,35 @@ $ matmul : @ctx {IAdd t, IMul t, IZero t} -> [@contra m, @co k]t -> [@contra k, 
 	= \e a b =
 	let bt = transpose b in
 	create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))
+
+# ---- maps ----
+
+# `map f t` applies `f` along the leading axis: to each element of a vector, to
+# each row of a matrix.
+$ map : (a -> b) -> [n]a -> [n]b = \f t = create t (\i = f t.[i])
+
+# `map f t` with the leading axis split into `chunks` slices (O(1) views), each
+# mapped by a pure parallel task. The result equals `map f t`, element for
+# element; `f` is pure, so the order the tasks run in cannot show.
+$ par_map_chunks : @int -> (a -> b) -> [n]a -> [n]b = \chunks f t =
+	let n = length t in
+	let c = if chunks < 1 => 1 else chunks in
+	let size = if n < c => 1 else (n + c - 1) / c in
+	let parts = await_parts (spawn_parts f t size 0 (@vec_new {})) 0 (@vec_new {}) in
+	create t (\i = (@vec_get parts (i / size)).[i % size])
+
+$ par_map : (a -> b) -> [n]a -> [n]b = \f t = par_map_chunks 64 f t
+
+$ spawn_parts : (a -> b) -> [n]a -> @int -> @int -> @vec (@future ([k]b))
+	-> @vec (@future ([k]b)) = \f t size lo acc =
+	let n = length t in
+	if lo >= n => acc
+	else
+		let hi = if lo + size > n => n else lo + size in
+		let part = slice t lo hi in
+		let fut = @par (\u = map f part) in
+		spawn_parts f t size hi (@vec_push acc fut)
+
+$ await_parts : @vec (@future ([k]b)) -> @int -> @vec ([k]b) -> @vec ([k]b) = \futs i acc =
+	if i >= @vec_len futs => acc
+	else await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))

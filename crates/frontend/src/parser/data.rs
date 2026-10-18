@@ -201,8 +201,14 @@ pub enum Item {
         params: Slice<StrId>,
         ty: Aol<Ty>,
     },
-    /// `$ Name : @effect = op : ty, ...`
-    Effect { name: StrId, ops: Slice<FieldDecl> },
+    /// `$ Name : @effect params = op : ty, ...`. An operation's type may mention
+    /// only the effect's parameters: a handler fixes them for every operation it
+    /// serves.
+    Effect {
+        name: StrId,
+        params: Slice<StrId>,
+        ops: Slice<FieldDecl>,
+    },
     /// `$ with module [= rename]`. `span` covers the module path.
     Import {
         module: Slice<StrId>,
@@ -339,12 +345,13 @@ pub struct EffectRow {
     pub tail: Option<StrId>,
 }
 
-/// One comma-separated entry of an effect row: an effect label, or a row alias
-/// applied to row variables (`<WithLog e, @io>`). `args` is empty for a label.
+/// One comma-separated entry of an effect row: an effect label with its type
+/// arguments (`<Chan @int e>`), or a row alias applied to its parameters
+/// (`<WithLog e, @io>`). `args` are type atoms, empty for a bare label.
 #[derive(Clone, Copy, Debug)]
 pub struct RowEntry {
     pub name: StrId,
-    pub args: Slice<StrId>,
+    pub args: Slice<Aol<Ty>>,
     pub span: Span,
 }
 

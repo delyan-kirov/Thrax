@@ -1,0 +1,16 @@
+$ @mod EFFECT_RESUME_RIGID
+
+# `take`'s result is chosen at each use, so a handler cannot resume it with a
+# value of its own (#290: an `@int` would reach a use at `@str`).
+$ Box : @effect = take : @int -> a,
+
+$ use : {} -> <Box> @int = \u =
+	let s : @str = Box.take 0 in
+	let n : @int = Box.take 1 in
+	n
+
+$ run : @int =
+	do use {}
+	ctl k
+	| Box.take x => k x  #~ error[TYPE_MISMATCH]: expected `a` of `Box.take`, found @int
+	| r => r

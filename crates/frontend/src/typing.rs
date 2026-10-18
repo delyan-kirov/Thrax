@@ -118,6 +118,14 @@ pub struct Checker<'a> {
     /// scheme. Used to type a handler clause head, which cannot be resolved by
     /// inference alone.
     effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    /// The same for effects imported from other modules, consulted after
+    /// `effect_ops` so a handler of an imported effect types its clauses too.
+    imported_effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    /// How many type parameters each visible effect declares.
+    effect_arity: HashMap<&'a str, usize>,
+    /// While an effect's operations are elaborated: that effect and its
+    /// parameters, which a bare mention of it in an operation type stands for.
+    effect_self: Option<(&'a str, Type)>,
     /// Operation names several EFFECTS declare, mapped to one candidate per effect.
     /// The only argument-type-driven selection left (see [`Cand`]).
     overloads: HashMap<&'a str, Vec<Cand<'a>>>,
@@ -377,6 +385,9 @@ impl<'a> Checker<'a> {
             crepr_layouts: HashMap::new(),
             aliases: HashMap::new(),
             effect_ops: HashMap::new(),
+            imported_effect_ops: HashMap::new(),
+            effect_arity: HashMap::new(),
+            effect_self: None,
             overloads: HashMap::new(),
             pending: Vec::new(),
             local_defs: HashSet::new(),
@@ -678,7 +689,7 @@ impl<'a> Checker<'a> {
         let saved_unknown = self.unknown_type.take();
         self.register_struct_rows();
         self.unknown_type = saved_unknown;
-        self.register_effects(program);
+        self.register_effects(program)?;
 
         let defs: Vec<Def<'a>> = self
             .ast
@@ -912,12 +923,19 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(effect) {
                 continue;
             }
+            if let Some(&n) = other.effect_arity.get(effect) {
+                self.effect_arity.insert(effect, n);
+            }
             for (&op, &scheme) in &other.effect_ops[effect] {
                 let qualified = self.import_scheme(scheme);
                 self.qualified
                     .entry(effect)
                     .or_default()
                     .insert(op, vec![qualified]);
+                self.imported_effect_ops
+                    .entry(effect)
+                    .or_default()
+                    .insert(op, qualified);
             }
         }
         let module = other.module_name;
@@ -996,9 +1014,10 @@ impl<'a> Checker<'a> {
                 );
                 self.eng.types.arrow_eff(f, t, e)
             }
-            TypeNode::RowExtend(label, rest) => {
+            TypeNode::RowExtend(label, args, rest) => {
+                let a = self.import_ty(args, map);
                 let r = self.import_ty(rest, map);
-                self.eng.types.add(TypeNode::RowExtend(label, r))
+                self.eng.types.add(TypeNode::RowExtend(label, a, r))
             }
             TypeNode::Tuple(items) => {
                 let items = self.eng.types.items(items).to_vec();
@@ -1027,15 +1046,6 @@ impl<'a> Checker<'a> {
         } else {
             self.eng.types.row_empty()
         }
-    }
-
-    fn scheme_of_sig(&mut self, sig: Aol<Ty>) -> Type {
-        self.eng.enter_level();
-        let mut tvars = HashMap::new();
-        let ty = self.ty_of_ast(sig, &mut tvars);
-        self.eng.leave_level();
-        self.eng.generalize(ty);
-        self.eng.zonk(ty)
     }
 
     /// Elaborate a signature into the type callers see and, when it opens with a
@@ -1155,6 +1165,15 @@ impl<'a> Checker<'a> {
             self.bind(defs[i].name, v);
             declared.push(v);
         }
+        // A member with a signature has its declared shape before any body in
+        // the group is checked. Otherwise a call to it from a sibling checked
+        // first meets a bare variable, and the effect of applying it is equated
+        // with that sibling's ambient row, which the signature later closes.
+        for (&i, decl) in component.iter().zip(&declared) {
+            if component.len() > 1 {
+                self.bind_signature(&defs[i], *decl)?;
+            }
+        }
         for (&i, decl) in component.iter().zip(&declared) {
             self.check_def_body(&defs[i], *decl)?;
         }
@@ -1167,6 +1186,20 @@ impl<'a> Checker<'a> {
             types.insert(defs[i].name, self.eng.zonk(*decl));
         }
         Ok(())
+    }
+
+    /// Unify a definition's variable with the type its signature exposes.
+    fn bind_signature(&mut self, def: &Def<'a>, decl: Type) -> Result<()> {
+        let Some(sig) = def.sig else {
+            return Ok(());
+        };
+        let mut tvars = HashMap::new();
+        let sig_ty = self.ty_of_ast(sig, &mut tvars);
+        let exposed = match (def.ctx, self.eng.types.node(sig_ty)) {
+            (Some(_), TypeNode::Arrow(_, to, _)) => to,
+            _ => sig_ty,
+        };
+        self.eng.unify(decl, exposed, &format!("against the signature of `{}`", def.name))
     }
 
     fn check_def_body(&mut self, def: &Def<'a>, decl: Type) -> Result<()> {
@@ -2254,18 +2287,25 @@ impl<'a> Checker<'a> {
         self.eng.set_struct_rows(rows);
     }
 
-    fn register_effects(&mut self, program: &Program) {
+    fn register_effects(&mut self, program: &Program) -> Result<()> {
+        let items = self.ast.slice(program.items);
+        for item in items.iter() {
+            if let Item::Effect { name, params, .. } = item {
+                let n = self.ast.slice(*params).len();
+                self.effect_arity.insert(self.text(*name), n);
+            }
+        }
         let mut per_op: HashMap<&'a str, Vec<Type>> = HashMap::new();
-        for item in self.ast.slice(program.items).iter() {
-            let Item::Effect { name, ops } = item else {
+        for item in items.iter() {
+            let Item::Effect { name, params, ops } = item else {
                 continue;
             };
             let effect = self.text(*name);
+            let params: Vec<&'a str> = self.ast.slice(*params).iter().map(|p| self.text(*p)).collect();
             let mut op_schemes = HashMap::new();
             for op in self.ast.slice(*ops).iter() {
                 let op_name = self.text(op.name);
-                let base = self.scheme_of_sig(op.ty);
-                let scheme = self.with_effect(base, effect);
+                let scheme = self.op_scheme(effect, &params, op.ty)?;
                 op_schemes.insert(op_name, scheme);
                 per_op.entry(op_name).or_default().push(scheme);
                 self.qualified
@@ -2286,20 +2326,53 @@ impl<'a> Checker<'a> {
                     .extend(schemes.into_iter().map(Cand::local));
             }
         }
+        Ok(())
     }
 
-    /// Give an operation's outermost arrow the latent effect `<effect | mu>` (mu
-    /// a fresh quantified row variable), so performing it forces `effect` into the
-    /// ambient and fits any ambient already containing more effects.
-    fn with_effect(&mut self, scheme: Type, effect: &str) -> Type {
-        match self.eng.types.node(scheme) {
+    /// An operation's scheme: its written type, with the outermost arrow's
+    /// latent effect `<effect params | mu>` (mu a fresh row variable), so
+    /// performing it forces `effect` into the ambient, fits any ambient already
+    /// containing more effects, and ties `params` to the handler's instance. The
+    /// type may also use variables of its own, chosen anew at each use, like
+    /// `throw : @str -> a`. One handler serves every use, so its clause sees
+    /// each of them as an opaque type (see `instantiate_for_handler`): it can
+    /// pass such a value along, but cannot make one up or inspect it, which
+    /// keeps it from answering one use's type to another (#290).
+    fn op_scheme(
+        &mut self,
+        effect: &'a str,
+        params: &[&'a str],
+        sig: Aol<Ty>,
+    ) -> Result<Type> {
+        self.eng.enter_level();
+        let mut tvars: HashMap<&'a str, Type> = HashMap::new();
+        let param_tys: Vec<Type> = params
+            .iter()
+            .map(|p| {
+                let v = self.eng.fresh();
+                tvars.insert(p, v);
+                v
+            })
+            .collect();
+        let args = if param_tys.is_empty() {
+            self.eng.types.row_empty()
+        } else {
+            self.eng.types.tuple(param_tys)
+        };
+        let saved = self.effect_self.replace((effect, args));
+        let ty = self.ty_of_ast(sig, &mut tvars);
+        self.effect_self = saved;
+        let ty = match self.eng.types.node(ty) {
             TypeNode::Arrow(from, to, _) => {
-                let mu = self.eng.fresh_generic();
-                let eff = self.eng.types.row_extend(effect, mu);
+                let mu = self.eng.fresh();
+                let eff = self.eng.types.row_extend_args(effect, args, mu);
                 self.eng.types.arrow_eff(from, to, eff)
             }
-            _ => scheme,
-        }
+            _ => ty,
+        };
+        self.eng.leave_level();
+        self.eng.generalize(ty);
+        Ok(self.eng.zonk(ty))
     }
 
     /// The effect a handler clause discharges: its explicit qualifier, or the
@@ -2309,35 +2382,31 @@ impl<'a> Checker<'a> {
         if let Some(e) = effect {
             return Some(e.to_string());
         }
-        let mut found = None;
-        for (eff, ops) in &self.effect_ops {
-            if ops.contains_key(op) {
-                if found.is_some() {
-                    return None;
+        for table in [&self.effect_ops, &self.imported_effect_ops] {
+            let mut found = None;
+            for (eff, ops) in table {
+                if ops.contains_key(op) {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some((*eff).to_string());
                 }
-                found = Some((*eff).to_string());
+            }
+            if found.is_some() {
+                return found;
             }
         }
-        found
+        None
     }
 
     /// The `Arg -> Res` scheme of an operation named in a handler clause, resolved
     /// by its explicit effect or, for a bare name, by the unique effect declaring
     /// it.
     fn resolve_op_ty(&self, effect: Option<&str>, op: &str) -> Option<Type> {
-        if let Some(e) = effect {
-            return self.effect_ops.get(e).and_then(|ops| ops.get(op)).cloned();
-        }
-        let mut found = None;
-        for ops in self.effect_ops.values() {
-            if let Some(scheme) = ops.get(op) {
-                if found.is_some() {
-                    return None;
-                }
-                found = Some(*scheme);
-            }
-        }
-        found
+        let owner = self.op_owner(effect, op)?;
+        [&self.effect_ops, &self.imported_effect_ops]
+            .into_iter()
+            .find_map(|table| table.get(owner.as_str()).and_then(|ops| ops.get(op)).copied())
     }
 
     // -- struct / union typing ----------------------------------------------
@@ -3277,14 +3346,24 @@ impl<'a> Checker<'a> {
         // the ambient extended with each DISTINCT handled effect (several clauses
         // may handle one effect, e.g. get/put both belong to State), the handle
         // expression itself under the outer ambient.
+        // Each handled effect gets one instance of its type parameters, shared
+        // by every clause and every operation the body performs on it.
         let mut inner = self.ambient;
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut instances: HashMap<String, Type> = HashMap::new();
         for clause in self.ast.slice(handler.clauses).iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
             if let Some(eff_name) = self.op_owner(effect, op) {
-                if seen.insert(eff_name.clone()) {
-                    inner = self.eng.types.row_extend(&eff_name, inner);
+                if !instances.contains_key(&eff_name) {
+                    let n = self.effect_arity.get(eff_name.as_str()).copied().unwrap_or(0);
+                    let args = if n == 0 {
+                        self.eng.types.row_empty()
+                    } else {
+                        let vars: Vec<Type> = (0..n).map(|_| self.eng.fresh()).collect();
+                        self.eng.types.tuple(vars)
+                    };
+                    inner = self.eng.types.row_extend_args(&eff_name, args, inner);
+                    instances.insert(eff_name, args);
                 }
             }
         }
@@ -3296,10 +3375,23 @@ impl<'a> Checker<'a> {
         for clause in self.ast.slice(handler.clauses).iter() {
             let effect = clause.effect.map(|e| self.text(e));
             let op = self.text(clause.op);
+            let owner = self.op_owner(effect, op);
+            let shown = match &owner {
+                Some(o) => format!("{o}.{op}"),
+                None => op.to_string(),
+            };
             let (arg_ty, res_ty) = match self.resolve_op_ty(effect, op) {
                 Some(scheme) => {
-                    let inst = self.eng.instantiate(scheme);
-                    let (a, r, _) = self.arrow_parts(inst)?;
+                    let inst = self.eng.instantiate_for_handler(scheme, &shown);
+                    let (a, r, eff) = self.arrow_parts(inst)?;
+                    if let (TypeNode::RowExtend(_, op_args, _), Some(args)) =
+                        (self.eng.types.node(eff), owner.and_then(|o| instances.get(&o)))
+                    {
+                        let args = *args;
+                        if !matches!(self.eng.types.node(op_args), TypeNode::RowEmpty) {
+                            self.eng.unify(op_args, args, "in a handler clause")?;
+                        }
+                    }
                     (a, r)
                 }
                 None => (self.eng.fresh(), self.eng.fresh()),
@@ -3311,7 +3403,19 @@ impl<'a> Checker<'a> {
             let amb = self.ambient;
             let k_ty = self.eng.types.arrow_eff(res_ty, result, amb);
             self.bind(self.text(handler.continuation), k_ty);
-            let cb = self.infer(clause.body)?;
+            let cb = self.infer(clause.body).map_err(|d| {
+                if !d.root().msg.contains(&format!(" of `{shown}`")) {
+                    return d;
+                }
+                d.with_note(format!(
+                    "each use of `{shown}` chooses its own types, so the handler sees them as \
+                     opaque: it can pass such a value along, but not make one up or inspect it"
+                ))
+                .with_help(format!(
+                    "make the type a parameter of the effect, which one handler fixes for every \
+                     use, or do not resume `{shown}`"
+                ))
+            })?;
             self.eng.unify(cb, result, "in a handler clause")?;
             self.leave_scope();
         }
@@ -4130,7 +4234,10 @@ impl<'a> Checker<'a> {
         .with_help(if io {
             "start it with `spawn`, which allows `@io`".to_string()
         } else {
-            format!("handle `{label}` inside the task, around the code that performs it")
+            format!(
+                "handle `{label}` inside the task, around the code that performs it \
+                 (`PAR.spawn_with handler body` and `PAR.par_with` do this)"
+            )
         })
     }
 
@@ -5493,7 +5600,7 @@ impl<'a> Checker<'a> {
         tail: Option<StrId>,
         tvars: &mut HashMap<&'a str, Type>,
     ) -> Type {
-        let mut labels: Vec<(&'a str, bool)> = Vec::new();
+        let mut labels: Vec<(&'a str, bool, Type)> = Vec::new();
         let mut tails: Vec<Type> = Vec::new();
         if let Some(t) = tail {
             let name = self.text(t);
@@ -5511,10 +5618,55 @@ impl<'a> Checker<'a> {
                 first
             }
         };
-        for &(label, _) in labels.iter().rev() {
-            row = self.eng.types.row_extend(label, row);
+        for &(label, _, args) in labels.iter().rev() {
+            row = self.eng.types.row_extend_args(label, args, row);
         }
         row
+    }
+
+    /// The type arguments of effect label `name` written with `args`. Omitted
+    /// arguments of a parameterized effect are fresh variables, except inside
+    /// that effect's own declaration, where they are its parameters. A label
+    /// whose effect is not visible here keeps what was written, or matches any
+    /// arguments when nothing was.
+    fn effect_label_args(
+        &mut self,
+        name: &'a str,
+        args: &[Aol<Ty>],
+        span: Span,
+        tvars: &mut HashMap<&'a str, Type>,
+    ) -> Type {
+        if args.is_empty() {
+            if let Some((own, own_args)) = self.effect_self {
+                if own == name {
+                    return own_args;
+                }
+            }
+        }
+        let arity = self.effect_arity.get(name).copied();
+        match arity {
+            Some(0) if !args.is_empty() => self.defer_type_error(diag!(
+                Code::TypeMismatch, span, 0,
+                "effect `{name}` takes no parameters";
+                note: "only an effect or a row alias declared with parameters is applied in a row"
+            )),
+            Some(n) if !args.is_empty() && args.len() != n => self.defer_type_error(diag!(
+                Code::TypeMismatch, span, 0,
+                "effect `{name}` takes {n} parameter(s) but {} were given", args.len();
+                help: "write all of them, or none to leave them to inference"
+            )),
+            _ => {}
+        }
+        let tys: Vec<Type> = if args.is_empty() {
+            (0..arity.unwrap_or(0)).map(|_| self.eng.fresh()).collect()
+        } else {
+            args.iter().map(|&a| self.ty_of_ast(a, tvars)).collect()
+        };
+        if tys.is_empty() {
+            self.eng.types.row_empty()
+        } else {
+            self.eng.types.tuple(tys)
+        }
     }
 
     /// Append a row's entries to `labels` (each tagged with whether an alias
@@ -5524,7 +5676,7 @@ impl<'a> Checker<'a> {
         entries: Slice<RowEntry>,
         tvars: &mut HashMap<&'a str, Type>,
         in_alias: bool,
-        labels: &mut Vec<(&'a str, bool)>,
+        labels: &mut Vec<(&'a str, bool, Type)>,
         tails: &mut Vec<Type>,
     ) {
         let ast = self.ast;
@@ -5532,16 +5684,10 @@ impl<'a> Checker<'a> {
             let name = self.text(entry.name);
             let args = ast.slice(entry.args);
             let Some((params, body)) = self.aliases.get(name).cloned() else {
-                if !args.is_empty() {
-                    self.defer_type_error(diag!(
-                        Code::TypeMismatch, entry.span, 0,
-                        "effect `{name}` takes no parameters";
-                        note: "only a row alias declared with parameters is applied in a row"
-                    ));
-                }
-                let dup = labels.iter().any(|&(l, from)| l == name && (from || in_alias));
+                let dup = labels.iter().any(|&(l, from, _)| l == name && (from || in_alias));
                 if !dup {
-                    labels.push((name, in_alias));
+                    let args = self.effect_label_args(name, args, entry.span, tvars);
+                    labels.push((name, in_alias, args));
                 }
                 continue;
             };
@@ -5565,10 +5711,7 @@ impl<'a> Checker<'a> {
             let mut sub: HashMap<&'a str, Type> = HashMap::new();
             for (i, p) in params.iter().enumerate() {
                 let t = match args.get(i) {
-                    Some(&a) => {
-                        let a = self.text(a);
-                        *tvars.entry(a).or_insert_with(|| self.eng.fresh())
-                    }
+                    Some(&a) => self.ty_of_ast(a, tvars),
                     None => self.eng.fresh(),
                 };
                 sub.insert(*p, t);
@@ -5925,6 +6068,58 @@ impl<'a> Checker<'a> {
         let b = self.eng.fresh_generic();
         let fut = self.eng.types.app(future_con, b);
         self.bind("@await", self.eng.types.arrow(fut, b));
+
+        // Communication between tasks (#283), all `<@io>`: which task gets a
+        // message, or commits first, depends on scheduling. `@chan a` is an
+        // unbounded channel (a send never waits, a receive waits for a value).
+        // `@tvar a` is a transactional variable: `@stm_*` keep the calling
+        // thread's transaction log (reads with the versions they saw, buffered
+        // writes); `@stm_commit` publishes the writes only if no read changed,
+        // `@stm_wait` blocks until one does, and `@stm_save`/`@stm_rollback`
+        // mark and discard the writes made since (for `or_else`). `@tvar_read`
+        // reads outside any transaction.
+        let unit = self.eng.types.con(ty::UNIT);
+        let int = self.eng.types.con(ty::INT);
+        let bool_ty = self.eng.types.con(ty::BOOL);
+        let chan_con = self.eng.types.con("@chan");
+        let tvar_con = self.eng.types.con("@tvar");
+        let io_arrow = |this: &mut Self, from: Type, to: Type| {
+            let empty = this.eng.types.row_empty();
+            let io = this.eng.types.row_extend(ty::IO, empty);
+            this.eng.types.arrow_eff(from, to, io)
+        };
+        let a = self.eng.fresh_generic();
+        let ch = self.eng.types.app(chan_con, a);
+        let t = io_arrow(self, unit, ch);
+        self.bind("@chan_new", t);
+        let a = self.eng.fresh_generic();
+        let ch = self.eng.types.app(chan_con, a);
+        let send = io_arrow(self, a, unit);
+        self.bind("@chan_send", self.eng.types.arrow(ch, send));
+        let a = self.eng.fresh_generic();
+        let ch = self.eng.types.app(chan_con, a);
+        let t = io_arrow(self, ch, a);
+        self.bind("@chan_recv", t);
+        let a = self.eng.fresh_generic();
+        let tv = self.eng.types.app(tvar_con, a);
+        let t = io_arrow(self, a, tv);
+        self.bind("@tvar_new", t);
+        for name in ["@tvar_read", "@stm_read"] {
+            let a = self.eng.fresh_generic();
+            let tv = self.eng.types.app(tvar_con, a);
+            let t = io_arrow(self, tv, a);
+            self.bind(name, t);
+        }
+        let a = self.eng.fresh_generic();
+        let tv = self.eng.types.app(tvar_con, a);
+        let write = io_arrow(self, a, unit);
+        self.bind("@stm_write", self.eng.types.arrow(tv, write));
+        for (name, res) in [("@stm_begin", unit), ("@stm_commit", bool_ty), ("@stm_wait", unit), ("@stm_save", int)] {
+            let t = io_arrow(self, unit, res);
+            self.bind(name, t);
+        }
+        let t = io_arrow(self, int, unit);
+        self.bind("@stm_rollback", t);
 
         // Metaprogramming primitives (compile-time; usable inside `$ @e`). `@lex`
         // tokenizes a string into an opaque `@token` vector; a lex error traps
@@ -6498,9 +6693,11 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
             collect_tyvars(ast, *b, out);
         }
         Ty::Row(row) => {
-            let args = ast.slice(row.entries).iter().flat_map(|e| ast.slice(e.args));
-            for &v in args.chain(row.tail.iter()) {
-                let name = ast.text(v);
+            for entry in ast.slice(row.entries) {
+                ast.slice(entry.args).iter().for_each(|a| collect_tyvars(ast, *a, out));
+            }
+            if let Some(t) = row.tail {
+                let name = ast.text(t);
                 if !out.contains(&name) {
                     out.push(name);
                 }
@@ -6709,7 +6906,7 @@ fn is_base_type(name: &str) -> bool {
             | "@nat8" | "@nat16" | "@nat32" | "@nat64"
             | "@float32" | "@float64"
             | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
-            | "@token" | "@code" | "@future"
+            | "@token" | "@code" | "@future" | "@chan" | "@tvar"
     )
 }
 

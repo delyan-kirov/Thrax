@@ -10,7 +10,10 @@ $ @mod PAR
 #       thread-safety check). The native backend runs tasks on a work-stealing
 #       pool of `THRAX_THREADS` threads (default: one per core); the
 #       interpreter, the reference semantics, runs each task where it is
-#       spawned.
+#       spawned. The parallel map over tensors is `LA.par_map`. Tasks talk
+#       over channels (`channel`, `send`, `recv`); shared state that several
+#       tasks update goes through `STM`. A program exits only after every
+#       `spawn` task has finished.
 
 $ Future : @alias b = @future b
 
@@ -21,6 +24,30 @@ $ par : ({} -> b) -> Future b = \f = @par f
 $ spawn : ({} -> <@io> b) -> <@io> Future b = \f = @spawn f
 
 $ get : Future b -> b = \fut = @await fut
+
+# ---- channels ----
+
+# An unbounded channel between tasks: `send` never waits, `recv` waits for a
+# message. Messages arrive in the order one task sent them; which receiver
+# gets a message depends on scheduling, so both are `@io`. With uniqueness, a
+# message is handed over, not copied.
+$ Channel : @alias a = @chan a
+
+$ channel : {} -> <@io | e> Channel a = \u = @chan_new {}
+
+$ send : Channel a -> a -> <@io | e> {} = \c x = @chan_send c x
+
+$ recv : Channel a -> <@io | e> a = \c = @chan_recv c
+
+# A task takes its handlers with it: `spawn_with run_log body` runs `body`
+# under the handler `run_log` on the task's thread, so an effect that handler
+# serves never has to cross threads. Only `@io`, which the runtime serves on
+# every thread, reaches a task from outside.
+$ par_with : (({} -> <e> b) -> c) -> ({} -> <e> b) -> Future c = \handler body =
+	@par (\u = handler body)
+
+$ spawn_with : (({} -> <e> b) -> <@io> c) -> ({} -> <e> b) -> <@io> Future c = \handler body =
+	@spawn (\u = handler body)
 
 # Run two pure computations in parallel and pair their results.
 $ both : ({} -> a) -> ({} -> b) -> {a, b} = \f g =

@@ -1,0 +1,11 @@
+$ @mod EFFECT_OP_RIGID_ARG
+
+# `put` takes a type each use chooses, so its handler sees the value as opaque:
+# it may pass it along, but not treat it as any one type.
+$ Store : @effect = put : a -> {},
+
+$ total : ({} -> <Store> {}) -> @int = \body =
+	do body {}
+	ctl k
+	| Store.put x => let n : @int = x in n  #~ error[TYPE_MISMATCH]: expected @int, found `a` of `Store.put`
+	| u => 0

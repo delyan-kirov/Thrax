@@ -105,7 +105,7 @@ global
   | DOLLAR LIDENT COLON AT_UNION  opt_type_params EQ union_body
   | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ type
   | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
-  | DOLLAR LIDENT COLON AT_EFFECT EQ effect_body
+  | DOLLAR LIDENT COLON AT_EFFECT opt_type_params EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
@@ -246,9 +246,10 @@ eff_row
   | PIPE_BACK TYVAR GT
   ;
 
-/* An entry is an effect, or a row alias applied to row variables (`WithLog e`). */
+/* An entry is an effect applied to its type arguments (`Chan @int e`), or a row
+ * alias applied to its parameters (`WithLog e`). */
 eff_names : eff_entry | eff_names COMMA eff_entry ;
-eff_entry : UIDENT | eff_entry TYVAR ;
+eff_entry : UIDENT | eff_entry type_atom ;
 
 expr      : ctrl_expr | op_expr ;
 

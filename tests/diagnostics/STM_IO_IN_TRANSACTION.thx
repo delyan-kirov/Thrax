@@ -1,0 +1,9 @@
+$ @mod STM_IO_IN_TRANSACTION
+
+# A transaction may run several times, so it cannot perform `@io`: its row is
+# `<Stm>` and nothing else.
+$ with IO
+$ with STM
+
+$ bump : TVar @int -> {} -> <@io> {} = \t u =
+	atomically (\w = println "bump"; modify t (\x = x + 1))  #~ error[TYPE_MISMATCH]: effect `@io` is performed but not handled

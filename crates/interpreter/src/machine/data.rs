@@ -94,6 +94,27 @@ pub enum Value<'p> {
     /// result, so a recursive structure is built one cell at a time and each cell
     /// is computed at most once.
     Thunk(PVal<'p>),
+    /// A `@spawn` task's handle (a `@par` future is its result itself).
+    Future(Rc<RefCell<Task<'p>>>),
+    /// An unbounded channel (`@chan`): the messages sent and not yet received.
+    Chan(Rc<RefCell<std::collections::VecDeque<PVal<'p>>>>),
+    /// A transactional variable (`@tvar`).
+    TVar(Rc<RefCell<TVar<'p>>>),
+}
+
+/// A `@spawn` task. The reference semantics run it lazily, on one thread: when
+/// it is awaited, when another task would block (a receive on an empty
+/// channel, a transaction that retries), or before the program exits.
+pub enum Task<'p> {
+    Pending(PVal<'p>),
+    Running,
+    Done(PVal<'p>),
+}
+
+/// A transactional variable's value and how many commits have written it.
+pub struct TVar<'p> {
+    pub val: PVal<'p>,
+    pub version: u64,
 }
 
 /// Move `v`'s child cells onto `out`, leaving `v` childless.
@@ -353,14 +374,17 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
         | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
         | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" | "@par"
-        | "@spawn" | "@await" => 1,
+        | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
+        | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
+        | "@stm_rollback" => 1,
         "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
         | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
         | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
         | "@slt" | "@swrap" | "@uwrap" => 2,
         "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
         | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
-        | "@tensor_concat" | "@tensor_index" | "@tensor_create" => 2,
+        | "@tensor_concat" | "@tensor_index" | "@tensor_create" | "@chan_send"
+        | "@stm_write" => 2,
         "@tensor_slice" | "@tensor_index_axis" => 3,
         "@tensor_slice_axis" => 4,
         "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" => 3,
@@ -1130,6 +1154,9 @@ impl<'p> Value<'p> {
             },
             Value::Resump(r) => Value::Resump(r.clone()),
             Value::Thunk(f) => Value::Thunk(f.clone()),
+            Value::Future(t) => Value::Future(t.clone()),
+            Value::Chan(c) => Value::Chan(c.clone()),
+            Value::TVar(t) => Value::TVar(t.clone()),
         }
     }
 
@@ -1174,6 +1201,12 @@ impl<'p> Value<'p> {
             Value::Resump(_) => "<continuation>".into(),
             Value::Thunk(_) => "...".into(),
             Value::Rec(_) => "<recursive>".into(),
+            Value::Future(t) => match &*t.borrow() {
+                Task::Done(v) => v.borrow().show(),
+                _ => "<future>".into(),
+            },
+            Value::Chan(_) => "<channel>".into(),
+            Value::TVar(_) => "<tvar>".into(),
         }
     }
 }

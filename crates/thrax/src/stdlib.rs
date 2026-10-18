@@ -26,6 +26,7 @@ pub(crate) const MODULES: &[(&str, &str)] = &[
     ("RANDOM", include_str!("../../../library/RANDOM.thx")),
     ("RESULT", include_str!("../../../library/RESULT.thx")),
     ("SET", include_str!("../../../library/SET.thx")),
+    ("STM", include_str!("../../../library/STM.thx")),
     ("STR", include_str!("../../../library/STR.thx")),
     ("VEC", include_str!("../../../library/VEC.thx")),
 ];
