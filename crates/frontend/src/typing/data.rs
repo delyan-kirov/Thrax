@@ -223,8 +223,24 @@ pub const VEC: &str = "@vec";
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
 pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) -> String {
+    display_folding(types, ty, namer, &[])
+}
+
+/// A row alias that display may print in place of its labels: the alias name
+/// and the labels it stands for.
+pub type RowFold = (String, Vec<String>);
+
+/// [`display`], printing any row that holds every label of a fold in `folds` with
+/// the fold's name instead of those labels. Earlier folds are tried first.
+pub fn display_folding(
+    types: &Types,
+    ty: Type,
+    namer: &mut dyn FnMut(VarId) -> String,
+    folds: &[RowFold],
+) -> String {
     fn go(
         types: &Types,
+        folds: &[RowFold],
         ty: Type,
         namer: &mut dyn FnMut(VarId) -> String,
         out: &mut String,
@@ -238,14 +254,14 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
             TypeNode::Con(name) => out.push_str(&types.name(name)),
             TypeNode::Nat(n) => out.push_str(&n.to_string()),
             TypeNode::NatAdd(a, b) => paren(out, prec > 2, |out| {
-                go(types, a, namer, out, 2);
+                go(types, folds, a, namer, out, 2);
                 out.push_str(" + ");
-                go(types, b, namer, out, 2);
+                go(types, folds, b, namer, out, 2);
             }),
             TypeNode::NatMul(a, b) => paren(out, prec > 3, |out| {
-                go(types, a, namer, out, 3);
+                go(types, folds, a, namer, out, 3);
                 out.push_str(" * ");
-                go(types, b, namer, out, 3);
+                go(types, folds, b, namer, out, 3);
             }),
             TypeNode::App(head, arg) => {
                 if let Some((variance, size, elem)) = tensor_spine_raw(types, ty) {
@@ -258,27 +274,28 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
                             out.push_str("@co ");
                         }
                     }
-                    go(types, size, namer, out, 0);
+                    go(types, folds, size, namer, out, 0);
                     out.push(']');
-                    go(types, elem, namer, out, 2);
+                    go(types, folds, elem, namer, out, 2);
                 } else {
                     let wrap = prec > 1;
                     paren(out, wrap, |out| {
-                        go(types, head, namer, out, 1);
+                        go(types, folds, head, namer, out, 1);
                         out.push(' ');
-                        go(types, arg, namer, out, 2);
+                        go(types, folds, arg, namer, out, 2);
                     });
                 }
             }
             TypeNode::Arrow(from, to, eff) => {
                 let wrap = prec > 0;
                 paren(out, wrap, |out| {
-                    go(types, from, namer, out, 1);
+                    go(types, folds, from, namer, out, 1);
                     out.push_str(" -> ");
                     // Only a row with concrete labels is shown; a pure or
                     // fully-polymorphic effect (empty row / bare row variable) is
                     // elided, so ordinary functions read as `A -> B`.
                     let (labels, tail) = row_parts(types, eff);
+                    let labels = fold_labels(labels, folds);
                     if !labels.is_empty() {
                         out.push('<');
                         out.push_str(&labels.join(", "));
@@ -288,7 +305,7 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
                         }
                         out.push_str("> ");
                     }
-                    go(types, to, namer, out, 0);
+                    go(types, folds, to, namer, out, 0);
                 });
             }
             TypeNode::Tuple(items) => {
@@ -297,7 +314,7 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
                     if i > 0 {
                         out.push_str(", ");
                     }
-                    go(types, *item, namer, out, 0);
+                    go(types, folds, *item, namer, out, 0);
                 }
                 out.push('}');
             }
@@ -305,6 +322,7 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
             TypeNode::RowEmpty => out.push_str("<>"),
             TypeNode::RowExtend(..) => {
                 let (labels, tail) = row_parts(types, ty);
+                let labels = fold_labels(labels, folds);
                 out.push('<');
                 out.push_str(&labels.join(", "));
                 if let Some(t) = tail {
@@ -324,7 +342,7 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
                             first = false;
                             out.push_str(&types.name(label));
                             out.push_str(": ");
-                            go(types, fty, namer, out, 0);
+                            go(types, folds, fty, namer, out, 0);
                             cur = rest;
                         }
                         TypeNode::Var(id) => {
@@ -341,9 +359,9 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
             TypeNode::RowField(label, fty, rest) => {
                 out.push_str(&types.name(label));
                 out.push_str(": ");
-                go(types, fty, namer, out, 0);
+                go(types, folds, fty, namer, out, 0);
                 out.push_str(" | ");
-                go(types, rest, namer, out, 0);
+                go(types, folds, rest, namer, out, 0);
             }
         }
     }
@@ -357,8 +375,26 @@ pub fn display(types: &Types, ty: Type, namer: &mut dyn FnMut(VarId) -> String) 
         }
     }
     let mut out = String::new();
-    go(types, ty, namer, &mut out, 0);
+    go(types, folds, ty, namer, &mut out, 0);
     out
+}
+
+/// Replace each fold whose labels all occur in `labels` by the fold's name, at
+/// the position of its first label. One occurrence of each label is consumed, so
+/// a label the row repeats outside the alias still shows.
+pub fn fold_labels(mut labels: Vec<String>, folds: &[RowFold]) -> Vec<String> {
+    for (name, members) in folds {
+        if members.is_empty() || !members.iter().all(|m| labels.contains(m)) {
+            continue;
+        }
+        let at = labels.iter().position(|l| members.contains(l)).expect("a member is present");
+        for m in members {
+            let i = labels.iter().position(|l| l == m).expect("checked above");
+            labels.remove(i);
+        }
+        labels.insert(at, name.clone());
+    }
+    labels
 }
 
 /// Flatten a row into its concrete labels and its tail variable (if the row is

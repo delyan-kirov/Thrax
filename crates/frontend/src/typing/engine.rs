@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 
 use utilities::{Code, Diagnostic, Result, Span};
 
-use crate::typing::data::{display, Level, Type, TypeNode, Types, VarId};
+use crate::typing::data::{display_folding, Level, RowFold, Type, TypeNode, Types, VarId};
 use std::rc::Rc;
 
 /// The state of one unification variable.
@@ -53,6 +53,12 @@ pub struct Engine {
     /// Set while [`Engine::unify_expected`] runs: its first operand is the type
     /// found, not the one expected, so a mismatch names them the other way round.
     found_first: bool,
+    /// The row aliases in scope that a printed row folds back to, largest first.
+    /// An unhandled label is attributed to the fold its row prints with.
+    pub row_folds: Vec<RowFold>,
+    /// The labels of the row being performed while [`Engine::subrow`] or a row
+    /// unification runs, to name the alias an unhandled label belongs to.
+    performed: Option<Vec<String>>,
 }
 
 /// One reversible mutation, recorded so [`Engine::restore`] can rewind a trial.
@@ -86,6 +92,8 @@ impl Engine {
             int_vars: HashSet::new(),
             trail: Vec::new(),
             found_first: false,
+            row_folds: Vec::new(),
+            performed: None,
         }
     }
 
@@ -672,8 +680,17 @@ impl Engine {
             unreachable!("unify_row without a row extension")
         };
         let label = self.types.name(label).to_string();
-        let b_rest = self.rewrite_row(b, &label, where_)?;
-        self.unify(a_rest, b_rest, where_)
+        let outermost = self.performed.is_none();
+        if outermost {
+            self.performed = Some(self.row_labels(a));
+        }
+        let r = self
+            .rewrite_row(b, &label, where_)
+            .and_then(|b_rest| self.unify(a_rest, b_rest, where_));
+        if outermost {
+            self.performed = None;
+        }
+        r
     }
 
     /// Bring an occurrence of effect `label` to the head of `row`, returning the
@@ -703,24 +720,51 @@ impl Engine {
     /// Effect subsumption: require `sub` to be a subrow of `super_`. Every effect
     /// the callee performs (`sub`) must be permitted by the ambient (`super_`).
     pub fn subrow(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
+        let saved = self.performed.replace(self.row_labels(sub));
+        let r = self.subrow_go(sub, super_, where_);
+        self.performed = saved;
+        r
+    }
+
+    fn subrow_go(&mut self, sub: Type, super_: Type, where_: &str) -> Result<()> {
         match self.head(sub) {
             TypeNode::RowEmpty => Ok(()),
             TypeNode::Var(_) => self.unify(sub, super_, where_),
             TypeNode::RowExtend(label, rest) => {
                 let label = self.types.name(label).to_string();
                 let super_rest = self.rewrite_row(super_, &label, where_)?;
-                self.subrow(rest, super_rest, where_)
+                self.subrow_go(rest, super_rest, where_)
             }
             _ => self.unify(sub, super_, where_),
         }
     }
 
+    /// The labels of a row, in order, up to its tail.
+    fn row_labels(&self, row: Type) -> Vec<String> {
+        let mut labels = Vec::new();
+        let mut cur = row;
+        while let TypeNode::RowExtend(label, rest) = self.head(cur) {
+            labels.push(self.types.name(label));
+            cur = rest;
+        }
+        labels
+    }
+
     fn effect_not_handled(&self, label: &str, where_: &str) -> Diagnostic {
+        let part_of = self.performed.as_ref().and_then(|performed| {
+            self.row_folds.iter().find(|(_, members)| {
+                members.iter().any(|m| m == label) && members.iter().all(|m| performed.contains(m))
+            })
+        });
+        let effect = match part_of {
+            Some((alias, _)) => format!("effect `{label}` (part of `{alias}`)"),
+            None => format!("effect `{label}`"),
+        };
         Diagnostic::error(
             Code::TypeMismatch,
             Span::at(0),
             0,
-            format!("effect `{label}` is performed but not handled {where_}"),
+            format!("{effect} is performed but not handled {where_}"),
         )
     }
 
@@ -1072,7 +1116,7 @@ impl Engine {
         tys.iter()
             .map(|t| {
                 let zonked = self.zonk(*t);
-                display(&self.types, zonked, &mut namer)
+                display_folding(&self.types, zonked, &mut namer, &self.row_folds)
             })
             .collect()
     }

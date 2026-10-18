@@ -313,6 +313,9 @@ $ IntPair : @alias b = Pair @int b               # fix the first arg, keep the s
 $ ip : IntPair Str = .{ .fst = 3, .snd = "z" }  # same as Pair @int Str
 ```
 
+An alias whose body is an effect row is a row alias. It names effects, not a
+type, so it is used inside a row (section 8.6).
+
 ---
 
 # 4. Expressions and syntactic sugar
@@ -962,7 +965,39 @@ $ map : (a -> <e> b) -> @vec a -> <e> @vec b = \f xs =
 	is xs | [] => [] | h :: t => f h :: map f t
 ```
 
-## 8.6 `defer`
+## 8.6 Row aliases
+`$ Name : @alias = <...>` names a row of effects. Inside another row the alias
+stands for its labels, so with `App` below, `<App>` is `<Gpu, Log>` and
+`<App, Net>` is `<Gpu, Log, Net>`. A row alias may name other row aliases. It
+is transparent, like a type alias: it checks exactly what its labels check, and
+a label that both an alias and the rest of the row name is kept once.
+
+```thrax
+$ Log : @effect = log : @int -> {},
+$ Gpu : @effect = draw : @int -> {},
+$ Net : @effect = fetch : @int -> @int,
+$ App : @alias = <Gpu, Log>
+$ Online : @alias = <App, Net>
+$ frame : @int -> <App> @int = \x = draw x; log x; x
+$ sync : @int -> <Online> @int = \x = frame (fetch x)
+```
+
+A row variable in the body makes the alias parameterized, and it is applied to
+row variables inside a row. Left unapplied, its tail is a fresh variable, as for
+an under-applied type alias.
+
+```thrax
+$ WithLog : @alias e = <Log | e>
+$ traced : (@int -> <WithLog e> @int) -> @int -> <WithLog e> @int = \f x = log x; f x
+```
+
+A printed row that holds every label of a closed, parameterless alias of two or
+more labels shows the alias name in their place (`<App, Net>`). An unhandled
+label that the performed row holds through such an alias names it:
+``effect `Log` (part of `App`) is performed but not handled``. A row alias in
+type position, or a type alias in a row, is an error.
+
+## 8.7 `defer`
 `defer <cleanup> in <body>` runs the cleanup when the body's scope exits, on
 normal completion, on an abort by an outer non-resuming handler, or when a stored
 continuation holding it completes. Nested defers run innermost-first. The

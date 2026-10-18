@@ -543,6 +543,31 @@ fn effect_rows_still_parse_in_type_position() {
 }
 
 #[test]
+fn row_alias_body_and_applied_entries_parse() {
+    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @int -> <W r, @io> @int = \\n = n");
+    let items = p.ast.slice(p.program.items);
+    let Item::Alias { ty, .. } = &items[0] else {
+        panic!("expected an alias")
+    };
+    let Ty::Row(row) = p.ast.ty(*ty) else {
+        panic!("expected a row body")
+    };
+    let names: Vec<&str> = p.ast.slice(row.entries).iter().map(|e| p.ast.text(e.name)).collect();
+    assert_eq!(names, ["Log", "App"]);
+    assert_eq!(row.tail.map(|t| p.ast.text(t)), Some("e"));
+    let Item::Def { sig: Some(sig), .. } = &items[1] else {
+        panic!("expected a definition")
+    };
+    let Ty::Arrow { effect: Some(row), .. } = p.ast.ty(*sig) else {
+        panic!("expected an effectful arrow")
+    };
+    let entries = p.ast.slice(row.entries);
+    let args: Vec<&str> = p.ast.slice(entries[0].args).iter().map(|a| p.ast.text(*a)).collect();
+    assert_eq!(args, ["r"]);
+    assert!(p.ast.slice(entries[1].args).is_empty());
+}
+
+#[test]
 fn operator_in_parens_is_a_function_reference() {
     // `(+) 1 1` applies the operator's own binding, so the head is a plain var.
     let p = prog("$ @mod M\n$ y = (+) 1 1");

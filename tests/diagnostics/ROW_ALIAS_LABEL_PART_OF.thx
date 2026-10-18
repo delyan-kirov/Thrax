@@ -1,0 +1,9 @@
+$ @mod ROW_ALIAS_LABEL_PART_OF
+
+# An unhandled label that came in through an alias names the alias.
+$ Log : @effect = log : @str -> {},
+$ Gpu : @effect = draw : @int -> {},
+$ App : @alias = <Gpu, Log>
+
+$ frame : @int -> <App> @int = \x = log "frame"; draw x; x
+$ g : @int -> <Gpu> @int = \x = frame x  #~ error[TYPE_MISMATCH]: effect `Log` (part of `App`) is performed but not handled
