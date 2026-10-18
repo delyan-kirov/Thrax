@@ -21,7 +21,7 @@ $ check : @str -> @int -> <@io> @int = \name t =
 		  => println ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else println ("\x1b[1;31mERR\x1b[0m " ++ name); 1
 
-$ excluded_tests : @vec @str = ["STDLIB_IO"]
+$ excluded_tests : @vec @str = ["STDLIB_IO", "STDLIB_ASYNC_IO", "STDLIB_CHANNELS", "STDLIB_STM"]
 
 $ modules : {} -> <@meta, @io> @vec @str =
 	VEC.map PATH.strip_ext

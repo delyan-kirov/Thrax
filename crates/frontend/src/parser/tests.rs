@@ -562,7 +562,15 @@ fn row_alias_body_and_applied_entries_parse() {
         panic!("expected an effectful arrow")
     };
     let entries = p.ast.slice(row.entries);
-    let args: Vec<&str> = p.ast.slice(entries[0].args).iter().map(|a| p.ast.text(*a)).collect();
+    let args: Vec<&str> = p
+        .ast
+        .slice(entries[0].args)
+        .iter()
+        .map(|a| match p.ast.ty(*a) {
+            Ty::Var(v) => p.ast.text(*v),
+            other => panic!("expected a type variable, got {other:?}"),
+        })
+        .collect();
     assert_eq!(args, ["r"]);
     assert!(p.ast.slice(entries[1].args).is_empty());
 }

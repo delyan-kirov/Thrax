@@ -651,7 +651,7 @@ pub fn lower_program(
                 globals.push((name.clone(), term));
                 ct_runs.push((name, *span));
             }
-            Item::Effect { name, ops } => {
+            Item::Effect { name, ops, .. } => {
                 let effect = ast.text(*name).to_string();
                 for op in ast.slice(*ops).iter() {
                     effects.push(Effect {

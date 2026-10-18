@@ -1413,3 +1413,53 @@ fn row_alias_misuse_is_reported() {
     let e = errors(&format!("{ROW_ALIAS_EFFECTS}$ A1 : @alias = <A2>\n$ A2 : @alias = <A1>\n"));
     assert!(e.contains("row alias `A1` expands to itself"), "got: {e:?}");
 }
+
+// -- effect parameters (#291) ---------------------------------------------
+
+const BOX_EFFECT: &str = "$ @mod M\n$ Box : @effect a = take : @int -> a,\n";
+
+#[test]
+fn an_effect_parameter_is_fixed_by_its_row() {
+    let src = format!("{BOX_EFFECT}$ f : {{}} -> <Box @int> @int = \\u = Box.take 1 + Box.take 2\n");
+    assert_eq!(type_of(&src, "f"), "{} -> <Box @int> @int");
+}
+
+#[test]
+fn one_handler_serves_one_instance() {
+    let src = format!(
+        "{BOX_EFFECT}\
+         $ f : {{}} -> <Box> @int = \\u = let s : @str = Box.take 0 in Box.take 1\n"
+    );
+    assert!(errors(&src).contains("expected @int, found @str"), "got: {:?}", errors(&src));
+}
+
+#[test]
+fn an_operation_variable_is_opaque_in_the_handler() {
+    let ok = "$ @mod M\n$ Put : @effect = put : a -> {},\n\
+              $ f : ({} -> <Put> {}) -> @int = \\b = do b {} ctl k | Put.put x => k {} | u => 0\n";
+    assert_eq!(errors(ok), "");
+    let bad = "$ @mod M\n$ Put : @effect = put : a -> {},\n\
+               $ f : ({} -> <Put> {}) -> @int = \\b = do b {} ctl k | Put.put x => x + 0 | u => 0\n";
+    assert!(errors(bad).contains("`a` of `Put.put`"), "got: {:?}", errors(bad));
+}
+
+#[test]
+fn a_handler_cannot_resume_with_a_value_of_its_own() {
+    let src = "$ @mod M\n$ Exn : @effect = throw : @int -> a,\n\
+               $ ok : @int = do Exn.throw 1 + 2 ctl k | Exn.throw n => n\n\
+               $ bad : @int = do Exn.throw 1 + 2 ctl k | Exn.throw n => k n\n";
+    let e = errors(src);
+    assert!(e.contains("expected `a` of `Exn.throw`") && e.contains("found @int"), "got: {e:?}");
+}
+
+#[test]
+fn mutual_recursion_keeps_a_row_parameter_open() {
+    let src = "$ @mod M\n\
+               $ St : @union e = Done: @int, More: ({} -> <e> St e),\n\
+               $ serve : St e -> @int -> <e> @int = \\st s =\n\
+               \tis st | St.Done.{ r } => r + s | St.More.{ k } => step k s\n\
+               $ step : ({} -> <e> St e) -> @int -> <e> @int = \\k s = serve (k {}) s\n";
+    // A bare row variable is not printed; a closed one would show as `St <>`.
+    assert_eq!(type_of(src, "serve"), "St a -> @int -> @int");
+    assert_eq!(type_of(src, "step"), "({} -> St a) -> @int -> @int");
+}

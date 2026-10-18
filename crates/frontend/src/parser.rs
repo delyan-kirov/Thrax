@@ -642,9 +642,10 @@ impl<'a> Parser<'a> {
                 }
                 "effect" => {
                     self.bump()?;
+                    let params = self.parse_type_params()?;
                     expect!(self, Kind::Eq, "expected '=' after '@effect'");
                     let ops = self.parse_effect_ops()?;
-                    return Ok(Item::Effect { name, ops });
+                    return Ok(Item::Effect { name, params, ops });
                 }
                 _ => {} // an @tycon type signature; fall through
             }
@@ -1099,8 +1100,8 @@ impl<'a> Parser<'a> {
             let start = self.here()?;
             let name = self.expect_effect_label()?;
             let mut args = Vec::new();
-            while self.at_tyvar()? {
-                args.push(self.expect_tyvar("expected a row variable")?);
+            while self.starts_type_atom()? {
+                args.push(self.parse_type_atom()?);
             }
             let args = self.ast.make_slice(args);
             entries.push(RowEntry {

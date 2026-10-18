@@ -315,9 +315,9 @@ impl Engine {
                 let zonked: Vec<Type> = items.into_iter().map(|t| self.zonk(t)).collect();
                 self.types.tuple(zonked)
             }
-            TypeNode::RowExtend(label, rest) => {
-                let r = self.zonk(rest);
-                self.types.add(TypeNode::RowExtend(label, r))
+            TypeNode::RowExtend(label, args, rest) => {
+                let (a, r) = (self.zonk(args), self.zonk(rest));
+                self.types.add(TypeNode::RowExtend(label, a, r))
             }
             TypeNode::Record(row) => {
                 let r = self.zonk(row);
@@ -584,9 +584,9 @@ impl Engine {
                 let mapped: Vec<Type> = items.into_iter().map(|t| self.subst_vars(t, sub)).collect();
                 self.types.tuple(mapped)
             }
-            TypeNode::RowExtend(label, rest) => {
-                let r = self.subst_vars(rest, sub);
-                self.types.add(TypeNode::RowExtend(label, r))
+            TypeNode::RowExtend(label, args, rest) => {
+                let (a, r) = (self.subst_vars(args, sub), self.subst_vars(rest, sub));
+                self.types.add(TypeNode::RowExtend(label, a, r))
             }
             TypeNode::Record(row) => {
                 let r = self.subst_vars(row, sub);
@@ -676,7 +676,7 @@ impl Engine {
         } else {
             (b, a)
         };
-        let TypeNode::RowExtend(label, a_rest) = self.types.node(a) else {
+        let TypeNode::RowExtend(label, a_args, a_rest) = self.types.node(a) else {
             unreachable!("unify_row without a row extension")
         };
         let label = self.types.name(label).to_string();
@@ -685,7 +685,7 @@ impl Engine {
             self.performed = Some(self.row_labels(a));
         }
         let r = self
-            .rewrite_row(b, &label, where_)
+            .rewrite_row(b, &label, a_args, where_)
             .and_then(|b_rest| self.unify(a_rest, b_rest, where_));
         if outermost {
             self.performed = None;
@@ -693,23 +693,24 @@ impl Engine {
         r
     }
 
-    /// Bring an occurrence of effect `label` to the head of `row`, returning the
-    /// row that remains once it is removed. An open tail (a row variable) grows to
-    /// accept the label. A closed row lacking the label is the unhandled-effect
-    /// error.
-    fn rewrite_row(&mut self, row: Type, label: &str, where_: &str) -> Result<Type> {
+    /// Bring an occurrence of effect `label` to the head of `row`, unify its
+    /// arguments with `args`, and return the row that remains once it is
+    /// removed. An open tail (a row variable) grows to accept the label. A closed
+    /// row lacking the label is the unhandled-effect error.
+    fn rewrite_row(&mut self, row: Type, label: &str, args: Type, where_: &str) -> Result<Type> {
         match self.head(row) {
-            TypeNode::RowExtend(l, rest) => {
+            TypeNode::RowExtend(l, l_args, rest) => {
                 if self.types.name(l) == label {
+                    self.unify_effect_args(label, args, l_args, where_)?;
                     Ok(rest)
                 } else {
-                    let deeper = self.rewrite_row(rest, label, where_)?;
-                    Ok(self.types.add(TypeNode::RowExtend(l, deeper)))
+                    let deeper = self.rewrite_row(rest, label, args, where_)?;
+                    Ok(self.types.add(TypeNode::RowExtend(l, l_args, deeper)))
                 }
             }
             TypeNode::Var(id) => {
                 let tail = self.fresh();
-                let ext = self.types.row_extend(label, tail);
+                let ext = self.types.row_extend_args(label, args, tail);
                 self.bind(id, ext)?;
                 Ok(tail)
             }
@@ -730,9 +731,9 @@ impl Engine {
         match self.head(sub) {
             TypeNode::RowEmpty => Ok(()),
             TypeNode::Var(_) => self.unify(sub, super_, where_),
-            TypeNode::RowExtend(label, rest) => {
+            TypeNode::RowExtend(label, args, rest) => {
                 let label = self.types.name(label).to_string();
-                let super_rest = self.rewrite_row(super_, &label, where_)?;
+                let super_rest = self.rewrite_row(super_, &label, args, where_)?;
                 self.subrow_go(rest, super_rest, where_)
             }
             _ => self.unify(sub, super_, where_),
@@ -743,11 +744,48 @@ impl Engine {
     fn row_labels(&self, row: Type) -> Vec<String> {
         let mut labels = Vec::new();
         let mut cur = row;
-        while let TypeNode::RowExtend(label, rest) = self.head(cur) {
+        while let TypeNode::RowExtend(label, _, rest) = self.head(cur) {
             labels.push(self.types.name(label));
             cur = rest;
         }
         labels
+    }
+
+    /// Unify the type arguments of two occurrences of one effect label. Unknown
+    /// arguments (`RowEmpty`, a label written where its effect is not visible)
+    /// match any.
+    fn unify_effect_args(&mut self, label: &str, a: Type, b: Type, where_: &str) -> Result<()> {
+        let (a, b) = (self.resolve(a), self.resolve(b));
+        if matches!(self.types.node(a), TypeNode::RowEmpty)
+            || matches!(self.types.node(b), TypeNode::RowEmpty)
+        {
+            return Ok(());
+        }
+        let saved = self.performed.take();
+        let r = self.unify(a, b, where_);
+        self.performed = saved;
+        r.map_err(|d| {
+            let note = format!(
+                "effect `{label}` is used here at `{}` and at `{}`; one handler serves one instance",
+                self.show_args(a),
+                self.show_args(b)
+            );
+            d.with_note(note)
+        })
+    }
+
+    /// An effect's type arguments, space-separated as written in a row.
+    fn show_args(&self, args: Type) -> String {
+        match self.types.node(args) {
+            TypeNode::Tuple(items) => self
+                .types
+                .items(items)
+                .into_iter()
+                .map(|t| self.show(t))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => self.show(args),
+        }
     }
 
     fn effect_not_handled(&self, label: &str, where_: &str) -> Diagnostic {
@@ -877,7 +915,10 @@ impl Engine {
                 }
                 Ok(())
             }
-            TypeNode::RowExtend(_, rest) => self.occurs_and_adjust(id, level, rest),
+            TypeNode::RowExtend(_, args, rest) => {
+                self.occurs_and_adjust(id, level, args)?;
+                self.occurs_and_adjust(id, level, rest)
+            }
             TypeNode::Record(row) => self.occurs_and_adjust(id, level, row),
             TypeNode::RowField(_, ty, rest) => {
                 self.occurs_and_adjust(id, level, ty)?;
@@ -942,7 +983,10 @@ impl Engine {
                     self.generalize_except(t, mono);
                 }
             }
-            TypeNode::RowExtend(_, rest) => self.generalize_except(rest, mono),
+            TypeNode::RowExtend(_, args, rest) => {
+                self.generalize_except(args, mono);
+                self.generalize_except(rest, mono);
+            }
             TypeNode::Record(row) => self.generalize_except(row, mono),
             TypeNode::RowField(_, ty, rest) => {
                 self.generalize_except(ty, mono);
@@ -977,7 +1021,10 @@ impl Engine {
                     self.collect_vars(t, out);
                 }
             }
-            TypeNode::RowExtend(_, rest) => self.collect_vars(rest, out),
+            TypeNode::RowExtend(_, args, rest) => {
+                self.collect_vars(args, out);
+                self.collect_vars(rest, out);
+            }
             TypeNode::Record(row) => self.collect_vars(row, out),
             TypeNode::RowField(_, ty, rest) => {
                 self.collect_vars(ty, out);
@@ -992,6 +1039,42 @@ impl Engine {
     pub fn instantiate(&mut self, ty: Type) -> Type {
         let mut mapping = HashMap::new();
         self.instantiate_with(ty, &mut mapping)
+    }
+
+    /// Instantiate an effect operation's scheme for a handler clause. The
+    /// effect's parameters (the label's arguments) and the row tail are fresh
+    /// variables as usual; every other variable is the operation's own, chosen
+    /// by each performer, so the clause sees it as an opaque type of its own (a
+    /// rigid variable, unique to this clause): it can pass such a value along,
+    /// but not make one up. `op` names the operation in it.
+    pub fn instantiate_for_handler(&mut self, scheme: Type, op: &str) -> Type {
+        let mut mapping = HashMap::new();
+        if let TypeNode::Arrow(from, to, eff) = self.head(scheme) {
+            let mut shared = HashSet::new();
+            self.collect_vars(eff, &mut shared);
+            let mut order = Vec::new();
+            self.vars_in_order(from, &mut order);
+            self.vars_in_order(to, &mut order);
+            let own: Vec<VarId> = order
+                .into_iter()
+                .filter(|id| !shared.contains(id) && matches!(self.vars[*id as usize], Var::Generic))
+                .collect();
+            for (i, id) in own.into_iter().enumerate() {
+                let letter = (b'a' + (i % 26) as u8) as char;
+                let rigid = self.types.rigid(&format!("`{letter}` of `{op}`"));
+                mapping.insert(id, rigid);
+            }
+        }
+        self.instantiate_with(scheme, &mut mapping)
+    }
+
+    /// The variables of `ty` in order of first appearance, each once.
+    fn vars_in_order(&self, ty: Type, out: &mut Vec<VarId>) {
+        let mut set = HashSet::new();
+        self.collect_vars(ty, &mut set);
+        let mut found: Vec<VarId> = set.into_iter().filter(|id| !out.contains(id)).collect();
+        found.sort_unstable();
+        out.extend(found);
     }
 
     /// Instantiate several types that share generalized variables with ONE fresh
@@ -1062,9 +1145,10 @@ impl Engine {
                     .collect();
                 self.types.tuple(mapped)
             }
-            TypeNode::RowExtend(label, rest) => {
+            TypeNode::RowExtend(label, args, rest) => {
+                let a = self.instantiate_with(args, mapping);
                 let r = self.instantiate_with(rest, mapping);
-                self.types.add(TypeNode::RowExtend(label, r))
+                self.types.add(TypeNode::RowExtend(label, a, r))
             }
             TypeNode::Record(row) => {
                 let r = self.instantiate_with(row, mapping);

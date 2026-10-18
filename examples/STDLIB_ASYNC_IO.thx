@@ -1,0 +1,59 @@
+$ @mod STDLIB_ASYNC_IO
+
+# \file STDLIB_ASYNC_IO.thx
+# \info `ASYNC.run_io`: tasks that perform `@io`, and a task that waits on a file
+#       descriptor. One task reads a command's output from a pipe, parking in
+#       `wait_fd` until poll(2) says a read will not block, while another
+#       computes and yields; the group sleeps in poll(2) only when every task is
+#       blocked. The answers do not depend on how the two interleave, so both
+#       engines agree whatever the timing.
+
+$ with ASYNC
+$ with OPT
+$ with STR
+
+$ fileno : @int -> <@io> @int32 = @extern "C" "fileno" "libc"
+# `@int32`: C's `int` result, so EOF reads back as -1.
+$ fgetc : @int -> <@io> @int32 = @extern "C" "fgetc" "libc"
+$ setvbuf : {stream: @int, buf: @int, mode: @int, size: @int} -> <@io> @int = @extern "C" "setvbuf" "libc"
+
+# Unbuffered, so each `fgetc` is one read(2): a byte the stream already buffered
+# would be invisible to poll(2), and its reader would wait on it forever.
+$ unbuffered_io_mode : @int = 2
+
+# Read the stream to its end, waiting for the descriptor before every byte.
+$ drain : @int -> @int -> @str -> <Async, @io> @str = \f fd acc =
+	Async.wait_fd {fd, pollin};
+	let c : @int = @cast (fgetc f) in
+	if c < 0 => acc else drain f fd (@array_push acc c)
+
+$ reader : Chan @str -> {} -> <Async, @io> {} = \out u =
+	let f = C.popen { "sleep 0.05; printf 'one\\ntwo\\n'", "r" } in
+	let ok = setvbuf { f, 0, unbuffered_io_mode, 0 } in
+	let fd : @int = @cast (fileno f) in
+	let text = drain f fd "" in
+	let status = C.pclose f in
+	Async.send {out, text}
+
+$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+
+# Compute in steps, yielding between them so the reader gets its turns.
+$ computer : Chan @str -> @int -> @int -> {} -> <Async, @io> {} = \out i acc u =
+	if i > 15 => Async.send {out, to_string acc}
+	else (Async.yield {}; computer out (i + 1) (acc + fib i) u)
+
+$ both : {} -> <Async, @io> @str = \u =
+	let out = Async.chan 0 in
+	Async.spawn (reader out);
+	Async.spawn (computer out 0 0);
+	let a = Async.recv out in
+	let b = Async.recv out in
+	if STR.len a < STR.len b => a ++ "|" ++ b else b ++ "|" ++ a
+
+$ ck_pipe : {} -> <@io> @int =
+	if unwrap_or (run_io both) "" == "1596|one\ntwo\n" => 0 else 1
+
+# Performs `@io`, so the runner calls it as `test {}` (like `STDLIB_IO`).
+$ test : {} -> <@io> @int = ck_pipe {}
+
+$ @main : @vec @str -> <@io> @int = \args = test {}

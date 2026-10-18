@@ -1,8 +1,8 @@
 # Thrax Concurrency and Parallelism Design
 
-**Status:** sections 2.1, 2.2, 2.3 and 2.5 implemented, with the gaps listed
-in section 6; STM (2.4) is a proposal. Tracked by the GitHub issues labelled `multi-threading`.
-**Date:** 2026-10-17.
+**Status:** sections 2.1 to 2.5 implemented, with the gaps listed in
+section 6. Tracked by the GitHub issues labelled `multi-threading`.
+**Date:** 2026-10-18.
 **Scope:** how Thrax programs run work concurrently (interleaved) and in
 parallel (on several cores), what the runtime must change to allow it, and how
 the effect system decides what may cross a thread boundary.
@@ -207,7 +207,9 @@ case `e = <>`.
    transaction, which is exactly the property Haskell's design rests on.
 
 STM is not the foundation: it solves contention on shared mutable state, which
-Thrax does not have until it adds mutable cells.
+Thrax does not have until it adds mutable cells. Its transactional variables
+(`@tvar`) are those cells, and the only ones: a `TVar` is written only by a
+committed transaction.
 
 ### 2.5 `@io` stays one effect
 
@@ -272,17 +274,27 @@ C state such as `rand`.
 
 ## 4. Open questions
 
-- **Cross-thread resume.** Can a continuation captured on one thread be
-  resumed on another? If so, its frames must be marked shared, and the
-  multi-shot copy rule (`seg->rc == seg->nbound + 1` means move) must use the
-  shared counts.
-- **`defer` and cancellation.** When a task group is cancelled, the `defer`
-  cleanups of its abandoned tasks must run exactly once, in the right thread.
+Settled under #282 (section 6 has the details):
+
+- **Cross-thread resume.** Yes. A continuation that crosses to another thread
+  is marked like any value; marking flags the slice, which is then always
+  copied on resume (never moved), and its counts are atomic.
+- **`defer` and cancellation.** Tasks are never cancelled, and a program
+  waits for its `spawn` tasks before it exits, so a task's `defer` cleanups
+  run exactly once, on the thread that runs the task.
+- **Declaring a handler thread-safe.** No declaration: a task takes its
+  handlers with it (`PAR.spawn_with handler body`), and a handler is ordinary
+  code that runs on the task's thread. Only `@io`, which the runtime serves on
+  every thread, reaches a task from outside. A builtin label that other
+  threads may serve is added only when the runtime serves one.
+- **One primitive for `@par` and `@spawn`.** Kept as two: they admit
+  different rows, and only `spawn` tasks are waited for at exit.
+
+Still open:
+
 - **Scheduler fairness.** Cooperative scheduling (section 2.1) only switches at
   `yield` and IO; a long pure loop starves its siblings. Options: compiler
   inserted yield points, or pushing heavy pure work to `par`.
-- **Declaring a handler thread-safe.** Syntax and checking for section 2.3: an
-  attribute on the handler, or on the effect declaration.
 - **Interpreter.** Running `par` sequentially is enough for the reference
   semantics, but section 2.3 checks are static and must behave identically.
 - **Evidence passing (M3.2).** Handler evidence passed in registers interacts
@@ -323,6 +335,14 @@ sequential program compiles exactly as before, so its timings are unchanged.
   anyway, and counting a hot global closure such as a recursive function from
   several cores made the cache line bounce. An immortal value is freed by one
   sweep at exit, so the Show-mode leak check stays exact.
+- **The level is also the sign of the count** (Lean 4's encoding, #293):
+  `rc > 0` is a local count, `rc < 0` a shared one, `rc == 0` immortal. The
+  fast path of retain and release is one relaxed load and one compare, and
+  only a shared or immortal value takes the out-of-line slow path, where the
+  `shared` byte decides. A shared value later made immortal keeps its negative
+  count, because other threads may be counting it at that moment; the
+  reference its global holds keeps the count from reaching zero. The `shared`
+  byte is read and written with relaxed atomics for the same reason.
 - **Thunks.** Forcing a shared lazy slot swaps `T_THUNK` for `T_BLACKHOLE`
   with a compare-and-swap; the winner evaluates, writes the payload, and
   publishes the new tag with release order. Other threads wait for the tag.
@@ -337,13 +357,24 @@ sequential program compiles exactly as before, so its timings are unchanged.
   newest-first, thieves take oldest-first. `@await` runs a task nobody has
   started yet in place, and otherwise helps with queued work, so a pool whose
   every thread awaits cannot deadlock.
-- **Continuations do not cross threads.** Marking a captured continuation
-  faults: a resume writes its frames and slot boxes in place.
+- **Continuations cross threads by copy (#282).** Marking a captured
+  continuation marks everything its frames hold, and the slices of
+  continuations captured inside it, and sets the slice's `shared` flag. A
+  resume of a shared slice always splices a copy (the multi-shot path) and
+  never moves the frames, which another thread may be reading. A slice's
+  counts are atomic in a threaded build.
+- **Exit.** A `@main` program waits for every `@spawn` task to finish before
+  it exits, helping with queued work meanwhile. `@par` tasks nobody awaits
+  are dropped: they are pure, so their results were unobservable.
 
 Measured on a 12-thread machine: a CPU-bound parallel reduction scales about
-5.8x. A parallel-enabled program run with `THRAX_THREADS=1` is about 5 to 19
+5.8x. A parallel-enabled program run with `THRAX_THREADS=1` is about 1 to 4
 percent slower than the same program without `THRAX_THREADS`, depending on the
-workload (the extra branch in every retain and release). The tests compile a
+workload (5 to 19 percent before the sign encoding of #293). Still open from
+#293: passing the machine state as a context pointer instead of thread-locals,
+moving rather than marking a value handed to a task with `rc == 1`, and
+borrowed reads of shared data, which would cut atomic contention while running
+in parallel. The tests compile a
 parallel program with `-fsanitize=thread` at 2, 4 and 8 threads and require a
 clean report.
 
@@ -355,14 +386,56 @@ clean report.
 - `library/PAR.thx`: `Future`, `par`, `spawn`, `get`, `both`, and over
   `@vec` the parallel `map`, `formap` (pure body: a task has no `Loop` to break
   out of its siblings), `map_chunks` and `reduce`.
-- The interpreter runs a task where it is spawned and its future is its
-  result. It stays the reference semantics.
+- `library/LA.thx`: `map` over a tensor's leading axis, and its parallel
+  counterparts `par_map` and `par_map_chunks` (#294), which split that axis
+  into O(1) slices, map each slice in a `@par` task, and assemble the result
+  with `create`. About 6x on 12 threads for a CPU-bound map.
+- The interpreter stays the reference semantics, on one thread. A `@par`
+  task runs where it is spawned, and its future is its result. A `@spawn`
+  task runs lazily: when it is awaited, when another task would block on a
+  channel or a retrying transaction, or before the program exits. A task
+  waiting on a task that is itself suspended below it on the interpreter's
+  stack is reported as a deadlock, though threads would make progress (for
+  example two tasks that exchange several messages back and forth).
+- `PAR.par_with` / `PAR.spawn_with` run a task under a handler of its own
+  (section 4).
 - **The thread-safety check is the task's row (section 2.3).** For now the only
   thread-safe effect is the builtin `@io`, the one effect no handler on the
   spawning thread serves. Every handled effect must be discharged inside the
-  task. Cross-thread handlers (declaring a user handler thread-safe) remain open
-  (section 4). A task that performs a handled effect is reported as such, with
+  task, which `par_with`/`spawn_with` do (section 4). A task that performs a handled effect is reported as such, with
   `help:` to handle it inside the task (`tests/diagnostics/TASK_*.thx`).
+
+### Channels and STM (#283)
+
+- Builtins, all `<@io>`: `@chan_new`, `@chan_send`, `@chan_recv` over an
+  opaque `@chan a`, an unbounded channel (a send never waits, a receive
+  waits); `@tvar_new`, `@tvar_read` over `@tvar a`; and the transaction log,
+  `@stm_begin`, `@stm_read`, `@stm_write`, `@stm_commit`, `@stm_wait`,
+  `@stm_save`, `@stm_rollback`.
+- Runtime: a channel is a mutex-guarded ring; a sent value is marked shared,
+  since any thread may receive it. A receiver with nothing to take helps with
+  queued tasks, then sleeps on the pool's condition variable, which every
+  send broadcasts. A transaction logs each read with the version it saw and
+  buffers its writes in a thread-local log; a commit validates the reads and
+  publishes the writes under one global lock. `@stm_wait` (retry) moves the
+  read set out of the log, since a task it runs while helping uses the same
+  log, and waits until a version changes. Without any other task, a receive
+  on an empty channel or a retry is a deadlock fault.
+- `library/PAR.thx`: `Channel`, `channel`, `send`, `recv`.
+- `library/STM.thx`: `TVar`, the `Stm` effect (`read`, `write`, `retry`, plus
+  `save`/`rollback` for `or_else`), `modify`, `or_else`, and `atomically`, a
+  handler that runs the transaction against the log, commits, and reruns it
+  on a conflict or after a retry. A transaction's row is `<Stm>`, so
+  `@io` in one is a compile-time error
+  (`tests/diagnostics/STM_IO_IN_TRANSACTION.thx`).
+- The operations are polymorphic in the variable's type (`read : TVar a ->
+  a`), which effect typing allows since #291: a handler clause sees such a
+  type as opaque, and `atomically` only passes values through.
+- `examples/STDLIB_CHANNELS.thx` (a worker pool) and
+  `examples/STDLIB_STM.thx` (transfers from six tasks, a `retry` waiting for
+  deposits, `or_else` undoing writes); both perform `@io`, so the corpus runs
+  them rather than a compile-time assert. Clean under `-fsanitize=thread` at
+  2, 4 and 8 threads.
 
 ### `@io` stays one effect (#297)
 
@@ -372,24 +445,33 @@ clean report.
 - A `par` task that performs `@io` is reported as "a pure parallel task
   performs effect `@io`", with `help:` to start it with `spawn`.
 
-### `Async` on one thread (#279)
+### `Async` on one thread (#279, #291, #292)
 
-- `library/ASYNC.thx`: the `Async` effect (`spawn`, `yield`, `chan`, `send`,
-  `recv`) and `run_async : ({} -> <Async> a) -> Option a`. A deep handler turns
-  each task into a `Step` (finished, or stopped at an operation with its
-  continuation), and a pure round-robin loop serves the steps. An operation
-  that can complete at once resumes the same task; `yield` requeues it; a full
-  channel parks its sender and an empty one its receiver (capacity 0 is a
-  rendezvous).
-- Structured: `run_async` returns once no task in the group can run. `None`
-  means `main` never finished, which is a deadlock (every remaining task is
-  parked).
-- Deterministic, so both engines agree (`examples/STDLIB_ASYNC.thx`:
-  producer/consumer, fan-in, interleaving, deadlock).
-- Not done: IO readiness through `poll(2)`. A task's row is `<Async>` only,
-  because an operation's type cannot carry a row variable, so a task cannot
-  perform `@io`; an IO-capable scheduler needs effect declarations that take
-  parameters. For the same reason channels carry `@int`. (An operation type
-  with a free type variable, `recv : @int -> a`, is accepted today and
-  generalized at each use, which is unsound for this purpose.)
-
+- `library/ASYNC.thx`: the effect `Async m e` (`spawn`, `yield`, `chan`,
+  `send`, `recv`, `wait_fd`) and `run_async : ({} -> <Async m e | e> a) -> <e>
+  Option a`. A deep handler turns each task into a `Step` (finished, or
+  stopped at an operation with its continuation), and a round-robin loop
+  serves the steps. An operation that can complete at once resumes the same
+  task; `yield` requeues it; a full channel parks its sender and an empty one
+  its receiver (capacity 0 is a rendezvous).
+- The effect's parameters (#291) are fixed by the handler for the whole group:
+  `m` is the message type of its channels (`Chan m`), and `e` the effects a
+  task may perform besides `Async`, which flow out to the handler around
+  `run_async`. A task can therefore perform `@io`, or any effect handled
+  outside the group.
+- IO readiness (#292): `wait_fd {fd, events}` parks a task until the
+  descriptor is ready. `run_io` runs a group whose tasks may perform `@io`;
+  when no task is ready and some wait on descriptors, it sleeps in poll(2)
+  until one is. Because the FFI does not read the `pollfd` array back, it then
+  probes each parked descriptor with a zero-timeout poll(2) to see which woke.
+  `run_async` polls nothing, so a task waiting on a descriptor there counts as
+  blocked.
+- Structured: a group returns once no task in it can run. `None` means `main`
+  never finished, which is a deadlock (every remaining task is parked).
+- Deterministic apart from descriptor readiness, so both engines agree
+  (`examples/STDLIB_ASYNC.thx`: producer/consumer, fan-in, interleaving,
+  typed messages, a task effect served outside the group, deadlock;
+  `examples/STDLIB_ASYNC_IO.thx`: a task reading a pipe while another
+  computes, checked at run time because it performs `@io`).
+- Open: channels and tasks of one group share one message type `m` (a group
+  that needs several uses a union); channels between OS threads (#283).

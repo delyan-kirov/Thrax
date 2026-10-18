@@ -1207,11 +1207,22 @@ fn parallel_tasks_match_interpreter() {
 
 #[test]
 fn parallel_tasks_are_clean_under_thread_sanitizer() {
-    let lowered = lower(PAR_SRC);
+    tsan_clean(PAR_SRC);
+}
+
+#[test]
+fn a_shared_continuation_is_clean_under_thread_sanitizer() {
+    tsan_clean(PAR_RESUME_SRC);
+}
+
+/// Build `src` with `-fsanitize=thread` and require a clean report and the
+/// interpreter's answer at 2, 4 and 8 threads.
+fn tsan_clean(src: &str) {
+    let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     assert!(code.contains("#define THRAX_THREADS 1"));
     let mut c_path = std::env::temp_dir();
-    c_path.push(format!("ccg_{}_tsan.c", std::process::id()));
+    c_path.push(format!("ccg_{}_{}_tsan.c", std::process::id(), src.len()));
     let bin_path: PathBuf = c_path.with_extension("bin");
     std::fs::write(&c_path, &code).expect("write C");
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
@@ -1236,11 +1247,35 @@ fn parallel_tasks_are_clean_under_thread_sanitizer() {
         );
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim_end(),
-            format!("test = {}", interp_show(PAR_SRC, "test"))
+            format!("test = {}", interp_show(src, "test"))
         );
     }
     let _ = std::fs::remove_file(&c_path);
     let _ = std::fs::remove_file(&bin_path);
+}
+
+/// A continuation captured inside a task and resumed on another thread: a
+/// generator a task suspends and the main thread drains, and one resumed twice.
+const PAR_RESUME_SRC: &str = "$ @mod M\n\
+    $ Yield : @effect = yield : @int -> {},\n\
+    $ Gen : @union = Done: {}, More: {@int, {} -> Gen},\n\
+    $ gen : ({} -> <Yield> {}) -> Gen = \\t =\n\
+    \tdo t {} ctl k | Yield.yield v => Gen.More.{ v, k } | _ => Gen.Done.{}\n\
+    $ count : @int -> @int -> <Yield> {} = \\i n = if i > n => {} else (Yield.yield i; count (i + 1) n)\n\
+    $ sum : Gen -> @int -> @int = \\g acc = is g | Gen.More.{ v, k } => sum (k {}) (acc + v) | _ => acc\n\
+    $ twice : Gen -> @int = \\g = is g | Gen.More.{ v, k } => sum (k {}) 0 + sum (k {}) 0 | _ => 0\n\
+    $ test : {@int, @int, @int} =\n\
+    \tlet a = @par (\\u = gen (\\w = count 1 100)) in\n\
+    \tlet b = @par (\\u = gen (\\w = count 1 10)) in\n\
+    \tlet c = @par (\\u = @await (@par (\\w = gen (\\x = count 5 9)))) in\n\
+    \t{sum (@await a) 0, twice (@await b), sum (@await c) 0}\n";
+
+#[test]
+fn a_continuation_resumes_on_another_thread() {
+    // The tasks' generators are captured on workers and resumed on the main
+    // thread; the leak check (exit 97) catches a miscounted shared frame.
+    assert_matches(PAR_RESUME_SRC, "test");
+    assert_eq!(interp_show(PAR_RESUME_SRC, "test"), "{5050, 108, 35}");
 }
 
 #[test]

@@ -24,7 +24,7 @@ use std::rc::Rc;
 use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
 use utilities::Result;
 
-use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Value};
+use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
 
 /// One activation: the local slot array (params + let/case binders) and the
 /// current closure's captured record.
@@ -139,6 +139,20 @@ pub struct Machine<'p> {
     ops_by_name: HashMap<String, Vec<String>>,
     /// What a slot holds once its value has moved out or been dropped.
     unk: PVal<'p>,
+    /// `@spawn` tasks not yet started, oldest first (see [`Task`]).
+    tasks: RefCell<std::collections::VecDeque<Rc<RefCell<Task<'p>>>>>,
+    /// The running transaction's log (the `@stm_*` builtins).
+    stm: RefCell<StmLog<'p>>,
+}
+
+type TVarP<'p> = Rc<RefCell<TVar<'p>>>;
+
+/// What a transaction has read (with the version it saw) and buffered for
+/// writing, in order.
+#[derive(Default)]
+struct StmLog<'p> {
+    reads: Vec<(TVarP<'p>, u64)>,
+    writes: Vec<(TVarP<'p>, PVal<'p>)>,
 }
 
 /// The mutable state of one `run`: the current activation, the reified
@@ -229,7 +243,172 @@ impl<'p> Machine<'p> {
             ops_by_effect,
             ops_by_name,
             unk: mk(Value::Unk),
+            tasks: RefCell::new(std::collections::VecDeque::new()),
+            stm: RefCell::new(StmLog::default()),
         }
+    }
+
+    /// Run a `@spawn` task to its end if nobody has started it, and hand back
+    /// its result once it has one.
+    fn run_task(&self, task: &Rc<RefCell<Task<'p>>>) -> Result<Option<PVal<'p>>> {
+        let state = std::mem::replace(&mut *task.borrow_mut(), Task::Running);
+        let f = match state {
+            Task::Pending(f) => f,
+            Task::Done(v) => {
+                *task.borrow_mut() = Task::Done(v.clone());
+                return Ok(Some(v));
+            }
+            Task::Running => return Ok(None),
+        };
+        let v = self.apply(f, mk(Value::Unit))?;
+        *task.borrow_mut() = Task::Done(v.clone());
+        Ok(Some(v))
+    }
+
+    /// Run the oldest task nobody has started, as a task that cannot go on
+    /// does while it waits. False when there is none, so the waiter is stuck.
+    fn run_next_task(&self) -> Result<bool> {
+        loop {
+            let next = self.tasks.borrow_mut().pop_front();
+            let Some(task) = next else {
+                return Ok(false);
+            };
+            if matches!(&*task.borrow(), Task::Pending(_)) {
+                self.run_task(&task)?;
+                return Ok(true);
+            }
+        }
+    }
+
+    /// Run every task still waiting to start: a program ends after the tasks
+    /// it spawned.
+    pub fn finish_tasks(&self) -> Result<()> {
+        while self.run_next_task()? {}
+        Ok(())
+    }
+
+    /// The task, channel and transaction builtins, which need the machine (to
+    /// run other tasks while one waits). `None` for any other name.
+    fn run_concurrency(&self, name: &str, args: &[PVal<'p>]) -> Result<Option<PVal<'p>>> {
+        let arg = |i: usize| -> Result<PVal<'p>> { self.force_thunk(args[i].clone()) };
+        let tvar = |v: &PVal<'p>| -> Result<TVarP<'p>> {
+            match &*v.borrow() {
+                Value::TVar(t) => Ok(t.clone()),
+                _ => Err(fault("expected a transactional variable")),
+            }
+        };
+        let v = match name {
+            // The reference semantics of a pure task: run it now. Its future is
+            // its result, which `@await` hands back.
+            "@par" => self.apply(args[0].clone(), mk(Value::Unit))?,
+            "@spawn" => {
+                let task = Rc::new(RefCell::new(Task::Pending(args[0].clone())));
+                self.tasks.borrow_mut().push_back(task.clone());
+                mk(Value::Future(task))
+            }
+            "@await" => {
+                let fut = arg(0)?;
+                let task = match &*fut.borrow() {
+                    Value::Future(t) => t.clone(),
+                    _ => return Ok(Some(fut.clone())),
+                };
+                match self.run_task(&task)? {
+                    Some(v) => v,
+                    None => return Err(fault("a task awaits its own result")),
+                }
+            }
+            "@chan_new" => mk(Value::Chan(Rc::new(RefCell::new(Default::default())))),
+            "@chan_send" => {
+                let ch = arg(0)?;
+                match &*ch.borrow() {
+                    Value::Chan(q) => q.borrow_mut().push_back(args[1].clone()),
+                    _ => return Err(fault("expected a channel")),
+                }
+                mk(Value::Unit)
+            }
+            "@chan_recv" => {
+                let ch = arg(0)?;
+                let q = match &*ch.borrow() {
+                    Value::Chan(q) => q.clone(),
+                    _ => return Err(fault("expected a channel")),
+                };
+                loop {
+                    if let Some(v) = q.borrow_mut().pop_front() {
+                        break v;
+                    }
+                    if !self.run_next_task()? {
+                        return Err(fault(
+                            "deadlock: receiving from a channel that no task will send to",
+                        ));
+                    }
+                }
+            }
+            "@tvar_new" => mk(Value::TVar(Rc::new(RefCell::new(TVar {
+                val: args[0].clone(),
+                version: 0,
+            })))),
+            "@tvar_read" => tvar(&arg(0)?)?.borrow().val.clone(),
+            "@stm_begin" => {
+                *self.stm.borrow_mut() = StmLog::default();
+                mk(Value::Unit)
+            }
+            "@stm_read" => {
+                let t = tvar(&arg(0)?)?;
+                let mut log = self.stm.borrow_mut();
+                if let Some((_, v)) = log.writes.iter().rev().find(|(w, _)| Rc::ptr_eq(w, &t)) {
+                    v.clone()
+                } else {
+                    let (v, version) = {
+                        let cell = t.borrow();
+                        (cell.val.clone(), cell.version)
+                    };
+                    log.reads.push((t, version));
+                    v
+                }
+            }
+            "@stm_write" => {
+                let t = tvar(&arg(0)?)?;
+                self.stm.borrow_mut().writes.push((t, args[1].clone()));
+                mk(Value::Unit)
+            }
+            "@stm_commit" => {
+                let log = std::mem::take(&mut *self.stm.borrow_mut());
+                let valid = log.reads.iter().all(|(t, v)| t.borrow().version == *v);
+                if valid {
+                    for (t, v) in log.writes {
+                        let mut cell = t.borrow_mut();
+                        cell.val = v;
+                        cell.version += 1;
+                    }
+                }
+                mk(Value::Bool(valid))
+            }
+            // A transaction that retries waits for another task to change what
+            // it read; the reference semantics run waiting tasks until one has.
+            "@stm_wait" => {
+                let log = std::mem::take(&mut *self.stm.borrow_mut());
+                let changed = || log.reads.iter().any(|(t, v)| t.borrow().version != *v);
+                while !changed() {
+                    if !self.run_next_task()? {
+                        return Err(fault(
+                            "deadlock: a transaction retries, and no task will change what it read",
+                        ));
+                    }
+                }
+                mk(Value::Unit)
+            }
+            "@stm_save" => mk(Value::Int(self.stm.borrow().writes.len() as i64)),
+            "@stm_rollback" => {
+                let mark = match &*arg(0)?.borrow() {
+                    Value::Int(n) => *n as usize,
+                    _ => return Err(fault("expected a transaction mark")),
+                };
+                self.stm.borrow_mut().writes.truncate(mark);
+                mk(Value::Unit)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(v))
     }
 
     /// Force and return a global (by canonical or bare name), then collapse
@@ -792,12 +971,8 @@ impl<'p> Machine<'p> {
                         self.force_deep(&args[0])?;
                         self.force_deep(&args[1])?;
                         mk(run_builtin(&name, &args)?)
-                    } else if &*name == "@par" || &*name == "@spawn" {
-                        // The reference semantics of a parallel task: run it now.
-                        // Its future is its result, which `@await` hands back.
-                        self.apply(args[0].clone(), mk(Value::Unit))?
-                    } else if &*name == "@await" {
-                        args[0].clone()
+                    } else if let Some(v) = self.run_concurrency(&name, &args)? {
+                        v
                     } else if &*name == "@tensor_create" {
                         // Build the elements by applying `f` at each index of the
                         // template's leading axis, then stack them into a tensor.
@@ -1145,24 +1320,30 @@ const RENDER_FORCE_BUDGET: usize = 64;
 pub fn eval(prog: &Program, name: &str) -> Result<String> {
     // Install the program's C-repr struct layouts so the `@extern` seam can
     // marshal struct values by value.
-    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
-    let m = Machine::new(prog);
-    let v = m.eval_global(name)?;
-    // Rendering is an observation, so it forces: showing `<unforced>` would report
-    // the representation rather than the value. An unbounded structure does not
-    // terminate here, which is what asking to print one means.
-    m.force_deep_upto(&v, RENDER_FORCE_BUDGET)?;
-    let s = v.borrow().show();
-    Ok(s)
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let shown = (|| {
+        let m = Machine::new(prog);
+        let v = m.eval_global(name)?;
+        // Rendering is an observation, so it forces: showing `<unforced>` would
+        // report the representation rather than the value. An unbounded structure
+        // does not terminate here, which is what asking to print one means.
+        m.force_deep_upto(&v, RENDER_FORCE_BUDGET)?;
+        let s = v.borrow().show();
+        Ok(s)
+    })();
+    ffi::set_layouts(outer);
+    shown
 }
 
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
 /// `$ @e` whose `@code` result the driver splices.
 pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
-    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
-    m.eval_global(name)
+    let v = m.eval_global(name).and_then(|v| m.finish_tasks().map(|_| v));
+    ffi::set_layouts(outer);
+    v
 }
 
 /// A machine value detached from any [`Program`], so it can cross the re-entrant
@@ -1344,7 +1525,7 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
 /// Run the program entry (`@main`): apply it to `argv` as a `@vec @str` and
 /// return its `@int` result as the process exit code.
 pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
-    ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let _outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let f = m.eval_global(name)?;
     let args: Vec<PVal> = argv
@@ -1352,6 +1533,7 @@ pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
         .map(|s| mk(Value::Str(Rc::new(s.into_bytes()))))
         .collect();
     let r = deref(m.apply(f, mk(Value::Vector(Rc::new(args))))?);
+    m.finish_tasks()?;
     let out = match &*r.borrow() {
         Value::Int(code) => Ok(*code),
         _ => Err(fault("the program entry must return an `@int` exit code")),

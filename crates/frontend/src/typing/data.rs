@@ -54,10 +54,14 @@ pub enum TypeNode {
     /// The empty, closed effect row `<>`: a pure computation. Also the empty
     /// record row (the tail of a closed record).
     RowEmpty,
-    /// An effect-row extension `<label | rest>`. Rows are unordered up to
+    /// An effect-row extension `<label args | rest>`. Rows are unordered up to
     /// reordering (Leijen scoped labels); a row variable in tail position is an
-    /// ordinary [`TypeNode::Var`].
-    RowExtend(StrId, Type),
+    /// ordinary [`TypeNode::Var`]. `args` is the effect's type arguments as a
+    /// [`TypeNode::Tuple`] (`<Chan @int e>`), or [`TypeNode::RowEmpty`] for a
+    /// label whose arguments are unknown, which matches any (an effect this
+    /// module cannot see). Two occurrences of one label unify their arguments,
+    /// so every operation performed under one handler shares its instance.
+    RowExtend(StrId, Type, Type),
     /// A record type `{ label: ty, ... | rest }`, wrapping a record row built from
     /// [`TypeNode::RowField`] / [`TypeNode::RowEmpty`] / a tail [`TypeNode::Var`].
     /// A declared struct is nominal ([`TypeNode::Con`]); this is the structural,
@@ -80,6 +84,8 @@ pub struct Types {
     names: RefCell<Interner>,
     cons: RefCell<std::collections::HashMap<StrId, Type>>,
     row_empty: Type,
+    /// How many rigid types each name has been given (see [`Types::rigid`]).
+    rigids: RefCell<std::collections::HashMap<String, u32>>,
 }
 
 impl Default for Types {
@@ -98,6 +104,7 @@ impl Types {
             names: RefCell::new(Interner::new()),
             cons: RefCell::new(std::collections::HashMap::new()),
             row_empty,
+            rigids: RefCell::new(std::collections::HashMap::new()),
         }
     }
 
@@ -153,6 +160,23 @@ impl Types {
         self.con_id(id)
     }
 
+    /// A rigid type: an opaque constructor equal only to itself, shown as
+    /// `name`. Each call makes a new one; a later one with the same name is
+    /// told apart by a `#n` suffix, since the store is shared by every module.
+    pub fn rigid(&self, name: &str) -> Type {
+        let n = {
+            let mut rigids = self.rigids.borrow_mut();
+            let n = rigids.entry(name.to_string()).or_insert(0);
+            *n += 1;
+            *n
+        };
+        if n == 1 {
+            self.add(TypeNode::Con(self.intern(name)))
+        } else {
+            self.add(TypeNode::Con(self.intern(&format!("{name} #{n}"))))
+        }
+    }
+
     pub fn app(&self, head: Type, arg: Type) -> Type {
         self.add(TypeNode::App(head, arg))
     }
@@ -169,10 +193,16 @@ impl Types {
         self.add(TypeNode::Arrow(from, to, eff))
     }
 
-    /// Extend a row with an effect label.
+    /// Extend a row with an effect label that takes no arguments.
     pub fn row_extend(&self, label: &str, rest: Type) -> Type {
+        let args = self.row_empty;
+        self.row_extend_args(label, args, rest)
+    }
+
+    /// Extend a row with an effect label and its type arguments (a tuple).
+    pub fn row_extend_args(&self, label: &str, args: Type, rest: Type) -> Type {
         let l = self.intern(label);
-        self.add(TypeNode::RowExtend(l, rest))
+        self.add(TypeNode::RowExtend(l, args, rest))
     }
 
     pub fn record(&self, row: Type) -> Type {
@@ -294,7 +324,7 @@ pub fn display_folding(
                     // Only a row with concrete labels is shown; a pure or
                     // fully-polymorphic effect (empty row / bare row variable) is
                     // elided, so ordinary functions read as `A -> B`.
-                    let (labels, tail) = row_parts(types, eff);
+                    let (labels, tail) = row_parts(types, folds, eff, namer);
                     let labels = fold_labels(labels, folds);
                     if !labels.is_empty() {
                         out.push('<');
@@ -321,7 +351,7 @@ pub fn display_folding(
             // A bare row outside an arrow (only shown in raw dumps / diagnostics).
             TypeNode::RowEmpty => out.push_str("<>"),
             TypeNode::RowExtend(..) => {
-                let (labels, tail) = row_parts(types, ty);
+                let (labels, tail) = row_parts(types, folds, ty, namer);
                 let labels = fold_labels(labels, folds);
                 out.push('<');
                 out.push_str(&labels.join(", "));
@@ -365,6 +395,35 @@ pub fn display_folding(
             }
         }
     }
+    /// Flatten a row into its concrete labels, each with its type arguments,
+    /// and its tail variable (if the row is open).
+    fn row_parts(
+        types: &Types,
+        folds: &[RowFold],
+        row: Type,
+        namer: &mut dyn FnMut(VarId) -> String,
+    ) -> (Vec<String>, Option<VarId>) {
+        let mut labels = Vec::new();
+        let mut cur = row;
+        let tail = loop {
+            match types.node(cur) {
+                TypeNode::RowExtend(label, args, rest) => {
+                    let mut text = types.name(label).to_string();
+                    if let TypeNode::Tuple(items) = types.node(args) {
+                        for arg in types.items(items) {
+                            text.push(' ');
+                            go(types, folds, arg, namer, &mut text, 2);
+                        }
+                    }
+                    labels.push(text);
+                    cur = rest;
+                }
+                TypeNode::Var(id) => break Some(id),
+                _ => break None, // RowEmpty or a malformed tail
+            }
+        };
+        (labels, tail)
+    }
     fn paren(out: &mut String, wrap: bool, f: impl FnOnce(&mut String)) {
         if wrap {
             out.push('(');
@@ -395,24 +454,6 @@ pub fn fold_labels(mut labels: Vec<String>, folds: &[RowFold]) -> Vec<String> {
         labels.insert(at, name.clone());
     }
     labels
-}
-
-/// Flatten a row into its concrete labels and its tail variable (if the row is
-/// open). An empty or bare-variable row yields no labels.
-fn row_parts(types: &Types, row: Type) -> (Vec<String>, Option<VarId>) {
-    let mut labels = Vec::new();
-    let mut cur = row;
-    let tail = loop {
-        match types.node(cur) {
-            TypeNode::RowExtend(label, rest) => {
-                labels.push(types.name(label).to_string());
-                cur = rest;
-            }
-            TypeNode::Var(id) => break Some(id),
-            _ => break None, // RowEmpty or a malformed tail
-        }
-    };
-    (labels, tail)
 }
 
 /// Peel a literal (already-zonked) sized-tensor spine `@tensor variance size elem`
@@ -448,7 +489,7 @@ fn closed_row_labels(types: &Types, row: Type) -> Option<Vec<String>> {
     let mut cur = row;
     loop {
         match types.node(cur) {
-            TypeNode::RowExtend(label, rest) => {
+            TypeNode::RowExtend(label, _, rest) => {
                 labels.push(types.name(label).to_string());
                 cur = rest;
             }

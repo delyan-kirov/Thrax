@@ -1,0 +1,65 @@
+$ @mod STDLIB_STM
+
+# \file STDLIB_STM.thx
+# \info Software transactional memory (`STM`): tasks update shared accounts
+#       with transactions, without locks. Transfers keep the total whatever
+#       the interleaving, a withdrawal `retry`s until the money is there, and
+#       `or_else` falls back when its first choice would wait, undoing that
+#       choice's writes. The checks perform `@io`, so they run when the corpus
+#       runs, not at compile time.
+
+$ with PAR
+$ with STM
+
+$ transfer : TVar @int -> TVar @int -> @int -> <Stm> {} = \from to n =
+	let balance = read from in
+	if balance < n => retry {}
+	else (write from (balance - n); modify to (\x = x + n))
+
+# Move one unit there and back, `k` times, each move its own transaction.
+$ shuffle : TVar @int -> TVar @int -> @int -> {} -> <@io> {} = \a b k u =
+	if k == 0 => {}
+	else
+		atomically (\w = transfer a b 1);
+		atomically (\w = transfer b a 1);
+		shuffle a b (k - 1) u
+
+$ spawn_n : @int -> ({} -> <@io> {}) -> @vec (Future {}) -> <@io> @vec (Future {}) = \n f acc =
+	if n == 0 => acc else spawn_n (n - 1) f (@vec_push acc (spawn f))
+
+$ join_all : @vec (Future {}) -> @int -> {} = \ws i =
+	if i >= @vec_len ws => {} else (get (@vec_get ws i); join_all ws (i + 1))
+
+$ ck_total : {} -> <@io> @int =
+	let a = new_tvar 3 in
+	let b = new_tvar 0 in
+	let ws = spawn_n 6 (shuffle a b 300) (@vec_new {}) in
+	join_all ws 0;
+	let sum = atomically (\u = read a + read b) in
+	if sum == 3 && read_tvar a == 3 => 0 else 1
+
+# The withdrawal is spawned first and waits; the deposits arrive later.
+$ deposit : TVar @int -> @int -> {} -> <@io> {} = \acct k u =
+	if k == 0 => {} else (atomically (\w = modify acct (\x = x + 10)); deposit acct (k - 1) u)
+
+$ ck_retry : {} -> <@io> @int =
+	let acct = new_tvar 0 in
+	let wallet = new_tvar 0 in
+	let w = spawn (\u = atomically (\v = transfer acct wallet 50)) in
+	let d = spawn (deposit acct 5) in
+	get w;
+	get d;
+	if read_tvar wallet == 50 && read_tvar acct == 0 => 0 else 1
+
+# The first choice writes, then would wait: its write is undone.
+$ ck_or_else : {} -> <@io> @int =
+	let empty = new_tvar 0 in
+	let other = new_tvar 0 in
+	let mark = new_tvar 7 in
+	let r = atomically (\u =
+		or_else (\v = write mark 99; transfer empty other 5; 1) (\v = 2)) in
+	if r == 2 && read_tvar mark == 7 => 0 else 1
+
+$ test : {} -> <@io> @int = ck_total {} + ck_retry {} + ck_or_else {}
+
+$ @main : @vec @str -> <@io> @int = \args = test {}
