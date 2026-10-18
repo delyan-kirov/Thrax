@@ -463,16 +463,32 @@ is shared; a new platform implements only `call`.
   libffi handles the calling convention on every target, so there is no
   hand-written per-ABI trampoline and no arity/`Real32` restriction.
 - The interpreter's `build.rs` LINKS a prebuilt libffi (it does not build one):
-  it prefers the vendored `external/artifacts` (a static archive), else the
+  `$THRAX_LIBFFI` (a prefix holding a static `libffi.a`) when set, else the
   environment's libffi via `$LIBFFI`/`$LIBFFI_DEV` (the dev shell and CI export
   these), else `pkg-config`, else a system libffi. It compiles a thin C shim,
   `crates/interpreter/src/ffi_shim.c`, exposing one `thx_ffi_call` entry so the
   Rust side never mirrors libffi's arch-specific `ffi_cif`/`ffi_type` layout or
   `FFI_DEFAULT_ABI`; a C toolchain (cc/ar) is therefore a build input, as the C
   backend already needed. The vendored `external/libffi` subtree is pruned to
-  source only (no generated `configure`); rebuilding its `external/artifacts`
-  from source is a rare manual step in a heavy toolchain shell:
-  `nix develop ./external -c ./external/rebuild-libffi.sh`.
+  source only (no generated `configure`). A debug build links the dev shell's
+  libffi; `thxdo build release` builds the subtree into
+  `external/artifacts/libffi` (only when a source file is newer than the
+  archive, bootstrapping `configure` with autoreconf from `external/flake.nix`)
+  and sets `THRAX_LIBFFI` to it, so the release compiler carries no libffi
+  dependency.
+- **The C library of a built program.** On Linux `thrax build` links musl
+  statically by default (`--libc=musl|gnu`, [`Target::default_libc`]); macOS,
+  Windows and wasm have one C library each and take no choice. The musl
+  sysroot is `$THRAX_MUSL` or the `lib/musl` a release compiler ships (built by
+  `thxdo build release` from `external/musl`, a gitignored checkout of a pinned
+  musl tag). The system gcc is pointed at it through a generated GCC specs file
+  ([`musl_specs`]), the way `musl-gcc` works but without baked-in paths, so the
+  install is relocatable. Without a sysroot (a debug compiler), or when the
+  program links a shared library (an `@extern` `.so`, or libthrax for a program
+  that runs the compiler), the default quietly becomes glibc; an explicit
+  `--libc=musl` refuses those cases instead. The compiler binary itself stays on
+  glibc: the interpreter reaches every `@extern` through `dlopen`, which a
+  static musl executable does not have.
 - The wasm backend (`WasmHostFfi`) serialises the same value model across a single
   generic import to the JavaScript embedder, which owns the function registry (the
   playground). The compiler knows none of the host names.

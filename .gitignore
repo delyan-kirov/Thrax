@@ -14,3 +14,4 @@ thrax-out
 result
 target
 artifacts
+external/musl

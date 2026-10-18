@@ -34,6 +34,30 @@ pub enum Arch {
     Wasm32,
 }
 
+/// The C library a built program links against, where the OS offers a choice.
+/// Only Linux does: macOS and Windows ship one system C library, linked
+/// dynamically, and wasm uses whatever the wasm toolchain bundles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Libc {
+    /// musl, linked statically: a self-contained executable with no `.so`
+    /// lookups. It cannot link shared libraries, so a program that needs one
+    /// (raylib, libthrax) must use the system C library.
+    Musl,
+    /// glibc, linked dynamically: the platform's own C library.
+    Gnu,
+}
+
+impl Libc {
+    /// Parse a `--libc=` spelling (`"musl"`, `"gnu"`).
+    pub fn parse(s: &str) -> Option<Libc> {
+        match s {
+            "musl" => Some(Libc::Musl),
+            "gnu" => Some(Libc::Gnu),
+            _ => None,
+        }
+    }
+}
+
 /// A compilation target: an OS paired with an architecture.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Target {
@@ -121,6 +145,17 @@ impl Target {
         match self.os {
             Os::Linux => "libm.so.6",
             _ => self.libc_soname(),
+        }
+    }
+
+    /// The C library a build links by default, `None` where the OS has only its
+    /// own. On Linux that is musl, for self-contained binaries; the driver falls
+    /// back to glibc when no musl sysroot is installed or the program needs a
+    /// shared library.
+    pub const fn default_libc(self) -> Option<Libc> {
+        match self.os {
+            Os::Linux => Some(Libc::Musl),
+            Os::Macos | Os::Windows | Os::Wasi => None,
         }
     }
 
@@ -306,4 +341,46 @@ pub fn toolchain(target: Target) -> Toolchain {
         Target::host().name()
     );
     tc
+}
+
+/// The toolchain that links a program statically against musl. `THRAX_MUSL_CC`
+/// names a complete musl compiler (e.g. `x86_64-unknown-linux-musl-gcc`) and
+/// wins; otherwise the system gcc is pointed at the musl `sysroot` through the
+/// GCC specs file at `specs` (see [`musl_specs`]), which is what musl's own
+/// `musl-gcc` wrapper does, minus the absolute paths it bakes in.
+pub fn musl_toolchain(sysroot: &std::path::Path, specs: &std::path::Path) -> Toolchain {
+    let mut tc = Toolchain {
+        cc: "cc".to_string(),
+        hint: format!(
+            "the musl link failed; check the sysroot at {} or set THRAX_MUSL_CC",
+            sysroot.display()
+        ),
+        cflags: vec!["-O2".to_string(), "-static".to_string()],
+        runner: String::new(),
+        exe_suffix: String::new(),
+        rpath: false,
+    };
+    match std::env::var("THRAX_MUSL_CC") {
+        Ok(cc) if !cc.is_empty() => tc.cc = cc,
+        _ => tc.cflags.push(format!("-specs={}", specs.display())),
+    }
+    tc
+}
+
+/// A GCC specs file that swaps glibc for the musl installed at `sysroot`:
+/// musl's headers instead of the system's, its crt objects and `libc.a`
+/// instead of glibc's. GCC's own headers (`include%s`) and `libgcc` stay. This
+/// is musl's `musl-gcc.specs` for a static link.
+pub fn musl_specs(sysroot: &std::path::Path) -> String {
+    let p = sysroot.display();
+    format!(
+        "%rename cpp_options old_cpp_options\n\n\
+         *cpp_options:\n-nostdinc -isystem {p}/include -isystem include%s %(old_cpp_options)\n\n\
+         *cc1:\n%(cc1_cpu) -nostdinc -isystem {p}/include -isystem include%s\n\n\
+         *link_libgcc:\n-L{p}/lib -L .%s\n\n\
+         *libgcc:\nlibgcc.a%s %:if-exists(libgcc_eh.a%s)\n\n\
+         *startfile:\n%{{!shared: {p}/lib/Scrt1.o}} {p}/lib/crti.o crtbeginS.o%s\n\n\
+         *endfile:\ncrtendS.o%s {p}/lib/crtn.o\n\n\
+         *link:\n-nostdlib %{{shared:-shared}} %{{static:-static}} %{{rdynamic:-export-dynamic}}\n"
+    )
 }

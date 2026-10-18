@@ -10,6 +10,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let mut target = utilities::Target::host();
+    let mut libc = None;
     let mut import_dirs: Vec<PathBuf> = Vec::new();
     let mut rest: Vec<String> = Vec::new();
     for arg in std::env::args().skip(1) {
@@ -18,6 +19,14 @@ fn main() -> ExitCode {
                 Some(t) => target = t,
                 None => {
                     eprintln!("thrax: unknown target '{spec}' (e.g. x86_64-linux, wasm32-wasi)");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if let Some(spec) = arg.strip_prefix("--libc=") {
+            match utilities::Libc::parse(spec) {
+                Some(l) => libc = Some(l),
+                None => {
+                    eprintln!("thrax: unknown libc '{spec}' (musl or gnu)");
                     return ExitCode::FAILURE;
                 }
             }
@@ -52,7 +61,7 @@ fn main() -> ExitCode {
             driver::cmd_emit_c(path, target)
         }),
         Some("build") => with_root(root_arg(&rest[1..]), |path| {
-            driver::cmd_build(path, target)
+            driver::cmd_build(path, target, libc)
         }),
         Some(other) => {
             eprintln!("thrax: unknown command '{other}'; run `thrax --help` for usage");
@@ -69,7 +78,7 @@ current directory (or the sole .thx file there). A program is a module with an
 entry point: `$ @main : @vec @str -> <@io> @int`.
 
 Usage:
-  thrax [--target=ARCH-OS] <command> [file.thx] [args...]
+  thrax [--target=ARCH-OS] [--libc=musl|gnu] <command> [file.thx] [args...]
 
 With no file.thx, `--` says so explicitly, which is how a first argument that
 itself names a file reaches the program: `thrax run -- data.xml`.
@@ -86,6 +95,10 @@ Commands:
 
 Flags:
   --target=ARCH-OS   Cross-compile target (e.g. x86_64-linux, wasm32-wasi).
+  --libc=musl|gnu    C library for `build` on Linux. musl links a static
+                     executable; gnu links glibc dynamically. The default is
+                     musl when this compiler ships a musl sysroot (a release
+                     build does) and the program links no shared library.
   --import-dir=DIR   Resolve `$ with MOD` from DIR first (repeatable).
   -h, --help         Show this help.
 
