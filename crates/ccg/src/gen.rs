@@ -15,7 +15,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
+use frontend::ir::data::{builtin_arity, Atom, AltKind, Expr, Program, ResumeUse};
+use frontend::ir::lower::mentions;
+
+/// A saturated built-in call found by `prim_chain`.
+struct PrimCall<'e> {
+    name: &'e str,
+    args: Vec<&'e Atom>,
+    drops: Vec<usize>,
+    rest: Option<(usize, &'e Expr)>,
+}
 
 /// Where a computed value goes.
 #[derive(Clone, Copy)]
@@ -76,10 +85,7 @@ pub struct Emitter<'p> {
     uses_threads: std::cell::Cell<bool>,
 }
 
-/// The builtins a native program runs by calling into the compiler library
-/// (`libthrax`, see `crates/thrax/include/thrax.h`).
-pub const COMPILER_BUILTINS: &[&str] =
-    &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
+pub use frontend::ir::data::COMPILER_BUILTINS;
 
 /// The builtins that start or join parallel tasks. A program naming one gets the
 /// thread-ready runtime (`THRAX_THREADS`); every other program keeps plain,
@@ -151,6 +157,17 @@ fn for_each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
             for_each_atom(body, f);
         }
         Expr::Drop { body, .. } => for_each_atom(body, f),
+    }
+}
+
+/// Prepare a `let`'s slot for its value. Only a recursive binding, whose
+/// right-hand side captures the slot's box before the value exists, needs the
+/// box; any other slot is left empty and the value moves straight in.
+fn emit_let_slot(rhs: &Expr, slot: usize, out: &mut String) {
+    if mentions(rhs, slot) {
+        out.push_str(&format!("  THxK_setbox(fr, {slot});\n"));
+    } else {
+        out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
     }
 }
 
@@ -786,32 +803,6 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
     out
 }
 
-/// The arity of a built-in operator, or `None`. Mirrors the runtime's table and
-/// the interpreter's `builtin_arity`.
-fn builtin_arity(name: &str) -> Option<usize> {
-    let n = match name {
-        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" | "@par"
-        | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
-        | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
-        | "@stm_rollback" => 1,
-        _ if COMPILER_BUILTINS.contains(&name) => 1,
-        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
-        | "@slt" | "@swrap" | "@uwrap" => 2,
-        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
-        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
-        | "@tensor_concat" | "@tensor_index" | "@tensor_create" | "@chan_send"
-        | "@stm_write" => 2,
-        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" | "@tensor_slice"
-        | "@tensor_index_axis" => 3,
-        "@tensor_slice_axis" => 4,
-        _ => return None,
-    };
-    Some(n)
-}
-
 impl<'p> Emitter<'p> {
     pub fn new(prog: &'p Program, reachable: HashSet<usize>) -> Emitter<'p> {
         let mut globals: HashMap<&str, usize> = HashMap::new();
@@ -1103,7 +1094,7 @@ impl<'p> Emitter<'p> {
                 rhs,
                 body,
             } => {
-                out.push_str(&format!("  THxK_setbox(fr, {inner});\n"));
+                emit_let_slot(rhs, *inner, out);
                 self.emit_pure_into(rhs, *inner, out);
                 self.emit_pure_into(body, slot, out);
             }
@@ -1166,7 +1157,11 @@ impl<'p> Emitter<'p> {
         let Expr::Let { slot, rhs, body } = e else {
             unreachable!()
         };
-        out.push_str(&format!("  THxK_setbox(fr, {slot});\n"));
+        if let Some(call) = self.prim_chain(*slot, rhs, body) {
+            self.emit_prim(call, sink, out);
+            return;
+        }
+        emit_let_slot(rhs, *slot, out);
         if self.has_call(rhs) {
             // The body becomes a continuation block; the rhs delivers into the slot
             // then control transfers there.
@@ -1187,6 +1182,102 @@ impl<'p> Emitter<'p> {
             // block.
             self.emit_pure_into(rhs, *slot, out);
             self.emit_expr(body, sink, out);
+        }
+    }
+
+    /// A built-in applied to all its operands, which ANF spells as a chain of
+    /// lets each applying the previous partial application to one more operand:
+    /// `let a = b x in let c = a y in rest`, or with the last application in tail
+    /// position. Each partial must be used once, by the next application.
+    fn prim_chain<'e>(&self, slot: usize, rhs: &'e Expr, body: &'e Expr) -> Option<PrimCall<'e>> {
+        let Expr::App {
+            fun: Atom::Glob { name },
+            arg,
+            ..
+        } = rhs
+        else {
+            return None;
+        };
+        if self.globals.contains_key(name.as_str()) {
+            return None;
+        }
+        let arity = builtin_arity(name)?;
+        let mut args = vec![arg];
+        let mut drops = Vec::new();
+        let (mut partial, mut cur) = (slot, body);
+        loop {
+            if args.len() == arity {
+                return Some(PrimCall {
+                    name,
+                    args,
+                    drops,
+                    rest: Some((partial, cur)),
+                });
+            }
+            match cur {
+                Expr::Drop { slots, body } => {
+                    drops.extend(slots.iter().copied());
+                    cur = body;
+                }
+                Expr::App {
+                    fun: Atom::Move(s),
+                    arg,
+                    ..
+                } if *s == partial && args.len() + 1 == arity => {
+                    args.push(arg);
+                    return Some(PrimCall {
+                        name,
+                        args,
+                        drops,
+                        rest: None,
+                    });
+                }
+                Expr::Let {
+                    slot: next,
+                    rhs,
+                    body,
+                } => match rhs.as_ref() {
+                    Expr::App {
+                        fun: Atom::Move(s),
+                        arg,
+                        ..
+                    } if *s == partial => {
+                        args.push(arg);
+                        partial = *next;
+                        cur = body;
+                    }
+                    _ => return None,
+                },
+                _ => return None,
+            }
+        }
+    }
+
+    /// Call a saturated built-in directly. Its result goes to `rest`'s slot (then
+    /// `rest` runs) or, with no `rest`, to `sink`. A drop between the
+    /// applications waits until the operands have been read.
+    fn emit_prim(&mut self, call: PrimCall, sink: Sink, out: &mut String) {
+        self.glob_atom(call.name);
+        let args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
+        let val = format!(
+            "THxK_prim({}, (Value*[]){{ {} }}, {})",
+            cstr(call.name.as_bytes()),
+            args.join(", "),
+            args.len()
+        );
+        match call.rest {
+            Some((slot, rest)) => {
+                out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
+                out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
+                emit_drops(&call.drops, out);
+                self.emit_expr(rest, sink, out);
+            }
+            None => {
+                let r = self.fresh("prim");
+                out.push_str(&format!("  Value* {r} = {val};\n"));
+                emit_drops(&call.drops, out);
+                self.deliver(&r, sink, out);
+            }
         }
     }
 

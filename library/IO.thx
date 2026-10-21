@@ -117,5 +117,5 @@ $ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
 	let f = C.fopen {path, mode} in
 	if f == 0 => @false
 	else
-		C.fputs {content, f};
+		C.fwrite {content, 1, @array_len content, f};
 		(C.fclose f) == 0

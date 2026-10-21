@@ -22,6 +22,10 @@
 //! A slot a recursive `let` binds is exempt. Closures in its right-hand side
 //! reach it through a weak edge to the slot's box, so the slot itself has to
 //! keep the box alive for as long as the activation lasts.
+//!
+//! So is anything a handler body reads from outside it. The body runs in the
+//! enclosing activation, and a resumption can re-enter it after the code that
+//! follows the handler has run, so no point in this code is its last use.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,11 +56,99 @@ struct Flow {
 pub fn annotate(codes: &mut [Code]) {
     for code in codes {
         let mut body = std::mem::replace(&mut code.body, Expr::Fault(String::new()));
-        let flow = expr(&mut body, &Live::new());
+        let mut pinned = Live::new();
+        handler_reads(&body, &mut pinned);
+        let flow = expr(&mut body, &pinned);
         let dead_params = (0..code.nparams)
             .filter(|p| !flow.live.contains(&Var::Local(*p)))
             .collect();
         code.body = with_drops(dead_params, body);
+    }
+}
+
+/// Collect into `out` what each handler body in `e` reads from outside it.
+fn handler_reads(e: &Expr, out: &mut Live) {
+    walk(e, &mut |e| {
+        if let Expr::Handle { body, .. } = e {
+            let mut reads = Live::new();
+            let mut bound = Live::new();
+            walk(body, &mut |e| {
+                match e {
+                    Expr::Let { slot, .. } => {
+                        bound.insert(Var::Local(*slot));
+                    }
+                    Expr::Case { alts, .. } => {
+                        for alt in alts {
+                            for i in 0..alt.binders.len() {
+                                bound.insert(Var::Local(alt.binder_base + i));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                each_atom(e, &mut |a| {
+                    reads.extend(var(a));
+                });
+            });
+            out.extend(reads.difference(&bound));
+        }
+    });
+}
+
+/// Visit `e` and every expression nested in it.
+fn walk(e: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(e);
+    match e {
+        Expr::Let { rhs, body, .. } => {
+            walk(rhs, f);
+            walk(body, f);
+        }
+        Expr::Case { alts, default, .. } => {
+            for alt in alts {
+                walk(&alt.body, f);
+            }
+            walk(default, f);
+        }
+        Expr::Handle { body, .. } | Expr::Defer { body, .. } | Expr::Drop { body, .. } => {
+            walk(body, f)
+        }
+        Expr::Ret(_)
+        | Expr::App { .. }
+        | Expr::MkStruct { .. }
+        | Expr::Field { .. }
+        | Expr::MkVariant { .. }
+        | Expr::MkTuple(_)
+        | Expr::Fault(_) => {}
+    }
+}
+
+/// The atoms `e` itself reads (not those of nested expressions), including
+/// closures' captures.
+fn each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
+    fn visit(a: &Atom, f: &mut impl FnMut(&Atom)) {
+        match a {
+            Atom::Clos { captures, .. } => captures.iter().for_each(|c| visit(c, f)),
+            _ => f(a),
+        }
+    }
+    match e {
+        Expr::Ret(a) | Expr::Field { rec: a, .. } => visit(a, f),
+        Expr::App { fun, arg, .. } => {
+            visit(fun, f);
+            visit(arg, f);
+        }
+        Expr::MkStruct { base, fields, .. } => {
+            base.iter().chain(fields.iter().map(|(_, a)| a)).for_each(|a| visit(a, f))
+        }
+        Expr::MkVariant { fields, .. } => fields.iter().for_each(|a| visit(a, f)),
+        Expr::MkTuple(items) => items.iter().for_each(|a| visit(a, f)),
+        Expr::Case { scrut, .. } => visit(scrut, f),
+        Expr::Handle { clauses, els, .. } => {
+            clauses.iter().for_each(|c| visit(&c.fun, f));
+            visit(els, f);
+        }
+        Expr::Defer { cleanup, .. } => visit(cleanup, f),
+        Expr::Let { .. } | Expr::Drop { .. } | Expr::Fault(_) => {}
     }
 }
 

@@ -12,12 +12,14 @@ use std::path::{Path, PathBuf};
 /// standard-library module must be added here too; the tests below enforce it.
 pub(crate) const MODULES: &[(&str, &str)] = &[
     ("ASYNC", include_str!("../../../library/ASYNC.thx")),
+    ("BITS", include_str!("../../../library/BITS.thx")),
     ("C", include_str!("../../../library/C.thx")),
     ("CORE", include_str!("../../../library/CORE.thx")),
     ("CPX", include_str!("../../../library/CPX.thx")),
     ("DERIVE", include_str!("../../../library/DERIVE.thx")),
     ("IO", include_str!("../../../library/IO.thx")),
     ("LA", include_str!("../../../library/LA.thx")),
+    ("LIST", include_str!("../../../library/LIST.thx")),
     ("MAP", include_str!("../../../library/MAP.thx")),
     ("MATH", include_str!("../../../library/MATH.thx")),
     ("OPT", include_str!("../../../library/OPT.thx")),

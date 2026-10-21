@@ -12,9 +12,9 @@
 //! back to an enclosing-scope position.
 
 use std::collections::BTreeSet;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::data::{self, Alt, AltKind, Atom, Code, Expr, HandleClause, ResumeUse};
+use super::data::{self, builtin_arity, Alt, AltKind, Atom, Code, Expr, HandleClause, ResumeUse};
 use crate::lowering::data::{Clause, Effect, Handler, Pat, Program as Core, Term};
 
 /// Lower a whole program (root module first) to the IR, the way the C++ pipeline
@@ -77,6 +77,11 @@ pub fn lower(core: &Core) -> data::Program {
         globals.push((name.clone(), id));
     }
     let mut codes = conv.codes;
+    let names: HashSet<&str> = globals.iter().map(|(n, _)| n.as_str()).collect();
+    for code in &mut codes {
+        let body = std::mem::replace(&mut code.body, Expr::Fault(String::new()));
+        code.body = sink_partials(body, &names);
+    }
     super::ownership::annotate(&mut codes);
     data::Program {
         codes,
@@ -100,6 +105,9 @@ struct Ctx {
     scope: Vec<Option<data::Atom>>,
     next_local: usize,
     nlocals: usize,
+    /// Slots below this are never handed out again: a handler body that ran in
+    /// them can be resumed after the code following the handler has started.
+    floor: usize,
 }
 
 impl Ctx {
@@ -108,6 +116,7 @@ impl Ctx {
             scope: Vec::new(),
             next_local: 0,
             nlocals: 0,
+            floor: 0,
         }
     }
 
@@ -121,7 +130,9 @@ impl Ctx {
     }
 
     fn free_local(&mut self) {
-        self.next_local -= 1;
+        if self.next_local > self.floor {
+            self.next_local -= 1;
+        }
     }
 }
 
@@ -513,7 +524,12 @@ impl Conv {
     }
 
     fn handle(&mut self, body: &Term, handler: &Handler, ctx: &mut Ctx) -> Expr {
+        let high_water = ctx.nlocals;
+        ctx.nlocals = ctx.next_local;
         let body_e = self.expr(body, ctx, true);
+        ctx.floor = ctx.floor.max(ctx.nlocals);
+        ctx.next_local = ctx.next_local.max(ctx.floor);
+        ctx.nlocals = ctx.nlocals.max(high_water);
         let clauses = handler
             .clauses
             .iter()
@@ -556,6 +572,123 @@ impl Conv {
     }
 }
 
+/// Move each partial application of a built-in down to the application that
+/// saturates it. A-normal form evaluates `@iadd x (f y)` as `let p = @iadd x in
+/// let a = f y in p a`; this gives `let a = f y in let p = @iadd x in p a`, which
+/// a backend can run as one direct call. Applying a built-in to fewer operands
+/// than its arity does nothing but collect them, so the move changes no
+/// behaviour, and `x`'s slots stay bound across the body it moves through.
+fn sink_partials(e: Expr, globals: &HashSet<&str>) -> Expr {
+    match e {
+        Expr::Let { slot, rhs, body } => {
+            let rhs = sink_partials(*rhs, globals);
+            let body = sink_partials(*body, globals);
+            let partial = match &rhs {
+                Expr::App {
+                    fun: Atom::Glob { name },
+                    ..
+                } => !globals.contains(name.as_str()) && builtin_arity(name).is_some_and(|n| n >= 2),
+                _ => false,
+            };
+            if partial {
+                match place_partial(slot, &rhs, body) {
+                    Ok(placed) => placed,
+                    Err(body) => Expr::Let {
+                        slot,
+                        rhs: Box::new(rhs),
+                        body: Box::new(body),
+                    },
+                }
+            } else {
+                Expr::Let {
+                    slot,
+                    rhs: Box::new(rhs),
+                    body: Box::new(body),
+                }
+            }
+        }
+        Expr::Case {
+            scrut,
+            alts,
+            default,
+        } => Expr::Case {
+            scrut,
+            alts: alts
+                .into_iter()
+                .map(|a| Alt {
+                    body: sink_partials(a.body, globals),
+                    ..a
+                })
+                .collect(),
+            default: Box::new(sink_partials(*default, globals)),
+        },
+        Expr::Handle { body, clauses, els } => Expr::Handle {
+            body: Box::new(sink_partials(*body, globals)),
+            clauses,
+            els,
+        },
+        Expr::Defer { cleanup, body } => Expr::Defer {
+            cleanup,
+            body: Box::new(sink_partials(*body, globals)),
+        },
+        e => e,
+    }
+}
+
+/// Bind `slot` to `rhs` just before the application of it on `body`'s spine of
+/// lets, when that is its only use; otherwise hand `body` back unchanged.
+fn place_partial(slot: usize, rhs: &Expr, body: Expr) -> Result<Expr, Expr> {
+    let bind = |at: Expr| Expr::Let {
+        slot,
+        rhs: Box::new(rhs.clone()),
+        body: Box::new(at),
+    };
+    let applies = |e: &Expr| matches!(e, Expr::App { fun: Atom::Local(s), arg, .. } if *s == slot && !atom_mentions(arg, slot));
+    match body {
+        e if applies(&e) => Ok(bind(e)),
+        Expr::Let {
+            slot: next,
+            rhs: next_rhs,
+            body: rest,
+        } => {
+            if applies(&next_rhs) {
+                if mentions(&rest, slot) {
+                    return Err(Expr::Let {
+                        slot: next,
+                        rhs: next_rhs,
+                        body: rest,
+                    });
+                }
+                return Ok(bind(Expr::Let {
+                    slot: next,
+                    rhs: next_rhs,
+                    body: rest,
+                }));
+            }
+            if mentions(&next_rhs, slot) {
+                return Err(Expr::Let {
+                    slot: next,
+                    rhs: next_rhs,
+                    body: rest,
+                });
+            }
+            match place_partial(slot, rhs, *rest) {
+                Ok(placed) => Ok(Expr::Let {
+                    slot: next,
+                    rhs: next_rhs,
+                    body: Box::new(placed),
+                }),
+                Err(rest) => Err(Expr::Let {
+                    slot: next,
+                    rhs: next_rhs,
+                    body: Box::new(rest),
+                }),
+            }
+        }
+        e => Err(e),
+    }
+}
+
 /// Classify a lifted clause body by whether it mentions `k`, which is `Local(1)`
 /// there (slot 0 is the operation argument, and the slot allocator hands out 2
 /// and up to the body's own binders, so no other binder can alias it). Any
@@ -590,7 +723,7 @@ fn any_mentions<'a>(atoms: impl IntoIterator<Item = &'a Atom>, slot: usize) -> b
 }
 
 /// Does `e` read local `slot` anywhere, including inside a closure it builds?
-pub(super) fn mentions(e: &Expr, slot: usize) -> bool {
+pub fn mentions(e: &Expr, slot: usize) -> bool {
     match e {
         Expr::Ret(a) => atom_mentions(a, slot),
         Expr::Let { rhs, body, .. } => mentions(rhs, slot) || mentions(body, slot),

@@ -216,3 +216,34 @@ pub struct Program {
     /// them to marshal a struct value across the `@extern` boundary by value.
     pub crepr_layouts: Vec<(String, utilities::CLayout)>,
 }
+
+/// The builtins a native program runs by calling into the compiler library
+/// (`libthrax`, see `crates/thrax/include/thrax.h`).
+pub const COMPILER_BUILTINS: &[&str] =
+    &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
+
+/// The arity of a built-in operator, or `None`. Mirrors the C runtime's table and
+/// the interpreter's `builtin_arity`.
+pub fn builtin_arity(name: &str) -> Option<usize> {
+    let n = match name {
+        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
+        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" | "@par"
+        | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
+        | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
+        | "@stm_rollback" => 1,
+        _ if COMPILER_BUILTINS.contains(&name) => 1,
+        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
+        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
+        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
+        | "@slt" | "@swrap" | "@uwrap" => 2,
+        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
+        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
+        | "@tensor_concat" | "@tensor_index" | "@tensor_create" | "@chan_send"
+        | "@stm_write" => 2,
+        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" | "@tensor_slice"
+        | "@tensor_index_axis" => 3,
+        "@tensor_slice_axis" => 4,
+        _ => return None,
+    };
+    Some(n)
+}

@@ -1913,13 +1913,15 @@ static void segment_copy(Resump *src, KFrame *out) {
     switch (kf.tag) {
       case K_RET: {
         Frame *c = frame_copy_of(&map, kf.u.ret.frame);
-        /* The slot holds the box this frame's return patches in place, so the
-         * copy needs its own; a closure built by the right-hand side still
-         * reads the original's (it captured that very value). */
-        Value *box = THxRT_unit();
-        THxMEM_retain(box);
-        THxMEM_release(c->locals[kf.u.ret.slot]);
-        c->locals[kf.u.ret.slot] = box;
+        /* A slot holding a box (a recursive `let`'s) is patched in place on
+         * return, so the copy needs its own; a closure built by the right-hand
+         * side still reads the original's (it captured that very value). */
+        if (c->locals[kf.u.ret.slot]) {
+          Value *box = THxRT_unit();
+          THxMEM_retain(box);
+          THxMEM_release(c->locals[kf.u.ret.slot]);
+          c->locals[kf.u.ret.slot] = box;
+        }
         kf.u.ret.frame = c;
         break;
       }
@@ -2092,10 +2094,14 @@ void THxK_drop(Frame *fr, size_t slot) {
 void THxK_setbox(Frame *fr, size_t slot) {
   THxK_setlocal(fr, slot, THxRT_unit());
 }
+/* A slot with no box is a non-recursive `let`'s: the value moves in. */
 void THxK_backpatch(Frame *fr, size_t slot, Value *v) {
   if (slot >= fr->nlocals) thrax_fault("backpatch: slot out of range");
   Value *box = fr->locals[slot];
-  if (!box) thrax_fault("backpatch: no box in slot");
+  if (!box) {
+    THxK_setlocal(fr, slot, v);
+    return;
+  }
   THxVALUE_patch_box(box, v);
 }
 
@@ -2140,12 +2146,15 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
     KFrame kf = g_kont[--g_kn];
     switch (kf.tag) {
       case K_RET: {
-        Value *box = kf.u.ret.frame->locals[kf.u.ret.slot];
-        if (!box) thrax_fault("ret: no box in resumed slot");
-        THxVALUE_patch_box(box, v);
+        Value **slot = &kf.u.ret.frame->locals[kf.u.ret.slot];
         *cur = kf.u.ret.cont;
         *fr = kf.u.ret.frame; /* adopt the KRet's frame reference */
         *in = v;
+        if (!*slot) {
+          *slot = v; /* no box: the slot adopts the in-flight reference */
+          return 1;
+        }
+        THxVALUE_patch_box(*slot, v);
         THxMEM_release(v); /* delivered: the box owns copies of v's children */
         return 1;
       }
@@ -2281,6 +2290,13 @@ static Value *rt_generate(Value *tmpl, Value *f) {
   for (size_t i = 0; i < len; i++) THxMEM_release(items[i]); /* drop generate's ref */
   free(items);
   return v;
+}
+
+/* A built-in applied to all `n` of its operands at once, which are borrowed.
+ * The result is fresh or one of the operands' children, as through do_apply. */
+Value *THxK_prim(const char *name, Value **a, size_t n) {
+  if (strcmp(name, "@tensor_create") == 0) return rt_generate(a[0], a[1]);
+  return run_builtin(name, a, n);
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
@@ -2641,6 +2657,19 @@ static void THxPAR_free_immortals(void) {
   g_imn = g_imcap = 0;
 }
 
+/* Claims a shared thunk for forcing. A compare-and-swap would do, but a failed
+ * one counts as a write to the sanitizer, racing the winner's plain reads of
+ * the tag it then sets; under the lock a losing claim only loads. */
+static pthread_mutex_t g_claim_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static int claim_thunk(Value *v) {
+  pthread_mutex_lock(&g_claim_mu);
+  int won = __atomic_load_n(&v->tag, __ATOMIC_ACQUIRE) == T_THUNK;
+  if (won) __atomic_store_n(&v->tag, (uint8_t)T_BLACKHOLE, __ATOMIC_RELAXED);
+  pthread_mutex_unlock(&g_claim_mu);
+  return won;
+}
+
 /* Force a shared lazy slot. The first thread to see T_THUNK swaps in
  * T_BLACKHOLE and evaluates; the others wait for the tag to change. The payload
  * is written before the tag (release), so a reader that sees the new tag (its
@@ -2653,10 +2682,7 @@ static Value *force_shared(Value *v) {
       continue;
     }
     if (tag != T_THUNK) return v;
-    uint8_t expect = T_THUNK;
-    if (!__atomic_compare_exchange_n(&v->tag, &expect, (uint8_t)T_BLACKHOLE, 0,
-                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-      continue;
+    if (!claim_thunk(v)) continue;
     Value *f = v->u.thunk; /* the cell's reference, dropped once replaced */
     Value *forced = THxK_call(f, THxRT_unit()); /* owned */
     if (forced == v) {

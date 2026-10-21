@@ -65,7 +65,8 @@ there is no Pair type.
 | module | contents |
 |--------|----------|
 | `OPT`  | `Option` (`Some`/`None`), `is_some`, `is_none`, `unwrap_or`, `opt_map`, `opt_then` |
-| `LIST` | `length`, `is_empty`, `map`, `filter`, `foldl`, `foldr`, `reverse`, `append`, `concat`, `take`, `drop`, `nth`, `set_nth`, `any`, `all`, `find`, `contains`, `range`, `zip`, `zip_with`, `unzip`, `sum`, `product`, `minimum`, `maximum`, `last`, `init`, `replicate`, `intersperse`, `take_while`, `drop_while`, `span`, `split_at`, `partition`, `filter_map`, `flat_map`, `remove_first`, `find_index`, `lookup`, `sort_by`, `merge_by` |
+| `LIST` | CORE's cons `List`, lazy in the tail (`map`, `filter`, `append`, `take`, `concat`, `zip` build cells as they are walked, so pipelines stream): `empty`, `singleton`, `is_empty`, `head`, `tail`, `length`, `nth`, `last`, `reverse`, `reverse_onto`, `append`, `concat`, `map`, `concat_map`, `filter`, `filter_map`, `foldl`, `foldr`, `take`, `drop`, `take_while`, `drop_while`, `any`, `all`, `find`, `lookup`, `zip`, `to_vec`, `from_vec` |
+| `BITS` | bitwise operations on the 64-bit `@int` (arithmetic, there being no intrinsics): `band`, `bor`, `bxor`, `bnot`, `shl`, `shr_u`, `shr_s`, `zext`, `sext`, `pow2`, `bit_len`, `min_int`, `max_int`; IEEE 754 encodings `f64_bits`, `f32_bits` |
 | `STR`  | `len`, `at`, `substr`, `eq`, `cmp_str`, `from_byte`, `starts_with`, `ends_with`, `find`, `find_from`, `contains`, `split`, `lines`, `join`, `concat`, `trim`(`_left`/`_right`), `repeat`, `pad_left`, `pad_right`, `replace`, `count`, `reverse`, `map_bytes`, `to_upper`, `to_lower`, `is_space`/`is_digit`/`is_alpha`/`is_alnum`/`is_upper`/`is_lower`, `from_int`, `to_int` |
 | `MATH` | @int: `min`, `max`, `cmp_int`, `abs`, `sign`, `clamp`, `even`, `odd`, `gcd`, `pow`; Real: `pi`, `euler`, `min`, `max`, `abs`, `clamp`, `sqrt`, `sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `floor`, `ceil`, `round`, `pow`, `fmod` (libm via `C`) |
 | `IO`   | `print`, `println`, `eprint`, `eprintln`, `print_int`, `println_int`, `read_line`, `read_file`, `write_file`, `append_file`, `remove_file`, `read_dir`, `env`, `now` (all `<@io>`) |
@@ -83,8 +84,8 @@ there is no Pair type.
 `C` binding that touches it is `<@io>`. A finer effect (a GPU, a log) is an
 ordinary `@effect` whose handler discharges into `@io`.
 
-`STR` and `LIST` share some natural names (`reverse`, `find`, `contains`,
-`repeat`, `concat`). A name two imports share has no bare meaning, so use the
+`STR`, `VEC` and `LIST` share some natural names (`reverse`, `find`, `length`,
+`map`, `concat`). A name two imports share has no bare meaning, so use the
 qualified `STR.reverse` / `LIST.find` forms where both modules are imported.
 
 ### The map

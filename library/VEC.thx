@@ -154,8 +154,7 @@ $ maximum : @vec @int -> @int -> @int = \v d =
 
 # ---- conversion (bridges to the optional cons `List`) ----
 
-$ from_list : List t -> @vec t = \xs =
-	is xs | List.Cons.{h, t} => @vec_push (from_list t) h | _ => @vec_new {}
+$ from_list : List t -> @vec t = \xs = from_list_onto (@vec_new {}) xs
 
 $ to_list : @vec t -> List t = \v = foldr (\x acc = List.Cons.{x, acc}) List.Nil v
 
@@ -219,3 +218,6 @@ $ merge_from : (t -> t -> @int) -> @vec t -> @vec t -> @int -> @int -> @vec t ->
 		let y = @vec_get ys j in
 		if (c x y) <= 0 => merge_from c xs ys (i + 1) j (@vec_push acc x)
 		else merge_from c xs ys i (j + 1) (@vec_push acc y)
+
+$ from_list_onto : @vec t -> List t -> @vec t = \acc xs =
+	is xs | List.Cons.{h, t} => from_list_onto (@vec_push acc h) t | _ => acc
