@@ -281,8 +281,10 @@ $ from_string : @ctx IFromString t -> @str -> t = \d s = d.parse s
 $ impl_IToString_for_str : IToString @str = .{ .show = \s = s }
 $ impl_IToString_for_bool : IToString @bool = .{ .show = \b = if b => "true" else "false" }
 
+# A negative value prints through `@nat`, because negating the minimum `@int`
+# overflows back to itself while its `@nat` reinterpretation is the magnitude.
 $ int_to_str : @int -> @str = \n =
-	if n < 0 => "-" ++ to_string_digits (0 - n) ""
+	if n < 0 => "-" ++ to_string_udigits (@cast (0 - n)) ""
 	else to_string_digits n ""
 
 $ impl_IToString_for_int : IToString @int = .{ .show = int_to_str }

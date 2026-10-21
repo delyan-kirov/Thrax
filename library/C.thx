@@ -101,6 +101,7 @@ $ fclose  : @int -> <@io> @int                          = @extern "C" "fclose"  
 $ fgetc   : @int -> <@io> @int                          = @extern "C" "fgetc"   "libc"
 $ fputc   : {c: @int, stream: @int}    -> <@io> @int     = @extern "C" "fputc"   "libc"
 $ fputs   : {s: @str, stream: @int}    -> <@io> @int     = @extern "C" "fputs"   "libc"
+$ fwrite  : {buf: @str, size: @int, n: @int, stream: @int} -> <@io> @int = @extern "C" "fwrite" "libc"
 $ fflush  : @int -> <@io> @int                          = @extern "C" "fflush"  "libc"
 $ fseek   : {stream: @int, off: @int, whence: @int} -> <@io> @int = @extern "C" "fseek" "libc"
 $ ftell   : @int -> <@io> @int                          = @extern "C" "ftell"   "libc"
@@ -119,6 +120,7 @@ $ pclose  : @int -> <@io> @int                          = @extern "C" "pclose"  
 $ write  : {fd: @int, buf: @str, n: @int} -> <@io> @int   = @extern "C" "write"  "libc"
 $ getenv : @str -> <@io> @str                           = @extern "C" "getenv" "libc"
 $ time   : @int -> <@io> @int                           = @extern "C" "time"   "libc"
+$ clock  : {} -> <@io> @int                            = @extern "C" "clock"  "libc"
 
 # -- engine intrinsics -----------------------------------------------------
 # NOT libc: the interpreter serves these from a compiled-in host table, and the

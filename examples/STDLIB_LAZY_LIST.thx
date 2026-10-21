@@ -1,0 +1,34 @@
+$ @mod STDLIB_LAZY_LIST
+
+# \file STDLIB_LAZY_LIST.thx
+# \info The standard library's LIST module over CORE's cons `List`. The
+#       rebuilding functions are lazy in the tail, so a pipeline over an
+#       unbounded list streams: only the cells a consumer looks at are built.
+
+$ with LIST
+$ with OPT
+
+$ nums : List @int = [1, 2, 3, 4, 5]
+$ naturals : List @int = [0 ...]
+
+$ ck_length : @int = if LIST.length nums == 5 => 0 else 1
+$ ck_map    : @int = if LIST.foldl (\a x = a + x) 0 (LIST.map (\x = x * x) nums) == 55 => 0 else 1
+$ ck_filter : @int = if LIST.length (LIST.filter (\x = x % 2 == 0) nums) == 2 => 0 else 1
+$ ck_rev    : @int = if LIST.foldl (\a x = a * 10 + x) 0 (LIST.reverse nums) == 54321 => 0 else 1
+$ ck_append : @int = if LIST.length (LIST.append nums nums) == 10 => 0 else 1
+$ ck_nth    : @int = if unwrap_or (LIST.nth nums 3) 0 == 4 => 0 else 1
+$ ck_last   : @int = if unwrap_or (LIST.last nums) 0 == 5 => 0 else 1
+$ ck_vec    : @int = if @vec_len (LIST.to_vec nums) == 5 => 0 else 1
+$ ck_back   : @int = if LIST.length (LIST.from_vec [7, 8, 9]) == 3 => 0 else 1
+
+# An unbounded source, transformed and cut: only ten cells are ever built.
+$ ck_stream : @int =
+	let evens = LIST.filter (\x = x % 2 == 0) naturals in
+	if LIST.foldl (\a x = a + x) 0 (LIST.take 10 (LIST.map (\x = x * 3) evens)) == 270 => 0 else 1
+
+$ ck_find : @int = if unwrap_or (LIST.find (\x = x > 1000) naturals) 0 == 1001 => 0 else 1
+
+$ test : @int = ck_length + ck_map + ck_filter + ck_rev + ck_append + ck_nth + ck_last
+	+ ck_vec + ck_back + ck_stream + ck_find
+
+$ @e <| assert (test == 0) "STDLIB_LAZY_LIST: a check failed"

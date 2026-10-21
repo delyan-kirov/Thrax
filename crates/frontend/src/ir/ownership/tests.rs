@@ -164,7 +164,7 @@ fn a_captured_field_moves_at_its_last_use() {
 }
 
 #[test]
-fn a_slot_live_across_a_handler_body_survives_it() {
+fn a_slot_a_handler_body_reads_is_never_moved() {
     let handle = Expr::Handle {
         body: Box::new(app(glob(), Atom::Local(0))),
         clauses: Vec::new(),
@@ -181,5 +181,5 @@ fn a_slot_live_across_a_handler_body_survives_it() {
         panic!()
     };
     assert!(matches!(*hbody, Expr::App { arg: Atom::Local(0), .. }));
-    assert!(matches!(*body, Expr::App { fun: Atom::Move(0), .. }));
+    assert!(matches!(*body, Expr::App { fun: Atom::Local(0), .. }));
 }
