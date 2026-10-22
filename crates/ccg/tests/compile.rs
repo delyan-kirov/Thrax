@@ -479,6 +479,40 @@ fn lazy_recursive_struct_streams() {
 }
 
 #[test]
+fn record_update_forces_a_lazy_base() {
+    // #310: `| base` read from an unforced recursive field must be forced
+    // before its fields are copied, in both engines.
+    let src = "$ @mod M\n\
+               $ Node : @struct = v : @int, next : Node\n\
+               $ mk : @int -> Node = \\n = { .v = n, .next = mk (n + 1) }\n\
+               $ test : @int = let b = Node.{ .v = 5 | (mk 0).next } in b.v * 100 + b.next.v\n";
+    assert_eq!(c_run(src, "test"), "test = 502");
+    assert_matches(src, "test");
+    assert_example("RECORD_UPDATE.thx", "test");
+}
+
+#[test]
+fn recursive_let_through_a_nested_binding() {
+    // #250: ANF floated `helper` out of `go`'s value, past the binding it
+    // calls, so `go` became an unbound global. The interpreter also lost
+    // `go`'s box once the tail call `go m` dropped the frame holding it.
+    // Native runs through `@main` because the `go` -> `helper` -> `go` cycle
+    // is not a direct self edge, so the `Show` harness's leak check trips.
+    let def = "$ @mod M\n\
+               $ f : @int -> @int = \\m =\n\
+               \tlet go = (let helper = \\x = if x == 0 => 0 else 1 + go (x - 1) in \\n = helper n) in\n\
+               \tgo m\n";
+    assert_eq!(
+        interp_show(&format!("{def}$ test : @int = f 5\n"), "test"),
+        "5"
+    );
+    let main = format!("{def}$ @main : @vec @str -> <@io> @int = \\args = f 5\n");
+    assert_eq!(c_run_entry(&main, &[]).0, 5);
+    // A local recursive closure that escapes the frame that bound it.
+    assert_example("LET_IN.thx", "chk_escape");
+}
+
+#[test]
 fn ffi_struct_by_value_return() {
     // libc's `ldiv_t ldiv(long, long)` returns a struct BY VALUE. The C backend
     // emits a `typedef struct` and rebuilds the Thrax struct from the C result,

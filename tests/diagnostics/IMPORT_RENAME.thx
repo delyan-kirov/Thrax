@@ -1,0 +1,3 @@
+$ @mod IMPORT_RENAME
+
+$ with V = VEC  #~ error[UNSUPPORTED]: an import cannot be renamed

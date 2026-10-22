@@ -599,10 +599,13 @@ Value *THxRT_extern(int idx, size_t arity) {
   return v;
 }
 
+Value *THxVALUE_force(Value *v);
+
 /* A struct built from a base (record update): base's fields seeded, then the
  * listed overrides. An empty `name` keeps the base's type name. */
 Value *THxRT_struct_update(Value *base, const char *name, size_t nextra,
                            const char **fnames, Value **vals) {
+  base = THxVALUE_force(base); /* a base read from a lazy slot */
   if (base->tag != T_STRUCT) thrax_fault("record update of a non-struct value");
   size_t cap = base->u.strct.len + nextra;
   Field *fields = THxMEM_alloc((cap ? cap : 1) * sizeof(Field));

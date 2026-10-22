@@ -851,7 +851,7 @@ impl Repl {
         // (and its type), keeping that boundary visible.
         match interpreter::machine::eval(&ir, IT) {
             Ok(shown) => match ty {
-                Some(ty) => println!("{RESULT}{shown} : {ty}"),
+                Some(ty) => println!("{RESULT}{} : {ty}", show_at_type(shown, &ty)),
                 None => println!("{RESULT}{shown}"),
             },
             // A pending interrupt request means the evaluation was stopped by
@@ -994,6 +994,16 @@ Emacs editing keys:
       Enter to accept, Esc (or C-g) to cancel
   C-j new line (or submit the item when it ends in `$`)
 ";
+
+/// A rendered value, corrected for its type where the untyped runtime value
+/// cannot tell: a 64-bit `@nat` is held as the bits of an `i64`, so one above
+/// `i64::MAX` renders negative.
+fn show_at_type(shown: String, ty: &str) -> String {
+    match (ty, shown.parse::<i64>()) {
+        ("@nat" | "@nat64", Ok(n)) if n < 0 => (n as u64).to_string(),
+        _ => shown,
+    }
+}
 
 #[cfg(test)]
 #[path = "repl_tests.rs"]

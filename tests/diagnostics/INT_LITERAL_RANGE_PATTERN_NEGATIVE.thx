@@ -1,0 +1,3 @@
+$ @mod INT_LITERAL_RANGE_PATTERN_NEGATIVE
+
+$ e : @nat8 -> @int = \d = is d | -1 => 2 | _ => 3  #~ error[INT_LITERAL_RANGE]: integer literal -1 is out of range for `@nat8`

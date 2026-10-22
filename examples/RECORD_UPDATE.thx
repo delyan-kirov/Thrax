@@ -54,6 +54,21 @@ $ fromcall : Vec3 = Vec3.{ .z = 9 | (mkv 2) }
 $ chk_call_x : @int = if fromcall.x == 2 => 0 else 1
 $ chk_call_z : @int = if fromcall.z == 9 => 0 else 1
 
+# The base may be a lazy slot that has not been forced yet: a recursive field,
+# or a recursive variant's payload bound by a pattern. The update forces it.
+$ Chain : @struct = v: @int, next: Chain
+$ chain_from : @int -> Chain = \n = { .v = n, .next = chain_from (n + 1) }
+$ relinked : Chain = Chain.{ .v = 5 | (chain_from 0).next }
+$ chk_lazy_v    : @int = if relinked.v == 5 => 0 else 1
+$ chk_lazy_next : @int = if relinked.next.v == 2 => 0 else 1
+
+$ Wrapped : @union = Leaf : { @int }, Wrap : { Box }
+$ Box : @struct = e: Wrapped, tag: @int
+$ unwrap : Box -> Box = \x = is x.e | Wrapped.Wrap.{ inner } => Box.{ .tag = 9 | inner } | _ => x
+$ unwrapped : Box = unwrap Box.{ .e = Wrapped.Wrap.{ Box.{ .e = Wrapped.Leaf.{ 1 }, .tag = 0 } }, .tag = 1 }
+$ chk_payload_tag : @int = if unwrapped.tag == 9 => 0 else 1
+$ chk_payload_e   : @int = is unwrapped.e | Wrapped.Leaf.{ 1 } => 0 | _ => 1
+
 $ test : @int =
 	  chk_renamed_name + chk_renamed_age
 	+ chk_older_name + chk_older_age
@@ -61,5 +76,7 @@ $ test : @int =
 	+ chk_bumped_name + chk_bumped_age
 	+ chk_v_x + chk_v_y + chk_v_z
 	+ chk_call_x + chk_call_z
+	+ chk_lazy_v + chk_lazy_next
+	+ chk_payload_tag + chk_payload_e
 
 $ @e <| assert (test == 0) "RECORD_UPDATE: a check failed"

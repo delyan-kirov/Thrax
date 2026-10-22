@@ -1,0 +1,5 @@
+$ @mod INT_LITERAL_RANGE_PATTERN
+
+# A pattern literal is range-checked against the scrutinee's type.
+$ d : @int8 = 1
+$ e : @int = is d | 1111111111 => 2 | _ => 3  #~ error[INT_LITERAL_RANGE]: integer literal 1111111111 is out of range for `@int8`

@@ -1,0 +1,3 @@
+$ @mod AA
+
+$ Inner : @struct = v : @int,

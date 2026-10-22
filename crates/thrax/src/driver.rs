@@ -519,7 +519,10 @@ fn lower_all(
                 Ok(v) => v,
                 Err(d) => {
                     clear_meta_hosts();
-                    eprintln!("thrax: `{}` of module `{module}` failed:", frontend::BUILD);
+                    let d = d.with_note(format!(
+                        "raised while running `{}` of module `{module}`",
+                        frontend::BUILD
+                    ));
                     eprint!("{}", render_e_fault(d, &module, utilities::Span::at(0), &loaded.sources));
                     return Err(ExitCode::FAILURE);
                 }
@@ -603,7 +606,7 @@ fn lower_all(
         if edits.is_empty() {
             assert!(!faults.is_empty(), "a round with sites and no edits must have faulted");
             for (diag, module, span) in faults {
-                eprintln!("thrax: a compile-time `@e` failed:");
+                let diag = diag.with_note("raised while running this compile-time `@e`");
                 eprint!("{}", render_e_fault(diag, &module, span, &loaded.sources));
             }
             return Err(ExitCode::FAILURE);
@@ -1345,7 +1348,7 @@ fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
         .collect()
 }
 
-/// A source's `$ with` items, re-rendered as source lines (renames kept).
+/// A source's `$ with` items, re-rendered as source lines.
 fn import_lines(src: &str) -> Vec<String> {
     let Ok(parsed) = frontend::parse(src) else {
         return Vec::new();
@@ -1362,10 +1365,7 @@ fn import_lines(src: &str) -> Vec<String> {
         .slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, rename, .. } => Some(match rename {
-                Some(r) => format!("$ with {} = {}", dotted(*module), dotted(*r)),
-                None => format!("$ with {}", dotted(*module)),
-            }),
+            Item::Import { module, .. } => Some(format!("$ with {}", dotted(*module))),
             _ => None,
         })
         .collect()

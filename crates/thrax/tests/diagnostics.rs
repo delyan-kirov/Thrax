@@ -340,9 +340,9 @@ error[TYPE_MISMATCH]: struct `P` has no field `z`
   |           ^^^^^^^^^^^^^^^^^^^^
 warning[UNREACHABLE_ARM]: unreachable arm
   --> CORE.thx:9:1
-thrax: a compile-time `@e` failed:
-error[RUNTIME_FAULT]: boom
+error[META_ABORT]: boom
   --> F.thx
+note: raised while running this compile-time `@e`
 thrax: cannot find module `NOPE`
 ";
     let got: Vec<String> = diagnostics(stderr, &["F.thx".to_string()])
@@ -354,7 +354,7 @@ thrax: cannot find module `NOPE`
         [
             "F.thx:4: error[TYPE_MISMATCH]: struct `P` has no field `z`",
             "<unlocated>: warning[UNREACHABLE_ARM]: unreachable arm",
-            "<unlocated>: error[RUNTIME_FAULT]: boom",
+            "<unlocated>: error[META_ABORT]: boom",
             "<unlocated>: error: cannot find module `NOPE`",
         ]
     );

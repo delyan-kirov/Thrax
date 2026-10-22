@@ -36,8 +36,8 @@ use std::rc::Rc;
 
 use crate::lowering::{CtxVal, HookImpl};
 use crate::parser::data::{
-    Ast, Binding, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField, RowEntry,
-    SliceSlot, Ty, Variance,
+    Ast, Binding, EffectRow, Expr, FieldInit, FieldPat, Item, Pattern, Payload, Program, RecField,
+    RowEntry, SliceSlot, Ty, Variance,
 };
 use utilities::{Aol, Slice, StrId};
 use utilities::{diag, Code, Diagnostic, ExternArg, Result, Span};
@@ -193,6 +193,18 @@ pub struct Checker<'a> {
     /// This module's own exports, recorded after checking.
     own_values: Vec<(&'a str, Type)>,
     own_type_names: Vec<&'a str>,
+    /// Types this module reaches through an import's declarations without
+    /// importing their home module (`BB.Outer`'s field of `AA.Inner`), each with
+    /// that home. They are in `structs`/`unions`/`aliases` so imported
+    /// declarations elaborate, but a type this module writes cannot name them.
+    hidden_types: HashMap<&'a str, &'a str>,
+    /// The module that declares each type in scope, to name the import a use of
+    /// a hidden type is missing.
+    type_home: HashMap<&'a str, &'a str>,
+    /// Every type node of an imported declaration (struct fields, variant
+    /// payloads, alias bodies, context signatures). Elaborating one of these
+    /// may name a hidden type.
+    foreign_tys: HashSet<Aol<Ty>>,
     /// The effects this module declares, exported so an importer can type a
     /// qualified `Effect.op` reference.
     own_effects: Vec<&'a str>,
@@ -250,8 +262,8 @@ pub struct Checker<'a> {
     /// Each `@cast` application under 64 bits, mapped to its target's signedness
     /// and width. Lowering wraps the operand into that range.
     cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
-    /// Every integer literal's type, value, and span, range-checked against its
-    /// type once the module is solved (see [`Self::check_int_literals`]).
+    /// Every integer literal's type, value, and span, in an expression or a
+    /// pattern, range-checked once the module is solved (see [`Self::check_int_literals`]).
     int_literals: Vec<(Type, i64, Span)>,
     /// Non-fatal diagnostics (unreachable match arms), in source order.
     warnings: Vec<Diagnostic>,
@@ -408,6 +420,9 @@ impl<'a> Checker<'a> {
             numeric: Vec::new(),
             own_values: Vec::new(),
             own_type_names: Vec::new(),
+            hidden_types: HashMap::new(),
+            type_home: HashMap::new(),
+            foreign_tys: HashSet::new(),
             own_effects: Vec::new(),
             private_names: HashSet::new(),
             imported_private: HashMap::new(),
@@ -909,6 +924,8 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
+            self.hidden_types.remove(name);
+            self.type_home.insert(name, other.module_name);
             if let Some(s) = other.structs.get(name) {
                 self.structs.insert(name, s.clone());
             }
@@ -919,6 +936,51 @@ impl<'a> Checker<'a> {
                 self.aliases.insert(name, a.clone());
             }
         }
+        // Everything the exporter's declarations can mention, so they elaborate
+        // here too (#311). What this module cannot name stays hidden.
+        let names: Vec<&'a str> = other
+            .structs
+            .keys()
+            .chain(other.unions.keys())
+            .chain(other.aliases.keys())
+            .copied()
+            .collect();
+        for name in names {
+            if self.is_known_type(name) {
+                continue;
+            }
+            let home = other
+                .type_home
+                .get(name)
+                .copied()
+                .unwrap_or(other.module_name);
+            self.hidden_types.insert(name, home);
+            self.type_home.insert(name, home);
+            if let Some(s) = other.structs.get(name) {
+                self.structs.insert(name, s.clone());
+            }
+            if let Some(u) = other.unions.get(name) {
+                self.unions.insert(name, u.clone());
+            }
+            if let Some(a) = other.aliases.get(name) {
+                self.aliases.insert(name, a.clone());
+            }
+        }
+        let mut roots: Vec<Aol<Ty>> = Vec::new();
+        for s in other.structs.values() {
+            roots.extend(s.fields.iter().map(|(_, t)| *t));
+        }
+        for u in other.unions.values() {
+            for v in &u.variants {
+                roots.extend(v.payload.iter().map(|(_, t)| *t));
+            }
+        }
+        roots.extend(other.aliases.values().map(|(_, t)| *t));
+        roots.extend(other.own_ctx.iter().map(|(_, t)| *t));
+        for root in roots {
+            collect_ty_nodes(self.ast, root, &mut self.foreign_tys);
+        }
+        self.foreign_tys.extend(other.foreign_tys.iter().copied());
         for &effect in &other.own_effects {
             if other.private_names.contains(effect) {
                 continue;
@@ -1833,6 +1895,7 @@ impl<'a> Checker<'a> {
                     let params = self.resolve_type_params("struct", name, params, collected)?;
                     let fields = fields.iter().map(|f| (self.text(f.name), f.ty)).collect();
                     let crepr = abi.is_some();
+                    self.claim_type_name(name);
                     self.structs.insert(
                         name,
                         StructInfo {
@@ -1872,6 +1935,7 @@ impl<'a> Checker<'a> {
                     let collected = self.tyvars_with_spans(payload_tys);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("union", name, params, collected)?;
+                    self.claim_type_name(name);
                     self.unions.insert(
                         name,
                         UnionInfo {
@@ -1890,6 +1954,7 @@ impl<'a> Checker<'a> {
                     let collected = self.tyvars_with_spans([*ty]);
                     let name = self.text(*name);
                     let params = self.resolve_type_params("alias", name, params, collected)?;
+                    self.claim_type_name(name);
                     self.aliases.insert(name, (params, *ty));
                     self.own_type_names.push(name);
                 }
@@ -3095,8 +3160,10 @@ impl<'a> Checker<'a> {
                 let t = self.infer(operand)?;
                 // `-128` is `neg 128`: range-check the literal as the value it denotes.
                 if op == "neg" && matches!(self.node(operand), Expr::Int(_)) {
+                    let span = self.ast.expr_span(e);
                     if let Some(lit) = self.int_literals.last_mut() {
                         lit.1 = lit.1.wrapping_neg();
+                        lit.2 = span.unwrap_or(lit.2);
                     }
                 }
                 let op_ty = match self.global_ctx.get(op).copied() {
@@ -4937,6 +5004,10 @@ impl<'a> Checker<'a> {
         if matches!(self.pnode(pat), Pattern::Int(_) | Pattern::Range { .. }) {
             self.int_pattern_tys.insert(pat, expected);
         }
+        if let Pattern::Int(n) = self.pnode(pat) {
+            let span = self.ast.pat_span(pat).unwrap_or_else(|| Span::at(0));
+            self.int_literals.push((expected, *n, span));
+        }
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
             Pattern::Var(name) => {
@@ -5323,7 +5394,11 @@ impl<'a> Checker<'a> {
             }
             Pattern::Int(n) => match self.int_domain(pat) {
                 Some(dom) => {
-                    let n = int_in(*n, dom);
+                    let n = *n as i128;
+                    if n < dom.0 || dom.1 < n {
+                        // Rejected by `check_int_literals` once the module is solved.
+                        return DPat::Opaque;
+                    }
                     DPat::Ctor(Ctor::Int { lo: n, hi: n, dom }, Vec::new())
                 }
                 None => DPat::Ctor(Ctor::Lit(n.to_string()), Vec::new()),
@@ -5339,7 +5414,7 @@ impl<'a> Checker<'a> {
                     return DPat::Opaque;
                 };
                 let bound = |p: Aol<Pattern>| match self.pnode(p) {
-                    Pattern::Int(n) => Some(int_in(*n, dom)),
+                    Pattern::Int(n) => Some(*n as i128),
                     _ => None,
                 };
                 let lo = bound(*lo);
@@ -5454,7 +5529,7 @@ impl<'a> Checker<'a> {
             let Some(dom) = self.int_type_domain(t) else {
                 continue;
             };
-            let v = int_in(n, dom);
+            let v = n as i128;
             if v < dom.0 || dom.1 < v {
                 let ty = self.show(t);
                 return Err(diag!(
@@ -5512,6 +5587,37 @@ impl<'a> Checker<'a> {
                 "a type variable is written as a lowercase name; a capitalized type must be declared",
             ),
         }
+    }
+
+    /// Record `name` as one of this module's own types, displacing a hidden
+    /// one of the same name an import brought in.
+    fn claim_type_name(&mut self, name: &'a str) {
+        self.type_home.insert(name, self.module_name);
+        if self.hidden_types.remove(name).is_some() {
+            self.structs.remove(name);
+            self.unions.remove(name);
+            self.aliases.remove(name);
+        }
+    }
+
+    /// A type this module wrote naming a hidden type: one only an import's
+    /// declarations reach. Deferred like the other type-name errors.
+    fn check_hidden_type(&mut self, ty: Aol<Ty>, name: &str) {
+        let Some(&home) = self.hidden_types.get(name) else {
+            return;
+        };
+        if self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
+            return;
+        }
+        let mut d = diag!(
+            Code::TypeUnbound, Span::at(0), 0,
+            "type `{name}` is not imported";
+            help: "import its module with `$ with {home}`"
+        );
+        if let Some(span) = self.ast.ty_span(ty) {
+            d = d.fill_span(span);
+        }
+        self.unknown_type = Some(d);
     }
 
     fn is_known_type(&self, name: &str) -> bool {
@@ -5591,6 +5697,7 @@ impl<'a> Checker<'a> {
             _ => return None,
         };
         let (params, body) = self.aliases.get(name)?.clone();
+        self.check_hidden_type(cur, name);
         if matches!(self.tnode(body), Ty::Row(_)) {
             let span = self.ty_span_or_none(ty);
             self.defer_type_error(diag!(
@@ -5884,6 +5991,7 @@ impl<'a> Checker<'a> {
             }
             self.unknown_type = Some(d);
         }
+        self.check_hidden_type(ty, name);
         self.eng.types.con(name)
     }
 
@@ -6688,6 +6796,47 @@ fn subst_from_args<'a>(
     subst
 }
 
+/// Every type node in `ty`, itself included.
+fn collect_ty_nodes(ast: &Ast, ty: Aol<Ty>, out: &mut HashSet<Aol<Ty>>) {
+    if !out.insert(ty) {
+        return;
+    }
+    let row = |row: &EffectRow, out: &mut HashSet<Aol<Ty>>| {
+        for entry in ast.slice(row.entries) {
+            ast.slice(entry.args)
+                .iter()
+                .for_each(|a| collect_ty_nodes(ast, *a, out));
+        }
+    };
+    match ast.ty(ty) {
+        Ty::Con { .. } | Ty::Var(_) | Ty::Nat(_) | Ty::MetaE(_) | Ty::Unit => {}
+        Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+            collect_ty_nodes(ast, *a, out);
+            collect_ty_nodes(ast, *b, out);
+        }
+        Ty::Sized { size, elem, .. } => {
+            collect_ty_nodes(ast, *size, out);
+            collect_ty_nodes(ast, *elem, out);
+        }
+        Ty::Arrow { from, effect, to } => {
+            collect_ty_nodes(ast, *from, out);
+            collect_ty_nodes(ast, *to, out);
+            if let Some(r) = effect {
+                row(r, out);
+            }
+        }
+        Ty::Row(r) => row(r, out),
+        Ty::Tuple(items) => ast
+            .slice(*items)
+            .iter()
+            .for_each(|t| collect_ty_nodes(ast, *t, out)),
+        Ty::Record { fields, .. } => ast
+            .slice(*fields)
+            .iter()
+            .for_each(|f| collect_ty_nodes(ast, f.ty, out)),
+    }
+}
+
 /// Collect the type variables appearing in `ty`, in order of first appearance.
 fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
     match ast.ty(ty) {
@@ -6820,20 +6969,6 @@ fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) 
             .find(|(n, _)| *n == Some(name))
             .map(|(_, t)| *t),
         None => payload.get(index).map(|(_, t)| *t),
-    }
-}
-
-/// Map the sigil/alias type constructors to their canonical built-in name. Every
-/// sized integer width (signed and unsigned, `@`-sigil and friendly alias) is
-
-/// An integer literal's value in a type with value range `dom`. The literal is
-/// stored as an `i64`, so a value of an unsigned 64-bit type above `i64::MAX` is
-/// its two's-complement bits.
-fn int_in(n: i64, dom: (i128, i128)) -> i128 {
-    if n < 0 && dom.0 == 0 {
-        n as u64 as i128
-    } else {
-        n as i128
     }
 }
 

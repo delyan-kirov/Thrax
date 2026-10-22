@@ -86,7 +86,8 @@ pub enum Code {
     PrivateSymbol,
     NoEntry,
     EntrySignature,
-    AssertFailed,
+    /// `@abort` ran: a compile-time check or generator failed the build.
+    MetaAbort,
     IntLiteralRange,
     NonExhaustiveMatch,
     UnreachableArm,
@@ -126,7 +127,7 @@ impl Code {
             PrivateSymbol => "PRIVATE_SYMBOL",
             NoEntry => "NO_ENTRY",
             EntrySignature => "ENTRY_SIGNATURE",
-            AssertFailed => "ASSERT_FAILED",
+            MetaAbort => "META_ABORT",
             IntLiteralRange => "INT_LITERAL_RANGE",
             NonExhaustiveMatch => "NON_EXHAUSTIVE_MATCH",
             UnreachableArm => "UNREACHABLE_ARM",

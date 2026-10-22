@@ -1,0 +1,8 @@
+$ @mod MAIN
+
+# `BB.Outer` mentions `AA.Inner`, so `Inner` elaborates inside `Outer`'s
+# fields, but this module did not import `AA` and cannot name it.
+$ with BB
+
+$ first : Outer -> @int = \o = @vec_len o.items
+$ bad : Inner -> @int = \i = i.v  #~ error[TYPE_UNBOUND]: type `Inner` is not imported

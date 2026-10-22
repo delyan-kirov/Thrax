@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use super::data::{Arm, Clause, Handler, Program, Term};
+use super::data::{Arm, Clause, Handler, Pat, Program, Term};
 
 /// A normalization continuation: given the (atomic-or-computation) value of the
 /// current subexpression, produce the finished term. Called exactly once per
@@ -57,6 +57,71 @@ fn is_atom(t: &Term) -> bool {
             | Term::Extern { .. }
             | Term::Lam { .. }
     )
+}
+
+/// Whether `name` occurs as an unqualified variable anywhere in `t`. Shadowing
+/// is ignored, so this over-approximates: a `true` only costs a missed hoist.
+fn mentions(t: &Term, name: &str) -> bool {
+    let m = |t: &Term| mentions(t, name);
+    match t {
+        Term::Var {
+            module, name: n, ..
+        } => module.is_none() && n == name,
+        Term::Int(_)
+        | Term::Real(_)
+        | Term::Str(_)
+        | Term::Bool(_)
+        | Term::Unit
+        | Term::Extern { .. }
+        | Term::Fault(_) => false,
+        Term::App(f, x) => m(f) || m(x),
+        Term::Lam { body, .. } => m(body),
+        Term::Let { val, body, .. } => m(val) || m(body),
+        Term::Case {
+            scrut,
+            arms,
+            default,
+        } => {
+            m(scrut)
+                || arms.iter().any(|a| {
+                    a.guard.as_deref().is_some_and(m) || m(&a.body) || pat_mentions(&a.pat, name)
+                })
+                || default.as_deref().is_some_and(m)
+        }
+        Term::Tuple(fields) | Term::Variant { fields, .. } => fields.iter().any(m),
+        Term::Struct { base, fields, .. } => {
+            base.as_deref().is_some_and(m) || fields.iter().any(|(_, f)| m(f))
+        }
+        Term::Field(r, _) => m(r),
+        Term::Handle { body, handler } => {
+            m(body)
+                || handler.clauses.iter().any(|c| m(&c.body))
+                || handler.default.as_ref().is_some_and(|(_, d)| m(d))
+        }
+        Term::Defer { cleanup, body } => m(cleanup) || m(body),
+    }
+}
+
+/// Whether a term embedded in a pattern (a range bound, a hooked literal or
+/// view) mentions `name`.
+fn pat_mentions(p: &Pat, name: &str) -> bool {
+    match p {
+        Pat::Wild | Pat::Var(_) | Pat::Int(_) | Pat::Real(_) | Pat::Str(_) | Pat::Bool(_) => false,
+        Pat::Tuple(ps) | Pat::Variant { fields: ps, .. } => {
+            ps.iter().any(|p| pat_mentions(p, name))
+        }
+        Pat::Struct { fields, .. } => fields.iter().any(|(_, p)| pat_mentions(p, name)),
+        Pat::StrPrefix { rest, .. } => pat_mentions(rest, name),
+        Pat::Range { lo, hi } => {
+            mentions(lo, name) || hi.as_ref().is_some_and(|h| mentions(h, name))
+        }
+        Pat::HookEq { eq, value } => mentions(eq, name) || mentions(value, name),
+        Pat::SeqView { view, elems, rest } => {
+            mentions(view, name)
+                || elems.iter().any(|p| pat_mentions(p, name))
+                || rest.as_deref().is_some_and(|r| pat_mentions(r, name))
+        }
+    }
 }
 
 impl Anf {
@@ -165,6 +230,18 @@ impl Anf {
                 // The bound value is never in tail position; the body inherits
                 // this let's position and continuation.
                 let (name, rec) = (name.clone(), *rec);
+                if rec && mentions(val, &name) {
+                    // Normalizing the value with the let as its continuation
+                    // would float the value's own lets above this one, out of
+                    // the scope of the name they refer to (#250).
+                    let v2 = self.norm(val, false, Box::new(|v| v));
+                    return Term::Let {
+                        name,
+                        rec,
+                        val: Arc::new(v2),
+                        body: Arc::new(self.norm(body, tail, k)),
+                    };
+                }
                 self.norm(
                     val,
                     false,

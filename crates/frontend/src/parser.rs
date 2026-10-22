@@ -528,18 +528,25 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `$ with module [= rename]`
+    /// `$ with module`
     fn parse_import(&mut self) -> Result<Item> {
         self.bump()?; // 'with'
         let start = self.here()?;
         let module = self.parse_dotted_name()?;
         let span = Span::new(start, self.last_end);
-        let rename = if self.eat(|k| matches!(k, Kind::Eq))? {
-            Some(self.parse_dotted_name()?)
-        } else {
-            None
-        };
-        Ok(Item::Import { module, rename, span })
+        let eq = self.peek()?;
+        if matches!(eq.kind, Kind::Eq) {
+            self.bump()?;
+            self.parse_dotted_name()?;
+            return Err(Diagnostic::error(
+                Code::Unsupported,
+                Span::new(start, self.last_end),
+                eq.line,
+                "an import cannot be renamed",
+            )
+            .with_help("import the module itself (`$ with VEC`) and qualify its names (`VEC.len`)"));
+        }
+        Ok(Item::Import { module, span })
     }
 
     fn parse_dotted_name(&mut self) -> Result<Slice<StrId>> {
