@@ -45,7 +45,7 @@
  *     -- the `+ 100` is swallowed. Legal, but a footgun that should emit a
  *     compiler warning. Here a control form in operand position needs parens.
  *   - LOWER PRIORITY: `defer` cleanup is `op_expr` here (EX.cpp allows a full
- *     expr up to `,`/`in`); `ext` and semantic well-formedness (field-case, mixed
+ *     expr up to `,`/`in`); semantic well-formedness (field-case, mixed
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
@@ -145,7 +145,7 @@ operator_name
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
-import       : dotted_name | dotted_name EQ dotted_name ;
+import       : dotted_name ;
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 

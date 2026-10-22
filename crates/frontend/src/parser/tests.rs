@@ -836,3 +836,29 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
         assert!(parse(ok).is_ok(), "{ok}");
     }
 }
+
+#[test]
+fn ext_is_an_ordinary_name() {
+    // #312: `ext` was a keyword no parser rule consumed, so it could not name
+    // anything and the error did not say why.
+    prog("$ @mod KW\n$ S : @struct = a : @str, ext : @str,");
+    prog("$ @mod KW\n$ ext : @int -> @int = \\ext = ext");
+}
+
+#[test]
+fn every_keyword_is_consumed_by_the_parser() {
+    // A keyword the parser never matches reserves a name for nothing (#312).
+    let parser_src = [
+        include_str!("../parser.rs"),
+        include_str!("table.rs"),
+        include_str!("data.rs"),
+    ]
+    .concat();
+    for (lexeme, kind) in crate::lexer::data::KEYWORDS {
+        let needle = format!("Kind::{kind:?}");
+        assert!(
+            parser_src.contains(&needle),
+            "keyword `{lexeme}` lexes as {needle}, which the parser never consumes"
+        );
+    }
+}

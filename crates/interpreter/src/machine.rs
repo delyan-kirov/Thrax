@@ -744,7 +744,7 @@ impl<'p> Machine<'p> {
                 Expr::MkStruct { name, base, fields } => {
                     let (mut out, base_name): (Vec<(String, PVal<'p>)>, String) = match base {
                         Some(b) => {
-                            let bv = deref(self.eval_atom(b, &ex.frame)?);
+                            let bv = self.force_thunk(self.eval_atom(b, &ex.frame)?)?;
                             let bb = bv.borrow();
                             match &*bb {
                                 Value::Struct { name, fields } => (fields.clone(), name.clone()),
@@ -1261,6 +1261,20 @@ impl<'p> Exec<'p> {
                 KFrame::Ret(kr) => {
                     let filled = v.borrow().clone_shallow();
                     *kr.boxed.borrow_mut() = filled;
+                    // A closure built by the right-hand side holds the slot's weak
+                    // cell, possibly behind other closures (#250), and may outlive
+                    // the slot through a tail call or by escaping. The capture
+                    // pinning on call only sees direct captures, so pin here.
+                    let captured = {
+                        let f = kr.frame.borrow();
+                        let cell = &f.locals[kr.slot];
+                        Rc::strong_count(cell) > 1
+                            && matches!(&*cell.borrow(), Value::Rec(w)
+                                if w.upgrade().is_some_and(|t| Rc::ptr_eq(&t, &kr.boxed)))
+                    };
+                    if captured && self.live.last().is_none_or(|l| !Rc::ptr_eq(l, &kr.boxed)) {
+                        self.live.push(kr.boxed.clone());
+                    }
                     kr.frame.borrow_mut().locals[kr.slot] = kr.boxed.clone();
                     self.frame = kr.frame;
                     self.ctrl = kr.cont;

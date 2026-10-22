@@ -8,34 +8,62 @@ use thrax::driver;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    let mut target = utilities::Target::host();
-    let mut libc = None;
-    let mut import_dirs: Vec<PathBuf> = Vec::new();
+/// The driver's own flags, pulled out of the command line.
+struct Flags {
+    target: utilities::Target,
+    libc: Option<utilities::Libc>,
+    import_dirs: Vec<PathBuf>,
+}
+
+/// Separate the driver flags from the command and its tokens. For `run`, flags
+/// are only taken up to the first token after the command that is not one: from
+/// there on (the root file, `--`, or the program's first argument) everything
+/// belongs to the program, which may have a `--target=` of its own.
+fn split_flags(args: impl IntoIterator<Item = String>) -> Result<(Flags, Vec<String>), String> {
+    let mut flags = Flags {
+        target: utilities::Target::host(),
+        libc: None,
+        import_dirs: Vec::new(),
+    };
     let mut rest: Vec<String> = Vec::new();
-    for arg in std::env::args().skip(1) {
-        if let Some(spec) = arg.strip_prefix("--target=") {
-            match utilities::Target::parse(spec) {
-                Some(t) => target = t,
-                None => {
-                    eprintln!("thrax: unknown target '{spec}' (e.g. x86_64-linux, wasm32-wasi)");
-                    return ExitCode::FAILURE;
-                }
-            }
+    let mut verbatim = false;
+    for arg in args {
+        if verbatim {
+            rest.push(arg);
+        } else if let Some(spec) = arg.strip_prefix("--target=") {
+            flags.target = utilities::Target::parse(spec).ok_or_else(|| {
+                format!("unknown target '{spec}' (e.g. x86_64-linux, wasm32-wasi)")
+            })?;
         } else if let Some(spec) = arg.strip_prefix("--libc=") {
-            match utilities::Libc::parse(spec) {
-                Some(l) => libc = Some(l),
-                None => {
-                    eprintln!("thrax: unknown libc '{spec}' (musl or gnu)");
-                    return ExitCode::FAILURE;
-                }
-            }
+            flags.libc = Some(
+                utilities::Libc::parse(spec)
+                    .ok_or_else(|| format!("unknown libc '{spec}' (musl or gnu)"))?,
+            );
         } else if let Some(dir) = arg.strip_prefix("--import-dir=") {
-            import_dirs.push(PathBuf::from(dir));
+            flags.import_dirs.push(PathBuf::from(dir));
         } else {
+            verbatim = rest.first().is_some_and(|cmd| cmd == "run");
             rest.push(arg);
         }
     }
+    Ok((flags, rest))
+}
+
+fn main() -> ExitCode {
+    let (
+        Flags {
+            target,
+            libc,
+            import_dirs,
+        },
+        rest,
+    ) = match split_flags(std::env::args().skip(1)) {
+        Ok(split) => split,
+        Err(msg) => {
+            eprintln!("thrax: {msg}");
+            return ExitCode::FAILURE;
+        }
+    };
     driver::set_import_dirs(import_dirs);
     match rest.first().map(String::as_str) {
         None | Some("-h") | Some("--help") | Some("help") => {
@@ -100,6 +128,8 @@ Flags:
                      musl when this compiler ships a musl sysroot (a release
                      build does) and the program links no shared library.
   --import-dir=DIR   Resolve `$ with MOD` from DIR first (repeatable).
+                     For `run`, flags go before the root file; everything
+                     after it is passed to the program unchanged.
   -h, --help         Show this help.
 
 Examples:
@@ -195,7 +225,7 @@ fn resolve_root(explicit: Option<&str>) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{root_arg, split_root};
+    use super::{root_arg, split_flags, split_root};
 
     fn toks(xs: &[&str]) -> Vec<String> {
         xs.iter().map(|s| s.to_string()).collect()
@@ -252,5 +282,60 @@ mod tests {
         assert_eq!(root_arg(&toks(&["--"])), None);
         assert_eq!(root_arg(&toks(&[])), None);
         assert_eq!(root_arg(&toks(&["app.thx"])), Some("app.thx"));
+    }
+
+    #[test]
+    fn run_passes_flags_after_the_root_to_the_program() {
+        // #307: `--target=wasm64` is the program's option, not the driver's.
+        let (flags, rest) = split_flags(toks(&[
+            "run",
+            "MAIN.thx",
+            "--",
+            "--target=wasm64",
+            "--import-dir=x",
+        ]))
+        .unwrap();
+        assert_eq!(
+            rest,
+            toks(&["run", "MAIN.thx", "--", "--target=wasm64", "--import-dir=x"])
+        );
+        assert!(flags.import_dirs.is_empty());
+
+        let (_, rest) = split_flags(toks(&["run", "MAIN.thx", "--libc=gnu"])).unwrap();
+        assert_eq!(rest, toks(&["run", "MAIN.thx", "--libc=gnu"]));
+
+        let (_, rest) = split_flags(toks(&["run", "a", "--target=x86_64-linux"])).unwrap();
+        assert_eq!(
+            rest,
+            toks(&["run", "a", "--target=x86_64-linux"]),
+            "inferred root"
+        );
+    }
+
+    #[test]
+    fn driver_flags_before_the_root_are_still_taken() {
+        let (flags, rest) = split_flags(toks(&[
+            "--import-dir=a",
+            "run",
+            "--import-dir=b",
+            "MAIN.thx",
+            "x",
+        ]))
+        .unwrap();
+        assert_eq!(
+            flags.import_dirs,
+            vec![std::path::PathBuf::from("a"), "b".into()]
+        );
+        assert_eq!(rest, toks(&["run", "MAIN.thx", "x"]));
+
+        let (flags, rest) = split_flags(toks(&["build", "MAIN.thx", "--libc=gnu"])).unwrap();
+        assert_eq!(flags.libc, Some(utilities::Libc::Gnu));
+        assert_eq!(
+            rest,
+            toks(&["build", "MAIN.thx"]),
+            "other commands take flags anywhere"
+        );
+
+        assert!(split_flags(toks(&["--target=wasm64", "run"])).is_err());
     }
 }

@@ -1,0 +1,4 @@
+$ @mod INT_LITERAL_RANGE_PATTERN_BOUND
+
+# A range pattern's bounds are literals of the scrutinee's type too.
+$ e : @int16 -> @int = \d = is d | 0 ... 40000 => 2 | _ => 3  #~ error[INT_LITERAL_RANGE]: integer literal 40000 is out of range for `@int16`

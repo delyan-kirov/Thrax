@@ -133,7 +133,7 @@ As at compile time, only first-order data crosses (a function, or a `List` whose
 lazy constructor fields are still unforced, is rejected), and the result type is
 whatever the use site says, so a mismatch is a fault when it runs. `@abort`/`@emit`
 take a plain `@str` for now (a richer `@diag` with spans comes with the handler).
-A compile-time `@e`/`@abort` fault is reported at the real `@e` call site
+A compile-time `@e` fault, or an `@abort` (`error[META_ABORT]`), is reported at the real `@e` call site
 (`file:line:col` + caret), not a synthetic global, since every `@e` site records
 its source span.
 There is no `@assert` builtin: assert is user code,

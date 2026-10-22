@@ -39,7 +39,22 @@ $compose =
 	let add1   = \x = x + 1 in
 	add1 (square 5)
 
+# A recursive binding whose value is not itself a lambda: the helper bound
+# inside it calls back into `count`, which must still be in scope and alive
+# when the helper runs, after `count m` has replaced the caller's frame.
+$ count_down : @int -> @int = \m =
+	let count = (let helper = \x = if x == 0 => 0 else 1 + count (x - 1) in \n = helper n) in
+	count m
+$ chk_indirect : @int = if count_down 5 == 5 => 0 else 1
+
+# A local recursive closure may outlive the call that bound it.
+$ Counter : @struct = run: @int -> @int,
+$ make_counter : {} -> Counter = \u =
+	let go = \x = if x == 0 => 0 else 1 + go (x - 1) in
+	Counter.{ go }
+$ chk_escape : @int = if (make_counter {}).run 7 == 7 => 0 else 1
+
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; 0
+$ test : @int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; chk_indirect + chk_escape
 
 $ @e <| assert (test == 0) "LET_IN: a check failed"

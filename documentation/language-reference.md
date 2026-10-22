@@ -142,16 +142,17 @@ $ odd  : @int -> @bool = \n = if n == 0 => @false else even (n - 1)
 ```
 
 ## 2.3 Imports `$ with`
-`$ with MOD` brings a module's public names into scope (bare or qualified).
-Variants alias or import a single symbol. `Module.symbol` is always valid,
-imported or not.
+`$ with MOD` brings a module's public names into scope, bare or qualified.
+A qualified `MOD.symbol` needs the import too. An import cannot be renamed, and
+it brings in the whole module, not one symbol.
 
 ```thrax
 $ with MATH                    # MATH.sqrt, or bare sqrt
 $ with STR
-$ with V = VEC                 # qualified only: V.push
-$ with from_int = STR.from_int # one symbol, bound bare
 ```
+
+When two imports export the same name, the bare name is ambiguous and the
+qualified form picks one (`VEC.len`, `LIST.len`).
 
 ## 2.4 Visibility `$ @private`
 Symbols are public by default. `$ @private` hides every symbol below it, to the
@@ -1242,6 +1243,10 @@ states its own invariants and checking it is testing it.
 $ @e <| assert (fib 10 == 55) "fib 10 should be 55"
 $ @e <| assert (fact 5 == 120) "fact 5 should be 120"
 ```
+
+A failing assertion, like any `@abort`, is an `error[META_ABORT]` carrying the
+message, pointed at the `@e` site. A fault the code runs into on its own (a
+division by zero, a failed match) stays a `RUNTIME_FAULT`.
 
 `@link` / `@link_path` steer the compilation itself: they add a library to the
 link line and the dlopen set, or a directory to the search path. Both return

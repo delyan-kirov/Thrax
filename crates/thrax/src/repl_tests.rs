@@ -283,3 +283,12 @@ fn a_definition_typed_after_the_prefill_is_recognised() {
     assert_eq!(prefilled_definition("= xs :: rest"), None);
     assert_eq!(prefilled_definition("= foo: @int"), None);
 }
+
+#[test]
+fn a_64_bit_nat_result_shows_unsigned() {
+    // #235: `let a: @nat = 2 in a - 3` showed `-1 : @nat`.
+    assert_eq!(show_at_type("-1".into(), "@nat"), "18446744073709551615");
+    assert_eq!(show_at_type("-2".into(), "@nat64"), "18446744073709551614");
+    assert_eq!(show_at_type("-1".into(), "@int"), "-1");
+    assert_eq!(show_at_type("12".into(), "@nat"), "12");
+}

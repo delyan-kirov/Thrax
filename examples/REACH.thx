@@ -1,0 +1,21 @@
+$ @mod REACH
+
+# \file REACH.thx
+# \info A type reached through an imported module's declarations is usable
+#       without importing its home module: `REACH_MID.Bag` holds `REACH_LIB.Item`
+#       values, and this module reads them while importing `REACH_MID` alone.
+#       Writing `Item` here would still need `$ with REACH_LIB`.
+
+$ with REACH_MID
+
+$ count : @int = @vec_len (bag {}).items
+$ total : @int = (@vec_get (bag {}).items 0).v + (@vec_get (bag {}).items 1).v
+$ best : @int = (bag {}).best.v
+
+$ chk_count : @int = if count == 2 => 0 else 1
+$ chk_total : @int = if total == 42 => 0 else 1
+$ chk_best  : @int = if best == 7 => 0 else 1
+
+$ test : @int = chk_count + chk_total + chk_best
+
+$ @e <| assert (test == 0) "REACH: a check failed"

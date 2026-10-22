@@ -209,12 +209,8 @@ pub enum Item {
         params: Slice<StrId>,
         ops: Slice<FieldDecl>,
     },
-    /// `$ with module [= rename]`. `span` covers the module path.
-    Import {
-        module: Slice<StrId>,
-        rename: Option<Slice<StrId>>,
-        span: Span,
-    },
+    /// `$ with module`. `span` covers the module path.
+    Import { module: Slice<StrId>, span: Span },
     /// `$ @private`: marks every following declaration in the file as
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.

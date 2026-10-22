@@ -698,10 +698,16 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             Ok(crate::machine::embed(&owned))
         }
         // Compile-time diagnostics. `@abort` fails the build with the given
-        // message (a fault the driver renders); `@emit` prints it and continues.
+        // message (a diagnostic the driver renders); `@emit` prints it and
+        // continues.
         "@abort" => {
             let msg = as_bytes(&a[0])?;
-            Err(fault(String::from_utf8_lossy(&msg).into_owned()))
+            Err(Diagnostic::error(
+                Code::MetaAbort,
+                Span::at(0),
+                0,
+                String::from_utf8_lossy(&msg).into_owned(),
+            ))
         }
         "@emit" => {
             let msg = as_bytes(&a[0])?;
@@ -868,7 +874,6 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
         If => "If",
         Is => "Is",
         Else => "Else",
-        Ext => "Ext",
         With => "With",
         Do => "Do",
         Ctl => "Ctl",

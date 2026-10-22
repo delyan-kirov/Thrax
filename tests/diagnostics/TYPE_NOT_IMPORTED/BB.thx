@@ -1,0 +1,5 @@
+$ @mod BB
+
+$ with AA
+
+$ Outer : @struct = items : @vec Inner,
