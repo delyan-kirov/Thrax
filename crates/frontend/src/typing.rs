@@ -1590,6 +1590,13 @@ impl<'a> Checker<'a> {
                         };
                         return self.promote_to_record(e, &values, expected);
                     }
+                    if let TypeNode::Tuple(_) = self.eng.head(got) {
+                        let help = self.open_record_help(expected);
+                        return self
+                            .eng
+                            .unify_expected(got, expected, "against the expected type")
+                            .map_err(|d| d.with_help(help));
+                    }
                 }
                 self.eng.unify_expected(got, expected, "against the expected type")
             }
@@ -4763,6 +4770,24 @@ impl<'a> Checker<'a> {
 
     /// Whether `ty` is a record whose row is closed (ends in `RowEmpty`, so its
     /// fields are fully known) rather than open (a tail variable).
+    /// How to pass a value where the open record `ty` is expected: by naming its
+    /// fields, since only a closed record takes values by position.
+    fn open_record_help(&self, ty: Type) -> String {
+        let mut labels = Vec::new();
+        if let TypeNode::Record(row) = self.eng.head(ty) {
+            let mut cur = row;
+            while let TypeNode::RowField(label, _, rest) = self.eng.head(cur) {
+                labels.push(format!(".{} = ...", self.eng.types.name(label)));
+                cur = rest;
+            }
+        }
+        format!(
+            "a record type with an open row (`| r`) takes its fields by name, as in `{{ {} }}`; \
+             only a closed record takes values by position",
+            labels.join(", ")
+        )
+    }
+
     fn record_is_closed(&self, ty: Type) -> bool {
         let TypeNode::Record(row) = self.eng.head(ty) else {
             return false;
@@ -4804,11 +4829,17 @@ impl<'a> Checker<'a> {
                 // bare literal is a number, so this is a type error, not a coercion.
                 _ => {
                     let shown = self.show(*t);
-                    return Err(diag!(
+                    let d = diag!(
                         Code::TypeMismatch, *span, 0,
                         "a numeric literal cannot be used where `{}` is expected",
                         shown
-                    ));
+                    );
+                    // A closed record would have taken the literal as its one field,
+                    // so a record here has an open row.
+                    return Err(match self.eng.head(*t) {
+                        TypeNode::Record(_) => d.with_help(self.open_record_help(*t)),
+                        _ => d,
+                    });
                 }
             }
         }

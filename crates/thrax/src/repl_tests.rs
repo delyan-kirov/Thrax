@@ -269,3 +269,17 @@ fn history_search_finds_navigates_and_cancels() {
     let mut input: &[u8] = b"zzz\r";
     assert_eq!(history_search(&mut input, &history), None);
 }
+
+#[test]
+fn a_definition_typed_after_the_prefill_is_recognised() {
+    assert_eq!(
+        prefilled_definition("= foo: {roo:@int} -> @int = \\p = p.roo"),
+        Some("foo".to_string())
+    );
+    assert_eq!(prefilled_definition("= x : @int = 1"), Some("x".to_string()));
+    // An expression, even one mentioning `:` or `=`, is left alone.
+    assert_eq!(prefilled_definition("= 1 + 2"), None);
+    assert_eq!(prefilled_definition("= f x"), None);
+    assert_eq!(prefilled_definition("= xs :: rest"), None);
+    assert_eq!(prefilled_definition("= foo: @int"), None);
+}
