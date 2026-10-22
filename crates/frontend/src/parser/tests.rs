@@ -806,3 +806,33 @@ fn a_dot_after_a_number_is_an_unfinished_decimal() {
     assert!(text.contains("a number has no fields"), "{text}");
     assert!(parse("$ @mod M\n$ x = t.0.1\n").is_ok());
 }
+
+#[test]
+fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
+    let err = |src: &str| match parse(src) {
+        Err(e) => e.render(src, "t.thx"),
+        Ok(_) => panic!("expected a parse error for {src:?}"),
+    };
+    let text = err("$ @mod M\n$ y = is r | { .a = 1, .. } => 1 | _ => 2");
+    assert!(text.contains("expected a pattern after '..'"), "{text}");
+    assert!(text.contains("help: write `.._` to ignore the remaining fields"), "{text}");
+
+    let text = err("$ @mod M\n$ y = is xs | [x, ..] => x | _ => 2");
+    assert!(text.contains("help: write `.._` to ignore the remaining elements"), "{text}");
+
+    let text = err("$ @mod M\n$ y = is s | \"a\".. => 1 | _ => 2");
+    assert!(text.contains("help: a string prefix pattern is written `\"abc\" ++ rest`"), "{text}");
+
+    let text = err("$ @mod M\n$ y = {1, 2 | e}");
+    assert!(text.contains("expected '}' to close the tuple"), "{text}");
+    assert!(text.contains("help: `| base` updates a record"), "{text}");
+
+    for ok in [
+        "$ @mod M\n$ y = is r | { .a = 1, .._ } => 1 | _ => 2",
+        "$ @mod M\n$ y = is r | { .a = 1, ..rest } => 1 | _ => 2",
+        "$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2",
+        "$ @mod M\n$ y = is s | \"a\" ++ rest => 1 | _ => 2",
+    ] {
+        assert!(parse(ok).is_ok(), "{ok}");
+    }
+}

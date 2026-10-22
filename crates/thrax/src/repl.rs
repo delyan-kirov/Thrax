@@ -832,6 +832,11 @@ impl Repl {
             Ok(s) => s,
             Err(e) => {
                 print!("{e}");
+                if let Some(name) = prefilled_definition(&body[1..]) {
+                    println!(
+                        "help: `_=` evaluates an expression; delete the `_= ` prefill to define `{name}`"
+                    );
+                }
                 return;
             }
         };
@@ -922,6 +927,20 @@ impl Repl {
             Err(e) => print!("{e}"),
         }
     }
+}
+
+/// The name a definition typed after the `_=` prefill would bind, as in
+/// `_= foo : T = e`: a name, a `:` and later an `=`. `after` is the text after
+/// the `_`.
+fn prefilled_definition(after: &str) -> Option<String> {
+    let rest = after.trim_start().strip_prefix('=')?.trim_start();
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    let tail = rest[name.len()..].trim_start();
+    let starts_like_name = name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    (starts_like_name && tail.starts_with(':') && tail.contains('=')).then_some(name)
 }
 
 /// Whether `name` could be a Thrax binding name: a value/type name starts with a

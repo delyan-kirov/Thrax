@@ -1,0 +1,5 @@
+$ @mod PARSE_RECORD_REST_UNNAMED
+
+# A rest needs a binder: `.._` to discard it, `..rest` to bind it.
+$ r : { a: @int } = { .a = 1 }
+$ y : @int = is r | { .a = 1, .. } => 1 | _ => 2  #~ error[UNEXPECTED_TOKEN]: expected a pattern after '..', found '}'

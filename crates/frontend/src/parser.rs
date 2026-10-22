@@ -1648,6 +1648,14 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        if self.at_op("|")? {
+            let t = self.peek()?;
+            return Err(self.unexpected(&t, "expected '}' to close the tuple").with_help(
+                "`| base` updates a record, so the fields before it are named, as in \
+                 `{ .x = 1 | base }`; a tuple has no update form"
+                    .to_string(),
+            ));
+        }
         expect!(self, Kind::RBrace, "expected '}' to close the tuple");
         let elems = self.ast.make_slice(elems);
         Ok(self.expr(Expr::Tuple(elems)))
@@ -2211,6 +2219,17 @@ impl<'a> Parser<'a> {
             let t = self.peek()?;
             return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
         }
+        if matches!(self.ast.pats.lookup(atom), Pattern::Str(_))
+            && matches!(self.peek_kind()?, Kind::Dot)
+            && matches!(self.peek_kind_at(1)?, Kind::Dot)
+        {
+            let t = self.peek()?;
+            return Err(self.unexpected(&t, "expected the end of the pattern").with_help(
+                "a string prefix pattern is written `\"abc\" ++ rest`, or `\"abc\" ++ _` \
+                 to ignore the rest"
+                    .to_string(),
+            ));
+        }
         // `lo ... hi`: an inclusive numeric range, or `lo ...`: an open range (no
         // upper bound). Both bounds are numeric literals.
         if matches!(self.peek_kind()?, Kind::Ellipsis) {
@@ -2406,7 +2425,7 @@ impl<'a> Parser<'a> {
             {
                 self.bump()?;
                 self.bump()?; // '..'
-                rest = Some(self.parse_pattern()?);
+                rest = Some(self.parse_rest_pattern("elements")?);
                 break;
             }
             elems.push(self.parse_pattern()?);
@@ -2417,6 +2436,18 @@ impl<'a> Parser<'a> {
         expect!(self, Kind::RBrack, "expected ']' to close the list pattern");
         let elems = self.ast.make_slice(elems);
         Ok(self.pat(Pattern::List { elems, rest }))
+    }
+
+    /// The binder after `..` in a list or record pattern. Nothing there (the
+    /// closing bracket or a comma) is a rest left unnamed.
+    fn parse_rest_pattern(&mut self, what: &str) -> Result<Aol<Pattern>> {
+        if matches!(self.peek_kind()?, Kind::RBrace | Kind::RBrack | Kind::Comma) {
+            let t = self.peek()?;
+            return Err(self.unexpected(&t, "expected a pattern after '..'").with_help(format!(
+                "write `.._` to ignore the remaining {what}, or `..rest` to bind them"
+            )));
+        }
+        self.parse_pattern()
     }
 
     fn parse_tuple_pattern(&mut self) -> Result<Aol<Pattern>> {
@@ -2460,7 +2491,7 @@ impl<'a> Parser<'a> {
             if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot) {
                 self.bump()?;
                 self.bump()?;
-                rest = Some(self.parse_pattern()?);
+                rest = Some(self.parse_rest_pattern("fields")?);
                 break;
             }
             expect!(self, Kind::Dot, "expected '.field' in a record pattern");

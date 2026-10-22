@@ -1,0 +1,5 @@
+$ @mod PARSE_TUPLE_UPDATE
+
+# `| base` updates a record, whose fields are named; a tuple has no update form.
+$ e : {@int, @int} = {3, 4}
+$ y : {@int, @int} = {1, 2 | e}  #~ error[UNEXPECTED_TOKEN]: expected '}' to close the tuple, found '|'
