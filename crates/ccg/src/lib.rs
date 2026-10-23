@@ -18,6 +18,10 @@ use frontend::ir;
 use frontend::lowering::data::Program;
 use gen::{cstr, emit_extern_table, reachable_codes, Emitter};
 
+/// The C portability layer, emitted ahead of the runtime: every platform
+/// conditional the runtime and `thraxstd.c` need.
+const PORTABLE: &str = include_str!("portable.h");
+
 /// The runtime prelude, emitted verbatim ahead of the generated code.
 const RUNTIME: &str = include_str!("runtime.c");
 
@@ -76,10 +80,18 @@ pub fn emit_program(
 ) -> Emitted {
     let prog = ir::lower_modules(modules);
     let reachable = reachable_codes(&prog, entry);
-    let (blocks, code_entry, externs, uses_compiler, uses_par) =
+    let (blocks, code_entry, mut externs, uses_compiler, uses_par) =
         Emitter::new(&prog, reachable.clone()).run();
-    // Without OS threads (wasm) a parallel program still runs: each task runs
-    // where it is spawned, exactly as in the interpreter.
+    for e in &mut externs {
+        if let Some((args, ret)) =
+            utilities::libc::exact_types(target, &e.lib, &e.symbol, &e.arg_types, &e.ret_type)
+        {
+            e.arg_types = args;
+            e.ret_type = ret;
+        }
+    }
+    // Without OS threads (wasm) a parallel program still runs: its tasks wait
+    // in a queue until something needs them, exactly as in the interpreter.
     let uses_threads = uses_par && target.arch != utilities::Arch::Wasm32;
 
     // Two resolution chains, mirroring the machine's `glob`: canonical
@@ -121,6 +133,7 @@ pub fn emit_program(
         out.push_str("/* Spawns parallel tasks: build with -pthread. */\n");
         out.push_str("#define THRAX_THREADS 1\n");
     }
+    out.push_str(PORTABLE);
     out.push_str(RUNTIME);
     out.push_str(THRAXSTD);
 
@@ -232,6 +245,7 @@ pub fn emit_program(
     // (exit 97 on a leak).
     out.push_str("int main(int argc, char** argv) {\n");
     out.push_str("  (void)argc; (void)argv;\n");
+    out.push_str("  thx_stdio_binary();\n");
     for (name, code) in &canon {
         // Force only globals reachable from the entry (the interpreter is entry-
         // lazy; an unreachable global's CAF is a trap stub).

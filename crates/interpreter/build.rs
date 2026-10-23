@@ -12,12 +12,18 @@
 //!   3. `pkg-config libffi`;
 //!   4. a system libffi on the default search path.
 //!
+//! The shim archive also carries `src/host.c`, the platform layer behind
+//! `crate::host` (library loading, symbol lookup, stdio mode).
+//!
 //! The wasm playground has no libc or loader; there `@extern` goes through the
 //! JavaScript host bridge, so this build is skipped.
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "../utilities/src/build_cc.rs"]
+mod build_cc;
 
 enum Link {
     /// A static `libffi.a` in this directory.
@@ -33,6 +39,7 @@ fn main() {
         return;
     }
     println!("cargo:rerun-if-changed=src/ffi_shim.c");
+    println!("cargo:rerun-if-changed=src/host.c");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=THRAX_LIBFFI");
     println!("cargo:rerun-if-env-changed=LIBFFI");
@@ -40,15 +47,16 @@ fn main() {
 
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let tools = build_cc::tools();
+    let windows = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
 
-    build_thraxstd(&manifest, &out);
+    build_thraxstd(&manifest, &out, &tools, windows);
 
     let (include, link) = resolve_libffi();
 
     // Compile the shim against the chosen libffi's headers and archive it.
-    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
     let shim_o = out.join("thx_ffi_shim.o");
-    let mut compile = Command::new(&cc);
+    let mut compile = Command::new(&tools.cc);
     compile.args(["-O2", "-fPIC", "-c"]).arg(manifest.join("src/ffi_shim.c"));
     if let Some(dir) = &include {
         compile.arg(format!("-I{}", dir.display()));
@@ -56,10 +64,16 @@ fn main() {
     compile.arg("-o").arg(&shim_o);
     run(&mut compile);
 
+    let host_o = out.join("thx_host.o");
+    run(Command::new(&tools.cc)
+        .args(["-O2", "-fPIC", "-c"])
+        .arg(manifest.join("src/host.c"))
+        .arg("-o")
+        .arg(&host_o));
+
     let shim_a = out.join("libthxffishim.a");
     let _ = std::fs::remove_file(&shim_a);
-    let ar = env::var("AR").unwrap_or_else(|_| "ar".into());
-    run(Command::new(&ar).arg("rcs").arg(&shim_a).arg(&shim_o));
+    run(Command::new(&tools.ar).arg("rcs").arg(&shim_a).arg(&shim_o).arg(&host_o));
 
     println!("cargo:rustc-link-search=native={}", out.display());
     // The shim references libffi, so it must precede libffi for a single-pass
@@ -73,7 +87,10 @@ fn main() {
         Link::Dynamic(dir) => {
             println!("cargo:rustc-link-search=native={}", dir.display());
             println!("cargo:rustc-link-lib=dylib=ffi");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            // PE has no rpath: a DLL is found on PATH or beside the executable.
+            if !windows {
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+            }
         }
         Link::System => {
             println!("cargo:rustc-link-lib=dylib=ffi");
@@ -85,13 +102,13 @@ fn main() {
 /// (`crates/ccg/src/thraxstd.c`, the single source shared with the native
 /// backend) into this crate's link, so the interpreter serves `thx_*` in-process
 /// through the same C code rather than reimplementing it.
-fn build_thraxstd(manifest: &Path, out: &Path) {
+fn build_thraxstd(manifest: &Path, out: &Path, tools: &build_cc::Tools, windows: bool) {
     let src = manifest.join("../ccg/src/thraxstd.c");
     println!("cargo:rerun-if-changed={}", src.display());
 
-    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
+    println!("cargo:rerun-if-changed={}", manifest.join("../ccg/src/portable.h").display());
     let obj = out.join("thraxstd.o");
-    run(Command::new(&cc)
+    run(Command::new(&tools.cc)
         .args(["-O2", "-fPIC", "-c"])
         .arg(&src)
         .arg("-o")
@@ -99,17 +116,19 @@ fn build_thraxstd(manifest: &Path, out: &Path) {
 
     let lib = out.join("libthraxstd.a");
     let _ = std::fs::remove_file(&lib);
-    let ar = env::var("AR").unwrap_or_else(|_| "ar".into());
-    run(Command::new(&ar).arg("rcs").arg(&lib).arg(&obj));
+    run(Command::new(&tools.ar).arg("rcs").arg(&lib).arg(&obj));
 
     println!("cargo:rustc-link-search=native={}", out.display());
     // No Rust code references these symbols (the interpreter resolves `thx_*`
     // dynamically, in-process, via `dlsym`), so force the whole archive in. Export
     // it with `-rdynamic` so `dlsym(RTLD_DEFAULT)` finds it; a build-script link
     // arg is used (not `RUSTFLAGS`/config, which CI overrides). This covers this
-    // crate's own test binaries; `thrax` and `ccg` set it for theirs.
+    // crate's own test binaries; `thrax` and `ccg` set it for theirs. On Windows
+    // the functions are `dllexport`ed instead, which needs no flag.
     println!("cargo:rustc-link-lib=static:+whole-archive=thraxstd");
-    println!("cargo:rustc-link-arg-tests=-rdynamic");
+    if !windows {
+        println!("cargo:rustc-link-arg-tests=-rdynamic");
+    }
 }
 
 fn resolve_libffi() -> (Option<PathBuf>, Link) {

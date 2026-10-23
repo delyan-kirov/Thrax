@@ -896,6 +896,7 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
+    interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
@@ -923,6 +924,7 @@ pub fn cmd_build(
     target: utilities::Target,
     libc: Option<utilities::Libc>,
 ) -> ExitCode {
+    interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
@@ -974,7 +976,8 @@ pub fn cmd_build(
             None => {
                 eprintln!(
                     "thrax: this program runs the compiler (`@lex`, `@parse_str`, `@eval`, ...), \
-                     but libthrax.so was not found beside the thrax executable or in its lib/"
+                     but the compiler library was not found beside the thrax executable or in \
+                     its lib/"
                 );
                 return ExitCode::FAILURE;
             }
@@ -1033,12 +1036,22 @@ pub fn cmd_build(
     // The shared library, not `libthrax.a`: it carries its own dependencies
     // (libffi among them, which a static link would have to name and find).
     if let Some(dir) = &compiler_lib {
-        cmd.arg(format!("-L{}", dir.display()))
-            .arg(format!("-Wl,-rpath,{}", dir.display()))
-            .arg("-lthrax");
+        cmd.arg(format!("-L{}", dir.display()));
+        if tc.rpath {
+            cmd.arg(format!("-Wl,-rpath,{}", dir.display()));
+        }
+        cmd.arg("-lthrax");
     }
     match cmd.status() {
         Ok(status) if status.success() => {
+            // Without an rpath the loader looks beside the executable.
+            if let (Some(dir), false) = (&compiler_lib, tc.rpath) {
+                let name = target.soname("thrax");
+                if let Err(e) = std::fs::copy(dir.join(&name), out_path.with_file_name(&name)) {
+                    eprintln!("thrax: cannot copy {name} beside {}: {e}", out_path.display());
+                    return ExitCode::FAILURE;
+                }
+            }
             println!("built {}", out_path.display());
             ExitCode::SUCCESS
         }
@@ -1053,7 +1066,8 @@ pub fn cmd_build(
     }
 }
 
-/// The directory holding `libthrax.so`: beside this executable (a cargo build,
+/// The directory holding the compiler library (`libthrax.so`, `libthrax.dylib`,
+/// `thrax.dll`): beside this executable (a cargo build,
 /// `target/<profile>/`), or `<prefix>/lib` for `<prefix>/bin/thrax` (the Nix
 /// package).
 /// Pick the C library for a build: `Some(sysroot)` links statically against
@@ -1132,19 +1146,31 @@ fn musl_sysroot() -> Option<PathBuf> {
         let dir = PathBuf::from(dir);
         return is_sysroot(&dir).then_some(dir);
     }
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = exe_path()?;
     let dir = exe.parent()?.parent()?.join("lib/musl");
     is_sysroot(&dir).then_some(dir)
 }
 
+/// This executable's path with symlinks resolved (a Nix profile links it). On
+/// Windows the path is already final, and canonicalizing would give it the
+/// `\\?\` verbatim prefix, which a C compiler's `-L` does not understand.
+fn exe_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if utilities::Target::host().os == utilities::Os::Windows {
+        return Some(exe);
+    }
+    exe.canonicalize().ok()
+}
+
 fn libthrax_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = exe_path()?;
     let bin = exe.parent()?;
     let mut dirs = vec![bin.to_path_buf()];
     if let Some(prefix) = bin.parent() {
         dirs.push(prefix.join("lib"));
     }
-    dirs.into_iter().find(|d| d.join("libthrax.so").exists())
+    let name = utilities::Target::host().soname("thrax");
+    dirs.into_iter().find(|d| d.join(&name).exists())
 }
 
 /// Print the source as the checker finally saw it: every `@e` spliced
@@ -1434,10 +1460,15 @@ pub fn cmd_lex(path: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::choose_libc;
-    use utilities::{Libc, Target};
+    use utilities::{Libc, Os, Target};
 
+    // The libc choice is a Linux policy, checked against the host because the
+    // musl sysroot is.
     #[test]
     fn a_shared_library_keeps_the_default_build_on_glibc() {
+        if Target::host().os != Os::Linux {
+            return;
+        }
         let linux = Target::host();
         assert_eq!(choose_libc(linux, None, &["raylib"], false), Ok(None));
         assert_eq!(choose_libc(linux, None, &["m", "pthread"], true), Ok(None));
@@ -1446,6 +1477,9 @@ mod tests {
 
     #[test]
     fn explicit_musl_refuses_what_it_cannot_link() {
+        if Target::host().os != Os::Linux {
+            return;
+        }
         let host = Target::host();
         let shared = choose_libc(host, Some(Libc::Musl), &["m", "raylib"], false);
         assert!(shared.unwrap_err().contains("`raylib`"));

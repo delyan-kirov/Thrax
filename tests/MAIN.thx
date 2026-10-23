@@ -9,6 +9,7 @@ $ @mod MAIN
 
 #- Imports -#
 
+$ with EXCEPTIONS
 $ with IO
 $ with PATH
 $ with STR
@@ -21,17 +22,24 @@ $ check : @str -> @int -> <@io> @int = \name t =
 		  => println ("\x1b[1;32mOK\x1b[0m " ++ name); 0
 		else println ("\x1b[1;31mERR\x1b[0m " ++ name); 1
 
+# A module tests/EXCEPTIONS.thx skips here, reported so the output says so.
+$ skip : @str -> @str -> <@io> @int = \name reason =
+	println ("\x1b[1;33mSKIP\x1b[0m " ++ name ++ " (" ++ reason ++ ")"); 0
+
 $ excluded_tests : @vec @str = ["STDLIB_IO", "STDLIB_ASYNC_IO", "STDLIB_CHANNELS", "STDLIB_STM"]
 
+# Every example, less the ones tests/EXCEPTIONS.thx says this platform cannot run.
 $ modules : {} -> <@meta, @io> @vec @str =
-	VEC.map PATH.strip_ext
-		(filter (\f = ends_with f ".thx") (read_dir "examples"))
+	filter (\m = !(EXCEPTIONS.skipped TARGET.os m))
+		(VEC.map PATH.strip_ext (filter (\f = ends_with f ".thx") (read_dir "examples")))
 
 $ check_call : @str -> @str = \m =
 	if VEC.contains STR.eq m excluded_tests
 	    # check "whatever" whatever.test
 		  => "check \"?(m)\" (?(m).test {})"
 		else "check \"?(m)\" ?(m).test"  
+
+$ skip_call : EXCEPTIONS.Exception -> @str = \e = "skip \"?(e.module)\" \"?(e.reason)\""
 
 $ concat : @vec @str -> @str = STR.concat
 
@@ -42,6 +50,7 @@ $ @build : {} -> <@meta, @io> @code = \_ =
 		ms = modules {},
 		includes = concat (map (\m = "$ with ?(m)\n") ms),
 		main = "$ @main : @vec @str -> <@io> @int = \\args = 0" ++
-			concat (map (\m = " + \n\t" ++ check_call m) ms)
+			concat (map (\m = " + \n\t" ++ check_call m) ms) ++
+			concat (map (\e = " + \n\t" ++ skip_call e) (EXCEPTIONS.on TARGET.os))
 	 in
 		@parse_items <| includes ++ "\n" ++ main

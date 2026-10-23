@@ -17,8 +17,8 @@
 //!
 //! The whole session is recompiled against the standard library on each item,
 //! so definitions accumulate and errors just print and leave the session intact.
-//! No external crates are allowed, so the line editor is hand-rolled on raw-mode
-//! `termios`, with a movable cursor and emacs-style editing keys (character,
+//! No external crates are allowed, so the line editor is hand-rolled on a raw-mode
+//! terminal (`termios`, or the Windows console, behind `term.c`), with a movable cursor and emacs-style editing keys (character,
 //! word, and line motion, the usual kill keys, undo/redo, and `C-r` reverse
 //! history search). When stdin is not a terminal the shell falls back to a
 //! plain line reader with the same `$`-terminates-an-item convention.
@@ -33,7 +33,7 @@
 //! and taking raw mode again on resume.
 
 use std::io::{self, BufRead, Write};
-use std::os::raw::{c_int, c_ulong};
+use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -1009,30 +1009,15 @@ fn show_at_type(shown: String, ty: &str) -> String {
 #[path = "repl_tests.rs"]
 mod tests;
 
-/// Raw-mode terminal support, built directly on libc `termios` (no crates).
+/// Raw-mode terminal support. The OS half (termios, the Windows console,
+/// signals) is `term.c`; this side decodes keys.
 mod term {
-    use super::{c_int, c_ulong, Key};
+    use super::{c_int, Key};
 
-    const STDIN: c_int = 0;
-    const TCSANOW: c_int = 0;
-    const TIOCGWINSZ: c_ulong = 0x5413; // Linux "get window size" ioctl
-    const POLLIN: i16 = 0x001;
     /// How long to wait for the rest of an escape sequence before deciding a
     /// lone `ESC` was a keypress, not the start of one. Terminals emit a whole
     /// sequence in one burst, so this is imperceptible yet unambiguous.
     const ESC_WAIT_MS: c_int = 20;
-    // Linux `c_iflag`, `c_lflag` bits and `c_cc` indices.
-    const ICRNL: u32 = 0x0000_0100; // input: translate a received CR to NL
-    const ISIG: u32 = 0x0000_0001;
-    const ICANON: u32 = 0x0000_0002;
-    const ECHO: u32 = 0x0000_0008;
-    const IEXTEN: u32 = 0x0000_8000;
-    const VMIN: usize = 6;
-    const VTIME: usize = 5;
-    // Signal numbers and `sigaction` flags (Linux).
-    const SIGINT: c_int = 2;
-    const SIGTSTP: c_int = 20;
-    const SA_RESTART: c_int = 0x1000_0000;
 
     // Control bytes the editor acts on. The emacs movement/kill keys arrive as
     // their Ctrl- code points; `Ctrl-<letter>` is the letter's position in the
@@ -1060,82 +1045,39 @@ mod term {
     const DEL: u8 = 0x7f; // what most terminals send for Backspace
     const LAST_CONTROL: u8 = 0x1f; // end of the C0 control range
 
-    #[repr(C)]
-    #[derive(Clone)]
-    struct Termios {
-        c_iflag: u32,
-        c_oflag: u32,
-        c_cflag: u32,
-        c_lflag: u32,
-        c_line: u8,
-        c_cc: [u8; 32],
-        c_ispeed: u32,
-        c_ospeed: u32,
-    }
-
-    #[repr(C)]
-    struct Winsize {
-        rows: u16,
-        cols: u16,
-        xpixel: u16,
-        ypixel: u16,
-    }
-
-    #[repr(C)]
-    struct Pollfd {
-        fd: c_int,
-        events: i16,
-        revents: i16,
-    }
-
-    /// The libc `struct sigaction`, in the glibc/Linux field order. `restorer` is
-    /// glibc's business, so it stays null.
-    #[repr(C)]
-    struct Sigaction {
-        handler: Option<extern "C" fn(c_int)>,
-        mask: [u64; 16],
-        flags: c_int,
-        restorer: Option<extern "C" fn()>,
-    }
-
     extern "C" {
-        fn tcgetattr(fd: c_int, termios: *mut Termios) -> c_int;
-        fn tcsetattr(fd: c_int, actions: c_int, termios: *const Termios) -> c_int;
-        fn ioctl(fd: c_int, request: c_ulong, argp: *mut Winsize) -> c_int;
-        fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
-        fn poll(fds: *mut Pollfd, nfds: c_ulong, timeout: c_int) -> c_int;
-        fn sigaction(sig: c_int, act: *const Sigaction, old: *mut Sigaction) -> c_int;
-        fn raise(sig: c_int) -> c_int;
+        fn thx_term_enable() -> c_int;
+        fn thx_term_enter();
+        fn thx_term_leave();
+        fn thx_term_read_byte() -> c_int;
+        fn thx_term_pending(timeout_ms: c_int) -> c_int;
+        fn thx_term_rows() -> c_int;
+        fn thx_term_catch_interrupts(on_interrupt: extern "C" fn());
+        fn thx_term_suspend() -> c_int;
     }
 
     /// All a `SIGINT` handler may safely do: set the flag the evaluator polls.
-    extern "C" fn on_interrupt(_sig: c_int) {
+    extern "C" fn on_interrupt() {
         utilities::interrupt::request();
     }
 
     /// Route `SIGINT` to the interrupt flag instead of killing the shell, for the
     /// whole session. At the prompt the terminal does not generate it (raw mode
-    /// keeps `ISIG` off, so `Ctrl-C` arrives as a byte); during an evaluation, with
-    /// the terminal handed back, this is what turns `Ctrl-C` into a stopped
-    /// evaluation. `SA_RESTART` keeps a syscall the evaluated program is blocked in
-    /// from failing with `EINTR`.
+    /// keeps signal keys off, so `Ctrl-C` arrives as a byte); during an
+    /// evaluation, with the terminal handed back, this is what turns `Ctrl-C` into
+    /// a stopped evaluation.
     pub fn catch_interrupts() {
-        let act = Sigaction {
-            handler: Some(on_interrupt),
-            mask: [0; 16],
-            flags: SA_RESTART,
-            restorer: None,
-        };
-        unsafe { sigaction(SIGINT, &act, std::ptr::null_mut()) };
+        unsafe { thx_term_catch_interrupts(on_interrupt) };
     }
 
     /// Suspend the shell the way `Ctrl-Z` does in any other program: hand the
     /// terminal back as it was found, stop, and take raw mode again once the job is
     /// resumed. Raw mode must not survive the stop, or the parent shell would read a
-    /// terminal with echo and line editing switched off.
+    /// terminal with echo and line editing switched off. A no-op where the OS has
+    /// no job control.
     pub fn suspend(raw: &RawMode) {
         raw.leave();
-        unsafe { raise(SIGTSTP) };
+        unsafe { thx_term_suspend() };
         raw.enter();
     }
 
@@ -1148,27 +1090,17 @@ mod term {
         fn pending(&mut self, timeout_ms: c_int) -> bool;
     }
 
-    /// The real terminal: unbuffered `read`s straight from the stdin fd, so a
-    /// `poll` on that fd sees exactly what is pending (a buffered reader could
-    /// hold bytes the poll would miss).
+    /// The real terminal, read unbuffered so `pending` sees exactly what is
+    /// waiting (a buffered reader could hold bytes it would miss).
     pub struct FdKeys;
 
     impl Keys for FdKeys {
         fn byte(&mut self) -> Option<u8> {
-            let mut b = 0u8;
-            match unsafe { read(STDIN, &mut b, 1) } {
-                1 => Some(b),
-                _ => None,
-            }
+            u8::try_from(unsafe { thx_term_read_byte() }).ok()
         }
 
         fn pending(&mut self, timeout_ms: c_int) -> bool {
-            let mut pfd = Pollfd {
-                fd: STDIN,
-                events: POLLIN,
-                revents: 0,
-            };
-            unsafe { poll(&mut pfd, 1, timeout_ms) > 0 }
+            unsafe { thx_term_pending(timeout_ms) != 0 }
         }
     }
 
@@ -1186,79 +1118,43 @@ mod term {
 
     /// The terminal's height in rows, or 24 when it cannot be determined.
     pub fn window_rows() -> usize {
-        let mut ws = Winsize {
-            rows: 0,
-            cols: 0,
-            xpixel: 0,
-            ypixel: 0,
-        };
-        if unsafe { ioctl(STDIN, TIOCGWINSZ, &mut ws) } == 0 && ws.rows > 0 {
-            ws.rows as usize
-        } else {
-            24
+        match unsafe { thx_term_rows() } {
+            rows if rows > 0 => rows as usize,
+            _ => 24,
         }
     }
 
     /// Puts the terminal into a minimally-raw mode for the editor's lifetime:
     /// echo, canonical line buffering, and signal keys are off, so keys arrive
-    /// one at a time and Ctrl-C/D come through as bytes. `ICRNL` is cleared too, so
-    /// a received CR is not folded into NL: the Return key arrives as CR (`\r`) and
-    /// `Ctrl-J` as LF (`\n`), letting the editor tell them apart. Output
-    /// post-processing (`\n` -> CRLF) is left on, so ordinary `println!` still
-    /// works. The original settings are restored on drop. `enable` returns `None`
-    /// when stdin is not a terminal.
-    pub struct RawMode {
-        original: Termios,
-        raw: Termios,
-    }
+    /// one at a time and Ctrl-C/D come through as bytes. Return arrives as CR
+    /// (`\r`) and `Ctrl-J` as LF (`\n`), letting the editor tell them apart.
+    /// Output post-processing (`\n` -> CRLF) is left on, so ordinary `println!`
+    /// still works. The original settings are restored on drop. `enable` returns
+    /// `None` when stdin is not a terminal.
+    pub struct RawMode(());
 
     impl RawMode {
         pub fn enable() -> Option<RawMode> {
-            let mut original = zeroed();
-            if unsafe { tcgetattr(STDIN, &mut original) } != 0 {
-                return None;
-            }
-            let mut raw = original.clone();
-            raw.c_iflag &= !ICRNL;
-            raw.c_lflag &= !(ISIG | ICANON | ECHO | IEXTEN);
-            raw.c_cc[VMIN] = 1;
-            raw.c_cc[VTIME] = 0;
-            if unsafe { tcsetattr(STDIN, TCSANOW, &raw) } != 0 {
-                return None;
-            }
-            Some(RawMode { original, raw })
+            (unsafe { thx_term_enable() } != 0).then_some(RawMode(()))
         }
 
         /// Take raw mode (again): the editor is reading keys.
         pub fn enter(&self) {
-            unsafe { tcsetattr(STDIN, TCSANOW, &self.raw) };
+            unsafe { thx_term_enter() };
         }
 
         /// Put the terminal back the way it was found, for anything that is not the
         /// editor: a suspend, or an evaluation, which should see an ordinary
-        /// terminal (echo and line editing on, and `ISIG` on so `Ctrl-C` raises
-        /// `SIGINT`).
+        /// terminal (echo and line editing on, and signal keys on so `Ctrl-C`
+        /// raises `SIGINT`).
         pub fn leave(&self) {
-            unsafe { tcsetattr(STDIN, TCSANOW, &self.original) };
+            unsafe { thx_term_leave() };
         }
     }
 
     impl Drop for RawMode {
         fn drop(&mut self) {
             self.leave();
-        }
-    }
-
-    fn zeroed() -> Termios {
-        Termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_line: 0,
-            c_cc: [0; 32],
-            c_ispeed: 0,
-            c_ospeed: 0,
         }
     }
 

@@ -50,6 +50,7 @@ fn split_flags(args: impl IntoIterator<Item = String>) -> Result<(Flags, Vec<Str
 }
 
 fn main() -> ExitCode {
+    interpreter::host::stdio_binary();
     let (
         Flags {
             target,

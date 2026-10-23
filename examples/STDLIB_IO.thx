@@ -3,15 +3,16 @@ $ @mod STDLIB_IO
 # \file STDLIB_IO.thx
 # \info The standard library's IO module: file round-trips and the
 #       environment. Console printing is exercised lightly (the combined
-#       runner owns the suite's output); the file tests write under /tmp
-#       and clean up after themselves.
+#       runner owns the suite's output); the file tests write in the
+#       working directory, which every platform has (unlike /tmp), and clean
+#       up after themselves.
 
 $ with IO
 $ with OPT
 $ with STR
 $ with VEC
 
-$ path : @str = "/tmp/thrax_stdlib_io_test.txt"
+$ path : @str = "thrax_stdlib_io_test.txt"
 
 # Write, append, read back, remove -- each step feeding the next. An effect row
 # lives on an arrow, so a check that performs `@io` takes `{}` and declares it;
