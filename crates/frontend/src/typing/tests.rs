@@ -592,6 +592,26 @@ fn open_row_entry_may_perform_any_effect() {
 }
 
 #[test]
+fn signed_member_recurses_at_another_type() {
+    // A use inside the recursive group sees `id`'s signature, so `g` may call it
+    // at `@str` and `@int` and neither use fixes `a`.
+    let src = "$ @mod M\n\
+               $ id : a -> a = \\x = let _ = g 0 in x\n\
+               $ g : @int -> @int = \\n = let _ = id \"s\" in id n";
+    assert_eq!(errors(src), "");
+    assert_eq!(type_of(src, "id"), "a -> a");
+}
+
+#[test]
+fn signature_row_tail_stays_open() {
+    // Unlike a type variable, a row tail may be extended by the body (#270).
+    let src = "$ @mod M\n\
+               $ Yell : @effect = shout : @int -> {},\n\
+               $ f : {} -> <| e> @int = \\u = let _ = Yell.shout 5 in 0";
+    assert_eq!(errors(src), "");
+}
+
+#[test]
 fn meta_op_outside_e_is_an_unhandled_effect() {
     // The metaprogramming ops carry `<@meta>`. Used in ordinary code (outside an
     // `@e`), the latent `<@meta>` cannot be subsumed into the pure ambient,
