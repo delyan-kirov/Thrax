@@ -8,6 +8,7 @@ $ @mod THXDO
 $ with IO
 $ with OPT
 $ with STR
+$ with VEC
 
 $ help_text : @str
      = "thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
@@ -15,14 +16,16 @@ $ help_text : @str
 	++ "Usage: thxdo <command>\n"
 	++ "\n"
 	++ "Commands:\n"
-	++ "  build [release [musl|gnu]]\n"
+	++ "  build [release [musl|gnu|windows]]\n"
 	++ "            clean, then build the compiler (debug unless `release`)\n"
-	++ "  rebuild [release [musl|gnu]]\n"
+	++ "  rebuild [release [musl|gnu|windows]]\n"
 	++ "            build the compiler without cleaning\n"
 	++ "  clean [all]\n"
 	++ "            remove build artifacts (all: also the built libffi and musl)\n"
 	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
-	++ "  corpus    run tests/MAIN.thx on both engines (interpreter + native C)\n"
+	++ "  corpus [wasm]\n"
+	++ "            run tests/MAIN.thx on both engines (interpreter + native C,\n"
+	++ "            or with `wasm` the C built for wasm32-wasi, under node)\n"
 	++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
 	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
 	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
@@ -39,21 +42,57 @@ $ help_text : @str
 	++ "than the last build, and lands in target/dist (bin/, lib/, include/,\n"
 	++ "library/). On Linux its libc is musl unless `gnu` is given: musl is fetched\n"
 	++ "into external/musl, built, and shipped as target/dist/lib/musl, so the\n"
-	++ "programs that compiler builds are static executables.\n"
+	++ "programs that compiler builds are static executables. `windows` cross-builds\n"
+	++ "thrax.exe from Linux (tools/windows/flake.nix) into the same layout.\n"
 
 $ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 
-$ thrax_bin : @str = "${THRAX_BIN:-thrax}"
+# A command path in the platform's shell: `cmd.exe` reads `/` as a switch.
+$ native_path : @str -> @str = \p =
+	if TARGET.os == "windows" => STR.replace p "/" "\\" else p
 
 # The combined corpus. `cargo test` does not cover it, so this is the only thing
 # that catches a break in the examples or the standard library. Both engines, and
-# their output must match: the C backend is only correct if it agrees.
-$ corpus_cmd : @str =
-	thrax_bin ++ " run tests/MAIN.thx > /tmp/thx-corpus-interp.txt && "
-	++ thrax_bin ++ " build tests/MAIN.thx >/dev/null && "
-	++ "./tests/thrax-out/MAIN > /tmp/thx-corpus-native.txt && "
-	++ "diff /tmp/thx-corpus-interp.txt /tmp/thx-corpus-native.txt && "
-	++ "cat /tmp/thx-corpus-interp.txt"
+# their output must match: the C backend is only correct if it agrees. Written
+# without shell syntax beyond `>`, so it runs under `cmd.exe` as well as `sh`;
+# CI runs it on every platform. `wasm` builds the native leg for wasm32-wasi and
+# runs it under node instead.
+$ corpus_task : @bool -> <@io> @bool = \wasm =
+	let
+		bin = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
+		interp = "target/corpus-interp.txt",
+		native = "target/corpus-native.txt",
+		build = if wasm => " build --target=wasm32-wasi tests/MAIN.thx" else " build tests/MAIN.thx",
+		exe = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN"
+	in
+	step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp)
+	&& step "native build" (bin ++ build)
+	&& step "native run" (exe ++ " > " ++ native)
+	&& (is {read_file interp, read_file native}
+		| {Option.Some.{ a }, Option.Some.{ b }} =>
+			print b;
+			let
+				la = STR.lines a,
+				lb = STR.lines b,
+				skip = VEC.append (skips la) (skips lb)
+			in
+			if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) => @true
+			else println "thxdo: the engines disagree (target/corpus-*.txt)"; @false
+		| _ => println "thxdo: corpus output missing"; @false)
+
+# The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
+$ line_module : @str -> @str = \l =
+	let ws = STR.split l " " in
+	if @vec_len ws > 1 => @vec_get ws 1 else ""
+
+$ is_skip : @str -> @bool = \l = STR.contains l "SKIP"
+
+# The modules a corpus run skipped (tests/EXCEPTIONS.thx) on its platform.
+$ skips : @vec @str -> @vec @str = \ls = VEC.map line_module (VEC.filter is_skip ls)
+
+# A corpus output without what either run skipped: the part both must agree on.
+$ comparable : @vec @str -> @vec @str -> @vec @str = \skip ls =
+	VEC.filter (\l = !(is_skip l) && !(VEC.contains STR.eq (line_module l) skip)) ls
 
 # `%expect` in the grammar is a tripwire: bison fails when the conflict count
 # moves, so a syntax change has to be accounted for in the spec.
@@ -139,12 +178,15 @@ $ musl_stale_cmd : @str =
 $ ffi_build_cmd : @str =
 	"set -e; root=$PWD; b=target/libffi-build; p=$root/" ++ ffi_prefix ++ "; "
 	++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; "
-	++ "git ls-files -z external/libffi | xargs -0 cp --parents -t $b; "
+	++ "git ls-files -z external/libffi | tar --null -T - -cf - | tar -xf - -C $b; "
 	++ "cd $b/external/libffi; "
 	++ "autoreconf -fi; "
 	++ "./configure --disable-shared --enable-static --with-pic "
 	++ "--disable-docs --disable-multi-os-directory --prefix=$p; "
-	++ "make -j$(nproc); rm -rf $p; make install"
+	++ "make -j" ++ jobs ++ "; rm -rf $p; make install"
+
+# The machine's core count for `make -j`, in a spelling Linux and macOS share.
+$ jobs : @str = "$(getconf _NPROCESSORS_ONLN)"
 
 # autoreconf and libtool are too heavy for the everyday dev shell, so they come
 # from external/flake.nix unless the environment already has them.
@@ -160,20 +202,38 @@ $ musl_build_cmd : @str =
 	"set -e; root=$PWD; b=target/musl-build; p=$root/" ++ musl_prefix ++ "; "
 	++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; cd $b; "
 	++ "$root/" ++ musl_src ++ "/configure --prefix=$p --syslibdir=$p/lib --disable-shared; "
-	++ "make -j$(nproc); rm -rf $p; make install"
+	++ "make -j" ++ jobs ++ "; rm -rf $p; make install"
 
 $ release_cargo_cmd : @str =
 	"THRAX_LIBFFI=$PWD/" ++ ffi_prefix ++ " cargo build --release"
 
 # The layout the flake's installPhase produces, which is where the compiler
-# looks for library/, lib/libthrax.so and lib/musl relative to its own path.
-$ dist_cmd : @str =
-	"set -e; d=" ++ dist_dir ++ "; rm -rf $d; "
+# looks for library/, its shared library and lib/musl relative to its own path.
+# `release` is cargo's output directory, `exe` the compiler's file name and
+# `libs` the compiler libraries for lib/.
+$ dist_layout_cmd : @str -> @str -> @str -> @str = \release exe libs =
+	"set -e; d=" ++ dist_dir ++ "; r=" ++ release ++ "; rm -rf $d; "
 	++ "mkdir -p $d/bin $d/lib $d/include $d/library; "
-	++ "cp target/release/thrax $d/bin/; "
-	++ "cp target/release/libthrax.so target/release/libthrax.a $d/lib/; "
+	++ "cp $r/" ++ exe ++ " $d/bin/; "
+	++ "for f in " ++ libs ++ "; do cp $r/$f $d/lib/; done; "
 	++ "cp crates/thrax/include/thrax.h $d/include/; "
 	++ "cp library/*.thx $d/library/"
+
+$ dist_cmd : @str =
+	dist_layout_cmd "target/release" "thrax"
+		(if TARGET.os == "macos" => "libthrax.dylib libthrax.a" else "libthrax.so libthrax.a")
+
+# Windows is built from Linux: tools/windows/flake.nix cross-compiles with
+# MinGW-w64. libffi stays a DLL there, shipped beside thrax.exe, where Windows
+# looks for it.
+$ windows_shell : @str = "nix develop ./tools/windows --command "
+
+$ windows_cargo_cmd : @str = windows_shell ++ "cargo build --release -p thrax"
+
+$ windows_dist_cmd : @str =
+	dist_layout_cmd "target/windows/x86_64-pc-windows-gnu/release" "thrax.exe"
+		"thrax.dll libthrax.dll.a libthrax.a"
+	++ "; " ++ windows_shell ++ "sh -c 'cp $LIBFFI/bin/libffi-*.dll " ++ dist_dir ++ "/bin/'"
 
 # musl-gcc and its specs file hard-code the build prefix; the compiler writes a
 # specs file for wherever the sysroot is found instead.
@@ -200,7 +260,7 @@ $ refresh_musl : {} -> <@io> @bool = \u =
 		else println "thxdo: musl is up to date"; @true
 	else @false
 
-$ is_linux : {} -> <@io> @bool = \u = C.system "[ \"$(uname -s)\" = Linux ]" == 0
+$ is_linux : {} -> <@io> @bool = \u = TARGET.os == "linux"
 
 $ release_build : @str -> <@io> @bool = \libc =
 	let musl = (is libc | "musl" => @true | _ => @false) in
@@ -214,6 +274,11 @@ $ release_build : @str -> <@io> @bool = \libc =
 		&& (if musl => step "dist musl" dist_musl_cmd else @true)
 		&& (println ("thxdo: release compiler in " ++ dist_dir ++ "/bin/thrax"); @true)
 
+$ windows_release : {} -> <@io> @bool = \u =
+	step "cross build (tools/windows)" windows_cargo_cmd
+	&& step "dist" windows_dist_cmd
+	&& (println ("thxdo: Windows release in " ++ dist_dir ++ "/bin/thrax.exe"); @true)
+
 $ build_task : @bool -> @vec @str -> <@io> @bool = \clean args =
 	is arg_or args 2 ""
 		| "" =>
@@ -225,7 +290,10 @@ $ build_task : @bool -> @vec @str -> <@io> @bool = \clean args =
 				| "musl" | "gnu" =>
 					(if clean => C.system ("cargo clean --release; rm -rf " ++ dist_dir) else 0);
 					release_build libc
-				| _ => println ("thxdo: unknown libc `" ++ libc ++ "` (musl or gnu)"); @false)
+				| "windows" =>
+					(if clean => C.system ("rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir) else 0);
+					windows_release {}
+				| _ => println ("thxdo: unknown release `" ++ libc ++ "` (musl, gnu or windows)"); @false)
 		| other =>
 			println ("thxdo: unknown build mode `" ++ other ++ "` (try `release`)"); @false
 
@@ -263,10 +331,10 @@ $ run_command: @vec @str -> <@io> @bool = \args =
 			println (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
 			if 0 == rc => @true else @false
 		| "corpus"  =>
+			let wasm = arg_or args 2 "" == "wasm" in
 			println "thxdo: running tests/MAIN.thx on both engines ...";
-			let rc = C.system corpus_cmd in
-				if rc == 0 => println "thxdo: corpus OK (engines agree)"; @true
-				else println "thxdo: corpus FAILED"; @false
+			if corpus_task wasm => println "thxdo: corpus OK (engines agree)"; @true
+			else println "thxdo: corpus FAILED"; @false
 		| "grammar" =>
 			println "thxdo: checking documentation/thrax.y ...";
 			let rc = C.system grammar_cmd in

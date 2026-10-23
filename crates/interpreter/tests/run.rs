@@ -7,6 +7,21 @@ use frontend::{lower_program, Checker, Decls};
 /// / %` operator overloads). The driver injects it into every program; the test
 /// harness must do the same, or arithmetic is unbound.
 const CORE_SRC: &str = include_str!("../../../library/CORE.thx");
+/// A path as a Thrax string literal can hold it: forward slashes, which every
+/// platform's C library accepts, so a Windows path's `\` is not read as an
+/// escape.
+fn thx_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+/// The C compiler a test builds with: `THRAX_CC`, then `CC`, then the host
+/// toolchain's default (`cc`, or `gcc` on Windows).
+fn c_compiler() -> String {
+    std::env::var("THRAX_CC")
+        .or_else(|_| std::env::var("CC"))
+        .unwrap_or_else(|_| utilities::toolchain(utilities::Target::host()).cc)
+}
+
 
 /// Parse, check, and lower a single module WITHOUT CORE (for entry-point tests
 /// that use no CORE names). See `run` for the CORE-injecting path.
@@ -227,7 +242,7 @@ fn compile_helper_so(basename: &str, c_src: &str) -> std::path::PathBuf {
         .unwrap()
         .write_all(c_src.as_bytes())
         .unwrap();
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let cc = c_compiler();
     let status = std::process::Command::new(cc)
         .args(["-shared", "-fPIC", "-O2", "-o"])
         .arg(&so_path)
@@ -245,15 +260,15 @@ fn ffi_struct_by_value_argument() {
     // gives a function that takes a small struct by value.
     let so = compile_helper_so(
         "thx_ffi_arg_helper",
-        "typedef struct { long x, y; } P;\n\
-         long sum_p(P p) { return p.x * 1000 + p.y; }\n",
+        "typedef struct { long long x, y; } P;\n\
+         long long sum_p(P p) { return p.x * 1000 + p.y; }\n",
     );
     let src = format!(
         "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_p : P -> @int = @extern \"C\" \"sum_p\" \"{}\"\n\
          $ test : @int = sum_p (P.{{ .x = 40, .y = 2 }})",
-        so.display()
+        thx_path(&so)
     );
     assert_eq!(run(&src, "test"), "40002");
 }
@@ -264,15 +279,15 @@ fn ffi_struct_array() {
     // separate count), the raylib vertex/point/color-buffer shape.
     let so = compile_helper_so(
         "thx_ffi_arr_helper",
-        "typedef struct { long x, y; } P;\n\
-         long sum_ps(P* a, int n) { long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
+        "typedef struct { long long x, y; } P;\n\
+         long long sum_ps(P* a, int n) { long long s = 0; for (int i = 0; i < n; i++) s += a[i].x * 10 + a[i].y; return s; }\n",
     );
     let src = format!(
         "$ @mod M\n\
          $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
          $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
          $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
-        lib = so.display()
+        lib = thx_path(&so)
     );
     // (1*10+2) + (3*10+4) + (5*10+6) = 12 + 34 + 56 = 102.
     assert_eq!(run(&src, "test"), "102");
@@ -291,7 +306,7 @@ fn ffi_callback() {
          $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
          $ k : @int = 10\n\
          $ test : @int = call_twice (\\a b = a + b + k)",
-        lib = so.display()
+        lib = thx_path(&so)
     );
     // f(1,2)=13, f(3,4)=17 -> 13*100 + 17 = 1317.
     assert_eq!(run(&src, "test"), "1317");
@@ -303,9 +318,9 @@ fn ffi_c_union_by_value() {
     // offset 0), read a member back from a returned union (reinterpreted bytes).
     let so = compile_helper_so(
         "thx_ffi_union_helper",
-        "typedef union { long i; double d; } U;\n\
-         long u_as_long(U u) { return u.i; }\n\
-         U u_from_long(long v) { U u; u.i = v; return u; }\n",
+        "typedef union { long long i; double d; } U;\n\
+         long long u_as_long(U u) { return u.i; }\n\
+         U u_from_long(long long v) { U u; u.i = v; return u; }\n",
     );
     let src = format!(
         "$ @mod M\n\
@@ -315,7 +330,7 @@ fn ffi_c_union_by_value() {
          $ built : @int = u_as_long (U.{{ .i = 42 }})\n\
          $ back  : @int = (u_from_long 99).i\n\
          $ test  : @int = built * 1000 + back",
-        lib = so.display()
+        lib = thx_path(&so)
     );
     // built = 42, back = 99.
     assert_eq!(run(&src, "test"), "42099");
@@ -328,10 +343,10 @@ fn ffi_nested_struct_by_value() {
     // takes one; the round-trip exercises nested pack and unpack.
     let so = compile_helper_so(
         "thx_ffi_nested_helper",
-        "typedef struct { long x, y; } P;\n\
+        "typedef struct { long long x, y; } P;\n\
          typedef struct { P a; P b; } Seg;\n\
-         long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
-         Seg seg_make(long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
+         long long seg_sum(Seg s) { return s.a.x + s.a.y*10 + s.b.x*100 + s.b.y*1000; }\n\
+         Seg seg_make(long long v) { Seg s = {{v, v+1},{v+2, v+3}}; return s; }\n",
     );
     let src = format!(
         "$ @mod M\n\
@@ -340,7 +355,7 @@ fn ffi_nested_struct_by_value() {
          $ seg_sum : Seg -> @int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
          $ seg_make : @int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
          $ test : @int = seg_sum (seg_make 1)",
-        lib = so.display()
+        lib = thx_path(&so)
     );
     // seg_make 1 = {{1,2},{3,4}}; seg_sum = 1 + 2*10 + 3*100 + 4*1000 = 4321.
     assert_eq!(run(&src, "test"), "4321");
@@ -348,13 +363,14 @@ fn ffi_nested_struct_by_value() {
 
 #[test]
 fn ffi_struct_by_value_return() {
-    // libc's `div_t div(int, int)` returns a small struct BY VALUE. A C-repr
+    // libc's `lldiv_t lldiv(long long, long long)` returns a small struct BY
+    // VALUE (`long long`, not `long`: `@int` is 64 bits, Windows' `long` 32). A C-repr
     // struct return exercises the whole struct-marshalling path (layout, libffi
     // aggregate return, unpack back to a Thrax struct value).
     let src = "$ @mod M\n\
         $ LDivT : @struct @extern \"C\" = quot: @int, rem: @int,\n\
-        $ ldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"ldiv\" \"libc\"\n\
-        $ test : @int = let d = ldiv {17, 5} in d.quot * 100 + d.rem";
+        $ lldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"lldiv\" \"libc\"\n\
+        $ test : @int = let d = lldiv {17, 5} in d.quot * 100 + d.rem";
     // 17 / 5 = 3 remainder 2 -> 3*100 + 2.
     assert_eq!(run(src, "test"), "302");
 }
@@ -1286,7 +1302,9 @@ fn extern_ffi_file_roundtrip() {
           let g = fopen {p, \"rb\"} in \
           let a = fgetc g in let b = fgetc g in \
           fclose g ; remove p ; a + b";
-    assert_eq!(run(src, "r"), "209");
+    let path = thx_path(&std::env::temp_dir().join("thrax_core_roundtrip.txt"));
+    let src = src.replace("/tmp/thrax_core_roundtrip.txt", &path);
+    assert_eq!(run(&src, "r"), "209");
 }
 
 #[test]

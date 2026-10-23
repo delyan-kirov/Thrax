@@ -289,9 +289,10 @@ fn decorate(lib: &str, prefix: &str, suffix: &str) -> String {
 }
 
 /// How the host invokes a C compiler for a target: the compiler call as data.
-/// The host target uses the system `cc`; a wasm target uses `emcc` (overridable
-/// via `THRAX_WASM_CC`), so tool LOCATIONS stay out of the compiler the way
-/// `@extern` library locations do. An empty `cc` means no toolchain was found
+/// The host target uses the system `cc` (`gcc` on Windows, where MinGW-w64
+/// ships no `cc`; either overridable via `THRAX_CC`); a wasm target uses `emcc`
+/// (overridable via `THRAX_WASM_CC`), so tool LOCATIONS stay out of the
+/// compiler the way `@extern` library locations do. An empty `cc` means no toolchain was found
 /// and `hint` says what to provide.
 #[derive(Clone, Debug)]
 pub struct Toolchain {
@@ -321,7 +322,14 @@ pub fn toolchain(target: Target) -> Toolchain {
         rpath: true,
     };
     if target == Target::host() {
-        tc.cc = "cc".to_string();
+        let windows = target.os == Os::Windows;
+        let default_cc = if windows { "gcc" } else { "cc" };
+        tc.cc = std::env::var("THRAX_CC").unwrap_or_else(|_| default_cc.to_string());
+        // PE has no rpath: a DLL is found beside the executable or on PATH.
+        tc.rpath = !windows;
+        if windows {
+            tc.exe_suffix = ".exe".to_string();
+        }
         return tc;
     }
     if target.os == Os::Wasi && target.arch == Arch::Wasm32 {
@@ -329,6 +337,9 @@ pub fn toolchain(target: Target) -> Toolchain {
         tc.hint =
             "no wasm C compiler found: install emscripten (emcc) or set THRAX_WASM_CC".to_string();
         tc.runner = "node".to_string();
+        // The program runs under node, so it reads and writes the real file
+        // system rather than emscripten's in-memory one.
+        tc.cflags.push("-sNODERAWFS=1".to_string());
         // emcc writes <name>.js plus a sibling <name>.wasm; node runs the .js.
         tc.exe_suffix = ".js".to_string();
         tc.rpath = false;

@@ -763,7 +763,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
             sig_types.join(", ")
         };
         out.push_str(&format!(
-            "extern {ret_ty} THx_sym_{n}({sig}) __asm__({});\n",
+            "extern {ret_ty} THx_sym_{n}({sig}) __asm__(THX_ASM_NAME({}));\n",
             cstr(e.symbol.as_bytes())
         ));
         out.push_str(&format!("static Value* THx_extern_{n}(Value** args) {{\n  (void)args;\n"));

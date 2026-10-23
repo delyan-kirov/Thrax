@@ -7,9 +7,9 @@
 //! shared; a new platform only implements `call`.
 //!
 //! Two backends ship:
-//! - `NativeFfi` resolves the symbol with `dlopen`/`dlsym` and performs the
-//!   call through libffi (built from `external/libffi`; see `build.rs` and
-//!   `ffi_shim.c`). libffi handles the calling convention on every target, so
+//! - `NativeFfi` resolves the symbol through [`crate::host`] (`dlopen`/`dlsym`,
+//!   or `LoadLibrary`/`GetProcAddress`) and performs the call through libffi
+//!   (built from `external/libffi`; see `build.rs` and `ffi_shim.c`). libffi handles the calling convention on every target, so
 //!   there is no hand-written per-ABI trampoline and no arity/`Real32` limit.
 //! - `WasmHostFfi` serialises the call across a single generic import to the
 //!   JavaScript embedder, which owns the function registry (the playground).
@@ -546,6 +546,17 @@ pub fn call_extern<'p>(
     ret_type: &str,
     args: &[PVal<'p>],
 ) -> Result<Value<'p>> {
+    let exact = utilities::libc::exact_types(
+        utilities::Target::host(),
+        lib,
+        symbol,
+        arg_types,
+        ret_type,
+    );
+    let (arg_types, ret_type) = match &exact {
+        Some((a, r)) => (a.as_slice(), r.as_str()),
+        None => (arg_types, ret_type),
+    };
     let mut cargs = Vec::with_capacity(arg_types.len());
     for (i, ty) in arg_types.iter().enumerate() {
         cargs.push(classify_arg(ty, &args[i])?);
@@ -596,8 +607,6 @@ mod native {
     use utilities::Result;
 
     extern "C" {
-        fn dlopen(path: *const c_char, flag: c_int) -> *mut c_void;
-        fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
         fn strlen(s: *const c_char) -> usize;
         fn fflush(f: *mut c_void) -> c_int;
         fn thx_ffi_call_x(
@@ -623,15 +632,12 @@ mod native {
         fn thx_closure_free(handle: *mut c_void);
     }
 
-    const RTLD_NOW: c_int = 2;
-    const RTLD_GLOBAL: c_int = 0x100;
-
     // Loaded library handles, keyed by resolved soname, kept open for the
     // process. The interpreter is single-threaded (values are `Rc`), so a
     // thread-local map is enough; a handle is never closed, matching how a
     // linked program keeps its libraries mapped for its whole run.
     thread_local! {
-        static HANDLES: RefCell<std::collections::HashMap<String, usize>> =
+        static HANDLES: RefCell<std::collections::HashMap<String, crate::host::Library>> =
             RefCell::new(std::collections::HashMap::new());
     }
 
@@ -700,39 +706,33 @@ mod native {
     }
 
     fn resolve(symbol: &str, lib: &str) -> Result<*mut c_void> {
+        use crate::host;
         use utilities::target::Target;
-        // libc/libm/no-lib live in the already-loaded set (RTLD_DEFAULT = null).
+        // libc/libm/no-lib live in the already-loaded set.
         let default_set = matches!(lib, "" | "libc" | "c" | "libm" | "m");
         let handle = if default_set {
-            std::ptr::null_mut()
+            None
         } else {
             let soname = Target::host().soname(lib);
             if let Some(p) = HANDLES.with(|h| h.borrow().get(&soname).copied()) {
-                p as *mut c_void
+                Some(p)
             } else {
-                let mut path = soname.clone().into_bytes();
-                path.push(0);
-                let p = unsafe { dlopen(path.as_ptr() as *const c_char, RTLD_NOW | RTLD_GLOBAL) };
-                if p.is_null() {
+                let Some(p) = host::open_library(&soname) else {
                     return Err(fault(format!(
                         "FFI: cannot load library `{lib}` (resolved to `{soname}`) for symbol \
                          `{symbol}`"
                     )));
-                }
-                HANDLES.with(|h| h.borrow_mut().insert(soname, p as usize));
-                p
+                };
+                HANDLES.with(|h| h.borrow_mut().insert(soname, p));
+                Some(p)
             }
         };
-        let mut name = symbol.as_bytes().to_vec();
-        name.push(0);
-        let addr = unsafe { dlsym(handle, name.as_ptr() as *const c_char) };
-        if addr.is_null() {
-            return Err(fault(format!(
+        host::symbol(handle, symbol).ok_or_else(|| {
+            fault(format!(
                 "FFI: symbol `{symbol}` not found in `{}`",
                 if default_set { "the loaded libraries" } else { lib }
-            )));
-        }
-        Ok(addr)
+            ))
+        })
     }
 
     /// Where an argument's `avalue` cell lives: a scalar slot, or the bytes of a

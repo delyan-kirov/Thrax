@@ -1,0 +1,143 @@
+name: Release
+
+# Pushing a `v*` tag builds the SDK for every platform and publishes a GitHub
+# release with one archive each. Run by hand, it is a dry run: the archives are
+# left as workflow artifacts and nothing is published. An SDK is the layout
+# `thxdo build release` produces: bin/thrax, lib/ (the compiler library, and on
+# Linux the musl sysroot), include/thrax.h, library/*.thx.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Built on the runner, not in Nix: a binary linked in the dev shell names the
+  # glibc in /nix/store, which an ordinary Linux does not have. The oldest
+  # supported Ubuntu keeps the glibc it needs old. libffi is the vendored one,
+  # linked statically, and programs the SDK builds link musl statically.
+  linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autotools for the vendored libffi
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool texinfo libffi-dev
+
+      - name: Build the SDK
+        run: |
+          set -e
+          cargo build --release -p thrax
+          ./target/release/thrax run tools/THXDO.thx rebuild release musl
+
+      - name: Smoke test
+        run: |
+          set -e
+          ./target/dist/bin/thrax check examples/FIB.thx
+          ldd ./target/dist/bin/thrax
+
+      - name: Package
+        run: |
+          set -e
+          name=thrax-${GITHUB_REF_NAME}-x86_64-linux
+          mv target/dist "target/$name"
+          tar -czf "$name.tar.gz" -C target "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: thrax-*.tar.gz
+
+  # Apple Silicon. Homebrew's libffi only bootstraps the compiler that runs
+  # thxdo; the released one links the vendored libffi statically.
+  macos:
+    runs-on: macos-latest
+
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autotools and a bootstrap libffi
+        run: brew install autoconf automake libtool texinfo libffi
+
+      - name: Build the SDK
+        run: |
+          set -e
+          export LIBFFI=$(brew --prefix libffi) LIBFFI_DEV=$(brew --prefix libffi)
+          cargo build --release -p thrax
+          ./target/release/thrax run tools/THXDO.thx rebuild release
+
+      - name: Smoke test
+        run: |
+          set -e
+          ./target/dist/bin/thrax check examples/FIB.thx
+          otool -L ./target/dist/bin/thrax
+
+      - name: Package
+        run: |
+          set -e
+          name=thrax-${GITHUB_REF_NAME}-aarch64-macos
+          mv target/dist "target/$name"
+          tar -czf "$name.tar.gz" -C target "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: thrax-*.tar.gz
+
+  # Cross-built from Linux (tools/windows/flake.nix), then checked under Wine.
+  windows:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build the SDK
+        run: |
+          nix develop --command bash -c '
+            set -e
+            cargo build --release -p thrax
+            ./target/release/thrax run tools/THXDO.thx rebuild release windows
+          '
+
+      - name: Smoke test under Wine
+        run: nix develop ./tools/windows --command wine target/dist/bin/thrax.exe check examples/FIB.thx
+
+      - name: Package
+        run: |
+          set -e
+          name=thrax-${GITHUB_REF_NAME}-x86_64-windows
+          mv target/dist "target/$name"
+          (cd target && zip -qr "../$name.zip" "$name")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: thrax-*.zip
+
+  publish:
+    needs: [linux, macos, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Thrax $GITHUB_REF_NAME" \
+            --generate-notes

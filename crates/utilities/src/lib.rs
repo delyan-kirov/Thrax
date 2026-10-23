@@ -3,6 +3,8 @@
 //! * [`arena`] is the bump arena; [`handle`] is the handle-addressed store the
 //!   AST uses to drop its source lifetime.
 //! * [`error`] is the diagnostic model.
+//! * [`libc`] holds the C library's real prototypes, which `@extern` bindings
+//!   type loosely.
 //! * [`interrupt`] is the interrupt flag a signal handler sets and a running
 //!   evaluation polls.
 //! * [`scc`] is a generic strongly-connected-components pass (Tarjan).
@@ -14,6 +16,7 @@ pub mod cabi;
 pub mod error;
 pub mod handle;
 pub mod interrupt;
+pub mod libc;
 pub mod scc;
 pub mod target;
 
@@ -23,5 +26,7 @@ pub use error::{Aside, Code, Diagnostic, Label, Line, Result, Span};
 pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
 pub use target::{musl_specs, musl_toolchain, toolchain, Arch, Libc, Os, Target, Toolchain};
 
+#[cfg(test)]
+mod libc_tests;
 #[cfg(test)]
 mod target_tests;
