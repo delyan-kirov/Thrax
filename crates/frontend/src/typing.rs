@@ -1224,7 +1224,16 @@ impl<'a> Checker<'a> {
         let mut declared = Vec::with_capacity(component.len());
         for &i in component {
             let v = self.eng.fresh();
-            self.bind(defs[i].name, v);
+            // A use inside the group sees a signed member's signature, so it may
+            // recurse at another type. Not with a row tail: the body may extend
+            // the row, and a use that saw only the signature would miss that.
+            let seen = match (defs[i].sig, defs[i].ctx) {
+                (Some(sig), None) if !self.sig_has_row_tail(sig) => {
+                    self.scheme_and_ctx(sig, false).0
+                }
+                _ => v,
+            };
+            self.bind(defs[i].name, seen);
             declared.push(v);
         }
         // A member with a signature has its declared shape before any body in
@@ -1236,18 +1245,31 @@ impl<'a> Checker<'a> {
                 self.bind_signature(&defs[i], *decl)?;
             }
         }
+        let mut sig_vars = Vec::new();
         for (&i, decl) in component.iter().zip(&declared) {
-            self.check_def_body(&defs[i], *decl)?;
+            if let Some(vars) = self.check_def_body(&defs[i], *decl)? {
+                sig_vars.push(vars);
+            }
         }
         self.solve_pending()?;
         self.resolve_pending_ctx()?;
+        for vars in &sig_vars {
+            self.check_sig_vars_rigid(vars)?;
+        }
         self.eng.leave_level();
         let mono = self.pending_vars();
         for (&i, decl) in component.iter().zip(&declared) {
             self.eng.generalize_except(*decl, &mono);
+            self.bind(defs[i].name, *decl);
             types.insert(defs[i].name, self.eng.zonk(*decl));
         }
         Ok(())
+    }
+
+    fn sig_has_row_tail(&self, sig: Aol<Ty>) -> bool {
+        let (mut sites, mut tails) = (Vec::new(), Vec::new());
+        sig_var_sites(self.ast, sig, Span::at(0), &mut sites, &mut tails);
+        !tails.is_empty()
     }
 
     /// Unify a definition's variable with the type its signature exposes.
@@ -1264,7 +1286,10 @@ impl<'a> Checker<'a> {
         self.eng.unify(decl, exposed, &format!("against the signature of `{}`", def.name))
     }
 
-    fn check_def_body(&mut self, def: &Def<'a>, decl: Type) -> Result<()> {
+    /// Check a definition's body. For a signed one, also hand back the
+    /// variables its signature names, for [`Self::check_sig_vars_rigid`] once the
+    /// component is solved.
+    fn check_def_body(&mut self, def: &Def<'a>, decl: Type) -> Result<Option<SigVars<'a>>> {
         self.ambient = self.top_level_ambient();
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
@@ -1287,15 +1312,63 @@ impl<'a> Checker<'a> {
             let saved_sig = self.current_sig.replace(sig_ty);
             let r = self.check_body_against_sig(def.body, sig, sig_ty);
             self.current_sig = saved_sig;
-            r
+            r?;
+            // A row tail stays open on purpose: `<| e>` lets the body perform
+            // more, which is how an entry point performs any effect.
+            let (mut sites, mut tails) = (Vec::new(), Vec::new());
+            sig_var_sites(self.ast, sig, Span::at(0), &mut sites, &mut tails);
+            let vars = sites
+                .into_iter()
+                .filter(|(name, _)| !tails.contains(name))
+                .filter_map(|(name, span)| tvars.get(name).map(|&ty| (name, span, ty)))
+                .collect();
+            Ok(Some(SigVars { def: def.name, vars }))
         } else {
             let inferred = self.infer(def.body)?;
             self.eng.unify(
                 decl,
                 inferred,
                 &format!("in the definition of `{}`", def.name),
-            )
+            )?;
+            Ok(None)
         }
+    }
+
+    /// A signature's variables are the caller's to choose, so the body must
+    /// leave each one a variable of its own: one the body fixed to a type, or
+    /// merged with another, makes the signature claim more than the definition
+    /// gives (#270).
+    fn check_sig_vars_rigid(&mut self, sig: &SigVars<'a>) -> Result<()> {
+        let mut seen: Vec<(VarId, &'a str)> = Vec::new();
+        for &(name, span, ty) in &sig.vars {
+            let zonked = self.eng.zonk(ty);
+            match self.eng.types.node(zonked) {
+                TypeNode::Var(id) => match seen.iter().find(|(v, _)| *v == id) {
+                    Some(&(_, other)) => {
+                        return Err(diag!(
+                            Code::TypeMismatch, span, 0,
+                            "the body of `{}` needs `{name}` and `{other}` to be the same type",
+                            sig.def;
+                            note: "the caller chooses each of them, so they may differ";
+                            help: "write the same variable for both, if that is what the body means"
+                        ));
+                    }
+                    None => seen.push((id, name)),
+                },
+                _ => {
+                    let found = self.show(zonked);
+                    return Err(diag!(
+                        Code::TypeMismatch, span, 0,
+                        "the body of `{}` needs `{name}` to be `{found}`",
+                        sig.def;
+                        note: "`{name}` is a type variable the caller chooses, so the body must work \
+                               for every one";
+                        help: "write `{found}` in the signature, if that is what the body means"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Check a body against its signature, implicitly consuming leading record
@@ -6491,6 +6564,13 @@ impl<'a> Checker<'a> {
 
 /// A global `$` definition, extracted from the program for dependency analysis.
 #[derive(Clone)]
+/// The variables a definition's signature names, each with the span of its
+/// first occurrence and the type it elaborated to.
+struct SigVars<'a> {
+    def: &'a str,
+    vars: Vec<(&'a str, Span, Type)>,
+}
+
 struct Def<'a> {
     name: &'a str,
     sig: Option<Aol<Ty>>,
@@ -6838,6 +6918,57 @@ fn collect_ty_nodes(ast: &Ast, ty: Aol<Ty>, out: &mut HashSet<Aol<Ty>>) {
 }
 
 /// Collect the type variables appearing in `ty`, in order of first appearance.
+/// Every variable a signature names, in order of first occurrence, with the
+/// span of the type it occurs in (the nearest one with a span, falling back to
+/// `outer`). The names of effect-row and record tails go to `tails` instead.
+fn sig_var_sites<'a>(
+    ast: &'a Ast,
+    ty: Aol<Ty>,
+    outer: Span,
+    out: &mut Vec<(&'a str, Span)>,
+    tails: &mut Vec<&'a str>,
+) {
+    let span = ast.ty_span(ty).unwrap_or(outer);
+    let row = |row: &EffectRow, out: &mut Vec<(&'a str, Span)>, tails: &mut Vec<&'a str>| {
+        for entry in ast.slice(row.entries) {
+            ast.slice(entry.args).iter().for_each(|a| sig_var_sites(ast, *a, span, out, tails));
+        }
+        tails.extend(row.tail.map(|t| ast.text(t)));
+    };
+    match ast.ty(ty) {
+        Ty::Var(name) => {
+            let name = ast.text(*name);
+            if !out.iter().any(|(n, _)| *n == name) {
+                out.push((name, span));
+            }
+        }
+        Ty::App(a, b) | Ty::SizeAdd(a, b) | Ty::SizeMul(a, b) => {
+            sig_var_sites(ast, *a, span, out, tails);
+            sig_var_sites(ast, *b, span, out, tails);
+        }
+        Ty::Arrow { from, effect, to } => {
+            sig_var_sites(ast, *from, span, out, tails);
+            if let Some(effect) = effect {
+                row(effect, out, tails);
+            }
+            sig_var_sites(ast, *to, span, out, tails);
+        }
+        Ty::Tuple(items) => {
+            ast.slice(*items).iter().for_each(|t| sig_var_sites(ast, *t, span, out, tails))
+        }
+        Ty::Record { fields, tail } => {
+            ast.slice(*fields).iter().for_each(|f| sig_var_sites(ast, f.ty, span, out, tails));
+            tails.extend(tail.map(|t| ast.text(t)));
+        }
+        Ty::Sized { size, elem, .. } => {
+            sig_var_sites(ast, *size, span, out, tails);
+            sig_var_sites(ast, *elem, span, out, tails);
+        }
+        Ty::Row(r) => row(r, out, tails),
+        Ty::Con { .. } | Ty::Nat(_) | Ty::Unit | Ty::MetaE(..) => {}
+    }
+}
+
 fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
     match ast.ty(ty) {
         Ty::Var(name) => {

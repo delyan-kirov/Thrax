@@ -1,0 +1,5 @@
+$ @mod SIG_VARS_MERGED
+
+# Two signature variables may be chosen differently, so a body that returns its
+# argument cannot promise a result of another variable (#270).
+$ f : a -> b = \x = x  #~ error[TYPE_MISMATCH]: the body of `f` needs `b` and `a` to be the same type

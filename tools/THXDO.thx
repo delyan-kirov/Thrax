@@ -182,17 +182,17 @@ $ dist_musl_cmd : @str =
 	++ "cp -r " ++ musl_prefix ++ "/include " ++ musl_prefix ++ "/lib $m/; "
 	++ "rm -f $m/lib/musl-gcc.specs"
 
-$ step : @str -> @str -> <@io> bool = \what cmd =
+$ step : @str -> @str -> <@io> @bool = \what cmd =
 	if C.system cmd == 0 => @true
 	else print ("thxdo: " ++ what ++ " FAILED\n"); @false
 
-$ refresh_ffi : {} -> <@io> bool = \u =
+$ refresh_ffi : {} -> <@io> @bool = \u =
 	if C.system ffi_stale_cmd == 0 =>
 		println "thxdo: building libffi from external/libffi ...";
 		step "libffi build (log: target/libffi-build.log)" (ffi_wrap ffi_build_cmd)
 	else println "thxdo: libffi is up to date"; @true
 
-$ refresh_musl : {} -> <@io> bool = \u =
+$ refresh_musl : {} -> <@io> @bool = \u =
 	if step "musl fetch" musl_fetch_cmd =>
 		if C.system musl_stale_cmd == 0 =>
 			println "thxdo: building musl from external/musl ...";
@@ -200,9 +200,9 @@ $ refresh_musl : {} -> <@io> bool = \u =
 		else println "thxdo: musl is up to date"; @true
 	else @false
 
-$ is_linux : {} -> <@io> bool = \u = C.system "[ \"$(uname -s)\" = Linux ]" == 0
+$ is_linux : {} -> <@io> @bool = \u = C.system "[ \"$(uname -s)\" = Linux ]" == 0
 
-$ release_build : @str -> <@io> bool = \libc =
+$ release_build : @str -> <@io> @bool = \libc =
 	let musl = (is libc | "musl" => @true | _ => @false) in
 	if musl && !(is_linux {}) =>
 		println "thxdo: musl is for Linux; this platform links its own C library"; @false
@@ -214,7 +214,7 @@ $ release_build : @str -> <@io> bool = \libc =
 		&& (if musl => step "dist musl" dist_musl_cmd else @true)
 		&& (println ("thxdo: release compiler in " ++ dist_dir ++ "/bin/thrax"); @true)
 
-$ build_task : bool -> @vec @str -> <@io> bool = \clean args =
+$ build_task : @bool -> @vec @str -> <@io> @bool = \clean args =
 	is arg_or args 2 ""
 		| "" =>
 			(if clean => C.system "cargo clean --profile dev" else 0);
@@ -229,7 +229,7 @@ $ build_task : bool -> @vec @str -> <@io> bool = \clean args =
 		| other =>
 			println ("thxdo: unknown build mode `" ++ other ++ "` (try `release`)"); @false
 
-$ clean_task : @vec @str -> <@io> bool = \args =
+$ clean_task : @vec @str -> <@io> @bool = \args =
 	is arg_or args 2 ""
 		| ""    => step "cargo clean" "cargo clean"
 		| "all" => step "cargo clean" "cargo clean" && step "clean" "rm -rf external/artifacts"
@@ -244,7 +244,7 @@ $ quoted_from : @vec @str -> @int -> @str = \args i =
 $ arg_or : @vec @str -> @int -> @str -> @str = \args i d =
 	if @vec_len args <= i => d else @vec_get args i
 
-$ run_command: @vec @str -> <@io> bool = \args =
+$ run_command: @vec @str -> <@io> @bool = \args =
 	is @vec_get args 1
 		| "build"   => build_task @true args
 		| "test"    => C.system "cargo clean"; C.system "cargo test"; @true 
