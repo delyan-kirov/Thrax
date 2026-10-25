@@ -77,8 +77,9 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **Block**: `static void blk_<n>(Frame* fr, Value* in)`. A `Code`'s entry block
   is its first; **suspension points spawn continuation blocks** (see `Let`).
 - **Atoms** become single C expressions: `Local i`->`THxVALUE_local(fr->locals,
-  ...)`, `Env i`->`THxVALUE_env(fr->env, ...)`, `Glob n`->`THxRT_glob("n")` (or
-  `THxK_op("Eff.op")` for an effect operation, `THxK_defer()` for `defer`),
+  ...)`, `Env i`->`THxVALUE_env(fr->env, ...)`, `Glob n`->`force_code(<code>)` (or
+  `THxRT_builtin(THxB_<NAME>, arity)` for a built-in, `THxK_op("Eff.op")` for an
+  effect operation, `THxK_defer()` for `defer`),
   literals->`THxRT_int/...`, `MkClosure`->`THxRT_closure(code, captures, n)`.
 - **Terminators**: `THxK_ret(v)` delivers a value up the continuation;
   `THxK_tailcall(fn,arg)` tail-applies (constant stack); `THxK_apply(fr,fn,arg,
@@ -97,12 +98,17 @@ straight-line C and ends by calling exactly one **terminator**; the driver
 - **`App`** tail -> `THxK_tailcall`; non-tail (always a let rhs, by ANF) ->
   `THxK_apply` with the let body as its continuation block.
 - **`Case`** evaluates the scrutinee once, then an if/else chain on
-  `THxVALUE_as_int` / `THxVALUE_as_num` / `strcmp(THxVALUE_ctor(...))`; a `Con`
+  `THxVALUE_as_int` / `THxVALUE_as_num` / `THxVALUE_ctor_is(...)`; a `Con`
   arm binds its payload into the frame slots via `THxVALUE_variant_field`; each
   branch delivers to the same sink.
-- **Globals** are lazy, memoized CAFs: `THxRT_glob` runs the nullary code
+- **Globals** are lazy, memoized CAFs: `force_code` runs the nullary code
   (`THxK_run_code`) on first demand and caches it (cyclic value globals abort),
-  exactly as `IT::glob`. Unknown names fall through to `THxRT_builtin`.
+  exactly as `IT::glob`. The generator resolves every global name to its code
+  index, so nothing is looked up by name at run time.
+- **Built-ins** are numbered by `frontend::ir::data::BUILTINS`: the generator
+  emits that table as the `THxB_*` enum ahead of the runtime, and a saturated
+  call is `THxK_prim(THxB_<NAME>, args)`, which the runtime dispatches with a
+  `switch`.
 - **Entry**: the generated C `main` forces every global reachable from the entry,
   then applies `@main` (`THxK_call`) to the argument vector as a `@vec @str` and
   returns its `@int` as the exit code. A harness mode (`ccg::Entry::Show`) instead

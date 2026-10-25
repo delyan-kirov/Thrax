@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ir::data::{builtin_arity, Atom, AltKind, Expr, Program, ResumeUse};
+use frontend::ir::data::{builtin_arity, Atom, BUILTINS, AltKind, Expr, Program, ResumeUse};
 use frontend::ir::lower::mentions;
 
 /// A saturated built-in call found by `prim_chain`.
@@ -91,6 +91,45 @@ pub use frontend::ir::data::COMPILER_BUILTINS;
 /// thread-ready runtime (`THRAX_THREADS`); every other program keeps plain,
 /// non-atomic counts.
 pub const PARALLEL_BUILTINS: &[&str] = &["@par", "@spawn", "@await"];
+
+/// The C enum constant the runtime dispatches a built-in on: `@vec_get` is
+/// `THxB_VEC_GET`, an operator spells its symbol out.
+pub fn builtin_ident(name: &str) -> String {
+    let stem = match name {
+        "==" => "EQ".to_string(),
+        "<" => "LT".to_string(),
+        ">" => "GT".to_string(),
+        "<=" => "LE".to_string(),
+        ">=" => "GE".to_string(),
+        "++" => "CONCAT".to_string(),
+        _ => {
+            let stem = name.strip_prefix('@').unwrap_or(name);
+            assert!(
+                stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "built-in `{name}` has no C identifier"
+            );
+            stem.to_ascii_uppercase()
+        }
+    };
+    format!("THxB_{stem}")
+}
+
+/// The `THxB_*` enum, emitted ahead of the runtime, and the names it indexes
+/// (only the compiler builtins report one).
+pub fn emit_builtin_enum() -> String {
+    let mut out = String::from("enum {\n");
+    for (name, _) in BUILTINS {
+        out.push_str(&format!("  {},\n", builtin_ident(name)));
+    }
+    out.push_str("  THxB_COUNT\n};\n");
+    out.push_str("#ifdef THRAX_WITH_COMPILER\n");
+    out.push_str("static const char *const THxB_names[] = {\n");
+    for (name, _) in BUILTINS {
+        out.push_str(&format!("  {},\n", cstr(name.as_bytes())));
+    }
+    out.push_str("};\n#endif\n");
+    out
+}
 
 /// The dedup key for an extern site.
 fn extern_key(
@@ -902,7 +941,7 @@ impl<'p> Emitter<'p> {
             if PARALLEL_BUILTINS.contains(&name) {
                 self.uses_threads.set(true);
             }
-            return format!("THxRT_builtin({}, {arity})", cstr(name.as_bytes()));
+            return format!("THxRT_builtin({}, {arity})", builtin_ident(name));
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {
             return format!("THxRT_target({})", cstr(suffix.as_bytes()));
@@ -1260,10 +1299,9 @@ impl<'p> Emitter<'p> {
         self.glob_atom(call.name);
         let args: Vec<String> = call.args.iter().map(|a| self.atom(a)).collect();
         let val = format!(
-            "THxK_prim({}, (Value*[]){{ {} }}, {})",
-            cstr(call.name.as_bytes()),
-            args.join(", "),
-            args.len()
+            "THxK_prim({}, (Value*[]){{ {} }})",
+            builtin_ident(call.name),
+            args.join(", ")
         );
         match call.rest {
             Some((slot, rest)) => {
@@ -1302,7 +1340,7 @@ impl<'p> Emitter<'p> {
                     format!("THxVALUE_as_bool({s}) == {}", if *b { 1 } else { 0 })
                 }
                 AltKind::Con(c) => {
-                    format!("strcmp(THxVALUE_ctor({s}), {}) == 0", cstr(c.as_bytes()))
+                    format!("THxVALUE_ctor_is({s}, {})", cstr(c.as_bytes()))
                 }
             };
             out.push_str(&format!(

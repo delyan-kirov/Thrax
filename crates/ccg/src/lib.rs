@@ -16,7 +16,7 @@ mod gen;
 
 use frontend::ir;
 use frontend::lowering::data::Program;
-use gen::{cstr, emit_extern_table, reachable_codes, Emitter};
+use gen::{cstr, emit_builtin_enum, emit_extern_table, reachable_codes, Emitter};
 
 /// The C portability layer, emitted ahead of the runtime: every platform
 /// conditional the runtime and `thraxstd.c` need.
@@ -94,17 +94,7 @@ pub fn emit_program(
     // in a queue until something needs them, exactly as in the interpreter.
     let uses_threads = uses_par && target.arch != utilities::Arch::Wasm32;
 
-    // Two resolution chains, mirroring the machine's `glob`: canonical
-    // `Module.name` keys (exact), and bare last-segment names (first definition
-    // winning), for an unqualified reference or the entry point.
     let canon: Vec<(&str, usize)> = prog.globals.iter().map(|(n, c)| (n.as_str(), *c)).collect();
-    let mut bare: Vec<(&str, usize)> = Vec::new();
-    for (name, code) in &prog.globals {
-        let last = name.rsplit('.').next().unwrap_or(name);
-        if !bare.iter().any(|(n, _)| *n == last) {
-            bare.push((last, *code));
-        }
-    }
 
     let mut out = String::new();
     out.push_str(
@@ -134,6 +124,7 @@ pub fn emit_program(
         out.push_str("#define THRAX_THREADS 1\n");
     }
     out.push_str(PORTABLE);
+    out.push_str(&emit_builtin_enum());
     out.push_str(RUNTIME);
     out.push_str(THRAXSTD);
 
@@ -199,15 +190,7 @@ pub fn emit_program(
         out.push_str("  return g_cache[code];\n");
         out.push_str("}\n");
     }
-    out.push_str("Value* THxRT_glob(const char* name) {\n");
-    for (name, code) in canon.iter().chain(bare.iter()) {
-        out.push_str(&format!(
-            "  if (strcmp(name, {}) == 0) return force_code({code});\n",
-            cstr(name.as_bytes())
-        ));
-    }
-    out.push_str("  thrax_fault(\"unbound global\");\n");
-    out.push_str("}\n\n");
+    out.push('\n');
 
     // Forward declarations of every block, then the definitions (blocks reference
     // each other's continuations freely).
@@ -246,17 +229,29 @@ pub fn emit_program(
     out.push_str("int main(int argc, char** argv) {\n");
     out.push_str("  (void)argc; (void)argv;\n");
     out.push_str("  thx_stdio_binary();\n");
-    for (name, code) in &canon {
+    for (_, code) in &canon {
         // Force only globals reachable from the entry (the interpreter is entry-
         // lazy; an unreachable global's CAF is a trap stub).
         if reachable.contains(code) {
-            out.push_str(&format!("  (void)THxRT_glob({});\n", cstr(name.as_bytes())));
+            out.push_str(&format!("  (void)force_code({code});\n"));
         }
     }
     let entry_c = cstr(entry.as_bytes());
+    // The entry resolves as the machine's `glob` does: an exact canonical
+    // `Module.name` first, else the first global whose last segment matches.
+    let entry_code = canon.iter().find(|(n, _)| *n == entry).or_else(|| {
+        canon.iter().find(|(n, _)| n.rsplit('.').next() == Some(entry))
+    });
+    let entry_val = match entry_code {
+        Some(&(_, code)) => format!("force_code({code})"),
+        None => {
+            out.push_str("  thrax_fault(\"unbound global\");\n");
+            "NULL".to_string()
+        }
+    };
     match kind {
         Entry::Show => {
-            out.push_str(&format!("  Value* e = THxRT_glob({entry_c});\n"));
+            out.push_str(&format!("  Value* e = {entry_val};\n"));
             out.push_str("  char* shown = thrax_show(e);\n");
             out.push_str(&format!("  printf(\"%s = %s\\n\", {entry_c}, shown);\n"));
             out.push_str("  free(shown);\n");
@@ -284,7 +279,7 @@ pub fn emit_program(
             out.push_str("  for (int _i = 0; _i < argc; _i++) THxMEM_release(_items[_i]);\n");
             out.push_str("  free(_items);\n");
             out.push_str(&format!(
-                "  Value* e = THxK_call(THxRT_glob({entry_c}), _arg);\n"
+                "  Value* e = THxK_call({entry_val}, _arg);\n"
             ));
             // A program ends after the `@spawn` tasks it started.
             out.push_str("  THxPAR_join_io();\n");
@@ -318,5 +313,24 @@ pub fn emit_program(
         libraries,
         uses_compiler,
         uses_threads,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RUNTIME;
+    use frontend::ir::data::BUILTINS;
+
+    /// A built-in the runtime never dispatches would compile, then fault as
+    /// "unknown built-in" the first time a program ran it.
+    #[test]
+    fn runtime_dispatches_every_builtin() {
+        for (name, _) in BUILTINS {
+            let id = super::gen::builtin_ident(name);
+            let dispatched = [format!("case {id}:"), format!("id == {id}")]
+                .iter()
+                .any(|p| RUNTIME.contains(p.as_str()));
+            assert!(dispatched, "runtime.c never dispatches `{name}` ({id})");
+        }
     }
 }
