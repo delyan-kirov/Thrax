@@ -3,10 +3,12 @@
 //! support functions (whole-archive-linked from `thraxstd.c` via the interpreter
 //! crate) through `dlsym(RTLD_DEFAULT)`. A build-script link arg is used rather
 //! than `RUSTFLAGS`/`.cargo/config.toml`, which a CI-set `RUSTFLAGS` would
-//! override. wasm has no dynamic loader, so this applies only elsewhere.
+//! override. wasm has no dynamic loader and a PE executable no dynamic symbol
+//! table (`thraxstd.c` `dllexport`s there), so this applies only elsewhere.
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") {
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32") && os != "windows" {
         println!("cargo:rustc-link-arg-tests=-rdynamic");
     }
 }

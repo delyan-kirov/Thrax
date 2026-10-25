@@ -10,7 +10,7 @@ $ @mod META_BUILD
 #       `<@meta>` alone, so it is hermetic: a generator there can compute, parse
 #       and inject, but not touch the world.
 #       Building IS IO, so `@build` is the one context that discharges it.
-#       The IO itself is ORDINARY: `IO.read_dir` is library code over `C.popen`,
+#       The IO itself is ORDINARY: `IO.read_dir` is library code over `C.dir_entries`,
 #       not a compiler intrinsic, so compile-time IO is the same IO a program
 #       does at run time, and its paths are relative to the WORKING directory
 #       (this module is checked from the repo root, like the rest of the corpus).

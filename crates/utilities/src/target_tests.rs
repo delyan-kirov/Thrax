@@ -70,9 +70,12 @@ fn wasm_has_no_runtime_loading() {
 #[test]
 fn host_toolchain_uses_system_cc() {
     let tc = toolchain(Target::host());
-    assert_eq!(tc.cc, "cc");
+    let windows = Target::host().os == Os::Windows;
+    let default_cc = if windows { "gcc" } else { "cc" };
+    assert_eq!(tc.cc, std::env::var("THRAX_CC").unwrap_or_else(|_| default_cc.to_string()));
     assert!(tc.runner.is_empty());
-    assert!(tc.exe_suffix.is_empty());
+    assert_eq!(tc.exe_suffix, if windows { ".exe" } else { "" });
+    assert_eq!(tc.rpath, !windows);
 }
 
 #[test]

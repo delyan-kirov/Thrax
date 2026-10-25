@@ -26,6 +26,10 @@ cargo test       # the frontend, interpreter, and backend suites
 cargo build --release   # target/release/thrax
 ```
 
+Linux is the development platform; macOS, Windows and wasm are tested in CI,
+and each release ships an SDK for them. See
+[documentation/platforms.md](documentation/platforms.md).
+
 ## Compiling and running
 
 `thrax` takes a subcommand and, optionally, a `.thx` file. With no file it

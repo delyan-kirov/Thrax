@@ -5,6 +5,8 @@
 //! capture and splice the delimited continuation. It is one of the backends that
 //! consume the IR; the C generator (`ccg`) is another.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod host;
 pub mod machine;
 
 pub use machine::{eval, Machine};

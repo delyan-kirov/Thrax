@@ -131,6 +131,9 @@ $ building : @str =
 	     ++ "cargo test       # the frontend, interpreter, and backend suites")
 	++ "\n**Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain:\n\n"
 	++ sh "cargo build --release   # target/release/thrax"
+	++ "\nLinux is the development platform; macOS, Windows and wasm are tested in CI,\n"
+	++ "and each release ships an SDK for them. See\n"
+	++ "[documentation/platforms.md](documentation/platforms.md).\n"
 
 $ ex_entry : @str =
 	"$ @main : @vec @str -> <@io> @int = \\args =\n"

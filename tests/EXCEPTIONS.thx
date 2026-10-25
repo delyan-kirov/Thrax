@@ -1,0 +1,42 @@
+$ @mod EXCEPTIONS
+
+#-
+ - \file EXCEPTIONS.thx
+ - \info The examples the corpus (tests/MAIN.thx) cannot run on a platform, each
+		with the reason. An example listed here is neither imported nor run there,
+		so it must not be one a platform merely fails: fix those instead. The key
+		is `TARGET.os` of the build: the machine the corpus runs on, or `wasi`
+		for `thrax build --target=wasm32-wasi`.
+ -#
+
+$ with VEC
+
+$ Exception : @struct =
+	module: @str,
+	os: @str,
+	reason: @str,
+
+$ exceptions : @vec Exception = [
+	Exception.{
+		.module = "STDLIB_ASYNC_IO",
+		.os     = "windows",
+		.reason = "polls a pipe from a POSIX shell (`sh`, `poll(2)`); Windows has neither",
+	},
+	Exception.{
+		.module = "STDLIB_ASYNC_IO",
+		.os     = "wasi",
+		.reason = "spawns a shell through `popen`, and wasm has no processes",
+	},
+	Exception.{
+		.module = "META_RUNTIME",
+		.os     = "wasi",
+		.reason = "runs the compiler at run time, and libthrax is built for the host only",
+	},
+]
+
+# Whether the corpus skips `module` on `os`.
+$ skipped : @str -> @str -> @bool = \os module =
+	VEC.any (\e = e.os == os && e.module == module) exceptions
+
+# The exceptions that apply on `os`.
+$ on : @str -> @vec Exception = \os = VEC.filter (\e = e.os == os) exceptions

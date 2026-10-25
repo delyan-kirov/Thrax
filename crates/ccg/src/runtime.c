@@ -9,17 +9,8 @@
 
 /* THRAX_THREADS is defined by the emitter for a program that spawns parallel
  * tasks (`@par`) on a target with threads. Without it the machine state is plain
- * globals and every count is non-atomic, so a sequential program pays nothing. */
-#ifdef THRAX_THREADS
-#include <pthread.h>
-#include <sched.h>
-#include <unistd.h>
-/* local-exec: the program is an executable, and under a PIC default the
- * general-dynamic model would call __tls_get_addr on every machine step. */
-#define THX_TLS _Thread_local __attribute__((tls_model("local-exec")))
-#else
-#define THX_TLS
-#endif
+ * globals and every count is non-atomic, so a sequential program pays nothing.
+ * The thread headers and `THX_TLS` come from portable.h, emitted ahead of this. */
 
 typedef struct Value Value;
 typedef struct Frame Frame;
@@ -315,9 +306,9 @@ static void THxVALUE_destroy(Value *v);
  * block may be freed by a thread other than the one that allocated it, so one
  * thread's count can go negative; a worker folds its count into
  * `g_live_folded` when it exits, and the sum stays exact. */
-static THX_TLS long g_live = 0;
+static THX_TLS long long g_live = 0;
 #ifdef THRAX_THREADS
-static long g_live_folded = 0;
+static long long g_live_folded = 0;
 #endif
 
 /* Allocate `size` zeroed bytes with value lifetime (counted). */
@@ -1204,22 +1195,11 @@ static Value *compiler_builtin(const char *name, Value **a) {
 
 /* `@par f` (and `@spawn f`, whose task may also perform `@io`) starts the task
  * `f {}` and returns its future; `@await` blocks until the result is in and
- * returns it (borrowed: the future owns it). Without threads a task runs on the
- * spot and its future is its result itself, which is also how the interpreter,
- * the reference semantics, runs it. */
-#ifdef THRAX_THREADS
+ * returns it (borrowed: the future owns it). Without threads a task waits in a
+ * queue until something needs it, as in the interpreter (see `run_next_task`). */
 static Value *THxPAR_spawn(Value *f);
 static Value *THxPAR_await(Value *fut);
 static Value *THxPAR_spawn_io(Value *f);
-#else
-static Value *THxPAR_spawn(Value *f) {
-  Value *r = THxK_call(f, THxRT_unit());
-  pool_adopt(r);
-  return r;
-}
-static Value *THxPAR_spawn_io(Value *f) { return THxPAR_spawn(f); }
-static Value *THxPAR_await(Value *fut) { return THxVALUE_force(fut); }
-#endif
 
 static void chan_release(Chan *c);
 static void tvar_release(TVar *tv);
@@ -1592,8 +1572,8 @@ Value *THxK_op(const char *effect, const char *op) {
 
 static void THxK_resump_addref(Resump *seg);
 static void THxK_resump_release(Resump *seg);
-#ifdef THRAX_THREADS
 static void task_destroy(Task *t);
+#ifdef THRAX_THREADS
 static void mark_shared(Value *v);
 static void mark_immortal(Value *v);
 #endif
@@ -1637,9 +1617,7 @@ static void payload_destroy(Value *v) {
     case T_RESUMP: THxK_resump_release(v->u.resump); return;
     case T_THUNK:
     case T_BLACKHOLE: THxMEM_release(v->u.thunk); return;
-#ifdef THRAX_THREADS
     case T_FUTURE: task_destroy(v->u.future); return;
-#endif
     case T_CHAN: chan_release(v->u.chan); return;
     case T_TVAR: tvar_release(v->u.tvar); return;
   }
@@ -1722,13 +1700,15 @@ static void copy_payload(Value *dst, Value *self, Value *v) {
     case T_BLACKHOLE:
       if (dst->u.thunk != self) THxMEM_retain(dst->u.thunk);
       break;
-#ifdef THRAX_THREADS
     case T_FUTURE:
       /* The handle is one task; a copy is another owner of the same task, so
        * both cells observe one result. */
+#ifdef THRAX_THREADS
       __atomic_fetch_add(&dst->u.future->rc, 1, __ATOMIC_RELAXED);
-      break;
+#else
+      dst->u.future->rc++;
 #endif
+      break;
     case T_CHAN: obj_retain(&dst->u.chan->rc); break;
     case T_TVAR: obj_retain(&dst->u.tvar->rc); break;
   }
@@ -2784,7 +2764,7 @@ static int task_claim(Task *t) {
 /* Run a claimed task. The result is marked before it is published: every
  * thread awaiting the future takes references on it. */
 /* `@spawn` tasks not finished yet, which the program waits for at exit. */
-static long g_io_pending = 0;
+static long long g_io_pending = 0;
 
 static void task_exec(Task *t) {
   Value *fn = t->fn;
@@ -2839,7 +2819,7 @@ static void mt_start(void) {
   if (!g_mt_started) {
     const char *env = getenv("THRAX_THREADS");
     int n = env ? atoi(env) : 0;
-    if (n <= 0) n = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (n <= 0) n = thx_nprocs();
     if (n <= 0) n = 1;
     g_nthreads = n;
     g_deques = xmalloc((size_t)n * sizeof(Deque));
@@ -2961,9 +2941,97 @@ static void THxPAR_join_io(void) {
   }
 }
 #else
-static void THxPAR_shutdown(void) {}
+/* Without threads a task waits here, oldest first, until something needs it:
+ * an `@await` of its future, a receive or a retry that cannot go on, or the end
+ * of the program. That is the interpreter's order, so both engines agree. Each
+ * entry is a future holding a reference. */
+static Value **g_tasks = NULL;
+static size_t g_task_head = 0, g_task_len = 0, g_task_cap = 0;
+
+static void task_destroy(Task *t) {
+  if (--t->rc > 0) return;
+  THxMEM_release(t->fn);
+  THxMEM_release(t->result);
+  THxMEM_free(t);
+}
+
+static void task_exec(Task *t) {
+  Value *fn = t->fn;
+  t->state = TASK_RUNNING;
+  t->fn = NULL;
+  t->result = THxK_call(fn, THxRT_unit()); /* owned, now by the task */
+  t->state = TASK_DONE;
+  THxMEM_release(fn);
+}
+
+static Value *spawn_task(Value *f) {
+  Task *t = THxMEM_alloc(sizeof(Task));
+  t->rc = 1;
+  t->state = TASK_PENDING;
+  t->io = 0;
+  THxMEM_retain(f);
+  t->fn = f;
+  t->result = NULL;
+  Value *fut = alloc_value(T_FUTURE);
+  fut->u.future = t;
+  if (g_task_len == g_task_cap) {
+    size_t ncap = g_task_cap ? g_task_cap * 2 : 8;
+    Value **nb = xmalloc(ncap * sizeof(Value *));
+    for (size_t i = 0; i < g_task_len; i++) nb[i] = g_tasks[(g_task_head + i) % g_task_cap];
+    free(g_tasks);
+    g_tasks = nb;
+    g_task_head = 0;
+    g_task_cap = ncap;
+  }
+  THxMEM_retain(fut); /* the queue's reference */
+  g_tasks[(g_task_head + g_task_len++) % g_task_cap] = fut;
+  return fut;
+}
+
+static Value *THxPAR_spawn(Value *f) { return spawn_task(f); }
+static Value *THxPAR_spawn_io(Value *f) { return spawn_task(f); }
+
+/* Run the oldest task nobody has started; 0 when there is none. */
+static int run_next_task(void) {
+  while (g_task_len > 0) {
+    Value *fut = g_tasks[g_task_head];
+    g_task_head = (g_task_head + 1) % g_task_cap;
+    g_task_len--;
+    Task *t = fut->u.future;
+    int ran = t->state == TASK_PENDING;
+    if (ran) task_exec(t);
+    THxMEM_release(fut);
+    if (ran) return 1;
+  }
+  return 0;
+}
+
+static Value *THxPAR_await(Value *fut) {
+  fut = THxVALUE_force(fut);
+  if (fut->tag != T_FUTURE) return fut;
+  Task *t = fut->u.future;
+  if (t->state == TASK_RUNNING) thrax_fault("a task awaits its own result");
+  if (t->state == TASK_PENDING) task_exec(t);
+  return t->result;
+}
+
+/* Drop the tasks nobody ran (the `Show` entry evaluates one global and stops). */
+static void THxPAR_shutdown(void) {
+  while (g_task_len > 0) {
+    THxMEM_release(g_tasks[g_task_head]);
+    g_task_head = (g_task_head + 1) % g_task_cap;
+    g_task_len--;
+  }
+  free(g_tasks);
+  g_tasks = NULL;
+  g_task_cap = 0;
+}
 static void THxPAR_free_immortals(void) {}
-static void THxPAR_join_io(void) {}
+/* A program ends after the tasks it spawned. */
+static void THxPAR_join_io(void) {
+  while (run_next_task()) {
+  }
+}
 #endif
 
 /*------------------------------------------------------------------------------
@@ -3059,6 +3127,9 @@ static Value *THxCHAN_recv(Value *ch) {
     }
 #ifdef THRAX_THREADS
     pthread_mutex_unlock(&c->mu);
+#endif
+#ifndef THRAX_THREADS
+    if (run_next_task()) continue;
 #endif
     if (!others_may_run())
       thrax_fault("deadlock: receiving from a channel that no task will send to");
@@ -3247,6 +3318,9 @@ static Value *THxSTM_wait(void) {
       if (reads[i].tv->version != reads[i].version) same = 0;
     STM_UNLOCK();
     if (!same) break;
+#ifndef THRAX_THREADS
+    if (run_next_task()) continue;
+#endif
     if (!others_may_run())
       thrax_fault("deadlock: a transaction retries, and no task will change what it read");
 #ifdef THRAX_THREADS

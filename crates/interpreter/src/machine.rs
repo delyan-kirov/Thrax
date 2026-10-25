@@ -1481,6 +1481,21 @@ pub fn take_link_directives() -> Vec<(bool, String)> {
     LINKS.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
+thread_local! {
+    /// The target `TARGET` reflects, when it is not the host: the driver sets it
+    /// for a cross build, so the compile-time code of a program built for wasm
+    /// sees wasm.
+    static REFLECTED: std::cell::Cell<Option<utilities::Target>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Make `TARGET` reflect `target` (`None`: the host). Only the reflection
+/// changes; the machine itself, and every foreign call it makes, still run on
+/// the host.
+pub fn set_reflected_target(target: Option<utilities::Target>) {
+    REFLECTED.with(|c| c.set(target));
+}
+
 /// Run the installed `@eval` host on `src`, or fault if none is installed.
 pub(crate) fn meta_eval(src: &str) -> Result<OwnedValue> {
     META_EVAL.with(|c| match &*c.borrow() {
@@ -1564,9 +1579,10 @@ mod clib {
     use super::data::Value;
 
     /// A `TARGET.<field>` reflection constant. The interpreter is defined to run
-    /// programs for the host, so the reflected target is `Target::host()`.
+    /// programs for the host, so the reflected target is `Target::host()`, unless
+    /// the program is being compiled for another (see `set_reflected_target`).
     pub(super) fn target_value<'p>(name: &str) -> Option<Value<'p>> {
-        let t = utilities::Target::host();
+        let t = super::REFLECTED.with(|c| c.get()).unwrap_or_else(utilities::Target::host);
         let bytes = |s: &str| Value::Str(Rc::new(s.as_bytes().to_vec()));
         Some(match name {
             "int_bits" | "ptr_bits" => Value::Int(t.ptr_bits() as i64),
