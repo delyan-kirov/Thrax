@@ -472,13 +472,15 @@ impl<'a> Parser<'a> {
     }
 
     /// The span of the name the item at the cursor (its `$`) defines: the word
-    /// after `$`, or `@main`/`@build`.
+    /// after `$`, or an `@`-named value (`@main`, `@build`, a CORE builtin).
     fn item_name_span(&mut self) -> Option<Span> {
         let t = self.peek_at(1).ok()?;
         let text = &self.src[t.span.start..t.span.end];
         match t.kind {
             Kind::Word => Some(t.span),
             Kind::At if matches!(text, "@main" | "@build") => Some(t.span),
+            Kind::At if !table::is_blessed_interface(text)
+                && matches!(self.peek_at(2).ok()?.kind, Kind::Colon) => Some(t.span),
             _ => None,
         }
     }
@@ -601,11 +603,39 @@ impl<'a> Parser<'a> {
                     c_union: false,
                 })
             }
+            // A builtin declaration (`$ @iadd : t -> t -> t = @extern "thrax"`): the
+            // one other `@`-named value, and the checker allows it only in CORE.
+            _ if matches!(self.peek_at(1)?.kind, Kind::Colon) => {
+                let at_tok = self.bump()?;
+                let name = self.intern(self.text(at_tok));
+                self.bump()?; // ':'
+                let (sig, ctx) = self.parse_signature()?;
+                expect!(self, Kind::Eq, "expected '=' after the type signature");
+                let body = self.parse_expr(0)?;
+                if !matches!(self.ast.expr(body), Expr::Builtin) {
+                    return Err(self.unexpected(
+                        &at_tok,
+                        &format!(
+                            "'{}' is a compiler intrinsic and is not extensible in user \
+                             code; an '@'-named value is '@main', '@build', or a builtin \
+                             defined as '@extern \"thrax\"'",
+                            self.text(at_tok)
+                        ),
+                    ));
+                }
+                Ok(Item::Def {
+                    name,
+                    sig: Some(sig),
+                    ctx,
+                    body,
+                })
+            }
             other => Err(self.unexpected(
                 &at,
                 &format!(
                     "'@{other}' is a compiler intrinsic and is not extensible in user code; \
-                     only '@main' and the blessed interface types may be declared"
+                     only '@main', '@build', builtins and the blessed interface types may \
+                     be declared"
                 ),
             )),
         }
@@ -2014,10 +2044,13 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::Array { size }))
     }
 
-    /// `@extern "abi" "symbol" "lib"`.
+    /// `@extern "abi" "symbol" "lib"`, or `@extern "thrax"` for a runtime builtin.
     fn parse_extern(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '@extern'
         let abi = self.expect_string("expected an ABI string after '@extern'")?;
+        if self.ast.bytes(abi) == BUILTIN_ABI.as_bytes() {
+            return Ok(self.expr(Expr::Builtin));
+        }
         let symbol = self.expect_string("expected a symbol string")?;
         let lib = self.expect_string("expected a library string")?;
         Ok(self.expr(Expr::Extern { abi, symbol, lib }))

@@ -241,3 +241,67 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     assert!(status.success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The 0-based line of `needle` in CORE.thx.
+fn core_line(needle: &str) -> i64 {
+    let core = include_str!("../../../library/CORE.thx");
+    core.lines().position(|l| l.starts_with(needle)).unwrap_or_else(|| panic!("no `{needle}` in CORE")) as i64
+}
+
+#[test]
+fn builtins_are_defined_in_core() {
+    let dir = std::env::temp_dir().join(format!("thrax-lsp-builtins-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("USE.thx");
+    let src = "$ @mod USE\n$ n : @int = @iadd 1 2\n$ b : @bool = not @true\n$ v : @int = @vec_len [1, 2]\n";
+    std::fs::write(&path, src).unwrap();
+    let uri = format!("file://{}", path.canonicalize().unwrap().display());
+    let core_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/CORE.thx").canonicalize().unwrap();
+    let core_uri = format!("file://{}", core_path.display());
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([
+            ("capabilities", Json::obj([("general", Json::obj([("positionEncodings", Json::Arr(vec![Json::str("utf-8")]))]))])),
+            ("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))])),
+        ]),
+    );
+    c.notify("initialized", Json::obj([]));
+    let open = |c: &mut Client, uri: &str, text: &str| {
+        c.notify(
+            "textDocument/didOpen",
+            Json::obj([(
+                "textDocument",
+                Json::obj([
+                    ("uri", Json::str(uri)),
+                    ("languageId", Json::str("thrax")),
+                    ("version", Json::int(1)),
+                    ("text", Json::str(text)),
+                ]),
+            )]),
+        );
+    };
+    open(&mut c, &uri, src);
+    let diags = c.diagnostics(&uri);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    for (line, col, decl) in [(1, 15, "$ @iadd "), (2, 16, "$ not "), (3, 15, "$ @vec_len ")] {
+        let def = c.request("textDocument/definition", Json::obj([("textDocument", doc(&uri)), ("position", pos(line, col))]));
+        assert_eq!(def.get("uri").as_str(), Some(core_uri.as_str()), "{decl}: {def}");
+        assert_eq!(def.get("range").get("start").get("line").as_i64(), Some(core_line(decl)), "{decl}: {def}");
+    }
+
+    // CORE itself, open in the editor, is clean.
+    open(&mut c, &core_uri, include_str!("../../../library/CORE.thx"));
+    let diags = c.diagnostics(&core_uri);
+    assert!(diags.is_empty(), "{diags:?}");
+    c.notify("textDocument/didSave", Json::obj([("textDocument", doc(&core_uri))]));
+    let diags = c.diagnostics(&core_uri);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    c.request("shutdown", Json::Null);
+    c.notify("exit", Json::Null);
+    assert!(c.child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}

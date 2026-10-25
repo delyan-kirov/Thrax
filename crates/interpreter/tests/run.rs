@@ -1770,8 +1770,7 @@ fn entry_returns_exit_code() {
 fn entry_receives_string_vector() {
     let src = "$ @mod MAIN\n\
                $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
-    let program = lower_checked(src, "@main");
-    let ir = frontend::ir::lower_modules(std::slice::from_ref(&program));
+    let ir = lower_to_ir(&[src], "@main");
     let argv = vec!["prog".to_string(), "alpha".to_string(), "beta".to_string()];
     let code = interpreter::machine::run_entry(&ir, "@main", argv)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "@main")));

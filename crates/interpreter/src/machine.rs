@@ -16,6 +16,8 @@
 
 pub mod data;
 pub mod ffi;
+#[cfg(test)]
+mod tests;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};

@@ -123,6 +123,9 @@ global
    * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex
    * @ISlice @ISeqView`. */
   | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
+  /* A builtin, declarable only in CORE: the name is the runtime primitive
+   * (`$ @iadd : t -> t -> t = @extern "thrax"`). */
+  | DOLLAR AT_TYCON COLON sig EQ builtin_lit
   | DOLLAR AT_E expr
   | DOLLAR AT_E PIPE_BACK expr  /* `$ @e <| assert ..`: `@e` piped into */
   | DOLLAR AT_RUN expr
@@ -427,7 +430,11 @@ array_lit
 /* `@extern "C" "symbol" "lib"`: ABI, symbol, then SYMBOLIC library name --
  * never a path or soname (resolution is the consumer's job: dlopen table in
  * the interpreter, link line in the native backend). */
-extern_lit : AT_EXTERN STR STR STR ;
+extern_lit : AT_EXTERN STR STR STR | builtin_lit ;
+
+/* `@extern "thrax"`: the definition is the runtime builtin of its own name. The
+ * one STR must be "thrax"; only CORE may write it. */
+builtin_lit : AT_EXTERN STR ;
 
 handle
   : KW_DO expr

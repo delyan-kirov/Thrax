@@ -20,6 +20,147 @@ $ @ISlice     : @struct s t   = slice: s -> @int -> @int -> t,
 $ @IIndex     : @struct s i t = index: s -> i -> t,
 $ @ISeqView   : @struct s e   = view: s -> SeqView s e,
 
+# ---- builtins ----
+# The primitives the compiler and runtime implement. `@extern "thrax"` declares one:
+# the definition's name IS the builtin, so a reference compiles to a direct call
+# with no wrapper. Only CORE may declare them. A few stay inside the compiler
+# because their types have no surface syntax: `@e` and `@cast` are checked
+# specially, and the `@tensor_*` primitives are polymorphic over axis variance.
+
+$ not : @bool -> @bool = @extern "thrax"
+
+# Sequencing and the pipes. The parser rewrites each into the form it means
+# (`a; b` is a `let` that drops `a`, `x |> f` and `f <| x` are `f x`), so these
+# declarations give the operators their types and nothing calls them. `f`'s effect
+# passes through to the pipe.
+$ (;) : a -> b -> b = @extern "thrax"
+$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "thrax"
+$ (<|) : (a -> <e> b) -> a -> <e> b = @extern "thrax"
+
+# Arithmetic, the floor the operator instances bottom out on. One width-agnostic
+# operation over the value representation, so `t` is unconstrained: the instance
+# picks the right family for its type. `@i*` is signed (division truncates toward
+# zero), `@u*` unsigned, `@f*` computes at `@float64`, and `@f32*` rounds each
+# operand and the result to single precision.
+$ @iadd : t -> t -> t = @extern "thrax"
+$ @isub : t -> t -> t = @extern "thrax"
+$ @imul : t -> t -> t = @extern "thrax"
+$ @idiv : t -> t -> t = @extern "thrax"
+$ @imod : t -> t -> t = @extern "thrax"
+$ @udiv : t -> t -> t = @extern "thrax"
+$ @umod : t -> t -> t = @extern "thrax"
+$ @fadd : t -> t -> t = @extern "thrax"
+$ @fsub : t -> t -> t = @extern "thrax"
+$ @fmul : t -> t -> t = @extern "thrax"
+$ @fdiv : t -> t -> t = @extern "thrax"
+$ @fmod : t -> t -> t = @extern "thrax"
+$ @fpow : t -> t -> t = @extern "thrax"
+$ @f32add : t -> t -> t = @extern "thrax"
+$ @f32sub : t -> t -> t = @extern "thrax"
+$ @f32mul : t -> t -> t = @extern "thrax"
+$ @f32div : t -> t -> t = @extern "thrax"
+$ @f32mod : t -> t -> t = @extern "thrax"
+$ @f32pow : t -> t -> t = @extern "thrax"
+
+# Comparison, under the `IEq` / `IOrd` instances. `@ieq` serves signed and unsigned
+# alike (equality reads the same bits); the float pair compares at `@float64`,
+# which is exact for a `@float32` too; `@seq`/`@slt` compare byte strings.
+$ @ieq : t -> t -> @bool = @extern "thrax"
+$ @ilt : t -> t -> @bool = @extern "thrax"
+$ @ult : t -> t -> @bool = @extern "thrax"
+$ @feq : t -> t -> @bool = @extern "thrax"
+$ @flt : t -> t -> @bool = @extern "thrax"
+$ @seq : t -> t -> @bool = @extern "thrax"
+$ @slt : t -> t -> @bool = @extern "thrax"
+
+# Byte buffers. `@str` and `@array` share one runtime representation, so these
+# take either (the runtime reads the kind off the value). Elements are bytes, as
+# `@int` in 0..255; an update returns a new buffer.
+$ @acat : t -> t -> t = @extern "thrax"
+$ @array_len : t -> @int = @extern "thrax"
+$ @array_get : t -> @int -> @int = @extern "thrax"
+$ @array_push : t -> @int -> t = @extern "thrax"
+$ @array_set : t -> @int -> @int -> t = @extern "thrax"
+$ @array_slice : t -> @int -> @int -> t = @extern "thrax"
+
+# Vectors. `@vec_slice v lo hi` is the half-open `[lo, hi)`. An update of a vector
+# nothing else references happens in place.
+$ @vec_new : {} -> @vec a = @extern "thrax"
+$ @vec_fill : @int -> a -> @vec a = @extern "thrax"
+$ @vec_len : @vec a -> @int = @extern "thrax"
+$ @vec_get : @vec a -> @int -> a = @extern "thrax"
+$ @vec_set : @vec a -> @int -> a -> @vec a = @extern "thrax"
+$ @vec_push : @vec a -> a -> @vec a = @extern "thrax"
+$ @vec_slice : @vec a -> @int -> @int -> @vec a = @extern "thrax"
+
+# Parallel tasks. `@par f` starts `f {}` as a task and `@await` joins it. An effect
+# may cross to the worker only if no handler on the spawning thread serves it, so
+# `@par` takes a PURE task, which may then run anywhere, in any order, or on the
+# spot. `@spawn` also admits `@io`, which has no handler: the C library serves it
+# on whichever thread calls.
+$ @par : ({} -> b) -> @future b = @extern "thrax"
+$ @spawn : ({} -> <@io> b) -> <@io> @future b = @extern "thrax"
+$ @await : @future b -> b = @extern "thrax"
+
+# Communication between tasks, all `<@io>`: which task gets a message, or commits
+# first, depends on scheduling. `@chan a` is an unbounded channel (a send never
+# waits, a receive waits for a value).
+$ @chan_new : {} -> <@io> @chan a = @extern "thrax"
+$ @chan_send : @chan a -> a -> <@io> {} = @extern "thrax"
+$ @chan_recv : @chan a -> <@io> a = @extern "thrax"
+
+# Software transactional memory. `@tvar a` is a transactional variable. The
+# `@stm_*` operations keep the calling thread's transaction log (reads with the
+# versions they saw, buffered writes): `@stm_commit` publishes the writes only if
+# no read changed, `@stm_wait` blocks until one does, and `@stm_save` /
+# `@stm_rollback` mark and discard the writes made since (for `or_else`).
+# `@tvar_read` reads outside any transaction.
+$ @tvar_new : a -> <@io> @tvar a = @extern "thrax"
+$ @tvar_read : @tvar a -> <@io> a = @extern "thrax"
+$ @stm_read : @tvar a -> <@io> a = @extern "thrax"
+$ @stm_write : @tvar a -> a -> <@io> {} = @extern "thrax"
+$ @stm_begin : {} -> <@io> {} = @extern "thrax"
+$ @stm_commit : {} -> <@io> @bool = @extern "thrax"
+$ @stm_wait : {} -> <@io> {} = @extern "thrax"
+$ @stm_save : {} -> <@io> @int = @extern "thrax"
+$ @stm_rollback : @int -> <@io> {} = @extern "thrax"
+
+# Metaprogramming: the compiler pipeline as a library (see
+# documentation/metaprogramming.md). Lexing, parsing and `@eval` are pure, so they
+# also run in a built program. A lex or syntax error traps (fails the build).
+# `@token` and `@code` are opaque: inspect a token through its accessors.
+$ @lex : @str -> @vec @token = @extern "thrax"
+$ @token_kind : @token -> @str = @extern "thrax"
+$ @token_text : @token -> @str = @extern "thrax"
+$ @parse : @vec @token -> @code = @extern "thrax"
+# An expression fragment.
+$ @parse_str : @str -> @code = @extern "thrax"
+# Top-level items, for an `$ @e` that injects definitions.
+$ @parse_items : @str -> @code = @extern "thrax"
+# Compiles and runs a fragment, checked as a pure definition body. The result is
+# embedded as-is, so a mismatch with the use site is a fault when it runs, not a
+# type error.
+$ @eval : @code -> a = @extern "thrax"
+
+# The `<@meta>` operations, usable only where the compiler handles `@meta`
+# (inside `@e`). `@abort` fails the build with its message, and `@emit` prints one
+# and continues. `@fresh prefix` mints a unique identifier for hygienic generated
+# binders. `@link` / `@link_path` add a library or a search path to the link line
+# and insert nothing.
+$ @abort : @str -> <@meta> a = @extern "thrax"
+$ @emit : @str -> <@meta> {} = @extern "thrax"
+$ @fresh : @str -> <@meta> @str = @extern "thrax"
+$ @link : @str -> <@meta> @code = @extern "thrax"
+$ @link_path : @str -> <@meta> @code = @extern "thrax"
+
+# Reflection over a declared type, by name. `@type_kind` is `"struct"` or
+# `"union"`; `@type_fields` lists a struct's fields, `@type_variants` a union's
+# `(tag, arity)` pairs.
+$ @type_kind : @str -> @str = @extern "thrax"
+$ @type_params : @str -> @vec @str = @extern "thrax"
+$ @type_fields : @str -> @vec @str = @extern "thrax"
+$ @type_variants : @str -> @vec {@str, @int} = @extern "thrax"
+
 # Arithmetic. Each operator has its OWN interface, so a type implements exactly the
 # operations it has: `Money` adds but does not divide. An interface is an ordinary
 # struct whose field is the operation, an implementation is a value of it, and the

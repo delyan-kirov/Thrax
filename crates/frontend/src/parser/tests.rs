@@ -517,6 +517,9 @@ fn blessed_interface_prefix_rule() {
     assert!(err("$ @mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
     assert!(err("$ @mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
+    // ...except a builtin declaration, which the checker confines to CORE.
+    let p = prog("$ @mod M\n$ @iadd : t -> t -> t = @extern \"thrax\"");
+    assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Builtin));
 }
 
 /// `<` and `>` are infix comparisons in expression position, where they once
