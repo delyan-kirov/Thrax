@@ -1,4 +1,4 @@
 $ @mod LEX_UNCLOSED_STRING
 
-$ f : @str = "abc
+$ f : @Str = "abc
 #~^ error[QUOTM_UNCLOSED]: string literal is not closed

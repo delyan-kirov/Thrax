@@ -6,54 +6,46 @@ $ @mod STDLIB_CHANNELS
 #       another, stopped by one sentinel per worker. Natively the workers run on
 #       the thread pool and take jobs in any order; the interpreter runs a task
 #       when another waits on it. The sum is the same either way. The checks
-#       perform `@io`, so they run when the corpus runs, not at compile time.
+#       perform `@IO`, so they run when the corpus runs, not at compile time.
 
 $ with PAR
 
-$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
 
 # Take jobs until the sentinel (a negative job).
-$ worker : Channel @int -> Channel @int -> {} -> <@io> {} = \jobs results u =
-	let n = recv jobs in
-	if n < 0 => {}
-	else (send results (fib n); worker jobs results u)
+$ worker : Channel @Int -> Channel @Int -> {} -> <@IO> {} = \jobs results u =
+    let n = recv jobs in if n < 0 => {} else (send results (fib n); worker jobs results u)
 
-$ start : @int -> Channel @int -> Channel @int -> @vec (Future {}) -> <@io> @vec (Future {})
-	= \k jobs results acc =
-	if k == 0 => acc
-	else start (k - 1) jobs results (@vec_push acc (spawn (worker jobs results)))
+$ start : @Int -> Channel @Int -> Channel @Int -> @Vec (Future {}) -> <@IO> @Vec (Future {}) = \k jobs results acc =
+    if k == 0 => acc else start (k - 1) jobs results (@vec_push acc (spawn (worker jobs results)))
 
-$ send_all : Channel @int -> @int -> @int -> <@io> {} = \c i hi =
-	if i > hi => {} else (send c i; send_all c (i + 1) hi)
+$ send_all : Channel @Int -> @Int -> @Int -> <@IO> {} = \c i hi =
+    if i > hi => {} else (send c i; send_all c (i + 1) hi)
 
-$ sum_n : Channel @int -> @int -> @int -> <@io> @int = \c n acc =
-	if n == 0 => acc else sum_n c (n - 1) (acc + recv c)
+$ sum_n : Channel @Int -> @Int -> @Int -> <@IO> @Int = \c n acc =
+    if n == 0 => acc else sum_n c (n - 1) (acc + recv c)
 
-$ join_all : @vec (Future {}) -> @int -> {} = \ws i =
-	if i >= @vec_len ws => {} else (get (@vec_get ws i); join_all ws (i + 1))
+$ join_all : @Vec (Future {}) -> @Int -> {} = \ws i =
+    if i >= @vec_len ws => {} else (get (@vec_get ws i); join_all ws (i + 1))
 
-$ seq_sum : @int -> @int -> @int = \i acc = if i > 24 => acc else seq_sum (i + 1) (acc + fib i)
+$ seq_sum : @Int -> @Int -> @Int = \i acc = if i > 24 => acc else seq_sum (i + 1) (acc + fib i)
 
-$ workers : @int = 4
+$ workers : @Int = 4
 
-$ ck_pool : {} -> <@io> @int =
-	let jobs = channel {} in
-	let results = channel {} in
-	let ws = start workers jobs results (@vec_new {}) in
-	send_all jobs 1 24;
-	send_all jobs (0 - workers) (0 - 1);
-	let total = sum_n results 24 0 in
-	join_all ws 0;
-	if total == seq_sum 1 0 => 0 else 1
+$ ck_pool : {} -> <@IO> @Int =
+    let jobs = channel {} in
+    let results = channel {} in
+    let ws = start workers jobs results (@vec_new {}) in
+    send_all jobs 1 24;
+    send_all jobs (0 - workers) (0 - 1);
+    let total = sum_n results 24 0 in join_all ws 0; if total == seq_sum 1 0 => 0 else 1
 
 # One task's messages arrive in the order it sent them.
-$ ck_order : {} -> <@io> @int =
-	let c = channel {} in
-	let t = spawn (\u = send c "a"; send c "b"; send c "c") in
-	let s = recv c ++ recv c ++ recv c in
-	get t;
-	if s == "abc" => 0 else 1
+$ ck_order : {} -> <@IO> @Int =
+    let c = channel {} in
+    let t = spawn (\u = send c "a"; send c "b"; send c "c") in
+    let s = recv c ++ recv c ++ recv c in get t; if s == "abc" => 0 else 1
 
-$ test : {} -> <@io> @int = ck_pool {} + ck_order {}
+$ test : {} -> <@IO> @Int = ck_pool {} + ck_order {}
 
-$ @main : @vec @str -> <@io> @int = \args = test {}
+$ @main : @Vec @Str -> <@IO> @Int = \args = test {}

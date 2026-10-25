@@ -1,9 +1,9 @@
 $ @mod ROW_ALIAS_OUTSIDE_LABEL
 
 # A row alias admits exactly its own labels.
-$ Log : @effect = log : @str -> {},
-$ Gpu : @effect = draw : @int -> {},
-$ Net : @effect = fetch : @int -> @int,
+$ Log : @effect = log : @Str -> {},
+$ Gpu : @effect = draw : @Int -> {},
+$ Net : @effect = fetch : @Int -> @Int,
 $ App : @alias = <Gpu, Log>
 
-$ frame : @int -> <App> @int = \x = fetch x  #~ error[TYPE_MISMATCH]: effect `Net` is performed but not handled
+$ frame : @Int -> <App> @Int = \x = fetch x  #~ error[TYPE_MISMATCH]: effect `Net` is performed but not handled

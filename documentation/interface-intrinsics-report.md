@@ -33,20 +33,20 @@ starts with `@compiler_interface_`; any other `@`-definition is rejected.
   `$ @name` errors "not extensible in user code".
 
 ### Stage 4 — type-name cleanup (done before Stage 1)
-- Word-size integers are now spelled `@int` / `@nat`; the friendly `Int` / `Nat`
+- Word-size integers are now spelled `@Int` / `@Nat`; the friendly `Int` / `Nat`
   spellings were **dropped**. `Real` / `Str` keep friendly names; `Bool` was already
-  `@bool`-only.
+  `@Bool`-only.
 - Internal Con names are unchanged (still `"Int"`/`"Nat"`), so only the source
-  spelling and display changed — mirroring how `@bool` / `@list` already worked.
+  spelling and display changed — mirroring how `@Bool` / `@list` already worked.
 - The **entire** corpus, examples, applications, and Rust test snippets were migrated.
 
 ### Stage 1 — literal construction hooks
 Four overloadable construction hooks:
 - `@compiler_interface_string_literal  : Str -> a`
-- `@compiler_interface_integer_literal : @int -> a`
-- `@compiler_interface_real_literal    : @float64 -> a`
-- `@compiler_interface_imaginary_literal : @float64 -> a`
-- `@compiler_interface_sequence_literal : @vec t -> f t`
+- `@compiler_interface_integer_literal : @Int -> a`
+- `@compiler_interface_real_literal    : @Float64 -> a`
+- `@compiler_interface_imaginary_literal : @Float64 -> a`
+- `@compiler_interface_sequence_literal : @Vec t -> f t`
 
 A literal whose **expected type is a user type** providing the matching hook builds
 that type through it — driven by a signature / argument context or a `(e : T)`
@@ -55,13 +55,13 @@ to a plain constant** (no payload, no runtime conversion). The interception
 (`literal_hook_check`) reuses the overload resolver's trial-unify/rollback and records
 the resolved hook per literal site. All numeric / sized-int behaviour is untouched.
 
-The string hook takes the **built-in `Str`** (not raw `@array`): the compiler hands
+The string hook takes the **built-in `Str`** (not raw `@Array`): the compiler hands
 over a fully UTF-8-checked, escape-decoded `Str` and the custom type just maps it.
 
 ### Stage 2 — pattern intrinsics
 - **Literal patterns via equality** — `is "foo"` / `is 42` on a user type builds the
   literal into that type and matches with `@compiler_interface_equality : t -> t ->
-  @bool`. New core `Pat::HookEq`, expanded by `patmat` to a boolean test.
+  @Bool`. New core `Pat::HookEq`, expanded by `patmat` to a boolean test.
 - **Sequence patterns via view** — `is [a, b, ..r]` / `is h :: t` / `is []` on a user
   type unfold `@compiler_interface_sequence_view : f t -> SeqView (f t) t` (new core
   union `SeqView s t = Empty | More t s`). New core `Pat::SeqView`, expanded by
@@ -86,7 +86,7 @@ Both are check-directed in `type_pattern` (only user types route; the built-in
 
 ## Design decisions (explored, then deliberately not shipped)
 
-- **`@str` → `@array` fold: decided against.** It throws away the useful
+- **`@Str` → `@Array` fold: decided against.** It throws away the useful
   `Str`-vs-raw-bytes distinction, and `Str`'s hard parts (UTF-8 validation, escape
   decoding) are genuinely primitive.
 - **`Str` as a library `@unbox` newtype: built, then removed.** A transparent
@@ -107,7 +107,7 @@ Both are check-directed in `type_pattern` (only user types route; the built-in
 - **Stage 1b** — the `@default` overload attribute + unconstrained literal defaulting
   (a module making a bare, unconstrained `[1,2,3]` build a user type by default). The
   plan flags this as its own milestone; the check-directed behaviour needs none of it.
-- **`@str` de-builtining** — not pursued (see decisions above).
+- **`@Str` de-builtining** — not pursued (see decisions above).
 - **CStr / explicit C-string interop** — see the decision above.
 
 ## Verification
@@ -127,7 +127,7 @@ resolution coexisting with the prelude `List`.
   the `.[..]` desugar.
 - `crates/frontend/src/typing.rs` — the hook family, `literal_hook_check` /
   `literal_pattern_hook_check` / `sequence_pattern_hook_check`, `resolve_hook` /
-  `hook_use`, type-directed variant resolution, the `@int`/`@nat` and `List`
+  `hook_use`, type-directed variant resolution, the `@Int`/`@Nat` and `List`
   de-builtining.
 - `crates/frontend/src/lowering.rs`, `lowering/patmat.rs`, `lowering/data.rs` — hook
   wrapping/folding, `Pat::HookEq` / `Pat::SeqView` and their expansion.

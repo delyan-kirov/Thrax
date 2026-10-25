@@ -155,7 +155,7 @@ $ par : ({} -> b) -> Future b = ...          # the argument must be PURE (empty 
 $ get : Future b -> b = ...
 ```
 
-plus parallel instances of `formap` for `@vec` and the LA tensors.
+plus parallel instances of `formap` for `@Vec` and the LA tensors.
 
 - The argument's row must be empty. Pure code gives the same result on any
   core in any order, so parallelism never changes meaning.
@@ -202,22 +202,22 @@ case `e = <>`.
 1. **Channels first.** Message passing fits immutable data, and with
    uniqueness a send is a move, so it costs nothing.
 2. **STM as a library effect.** A transaction is a function with row `<Stm>`
-   and no `<@io>`, run by an `atomically` handler that logs reads and writes
+   and no `<@IO>`, run by an `atomically` handler that logs reads and writes
    and retries on conflict. The row system then rejects IO inside a
    transaction, which is exactly the property Haskell's design rests on.
 
 STM is not the foundation: it solves contention on shared mutable state, which
 Thrax does not have until it adds mutable cells. Its transactional variables
-(`@tvar`) are those cells, and the only ones: a `TVar` is written only by a
+(`@TVar`) are those cells, and the only ones: a `TVar` is written only by a
 committed transaction.
 
-### 2.5 `@io` stays one effect
+### 2.5 `@IO` stays one effect
 
-`@io` is the one builtin effect: the outside world, handled by the runtime
+`@IO` is the one builtin effect: the outside world, handled by the runtime
 around `@main` and around each `@spawn` task. The entry and build signature
 checks match its literal name (`crates/frontend/src/typing/data.rs`:
 `ENTRY_SIG`, `BUILD_SIG`). A split by resource (`@console`, `@fs`, `@net`,
-`@env`, `@time`, `@random`, `@ffi`, with `@io` as a row alias for all of them)
+`@env`, `@time`, `@random`, `@ffi`, with `@IO` as a row alias for all of them)
 was implemented under #284 and reverted under #297:
 
 - The resources were arbitrary. They followed libc's grouping, and nothing in
@@ -225,17 +225,17 @@ was implemented under #284 and reverted under #297:
   unchecked documentation.
 - They were only as accurate as the bindings, which work at the level of C:
   `C.fputs` to stdout counted as `@fs`, while `C.write` and `C.popen` had to
-  stay `<@io>`.
+  stay `<@IO>`.
 - Only the runtime author can add a builtin label, so the set could never
   cover a GPU, audio or sockets.
 
 The extensible route is an ordinary effect whose handler discharges into
-`@io`:
+`@IO`:
 
 ```thrax
 $ Gpu : @effect = draw : Mesh -> {}, present : {} -> {}
 
-$ run_gpu : ({} -> <Gpu | e> a) -> <@io | e> a = \body =
+$ run_gpu : ({} -> <Gpu | e> a) -> <@IO | e> a = \body =
 	do body {}
 	ctl k
 	| Gpu.draw m => (raylib_draw m; k {})
@@ -244,8 +244,8 @@ $ run_gpu : ({} -> <Gpu | e> a) -> <@io | e> a = \body =
 ```
 
 It is precise (`<Gpu>` code can only draw), handleable (a test swaps the
-handler), and needs no special rule for `@main`. Aliases of `@io` such as
-`$ Console : @alias = <@io>` are rejected for the library: an alias is
+handler), and needs no special rule for `@main`. Aliases of `@IO` such as
+`$ Console : @alias = <@IO>` are rejected for the library: an alias is
 transparent, so `<Console>` would check nothing while reading as a
 restriction.
 
@@ -284,7 +284,7 @@ Settled under #282 (section 6 has the details):
   run exactly once, on the thread that runs the task.
 - **Declaring a handler thread-safe.** No declaration: a task takes its
   handlers with it (`PAR.spawn_with handler body`), and a handler is ordinary
-  code that runs on the task's thread. Only `@io`, which the runtime serves on
+  code that runs on the task's thread. Only `@IO`, which the runtime serves on
   every thread, reaches a task from outside. A builtin label that other
   threads may serve is added only when the runtime serves one.
 - **One primitive for `@par` and `@spawn`.** Kept as two: they admit
@@ -309,7 +309,7 @@ Still open:
 3. `par`, `Future`, parallel `formap` (section 2.2, surface).
 4. Effect rows as the thread-safety check (section 2.3).
 5. Channels, then STM (section 2.4).
-6. Independently: split `@io` (section 2.5).
+6. Independently: split `@IO` (section 2.5).
 
 ---
 
@@ -380,11 +380,11 @@ clean report.
 
 ### Surface (#281, #282)
 
-- Builtins: `@par : ({} -> b) -> @future b` (a pure task),
-  `@spawn : ({} -> <@io> b) -> <@io> @future b`, and
-  `@await : @future b -> b`. `@future` is an opaque base type.
+- Builtins: `@par : ({} -> b) -> @Future b` (a pure task),
+  `@spawn : ({} -> <@IO> b) -> <@IO> @Future b`, and
+  `@await : @Future b -> b`. `@Future` is an opaque base type.
 - `library/PAR.thx`: `Future`, `par`, `spawn`, `get`, `both`, and over
-  `@vec` the parallel `map`, `formap` (pure body: a task has no `Loop` to break
+  `@Vec` the parallel `map`, `formap` (pure body: a task has no `Loop` to break
   out of its siblings), `map_chunks` and `reduce`.
 - `library/LA.thx`: `map` over a tensor's leading axis, and its parallel
   counterparts `par_map` and `par_map_chunks` (#294), which split that axis
@@ -400,16 +400,16 @@ clean report.
 - `PAR.par_with` / `PAR.spawn_with` run a task under a handler of its own
   (section 4).
 - **The thread-safety check is the task's row (section 2.3).** For now the only
-  thread-safe effect is the builtin `@io`, the one effect no handler on the
+  thread-safe effect is the builtin `@IO`, the one effect no handler on the
   spawning thread serves. Every handled effect must be discharged inside the
   task, which `par_with`/`spawn_with` do (section 4). A task that performs a handled effect is reported as such, with
   `help:` to handle it inside the task (`tests/diagnostics/TASK_*.thx`).
 
 ### Channels and STM (#283)
 
-- Builtins, all `<@io>`: `@chan_new`, `@chan_send`, `@chan_recv` over an
-  opaque `@chan a`, an unbounded channel (a send never waits, a receive
-  waits); `@tvar_new`, `@tvar_read` over `@tvar a`; and the transaction log,
+- Builtins, all `<@IO>`: `@chan_new`, `@chan_send`, `@chan_recv` over an
+  opaque `@Chan a`, an unbounded channel (a send never waits, a receive
+  waits); `@tvar_new`, `@tvar_read` over `@TVar a`; and the transaction log,
   `@stm_begin`, `@stm_read`, `@stm_write`, `@stm_commit`, `@stm_wait`,
   `@stm_save`, `@stm_rollback`.
 - Runtime: a channel is a mutex-guarded ring; a sent value is marked shared,
@@ -426,24 +426,24 @@ clean report.
   `save`/`rollback` for `or_else`), `modify`, `or_else`, and `atomically`, a
   handler that runs the transaction against the log, commits, and reruns it
   on a conflict or after a retry. A transaction's row is `<Stm>`, so
-  `@io` in one is a compile-time error
+  `@IO` in one is a compile-time error
   (`tests/diagnostics/STM_IO_IN_TRANSACTION.thx`).
 - The operations are polymorphic in the variable's type (`read : TVar a ->
   a`), which effect typing allows since #291: a handler clause sees such a
   type as opaque, and `atomically` only passes values through.
 - `examples/STDLIB_CHANNELS.thx` (a worker pool) and
   `examples/STDLIB_STM.thx` (transfers from six tasks, a `retry` waiting for
-  deposits, `or_else` undoing writes); both perform `@io`, so the corpus runs
+  deposits, `or_else` undoing writes); both perform `@IO`, so the corpus runs
   them rather than a compile-time assert. Clean under `-fsanitize=thread` at
   2, 4 and 8 threads.
 
-### `@io` stays one effect (#297)
+### `@IO` stays one effect (#297)
 
-- The resource split of #284 is reverted (section 2.5). `@io` is a plain
+- The resource split of #284 is reverted (section 2.5). `@IO` is a plain
   builtin label again, every `library/C.thx` and `library/IO.thx` binding is
-  `<@io>`, and the entry and build checks compare label sets over `@io` itself.
-- A `par` task that performs `@io` is reported as "a pure parallel task
-  performs effect `@io`", with `help:` to start it with `spawn`.
+  `<@IO>`, and the entry and build checks compare label sets over `@IO` itself.
+- A `par` task that performs `@IO` is reported as "a pure parallel task
+  performs effect `@IO`", with `help:` to start it with `spawn`.
 
 ### `Async` on one thread (#279, #291, #292)
 
@@ -457,10 +457,10 @@ clean report.
 - The effect's parameters (#291) are fixed by the handler for the whole group:
   `m` is the message type of its channels (`Chan m`), and `e` the effects a
   task may perform besides `Async`, which flow out to the handler around
-  `run_async`. A task can therefore perform `@io`, or any effect handled
+  `run_async`. A task can therefore perform `@IO`, or any effect handled
   outside the group.
 - IO readiness (#292): `wait_fd {fd, events}` parks a task until the
-  descriptor is ready. `run_io` runs a group whose tasks may perform `@io`;
+  descriptor is ready. `run_io` runs a group whose tasks may perform `@IO`;
   when no task is ready and some wait on descriptors, it sleeps in poll(2)
   until one is. Because the FFI does not read the `pollfd` array back, it then
   probes each parked descriptor with a zero-timeout poll(2) to see which woke.
@@ -472,6 +472,6 @@ clean report.
   (`examples/STDLIB_ASYNC.thx`: producer/consumer, fan-in, interleaving,
   typed messages, a task effect served outside the group, deadlock;
   `examples/STDLIB_ASYNC_IO.thx`: a task reading a pipe while another
-  computes, checked at run time because it performs `@io`).
+  computes, checked at run time because it performs `@IO`).
 - Open: channels and tasks of one group share one message type `m` (a group
   that needs several uses a union); channels between OS threads (#283).

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Format the staged .thx files with `thrax fmt` before they are committed.
+# Installed by `thxdo hooks` (git config core.hooksPath tools/hooks); skip once
+# with `git commit --no-verify`.
+#
+# The STAGED version is formatted, not the working tree, so a partially staged
+# file commits only its staged hunks. The working tree copy is rewritten too when
+# it matched the index, and left alone otherwise.
+# tests/diagnostics/ is exempt: its files pin error positions, some do not lex.
+set -euo pipefail
+
+thrax=${THRAX_BIN:-thrax}
+if ! command -v "$thrax" >/dev/null 2>&1; then
+    root=$(git rev-parse --show-toplevel)
+    thrax=$root/target/debug/thrax
+    if [ ! -x "$thrax" ]; then
+        echo "pre-commit: no thrax binary (PATH or target/debug), .thx files not formatted" >&2
+        exit 0
+    fi
+fi
+
+failed=0
+while IFS= read -r -d '' f; do
+    case $f in tests/diagnostics/*) continue ;; esac
+    # Next to the original, so `thrax fmt` finds the same thrax.toml.
+    tmp=$(dirname "$f")/.fmt.$$.$(basename "$f")
+    git show ":$f" >"$tmp"
+    if ! "$thrax" fmt "$tmp" 2>/dev/null; then
+        echo "pre-commit: thrax fmt refused $f:" >&2
+        "$thrax" fmt --check "$tmp" 2>&1 | sed "s|$tmp|$f|g" >&2 || true
+        rm -f "$tmp"
+        failed=1
+        continue
+    fi
+    if git show ":$f" | cmp -s - "$tmp"; then
+        rm -f "$tmp"
+        continue
+    fi
+    mode=$(git ls-files -s -- "$f" | cut -d' ' -f1)
+    blob=$(git hash-object -w -- "$tmp")
+    if git show ":$f" | cmp -s - "$f"; then
+        cat "$tmp" >"$f"
+    fi
+    git update-index --cacheinfo "$mode,$blob,$f"
+    rm -f "$tmp"
+    echo "pre-commit: formatted $f"
+done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.thx')
+
+exit $failed

@@ -40,9 +40,7 @@ shape: `@main` takes the argument vector (`args[0]` is the program) and
 returns the exit code. It is the only name the compiler knows.
 
 ```thrax
-$ @main : @vec @str -> <@io> @int = \args =
-	C.puts "hello";
-	0
+$ @main : @Vec @Str -> <@IO> @Int = \args = C.puts "hello"; 0
 ```
 
 Every other module is a library. Checking one runs its compile-time
@@ -97,23 +95,23 @@ Structs are named records; a free lowercase name in a field type is an
 implicit type parameter, so declarations are generic.
 
 ```thrax
-$ Person : @struct = name: @str, age: @int,
+$ Person : @struct = name: @Str, age: @Int,
 $ person : Person = Person.{ .name = "Will", .age = 21 }
-$ who    : @str = person.name
-$ older  : @int = person.age + 1
+$ who : @Str = person.name
+$ older : @Int = person.age + 1
 
 # Generic: one declaration, two instantiations.
-$ Box  : @struct t = val: t,
-$ ibox : Box @int = Box.{ .val = 7 }
-$ sbox : Box @str = Box.{ .val = "hi" }
+$ Box : @struct t = val: t,
+$ ibox : Box @Int = Box.{ .val = 7 }
+$ sbox : Box @Str = Box.{ .val = "hi" }
 ```
 
 A declaration may start with `with Other` to splice in another struct's
 fields (a copy-paste convenience, not subtyping).
 
 ```thrax
-$ Point  : @struct = x: @int, y: @int,
-$ Point3 : @struct = with Point, z: @int,   # x, y, then z
+$ Point : @struct = x: @Int, y: @Int,
+$ Point3 : @struct = with Point, z: @Int, # x, y, then z
 ```
 
 ### Unions and pattern matching
@@ -122,17 +120,17 @@ Sum types are a tagged choice of a variant and its payload; a `{}` payload is
 the unit variant. Unions take `with` too.
 
 ```thrax
-$ Maybe : @union t = Just: {t}, None: {},
+$ Maybe : @union t = Just: { t }, None: {},
 
-$ some_i : Maybe @int = Maybe.Just.{ 5 }
-$ none_i : Maybe @int = Maybe.None
+$ some_i : Maybe @Int = Maybe.Just.{ 5 }
+$ none_i : Maybe @Int = Maybe.None
 
-$ List : @union t = Cons: {t, List t}, Nil: {},
+$ List : @union t = Cons: { t, List t }, Nil: {},
 ```
 
 ```thrax
-$ Base  : @union = Red: {}, Green: {},
-$ Color : @union = with Base, Blue: {}   # Red, Green, then Blue
+$ Base : @union = Red: {}, Green: {},
+$ Color : @union = with Base, Blue: {} # Red, Green, then Blue
 ```
 
 `is scrut | pat => e ...` matches top to bottom; each arm may carry an
@@ -140,12 +138,12 @@ $ Color : @union = with Base, Blue: {}   # Red, Green, then Blue
 default branch: a catch-all is just an arm, `| _ => d`.
 
 ```thrax
-$ grade : Maybe @int -> @int = \m =
-	is m
-		| .Just.{ v } if v > 100 => 3
-		| .Just.{ v } if v > 0   => 2
-		| .Just.{ _ }             => 1
-		| .None                   => 0
+$ grade : Maybe @Int -> @Int = \m =
+    is m
+    | .Just.{ v } if v > 100 => 3
+    | .Just.{ v } if v > 0 => 2
+    | .Just.{ _ } => 1
+    | .None => 0
 ```
 
 ### Algebraic effects and handlers
@@ -160,13 +158,12 @@ ordinary patterns over the body's final value, like `| _ => 0` below. Without
 one, that value is the handler's result.
 
 ```thrax
-$ Yield : @effect = yield : @int -> {},
+$ Yield : @effect = yield : @Int -> {},
 
 # The handler resumes once per yield, summing every value it produces.
-$ sumGen : ({} -> <Yield> {}) -> @int = \gen =
-	do gen {}
-	ctl k | Yield.yield v => v + k {}
-	      | _ => 0
+$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =
+    do gen {}
+    ctl k | Yield.yield v => v + k {} | _ => 0
 ```
 
 ### Interfaces
@@ -185,17 +182,16 @@ $ impl_IArea_for_Rect : IArea Rect = .{ .area = \r = r.w * r.h }
 
 # `d` is the CONTEXT parameter: ordinary in every respect, except that call
 # sites do not write it. The compiler finds it by type.
-$ total : @ctx IArea t -> @vec t -> Real = \d xs =
-	VEC.foldl (\acc x = acc + d.area x) 0.0 xs
+$ total : @ctx IArea t -> @Vec t -> Real = \d xs = VEC.foldl (\acc x = acc + d.area x) 0.0 xs
 
-$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }]   # 10.0
+$ sum : Real = total [Rect.{ 2.0, 3.0 }, Rect.{ 1.0, 4.0 }] # 10.0
 ```
 
 Every operator works this way, so there is nothing special about `+`: it is a
 function over `IAdd`, and a type joins it by defining an instance.
 
 ```thrax
-$ Money : @struct = cents: @int,
+$ Money : @struct = cents: @Int,
 
 # `+` is an ordinary CORE function over `IAdd`, so a type joins it with a value.
 $ impl_IAdd_for_Money : IAdd Money = .{ .add = \a b = Money.{ .cents = a.cents + b.cents } }
@@ -209,8 +205,8 @@ a CEK-style machine emitted in C. Foreign C functions are bound with `@extern`;
 the library name is symbolic (no path or soname in source).
 
 ```thrax
-$ puts : @str -> <@io> @int = @extern "C" "puts" "libc"
-$ @main : @vec @str -> <@io> @int = \args = puts "Hello world"; 0
+$ puts : @Str -> <@IO> @Int = @extern "C" "puts" "libc"
+$ @main : @Vec @Str -> <@IO> @Int = \args = puts "Hello world"; 0
 ```
 
 ## Project layout

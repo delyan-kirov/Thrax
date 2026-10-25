@@ -2,4 +2,4 @@ $ @mod SIG_VAR_FIXED
 
 # A signature's type variable is the caller's to choose (#270), so a body that
 # only works at one type does not have the type its signature claims.
-$ g : a -> b = \x = 1  #~ error[TYPE_MISMATCH]: the body of `g` needs `b` to be `@int`
+$ g : a -> b = \x = 1  #~ error[TYPE_MISMATCH]: the body of `g` needs `b` to be `@Int`

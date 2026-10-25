@@ -31,15 +31,15 @@ types.
 
 Three aggregates the compiler still knows directly:
 
-- `@array` packed byte buffer (absorbs `@str`).
-- `@vec t` boxed dynamic array.
+- `@Array` packed byte buffer (absorbs `@Str`).
+- `@Vec t` boxed dynamic array.
 - `[n]T` (`@tensor`) unboxed numeric fixed-size tensor, size in the type.
 
-Deleted as builtins: `@str` (folded into `@array`), `@list` (redefined as a core
+Deleted as builtins: `@Str` (folded into `@Array`), `@list` (redefined as a core
 `@union`).
 
-Scalars stay primitive: `@int`, `@nat`, `@float64` (and the sized `@intN`/`@natN`/
-`@float32`), `@bool` (control flow needs a concrete branch value; `Bool` is out of
+Scalars stay primitive: `@Int`, `@Nat`, `@Float64` (and the sized `@intN`/`@natN`/
+`@Float32`), `@Bool` (control flow needs a concrete branch value; `Bool` is out of
 scope for literal work).
 
 ## The blessed-interface family
@@ -48,15 +48,15 @@ CORE declares each as a one-field `@struct`; an implementation is an ordinary va
 
 Construction / access:
 
-- `@IStrLit t   = of_str: @str -> t,`
-- `@ISeqLit e t = of_vec: @vec e -> t,`
-- `@IIntLit t   = of_int: @int -> t,`
-- `@IRealLit t  = of_real: @float64 -> t,`
-- `@IImagLit t  = of_imag: @float64 -> t,`      (the `3i` suffix)
+- `@IStrLit t   = of_str: @Str -> t,`
+- `@ISeqLit e t = of_vec: @Vec e -> t,`
+- `@IIntLit t   = of_int: @Int -> t,`
+- `@IRealLit t  = of_real: @Float64 -> t,`
+- `@IImagLit t  = of_imag: @Float64 -> t,`      (the `3i` suffix)
 - `@IIndex s i t = index: s -> i -> t,`         (the `.[..]` surface)
 - `@IRange b t  = range: b -> b -> t,`          (`[lo ... hi]`)
 - `@IRangeFrom b t = range_from: b -> t,`       (`[lo ...]`)
-- `@ISlice s t  = slice: s -> @int -> @int -> t,`  (`.[lo ... hi]`)
+- `@ISlice s t  = slice: s -> @Int -> @Int -> t,`  (`.[lo ... hi]`)
 
 Matching:
 
@@ -70,11 +70,11 @@ where core defines `$ SeqView : @union s t = Empty: {}, More: {t, s},`.
 
 Each writes `I.m` for "the single field of the instance resolved for `I` here".
 
-- `"foo"`            ->  `@IStrLit.of_str <bytes:@str>`
-- `[a, b, c]`        ->  `@ISeqLit.of_vec <@vec t payload>`
+- `"foo"`            ->  `@IStrLit.of_str <bytes:@Str>`
+- `[a, b, c]`        ->  `@ISeqLit.of_vec <@Vec t payload>`
 
   (except when the expected type is a sized tensor `[n]T`: that stays the existing
-  type-directed build, since a `@vec` payload cannot carry the static length `n`.)
+  type-directed build, since a `@Vec` payload cannot carry the static length `n`.)
 - `42`               ->  `@IIntLit.of_int 42`
 - `1.5`              ->  `@IRealLit.of_real 1.5`
 - `1.5i`             ->  `@IImagLit.of_imag 1.5`
@@ -162,7 +162,7 @@ tests; it is the risk area the plan calls out.
 - Recognize the `@compiler_interface_*` construction hooks; allow user overloads.
 - Add the `@default` overload attribute and the literal-defaulting step.
 - Desugar string / list / integer / real literals to their hooks; core provides
-  default overloads reproducing today's types exactly (`@array`-backed string,
+  default overloads reproducing today's types exactly (`@Array`-backed string,
   `@list`, machine int/float).
 - Constant-fold default instances; verify on interpreter and ccg.
 - Tests: a user type opting into each literal via context and via `(e : T)`.
@@ -174,7 +174,7 @@ Touchpoints: `parser.rs`/`typing.rs` (literal lowering + defaulting),
 
 Landed both halves. A literal PATTERN (`is "foo"`, `is 42`) whose scrutinee is a user
 type routes through that type's construction hook (to build the literal into the type)
-plus `@compiler_interface_equality : t -> t -> @bool`, matching by a boolean test. A
+plus `@compiler_interface_equality : t -> t -> @Bool`, matching by a boolean test. A
 sequence PATTERN (`is [a, b, ..r]`, `is h :: t`, `is []`) on a user type unfolds
 `@compiler_interface_sequence_view : f t -> SeqView (f t) t` (core union
 `$ SeqView s t = Empty | More t s`), stepping `More elem tail` per leading element and
@@ -196,7 +196,7 @@ Touchpoints: `lowering/patmat.rs`, `typing.rs`, `library/CORE.thx`.
 Deferred: general extractors / pattern synonyms via a `@compiler_interface_view`
 returning an arbitrary sum. Same machinery, later.
 
-## Stage 3 - collapse builtins onto the mechanism  [List half LANDED; @str half deferred]
+## Stage 3 - collapse builtins onto the mechanism  [List half LANDED; @Str half deferred]
 
 Prerequisite LANDED (2026-09-05): type-directed resolution of BARE variant tags. A
 `.Tag` now takes its union from the expected type (`Checker::union_head_with_tag` + a
@@ -213,12 +213,12 @@ sugar still names `List`/`Cons`/`Nil` (its surface definition), and `@list` stay
 spelling alias for `List`. Verified interpreter + ccg (STRINGS, LISTS examples;
 `bare_variant_tag_resolves_by_expected_type` test).
 
-`@str` fold / `Str`-as-library-type: NOT DONE, decided AGAINST (2026-09-05). Explored two
+`@Str` fold / `Str`-as-library-type: NOT DONE, decided AGAINST (2026-09-05). Explored two
 routes and backed out of both:
 
 - An `@struct @unbox` transparent single-field newtype (erase the wrapper at lowering) was
   built as the enabler, and `Str` was briefly declared `$ Str : @struct @unbox = _buffer :
-  @array`. It worked and was zero-cost, but the whole thing was REMOVED at the user's call:
+  @Array`. It worked and was zero-cost, but the whole thing was REMOVED at the user's call:
   `Str`'s hard parts are genuinely primitive (UTF-8 validation, escape decoding) and it is
   load-bearing in CORE-less bootstrap contexts (`library/C.thx`'s libc bindings, the
   `@main` argv contract), so making it a library type fights all of that for no
@@ -228,12 +228,12 @@ routes and backed out of both:
   because of the `Con ~ Record` bridge (a nominal 1-field struct can be used structurally
   as an open record, e.g. `Box : @struct a = val: a` passed to `{ val | r }`), which needs
   the boxed rep; the suite catches this immediately.
-- `@str` -> `@array` fold: also not done -- it discards the useful `Str`-vs-raw-bytes
+- `@Str` -> `@Array` fold: also not done -- it discards the useful `Str`-vs-raw-bytes
   distinction, and `Str` handling UTF-8/escapes means it stays a real primitive.
 
 What DID land instead: `Str` stays a built-in primitive, and the string-literal INTERFACE
 takes the built-in `Str`. `@compiler_interface_string_literal` is now `Str -> a` (was
-`@array -> a`): the compiler builds a fully-formed, UTF-8-checked, escape-decoded `Str` and
+`@Array -> a`): the compiler builds a fully-formed, UTF-8-checked, escape-decoded `Str` and
 the custom type just maps it to its value (default `Str` folds to zero cost). So other
 types can adopt string literals while `Str` itself is not de-builtined. `CStr` for C
 interop was considered and deferred (the FFI already NUL-terminates a `Str` on marshal, so
@@ -247,19 +247,19 @@ A `CStr` would need a conversion primitive that does not exist and a rewrite of
 
 - Delete the `@list` builtin; define `List` as a core `@union`; `@compiler_interface_sequence_literal`
   default builds it; rewrite `library/LIST.thx`.
-- Fold `@str` into `@array`; string literals lower to a byte payload; migrate the
+- Fold `@Str` into `@Array`; string literals lower to a byte payload; migrate the
   `@array_*` byte-poking in `CORE.thx`/`STR.thx`.
-- Keep `@array`, `@vec`, `[n]T` as the three aggregate primitives.
+- Keep `@Array`, `@Vec`, `[n]T` as the three aggregate primitives.
 
-Touchpoints: `typing.rs` (drop `@list`/`@str` builtins), `library/CORE.thx`,
+Touchpoints: `typing.rs` (drop `@list`/`@Str` builtins), `library/CORE.thx`,
 `library/LIST.thx`, `library/STR.thx`, both backends.
 
 ## Stage 4 - type-name cleanup  [LANDED, done before Stage 1]
 
-- Make `@int`/`@nat` canonical; drop the `Int`/`Nat` aliases entirely.
-- Keep `Real` as a core alias to `@float64`, the single surviving alias (float has
+- Make `@Int`/`@Nat` canonical; drop the `Int`/`Nat` aliases entirely.
+- Keep `Real` as a core alias to `@Float64`, the single surviving alias (float has
   no obvious default name; int/nat do). Drop every other alias.
-- Drop the friendly `Bool` spelling; `@bool` only.
+- Drop the friendly `Bool` spelling; `@Bool` only.
 - Migrate corpus, examples, and docs.
 
 Touchpoints: `typing/data.rs` (`display_con`, base-type set), `library/CORE.thx`,
@@ -276,33 +276,33 @@ The remaining hardcoded `[]` jobs became overloads, so every bracket form except
 `[n]T` type resolves through the same machinery.
 
 - **Ranges.** `[lo ... hi]` resolves `@compiler_interface_range` and `[lo ...]`
-  `@compiler_interface_range_from`; CORE overloads them for `@vec` and `Stream`. The
+  `@compiler_interface_range_from`; CORE overloads them for `@Vec` and `Stream`. The
   checker no longer knows the con name `Stream`, and lowering no longer names `range`
   or `count_from`. `Checker::range_hook` resolves against the expected type, so a
   sequence of your own claims the surface with one overload.
-- **`::`.** An ordinary operator (`$ (::) : t -> @vec t -> @vec t` in CORE) instead of
+- **`::`.** An ordinary operator (`$ (::) : t -> @Vec t -> @Vec t` in CORE) instead of
   a lowering-time rewrite to `vcons`, so it is overloadable like `+` and construction
   now agrees with the `h :: t` pattern. Dropped from `parser::table::desugared` and
   from the checker's built-in bindings.
-- **Sequence literals.** CORE has a `@vec t -> @vec t` overload, the
+- **Sequence literals.** CORE has a `@Vec t -> @Vec t` overload, the
   `user_type_head` guard on `literal_hook_check` is gone, and `infer` records the hook
   for the default case too, so lowering has ONE path: collect the elements into the
-  `@vec` payload and apply the resolved hook.
-- **`@array`.** Joins through its own CORE overloads of `_sequence_literal`
-  (`@vec @int -> @array`) and `_sequence_view`. Deleted: the `is_array` arms in
+  `@Vec` payload and apply the resolved hook.
+- **`@Array`.** Joins through its own CORE overloads of `_sequence_literal`
+  (`@Vec @Int -> @Array`) and `_sequence_view`. Deleted: the `is_array` arms in
   `check` / `type_pattern`, `array_exprs` / `array_pats` and their `Resolved`
   plumbing, and `lowering::array_arm` with its helpers. Array patterns now nest like
   any other sequence pattern (the old guarded-arm lowering ignored nested
   sub-patterns).
 - **Slices.** A lone `recv.[lo ... hi]` over a non-tensor receiver resolves
-  `@compiler_interface_slice`; CORE overloads it for `@vec`, `@array`, and `@str`, so
+  `@compiler_interface_slice`; CORE overloads it for `@Vec`, `@Array`, and `@Str`, so
   slicing is no longer tensor-private.
 
 CORE's cons `List` is the worked example of the result: it is an ordinary `@union`
 with no compiler support, and three overloads (`_sequence_literal`, `(::)`,
 `_sequence_view`) give it literals, cons, and every sequence pattern. Exercised in
 `examples/LISTS.thx`, whose second half runs the same surface over a `List` that the
-first half runs over a `@vec`.
+first half runs over a `@Vec`.
 
 What stays compiler business, by the type system rather than by convenience: the
 sized tensor `[n]T`. A `[..]` literal, a range, or a multi-axis slice aimed at one
@@ -339,8 +339,8 @@ What changed:
   `Pat::HookEq` / `Pat::SeqView` now carry a `Term` rather than a global's name.
 - Where nothing constrains a range's result the FIRST instance declared still wins
   (`blessed_first`), so CORE's declaration order keeps deciding that a bare
-  `[lo ... hi]` is a `@vec` and a bare `[lo ...]` is a `Stream`.
+  `[lo ... hi]` is a `@Vec` and a bare `[lo ...]` is a `Stream`.
 
-`LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a`,
+`LA`'s tensor indexing is `$ impl_IIndex_for_tensor : @IIndex ([n]a) @Int a`,
 `MAP`'s is `@IIndex (Map k v) k (Option v)`, and `examples/TENSORS.thx` shows a user type
-joining with `@IIndex Grid @int @int`.
+joining with `@IIndex Grid @Int @Int`.

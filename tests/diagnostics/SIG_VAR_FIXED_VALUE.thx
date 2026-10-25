@@ -1,4 +1,4 @@
 $ @mod SIG_VAR_FIXED_VALUE
 
 # A value whose signature is a bare variable claims to be of every type (#270).
-$ h : a = "s"  #~ error[TYPE_MISMATCH]: the body of `h` needs `a` to be `@str`
+$ h : a = "s"  #~ error[TYPE_MISMATCH]: the body of `h` needs `a` to be `@Str`

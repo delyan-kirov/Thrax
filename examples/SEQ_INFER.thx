@@ -1,31 +1,29 @@
 $ @mod SEQ_INFER
 
-# `[..]` infers its container from context: @vec by default, @array when the
+# `[..]` infers its container from context: @Vec by default, @Array when the
 # type says so (see documentation/strings-and-arrays.md). Same syntax, no `@`.
 
-# @array context -> a byte vector.
-$ bytes : @array = [10, 20, 30]
-$ ck_alen : @int = if (@array_len bytes) == 3 => 0 else 1
-$ ck_a1   : @int = if (@array_get bytes 1) == 20 => 0 else 1
+# @Array context -> a byte vector.
+$ bytes : @Array = [10, 20, 30]
+$ ck_alen : @Int = if (@array_len bytes) == 3 => 0 else 1
+$ ck_a1 : @Int = if (@array_get bytes 1) == 20 => 0 else 1
 
-# @vec context -> the blessed @vec.
-$ nums : @vec @int = [1, 2, 3, 4]
-$ sum : @vec @int -> @int = \xs =
-	is xs | [] => 0
-	           | h :: t => h + sum t
-$ ck_sum : @int = if (sum nums) == 10 => 0 else 1
+# @Vec context -> the blessed @Vec.
+$ nums : @Vec @Int = [1, 2, 3, 4]
+$ sum : @Vec @Int -> @Int = \xs = is xs | [] => 0 | h :: t => h + sum t
+$ ck_sum : @Int = if (sum nums) == 10 => 0 else 1
 
 # Empty literal in each context.
-$ empt_a : @array = []
-$ empt_l : @vec @int = []
-$ ck_ea : @int = if (@array_len empt_a) == 0 => 0 else 1
-$ ck_el : @int = if (sum empt_l) == 0 => 0 else 1
+$ empt_a : @Array = []
+$ empt_l : @Vec @Int = []
+$ ck_ea : @Int = if (@array_len empt_a) == 0 => 0 else 1
+$ ck_el : @Int = if (sum empt_l) == 0 => 0 else 1
 
-# Unannotated defaults to @vec.
-$ deflist : @vec @int = [7, 8]
-$ ck_def : @int = if (sum deflist) == 15 => 0 else 1
+# Unannotated defaults to @Vec.
+$ deflist : @Vec @Int = [7, 8]
+$ ck_def : @Int = if (sum deflist) == 15 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : @int = ck_alen + ck_a1 + ck_sum + ck_ea + ck_el + ck_def
+$ test : @Int = ck_alen + ck_a1 + ck_sum + ck_ea + ck_el + ck_def
 
 $ @e <| assert (test == 0) "SEQ_INFER: a check failed"

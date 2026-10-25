@@ -1,6 +1,6 @@
 //! Fold a saturated interface projection whose method is an eta-expanded
 //! primitive. Every `CORE` arithmetic and comparison instance has that shape
-//! (`$ impl_IAdd_for_int : IAdd @int = .{ .add = \a b = @iadd a b }`), so `x + y` can cost
+//! (`$ impl_IAdd_for_int : IAdd @Int = .{ .add = \a b = @iadd a b }`), so `x + y` can cost
 //! one builtin call again instead of a global lookup, a field read, and two
 //! closure applications. Runs over the MERGED program, where a global's key is
 //! already `MOD.name`, so a qualified projection matches by name.

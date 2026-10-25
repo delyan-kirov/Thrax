@@ -5,7 +5,7 @@ $ @mod PAR
 #       `get` waits for the result. A `par` task must be PURE (its arrow has the
 #       empty effect row), so it gives the same answer on any core in any order:
 #       parallelism never changes what a program means. A `spawn` task may also
-#       perform `@io`, the one effect no handler on the spawning thread serves;
+#       perform `@IO`, the one effect no handler on the spawning thread serves;
 #       any other effect must be handled inside the task (the effect row is the
 #       thread-safety check). The native backend runs tasks on a work-stealing
 #       pool of `THRAX_THREADS` threads (default: one per core); the
@@ -15,13 +15,13 @@ $ @mod PAR
 #       tasks update goes through `STM`. A program exits only after every
 #       `spawn` task has finished.
 
-$ Future : @alias b = @future b
+$ Future : @alias b = @Future b
 
 $ par : ({} -> b) -> Future b = \f = @par f
 
-# A task that may perform `@io`. Tasks run in any order, so their IO
+# A task that may perform `@IO`. Tasks run in any order, so their IO
 # interleaves in any order too.
-$ spawn : ({} -> <@io> b) -> <@io> Future b = \f = @spawn f
+$ spawn : ({} -> <@IO> b) -> <@IO> Future b = \f = @spawn f
 
 $ get : Future b -> b = \fut = @await fut
 
@@ -29,101 +29,93 @@ $ get : Future b -> b = \fut = @await fut
 
 # An unbounded channel between tasks: `send` never waits, `recv` waits for a
 # message. Messages arrive in the order one task sent them; which receiver
-# gets a message depends on scheduling, so both are `@io`. With uniqueness, a
+# gets a message depends on scheduling, so both are `@IO`. With uniqueness, a
 # message is handed over, not copied.
-$ Channel : @alias a = @chan a
+$ Channel : @alias a = @Chan a
 
-$ channel : {} -> <@io | e> Channel a = \u = @chan_new {}
+$ channel : {} -> <@IO | e> Channel a = \u = @chan_new {}
 
-$ send : Channel a -> a -> <@io | e> {} = \c x = @chan_send c x
+$ send : Channel a -> a -> <@IO | e> {} = \c x = @chan_send c x
 
-$ recv : Channel a -> <@io | e> a = \c = @chan_recv c
+$ recv : Channel a -> <@IO | e> a = \c = @chan_recv c
 
 # A task takes its handlers with it: `spawn_with run_log body` runs `body`
 # under the handler `run_log` on the task's thread, so an effect that handler
-# serves never has to cross threads. Only `@io`, which the runtime serves on
+# serves never has to cross threads. Only `@IO`, which the runtime serves on
 # every thread, reaches a task from outside.
 $ par_with : (({} -> <e> b) -> c) -> ({} -> <e> b) -> Future c = \handler body =
-	@par (\u = handler body)
+    @par (\u = handler body)
 
-$ spawn_with : (({} -> <e> b) -> <@io> c) -> ({} -> <e> b) -> <@io> Future c = \handler body =
-	@spawn (\u = handler body)
+$ spawn_with : (({} -> <e> b) -> <@IO> c) -> ({} -> <e> b) -> <@IO> Future c = \handler body =
+    @spawn (\u = handler body)
 
 # Run two pure computations in parallel and pair their results.
-$ both : ({} -> a) -> ({} -> b) -> {a, b} = \f g =
-	let fa = @par f in
-	let b = g {} in
-	{@await fa, b}
+$ both : ({} -> a) -> ({} -> b) -> { a, b } = \f g =
+    let fa = @par f in let b = g {} in { @await fa, b }
 
 # ---- parallel vectors ----
 
 # How many tasks a parallel vector operation splits into: enough to balance a
 # pool of any usual size, few enough that each task amortizes its spawn.
-$ default_chunks : @int = 64
+$ default_chunks : @Int = 64
 
-$ chunk_size : @int -> @int -> @int = \n chunks =
-	let c = n / chunks in if c * chunks < n => c + 1 else c
+$ chunk_size : @Int -> @Int -> @Int = \n chunks =
+    let c = n / chunks in if c * chunks < n => c + 1 else c
 
-$ map_range : (a -> b) -> @vec a -> @int -> @int -> @vec b -> @vec b = \f v i hi acc =
-	if i >= hi => acc
-	else map_range f v (i + 1) hi (@vec_push acc (f (@vec_get v i)))
+$ map_range : (a -> b) -> @Vec a -> @Int -> @Int -> @Vec b -> @Vec b = \f v i hi acc =
+    if i >= hi => acc else map_range f v (i + 1) hi (@vec_push acc (f (@vec_get v i)))
 
-$ spawn_chunks : (a -> b) -> @vec a -> @int -> @int -> @vec (Future (@vec b))
-	-> @vec (Future (@vec b)) = \f v size lo acc =
-	let n = @vec_len v in
-	if lo >= n => acc
-	else
-		let hi = if lo + size > n => n else lo + size in
-		let fut = @par (\u = map_range f v lo hi (@vec_new {})) in
-		spawn_chunks f v size hi (@vec_push acc fut)
+$ spawn_chunks : (a -> b) -> @Vec a -> @Int -> @Int -> @Vec (Future (@Vec b)) -> @Vec (Future (@Vec b)) = \f v size lo acc =
+    let n = @vec_len v in
+    if lo >= n => acc
+    else
+        let hi = if lo + size > n => n else lo + size in
+        let fut = @par (\u = map_range f v lo hi (@vec_new {})) in
+        spawn_chunks f v size hi (@vec_push acc fut)
 
-$ join_chunks : @vec (Future (@vec b)) -> @int -> @vec b -> @vec b = \futs i acc =
-	if i >= @vec_len futs => acc
-	else join_chunks futs (i + 1) (append_onto acc (@await (@vec_get futs i)) 0)
+$ join_chunks : @Vec (Future (@Vec b)) -> @Int -> @Vec b -> @Vec b = \futs i acc =
+    if i >= @vec_len futs => acc
+    else join_chunks futs (i + 1) (append_onto acc (@await (@vec_get futs i)) 0)
 
-$ append_onto : @vec t -> @vec t -> @int -> @vec t = \acc xs i =
-	if i >= @vec_len xs => acc
-	else append_onto (@vec_push acc (@vec_get xs i)) xs (i + 1)
+$ append_onto : @Vec t -> @Vec t -> @Int -> @Vec t = \acc xs i =
+    if i >= @vec_len xs => acc else append_onto (@vec_push acc (@vec_get xs i)) xs (i + 1)
 
 # `map f v` with the work split into `chunks` parallel tasks. The result equals
 # `VEC.map f v`, element for element.
-$ map_chunks : @int -> (a -> b) -> @vec a -> @vec b = \chunks f v =
-	let n = @vec_len v in
-	if n == 0 => @vec_new {}
-	else
-		let size = chunk_size n (if chunks < 1 => 1 else chunks) in
-		join_chunks (spawn_chunks f v size 0 (@vec_new {})) 0 (@vec_new {})
+$ map_chunks : @Int -> (a -> b) -> @Vec a -> @Vec b = \chunks f v =
+    let n = @vec_len v in
+    if n == 0 => @vec_new {}
+    else
+        let size = chunk_size n (if chunks < 1 => 1 else chunks) in
+        join_chunks (spawn_chunks f v size 0 (@vec_new {})) 0 (@vec_new {})
 
-$ map : (a -> b) -> @vec a -> @vec b = \f v = map_chunks default_chunks f v
+$ map : (a -> b) -> @Vec a -> @Vec b = \f v = map_chunks default_chunks f v
 
 # The parallel counterpart of `formap` for a pure body (no `Loop` control: a
 # task cannot break out of its siblings).
-$ formap : @vec a -> (a -> b) -> @vec b = \v f = map f v
+$ formap : @Vec a -> (a -> b) -> @Vec b = \v f = map f v
 
 # Fold each chunk in parallel, then combine the chunk results in order.
 # `combine` must be associative with `zero` as its identity (as for any
 # parallel reduction), so the answer equals the sequential fold.
-$ reduce : (b -> b -> b) -> b -> (a -> b) -> @vec a -> b = \combine zero f v =
-	let n = @vec_len v in
-	if n == 0 => zero
-	else
-		let size = chunk_size n default_chunks in
-		reduce_join combine (reduce_spawn combine zero f v size 0 (@vec_new {})) 0 zero
+$ reduce : (b -> b -> b) -> b -> (a -> b) -> @Vec a -> b = \combine zero f v =
+    let n = @vec_len v in
+    if n == 0 => zero
+    else
+        let size = chunk_size n default_chunks in
+        reduce_join combine (reduce_spawn combine zero f v size 0 (@vec_new {})) 0 zero
 
-$ reduce_range : (b -> b -> b) -> (a -> b) -> @vec a -> @int -> @int -> b -> b
-	= \combine f v i hi acc =
-	if i >= hi => acc
-	else reduce_range combine f v (i + 1) hi (combine acc (f (@vec_get v i)))
+$ reduce_range : (b -> b -> b) -> (a -> b) -> @Vec a -> @Int -> @Int -> b -> b = \combine f v i hi acc =
+    if i >= hi => acc else reduce_range combine f v (i + 1) hi (combine acc (f (@vec_get v i)))
 
-$ reduce_spawn : (b -> b -> b) -> b -> (a -> b) -> @vec a -> @int -> @int
-	-> @vec (Future b) -> @vec (Future b) = \combine zero f v size lo acc =
-	let n = @vec_len v in
-	if lo >= n => acc
-	else
-		let hi = if lo + size > n => n else lo + size in
-		let fut = @par (\u = reduce_range combine f v lo hi zero) in
-		reduce_spawn combine zero f v size hi (@vec_push acc fut)
+$ reduce_spawn : (b -> b -> b) -> b -> (a -> b) -> @Vec a -> @Int -> @Int -> @Vec (Future b) -> @Vec (Future b) = \combine zero f v size lo acc =
+    let n = @vec_len v in
+    if lo >= n => acc
+    else
+        let hi = if lo + size > n => n else lo + size in
+        let fut = @par (\u = reduce_range combine f v lo hi zero) in
+        reduce_spawn combine zero f v size hi (@vec_push acc fut)
 
-$ reduce_join : (b -> b -> b) -> @vec (Future b) -> @int -> b -> b = \combine futs i acc =
-	if i >= @vec_len futs => acc
-	else reduce_join combine futs (i + 1) (combine acc (@await (@vec_get futs i)))
+$ reduce_join : (b -> b -> b) -> @Vec (Future b) -> @Int -> b -> b = \combine futs i acc =
+    if i >= @vec_len futs => acc
+    else reduce_join combine futs (i + 1) (combine acc (@await (@vec_get futs i)))

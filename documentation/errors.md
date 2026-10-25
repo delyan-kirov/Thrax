@@ -110,7 +110,7 @@ Read the `expected` and `found` types in the message; a label points at where
 the expectation came from. Common causes: an integer literal where a float is
 expected (`1` is never a float; write `1.0`), a missing argument, a function
 applied to too many arguments (put `;` between separate steps), or a pure
-signature hiding an effect its body performs (add it to the arrow, `-> <@io> T`).
+signature hiding an effect its body performs (add it to the arrow, `-> <@IO> T`).
 
 ## TYPE_UNBOUND
 
@@ -175,14 +175,14 @@ Reserved, not currently emitted.
 
 ## NO_ENTRY
 
-A program to run has no `$ @main : @vec @str -> <@io> @int`. Reserved, not
+A program to run has no `$ @main : @Vec @Str -> <@IO> @Int`. Reserved, not
 currently emitted: the driver reports this without a code.
 
 ## ENTRY_SIGNATURE
 
 `@main` has the wrong signature. Reserved, not currently emitted: the driver
 reports this without a code. The one entry signature is
-`@vec @str -> <@io> @int`.
+`@Vec @Str -> <@IO> @Int`.
 
 ## META_ABORT
 
@@ -194,7 +194,7 @@ The message is the one the check gave. Fix what it checks, or the check.
 ## INT_LITERAL_RANGE
 
 An integer literal does not fit the type it is used at, such as `300` as an
-`@nat8`.
+`@Nat8`.
 
 Use a wider type, or `@cast` a wider value to wrap it into the narrow one.
 

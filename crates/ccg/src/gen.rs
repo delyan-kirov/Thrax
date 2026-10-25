@@ -380,30 +380,30 @@ fn cdbl(v: f64) -> String {
 /// type variable, or any unrecognized name) is `int64_t`, matching the C++
 /// `desc_of`.
 enum Cabi {
-    Bytes,             // @str/@array: the byte pointer (char*)
-    Ptr,               // @ptr: an opaque pointer carried as a word (void*)
-    F32,               // @float32: float
-    F64,               // @float64: double
+    Bytes,             // @Str/@Array: the byte pointer (char*)
+    Ptr,               // @Ptr: an opaque pointer carried as a word (void*)
+    F32,               // @Float32: float
+    F64,               // @Float64: double
     Unit,              // {}: a void result
     Int(&'static str), // a sized/word integer: the named C int type
 }
 
 fn cabi(name: &str) -> Cabi {
     match name {
-        "@str" | "@array" => Cabi::Bytes,
-        "@ptr" => Cabi::Ptr,
-        "@float32" => Cabi::F32,
-        "@float64" => Cabi::F64,
+        "@Str" | "@Array" => Cabi::Bytes,
+        "@Ptr" => Cabi::Ptr,
+        "@Float32" => Cabi::F32,
+        "@Float64" => Cabi::F64,
         "{}" => Cabi::Unit,
-        "@int8" => Cabi::Int("int8_t"),
-        "@int16" => Cabi::Int("int16_t"),
-        "@int32" => Cabi::Int("int32_t"),
-        "@int64" => Cabi::Int("int64_t"),
-        "@nat8" => Cabi::Int("uint8_t"),
-        "@nat16" => Cabi::Int("uint16_t"),
-        "@nat32" => Cabi::Int("uint32_t"),
-        "@nat64" | "@nat" => Cabi::Int("uint64_t"),
-        "@int" => Cabi::Int("int64_t"),
+        "@Int8" => Cabi::Int("int8_t"),
+        "@Int16" => Cabi::Int("int16_t"),
+        "@Int32" => Cabi::Int("int32_t"),
+        "@Int64" => Cabi::Int("int64_t"),
+        "@Nat8" => Cabi::Int("uint8_t"),
+        "@Nat16" => Cabi::Int("uint16_t"),
+        "@Nat32" => Cabi::Int("uint32_t"),
+        "@Nat64" | "@Nat" => Cabi::Int("uint64_t"),
+        "@Int" => Cabi::Int("int64_t"),
         _ => Cabi::Int("int64_t"),
     }
 }
@@ -743,7 +743,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
                 continue;
             }
             if let Some(elem) = struct_array_elem(t) {
-                // A `@vec T` array: pack each element of the vector into a contiguous
+                // A `@Vec T` array: pack each element of the vector into a contiguous
                 // malloc'd buffer, and pass it as a `T*`.
                 let cty = cstruct_name(elem);
                 let layout = layout_of(elem).expect("struct-array element has a layout");

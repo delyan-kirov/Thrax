@@ -40,12 +40,12 @@ pub struct Program {
     pub ct_evals: Vec<(String, utilities::Span)>,
     /// Type-position `@e X` sites (`Foo : @e X = ...`): `(synthetic global name,
     /// source span of the `@e X`)`. The driver forces the global at compile time,
-    /// splices the resulting `@code`'s type source at the span, and re-compiles.
+    /// splices the resulting `@Code`'s type source at the span, and re-compiles.
     /// See [`super::lower_program`].
     pub ct_types: Vec<(String, utilities::Span)>,
     /// The synthetic global holding the call `@build {}`, present when this module
     /// defines `$ @build`. The driver forces it once per module at compile time and
-    /// appends the items of the `@code` it returns to the module's source. Unlike
+    /// appends the items of the `@Code` it returns to the module's source. Unlike
     /// the `@e` sites there is no span: `@build` is a definition, not a directive,
     /// so it stays where it was written and its output is added to the module.
     pub ct_build: Option<String>,

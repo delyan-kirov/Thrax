@@ -7,57 +7,58 @@ $ @mod EFFECTS
 # may perform as a row on the arrow: `A -> <E> B`; a bare arrow is pure, and an
 # unhandled effect is a compile-time error.
 
-$ Exn : @effect = throw : @str -> a,  # never resumes -> polymorphic result
-$ Yield : @effect = yield : @int -> {},
-$ State : @effect = get : {} -> @int, put : @int -> {},
+$ Exn : @effect = throw : @Str -> a, # never resumes -> polymorphic result
+$ Yield : @effect = yield : @Int -> {},
+$ State : @effect = get : {} -> @Int, put : @Int -> {},
 
 # Exception: the clause ignores k (resume 0 times). Exn is handled here, so
 # safeDiv is pure at its boundary.
-$ safeDiv : @int -> @int -> @int = \a b =
+$ safeDiv : @Int -> @Int -> @Int = \a b =
     do if b == 0 => Exn.throw "div0" else a / b
     ctl k | Exn.throw msg => 0 - 1
 
 # Generator: resume once, summing every yielded value; the value arm is the base
 # case.
 # The argument performs Yield, so its arrow is `{} -> <Yield> {}`.
-$ sumGen : ({} -> <Yield> {}) -> @int = \gen =
+$ sumGen : ({} -> <Yield> {}) -> @Int = \gen =
     do gen {}
-    ctl k | Yield.yield v => v + k {}
-          | _ => 0
+    ctl k | Yield.yield v => v + k {} | _ => 0
 
 $ gen3 : {} -> <Yield> {} = \u =
     let _ = Yield.yield 10 in let _ = Yield.yield 20 in let _ = Yield.yield 12 in {}
 
 # State via parameter-passing: each clause returns a state-transforming function.
-# The action performs State, so its arrow is `{} -> <State> @int`.
-$ runState : ({} -> <State> @int) -> @int -> @int = \action s0 =
+# The action performs State, so its arrow is `{} -> <State> @Int`.
+$ runState : ({} -> <State> @Int) -> @Int -> @Int = \action s0 =
     let h = do action {}
-            ctl k | get u => \s = (k s) s
-                  | put n => \s = (k {}) n
-                  | x => \s = x
-     in h s0
+        ctl k
+        | get u => \s = (k s) s
+        | put n => \s = (k {}) n
+        | x => \s = x in
+    h s0
 
-$ counter : {} -> <State> @int = \u =
+$ counter : {} -> <State> @Int = \u =
     let x = get {} in let _ = put (x + 1) in let y = get {} in x + y
 
 # Value arms are patterns, with guards, over the body's result. A throw skips
 # them: the clause's value is the handler's result.
-$ Found : @union = Hit: @int, Miss: {},
-$ lookup : @int -> @int = \key =
+$ Found : @union = Hit: @Int, Miss: {},
+$ lookup : @Int -> @Int = \key =
     do (if key < 0 => Exn.throw "negative", key == 0 => Found.Miss else Found.Hit.{ key * 2 })
-    ctl k | Exn.throw msg => 0 - 2
-          | .Hit.{ v } if v > 100 => 100
-          | .Hit.{ v } => v
-          | .Miss => 0 - 1
+    ctl k
+    | Exn.throw msg => 0 - 2
+    | .Hit.{ v } if v > 100 => 100
+    | .Hit.{ v } => v
+    | .Miss => 0 - 1
 
 # Top-level results force the handlers to run under the test harness.
-$ r_exn_ok  : @int = safeDiv 84 2       # 42  (no throw)
-$ r_exn_bad : @int = safeDiv 10 0       # -1  (throw, no resume)
-$ r_gen     : @int = sumGen gen3        # 42  (10 + 20 + 12)
-$ r_state   : @int = runState counter 10 # 21 (x=10, put 11, y=11)
-$ r_lookup  : @int = lookup 21 + lookup 500 + lookup 0 + lookup (0 - 5)  # 42 + 100 - 1 - 2
+$ r_exn_ok : @Int = safeDiv 84 2 # 42  (no throw)
+$ r_exn_bad : @Int = safeDiv 10 0 # -1  (throw, no resume)
+$ r_gen : @Int = sumGen gen3 # 42  (10 + 20 + 12)
+$ r_state : @Int = runState counter 10 # 21 (x=10, put 11, y=11)
+$ r_lookup : @Int = lookup 21 + lookup 500 + lookup 0 + lookup (0 - 5) # 42 + 100 - 1 - 2
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = r_exn_ok ; r_exn_bad ; r_gen ; r_state ; if r_lookup == 139 => 0 else 1
+$ test : @Int = r_exn_ok; r_exn_bad; r_gen; r_state; if r_lookup == 139 => 0 else 1
 
 $ @e <| assert (test == 0) "EFFECTS: a check failed"

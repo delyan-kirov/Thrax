@@ -2,4 +2,4 @@ $ @mod BB
 
 $ with AA
 
-$ Outer : @struct = items : @vec Inner,
+$ Outer : @struct = items : @Vec Inner,

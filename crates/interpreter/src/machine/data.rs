@@ -32,7 +32,7 @@ pub enum Value<'p> {
     Unk,
     Int(i64),
     Real(f64),
-    /// A single-precision real (`@float32`). Held distinct from [`Value::Real`] so
+    /// A single-precision real (`@Float32`). Held distinct from [`Value::Real`] so
     /// arithmetic rounds to f32 and display uses f32 precision; it is stored as an
     /// `f32`, not a narrowed `f64`.
     Real32(f32),
@@ -96,9 +96,9 @@ pub enum Value<'p> {
     Thunk(PVal<'p>),
     /// A `@spawn` task's handle (a `@par` future is its result itself).
     Future(Rc<RefCell<Task<'p>>>),
-    /// An unbounded channel (`@chan`): the messages sent and not yet received.
+    /// An unbounded channel (`@Chan`): the messages sent and not yet received.
     Chan(Rc<RefCell<std::collections::VecDeque<PVal<'p>>>>),
-    /// A transactional variable (`@tvar`).
+    /// A transactional variable (`@TVar`).
     TVar(Rc<RefCell<TVar<'p>>>),
 }
 
@@ -372,7 +372,7 @@ pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
         "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
         | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
         | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
-        | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
+        | "@format" | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
         | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" | "@par"
         | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
         | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
@@ -428,7 +428,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         "==" => Ok(Value::Bool(value_eq(&a[0], &a[1]))),
         "<" | ">" | "<=" | ">=" => compare(name, &a[0], &a[1]),
         // `++` itself is a CORE function over the `ICat` interface now; `@acat` is the
-        // byte-buffer primitive its `@str` / `@array` instances bottom out on.
+        // byte-buffer primitive its `@Str` / `@Array` instances bottom out on.
         "++" | "@acat" => concat(&a[0], &a[1]),
         // Suspend a lazy slot. The argument is the nullary closure lowering built
         // around the slot's expression; `force` runs it.
@@ -636,7 +636,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             v[i] = a[2].clone();
             Ok(Value::Vector(Rc::new(v)))
         }
-        // Metaprogramming: tokenize a string into opaque `@token` values. A lex
+        // Metaprogramming: tokenize a string into opaque `@Token` values. A lex
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         "@lex" => {
             let bytes = as_bytes(&a[0])?;
@@ -646,7 +646,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
         }
         "@token_kind" => token_field(&a[0], "kind"),
         "@token_text" => token_field(&a[0], "text"),
-        // Parse a token vector (from `@lex`) into opaque `@code`. `@code` is
+        // Parse a token vector (from `@lex`) into opaque `@Code`. `@Code` is
         // text-backed, so this detokenizes (the lexemes rejoined with a space,
         // which whitespace-insensitive expression syntax re-lexes identically) and
         // validates exactly like `@parse_str`. A syntax error traps.
@@ -656,7 +656,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             for t in toks.iter() {
                 match &token_field(t, "text")? {
                     Value::Str(b) => lexemes.push(b.as_ref().clone()),
-                    _ => return Err(fault("@parse: an @token has a non-string lexeme")),
+                    _ => return Err(fault("@parse: an @Token has a non-string lexeme")),
                 }
             }
             let joined = lexemes.join(&b' ');
@@ -665,7 +665,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             check_fragment(src, Fragment::Expr)?;
             Ok(code_value(src))
         }
-        // Parse a string as an expression fragment into opaque `@code`. A syntax
+        // Parse a string as an expression fragment into opaque `@Code`. A syntax
         // error is a `Diagnostic`, which propagates as a fault (fails an `@e`).
         // The fragment is carried as its source text, which `@eval` and splicing
         // re-enter the driver's pipeline with.
@@ -677,20 +677,28 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
             check_fragment(src, kind)?;
             Ok(code_value(src))
         }
-        // Compile and run an `@code` fragment, embedding its value. Needs the
+        "@format" => {
+            let bytes = as_bytes(&a[0])?;
+            let src = std::str::from_utf8(&bytes)
+                .map_err(|_| fault("@format: the argument is not valid UTF-8"))?;
+            let out = frontend::format::format_source(src, &Default::default())
+                .map_err(|m| fault(format!("@format: {m}")))?;
+            Ok(Value::Str(Rc::new(out.into_bytes())))
+        }
+        // Compile and run an `@Code` fragment, embedding its value. Needs the
         // driver's pipeline, so it defers to the installed host (see
         // `crate::machine::set_meta_eval`).
         "@eval" => {
             let src = match &*a[0].borrow() {
-                Value::Struct { name, fields } if name == "@code" => fields
+                Value::Struct { name, fields } if name == "@Code" => fields
                     .iter()
                     .find(|(k, _)| k == "src")
                     .and_then(|(_, v)| match &*v.borrow() {
                         Value::Str(b) => Some(b.clone()),
                         _ => None,
                     })
-                    .ok_or_else(|| fault("@eval: malformed @code value"))?,
-                _ => return Err(fault("@eval expects an @code")),
+                    .ok_or_else(|| fault("@eval: malformed @Code value"))?,
+                _ => return Err(fault("@eval expects an @Code")),
             };
             let s = std::str::from_utf8(&src)
                 .map_err(|_| fault("@eval: the fragment source is not valid UTF-8"))?;
@@ -794,7 +802,7 @@ pub(crate) fn run_builtin<'p>(name: &str, a: &[PVal<'p>]) -> Result<Value<'p>> {
     }
 }
 
-/// Tokenize `src` as `@lex` does: a vector of `@token` structs, each holding its
+/// Tokenize `src` as `@lex` does: a vector of `@Token` structs, each holding its
 /// `kind` (the tag `@token_kind` reports) and its lexeme `text`.
 pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
     use crate::machine::OwnedValue;
@@ -806,7 +814,7 @@ pub fn lex(src: &str) -> Result<crate::machine::OwnedValue> {
             break;
         }
         toks.push(OwnedValue::Struct {
-            name: "@token".to_string(),
+            name: "@Token".to_string(),
             fields: vec![
                 ("kind".to_string(), OwnedValue::Str(token_kind_name(t.kind).as_bytes().to_vec())),
                 ("text".to_string(), OwnedValue::Str(src.as_bytes()[t.span.start..t.span.end].to_vec())),
@@ -833,10 +841,10 @@ pub fn check_fragment(src: &str, kind: Fragment) -> Result<()> {
     frontend::parse(&wrapped).map(|_| ())
 }
 
-/// An opaque `@code` value carrying `src`.
+/// An opaque `@Code` value carrying `src`.
 fn code_value<'p>(src: &str) -> Value<'p> {
     Value::Struct {
-        name: "@code".to_string(),
+        name: "@Code".to_string(),
         fields: vec![("src".to_string(), mk(Value::Str(Rc::new(src.as_bytes().to_vec()))))],
     }
 }
@@ -883,22 +891,22 @@ fn token_kind_name(kind: frontend::Kind) -> &'static str {
     }
 }
 
-/// Read a named `@str` field of an opaque `@token` struct (`@token_kind` /
+/// Read a named `@Str` field of an opaque `@Token` struct (`@token_kind` /
 /// `@token_text`).
 fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
     match &*v.borrow() {
-        Value::Struct { name, fields } if name == "@token" => {
+        Value::Struct { name, fields } if name == "@Token" => {
             for (k, val) in fields {
                 if k == field {
                     return match &*val.borrow() {
                         Value::Str(b) => Ok(Value::Str(b.clone())),
-                        _ => Err(fault("@token field is not a string")),
+                        _ => Err(fault("@Token field is not a string")),
                     };
                 }
             }
-            Err(fault(format!("@token has no `{field}` field")))
+            Err(fault(format!("@Token has no `{field}` field")))
         }
-        _ => Err(fault("expected an @token")),
+        _ => Err(fault("expected an @Token")),
     }
 }
 
@@ -907,7 +915,7 @@ fn token_field<'p>(v: &PVal<'p>, field: &str) -> Result<Value<'p>> {
 /// call these are type-directed), so an `@i*` op reads two integers and an `@f*`
 /// op two reals. Integer add/sub/mul wrap on overflow, matching the C backend.
 /// The `@f32*` family rounds both operands and the result to single precision and
-/// yields a [`Value::Real32`], so `@float32` arithmetic is genuinely f32.
+/// yields a [`Value::Real32`], so `@Float32` arithmetic is genuinely f32.
 fn arith_intrinsic<'p>(name: &str, x: &PVal<'p>, y: &PVal<'p>) -> Result<Value<'p>> {
     match name {
         "@iadd" => Ok(Value::Int(as_int(x)?.wrapping_add(as_int(y)?))),

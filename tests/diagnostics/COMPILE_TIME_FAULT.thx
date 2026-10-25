@@ -1,5 +1,5 @@
 $ @mod COMPILE_TIME_FAULT
 
 # A fault the compile-time code runs into itself is not an `@abort`.
-$ zero : @int = 0
+$ zero : @Int = 0
 $ @e <| assert (1 / zero == 0) "unreached"  #~ error[RUNTIME_FAULT]: division by zero

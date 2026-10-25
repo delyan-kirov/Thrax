@@ -15,14 +15,14 @@ fn name_and_parse_round_trip() {
 fn word_size_follows_arch() {
     let linux64 = Target { os: Os::Linux, arch: Arch::X86_64 };
     assert_eq!(linux64.ptr_bits(), 64);
-    assert_eq!(linux64.int_ty(), "@int64");
-    assert_eq!(linux64.nat_ty(), "@nat64");
+    assert_eq!(linux64.int_ty(), "@Int64");
+    assert_eq!(linux64.nat_ty(), "@Nat64");
     assert_eq!(linux64.int_max(), 0x7fff_ffff_ffff_ffff);
 
     let wasm = Target { os: Os::Wasi, arch: Arch::Wasm32 };
     assert_eq!(wasm.ptr_bits(), 32);
-    assert_eq!(wasm.int_ty(), "@int32");
-    assert_eq!(wasm.nat_ty(), "@nat32");
+    assert_eq!(wasm.int_ty(), "@Int32");
+    assert_eq!(wasm.nat_ty(), "@Nat32");
     assert_eq!(wasm.int_max(), 0x7fff_ffff);
     assert_eq!(wasm.lit_max(), 0xffff_ffff);
     assert_eq!(wasm.real_bits(), 64);

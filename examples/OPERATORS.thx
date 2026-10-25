@@ -1,69 +1,78 @@
 $ @mod OPERATORS
 
 # \file operators.thx
-# \info Comparison and logical operators. Comparisons evaluate to @bool (a
-#       built-in type); `!` negates a @bool. Each operator is a CORE function
+# \info Comparison and logical operators. Comparisons evaluate to @Bool (a
+#       built-in type); `!` negates a @Bool. Each operator is a CORE function
 #       over `IEq` / `IOrd`, whose instances bottom out at the comparison
 #       intrinsics, so a type of your own joins the set by writing an instance.
 #       There is no structural fallback.
 
-$eq_true   = 7 == 7
-$eq_false  = 7 == 8
-$neq_true  = 7 != 8
-$neq_false = 7 != 7
-$geq_true  = 9 > 4
-$geq_equal = 4 > 4
-$geq_false = 2 > 4
-$leq_true  = 3 < 8
-$leq_equal = 8 < 8
-$leq_false = 8 < 3
-$not_false = !@false
-$not_true  = !@true
-$not_not   = !(!@true)
+$ eq_true = 7 == 7
+$ eq_false = 7 == 8
+$ neq_true = 7 != 8
+$ neq_false = 7 != 7
+$ geq_true = 9 > 4
+$ geq_equal = 4 > 4
+$ geq_false = 2 > 4
+$ leq_true = 3 < 8
+$ leq_equal = 8 < 8
+$ leq_false = 8 < 3
+$ not_false = !@false
+$ not_true = !@true
+$ not_not = !(!@true)
 
 # Dispatch per base type: each of these picks a different CORE overload.
-$ ck_int   : @int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) && (3 != 4) => 0 else 1
-$ ck_real  : @int = if (1.5 < 2.5) && (2.5 >= 2.5) && (0.5 == 0.5) => 0 else 2
-$ ck_f32   : @int =
-	let a : @float32 = 1.25 in
-	let b : @float32 = 2.5 in
-	if (a < b) && (b > a) && (a != b) => 0 else 4
-$ ck_str   : @int = if ("abc" < "abd") && ("b" > "abc") && ("x" == "x") => 0 else 8
-$ ck_bool  : @int = if (@true == @true) && !(@true == @false) => 0 else 16
+$ ck_int : @Int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) && (3 != 4) => 0 else 1
+$ ck_real : @Int = if (1.5 < 2.5) && (2.5 >= 2.5) && (0.5 == 0.5) => 0 else 2
+$ ck_f32 : @Int =
+    let a : @Float32 = 1.25 in
+    let b : @Float32 = 2.5 in if (a < b) && (b > a) && (a != b) => 0 else 4
+$ ck_str : @Int = if ("abc" < "abd") && ("b" > "abc") && ("x" == "x") => 0 else 8
+$ ck_bool : @Int = if (@true == @true) && !(@true == @false) => 0 else 16
 
-# Unsigned ordering: `@nat*` compares with `@ult`, so a value past the signed
+# Unsigned ordering: `@Nat*` compares with `@ult`, so a value past the signed
 # range is LARGE, not negative. Read as signed, `big` would be -1.
-$ big : @nat64 = @cast (0 - 1)
-$ ck_unsigned : @int = if (big > 5) && !(big < 5) => 0 else 32
+$ big : @Nat64 = @cast (0 - 1)
+$ ck_unsigned : @Int = if (big > 5) && !(big < 5) => 0 else 32
 
 # A type of your own becomes comparable by implementing the interface: `<` on a
-# `Money` goes through this instance, `<` on an `@int` through CORE's.
-$ Money : @struct = cents: @int
+# `Money` goes through this instance, `<` on an `@Int` through CORE's.
+$ Money : @struct = cents: @Int
 
 $ impl_IOrd_for_Money : IOrd Money = .{ .lt = \a b = a.cents < b.cents }
 $ impl_IEq_for_Money : IEq Money = .{ .eq = \a b = a.cents == b.cents }
 
-$ ck_custom : @int =
-	if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
+$ ck_custom : @Int = if (Money.{ .cents = 150 } < Money.{ .cents = 900 }) && (2 < 3) => 0 else 64
 
 # There is no structural fallback: a struct is equatable because of the instance
 # above, and a tuple because CORE has one per arity (built from its components').
-$ ck_structural : @int =
-	if (Money.{ .cents = 7 } == Money.{ .cents = 7 })
-		&& ({1, "a"} == {1, "a"})
-		&& ({1, "a"} != {1, "b"})
-	=> 0 else 128
+$ ck_structural : @Int =
+    if (Money.{ .cents = 7 } == Money.{ .cents = 7 })
+        && ({ 1, "a" } == { 1, "a" })
+        && ({ 1, "a" } != { 1, "b" }) =>
+        0
+    else 128
 
 # `<` and `>` in an expression, in a function whose type carries an effect row:
 # the row is type-level, the operators value-level, so the two never meet.
-$ clamp_pos : @int -> <| e> @int = \n = if n < 0 => 0 else n
-$ ck_row : @int = if (clamp_pos (0 - 3) == 0) && (clamp_pos 5 == 5) => 0 else 256
+$ clamp_pos : @Int -> <| e> @Int = \n = if n < 0 => 0 else n
+$ ck_row : @Int = if (clamp_pos (0 - 3) == 0) && (clamp_pos 5 == 5) => 0 else 256
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int =
-	eq_true ; eq_false ; neq_true ; neq_false ; geq_true ; geq_equal ; geq_false
-	; leq_true ; leq_equal ; leq_false ; not_false ; not_true ; not_not
-	; ck_int + ck_real + ck_f32 + ck_str + ck_bool + ck_unsigned + ck_custom
-		+ ck_structural + ck_row
+$ test : @Int =
+    eq_true;
+    eq_false;
+    neq_true;
+    neq_false;
+    geq_true;
+    geq_equal;
+    geq_false;
+    leq_true;
+    leq_equal;
+    leq_false;
+    not_false;
+    not_true;
+    not_not;
+    ck_int + ck_real + ck_f32 + ck_str + ck_bool + ck_unsigned + ck_custom + ck_structural + ck_row
 
 $ @e <| assert (test == 0) "OPERATORS: a check failed"

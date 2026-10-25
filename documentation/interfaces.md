@@ -17,17 +17,17 @@ it is defining a value of that type. A function that needs one declares it as a
 it, `:type` prints it), except that call sites do not write it.
 
 ```
-$ Ito_string : @struct t = show: t -> @str,
+$ Ito_string : @struct t = show: t -> @Str,
 
-$ to_string : @ctx Ito_string t -> t -> @str = \d x = d.show x
+$ to_string : @ctx Ito_string t -> t -> @Str = \d x = d.show x
 
-$ impl_IToString_for_int : Ito_string @int = .{ .show = int_to_str }
+$ impl_IToString_for_int : Ito_string @Int = .{ .show = int_to_str }
 
-$ a : @str = to_string 1                 # the context is found by type
-$ b : @str = to_string (@ctx show_hex) 255   # or written by hand
+$ a : @Str = to_string 1                 # the context is found by type
+$ b : @Str = to_string (@ctx show_hex) 255   # or written by hand
 ```
 
-`:type to_string` prints `@ctx Ito_string a -> a -> @str`. The caller-visible type
+`:type to_string` prints `@ctx Ito_string a -> a -> @Str`. The caller-visible type
 is the arrow with that parameter stripped, so `to_string 1` is a complete call.
 
 Rules, all of them:
@@ -36,18 +36,18 @@ Rules, all of them:
    first, is a declaration error. Several requirements travel as one tuple:
    `@ctx {IOrd t, ISub t, IZero t} -> t -> t`, and the call site BUILDS the tuple,
    so no global of the bundled type has to exist.
-2. **The head must be nominal.** `@ctx t`, `@ctx @int` and
+2. **The head must be nominal.** `@ctx t`, `@ctx @Int` and
    `@ctx (a -> a -> Ordering)` are declaration errors: once grounded, `@ctx t`
    means "any value of this type in scope", which is a search over every value.
    Wrapping costs one line and moves the error to the declaration.
 3. **Resolution happens at the enclosing definition's boundary**, after numeric
-   defaulting, so `1 + 2` has `t` pinned to `@int` before any search runs.
+   defaulting, so `1 + 2` has `t` pinned to `@Int` before any search runs.
 4. **Search order**: the innermost matching local binder first (this includes the
    enclosing definition's own `@ctx` parameter, which is what makes generic code
    chain), then the instances in scope. Exactly one must match: zero and two are
    both errors, because global scope is flat.
 5. **Recursive resolution.** A matching instance may itself carry a context
-   (`$ impl_IEq_for_vec : @ctx IEq t -> IEq (@vec t)`), so resolution recurses
+   (`$ impl_IEq_for_vec : @ctx IEq t -> IEq (@Vec t)`), so resolution recurses
    into its requirement, bounded at 32 steps.
 6. **No overlapping instances.** A ground instance and a generic one that both
    match is an ambiguity error, not most-specific-wins.
@@ -87,7 +87,7 @@ pairs are gone.
 
 Comparison is `IEq` and `IOrd`. There is no structural fallback for `==`: a type
 needs an `IEq` instance, by hand or from `DERIVE.derive_eq` / `derive_ord`. CORE has
-instances for the base types, tuples, `@vec`, `@array` and `Cpx`.
+instances for the base types, tuples, `@Vec`, `@Array` and `Cpx`.
 
 The rest: `Ito_string` / `Ifrom_string` (which `"?(e)"` interpolation uses), `ICat`
 (`++`), `ICons` (`::`), `IFor` / `IFormap` (`for` / `formap`, whose effect row is an
@@ -95,7 +95,7 @@ ordinary interface parameter: `$ IFor : @struct s a e = ...`), and `DERIVE`'s
 three-way `ICmp`.
 
 `MATH.min` / `max` / `clamp` / `abs` / `pow` are ONE definition each over these
-interfaces, so they work for any type that has them, `@str` included.
+interfaces, so they work for any type that has them, `@Str` included.
 
 ## Blessed interfaces
 
@@ -107,7 +107,7 @@ the compiler needs the type name and never the method name.
 ```
 $ @IRange : @struct b t = range: b -> b -> t,          # in CORE
 
-$ range_span : @IRange @int Span = .{ .range = \lo hi = Span.{ lo, hi } }
+$ range_span : @IRange @Int Span = .{ .range = \lo hi = Span.{ lo, hi } }
 ```
 
 The set and what reaches it:
@@ -125,7 +125,7 @@ A literal PATTERN on a user type uses the construction interface plus the type's
 ordinary `IEq` instance, so no separate equality hook exists.
 
 Where nothing constrains a range's result, the FIRST instance declared wins, so
-CORE's declaration order decides that a bare `[lo ... hi]` is a `@vec` and a bare
+CORE's declaration order decides that a bare `[lo ... hi]` is a `@Vec` and a bare
 `[lo ...]` is a `Stream`. An annotation picks any other.
 
 These replace the `@compiler_interface_*` hook family, which was built on the

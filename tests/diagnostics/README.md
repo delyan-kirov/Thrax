@@ -10,7 +10,7 @@ when the diagnostic needs several modules.
 
 ```text
 $ p : P = P.{ 1 }  #~ error[TYPE_MISMATCH]: literal is missing field `y`
-$ s : @str = "abc
+$ s : @Str = "abc
 #~^ error[QUOTM_UNCLOSED]
 #~ error: must have the signature
 ```

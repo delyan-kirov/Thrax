@@ -141,21 +141,21 @@ fn c_run_entry(src: &str, args: &[&str]) -> (i32, String) {
     (exit, String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// The entry returns its `@int` as the process exit code, and prints nothing on
+/// The entry returns its `@Int` as the process exit code, and prints nothing on
 /// its own.
 #[test]
 fn entry_exit_code() {
-    let src = "$ @mod MAIN\n$ @main : @vec @str -> <@io> @int = \\args = 42\n";
+    let src = "$ @mod MAIN\n$ @main : @Vec @Str -> <@IO> @Int = \\args = 42\n";
     let (exit, stdout) = c_run_entry(src, &[]);
     assert_eq!(exit, 42);
     assert_eq!(stdout, "");
 }
 
-/// The entry receives argv (path first) as a `@vec @str`.
+/// The entry receives argv (path first) as a `@Vec @Str`.
 #[test]
 fn entry_receives_string_vector() {
     let src = "$ @mod MAIN\n\
-               $ @main : @vec @str -> <@io> @int = \\args = @vec_len args\n";
+               $ @main : @Vec @Str -> <@IO> @Int = \\args = @vec_len args\n";
     let (exit, _stdout) = c_run_entry(src, &["alpha", "beta"]);
     assert_eq!(exit, 3);
 }
@@ -192,7 +192,7 @@ fn runtime_operators_match_interpreter_natively() {
         "if 3 <= 3 => 1 else 0",
         "if 5 >= 4 => 1 else 0",
         "\"a\" ++ \"b\"",
-        // @float64 `^` goes through libm `pow`; the comparison keeps the result an @int
+        // @Float64 `^` goes through libm `pow`; the comparison keeps the result an @Int
         // so no real-formatting difference can enter the comparison.
         "if 2.0 ^ 3.0 > 7.0 => 1 else 0",
     ];
@@ -205,7 +205,7 @@ fn runtime_operators_match_interpreter_natively() {
 #[test]
 fn arithmetic_intrinsics_match_interpreter() {
     // The arithmetic primitives must compute identically in the C backend and the
-    // interpreter. Integer ops yield @int directly; float ops fold to an @int so no
+    // interpreter. Integer ops yield @Int directly; float ops fold to an @Int so no
     // real-formatting difference between the engines can enter the comparison.
     for body in [
         "@iadd 2 3",
@@ -252,14 +252,14 @@ fn comparison_intrinsics_match_interpreter() {
 /// per-type overload for a primitive.
 #[test]
 fn user_comparison_instance_compiles() {
-    let src = "$ @mod M\n$ T : @struct = v: @int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
+    let src = "$ @mod M\n$ T : @struct = v: @Int\n               $ ord_t : IOrd T = .{ .lt = \\a b = a.v < b.v }\n               $ a : @Int = if (T.{ .v = 1 } < T.{ .v = 2 }) && (2 < 3) => 1 else 0";
     assert_matches(src, "a");
 }
 
 #[test]
 fn float32_intrinsics_match_interpreter() {
     // The `@f32*` family rounds to single precision and yields a Real32. These
-    // return the value directly (not folded to an @int), so the comparison also
+    // return the value directly (not folded to an @Int), so the comparison also
     // pins the native `fmt_real32` shortest-round-trip display to Rust's
     // `f32::to_string`. `@f32add 16777216.0 1.0` loses the +1 (2^24 + 1 is not an
     // f32), and `0.1 + 0.2` at f32 is exactly `0.3`, unlike the f64 result.
@@ -282,22 +282,22 @@ fn scalar_serialization_matches_interpreter() {
     // arithmetic), so the C backend must render and parse scalars identically to
     // the interpreter. `to_string` cases also pin the shared textual encoding.
     for (body, entry) in [
-        ("$ a : @str = to_string 1234", "a"),
-        ("$ a : @str = to_string (0 - 42)", "a"),
-        ("$ a : @str = to_string (let n : @nat = 250 in n)", "a"),
-        ("$ a : @bool = (from_string (to_string 1234)) == 1234", "a"),
+        ("$ a : @Str = to_string 1234", "a"),
+        ("$ a : @Str = to_string (0 - 42)", "a"),
+        ("$ a : @Str = to_string (let n : @Nat = 250 in n)", "a"),
+        ("$ a : @Bool = (from_string (to_string 1234)) == 1234", "a"),
         (
-            "$ a : @bool = let n : @int32 = from_string \"77\" in (to_string n) == \"77\"",
+            "$ a : @Bool = let n : @Int32 = from_string \"77\" in (to_string n) == \"77\"",
             "a",
         ),
-        ("$ a : @bool = (from_string \"true\") == (1 == 1)", "a"),
+        ("$ a : @Bool = (from_string \"true\") == (1 == 1)", "a"),
         // Floats serialize via the C runtime seam (`thx_real_to_str` /
         // `thx_f32_to_str` + libc `atof`); the shortest-decimal rule must render
         // identically on both engines.
-        ("$ a : @str = to_string (let x : @float64 = 3.5 in x)", "a"),
-        ("$ a : @str = to_string (let x : @float32 = from_string \"0.5\" in x)", "a"),
+        ("$ a : @Str = to_string (let x : @Float64 = 3.5 in x)", "a"),
+        ("$ a : @Str = to_string (let x : @Float32 = from_string \"0.5\" in x)", "a"),
         (
-            "$ a : @bool = let x : @float64 = 2.25 in (from_string (to_string x)) == x",
+            "$ a : @Bool = let x : @Float64 = 2.25 in (from_string (to_string x)) == x",
             "a",
         ),
     ] {
@@ -308,12 +308,12 @@ fn scalar_serialization_matches_interpreter() {
 #[test]
 fn float_widening_matches_interpreter() {
     // Widening is explicit now (`f32_to_f64`, the `thx_f2d` runtime conversion); the
-    // C backend must produce the same `@float64` result as the interpreter.
+    // C backend must produce the same `@Float64` result as the interpreter.
     let src = "$ @mod M\n\
-               $ x : @float32 = from_string \"1.5\"\n\
-               $ y : @float64 = from_string \"2.25\"\n\
-               $ fwd : @float64 = f32_to_f64 x + y\n\
-               $ rev : @float64 = y + f32_to_f64 x\n";
+               $ x : @Float32 = from_string \"1.5\"\n\
+               $ y : @Float64 = from_string \"2.25\"\n\
+               $ fwd : @Float64 = f32_to_f64 x + y\n\
+               $ rev : @Float64 = y + f32_to_f64 x\n";
     assert_matches(src, "fwd");
     assert_matches(src, "rev");
 }
@@ -323,10 +323,10 @@ fn sized_arithmetic_matches_interpreter() {
     // A bare literal drops into sized arithmetic; a word-typed variable is `@cast`
     // first. The C backend must agree with the interpreter on both.
     let src = "$ @mod M\n\
-               $ p : @int32 = from_string \"3\"\n\
-               $ x : @int = 5\n\
-               $ cast : @int32 = (let y : @int32 = @cast x in y) * p\n\
-               $ lit : @int32 = 2 * p\n";
+               $ p : @Int32 = from_string \"3\"\n\
+               $ x : @Int = 5\n\
+               $ cast : @Int32 = (let y : @Int32 = @cast x in y) * p\n\
+               $ lit : @Int32 = 2 * p\n";
     assert_matches(src, "cast");
     assert_matches(src, "lit");
 }
@@ -335,11 +335,11 @@ fn sized_arithmetic_matches_interpreter() {
 fn user_operator_instance_matches_interpreter() {
     // A user `IAdd` instance for a struct must lower to the user global on the C
     // backend too (resolved via the runtime string-keyed global table), while the
-    // `@int + @int` inside finds CORE's instance.
+    // `@Int + @Int` inside finds CORE's instance.
     let src = "$ @mod M\n\
-               $ V : @struct = x: @int, y: @int\n\
+               $ V : @struct = x: @Int, y: @Int\n\
                $ add_v : IAdd V = .{ .add = \\a b = V.{ .x = a.x + b.x, .y = a.y + b.y } }\n\
-               $ r : @int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
+               $ r : @Int = let s = V.{ .x = 1, .y = 2 } + V.{ .x = 10, .y = 20 } in s.x + s.y";
     assert_matches(src, "r");
 }
 
@@ -349,7 +349,7 @@ fn native_program_always_declares_libm() {
     // libm. The emitter declares it even for a program that uses no math extern;
     // without it a minimal build fails to link `pow`. This asserts the driver's
     // link path (which, unlike `c_run` here, does not hardcode `-lm`) stays sound.
-    let lowered = lower("$ @mod M\n$ main : @int = 1 + 1");
+    let lowered = lower("$ @mod M\n$ main : @Int = 1 + 1");
     let emitted = ccg::emit_program(
         &lowered,
         "main",
@@ -367,13 +367,13 @@ fn native_program_always_declares_libm() {
 fn cast_between_integer_widths() {
     // `@cast` reinterprets an integer at another width. It is erased after type
     // checking (integers are boxed uniformly), so both engines must agree: widen
-    // `@int32 -> @int`, narrow `@int -> @int32`, and use the results in arithmetic.
+    // `@Int32 -> @Int`, narrow `@Int -> @Int32`, and use the results in arithmetic.
     let src = "$ @mod T\n\
-               $ small : {} -> @int32 = \\u = 65\n\
-               $ widened : @int = @cast (small {})\n\
-               $ narrowed : @int32 = @cast (widened + 1)\n\
-               $ back : @int = @cast narrowed\n\
-               $ test : @int = widened + back\n";
+               $ small : {} -> @Int32 = \\u = 65\n\
+               $ widened : @Int = @cast (small {})\n\
+               $ narrowed : @Int32 = @cast (widened + 1)\n\
+               $ back : @Int = @cast narrowed\n\
+               $ test : @Int = widened + back\n";
     assert_matches(src, "widened");
     assert_matches(src, "back");
     assert_matches(src, "test");
@@ -383,8 +383,8 @@ fn cast_between_integer_widths() {
 fn arithmetic_and_precedence() {
     let src = "$ @mod T\n\
                $ a = 1 + 2 * 3 - 4\n\
-               $ b : @float64 = 100.123 % 7.0\n\
-               $ test : @int = a\n";
+               $ b : @Float64 = 100.123 % 7.0\n\
+               $ test : @Int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
     assert_matches(src, "test");
@@ -394,11 +394,11 @@ fn arithmetic_and_precedence() {
 fn short_circuit_and_or() {
     // `&&`/`||` desugar to a lazy `if`; the C backend matches the interpreter.
     let src = "$ @mod T\n\
-               $ f : @bool = @false\n\
-               $ t : @bool = @true\n\
-               $ a : @int = if (t && 3 < 5) => 1 else 0\n\
-               $ b : @int = if (f || 5 < 3) => 1 else 0\n\
-               $ test : @int = a\n";
+               $ f : @Bool = @false\n\
+               $ t : @Bool = @true\n\
+               $ a : @Int = if (t && 3 < 5) => 1 else 0\n\
+               $ b : @Int = if (f || 5 < 3) => 1 else 0\n\
+               $ test : @Int = a\n";
     assert_matches(src, "a");
     assert_matches(src, "b");
 }
@@ -408,11 +408,11 @@ fn one_operation_over_two_types_matches_interpreter() {
     // One operation covering two types is an interface plus two instances. The C
     // backend must project and call the same instance the interpreter does.
     let src = "$ @mod M\n\
-               $ IKind : @struct t = kind: t -> @int,\n\
-               $ kind : @ctx IKind t -> t -> @int = \\d x = d.kind x\n\
-               $ kind_int : IKind @int = .{ .kind = \\x = 1 }\n\
-               $ kind_bool : IKind @bool = .{ .kind = \\b = 2 }\n\
-               $ test : @int = (kind 7) + (kind @true) * 10\n";
+               $ IKind : @struct t = kind: t -> @Int,\n\
+               $ kind : @ctx IKind t -> t -> @Int = \\d x = d.kind x\n\
+               $ kind_int : IKind @Int = .{ .kind = \\x = 1 }\n\
+               $ kind_bool : IKind @Bool = .{ .kind = \\b = 2 }\n\
+               $ test : @Int = (kind 7) + (kind @true) * 10\n";
     assert_matches(src, "test");
 }
 
@@ -422,18 +422,18 @@ fn ctx_context_parameter_passing() {
     // instance built from another instance to a nested one; the C backend must do it
     // exactly as the interpreter does.
     let src = "$ @mod M\n\
-               $ Ord : @struct t = gt: t -> t -> @bool,\n\
-               $ impl_Ord_for_int : Ord @int = .{ .gt = \\a b = a > b }\n\
+               $ Ord : @struct t = gt: t -> t -> @Bool,\n\
+               $ impl_Ord_for_int : Ord @Int = .{ .gt = \\a b = a > b }\n\
                $ max_of : @ctx Ord t -> t -> t -> t = \\o x y =\n\
                \tif o.gt x y => x else y\n\
                $ Box : @union t = Wrap: {t},\n\
                $ ord_box : @ctx Ord t -> Ord (Box t) = \\o =\n\
                \t.{ .gt = \\p q = is p | Box.Wrap.{a} => (is q | Box.Wrap.{b} => o.gt a b) }\n\
-               $ unbox : Box @int -> @int = \\b = is b | Box.Wrap.{n} => n\n\
-               $ test : @int =\n\
-               \tlet flip : Ord @int = .{ .gt = \\a b = a < b } in\n\
+               $ unbox : Box @Int -> @Int = \\b = is b | Box.Wrap.{n} => n\n\
+               $ test : @Int =\n\
+               \tlet flip : Ord @Int = .{ .gt = \\a b = a < b } in\n\
                \t(max_of 3 7) + (max_of (@ctx flip) 3 7)\n\
-               \t+ unbox (max_of (Box.Wrap.{ 2 } : Box @int) (Box.Wrap.{ 9 } : Box @int))\n";
+               \t+ unbox (max_of (Box.Wrap.{ 2 } : Box @Int) (Box.Wrap.{ 9 } : Box @Int))\n";
     assert_matches(src, "test");
 }
 
@@ -442,13 +442,13 @@ fn type_splice_with() {
     // `with` copies struct fields and union variants into a new type; the C
     // backend must lay them out and match them exactly as the interpreter does.
     let src = "$ @mod M\n\
-               $ Point : @struct = x: @int, y: @int\n\
-               $ Point3 : @struct = with Point, z: @int\n\
+               $ Point : @struct = x: @Int, y: @Int\n\
+               $ Point3 : @struct = with Point, z: @Int\n\
                $ Base : @union = Red: {}, Green: {}\n\
                $ Color : @union = with Base, Blue: {}\n\
-               $ rank : Color -> @int = \\c =\n\
+               $ rank : Color -> @Int = \\c =\n\
                \tis c | Color.Red => 1 | Color.Green => 2 | Color.Blue => 3\n\
-               $ test : @int =\n\
+               $ test : @Int =\n\
                \tlet p = Point3.{ .x = 1, .y = 2, .z = 3 } in\n\
                \t(p.x + p.y + p.z) + rank Color.Blue\n";
     assert_matches(src, "test");
@@ -459,10 +459,10 @@ fn open_row_record_param() {
     // Row-polymorphic record param over the C backend: field access resolves the
     // same by-name as the interpreter, regardless of the concrete struct passed.
     let src = "$ @mod M\n\
-               $ Point  : @struct = x: @int, y: @int,\n\
-               $ Point3 : @struct = x: @int, y: @int, z: @int,\n\
-               $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
-               $ test : @int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
+               $ Point  : @struct = x: @Int, y: @Int,\n\
+               $ Point3 : @struct = x: @Int, y: @Int, z: @Int,\n\
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = p.x * p.y\n\
+               $ test : @Int = (area Point.{ .x=3, .y=4 }) + (area Point3.{ .x=5, .y=6, .z=9 })\n";
     assert_matches(src, "test");
 }
 
@@ -471,10 +471,10 @@ fn anonymous_record_values() {
     // Records under an open row (name-keyed) and pair decay (positional) must build
     // and read the same on the C backend as the interpreter.
     let src = "$ @mod M\n\
-               $ area : { x: @int, y: @int | r } -> @int = \\p = p.x * p.y\n\
-               $ shift : { x: @int | r } -> { x: @int | r } = \\p = { .x = p.x + 10 | p }\n\
-               $ add : {x: @int, y: @int} -> @int = x + y\n\
-               $ test : @int =\n\
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = p.x * p.y\n\
+               $ shift : { x: @Int | r } -> { x: @Int | r } = \\p = { .x = p.x + 10 | p }\n\
+               $ add : {x: @Int, y: @Int} -> @Int = x + y\n\
+               $ test : @Int =\n\
                \t(area { .x = 2, .y = 5, .tag = 7 }) + (area (shift { .x = 1, .y = 4 })) + add { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
@@ -484,9 +484,9 @@ fn record_destructuring_pattern() {
     // Record patterns lower to name-keyed struct matches; the C backend must
     // destructure them the same as the interpreter.
     let src = "$ @mod M\n\
-               $ area : { x: @int, y: @int | r } -> @int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
-               $ sumxy : { x: @int, y: @int | r } -> @int = \\{ .x, .y } = x + y\n\
-               $ test : @int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
+               $ area : { x: @Int, y: @Int | r } -> @Int = \\p = is p | { .x = a, .y = b, .._ } => a * b\n\
+               $ sumxy : { x: @Int, y: @Int | r } -> @Int = \\{ .x, .y } = x + y\n\
+               $ test : @Int = area { .x = 3, .y = 4, .tag = 9 } + sumxy { .x = 5, .y = 6 }\n";
     assert_matches(src, "test");
 }
 
@@ -496,11 +496,11 @@ fn lazy_recursive_struct_streams() {
     // backend must drive the lazy infinite stream the same as the interpreter.
     let src = "$ @mod M\n\
                $ Stream : @struct t = head : t, tail : Stream t\n\
-               $ from : @int -> Stream @int = \\n = { .head = n, .tail = from (n + 1) }\n\
+               $ from : @Int -> Stream @Int = \\n = { .head = n, .tail = from (n + 1) }\n\
                $ smap : (a -> b) -> Stream a -> Stream b = \\f s = { .head = f s.head, .tail = smap f s.tail }\n\
-               $ nth : @int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
-               $ dbl : @int -> @int = \\x = x + x\n\
-               $ test : @int = nth 4 (smap dbl (from 1))\n";
+               $ nth : @Int -> Stream t -> t = \\n s = if n == 0 => s.head else nth (n - 1) s.tail\n\
+               $ dbl : @Int -> @Int = \\x = x + x\n\
+               $ test : @Int = nth 4 (smap dbl (from 1))\n";
     assert_matches(src, "test");
 }
 
@@ -509,9 +509,9 @@ fn record_update_forces_a_lazy_base() {
     // #310: `| base` read from an unforced recursive field must be forced
     // before its fields are copied, in both engines.
     let src = "$ @mod M\n\
-               $ Node : @struct = v : @int, next : Node\n\
-               $ mk : @int -> Node = \\n = { .v = n, .next = mk (n + 1) }\n\
-               $ test : @int = let b = Node.{ .v = 5 | (mk 0).next } in b.v * 100 + b.next.v\n";
+               $ Node : @struct = v : @Int, next : Node\n\
+               $ mk : @Int -> Node = \\n = { .v = n, .next = mk (n + 1) }\n\
+               $ test : @Int = let b = Node.{ .v = 5 | (mk 0).next } in b.v * 100 + b.next.v\n";
     assert_eq!(c_run(src, "test"), "test = 502");
     assert_matches(src, "test");
     assert_example("RECORD_UPDATE.thx", "test");
@@ -525,14 +525,14 @@ fn recursive_let_through_a_nested_binding() {
     // Native runs through `@main` because the `go` -> `helper` -> `go` cycle
     // is not a direct self edge, so the `Show` harness's leak check trips.
     let def = "$ @mod M\n\
-               $ f : @int -> @int = \\m =\n\
+               $ f : @Int -> @Int = \\m =\n\
                \tlet go = (let helper = \\x = if x == 0 => 0 else 1 + go (x - 1) in \\n = helper n) in\n\
                \tgo m\n";
     assert_eq!(
-        interp_show(&format!("{def}$ test : @int = f 5\n"), "test"),
+        interp_show(&format!("{def}$ test : @Int = f 5\n"), "test"),
         "5"
     );
-    let main = format!("{def}$ @main : @vec @str -> <@io> @int = \\args = f 5\n");
+    let main = format!("{def}$ @main : @Vec @Str -> <@IO> @Int = \\args = f 5\n");
     assert_eq!(c_run_entry(&main, &[]).0, 5);
     // A local recursive closure that escapes the frame that bound it.
     assert_example("LET_IN.thx", "chk_escape");
@@ -544,9 +544,9 @@ fn ffi_struct_by_value_return() {
     // emits a `typedef struct` and rebuilds the Thrax struct from the C result,
     // byte-identical to the interpreter.
     let src = "$ @mod M\n\
-        $ LDivT : @struct @extern \"C\" = quot: @int, rem: @int,\n\
-        $ lldiv : {numer: @int, denom: @int} -> LDivT = @extern \"C\" \"lldiv\" \"libc\"\n\
-        $ test : @int = let d = lldiv {17, 5} in d.quot * 100 + d.rem";
+        $ LDivT : @struct @extern \"C\" = quot: @Int, rem: @Int,\n\
+        $ lldiv : {numer: @Int, denom: @Int} -> LDivT = @extern \"C\" \"lldiv\" \"libc\"\n\
+        $ test : @Int = let d = lldiv {17, 5} in d.quot * 100 + d.rem";
     assert_matches(src, "test");
 }
 
@@ -574,9 +574,9 @@ fn ffi_struct_by_value_argument() {
 
     let src = format!(
         "$ @mod M\n\
-         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
-         $ sum_p : P -> @int = @extern \"C\" \"sum_p\" \"{}\"\n\
-         $ test : @int = sum_p (P.{{ .x = 40, .y = 2 }})",
+         $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
+         $ sum_p : P -> @Int = @extern \"C\" \"sum_p\" \"{}\"\n\
+         $ test : @Int = sum_p (P.{{ .x = 40, .y = 2 }})",
         thx_path(&so_path)
     );
 
@@ -608,7 +608,7 @@ fn ffi_struct_by_value_argument() {
 
 #[test]
 fn ffi_struct_array() {
-    // A `@vec T` of C-repr structs passed as a contiguous `T*`. The C backend walks
+    // A `@Vec T` of C-repr structs passed as a contiguous `T*`. The C backend walks
     // the cons list, packs into a malloc'd buffer, and frees after. Matches interp.
     use std::io::Write;
     let dir = std::env::temp_dir();
@@ -632,9 +632,9 @@ fn ffi_struct_array() {
 
     let src = format!(
         "$ @mod M\n\
-         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
-         $ sum_ps : {{ps: @vec P, n: @int}} -> @int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
-         $ test : @int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
+         $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
+         $ sum_ps : {{ps: @Vec P, n: @Int}} -> @Int = @extern \"C\" \"sum_ps\" \"{lib}\"\n\
+         $ test : @Int = sum_ps {{[P.{{ .x = 1, .y = 2 }}, P.{{ .x = 3, .y = 4 }}, P.{{ .x = 5, .y = 6 }}], 3}}",
         lib = thx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "102");
@@ -727,9 +727,9 @@ fn ffi_callback() {
 
     let src = format!(
         "$ @mod M\n\
-         $ call_twice : (@int -> @int -> @int) -> @int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
-         $ k : @int = 10\n\
-         $ test : @int = call_twice (\\a b = a + b + k)",
+         $ call_twice : (@Int -> @Int -> @Int) -> @Int = @extern \"C\" \"call_twice\" \"{lib}\"\n\
+         $ k : @Int = 10\n\
+         $ test : @Int = call_twice (\\a b = a + b + k)",
         lib = thx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "1317");
@@ -785,12 +785,12 @@ fn ffi_c_union_by_value() {
 
     let src = format!(
         "$ @mod M\n\
-         $ U : @union @extern \"C\" = i: @int, d: @float64,\n\
-         $ u_as_long : U -> @int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
-         $ u_from_long : @int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
-         $ built : @int = u_as_long (U.{{ .i = 42 }})\n\
-         $ back  : @int = (u_from_long 99).i\n\
-         $ test  : @int = built * 1000 + back",
+         $ U : @union @extern \"C\" = i: @Int, d: @Float64,\n\
+         $ u_as_long : U -> @Int = @extern \"C\" \"u_as_long\" \"{lib}\"\n\
+         $ u_from_long : @Int -> U = @extern \"C\" \"u_from_long\" \"{lib}\"\n\
+         $ built : @Int = u_as_long (U.{{ .i = 42 }})\n\
+         $ back  : @Int = (u_from_long 99).i\n\
+         $ test  : @Int = built * 1000 + back",
         lib = thx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "42099");
@@ -843,11 +843,11 @@ fn ffi_nested_struct_by_value() {
 
     let src = format!(
         "$ @mod M\n\
-         $ P : @struct @extern \"C\" = x: @int, y: @int,\n\
+         $ P : @struct @extern \"C\" = x: @Int, y: @Int,\n\
          $ Seg : @struct @extern \"C\" = a: P, b: P,\n\
-         $ seg_sum : Seg -> @int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
-         $ seg_make : @int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
-         $ test : @int = seg_sum (seg_make 1)",
+         $ seg_sum : Seg -> @Int = @extern \"C\" \"seg_sum\" \"{lib}\"\n\
+         $ seg_make : @Int -> Seg = @extern \"C\" \"seg_make\" \"{lib}\"\n\
+         $ test : @Int = seg_sum (seg_make 1)",
         lib = thx_path(&so_path)
     );
     assert_eq!(interp_show(&src, "test"), "4321");
@@ -880,9 +880,9 @@ fn open_range_stream() {
     // `Stream`, `count_from`, and `range` come from CORE (`[lo ...]` /
     // `[lo ... hi]` lower to them), so the test uses those and defines only `len`.
     let src = "$ @mod M\n\
-               $ len : @vec @int -> @int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
-               $ s : Stream @int = [3 ...]\n\
-               $ test : @int = s.head + s.tail.head + len [1 ... 4]\n";
+               $ len : @Vec @Int -> @Int = \\xs = is xs | [] => 0 | h :: t => 1 + len t\n\
+               $ s : Stream @Int = [3 ...]\n\
+               $ test : @Int = s.head + s.tail.head + len [1 ... 4]\n";
     assert_matches(src, "test");
 }
 
@@ -890,25 +890,25 @@ fn open_range_stream() {
 fn open_range_pattern() {
     // `lo ...` is an open range pattern, matching when `lo <= x` (one test).
     let src = "$ @mod M\n\
-               $ sign : @int -> @str = \\n = is n | 0 ... => \"nonneg\" | _ => \"neg\"\n\
-               $ test : @str = sign 3\n";
+               $ sign : @Int -> @Str = \\n = is n | 0 ... => \"nonneg\" | _ => \"neg\"\n\
+               $ test : @Str = sign 3\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn recursion_fib() {
     let src = "$ @mod T\n\
-               $ fib : @int -> @int = \\n =\n\
+               $ fib : @Int -> @Int = \\n =\n\
                \tif n == 0 => 0 else if n == 1 => 1 else (fib (n-1)) + (fib (n-2))\n\
-               $ test : @int = fib 15\n";
+               $ test : @Int = fib 15\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn higher_order_and_let() {
     let src = "$ @mod T\n\
-               $ apply2 : (@int -> @int) -> @int -> @int = \\f x = f (f x)\n\
-               $ test : @int =\n\
+               $ apply2 : (@Int -> @Int) -> @Int -> @Int = \\f x = f (f x)\n\
+               $ test : @Int =\n\
                \tlet inc = \\x = x + 1\n\
                \t in apply2 inc 40\n";
     assert_matches(src, "test");
@@ -917,10 +917,10 @@ fn higher_order_and_let() {
 #[test]
 fn structs_and_fields() {
     let src = "$ @mod T\n\
-               $ Point : @struct = x: @int, y: @int,\n\
+               $ Point : @struct = x: @Int, y: @Int,\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
-               $ sx : @int = p.x + p.y\n\
-               $ test : @int = sx\n";
+               $ sx : @Int = p.x + p.y\n\
+               $ test : @Int = sx\n";
     assert_matches(src, "p");
     assert_matches(src, "test");
 }
@@ -928,32 +928,32 @@ fn structs_and_fields() {
 #[test]
 fn variants_and_when() {
     let src = "$ @mod T\n\
-               $ Shape : @union = Dot: {}, Seg: { @int }\n\
-               $ size : Shape -> @int = \\s =\n\
+               $ Shape : @union = Dot: {}, Seg: { @Int }\n\
+               $ size : Shape -> @Int = \\s =\n\
                \tis s | Shape.Dot => 0 | Shape.Seg.{n} => n\n\
-               $ test : @int = size (Shape.Seg.{7}) - size Shape.Dot\n";
+               $ test : @Int = size (Shape.Seg.{7}) - size Shape.Dot\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn lists_and_length() {
     let src = "$ @mod T\n\
-               $ len : @vec t -> @int =\n\
-               \tlet helper : @vec t -> @int -> @int = \\l n =\n\
+               $ len : @Vec t -> @Int =\n\
+               \tlet helper : @Vec t -> @Int -> @Int = \\l n =\n\
                \t\tis l | [] => n | _ :: xs => helper xs (n + 1)\n\
                \t in \\l = helper l 0\n\
-               $ xs : @vec @int = [1, 2, 3]\n\
-               $ test : @int = len xs\n";
+               $ xs : @Vec @Int = [1, 2, 3]\n\
+               $ test : @Int = len xs\n";
     assert_matches(src, "test");
 }
 
 #[test]
 fn strings_and_arrays() {
     let src = "$ @mod T\n\
-               $ s : @str = \"ab\" ++ \"cd\"\n\
-               $ n : @int = @array_len s\n\
-               $ g : @int = @array_get s 1\n\
-               $ test : @int = n + g\n";
+               $ s : @Str = \"ab\" ++ \"cd\"\n\
+               $ n : @Int = @array_len s\n\
+               $ g : @Int = @array_get s 1\n\
+               $ test : @Int = n + g\n";
     assert_matches(src, "s");
     assert_matches(src, "n");
     assert_matches(src, "test");
@@ -963,8 +963,8 @@ fn strings_and_arrays() {
 fn tuples() {
     let src = "$ @mod T\n\
                $ t = {1, 2, 3}\n\
-               $ mid : @int = t.1\n\
-               $ test : @int = mid\n";
+               $ mid : @Int = t.1\n\
+               $ test : @Int = mid\n";
     assert_matches(src, "t");
     assert_matches(src, "test");
 }
@@ -1003,13 +1003,13 @@ fn effects_multi_shot_through_a_stored_continuation() {
     // Nothing in the clause bounds the uses of a stashed `k`, so driving the same
     // suspension twice must run the remainder twice (1 + 2 + 2).
     let src = "$ @mod M\n\
-               $ Co : @effect = step : @int -> {},\n\
-               $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },\n\
+               $ Co : @effect = step : @Int -> {},\n\
+               $ Task : @union = Fin: {}, Susp: { @Int, {} -> Task },\n\
                $ spawn : ({} -> <Co> {}) -> Task =\n\
                \t\\t = do t {} ctl k | step v => Task.Susp.{ v, k } | _ => Task.Fin.{}\n\
-               $ drive : Task -> @int =\n\
+               $ drive : Task -> @Int =\n\
                \t\\t = is t | Task.Fin.{} => 0 | Task.Susp.{ v, k } => v + drive (k {}) | _ => 0\n\
-               $ test : @int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {}))\n\
+               $ test : @Int = is spawn (\\_ = let _ = step 1 in (let _ = step 2 in {}))\n\
                \t| Task.Susp.{ v, k } => v + drive (k {}) + drive (k {}) | _ => 0\n";
     assert_matches(src, "test");
 }
@@ -1038,15 +1038,15 @@ fn effects_pipes_and_seq() {
     assert_example("PIPES.thx", "test");
 }
 
-// -- FFI marshalling (sized numerics + @ptr) --------------------------------
+// -- FFI marshalling (sized numerics + @Ptr) --------------------------------
 
 #[test]
 fn sized_extern_marshalling() {
     // A foreign binding with sized / pointer / float32 arguments emits each
     // argument's exact C ABI type in its wrapper (not a word-size fallback).
     let src = "$ @mod T\n\
-               $ f : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = @extern \"C\" \"f\" \"libx\"\n\
-               $ test : {a: @int8, b: @int32, c: @nat16, d: @float32, e: @ptr} -> @float64 = \\r = f r\n";
+               $ f : {a: @Int8, b: @Int32, c: @Nat16, d: @Float32, e: @Ptr} -> @Float64 = @extern \"C\" \"f\" \"libx\"\n\
+               $ test : {a: @Int8, b: @Int32, c: @Nat16, d: @Float32, e: @Ptr} -> @Float64 = \\r = f r\n";
     let lowered = lower(src);
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     // The wrapper's symbol declaration carries the exact C ABI types, in order.
@@ -1058,18 +1058,18 @@ fn sized_extern_marshalling() {
         decl.contains("double THx_sym_0(int8_t, int32_t, uint16_t, float, void*)"),
         "wrong C ABI signature: {decl}"
     );
-    // @float32 narrows the double slot to a float; a sized int casts to its width.
+    // @Float32 narrows the double slot to a float; a sized int casts to its width.
     assert!(code.contains("float a3 = (float)THxVALUE_as_num(args[3]);"));
     assert!(code.contains("int8_t a0 = (int8_t)THxVALUE_as_int(args[0]);"));
 }
 
 #[test]
 fn sized_extern_runs_and_matches() {
-    // A real libc call through a sized signature (`strlen : @str -> @nat64`, wrapped
+    // A real libc call through a sized signature (`strlen : @Str -> @Nat64`, wrapped
     // as `uint64_t(char*)`) runs and agrees with the interpreter's host table.
     let src = "$ @mod T\n\
-               $ strlen : @str -> @nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
-               $ test : @nat64 = strlen \"hello\"\n";
+               $ strlen : @Str -> @Nat64 = @extern \"C\" \"strlen\" \"libc\"\n\
+               $ test : @Nat64 = strlen \"hello\"\n";
     assert_matches(src, "test");
 }
 
@@ -1079,14 +1079,14 @@ fn literal_construction_hooks_match_interpreter() {
     // the interpreter: the literal builds the user type (wrapped in the resolved
     // instance's method), while a default-typed literal stays folded.
     let src = "$ @mod M\n\
-               $ Wrap : @struct = n: @int\n\
+               $ Wrap : @struct = n: @Int\n\
                $ il : @IIntLit Wrap = .{ .of_int = \\x = Wrap.{ .n = x } }\n\
-               $ Bag : @union a = Items: {@vec a}\n\
+               $ Bag : @union a = Items: {@Vec a}\n\
                $ ql : @ISeqLit a (Bag a) = .{ .of_vec = \\v = Bag.Items.{ v } }\n\
                $ w : Wrap = 40\n\
-               $ bag : Bag @int = [1, 2]\n\
-               $ plain : @int = 5\n\
-               $ r : @int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v | _ => 0)"; // 40+5+2
+               $ bag : Bag @Int = [1, 2]\n\
+               $ plain : @Int = 5\n\
+               $ r : @Int = w.n + plain + (is bag | Bag.Items.{v} => @vec_len v | _ => 0)"; // 40+5+2
     assert_matches(src, "r");
 }
 
@@ -1097,7 +1097,7 @@ fn complex_numbers_match_interpreter() {
     let src = "$ @mod M\n\
                $ a : Cpx = Cpx.{ 3.0, 0.0 } + 4.0i\n\
                $ b : Cpx = Cpx.{ 1.0, 0.0 } - 2.0i\n\
-               $ r : @str = to_string (a + b) ++ to_string (a * b)\n\
+               $ r : @Str = to_string (a + b) ++ to_string (a * b)\n\
                \t++ to_string (a / b) ++ to_string (-a) ++ to_string (2.5e-2i)\n";
     assert_matches(src, "r");
 }
@@ -1107,10 +1107,10 @@ fn tensor_of_structs_matches_interpreter() {
     // A tensor element that is a STRUCT is not a nested tensor. The C runtime used
     // to tell the two apart by tag alone (every struct shares it) and faulted here.
     let src = "$ @mod M\n\
-               $ P : @struct = x: @float64, y: @float64,\n\
+               $ P : @struct = x: @Float64, y: @Float64,\n\
                $ ps : [2]P = [P.{ 1.0, 2.0 }, P.{ 3.0, 4.0 }]\n\
                $ zs : [2]Cpx = [Cpx.{ 1.0, 0.0 } + 1.0i, Cpx.{ 2.0, 0.0 }]\n\
-               $ r : @str = to_string (@tensor_index ps 1).y\n\
+               $ r : @Str = to_string (@tensor_index ps 1).y\n\
                \t++ to_string (@tensor_length ps) ++ to_string (@tensor_index zs 0)\n";
     assert_matches(src, "r");
 }
@@ -1118,16 +1118,16 @@ fn tensor_of_structs_matches_interpreter() {
 #[test]
 fn bracket_hooks_match_interpreter() {
     // The rest of the `[..]` surface is interface-driven too: ranges, `::`, slices,
-    // and `@array` literals/patterns must lower the same on the C backend.
+    // and `@Array` literals/patterns must lower the same on the C backend.
     let src = "$ @mod M\n\
-               $ Span : @struct = lo: @int, hi: @int\n\
-               $ rg : @IRange @int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
+               $ Span : @struct = lo: @Int, hi: @Int\n\
+               $ rg : @IRange @Int Span = .{ .range = \\lo hi = Span.{ lo, hi } }\n\
                $ s : Span = [2 ... 6]\n\
-               $ v : @vec @int = [1 ... 4]\n\
-               $ w : @vec @int = 9 :: v.[1 ... 2]\n\
-               $ b : @array = [7, 8, 9]\n\
-               $ head : @array -> @int = \\a = is a | [x, ..r] => x + @array_len r | _ => 0\n\
-               $ r : @int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
+               $ v : @Vec @Int = [1 ... 4]\n\
+               $ w : @Vec @Int = 9 :: v.[1 ... 2]\n\
+               $ b : @Array = [7, 8, 9]\n\
+               $ head : @Array -> @Int = \\a = is a | [x, ..r] => x + @array_len r | _ => 0\n\
+               $ r : @Int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
     // 4 + 4 + 9 + (7+2)
     assert_matches(src, "r");
 }
@@ -1137,16 +1137,16 @@ fn pattern_hooks_match_interpreter() {
     // Literal patterns (via `IEq`) and sequence patterns (via `@ISeqView`) on user
     // types must lower the same on the C backend as on the interpreter.
     let src = "$ @mod M\n\
-               $ Stack : @struct a = items: @vec a\n\
+               $ Stack : @struct a = items: @Vec a\n\
                $ sv : @ISeqView (Stack a) a = .{\n\
                \t.view = \\s = is s.items | h :: t => SeqView.More.{ h, Stack.{ .items = t } } | _ => SeqView.Empty,\n\
                }\n\
-               $ MyStr : @struct = bytes: @str\n\
+               $ MyStr : @struct = bytes: @Str\n\
                $ sl : @IStrLit MyStr = .{ .of_str = \\s = MyStr.{ .bytes = s } }\n\
                $ eq_mystr : IEq MyStr = .{ .eq = \\a b = a.bytes == b.bytes }\n\
-               $ tag : MyStr -> @int = \\s = is s | \"hi\" => 1 | _ => 0\n\
-               $ len2 : Stack @int -> @int = \\s = is s | [x, y] => x + y | h :: t => h | _ => 0\n\
-               $ r : @int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
+               $ tag : MyStr -> @Int = \\s = is s | \"hi\" => 1 | _ => 0\n\
+               $ len2 : Stack @Int -> @Int = \\s = is s | [x, y] => x + y | h :: t => h | _ => 0\n\
+               $ r : @Int = tag \"hi\" * 100 + len2 (Stack.{ .items = [4, 5] })"; // 100 + 9
     assert_matches(src, "r");
 }
 
@@ -1158,9 +1158,9 @@ fn recursive_union_slot_is_lazy() {
     // interpreter; without it this diverges.
     let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
-               $ from : @int -> L @int = \\n = L.C.{ n, from (n + 1) }\n\
-               $ hd : L @int -> @int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
-               $ test : @int = hd (from 7)";
+               $ from : @Int -> L @Int = \\n = L.C.{ n, from (n + 1) }\n\
+               $ hd : L @Int -> @Int = \\l = is l | L.C.{h, t} => h | _ => 0\n\
+               $ test : @Int = hd (from 7)";
     assert_matches(src, "test");
 }
 
@@ -1170,10 +1170,10 @@ fn a_lazy_slot_is_forced_once() {
     // finds the spine already built.
     let src = "$ @mod M\n\
                $ L : @union a = N: {}, C: {a, L a},\n\
-               $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-               $ sum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
-               $ xs : L @int = mk 5\n\
-               $ test : @int = sum xs 0 + sum xs 0";
+               $ mk : @Int -> L @Int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+               $ sum : L @Int -> @Int -> @Int = \\l acc = is l | L.C.{h, t} => sum t (acc + h) | _ => acc\n\
+               $ xs : L @Int = mk 5\n\
+               $ test : @Int = sum xs 0 + sum xs 0";
     assert_matches(src, "test");
 }
 
@@ -1181,8 +1181,8 @@ fn a_lazy_slot_is_forced_once() {
 fn a_self_referential_lazy_global_is_not_a_cycle_at_definition() {
     let src = "$ @mod M\n\
                $ S : @struct t = head : t, tail : S t\n\
-               $ ones : S @int = { .head = 1, .tail = ones }\n\
-               $ test : @int = ones.tail.tail.tail.head";
+               $ ones : S @Int = { .head = 1, .tail = ones }\n\
+               $ test : @Int = ones.tail.tail.tail.head";
     assert_matches(src, "test");
 }
 
@@ -1191,9 +1191,9 @@ fn for_over_a_lazy_list_stops_at_break() {
     // `for` over a List walks the spine a cons at a time, so an unbounded list is
     // fine as long as the body breaks: only the cells reached are ever built.
     let src = "$ @mod M\n\
-               $ Acc : @effect = add : @int -> {},\n\
-               $ from : @int -> List @int = \\n = List.Cons.{ n, from (n + 1) }\n\
-               $ test : @int =\n\
+               $ Acc : @effect = add : @Int -> {},\n\
+               $ from : @Int -> List @Int = \\n = List.Cons.{ n, from (n + 1) }\n\
+               $ test : @Int =\n\
                \tdo for (from 1) (\\x = if x > 5 => break {} else Acc.add x)\n\
                \tctl k | Acc.add n => n + k {}\n\
                \t      | r => 0\n";
@@ -1205,12 +1205,12 @@ fn sized_integers_wrap_into_their_range() {
     // Both engines hold an integer as one 64-bit value, so sized arithmetic and
     // `@cast` must wrap the result into the type's range, identically.
     let src = "$ @mod T\n\
-               $ add8 : @int = let x : @nat8 = 200 in let y : @nat8 = x + 100 in let r : @int = @cast y in r\n\
-               $ sadd8 : @int = let x : @int8 = 100 in let y : @int8 = x + 100 in let r : @int = @cast y in r\n\
-               $ narrow : @int = let m : @int8 = @cast 250 in let r : @int = @cast m in r\n\
-               $ unarrow : @int = let m : @nat16 = @cast (0 - 1) in let r : @int = @cast m in r\n\
-               $ sdiv : @int = let a : @int8 = -128 in let b : @int8 = -1 in let q : @int8 = a / b in let r : @int = @cast q in r\n\
-               $ ranged : @int = let m : @int8 = @cast 250 in is m | -128 ... -1 => 1 | 0 ... => 2\n";
+               $ add8 : @Int = let x : @Nat8 = 200 in let y : @Nat8 = x + 100 in let r : @Int = @cast y in r\n\
+               $ sadd8 : @Int = let x : @Int8 = 100 in let y : @Int8 = x + 100 in let r : @Int = @cast y in r\n\
+               $ narrow : @Int = let m : @Int8 = @cast 250 in let r : @Int = @cast m in r\n\
+               $ unarrow : @Int = let m : @Nat16 = @cast (0 - 1) in let r : @Int = @cast m in r\n\
+               $ sdiv : @Int = let a : @Int8 = -128 in let b : @Int8 = -1 in let q : @Int8 = a / b in let r : @Int = @cast q in r\n\
+               $ ranged : @Int = let m : @Int8 = @cast 250 in is m | -128 ... -1 => 1 | 0 ... => 2\n";
     for (entry, want) in [
         ("add8", "44"),
         ("sadd8", "-56"),
@@ -1229,33 +1229,33 @@ fn sized_integers_wrap_into_their_range() {
 /// Tasks over global data (immortal), over local data (marked shared), nested
 /// tasks, a structured result, and a lazy list several tasks force at once.
 const PAR_SRC: &str = "$ @mod M\n\
-    $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-    $ build : @int -> @int -> @vec @int -> @vec @int = \\i n acc =\n\
+    $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+    $ build : @Int -> @Int -> @Vec @Int -> @Vec @Int = \\i n acc =\n\
     \tif i >= n => acc else build (i + 1) n (@vec_push acc (fib (i % 15)))\n\
-    $ table : @vec @int = build 0 200 (@vec_new {})\n\
-    $ sum_from : @vec @int -> @int -> @int -> @int -> @int = \\v i hi acc =\n\
+    $ table : @Vec @Int = build 0 200 (@vec_new {})\n\
+    $ sum_from : @Vec @Int -> @Int -> @Int -> @Int -> @Int = \\v i hi acc =\n\
     \tif i >= hi => acc else sum_from v (i + 1) hi (acc + @vec_get v i)\n\
-    $ chunk : @int -> @future @int = \\k = @par (\\u = sum_from table (k * 20) (k * 20 + 20) 0)\n\
-    $ spawn_all : @int -> @vec (@future @int) -> @vec (@future @int) = \\k acc =\n\
+    $ chunk : @Int -> @Future @Int = \\k = @par (\\u = sum_from table (k * 20) (k * 20 + 20) 0)\n\
+    $ spawn_all : @Int -> @Vec (@Future @Int) -> @Vec (@Future @Int) = \\k acc =\n\
     \tif k >= 10 => acc else spawn_all (k + 1) (@vec_push acc (chunk k))\n\
-    $ join : @vec (@future @int) -> @int -> @int -> @int = \\fs i acc =\n\
+    $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =\n\
     \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
-    $ nested : @int = @await (@par (\\u = @await (@par (\\w = fib 18)) + @await (@par (\\w = fib 17))))\n\
-    $ local_par : @int -> @int = \\n =\n\
+    $ nested : @Int = @await (@par (\\u = @await (@par (\\w = fib 18)) + @await (@par (\\w = fib 17))))\n\
+    $ local_par : @Int -> @Int = \\n =\n\
     \tlet v = build 0 n (@vec_new {}) in\n\
     \tlet a = @par (\\u = sum_from v 0 (n / 2) 0) in\n\
     \tlet b = @par (\\u = sum_from v (n / 2) n 0) in\n\
     \t@await a + @await b\n\
     $ L : @union a = N: {}, C: {a, L a},\n\
-    $ mk : @int -> L @int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
-    $ lsum : L @int -> @int -> @int = \\l acc = is l | L.C.{h, t} => lsum t (acc + h) | _ => acc\n\
-    $ shared_list : @int -> @int = \\n =\n\
+    $ mk : @Int -> L @Int = \\n = if n == 0 => L.N else L.C.{ n, mk (n - 1) }\n\
+    $ lsum : L @Int -> @Int -> @Int = \\l acc = is l | L.C.{h, t} => lsum t (acc + h) | _ => acc\n\
+    $ shared_list : @Int -> @Int = \\n =\n\
     \tlet l = mk n in\n\
     \tlet a = @par (\\u = lsum l 0) in\n\
     \tlet b = @par (\\u = lsum l 1) in\n\
     \t@await a + @await b + lsum l 0\n\
-    $ pair : {@int, @str} = @await (@par (\\u = {fib 10, \"ten\"}))\n\
-    $ test : {@int, @int, @int, @int, {@int, @str}} =\n\
+    $ pair : {@Int, @Str} = @await (@par (\\u = {fib 10, \"ten\"}))\n\
+    $ test : {@Int, @Int, @Int, @Int, {@Int, @Str}} =\n\
     \t{join (spawn_all 0 (@vec_new {})) 0 0, nested, local_par 300, shared_list 400, pair}\n";
 
 #[test]
@@ -1333,14 +1333,14 @@ fn tsan_clean(src: &str) {
 /// A continuation captured inside a task and resumed on another thread: a
 /// generator a task suspends and the main thread drains, and one resumed twice.
 const PAR_RESUME_SRC: &str = "$ @mod M\n\
-    $ Yield : @effect = yield : @int -> {},\n\
-    $ Gen : @union = Done: {}, More: {@int, {} -> Gen},\n\
+    $ Yield : @effect = yield : @Int -> {},\n\
+    $ Gen : @union = Done: {}, More: {@Int, {} -> Gen},\n\
     $ gen : ({} -> <Yield> {}) -> Gen = \\t =\n\
     \tdo t {} ctl k | Yield.yield v => Gen.More.{ v, k } | _ => Gen.Done.{}\n\
-    $ count : @int -> @int -> <Yield> {} = \\i n = if i > n => {} else (Yield.yield i; count (i + 1) n)\n\
-    $ sum : Gen -> @int -> @int = \\g acc = is g | Gen.More.{ v, k } => sum (k {}) (acc + v) | _ => acc\n\
-    $ twice : Gen -> @int = \\g = is g | Gen.More.{ v, k } => sum (k {}) 0 + sum (k {}) 0 | _ => 0\n\
-    $ test : {@int, @int, @int} =\n\
+    $ count : @Int -> @Int -> <Yield> {} = \\i n = if i > n => {} else (Yield.yield i; count (i + 1) n)\n\
+    $ sum : Gen -> @Int -> @Int = \\g acc = is g | Gen.More.{ v, k } => sum (k {}) (acc + v) | _ => acc\n\
+    $ twice : Gen -> @Int = \\g = is g | Gen.More.{ v, k } => sum (k {}) 0 + sum (k {}) 0 | _ => 0\n\
+    $ test : {@Int, @Int, @Int} =\n\
     \tlet a = @par (\\u = gen (\\w = count 1 100)) in\n\
     \tlet b = @par (\\u = gen (\\w = count 1 10)) in\n\
     \tlet c = @par (\\u = @await (@par (\\w = gen (\\x = count 5 9)))) in\n\
@@ -1356,7 +1356,7 @@ fn a_continuation_resumes_on_another_thread() {
 
 #[test]
 fn a_sequential_program_gets_the_single_threaded_runtime() {
-    let lowered = lower("$ @mod M\n$ test : @int = 1 + 2\n");
+    let lowered = lower("$ @mod M\n$ test : @Int = 1 + 2\n");
     let code = ccg::emit(&lowered, "test", ccg::Entry::Show, utilities::Target::host());
     assert!(!code.contains("#define THRAX_THREADS"));
 }
@@ -1366,27 +1366,27 @@ fn an_unawaited_task_is_dropped_cleanly() {
     // The future dies unawaited: whichever thread finishes with the task last
     // frees it, and the leak check still balances.
     let src = "$ @mod M\n\
-               $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ spin : @int -> @int -> @int = \\k acc =\n\
+               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ spin : @Int -> @Int -> @Int = \\k acc =\n\
                \tif k == 0 => acc else let f = @par (\\u = fib 15) in spin (k - 1) (acc + 1)\n\
-               $ test : @int = spin 50 0";
+               $ test : @Int = spin 50 0";
     assert_matches(src, "test");
 }
 
 #[test]
 fn spawned_tasks_perform_io_on_worker_threads() {
-    // `@spawn` admits `@io`: each task prints from whichever thread runs it. The
+    // `@spawn` admits `@IO`: each task prints from whichever thread runs it. The
     // lines come out in any order, so they are compared as a set.
     let src = "$ @mod MAIN\n\
-               $ puts : @str -> @int32 = @extern \"C\" \"puts\" \"libc\"\n\
-               $ fib : @int -> @int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
-               $ work : @int -> {} -> <@io> @int = \\k u =\n\
+               $ puts : @Str -> @Int32 = @extern \"C\" \"puts\" \"libc\"\n\
+               $ fib : @Int -> @Int = \\n = if n < 2 => n else fib (n - 1) + fib (n - 2)\n\
+               $ work : @Int -> {} -> <@IO> @Int = \\k u =\n\
                \tlet r = fib (15 + k % 3) in puts (\"task \" ++ to_string k); r\n\
-               $ spawn_n : @int -> @vec (@future @int) -> <@io> @vec (@future @int) = \\k acc =\n\
+               $ spawn_n : @Int -> @Vec (@Future @Int) -> <@IO> @Vec (@Future @Int) = \\k acc =\n\
                \tif k == 0 => acc else spawn_n (k - 1) (@vec_push acc (@spawn (work k)))\n\
-               $ join : @vec (@future @int) -> @int -> @int -> @int = \\fs i acc =\n\
+               $ join : @Vec (@Future @Int) -> @Int -> @Int -> @Int = \\fs i acc =\n\
                \tif i >= @vec_len fs => acc else join fs (i + 1) (acc + @await (@vec_get fs i))\n\
-               $ @main : @vec @str -> <@io> @int = \\args = join (spawn_n 8 (@vec_new {})) 0 0 % 251\n";
+               $ @main : @Vec @Str -> <@IO> @Int = \\args = join (spawn_n 8 (@vec_new {})) 0 0 % 251\n";
     let (exit, stdout) = c_run_entry(src, &[]);
     let fib = |n: i64| -> i64 {
         let (mut a, mut b) = (0i64, 1i64);

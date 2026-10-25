@@ -8,14 +8,14 @@ $ @mod REACH
 
 $ with REACH_MID
 
-$ count : @int = @vec_len (bag {}).items
-$ total : @int = (@vec_get (bag {}).items 0).v + (@vec_get (bag {}).items 1).v
-$ best : @int = (bag {}).best.v
+$ count : @Int = @vec_len (bag {}).items
+$ total : @Int = (@vec_get (bag {}).items 0).v + (@vec_get (bag {}).items 1).v
+$ best : @Int = (bag {}).best.v
 
-$ chk_count : @int = if count == 2 => 0 else 1
-$ chk_total : @int = if total == 42 => 0 else 1
-$ chk_best  : @int = if best == 7 => 0 else 1
+$ chk_count : @Int = if count == 2 => 0 else 1
+$ chk_total : @Int = if total == 42 => 0 else 1
+$ chk_best : @Int = if best == 7 => 0 else 1
 
-$ test : @int = chk_count + chk_total + chk_best
+$ test : @Int = chk_count + chk_total + chk_best
 
 $ @e <| assert (test == 0) "REACH: a check failed"

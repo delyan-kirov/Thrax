@@ -1,4 +1,4 @@
 $ @mod RANGE_FROM_NO_INSTANCE
 
-# A `@vec` is finite, so it has no open-range instance.
-$ r : @vec @int = [1 ...]  #~ error[TYPE_MISMATCH]: no `@IRangeFrom` instance builds a `@vec @int` from this range
+# A `@Vec` is finite, so it has no open-range instance.
+$ r : @Vec @Int = [1 ...]  #~ error[TYPE_MISMATCH]: no `@IRangeFrom` instance builds a `@Vec @Int` from this range

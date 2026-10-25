@@ -1,7 +1,7 @@
 $ @mod ROW_ALIAS_AS_TYPE
 
-$ Log : @effect = log : @str -> {},
-$ Gpu : @effect = draw : @int -> {},
+$ Log : @effect = log : @Str -> {},
+$ Gpu : @effect = draw : @Int -> {},
 $ App : @alias = <Gpu, Log>
 
 $ x : App = 3  #~ error[TYPE_MISMATCH]: `App` is an effect row alias, not a type

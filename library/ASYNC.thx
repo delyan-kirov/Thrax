@@ -14,7 +14,7 @@ $ @mod ASYNC
 #       `<Async m e | e>`). `run_async main` is a task group: it returns once no
 #       task in it can run, with `main`'s result, or `None` when `main` never
 #       finished (every remaining task is blocked: a deadlock). `run_io` is the
-#       same group for tasks that may perform `@io`: when every task is blocked
+#       same group for tasks that may perform `@IO`: when every task is blocked
 #       and some wait on descriptors, it sleeps in poll(2) until one is ready,
 #       where `run_async` stops. Scheduling is otherwise deterministic, so both
 #       engines run a group identically.
@@ -22,30 +22,28 @@ $ @mod ASYNC
 $ with OPT
 
 # A channel of the group, carrying messages of type `m`.
-$ Chan : @struct m = id: @int,
+$ Chan : @struct m = id: @Int,
 
 $ Async : @effect m e =
-	spawn : ({} -> <Async m e | e> {}) -> {},
-	yield : {} -> {},
-	chan : @int -> Chan m,
-	send : {Chan m, m} -> {},
-	recv : Chan m -> m,
-	wait_fd : {@int, @int} -> {},
+    spawn : ({} -> <Async m e | e> {}) -> {},
+    yield : {} -> {},
+    chan : @Int -> Chan m,
+    send : { Chan m, m } -> {},
+    recv : Chan m -> m,
+    wait_fd : { @Int, @Int } -> {},
 
 # poll(2) event bits for `wait_fd`. Hang-up and errors are always reported, so a
 # reader waiting on `pollin` also wakes at the end of its input.
-$ pollin : @int = 1
-$ pollout : @int = 4
+$ pollin : @Int = 1
+$ pollout : @Int = 4
 
 # Run `main` and every task it spawns to completion (see the module notes). A
 # task waiting on a descriptor is never woken here, so it counts as blocked.
-$ run_async : ({} -> <Async m e | e> a) -> <e> Option a = \main =
-	run_with (\fds = @vec_new {}) main
+$ run_async : ({} -> <Async m e | e> a) -> <e> Option a = \main = run_with (\fds = @vec_new {}) main
 
-# `run_async` for tasks that may perform `@io`: a group whose every task is
+# `run_async` for tasks that may perform `@IO`: a group whose every task is
 # blocked, some on descriptors, sleeps in poll(2) until one is ready.
-$ run_io : ({} -> <Async, @io | e> a) -> <@io | e> Option a = \main =
-	run_with poll_ready main
+$ run_io : ({} -> <Async, @IO | e> a) -> <@IO | e> Option a = \main = run_with poll_ready main
 
 # ---- internals ----
 
@@ -55,212 +53,209 @@ $ @private
 # `main`), or performed an operation, which the scheduler serves with the
 # continuation `k` it hands over.
 $ Step : @union m e a =
-	Done: Option a,
-	Yielded: ({} -> <e> Step m e a),
-	Spawned: {{} -> <Async m e | e> {}, {} -> <e> Step m e a},
-	Made: {@int, Chan m -> <e> Step m e a},
-	Sent: {Chan m, m, {} -> <e> Step m e a},
-	Wants: {Chan m, m -> <e> Step m e a},
-	Waits: {@int, @int, {} -> <e> Step m e a},
+    Done: Option a,
+    Yielded: ({} -> <e> Step m e a),
+    Spawned: { {} -> <Async m e | e> {}, {} -> <e> Step m e a },
+    Made: { @Int, Chan m -> <e> Step m e a },
+    Sent: { Chan m, m, {} -> <e> Step m e a },
+    Wants: { Chan m, m -> <e> Step m e a },
+    Waits: { @Int, @Int, {} -> <e> Step m e a },
 
 $ step_main : ({} -> <Async m e | e> a) -> <e> Step m e a = \t =
-	do t {}
-	ctl k
-	| Async.spawn c => Step.Spawned.{ c, k }
-	| Async.yield u => Step.Yielded.{ k }
-	| Async.chan n => Step.Made.{ n, k }
-	| Async.send m => Step.Sent.{ m.0, m.1, k }
-	| Async.recv c => Step.Wants.{ c, k }
-	| Async.wait_fd w => Step.Waits.{ w.0, w.1, k }
-	| r => Step.Done.{ Option.Some.{ r } }
+    do t {}
+    ctl k
+    | Async.spawn c => Step.Spawned.{ c, k }
+    | Async.yield u => Step.Yielded.{ k }
+    | Async.chan n => Step.Made.{ n, k }
+    | Async.send m => Step.Sent.{ m.0, m.1, k }
+    | Async.recv c => Step.Wants.{ c, k }
+    | Async.wait_fd w => Step.Waits.{ w.0, w.1, k }
+    | r => Step.Done.{ Option.Some.{ r } }
 
 $ step_child : ({} -> <Async m e | e> {}) -> <e> Step m e a = \t =
-	do t {}
-	ctl k
-	| Async.spawn c => Step.Spawned.{ c, k }
-	| Async.yield u => Step.Yielded.{ k }
-	| Async.chan n => Step.Made.{ n, k }
-	| Async.send m => Step.Sent.{ m.0, m.1, k }
-	| Async.recv c => Step.Wants.{ c, k }
-	| Async.wait_fd w => Step.Waits.{ w.0, w.1, k }
-	| _ => Step.Done.{ Option.None }
+    do t {}
+    ctl k
+    | Async.spawn c => Step.Spawned.{ c, k }
+    | Async.yield u => Step.Yielded.{ k }
+    | Async.chan n => Step.Made.{ n, k }
+    | Async.send m => Step.Sent.{ m.0, m.1, k }
+    | Async.recv c => Step.Wants.{ c, k }
+    | Async.wait_fd w => Step.Waits.{ w.0, w.1, k }
+    | _ => Step.Done.{ Option.None }
 
 # A FIFO queue: pushed onto `back`, popped from `front`, `back` reversed into
 # `front` when it runs dry.
 $ Queue : @struct t =
-	front: List t,
-	back: List t,
+    front: List t,
+    back: List t,
 
 $ q_empty : {} -> Queue t = \u = Queue.{ .front = List.Nil, .back = List.Nil }
 
 $ q_push : Queue t -> t -> Queue t = \q x = Queue.{ .back = List.Cons.{ x, q.back } | q }
 
-$ q_pop : Queue t -> Option {t, Queue t} = \q =
-	is q.front
-	| List.Cons.{ x, rest } => Option.Some.{ {x, Queue.{ .front = rest, .back = q.back }} }
-	| _ =>
-		is rev_onto q.back List.Nil
-		| List.Cons.{ x, rest } => Option.Some.{ {x, Queue.{ .front = rest, .back = List.Nil }} }
-		| _ => Option.None
+$ q_pop : Queue t -> Option { t, Queue t } = \q =
+    is q.front
+    | List.Cons.{ x, rest } => Option.Some.{ { x, Queue.{ .front = rest, .back = q.back } } }
+    | _ =>
+        is rev_onto q.back List.Nil
+        | List.Cons.{ x, rest } => Option.Some.{ { x, Queue.{ .front = rest, .back = List.Nil } } }
+        | _ => Option.None
 
 $ rev_onto : List t -> List t -> List t = \l acc =
-	is l | List.Cons.{ h, t } => rev_onto t (List.Cons.{ h, acc }) | _ => acc
+    is l | List.Cons.{ h, t } => rev_onto t (List.Cons.{ h, acc }) | _ => acc
 
 # A channel's state: its buffered values (at most `cap`), and the tasks parked
 # on it.
 $ Channel : @struct m e a =
-	cap: @int,
-	size: @int,
-	buf: Queue m,
-	senders: Queue {m, {} -> <e> Step m e a},
-	receivers: Queue (m -> <e> Step m e a),
+    cap: @Int,
+    size: @Int,
+    buf: Queue m,
+    senders: Queue { m, {} -> <e> Step m e a },
+    receivers: Queue (m -> <e> Step m e a),
 
 # A task parked on a descriptor until it is ready for `events`.
 $ Waiter : @struct m e a =
-	fd: @int,
-	events: @int,
-	k: {} -> <e> Step m e a,
+    fd: @Int,
+    events: @Int,
+    k: {} -> <e> Step m e a,
 
 # `poll` takes the parked descriptors as `{fd, events}` pairs and answers which
 # are ready, by index; an empty answer means none ever will be.
 $ Sched : @struct m e a =
-	ready: Queue ({} -> <e> Step m e a),
-	chans: @vec (Channel m e a),
-	waiting: @vec (Waiter m e a),
-	result: Option a,
-	poll: @vec {@int, @int} -> <e> @vec @int,
+    ready: Queue ({} -> <e> Step m e a),
+    chans: @Vec (Channel m e a),
+    waiting: @Vec (Waiter m e a),
+    result: Option a,
+    poll: @Vec { @Int, @Int } -> <e> @Vec @Int,
 
-$ run_with : (@vec {@int, @int} -> <e> @vec @int) -> ({} -> <Async m e | e> a) -> <e> Option a
-	= \poll main =
-	schedule (Sched.{
-		.ready = q_push (q_empty {}) (\u = step_main main),
-		.chans = @vec_new {},
-		.waiting = @vec_new {},
-		.result = Option.None,
-		.poll = poll,
-	})
+$ run_with : (@Vec { @Int, @Int } -> <e> @Vec @Int) -> ({} -> <Async m e | e> a) -> <e> Option a = \poll main =
+    schedule (
+        Sched.{
+            .ready = q_push (q_empty {}) (\u = step_main main),
+            .chans = @vec_new {},
+            .waiting = @vec_new {},
+            .result = Option.None,
+            .poll = poll,
+        }
+    )
 
 # Run the next ready task. With none ready, wake the descriptor waiters that
 # can go on; with none of those either, the group is over.
 $ schedule : Sched m e a -> <e> Option a = \s =
-	is q_pop s.ready
-	| Option.Some.{ p } => serve (p.0 {}) Sched.{ .ready = p.1 | s }
-	| _ =>
-		if @vec_len s.waiting == 0 => s.result
-		else
-			let woken = s.poll (fd_list s.waiting 0 (@vec_new {})) in
-			if @vec_len woken == 0 => s.result
-			else schedule (wake s woken)
+    is q_pop s.ready
+    | Option.Some.{ p } => serve (p.0 {}) Sched.{ .ready = p.1 | s }
+    | _ =>
+        if @vec_len s.waiting == 0 => s.result
+        else
+            let woken = s.poll (fd_list s.waiting 0 (@vec_new {})) in
+            if @vec_len woken == 0 => s.result else schedule (wake s woken)
 
-$ fd_list : @vec (Waiter m e a) -> @int -> @vec {@int, @int} -> @vec {@int, @int} = \ws i acc =
-	if i >= @vec_len ws => acc
-	else
-		let w = @vec_get ws i in
-		fd_list ws (i + 1) (@vec_push acc {w.fd, w.events})
+$ fd_list : @Vec (Waiter m e a) -> @Int -> @Vec { @Int, @Int } -> @Vec { @Int, @Int } = \ws i acc =
+    if i >= @vec_len ws => acc
+    else let w = @vec_get ws i in fd_list ws (i + 1) (@vec_push acc { w.fd, w.events })
 
 # Requeue the waiters at the `woken` indices (ascending), in order, and keep
 # the rest parked.
-$ wake : Sched m e a -> @vec @int -> Sched m e a = \s woken =
-	let go = \i j ready rest =
-		if i >= @vec_len s.waiting => Sched.{ .ready = ready, .waiting = rest | s }
-		else
-			let w = @vec_get s.waiting i in
-			if j < @vec_len woken && @vec_get woken j == i
-			=> go (i + 1) (j + 1) (q_push ready w.k) rest
-			else go (i + 1) j ready (@vec_push rest w)
-	in go 0 0 s.ready (@vec_new {})
+$ wake : Sched m e a -> @Vec @Int -> Sched m e a = \s woken =
+    let go = \i j ready rest =
+            if i >= @vec_len s.waiting => Sched.{ .ready = ready, .waiting = rest | s }
+            else
+                let w = @vec_get s.waiting i in
+                if j < @vec_len woken && @vec_get woken j == i =>
+                    go (i + 1) (j + 1) (q_push ready w.k) rest
+                else go (i + 1) j ready (@vec_push rest w) in
+    go 0 0 s.ready (@vec_new {})
 
 # Serve what a task stopped for. An operation that can complete at once resumes
 # the same task right away; one that cannot parks it.
 $ serve : Step m e a -> Sched m e a -> <e> Option a = \st s =
-	is st
-	| Step.Done.{ r } =>
-		schedule (is r | Option.Some.{ _ } => Sched.{ .result = r | s } | _ => s)
-	| Step.Yielded.{ k } => schedule Sched.{ .ready = q_push s.ready k | s }
-	| Step.Spawned.{ c, k } =>
-		serve (k {}) Sched.{ .ready = q_push s.ready (\u = step_child c) | s }
-	| Step.Made.{ cap, k } =>
-		let id = @vec_len s.chans in
-		let ch = Channel.{
-			.cap = if cap < 0 => 0 else cap,
-			.size = 0,
-			.buf = q_empty {},
-			.senders = q_empty {},
-			.receivers = q_empty {},
-		} in
-		serve (k Chan.{ .id = id }) Sched.{ .chans = @vec_push s.chans ch | s }
-	| Step.Sent.{ c, v, k } => send_to c.id v k s
-	| Step.Wants.{ c, k } => recv_from c.id k s
-	| Step.Waits.{ fd, ev, k } =>
-		schedule Sched.{ .waiting = @vec_push s.waiting Waiter.{ .fd = fd, .events = ev, .k = k } | s }
+    is st
+    | Step.Done.{ r } => schedule (is r | Option.Some.{ _ } => Sched.{ .result = r | s } | _ => s)
+    | Step.Yielded.{ k } => schedule Sched.{ .ready = q_push s.ready k | s }
+    | Step.Spawned.{ c, k } =>
+        serve (k {}) Sched.{ .ready = q_push s.ready (\u = step_child c) | s }
+    | Step.Made.{ cap, k } =>
+        let id = @vec_len s.chans in
+        let ch = Channel.{
+                .cap = if cap < 0 => 0 else cap,
+                .size = 0,
+                .buf = q_empty {},
+                .senders = q_empty {},
+                .receivers = q_empty {},
+            } in
+        serve (k Chan.{ .id = id }) Sched.{ .chans = @vec_push s.chans ch | s }
+    | Step.Sent.{ c, v, k } => send_to c.id v k s
+    | Step.Wants.{ c, k } => recv_from c.id k s
+    | Step.Waits.{ fd, ev, k } =>
+        schedule Sched.{
+            .waiting = @vec_push s.waiting Waiter.{ .fd = fd, .events = ev, .k = k } | s
+        }
 
-$ set_chan : Sched m e a -> @int -> Channel m e a -> Sched m e a = \s c ch =
-	Sched.{ .chans = @vec_set s.chans c ch | s }
+$ set_chan : Sched m e a -> @Int -> Channel m e a -> Sched m e a = \s c ch =
+    Sched.{ .chans = @vec_set s.chans c ch | s }
 
 # A waiting receiver takes the value directly; otherwise it is buffered if
 # there is room, and the sender parks if there is not.
-$ send_to : @int -> m -> ({} -> <e> Step m e a) -> Sched m e a -> <e> Option a = \c v k s =
-	let ch = @vec_get s.chans c in
-	is q_pop ch.receivers
-	| Option.Some.{ p } =>
-		let s2 = set_chan s c Channel.{ .receivers = p.1 | ch } in
-		serve (k {}) Sched.{ .ready = q_push s2.ready (\u = p.0 v) | s2 }
-	| _ =>
-		if ch.size < ch.cap =>
-			serve (k {}) (set_chan s c Channel.{ .buf = q_push ch.buf v, .size = ch.size + 1 | ch })
-		else schedule (set_chan s c Channel.{ .senders = q_push ch.senders {v, k} | ch })
+$ send_to : @Int -> m -> ({} -> <e> Step m e a) -> Sched m e a -> <e> Option a = \c v k s =
+    let ch = @vec_get s.chans c in
+    is q_pop ch.receivers
+    | Option.Some.{ p } =>
+        let s2 = set_chan s c Channel.{ .receivers = p.1 | ch } in
+        serve (k {}) Sched.{ .ready = q_push s2.ready (\u = p.0 v) | s2 }
+    | _ =>
+        if ch.size < ch.cap =>
+            serve (k {}) (set_chan s c Channel.{ .buf = q_push ch.buf v, .size = ch.size + 1 | ch })
+        else schedule (set_chan s c Channel.{ .senders = q_push ch.senders { v, k } | ch })
 
 # A buffered value is taken first (and a parked sender's value moves into the
 # freed slot); with an empty buffer a parked sender hands over directly (the
 # zero-capacity rendezvous); otherwise the receiver parks.
-$ recv_from : @int -> (m -> <e> Step m e a) -> Sched m e a -> <e> Option a = \c k s =
-	let ch = @vec_get s.chans c in
-	is q_pop ch.buf
-	| Option.Some.{ b } =>
-		(is q_pop ch.senders
-		| Option.Some.{ p } =>
-			let ch2 = Channel.{ .buf = q_push b.1 p.0.0, .senders = p.1 | ch } in
-			let s2 = set_chan s c ch2 in
-			serve (k b.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
-		| _ => serve (k b.0) (set_chan s c Channel.{ .buf = b.1, .size = ch.size - 1 | ch }))
-	| _ =>
-		is q_pop ch.senders
-		| Option.Some.{ p } =>
-			let s2 = set_chan s c Channel.{ .senders = p.1 | ch } in
-			serve (k p.0.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
-		| _ => schedule (set_chan s c Channel.{ .receivers = q_push ch.receivers k | ch })
+$ recv_from : @Int -> (m -> <e> Step m e a) -> Sched m e a -> <e> Option a = \c k s =
+    let ch = @vec_get s.chans c in
+    is q_pop ch.buf
+    | Option.Some.{ b } =>
+        (
+            is q_pop ch.senders
+            | Option.Some.{ p } =>
+                let ch2 = Channel.{ .buf = q_push b.1 p.0.0, .senders = p.1 | ch } in
+                let s2 = set_chan s c ch2 in
+                serve (k b.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
+            | _ => serve (k b.0) (set_chan s c Channel.{ .buf = b.1, .size = ch.size - 1 | ch })
+        )
+    | _ =>
+        is q_pop ch.senders
+        | Option.Some.{ p } =>
+            let s2 = set_chan s c Channel.{ .senders = p.1 | ch } in
+            serve (k p.0.0) Sched.{ .ready = q_push s2.ready p.0.1 | s2 }
+        | _ => schedule (set_chan s c Channel.{ .receivers = q_push ch.receivers k | ch })
 
 # ---- poll(2) ----
 
-$ PollFd : @struct @extern "C" = fd: @int32, events: @int16, revents: @int16,
-$ c_poll : {fds: @vec PollFd, n: @nat64, timeout: @int32} -> <@io> @int32 = @extern "C" "poll" "libc"
+$ PollFd : @struct @extern "C" = fd: @Int32, events: @Int16, revents: @Int16,
+$ c_poll : { fds: @Vec PollFd, n: @Nat64, timeout: @Int32 } -> <@IO> @Int32 =
+    @extern "C" "poll" "libc"
 
-$ pollfd : @int -> @int -> PollFd = \fd events =
-	let f : @int32 = @cast fd in
-	let ev : @int16 = @cast events in
-	PollFd.{ .fd = f, .events = ev, .revents = 0 }
+$ pollfd : @Int -> @Int -> PollFd = \fd events =
+    let f : @Int32 = @cast fd in
+    let ev : @Int16 = @cast events in PollFd.{ .fd = f, .events = ev, .revents = 0 }
 
-$ poll_now : @int -> @int -> <@io | e> @bool = \fd events =
-	c_poll { [pollfd fd events], 1, 0 } > 0
+$ poll_now : @Int -> @Int -> <@IO | e> @Bool = \fd events = c_poll { [pollfd fd events], 1, 0 } > 0
 
 # Sleep until at least one descriptor is ready, then answer which ones are,
 # each probed without blocking. The C array poll(2) fills in is not read back,
 # so readiness is asked one descriptor at a time.
-$ poll_ready : @vec {@int, @int} -> <@io | e> @vec @int = \fds =
-	let all = build_pollfds fds 0 (@vec_new {}) in
-	let n : @nat64 = @cast (@vec_len fds) in
-	let forever : @int32 = -1 in
-	if c_poll { all, n, forever } < 0 => @vec_new {}
-	else probe fds 0 (@vec_new {})
+$ poll_ready : @Vec { @Int, @Int } -> <@IO | e> @Vec @Int = \fds =
+    let all = build_pollfds fds 0 (@vec_new {}) in
+    let n : @Nat64 = @cast (@vec_len fds) in
+    let forever : @Int32 = -1 in
+    if c_poll { all, n, forever } < 0 => @vec_new {} else probe fds 0 (@vec_new {})
 
-$ build_pollfds : @vec {@int, @int} -> @int -> @vec PollFd -> @vec PollFd = \fds i acc =
-	if i >= @vec_len fds => acc
-	else
-		let p = @vec_get fds i in
-		build_pollfds fds (i + 1) (@vec_push acc (pollfd p.0 p.1))
+$ build_pollfds : @Vec { @Int, @Int } -> @Int -> @Vec PollFd -> @Vec PollFd = \fds i acc =
+    if i >= @vec_len fds => acc
+    else let p = @vec_get fds i in build_pollfds fds (i + 1) (@vec_push acc (pollfd p.0 p.1))
 
-$ probe : @vec {@int, @int} -> @int -> @vec @int -> <@io | e> @vec @int = \fds i acc =
-	if i >= @vec_len fds => acc
-	else
-		let p = @vec_get fds i in
-		probe fds (i + 1) (if poll_now p.0 p.1 => @vec_push acc i else acc)
+$ probe : @Vec { @Int, @Int } -> @Int -> @Vec @Int -> <@IO | e> @Vec @Int = \fds i acc =
+    if i >= @vec_len fds => acc
+    else
+        let p = @vec_get fds i in
+        probe fds (i + 1) (if poll_now p.0 p.1 => @vec_push acc i else acc)

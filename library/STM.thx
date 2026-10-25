@@ -4,7 +4,7 @@ $ @mod STM
 # \info Software transactional memory: shared state that parallel tasks update
 #       without locks. A `TVar` is a transactional variable. A transaction is a
 #       function with the row `<Stm>`, so it can read and write variables
-#       (`read`, `write`, `modify`) but cannot perform `@io`: it may run several
+#       (`read`, `write`, `modify`) but cannot perform `@IO`: it may run several
 #       times, and only its last run may count. `atomically tx` runs it as one
 #       step: its reads see one consistent state, and its writes appear all at
 #       once, or the run is discarded and redone when another task committed a
@@ -18,58 +18,52 @@ $ @mod STM
 
 $ with OPT
 
-$ TVar : @alias a = @tvar a
+$ TVar : @alias a = @TVar a
 
 $ Stm : @effect =
-	read : TVar a -> a,
-	write : {TVar a, a} -> {},
-	retry : {} -> a,
-	save : {} -> @int,
-	rollback : @int -> {},
+    read : TVar a -> a,
+    write : { TVar a, a } -> {},
+    retry : {} -> a,
+    save : {} -> @Int,
+    rollback : @Int -> {},
 
-$ new_tvar : a -> <@io | e> TVar a = \x = @tvar_new x
+$ new_tvar : a -> <@IO | e> TVar a = \x = @tvar_new x
 
 # The committed value, outside any transaction.
-$ read_tvar : TVar a -> <@io | e> a = \t = @tvar_read t
+$ read_tvar : TVar a -> <@IO | e> a = \t = @tvar_read t
 
 $ read : TVar a -> <Stm> a = \t = Stm.read t
 
-$ write : TVar a -> a -> <Stm> {} = \t x = Stm.write {t, x}
+$ write : TVar a -> a -> <Stm> {} = \t x = Stm.write { t, x }
 
-$ modify : TVar a -> (a -> a) -> <Stm> {} = \t f = Stm.write {t, f (Stm.read t)}
+$ modify : TVar a -> (a -> a) -> <Stm> {} = \t f = Stm.write { t, f (Stm.read t) }
 
 $ retry : {} -> <Stm> a = \u = Stm.retry {}
 
 # Run `first`; if it retries, undo its writes and run `second` instead. Reads
 # `first` made still count, so a `retry` of the whole also waits on them.
 $ or_else : ({} -> <Stm> a) -> ({} -> <Stm> a) -> <Stm> a = \first second =
-	let mark = Stm.save {} in
-	let r =
-		do first {}
-		ctl k
-		| Stm.retry u => Option.None
-		| v => Option.Some.{ v }
-	in
-	is r
-	| Option.Some.{ v } => v
-	| _ => (Stm.rollback mark; second {})
+    let mark = Stm.save {} in
+    let r = do first {}
+        ctl k | Stm.retry u => Option.None | v => Option.Some.{ v } in
+    is r | Option.Some.{ v } => v | _ => (Stm.rollback mark; second {})
 
-$ atomically : ({} -> <Stm> a) -> <@io | e> a = \tx =
-	@stm_begin {};
-	is attempt tx
-	| Option.Some.{ v } => if @stm_commit {} => v else atomically tx
-	| _ => (@stm_wait {}; atomically tx)
+$ atomically : ({} -> <Stm> a) -> <@IO | e> a = \tx =
+    @stm_begin {};
+    is attempt tx
+    | Option.Some.{ v } => if @stm_commit {} => v else atomically tx
+    | _ => (@stm_wait {}; atomically tx)
 
 $ @private
 
 # One run of the transaction against this thread's log: its result, or `None`
 # when it retried.
-$ attempt : ({} -> <Stm> a) -> <@io | e> Option a = \tx =
-	do tx {}
-	ctl k
-	| Stm.read t => k (@stm_read t)
-	| Stm.write p => (@stm_write p.0 p.1; k {})
-	| Stm.retry u => Option.None
-	| Stm.save u => k (@stm_save {})
-	| Stm.rollback m => (@stm_rollback m; k {})
-	| v => Option.Some.{ v }
+$ attempt : ({} -> <Stm> a) -> <@IO | e> Option a = \tx =
+    do tx {}
+    ctl k
+    | Stm.read t => k (@stm_read t)
+    | Stm.write p => (@stm_write p.0 p.1; k {})
+    | Stm.retry u => Option.None
+    | Stm.save u => k (@stm_save {})
+    | Stm.rollback m => (@stm_rollback m; k {})
+    | v => Option.Some.{ v }

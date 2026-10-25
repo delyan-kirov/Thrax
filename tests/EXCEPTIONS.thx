@@ -12,31 +12,32 @@ $ @mod EXCEPTIONS
 $ with VEC
 
 $ Exception : @struct =
-	module: @str,
-	os: @str,
-	reason: @str,
+    module: @Str,
+    os: @Str,
+    reason: @Str,
 
-$ exceptions : @vec Exception = [
-	Exception.{
-		.module = "STDLIB_ASYNC_IO",
-		.os     = "windows",
-		.reason = "polls a pipe from a POSIX shell (`sh`, `poll(2)`); Windows has neither",
-	},
-	Exception.{
-		.module = "STDLIB_ASYNC_IO",
-		.os     = "wasi",
-		.reason = "spawns a shell through `popen`, and wasm has no processes",
-	},
-	Exception.{
-		.module = "META_RUNTIME",
-		.os     = "wasi",
-		.reason = "runs the compiler at run time, and libthrax is built for the host only",
-	},
-]
+$ exceptions : @Vec Exception =
+    [
+        Exception.{
+            .module = "STDLIB_ASYNC_IO",
+            .os = "windows",
+            .reason = "polls a pipe from a POSIX shell (`sh`, `poll(2)`); Windows has neither",
+        },
+        Exception.{
+            .module = "STDLIB_ASYNC_IO",
+            .os = "wasi",
+            .reason = "spawns a shell through `popen`, and wasm has no processes",
+        },
+        Exception.{
+            .module = "META_RUNTIME",
+            .os = "wasi",
+            .reason = "runs the compiler at run time, and libthrax is built for the host only",
+        },
+    ]
 
 # Whether the corpus skips `module` on `os`.
-$ skipped : @str -> @str -> @bool = \os module =
-	VEC.any (\e = e.os == os && e.module == module) exceptions
+$ skipped : @Str -> @Str -> @Bool = \os module =
+    VEC.any (\e = e.os == os && e.module == module) exceptions
 
 # The exceptions that apply on `os`.
-$ on : @str -> @vec Exception = \os = VEC.filter (\e = e.os == os) exceptions
+$ on : @Str -> @Vec Exception = \os = VEC.filter (\e = e.os == os) exceptions

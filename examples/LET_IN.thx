@@ -7,54 +7,42 @@
 
 $ @mod LET_IN
 
-$simple = let x = 6 in x * 7
+$ simple = let x = 6 in x * 7
 
-$nested =
-	let a = 10 in
-	let b = 20 in
-	a * b + a
+$ nested = let a = 10 in let b = 20 in a * b + a
 
-$chained =
-	let x = 1 in
-	let y = x + 10 in
-	let z = y * 2 in
-	x + y + z
+$ chained = let x = 1 in let y = x + 10 in let z = y * 2 in x + y + z
 
 # The same chain, comma-separated: one `in`, later bindings see earlier ones.
-$commas = let x = 1, y = x + 10, z = y * 2 in x + y + z
+$ commas = let x = 1, y = x + 10, z = y * 2 in x + y + z
 
 # A comma chain mixing a tuple-pattern binder with a plain one.
-$mixed = let {a, b} = {3, 4}, s = a + b in s * 2
+$ mixed = let { a, b } = { 3, 4 }, s = a + b in s * 2
 
 # A trailing comma before `in` is fine (handy when editing a chain).
-$trailing = let 
-               a = 1, 
-               b = 2,
-               c = 3,
-	     in 
-               a + b + c
+$ trailing =
+    let a = 1,
+        b = 2,
+        c = 3, in
+    a + b + c
 
-$compose =
-	let square = \x = x * x in
-	let add1   = \x = x + 1 in
-	add1 (square 5)
+$ compose = let square = \x = x * x in let add1 = \x = x + 1 in add1 (square 5)
 
 # A recursive binding whose value is not itself a lambda: the helper bound
 # inside it calls back into `count`, which must still be in scope and alive
 # when the helper runs, after `count m` has replaced the caller's frame.
-$ count_down : @int -> @int = \m =
-	let count = (let helper = \x = if x == 0 => 0 else 1 + count (x - 1) in \n = helper n) in
-	count m
-$ chk_indirect : @int = if count_down 5 == 5 => 0 else 1
+$ count_down : @Int -> @Int = \m =
+    let count = (let helper = \x = if x == 0 => 0 else 1 + count (x - 1) in \n = helper n) in
+    count m
+$ chk_indirect : @Int = if count_down 5 == 5 => 0 else 1
 
 # A local recursive closure may outlive the call that bound it.
-$ Counter : @struct = run: @int -> @int,
+$ Counter : @struct = run: @Int -> @Int,
 $ make_counter : {} -> Counter = \u =
-	let go = \x = if x == 0 => 0 else 1 + go (x - 1) in
-	Counter.{ go }
-$ chk_escape : @int = if (make_counter {}).run 7 == 7 => 0 else 1
+    let go = \x = if x == 0 => 0 else 1 + go (x - 1) in Counter.{ go }
+$ chk_escape : @Int = if (make_counter {}).run 7 == 7 => 0 else 1
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = simple ; nested ; chained ; commas ; mixed ; trailing ; compose ; chk_indirect + chk_escape
+$ test : @Int = simple; nested; chained; commas; mixed; trailing; compose; chk_indirect + chk_escape
 
 $ @e <| assert (test == 0) "LET_IN: a check failed"

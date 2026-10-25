@@ -235,7 +235,7 @@ pub enum Item {
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
     Private,
-    /// `$ @e expr`: run the `@code`-valued expression at compile time and insert
+    /// `$ @e expr`: run the `@Code`-valued expression at compile time and insert
     /// the code it returns in place of the directive (see the driver). Also an
     /// expression/type intrinsic; this is the item form. The `Span` is the whole
     /// directive, which the driver replaces.
@@ -298,7 +298,7 @@ pub enum Variance {
 
 #[derive(Clone, Debug)]
 pub enum Ty {
-    /// A type constructor: `Int`, `@int64`, or module-qualified `A.B`.
+    /// A type constructor: `Int`, `@Int64`, or module-qualified `A.B`.
     Con { module: Option<StrId>, name: StrId },
     /// A type variable `` `a ``.
     Var(StrId),
@@ -320,7 +320,7 @@ pub enum Ty {
     /// Type application `Head Arg` (left-associative at use sites).
     App(Aol<Ty>, Aol<Ty>),
     /// A compile-time type splice `@e X`: `X` is a compile-time expression that
-    /// produces an `@code` denoting a type, spliced into this annotation. Erased
+    /// produces an `@Code` denoting a type, spliced into this annotation. Erased
     /// before the final (strict) compile: the driver's expand loop runs `X`,
     /// substitutes the resulting type source at this node's span, and re-parses.
     MetaE(Aol<Expr>),
@@ -362,8 +362,8 @@ pub struct EffectRow {
 }
 
 /// One comma-separated entry of an effect row: an effect label with its type
-/// arguments (`<Chan @int e>`), or a row alias applied to its parameters
-/// (`<WithLog e, @io>`). `args` are type atoms, empty for a bare label.
+/// arguments (`<Chan @Int e>`), or a row alias applied to its parameters
+/// (`<WithLog e, @IO>`). `args` are type atoms, empty for a bare label.
 #[derive(Clone, Copy, Debug)]
 pub struct RowEntry {
     pub name: StrId,
@@ -498,7 +498,7 @@ pub enum Expr {
         recv: Aol<Expr>,
         slots: Slice<SliceSlot>,
     },
-    /// `@array.{ n }` (size form) or `@array.{ .field = n }`.
+    /// `@Array.{ n }` (size form) or `@Array.{ .field = n }`.
     Array {
         size: Aol<Expr>,
     },

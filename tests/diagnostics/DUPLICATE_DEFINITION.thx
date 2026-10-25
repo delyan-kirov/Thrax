@@ -1,5 +1,5 @@
 $ @mod DUPLICATE_DEFINITION
 
 # One name, one definition: overloading is gone.
-$ f : @int = 1
-$ f : @int = 2  #~ error[DUPLICATE_SYMBOL]: `f` is defined twice in module `DUPLICATE_DEFINITION`
+$ f : @Int = 1
+$ f : @Int = 2  #~ error[DUPLICATE_SYMBOL]: `f` is defined twice in module `DUPLICATE_DEFINITION`

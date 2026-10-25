@@ -1,3 +1,3 @@
 $ @mod IMAG_LITERAL_NO_INSTANCE
 
-$ z : @int = 1.5i  #~ error[TYPE_MISMATCH]: expected @int, found Cpx
+$ z : @Int = 1.5i  #~ error[TYPE_MISMATCH]: expected @Int, found Cpx

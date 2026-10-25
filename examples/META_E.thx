@@ -2,55 +2,55 @@ $ @mod META_E
 
 # \file META_E.thx
 # \info The compile-time splice. `@e X` runs X at build time and inserts the code
-#       it returns at its site: X must be an `@code`, which `@parse_str` (an
+#       it returns at its site: X must be an `@Code`, which `@parse_str` (an
 #       expression) and `@parse_items` (top-level items) build from a string. The
 #       inserted source is then checked like hand-written code. `@e` works in
 #       expression, type, and item position, and composes with the pipes `<|` /
 #       `|>` like any one-argument function. X may perform the compile-time
 #       operations (`@emit`, `@abort`, `@fresh`, `@link`), which carry the
-#       `<@meta>` effect that `@e` discharges; any other effect is an error.
+#       `<@Meta>` effect that `@e` discharges; any other effect is an error.
 #       Empty code inserts nothing, so a site run only for its effect (a check, a
 #       link directive) returns `@parse_items ""`.
 
 # Ordinary functions, run here at compile time by the generators below.
-$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
-$ dbl : @int -> @int = \x = x * 2
-$ inc : @int -> @int = \x = x + 1
+$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ dbl : @Int -> @Int = \x = x * 2
+$ inc : @Int -> @Int = \x = x + 1
 
 # A generator that computes at build time and inserts the result as a literal.
-$ lit : @int -> @code = \n = @parse_str <| to_string n
+$ lit : @Int -> @Code = \n = @parse_str <| to_string n
 
 # --- expression position ---------------------------------------------------
-$ ten      : @int = 10
-$ fib10    : @int = @e <| lit <| fib ten              # inserts `55`
-$ via_pipe : @int = fib ten |> lit |> @e              # the same, left to right
-$ chained  : @int = @e <| lit <| (compose inc dbl) 5  # inc (dbl 5): inserts `11`
+$ ten : @Int = 10
+$ fib10 : @Int = @e <| lit <| fib ten # inserts `55`
+$ via_pipe : @Int = fib ten |> lit |> @e # the same, left to right
+$ chained : @Int = @e <| lit <| (compose inc dbl) 5 # inc (dbl 5): inserts `11`
 
 # The code is source, not a value: this inserts `1 + 2 * 3`, which yields 7.
-$ spliced : @int = @e <| @parse_str "1 + 2 * 3"
+$ spliced : @Int = @e <| @parse_str "1 + 2 * 3"
 
 # --- type position: `@e` computes the annotation ---------------------------
-$ pick_ty : {} -> @code = \_ = @parse_str "@int"
-$ typed   : @e <| pick_ty {} = 42
+$ pick_ty : {} -> @Code = \_ = @parse_str "@Int"
+$ typed : @e <| pick_ty {} = 42
 
 # --- item position: `$ @e X` inserts top-level definitions -----------------
-$ gen_def : {} -> @code = \_ = @parse_items "$ injected : @int = 99"
+$ gen_def : {} -> @Code = \_ = @parse_items "$ injected : @Int = 99"
 $ @e <| gen_def {}
 
 # --- compile-time operations -------------------------------------------------
-# `gen_meta` performs `@emit`, a `<@meta>` op, so it declares `<@meta>`.
-$ gen_meta : @int -> <@meta> @code = \n = @emit "computing at build time"; lit (n * 2)
-$ from_meta : @int = @e <| gen_meta 21              # inserts `42`
+# `gen_meta` performs `@emit`, a `<@Meta>` op, so it declares `<@Meta>`.
+$ gen_meta : @Int -> <@Meta> @Code = \n = @emit "computing at build time"; lit (n * 2)
+$ from_meta : @Int = @e <| gen_meta 21 # inserts `42`
 
 # --- checks ----------------------------------------------------------------
-$ ck1 : @int = if fib10 == 55 => 0 else 1
-$ ck2 : @int = if via_pipe == 55 => 0 else 2
-$ ck3 : @int = if chained == 11 => 0 else 4
-$ ck4 : @int = if spliced == 7 => 0 else 8
-$ ck5 : @int = if typed == 42 => 0 else 16
-$ ck6 : @int = if injected == 99 => 0 else 32
-$ ck7 : @int = if from_meta == 42 => 0 else 64
+$ ck1 : @Int = if fib10 == 55 => 0 else 1
+$ ck2 : @Int = if via_pipe == 55 => 0 else 2
+$ ck3 : @Int = if chained == 11 => 0 else 4
+$ ck4 : @Int = if spliced == 7 => 0 else 8
+$ ck5 : @Int = if typed == 42 => 0 else 16
+$ ck6 : @Int = if injected == 99 => 0 else 32
+$ ck7 : @Int = if from_meta == 42 => 0 else 64
 
-$ test : @int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
+$ test : @Int = ck1 + ck2 + ck3 + ck4 + ck5 + ck6 + ck7
 
 $ @e <| assert (test == 0) "META_E: a check failed"

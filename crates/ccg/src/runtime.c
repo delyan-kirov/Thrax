@@ -38,7 +38,7 @@ extern const size_t THxRT_extern_count;
 typedef enum {
   T_INT,
   T_REAL,
-  T_REAL32, /* single-precision real (@float32); stored in u.r as a double */
+  T_REAL32, /* single-precision real (@Float32); stored in u.r as a double */
   T_STR, /* byte vector: both Str and Array */
   T_BOOL,
   T_UNIT,
@@ -54,8 +54,8 @@ typedef enum {
   T_THUNK,     /* an unforced lazy slot: a nullary closure, forced in place */
   T_FUTURE,    /* a parallel task's handle (`@par`); only with THRAX_THREADS */
   T_BLACKHOLE, /* a shared thunk another thread is forcing right now */
-  T_CHAN,      /* a channel's handle (`@chan`) */
-  T_TVAR       /* a transactional variable's handle (`@tvar`) */
+  T_CHAN,      /* a channel's handle (`@Chan`) */
+  T_TVAR       /* a transactional variable's handle (`@TVar`) */
 } Tag;
 
 typedef struct {
@@ -237,7 +237,7 @@ struct Task {
   Value *result;
 };
 
-/* A channel (`@chan`), owned by the T_CHAN cells naming it (`rc`). A sent
+/* A channel (`@Chan`), owned by the T_CHAN cells naming it (`rc`). A sent
  * value waits in the ring `buf` (`len` of `cap` slots from `head`), holding a
  * reference. With threads, the ring changes only under `mu`. */
 struct Chan {
@@ -249,7 +249,7 @@ struct Chan {
 #endif
 };
 
-/* A transactional variable (`@tvar`), owned by the T_TVAR cells naming it and
+/* A transactional variable (`@TVar`), owned by the T_TVAR cells naming it and
  * by the transaction logs holding it (`rc`). `version` counts the commits
  * that wrote it. With threads, `val` and `version` change only under
  * `g_stm_mu`. */
@@ -475,7 +475,7 @@ Value *THxRT_real(double r) {
   v->u.r = r;
   return v;
 }
-/* An @float32 value: the exact f32 is held in the double slot (every float is
+/* An @Float32 value: the exact f32 is held in the double slot (every float is
  * representable as a double), so reads are lossless and display rounds to f32. */
 Value *THxRT_real32(float r) {
   Value *v = alloc_value(T_REAL32);
@@ -1126,15 +1126,15 @@ _Noreturn static void compiler_fault(const char *builtin, char *err) {
 static Value *code_value(const char *src, size_t len) {
   const char *key = "src";
   Value *text = THxRT_str(src, len);
-  return THxRT_struct("@code", 1, &key, &text);
+  return THxRT_struct("@Code", 1, &key, &text);
 }
 
 static Value *token_field(Value *tok, const char *field) {
   tok = THxVALUE_force(tok);
-  if (tok->tag != T_STRUCT || strcmp(tok->u.strct.name, "@token") != 0)
-    thrax_fault("expected an @token");
+  if (tok->tag != T_STRUCT || strcmp(tok->u.strct.name, "@Token") != 0)
+    thrax_fault("expected an @Token");
   Value *f = struct_field(tok, field);
-  if (!f || f->tag != T_STR) thrax_fault("malformed @token");
+  if (!f || f->tag != T_STR) thrax_fault("malformed @Token");
   return f;
 }
 
@@ -1145,17 +1145,18 @@ static Value *compiler_builtin(int id, Value **a) {
   switch (id) {
   case THxB_TOKEN_KIND: return token_field(a[0], "kind");
   case THxB_TOKEN_TEXT: return token_field(a[0], "text");
-  case THxB_LEX: case THxB_EVAL: {
-    int lexing = id == THxB_LEX;
+  case THxB_LEX: case THxB_FORMAT: case THxB_EVAL: {
+    int eval = id == THxB_EVAL;
     Value *arg = THxVALUE_force(a[0]);
-    if (!lexing) {
-      if (arg->tag != T_STRUCT || strcmp(arg->u.strct.name, "@code") != 0)
-        thrax_fault("@eval expects an @code");
+    if (eval) {
+      if (arg->tag != T_STRUCT || strcmp(arg->u.strct.name, "@Code") != 0)
+        thrax_fault("@eval expects an @Code");
       arg = struct_field(arg, "src");
     }
     if (!arg || arg->tag != T_STR) thrax_fault("expected a string");
-    thrax_value *v = lexing ? thrax_lex(arg->u.str.data, arg->u.str.len, &err)
-                            : thrax_eval(arg->u.str.data, arg->u.str.len, &err);
+    thrax_value *v = id == THxB_LEX ? thrax_lex(arg->u.str.data, arg->u.str.len, &err)
+                   : id == THxB_FORMAT ? thrax_format(arg->u.str.data, arg->u.str.len, &err)
+                   : thrax_eval(arg->u.str.data, arg->u.str.len, &err);
     if (!v) compiler_fault(name, err);
     Value *r = from_thrax(v);
     thrax_value_free(v);
@@ -1169,7 +1170,7 @@ static Value *compiler_builtin(int id, Value **a) {
     return code_value((const char *)s->u.str.data, s->u.str.len);
   }
   case THxB_PARSE: {
-    /* `@code` is text-backed: the lexemes rejoined with a space, as the
+    /* `@Code` is text-backed: the lexemes rejoined with a space, as the
      * interpreter's `@parse` does. */
     Value *toks = THxVALUE_force(a[0]);
     if (toks->tag != T_VEC) thrax_fault("expected a vector");
@@ -1195,7 +1196,7 @@ static Value *compiler_builtin(int id, Value **a) {
 }
 #endif
 
-/* `@par f` (and `@spawn f`, whose task may also perform `@io`) starts the task
+/* `@par f` (and `@spawn f`, whose task may also perform `@IO`) starts the task
  * `f {}` and returns its future; `@await` blocks until the result is in and
  * returns it (borrowed: the future owns it). Without threads a task waits in a
  * queue until something needs it, as in the interpreter (see `run_next_task`). */

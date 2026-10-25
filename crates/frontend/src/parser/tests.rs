@@ -12,11 +12,11 @@ fn type_names_must_be_capitalized() {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
-    assert!(err("$ @mod M\n$ point : @struct = a: @int,").contains("capital letter"));
+    assert!(err("$ @mod M\n$ point : @struct = a: @Int,").contains("capital letter"));
     // A lowercase name in type-use position is a type variable and parses.
     assert!(parse("$ @mod M\n$ id : a -> a = \\x = x").is_ok());
     // A capitalized type also parses.
-    assert!(parse("$ @mod M\n$ n : @int = 5").is_ok());
+    assert!(parse("$ @mod M\n$ n : @Int = 5").is_ok());
 }
 
 #[test]
@@ -26,12 +26,12 @@ fn value_and_function_names_must_be_lowercase() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     // A capitalized value or function name is a type/constructor spelling, rejected.
-    assert!(err("$ @mod M\n$ Foo : @int = 3").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ Foo : @Int = 3").contains("lowercase letter"));
     assert!(err("$ @mod M\n$ Bar = 3").contains("lowercase letter"));
-    assert!(err("$ @mod M\n$ GetRandomValue : @int -> @int = \\x = x").contains("lowercase letter"));
+    assert!(err("$ @mod M\n$ GetRandomValue : @Int -> @Int = \\x = x").contains("lowercase letter"));
     // Lowercase values/functions parse; capitalized names stay for type decls.
-    assert!(parse("$ @mod M\n$ foo : @int = 3").is_ok());
-    assert!(parse("$ @mod M\n$ Point : @struct = a: @int,").is_ok());
+    assert!(parse("$ @mod M\n$ foo : @Int = 3").is_ok());
+    assert!(parse("$ @mod M\n$ Point : @struct = a: @Int,").is_ok());
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn comma_arms_nest_if_defer_and_with() {
 
 #[test]
 fn struct_decl_and_literal_and_field() {
-    let src = "$ @mod M\n$ Person : @struct =\n name: @str,\n age: @int,\n\
+    let src = "$ @mod M\n$ Person : @struct =\n name: @Str,\n age: @Int,\n\
                    $ p : Person = Person.{ .name = \"a\", .age = 1 }\n$ n = p.age";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
@@ -177,10 +177,10 @@ fn struct_decl_and_literal_and_field() {
 #[test]
 fn declared_type_params() {
     let src = "$ @mod M\n\
-               $ Weird : @struct a b = fst: a, has: @int, snd: b\n\
+               $ Weird : @struct a b = fst: a, has: @Int, snd: b\n\
                $ Pair : @union a b = Left: a, Right: b\n\
                $ Stream : @struct t = head: t, tail: Stream t\n\
-               $ MapInt : @alias v = Map @int v";
+               $ MapInt : @alias v = Map @Int v";
     let p = prog(src);
     let names = |ps: utilities::Slice<utilities::StrId>| {
         p.ast.slice(ps).iter().map(|s| p.ast.text(*s)).collect::<Vec<_>>()
@@ -215,7 +215,7 @@ fn declared_type_params() {
 
 #[test]
 fn sized_tensor_type_parses() {
-    let p = prog("$ @mod M\n$ v : [3]@int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
+    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]\n$ f : [n]a -> a = \\t = t.[0]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { size, elem, .. } => {
@@ -231,7 +231,7 @@ fn sized_tensor_type_parses() {
 #[test]
 fn axis_variance_parses() {
     // `[@contra m, @co n]T` desugars to nested `Sized`, outer axis contra, inner co.
-    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@int -> @int = \\m = 0");
+    let p = prog("$ @mod M\n$ f : [@contra 2, @co 3]@Int -> @Int = \\m = 0");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Arrow { from, .. } => match p.ast.ty(*from) {
@@ -251,7 +251,7 @@ fn axis_variance_parses() {
         other => panic!("expected a def, got {other:?}"),
     }
     // A bare axis is Neutral.
-    let p = prog("$ @mod M\n$ v : [3]@int = [1, 2, 3]");
+    let p = prog("$ @mod M\n$ v : [3]@Int = [1, 2, 3]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { variance, .. } => assert_eq!(*variance, Variance::Neutral),
@@ -264,7 +264,7 @@ fn axis_variance_parses() {
 #[test]
 fn shape_sugar_nests() {
     // `[m, n]T` desugars to the nested `[m][n]T` (`Sized` of `Sized`).
-    let p = prog("$ @mod M\n$ g : [2, 3]@int = [ [1,2,3], [4,5,6] ]");
+    let p = prog("$ @mod M\n$ g : [2, 3]@Int = [ [1,2,3], [4,5,6] ]");
     match &p.ast.slice(p.program.items)[0] {
         Item::Def { sig: Some(sig), .. } => match p.ast.ty(*sig) {
             Ty::Sized { size, elem, .. } => {
@@ -372,7 +372,7 @@ fn variant_literal_and_when_match() {
 
 #[test]
 fn cons_and_list_and_function_type() {
-    let src = "$ @mod M\n$ g : @vec t -> @int = \\xs = 0\n$ xs = 1 :: [2, 3]";
+    let src = "$ @mod M\n$ g : @Vec t -> @Int = \\xs = 0\n$ xs = 1 :: [2, 3]";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(
@@ -397,7 +397,7 @@ fn cons_and_list_and_function_type() {
 #[test]
 fn union_effect_import_and_directives() {
     let src = "$ @mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
-                   $ State : @effect = get : @int, put : @int -> @int\n$ @e 1";
+                   $ State : @effect = get : @Int, put : @Int -> @Int\n$ @e 1";
     let p = prog(src);
     let items = p.ast.slice(p.program.items);
     assert!(matches!(items[0], Item::Import { .. }));
@@ -468,7 +468,7 @@ fn composition_becomes_a_lambda_and_binds_tightest() {
 
 #[test]
 fn string_interpolation_desugars_to_concat() {
-    // A plain string is a single `@str` node.
+    // A plain string is a single `@Str` node.
     let p = prog("$ @mod M\n$ s = \"hi\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Str(_)));
 
@@ -479,7 +479,7 @@ fn string_interpolation_desugars_to_concat() {
     };
     assert_eq!(p.ast.text(*op), "++");
 
-    // A sole interpolant is still `++` (seeded by a chunk), so it types as @str.
+    // A sole interpolant is still `++` (seeded by a chunk), so it types as @Str.
     let p = prog("$ @mod M\n$ s = \"?(x)\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::BinOp { .. }));
 }
@@ -501,7 +501,7 @@ fn string_interpolation_nesting_and_escapes() {
 #[test]
 fn ascription_parses_in_group() {
     // `(e : T)` inside a group is an ascription node.
-    let p = prog("$ @mod M\n$ n : @int = (5 : @int)");
+    let p = prog("$ @mod M\n$ n : @Int = (5 : @Int)");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Ascribe { .. }));
 }
 
@@ -514,9 +514,9 @@ fn blessed_interface_prefix_rule() {
     // A blessed interface is a declarable `@`-name, as a one-field `@struct`.
     assert!(parse("$ @mod M\n$ @IIndex : @struct s i t = index: s -> i -> t,").is_ok());
     // It is a TYPE, so a value signature on the same name is rejected.
-    assert!(err("$ @mod M\n$ @IIndex : a -> @int -> a = \\t i = t").contains("one-field '@struct'"));
+    assert!(err("$ @mod M\n$ @IIndex : a -> @Int -> a = \\t i = t").contains("one-field '@struct'"));
     // Any other `@`-name is a compiler intrinsic, not extensible in user code.
-    assert!(err("$ @mod M\n$ @my_hook : @int -> @int = \\x = x").contains("not extensible"));
+    assert!(err("$ @mod M\n$ @my_hook : @Int -> @Int = \\x = x").contains("not extensible"));
     // ...except a builtin declaration, which the checker confines to CORE.
     let p = prog("$ @mod M\n$ @iadd : t -> t -> t = @extern \"thrax\"");
     assert!(matches!(p.ast.expr(only_def_body(&p)), Expr::Builtin));
@@ -539,15 +539,15 @@ fn angle_brackets_are_comparisons_in_expressions() {
 /// `parse_effect_row_opt` reads by lexeme rather than by operator role.
 #[test]
 fn effect_rows_still_parse_in_type_position() {
-    for sig in ["<E> @int", "<E | e> @int", "<| e> @int", "<> @int"] {
-        let src = format!("$ @mod M\n$ E : @effect = op : @int -> @int\n$ f : @int -> {sig} = \\n = n");
+    for sig in ["<E> @Int", "<E | e> @Int", "<| e> @Int", "<> @Int"] {
+        let src = format!("$ @mod M\n$ E : @effect = op : @Int -> @Int\n$ f : @Int -> {sig} = \\n = n");
         assert!(parse(&src).is_ok(), "signature `{sig}` failed to parse");
     }
 }
 
 #[test]
 fn row_alias_body_and_applied_entries_parse() {
-    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @int -> <W r, @io> @int = \\n = n");
+    let p = prog("$ @mod M\n$ W : @alias e = <Log, App | e>\n$ f : @Int -> <W r, @IO> @Int = \\n = n");
     let items = p.ast.slice(p.program.items);
     let Item::Alias { ty, .. } = &items[0] else {
         panic!("expected an alias")
@@ -619,7 +619,7 @@ fn operator_in_parens_is_a_function_reference() {
 
 #[test]
 fn lambda_parameters_are_juxtaposed_and_take_annotations() {
-    let p = prog("$ @mod M\n$ f = \\i: @int = i");
+    let p = prog("$ @mod M\n$ f = \\i: @Int = i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -627,7 +627,7 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
     assert_eq!(params.len(), 1);
     assert!(params[0].sig.is_some());
 
-    let p = prog("$ @mod M\n$ g = \\(i: @int) y (s: @str) {a, b} = i");
+    let p = prog("$ @mod M\n$ g = \\(i: @Int) y (s: @Str) {a, b} = i");
     let Expr::Lambda { params, .. } = p.ast.expr(only_def_body(&p)) else {
         panic!("expected a lambda")
     };
@@ -639,7 +639,7 @@ fn lambda_parameters_are_juxtaposed_and_take_annotations() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
     // A bare annotation would swallow the next parameter as a type argument.
-    let e = err("$ @mod M\n$ k = \\a b: @int = a");
+    let e = err("$ @mod M\n$ k = \\a b: @Int = a");
     assert!(e.contains("parenthesize"), "{e}");
     let e = err("$ @mod M\n$ k = \\a, b = a");
     assert!(e.contains("juxtaposed"), "{e}");
@@ -654,14 +654,14 @@ fn a_misqualified_literal_points_at_the_expression() {
 
     // A type applied to arguments is how a reader asks for a constructor at a
     // fixed instantiation; the error names the ascription that does that job.
-    let text = err("$ @mod M\n$ y = (List @int32).Cons.{1}");
+    let text = err("$ @mod M\n$ y = (List @Int32).Cons.{1}");
     assert!(text.contains("applied to arguments"), "{text}");
     assert!(text.contains("ascribe"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
     assert!(text.contains("  |       ^^^^^^^^^^^^^^^^^^\n"), "{text}");
 
     // A lowercase head is a value name, not a type.
-    let text = err("$ @mod M\n$ y = (list @int32).Cons.{1}");
+    let text = err("$ @mod M\n$ y = (list @Int32).Cons.{1}");
     assert!(text.contains("`list` names a value"), "{text}");
     assert!(text.contains("--> t.thx:2:7"), "{text}");
 
@@ -677,14 +677,14 @@ fn a_misqualified_literal_points_at_the_expression() {
 fn a_binding_site_annotation_takes_any_pattern() {
     // The type describes the whole binding, so `let` accepts it on a destructuring
     // pattern exactly as a lambda parameter does.
-    assert!(parse("$ @mod M\n$ y = let {a, b} : {@int, @int} = {1, 2} in a").is_ok());
-    assert!(parse("$ @mod M\n$ y = \\{a, b}: {@int, @int} = a").is_ok());
-    assert!(parse("$ @mod M\n$ y = let x : @int = 1 in x").is_ok());
+    assert!(parse("$ @mod M\n$ y = let {a, b} : {@Int, @Int} = {1, 2} in a").is_ok());
+    assert!(parse("$ @mod M\n$ y = \\{a, b}: {@Int, @Int} = a").is_ok());
+    assert!(parse("$ @mod M\n$ y = let x : @Int = 1 in x").is_ok());
     // Several bindings still separate on the comma; a type runs only to the `=`.
-    assert!(parse("$ @mod M\n$ y = let a : @int = 1, b : @int = 2 in a").is_ok());
+    assert!(parse("$ @mod M\n$ y = let a : @Int = 1, b : @Int = 2 in a").is_ok());
 
     // A match arm takes no annotation: the scrutinee fixes the pattern's type.
-    let err = match parse("$ @mod M\n$ y = is 1 | n: @int => n | _ => 0") {
+    let err = match parse("$ @mod M\n$ y = is 1 | n: @Int => n | _ => 0") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -698,13 +698,13 @@ fn a_stray_annotation_names_where_the_type_goes() {
         Ok(_) => panic!("expected a parse error for {src:?}"),
     };
 
-    let text = err("$ @mod M\n$ y = [1: @int32, 2, 3]");
-    assert!(text.contains("[(1 : @int32), 2, 3]"), "{text}");
+    let text = err("$ @mod M\n$ y = [1: @Int32, 2, 3]");
+    assert!(text.contains("[(1 : @Int32), 2, 3]"), "{text}");
 
-    let text = err("$ @mod M\n$ y = .Cons.{ 1: @int32 }");
+    let text = err("$ @mod M\n$ y = .Cons.{ 1: @Int32 }");
     assert!(text.contains("ascribe a payload field in a group"), "{text}");
 
-    let text = err("$ @mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
+    let text = err("$ @mod M\n$ y = let {a: @Int32, b} = {1, 2} in a");
     assert!(text.contains("a pattern carries no types"), "{text}");
 
     // The annotation help is for a stray `:` only; an ordinary unclosed delimiter
@@ -768,7 +768,7 @@ fn else_no_longer_ends_a_match_or_a_handler() {
 
 #[test]
 fn effect_operation_names_must_be_lowercase() {
-    let err = match parse("$ @mod M\n$ E : @effect = Op : @int -> {},") {
+    let err = match parse("$ @mod M\n$ E : @effect = Op : @Int -> {},") {
         Err(e) => e.to_string(),
         Ok(_) => panic!("expected a parse error"),
     };
@@ -845,8 +845,8 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
 fn ext_is_an_ordinary_name() {
     // #312: `ext` was a keyword no parser rule consumed, so it could not name
     // anything and the error did not say why.
-    prog("$ @mod KW\n$ S : @struct = a : @str, ext : @str,");
-    prog("$ @mod KW\n$ ext : @int -> @int = \\ext = ext");
+    prog("$ @mod KW\n$ S : @struct = a : @Str, ext : @Str,");
+    prog("$ @mod KW\n$ ext : @Int -> @Int = \\ext = ext");
 }
 
 #[test]

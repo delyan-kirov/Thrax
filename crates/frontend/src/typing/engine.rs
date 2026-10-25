@@ -43,7 +43,7 @@ pub struct Engine {
     /// trial cannot leave a stale id that a reused var slot would inherit.
     nat_vars: HashSet<VarId>,
     /// Variables introduced by an INTEGER literal. An integer literal never adopts a
-    /// float type, so these refuse to bind to one: `1 + 2.0` and `x : @float64 = 1`
+    /// float type, so these refuse to bind to one: `1 + 2.0` and `x : @Float64 = 1`
     /// are errors, and the float literal (`1.0`) is the spelling. Tracked here
     /// rather than in the checker because the restriction has to hold wherever
     /// unification reaches, and it travels through variable chains.
@@ -1291,5 +1291,5 @@ fn show_poly(p: &Poly) -> String {
 /// Whether a type-constructor name is one of the float types, which an integer
 /// literal may not become.
 fn is_float_name(name: &str) -> bool {
-    matches!(name, "@float64" | "@float32")
+    matches!(name, "@Float64" | "@Float32")
 }

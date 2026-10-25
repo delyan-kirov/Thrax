@@ -4,11 +4,11 @@ $ @mod RECOVERY
 # definition is not reported again.
 $ h = \x = (x + 1  #~ error[UNEXPECTED_TOKEN]: expected ')' to close the group, found the next item
 
-$ k : @int = h 3 + lenght [1]  #~ error[TYPE_UNBOUND]: unbound name `lenght`
+$ k : @Int = h 3 + lenght [1]  #~ error[TYPE_UNBOUND]: unbound name `lenght`
 
-$ f : @int -> @int = \x = x + "a"  #~ error[TYPE_MISMATCH]: expected @int, found @str
+$ f : @Int -> @Int = \x = x + "a"  #~ error[TYPE_MISMATCH]: expected @Int, found @Str
 
 # `f` keeps its signature, so its callers still check against it.
-$ g : @int = f 1 + 1
+$ g : @Int = f 1 + 1
 
-$ m : @str = 4  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@str` is expected
+$ m : @Str = 4  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@Str` is expected

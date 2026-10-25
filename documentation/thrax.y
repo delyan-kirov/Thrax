@@ -62,9 +62,9 @@
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_CTX AT_IFACE
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
-%token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
-%token AT_TYCON     /* any other @name: a built-in type (@int64, @str, @vec) or
-                       effect (@io) in a type, an intrinsic (@vec_len) as a value */
+%token AT_TRUE AT_FALSE /* the two `@Bool` literals (there is no `true`/`false` alias) */
+%token AT_TYCON     /* any other @name: a built-in type (@Int64, @Str, @Vec) or
+                       effect (@IO) in a type, an intrinsic (@vec_len) as a value */
 
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
 %token LAMBDA       /* \ */
@@ -114,9 +114,9 @@ global
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
-  | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
-  /* The compile-time entry, run during compilation; its `@code` result adds
-   * items to this module. Signature: `{} -> <@meta, @io> @code`. */
+  | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
+  /* The compile-time entry, run during compilation; its `@Code` result adds
+   * items to this module. Signature: `{} -> <@Meta, @IO> @Code`. */
   | DOLLAR AT_BUILD COLON type EQ expr
   /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
    * value of it at a desugar site and calls its single field. AT_IFACE is one of
@@ -262,7 +262,7 @@ eff_row
   | PIPE_BACK LIDENT GT
   ;
 
-/* An entry is an effect applied to its type arguments (`Chan @int e`), or a row
+/* An entry is an effect applied to its type arguments (`Chan @Int e`), or a row
  * alias applied to its parameters (`WithLog e`). */
 eff_names : eff_entry | eff_names COMMA eff_entry ;
 eff_entry : UIDENT | AT_TYCON | eff_entry type_atom ;
@@ -356,7 +356,7 @@ atom
   | IMAG   /* resolves `@IImagLit <type>` and calls its field on the magnitude;
             * deliberately absent from `pat_atom` (a pattern holds no call) */
   | STR
-  | AT_TRUE   /* @bool literals; the ONLY spelling (no bare `true`/`false`) */
+  | AT_TRUE   /* @Bool literals; the ONLY spelling (no bare `true`/`false`) */
   | AT_FALSE
   | LIDENT
   | UIDENT
@@ -364,7 +364,7 @@ atom
   | AT_TYCON  /* an intrinsic as a value: `@vec_len v`, `@iadd a b` */
   | LPAREN expr RPAREN
   | LPAREN operator_name RPAREN  /* an operator as a function value: `(+) 1 1` */
-  | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @int)` */
+  | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @Int)` */
   | LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
   | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
   | LPAREN AT_CTX expr RPAREN    /* an explicit context, the FIRST argument of a
@@ -485,7 +485,7 @@ pat_atom
   | LIDENT
   | num_lit
   | STR
-  | AT_TRUE   /* @bool literal patterns; lowercase true/false would bind */
+  | AT_TRUE   /* @Bool literal patterns; lowercase true/false would bind */
   | AT_FALSE
   | list_pattern
   | LBRACE pat_elem_list opt_comma RBRACE  /* tuple pattern; n >= 1 */

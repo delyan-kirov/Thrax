@@ -1,103 +1,94 @@
 $ @mod BITS
 
 # \file BITS.thx
-# \info Bitwise operations on the 64-bit two's complement `@int`, and the IEEE 754
+# \info Bitwise operations on the 64-bit two's complement `@Int`, and the IEEE 754
 #       encodings of the float types. The compiler has no bitwise intrinsics, so
-#       these are arithmetic over `@nat` (whose division is unsigned): a bit is a
+#       these are arithmetic over `@Nat` (whose division is unsigned): a bit is a
 #       remainder by 2, a shift is a multiplication or division by a power of two.
 #       That is about 64 steps for `and`/`or`/`xor`, so this module suits constant
 #       folding and binary encoders, not inner loops.
 
-$ min_int : @int = 0 - 9223372036854775807 - 1
-$ max_int : @int = 9223372036854775807
+$ min_int : @Int = 0 - 9223372036854775807 - 1
+$ max_int : @Int = 9223372036854775807
 
-$ band : @int -> @int -> @int = \a b = @cast (and_go (@cast a) (@cast b) 0 1)
-$ bor : @int -> @int -> @int = \a b = @cast (or_go (@cast a) (@cast b) 0 1)
-$ bxor : @int -> @int -> @int = \a b = @cast (xor_go (@cast a) (@cast b) 0 1)
-$ bnot : @int -> @int = \a = 0 - a - 1
+$ band : @Int -> @Int -> @Int = \a b = @cast (and_go (@cast a) (@cast b) 0 1)
+$ bor : @Int -> @Int -> @Int = \a b = @cast (or_go (@cast a) (@cast b) 0 1)
+$ bxor : @Int -> @Int -> @Int = \a b = @cast (xor_go (@cast a) (@cast b) 0 1)
+$ bnot : @Int -> @Int = \a = 0 - a - 1
 
-# 2 to the `n`, as a `@nat` so that 2^63 is representable. 0 for `n >= 64`.
-$ pow2 : @int -> @nat = \n = if n >= 64 || n < 0 => 0 else pow2_go n 1
+# 2 to the `n`, as a `@Nat` so that 2^63 is representable. 0 for `n >= 64`.
+$ pow2 : @Int -> @Nat = \n = if n >= 64 || n < 0 => 0 else pow2_go n 1
 
 # Shifts by `n` bits. A count of 64 or more shifts every bit out, as in the
 # mathematical definition (C leaves it undefined; callers mask first).
-$ shl : @int -> @int -> @int = \a n =
-	if n >= 64 => 0 else let p : @int = @cast (pow2 n) in a * p
+$ shl : @Int -> @Int -> @Int = \a n = if n >= 64 => 0 else let p : @Int = @cast (pow2 n) in a * p
 
-$ shr_u : @int -> @int -> @int = \a n =
-	if n >= 64 => 0
-	else if n <= 0 => a
-	else let x : @nat = @cast a, r : @int = @cast (x / pow2 n) in r
+$ shr_u : @Int -> @Int -> @Int = \a n =
+    if n >= 64 => 0
+    else if n <= 0 => a
+    else let x : @Nat = @cast a, r : @Int = @cast (x / pow2 n) in r
 
-$ shr_s : @int -> @int -> @int = \a n =
-	if a >= 0 => shr_u a n else bnot (shr_u (bnot a) n)
+$ shr_s : @Int -> @Int -> @Int = \a n = if a >= 0 => shr_u a n else bnot (shr_u (bnot a) n)
 
 # The low `w` bits, zero-extended (`zext`) or sign-extended (`sext`), for w in
 # 1..64. This is how a value is narrowed to a C integer type of that width.
-$ zext : @int -> @int -> @int = \a w =
-	if w >= 64 => a else let x : @nat = @cast a, r : @int = @cast (x % pow2 w) in r
+$ zext : @Int -> @Int -> @Int = \a w =
+    if w >= 64 => a else let x : @Nat = @cast a, r : @Int = @cast (x % pow2 w) in r
 
-$ sext : @int -> @int -> @int = \a w =
-	if w >= 64 => a
-	else
-		let z = zext a w in
-		if z >= shl 1 (w - 1) => z - shl 1 w else z
+$ sext : @Int -> @Int -> @Int = \a w =
+    if w >= 64 => a else let z = zext a w in if z >= shl 1 (w - 1) => z - shl 1 w else z
 
 # Number of the highest set bit plus one (0 for 0), for a nonnegative value.
-$ bit_len : @int -> @int = \a = if a <= 0 => 0 else 1 + bit_len (a / 2)
+$ bit_len : @Int -> @Int = \a = if a <= 0 => 0 else 1 + bit_len (a / 2)
 
-# The IEEE 754 binary64 bit pattern of `x`, as the `@int` holding those bits.
-$ f64_bits : @float64 -> @int = \x =
-	float_bits x 1023 52 1074 1.7976931348623157e308 9221120237041090560 2047
+# The IEEE 754 binary64 bit pattern of `x`, as the `@Int` holding those bits.
+$ f64_bits : @Float64 -> @Int = \x =
+    float_bits x 1023 52 1074 1.7976931348623157e308 9221120237041090560 2047
 
 # The IEEE 754 binary32 bit pattern of `x` in the low 32 bits.
-$ f32_bits : @float32 -> @int = \x =
-	float_bits (f32_to_f64 x) 127 23 149 3.4028234663852886e38 2143289344 255
+$ f32_bits : @Float32 -> @Int = \x =
+    float_bits (f32_to_f64 x) 127 23 149 3.4028234663852886e38 2143289344 255
 
 $ @private
 
-$ and_go : @nat -> @nat -> @nat -> @nat -> @nat = \a b acc bit =
-	if a == 0 || b == 0 => acc
-	else and_go (a / 2) (b / 2) (if a % 2 == 1 && b % 2 == 1 => acc + bit else acc) (bit * 2)
+$ and_go : @Nat -> @Nat -> @Nat -> @Nat -> @Nat = \a b acc bit =
+    if a == 0 || b == 0 => acc
+    else and_go (a / 2) (b / 2) (if a % 2 == 1 && b % 2 == 1 => acc + bit else acc) (bit * 2)
 
-$ or_go : @nat -> @nat -> @nat -> @nat -> @nat = \a b acc bit =
-	if a == 0 && b == 0 => acc
-	else or_go (a / 2) (b / 2) (if a % 2 == 1 || b % 2 == 1 => acc + bit else acc) (bit * 2)
+$ or_go : @Nat -> @Nat -> @Nat -> @Nat -> @Nat = \a b acc bit =
+    if a == 0 && b == 0 => acc
+    else or_go (a / 2) (b / 2) (if a % 2 == 1 || b % 2 == 1 => acc + bit else acc) (bit * 2)
 
-$ xor_go : @nat -> @nat -> @nat -> @nat -> @nat = \a b acc bit =
-	if a == 0 && b == 0 => acc
-	else xor_go (a / 2) (b / 2) (if a % 2 != b % 2 => acc + bit else acc) (bit * 2)
+$ xor_go : @Nat -> @Nat -> @Nat -> @Nat -> @Nat = \a b acc bit =
+    if a == 0 && b == 0 => acc
+    else xor_go (a / 2) (b / 2) (if a % 2 != b % 2 => acc + bit else acc) (bit * 2)
 
-$ pow2_go : @int -> @nat -> @nat = \n acc = if n == 0 => acc else pow2_go (n - 1) (acc * 2)
+$ pow2_go : @Int -> @Nat -> @Nat = \n acc = if n == 0 => acc else pow2_go (n - 1) (acc * 2)
 
-$ pow2f : @int -> @float64 -> @float64 = \n acc =
-	if n == 0 => acc else pow2f (n - 1) (acc * 2.0)
+$ pow2f : @Int -> @Float64 -> @Float64 = \n acc = if n == 0 => acc else pow2f (n - 1) (acc * 2.0)
 
 # `bias`, `mbits` and `sub` describe the format: the exponent bias, the stored
 # mantissa width, and the power of two that scales the smallest subnormal to 1.
 # Every scaling below is by a power of two, so it is exact.
-$ float_bits : @float64 -> @int -> @int -> @int -> @float64 -> @int -> @int -> @int =
-	\x bias mbits sub maxv nan emax =
-	if x != x => nan
-	else
-		let neg = x < 0.0 || (x == 0.0 && 1.0 / x < 0.0),
-		    a = if x < 0.0 => 0.0 - x else x,
-		    sign = if neg => shl 1 (if mbits == 52 => 63 else 31) else 0 in
-		if a == 0.0 => sign
-		else if a > maxv => sign + shl emax mbits
-		else
-			let e = exponent_of a 0 in
-			if e < 1 - bias => sign + C.d2i (a * pow2f (sub / 2) 1.0 * pow2f (sub - sub / 2) 1.0)
-			else
-				let m = scale a e in
-				sign + shl (e + bias) mbits + C.d2i ((m - 1.0) * pow2f mbits 1.0)
+$ float_bits : @Float64 -> @Int -> @Int -> @Int -> @Float64 -> @Int -> @Int -> @Int = \x bias mbits sub maxv nan emax =
+    if x != x => nan
+    else
+        let neg = x < 0.0 || (x == 0.0 && 1.0 / x < 0.0),
+            a = if x < 0.0 => 0.0 - x else x,
+            sign = if neg => shl 1 (if mbits == 52 => 63 else 31) else 0 in
+        if a == 0.0 => sign
+        else if a > maxv => sign + shl emax mbits
+        else
+            let e = exponent_of a 0 in
+            if e < 1 - bias => sign + C.d2i (a * pow2f (sub / 2) 1.0 * pow2f (sub - sub / 2) 1.0)
+            else
+                let m = scale a e in
+                sign + shl (e + bias) mbits + C.d2i ((m - 1.0) * pow2f mbits 1.0)
 
-$ exponent_of : @float64 -> @int -> @int = \a e =
-	if a >= 2.0 => exponent_of (a / 2.0) (e + 1)
-	else if a < 1.0 => exponent_of (a * 2.0) (e - 1)
-	else e
+$ exponent_of : @Float64 -> @Int -> @Int = \a e =
+    if a >= 2.0 => exponent_of (a / 2.0) (e + 1)
+    else if a < 1.0 => exponent_of (a * 2.0) (e - 1)
+    else e
 
-$ scale : @float64 -> @int -> @float64 = \a e =
-	if e > 0 => scale (a / 2.0) (e - 1)
-	else if e < 0 => scale (a * 2.0) (e + 1)
-	else a
+$ scale : @Float64 -> @Int -> @Float64 = \a e =
+    if e > 0 => scale (a / 2.0) (e - 1) else if e < 0 => scale (a * 2.0) (e + 1) else a

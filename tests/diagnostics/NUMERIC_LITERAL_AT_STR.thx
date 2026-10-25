@@ -1,3 +1,3 @@
 $ @mod NUMERIC_LITERAL_AT_STR
 
-$ s : @str = 3  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@str` is expected
+$ s : @Str = 3  #~ error[TYPE_MISMATCH]: a numeric literal cannot be used where `@Str` is expected

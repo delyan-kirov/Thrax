@@ -1,40 +1,40 @@
 $ @mod ARRAY
 
-# @array: a builtin type -- a sized, contiguous block of bytes. It is allocated
-# with the `@array` form, an expression that yields a fresh block of that many
+# @Array: a builtin type -- a sized, contiguous block of bytes. It is allocated
+# with the `@Array` form, an expression that yields a fresh block of that many
 # zeroed bytes.
 
 # Positional: the size, in bytes.
-$ buf : @array = @array.{ 64 }
+$ buf : @Array = @Array.{ 64 }
 
 # Named: the same, with the `size` field spelled out.
-$ buf2 : @array = @array.{ .size = 8 }
+$ buf2 : @Array = @Array.{ .size = 8 }
 
-# The size is an ordinary @int expression, not just a literal.
-$ n : @int = 10
-$ buf3 : @array = @array.{ n * 4 }
+# The size is an ordinary @Int expression, not just a literal.
+$ n : @Int = 10
+$ buf3 : @Array = @Array.{ n * 4 }
 
-# `@array` is an expression, so it nests like any other -- here behind a `let`,
+# `@Array` is an expression, so it nests like any other -- here behind a `let`,
 # and as the body of a function that computes its size from an argument.
-$ make : @int -> @array = \k = let extra = 16 in @array.{ k + extra }
-$ buf4 : @array = make 32
+$ make : @Int -> @Array = \k = let extra = 16 in @Array.{ k + extra }
+$ buf4 : @Array = make 32
 
-$ Count: @alias = @int
+$ Count: @alias = @Int
 
-# `@vec` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
-$ IntList: @alias = @vec @int
+# `@Vec` is the prelude type (its `[..]`/`::` sugar is hardwired to that name).
+$ IntList: @alias = @Vec @Int
 
 $ list: IntList = 1 :: []
 
-# @array is an ordinary type, so it can be a struct field like any other.
+# @Array is an ordinary type, so it can be a struct field like any other.
 $ Buffer : @struct =
-	bytes: @array,
-	len: @int,
+    bytes: @Array,
+    len: @Int,
 
-$ b    : Buffer = Buffer.{ .bytes = @array.{ 128 }, .len = 128 }
-$ blen : Count    = b.len
+$ b : Buffer = Buffer.{ .bytes = @Array.{ 128 }, .len = 128 }
+$ blen : Count = b.len
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = buf ; buf2 ; buf3 ; buf4 ; list ; b ; blen ; n ; 0
+$ test : @Int = buf; buf2; buf3; buf4; list; b; blen; n; 0
 
 $ @e <| assert (test == 0) "ARRAY: a check failed"

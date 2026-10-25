@@ -85,7 +85,7 @@ an unpredictable lifetime.
 
 An effect row lives on an **arrow**, and effects run when a function is *invoked*
 under a handler. So an effectful computation is a function, conventionally taking
-unit: `counter : {} -> <State> @int`. Making it a value (`counter : <State> @int`,
+unit: `counter : {} -> <State> @Int`. Making it a value (`counter : <State> @Int`,
 not even valid syntax since a row needs an arrow) would force it eagerly at its
 definition, where no handler is installed. The handler runs it explicitly, e.g.
 `do action {}` inside `runState`.
@@ -94,7 +94,7 @@ The unit parameter is introduced **automatically**, so no `\u =` is needed; writ
 the body directly and it becomes the thunk:
 
 ```
-$ counter : {} -> <State> @int =
+$ counter : {} -> <State> @Int =
     let x = get {}, _ = put <| x + 1, y = get {} in x + y
 ```
 
@@ -116,14 +116,14 @@ union; neither needs its own kind.
 
 ```
 $ Stream : @struct t = head : t, tail : Stream t
-$ from : @int -> Stream @int = \n = { .head = n, .tail = from (n + 1) }
+$ from : @Int -> Stream @Int = \n = { .head = n, .tail = from (n + 1) }
 
 $ List : @union a = Nil: {}, Cons: {a, List a},
-$ count : @int -> List @int = \n = List.Cons.{ n, count (n + 1) }
+$ count : @Int -> List @Int = \n = List.Cons.{ n, count (n + 1) }
 ```
 
 The rule stops at an arrow: a slot typed `{} -> T` is already a suspension
-(`Task.Susp: { @int, {} -> Task }`), so it stays a plain function. A C-repr
+(`Task.Susp: { @Int, {} -> Task }`), so it stays a plain function. A C-repr
 struct is excluded too, since a thunk cannot cross the `@extern` boundary.
 
 **Why the old kind did not work.** `@codata` was lazy only by accident. ANF
@@ -143,7 +143,7 @@ spine twice. Forcing happens where a value is scrutinised (a `Case` scrutinee, a
 field access) and where a whole value is consumed (rendering, structural
 equality), never at construction.
 
-**Still open.** Self-reference (`$ ones : Stream @int = { .head = 1, .tail =
+**Still open.** Self-reference (`$ ones : Stream @Int = { .head = 1, .tail =
 ones }`) works but builds a reference cycle, which refcounting does not collect.
 That is the same stance as cyclic data: accepted as a rare leak.
 
@@ -162,7 +162,7 @@ and eliminated by **observing** them). Observations are **non-memoized**.
 ```
 $ Stream : @codata `T = head : `T, tail : Stream `T,
 
-$ from : @int -> Stream @int = \n =
+$ from : @Int -> Stream @Int = \n =
     .head = n,
     .tail = from (n + 1),     # copattern clauses, one per observation
 ```

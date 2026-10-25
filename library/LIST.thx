@@ -18,106 +18,103 @@ $ empty : List t = List.Nil
 
 $ singleton : t -> List t = \x = List.Cons.{ x, List.Nil }
 
-$ is_empty : List t -> @bool = \l = is l | List.Nil => @true | _ => @false
+$ is_empty : List t -> @Bool = \l = is l | List.Nil => @true | _ => @false
 
-$ head : List t -> Option t = \l = is l | List.Cons.{h, t} => Option.Some.{ h } | _ => Option.None
+$ head : List t -> Option t = \l = is l | List.Cons.{ h, t } => Option.Some.{ h } | _ => Option.None
 
-$ tail : List t -> List t = \l = is l | List.Cons.{h, t} => t | _ => List.Nil
+$ tail : List t -> List t = \l = is l | List.Cons.{ h, t } => t | _ => List.Nil
 
-$ length : List t -> @int = \l = length_onto 0 l
+$ length : List t -> @Int = \l = length_onto 0 l
 
-$ nth : List t -> @int -> Option t = \l i =
-	is l
-	| List.Cons.{h, t} => if i == 0 => Option.Some.{ h } else nth t (i - 1)
-	| _ => Option.None
+$ nth : List t -> @Int -> Option t = \l i =
+    is l
+    | List.Cons.{ h, t } => if i == 0 => Option.Some.{ h } else nth t (i - 1)
+    | _ => Option.None
 
 $ last : List t -> Option t = \l =
-	is l
-	| List.Cons.{h, t} => (is t | List.Nil => Option.Some.{ h } | _ => last t)
-	| _ => Option.None
+    is l
+    | List.Cons.{ h, t } => (is t | List.Nil => Option.Some.{ h } | _ => last t)
+    | _ => Option.None
 
 $ reverse : List t -> List t = \l = reverse_onto List.Nil l
 
 # `reverse_onto acc l` is `reverse l ++ acc`, the accumulator idiom's finisher.
 $ reverse_onto : List t -> List t -> List t = \acc l =
-	is l | List.Cons.{h, t} => reverse_onto List.Cons.{ h, acc } t | _ => acc
+    is l | List.Cons.{ h, t } => reverse_onto List.Cons.{ h, acc } t | _ => acc
 
 $ append : List t -> List t -> List t = \xs ys =
-	is xs | List.Cons.{h, t} => List.Cons.{ h, append t ys } | _ => ys
+    is xs | List.Cons.{ h, t } => List.Cons.{ h, append t ys } | _ => ys
 
 $ concat : List (List t) -> List t = \ls =
-	is ls | List.Cons.{h, t} => append h (concat t) | _ => List.Nil
+    is ls | List.Cons.{ h, t } => append h (concat t) | _ => List.Nil
 
 $ map : (a -> b) -> List a -> List b = \f l =
-	is l | List.Cons.{h, t} => List.Cons.{ f h, map f t } | _ => List.Nil
+    is l | List.Cons.{ h, t } => List.Cons.{ f h, map f t } | _ => List.Nil
 
 $ concat_map : (a -> List b) -> List a -> List b = \f l =
-	is l | List.Cons.{h, t} => append (f h) (concat_map f t) | _ => List.Nil
+    is l | List.Cons.{ h, t } => append (f h) (concat_map f t) | _ => List.Nil
 
-$ filter : (t -> @bool) -> List t -> List t = \p l =
-	is l
-	| List.Cons.{h, t} => if p h => List.Cons.{ h, filter p t } else filter p t
-	| _ => List.Nil
+$ filter : (t -> @Bool) -> List t -> List t = \p l =
+    is l
+    | List.Cons.{ h, t } => if p h => List.Cons.{ h, filter p t } else filter p t
+    | _ => List.Nil
 
 $ filter_map : (a -> Option b) -> List a -> List b = \f l =
-	is l
-	| List.Cons.{h, t} =>
-		(is f h | Option.Some.{ y } => List.Cons.{ y, filter_map f t } | _ => filter_map f t)
-	| _ => List.Nil
+    is l
+    | List.Cons.{ h, t } =>
+        (is f h | Option.Some.{ y } => List.Cons.{ y, filter_map f t } | _ => filter_map f t)
+    | _ => List.Nil
 
 $ foldl : (a -> t -> a) -> a -> List t -> a = \f acc l =
-	is l | List.Cons.{h, t} => foldl f (f acc h) t | _ => acc
+    is l | List.Cons.{ h, t } => foldl f (f acc h) t | _ => acc
 
 $ foldr : (t -> a -> a) -> a -> List t -> a = \f z l =
-	is l | List.Cons.{h, t} => f h (foldr f z t) | _ => z
+    is l | List.Cons.{ h, t } => f h (foldr f z t) | _ => z
 
-$ take : @int -> List t -> List t = \n l =
-	if n <= 0 => List.Nil
-	else is l | List.Cons.{h, t} => List.Cons.{ h, take (n - 1) t } | _ => List.Nil
+$ take : @Int -> List t -> List t = \n l =
+    if n <= 0 => List.Nil
+    else is l | List.Cons.{ h, t } => List.Cons.{ h, take (n - 1) t } | _ => List.Nil
 
-$ drop : @int -> List t -> List t = \n l =
-	if n <= 0 => l else is l | List.Cons.{h, t} => drop (n - 1) t | _ => List.Nil
+$ drop : @Int -> List t -> List t = \n l =
+    if n <= 0 => l else is l | List.Cons.{ h, t } => drop (n - 1) t | _ => List.Nil
 
-$ take_while : (t -> @bool) -> List t -> List t = \p l =
-	is l
-	| List.Cons.{h, t} => if p h => List.Cons.{ h, take_while p t } else List.Nil
-	| _ => List.Nil
+$ take_while : (t -> @Bool) -> List t -> List t = \p l =
+    is l
+    | List.Cons.{ h, t } => if p h => List.Cons.{ h, take_while p t } else List.Nil
+    | _ => List.Nil
 
-$ drop_while : (t -> @bool) -> List t -> List t = \p l =
-	is l | List.Cons.{h, t} => if p h => drop_while p t else l | _ => List.Nil
+$ drop_while : (t -> @Bool) -> List t -> List t = \p l =
+    is l | List.Cons.{ h, t } => if p h => drop_while p t else l | _ => List.Nil
 
-$ any : (t -> @bool) -> List t -> @bool = \p l =
-	is l | List.Cons.{h, t} => p h || any p t | _ => @false
+$ any : (t -> @Bool) -> List t -> @Bool = \p l =
+    is l | List.Cons.{ h, t } => p h || any p t | _ => @false
 
-$ all : (t -> @bool) -> List t -> @bool = \p l =
-	is l | List.Cons.{h, t} => p h && all p t | _ => @true
+$ all : (t -> @Bool) -> List t -> @Bool = \p l =
+    is l | List.Cons.{ h, t } => p h && all p t | _ => @true
 
-$ find : (t -> @bool) -> List t -> Option t = \p l =
-	is l
-	| List.Cons.{h, t} => if p h => Option.Some.{ h } else find p t
-	| _ => Option.None
+$ find : (t -> @Bool) -> List t -> Option t = \p l =
+    is l | List.Cons.{ h, t } => if p h => Option.Some.{ h } else find p t | _ => Option.None
 
-$ lookup : (k -> @bool) -> List {k, v} -> Option v = \p l =
-	is l
-	| List.Cons.{h, t} => if p h.0 => Option.Some.{ h.1 } else lookup p t
-	| _ => Option.None
+$ lookup : (k -> @Bool) -> List { k, v } -> Option v = \p l =
+    is l | List.Cons.{ h, t } => if p h.0 => Option.Some.{ h.1 } else lookup p t | _ => Option.None
 
-$ zip : List a -> List b -> List {a, b} = \xs ys =
-	is xs
-	| List.Cons.{x, xt} => (is ys | List.Cons.{y, yt} => List.Cons.{ {x, y}, zip xt yt } | _ => List.Nil)
-	| _ => List.Nil
+$ zip : List a -> List b -> List { a, b } = \xs ys =
+    is xs
+    | List.Cons.{ x, xt } =>
+        (is ys | List.Cons.{ y, yt } => List.Cons.{ { x, y }, zip xt yt } | _ => List.Nil)
+    | _ => List.Nil
 
-$ to_vec : List t -> @vec t = \l = to_vec_onto (@vec_new {}) l
+$ to_vec : List t -> @Vec t = \l = to_vec_onto (@vec_new {}) l
 
-$ from_vec : @vec t -> List t = \v = from_vec_onto List.Nil v (@vec_len v - 1)
+$ from_vec : @Vec t -> List t = \v = from_vec_onto List.Nil v (@vec_len v - 1)
 
 $ @private
 
-$ length_onto : @int -> List t -> @int = \n l =
-	is l | List.Cons.{h, t} => length_onto (n + 1) t | _ => n
+$ length_onto : @Int -> List t -> @Int = \n l =
+    is l | List.Cons.{ h, t } => length_onto (n + 1) t | _ => n
 
-$ to_vec_onto : @vec t -> List t -> @vec t = \acc l =
-	is l | List.Cons.{h, t} => to_vec_onto (@vec_push acc h) t | _ => acc
+$ to_vec_onto : @Vec t -> List t -> @Vec t = \acc l =
+    is l | List.Cons.{ h, t } => to_vec_onto (@vec_push acc h) t | _ => acc
 
-$ from_vec_onto : List t -> @vec t -> @int -> List t = \acc v i =
-	if i < 0 => acc else from_vec_onto List.Cons.{ @vec_get v i, acc } v (i - 1)
+$ from_vec_onto : List t -> @Vec t -> @Int -> List t = \acc v i =
+    if i < 0 => acc else from_vec_onto List.Cons.{ @vec_get v i, acc } v (i - 1)

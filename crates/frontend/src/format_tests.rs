@@ -19,22 +19,22 @@ fn spacing_is_normalized_within_a_line() {
 
 #[test]
 fn a_long_match_breaks_its_arms_under_the_head() {
-    let src = "$ @mod M\n$ go : Light -> @int = \\l =\n\tis l | Light.Red => 0\n\t       | Light.Yellow => 1\n";
+    let src = "$ @mod M\n$ go : Light -> @Int = \\l =\n\tis l | Light.Red => 0\n\t       | Light.Yellow => 1\n";
     let three = "$ @mod M\n$ go = \\l = is l | A => 0 | B => 1 | C => 2\n";
     assert_eq!(fmt(three), "$ @mod M\n$ go = \\l =\n    is l\n    | A => 0\n    | B => 1\n    | C => 2\n");
     assert_eq!(
         narrow(src, 40),
-        "$ @mod M\n$ go : Light -> @int = \\l =\n    is l\n    | Light.Red => 0\n    | Light.Yellow => 1\n"
+        "$ @mod M\n$ go : Light -> @Int = \\l =\n    is l\n    | Light.Red => 0\n    | Light.Yellow => 1\n"
     );
-    assert_eq!(fmt(src), "$ @mod M\n$ go : Light -> @int = \\l = is l | Light.Red => 0 | Light.Yellow => 1\n");
+    assert_eq!(fmt(src), "$ @mod M\n$ go : Light -> @Int = \\l = is l | Light.Red => 0 | Light.Yellow => 1\n");
 }
 
 #[test]
 fn a_trailing_comma_keeps_a_declaration_exploded() {
-    let src = "$ @mod M\n$ P : @struct =\n  x: @int, y: @int,\n$ Q : @struct = x: @int, y: @int,\n";
+    let src = "$ @mod M\n$ P : @struct =\n  x: @Int, y: @Int,\n$ Q : @struct = x: @Int, y: @Int,\n";
     assert_eq!(
         fmt(src),
-        "$ @mod M\n$ P : @struct =\n    x: @int,\n    y: @int,\n$ Q : @struct = x: @int, y: @int,\n"
+        "$ @mod M\n$ P : @struct =\n    x: @Int,\n    y: @Int,\n$ Q : @struct = x: @Int, y: @Int,\n"
     );
 }
 
@@ -71,7 +71,7 @@ fn sequences_break_after_semicolons() {
 
 #[test]
 fn formatting_is_idempotent() {
-    let src = "$ @mod M\n$ go : Light -> @int = \\l =\n\tis l | Light.Red => 0\n\t       | Light.Yellow => if l == l => 1 else 2\n$ P : @struct =\n\tx: @int,\n";
+    let src = "$ @mod M\n$ go : Light -> @Int = \\l =\n\tis l | Light.Red => 0\n\t       | Light.Yellow => if l == l => 1 else 2\n$ P : @struct =\n\tx: @Int,\n";
     let once = narrow(src, 30);
     assert_eq!(narrow(&once, 30), once);
 }
@@ -119,15 +119,15 @@ fn a_handler_puts_ctl_on_its_own_line() {
 
 #[test]
 fn a_long_concatenation_breaks_before_each_plus_plus() {
-    let src = "$ @mod M\n$ s : @str = \"aaaaaaaaaa\" ++ \"bbbbbbbbbb\" ++ \"cccccccccc\"\n";
+    let src = "$ @mod M\n$ s : @Str = \"aaaaaaaaaa\" ++ \"bbbbbbbbbb\" ++ \"cccccccccc\"\n";
     assert_eq!(
         narrow(src, 30),
-        "$ @mod M\n$ s : @str =\n    \"aaaaaaaaaa\"\n        ++ \"bbbbbbbbbb\"\n        ++ \"cccccccccc\"\n"
+        "$ @mod M\n$ s : @Str =\n    \"aaaaaaaaaa\"\n        ++ \"bbbbbbbbbb\"\n        ++ \"cccccccccc\"\n"
     );
 }
 
 #[test]
 fn a_long_signature_stays_on_one_line() {
-    let src = "$ @mod M\n$ f : @int -> {@vec @int, @int} = \\x = {[x], x}\n";
-    assert_eq!(narrow(src, 30), "$ @mod M\n$ f : @int -> { @vec @int, @int } = \\x =\n    { [x], x }\n");
+    let src = "$ @mod M\n$ f : @Int -> {@Vec @Int, @Int} = \\x = {[x], x}\n";
+    assert_eq!(narrow(src, 30), "$ @mod M\n$ f : @Int -> { @Vec @Int, @Int } = \\x =\n    { [x], x }\n");
 }

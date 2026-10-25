@@ -681,7 +681,7 @@ pub fn lower_program(
     let ct_types: Vec<(String, Span)> =
         lw.meta_type_evals.iter().map(|(n, _, s)| (n.clone(), *s)).collect();
     globals.extend(lw.meta_type_evals.drain(..).map(|(n, body, _)| (n, body)));
-    // `$ @build : {} -> <@meta, @io> @code`: back the call `@build {}` with a
+    // `$ @build : {} -> <@Meta, @IO> @Code`: back the call `@build {}` with a
     // synthetic global so the driver can force it exactly as it forces an `$ @e`.
     // The reference is module-qualified because several modules may each define
     // their own `@build`, and a bare global lookup resolves root-first.
@@ -734,7 +734,7 @@ struct Lowerer<'a> {
     meta_evals: Vec<(String, Term, Span)>,
     /// Synthetic globals for type-position `@e X` (`Foo : @e X = ...`), each a
     /// global `@e_type#n = X` forced at compile time; the driver splices the
-    /// resulting `@code`'s type source at the `@e X` span and re-compiles. Drained
+    /// resulting `@Code`'s type source at the `@e X` span and re-compiles. Drained
     /// by [`lower_program`] into `Program.globals` / `Program.ct_types`.
     meta_type_evals: Vec<(String, Term, Span)>,
 }
@@ -1113,7 +1113,7 @@ impl<'a> Lowerer<'a> {
 
             Expr::List(items) => {
                 let items: Vec<Aol<Expr>> = self.ast.slice(*items).to_vec();
-                // Every other `[...]` collects its elements into the `@vec` payload
+                // Every other `[...]` collects its elements into the `@Vec` payload
                 // (push left to right) that its construction hook consumes. A sized
                 // tensor is the exception the type system forces: its static length
                 // cannot ride along in the payload, so `@tensor_stack` flattens the
@@ -1933,7 +1933,7 @@ impl<'a> Lowerer<'a> {
                 Pat::Tuple(pats.into_iter().map(|p| self.pat(p)).collect())
             }
             // `h :: t` / `[a, b, ..r]` / `[]` match any sequence by unfolding its
-            // `sequence_view` hook (the default `@vec`, or a user type). The checker
+            // `sequence_view` hook (the default `@Vec`, or a user type). The checker
             // records the resolved hook for every such pattern.
             Pattern::Cons { head, tail } => {
                 let (head, tail) = (*head, *tail);
