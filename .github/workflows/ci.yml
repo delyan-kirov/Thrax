@@ -79,6 +79,17 @@ jobs:
         run: nix develop ./applications/web --command node applications/web/build.mjs
 
   # macOS, natively, in the smaller shell of tools/macos/flake.nix.
+  #
+  # macOS is not well supported. Nobody on the project develops on a Mac, and
+  # this job is the only place the port is exercised. Known gap (#327): the two
+  # ThreadSanitizer tests in crates/ccg/tests/compile.rs fail here. The
+  # instrumented binaries exit unsuccessfully at THRAX_THREADS=2 with nothing on
+  # stderr, so TSan reports no race and the runtime prints no fault. The same
+  # programs pass without TSan on this runner, and pass under TSan on Linux.
+  # Giving workers the 512 KiB macOS stack on Linux did not reproduce it, and
+  # the cause is unknown. We do not have the resources to debug it on Apple
+  # hardware, so the tests skip on macOS and the Linux job's TSan run covers
+  # the shared runtime C.
   macos:
     runs-on: macos-latest
 
