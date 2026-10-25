@@ -44,7 +44,11 @@ $ counter : {} -> <State> @Int = \u =
 # them: the clause's value is the handler's result.
 $ Found : @union = Hit: @Int, Miss: {},
 $ lookup : @Int -> @Int = \key =
-    do (if key < 0 => Exn.throw "negative", key == 0 => Found.Miss else Found.Hit.{ key * 2 })
+    do (
+        if key < 0 => Exn.throw "negative",
+           key == 0 => Found.Miss
+           else Found.Hit.{ key * 2 }
+    )
     ctl k
     | Exn.throw msg => 0 - 2
     | .Hit.{ v } if v > 100 => 100

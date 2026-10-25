@@ -11,7 +11,10 @@ $ sign : @Int -> @Int = \n = if n == 0 => 0 else if n > 0 => 1 else -1
 
 # The same chain written with comma-separated arms; a trailing comma before
 # `else` is allowed.
-$ sign2 : @Int -> @Int = \n = if n == 0 => 0, n > 0 => 1, else -1
+$ sign2 : @Int -> @Int = \n =
+    if n == 0 => 0,
+       n > 0 => 1,
+       else -1
 
 $ max : @Int -> @Int -> @Int = \a b = if a > b => a else b
 

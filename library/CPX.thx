@@ -53,10 +53,12 @@ $ recip : Cpx -> Cpx = \z = let d = norm z in Cpx.{ z.re / d, (0.0 - z.im) / d }
 # its range where CORE's `/` (which forms `|b|^2` directly) would overflow.
 $ div_smith : Cpx -> Cpx -> Cpx = \a b =
     if MATH.abs b.re >= MATH.abs b.im =>
-        let r = b.im / b.re, d = b.re + b.im * r in
+        let r = b.im / b.re,
+            d = b.re + b.im * r in
         Cpx.{ (a.re + a.im * r) / d, (a.im - a.re * r) / d }
     else
-        let r = b.re / b.im, d = b.re * r + b.im in
+        let r = b.re / b.im,
+            d = b.re * r + b.im in
         Cpx.{ (a.re * r + a.im) / d, (a.im * r - a.re) / d }
 
 # ---- polar form ----

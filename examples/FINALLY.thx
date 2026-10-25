@@ -33,7 +33,7 @@ $ r_nested : @Int = sum <| \_ = defer Y.yield 3 in defer Y.yield 2 in Y.yield 1;
 $ r_commas : @Int =
     sum <| \_ =
         defer Y.yield 3,
-            Y.yield 2, in
+              Y.yield 2, in
         Y.yield 1; 0
 
 # A stored continuation (coroutine): cleanup runs once, when the resumed task

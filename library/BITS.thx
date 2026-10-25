@@ -26,14 +26,21 @@ $ shl : @Int -> @Int -> @Int = \a n = if n >= 64 => 0 else let p : @Int = @cast 
 $ shr_u : @Int -> @Int -> @Int = \a n =
     if n >= 64 => 0
     else if n <= 0 => a
-    else let x : @Nat = @cast a, r : @Int = @cast (x / pow2 n) in r
+    else
+        let x : @Nat = @cast a,
+            r : @Int = @cast (x / pow2 n) in
+        r
 
 $ shr_s : @Int -> @Int -> @Int = \a n = if a >= 0 => shr_u a n else bnot (shr_u (bnot a) n)
 
 # The low `w` bits, zero-extended (`zext`) or sign-extended (`sext`), for w in
 # 1..64. This is how a value is narrowed to a C integer type of that width.
 $ zext : @Int -> @Int -> @Int = \a w =
-    if w >= 64 => a else let x : @Nat = @cast a, r : @Int = @cast (x % pow2 w) in r
+    if w >= 64 => a
+    else
+        let x : @Nat = @cast a,
+            r : @Int = @cast (x % pow2 w) in
+        r
 
 $ sext : @Int -> @Int -> @Int = \a w =
     if w >= 64 => a else let z = zext a w in if z >= shl 1 (w - 1) => z - shl 1 w else z

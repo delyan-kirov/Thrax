@@ -14,10 +14,17 @@ $ nested = let a = 10 in let b = 20 in a * b + a
 $ chained = let x = 1 in let y = x + 10 in let z = y * 2 in x + y + z
 
 # The same chain, comma-separated: one `in`, later bindings see earlier ones.
-$ commas = let x = 1, y = x + 10, z = y * 2 in x + y + z
+$ commas =
+    let x = 1,
+        y = x + 10,
+        z = y * 2 in
+    x + y + z
 
 # A comma chain mixing a tuple-pattern binder with a plain one.
-$ mixed = let { a, b } = { 3, 4 }, s = a + b in s * 2
+$ mixed =
+    let { a, b } = { 3, 4 },
+        s = a + b in
+    s * 2
 
 # A trailing comma before `in` is fine (handy when editing a chain).
 $ trailing =

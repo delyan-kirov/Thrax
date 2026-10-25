@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "ccg"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frontend",
  "interpreter",
@@ -13,14 +13,14 @@ dependencies = [
 
 [[package]]
 name = "frontend"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "utilities",
 ]
 
 [[package]]
 name = "interpreter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "frontend",
  "utilities",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "thrax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ccg",
  "frontend",
@@ -38,4 +38,4 @@ dependencies = [
 
 [[package]]
 name = "utilities"
-version = "0.1.0"
+version = "0.1.1"
