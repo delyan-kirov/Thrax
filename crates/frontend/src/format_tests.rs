@@ -131,3 +131,24 @@ fn a_long_signature_stays_on_one_line() {
     let src = "$ @mod M\n$ f : @Int -> {@Vec @Int, @Int} = \\x = {[x], x}\n";
     assert_eq!(narrow(src, 30), "$ @mod M\n$ f : @Int -> { @Vec @Int, @Int } = \\x =\n    { [x], x }\n");
 }
+
+#[test]
+fn comma_arms_of_an_if_line_up_under_the_first_condition() {
+    let src = "$ @mod M\n$ f = \\i = if i < 0 => 1, i == 0 => 2 else 3\n";
+    assert_eq!(fmt(src), "$ @mod M\n$ f = \\i =\n    if i < 0 => 1,\n       i == 0 => 2\n       else 3\n");
+    let chain = "$ @mod M\n$ f = \\i = if i < 0 => 1 else if i == 0 => 2, i == 1 => 3 else 4\n";
+    assert_eq!(
+        fmt(chain),
+        "$ @mod M\n$ f = \\i =\n    if i < 0 => 1\n    else if i == 0 => 2,\n            i == 1 => 3\n            else 4\n"
+    );
+    assert_eq!(fmt(&fmt(chain)), fmt(chain));
+}
+
+#[test]
+fn several_bindings_line_up_under_the_first() {
+    let src = "$ @mod M\n$ f = \\x = let a = x, b = a in a + b\n";
+    assert_eq!(fmt(src), "$ @mod M\n$ f = \\x =\n    let a = x,\n        b = a in\n    a + b\n");
+    let defer = "$ @mod M\n$ f = \\x = defer g 1, g 2 in x\n";
+    assert_eq!(fmt(defer), "$ @mod M\n$ f = \\x =\n    defer g 1,\n          g 2 in\n    x\n");
+    assert_eq!(fmt("$ @mod M\n$ f = \\x = let a = x in a\n"), "$ @mod M\n$ f = \\x = let a = x in a\n");
+}

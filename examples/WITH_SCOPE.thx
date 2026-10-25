@@ -32,7 +32,10 @@ $ chk_nested : @Int = with p in with who in (if x + y + age == 48 => 0 else 1)
 
 # One `with` may list several subjects, separated by commas: the same nesting,
 # so a later subject's fields shadow an earlier one's.
-$ chk_commas : @Int = with p, who in (if x + y + age == 48 => 0 else 1)
+$ chk_commas : @Int =
+    with p,
+         who in
+    (if x + y + age == 48 => 0 else 1)
 
 # A bound field shadows an outer local of the same name.
 $ chk_shadow : @Int = let x = 1 in with p in (if x == 3 => 0 else 1)
