@@ -222,28 +222,36 @@ pub struct Program {
 pub const COMPILER_BUILTINS: &[&str] =
     &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
 
-/// The arity of a built-in operator, or `None`. Mirrors the C runtime's table and
-/// the interpreter's `builtin_arity`.
+/// Every built-in operator with its arity. Mirrors the interpreter's
+/// `builtin_arity`; the C backend numbers its runtime dispatch from this order.
+pub const BUILTINS: &[(&str, usize)] = &[
+    ("not", 1), ("neg", 1),
+    ("@iadd", 2), ("@isub", 2), ("@imul", 2), ("@idiv", 2), ("@imod", 2),
+    ("@udiv", 2), ("@umod", 2),
+    ("@fadd", 2), ("@fsub", 2), ("@fmul", 2), ("@fdiv", 2), ("@fmod", 2), ("@fpow", 2),
+    ("@f32add", 2), ("@f32sub", 2), ("@f32mul", 2), ("@f32div", 2), ("@f32mod", 2),
+    ("@f32pow", 2),
+    ("@ieq", 2), ("@ilt", 2), ("@ult", 2), ("@feq", 2), ("@flt", 2), ("@seq", 2),
+    ("@slt", 2), ("@swrap", 2), ("@uwrap", 2),
+    ("==", 2), ("<", 2), (">", 2), ("<=", 2), (">=", 2), ("++", 2), ("@acat", 2),
+    ("@array_alloc", 1), ("@array_len", 1), ("@array_get", 2), ("@array_push", 2),
+    ("@array_set", 3), ("@array_slice", 3),
+    ("record_without", 2),
+    ("@vec_new", 1), ("@vec_len", 1), ("@vec_get", 2), ("@vec_push", 2), ("@vec_fill", 2),
+    ("@vec_set", 3), ("@vec_slice", 3),
+    ("@tensor_length", 1), ("@tensor_stack", 1), ("@tensor_transpose", 1),
+    ("@tensor_concat", 2), ("@tensor_index", 2), ("@tensor_create", 2),
+    ("@tensor_slice", 3), ("@tensor_index_axis", 3), ("@tensor_slice_axis", 4),
+    ("@delay", 1), ("@par", 1), ("@spawn", 1), ("@await", 1),
+    ("@chan_new", 1), ("@chan_send", 2), ("@chan_recv", 1),
+    ("@tvar_new", 1), ("@tvar_read", 1),
+    ("@stm_begin", 1), ("@stm_read", 1), ("@stm_write", 2), ("@stm_commit", 1),
+    ("@stm_wait", 1), ("@stm_save", 1), ("@stm_rollback", 1),
+    ("@lex", 1), ("@token_kind", 1), ("@token_text", 1), ("@parse", 1), ("@parse_str", 1),
+    ("@parse_items", 1), ("@eval", 1),
+];
+
+/// The arity of a built-in operator, or `None`.
 pub fn builtin_arity(name: &str) -> Option<usize> {
-    let n = match name {
-        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose" | "@delay" | "@par"
-        | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
-        | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
-        | "@stm_rollback" => 1,
-        _ if COMPILER_BUILTINS.contains(&name) => 1,
-        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
-        | "@slt" | "@swrap" | "@uwrap" => 2,
-        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
-        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
-        | "@tensor_concat" | "@tensor_index" | "@tensor_create" | "@chan_send"
-        | "@stm_write" => 2,
-        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" | "@tensor_slice"
-        | "@tensor_index_axis" => 3,
-        "@tensor_slice_axis" => 4,
-        _ => return None,
-    };
-    Some(n)
+    BUILTINS.iter().find(|(n, _)| *n == name).map(|&(_, a)| a)
 }

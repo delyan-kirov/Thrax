@@ -110,7 +110,7 @@ struct Value {
       size_t nenv;
     } clos;
     struct {
-      const char *name;
+      int id; /* a THxB_* constant */
       size_t arity;
       Value **args;
       size_t nargs;
@@ -573,9 +573,15 @@ Value *THxRT_thunk(Value *f) {
   THxMEM_retain(f);
   return v;
 }
-Value *THxRT_builtin(const char *name, size_t arity) {
+/* Field names and constructor tags are mostly the generated program's string
+ * literals, which the C compiler pools, so pointer equality usually decides a
+ * match before strcmp has to. */
+static inline int same_name(const char *a, const char *b) {
+  return a == b || strcmp(a, b) == 0;
+}
+Value *THxRT_builtin(int id, size_t arity) {
   Value *v = alloc_value(T_BUILTIN);
-  v->u.builtin.name = name;
+  v->u.builtin.id = id;
   v->u.builtin.arity = arity;
   v->u.builtin.args = NULL;
   v->u.builtin.nargs = 0;
@@ -605,7 +611,7 @@ Value *THxRT_struct_update(Value *base, const char *name, size_t nextra,
   for (size_t i = 0; i < nextra; i++) {
     bool found = false;
     for (size_t j = 0; j < len; j++)
-      if (strcmp(fields[j].name, fnames[i]) == 0) {
+      if (same_name(fields[j].name, fnames[i])) {
         fields[j].val = vals[i];
         found = true;
         break;
@@ -679,7 +685,7 @@ char *THxVALUE_str(Value *v) {
 }
 static Value *struct_field(Value *v, const char *name) {
   for (size_t i = 0; i < v->u.strct.len; i++)
-    if (strcmp(v->u.strct.fields[i].name, name) == 0)
+    if (same_name(v->u.strct.fields[i].name, name))
       return v->u.strct.fields[i].val;
   return NULL;
 }
@@ -730,6 +736,9 @@ Value *THxVALUE_field(Value *v, const char *name) {
 const char *THxVALUE_ctor(Value *v) {
   if (v->tag != T_VARIANT) thrax_fault("expected a variant");
   return v->u.variant.tag;
+}
+static inline int THxVALUE_ctor_is(Value *v, const char *tag) {
+  return same_name(THxVALUE_ctor(v), tag);
 }
 Value *THxVALUE_variant_field(Value *v, size_t i) {
   if (v->tag != T_VARIANT) thrax_fault("expected a variant");
@@ -795,7 +804,7 @@ static bool value_eq(Value *x, Value *y) {
       return true;
     }
     case T_VARIANT:
-      if (strcmp(x->u.variant.tag, y->u.variant.tag) != 0 ||
+      if (!same_name(x->u.variant.tag, y->u.variant.tag) ||
           x->u.variant.len != y->u.variant.len)
         return false;
       for (size_t i = 0; i < x->u.variant.len; i++)
@@ -811,55 +820,49 @@ static bool value_eq(Value *x, Value *y) {
 
 /* A monomorphic arithmetic intrinsic (`@iadd`, `@fmul`, ...), the primitive the
  * operator instances are built on. `@i*` reads two integers, `@f*` two reals;
- * the type-directed instances guarantee the tags. Returns NULL if `name` is not
- * an arithmetic intrinsic, so the caller falls through to other builtins. */
-static Value *arith_intrinsic(const char *name, Value *x, Value *y) {
-  if (name[1] == 'i' || name[1] == 'u') {
-    int64_t a = x->u.i, b = y->u.i;
-    if (strcmp(name, "@iadd") == 0) return THxRT_int(a + b);
-    if (strcmp(name, "@isub") == 0) return THxRT_int(a - b);
-    if (strcmp(name, "@imul") == 0) return THxRT_int(a * b);
-    if (strcmp(name, "@idiv") == 0) {
-      if (b == 0) thrax_fault("division by zero");
-      return THxRT_int(a / b);
-    }
-    if (strcmp(name, "@imod") == 0) {
-      if (b == 0) thrax_fault("division by zero");
-      return THxRT_int(a % b);
-    }
-    /* `@u*` read the same bits as unsigned: a `Nat` past i64::MAX would divide
-     * wrong under signed division. */
-    if (strcmp(name, "@udiv") == 0) {
-      if (b == 0) thrax_fault("division by zero");
-      return THxRT_int((int64_t)((uint64_t)a / (uint64_t)b));
-    }
-    if (strcmp(name, "@umod") == 0) {
-      if (b == 0) thrax_fault("division by zero");
-      return THxRT_int((int64_t)((uint64_t)a % (uint64_t)b));
-    }
-    return NULL;
-  }
+ * the type-directed instances guarantee the tags. */
+static Value *arith_intrinsic(int id, Value *x, Value *y) {
+  switch (id) {
+  case THxB_IADD: return THxRT_int(x->u.i + y->u.i);
+  case THxB_ISUB: return THxRT_int(x->u.i - y->u.i);
+  case THxB_IMUL: return THxRT_int(x->u.i * y->u.i);
+  case THxB_IDIV:
+    if (y->u.i == 0) thrax_fault("division by zero");
+    return THxRT_int(x->u.i / y->u.i);
+  case THxB_IMOD:
+    if (y->u.i == 0) thrax_fault("division by zero");
+    return THxRT_int(x->u.i % y->u.i);
+  /* `@u*` read the same bits as unsigned: a `Nat` past i64::MAX would divide
+   * wrong under signed division. */
+  case THxB_UDIV:
+    if (y->u.i == 0) thrax_fault("division by zero");
+    return THxRT_int((int64_t)((uint64_t)x->u.i / (uint64_t)y->u.i));
+  case THxB_UMOD:
+    if (y->u.i == 0) thrax_fault("division by zero");
+    return THxRT_int((int64_t)((uint64_t)x->u.i % (uint64_t)y->u.i));
   /* `@f32*` rounds each operand and the result to single precision. */
-  if (name[2] == '3') {
+  case THxB_F32ADD: return THxRT_real32(as_f32(x) + as_f32(y));
+  case THxB_F32SUB: return THxRT_real32(as_f32(x) - as_f32(y));
+  case THxB_F32MUL: return THxRT_real32(as_f32(x) * as_f32(y));
+  case THxB_F32DIV: return THxRT_real32(as_f32(x) / as_f32(y));
+  /* Rust f32 `%` is truncated toward zero, like C fmodf. */
+  case THxB_F32MOD: {
     float a = as_f32(x), b = as_f32(y);
-    if (strcmp(name, "@f32add") == 0) return THxRT_real32(a + b);
-    if (strcmp(name, "@f32sub") == 0) return THxRT_real32(a - b);
-    if (strcmp(name, "@f32mul") == 0) return THxRT_real32(a * b);
-    if (strcmp(name, "@f32div") == 0) return THxRT_real32(a / b);
-    /* Rust f32 `%` is truncated toward zero, like C fmodf. */
-    if (strcmp(name, "@f32mod") == 0) return THxRT_real32(a - b * (float)(long long)(a / b));
-    if (strcmp(name, "@f32pow") == 0) return THxRT_real32(powf(a, b));
-    return NULL;
+    return THxRT_real32(a - b * (float)(long long)(a / b));
   }
-  double a = as_f64(x), b = as_f64(y);
-  if (strcmp(name, "@fadd") == 0) return THxRT_real(a + b);
-  if (strcmp(name, "@fsub") == 0) return THxRT_real(a - b);
-  if (strcmp(name, "@fmul") == 0) return THxRT_real(a * b);
-  if (strcmp(name, "@fdiv") == 0) return THxRT_real(a / b);
+  case THxB_F32POW: return THxRT_real32(powf(as_f32(x), as_f32(y)));
+  case THxB_FADD: return THxRT_real(as_f64(x) + as_f64(y));
+  case THxB_FSUB: return THxRT_real(as_f64(x) - as_f64(y));
+  case THxB_FMUL: return THxRT_real(as_f64(x) * as_f64(y));
+  case THxB_FDIV: return THxRT_real(as_f64(x) / as_f64(y));
   /* Rust f64 `%` is C fmod (truncated toward zero). */
-  if (strcmp(name, "@fmod") == 0) return THxRT_real(a - b * (double)(long long)(a / b));
-  if (strcmp(name, "@fpow") == 0) return THxRT_real(pow(a, b));
-  return NULL;
+  case THxB_FMOD: {
+    double a = as_f64(x), b = as_f64(y);
+    return THxRT_real(a - b * (double)(long long)(a / b));
+  }
+  case THxB_FPOW: return THxRT_real(pow(as_f64(x), as_f64(y)));
+  default: thrax_fault("not an arithmetic intrinsic");
+  }
 }
 
 static int cmp_bytes(Value *a, Value *b) {
@@ -872,23 +875,23 @@ static int cmp_bytes(Value *a, Value *b) {
 
 /* A monomorphic comparison intrinsic (`@ieq`, `@slt`, ...), the primitive the
  * comparison instances are built on. `@u*` reads the same bits as unsigned, so a
- * `Nat` past i64::MAX orders correctly. Returns NULL if `name` is not one, so the
- * caller falls through to the other builtins. */
-static Value *compare_intrinsic(const char *name, Value *x, Value *y) {
-  if (strcmp(name, "@ieq") == 0) return THxRT_bool(x->u.i == y->u.i);
-  if (strcmp(name, "@ilt") == 0) return THxRT_bool(x->u.i < y->u.i);
-  if (strcmp(name, "@ult") == 0)
-    return THxRT_bool((uint64_t)x->u.i < (uint64_t)y->u.i);
-  if (strcmp(name, "@feq") == 0) return THxRT_bool(as_f64(x) == as_f64(y));
-  if (strcmp(name, "@flt") == 0) return THxRT_bool(as_f64(x) < as_f64(y));
-  if (strcmp(name, "@seq") == 0)
+ * `Nat` past i64::MAX orders correctly. */
+static Value *compare_intrinsic(int id, Value *x, Value *y) {
+  switch (id) {
+  case THxB_IEQ: return THxRT_bool(x->u.i == y->u.i);
+  case THxB_ILT: return THxRT_bool(x->u.i < y->u.i);
+  case THxB_ULT: return THxRT_bool((uint64_t)x->u.i < (uint64_t)y->u.i);
+  case THxB_FEQ: return THxRT_bool(as_f64(x) == as_f64(y));
+  case THxB_FLT: return THxRT_bool(as_f64(x) < as_f64(y));
+  case THxB_SEQ:
     return THxRT_bool(x->u.str.len == y->u.str.len &&
                       memcmp(x->u.str.data, y->u.str.data, x->u.str.len) == 0);
-  if (strcmp(name, "@slt") == 0) return THxRT_bool(cmp_bytes(x, y) < 0);
-  return NULL;
+  case THxB_SLT: return THxRT_bool(cmp_bytes(x, y) < 0);
+  default: thrax_fault("not a comparison intrinsic");
+  }
 }
 
-static Value *compare(const char *op, Value *x, Value *y) {
+static Value *compare(int op, Value *x, Value *y) {
   int ord;
   if (x->tag == T_STR && y->tag == T_STR) {
     ord = cmp_bytes(x, y);
@@ -896,16 +899,12 @@ static Value *compare(const char *op, Value *x, Value *y) {
     double a = as_f64(x), b = as_f64(y);
     ord = a < b ? -1 : (a > b ? 1 : 0);
   }
-  bool r;
-  if (strcmp(op, "<") == 0)
-    r = ord < 0;
-  else if (strcmp(op, ">") == 0)
-    r = ord > 0;
-  else if (strcmp(op, "<=") == 0)
-    r = ord <= 0;
-  else
-    r = ord >= 0;
-  return THxRT_bool(r);
+  switch (op) {
+  case THxB_LT: return THxRT_bool(ord < 0);
+  case THxB_GT: return THxRT_bool(ord > 0);
+  case THxB_LE: return THxRT_bool(ord <= 0);
+  default: return THxRT_bool(ord >= 0);
+  }
 }
 
 
@@ -1140,12 +1139,14 @@ static Value *token_field(Value *tok, const char *field) {
 }
 
 /* Run a compiler builtin, or return NULL when `name` is not one. */
-static Value *compiler_builtin(const char *name, Value **a) {
+static Value *compiler_builtin(int id, Value **a) {
+  const char *name = THxB_names[id];
   char *err = NULL;
-  if (strcmp(name, "@token_kind") == 0) return token_field(a[0], "kind");
-  if (strcmp(name, "@token_text") == 0) return token_field(a[0], "text");
-  if (strcmp(name, "@lex") == 0 || strcmp(name, "@eval") == 0) {
-    int lexing = name[1] == 'l';
+  switch (id) {
+  case THxB_TOKEN_KIND: return token_field(a[0], "kind");
+  case THxB_TOKEN_TEXT: return token_field(a[0], "text");
+  case THxB_LEX: case THxB_EVAL: {
+    int lexing = id == THxB_LEX;
     Value *arg = THxVALUE_force(a[0]);
     if (!lexing) {
       if (arg->tag != T_STRUCT || strcmp(arg->u.strct.name, "@code") != 0)
@@ -1160,14 +1161,14 @@ static Value *compiler_builtin(const char *name, Value **a) {
     thrax_value_free(v);
     return r;
   }
-  if (strcmp(name, "@parse_str") == 0 || strcmp(name, "@parse_items") == 0) {
+  case THxB_PARSE_STR: case THxB_PARSE_ITEMS: {
     Value *s = THxVALUE_force(a[0]);
     if (s->tag != T_STR) thrax_fault("expected a string");
-    if (thrax_parse(s->u.str.data, s->u.str.len, name[7] == 'i', &err) != 0)
+    if (thrax_parse(s->u.str.data, s->u.str.len, id == THxB_PARSE_ITEMS, &err) != 0)
       compiler_fault(name, err);
     return code_value((const char *)s->u.str.data, s->u.str.len);
   }
-  if (strcmp(name, "@parse") == 0) {
+  case THxB_PARSE: {
     /* `@code` is text-backed: the lexemes rejoined with a space, as the
      * interpreter's `@parse` does. */
     Value *toks = THxVALUE_force(a[0]);
@@ -1189,7 +1190,8 @@ static Value *compiler_builtin(const char *name, Value **a) {
     free(buf);
     return r;
   }
-  return NULL;
+  default: return NULL;
+  }
 }
 #endif
 
@@ -1217,57 +1219,56 @@ static Value *THxSTM_wait(void);
 static Value *THxSTM_save(void);
 static Value *THxSTM_rollback(Value *mark);
 
-static Value *run_builtin(const char *name, Value **a, size_t n) {
-  /* The two-operand intrinsic families. `n >= 2` first: a one-argument builtin
-   * (`@array_len`, ...) must never reach for `a[1]`. `arith_intrinsic` reads its
-   * operands as numbers before matching, so it stays behind its `@i`/`@u`/`@f`
-   * prefix test; `compare_intrinsic` matches the name first and needs none. */
-  if (n >= 2 && (strcmp(name, "@swrap") == 0 || strcmp(name, "@uwrap") == 0)) {
+static Value *run_builtin(int id, Value **a) {
+  switch (id) {
+  case THxB_IADD: case THxB_ISUB: case THxB_IMUL: case THxB_IDIV:
+  case THxB_IMOD: case THxB_UDIV: case THxB_UMOD:
+  case THxB_FADD: case THxB_FSUB: case THxB_FMUL: case THxB_FDIV:
+  case THxB_FMOD: case THxB_FPOW:
+  case THxB_F32ADD: case THxB_F32SUB: case THxB_F32MUL: case THxB_F32DIV:
+  case THxB_F32MOD: case THxB_F32POW:
+    return arith_intrinsic(id, a[0], a[1]);
+  case THxB_IEQ: case THxB_ILT: case THxB_ULT: case THxB_FEQ:
+  case THxB_FLT: case THxB_SEQ: case THxB_SLT:
+    return compare_intrinsic(id, a[0], a[1]);
+  case THxB_SWRAP: case THxB_UWRAP: {
     int64_t bits = a[0]->u.i, x = a[1]->u.i;
     if (bits < 1 || bits >= 64) return THxRT_int(x);
     unsigned shift = (unsigned)(64 - bits);
-    if (name[1] == 's') return THxRT_int((int64_t)((uint64_t)x << shift) >> shift);
+    if (id == THxB_SWRAP) return THxRT_int((int64_t)((uint64_t)x << shift) >> shift);
     return THxRT_int((int64_t)(((uint64_t)x << shift) >> shift));
   }
-  if (n >= 2 && name[0] == '@') {
-    Value *r = NULL;
-    if (name[1] == 'i' || name[1] == 'u' || name[1] == 'f')
-      r = arith_intrinsic(name, a[0], a[1]);
-    if (!r) r = compare_intrinsic(name, a[0], a[1]);
-    if (r) return r;
-  }
-  if (strcmp(name, "neg") == 0) {
+  case THxB_NEG: {
     if (a[0]->tag == T_INT) return THxRT_int(-a[0]->u.i);
     if (a[0]->tag == T_REAL) return THxRT_real(-a[0]->u.r);
     if (a[0]->tag == T_REAL32) return THxRT_real32(-(float)a[0]->u.r);
     thrax_fault("`neg` on a non-number");
   }
-  if (strcmp(name, "not") == 0) {
+  case THxB_NOT: {
     if (a[0]->tag == T_BOOL) return THxRT_bool(!a[0]->u.b);
     thrax_fault("`not` on a non-boolean");
   }
-  if (strcmp(name, "==") == 0) return THxRT_bool(value_eq(a[0], a[1]));
-  if (strcmp(name, "<") == 0 || strcmp(name, ">") == 0 ||
-      strcmp(name, "<=") == 0 || strcmp(name, ">=") == 0)
-    return compare(name, a[0], a[1]);
-  if (strcmp(name, "++") == 0) return concat(a[0], a[1]);
-  if (strcmp(name, "@acat") == 0) return concat(a[0], a[1]);
+  case THxB_EQ: return THxRT_bool(value_eq(a[0], a[1]));
+  case THxB_LT: case THxB_GT: case THxB_LE: case THxB_GE:
+    return compare(id, a[0], a[1]);
+  case THxB_CONCAT: return concat(a[0], a[1]);
+  case THxB_ACAT: return concat(a[0], a[1]);
 
-  if (strcmp(name, "@array_alloc") == 0) {
+  case THxB_ARRAY_ALLOC: {
     size_t len = as_index(a[0]);
     uint8_t *data = THxMEM_alloc(len + 1);
     memset(data, 0, len + 1);
     return mk_str_owned(data, len);
   }
-  if (strcmp(name, "@array_len") == 0)
+  case THxB_ARRAY_LEN:
     return THxRT_int((int64_t)as_str(a[0])->u.str.len);
-  if (strcmp(name, "@array_get") == 0) {
+  case THxB_ARRAY_GET: {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
     if (i >= s->u.str.len) thrax_fault("array index out of bounds");
     return THxRT_int(s->u.str.data[i]);
   }
-  if (strcmp(name, "@array_push") == 0) {
+  case THxB_ARRAY_PUSH: {
     Value *s = as_str(a[0]);
     size_t len = s->u.str.len + 1;
     uint8_t *data = THxMEM_alloc(len + 1);
@@ -1276,7 +1277,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     data[len] = 0;
     return mk_str_owned(data, len);
   }
-  if (strcmp(name, "@array_set") == 0) {
+  case THxB_ARRAY_SET: {
     Value *s = as_str(a[0]);
     size_t i = as_index(a[1]);
     if (i >= s->u.str.len) thrax_fault("array index out of bounds");
@@ -1286,7 +1287,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     data[s->u.str.len] = 0;
     return mk_str_owned(data, s->u.str.len);
   }
-  if (strcmp(name, "@array_slice") == 0) {
+  case THxB_ARRAY_SLICE: {
     Value *s = as_str(a[0]);
     size_t beg = as_index(a[1]);
     size_t end = as_index(a[2]);
@@ -1296,7 +1297,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return THxRT_str((const char *)s->u.str.data + beg, end - beg);
   }
 
-  if (strcmp(name, "record_without") == 0) {
+  case THxB_RECORD_WITHOUT: {
     Value *rec = a[0];
     if (rec->tag != T_STRUCT) thrax_fault("`record_without` on a non-record");
     Value *lbl = as_str(a[1]);
@@ -1323,8 +1324,8 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     }
     return v;
   }
-  if (strcmp(name, "@vec_new") == 0) return mk_vec(NULL, 0);
-  if (strcmp(name, "@vec_fill") == 0) {
+  case THxB_VEC_NEW: return mk_vec(NULL, 0);
+  case THxB_VEC_FILL: {
     size_t len = as_index(a[0]);
     Value **items = len ? xmalloc(len * sizeof(Value *)) : NULL;
     for (size_t i = 0; i < len; i++) items[i] = a[1];
@@ -1332,11 +1333,11 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
-  if (strcmp(name, "@vec_len") == 0) {
+  case THxB_VEC_LEN: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     return THxRT_int((int64_t)a[0]->u.seq.len);
   }
-  if (strcmp(name, "@tensor_length") == 0) {
+  case THxB_TENSOR_LENGTH: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1345,11 +1346,11 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return THxRT_int(r);
   }
-  if (strcmp(name, "@tensor_stack") == 0) {
+  case THxB_TENSOR_STACK: {
     if (a[0]->tag != T_VEC) thrax_fault("@tensor_stack expects a vector");
     return tensor_stack(a[0]->u.seq.items, a[0]->u.seq.len);
   }
-  if (strcmp(name, "@tensor_transpose") == 0) {
+  case THxB_TENSOR_TRANSPOSE: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1363,7 +1364,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
-  if (strcmp(name, "@tensor_slice") == 0) {
+  case THxB_TENSOR_SLICE: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1380,7 +1381,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
-  if (strcmp(name, "@tensor_index_axis") == 0) {
+  case THxB_TENSOR_INDEX_AXIS: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1407,7 +1408,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return r;
   }
-  if (strcmp(name, "@tensor_slice_axis") == 0) {
+  case THxB_TENSOR_SLICE_AXIS: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1425,32 +1426,29 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
-  if (strcmp(name, "@delay") == 0) return THxRT_thunk(a[0]);
-  if (strcmp(name, "@par") == 0) return THxPAR_spawn(a[0]);
-  if (strcmp(name, "@spawn") == 0) return THxPAR_spawn_io(a[0]);
-  if (strcmp(name, "@await") == 0) return THxPAR_await(a[0]);
-  if (strncmp(name, "@chan_", 6) == 0 || strncmp(name, "@tvar_", 6) == 0 ||
-      strncmp(name, "@stm_", 5) == 0) {
-    if (strcmp(name, "@chan_new") == 0) return THxCHAN_new();
-    if (strcmp(name, "@chan_send") == 0) return THxCHAN_send(a[0], a[1]);
-    if (strcmp(name, "@chan_recv") == 0) return THxCHAN_recv(a[0]);
-    if (strcmp(name, "@tvar_new") == 0) return THxTVAR_new(a[0]);
-    if (strcmp(name, "@tvar_read") == 0) return THxTVAR_read(a[0]);
-    if (strcmp(name, "@stm_begin") == 0) return THxSTM_begin();
-    if (strcmp(name, "@stm_read") == 0) return THxSTM_read(a[0]);
-    if (strcmp(name, "@stm_write") == 0) return THxSTM_write(a[0], a[1]);
-    if (strcmp(name, "@stm_commit") == 0) return THxSTM_commit();
-    if (strcmp(name, "@stm_wait") == 0) return THxSTM_wait();
-    if (strcmp(name, "@stm_save") == 0) return THxSTM_save();
-    if (strcmp(name, "@stm_rollback") == 0) return THxSTM_rollback(a[0]);
-  }
-  if (strcmp(name, "@vec_get") == 0) {
+  case THxB_DELAY: return THxRT_thunk(a[0]);
+  case THxB_PAR: return THxPAR_spawn(a[0]);
+  case THxB_SPAWN: return THxPAR_spawn_io(a[0]);
+  case THxB_AWAIT: return THxPAR_await(a[0]);
+  case THxB_CHAN_NEW: return THxCHAN_new();
+  case THxB_CHAN_SEND: return THxCHAN_send(a[0], a[1]);
+  case THxB_CHAN_RECV: return THxCHAN_recv(a[0]);
+  case THxB_TVAR_NEW: return THxTVAR_new(a[0]);
+  case THxB_TVAR_READ: return THxTVAR_read(a[0]);
+  case THxB_STM_BEGIN: return THxSTM_begin();
+  case THxB_STM_READ: return THxSTM_read(a[0]);
+  case THxB_STM_WRITE: return THxSTM_write(a[0], a[1]);
+  case THxB_STM_COMMIT: return THxSTM_commit();
+  case THxB_STM_WAIT: return THxSTM_wait();
+  case THxB_STM_SAVE: return THxSTM_save();
+  case THxB_STM_ROLLBACK: return THxSTM_rollback(a[0]);
+  case THxB_VEC_GET: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
     return a[0]->u.seq.items[i]; /* borrowed; the caller (do_ret) retains it */
   }
-  if (strcmp(name, "@vec_push") == 0) {
+  case THxB_VEC_PUSH: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t len = a[0]->u.seq.len + 1;
     Value **items = xmalloc(len * sizeof(Value *));
@@ -1460,7 +1458,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(items);
     return v;
   }
-  if (strcmp(name, "@vec_slice") == 0) {
+  case THxB_VEC_SLICE: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t n = a[0]->u.seq.len;
     size_t lo = as_index(a[1]);
@@ -1470,7 +1468,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     if (hi > n) hi = n;
     return mk_vec(a[0]->u.seq.items + lo, hi - lo); /* mk_vec retains each */
   }
-  if (strcmp(name, "@tensor_concat") == 0) {
+  case THxB_TENSOR_CONCAT: {
     Value *bx, *by;
     size_t ox, oy, *shx, *stx, rx, *shy, *sty, ry;
     tensor_fields(a[0], &bx, &ox, &shx, &stx, &rx);
@@ -1498,7 +1496,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return t;
   }
-  if (strcmp(name, "@tensor_index") == 0) {
+  case THxB_TENSOR_INDEX: {
     Value *buf;
     size_t off, *shape, *strides, rank;
     tensor_fields(a[0], &buf, &off, &shape, &strides, &rank);
@@ -1522,7 +1520,7 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     free(strides);
     return r;
   }
-  if (strcmp(name, "@vec_set") == 0) {
+  case THxB_VEC_SET: {
     if (a[0]->tag != T_VEC) thrax_fault("expected a vector");
     size_t i = as_index(a[1]);
     if (i >= a[0]->u.seq.len) thrax_fault("vec index out of bounds");
@@ -1535,11 +1533,11 @@ static Value *run_builtin(const char *name, Value **a, size_t n) {
     return v;
   }
 
-#ifdef THRAX_WITH_COMPILER
-  if (n == 1) {
-    Value *r = compiler_builtin(name, a);
-    if (r) return r;
+  default: break;
   }
+#ifdef THRAX_WITH_COMPILER
+  Value *r = compiler_builtin(id, a);
+  if (r) return r;
 #endif
   thrax_fault("unknown built-in");
 }
@@ -2220,7 +2218,7 @@ static int do_ret(BlockFn *cur, Frame **fr, Value **in, Value *v, size_t base) {
 static Value *builtin_push(Value *f, Value *arg) {
   size_t n = f->u.builtin.nargs;
   Value *nb = alloc_value(T_BUILTIN);
-  nb->u.builtin.name = f->u.builtin.name;
+  nb->u.builtin.id = f->u.builtin.id;
   nb->u.builtin.arity = f->u.builtin.arity;
   nb->u.builtin.nargs = n + 1;
   Value **args = THxMEM_alloc((n + 1) * sizeof(Value *));
@@ -2277,9 +2275,9 @@ static Value *rt_generate(Value *tmpl, Value *f) {
 
 /* A built-in applied to all `n` of its operands at once, which are borrowed.
  * The result is fresh or one of the operands' children, as through do_apply. */
-Value *THxK_prim(const char *name, Value **a, size_t n) {
-  if (strcmp(name, "@tensor_create") == 0) return rt_generate(a[0], a[1]);
-  return run_builtin(name, a, n);
+Value *THxK_prim(int id, Value **a) {
+  if (id == THxB_TENSOR_CREATE) return rt_generate(a[0], a[1]);
+  return run_builtin(id, a);
 }
 
 static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
@@ -2304,9 +2302,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         Value **args = THxMEM_alloc((nn + 1) * sizeof(Value *));
         for (size_t i = 0; i < nn; i++) args[i] = fn->u.builtin.args[i];
         args[nn] = arg;
-        Value *res = strcmp(fn->u.builtin.name, "@tensor_create") == 0
-                         ? rt_generate(args[0], args[1])
-                         : run_builtin(fn->u.builtin.name, args, nn + 1);
+        Value *res = THxK_prim(fn->u.builtin.id, args);
         THxMEM_free(args);
         r = do_ret(cur, fr, in, res, base);
       } else {
@@ -2344,8 +2340,7 @@ static int do_apply(BlockFn *cur, Frame **fr, Value **in, Value *fn, Value *arg,
         for (size_t j = 0; j < g_kont[i].u.prompt.n; j++) {
           const char *ceff = g_kont[i].u.prompt.effs[j];
           const char *cop = g_kont[i].u.prompt.ops[j];
-          bool m = strcmp(cop, op) == 0 &&
-                   (!(eff && ceff) || strcmp(eff, ceff) == 0);
+          bool m = same_name(cop, op) && (!(eff && ceff) || same_name(eff, ceff));
           if (m) {
             clause = g_kont[i].u.prompt.clauses[j];
             uses = g_kont[i].u.prompt.uses[j];
