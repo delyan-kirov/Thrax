@@ -86,6 +86,11 @@ fn main() -> ExitCode {
             with_root(root, |path| driver::cmd_run(path, prog_args))
         }
         Some("repl") | Some("shell") => repl::cmd_repl(),
+        Some("lsp") => thrax::lsp::cmd_lsp(),
+        Some("fmt") => thrax::tools::cmd_fmt(&rest[1..]),
+        Some("fix") => with_root(root_arg(&rest[1..]), thrax::tools::cmd_fix),
+        Some("explain") => thrax::tools::cmd_explain(rest.get(1).map(String::as_str)),
+        Some("config") => thrax::tools::cmd_config(rest.get(1).map(String::as_str)),
         Some("emit-c") => with_root(root_arg(&rest[1..]), |path| {
             driver::cmd_emit_c(path, target)
         }),
@@ -118,6 +123,11 @@ Commands:
   build    Compile a program to a native executable next to the source.
   check    Type-check a module, run its compile-time checks, print its types.
   expand   Print the source after metaprogram expansion (`$ @e`, `@build`).
+  fix      Apply every fix the compiler is sure of, in place.
+  fmt      Format files in place (`fmt --check FILE...` only reports).
+  explain  Explain a diagnostic code: `thrax explain TYPE_MISMATCH`.
+  config   Show the options in force (from thrax.toml) and document them all.
+  lsp      Run the language server on stdin/stdout (for an editor).
   emit-c   Emit standalone C for a program to stdout.
   parse    Parse a program and print its syntax tree.
   lex      Tokenize a program and print its tokens.

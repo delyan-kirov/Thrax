@@ -15,3 +15,6 @@ result
 target
 artifacts
 external/musl
+
+# Written by `thxdo tags` (tools/editors/TAGS.thx)
+/tags

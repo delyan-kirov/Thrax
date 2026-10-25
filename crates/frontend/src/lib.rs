@@ -7,6 +7,7 @@
 //! and [`lowering::lower_program`] (AST to Core). The Core ([`lowering::data`])
 //! is what the `interpreter` and, later, `cgen` crates consume.
 
+pub mod format;
 pub mod ir;
 pub mod lexer;
 pub mod lowering;
@@ -45,10 +46,22 @@ pub fn parse(source: &str) -> Result<Parsed> {
 /// cross-module type imports rely on. Tokens carry only spans and names/strings
 /// are interned into `ast`, so the result borrows nothing from `source`.
 pub fn parse_into(ast: Ast, source: &str) -> Result<(Ast, Program)> {
+    let (ast, program, errors) = parse_recovering(ast, source);
+    match (program, errors.into_iter().next()) {
+        (Ok(program), None) => Ok((ast, program)),
+        (Err(d), _) | (Ok(_), Some(d)) => Err(d),
+    }
+}
+
+/// [`parse_into`] that keeps going past a broken item: every item that parses is
+/// in the program, and every error is returned in source order. The program is
+/// `Err` only when the `$ @mod` header itself is unreadable.
+pub fn parse_recovering(ast: Ast, source: &str) -> (Ast, Result<Program>, Vec<utilities::Diagnostic>) {
     let lex = Lexer::new(source);
     let mut parser = Parser::new(lex, ast);
-    let program = parser.parse_program()?;
-    Ok((parser.into_ast(), program))
+    let program = parser.parse_program();
+    let errors = parser.take_errors();
+    (parser.into_ast(), program, errors)
 }
 
 /// Type-check a program, returning each global definition's generalized type.

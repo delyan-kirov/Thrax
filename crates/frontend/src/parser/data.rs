@@ -21,7 +21,7 @@ use utilities::{Aol, Interner, SecondaryMap, Slice, Span, Store, StrId};
 /// [`Ast::slice`] and build one with [`Ast::make_slice`] (both generic over the
 /// element type via the [`Sliced`] trait), so the whole tree stays arena-owned and
 /// frees all at once.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Ast {
     pub exprs: Store<Expr>,
     pub tys: Store<Ty>,
@@ -45,6 +45,7 @@ pub struct Ast {
     lam_params: Store<LamParam>,
     row_entries: Store<RowEntry>,
     items: Store<Item>,
+    item_spans: Store<ItemSpan>,
     slice_slots: Store<SliceSlot>,
     /// Source span of each `Expr` node, for diagnostics. Populated by the parser;
     /// a node absent here (e.g. one synthesized by a later pass) has no span.
@@ -89,6 +90,7 @@ sliced! {
     LamParam => lam_params,
     RowEntry => row_entries,
     Item => items,
+    ItemSpan => item_spans,
     SliceSlot => slice_slots,
 }
 
@@ -139,16 +141,31 @@ impl Ast {
 }
 
 /// A whole compilation unit: `$ @mod NAME` followed by top-level items.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Program {
     pub module: StrId,
+    /// The `$ @mod NAME` header.
+    pub header: Span,
     pub items: Slice<Item>,
+    /// Where each item sits in the source, parallel to `items`.
+    pub spans: Slice<ItemSpan>,
+    /// Names of items that failed to parse and were skipped. The checker gives
+    /// their uses the error type instead of reporting them unbound.
+    pub broken: Slice<StrId>,
+}
+
+/// An item's whole extent (from its `$` to its last token) and the span of the
+/// name it defines, when it defines one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemSpan {
+    pub full: Span,
+    pub name: Option<Span>,
 }
 
 // -- top-level items ---------------------------------------------------------
 
 /// A top-level `$ ...` declaration.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Item {
     /// `$ name [: [@ctx C ->] ty] = body`. `ctx` is the context parameter's type
     /// when the signature declares one: an ordinary first parameter that call
@@ -239,14 +256,14 @@ pub struct Include {
 }
 
 /// One `Tag : payload` arm of a union declaration.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct VariantDecl {
     pub tag: StrId,
     pub payload: Payload,
 }
 
 /// A union variant's payload.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Payload {
     /// `Tag` with no payload.
     None,
@@ -276,7 +293,7 @@ pub enum Variance {
     Contra,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Ty {
     /// A type constructor: `Int`, `@int64`, or module-qualified `A.B`.
     Con { module: Option<StrId>, name: StrId },
@@ -335,7 +352,7 @@ pub struct RecField {
 }
 
 /// An effect row `< A, B | `e >` on a function arrow.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EffectRow {
     pub entries: Slice<RowEntry>,
     pub tail: Option<StrId>,
@@ -353,7 +370,7 @@ pub struct RowEntry {
 
 // -- patterns ----------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Pattern {
     /// `_`
     Wild,
@@ -422,7 +439,7 @@ pub enum FieldPat {
 // -- expressions -------------------------------------------------------------
 
 /// One axis position in a multi-axis tensor slice `t.[s0, s1, ...]`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SliceSlot {
     /// `i`: index (reduce) this axis.
     Index(Aol<Expr>),
@@ -432,7 +449,7 @@ pub enum SliceSlot {
     Full,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Expr {
     Int(i64),
     Real(f64),
@@ -592,7 +609,7 @@ pub struct LamParam {
 
 /// One arm of an `is`, or a value arm of a handler. Or-patterns (`| p1 | p2 => e`)
 /// share a body and guard.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Arm {
     pub patterns: Slice<Aol<Pattern>>,
     pub guard: Option<Aol<Expr>>,
@@ -600,7 +617,7 @@ pub struct Arm {
 }
 
 /// A `ctl k ...` handler attached to a `do` block.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Handler {
     pub continuation: StrId,
     pub clauses: Slice<Clause>,

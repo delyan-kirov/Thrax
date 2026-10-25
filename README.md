@@ -58,6 +58,24 @@ thrax build   MAIN.thx          # compile to a native executable
 thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm
 ```
 
+The compiler is also the tooling. Every error carries a stable code
+(`thrax explain CODE` says what it means), keeps going past the first
+mistake, and offers a fix when it knows one; `thrax fix` applies the sure
+ones. `???` is a typed hole: the error names the type that goes there and
+the names in scope that fit.
+
+```sh
+thrax fmt     MAIN.thx          # format in place (--check only reports)
+thrax fix     MAIN.thx          # apply every fix the compiler is sure of
+thrax explain TYPE_MISMATCH     # what a diagnostic code means
+thrax config                    # the thrax.toml options in force
+thrax lsp                       # language server for an editor
+```
+
+`thrax lsp` serves diagnostics, fixes, hover, go-to-definition, completion,
+symbols and formatting. It ranks errors so the one that matters most stands
+out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
+
 ## Features
 
 - **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.

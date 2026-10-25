@@ -40,7 +40,7 @@ use crate::parser::data::{
     RowEntry, SliceSlot, Ty, Variance,
 };
 use utilities::{Aol, Slice, StrId};
-use utilities::{diag, Code, Diagnostic, ExternArg, Result, Span};
+use utilities::{diag, Applicability, Code, Diagnostic, Edit, ExternArg, Result, Span};
 
 use crate::typing::data::{self as ty, Type, TypeNode, Types, VarId};
 use crate::typing::engine::Engine;
@@ -267,6 +267,24 @@ pub struct Checker<'a> {
     int_literals: Vec<(Type, i64, Span)>,
     /// Non-fatal diagnostics (unreachable match arms), in source order.
     warnings: Vec<Diagnostic>,
+    /// Errors the check recovered from, in the order met: a definition that fails
+    /// is recorded here, given the error type, and checking moves on to the next.
+    errors: Vec<Diagnostic>,
+    /// Names of items the parser could not read. A use of one is not reported
+    /// again: it gets the error type.
+    broken: HashSet<&'a str>,
+    /// Where a missing `$ with M` goes, and the text around the module name:
+    /// after the last import, or before the first item.
+    import_anchor: Option<(usize, &'static str, &'static str)>,
+    /// Modules the driver could import, by the value names they define, for an
+    /// "import it" fix on an unbound name.
+    import_hints: Rc<HashMap<String, Vec<String>>>,
+    /// Every `???` met, with its type and the binders in scope there (the
+    /// candidates for filling it), reported once the definition is solved.
+    holes: Vec<(Aol<Expr>, Type, Vec<(&'a str, Type)>)>,
+    /// Each expression's inferred type, kept only when an editor asks
+    /// ([`Self::set_record_types`]): hover reads it after the check.
+    expr_types: Option<HashMap<Aol<Expr>, Type>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
@@ -441,6 +459,12 @@ impl<'a> Checker<'a> {
             cast_widths: HashMap::new(),
             int_literals: Vec::new(),
             warnings: Vec::new(),
+            errors: Vec::new(),
+            broken: HashSet::new(),
+            import_anchor: None,
+            import_hints: Rc::new(HashMap::new()),
+            expr_types: None,
+            holes: Vec::new(),
             with_fields: HashMap::new(),
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
@@ -731,18 +755,28 @@ impl<'a> Checker<'a> {
         // One name, one definition: a module may not define a name twice, since a
         // name's type is its contract and two definitions would make it dishonest.
         let mut seen: HashSet<&'a str> = HashSet::new();
-        for d in &defs {
+        let mut defs = defs;
+        let mut dups = Vec::new();
+        for (i, d) in defs.iter().enumerate() {
             if !seen.insert(d.name) {
                 let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
-                return Err(diag!(
-                    Code::TypeMismatch, span, 0,
+                self.errors.push(diag!(
+                    Code::DuplicateSymbol, span, 0,
                     "`{}` is defined twice in module `{}`", d.name, self.module_name;
                     note: "a name has one type";
                     help: "to give an operation several types, declare an interface and \
                            define one instance per type"
                 ));
+                dups.push(i);
             }
         }
+        for i in dups.into_iter().rev() {
+            defs.remove(i);
+        }
+        for name in self.ast.slice(program.broken) {
+            self.broken.insert(self.ast.text(*name));
+        }
+        self.import_anchor = import_anchor(self.ast, program);
         // A local definition SHADOWS an imported value of the same name, so the
         // import's binding, owner, and context registration all give way to it.
         for d in &defs {
@@ -794,11 +828,16 @@ impl<'a> Checker<'a> {
 
         let mut types: HashMap<&'a str, Type> = HashMap::new();
         for component in utilities::scc::scc(&graph) {
+            let level = self.eng.level();
             // An unknown type name met along the way is the likelier root cause
             // of whatever went wrong after it (`foo : MyTyp = .{..}` fails to
             // build a struct because `MyTyp` does not exist), so it wins.
-            if let Err(d) = self.check_component(&component, &defs, &mut types) {
-                return Err(self.unknown_type.take().unwrap_or(d));
+            let checked = self.check_component(&component, &defs, &mut types);
+            self.report_holes();
+            if let Err(d) = checked {
+                let d = self.unknown_type.take().unwrap_or(d);
+                self.errors.push(d);
+                self.recover_component(level, &component, &defs, &mut types);
             }
         }
 
@@ -807,7 +846,10 @@ impl<'a> Checker<'a> {
 
         self.own_values = out.clone();
         if let Some(d) = self.unknown_type.take() {
-            return Err(d);
+            self.errors.push(d);
+        }
+        if let Some(first) = self.first_error() {
+            return Err(first);
         }
         self.check_int_literals()?;
         self.build_extern_specs()?;
@@ -1266,6 +1308,105 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Undo what a failed [`Self::check_component`] left half done, then give
+    /// each member a type its uses can lean on: its signature when it has one
+    /// (callers are still checked against it), the error type otherwise.
+    fn recover_component(
+        &mut self,
+        level: crate::typing::data::Level,
+        component: &[usize],
+        defs: &[Def<'a>],
+        types: &mut HashMap<&'a str, Type>,
+    ) {
+        self.eng.unwind_level(level);
+        self.scopes.truncate(1);
+        self.pending.clear();
+        self.ctx_pending.clear();
+        self.current_sig = None;
+        self.ambient = self.eng.types.row_empty();
+        for &i in component {
+            let d = &defs[i];
+            let ty = match (d.sig, d.ctx) {
+                (Some(sig), None) => self.scheme_and_ctx(sig, false).0,
+                _ => self.eng.types.error(),
+            };
+            self.unknown_type = None;
+            self.bind(d.name, ty);
+            types.insert(d.name, ty);
+        }
+    }
+
+    /// Report each pending `???`: its type, and the names in scope that would
+    /// fill it (GHC's valid hole fits), each offered as a fix.
+    fn report_holes(&mut self) {
+        let holes = std::mem::take(&mut self.holes);
+        for (site, t, locals) in holes {
+            let t = self.eng.zonk(t);
+            let shown = self.show(t);
+            let globals: Vec<(&'a str, Type)> = self.scopes[0].iter().map(|(n, t)| (*n, *t)).collect();
+            let mut fits: Vec<&'a str> = Vec::new();
+            for (name, scheme) in locals.iter().chain(globals.iter()) {
+                if name.starts_with('@') || *name == crate::lexer::HOLE || fits.contains(name) {
+                    continue;
+                }
+                let save = self.eng.save();
+                let inst = self.eng.instantiate(*scheme);
+                let ok = self.eng.unify(inst, t, "a hole fit").is_ok();
+                self.eng.restore(save);
+                if ok {
+                    fits.push(name);
+                }
+            }
+            // Locals first (they are the likeliest), then the rest by name.
+            let n_local = fits.iter().filter(|f| locals.iter().any(|(l, _)| l == *f)).count();
+            fits[n_local..].sort_unstable();
+            let span = self.ast.expr_span(site).unwrap_or(Span::at(0));
+            let mut d = diag!(Code::TypedHole, span, 0, "hole `???` has type `{shown}`");
+            if fits.is_empty() {
+                d = d.with_note("nothing in scope has this type");
+            } else {
+                let listed: Vec<String> = fits.iter().take(MAX_HOLE_FITS).map(|f| format!("`{f}`")).collect();
+                d = d.with_note(format!("in scope with this type: {}", listed.join(", ")));
+                for f in fits.iter().take(MAX_HOLE_FITS) {
+                    d = d.with_fix(
+                        format!("fill the hole with `{f}`"),
+                        vec![Edit::new(span, *f)],
+                        Applicability::MaybeIncorrect,
+                    );
+                }
+            }
+            self.errors.push(d);
+        }
+    }
+
+    /// Every error recovered from so far, most fundamental first, without the
+    /// consequences of an earlier one (a message naming the error type).
+    pub fn errors(&self) -> Vec<Diagnostic> {
+        let mut seen = HashSet::new();
+        self.errors
+            .iter()
+            .filter(|d| !mentions_error_type(d))
+            .filter(|d| seen.insert((d.root().code.name(), d.root().span.start, d.root().span.end, d.root().msg.clone())))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the check recovered from any error (so [`Self::errors`] has the
+    /// full report, possibly empty once consequences are dropped).
+    pub fn recovered(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    /// This module's definitions and their types, as exported to importers. After
+    /// a failed check a broken definition has its signature or the error type.
+    pub fn own_values(&self) -> &[(&'a str, Type)] {
+        &self.own_values
+    }
+
+    fn first_error(&self) -> Option<Diagnostic> {
+        self.errors.first().cloned()
+    }
+
     fn sig_has_row_tail(&self, sig: Aol<Ty>) -> bool {
         let (mut sites, mut tails) = (Vec::new(), Vec::new());
         sig_var_sites(self.ast, sig, Span::at(0), &mut sites, &mut tails);
@@ -1471,6 +1612,9 @@ impl<'a> Checker<'a> {
     /// the start of the file.
     fn check(&mut self, e: Aol<Expr>, expected: Type) -> Result<()> {
         let r = self.check_node(e, expected);
+        if let (Some(map), true) = (self.expr_types.as_mut(), r.is_ok()) {
+            map.entry(e).or_insert(expected);
+        }
         r.map_err(|d| match self.ast.expr_span(e) {
             Some(span) => d.fill_span(span),
             None => d,
@@ -3065,6 +3209,39 @@ impl<'a> Checker<'a> {
         &self.eng.types
     }
 
+    /// Every value name visible at the top level of this module (its own and
+    /// the imported ones), with its type as a user reads it.
+    pub fn visible_values(&self) -> Vec<(&'a str, String)> {
+        let mut out: Vec<(&'a str, String)> =
+            self.scopes[0].iter().filter(|(n, _)| !n.starts_with('@')).map(|(n, t)| (*n, self.show_decl(n, *t))).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// The members of a qualified module `name` in scope (`C`, an import), with
+    /// their types.
+    pub fn qualified_values(&self, module: &str) -> Vec<(String, String)> {
+        let Some(members) = self.qualified.get(module) else { return Vec::new() };
+        let mut out: Vec<(String, String)> = members
+            .iter()
+            .filter_map(|(n, ts)| ts.first().map(|t| (n.to_string(), self.show(*t))))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Keep every expression's type for [`Self::expr_type`].
+    pub fn set_record_types(&mut self, on: bool) {
+        self.expr_types = on.then(HashMap::new);
+    }
+
+    /// The type inferred for expression `e`, as a user reads it, when types were
+    /// recorded and `e` was checked.
+    pub fn expr_type(&self, e: Aol<Expr>) -> Option<String> {
+        let t = *self.expr_types.as_ref()?.get(&e)?;
+        Some(self.show(self.eng.zonk(t)))
+    }
+
     pub fn show(&self, ty: Type) -> String {
         self.eng.show(ty)
     }
@@ -3120,6 +3297,9 @@ impl<'a> Checker<'a> {
 
     pub fn infer(&mut self, e: Aol<Expr>) -> Result<Type> {
         let r = self.infer_node(e);
+        if let (Some(map), Ok(t)) = (self.expr_types.as_mut(), &r) {
+            map.insert(e, *t);
+        }
         r.map_err(|d| match self.ast.expr_span(e) {
             Some(span) => d.fill_span(span),
             None => d,
@@ -3599,6 +3779,12 @@ impl<'a> Checker<'a> {
         name: &'a str,
         site: Aol<Expr>,
     ) -> Result<Type> {
+        if module.is_none() && name == crate::lexer::HOLE {
+            let t = self.eng.fresh();
+            let locals = self.scopes[1..].iter().flat_map(|s| s.iter().map(|(n, t)| (*n, *t))).collect();
+            self.holes.push((site, t, locals));
+            return Ok(t);
+        }
         // A blessed interface in VALUE position is a desugar's reference to the single
         // method of the instance the compiler resolves here (`.[i]` emits `@IIndex`,
         // `1.2i` emits `@IImagLit`). Resolution is deferred like any other context, so
@@ -3689,6 +3875,8 @@ impl<'a> Checker<'a> {
             Ok(self.eng.instantiate(scheme))
         } else if self.overloads.contains_key(name) {
             Ok(self.eng.fresh())
+        } else if self.broken.contains(name) {
+            Ok(self.eng.types.error())
         } else if self.lenient {
             // A metaprogram-expansion round: the name may be injected by a
             // generator that has not run yet. Defer it as a fresh variable; the
@@ -3708,8 +3896,41 @@ impl<'a> Checker<'a> {
             .chain(self.overloads.keys().copied())
             .chain(self.global_ctx.keys().copied());
         match utilities::error::closest(name, visible) {
-            Some(n) => unbound(name).with_help(format!("did you mean `{n}`?")),
-            None => unbound(name),
+            Some(n) => unbound(name).with_fix(
+                format!("did you mean `{n}`?"),
+                vec![Edit::new(Span::at(0), n)],
+                Applicability::MaybeIncorrect,
+            ),
+            None => match self.import_hints.get(name).map(Vec::as_slice) {
+                Some([home]) => {
+                    let home = home.clone();
+                    self.with_import_fix(unbound(name), &home)
+                }
+                Some(homes) if !homes.is_empty() => unbound(name).with_help(format!(
+                    "it is defined in {}; import one of them",
+                    homes.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ")
+                )),
+                _ => unbound(name),
+            },
+        }
+    }
+
+    /// Supply the module names an unbound name may suggest importing.
+    pub fn set_import_hints(&mut self, hints: Rc<HashMap<String, Vec<String>>>) {
+        self.import_hints = hints;
+    }
+
+    /// Add a fix that imports `module`, inserted next to this module's other
+    /// imports (prose only when the file has no item to anchor it to).
+    fn with_import_fix(&self, d: Diagnostic, module: &str) -> Diagnostic {
+        let msg = format!("import it with `$ with {module}`");
+        match self.import_anchor {
+            Some((at, before, after)) => d.with_fix(
+                msg,
+                vec![Edit::new(Span::at(at), format!("{before}$ with {module}{after}"))],
+                Applicability::MachineApplicable,
+            ),
+            None => d.with_help(msg),
         }
     }
 
@@ -4327,6 +4548,12 @@ impl<'a> Checker<'a> {
         let mut tf = self.infer(head)?;
         let mut callee = head;
         for a in &args {
+            if self.eng.resolve(tf) == self.eng.types.error() {
+                for a in &args {
+                    self.infer(*a)?;
+                }
+                return Ok(tf);
+            }
             if !matches!(self.eng.head(tf), TypeNode::Var(_) | TypeNode::Arrow(..)) {
                 return Err(self.not_a_function(head, callee, *a, tf));
             }
@@ -5653,9 +5880,14 @@ impl<'a> Checker<'a> {
             .keys()
             .chain(self.unions.keys())
             .chain(self.aliases.keys())
-            .copied();
+            .copied()
+            .chain(BASE_TYPES.iter().copied());
         match utilities::error::closest(name, known) {
-            Some(n) => d.with_help(format!("did you mean `{n}`?")),
+            Some(n) => d.with_fix(
+                format!("did you mean `{n}`?"),
+                vec![Edit::new(Span::at(0), n)],
+                Applicability::MaybeIncorrect,
+            ),
             None => d.with_note(
                 "a type variable is written as a lowercase name; a capitalized type must be declared",
             ),
@@ -5682,11 +5914,8 @@ impl<'a> Checker<'a> {
         if self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
             return;
         }
-        let mut d = diag!(
-            Code::TypeUnbound, Span::at(0), 0,
-            "type `{name}` is not imported";
-            help: "import its module with `$ with {home}`"
-        );
+        let mut d = diag!(Code::TypeUnbound, Span::at(0), 0, "type `{name}` is not imported");
+        d = self.with_import_fix(d, home);
         if let Some(span) = self.ast.ty_span(ty) {
             d = d.fill_span(span);
         }
@@ -7195,16 +7424,15 @@ const IF_SEQ_VIEW: &str = "@ISeqView";
 /// `IEq`, the same interface `==` wraps, so a type needs no second instance.
 const IF_EQ: &str = "IEq";
 
+/// The built-in types, by their `@` names.
+pub const BASE_TYPES: &[&str] = &[
+    "@int", "@nat", "@int8", "@int16", "@int32", "@int64", "@nat8", "@nat16", "@nat32", "@nat64",
+    "@float32", "@float64", "@str", "@ptr", "@bool", "@array", "@vec", "@token", "@code", "@future",
+    "@chan", "@tvar",
+];
+
 fn is_base_type(name: &str) -> bool {
-    matches!(
-        name,
-        "@int" | "@nat"
-            | "@int8" | "@int16" | "@int32" | "@int64"
-            | "@nat8" | "@nat16" | "@nat32" | "@nat64"
-            | "@float32" | "@float64"
-            | "@str" | "@ptr" | "@bool" | "@array" | "@vec"
-            | "@token" | "@code" | "@future" | "@chan" | "@tvar"
-    )
+    BASE_TYPES.contains(&name)
 }
 
 /// The internal constructor name of a sized tensor. Its type is the application
@@ -7254,4 +7482,33 @@ fn undeclared_param(kind: &str, name: &str, v: &str, declared: &[&str], spliced:
     Diagnostic::error(Code::TypeUnbound, Span::at(0), 0, msg)
         .with_note("type parameters are mandatory")
         .with_help(format!("declare every one after the keyword, e.g. `@{kind} {v} = ...`"))
+}
+
+/// The most hole fits listed (and offered as fixes).
+const MAX_HOLE_FITS: usize = 6;
+
+/// Whether a diagnostic is a consequence of an earlier failure: it talks about a
+/// value whose type is the error type, which only a recovered error introduces.
+fn mentions_error_type(d: &Diagnostic) -> bool {
+    let e = crate::typing::data::ERROR_CON;
+    d.frames().iter().any(|f| f.msg.contains(e))
+        || d.labels().iter().any(|l| l.msg.contains(e))
+        || d.notes().iter().any(|n| n.contains(e))
+}
+
+/// Where an added `$ with M` line goes: after the last import, or else before the
+/// first item. `None` for a file with no items to place it by.
+fn import_anchor(ast: &Ast, program: &Program) -> Option<(usize, &'static str, &'static str)> {
+    let items = ast.slice(program.items);
+    let spans = ast.slice(program.spans);
+    let last_import = items
+        .iter()
+        .zip(spans)
+        .filter(|(item, _)| matches!(item, Item::Import { .. }))
+        .last();
+    match last_import {
+        Some((_, span)) => Some((span.full.end, "\n", "")),
+        None if program.header != Span::at(0) => Some((program.header.end, "\n\n", "")),
+        None => spans.first().map(|s| (s.full.start, "", "\n\n")),
+    }
 }

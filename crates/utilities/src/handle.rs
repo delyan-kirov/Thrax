@@ -127,6 +127,17 @@ pub struct Store<T> {
     items: Vec<T>,
 }
 
+/// A clone keeps the original's tag: its handles address the clone too, which
+/// is what lets an editor extend a copy of an already-checked tree.
+impl<T: Clone> Clone for Store<T> {
+    fn clone(&self) -> Store<T> {
+        Store {
+            tag: self.tag,
+            items: self.items.clone(),
+        }
+    }
+}
+
 impl<T> Default for Store<T> {
     fn default() -> Store<T> {
         Store::new()
@@ -172,6 +183,23 @@ impl<T> Store<T> {
         }
     }
 
+    /// The handle of the value at `index` (for walking a run of the store).
+    pub fn handle(&self, index: usize) -> Aol<T> {
+        assert!(index < self.items.len(), "handle index {index} out of range");
+        Aol {
+            tag: self.tag,
+            index,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Drop every value from `len` on. Sound only when no handle at or past
+    /// `len` is used again: the arena-reset discipline, for a store whose tail
+    /// belongs to a computation that is over.
+    pub fn truncate(&mut self, len: usize) {
+        self.items.truncate(len);
+    }
+
     /// Read a handle's value, panicking if it did not come from this store.
     pub fn lookup(&self, id: Aol<T>) -> &T {
         self.check(id.tag);
@@ -214,6 +242,15 @@ pub struct SecondaryMap<T, V> {
     _marker: PhantomData<fn() -> T>,
 }
 
+impl<T, V: Clone> Clone for SecondaryMap<T, V> {
+    fn clone(&self) -> SecondaryMap<T, V> {
+        SecondaryMap {
+            entries: self.entries.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
 impl<T, V> Default for SecondaryMap<T, V> {
     fn default() -> SecondaryMap<T, V> {
         SecondaryMap::new()
@@ -253,7 +290,7 @@ pub struct StrId {
 
 /// A string interner: one growable byte buffer plus a dedup index, so equal
 /// identifiers share a single [`StrId`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Interner {
     buf: Vec<u8>,
     dedup: HashMap<Box<[u8]>, StrId>,
@@ -281,6 +318,21 @@ impl Interner {
         self.buf.extend_from_slice(bytes);
         self.dedup.insert(bytes.into(), id);
         id
+    }
+
+    /// The buffer length: a watermark for [`Interner::truncate`].
+    pub fn len(&self) -> usize {
+        self.buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
+
+    /// Forget every string interned at or past `len` (see [`Store::truncate`]).
+    pub fn truncate(&mut self, len: usize) {
+        self.buf.truncate(len);
+        self.dedup.retain(|_, id| id.offset + id.len <= len);
     }
 
     pub fn bytes(&self, id: StrId) -> &[u8] {

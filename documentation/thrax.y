@@ -16,10 +16,10 @@
  * Operator precedence/associativity is transcribed from infix_db in
  * compiler/EXxDATA.hpp; the %left/%right/%precedence block below is that spec.
  *
- * CONFLICTS. `%expect 9`: bison's summary count, all resolving by the default
+ * CONFLICTS. `%expect 10`: bison's summary count, all resolving by the default
  * (shift), all matching EX.cpp. Not LALR(1) but unambiguous under maximal munch
- * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates sixteen
- * (state, token) warnings over the same classes: 12 on DOT, 3 on BAR, 1 on
+ * -- EXPECTED, keep as is. (`-Wcounterexamples` enumerates seventeen
+ * (state, token) warnings over the same classes: 12 on DOT, 4 on BAR, 1 on
  * KW_CTL. The summary number is what `%expect` compares against.)
  *   - `lo ...`         open range shifts an upper bound when one follows, else
  *                      closes open (a pattern `num_lit ELLIPSIS`, an expression
@@ -30,6 +30,8 @@
  *                     three conflicts
  *   - `A.B.C`         qualified-name chains shift greedily
  *   - `do ... ctl`    `ctl` attaches to the nearest `do`
+ *   - `is x` alone    a match may have no arms (an uninhabited scrutinee); a
+ *                     `|` after it starts its arms
  *   - nested `is`     arms belong to the innermost `is` or handler; the real
  *                     parser also ends an `is` at a `| op x` operation clause,
  *                     which this grammar does not model
@@ -49,19 +51,20 @@
  *     named/positional, arity) are omitted -- those are checks, not grammar. */
 
 %define parse.error verbose
-%expect 9
+%expect 10
 
 %token INT REAL IMAG STR   /* IMAG: an `i`-suffixed number, `3i` / `1.2i` / `2.5e-2i` */
 %token UIDENT       /* Word, uppercase-initial */
 %token LIDENT       /* Word, lowercase-initial */
 %token UNDERSCORE   /* _ */
-%token TYVAR        /* `a */
+%token HOLE         /* ??? a typed hole: any type, always a compile error naming it */
 
 %token AT_MOD AT_STRUCT AT_UNION AT_ALIAS AT_EFFECT AT_MAIN AT_BUILD
 %token AT_E AT_RUN AT_CTX AT_IFACE
 %token AT_PRIVATE AT_EXTERN AT_ARRAY
 %token AT_TRUE AT_FALSE /* the two `@bool` literals (there is no `true`/`false` alias) */
-%token AT_TYCON     /* @int64 / @float64 / @str ... */
+%token AT_TYCON     /* any other @name: a built-in type (@int64, @str, @vec) or
+                       effect (@io) in a type, an intrinsic (@vec_len) as a value */
 
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
 %token LAMBDA       /* \ */
@@ -101,11 +104,14 @@ globals   : /* empty */ | globals global ;
 
 global
   : DOLLAR LIDENT opt_sig EQ body
-  | DOLLAR LIDENT COLON AT_STRUCT opt_type_params EQ struct_body
-  | DOLLAR LIDENT COLON AT_UNION  opt_type_params EQ union_body
-  | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ type
-  | DOLLAR LIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
-  | DOLLAR LIDENT COLON AT_EFFECT opt_type_params EQ effect_body
+  | DOLLAR UIDENT COLON AT_STRUCT opt_type_params EQ struct_body
+  | DOLLAR UIDENT COLON AT_STRUCT AT_EXTERN STR opt_type_params EQ struct_body  /* C layout */
+  | DOLLAR UIDENT COLON AT_UNION  opt_type_params EQ union_body
+  | DOLLAR UIDENT COLON AT_UNION  opt_type_params EQ  /* no variants: uninhabited */
+  | DOLLAR UIDENT COLON AT_UNION  AT_EXTERN STR opt_type_params EQ union_body  /* C layout */
+  | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
+  | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
+  | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
   | DOLLAR KW_WITH import
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@vec @str -> <@io> @int` */
@@ -118,6 +124,7 @@ global
    * @ISlice @ISeqView`. */
   | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
   | DOLLAR AT_E expr
+  | DOLLAR AT_E PIPE_BACK expr  /* `$ @e <| assert ..`: `@e` piped into */
   | DOLLAR AT_RUN expr
   | DOLLAR LPAREN operator_name RPAREN COLON type EQ expr  /* `$ (+) : T = e` */
   ;
@@ -156,11 +163,11 @@ opt_type_params : /* empty */ | opt_type_params LIDENT ;
 
 struct_body   : field_decls opt_comma ;
 field_decls   : field_decl | field_decls COMMA field_decl ;
-field_decl    : LIDENT COLON type ;
+field_decl    : LIDENT COLON type | KW_WITH type_app_head ;  /* `with P` copies P's fields */
 
 union_body    : variant_decls opt_comma ;
 variant_decls : variant_decl | variant_decls COMMA variant_decl ;
-variant_decl  : UIDENT COLON payload_decl ;
+variant_decl  : UIDENT COLON payload_decl | KW_WITH type_app_head ;
 
 /* After `Tag:` a '{' ALWAYS opens the payload's field braces (`{}` empty,
  * `{A, B}` two positional fields) never a bare tuple type; that is how
@@ -182,7 +189,7 @@ type_atom_nb
   : UIDENT
   | UIDENT DOT UIDENT
   | AT_TYCON
-  | TYVAR
+  | LIDENT   /* a type variable */
   | LPAREN type RPAREN
   ;
 
@@ -199,16 +206,18 @@ type
   ;
 
 type_app      : type_atom | type_app_head type_args ;
-type_app_head : UIDENT | UIDENT DOT UIDENT ;
+type_app_head : UIDENT | UIDENT DOT UIDENT | AT_TYCON | AT_IFACE ;
 type_args     : type_atom | type_args type_atom ;
 
 type_atom
   : UIDENT
   | UIDENT DOT UIDENT
   | AT_TYCON
-  | TYVAR
+  | LIDENT   /* a type variable */
   | LBRACE RBRACE
   | LBRACE type_list opt_comma RBRACE  /* tuple type; n >= 1 ({} is unit) */
+  | LBRACE rec_field_list BAR LIDENT RBRACE  /* open record: `{ x: T | r }` */
+  | AT_E LPAREN expr RPAREN                 /* a type a generator produces */
   | LBRACE rec_field_list opt_comma RBRACE /* named-record parameter sugar:
       `{x: T, y: U}` is the tuple `{T, U}` whose field names bind the argument;
       a one-field `{x: T}` collapses to `T` (see parse_global). Legal only in a
@@ -224,7 +233,8 @@ shape : tensor_size | shape COMMA tensor_size ;
 
 /* A tensor size: a modular (Z/2^64) arithmetic expression over Nat literals and
  * lowercase (Nat-kinded) size variables. `*` binds tighter than `+`. */
-tensor_size : size_sum ;
+/* An axis may carry its variance: `[@contra m, @co n]T`. */
+tensor_size : size_sum | AT_TYCON size_sum ;
 size_sum    : size_prod | size_sum PLUS size_prod ;
 size_prod   : size_atom | size_prod STAR size_atom ;
 size_atom   : INT | LIDENT | LPAREN size_sum RPAREN ;
@@ -232,26 +242,39 @@ size_atom   : INT | LIDENT | LPAREN size_sum RPAREN ;
 type_list : type | type_list COMMA type ;
 
 rec_field_list
-  : opt_with LIDENT COLON type
-  | rec_field_list COMMA opt_with LIDENT COLON type
+  : rec_field
+  | rec_field_list COMMA rec_field
   ;
 
-opt_with : /* empty */ | KW_WITH ;
+/* Spelled out rather than with an optional `with`: an empty rule before the
+ * name would have to be reduced before seeing whether `{x` starts a record
+ * parameter or a tuple of type variables. */
+rec_field : LIDENT COLON type | KW_WITH LIDENT COLON type ;
 
 eff_row
   : ANGLE_EMPTY
-  | LT TYVAR GT
+  | LT LIDENT GT
   | LT eff_names GT
-  | LT eff_names BAR TYVAR GT
-  | PIPE_BACK TYVAR GT
+  | LT eff_names BAR LIDENT GT
+  | PIPE_BACK LIDENT GT
   ;
 
 /* An entry is an effect applied to its type arguments (`Chan @int e`), or a row
  * alias applied to its parameters (`WithLog e`). */
 eff_names : eff_entry | eff_names COMMA eff_entry ;
-eff_entry : UIDENT | eff_entry type_atom ;
+eff_entry : UIDENT | AT_TYCON | eff_entry type_atom ;
 
-expr      : ctrl_expr | op_expr ;
+expr
+  : ctrl_expr
+  | op_expr
+  /* The two lowest, right-associative operators take a whole expression on
+   * their right, so a control form may follow and run to the end:
+   * `a; let x = 1 in b`, `f <| g <| \x = ..`. `|>` is left-associative, so
+   * only its last operand may be a control form: `xs |> f |> \v = ..`. */
+  | op_expr SEMI expr
+  | op_expr PIPE_BACK expr
+  | op_expr PIPE_FWD ctrl_expr
+  ;
 
 ctrl_expr
   : KW_LET let_bindings opt_comma KW_IN expr
@@ -260,6 +283,7 @@ ctrl_expr
                                 for the body */
   | KW_IF if_arms opt_comma KW_ELSE expr
   | KW_IS expr arms
+  | KW_IS expr       /* no arms: a scrutinee of an uninhabited type */
   | LAMBDA params EQ expr
   | LAMBDA pat_atom COLON type EQ expr
   | KW_DEFER defer_cleanups opt_comma KW_IN expr
@@ -298,9 +322,7 @@ let_binder
   ;
 
 op_expr
-  : op_expr SEMI op_expr
-  | op_expr PIPE_BACK op_expr
-  | op_expr PIPE_FWD op_expr
+  : op_expr PIPE_FWD op_expr
   | op_expr OR_OR op_expr            /* || short-circuit -> lazy if */
   | op_expr AND_AND op_expr          /* && short-circuit -> lazy if */
   | op_expr EQEQ op_expr
@@ -335,8 +357,13 @@ atom
   | AT_FALSE
   | LIDENT
   | UIDENT
+  | HOLE
+  | AT_TYCON  /* an intrinsic as a value: `@vec_len v`, `@iadd a b` */
   | LPAREN expr RPAREN
   | LPAREN operator_name RPAREN  /* an operator as a function value: `(+) 1 1` */
+  | LPAREN expr COLON type RPAREN  /* a type ascription: `([] : List @int)` */
+  | LBRACE dot_inits opt_comma RBRACE  /* a record or codata literal `{ .f = e }` */
+  | LBRACE dot_inits BAR expr RBRACE   /* a record update `{ .f = e | base }` */
   | LPAREN AT_CTX expr RPAREN    /* an explicit context, the FIRST argument of a
                                   * call: `max_of (@ctx flip) 3 7` */
   | LBRACE RBRACE
@@ -386,6 +413,11 @@ seq_lit
   | LBRACK expr ELLIPSIS RBRACK        /* open range `[lo ...]` -> `count_from lo` (Stream) */
   ;
 elem_list : expr | elem_list COMMA expr ;
+dot_inits
+  : DOT LIDENT EQ expr
+  | dot_inits COMMA DOT LIDENT EQ expr
+  | dot_inits COMMA KW_WITH op_expr  /* `{ .tag = 1, with p }`: p's fields too */
+  ;
 
 array_lit
   : AT_ARRAY DOT LBRACE expr opt_comma RBRACE
@@ -450,6 +482,7 @@ pat_atom
   | AT_FALSE
   | list_pattern
   | LBRACE pat_elem_list opt_comma RBRACE  /* tuple pattern; n >= 1 */
+  | LBRACE rec_pats RBRACE                 /* record pattern `{ .x = a, .y, .._ }` */
   | DOT UIDENT pat_payload
   | UIDENT DOT LBRACE field_pats RBRACE
   | UIDENT DOT UIDENT pat_payload
@@ -457,6 +490,9 @@ pat_atom
   ;
 
 pat_payload  : /* empty */ | DOT LBRACE field_pats RBRACE ;
+
+rec_pats : rec_pat | rec_pats COMMA rec_pat ;
+rec_pat  : DOT LIDENT EQ pattern | DOT LIDENT | DOT DOT pattern ;
 
 list_pattern : LBRACK RBRACK | LBRACK pat_elems RBRACK ;
 pat_elems

@@ -25,7 +25,7 @@ mod tests;
 use crate::lexer::data::{Kind, Token};
 use crate::lexer::Lexer;
 use utilities::{Aol, Line, Slice, Span, StrId};
-use utilities::{Code, Diagnostic, Result};
+use utilities::{Applicability, Code, Diagnostic, Edit, Result};
 
 use crate::parser::data::*;
 
@@ -38,6 +38,8 @@ pub struct Parser<'a> {
     /// End offset of the most recently consumed token, so a node's span can run
     /// from its first token's start to here.
     last_end: usize,
+    /// Errors recovered from at item boundaries, in source order.
+    errors: Vec<Diagnostic>,
 }
 
 /// Consume a token of an expected kind, or fail with an `UnexpectedToken`
@@ -63,7 +65,13 @@ impl<'a> Parser<'a> {
             ast,
             src,
             last_end: 0,
+            errors: Vec::new(),
         }
+    }
+
+    /// The errors [`Parser::parse_program`] recovered from.
+    pub fn take_errors(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.errors)
     }
 
     /// Consume the parser, yielding the filled store bundle.
@@ -350,12 +358,29 @@ impl<'a> Parser<'a> {
         Ok(self.at_op("-")? && matches!(self.peek_kind_at(1)?, Kind::Int(_) | Kind::Real(_)))
     }
     fn unexpected(&self, t: &Token, what: &str) -> Diagnostic {
-        Diagnostic::error(
-            Code::UnexpectedToken,
-            t.span,
-            t.line,
-            format!("{what}, found {}", describe(t, self.text(*t))),
-        )
+        // Running into the next item (or the end) means this one stopped short:
+        // the missing piece belongs right after its last token, not at the `$`.
+        let cut = matches!(t.kind, Kind::Dollar | Kind::Eof) && self.last_end > 0;
+        let span = if cut { Span::at(self.last_end) } else { t.span };
+        let found = if cut && matches!(t.kind, Kind::Dollar) {
+            "the next item".to_string()
+        } else {
+            describe(t, self.text(*t))
+        };
+        let d = Diagnostic::error(Code::UnexpectedToken, span, t.line, format!("{what}, found {found}"));
+        let closer = what
+            .strip_prefix("expected '")
+            .and_then(|rest| rest.split_once('\''))
+            .map(|(c, _)| c)
+            .filter(|c| matches!(*c, ")" | "]" | "}" | "-#"));
+        match closer {
+            Some(c) => d.with_fix(
+                format!("insert `{c}`"),
+                vec![Edit::new(Span::at(self.last_end), c)],
+                Applicability::MaybeIncorrect,
+            ),
+            None => d,
+        }
     }
 
     /// A type name must start with a capital letter; a lowercase name in type
@@ -389,22 +414,101 @@ impl<'a> Parser<'a> {
 
     /// Parse a whole compilation unit.
     pub fn parse_program(&mut self) -> Result<Program> {
-        expect!(self, Kind::Dollar, "expected '$ @mod' at the start of the file");
+        let head = expect!(self, Kind::Dollar, "expected '$ @mod' at the start of the file");
         let at = expect!(self, Kind::At, "expected '@mod' after '$' at the start of the file");
         if self.intrinsic_name(at) != "mod" {
             return Err(self.unexpected(&at, "expected '@mod' after '$' at the start of the file"));
         }
         let name = expect!(self, Kind::Word, "expected a module name after '@mod'");
         let module = self.intern(self.text(name));
+        let header = Span::new(head.span.start, name.span.end);
 
         let mut items = Vec::new();
-        while !matches!(self.peek_kind()?, Kind::Eof) {
-            items.push(self.parse_global()?);
+        let mut spans = Vec::new();
+        let mut broken = Vec::new();
+        loop {
+            match self.peek_kind() {
+                Ok(Kind::Eof) => break,
+                Ok(_) => {}
+                Err(d) => {
+                    self.errors.push(d);
+                    if !self.skip_to_next_item(self.last_end) {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            let start = self.peek()?.span.start;
+            let name = self.item_name_span();
+            match self.parse_global() {
+                Ok(item) => {
+                    items.push(item);
+                    spans.push(ItemSpan {
+                        full: Span::new(start, self.last_end),
+                        name,
+                    });
+                }
+                Err(d) => {
+                    if let Some(n) = name {
+                        let text = &self.src[n.start..n.end];
+                        if text.starts_with(|c: char| c.is_ascii_lowercase()) {
+                            broken.push(self.intern(text));
+                        }
+                    }
+                    self.errors.push(d);
+                    if !self.skip_to_next_item(start + 1) {
+                        break;
+                    }
+                }
+            }
         }
         Ok(Program {
             module,
+            header,
             items: self.ast.make_slice(items),
+            spans: self.ast.make_slice(spans),
+            broken: self.ast.make_slice(broken),
         })
+    }
+
+    /// The span of the name the item at the cursor (its `$`) defines: the word
+    /// after `$`, or `@main`/`@build`.
+    fn item_name_span(&mut self) -> Option<Span> {
+        let t = self.peek_at(1).ok()?;
+        let text = &self.src[t.span.start..t.span.end];
+        match t.kind {
+            Kind::Word => Some(t.span),
+            Kind::At if matches!(text, "@main" | "@build") => Some(t.span),
+            _ => None,
+        }
+    }
+
+    /// Resume after a broken item: move the cursor to the next `$` at the start
+    /// of a line past `from`, re-lexing from there so a lexical error inside the
+    /// broken item is left behind too. Reports whether there is such an item.
+    fn skip_to_next_item(&mut self, from: usize) -> bool {
+        let src = self.src;
+        let mut at = from.min(src.len());
+        let next = loop {
+            match src[at..].find('\n') {
+                None => break None,
+                Some(i) => {
+                    let line = at + i + 1;
+                    if src[line..].starts_with('$') {
+                        break Some(line);
+                    }
+                    at = line;
+                }
+            }
+        };
+        let Some(off) = next else {
+            self.lex = Lexer::sub("", src.len(), 0);
+            return false;
+        };
+        let line = src[..off].bytes().filter(|&b| b == b'\n').count() as Line + 1;
+        self.lex = Lexer::sub(&src[off..], off, line);
+        self.last_end = off;
+        true
     }
 
     fn parse_global(&mut self) -> Result<Item> {
@@ -1285,8 +1389,12 @@ impl<'a> Parser<'a> {
             let span = Span::new(lit.span.start, dot.span.end);
             return Ok(utilities::diag!(
                 Code::NumberParsingFailure, span, lit.line,
-                "unfinished decimal literal `{digits}.`";
-                help: "write the fractional part: `{digits}.0`"
+                "unfinished decimal literal `{digits}.`"
+            )
+            .with_fix(
+                format!("write the fractional part: `{digits}.0`"),
+                vec![Edit::new(span, format!("{digits}.0"))],
+                Applicability::MachineApplicable,
             ));
         }
         Ok(utilities::diag!(

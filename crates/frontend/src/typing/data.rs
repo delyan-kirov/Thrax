@@ -78,12 +78,27 @@ pub enum TypeNode {
 /// `Con` nodes and the empty row are shared rather than rebuilt, because they are
 /// the leaves inference creates over and over. The rest are appended: the store
 /// lives for one check and is dropped whole, so nothing is ever freed piecemeal.
+/// See [`Types::mark`].
+#[derive(Clone, Debug)]
+pub struct TypesMark {
+    nodes: usize,
+    tuples: usize,
+    names: usize,
+    rigids: std::collections::HashMap<String, u32>,
+}
+
+/// How [`Types::error`] prints. Not lexable as a type, so no source can name it.
+pub const ERROR_CON: &str = "{error}";
+
 pub struct Types {
     nodes: RefCell<Store<TypeNode>>,
     tuples: RefCell<Store<Type>>,
     names: RefCell<Interner>,
     cons: RefCell<std::collections::HashMap<StrId, Type>>,
     row_empty: Type,
+    /// The type of a definition or expression that failed to check. It unifies
+    /// with everything, so one error does not cascade into its uses.
+    error: Type,
     /// How many rigid types each name has been given (see [`Types::rigid`]).
     rigids: RefCell<std::collections::HashMap<String, u32>>,
 }
@@ -98,12 +113,16 @@ impl Types {
     pub fn new() -> Types {
         let mut nodes = Store::new();
         let row_empty = nodes.create(TypeNode::RowEmpty);
+        let mut names = Interner::new();
+        let error_name = names.intern(ERROR_CON);
+        let error = nodes.create(TypeNode::Con(error_name));
         Types {
             nodes: RefCell::new(nodes),
             tuples: RefCell::new(Store::new()),
-            names: RefCell::new(Interner::new()),
-            cons: RefCell::new(std::collections::HashMap::new()),
+            names: RefCell::new(names),
+            cons: RefCell::new(std::collections::HashMap::from([(error_name, error)])),
             row_empty,
+            error,
             rigids: RefCell::new(std::collections::HashMap::new()),
         }
     }
@@ -144,6 +163,31 @@ impl Types {
 
     pub fn row_empty(&self) -> Type {
         self.row_empty
+    }
+
+    pub fn error(&self) -> Type {
+        self.error
+    }
+
+    /// A watermark of everything built so far, for [`Types::truncate`].
+    pub fn mark(&self) -> TypesMark {
+        TypesMark {
+            nodes: self.nodes.borrow().len(),
+            tuples: self.tuples.borrow().len(),
+            names: self.names.borrow().len(),
+            rigids: self.rigids.borrow().clone(),
+        }
+    }
+
+    /// Drop every type built since `mark`. Sound only when nothing that holds
+    /// one of them is used again: an editor re-checking one module over checked
+    /// dependencies rewinds to the dependencies' mark before each new check.
+    pub fn truncate(&self, mark: &TypesMark) {
+        self.nodes.borrow_mut().truncate(mark.nodes);
+        self.tuples.borrow_mut().truncate(mark.tuples);
+        self.names.borrow_mut().truncate(mark.names);
+        self.cons.borrow_mut().retain(|_, t| t.index() < mark.nodes);
+        *self.rigids.borrow_mut() = mark.rigids.clone();
     }
 
     pub fn con_id(&self, name: StrId) -> Type {

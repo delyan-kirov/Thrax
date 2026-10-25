@@ -27,6 +27,14 @@ $ help_text : @str
 	++ "            run tests/MAIN.thx on both engines (interpreter + native C,\n"
 	++ "            or with `wasm` the C built for wasm32-wasi, under node)\n"
 	++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
+	++ "  tree-sitter\n"
+	++ "            generate the Helix grammar from documentation/thrax.y\n"
+	++ "            (tools/editors/tree-sitter-thrax, for Helix and Zed)\n"
+	++ "  tags [-o FILE] [PATH...]\n"
+	++ "            write a ctags `tags` file for Vim (default: the whole repo)\n"
+	++ "  fmt [check]\n"
+	++ "            format library/, examples/ and applications/ in place\n"
+	++ "            (check: only list the files that are not formatted)\n"
 	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
 	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
 	++ "  start N   branch N-<slug> off origin/master for issue N (or switch to it)\n"
@@ -97,6 +105,28 @@ $ comparable : @vec @str -> @vec @str -> @vec @str = \skip ls =
 # `%expect` in the grammar is a tripwire: bison fails when the conflict count
 # moves, so a syntax change has to be accounted for in the spec.
 $ grammar_cmd : @str = "bison -o /dev/null documentation/thrax.y"
+
+# The editor grammar: generated from the Bison spec by a Thrax program, then
+# compiled to C by tree-sitter from the tools/editors flake (kept out of the
+# root dev shell). `path:` so the flake need not be tracked by git yet.
+$ tree_sitter_cmd : @str =
+	"${THRAX_BIN:-thrax} run tools/editors/TREE_SITTER_GEN.thx"
+	++ " && cd tools/editors/tree-sitter-thrax"
+	++ " && nix develop path:.. -c tree-sitter generate"
+
+# The tags generator runs natively: interpreted, it takes seconds per file.
+# Built on first use and again when its source changes, as thxdo itself is.
+$ tags_cmd : @vec @str -> @str = \args =
+	"bin=tools/editors/thrax-out/TAGS; src=tools/editors/TAGS.thx;"
+	++ " { [ -x \"$bin\" ] && [ ! \"$src\" -nt \"$bin\" ]; }"
+	++ " || ${THRAX_BIN:-thrax} build \"$src\" >/dev/null"
+	++ " && \"$bin\"" ++ quoted_from args 2
+
+# Every Thrax source the formatter keeps canonical.
+$ fmt_files : @str = "$(find library examples applications -name '*.thx' -not -path '*/target/*')"
+
+$ fmt_cmd : @bool -> @str = \check =
+	"${THRAX_BIN:-thrax} fmt " ++ (if check => "--check " else "") ++ fmt_files
 
 $ grammar_verbose_cmd : @str =
 	"bison -Wcounterexamples -o /dev/null documentation/thrax.y"
@@ -335,6 +365,16 @@ $ run_command: @vec @str -> <@io> @bool = \args =
 			println "thxdo: running tests/MAIN.thx on both engines ...";
 			if corpus_task wasm => println "thxdo: corpus OK (engines agree)"; @true
 			else println "thxdo: corpus FAILED"; @false
+		| "tree-sitter" =>
+			let rc = C.system tree_sitter_cmd in
+			println (if rc == 0 => "thxdo: tree-sitter grammar OK" else "thxdo: tree-sitter FAILED");
+			if 0 == rc => @true else @false
+		| "tags" => C.system (tags_cmd args) == 0
+		| "fmt" =>
+			let check = arg_or args 2 "" == "check" in
+			let rc = C.system (fmt_cmd check) in
+			println (if rc == 0 => "thxdo: fmt OK" else "thxdo: fmt FAILED");
+			if 0 == rc => @true else @false
 		| "grammar" =>
 			println "thxdo: checking documentation/thrax.y ...";
 			let rc = C.system grammar_cmd in

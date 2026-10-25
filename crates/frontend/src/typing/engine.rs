@@ -187,6 +187,17 @@ impl Engine {
         self.level += 1;
     }
 
+    /// The current generalization level, saved before a definition so a failed
+    /// check can be unwound to it ([`Engine::unwind_level`]).
+    pub fn level(&self) -> Level {
+        self.level
+    }
+
+    pub fn unwind_level(&mut self, level: Level) {
+        assert!(level <= self.level, "unwinding to a deeper level");
+        self.level = level;
+    }
+
     pub fn leave_level(&mut self) {
         debug_assert!(self.level > 0, "leave_level without a matching enter_level");
         self.level -= 1;
@@ -362,6 +373,9 @@ impl Engine {
     pub fn unify(&mut self, a: Type, b: Type, where_: &str) -> Result<()> {
         let a = self.resolve(a);
         let b = self.resolve(b);
+        if a == self.types.error() || b == self.types.error() {
+            return Ok(());
+        }
         match (self.types.node(a), self.types.node(b)) {
             (TypeNode::Var(i), TypeNode::Var(j)) if i == j => Ok(()),
             (TypeNode::Var(i), _) => self.bind(i, b),

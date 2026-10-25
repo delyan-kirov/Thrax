@@ -19,6 +19,9 @@ use utilities::{Code, Diagnostic, Line, Result, Span};
 
 pub use crate::lexer::data::{Kind, Token};
 
+/// The typed hole, lexed as a name the checker treats specially.
+pub const HOLE: &str = "???";
+
 /// A forward, buffered cursor over the source token stream. It borrows the
 /// (read-only) source and emits borrow-free [`Token`]s: a token is just a tag
 /// plus a span, so the token stream outlives the lexer and is `Send`. A token's
@@ -117,6 +120,21 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// [`Lexer::tokenize`] that keeps the comments, for tools that must
+    /// reproduce the source (the formatter).
+    pub fn tokenize_with_comments(src: &'a str) -> Result<Vec<Token>> {
+        let mut lx = Lexer::new(src);
+        let mut out = Vec::new();
+        loop {
+            let tok = lx.lex_one()?;
+            let done = matches!(tok.kind, Kind::Eof);
+            out.push(tok);
+            if done {
+                return Ok(out);
+            }
+        }
+    }
+
     // -- buffering ----------------------------------------------------------
 
     /// Guarantee `buffer[pos + n]` exists, lexing (and dropping comments) as
@@ -195,6 +213,11 @@ impl<'a> Lexer<'a> {
             b'#' => self.lex_comment(start, line),
             b'"' => self.lex_string(start, line),
             b'@' => self.lex_intrinsic(start, line),
+            // A typed hole stands for an expression not written yet.
+            b'?' if self.src[self.cursor..].starts_with(HOLE) => {
+                self.cursor += HOLE.len();
+                Ok(self.mk(Kind::Word, start, line))
+            }
             _ if crate::lexer::data::is_digit(c) => self.lex_number(start, line),
             _ if crate::lexer::data::is_ident_start(c) => Ok(self.lex_word(start, line)),
             _ if crate::lexer::data::is_operator_char(c) => self.lex_operator(start, line),

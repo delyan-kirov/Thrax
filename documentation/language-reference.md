@@ -523,6 +523,18 @@ $ small : @int32 = @cast big              # reinterpret across integer widths
 $ back  : @int    = @cast small            # and back to the platform word
 ```
 
+## 4.12 Typed holes `???`
+`???` stands for an expression not written yet. It takes whatever type its
+context needs, and it is always a compile error (`TYPED_HOLE`) that names that
+type and lists the names in scope that fit it, each offered as a fix. A hole is
+how to ask the compiler what goes in a spot.
+
+```thrax
+$ f : @int -> @int = \n = n + ???
+# error[TYPED_HOLE]: hole `???` has type `@int`
+# note: in scope with this type: `n`
+```
+
 ---
 
 # 5. Pattern matching
@@ -1397,6 +1409,11 @@ is `MAIN.thx` in the current directory (or the sole `.thx` file there).
 | `emit-c` | emit standalone C to stdout |
 | `parse` | print the parsed syntax tree |
 | `lex` | print the token stream |
+| `fmt` | format files in place; `fmt --check` only lists unformatted ones |
+| `fix` | apply every fix the compiler is sure of, rechecking until none is left |
+| `explain` | explain a diagnostic code (`thrax explain TYPE_MISMATCH`) |
+| `config` | print the `thrax.toml` options in force and document them all |
+| `lsp` | run the language server on stdin/stdout (see `documentation/lsp.md`) |
 
 Flags: `--target=ARCH-OS` cross-compiles (e.g. `x86_64-linux`, `wasm32-wasi`);
 `-h` / `--help` prints usage.
