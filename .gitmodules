@@ -1,3 +1,6 @@
 [submodule "applications"]
 	path = applications
 	url = git@github.com:delyan-kirov/thrax-applications.git
+[submodule "tools/editors"]
+	path = tools/editors
+	url = https://github.com/delyan-kirov/thrax-ide-extensions

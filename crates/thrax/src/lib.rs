@@ -17,7 +17,11 @@
 //!   (`libthrax.so`), so a native Thrax program can call back into the compiler
 //!   for `@lex`, `@parse_str` and `@eval` at run time. The `thrax` executable
 //!   (the CLI and the GHCi-style shell) is a thin binary over this library.
+//!   [`lsp`] is the language server, and [`tools`] the source tools
+//!   (`fmt`, `fix`, `explain`, `config`).
 
 pub mod capi;
 pub mod driver;
+pub mod lsp;
 pub mod stdlib;
+pub mod tools;

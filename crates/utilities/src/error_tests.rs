@@ -186,3 +186,55 @@ fn caret_counts_characters_not_bytes() {
     let text = d.render(src, "t.thx");
     assert!(text.contains("  | ^^^^^^^\n"), "{text}");
 }
+
+#[test]
+fn fix_renders_the_patched_line() {
+    let src = "$ x = prinln 1\n";
+    let d = Diagnostic::error(Code::UnknownSymbol, Span::new(6, 12), 1, "unknown `prinln`")
+        .with_fix(
+            "did you mean `println`?",
+            vec![Edit::new(Span::new(6, 12), "println")],
+            Applicability::MaybeIncorrect,
+        );
+    let text = d.render(src, "t.thx");
+    assert!(text.contains("help: did you mean `println`?\n  |\n1 | $ x = println 1\n  |       ~~~~~~~\n"), "{text}");
+}
+
+#[test]
+fn insertion_is_marked_with_plus() {
+    let src = "f x\n";
+    let d = Diagnostic::error(Code::TypeMismatch, Span::new(0, 1), 1, "bad")
+        .with_fix("add a bang", vec![Edit::new(Span::at(1), "!")], Applicability::MachineApplicable);
+    assert!(d.render(src, "t.thx").contains("1 | f! x\n  |  +\n"), "{}", d.render(src, "t.thx"));
+}
+
+#[test]
+fn edits_apply_back_to_front() {
+    let src = "a b c";
+    let out = apply_edits(src, &[Edit::new(Span::new(4, 5), "zz"), Edit::new(Span::new(0, 1), "y")]);
+    assert_eq!(out, "y b zz");
+}
+
+#[test]
+fn a_sentinel_edit_takes_the_filled_primary_span() {
+    let d = Diagnostic::error(Code::TypeMismatch, Span::at(0), 1, "bad").with_fix(
+        "x",
+        vec![Edit::new(Span::at(0), "y")],
+        Applicability::MachineApplicable,
+    );
+    assert!(d.helps()[0].located_edits().is_none());
+    let d = d.fill_span(Span::new(2, 4));
+    assert_eq!(d.helps()[0].located_edits().unwrap()[0].span, Span::new(2, 4));
+}
+
+#[test]
+fn severity_leads_the_render() {
+    let d = Diagnostic::error(Code::UnreachableArm, Span::new(0, 1), 1, "dead").with_severity(Severity::Warning);
+    assert!(d.render("x\n", "t.thx").starts_with("warning[UNREACHABLE_ARM]"));
+}
+
+#[test]
+fn a_swapped_pair_is_one_typo() {
+    assert_eq!(closest("widht", ["width", "indent"]), Some("width"));
+    assert_eq!(closest("lenght", ["length"]), Some("length"));
+}

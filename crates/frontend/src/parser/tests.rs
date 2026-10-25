@@ -704,11 +704,12 @@ fn a_stray_annotation_names_where_the_type_goes() {
     let text = err("$ @mod M\n$ y = let {a: @int32, b} = {1, 2} in a");
     assert!(text.contains("a pattern carries no types"), "{text}");
 
-    // The help is for a stray `:` only; an ordinary unclosed delimiter keeps the
-    // plain message.
+    // The annotation help is for a stray `:` only; an ordinary unclosed delimiter
+    // gets just the fix that closes it.
     let text = err("$ @mod M\n$ y = [1, 2");
     assert!(text.contains("to close the list"), "{text}");
-    assert!(!text.contains("help:"), "{text}");
+    assert_eq!(text.matches("help:").count(), 1, "{text}");
+    assert!(text.contains("help: insert `]`\n  |\n2 | $ y = [1, 2]\n"), "{text}");
 }
 
 /// The handler of the single global's `do ... ctl` body.

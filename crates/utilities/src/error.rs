@@ -93,6 +93,8 @@ pub enum Code {
     UnreachableArm,
     RuntimeFault,
     ExpansionLimit,
+    /// A `???` typed hole: always an error, naming the type it stands for.
+    TypedHole,
 }
 
 impl Code {
@@ -133,6 +135,7 @@ impl Code {
             UnreachableArm => "UNREACHABLE_ARM",
             RuntimeFault => "RUNTIME_FAULT",
             ExpansionLimit => "EXPANSION_LIMIT",
+            TypedHole => "TYPED_HOLE",
         }
     }
 }
@@ -174,6 +177,27 @@ pub struct Frame {
     pub msg: String,
 }
 
+/// How bad a diagnostic is. The CLI renders it as the lead word; the LSP maps it
+/// onto its own severity scale.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+impl Severity {
+    pub fn lead(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+            Severity::Hint => "hint",
+        }
+    }
+}
+
 /// A trailing line printed after the source excerpt. The message says what is
 /// wrong; an aside carries everything else, so the two never run together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,12 +217,54 @@ impl Aside {
             other => panic!("unknown diagnostic aside `{other}:` (expected `note:` or `help:`)"),
         }
     }
+}
 
-    fn lead(self) -> &'static str {
-        match self {
-            Aside::Note => "note",
-            Aside::Help => "help",
+/// How safe it is to apply a [`Help`]'s edits without a human looking (the
+/// rustc scale). Only [`Applicability::MachineApplicable`] fixes are applied by
+/// `thrax fix` or marked preferred in an editor.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Applicability {
+    /// The edit is certainly what was meant and yields valid code.
+    MachineApplicable,
+    /// The edit is a likely fix, but may not be what was meant.
+    MaybeIncorrect,
+    /// The edit contains a placeholder (`???`) the user must fill in.
+    HasPlaceholders,
+    /// Prose advice with no machine edit.
+    Unspecified,
+}
+
+/// Replace the source text in `span` with `text`. An empty span inserts.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Edit {
+    pub span: Span,
+    pub text: String,
+}
+
+impl Edit {
+    pub fn new(span: Span, text: impl Into<String>) -> Edit {
+        Edit {
+            span,
+            text: text.into(),
         }
+    }
+}
+
+/// A `help:` aside: what to do, and when the compiler knows the exact change,
+/// the edits that do it.
+#[derive(Clone, Debug)]
+pub struct Help {
+    pub msg: String,
+    pub edits: Vec<Edit>,
+    pub applicability: Applicability,
+}
+
+impl Help {
+    /// The edits, when every one has a real location. A fix still waiting for
+    /// [`Diagnostic::fill_span`] has none to offer.
+    pub fn located_edits(&self) -> Option<&[Edit]> {
+        let ok = !self.edits.is_empty() && self.edits.iter().all(|e| e.span != Span::at(0));
+        ok.then_some(self.edits.as_slice())
     }
 }
 
@@ -217,11 +283,13 @@ pub struct Label {
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     frames: Vec<Frame>,
+    severity: Severity,
     /// Secondary spans drawn in the root frame's excerpt.
     labels: Vec<Label>,
-    /// Trailing `note:` / `help:` lines. Rendered notes first, then helps, each
-    /// kind in the order attached.
-    asides: Vec<(Aside, String)>,
+    /// Rendered after the excerpt, notes first, then helps, each in the order
+    /// attached.
+    notes: Vec<String>,
+    helps: Vec<Help>,
 }
 
 impl Diagnostic {
@@ -234,25 +302,67 @@ impl Diagnostic {
                 line,
                 msg: msg.into(),
             }],
+            severity: Severity::Error,
             labels: Vec::new(),
-            asides: Vec::new(),
+            notes: Vec::new(),
+            helps: Vec::new(),
         }
     }
 
-    /// Attach a trailing `note:` or `help:` line (builder style).
-    pub fn aside(mut self, kind: Aside, text: impl Into<String>) -> Diagnostic {
-        self.asides.push((kind, text.into()));
+    pub fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    pub fn with_severity(mut self, severity: Severity) -> Diagnostic {
+        self.severity = severity;
         self
     }
 
-    /// Attach a `note:` line: more information about the error.
-    pub fn with_note(self, note: impl Into<String>) -> Diagnostic {
-        self.aside(Aside::Note, note)
+    /// Attach a trailing `note:` or `help:` line (builder style).
+    pub fn aside(self, kind: Aside, text: impl Into<String>) -> Diagnostic {
+        match kind {
+            Aside::Note => self.with_note(text),
+            Aside::Help => self.with_help(text),
+        }
     }
 
-    /// Attach a `help:` line: how to fix the error.
-    pub fn with_help(self, help: impl Into<String>) -> Diagnostic {
-        self.aside(Aside::Help, help)
+    /// Attach a `note:` line: more information about the error.
+    pub fn with_note(mut self, note: impl Into<String>) -> Diagnostic {
+        self.notes.push(note.into());
+        self
+    }
+
+    /// Attach a prose `help:` line: how to fix the error.
+    pub fn with_help(mut self, help: impl Into<String>) -> Diagnostic {
+        self.helps.push(Help {
+            msg: help.into(),
+            edits: Vec::new(),
+            applicability: Applicability::Unspecified,
+        });
+        self
+    }
+
+    /// Attach a `help:` that carries the edits doing the fix. An edit at the
+    /// sentinel [`Span::at`]`(0)` replaces the diagnostic's primary span, which a
+    /// span-less pass (the type checker) does not know yet; [`Self::fill_span`]
+    /// fills it in. Until then the fix is shown as prose only.
+    pub fn with_fix(
+        mut self,
+        msg: impl Into<String>,
+        edits: Vec<Edit>,
+        applicability: Applicability,
+    ) -> Diagnostic {
+        let primary = self.frames[0].span;
+        let edits = edits
+            .into_iter()
+            .map(|e| if e.span == Span::at(0) { Edit { span: primary, ..e } } else { e })
+            .collect();
+        self.helps.push(Help {
+            msg: msg.into(),
+            edits,
+            applicability,
+        });
+        self
     }
 
     /// Underline a secondary span in the root excerpt. A span-less label
@@ -267,8 +377,12 @@ impl Diagnostic {
         self
     }
 
-    pub fn asides(&self) -> &[(Aside, String)] {
-        &self.asides
+    pub fn notes(&self) -> &[String] {
+        &self.notes
+    }
+
+    pub fn helps(&self) -> &[Help] {
+        &self.helps
     }
 
     pub fn labels(&self) -> &[Label] {
@@ -282,6 +396,27 @@ impl Diagnostic {
     pub fn fill_span(mut self, span: Span) -> Diagnostic {
         if self.frames[0].span == Span::at(0) {
             self.frames[0].span = span;
+            for e in self.helps.iter_mut().flat_map(|h| h.edits.iter_mut()) {
+                if e.span == Span::at(0) {
+                    e.span = span;
+                }
+            }
+        }
+        self
+    }
+
+    /// Move every located span (frames, labels, fix edits) through `f`, as when
+    /// the source it was raised against is not the source as written.
+    pub fn map_spans(mut self, f: impl Fn(Span) -> Span) -> Diagnostic {
+        let g = |s: Span| if s == Span::at(0) { s } else { f(s) };
+        for fr in &mut self.frames {
+            fr.span = g(fr.span);
+        }
+        for l in &mut self.labels {
+            l.span = g(l.span);
+        }
+        for e in self.helps.iter_mut().flat_map(|h| h.edits.iter_mut()) {
+            e.span = g(e.span);
         }
         self
     }
@@ -329,13 +464,13 @@ impl Diagnostic {
     /// gets the bare filename and no excerpt: pointing it at `1:1` would blame
     /// the file's first line for an error raised somewhere unknown.
     pub fn render(&self, source: &str, filename: &str) -> String {
-        self.render_as("error", source, filename)
+        self.render_as(self.severity.lead(), source, filename)
     }
 
     /// [`Self::render`] for a non-fatal diagnostic: the root frame leads with
     /// `warning` instead of `error`.
     pub fn render_warning(&self, source: &str, filename: &str) -> String {
-        self.render_as("warning", source, filename)
+        self.render_as(Severity::Warning.lead(), source, filename)
     }
 
     fn render_as(&self, root_lead: &str, source: &str, filename: &str) -> String {
@@ -369,14 +504,110 @@ impl Diagnostic {
             }
             out.push_str(&excerpt(source, &marks));
         }
-        // Information first, then what to do about it.
-        for want in [Aside::Note, Aside::Help] {
-            for (kind, text) in self.asides.iter().filter(|(k, _)| *k == want) {
-                out.push_str(&format!("{}: {text}\n", kind.lead()));
+        for note in &self.notes {
+            out.push_str(&format!("note: {note}\n"));
+        }
+        for help in &self.helps {
+            out.push_str(&format!("help: {}\n", help.msg));
+            if let Some(edits) = help.located_edits() {
+                out.push_str(&patched(source, edits));
             }
         }
         out
     }
+}
+
+/// A fix that adds or removes lines: the touched lines as they read after it,
+/// unnumbered (the numbers no longer match the file), each led by `+`.
+fn patched_region(source: &str, edits: &[Edit]) -> String {
+    let starts = line_starts(source);
+    let first = edits.iter().map(|e| e.span.start).min().unwrap_or(0);
+    let last = edits.iter().map(|e| e.span.end).max().unwrap_or(0);
+    let lo = starts[line_of(&starts, first)];
+    let hi = source[last..].find('\n').map_or(source.len(), |i| last + i);
+    let shifted: Vec<Edit> = edits
+        .iter()
+        .map(|e| Edit::new(Span::new(e.span.start - lo, e.span.end - lo), e.text.clone()))
+        .collect();
+    let region = apply_edits(&source[lo..hi], &shifted);
+    let mut out = String::from("  |\n");
+    for line in region.lines() {
+        out.push_str(&format!("+ | {line}").trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Apply `edits` (non-overlapping) to `source`, returning the new text. Edits are
+/// applied back to front so earlier offsets stay valid.
+pub fn apply_edits(source: &str, edits: &[Edit]) -> String {
+    let mut sorted: Vec<&Edit> = edits.iter().collect();
+    sorted.sort_by_key(|e| (e.span.start, e.span.end));
+    for pair in sorted.windows(2) {
+        assert!(
+            pair[0].span.end <= pair[1].span.start,
+            "edits must not overlap"
+        );
+    }
+    let mut out = source.to_string();
+    for e in sorted.iter().rev() {
+        let end = e.span.end.min(out.len());
+        let start = e.span.start.min(end);
+        out.replace_range(start..end, &e.text);
+    }
+    out
+}
+
+/// The source lines a fix touches, shown as they read after the fix, with the
+/// new text marked: `+` under an insertion, `~` under a replacement. A deletion
+/// leaves nothing to underline, so its line is shown with a `-` at the cut. Edits
+/// spanning lines are not previewed; their `help:` line says enough.
+fn patched(source: &str, edits: &[Edit]) -> String {
+    if edits.is_empty() {
+        return String::new();
+    }
+    if edits.iter().any(|e| e.span.slice(source).contains('\n') || e.text.contains('\n')) {
+        return patched_region(source, edits);
+    }
+    let starts = line_starts(source);
+    let mut lines: Vec<usize> = edits.iter().map(|e| line_of(&starts, e.span.start)).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    let width = (lines.last().copied().unwrap_or(0) + 1).to_string().len();
+    let blank = " ".repeat(width);
+    let mut out = format!("{blank} |\n");
+    for l in lines {
+        let ls = starts[l];
+        let text = line_text(source, &starts, l);
+        let mut on_line: Vec<&Edit> = edits
+            .iter()
+            .filter(|e| line_of(&starts, e.span.start) == l)
+            .collect();
+        on_line.sort_by_key(|e| e.span.start);
+        let mut new_line = String::new();
+        let mut marks = String::new();
+        let mut cursor = ls;
+        for e in on_line {
+            let kept = &source[cursor..e.span.start];
+            new_line.push_str(kept);
+            marks.extend(kept.chars().map(|c| if c == '\t' { '\t' } else { ' ' }));
+            let glyph = if e.span.is_empty() {
+                '+'
+            } else if e.text.is_empty() {
+                '-'
+            } else {
+                '~'
+            };
+            new_line.push_str(&e.text);
+            let n = e.text.chars().count().max(usize::from(glyph == '-'));
+            marks.extend(std::iter::repeat_n(glyph, n));
+            cursor = e.span.end;
+        }
+        new_line.push_str(&source[cursor..ls + text.len()]);
+        out.push_str(&format!("{:>width$} | {new_line}\n", l + 1));
+        out.push_str(&format!("{blank} | {}\n", marks.trim_end()));
+    }
+    out
 }
 
 impl fmt::Display for Diagnostic {
@@ -414,20 +645,32 @@ pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
     best.map(|(_, c)| c)
 }
 
-/// Levenshtein distance over characters.
+/// Edit distance over characters, counting a swap of two neighbours as one edit
+/// (optimal string alignment): `widht` is one typo away from `width`.
 fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diag = row[0];
-        row[0] = i + 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let next = (diag + usize::from(ca != cb)).min(row[j] + 1).min(row[j + 1] + 1);
-            diag = row[j + 1];
-            row[j + 1] = next;
+    let w = b.len() + 1;
+    let mut d = vec![0usize; (a.len() + 1) * w];
+    for i in 0..=a.len() {
+        d[i * w] = i;
+    }
+    for (j, cell) in d.iter_mut().enumerate().take(w) {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (d[(i - 1) * w + j] + 1)
+                .min(d[i * w + j - 1] + 1)
+                .min(d[(i - 1) * w + j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[(i - 2) * w + j - 2] + 1);
+            }
+            d[i * w + j] = best;
         }
     }
-    row[b.len()]
+    d[a.len() * w + b.len()]
 }
 
 /// Recover the 1-based line number and column, the full text of the line, and

@@ -14,12 +14,12 @@ use crate::stdlib;
 
 /// A module's name and source text, plus the name-to-slot index and the root
 /// module name. Shared by `check` and `run`.
-struct Loaded {
+pub(crate) struct Loaded {
     /// One entry per module: `(module name, source path, source text)`. The path
     /// is what diagnostics render, so it stays a real, clickable file location.
-    sources: Vec<(String, String, String)>,
-    index: HashMap<String, usize>,
-    root_name: String,
+    pub sources: Vec<(String, String, String)>,
+    pub index: HashMap<String, usize>,
+    pub root_name: String,
 }
 
 /// Load the root file and, transitively, every module it imports from the
@@ -50,7 +50,7 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
 /// diagnostic path, and source are supplied by the caller, so this serves both
 /// an on-disk file (`load_sources`) and an in-memory REPL session. `fetch` maps a
 /// module name to its diagnostic path and source. Returns a plain message on error.
-fn load_core(
+pub(crate) fn load_core(
     root_name: String,
     root_path: String,
     root_src: String,
@@ -133,13 +133,17 @@ fn import_failure(msg: &str, name: &str, span: utilities::Span, src: &str, path:
     let mut d = utilities::Diagnostic::error(utilities::Code::UnknownModule, span, 0, msg);
     let known = stdlib::MODULES.iter().map(|(n, _)| *n);
     if let Some(near) = utilities::error::closest(name, known) {
-        d = d.with_help(format!("did you mean `{near}`?"));
+        d = d.with_fix(
+            format!("did you mean `{near}`?"),
+            vec![utilities::Edit::new(span, near)],
+            utilities::Applicability::MaybeIncorrect,
+        );
     }
     d.render(src, path)
 }
 
 /// The dependency graph over parsed modules (edges point at imports).
-fn import_graph(
+pub(crate) fn import_graph(
     ast: &frontend::Ast,
     programs: &[Program],
     index: &HashMap<String, usize>,
@@ -160,6 +164,112 @@ fn import_graph(
         }
     }
     graph
+}
+
+/// Every module parsed into one shared [`frontend::Ast`], each past its broken
+/// items. `errors[i]` holds module `i`'s parse errors. Fails (rendered) only when
+/// a module's `$ @mod` header is unreadable, since then it has no program at all.
+pub(crate) struct ParsedAll {
+    pub ast: frontend::Ast,
+    pub programs: Vec<Program>,
+    pub errors: Vec<Vec<utilities::Diagnostic>>,
+    /// The expression handles each module's parse created (a contiguous run,
+    /// since modules are parsed one after another into the shared store).
+    pub expr_ranges: Vec<std::ops::Range<usize>>,
+}
+
+pub(crate) fn parse_all(sources: &[(String, String, String)]) -> Result<ParsedAll, String> {
+    let mut ast = frontend::Ast::new();
+    let mut programs = Vec::with_capacity(sources.len());
+    let mut errors = Vec::with_capacity(sources.len());
+    let mut expr_ranges = Vec::with_capacity(sources.len());
+    for (_name, src_path, src) in sources {
+        let lo = ast.exprs.len();
+        let (next_ast, program, errs) = frontend::parse_recovering(ast, src);
+        ast = next_ast;
+        expr_ranges.push(lo..ast.exprs.len());
+        match program {
+            Ok(p) => programs.push(p),
+            Err(d) => return Err(d.render(src, src_path)),
+        }
+        errors.push(errs);
+    }
+    Ok(ParsedAll { ast, programs, errors, expr_ranges })
+}
+
+thread_local! {
+    /// The project options of the program being compiled, read once from its
+    /// `thrax.toml` (see [`load_project_config`]).
+    static PROJECT: std::cell::RefCell<Option<utilities::config::Config>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Read the `thrax.toml` that governs `path`, reporting its problems once.
+fn load_project_config(path: &str) {
+    let at = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let (config, problems) = utilities::config::Config::for_path(&at);
+    for p in problems {
+        eprint!("{p}");
+    }
+    PROJECT.with(|c| *c.borrow_mut() = Some(config));
+}
+
+fn project_config() -> utilities::config::Config {
+    PROJECT.with(|c| c.borrow().clone()).unwrap_or_default()
+}
+
+/// Render the errors of every module, in the order given (dependencies first),
+/// capped at the project's `[check] max_errors`.
+fn render_errors(order: &[usize], errors: &[Vec<utilities::Diagnostic>], sources: &[(String, String, String)]) -> String {
+    let all: Vec<(usize, &utilities::Diagnostic)> = order
+        .iter()
+        .flat_map(|&i| errors[i].iter().map(move |d| (i, d)))
+        .collect();
+    let max = project_config().int("check", "max_errors") as usize;
+    let mut out = String::new();
+    for (i, d) in all.iter().take(max) {
+        let (_, path, src) = &sources[*i];
+        out.push_str(&d.render(src, path));
+    }
+    if all.len() > max {
+        out.push_str(&format!("thrax: {} more error(s) not shown\n", all.len() - max));
+    }
+    out
+}
+
+/// The public value names each standard-library module defines, inverted: name
+/// to the modules that define it. Read off the sources' `$ name` lines (no
+/// parse), so it is cheap enough to build once per process.
+fn import_hints() -> Rc<HashMap<String, Vec<String>>> {
+    thread_local! {
+        static HINTS: Rc<HashMap<String, Vec<String>>> = Rc::new(build_import_hints());
+    }
+    HINTS.with(Rc::clone)
+}
+
+fn build_import_hints() -> HashMap<String, Vec<String>> {
+    let mut hints: HashMap<String, Vec<String>> = HashMap::new();
+    for (module, src) in stdlib::MODULES {
+        if matches!(*module, "CORE" | "C") {
+            continue;
+        }
+        for line in src.lines() {
+            if line.starts_with("$ @private") {
+                break;
+            }
+            let Some(rest) = line.strip_prefix("$ ") else { continue };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if name.starts_with(|c: char| c.is_ascii_lowercase()) && name != "with" {
+                let homes = hints.entry(name).or_default();
+                if !homes.iter().any(|m| m == module) {
+                    homes.push(module.to_string());
+                }
+            }
+        }
+    }
+    hints
 }
 
 /// Type-check every module in dependency order, returning the per-module
@@ -187,7 +297,75 @@ fn check_all<'a>(
     sources: &[(String, String, String)],
     lenient: bool,
     open_effects_module: Option<&str>,
+    parse_errors: Vec<Vec<utilities::Diagnostic>>,
 ) -> Result<CheckOut<'a>, String> {
+    let mut checked = check_modules(ast, programs, graph, sources, lenient, open_effects_module, parse_errors);
+    let level = project_config().word("lints", "unreachable_arm").to_string();
+    for &i in &checked.order {
+        let (_name, src_path, src) = &sources[i];
+        for w in std::mem::take(&mut checked.warnings[i]) {
+            match level.as_str() {
+                "allow" if w.root().code == utilities::Code::UnreachableArm => {}
+                "deny" if w.root().code == utilities::Code::UnreachableArm => {
+                    checked.errors[i].push(w.with_note("`[lints] unreachable_arm = \"deny\"` makes this an error"));
+                }
+                _ => report_warning(w.render_warning(src, src_path)),
+            }
+        }
+    }
+    if checked.errors.iter().any(|e| !e.is_empty()) {
+        if sink_active() {
+            for &i in &checked.order {
+                for d in &checked.errors[i] {
+                    sink_push(&sources[i].0, d.clone());
+                }
+            }
+            return Err(String::new());
+        }
+        return Err(render_errors(&checked.order, &checked.errors, sources));
+    }
+    Ok((checked.checkers, checked.results))
+}
+
+/// The outcome of checking every module, failed ones included. Indexed by
+/// module; `order` is the order they were checked in (dependencies first), which
+/// is also the order their diagnostics are worth reading in.
+pub(crate) struct Checked<'a> {
+    pub checkers: Vec<frontend::Checker<'a>>,
+    pub results: Vec<Vec<(&'a str, frontend::Type)>>,
+    pub errors: Vec<Vec<utilities::Diagnostic>>,
+    pub warnings: Vec<Vec<utilities::Diagnostic>>,
+    pub order: Vec<usize>,
+    pub types: Rc<frontend::Types>,
+}
+
+pub(crate) fn check_modules<'a>(
+    ast: &'a frontend::Ast,
+    programs: &[Program],
+    graph: &[Vec<usize>],
+    sources: &[(String, String, String)],
+    lenient: bool,
+    open_effects_module: Option<&str>,
+    parse_errors: Vec<Vec<utilities::Diagnostic>>,
+) -> Checked<'a> {
+    check_modules_with(ast, programs, graph, sources, lenient, open_effects_module, parse_errors, false)
+}
+
+/// [`check_modules`] that can also keep every expression's type (for an editor).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_modules_with<'a>(
+    ast: &'a frontend::Ast,
+    programs: &[Program],
+    graph: &[Vec<usize>],
+    sources: &[(String, String, String)],
+    lenient: bool,
+    open_effects_module: Option<&str>,
+    parse_errors: Vec<Vec<utilities::Diagnostic>>,
+    record_types: bool,
+) -> Checked<'a> {
+    let mut errors = parse_errors;
+    errors.resize_with(programs.len(), Vec::new);
+    let mut warnings = vec![Vec::new(); programs.len()];
     // One type store for the whole compilation: a `Type` is a handle into it, so a
     // type crossing a module boundary has to address the same store.
     let types = std::rc::Rc::new(frontend::Types::new());
@@ -198,55 +376,94 @@ fn check_all<'a>(
     // have no dependencies and are checked first: `C` made available qualified-only
     // (`C.sqrt`), `CORE` bare (its `to_string`, its instances, etc.). `CORE` is checked
     // after `C` but imports neither, so ordering the two is unconstrained.
-    let c_idx = sources.iter().position(|(n, _, _)| n == "C");
-    let core_idx = sources.iter().position(|(n, _, _)| n == "CORE");
+    let (c_idx, core_idx) = prelude_indices(sources);
     let mut order: Vec<usize> = topological_order(graph);
     for &pre in [core_idx, c_idx].iter().flatten() {
         order.retain(|&i| i != pre);
         order.insert(0, pre);
     }
-    for i in order {
-        let mut checker = frontend::Checker::new(ast, types.clone());
-        checker.set_lenient(lenient);
-        if open_effects_module == Some(sources[i].0.as_str()) {
-            checker.set_open_effects(true);
-        }
-        if let Some(c) = c_idx {
-            if c != i && Some(i) != core_idx {
-                checker.import_qualified(checkers[c].as_ref().expect("C checked first"));
-            }
-        }
-        if let Some(core) = core_idx {
-            if core != i && Some(i) != c_idx {
-                checker.import_from(checkers[core].as_ref().expect("CORE checked first"));
-            }
-        }
-        for &dep in &graph[i] {
-            let dep_checker = checkers[dep].as_ref().expect("dependency checked first");
-            checker.import_from(dep_checker);
-        }
-        match checker.check_program(&programs[i]) {
-            Ok(defs) => {
-                let (_name, src_path, src) = &sources[i];
-                for w in checker.warnings() {
-                    report_warning(w.render_warning(src, src_path));
-                }
-                results[i] = defs;
-                checkers[i] = Some(checker);
-            }
+    let mut hollow = vec![false; programs.len()];
+    for &i in &order {
+        let setup = Setup { lenient, open_effects: open_effects_module == Some(sources[i].0.as_str()), record_types };
+        let mut checker = prepare_checker(ast, &types, &|k| checkers[k].as_ref(), &graph[i], c_idx, core_idx, i, setup);
+        let checked = checker.check_program(&programs[i]);
+        // A dependency that failed before exporting anything leaves every name it
+        // defines unbound here, so this module's errors would only echo it.
+        let echo = graph[i].iter().any(|&d| hollow[d]);
+        warnings[i] = checker.warnings().to_vec();
+        match checked {
+            Ok(defs) => results[i] = defs,
             Err(diag) => {
-                let (_name, src_path, src) = &sources[i];
-                return Err(diag.render(src, src_path));
+                hollow[i] = echo || checker.own_values().is_empty();
+                if echo {
+                } else if !checker.recovered() {
+                    errors[i].push(diag);
+                } else {
+                    errors[i].extend(checker.errors());
+                }
+                results[i] = checker.own_values().to_vec();
             }
+        }
+        checkers[i] = Some(checker);
+    }
+    Checked {
+        checkers: checkers.into_iter().map(|c| c.expect("all checked")).collect(),
+        results,
+        errors,
+        warnings,
+        order,
+        types,
+    }
+}
+
+/// Where the auto-injected `C` and the implicit `CORE` sit among the modules.
+pub(crate) fn prelude_indices(sources: &[(String, String, String)]) -> (Option<usize>, Option<usize>) {
+    (
+        sources.iter().position(|(n, _, _)| n == "C"),
+        sources.iter().position(|(n, _, _)| n == "CORE"),
+    )
+}
+
+/// How one module is checked.
+#[derive(Clone, Copy)]
+pub(crate) struct Setup {
+    pub lenient: bool,
+    pub open_effects: bool,
+    pub record_types: bool,
+}
+
+/// A checker for module `i`, with `C` (qualified), `CORE` (bare) and its
+/// direct imports `deps` brought in from their already-run checkers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_checker<'a, 'c>(
+    ast: &'a frontend::Ast,
+    types: &Rc<frontend::Types>,
+    checkers: &dyn Fn(usize) -> Option<&'c frontend::Checker<'a>>,
+    deps: &[usize],
+    c_idx: Option<usize>,
+    core_idx: Option<usize>,
+    i: usize,
+    setup: Setup,
+) -> frontend::Checker<'a> {
+    let mut checker = frontend::Checker::new(ast, types.clone());
+    checker.set_lenient(setup.lenient);
+    checker.set_import_hints(import_hints());
+    checker.set_record_types(setup.record_types);
+    checker.set_open_effects(setup.open_effects);
+    if let Some(c) = c_idx {
+        if c != i && Some(i) != core_idx {
+            checker.import_qualified(checkers(c).expect("C checked first"));
         }
     }
-    Ok((
-        checkers
-            .into_iter()
-            .map(|c| c.expect("all checked"))
-            .collect(),
-        results,
-    ))
+    if let Some(core) = core_idx {
+        if core != i && Some(i) != c_idx {
+            checker.import_from(checkers(core).expect("CORE checked first"));
+        }
+    }
+    for &dep in deps {
+        checker.import_from(checkers(dep).expect("dependency checked first"));
+    }
+    checker
 }
 
 /// The full pipeline up to (but not including) execution: load, parse, check,
@@ -260,27 +477,29 @@ type Compiled = (
 );
 
 fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
-    let mut ast = frontend::Ast::new();
-    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (_name, src_path, src) in &loaded.sources {
-        match frontend::parse_into(ast, src) {
-            Ok((next_ast, p)) => {
-                ast = next_ast;
-                programs.push(p);
-            }
-            Err(diag) => {
-                eprint!("{}", diag.render(src, src_path));
-                return Err(ExitCode::FAILURE);
-            }
-        }
-    }
+    let ParsedAll { ast, programs, errors, .. } = parse_all(&loaded.sources).map_err(|rendered| {
+        eprint!("{rendered}");
+        ExitCode::FAILURE
+    })?;
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = check_all(&ast, &programs, &graph, &loaded.sources, lenient, None)
-        .map_err(|rendered| {
+    // A lenient round tolerates unbound names a generator may still inject. Once
+    // the round fails anyway those names are worth reporting too, so the report
+    // comes from a strict check of the same sources.
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, lenient, None, errors.clone()) {
+        Ok(out) => out,
+        Err(rendered) => {
+            let rendered = if lenient {
+                check_all(&ast, &programs, &graph, &loaded.sources, false, None, errors)
+                    .err()
+                    .unwrap_or(rendered)
+            } else {
+                rendered
+            };
             eprint!("{rendered}");
-            ExitCode::FAILURE
-        })?;
+            return Err(ExitCode::FAILURE);
+        }
+    };
 
     let resolved = frontend::collect_resolved(&checkers);
 
@@ -356,12 +575,91 @@ fn render_e_fault(
     span: utilities::Span,
     sources: &[(String, String, String)],
 ) -> String {
+    if sink_active() {
+        sink_push(module, diag.fill_span(span));
+        return String::new();
+    }
     let (src, path) = sources
         .iter()
         .find(|(n, _, _)| n == module)
         .map(|(_, p, s)| (s.as_str(), p.as_str()))
         .unwrap_or(("", module));
     diag.fill_span(span).render(src, path)
+}
+
+/// Where diagnostics go when an editor drives the pipeline: collected here as
+/// `(module, diagnostic)` instead of rendered to stderr. Spans are mapped back
+/// through the expansion splices to the source as written.
+struct Sink {
+    found: Vec<(String, utilities::Diagnostic)>,
+    /// Per round, per module, the splices `(start, old_len, new_len)` in the
+    /// round's own coordinates, sorted by start.
+    rounds: Vec<HashMap<String, Vec<(usize, usize, usize)>>>,
+}
+
+thread_local! {
+    static SINK: std::cell::RefCell<Option<Sink>> = const { std::cell::RefCell::new(None) };
+}
+
+fn sink_active() -> bool {
+    SINK.with(|s| s.borrow().is_some())
+}
+
+/// Collect a diagnostic of `module` (span in the current round's text).
+fn sink_push(module: &str, diag: utilities::Diagnostic) {
+    SINK.with(|s| {
+        if let Some(sink) = s.borrow_mut().as_mut() {
+            sink.found.push((module.to_string(), diag));
+        }
+    });
+}
+
+/// A position in `module`'s expanded text, as a position in the text as
+/// written: a position inside spliced-in code maps to the site it replaced.
+fn map_back(rounds: &[HashMap<String, Vec<(usize, usize, usize)>>], module: &str, pos: usize) -> usize {
+    let mut p = pos as isize;
+    for round in rounds.iter().rev() {
+        let Some(edits) = round.get(module) else { continue };
+        let mut delta: isize = 0;
+        let mut inside = None;
+        for &(start, old, new) in edits {
+            let post = start as isize + delta;
+            if p < post {
+                break;
+            }
+            if p < post + new as isize {
+                inside = Some(start as isize);
+                break;
+            }
+            delta += new as isize - old as isize;
+        }
+        p = inside.unwrap_or(p - delta);
+    }
+    p.max(0) as usize
+}
+
+/// Run `path`'s whole compile-time pipeline (every `$ @e` and `@build`, then the
+/// strict check) and return what it reports, as `(module, diagnostic)` with
+/// spans in the sources as written. For an editor's on-save check.
+pub(crate) fn compile_time_diagnostics(path: &str) -> Vec<(String, utilities::Diagnostic)> {
+    SINK.with(|s| *s.borrow_mut() = Some(Sink { found: Vec::new(), rounds: Vec::new() }));
+    let _ = lower_all(path, false);
+    let sink = SINK.with(|s| s.borrow_mut().take()).expect("installed above");
+    let mut seen = HashSet::new();
+    sink.found
+        .into_iter()
+        .filter(|(m, d)| seen.insert((m.clone(), d.root().span.start, d.root().span.end, d.root().msg.clone())))
+        .map(|(module, d)| {
+            let moved = d.root().span != utilities::Span::at(0)
+                && map_back(&sink.rounds, &module, d.root().span.start) != d.root().span.start;
+            let d = d.map_spans(|s| {
+                let start = map_back(&sink.rounds, &module, s.start);
+                utilities::Span::new(start, map_back(&sink.rounds, &module, s.end).max(start))
+            });
+            let d = if moved { d.with_note("raised in code a compile-time generator produced") } else { d };
+            (module, d)
+        })
+        .collect()
 }
 
 /// How many expansion rounds [`lower_all`] runs before it gives up. Staging depth
@@ -699,6 +997,20 @@ fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
 /// Apply `@e` source substitutions to each module, right-to-left within a module
 /// so earlier spans stay valid as later ones are replaced.
 fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(String, utilities::Span, String)>) {
+    if sink_active() {
+        let mut round: HashMap<String, Vec<(usize, usize, usize)>> = HashMap::new();
+        for (module, span, text) in &edits {
+            round.entry(module.clone()).or_default().push((span.start, span.len(), text.len()));
+        }
+        for v in round.values_mut() {
+            v.sort_unstable();
+        }
+        SINK.with(|s| {
+            if let Some(sink) = s.borrow_mut().as_mut() {
+                sink.rounds.push(round);
+            }
+        });
+    }
     edits.sort_by(|a, b| b.1.start.cmp(&a.1.start));
     for (module, span, text) in edits {
         if let Some((_, _, src)) = sources.iter_mut().find(|(n, _, _)| *n == module) {
@@ -748,17 +1060,7 @@ fn compile_in_memory(
 ) -> Result<Session, String> {
     let loaded = load_core("REPL".to_string(), "<repl>".to_string(), source.to_string(), fetch)?;
 
-    let mut ast = frontend::Ast::new();
-    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (_name, src_path, src) in &loaded.sources {
-        match frontend::parse_into(ast, src) {
-            Ok((next_ast, p)) => {
-                ast = next_ast;
-                programs.push(p);
-            }
-            Err(diag) => return Err(diag.render(src, src_path)),
-        }
-    }
+    let ParsedAll { ast, programs, errors, .. } = parse_all(&loaded.sources)?;
 
     let graph = import_graph(&ast, &programs, &loaded.index);
     let (checkers, results) = check_all(
@@ -768,6 +1070,7 @@ fn compile_in_memory(
         &loaded.sources,
         false,
         open_effects.then_some(loaded.root_name.as_str()),
+        errors,
     )?;
     let resolved = frontend::collect_resolved(&checkers);
 
@@ -870,6 +1173,7 @@ pub fn install_eval_host(root_dir: PathBuf) {
 }
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
+    load_project_config(path);
     // `lower_all` has already expanded every `$ @e` (compile-time execution and
     // code injection); the lowered program is `@e`-free.
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
@@ -896,6 +1200,7 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// Lower, then emit a standalone C program for the module to stdout, compiled
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
+    load_project_config(path);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
@@ -924,6 +1229,7 @@ pub fn cmd_build(
     target: utilities::Target,
     libc: Option<utilities::Libc>,
 ) -> ExitCode {
+    load_project_config(path);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, plan) = match lower_all(path, true) {
         Ok(x) => x,
@@ -1182,6 +1488,7 @@ fn libthrax_dir() -> Option<PathBuf> {
 /// The standard library is skipped unless asked for by name, since a program's own
 /// modules are the interesting ones.
 pub fn cmd_expand(path: &str, only: Option<&str>) -> ExitCode {
+    load_project_config(path);
     let (_lowered, loaded, _plan) = match lower_all(path, false) {
         Ok(x) => x,
         Err(code) => return code,
@@ -1219,6 +1526,7 @@ fn is_stdlib_module(name: &str) -> bool {
 }
 
 pub fn cmd_check(path: &str) -> ExitCode {
+    load_project_config(path);
     // Expanding first means the printed types are the ones the program really has
     // (a `@e`-injected definition included), and that every `$ @e` directive has
     // run: a module's compile-time assertions are checked by checking it.
@@ -1227,24 +1535,16 @@ pub fn cmd_check(path: &str) -> ExitCode {
         Err(code) => return code,
     };
 
-    // Parse every module into one shared arena.
-    let mut ast = frontend::Ast::new();
-    let mut programs: Vec<Program> = Vec::with_capacity(loaded.sources.len());
-    for (_name, src_path, src) in &loaded.sources {
-        match frontend::parse_into(ast, src) {
-            Ok((next_ast, p)) => {
-                ast = next_ast;
-                programs.push(p);
-            }
-            Err(diag) => {
-                eprint!("{}", diag.render(src, src_path));
-                return ExitCode::FAILURE;
-            }
+    let ParsedAll { ast, programs, errors, .. } = match parse_all(&loaded.sources) {
+        Ok(p) => p,
+        Err(rendered) => {
+            eprint!("{rendered}");
+            return ExitCode::FAILURE;
         }
-    }
+    };
 
     let graph = import_graph(&ast, &programs, &loaded.index);
-    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false, None) {
+    let (checkers, results) = match check_all(&ast, &programs, &graph, &loaded.sources, false, None, errors) {
         Ok(out) => out,
         Err(rendered) => {
             eprint!("{rendered}");
@@ -1262,7 +1562,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
 
 /// Postorder DFS over the dependency graph: a vertex appears after all vertices
 /// it points at, so dependencies are checked before their importers.
-fn topological_order(graph: &[Vec<usize>]) -> Vec<usize> {
+pub(crate) fn topological_order(graph: &[Vec<usize>]) -> Vec<usize> {
     fn visit(v: usize, graph: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
         if seen[v] {
             return;
@@ -1298,7 +1598,7 @@ fn import_dirs() -> &'static [PathBuf] {
 /// runner imports, a sibling file), then the standard libraries [`stdlib_dirs`]
 /// found. First match wins, so a module a program ships beside itself shadows the
 /// standard-library module of that name.
-fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
+pub(crate) fn resolve_module_file(name: &str, root_dir: &Path) -> Option<PathBuf> {
     let file = format!("{name}.thx");
     let mut candidates: Vec<PathBuf> = import_dirs().iter().map(|d| d.join(&file)).collect();
     candidates.push(root_dir.join("library").join(&file));
@@ -1344,27 +1644,29 @@ fn load_module(name: &str, root_dir: &Path) -> Result<(String, String), String> 
 }
 
 /// The `@mod` name declared by a source, by parsing it in a scratch arena.
-fn parse_mod_name(src: &str) -> Option<String> {
-    frontend::parse(src)
-        .ok()
-        .map(|p| p.ast.text(p.program.module).to_string())
+pub(crate) fn parse_mod_name(src: &str) -> Option<String> {
+    let (ast, program, _) = frontend::parse_recovering(frontend::Ast::new(), src);
+    program.ok().map(|p| ast.text(p.module).to_string())
 }
 
 /// The module names a source imports (`$ with MOD`) with the span of each, or
-/// empty if it does not parse (the parse error is reported later, against the
+/// empty if even its header does not parse (the errors are reported later, against the
 /// shared arena).
-fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
-    let Ok(parsed) = frontend::parse(src) else {
+pub(crate) fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
+    // Recovering, so a broken item elsewhere in the file does not hide its
+    // imports (every use of an imported name would then be reported unbound).
+    let (ast, program, _) = frontend::parse_recovering(frontend::Ast::new(), src);
+    let Ok(program) = program else {
         return Vec::new();
     };
-    parsed.ast
-        .slice(parsed.program.items)
+    ast
+        .slice(program.items)
         .iter()
         .filter_map(|item| match item {
             Item::Import { module, span, .. } => Some((
-                parsed.ast.slice(*module)
+                ast.slice(*module)
                     .iter()
-                    .map(|&part| parsed.ast.text(part))
+                    .map(|&part| ast.text(part))
                     .collect::<Vec<_>>()
                     .join("."),
                 *span,
@@ -1397,7 +1699,7 @@ fn import_lines(src: &str) -> Vec<String> {
         .collect()
 }
 
-fn file_stem(path: &str) -> String {
+pub(crate) fn file_stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1500,5 +1802,23 @@ mod tests {
             vec![(false, "curl".to_string()), (true, "vendor".to_string())]
         );
         assert!(take_link_directives().is_empty(), "draining empties the queue");
+    }
+}
+
+#[cfg(test)]
+mod sink_tests {
+    use super::*;
+
+    #[test]
+    fn positions_map_back_through_splices() {
+        // "ab@e(x)cd" -> the 5-byte site at 2 became 1 byte: "ab1cd".
+        let mut round = HashMap::new();
+        round.insert("M".to_string(), vec![(2, 5, 1)]);
+        let rounds = vec![round];
+        assert_eq!(map_back(&rounds, "M", 0), 0);
+        assert_eq!(map_back(&rounds, "M", 2), 2);
+        assert_eq!(map_back(&rounds, "M", 3), 7);
+        assert_eq!(map_back(&rounds, "M", 4), 8);
+        assert_eq!(map_back(&rounds, "N", 4), 4);
     }
 }

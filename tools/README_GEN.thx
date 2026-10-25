@@ -157,6 +157,19 @@ $ compiling : @str =
 	     ++ "thrax emit-c  MAIN.thx          # print the generated C (native backend)\n"
 	     ++ "thrax build   MAIN.thx          # compile to a native executable\n"
 	     ++ "thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm")
+	++ "\nThe compiler is also the tooling. Every error carries a stable code\n"
+	++ "(`thrax explain CODE` says what it means), keeps going past the first\n"
+	++ "mistake, and offers a fix when it knows one; `thrax fix` applies the sure\n"
+	++ "ones. `???` is a typed hole: the error names the type that goes there and\n"
+	++ "the names in scope that fit.\n\n"
+	++ sh ("thrax fmt     MAIN.thx          # format in place (--check only reports)\n"
+	     ++ "thrax fix     MAIN.thx          # apply every fix the compiler is sure of\n"
+	     ++ "thrax explain TYPE_MISMATCH     # what a diagnostic code means\n"
+	     ++ "thrax config                    # the thrax.toml options in force\n"
+	     ++ "thrax lsp                       # language server for an editor")
+	++ "\n`thrax lsp` serves diagnostics, fixes, hover, go-to-definition, completion,\n"
+	++ "symbols and formatting. It ranks errors so the one that matters most stands\n"
+	++ "out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.\n"
 
 $ features : @str =
 	"\n## Features\n\n"
