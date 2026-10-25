@@ -303,6 +303,11 @@ pub struct Checker<'a> {
     /// owner module) so lowering can flatten a foreign call it did not itself
     /// resolve across modules.
     own_externs: HashMap<&'a str, ExternSpec>,
+    /// This module's `@extern "thrax"` definitions, each named for the runtime
+    /// builtin it declares.
+    own_builtins: HashSet<&'a str>,
+    /// The builtins imported modules declare, which no definition may reuse.
+    imported_builtins: HashSet<&'a str>,
     /// The ambient effect row: the effects the expression currently being
     /// inferred is allowed to perform. A call subsumes its callee's latent effect
     /// into this; a lambda body and a handler body run under a fresh/extended
@@ -469,6 +474,8 @@ impl<'a> Checker<'a> {
             extern_tys: HashMap::new(),
             extern_specs: HashMap::new(),
             own_externs: HashMap::new(),
+            own_builtins: HashSet::new(),
+            imported_builtins: HashSet::new(),
             ambient,
             unknown_type: None,
             lenient: false,
@@ -574,6 +581,11 @@ impl<'a> Checker<'a> {
     /// module) so a call site can flatten a foreign call cross-module.
     pub fn own_externs(&self) -> &HashMap<&'a str, ExternSpec> {
         &self.own_externs
+    }
+
+    /// This module's `@extern "thrax"` builtin declarations.
+    pub fn own_builtins(&self) -> &HashSet<&'a str> {
+        &self.own_builtins
     }
 
     /// This module's name.
@@ -758,7 +770,16 @@ impl<'a> Checker<'a> {
         let mut defs = defs;
         let mut dups = Vec::new();
         for (i, d) in defs.iter().enumerate() {
-            if !seen.insert(d.name) {
+            if self.imported_builtins.contains(d.name) {
+                let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
+                self.errors.push(diag!(
+                    Code::DuplicateSymbol, span, 0,
+                    "`{}` is a builtin and cannot be redefined", d.name;
+                    note: "CORE declares it with `@extern \"thrax\"`, and the compiler \
+                           relies on its meaning"
+                ));
+                dups.push(i);
+            } else if !seen.insert(d.name) {
                 let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
                 self.errors.push(diag!(
                     Code::DuplicateSymbol, span, 0,
@@ -854,10 +875,16 @@ impl<'a> Checker<'a> {
         self.check_int_literals()?;
         self.build_extern_specs()?;
         for d in &defs {
-            if matches!(self.node(d.body), Expr::Extern { .. }) {
-                if let Some(spec) = self.extern_specs.get(&d.body) {
-                    self.own_externs.insert(d.name, spec.clone());
+            match self.node(d.body) {
+                Expr::Extern { .. } => {
+                    if let Some(spec) = self.extern_specs.get(&d.body) {
+                        self.own_externs.insert(d.name, spec.clone());
+                    }
                 }
+                Expr::Builtin => {
+                    self.own_builtins.insert(d.name);
+                }
+                _ => {}
             }
         }
         // Type-check `$ @e <expr>` directives. All globals are in scope now, so
@@ -926,6 +953,7 @@ impl<'a> Checker<'a> {
     }
 
     pub fn import_from(&mut self, other: &Checker<'a>) {
+        self.imported_builtins.extend(other.own_builtins.iter().copied());
         if !other.private_names.is_empty() {
             self.imported_private
                 .entry(other.module_name)
@@ -1526,7 +1554,7 @@ impl<'a> Checker<'a> {
         // FULL signature arrow rather than having its record/unit parameter stripped
         // by the sugar below. This keeps the extern node's type the complete arrow,
         // which `build_extern_specs` reads to plan the marshalling.
-        if matches!(self.node(body), Expr::Extern { .. }) {
+        if matches!(self.node(body), Expr::Extern { .. } | Expr::Builtin) {
             return self.check(body, sig_ty);
         }
         // The body's leading lambdas bind the last k of the m signature parameters,
@@ -3614,6 +3642,18 @@ impl<'a> Checker<'a> {
                 let v = self.eng.fresh();
                 self.extern_tys.insert(e, v);
                 Ok(v)
+            }
+            Expr::Builtin => {
+                if self.module_name != "CORE" {
+                    let span = self.ast.expr_span(e).unwrap_or_else(|| Span::at(0));
+                    return Err(diag!(
+                        Code::TypeMismatch, span, 0,
+                        "only CORE may declare a builtin with `@extern \"thrax\"`";
+                        note: "a builtin is implemented by the compiler and runtime, \
+                               not by a library"
+                    ));
+                }
+                Ok(self.eng.fresh())
             }
 
             // `(inner : T)`: check `inner` against `T` and take `T` as the type. Any
@@ -6389,281 +6429,17 @@ impl<'a> Checker<'a> {
 
     // -- built-ins ----------------------------------------------------------
 
-    /// A fresh element variable and the `@vec` of it, for a vector built-in.
-    fn fresh_vec(&mut self, vec_con: Type) -> (Type, Type) {
-        let t = self.eng.fresh_generic();
-        let vt = self.eng.types.app(vec_con, t);
-        (t, vt)
-    }
-
     fn install_builtins(&mut self) {
+        // Most builtins are declared in CORE with `@extern "thrax"`. These stay here
+        // because their types have no surface syntax.
         let int = self.eng.types.con(ty::INT);
-        let bool_ = self.eng.types.con(ty::BOOL);
 
-        // `+ - * / % ^`, the comparisons, and the unary `neg` are all defined in
-        // CORE.thx over their interfaces, not seeded here. `!` is the one operator
-        // with a single type, so it stays a plain binding.
-        let t = self.eng.types.arrow(bool_, bool_);
-        self.bind("not", t);
-
-        // Monomorphic arithmetic intrinsics: the primitive floor the operator
-        // overloads are built on. Typed `t -> t -> t` (like the `@vec_*`
-        // primitives): a single width-agnostic op the runtime implements over the
-        // value rep. The `@i*`/`@u*`/`@f*`/`@f32*` split is behavioural, not typed;
-        // callers pass the right numeric type. `@f*` computes at f64 (`@float64`);
-        // `@f32*` rounds each operand and its result to single precision.
-        for name in [
-            "@iadd", "@isub", "@imul", "@idiv", "@imod", "@udiv", "@umod", "@fadd", "@fsub",
-            "@fmul", "@fdiv", "@fmod", "@fpow", "@f32add", "@f32sub", "@f32mul", "@f32div",
-            "@f32mod", "@f32pow",
-        ] {
-            let t = self.eng.fresh_generic();
-            self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, t)));
-        }
-
-        // Comparison intrinsics, the floor under the comparison overloads. Same
-        // shape as the arithmetic ones (`t -> t -> @bool`, the behavioural
-        // `@i`/`@u`/`@f`/`@s` split picked by the overload that calls them). `@ieq`
-        // serves signed and unsigned alike (equality reads the same bits), and the
-        // float pair compares at `@float64`, which is exact for a `@float32` too.
-        for name in ["@ieq", "@ilt", "@ult", "@feq", "@flt", "@seq", "@slt"] {
-            let t = self.eng.fresh_generic();
-            self.bind(name, self.eng.types.arrow(t, self.eng.types.arrow(t, bool_)));
-        }
-
-        // `@acat` joins two byte buffers of the same kind: the primitive CORE's
-        // `ICat @str` / `ICat @array` instances are built on, now that `++` is an
-        // ordinary function. Typed like the arithmetic intrinsics (`t -> t -> t`),
-        // since the runtime reads the kind off the values.
-        {
-            let t = self.eng.fresh_generic();
-            self.bind("@acat", self.eng.types.arrow(t, self.eng.types.arrow(t, t)));
-        }
-        // The byte-buffer primitives serve `@array` and `@str` alike (one runtime rep,
-        // two types), so they are typed with a single receiver variable like the
-        // `@vec_*` family: the runtime reads the kind off the value.
-        for (name, mids, returns_self) in [
-            ("@array_len", 0, false),
-            ("@array_get", 1, false),
-            ("@array_push", 1, true),
-            ("@array_set", 2, true),
-            ("@array_slice", 2, true),
-        ] {
-            let recv = self.eng.fresh_generic();
-            let ret = if returns_self { recv } else { int };
-            let params = std::iter::once(recv).chain((0..mids).map(|_| int));
-            let t = self.eng.types.arrows(params, ret);
-            self.bind(name, t);
-        }
-
-        let vec_con = self.eng.types.con(ty::VEC);
-        let (_t, vt) = self.fresh_vec(vec_con);
-        let t = self.eng.types.arrow(self.eng.types.con(ty::UNIT), vt);
-        self.bind("@vec_new", t);
-        let (t, vt) = self.fresh_vec(vec_con);
-        let t = self.eng.types.arrow(int, self.eng.types.arrow(t, vt));
-        self.bind("@vec_fill", t);
-        let (_t, vt) = self.fresh_vec(vec_con);
-        let t = self.eng.types.arrow(vt, int);
-        self.bind("@vec_len", t);
-        let (t, vt) = self.fresh_vec(vec_con);
-        let t = self.eng.types.arrow(vt, self.eng.types.arrow(int, t));
-        self.bind("@vec_get", t);
-        let (t, vt) = self.fresh_vec(vec_con);
-        self.bind(
-            "@vec_set",
-            self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(t, vt))),
-        );
-        let (t, vt) = self.fresh_vec(vec_con);
-        let t = self.eng.types.arrow(vt, self.eng.types.arrow(t, vt));
-        self.bind("@vec_push", t);
-        let (_t, vt) = self.fresh_vec(vec_con);
-        self.bind(
-            "@vec_slice",
-            self.eng.types.arrow(vt, self.eng.types.arrow(int, self.eng.types.arrow(int, vt))),
-        );
-
-        // Parallel tasks. `@par f` starts `f {}` as a task and `@await` joins it.
-        // The task's row is the thread-safety check: an effect may cross to the
-        // worker thread only if no handler on the spawning thread's stack serves
-        // it. `@par` takes a PURE task (the empty row), which gives the same
-        // answer on any core in any order, so the interpreter may run it on the
-        // spot. `@spawn` also admits `@io`, the builtin effect that has no handler
-        // (the C library serves it on whichever thread calls); its own arrow
-        // carries `<@io>`, since the task's IO is the spawner's. A task that
-        // performs a handled effect is rejected (see `explain_task_effect`).
-        // `@future` is opaque.
-        let future_con = self.eng.types.con("@future");
-        let b = self.eng.fresh_generic();
-        let task = self.eng.types.arrow(self.eng.types.con(ty::UNIT), b);
-        let fut = self.eng.types.app(future_con, b);
-        self.bind("@par", self.eng.types.arrow(task, fut));
-        let io_row = {
-            let empty = self.eng.types.row_empty();
-            self.eng.types.row_extend(ty::IO, empty)
-        };
-        let b = self.eng.fresh_generic();
-        let task = self.eng.types.arrow_eff(self.eng.types.con(ty::UNIT), b, io_row);
-        let fut = self.eng.types.app(future_con, b);
-        self.bind("@spawn", self.eng.types.arrow_eff(task, fut, io_row));
-        let b = self.eng.fresh_generic();
-        let fut = self.eng.types.app(future_con, b);
-        self.bind("@await", self.eng.types.arrow(fut, b));
-
-        // Communication between tasks (#283), all `<@io>`: which task gets a
-        // message, or commits first, depends on scheduling. `@chan a` is an
-        // unbounded channel (a send never waits, a receive waits for a value).
-        // `@tvar a` is a transactional variable: `@stm_*` keep the calling
-        // thread's transaction log (reads with the versions they saw, buffered
-        // writes); `@stm_commit` publishes the writes only if no read changed,
-        // `@stm_wait` blocks until one does, and `@stm_save`/`@stm_rollback`
-        // mark and discard the writes made since (for `or_else`). `@tvar_read`
-        // reads outside any transaction.
-        let unit = self.eng.types.con(ty::UNIT);
-        let int = self.eng.types.con(ty::INT);
-        let bool_ty = self.eng.types.con(ty::BOOL);
-        let chan_con = self.eng.types.con("@chan");
-        let tvar_con = self.eng.types.con("@tvar");
-        let io_arrow = |this: &mut Self, from: Type, to: Type| {
-            let empty = this.eng.types.row_empty();
-            let io = this.eng.types.row_extend(ty::IO, empty);
-            this.eng.types.arrow_eff(from, to, io)
-        };
-        let a = self.eng.fresh_generic();
-        let ch = self.eng.types.app(chan_con, a);
-        let t = io_arrow(self, unit, ch);
-        self.bind("@chan_new", t);
-        let a = self.eng.fresh_generic();
-        let ch = self.eng.types.app(chan_con, a);
-        let send = io_arrow(self, a, unit);
-        self.bind("@chan_send", self.eng.types.arrow(ch, send));
-        let a = self.eng.fresh_generic();
-        let ch = self.eng.types.app(chan_con, a);
-        let t = io_arrow(self, ch, a);
-        self.bind("@chan_recv", t);
-        let a = self.eng.fresh_generic();
-        let tv = self.eng.types.app(tvar_con, a);
-        let t = io_arrow(self, a, tv);
-        self.bind("@tvar_new", t);
-        for name in ["@tvar_read", "@stm_read"] {
-            let a = self.eng.fresh_generic();
-            let tv = self.eng.types.app(tvar_con, a);
-            let t = io_arrow(self, tv, a);
-            self.bind(name, t);
-        }
-        let a = self.eng.fresh_generic();
-        let tv = self.eng.types.app(tvar_con, a);
-        let write = io_arrow(self, a, unit);
-        self.bind("@stm_write", self.eng.types.arrow(tv, write));
-        for (name, res) in [("@stm_begin", unit), ("@stm_commit", bool_ty), ("@stm_wait", unit), ("@stm_save", int)] {
-            let t = io_arrow(self, unit, res);
-            self.bind(name, t);
-        }
-        let t = io_arrow(self, int, unit);
-        self.bind("@stm_rollback", t);
-
-        // Metaprogramming primitives (compile-time; usable inside `$ @e`). `@lex`
-        // tokenizes a string into an opaque `@token` vector; a lex error traps
-        // (fails the build). Tokens are inspected via the `@token_*` accessors, not
-        // pattern-matched. `@token` is an opaque builtin type (see `is_base_type`).
-        let token = self.eng.types.con("@token");
-        let str_ty = self.eng.types.con(ty::STR);
-        self.bind(
-            "@lex",
-            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), token)),
-        );
-        let t = self.eng.types.arrow(token, str_ty);
-        self.bind("@token_kind", t);
-        let t = self.eng.types.arrow(token, str_ty);
-        self.bind("@token_text", t);
-        // `@parse_str` parses a string as an expression fragment into an opaque
-        // `@code` value; a syntax error traps (fails the build). `@parse_items`
-        // validates the string as top-level item(s) instead, for a `$ @e` that
-        // injects definitions.
-        let t = self.eng.types.arrow(str_ty, self.eng.types.con("@code"));
-        self.bind("@parse_str", t);
-        let t = self.eng.types.arrow(str_ty, self.eng.types.con("@code"));
-        self.bind("@parse_items", t);
-        // `@parse` consumes a token vector (from `@lex`) into the same opaque
-        // `@code` as `@parse_str`, closing the `@str -> @token -> @code` pipeline.
-        self.bind(
-            "@parse",
-            self.eng.types.arrow(self.eng.types.app(self.eng.types.con(ty::VEC), token), self.eng.types.con("@code")),
-        );
-        // The metaprogramming ops carry the `<@meta>` effect, so they are usable
-        // only where a `<@meta>` handler is installed: inside `@e` (see the
-        // `@e`-position ambients in `check_program` / `infer_app` / `ty_of_ast`).
-        // A use in ordinary code fails to unify the `<@meta>` latent row into the
-        // pure ambient, giving a clean "effect `@meta` is performed but not
-        // handled" error instead of a runtime no-op/fault. Lexing, parsing and
-        // `@eval` stay PURE: they need no compile-time state, so they also run in
-        // a built program.
-        let meta_row = {
-            let empty = self.eng.types.row_empty();
-            self.eng.types.row_extend("@meta", empty)
-        };
-        // `@eval` compiles and runs an `@code` fragment and returns its value, at
-        // build time or at run time (a native program calls into `libthrax`). The
-        // fragment is checked as a pure def body, so `@eval` is pure like
-        // `@parse_str`. Its result type is fully polymorphic (`a`): the produced
-        // value is embedded as-is, so a mismatch with the use site is a fault when
-        // it runs, not a static error.
-        let eval_res = self.eng.fresh_generic();
-        let t = self.eng.types.arrow(self.eng.types.con("@code"), eval_res);
-        self.bind("@eval", t);
-        // Compile-time diagnostics. `@abort` fails the build with its message (a
-        // clean user-land `assert` is `if ok => {} else @abort "..."`); its result
-        // is polymorphic since it never returns. `@emit` prints a message and
-        // continues.
-        let abort_res = self.eng.fresh_generic();
-        let t = self.eng.types.arrow_eff(str_ty, abort_res, meta_row);
-        self.bind("@abort", t);
-        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con(ty::UNIT), meta_row);
-        self.bind("@emit", t);
         // `@e X` runs the `@code` X at compile time and splices the code in.
         // Special-cased in `infer_app`/`ty_of_ast`; this binding is the
         // first-class fallback.
         let e_ty = self.eng.fresh_generic();
         let t = self.eng.types.arrow(self.eng.types.con("@code"), e_ty);
         self.bind("@e", t);
-        // `@fresh prefix` mints a unique identifier string (`prefix` + a counter),
-        // for generating hygienic, non-colliding binders in compile-time codegen.
-        let t = self.eng.types.arrow_eff(str_ty, str_ty, meta_row);
-        self.bind("@fresh", t);
-        // `@link name` / `@link_path p`: steer the build (add a library / search
-        // path to the link line), used at compile time as `$ @e <| @link "curl"`.
-        // The effect is the directive; the call returns empty code, so the
-        // directive inserts nothing.
-        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con("@code"), meta_row);
-        self.bind("@link", t);
-        let t = self.eng.types.arrow_eff(str_ty, self.eng.types.con("@code"), meta_row);
-        self.bind("@link_path", t);
-        // Compile-time reflection over a declared type (resolved by the driver's
-        // type host inside `$ @e`). `@type_kind` is `"struct"`/`"union"`;
-        // `@type_fields` the struct's field names; `@type_variants` the union's
-        // `(tag, arity)` pairs. A derive-style macro reads these and generates code.
-        let t = self.eng.types.arrow(str_ty, str_ty);
-        self.bind("@type_kind", t);
-        self.bind(
-            "@type_params",
-            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), str_ty)),
-        );
-        self.bind(
-            "@type_fields",
-            self.eng.types.arrow(str_ty, self.eng.types.app(self.eng.types.con(ty::VEC), str_ty)),
-        );
-        self.bind(
-            "@type_variants",
-            self.eng.types.arrow(
-                str_ty,
-                {
-                    let i = self.eng.types.con(ty::INT);
-                    let pair = self.eng.types.tuple(vec![str_ty, i]);
-                    let v = self.eng.types.con(ty::VEC);
-                    self.eng.types.app(v, pair)
-                },
-            ),
-        );
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@int64`), the minimal set the runtime provides; every nice name
@@ -6761,33 +6537,6 @@ impl<'a> Checker<'a> {
                 self.eng.types.arrow(src, self.eng.types.arrow(int, self.eng.types.arrow(int, out))),
             );
         }
-
-        // Comparison has no built-in tier: `==` and `<` are CORE functions over the
-        // `IEq` / `IOrd` interfaces, so a type is comparable exactly when it has an
-        // instance. The structural built-in that used to catch everything else is
-        // gone, because it made `==` type-check on values it could not compare.
-        {
-            let a = self.eng.fresh_generic();
-            let b = self.eng.fresh_generic();
-            let t = self.eng.types.arrow(a, self.eng.types.arrow(b, b));
-        self.bind(";", t);
-        }
-        {
-            let a = self.eng.fresh_generic();
-            let b = self.eng.fresh_generic();
-            let e = self.eng.fresh_generic();
-            let f = self.eng.types.arrow_eff(a, b, e);
-            let t = self.eng.types.arrow(a, self.eng.types.arrow_eff(f, b, e));
-        self.bind("|>", t);
-        }
-        {
-            let a = self.eng.fresh_generic();
-            let b = self.eng.fresh_generic();
-            let e = self.eng.fresh_generic();
-            let f = self.eng.types.arrow_eff(a, b, e);
-            let t = self.eng.types.arrow(f, f);
-        self.bind("<|", t);
-        }
     }
 }
 
@@ -6852,7 +6601,8 @@ fn free_globals<'a>(
         | Expr::Bool(_)
         | Expr::Unit
         | Expr::Var { .. }
-        | Expr::Extern { .. } => {}
+        | Expr::Extern { .. }
+        | Expr::Builtin => {}
 
         Expr::App(f, x) => {
             free_globals(ast, *f, globals, bound, out);

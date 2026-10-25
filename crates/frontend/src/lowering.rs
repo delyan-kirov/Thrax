@@ -523,6 +523,9 @@ pub struct Resolved {
     /// positional arguments (so the record is never built), and a first-class
     /// reference to a multi-argument extern eta-expands against it.
     pub externs: HashMap<(String, String), crate::typing::ExternSpec>,
+    /// Every `@extern "thrax"` declaration as its `(module, name)`, so a reference
+    /// lowers to the bare builtin instead of a global.
+    pub builtins: HashSet<(String, String)>,
     /// The C memory layout of each C-repr struct (`@struct @extern "abi"`), keyed
     /// by type name (from [`crate::typing::Checker::crepr_layouts`]). Carried to
     /// the runtime so a struct value can be marshalled across the `@extern`
@@ -588,6 +591,9 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
                 .externs
                 .insert((module.clone(), name.to_string()), spec.clone());
         }
+        for name in checker.own_builtins() {
+            resolved.builtins.insert((module.clone(), name.to_string()));
+        }
         for (name, layout) in checker.crepr_layouts() {
             resolved
                 .crepr_layouts
@@ -632,6 +638,7 @@ pub fn lower_program(
     let mut ct_runs = Vec::new();
     for item in ast.slice(program.items).iter() {
         match item {
+            Item::Def { body, .. } if matches!(ast.expr(*body), Expr::Builtin) => {}
             Item::Def {
                 name, sig, body, ..
             } => {
@@ -1325,6 +1332,7 @@ impl<'a> Lowerer<'a> {
                     body: Arc::new(self.expr(body)),
                 }
             }
+            Expr::Builtin => Term::Fault("`@extern \"thrax\"` is only a definition's whole body".to_string()),
             Expr::Extern { abi, symbol, lib } => {
                 let abi = self.text(*abi).to_string();
                 let symbol = self.text(*symbol).to_string();
@@ -1399,7 +1407,16 @@ impl<'a> Lowerer<'a> {
             Some(m) => Some(self.text(m).to_string()),
             None => self.resolved.call_modules.get(&site).cloned(),
         };
-        (module, name.to_string())
+        (self.unless_builtin(module, name), name.to_string())
+    }
+
+    /// `module`, or `None` when `module.name` is an `@extern "thrax"` declaration:
+    /// a bare name is how the runtime reaches a builtin.
+    fn unless_builtin(&self, module: Option<String>, name: &str) -> Option<String> {
+        match module {
+            Some(m) if self.resolved.builtins.contains(&(m.clone(), name.to_string())) => None,
+            m => m,
+        }
     }
 
     /// The lowered head term for an `Expr::Var`: the resolved global reference
@@ -1656,7 +1673,7 @@ impl<'a> Lowerer<'a> {
     /// The lowered head for an operator at `site`: the module the checker resolved
     /// it to (`None` for a builtin) and the operator's name.
     fn operator_head(&mut self, site: Aol<Expr>, op: &str) -> Term {
-        let module = self.resolved.call_modules.get(&site).cloned();
+        let module = self.unless_builtin(self.resolved.call_modules.get(&site).cloned(), op);
         if let Some(t) = self.wrapper_projection(site, module.as_deref(), op) {
             return t;
         }

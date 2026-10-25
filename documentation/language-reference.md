@@ -1219,6 +1219,25 @@ Limitation: variadic C functions (`printf(fmt, ...)`) have no single binding.
 Declare a fixed-arity binding per argument shape you use; there is no `...`
 marker.
 
+## 10.6 Builtins: `@extern "thrax"`
+The primitives the compiler and runtime implement (`@iadd`, `@vec_push`,
+`@chan_send`, `@lex`, ...) are declared in `library/CORE.thx`, each with its
+signature and a comment:
+
+```thrax
+$ @iadd : t -> t -> t = @extern "thrax"
+$ @vec_push : @vec a -> a -> @vec a = @extern "thrax"
+```
+
+The definition's name is the builtin, so there is no symbol or library string,
+and a reference compiles to a direct call with no wrapper. Unlike a C extern, a
+builtin is curried. Only CORE may declare one, and no module may redefine one.
+The operators the parser rewrites (`;`, `|>`, `<|`) are declared the same way, for
+their types: `$ (|>) : a -> (a -> <e> b) -> <e> b = @extern "thrax"`. A few primitives stay inside the
+compiler because their types have no surface syntax: `@e` and `@cast` are
+checked specially, and the `@tensor_*` primitives are polymorphic over axis
+variance.
+
 ---
 
 # 11. Compile-time evaluation
@@ -1378,7 +1397,7 @@ A quick index of the `@`-forms and where each is documented above.
 | `@main` | program entry | 2.5 |
 | `@build` | compile-time entry | 11.3 |
 | `@struct` `@union` `@effect` `@alias` | type declarations | 6, 8.1, 3.10 |
-| `@extern` | foreign binding | 10 |
+| `@extern` | foreign binding, builtin declaration | 10 |
 | `@ctx` | context (interface) parameter | 7.4 |
 | `@private` | visibility | 2.4 |
 | `@e` `@abort` | compile-time code insertion | 11 |

@@ -7,7 +7,7 @@
 use frontend::{lower_program, Checker, Decls};
 
 /// Parse, check and lower one module to the IR. CORE is not injected, so the
-/// module must stick to intrinsics.
+/// module can use no CORE names, builtins included.
 fn lower(src: &str) -> frontend::ir::data::Program {
     let parsed = frontend::parse(src).expect("parse");
     let types = std::rc::Rc::new(frontend::Types::new());
@@ -27,7 +27,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // would never return.
     let spin = lower(
         "$ @mod T\n\
-         $ spin : @int -> @int = \\n = spin (@iadd n 1)\n\
+         $ spin : @int -> @int = \\n = spin n\n\
          $ test : @int = spin 0\n",
     );
     utilities::interrupt::request();
@@ -37,7 +37,7 @@ fn a_pending_request_stops_a_runaway_evaluation() {
     // Taking the request clears it, so the next evaluation runs to completion.
     assert!(utilities::interrupt::take());
     assert!(!utilities::interrupt::requested());
-    let sum = lower("$ @mod T\n$ test : @int = @iadd 1 2\n");
+    let sum = lower("$ @mod T\n$ test : @int = (\\n = n) 3\n");
     assert_eq!(
         interpreter::machine::eval(&sum, "test").expect("no request pending"),
         "3"

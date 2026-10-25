@@ -714,6 +714,8 @@ impl Layout<'_, '_> {
             let at = ts.get(*pos).map_or(0, Self::first_tok);
             return P { d, first: at, last: at };
         }
+        // A lone operator, as in `$ (;) : ...`, has nothing on one side to break from.
+        breaks.retain(|&(at, _)| 0 < at && at < run.len());
         if breaks.is_empty() {
             return self.join(&run).expect("non-empty");
         }

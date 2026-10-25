@@ -13,6 +13,9 @@
 
 use utilities::{Aol, Interner, SecondaryMap, Slice, Span, Store, StrId};
 
+/// The `@extern` ABI that names a runtime builtin rather than a foreign symbol.
+pub const BUILTIN_ABI: &str = "thrax";
+
 /// The stores that back a parsed tree. Every handle in the tree indexes into one
 /// of these; reads go through [`Store::lookup`] / [`Interner::resolve`].
 ///
@@ -570,6 +573,10 @@ pub enum Expr {
         symbol: StrId,
         lib: StrId,
     },
+    /// `@extern "thrax"`: the definition it is the body of IS the runtime builtin
+    /// of the same name. Only CORE declares these, so a builtin has a signature and
+    /// a doc comment in source; every reference lowers to the bare builtin.
+    Builtin,
     /// `(e : T)`: an ascription. Checks `e` against `T` and has type `T`. Purely a
     /// checking hint; lowering emits `e` unchanged.
     Ascribe {
