@@ -273,22 +273,22 @@ fn history_search_finds_navigates_and_cancels() {
 #[test]
 fn a_definition_typed_after_the_prefill_is_recognised() {
     assert_eq!(
-        prefilled_definition("= foo: {roo:@int} -> @int = \\p = p.roo"),
+        prefilled_definition("= foo: {roo:@Int} -> @Int = \\p = p.roo"),
         Some("foo".to_string())
     );
-    assert_eq!(prefilled_definition("= x : @int = 1"), Some("x".to_string()));
+    assert_eq!(prefilled_definition("= x : @Int = 1"), Some("x".to_string()));
     // An expression, even one mentioning `:` or `=`, is left alone.
     assert_eq!(prefilled_definition("= 1 + 2"), None);
     assert_eq!(prefilled_definition("= f x"), None);
     assert_eq!(prefilled_definition("= xs :: rest"), None);
-    assert_eq!(prefilled_definition("= foo: @int"), None);
+    assert_eq!(prefilled_definition("= foo: @Int"), None);
 }
 
 #[test]
 fn a_64_bit_nat_result_shows_unsigned() {
-    // #235: `let a: @nat = 2 in a - 3` showed `-1 : @nat`.
-    assert_eq!(show_at_type("-1".into(), "@nat"), "18446744073709551615");
-    assert_eq!(show_at_type("-2".into(), "@nat64"), "18446744073709551614");
-    assert_eq!(show_at_type("-1".into(), "@int"), "-1");
-    assert_eq!(show_at_type("12".into(), "@nat"), "12");
+    // #235: `let a: @Nat = 2 in a - 3` showed `-1 : @Nat`.
+    assert_eq!(show_at_type("-1".into(), "@Nat"), "18446744073709551615");
+    assert_eq!(show_at_type("-2".into(), "@Nat64"), "18446744073709551614");
+    assert_eq!(show_at_type("-1".into(), "@Int"), "-1");
+    assert_eq!(show_at_type("12".into(), "@Nat"), "12");
 }

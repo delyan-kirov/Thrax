@@ -6,47 +6,55 @@ $ @mod PIPES
 # three sit at the lowest precedences, so application and arithmetic bind tighter;
 # `<|>` is the opposite end, the tightest infix operator.
 
-$ Y : @effect = yield : @int -> {},
-$ sum : ({} -> <Y> @int) -> @int =
-    \body = do body {} ctl k | Y.yield v => v + k {} | r => r
+$ Y : @effect = yield : @Int -> {},
+$ sum : ({} -> <Y> @Int) -> @Int = \body =
+    do body {}
+    ctl k | Y.yield v => v + k {} | r => r
 
-$ inc : @int -> @int        = \x = x + 1
-$ dbl : @int -> @int        = \x = x + x
-$ add : @int -> @int -> @int = \a b = a + b
+$ inc : @Int -> @Int = \x = x + 1
+$ dbl : @Int -> @Int = \x = x + x
+$ add : @Int -> @Int -> @Int = \a b = a + b
 
 # `;` runs the left side for its effect, discards its value, yields the right.
-$ r_seq : @int = sum (\_ = Y.yield 1 ; Y.yield 2 ; 0)   # 1+2+0 = 3
+$ r_seq : @Int = sum (\_ = Y.yield 1; Y.yield 2; 0) # 1+2+0 = 3
 
 # `|>` is left-associative; `<|` is right-associative; both are just application.
-$ r_fwd  : @int = 5 |> inc |> dbl   # dbl (inc 5)        = 12
-$ r_bwd  : @int = dbl <| inc <| 5   # dbl (inc 5)        = 12
-$ r_part : @int = 5 |> add 3        # add 3 5  (partial)  = 8
-$ r_prec : @int = 2 + 3 |> inc      # inc (2 + 3)         = 6
+$ r_fwd : @Int = 5 |> inc |> dbl # dbl (inc 5)        = 12
+$ r_bwd : @Int = dbl <| inc <| 5 # dbl (inc 5)        = 12
+$ r_part : @Int = 5 |> add 3 # add 3 5  (partial)  = 8
+$ r_prec : @Int = 2 + 3 |> inc # inc (2 + 3)         = 6
 
 # `<|>` composes: the RIGHT function runs first, and a chain is right-associative.
 # Typed per site, so the composed function's effect row is the UNION of the two
 # steps' rows: a pure step and an effectful one compose freely.
-$ r_comp  : @int = (dbl <|> inc) 5          # dbl (inc 5)          = 12
-$ r_chain : @int = (dbl <|> inc <|> inc) 5  # dbl (inc (inc 5))    = 14
-$ shown   : @int -> @str = to_string <|> dbl
-$ r_mixed : @int = 5 |> (dbl <|> inc)       # pipe into a composed = 12
-$ bump : @int -> <Y> @int = \n = Y.yield n ; n + 1
-$ r_eff : @int = sum (\_ = (inc <|> bump) 1)   # yields 1, returns inc 2 = 3, so 4
+$ r_comp : @Int = (dbl <|> inc) 5 # dbl (inc 5)          = 12
+$ r_chain : @Int = (dbl <|> inc <|> inc) 5 # dbl (inc (inc 5))    = 14
+$ shown : @Int -> @Str = to_string <|> dbl
+$ r_mixed : @Int = 5 |> (dbl <|> inc) # pipe into a composed = 12
+$ bump : @Int -> <Y> @Int = \n = Y.yield n; n + 1
+$ r_eff : @Int = sum (\_ = (inc <|> bump) 1) # yields 1, returns inc 2 = 3, so 4
 
 # The FUNCTION form is CORE's `compose`, which carries one written row for both
 # steps: `(b -> <e> c) -> (a -> <e> b) -> a -> <e> c`. So it composes two steps that
 # agree on their effects, where the infix form above also takes two different rows.
-$ r_ref   : @int = (<|>) dbl inc 5          # the reference form   = 12
-$ r_named : @int = compose dbl inc 5        # the same binding     = 12
-$ twice_y : @int -> <Y> @int = compose bump bump
-$ r_both  : @int = sum (\_ = twice_y 1)        # yields 1 then 2, returns 3, so 6
+$ r_ref : @Int = (<|>) dbl inc 5 # the reference form   = 12
+$ r_named : @Int = compose dbl inc 5 # the same binding     = 12
+$ twice_y : @Int -> <Y> @Int = compose bump bump
+$ r_both : @Int = sum (\_ = twice_y 1) # yields 1 then 2, returns 3, so 6
 
-$ ck : @int =
-	if r_comp == 12 && r_chain == 14 && shown 21 == "42" && r_ref == 12
-		&& r_mixed == 12 && r_eff == 4 && r_named == 12 && r_both == 6
-	=> 0 else 1
+$ ck : @Int =
+    if r_comp == 12
+        && r_chain == 14
+        && shown 21 == "42"
+        && r_ref == 12
+        && r_mixed == 12
+        && r_eff == 4
+        && r_named == 12
+        && r_both == 6 =>
+        0
+    else 1
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = r_seq ; r_fwd ; r_bwd ; r_part ; r_prec ; ck
+$ test : @Int = r_seq; r_fwd; r_bwd; r_part; r_prec; ck
 
 $ @e <| assert (test == 0) "PIPES: a check failed"

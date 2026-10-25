@@ -110,8 +110,8 @@ straight-line C and ends by calling exactly one **terminator**; the driver
   call is `THxK_prim(THxB_<NAME>, args)`, which the runtime dispatches with a
   `switch`.
 - **Entry**: the generated C `main` forces every global reachable from the entry,
-  then applies `@main` (`THxK_call`) to the argument vector as a `@vec @str` and
-  returns its `@int` as the exit code. A harness mode (`ccg::Entry::Show`) instead
+  then applies `@main` (`THxK_call`) to the argument vector as a `@Vec @Str` and
+  returns its `@Int` as the exit code. A harness mode (`ccg::Entry::Show`) instead
   forces a named global and prints `name = value`, which is how the differential
   tests compare the two engines.
 
@@ -141,9 +141,9 @@ built-in breaks **every** dependent path loudly:
 ## Supported surface (v1)
 
 Atoms `Local`/`Env`/`Glob`/`LitI`/`LitR`/`LitS`/`MkClosure`; expressions `Ret`,
-`Let` (incl. recursive), `App` (with TCO), `Case` (@int/Real/Con + payload bind +
+`Let` (incl. recursive), `App` (with TCO), `Case` (@Int/Real/Con + payload bind +
 default), `MkStruct`, `Field`, `MkVariant`, `Unk`; lazy-memoized global CAFs;
-built-in @int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
+built-in @Int/Real operators and the `%array` primitive; **C FFI** (`@extern`,
 below); and **algebraic effects** handlers (`do`/`ctl`), operations,
 first-class resumptions, and `defer` (see below).
 
@@ -209,8 +209,8 @@ linked into the interpreter and its dynamic symbols exported (see below).
 A few conversions the language cannot express with `@cast` (which crosses only
 integer widths) are provided by the standard library's native support functions
 and bound in `library/C.thx` with an EMPTY library name: `C.i2d` / `C.d2i`
-(@int and Real), `C.i2f` / `C.f2i` (@int and `@float32`), `C.i2p` (@int to
-`@ptr`), and `C.null` (the null pointer, `i2p 0`); CORE also binds the float
+(@Int and Real), `C.i2f` / `C.f2i` (@Int and `@Float32`), `C.i2p` (@Int to
+`@Ptr`), and `C.null` (the null pointer, `i2p 0`); CORE also binds the float
 width/format helpers (`thx_f2d`/`thx_d2f`/`thx_real_to_str`/`thx_f32_to_str`).
 `MATH` re-exports the numeric ones as `real_of_int` / `int_of_real` /
 `f32_of_int` / `int_of_f32`.
@@ -324,7 +324,7 @@ example is thereby also a leak regression test. Under `-DTHX_MEM_BUMP`,
 
 ### Unboxing *(optimization)*
 
-Values are pointer-boxed. A later representation pass could keep `@int`/`Real`
+Values are pointer-boxed. A later representation pass could keep `@Int`/`Real`
 unboxed in registers for true low-level performance.
 
 ## Known limitations

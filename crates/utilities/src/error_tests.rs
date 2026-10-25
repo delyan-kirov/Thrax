@@ -146,7 +146,7 @@ fn end_of_input_points_after_the_last_character() {
 
 #[test]
 fn a_label_underlines_a_secondary_span() {
-    let src = "f (\"s\" : @int)\n";
+    let src = "f (\"s\" : @Int)\n";
     let d = Diagnostic::error(Code::TypeMismatch, Span::new(3, 6), 1, "mismatch")
         .with_label(Span::new(9, 13), "expected because of this");
     let text = d.render(src, "t.thx");

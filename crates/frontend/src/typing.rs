@@ -168,7 +168,7 @@ pub struct Checker<'a> {
     ctx_pending: Vec<PendingCtx<'a>>,
     /// The elaborated signature of the definition currently being checked. Its type
     /// variables are the caller's to choose, so context resolution may not bind
-    /// them: a `$ g : a -> @str = \x = show x` must declare the context rather than
+    /// them: a `$ g : a -> @Str = \x = show x` must declare the context rather than
     /// have `a` silently specialized to the one instance that happens to exist. The
     /// signature is kept as a type (not a variable set) because unification may
     /// point its variables at others, and zonking at resolution time follows that.
@@ -634,7 +634,7 @@ impl<'a> Checker<'a> {
     /// Reduce an extern's single parameter type to its positional C arguments:
     /// unit takes none; an anonymous record contributes one C argument per field,
     /// in declared order, pulled by name; any other type is one C argument used
-    /// directly (a scalar, a C-repr struct by value, `@ptr`, `Str`, a callback, or
+    /// directly (a scalar, a C-repr struct by value, `@Ptr`, `Str`, a callback, or
     /// a `List T` array).
     fn extern_param_spec(&mut self, param: Type) -> Result<(Vec<ExternArg>, Vec<String>)> {
         if is_unit_ty(&self.eng.types, param) {
@@ -889,9 +889,9 @@ impl<'a> Checker<'a> {
         }
         // Type-check `$ @e <expr>` directives. All globals are in scope now, so
         // the expression resolves like a top-level body. The directive runs under
-        // a closed `<@meta>` handler and nothing else, so a stray `@io` in a
+        // a closed `<@Meta>` handler and nothing else, so a stray `@IO` in a
         // generator is rejected (hermetic); `@build` is the one context that also
-        // discharges `<@io>`.
+        // discharges `<@IO>`.
         let runs: Vec<Aol<Expr>> = self
             .ast
             .slice(program.items)
@@ -916,8 +916,8 @@ impl<'a> Checker<'a> {
     /// The built-in `TARGET` namespace: facts about the compilation target that
     /// both engines supply as constants (see the machine's `target_value`).
     fn register_target_namespace(&mut self) {
-        let int = self.eng.types.con("@int");
-        let str_ = self.eng.types.con("@str");
+        let int = self.eng.types.con("@Int");
+        let str_ = self.eng.types.con("@Str");
         let members = [
             ("int_bits", int),
             ("ptr_bits", int),
@@ -1212,7 +1212,7 @@ impl<'a> Checker<'a> {
     /// Elaborate a context-bearing signature at a USE site: fresh variables for
     /// its type variables, split into the context requirement and the type the
     /// caller applies. One map for the whole signature keeps the two aligned, so
-    /// `Ito_string t -> t -> @str` ties the requirement to the argument.
+    /// `Ito_string t -> t -> @Str` ties the requirement to the argument.
     fn ctx_use_type(&mut self, sig: Aol<Ty>) -> (Type, Type) {
         let mut tvars = HashMap::new();
         let full = self.ty_of_ast(sig, &mut tvars);
@@ -1278,7 +1278,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Whether a type-constructor name is a declared struct or union (as opposed to
-    /// a base type like `@int` or an arrow).
+    /// a base type like `@Int` or an arrow).
     fn is_nominal(&self, head: utilities::StrId) -> bool {
         let name = self.eng.types.name(head).to_string();
         self.structs.contains_key(name.as_str()) || self.unions.contains_key(name.as_str())
@@ -1941,7 +1941,7 @@ impl<'a> Checker<'a> {
         matches!(
             self.eng.head(ty),
             TypeNode::Con(name)
-                if matches!(self.eng.types.name(name).as_str(), "@float64" | "@float32")
+                if matches!(self.eng.types.name(name).as_str(), "@Float64" | "@Float32")
         )
     }
 
@@ -1950,9 +1950,9 @@ impl<'a> Checker<'a> {
     fn is_int_scalar(&self, ty: Type) -> bool {
         matches!(self.eng.head(ty),
             TypeNode::Con(name) if matches!(self.eng.types.name(name).as_str(),
-                "@int" | "@nat"
-                    | "@int8" | "@int16" | "@int32" | "@int64"
-                    | "@nat8" | "@nat16" | "@nat32" | "@nat64"))
+                "@Int" | "@Nat"
+                    | "@Int8" | "@Int16" | "@Int32" | "@Int64"
+                    | "@Nat8" | "@Nat16" | "@Nat32" | "@Nat64"))
     }
 
     /// Whether `f` is the `@cast` intrinsic in head position.
@@ -1963,7 +1963,7 @@ impl<'a> Checker<'a> {
     /// Check `@cast x` against the expected integer type. Both engines hold every
     /// integer as one 64-bit value, so lowering wraps `x` into a narrower target's
     /// range (see `cast_widths`) and emits a 64-bit target's operand unchanged. A
-    /// numeric literal operand is accepted (it defaults to `@int`).
+    /// numeric literal operand is accepted (it defaults to `@Int`).
     fn check_cast(&mut self, arg: Aol<Expr>, expected: Type) -> Result<()> {
         if !self.is_int_scalar(expected) {
             return Err(diag!(
@@ -2021,7 +2021,7 @@ impl<'a> Checker<'a> {
         // A variable an unresolved context still mentions must stay monomorphic:
         // generalizing it would quantify the very type the search is waiting for,
         // and a `let square = \x = x * x` would then resolve `IArith` against a
-        // quantified variable instead of the `@int` its use site supplies.
+        // quantified variable instead of the `@Int` its use site supplies.
         for p in &self.ctx_pending {
             self.eng.collect_vars(p.req, &mut out);
         }
@@ -2126,7 +2126,7 @@ impl<'a> Checker<'a> {
                                 Code::TypeMismatch, at, 0,
                                 "`{name}` is a blessed interface and only CORE may declare it";
                                 help: "implement it instead: a value of the applied type \
-                                       (`$ r : @IRange @int Span = .{{ .range = ... }}`)"
+                                       (`$ r : @IRange @Int Span = .{{ .range = ... }}`)"
                             ));
                         }
                         if fields.len() != 1 {
@@ -2651,7 +2651,7 @@ impl<'a> Checker<'a> {
     /// performing it forces `effect` into the ambient, fits any ambient already
     /// containing more effects, and ties `params` to the handler's instance. The
     /// type may also use variables of its own, chosen anew at each use, like
-    /// `throw : @str -> a`. One handler serves every use, so its clause sees
+    /// `throw : @Str -> a`. One handler serves every use, so its clause sees
     /// each of them as an opaque type (see `instantiate_for_handler`): it can
     /// pass such a value along, but cannot make one up or inspect it, which
     /// keeps it from answering one use's type to another (#290).
@@ -3479,8 +3479,8 @@ impl<'a> Checker<'a> {
                 Ok(self.eng.types.tuple(tys))
             }
 
-            // An unconstrained `[...]` DEFAULTS to a `@vec`, then builds it through
-            // the same `@ISeqLit` instance a user sequence uses (CORE's `@vec` one is
+            // An unconstrained `[...]` DEFAULTS to a `@Vec`, then builds it through
+            // the same `@ISeqLit` instance a user sequence uses (CORE's `@Vec` one is
             // the identity on the payload).
             Expr::List(items) => {
                 let items = self.ast.slice(*items);
@@ -3498,7 +3498,7 @@ impl<'a> Checker<'a> {
             }
 
             // A range builds whatever its `@compiler_interface_range` /
-            // `_range_from` hook returns (CORE: a `@vec` for `[lo ... hi]`, a
+            // `_range_from` hook returns (CORE: a `@Vec` for `[lo ... hi]`, a
             // `Stream` for the unbounded `[lo ...]`). The sized-tensor target is
             // reached only through `check` against a `[n]T`.
             Expr::Range { lo, hi } => {
@@ -3978,7 +3978,7 @@ impl<'a> Checker<'a> {
         matches!(self.node(e), Expr::Var { module: None, name } if self.text(*name) == "@e")
     }
 
-    /// `@e X` runs the `@code`-valued X at compile time and splices the code in
+    /// `@e X` runs the `@Code`-valued X at compile time and splices the code in
     /// at this site. What the code denotes is only known once the driver has
     /// spliced it and re-checked, so the site is a fresh variable here (which
     /// the context binds).
@@ -3991,23 +3991,23 @@ impl<'a> Checker<'a> {
         Ok(self.eng.fresh())
     }
 
-    /// The ambient an `@e` operand runs under: a closed `<@meta>`, so meta ops
+    /// The ambient an `@e` operand runs under: a closed `<@Meta>`, so meta ops
     /// discharge there and any other effect is rejected.
     fn meta_ambient(&mut self) -> Type {
         let empty = self.eng.types.row_empty();
-        self.eng.types.row_extend("@meta", empty)
+        self.eng.types.row_extend("@Meta", empty)
     }
 
-    /// Require an `@e` operand to be `@code`: `@e` inserts code and nothing else.
+    /// Require an `@e` operand to be `@Code`: `@e` inserts code and nothing else.
     fn require_code(&mut self, found: Type) -> Result<()> {
-        let code = self.eng.types.con("@code");
+        let code = self.eng.types.con("@Code");
         if self.eng.unify(found, code, "in an `@e` operand").is_ok() {
             return Ok(());
         }
         let shown = self.eng.show(found);
         Err(diag!(
             Code::TypeMismatch, Span::at(0), 0,
-            "`@e` inserts code, but its operand is `{shown}`, not `@code`";
+            "`@e` inserts code, but its operand is `{shown}`, not `@Code`";
             help: "build the code with `@parse_str`/`@parse_items`; a site run only for \
                    its effect returns empty code (`@parse_items \"\"`)"
         ))
@@ -4046,7 +4046,7 @@ impl<'a> Checker<'a> {
     /// Plan the context argument of `fname` at use `site`. An explicit `(@ctx e)`
     /// is checked and used at once; otherwise resolution is deferred to the
     /// enclosing definition's boundary, where the requirement's type variables are
-    /// pinned (so `max_of 3 7` searches for a context over `@int` rather than over
+    /// pinned (so `max_of 3 7` searches for a context over `@Int` rather than over
     /// a bare variable). The binders that could satisfy it are captured now,
     /// because the scopes are gone by then.
     fn plan_ctx(&mut self, site: Aol<Expr>, fname: &str, req: Type) -> Result<()> {
@@ -4441,7 +4441,7 @@ impl<'a> Checker<'a> {
     ) -> Result<Type> {
         let rt = self.infer(recv)?;
         // A lone `lo ... hi` over a non-tensor receiver is the `@ISlice` interface,
-        // which `@vec` / `@array` / `@str` and any user sequence share. A tensor keeps
+        // which `@Vec` / `@Array` / `@Str` and any user sequence share. A tensor keeps
         // the path below: its result SHAPE is computed from the slots, which no
         // interface method's type can express.
         if let [SliceSlot::Range(lo, hi)] = slots {
@@ -4547,7 +4547,7 @@ impl<'a> Checker<'a> {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
                 "the target type of `@cast` must be known from context";
-                help: "annotate it (e.g. `let n : @int = @cast x`) or use it where a specific \
+                help: "annotate it (e.g. `let n : @Int = @cast x`) or use it where a specific \
                        integer type is expected"
             ));
         }
@@ -4613,7 +4613,7 @@ impl<'a> Checker<'a> {
     }
 
     /// An argument whose effect is not handled, where the call returns a
-    /// `@future`, is a parallel task performing an effect that cannot cross to
+    /// `@Future`, is a parallel task performing an effect that cannot cross to
     /// the worker thread: say so, rather than the bare row mismatch.
     fn explain_task_effect(&mut self, d: Diagnostic, result: Type) -> Diagnostic {
         let msg = &d.root().msg;
@@ -4627,7 +4627,7 @@ impl<'a> Checker<'a> {
         };
         let is_future = match self.eng.head(result) {
             TypeNode::App(head, _) => {
-                matches!(self.eng.head(head), TypeNode::Con(c) if self.eng.types.name(c) == "@future")
+                matches!(self.eng.head(head), TypeNode::Con(c) if self.eng.types.name(c) == "@Future")
             }
             _ => false,
         };
@@ -4643,10 +4643,10 @@ impl<'a> Checker<'a> {
         d.retitle(what)
         .with_note(
             "a task runs on a worker thread, away from the handlers of the thread that \
-             spawned it; `par` takes a pure task, and `spawn` also allows `@io`",
+             spawned it; `par` takes a pure task, and `spawn` also allows `@IO`",
         )
         .with_help(if io {
-            "start it with `spawn`, which allows `@io`".to_string()
+            "start it with `spawn`, which allows `@IO`".to_string()
         } else {
             format!(
                 "handle `{label}` inside the task, around the code that performs it \
@@ -4850,7 +4850,7 @@ impl<'a> Checker<'a> {
         }
         // With nothing to pin the result, several instances fit. Rather than call that
         // ambiguous, the FIRST one declared is the default, so CORE's declaration
-        // order sets what a bare range builds: a `@vec` for `[lo ... hi]`, a `Stream`
+        // order sets what a bare range builds: a `@Vec` for `[lo ... hi]`, a `Stream`
         // for `[lo ...]`. An annotation or a known expected type still picks another.
         let hook = self
             .blessed(name, &[bound, result])
@@ -4875,7 +4875,7 @@ impl<'a> Checker<'a> {
             ));
         };
         // The method's own type decides how the bounds are typed, so a range over a
-        // non-`@int` bound works exactly as the instance declares it.
+        // non-`@Int` bound works exactly as the instance declares it.
         let mut rest = field_ty;
         for arg in std::iter::once(lo).chain(hi) {
             let (param, next, _) = self.arrow_parts(rest)?;
@@ -4958,8 +4958,8 @@ impl<'a> Checker<'a> {
     }
 
     /// The element type of a sequence PATTERN's scrutinee. A user sequence type (or a
-    /// scrutinee already fixed to `@vec`) resolves via its `sequence_view` hook;
-    /// otherwise the scrutinee DEFAULTS to `@vec elem` and resolves through `@vec`'s
+    /// scrutinee already fixed to `@Vec`) resolves via its `sequence_view` hook;
+    /// otherwise the scrutinee DEFAULTS to `@Vec elem` and resolves through `@Vec`'s
     /// view. Records the hook at `pat` either way.
     fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<Type> {
         if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
@@ -5130,10 +5130,10 @@ impl<'a> Checker<'a> {
 
     /// Break an ambiguity where a pending overload's RESULT is already a concrete
     /// integer type but its operands are still unconstrained numeric literals. For
-    /// homogeneous arithmetic (`@int32 + @int32 -> @int32`), the operands should
-    /// take the result type, not default to `@int`; e.g. `let x : @int32 = 2 + 3`
-    /// resolves to the `@int32` overload rather than failing because both literals
-    /// became `@int`. Each candidate is tried under that constraint and kept only if
+    /// homogeneous arithmetic (`@Int32 + @Int32 -> @Int32`), the operands should
+    /// take the result type, not default to `@Int`; e.g. `let x : @Int32 = 2 + 3`
+    /// resolves to the `@Int32` overload rather than failing because both literals
+    /// became `@Int`. Each candidate is tried under that constraint and kept only if
     /// it makes the overload unique, so a genuinely wrong guess is rolled back.
     fn propagate_result_to_operands(&mut self) -> Result<bool> {
         let batch = std::mem::take(&mut self.pending);
@@ -5232,7 +5232,7 @@ impl<'a> Checker<'a> {
                 // Pinned to a genuinely UNKNOWN con (a typo'd type): let that type's
                 // own "unknown type" diagnostic surface instead of the numeric error.
                 TypeNode::Con(name) if !self.is_known_type(&self.eng.types.name(name)) => {}
-                // Pinned to a known non-numeric type (e.g. `if 1` wants `@bool`): a
+                // Pinned to a known non-numeric type (e.g. `if 1` wants `@Bool`): a
                 // bare literal is a number, so this is a type error, not a coercion.
                 _ => {
                     let shown = self.show(*t);
@@ -5402,7 +5402,7 @@ impl<'a> Checker<'a> {
             }
             Pattern::Cons { head, tail } => {
                 // `h :: t` matches any sequence via its `sequence_view` hook (a user
-                // type, else the default `@vec`); the tail keeps the scrutinee's type.
+                // type, else the default `@Vec`); the tail keeps the scrutinee's type.
                 let (head, tail) = (*head, *tail);
                 let elem = self.sequence_pattern_elem(pat, expected)?;
                 self.type_pattern(head, elem)?;
@@ -5410,7 +5410,7 @@ impl<'a> Checker<'a> {
             }
             Pattern::List { elems, rest } => {
                 // `[a, b, ..r]` / `[]` matches any sequence via its `sequence_view` hook
-                // (a user type, else the default `@vec`): each element at the view's
+                // (a user type, else the default `@Vec`): each element at the view's
                 // element type, `..rest` at the sequence type.
                 let elem = self.sequence_pattern_elem(pat, expected)?;
                 let (elems, rest) = (self.ast.slice(*elems), *rest);
@@ -5695,7 +5695,7 @@ impl<'a> Checker<'a> {
     }
 
     /// The value range of an integer pattern's type, or `None` when it is not a
-    /// built-in integer. `@int` and `@nat` take the widest target's range, which
+    /// built-in integer. `@Int` and `@Nat` take the widest target's range, which
     /// is conservative on a narrower one: covering it covers the narrower range.
     fn int_domain(&self, pat: Aol<Pattern>) -> Option<(i128, i128)> {
         self.int_type_domain(*self.int_pattern_tys.get(&pat)?)
@@ -5710,14 +5710,14 @@ impl<'a> Checker<'a> {
         let signed = |bits: u32| (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
         let unsigned = |bits: u32| (0, (1i128 << bits) - 1);
         Some(match self.eng.types.name(name).as_str() {
-            "@int8" => signed(8),
-            "@int16" => signed(16),
-            "@int32" => signed(32),
-            "@int64" | "@int" => signed(64),
-            "@nat8" => unsigned(8),
-            "@nat16" => unsigned(16),
-            "@nat32" => unsigned(32),
-            "@nat64" | "@nat" => unsigned(64),
+            "@Int8" => signed(8),
+            "@Int16" => signed(16),
+            "@Int32" => signed(32),
+            "@Int64" | "@Int" => signed(64),
+            "@Nat8" => unsigned(8),
+            "@Nat16" => unsigned(16),
+            "@Nat32" => unsigned(32),
+            "@Nat64" | "@Nat" => unsigned(64),
             _ => return None,
         })
     }
@@ -5863,7 +5863,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Reject an integer literal outside its resolved type's range, such as `300`
-    /// as a `@nat8`. A value that does not fit is not one of the type's values.
+    /// as a `@Nat8`. A value that does not fit is not one of the type's values.
     fn check_int_literals(&mut self) -> Result<()> {
         for (t, n, span) in std::mem::take(&mut self.int_literals) {
             let Some(dom) = self.int_type_domain(t) else {
@@ -5888,12 +5888,12 @@ impl<'a> Checker<'a> {
             return None;
         };
         Some(match self.eng.types.name(name).as_str() {
-            "@int8" => (true, 8),
-            "@int16" => (true, 16),
-            "@int32" => (true, 32),
-            "@nat8" => (false, 8),
-            "@nat16" => (false, 16),
-            "@nat32" => (false, 32),
+            "@Int8" => (true, 8),
+            "@Int16" => (true, 16),
+            "@Int32" => (true, 32),
+            "@Nat8" => (false, 8),
+            "@Nat16" => (false, 16),
+            "@Nat32" => (false, 32),
             _ => return None,
         })
     }
@@ -6306,7 +6306,7 @@ impl<'a> Checker<'a> {
     }
 
     /// An application spine whose arity the caller has already checked: the
-    /// partial applications inside it (`Pair @int` in `Pair @int @str`) are not
+    /// partial applications inside it (`Pair @Int` in `Pair @Int @Str`) are not
     /// types of their own, so they are not checked again.
     fn spine_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
         match self.tnode(ty) {
@@ -6359,7 +6359,7 @@ impl<'a> Checker<'a> {
                 self.spine_of_ast(ty, tvars)
             }
             // `@e X` in type position: infer `X` (so its calls/overloads resolve
-            // for lowering) and require it to build `@code`; the spliced-in type is
+            // for lowering) and require it to build `@Code`; the spliced-in type is
             // unknown until the driver's expand loop runs `X`, so it stands as a
             // fresh variable here. Only reachable in a lenient (pre-expansion)
             // round; the final strict compile sees the substituted concrete type.
@@ -6368,7 +6368,7 @@ impl<'a> Checker<'a> {
                 let ambient = self.meta_ambient();
                 let saved = std::mem::replace(&mut self.ambient, ambient);
                 if let Ok(t) = self.infer(expr) {
-                    let _ = self.eng.unify(t, self.eng.types.con("@code"), "in a `@e` type splice");
+                    let _ = self.eng.unify(t, self.eng.types.con("@Code"), "in a `@e` type splice");
                 }
                 self.ambient = saved;
                 self.eng.fresh()
@@ -6434,15 +6434,15 @@ impl<'a> Checker<'a> {
         // because their types have no surface syntax.
         let int = self.eng.types.con(ty::INT);
 
-        // `@e X` runs the `@code` X at compile time and splices the code in.
+        // `@e X` runs the `@Code` X at compile time and splices the code in.
         // Special-cased in `infer_app`/`ty_of_ast`; this binding is the
         // first-class fallback.
         let e_ty = self.eng.fresh_generic();
-        let t = self.eng.types.arrow(self.eng.types.con("@code"), e_ty);
+        let t = self.eng.types.arrow(self.eng.types.con("@Code"), e_ty);
         self.bind("@e", t);
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
-        // (like `@int64`), the minimal set the runtime provides; every nice name
+        // (like `@Int64`), the minimal set the runtime provides; every nice name
         // (`index`, `length`, `dot`, `matmul`, `transpose`, `concat`) is a `library/LA`
         // function built from these plus `@ctx`, not a builtin.
         //
@@ -6830,7 +6830,7 @@ fn marshal_name(types: &Types, ty: Type) -> String {
             }
             format!("@fn({})->{}", args.join(","), marshal_name(types, cur))
         }
-        // A `@vec T` parameter is a C array of `T`: passed as a `T*` pointing at a
+        // A `@Vec T` parameter is a C array of `T`: passed as a `T*` pointing at a
         // contiguous packed buffer. Encoded so the seam can find `T`'s layout.
         TypeNode::App(head, arg) => match (types.node(head), types.node(arg)) {
             (TypeNode::Con(vec), TypeNode::Con(elem)) if types.name(vec) == ty::VEC => {
@@ -7004,7 +7004,7 @@ fn collect_tyvars<'a>(ast: &'a Ast, ty: Aol<Ty>, out: &mut Vec<&'a str>) {
 /// graph behind the lazy-slot decision.
 ///
 /// An arrow is not descended into. A function is already a suspension, so a
-/// recursive occurrence behind one (`Susp: { @int, {} -> Task }`) costs nothing
+/// recursive occurrence behind one (`Susp: { @Int, {} -> Task }`) costs nothing
 /// at construction and must stay a plain function: thunking it again would leave
 /// callers applying a thunk. A type variable contributes nothing either, since a
 /// parameter cannot make its owner recursive on its own.
@@ -7111,8 +7111,8 @@ fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
         Code::TypeMismatch, Span::at(0), 0,
         "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \
          C-representable; a `@struct @extern \"C\"` field must be a sized number \
-         (`@int8..64`/`@nat8..64`/`@float32`/`@float64`), `@int`/`@nat`/`Real`, `@ptr`, \
-         `@bool`, or another C-repr struct"
+         (`@Int8..64`/`@Nat8..64`/`@Float32`/`@Float64`), `@Int`/`@Nat`/`Real`, `@Ptr`, \
+         `@Bool`, or another C-repr struct"
     )
 }
 
@@ -7124,34 +7124,34 @@ fn scalar_ckind(name: &str, ptr_bits: u32) -> Option<utilities::CKind> {
     let word = if ptr_bits == 32 { S32 } else { S64 };
     let uword = if ptr_bits == 32 { U32 } else { U64 };
     Some(match name {
-        "@int8" => S8,
-        "@int16" => S16,
-        "@int32" => S32,
-        "@int64" => S64,
-        "@nat8" => U8,
-        "@nat16" => U16,
-        "@nat32" => U32,
-        "@nat64" => U64,
-        "@float32" => F32,
-        "@float64" => F64,
-        "@int" => word,
-        "@nat" => uword,
-        "@ptr" => uword,
-        "@bool" => U8,
+        "@Int8" => S8,
+        "@Int16" => S16,
+        "@Int32" => S32,
+        "@Int64" => S64,
+        "@Nat8" => U8,
+        "@Nat16" => U16,
+        "@Nat32" => U32,
+        "@Nat64" => U64,
+        "@Float32" => F32,
+        "@Float64" => F64,
+        "@Int" => word,
+        "@Nat" => uword,
+        "@Ptr" => uword,
+        "@Bool" => U8,
         _ => return None,
     })
 }
 
 /// The numeric types a bare integer/real literal may take: the friendly word-size
 /// `Int`/`Nat`/`Real` and every sized `@`-form. A literal used anywhere else (a
-/// `@bool` condition, a `@ptr`, a `Str`) is a type error.
+/// `@Bool` condition, a `@Ptr`, a `Str`) is a type error.
 fn is_numeric_type(name: &str) -> bool {
     matches!(
         name,
-        "@int" | "@nat" | "@float64"
-            | "@int8" | "@int16" | "@int32" | "@int64"
-            | "@nat8" | "@nat16" | "@nat32" | "@nat64"
-            | "@float32"
+        "@Int" | "@Nat" | "@Float64"
+            | "@Int8" | "@Int16" | "@Int32" | "@Int64"
+            | "@Nat8" | "@Nat16" | "@Nat32" | "@Nat64"
+            | "@Float32"
     )
 }
 
@@ -7176,9 +7176,9 @@ const IF_EQ: &str = "IEq";
 
 /// The built-in types, by their `@` names.
 pub const BASE_TYPES: &[&str] = &[
-    "@int", "@nat", "@int8", "@int16", "@int32", "@int64", "@nat8", "@nat16", "@nat32", "@nat64",
-    "@float32", "@float64", "@str", "@ptr", "@bool", "@array", "@vec", "@token", "@code", "@future",
-    "@chan", "@tvar",
+    "@Int", "@Nat", "@Int8", "@Int16", "@Int32", "@Int64", "@Nat8", "@Nat16", "@Nat32", "@Nat64",
+    "@Float32", "@Float64", "@Str", "@Ptr", "@Bool", "@Array", "@Vec", "@Token", "@Code", "@Future",
+    "@Chan", "@TVar",
 ];
 
 fn is_base_type(name: &str) -> bool {

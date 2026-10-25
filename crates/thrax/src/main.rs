@@ -109,7 +109,7 @@ thrax - the Thrax compiler and interpreter.
 
 Compiles or runs a Thrax program. With no file, the root is MAIN.thx in the
 current directory (or the sole .thx file there). A program is a module with an
-entry point: `$ @main : @vec @str -> <@io> @int`.
+entry point: `$ @main : @Vec @Str -> <@IO> @Int`.
 
 Usage:
   thrax [--target=ARCH-OS] [--libc=musl|gnu] <command> [file.thx] [args...]

@@ -98,7 +98,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     let dir = std::env::temp_dir().join(format!("thrax-lsp-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("DEMO.thx");
-    let src = "$ @mod DEMO\n\n$ double : @int -> @int = \\x = x * 2\n\n$ h = \\x = (x + 1\n\n$ k : @int = dobule 3\n\n$ y : @float64 = 2.\n";
+    let src = "$ @mod DEMO\n\n$ double : @Int -> @Int = \\x = x * 2\n\n$ h = \\x = (x + 1\n\n$ k : @Int = dobule 3\n\n$ y : @Float64 = 2.\n";
     std::fs::write(&path, src).unwrap();
     let path = path.canonicalize().unwrap();
     let uri = format!("file://{}", path.display());
@@ -169,7 +169,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     // Hover shows a type; definition jumps to `double`.
     let hover = c.request("textDocument/hover", Json::obj([("textDocument", doc(&uri)), ("position", pos(2, 31))]));
     let shown = hover.get("contents").get("value").as_str().unwrap_or("");
-    assert!(shown.contains("@int"), "{hover}");
+    assert!(shown.contains("@Int"), "{hover}");
     let fixed = src.replace("dobule", "double");
     c.notify(
         "textDocument/didChange",
@@ -203,7 +203,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     assert_eq!(symbols.as_arr()[0].get("name").as_str(), Some("x"), "{symbols}");
 
     // Completion offers visible names with their types.
-    let typing = "$ @mod DEMO\n$ double : @int -> @int = \\x = x * 2\n$ k : @int = dou\n";
+    let typing = "$ @mod DEMO\n$ double : @Int -> @Int = \\x = x * 2\n$ k : @Int = dou\n";
     c.notify(
         "textDocument/didChange",
         Json::obj([
@@ -216,7 +216,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     assert!(labels.contains(&"double"), "{labels:?}");
 
     // Saving runs the compile-time checks, whose failures show up too.
-    let checked = "$ @mod DEMO\n$ two : @int = 2\n$ @e <| assert (two == 3) \"two is not three\"\n";
+    let checked = "$ @mod DEMO\n$ two : @Int = 2\n$ @e <| assert (two == 3) \"two is not three\"\n";
     std::fs::write(&path, checked).unwrap();
     c.notify(
         "textDocument/didChange",
@@ -253,7 +253,7 @@ fn builtins_are_defined_in_core() {
     let dir = std::env::temp_dir().join(format!("thrax-lsp-builtins-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("USE.thx");
-    let src = "$ @mod USE\n$ n : @int = @iadd 1 2\n$ b : @bool = not @true\n$ v : @int = @vec_len [1, 2]\n";
+    let src = "$ @mod USE\n$ n : @Int = @iadd 1 2\n$ b : @Bool = not @true\n$ v : @Int = @vec_len [1, 2]\n";
     std::fs::write(&path, src).unwrap();
     let uri = format!("file://{}", path.canonicalize().unwrap().display());
     let core_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/CORE.thx").canonicalize().unwrap();

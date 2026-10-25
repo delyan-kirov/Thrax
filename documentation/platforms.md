@@ -37,7 +37,7 @@ Platform conditionals live in a few files, not throughout the code:
   names, which C compiler, `.exe`, rpath). `Target::host()` is the one place
   that reads the build's `cfg!` flags.
 - `crates/utilities/src/libc.rs`: the real prototypes of the C library
-  functions `library/C.thx` binds. A binding says `@int` for every integer
+  functions `library/C.thx` binds. A binding says `@Int` for every integer
   and handle; C says `int`, `long`, `size_t` or `FILE*`, whose widths differ
   by target (`long` is 32 bits on Windows, `size_t` on wasm32). Both engines
   marshal a libc call at the real widths, so a narrow return is

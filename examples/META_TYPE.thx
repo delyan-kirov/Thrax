@@ -2,28 +2,28 @@ $ @mod META_TYPE
 
 # \file META_TYPE.thx
 # \info Type-position `@e`. `Foo : @e X = ...` runs X at build time; X must build an
-#       `@code` denoting a TYPE (with `@parse_str`), whose source is spliced into
+#       `@Code` denoting a TYPE (with `@parse_str`), whose source is spliced into
 #       the annotation before the final compile. This completes `@e` across all
 #       three positions: expression (`let a = @e X`), item (`$ @e X`), and now type
 #       (`Foo : @e X`). The generator picks the type from compile-time data, so one
 #       source can specialize a binding's type by a build-time choice.
 
 # A compile-time generator: choose a type by name.
-$ number_type : @str -> @code = \which =
-	if which == "wide" => @parse_str "@int64" else @parse_str "@int"
+$ number_type : @Str -> @Code = \which =
+    if which == "wide" => @parse_str "@Int64" else @parse_str "@Int"
 
 # The element type of a vector, computed at build time.
-$ elem_type : {} -> @code = \_ = @parse_str "@int"
+$ elem_type : {} -> @Code = \_ = @parse_str "@Int"
 
-# The annotation is filled in by running the generator: `n : @int64`.
+# The annotation is filled in by running the generator: `n : @Int64`.
 $ n : @e (number_type "wide") = 1000 + 24
 
-# `@e` nests inside a larger type: `xs : @vec @int`.
-$ xs : @vec (@e (elem_type {})) = [3, 4, 5]
+# `@e` nests inside a larger type: `xs : @Vec @Int`.
+$ xs : @Vec (@e (elem_type {})) = [3, 4, 5]
 
-$ ck_scalar : @int = if n == 1024 => 0 else 1
-$ ck_nested : @int = if @vec_len xs == 3 => 0 else 2
+$ ck_scalar : @Int = if n == 1024 => 0 else 1
+$ ck_nested : @Int = if @vec_len xs == 3 => 0 else 2
 
-$ test : @int = ck_scalar + ck_nested
+$ test : @Int = ck_scalar + ck_nested
 
 $ @e <| assert (test == 0) "META_TYPE: a check failed"

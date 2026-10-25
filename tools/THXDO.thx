@@ -10,54 +10,56 @@ $ with OPT
 $ with STR
 $ with VEC
 
-$ help_text : @str
-     = "thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
-	++ "\n"
-	++ "Usage: thxdo <command>\n"
-	++ "\n"
-	++ "Commands:\n"
-	++ "  build [release [musl|gnu|windows]]\n"
-	++ "            clean, then build the compiler (debug unless `release`)\n"
-	++ "  rebuild [release [musl|gnu|windows]]\n"
-	++ "            build the compiler without cleaning\n"
-	++ "  clean [all]\n"
-	++ "            remove build artifacts (all: also the built libffi and musl)\n"
-	++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
-	++ "  corpus [wasm]\n"
-	++ "            run tests/MAIN.thx on both engines (interpreter + native C,\n"
-	++ "            or with `wasm` the C built for wasm32-wasi, under node)\n"
-	++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
-	++ "  tree-sitter\n"
-	++ "            generate the Helix grammar from documentation/thrax.y\n"
-	++ "            (tools/editors/tree-sitter-thrax, for Helix and Zed)\n"
-	++ "  tags [-o FILE] [PATH...]\n"
-	++ "            write a ctags `tags` file for Vim (default: the whole repo)\n"
-	++ "  fmt [check]\n"
-	++ "            format library/, examples/ and applications/ in place\n"
-	++ "            (check: only list the files that are not formatted)\n"
-	++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
-	++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
-	++ "  start N   branch N-<slug> off origin/master for issue N (or switch to it)\n"
-	++ "  done      switch to master, pull, delete the branch if its PR merged\n"
-	++ "  issue     create a GitHub issue (extra args go to `gh issue create`)\n"
-	++ "  sdk_path  print the repo root (source tools/thxdo.nu to cd there)\n"
-	++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
-	++ "  all       build, then regenerate README.md\n"
-	++ "  help      show this help\n"
-	++ "\n"
-	++ "A debug build links the dev shell's libraries, so it stays fast. A release\n"
-	++ "build links libffi statically, built from external/libffi when that is newer\n"
-	++ "than the last build, and lands in target/dist (bin/, lib/, include/,\n"
-	++ "library/). On Linux its libc is musl unless `gnu` is given: musl is fetched\n"
-	++ "into external/musl, built, and shipped as target/dist/lib/musl, so the\n"
-	++ "programs that compiler builds are static executables. `windows` cross-builds\n"
-	++ "thrax.exe from Linux (tools/windows/flake.nix) into the same layout.\n"
+$ help_text : @Str =
+    "thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
+        ++ "\n"
+        ++ "Usage: thxdo <command>\n"
+        ++ "\n"
+        ++ "Commands:\n"
+        ++ "  build [release [musl|gnu|windows]]\n"
+        ++ "            clean, then build the compiler (debug unless `release`)\n"
+        ++ "  rebuild [release [musl|gnu|windows]]\n"
+        ++ "            build the compiler without cleaning\n"
+        ++ "  clean [all]\n"
+        ++ "            remove build artifacts (all: also the built libffi and musl)\n"
+        ++ "  readme    regenerate README.md from tools/README_GEN.thx\n"
+        ++ "  corpus [wasm]\n"
+        ++ "            run tests/MAIN.thx on both engines (interpreter + native C,\n"
+        ++ "            or with `wasm` the C built for wasm32-wasi, under node)\n"
+        ++ "  grammar   check documentation/thrax.y with bison (-v for counterexamples)\n"
+        ++ "  tree-sitter\n"
+        ++ "            generate the Helix grammar from documentation/thrax.y\n"
+        ++ "            (tools/editors/tree-sitter-thrax, for Helix and Zed)\n"
+        ++ "  tags [-o FILE] [PATH...]\n"
+        ++ "            write a ctags `tags` file for Vim (default: the whole repo)\n"
+        ++ "  fmt [check]\n"
+        ++ "            format every tracked .thx file in place (submodules too,\n"
+        ++ "            not tests/diagnostics/)\n"
+        ++ "            (check: only list the files that are not formatted)\n"
+        ++ "  hooks     use tools/hooks as this clone's git hooks (pre-commit\n"
+        ++ "            formats the staged .thx files)\n"
+        ++ "  doc       build the rustdoc for the workspace and open it in a browser\n"
+        ++ "  site      rebuild the web playground's wasm, then serve it and open it\n"
+        ++ "  start N   branch N-<slug> off origin/master for issue N (or switch to it)\n"
+        ++ "  done      switch to master, pull, delete the branch if its PR merged\n"
+        ++ "  issue     create a GitHub issue (extra args go to `gh issue create`)\n"
+        ++ "  sdk_path  print the repo root (source tools/thxdo.nu to cd there)\n"
+        ++ "  stats     line counts (tokei, excluding external/ and applications/)\n"
+        ++ "  all       build, then regenerate README.md\n"
+        ++ "  help      show this help\n"
+        ++ "\n"
+        ++ "A debug build links the dev shell's libraries, so it stays fast. A release\n"
+        ++ "build links libffi statically, built from external/libffi when that is newer\n"
+        ++ "than the last build, and lands in target/dist (bin/, lib/, include/,\n"
+        ++ "library/). On Linux its libc is musl unless `gnu` is given: musl is fetched\n"
+        ++ "into external/musl, built, and shipped as target/dist/lib/musl, so the\n"
+        ++ "programs that compiler builds are static executables. `windows` cross-builds\n"
+        ++ "thrax.exe from Linux (tools/windows/flake.nix) into the same layout.\n"
 
-$ readme_cmd : @str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
+$ readme_cmd : @Str = "${THRAX_BIN:-thrax} run tools/README_GEN.thx"
 
 # A command path in the platform's shell: `cmd.exe` reads `/` as a switch.
-$ native_path : @str -> @str = \p =
-	if TARGET.os == "windows" => STR.replace p "/" "\\" else p
+$ native_path : @Str -> @Str = \p = if TARGET.os == "windows" => STR.replace p "/" "\\" else p
 
 # The combined corpus. `cargo test` does not cover it, so this is the only thing
 # that catches a break in the examples or the standard library. Both engines, and
@@ -65,363 +67,398 @@ $ native_path : @str -> @str = \p =
 # without shell syntax beyond `>`, so it runs under `cmd.exe` as well as `sh`;
 # CI runs it on every platform. `wasm` builds the native leg for wasm32-wasi and
 # runs it under node instead.
-$ corpus_task : @bool -> <@io> @bool = \wasm =
-	let
-		bin = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
-		interp = "target/corpus-interp.txt",
-		native = "target/corpus-native.txt",
-		build = if wasm => " build --target=wasm32-wasi tests/MAIN.thx" else " build tests/MAIN.thx",
-		exe = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN"
-	in
-	step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp)
-	&& step "native build" (bin ++ build)
-	&& step "native run" (exe ++ " > " ++ native)
-	&& (is {read_file interp, read_file native}
-		| {Option.Some.{ a }, Option.Some.{ b }} =>
-			print b;
-			let
-				la = STR.lines a,
-				lb = STR.lines b,
-				skip = VEC.append (skips la) (skips lb)
-			in
-			if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) => @true
-			else println "thxdo: the engines disagree (target/corpus-*.txt)"; @false
-		| _ => println "thxdo: corpus output missing"; @false)
+$ corpus_task : @Bool -> <@IO> @Bool = \wasm =
+    let bin = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
+        interp = "target/corpus-interp.txt",
+        native = "target/corpus-native.txt",
+        build = if wasm => " build --target=wasm32-wasi tests/MAIN.thx"
+        else " build tests/MAIN.thx",
+        exe = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN" in
+    step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp)
+        && step "native build" (bin ++ build)
+        && step "native run" (exe ++ " > " ++ native)
+        && (
+            is { read_file interp, read_file native }
+            | { Option.Some.{ a }, Option.Some.{ b } } =>
+                print b;
+                let la = STR.lines a, lb = STR.lines b, skip = VEC.append (skips la) (skips lb) in
+                if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) => @true
+                else println "thxdo: the engines disagree (target/corpus-*.txt)"; @false
+            | _ => println "thxdo: corpus output missing"; @false
+        )
 
 # The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
-$ line_module : @str -> @str = \l =
-	let ws = STR.split l " " in
-	if @vec_len ws > 1 => @vec_get ws 1 else ""
+$ line_module : @Str -> @Str = \l =
+    let ws = STR.split l " " in if @vec_len ws > 1 => @vec_get ws 1 else ""
 
-$ is_skip : @str -> @bool = \l = STR.contains l "SKIP"
+$ is_skip : @Str -> @Bool = \l = STR.contains l "SKIP"
 
 # The modules a corpus run skipped (tests/EXCEPTIONS.thx) on its platform.
-$ skips : @vec @str -> @vec @str = \ls = VEC.map line_module (VEC.filter is_skip ls)
+$ skips : @Vec @Str -> @Vec @Str = \ls = VEC.map line_module (VEC.filter is_skip ls)
 
 # A corpus output without what either run skipped: the part both must agree on.
-$ comparable : @vec @str -> @vec @str -> @vec @str = \skip ls =
-	VEC.filter (\l = !(is_skip l) && !(VEC.contains STR.eq (line_module l) skip)) ls
+$ comparable : @Vec @Str -> @Vec @Str -> @Vec @Str = \skip ls =
+    VEC.filter (\l = !(is_skip l) && !(VEC.contains STR.eq (line_module l) skip)) ls
 
 # `%expect` in the grammar is a tripwire: bison fails when the conflict count
 # moves, so a syntax change has to be accounted for in the spec.
-$ grammar_cmd : @str = "bison -o /dev/null documentation/thrax.y"
+$ grammar_cmd : @Str = "bison -o /dev/null documentation/thrax.y"
 
 # The editor grammar: generated from the Bison spec by a Thrax program, then
 # compiled to C by tree-sitter from the tools/editors flake (kept out of the
 # root dev shell). `path:` so the flake need not be tracked by git yet.
-$ tree_sitter_cmd : @str =
-	"${THRAX_BIN:-thrax} run tools/editors/TREE_SITTER_GEN.thx"
-	++ " && cd tools/editors/tree-sitter-thrax"
-	++ " && nix develop path:.. -c tree-sitter generate"
+$ tree_sitter_cmd : @Str =
+    "${THRAX_BIN:-thrax} run tools/editors/TREE_SITTER_GEN.thx"
+        ++ " && cd tools/editors/tree-sitter-thrax"
+        ++ " && nix develop path:.. -c tree-sitter generate"
 
 # The tags generator runs natively: interpreted, it takes seconds per file.
 # Built on first use and again when its source changes, as thxdo itself is.
-$ tags_cmd : @vec @str -> @str = \args =
-	"bin=tools/editors/thrax-out/TAGS; src=tools/editors/TAGS.thx;"
-	++ " { [ -x \"$bin\" ] && [ ! \"$src\" -nt \"$bin\" ]; }"
-	++ " || ${THRAX_BIN:-thrax} build \"$src\" >/dev/null"
-	++ " && \"$bin\"" ++ quoted_from args 2
+$ tags_cmd : @Vec @Str -> @Str = \args =
+    "bin=tools/editors/thrax-out/TAGS; src=tools/editors/TAGS.thx;"
+        ++ " { [ -x \"$bin\" ] && [ ! \"$src\" -nt \"$bin\" ]; }"
+        ++ " || ${THRAX_BIN:-thrax} build \"$src\" >/dev/null"
+        ++ " && \"$bin\""
+        ++ quoted_from args 2
 
 # Every Thrax source the formatter keeps canonical.
-$ fmt_files : @str = "$(find library examples applications -name '*.thx' -not -path '*/target/*')"
+$ fmt_files : @Str = "$(git ls-files --recurse-submodules -- '*.thx' ':!:tests/diagnostics/*')"
 
-$ fmt_cmd : @bool -> @str = \check =
-	"${THRAX_BIN:-thrax} fmt " ++ (if check => "--check " else "") ++ fmt_files
+$ fmt_cmd : @Bool -> @Str = \check =
+    "${THRAX_BIN:-thrax} fmt " ++ (if check => "--check " else "") ++ fmt_files
 
-$ grammar_verbose_cmd : @str =
-	"bison -Wcounterexamples -o /dev/null documentation/thrax.y"
+$ grammar_verbose_cmd : @Str = "bison -Wcounterexamples -o /dev/null documentation/thrax.y"
 
-$ doc_page : @str = "target/doc/thrax/index.html"
+$ doc_page : @Str = "target/doc/thrax/index.html"
 
-$ doc_open_cmd : @str =
-	"( ${BROWSER:-xdg-open} \"$PWD/" ++ doc_page ++ "\" >/dev/null 2>&1 & )"
+$ doc_open_cmd : @Str = "( ${BROWSER:-xdg-open} \"$PWD/" ++ doc_page ++ "\" >/dev/null 2>&1 & )"
 
-$ site_url : @str = "http://localhost:8000"
+$ site_url : @Str = "http://localhost:8000"
 
 # The playground links with wasm-ld, which only the web app's own dev shell
 # carries (applications/web/flake.nix), so the build runs inside it.
-$ site_build_cmd : @str =
-	"nix develop ./applications/web --command node applications/web/build.mjs"
+$ site_build_cmd : @Str = "nix develop ./applications/web --command node applications/web/build.mjs"
 
-$ site_serve_cmd : @str = "node applications/web/serve.mjs"
+$ site_serve_cmd : @Str = "node applications/web/serve.mjs"
 
 # The server holds the terminal, so the browser has to be launched before it,
 # and after a moment so it does not beat the listen.
-$ site_open_cmd : @str =
-	"( sleep 1; ${BROWSER:-xdg-open} \"" ++ site_url ++ "\" >/dev/null 2>&1 & )"
+$ site_open_cmd : @Str =
+    "( sleep 1; ${BROWSER:-xdg-open} \"" ++ site_url ++ "\" >/dev/null 2>&1 & )"
 
 # Uncommitted changes would silently ride along to the other branch.
-$ clean_tree_check : @str =
-	"if ! git diff --quiet || ! git diff --cached --quiet; then "
-	++ "echo 'thxdo: uncommitted changes, commit or stash them first' >&2; exit 1; fi; "
+$ clean_tree_check : @Str =
+    "if ! git diff --quiet || ! git diff --cached --quiet; then "
+        ++ "echo 'thxdo: uncommitted changes, commit or stash them first' >&2; exit 1; fi; "
 
 # An existing branch for the issue is reused, so `start N` also means "go back
 # to N". `--no-track` keeps the branch from adopting origin/master as upstream.
-$ start_cmd : @str -> @str = \n =
-	"set -e; n=" ++ n ++ "; "
-	++ clean_tree_check
-	++ "b=$(git for-each-ref --format='%(refname:short)' \"refs/heads/$n-*\" | head -n 1); "
-	++ "if [ -n \"$b\" ]; then git switch \"$b\"; exit 0; fi; "
-	++ "title=$(gh issue view \"$n\" --json title -q .title); "
-	++ "slug=$(printf '%s' \"$title\" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' "
-	++ "| cut -c 1-40 | sed 's/^-*//; s/-*$//'); "
-	++ "git fetch --quiet origin master; "
-	++ "git switch --no-track -c \"$n-$slug\" origin/master; "
-	++ "echo \"thxdo: on $n-$slug ($title)\""
+$ start_cmd : @Str -> @Str = \n =
+    "set -e; n="
+        ++ n
+        ++ "; "
+        ++ clean_tree_check
+        ++ "b=$(git for-each-ref --format='%(refname:short)' \"refs/heads/$n-*\" | head -n 1); "
+        ++ "if [ -n \"$b\" ]; then git switch \"$b\"; exit 0; fi; "
+        ++ "title=$(gh issue view \"$n\" --json title -q .title); "
+        ++ "slug=$(printf '%s' \"$title\" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' "
+        ++ "| cut -c 1-40 | sed 's/^-*//; s/-*$//'); "
+        ++ "git fetch --quiet origin master; "
+        ++ "git switch --no-track -c \"$n-$slug\" origin/master; "
+        ++ "echo \"thxdo: on $n-$slug ($title)\""
 
 # PRs are squash-merged, so a merged branch is never an ancestor of master and
 # `git branch -d` refuses it. GitHub's PR state is the merge signal instead.
-$ done_cmd : @str =
-	"set -e; b=$(git branch --show-current); "
-	++ "if [ \"$b\" != master ]; then " ++ clean_tree_check ++ "git switch master; fi; "
-	++ "git pull --ff-only; "
-	++ "if [ -n \"$b\" ] && [ \"$b\" != master ]; then "
-	++ "state=$(gh pr view \"$b\" --json state -q .state 2>/dev/null || echo NONE); "
-	++ "if [ \"$state\" = MERGED ]; then git branch -D \"$b\"; "
-	++ "else echo \"thxdo: kept $b (PR: $state)\"; fi; fi"
+$ done_cmd : @Str =
+    "set -e; b=$(git branch --show-current); "
+        ++ "if [ \"$b\" != master ]; then "
+        ++ clean_tree_check
+        ++ "git switch master; fi; "
+        ++ "git pull --ff-only; "
+        ++ "if [ -n \"$b\" ] && [ \"$b\" != master ]; then "
+        ++ "state=$(gh pr view \"$b\" --json state -q .state 2>/dev/null || echo NONE); "
+        ++ "if [ \"$state\" = MERGED ]; then git branch -D \"$b\"; "
+        ++ "else echo \"thxdo: kept $b (PR: $state)\"; fi; fi"
 
-$ ffi_prefix : @str = "external/artifacts/libffi"
+$ ffi_prefix : @Str = "external/artifacts/libffi"
 
-$ musl_prefix : @str = "external/artifacts/musl"
+$ musl_prefix : @Str = "external/artifacts/musl"
 
-$ musl_src : @str = "external/musl"
+$ musl_src : @Str = "external/musl"
 
-$ musl_tag : @str = "v1.2.5"
+$ musl_tag : @Str = "v1.2.5"
 
-$ dist_dir : @str = "target/dist"
+$ dist_dir : @Str = "target/dist"
 
 # Exit status 0 when the archive at `stamp` is missing or older than a file
 # under `src` (outside `prune`), the way make decides a target is out of date.
-$ stale_cmd : @str -> @str -> @str -> @str = \stamp src prune =
-	"[ ! -f " ++ stamp ++ " ] || [ -n \"$(find " ++ src ++ " -path '" ++ prune
-	++ "' -prune -o -type f -newer " ++ stamp ++ " -print -quit)\" ]"
+$ stale_cmd : @Str -> @Str -> @Str -> @Str = \stamp src prune =
+    "[ ! -f "
+        ++ stamp
+        ++ " ] || [ -n \"$(find "
+        ++ src
+        ++ " -path '"
+        ++ prune
+        ++ "' -prune -o -type f -newer "
+        ++ stamp
+        ++ " -print -quit)\" ]"
 
-$ ffi_stale_cmd : @str =
-	stale_cmd (ffi_prefix ++ "/lib/libffi.a") "external/libffi" "*/autom4te.cache"
+$ ffi_stale_cmd : @Str =
+    stale_cmd (ffi_prefix ++ "/lib/libffi.a") "external/libffi" "*/autom4te.cache"
 
-$ musl_stale_cmd : @str =
-	stale_cmd (musl_prefix ++ "/lib/libc.a") musl_src (musl_src ++ "/.git")
+$ musl_stale_cmd : @Str = stale_cmd (musl_prefix ++ "/lib/libc.a") musl_src (musl_src ++ "/.git")
 
 # The subtree carries no generated `configure`, so the build bootstraps one with
 # autoreconf. It works on a copy of the tracked files: an in-tree configure would
 # leave generated files in external/libffi and block the next out-of-tree build.
-$ ffi_build_cmd : @str =
-	"set -e; root=$PWD; b=target/libffi-build; p=$root/" ++ ffi_prefix ++ "; "
-	++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; "
-	++ "git ls-files -z external/libffi | tar --null -T - -cf - | tar -xf - -C $b; "
-	++ "cd $b/external/libffi; "
-	++ "autoreconf -fi; "
-	++ "./configure --disable-shared --enable-static --with-pic "
-	++ "--disable-docs --disable-multi-os-directory --prefix=$p; "
-	++ "make -j" ++ jobs ++ "; rm -rf $p; make install"
+$ ffi_build_cmd : @Str =
+    "set -e; root=$PWD; b=target/libffi-build; p=$root/"
+        ++ ffi_prefix
+        ++ "; "
+        ++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; "
+        ++ "git ls-files -z external/libffi | tar --null -T - -cf - | tar -xf - -C $b; "
+        ++ "cd $b/external/libffi; "
+        ++ "autoreconf -fi; "
+        ++ "./configure --disable-shared --enable-static --with-pic "
+        ++ "--disable-docs --disable-multi-os-directory --prefix=$p; "
+        ++ "make -j"
+        ++ jobs
+        ++ "; rm -rf $p; make install"
 
 # The machine's core count for `make -j`, in a spelling Linux and macOS share.
-$ jobs : @str = "$(getconf _NPROCESSORS_ONLN)"
+$ jobs : @Str = "$(getconf _NPROCESSORS_ONLN)"
 
 # autoreconf and libtool are too heavy for the everyday dev shell, so they come
 # from external/flake.nix unless the environment already has them.
-$ ffi_wrap : @str -> <@io> @str = \cmd =
-	if C.system "command -v autoreconf >/dev/null 2>&1" == 0 => "sh -c " ++ sh_quote cmd
-	else "nix develop ./external --command sh -c " ++ sh_quote cmd
+$ ffi_wrap : @Str -> <@IO> @Str = \cmd =
+    if C.system "command -v autoreconf >/dev/null 2>&1" == 0 => "sh -c " ++ sh_quote cmd
+    else "nix develop ./external --command sh -c " ++ sh_quote cmd
 
-$ musl_fetch_cmd : @str =
-	"[ -d " ++ musl_src ++ " ] || git clone --quiet --depth 1 --branch " ++ musl_tag
-	++ " https://git.musl-libc.org/git/musl " ++ musl_src
+$ musl_fetch_cmd : @Str =
+    "[ -d "
+        ++ musl_src
+        ++ " ] || git clone --quiet --depth 1 --branch "
+        ++ musl_tag
+        ++ " https://git.musl-libc.org/git/musl "
+        ++ musl_src
 
-$ musl_build_cmd : @str =
-	"set -e; root=$PWD; b=target/musl-build; p=$root/" ++ musl_prefix ++ "; "
-	++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; cd $b; "
-	++ "$root/" ++ musl_src ++ "/configure --prefix=$p --syslibdir=$p/lib --disable-shared; "
-	++ "make -j" ++ jobs ++ "; rm -rf $p; make install"
+$ musl_build_cmd : @Str =
+    "set -e; root=$PWD; b=target/musl-build; p=$root/"
+        ++ musl_prefix
+        ++ "; "
+        ++ "rm -rf $b; mkdir -p $b; exec >$b.log 2>&1; cd $b; "
+        ++ "$root/"
+        ++ musl_src
+        ++ "/configure --prefix=$p --syslibdir=$p/lib --disable-shared; "
+        ++ "make -j"
+        ++ jobs
+        ++ "; rm -rf $p; make install"
 
-$ release_cargo_cmd : @str =
-	"THRAX_LIBFFI=$PWD/" ++ ffi_prefix ++ " cargo build --release"
+$ release_cargo_cmd : @Str = "THRAX_LIBFFI=$PWD/" ++ ffi_prefix ++ " cargo build --release"
 
 # The layout the flake's installPhase produces, which is where the compiler
 # looks for library/, its shared library and lib/musl relative to its own path.
 # `release` is cargo's output directory, `exe` the compiler's file name and
 # `libs` the compiler libraries for lib/.
-$ dist_layout_cmd : @str -> @str -> @str -> @str = \release exe libs =
-	"set -e; d=" ++ dist_dir ++ "; r=" ++ release ++ "; rm -rf $d; "
-	++ "mkdir -p $d/bin $d/lib $d/include $d/library; "
-	++ "cp $r/" ++ exe ++ " $d/bin/; "
-	++ "for f in " ++ libs ++ "; do cp $r/$f $d/lib/; done; "
-	++ "cp crates/thrax/include/thrax.h $d/include/; "
-	++ "cp library/*.thx $d/library/"
+$ dist_layout_cmd : @Str -> @Str -> @Str -> @Str = \release exe libs =
+    "set -e; d="
+        ++ dist_dir
+        ++ "; r="
+        ++ release
+        ++ "; rm -rf $d; "
+        ++ "mkdir -p $d/bin $d/lib $d/include $d/library; "
+        ++ "cp $r/"
+        ++ exe
+        ++ " $d/bin/; "
+        ++ "for f in "
+        ++ libs
+        ++ "; do cp $r/$f $d/lib/; done; "
+        ++ "cp crates/thrax/include/thrax.h $d/include/; "
+        ++ "cp library/*.thx $d/library/"
 
-$ dist_cmd : @str =
-	dist_layout_cmd "target/release" "thrax"
-		(if TARGET.os == "macos" => "libthrax.dylib libthrax.a" else "libthrax.so libthrax.a")
+$ dist_cmd : @Str =
+    dist_layout_cmd "target/release" "thrax" (
+        if TARGET.os == "macos" => "libthrax.dylib libthrax.a" else "libthrax.so libthrax.a"
+    )
 
 # Windows is built from Linux: tools/windows/flake.nix cross-compiles with
 # MinGW-w64. libffi stays a DLL there, shipped beside thrax.exe, where Windows
 # looks for it.
-$ windows_shell : @str = "nix develop ./tools/windows --command "
+$ windows_shell : @Str = "nix develop ./tools/windows --command "
 
-$ windows_cargo_cmd : @str = windows_shell ++ "cargo build --release -p thrax"
+$ windows_cargo_cmd : @Str = windows_shell ++ "cargo build --release -p thrax"
 
-$ windows_dist_cmd : @str =
-	dist_layout_cmd "target/windows/x86_64-pc-windows-gnu/release" "thrax.exe"
-		"thrax.dll libthrax.dll.a libthrax.a"
-	++ "; " ++ windows_shell ++ "sh -c 'cp $LIBFFI/bin/libffi-*.dll " ++ dist_dir ++ "/bin/'"
+$ windows_dist_cmd : @Str =
+    dist_layout_cmd "target/windows/x86_64-pc-windows-gnu/release" "thrax.exe" "thrax.dll libthrax.dll.a libthrax.a"
+        ++ "; "
+        ++ windows_shell
+        ++ "sh -c 'cp $LIBFFI/bin/libffi-*.dll "
+        ++ dist_dir
+        ++ "/bin/'"
 
 # musl-gcc and its specs file hard-code the build prefix; the compiler writes a
 # specs file for wherever the sysroot is found instead.
-$ dist_musl_cmd : @str =
-	"set -e; m=" ++ dist_dir ++ "/lib/musl; mkdir -p $m; "
-	++ "cp -r " ++ musl_prefix ++ "/include " ++ musl_prefix ++ "/lib $m/; "
-	++ "rm -f $m/lib/musl-gcc.specs"
+$ dist_musl_cmd : @Str =
+    "set -e; m="
+        ++ dist_dir
+        ++ "/lib/musl; mkdir -p $m; "
+        ++ "cp -r "
+        ++ musl_prefix
+        ++ "/include "
+        ++ musl_prefix
+        ++ "/lib $m/; "
+        ++ "rm -f $m/lib/musl-gcc.specs"
 
-$ step : @str -> @str -> <@io> @bool = \what cmd =
-	if C.system cmd == 0 => @true
-	else print ("thxdo: " ++ what ++ " FAILED\n"); @false
+$ step : @Str -> @Str -> <@IO> @Bool = \what cmd =
+    if C.system cmd == 0 => @true else print ("thxdo: " ++ what ++ " FAILED\n"); @false
 
-$ refresh_ffi : {} -> <@io> @bool = \u =
-	if C.system ffi_stale_cmd == 0 =>
-		println "thxdo: building libffi from external/libffi ...";
-		step "libffi build (log: target/libffi-build.log)" (ffi_wrap ffi_build_cmd)
-	else println "thxdo: libffi is up to date"; @true
+$ refresh_ffi : {} -> <@IO> @Bool = \u =
+    if C.system ffi_stale_cmd == 0 =>
+        println "thxdo: building libffi from external/libffi ...";
+        step "libffi build (log: target/libffi-build.log)" (ffi_wrap ffi_build_cmd)
+    else println "thxdo: libffi is up to date"; @true
 
-$ refresh_musl : {} -> <@io> @bool = \u =
-	if step "musl fetch" musl_fetch_cmd =>
-		if C.system musl_stale_cmd == 0 =>
-			println "thxdo: building musl from external/musl ...";
-			step "musl build (log: target/musl-build.log)" musl_build_cmd
-		else println "thxdo: musl is up to date"; @true
-	else @false
+$ refresh_musl : {} -> <@IO> @Bool = \u =
+    if step "musl fetch" musl_fetch_cmd =>
+        if C.system musl_stale_cmd == 0 =>
+            println "thxdo: building musl from external/musl ...";
+            step "musl build (log: target/musl-build.log)" musl_build_cmd
+        else println "thxdo: musl is up to date"; @true
+    else @false
 
-$ is_linux : {} -> <@io> @bool = \u = TARGET.os == "linux"
+$ is_linux : {} -> <@IO> @Bool = \u = TARGET.os == "linux"
 
-$ release_build : @str -> <@io> @bool = \libc =
-	let musl = (is libc | "musl" => @true | _ => @false) in
-	if musl && !(is_linux {}) =>
-		println "thxdo: musl is for Linux; this platform links its own C library"; @false
-	else
-		refresh_ffi {}
-		&& (if musl => refresh_musl {} else @true)
-		&& step "cargo build --release" release_cargo_cmd
-		&& step "dist" dist_cmd
-		&& (if musl => step "dist musl" dist_musl_cmd else @true)
-		&& (println ("thxdo: release compiler in " ++ dist_dir ++ "/bin/thrax"); @true)
+$ release_build : @Str -> <@IO> @Bool = \libc =
+    let musl = (is libc | "musl" => @true | _ => @false) in
+    if musl && !(is_linux {}) =>
+        println "thxdo: musl is for Linux; this platform links its own C library"; @false
+    else
+        refresh_ffi {}
+            && (if musl => refresh_musl {} else @true)
+            && step "cargo build --release" release_cargo_cmd
+            && step "dist" dist_cmd
+            && (if musl => step "dist musl" dist_musl_cmd else @true)
+            && (println ("thxdo: release compiler in " ++ dist_dir ++ "/bin/thrax"); @true)
 
-$ windows_release : {} -> <@io> @bool = \u =
-	step "cross build (tools/windows)" windows_cargo_cmd
-	&& step "dist" windows_dist_cmd
-	&& (println ("thxdo: Windows release in " ++ dist_dir ++ "/bin/thrax.exe"); @true)
+$ windows_release : {} -> <@IO> @Bool = \u =
+    step "cross build (tools/windows)" windows_cargo_cmd
+        && step "dist" windows_dist_cmd
+        && (println ("thxdo: Windows release in " ++ dist_dir ++ "/bin/thrax.exe"); @true)
 
-$ build_task : @bool -> @vec @str -> <@io> @bool = \clean args =
-	is arg_or args 2 ""
-		| "" =>
-			(if clean => C.system "cargo clean --profile dev" else 0);
-			step "cargo build" "cargo build"
-		| "release" =>
-			let libc = arg_or args 3 (if is_linux {} => "musl" else "gnu") in
-			(is libc
-				| "musl" | "gnu" =>
-					(if clean => C.system ("cargo clean --release; rm -rf " ++ dist_dir) else 0);
-					release_build libc
-				| "windows" =>
-					(if clean => C.system ("rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir) else 0);
-					windows_release {}
-				| _ => println ("thxdo: unknown release `" ++ libc ++ "` (musl, gnu or windows)"); @false)
-		| other =>
-			println ("thxdo: unknown build mode `" ++ other ++ "` (try `release`)"); @false
+$ build_task : @Bool -> @Vec @Str -> <@IO> @Bool = \clean args =
+    is arg_or args 2 ""
+    | "" =>
+        (if clean => C.system "cargo clean --profile dev" else 0); step "cargo build" "cargo build"
+    | "release" =>
+        let libc = arg_or args 3 (if is_linux {} => "musl" else "gnu") in
+        (
+            is libc
+            | "musl" | "gnu" =>
+                (if clean => C.system ("cargo clean --release; rm -rf " ++ dist_dir) else 0);
+                release_build libc
+            | "windows" =>
+                (
+                    if clean =>
+                        C.system (
+                            "rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir
+                        )
+                    else 0
+                );
+                windows_release {}
+            | _ =>
+                println ("thxdo: unknown release `" ++ libc ++ "` (musl, gnu or windows)"); @false
+        )
+    | other => println ("thxdo: unknown build mode `" ++ other ++ "` (try `release`)"); @false
 
-$ clean_task : @vec @str -> <@io> @bool = \args =
-	is arg_or args 2 ""
-		| ""    => step "cargo clean" "cargo clean"
-		| "all" => step "cargo clean" "cargo clean" && step "clean" "rm -rf external/artifacts"
-		| other => println ("thxdo: unknown clean mode `" ++ other ++ "` (try `all`)"); @false
+$ clean_task : @Vec @Str -> <@IO> @Bool = \args =
+    is arg_or args 2 ""
+    | "" => step "cargo clean" "cargo clean"
+    | "all" => step "cargo clean" "cargo clean" && step "clean" "rm -rf external/artifacts"
+    | other => println ("thxdo: unknown clean mode `" ++ other ++ "` (try `all`)"); @false
 
-$ sh_quote : @str -> @str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
+$ sh_quote : @Str -> @Str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
 
-$ quoted_from : @vec @str -> @int -> @str = \args i =
-	if @vec_len args <= i => ""
-	else " " ++ sh_quote (@vec_get args i) ++ quoted_from args (i + 1)
+$ quoted_from : @Vec @Str -> @Int -> @Str = \args i =
+    if @vec_len args <= i => "" else " " ++ sh_quote (@vec_get args i) ++ quoted_from args (i + 1)
 
-$ arg_or : @vec @str -> @int -> @str -> @str = \args i d =
-	if @vec_len args <= i => d else @vec_get args i
+$ arg_or : @Vec @Str -> @Int -> @Str -> @Str = \args i d =
+    if @vec_len args <= i => d else @vec_get args i
 
-$ run_command: @vec @str -> <@io> @bool = \args =
-	is @vec_get args 1
-		| "build"   => build_task @true args
-		| "test"    => C.system "cargo clean"; C.system "cargo test"; @true 
-		| "rebuild" => build_task @false args
-		| "clean"   => clean_task args
-		| "install" => C.system "nix profile remove Thrax"; C.system "nix profile add"; @true
-		| "issue"   => C.system ("gh issue create" ++ quoted_from args 2) == 0
-		| "start"   =>
-			(is STR.to_int (arg_or args 2 "")
-				| Option.Some.{n} if n > 0 => C.system (start_cmd (int_to_str n)) == 0
-				| _ => print "thxdo: usage: thxdo start <issue-number>\n"; @false)
-		| "done"    => C.system done_cmd == 0
-		| "readme"  =>
-			println "thxdo: regenerating README.md ...";
-			let rc = C.system readme_cmd in
-			println (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
-			if 0 == rc => @true else @false
-		| "corpus"  =>
-			let wasm = arg_or args 2 "" == "wasm" in
-			println "thxdo: running tests/MAIN.thx on both engines ...";
-			if corpus_task wasm => println "thxdo: corpus OK (engines agree)"; @true
-			else println "thxdo: corpus FAILED"; @false
-		| "tree-sitter" =>
-			let rc = C.system tree_sitter_cmd in
-			println (if rc == 0 => "thxdo: tree-sitter grammar OK" else "thxdo: tree-sitter FAILED");
-			if 0 == rc => @true else @false
-		| "tags" => C.system (tags_cmd args) == 0
-		| "fmt" =>
-			let check = arg_or args 2 "" == "check" in
-			let rc = C.system (fmt_cmd check) in
-			println (if rc == 0 => "thxdo: fmt OK" else "thxdo: fmt FAILED");
-			if 0 == rc => @true else @false
-		| "grammar" =>
-			println "thxdo: checking documentation/thrax.y ...";
-			let rc = C.system grammar_cmd in
-				if rc == 0 => println "thxdo: grammar OK"; @true
-				else
-					println "thxdo: grammar FAILED (counterexamples below)";
-					C.system grammar_verbose_cmd;
-					@false
-		| "doc"     =>
-			println "thxdo: building rustdoc ...";
-			let rc = C.system "cargo doc --workspace --no-deps" in
-				if rc == 0 =>
-					println ("thxdo: opening " ++ doc_page); C.system doc_open_cmd;
-					@true
-				else
-					println "thxdo: doc FAILED";
-					@false
-		| "site"     =>
-			println "thxdo: rebuilding the playground wasm ...";
-			let rc = C.system site_build_cmd in
-				if rc == 0 =>
-					println ("thxdo: serving " ++ site_url ++ " (Ctrl-C to stop)");
-					C.system site_open_cmd;
-					C.system site_serve_cmd;
-					@true
-				else
-					println "thxdo: site build FAILED";
-					@false
-		| "sdk_path" => println (env "THRAX_ROOT"); @true
-		| "stats"    => C.system "tokei --exclude external --exclude applications"; @true
-		| "all"      =>
-			C.system <|
-				"cargo clean && cargo build && echo 'thxdo: regenerating README.md ...' && "
-					++ readme_cmd;
-			@true
-		| "help"     => print help_text; @true
-		| _ =>
-			print ("thxdo: unknown command\n\n" ++ help_text);
-			@false
+$ run_command: @Vec @Str -> <@IO> @Bool = \args =
+    is @vec_get args 1
+    | "build" => build_task @true args
+    | "test" => C.system "cargo clean"; C.system "cargo test"; @true
+    | "rebuild" => build_task @false args
+    | "clean" => clean_task args
+    | "install" => C.system "nix profile remove Thrax"; C.system "nix profile add"; @true
+    | "issue" => C.system ("gh issue create" ++ quoted_from args 2) == 0
+    | "start" =>
+        (
+            is STR.to_int (arg_or args 2 "")
+            | Option.Some.{ n } if n > 0 => C.system (start_cmd (int_to_str n)) == 0
+            | _ => print "thxdo: usage: thxdo start <issue-number>\n"; @false
+        )
+    | "done" => C.system done_cmd == 0
+    | "readme" =>
+        println "thxdo: regenerating README.md ...";
+        let rc = C.system readme_cmd in
+        println (if rc == 0 => "thxdo: README.md updated" else "thxdo: readme FAILED");
+        if 0 == rc => @true else @false
+    | "corpus" =>
+        let wasm = arg_or args 2 "" == "wasm" in
+        println "thxdo: running tests/MAIN.thx on both engines ...";
+        if corpus_task wasm => println "thxdo: corpus OK (engines agree)"; @true
+        else println "thxdo: corpus FAILED"; @false
+    | "tree-sitter" =>
+        let rc = C.system tree_sitter_cmd in
+        println (if rc == 0 => "thxdo: tree-sitter grammar OK" else "thxdo: tree-sitter FAILED");
+        if 0 == rc => @true else @false
+    | "tags" => C.system (tags_cmd args) == 0
+    | "fmt" =>
+        let check = arg_or args 2 "" == "check" in
+        let rc = C.system (fmt_cmd check) in
+        println (if rc == 0 => "thxdo: fmt OK" else "thxdo: fmt FAILED");
+        if 0 == rc => @true else @false
+    | "hooks" =>
+        let rc = C.system "git config core.hooksPath tools/hooks" in
+        println (
+            if rc == 0 => "thxdo: git hooks installed from tools/hooks" else "thxdo: hooks FAILED"
+        );
+        if 0 == rc => @true else @false
+    | "grammar" =>
+        println "thxdo: checking documentation/thrax.y ...";
+        let rc = C.system grammar_cmd in
+        if rc == 0 => println "thxdo: grammar OK"; @true
+        else
+            println "thxdo: grammar FAILED (counterexamples below)";
+            C.system grammar_verbose_cmd;
+            @false
+    | "doc" =>
+        println "thxdo: building rustdoc ...";
+        let rc = C.system "cargo doc --workspace --no-deps" in
+        if rc == 0 => println ("thxdo: opening " ++ doc_page); C.system doc_open_cmd; @true
+        else println "thxdo: doc FAILED"; @false
+    | "site" =>
+        println "thxdo: rebuilding the playground wasm ...";
+        let rc = C.system site_build_cmd in
+        if rc == 0 =>
+            println ("thxdo: serving " ++ site_url ++ " (Ctrl-C to stop)");
+            C.system site_open_cmd;
+            C.system site_serve_cmd;
+            @true
+        else println "thxdo: site build FAILED"; @false
+    | "sdk_path" => println (env "THRAX_ROOT"); @true
+    | "stats" => C.system "tokei --exclude external --exclude applications"; @true
+    | "all" =>
+        C.system <| "cargo clean && cargo build && echo 'thxdo: regenerating README.md ...' && "
+            ++ readme_cmd;
+        @true
+    | "help" => print help_text; @true
+    | _ => print ("thxdo: unknown command\n\n" ++ help_text); @false
 
 #-
  - \args(1) : command
  - \note : if no command present, show help msg
  -#
-$ @main : @vec @str -> <@io> @int = \args =
-	if @vec_len args < 2 =>
-		print help_text; 0
-	else
-		if run_command args => 0
-		else 1
+$ @main : @Vec @Str -> <@IO> @Int = \args =
+    if @vec_len args < 2 => print help_text; 0 else if run_command args => 0 else 1

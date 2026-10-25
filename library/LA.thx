@@ -15,33 +15,31 @@ $ @mod LA
 # tensor candidate forwards to the `@tensor_index` primitive; a custom container adds
 # its own hook overload (the two coexist by the import merge), so any type can join
 # the `.[..]` surface.
-$ impl_IIndex_for_tensor : @IIndex ([n]a) @int a = .{ .index = \t i = @tensor_index t i }
+$ impl_IIndex_for_tensor : @IIndex ([n] a) @Int a = .{ .index = \t i = @tensor_index t i }
 
 # Thin names over the remaining primitives.
-$ length : [n]a -> @int = \t = @tensor_length t
-$ create : [n]x -> (@int -> a) -> [n]a = \t f = @tensor_create t f
-$ concat : [n]a -> [m]a -> [n+m]a = \x y = @tensor_concat x y
+$ length : [n] a -> @Int = \t = @tensor_length t
+$ create : [n] x -> (@Int -> a) -> [n] a = \t f = @tensor_create t f
+$ concat : [n] a -> [m] a -> [n + m] a = \x y = @tensor_concat x y
 
 # O(1) VIEWS (share the buffer, copy nothing). `slice` takes `[lo, hi)` of the
 # leading axis; `row i` is a row; `col j` is a column (a strided view, via the O(1)
 # transpose). The sliced size is a runtime value, so it is not tracked statically
 # (indexing stays modular/total).
-$ slice : [n]a -> @int -> @int -> [k]a = \t lo hi = @tensor_slice t lo hi
-$ row : [m][n]a -> @int -> [n]a = \t i = t.[i]
-$ col : [m][n]a -> @int -> [m]a = \t j = (transpose t).[j]
+$ slice : [n] a -> @Int -> @Int -> [k] a = \t lo hi = @tensor_slice t lo hi
+$ row : [m] [n] a -> @Int -> [n] a = \t i = t.[i]
+$ col : [m] [n] a -> @Int -> [m] a = \t j = (transpose t).[j]
 
 # Transpose swaps the two axes. This is O(1): `@tensor_transpose` returns a VIEW
 # that shares the buffer and only swaps the shape/strides, copying nothing.
-$ transpose : [m][n]a -> [n][m]a = \t = @tensor_transpose t
+$ transpose : [m] [n] a -> [n] [m] a = \t = @tensor_transpose t
 
 # Dot product: a reduction, so a plain recursive loop over `length`/`index`, with
 # the element arithmetic arriving as the context: the three operations it needs,
 # bundled. Any element type with them works, CORE's numbers and `Cpx` included.
-$ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e x y =
-	let go = \i acc =
-		if i == length x => acc
-		else go (i + 1) (e.0.add acc (e.1.mul x.[i] y.[i]))
-	in go 0 e.2.zero
+$ dot : @ctx { IAdd a, IMul a, IZero a } -> [n] a -> [n] a -> a = \e x y =
+    let go = \i acc = if i == length x => acc else go (i + 1) (e.0.add acc (e.1.mul x.[i] y.[i])) in
+    go 0 e.2.zero
 
 # Matrix multiply: transpose `b` so its columns are rows, then each result cell is
 # the dot of a row of `a` with a column of `b`. The shared inner dimension `k`
@@ -53,39 +51,35 @@ $ dot : @ctx {IAdd a, IMul a, IZero a} -> [n]a -> [n]a -> a = \e x y =
 # one). So swapping a factor's variance is a type error, not just a shape mismatch.
 # A plain unmarked `[m][n]` matrix still works: a neutral axis is compatible with
 # either variance.
-$ matmul : @ctx {IAdd t, IMul t, IZero t} -> [@contra m, @co k]t -> [@contra k, @co n]t -> [@contra m, @co n]t
-	= \e a b =
-	let bt = transpose b in
-	create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))
+$ matmul : @ctx { IAdd t, IMul t, IZero t } -> [@contra m, @co k] t -> [@contra k, @co n] t -> [@contra m, @co n] t = \e a b =
+    let bt = transpose b in create a (\i = create (b.[0]) (\j = dot (@ctx e) a.[i] bt.[j]))
 
 # ---- maps ----
 
 # `map f t` applies `f` along the leading axis: to each element of a vector, to
 # each row of a matrix.
-$ map : (a -> b) -> [n]a -> [n]b = \f t = create t (\i = f t.[i])
+$ map : (a -> b) -> [n] a -> [n] b = \f t = create t (\i = f t.[i])
 
 # `map f t` with the leading axis split into `chunks` slices (O(1) views), each
 # mapped by a pure parallel task. The result equals `map f t`, element for
 # element; `f` is pure, so the order the tasks run in cannot show.
-$ par_map_chunks : @int -> (a -> b) -> [n]a -> [n]b = \chunks f t =
-	let n = length t in
-	let c = if chunks < 1 => 1 else chunks in
-	let size = if n < c => 1 else (n + c - 1) / c in
-	let parts = await_parts (spawn_parts f t size 0 (@vec_new {})) 0 (@vec_new {}) in
-	create t (\i = (@vec_get parts (i / size)).[i % size])
+$ par_map_chunks : @Int -> (a -> b) -> [n] a -> [n] b = \chunks f t =
+    let n = length t in
+    let c = if chunks < 1 => 1 else chunks in
+    let size = if n < c => 1 else (n + c - 1) / c in
+    let parts = await_parts (spawn_parts f t size 0 (@vec_new {})) 0 (@vec_new {}) in
+    create t (\i = (@vec_get parts (i / size)).[i % size])
 
-$ par_map : (a -> b) -> [n]a -> [n]b = \f t = par_map_chunks 64 f t
+$ par_map : (a -> b) -> [n] a -> [n] b = \f t = par_map_chunks 64 f t
 
-$ spawn_parts : (a -> b) -> [n]a -> @int -> @int -> @vec (@future ([k]b))
-	-> @vec (@future ([k]b)) = \f t size lo acc =
-	let n = length t in
-	if lo >= n => acc
-	else
-		let hi = if lo + size > n => n else lo + size in
-		let part = slice t lo hi in
-		let fut = @par (\u = map f part) in
-		spawn_parts f t size hi (@vec_push acc fut)
+$ spawn_parts : (a -> b) -> [n] a -> @Int -> @Int -> @Vec (@Future ([k] b)) -> @Vec (@Future ([k] b)) = \f t size lo acc =
+    let n = length t in
+    if lo >= n => acc
+    else
+        let hi = if lo + size > n => n else lo + size in
+        let part = slice t lo hi in
+        let fut = @par (\u = map f part) in spawn_parts f t size hi (@vec_push acc fut)
 
-$ await_parts : @vec (@future ([k]b)) -> @int -> @vec ([k]b) -> @vec ([k]b) = \futs i acc =
-	if i >= @vec_len futs => acc
-	else await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))
+$ await_parts : @Vec (@Future ([k] b)) -> @Int -> @Vec ([k] b) -> @Vec ([k] b) = \futs i acc =
+    if i >= @vec_len futs => acc
+    else await_parts futs (i + 1) (@vec_push acc (@await (@vec_get futs i)))

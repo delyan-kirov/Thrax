@@ -14,48 +14,42 @@ $ with MATH
 $ with STR
 
 $ Set : @struct t =
-	m: Map t {},
+    m: Map t {},
 
 # ---- construction ----
 
-$ new : (t -> t -> @int) -> Set t = \c = Set.{ .m = MAP.new c }
+$ new : (t -> t -> @Int) -> Set t = \c = Set.{ .m = MAP.new c }
 
-$ new_int : Set @int = Set.{ .m = MAP.new_int }
+$ new_int : Set @Int = Set.{ .m = MAP.new_int }
 
-$ new_str : Set @str = Set.{ .m = MAP.new_str }
+$ new_str : Set @Str = Set.{ .m = MAP.new_str }
 
-$ from_list : (t -> t -> @int) -> @vec t -> Set t = \c xs =
-	foldl (\s x = add s x) (new c) xs
+$ from_list : (t -> t -> @Int) -> @Vec t -> Set t = \c xs = foldl (\s x = add s x) (new c) xs
 
 # ---- operations ----
 
 $ add : Set t -> t -> Set t = \s x = Set.{ .m = MAP.insert s.m x {} }
 
-$ has : Set t -> t -> @bool = \s x = MAP.has s.m x
+$ has : Set t -> t -> @Bool = \s x = MAP.has s.m x
 
 $ remove : Set t -> t -> Set t = \s x = Set.{ .m = MAP.remove s.m x }
 
-$ size : Set t -> @int = \s = MAP.size s.m
+$ size : Set t -> @Int = \s = MAP.size s.m
 
-$ is_empty : Set t -> @bool = \s = MAP.is_empty s.m
+$ is_empty : Set t -> @Bool = \s = MAP.is_empty s.m
 
 # Elements in ascending order.
-$ to_list : Set t -> @vec t = \s = keys s.m
+$ to_list : Set t -> @Vec t = \s = keys s.m
 
-$ fold : (a -> t -> a) -> a -> Set t -> a = \f acc s =
-	MAP.fold (\a k u = f a k) acc s.m
+$ fold : (a -> t -> a) -> a -> Set t -> a = \f acc s = MAP.fold (\a k u = f a k) acc s.m
 
-$ filter : (t -> @bool) -> Set t -> Set t = \p s =
-	Set.{ .m = MAP.filter (\k u = p k) s.m }
+$ filter : (t -> @Bool) -> Set t -> Set t = \p s = Set.{ .m = MAP.filter (\k u = p k) s.m }
 
 # ---- set algebra ----
 
-$ merge : Set t -> Set t -> Set t = \a b =
-	Set.{ .m = MAP.merge a.m b.m }
+$ merge : Set t -> Set t -> Set t = \a b = Set.{ .m = MAP.merge a.m b.m }
 
-$ inter : Set t -> Set t -> Set t = \a b =
-	filter (\x = has b x) a
+$ inter : Set t -> Set t -> Set t = \a b = filter (\x = has b x) a
 
 # Elements of `a` not in `b`.
-$ diff : Set t -> Set t -> Set t = \a b =
-	filter (\x = !(has b x)) a
+$ diff : Set t -> Set t -> Set t = \a b = filter (\x = !(has b x)) a

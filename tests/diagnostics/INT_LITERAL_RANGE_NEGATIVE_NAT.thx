@@ -1,4 +1,4 @@
 $ @mod INT_LITERAL_RANGE_NEGATIVE_NAT
 
 # A negated literal is a negative value, not the bits of a large unsigned one.
-$ n : @nat = -12  #~ error[INT_LITERAL_RANGE]: integer literal -12 is out of range for `@nat`
+$ n : @Nat = -12  #~ error[INT_LITERAL_RANGE]: integer literal -12 is out of range for `@Nat`

@@ -4,8 +4,8 @@ $ @mod EFFECT_OP_RIGID_ARG
 # it may pass it along, but not treat it as any one type.
 $ Store : @effect = put : a -> {},
 
-$ total : ({} -> <Store> {}) -> @int = \body =
+$ total : ({} -> <Store> {}) -> @Int = \body =
 	do body {}
 	ctl k
-	| Store.put x => let n : @int = x in n  #~ error[TYPE_MISMATCH]: expected @int, found `a` of `Store.put`
+	| Store.put x => let n : @Int = x in n  #~ error[TYPE_MISMATCH]: expected @Int, found `a` of `Store.put`
 	| u => 0

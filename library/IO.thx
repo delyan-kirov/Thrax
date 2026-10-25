@@ -15,90 +15,75 @@ $ with VEC
 
 # ---- console ----
 
-$ print : @str -> <@io> {} = \s =
-	C.write {1, s, @array_len s}; {}
+$ print : @Str -> <@IO> {} = \s = C.write { 1, s, @array_len s }; {}
 
-$ println : @str -> <@io> {} = \s =
-	C.write {1, s, @array_len s}; C.write {1, "\n", 1}; {}
+$ println : @Str -> <@IO> {} = \s = C.write { 1, s, @array_len s }; C.write { 1, "\n", 1 }; {}
 
-$ eprint : @str -> <@io> {} = \s =
-	C.write {2, s, @array_len s}; {}
+$ eprint : @Str -> <@IO> {} = \s = C.write { 2, s, @array_len s }; {}
 
-$ eprintln : @str -> <@io> {} = \s =
-	C.write {2, s, @array_len s}; C.write {2, "\n", 1}; {}
+$ eprintln : @Str -> <@IO> {} = \s = C.write { 2, s, @array_len s }; C.write { 2, "\n", 1 }; {}
 
-$ print_int : @int -> <@io> {} = \n = print (from_int n)
+$ print_int : @Int -> <@IO> {} = \n = print (from_int n)
 
-$ println_int : @int -> <@io> {} = \n = println (from_int n)
+$ println_int : @Int -> <@IO> {} = \n = println (from_int n)
 
 # One line from stdin, without the trailing newline. Returns "" at
 # end-of-input (indistinguishable from an empty line).
-$ read_line : {} -> <@io> @str = \u = read_line_acc ""
+$ read_line : {} -> <@IO> @Str = \u = read_line_acc ""
 
 # ---- files ----
 
-# The whole file as a @str; None when it cannot be opened. Reads are counted
+# The whole file as a @Str; None when it cannot be opened. Reads are counted
 # via fseek/ftell (SEEK_END = 2, SEEK_SET = 0), not EOF-terminated.
-$ read_file : @str -> <@io> Option @str = \path =
-	let f = C.fopen {path, "rb"} in
-	if f == 0 => Option.None
-	else
-		C.fseek {f, 0, 2};
-		let n = C.ftell f in
-		C.fseek {f, 0, 0};
-		let body = read_bytes f n "" in
-		C.fclose f;
-		Option.Some.{ body }
+$ read_file : @Str -> <@IO> Option @Str = \path =
+    let f = C.fopen { path, "rb" } in
+    if f == 0 => Option.None
+    else
+        C.fseek { f, 0, 2 };
+        let n = C.ftell f in
+        C.fseek { f, 0, 0 }; let body = read_bytes f n "" in C.fclose f; Option.Some.{ body }
 
 # The names (not paths) of a directory's entries, `.` and `..` excluded, sorted
 # byte-wise so the result never depends on the filesystem's or the locale's
 # order. Empty when the directory cannot be read.
-$ read_dir : @str -> <@io> @vec @str = \dir =
-	VEC.sort_by STR.cmp_str
-		(VEC.filter (\name = !(STR.is_empty name)) (STR.lines (C.dir_entries dir)))
+$ read_dir : @Str -> <@IO> @Vec @Str = \dir =
+    VEC.sort_by STR.cmp_str (
+        VEC.filter (\name = !(STR.is_empty name)) (STR.lines (C.dir_entries dir))
+    )
 
 # Write (truncating) / append `content` to the file; true on success, false
 # on failure to open.
-$ write_file : @str -> @str -> <@io> @bool = \path content =
-	spill_file path content "wb"
+$ write_file : @Str -> @Str -> <@IO> @Bool = \path content = spill_file path content "wb"
 
-$ append_file : @str -> @str -> <@io> @bool = \path content =
-	spill_file path content "ab"
+$ append_file : @Str -> @Str -> <@IO> @Bool = \path content = spill_file path content "ab"
 
-$ remove_file : @str -> <@io> @bool = \path =
-	(C.remove path) == 0
+$ remove_file : @Str -> <@IO> @Bool = \path = (C.remove path) == 0
 
 # The environment variable's value, or "" when unset (libc's NULL becomes
 # the empty string across the FFI).
-$ env : @str -> <@io> @str = \name = C.getenv name
+$ env : @Str -> <@IO> @Str = \name = C.getenv name
 
 # Seconds since the Unix epoch (libc time(NULL)).
-$ now : {} -> <@io> @int = \u = C.time 0
+$ now : {} -> <@IO> @Int = \u = C.time 0
 
 # ---- internal helpers ----
 
 $ @private
 
-$ read_line_acc : @str -> <@io> @str = \acc =
-	let c = C.getchar {} in
-	if c == 10 => acc
-	else if is_byte c => read_line_acc (@array_push acc c)
-	else acc
+$ read_line_acc : @Str -> <@IO> @Str = \acc =
+    let c = C.getchar {} in
+    if c == 10 => acc else if is_byte c => read_line_acc (@array_push acc c) else acc
 
 # `fgetc`/`getchar` return a byte, or EOF (-1).
-$ is_byte : @int -> @bool = \c =
-	if c < 0 => @false else c <= 255
+$ is_byte : @Int -> @Bool = \c = if c < 0 => @false else c <= 255
 
-$ read_bytes : @int -> @int -> @str -> <@io> @str = \f n acc =
-	if n <= 0 => acc
-	else
-		let c = C.fgetc f in
-		if is_byte c => read_bytes f (n - 1) (@array_push acc c)
-		else acc # stream ended early (unreadable path, truncated file)
+$ read_bytes : @Int -> @Int -> @Str -> <@IO> @Str = \f n acc =
+    if n <= 0 => acc
+    else
+        let c = C.fgetc f in
+        if is_byte c => read_bytes f (n - 1) (@array_push acc c)
+        else acc # stream ended early (unreadable path, truncated file)
 
-$ spill_file : @str -> @str -> @str -> <@io> @bool = \path content mode =
-	let f = C.fopen {path, mode} in
-	if f == 0 => @false
-	else
-		C.fwrite {content, 1, @array_len content, f};
-		(C.fclose f) == 0
+$ spill_file : @Str -> @Str -> @Str -> <@IO> @Bool = \path content mode =
+    let f = C.fopen { path, mode } in
+    if f == 0 => @false else C.fwrite { content, 1, @array_len content, f }; (C.fclose f) == 0

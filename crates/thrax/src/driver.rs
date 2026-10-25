@@ -704,7 +704,7 @@ fn lower_all(
         // can still run; the final strict compile below validates the result.
         let compiled = compile_sources(&loaded, true, want_entry)?;
         // Gather every `@e` site this round: expression-position (`ct_evals`,
-        // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@code`,
+        // embed the value) and item-position (`ct_runs`, `$ @e X`: inject `@Code`,
         // apply a `BUILD` directive, or discard).
         let expr_sites: Vec<(String, String, utilities::Span)> = compiled
             .0
@@ -804,7 +804,7 @@ fn lower_all(
         // `@build` first, and alone in its round: it contributes the definitions
         // the rest of the compile-time code may depend on, so its items have to
         // land before any `$ @e` that reads them runs. Each `@build` is forced
-        // once, and the items of the `@code` it returns are APPENDED to its
+        // once, and the items of the `@Code` it returns are APPENDED to its
         // module's source. Appending (rather than replacing a span, as an `$ @e`
         // directive does) is what makes `@build` a definition that stays put: it
         // contributes items to its module instead of becoming them. Whatever it
@@ -826,11 +826,11 @@ fn lower_all(
                 }
             };
             // The signature check in `compile_sources` already pinned the result
-            // type, so this guards only a malformed `@code` value.
+            // type, so this guards only a malformed `@Code` value.
             let Some(items) = as_code_src(&v) else {
                 clear_meta_hosts();
                 eprintln!(
-                    "thrax: `{}` of module `{module}` did not produce an `@code` of \
+                    "thrax: `{}` of module `{module}` did not produce an `@Code` of \
                      top-level items (build one with `@parse_items`)",
                     frontend::BUILD
                 );
@@ -865,7 +865,7 @@ fn lower_all(
                     continue;
                 }
             };
-            let code = as_code_src(&v).expect("the checker requires an `@e` operand to be `@code`");
+            let code = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
             edits.push((module, span, format!("({code})")));
         }
         // Item-position `$ @e X`: the whole directive is replaced by the item(s)
@@ -880,13 +880,13 @@ fn lower_all(
                 }
             };
             // `span` is the whole `$ @e X` directive, so replacing it drops the
-            // directive: an `@code` result becomes its item(s), anything else (a
+            // directive: an `@Code` result becomes its item(s), anything else (a
             // `@link` call, whose effect was already recorded, or a discarded
             // value) becomes nothing.
-            let items = as_code_src(&v).expect("the checker requires an `@e` operand to be `@code`");
+            let items = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
             edits.push((module, span, items));
         }
-        // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@code`
+        // Type-position `@e X` (`Foo : @e X = ...`): the result must be an `@Code`
         // denoting a type; splice its source in place of the `@e X`.
         for (module, qualified, span) in type_sites {
             enter(&module);
@@ -897,7 +897,7 @@ fn lower_all(
                     continue;
                 }
             };
-            let ty_src = as_code_src(&v).expect("the checker requires an `@e` operand to be `@code`");
+            let ty_src = as_code_src(&v).expect("the checker requires an `@e` operand to be `@Code`");
             edits.push((module, span, format!("({ty_src})")));
         }
         clear_meta_hosts();
@@ -978,11 +978,11 @@ fn reflect_host(
     })
 }
 
-/// If `v` is a `@code` fragment, its source text.
+/// If `v` is a `@Code` fragment, its source text.
 fn as_code_src(v: &interpreter::machine::data::PVal) -> Option<String> {
     use interpreter::machine::data::Value;
     if let Value::Struct { name, fields } = &*v.borrow() {
-        if name == "@code" {
+        if name == "@Code" {
             return fields.iter().find(|(k, _)| k == "src").and_then(|(_, s)| {
                 match &*s.borrow() {
                     Value::Str(b) => Some(String::from_utf8_lossy(b).into_owned()),
@@ -1109,7 +1109,7 @@ struct BuildPlan {
 }
 
 
-/// Compile and run an `@code` fragment (source text), reifying its value. This
+/// Compile and run an `@Code` fragment (source text), reifying its value. This
 /// is the `@eval` host, at build time and at run time alike: it re-enters the same
 /// pipeline the REPL uses, wrapping the fragment as a def body of an in-memory
 /// module. The fragment must be pure, which is what lets `@eval` be typed pure.
@@ -1185,7 +1185,7 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
         Path::new(path).parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
     );
     // `@main` takes the argument vector (`argv[0]` = the entry path, then the
-    // extra args) and its `@int` result is the process exit code.
+    // extra args) and its `@Int` result is the process exit code.
     let mut argv = vec![path.to_string()];
     argv.extend(prog_args.iter().cloned());
     match interpreter::machine::run_entry(&ir, frontend::ENTRY, argv) {

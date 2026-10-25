@@ -1,4 +1,4 @@
 $ @mod TYPE_CTOR_OVER_APPLIED
 
 $ Box : @struct t = val: t,
-$ b : Box @int @int = Box.{ .val = 1 }  #~ error[TYPE_MISMATCH]: type `Box` takes 1 parameter(s) but 2 were given
+$ b : Box @Int @Int = Box.{ .val = 1 }  #~ error[TYPE_MISMATCH]: type `Box` takes 1 parameter(s) but 2 were given

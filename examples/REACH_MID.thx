@@ -6,11 +6,14 @@ $ @mod REACH_MID
 
 $ with REACH_LIB
 
-$ Bag : @struct = items : @vec Item, best : Item
+$ Bag : @struct = items : @Vec Item, best : Item
 
 $ bag : {} -> Bag = \u =
-	Bag.{ .items = @vec_new {} |> \v = @vec_push v Item.{ 40 } |> \v = @vec_push v Item.{ 2 }, .best = Item.{ 7 } }
+    Bag.{
+        .items = @vec_new {} |> \v = @vec_push v Item.{ 40 } |> \v = @vec_push v Item.{ 2 },
+        .best = Item.{ 7 }
+    }
 
-$ test : @int = 0
+$ test : @Int = 0
 
 $ @e <| assert (test == 0) "REACH_MID: a check failed"

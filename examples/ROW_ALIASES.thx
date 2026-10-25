@@ -6,46 +6,42 @@ $ @mod ROW_ALIASES
 # checks exactly what its labels check. A row that holds every label of an
 # alias prints with the alias name.
 
-$ Log : @effect = log : @int -> {},
-$ Gpu : @effect = draw : @int -> {},
-$ Net : @effect = fetch : @int -> @int,
+$ Log : @effect = log : @Int -> {},
+$ Gpu : @effect = draw : @Int -> {},
+$ Net : @effect = fetch : @Int -> @Int,
 
 $ App : @alias = <Gpu, Log>
-$ Online : @alias = <App, Net>    # an alias may name another alias
+$ Online : @alias = <App, Net> # an alias may name another alias
 
 # A row variable makes the alias parameterized, like a type alias. `<WithLog e>`
 # is `<Log | e>`: logging, plus whatever else the caller allows.
 $ WithLog : @alias e = <Log | e>
 
-$ frame : @int -> <App> @int = \x = draw x; log x; x * 2
+$ frame : @Int -> <App> @Int = \x = draw x; log x; x * 2
 
-$ sync : @int -> <Online> @int = \x = frame (fetch x)
+$ sync : @Int -> <Online> @Int = \x = frame (fetch x)
 
-$ traced : (@int -> <WithLog e> @int) -> @int -> <WithLog e> @int = \f x = log x; f x
+$ traced : (@Int -> <WithLog e> @Int) -> @Int -> <WithLog e> @Int = \f x = log x; f x
 
 # Each handler discharges one label; together they discharge the whole alias.
-$ runLog : ({} -> <Log | e> @int) -> <e> @int = \body =
+$ runLog : ({} -> <Log | e> @Int) -> <e> @Int = \body =
     do body {}
-    ctl k | log n => n + k {}
-          | r => r
+    ctl k | log n => n + k {} | r => r
 
-$ runGpu : ({} -> <Gpu | e> @int) -> <e> @int = \body =
+$ runGpu : ({} -> <Gpu | e> @Int) -> <e> @Int = \body =
     do body {}
-    ctl k | draw n => k {}
-          | r => r
+    ctl k | draw n => k {} | r => r
 
-$ runNet : ({} -> <Net | e> @int) -> <e> @int = \body =
+$ runNet : ({} -> <Net | e> @Int) -> <e> @Int = \body =
     do body {}
-    ctl k | fetch n => k (n + 1)
-          | r => r
+    ctl k | fetch n => k (n + 1) | r => r
 
-$ runApp : ({} -> <App> @int) -> @int = \body =
-    runGpu <| \_ = runLog body
+$ runApp : ({} -> <App> @Int) -> @Int = \body = runGpu <| \_ = runLog body
 
-$ r_frame  : @int = runApp <| \_ = frame 10                         # 20 + log 10
-$ r_sync   : @int = runNet <| \_ = runGpu <| \_ = runLog <| \_ = sync 4  # fetch 5, 10 + log 5
-$ r_traced : @int = runLog <| \_ = traced (\n = n + 1) 7           # 8 + log 7
+$ r_frame : @Int = runApp <| \_ = frame 10 # 20 + log 10
+$ r_sync : @Int = runNet <| \_ = runGpu <| \_ = runLog <| \_ = sync 4 # fetch 5, 10 + log 5
+$ r_traced : @Int = runLog <| \_ = traced (\n = n + 1) 7 # 8 + log 7
 
-$ test : @int = if r_frame == 30 && r_sync == 15 && r_traced == 15 => 0 else 1
+$ test : @Int = if r_frame == 30 && r_sync == 15 && r_traced == 15 => 0 else 1
 
 $ @e <| assert (test == 0) "ROW_ALIASES: a check failed"

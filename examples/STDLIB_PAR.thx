@@ -12,84 +12,79 @@ $ with PAR
 $ with VEC
 $ with LA
 
-$ fib : @int -> @int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
+$ fib : @Int -> @Int = \n = if n < 2 => n else fib (n - 1) + fib (n - 2)
 
-$ xs : @vec @int = VEC.map (\i = 6 + (i % 5)) (range 0 99)
+$ xs : @Vec @Int = VEC.map (\i = 6 + (i % 5)) (range 0 99)
 
 # One task, joined.
-$ ck_one : @int = if PAR.get (par (\u = fib 16)) == 987 => 0 else 1
+$ ck_one : @Int = if PAR.get (par (\u = fib 16)) == 987 => 0 else 1
 
 # Two at once.
-$ ck_both : @int =
-	let p = both (\u = fib 15) (\u = "fifteen") in
-	if p.0 == 610 && p.1 == "fifteen" => 0 else 1
+$ ck_both : @Int =
+    let p = both (\u = fib 15) (\u = "fifteen") in if p.0 == 610 && p.1 == "fifteen" => 0 else 1
 
 # A parallel map equals the sequential one, element for element.
-$ ck_map : @int =
-	let par_v = PAR.map fib xs in
-	let seq_v = VEC.map fib xs in
-	if VEC.len par_v == VEC.len seq_v
-	   && VEC.fold (\a x = a + x) 0 par_v == VEC.fold (\a x = a + x) 0 seq_v
-	   && VEC.get_or par_v 57 0 == fib (6 + (57 % 5))
-	=> 0 else 1
+$ ck_map : @Int =
+    let par_v = PAR.map fib xs in
+    let seq_v = VEC.map fib xs in
+    if VEC.len par_v == VEC.len seq_v
+        && VEC.fold (\a x = a + x) 0 par_v == VEC.fold (\a x = a + x) 0 seq_v
+        && VEC.get_or par_v 57 0 == fib (6 + (57 % 5)) =>
+        0
+    else 1
 
 # Fewer chunks than elements, more chunks than elements, and an empty vector.
-$ ck_chunks : @int =
-	let a = VEC.fold (\s x = s + x) 0 (map_chunks 3 fib xs) in
-	let b = VEC.fold (\s x = s + x) 0 (map_chunks 1000 fib xs) in
-	let c = VEC.len (map_chunks 4 fib (VEC.new {})) in
-	if a == b && c == 0 => 0 else 1
+$ ck_chunks : @Int =
+    let a = VEC.fold (\s x = s + x) 0 (map_chunks 3 fib xs) in
+    let b = VEC.fold (\s x = s + x) 0 (map_chunks 1000 fib xs) in
+    let c = VEC.len (map_chunks 4 fib (VEC.new {})) in if a == b && c == 0 => 0 else 1
 
 # A parallel reduction with an associative combine.
-$ ck_reduce : @int =
-	if PAR.reduce (\a b = a + b) 0 fib xs == VEC.fold (\a x = a + fib x) 0 xs
-	=> 0 else 1
+$ ck_reduce : @Int =
+    if PAR.reduce (\a b = a + b) 0 fib xs == VEC.fold (\a x = a + fib x) 0 xs => 0 else 1
 
 # Tasks that spawn tasks.
-$ ck_nested : @int =
-	let outer = par (\u = PAR.get (par (\w = fib 12)) + PAR.get (par (\w = fib 11))) in
-	if PAR.get outer == fib 13 => 0 else 1
+$ ck_nested : @Int =
+    let outer = par (\u = PAR.get (par (\w = fib 12)) + PAR.get (par (\w = fib 11))) in
+    if PAR.get outer == fib 13 => 0 else 1
 
 # Over a tensor, the leading axis is split into O(1) slices, one task each:
 # rows of a matrix, elements of a vector. Equal to the sequential `LA.map`.
-$ tv : [12]@int = [3, 9, 4, 12, 7, 5, 10, 8, 6, 11, 2, 13]
-$ tm : [3, 2]@int = [ [1, 2], [3, 4], [5, 6] ]
+$ tv : [12] @Int = [3, 9, 4, 12, 7, 5, 10, 8, 6, 11, 2, 13]
+$ tm : [3, 2] @Int = [[1, 2], [3, 4], [5, 6]]
 
-$ same : [n]@int -> [n]@int -> @int -> @int = \x y i =
-	if i == LA.length x => 0
-	else if x.[i] == y.[i] => same x y (i + 1)
-	else 1
+$ same : [n] @Int -> [n] @Int -> @Int -> @Int = \x y i =
+    if i == LA.length x => 0 else if x.[i] == y.[i] => same x y (i + 1) else 1
 
-$ ck_tensor : @int =
-	let seq_v = LA.map fib tv in
-	let row_sum = \r = r.[0] + r.[1] in
-	let m = par_map row_sum tm in
-	same (par_map fib tv) seq_v 0
-	+ same (par_map_chunks 5 fib tv) seq_v 0
-	+ same (par_map_chunks 100 fib tv) seq_v 0
-	+ same m (LA.map row_sum tm) 0
-	+ (if m.[2] == 11 && seq_v.[3] == 144 => 0 else 1)
+$ ck_tensor : @Int =
+    let seq_v = LA.map fib tv in
+    let row_sum = \r = r.[0] + r.[1] in
+    let m = par_map row_sum tm in
+    same (
+        par_map fib tv
+    ) seq_v 0 + same (
+        par_map_chunks 5 fib tv
+    ) seq_v 0 + same (
+        par_map_chunks 100 fib tv
+    ) seq_v 0 + same m (LA.map row_sum tm) 0 + (if m.[2] == 11 && seq_v.[3] == 144 => 0 else 1)
 
 # A task that performs an effect takes its handler along (`par_with`): the
 # handler runs on the task's thread, so the effect never crosses threads.
-$ Emit : @effect = emit : @int -> {},
+$ Emit : @effect = emit : @Int -> {},
 
-$ total : ({} -> <Emit> {}) -> @int = \body =
-	let run =
-		do body {}
-		ctl k
-		| Emit.emit n => \acc = k {} (acc + n)
-		| u => \acc = acc
-	in run 0
+$ total : ({} -> <Emit> {}) -> @Int = \body =
+    let run = do body {}
+        ctl k | Emit.emit n => \acc = k {} (acc + n) | u => \acc = acc in
+    run 0
 
-$ emit_fibs : @int -> <Emit> {} = \n = if n < 0 => {} else (Emit.emit (fib n); emit_fibs (n - 1))
+$ emit_fibs : @Int -> <Emit> {} = \n = if n < 0 => {} else (Emit.emit (fib n); emit_fibs (n - 1))
 
-$ ck_with : @int =
-	let a = par_with total (\u = emit_fibs 10) in
-	let b = par_with total (\u = emit_fibs 12) in
-	if PAR.get a == 143 && PAR.get b == 376 => 0 else 1
+$ ck_with : @Int =
+    let a = par_with total (\u = emit_fibs 10) in
+    let b = par_with total (\u = emit_fibs 12) in
+    if PAR.get a == 143 && PAR.get b == 376 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
-$ test : @int = ck_one + ck_both + ck_map + ck_chunks + ck_reduce + ck_nested + ck_tensor + ck_with
+$ test : @Int = ck_one + ck_both + ck_map + ck_chunks + ck_reduce + ck_nested + ck_tensor + ck_with
 
 $ @e <| assert (test == 0) "STDLIB_PAR: a check failed"

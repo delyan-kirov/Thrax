@@ -1353,7 +1353,7 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
 
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
-/// `$ @e` whose `@code` result the driver splices.
+/// `$ @e` whose `@Code` result the driver splices.
 pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
     let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
@@ -1553,8 +1553,8 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
     })
 }
 
-/// Run the program entry (`@main`): apply it to `argv` as a `@vec @str` and
-/// return its `@int` result as the process exit code.
+/// Run the program entry (`@main`): apply it to `argv` as a `@Vec @Str` and
+/// return its `@Int` result as the process exit code.
 pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
     let _outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
@@ -1567,7 +1567,7 @@ pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
     m.finish_tasks()?;
     let out = match &*r.borrow() {
         Value::Int(code) => Ok(*code),
-        _ => Err(fault("the program entry must return an `@int` exit code")),
+        _ => Err(fault("the program entry must return an `@Int` exit code")),
     };
     out
 }

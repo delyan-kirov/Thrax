@@ -45,13 +45,17 @@ struct thrax_value {
   size_t len;
 };
 
-/* Tokenize `src`. Returns a THRAX_VEC of `@token` structs, each with the string
+/* Tokenize `src`. Returns a THRAX_VEC of `@Token` structs, each with the string
  * fields `kind` and `text`, or NULL with `*err` set on a lex error. */
 thrax_value *thrax_lex(const uint8_t *src, size_t len, char **err);
 
 /* Check that `src` parses: as an expression, or as top-level items when
  * `items` is nonzero. Returns 0 when it does, else 1 with `*err` set. */
 int thrax_parse(const uint8_t *src, size_t len, int items, char **err);
+
+/* Format the top-level items `src` as `thrax fmt` does. Returns a THRAX_STR,
+ * or NULL with `*err` set when the formatter refuses the text. */
+thrax_value *thrax_format(const uint8_t *src, size_t len, char **err);
 
 /* Compile and run the expression `src` against the standard library, returning
  * its value, or NULL with `*err` set. Only first-order values cross: a function

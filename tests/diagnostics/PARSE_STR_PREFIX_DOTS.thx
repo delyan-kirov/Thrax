@@ -1,4 +1,4 @@
 $ @mod PARSE_STR_PREFIX_DOTS
 
 # A string prefix pattern is `"a" ++ rest`.
-$ y : @int = is "abc" | "a".. => 1 | _ => 2  #~ error[UNEXPECTED_TOKEN]: expected the end of the pattern, found '.'
+$ y : @Int = is "abc" | "a".. => 1 | _ => 2  #~ error[UNEXPECTED_TOKEN]: expected the end of the pattern, found '.'

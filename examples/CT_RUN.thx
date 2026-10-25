@@ -4,7 +4,7 @@ $ @mod CT_RUN
 # \info Build directives: `$ @e <| @link "m"` runs at build time and adds the
 #       named library to the link line for the native backend and to the dlopen
 #       set for the interpreter, so a project declares its libraries in Thrax.
-#       `@link` / `@link_path` carry the `<@meta>` effect and return empty code,
+#       `@link` / `@link_path` carry the `<@Meta>` effect and return empty code,
 #       so the directive inserts nothing. `@abort`, the checking twin, lives in
 #       CT_ASSERT.thx.
 
@@ -12,6 +12,6 @@ $ @mod CT_RUN
 # so this is exercised end to end in both engines without adding a dependency).
 $ @e <| @link "m"
 
-$ test : @int = 0
+$ test : @Int = 0
 
 $ @e <| assert (test == 0) "CT_RUN: a check failed"

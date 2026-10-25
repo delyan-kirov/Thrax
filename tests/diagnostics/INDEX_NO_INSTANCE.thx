@@ -1,4 +1,4 @@
 $ @mod INDEX_NO_INSTANCE
 
-$ P : @struct = x: @int,
-$ s : P -> @int = \p = p.[0]  #~ error[TYPE_MISMATCH]: no `@IIndex` instance of type `@IIndex P @int @int` is in scope
+$ P : @struct = x: @Int,
+$ s : P -> @Int = \p = p.[0]  #~ error[TYPE_MISMATCH]: no `@IIndex` instance of type `@IIndex P @Int @Int` is in scope

@@ -46,7 +46,7 @@ pub struct Emitted {
 }
 
 /// What the generated C `main` does with the Thrax global it is given: run it as
-/// the program entry (`@main`: applied to the C argument vector, its `@int` the
+/// the program entry (`@main`: applied to the C argument vector, its `@Int` the
 /// exit code), or force it and print `name = value`. `Show` is how the harnesses
 /// evaluate a named global (the differential tests compare it against the
 /// interpreter); a compiled program always uses `Main`.
@@ -222,8 +222,8 @@ pub fn emit_program(
     out.push_str("};\n");
     out.push_str(&format!("const size_t THxRT_code_count = {ncodes};\n\n"));
 
-    // Entry. `@main` is applied to the argument vector (`@vec @str`) and its
-    // `@int` result is the process exit code. The `Show` harness mode instead
+    // Entry. `@main` is applied to the argument vector (`@Vec @Str`) and its
+    // `@Int` result is the process exit code. The `Show` harness mode instead
     // forces the global and prints `entry = <value>`, with the built-in leak check
     // (exit 97 on a leak).
     out.push_str("int main(int argc, char** argv) {\n");
@@ -271,7 +271,7 @@ pub fn emit_program(
             out.push_str("  return 0;\n");
         }
         Entry::Main => {
-            // The argument vector as a `@vec @str`.
+            // The argument vector as a `@Vec @Str`.
             out.push_str("  Value** _items = (Value**)malloc((size_t)(argc>0?argc:1)*sizeof(Value*));\n");
             out.push_str("  for (int _i = 0; _i < argc; _i++) _items[_i] = THxRT_str(argv[_i], strlen(argv[_i]));\n");
             out.push_str("  Value* _arg = mk_vec(_items, (size_t)argc);\n");

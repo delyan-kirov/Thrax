@@ -111,18 +111,18 @@ impl Target {
     /// The canonical sigil type `Int`/`Nat` alias to on this target: the word.
     pub const fn int_ty(self) -> &'static str {
         if self.ptr_bits() == 32 {
-            "@int32"
+            "@Int32"
         } else {
-            "@int64"
+            "@Int64"
         }
     }
 
     /// The canonical sigil type `Nat` aliases to on this target.
     pub const fn nat_ty(self) -> &'static str {
         if self.ptr_bits() == 32 {
-            "@nat32"
+            "@Nat32"
         } else {
-            "@nat64"
+            "@Nat64"
         }
     }
 

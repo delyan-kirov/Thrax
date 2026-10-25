@@ -90,7 +90,7 @@ layer, and "wrap C, don't re-derive" is the rule for all OS-facing modules.
 Done, tested in both engines (see documentation/standard-library.md for the per-module
 function tables): OPT, RESULT (+ `Fail` effect), LIST (Koka core set
 incl. stable `sort_by`), STR (search/split/pad/replace/case/parse), MATH
-(@int + Real, libm via `C`), MAP (immutable AVL tree map, ordered, three-way
+(@Int + Real, libm via `C`), MAP (immutable AVL tree map, ordered, three-way
 cmp dictionary), RANDOM (MINSTD, value-threaded), IO (console/file/env/now).
 
 Design decisions already made:
@@ -126,7 +126,7 @@ The original analysis, for the record:
    map; `freeze` returns it). Same API feel, O(log n) not O(1), zero new
    machinery -- a fine stopgap if the need arises before Vec lands.
 3. C-backed handle table (Jai literally): a runtime-owned table addressed by
-   an @int handle over FFI. Rejected for polymorphic values: storing Thrax
+   an @Int handle over FFI. Rejected for polymorphic values: storing Thrax
    values in C memory fights the refcounter's ownership; only viable for
    word/Str payloads, which is too narrow to be THE mutable map.
 
@@ -143,8 +143,8 @@ open-addressing table backed by a `Vec` of slots (flat array, not chained),
 linear/MINSTD probe, resize + rehash at 0.75 load, Jai surface (`new`, `set`,
 `find` -> Option, `remove`, `has`, `len`, `is_empty`, `fold`, `from_list`/
 `to_list`). Hashing is dictionary-passed like `MAP`'s `cmp` (`new hash_int
-impl_IEq_for_int`, ...); @int + Str hashers to start. Deliverables:
-`library/TABLE.thx`, `examples/STDLIB_TABLE.thx` (a `$ test : @int` that
+impl_IEq_for_int`, ...); @Int + Str hashers to start. Deliverables:
+`library/TABLE.thx`, `examples/STDLIB_TABLE.thx` (a `$ test : @Int` that
 `tests/MAIN.thx` picks up from the directory on its own), a row in
 documentation/standard-library.md.
 
@@ -155,7 +155,7 @@ Route 1's whole premise is the plain-value form (simpler, consistent with the
 rest of the stdlib); the effect-scoped form is the more ambitious dogfood of
 the effect system. Pick this before writing code.
 
-## 5. Tuples `{@int, Real}`, and `Map {@int, Str}` (DONE)
+## 5. Tuples `{@Int, Real}`, and `Map {@Int, Str}` (DONE)
 
 The language feature landed (2026-07-20, branch standard-library-part-2;
 examples/TUPLES.thx):
@@ -174,13 +174,13 @@ examples/TUPLES.thx):
   literals, field sites, patterns, PatLower and unification all ride the
   existing nominal-struct machinery -- ZERO engine/runtime changes, and MR
   passes the `%`-names through untouched (they cannot clash: user type
-  names must start uppercase). Diagnostics render `{@int64, @str}`, never
+  names must start uppercase). Diagnostics render `{@Int64, @Str}`, never
   `%tupleN`.
 - One grammar subtlety: after `Tag:` in a union declaration, `{` always
   opens the PAYLOAD's field braces, never a bare tuple type (a single
   tuple-typed field is `Tag: {{A, B}}` or `Tag: {t: {A, B}}`); documentation/thrax.y
   resolves this structurally (payload_decl / type_nb).
-- `Map {@int, Str}` works today as a type argument; keying a map by a tuple
+- `Map {@Int, Str}` works today as a type argument; keying a map by a tuple
   just needs a lexicographic comparison (dictionary passing, see
   STDLIB tests / section 4 of documentation/standard-library.md).
 
@@ -189,7 +189,7 @@ LIST's `zip`/`unzip`/`span`/`split_at`/`partition`/`lookup`, MAP's
 `from_list`/`to_list`/`min_entry`/`max_entry` and RANDOM's `next` family
 all speak `{\`A, \`B}` with `.0`/`.1` access. `MAP.cmp_pair` (lexicographic
 composition of element orderings) ships the tuple-keyed-map convenience:
-`new (cmp_pair cmp_int cmp_str)` orders a `Map {@int, Str} \`V`.
+`new (cmp_pair cmp_int cmp_str)` orders a `Map {@Int, Str} \`V`.
 
 ## 6. Target module tree and phases
 
@@ -226,7 +226,7 @@ Phase 2 -- OS layer, pure C wrapping, no language work:
 - `DIR`: list/create/remove (opendir/readdir/mkdir/rmdir externs; readdir
   returns a struct -- needs either a small runtime shim or the dirent
   layout per platform, prefer a shim in THxRT).
-- `PROCESS`: `run : Str -> @int` (system), later popen for captured output.
+- `PROCESS`: `run : Str -> @Int` (system), later popen for captured output.
 - `ARGS`/`FLAGS`: argv access (needs DR to expose argv; today only `env`),
   then Koka-flags-style parsing in pure Thrax.
 - `TIME`: now (done), `clock`, formatting via localtime/strftime (shim for
@@ -250,7 +250,7 @@ windowing/GL layer, threads (no runtime story yet), decimal/ddouble.
 
 ## 7. core.thx: the language-defined layer (DONE)
 
-Historical note: `if` took @int truth because the language predates its type
+Historical note: `if` took @Int truth because the language predates its type
 system; predicates returned 1/0 to match. Both halves of the plan landed
 (2026-07-20, branch standard-library-part-2):
 
@@ -261,7 +261,7 @@ system; predicates returned 1/0 to match. Both halves of the plan landed
   built-in; everything else is readable Thrax you can open. Diagnostics
   point into it like any stdlib file.
 - **The target-dependent lines stay generated**: DR still emits the other
-  half of the PRELUDE module (`PRELUDE_implTarget.thx`) -- `@int`/`@nat`
+  half of the PRELUDE module (`PRELUDE_implTarget.thx`) -- `@Int`/`@Nat`
   alias the TARGET's word type, and the fixed aliases mirror
   OP::base_aliases. A future `@word`/`@uword` canonical spelling would let
   the whole prelude go static.
@@ -270,7 +270,7 @@ system; predicates returned 1/0 to match. Both halves of the plan landed
   `if`/guards/`@assert` consume it (OP::TY_BOOL; overload RESULT types
   flipped in TCxDATA while the mono impl keys stay operand-derived, so the
   engines' 1/0 impls serve unchanged). It is ERASED after checking:
-  CR rewrites `Bool.True`/`Bool.False` literals to @int 1/0, and PatLower
+  CR rewrites `Bool.True`/`Bool.False` literals to @Int 1/0, and PatLower
   rewrites Bool variant patterns to integer-literal patterns -- so at
   runtime and across the C FFI a Bool is a plain word, but user code can
   still construct and match it as an ordinary union (examples/AGTxSUM.thx

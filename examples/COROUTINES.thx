@@ -5,8 +5,8 @@ $ @mod COROUTINES
 # stored resumption). A scheduler resumes it later, from a different context --
 # the defining test of coroutines (vs a plain generator that resumes in place).
 
-$ Co   : @effect = yield : @int -> {},
-$ Task : @union = Fin: {}, Susp: { @int, {} -> Task },
+$ Co : @effect = yield : @Int -> {},
+$ Task : @union = Fin: {}, Susp: { @Int, {} -> Task },
 
 # Run a task one step: it either finishes (`Fin`) or yields a value and suspends,
 # in which case we capture its continuation `k` in `Susp` for the scheduler.
@@ -16,28 +16,24 @@ $ Task : @union = Fin: {}, Susp: { @int, {} -> Task },
 # it, and the captured computation is handed over rather than copied.
 $ spawn : ({} -> <Co> {}) -> Task = \t =
     do t {}
-    ctl k
-       | Co.yield v => Task.Susp.{ v, k }
-       | _ => Task.Fin.{}
+    ctl k | Co.yield v => Task.Susp.{ v, k } | _ => Task.Fin.{}
 
 # Round-robin two tasks: step the head task, emit its yield, then swap so the
 # other runs next. Resuming `ka {}` / `kb {}` resumes a continuation captured in
 # `spawn`'s handler from HERE -- cross-context resume.
-$ rr : Task -> Task -> @int = \a b =
-    is a | Task.Fin.{} =>
-         (is b | Task.Fin.{} => 0
-               | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {}))
-         | Task.Susp.{ va, ka } => va + rr b (ka {})
+$ rr : Task -> Task -> @Int = \a b =
+    is a
+    | Task.Fin.{} =>
+        (is b | Task.Fin.{} => 0 | Task.Susp.{ vb, kb } => vb + rr (Task.Fin.{}) (kb {}))
+    | Task.Susp.{ va, ka } => va + rr b (ka {})
 
-$ t1 : {} -> <Co> {} =
-	\u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}
-$ t2 : {} -> <Co> {} =
-	\u = let _ = Co.yield 2 in let _ = Co.yield 4 in {}
+$ t1 : {} -> <Co> {} = \u = let _ = Co.yield 1 in let _ = Co.yield 3 in {}
+$ t2 : {} -> <Co> {} = \u = let _ = Co.yield 2 in let _ = Co.yield 4 in {}
 
 # Interleaved order is 1,2,3,4 -> sum 10.
-$ scheduled : @int = rr (spawn t1) (spawn t2)
+$ scheduled : @Int = rr (spawn t1) (spawn t2)
 
 # Force-evaluate results for the combined test runner (pass = no fault).
-$ test : @int = scheduled ; 0
+$ test : @Int = scheduled; 0
 
 $ @e <| assert (test == 0) "COROUTINES: a check failed"

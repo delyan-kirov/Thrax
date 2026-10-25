@@ -1,4 +1,4 @@
 $ @mod TYPED_HOLE
 
 # A hole is an error that names the type it stands for.
-$ f : @int -> @int = \n = n + ???  #~ error[TYPED_HOLE]: hole `???` has type `@int`
+$ f : @Int -> @Int = \n = n + ???  #~ error[TYPED_HOLE]: hole `???` has type `@Int`

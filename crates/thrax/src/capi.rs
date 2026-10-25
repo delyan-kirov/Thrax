@@ -227,6 +227,18 @@ pub unsafe extern "C" fn thrax_parse(
 /// # Safety
 /// `src` is valid for `len` bytes; `err` is null or writable.
 #[no_mangle]
+pub unsafe extern "C" fn thrax_format(src: *const u8, len: usize, err: *mut *mut c_char) -> *mut ThraxValue {
+    guarded(err, || {
+        let src = source(src, len)?;
+        let out = frontend::format::format_source(src, &Default::default())?;
+        Ok(boxed(OwnedValue::Str(out.into_bytes())))
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+/// # Safety
+/// `src` is valid for `len` bytes; `err` is null or writable.
+#[no_mangle]
 pub unsafe extern "C" fn thrax_eval(src: *const u8, len: usize, err: *mut *mut c_char) -> *mut ThraxValue {
     guarded(err, || {
         let src = source(src, len)?;
@@ -276,7 +288,7 @@ mod tests {
         assert_eq!(v.len, 3);
         let third = unsafe { &*v.items.add(2) };
         assert_eq!(third.kind, ThraxKind::Struct);
-        assert_eq!(cstr(third.name), "@token");
+        assert_eq!(cstr(third.name), "@Token");
         let text = unsafe { &*third.items.add(1) };
         assert_eq!(cstr(unsafe { *third.keys.add(1) }), "text");
         assert_eq!(cstr(text.bytes as *const c_char), "foo");

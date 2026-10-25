@@ -220,7 +220,7 @@ pub struct Program {
 /// The builtins a native program runs by calling into the compiler library
 /// (`libthrax`, see `crates/thrax/include/thrax.h`).
 pub const COMPILER_BUILTINS: &[&str] =
-    &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@eval"];
+    &["@lex", "@token_kind", "@token_text", "@parse", "@parse_str", "@parse_items", "@format", "@eval"];
 
 /// Every built-in operator with its arity. Mirrors the interpreter's
 /// `builtin_arity`; the C backend numbers its runtime dispatch from this order.
@@ -248,7 +248,7 @@ pub const BUILTINS: &[(&str, usize)] = &[
     ("@stm_begin", 1), ("@stm_read", 1), ("@stm_write", 2), ("@stm_commit", 1),
     ("@stm_wait", 1), ("@stm_save", 1), ("@stm_rollback", 1),
     ("@lex", 1), ("@token_kind", 1), ("@token_text", 1), ("@parse", 1), ("@parse_str", 1),
-    ("@parse_items", 1), ("@eval", 1),
+    ("@parse_items", 1), ("@format", 1), ("@eval", 1),
 ];
 
 /// The arity of a built-in operator, or `None`.

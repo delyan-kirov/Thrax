@@ -1,4 +1,4 @@
 $ @mod STRUCT_POSITIONAL_TOO_MANY
 
-$ P : @struct = x: @int, y: @int,
+$ P : @struct = x: @Int, y: @Int,
 $ p : P = P.{ 1, 2, 3 }  #~ error[TYPE_MISMATCH]: struct `P` has 2 fields, so there is no field 2

@@ -3,4 +3,4 @@ $ @mod MAIN
 # The failure is reported in the module that names the missing import.
 $ with A
 
-$ n : @int = A.a
+$ n : @Int = A.a

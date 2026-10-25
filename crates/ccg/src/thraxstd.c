@@ -17,14 +17,14 @@
 #include <dirent.h>
 
 /* Integer <-> real conversions. `@cast` crosses only integer widths, so these
-   bridge the integer/real boundary. `long long`, not `long`: an `@int` is 64
+   bridge the integer/real boundary. `long long`, not `long`: an `@Int` is 64
    bits everywhere, and Windows' `long` is 32. */
 THX_EXPORT double thx_i2d(long long n) { return (double)n; }
 THX_EXPORT long long thx_d2i(double x) { return (long long)(x < 0 ? x - 0.5 : x + 0.5); }
 THX_EXPORT float thx_i2f(long long n) { return (float)n; }
 THX_EXPORT long long thx_f2i(float x) { return (long long)(x < 0 ? x - 0.5f : x + 0.5f); }
 
-/* Float width conversions. `@float32` and `@float64` have distinct runtime
+/* Float width conversions. `@Float32` and `@Float64` have distinct runtime
    representations, so widening/narrowing is real work (unlike the erased `@cast`
    between integer widths). */
 THX_EXPORT double thx_f2d(float f) { return (double)f; }
@@ -33,7 +33,7 @@ THX_EXPORT float thx_d2f(double d) { return (float)d; }
 /* Format a real as its shortest decimal that round-trips (the same rule as the
    runtime's `fmt_real`/`fmt_real32` display path, and Rust's `f64::to_string`,
    so both engines print a float identically). The result lives in a static
-   buffer that the FFI copies into a Thrax `@str` immediately on return, so it
+   buffer that the FFI copies into a Thrax `@Str` immediately on return, so it
    need not outlive the call. */
 THX_EXPORT const char *thx_real_to_str(double r) {
   static char buf[64];
@@ -52,7 +52,7 @@ THX_EXPORT const char *thx_f32_to_str(float r) {
   return buf;
 }
 
-/* Reinterpret a machine word as a raw pointer (`@ptr` travels as an Int), so
+/* Reinterpret a machine word as a raw pointer (`@Ptr` travels as an Int), so
    the standard library can spell a null pointer as `C.null` (= i2p 0). */
 THX_EXPORT void *thx_i2p(long long n) { return (void *)(intptr_t)n; }
 

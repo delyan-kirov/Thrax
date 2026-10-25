@@ -1,13 +1,13 @@
 $ @mod META_BUILD
 
 # \file META_BUILD.thx
-# \info `@build`, the compile-time entry. Where `@main : @vec @str -> <@io> @int`
-#       is the one name the RUN of a program starts from, `@build : {} -> <@meta,
-#       @io> @code` is the one name its BUILD starts from: the compiler runs it
-#       during compilation and adds the items of the `@code` it returns to this
+# \info `@build`, the compile-time entry. Where `@main : @Vec @Str -> <@IO> @Int`
+#       is the one name the RUN of a program starts from, `@build : {} -> <@Meta,
+#       @IO> @Code` is the one name its BUILD starts from: the compiler runs it
+#       during compilation and adds the items of the `@Code` it returns to this
 #       module. One name, one signature, like the entry.
-#       Its privilege over `$ @e` is the `<@io>` in that row. `$ @e` installs
-#       `<@meta>` alone, so it is hermetic: a generator there can compute, parse
+#       Its privilege over `$ @e` is the `<@IO>` in that row. `$ @e` installs
+#       `<@Meta>` alone, so it is hermetic: a generator there can compute, parse
 #       and inject, but not touch the world.
 #       Building IS IO, so `@build` is the one context that discharges it.
 #       The IO itself is ORDINARY: `IO.read_dir` is library code over `C.dir_entries`,
@@ -21,26 +21,31 @@ $ with IO
 $ with STR
 $ with VEC
 
-$ thx_files : {} -> <@meta, @io> @vec @str = \_ =
-	VEC.filter (\f = STR.ends_with f ".thx") (IO.read_dir "examples")
+$ thx_files : {} -> <@Meta, @IO> @Vec @Str = \_ =
+    VEC.filter (\f = STR.ends_with f ".thx") (IO.read_dir "examples")
 
-# `@build` returns the items to add, as `@code`. Here: a count of the example
+# `@build` returns the items to add, as `@Code`. Here: a count of the example
 # files (so the number is baked in, never computed at run time) and the name of
 # the first of them, which the sorted listing makes deterministic.
-$ @build : {} -> <@meta, @io> @code = \_ =
-	let files = thx_files {} in
-	@parse_items
-		( "$ file_count : @int = " ++ STR.from_int (VEC.len files) ++ "\n"
-		++ "$ first_file : @str = \"" ++ VEC.get_or files 0 "" ++ "\"\n" )
+$ @build : {} -> <@Meta, @IO> @Code = \_ =
+    let files = thx_files {} in
+    @parse_items (
+        "$ file_count : @Int = "
+            ++ STR.from_int (VEC.len files)
+            ++ "\n"
+            ++ "$ first_file : @Str = \""
+            ++ VEC.get_or files 0 ""
+            ++ "\"\n"
+    )
 
 # `file_count` and `first_file` exist only because `@build` produced them.
-$ ck_count : @int = if file_count > 0 => 0 else 1
-$ ck_first : @int = if STR.ends_with first_file ".thx" => 0 else 2
+$ ck_count : @Int = if file_count > 0 => 0 else 1
+$ ck_first : @Int = if STR.ends_with first_file ".thx" => 0 else 2
 
 # This file is one of the files it counted, and the listing is sorted, so the
 # first name cannot sort after this module's own.
-$ ck_self : @int = if STR.cmp_str first_file "META_BUILD.thx" <= 0 => 0 else 4
+$ ck_self : @Int = if STR.cmp_str first_file "META_BUILD.thx" <= 0 => 0 else 4
 
-$ test : @int = ck_count + ck_first + ck_self
+$ test : @Int = ck_count + ck_first + ck_self
 
 $ @e <| assert (test == 0) "META_BUILD: a check failed"

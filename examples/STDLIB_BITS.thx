@@ -2,27 +2,27 @@ $ @mod STDLIB_BITS
 
 # \file STDLIB_BITS.thx
 # \info The standard library's BITS module: bitwise operations and shifts on
-#       the 64-bit `@int`, width narrowing, and the IEEE 754 encodings of the
+#       the 64-bit `@Int`, width narrowing, and the IEEE 754 encodings of the
 #       float types (what a binary encoder writes for a float).
 
 $ with BITS
 
-$ ck_and   : @int = if band 12 10 == 8 => 0 else 1
-$ ck_or    : @int = if bor 12 10 == 14 => 0 else 1
-$ ck_xor   : @int = if bxor 12 10 == 6 => 0 else 1
-$ ck_not   : @int = if bnot 0 == 0 - 1 => 0 else 1
-$ ck_neg   : @int = if band (0 - 1) 255 == 255 => 0 else 1
-$ ck_shl   : @int = if shl 1 40 == 1099511627776 => 0 else 1
-$ ck_shr_u : @int = if shr_u (0 - 1) 60 == 15 => 0 else 1
-$ ck_shr_s : @int = if shr_s (0 - 16) 2 == 0 - 4 => 0 else 1
-$ ck_zext  : @int = if zext (0 - 1) 8 == 255 => 0 else 1
-$ ck_sext  : @int = if sext 255 8 == 0 - 1 => 0 else 1
-$ ck_bits1 : @int = if f64_bits 1.0 == 4607182418800017408 => 0 else 1
-$ ck_bits2 : @int = if f64_bits 5e-324 == 1 => 0 else 1
-$ ck_bits3 : @int = if f32_bits (f64_to_f32 0.1) == 1036831949 => 0 else 1
-$ ck_minus : @int = if f64_bits (0.0 - 2.5) == bor min_int 4612811918334230528 => 0 else 1
+$ ck_and : @Int = if band 12 10 == 8 => 0 else 1
+$ ck_or : @Int = if bor 12 10 == 14 => 0 else 1
+$ ck_xor : @Int = if bxor 12 10 == 6 => 0 else 1
+$ ck_not : @Int = if bnot 0 == 0 - 1 => 0 else 1
+$ ck_neg : @Int = if band (0 - 1) 255 == 255 => 0 else 1
+$ ck_shl : @Int = if shl 1 40 == 1099511627776 => 0 else 1
+$ ck_shr_u : @Int = if shr_u (0 - 1) 60 == 15 => 0 else 1
+$ ck_shr_s : @Int = if shr_s (0 - 16) 2 == 0 - 4 => 0 else 1
+$ ck_zext : @Int = if zext (0 - 1) 8 == 255 => 0 else 1
+$ ck_sext : @Int = if sext 255 8 == 0 - 1 => 0 else 1
+$ ck_bits1 : @Int = if f64_bits 1.0 == 4607182418800017408 => 0 else 1
+$ ck_bits2 : @Int = if f64_bits 5e-324 == 1 => 0 else 1
+$ ck_bits3 : @Int = if f32_bits (f64_to_f32 0.1) == 1036831949 => 0 else 1
+$ ck_minus : @Int = if f64_bits (0.0 - 2.5) == bor min_int 4612811918334230528 => 0 else 1
 
-$ test : @int = ck_and + ck_or + ck_xor + ck_not + ck_neg + ck_shl + ck_shr_u + ck_shr_s
-	+ ck_zext + ck_sext + ck_bits1 + ck_bits2 + ck_bits3 + ck_minus
+$ test : @Int =
+    ck_and + ck_or + ck_xor + ck_not + ck_neg + ck_shl + ck_shr_u + ck_shr_s + ck_zext + ck_sext + ck_bits1 + ck_bits2 + ck_bits3 + ck_minus
 
 $ @e <| assert (test == 0) "STDLIB_BITS: a check failed"

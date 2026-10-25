@@ -273,8 +273,8 @@ impl<'a> Parser<'a> {
         Ok(self.intern(self.text(t)))
     }
     /// An effect-row label: a Capitalized `Word` (a user-declared effect like
-    /// `Fail`) or an `@`-form builtin effect (`@io`). The lexeme is interned as
-    /// written, so `@io` keeps its sigil ("@io"), matching the `@`-type-con
+    /// `Fail`) or an `@`-form builtin effect (`@IO`). The lexeme is interned as
+    /// written, so `@IO` keeps its sigil ("@IO"), matching the `@`-type-con
     /// convention and staying distinct from any user effect.
     fn expect_effect_label(&mut self) -> Result<StrId> {
         let t = self.peek()?;
@@ -550,10 +550,10 @@ impl<'a> Parser<'a> {
             "run" => Err(self.unexpected(
                 &at,
                 "there is no '@run': '$ @e X' runs X at compile time and inserts the \
-                 '@code' it returns",
+                 '@Code' it returns",
             )),
             // The two `@`-names bound to a VALUE: `@main`, the program entry, and
-            // `@build`, the compile-time entry, whose `@code` result the driver adds
+            // `@build`, the compile-time entry, whose `@Code` result the driver adds
             // to this module. Both are ordinary definitions with a mandatory
             // signature; the compiler knows nothing about them but their names.
             which @ ("main" | "build") => {
@@ -578,8 +578,8 @@ impl<'a> Parser<'a> {
             // A blessed interface TYPE (`$ @IRange : @struct b t = range: b -> b -> t,`).
             // The compiler resolves a value of it at the matching desugar site and
             // projects its single field, so the name is fixed and only CORE declares
-            // it; an implementation is an ordinary value (`$ r : @IRange @int (@vec
-            // @int) = .{ .range = ... }`).
+            // it; an implementation is an ordinary value (`$ r : @IRange @Int (@Vec
+            // @Int) = .{ .range = ... }`).
             name if table::is_blessed_interface(&format!("@{name}")) => {
                 let at_tok = self.bump()?; // the '@I...' token
                 let iname = self.intern(self.text(at_tok));
@@ -818,7 +818,7 @@ impl<'a> Parser<'a> {
             return Err(self.unexpected(
                 &at,
                 "expected '->' after the '@ctx' parameter type: a context parameter is the \
-                 function's first parameter, as in `@ctx Ito_string t -> t -> @str`",
+                 function's first parameter, as in `@ctx Ito_string t -> t -> @Str`",
             ));
         }
         self.bump()?; // '->'
@@ -1204,9 +1204,9 @@ impl<'a> Parser<'a> {
 
     /// An optional effect row right after `->`: `<>`, `<e>`, `<A, B>`,
     /// `<A, B | e>`, or `<| e>`. Effect names are Capitalized (user effects) or
-    /// `@`-form (builtin effects like `@io`); a lowercase name is the
+    /// `@`-form (builtin effects like `@IO`); a lowercase name is the
     /// row-polymorphic tail variable. An entry may be a row alias applied to row
-    /// variables, `<WithLog e, @io>`; what each name denotes is the checker's call.
+    /// variables, `<WithLog e, @IO>`; what each name denotes is the checker's call.
     fn parse_effect_row_opt(&mut self) -> Result<Option<EffectRow>> {
         if self.at_op("<>")? {
             self.bump()?;
@@ -1638,7 +1638,7 @@ impl<'a> Parser<'a> {
                 ),
             ));
         }
-        // `(List @int32).Cons`: a type applied to its arguments, which is how a
+        // `(List @Int32).Cons`: a type applied to its arguments, which is how a
         // reader asks for a constructor at a fixed instantiation. Thrax infers
         // those arguments instead, so an ascription is where the types go.
         Err(Diagnostic::error(
@@ -1649,12 +1649,12 @@ impl<'a> Parser<'a> {
         )
         .with_note("the type arguments are inferred")
         .with_help(format!(
-            "drop them here and ascribe the whole expression instead, as in `(e : {head} @int32)`"
+            "drop them here and ascribe the whole expression instead, as in `(e : {head} @Int32)`"
         )))
     }
 
     /// The head of an application spine, when it is a bare unqualified name:
-    /// `List` for `List @int32 @str`, and for a bare `List` itself.
+    /// `List` for `List @Int32 @Str`, and for a bare `List` itself.
     fn spine_head_name(&self, base: Aol<Expr>) -> Option<StrId> {
         let mut head = base;
         while let Expr::App(f, _) = self.ast.exprs.lookup(head) {
@@ -1912,8 +1912,8 @@ impl<'a> Parser<'a> {
             }
             if let Some(d) = self.stray_annotation(
                 "expected '}' to close the variant payload",
-                "ascribe a payload field in a group, `.Cons.{ (1 : @int32), rest }`, or the \
-                 whole value, `(.Cons.{ .. } : List @int32)`",
+                "ascribe a payload field in a group, `.Cons.{ (1 : @Int32), rest }`, or the \
+                 whole value, `(.Cons.{ .. } : List @Int32)`",
             )? {
                 return Err(d);
             }
@@ -1985,8 +1985,8 @@ impl<'a> Parser<'a> {
         }
         if let Some(d) = self.stray_annotation(
             "expected ']' to close the list",
-            "ascribe an element in a group, `[(1 : @int32), 2, 3]`, or the whole literal and \
-             its sequence type, `([1, 2, 3] : List @int32)`",
+            "ascribe an element in a group, `[(1 : @Int32), 2, 3]`, or the whole literal and \
+             its sequence type, `([1, 2, 3] : List @Int32)`",
         )? {
             return Err(d);
         }
@@ -1995,7 +1995,7 @@ impl<'a> Parser<'a> {
         Ok(self.expr(Expr::List(elems)))
     }
 
-    /// An `@`-intrinsic in expression position: `@true`, `@false`, `@array`,
+    /// An `@`-intrinsic in expression position: `@true`, `@false`, `@Array`,
     /// `@extern`.
     fn parse_at_term(&mut self) -> Result<Aol<Expr>> {
         let at = self.peek()?;
@@ -2008,12 +2008,15 @@ impl<'a> Parser<'a> {
                 self.bump()?;
                 Ok(self.expr(Expr::Bool(false)))
             }
-            "array" => self.parse_array(),
+            "Array" => self.parse_array(),
             "extern" => self.parse_extern(),
             // Any other lowercase `@name` is a reference to a compiler intrinsic
             // (`@tensor_create`, `@tensor_index`, `@vec_get`, ...), usable as a value
             // function value. The `@` sigil marks it as a primitive, not a library fn.
-            other if other.starts_with(|c: char| c.is_ascii_lowercase()) => {
+            // A base type (`@Int32`) parses the same way, so a misplaced one reaches
+            // the checker's diagnostics rather than a bare parse error.
+            other if other.starts_with(|c: char| c.is_ascii_lowercase())
+                || crate::typing::BASE_TYPES.contains(&self.text(at)) => {
                 self.bump()?;
                 let name = self.intern(self.text(at));
                 Ok(self.expr(Expr::Var { module: None, name }))
@@ -2024,11 +2027,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `@array.{ n }` or `@array.{ .field = n }`.
+    /// `@Array.{ n }` or `@Array.{ .field = n }`.
     fn parse_array(&mut self) -> Result<Aol<Expr>> {
-        self.bump()?; // '@array'
-        expect!(self, Kind::Dot, "expected '.{' after '@array'");
-        expect!(self, Kind::LBrace, "expected '{' after '@array.'");
+        self.bump()?; // '@Array'
+        expect!(self, Kind::Dot, "expected '.{' after '@Array'");
+        expect!(self, Kind::LBrace, "expected '{' after '@Array.'");
         if matches!(self.peek_kind()?, Kind::Dot) {
             self.bump()?; // '.'
             expect!(self, Kind::Word, "expected a field name after '.'");
@@ -2197,10 +2200,10 @@ impl<'a> Parser<'a> {
     }
 
     /// `\p1 p2 = body`. Parameters are juxtaposed pattern atoms. An annotated
-    /// parameter is parenthesized, `\(i: @int) (j: @float32) = ...`, because a
+    /// parameter is parenthesized, `\(i: @Int) (j: @Float32) = ...`, because a
     /// lowercase name in a type is a type variable and a bare annotation would
     /// swallow the next parameter as its argument. A lone parameter may drop the
-    /// parens (`\x: @int = ...`), since `=` ends its type.
+    /// parens (`\x: @Int = ...`), since `=` ends its type.
     fn parse_lambda(&mut self) -> Result<Aol<Expr>> {
         self.bump()?; // '\'
         let mut params = vec![self.parse_lambda_param()?];
@@ -2616,7 +2619,7 @@ impl<'a> Parser<'a> {
         if let Some(d) = self.stray_annotation(
             "expected '}' to close the tuple pattern",
             "a pattern carries no types, so annotate the binding instead, as in \
-             `let {a, b} : {@int32, @int32} = ...` or `\\{a, b}: {@int32, @int32} = ...`",
+             `let {a, b} : {@Int32, @Int32} = ...` or `\\{a, b}: {@Int32, @Int32} = ...`",
         )? {
             return Err(d);
         }

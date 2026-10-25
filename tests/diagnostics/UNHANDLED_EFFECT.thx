@@ -2,5 +2,5 @@ $ @mod UNHANDLED_EFFECT
 $ with IO
 
 # A pure signature cannot hide an effect its body performs.
-$ g : @int -> <@io> @int = \x = println "a"; x
-$ f : @int -> @int = \x = g x  #~ error[TYPE_MISMATCH]: effect `@io` is performed but not handled
+$ g : @Int -> <@IO> @Int = \x = println "a"; x
+$ f : @Int -> @Int = \x = g x  #~ error[TYPE_MISMATCH]: effect `@IO` is performed but not handled

@@ -1,7 +1,7 @@
 //! The C standard library's real prototypes, for the integer slots an `@extern`
 //! types loosely.
 //!
-//! `library/C.thx` gives libc functions the friendly `@int` for every integer
+//! `library/C.thx` gives libc functions the friendly `@Int` for every integer
 //! and handle, but C does not: `fgetc` returns a 32-bit `int`, `write` takes a
 //! `size_t`, a `FILE*` is a pointer, and `long` is 32 bits on Windows. Calling
 //! across that gap reads the upper half of a narrow return as garbage (so EOF is
@@ -33,7 +33,7 @@ enum C {
     Clock,
     /// Any pointer that a Thrax binding may carry as an integer (`FILE*`).
     Ptr,
-    /// Anything a binding cannot get wrong with an integer: `char*` (`@str`),
+    /// Anything a binding cannot get wrong with an integer: `char*` (`@Str`),
     /// `double`, `void`.
     Other,
 }
@@ -110,7 +110,7 @@ fn is_libc(lib: &str) -> bool {
 }
 
 fn is_integer(ty: &str) -> bool {
-    ty == "@int" || ty == "@nat" || ty.starts_with("@int") || ty.starts_with("@nat")
+    ty == "@Int" || ty == "@Nat" || ty.starts_with("@Int") || ty.starts_with("@Nat")
 }
 
 /// The sized Thrax type `c` is on `target`, or `None` to keep the binding's own.
@@ -118,18 +118,18 @@ fn sized(target: Target, c: C) -> Option<&'static str> {
     let word = target.ptr_bits() == 64;
     let long64 = word && target.os != Os::Windows;
     Some(match c {
-        Int => "@int32",
-        UInt => "@nat32",
-        Long | Clock if long64 => "@int64",
-        Long | Clock => "@int32",
-        ULong if long64 => "@nat64",
-        ULong => "@nat32",
-        Size if word => "@nat64",
-        Size => "@nat32",
-        SSize if word => "@int64",
-        SSize => "@int32",
-        Time => "@int64",
-        Ptr => "@ptr",
+        Int => "@Int32",
+        UInt => "@Nat32",
+        Long | Clock if long64 => "@Int64",
+        Long | Clock => "@Int32",
+        ULong if long64 => "@Nat64",
+        ULong => "@Nat32",
+        Size if word => "@Nat64",
+        Size => "@Nat32",
+        SSize if word => "@Int64",
+        SSize => "@Int32",
+        Time => "@Int64",
+        Ptr => "@Ptr",
         Other => return None,
     })
 }

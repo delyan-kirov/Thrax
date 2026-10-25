@@ -1,4 +1,4 @@
 $ @mod SEQ_PATTERN_NO_VIEW
 
-$ P : @struct = x: @int,
-$ f : P -> @int = \s = is s | [] => 1 | _ => 0  #~ error[TYPE_MISMATCH]: type mismatch in a sequence pattern: expected P, found @vec a
+$ P : @struct = x: @Int,
+$ f : P -> @Int = \s = is s | [] => 1 | _ => 0  #~ error[TYPE_MISMATCH]: type mismatch in a sequence pattern: expected P, found @Vec a

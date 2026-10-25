@@ -1,4 +1,4 @@
 $ @mod PROMOTE_TUPLE_ARITY
 
-$ add : {x: @int, y: @int} -> @int = x + y
-$ a : @int = add {1, 2, 3}  #~ error[TYPE_MISMATCH]: cannot pass 3 value(s) as a record with 2 field(s)
+$ add : {x: @Int, y: @Int} -> @Int = x + y
+$ a : @Int = add {1, 2, 3}  #~ error[TYPE_MISMATCH]: cannot pass 3 value(s) as a record with 2 field(s)

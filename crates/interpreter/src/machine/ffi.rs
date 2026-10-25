@@ -192,7 +192,7 @@ pub enum Outcome {
     Unit,
     Int(i64),
     Real(f64),
-    /// A single-precision result (`@float32`), kept distinct so it wraps to a
+    /// A single-precision result (`@Float32`), kept distinct so it wraps to a
     /// [`Value::Real32`] rather than a widened double.
     Real32(f32),
     Bytes(Vec<u8>),
@@ -303,18 +303,18 @@ fn parse_fn_sig(ty: &str) -> Option<(Vec<std::os::raw::c_int>, std::os::raw::c_i
 /// The libffi kind for a scalar marshal name.
 fn scalar_ffi_kind(name: &str) -> Option<std::os::raw::c_int> {
     Some(match name {
-        "@float64" => kind::DOUBLE,
-        "@float32" => kind::FLOAT,
-        "@ptr" | "@str" | "@array" => kind::PTR,
-        "@int8" => kind::S8,
-        "@int16" => kind::S16,
-        "@int32" => kind::S32,
-        "@int64" | "@int" => kind::S64,
-        "@nat8" => kind::U8,
-        "@nat16" => kind::U16,
-        "@nat32" => kind::U32,
-        "@nat64" | "@nat" => kind::U64,
-        "@bool" => kind::U8,
+        "@Float64" => kind::DOUBLE,
+        "@Float32" => kind::FLOAT,
+        "@Ptr" | "@Str" | "@Array" => kind::PTR,
+        "@Int8" => kind::S8,
+        "@Int16" => kind::S16,
+        "@Int32" => kind::S32,
+        "@Int64" | "@Int" => kind::S64,
+        "@Nat8" => kind::U8,
+        "@Nat16" => kind::U16,
+        "@Nat32" => kind::U32,
+        "@Nat64" | "@Nat" => kind::U64,
+        "@Bool" => kind::U8,
         "{}" => kind::VOID,
         _ => return None,
     })
@@ -339,11 +339,11 @@ fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
     // `Bytes` appends is harmless (C reads a separately-passed count).
     if let Some(elem) = ty.strip_prefix("@structs(").and_then(|s| s.strip_suffix(')')) {
         let layout = layout_of(elem)
-            .ok_or_else(|| fault(format!("FFI: `@vec {elem}` is not a C-repr struct array")))?;
+            .ok_or_else(|| fault(format!("FFI: `@Vec {elem}` is not a C-repr struct array")))?;
         let mut bytes = Vec::new();
         let items = match &*v.borrow() {
             Value::Vector(items) => items.clone(),
-            _ => return Err(fault("FFI: a C struct array expects a `@vec`")),
+            _ => return Err(fault("FFI: a C struct array expects a `@Vec`")),
         };
         for item in items.iter() {
             let mut elem_bytes = vec![0u8; layout.size];
@@ -362,23 +362,23 @@ fn classify_arg(ty: &str, v: &PVal) -> Result<CArg> {
         return Ok(CArg::Struct { leaves, bytes });
     }
     Ok(match ty {
-        "@float64" => CArg::Double(read_real(v)?),
-        "@float32" => CArg::Float(read_real(v)? as f32),
-        "@str" | "@array" => CArg::Bytes(read_bytes(v)?),
-        "@ptr" => CArg::Ptr(read_word(v)?),
+        "@Float64" => CArg::Double(read_real(v)?),
+        "@Float32" => CArg::Float(read_real(v)? as f32),
+        "@Str" | "@Array" => CArg::Bytes(read_bytes(v)?),
+        "@Ptr" => CArg::Ptr(read_word(v)?),
         // A `{}` parameter is a nullary C function's placeholder: an ignored word.
         "{}" => CArg::Int {
             kind: kind::S64,
             val: 0,
         },
-        "@int8" => int_arg(kind::S8, v)?,
-        "@int16" => int_arg(kind::S16, v)?,
-        "@int32" => int_arg(kind::S32, v)?,
-        "@int64" => int_arg(kind::S64, v)?,
-        "@nat8" => int_arg(kind::U8, v)?,
-        "@nat16" => int_arg(kind::U16, v)?,
-        "@nat32" => int_arg(kind::U32, v)?,
-        "@nat64" | "@nat" => int_arg(kind::U64, v)?,
+        "@Int8" => int_arg(kind::S8, v)?,
+        "@Int16" => int_arg(kind::S16, v)?,
+        "@Int32" => int_arg(kind::S32, v)?,
+        "@Int64" => int_arg(kind::S64, v)?,
+        "@Nat8" => int_arg(kind::U8, v)?,
+        "@Nat16" => int_arg(kind::U16, v)?,
+        "@Nat32" => int_arg(kind::U32, v)?,
+        "@Nat64" | "@Nat" => int_arg(kind::U64, v)?,
         _ => int_arg(kind::S64, v)?,
     })
 }
@@ -406,18 +406,18 @@ fn classify_ret(ty: &str) -> RetPlan {
         };
     }
     let (ffi_kind, wrap) = match ty {
-        "@float64" => (kind::DOUBLE, Wrap::Real),
-        "@float32" => (kind::FLOAT, Wrap::Real),
-        "@str" | "@array" => (kind::PTR, Wrap::Bytes),
-        "@ptr" => (kind::PTR, Wrap::Int),
+        "@Float64" => (kind::DOUBLE, Wrap::Real),
+        "@Float32" => (kind::FLOAT, Wrap::Real),
+        "@Str" | "@Array" => (kind::PTR, Wrap::Bytes),
+        "@Ptr" => (kind::PTR, Wrap::Int),
         "{}" => (kind::VOID, Wrap::Unit),
-        "@int8" => (kind::S8, Wrap::Int),
-        "@int16" => (kind::S16, Wrap::Int),
-        "@int32" => (kind::S32, Wrap::Int),
-        "@nat8" => (kind::U8, Wrap::Int),
-        "@nat16" => (kind::U16, Wrap::Int),
-        "@nat32" => (kind::U32, Wrap::Int),
-        "@nat64" | "@nat" => (kind::U64, Wrap::Int),
+        "@Int8" => (kind::S8, Wrap::Int),
+        "@Int16" => (kind::S16, Wrap::Int),
+        "@Int32" => (kind::S32, Wrap::Int),
+        "@Nat8" => (kind::U8, Wrap::Int),
+        "@Nat16" => (kind::U16, Wrap::Int),
+        "@Nat32" => (kind::U32, Wrap::Int),
+        "@Nat64" | "@Nat" => (kind::U64, Wrap::Int),
         _ => (kind::S64, Wrap::Int),
     };
     RetPlan {

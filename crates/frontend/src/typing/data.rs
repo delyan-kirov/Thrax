@@ -31,7 +31,7 @@ pub type Type = Aol<TypeNode>;
 pub enum TypeNode {
     /// A unification variable, resolved through the engine's var store.
     Var(VarId),
-    /// A nullary type constructor: `@int`, `@str`, unit `{}`, or a user-declared
+    /// A nullary type constructor: `@Int`, `@Str`, unit `{}`, or a user-declared
     /// type name.
     Con(StrId),
     /// A type-level natural (the size in a sized tensor `[n]T`). A distinct KIND
@@ -43,7 +43,7 @@ pub enum TypeNode {
     NatAdd(Type, Type),
     /// A type-level size product `a * b`, modular (Z/2^64).
     NatMul(Type, Type),
-    /// Type application `Head Arg`, e.g. `@vec @int` is `App(Con("@vec"), @int)`.
+    /// Type application `Head Arg`, e.g. `@Vec @Int` is `App(Con("@Vec"), @Int)`.
     App(Type, Type),
     /// A function type `From -[eff]-> To`. `eff` is the arrow's latent effect row:
     /// the effects a call may perform. A pure arrow's `eff` is
@@ -57,7 +57,7 @@ pub enum TypeNode {
     /// An effect-row extension `<label args | rest>`. Rows are unordered up to
     /// reordering (Leijen scoped labels); a row variable in tail position is an
     /// ordinary [`TypeNode::Var`]. `args` is the effect's type arguments as a
-    /// [`TypeNode::Tuple`] (`<Chan @int e>`), or [`TypeNode::RowEmpty`] for a
+    /// [`TypeNode::Tuple`] (`<Chan @Int e>`), or [`TypeNode::RowEmpty`] for a
     /// label whose arguments are unknown, which matches any (an effect this
     /// module cannot see). Two occurrences of one label unify their arguments,
     /// so every operation performed under one handler shares its instance.
@@ -285,14 +285,14 @@ impl Types {
 // Built-in constructor names, kept as constants so use sites don't stringly-type.
 // The `@`-sigil builtins' internal name IS their source spelling (no translation
 // layer); only `Real`/`Str` keep a friendly spelling.
-pub const INT: &str = "@int";
-pub const REAL: &str = "@float64";
-pub const STR: &str = "@str";
-pub const BOOL: &str = "@bool";
+pub const INT: &str = "@Int";
+pub const REAL: &str = "@Float64";
+pub const STR: &str = "@Str";
+pub const BOOL: &str = "@Bool";
 pub const UNIT: &str = "{}";
-pub const PTR: &str = "@ptr";
-pub const ARRAY: &str = "@array";
-pub const VEC: &str = "@vec";
+pub const PTR: &str = "@Ptr";
+pub const ARRAY: &str = "@Array";
+pub const VEC: &str = "@Vec";
 
 /// Format a fully resolved type (no `Var` links left) for display. Variables are
 /// named `t0`, `t1`, ... by first appearance via `namer`.
@@ -524,8 +524,8 @@ pub fn dump(types: &Types, ty: Type) -> String {
 
 /// The one builtin effect: the outside world, handled by the runtime around
 /// [`ENTRY`] and around each `@spawn` task. Anything finer is an ordinary effect
-/// whose handler discharges into `@io`.
-pub const IO: &str = "@io";
+/// whose handler discharges into `@IO`.
+pub const IO: &str = "@IO";
 
 /// The labels of a closed row as a sorted set, or `None` for an open row.
 fn closed_row_labels(types: &Types, row: Type) -> Option<Vec<String>> {
@@ -560,11 +560,11 @@ fn label_set(labels: &[&str]) -> Vec<String> {
 pub const ENTRY: &str = "@main";
 
 /// The entry's mandated signature, in source spelling, for diagnostics.
-pub const ENTRY_SIG: &str = "@vec @str -> <@io> @int";
+pub const ENTRY_SIG: &str = "@Vec @Str -> <@IO> @Int";
 
-/// Whether a (zonked) type is [`ENTRY_SIG`]: `@vec @str -> <@io> @int`. The one
+/// Whether a (zonked) type is [`ENTRY_SIG`]: `@Vec @Str -> <@IO> @Int`. The one
 /// accepted entry shape, effect row included, so an entry that performs anything
-/// beyond `@io` is a type error at its own signature rather than a surprise at
+/// beyond `@IO` is a type error at its own signature rather than a surprise at
 /// run time.
 pub fn is_entry_type(types: &Types, ty: Type) -> bool {
     let TypeNode::Arrow(from, to, eff) = types.node(ty) else {
@@ -583,18 +583,18 @@ pub fn is_entry_type(types: &Types, ty: Type) -> bool {
 }
 
 /// The compile-time analogue of [`ENTRY`]: `$ @build`, the function the compiler
-/// runs *during* compilation. Its `@code` result is injected in place of its own
+/// runs *during* compilation. Its `@Code` result is injected in place of its own
 /// definition, so a module generates part of itself from whatever the build can
-/// see. It is the only context whose effect row discharges `<@io>` at compile
+/// see. It is the only context whose effect row discharges `<@IO>` at compile
 /// time, which is what separates it from `$ @e`: building is IO.
 pub const BUILD: &str = "@build";
 
 /// The build function's mandated signature, in source spelling, for diagnostics.
-pub const BUILD_SIG: &str = "{} -> <@meta, @io> @code";
+pub const BUILD_SIG: &str = "{} -> <@Meta, @IO> @Code";
 
-/// Whether a (zonked) type is [`BUILD_SIG`]: `{} -> <@meta, @io> @code`. As with
+/// Whether a (zonked) type is [`BUILD_SIG`]: `{} -> <@Meta, @IO> @Code`. As with
 /// the entry, one name means one signature, so a `@build` that performs anything
-/// beyond `@meta`/`@io` is a type error at its own signature.
+/// beyond `@Meta`/`@IO` is a type error at its own signature.
 pub fn is_build_type(types: &Types, ty: Type) -> bool {
     let TypeNode::Arrow(from, to, eff) = types.node(ty) else {
         return false;
@@ -603,7 +603,7 @@ pub fn is_build_type(types: &Types, ty: Type) -> bool {
         matches!(types.node(t), TypeNode::Con(n) if types.name(n) == want)
     };
     // The row is order-insensitive, so compare label sets rather than a fixed
-    // spelling: `<@meta, @io>` and `<@io, @meta>` are the same row.
-    let io_meta = closed_row_labels(types, eff) == Some(label_set(&["@meta", IO]));
-    is_con(from, UNIT) && is_con(to, "@code") && io_meta
+    // spelling: `<@Meta, @IO>` and `<@IO, @Meta>` are the same row.
+    let io_meta = closed_row_labels(types, eff) == Some(label_set(&["@Meta", IO]));
+    is_con(from, UNIT) && is_con(to, "@Code") && io_meta
 }

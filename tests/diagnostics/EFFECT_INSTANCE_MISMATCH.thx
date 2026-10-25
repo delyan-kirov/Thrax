@@ -2,9 +2,9 @@ $ @mod EFFECT_INSTANCE_MISMATCH
 
 # A parameterized effect is used at one instance per handler: the parameter is
 # fixed for every operation the handler serves.
-$ Box : @effect a = take : @int -> a,
+$ Box : @effect a = take : @Int -> a,
 
-$ use : {} -> <Box> @int = \u =
-	let s : @str = Box.take 0 in
-	let n : @int = Box.take 1 in  #~ error[TYPE_MISMATCH]: expected @int, found @str
+$ use : {} -> <Box> @Int = \u =
+	let s : @Str = Box.take 0 in
+	let n : @Int = Box.take 1 in  #~ error[TYPE_MISMATCH]: expected @Int, found @Str
 	n
