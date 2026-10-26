@@ -63,14 +63,37 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
         bytes.push(raw[i]);
         i += 1;
     }
-    let path = PathBuf::from(String::from_utf8(bytes).ok()?);
+    let text = String::from_utf8(bytes).ok()?;
+    let path = PathBuf::from(if cfg!(windows) { from_uri_path(&text) } else { text });
     Some(path.canonicalize().unwrap_or(path))
 }
 
+/// `/C:/x/y` (a URI path) as the Windows path `C:\x\y`; `//server/share/x`
+/// stays a UNC path `\\server\share\x`.
+fn from_uri_path(text: &str) -> String {
+    let b = text.as_bytes();
+    let text = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' { &text[1..] } else { text };
+    text.replace('/', "\\")
+}
+
+/// A Windows path as a URI path: no `\\?\` verbatim prefix (which
+/// `canonicalize` adds), forward slashes, and a leading `/` before the drive.
+fn to_uri_path(text: &str) -> String {
+    let text = match text.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(text).to_string(),
+    };
+    let text = text.replace('\\', "/");
+    let b = text.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' { format!("/{text}") } else { text }
+}
+
 pub fn path_to_uri(path: &std::path::Path) -> String {
+    let text = path.display().to_string();
+    let text = if cfg!(windows) { to_uri_path(&text) } else { text };
     let mut out = String::from("file://");
-    for b in path.display().to_string().bytes() {
-        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-_.~:".contains(&b) {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -94,6 +117,15 @@ mod tests {
         let uri = path_to_uri(p);
         assert_eq!(uri, "file:///tmp/a%20b/c.thx");
         assert_eq!(uri_to_path(&uri).unwrap(), p);
+    }
+
+    #[test]
+    fn windows_paths_become_drive_uris() {
+        assert_eq!(to_uri_path(r"\\?\D:\a\b c.thx"), "/D:/a/b c.thx");
+        assert_eq!(to_uri_path(r"C:\x"), "/C:/x");
+        assert_eq!(to_uri_path(r"\\?\UNC\srv\share\x"), "//srv/share/x");
+        assert_eq!(from_uri_path("/D:/a/b.thx"), r"D:\a\b.thx");
+        assert_eq!(from_uri_path("//srv/share/x"), r"\\srv\share\x");
     }
 
     #[test]

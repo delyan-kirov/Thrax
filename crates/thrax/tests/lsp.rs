@@ -101,7 +101,7 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     let src = "$ @mod DEMO\n\n$ double : @Int -> @Int = \\x = x * 2\n\n$ h = \\x = (x + 1\n\n$ k : @Int = dobule 3\n\n$ y : @Float64 = 2.\n";
     std::fs::write(&path, src).unwrap();
     let path = path.canonicalize().unwrap();
-    let uri = format!("file://{}", path.display());
+    let uri = thrax::lsp::path_to_uri(&path);
 
     let mut c = Client::start();
     let init = c.request(
@@ -255,9 +255,9 @@ fn builtins_are_defined_in_core() {
     let path = dir.join("USE.thx");
     let src = "$ @mod USE\n$ n : @Int = @iadd 1 2\n$ b : @Bool = not @true\n$ v : @Int = @vec_len [1, 2]\n";
     std::fs::write(&path, src).unwrap();
-    let uri = format!("file://{}", path.canonicalize().unwrap().display());
+    let uri = thrax::lsp::path_to_uri(&path.canonicalize().unwrap());
     let core_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/CORE.thx").canonicalize().unwrap();
-    let core_uri = format!("file://{}", core_path.display());
+    let core_uri = thrax::lsp::path_to_uri(&core_path);
 
     let mut c = Client::start();
     c.request(
