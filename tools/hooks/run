@@ -1,0 +1,10 @@
+#!/bin/sh
+# Every hook in this directory is `run <hook> <git's arguments>`. The logic is
+# Thrax, in tools/HOOKS.thx, reached through `thxdo hook`. Installed by
+# `thxdo hooks` (and on entering the nix shell); `--no-verify` skips the
+# commit and push checks.
+thxdo=$(command -v thxdo) || {
+    echo "thxdo: not on PATH (outside the nix shell?), $1 hook skipped" >&2
+    exit 0
+}
+THXDO_BIN=$thxdo exec "$thxdo" hook "$@"

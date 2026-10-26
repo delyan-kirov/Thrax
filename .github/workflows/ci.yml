@@ -157,3 +157,37 @@ jobs:
 
       - name: Corpus under Wine
         run: nix develop ./tools/windows --command thrax-wine-corpus
+
+  # A red master opens one `ci-failure` issue, the one to commit the fix
+  # against. Later red runs comment on it rather than opening more, and the
+  # next green master closes it.
+  report:
+    needs: [build, wasm, playground, macos, windows, windows-cross]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      NEEDS: ${{ toJSON(needs) }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Open, update or close the ci-failure issue
+        run: |
+          failed=$(printf '%s' "$NEEDS" | jq -r 'to_entries[] | select(.value.result == "failure") | .key' | paste -sd, - | sed 's/,/, /g')
+          open=$(gh issue list --label ci-failure --state open --json number --jq '.[0].number // empty')
+          note="Failing: ${failed}. Commit ${GITHUB_SHA::7}, run $RUN"
+          if [ -n "$failed" ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --body "Still red. $note"
+            else
+              gh label create ci-failure --color d73a4a --description "master is red" --force
+              gh issue create --title "CI fails on master" --label ci-failure --body "$note"
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Green again at ${GITHUB_SHA::7}, run $RUN"
+          fi

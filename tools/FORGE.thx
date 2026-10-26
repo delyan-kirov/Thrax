@@ -1,0 +1,132 @@
+$ @mod FORGE
+
+#-
+ - \file FORGE.thx
+ - \info The code host (issues and pull requests) as an effect
+ - \note thxdo and the git hooks only perform `Forge` operations; a handler
+ -       maps them onto one host's CLI. `github` (over `gh`) is the only one.
+ -       Another host is another handler, picked in `with_forge`.
+ -#
+
+$ with IO
+$ with OPT
+$ with STR
+$ with VEC
+$ with RESULT
+$ with SH
+
+$ Issue : @struct =
+    title: @Str,
+    open: @Bool,
+
+# `Unreachable` is the host not answering (offline, CLI missing or logged
+# out), as opposed to the issue not existing.
+$ Lookup : @union =
+    Found: Issue,
+    Missing: {},
+    Unreachable: {},
+
+$ Pr : @union =
+    Absent: {},
+    Open: @Str,
+    Merged: {},
+    Closed: {},
+
+$ PrSpec : @struct =
+    branch: @Str,
+    base: @Str,
+    title: @Str,
+    body: @Str,
+
+$ Forge : @effect =
+    issue : @Int -> Lookup,
+    create_issue : @Str -> Option @Int,
+    pr : @Str -> Pr,
+    open_pr : PrSpec -> Option @Str,
+
+# Runs `body` against the host `origin` lives on, or the one `git config
+# thxdo.forge` names. A host it cannot tell is `offline`: the hooks that need
+# no forge must work in any clone.
+$ with_forge : ({} -> <Forge, @IO, Fail> t) -> <@IO, Fail> t = \body =
+    let named = output "git config --get thxdo.forge",
+        remote = output "git remote get-url origin 2>/dev/null",
+        host = if !(STR.is_empty named) => named,
+           STR.contains remote "github.com" => "github"
+           else "" in
+    is host
+    | "github" => github body
+    | "offline" => offline body
+    | "" => offline body
+    | other => Fail.fail ("unknown forge `" ++ other ++ "` (thxdo.forge)")
+
+$ github : ({} -> <Forge, @IO, Fail> t) -> <@IO, Fail> t = \body =
+    do body {}
+    ctl k
+    | Forge.issue n => k (gh_issue n)
+    | Forge.create_issue title => k (gh_create_issue title)
+    | Forge.pr branch => k (gh_pr branch)
+    | Forge.open_pr spec => k (gh_open_pr spec)
+    | x => x
+
+# No host: issues go unchecked and nothing can be opened.
+$ offline : ({} -> <Forge, @IO, Fail> t) -> <@IO, Fail> t = \body =
+    do body {}
+    ctl k
+    | Forge.issue n => k Lookup.Unreachable
+    | Forge.create_issue title => Fail.fail "no forge to open an issue on (thxdo.forge is offline)"
+    | Forge.pr branch => k Pr.Absent
+    | Forge.open_pr spec => k Option.None
+    | x => x
+
+$ @private
+
+# `s` split at its first space; all of `s` and "" when it has none.
+$ split_word : @Str -> { @Str, @Str } = \s =
+    is STR.find s " "
+    | Option.Some.{ i } => { STR.substr s 0 i, STR.substr s (i + 1) (STR.len s) }
+    | _ => { s, "" }
+
+$ gh_issue : @Int -> <@IO> Lookup = \n =
+    let r = capture (
+            "gh issue view "
+                ++ int_to_str n
+                ++ " --json state,title --jq '.state + \" \" + .title' 2>&1"
+        ) in
+    if r.ok =>
+        let parts = split_word (STR.trim_right r.out) in
+        Lookup.Found.{ Issue.{ .title = parts.1, .open = parts.0 == "OPEN" } }
+    else if STR.contains r.out "Could not resolve" => Lookup.Missing
+    else Lookup.Unreachable
+
+# `gh issue create` prints the new issue's URL, which ends in its number.
+$ gh_create_issue : @Str -> <@IO> Option @Int = \title =
+    let url = output ("gh issue create --title " ++ quote title ++ " --body '' 2>/dev/null") in
+    is VEC.last (STR.split url "/") | Option.Some.{ n } => STR.to_int n | _ => Option.None
+
+$ gh_pr : @Str -> <@IO> Pr = \branch =
+    let parts = split_word (
+            output (
+                "gh pr view "
+                    ++ quote branch
+                    ++ " --json state,url --jq '.state + \" \" + .url' 2>/dev/null"
+            )
+        ) in
+    is parts.0
+    | "OPEN" => Pr.Open.{ parts.1 }
+    | "MERGED" => Pr.Merged
+    | "CLOSED" => Pr.Closed
+    | _ => Pr.Absent
+
+$ gh_open_pr : PrSpec -> <@IO> Option @Str = \s =
+    let r = capture (
+            "gh pr create --head "
+                ++ quote s.branch
+                ++ " --base "
+                ++ quote s.base
+                ++ " --title "
+                ++ quote s.title
+                ++ " --body "
+                ++ quote s.body
+                ++ " 2>&1"
+        ) in
+    if r.ok => VEC.last (STR.lines r.out) else eprint r.out; Option.None
