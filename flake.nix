@@ -27,8 +27,10 @@
         bin="$root/tools/thrax-out/THXDO"
         src="$root/tools/THXDO.thx"
         # A compiler recompile alone does not force a rebuild, so the common path
-        # stays a bare exec.
-        if [ ! -x "$bin" ] || [ "$src" -nt "$bin" ] || [ ! -x "$THRAX_BIN" ]; then
+        # stays a bare exec. THXDO.thx imports the modules beside it.
+        stale=
+        for f in "$root"/tools/*.thx; do [ "$f" -nt "$bin" ] && stale=1; done
+        if [ ! -x "$bin" ] || [ -n "$stale" ] || [ ! -x "$THRAX_BIN" ]; then
           cargo build --quiet --manifest-path "$root/Cargo.toml" -p thrax 1>&2 || exit
           "$THRAX_BIN" build "$src" 1>&2 || exit
         fi
@@ -130,6 +132,13 @@
           # The directory `nix develop` was entered from: the workspace root, as
           # far as thraxDev, thxdoDev and `thxdo tosdk` are concerned.
           export THRAX_ROOT=$PWD
+
+          # What `thxdo hooks` sets: the git hooks of documentation/workflow.md.
+          if [ -d .git ]; then
+            git config core.hooksPath tools/hooks
+            git config core.commentChar ';'
+            git config push.autoSetupRemote true
+          fi
         '';
       };
     };

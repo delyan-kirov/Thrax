@@ -10,6 +10,8 @@ $ with OPT
 $ with STR
 $ with VEC
 $ with RESULT
+$ with FORGE
+$ with HOOKS
 
 $ Command : @union =
     Build,
@@ -27,8 +29,7 @@ $ Command : @union =
     Hooks,
     Doc,
     Site,
-    Start,
-    Done,
+    Hook,
     Issue,
     SdkPath,
     Stats,
@@ -119,8 +120,8 @@ $ spec : Command -> Spec = \c =
         Spec.{
             .name = "hooks",
             .usage = "",
-            .info = "use tools/hooks as this clone's git hooks (pre-commit\n"
-                ++ "formats the staged .thx files)",
+            .info = "use tools/hooks as this clone's git hooks (see\n"
+                ++ "documentation/workflow.md)",
         }
     | .Doc =>
         Spec.{
@@ -134,23 +135,17 @@ $ spec : Command -> Spec = \c =
             .usage = "",
             .info = "rebuild the web playground's wasm, then serve it and open it",
         }
-    | .Start =>
+    | .Hook =>
         Spec.{
-            .name = "start",
-            .usage = "N",
-            .info = "branch N-<slug> off origin/master for issue N (or switch to it)",
-        }
-    | .Done =>
-        Spec.{
-            .name = "done",
-            .usage = "",
-            .info = "switch to master, pull, delete the branch if its PR merged",
+            .name = "hook",
+            .usage = "NAME ARGS",
+            .info = "run the git hook NAME (tools/hooks/* call this)",
         }
     | .Issue =>
         Spec.{
             .name = "issue",
-            .usage = "",
-            .info = "create a GitHub issue (extra args go to `gh issue create`)",
+            .usage = "TITLE",
+            .info = "open an issue titled TITLE and print its number",
         }
     | .SdkPath =>
         Spec.{
@@ -286,40 +281,6 @@ $ site_serve_cmd : @Str = "node applications/web/serve.mjs"
 $ site_open_cmd : @Str =
     "( sleep 1; ${BROWSER:-xdg-open} \"" ++ site_url ++ "\" >/dev/null 2>&1 & )"
 
-# Uncommitted changes would silently ride along to the other branch.
-$ clean_tree_check : @Str =
-    "if ! git diff --quiet || ! git diff --cached --quiet; then "
-        ++ "echo 'thxdo: uncommitted changes, commit or stash them first' >&2; exit 1; fi; "
-
-# An existing branch for the issue is reused, so `start N` also means "go back
-# to N". `--no-track` keeps the branch from adopting origin/master as upstream.
-$ start_cmd : @Str -> @Str = \n =
-    "set -e; n="
-        ++ n
-        ++ "; "
-        ++ clean_tree_check
-        ++ "b=$(git for-each-ref --format='%(refname:short)' \"refs/heads/$n-*\" | head -n 1); "
-        ++ "if [ -n \"$b\" ]; then git switch \"$b\"; exit 0; fi; "
-        ++ "title=$(gh issue view \"$n\" --json title -q .title); "
-        ++ "slug=$(printf '%s' \"$title\" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9' '-' "
-        ++ "| cut -c 1-40 | sed 's/^-*//; s/-*$//'); "
-        ++ "git fetch --quiet origin master; "
-        ++ "git switch --no-track -c \"$n-$slug\" origin/master; "
-        ++ "echo \"thxdo: on $n-$slug ($title)\""
-
-# PRs are squash-merged, so a merged branch is never an ancestor of master and
-# `git branch -d` refuses it. GitHub's PR state is the merge signal instead.
-$ done_cmd : @Str =
-    "set -e; b=$(git branch --show-current); "
-        ++ "if [ \"$b\" != master ]; then "
-        ++ clean_tree_check
-        ++ "git switch master; fi; "
-        ++ "git pull --ff-only; "
-        ++ "if [ -n \"$b\" ] && [ \"$b\" != master ]; then "
-        ++ "state=$(gh pr view \"$b\" --json state -q .state 2>/dev/null || echo NONE); "
-        ++ "if [ \"$state\" = MERGED ]; then git branch -D \"$b\"; "
-        ++ "else echo \"thxdo: kept $b (PR: $state)\"; fi; fi"
-
 $ ffi_prefix : @Str = "external/artifacts/libffi"
 
 $ musl_prefix : @Str = "external/artifacts/musl"
@@ -449,6 +410,19 @@ $ dist_musl_cmd : @Str =
         ++ "/lib $m/; "
         ++ "rm -f $m/lib/musl-gcc.specs"
 
+# `#351 ...` would be a comment line to git, so comments start with `;`. A new
+# branch pushes to its own name with no `-u`.
+$ hooks_cmd : @Str =
+    "git config core.hooksPath tools/hooks && git config core.commentChar ';' "
+        ++ "&& git config push.autoSetupRemote true"
+
+$ new_issue : @Str -> <@IO, Fail> {} = \title =
+    if STR.is_empty (STR.trim title) => Fail.fail "usage: thxdo issue <title>"
+    else
+        is with_forge (\u = Forge.create_issue title)
+        | Option.Some.{ n } => println ("#" ++ int_to_str n)
+        | _ => Fail.fail "could not open the issue"
+
 $ step : @Str -> @Str -> <@IO, Fail> {} = \what cmd =
     if C.system cmd == 0 => {} else Fail.fail (what ++ " FAILED")
 
@@ -529,14 +503,8 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
     | .Clean => clean_task args
     | .Test => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
     | .Install => C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
-    | .Issue => step "gh issue create" ("gh issue create" ++ quoted_from args 2)
-    | .Start =>
-        (
-            is STR.to_int (arg_or args 2 "")
-            | Option.Some.{ n } if n > 0 => step "start" (start_cmd (int_to_str n))
-            | _ => Fail.fail "usage: thxdo start <issue-number>"
-        )
-    | .Done => step "done" done_cmd
+    | .Issue => new_issue (STR.join " " (VEC.drop 2 args))
+    | .Hook => with_forge (\u = HOOKS.hook args)
     | .Readme =>
         println "thxdo: regenerating README.md ...";
         step "readme" readme_cmd;
@@ -548,9 +516,7 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
     | .TreeSitter => step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
     | .Tags => step "tags" (tags_cmd args)
     | .Fmt => step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
-    | .Hooks =>
-        step "hooks" "git config core.hooksPath tools/hooks";
-        println "thxdo: git hooks installed from tools/hooks"
+    | .Hooks => step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
     | .Grammar =>
         println "thxdo: checking documentation/thrax.y ...";
         if C.system grammar_cmd == 0 => println "thxdo: grammar OK"

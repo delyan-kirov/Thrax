@@ -1,0 +1,36 @@
+$ @mod SH
+
+#-
+ - \file SH.thx
+ - \info Running shell commands and reading what they print
+ -#
+
+$ with IO
+$ with STR
+
+# `ok` is a zero exit status. `pclose` hands back the wait status, which is
+# zero exactly when the command exited with 0.
+$ Out : @struct =
+    ok: @Bool,
+    out: @Str,
+
+# The command's exit status and its whole standard output, byte for byte.
+$ capture : @Str -> <@IO> Out = \cmd =
+    let f = C.popen { cmd, "r" } in
+    if f == 0 => Out.{ .ok = @false, .out = "" }
+    else let out = drain f "" in Out.{ .ok = C.pclose f == 0, .out = out }
+
+# Standard output without its trailing newline, "" when the command failed.
+$ output : @Str -> <@IO> @Str = \cmd =
+    let r = capture cmd in if r.ok => STR.trim_right r.out else ""
+
+$ succeeds : @Str -> <@IO> @Bool = \cmd = C.system cmd == 0
+
+$ quote : @Str -> @Str = \s = "'" ++ STR.replace s "'" "'\\''" ++ "'"
+
+$ @private
+
+# `fgetc` returns a byte, or EOF (-1), which does not arrive negative across
+# the FFI: anything outside 0..255 ends the stream.
+$ drain : @Int -> @Str -> <@IO> @Str = \f acc =
+    let c = C.fgetc f in if c >= 0 && c <= 255 => drain f (@array_push acc c) else acc
