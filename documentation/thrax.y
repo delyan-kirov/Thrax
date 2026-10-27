@@ -112,7 +112,7 @@ global
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
-  | DOLLAR KW_WITH import
+  | DOLLAR KW_WITH import opt_comma
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
   /* The compile-time entry, run during compilation; its `@Code` result adds
@@ -155,7 +155,8 @@ operator_name
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
-import       : dotted_name ;
+import       : import_entry | import COMMA import_entry ;  /* `$ with A, V = VEC,` */
+import_entry : dotted_name | any_name EQ dotted_name ;     /* `V = VEC`: qualified only */
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 

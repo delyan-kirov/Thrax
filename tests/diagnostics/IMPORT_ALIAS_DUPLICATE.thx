@@ -1,0 +1,7 @@
+$ @mod IMPORT_ALIAS_DUPLICATE
+
+$ with V = VEC
+$ with V = LIST  #~ error[DUPLICATE_SYMBOL]: import alias `V` names more than one thing
+$ with STR
+$ with STR = OPT  #~ error[DUPLICATE_SYMBOL]: import alias `STR` names more than one thing
+$ with C = MAP  #~ error[DUPLICATE_SYMBOL]: import alias `C` names more than one thing

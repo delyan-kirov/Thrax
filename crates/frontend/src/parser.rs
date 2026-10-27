@@ -40,6 +40,8 @@ pub struct Parser<'a> {
     last_end: usize,
     /// Errors recovered from at item boundaries, in source order.
     errors: Vec<Diagnostic>,
+    /// The entries after the first of a `$ with A, B` list, each its own item.
+    more_imports: Vec<Item>,
 }
 
 /// Consume a token of an expected kind, or fail with an `UnexpectedToken`
@@ -66,6 +68,7 @@ impl<'a> Parser<'a> {
             src,
             last_end: 0,
             errors: Vec::new(),
+            more_imports: Vec::new(),
         }
     }
 
@@ -442,11 +445,11 @@ impl<'a> Parser<'a> {
             let name = self.item_name_span();
             match self.parse_global() {
                 Ok(item) => {
-                    items.push(item);
-                    spans.push(ItemSpan {
-                        full: Span::new(start, self.last_end),
-                        name,
-                    });
+                    let full = Span::new(start, self.last_end);
+                    for item in std::iter::once(item).chain(self.more_imports.drain(..)) {
+                        items.push(item);
+                        spans.push(ItemSpan { full, name });
+                    }
                 }
                 Err(d) => {
                     if let Some(n) = name {
@@ -662,25 +665,47 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `$ with module`
+    /// `$ with entry, entry, ...` (trailing comma optional), each entry a
+    /// `module` or `ALIAS = module`. The first entry is the item; the rest wait
+    /// in `more_imports`.
     fn parse_import(&mut self) -> Result<Item> {
         self.bump()?; // 'with'
+        self.more_imports.clear();
+        let first = self.parse_import_entry()?;
+        while self.eat(|k| matches!(k, Kind::Comma))? {
+            if matches!(self.peek_kind()?, Kind::Dollar | Kind::Eof) {
+                break;
+            }
+            let entry = self.parse_import_entry()?;
+            self.more_imports.push(entry);
+        }
+        Ok(first)
+    }
+
+    /// One `$ with` entry: `module` or `ALIAS = module`.
+    fn parse_import_entry(&mut self) -> Result<Item> {
+        let start = self.here()?;
+        let first = self.parse_dotted_name()?;
+        let span = Span::new(start, self.last_end);
+        if !self.eat(|k| matches!(k, Kind::Eq))? {
+            return Ok(Item::Import { module: first, alias: None, span });
+        }
+        let alias = match self.ast.slice(first) {
+            [alias] if is_upper(self.ast.text(*alias)) => *alias,
+            _ => {
+                return Err(Diagnostic::error(
+                    Code::BadModuleName,
+                    span,
+                    0,
+                    "an import alias is a single capitalized name",
+                )
+                .with_help("write `$ with ALIAS = MODULE`, e.g. `$ with V = VEC`"))
+            }
+        };
         let start = self.here()?;
         let module = self.parse_dotted_name()?;
         let span = Span::new(start, self.last_end);
-        let eq = self.peek()?;
-        if matches!(eq.kind, Kind::Eq) {
-            self.bump()?;
-            self.parse_dotted_name()?;
-            return Err(Diagnostic::error(
-                Code::Unsupported,
-                Span::new(start, self.last_end),
-                eq.line,
-                "an import cannot be renamed",
-            )
-            .with_help("import the module itself (`$ with VEC`) and qualify its names (`VEC.len`)"));
-        }
-        Ok(Item::Import { module, span })
+        Ok(Item::Import { module, alias: Some(alias), span })
     }
 
     fn parse_dotted_name(&mut self) -> Result<Slice<StrId>> {

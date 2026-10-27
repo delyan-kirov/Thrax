@@ -152,12 +152,7 @@ pub(crate) fn import_graph(
     for (i, program) in programs.iter().enumerate() {
         for item in ast.slice(program.items) {
             if let Item::Import { module, .. } = item {
-                let name = ast.slice(*module)
-                    .iter()
-                    .map(|&part| ast.text(part))
-                    .collect::<Vec<_>>()
-                    .join(".");
-                if let Some(&j) = index.get(&name) {
+                if let Some(&j) = index.get(&dotted(ast, *module)) {
                     graph[i].push(j);
                 }
             }
@@ -385,7 +380,7 @@ pub(crate) fn check_modules_with<'a>(
     let mut hollow = vec![false; programs.len()];
     for &i in &order {
         let setup = Setup { lenient, open_effects: open_effects_module == Some(sources[i].0.as_str()), record_types };
-        let mut checker = prepare_checker(ast, &types, &|k| checkers[k].as_ref(), &graph[i], c_idx, core_idx, i, setup);
+        let mut checker = prepare_checker(ast, &programs[i], &types, &|k| checkers[k].as_ref(), &graph[i], c_idx, core_idx, i, setup);
         let checked = checker.check_program(&programs[i]);
         // A dependency that failed before exporting anything leaves every name it
         // defines unbound here, so this module's errors would only echo it.
@@ -433,10 +428,12 @@ pub(crate) struct Setup {
 }
 
 /// A checker for module `i`, with `C` (qualified), `CORE` (bare) and its
-/// direct imports `deps` brought in from their already-run checkers.
+/// direct imports `deps` brought in from their already-run checkers, each as
+/// `program`'s `$ with` items for it say (bare, aliased, or both).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_checker<'a, 'c>(
     ast: &'a frontend::Ast,
+    program: &Program,
     types: &Rc<frontend::Types>,
     checkers: &dyn Fn(usize) -> Option<&'c frontend::Checker<'a>>,
     deps: &[usize],
@@ -456,14 +453,43 @@ pub(crate) fn prepare_checker<'a, 'c>(
         }
     }
     if let Some(core) = core_idx {
-        if core != i && Some(i) != c_idx {
+        if core != i && Some(i) != c_idx && !deps.contains(&core) {
             checker.import_from(checkers(core).expect("CORE checked first"));
         }
     }
+    let mut done = HashSet::new();
     for &dep in deps {
-        checker.import_from(checkers(dep).expect("dependency checked first"));
+        if !done.insert(dep) {
+            continue;
+        }
+        let other = checkers(dep).expect("dependency checked first");
+        let (bare, aliases) = import_forms(ast, program, other.module_name());
+        checker.import_as(other, bare || Some(dep) == core_idx, &aliases);
     }
     checker
+}
+
+/// How `program` imports `module`: whether bare (`$ with M`), and under which
+/// aliases (`$ with A = M`).
+fn import_forms<'a>(ast: &'a frontend::Ast, program: &Program, module: &str) -> (bool, Vec<&'a str>) {
+    let mut bare = false;
+    let mut aliases = Vec::new();
+    for item in ast.slice(program.items) {
+        let Item::Import { module: m, alias, .. } = item else { continue };
+        if dotted(ast, *m) != module {
+            continue;
+        }
+        match alias {
+            Some(a) => aliases.push(ast.text(*a)),
+            None => bare = true,
+        }
+    }
+    (bare, aliases)
+}
+
+/// A dotted module path as written, `A.B`.
+pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::StrId>) -> String {
+    ast.slice(parts).iter().map(|&p| ast.text(p)).collect::<Vec<_>>().join(".")
 }
 
 /// The full pipeline up to (but not including) execution: load, parse, check,
@@ -1663,14 +1689,7 @@ pub(crate) fn parse_imports(src: &str) -> Vec<(String, utilities::Span)> {
         .slice(program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, span, .. } => Some((
-                ast.slice(*module)
-                    .iter()
-                    .map(|&part| ast.text(part))
-                    .collect::<Vec<_>>()
-                    .join("."),
-                *span,
-            )),
+            Item::Import { module, span, .. } => Some((dotted(&ast, *module), *span)),
             _ => None,
         })
         .collect()
@@ -1681,19 +1700,14 @@ fn import_lines(src: &str) -> Vec<String> {
     let Ok(parsed) = frontend::parse(src) else {
         return Vec::new();
     };
-    let dotted = |parts: utilities::Slice<utilities::StrId>| {
-        parsed.ast
-            .slice(parts)
-            .iter()
-            .map(|&part| parsed.ast.text(part))
-            .collect::<Vec<_>>()
-            .join(".")
-    };
-    parsed.ast
-        .slice(parsed.program.items)
+    let ast = &parsed.ast;
+    ast.slice(parsed.program.items)
         .iter()
         .filter_map(|item| match item {
-            Item::Import { module, .. } => Some(format!("$ with {}", dotted(*module))),
+            Item::Import { module, alias: None, .. } => Some(format!("$ with {}", dotted(ast, *module))),
+            Item::Import { module, alias: Some(alias), .. } => {
+                Some(format!("$ with {} = {}", ast.text(*alias), dotted(ast, *module)))
+            }
             _ => None,
         })
         .collect()

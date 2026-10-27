@@ -1,0 +1,9 @@
+$ @mod IMPORT_ALIAS_BARE
+
+$ with V = VEC
+$ with O = OPT
+
+$ v : @Vec @Int = V.new {}
+$ n : @Int = length v  #~ error[TYPE_UNBOUND]: unbound name `length`
+$ m : @Int = VEC.length v  #~ error[UNKNOWN_MODULE]: no module or effect `VEC` is in scope
+$ c : O.Option @Int = Option.Some.{ 1 }  #~ error[TYPE_UNBOUND]: type `Option` is imported qualified-only

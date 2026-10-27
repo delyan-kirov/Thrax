@@ -1,0 +1,36 @@
+$ @mod IMPORT_ALIAS
+
+# \file IMPORT_ALIAS.thx
+# \info Qualified-only imports: `V = VEC` reaches VEC's names only as `V.name`,
+#       and `LIST = LIST` keeps LIST's own name as the qualifier. One `$ with`
+#       lists several imports, separated by commas.
+
+$ with
+    V = VEC,
+    LIST = LIST,
+    O = OPT,
+
+# VEC and LIST both export `length`, `map`, `foldl` and `find`. Neither import
+# brings them in bare, so there is nothing to disambiguate.
+$ v : @Vec @Int = V.push (V.push (V.push (V.new {}) 1) 2) 3
+$ l : List @Int = [4, 5, 6]
+
+$ ck_len : @Int = if (V.length v) + (LIST.length l) == 6 => 0 else 1
+$ ck_map : @Int = if (V.sum <| V.map (\x = x * 10) v) == 60 => 0 else 1
+$ ck_fold : @Int = if (LIST.foldl (\a x = a + x) 0 <| LIST.map (\x = x + 1) l) == 18 => 0 else 1
+$ ck_both : @Int = if (V.sum <| V.from_list <| LIST.reverse l) == 15 => 0 else 1
+
+# Types and constructors go through the alias too.
+$ found : O.Option @Int = V.find (\x = x > 1) v
+$ ck_type : @Int = is found | O.Option.Some.{ x } => (if x == 2 => 0 else 1) | _ => 1
+$ ck_ctor : @Int = if O.unwrap_or (O.Option.Some.{ 7 }) 0 == 7 => 0 else 1
+$ ck_none : @Int = if O.is_none (LIST.find (\x = x > 9) l) => 0 else 1
+
+# A local `length` is no clash: the imports brought none in bare.
+$ length : @Int = 3
+$ ck_local : @Int = if length == V.length v => 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @Int = ck_len + ck_map + ck_fold + ck_both + ck_type + ck_ctor + ck_none + ck_local
+
+$ @e <| assert (test == 0) "IMPORT_ALIAS: a check failed"

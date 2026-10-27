@@ -339,7 +339,7 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
     let (c_idx, core_idx) = driver::prelude_indices(&base_ref.sources);
     let setup = driver::Setup { lenient: false, open_effects: false, record_types: true };
     let mut checker =
-        driver::prepare_checker(ast_ref, &base_ref.types, &|k| base_ref.checkers.get(k), &deps, c_idx, core_idx, root, setup);
+        driver::prepare_checker(ast_ref, &program, &base_ref.types, &|k| base_ref.checkers.get(k), &deps, c_idx, core_idx, root, setup);
     if let Err(d) = checker.check_program(&program) {
         if checker.recovered() {
             errors.extend(checker.errors());
