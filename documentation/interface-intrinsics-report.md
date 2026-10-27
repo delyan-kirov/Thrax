@@ -66,7 +66,8 @@ over a fully UTF-8-checked, escape-decoded `Str` and the custom type just maps i
   type unfold `@compiler_interface_sequence_view : f t -> SeqView (f t) t` (new core
   union `SeqView s t = Empty | More t s`). New core `Pat::SeqView`, expanded by
   `patmat` to nested `More`/`Empty` matches; fixed-length patterns require an empty
-  tail, `..rest` binds the remainder.
+  tail, `..rest` binds the remainder. (Since #324 the rest is written `[a, b] ++ r`,
+  and pieces after the middle of a `++` pattern step a second view, `@ISeqViewBack`.)
 
 Both are check-directed in `type_pattern` (only user types route; the built-in
 `Str`/`List` fast paths are unchanged), and both new `Pat` variants are eliminated by

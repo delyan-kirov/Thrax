@@ -1189,7 +1189,7 @@ fn bools_tuples_and_structs() {
 fn sequence_patterns_reduce_to_the_view() {
     let ok = "$ @mod T\n$ f : @Vec @Int -> @Int = \\v = is v | [] => 0 | [x] => x | x :: y :: r => y\n";
     assert_eq!(coverage(ok), (String::new(), vec![]));
-    let (err, _) = coverage("$ @mod T\n$ f : @Vec @Int -> @Int = \\v = is v | [] => 0 | [x, y, ..r] => y\n");
+    let (err, _) = coverage("$ @mod T\n$ f : @Vec @Int -> @Int = \\v = is v | [] => 0 | [x, y] ++ r => y\n");
     assert!(err.contains("`[_]`"), "{err}");
     let list = "$ @mod T\n$ f : List @Int -> @Int = \\l = is l | List.Nil => 0 | h :: t => h\n";
     assert_eq!(coverage(list), (String::new(), vec![]));

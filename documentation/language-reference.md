@@ -144,8 +144,8 @@ $ odd  : @Int -> @Bool = \n = if n == 0 => @false else even (n - 1)
 
 ## 2.3 Imports `$ with`
 `$ with MOD` brings a module's public names into scope, bare or qualified.
-A qualified `MOD.symbol` needs the import too. An import cannot be renamed, and
-it brings in the whole module, not one symbol.
+A qualified `MOD.symbol` needs the import too. An import brings in the whole
+module, not one symbol.
 
 ```thrax
 $ with MATH                    # MATH.sqrt, or bare sqrt
@@ -154,6 +154,30 @@ $ with STR
 
 When two imports export the same name, the bare name is ambiguous and the
 qualified form picks one (`VEC.len`, `LIST.len`).
+
+`$ with ALIAS = MOD` imports `MOD` qualified only, under the name `ALIAS`. None
+of its names come into scope bare, so several modules with overlapping names
+import side by side without ambiguity. Its values, types and constructors are
+all reached through the alias (`V.len`, `O.Option @Int`, `O.Option.Some.{ 1 }`).
+Writing the module's own name as the alias makes a plain qualified-only import.
+
+```thrax
+$ with V = VEC                 # V.len, never bare len or VEC.len
+$ with LIST = LIST             # LIST.len, never bare len
+```
+
+An alias is one capitalized name. It may not repeat, nor reuse the name of
+another imported module, of this module, or of the built-in `C` namespace.
+
+One `$ with` may list several imports, separated by commas, with an optional
+trailing comma. Each entry is a module or an `ALIAS = MOD`.
+
+```thrax
+$ with
+    VEC,
+    M = MAP,
+    STR,
+```
 
 ## 2.4 Visibility `$ @private`
 Symbols are public by default. `$ @private` hides every symbol below it, to the
@@ -571,6 +595,9 @@ $ describe : @Int -> Str = \n = is n | 0 => "z" | 1 => "o" | -1 => "m1" | _ => "
 $ yn : Str -> @Int = \s = is s | "yes" => 1 | "no" => 0 | _ => 99
 ```
 
+A string literal can be a piece of a `++` pattern (5.7): `"GET " ++ path`
+strips a prefix, `name ++ ".thx"` a suffix, and `"<" ++ body ++ ">"` both.
+
 ## 5.3 Wildcard and variable patterns
 `_` matches anything binding nothing; a lowercase name binds the value.
 
@@ -615,20 +642,39 @@ $ band : Real -> @Int = \x = is x | 0.0 ... 0.5 => 1 | 0.5 ... 1.0 => 2 | _ => 0
 ```
 
 ## 5.7 Sequence and array patterns
-Sequence: `[]`, `h :: t`, fixed-arity `[a, b]`, open `[a, ..rest]`. Every one of
-them steps the scrutinee's `@compiler_interface_sequence_view` hook, so `@Vec`
-(the default), `@Array`, `CORE`'s cons `List`, and any type of your own match the
-same way: define the hook and the brackets work.
+A closed `[a, b]` matches a sequence of exactly those elements, and `[]` an
+empty one. `++` splits a sequence into fixed pieces around at most one part of
+unknown length: `pre ++ mid ++ suf`. A fixed piece is a closed `[..]` list or,
+on a `@Str`, a string literal; adjacent pieces merge (`[1] ++ [2]` is `[1, 2]`).
+`h :: t` is shorthand for `[h] ++ t`.
+
+Pieces before the middle step the scrutinee's `@ISeqView` from the front;
+pieces after it step its `@ISeqViewBack` from the back. `@Vec` (the default),
+`@Array`, and `@Str` (as its bytes) have both, `CORE`'s cons `List` only the
+front one, and any type of your own joins with an instance. Two parts of unknown
+length (`"a" ++ x ++ "b" ++ y`) are an error: the sequence could split between
+them in more than one way.
 
 Simple:
 ```thrax
-$ sum : @Vec @Int -> @Int = \xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0
+$ sum : @Vec @Int -> @Int = \xs = is xs | [] => 0 | h :: t => h + sum t
 ```
 
-Involved (leading elements plus a rest tail, on a vector and on an array):
+Involved (a prefix, a suffix, and both ends):
 ```thrax
-$ second : @Vec @Int -> @Int = \xs = is xs | [_, x, ..rest] => x | _ => -1
-$ head_of : @Array -> @Int = \a = is a | [h, ..rest] => h | _ => 0
+$ second : @Vec @Int -> @Int = \xs = is xs | [_, x] ++ rest => x | _ => -1
+$ ext    : @Str -> @Str = \s = is s | name ++ ".thx" => name | _ => s
+$ ends   : @Array -> @Int = \a = is a | [x] ++ mid ++ [z] => x + z | _ => 0
+```
+
+A sized tensor `[n]T` (3.9) knows its length, so its patterns are checked at
+compile time instead of tested: `[x, y, z]` covers a `[3]T` with no `_` arm, a
+wrong length is a type error, and the middle of a split gets an exact size
+(`[a] ++ r` on a `[3]T` binds `r : [2]T`). The size must be concrete there.
+A rank-2 tensor splits along its first axis, one row per element.
+
+```thrax
+$ sum3 : [3] @Int -> @Int = \t = is t | [x, y, z] => x + y + z
 ```
 
 ## 5.8 Or-patterns and guards
@@ -666,11 +712,12 @@ inference. A match that misses a value is a compile error
   earlier arms already cover is unreachable. `@Int` and `@Nat` are taken at 64
   bits. A missing interval is named, such as `100` or `10 ...`.
 - `@Float64`, `@Str`, and the other infinite domains need a `_` or binder arm.
-  Real ranges and string-prefix patterns never cover a whole domain.
+  Real ranges and string `++` patterns never cover a whole domain.
 - A union with its own `@ISeqView` cannot be matched with both its variants and
   sequence patterns in one position (only `List` can); that is reported.
-- A sequence pattern (`[]`, `h :: t`, `[a, ..r]`) is checked through the
-  sequence view, so `[]` and `_ :: _` together cover any sequence.
+- A sequence pattern (`[]`, `h :: t`, `[a] ++ r`) is checked through the
+  sequence view, so `[]` and `_ :: _` together cover any sequence. A piece
+  matched from the back (`r ++ [z]`) is not modeled, so it needs a `_` arm.
 
 ```thrax
 $ Light : @union = Red: {}, Yellow: {}, Green: {}

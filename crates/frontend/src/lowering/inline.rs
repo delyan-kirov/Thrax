@@ -206,8 +206,9 @@ fn rewrite_pat(pat: &Pat, prims: &Prims) -> Pat {
                 .collect(),
             rest: rest.clone(),
         },
-        Pat::StrPrefix { prefix, rest } => Pat::StrPrefix {
+        Pat::StrPrefix { prefix, back, rest } => Pat::StrPrefix {
             prefix: prefix.clone(),
+            back: *back,
             rest: Box::new(rewrite_pat(rest, prims)),
         },
         Pat::Range { lo, hi } => Pat::Range {
@@ -218,10 +219,17 @@ fn rewrite_pat(pat: &Pat, prims: &Prims) -> Pat {
             eq: rewrite(eq, prims),
             value: Box::new(rewrite(value, prims)),
         },
-        Pat::SeqView { view, elems, rest } => Pat::SeqView {
+        Pat::SeqView { view, back, elems, rest } => Pat::SeqView {
             view: rewrite(view, prims),
+            back: *back,
             elems: elems.iter().map(|p| rewrite_pat(p, prims)).collect(),
             rest: rest.as_ref().map(|r| Box::new(rewrite_pat(r, prims))),
+        },
+        Pat::Tensor { len, front, mid, back } => Pat::Tensor {
+            len: *len,
+            front: front.iter().map(|p| rewrite_pat(p, prims)).collect(),
+            mid: mid.as_ref().map(|m| Box::new(rewrite_pat(m, prims))),
+            back: back.iter().map(|p| rewrite_pat(p, prims)).collect(),
         },
     }
 }

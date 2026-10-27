@@ -229,8 +229,13 @@ pub enum Item {
         params: Slice<StrId>,
         ops: Slice<FieldDecl>,
     },
-    /// `$ with module`. `span` covers the module path.
-    Import { module: Slice<StrId>, span: Span },
+    /// `$ with module`, or `$ with ALIAS = module`: a qualified-only import whose
+    /// names are reachable only as `ALIAS.name`. `span` covers the module path.
+    Import {
+        module: Slice<StrId>,
+        alias: Option<StrId>,
+        span: Span,
+    },
     /// `$ @private`: marks every following declaration in the file as
     /// module-private (not exported). Symbols are public by default; there is no
     /// `@public` counterpart, so a module's public interface sits above the marker.
@@ -390,21 +395,18 @@ pub enum Pattern {
         lo: Aol<Pattern>,
         hi: Option<Aol<Pattern>>,
     },
-    /// A literal string prefix match: `"GET " ++ rest`.
-    StrPrefix {
-        prefix: StrId,
-        rest: Aol<Pattern>,
+    /// A `++` chain: fixed pieces before and after one variable-length part,
+    /// `pre ++ mid ++ suf`. Each piece is a `Str` or a closed `List`; `h :: t` is
+    /// `[h] ++ t`. `mid` is absent only when the pieces mix kinds and leave no
+    /// hole (`"a" ++ [98]`), in which case `suf` is empty and the remainder after
+    /// `pre` must be empty. Adjacent pieces of one kind are merged by the parser.
+    Concat {
+        pre: Slice<Aol<Pattern>>,
+        mid: Option<Aol<Pattern>>,
+        suf: Slice<Aol<Pattern>>,
     },
-    /// `head :: tail`
-    Cons {
-        head: Aol<Pattern>,
-        tail: Aol<Pattern>,
-    },
-    /// `[ a, b, ..rest ]` / `[]`
-    List {
-        elems: Slice<Aol<Pattern>>,
-        rest: Option<Aol<Pattern>>,
-    },
+    /// `[a, b]` / `[]`: exactly these elements.
+    List(Slice<Aol<Pattern>>),
     /// `{ a, b }`
     Tuple(Slice<Aol<Pattern>>),
     /// `Type.{ field-patterns }`

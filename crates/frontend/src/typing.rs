@@ -218,8 +218,17 @@ pub struct Checker<'a> {
     /// Value schemes pulled in from imports (with their source module), finalized
     /// once.
     imported: HashMap<&'a str, Vec<(Type, &'a str)>>,
-    /// Imported names reachable qualified as `MOD.name`.
+    /// Imported names reachable qualified as `MOD.name` (or `ALIAS.name`).
     qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
+    /// Each import alias in scope (`$ with V = VEC`), mapped to its module.
+    alias_modules: HashMap<&'a str, &'a str>,
+    /// Values an aliased-only import exports, mapped to the aliases that reach
+    /// them, so a bare use can name the qualified form.
+    alias_values: HashMap<&'a str, Vec<&'a str>>,
+    /// Types an aliased-only import exports, mapped to the alias that reaches
+    /// them. Like a hidden type, a bare mention is an error; a qualified one
+    /// (`V.Type`) is not.
+    alias_types: HashMap<&'a str, &'a str>,
     module_name: &'a str,
     /// `[..]` literal sites resolved to a sized tensor `[n]T`: the one `[...]`
     /// shape no hook can build, since the payload cannot carry the static size.
@@ -249,10 +258,14 @@ pub struct Checker<'a> {
     /// building the literal into the user type (build hook) and comparing it against
     /// the scrutinee (equality hook), instead of the built-in `==` on a primitive.
     literal_pattern_hooks: HashMap<Aol<Pattern>, (HookImpl, HookImpl)>,
-    /// Sequence PATTERN sites (`is [a, b, ..rest]`, `is h :: t`, `is []`) whose
-    /// scrutinee is a user type, mapped to the resolved `@compiler_interface_sequence_view`
-    /// hook's `(module, emitted name)`. Lowering unfolds the pattern through this view.
+    /// Sequence PATTERN pieces (`is [a, b]`, the `[h]` of `h :: t`, the `[z]` of
+    /// `r ++ [z]`), mapped to the resolved view: `@ISeqView` for a piece matched
+    /// from the front, `@ISeqViewBack` for one matched from the back. Lowering
+    /// unfolds the piece through it.
     sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
+    /// Sequence patterns on a sized tensor, mapped to the tensor's (static) size.
+    /// Lengths are checked here, so lowering reads elements and slices directly.
+    tensor_patterns: HashMap<Aol<Pattern>, u64>,
     /// The union each variant pattern resolved to, so the exhaustiveness check
     /// reads the same union a bare `.Tag` was typed against.
     variant_pattern_unions: HashMap<Aol<Pattern>, &'a str>,
@@ -454,6 +467,9 @@ impl<'a> Checker<'a> {
             imported_private: HashMap::new(),
             imported: HashMap::new(),
             qualified: HashMap::new(),
+            alias_modules: HashMap::new(),
+            alias_values: HashMap::new(),
+            alias_types: HashMap::new(),
             module_name: "",
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
@@ -462,6 +478,7 @@ impl<'a> Checker<'a> {
             blessed_sites: HashMap::new(),
             literal_pattern_hooks: HashMap::new(),
             sequence_pattern_hooks: HashMap::new(),
+            tensor_patterns: HashMap::new(),
             variant_pattern_unions: HashMap::new(),
             int_pattern_tys: HashMap::new(),
             cast_widths: HashMap::new(),
@@ -547,6 +564,11 @@ impl<'a> Checker<'a> {
     /// mapped to the hook's `(module, emitted name)`.
     pub fn sequence_pattern_hooks(&self) -> &HashMap<Aol<Pattern>, HookImpl> {
         &self.sequence_pattern_hooks
+    }
+
+    /// Sequence patterns on a sized tensor, mapped to the tensor's size.
+    pub fn tensor_patterns(&self) -> &HashMap<Aol<Pattern>, u64> {
+        &self.tensor_patterns
     }
 
 
@@ -732,12 +754,59 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Every qualifier a module writes must name one thing: an alias may not
+    /// repeat, nor reuse the name of another imported module, this module, or `C`.
+    fn check_import_aliases(&mut self, program: &Program) {
+        let dotted = |parts: Slice<StrId>| {
+            self.ast.slice(parts).iter().map(|&p| self.text(p)).collect::<Vec<_>>().join(".")
+        };
+        let mut plain: HashSet<String> = HashSet::new();
+        let mut aliased: Vec<(&'a str, String, Span)> = Vec::new();
+        for item in self.ast.slice(program.items) {
+            match item {
+                Item::Import { module, alias: None, .. } => {
+                    plain.insert(dotted(*module));
+                }
+                Item::Import { module, alias: Some(alias), span } => {
+                    aliased.push((self.text(*alias), dotted(*module), *span));
+                }
+                _ => {}
+            }
+        }
+        let mut seen: HashMap<&'a str, String> = HashMap::new();
+        for (alias, module, span) in aliased {
+            let clash = if let Some(first) = seen.get(alias) {
+                Some(format!("`{alias}` is already an alias of `{first}`"))
+            } else if alias != module && plain.contains(alias) {
+                Some(format!("`{alias}` is already the name of an imported module"))
+            } else if alias == self.module_name {
+                Some(format!("`{alias}` is the name of this module"))
+            } else if alias == "C" || alias == "TARGET" {
+                Some(format!("`{alias}` is a built-in namespace"))
+            } else {
+                None
+            };
+            match clash {
+                Some(why) => self.errors.push(diag!(
+                    Code::DuplicateSymbol, span, 0,
+                    "import alias `{alias}` names more than one thing";
+                    note: "{why}";
+                    help: "pick another alias for `{module}`"
+                )),
+                None => {
+                    seen.insert(alias, module);
+                }
+            }
+        }
+    }
+
     /// Check a whole program, returning the inferred (generalized) type of every
     /// global definition, in source order.
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
         self.register_target_namespace();
         self.collect_private_names(program);
+        self.check_import_aliases(program);
         self.finalize_imports();
         self.register_types(program)?;
         self.register_row_folds();
@@ -967,12 +1036,30 @@ impl<'a> Checker<'a> {
     }
 
     pub fn import_from(&mut self, other: &Checker<'a>) {
+        self.import_as(other, true, &[]);
+    }
+
+    /// Import another module's exports: bare when `bare`, and qualified under its
+    /// own name then. Each of `aliases` (`$ with V = VEC`) is a further qualifier
+    /// for them, and an aliased-only import (`bare` false) brings no name in bare.
+    pub fn import_as(&mut self, other: &Checker<'a>, bare: bool, aliases: &[&'a str]) {
+        assert!(bare || !aliases.is_empty(), "an import is bare or aliased");
+        let module = other.module_name;
+        let mut scopes: Vec<&'a str> = aliases.to_vec();
+        if bare {
+            scopes.push(module);
+        }
+        for &alias in aliases {
+            self.alias_modules.insert(alias, module);
+        }
         self.imported_builtins.extend(other.own_builtins.iter().copied());
         if !other.private_names.is_empty() {
-            self.imported_private
-                .entry(other.module_name)
-                .or_default()
-                .extend(other.private_names.iter().copied());
+            for &scope in &scopes {
+                self.imported_private
+                    .entry(scope)
+                    .or_default()
+                    .extend(other.private_names.iter().copied());
+            }
         }
         // Bring the exporter's context-bearing functions in, so a bare or qualified
         // use of an imported one plans its context (the signature handle lives in
@@ -981,8 +1068,12 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            self.qualified_ctx.insert((other.module_name, name), *sig);
-            self.global_ctx.insert(name, *sig);
+            for &scope in &scopes {
+                self.qualified_ctx.insert((scope, name), *sig);
+            }
+            if bare {
+                self.global_ctx.insert(name, *sig);
+            }
         }
         // Bring the exporter's instances in, translating their packed types into
         // this module's engine so their variables stay generalized.
@@ -1008,7 +1099,19 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            self.hidden_types.remove(name);
+            if bare {
+                self.hidden_types.remove(name);
+                self.alias_types.remove(name);
+            } else {
+                let named_bare = self.is_known_type(name)
+                    && !self.hidden_types.contains_key(name)
+                    && !self.alias_types.contains_key(name);
+                if named_bare {
+                    continue;
+                }
+                self.hidden_types.remove(name);
+                self.alias_types.insert(name, aliases[0]);
+            }
             self.type_home.insert(name, other.module_name);
             if let Some(s) = other.structs.get(name) {
                 self.structs.insert(name, s.clone());
@@ -1084,21 +1187,26 @@ impl<'a> Checker<'a> {
                     .insert(op, qualified);
             }
         }
-        let module = other.module_name;
         for (name, scheme) in &other.own_values {
             if other.private_names.contains(name) {
                 continue;
             }
-            let unqualified = self.import_scheme(*scheme);
-            self.imported
-                .entry(name)
-                .or_default()
-                .push((unqualified, module));
-            let qualified = self.import_scheme(*scheme);
-            self.qualified
-                .entry(module)
-                .or_default()
-                .insert(name, vec![qualified]);
+            if bare {
+                let unqualified = self.import_scheme(*scheme);
+                self.imported
+                    .entry(name)
+                    .or_default()
+                    .push((unqualified, module));
+            } else {
+                self.alias_values.entry(name).or_default().extend(aliases);
+            }
+            for &scope in &scopes {
+                let qualified = self.import_scheme(*scheme);
+                self.qualified
+                    .entry(scope)
+                    .or_default()
+                    .insert(name, vec![qualified]);
+            }
         }
     }
 
@@ -3647,10 +3755,14 @@ impl<'a> Checker<'a> {
                 self.infer_record(fields, *with, *update)
             }
             Expr::Variant {
-                ty, tag, fields, ..
+                module, ty, tag, fields,
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
+                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                    return Err(d.fill_span(span));
+                }
                 let fields = self.ast.slice(*fields);
                 self.infer_variant(ty, tag, fields)
             }
@@ -3972,6 +4084,15 @@ impl<'a> Checker<'a> {
 
     /// `name` is bound nowhere; suggest a near miss among the visible names.
     fn unbound_name(&self, name: &str) -> Diagnostic {
+        if let Some(&alias) = self.alias_values.get(name).and_then(|a| a.first()) {
+            return unbound(name)
+                .with_note(format!("`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]))
+                .with_fix(
+                    format!("write `{alias}.{name}`"),
+                    vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
+                    Applicability::MachineApplicable,
+                );
+        }
         let visible = self
             .scopes
             .iter()
@@ -4071,6 +4192,18 @@ impl<'a> Checker<'a> {
     fn unknown_qualified(&self, module: &str, name: &str) -> Diagnostic {
         let Some(members) = self.qualified.get(module) else {
             let d = diag!(Code::UnknownModule, Span::at(0), 0, "no module or effect `{module}` is in scope");
+            let mut aliases: Vec<&str> =
+                self.alias_modules.iter().filter(|(_, &m)| m == module).map(|(&a, _)| a).collect();
+            aliases.sort_unstable();
+            if let Some(alias) = aliases.first() {
+                return d
+                    .with_note(format!("`{module}` is imported as `{alias}`"))
+                    .with_fix(
+                        format!("write `{alias}.{name}`"),
+                        vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
+                        Applicability::MachineApplicable,
+                    );
+            }
             return match utilities::error::closest(module, self.qualified.keys().copied()) {
                 Some(m) => d.with_help(format!("did you mean `{m}.{name}`?")),
                 None => d.with_help(format!("import it with `$ with {module}`")),
@@ -4983,36 +5116,138 @@ impl<'a> Checker<'a> {
         })
     }
 
-    /// Route a sequence pattern (`is [a, b, ..r]`, `is h :: t`, `is []`) whose
-    /// scrutinee is a user type through that type's `@compiler_interface_sequence_view`
-    /// hook. On success records the hook at `pat` and returns `Some(element type)` so
-    /// the caller types the sub-patterns; otherwise returns `None` (built-in typing).
+    /// Resolve the sequence view `view` (`@ISeqView` or `@ISeqViewBack`) for a
+    /// pattern piece's scrutinee. On success records the hook at `pat` and returns
+    /// `Some(element type)`; otherwise `None`, with the engine untouched.
     fn sequence_pattern_hook_check(
         &mut self,
         pat: Aol<Pattern>,
         expected: Type,
+        view: &str,
     ) -> Result<Option<Type>> {
         let elem = self.eng.fresh();
-        let Some((hook, _)) = self.blessed(IF_SEQ_VIEW, &[expected, elem]) else {
+        let Some((hook, _)) = self.blessed(view, &[expected, elem]) else {
             return Ok(None);
         };
         self.sequence_pattern_hooks.insert(pat, hook);
         Ok(Some(elem))
     }
 
-    /// The element type of a sequence PATTERN's scrutinee. A user sequence type (or a
-    /// scrutinee already fixed to `@Vec`) resolves via its `sequence_view` hook;
-    /// otherwise the scrutinee DEFAULTS to `@Vec elem` and resolves through `@Vec`'s
-    /// view. Records the hook at `pat` either way.
-    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<Type> {
-        if let Some(elem) = self.sequence_pattern_hook_check(pat, expected)? {
+    /// The element type of a sequence pattern piece's scrutinee, through `view`.
+    /// A scrutinee not yet known DEFAULTS to `@Vec elem`. Records the hook at
+    /// `pat` either way.
+    fn sequence_pattern_elem(&mut self, pat: Aol<Pattern>, expected: Type, view: &str) -> Result<Type> {
+        if let Some(elem) = self.sequence_pattern_hook_check(pat, expected, view)? {
             return Ok(elem);
+        }
+        if self.user_type_head(expected).is_some() || matches!(self.eng.head(expected), TypeNode::Con(_)) {
+            return Err(self.no_sequence_view(expected, view));
         }
         let elem = self.eng.fresh();
         let vec_con = self.eng.types.con(ty::VEC);
         let want = self.eng.types.app(vec_con, elem);
         self.eng.unify(expected, want, "in a sequence pattern")?;
-        Ok(self.sequence_pattern_hook_check(pat, expected)?.unwrap_or(elem))
+        Ok(self.sequence_pattern_hook_check(pat, expected, view)?.unwrap_or(elem))
+    }
+
+    fn no_sequence_view(&self, expected: Type, view: &str) -> Diagnostic {
+        let shown = self.eng.show(expected);
+        let end = if view == IF_SEQ_VIEW { "front" } else { "back" };
+        diag!(
+            Code::TypeMismatch, Span::at(0), 0,
+            "`{shown}` cannot be matched from the {end} by a sequence pattern";
+            note: "a sequence pattern steps the scrutinee through its `{view}` instance";
+            help: "give `{shown}` an `{view}` instance, or match it another way"
+        )
+    }
+
+    /// One fixed piece of a `++` pattern, matched from the front (`view` is
+    /// `@ISeqView`) or the back (`@ISeqViewBack`). A string literal strips a
+    /// literal prefix or suffix of a `@Str`; a closed `[..]` steps the view.
+    fn type_concat_piece(&mut self, piece: Aol<Pattern>, expected: Type, view: &str) -> Result<()> {
+        let r = match self.pnode(piece) {
+            Pattern::Str(_) => {
+                let str_ty = self.eng.types.con(ty::STR);
+                self.eng.unify(expected, str_ty, "in a string `++` pattern")
+            }
+            Pattern::List(elems) => {
+                let elems = self.ast.slice(*elems);
+                self.sequence_pattern_elem(piece, expected, view)
+                    .and_then(|elem| elems.iter().try_for_each(|e| self.type_pattern(*e, elem)))
+            }
+            _ => unreachable!("the parser keeps only literal pieces around a `++` hole"),
+        };
+        match self.ast.pat_span(piece) {
+            Some(span) => r.map_err(|d| d.fill_span(span)),
+            None => r,
+        }
+    }
+
+    /// A `[..]` or `++` pattern on a sized tensor `[n]T`. The size must be known,
+    /// so every length is checked here: a closed `[a, b, c]` fixes `n = 3`, and a
+    /// `pre ++ mid ++ suf` gives `mid` the exact type `[n - k]T`. Splits along the
+    /// first axis, so on `[m, n]T` each element is a `[n]T` row.
+    fn type_tensor_pattern(&mut self, pat: Aol<Pattern>, expected: Type) -> Result<()> {
+        let (variance, size, elem) = self.eng.tensor_spine(expected).expect("guarded by tensor_parts");
+        let (pre, mid, suf): (Vec<Aol<Pattern>>, Option<Aol<Pattern>>, Vec<Aol<Pattern>>) =
+            match self.pnode(pat) {
+                Pattern::List(_) => (vec![pat], None, Vec::new()),
+                Pattern::Concat { pre, mid, suf } => {
+                    (self.ast.slice(*pre).to_vec(), *mid, self.ast.slice(*suf).to_vec())
+                }
+                _ => unreachable!("guarded"),
+            };
+        let mut elems = Vec::new();
+        for piece in pre.iter().chain(&suf) {
+            match self.pnode(*piece) {
+                Pattern::List(es) => elems.extend_from_slice(self.ast.slice(*es)),
+                _ => {
+                    return Err(diag!(
+                        Code::TypeMismatch, Span::at(0), 0,
+                        "a tensor pattern's fixed parts are `[..]` element lists";
+                        help: "a string literal matches a `@Str`, not a tensor"
+                    ))
+                }
+            }
+        }
+        let k = elems.len() as u64;
+        let Some(n) = self.eng.nat_value(size) else {
+            if mid.is_none() {
+                let want = self.eng.types.nat(k);
+                self.eng.unify(size, want, "in a tensor pattern (its length fixes the size)")?;
+                return self.type_tensor_pattern(pat, expected);
+            }
+            let shown = self.eng.show(expected);
+            return Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "the size of `{shown}` is not known here, so a `++` pattern cannot split it";
+                note: "a tensor pattern checks its lengths at compile time";
+                help: "annotate the scrutinee with a concrete size, such as `[3] @Int`"
+            ));
+        };
+        match mid {
+            None if n != k => Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "this pattern has {k} elements, but the tensor has {n}";
+                help: "list all {n} elements, or match the rest with `++`, as in `[a] ++ rest`"
+            )),
+            Some(_) if n < k => Err(diag!(
+                Code::TypeMismatch, Span::at(0), 0,
+                "this pattern needs at least {k} elements, but the tensor has {n}"
+            )),
+            _ => {
+                for e in &elems {
+                    self.type_pattern(*e, elem)?;
+                }
+                if let Some(mid) = mid {
+                    let rest = self.eng.types.nat(n - k);
+                    let rest = tensor_type(&self.eng.types, variance, rest, elem);
+                    self.type_pattern(mid, rest)?;
+                }
+                self.tensor_patterns.insert(pat, n);
+                Ok(())
+            }
+        }
     }
 
     /// Route a literal pattern (`is "foo"`, `is 42`) whose scrutinee is a user type
@@ -5427,12 +5662,6 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
-            Pattern::StrPrefix { rest, .. } => {
-                let rest = *rest;
-                self.eng
-                    .unify(expected, self.eng.types.con(ty::STR), "in a string-prefix pattern")?;
-                self.type_pattern(rest, self.eng.types.con(ty::STR))
-            }
             Pattern::Tuple(pats) => {
                 let pats = self.ast.slice(*pats);
                 let vars: Vec<Type> = pats.iter().map(|_| self.eng.fresh()).collect();
@@ -5443,27 +5672,29 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
-            Pattern::Cons { head, tail } => {
-                // `h :: t` matches any sequence via its `sequence_view` hook (a user
-                // type, else the default `@Vec`); the tail keeps the scrutinee's type.
-                let (head, tail) = (*head, *tail);
-                let elem = self.sequence_pattern_elem(pat, expected)?;
-                self.type_pattern(head, elem)?;
-                self.type_pattern(tail, expected)
+            Pattern::List(_) | Pattern::Concat { .. } if self.tensor_parts(expected).is_some() => {
+                self.type_tensor_pattern(pat, expected)
             }
-            Pattern::List { elems, rest } => {
-                // `[a, b, ..r]` / `[]` matches any sequence via its `sequence_view` hook
-                // (a user type, else the default `@Vec`): each element at the view's
-                // element type, `..rest` at the sequence type.
-                let elem = self.sequence_pattern_elem(pat, expected)?;
-                let (elems, rest) = (self.ast.slice(*elems), *rest);
-                for e in elems.iter() {
+            Pattern::List(elems) => {
+                // `[a, b]` / `[]` matches any sequence through its `@ISeqView` (the
+                // default `@Vec` when the scrutinee is not yet known).
+                let elem = self.sequence_pattern_elem(pat, expected, IF_SEQ_VIEW)?;
+                for e in self.ast.slice(*elems).iter() {
                     self.type_pattern(*e, elem)?;
                 }
-                if let Some(rest) = rest {
-                    self.type_pattern(rest, expected)?;
-                }
                 Ok(())
+            }
+            Pattern::Concat { pre, mid, suf } => {
+                let (pre, mid, suf) = (self.ast.slice(*pre), *mid, self.ast.slice(*suf));
+                for (pieces, view) in [(pre, IF_SEQ_VIEW), (suf, IF_SEQ_VIEW_BACK)] {
+                    for piece in pieces.iter() {
+                        self.type_concat_piece(*piece, expected, view)?;
+                    }
+                }
+                match mid {
+                    Some(mid) => self.type_pattern(mid, expected),
+                    None => Ok(()),
+                }
             }
             Pattern::Struct { ty, fields } => {
                 let ty = self.text(*ty);
@@ -5475,10 +5706,14 @@ impl<'a> Checker<'a> {
                 self.type_record_pattern(fields, *rest, expected)
             }
             Pattern::Variant {
-                ty, tag, fields, ..
+                module, ty, tag, fields,
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
+                    let span = self.ast.pat_span(pat).unwrap_or(Span::at(0));
+                    return Err(d.fill_span(span));
+                }
                 let fields = self.ast.slice(*fields);
                 self.type_variant_pattern(pat, ty, tag, fields, expected)
             }
@@ -5766,6 +6001,49 @@ impl<'a> Checker<'a> {
     }
 
     /// Translate a typed pattern for [`exhaustive::check`].
+    /// `[e1, .., en]` followed by `end`, as cons steps.
+    fn seq_dpat(&self, elems: &[Aol<Pattern>], end: exhaustive::DPat) -> exhaustive::DPat {
+        use exhaustive::{Ctor, DPat};
+        elems
+            .iter()
+            .rev()
+            .fold(end, |tail, e| DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*e), tail]))
+    }
+
+    /// A tensor pattern as a product over element positions: its length is static,
+    /// so `[x, y, z]` on a `[3]T` covers it. A refutable middle part is not modeled.
+    fn tensor_dpat(&self, pat: Aol<Pattern>) -> exhaustive::DPat {
+        use exhaustive::{DPat, ProductKind};
+        let n = self.tensor_patterns[&pat];
+        let (pre, mid, suf): (&[Aol<Pattern>], Option<Aol<Pattern>>, &[Aol<Pattern>]) =
+            match self.pnode(pat) {
+                Pattern::List(_) => (std::slice::from_ref(&pat), None, &[]),
+                Pattern::Concat { pre, mid, suf } => (self.ast.slice(*pre), *mid, self.ast.slice(*suf)),
+                _ => return DPat::Opaque,
+            };
+        if mid.is_some_and(|m| !matches!(self.pnode(m), Pattern::Var(_) | Pattern::Wild)) {
+            return DPat::Opaque;
+        }
+        let pieces = |ps: &[Aol<Pattern>]| -> Vec<Aol<Pattern>> {
+            ps.iter()
+                .flat_map(|p| match self.pnode(*p) {
+                    Pattern::List(es) => self.ast.slice(*es).to_vec(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        let (front, back) = (pieces(pre), pieces(suf));
+        let back_start = n - back.len() as u64;
+        let fields = front
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i as u64, *p))
+            .chain(back.iter().enumerate().map(|(j, p)| (back_start + j as u64, *p)))
+            .map(|(i, p)| (i.to_string(), self.dpat(p)))
+            .collect();
+        DPat::Product(ProductKind::Tensor(n), fields)
+    }
+
     fn dpat(&self, pat: Aol<Pattern>) -> exhaustive::DPat {
         use exhaustive::{Ctor, DPat, ProductKind};
         match self.pnode(pat) {
@@ -5812,18 +6090,30 @@ impl<'a> Checker<'a> {
                     _ => DPat::Opaque,
                 }
             }
-            Pattern::StrPrefix { .. } => DPat::Opaque,
-            Pattern::Cons { head, tail } => {
-                DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*head), self.dpat(*tail)])
+            Pattern::List(_) | Pattern::Concat { .. } if self.tensor_patterns.contains_key(&pat) => {
+                self.tensor_dpat(pat)
             }
-            Pattern::List { elems, rest } => {
-                let end = match rest {
-                    Some(r) => self.dpat(*r),
+            Pattern::List(elems) => self.seq_dpat(self.ast.slice(*elems), DPat::Ctor(Ctor::SeqEmpty, Vec::new())),
+            // A chain matched from the front only, through list pieces, is the same
+            // cons steps a closed list takes. Anything else (a string piece, a piece
+            // matched from the back) never covers the whole domain.
+            Pattern::Concat { pre, mid, suf } => {
+                let pre = self.ast.slice(*pre);
+                if !self.ast.slice(*suf).is_empty() {
+                    return DPat::Opaque;
+                }
+                let mut elems = Vec::new();
+                for piece in pre.iter() {
+                    match self.pnode(*piece) {
+                        Pattern::List(es) => elems.extend_from_slice(self.ast.slice(*es)),
+                        _ => return DPat::Opaque,
+                    }
+                }
+                let end = match mid {
+                    Some(m) => self.dpat(*m),
                     None => DPat::Ctor(Ctor::SeqEmpty, Vec::new()),
                 };
-                self.ast.slice(*elems).iter().rev().fold(end, |tail, e| {
-                    DPat::Ctor(Ctor::SeqMore, vec![self.dpat(*e), tail])
-                })
+                self.seq_dpat(&elems, end)
             }
             Pattern::Tuple(pats) => {
                 let pats = self.ast.slice(*pats);
@@ -5981,7 +6271,8 @@ impl<'a> Checker<'a> {
     /// one of the same name an import brought in.
     fn claim_type_name(&mut self, name: &'a str) {
         self.type_home.insert(name, self.module_name);
-        if self.hidden_types.remove(name).is_some() {
+        let aliased = self.alias_types.remove(name).is_some();
+        if self.hidden_types.remove(name).is_some() || aliased {
             self.structs.remove(name);
             self.unions.remove(name);
             self.aliases.remove(name);
@@ -5991,6 +6282,26 @@ impl<'a> Checker<'a> {
     /// A type this module wrote naming a hidden type: one only an import's
     /// declarations reach. Deferred like the other type-name errors.
     fn check_hidden_type(&mut self, ty: Aol<Ty>, name: &str) {
+        if let Some(&alias) = self.alias_types.get(name) {
+            let qualified = matches!(self.tnode(ty), Ty::Con { module: Some(_), .. });
+            if qualified || self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
+                return;
+            }
+            let mut d = diag!(
+                Code::TypeUnbound, Span::at(0), 0,
+                "type `{name}` is imported qualified-only";
+                note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]
+            );
+            if let Some(span) = self.ast.ty_span(ty) {
+                d = d.fill_span(span).with_fix(
+                    format!("write `{alias}.{name}`"),
+                    vec![Edit::new(span, format!("{alias}.{name}"))],
+                    Applicability::MachineApplicable,
+                );
+            }
+            self.unknown_type = Some(d);
+            return;
+        }
         let Some(&home) = self.hidden_types.get(name) else {
             return;
         };
@@ -6003,6 +6314,22 @@ impl<'a> Checker<'a> {
             d = d.fill_span(span);
         }
         self.unknown_type = Some(d);
+    }
+
+    /// `Type.Tag` naming a type an aliased-only import brought in, without the
+    /// alias. A bare `.Tag` is fine: the expected type picks the union.
+    fn unqualified_alias_ctor(&self, module: Option<StrId>, ty: Option<&str>, tag: &str) -> Option<Diagnostic> {
+        let ty = ty?;
+        let alias = *self.alias_types.get(ty)?;
+        if module.is_some() {
+            return None;
+        }
+        Some(diag!(
+            Code::TypeUnbound, Span::at(0), 0,
+            "type `{ty}` is imported qualified-only";
+            note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias];
+            help: "write `{alias}.{ty}.{tag}`"
+        ))
     }
 
     fn is_known_type(&self, name: &str) -> bool {
@@ -6788,18 +7115,16 @@ fn free_globals_field_inits<'a>(
 fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<&'a str>) {
     match ast.pat(pat) {
         Pattern::Var(name) => bound.push(ast.text(*name)),
-        Pattern::StrPrefix { rest, .. } => collect_pattern_binders(ast, *rest, bound),
-        Pattern::Cons { head, tail } => {
-            collect_pattern_binders(ast, *head, bound);
-            collect_pattern_binders(ast, *tail, bound);
-        }
-        Pattern::List { elems, rest } => {
-            ast.slice(*elems)
+        Pattern::List(elems) => ast
+            .slice(*elems)
+            .iter()
+            .for_each(|p| collect_pattern_binders(ast, *p, bound)),
+        Pattern::Concat { pre, mid, suf } => {
+            ast.slice(*pre)
                 .iter()
+                .chain(mid.iter())
+                .chain(ast.slice(*suf).iter())
                 .for_each(|p| collect_pattern_binders(ast, *p, bound));
-            if let Some(r) = rest {
-                collect_pattern_binders(ast, *r, bound);
-            }
         }
         Pattern::Tuple(pats) => ast
             .slice(*pats)
@@ -7214,6 +7539,7 @@ const IF_RANGE: &str = "@IRange";
 const IF_RANGE_FROM: &str = "@IRangeFrom";
 const IF_SLICE: &str = "@ISlice";
 const IF_SEQ_VIEW: &str = "@ISeqView";
+const IF_SEQ_VIEW_BACK: &str = "@ISeqViewBack";
 /// The equality a literal PATTERN on a user type compares with: CORE's ordinary
 /// `IEq`, the same interface `==` wraps, so a type needs no second instance.
 const IF_EQ: &str = "IEq";

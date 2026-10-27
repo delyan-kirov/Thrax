@@ -66,6 +66,15 @@ $ ex_match : @Str =
         ++ "\t\t| .Just.{ _ }             => 1\n"
         ++ "\t\t| .None                   => 0"
 
+$ ex_split : @Str =
+    "$ ext : @Str -> @Str = \\s = is s | name ++ \".thx\" => name | _ => s\n"
+        ++ "\n"
+        ++ "$ ends : @Vec @Int -> @Int = \\xs =\n"
+        ++ "\tis xs\n"
+        ++ "\t\t| [a] ++ mid ++ [z] => a + z\n"
+        ++ "\t\t| [a]               => a\n"
+        ++ "\t\t| _                 => 0"
+
 $ ex_effect : @Str =
     "$ Yield : @effect = yield : @Int -> {},\n"
         ++ "\n"
@@ -111,6 +120,7 @@ $ @e <| formatted "fmt_splice_struct" ex_splice_struct
 $ @e <| formatted "fmt_union" ex_union
 $ @e <| formatted "fmt_splice_union" ex_splice_union
 $ @e <| formatted "fmt_match" ex_match
+$ @e <| formatted "fmt_split" ex_split
 $ @e <| formatted "fmt_effect" ex_effect
 $ @e <| formatted "fmt_interface" ex_interface
 $ @e <| formatted "fmt_operator" ex_operator
@@ -141,11 +151,12 @@ $ links : @Str =
 $ building : @Str =
     "\n## Building\n\n"
         ++ "**With nix** (recommended):\n\n"
-        ++ sh (
-            "nix develop      # dev shell; `thrax` is already on PATH here\n"
-                ++ "cargo build      # or build it yourself: target/debug/thrax\n"
-                ++ "cargo test       # the frontend, interpreter, and backend suites"
-        )
+        ++ sh
+            (
+                "nix develop      # dev shell; `thrax` is already on PATH here\n"
+                    ++ "cargo build      # or build it yourself: target/debug/thrax\n"
+                    ++ "cargo test       # the frontend, interpreter, and backend suites"
+            )
         ++ "\n**Without nix**: any host with a recent `cargo`/`rustc` and a C toolchain:\n\n"
         ++ sh "cargo build --release   # target/release/thrax"
         ++ "\nLinux is the development platform; macOS, Windows and wasm are tested in CI,\n"
@@ -166,26 +177,28 @@ $ compiling : @Str =
         ++ "\nEvery other module is a library. Checking one runs its compile-time\n"
         ++ "assertions (`$ @e <| assert ..`), so a module states its own invariants and\n"
         ++ "type-checking it is testing it.\n\n"
-        ++ sh (
-            "thrax run     MAIN.thx          # run under the interpreter\n"
-                ++ "thrax check   examples/FIB.thx  # type-check, print types, run `$ @e` checks\n"
-                ++ "thrax expand  MAIN.thx          # the source after metaprogram expansion\n"
-                ++ "thrax emit-c  MAIN.thx          # print the generated C (native backend)\n"
-                ++ "thrax build   MAIN.thx          # compile to a native executable\n"
-                ++ "thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm"
-        )
+        ++ sh
+            (
+                "thrax run     MAIN.thx          # run under the interpreter\n"
+                    ++ "thrax check   examples/FIB.thx  # type-check, print types, run `$ @e` checks\n"
+                    ++ "thrax expand  MAIN.thx          # the source after metaprogram expansion\n"
+                    ++ "thrax emit-c  MAIN.thx          # print the generated C (native backend)\n"
+                    ++ "thrax build   MAIN.thx          # compile to a native executable\n"
+                    ++ "thrax --target=wasm32-wasi build MAIN.thx   # cross-compile to wasm"
+            )
         ++ "\nThe compiler is also the tooling. Every error carries a stable code\n"
         ++ "(`thrax explain CODE` says what it means), keeps going past the first\n"
         ++ "mistake, and offers a fix when it knows one; `thrax fix` applies the sure\n"
         ++ "ones. `???` is a typed hole: the error names the type that goes there and\n"
         ++ "the names in scope that fit.\n\n"
-        ++ sh (
-            "thrax fmt     MAIN.thx          # format in place (--check only reports)\n"
-                ++ "thrax fix     MAIN.thx          # apply every fix the compiler is sure of\n"
-                ++ "thrax explain TYPE_MISMATCH     # what a diagnostic code means\n"
-                ++ "thrax config                    # the thrax.toml options in force\n"
-                ++ "thrax lsp                       # language server for an editor"
-        )
+        ++ sh
+            (
+                "thrax fmt     MAIN.thx          # format in place (--check only reports)\n"
+                    ++ "thrax fix     MAIN.thx          # apply every fix the compiler is sure of\n"
+                    ++ "thrax explain TYPE_MISMATCH     # what a diagnostic code means\n"
+                    ++ "thrax config                    # the thrax.toml options in force\n"
+                    ++ "thrax lsp                       # language server for an editor"
+            )
         ++ "\n`thrax lsp` serves diagnostics, fixes, hover, go-to-definition, completion,\n"
         ++ "symbols and formatting. It ranks errors so the one that matters most stands\n"
         ++ "out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.\n"
@@ -193,7 +206,7 @@ $ compiling : @Str =
 $ features : @Str =
     "\n## Features\n\n"
         ++ "- **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.\n"
-        ++ "- **Pattern matching**: nested, literal, string, and range patterns, `..rest`, and fall-through guards.\n"
+        ++ "- **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.\n"
         ++ "- **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.\n"
         ++ "- **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.\n"
         ++ "- **C FFI with no ceremony**: `@extern \"C\" \"sym\" \"lib\"` binds a foreign function; C structs pass by value both ways.\n"
@@ -221,6 +234,10 @@ $ tour : @Str =
         ++ "`if <guard>` that falls through to the next arm on failure. There is no\n"
         ++ "default branch: a catch-all is just an arm, `| _ => d`.\n\n"
         ++ fence fmt_match
+        ++ "\n`++` splits a sequence (a string, vector, array, or a type of your own) into\n"
+        ++ "fixed pieces around one part of any length, from either end; `h :: t` is\n"
+        ++ "`[h] ++ t`. On a sized tensor the lengths are checked at compile time.\n\n"
+        ++ fence fmt_split
         ++ "\n### Algebraic effects and handlers\n\n"
         ++ "An effect is a set of operations; performing one is just a call. A function's\n"
         ++ "type carries the effects it may perform as a **row** on its arrow (`A -> <E> B`);\n"

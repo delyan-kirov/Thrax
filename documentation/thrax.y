@@ -112,7 +112,7 @@ global
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ type
   | DOLLAR UIDENT COLON AT_ALIAS  opt_type_params EQ eff_row  /* a row alias */
   | DOLLAR UIDENT COLON AT_EFFECT opt_type_params EQ effect_body
-  | DOLLAR KW_WITH import
+  | DOLLAR KW_WITH import opt_comma
   | DOLLAR AT_PRIVATE
   | DOLLAR AT_MAIN COLON type EQ expr  /* the entry: `@Vec @Str -> <@IO> @Int` */
   /* The compile-time entry, run during compilation; its `@Code` result adds
@@ -121,7 +121,7 @@ global
   /* A blessed interface TYPE, declarable only in CORE: the compiler resolves a
    * value of it at a desugar site and calls its single field. AT_IFACE is one of
    * `@IIntLit @IRealLit @IImagLit @IStrLit @ISeqLit @IRange @IRangeFrom @IIndex
-   * @ISlice @ISeqView`. */
+   * @ISlice @ISeqView @ISeqViewBack`. */
   | DOLLAR AT_IFACE COLON AT_STRUCT opt_type_params EQ struct_body
   /* A builtin, declarable only in CORE: the name is the runtime primitive
    * (`$ @iadd : t -> t -> t = @extern "thrax"`). */
@@ -155,7 +155,8 @@ operator_name
   | AND_AND | OR_OR | SEMI | PIPE_FWD | PIPE_BACK | COMPOSE
   ;
 
-import       : dotted_name ;
+import       : import_entry | import COMMA import_entry ;  /* `$ with A, V = VEC,` */
+import_entry : dotted_name | any_name EQ dotted_name ;     /* `V = VEC`: qualified only */
 dotted_name  : any_name | any_name DOT any_name ;
 any_name     : UIDENT | LIDENT ;
 
@@ -470,10 +471,14 @@ params : param | params param ;
 
 param : pat_atom | LPAREN pattern RPAREN | LPAREN pattern COLON type RPAREN ;
 
+/* `++` splits a sequence into fixed pieces (string literals, `[..]` lists)
+ * around at most one part of unknown length: `"a" ++ r`, `r ++ [z]`,
+ * `[a] ++ m ++ "z"`. `h :: t` is `[h] ++ t`. The one-hole rule is checked by
+ * the parser, not encoded here. */
 pattern
   : pat_atom
   | pat_atom CONS pattern
-  | STR CONCAT pattern
+  | pat_atom CONCAT pattern
   | num_lit ELLIPSIS num_lit   /* inclusive numeric range `lo ... hi` */
   | num_lit ELLIPSIS           /* open range `lo ...` (matches `lo <= x`) */
   ;
@@ -501,12 +506,7 @@ pat_payload  : /* empty */ | DOT LBRACE field_pats RBRACE ;
 rec_pats : rec_pat | rec_pats COMMA rec_pat ;
 rec_pat  : DOT LIDENT EQ pattern | DOT LIDENT | DOT DOT pattern ;
 
-list_pattern : LBRACK RBRACK | LBRACK pat_elems RBRACK ;
-pat_elems
-  : pat_elem_list opt_comma
-  | pat_elem_list COMMA DOT DOT pattern
-  | DOT DOT pattern
-  ;
+list_pattern : LBRACK RBRACK | LBRACK pat_elem_list opt_comma RBRACK ;
 pat_elem_list : pattern | pat_elem_list COMMA pattern ;
 
 field_pats     : /* empty */ | field_pat_list opt_comma ;

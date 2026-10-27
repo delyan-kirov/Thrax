@@ -88,6 +88,7 @@ pub const BLESSED_INTERFACES: &[&str] = &[
     "@IIndex",
     "@ISlice",
     "@ISeqView",
+    "@ISeqViewBack",
 ];
 
 /// Whether `name` (with its `@` sigil) is one of [`BLESSED_INTERFACES`].

@@ -1,0 +1,5 @@
+$ @mod PARSE_PATTERN_CONCAT_TWO_HOLES
+
+# A `++` pattern splits at points fixed by its literal pieces, so only one part
+# may have unknown length.
+$ y : @Int = is "Alex" | "A" ++ _ ++ s => 1 | _ => 2  #~ error[UNEXPECTED_TOKEN]: a `++` pattern can have only one part of unknown length

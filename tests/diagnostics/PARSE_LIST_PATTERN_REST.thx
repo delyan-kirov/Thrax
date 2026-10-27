@@ -1,0 +1,4 @@
+$ @mod PARSE_LIST_PATTERN_REST
+
+# A list pattern lists exactly its elements; the rest is matched with `++`.
+$ y : @Int = is [1, 2] | [a, ..r] => a | _ => 2  #~ error[UNEXPECTED_TOKEN]: expected an element pattern, found '.'

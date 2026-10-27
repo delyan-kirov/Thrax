@@ -77,7 +77,7 @@ out; see documentation/lsp.md, and tools/editors/ for Neovim and Helix.
 ## Features
 
 - **Algebraic data types**: structs and sum types, generic by default, composed with `with`-splicing.
-- **Pattern matching**: nested, literal, string, and range patterns, `..rest`, and fall-through guards.
+- **Pattern matching**: nested, literal, string, and range patterns, `++` sequence patterns that match a prefix, a suffix, or both ends, and fall-through guards.
 - **Typed algebraic effects with handlers**: the effect row is part of the type; continuations are first-class and resumable.
 - **A native C backend**: the whole IR, effects included, lowers to self-contained C via a CEK machine, with reference-counted memory.
 - **C FFI with no ceremony**: `@extern "C" "sym" "lib"` binds a foreign function; C structs pass by value both ways.
@@ -141,9 +141,23 @@ default branch: a catch-all is just an arm, `| _ => d`.
 $ grade : Maybe @Int -> @Int = \m =
     is m
     | .Just.{ v } if v > 100 => 3
-    | .Just.{ v } if v > 0 => 2
-    | .Just.{ _ } => 1
-    | .None => 0
+    | .Just.{ v } if v > 0   => 2
+    | .Just.{ _ }            => 1
+    | .None                  => 0
+```
+
+`++` splits a sequence (a string, vector, array, or a type of your own) into
+fixed pieces around one part of any length, from either end; `h :: t` is
+`[h] ++ t`. On a sized tensor the lengths are checked at compile time.
+
+```thrax
+$ ext : @Str -> @Str = \s = is s | name ++ ".thx" => name | _ => s
+
+$ ends : @Vec @Int -> @Int = \xs =
+    is xs
+    | [a] ++ mid ++ [z] => a + z
+    | [a]               => a
+    | _                 => 0
 ```
 
 ### Algebraic effects and handlers

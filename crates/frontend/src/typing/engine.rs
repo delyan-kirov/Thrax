@@ -435,7 +435,7 @@ impl Engine {
     }
 
     /// Peel a sized-tensor type `@tensor variance size elem` into its three parts.
-    fn tensor_spine(&self, ty: Type) -> Option<(Type, Type, Type)> {
+    pub fn tensor_spine(&self, ty: Type) -> Option<(Type, Type, Type)> {
         if let TypeNode::App(head, elem) = self.head(ty) {
             if let TypeNode::App(head2, size) = self.head(head) {
                 if let TypeNode::App(con, variance) = self.head(head2) {
@@ -510,6 +510,18 @@ impl Engine {
                 show_poly(&pb)
             ),
         ))
+    }
+
+    /// A size's value when it has no variables left (`2 + 3` is 5).
+    pub fn nat_value(&self, ty: Type) -> Option<u64> {
+        if !matches!(self.head(ty), TypeNode::Nat(_) | TypeNode::NatAdd(..) | TypeNode::NatMul(..)) {
+            return None;
+        }
+        match self.normalize_size(ty).as_slice() {
+            [] => Some(0),
+            [(k, vars)] if vars.is_empty() => Some(*k),
+            _ => None,
+        }
     }
 
     /// Normalize a size to a canonical polynomial over Z/2^64: a sorted list of

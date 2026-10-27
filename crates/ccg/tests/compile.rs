@@ -1126,7 +1126,7 @@ fn bracket_hooks_match_interpreter() {
                $ v : @Vec @Int = [1 ... 4]\n\
                $ w : @Vec @Int = 9 :: v.[1 ... 2]\n\
                $ b : @Array = [7, 8, 9]\n\
-               $ head : @Array -> @Int = \\a = is a | [x, ..r] => x + @array_len r | _ => 0\n\
+               $ head : @Array -> @Int = \\a = is a | [x] ++ r => x + @array_len r | _ => 0\n\
                $ r : @Int = (s.hi - s.lo) + @vec_len v + @vec_get w 0 + head b";
     // 4 + 4 + 9 + (7+2)
     assert_matches(src, "r");

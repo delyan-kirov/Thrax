@@ -1,0 +1,3 @@
+$ @mod IMPORT_ALIAS_SYNTAX
+
+$ with A.B = VEC  #~ error[BAD_MODULE_NAME]: an import alias is a single capitalized name

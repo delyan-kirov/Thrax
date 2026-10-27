@@ -395,6 +395,44 @@ fn cons_and_list_and_function_type() {
 }
 
 #[test]
+fn import_alias() {
+    let p = prog("$ @mod M\n$ with V = VEC\n$ with A.B\n");
+    let items = p.ast.slice(p.program.items);
+    let Item::Import { module, alias: Some(alias), .. } = items[0] else {
+        panic!("expected an aliased import, got {:?}", items[0]);
+    };
+    assert_eq!(p.ast.text(alias), "V");
+    assert_eq!(p.ast.slice(module).len(), 1);
+    assert_eq!(p.ast.text(p.ast.slice(module)[0]), "VEC");
+    assert!(matches!(items[1], Item::Import { alias: None, .. }));
+    for bad in ["$ @mod M\n$ with A.B = VEC\n", "$ @mod M\n$ with v = VEC\n"] {
+        assert!(parse(bad).is_err(), "{bad} should not parse");
+    }
+}
+
+#[test]
+fn import_list() {
+    let p = prog("$ @mod M\n$ with\n    VEC,\n    M = MAP,\n    FOO,\n$ with A, B\n$ x = 1\n");
+    let items = p.ast.slice(p.program.items);
+    let imports: Vec<(Option<&str>, &str)> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Import { module, alias, .. } => {
+                Some((alias.map(|a| p.ast.text(a)), p.ast.text(p.ast.slice(*module)[0])))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        [(None, "VEC"), (Some("M"), "MAP"), (None, "FOO"), (None, "A"), (None, "B")]
+    );
+    assert_eq!(items.len(), 6);
+    assert_eq!(p.ast.slice(p.program.spans).len(), 6);
+    assert!(parse("$ @mod M\n$ with A,,\n").is_err());
+}
+
+#[test]
 fn union_effect_import_and_directives() {
     let src = "$ @mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : @Int, put : @Int -> @Int\n$ @e 1";
@@ -821,8 +859,11 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     assert!(text.contains("expected a pattern after '..'"), "{text}");
     assert!(text.contains("help: write `.._` to ignore the remaining fields"), "{text}");
 
-    let text = err("$ @mod M\n$ y = is xs | [x, ..] => x | _ => 2");
-    assert!(text.contains("help: write `.._` to ignore the remaining elements"), "{text}");
+    let text = err("$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2");
+    assert!(text.contains("help: a list pattern lists exactly its elements"), "{text}");
+
+    let text = err("$ @mod M\n$ y = is s | \"A\" ++ _ ++ r => 1 | _ => 2");
+    assert!(text.contains("can have only one part of unknown length"), "{text}");
 
     let text = err("$ @mod M\n$ y = is s | \"a\".. => 1 | _ => 2");
     assert!(text.contains("help: a string prefix pattern is written `\"abc\" ++ rest`"), "{text}");
@@ -834,8 +875,11 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     for ok in [
         "$ @mod M\n$ y = is r | { .a = 1, .._ } => 1 | _ => 2",
         "$ @mod M\n$ y = is r | { .a = 1, ..rest } => 1 | _ => 2",
-        "$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2",
+        "$ @mod M\n$ y = is xs | [x] ++ rest => x | _ => 2",
         "$ @mod M\n$ y = is s | \"a\" ++ rest => 1 | _ => 2",
+        "$ @mod M\n$ y = is s | rest ++ \"a\" => 1 | _ => 2",
+        "$ @mod M\n$ y = is s | \"a\" ++ rest ++ \"b\" => 1 | _ => 2",
+        "$ @mod M\n$ y = is xs | [a] ++ m ++ [y, z] => 1 | _ => 2",
     ] {
         assert!(parse(ok).is_ok(), "{ok}");
     }

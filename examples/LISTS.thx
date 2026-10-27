@@ -23,23 +23,34 @@ $ map_inc : @Vec @Int -> @Vec @Int = \xs = is xs | [] => [] | h :: t => (h + 1) 
 # `[a, b]`); a failed inner match falls through to the next arm.
 $ size_class : @Vec @Int -> @Int = \xs =
     is xs
-    | [] => 0
-    | [a] => 1
+    | []     => 0
+    | [a]    => 1
     | [a, b] => 2
-    | _ => 9
+    | _      => 9
 
-# An open list pattern `[a, ..rest]` binds leading cells and a `rest` tail
-# (the remaining list), so it matches AT LEAST that many elements -- `[a, ..t]`
-# is exactly `a :: t`, and `[a, b, ..t]` is `a :: b :: t`. `[..all]` binds the
-# whole list.
-$ second : @Vec @Int -> @Int = \xs = is xs | [_, x, ..rest] => x | _ => 0 - 1
+# `[a, b] ++ rest` binds leading cells and a `rest` tail (the remaining
+# list), so it matches AT LEAST that many elements: `[a] ++ t` is exactly
+# `a :: t`, and `[a, b] ++ t` is `a :: b :: t`.
+$ second : @Vec @Int -> @Int = \xs = is xs | [_, x] ++ rest => x | _ => 0 - 1
 
-$ drop2 : @Vec @Int -> @Vec @Int = \xs = is xs | [_, _, ..rest] => rest | _ => []
+$ drop2 : @Vec @Int -> @Vec @Int = \xs = is xs | [_, _] ++ rest => rest | _ => []
 
 $ ck_second : @Int = if (second xs) == 2 => 0 else 1
 $ ck_second_short : @Int = if (second [9]) == 0 - 1 => 0 else 1
 $ ck_drop2 : @Int = if (sum (drop2 xs)) == 12 => 0 else 1
-$ ck_head_tail : @Int = is xs | [h, ..t] => if (h + sum t) == 15 => 0 else 1 | _ => 1
+$ ck_head_tail : @Int = is xs | [h] ++ t => if (h + sum t) == 15 => 0 else 1 | _ => 1
+
+# Pieces chain the way `"abc" ++ rest` matches a string. A closed list on the
+# right merges in, so `[1] ++ [2] ++ rest` is `[1, 2] ++ rest`.
+$ after_12 : @Vec @Int -> @Int = \xs =
+    is xs
+    | [1] ++ [2] ++ rest => sum rest
+    | [1] ++ _           => 0 - 1
+    | _                  => 0 - 2
+
+$ ck_after_12 : @Int = if (after_12 xs) == 12 => 0 else 1
+$ ck_after_1 : @Int = if (after_12 [1, 5]) == 0 - 1 => 0 else 1
+$ ck_after_none : @Int = if (after_12 [2, 1]) == 0 - 2 => 0 else 1
 
 # `[1, 2, 3]` and `1 :: 2 :: 3 :: []` are the same list.
 $ xs : @Vec @Int = [1, 2, 3, 4, 5]
@@ -62,18 +73,21 @@ $ ls2 : List @Int = 0 :: ls
 
 $ lsum : List @Int -> @Int = \l = is l | [] => 0 | h :: t => h + lsum t
 
-$ lsecond : List @Int -> @Int = \l = is l | [_, x, ..rest] => x | _ => 0 - 1
+$ lsecond : List @Int -> @Int = \l = is l | [_, x] ++ rest => x | _ => 0 - 1
+
+$ lafter_12 : List @Int -> @Int = \l = is l | [1, 2] ++ rest => lsum rest | _ => 0 - 1
 
 $ lsize_class : List @Int -> @Int = \l =
     is l
-    | [] => 0
-    | [a] => 1
+    | []     => 0
+    | [a]    => 1
     | [a, b] => 2
-    | _ => 9
+    | _      => 9
 
 $ ck_lsum : @Int = if (lsum ls) == 15 => 0 else 1
 $ ck_lcons : @Int = if (lsum ls2) == 15 => 0 else 1
 $ ck_lsecond : @Int = if (lsecond ls) == 2 => 0 else 1
+$ ck_lafter_12 : @Int = if (lafter_12 ls) == 12 => 0 else 1
 $ ck_lsc0 : @Int = if (lsize_class []) == 0 => 0 else 1
 $ ck_lsc2 : @Int = if (lsize_class [7, 8]) == 2 => 0 else 1
 $ ck_lscN : @Int = if (lsize_class ls) == 9 => 0 else 1
@@ -101,6 +115,9 @@ $ ck_for_unbounded : @Int =
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int =
-    ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN + ck_lsum + ck_lcons + ck_lsecond + ck_lsc0 + ck_lsc2 + ck_lscN + ck_for + ck_for_break + ck_for_continue + ck_for_unbounded
+    ck_second + ck_second_short + ck_drop2 + ck_head_tail + ck_after_12 + ck_after_1 + ck_after_none
+        + ck_sum + ck_len + ck_cons + ck_map + ck_empty + ck_sc0 + ck_sc1 + ck_sc2 + ck_scN
+        + ck_lsum + ck_lcons + ck_lsecond + ck_lafter_12 + ck_lsc0 + ck_lsc2 + ck_lscN + ck_for
+        + ck_for_break + ck_for_continue + ck_for_unbounded
 
 $ @e <| assert (test == 0) "LISTS: a check failed"

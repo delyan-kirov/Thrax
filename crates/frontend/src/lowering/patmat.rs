@@ -239,8 +239,33 @@ impl Pm {
             // A sequence pattern on a user type: unfold the `sequence_view` hook one
             // step at a time, matching each leading element and (`..rest`) binding or
             // (no rest) requiring `Empty` at the end.
-            Pat::SeqView { view, elems, rest } => {
-                self.compile_seqview(sv, view, elems, rest.as_deref(), on_match, on_fail)
+            Pat::SeqView { view, back, elems, rest } => {
+                self.compile_seqview(sv, view, *back, elems, rest.as_deref(), on_match, on_fail)
+            }
+            // Lengths were proven by the checker, so each part is read directly.
+            Pat::Tensor { len, front, mid, back } => {
+                let idx = |i: u64| Term::app(Term::app(v("@tensor_index"), v(sv)), Term::Int(i as i64));
+                let back_start = len - back.len() as u64;
+                let mut parts: Vec<(Term, &Pat)> = Vec::new();
+                parts.extend(front.iter().enumerate().map(|(i, p)| (idx(i as u64), p)));
+                if let Some(mid) = mid {
+                    let slice = Term::app(
+                        Term::app(Term::app(v("@tensor_slice"), v(sv)), Term::Int(front.len() as i64)),
+                        Term::Int(back_start as i64),
+                    );
+                    parts.push((slice, mid));
+                }
+                parts.extend(back.iter().enumerate().map(|(j, p)| (idx(back_start + j as u64), p)));
+                parts.into_iter().rev().fold(on_match, |inner, (val, p)| {
+                    let fv = self.fresh("f");
+                    let sub = self.compile_pat(&fv, p, inner, on_fail);
+                    Term::Let {
+                        name: fv,
+                        rec: false,
+                        val: Arc::new(val),
+                        body: Arc::new(sub),
+                    }
+                })
             }
             // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive). An open
             // range `lo ...` has no upper bound, so only the `sv >= lo` test.
@@ -292,21 +317,26 @@ impl Pm {
                 };
                 case1(v(sv), shallow, inner, on_fail.clone())
             }
-            Pat::StrPrefix { prefix, rest } => {
+            // `back` matches a suffix: the literal is the last `plen` bytes and the
+            // rest is everything before it.
+            Pat::StrPrefix { prefix, back, rest } => {
+                let plen = Term::Int(prefix.len() as i64);
+                let cut = if *back { bin("@isub", array_len(sv), plen.clone()) } else { plen.clone() };
+                let (lit, left) = if *back {
+                    (array_slice(sv, cut.clone(), array_len(sv)), array_slice(sv, Term::Int(0), cut))
+                } else {
+                    (array_slice(sv, Term::Int(0), cut.clone()), array_slice(sv, cut, array_len(sv)))
+                };
                 let plen = prefix.len();
                 let tv = self.fresh("t");
                 let tail_match = Term::Let {
                     name: tv.clone(),
                     rec: false,
-                    val: Arc::new(array_slice(sv, Term::Int(plen as i64), array_len(sv))),
+                    val: Arc::new(left),
                     body: Arc::new(self.compile_pat(&tv, rest, on_match, on_fail)),
                 };
                 let prefix_ok = case1(
-                    bin(
-                        "==",
-                        array_slice(sv, Term::Int(0), Term::Int(plen as i64)),
-                        Term::Str(prefix.clone()),
-                    ),
+                    bin("==", lit, Term::Str(prefix.clone())),
                     Pat::Bool(true),
                     tail_match,
                     on_fail.clone(),
@@ -329,6 +359,7 @@ impl Pm {
         &mut self,
         sv: &str,
         view: &Term,
+        back: bool,
         elems: &[Pat],
         rest: Option<&Pat>,
         on_match: Term,
@@ -362,8 +393,16 @@ impl Pm {
         let vw = self.fresh("vw");
         let h = self.fresh("h");
         let t = self.fresh("t");
-        let recur = self.compile_seqview(&t, view, &elems[1..], rest, on_match, on_fail);
-        let matched = self.compile_pat(&h, &elems[0], recur, on_fail);
+        // From the back, each step peels the last remaining element.
+        let (elem, others) = if back {
+            let (last, init) = elems.split_last().expect("checked non-empty");
+            (last, init)
+        } else {
+            let (first, tail) = elems.split_first().expect("checked non-empty");
+            (first, tail)
+        };
+        let recur = self.compile_seqview(&t, view, back, others, rest, on_match, on_fail);
+        let matched = self.compile_pat(&h, elem, recur, on_fail);
         let body = case1(
             v(&vw),
             Pat::Variant {

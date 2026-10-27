@@ -869,7 +869,7 @@ fn list_literal_defaults_to_vec_with_patterns() {
         $ xs : @Vec @Int = [10, 20, 30]\n\
         $ len : @Int = @vec_len xs\n\
         $ head : @Int = is xs | h :: _ => h | _ => 0\n\
-        $ tak2 : @Int = is [1, 2, 3, 4] | [a, b, ..r] => a + b + @vec_len r | _ => 0\n\
+        $ tak2 : @Int = is [1, 2, 3, 4] | [a, b] ++ r => a + b + @vec_len r | _ => 0\n\
         $ r : @Int = len * 100 + head + tak2"; // 300 + 10 + (1+2+2)
     assert_eq!(run(src, "r"), "315");
 }
@@ -1363,7 +1363,7 @@ fn array_patterns_destructure_and_guard() {
                $ lit : @Array -> @Int = \\a = is a | [1, y] => y | _ => 0\n\
                $ hit : @Int = lit [1, 42]\n\
                $ no : @Int = lit [2, 42]\n\
-               $ head : @Array -> @Int = \\a = is a | [h, ..rest] => h + @array_len rest | _ => 0\n\
+               $ head : @Array -> @Int = \\a = is a | [h] ++ rest => h + @array_len rest | _ => 0\n\
                $ hd : @Int = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");

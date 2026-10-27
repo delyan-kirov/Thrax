@@ -1,0 +1,6 @@
+$ @mod IMPORT_LIST
+
+$ with
+    V = VEC,
+    STRR,  #~ error[UNKNOWN_MODULE]: cannot find module `STRR`
+    O = OPT,

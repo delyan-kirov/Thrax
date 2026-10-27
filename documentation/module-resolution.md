@@ -57,6 +57,15 @@ prefer to be explicit.
 exports several `name` overloads, the qualifier narrows to that module and the
 usual type-directed pick runs among just its candidates.
 
+### 1d. Aliased imports are qualified only
+
+`$ with V = VEC` brings none of `VEC`'s names in bare. Its values, types and
+constructors are reachable only as `V.name`, `V.Type` and `V.Type.Tag`, and not
+as `VEC.name` either. `$ with VEC = VEC` keeps the module's own name as the
+qualifier. The checker registers the module's exports under each alias, and
+lowering rewrites the alias back to the module, so `V.len` reaches `VEC.len`.
+Effect operations keep their effect's name as the qualifier (`State.get`).
+
 ---
 
 ## 2. Types and effects are namespaced per module

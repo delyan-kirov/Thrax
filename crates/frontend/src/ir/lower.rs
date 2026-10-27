@@ -172,6 +172,9 @@ fn pat_binders(p: &Pat) -> usize {
             elems.iter().map(pat_binders).sum::<usize>()
                 + rest.as_deref().map(pat_binders).unwrap_or(0)
         }
+        Pat::Tensor { front, mid, back, .. } => {
+            front.iter().chain(mid.as_deref()).chain(back).map(pat_binders).sum()
+        }
     }
 }
 

@@ -195,9 +195,11 @@ pub enum Pat {
         fields: Vec<(String, Pat)>,
         rest: Option<String>,
     },
-    /// A literal byte-string prefix `"GET " ++ rest`.
+    /// A literal byte-string prefix `"GET " ++ rest`, or with `back` a suffix
+    /// `rest ++ ".thx"`. `rest` matches what is left.
     StrPrefix {
         prefix: Vec<u8>,
+        back: bool,
         rest: Box<Pat>,
     },
     /// An inclusive numeric range `lo ... hi`: matches when `lo <= x <= hi`. `lo`
@@ -220,10 +222,22 @@ pub enum Pat {
     /// leading element patterns; `rest`, when present, binds the remaining sequence,
     /// else the tail must be `Empty`. Compiled to nested `SeqView` (`More`/`Empty`)
     /// matches by `patmat`, so it never reaches the later passes.
+    /// With `back`, `view` is an `@ISeqViewBack` method and `elems` are the
+    /// trailing element patterns, matched from the last one inward.
     SeqView {
         view: Term,
+        back: bool,
         elems: Vec<Pat>,
         rest: Option<Box<Pat>>,
+    },
+    /// A sequence pattern on a sized tensor of static length `len`: `front`
+    /// elements from index 0, `back` elements ending at `len - 1`, and `mid` the
+    /// slice between. The checker has proven the lengths, so nothing is tested.
+    Tensor {
+        len: u64,
+        front: Vec<Pat>,
+        mid: Option<Box<Pat>>,
+        back: Vec<Pat>,
     },
 }
 
