@@ -27,7 +27,7 @@ use crate::parser::data::{
     Ast, Binding, Expr, FieldInit, FieldPat, Item, LamParam, Pattern, Payload,
     Program as AstProgram, RecField, SliceSlot, Ty,
 };
-use utilities::{Aol, Span};
+use utilities::{Aol, Slice, Span, StrId};
 
 /// The built-in that suspends a value. Construction wraps a lazy slot in
 /// `@delay (\_ = e)`; the machine forces it at the point the value is
@@ -610,25 +610,25 @@ pub fn lower_program(
     decls: &Decls,
     resolved: &Resolved,
 ) -> Program {
-    let imports = ast.slice(program.items)
-        .iter()
-        .filter_map(|item| match item {
-            Item::Import { module, .. } => Some(
-                ast.slice(*module)
-                    .iter()
-                    .map(|&p| ast.text(p))
-                    .collect::<Vec<_>>()
-                    .join("."),
-            ),
-            _ => None,
-        })
-        .collect();
+    let dotted = |parts: Slice<StrId>| ast.slice(parts).iter().map(|&p| ast.text(p)).collect::<Vec<_>>().join(".");
+    let mut imports = Vec::new();
+    let mut aliases = HashMap::new();
+    for item in ast.slice(program.items) {
+        if let Item::Import { module, alias, .. } = item {
+            let module = dotted(*module);
+            if let Some(alias) = alias {
+                aliases.insert(ast.text(*alias).to_string(), module.clone());
+            }
+            imports.push(module);
+        }
+    }
     let mut lw = Lowerer {
         ast,
         decls,
         resolved,
         module: ast.text(program.module).to_string(),
         imports,
+        aliases,
         fresh: 0,
         meta_evals: Vec::new(),
         meta_type_evals: Vec::new(),
@@ -725,6 +725,9 @@ struct Lowerer<'a> {
     /// used to resolve a same-named type to the right module's declaration.
     module: String,
     imports: Vec<String>,
+    /// Import aliases (`$ with V = VEC`), alias to module, so `V.name` lowers
+    /// to `VEC.name`.
+    aliases: HashMap<String, String>,
     fresh: u32,
     /// Synthetic globals for expression-position `@e X`: each `@e X` becomes a
     /// global `@e_expr#n = X` that the driver forces at compile time, with the
@@ -1404,7 +1407,10 @@ impl<'a> Lowerer<'a> {
             _ => unreachable!("resolved_var_id on a non-variable"),
         };
         let module = match module {
-            Some(m) => Some(self.text(m).to_string()),
+            Some(m) => {
+                let m = self.text(m);
+                Some(self.aliases.get(m).cloned().unwrap_or_else(|| m.to_string()))
+            }
             None => self.resolved.call_modules.get(&site).cloned(),
         };
         (self.unless_builtin(module, name), name.to_string())

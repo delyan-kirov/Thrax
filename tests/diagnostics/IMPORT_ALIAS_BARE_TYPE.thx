@@ -1,0 +1,6 @@
+$ @mod IMPORT_ALIAS_BARE_TYPE
+
+$ with V = VEC
+$ with O = OPT
+
+$ t : Option @Int = V.first (V.new {})  #~ error[TYPE_UNBOUND]: type `Option` is imported qualified-only

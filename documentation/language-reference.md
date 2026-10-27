@@ -143,8 +143,8 @@ $ odd  : @Int -> @Bool = \n = if n == 0 => @false else even (n - 1)
 
 ## 2.3 Imports `$ with`
 `$ with MOD` brings a module's public names into scope, bare or qualified.
-A qualified `MOD.symbol` needs the import too. An import cannot be renamed, and
-it brings in the whole module, not one symbol.
+A qualified `MOD.symbol` needs the import too. An import brings in the whole
+module, not one symbol.
 
 ```thrax
 $ with MATH                    # MATH.sqrt, or bare sqrt
@@ -153,6 +153,30 @@ $ with STR
 
 When two imports export the same name, the bare name is ambiguous and the
 qualified form picks one (`VEC.len`, `LIST.len`).
+
+`$ with ALIAS = MOD` imports `MOD` qualified only, under the name `ALIAS`. None
+of its names come into scope bare, so several modules with overlapping names
+import side by side without ambiguity. Its values, types and constructors are
+all reached through the alias (`V.len`, `O.Option @Int`, `O.Option.Some.{ 1 }`).
+Writing the module's own name as the alias makes a plain qualified-only import.
+
+```thrax
+$ with V = VEC                 # V.len, never bare len or VEC.len
+$ with LIST = LIST             # LIST.len, never bare len
+```
+
+An alias is one capitalized name. It may not repeat, nor reuse the name of
+another imported module, of this module, or of the built-in `C` namespace.
+
+One `$ with` may list several imports, separated by commas, with an optional
+trailing comma. Each entry is a module or an `ALIAS = MOD`.
+
+```thrax
+$ with
+    VEC,
+    M = MAP,
+    STR,
+```
 
 ## 2.4 Visibility `$ @private`
 Symbols are public by default. `$ @private` hides every symbol below it, to the

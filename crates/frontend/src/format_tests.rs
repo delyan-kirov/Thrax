@@ -248,3 +248,18 @@ fn a_trailing_lambda_opens_on_the_calls_line() {
         "$ @mod M\n$ f = \\s =\n    let\n        r = with_a (\\u =\n            with_b s (\\v =\n                with_c (\\w =\n                    go s u v w)))\n    in\n        r\n"
     );
 }
+
+#[test]
+fn an_import_list_keeps_one_line_or_goes_one_entry_per_line() {
+    assert_eq!(fmt("$ @mod M\n$ with V=VEC\n"), "$ @mod M\n$ with V = VEC\n");
+    assert_eq!(fmt("$ @mod M\n$ with VEC ,M=MAP\n"), "$ @mod M\n$ with VEC, M = MAP\n");
+    let exploded = "$ @mod M\n$ with\n    VEC,\n    M = MAP,\n    FOO,\n";
+    assert_eq!(fmt("$ @mod M\n$ with VEC,\n  M = MAP, FOO,\n"), exploded);
+    assert_eq!(fmt(exploded), exploded);
+    assert_eq!(
+        narrow("$ @mod M\n$ with ALPHA, BETA = GAMMA\n", 20),
+        "$ @mod M\n$ with\n    ALPHA,\n    BETA = GAMMA\n"
+    );
+    let commented = "$ @mod M\n$ with\n    # the vectors\n    V = VEC, # qualified\n    LIST,\n";
+    assert_eq!(fmt(commented), commented);
+}

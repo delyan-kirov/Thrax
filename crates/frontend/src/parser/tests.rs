@@ -395,6 +395,44 @@ fn cons_and_list_and_function_type() {
 }
 
 #[test]
+fn import_alias() {
+    let p = prog("$ @mod M\n$ with V = VEC\n$ with A.B\n");
+    let items = p.ast.slice(p.program.items);
+    let Item::Import { module, alias: Some(alias), .. } = items[0] else {
+        panic!("expected an aliased import, got {:?}", items[0]);
+    };
+    assert_eq!(p.ast.text(alias), "V");
+    assert_eq!(p.ast.slice(module).len(), 1);
+    assert_eq!(p.ast.text(p.ast.slice(module)[0]), "VEC");
+    assert!(matches!(items[1], Item::Import { alias: None, .. }));
+    for bad in ["$ @mod M\n$ with A.B = VEC\n", "$ @mod M\n$ with v = VEC\n"] {
+        assert!(parse(bad).is_err(), "{bad} should not parse");
+    }
+}
+
+#[test]
+fn import_list() {
+    let p = prog("$ @mod M\n$ with\n    VEC,\n    M = MAP,\n    FOO,\n$ with A, B\n$ x = 1\n");
+    let items = p.ast.slice(p.program.items);
+    let imports: Vec<(Option<&str>, &str)> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Import { module, alias, .. } => {
+                Some((alias.map(|a| p.ast.text(a)), p.ast.text(p.ast.slice(*module)[0])))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        imports,
+        [(None, "VEC"), (Some("M"), "MAP"), (None, "FOO"), (None, "A"), (None, "B")]
+    );
+    assert_eq!(items.len(), 6);
+    assert_eq!(p.ast.slice(p.program.spans).len(), 6);
+    assert!(parse("$ @mod M\n$ with A,,\n").is_err());
+}
+
+#[test]
 fn union_effect_import_and_directives() {
     let src = "$ @mod M\n$ with Foo\n$ @private\n$ Color : @union = Red, Green, Blue\n\
                    $ State : @effect = get : @Int, put : @Int -> @Int\n$ @e 1";

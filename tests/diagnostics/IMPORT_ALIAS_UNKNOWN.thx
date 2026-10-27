@@ -1,0 +1,3 @@
+$ @mod IMPORT_ALIAS_UNKNOWN
+
+$ with V = VECC  #~ error[UNKNOWN_MODULE]: cannot find module `VECC`

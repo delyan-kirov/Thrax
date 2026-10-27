@@ -1,0 +1,6 @@
+$ @mod IMPORT_LIST_DUPLICATE
+
+$ with
+    V = VEC,
+    V = LIST,  #~ error[DUPLICATE_SYMBOL]: import alias `V` names more than one thing
+    O = OPT,

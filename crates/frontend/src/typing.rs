@@ -218,8 +218,17 @@ pub struct Checker<'a> {
     /// Value schemes pulled in from imports (with their source module), finalized
     /// once.
     imported: HashMap<&'a str, Vec<(Type, &'a str)>>,
-    /// Imported names reachable qualified as `MOD.name`.
+    /// Imported names reachable qualified as `MOD.name` (or `ALIAS.name`).
     qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
+    /// Each import alias in scope (`$ with V = VEC`), mapped to its module.
+    alias_modules: HashMap<&'a str, &'a str>,
+    /// Values an aliased-only import exports, mapped to the aliases that reach
+    /// them, so a bare use can name the qualified form.
+    alias_values: HashMap<&'a str, Vec<&'a str>>,
+    /// Types an aliased-only import exports, mapped to the alias that reaches
+    /// them. Like a hidden type, a bare mention is an error; a qualified one
+    /// (`V.Type`) is not.
+    alias_types: HashMap<&'a str, &'a str>,
     module_name: &'a str,
     /// `[..]` literal sites resolved to a sized tensor `[n]T`: the one `[...]`
     /// shape no hook can build, since the payload cannot carry the static size.
@@ -451,6 +460,9 @@ impl<'a> Checker<'a> {
             imported_private: HashMap::new(),
             imported: HashMap::new(),
             qualified: HashMap::new(),
+            alias_modules: HashMap::new(),
+            alias_values: HashMap::new(),
+            alias_types: HashMap::new(),
             module_name: "",
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
@@ -723,12 +735,59 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Every qualifier a module writes must name one thing: an alias may not
+    /// repeat, nor reuse the name of another imported module, this module, or `C`.
+    fn check_import_aliases(&mut self, program: &Program) {
+        let dotted = |parts: Slice<StrId>| {
+            self.ast.slice(parts).iter().map(|&p| self.text(p)).collect::<Vec<_>>().join(".")
+        };
+        let mut plain: HashSet<String> = HashSet::new();
+        let mut aliased: Vec<(&'a str, String, Span)> = Vec::new();
+        for item in self.ast.slice(program.items) {
+            match item {
+                Item::Import { module, alias: None, .. } => {
+                    plain.insert(dotted(*module));
+                }
+                Item::Import { module, alias: Some(alias), span } => {
+                    aliased.push((self.text(*alias), dotted(*module), *span));
+                }
+                _ => {}
+            }
+        }
+        let mut seen: HashMap<&'a str, String> = HashMap::new();
+        for (alias, module, span) in aliased {
+            let clash = if let Some(first) = seen.get(alias) {
+                Some(format!("`{alias}` is already an alias of `{first}`"))
+            } else if alias != module && plain.contains(alias) {
+                Some(format!("`{alias}` is already the name of an imported module"))
+            } else if alias == self.module_name {
+                Some(format!("`{alias}` is the name of this module"))
+            } else if alias == "C" || alias == "TARGET" {
+                Some(format!("`{alias}` is a built-in namespace"))
+            } else {
+                None
+            };
+            match clash {
+                Some(why) => self.errors.push(diag!(
+                    Code::DuplicateSymbol, span, 0,
+                    "import alias `{alias}` names more than one thing";
+                    note: "{why}";
+                    help: "pick another alias for `{module}`"
+                )),
+                None => {
+                    seen.insert(alias, module);
+                }
+            }
+        }
+    }
+
     /// Check a whole program, returning the inferred (generalized) type of every
     /// global definition, in source order.
     pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
         self.module_name = self.text(program.module);
         self.register_target_namespace();
         self.collect_private_names(program);
+        self.check_import_aliases(program);
         self.finalize_imports();
         self.register_types(program)?;
         self.register_row_folds();
@@ -953,12 +1012,30 @@ impl<'a> Checker<'a> {
     }
 
     pub fn import_from(&mut self, other: &Checker<'a>) {
+        self.import_as(other, true, &[]);
+    }
+
+    /// Import another module's exports: bare when `bare`, and qualified under its
+    /// own name then. Each of `aliases` (`$ with V = VEC`) is a further qualifier
+    /// for them, and an aliased-only import (`bare` false) brings no name in bare.
+    pub fn import_as(&mut self, other: &Checker<'a>, bare: bool, aliases: &[&'a str]) {
+        assert!(bare || !aliases.is_empty(), "an import is bare or aliased");
+        let module = other.module_name;
+        let mut scopes: Vec<&'a str> = aliases.to_vec();
+        if bare {
+            scopes.push(module);
+        }
+        for &alias in aliases {
+            self.alias_modules.insert(alias, module);
+        }
         self.imported_builtins.extend(other.own_builtins.iter().copied());
         if !other.private_names.is_empty() {
-            self.imported_private
-                .entry(other.module_name)
-                .or_default()
-                .extend(other.private_names.iter().copied());
+            for &scope in &scopes {
+                self.imported_private
+                    .entry(scope)
+                    .or_default()
+                    .extend(other.private_names.iter().copied());
+            }
         }
         // Bring the exporter's context-bearing functions in, so a bare or qualified
         // use of an imported one plans its context (the signature handle lives in
@@ -967,8 +1044,12 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            self.qualified_ctx.insert((other.module_name, name), *sig);
-            self.global_ctx.insert(name, *sig);
+            for &scope in &scopes {
+                self.qualified_ctx.insert((scope, name), *sig);
+            }
+            if bare {
+                self.global_ctx.insert(name, *sig);
+            }
         }
         // Bring the exporter's instances in, translating their packed types into
         // this module's engine so their variables stay generalized.
@@ -994,7 +1075,19 @@ impl<'a> Checker<'a> {
             if other.private_names.contains(name) {
                 continue;
             }
-            self.hidden_types.remove(name);
+            if bare {
+                self.hidden_types.remove(name);
+                self.alias_types.remove(name);
+            } else {
+                let named_bare = self.is_known_type(name)
+                    && !self.hidden_types.contains_key(name)
+                    && !self.alias_types.contains_key(name);
+                if named_bare {
+                    continue;
+                }
+                self.hidden_types.remove(name);
+                self.alias_types.insert(name, aliases[0]);
+            }
             self.type_home.insert(name, other.module_name);
             if let Some(s) = other.structs.get(name) {
                 self.structs.insert(name, s.clone());
@@ -1070,21 +1163,26 @@ impl<'a> Checker<'a> {
                     .insert(op, qualified);
             }
         }
-        let module = other.module_name;
         for (name, scheme) in &other.own_values {
             if other.private_names.contains(name) {
                 continue;
             }
-            let unqualified = self.import_scheme(*scheme);
-            self.imported
-                .entry(name)
-                .or_default()
-                .push((unqualified, module));
-            let qualified = self.import_scheme(*scheme);
-            self.qualified
-                .entry(module)
-                .or_default()
-                .insert(name, vec![qualified]);
+            if bare {
+                let unqualified = self.import_scheme(*scheme);
+                self.imported
+                    .entry(name)
+                    .or_default()
+                    .push((unqualified, module));
+            } else {
+                self.alias_values.entry(name).or_default().extend(aliases);
+            }
+            for &scope in &scopes {
+                let qualified = self.import_scheme(*scheme);
+                self.qualified
+                    .entry(scope)
+                    .or_default()
+                    .insert(name, vec![qualified]);
+            }
         }
     }
 
@@ -3604,10 +3702,14 @@ impl<'a> Checker<'a> {
                 self.infer_record(fields, *with, *update)
             }
             Expr::Variant {
-                ty, tag, fields, ..
+                module, ty, tag, fields,
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
+                    let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
+                    return Err(d.fill_span(span));
+                }
                 let fields = self.ast.slice(*fields);
                 self.infer_variant(ty, tag, fields)
             }
@@ -3929,6 +4031,15 @@ impl<'a> Checker<'a> {
 
     /// `name` is bound nowhere; suggest a near miss among the visible names.
     fn unbound_name(&self, name: &str) -> Diagnostic {
+        if let Some(&alias) = self.alias_values.get(name).and_then(|a| a.first()) {
+            return unbound(name)
+                .with_note(format!("`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]))
+                .with_fix(
+                    format!("write `{alias}.{name}`"),
+                    vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
+                    Applicability::MachineApplicable,
+                );
+        }
         let visible = self
             .scopes
             .iter()
@@ -4028,6 +4139,18 @@ impl<'a> Checker<'a> {
     fn unknown_qualified(&self, module: &str, name: &str) -> Diagnostic {
         let Some(members) = self.qualified.get(module) else {
             let d = diag!(Code::UnknownModule, Span::at(0), 0, "no module or effect `{module}` is in scope");
+            let mut aliases: Vec<&str> =
+                self.alias_modules.iter().filter(|(_, &m)| m == module).map(|(&a, _)| a).collect();
+            aliases.sort_unstable();
+            if let Some(alias) = aliases.first() {
+                return d
+                    .with_note(format!("`{module}` is imported as `{alias}`"))
+                    .with_fix(
+                        format!("write `{alias}.{name}`"),
+                        vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
+                        Applicability::MachineApplicable,
+                    );
+            }
             return match utilities::error::closest(module, self.qualified.keys().copied()) {
                 Some(m) => d.with_help(format!("did you mean `{m}.{name}`?")),
                 None => d.with_help(format!("import it with `$ with {module}`")),
@@ -5432,10 +5555,14 @@ impl<'a> Checker<'a> {
                 self.type_record_pattern(fields, *rest, expected)
             }
             Pattern::Variant {
-                ty, tag, fields, ..
+                module, ty, tag, fields,
             } => {
                 let ty = ty.map(|t| self.text(t));
                 let tag = self.text(*tag);
+                if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
+                    let span = self.ast.pat_span(pat).unwrap_or(Span::at(0));
+                    return Err(d.fill_span(span));
+                }
                 let fields = self.ast.slice(*fields);
                 self.type_variant_pattern(pat, ty, tag, fields, expected)
             }
@@ -5938,7 +6065,8 @@ impl<'a> Checker<'a> {
     /// one of the same name an import brought in.
     fn claim_type_name(&mut self, name: &'a str) {
         self.type_home.insert(name, self.module_name);
-        if self.hidden_types.remove(name).is_some() {
+        let aliased = self.alias_types.remove(name).is_some();
+        if self.hidden_types.remove(name).is_some() || aliased {
             self.structs.remove(name);
             self.unions.remove(name);
             self.aliases.remove(name);
@@ -5948,6 +6076,26 @@ impl<'a> Checker<'a> {
     /// A type this module wrote naming a hidden type: one only an import's
     /// declarations reach. Deferred like the other type-name errors.
     fn check_hidden_type(&mut self, ty: Aol<Ty>, name: &str) {
+        if let Some(&alias) = self.alias_types.get(name) {
+            let qualified = matches!(self.tnode(ty), Ty::Con { module: Some(_), .. });
+            if qualified || self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
+                return;
+            }
+            let mut d = diag!(
+                Code::TypeUnbound, Span::at(0), 0,
+                "type `{name}` is imported qualified-only";
+                note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]
+            );
+            if let Some(span) = self.ast.ty_span(ty) {
+                d = d.fill_span(span).with_fix(
+                    format!("write `{alias}.{name}`"),
+                    vec![Edit::new(span, format!("{alias}.{name}"))],
+                    Applicability::MachineApplicable,
+                );
+            }
+            self.unknown_type = Some(d);
+            return;
+        }
         let Some(&home) = self.hidden_types.get(name) else {
             return;
         };
@@ -5960,6 +6108,22 @@ impl<'a> Checker<'a> {
             d = d.fill_span(span);
         }
         self.unknown_type = Some(d);
+    }
+
+    /// `Type.Tag` naming a type an aliased-only import brought in, without the
+    /// alias. A bare `.Tag` is fine: the expected type picks the union.
+    fn unqualified_alias_ctor(&self, module: Option<StrId>, ty: Option<&str>, tag: &str) -> Option<Diagnostic> {
+        let ty = ty?;
+        let alias = *self.alias_types.get(ty)?;
+        if module.is_some() {
+            return None;
+        }
+        Some(diag!(
+            Code::TypeUnbound, Span::at(0), 0,
+            "type `{ty}` is imported qualified-only";
+            note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias];
+            help: "write `{alias}.{ty}.{tag}`"
+        ))
     }
 
     fn is_known_type(&self, name: &str) -> bool {
