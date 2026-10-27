@@ -5,26 +5,26 @@ $ @mod REALS
 #       operators are the same as for @Int -- overload resolution picks the Real
 #       implementation from the operand types.
 
-$ pi = 3.14159
-$ e = 2.71828
-$ sci = 1.5e3
-$ small = 2.5e-2
-$ sum = 1.5 + 2.5
-$ product = 2.0 * 3.5
-$ diff = 10.0 - 0.5
-$ quot = 7.0 / 2.0
-$ negate = -4.2
+$ pi : @Float64 = 3.14159
+$ e : @Float64 = 2.71828
+$ sci : @Float64 = 1.5e3
+$ small : @Float64 = 2.5e-2
+$ sum : @Float64 = 1.5 + 2.5
+$ product : @Float64 = 2.0 * 3.5
+$ diff : @Float64 = 10.0 - 0.5
+$ quot : @Float64 = 7.0 / 2.0
+$ negate : @Float64 = -4.2
 
 # comparisons on Reals still yield an @Int (0/1)
-$ lt = 1.5 < 2.5
-$ ge = 3.0 >= 3.0
-$ eq = 0.1 == 0.1
+$ lt : @Bool = 1.5 < 2.5
+$ ge : @Bool = 3.0 >= 3.0
+$ eq : @Bool = 0.1 == 0.1
 
 # a Real-typed recursive function
 $ pow : Real -> @Int -> Real = \base n = if n == 0 => 1.0 else base * (pow base (n - 1))
 
-$ two_pow_10 = pow 2.0 10
-$ half_cubed = pow 0.5 3
+$ two_pow_10 : @Float64 = pow 2.0 10
+$ half_cubed : @Float64 = pow 0.5 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int =

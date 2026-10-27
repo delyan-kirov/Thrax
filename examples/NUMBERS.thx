@@ -3,15 +3,15 @@ $ @mod NUMBERS
 # \file numbers.thx
 # \info Integer literal forms: decimal, hexadecimal (0x), and binary (0b).
 
-$ dec = 255
-$ hex = 0xFF
-$ hex2 = 0xff
-$ bin = 0b11111111
-$ mix = 0x10 + 0b10 + 8
-$ big = 0xDEADBEEF
-$ zero = 0b0
-$ ten = 0b1010
-$ mixer = 1.0 + 1.0
+$ dec : @Int = 255
+$ hex : @Int = 0xFF
+$ hex2 : @Int = 0xff
+$ bin : @Int = 0b11111111
+$ mix : @Int = 0x10 + 0b10 + 8
+$ big : @Int = 0xDEADBEEF
+$ zero : @Int = 0b0
+$ ten : @Int = 0b1010
+$ mixer : @Float64 = 1.0 + 1.0
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = dec; hex; hex2; bin; mix; big; zero; ten; mixer; 0

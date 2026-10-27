@@ -6,7 +6,7 @@
 //! defined it is evaluated. To run effects, use an underscore name like `_= `.
 //! That prefill is inserted at the start of every prompt by default and can be
 //! deleted, so the user can instead define a named global symbol they can reuse
-//! (`$ name = ...` defines silently, `$ with MOD` imports). The auto-inserted
+//! (`$ name : T = ...` defines silently, `$ with MOD` imports). The auto-inserted
 //! `$ ` opening each prompt cannot be deleted. Enter submits the whole buffer at
 //! once, wherever the cursor sits and with no trailing `$` needed. `Ctrl-J` starts
 //! a new line instead (it arrives as LF, distinct from the Return key's CR; some
@@ -40,7 +40,7 @@ use std::process::ExitCode;
 use thrax::driver;
 
 /// The reserved binding an evaluated expression is compiled under.
-const IT: &str = "__it";
+const IT: &str = driver::PROBE;
 
 /// The fixed, undeletable prefix that opens every prompt.
 const PROMPT: &str = "$ ";
@@ -973,7 +973,7 @@ the item you are editing. An evaluated item's value is reported on a `#` comment
 line, with its type.
 
   $ _= <expr>       evaluate an expression and print its value and type
-  $ name = <expr>   add (or redefine) a binding (silent, like a file)
+  $ name : T = <e>  add (or redefine) a binding (silent, like a file)
   $ with MOD        import a standard-library module (e.g. VEC, STR, MATH)
   :type <expr>      show an expression's type without evaluating   (:t)
   :list             show the current imports and definitions       (:l)

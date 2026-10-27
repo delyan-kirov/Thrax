@@ -12,22 +12,23 @@ $ sign : @Int -> @Int = \n = if n == 0 => 0 else if n > 0 => 1 else -1
 # The same chain written with comma-separated arms; a trailing comma before
 # `else` is allowed.
 $ sign2 : @Int -> @Int = \n =
-    if n == 0 => 0,
-       n > 0 => 1,
-       else -1
+    if
+        n == 0 => 0,
+        n > 0  => 1,
+        else -1
 
 $ max : @Int -> @Int -> @Int = \a b = if a > b => a else b
 
 $ min : @Int -> @Int -> @Int = \a b = if a < b => a else b
 
-$ abs_neg = abs (-9)
-$ abs_pos = abs 9
-$ sign_neg = sign (-3)
-$ sign_zero = sign 0
-$ sign_pos = sign 3
-$ sign2_agree = (sign2 (-3) - sign (-3)) + (sign2 0 - sign 0) + (sign2 3 - sign 3)
-$ max_ex = max 3 7
-$ min_ex = min 3 7
+$ abs_neg : @Int = abs (-9)
+$ abs_pos : @Int = abs 9
+$ sign_neg : @Int = sign (-3)
+$ sign_zero : @Int = sign 0
+$ sign_pos : @Int = sign 3
+$ sign2_agree : @Int = (sign2 (-3) - sign (-3)) + (sign2 0 - sign 0) + (sign2 3 - sign 3)
+$ max_ex : @Int = max 3 7
+$ min_ex : @Int = min 3 7
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = abs_neg; abs_pos; sign_neg; sign_zero; sign_pos; max_ex; min_ex; sign2_agree

@@ -50,10 +50,10 @@ $ x : @Int = 1   # trailing comment
 Decimal, hexadecimal (`0x`), and binary (`0b`).
 
 ```thrax
-$ a = 255
-$ b = 0xFF
-$ c = 0b1010
-$ mix = 0x10 + 0b10 + 8      # bases mix freely in arithmetic
+$ a   : @Int = 255
+$ b   : @Int = 0xFF
+$ c   : @Int = 0b1010
+$ mix : @Int = 0x10 + 0b10 + 8   # bases mix freely in arithmetic
 ```
 
 ## 1.3 Real literals
@@ -62,7 +62,7 @@ Decimal point or scientific notation.
 ```thrax
 $ pi   : Real = 3.14159
 $ tiny : Real = 12e-3        # 0.012
-$ mixed = 1 + 1.0            # a literal takes the type its context wants
+$ half : Real = 1.0 / 2.0     # an integer literal never becomes a real
 ```
 
 ## 1.4 Imaginary literals
@@ -125,14 +125,15 @@ $ @mod MAIN
 ```
 
 ## 2.2 Global definitions `$`
-`$ name : Type = expr`. The annotation is required unless inference gives the
-body a ground, non-arrow type (a plain `@Int`/`Str` constant). Functions and
-anything polymorphic must be annotated. `$a` and `$ a` are the same.
+`$ name : Type = expr`. The annotation is always required, with no exceptions:
+a global's type is its contract with every importer. Leaving it out is a
+`TYPE_ANNOTATION_REQUIRED` error whose fix inserts the inferred type. `$a` and
+`$ a` are the same.
 
 Simple:
 ```thrax
-$ answer = 42                 # inferred @Int, no annotation needed
-$ id : t -> t = \x = x        # annotation required (polymorphic)
+$ answer : @Int = 42
+$ id : t -> t = \x = x
 ```
 
 Involved (definitions may appear in any order and reference each other):
@@ -333,8 +334,8 @@ $ Person : @struct = name: Str, age: @Int,
 $ inc : @Int -> @Int = \x = x + 1
 $ add : @Int -> @Int -> @Int = \a b = a + b            # curried
 $ name : Person -> Str = \Person.{ name, _ } = name # destructuring parameter
-$ dec = \x: @Int = x - 1                            # annotated parameter
-$ sub = \(a: @Int) (b: @Int) = a - b               # one annotation per parameter
+$ dec : @Int -> @Int = \x: @Int = x - 1                     # annotated parameter
+$ sub : @Int -> @Int -> @Int = \(a: @Int) (b: @Int) = a - b  # one annotation per parameter
 ```
 
 ## 4.2 Application
@@ -343,7 +344,7 @@ Juxtaposition, left-associative, binds tighter than any operator.
 ```thrax
 $ inc : @Int -> @Int = \x = x + 1
 $ add : @Int -> @Int -> @Int = \a b = a + b
-$ r = add (inc 2) 3          # (add (inc 2)) 3
+$ r : @Int = add (inc 2) 3   # (add (inc 2)) 3
 ```
 
 ## 4.3 Arithmetic and unary operators
@@ -351,10 +352,10 @@ $ r = add (inc 2) 3          # (add (inc 2)) 3
 `( )` groups.
 
 ```thrax
-$ a = 1 + 2 * 3 - 4          # 3
-$ b = (1 + 2) * (3 - 4)      # -3
-$ c = -42
-$ d = !@true                 # @false
+$ a : @Int  = 1 + 2 * 3 - 4      # 3
+$ b : @Int  = (1 + 2) * (3 - 4)  # -3
+$ c : @Int  = -42
+$ d : @Bool = !@true             # @false
 ```
 
 ## 4.4 Comparisons
@@ -439,12 +440,12 @@ the next). A binding is recursive exactly when its name occurs in its own body
 
 Simple:
 ```thrax
-$ x = let a = 6 in a * 7
+$ x : @Int = let a = 6 in a * 7
 ```
 
 Involved (comma chain, destructuring, recursion, annotation):
 ```thrax
-$ r = let {a, b} = {3, 4}, s = a + b in s * 2
+$ r : @Int = let {a, b} = {3, 4}, s = a + b in s * 2
 $ len : @Vec @Int -> @Int =
 	let go : @Vec @Int -> @Int -> @Int = \l n =
 		is l | _ :: t => go t (n + 1) | _ => n
@@ -475,11 +476,11 @@ $ inc : @Int -> @Int = \x = x + 1
 $ double : @Int -> @Int = \x = x * 2
 $ step1 : {} -> @Int = \u = 0
 $ step2 : {} -> @Int = \u = 0
-$ eff = step1 {} ; step2 {} ; 0            # run for effect, return 0
-$ y   = 5 |> inc |> double                 # double (inc 5)
-$ z   = double <| inc <| 5                 # same
+$ eff : @Int = step1 {} ; step2 {} ; 0     # run for effect, return 0
+$ y   : @Int = 5 |> inc |> double          # double (inc 5)
+$ z   : @Int = double <| inc <| 5          # same
 $ f   : @Int -> @Int = double <|> inc      # \x = double (inc x)
-$ w   = (double <|> inc) 5                 # 12
+$ w   : @Int = (double <|> inc) 5          # 12
 $ shout : @Str -> <@IO> {} = \s = IO.println s
 $ show  : @Int -> <@IO> {} = shout <|> to_string   # the row is the union
 $ h2    : @Int -> @Int = (<|>) double inc          # = compose double inc
@@ -492,10 +493,10 @@ it takes a context parameter, the type it is used at decides which instance is
 injected, so a bare `(+)` with nothing to pin its type is an error that says so.
 
 ```thrax
-$ two   = (+) 1 1                          # 1 + 1
+$ two   : @Int = (+) 1 1                   # 1 + 1
 $ add1  : @Int -> @Int = (+) 1             # curried
 $ plus  : @Int -> @Int -> @Int = (+)       # the instance comes from the type
-$ total = VEC.foldl (+) 0 [1, 2, 3]        # as an argument
+$ total : @Int = VEC.foldl (+) 0 [1, 2, 3] # as an argument
 ```
 
 The parens must hold exactly one operator, so `(a + b)` and `(-1)` still group.
@@ -1364,7 +1365,7 @@ A growable typed vector, wrapped by the `VEC` library over `@vec_new`,
 
 ```thrax
 $ with VEC
-$ v = push (push (new {}) 1) 2          # VEC over @vec_* primitives
+$ v : @Vec @Int = push (push (new {}) 1) 2   # VEC over @vec_* primitives
 ```
 
 ## 12.4 `to_string` (CORE) and interpolation

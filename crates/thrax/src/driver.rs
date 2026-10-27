@@ -296,10 +296,10 @@ fn check_all<'a>(
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
     lenient: bool,
-    open_effects_module: Option<&str>,
+    session: Option<SessionRoot<'_>>,
     parse_errors: Vec<Vec<utilities::Diagnostic>>,
 ) -> Result<CheckOut<'a>, String> {
-    let mut checked = check_modules(ast, programs, graph, sources, lenient, open_effects_module, parse_errors);
+    let mut checked = check_modules(ast, programs, graph, sources, lenient, session, parse_errors);
     let level = project_config().word("lints", "unreachable_arm").to_string();
     for &i in &checked.order {
         let (_name, src_path, src) = &sources[i];
@@ -345,10 +345,10 @@ pub(crate) fn check_modules<'a>(
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
     lenient: bool,
-    open_effects_module: Option<&str>,
+    session: Option<SessionRoot<'_>>,
     parse_errors: Vec<Vec<utilities::Diagnostic>>,
 ) -> Checked<'a> {
-    check_modules_with(ast, programs, graph, sources, lenient, open_effects_module, parse_errors, false)
+    check_modules_with(ast, programs, graph, sources, lenient, session, parse_errors, false)
 }
 
 /// [`check_modules`] that can also keep every expression's type (for an editor).
@@ -359,7 +359,7 @@ pub(crate) fn check_modules_with<'a>(
     graph: &[Vec<usize>],
     sources: &[(String, String, String)],
     lenient: bool,
-    open_effects_module: Option<&str>,
+    session: Option<SessionRoot<'_>>,
     parse_errors: Vec<Vec<utilities::Diagnostic>>,
     record_types: bool,
 ) -> Checked<'a> {
@@ -384,7 +384,13 @@ pub(crate) fn check_modules_with<'a>(
     }
     let mut hollow = vec![false; programs.len()];
     for &i in &order {
-        let setup = Setup { lenient, open_effects: open_effects_module == Some(sources[i].0.as_str()), record_types };
+        let root = session.filter(|s| s.module == sources[i].0);
+        let setup = Setup {
+            lenient,
+            open_effects: root.is_some_and(|s| s.open_effects),
+            record_types,
+            probe: root.is_some(),
+        };
         let mut checker = prepare_checker(ast, &types, &|k| checkers[k].as_ref(), &graph[i], c_idx, core_idx, i, setup);
         let checked = checker.check_program(&programs[i]);
         // A dependency that failed before exporting anything leaves every name it
@@ -424,12 +430,26 @@ pub(crate) fn prelude_indices(sources: &[(String, String, String)]) -> (Option<u
     )
 }
 
+/// The binding the shell and `@eval` wrap an expression in, the one global whose
+/// type is inferred rather than written.
+pub const PROBE: &str = "__it";
+
+/// The in-memory module a tool compiles around one expression (see [`PROBE`]).
+#[derive(Clone, Copy)]
+pub(crate) struct SessionRoot<'s> {
+    pub module: &'s str,
+    /// Check the top level under an open effect row, as the shell needs to run IO.
+    pub open_effects: bool,
+}
+
 /// How one module is checked.
 #[derive(Clone, Copy)]
 pub(crate) struct Setup {
     pub lenient: bool,
     pub open_effects: bool,
     pub record_types: bool,
+    /// The module may leave [`PROBE`] unannotated.
+    pub probe: bool,
 }
 
 /// A checker for module `i`, with `C` (qualified), `CORE` (bare) and its
@@ -450,6 +470,9 @@ pub(crate) fn prepare_checker<'a, 'c>(
     checker.set_import_hints(import_hints());
     checker.set_record_types(setup.record_types);
     checker.set_open_effects(setup.open_effects);
+    if setup.probe {
+        checker.set_inferred(PROBE);
+    }
     if let Some(c) = c_idx {
         if c != i && Some(i) != core_idx {
             checker.import_qualified(checkers(c).expect("C checked first"));
@@ -1069,7 +1092,7 @@ fn compile_in_memory(
         &graph,
         &loaded.sources,
         false,
-        open_effects.then_some(loaded.root_name.as_str()),
+        Some(SessionRoot { module: &loaded.root_name, open_effects }),
         errors,
     )?;
     let resolved = frontend::collect_resolved(&checkers);
@@ -1134,11 +1157,11 @@ fn eval_wrapped(
         module.push_str(line);
         module.push('\n');
     }
-    module.push_str("$ _thrax_meta =\n");
+    module.push_str(&format!("$ {PROBE} =\n"));
     module.push_str(src);
     let session = compile_in_memory(&module, fetch, None, false)?;
     let ir = frontend::ir::lower_modules(&session.lowered);
-    let v = interpreter::machine::eval_value(&ir, "REPL._thrax_meta")
+    let v = interpreter::machine::eval_value(&ir, &format!("REPL.{PROBE}"))
         .map_err(|d| d.render("", "@eval"))?;
     interpreter::machine::reify(&v)
 }

@@ -10,24 +10,24 @@ $ with VEC
 
 $ apply2 : (@Int -> @Int -> @Int) -> @Int -> @Int -> @Int = \f a b = f a b
 
-$ added = (+) 1 1
-$ diff = (-) 10 4
-$ times = (*) 6 7
-$ quotient = (/) 84 2
-$ power = (^) 2 5
-$ less = (<) 1 2
-$ negated = (!) @false
+$ added : @Int = (+) 1 1
+$ diff : @Int = (-) 10 4
+$ times : @Int = (*) 6 7
+$ quotient : @Int = (/) 84 2
+$ power : @Int = (^) 2 5
+$ less : @Bool = (<) 1 2
+$ negated : @Bool = (!) @false
 
 # Partial application: an operator reference curries like any other function.
 $ add_one : @Int -> @Int = (+) 1
-$ curried = add_one 41
+$ curried : @Int = add_one 41
 
 # As a value and as an argument. Both sites are bare references with no argument
 # types of their own, so the expected type picks the overload.
 $ plus : @Int -> @Int -> @Int = (+)
-$ bound = plus 2 3
-$ passed = apply2 (+) 20 22
-$ summed = foldl (+) 0 [1, 2, 3]
+$ bound : @Int = plus 2 3
+$ passed : @Int = apply2 (+) 20 22
+$ summed : @Int = foldl (+) 0 [1, 2, 3]
 
 # A type of your own joins `+` by implementing its interface: `+` on a `Money` goes
 # through this instance, `+` on an `@Int` through CORE's.
@@ -41,15 +41,15 @@ $ pooled : Money = (+) Money.{ .cents = 150 } Money.{ .cents = 900 }
 # `::`) has no binding of its own, so its reference is the function `\l r = l op r`.
 # Referenced this way, `&&` evaluates both sides: short-circuiting is a property
 # of the infix form, not of the function.
-$ both = (&&) @true @true
-$ either = (||) @false @true
-$ piped = (|>) 3 add_one
-$ consed = (::) 1 [2, 3]
+$ both : @Bool = (&&) @true @true
+$ either : @Bool = (||) @false @true
+$ piped : @Int = (|>) 3 add_one
+$ consed : @Vec @Int = (::) 1 [2, 3]
 
 # Grouping is unaffected: parens hold an operator reference only when that is
 # all they hold.
-$ grouped = (1 + 2) * 3
-$ negative = (-1) + 2
+$ grouped : @Int = (1 + 2) * 3
+$ negative : @Int = (-1) + 2
 
 $ test : @Int =
     if added == 2
@@ -71,6 +71,7 @@ $ test : @Int =
         && grouped == 9
         && negative == 1 =>
         0
-    else 1
+    else
+        1
 
 $ @e <| assert (test == 0) "OPERATOR_REFS: a check failed"

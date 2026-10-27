@@ -146,7 +146,7 @@ fn lex_tokenizes_a_string_into_opaque_tokens() {
     // `@lex` tokenizes a string into `@Vec @Token`; `@token_kind` / `@token_text`
     // read a token's tag and lexeme. `foo + 12` is Word "foo", Op "+", Int "12".
     let src = "$ @mod T\n\
-               $ toks = @lex \"foo + 12\"\n\
+               $ toks : @Vec @Token = @lex \"foo + 12\"\n\
                $ n : @Int = @vec_len toks\n\
                $ ck : @Bool =\n\
                \t@token_kind (@vec_get toks 0) == \"Word\"\n\
@@ -1349,7 +1349,7 @@ fn target_reflects_the_host_consistently() {
 fn array_literal_lowers_to_byte_vector() {
     // `[..]` in @Array context builds a byte vector, so array_* primitives apply.
     let src = "$ @mod M\n$ a : @Array = [10, 20, 30]\n\
-               $ n = @array_len a\n$ g = @array_get a 1";
+               $ n : @Int = @array_len a\n$ g : @Int = @array_get a 1";
     assert_eq!(run(src, "n"), "3");
     assert_eq!(run(src, "g"), "20");
 }
@@ -1358,13 +1358,13 @@ fn array_literal_lowers_to_byte_vector() {
 fn array_patterns_destructure_and_guard() {
     let src = "$ @mod M\n\
                $ sum2 : @Array -> @Int = \\a = is a | [x, y] => x + y | _ => 0\n\
-               $ r = sum2 [4, 5]\n\
-               $ miss = sum2 [1, 2, 3]\n\
+               $ r : @Int = sum2 [4, 5]\n\
+               $ miss : @Int = sum2 [1, 2, 3]\n\
                $ lit : @Array -> @Int = \\a = is a | [1, y] => y | _ => 0\n\
-               $ hit = lit [1, 42]\n\
-               $ no = lit [2, 42]\n\
+               $ hit : @Int = lit [1, 42]\n\
+               $ no : @Int = lit [2, 42]\n\
                $ head : @Array -> @Int = \\a = is a | [h, ..rest] => h + @array_len rest | _ => 0\n\
-               $ hd = head [7, 8, 9]";
+               $ hd : @Int = head [7, 8, 9]";
     assert_eq!(run(src, "r"), "9");
     assert_eq!(run(src, "miss"), "0");
     assert_eq!(run(src, "hit"), "42");
@@ -1375,34 +1375,34 @@ fn array_patterns_destructure_and_guard() {
 #[test]
 fn arithmetic_intrinsics() {
     // The monomorphic primitives the operator overloads will be built on.
-    assert_eq!(run("$ @mod M\n$ a = @iadd 2 3", "a"), "5");
-    assert_eq!(run("$ @mod M\n$ a = @isub 10 4", "a"), "6");
-    assert_eq!(run("$ @mod M\n$ a = @imul 6 7", "a"), "42");
-    assert_eq!(run("$ @mod M\n$ a = @idiv 13 4", "a"), "3");
-    assert_eq!(run("$ @mod M\n$ a = @imod 13 4", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @iadd 2 3", "a"), "5");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @isub 10 4", "a"), "6");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @imul 6 7", "a"), "42");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @idiv 13 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @imod 13 4", "a"), "1");
     // Unsigned div/mod agree with signed for small values, but read the all-ones
     // bit pattern (`@isub 0 1` = every bit set) as u64::MAX, not -1.
-    assert_eq!(run("$ @mod M\n$ a = @udiv 13 4", "a"), "3");
-    assert_eq!(run("$ @mod M\n$ a = @umod 13 4", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @udiv 13 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @umod 13 4", "a"), "1");
     assert_eq!(
-        run("$ @mod M\n$ a = @udiv (@isub 0 1) 2", "a"),
+        run("$ @mod M\n$ a : @Int = @udiv (@isub 0 1) 2", "a"),
         "9223372036854775807" // (2^64 - 1) / 2
     );
-    assert_eq!(run("$ @mod M\n$ a = @umod (@isub 0 1) 3", "a"), "0"); // (2^64 - 1) % 3
-    assert_eq!(run("$ @mod M\n$ a = @fadd 1.5 2.0", "a"), "3.5");
-    assert_eq!(run("$ @mod M\n$ a = @fsub 5.0 1.5", "a"), "3.5");
-    assert_eq!(run("$ @mod M\n$ a = @fmul 2.0 3.5", "a"), "7");
-    assert_eq!(run("$ @mod M\n$ a = @fdiv 3.0 2.0", "a"), "1.5");
-    assert_eq!(run("$ @mod M\n$ a = @fmod 7.0 3.0", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a : @Int = @umod (@isub 0 1) 3", "a"), "0"); // (2^64 - 1) % 3
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fadd 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fsub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fmul 2.0 3.5", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fdiv 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fmod 7.0 3.0", "a"), "1");
     // The `@f32*` family rounds to single precision. Adding 1 to 2^24 is lost in
     // f32 (the next representable float is 2^24 + 2), where `@fadd` keeps it.
-    assert_eq!(run("$ @mod M\n$ a = @f32add 1.5 2.0", "a"), "3.5");
-    assert_eq!(run("$ @mod M\n$ a = @f32add 16777216.0 1.0", "a"), "16777216");
-    assert_eq!(run("$ @mod M\n$ a = @fadd 16777216.0 1.0", "a"), "16777217");
-    assert_eq!(run("$ @mod M\n$ a = @f32sub 5.0 1.5", "a"), "3.5");
-    assert_eq!(run("$ @mod M\n$ a = @f32mul 2.0 3.5", "a"), "7");
-    assert_eq!(run("$ @mod M\n$ a = @f32div 3.0 2.0", "a"), "1.5");
-    assert_eq!(run("$ @mod M\n$ a = @f32mod 7.0 3.0", "a"), "1");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32add 1.5 2.0", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32add 16777216.0 1.0", "a"), "16777216");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @fadd 16777216.0 1.0", "a"), "16777217");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32sub 5.0 1.5", "a"), "3.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32mul 2.0 3.5", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32div 3.0 2.0", "a"), "1.5");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = @f32mod 7.0 3.0", "a"), "1");
 }
 
 #[test]
@@ -1550,42 +1550,42 @@ fn operator_table_every_entry() {
         // global `a`.
         let (body, expect): (&str, &str) = match d.lexeme {
             // Structural punctuation.
-            "\\" => ("$ a = (\\x = x) 5", "5"),
-            "=" => ("$ a = 5", "5"),
-            "=>" => ("$ a = if @true => 1 else 0", "1"),
-            "->" => ("$ f : @Int -> @Int = \\x = x\n$ a = f 5", "5"),
+            "\\" => ("$ a : @Int = (\\x = x) 5", "5"),
+            "=" => ("$ a : @Int = 5", "5"),
+            "=>" => ("$ a : @Int = if @true => 1 else 0", "1"),
+            "->" => ("$ f : @Int -> @Int = \\x = x\n$ a : @Int = f 5", "5"),
             ":" => ("$ a : @Int = 5", "5"),
-            "$" => ("$ a = 5", "5"),
+            "$" => ("$ a : @Int = 5", "5"),
             // Arithmetic and prefix.
-            "+" => ("$ a = 1 + 2", "3"),
-            "-" => ("$ a = 0 - (- 5)", "5"), // infix and prefix `-`
-            "*" => ("$ a = 4 * 3", "12"),
-            "/" => ("$ a = 13 / 4", "3"),
-            "%" => ("$ a = 13 % 5", "3"),
-            "^" => ("$ a = 2 ^ 3", "8"),
-            "!" => ("$ a = if !@false => 1 else 0", "1"),
+            "+" => ("$ a : @Int = 1 + 2", "3"),
+            "-" => ("$ a : @Int = 0 - (- 5)", "5"), // infix and prefix `-`
+            "*" => ("$ a : @Int = 4 * 3", "12"),
+            "/" => ("$ a : @Int = 13 / 4", "3"),
+            "%" => ("$ a : @Int = 13 % 5", "3"),
+            "^" => ("$ a : @Int = 2 ^ 3", "8"),
+            "!" => ("$ a : @Int = if !@false => 1 else 0", "1"),
             // Comparison.
-            "==" => ("$ a = if 3 == 3 => 1 else 0", "1"),
-            "!=" => ("$ a = if 3 != 4 => 1 else 0", "1"),
-            ">" => ("$ a = if 5 > 3 => 1 else 0", "1"),
-            "<" => ("$ a = if 3 < 5 => 1 else 0", "1"),
-            "<=" => ("$ a = if 3 <= 3 => 1 else 0", "1"),
-            ">=" => ("$ a = if 5 >= 4 => 1 else 0", "1"),
+            "==" => ("$ a : @Int = if 3 == 3 => 1 else 0", "1"),
+            "!=" => ("$ a : @Int = if 3 != 4 => 1 else 0", "1"),
+            ">" => ("$ a : @Int = if 5 > 3 => 1 else 0", "1"),
+            "<" => ("$ a : @Int = if 3 < 5 => 1 else 0", "1"),
+            "<=" => ("$ a : @Int = if 3 <= 3 => 1 else 0", "1"),
+            ">=" => ("$ a : @Int = if 5 >= 4 => 1 else 0", "1"),
             // Effect rows. `<` and `>` double as the row delimiters, but they are
             // tested above as the comparisons they also are; `<>` is the pure row.
-            "<>" => ("$ f : @Int -> <> @Int = \\x = x\n$ a = f 5", "5"),
+            "<>" => ("$ f : @Int -> <> @Int = \\x = x\n$ a : @Int = f 5", "5"),
             // `|` both alternates patterns and separates union variants.
-            "|" => ("$ a = is 1 | 1 => 10 | _ => 0", "10"),
+            "|" => ("$ a : @Int = is 1 | 1 => 10 | _ => 0", "10"),
             // Pipes, short-circuit, sequencing, cons, concat.
-            "<|" => ("$ a = (\\n = n + 1) <| 5", "6"),
-            "&&" => ("$ a = if @true && @true => 1 else 0", "1"),
-            "||" => ("$ a = if @false || @true => 1 else 0", "1"),
-            ";" => ("$ a = 1 ; 2 ; 3", "3"),
-            "|>" => ("$ a = 5 |> (\\n = n + 1)", "6"),
+            "<|" => ("$ a : @Int = (\\n = n + 1) <| 5", "6"),
+            "&&" => ("$ a : @Int = if @true && @true => 1 else 0", "1"),
+            "||" => ("$ a : @Int = if @false || @true => 1 else 0", "1"),
+            ";" => ("$ a : @Int = 1 ; 2 ; 3", "3"),
+            "|>" => ("$ a : @Int = 5 |> (\\n = n + 1)", "6"),
             // Composition applies the RIGHT function first: 5 * 2, then + 1.
-            "<|>" => ("$ a = ((\\n = n + 1) <|> (\\n = n * 2)) 5", "11"),
-            "::" => ("$ a = is 1 :: 2 :: [] | h :: _ => h | _ => 0", "1"),
-            "++" => ("$ a = \"x\" ++ \"y\"", "\"xy\""),
+            "<|>" => ("$ a : @Int = ((\\n = n + 1) <|> (\\n = n * 2)) 5", "11"),
+            "::" => ("$ a : @Int = is 1 :: 2 :: [] | h :: _ => h | _ => 0", "1"),
+            "++" => ("$ a : @Str = \"x\" ++ \"y\"", "\"xy\""),
             other => panic!("OPERATORS entry `{other}` has no test; add an arm"),
         };
         let src = format!("$ @mod M\n{body}");
@@ -1607,23 +1607,23 @@ fn user_type_joins_an_operator_by_instance() {
 
 #[test]
 fn arithmetic_and_precedence() {
-    assert_eq!(run("$ @mod M\n$ a = 1 + 2 * 3 - 4", "a"), "3");
-    assert_eq!(run("$ @mod M\n$ a = (1 + 2) * (3 - 4)", "a"), "-3");
-    assert_eq!(run("$ @mod M\n$ a = 100 / 7", "a"), "14");
-    assert_eq!(run("$ @mod M\n$ a = 100 % 7", "a"), "2");
-    assert_eq!(run("$ @mod M\n$ a = - (-7)", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a : @Int = 1 + 2 * 3 - 4", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @Int = (1 + 2) * (3 - 4)", "a"), "-3");
+    assert_eq!(run("$ @mod M\n$ a : @Int = 100 / 7", "a"), "14");
+    assert_eq!(run("$ @mod M\n$ a : @Int = 100 % 7", "a"), "2");
+    assert_eq!(run("$ @mod M\n$ a : @Int = - (-7)", "a"), "7");
 }
 
 #[test]
 fn reals_and_mixed() {
-    assert_eq!(run("$ @mod M\n$ a = 1.0 + 2.0", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @Float64 = 1.0 + 2.0", "a"), "3");
     assert_eq!(run("$ @mod M\n$ a : @Float64 = 3.0 / 2.0", "a"), "1.5");
 }
 
 #[test]
 fn self_recursion_factorial() {
     let src = "$ @mod M\n$ fact : @Int -> @Int = \\n = if n == 0 => 1 else n * fact (n - 1)\n\
-               $ r = fact 5";
+               $ r : @Int = fact 5";
     assert_eq!(run(src, "r"), "120");
 }
 
@@ -1632,27 +1632,27 @@ fn mutual_recursion() {
     let src = "$ @mod M\n\
                $ is_even : @Int -> @Int = \\n = if n == 0 => 1 else is_odd (n - 1)\n\
                $ is_odd  : @Int -> @Int = \\n = if n == 0 => 0 else is_even (n - 1)\n\
-               $ r = is_even 10";
+               $ r : @Int = is_even 10";
     assert_eq!(run(src, "r"), "1");
 }
 
 #[test]
 fn let_bindings_chain_and_destructure() {
-    assert_eq!(run("$ @mod M\n$ a = let x = 6 in x * 7", "a"), "42");
+    assert_eq!(run("$ @mod M\n$ a : @Int = let x = 6 in x * 7", "a"), "42");
     assert_eq!(
         run(
-            "$ @mod M\n$ a = let x = 1, y = x + 10, z = y * 2 in x + y + z",
+            "$ @mod M\n$ a : @Int = let x = 1, y = x + 10, z = y * 2 in x + y + z",
             "a"
         ),
         "34"
     );
-    assert_eq!(run("$ @mod M\n$ a = let {p, q} = {3, 4} in p + q", "a"), "7");
+    assert_eq!(run("$ @mod M\n$ a : @Int = let {p, q} = {3, 4} in p + q", "a"), "7");
 }
 
 #[test]
 fn tuples_and_indexing() {
-    assert_eq!(run("$ @mod M\n$ a = {1, {2, 3}}.1.0", "a"), "2");
-    let swap = "$ @mod M\n$ swap = \\t = {t.1, t.0}\n$ a = (swap {1, 2}).0";
+    assert_eq!(run("$ @mod M\n$ a : @Int = {1, {2, 3}}.1.0", "a"), "2");
+    let swap = "$ @mod M\n$ swap : a -> {b, c} = \\t = {t.1, t.0}\n$ a : @Int = (swap {1, 2}).0";
     assert_eq!(run(swap, "a"), "2");
 }
 
@@ -1660,11 +1660,11 @@ fn tuples_and_indexing() {
 fn list_sum_and_map() {
     let src = "$ @mod M\n\
                $ sum : @Vec @Int -> @Int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
-               $ a = sum [1, 2, 3, 4, 5]";
+               $ a : @Int = sum [1, 2, 3, 4, 5]";
     assert_eq!(run(src, "a"), "15");
     let cons = "$ @mod M\n\
                 $ sum : @Vec @Int -> @Int = \\xs = is xs | [] => 0 | h :: t => h + sum t | _ => 0\n\
-                $ a = sum (1 :: 2 :: 3 :: [])";
+                $ a : @Int = sum (1 :: 2 :: 3 :: [])";
     assert_eq!(run(cons, "a"), "6");
 }
 
@@ -1676,7 +1676,7 @@ fn union_construction_and_nested_match() {
                  is n | Peano.Zero => 0 \
                  | Peano.Succ.{ Peano.Zero } => 1 \
                  | Peano.Succ.{ Peano.Succ.{ _ } } => 2\n\
-               $ a = depth Peano.Succ.{ Peano.Succ.{ Peano.Zero } }";
+               $ a : @Int = depth Peano.Succ.{ Peano.Succ.{ Peano.Zero } }";
     assert_eq!(run(src, "a"), "2");
 }
 
@@ -1685,12 +1685,12 @@ fn struct_field_access_and_match() {
     let src = "$ @mod M\n\
                $ Point : @struct = x: @Int, y: @Int\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
-               $ a = p.x + p.y";
+               $ a : @Int = p.x + p.y";
     assert_eq!(run(src, "a"), "7");
     let m = "$ @mod M\n\
              $ Point : @struct = x: @Int, y: @Int\n\
              $ sum : Point -> @Int = \\pt = is pt | Point.{ x, y } => x + y | _ => 0\n\
-             $ a = sum Point.{ .x = 10, .y = 20 }";
+             $ a : @Int = sum Point.{ .x = 10, .y = 20 }";
     assert_eq!(run(m, "a"), "30");
 }
 
@@ -1699,7 +1699,7 @@ fn with_scopes_struct_fields() {
     let src = "$ @mod M\n\
                $ Point : @struct = x: @Int, y: @Int\n\
                $ p : Point = Point.{ .x = 3, .y = 4 }\n\
-               $ a = with p in x + y";
+               $ a : @Int = with p in x + y";
     assert_eq!(run(src, "a"), "7");
 }
 
@@ -1707,13 +1707,13 @@ fn with_scopes_struct_fields() {
 fn record_parameter_destructures() {
     assert_eq!(
         run(
-            "$ @mod M\n$ add : {x: @Int, y: @Int} -> @Int = x + y\n$ a = add {3, 4}",
+            "$ @mod M\n$ add : {x: @Int, y: @Int} -> @Int = x + y\n$ a : @Int = add {3, 4}",
             "a"
         ),
         "7"
     );
     assert_eq!(
-        run("$ @mod M\n$ inc : {x: @Int} -> @Int = x + 1\n$ a = inc 5", "a"),
+        run("$ @mod M\n$ inc : {x: @Int} -> @Int = x + 1\n$ a : @Int = inc 5", "a"),
         "6"
     );
 }
@@ -1721,27 +1721,27 @@ fn record_parameter_destructures() {
 #[test]
 fn higher_order_and_guards() {
     let src = "$ @mod M\n\
-               $ twice = \\f x = f (f x)\n\
-               $ a = twice (\\n = n + 3) 1";
+               $ twice : (a -> a) -> a -> a = \\f x = f (f x)\n\
+               $ a : @Int = twice (\\n = n + 3) 1";
     assert_eq!(run(src, "a"), "7");
     let guard = "$ @mod M\n\
                  $ classify : @Int -> @Int = \\n = is n | m if m > 0 => 1 | _ => 0\n\
-                 $ a = classify 5";
+                 $ a : @Int = classify 5";
     assert_eq!(run(guard, "a"), "1");
 }
 
 #[test]
 fn string_concat_and_prefix_match() {
-    assert_eq!(run("$ @mod M\n$ a = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
+    assert_eq!(run("$ @mod M\n$ a : @Str = \"hi\" ++ \"!\"", "a"), "\"hi!\"");
     let src = "$ @mod M\n\
                $ verb : @Str -> @Int = \\s = is s | \"GET \" ++ _ => 1 | _ => 0\n\
-               $ a = verb \"GET /\"";
+               $ a : @Int = verb \"GET /\"";
     assert_eq!(run(src, "a"), "1");
 }
 
 #[test]
 fn sequencing_returns_last() {
-    assert_eq!(run("$ @mod M\n$ a = 1 ; 2 ; 3", "a"), "3");
+    assert_eq!(run("$ @mod M\n$ a : @Int = 1 ; 2 ; 3", "a"), "3");
 }
 
 #[test]

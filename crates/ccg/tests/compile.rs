@@ -179,25 +179,25 @@ fn runtime_operators_match_interpreter_natively() {
     // `compare`, `concat`). A gap in the C backend's builtin dispatch (the class
     // of bug where `^` was wired for the interpreter but not the C runtime) makes
     // the compiled program disagree with the interpreter or fail to build.
-    let cases: &[&str] = &[
-        "1 + 2",
-        "7 - 2",
-        "4 * 3",
-        "13 / 4",
-        "13 % 5",
-        "2 ^ 10",
-        "if 3 == 3 => 1 else 0",
-        "if 5 > 3 => 1 else 0",
-        "if 3 < 5 => 1 else 0",
-        "if 3 <= 3 => 1 else 0",
-        "if 5 >= 4 => 1 else 0",
-        "\"a\" ++ \"b\"",
+    let cases: &[(&str, &str)] = &[
+        ("1 + 2", "@Int"),
+        ("7 - 2", "@Int"),
+        ("4 * 3", "@Int"),
+        ("13 / 4", "@Int"),
+        ("13 % 5", "@Int"),
+        ("2 ^ 10", "@Int"),
+        ("if 3 == 3 => 1 else 0", "@Int"),
+        ("if 5 > 3 => 1 else 0", "@Int"),
+        ("if 3 < 5 => 1 else 0", "@Int"),
+        ("if 3 <= 3 => 1 else 0", "@Int"),
+        ("if 5 >= 4 => 1 else 0", "@Int"),
+        ("\"a\" ++ \"b\"", "@Str"),
         // @Float64 `^` goes through libm `pow`; the comparison keeps the result an @Int
         // so no real-formatting difference can enter the comparison.
-        "if 2.0 ^ 3.0 > 7.0 => 1 else 0",
+        ("if 2.0 ^ 3.0 > 7.0 => 1 else 0", "@Int"),
     ];
-    for body in cases {
-        let src = format!("$ @mod M\n$ a = {body}");
+    for (body, ty) in cases {
+        let src = format!("$ @mod M\n$ a : {ty} = {body}");
         assert_matches(&src, "a");
     }
 }
@@ -223,7 +223,7 @@ fn arithmetic_intrinsics_match_interpreter() {
         "if @fdiv 3.0 2.0 == 1.5 => 1 else 0",
         "if @fmod 7.0 3.0 == 1.0 => 1 else 0",
     ] {
-        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a : @Int = {body}"), "a");
     }
 }
 
@@ -243,7 +243,7 @@ fn comparison_intrinsics_match_interpreter() {
         "if @slt \"ab\" \"b\" => 1 else 0",
         "if @slt \"ab\" \"ab\" => 1 else 0",
     ] {
-        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a : @Int = {body}"), "a");
     }
 }
 
@@ -272,7 +272,7 @@ fn float32_intrinsics_match_interpreter() {
         "@f32div 1.0 3.0",
         "@f32mod 7.0 3.0",
     ] {
-        assert_matches(&format!("$ @mod M\n$ a = {body}"), "a");
+        assert_matches(&format!("$ @mod M\n$ a : @Float64 = {body}"), "a");
     }
 }
 
@@ -382,7 +382,7 @@ fn cast_between_integer_widths() {
 #[test]
 fn arithmetic_and_precedence() {
     let src = "$ @mod T\n\
-               $ a = 1 + 2 * 3 - 4\n\
+               $ a : @Int = 1 + 2 * 3 - 4\n\
                $ b : @Float64 = 100.123 % 7.0\n\
                $ test : @Int = a\n";
     assert_matches(src, "a");
@@ -962,7 +962,7 @@ fn strings_and_arrays() {
 #[test]
 fn tuples() {
     let src = "$ @mod T\n\
-               $ t = {1, 2, 3}\n\
+               $ t : {@Int, @Int, @Int} = {1, 2, 3}\n\
                $ mid : @Int = t.1\n\
                $ test : @Int = mid\n";
     assert_matches(src, "t");

@@ -18,7 +18,7 @@ $ let_sum : @Int -> @Int = \m =
 $ is_even : @Int -> @Int = \n = if n == 0 => 1 else is_odd (n - 1)
 $ is_odd : @Int -> @Int = \n = if n == 0 => 0 else is_even (n - 1)
 
-$ ck_odd = is_odd 100
+$ ck_odd : @Int = is_odd 100
 
 # FIXME : Check int size here instead
 # Deep tail recursion (constant stack) checked against closed forms.
@@ -26,10 +26,7 @@ $ ck_odd = is_odd 100
 # a 32-bit target too (this suite runs for every target, wasm included); the
 # depth still proves the trampoline runs it in constant stack.
 $ test : @Int =
-    (
-        if sum_to 65000 0 == 2112532500 => 0 else 1
-    ) + (
-        if let_sum 65000 == 2112532500 => 0 else 1
-    ) + (if is_even 65000 == 1 => 0 else 1) + (if is_odd 65000 == 0 => 0 else 1)
+    (if sum_to 65000 0 == 2112532500 => 0 else 1) + (if let_sum 65000 == 2112532500 => 0 else 1)
+        + (if is_even 65000 == 1 => 0 else 1) + (if is_odd 65000 == 0 => 0 else 1)
 
 $ @e <| assert (test == 0) "TAIL_CALLS: a check failed"
