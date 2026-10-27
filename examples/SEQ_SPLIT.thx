@@ -1,0 +1,68 @@
+$ @mod SEQ_SPLIT
+
+# \info `++` in a pattern splits a sequence into fixed pieces around at most one
+#       part of unknown length: `pre ++ mid ++ suf`. A fixed piece is a string
+#       literal or a closed `[..]` list; `h :: t` is `[h] ++ t`. Pieces before
+#       the middle step the scrutinee's `@ISeqView` from the front, pieces after
+#       it step its `@ISeqViewBack` from the back. A sized tensor checks every
+#       length at compile time instead.
+
+$ with LA
+
+# Strings: prefix, suffix, and both around one middle.
+$ ext : @Str -> @Str = \s = is s | name ++ ".thx" => name | _ => "?"
+$ inner : @Str -> @Str = \s = is s | "<" ++ body ++ ">" => body | _ => "?"
+$ greet : @Str -> @Str = \s = is s | "A" ++ rest ++ "x" => "Hi, A?(rest)x" | _ => "who?"
+
+$ ck_ext : @Int = if ext "MAIN.thx" == "MAIN" => 0 else 1
+$ ck_ext_no : @Int = if ext "MAIN.c" == "?" => 0 else 1
+$ ck_inner : @Int = if inner "<b>" == "b" => 0 else 1
+$ ck_inner_empty : @Int = if inner "<>" == "" => 0 else 1
+# The pieces never overlap: `"<"` and `">"` need two bytes between them.
+$ ck_inner_short : @Int = if inner ">" == "?" => 0 else 1
+$ ck_greet : @Int = if greet "Alex" == "Hi, Alex" => 0 else 1
+
+# A string steps as its bytes, so a `[..]` piece reads them as `@Int`s.
+$ first_byte : @Str -> @Int = \s = is s | [c] ++ _ => c | _ => 0 - 1
+$ ck_byte : @Int = if first_byte "A" == 65 => 0 else 1
+$ ck_byte_empty : @Int = if first_byte "" == 0 - 1 => 0 else 1
+
+# Vectors and arrays, from either end.
+$ last : @Vec @Int -> @Int = \xs = is xs | _ ++ [z] => z | _ => 0 - 1
+$ ends : @Vec @Int -> @Int = \xs = is xs | [a] ++ mid ++ [z] => a + z + @vec_len mid | _ => 0 - 1
+$ tail2 : @Array -> @Int = \a = is a | _ ++ [y, z] => y * 10 + z | _ => 0 - 1
+
+$ ck_last : @Int = if last [1, 2, 3] == 3 => 0 else 1
+$ ck_last_empty : @Int = if last [] == 0 - 1 => 0 else 1
+$ ck_ends : @Int = if ends [1, 5, 5, 9] == 12 => 0 else 1
+$ ck_ends_one : @Int = if ends [4] == 0 - 1 => 0 else 1
+$ ck_tail2 : @Array = [7, 8, 9]
+$ ck_tail2_ok : @Int = if tail2 ck_tail2 == 89 => 0 else 1
+
+# `h :: t` is sugar for `[h] ++ t`, and pieces merge.
+$ two : List @Int -> @Int = \l = is l | a :: [b] ++ _ => a + b | _ => 0
+$ ck_two : @Int = if two [3, 4, 5] == 7 => 0 else 1
+
+# A sized tensor knows its length, so `[x, y, z]` covers a `[3]T` (no `_` arm)
+# and the middle of a split gets an exact size: here `[2] @Int`.
+$ v3 : [3] @Int = [10, 20, 30]
+$ sum3 : [3] @Int -> @Int = \t = is t | [x, y, z] => x + y + z
+$ rest_sum : [4] @Int -> @Int = \t = is t | [a] ++ mid ++ [d] => a + d + sum3 (concat [0] mid)
+$ split_head : [3] @Int -> [2] @Int = \t = is t | [_] ++ r => r
+
+$ ck_sum3 : @Int = if sum3 v3 == 60 => 0 else 1
+$ ck_rest_sum : @Int = if rest_sum [1, 2, 3, 4] == 10 => 0 else 1
+$ ck_split : @Int = if (split_head v3).[1] == 30 => 0 else 1
+
+# Rank 2 splits along the first axis: each element is a row.
+$ m : [2, 2] @Int = [[1, 2], [3, 4]]
+$ corner : [2, 2] @Int -> @Int = \t = is t | [[a, _], [_, d]] => a * 10 + d
+$ ck_corner : @Int = if corner m == 14 => 0 else 1
+
+# Aggregate check for the combined test runner: 0 = all pass.
+$ test : @Int =
+    ck_ext + ck_ext_no + ck_inner + ck_inner_empty + ck_inner_short + ck_greet + ck_byte
+        + ck_byte_empty + ck_last + ck_last_empty + ck_ends + ck_ends_one + ck_tail2_ok + ck_two
+        + ck_sum3 + ck_rest_sum + ck_split + ck_corner
+
+$ @e <| assert (test == 0) "SEQ_SPLIT: a check failed"

@@ -24,23 +24,29 @@ $ after_one : @Array -> @Int = \a = is a | [1, y] => y | _ => 0
 $ ck_after_one : @Int = if (after_one [1, 42]) == 42 => 0 else 1
 $ ck_after_two : @Int = if (after_one [2, 42]) == 0 => 0 else 1
 
-# Open pattern `[h, ..rest]`: head plus the remaining slice.
-$ head3 : @Array -> @Int = \a = is a | [h, ..rest] => h | _ => 0
+# `[h] ++ rest`: head plus the remaining slice.
+$ head3 : @Array -> @Int = \a = is a | [h] ++ rest => h | _ => 0
 $ ck_head3 : @Int = if (head3 arr3) == 1 => 0 else 1
 
-$ rest_len : @Array -> @Int = \a = is a | [h, ..rest] => @array_len rest | _ => 0
+$ rest_len : @Array -> @Int = \a = is a | [h] ++ rest => @array_len rest | _ => 0
 $ ck_rest_len : @Int = if (rest_len arr3) == 2 => 0 else 1
+
+# A literal element in the leading piece.
+$ after_one_len : @Array -> @Int = \a = is a | [1] ++ rest => @array_len rest | _ => 0 - 1
+$ ck_prefix : @Int = if (after_one_len arr3) == 2 => 0 else 1
+$ ck_prefix_miss : @Int = if (after_one_len arr2) == 0 - 1 => 0 else 1
 
 # A guard on a sequence arm.
 $ ordered : @Array -> @Int = \a =
     is a
     | [x, y] if (x < y) => 1
-    | [x, y] => 2
-    | _ => 0
+    | [x, y]            => 2
+    | _                 => 0
 $ ck_ord_lt : @Int = if (ordered arr2) == 1 => 0 else 1
 
 # Aggregate check for the combined test runner: 0 = all pass.
 $ test : @Int =
-    ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3 + ck_rest_len + ck_ord_lt
+    ck_empty + ck_nonempty + ck_sum2 + ck_sum2_miss + ck_after_one + ck_after_two + ck_head3
+        + ck_rest_len + ck_prefix + ck_prefix_miss + ck_ord_lt
 
 $ @e <| assert (test == 0) "ARRAY_PATTERNS: a check failed"

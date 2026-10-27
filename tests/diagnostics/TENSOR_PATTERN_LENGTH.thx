@@ -1,0 +1,5 @@
+$ @mod TENSOR_PATTERN_LENGTH
+
+# A tensor's size is static, so a pattern's length is checked at compile time.
+$ v : [3] @Int = [1, 2, 3]
+$ a : @Int = is v | [x, y] => x | _ => 0  #~ error[TYPE_MISMATCH]: this pattern has 2 elements, but the tensor has 3

@@ -150,7 +150,12 @@ literal) that settles `use` to `List elem` or `Array` and patches
 `array_push (.. (%array 0) ..)` for an Array. The `array_push` overload's impl
 key *is* `array_push`, so emitting it post-TC dispatches correctly.
 
-## Open list patterns  *(DONE)*
+## Open list patterns  *(DONE, then replaced by `++` in #324)*
+
+> **Superseded.** `[a, ..rest]` is gone. The rest of a sequence is matched with
+> `++`, which also matches suffixes and both ends: `[a] ++ rest`, `rest ++ [z]`,
+> `[a] ++ mid ++ [z]`, at most one part of unknown length. See
+> documentation/language-reference.md 5.7 and `examples/SEQ_SPLIT.thx`.
 
 `[p1, .., pn, ..rest]` binds the leading cells and a `rest` tail (the remaining
 list), so it matches *at least* n elements; it is pure parser sugar
@@ -190,6 +195,8 @@ stays List-only.
    "GET "`, the slice clamps so a short subject just compares unequal) plus a
    tail binding (`rest = array_slice s plen (array_len s)`); the `rest`
    sub-pattern may itself be refutable and nest. `examples/STR_PREFIX.thx`.
+   Since #324 string literals are pieces of the general `++` pattern, so suffixes
+   (`name ++ ".thx"`) and both ends (`"<" ++ body ++ ">"`) match too.
 6a. **DONE Type-directed `[..]` sequence literals** (List vs Array inferred,
     no `@`). `examples/SEQ_INFER.thx`.
 6b. **DONE Array `[..]` patterns** (symmetric with 6a). The pipeline reorder

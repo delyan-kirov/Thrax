@@ -859,8 +859,11 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     assert!(text.contains("expected a pattern after '..'"), "{text}");
     assert!(text.contains("help: write `.._` to ignore the remaining fields"), "{text}");
 
-    let text = err("$ @mod M\n$ y = is xs | [x, ..] => x | _ => 2");
-    assert!(text.contains("help: write `.._` to ignore the remaining elements"), "{text}");
+    let text = err("$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2");
+    assert!(text.contains("help: a list pattern lists exactly its elements"), "{text}");
+
+    let text = err("$ @mod M\n$ y = is s | \"A\" ++ _ ++ r => 1 | _ => 2");
+    assert!(text.contains("can have only one part of unknown length"), "{text}");
 
     let text = err("$ @mod M\n$ y = is s | \"a\".. => 1 | _ => 2");
     assert!(text.contains("help: a string prefix pattern is written `\"abc\" ++ rest`"), "{text}");
@@ -872,8 +875,11 @@ fn a_rest_left_unnamed_or_a_dotted_string_prefix_says_how_to_write_it() {
     for ok in [
         "$ @mod M\n$ y = is r | { .a = 1, .._ } => 1 | _ => 2",
         "$ @mod M\n$ y = is r | { .a = 1, ..rest } => 1 | _ => 2",
-        "$ @mod M\n$ y = is xs | [x, ..rest] => x | _ => 2",
+        "$ @mod M\n$ y = is xs | [x] ++ rest => x | _ => 2",
         "$ @mod M\n$ y = is s | \"a\" ++ rest => 1 | _ => 2",
+        "$ @mod M\n$ y = is s | rest ++ \"a\" => 1 | _ => 2",
+        "$ @mod M\n$ y = is s | \"a\" ++ rest ++ \"b\" => 1 | _ => 2",
+        "$ @mod M\n$ y = is xs | [a] ++ m ++ [y, z] => 1 | _ => 2",
     ] {
         assert!(parse(ok).is_ok(), "{ok}");
     }

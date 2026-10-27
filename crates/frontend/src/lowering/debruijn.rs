@@ -202,6 +202,11 @@ fn collect_pat_binders(p: &Pat, out: &mut Vec<String>) {
                 collect_pat_binders(r, out);
             }
         }
+        Pat::Tensor { front, mid, back, .. } => {
+            for p in front.iter().chain(mid.as_deref()).chain(back) {
+                collect_pat_binders(p, out);
+            }
+        }
     }
 }
 

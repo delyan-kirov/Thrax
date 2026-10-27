@@ -57,6 +57,8 @@ pub enum ProductKind {
     Struct(Rc<str>),
     Tuple,
     Record,
+    /// A sized tensor of this length; fields are element positions.
+    Tensor(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -434,6 +436,18 @@ pub fn show(p: &DPat) -> String {
                         slots.sort_by_key(|(i, _)| *i);
                         let slots: Vec<String> = slots.into_iter().map(|(_, s)| s).collect();
                         format!("{{ {} }}", slots.join(", "))
+                    }
+                    ProductKind::Tensor(n) => {
+                        let slots: Vec<String> = (0..*n)
+                            .map(|i| {
+                                fields
+                                    .iter()
+                                    .zip(args)
+                                    .find(|(f, _)| f.parse() == Ok(i))
+                                    .map_or("_".to_string(), |(_, a)| show(a))
+                            })
+                            .collect();
+                        format!("[{}]", slots.join(", "))
                     }
                     ProductKind::Struct(_) | ProductKind::Record => {
                         let named: Vec<String> = fields

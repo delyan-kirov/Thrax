@@ -2380,20 +2380,22 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern_unstamped(&mut self) -> Result<Aol<Pattern>> {
         let atom = self.parse_pattern_atom()?;
-        if self.at_op("::")? {
+        if self.at_op("::")? || self.at_op("++")? {
+            let op = self.peek()?;
+            let cons = self.at_op("::")?;
             self.bump()?;
-            let tail = self.parse_pattern()?; // right-associative
-            return Ok(self.pat(Pattern::Cons { head: atom, tail }));
-        }
-        if self.at_op("++")? {
-            if let Pattern::Str(prefix) = self.ast.pats.lookup(atom) {
-                let prefix = *prefix;
-                self.bump()?;
-                let rest = self.parse_pattern()?;
-                return Ok(self.pat(Pattern::StrPrefix { prefix, rest }));
-            }
-            let t = self.peek()?;
-            return Err(self.unexpected(&t, "'++' in a pattern needs a string-literal prefix"));
+            let right = self.parse_pattern()?; // right-associative
+            let left = if cons {
+                let one = self.ast.make_slice([atom]);
+                let piece = self.pat(Pattern::List(one));
+                if let Some(span) = self.ast.pat_span(atom) {
+                    self.ast.pat_spans.insert(piece, span);
+                }
+                piece
+            } else {
+                atom
+            };
+            return self.concat_pattern(left, right, &op);
         }
         if matches!(self.ast.pats.lookup(atom), Pattern::Str(_))
             && matches!(self.peek_kind()?, Kind::Dot)
@@ -2424,6 +2426,88 @@ impl<'a> Parser<'a> {
             return Ok(self.pat(Pattern::Range { lo: atom, hi }));
         }
         Ok(atom)
+    }
+
+    /// A pattern as a `++` chain: its fixed pieces before the variable-length
+    /// part, that part, and the fixed pieces after it.
+    fn pattern_chain(&self, p: Aol<Pattern>) -> (Vec<Aol<Pattern>>, Option<Aol<Pattern>>, Vec<Aol<Pattern>>) {
+        match self.ast.pats.lookup(p) {
+            Pattern::Str(_) | Pattern::List(_) => (vec![p], None, Vec::new()),
+            Pattern::Concat { pre, mid, suf } => {
+                (self.ast.slice(*pre).to_vec(), *mid, self.ast.slice(*suf).to_vec())
+            }
+            _ => (Vec::new(), Some(p), Vec::new()),
+        }
+    }
+
+    /// `left ++ right` as one chain. A pattern can only split a sequence at
+    /// points fixed by the pieces' lengths, so at most one part may be
+    /// variable-length.
+    fn concat_pattern(&mut self, left: Aol<Pattern>, right: Aol<Pattern>, op: &Token) -> Result<Aol<Pattern>> {
+        let (lp, lm, ls) = self.pattern_chain(left);
+        let (rp, rm, rs) = self.pattern_chain(right);
+        let (pre, mid, suf) = match (lm, rm) {
+            (Some(a), Some(b)) => {
+                let mut d = Diagnostic::error(
+                    Code::UnexpectedToken,
+                    op.span,
+                    op.line,
+                    "a `++` pattern can have only one part of unknown length",
+                );
+                for p in [a, b] {
+                    if let Some(span) = self.ast.pat_span(p) {
+                        d = d.with_label(span, "this matches any length");
+                    }
+                }
+                return Err(d.with_help(
+                    "there is more than one way to split the sequence between them; keep one \
+                     variable part and match the rest in the arm body or a guard"
+                        .to_string(),
+                ));
+            }
+            (Some(m), None) => (lp, Some(m), [ls, rp, rs].concat()),
+            (None, m) => ([lp, ls, rp].concat(), m, rs),
+        };
+        let pre = self.merge_pieces(pre);
+        let suf = self.merge_pieces(suf);
+        if mid.is_none() && pre.len() == 1 {
+            return Ok(pre[0]);
+        }
+        let pre = self.ast.make_slice(pre);
+        let suf = self.ast.make_slice(suf);
+        Ok(self.pat(Pattern::Concat { pre, mid, suf }))
+    }
+
+    /// Merge adjacent pieces of one kind: `"a" ++ "b"` is `"ab"`, `[1] ++ [2]`
+    /// is `[1, 2]`.
+    fn merge_pieces(&mut self, pieces: Vec<Aol<Pattern>>) -> Vec<Aol<Pattern>> {
+        let mut out: Vec<Aol<Pattern>> = Vec::new();
+        for p in pieces {
+            let merged = match (out.last().map(|q| self.ast.pats.lookup(*q).clone()), self.ast.pats.lookup(p).clone()) {
+                (Some(Pattern::Str(a)), Pattern::Str(b)) => {
+                    let bytes = [self.ast.bytes(a), self.ast.bytes(b)].concat();
+                    let s = self.ast.strings.intern_bytes(&bytes);
+                    Some(self.pat(Pattern::Str(s)))
+                }
+                (Some(Pattern::List(a)), Pattern::List(b)) => {
+                    let elems = [self.ast.slice(a), self.ast.slice(b)].concat();
+                    let elems = self.ast.make_slice(elems);
+                    Some(self.pat(Pattern::List(elems)))
+                }
+                _ => None,
+            };
+            match merged {
+                Some(m) => {
+                    let first = self.ast.pat_span(*out.last().expect("merged with a piece"));
+                    if let (Some(a), Some(b)) = (first, self.ast.pat_span(p)) {
+                        self.ast.pat_spans.insert(m, Span::new(a.start, b.end));
+                    }
+                    *out.last_mut().expect("merged with a piece") = m;
+                }
+                None => out.push(p),
+            }
+        }
+        out
     }
 
     fn parse_pattern_atom(&mut self) -> Result<Aol<Pattern>> {
@@ -2595,14 +2679,15 @@ impl<'a> Parser<'a> {
     fn parse_list_pattern(&mut self) -> Result<Aol<Pattern>> {
         self.bump()?; // '['
         let mut elems = Vec::new();
-        let mut rest = None;
         while !matches!(self.peek_kind()?, Kind::RBrack) {
             if matches!(self.peek_kind()?, Kind::Dot) && matches!(self.peek_kind_at(1)?, Kind::Dot)
             {
-                self.bump()?;
-                self.bump()?; // '..'
-                rest = Some(self.parse_rest_pattern("elements")?);
-                break;
+                let t = self.peek()?;
+                return Err(self.unexpected(&t, "expected an element pattern").with_help(
+                    "a list pattern lists exactly its elements; match the rest with `++`, \
+                     as in `[a, b] ++ rest`"
+                        .to_string(),
+                ));
             }
             elems.push(self.parse_pattern()?);
             if !self.eat(|k| matches!(k, Kind::Comma))? {
@@ -2611,11 +2696,9 @@ impl<'a> Parser<'a> {
         }
         expect!(self, Kind::RBrack, "expected ']' to close the list pattern");
         let elems = self.ast.make_slice(elems);
-        Ok(self.pat(Pattern::List { elems, rest }))
+        Ok(self.pat(Pattern::List(elems)))
     }
 
-    /// The binder after `..` in a list or record pattern. Nothing there (the
-    /// closing bracket or a comma) is a rest left unnamed.
     fn parse_rest_pattern(&mut self, what: &str) -> Result<Aol<Pattern>> {
         if matches!(self.peek_kind()?, Kind::RBrace | Kind::RBrack | Kind::Comma) {
             let t = self.peek()?;

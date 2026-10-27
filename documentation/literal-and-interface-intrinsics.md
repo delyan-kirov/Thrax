@@ -61,6 +61,8 @@ Construction / access:
 Matching:
 
 - `@ISeqView s e = view: s -> SeqView s e,`
+- `@ISeqViewBack s e = view_back: s -> SeqView s e,` (the last element and
+  everything before it)
 - equality is CORE's ordinary `IEq t`, the same interface `==` wraps, so a type
   needs no second instance for its literal patterns.
 
@@ -85,7 +87,7 @@ Each writes `I.m` for "the single field of the instance resolved for `I` here".
   compiler only a token and a desugar.)
 - `m.["k"]`          ->  `@IIndex.index m "k"`
 - `is "foo"`         ->  `IEq.eq scrut (@IStrLit.of_str <bytes>)`
-- `[a, b, ..rest]`   ->  nested match on `@ISeqView.view`:
+- `[a, b] ++ rest`   ->  nested match on `@ISeqView.view`:
 
 ```
 when @ISeqView.view scrut is
@@ -94,6 +96,9 @@ when @ISeqView.view scrut is
     _           => <fail>
   _ => <fail>
 ```
+
+  A piece after the middle (`rest ++ [y, z]`) steps `@ISeqViewBack.view_back`
+  the same way, peeling `z` first.
 
 A construction interface is resolved only where the expected type already has a
 constructor head: with it still open, resolving would DECIDE what the literal is
@@ -175,10 +180,12 @@ Touchpoints: `parser.rs`/`typing.rs` (literal lowering + defaulting),
 Landed both halves. A literal PATTERN (`is "foo"`, `is 42`) whose scrutinee is a user
 type routes through that type's construction hook (to build the literal into the type)
 plus `@compiler_interface_equality : t -> t -> @Bool`, matching by a boolean test. A
-sequence PATTERN (`is [a, b, ..r]`, `is h :: t`, `is []`) on a user type unfolds
+sequence PATTERN (`is [a, b] ++ r`, `is h :: t`, `is []`) on a user type unfolds
 `@compiler_interface_sequence_view : f t -> SeqView (f t) t` (core union
 `$ SeqView s t = Empty | More t s`), stepping `More elem tail` per leading element and
-binding `..rest` (or requiring `Empty` for a fixed length). Check-directed in
+binding the rest (or requiring `Empty` for a fixed length). (Since #324 the hook is
+the blessed `@ISeqView`, joined by `@ISeqViewBack` for pieces after the middle of a
+`++` pattern.) Check-directed in
 `type_pattern` (only user types route; builtin Str/List keep the fast path); lowering
 emits new core `Pat::HookEq` / `Pat::SeqView`, which `patmat` expands to boolean tests /
 nested `SeqView` matches before the later passes. Verified interpreter + ccg.
