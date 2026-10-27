@@ -134,7 +134,8 @@ fn format_items(src: &str, style: &Style) -> Result<(String, Vec<(Span, String)>
         starts.insert(0, 0);
     }
     let mut out = String::new();
-    let mut items = Vec::new();
+    // Per item: its source extent and the output lines it covers.
+    let mut items: Vec<(Span, usize, usize)> = Vec::new();
     for (n, &s) in starts.iter().enumerate() {
         let e = starts.get(n + 1).copied().unwrap_or(toks.len());
         if s == e {
@@ -145,15 +146,60 @@ fn format_items(src: &str, style: &Style) -> Result<(String, Vec<(Span, String)>
         if n > 0 {
             out.push_str(if slice[0].blank { "\n\n" } else { "\n" });
         }
+        let first_line = out.matches('\n').count();
         out.push_str(&text);
         let span = Span::new(slice[0].span.start, slice[slice.len() - 1].span.end);
-        items.push((span, text));
+        items.push((span, first_line, out.matches('\n').count()));
     }
     if !out.is_empty() {
         out.push('\n');
     }
+    let out = align_comments(&out, style.width);
     verify(src, &out)?;
+    let lines: Vec<&str> = out.split('\n').collect();
+    let items = items.into_iter().map(|(span, a, b)| (span, lines[a..=b].join("\n"))).collect();
     Ok((out, items))
+}
+
+/// Line up the trailing comments of consecutive lines at one indentation one
+/// space past the longest code among them, unless that pushes a line past the
+/// width.
+fn align_comments(out: &str, width: usize) -> String {
+    let Ok(toks) = lex(out) else { return out.to_string() };
+    let mut lines: Vec<String> = out.split('\n').map(str::to_string).collect();
+    let mut starts = vec![0];
+    starts.extend(out.match_indices('\n').map(|(i, _)| i + 1));
+    // Per line, where its trailing line comment starts (a column in bytes).
+    let mut trailing: Vec<Option<usize>> = vec![None; lines.len()];
+    for t in &toks {
+        if matches!(t.kind, Kind::Comment) && !t.newline && !t.text.starts_with("#-") {
+            let line = starts.partition_point(|&s| s <= t.span.start) - 1;
+            trailing[line] = Some(t.span.start - starts[line]);
+        }
+    }
+    let mut i = 0;
+    while i < lines.len() {
+        let indent = |l: &str| l.len() - l.trim_start().len();
+        let mut j = i;
+        while j < lines.len() && trailing[j].is_some() && indent(&lines[j]) == indent(&lines[i]) {
+            j += 1;
+        }
+        if j - i > 1 {
+            let code_width = |l: &str, at: usize| l[..at].trim_end().chars().count();
+            let column = (i..j).map(|k| code_width(&lines[k], trailing[k].expect("in run"))).max().expect("non-empty") + 1;
+            let fits = (i..j).all(|k| column + lines[k][trailing[k].expect("in run")..].chars().count() <= width);
+            if fits {
+                for k in i..j {
+                    let at = trailing[k].expect("in run");
+                    let code = lines[k][..at].trim_end().to_string();
+                    let pad = column - code.chars().count();
+                    lines[k] = format!("{code}{}{}", " ".repeat(pad), &lines[k][at..]);
+                }
+            }
+        }
+        i = j.max(i + 1);
+    }
+    lines.join("\n")
 }
 
 /// Refuse output that is not the input's token sequence, or that stops parsing.
@@ -200,14 +246,31 @@ enum Node {
     /// which may follow a line break already).
     Fresh,
     Nest(D),
-    /// Indented by exactly this many columns: the lines after a keyword's
-    /// first one line up with what follows the keyword.
-    Align(D, usize),
     /// Fits on a line or breaks all its lines; `true` always breaks.
     Group(D, bool),
     Cat(Vec<D>),
-    /// Always on one line, however long: a declaration's head.
-    Flat(D),
+    /// A space when flat; when broken, a newline only if what follows, up to
+    /// the next line point, does not fit on this line.
+    FillLine,
+    /// `flat` or `broken`, as the group `group` was printed. The group is
+    /// printed before this node; while it is being fitted, `flat` is assumed.
+    Cond { group: D, flat: D, broken: D },
+    /// A head and a bracketed body: on one line (`flat`) if it fits, else
+    /// `head` then `tail`.
+    Hang { flat: D, head: D, tail: D },
+    /// The group `D`, always broken.
+    Broken(D),
+    /// Prints nothing. Decided flat when this many columns fit from where it
+    /// is printed, so a [`Node::Cond`] after it can pick a layout by the width
+    /// of a line that is not the first.
+    Fits(usize),
+    /// `D` indented from the indentation of the line it starts on, so a
+    /// lambda opened at the end of a line nests one level under that line.
+    LineIndent(D),
+    /// The bracket of a [`Node::Hang`] that did not fit beside its head: on
+    /// the next line, indented, if it fits there whole, else opened on the
+    /// head's line and broken.
+    HangTail(D),
 }
 
 /// The document arena for one item: nodes refer to each other by index, and
@@ -215,6 +278,10 @@ enum Node {
 #[derive(Default)]
 struct Docs {
     nodes: Vec<Node>,
+    /// Groups that open at the end of a line (a trailing `(\x = ...)`): when
+    /// fitting what comes before one, only its text up to its first line
+    /// point counts.
+    open: std::collections::HashSet<D>,
 }
 
 impl Docs {
@@ -231,11 +298,16 @@ impl Docs {
     fn nest(&mut self, d: D) -> D {
         self.add(Node::Nest(d))
     }
-    fn align(&mut self, d: D, by: usize) -> D {
-        self.add(Node::Align(d, by))
-    }
     fn group(&mut self, d: D, force: bool) -> D {
         self.add(Node::Group(d, force))
+    }
+    /// A slot for a group whose contents refer to it (through [`Node::Cond`]);
+    /// filled by [`Docs::fill_group`].
+    fn reserve(&mut self) -> D {
+        self.add(Node::Text(String::new()))
+    }
+    fn fill_group(&mut self, at: D, d: D, force: bool) {
+        self.nodes[at] = Node::Group(d, force);
     }
 }
 
@@ -249,6 +321,14 @@ fn print(docs: &Docs, root: D, style: &Style) -> String {
     let mut out = String::new();
     let mut col = 0usize;
     let mut stack: Vec<(usize, Mode, D)> = vec![(0, Mode::Break, root)];
+    let mut decided: Vec<Option<Mode>> = vec![None; docs.nodes.len()];
+    let newline = |out: &mut String, ind: usize| {
+        while out.ends_with(' ') {
+            out.pop();
+        }
+        out.push('\n');
+        out.extend(std::iter::repeat_n(' ', ind));
+    };
     while let Some((ind, mode, d)) = stack.pop() {
         match &docs.nodes[d] {
             Node::Text(s) => {
@@ -261,12 +341,58 @@ fn print(docs: &Docs, root: D, style: &Style) -> String {
             Node::Fresh => {
                 let line_start = out.rfind('\n').map_or(0, |i| i + 1);
                 if !out[line_start..].trim().is_empty() {
-                    while out.ends_with(' ') {
-                        out.pop();
-                    }
-                    out.push('\n');
-                    out.extend(std::iter::repeat_n(' ', ind));
+                    newline(&mut out, ind);
                     col = ind;
+                }
+            }
+            Node::FillLine => {
+                let room = style.width.saturating_sub(col + 1);
+                let fits_here = match stack.split_last() {
+                    Some((&next, rest)) => fits_up_to(docs, &decided, room, next, rest, false),
+                    None => true,
+                };
+                if mode == Mode::Flat || fits_here {
+                    out.push(' ');
+                    col += 1;
+                } else {
+                    newline(&mut out, ind);
+                    col = ind;
+                }
+            }
+            Node::Cond { group, flat, broken } => {
+                let x = if decided[*group] == Some(Mode::Break) { *broken } else { *flat };
+                stack.push((ind, mode, x));
+            }
+            Node::Fits(w) => decided[d] = Some(if col + w <= style.width { Mode::Flat } else { Mode::Break }),
+            Node::Hang { flat, head, tail } => {
+                if mode == Mode::Flat || fits(docs, &decided, style.width.saturating_sub(col), (ind, Mode::Flat, *flat), &stack) {
+                    stack.push((ind, Mode::Flat, *flat));
+                } else {
+                    stack.push((ind, mode, *tail));
+                    stack.push((ind, mode, *head));
+                }
+            }
+            Node::LineIndent(x) => {
+                let line = &out[out.rfind('\n').map_or(0, |i| i + 1)..];
+                stack.push((line.len() - line.trim_start().len(), mode, *x));
+            }
+            Node::Broken(g) => {
+                let Node::Group(x, _) = docs.nodes[*g] else { unreachable!("Broken wraps a group") };
+                decided[*g] = Some(Mode::Break);
+                stack.push((ind, Mode::Break, x));
+            }
+            Node::HangTail(body) => {
+                let line = &out[out.rfind('\n').map_or(0, |i| i + 1)..];
+                let here = line.len() - line.trim_start().len();
+                let under = here + style.indent;
+                if fits(docs, &decided, style.width.saturating_sub(under), (under, Mode::Flat, *body), &stack) {
+                    newline(&mut out, under);
+                    col = under;
+                    stack.push((under, Mode::Flat, *body));
+                } else {
+                    out.push(' ');
+                    col += 1;
+                    stack.push((here, Mode::Break, *body));
                 }
             }
             Node::Line | Node::Soft | Node::Hard => {
@@ -291,8 +417,6 @@ fn print(docs: &Docs, root: D, style: &Style) -> String {
                 }
             }
             Node::Nest(x) => stack.push((ind + style.indent, mode, *x)),
-            Node::Align(x, by) => stack.push((ind + by, mode, *x)),
-            Node::Flat(x) => stack.push((ind, Mode::Flat, *x)),
             Node::Cat(xs) => {
                 for x in xs.iter().rev() {
                     stack.push((ind, mode, *x));
@@ -301,11 +425,12 @@ fn print(docs: &Docs, root: D, style: &Style) -> String {
             Node::Group(x, force) => {
                 let m = if !*force && mode == Mode::Flat {
                     Mode::Flat
-                } else if !*force && fits(docs, style.width.saturating_sub(col), (ind, Mode::Flat, *x), &stack) {
+                } else if !*force && fits(docs, &decided, style.width.saturating_sub(col), (ind, Mode::Flat, *x), &stack) {
                     Mode::Flat
                 } else {
                     Mode::Break
                 };
+                decided[d] = Some(m);
                 stack.push((ind, m, *x));
             }
         }
@@ -317,12 +442,30 @@ fn print(docs: &Docs, root: D, style: &Style) -> String {
 }
 
 /// Whether `next` printed flat, followed by the rest of the line, fits in `room`.
-fn fits(docs: &Docs, room: usize, next: (usize, Mode, D), rest: &[(usize, Mode, D)]) -> bool {
+fn fits(docs: &Docs, decided: &[Option<Mode>], room: usize, next: (usize, Mode, D), rest: &[(usize, Mode, D)]) -> bool {
+    fits_up_to(docs, decided, room, next, rest, true)
+}
+
+/// [`fits`], where `lenient` measures the groups after `next` only up to their
+/// first line point; otherwise they must fit whole, up to a line point outside
+/// any group.
+fn fits_up_to(
+    docs: &Docs,
+    decided: &[Option<Mode>],
+    room: usize,
+    next: (usize, Mode, D),
+    rest: &[(usize, Mode, D)],
+    lenient: bool,
+) -> bool {
     let mut room = room as isize;
-    let mut work: Vec<(usize, Mode, D)> = vec![next];
+    // `after` marks a piece whose groups may still break, so only their text
+    // up to their first line point has to fit; `later` marks what follows `next`.
+    let mut work: Vec<(usize, Mode, D, bool, bool)> = vec![(next.0, next.1, next.2, false, false)];
     let mut rest = rest.iter().rev();
     loop {
-        let Some((ind, mode, d)) = work.pop().or_else(|| rest.next().copied()) else {
+        let Some((ind, mode, d, after, later)) =
+            work.pop().or_else(|| rest.next().map(|&(i, m, d)| (i, m, d, lenient, true)))
+        else {
             return true;
         };
         if room < 0 {
@@ -343,18 +486,45 @@ fn fits(docs: &Docs, room: usize, next: (usize, Mode, D), rest: &[(usize, Mode, 
                 Mode::Break => return true,
                 Mode::Flat => room -= isize::from(matches!(docs.nodes[d], Node::Line)),
             },
-            Node::Nest(x) | Node::Align(x, _) => work.push((ind, mode, *x)),
-            Node::Flat(x) => work.push((ind, Mode::Flat, *x)),
+            Node::Nest(x) => work.push((ind, mode, *x, after, later)),
+            Node::Fits(_) => {}
+            Node::FillLine => match mode {
+                Mode::Break => return true,
+                Mode::Flat => room -= 1,
+            },
+            Node::Cond { group, flat, broken } => {
+                work.push((ind, mode, if decided[*group] == Some(Mode::Break) { *broken } else { *flat }, after, later));
+            }
+            Node::Hang { flat, head, tail } => match mode {
+                Mode::Flat => work.push((ind, Mode::Flat, *flat, after, later)),
+                Mode::Break => {
+                    work.push((ind, mode, *tail, after, later));
+                    work.push((ind, mode, *head, after, later));
+                }
+            },
+            // Counted as if it stays beside its head: what it opens with must fit.
+            Node::HangTail(body) => {
+                room -= 1;
+                work.push((ind, Mode::Break, *body, true, later));
+            }
+            Node::Broken(g) => match (after, &docs.nodes[*g]) {
+                (true, Node::Group(x, _)) => work.push((ind, Mode::Break, *x, true, later)),
+                _ => return false,
+            },
             Node::Cat(xs) => {
                 for x in xs.iter().rev() {
-                    work.push((ind, mode, *x));
+                    work.push((ind, mode, *x, after, later));
                 }
             }
+            Node::LineIndent(x) => work.push((ind, mode, *x, after, later)),
             Node::Group(x, force) => {
-                if *force {
+                if after || (later && docs.open.contains(&d)) {
+                    work.push((ind, Mode::Break, *x, true, later));
+                } else if *force {
                     return false;
+                } else {
+                    work.push((ind, Mode::Flat, *x, false, later));
                 }
-                work.push((ind, Mode::Flat, *x));
             }
         }
         if room < 0 {
@@ -403,11 +573,17 @@ struct P {
 struct Layout<'t, 's> {
     toks: &'t [Tok<'s>],
     docs: Docs,
+    /// Per bracket-opening token, the token that closes it.
+    closes: Vec<Option<usize>>,
+    /// Per closing token, whether its group opens at the end of a line: a
+    /// non-empty `{ }` or `[ ]`, or a parenthesized lambda.
+    opens: Vec<bool>,
+    width: usize,
 }
 
 fn format_item(toks: &[Tok], style: &Style) -> String {
     let ts = trees(toks);
-    let mut l = Layout { toks, docs: Docs::default() };
+    let mut l = Layout { toks, docs: Docs::default(), closes: vec![None; toks.len()], opens: vec![false; toks.len()], width: style.width };
     let root = l.item(&ts);
     print(&l.docs, root, style).trim_end_matches('\n').to_string()
 }
@@ -416,8 +592,15 @@ fn format_item(toks: &[Tok], style: &Style) -> String {
 /// `"a"\n    ++ "b"`, `xs\n    |> f`.
 const BREAK_BEFORE: &[&str] = &["|>", "++", "&&", "||"];
 
+/// Operators a long expression wraps before, as many operands to a line as fit.
+const FILL_BEFORE: &[&str] = &["+", "-", "*"];
+
 /// A match with more arms than this always puts each arm on its own line.
 const MAX_FLAT_ARMS: usize = 2;
+
+/// Arms and bindings line up their `=>` or `=`, except one whose left side is
+/// wider than this: a long pattern would push every other arm far right.
+const MAX_ALIGNED: usize = 40;
 
 /// The keywords and marks that start a layout form.
 fn starts_form(t: &Tok) -> bool {
@@ -483,12 +666,6 @@ impl Layout<'_, '_> {
             (At, LParen | LBrack) => y.gap,
             _ => true,
         }
-    }
-
-    /// The printed width of a keyword piece (`if`, `else if`), its tokens one
-    /// space apart.
-    fn width(&self, p: P) -> usize {
-        (p.first..=p.last).map(|i| self.toks[i].text.chars().count() + 1).sum::<usize>() - 1
     }
 
     /// Whether the source broke a line anywhere between tokens `a` and `b`.
@@ -580,6 +757,7 @@ impl Layout<'_, '_> {
     }
 
     fn bracket(&mut self, open: usize, kids: &[Tree], close: Option<usize>) -> P {
+        self.closes[open] = close;
         let o = self.tok(open);
         let Some(c) = close else {
             let mut ps = vec![o];
@@ -600,6 +778,17 @@ impl Layout<'_, '_> {
         }
         let force = (trailing && self.multiline(open, c)) || !tail.is_empty();
         inner = self.close_list(inner, trailing, tail);
+        let lambda = matches!(self.peek_tok(kids, 0).map(|t| t.kind), Some(Kind::Lambda)) && elems.len() == 1 && !trailing;
+        if lambda {
+            // `f (\x =\n    body)`: the body one level under the line, not the paren.
+            self.opens[c] = true;
+            let under = self.docs.add(Node::LineIndent(inner.d));
+            let d = self.docs.cat(vec![o.d, under, c_p.d]);
+            let g = self.docs.group(d, force);
+            self.docs.open.insert(g);
+            return P { d: g, first: open, last: c };
+        }
+        self.opens[c] = true;
         let edge = if braces { Node::Line } else { Node::Soft };
         let lead = self.docs.add(if braces { Node::Line } else { Node::Soft });
         let body = self.docs.cat(vec![lead, inner.d]);
@@ -688,6 +877,7 @@ impl Layout<'_, '_> {
         let mut run: Vec<P> = Vec::new();
         // Break points in the run: after `;` (same level) and before `|>` (nested).
         let mut breaks: Vec<(usize, bool)> = Vec::new();
+        let mut fills: Vec<usize> = Vec::new();
         while *pos < ts.len() {
             let tree = &ts[*pos];
             if self.is_comment(tree) {
@@ -713,6 +903,14 @@ impl Layout<'_, '_> {
                 if matches!(t.kind, Kind::Op) && BREAK_BEFORE.contains(&t.text) && !run.is_empty() && !self.unary(Self::first_tok(tree)) {
                     breaks.push((run.len(), true));
                 }
+                if matches!(t.kind, Kind::Op) && FILL_BEFORE.contains(&t.text) && !run.is_empty() && !self.unary(Self::first_tok(tree)) {
+                    fills.push(run.len());
+                }
+            }
+            if let Some(prev) = run.last() {
+                if self.applies(prev.last, Self::first_tok(tree)) {
+                    fills.push(run.len());
+                }
             }
             run.push(self.tree(tree));
             *pos += 1;
@@ -729,16 +927,20 @@ impl Layout<'_, '_> {
         }
         // A lone operator, as in `$ (;) : ...`, has nothing on one side to break from.
         breaks.retain(|&(at, _)| 0 < at && at < run.len());
+        let segment = |l: &mut Self, from: usize, to: usize| {
+            let at: Vec<usize> = fills.iter().filter(|&&k| from < k && k < to).map(|&k| k - from).collect();
+            l.join_fill(&run[from..to], &at)
+        };
         if breaks.is_empty() {
-            return self.join(&run).expect("non-empty");
+            return segment(self, 0, run.len());
         }
         let mut segments = Vec::new();
         let mut from = 0;
         for &(at, _) in &breaks {
-            segments.push(self.join(&run[from..at]).expect("non-empty"));
+            segments.push(segment(self, from, at));
             from = at;
         }
-        segments.push(self.join(&run[from..]).expect("non-empty"));
+        segments.push(segment(self, from, run.len()));
         let mut acc = segments[0];
         let mut nested_tail: Vec<D> = Vec::new();
         for (k, seg) in segments[1..].iter().enumerate() {
@@ -795,7 +997,7 @@ impl Layout<'_, '_> {
             Kind::Lambda => {
                 let head = self.lambda_head(ts, pos, halt);
                 let body = self.expr(ts, pos, halt, false);
-                self.hang(head, body)
+                self.hang_below(head, body, true)
             }
             Kind::Let | Kind::With | Kind::Defer => self.binding_form(ts, pos, halt),
             Kind::If => self.if_form(ts, pos, halt),
@@ -805,21 +1007,21 @@ impl Layout<'_, '_> {
                 let bar_or = |t: &Tok| halt(t) || is_bar(t);
                 let scrut = self.expr(ts, pos, &bar_or, false);
                 let head = self.join(&[k, scrut]).expect("non-empty");
-                self.arms(head, ts, pos, halt)
+                self.arms(head, ts, pos, halt, true)
             }
             Kind::Do => {
                 let k = self.tok(Self::first_tok(&ts[*pos]));
                 *pos += 1;
                 let ctl_or = |t: &Tok| halt(t) || matches!(t.kind, Kind::Ctl);
                 let body = self.expr(ts, pos, &ctl_or, false);
-                let head = self.join(&[k, body]).expect("non-empty");
+                let head = self.hang(k, body);
                 let Some(ctl) = self.expect(ts, pos, |t| matches!(t.kind, Kind::Ctl)) else {
                     return head;
                 };
                 let bar_or = |t: &Tok| halt(t) || is_bar(t);
                 let name = self.expr(ts, pos, &bar_or, false);
                 let ctl_head = self.join(&[ctl, name]).expect("non-empty");
-                let handled = self.arms(ctl_head, ts, pos, halt);
+                let handled = self.arms(ctl_head, ts, pos, halt, false);
                 let joined = self.line_join(head, handled, Node::Line);
                 P { d: self.docs.group(joined.d, true), ..joined }
             }
@@ -828,14 +1030,131 @@ impl Layout<'_, '_> {
     }
 
     /// `head` then `body`, the body moved to its own indented line when the
-    /// two do not fit on one.
+    /// two do not fit on one. A bracketed body never leaves its opening bracket
+    /// alone on a line: it moves down only if it fits there whole, and is
+    /// otherwise opened on the head's line.
     fn hang(&mut self, head: P, body: P) -> P {
+        if self.opens_block(body) {
+            let space = self.docs.text(" ");
+            let flat = self.docs.cat(vec![head.d, space, body.d]);
+            let tail = self.docs.add(Node::HangTail(body.d));
+            let d = self.docs.add(Node::Hang { flat, head: head.d, tail });
+            return P { d, first: head.first, last: body.last };
+        }
+        self.hang_below(head, body, false)
+    }
+
+    /// `head` then `body`, the body on its own indented line when the two do
+    /// not fit on one: a lambda's body never starts beside `\x =` unless it
+    /// fits there whole. A lambda's body (`by_line`) goes one level under the
+    /// line its head ends, however deep the expression around it wrapped.
+    fn hang_below(&mut self, head: P, body: P, by_line: bool) -> P {
         let line = self.docs.add(Node::Line);
         let inner = self.docs.cat(vec![line, body.d]);
-        let nested = self.docs.nest(inner);
+        let mut nested = self.docs.nest(inner);
+        if by_line {
+            nested = self.docs.add(Node::LineIndent(nested));
+        }
         let d = self.docs.cat(vec![head.d, nested]);
         let g = self.docs.group(d, false);
         P { d: g, first: head.first, last: body.last }
+    }
+
+    /// The width of `d` printed on one line, if it can be.
+    fn flat_width(&self, d: D) -> Option<usize> {
+        match &self.docs.nodes[d] {
+            Node::Text(s) => (!s.contains('\n')).then(|| s.chars().count()),
+            Node::Line | Node::FillLine => Some(1),
+            Node::Soft | Node::Fits(_) => Some(0),
+            Node::Hard | Node::Fresh | Node::HangTail(_) | Node::Broken(_) | Node::Group(_, true) => None,
+            Node::Nest(x) | Node::LineIndent(x) | Node::Group(x, false) => self.flat_width(*x),
+            Node::Cat(xs) => xs.iter().map(|x| self.flat_width(*x)).sum(),
+            Node::Cond { flat, .. } | Node::Hang { flat, .. } => self.flat_width(*flat),
+        }
+    }
+
+    /// The width of a left side that lines up with its neighbours, or `None`
+    /// for one that does not: too wide (see [`MAX_ALIGNED`]), or with a right
+    /// side that could not share its line even at the margin.
+    fn left_width(&self, left: P, right: Option<P>) -> Option<usize> {
+        let w = self.flat_width(left.d).filter(|&w| w <= MAX_ALIGNED)?;
+        let right = right?;
+        if self.opens_block(right) || self.closes[right.first] == Some(right.last) {
+            return Some(w);
+        }
+        let r = self.flat_width(right.d)?;
+        (w + 4 + r <= self.width).then_some(w)
+    }
+
+    /// The widest of the left sides that are lined up.
+    fn align_width(&self, lefts: &[Option<usize>]) -> Option<usize> {
+        lefts.iter().flatten().copied().max()
+    }
+
+    /// The padding that lines a left side of width `w` up to width `to`.
+    fn pad(&mut self, w: Option<usize>, to: Option<usize>) -> D {
+        match (w, to) {
+            (Some(w), Some(to)) if w < to => self.docs.text(&" ".repeat(to - w)),
+            _ => self.docs.text(""),
+        }
+    }
+
+    /// Join pieces as [`Layout::join`] does, except that before each piece
+    /// whose index is in `fill` the line may wrap, one level in, so a long run
+    /// packs as much on a line as fits.
+    fn join_fill(&mut self, ps: &[P], fill: &[usize]) -> P {
+        if fill.is_empty() {
+            return self.join(ps).expect("non-empty");
+        }
+        let mut head = vec![ps[0].d];
+        let mut tail = Vec::new();
+        for k in 1..ps.len() {
+            let wraps = fill.contains(&k);
+            let sep = if wraps {
+                Some(self.docs.add(Node::FillLine))
+            } else if self.space(ps[k - 1].last, ps[k].first) {
+                Some(self.docs.text(" "))
+            } else {
+                None
+            };
+            let into = if wraps || !tail.is_empty() { &mut tail } else { &mut head };
+            into.extend(sep);
+            into.push(ps[k].d);
+        }
+        let tail = self.docs.cat(tail);
+        let tail = self.docs.nest(tail);
+        head.push(tail);
+        let d = self.docs.cat(head);
+        P { d, first: ps[0].first, last: ps[ps.len() - 1].last }
+    }
+
+    /// Whether tokens `a` and `b` are a function and its argument (or two
+    /// arguments) side by side, where a long application may wrap. Never
+    /// before a `{ }`, `[ ]` or lambda argument, which opens on the call's line.
+    fn applies(&self, a: usize, b: usize) -> bool {
+        use Kind::*;
+        let (x, y) = (&self.toks[a], &self.toks[b]);
+        let operand = |k: Kind| matches!(k, Int(_) | Real(_) | Imaginary(_) | Str | Word | At);
+        self.space(a, b)
+            && (operand(x.kind) || matches!(x.kind, RParen | RBrace | RBrack))
+            && (operand(y.kind) || (matches!(y.kind, LParen) && !self.toks.get(b + 1).is_some_and(|t| matches!(t.kind, Lambda))))
+    }
+
+    /// Whether the bar at `pos` starts a handler's operation clause
+    /// (`| op x`, `| Eff.op x`), which ends an `is` nested in the clause before.
+    fn at_op_clause(&self, ts: &[Tree], pos: usize) -> bool {
+        let Some((i, _)) = self.peek(ts, pos) else { return false };
+        let kinds: Vec<Option<Tok>> = (i..i + 4).map(|k| ts.get(k).and_then(|t| self.tok_of(t)).copied()).collect();
+        let word = |k: usize| kinds[k].filter(|t| matches!(t.kind, Kind::Word));
+        let lower = |t: Tok| !t.text.starts_with(|c: char| c.is_ascii_uppercase());
+        if !kinds[0].is_some_and(|t| is_bar(&t)) {
+            return false;
+        }
+        match word(1) {
+            Some(first) if lower(first) => word(2).is_some(),
+            Some(_) => kinds[2].is_some_and(|t| matches!(t.kind, Kind::Dot)) && word(3).is_some_and(lower),
+            None => false,
+        }
     }
 
     /// `\p q =`, as one piece.
@@ -856,20 +1175,27 @@ impl Layout<'_, '_> {
         self.join(&ps).expect("a lambda has its backslash")
     }
 
-    /// `let a = x, b = y in body` (and `with`, `defer`): a lone binding on the
-    /// keyword's line, several each on a line of its own lined up under the
-    /// first, then `in` and the body.
+    /// `let a = x, b = y in body` (and `with`, `defer`). One short binding
+    /// stays on the keyword's line, `in` ending it. Several bindings, or one that
+    /// does not fit there, make a block: the keyword alone, the bindings
+    /// indented with their `=` lined up, then `in` alone and the body indented.
     fn binding_form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
+        let is_let = matches!(self.tok_of(&ts[*pos]).map(|t| t.kind), Some(Kind::Let));
         let kw = self.tok(Self::first_tok(&ts[*pos]));
         *pos += 1;
         let sep = |t: &Tok| halt(t) || matches!(t.kind, Kind::Comma | Kind::In);
-        let mut binds: Vec<P> = Vec::new();
+        let lhs_end = |t: &Tok| sep(t) || matches!(t.kind, Kind::Eq);
+        // Per binding: its leading comments, its left side, and `=` with the value.
+        let mut binds: Vec<(Vec<P>, P, Option<(P, P)>)> = Vec::new();
         let mut trailing = false;
         loop {
             let cs = self.comments(ts, pos);
-            let b = self.expr(ts, pos, &sep, false);
-            let b = self.with_comments(cs, b);
-            binds.push(b);
+            let lhs = self.expr(ts, pos, if is_let { &lhs_end } else { &sep }, false);
+            let rhs = match self.expect(ts, pos, |t| is_let && matches!(t.kind, Kind::Eq)) {
+                Some(eq) => Some((eq, self.expr(ts, pos, &sep, false))),
+                None => None,
+            };
+            binds.push((cs, lhs, rhs));
             match self.expect(ts, pos, |t| matches!(t.kind, Kind::Comma)) {
                 Some(_) => {
                     trailing = true;
@@ -881,40 +1207,75 @@ impl Layout<'_, '_> {
                 None => break,
             }
         }
-        let space = self.docs.text(" ");
-        let mut rest: Vec<D> = vec![binds[0].d];
-        for k in 0..binds.len() {
+        let several = binds.len() > 1;
+        let widths: Vec<Option<usize>> = binds.iter().map(|b| self.left_width(b.1, b.2.map(|r| r.1))).collect();
+        let to = if several { self.align_width(&widths) } else { None };
+        let mut items: Vec<D> = Vec::new();
+        for (k, (cs, lhs, rhs)) in binds.iter().enumerate() {
+            let mut piece = match rhs {
+                Some((eq, value)) => {
+                    let pad = self.pad(widths[k], to);
+                    let space = self.docs.text(" ");
+                    let head = self.docs.cat(vec![lhs.d, pad, space, eq.d]);
+                    self.hang(P { d: head, first: lhs.first, last: eq.last }, *value)
+                }
+                None => *lhs,
+            };
+            piece = self.with_comments(cs.clone(), piece);
             if k + 1 < binds.len() || trailing {
-                rest.push(self.docs.text(","));
+                let comma = self.docs.text(",");
+                piece.d = self.docs.cat(vec![piece.d, comma]);
             }
-            if k + 1 < binds.len() {
-                rest.push(self.docs.add(Node::Line));
-                rest.push(binds[k + 1].d);
+            if k > 0 {
+                items.push(self.docs.add(Node::Line));
+            }
+            items.push(piece.d);
+        }
+        let last = binds[binds.len() - 1].2.as_ref().map_or(binds[binds.len() - 1].1.last, |r| r.1.last);
+        let lead = self.docs.add(Node::Line);
+        let list = self.docs.cat(std::iter::once(lead).chain(items).collect());
+        let list = self.docs.nest(list);
+        let explode = trailing || several;
+        let Some(in_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::In)) else {
+            let d = self.docs.cat(vec![kw.d, list]);
+            let g = self.docs.group(d, explode);
+            return P { d: g, first: kw.first, last };
+        };
+        let head = self.docs.reserve();
+        let line = self.docs.add(Node::Line);
+        let d = self.docs.cat(vec![kw.d, list, line, in_kw.d]);
+        self.docs.fill_group(head, d, explode);
+        let outer = self.docs.reserve();
+        let mut body = self.expr(ts, pos, halt, false);
+        // A chain of lets breaks as one: once this one ends its line with `in`,
+        // so does every let after it.
+        if matches!(self.toks[body.first].kind, Kind::Let) {
+            while let Node::Cat(xs) = &self.docs.nodes[body.d] {
+                let [x] = xs[..] else { break };
+                body.d = x;
+            }
+            if let Node::Group(_, false) = self.docs.nodes[body.d] {
+                let broken = self.docs.add(Node::Broken(body.d));
+                body.d = self.docs.add(Node::Cond { group: outer, flat: body.d, broken });
             }
         }
-        let explode = trailing || binds.len() > 1;
-        let tail = self.docs.cat(rest);
-        let aligned = self.docs.align(tail, self.width(kw) + 1);
-        let d = self.docs.cat(vec![kw.d, space, aligned]);
-        let inner = P { d, first: kw.first, last: binds[binds.len() - 1].last };
-        let Some(in_kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::In)) else {
-            let g = self.docs.group(inner.d, explode);
-            return P { d: g, ..inner };
-        };
-        let space = self.docs.text(" ");
-        let head = self.docs.cat(vec![inner.d, space, in_kw.d]);
-        let head = P { d: self.docs.group(head, explode), first: inner.first, last: in_kw.last };
-        let body = self.expr(ts, pos, halt, false);
-        let joined = self.line_join(head, body, Node::Line);
-        let g = self.docs.group(joined.d, false);
-        P { d: g, ..joined }
+        let line = self.docs.add(Node::Line);
+        let flat = self.docs.cat(vec![line, body.d]);
+        let line = self.docs.add(Node::Line);
+        let broken = self.docs.cat(vec![line, body.d]);
+        let broken = self.docs.nest(broken);
+        let after = self.docs.add(Node::Cond { group: head, flat, broken });
+        let d = self.docs.cat(vec![head, after]);
+        self.docs.fill_group(outer, d, false);
+        P { d: outer, first: kw.first, last: body.last }
     }
 
-    /// `if c => t, c2 => t2 else e`, with an `else if` chain kept flat: each
-    /// `else if` starts a line of its own, at the level of the first `if`. A
-    /// keyword with several comma-separated arms always breaks them one per
-    /// line, lined up under the first condition, and an `else` after them joins
-    /// that column.
+    /// `if c => t else e` on one line, or broken: every body on a line of its
+    /// own one level under its `=>` or `else`, each `else` (or `else if`)
+    /// starting a line at the level of the first `if`. A keyword with several
+    /// comma-separated arms makes a block: the keyword alone, then the arms and
+    /// the `else` indented, either each on one line with their `=>` lined up
+    /// or, when one of them does not fit so, every body under its arm.
     fn if_form(&mut self, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
         let arrow_or = |t: &Tok| halt(t) || matches!(t.kind, Kind::FatArrow);
         let branch_end = |t: &Tok| halt(t) || matches!(t.kind, Kind::Comma | Kind::Else);
@@ -923,54 +1284,109 @@ impl Layout<'_, '_> {
         let mut lines: Vec<P> = Vec::new();
         let mut explode = false;
         loop {
-            let mut arms: Vec<P> = Vec::new();
+            // Per arm: the condition, `=>` with the branch, and its comma.
+            let mut arms: Vec<(P, Option<(P, P)>, bool)> = Vec::new();
+            let mut trailing = false;
             loop {
                 let cond = self.expr(ts, pos, &arrow_or, false);
-                let mut parts = if arms.is_empty() { vec![kw, cond] } else { vec![cond] };
-                let arm = match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
-                    Some(arrow) => {
-                        parts.push(arrow);
-                        let then = self.expr(ts, pos, &branch_end, false);
-                        let head = self.join(&parts).expect("non-empty");
-                        self.hang(head, then)
-                    }
-                    None => self.join(&parts).expect("non-empty"),
+                let then = match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
+                    Some(arrow) => Some((arrow, self.expr(ts, pos, &branch_end, false))),
+                    None => None,
                 };
-                if self.expect(ts, pos, |t| matches!(t.kind, Kind::Comma)).is_none() {
-                    arms.push(arm);
+                let comma = self.expect(ts, pos, |t| matches!(t.kind, Kind::Comma)).is_some();
+                arms.push((cond, then, comma));
+                if !comma {
                     break;
                 }
-                let comma = self.docs.text(",");
-                arms.push(P { d: self.docs.cat(vec![arm.d, comma]), ..arm });
+                if matches!(self.peek_tok(ts, *pos).map(|t| t.kind), Some(Kind::Else)) {
+                    trailing = true;
+                    break;
+                }
             }
             let else_kw = self.expect(ts, pos, |t| matches!(t.kind, Kind::Else));
             let chained = else_kw.is_some() && matches!(self.peek_tok(ts, *pos).map(|t| t.kind), Some(Kind::If));
-            let otherwise = match else_kw {
-                Some(e) if !chained => {
-                    let body = self.expr(ts, pos, halt, false);
-                    Some(self.hang(e, body))
-                }
-                _ => None,
-            };
-            if arms.len() == 1 {
-                lines.push(arms[0]);
-                lines.extend(otherwise);
-            } else {
+            if arms.len() > 1 || trailing {
                 explode = true;
-                // The first arm's head starts with the keyword; the rest line up
-                // after it.
-                let by = self.width(kw) + 1;
-                let mut rest = arms[1..].to_vec();
-                rest.extend(otherwise);
-                let mut acc = rest[0];
-                for &l in &rest[1..] {
-                    acc = self.line_join(acc, l, Node::Line);
+                let widths: Vec<Option<usize>> = arms.iter().map(|a| self.left_width(a.0, a.1.map(|t| t.1))).collect();
+                let to = self.align_width(&widths).filter(|_| widths.iter().all(Option::is_some));
+                // Lined up only if every arm's line fits, decided where the arms start.
+                let probe = to.map(|to| {
+                    let w = arms
+                        .iter()
+                        .filter_map(|(_, then, comma)| {
+                            let (_, b) = then.as_ref()?;
+                            let r = self.flat_width(b.d).unwrap_or_else(|| self.opening_width(*b));
+                            Some(to + 4 + r + usize::from(*comma))
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    self.docs.add(Node::Fits(w))
+                });
+                let mut inner = Vec::new();
+                for (k, (cond, then, comma)) in arms.iter().enumerate() {
+                    let mut entry = match then {
+                        Some((arrow, branch)) => {
+                            let space = self.docs.text(" ");
+                            let head = self.docs.cat(vec![cond.d, space, arrow.d]);
+                            let below = self.under(P { d: head, first: cond.first, last: arrow.last }, *branch);
+                            match probe {
+                                Some(group) => {
+                                    let pad = self.pad(widths[k], to);
+                                    let (s1, s2) = (self.docs.text(" "), self.docs.text(" "));
+                                    let beside = self.docs.cat(vec![cond.d, pad, s1, arrow.d, s2, branch.d]);
+                                    let beside = self.docs.group(beside, false);
+                                    let d = self.docs.add(Node::Cond { group, flat: beside, broken: below.d });
+                                    P { d, ..below }
+                                }
+                                None => below,
+                            }
+                        }
+                        None => *cond,
+                    };
+                    if *comma {
+                        let c = self.docs.text(",");
+                        entry.d = self.docs.cat(vec![entry.d, c]);
+                    }
+                    inner.push(self.docs.add(Node::Line));
+                    if k == 0 {
+                        inner.extend(probe);
+                    }
+                    inner.push(entry.d);
                 }
-                let line = self.docs.add(Node::Line);
-                let tail = self.docs.cat(vec![line, acc.d]);
-                let aligned = self.docs.align(tail, by);
-                let d = self.docs.cat(vec![arms[0].d, aligned]);
-                lines.push(P { d, first: arms[0].first, last: acc.last });
+                let mut last = arms[arms.len() - 1].1.map_or(arms[arms.len() - 1].0.last, |t| t.1.last);
+                if let Some(e) = else_kw.filter(|_| !chained) {
+                    let body = self.expr(ts, pos, halt, false);
+                    let below = self.under(e, body);
+                    let d = match probe {
+                        Some(group) => {
+                            let beside = self.hang_below(e, body, false);
+                            self.docs.add(Node::Cond { group, flat: beside.d, broken: below.d })
+                        }
+                        None => below.d,
+                    };
+                    inner.push(self.docs.add(Node::Line));
+                    inner.push(d);
+                    last = body.last;
+                }
+                let inner = self.docs.cat(inner);
+                let inner = self.docs.nest(inner);
+                let d = self.docs.cat(vec![kw.d, inner]);
+                lines.push(P { d, first: kw.first, last });
+            } else {
+                let (cond, then, _) = arms[0];
+                let head = self.join(&[kw, cond]).expect("non-empty");
+                lines.push(match then {
+                    Some((arrow, branch)) => {
+                        let space = self.docs.text(" ");
+                        let d = self.docs.cat(vec![head.d, space, arrow.d]);
+                        self.under(P { d, first: head.first, last: arrow.last }, branch)
+                    }
+                    None => head,
+                });
+                if let Some(e) = else_kw.filter(|_| !chained) {
+                    let body = self.expr(ts, pos, halt, false);
+                    lines.push(self.under(e, body));
+                }
             }
             if !chained {
                 break;
@@ -982,46 +1398,119 @@ impl Layout<'_, '_> {
         for &l in &lines[1..] {
             acc = self.line_join(acc, l, Node::Line);
         }
-        let g = self.docs.group(acc.d, explode);
+        let commented = (acc.first..=acc.last).any(|i| matches!(self.toks[i].kind, Kind::Comment));
+        let g = self.docs.group(acc.d, explode || commented);
         P { d: g, ..acc }
     }
 
+    /// `head body`, or, when the group around it breaks, `body` on the next
+    /// line one level in.
+    fn under(&mut self, head: P, body: P) -> P {
+        let line = self.docs.add(Node::Line);
+        let inner = self.docs.cat(vec![line, body.d]);
+        let nested = self.docs.nest(inner);
+        let d = self.docs.cat(vec![head.d, nested]);
+        P { d, first: head.first, last: body.last }
+    }
+
+    /// Whether `p` ends in a group that opens at the end of its line (a
+    /// `{ }`, `[ ]` or `( )`), so it can start beside its head rather than on
+    /// a line of its own. A sequence `a; b { }` does not: only its last part
+    /// ends in the group.
+    fn opens_block(&self, p: P) -> bool {
+        let t = self.toks[p.first];
+        if !self.opens[p.last] || starts_form(&t) || matches!(t.kind, Kind::With) {
+            return false;
+        }
+        let mut i = p.first;
+        while i < p.last {
+            if let Some(c) = self.closes[i] {
+                if c == p.last {
+                    return true;
+                }
+                i = c + 1;
+                continue;
+            }
+            if matches!(self.toks[i].kind, Kind::Op) && self.toks[i].text == ";" {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// The width of `p` up to where its last group opens: `f x {`, or through
+    /// the `=` of `f (\x =`.
+    fn opening_width(&self, p: P) -> usize {
+        let open = (p.first..=p.last).find(|&i| self.closes[i] == Some(p.last)).unwrap_or(p.last);
+        let lambda = self.toks.get(open + 1).is_some_and(|t| matches!(t.kind, Kind::Lambda));
+        let end = if lambda {
+            (open..p.last).find(|&i| matches!(self.toks[i].kind, Kind::Eq)).unwrap_or(open)
+        } else {
+            open
+        };
+        (p.first..=end).map(|i| self.toks[i].text.chars().count() + 1).sum::<usize>().saturating_sub(1)
+    }
+
     /// `head | p => e | q if g => f`: on one line, or the arms one per line
-    /// under the head.
-    fn arms(&mut self, head: P, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool) -> P {
-        let mut acc = head;
-        let mut count = 0;
+    /// under the head with their `=>` lined up. An `is` (`clauses_end`) stops
+    /// at a handler's operation clause, as the parser does.
+    fn arms(&mut self, head: P, ts: &[Tree], pos: &mut usize, halt: &dyn Fn(&Tok) -> bool, clauses_end: bool) -> P {
+        let group = self.docs.reserve();
+        // Per arm: its patterns and guard, then `=>` with the body.
+        let mut arms: Vec<(P, Option<(P, P)>)> = Vec::new();
         loop {
+            if clauses_end && self.at_op_clause(ts, *pos) {
+                break;
+            }
             let Some(bar) = self.expect(ts, pos, is_bar) else { break };
             let pat_end = |t: &Tok| halt(t) || is_bar(t) || matches!(t.kind, Kind::FatArrow | Kind::If);
             let mut parts = vec![bar];
+            let mut alts = Vec::new();
             loop {
                 parts.push(self.expr(ts, pos, &pat_end, false));
                 match self.expect(ts, pos, is_bar) {
-                    Some(alt) => parts.push(alt),
+                    Some(alt) => {
+                        alts.push(parts.len());
+                        parts.push(alt);
+                    }
                     None => break,
                 }
             }
+            let mut lead = self.join_fill(&parts, &alts);
             if let Some(kw) = self.expect(ts, pos, |t| matches!(t.kind, Kind::If)) {
-                parts.push(kw);
                 let arrow_or = |t: &Tok| halt(t) || matches!(t.kind, Kind::FatArrow);
-                parts.push(self.expr(ts, pos, &arrow_or, false));
+                let guard = self.expr(ts, pos, &arrow_or, false);
+                lead = self.join(&[lead, kw, guard]).expect("non-empty");
             }
-            let arm = match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
+            let body = match self.expect(ts, pos, |t| matches!(t.kind, Kind::FatArrow)) {
                 Some(arrow) => {
-                    parts.push(arrow);
-                    let head = self.join(&parts).expect("non-empty");
                     let bar_or = |t: &Tok| halt(t) || is_bar(t);
-                    let body = self.expr(ts, pos, &bar_or, false);
-                    self.hang(head, body)
+                    Some((arrow, self.expr(ts, pos, &bar_or, false)))
                 }
-                None => self.join(&parts).expect("non-empty"),
+                None => None,
+            };
+            arms.push((lead, body));
+        }
+        let widths: Vec<Option<usize>> = arms.iter().map(|a| self.left_width(a.0, a.1.map(|b| b.1))).collect();
+        let to = self.align_width(&widths);
+        let mut acc = head;
+        for (k, (lead, body)) in arms.iter().enumerate() {
+            let arm = match body {
+                Some((arrow, body)) => {
+                    let flat = self.docs.text("");
+                    let broken = self.pad(widths[k], to);
+                    let pad = self.docs.add(Node::Cond { group, flat, broken });
+                    let space = self.docs.text(" ");
+                    let d = self.docs.cat(vec![lead.d, pad, space, arrow.d]);
+                    self.hang(P { d, first: lead.first, last: arrow.last }, *body)
+                }
+                None => *lead,
             };
             acc = self.line_join(acc, arm, Node::Line);
-            count += 1;
         }
-        let g = self.docs.group(acc.d, count > MAX_FLAT_ARMS);
-        P { d: g, ..acc }
+        self.docs.fill_group(group, acc.d, arms.len() > MAX_FLAT_ARMS);
+        P { d: group, ..acc }
     }
 
     /// One top-level item: its leading comments, then `$ head = body`.
@@ -1080,9 +1569,11 @@ impl Layout<'_, '_> {
             head_comment = true;
             pos += 1;
         }
-        let head = self.join(&head_ps).expect("non-empty");
-        // A signature reads best whole; only the body moves to the next line.
-        let head = P { d: self.docs.add(Node::Flat(head.d)), ..head };
+        // A long signature wraps before its arrows.
+        let arrows: Vec<usize> = (1..head_ps.len())
+            .filter(|&k| head_ps[k].first == head_ps[k].last && matches!(self.toks[head_ps[k].first].kind, Kind::Arrow))
+            .collect();
+        let head = self.join_fill(&head_ps, &arrows);
         let (elems, trailing, tail) = self.comma_list(&ts[pos..]);
         let mut body = elems[0];
         for &e in &elems[1..] {
@@ -1092,6 +1583,12 @@ impl Layout<'_, '_> {
         }
         let exploded = trailing && self.multiline(eq_tok, self.toks.len() - 1);
         let body = self.close_list(body, trailing, tail);
+        // A body opens beside the head only when the head and the opening fit
+        // one line; a head that must wrap reads better with the body below it.
+        let beside = self.flat_width(head.d).is_some_and(|w| w + 1 + self.opening_width(body) <= self.width);
+        if elems.len() == 1 && !exploded && !head_comment && self.opens_block(body) && beside {
+            return self.hang(head, body).d;
+        }
         let line = self.docs.add(Node::Line);
         let inner = self.docs.cat(vec![line, body.d]);
         let nested = self.docs.nest(inner);
