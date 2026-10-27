@@ -24,7 +24,7 @@ fn a_long_match_breaks_its_arms_under_the_head() {
     assert_eq!(fmt(three), "$ @mod M\n$ go = \\l =\n    is l\n    | A => 0\n    | B => 1\n    | C => 2\n");
     assert_eq!(
         narrow(src, 40),
-        "$ @mod M\n$ go : Light -> @Int = \\l =\n    is l\n    | Light.Red => 0\n    | Light.Yellow => 1\n"
+        "$ @mod M\n$ go : Light -> @Int = \\l =\n    is l\n    | Light.Red    => 0\n    | Light.Yellow => 1\n"
     );
     assert_eq!(fmt(src), "$ @mod M\n$ go : Light -> @Int = \\l = is l | Light.Red => 0 | Light.Yellow => 1\n");
 }
@@ -55,11 +55,43 @@ fn dots_and_unary_minus_keep_their_adjacency() {
 }
 
 #[test]
-fn a_long_let_puts_each_binding_on_its_line() {
-    let src = "$ @mod M\n$ f = \\x = let a = x + 1, b = a * 2 in a + b\n";
+fn several_bindings_make_a_let_block() {
+    let src = "$ @mod M\n$ f = \\x = let a = x + 1, bb = a * 2 in a + bb\n";
     assert_eq!(
-        narrow(src, 24),
-        "$ @mod M\n$ f = \\x =\n    let a = x + 1,\n        b = a * 2 in\n    a + b\n"
+        fmt(src),
+        "$ @mod M\n$ f = \\x =\n    let\n        a  = x + 1,\n        bb = a * 2\n    in\n        a + bb\n"
+    );
+    let defer = "$ @mod M\n$ f = \\x = defer g 1, g 2 in x\n";
+    assert_eq!(fmt(defer), "$ @mod M\n$ f = \\x =\n    defer\n        g 1,\n        g 2\n    in\n        x\n");
+    assert_eq!(fmt("$ @mod M\n$ f = \\x = let a = x in a\n"), "$ @mod M\n$ f = \\x = let a = x in a\n");
+}
+
+#[test]
+fn a_binding_that_cannot_share_the_line_makes_a_let_block() {
+    let src = "$ @mod M\n$ f = \\g = let h = do g {} ctl k | Y.y v => v | X.x u => 1 | _ => 0 in h\n";
+    assert_eq!(
+        fmt(src),
+        "$ @mod M\n$ f = \\g =\n    let\n        h =\n            do g {}\n            ctl k\n            | Y.y v => v\n            | X.x u => 1\n            | _     => 0\n    in\n        h\n"
+    );
+}
+
+#[test]
+fn a_form_after_a_broken_in_or_else_goes_one_level_in() {
+    let src = "$ @mod M\n$ f = \\x = let a = x, b = x in let c = a + b in c\n";
+    assert_eq!(
+        fmt(src),
+        "$ @mod M\n$ f = \\x =\n    let\n        a = x,\n        b = x\n    in\n        let c = a + b in\n        c\n"
+    );
+    let els = "$ @mod M\n$ f = \\x = if x == 0 => 1 else let y = x * 2 in y + 1\n";
+    assert_eq!(narrow(els, 30), "$ @mod M\n$ f = \\x =\n    if x == 0 =>\n        1\n    else\n        let y = x * 2 in y + 1\n");
+}
+
+#[test]
+fn a_broken_let_chain_ends_every_line_with_in() {
+    let src = "$ @mod M\n$ f = \\x = let a = x in let b = a in let c = b in a + b + c\n";
+    assert_eq!(
+        narrow(src, 40),
+        "$ @mod M\n$ f = \\x =\n    let a = x in\n    let b = a in\n    let c = b in\n    a + b + c\n"
     );
 }
 
@@ -97,12 +129,13 @@ fn let_chains_end_each_line_with_in() {
 }
 
 #[test]
-fn else_if_chains_stay_flat() {
+fn a_broken_if_puts_every_body_under_its_arrow_or_else() {
     let src = "$ @mod M\n$ f = \\i = if i < 0 => 1 else if i == 0 => 2 # zero\n else 3\n";
     assert_eq!(
         narrow(src, 30),
-        "$ @mod M\n$ f = \\i =\n    if i < 0 => 1\n    else if i == 0 => 2 # zero\n    else 3\n"
+        "$ @mod M\n$ f = \\i =\n    if i < 0 =>\n        1\n    else if i == 0 =>\n        2 # zero\n    else\n        3\n"
     );
+    assert_eq!(fmt("$ @mod M\n$ f = \\i = if i < 0 => 1 else 2\n"), "$ @mod M\n$ f = \\i = if i < 0 => 1 else 2\n");
 }
 
 #[test]
@@ -127,28 +160,91 @@ fn a_long_concatenation_breaks_before_each_plus_plus() {
 }
 
 #[test]
-fn a_long_signature_stays_on_one_line() {
-    let src = "$ @mod M\n$ f : @Int -> {@Vec @Int, @Int} = \\x = {[x], x}\n";
-    assert_eq!(narrow(src, 30), "$ @mod M\n$ f : @Int -> { @Vec @Int, @Int } = \\x =\n    { [x], x }\n");
+fn a_long_signature_wraps_before_its_arrows() {
+    let src = "$ @mod M\n$ f : @Int -> {@Vec @Int, @Int} = \\x = x\n";
+    assert_eq!(narrow(src, 36), "$ @mod M\n$ f : @Int\n    -> { @Vec @Int, @Int } = \\x =\n    x\n");
 }
 
 #[test]
-fn comma_arms_of_an_if_line_up_under_the_first_condition() {
+fn a_long_sum_packs_its_operands() {
+    let src = "$ @mod M\n$ t : @Int = aaaa + bbbb + cccc + dddd + eeee\n";
+    assert_eq!(narrow(src, 30), "$ @mod M\n$ t : @Int =\n    aaaa + bbbb + cccc + dddd\n        + eeee\n");
+}
+
+#[test]
+fn long_alternatives_wrap_one_level_in() {
+    let src = "$ @mod M\n$ k = \\s = is s | \"aaaa\" | \"bbbb\" | \"cccc\" | \"dddd\" => 1 | _ => 0\n";
+    assert_eq!(
+        narrow(src, 30),
+        "$ @mod M\n$ k = \\s =\n    is s\n    | \"aaaa\" | \"bbbb\" | \"cccc\"\n        | \"dddd\" =>\n        1\n    | _ => 0\n"
+    );
+}
+
+#[test]
+fn a_broken_paren_nests_its_contents() {
+    let src = "$ @mod M\n$ f = \\x = is x | 0 => (let a = x in let b = a in { a, b, a, b }) | _ => (x)\n";
+    assert_eq!(
+        narrow(src, 30),
+        "$ @mod M\n$ f = \\x =\n    is x\n    | 0 => (\n        let a = x in\n        let b = a in\n        { a, b, a, b }\n    )\n    | _ => (x)\n"
+    );
+}
+
+#[test]
+fn a_braced_body_opens_on_its_heads_line() {
+    let src = "$ @mod M\n$ t = { aaaaaaaaaa, bbbbbbbbbb, cccccccccc }\n";
+    assert_eq!(narrow(src, 30), "$ @mod M\n$ t = {\n    aaaaaaaaaa,\n    bbbbbbbbbb,\n    cccccccccc\n}\n");
+}
+
+#[test]
+fn an_is_inside_a_handler_clause_ends_at_the_next_clause() {
+    let src = "$ @mod M\n$ h = \\g = do g {} ctl k | Y.y v => (is v | 0 => 1 | _ => 2) | X.x u => is u | 0 => 1 | _ => 2 | Z.z w => 3\n";
+    assert_eq!(
+        fmt(src),
+        "$ @mod M\n$ h = \\g =\n    do g {}\n    ctl k\n    | Y.y v => (is v | 0 => 1 | _ => 2)\n    | X.x u => is u | 0 => 1 | _ => 2\n    | Z.z w => 3\n"
+    );
+}
+
+#[test]
+fn trailing_comments_of_neighbouring_lines_line_up() {
+    let src = "$ @mod M\n$ a = 1 # one\n$ bbb = 22 # two\n\n$ c = 3 # alone\n";
+    assert_eq!(fmt(src), "$ @mod M\n$ a = 1    # one\n$ bbb = 22 # two\n\n$ c = 3 # alone\n");
+}
+
+#[test]
+fn comma_arms_make_an_if_block() {
     let src = "$ @mod M\n$ f = \\i = if i < 0 => 1, i == 0 => 2 else 3\n";
-    assert_eq!(fmt(src), "$ @mod M\n$ f = \\i =\n    if i < 0 => 1,\n       i == 0 => 2\n       else 3\n");
+    assert_eq!(fmt(src), "$ @mod M\n$ f = \\i =\n    if\n        i < 0  => 1,\n        i == 0 => 2\n        else 3\n");
     let chain = "$ @mod M\n$ f = \\i = if i < 0 => 1 else if i == 0 => 2, i == 1 => 3 else 4\n";
     assert_eq!(
         fmt(chain),
-        "$ @mod M\n$ f = \\i =\n    if i < 0 => 1\n    else if i == 0 => 2,\n            i == 1 => 3\n            else 4\n"
+        "$ @mod M\n$ f = \\i =\n    if i < 0 =>\n        1\n    else if\n        i == 0 => 2,\n        i == 1 => 3\n        else 4\n"
     );
     assert_eq!(fmt(&fmt(chain)), fmt(chain));
 }
 
 #[test]
-fn several_bindings_line_up_under_the_first() {
-    let src = "$ @mod M\n$ f = \\x = let a = x, b = a in a + b\n";
-    assert_eq!(fmt(src), "$ @mod M\n$ f = \\x =\n    let a = x,\n        b = a in\n    a + b\n");
-    let defer = "$ @mod M\n$ f = \\x = defer g 1, g 2 in x\n";
-    assert_eq!(fmt(defer), "$ @mod M\n$ f = \\x =\n    defer g 1,\n          g 2 in\n    x\n");
-    assert_eq!(fmt("$ @mod M\n$ f = \\x = let a = x in a\n"), "$ @mod M\n$ f = \\x = let a = x in a\n");
+fn a_long_condition_never_pushes_else_or_its_body_right() {
+    let src = "$ @mod M\n$ f = \\c = if a => b, at_p \"*\" && is_punct (peek_at 1) \"]\" => d else let e = rv (assign c) in expect \"]\"; g e\n";
+    assert_eq!(
+        fmt(src),
+        "$ @mod M\n$ f = \\c =\n    if\n        a                                    => b,\n        at_p \"*\" && is_punct (peek_at 1) \"]\" => d\n        else let e = rv (assign c) in expect \"]\"; g e\n"
+    );
+}
+
+#[test]
+fn if_arms_that_cannot_line_up_all_break_under_their_arrows() {
+    let src = "$ @mod M\n$ f = \\i = if i < 0 => 1, i == 0 => g iiiiiiiiii jjjjjjjjjj else 3\n";
+    assert_eq!(
+        narrow(src, 40),
+        "$ @mod M\n$ f = \\i =\n    if\n        i < 0 =>\n            1,\n        i == 0 =>\n            g iiiiiiiiii jjjjjjjjjj\n        else\n            3\n"
+    );
+}
+
+#[test]
+fn a_trailing_lambda_opens_on_the_calls_line() {
+    let src = "$ @mod M\n$ f = \\s = let r = with_a (\\u = with_b s (\\v = with_c (\\w = go s u v w))) in r\n";
+    assert_eq!(
+        narrow(src, 40),
+        "$ @mod M\n$ f = \\s =\n    let\n        r = with_a (\\u =\n            with_b s (\\v =\n                with_c (\\w =\n                    go s u v w)))\n    in\n        r\n"
+    );
 }
