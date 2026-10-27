@@ -1,0 +1,4 @@
+$ @mod TYPE_ANNOTATION_REQUIRED
+
+$ answer = 42  #~ error[TYPE_ANNOTATION_REQUIRED]: global `answer` has no type annotation
+$ id = \x = x  #~ error[TYPE_ANNOTATION_REQUIRED]: global `id` has no type annotation

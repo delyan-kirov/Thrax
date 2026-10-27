@@ -101,7 +101,7 @@ $ counter : {} -> <State> @Int =
 This is the same leading-parameter sugar as the record-parameter destructuring: a
 `{}` (unit) parameter simply binds nothing. An explicit `\u = ...` still works.
 (The one thing the sugar precludes is aliasing an existing thunk directly,
-`f : {} -> T = g`, which now wraps `g`; write `$ f = g` or `\u = g u` instead.)
+`f : {} -> T = g`, which now wraps `g`; write `\u = g u` instead.)
 
 ---
 

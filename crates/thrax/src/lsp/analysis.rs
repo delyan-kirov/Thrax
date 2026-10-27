@@ -337,7 +337,7 @@ fn check_root(base: Rc<Base>, root_path: &Path, root_src: String, fresh: bool) -
     let ast_ref: &'static Ast = unsafe { &*(ast.as_ref() as *const Ast) };
     let base_ref: &'static Base = unsafe { &*Rc::as_ptr(&base) };
     let (c_idx, core_idx) = driver::prelude_indices(&base_ref.sources);
-    let setup = driver::Setup { lenient: false, open_effects: false, record_types: true };
+    let setup = driver::Setup { lenient: false, open_effects: false, record_types: true, probe: false };
     let mut checker =
         driver::prepare_checker(ast_ref, &program, &base_ref.types, &|k| base_ref.checkers.get(k), &deps, c_idx, core_idx, root, setup);
     if let Err(d) = checker.check_program(&program) {

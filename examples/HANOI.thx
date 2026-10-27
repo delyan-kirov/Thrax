@@ -7,10 +7,10 @@ $ @mod HANOI
 
 $ hanoi : @Int -> @Int = \n = if n == 0 => 0 else 1 + 2 * (hanoi (n - 1))
 
-$ hanoi1 = hanoi 1
-$ hanoi3 = hanoi 3
-$ hanoi5 = hanoi 5
-$ hanoi10 = hanoi 10
+$ hanoi1 : @Int = hanoi 1
+$ hanoi3 : @Int = hanoi 3
+$ hanoi5 : @Int = hanoi 5
+$ hanoi10 : @Int = hanoi 10
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int = hanoi1; hanoi3; hanoi5; hanoi10; 0

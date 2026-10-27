@@ -10,11 +10,10 @@ $ Person : @struct =
 
 # A struct literal. The qualified form `Type.{ ... }` names the type explicitly;
 # each field is set with a leading-dot `.field = value` (as in C).
-$ person : Person =
-    Person.{
-        .name = "Will",
-        .age = 21, # trailing comma is allowed but not required
-    }
+$ person : Person = Person.{
+    .name = "Will",
+    .age = 21, # trailing comma is allowed but not required
+}
 
 # Field access reads a field out of a struct.
 $ who : @Str = person.name
@@ -58,7 +57,7 @@ $ Weirdtype : @struct a b = fst : a, has : @Int, snd : b
 # A bare `.{..}` resolves its struct from the expected type (bidirectional).
 $ try_weird : Real = let w : Weirdtype Real Real = .{ 1.1, 1, 1.1 } in w.fst
 # Qualified positional literals name the struct directly.
-$ try_weird2 = let w = Weirdtype.{ 1.1, 1, 1.1 } in w.fst
+$ try_weird2 : @Float64 = let w = Weirdtype.{ 1.1, 1, 1.1 } in w.fst
 
 # Generic field types nest: a struct holding a `Box @Int`.
 $ Wrap : @struct t =

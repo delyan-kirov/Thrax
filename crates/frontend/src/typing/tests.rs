@@ -8,7 +8,7 @@ const CORE_SRC: &str = include_str!("../../../../library/CORE.thx");
 /// Infer the type of a single global `x`, rendered as a string. CORE is parsed
 /// and imported first (so arithmetic and other CORE names resolve), as the driver
 /// does for every real program.
-fn type_of(src: &str, name: &str) -> String {
+fn type_of(src: &str, name: &'static str) -> String {
     let (ast, core) = crate::parse_into(Ast::new(), CORE_SRC).expect("parse CORE");
     let (ast, prog) = crate::parse_into(ast, src).expect("parse");
     let types = std::rc::Rc::new(crate::Types::new());
@@ -16,6 +16,7 @@ fn type_of(src: &str, name: &str) -> String {
     core_checker.check_program(&core).expect("check CORE");
     let mut checker = Checker::new(&ast, types.clone());
     checker.import_from(&core_checker);
+    checker.set_inferred(name);
     let results = checker
         .check_program(&prog)
         .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
@@ -140,14 +141,14 @@ fn identity_is_polymorphic() {
 fn polymorphic_id_used_at_two_types() {
     // Using a generalized `id` at @Int and @Str must not conflict.
     let src = "$ @mod M\n\
-                   $ id = \\x = x\n\
-                   $ pair = let a = id 1, b = id \"s\" in {a, b}";
+                   $ id : a -> a = \\x = x\n\
+                   $ pair : {@Int, @Str} = let a = id 1, b = id \"s\" in {a, b}";
     assert_eq!(type_of(src, "pair"), "{@Int, @Str}");
 }
 
 #[test]
 fn function_application_and_arrows() {
-    let src = "$ @mod M\n$ apply = \\f x = f x";
+    let src = "$ @mod M\n$ apply : (a -> b) -> a -> b = \\f x = f x";
     // `(A -> B) -> A -> B`.
     assert_eq!(type_of(src, "apply"), "(a -> b) -> a -> b");
 }
@@ -162,7 +163,7 @@ fn if_unifies_branches_and_condition() {
 
 #[test]
 fn recursion_through_predeclared_globals() {
-    let src = "$ @mod M\n$ fib = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
+    let src = "$ @mod M\n$ fib : @Int -> @Int = \\n = if n == 0 => 0 else fib (n - 1) + fib (n - 2)";
     assert_eq!(type_of(src, "fib"), "@Int -> @Int");
 }
 
@@ -201,8 +202,8 @@ fn struct_field_access_is_typed() {
     let src = "$ @mod M\n\
                    $ P : @struct = x: @Int, y: @Str\n\
                    $ p : P = P.{ .x = 1, .y = \"s\" }\n\
-                   $ gx = p.x\n\
-                   $ gy = p.y";
+                   $ gx : @Int = p.x\n\
+                   $ gy : @Str = p.y";
     assert_eq!(type_of(src, "gx"), "@Int");
     assert_eq!(type_of(src, "gy"), "@Str");
 }
@@ -212,7 +213,7 @@ fn generic_struct_instantiates_per_use() {
     let src = "$ @mod M\n\
                    $ Box : @struct t = val: t\n\
                    $ b : Box @Str = Box.{ .val = \"hi\" }\n\
-                   $ out = b.val";
+                   $ out : @Str = b.val";
     assert_eq!(type_of(src, "b"), "Box @Str");
     assert_eq!(type_of(src, "out"), "@Str");
 }
@@ -222,7 +223,7 @@ fn union_constructor_and_match() {
     let src = "$ @mod M\n\
                    $ Maybe : @union t = Just: t, None: {}\n\
                    $ m : Maybe @Int = Maybe.Just.{ 7 }\n\
-                   $ get = \\d = \\o = is o | Maybe.Just.{x} => x | _ => d";
+                   $ get : a -> Maybe a -> a = \\d = \\o = is o | Maybe.Just.{x} => x | _ => d";
     assert_eq!(type_of(src, "m"), "Maybe @Int");
     assert_eq!(type_of(src, "get"), "a -> Maybe a -> a");
 }
@@ -239,7 +240,7 @@ fn mutually_recursive_globals_via_scc() {
 #[test]
 fn recursive_let_binding() {
     let src = "$ @mod M\n\
-                   $ f = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
+                   $ f : @Int -> @Int = \\m = let go = \\n acc = if n == 0 => acc else go (n - 1) (acc + n) \
                    in go m 0";
     assert_eq!(type_of(src, "f"), "@Int -> @Int");
 }
@@ -251,7 +252,7 @@ fn arithmetic_resolves_its_interface_per_type() {
     // An operator takes ONE type for both operands, and an integer literal never
     // adopts a float type, so mixing the two is an error rather than a silent
     // promotion. Write the float literal instead.
-    assert!(errors("$ @mod M\n$ a = 1 + 2.0").contains("an integer literal cannot be a"));
+    assert!(errors("$ @mod M\n$ a : @Int = 1 + 2.0").contains("an integer literal cannot be a"));
 }
 
 /// One name, one type. Two definitions of a name are rejected where they are
@@ -273,8 +274,8 @@ fn an_interface_covers_several_types() {
                    $ bump : @ctx IBump t -> t -> t = \\d x = d.bump x\n\
                    $ bump_int : IBump @Int = .{ .bump = \\x = x + 1 }\n\
                    $ bump_str : IBump @Str = .{ .bump = \\x = x ++ \"!\" }\n\
-                   $ a = bump 3\n\
-                   $ b = bump \"hi\"";
+                   $ a : @Int = bump 3\n\
+                   $ b : @Str = bump \"hi\"";
     assert_eq!(errors(src), "");
     assert_eq!(type_of(src, "a"), "@Int");
     assert_eq!(type_of(src, "b"), "@Str");
@@ -324,8 +325,8 @@ fn cross_module_import_brings_in_types_and_values() {
     let use_src = "$ @mod U\n\
                        $ with OPT\n\
                        $ o : Option @Int = Option.Some.{ 41 }\n\
-                       $ present = is_some o\n\
-                       $ value = unwrap_or o 0";
+                       $ present : @Bool = is_some o\n\
+                       $ value : @Int = unwrap_or o 0";
     // Both modules parse into one shared `Ast` so cross-module handles resolve.
     let (ast, dep) = crate::parse_into(crate::Ast::new(), dep_src).expect("parse dep");
     let (ast, program) = crate::parse_into(ast, use_src).expect("parse use");
@@ -372,7 +373,7 @@ const PRIVATE_DEP: &str = "$ @mod A\n\
 fn public_symbol_above_private_marker_is_importable() {
     // `api` sits before `$ @private`, so it exports even though its body calls a
     // private helper.
-    assert_eq!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r = api 3"), "");
+    assert_eq!(cross_module_errors(PRIVATE_DEP, "$ @mod B\n$ with A\n$ r : @Int = api 3"), "");
 }
 
 #[test]
@@ -455,7 +456,7 @@ fn sequence_literal_is_type_directed() {
     // An @Array-typed parameter directs a `[..]` argument at the call site.
     let src = "$ @mod M\n\
                    $ len : @Array -> @Int = \\a = @array_len a\n\
-                   $ n = len [1, 2]";
+                   $ n : @Int = len [1, 2]";
     assert_eq!(type_of(src, "n"), "@Int");
 }
 
@@ -479,7 +480,7 @@ fn io_is_a_builtin_effect_and_propagates() {
     // it in its latent row, and a caller that performs it inherits `@IO`.
     let src = "$ @mod M\n\
                $ write : @Str -> <@IO> @Int = @extern \"C\" \"write\" \"libc\"\n\
-               $ p = \\s = let _ = write s in {}";
+               $ p : @Str -> <@IO | a> {} = \\s = let _ = write s in {}";
     assert_eq!(type_of(src, "write"), "@Str -> <@IO> @Int");
     assert!(type_of(src, "p").contains("<@IO"), "{}", type_of(src, "p"));
 }
@@ -759,8 +760,8 @@ fn same_operation_in_two_effects_resolves_by_result_type() {
 fn array_primitives_overload_on_array_and_str() {
     let src = "$ @mod M\n\
                    $ a : @Array = @array_push (@Array.{ 0 }) 65\n\
-                   $ n = @array_len a\n\
-                   $ b = @array_get \"hi\" 0";
+                   $ n : @Int = @array_len a\n\
+                   $ b : @Int = @array_get \"hi\" 0";
     assert_eq!(type_of(src, "a"), "@Array");
     assert_eq!(type_of(src, "n"), "@Int");
     assert_eq!(type_of(src, "b"), "@Int");
@@ -1047,19 +1048,19 @@ fn a_literal_must_give_every_field() {
 
     // Too few: the value would be missing a field its type promises, and reading
     // that field faults at run time.
-    assert!(err(&format!("{p}$ y = P.{{1}}")).contains("missing field `b`"));
-    assert!(err("$ @mod M\n$ y = List.Cons.{1}").contains("missing the one at index 1"));
-    assert!(err("$ @mod M\n$ y = List.Cons.{}").contains("missing the one at index 0"));
+    assert!(err(&format!("{p}$ y : P = P.{{1}}")).contains("missing field `b`"));
+    assert!(err("$ @mod M\n$ y : List @Int = List.Cons.{1}").contains("missing the one at index 1"));
+    assert!(err("$ @mod M\n$ y : List @Int = List.Cons.{}").contains("missing the one at index 0"));
     // Too many.
-    assert!(err(&format!("{p}$ y = P.{{1, 2, 3}}")).contains("no field 2"));
-    assert!(err("$ @mod M\n$ y = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
-    assert!(err(&format!("{p}$ y = P.{{ .c = 1 }}")).contains("has no field `c`"));
+    assert!(err(&format!("{p}$ y : P = P.{{1, 2, 3}}")).contains("no field 2"));
+    assert!(err("$ @mod M\n$ y : List @Int = List.Cons.{1, List.Nil, 9}").contains("no field 2"));
+    assert!(err(&format!("{p}$ y : P = P.{{ .c = 1 }}")).contains("has no field `c`"));
 
     // A complete literal, a named one, and an update are all fine.
-    assert!(rendered_errors(&format!("{p}$ y = P.{{1, 2}}")).is_empty());
-    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 1, .b = 2 }}")).is_empty());
-    assert!(rendered_errors(&format!("{p}$ y = P.{{ .a = 9 | P.{{1, 2}} }}")).is_empty());
-    assert!(rendered_errors("$ @mod M\n$ y = List.Cons.{1, List.Nil}").is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : P = P.{{1, 2}}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : P = P.{{ .a = 1, .b = 2 }}")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : P = P.{{ .a = 9 | P.{{1, 2}} }}")).is_empty());
+    assert!(rendered_errors("$ @mod M\n$ y : List @Int = List.Cons.{1, List.Nil}").is_empty());
 }
 
 #[test]
@@ -1067,8 +1068,8 @@ fn a_c_union_literal_picks_one_member() {
     let u = "$ @mod M\n$ U : @union @extern \"C\" = i: @Int, d: @Float64,\n";
     // Members share offset 0, so a literal names exactly one; completeness would
     // be wrong here, and two members would be nonsense.
-    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 42 }}")).is_empty());
-    assert!(rendered_errors(&format!("{u}$ y = U.{{ .i = 1, .d = 2.0 }}"))
+    assert!(rendered_errors(&format!("{u}$ y : U = U.{{ .i = 42 }}")).is_empty());
+    assert!(rendered_errors(&format!("{u}$ y : U = U.{{ .i = 1, .d = 2.0 }}"))
         .contains("exactly one member"));
 }
 
@@ -1076,20 +1077,20 @@ fn a_c_union_literal_picks_one_member() {
 fn a_pattern_may_bind_fewer_fields_but_never_more() {
     let p = "$ @mod M\n$ P : @struct = a: @Int, b: @Int,\n";
     // Fewer is the point of a pattern.
-    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x}} => x | _ => 0")).is_empty());
-    assert!(rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .b = v }} => v | _ => 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{x}} => x | _ => 0")).is_empty());
+    assert!(rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{ .b = v }} => v | _ => 0")).is_empty());
     assert!(
-        rendered_errors("$ @mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
+        rendered_errors("$ @mod M\n$ y : @Int = is List.Cons.{1, List.Nil} | List.Cons.{h, t} => h | _ => 0")
             .is_empty()
     );
     // More binds a name with no field behind it, which faults when read.
-    let surplus = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{x, y, z}} => x | _ => 0"));
+    let surplus = rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{x, y, z}} => x | _ => 0"));
     assert!(surplus.contains("no field 2"), "{surplus}");
     let surplus = rendered_errors(
-        "$ @mod M\n$ y = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
+        "$ @mod M\n$ y : @Int = is List.Cons.{1, List.Nil} | List.Cons.{h, t, u} => h | _ => 0",
     );
     assert!(surplus.contains("no field 2"), "{surplus}");
-    let unknown = rendered_errors(&format!("{p}$ y = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
+    let unknown = rendered_errors(&format!("{p}$ y : @Int = is P.{{1,2}} | P.{{ .c = v }} => v | _ => 0"));
     assert!(unknown.contains("has no field `c`"), "{unknown}");
 }
 

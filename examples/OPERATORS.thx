@@ -7,26 +7,27 @@ $ @mod OPERATORS
 #       intrinsics, so a type of your own joins the set by writing an instance.
 #       There is no structural fallback.
 
-$ eq_true = 7 == 7
-$ eq_false = 7 == 8
-$ neq_true = 7 != 8
-$ neq_false = 7 != 7
-$ geq_true = 9 > 4
-$ geq_equal = 4 > 4
-$ geq_false = 2 > 4
-$ leq_true = 3 < 8
-$ leq_equal = 8 < 8
-$ leq_false = 8 < 3
-$ not_false = !@false
-$ not_true = !@true
-$ not_not = !(!@true)
+$ eq_true : @Bool = 7 == 7
+$ eq_false : @Bool = 7 == 8
+$ neq_true : @Bool = 7 != 8
+$ neq_false : @Bool = 7 != 7
+$ geq_true : @Bool = 9 > 4
+$ geq_equal : @Bool = 4 > 4
+$ geq_false : @Bool = 2 > 4
+$ leq_true : @Bool = 3 < 8
+$ leq_equal : @Bool = 8 < 8
+$ leq_false : @Bool = 8 < 3
+$ not_false : @Bool = !@false
+$ not_true : @Bool = !@true
+$ not_not : @Bool = !(!@true)
 
 # Dispatch per base type: each of these picks a different CORE overload.
 $ ck_int : @Int = if (3 < 4) && (4 <= 4) && (5 >= 5) && !(6 < 6) && (3 != 4) => 0 else 1
 $ ck_real : @Int = if (1.5 < 2.5) && (2.5 >= 2.5) && (0.5 == 0.5) => 0 else 2
 $ ck_f32 : @Int =
     let a : @Float32 = 1.25 in
-    let b : @Float32 = 2.5 in if (a < b) && (b > a) && (a != b) => 0 else 4
+    let b : @Float32 = 2.5 in
+    if (a < b) && (b > a) && (a != b) => 0 else 4
 $ ck_str : @Int = if ("abc" < "abd") && ("b" > "abc") && ("x" == "x") => 0 else 8
 $ ck_bool : @Int = if (@true == @true) && !(@true == @false) => 0 else 16
 
@@ -51,7 +52,8 @@ $ ck_structural : @Int =
         && ({ 1, "a" } == { 1, "a" })
         && ({ 1, "a" } != { 1, "b" }) =>
         0
-    else 128
+    else
+        128
 
 # `<` and `>` in an expression, in a function whose type carries an effect row:
 # the row is type-level, the operators value-level, so the two never meet.

@@ -4,17 +4,17 @@ $ @mod ARITHMETIC
 # \info Integer arithmetic: operator precedence, grouping, division, modulo,
 #       and unary negation.
 
-$ sum = -1.0 + 2.0 + 3.0 + 4.2
-$ product = 2 * 3 * 4
-$ precedence = 1 + 2 * 3 - 4
-$ grouped = (1 + 2) * (3 - 4) + 5
-$ quotient = 100 / 7
-$ remainder = 100.123 % 7.0
-$ negate = -42
-$ double_neg = - (-7)
-$ chained = 1 - 2 - 3 - 4
-$ big = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)
-$ exp = 2 ^ 3
+$ sum : @Float64 = -1.0 + 2.0 + 3.0 + 4.2
+$ product : @Int = 2 * 3 * 4
+$ precedence : @Int = 1 + 2 * 3 - 4
+$ grouped : @Int = (1 + 2) * (3 - 4) + 5
+$ quotient : @Int = 100 / 7
+$ remainder : @Float64 = 100.123 % 7.0
+$ negate : @Int = -42
+$ double_neg : @Int = - (-7)
+$ chained : @Int = 1 - 2 - 3 - 4
+$ big : @Int = (3 * (244 - 57 + 4) - (74 - 777)) / 5 + (4 + 27) * (3 - 7)
+$ exp : @Int = 2 ^ 3
 
 # Force-evaluate results for the combined test runner (pass = no fault).
 $ test : @Int =

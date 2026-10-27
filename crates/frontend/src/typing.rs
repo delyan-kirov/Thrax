@@ -342,6 +342,9 @@ pub struct Checker<'a> {
     /// may perform effects (`println`, file IO) the way a `main` body can. A
     /// batch-compiled file leaves this off, so its top level stays pure.
     open_effects: bool,
+    /// The one global allowed to omit its signature: the binding a tool (the shell,
+    /// `@eval`) wraps around an expression to learn its type. Never set for a file.
+    inferred: Option<&'static str>,
 }
 
 /// One candidate of an operation name that several EFFECTS declare (`ask` in both
@@ -497,6 +500,7 @@ impl<'a> Checker<'a> {
             unknown_type: None,
             lenient: false,
             open_effects: false,
+            inferred: None,
         };
         c.install_builtins();
         c
@@ -514,6 +518,11 @@ impl<'a> Checker<'a> {
     /// The interactive shell turns this on so an entered expression may perform IO.
     pub fn set_open_effects(&mut self, open: bool) {
         self.open_effects = open;
+    }
+
+    /// Let the global `name` omit its signature (see `inferred`).
+    pub fn set_inferred(&mut self, name: &'static str) {
+        self.inferred = Some(name);
     }
 
     /// The `[..]` literal sites resolved to a sized tensor. Lowering builds a vector.
@@ -815,7 +824,8 @@ impl<'a> Checker<'a> {
             .ast
             .slice(program.items)
             .iter()
-            .filter_map(|item| match item {
+            .zip(self.ast.slice(program.spans))
+            .filter_map(|(item, span)| match item {
                 Item::Def {
                     name,
                     sig,
@@ -823,6 +833,7 @@ impl<'a> Checker<'a> {
                     body,
                 } => Some(Def {
                     name: self.text(*name),
+                    name_span: span.name,
                     sig: *sig,
                     ctx: *ctx,
                     body: *body,
@@ -924,10 +935,13 @@ impl<'a> Checker<'a> {
             // build a struct because `MyTyp` does not exist), so it wins.
             let checked = self.check_component(&component, &defs, &mut types);
             self.report_holes();
-            if let Err(d) = checked {
-                let d = self.unknown_type.take().unwrap_or(d);
-                self.errors.push(d);
-                self.recover_component(level, &component, &defs, &mut types);
+            match checked {
+                Ok(()) => self.require_signatures(&component, &defs, &types),
+                Err(d) => {
+                    let d = self.unknown_type.take().unwrap_or(d);
+                    self.errors.push(d);
+                    self.recover_component(level, &component, &defs, &mut types);
+                }
             }
         }
 
@@ -1442,6 +1456,35 @@ impl<'a> Checker<'a> {
             types.insert(defs[i].name, self.eng.zonk(*decl));
         }
         Ok(())
+    }
+
+    /// Report each member of a checked component that has no signature. A global's
+    /// type is its contract with every importer, so it is always written; the
+    /// inferred type is offered as the annotation.
+    fn require_signatures(&mut self, component: &[usize], defs: &[Def<'a>], types: &HashMap<&'a str, Type>) {
+        for &i in component {
+            let d = &defs[i];
+            if d.sig.is_some() || self.inferred == Some(d.name) {
+                continue;
+            }
+            let shown = self.show(types[d.name]);
+            let span = d.name_span.or_else(|| self.ast.expr_span(d.body)).unwrap_or(Span::at(0));
+            let mut diag = diag!(
+                Code::TypeAnnotationRequired, span, 0,
+                "global `{}` has no type annotation", d.name;
+                note: "global symbols require a type annotation"
+            );
+            let rewrite = format!("the type `{shown}` was deduced for `{}`, rewrite it like this", d.name);
+            diag = match d.name_span {
+                Some(at) => diag.with_fix(
+                    rewrite,
+                    vec![Edit::new(Span::at(at.end), format!(" : {shown}"))],
+                    Applicability::MachineApplicable,
+                ),
+                None => diag.with_help(format!("the type `{shown}` was deduced for `{}`", d.name)),
+            };
+            self.errors.push(diag);
+        }
     }
 
     /// Undo what a failed [`Self::check_component`] left half done, then give
@@ -6878,6 +6921,7 @@ struct SigVars<'a> {
 
 struct Def<'a> {
     name: &'a str,
+    name_span: Option<Span>,
     sig: Option<Aol<Ty>>,
     /// The context parameter's type when the signature declares one. It is also
     /// `sig`'s first `from`, so the signature stays what the user wrote.

@@ -123,9 +123,10 @@ capitalized; a lowercase name in a type is a type variable.
 
 ## TYPE_ANNOTATION_REQUIRED
 
-The type of something cannot be inferred and must be written. Reserved, not
-currently emitted; such cases are reported as `TYPE_MISMATCH` with a `help:`
-suggesting the annotation.
+A global definition has no type annotation. Every global states its type,
+since that type is its contract with every importer; there are no exceptions,
+not even for a constant. The fix inserts the type that was deduced for it:
+`$ answer = 42` becomes `$ answer : @Int = 42`. `thrax fix` applies it.
 
 ## TYPE_CYCLE
 
