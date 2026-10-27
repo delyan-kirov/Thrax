@@ -437,15 +437,17 @@ platform layer feeds the target through the whole pipeline.
 build to `wasm32-unknown-unknown` as a `cdylib` (`web/playground`, a crate that
 lives under `web/` because it is a web deliverable), exposing a
 raw C-ABI (`thx_alloc`/`thx_compile`/`thx_out_ptr`/`thx_out_len`) over linear
-memory, driven from hand-written JS in `web/site/index.html` (no wasm-bindgen, no
-emscripten). It runs the WHOLE pipeline in the page: parse, check, lower, and
+memory, driven from TypeScript in `web/src/` (no wasm-bindgen, no emscripten, no
+npm packages; `tsc` emits the page's JavaScript). It runs the WHOLE pipeline in the page: parse, check, lower, and
 either interpret (`Run`), emit C (`Generated C`), or dump the IR/AST. The bundled
 standard library is `include_str!`'d, so no filesystem is needed. nixpkgs `rustc`
 ships that target's `std` (allocator included) but not a bundled `rust-lld`, so
 the dev shell provides `wasm-ld` (`pkgs.lld`) and `.cargo/config.toml` points the
 target at it. On wasm a foreign call resolves against the JavaScript embedder
-instead of libc (see the FFI section below). Serve with `node web/serve.mjs` and
-open `http://localhost:8000/`.
+instead of libc (see the FFI section below). The same module carries the language
+server (`thx_lsp`), which the page's editor drives one message at a time. Build
+with `node web/build.ts`, serve with `node web/serve.ts`, and open
+`http://localhost:8000/`.
 
 **Foreign function interface (the Rust port).** An `@extern` call is reduced to a
 platform-independent C value model and handed to a [`ForeignCalls`] backend for

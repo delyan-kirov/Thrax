@@ -45,126 +45,108 @@ $ Spec : @struct =
 
 $ spec : Command -> Spec = \c =
     is c
-    | .Build =>
-        Spec.{
-            .name = "build",
-            .usage = "[release [musl|gnu|windows]]",
-            .info = "clean, then build the compiler (debug unless `release`)",
-        }
-    | .Rebuild =>
-        Spec.{
-            .name = "rebuild",
-            .usage = "[release [musl|gnu|windows]]",
-            .info = "build the compiler without cleaning",
-        }
-    | .Clean =>
-        Spec.{
-            .name = "clean",
-            .usage = "[all]",
-            .info = "remove build artifacts (all: also the built libffi and musl)",
-        }
-    | .Test => Spec.{ .name = "test", .usage = "", .info = "clean, then run `cargo test`" }
-    | .Install =>
-        Spec.{
-            .name = "install",
-            .usage = "",
-            .info = "install this checkout into the nix profile, replacing the old one",
-        }
-    | .Readme =>
-        Spec.{
-            .name = "readme",
-            .usage = "",
-            .info = "regenerate README.md from tools/README_GEN.thx"
-        }
-    | .HelixUpdate =>
-        Spec.{
-            .name = "helix-update",
-            .usage = "",
-            .info = "rebuild the grammars of the Helix editor"
-        }
-    | .Corpus =>
-        Spec.{
-            .name = "corpus",
-            .usage = "[wasm]",
-            .info = "run tests/MAIN.thx on both engines (interpreter + native C,\n"
-                ++ "or with `wasm` the C built for wasm32-wasi, under node)",
-        }
-    | .Grammar =>
-        Spec.{
-            .name = "grammar",
-            .usage = "",
-            .info = "check documentation/thrax.y with bison (-v for counterexamples)",
-        }
-    | .TreeSitter =>
-        Spec.{
-            .name = "tree-sitter",
-            .usage = "",
-            .info = "generate the Helix grammar from documentation/thrax.y\n"
-                ++ "(tools/editors/tree-sitter-thrax, for Helix and Zed)",
-        }
-    | .Tags =>
-        Spec.{
-            .name = "tags",
-            .usage = "[-o FILE] [PATH...]",
-            .info = "write a ctags `tags` file for Vim (default: the whole repo)",
-        }
-    | .Fmt =>
-        Spec.{
-            .name = "fmt",
-            .usage = "[check]",
-            .info = "format every tracked .thx file in place (submodules too,\n"
-                ++ "not tests/diagnostics/)\n"
-                ++ "(check: only list the files that are not formatted)",
-        }
-    | .Hooks =>
-        Spec.{
-            .name = "hooks",
-            .usage = "",
-            .info = "use tools/hooks as this clone's git hooks (see\n"
-                ++ "documentation/workflow.md)",
-        }
-    | .Doc =>
-        Spec.{
-            .name = "doc",
-            .usage = "",
-            .info = "build the rustdoc for the workspace and open it in a browser",
-        }
-    | .Site =>
-        Spec.{
-            .name = "site",
-            .usage = "",
-            .info = "rebuild the web playground's wasm, then serve it and open it",
-        }
-    | .Hook =>
-        Spec.{
-            .name = "hook",
-            .usage = "NAME ARGS",
-            .info = "run the git hook NAME (tools/hooks/* call this)",
-        }
-    | .Issue =>
-        Spec.{
-            .name = "issue",
-            .usage = "TITLE",
-            .info = "open an issue titled TITLE and print its number",
-        }
-    | .SdkPath =>
-        Spec.{
-            .name = "sdk_path",
-            .usage = "",
-            .info = "print the repo root (source tools/thxdo.nu to cd there)",
-        }
-    | .Stats =>
-        Spec.{
-            .name = "stats",
-            .usage = "",
-            .info = "line counts (tokei, excluding external/ and applications/)",
-        }
-    | .All => Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
-    | .Help => Spec.{ .name = "help", .usage = "", .info = "show this help" }
+    | .Build       => Spec.{
+        .name = "build",
+        .usage = "[release [musl|gnu|windows]]",
+        .info = "clean, then build the compiler (debug unless `release`)",
+    }
+    | .Rebuild     => Spec.{
+        .name = "rebuild",
+        .usage = "[release [musl|gnu|windows]]",
+        .info = "build the compiler without cleaning",
+    }
+    | .Clean       => Spec.{
+        .name = "clean",
+        .usage = "[all]",
+        .info = "remove build artifacts (all: also the built libffi and musl)",
+    }
+    | .Test        => Spec.{ .name = "test", .usage = "", .info = "clean, then run `cargo test`" }
+    | .Install     => Spec.{
+        .name = "install",
+        .usage = "",
+        .info = "install this checkout into the nix profile, replacing the old one",
+    }
+    | .Readme      => Spec.{
+        .name = "readme",
+        .usage = "",
+        .info = "regenerate README.md from tools/README_GEN.thx"
+    }
+    | .HelixUpdate => Spec.{
+        .name = "helix-update",
+        .usage = "",
+        .info = "rebuild the grammars of the Helix editor"
+    }
+    | .Corpus      => Spec.{
+        .name = "corpus",
+        .usage = "[wasm]",
+        .info = "run tests/MAIN.thx on both engines (interpreter + native C,\n"
+            ++ "or with `wasm` the C built for wasm32-wasi, under node)",
+    }
+    | .Grammar     => Spec.{
+        .name = "grammar",
+        .usage = "",
+        .info = "check documentation/thrax.y with bison (-v for counterexamples)",
+    }
+    | .TreeSitter  => Spec.{
+        .name = "tree-sitter",
+        .usage = "",
+        .info = "generate the Helix grammar from documentation/thrax.y\n"
+            ++ "(tools/editors/tree-sitter-thrax, for Helix and Zed)",
+    }
+    | .Tags        => Spec.{
+        .name = "tags",
+        .usage = "[-o FILE] [PATH...]",
+        .info = "write a ctags `tags` file for Vim (default: the whole repo)",
+    }
+    | .Fmt         => Spec.{
+        .name = "fmt",
+        .usage = "[check]",
+        .info = "format every tracked .thx file in place (submodules too,\n"
+            ++ "not tests/diagnostics/)\n"
+            ++ "(check: only list the files that are not formatted)",
+    }
+    | .Hooks       => Spec.{
+        .name = "hooks",
+        .usage = "",
+        .info = "use tools/hooks as this clone's git hooks (see\n" ++ "documentation/workflow.md)",
+    }
+    | .Doc         => Spec.{
+        .name = "doc",
+        .usage = "",
+        .info = "build the rustdoc for the workspace and open it in a browser",
+    }
+    | .Site        => Spec.{
+        .name = "site",
+        .usage = "",
+        .info = "rebuild the web playground's wasm, then serve it and open it",
+    }
+    | .Hook        => Spec.{
+        .name = "hook",
+        .usage = "NAME ARGS",
+        .info = "run the git hook NAME (tools/hooks/* call this)",
+    }
+    | .Issue       => Spec.{
+        .name = "issue",
+        .usage = "TITLE",
+        .info = "open an issue titled TITLE and print its number",
+    }
+    | .SdkPath     => Spec.{
+        .name = "sdk_path",
+        .usage = "",
+        .info = "print the repo root (source tools/thxdo.nu to cd there)",
+    }
+    | .Stats       => Spec.{
+        .name = "stats",
+        .usage = "",
+        .info = "line counts (tokei, excluding external/ and applications/)",
+    }
+    | .All         =>
+        Spec.{ .name = "all", .usage = "", .info = "build, then regenerate README.md" }
+    | .Help        => Spec.{ .name = "help", .usage = "", .info = "show this help" }
 
 # `$ commands : @Vec Command = [Command.Build, ...]`, in declaration order.
-$ @e
-    <| @parse_items (
+$ @e <| @parse_items
+    (
         "$ commands : @Vec Command = ["
             ++ STR.join ", " (VEC.map (\v = "Command." ++ v.0) (@type_variants "Command"))
             ++ "]"
@@ -180,8 +162,10 @@ $ help_entry : Command -> @Str = \c =
     let head = "  " ++ s.name ++ (if STR.is_empty s.usage => "" else " " ++ s.usage) in
     let indent = STR.repeat " " help_column in
     let info = STR.join ("\n" ++ indent) (STR.split s.info "\n") in
-    if STR.len head < help_column - 1 => STR.pad_right head help_column ++ info ++ "\n"
-    else head ++ "\n" ++ indent ++ info ++ "\n"
+    if STR.len head < help_column - 1 =>
+        STR.pad_right head help_column ++ info ++ "\n"
+    else
+        head ++ "\n" ++ indent ++ info ++ "\n"
 
 $ help_text : @Str =
     "thxdo - the Thrax task runner (tasks live in tools/THXDO.thx)\n"
@@ -203,24 +187,30 @@ $ native_path : @Str -> @Str = \p = if TARGET.os == "windows" => STR.replace p "
 # CI runs it on every platform. `wasm` builds the native leg for wasm32-wasi and
 # runs it under node instead.
 $ corpus_task : @Bool -> <@IO, Fail> {} = \wasm =
-    let bin = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
+    let
+        bin    = native_path (if STR.is_empty (env "THRAX_BIN") => "thrax" else env "THRAX_BIN"),
         interp = "target/corpus-interp.txt",
         native = "target/corpus-native.txt",
-        build = if wasm => " build --target=wasm32-wasi tests/MAIN.thx"
-        else " build tests/MAIN.thx",
-        exe = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN" in
-    step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp);
-    step "native build" (bin ++ build);
-    step "native run" (exe ++ " > " ++ native);
-    is { read_file interp, read_file native }
-    | { Option.Some.{ a }, Option.Some.{ b } } =>
-        print b;
-        let la = STR.lines a,
-            lb = STR.lines b,
-            skip = VEC.append (skips la) (skips lb) in
-        if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) => {}
-        else Fail.fail "the engines disagree (target/corpus-*.txt)"
-    | _ => Fail.fail "corpus output missing"
+        build  =
+            if wasm => " build --target=wasm32-wasi tests/MAIN.thx" else " build tests/MAIN.thx",
+        exe    = if wasm => "node tests/thrax-out/MAIN.js" else native_path "tests/thrax-out/MAIN"
+    in
+        step "interpreter run" (bin ++ " run tests/MAIN.thx > " ++ interp);
+        step "native build" (bin ++ build);
+        step "native run" (exe ++ " > " ++ native);
+        is { read_file interp, read_file native }
+        | { Option.Some.{ a }, Option.Some.{ b } } =>
+            print b;
+            let
+                la   = STR.lines a,
+                lb   = STR.lines b,
+                skip = VEC.append (skips la) (skips lb)
+            in
+                if STR.join "\n" (comparable skip la) == STR.join "\n" (comparable skip lb) =>
+                    {}
+                else
+                    Fail.fail "the engines disagree (target/corpus-*.txt)"
+        | _ => Fail.fail "corpus output missing"
 
 # The module named on a corpus line (`OK NAME`, `ERR NAME`, `SKIP NAME (why)`).
 $ line_module : @Str -> @Str = \l =
@@ -270,11 +260,12 @@ $ doc_open_cmd : @Str = "( ${BROWSER:-xdg-open} \"$PWD/" ++ doc_page ++ "\" >/de
 
 $ site_url : @Str = "http://localhost:8000"
 
-# The playground links with wasm-ld, which only the web app's own dev shell
-# carries (applications/web/flake.nix), so the build runs inside it.
-$ site_build_cmd : @Str = "nix develop ./applications/web --command node applications/web/build.mjs"
+# The playground links with wasm-ld and emits its page with tsc, which only the
+# web app's own dev shell carries (applications/web/flake.nix), so the build runs
+# inside it.
+$ site_build_cmd : @Str = "nix develop ./applications/web --command node applications/web/build.ts"
 
-$ site_serve_cmd : @Str = "node applications/web/serve.mjs"
+$ site_serve_cmd : @Str = "node applications/web/serve.ts"
 
 # The server holds the terminal, so the browser has to be launched before it,
 # and after a moment so it does not beat the listen.
@@ -332,8 +323,10 @@ $ jobs : @Str = "$(getconf _NPROCESSORS_ONLN)"
 # autoreconf and libtool are too heavy for the everyday dev shell, so they come
 # from external/flake.nix unless the environment already has them.
 $ ffi_wrap : @Str -> <@IO> @Str = \cmd =
-    if C.system "command -v autoreconf >/dev/null 2>&1" == 0 => "sh -c " ++ sh_quote cmd
-    else "nix develop ./external --command sh -c " ++ sh_quote cmd
+    if C.system "command -v autoreconf >/dev/null 2>&1" == 0 =>
+        "sh -c " ++ sh_quote cmd
+    else
+        "nix develop ./external --command sh -c " ++ sh_quote cmd
 
 $ musl_fetch_cmd : @Str =
     "[ -d "
@@ -377,10 +370,8 @@ $ dist_layout_cmd : @Str -> @Str -> @Str -> @Str = \release exe libs =
         ++ "cp crates/thrax/include/thrax.h $d/include/; "
         ++ "cp library/*.thx $d/library/"
 
-$ dist_cmd : @Str =
-    dist_layout_cmd "target/release" "thrax" (
-        if TARGET.os == "macos" => "libthrax.dylib libthrax.a" else "libthrax.so libthrax.a"
-    )
+$ dist_cmd : @Str = dist_layout_cmd "target/release" "thrax"
+    (if TARGET.os == "macos" => "libthrax.dylib libthrax.a" else "libthrax.so libthrax.a")
 
 # Windows is built from Linux: tools/windows/flake.nix cross-compiles with
 # MinGW-w64. libffi stays a DLL there, shipped beside thrax.exe, where Windows
@@ -390,7 +381,8 @@ $ windows_shell : @Str = "nix develop ./tools/windows --command "
 $ windows_cargo_cmd : @Str = windows_shell ++ "cargo build --release -p thrax"
 
 $ windows_dist_cmd : @Str =
-    dist_layout_cmd "target/windows/x86_64-pc-windows-gnu/release" "thrax.exe" "thrax.dll libthrax.dll.a libthrax.a"
+    dist_layout_cmd "target/windows/x86_64-pc-windows-gnu/release" "thrax.exe"
+        "thrax.dll libthrax.dll.a libthrax.a"
         ++ "; "
         ++ windows_shell
         ++ "sh -c 'cp $LIBFFI/bin/libffi-*.dll "
@@ -417,11 +409,12 @@ $ hooks_cmd : @Str =
         ++ "&& git config push.autoSetupRemote true"
 
 $ new_issue : @Str -> <@IO, Fail> {} = \title =
-    if STR.is_empty (STR.trim title) => Fail.fail "usage: thxdo issue <title>"
+    if STR.is_empty (STR.trim title) =>
+        Fail.fail "usage: thxdo issue <title>"
     else
         is with_forge (\u = Forge.create_issue title)
         | Option.Some.{ n } => println ("#" ++ int_to_str n)
-        | _ => Fail.fail "could not open the issue"
+        | _                 => Fail.fail "could not open the issue"
 
 $ step : @Str -> @Str -> <@IO, Fail> {} = \what cmd =
     if C.system cmd == 0 => {} else Fail.fail (what ++ " FAILED")
@@ -430,14 +423,16 @@ $ refresh_ffi : {} -> <@IO, Fail> {} = \u =
     if C.system ffi_stale_cmd == 0 =>
         println "thxdo: building libffi from external/libffi ...";
         step "libffi build (log: target/libffi-build.log)" (ffi_wrap ffi_build_cmd)
-    else println "thxdo: libffi is up to date"
+    else
+        println "thxdo: libffi is up to date"
 
 $ refresh_musl : {} -> <@IO, Fail> {} = \u =
     step "musl fetch" musl_fetch_cmd;
     if C.system musl_stale_cmd == 0 =>
         println "thxdo: building musl from external/musl ...";
         step "musl build (log: target/musl-build.log)" musl_build_cmd
-    else println "thxdo: musl is up to date"
+    else
+        println "thxdo: musl is up to date"
 
 $ is_linux : {} -> <@IO> @Bool = \u = TARGET.os == "linux"
 
@@ -460,7 +455,7 @@ $ windows_release : {} -> <@IO, Fail> {} = \u =
 
 $ build_task : @Bool -> @Vec @Str -> <@IO, Fail> {} = \clean args =
     is arg_or args 2 ""
-    | "" =>
+    | ""    =>
         (if clean => C.system "cargo clean --profile dev" else 0); step "cargo build" "cargo build"
     | "release" =>
         let libc = arg_or args 3 (if is_linux {} => "musl" else "gnu") in
@@ -472,10 +467,10 @@ $ build_task : @Bool -> @Vec @Str -> <@IO, Fail> {} = \clean args =
             | "windows" =>
                 (
                     if clean =>
-                        C.system (
-                            "rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir
-                        )
-                    else 0
+                        C.system
+                            ("rm -rf target/windows/x86_64-pc-windows-gnu/release " ++ dist_dir)
+                    else
+                        0
                 );
                 windows_release {}
             | _ => Fail.fail ("unknown release `" ++ libc ++ "` (musl, gnu or windows)")
@@ -484,7 +479,7 @@ $ build_task : @Bool -> @Vec @Str -> <@IO, Fail> {} = \clean args =
 
 $ clean_task : @Vec @Str -> <@IO, Fail> {} = \args =
     is arg_or args 2 ""
-    | "" => step "cargo clean" "cargo clean"
+    | ""    => step "cargo clean" "cargo clean"
     | "all" => step "cargo clean" "cargo clean"; step "clean" "rm -rf external/artifacts"
     | other => Fail.fail ("unknown clean mode `" ++ other ++ "` (try `all`)")
 
@@ -498,13 +493,13 @@ $ arg_or : @Vec @Str -> @Int -> @Str -> @Str = \args i d =
 
 $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
     is c
-    | .Build => build_task @true args
-    | .Rebuild => build_task @false args
-    | .Clean => clean_task args
-    | .Test => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
-    | .Install => C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
-    | .Issue => new_issue (STR.join " " (VEC.drop 2 args))
-    | .Hook => with_forge (\u = HOOKS.hook args)
+    | .Build       => build_task @true args
+    | .Rebuild     => build_task @false args
+    | .Clean       => clean_task args
+    | .Test        => step "cargo clean" "cargo clean"; step "cargo test" "cargo test"
+    | .Install     => C.system "nix profile remove Thrax"; step "nix profile add" "nix profile add"
+    | .Issue       => new_issue (STR.join " " (VEC.drop 2 args))
+    | .Hook        => with_forge (\u = HOOKS.hook args)
     | .Readme =>
         println "thxdo: regenerating README.md ...";
         step "readme" readme_cmd;
@@ -513,14 +508,16 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
         println "thxdo: running tests/MAIN.thx on both engines ...";
         corpus_task (arg_or args 2 "" == "wasm");
         println "thxdo: corpus OK (engines agree)"
-    | .TreeSitter => step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
-    | .Tags => step "tags" (tags_cmd args)
-    | .Fmt => step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
-    | .Hooks => step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
+    | .TreeSitter  => step "tree-sitter" tree_sitter_cmd; println "thxdo: tree-sitter grammar OK"
+    | .Tags        => step "tags" (tags_cmd args)
+    | .Fmt         => step "fmt" (fmt_cmd (arg_or args 2 "" == "check")); println "thxdo: fmt OK"
+    | .Hooks       => step "hooks" hooks_cmd; println "thxdo: git hooks installed from tools/hooks"
     | .Grammar =>
         println "thxdo: checking documentation/thrax.y ...";
-        if C.system grammar_cmd == 0 => println "thxdo: grammar OK"
-        else C.system grammar_verbose_cmd; Fail.fail "grammar FAILED (counterexamples above)"
+        if C.system grammar_cmd == 0 =>
+            println "thxdo: grammar OK"
+        else
+            C.system grammar_verbose_cmd; Fail.fail "grammar FAILED (counterexamples above)"
     | .Doc =>
         println "thxdo: building rustdoc ...";
         step "doc" "cargo doc --workspace --no-deps";
@@ -535,20 +532,20 @@ $ run_command : Command -> @Vec @Str -> <@IO, Fail> {} = \c args =
         C.system site_open_cmd;
         C.system site_serve_cmd;
         {}
-    | .SdkPath => println (env "THRAX_ROOT")
-    | .Stats => step "stats" "tokei --exclude external --exclude applications"
+    | .SdkPath     => println (env "THRAX_ROOT")
+    | .Stats       => step "stats" "tokei --exclude external --exclude applications"
     | .All =>
         step "cargo clean" "cargo clean";
         step "cargo build" "cargo build";
         println "thxdo: regenerating README.md ...";
         step "readme" readme_cmd
-    | .Help => print help_text
+    | .Help        => print help_text
 
 $ run : @Vec @Str -> <@IO, Fail> {} = \args =
     let name = arg_or args 1 "help" in
     is parse_command name
     | Option.Some.{ c } => run_command c args
-    | _ => print help_text; Fail.fail ("unknown command `" ++ name ++ "`")
+    | _                 => print help_text; Fail.fail ("unknown command `" ++ name ++ "`")
 
 #-
  - \args(1) : command

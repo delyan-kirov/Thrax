@@ -8,12 +8,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use utilities::config::{Config, Value};
 use utilities::{Applicability, Code, Diagnostic, Json, Severity, Span};
 
 use super::analysis::{self, Snapshot};
+use super::clock::Instant;
 use super::text::{Document, Encoding, Position};
 use super::{path_to_uri, read_message, uri_to_path, write_message};
 
@@ -61,11 +62,23 @@ pub struct Server {
     /// Settings the client sent, re-applied over each file's `thrax.toml`.
     client: Json,
     shutting_down: bool,
-    out: Box<dyn std::io::Write>,
+    out: Sink,
+    /// Sources imports resolve against as if they were files, without being
+    /// open or checked themselves (see [`Server::provide`]).
+    provided: HashMap<PathBuf, String>,
     /// Messages the reader has received, and how many of them were handled:
     /// when they differ, a message is waiting and analysis should yield to it.
     arrived: Arc<AtomicUsize>,
     handled: usize,
+}
+
+/// Where outgoing messages go.
+enum Sink {
+    /// Framed onto a stream, the stdio transport.
+    Stream(Box<dyn std::io::Write>),
+    /// Kept for an embedder to take with [`Server::take_outbox`], when the
+    /// server is driven one call at a time (the browser playground).
+    Queue(Vec<Json>),
 }
 
 /// The protocol's channel: the original stdout. Compile-time code the save
@@ -117,19 +130,7 @@ pub fn run() -> std::process::ExitCode {
             }
         }
     });
-    let mut server = Server {
-        enc: Encoding::Utf16,
-        open: HashMap::new(),
-        dirty: Vec::new(),
-        due: None,
-        grace_due: Vec::new(),
-        rank_due: Vec::new(),
-        client: Json::Null,
-        shutting_down: false,
-        out: protocol_output(),
-        arrived,
-        handled: 0,
-    };
+    let mut server = Server::new(Sink::Stream(protocol_output()), arrived);
     loop {
         let wake = server.next_wake();
         let msg = match wake {
@@ -164,6 +165,52 @@ pub fn run() -> std::process::ExitCode {
 }
 
 impl Server {
+    fn new(out: Sink, arrived: Arc<AtomicUsize>) -> Server {
+        Server {
+            enc: Encoding::Utf16,
+            open: HashMap::new(),
+            dirty: Vec::new(),
+            due: None,
+            grace_due: Vec::new(),
+            rank_due: Vec::new(),
+            client: Json::Null,
+            shutting_down: false,
+            out,
+            provided: HashMap::new(),
+            arrived,
+            handled: 0,
+        }
+    }
+
+    /// A server with no transport: the embedder passes each message to
+    /// [`Server::handle`], calls [`Server::tick`] when [`Server::wake_in`] says,
+    /// and collects what the server sent with [`Server::take_outbox`].
+    pub fn queued() -> Server {
+        Server::new(Sink::Queue(Vec::new()), Arc::new(AtomicUsize::new(0)))
+    }
+
+    /// Make `text` the source of `path` for import resolution, where there is
+    /// no file to read: a module the embedder supplies, like the browser
+    /// playground's `HOST`. Unlike an open document it is never checked or
+    /// reported on.
+    pub fn provide(&mut self, path: PathBuf, text: String) {
+        self.provided.insert(path, text);
+    }
+
+    /// The messages sent since the last call, oldest first. Empty for a
+    /// stdio server, which writes them as it goes.
+    pub fn take_outbox(&mut self) -> Vec<Json> {
+        match &mut self.out {
+            Sink::Queue(q) => std::mem::take(q),
+            Sink::Stream(_) => Vec::new(),
+        }
+    }
+
+    /// How long until [`Server::tick`] has work, or `None` while it has none.
+    pub fn wake_in(&self) -> Option<Duration> {
+        self.next_wake().map(|at| at.saturating_duration_since(Instant::now()))
+    }
+
     fn config(&self, path: &Path) -> Config {
         let (mut config, _) = Config::for_path(path);
         if let Json::Obj(sections) = &self.client {
@@ -189,7 +236,12 @@ impl Server {
     }
 
     fn send(&mut self, msg: Json) {
-        let _ = write_message(&mut self.out, &msg);
+        match &mut self.out {
+            Sink::Stream(out) => {
+                let _ = write_message(out, &msg);
+            }
+            Sink::Queue(q) => q.push(msg),
+        }
     }
 
     fn reply(&mut self, id: &Json, result: Json) {
@@ -206,7 +258,7 @@ impl Server {
     }
 
     /// Handle one message; `Some(code)` ends the server.
-    fn handle(&mut self, msg: Json) -> Option<std::process::ExitCode> {
+    pub fn handle(&mut self, msg: Json) -> Option<std::process::ExitCode> {
         let method = msg.get("method").as_str().unwrap_or("").to_string();
         let id = msg.get("id").clone();
         let params = msg.get("params");
@@ -434,7 +486,7 @@ impl Server {
     /// Run what is due: checks of dirty documents (stopping early when new
     /// messages arrive, so typing is never queued behind analysis), then any
     /// held-back errors whose grace ran out.
-    fn tick(&mut self) {
+    pub fn tick(&mut self) {
         let now = Instant::now();
         if self.due.is_some_and(|d| d <= now) {
             self.due = None;
@@ -511,8 +563,12 @@ impl Server {
     }
 
     fn analyze(&mut self, uri: &str) {
-        let overlay: HashMap<PathBuf, String> =
-            self.open.values().map(|o| (o.path.clone(), o.doc.text.clone())).collect();
+        let overlay: HashMap<PathBuf, String> = self
+            .provided
+            .iter()
+            .map(|(p, t)| (p.clone(), t.clone()))
+            .chain(self.open.values().map(|o| (o.path.clone(), o.doc.text.clone())))
+            .collect();
         let Some(open) = self.open.get_mut(uri) else { return };
         let (path, version) = (open.path.clone(), open.doc.version);
         // The new check rewinds the types the old snapshot reads, so it goes first.
@@ -793,6 +849,7 @@ impl Server {
         let Some((uri, offset)) = self.locate(params) else { return Json::Null };
         let enc = self.enc;
         let path = self.open[&uri].path.clone();
+        let buffers: Vec<(PathBuf, String)> = self.open.iter().map(|(u, o)| (o.path.clone(), u.clone())).collect();
         let Some(snap) = self.current(&uri) else { return Json::Null };
         let Some(module) = snap.module_of(&path) else { return Json::Null };
         let Some((e, _)) = snap.expr_at(module, offset) else { return Json::Null };
@@ -811,10 +868,15 @@ impl Server {
         for m in candidates {
             if let Some(span) = snap.definition(m, name) {
                 let (_, file, src) = &snap.sources[m];
+                let doc = Document::new(src.clone(), 0);
+                // An open buffer is a target even with no file behind it (a new
+                // file, or an editor with no filesystem); an embedded module is not.
+                if let Some((_, open_uri)) = buffers.iter().find(|(p, _)| p == Path::new(file)) {
+                    return Json::obj([("uri", Json::str(open_uri.clone())), ("range", range(&doc, span, enc))]);
+                }
                 if !Path::new(file).is_file() {
                     continue;
                 }
-                let doc = Document::new(src.clone(), 0);
                 let file = Path::new(file).canonicalize().unwrap_or_else(|_| PathBuf::from(file));
                 return Json::obj([("uri", Json::str(path_to_uri(&file))), ("range", range(&doc, span, enc))]);
             }
@@ -883,31 +945,7 @@ impl Server {
     fn semantic_tokens(&mut self, params: &Json) -> Json {
         let Some(uri) = params.get("textDocument").get("uri").as_str() else { return Json::Null };
         let Some(open) = self.open.get(uri) else { return Json::Null };
-        let doc = &open.doc;
-        let Ok(tokens) = frontend::Lexer::tokenize_with_comments(&doc.text) else { return Json::Null };
-        let mut data = Vec::new();
-        let (mut line, mut col) = (0usize, 0usize);
-        for t in tokens {
-            let text = &doc.text[t.span.start..t.span.end];
-            let Some(class) = token_class(t.kind, text) else { continue };
-            // A token is reported line by line, so a multi-line one (a block
-            // comment) is split at its newlines.
-            let mut start = t.span.start;
-            for piece in text.split_inclusive('\n') {
-                let body = piece.trim_end_matches('\n');
-                let at = doc.position(start, self.enc);
-                let end = doc.position(start + body.len(), self.enc);
-                if end.character > at.character {
-                    let dl = at.line - line;
-                    let dc = if dl == 0 { at.character - col } else { at.character };
-                    data.extend([dl, dc, end.character - at.character, class, 0].map(|n| Json::int(n as i64)));
-                    line = at.line;
-                    col = at.character;
-                }
-                start += piece.len();
-            }
-        }
-        Json::obj([("data", Json::Arr(data))])
+        semantic_token_data(&open.doc, self.enc)
     }
 
     fn document_symbols(&mut self, params: &Json) -> Json {
@@ -986,6 +1024,40 @@ impl Server {
         let offset = open.doc.offset(position(params.get("position")), self.enc);
         Some((uri, offset))
     }
+}
+
+/// `textDocument/semanticTokens/full` for `text` with no document open: what an
+/// embedder highlights a buffer with before (or without) opening it. UTF-16
+/// positions, the protocol's default.
+pub fn highlight(text: &str) -> Json {
+    semantic_token_data(&Document::new(text.to_string(), 0), Encoding::Utf16)
+}
+
+fn semantic_token_data(doc: &Document, enc: Encoding) -> Json {
+    let Ok(tokens) = frontend::Lexer::tokenize_with_comments(&doc.text) else { return Json::Null };
+    let mut data = Vec::new();
+    let (mut line, mut col) = (0usize, 0usize);
+    for t in tokens {
+        let text = &doc.text[t.span.start..t.span.end];
+        let Some(class) = token_class(t.kind, text) else { continue };
+        // A token is reported line by line, so a multi-line one (a block
+        // comment) is split at its newlines.
+        let mut start = t.span.start;
+        for piece in text.split_inclusive('\n') {
+            let body = piece.trim_end_matches('\n');
+            let at = doc.position(start, enc);
+            let end = doc.position(start + body.len(), enc);
+            if end.character > at.character {
+                let dl = at.line - line;
+                let dc = if dl == 0 { at.character - col } else { at.character };
+                data.extend([dl, dc, end.character - at.character, class, 0].map(|n| Json::int(n as i64)));
+                line = at.line;
+                col = at.character;
+            }
+            start += piece.len();
+        }
+    }
+    Json::obj([("data", Json::Arr(data))])
 }
 
 /// The semantic token classes, in legend order.

@@ -242,6 +242,53 @@ fn diagnostics_fixes_hover_definition_and_formatting() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// A module that exists only as an unsaved buffer beside the document resolves
+// where its file would be, and a definition in it is a jump target: an editor
+// with a new file, or one with no filesystem at all (the browser playground).
+#[test]
+fn unsaved_sibling_buffer_is_a_module() {
+    let dir = std::env::temp_dir().join(format!("thrax-lsp-sibling-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let main_src = "$ @mod MAIN\n$ with GREET\n$ n : @Int = GREET.hello\n";
+    std::fs::write(dir.join("MAIN.thx"), main_src).unwrap();
+    let main_uri = thrax::lsp::path_to_uri(&dir.join("MAIN.thx"));
+    let greet_uri = thrax::lsp::path_to_uri(&dir.join("GREET.thx"));
+    assert!(!dir.join("GREET.thx").exists());
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))]))]),
+    );
+    c.notify("initialized", Json::obj([]));
+    for (uri, text) in [(&greet_uri, "$ @mod GREET\n$ hello : @Int = 1\n"), (&main_uri, main_src)] {
+        c.notify(
+            "textDocument/didOpen",
+            Json::obj([(
+                "textDocument",
+                Json::obj([
+                    ("uri", Json::str(uri.as_str())),
+                    ("languageId", Json::str("thrax")),
+                    ("version", Json::int(1)),
+                    ("text", Json::str(text)),
+                ]),
+            )]),
+        );
+    }
+    let diags = c.diagnostics(&main_uri);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    let def = c.request("textDocument/definition", Json::obj([("textDocument", doc(&main_uri)), ("position", pos(2, 20))]));
+    assert_eq!(def.get("uri").as_str(), Some(greet_uri.as_str()), "{def}");
+    assert_eq!(def.get("range").get("start").get("line").as_i64(), Some(1), "{def}");
+
+    c.request("shutdown", Json::Null);
+    c.notify("exit", Json::Null);
+    assert!(c.child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The 0-based line of `needle` in CORE.thx.
 fn core_line(needle: &str) -> i64 {
     let core = include_str!("../../../library/CORE.thx");

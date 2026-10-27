@@ -236,6 +236,12 @@ impl Base {
                     .map(|src| (file.display().to_string(), src))
                     .map_err(|e| format!("cannot read module `{name}` ({}): {e}", file.display()));
             }
+            // An open buffer beside the document that has no file yet (or no
+            // filesystem at all, in the browser) resolves where its file would.
+            let sibling = root_dir.join(format!("{name}.thx"));
+            if let Some(src) = overlay.get(&sibling) {
+                return Ok((sibling.display().to_string(), src.clone()));
+            }
             match crate::stdlib::source(name) {
                 Some(src) => Ok((crate::stdlib::path(name), src.to_string())),
                 None => Err(format!("cannot find module `{name}`")),
