@@ -2,7 +2,7 @@ $ @mod VEC
 
 # \file VEC.thx
 # \info Operations on the default sequence, the growable vector `@Vec `T`. A `[...]`
-#       literal builds one, and `[a, b, ..r]` / `h :: t` / `[]` patterns match one
+#       literal builds one, and `[a, b] ++ r` / `h :: t` / `[]` patterns match one
 #       (via its `@ISeqView` instance in CORE). Everything here is
 #       INDEX-BASED (`@vec_len`/`@vec_get`/`@vec_push`/`@vec_slice`), so it is O(n):
 #       building goes through `@vec_push` (append), never `::` (prepend is O(n)).
@@ -84,11 +84,11 @@ $ init : @Vec t -> @Vec t = \v = let n = @vec_len v in @vec_slice v 0 (if n == 0
 $ replicate : @Int -> t -> @Vec t = \n x = fill n x
 
 $ intersperse : t -> @Vec t -> @Vec t = \sep v =
-    if @vec_len v == 0 => @vec_new {}
+    if @vec_len v == 0 =>
+        @vec_new {}
     else
-        foldl (
-            \acc x = @vec_push (@vec_push acc sep) x
-        ) (@vec_push (@vec_new {}) (@vec_get v 0)) (@vec_slice v 1 (@vec_len v))
+        foldl (\acc x = @vec_push (@vec_push acc sep) x) (@vec_push (@vec_new {}) (@vec_get v 0))
+            (@vec_slice v 1 (@vec_len v))
 
 # ---- predicates / search ----
 
@@ -121,7 +121,7 @@ $ partition : (t -> @Bool) -> @Vec t -> { @Vec t, @Vec t } = \p v =
 $ remove_first : (t -> @Bool) -> @Vec t -> @Vec t = \p v =
     is find_index p v
     | Option.Some.{ i } => append (@vec_slice v 0 i) (@vec_slice v (i + 1) (@vec_len v))
-    | _ => v
+    | _                 => v
 
 # ---- pairs / numeric ----
 
@@ -138,12 +138,16 @@ $ sum : @Vec @Int -> @Int = \v = foldl (\a x = a + x) 0 v
 $ product : @Vec @Int -> @Int = \v = foldl (\a x = a * x) 1 v
 
 $ minimum : @Vec @Int -> @Int -> @Int = \v d =
-    if @vec_len v == 0 => d
-    else foldl (\a x = if x < a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+    if @vec_len v == 0 =>
+        d
+    else
+        foldl (\a x = if x < a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
 
 $ maximum : @Vec @Int -> @Int -> @Int = \v d =
-    if @vec_len v == 0 => d
-    else foldl (\a x = if x > a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
+    if @vec_len v == 0 =>
+        d
+    else
+        foldl (\a x = if x > a => x else a) (@vec_get v 0) (@vec_slice v 1 (@vec_len v))
 
 # ---- conversion (bridges to the optional cons `List`) ----
 
@@ -157,7 +161,8 @@ $ to_list : @Vec t -> List t = \v = foldr (\x acc = List.Cons.{ x, acc }) List.N
 # their original order.
 $ sort_by : (t -> t -> @Int) -> @Vec t -> @Vec t = \c v =
     let n = @vec_len v in
-    if n <= 1 => v
+    if n <= 1 =>
+        v
     else
         let mid = n / 2 in
         merge_by c (sort_by c (@vec_slice v 0 mid)) (sort_by c (@vec_slice v mid n))
@@ -182,30 +187,43 @@ $ all_from : (t -> @Bool) -> @Vec t -> @Int -> @Bool = \p v i =
     if i >= @vec_len v => @true else if p (@vec_get v i) => all_from p v (i + 1) else @false
 
 $ find_from : (t -> @Bool) -> @Vec t -> @Int -> Option t = \p v i =
-    if i >= @vec_len v => Option.None
-    else let x = @vec_get v i in if p x => Option.Some.{ x } else find_from p v (i + 1)
+    if i >= @vec_len v =>
+        Option.None
+    else
+        let x = @vec_get v i in if p x => Option.Some.{ x } else find_from p v (i + 1)
 
 $ find_index_from : (t -> @Bool) -> @Vec t -> @Int -> Option @Int = \p v i =
-    if i >= @vec_len v => Option.None
-    else if p (@vec_get v i) => Option.Some.{ i }
-    else find_index_from p v (i + 1)
+    if i >= @vec_len v =>
+        Option.None
+    else if p (@vec_get v i) =>
+        Option.Some.{ i }
+    else
+        find_index_from p v (i + 1)
 
 $ prefix_len : (t -> @Bool) -> @Vec t -> @Int -> @Int = \p v i =
     if i >= @vec_len v => i else if p (@vec_get v i) => prefix_len p v (i + 1) else i
 
 $ zip_with_from : (a -> b -> c) -> @Vec a -> @Vec b -> @Int -> @Vec c -> @Vec c = \f xs ys i acc =
-    if i >= @vec_len xs => acc
-    else if i >= @vec_len ys => acc
-    else zip_with_from f xs ys (i + 1) (@vec_push acc (f (@vec_get xs i) (@vec_get ys i)))
+    if i >= @vec_len xs =>
+        acc
+    else if i >= @vec_len ys =>
+        acc
+    else
+        zip_with_from f xs ys (i + 1) (@vec_push acc (f (@vec_get xs i) (@vec_get ys i)))
 
-$ merge_from : (t -> t -> @Int) -> @Vec t -> @Vec t -> @Int -> @Int -> @Vec t -> @Vec t = \c xs ys i j acc =
-    if i >= @vec_len xs => append acc (@vec_slice ys j (@vec_len ys))
-    else if j >= @vec_len ys => append acc (@vec_slice xs i (@vec_len xs))
+$ merge_from : (t -> t -> @Int) -> @Vec t -> @Vec t -> @Int -> @Int -> @Vec t
+    -> @Vec t = \c xs ys i j acc =
+    if i >= @vec_len xs =>
+        append acc (@vec_slice ys j (@vec_len ys))
+    else if j >= @vec_len ys =>
+        append acc (@vec_slice xs i (@vec_len xs))
     else
         let x = @vec_get xs i in
         let y = @vec_get ys j in
-        if (c x y) <= 0 => merge_from c xs ys (i + 1) j (@vec_push acc x)
-        else merge_from c xs ys i (j + 1) (@vec_push acc y)
+        if (c x y) <= 0 =>
+            merge_from c xs ys (i + 1) j (@vec_push acc x)
+        else
+            merge_from c xs ys i (j + 1) (@vec_push acc y)
 
 $ from_list_onto : @Vec t -> List t -> @Vec t = \acc xs =
     is xs | List.Cons.{ h, t } => from_list_onto (@vec_push acc h) t | _ => acc

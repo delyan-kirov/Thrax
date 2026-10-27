@@ -1,0 +1,5 @@
+$ @mod SEQ_PATTERN_NO_BACK_VIEW
+
+# A cons `List` steps only from the front, so a piece after the middle part has
+# no view to step.
+$ f : List @Int -> @Int = \l = is l | _ ++ [z] => z | _ => 0  #~ error[TYPE_MISMATCH]: cannot be matched from the back by a sequence pattern

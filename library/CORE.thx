@@ -19,6 +19,7 @@ $ @IRangeFrom : @struct b t = range_from: b -> t,
 $ @ISlice : @struct s t = slice: s -> @Int -> @Int -> t,
 $ @IIndex : @struct s i t = index: s -> i -> t,
 $ @ISeqView : @struct s e = view: s -> SeqView s e,
+$ @ISeqViewBack : @struct s e = view_back: s -> SeqView s e,
 
 # ---- builtins ----
 # The primitives the compiler and runtime implement. `@extern "thrax"` declares one:
@@ -390,9 +391,12 @@ $ impl_IEq_for_tup3 : @ctx { IEq a, IEq b, IEq c } -> IEq { a, b, c } = \ds =
     .{ .eq = \x y = ds.0.eq x.0 y.0 && ds.1.eq x.1 y.1 && ds.2.eq x.2 y.2 }
 
 $ vec_eq_from : @ctx IEq t -> @Vec t -> @Vec t -> @Int -> @Bool = \d x y i =
-    if i >= @vec_len x => @true
-    else if d.eq (@vec_get x i) (@vec_get y i) => vec_eq_from (@ctx d) x y (i + 1)
-    else @false
+    if i >= @vec_len x =>
+        @true
+    else if d.eq (@vec_get x i) (@vec_get y i) =>
+        vec_eq_from (@ctx d) x y (i + 1)
+    else
+        @false
 
 $ impl_IEq_for_vec : @ctx IEq t -> IEq (@Vec t) = \d =
     .{ .eq = \x y = if @vec_len x == @vec_len y => vec_eq_from (@ctx d) x y 0 else @false }
@@ -461,9 +465,12 @@ $ impl_IToString_for_float32 : IToString @Float32 = .{ .show = f32_to_str }
 # `from_string` reads bytes with `@array_get`/`@array_len`, so parsing stays in the
 # language; only the float parser is foreign.
 $ str_to_int : @Str -> @Int = \s =
-    if @array_len s == 0 => 0
-    else if @array_get s 0 == 45 => 0 - from_string_digits s 1 0
-    else from_string_digits s 0 0
+    if @array_len s == 0 =>
+        0
+    else if @array_get s 0 == 45 =>
+        0 - from_string_digits s 1 0
+    else
+        from_string_digits s 0 0
 
 $ impl_IFromString_for_str : IFromString @Str = .{ .parse = \s = s }
 $ impl_IFromString_for_bool : IFromString @Bool = .{ .parse = \s = s == "true" }
@@ -506,18 +513,16 @@ $ impl_IImagLit_for_Cpx : @IImagLit Cpx = .{ .of_imag = \x = Cpx.{ 0.0, x } }
 
 $ impl_IAdd_for_Cpx : IAdd Cpx = .{ .add = \a b = Cpx.{ a.re + b.re, a.im + b.im } }
 $ impl_ISub_for_Cpx : ISub Cpx = .{ .sub = \a b = Cpx.{ a.re - b.re, a.im - b.im } }
-$ impl_IMul_for_Cpx : IMul Cpx =
-    .{
-        .mul = \a b = Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re },
-    }
+$ impl_IMul_for_Cpx : IMul Cpx = .{
+    .mul = \a b = Cpx.{ a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re },
+}
 # The textbook quotient. It divides by `|b|^2`, so it loses range for operands near
 # the square root of the float limits; CPX.div_smith trades a branch for that range.
-$ impl_IDiv_for_Cpx : IDiv Cpx =
-    .{
-        .div = \a b =
-            let d = b.re * b.re + b.im * b.im in
-            Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d },
-    }
+$ impl_IDiv_for_Cpx : IDiv Cpx = .{
+    .div = \a b =
+        let d = b.re * b.re + b.im * b.im in
+        Cpx.{ (a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d },
+}
 $ impl_IZero_for_Cpx : IZero Cpx = .{ .zero = Cpx.{ 0.0, 0.0 } }
 $ impl_IOne_for_Cpx : IOne Cpx = .{ .one = Cpx.{ 1.0, 0.0 } }
 
@@ -562,10 +567,9 @@ $ impl_IRange_for_vec : @IRange @Int (@Vec @Int) = .{ .range = \lo hi = range lo
 # `::`, and sequence patterns, with no compiler support of its own.
 $ List : @union a = Nil: {}, Cons: { a, List a },
 
-$ impl_ISeqLit_for_List : @ISeqLit t (List t) =
-    .{
-        .of_vec = \v = list_onto List.Nil v (@vec_len v - 1),
-    }
+$ impl_ISeqLit_for_List : @ISeqLit t (List t) = .{
+    .of_vec = \v = list_onto List.Nil v (@vec_len v - 1),
+}
 
 $ impl_ICons_for_List : ICons t (List t) = .{ .cons = \x l = List.Cons.{ x, l } }
 
@@ -587,20 +591,17 @@ $ (++) : @ctx ICat t -> t -> t -> t = \d a b = d.cat a b
 
 $ impl_ICat_for_str : ICat @Str = .{ .cat = \a b = @acat a b }
 $ impl_ICat_for_array : ICat @Array = .{ .cat = \a b = @acat a b }
-$ impl_ICat_for_vec : ICat (@Vec t) =
-    .{
-        .cat = \xs ys = vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0,
-    }
-$ impl_ICat_for_List : ICat (List t) =
-    .{
-        .cat = \xs ys =
-            is xs | List.Cons.{ h, t } => List.Cons.{ h, impl_ICat_for_List.cat t ys } | _ => ys,
-    }
+$ impl_ICat_for_vec : ICat (@Vec t) = .{
+    .cat = \xs ys = vcons_onto (vcons_onto (@vec_new {}) xs 0) ys 0,
+}
+$ impl_ICat_for_List : ICat (List t) = .{
+    .cat = \xs ys =
+        is xs | List.Cons.{ h, t } => List.Cons.{ h, impl_ICat_for_List.cat t ys } | _ => ys,
+}
 
-$ impl_ISeqView_for_List : @ISeqView (List t) t =
-    .{
-        .view = \l = is l | List.Cons.{ h, t } => SeqView.More.{ h, t } | _ => SeqView.Empty,
-    }
+$ impl_ISeqView_for_List : @ISeqView (List t) t = .{
+    .view = \l = is l | List.Cons.{ h, t } => SeqView.More.{ h, t } | _ => SeqView.Empty,
+}
 
 # A `[...]` literal builds whatever its `@ISeqLit` instance returns. `@Vec` is what
 # an unconstrained literal defaults to, so its instance is the identity on the
@@ -610,7 +611,7 @@ $ impl_ISeqLit_for_vec : @ISeqLit t (@Vec t) = .{ .of_vec = \v = v }
 
 # The packed byte buffer `@Array` joins the same two surfaces through its own
 # instances: `[1, 2, 3] : @Array` builds one from the collected payload, and
-# `[a, b, ..r]` matches one by stepping the view below.
+# `[a, b] ++ r` matches one by stepping the view below.
 $ impl_ISeqLit_for_array : @ISeqLit @Int @Array = .{ .of_vec = \v = array_onto @Array.{ 0 } v 0 }
 
 # A single-axis `xs.[lo ... hi]` slice, inclusive at both ends. An `@ISlice`
@@ -625,26 +626,63 @@ $ impl_ISlice_for_str : @ISlice @Str @Str = .{ .slice = \s lo hi = @array_slice 
 
 # One step of a sequence, produced by an `@ISeqView` instance: `Empty` at the end,
 # or `More elem rest` (the head element and the remaining sequence). A user sequence
-# type joins the `[..]`/`::`/`[]` PATTERN surface with an instance returning this
-# view; the compiler matches sequence patterns by unfolding it.
+# type joins the `[..]`/`::`/`++` PATTERN surface with an instance returning this
+# view; the compiler matches sequence patterns by unfolding it. An `@ISeqViewBack`
+# instance returns the same view from the other end (the last element and
+# everything before it), which `rest ++ [z]` patterns step.
 $ SeqView : @union s t = Empty: {}, More: { t, s },
 
-# The built-in growable vector `@Vec` joins the `[..]`/`::`/`[]` PATTERN surface: its
+# The built-in growable vector `@Vec` joins the `[..]`/`::`/`++` PATTERN surface: its
 # view is `Empty` when empty, else the first element and the tail (a slice). `[...]`
 # literals build a `@Vec`, so this is what a sequence pattern unfolds by default.
-$ impl_ISeqView_for_vec : @ISeqView (@Vec t) t =
-    .{
-        .view = \v =
-            if @vec_len v == 0 => SeqView.Empty
-            else SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) },
-    }
+$ impl_ISeqView_for_vec : @ISeqView (@Vec t) t = .{
+    .view = \v =
+        if @vec_len v == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @vec_get v 0, @vec_slice v 1 (@vec_len v) },
+}
 
-$ impl_ISeqView_for_array : @ISeqView @Array @Int =
-    .{
-        .view = \a =
-            if @array_len a == 0 => SeqView.Empty
-            else SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) },
-    }
+$ impl_ISeqView_for_array : @ISeqView @Array @Int = .{
+    .view = \a =
+        if @array_len a == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get a 0, @array_slice a 1 (@array_len a) },
+}
+
+# A `@Str` steps as its bytes, so `[c] ++ rest` reads the first byte as an `@Int`.
+$ impl_ISeqView_for_str : @ISeqView @Str @Int = .{
+    .view = \s =
+        if @array_len s == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get s 0, @array_slice s 1 (@array_len s) },
+}
+
+$ impl_ISeqViewBack_for_vec : @ISeqViewBack (@Vec t) t = .{
+    .view_back = \v =
+        let n = @vec_len v in
+        if n == 0 => SeqView.Empty else SeqView.More.{ @vec_get v (n - 1), @vec_slice v 0 (n - 1) },
+}
+
+$ impl_ISeqViewBack_for_array : @ISeqViewBack @Array @Int = .{
+    .view_back = \a =
+        let n = @array_len a in
+        if n == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get a (n - 1), @array_slice a 0 (n - 1) },
+}
+
+$ impl_ISeqViewBack_for_str : @ISeqViewBack @Str @Int = .{
+    .view_back = \s =
+        let n = @array_len s in
+        if n == 0 =>
+            SeqView.Empty
+        else
+            SeqView.More.{ @array_get s (n - 1), @array_slice s 0 (n - 1) },
+}
 
 # The canonical infinite stream: `.head` is the current element and `.tail` the
 # rest. `tail` is recursive, so it holds its value lazily and a stream is
@@ -725,12 +763,15 @@ $ forever : Stream {} = { .head = {}, .tail = forever }
 # Over a `Stream`, iteration is INDEFINITE: it runs until `break`, or forever
 # (`forever` and `count_from` are ready-made infinite sources).
 $ stream_for : Stream a -> (a -> <Loop | e> {}) -> <e> {} = \s body =
-    let more = do body s.head
-        ctl k
-        | Loop.continue u => @true
-        | Loop.break u => @false
-        | _ => @true in
-    if more => stream_for s.tail body else {}
+    let
+        more =
+            do body s.head
+            ctl k
+            | Loop.continue u => @true
+            | Loop.break u    => @false
+            | _               => @true
+    in
+        if more => stream_for s.tail body else {}
 
 $ impl_IFor_for_Stream : IFor (Stream a) a e = .{ .each = stream_for }
 
@@ -740,12 +781,15 @@ $ list_for : List a -> (a -> <Loop | e> {}) -> <e> {} = \xs body =
     is xs
     | List.Nil => {}
     | List.Cons.{ h, t } =>
-        let more = do body h
-            ctl k
-            | Loop.continue u => @true
-            | Loop.break u => @false
-            | _ => @true in
-        if more => list_for t body else {}
+        let
+            more =
+                do body h
+                ctl k
+                | Loop.continue u => @true
+                | Loop.break u    => @false
+                | _               => @true
+        in
+            if more => list_for t body else {}
 
 $ impl_IFor_for_List : IFor (List a) a e = .{ .each = list_for }
 
@@ -761,23 +805,21 @@ $ IFormap : @struct s a t b e = mapping: s -> (a -> <Loop | e> b) -> <e> t,
 
 $ formap : @ctx IFormap s a t b e -> s -> (a -> <Loop | e> b) -> <e> t = \d xs f = d.mapping xs f
 
-$ impl_IFormap_for_vec : IFormap (@Vec a) a (@Vec b) b e =
-    .{
-        .mapping = \xs f = formap_vec xs f 0 (@vec_new {}),
-    }
+$ impl_IFormap_for_vec : IFormap (@Vec a) a (@Vec b) b e = .{
+    .mapping = \xs f = formap_vec xs f 0 (@vec_new {}),
+}
 
 # `let`-force each step: a data constructor's fields are lazy, so building the Cons
 # directly would defer the effects until the result were observed.
 $ list_formap : List a -> (a -> <Loop | e> b) -> <e> List b = \xs f =
     is xs
-    | List.Cons.{ h, t } =>
-        (
-            is formap_step h f
-            | LoopStep.Keep.{ y } => let ys = list_formap t f in List.Cons.{ y, ys }
-            | LoopStep.Skip => list_formap t f
-            | _ => List.Nil
-        )
-    | _ => List.Nil
+    | List.Cons.{ h, t } => (
+        is formap_step h f
+        | LoopStep.Keep.{ y } => let ys = list_formap t f in List.Cons.{ y, ys }
+        | LoopStep.Skip       => list_formap t f
+        | _                   => List.Nil
+    )
+    | _                  => List.Nil
 
 $ impl_IFormap_for_List : IFormap (List a) a (List b) b e = .{ .mapping = list_formap }
 
@@ -794,8 +836,10 @@ $ assert : @Bool -> @Str -> <@Meta> @Code = \ok msg = if ok => @parse_items "" e
 $ @private
 
 $ to_string_digits : @Int -> @Str -> @Str = \n acc =
-    if n < 10 => (@array_push "" (48 + n)) ++ acc
-    else to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
+    if n < 10 =>
+        (@array_push "" (48 + n)) ++ acc
+    else
+        to_string_digits (n / 10) ((@array_push "" (48 + n % 10)) ++ acc)
 
 # `@Nat` prints unsigned: it divides with `@udiv`/`@umod` so a value above the
 # signed range still renders correctly. A single digit fits an `@Int`, so `@cast`
@@ -803,8 +847,10 @@ $ to_string_digits : @Int -> @Str -> @Str = \n acc =
 $ to_string_udigit : @Nat -> @Int = \n = @cast n
 
 $ to_string_udigits : @Nat -> @Str -> @Str = \n acc =
-    if n < 10 => (@array_push "" (48 + to_string_udigit n)) ++ acc
-    else to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
+    if n < 10 =>
+        (@array_push "" (48 + to_string_udigit n)) ++ acc
+    else
+        to_string_udigits (n / 10) ((@array_push "" (48 + to_string_udigit (n % 10))) ++ acc)
 
 $ from_string_digits : @Str -> @Int -> @Int -> @Int = \s i acc =
     if i == @array_len s => acc else from_string_digits s (i + 1) (acc * 10 + (@array_get s i - 48))
@@ -823,26 +869,31 @@ $ range_onto : @Vec @Int -> @Int -> @Int -> @Vec @Int = \acc lo hi =
     if lo > hi => acc else range_onto (@vec_push acc lo) (lo + 1) hi
 
 $ for_go : @Vec a -> (a -> <Loop | e> {}) -> @Int -> <e> {} = \xs body i =
-    if i >= @vec_len xs => {}
+    if i >= @vec_len xs =>
+        {}
     else
-        let more = do body (@vec_get xs i)
-            ctl k
-            | Loop.continue u => @true
-            | Loop.break u => @false
-            | _ => @true in
-        if more => for_go xs body (i + 1) else {}
+        let
+            more =
+                do body (@vec_get xs i)
+                ctl k
+                | Loop.continue u => @true
+                | Loop.break u    => @false
+                | _               => @true
+        in
+            if more => for_go xs body (i + 1) else {}
 
 $ formap_step : a -> (a -> <Loop | e> b) -> <e> LoopStep b = \x f =
     do let y = f x in LoopStep.Keep.{ y }
     ctl k
     | Loop.continue u => LoopStep.Skip
-    | Loop.break u => LoopStep.Stop
-    | s => s
+    | Loop.break u    => LoopStep.Stop
+    | s               => s
 
 $ formap_vec : @Vec a -> (a -> <Loop | e> b) -> @Int -> @Vec b -> <e> @Vec b = \xs f i acc =
-    if i >= @vec_len xs => acc
+    if i >= @vec_len xs =>
+        acc
     else
         is formap_step (@vec_get xs i) f
         | LoopStep.Keep.{ y } => formap_vec xs f (i + 1) (@vec_push acc y)
-        | LoopStep.Skip => formap_vec xs f (i + 1) acc
-        | _ => acc
+        | LoopStep.Skip       => formap_vec xs f (i + 1) acc
+        | _                   => acc

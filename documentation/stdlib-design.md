@@ -297,7 +297,9 @@ and `Vec \`T` picks up literals for free the day it lands, as does any
 user collection.
 
 Two footnotes:
-- PATTERNS stay hardwired to List/Array for now. `is [a, b, ..rest]` for a
+- (Superseded: sequence patterns now go through `@ISeqView`/`@ISeqViewBack` for
+  any type, and `[a, b, ..rest]` is written `[a, b] ++ rest` since #324.)
+  PATTERNS stay hardwired to List/Array for now. `is [a, b, ..rest]` for a
   custom type needs an uncons VIEW (`seq_uncons : T -> Option {head,
   rest}`), i.e. view patterns -- a separate, later design.
 - The desugaring turns one literal node into n applications; if literal

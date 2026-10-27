@@ -1,0 +1,4 @@
+$ @mod TENSOR_PATTERN_SIZE_UNKNOWN
+
+# Splitting a tensor gives the rest an exact size, which needs a known size.
+$ f : [n] @Int -> @Int = \t = is t | [x] ++ r => x | _ => 0  #~ error[TYPE_MISMATCH]: is not known here, so a `++` pattern cannot split it

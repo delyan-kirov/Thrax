@@ -116,11 +116,16 @@ fn pat_mentions(p: &Pat, name: &str) -> bool {
             mentions(lo, name) || hi.as_ref().is_some_and(|h| mentions(h, name))
         }
         Pat::HookEq { eq, value } => mentions(eq, name) || mentions(value, name),
-        Pat::SeqView { view, elems, rest } => {
+        Pat::SeqView { view, elems, rest, .. } => {
             mentions(view, name)
                 || elems.iter().any(|p| pat_mentions(p, name))
                 || rest.as_deref().is_some_and(|r| pat_mentions(r, name))
         }
+        Pat::Tensor { front, mid, back, .. } => front
+            .iter()
+            .chain(mid.as_deref())
+            .chain(back)
+            .any(|p| pat_mentions(p, name)),
     }
 }
 

@@ -500,6 +500,9 @@ pub struct Resolved {
     /// [`crate::typing::Checker::sequence_pattern_hooks`]). Lowering emits a
     /// `Pat::SeqView` that unfolds the view.
     pub sequence_pattern_hooks: HashMap<Aol<Pattern>, HookImpl>,
+    /// Sequence patterns on a sized tensor, with its static size (from
+    /// [`crate::typing::Checker::tensor_patterns`]).
+    pub tensor_patterns: HashMap<Aol<Pattern>, u64>,
     pub call_modules: HashMap<Aol<Expr>, String>,
     /// Each use site of a `@ctx`-bearing function, mapped to the context value
     /// lowering injects ahead of the explicit arguments (from
@@ -567,6 +570,9 @@ pub fn collect_resolved(checkers: &[crate::typing::Checker]) -> Resolved {
         }
         for (&site, hook) in checker.sequence_pattern_hooks() {
             resolved.sequence_pattern_hooks.insert(site, hook.clone());
+        }
+        for (&site, &len) in checker.tensor_patterns() {
+            resolved.tensor_patterns.insert(site, len);
         }
         for (key, flags) in checker.lazy_slots() {
             resolved.lazy_slots.insert(key.clone(), flags.clone());
@@ -1911,6 +1917,65 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// One fixed piece of a sequence pattern, matched from the front or (`back`)
+    /// the back, with `rest` matching what is left; `None` requires nothing left.
+    fn seq_piece(&mut self, piece: Aol<Pattern>, back: bool, rest: Option<Pat>) -> Pat {
+        match self.pnode(piece) {
+            Pattern::Str(s) => Pat::StrPrefix {
+                prefix: self.ast.bytes(*s).to_vec(),
+                back,
+                rest: Box::new(rest.unwrap_or_else(|| Pat::Str(Vec::new()))),
+            },
+            Pattern::List(elems) => {
+                let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
+                let hook = self
+                    .resolved
+                    .sequence_pattern_hooks
+                    .get(&piece)
+                    .cloned()
+                    .expect("a list pattern resolves a sequence view");
+                let view = self.hook_term(&hook);
+                Pat::SeqView {
+                    view,
+                    back,
+                    elems: elems.into_iter().map(|e| self.pat(e)).collect(),
+                    rest: rest.map(Box::new),
+                }
+            }
+            _ => unreachable!("the parser keeps only literal pieces around a `++` hole"),
+        }
+    }
+
+    /// A `[..]` or `++` pattern on a sized tensor, its lengths already proven.
+    fn tensor_pat(&mut self, p: Aol<Pattern>) -> Pat {
+        let len = self.resolved.tensor_patterns[&p];
+        let (pre, mid, suf) = match self.pnode(p) {
+            Pattern::List(_) => (vec![p], None, Vec::new()),
+            Pattern::Concat { pre, mid, suf } => {
+                (self.ast.slice(*pre).to_vec(), *mid, self.ast.slice(*suf).to_vec())
+            }
+            _ => unreachable!("guarded"),
+        };
+        let mut elems = |pieces: Vec<Aol<Pattern>>| -> Vec<Pat> {
+            let mut out = Vec::new();
+            for piece in pieces {
+                if let Pattern::List(es) = self.pnode(piece) {
+                    let es: Vec<Aol<Pattern>> = self.ast.slice(*es).to_vec();
+                    out.extend(es.into_iter().map(|e| self.pat(e)));
+                }
+            }
+            out
+        };
+        let front = elems(pre);
+        let back = elems(suf);
+        Pat::Tensor {
+            len,
+            front,
+            mid: mid.map(|m| Box::new(self.pat(m))),
+            back,
+        }
+    }
+
     fn pat(&mut self, p: Aol<Pattern>) -> Pat {
         match self.pnode(p) {
             Pattern::Wild => Pat::Wild,
@@ -1930,47 +1995,29 @@ impl<'a> Lowerer<'a> {
                 lo: self.range_bound(*lo),
                 hi: hi.map(|h| self.range_bound(h)),
             },
-            Pattern::StrPrefix { prefix, rest } => Pat::StrPrefix {
-                prefix: self.ast.bytes(*prefix).to_vec(),
-                rest: Box::new(self.pat(*rest)),
-            },
             Pattern::Tuple(pats) => {
                 let pats: Vec<Aol<Pattern>> = self.ast.slice(*pats).to_vec();
                 Pat::Tuple(pats.into_iter().map(|p| self.pat(p)).collect())
             }
-            // `h :: t` / `[a, b, ..r]` / `[]` match any sequence by unfolding its
-            // `sequence_view` hook (the default `@Vec`, or a user type). The checker
-            // records the resolved hook for every such pattern.
-            Pattern::Cons { head, tail } => {
-                let (head, tail) = (*head, *tail);
-                let hook = self
-                    .resolved
-                    .sequence_pattern_hooks
-                    .get(&p)
-                    .cloned()
-                    .expect("a `::` pattern resolves a sequence_view hook");
-                let view = self.hook_term(&hook);
-                Pat::SeqView {
-                    view,
-                    elems: vec![self.pat(head)],
-                    rest: Some(Box::new(self.pat(tail))),
-                }
+            Pattern::List(_) | Pattern::Concat { .. }
+                if self.resolved.tensor_patterns.contains_key(&p) =>
+            {
+                self.tensor_pat(p)
             }
-            Pattern::List { elems, rest } => {
-                let elems: Vec<Aol<Pattern>> = self.ast.slice(*elems).to_vec();
-                let rest = *rest;
-                let hook = self
-                    .resolved
-                    .sequence_pattern_hooks
-                    .get(&p)
-                    .cloned()
-                    .expect("a list pattern resolves a sequence_view hook");
-                let view = self.hook_term(&hook);
-                Pat::SeqView {
-                    view,
-                    elems: elems.into_iter().map(|e| self.pat(e)).collect(),
-                    rest: rest.map(|r| Box::new(self.pat(r))),
+            Pattern::List(_) => self.seq_piece(p, false, None),
+            // `pre ++ mid ++ suf` nests: the front pieces strip from the outside in,
+            // then the back pieces from the last one inward, leaving `mid`.
+            Pattern::Concat { pre, mid, suf } => {
+                let (pre, mid, suf) = (self.ast.slice(*pre).to_vec(), *mid, self.ast.slice(*suf).to_vec());
+                let mut inner = mid.map(|m| self.pat(m));
+                for piece in suf.iter() {
+                    let rest = inner.take().expect("a back piece has a middle part inside it");
+                    inner = Some(self.seq_piece(*piece, true, Some(rest)));
                 }
+                for piece in pre.iter().rev() {
+                    inner = Some(self.seq_piece(*piece, false, inner));
+                }
+                inner.expect("a `++` pattern has a piece")
             }
             Pattern::Struct { ty, fields } => {
                 let sname = self.text(*ty);

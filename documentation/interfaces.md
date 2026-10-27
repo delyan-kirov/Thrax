@@ -119,7 +119,8 @@ The set and what reaches it:
 | `@IRange` `@IRangeFrom` | `[lo ... hi]`, `[lo ...]` |
 | `@IIndex` | `recv.[i]`, `recv.[i, j]` |
 | `@ISlice` | `recv.[lo ... hi]` on a non-tensor |
-| `@ISeqView` | `[]` / `[a, b, ..r]` / `h :: t` PATTERNS |
+| `@ISeqView` | `[]` / `[a, b]` / `[a] ++ r` / `h :: t` PATTERNS (pieces before the middle) |
+| `@ISeqViewBack` | `r ++ [y, z]` PATTERNS (pieces after the middle) |
 
 A literal PATTERN on a user type uses the construction interface plus the type's
 ordinary `IEq` instance, so no separate equality hook exists.
