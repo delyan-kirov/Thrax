@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 /// Module name to source text, one entry per `library/*.thx`. A new
 /// standard-library module must be added here too; the tests below enforce it.
-pub(crate) const MODULES: &[(&str, &str)] = &[
+pub const MODULES: &[(&str, &str)] = &[
     ("ASYNC", include_str!("../../../library/ASYNC.thx")),
     ("BITS", include_str!("../../../library/BITS.thx")),
     ("C", include_str!("../../../library/C.thx")),
@@ -34,7 +34,7 @@ pub(crate) const MODULES: &[(&str, &str)] = &[
 ];
 
 /// The embedded source of a standard-library module.
-pub(crate) fn source(name: &str) -> Option<&'static str> {
+pub fn source(name: &str) -> Option<&'static str> {
     MODULES.iter().find(|(n, _)| *n == name).map(|(_, src)| *src)
 }
 

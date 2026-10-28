@@ -931,7 +931,7 @@ mod wasm {
     // serialised into one kind-tagged buffer (tag 1 int i64le, 2 real f64le, 3
     // str u32len+bytes), and the host answers with the result's kind, read back
     // through the typed getters. The embedder owns the registry; the compiler
-    // knows none of the names. See `web/site/host.mjs`.
+    // knows none of the names. See `web/src/host.ts`.
     extern "C" {
         fn thx_host_call(sym: *const u8, sym_len: usize, args: *const u8, args_len: usize) -> i32;
         fn thx_host_ret_int() -> i64;

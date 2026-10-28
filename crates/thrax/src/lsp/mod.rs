@@ -6,6 +6,7 @@
 //! important error stands out.
 
 pub mod analysis;
+pub mod clock;
 pub mod server;
 pub mod text;
 

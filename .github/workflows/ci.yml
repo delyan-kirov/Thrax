@@ -62,9 +62,11 @@ jobs:
             THRAX_BIN=./target/release/thrax ./target/release/thrax run tools/THXDO.thx corpus wasm
           '
 
-  # The browser playground: the compiler itself built to wasm32-unknown-unknown,
-  # then the headless smoke test that runs every tour cell through it. It lives
-  # in the applications submodule.
+  # The browser playground: the compiler and its language server built to
+  # wasm32-unknown-unknown, then the headless smoke test that runs every tour
+  # cell through it and drives the server. It lives in the applications
+  # submodule. The crate's own tests run natively first; they catch what the
+  # wasm build cannot, such as a standard-library module the playground misses.
   playground:
     runs-on: ubuntu-latest
 
@@ -76,7 +78,12 @@ jobs:
       - uses: cachix/install-nix-action@v31
 
       - name: Build the playground and smoke-test it
-        run: nix develop ./applications/web --command node applications/web/build.mjs
+        run: |
+          nix develop ./applications/web --command bash -c '
+            set -e
+            (cd applications && cargo test -p playground)
+            node applications/web/build.ts
+          '
 
   # macOS, natively, in the smaller shell of tools/macos/flake.nix.
   #
