@@ -6,7 +6,7 @@ compiles to native C, cross-compiles to WebAssembly, and can also be interpreted
 
 ## Links
 
-- **[Try it in your browser](https://delyan-kirov.github.io/Thrax/)**
+- **[Try it in your browser](https://delyan-kirov.github.io/thrax-applications/)**
 - **[Source on GitHub](https://github.com/delyan-kirov/Thrax)**: the compiler, standard library, and docs.
 - **[Examples](examples/)**: a small program for each feature (also the test corpus).
 

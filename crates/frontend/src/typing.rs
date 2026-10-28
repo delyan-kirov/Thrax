@@ -586,6 +586,11 @@ impl<'a> Checker<'a> {
         &self.resolved_calls
     }
 
+    /// The module a qualifier written in this module names: an import alias's
+    /// module (`$ with V = VEC` makes `V` name `VEC`), otherwise the qualifier.
+    pub fn qualifier_module(&self, qualifier: &str) -> String {
+        self.alias_modules.get(qualifier).copied().unwrap_or(qualifier).to_string()
+    }
 
     /// Each use site of a context-bearing function, mapped to the resolved context
     /// value lowering injects ahead of the explicit arguments.

@@ -39,25 +39,58 @@ fn load_sources(path: &str) -> Result<Loaded, ExitCode> {
     };
     let root_name = parse_mod_name(&root_src).unwrap_or_else(|| file_stem(path));
 
-    load_core(root_name, path.to_string(), root_src, &|name| load_module(name, &root_dir)).map_err(|msg| {
-        eprintln!("{}", msg.trim_end());
+    load_core(root_name, path.to_string(), root_src, &|name| load_module(name, &root_dir)).map_err(|e| {
+        eprintln!("{}", e.render().trim_end());
         ExitCode::FAILURE
     })
+}
+
+/// Why [`load_core`] failed.
+pub(crate) enum LoadError {
+    Message(String),
+    /// A `$ with` that names no loadable module, as a diagnostic in the
+    /// importing module. `root_span` is the root's own `$ with` that leads,
+    /// possibly through other modules, to that importer; it is `None` when
+    /// the importer is not reached from the root (CORE's own imports).
+    Import { diag: utilities::Diagnostic, importer: String, path: String, src: String, root_span: Option<utilities::Span> },
+}
+
+impl LoadError {
+    pub(crate) fn render(&self) -> String {
+        match self {
+            LoadError::Message(msg) => msg.clone(),
+            LoadError::Import { diag, path, src, .. } => diag.render(src, path),
+        }
+    }
+}
+
+impl From<String> for LoadError {
+    fn from(msg: String) -> LoadError {
+        LoadError::Message(msg)
+    }
+}
+
+impl From<LoadError> for String {
+    fn from(e: LoadError) -> String {
+        e.render()
+    }
 }
 
 /// Transitively load the standard-library modules a given root module imports,
 /// seeding the always-present `CORE` and auto-injected `C`. The root's name,
 /// diagnostic path, and source are supplied by the caller, so this serves both
 /// an on-disk file (`load_sources`) and an in-memory REPL session. `fetch` maps a
-/// module name to its diagnostic path and source. Returns a plain message on error.
+/// module name to its diagnostic path and source.
 pub(crate) fn load_core(
     root_name: String,
     root_path: String,
     root_src: String,
     fetch: &dyn Fn(&str) -> Result<(String, String), String>,
-) -> Result<Loaded, String> {
+) -> Result<Loaded, LoadError> {
     let mut sources: Vec<(String, String, String)> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
+    // Each module reached from the root, mapped to the root's `$ with` it came through.
+    let mut via: HashMap<String, utilities::Span> = HashMap::new();
     let mut queue: Vec<(String, String, String)> =
         vec![(root_name.clone(), root_path, root_src)];
 
@@ -80,8 +113,17 @@ pub(crate) fn load_core(
             {
                 continue;
             }
-            let (path, imp_src) =
-                fetch(&imp).map_err(|msg| import_failure(&msg, &imp, span, &src, &src_path))?;
+            let root_span = if name == root_name { Some(span) } else { via.get(&name).copied() };
+            let (path, imp_src) = fetch(&imp).map_err(|msg| LoadError::Import {
+                diag: import_failure(&msg, &imp, span),
+                importer: name.clone(),
+                path: src_path.clone(),
+                src: src.clone(),
+                root_span,
+            })?;
+            if let Some(at) = root_span {
+                via.entry(imp.clone()).or_insert(at);
+            }
             queue.push((imp, path, imp_src));
         }
         index.insert(name.clone(), sources.len());
@@ -117,7 +159,7 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
         }
         let (path, src) = load_module(&name, root_dir).map_err(|msg| {
             let (_, imp_path, imp_src) = &loaded.sources[importer];
-            import_failure(&msg, &name, span, imp_src, imp_path)
+            import_failure(&msg, &name, span).render(imp_src, imp_path)
         })?;
         let me = loaded.sources.len();
         queue.extend(parse_imports(&src).into_iter().map(|(name, span)| (name, span, me)));
@@ -128,7 +170,7 @@ fn load_injected_imports(loaded: &mut Loaded, root_dir: &Path) -> Result<(), Str
 }
 
 /// A module that could not be loaded, reported at the `$ with` that names it.
-fn import_failure(msg: &str, name: &str, span: utilities::Span, src: &str, path: &str) -> String {
+fn import_failure(msg: &str, name: &str, span: utilities::Span) -> utilities::Diagnostic {
     let msg = msg.strip_prefix("thrax: ").unwrap_or(msg);
     let mut d = utilities::Diagnostic::error(utilities::Code::UnknownModule, span, 0, msg);
     let known = stdlib::MODULES.iter().map(|(n, _)| *n);
@@ -139,7 +181,7 @@ fn import_failure(msg: &str, name: &str, span: utilities::Span, src: &str, path:
             utilities::Applicability::MaybeIncorrect,
         );
     }
-    d.render(src, path)
+    d
 }
 
 /// The dependency graph over parsed modules (edges point at imports).
