@@ -1085,10 +1085,25 @@ pub(crate) fn run_extern<'p>(
              the wasm playground, not in a native run"
         )));
     }
+    if writes_terminal(symbol, args) {
+        utilities::progress::seal();
+    }
     let v = crate::machine::ffi::call_extern(symbol, lib, arg_types, ret_type, args)?;
     // Keep foreign stdout (C stdio) ordered against the driver's own output.
     unsafe { fflush(std::ptr::null_mut()) };
     Ok(v)
+}
+
+/// Whether a foreign call prints to the console, where the compiler's progress
+/// line may be open. Compile-time code reaches the terminal only through `C`,
+/// and `IO` writes with `write` on fd 1 or 2.
+#[cfg(not(target_arch = "wasm32"))]
+fn writes_terminal(symbol: &str, args: &[PVal]) -> bool {
+    match symbol {
+        "write" => args.first().is_some_and(|fd| matches!(&*fd.borrow(), Value::Int(1 | 2))),
+        "puts" | "printf" | "putchar" | "perror" => true,
+        _ => false,
+    }
 }
 
 // On wasm there is no libc: `@extern "WASM"` resolves against the JavaScript

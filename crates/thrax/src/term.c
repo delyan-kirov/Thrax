@@ -59,6 +59,12 @@ int thx_term_rows(void) {
   return info.srWindow.Bottom - info.srWindow.Top + 1;
 }
 
+int thx_term_err_cols(void) {
+  CONSOLE_SCREEN_BUFFER_INFO info;
+  if (!GetConsoleScreenBufferInfo(GetStdHandle(STD_ERROR_HANDLE), &info)) return 0;
+  return info.srWindow.Right - info.srWindow.Left + 1;
+}
+
 static void (*g_on_interrupt)(void);
 
 static void on_sigint(int sig) {
@@ -118,6 +124,12 @@ int thx_term_rows(void) {
   struct winsize ws;
   memset(&ws, 0, sizeof ws);
   return ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == 0 ? ws.ws_row : 0;
+}
+
+int thx_term_err_cols(void) {
+  struct winsize ws;
+  memset(&ws, 0, sizeof ws);
+  return ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 ? ws.ws_col : 0;
 }
 
 static void (*g_on_interrupt)(void);
