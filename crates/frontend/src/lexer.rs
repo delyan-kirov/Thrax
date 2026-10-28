@@ -135,6 +135,24 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// [`Lexer::tokenize_with_comments`] that stops at the first lexical error
+    /// instead of failing, for highlighting text that is still being typed.
+    /// Returns the tokens before the error (no [`Kind::Eof`]) and the byte
+    /// offset lexing stopped at.
+    pub fn tokenize_prefix(src: &'a str) -> (Vec<Token>, usize) {
+        let mut lx = Lexer::new(src);
+        let mut out = Vec::new();
+        loop {
+            lx.skip_whitespace();
+            let at = lx.cursor;
+            match lx.lex_one() {
+                Ok(tok) if matches!(tok.kind, Kind::Eof) => return (out, src.len()),
+                Ok(tok) => out.push(tok),
+                Err(_) => return (out, at),
+            }
+        }
+    }
+
     // -- buffering ----------------------------------------------------------
 
     /// Guarantee `buffer[pos + n]` exists, lexing (and dropping comments) as
