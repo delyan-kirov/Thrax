@@ -9,6 +9,7 @@
 //!   type loosely.
 //! * [`interrupt`] is the interrupt flag a signal handler sets and a running
 //!   evaluation polls.
+//! * [`progress`] prints what a slow command is doing to stderr, as it goes.
 //! * [`scc`] is a generic strongly-connected-components pass (Tarjan).
 //! * [`target`] is the compilation target as data (the single source of
 //!   platform truth: word size, `@extern` library resolution, toolchain).
@@ -21,6 +22,7 @@ pub mod handle;
 pub mod interrupt;
 pub mod json;
 pub mod libc;
+pub mod progress;
 pub mod scc;
 pub mod target;
 

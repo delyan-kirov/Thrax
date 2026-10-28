@@ -12,6 +12,48 @@ use frontend::{Item, Program};
 
 use crate::stdlib;
 
+// These shadow the std macros for this whole module, so a diagnostic printed
+// while a progress line is open starts on a line of its own.
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        utilities::progress::seal();
+        std::eprint!($($arg)*)
+    }};
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        utilities::progress::seal();
+        std::eprintln!($($arg)*)
+    }};
+}
+
+/// Report the `steps` steps of a command on stderr, as it takes them, when that
+/// is a terminal.
+fn start_progress(steps: usize) {
+    use std::io::IsTerminal;
+    if cfg!(target_arch = "wasm32")
+        || !std::io::stderr().is_terminal()
+        || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
+    {
+        return;
+    }
+    utilities::progress::begin(steps, stderr_cols());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stderr_cols() -> usize {
+    extern "C" {
+        fn thx_term_err_cols() -> std::os::raw::c_int;
+    }
+    unsafe { thx_term_err_cols() }.max(0) as usize
+}
+
+#[cfg(target_arch = "wasm32")]
+fn stderr_cols() -> usize {
+    0
+}
+
 /// A module's name and source text, plus the name-to-slot index and the root
 /// module name. Shared by `check` and `run`.
 pub(crate) struct Loaded {
@@ -770,6 +812,7 @@ fn lower_all(
     path: &str,
     want_entry: bool,
 ) -> Result<(Vec<frontend::lowering::data::Program>, Loaded, BuildPlan), ExitCode> {
+    utilities::progress::step("PARSING");
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
         .parent()
@@ -1265,6 +1308,7 @@ pub fn install_eval_host(root_dir: PathBuf) {
 
 pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
     load_project_config(path);
+    start_progress(2);
     // `lower_all` has already expanded every `$ @e` (compile-time execution and
     // code injection); the lowered program is `@e`-free.
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
@@ -1279,6 +1323,7 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
     // extra args) and its `@Int` result is the process exit code.
     let mut argv = vec![path.to_string()];
     argv.extend(prog_args.iter().cloned());
+    utilities::progress::end_with("RUNNING");
     match interpreter::machine::run_entry(&ir, frontend::ENTRY, argv) {
         Ok(code) => ExitCode::from((code & 0xff) as u8),
         Err(diag) => {
@@ -1292,6 +1337,7 @@ pub fn cmd_run(path: &str, prog_args: &[String]) -> ExitCode {
 /// for `target` (default: the host).
 pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
     load_project_config(path);
+    start_progress(2);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, _plan) = match lower_all(path, true) {
         Ok(x) => x,
@@ -1300,10 +1346,10 @@ pub fn cmd_emit_c(path: &str, target: utilities::Target) -> ExitCode {
     // `emit-c` prints C to stdout; the caller drives the link, so `BUILD`
     // directives (which steer linking) have nothing to apply here beyond the
     // link comment the generated source already carries.
-    print!(
-        "{}",
-        ccg::emit(&lowered, frontend::ENTRY, ccg::Entry::Main, target)
-    );
+    utilities::progress::step("GENERATING C");
+    let c = ccg::emit(&lowered, frontend::ENTRY, ccg::Entry::Main, target);
+    utilities::progress::end();
+    print!("{c}");
     ExitCode::SUCCESS
 }
 
@@ -1321,11 +1367,13 @@ pub fn cmd_build(
     libc: Option<utilities::Libc>,
 ) -> ExitCode {
     load_project_config(path);
+    start_progress(3);
     interpreter::machine::set_reflected_target(Some(target));
     let (lowered, _loaded, plan) = match lower_all(path, true) {
         Ok(x) => x,
         Err(code) => return code,
     };
+    utilities::progress::step("GENERATING C");
     let emitted = ccg::emit_program(&lowered, frontend::ENTRY, ccg::Entry::Main, target);
 
     let src = Path::new(path);
@@ -1439,7 +1487,19 @@ pub fn cmd_build(
         }
         cmd.arg("-lthrax");
     }
-    match cmd.status() {
+    utilities::progress::step("COMPILING");
+    // The compiler's own messages would land on the open progress line, so
+    // they are held back and printed once it is ended.
+    let held = utilities::progress::active();
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(if held { std::process::Stdio::piped() } else { std::process::Stdio::inherit() });
+    let ran = cmd.output();
+    utilities::progress::end();
+    if let Ok(out) = &ran {
+        use std::io::Write;
+        let _ = std::io::stderr().write_all(&out.stderr);
+    }
+    match ran.map(|out| out.status) {
         Ok(status) if status.success() => {
             // Without an rpath the loader looks beside the executable.
             if let (Some(dir), false) = (&compiler_lib, tc.rpath) {
@@ -1580,10 +1640,12 @@ fn libthrax_dir() -> Option<PathBuf> {
 /// modules are the interesting ones.
 pub fn cmd_expand(path: &str, only: Option<&str>) -> ExitCode {
     load_project_config(path);
+    start_progress(1);
     let (_lowered, loaded, _plan) = match lower_all(path, false) {
         Ok(x) => x,
         Err(code) => return code,
     };
+    utilities::progress::end();
     if let Some(name) = only {
         match loaded.index.get(name) {
             Some(&i) => {
@@ -1618,6 +1680,7 @@ fn is_stdlib_module(name: &str) -> bool {
 
 pub fn cmd_check(path: &str) -> ExitCode {
     load_project_config(path);
+    start_progress(1);
     // Expanding first means the printed types are the ones the program really has
     // (a `@e`-injected definition included), and that every `$ @e` directive has
     // run: a module's compile-time assertions are checked by checking it.
@@ -1643,6 +1706,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
         }
     };
 
+    utilities::progress::end();
     let root = loaded.index[&loaded.root_name];
     let checker = &checkers[root];
     for (name, ty) in &results[root] {
