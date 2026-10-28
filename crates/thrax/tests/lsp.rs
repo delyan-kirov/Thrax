@@ -250,7 +250,7 @@ fn unsaved_sibling_buffer_is_a_module() {
     let dir = std::env::temp_dir().join(format!("thrax-lsp-sibling-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    let main_src = "$ @mod MAIN\n$ with GREET\n$ n : @Int = GREET.hello\n";
+    let main_src = "$ @mod MAIN\n$ with GREET\n$ n : @Int = GREET.hello\n$ with G = GREET\n$ m : @Int = G.hello\n";
     std::fs::write(dir.join("MAIN.thx"), main_src).unwrap();
     let main_uri = thrax::lsp::path_to_uri(&dir.join("MAIN.thx"));
     let greet_uri = thrax::lsp::path_to_uri(&dir.join("GREET.thx"));
@@ -282,6 +282,86 @@ fn unsaved_sibling_buffer_is_a_module() {
     let def = c.request("textDocument/definition", Json::obj([("textDocument", doc(&main_uri)), ("position", pos(2, 20))]));
     assert_eq!(def.get("uri").as_str(), Some(greet_uri.as_str()), "{def}");
     assert_eq!(def.get("range").get("start").get("line").as_i64(), Some(1), "{def}");
+
+    // An import alias is a qualifier for the module it names.
+    let def = c.request("textDocument/definition", Json::obj([("textDocument", doc(&main_uri)), ("position", pos(4, 16))]));
+    assert_eq!(def.get("uri").as_str(), Some(greet_uri.as_str()), "{def}");
+    assert_eq!(def.get("range").get("start").get("line").as_i64(), Some(1), "{def}");
+
+    c.request("shutdown", Json::Null);
+    c.notify("exit", Json::Null);
+    assert!(c.child.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// A module that cannot be loaded leaves nothing to check, but the editor still
+// hears why: at the import that names it, or at the root's import it is
+// reached through.
+#[test]
+fn an_import_that_cannot_be_loaded_is_reported() {
+    let dir = std::env::temp_dir().join(format!("thrax-lsp-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    std::fs::write(dir.join("LOCAL.thx"), "$ @mod LOCAL\n$ with NOPE\n$ one : @Int = 1\n").unwrap();
+    let src = "$ @mod MAIN\n$ with VECC\n$ n : @Int = 1\n";
+    std::fs::write(dir.join("MAIN.thx"), src).unwrap();
+    let uri = thrax::lsp::path_to_uri(&dir.join("MAIN.thx"));
+
+    let mut c = Client::start();
+    c.request(
+        "initialize",
+        Json::obj([("initializationOptions", Json::obj([("lsp", Json::obj([("grace", Json::Bool(false))]))]))]),
+    );
+    c.notify("initialized", Json::obj([]));
+    c.notify(
+        "textDocument/didOpen",
+        Json::obj([(
+            "textDocument",
+            Json::obj([
+                ("uri", Json::str(uri.as_str())),
+                ("languageId", Json::str("thrax")),
+                ("version", Json::int(1)),
+                ("text", Json::str(src)),
+            ]),
+        )]),
+    );
+    let diags = c.diagnostics(&uri);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].get("code").as_str(), Some("UNKNOWN_MODULE"), "{diags:?}");
+    assert_eq!(diags[0].get("range").get("start").get("line").as_i64(), Some(1), "{diags:?}");
+
+    let actions = c.request(
+        "textDocument/codeAction",
+        Json::obj([
+            ("textDocument", doc(&uri)),
+            ("range", diags[0].get("range").clone()),
+            ("context", Json::obj([("diagnostics", Json::Arr(vec![]))])),
+        ]),
+    );
+    let fix = actions.as_arr().iter().find(|a| a.get("title").as_str() == Some("did you mean `VEC`?"));
+    assert!(fix.is_some(), "{actions}");
+
+    let change = |c: &mut Client, version: i64, text: &str| {
+        c.notify(
+            "textDocument/didChange",
+            Json::obj([
+                ("textDocument", Json::obj([("uri", Json::str(uri.as_str())), ("version", Json::int(version))])),
+                ("contentChanges", Json::Arr(vec![Json::obj([("text", Json::str(text))])])),
+            ]),
+        );
+    };
+    change(&mut c, 2, "$ @mod MAIN\n$ with VEC\n$ n : @Int = 1\n");
+    let diags = c.diagnostics(&uri);
+    assert!(diags.is_empty(), "{diags:?}");
+
+    // LOCAL loads, but its own import does not.
+    change(&mut c, 3, "$ @mod MAIN\n$ n : @Int = 1\n$ with LOCAL\n");
+    let diags = c.diagnostics(&uri);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(diags[0].get("code").as_str(), Some("UNKNOWN_MODULE"), "{diags:?}");
+    assert_eq!(diags[0].get("range").get("start").get("line").as_i64(), Some(2), "{diags:?}");
+    let text = diags[0].get("message").as_str().unwrap_or("");
+    assert!(text.contains("LOCAL") && text.contains("NOPE"), "{text}");
 
     c.request("shutdown", Json::Null);
     c.notify("exit", Json::Null);

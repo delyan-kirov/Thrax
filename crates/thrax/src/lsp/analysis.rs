@@ -143,6 +143,26 @@ impl Snapshot {
     }
 }
 
+/// Why a document could not be checked at all.
+pub struct LoadFailure {
+    pub message: String,
+    /// The error to show in the document itself, when one of its imports (or
+    /// an import of theirs) names a module that cannot be loaded.
+    pub diagnostic: Option<Diagnostic>,
+}
+
+impl From<String> for LoadFailure {
+    fn from(message: String) -> LoadFailure {
+        LoadFailure { message, diagnostic: None }
+    }
+}
+
+impl std::fmt::Display for LoadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
 /// The analyses of one document, keeping its [`Base`] between them.
 #[derive(Default)]
 pub struct Analyzer {
@@ -153,7 +173,7 @@ impl Analyzer {
     /// Check the document at `root_path`, with `overlay` (open buffers by path)
     /// standing in for files on disk. Fails only when it cannot be loaded.
     /// Any earlier [`Snapshot`] from this analyzer is invalid afterwards.
-    pub fn analyze(&mut self, root_path: &Path, overlay: &HashMap<PathBuf, String>) -> Result<Snapshot, String> {
+    pub fn analyze(&mut self, root_path: &Path, overlay: &HashMap<PathBuf, String>) -> Result<Snapshot, LoadFailure> {
         let root_src = match overlay.get(root_path) {
             Some(s) => s.clone(),
             None => std::fs::read_to_string(root_path)
@@ -188,8 +208,27 @@ pub fn trial(current: &Snapshot, src: &str) -> Vec<Diagnostic> {
 }
 
 /// A one-off check, with no base kept.
-pub fn analyze(root_path: &Path, overlay: &HashMap<PathBuf, String>) -> Result<Snapshot, String> {
+pub fn analyze(root_path: &Path, overlay: &HashMap<PathBuf, String>) -> Result<Snapshot, LoadFailure> {
     Analyzer::default().analyze(root_path, overlay)
+}
+
+/// A failed load, with the error placed in the root document: an import of the
+/// root's own is reported as it is; one further down is reported at the
+/// root's `$ with` it is reached through.
+fn load_failure(e: driver::LoadError, root_name: &str) -> LoadFailure {
+    let message = e.render().trim_end().to_string();
+    let driver::LoadError::Import { diag, importer, path, root_span, .. } = e else {
+        return LoadFailure { message, diagnostic: None };
+    };
+    let diagnostic = if importer == root_name {
+        Some(diag)
+    } else {
+        root_span.map(|at| {
+            Diagnostic::error(Code::UnknownModule, at, 0, "a module this import needs cannot be loaded")
+                .with_note(format!("module `{importer}` ({path}): {}", diag.root().msg))
+        })
+    };
+    LoadFailure { message, diagnostic }
 }
 
 /// The module name a source declares, and the modules it imports (sorted).
@@ -224,7 +263,7 @@ impl Base {
         root_name: &str,
         root_imports: Vec<String>,
         overlay: &HashMap<PathBuf, String>,
-    ) -> Result<Base, String> {
+    ) -> Result<Base, LoadFailure> {
         let root_dir = root_path.parent().map(Path::to_path_buf).unwrap_or_default();
         let fetch = |name: &str| -> Result<(String, String), String> {
             if let Some(file) = driver::resolve_module_file(name, &root_dir) {
@@ -249,7 +288,7 @@ impl Base {
         };
         let loaded =
             driver::load_core(root_name.to_string(), root_path.display().to_string(), root_src.to_string(), &fetch)
-                .map_err(|m| m.trim_end().to_string())?;
+                .map_err(|e| load_failure(e, root_name))?;
         let root = loaded.index[&loaded.root_name];
         let sources: Vec<(String, String, String)> =
             loaded.sources.into_iter().enumerate().filter(|(i, _)| *i != root).map(|(_, s)| s).collect();

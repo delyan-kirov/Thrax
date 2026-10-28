@@ -144,7 +144,7 @@ $ autogen_note : @Str =
 
 $ links : @Str =
     "\n## Links\n\n"
-        ++ "- **[Try it in your browser](https://delyan-kirov.github.io/Thrax/)**\n"
+        ++ "- **[Try it in your browser](https://delyan-kirov.github.io/thrax-applications/)**\n"
         ++ "- **[Source on GitHub](https://github.com/delyan-kirov/Thrax)**: the compiler, standard library, and docs.\n"
         ++ "- **[Examples](examples/)**: a small program for each feature (also the test corpus).\n"
 

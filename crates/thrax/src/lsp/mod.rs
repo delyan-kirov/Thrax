@@ -46,8 +46,10 @@ pub fn write_message(out: &mut impl Write, msg: &Json) -> std::io::Result<()> {
     out.flush()
 }
 
-/// The file a `file://` URI names (percent-escapes decoded), canonicalized when
-/// it exists so it matches the paths the loader resolves.
+/// The file a `file://` URI names (percent-escapes decoded), canonicalized so
+/// it matches the paths the loader resolves. A file that does not exist yet
+/// (an unsaved buffer) has its directory canonicalized instead: on Windows
+/// that adds the same `\\?\` prefix the loader's sibling lookup carries.
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let mut bytes = Vec::with_capacity(rest.len());
@@ -66,7 +68,11 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     }
     let text = String::from_utf8(bytes).ok()?;
     let path = PathBuf::from(if cfg!(windows) { from_uri_path(&text) } else { text });
-    Some(path.canonicalize().unwrap_or(path))
+    if let Ok(real) = path.canonicalize() {
+        return Some(real);
+    }
+    let dir = path.parent().zip(path.file_name()).and_then(|(dir, name)| Some(dir.canonicalize().ok()?.join(name)));
+    Some(dir.unwrap_or(path))
 }
 
 /// `/C:/x/y` (a URI path) as the Windows path `C:\x\y`; `//server/share/x`

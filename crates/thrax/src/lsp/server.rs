@@ -47,6 +47,9 @@ struct Open {
     /// The error that counterfactual ranking found matters most, for the
     /// version ranked: its span and how many other errors go with it.
     focus: Option<(i64, Span, usize)>,
+    /// Why the last analysis could not load the document's modules, for the
+    /// version analyzed, when that has a place in the document.
+    failure: Option<(i64, Diagnostic)>,
 }
 
 pub struct Server {
@@ -409,6 +412,7 @@ impl Server {
                 analyzer: analysis::Analyzer::default(),
                 saved: None,
                 focus: None,
+                failure: None,
             },
         );
         self.mark_dirty(uri, Duration::ZERO);
@@ -576,6 +580,10 @@ impl Server {
         let started = Instant::now();
         let result = open.analyzer.analyze(&path, &overlay);
         let took = started.elapsed();
+        open.failure = match &result {
+            Ok(_) => None,
+            Err(e) => e.diagnostic.clone().map(|d| (version, d)),
+        };
         match result {
             Ok(snapshot) => {
                 let msg = format!(
@@ -611,7 +619,10 @@ impl Server {
 
     fn publish(&mut self, uri: &str) {
         let Some(open) = self.open.get(uri) else { return };
-        let Some((_, snap)) = &open.snapshot else { return };
+        let Some((_, snap)) = &open.snapshot else {
+            self.publish_failure(uri);
+            return;
+        };
         let config = self.config(&open.path);
         let Some(module) = snap.module_of(&open.path).or(Some(snap.root)) else { return };
         let src = &snap.sources[module].2;
@@ -733,6 +744,61 @@ impl Server {
         );
     }
 
+    /// A document whose modules cannot be loaded has no snapshot, only the
+    /// load failure, which is its one diagnostic.
+    fn publish_failure(&mut self, uri: &str) {
+        let Some(open) = self.open.get(uri) else { return };
+        let Some((version, d)) = &open.failure else { return };
+        let diag = Json::obj([
+            ("range", range(&open.doc, d.root().span, self.enc)),
+            ("severity", Json::int(ERROR)),
+            ("code", Json::str(d.root().code.name())),
+            ("source", Json::str("thrax")),
+            ("message", Json::str(message(d))),
+            ("data", Json::obj([("rank", Json::int(0)), ("role", Json::str("focus"))])),
+        ]);
+        let version = *version;
+        self.notify(
+            "textDocument/publishDiagnostics",
+            Json::obj([("uri", Json::str(uri)), ("version", Json::int(version)), ("diagnostics", Json::Arr(vec![diag]))]),
+        );
+    }
+
+    /// The fixes a load failure carries (a misspelt import's `did you mean`),
+    /// offered as they are: with nothing loaded there is nothing to try them on.
+    fn failure_actions(&self, uri: &str, lo: usize, hi: usize) -> Json {
+        let Some(open) = self.open.get(uri) else { return Json::Arr(Vec::new()) };
+        let Some((_, d)) = open.failure.as_ref().filter(|(v, _)| *v == open.doc.version) else {
+            return Json::Arr(Vec::new());
+        };
+        let span = d.root().span;
+        if !(span.start <= hi && lo <= span.end) {
+            return Json::Arr(Vec::new());
+        }
+        let mut actions = Vec::new();
+        for help in d.helps() {
+            let Some(edits) = help.located_edits() else { continue };
+            let text_edits: Vec<Json> = edits
+                .iter()
+                .map(|e| Json::obj([("range", range(&open.doc, e.span, self.enc)), ("newText", Json::str(e.text.clone()))]))
+                .collect();
+            let mut changes = Json::Obj(Vec::new());
+            changes.set(uri, Json::Arr(text_edits));
+            actions.push(Json::obj([
+                ("title", Json::str(help.msg.clone())),
+                ("kind", Json::str("quickfix")),
+                ("isPreferred", Json::Bool(help.applicability == Applicability::MachineApplicable)),
+                ("diagnostics", Json::Arr(vec![Json::obj([
+                    ("range", range(&open.doc, span, self.enc)),
+                    ("message", Json::str(message(d))),
+                    ("code", Json::str(d.root().code.name())),
+                ])])),
+                ("edit", Json::obj([("changes", changes)])),
+            ]));
+        }
+        Json::Arr(actions)
+    }
+
     fn code_actions(&mut self, params: &Json) -> Json {
         let Some(uri) = params.get("textDocument").get("uri").as_str().map(str::to_string) else {
             return Json::Arr(Vec::new());
@@ -744,6 +810,9 @@ impl Server {
         let Some(open) = self.open.get(&uri) else { return Json::Arr(Vec::new()) };
         let (lo, hi) = (open.doc.offset(position(r.get("start")), enc), open.doc.offset(position(r.get("end")), enc));
         let path = open.path.clone();
+        if self.current(&uri).is_none() {
+            return if wants("quickfix") { self.failure_actions(&uri, lo, hi) } else { Json::Arr(Vec::new()) };
+        }
         let Some(snap) = self.current(&uri) else { return Json::Arr(Vec::new()) };
         let Some(module) = snap.module_of(&path) else { return Json::Arr(Vec::new()) };
         let doc = Document::new(snap.sources[module].2.clone(), 0);
@@ -858,7 +927,7 @@ impl Server {
         let name = ast.text(*name);
         let checker = snap.checker(module);
         let owner = match qual {
-            Some(q) => Some(ast.text(*q).to_string()),
+            Some(q) => Some(checker.qualifier_module(ast.text(*q))),
             None => checker.call_modules().get(&e).map(|m| m.to_string()),
         };
         let candidates: Vec<usize> = match owner {
