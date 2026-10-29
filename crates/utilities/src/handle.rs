@@ -1,5 +1,4 @@
-//! Handle-based storage: an alternative to the reference-returning bump
-//! allocator ([`crate::Arena`]) that lets AST-style trees drop their lifetime
+//! Handle-based storage, which lets AST-style trees drop their lifetime
 //! parameter entirely.
 //!
 //! Instead of a child being `&'a Node<'a>`, it is an [`Aol<Node>`] ("arena object
@@ -347,5 +346,4 @@ impl Interner {
 }
 
 #[cfg(test)]
-#[path = "handle_tests.rs"]
 mod tests;

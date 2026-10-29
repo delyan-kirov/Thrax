@@ -605,8 +605,8 @@ pub(crate) fn dotted(ast: &frontend::Ast, parts: utilities::Slice<utilities::Str
 /// escapes; the expansion loop in [`lower_all`] calls this repeatedly on
 /// progressively `@e`-expanded sources.
 type Compiled = (
-    Vec<frontend::lowering::data::Program>,
-    frontend::lowering::ReflectInfo,
+    Vec<frontend::core::CoreProgram>,
+    frontend::ReflectInfo,
 );
 
 fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<Compiled, ExitCode> {
@@ -638,14 +638,13 @@ fn compile_sources(loaded: &Loaded, lenient: bool, want_entry: bool) -> Result<C
 
     // Lower every module; put the root first so its names win when resolving an
     // unqualified reference defined in more than one module.
-    let decls = frontend::Decls::collect(&ast, &programs);
-    let reflect = decls.reflect();
+    let reflect = resolved.declarations.reflect();
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
-    let lowered: Vec<frontend::lowering::data::Program> = order
+    let lowered: Vec<frontend::core::CoreProgram> = order
         .iter()
-        .map(|&i| frontend::lower_program(&ast, &programs[i], &decls, &resolved))
+        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
         .collect();
 
     // `$ @build` has one signature, like the entry: one name, one shape. Its own
@@ -811,7 +810,7 @@ const MAX_META_ROUNDS: usize = 100;
 fn lower_all(
     path: &str,
     want_entry: bool,
-) -> Result<(Vec<frontend::lowering::data::Program>, Loaded, BuildPlan), ExitCode> {
+) -> Result<(Vec<frontend::core::CoreProgram>, Loaded, BuildPlan), ExitCode> {
     utilities::progress::step("PARSING");
     let mut loaded = load_sources(path)?;
     let root_dir = Path::new(path)
@@ -1064,7 +1063,7 @@ struct ReflectTables {
 }
 
 /// Index a round's collected type shapes for `$ @e` reflection.
-fn reflect_tables(reflect: frontend::lowering::ReflectInfo) -> Rc<ReflectTables> {
+fn reflect_tables(reflect: frontend::ReflectInfo) -> Rc<ReflectTables> {
     use interpreter::machine::TypeInfo;
     let mut qualified = HashMap::new();
     let mut bare: HashMap<String, Vec<(String, TypeInfo)>> = HashMap::new();
@@ -1158,7 +1157,7 @@ fn splice_sources(sources: &mut [(String, String, String)], mut edits: Vec<(Stri
 /// A compiled REPL session: the lowered modules (root `REPL` first) and the
 /// root module's top-level bindings as `(name, rendered type)`.
 pub struct Session {
-    pub lowered: Vec<frontend::lowering::data::Program>,
+    pub lowered: Vec<frontend::core::CoreProgram>,
     pub decls: Vec<(String, String)>,
     /// The declared type of the name `queried` asked about, when one was asked for.
     pub queried: Option<String>,
@@ -1208,13 +1207,12 @@ fn compile_in_memory(
     )?;
     let resolved = frontend::collect_resolved(&checkers);
 
-    let module_decls = frontend::Decls::collect(&ast, &programs);
     let root = loaded.index[&loaded.root_name];
     let mut order: Vec<usize> = (0..programs.len()).collect();
     order.sort_by_key(|&i| i != root);
     let lowered = order
         .iter()
-        .map(|&i| frontend::lower_program(&ast, &programs[i], &module_decls, &resolved))
+        .map(|&i| frontend::desugar_program(&ast, &programs[i], &resolved))
         .collect();
 
     let mut checkers = checkers;

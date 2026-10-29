@@ -804,5 +804,4 @@ fn line_text<'a>(source: &'a str, starts: &[usize], l: usize) -> &'a str {
 }
 
 #[cfg(test)]
-#[path = "error_tests.rs"]
 mod tests;

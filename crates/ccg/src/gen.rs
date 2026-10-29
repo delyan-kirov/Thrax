@@ -15,15 +15,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use frontend::ir::data::{builtin_arity, Atom, BUILTINS, AltKind, Expr, Program, ResumeUse};
-use frontend::ir::lower::mentions;
+use frontend::ir::data::{native_builtin, native_builtins, Atom, AltKind, BuiltinHost, IrExpr, IrProgram, ResumeUse};
 
 /// A saturated built-in call found by `prim_chain`.
 struct PrimCall<'e> {
     name: &'e str,
     args: Vec<&'e Atom>,
     drops: Vec<usize>,
-    rest: Option<(usize, &'e Expr)>,
+    rest: Option<(usize, &'e IrExpr)>,
 }
 
 /// Where a computed value goes.
@@ -53,7 +52,7 @@ pub struct ExternSite {
 }
 
 pub struct Emitter<'p> {
-    prog: &'p Program,
+    prog: &'p IrProgram,
     /// Canonical names of every global (`Module.name`) -> its code; a `Glob`
     /// naming one resolves to that CAF.
     globals: HashMap<&'p str, usize>,
@@ -77,20 +76,14 @@ pub struct Emitter<'p> {
     /// trap stubs and their `@extern` sites are not collected.
     reachable: HashSet<usize>,
     tmp: usize,
-    /// Whether an emitted block names a [`COMPILER_BUILTINS`] entry, so the
-    /// program must link `libthrax`.
+    /// Whether an emitted block names a [`BuiltinHost::Compiler`] builtin, so
+    /// the program must link `libthrax`.
     uses_compiler: std::cell::Cell<bool>,
-    /// Whether an emitted block names a [`PARALLEL_BUILTINS`] entry, so the
-    /// runtime must be built thread-ready.
+    /// Whether an emitted block names a [`BuiltinHost::Parallel`] builtin, so
+    /// the runtime must be built thread-ready (`THRAX_THREADS`); every other
+    /// program keeps plain, non-atomic counts.
     uses_threads: std::cell::Cell<bool>,
 }
-
-pub use frontend::ir::data::COMPILER_BUILTINS;
-
-/// The builtins that start or join parallel tasks. A program naming one gets the
-/// thread-ready runtime (`THRAX_THREADS`); every other program keeps plain,
-/// non-atomic counts.
-pub const PARALLEL_BUILTINS: &[&str] = &["@par", "@spawn", "@await"];
 
 /// The C enum constant the runtime dispatches a built-in on: `@vec_get` is
 /// `THxB_VEC_GET`, an operator spells its symbol out.
@@ -118,14 +111,14 @@ pub fn builtin_ident(name: &str) -> String {
 /// (only the compiler builtins report one).
 pub fn emit_builtin_enum() -> String {
     let mut out = String::from("enum {\n");
-    for (name, _) in BUILTINS {
-        out.push_str(&format!("  {},\n", builtin_ident(name)));
+    for b in native_builtins() {
+        out.push_str(&format!("  {},\n", builtin_ident(b.name)));
     }
     out.push_str("  THxB_COUNT\n};\n");
     out.push_str("#ifdef THRAX_WITH_COMPILER\n");
     out.push_str("static const char *const THxB_names[] = {\n");
-    for (name, _) in BUILTINS {
-        out.push_str(&format!("  {},\n", cstr(name.as_bytes())));
+    for b in native_builtins() {
+        out.push_str(&format!("  {},\n", cstr(b.name.as_bytes())));
     }
     out.push_str("};\n#endif\n");
     out
@@ -147,14 +140,14 @@ fn extern_key(
 
 /// Visit every [`Atom`] occurring in `e` (including those captured inside a
 /// nested [`Atom::Clos`]).
-fn for_each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
+fn for_each_atom(e: &IrExpr, f: &mut impl FnMut(&Atom)) {
     match e {
-        Expr::Ret(a) | Expr::Field { rec: a, .. } => visit_atom(a, f),
-        Expr::App { fun, arg, .. } => {
+        IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => visit_atom(a, f),
+        IrExpr::App { fun, arg, .. } => {
             visit_atom(fun, f);
             visit_atom(arg, f);
         }
-        Expr::MkStruct { base, fields, .. } => {
+        IrExpr::MkStruct { base, fields, .. } => {
             if let Some(b) = base {
                 visit_atom(b, f);
             }
@@ -162,48 +155,48 @@ fn for_each_atom(e: &Expr, f: &mut impl FnMut(&Atom)) {
                 visit_atom(v, f);
             }
         }
-        Expr::MkVariant { fields, .. } => {
+        IrExpr::MkVariant { fields, .. } => {
             for v in fields {
                 visit_atom(v, f);
             }
         }
-        Expr::MkTuple(items) => {
+        IrExpr::MkTuple(items) => {
             for v in items {
                 visit_atom(v, f);
             }
         }
-        Expr::Fault(_) => {}
-        Expr::Let { rhs, body, .. } => {
+        IrExpr::Fault(_) => {}
+        IrExpr::Let { rhs, body, .. } => {
             for_each_atom(rhs, f);
             for_each_atom(body, f);
         }
-        Expr::Case { scrut, alts, default } => {
+        IrExpr::Case { scrut, alts, default } => {
             visit_atom(scrut, f);
             for al in alts {
                 for_each_atom(&al.body, f);
             }
             for_each_atom(default, f);
         }
-        Expr::Handle { body, clauses, els } => {
+        IrExpr::Handle { body, clauses, els } => {
             for_each_atom(body, f);
             for c in clauses {
                 visit_atom(&c.fun, f);
             }
             visit_atom(els, f);
         }
-        Expr::Defer { cleanup, body } => {
+        IrExpr::Defer { cleanup, body } => {
             visit_atom(cleanup, f);
             for_each_atom(body, f);
         }
-        Expr::Drop { body, .. } => for_each_atom(body, f),
+        IrExpr::Drop { body, .. } => for_each_atom(body, f),
     }
 }
 
 /// Prepare a `let`'s slot for its value. Only a recursive binding, whose
 /// right-hand side captures the slot's box before the value exists, needs the
 /// box; any other slot is left empty and the value moves straight in.
-fn emit_let_slot(rhs: &Expr, slot: usize, out: &mut String) {
-    if mentions(rhs, slot) {
+fn emit_let_slot(rhs: &IrExpr, slot: usize, out: &mut String) {
+    if rhs.mentions(slot) {
         out.push_str(&format!("  THxK_setbox(fr, {slot});\n"));
     } else {
         out.push_str(&format!("  THxK_drop(fr, {slot});\n"));
@@ -232,7 +225,7 @@ fn visit_atom(a: &Atom, f: &mut impl FnMut(&Atom)) {
 /// bindings a program never calls) are pruned so their `@extern` wrappers are
 /// not emitted; on a strict-signature target like wasm those redeclarations
 /// would otherwise clash with the real libc.
-pub fn reachable_codes(prog: &Program, entry: &str) -> HashSet<usize> {
+pub fn reachable_codes(prog: &IrProgram, entry: &str) -> HashSet<usize> {
     let mut canon: HashMap<&str, usize> = HashMap::new();
     let mut bare: HashMap<&str, usize> = HashMap::new();
     for (name, code) in &prog.globals {
@@ -268,49 +261,49 @@ pub fn reachable_codes(prog: &Program, entry: &str) -> HashSet<usize> {
 
 /// Register any `Atom::Extern` reachable in `e` into the table (deduplicated).
 fn collect_externs(
-    e: &Expr,
+    e: &IrExpr,
     externs: &mut Vec<ExternSite>,
     idx: &mut HashMap<String, usize>,
 ) {
     let mut atom = |a: &Atom| collect_extern_atom(a, externs, idx);
     match e {
-        Expr::Ret(a) | Expr::Field { rec: a, .. } => atom(a),
-        Expr::App { fun, arg, .. } => {
+        IrExpr::Ret(a) | IrExpr::Field { rec: a, .. } => atom(a),
+        IrExpr::App { fun, arg, .. } => {
             atom(fun);
             atom(arg);
         }
-        Expr::MkStruct { base, fields, .. } => {
+        IrExpr::MkStruct { base, fields, .. } => {
             if let Some(b) = base {
                 atom(b);
             }
             fields.iter().for_each(|(_, v)| atom(v));
         }
-        Expr::MkVariant { fields, .. } => fields.iter().for_each(&mut atom),
-        Expr::MkTuple(items) => items.iter().for_each(&mut atom),
-        Expr::Fault(_) => {}
-        Expr::Let { rhs, body, .. } => {
+        IrExpr::MkVariant { fields, .. } => fields.iter().for_each(&mut atom),
+        IrExpr::MkTuple(items) => items.iter().for_each(&mut atom),
+        IrExpr::Fault(_) => {}
+        IrExpr::Let { rhs, body, .. } => {
             collect_externs(rhs, externs, idx);
             collect_externs(body, externs, idx);
         }
-        Expr::Case { scrut, alts, default } => {
+        IrExpr::Case { scrut, alts, default } => {
             collect_extern_atom(scrut, externs, idx);
             for al in alts {
                 collect_externs(&al.body, externs, idx);
             }
             collect_externs(default, externs, idx);
         }
-        Expr::Handle { body, clauses, els } => {
+        IrExpr::Handle { body, clauses, els } => {
             collect_externs(body, externs, idx);
             for c in clauses {
                 collect_extern_atom(&c.fun, externs, idx);
             }
             collect_extern_atom(els, externs, idx);
         }
-        Expr::Defer { cleanup, body } => {
+        IrExpr::Defer { cleanup, body } => {
             collect_extern_atom(cleanup, externs, idx);
             collect_externs(body, externs, idx);
         }
-        Expr::Drop { body, .. } => collect_externs(body, externs, idx),
+        IrExpr::Drop { body, .. } => collect_externs(body, externs, idx),
     }
 }
 
@@ -843,7 +836,7 @@ pub fn emit_extern_table(externs: &[ExternSite], layouts: &[(String, utilities::
 }
 
 impl<'p> Emitter<'p> {
-    pub fn new(prog: &'p Program, reachable: HashSet<usize>) -> Emitter<'p> {
+    pub fn new(prog: &'p IrProgram, reachable: HashSet<usize>) -> Emitter<'p> {
         let mut globals: HashMap<&str, usize> = HashMap::new();
         let mut bare: HashMap<&str, usize> = HashMap::new();
         for (name, code) in &prog.globals {
@@ -892,7 +885,7 @@ impl<'p> Emitter<'p> {
 
     /// Emit every code, then return the finished block function texts, the code
     /// index -> entry block map, the foreign-function table, and whether the
-    /// program uses a [`COMPILER_BUILTINS`] entry and a [`PARALLEL_BUILTINS`] one.
+    /// program uses a [`BuiltinHost::Compiler`] builtin and a [`BuiltinHost::Parallel`] one.
     pub fn run(mut self) -> (Vec<String>, Vec<usize>, Vec<ExternSite>, bool, bool) {
         for id in 0..self.prog.codes.len() {
             self.emit_code(id);
@@ -934,14 +927,13 @@ impl<'p> Emitter<'p> {
         if let Some(code) = self.globals.get(name) {
             return format!("force_code({code})");
         }
-        if let Some(arity) = builtin_arity(name) {
-            if COMPILER_BUILTINS.contains(&name) {
-                self.uses_compiler.set(true);
+        if let Some(b) = native_builtin(name) {
+            match b.host {
+                BuiltinHost::Compiler => self.uses_compiler.set(true),
+                BuiltinHost::Parallel => self.uses_threads.set(true),
+                BuiltinHost::Everywhere | BuiltinHost::CompileTime => {}
             }
-            if PARALLEL_BUILTINS.contains(&name) {
-                self.uses_threads.set(true);
-            }
-            return format!("THxRT_builtin({}, {arity})", builtin_ident(name));
+            return format!("THxRT_builtin({}, {})", builtin_ident(name), b.arity);
         }
         if let Some(suffix) = name.strip_prefix("TARGET.") {
             return format!("THxRT_target({})", cstr(suffix.as_bytes()));
@@ -1014,10 +1006,10 @@ impl<'p> Emitter<'p> {
 
     /// A single C expression for a value-producing, non-suspending, non-branching
     /// expression. Case/Let/App/Handle/Defer are structural and never reach here.
-    fn value_expr(&self, e: &Expr) -> String {
+    fn value_expr(&self, e: &IrExpr) -> String {
         match e {
-            Expr::Ret(a) => self.atom(a),
-            Expr::MkStruct { name, base, fields } => {
+            IrExpr::Ret(a) => self.atom(a),
+            IrExpr::MkStruct { name, base, fields } => {
                 let n = fields.len();
                 let (fnames, vals) = if n == 0 {
                     ("NULL".to_string(), "NULL".to_string())
@@ -1040,10 +1032,10 @@ impl<'p> Emitter<'p> {
                     }
                 }
             }
-            Expr::Field { rec, name } => {
+            IrExpr::Field { rec, name } => {
                 format!("THxVALUE_field({}, {})", self.atom(rec), cstr(name.as_bytes()))
             }
-            Expr::MkVariant { ty, tag, fields } => {
+            IrExpr::MkVariant { ty, tag, fields } => {
                 if fields.is_empty() {
                     format!(
                         "THxRT_variant({}, {}, 0, NULL)",
@@ -1061,7 +1053,7 @@ impl<'p> Emitter<'p> {
                     )
                 }
             }
-            Expr::MkTuple(items) => {
+            IrExpr::MkTuple(items) => {
                 if items.is_empty() {
                     "THxRT_tuple(NULL, 0)".into()
                 } else {
@@ -1069,31 +1061,31 @@ impl<'p> Emitter<'p> {
                     format!("THxRT_tuple((Value*[]){{ {} }}, {})", vs.join(", "), items.len())
                 }
             }
-            Expr::Let { .. }
-            | Expr::App { .. }
-            | Expr::Case { .. }
-            | Expr::Handle { .. }
-            | Expr::Defer { .. }
-            | Expr::Drop { .. } => unreachable!("value_expr on a non-value expression"),
-            Expr::Fault(_) => unreachable!("Fault is emitted structurally, not as a value"),
+            IrExpr::Let { .. }
+            | IrExpr::App { .. }
+            | IrExpr::Case { .. }
+            | IrExpr::Handle { .. }
+            | IrExpr::Defer { .. }
+            | IrExpr::Drop { .. } => unreachable!("value_expr on a non-value expression"),
+            IrExpr::Fault(_) => unreachable!("Fault is emitted structurally, not as a value"),
         }
     }
 
     /// Does `e` perform a call or install a handler/defer anywhere in the value it
     /// produces? Then a `let` RHS must deliver through a continuation block. Counts
     /// tail Apps too: a `let` RHS is never really in tail position.
-    fn has_call(&self, e: &Expr) -> bool {
+    fn has_call(&self, e: &IrExpr) -> bool {
         match e {
-            Expr::Ret(_)
-            | Expr::MkStruct { .. }
-            | Expr::Field { .. }
-            | Expr::MkVariant { .. }
-            | Expr::MkTuple(_)
-            | Expr::Fault(_) => false,
-            Expr::App { .. } | Expr::Handle { .. } | Expr::Defer { .. } => true,
-            Expr::Let { rhs, body, .. } => self.has_call(rhs) || self.has_call(body),
-            Expr::Drop { body, .. } => self.has_call(body),
-            Expr::Case { alts, default, .. } => {
+            IrExpr::Ret(_)
+            | IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_)
+            | IrExpr::Fault(_) => false,
+            IrExpr::App { .. } | IrExpr::Handle { .. } | IrExpr::Defer { .. } => true,
+            IrExpr::Let { rhs, body, .. } => self.has_call(rhs) || self.has_call(body),
+            IrExpr::Drop { body, .. } => self.has_call(body),
+            IrExpr::Case { alts, default, .. } => {
                 alts.iter().any(|a| self.has_call(&a.body)) || self.has_call(default)
             }
         }
@@ -1114,21 +1106,21 @@ impl<'p> Emitter<'p> {
 
     /// Compute a pure (suspension-free) expression's value into frame `slot`,
     /// emitted inline. Never reaches App/Handle/Defer.
-    fn emit_pure_into(&mut self, e: &Expr, slot: usize, out: &mut String) {
+    fn emit_pure_into(&mut self, e: &IrExpr, slot: usize, out: &mut String) {
         match e {
-            Expr::Ret(_)
-            | Expr::MkStruct { .. }
-            | Expr::Field { .. }
-            | Expr::MkVariant { .. }
-            | Expr::MkTuple(_) => {
+            IrExpr::Ret(_)
+            | IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_) => {
                 let val = self.value_expr(e);
                 out.push_str(&format!("  THxK_backpatch(fr, {slot}, {val});\n"));
             }
-            Expr::Fault(msg) => {
+            IrExpr::Fault(msg) => {
                 out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
             }
-            Expr::Case { .. } => self.emit_case(e, Sink::Slot { slot, cont: None }, out),
-            Expr::Let {
+            IrExpr::Case { .. } => self.emit_case(e, Sink::Slot { slot, cont: None }, out),
+            IrExpr::Let {
                 slot: inner,
                 rhs,
                 body,
@@ -1137,11 +1129,11 @@ impl<'p> Emitter<'p> {
                 self.emit_pure_into(rhs, *inner, out);
                 self.emit_pure_into(body, slot, out);
             }
-            Expr::Drop { slots, body } => {
+            IrExpr::Drop { slots, body } => {
                 emit_drops(slots, out);
                 self.emit_pure_into(body, slot, out);
             }
-            Expr::App { .. } | Expr::Handle { .. } | Expr::Defer { .. } => {
+            IrExpr::App { .. } | IrExpr::Handle { .. } | IrExpr::Defer { .. } => {
                 unreachable!("emit_pure_into on a suspending expression")
             }
         }
@@ -1149,21 +1141,21 @@ impl<'p> Emitter<'p> {
 
     /// The core continuation-passing lowering: lower `e` so its value reaches
     /// `sink`.
-    fn emit_expr(&mut self, e: &Expr, sink: Sink, out: &mut String) {
+    fn emit_expr(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
         match e {
-            Expr::Ret(_)
-            | Expr::MkStruct { .. }
-            | Expr::Field { .. }
-            | Expr::MkVariant { .. }
-            | Expr::MkTuple(_) => {
+            IrExpr::Ret(_)
+            | IrExpr::MkStruct { .. }
+            | IrExpr::Field { .. }
+            | IrExpr::MkVariant { .. }
+            | IrExpr::MkTuple(_) => {
                 let val = self.value_expr(e);
                 self.deliver(&val, sink, out);
             }
-            Expr::Fault(msg) => {
+            IrExpr::Fault(msg) => {
                 out.push_str(&format!("  thrax_fault({});\n", cstr(msg.as_bytes())))
             }
 
-            Expr::App { fun, arg, .. } => {
+            IrExpr::App { fun, arg, .. } => {
                 let fn_ = self.atom(fun);
                 let arg = self.atom(arg);
                 // Tail-ness follows the sink, not the ANF flag: only a RET sink is a
@@ -1181,19 +1173,19 @@ impl<'p> Emitter<'p> {
                 }
             }
 
-            Expr::Let { .. } => self.emit_let(e, sink, out),
-            Expr::Case { .. } => self.emit_case(e, sink, out),
-            Expr::Handle { .. } => self.emit_handle(e, sink, out),
-            Expr::Defer { .. } => self.emit_defer(e, sink, out),
-            Expr::Drop { slots, body } => {
+            IrExpr::Let { .. } => self.emit_let(e, sink, out),
+            IrExpr::Case { .. } => self.emit_case(e, sink, out),
+            IrExpr::Handle { .. } => self.emit_handle(e, sink, out),
+            IrExpr::Defer { .. } => self.emit_defer(e, sink, out),
+            IrExpr::Drop { slots, body } => {
                 emit_drops(slots, out);
                 self.emit_expr(body, sink, out);
             }
         }
     }
 
-    fn emit_let(&mut self, e: &Expr, sink: Sink, out: &mut String) {
-        let Expr::Let { slot, rhs, body } = e else {
+    fn emit_let(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
+        let IrExpr::Let { slot, rhs, body } = e else {
             unreachable!()
         };
         if let Some(call) = self.prim_chain(*slot, rhs, body) {
@@ -1228,8 +1220,8 @@ impl<'p> Emitter<'p> {
     /// lets each applying the previous partial application to one more operand:
     /// `let a = b x in let c = a y in rest`, or with the last application in tail
     /// position. Each partial must be used once, by the next application.
-    fn prim_chain<'e>(&self, slot: usize, rhs: &'e Expr, body: &'e Expr) -> Option<PrimCall<'e>> {
-        let Expr::App {
+    fn prim_chain<'e>(&self, slot: usize, rhs: &'e IrExpr, body: &'e IrExpr) -> Option<PrimCall<'e>> {
+        let IrExpr::App {
             fun: Atom::Glob { name },
             arg,
             ..
@@ -1240,7 +1232,7 @@ impl<'p> Emitter<'p> {
         if self.globals.contains_key(name.as_str()) {
             return None;
         }
-        let arity = builtin_arity(name)?;
+        let arity = native_builtin(name)?.arity;
         let mut args = vec![arg];
         let mut drops = Vec::new();
         let (mut partial, mut cur) = (slot, body);
@@ -1254,11 +1246,11 @@ impl<'p> Emitter<'p> {
                 });
             }
             match cur {
-                Expr::Drop { slots, body } => {
+                IrExpr::Drop { slots, body } => {
                     drops.extend(slots.iter().copied());
                     cur = body;
                 }
-                Expr::App {
+                IrExpr::App {
                     fun: Atom::Move(s),
                     arg,
                     ..
@@ -1271,12 +1263,12 @@ impl<'p> Emitter<'p> {
                         rest: None,
                     });
                 }
-                Expr::Let {
+                IrExpr::Let {
                     slot: next,
                     rhs,
                     body,
                 } => match rhs.as_ref() {
-                    Expr::App {
+                    IrExpr::App {
                         fun: Atom::Move(s),
                         arg,
                         ..
@@ -1319,8 +1311,8 @@ impl<'p> Emitter<'p> {
         }
     }
 
-    fn emit_case(&mut self, e: &Expr, sink: Sink, out: &mut String) {
-        let Expr::Case {
+    fn emit_case(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
+        let IrExpr::Case {
             scrut,
             alts,
             default,
@@ -1368,15 +1360,15 @@ impl<'p> Emitter<'p> {
 
     /// A case branch: either a real sink, or the pure-into sink (back-patch and
     /// fall through, so the enclosing pure let continues after the if/else).
-    fn emit_branch(&mut self, e: &Expr, sink: Sink, out: &mut String) {
+    fn emit_branch(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
         match sink {
             Sink::Slot { slot, cont: None } => self.emit_pure_into(e, slot, out),
             _ => self.emit_expr(e, sink, out),
         }
     }
 
-    fn emit_handle(&mut self, e: &Expr, sink: Sink, out: &mut String) {
-        let Expr::Handle {
+    fn emit_handle(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
+        let IrExpr::Handle {
             body,
             clauses,
             els,
@@ -1438,8 +1430,8 @@ impl<'p> Emitter<'p> {
         self.set_block(hbody, &body_out);
     }
 
-    fn emit_defer(&mut self, e: &Expr, sink: Sink, out: &mut String) {
-        let Expr::Defer { cleanup, body } = e else {
+    fn emit_defer(&mut self, e: &IrExpr, sink: Sink, out: &mut String) {
+        let IrExpr::Defer { cleanup, body } = e else {
             unreachable!()
         };
         let hbody = self.reserve_block();

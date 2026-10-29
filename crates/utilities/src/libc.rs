@@ -168,3 +168,6 @@ pub fn exact_types(
         .collect();
     Some((args, exact(target, c_ret, ret)))
 }
+
+#[cfg(test)]
+mod tests;

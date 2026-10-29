@@ -23,10 +23,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ir::data::{Atom, AltKind, Expr, Program, ResumeUse};
+use frontend::ir::data::{builtin, builtin_arity, Atom, AltKind, IrExpr, IrProgram, ResumeUse, Strictness};
 use utilities::Result;
 
-use data::{builtin_arity, fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
+use data::{fault, mk, run_builtin, run_extern, PVal, Resumption, Task, TVar, Value};
 
 /// One activation: the local slot array (params + let/case binders) and the
 /// current closure's captured record.
@@ -43,7 +43,7 @@ type FrameP<'p> = Rc<RefCell<Frame<'p>>>;
 pub(crate) struct KRet<'p> {
     boxed: PVal<'p>,
     slot: usize,
-    cont: &'p Expr,
+    cont: &'p IrExpr,
     frame: FrameP<'p>,
 }
 
@@ -127,7 +127,7 @@ pub(crate) enum KFrame<'p> {
 /// The machine: the program plus the global (CAF) memo table. One instance runs a
 /// whole program and is reused across nested CAF evaluations.
 pub struct Machine<'p> {
-    prog: &'p Program,
+    prog: &'p IrProgram,
     /// Canonical global name (`Module.name`) -> its CAF code index.
     globals: HashMap<String, usize>,
     /// Bare name (a global's last segment) -> its CAF, first definition winning.
@@ -161,7 +161,7 @@ struct StmLog<'p> {
 /// continuation, and the recursive-closure keep-alive list.
 struct Exec<'p> {
     frame: FrameP<'p>,
-    ctrl: &'p Expr,
+    ctrl: &'p IrExpr,
     kont: Vec<KFrame<'p>>,
     /// Recursive-let closures are reachable from their own env only weakly. With
     /// calls trampolined (no host-stack pinning), keep each one alive here for the
@@ -212,7 +212,7 @@ fn format_op(effect: Option<&str>, op: &str) -> String {
 }
 
 impl<'p> Machine<'p> {
-    pub fn new(prog: &'p Program) -> Machine<'p> {
+    pub fn new(prog: &'p IrProgram) -> Machine<'p> {
         let mut globals = HashMap::new();
         let mut bare = HashMap::new();
         for (name, code) in &prog.globals {
@@ -674,14 +674,14 @@ impl<'p> Machine<'p> {
                 }
             }
             match ex.ctrl {
-                Expr::Ret(a) => {
+                IrExpr::Ret(a) => {
                     let v = deref(self.eval_atom(a, &ex.frame)?);
                     if let Some(r) = ex.ret(self, v)? {
                         return Ok(r);
                     }
                 }
 
-                Expr::Let { slot, rhs, body } => {
+                IrExpr::Let { slot, rhs, body } => {
                     let boxed = mk(Value::Unk);
                     let self_ = mk(Value::Rec(Rc::downgrade(&boxed)));
                     ex.frame.borrow_mut().locals[*slot] = self_;
@@ -694,7 +694,7 @@ impl<'p> Machine<'p> {
                     ex.ctrl = rhs.as_ref();
                 }
 
-                Expr::App { fun, arg, .. } => {
+                IrExpr::App { fun, arg, .. } => {
                     let callee = deref(self.eval_atom(fun, &ex.frame)?);
                     let argv = deref(self.eval_atom(arg, &ex.frame)?);
                     if let Some(r) = self.apply_inline(&mut ex, callee, argv)? {
@@ -702,7 +702,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Case {
+                IrExpr::Case {
                     scrut,
                     alts,
                     default,
@@ -711,7 +711,7 @@ impl<'p> Machine<'p> {
                     // built a cell at a time and each cell is computed when an arm
                     // looks at it.
                     let sv = self.force_thunk(self.eval_atom(scrut, &ex.frame)?)?;
-                    let mut next: Option<&'p Expr> = None;
+                    let mut next: Option<&'p IrExpr> = None;
                     for alt in alts {
                         let matched = {
                             let b = sv.borrow();
@@ -743,7 +743,7 @@ impl<'p> Machine<'p> {
                     ex.ctrl = next.unwrap_or_else(|| default.as_ref());
                 }
 
-                Expr::MkStruct { name, base, fields } => {
+                IrExpr::MkStruct { name, base, fields } => {
                     let (mut out, base_name): (Vec<(String, PVal<'p>)>, String) = match base {
                         Some(b) => {
                             let bv = self.force_thunk(self.eval_atom(b, &ex.frame)?)?;
@@ -776,7 +776,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Field { rec, name } => {
+                IrExpr::Field { rec, name } => {
                     let rv = self.force_thunk(self.eval_atom(rec, &ex.frame)?)?;
                     let v = {
                         let b = rv.borrow();
@@ -797,7 +797,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::MkVariant { ty, tag, fields } => {
+                IrExpr::MkVariant { ty, tag, fields } => {
                     let mut fs = Vec::with_capacity(fields.len());
                     for a in fields {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
@@ -812,7 +812,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::MkTuple(items) => {
+                IrExpr::MkTuple(items) => {
                     let mut fs = Vec::with_capacity(items.len());
                     for a in items {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
@@ -823,7 +823,7 @@ impl<'p> Machine<'p> {
                     }
                 }
 
-                Expr::Handle {
+                IrExpr::Handle {
                     body,
                     clauses,
                     els,
@@ -848,13 +848,13 @@ impl<'p> Machine<'p> {
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Defer { cleanup, body } => {
+                IrExpr::Defer { cleanup, body } => {
                     let cl = deref(self.eval_atom(cleanup, &ex.frame)?);
                     ex.kont.push(KFrame::Defer(KDefer { cleanup: cl }));
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Drop { slots, body } => {
+                IrExpr::Drop { slots, body } => {
                     let mut f = ex.frame.borrow_mut();
                     for &s in slots {
                         f.locals[s] = self.unk.clone();
@@ -863,7 +863,7 @@ impl<'p> Machine<'p> {
                     ex.ctrl = body.as_ref();
                 }
 
-                Expr::Fault(s) => return Err(fault(s.clone())),
+                IrExpr::Fault(s) => return Err(fault(s.clone())),
             }
         }
     }
@@ -962,22 +962,20 @@ impl<'p> Machine<'p> {
             Kind::Builtin(name, arity, mut args) => {
                 args.push(argv);
                 let v = if args.len() >= arity {
-                    // `generate template f` is HIGHER-ORDER: it applies the closure
-                    // `f` to each index, so it runs here (where `self.apply` can drive
-                    // the machine) rather than in the leaf `run_builtin`.
-                    // Structural equality walks the whole value, so both sides are
-                    // forced first: comparing an unforced slot would compare
-                    // representations, not values. Like `@tensor_create` below, this
-                    // needs the machine, so it cannot live in the leaf `run_builtin`.
-                    if &*name == "==" {
-                        self.force_deep(&args[0])?;
-                        self.force_deep(&args[1])?;
+                    // A deep-strict builtin (structural `==`) compares values, so
+                    // every lazy slot in its operands is forced first. Forcing needs
+                    // the machine, so it cannot happen in the leaf `run_builtin`.
+                    if builtin(&name).is_some_and(|b| b.strictness == Strictness::Deep) {
+                        for a in &args {
+                            self.force_deep(a)?;
+                        }
                         mk(run_builtin(&name, &args)?)
                     } else if let Some(v) = self.run_concurrency(&name, &args)? {
                         v
                     } else if &*name == "@tensor_create" {
-                        // Build the elements by applying `f` at each index of the
-                        // template's leading axis, then stack them into a tensor.
+                        // Higher-order: apply `f` at each index of the template's
+                        // leading axis, which needs the machine, then stack the
+                        // results into a tensor.
                         let (_, _, shape, _) = data::tensor_fields(&args[0])?;
                         let len = shape.first().copied().unwrap_or(0);
                         let f = args[1].clone();
@@ -1333,7 +1331,7 @@ const RENDER_FORCE_BUDGET: usize = 64;
 
 /// Evaluate a global of `prog` on the machine and render it, for diffing against
 /// the tree-walker.
-pub fn eval(prog: &Program, name: &str) -> Result<String> {
+pub fn eval(prog: &IrProgram, name: &str) -> Result<String> {
     // Install the program's C-repr struct layouts so the `@extern` seam can
     // marshal struct values by value.
     let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
@@ -1354,7 +1352,7 @@ pub fn eval(prog: &Program, name: &str) -> Result<String> {
 /// Evaluate a global to its structured value (like [`eval`] but without
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
 /// `$ @e` whose `@Code` result the driver splices.
-pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
+pub fn eval_value<'p>(prog: &'p IrProgram, name: &str) -> Result<PVal<'p>> {
     let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let v = m.eval_global(name).and_then(|v| m.finish_tasks().map(|_| v));
@@ -1362,7 +1360,7 @@ pub fn eval_value<'p>(prog: &'p Program, name: &str) -> Result<PVal<'p>> {
     v
 }
 
-/// A machine value detached from any [`Program`], so it can cross the re-entrant
+/// A machine value detached from any [`IrProgram`], so it can cross the re-entrant
 /// compile boundary of `@eval`: the nested compile produces a value tied to its
 /// own program's lifetime, and this is the reified, lifetime-free form embedded
 /// back into the outer machine. Only first-order data reifies; a closure, a
@@ -1555,7 +1553,7 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
 
 /// Run the program entry (`@main`): apply it to `argv` as a `@Vec @Str` and
 /// return its `@Int` result as the process exit code.
-pub fn run_entry(prog: &Program, name: &str, argv: Vec<String>) -> Result<i64> {
+pub fn run_entry(prog: &IrProgram, name: &str, argv: Vec<String>) -> Result<i64> {
     let _outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
     let m = Machine::new(prog);
     let f = m.eval_global(name)?;

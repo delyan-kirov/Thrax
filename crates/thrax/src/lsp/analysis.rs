@@ -47,7 +47,7 @@ pub struct Base {
     index: HashMap<String, usize>,
     expr_ranges: Vec<std::ops::Range<usize>>,
     types: Rc<Types>,
-    mark: frontend::typing::data::TypesMark,
+    mark: frontend::typing::types::TypesMark,
     stamps: Vec<Stamp>,
     root_name: String,
     root_imports: Vec<String>,

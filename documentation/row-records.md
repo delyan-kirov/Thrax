@@ -27,7 +27,7 @@ All three former gaps are now closed:
 - **Generic structs** at open rows: a generic instance like `Box @Int` satisfies
   `{ val: @Int | r }`. Struct rows are registered as schemes (parameter vars in
   declaration order) and the engine bridges an `App..(Con)` spine by substituting
-  the type arguments (`Engine::struct_row_bridge` / `subst_vars`).
+  the type arguments (`Unifier::struct_row_bridge` / `subst_vars`).
 - **Record update** is spelled `{ .f = v | base }` everywhere, in nominal
   `Type.{ .. }` / bare `.{ .. }` literals too (the old `..base` spread is gone).
 
@@ -50,7 +50,7 @@ unified.
 
 Implementation: `Type::Record(row)` + `Type::RowField(label, ty, rest)` (engine.rs)
 unified by `unify_record_row` / `rewrite_field` (mirrors the effect
-`unify_row` / `rewrite_row`); `Engine::struct_rows` (non-generic structs' closed
+`unify_row` / `rewrite_row`); `Unifier::struct_rows` (non-generic structs' closed
 rows, from `Checker::register_struct_rows`) is the `Con ~ Record` bridge; open/closed
 record types parse via `Ty::Record { fields, tail }` and `ty_of_ast`; `infer_field`
 is a row lookup; the param sugar auto-binds via field access (`bind_record_param` /

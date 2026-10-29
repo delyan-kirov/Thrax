@@ -1,5 +1,5 @@
 //! The C code generator (`ccg`): a backend that emits a standalone C program
-//! from the Core ([`frontend::lowering::data`]), the ahead-of-time counterpart to
+//! from the Core ([`frontend::core`]), the ahead-of-time counterpart to
 //! the tree-walking `interpreter`.
 //!
 //! [`emit`] runs the middle-end via [`frontend::ir::lower_modules`] (canonical
@@ -15,7 +15,7 @@
 mod gen;
 
 use frontend::ir;
-use frontend::lowering::data::Program;
+use frontend::core::CoreProgram;
 use gen::{cstr, emit_builtin_enum, emit_extern_table, reachable_codes, Emitter};
 
 /// The C portability layer, emitted ahead of the runtime: every platform
@@ -31,7 +31,7 @@ const RUNTIME: &str = include_str!("runtime.c");
 const THRAXSTD: &str = include_str!("thraxstd.c");
 
 /// The C API of the compiler library, emitted ahead of the runtime when a
-/// program runs a compiler builtin (see [`gen::COMPILER_BUILTINS`]).
+/// program runs a compiler builtin (see [`frontend::ir::data::BuiltinHost::Compiler`]).
 const THRAX_H: &str = include_str!("../../thrax/include/thrax.h");
 
 /// A generated C program together with the symbolic `@extern` libraries it uses,
@@ -62,7 +62,7 @@ pub enum Entry {
 /// the program (word size, os/arch), so a cross build reports the target it was
 /// compiled for rather than the build host.
 pub fn emit(
-    modules: &[Program],
+    modules: &[CoreProgram],
     entry: &str,
     kind: Entry,
     target: utilities::Target,
@@ -73,7 +73,7 @@ pub fn emit(
 /// Like [`emit`], also returning the symbolic `@extern` libraries the program
 /// links against (deduplicated, in first-seen order).
 pub fn emit_program(
-    modules: &[Program],
+    modules: &[CoreProgram],
     entry: &str,
     kind: Entry,
     target: utilities::Target,
@@ -319,14 +319,14 @@ pub fn emit_program(
 #[cfg(test)]
 mod tests {
     use super::RUNTIME;
-    use frontend::ir::data::BUILTINS;
+    use frontend::ir::data::native_builtins;
 
     /// A built-in the runtime never dispatches would compile, then fault as
     /// "unknown built-in" the first time a program ran it.
     #[test]
     fn runtime_dispatches_every_builtin() {
-        for (name, _) in BUILTINS {
-            let id = super::gen::builtin_ident(name);
+        for b in native_builtins() {
+            let (name, id) = (b.name, super::gen::builtin_ident(b.name));
             let dispatched = [format!("case {id}:"), format!("id == {id}")]
                 .iter()
                 .any(|p| RUNTIME.contains(p.as_str()));

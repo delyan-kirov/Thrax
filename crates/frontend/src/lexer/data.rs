@@ -299,7 +299,7 @@ fn lookup_str(table: &[(&str, Kind)], s: &str) -> Option<Kind> {
     table.iter().find(|&&(k, _)| k == s).map(|&(_, v)| v)
 }
 
-// -- character classes (matches the C++ `LXxDATA` predicates) ----------------
+// ## Character classes
 
 pub fn is_digit(b: u8) -> bool {
     b.is_ascii_digit()

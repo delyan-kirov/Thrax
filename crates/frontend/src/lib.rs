@@ -1,29 +1,37 @@
-//! The Thrax compiler front end, as a pipeline of phases: [`lexer`] lexes,
-//! [`parser`] parses to the handle-based AST, [`typing`] type-checks it, and
-//! [`lowering`] lowers it to the Core. Each phase keeps its data in a nested
-//! module (`parser::data`, `typing::data`/`typing::engine`, `lowering::data`).
+//! The Thrax compiler front end, as a pipeline of phases:
+//!
+//! 1. [`lexer`] turns source into tokens.
+//! 2. [`parser`] builds the handle-based AST ([`parser::data`]).
+//! 3. [`typing`] checks it and records what it resolved ([`typing::resolved`]).
+//! 4. [`desugar`] turns the checked AST into the [`core`] lambda calculus.
+//! 5. [`ir`] runs the [`passes`] over the Core and closure-converts it to the
+//!    IR the `interpreter` and `ccg` crates consume.
+//!
+//! [`format`](mod@format) is the source formatter, which runs on tokens alone.
 //!
 //! Entry points: [`parse`] (source to AST), [`check`] (AST to inferred types),
-//! and [`lowering::lower_program`] (AST to Core). The Core ([`lowering::data`])
-//! is what the `interpreter` and, later, `cgen` crates consume.
+//! [`desugar_program`] (AST to Core), and [`ir::lower_modules`] (Core to IR).
 
+pub mod core;
+pub mod desugar;
 pub mod format;
 pub mod ir;
 pub mod lexer;
-pub mod lowering;
 pub mod parser;
+pub mod passes;
 pub mod typing;
 
+pub use desugar::desugar_program;
 pub use lexer::data::{Kind, Token};
 pub use lexer::Lexer;
-pub use lowering::{collect_resolved, lower_program, Decls, Resolved};
 pub use parser::data::*;
 pub use parser::Parser;
-pub use typing::data::{
+pub use typing::types::{
     is_build_type, is_entry_type, Type, TypeNode, Types, BUILD, BUILD_SIG, ENTRY, ENTRY_SIG,
 };
-pub use typing::engine::Engine;
+pub use typing::unify::Unifier;
 pub use typing::Checker;
+pub use typing::{collect_resolved, Declarations, ReflectInfo, Resolved};
 
 use utilities::Result;
 

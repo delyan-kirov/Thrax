@@ -1,15 +1,23 @@
-//! Streaming lexer for Thrax.
+//! The lexer: source text to tokens.
+//!
+//! A hand-written scanner driven by the tables in [`data`]: keywords and
+//! operators are looked up there (longest match for operators), so the lexer
+//! and the parser cannot disagree about what an operator is.
 //!
 //! The public surface is a forward cursor: [`Lexer::peek`] and
 //! [`Lexer::next_token`] hand out one token at a time, lexing on demand, and
-//! [`Lexer::mark`] /
-//! [`Lexer::reset`] give the parser cheap backtracking. Comments are lexed but
-//! transparently skipped. This is the same reusable API as the C++ lexer.
+//! [`Lexer::mark`] / [`Lexer::reset`] give the parser cheap backtracking.
+//! Comments are lexed but skipped, except by [`Lexer::tokenize_with_comments`],
+//! which the formatter uses.
 //!
 //! Tokens are borrow-free: a [`Kind`] tag plus a [`Span`]. A lexeme is
 //! `source[span]`, resolved on demand; a string literal's bytes are decoded
 //! from the source later by [`decode_string`]. So the token stream owns nothing
-//! borrowed and is `Send`, and the lexer needs no arena.
+//! borrowed and is `Send`.
+//!
+//! Input: source text. Output: tokens, or a diagnostic at the first bad one.
+//!
+//! Entry point: [`Lexer::new`].
 
 pub mod data;
 #[cfg(test)]

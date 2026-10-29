@@ -15,7 +15,12 @@
 //! Nodes are built into the [`Ast`] stores as they are parsed (bottom-up), so a
 //! parse method returns an [`Aol`] handle, not a reference. Names are interned to
 //! [`StrId`]. Sugar (`;`, `|>`, `<|`, `::`, `[..]`) is preserved as explicit AST
-//! nodes; a later pass desugars it.
+//! nodes; [`crate::desugar`] removes it.
+//!
+//! Input: a [`Lexer`] over one module. Output: its [`Program`] in a shared
+//! [`Ast`], plus every error, so one broken item does not hide the rest.
+//!
+//! Entry point: [`Parser::parse_program`].
 
 pub mod data;
 pub(crate) mod table;
@@ -482,7 +487,7 @@ impl<'a> Parser<'a> {
         match t.kind {
             Kind::Word => Some(t.span),
             Kind::At if matches!(text, "@main" | "@build") => Some(t.span),
-            Kind::At if !table::is_blessed_interface(text)
+            Kind::At if !crate::typing::types::is_blessed_interface(text)
                 && matches!(self.peek_at(2).ok()?.kind, Kind::Colon) => Some(t.span),
             _ => None,
         }
@@ -583,7 +588,7 @@ impl<'a> Parser<'a> {
             // projects its single field, so the name is fixed and only CORE declares
             // it; an implementation is an ordinary value (`$ r : @IRange @Int (@Vec
             // @Int) = .{ .range = ... }`).
-            name if table::is_blessed_interface(&format!("@{name}")) => {
+            name if crate::typing::types::is_blessed_interface(&format!("@{name}")) => {
                 let at_tok = self.bump()?; // the '@I...' token
                 let iname = self.intern(self.text(at_tok));
                 expect!(self, Kind::Colon, "expected ':' and '@struct' for the interface type");

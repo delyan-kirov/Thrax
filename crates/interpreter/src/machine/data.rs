@@ -5,7 +5,7 @@
 //! handling in [`crate::machine`]): a closure that captured the placeholder
 //! weakly must observe the finished value.
 //!
-//! The lifetime `'p` is the borrow of the [`Program`](frontend::ir::Program): a
+//! The lifetime `'p` is the borrow of the [`Program`](frontend::ir::IrProgram): a
 //! captured continuation ([`Resumption`]) holds `&'p` pointers into the code, and
 //! a resumption can be stored in a value and resumed later, so the value type
 //! carries the program's lifetime.
@@ -365,33 +365,6 @@ fn as_byte(v: &PVal) -> Result<u8> {
 }
 
 // -- built-ins --------------------------------------------------------------
-
-/// The arity of a built-in operator, or `None` if the name is not a built-in.
-pub(crate) fn builtin_arity(name: &str) -> Option<usize> {
-    let n = match name {
-        "not" | "neg" | "@array_len" | "@array_alloc" | "@vec_len" | "@vec_new"
-        | "@tensor_length" | "@tensor_stack" | "@tensor_transpose"
-        | "@lex" | "@token_kind" | "@token_text" | "@parse" | "@parse_str" | "@parse_items"
-        | "@format" | "@eval" | "@abort" | "@emit" | "@fresh" | "@link" | "@link_path"
-        | "@type_kind" | "@type_fields" | "@type_variants" | "@type_params" | "@delay" | "@par"
-        | "@spawn" | "@await" | "@chan_new" | "@chan_recv" | "@tvar_new" | "@tvar_read"
-        | "@stm_begin" | "@stm_read" | "@stm_commit" | "@stm_wait" | "@stm_save"
-        | "@stm_rollback" => 1,
-        "@iadd" | "@isub" | "@imul" | "@idiv" | "@imod" | "@udiv" | "@umod" | "@fadd" | "@fsub"
-        | "@fmul" | "@fdiv" | "@fmod" | "@fpow" | "@f32add" | "@f32sub" | "@f32mul" | "@f32div"
-        | "@f32mod" | "@f32pow" | "@ieq" | "@ilt" | "@ult" | "@feq" | "@flt" | "@seq"
-        | "@slt" | "@swrap" | "@uwrap" => 2,
-        "==" | "<" | ">" | "<=" | ">=" | "++" | "@acat" | "@array_get"
-        | "@array_push" | "@vec_get" | "@vec_push" | "@vec_fill" | "record_without"
-        | "@tensor_concat" | "@tensor_index" | "@tensor_create" | "@chan_send"
-        | "@stm_write" => 2,
-        "@tensor_slice" | "@tensor_index_axis" => 3,
-        "@tensor_slice_axis" => 4,
-        "@array_set" | "@array_slice" | "@vec_set" | "@vec_slice" => 3,
-        _ => return None,
-    };
-    Some(n)
-}
 
 /// Run a saturated built-in. `a` is already deref'd (the machine derefs an
 /// argument before pushing it onto a builtin's operand list).

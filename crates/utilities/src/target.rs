@@ -395,3 +395,6 @@ pub fn musl_specs(sysroot: &std::path::Path) -> String {
          *link:\n-nostdlib %{{shared:-shared}} %{{static:-static}} %{{rdynamic:-export-dynamic}}\n"
     )
 }
+
+#[cfg(test)]
+mod tests;

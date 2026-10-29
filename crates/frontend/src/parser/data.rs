@@ -8,8 +8,8 @@
 //! [`utilities::SecondaryMap`]), and it can be rewritten in place ([`utilities::Store::commit`]).
 //!
 //! The tree stays close to the surface syntax: sequencing/pipes/cons and other
-//! sugar are kept as explicit nodes ([`Expr::BinOp`], [`Expr::List`], ...) and a
-//! later `core` pass desugars them.
+//! sugar are kept as explicit nodes ([`Expr::BinOp`], [`Expr::List`], ...), which
+//! [`crate::desugar`] removes.
 
 use utilities::{Aol, Interner, SecondaryMap, Slice, Span, Store, StrId};
 
@@ -519,7 +519,7 @@ pub enum Expr {
     /// An anonymous, structural record value: `{ .foo = 1, .bar = 2 }` (plain),
     /// `{ .foo = v | base }` (update: the rest come from `base`), or
     /// `{ .foo = 1, with base }` (stack: this record's fields on top of `base`'s).
-    /// Its type is a [`crate::typing::data::TypeNode::Record`] row, not a nominal struct.
+    /// Its type is a [`crate::typing::types::TypeNode::Record`] row, not a nominal struct.
     Record {
         fields: Slice<FieldInit>,
         with: Option<Aol<Expr>>,

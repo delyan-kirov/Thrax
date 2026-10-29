@@ -669,7 +669,7 @@ fn build_has_one_signature() {
     // `@build` is a definition like any other, so the checker only has to agree
     // with its annotation; `is_build_type` is what pins the shape (see the driver).
     let types = Types::new();
-    let unit = types.con(crate::typing::data::UNIT);
+    let unit = types.con(crate::typing::types::UNIT);
     let code = types.con("@Code");
     let row = {
         let empty = types.row_empty();
@@ -690,7 +690,7 @@ fn build_has_one_signature() {
         types.row_extend("@Meta", empty)
     };
     assert!(!crate::is_build_type(&types, types.arrow_eff(unit, code, meta_only)));
-    let int = types.con(crate::typing::data::INT);
+    let int = types.con(crate::typing::types::INT);
     assert!(!crate::is_build_type(&types, types.arrow_eff(unit, int, row)));
 }
 
@@ -1483,4 +1483,22 @@ fn mutual_recursion_keeps_a_row_parameter_open() {
     // A bare row variable is not printed; a closed one would show as `St <>`.
     assert_eq!(type_of(src, "serve"), "St a -> @Int -> @Int");
     assert_eq!(type_of(src, "step"), "({} -> St a) -> @Int -> @Int");
+}
+
+/// Reflection lists a spliced union's variants in their order after splicing:
+/// the included union's first, then the union's own.
+#[test]
+fn reflection_orders_spliced_variants_included_first() {
+    let src = "$ @mod M\n\
+               $ Small : @union = A: {}, B: {}\n\
+               $ Big : @union = with Small, C: {}, D: {}\n\
+               $ x : @Int = 0\n";
+    let (ast, prog) = crate::parse_into(Ast::new(), src).expect("parse");
+    let mut checker = Checker::new(&ast, std::rc::Rc::new(crate::Types::new()));
+    checker.check_program(&prog).unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
+    let resolved = crate::collect_resolved(std::slice::from_ref(&checker));
+    let reflect = resolved.declarations.reflect();
+    let big = reflect.unions.iter().find(|(_, n, _, _)| n == "Big").expect("Big reflected");
+    let tags: Vec<&str> = big.3.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(tags, ["A", "B", "C", "D"]);
 }
