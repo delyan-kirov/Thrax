@@ -20,7 +20,9 @@
 //! No external crates are allowed, so the line editor is hand-rolled on a raw-mode
 //! terminal (`termios`, or the Windows console, behind `term.c`), with a movable cursor and emacs-style editing keys (character,
 //! word, and line motion, the usual kill keys, undo/redo, and `C-r` reverse
-//! history search). When stdin is not a terminal the shell falls back to a
+//! history search). The buffer is colored as it is typed, by the same lexical
+//! classes the language server reports (see [`thrax::highlight`]); `NO_COLOR`
+//! turns that off. When stdin is not a terminal the shell falls back to a
 //! plain line reader with the same `$`-terminates-an-item convention.
 //!
 //! Raw mode is for reading keys only: an item is evaluated with the terminal put
@@ -37,7 +39,7 @@ use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use thrax::driver;
+use thrax::{driver, highlight};
 
 /// The reserved binding an evaluated expression is compiled under.
 const IT: &str = driver::PROBE;
@@ -656,7 +658,11 @@ impl Editor {
         }
         out.push_str("\r\x1b[J");
         out.push_str(PROMPT);
-        out.push_str(&self.buffer);
+        if colored() {
+            out.push_str(&highlight::ansi(&self.buffer));
+        } else {
+            out.push_str(&self.buffer);
+        }
 
         let total = 1 + self.buffer.matches('\n').count();
         let before = &self.buffer[..self.cursor];
@@ -677,6 +683,12 @@ impl Editor {
         let _ = io::stdout().flush();
         self.cursor_row = row;
     }
+}
+
+/// Whether the buffer is painted with syntax colors: always, unless the
+/// `NO_COLOR` convention (any non-empty value) turns it off.
+fn colored() -> bool {
+    std::env::var_os("NO_COLOR").map_or(true, |v| v.is_empty())
 }
 
 /// An incremental reverse history search (`C-r`). Refine with typing/Backspace;

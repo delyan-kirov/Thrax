@@ -16,6 +16,7 @@ use utilities::{Applicability, Code, Diagnostic, Json, Severity, Span};
 use super::analysis::{self, Snapshot};
 use super::clock::Instant;
 use super::text::{Document, Encoding, Position};
+use crate::highlight::{self, Class};
 use super::{path_to_uri, read_message, uri_to_path, write_message};
 
 /// LSP `DiagnosticSeverity`.
@@ -374,7 +375,7 @@ impl Server {
                     (
                         "legend",
                         Json::obj([
-                            ("tokenTypes", Json::Arr(TOKEN_TYPES.iter().map(|t| Json::str(*t)).collect())),
+                            ("tokenTypes", Json::Arr(Class::ALL.iter().map(|c| Json::str(c.lsp_name())).collect())),
                             ("tokenModifiers", Json::Arr(Vec::new())),
                         ]),
                     ),
@@ -1010,7 +1011,7 @@ impl Server {
     }
 
     /// Highlighting straight from the lexer, so an editor needs no grammar of
-    /// its own: the classes are [`TOKEN_TYPES`].
+    /// its own: the classes are [`Class`].
     fn semantic_tokens(&mut self, params: &Json) -> Json {
         let Some(uri) = params.get("textDocument").get("uri").as_str() else { return Json::Null };
         let Some(open) = self.open.get(uri) else { return Json::Null };
@@ -1108,7 +1109,8 @@ fn semantic_token_data(doc: &Document, enc: Encoding) -> Json {
     let (mut line, mut col) = (0usize, 0usize);
     for t in tokens {
         let text = &doc.text[t.span.start..t.span.end];
-        let Some(class) = token_class(t.kind, text) else { continue };
+        let Some(class) = highlight::class(t.kind, text) else { continue };
+        let class = class as usize;
         // A token is reported line by line, so a multi-line one (a block
         // comment) is split at its newlines.
         let mut start = t.span.start;
@@ -1127,27 +1129,6 @@ fn semantic_token_data(doc: &Document, enc: Encoding) -> Json {
         }
     }
     Json::obj([("data", Json::Arr(data))])
-}
-
-/// The semantic token classes, in legend order.
-const TOKEN_TYPES: &[&str] = &["keyword", "comment", "string", "number", "operator", "type", "function", "macro", "variable"];
-
-fn token_class(kind: frontend::Kind, text: &str) -> Option<usize> {
-    use frontend::Kind::*;
-    let class = match kind {
-        Let | In | If | Is | Else | With | Do | Ctl | Defer => "keyword",
-        Comment => "comment",
-        Str => "string",
-        Int(_) | Real(_) | Imaginary(_) => "number",
-        Op | Eq | FatArrow | Arrow | Lambda | Colon | Dollar | Ellipsis => "operator",
-        Word if text.starts_with(|c: char| c.is_ascii_uppercase()) => "type",
-        Word => "variable",
-        At if matches!(text, "@true" | "@false") => "number",
-        At if frontend::typing::BASE_TYPES.contains(&text) => "type",
-        At => "macro",
-        _ => return None,
-    };
-    TOKEN_TYPES.iter().position(|t| *t == class)
 }
 
 fn position(p: &Json) -> Position {
