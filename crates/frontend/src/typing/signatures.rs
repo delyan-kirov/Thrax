@@ -15,16 +15,16 @@ impl<'a> Checker<'a> {
     /// Is `name` a usable type: a built-in base type, or a struct/union/alias
     /// declared here or imported? A bare name that is none of these is a typo (a
     /// type variable is a lowercase name).
-    pub(super) fn unknown_type(&self, name: &str) -> Diagnostic {
+    pub(super) fn unknown_type(&self, name: StrId) -> Diagnostic {
         let d = diag!(Code::TypeUnbound, Span::at(0), 0, "unknown type `{name}`");
         let known = self
             .structs
             .keys()
             .chain(self.unions.keys())
             .chain(self.aliases.keys())
-            .copied()
+            .map(|k| k.as_str())
             .chain(BASE_TYPES.iter().copied());
-        match utilities::error::closest(name, known) {
+        match utilities::error::closest(name.as_str(), known) {
             Some(n) => d.with_fix(
                 format!("did you mean `{n}`?"),
                 vec![Edit::new(Span::at(0), n)],
@@ -38,20 +38,20 @@ impl<'a> Checker<'a> {
 
     /// Record `name` as one of this module's own types, displacing a hidden
     /// one of the same name an import brought in.
-    pub(super) fn claim_type_name(&mut self, name: &'a str) {
+    pub(super) fn claim_type_name(&mut self, name: StrId) {
         self.type_home.insert(name, self.module_name);
-        let aliased = self.alias_types.remove(name).is_some();
-        if self.hidden_types.remove(name).is_some() || aliased {
-            self.structs.remove(name);
-            self.unions.remove(name);
-            self.aliases.remove(name);
+        let aliased = self.alias_types.remove(&name).is_some();
+        if self.hidden_types.remove(&name).is_some() || aliased {
+            self.structs.remove(&name);
+            self.unions.remove(&name);
+            self.aliases.remove(&name);
         }
     }
 
     /// A type this module wrote naming a hidden type: one only an import's
     /// declarations reach. Deferred like the other type-name errors.
-    pub(super) fn check_hidden_type(&mut self, ty: Aol<Ty>, name: &str) {
-        if let Some(&alias) = self.alias_types.get(name) {
+    pub(super) fn check_hidden_type(&mut self, ty: Aol<Ty>, name: StrId) {
+        if let Some(&alias) = self.alias_types.get(&name) {
             let qualified = matches!(self.tnode(ty), Ty::Con { module: Some(_), .. });
             if qualified || self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
                 return;
@@ -59,7 +59,7 @@ impl<'a> Checker<'a> {
             let mut d = diag!(
                 Code::TypeUnbound, Span::at(0), 0,
                 "type `{name}` is imported qualified-only";
-                note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]
+                note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias]
             );
             if let Some(span) = self.ast.ty_span(ty) {
                 d = d.fill_span(span).with_fix(
@@ -71,14 +71,14 @@ impl<'a> Checker<'a> {
             self.unknown_type = Some(d);
             return;
         }
-        let Some(&home) = self.hidden_types.get(name) else {
+        let Some(&home) = self.hidden_types.get(&name) else {
             return;
         };
         if self.foreign_tys.contains(&ty) || self.unknown_type.is_some() {
             return;
         }
         let mut d = diag!(Code::TypeUnbound, Span::at(0), 0, "type `{name}` is not imported");
-        d = self.with_import_fix(d, home);
+        d = self.with_import_fix(d, home.as_str());
         if let Some(span) = self.ast.ty_span(ty) {
             d = d.fill_span(span);
         }
@@ -87,35 +87,35 @@ impl<'a> Checker<'a> {
 
     /// `Type.Tag` naming a type an aliased-only import brought in, without the
     /// alias. A bare `.Tag` is fine: the expected type picks the union.
-    pub(super) fn unqualified_alias_ctor(&self, module: Option<StrId>, ty: Option<&str>, tag: &str) -> Option<Diagnostic> {
+    pub(super) fn unqualified_alias_ctor(&self, module: Option<StrId>, ty: Option<StrId>, tag: StrId) -> Option<Diagnostic> {
         let ty = ty?;
-        let alias = *self.alias_types.get(ty)?;
+        let alias = *self.alias_types.get(&ty)?;
         if module.is_some() {
             return None;
         }
         Some(diag!(
             Code::TypeUnbound, Span::at(0), 0,
             "type `{ty}` is imported qualified-only";
-            note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias];
+            note: "`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias];
             help: "write `{alias}.{ty}.{tag}`"
         ))
     }
 
-    pub(super) fn is_known_type(&self, name: &str) -> bool {
-        is_base_type(name)
-            || self.structs.contains_key(name)
-            || self.unions.contains_key(name)
-            || self.aliases.contains_key(name)
+    pub(super) fn is_known_type(&self, name: StrId) -> bool {
+        is_base_type(name.as_str())
+            || self.structs.contains_key(&name)
+            || self.unions.contains_key(&name)
+            || self.aliases.contains_key(&name)
     }
 
     /// The type parameters a user-declared type constructor takes, if `name` is
     /// a struct, union, or alias (the ones whose arity we track).
-    pub(super) fn type_params(&self, name: &str) -> Option<&[&'a str]> {
+    pub(super) fn type_params(&self, name: StrId) -> Option<&[StrId]> {
         self.structs
-            .get(name)
+            .get(&name)
             .map(|i| i.params.as_slice())
-            .or_else(|| self.unions.get(name).map(|i| i.params.as_slice()))
-            .or_else(|| self.aliases.get(name).map(|(p, _)| p.as_slice()))
+            .or_else(|| self.unions.get(&name).map(|i| i.params.as_slice()))
+            .or_else(|| self.aliases.get(&name).map(|(p, _)| p.as_slice()))
     }
 
     /// Flag a type constructor applied to the wrong number of arguments
@@ -132,7 +132,7 @@ impl<'a> Checker<'a> {
             cur = *h;
         }
         if let Ty::Con { name, .. } = self.tnode(cur) {
-            let name = self.text(*name);
+            let name = *name;
             if let Some(params) = self.type_params(name) {
                 let arity = params.len();
                 if count < arity && exact && self.unknown_type.is_none() {
@@ -141,7 +141,8 @@ impl<'a> Checker<'a> {
                         "type `{name}` takes {arity} parameter(s) but {count} {} given",
                         if count == 1 { "was" } else { "were" };
                         note: "a type constructor is a type only once it is applied to every parameter";
-                        help: "write `{name} {}`, with a type for each parameter", params.join(" ")
+                        help: "write `{name} {}`, with a type for each parameter",
+                            params.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(" ")
                     );
                     if let Some(span) = self.ast.ty_span(ty) {
                         d = d.fill_span(span);
@@ -166,7 +167,7 @@ impl<'a> Checker<'a> {
     /// alias's parameters to the arguments (a fresh variable for any not supplied,
     /// so an under-applied alias stays polymorphic, as for structs) and elaborate
     /// the body under that binding. Returns None when the spine head is not an alias.
-    pub(super) fn try_expand_alias(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Option<Type> {
+    pub(super) fn try_expand_alias(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<StrId, Type>) -> Option<Type> {
         let mut args = Vec::new();
         let mut cur = ty;
         while let Ty::App(h, a) = self.tnode(cur) {
@@ -174,10 +175,10 @@ impl<'a> Checker<'a> {
             cur = *h;
         }
         let name = match self.tnode(cur) {
-            Ty::Con { name, .. } => self.text(*name),
+            Ty::Con { name, .. } => *name,
             _ => return None,
         };
-        let (params, body) = self.aliases.get(name)?.clone();
+        let (params, body) = self.aliases.get(&name)?.clone();
         self.check_hidden_type(cur, name);
         if matches!(self.tnode(body), Ty::Row(_)) {
             let span = self.ty_span_or_none(ty);
@@ -190,7 +191,7 @@ impl<'a> Checker<'a> {
         }
         args.reverse();
         self.check_type_arity(ty, false);
-        let mut sub: HashMap<&'a str, Type> = HashMap::new();
+        let mut sub: HashMap<StrId, Type> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
             let t = match args.get(i) {
                 Some(&a) => self.ty_of_ast(a, tvars),
@@ -221,13 +222,12 @@ impl<'a> Checker<'a> {
         &mut self,
         entries: Slice<RowEntry>,
         tail: Option<StrId>,
-        tvars: &mut HashMap<&'a str, Type>,
+        tvars: &mut HashMap<StrId, Type>,
     ) -> Type {
-        let mut labels: Vec<(&'a str, bool, Type)> = Vec::new();
+        let mut labels: Vec<(StrId, bool, Type)> = Vec::new();
         let mut tails: Vec<Type> = Vec::new();
         if let Some(t) = tail {
-            let name = self.text(t);
-            tails.push(*tvars.entry(name).or_insert_with(|| self.unifier.fresh()));
+            tails.push(*tvars.entry(t).or_insert_with(|| self.unifier.fresh()));
         }
         self.expand_row_entries(entries, tvars, false, &mut labels, &mut tails);
         let mut row = match tails.split_first() {
@@ -254,10 +254,10 @@ impl<'a> Checker<'a> {
     /// arguments when nothing was.
     pub(super) fn effect_label_args(
         &mut self,
-        name: &'a str,
+        name: StrId,
         args: &[Aol<Ty>],
         span: Span,
-        tvars: &mut HashMap<&'a str, Type>,
+        tvars: &mut HashMap<StrId, Type>,
     ) -> Type {
         if args.is_empty() {
             if let Some((own, own_args)) = self.effect_self {
@@ -266,7 +266,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let arity = self.effect_arity.get(name).copied();
+        let arity = self.effect_arity.get(&name).copied();
         match arity {
             Some(0) if !args.is_empty() => self.defer_type_error(diag!(
                 Code::TypeMismatch, span, 0,
@@ -297,16 +297,16 @@ impl<'a> Checker<'a> {
     pub(super) fn expand_row_entries(
         &mut self,
         entries: Slice<RowEntry>,
-        tvars: &mut HashMap<&'a str, Type>,
+        tvars: &mut HashMap<StrId, Type>,
         in_alias: bool,
-        labels: &mut Vec<(&'a str, bool, Type)>,
+        labels: &mut Vec<(StrId, bool, Type)>,
         tails: &mut Vec<Type>,
     ) {
         let ast = self.ast;
         for entry in ast.slice(entries) {
-            let name = self.text(entry.name);
+            let name = entry.name;
             let args = ast.slice(entry.args);
-            let Some((params, body)) = self.aliases.get(name).cloned() else {
+            let Some((params, body)) = self.aliases.get(&name).cloned() else {
                 let dup = labels.iter().any(|&(l, from, _)| l == name && (from || in_alias));
                 if !dup {
                     let args = self.effect_label_args(name, args, entry.span, tvars);
@@ -331,7 +331,7 @@ impl<'a> Checker<'a> {
                 ));
                 continue;
             }
-            let mut sub: HashMap<&'a str, Type> = HashMap::new();
+            let mut sub: HashMap<StrId, Type> = HashMap::new();
             for (i, p) in params.iter().enumerate() {
                 let t = match args.get(i) {
                     Some(&a) => self.ty_of_ast(a, tvars),
@@ -341,7 +341,6 @@ impl<'a> Checker<'a> {
             }
             self.expand_row_entries(row.entries, &mut sub, true, labels, tails);
             if let Some(t) = row.tail {
-                let t = self.text(t);
                 tails.push(*sub.entry(t).or_insert_with(|| self.unifier.fresh()));
             }
         }
@@ -349,8 +348,8 @@ impl<'a> Checker<'a> {
 
     /// The labels a parameterless, closed row alias stands for, through any
     /// aliases it names, or None when it is not one (or names something else).
-    pub(super) fn closed_row_alias_labels(&self, name: &str) -> Option<Vec<String>> {
-        let (params, body) = self.aliases.get(name)?;
+    pub(super) fn closed_row_alias_labels(&self, name: StrId) -> Option<Vec<String>> {
+        let (params, body) = self.aliases.get(&name)?;
         let Ty::Row(row) = self.ast.ty(*body) else {
             return None;
         };
@@ -359,8 +358,8 @@ impl<'a> Checker<'a> {
         }
         let mut out: Vec<String> = Vec::new();
         for entry in self.ast.slice(row.entries) {
-            let label = self.text(entry.name);
-            let more = if self.aliases.contains_key(label) {
+            let label = entry.name;
+            let more = if self.aliases.contains_key(&label) {
                 if !self.ast.slice(entry.args).is_empty() {
                     return None;
                 }
@@ -385,7 +384,7 @@ impl<'a> Checker<'a> {
             .aliases
             .keys()
             .filter_map(|name| {
-                let labels = self.closed_row_alias_labels(name)?;
+                let labels = self.closed_row_alias_labels(*name)?;
                 (labels.len() >= 2).then(|| (name.to_string(), labels))
             })
             .collect();
@@ -399,13 +398,12 @@ impl<'a> Checker<'a> {
 impl<'a> Checker<'a> {
     /// Elaborate a tensor size: a `Nat` literal, or a (Nat-kinded) size variable
     /// bound by name in `tvars` so `[n]T -> [n]U` shares the one size.
-    pub(super) fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+    pub(super) fn size_ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<StrId, Type>) -> Type {
         match self.tnode(ty) {
             Ty::Nat(n) => self.unifier.types.add(TypeNode::Nat(*n)),
             Ty::Var(name) => {
-                let name = self.text(*name);
                 let eng = &mut self.unifier;
-                *tvars.entry(name).or_insert_with(|| eng.fresh_nat())
+                *tvars.entry(*name).or_insert_with(|| eng.fresh_nat())
             }
             Ty::SizeAdd(a, b) => {
                 let (a, b) = (*a, *b);
@@ -455,7 +453,7 @@ impl<'a> Checker<'a> {
     /// An application spine whose arity the caller has already checked: the
     /// partial applications inside it (`Pair @Int` in `Pair @Int @Str`) are not
     /// types of their own, so they are not checked again.
-    pub(super) fn spine_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+    pub(super) fn spine_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<StrId, Type>) -> Type {
         match self.tnode(ty) {
             Ty::App(head, arg) => {
                 let (head, arg) = (*head, *arg);
@@ -472,7 +470,7 @@ impl<'a> Checker<'a> {
         let Ty::Con { name, .. } = self.tnode(ty) else {
             unreachable!("con_of_ast on a non-constructor");
         };
-        let name = self.text(*name);
+        let name = *name;
         if !self.is_known_type(name) && self.unknown_type.is_none() {
             let mut d = self.unknown_type(name);
             if let Some(span) = self.ast.ty_span(ty) {
@@ -484,7 +482,7 @@ impl<'a> Checker<'a> {
         self.unifier.types.con(name)
     }
 
-    pub(super) fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<&'a str, Type>) -> Type {
+    pub(super) fn ty_of_ast(&mut self, ty: Aol<Ty>, tvars: &mut HashMap<StrId, Type>) -> Type {
         // An alias at the head of an application spine expands first, so `MapInt Bool`
         // substitutes into `Map Int Bool` rather than forming `App(alias, Bool)`.
         if let Some(t) = self.try_expand_alias(ty, tvars) {
@@ -496,9 +494,8 @@ impl<'a> Checker<'a> {
                 self.con_of_ast(ty)
             }
             Ty::Var(name) => {
-                let name = self.text(*name);
                 *tvars
-                    .entry(name)
+                    .entry(*name)
                     .or_insert_with(|| self.unifier.fresh())
             }
             Ty::App(..) => {
@@ -557,17 +554,14 @@ impl<'a> Checker<'a> {
                 // y: B }` is closed (empty tail). Records are real, name-keyed types;
                 // positional/scalar values promote to them at call sites.
                 let rest = match tail {
-                    Some(tvar) => {
-                        let name = self.text(*tvar);
-                        *tvars.entry(name).or_insert_with(|| self.unifier.fresh())
-                    }
+                    Some(tvar) => *tvars.entry(*tvar).or_insert_with(|| self.unifier.fresh()),
                     None => self.unifier.types.row_empty(),
                 };
                 let decls: Vec<_> = self.ast.slice(*fields).to_vec();
                 let mut row = rest;
                 for f in decls.iter().rev() {
                     let fty = self.ty_of_ast(f.ty, tvars);
-                    row = self.unifier.types.row_field(self.text(f.name), fty, row);
+                    row = self.unifier.types.row_field(f.name, fty, row);
                 }
                 self.unifier.types.record(row)
             }

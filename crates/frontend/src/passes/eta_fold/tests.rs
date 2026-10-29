@@ -1,80 +1,83 @@
-use std::sync::Arc;
-
 use super::*;
 
-fn prog(globals: Vec<(&str, Term)>) -> CoreProgram {
-    CoreProgram {
-        module: "M".into(),
-        effects: Vec::new(),
-        globals: globals
-            .into_iter()
-            .map(|(n, t)| (n.to_string(), t))
-            .collect(),
-        crepr_layouts: Vec::new(),
-        ct_runs: Vec::new(),
-        ct_build: None,
-        ct_evals: Vec::new(),
-        ct_types: Vec::new(),
+/// A program of `globals`, each built in its store by its function.
+fn prog(globals: Vec<(&str, fn(&mut Terms) -> Aol<Term>)>) -> CoreProgram {
+    let mut p = CoreProgram::new(StrId::intern("M"));
+    for (name, build) in globals {
+        let term = build(&mut p.terms);
+        p.globals.push((StrId::intern(name), term));
     }
+    p
+}
+
+/// `\a b = op p q`, with `p` and `q` the parameters named.
+fn eta(t: &mut Terms, op: &str, p: &str, q: &str) -> Aol<Term> {
+    let op = t.var(op);
+    let (p, q) = (t.var(p), t.var(q));
+    let body = t.app(op, p);
+    let body = t.app(body, q);
+    let inner = t.lam(StrId::intern("b"), body);
+    t.lam(StrId::intern("a"), inner)
+}
+
+fn instance(t: &mut Terms, field: Aol<Term>) -> Aol<Term> {
+    t.add(Term::Struct {
+        name: StrId::intern("IAdd"),
+        base: None,
+        fields: vec![(StrId::intern("add"), field)],
+    })
 }
 
 /// `\a b = @iadd a b`, the shape every CORE arithmetic instance field has.
-fn eta_add() -> Term {
-    Term::Lam {
-        param: "a".into(),
-        body: Arc::new(Term::Lam {
-            param: "b".into(),
-            body: Arc::new(Term::app(
-                Term::app(Term::var("@iadd"), Term::var("a")),
-                Term::var("b"),
-            )),
-        }),
-    }
+fn eta_add(t: &mut Terms) -> Aol<Term> {
+    let field = eta(t, "@iadd", "a", "b");
+    instance(t, field)
 }
 
-fn instance(field: Term) -> Term {
-    Term::Struct {
-        name: "IAdd".into(),
-        base: None,
-        fields: Arc::from(vec![("add".to_string(), field)]),
-    }
+/// A method that reorders its arguments: `\a b = @iadd b a`.
+fn flipped(t: &mut Terms) -> Aol<Term> {
+    let field = eta(t, "@iadd", "b", "a");
+    instance(t, field)
 }
 
-fn projection() -> Term {
-    Term::Field(
-        Arc::new(Term::Var {
-            module: Some("CORE".into()),
-            name: "impl_IAdd_for_int".into(),
-            idx: 0,
-        }),
-        "add".into(),
-    )
+/// `CORE.impl_IAdd_for_int.add` applied to `args` integers.
+fn projection(t: &mut Terms, args: i64) -> Aol<Term> {
+    let instance = t.add(Term::Var {
+        module: Some(StrId::intern("CORE")),
+        name: StrId::intern("impl_IAdd_for_int"),
+    });
+    let mut out = t.field(instance, "add");
+    for n in 1..=args {
+        let n = t.add(Term::Int(n));
+        out = t.app(out, n);
+    }
+    out
+}
+
+fn rendered(p: &CoreProgram, i: usize) -> String {
+    p.terms.render(p.globals[i].1)
 }
 
 #[test]
 fn a_saturated_projection_of_an_eta_primitive_folds() {
-    let use_site = Term::app(Term::app(projection(), Term::Int(1)), Term::Int(2));
     let mut p = prog(vec![
-        ("CORE.impl_IAdd_for_int", instance(eta_add())),
-        ("M.sum", use_site),
+        ("CORE.impl_IAdd_for_int", eta_add),
+        ("M.sum", |t| projection(t, 2)),
     ]);
     fold_primitive_methods(&mut p);
-    let folded = format!("{:?}", p.globals[1].1);
-    assert!(folded.contains("@iadd"), "{folded}");
-    assert!(!folded.contains("Field"), "{folded}");
+    assert_eq!(rendered(&p, 1), "(App (App (Var @iadd) (Int 1)) (Int 2))");
 }
 
 /// An UNDER-applied projection keeps the field read: there is nothing to
 /// eta-reduce, and the primitive is not a first-class value.
 #[test]
 fn an_under_applied_projection_is_left_alone() {
-    let use_site = Term::app(projection(), Term::Int(1));
     let mut p = prog(vec![
-        ("CORE.impl_IAdd_for_int", instance(eta_add())),
-        ("M.add1", use_site),
+        ("CORE.impl_IAdd_for_int", eta_add),
+        ("M.add1", |t| projection(t, 1)),
     ]);
     fold_primitive_methods(&mut p);
-    assert!(format!("{:?}", p.globals[1].1).contains("Field"));
+    assert!(rendered(&p, 1).contains("Field"));
 }
 
 /// A method that is not an eta-expanded primitive (it reorders its arguments)
@@ -82,21 +85,10 @@ fn an_under_applied_projection_is_left_alone() {
 /// primitive to its own parameters in order.
 #[test]
 fn a_method_that_reorders_its_arguments_is_left_alone() {
-    let flipped = Term::Lam {
-        param: "a".into(),
-        body: Arc::new(Term::Lam {
-            param: "b".into(),
-            body: Arc::new(Term::app(
-                Term::app(Term::var("@iadd"), Term::var("b")),
-                Term::var("a"),
-            )),
-        }),
-    };
-    let use_site = Term::app(Term::app(projection(), Term::Int(1)), Term::Int(2));
     let mut p = prog(vec![
-        ("CORE.impl_IAdd_for_int", instance(flipped)),
-        ("M.sum", use_site),
+        ("CORE.impl_IAdd_for_int", flipped),
+        ("M.sum", |t| projection(t, 2)),
     ]);
     fold_primitive_methods(&mut p);
-    assert!(format!("{:?}", p.globals[1].1).contains("Field"));
+    assert!(rendered(&p, 1).contains("Field"));
 }

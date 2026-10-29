@@ -205,7 +205,9 @@ pub fn emit_program(
 
     // The foreign-function wrappers and their dispatch table (empty table + count
     // 0 when the program has no `@extern`).
-    out.push_str(&emit_extern_table(&externs, &prog.crepr_layouts));
+    let layouts: Vec<(String, utilities::CLayout)> =
+        prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect();
+    out.push_str(&emit_extern_table(&externs, &layouts));
 
     // The dispatch tables the runtime calls back through: entry block + slot count
     // per lifted Code.

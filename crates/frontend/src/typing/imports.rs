@@ -34,7 +34,7 @@ impl<'a> Checker<'a> {
                 | Item::Alias { name, .. } => *name,
                 _ => continue,
             };
-            self.private_names.insert(self.text(name));
+            self.private_names.insert(name);
         }
     }
 
@@ -42,26 +42,26 @@ impl<'a> Checker<'a> {
     /// repeat, nor reuse the name of another imported module, this module, or `C`.
     pub(super) fn check_import_aliases(&mut self, program: &Program) {
         let dotted = |parts: Slice<StrId>| {
-            self.ast.slice(parts).iter().map(|&p| self.text(p)).collect::<Vec<_>>().join(".")
+            self.ast.slice(parts).iter().map(|p| p.as_str()).collect::<Vec<_>>().join(".")
         };
         let mut plain: HashSet<String> = HashSet::new();
-        let mut aliased: Vec<(&'a str, String, Span)> = Vec::new();
+        let mut aliased: Vec<(StrId, String, Span)> = Vec::new();
         for item in self.ast.slice(program.items) {
             match item {
                 Item::Import { module, alias: None, .. } => {
                     plain.insert(dotted(*module));
                 }
                 Item::Import { module, alias: Some(alias), span } => {
-                    aliased.push((self.text(*alias), dotted(*module), *span));
+                    aliased.push((*alias, dotted(*module), *span));
                 }
                 _ => {}
             }
         }
-        let mut seen: HashMap<&'a str, String> = HashMap::new();
+        let mut seen: HashMap<StrId, String> = HashMap::new();
         for (alias, module, span) in aliased {
-            let clash = if let Some(first) = seen.get(alias) {
+            let clash = if let Some(first) = seen.get(&alias) {
                 Some(format!("`{alias}` is already an alias of `{first}`"))
-            } else if alias != module && plain.contains(alias) {
+            } else if alias != module.as_str() && plain.contains(alias.as_str()) {
                 Some(format!("`{alias}` is already the name of an imported module"))
             } else if alias == self.module_name {
                 Some(format!("`{alias}` is the name of this module"))
@@ -98,9 +98,9 @@ impl<'a> Checker<'a> {
             ("os", str_),
             ("name", str_),
         ];
-        let table = self.qualified.entry("TARGET").or_default();
+        let table = self.qualified.entry(StrId::intern("TARGET")).or_default();
         for (name, ty) in members {
-            table.insert(name, vec![ty]);
+            table.insert(StrId::intern(name), vec![ty]);
         }
     }
 }
@@ -123,7 +123,7 @@ impl<'a> Checker<'a> {
             self.qualified
                 .entry(module)
                 .or_default()
-                .insert(name, vec![qualified]);
+                .insert(*name, vec![qualified]);
         }
     }
 
@@ -134,10 +134,10 @@ impl<'a> Checker<'a> {
     /// Import another module's exports: bare when `bare`, and qualified under its
     /// own name then. Each of `aliases` (`$ with V = VEC`) is a further qualifier
     /// for them, and an aliased-only import (`bare` false) brings no name in bare.
-    pub fn import_as(&mut self, other: &Checker<'a>, bare: bool, aliases: &[&'a str]) {
+    pub fn import_as(&mut self, other: &Checker<'a>, bare: bool, aliases: &[StrId]) {
         assert!(bare || !aliases.is_empty(), "an import is bare or aliased");
         let module = other.module_name;
-        let mut scopes: Vec<&'a str> = aliases.to_vec();
+        let mut scopes: Vec<StrId> = aliases.to_vec();
         if bare {
             scopes.push(module);
         }
@@ -161,10 +161,10 @@ impl<'a> Checker<'a> {
                 continue;
             }
             for &scope in &scopes {
-                self.qualified_ctx.insert((scope, name), *sig);
+                self.qualified_ctx.insert((scope, *name), *sig);
             }
             if bare {
-                self.global_ctx.insert(name, *sig);
+                self.global_ctx.insert(*name, *sig);
             }
         }
         // Bring the exporter's instances in, translating their packed types into
@@ -179,45 +179,44 @@ impl<'a> Checker<'a> {
             let Some(head) = self.ctx_head(self.unifier.zonk(self.bundle_parts(bundle).0)) else {
                 continue;
             };
-            let key = self.unifier.types.name(head).to_string();
-            self.instances.entry(key).or_default().push(Inst {
-                name: inst.name.clone(),
+            self.instances.entry(head).or_default().push(Inst {
+                name: inst.name,
                 module: Some(other.module_name),
                 bundle,
                 has_ctx: inst.has_ctx,
             });
         }
         for &name in &other.own_type_names {
-            if other.private_names.contains(name) {
+            if other.private_names.contains(&name) {
                 continue;
             }
             if bare {
-                self.hidden_types.remove(name);
-                self.alias_types.remove(name);
+                self.hidden_types.remove(&name);
+                self.alias_types.remove(&name);
             } else {
                 let named_bare = self.is_known_type(name)
-                    && !self.hidden_types.contains_key(name)
-                    && !self.alias_types.contains_key(name);
+                    && !self.hidden_types.contains_key(&name)
+                    && !self.alias_types.contains_key(&name);
                 if named_bare {
                     continue;
                 }
-                self.hidden_types.remove(name);
+                self.hidden_types.remove(&name);
                 self.alias_types.insert(name, aliases[0]);
             }
             self.type_home.insert(name, other.module_name);
-            if let Some(s) = other.structs.get(name) {
+            if let Some(s) = other.structs.get(&name) {
                 self.structs.insert(name, s.clone());
             }
-            if let Some(u) = other.unions.get(name) {
+            if let Some(u) = other.unions.get(&name) {
                 self.unions.insert(name, u.clone());
             }
-            if let Some(a) = other.aliases.get(name) {
+            if let Some(a) = other.aliases.get(&name) {
                 self.aliases.insert(name, a.clone());
             }
         }
         // Everything the exporter's declarations can mention, so they elaborate
         // here too (#311). What this module cannot name stays hidden.
-        let names: Vec<&'a str> = other
+        let names: Vec<StrId> = other
             .structs
             .keys()
             .chain(other.unions.keys())
@@ -230,18 +229,18 @@ impl<'a> Checker<'a> {
             }
             let home = other
                 .type_home
-                .get(name)
+                .get(&name)
                 .copied()
                 .unwrap_or(other.module_name);
             self.hidden_types.insert(name, home);
             self.type_home.insert(name, home);
-            if let Some(s) = other.structs.get(name) {
+            if let Some(s) = other.structs.get(&name) {
                 self.structs.insert(name, s.clone());
             }
-            if let Some(u) = other.unions.get(name) {
+            if let Some(u) = other.unions.get(&name) {
                 self.unions.insert(name, u.clone());
             }
-            if let Some(a) = other.aliases.get(name) {
+            if let Some(a) = other.aliases.get(&name) {
                 self.aliases.insert(name, a.clone());
             }
         }
@@ -261,13 +260,13 @@ impl<'a> Checker<'a> {
         }
         self.foreign_tys.extend(other.foreign_tys.iter().copied());
         for &effect in &other.own_effects {
-            if other.private_names.contains(effect) {
+            if other.private_names.contains(&effect) {
                 continue;
             }
-            if let Some(&n) = other.effect_arity.get(effect) {
+            if let Some(&n) = other.effect_arity.get(&effect) {
                 self.effect_arity.insert(effect, n);
             }
-            for (&op, &scheme) in &other.effect_ops[effect] {
+            for (&op, &scheme) in &other.effect_ops[&effect] {
                 let qualified = self.import_scheme(scheme);
                 self.qualified
                     .entry(effect)
@@ -286,18 +285,18 @@ impl<'a> Checker<'a> {
             if bare {
                 let unqualified = self.import_scheme(*scheme);
                 self.imported
-                    .entry(name)
+                    .entry(*name)
                     .or_default()
                     .push((unqualified, module));
             } else {
-                self.alias_values.entry(name).or_default().extend(aliases);
+                self.alias_values.entry(*name).or_default().extend(aliases);
             }
             for &scope in &scopes {
                 let qualified = self.import_scheme(*scheme);
                 self.qualified
                     .entry(scope)
                     .or_default()
-                    .insert(name, vec![qualified]);
+                    .insert(*name, vec![qualified]);
             }
         }
     }
@@ -314,8 +313,8 @@ impl<'a> Checker<'a> {
                 // name cannot pick one; it is an error at the USE site (with the
                 // qualified form as the escape), not here, because a module may import
                 // both and reference neither bare.
-                let mut owners: Vec<&'a str> = cands.iter().map(|(_, m)| *m).collect();
-                owners.sort_unstable();
+                let mut owners: Vec<StrId> = cands.iter().map(|(_, m)| *m).collect();
+                owners.sort_unstable_by_key(|m| m.as_str());
                 self.ambiguous_imports.insert(name, owners);
             }
         }
@@ -388,10 +387,10 @@ impl<'a> Checker<'a> {
 
 impl<'a> Checker<'a> {
     /// `name` is bound nowhere; suggest a near miss among the visible names.
-    pub(super) fn unbound_name(&self, name: &str) -> Diagnostic {
-        if let Some(&alias) = self.alias_values.get(name).and_then(|a| a.first()) {
+    pub(super) fn unbound_name(&self, name: StrId) -> Diagnostic {
+        if let Some(&alias) = self.alias_values.get(&name).and_then(|a| a.first()) {
             return unbound(name)
-                .with_note(format!("`$ with {alias} = {}` brings in no bare names", self.alias_modules[alias]))
+                .with_note(format!("`$ with {alias} = {}` brings in no bare names", self.alias_modules[&alias]))
                 .with_fix(
                     format!("write `{alias}.{name}`"),
                     vec![Edit::new(Span::at(0), format!("{alias}.{name}"))],
@@ -401,16 +400,17 @@ impl<'a> Checker<'a> {
         let visible = self
             .scopes
             .iter()
-            .flat_map(|s| s.keys().copied())
-            .chain(self.overloads.keys().copied())
-            .chain(self.global_ctx.keys().copied());
-        match utilities::error::closest(name, visible) {
+            .flat_map(|s| s.keys())
+            .chain(self.overloads.keys())
+            .chain(self.global_ctx.keys())
+            .map(|n| n.as_str());
+        match utilities::error::closest(name.as_str(), visible) {
             Some(n) => unbound(name).with_fix(
                 format!("did you mean `{n}`?"),
                 vec![Edit::new(Span::at(0), n)],
                 Applicability::MaybeIncorrect,
             ),
-            None => match self.import_hints.get(name).map(Vec::as_slice) {
+            None => match self.import_hints.get(name.as_str()).map(Vec::as_slice) {
                 Some([home]) => {
                     let home = home.clone();
                     self.with_import_fix(unbound(name), &home)
@@ -438,17 +438,17 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(super) fn qualified_candidates(&self, module: &str, name: &str) -> Option<Vec<Type>> {
-        self.qualified.get(module)?.get(name).cloned()
+    pub(super) fn qualified_candidates(&self, module: StrId, name: StrId) -> Option<Vec<Type>> {
+        self.qualified.get(&module)?.get(&name).cloned()
     }
 
     /// `module.name` names nothing: either the module exports no such value or
     /// no module or effect of that name is in scope.
-    pub(super) fn unknown_qualified(&self, module: &str, name: &str) -> Diagnostic {
-        let Some(members) = self.qualified.get(module) else {
+    pub(super) fn unknown_qualified(&self, module: StrId, name: StrId) -> Diagnostic {
+        let Some(members) = self.qualified.get(&module) else {
             let d = diag!(Code::UnknownModule, Span::at(0), 0, "no module or effect `{module}` is in scope");
             let mut aliases: Vec<&str> =
-                self.alias_modules.iter().filter(|(_, &m)| m == module).map(|(&a, _)| a).collect();
+                self.alias_modules.iter().filter(|(_, &m)| m == module).map(|(a, _)| a.as_str()).collect();
             aliases.sort_unstable();
             if let Some(alias) = aliases.first() {
                 return d
@@ -459,13 +459,13 @@ impl<'a> Checker<'a> {
                         Applicability::MachineApplicable,
                     );
             }
-            return match utilities::error::closest(module, self.qualified.keys().copied()) {
+            return match utilities::error::closest(module.as_str(), self.qualified.keys().map(|k| k.as_str())) {
                 Some(m) => d.with_help(format!("did you mean `{m}.{name}`?")),
                 None => d.with_help(format!("import it with `$ with {module}`")),
             };
         };
         let d = diag!(Code::TypeUnbound, Span::at(0), 0, "`{module}` has no value named `{name}`");
-        match utilities::error::closest(name, members.keys().copied()) {
+        match utilities::error::closest(name.as_str(), members.keys().map(|k| k.as_str())) {
             Some(n) => d.with_help(format!("did you mean `{module}.{n}`?")),
             None => d,
         }

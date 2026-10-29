@@ -16,6 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use frontend::ir::data::{native_builtin, native_builtins, Atom, AltKind, BuiltinHost, IrExpr, IrProgram, ResumeUse};
+use utilities::StrId;
 
 /// A saturated built-in call found by `prim_chain`.
 struct PrimCall<'e> {
@@ -126,12 +127,13 @@ pub fn emit_builtin_enum() -> String {
 
 /// The dedup key for an extern site.
 fn extern_key(
-    abi: &str,
-    symbol: &str,
-    lib: &str,
-    arg_types: &[String],
-    ret_type: &str,
+    abi: &StrId,
+    symbol: &StrId,
+    lib: &StrId,
+    arg_types: &[StrId],
+    ret_type: &StrId,
 ) -> String {
+    let arg_types: Vec<&str> = arg_types.iter().map(|t| t.as_str()).collect();
     format!(
         "{abi}\x1f{symbol}\x1f{lib}\x1f{}\x1f{ret_type}",
         arg_types.join(",")
@@ -229,7 +231,8 @@ pub fn reachable_codes(prog: &IrProgram, entry: &str) -> HashSet<usize> {
     let mut canon: HashMap<&str, usize> = HashMap::new();
     let mut bare: HashMap<&str, usize> = HashMap::new();
     for (name, code) in &prog.globals {
-        canon.entry(name.as_str()).or_insert(*code);
+        let name = name.as_str();
+        canon.entry(name).or_insert(*code);
         let last = name.rsplit('.').next().unwrap_or(name);
         bare.entry(last).or_insert(*code);
     }
@@ -248,7 +251,7 @@ pub fn reachable_codes(prog: &IrProgram, entry: &str) -> HashSet<usize> {
         }
         for_each_atom(&prog.codes[c].body, &mut |a| match a {
             Atom::Glob { name } => {
-                if let Some(cc) = resolve(name) {
+                if let Some(cc) = resolve(name.as_str()) {
                     work.push(cc);
                 }
             }
@@ -319,11 +322,11 @@ fn collect_extern_atom(a: &Atom, externs: &mut Vec<ExternSite>, idx: &mut HashMa
             let key = extern_key(abi, symbol, lib, arg_types, ret_type);
             idx.entry(key).or_insert_with(|| {
                 externs.push(ExternSite {
-                    abi: abi.clone(),
-                    symbol: symbol.clone(),
-                    lib: lib.clone(),
-                    arg_types: arg_types.clone(),
-                    ret_type: ret_type.clone(),
+                    abi: abi.to_string(),
+                    symbol: symbol.to_string(),
+                    lib: lib.to_string(),
+                    arg_types: arg_types.iter().map(|t| t.to_string()).collect(),
+                    ret_type: ret_type.to_string(),
                 });
                 externs.len() - 1
             });
@@ -840,7 +843,8 @@ impl<'p> Emitter<'p> {
         let mut globals: HashMap<&str, usize> = HashMap::new();
         let mut bare: HashMap<&str, usize> = HashMap::new();
         for (name, code) in &prog.globals {
-            globals.entry(name.as_str()).or_insert(*code);
+            let name = name.as_str();
+            globals.entry(name).or_insert(*code);
             bare.entry(name.rsplit('.').next().unwrap_or(name)).or_insert(*code);
         }
         let mut ops_by_effect: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -969,7 +973,7 @@ impl<'p> Emitter<'p> {
             Atom::Move(i) => format!("THxVALUE_take(fr, {i})"),
             Atom::Env(i) => format!("THxVALUE_env(fr->env, fr->nenv, {i})"),
             Atom::MoveEnv(i) => format!("THxVALUE_take_env(fr, {i})"),
-            Atom::Glob { name } => self.glob_atom(name),
+            Atom::Glob { name } => self.glob_atom(name.as_str()),
             Atom::LitI(n) => format!("THxRT_int({n}LL)"),
             Atom::LitR(r) => format!("THxRT_real({})", cdbl(*r)),
             Atom::LitS(v) => format!("THxRT_str({}, {})", cstr(v), v.len()),
@@ -1014,7 +1018,7 @@ impl<'p> Emitter<'p> {
                 let (fnames, vals) = if n == 0 {
                     ("NULL".to_string(), "NULL".to_string())
                 } else {
-                    let ns: Vec<String> = fields.iter().map(|(f, _)| cstr(f.as_bytes())).collect();
+                    let ns: Vec<String> = fields.iter().map(|(f, _)| cstr(f.bytes())).collect();
                     let vs: Vec<String> = fields.iter().map(|(_, v)| self.atom(v)).collect();
                     (
                         format!("(const char*[]){{ {} }}", ns.join(", ")),
@@ -1025,29 +1029,29 @@ impl<'p> Emitter<'p> {
                     Some(b) => format!(
                         "THxRT_struct_update({}, {}, {n}, {fnames}, {vals})",
                         self.atom(b),
-                        cstr(name.as_bytes())
+                        cstr(name.bytes())
                     ),
                     None => {
-                        format!("THxRT_struct({}, {n}, {fnames}, {vals})", cstr(name.as_bytes()))
+                        format!("THxRT_struct({}, {n}, {fnames}, {vals})", cstr(name.bytes()))
                     }
                 }
             }
             IrExpr::Field { rec, name } => {
-                format!("THxVALUE_field({}, {})", self.atom(rec), cstr(name.as_bytes()))
+                format!("THxVALUE_field({}, {})", self.atom(rec), cstr(name.bytes()))
             }
             IrExpr::MkVariant { ty, tag, fields } => {
                 if fields.is_empty() {
                     format!(
                         "THxRT_variant({}, {}, 0, NULL)",
-                        cstr(ty.as_bytes()),
-                        cstr(tag.as_bytes())
+                        cstr(ty.bytes()),
+                        cstr(tag.bytes())
                     )
                 } else {
                     let vs: Vec<String> = fields.iter().map(|f| self.atom(f)).collect();
                     format!(
                         "THxRT_variant({}, {}, {}, (Value*[]){{ {} }})",
-                        cstr(ty.as_bytes()),
-                        cstr(tag.as_bytes()),
+                        cstr(ty.bytes()),
+                        cstr(tag.bytes()),
                         fields.len(),
                         vs.join(", ")
                     )
@@ -1229,7 +1233,8 @@ impl<'p> Emitter<'p> {
         else {
             return None;
         };
-        if self.globals.contains_key(name.as_str()) {
+        let name = name.as_str();
+        if self.globals.contains_key(name) {
             return None;
         }
         let arity = native_builtin(name)?.arity;
@@ -1332,7 +1337,7 @@ impl<'p> Emitter<'p> {
                     format!("THxVALUE_as_bool({s}) == {}", if *b { 1 } else { 0 })
                 }
                 AltKind::Con(c) => {
-                    format!("THxVALUE_ctor_is({s}, {})", cstr(c.as_bytes()))
+                    format!("THxVALUE_ctor_is({s}, {})", cstr(c.bytes()))
                 }
             };
             out.push_str(&format!(
@@ -1388,11 +1393,11 @@ impl<'p> Emitter<'p> {
             let effs: Vec<String> = clauses
                 .iter()
                 .map(|c| match &c.effect {
-                    Some(e) => cstr(e.as_bytes()),
+                    Some(e) => cstr(e.bytes()),
                     None => "NULL".into(),
                 })
                 .collect();
-            let ops: Vec<String> = clauses.iter().map(|c| cstr(c.op.as_bytes())).collect();
+            let ops: Vec<String> = clauses.iter().map(|c| cstr(c.op.bytes())).collect();
             // Matches the runtime's `ResumeUse` enum.
             let uses: Vec<String> = clauses
                 .iter()

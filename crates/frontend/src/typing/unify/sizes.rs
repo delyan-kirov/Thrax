@@ -123,7 +123,7 @@ impl Unifier {
                     self.mark_int_literal(ty);
                 }
             }
-            TypeNode::Con(name) if self.is_int_var(id) && is_float_name(&self.types.name(name)) => {
+            TypeNode::Con(name) if self.is_int_var(id) && is_float_name(self.types.name(name)) => {
                 return Err(Diagnostic::error(
                     Code::TypeMismatch,
                     Span::at(0),

@@ -12,7 +12,7 @@ use super::*;
 /// Which slots of a declared type are lazy: keyed by `(type name, variant tag)`
 /// with `None` as the tag for a struct, holding one flag per slot in declaration
 /// order. Only types with at least one lazy slot appear.
-pub type LazySlots = HashMap<(String, Option<String>), Vec<bool>>;
+pub type LazySlots = HashMap<(StrId, Option<StrId>), Vec<bool>>;
 
 /// An `@extern`'s marshalling spec: how the single applied Thrax value maps to
 /// positional C arguments (`params`), the flattened C argument type names
@@ -26,9 +26,9 @@ pub type ExternSpec = (Vec<ExternArg>, Vec<String>, String);
 pub enum CtxVal {
     /// A bare name: a local binder (the caller's own context parameter) or a
     /// builtin; De-Bruijn / the runtime resolves it.
-    Bare(String),
+    Bare(StrId),
     /// A top-level value `module.name`.
-    Qualified { module: String, name: String },
+    Qualified { module: StrId, name: StrId },
     /// An instance that itself takes a context, applied to the context resolved
     /// for it (`ts_list ts_int`).
     App(Box<CtxVal>, Box<CtxVal>),
@@ -48,7 +48,7 @@ pub enum CtxVal {
 #[derive(Clone, Debug)]
 pub struct HookImpl {
     pub ctx: CtxVal,
-    pub field: String,
+    pub field: StrId,
 }
 
 /// The type checker's resolutions that lowering cannot re-derive without types.
@@ -62,11 +62,11 @@ pub struct Resolved {
     pub tensor_exprs: HashSet<Aol<Expr>>,
     /// Argument sites promoted to a record, mapped to the target field names (from
     /// [`Checker::promotions`]); lowering wraps the value.
-    pub promotions: HashMap<Aol<Expr>, Vec<String>>,
+    pub promotions: HashMap<Aol<Expr>, Vec<StrId>>,
     /// `.{ .. }` struct-literal sites mapped to their resolved struct name (from
     /// [`Checker::struct_lit_names`]); lowering uses it for the
     /// field-name layout of a positional literal.
-    pub struct_lit_names: HashMap<Aol<Expr>, String>,
+    pub struct_lit_names: HashMap<Aol<Expr>, StrId>,
     /// Literal sites (`"..."`, `[..]`, an int, a real) a blessed `@I*`
     /// construction interface builds into a user type, mapped to the hook's
     /// `(owning module, emitted name)` (from
@@ -76,7 +76,7 @@ pub struct Resolved {
     /// Blessed-interface value sites (`@IIndex`, `@IImagLit`) mapped to the field
     /// lowering projects off the instance `ctx_args` records for the same site (from
     /// [`Checker::blessed_sites`]).
-    pub blessed_sites: HashMap<Aol<Expr>, String>,
+    pub blessed_sites: HashMap<Aol<Expr>, StrId>,
     /// Literal PATTERN sites matched through a user type's construction + equality
     /// hooks, mapped to `(build hook, equality hook)` as `(module, emitted name)`
     /// (from [`Checker::literal_pattern_hooks`]). Lowering emits a
@@ -90,7 +90,7 @@ pub struct Resolved {
     /// Sequence patterns on a sized tensor, with its static size (from
     /// [`Checker::tensor_patterns`]).
     pub tensor_patterns: HashMap<Aol<Pattern>, u64>,
-    pub call_modules: HashMap<Aol<Expr>, String>,
+    pub call_modules: HashMap<Aol<Expr>, StrId>,
     /// Each use site of a `@ctx`-bearing function, mapped to the context value
     /// lowering injects ahead of the explicit arguments (from
     /// [`Checker::ctx_calls`]).
@@ -98,7 +98,7 @@ pub struct Resolved {
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node (from [`Checker::with_fields`]). Lowering desugars
     /// `with` into a `let` per field so the Core carries no `with` node.
-    pub with_fields: HashMap<Aol<Expr>, Vec<String>>,
+    pub with_fields: HashMap<Aol<Expr>, Vec<StrId>>,
     /// Each `@cast` to a type under 64 bits, mapped to the target's signedness
     /// and width (from [`Checker::cast_widths`]).
     pub cast_widths: HashMap<Aol<Expr>, (bool, u32)>,
@@ -112,15 +112,15 @@ pub struct Resolved {
     /// looks its head up here to flatten the record of C parameters into
     /// positional arguments (so the record is never built), and a first-class
     /// reference to a multi-argument extern eta-expands against it.
-    pub externs: HashMap<(String, String), ExternSpec>,
+    pub externs: HashMap<(StrId, StrId), ExternSpec>,
     /// Every `@extern "thrax"` declaration as its `(module, name)`, so a reference
     /// lowers to the bare builtin instead of a global.
-    pub builtins: HashSet<(String, String)>,
+    pub builtins: HashSet<(StrId, StrId)>,
     /// The C memory layout of each C-repr struct (`@struct @extern "abi"`), keyed
     /// by type name (from [`Checker::crepr_layouts`]). Carried to
     /// the runtime so a struct value can be marshalled across the `@extern`
     /// boundary by value.
-    pub crepr_layouts: HashMap<String, utilities::CLayout>,
+    pub crepr_layouts: HashMap<StrId, utilities::CLayout>,
     /// Which slots of a declared type are lazy (from
     /// [`Checker::lazy_slots`]). Construction wraps such a slot in
     /// a thunk and the machine forces it when the value is scrutinised, so a
@@ -147,13 +147,13 @@ pub fn collect_resolved(checkers: &[Checker]) -> Resolved {
             resolved.promotions.insert(site, names.clone());
         }
         for (&site, n) in checker.struct_lit_names() {
-            resolved.struct_lit_names.insert(site, n.clone());
+            resolved.struct_lit_names.insert(site, *n);
         }
         for (&site, hook) in checker.literal_hooks() {
             resolved.literal_hooks.insert(site, hook.clone());
         }
         for (&site, field) in checker.blessed_sites() {
-            resolved.blessed_sites.insert(site, field.clone());
+            resolved.blessed_sites.insert(site, *field);
         }
         for (&site, pair) in checker.literal_pattern_hooks() {
             resolved.literal_pattern_hooks.insert(site, pair.clone());
@@ -165,14 +165,12 @@ pub fn collect_resolved(checkers: &[Checker]) -> Resolved {
             resolved.tensor_patterns.insert(site, len);
         }
         for (key, flags) in checker.lazy_slots() {
-            resolved.lazy_slots.insert(key.clone(), flags.clone());
+            resolved.lazy_slots.insert(*key, flags.clone());
         }
         if std::env::var_os("THX_LAZY_DEBUG").is_some() {
             for (k, v) in checker.lazy_slots() { eprintln!("LAZY {k:?} -> {v:?}"); }
         }
-        for (&site, &module) in checker.call_modules() {
-            resolved.call_modules.insert(site, module.to_string());
-        }
+        resolved.call_modules.extend(checker.call_modules());
         for (&site, val) in checker.ctx_calls() {
             resolved.ctx_args.insert(site, val.clone());
         }
@@ -181,19 +179,15 @@ pub fn collect_resolved(checkers: &[Checker]) -> Resolved {
         }
         resolved.cast_widths.extend(checker.cast_widths());
         resolved.extern_sigs.extend(checker.extern_sigs());
-        let module = checker.module_name().to_string();
-        for (name, spec) in checker.own_externs() {
-            resolved
-                .externs
-                .insert((module.clone(), name.to_string()), spec.clone());
+        let module = checker.module_name();
+        for (&name, spec) in checker.own_externs() {
+            resolved.externs.insert((module, name), spec.clone());
         }
-        for name in checker.own_builtins() {
-            resolved.builtins.insert((module.clone(), name.to_string()));
+        for &name in checker.own_builtins() {
+            resolved.builtins.insert((module, name));
         }
-        for (name, layout) in checker.crepr_layouts() {
-            resolved
-                .crepr_layouts
-                .insert(name.to_string(), layout.clone());
+        for (&name, layout) in checker.crepr_layouts() {
+            resolved.crepr_layouts.insert(name, layout.clone());
         }
     }
     resolved
@@ -209,13 +203,13 @@ impl<'a> Checker<'a> {
 
     /// Argument sites promoted to a record, mapped to the target field names;
     /// lowering wraps the value into a name-keyed record.
-    pub fn promotions(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
+    pub fn promotions(&self) -> &HashMap<Aol<Expr>, Vec<StrId>> {
         &self.promotions
     }
 
     /// `.{ ... }` struct-literal sites mapped to the resolved struct name, so
     /// lowering emits the correct field names (esp. for positional literals).
-    pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, String> {
+    pub fn struct_lit_names(&self) -> &HashMap<Aol<Expr>, StrId> {
         &self.struct_lit_names
     }
 
@@ -227,7 +221,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Blessed-interface value sites, mapped to the field lowering projects.
-    pub fn blessed_sites(&self) -> &HashMap<Aol<Expr>, String> {
+    pub fn blessed_sites(&self) -> &HashMap<Aol<Expr>, StrId> {
         &self.blessed_sites
     }
 
@@ -257,14 +251,14 @@ impl<'a> Checker<'a> {
     /// Bare-call `Expr::Var` sites this checker resolved to a specific module.
     /// Lowering rewrites each to a qualified `MOD.name` so the interpreter reaches
     /// the intended function rather than a same-named one from another module.
-    pub fn call_modules(&self) -> &HashMap<Aol<Expr>, &'a str> {
+    pub fn call_modules(&self) -> &HashMap<Aol<Expr>, StrId> {
         &self.resolved_calls
     }
 
     /// The module a qualifier written in this module names: an import alias's
     /// module (`$ with V = VEC` makes `V` name `VEC`), otherwise the qualifier.
-    pub fn qualifier_module(&self, qualifier: &str) -> String {
-        self.alias_modules.get(qualifier).copied().unwrap_or(qualifier).to_string()
+    pub fn qualifier_module(&self, qualifier: StrId) -> StrId {
+        self.alias_modules.get(&qualifier).copied().unwrap_or(qualifier)
     }
 
     /// Each use site of a context-bearing function, mapped to the resolved context
@@ -275,7 +269,7 @@ impl<'a> Checker<'a> {
 
     /// The ordered field names each `with` expression binds, keyed by the `With`
     /// node. Lowering desugars `with` into a `let` per field using these.
-    pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<String>> {
+    pub fn with_fields(&self) -> &HashMap<Aol<Expr>, Vec<StrId>> {
         &self.with_fields
     }
 
@@ -290,17 +284,17 @@ impl<'a> Checker<'a> {
     /// This module's foreign functions, keyed by the global name bound to the bare
     /// `@extern`. The driver aggregates these across modules (keyed by owner
     /// module) so a call site can flatten a foreign call cross-module.
-    pub fn own_externs(&self) -> &HashMap<&'a str, ExternSpec> {
+    pub fn own_externs(&self) -> &HashMap<StrId, ExternSpec> {
         &self.own_externs
     }
 
     /// This module's `@extern "thrax"` builtin declarations.
-    pub fn own_builtins(&self) -> &HashSet<&'a str> {
+    pub fn own_builtins(&self) -> &HashSet<StrId> {
         &self.own_builtins
     }
 
     /// The C layouts of this module's C-repr structs, keyed by type name.
-    pub fn crepr_layouts(&self) -> &HashMap<&'a str, utilities::CLayout> {
+    pub fn crepr_layouts(&self) -> &HashMap<StrId, utilities::CLayout> {
         &self.crepr_layouts
     }
 }
@@ -316,25 +310,25 @@ impl<'a> Checker<'a> {
 #[derive(Default)]
 pub struct Declarations {
     /// module name -> (struct name -> field names, in declaration order).
-    structs: HashMap<String, HashMap<String, Vec<String>>>,
+    structs: HashMap<StrId, HashMap<StrId, Vec<StrId>>>,
     /// module name -> (variant tag -> its union name and payload field names).
-    unions: HashMap<String, HashMap<String, VariantLayout>>,
+    unions: HashMap<StrId, HashMap<StrId, VariantLayout>>,
     /// module name -> (type name -> declared type parameters, in order), for every
     /// struct and union. Empty for a monomorphic type. Read by reflection.
-    type_params: HashMap<String, HashMap<String, Vec<String>>>,
+    type_params: HashMap<StrId, HashMap<StrId, Vec<StrId>>>,
     /// Interface WRAPPERS: `(module, name) -> field`, for a context-bearing global
     /// whose body is exactly `\d p1 .. pn = d.field p1 .. pn` (every CORE operator).
     /// A call site then projects the resolved instance's field directly instead of
     /// calling through the wrapper, which is three closure applications per use.
-    wrappers: HashMap<(String, String), String>,
+    wrappers: HashMap<(StrId, StrId), StrId>,
 }
 
 /// One variant's layout: its union, its payload field names, and its position
 /// among the union's variants after splicing, which reflection reports them in
 /// (a derived comparison orders variants by it).
 struct VariantLayout {
-    union: String,
-    fields: Vec<Option<String>>,
+    union: StrId,
+    fields: Vec<Option<StrId>>,
     order: usize,
 }
 
@@ -354,87 +348,75 @@ pub struct ReflectInfo {
 impl Declarations {
     /// Record one checked module's own types and wrappers.
     fn add_module(&mut self, checker: &Checker) {
-        let module = checker.module_name.to_string();
+        let module = checker.module_name;
         for &name in &checker.own_type_names {
-            if let Some(info) = checker.structs.get(name) {
-                let fields = info.fields.iter().map(|(f, _)| f.to_string()).collect();
-                self.structs.entry(module.clone()).or_default().insert(name.to_string(), fields);
-                let params = info.params.iter().map(|p| p.to_string()).collect();
-                self.type_params.entry(module.clone()).or_default().insert(name.to_string(), params);
-            } else if let Some(info) = checker.unions.get(name) {
-                let by_tag = self.unions.entry(module.clone()).or_default();
+            if let Some(info) = checker.structs.get(&name) {
+                let fields = info.fields.iter().map(|(f, _)| *f).collect();
+                self.structs.entry(module).or_default().insert(name, fields);
+                self.type_params.entry(module).or_default().insert(name, info.params.clone());
+            } else if let Some(info) = checker.unions.get(&name) {
+                let by_tag = self.unions.entry(module).or_default();
                 for (order, v) in info.variants.iter().enumerate() {
-                    let fields = v.payload.iter().map(|(f, _)| f.map(str::to_string)).collect();
-                    by_tag.insert(
-                        v.tag.to_string(),
-                        VariantLayout { union: name.to_string(), fields, order },
-                    );
+                    let fields = v.payload.iter().map(|(f, _)| *f).collect();
+                    by_tag.insert(v.tag, VariantLayout { union: name, fields, order });
                 }
-                let params = info.params.iter().map(|p| p.to_string()).collect();
-                self.type_params.entry(module.clone()).or_default().insert(name.to_string(), params);
+                self.type_params.entry(module).or_default().insert(name, info.params.clone());
             }
         }
-        for (&name, field) in &checker.own_wrappers {
-            self.wrappers.insert((module.clone(), name.to_string()), field.clone());
+        for (&name, &field) in &checker.own_wrappers {
+            self.wrappers.insert((module, name), field);
         }
     }
 
     /// The field an interface wrapper projects, when `body` is exactly
     /// `\d p1 .. pn = d.field p1 .. pn` over distinct variable patterns.
-    pub(crate) fn wrapper_field_of(&self, module: &str, name: &str) -> Option<&str> {
-        self.wrappers
-            .get(&(module.to_string(), name.to_string()))
-            .map(String::as_str)
+    pub(crate) fn wrapper_field_of(&self, module: StrId, name: StrId) -> Option<StrId> {
+        self.wrappers.get(&(module, name)).copied()
     }
 
     /// The declared shape of every struct and union, for compile-time reflection.
     /// Unions are reconstructed from the tag-keyed table by grouping on the union
     /// name; a variant's arity is its payload field count (`0` for a unit payload).
     pub fn reflect(&self) -> ReflectInfo {
-        let params_of = |module: &str, name: &str| -> Vec<String> {
+        let texts = |ids: &[StrId]| ids.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        let params_of = |module: StrId, name: StrId| -> Vec<String> {
             self.type_params
-                .get(module)
-                .and_then(|m| m.get(name))
-                .cloned()
-                .unwrap_or_default()
+                .get(&module)
+                .and_then(|m| m.get(&name))
+                .map_or_else(Vec::new, |ps| texts(ps))
         };
         let mut structs: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
-        for (module, fields_by_name) in &self.structs {
-            for (name, fields) in fields_by_name {
-                structs.push((module.clone(), name.clone(), params_of(module, name), fields.clone()));
+        for (&module, fields_by_name) in &self.structs {
+            for (&name, fields) in fields_by_name {
+                structs.push((module.to_string(), name.to_string(), params_of(module, name), texts(fields)));
             }
         }
         // Group variants per union, carrying each variant's declaration order, then
         // sort by it so reflection reports variants in SOURCE order (the tag-keyed
         // map is unordered). A derived comparison orders variants by this.
-        let mut unions_ord: Vec<(String, String, Vec<String>, Vec<(String, usize, usize)>)> =
-            Vec::new();
-        for (module, by_tag) in &self.unions {
-            for (tag, decl) in by_tag {
+        let mut unions_ord: Vec<(StrId, StrId, Vec<(StrId, usize, usize)>)> = Vec::new();
+        for (&module, by_tag) in &self.unions {
+            for (&tag, decl) in by_tag {
                 let arity = decl.fields.len();
                 match unions_ord
                     .iter_mut()
-                    .find(|(m, n, _, _)| m == module && *n == decl.union)
+                    .find(|(m, n, _)| *m == module && *n == decl.union)
                 {
-                    Some((_, _, _, variants)) => {
-                        if !variants.iter().any(|(t, _, _)| t == tag) {
-                            variants.push((tag.clone(), arity, decl.order));
+                    Some((_, _, variants)) => {
+                        if !variants.iter().any(|(t, _, _)| *t == tag) {
+                            variants.push((tag, arity, decl.order));
                         }
                     }
-                    None => unions_ord.push((
-                        module.clone(),
-                        decl.union.clone(),
-                        params_of(module, &decl.union),
-                        vec![(tag.clone(), arity, decl.order)],
-                    )),
+                    None => unions_ord.push((module, decl.union, vec![(tag, arity, decl.order)])),
                 }
             }
         }
         let unions = unions_ord
             .into_iter()
-            .map(|(m, n, ps, mut vs)| {
+            .map(|(m, n, mut vs)| {
                 vs.sort_by_key(|(_, _, order)| *order);
-                (m, n, ps, vs.into_iter().map(|(t, a, _)| (t, a)).collect())
+                let vs = vs.into_iter().map(|(t, a, _)| (t.to_string(), a)).collect();
+                (m.to_string(), n.to_string(), params_of(m, n), vs)
             })
             .collect();
         ReflectInfo { structs, unions }
@@ -444,47 +426,47 @@ impl Declarations {
     /// module's, then any module (a last-resort global fallback).
     fn resolve<'d, T>(
         &'d self,
-        table: &'d HashMap<String, HashMap<String, T>>,
-        module: &str,
-        imports: &[String],
-        key: &str,
+        table: &'d HashMap<StrId, HashMap<StrId, T>>,
+        module: StrId,
+        imports: &[StrId],
+        key: StrId,
     ) -> Option<&'d T> {
         table
-            .get(module)
-            .and_then(|m| m.get(key))
-            .or_else(|| imports.iter().find_map(|i| table.get(i).and_then(|m| m.get(key))))
-            .or_else(|| table.values().find_map(|m| m.get(key)))
+            .get(&module)
+            .and_then(|m| m.get(&key))
+            .or_else(|| imports.iter().find_map(|i| table.get(i).and_then(|m| m.get(&key))))
+            .or_else(|| table.values().find_map(|m| m.get(&key)))
     }
 
     /// The payload arity and (union, field names) for a variant tag.
     pub(crate) fn variant(
         &self,
-        module: &str,
-        imports: &[String],
-        tag: &str,
-    ) -> Option<(&str, &[Option<String>])> {
+        module: StrId,
+        imports: &[StrId],
+        tag: StrId,
+    ) -> Option<(StrId, &[Option<StrId>])> {
         self.resolve(&self.unions, module, imports, tag)
-            .map(|v| (v.union.as_str(), v.fields.as_slice()))
+            .map(|v| (v.union, v.fields.as_slice()))
     }
 
     /// A struct's field names in declaration order, if `name` is a known struct.
-    pub(crate) fn fields_of(&self, module: &str, imports: &[String], name: &str) -> Option<&[String]> {
+    pub(crate) fn fields_of(&self, module: StrId, imports: &[StrId], name: StrId) -> Option<&[StrId]> {
         self.resolve(&self.structs, module, imports, name)
             .map(Vec::as_slice)
     }
 
     /// The struct whose exact set of field names matches an all-named literal,
     /// preferring the lowering module's own then imported declarations.
-    pub(crate) fn struct_by_fields(&self, module: &str, imports: &[String], names: &[&str]) -> Option<&str> {
-        fn hit<'d>(structs: &'d HashMap<String, Vec<String>>, names: &[&str]) -> Option<&'d str> {
+    pub(crate) fn struct_by_fields(&self, module: StrId, imports: &[StrId], names: &[StrId]) -> Option<StrId> {
+        fn hit(structs: &HashMap<StrId, Vec<StrId>>, names: &[StrId]) -> Option<StrId> {
             structs.iter().find_map(|(sname, fields)| {
                 let same = fields.len() == names.len()
-                    && names.iter().all(|n| fields.iter().any(|f| f == n));
-                same.then_some(sname.as_str())
+                    && names.iter().all(|n| fields.contains(n));
+                same.then_some(*sname)
             })
         }
         self.structs
-            .get(module)
+            .get(&module)
             .and_then(|s| hit(s, names))
             .or_else(|| {
                 imports

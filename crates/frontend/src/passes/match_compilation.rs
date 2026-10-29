@@ -17,16 +17,14 @@
 //!
 //! Entry point: [`compile_matches`].
 
-use std::sync::Arc;
+use utilities::{Aol, StrId};
 
-use crate::core::{CoreArm, CoreProgram, FreshNames, Pat, Term};
+use crate::core::{CoreArm, CoreProgram, FreshNames, Pat, Term, Terms};
 
 /// Compile rich patterns to shallow cases in every global.
 pub fn compile_matches(program: &mut CoreProgram) {
     let mut pm = MatchCompiler::new();
-    for (_, term) in program.globals.iter_mut() {
-        *term = pm.go(term);
-    }
+    program.rewrite_globals(|terms, term| pm.go(terms, term));
 }
 
 struct MatchCompiler {
@@ -34,17 +32,21 @@ struct MatchCompiler {
 }
 
 /// A one-armed case: `when scrut is pat then body else default`.
-fn case1(scrut: Term, pat: Pat, body: Term, default: Term) -> Term {
-    Term::Case {
-        scrut: Arc::new(scrut),
+fn case1(t: &mut Terms, scrut: Aol<Term>, pat: Pat, body: Aol<Term>, default: Aol<Term>) -> Aol<Term> {
+    t.add(Term::Case {
+        scrut,
         arms: vec![CoreArm {
             pat,
             guard: None,
-            body: Arc::new(body),
-        }]
-        .into(),
-        default: Some(Arc::new(default)),
-    }
+            body,
+        }],
+        default: Some(default),
+    })
+}
+
+/// A one-armed case that succeeds when the boolean `test` holds.
+fn when(t: &mut Terms, test: Aol<Term>, body: Aol<Term>, default: Aol<Term>) -> Aol<Term> {
+    case1(t, test, Pat::Bool(true), body, default)
 }
 
 impl MatchCompiler {
@@ -52,33 +54,31 @@ impl MatchCompiler {
         MatchCompiler { names: FreshNames::new("%m", 0) }
     }
 
-    fn fresh(&mut self, tag: &str) -> String {
+    fn fresh(&mut self, tag: &str) -> StrId {
         self.names.tagged(tag)
     }
 
-    /// Flatten every `Case` under `t`, rebuilding the tree.
-    fn go(&mut self, t: &Term) -> Term {
-        match t.map_children(&mut |child, _| self.go(child)) {
+    /// Flatten every `Case` under `term`, rebuilding the tree.
+    fn go(&mut self, t: &mut Terms, term: Aol<Term>) -> Aol<Term> {
+        let term = t.map_children(term, &mut |t, child, _| self.go(t, child));
+        match t.get(term) {
             Term::Case { scrut, arms, default } => {
-                let default = default.map(Arc::unwrap_or_clone);
-                self.compile_case(Arc::unwrap_or_clone(scrut), &arms, default)
+                let (scrut, arms, default) = (*scrut, arms.clone(), *default);
+                self.compile_case(t, scrut, &arms, default)
             }
-            t => t,
+            _ => term,
         }
     }
 
     /// Compile one flattened `Case`: bind the scrutinee once, then chain the arms.
-    fn compile_case(&mut self, scrut: Term, arms: &[CoreArm], default: Option<Term>) -> Term {
+    fn compile_case(&mut self, t: &mut Terms, scrut: Aol<Term>, arms: &[CoreArm], default: Option<Aol<Term>>) -> Aol<Term> {
         let s = self.fresh("s");
-        let ultimate = default
-            .unwrap_or_else(|| Term::Fault("no pattern matched (non-exhaustive match)".into()));
-        let chain = self.compile_arms(&s, arms, 0, ultimate);
-        Term::Let {
-            name: s,
-            rec: false,
-            val: Arc::new(scrut),
-            body: Arc::new(chain),
-        }
+        let ultimate = match default {
+            Some(d) => d,
+            None => t.add(Term::Fault("no pattern matched (non-exhaustive match)".into())),
+        };
+        let chain = self.compile_arms(t, s, arms, 0, ultimate);
+        t.let_(s, scrut, chain)
     }
 
     // Note [Fallthrough thunks]
@@ -99,177 +99,179 @@ impl MatchCompiler {
     /// The code for arms `i..`: try arm `i`, falling through to arms `i+1..` on
     /// any mismatch, or to `fail` when the arms are exhausted.
     /// See Note [Fallthrough thunks].
-    fn compile_arms(&mut self, s: &str, arms: &[CoreArm], i: usize, fail: Term) -> Term {
+    fn compile_arms(&mut self, t: &mut Terms, s: StrId, arms: &[CoreArm], i: usize, fail: Aol<Term>) -> Aol<Term> {
         if i == arms.len() {
             return fail;
         }
-        let fail_rest = self.compile_arms(s, arms, i + 1, fail);
+        let fail_rest = self.compile_arms(t, s, arms, i + 1, fail);
         let fk = self.fresh("k");
-        let on_fail = Term::app(Term::var(fk.clone()), Term::Unit);
-        let arm_code = self.compile_arm(s, &arms[i], &on_fail);
-        Term::Let {
-            name: fk,
-            rec: false,
-            val: Arc::new(Term::Lam {
-                param: "_".into(),
-                body: Arc::new(fail_rest),
-            }),
-            body: Arc::new(arm_code),
-        }
+        let fkv = t.var(fk);
+        let unit = t.add(Term::Unit);
+        let on_fail = t.app(fkv, unit);
+        let arm_code = self.compile_arm(t, s, &arms[i], on_fail);
+        let thunk = t.lam(StrId::intern("_"), fail_rest);
+        t.let_(fk, thunk, arm_code)
     }
 
     /// Compile a single arm: match its pattern, then run the guard (if any) and
     /// body; any failure goes to `on_fail`.
-    fn compile_arm(&mut self, s: &str, arm: &CoreArm, on_fail: &Term) -> Term {
-        let success = match &arm.guard {
-            Some(g) => case1(
-                (**g).clone(),
-                Pat::Bool(true),
-                (*arm.body).clone(),
-                on_fail.clone(),
-            ),
-            None => (*arm.body).clone(),
+    fn compile_arm(&mut self, t: &mut Terms, s: StrId, arm: &CoreArm, on_fail: Aol<Term>) -> Aol<Term> {
+        let success = match arm.guard {
+            Some(g) => when(t, g, arm.body, on_fail),
+            None => arm.body,
         };
-        self.compile_pat(s, &arm.pat, success, on_fail)
+        self.compile_pat(t, s, &arm.pat, success, on_fail)
     }
 
     /// Match `pat` against the variable `sv`; on full match run `on_match`, else
     /// `on_fail`.
-    fn compile_pat(&mut self, sv: &str, pat: &Pat, on_match: Term, on_fail: &Term) -> Term {
+    fn compile_pat(&mut self, t: &mut Terms, sv: StrId, pat: &Pat, on_match: Aol<Term>, on_fail: Aol<Term>) -> Aol<Term> {
         match pat {
             Pat::Wild => on_match,
-            Pat::Var(name) => Term::Let {
-                name: name.clone(),
-                rec: false,
-                val: Arc::new(Term::var(sv)),
-                body: Arc::new(on_match),
-            },
-            Pat::Int(k) => case1(Term::var(sv), Pat::Int(*k), on_match, on_fail.clone()),
-            Pat::Real(r) => case1(Term::var(sv), Pat::Real(*r), on_match, on_fail.clone()),
-            Pat::Bool(b) => case1(Term::var(sv), Pat::Bool(*b), on_match, on_fail.clone()),
-            Pat::Str(bytes) => case1(
-                Term::bin("==", Term::var(sv), Term::Str(bytes.clone())),
-                Pat::Bool(true),
-                on_match,
-                on_fail.clone(),
-            ),
+            Pat::Var(name) => {
+                let val = t.var(sv);
+                t.let_(*name, val, on_match)
+            }
+            Pat::Int(k) => {
+                let scrut = t.var(sv);
+                case1(t, scrut, Pat::Int(*k), on_match, on_fail)
+            }
+            Pat::Real(r) => {
+                let scrut = t.var(sv);
+                case1(t, scrut, Pat::Real(*r), on_match, on_fail)
+            }
+            Pat::Bool(b) => {
+                let scrut = t.var(sv);
+                case1(t, scrut, Pat::Bool(*b), on_match, on_fail)
+            }
+            Pat::Str(bytes) => {
+                let scrut = t.var(sv);
+                let lit = t.add(Term::Str(*bytes));
+                let test = t.bin("==", scrut, lit);
+                when(t, test, on_match, on_fail)
+            }
             // A literal pattern on a user type: succeed when its equality hook holds
             // between the scrutinee and the literal built into that type.
             Pat::HookEq { eq, value } => {
-                let test = Term::app(Term::app(eq.clone(), Term::var(sv)), self.go(value));
-                case1(test, Pat::Bool(true), on_match, on_fail.clone())
+                let scrut = t.var(sv);
+                let partial = t.app(*eq, scrut);
+                let value = self.go(t, *value);
+                let test = t.app(partial, value);
+                when(t, test, on_match, on_fail)
             }
             // A sequence pattern on a user type: unfold the `sequence_view` hook one
             // step at a time, matching each leading element and (`..rest`) binding or
             // (no rest) requiring `Empty` at the end.
             Pat::SeqView { view, back, elems, rest } => {
-                self.compile_seqview(sv, view, *back, elems, rest.as_deref(), on_match, on_fail)
+                self.compile_seqview(t, sv, *view, *back, elems, rest.as_deref(), on_match, on_fail)
             }
             // Lengths were proven by the checker, so each part is read directly.
             Pat::Tensor { len, front, mid, back } => {
-                let idx = |i: u64| Term::app(Term::app(Term::var("@tensor_index"), Term::var(sv)), Term::Int(i as i64));
+                let idx = |t: &mut Terms, i: u64| {
+                    let op = t.var("@tensor_index");
+                    let scrut = t.var(sv);
+                    let partial = t.app(op, scrut);
+                    let i = t.add(Term::Int(i as i64));
+                    t.app(partial, i)
+                };
                 let back_start = len - back.len() as u64;
-                let mut parts: Vec<(Term, &Pat)> = Vec::new();
-                parts.extend(front.iter().enumerate().map(|(i, p)| (idx(i as u64), p)));
-                if let Some(mid) = mid {
-                    let slice = Term::app(
-                        Term::app(Term::app(Term::var("@tensor_slice"), Term::var(sv)), Term::Int(front.len() as i64)),
-                        Term::Int(back_start as i64),
-                    );
-                    parts.push((slice, mid));
+                let mut parts: Vec<(Aol<Term>, &Pat)> = Vec::new();
+                for (i, p) in front.iter().enumerate() {
+                    parts.push((idx(t, i as u64), p));
                 }
-                parts.extend(back.iter().enumerate().map(|(j, p)| (idx(back_start + j as u64), p)));
+                if let Some(mid) = mid {
+                    let op = t.var("@tensor_slice");
+                    let scrut = t.var(sv);
+                    let partial = t.app(op, scrut);
+                    let lo = t.add(Term::Int(front.len() as i64));
+                    let partial = t.app(partial, lo);
+                    let hi = t.add(Term::Int(back_start as i64));
+                    parts.push((t.app(partial, hi), mid));
+                }
+                for (j, p) in back.iter().enumerate() {
+                    parts.push((idx(t, back_start + j as u64), p));
+                }
                 parts.into_iter().rev().fold(on_match, |inner, (val, p)| {
                     let fv = self.fresh("f");
-                    let sub = self.compile_pat(&fv, p, inner, on_fail);
-                    Term::Let {
-                        name: fv,
-                        rec: false,
-                        val: Arc::new(val),
-                        body: Arc::new(sub),
-                    }
+                    let sub = self.compile_pat(t, fv, p, inner, on_fail);
+                    t.let_(fv, val, sub)
                 })
             }
             // `lo ... hi`: match when `sv >= lo` and `sv <= hi` (inclusive). An open
             // range `lo ...` has no upper bound, so only the `sv >= lo` test.
             Pat::Range { lo, hi } => {
                 let inner = match hi {
-                    Some(hi) => case1(
-                        Term::bin("<=", Term::var(sv), hi.clone()),
-                        Pat::Bool(true),
-                        on_match,
-                        on_fail.clone(),
-                    ),
+                    Some(hi) => {
+                        let scrut = t.var(sv);
+                        let test = t.bin("<=", scrut, *hi);
+                        when(t, test, on_match, on_fail)
+                    }
                     None => on_match,
                 };
-                case1(
-                    Term::bin(">=", Term::var(sv), lo.clone()),
-                    Pat::Bool(true),
-                    inner,
-                    on_fail.clone(),
-                )
+                let scrut = t.var(sv);
+                let test = t.bin(">=", scrut, *lo);
+                when(t, test, inner, on_fail)
             }
-            Pat::Tuple(pats) => self.compile_fields(sv, &index_names(pats.len()), pats, on_match, on_fail),
+            Pat::Tuple(pats) => self.compile_fields(t, sv, &index_names(pats.len()), pats, on_match, on_fail),
             Pat::Struct { fields, rest } => {
-                let (names, pats): (Vec<String>, Vec<Pat>) =
-                    fields.iter().map(|(n, p)| (n.clone(), p.clone())).unzip();
+                let (names, pats): (Vec<StrId>, Vec<Pat>) =
+                    fields.iter().map(|(n, p)| (*n, p.clone())).unzip();
                 // `..name` binds the record minus the listed labels: drop each label
                 // from `sv` in turn, then match the fields against the bound record.
                 let on_match = match rest {
                     Some(name) => {
-                        let restricted = names.iter().fold(Term::var(sv), |rec, label| {
-                            record_without(rec, label)
-                        });
-                        Term::Let {
-                            name: name.clone(),
-                            rec: false,
-                            val: Arc::new(restricted),
-                            body: Arc::new(on_match),
+                        let mut restricted = t.var(sv);
+                        for label in &names {
+                            restricted = record_without(t, restricted, *label);
                         }
+                        t.let_(*name, restricted, on_match)
                     }
                     None => on_match,
                 };
-                self.compile_fields(sv, &names, &pats, on_match, on_fail)
+                self.compile_fields(t, sv, &names, &pats, on_match, on_fail)
             }
             Pat::Variant { tag, fields } => {
-                let binders: Vec<String> = (0..fields.len()).map(|_| self.fresh("v")).collect();
-                let inner = self.compile_binders(&binders, fields, on_match, on_fail);
+                let binders: Vec<StrId> = (0..fields.len()).map(|_| self.fresh("v")).collect();
+                let inner = self.compile_binders(t, &binders, fields, on_match, on_fail);
                 let shallow = Pat::Variant {
-                    tag: tag.clone(),
-                    fields: binders.iter().map(|b| Pat::Var(b.clone())).collect(),
+                    tag: *tag,
+                    fields: binders.iter().map(|b| Pat::Var(*b)).collect(),
                 };
-                case1(Term::var(sv), shallow, inner, on_fail.clone())
+                let scrut = t.var(sv);
+                case1(t, scrut, shallow, inner, on_fail)
             }
             // `back` matches a suffix: the literal is the last `plen` bytes and the
             // rest is everything before it.
             Pat::StrPrefix { prefix, back, rest } => {
-                let plen = Term::Int(prefix.len() as i64);
-                let cut = if *back { Term::bin("@isub", array_len(sv), plen.clone()) } else { plen.clone() };
-                let (lit, left) = if *back {
-                    (array_slice(sv, cut.clone(), array_len(sv)), array_slice(sv, Term::Int(0), cut))
+                let plen = prefix.bytes().len() as i64;
+                let cut = if *back {
+                    let len = array_len(t, sv);
+                    let p = t.add(Term::Int(plen));
+                    t.bin("@isub", len, p)
                 } else {
-                    (array_slice(sv, Term::Int(0), cut.clone()), array_slice(sv, cut, array_len(sv)))
+                    t.add(Term::Int(plen))
                 };
-                let plen = prefix.len();
+                let (lit, left) = if *back {
+                    let len = array_len(t, sv);
+                    let lit = array_slice(t, sv, cut, len);
+                    let zero = t.add(Term::Int(0));
+                    (lit, array_slice(t, sv, zero, cut))
+                } else {
+                    let zero = t.add(Term::Int(0));
+                    let lit = array_slice(t, sv, zero, cut);
+                    let len = array_len(t, sv);
+                    (lit, array_slice(t, sv, cut, len))
+                };
                 let tv = self.fresh("t");
-                let tail_match = Term::Let {
-                    name: tv.clone(),
-                    rec: false,
-                    val: Arc::new(left),
-                    body: Arc::new(self.compile_pat(&tv, rest, on_match, on_fail)),
-                };
-                let prefix_ok = case1(
-                    Term::bin("==", lit, Term::Str(prefix.clone())),
-                    Pat::Bool(true),
-                    tail_match,
-                    on_fail.clone(),
-                );
-                case1(
-                    Term::bin(">=", array_len(sv), Term::Int(plen as i64)),
-                    Pat::Bool(true),
-                    prefix_ok,
-                    on_fail.clone(),
-                )
+                let tail = self.compile_pat(t, tv, rest, on_match, on_fail);
+                let tail_match = t.let_(tv, left, tail);
+                let expect = t.add(Term::Str(*prefix));
+                let test = t.bin("==", lit, expect);
+                let prefix_ok = when(t, test, tail_match, on_fail);
+                let len = array_len(t, sv);
+                let p = t.add(Term::Int(plen));
+                let test = t.bin(">=", len, p);
+                when(t, test, prefix_ok, on_fail)
             }
         }
     }
@@ -278,44 +280,39 @@ impl MatchCompiler {
     /// then for each leading element take a `More head tail` step (matching the
     /// element pattern and recursing on the tail), and finally either bind `..rest`
     /// to the remaining sequence or require it to be `Empty`.
+    #[allow(clippy::too_many_arguments)]
     fn compile_seqview(
         &mut self,
-        sv: &str,
-        view: &Term,
+        t: &mut Terms,
+        sv: StrId,
+        view: Aol<Term>,
         back: bool,
         elems: &[Pat],
         rest: Option<&Pat>,
-        on_match: Term,
-        on_fail: &Term,
-    ) -> Term {
+        on_match: Aol<Term>,
+        on_fail: Aol<Term>,
+    ) -> Aol<Term> {
         if elems.is_empty() {
             return match rest {
                 // `..rest` binds the whole remaining sequence.
-                Some(pr) => self.compile_pat(sv, pr, on_match, on_fail),
+                Some(pr) => self.compile_pat(t, sv, pr, on_match, on_fail),
                 // A fixed-length pattern: the tail must view as `Empty`.
                 None => {
                     let vw = self.fresh("vw");
-                    let body = case1(
-                        Term::var(&vw),
-                        Pat::Variant {
-                            tag: "Empty".into(),
-                            fields: Vec::new(),
-                        },
-                        on_match,
-                        on_fail.clone(),
-                    );
-                    Term::Let {
-                        name: vw,
-                        rec: false,
-                        val: Arc::new(view_call(view, sv)),
-                        body: Arc::new(body),
-                    }
+                    let scrut = t.var(vw);
+                    let empty = Pat::Variant {
+                        tag: StrId::intern("Empty"),
+                        fields: Vec::new(),
+                    };
+                    let body = case1(t, scrut, empty, on_match, on_fail);
+                    let call = view_call(t, view, sv);
+                    t.let_(vw, call, body)
                 }
             };
         }
         let vw = self.fresh("vw");
         let h = self.fresh("h");
-        let t = self.fresh("t");
+        let tl = self.fresh("t");
         // From the back, each step peels the last remaining element.
         let (elem, others) = if back {
             let (last, init) = elems.split_last().expect("checked non-empty");
@@ -324,116 +321,118 @@ impl MatchCompiler {
             let (first, tail) = elems.split_first().expect("checked non-empty");
             (first, tail)
         };
-        let recur = self.compile_seqview(&t, view, back, others, rest, on_match, on_fail);
-        let matched = self.compile_pat(&h, elem, recur, on_fail);
-        let body = case1(
-            Term::var(&vw),
-            Pat::Variant {
-                tag: "More".into(),
-                fields: vec![Pat::Var(h.clone()), Pat::Var(t.clone())],
-            },
-            matched,
-            on_fail.clone(),
-        );
-        Term::Let {
-            name: vw,
-            rec: false,
-            val: Arc::new(view_call(view, sv)),
-            body: Arc::new(body),
-        }
+        let recur = self.compile_seqview(t, tl, view, back, others, rest, on_match, on_fail);
+        let matched = self.compile_pat(t, h, elem, recur, on_fail);
+        let scrut = t.var(vw);
+        let more = Pat::Variant {
+            tag: StrId::intern("More"),
+            fields: vec![Pat::Var(h), Pat::Var(tl)],
+        };
+        let body = case1(t, scrut, more, matched, on_fail);
+        let call = view_call(t, view, sv);
+        t.let_(vw, call, body)
     }
 
     /// Match `pats` against fields of `sv` named `names` (a tuple index or struct
     /// field), each bound to a fresh variable, left-to-right.
     fn compile_fields(
         &mut self,
-        sv: &str,
-        names: &[String],
+        t: &mut Terms,
+        sv: StrId,
+        names: &[StrId],
         pats: &[Pat],
-        on_match: Term,
-        on_fail: &Term,
-    ) -> Term {
-        self.compile_fields_from(sv, names, pats, 0, on_match, on_fail)
+        on_match: Aol<Term>,
+        on_fail: Aol<Term>,
+    ) -> Aol<Term> {
+        self.compile_fields_from(t, sv, names, pats, 0, on_match, on_fail)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_fields_from(
         &mut self,
-        sv: &str,
-        names: &[String],
+        t: &mut Terms,
+        sv: StrId,
+        names: &[StrId],
         pats: &[Pat],
         i: usize,
-        on_match: Term,
-        on_fail: &Term,
-    ) -> Term {
+        on_match: Aol<Term>,
+        on_fail: Aol<Term>,
+    ) -> Aol<Term> {
         if i == pats.len() {
             return on_match;
         }
         let fv = self.fresh("f");
-        let rest = self.compile_fields_from(sv, names, pats, i + 1, on_match, on_fail);
-        let sub = self.compile_pat(&fv, &pats[i], rest, on_fail);
-        Term::Let {
-            name: fv,
-            rec: false,
-            val: Arc::new(Term::Field(Arc::new(Term::var(sv)), names[i].clone())),
-            body: Arc::new(sub),
-        }
+        let rest = self.compile_fields_from(t, sv, names, pats, i + 1, on_match, on_fail);
+        let sub = self.compile_pat(t, fv, &pats[i], rest, on_fail);
+        let record = t.var(sv);
+        let val = t.field(record, names[i]);
+        t.let_(fv, val, sub)
     }
 
     /// Match `pats` against already-bound variables `binders`, left-to-right (the
     /// payload of a shallow variant match).
     fn compile_binders(
         &mut self,
-        binders: &[String],
+        t: &mut Terms,
+        binders: &[StrId],
         pats: &[Pat],
-        on_match: Term,
-        on_fail: &Term,
-    ) -> Term {
-        self.compile_binders_from(binders, pats, 0, on_match, on_fail)
+        on_match: Aol<Term>,
+        on_fail: Aol<Term>,
+    ) -> Aol<Term> {
+        self.compile_binders_from(t, binders, pats, 0, on_match, on_fail)
     }
 
     fn compile_binders_from(
         &mut self,
-        binders: &[String],
+        t: &mut Terms,
+        binders: &[StrId],
         pats: &[Pat],
         i: usize,
-        on_match: Term,
-        on_fail: &Term,
-    ) -> Term {
+        on_match: Aol<Term>,
+        on_fail: Aol<Term>,
+    ) -> Aol<Term> {
         if i == pats.len() {
             return on_match;
         }
-        let rest = self.compile_binders_from(binders, pats, i + 1, on_match, on_fail);
-        self.compile_pat(&binders[i], &pats[i], rest, on_fail)
+        let rest = self.compile_binders_from(t, binders, pats, i + 1, on_match, on_fail);
+        self.compile_pat(t, binders[i], &pats[i], rest, on_fail)
     }
 }
 
 /// `view sv`: apply the resolved `sequence_view` hook global to the scrutinee.
-fn view_call(view: &Term, sv: &str) -> Term {
-    Term::app(view.clone(), Term::var(sv))
+fn view_call(t: &mut Terms, view: Aol<Term>, sv: StrId) -> Aol<Term> {
+    let scrut = t.var(sv);
+    t.app(view, scrut)
 }
 
 /// `array_len sv`.
-fn array_len(sv: &str) -> Term {
-    Term::app(Term::var("@array_len"), Term::var(sv))
+fn array_len(t: &mut Terms, sv: StrId) -> Aol<Term> {
+    let op = t.var("@array_len");
+    let scrut = t.var(sv);
+    t.app(op, scrut)
 }
 
 /// `array_slice sv beg end`.
-fn array_slice(sv: &str, beg: Term, end: Term) -> Term {
-    Term::app(Term::app(Term::app(Term::var("@array_slice"), Term::var(sv)), beg), end)
+fn array_slice(t: &mut Terms, sv: StrId, beg: Aol<Term>, end: Aol<Term>) -> Aol<Term> {
+    let op = t.var("@array_slice");
+    let scrut = t.var(sv);
+    let partial = t.app(op, scrut);
+    let partial = t.app(partial, beg);
+    t.app(partial, end)
 }
 
 /// `record_without rec "label"`: the record with the head occurrence of `label`
 /// dropped. Folded over the matched labels to build a record pattern's `..rest`.
-fn record_without(rec: Term, label: &str) -> Term {
-    Term::app(
-        Term::app(Term::var("record_without"), rec),
-        Term::Str(label.as_bytes().to_vec()),
-    )
+fn record_without(t: &mut Terms, rec: Aol<Term>, label: StrId) -> Aol<Term> {
+    let op = t.var("record_without");
+    let partial = t.app(op, rec);
+    let label = t.add(Term::Str(label));
+    t.app(partial, label)
 }
 
 /// Tuple field names are their decimal indices.
-fn index_names(n: usize) -> Vec<String> {
-    (0..n).map(|i| i.to_string()).collect()
+fn index_names(n: usize) -> Vec<StrId> {
+    (0..n).map(|i| StrId::intern(&i.to_string())).collect()
 }
 
 #[cfg(test)]

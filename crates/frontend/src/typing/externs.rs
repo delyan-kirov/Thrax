@@ -67,7 +67,7 @@ impl<'a> Checker<'a> {
             let mut params = Vec::with_capacity(fields.len());
             let mut arg_types = Vec::with_capacity(fields.len());
             for (name, fty) in fields {
-                params.push(ExternArg::Field(name));
+                params.push(ExternArg::Field(name.to_string()));
                 arg_types.push(marshal_name(&self.unifier.types, self.unifier.resolve(fty)));
             }
             return Ok((params, arg_types));
@@ -96,7 +96,7 @@ impl<'a> Checker<'a> {
     /// not be generic (a C type is monomorphic), and each field must be a
     /// C-representable scalar or a nested C-repr struct.
     pub(super) fn validate_crepr_structs(&mut self) -> Result<()> {
-        let names: Vec<&'a str> = self
+        let names: Vec<StrId> = self
             .structs
             .iter()
             .filter(|(_, s)| s.crepr)
@@ -115,8 +115,8 @@ impl<'a> Checker<'a> {
     /// contains itself by value, which has no finite C layout.
     pub(super) fn clayout_of(
         &self,
-        name: &'a str,
-        visiting: &mut HashSet<&'a str>,
+        name: StrId,
+        visiting: &mut HashSet<StrId>,
     ) -> Result<utilities::CLayout> {
         if !visiting.insert(name) {
             return Err(diag!(
@@ -124,7 +124,7 @@ impl<'a> Checker<'a> {
                 "C-repr struct `{name}` contains itself by value (an infinite C layout)"
             ));
         }
-        let info = self.structs.get(name).expect("crepr struct registered").clone();
+        let info = self.structs.get(&name).expect("crepr struct registered").clone();
         if !info.params.is_empty() {
             return Err(diag!(
                 Code::TypeMismatch, Span::at(0), 0,
@@ -139,13 +139,13 @@ impl<'a> Checker<'a> {
                     // A nullary alias to a C-repr type (`typedef Vector4 Quaternion`)
                     // is C-representable: follow the alias chain when the name is
                     // itself neither a scalar nor a registered crepr struct.
-                    let mut cn = self.text(*cn);
+                    let mut cn = *cn;
                     let mut steps = 0;
                     let kind = loop {
-                        if let Some(k) = scalar_ckind(cn, ptr_bits) {
+                        if let Some(k) = scalar_ckind(cn.as_str(), ptr_bits) {
                             break k;
                         }
-                        if self.structs.get(cn).map(|s| s.crepr).unwrap_or(false) {
+                        if self.structs.get(&cn).map(|s| s.crepr).unwrap_or(false) {
                             let layout = self
                                 .clayout_of(cn, visiting)
                                 .map_err(|d| d.fill_span(self.ty_span_or_none(*fty)))?;
@@ -157,7 +157,7 @@ impl<'a> Checker<'a> {
                                 steps += 1;
                             }
                             _ => {
-                                return Err(crepr_field_error(name, fname, cn)
+                                return Err(crepr_field_error(name, fname, cn.as_str())
                                     .fill_span(self.ty_span_or_none(*fty)))
                             }
                         }
@@ -171,7 +171,7 @@ impl<'a> Checker<'a> {
             };
             fields.push((fname.to_string(), kind));
         }
-        visiting.remove(name);
+        visiting.remove(&name);
         Ok(if info.c_union {
             utilities::CLayout::of_union(fields)
         } else {
@@ -223,7 +223,7 @@ pub(super) fn marshal_name(types: &Types, ty: Type) -> String {
     }
 }
 
-pub(super) fn crepr_field_error(ty: &str, field: &str, field_ty: &str) -> Diagnostic {
+pub(super) fn crepr_field_error(ty: impl Display, field: impl Display, field_ty: &str) -> Diagnostic {
     diag!(
         Code::TypeMismatch, Span::at(0), 0,
         "field `{field}` of C-repr struct `{ty}` has type `{field_ty}`, which is not \

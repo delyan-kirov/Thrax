@@ -131,18 +131,18 @@ impl<'a> Parser<'a> {
         &self.text(t)[1..]
     }
     fn intern(&mut self, s: &str) -> StrId {
-        self.ast.strings.intern(s)
+        StrId::intern(s)
     }
     /// Decode a `Kind::Str` token's literal (escapes and all) into interned
     /// bytes. Decoding is deferred to here so the lexer stays borrow-free. Used
     /// for non-interpolating strings (patterns, `@extern` operands).
     fn intern_str(&mut self, t: Token) -> Result<StrId> {
         let bytes = crate::lexer::decode_string(self.text(t), t.span.start, t.line)?;
-        Ok(self.ast.strings.intern_bytes(&bytes))
+        Ok(StrId::intern_bytes(&bytes))
     }
     /// A `Str` literal expression from raw decoded bytes.
     fn str_expr(&mut self, bytes: &[u8]) -> Aol<Expr> {
-        let s = self.ast.strings.intern_bytes(bytes);
+        let s = StrId::intern_bytes(bytes);
         self.expr(Expr::Str(s))
     }
 
@@ -2491,7 +2491,7 @@ impl<'a> Parser<'a> {
             let merged = match (out.last().map(|q| self.ast.pats.lookup(*q).clone()), self.ast.pats.lookup(p).clone()) {
                 (Some(Pattern::Str(a)), Pattern::Str(b)) => {
                     let bytes = [self.ast.bytes(a), self.ast.bytes(b)].concat();
-                    let s = self.ast.strings.intern_bytes(&bytes);
+                    let s = StrId::intern_bytes(&bytes);
                     Some(self.pat(Pattern::Str(s)))
                 }
                 (Some(Pattern::List(a)), Pattern::List(b)) => {

@@ -355,7 +355,7 @@ fn build_import_hints() -> HashMap<String, Vec<String>> {
 /// checkers (or the first error, rendered).
 type CheckOut<'a> = (
     Vec<frontend::Checker<'a>>,
-    Vec<Vec<(&'a str, frontend::Type)>>,
+    Vec<Vec<(utilities::StrId, frontend::Type)>>,
 );
 
 /// Print a rendered warning once per process. A module is checked again on
@@ -411,7 +411,7 @@ fn check_all<'a>(
 /// is also the order their diagnostics are worth reading in.
 pub(crate) struct Checked<'a> {
     pub checkers: Vec<frontend::Checker<'a>>,
-    pub results: Vec<Vec<(&'a str, frontend::Type)>>,
+    pub results: Vec<Vec<(utilities::StrId, frontend::Type)>>,
     pub errors: Vec<Vec<utilities::Diagnostic>>,
     pub warnings: Vec<Vec<utilities::Diagnostic>>,
     pub order: Vec<usize>,
@@ -449,7 +449,7 @@ pub(crate) fn check_modules_with<'a>(
     // type crossing a module boundary has to address the same store.
     let types = std::rc::Rc::new(frontend::Types::new());
     let mut checkers: Vec<Option<frontend::Checker>> = (0..programs.len()).map(|_| None).collect();
-    let mut results: Vec<Vec<(&str, frontend::Type)>> = vec![Vec::new(); programs.len()];
+    let mut results: Vec<Vec<(utilities::StrId, frontend::Type)>> = vec![Vec::new(); programs.len()];
 
     // The auto-injected `C` namespace and the implicitly imported `CORE` module
     // have no dependencies and are checked first: `C` made available qualified-only
@@ -570,7 +570,7 @@ pub(crate) fn prepare_checker<'a, 'c>(
             continue;
         }
         let other = checkers(dep).expect("dependency checked first");
-        let (bare, aliases) = import_forms(ast, program, other.module_name());
+        let (bare, aliases) = import_forms(ast, program, other.module_name().as_str());
         checker.import_as(other, bare || Some(dep) == core_idx, &aliases);
     }
     checker
@@ -578,7 +578,7 @@ pub(crate) fn prepare_checker<'a, 'c>(
 
 /// How `program` imports `module`: whether bare (`$ with M`), and under which
 /// aliases (`$ with A = M`).
-fn import_forms<'a>(ast: &'a frontend::Ast, program: &Program, module: &str) -> (bool, Vec<&'a str>) {
+fn import_forms(ast: &frontend::Ast, program: &Program, module: &str) -> (bool, Vec<utilities::StrId>) {
     let mut bare = false;
     let mut aliases = Vec::new();
     for item in ast.slice(program.items) {
@@ -587,7 +587,7 @@ fn import_forms<'a>(ast: &'a frontend::Ast, program: &Program, module: &str) -> 
             continue;
         }
         match alias {
-            Some(a) => aliases.push(ast.text(*a)),
+            Some(a) => aliases.push(*a),
             None => bare = true,
         }
     }
@@ -845,7 +845,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_evals
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         let item_sites: Vec<(String, String, utilities::Span)> = compiled
@@ -854,7 +854,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_runs
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         let type_sites: Vec<(String, String, utilities::Span)> = compiled
@@ -863,7 +863,7 @@ fn lower_all(
             .flat_map(|p| {
                 p.ct_types
                     .iter()
-                    .map(move |(name, span)| (p.module.clone(), format!("{}.{}", p.module, name), *span))
+                    .map(move |(name, span)| (p.module.to_string(), format!("{}.{}", p.module, name), *span))
             })
             .collect();
         // `$ @build` sites: the synthetic `@build {}` call of every module whose
@@ -871,11 +871,11 @@ fn lower_all(
         let build_sites: Vec<(String, String)> = compiled
             .0
             .iter()
-            .filter(|p| !built.contains(&p.module))
+            .filter(|p| !built.contains(p.module.as_str()))
             .filter_map(|p| {
                 p.ct_build
                     .as_ref()
-                    .map(|name| (p.module.clone(), format!("{}.{}", p.module, name)))
+                    .map(|name| (p.module.to_string(), format!("{}.{}", p.module, name)))
             })
             .collect();
         if expr_sites.is_empty()
@@ -1220,7 +1220,7 @@ fn compile_in_memory(
     let queried = query.and_then(|n| checker.show_name(n));
     let decls = results[root]
         .iter()
-        .map(|(n, ty)| (n.to_string(), checker.show_decl(n, *ty)))
+        .map(|(n, ty)| (n.to_string(), checker.show_decl(*n, *ty)))
         .collect();
 
     Ok(Session {
@@ -1708,7 +1708,7 @@ pub fn cmd_check(path: &str) -> ExitCode {
     let root = loaded.index[&loaded.root_name];
     let checker = &checkers[root];
     for (name, ty) in &results[root] {
-        println!("{name} : {}", checker.show_decl(name, *ty));
+        println!("{name} : {}", checker.show_decl(*name, *ty));
     }
     ExitCode::SUCCESS
 }

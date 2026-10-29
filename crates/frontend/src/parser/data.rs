@@ -11,13 +11,14 @@
 //! sugar are kept as explicit nodes ([`Expr::BinOp`], [`Expr::List`], ...), which
 //! [`crate::desugar`] removes.
 
-use utilities::{Aol, Interner, SecondaryMap, Slice, Span, Store, StrId};
+use utilities::{Aol, SecondaryMap, Slice, Span, Store, StrId};
 
 /// The `@extern` ABI that names a runtime builtin rather than a foreign symbol.
 pub const BUILTIN_ABI: &str = "thrax";
 
 /// The stores that back a parsed tree. Every handle in the tree indexes into one
-/// of these; reads go through [`Store::lookup`] / [`Interner::resolve`].
+/// of these; reads go through [`Store::lookup`]. Names are [`StrId`]s into the
+/// process-wide interner.
 ///
 /// Variable-length child lists are NOT boxed onto the node; they are runs in a
 /// per-element-type [`Store`], addressed by a [`Slice`] handle. Read one with
@@ -29,7 +30,6 @@ pub struct Ast {
     pub exprs: Store<Expr>,
     pub tys: Store<Ty>,
     pub pats: Store<Pattern>,
-    pub strings: Interner,
     // Backing stores for the tree's variable-length runs, one per element type.
     expr_seqs: Store<Aol<Expr>>,
     ty_seqs: Store<Aol<Ty>>,
@@ -113,12 +113,12 @@ impl Ast {
     }
 
     /// Resolve an interned name to text.
-    pub fn text(&self, id: StrId) -> &str {
-        self.strings.resolve(id)
+    pub fn text(&self, id: StrId) -> &'static str {
+        id.as_str()
     }
     /// Resolve an interned byte string (literals are byte vectors).
-    pub fn bytes(&self, id: StrId) -> &[u8] {
-        self.strings.bytes(id)
+    pub fn bytes(&self, id: StrId) -> &'static [u8] {
+        id.bytes()
     }
     pub fn expr(&self, id: Aol<Expr>) -> &Expr {
         self.exprs.lookup(id)

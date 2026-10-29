@@ -19,38 +19,31 @@ pub use data::IrProgram;
 
 use crate::core::{CoreEffect, CoreProgram};
 use crate::passes;
+use utilities::StrId;
 
 /// Lower a whole program (root module first) to the IR: give every global the
-/// canonical key `Module.name`, concatenate the modules into one Core, run the
+/// canonical key `Module.name`, copy the modules into one Core, run the
 /// [`passes`], then closure-convert. A qualified reference resolves to its canonical
 /// key; a bare reference resolves through the runtime's bare fallback (see
 /// `machine::glob`). Root first, so a bare name collision resolves to the root.
 pub fn lower_modules(modules: &[CoreProgram]) -> IrProgram {
-    let mut merged = CoreProgram {
-        module: modules.first().map(|m| m.module.clone()).unwrap_or_default(),
-        effects: Vec::new(),
-        globals: Vec::new(),
-        crepr_layouts: Vec::new(),
-        ct_runs: Vec::new(),
-        ct_build: None,
-        ct_evals: Vec::new(),
-        ct_types: Vec::new(),
-    };
+    let mut merged = CoreProgram::new(modules.first().map_or_else(|| StrId::intern(""), |m| m.module));
     for m in modules {
         for e in &m.effects {
             merged.effects.push(CoreEffect {
-                effect: e.effect.clone(),
-                op: e.op.clone(),
+                effect: e.effect,
+                op: e.op,
             });
         }
-        for (name, term) in &m.globals {
+        for &(name, term) in &m.globals {
+            let term = merged.terms.import(&m.terms, term);
             merged
                 .globals
-                .push((format!("{}.{}", m.module, name), term.clone()));
+                .push((StrId::intern(&format!("{}.{}", m.module, name)), term));
         }
         for (name, layout) in &m.crepr_layouts {
             if !merged.crepr_layouts.iter().any(|(n, _)| n == name) {
-                merged.crepr_layouts.push((name.clone(), layout.clone()));
+                merged.crepr_layouts.push((*name, layout.clone()));
             }
         }
     }

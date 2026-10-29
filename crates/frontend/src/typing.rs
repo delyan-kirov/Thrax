@@ -16,10 +16,11 @@
 //! modules each hold one concern of the [`Checker`]: `declarations`,
 //! `signatures` (written types), `patterns`, `imports` and `externs`.
 //!
-//! The AST is read through a borrowed [`Ast`]: `Checker::node`, `tnode`,
-//! `pnode` and `text` resolve handles to `'a`-lived data, independent of the
-//! `&mut self` borrow, so a node can be read and its children inferred in the
-//! same method.
+//! The AST is read through a borrowed [`Ast`]: `Checker::node`, `tnode` and
+//! `pnode` resolve handles to `'a`-lived data, independent of the `&mut self`
+//! borrow, so a node can be read and its children inferred in the same method.
+//! Names stay [`StrId`]s throughout: the checker's tables are keyed by them, and
+//! a name becomes text only when a diagnostic or a printed type renders it.
 //!
 //! Input: one parsed module, plus the checkers of its imports. Output: each
 //! global's generalized type, diagnostics, and the side tables in
@@ -42,6 +43,7 @@ pub mod usefulness;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::rc::Rc;
 
 use crate::parser::data::{
@@ -68,9 +70,9 @@ use types::*;
 /// runtime value is a flat, unboxed C struct rather than a boxed record, and it
 /// may cross the `@extern` boundary by value.
 #[derive(Clone)]
-struct StructInfo<'a> {
-    params: Vec<&'a str>,
-    fields: Vec<(&'a str, Aol<Ty>)>,
+struct StructInfo {
+    params: Vec<StrId>,
+    fields: Vec<(StrId, Aol<Ty>)>,
     crepr: bool,
     /// A C `union` (`@union @extern`): members share offset 0. Handled as a C-repr
     /// struct otherwise; only its layout and single-member construction differ.
@@ -80,33 +82,33 @@ struct StructInfo<'a> {
 /// Pending `with Other` splices, keyed by the type that wrote them: whether it
 /// is a struct (rather than a union), and each included name with the span it
 /// was written at, so a bad include carets its own `with`.
-type PendingIncludes<'a> = HashMap<&'a str, (bool, Vec<(&'a str, Span)>)>;
+type PendingIncludes = HashMap<StrId, (bool, Vec<(StrId, Span)>)>;
 
 /// A declared union type: implicit `params` and one [`VariantSig`] per variant.
 #[derive(Clone)]
-struct UnionInfo<'a> {
-    params: Vec<&'a str>,
-    variants: Vec<VariantSig<'a>>,
+struct UnionInfo {
+    params: Vec<StrId>,
+    variants: Vec<VariantSig>,
 }
 
 /// A union variant: its tag and its (normalized) payload fields, each an optional
 /// name and its declared type.
 #[derive(Clone)]
-struct VariantSig<'a> {
-    tag: &'a str,
-    payload: Vec<(Option<&'a str>, Aol<Ty>)>,
+struct VariantSig {
+    tag: StrId,
+    payload: Vec<(Option<StrId>, Aol<Ty>)>,
 }
 
 /// A variant's payload instantiated to concrete types: one `(optional-name,
 /// type)` pair per field, in declaration order.
-type VariantPayload<'a> = Vec<(Option<&'a str>, Type)>;
+type VariantPayload = Vec<(Option<StrId>, Type)>;
 
 pub struct Checker<'a> {
     ast: &'a Ast,
     unifier: Unifier,
-    scopes: Vec<HashMap<&'a str, Type>>,
-    structs: HashMap<&'a str, StructInfo<'a>>,
-    unions: HashMap<&'a str, UnionInfo<'a>>,
+    scopes: Vec<HashMap<StrId, Type>>,
+    structs: HashMap<StrId, StructInfo>,
+    unions: HashMap<StrId, UnionInfo>,
     /// Which slots of a declared type hold their value lazily, keyed by
     /// `(type, Some(variant tag))` for a union and `(type, None)` for a struct,
     /// one flag per slot in declaration order. See [`Self::compute_lazy_slots`].
@@ -114,66 +116,66 @@ pub struct Checker<'a> {
     /// Computed C memory layout for each `@struct @extern "abi"` (C-repr) struct,
     /// keyed by type name. Used to marshal a struct value across the `@extern`
     /// boundary by value.
-    crepr_layouts: HashMap<&'a str, utilities::CLayout>,
+    crepr_layouts: HashMap<StrId, utilities::CLayout>,
     /// Type aliases: `name -> (declared params, body)`. An applied alias is
     /// expanded by substituting its arguments for the parameters in the body.
-    aliases: HashMap<&'a str, (Vec<&'a str>, Aol<Ty>)>,
+    aliases: HashMap<StrId, (Vec<StrId>, Aol<Ty>)>,
     /// Each declared effect's operations, `effect -> op -> its `Arg -> Res`
     /// scheme. Used to type a handler clause head, which cannot be resolved by
     /// inference alone.
-    effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    effect_ops: HashMap<StrId, HashMap<StrId, Type>>,
     /// The same for effects imported from other modules, consulted after
     /// `effect_ops` so a handler of an imported effect types its clauses too.
-    imported_effect_ops: HashMap<&'a str, HashMap<&'a str, Type>>,
+    imported_effect_ops: HashMap<StrId, HashMap<StrId, Type>>,
     /// How many type parameters each visible effect declares.
-    effect_arity: HashMap<&'a str, usize>,
+    effect_arity: HashMap<StrId, usize>,
     /// While an effect's operations are elaborated: that effect and its
     /// parameters, which a bare mention of it in an operation type stands for.
-    effect_self: Option<(&'a str, Type)>,
+    effect_self: Option<(StrId, Type)>,
     /// Operation names several EFFECTS declare, mapped to one candidate per effect.
     /// The only argument-type-driven selection left (see [`Cand`]).
-    overloads: HashMap<&'a str, Vec<Cand<'a>>>,
+    overloads: HashMap<StrId, Vec<Cand>>,
     /// Effect-operation uses that were ambiguous when first seen. Solved to a
     /// fixpoint at each definition boundary.
-    pending: Vec<Pending<'a>>,
+    pending: Vec<Pending>,
     /// Names this module defines itself, so a use of one is NOT rewritten to an
     /// imported module's copy.
-    local_defs: HashSet<&'a str>,
+    local_defs: HashSet<StrId>,
     /// Single imported values, `name -> module`, so a bare use lowers to the
     /// owning module even when another loaded module defines the same name.
-    value_module: HashMap<&'a str, &'a str>,
+    value_module: HashMap<StrId, StrId>,
     /// Names more than one import brings in, mapped to the modules that export
     /// them. A bare use is an error naming the owners; `Module.name` still works.
-    ambiguous_imports: HashMap<&'a str, Vec<&'a str>>,
+    ambiguous_imports: HashMap<StrId, Vec<StrId>>,
     /// Bare-call sites resolved to a specific module. Lowering rewrites the
     /// referenced `Expr::Var` to `MOD.name`.
-    resolved_calls: HashMap<Aol<Expr>, &'a str>,
+    resolved_calls: HashMap<Aol<Expr>, StrId>,
     /// The context parameter type of each context-bearing definition in this
     /// module, sharing its variables with the exposed type, so a printed signature
     /// can show the `@ctx` prefix.
-    decl_ctx: HashMap<&'a str, Type>,
+    decl_ctx: HashMap<StrId, Type>,
     /// Top-level definitions whose signature opens with a `@ctx` context
     /// parameter, by name, as the signature's AST handle (the context type is its
     /// first `from`). A use site plans the context from it and records the resolved
     /// value in [`Self::ctx_args`]; lowering injects it as a leading argument.
     /// Populated up front (own module) so resolution is order-independent, and
     /// extended from imports.
-    global_ctx: HashMap<&'a str, Aol<Ty>>,
+    global_ctx: HashMap<StrId, Aol<Ty>>,
     /// The same, keyed by `(module, name)` so a QUALIFIED use (`MOD.f`) plans its
     /// context too (the bare-keyed map collides when two modules define the name).
-    qualified_ctx: HashMap<(&'a str, &'a str), Aol<Ty>>,
+    qualified_ctx: HashMap<(StrId, StrId), Aol<Ty>>,
     /// This module's own context-bearing definitions, re-exported to importers.
-    own_ctx: Vec<(&'a str, Aol<Ty>)>,
+    own_ctx: Vec<(StrId, Aol<Ty>)>,
     /// This module's interface wrappers: a context-bearing definition whose body
     /// only projects one field of its context, mapped to that field (see
     /// [`instances::wrapper_field`]).
-    own_wrappers: HashMap<&'a str, String>,
+    own_wrappers: HashMap<StrId, StrId>,
     /// Each use site of a context-bearing function, mapped to the resolved context
     /// value lowering injects ahead of the explicit arguments.
     ctx_args: HashMap<Aol<Expr>, CtxVal>,
     /// Context resolutions deferred to the enclosing definition's boundary, where
     /// inference has pinned the requirement's type variables.
-    ctx_pending: Vec<PendingCtx<'a>>,
+    ctx_pending: Vec<PendingCtx>,
     /// The elaborated signature of the definition currently being checked. Its type
     /// variables are the caller's to choose, so context resolution may not bind
     /// them: a `$ g : a -> @Str = \x = show x` must declare the context rather than
@@ -187,57 +189,57 @@ pub struct Checker<'a> {
     /// Every global whose type's head is a declared nominal type, keyed by that
     /// head's name: the candidates a context requirement searches. Implementing an
     /// interface is just defining a value of its type, so there is nothing to mark.
-    instances: HashMap<String, Vec<Inst<'a>>>,
+    instances: HashMap<StrId, Vec<Inst>>,
     /// This module's own instances, re-exported to importers.
-    own_instances: Vec<(&'a str, Inst<'a>)>,
+    own_instances: Vec<(StrId, Inst)>,
     /// Types with unresolved `with Other` splices, `name -> (is_struct, includes)`.
     /// Drained as each type's members are copied in (see `splice_includes`). This
     /// is a declaration-time convenience only; no type relationship is recorded.
-    pending_includes: PendingIncludes<'a>,
+    pending_includes: PendingIncludes,
     /// Type variables introduced by integer literals, which may be Int or Real;
     /// leftovers default to Int at the definition boundary. Each carries the
     /// literal's source span so a defaulting error can point at it.
     numeric: Vec<(Type, Span)>,
     /// This module's own exports, recorded after checking.
-    own_values: Vec<(&'a str, Type)>,
-    own_type_names: Vec<&'a str>,
+    own_values: Vec<(StrId, Type)>,
+    own_type_names: Vec<StrId>,
     /// Types this module reaches through an import's declarations without
     /// importing their home module (`BB.Outer`'s field of `AA.Inner`), each with
     /// that home. They are in `structs`/`unions`/`aliases` so imported
     /// declarations elaborate, but a type this module writes cannot name them.
-    hidden_types: HashMap<&'a str, &'a str>,
+    hidden_types: HashMap<StrId, StrId>,
     /// The module that declares each type in scope, to name the import a use of
     /// a hidden type is missing.
-    type_home: HashMap<&'a str, &'a str>,
+    type_home: HashMap<StrId, StrId>,
     /// Every type node of an imported declaration (struct fields, variant
     /// payloads, alias bodies, context signatures). Elaborating one of these
     /// may name a hidden type.
     foreign_tys: HashSet<Aol<Ty>>,
     /// The effects this module declares, exported so an importer can type a
     /// qualified `Effect.op` reference.
-    own_effects: Vec<&'a str>,
+    own_effects: Vec<StrId>,
     /// Names declared after a `$ @private` marker: defined and usable within this
     /// module, but not exported, so no importer can bind or qualify them.
-    private_names: HashSet<&'a str>,
+    private_names: HashSet<StrId>,
     /// Private names of the modules this one imports, `module -> names`. A
     /// qualified reference (`A.helper`) to one is rejected rather than deferred to
     /// the runtime, which would otherwise reach the still-present global.
-    imported_private: HashMap<&'a str, HashSet<&'a str>>,
+    imported_private: HashMap<StrId, HashSet<StrId>>,
     /// Value schemes pulled in from imports (with their source module), finalized
     /// once.
-    imported: HashMap<&'a str, Vec<(Type, &'a str)>>,
+    imported: HashMap<StrId, Vec<(Type, StrId)>>,
     /// Imported names reachable qualified as `MOD.name` (or `ALIAS.name`).
-    qualified: HashMap<&'a str, HashMap<&'a str, Vec<Type>>>,
+    qualified: HashMap<StrId, HashMap<StrId, Vec<Type>>>,
     /// Each import alias in scope (`$ with V = VEC`), mapped to its module.
-    alias_modules: HashMap<&'a str, &'a str>,
+    alias_modules: HashMap<StrId, StrId>,
     /// Values an aliased-only import exports, mapped to the aliases that reach
     /// them, so a bare use can name the qualified form.
-    alias_values: HashMap<&'a str, Vec<&'a str>>,
+    alias_values: HashMap<StrId, Vec<StrId>>,
     /// Types an aliased-only import exports, mapped to the alias that reaches
     /// them. Like a hidden type, a bare mention is an error; a qualified one
     /// (`V.Type`) is not.
-    alias_types: HashMap<&'a str, &'a str>,
-    module_name: &'a str,
+    alias_types: HashMap<StrId, StrId>,
+    module_name: StrId,
     /// `[..]` literal sites resolved to a sized tensor `[n]T`: the one `[...]`
     /// shape no hook can build, since the payload cannot carry the static size.
     /// Lowering flattens the collected elements with `@tensor_stack`.
@@ -245,12 +247,12 @@ pub struct Checker<'a> {
     /// Argument sites promoted to a record: a bare scalar `1` or a positional
     /// `{1, 2}` passed where a record is expected, mapped to the target record's
     /// field names (in order). Lowering wraps the value into a name-keyed record.
-    promotions: HashMap<Aol<Expr>, Vec<String>>,
+    promotions: HashMap<Aol<Expr>, Vec<StrId>>,
     /// `.{ ... }` struct-literal sites, mapped to the nominal struct name the
     /// checker resolved them to (from a type annotation / expected type, or the
     /// field set). Lowering reads this so a positional literal gets the right field
     /// names instead of falling back to positional indices.
-    struct_lit_names: HashMap<Aol<Expr>, String>,
+    struct_lit_names: HashMap<Aol<Expr>, StrId>,
     /// Literal sites (`"..."`, `[..]`, an int, a real) that a blessed `@I*`
     /// construction interface builds into a user type instead of the built-in default,
     /// mapped to the resolved hook's `(owning module, emitted name)`. Lowering wraps
@@ -260,7 +262,7 @@ pub struct Checker<'a> {
     /// Blessed-interface VALUE sites (the `@IIndex` / `@IImagLit` head a desugar
     /// emits), mapped to the single field lowering projects off the instance that
     /// `ctx_args` records for the same site.
-    blessed_sites: HashMap<Aol<Expr>, String>,
+    blessed_sites: HashMap<Aol<Expr>, StrId>,
     /// Literal PATTERN sites (`is "foo"`, `is 42`) whose scrutinee is a user type,
     /// mapped to the resolved `(build hook, equality hook)`: the pattern matches by
     /// building the literal into the user type (build hook) and comparing it against
@@ -276,7 +278,7 @@ pub struct Checker<'a> {
     tensor_patterns: HashMap<Aol<Pattern>, u64>,
     /// The union each variant pattern resolved to, so the exhaustiveness check
     /// reads the same union a bare `.Tag` was typed against.
-    variant_pattern_unions: HashMap<Aol<Pattern>, &'a str>,
+    variant_pattern_unions: HashMap<Aol<Pattern>, StrId>,
     /// The scrutinee type of each integer literal and range pattern, read once the
     /// match is typed to give the exhaustiveness check the type's value range.
     int_pattern_tys: HashMap<Aol<Pattern>, Type>,
@@ -293,7 +295,7 @@ pub struct Checker<'a> {
     errors: Vec<Diagnostic>,
     /// Names of items the parser could not read. A use of one is not reported
     /// again: it gets the error type.
-    broken: HashSet<&'a str>,
+    broken: HashSet<StrId>,
     /// Where a missing `$ with M` goes, and the text around the module name:
     /// after the last import, or before the first item.
     import_anchor: Option<(usize, &'static str, &'static str)>,
@@ -302,14 +304,14 @@ pub struct Checker<'a> {
     import_hints: Rc<HashMap<String, Vec<String>>>,
     /// Every `???` met, with its type and the binders in scope there (the
     /// candidates for filling it), reported once the definition is solved.
-    holes: Vec<(Aol<Expr>, Type, Vec<(&'a str, Type)>)>,
+    holes: Vec<(Aol<Expr>, Type, Vec<(StrId, Type)>)>,
     /// Each expression's inferred type, kept only when an editor asks
     /// ([`Self::set_record_types`]): hover reads it after the check.
     expr_types: Option<HashMap<Aol<Expr>, Type>>,
     /// The ordered field names each `with subject in body` brings into scope,
     /// keyed by the `With` node. Lowering desugars `with` into a `let` per field,
     /// so the Core has no name-binding-by-type node and stays De-Bruijn indexable.
-    with_fields: HashMap<Aol<Expr>, Vec<String>>,
+    with_fields: HashMap<Aol<Expr>, Vec<StrId>>,
     /// Each `@extern` node's type variable, zonked after solving to recover the
     /// concrete arrow the declaration constrained it to. Lowering reads the
     /// flattened arg/result marshalling names off this.
@@ -323,12 +325,12 @@ pub struct Checker<'a> {
     /// bare `@extern`. Aggregated with every dependency's `own_externs` (keyed by
     /// owner module) so lowering can flatten a foreign call it did not itself
     /// resolve across modules.
-    own_externs: HashMap<&'a str, ExternSpec>,
+    own_externs: HashMap<StrId, ExternSpec>,
     /// This module's `@extern "thrax"` definitions, each named for the runtime
     /// builtin it declares.
-    own_builtins: HashSet<&'a str>,
+    own_builtins: HashSet<StrId>,
     /// The builtins imported modules declare, which no definition may reuse.
-    imported_builtins: HashSet<&'a str>,
+    imported_builtins: HashSet<StrId>,
     /// The ambient effect row: the effects the expression currently being
     /// inferred is allowed to perform. A call subsumes its callee's latent effect
     /// into this; a lambda body and a handler body run under a fresh/extended
@@ -352,24 +354,23 @@ pub struct Checker<'a> {
     open_effects: bool,
     /// The one global allowed to omit its signature: the binding a tool (the shell,
     /// `@eval`) wraps around an expression to learn its type. Never set for a file.
-    inferred: Option<&'static str>,
+    inferred: Option<StrId>,
 }
 
 /// One candidate of an operation name that several EFFECTS declare (`ask` in both
 /// `Reader` and `Config`). This is the one place left that picks a definition from
 /// argument types: values are never overloaded, a name has one definition.
 #[derive(Clone)]
-struct Cand<'a> {
+struct Cand {
     ty: Type,
-    module: Option<&'a str>,
-    _marker: std::marker::PhantomData<&'a ()>,
+    module: Option<StrId>,
 }
 
-impl<'a> Cand<'a> {
+impl Cand {
     /// An effect-operation candidate, owned by no module (never rewritten to a
     /// qualified reference).
-    fn local(ty: Type) -> Cand<'a> {
-        Cand { ty, module: None, _marker: std::marker::PhantomData }
+    fn local(ty: Type) -> Cand {
+        Cand { ty, module: None }
     }
 }
 
@@ -378,11 +379,10 @@ impl<'a> Cand<'a> {
 /// the instance itself takes a context, that requirement, generalized together so
 /// instantiating the bundle keeps their variables aligned.
 #[derive(Clone)]
-struct Inst<'a> {
-    /// The global's emitted name: the source name, or the type-mangled one when it
-    /// shares its name with another definition in the same module.
-    name: String,
-    module: Option<&'a str>,
+struct Inst {
+    /// The global's name.
+    name: StrId,
+    module: Option<StrId>,
     bundle: Type,
     has_ctx: bool,
 }
@@ -391,16 +391,16 @@ struct Inst<'a> {
 /// when the binder holds a BUNDLE of contexts and this is one component of it, so
 /// the resolved value is `name.index`.
 #[derive(Clone)]
-struct CtxLocal<'a> {
+struct CtxLocal {
     depth: usize,
-    name: &'a str,
+    name: StrId,
     ty: Type,
     index: Option<usize>,
 }
 
 /// A context resolution deferred to the enclosing definition's boundary, where the
 /// requirement's type variables are pinned.
-struct PendingCtx<'a> {
+struct PendingCtx {
     site: Aol<Expr>,
     fname: String,
     req: Type,
@@ -409,15 +409,15 @@ struct PendingCtx<'a> {
     sig: Option<Type>,
     /// Binders in scope at the use site that could satisfy the requirement. Captured
     /// there because the scopes are gone by the time the boundary resolves.
-    locals: Vec<CtxLocal<'a>>,
+    locals: Vec<CtxLocal>,
 }
 
 /// A deferred overload use: its candidate set, the argument types, the fresh
 /// result variable standing in for the (not-yet-known) result, and the call site
 /// to annotate once it resolves.
-struct Pending<'a> {
+struct Pending {
     name: String,
-    candidates: Vec<Cand<'a>>,
+    candidates: Vec<Cand>,
     args: Vec<Type>,
     result: Type,
     site: Option<Aol<Expr>>,
@@ -481,7 +481,7 @@ impl<'a> Checker<'a> {
             alias_modules: HashMap::new(),
             alias_values: HashMap::new(),
             alias_types: HashMap::new(),
-            module_name: "",
+            module_name: StrId::intern(""),
             tensor_exprs: HashSet::new(),
             promotions: HashMap::new(),
             struct_lit_names: HashMap::new(),
@@ -533,7 +533,7 @@ impl<'a> Checker<'a> {
 
     /// Let the global `name` omit its signature (see `inferred`).
     pub fn set_inferred(&mut self, name: &'static str) {
-        self.inferred = Some(name);
+        self.inferred = Some(StrId::intern(name));
     }
 
     /// Supply the module names an unbound name may suggest importing.
@@ -581,10 +581,6 @@ impl<'a> Checker<'a> {
     fn pnode(&self, p: Aol<Pattern>) -> &'a Pattern {
         self.ast.pat(p)
     }
-
-    fn text(&self, id: utilities::StrId) -> &'a str {
-        self.ast.text(id)
-    }
 }
 
 // ## Checking a program
@@ -592,8 +588,8 @@ impl<'a> Checker<'a> {
 impl<'a> Checker<'a> {
     /// Check a whole program, returning the inferred (generalized) type of every
     /// global definition, in source order.
-    pub fn check_program(&mut self, program: &Program) -> Result<Vec<(&'a str, Type)>> {
-        self.module_name = self.text(program.module);
+    pub fn check_program(&mut self, program: &Program) -> Result<Vec<(StrId, Type)>> {
+        self.module_name = program.module;
         self.register_target_namespace();
         self.collect_private_names(program);
         self.check_import_aliases(program);
@@ -610,7 +606,7 @@ impl<'a> Checker<'a> {
         self.unknown_type = saved_unknown;
         self.register_effects(program)?;
 
-        let defs: Vec<Def<'a>> = self
+        let defs: Vec<Def> = self
             .ast
             .slice(program.items)
             .iter()
@@ -622,7 +618,7 @@ impl<'a> Checker<'a> {
                     ctx,
                     body,
                 } => Some(Def {
-                    name: self.text(*name),
+                    name: *name,
                     name_span: span.name,
                     sig: *sig,
                     ctx: *ctx,
@@ -641,11 +637,11 @@ impl<'a> Checker<'a> {
 
         // One name, one definition: a module may not define a name twice, since a
         // name's type is its contract and two definitions would make it dishonest.
-        let mut seen: HashSet<&'a str> = HashSet::new();
+        let mut seen: HashSet<StrId> = HashSet::new();
         let mut defs = defs;
         let mut dups = Vec::new();
         for (i, d) in defs.iter().enumerate() {
-            if self.imported_builtins.contains(d.name) {
+            if self.imported_builtins.contains(&d.name) {
                 let span = self.ast.expr_span(d.body).unwrap_or(Span::at(0));
                 self.errors.push(diag!(
                     Code::DuplicateSymbol, span, 0,
@@ -670,22 +666,22 @@ impl<'a> Checker<'a> {
             defs.remove(i);
         }
         for name in self.ast.slice(program.broken) {
-            self.broken.insert(self.ast.text(*name));
+            self.broken.insert(*name);
         }
         self.import_anchor = import_anchor(self.ast, program);
         // A local definition SHADOWS an imported value of the same name, so the
         // import's binding, owner, and context registration all give way to it.
         for d in &defs {
-            self.value_module.remove(d.name);
-            self.global_ctx.remove(d.name);
-            self.ambiguous_imports.remove(d.name);
+            self.value_module.remove(&d.name);
+            self.global_ctx.remove(&d.name);
+            self.ambiguous_imports.remove(&d.name);
         }
 
         // Register context-bearing definitions up front so a use anywhere in the
         // module resolves them regardless of source order.
         for d in &defs {
             let Some(ctx) = d.ctx else { continue };
-            self.check_ctx_head(d.name, ctx)?;
+            self.check_ctx_head(d.name.as_str(), ctx)?;
             let sig = d.sig.expect("a `@ctx` is parsed as part of a signature");
             self.own_ctx.push((d.name, sig));
             self.qualified_ctx.insert((self.module_name, d.name), sig);
@@ -705,24 +701,23 @@ impl<'a> Checker<'a> {
             }
             let bundle = self.instance_bundle(exposed, ctx);
             let inst = Inst {
-                name: d.name.to_string(),
+                name: d.name,
                 module: Some(self.module_name),
                 bundle,
                 has_ctx: ctx.is_some(),
             };
-            let key = self.unifier.types.name(head).to_string();
             self.own_instances.push((d.name, inst.clone()));
-            self.instances.entry(key).or_default().push(inst);
+            self.instances.entry(head).or_default().push(inst);
         }
 
-        let single_index: HashMap<&'a str, usize> = defs
+        let single_index: HashMap<StrId, usize> = defs
             .iter()
             .enumerate()
             .map(|(i, d)| (d.name, i))
             .collect();
         let graph = dependency_graph(self.ast, &defs, &single_index);
 
-        let mut types: HashMap<&'a str, Type> = HashMap::new();
+        let mut types: HashMap<StrId, Type> = HashMap::new();
         for component in utilities::tarjan::strongly_connected_components(&graph) {
             let level = self.unifier.level();
             // An unknown type name met along the way is the likelier root cause
@@ -740,8 +735,8 @@ impl<'a> Checker<'a> {
             }
         }
 
-        let out: Vec<(&'a str, Type)> =
-            defs.iter().map(|d| (d.name, types[d.name])).collect();
+        let out: Vec<(StrId, Type)> =
+            defs.iter().map(|d| (d.name, types[&d.name])).collect();
 
         self.own_values = out.clone();
         if let Some(d) = self.unknown_type.take() {
@@ -805,8 +800,8 @@ impl<'a> Checker<'a> {
     fn check_component(
         &mut self,
         component: &[usize],
-        defs: &[Def<'a>],
-        types: &mut HashMap<&'a str, Type>,
+        defs: &[Def],
+        types: &mut HashMap<StrId, Type>,
     ) -> Result<()> {
         // See Note [Rémy levels].
         self.unifier.enter_level();
@@ -858,13 +853,13 @@ impl<'a> Checker<'a> {
     /// Report each member of a checked component that has no signature. A global's
     /// type is its contract with every importer, so it is always written; the
     /// inferred type is offered as the annotation.
-    fn require_signatures(&mut self, component: &[usize], defs: &[Def<'a>], types: &HashMap<&'a str, Type>) {
+    fn require_signatures(&mut self, component: &[usize], defs: &[Def], types: &HashMap<StrId, Type>) {
         for &i in component {
             let d = &defs[i];
             if d.sig.is_some() || self.inferred == Some(d.name) {
                 continue;
             }
-            let shown = self.show(types[d.name]);
+            let shown = self.show(types[&d.name]);
             let span = d.name_span.or_else(|| self.ast.expr_span(d.body)).unwrap_or(Span::at(0));
             let mut diag = diag!(
                 Code::TypeAnnotationRequired, span, 0,
@@ -891,8 +886,8 @@ impl<'a> Checker<'a> {
         &mut self,
         level: crate::typing::types::Level,
         component: &[usize],
-        defs: &[Def<'a>],
-        types: &mut HashMap<&'a str, Type>,
+        defs: &[Def],
+        types: &mut HashMap<StrId, Type>,
     ) {
         self.unifier.unwind_level(level);
         self.scopes.truncate(1);
@@ -919,10 +914,10 @@ impl<'a> Checker<'a> {
         for (site, t, locals) in holes {
             let t = self.unifier.zonk(t);
             let shown = self.show(t);
-            let globals: Vec<(&'a str, Type)> = self.scopes[0].iter().map(|(n, t)| (*n, *t)).collect();
-            let mut fits: Vec<&'a str> = Vec::new();
+            let globals: Vec<(StrId, Type)> = self.scopes[0].iter().map(|(n, t)| (*n, *t)).collect();
+            let mut fits: Vec<StrId> = Vec::new();
             for (name, scheme) in locals.iter().chain(globals.iter()) {
-                if name.starts_with('@') || *name == crate::lexer::HOLE || fits.contains(name) {
+                if name.as_str().starts_with('@') || *name == crate::lexer::HOLE || fits.contains(name) {
                     continue;
                 }
                 let save = self.unifier.save();
@@ -930,12 +925,12 @@ impl<'a> Checker<'a> {
                 let ok = self.unifier.unify(inst, t, "a hole fit").is_ok();
                 self.unifier.restore(save);
                 if ok {
-                    fits.push(name);
+                    fits.push(*name);
                 }
             }
             // Locals first (they are the likeliest), then the rest by name.
             let n_local = fits.iter().filter(|f| locals.iter().any(|(l, _)| l == *f)).count();
-            fits[n_local..].sort_unstable();
+            fits[n_local..].sort_unstable_by_key(|f| f.as_str());
             let span = self.ast.expr_span(site).unwrap_or(Span::at(0));
             let mut d = diag!(Code::TypedHole, span, 0, "hole `???` has type `{shown}`");
             if fits.is_empty() {
@@ -946,7 +941,7 @@ impl<'a> Checker<'a> {
                 for f in fits.iter().take(MAX_HOLE_FITS) {
                     d = d.with_fix(
                         format!("fill the hole with `{f}`"),
-                        vec![Edit::new(span, *f)],
+                        vec![Edit::new(span, f.as_str())],
                         Applicability::MaybeIncorrect,
                     );
                 }
@@ -975,7 +970,7 @@ impl<'a> Checker<'a> {
 
     /// This module's definitions and their types, as exported to importers. After
     /// a failed check a broken definition has its signature or the error type.
-    pub fn own_values(&self) -> &[(&'a str, Type)] {
+    pub fn own_values(&self) -> &[(StrId, Type)] {
         &self.own_values
     }
 
@@ -989,7 +984,7 @@ impl<'a> Checker<'a> {
     }
 
     /// This module's name.
-    pub fn module_name(&self) -> &'a str {
+    pub fn module_name(&self) -> StrId {
         self.module_name
     }
 }
@@ -1005,9 +1000,12 @@ impl<'a> Checker<'a> {
 
     /// Every value name visible at the top level of this module (its own and
     /// the imported ones), with its type as a user reads it.
-    pub fn visible_values(&self) -> Vec<(&'a str, String)> {
-        let mut out: Vec<(&'a str, String)> =
-            self.scopes[0].iter().filter(|(n, _)| !n.starts_with('@')).map(|(n, t)| (*n, self.show_decl(n, *t))).collect();
+    pub fn visible_values(&self) -> Vec<(&'static str, String)> {
+        let mut out: Vec<(&'static str, String)> = self.scopes[0]
+            .iter()
+            .filter(|(n, _)| !n.as_str().starts_with('@'))
+            .map(|(n, t)| (n.as_str(), self.show_decl(*n, *t)))
+            .collect();
         out.sort_unstable();
         out
     }
@@ -1015,7 +1013,7 @@ impl<'a> Checker<'a> {
     /// The members of a qualified module `name` in scope (`C`, an import), with
     /// their types.
     pub fn qualified_values(&self, module: &str) -> Vec<(String, String)> {
-        let Some(members) = self.qualified.get(module) else { return Vec::new() };
+        let Some(members) = self.qualified.get(&StrId::intern(module)) else { return Vec::new() };
         let mut out: Vec<(String, String)> = members
             .iter()
             .filter_map(|(n, ts)| ts.first().map(|t| (n.to_string(), self.show(*t))))
@@ -1040,21 +1038,21 @@ impl<'a> Checker<'a> {
     /// name as an expression would have to pick a type for its context, which is
     /// exactly what the declaration leaves open.
     pub fn show_name(&mut self, name: &str) -> Option<String> {
-        if let Some(sig) = self.global_ctx.get(name).copied() {
+        if let Some(sig) = self.global_ctx.get(&StrId::intern(name)).copied() {
             let (exposed, ctx) = self.scheme_and_ctx(sig, true);
             if let Some(ctx) = ctx {
                 let parts = self.unifier.show_all(&[ctx, exposed]);
                 return Some(format!("@ctx {} -> {}", parts[0], parts[1]));
             }
         }
-        self.lookup(name).map(|ty| self.show(ty))
+        self.lookup(StrId::intern(name)).map(|ty| self.show(ty))
     }
 
     /// How a definition's type reads to a user: its exposed arrow, prefixed with the
     /// `@ctx` parameter when it declares one. A printed type never hides the context
     /// a call site has to satisfy, which is the whole point of #213.
-    pub fn show_decl(&self, name: &str, ty: Type) -> String {
-        match self.decl_ctx.get(name) {
+    pub fn show_decl(&self, name: StrId, ty: Type) -> String {
+        match self.decl_ctx.get(&name) {
             Some(ctx) => {
                 let parts = self.unifier.show_all(&[*ctx, ty]);
                 format!("@ctx {} -> {}", parts[0], parts[1])
@@ -1063,15 +1061,15 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn bind(&mut self, name: &'a str, ty: Type) {
+    fn bind(&mut self, name: StrId, ty: Type) {
         self.scopes
             .last_mut()
             .expect("a scope is always open")
             .insert(name, ty);
     }
 
-    fn lookup(&self, name: &str) -> Option<Type> {
-        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
+    fn lookup(&self, name: StrId) -> Option<Type> {
+        self.scopes.iter().rev().find_map(|s| s.get(&name).cloned())
     }
 
     fn enter_scope(&mut self) {
@@ -1097,7 +1095,7 @@ impl<'a> Checker<'a> {
         // first-class fallback.
         let e_ty = self.unifier.fresh_generic();
         let t = self.unifier.types.arrow(self.unifier.types.con("@Code"), e_ty);
-        self.bind("@e", t);
+        self.bind(StrId::intern("@e"), t);
 
         // The sized-tensor PRIMITIVES. `@`-sigil marks them as compiler intrinsics
         // (like `@Int64`), the minimal set the runtime provides; every nice name
@@ -1120,7 +1118,7 @@ impl<'a> Checker<'a> {
             let v = self.unifier.fresh_generic();
             let vn = tensor_type(&self.unifier.types, v, n, a);
             let t = self.unifier.types.arrow(vn, self.unifier.types.arrow(int, a));
-        self.bind("@tensor_index", t);
+        self.bind(StrId::intern("@tensor_index"), t);
         }
         // `@tensor_length : [n]a -> Int` (runtime size, untied to `n`: no dependent values).
         {
@@ -1129,7 +1127,7 @@ impl<'a> Checker<'a> {
             let v = self.unifier.fresh_generic();
             let vn = tensor_type(&self.unifier.types, v, n, a);
             let t = self.unifier.types.arrow(vn, int);
-        self.bind("@tensor_length", t);
+        self.bind(StrId::intern("@tensor_length"), t);
         }
         // `@tensor_create : [n]x -> (Int -> a) -> [n]a`: build a tensor the SAME SIZE as a
         // template from an index function (sound: result size = template size). The
@@ -1143,8 +1141,7 @@ impl<'a> Checker<'a> {
             let template = tensor_type(&self.unifier.types, v, n, x);
             let idx_fn = self.unifier.types.arrow(int, a);
             let result = tensor_type(&self.unifier.types, v, n, a);
-            self.bind(
-                "@tensor_create",
+            self.bind(StrId::intern("@tensor_create"),
                 self.unifier.types.arrow(template, self.unifier.types.arrow(idx_fn, result)),
             );
         }
@@ -1160,7 +1157,7 @@ impl<'a> Checker<'a> {
             let tm = tensor_type(&self.unifier.types, v, m, a);
             let tnm = tensor_type(&self.unifier.types, v, self.unifier.types.add(TypeNode::NatAdd(n, m)), a);
             let t = self.unifier.types.arrow(tn, self.unifier.types.arrow(tm, tnm));
-        self.bind("@tensor_concat", t);
+        self.bind(StrId::intern("@tensor_concat"), t);
         }
         // `@tensor_transpose : [m][n]a -> [n][m]a`: an O(1) VIEW (swap axes/strides),
         // so `LA.transpose` copies nothing. Variance stays per POSITION (outer `vm`,
@@ -1175,7 +1172,7 @@ impl<'a> Checker<'a> {
             let mn = tensor_type(&self.unifier.types, vm, m, tensor_type(&self.unifier.types, vn, n, a));
             let nm = tensor_type(&self.unifier.types, vm, n, tensor_type(&self.unifier.types, vn, m, a));
             let t = self.unifier.types.arrow(mn, nm);
-        self.bind("@tensor_transpose", t);
+        self.bind(StrId::intern("@tensor_transpose"), t);
         }
         // `@tensor_slice : [n]a -> Int -> Int -> [k]a`: an O(1) VIEW over `[lo, hi)` of
         // the leading axis. The result size `k` is a runtime value, so it is a fresh
@@ -1189,8 +1186,7 @@ impl<'a> Checker<'a> {
             let v = self.unifier.fresh_generic();
             let src = tensor_type(&self.unifier.types, v, n, a);
             let out = tensor_type(&self.unifier.types, v, k, a);
-            self.bind(
-                "@tensor_slice",
+            self.bind(StrId::intern("@tensor_slice"),
                 self.unifier.types.arrow(src, self.unifier.types.arrow(int, self.unifier.types.arrow(int, out))),
             );
         }
@@ -1201,8 +1197,8 @@ impl<'a> Checker<'a> {
 
 /// A global `$` definition, extracted from the program for dependency analysis.
 #[derive(Clone)]
-struct Def<'a> {
-    name: &'a str,
+struct Def {
+    name: StrId,
     name_span: Option<Span>,
     sig: Option<Aol<Ty>>,
     /// The context parameter's type when the signature declares one. It is also
@@ -1213,10 +1209,10 @@ struct Def<'a> {
 
 /// Build the reference graph over globals: `graph[i]` lists the definitions that
 /// definition `i` refers to.
-fn dependency_graph<'a>(
-    ast: &'a Ast,
-    defs: &[Def<'a>],
-    index: &HashMap<&'a str, usize>,
+fn dependency_graph(
+    ast: &Ast,
+    defs: &[Def],
+    index: &HashMap<StrId, usize>,
 ) -> Vec<Vec<usize>> {
     defs.iter()
         .map(|def| {
@@ -1232,17 +1228,16 @@ fn dependency_graph<'a>(
 
 /// Collect the indices of global definitions referenced by `e`, skipping any
 /// reference that a local binder in `bound` shadows.
-fn free_globals<'a>(
-    ast: &'a Ast,
+fn free_globals(
+    ast: &Ast,
     e: Aol<Expr>,
-    globals: &HashMap<&'a str, usize>,
-    bound: &mut Vec<&'a str>,
+    globals: &HashMap<StrId, usize>,
+    bound: &mut Vec<StrId>,
     out: &mut Vec<usize>,
 ) {
     match ast.expr(e) {
         Expr::Var { module: None, name } => {
-            let name = ast.text(*name);
-            if !bound.contains(&name) {
+            if !bound.contains(name) {
                 if let Some(&idx) = globals.get(name) {
                     out.push(idx);
                 }
@@ -1356,14 +1351,14 @@ fn free_globals<'a>(
             if let Some(h) = handler {
                 for clause in ast.slice(h.clauses).iter() {
                     let mark = bound.len();
-                    bound.push(ast.text(clause.arg));
-                    bound.push(ast.text(h.continuation));
+                    bound.push(clause.arg);
+                    bound.push(h.continuation);
                     free_globals(ast, clause.body, globals, bound, out);
                     bound.truncate(mark);
                 }
                 if let Some((name, value_body)) = &h.value {
                     let mark = bound.len();
-                    bound.push(ast.text(*name));
+                    bound.push(*name);
                     free_globals(ast, *value_body, globals, bound, out);
                     bound.truncate(mark);
                 }
@@ -1378,11 +1373,11 @@ fn free_globals<'a>(
     }
 }
 
-fn free_globals_field_inits<'a>(
-    ast: &'a Ast,
+fn free_globals_field_inits(
+    ast: &Ast,
     fields: &[FieldInit],
-    globals: &HashMap<&'a str, usize>,
-    bound: &mut Vec<&'a str>,
+    globals: &HashMap<StrId, usize>,
+    bound: &mut Vec<StrId>,
     out: &mut Vec<usize>,
 ) {
     for f in fields {
@@ -1394,9 +1389,9 @@ fn free_globals_field_inits<'a>(
 }
 
 /// Push every name a pattern binds onto `bound`.
-fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<&'a str>) {
+fn collect_pattern_binders(ast: &Ast, pat: Aol<Pattern>, bound: &mut Vec<StrId>) {
     match ast.pat(pat) {
-        Pattern::Var(name) => bound.push(ast.text(*name)),
+        Pattern::Var(name) => bound.push(*name),
         Pattern::List(elems) => ast
             .slice(*elems)
             .iter()
@@ -1417,7 +1412,7 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                 match f {
                     FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
                     FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
-                    FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
+                    FieldPat::Shorthand(name) => bound.push(*name),
                 }
             }
         }
@@ -1426,7 +1421,7 @@ fn collect_pattern_binders<'a>(ast: &'a Ast, pat: Aol<Pattern>, bound: &mut Vec<
                 match f {
                     FieldPat::Named { pat, .. } => collect_pattern_binders(ast, *pat, bound),
                     FieldPat::Positional(pat) => collect_pattern_binders(ast, *pat, bound),
-                    FieldPat::Shorthand(name) => bound.push(ast.text(*name)),
+                    FieldPat::Shorthand(name) => bound.push(*name),
                 }
             }
             if let Some(r) = rest {

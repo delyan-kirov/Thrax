@@ -1,22 +1,14 @@
-use std::sync::Arc;
-
 use super::super::data::{Alt, AltKind, Atom, IrExpr, ResumeUse};
 use super::resume_use;
 use crate::ir::lower;
-use crate::core::{CoreProgram, Term};
+use crate::core::{CoreProgram, Term, Terms};
+use utilities::{Aol, StrId};
 use crate::passes::de_bruijn::assign_de_bruijn_indices;
 
-fn caf(name: &str, body: Term) -> CoreProgram {
-    let mut p = CoreProgram {
-        module: "M".into(),
-        effects: Vec::new(),
-        globals: vec![(name.into(), body)],
-        crepr_layouts: Vec::new(),
-        ct_runs: Vec::new(),
-        ct_build: None,
-        ct_evals: Vec::new(),
-        ct_types: Vec::new(),
-    };
+fn caf(name: &str, build: impl FnOnce(&mut Terms) -> Aol<Term>) -> CoreProgram {
+    let mut p = CoreProgram::new(StrId::intern("M"));
+    let body = build(&mut p.terms);
+    p.globals.push((StrId::intern(name), body));
     assign_de_bruijn_indices(&mut p);
     p
 }
@@ -26,13 +18,10 @@ fn caf(name: &str, body: Term) -> CoreProgram {
 /// the parameter's last use, so it moves out.
 #[test]
 fn identity_lifts_a_code() {
-    let core = caf(
-        "id",
-        Term::Lam {
-            param: "x".into(),
-            body: Arc::new(Term::var("x")),
-        },
-    );
+    let core = caf("id", |t| {
+        let x = t.var("x");
+        t.lam(StrId::intern("x"), x)
+    });
     let ir = lower(&core);
     assert_eq!(ir.codes.len(), 2);
     let (_, caf_idx) = ir.globals[0];
@@ -50,16 +39,11 @@ fn identity_lifts_a_code() {
 /// Both are last uses, so both move.
 #[test]
 fn nested_lambda_captures_free_var() {
-    let core = caf(
-        "k",
-        Term::Lam {
-            param: "x".into(),
-            body: Arc::new(Term::Lam {
-                param: "y".into(),
-                body: Arc::new(Term::var("x")),
-            }),
-        },
-    );
+    let core = caf("k", |t| {
+        let x = t.var("x");
+        let inner = t.lam(StrId::intern("y"), x);
+        t.lam(StrId::intern("x"), inner)
+    });
     let ir = lower(&core);
     // Find the inner code: the one whose body reads an Env. Its own parameter `y`
     // is never read, so it is dropped on entry.

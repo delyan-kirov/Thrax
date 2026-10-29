@@ -28,5 +28,5 @@ pub mod target;
 pub use cabi::{CField, CKind, CLayout, ExternArg};
 pub use error::{Applicability, Aside, Code, Diagnostic, Edit, Help, Label, Line, Result, Severity, Span};
 pub use json::Json;
-pub use handle::{Aol, Interner, SecondaryMap, Slice, Store, StrId};
+pub use handle::{Aol, SecondaryMap, Slice, Store, StrId};
 pub use target::{musl_specs, musl_toolchain, toolchain, Arch, Libc, Os, Target, Toolchain};

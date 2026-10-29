@@ -14,8 +14,13 @@
 //! shallow, so an [`IrExpr::Case`] alternative matches one constructor or
 //! literal and binds its payload positionally.
 //!
+//! Every name in the IR (a global, a constructor, a field, an effect
+//! operation) is a [`StrId`].
+//!
 //! This module also holds the one table of built-in operations ([`BUILTINS`])
 //! that both engines read, and a small traversal over [`IrExpr`].
+
+use utilities::StrId;
 
 /// A trivial value-expression: no evaluation step to name it.
 #[derive(Clone, Debug)]
@@ -40,7 +45,7 @@ pub enum Atom {
     /// `IR::Glob` (one mangled string), so the runtime resolves everything by
     /// name (see `machine::glob`), rather than carrying a separate module.
     Glob {
-        name: String,
+        name: StrId,
     },
     LitI(i64),
     LitR(f64),
@@ -61,11 +66,11 @@ pub enum Atom {
     /// flattened into positional arguments at the call site during lowering, so it
     /// never reaches here.
     Extern {
-        abi: String,
-        symbol: String,
-        lib: String,
-        arg_types: Vec<String>,
-        ret_type: String,
+        abi: StrId,
+        symbol: StrId,
+        lib: StrId,
+        arg_types: Vec<StrId>,
+        ret_type: StrId,
     },
 }
 
@@ -77,7 +82,7 @@ pub enum Atom {
 pub struct Alt {
     pub kind: AltKind,
     pub binder_base: usize,
-    pub binders: Vec<Option<String>>,
+    pub binders: Vec<Option<StrId>>,
     pub body: IrExpr,
 }
 
@@ -87,7 +92,7 @@ pub enum AltKind {
     Int(i64),
     Real(f64),
     Bool(bool),
-    Con(String),
+    Con(StrId),
 }
 
 /// One handler clause: its operation (optionally effect-qualified) and the
@@ -95,8 +100,8 @@ pub enum AltKind {
 /// argument is `Local 0`, the continuation is `Local 1`).
 #[derive(Clone, Debug)]
 pub struct HandleClause {
-    pub effect: Option<String>,
-    pub op: String,
+    pub effect: Option<StrId>,
+    pub op: StrId,
     pub fun: Atom,
     pub resume: ResumeUse,
 }
@@ -158,19 +163,19 @@ pub enum IrExpr {
         default: Box<IrExpr>,
     },
     MkStruct {
-        name: String,
+        name: StrId,
         /// A record-update base whose fields seed the value before the listed
         /// overrides (the Rust Core's `Base.{ ... }`).
         base: Option<Atom>,
-        fields: Vec<(String, Atom)>,
+        fields: Vec<(StrId, Atom)>,
     },
     Field {
         rec: Atom,
-        name: String,
+        name: StrId,
     },
     MkVariant {
-        ty: String,
-        tag: String,
+        ty: StrId,
+        tag: StrId,
         fields: Vec<Atom>,
     },
     MkTuple(Vec<Atom>),
@@ -209,15 +214,15 @@ pub struct Code {
     pub nparams: usize,
     pub nlocals: usize,
     pub body: IrExpr,
-    pub name: String,
+    pub name: StrId,
 }
 
 /// One declared effect operation (carried through for the machine's operation
 /// resolution).
 #[derive(Clone, Debug)]
 pub struct IrEffect {
-    pub effect: String,
-    pub op: String,
+    pub effect: StrId,
+    pub op: StrId,
 }
 
 /// The whole program: a pool of code blocks, the global table (name -> the
@@ -225,11 +230,11 @@ pub struct IrEffect {
 #[derive(Clone, Debug, Default)]
 pub struct IrProgram {
     pub codes: Vec<Code>,
-    pub globals: Vec<(String, usize)>,
+    pub globals: Vec<(StrId, usize)>,
     pub effects: Vec<IrEffect>,
     /// C memory layouts of C-repr structs, keyed by type name. The machine uses
     /// them to marshal a struct value across the `@extern` boundary by value.
-    pub crepr_layouts: Vec<(String, utilities::CLayout)>,
+    pub crepr_layouts: Vec<(StrId, utilities::CLayout)>,
 }
 
 // ## Traversal

@@ -10,8 +10,8 @@
 //! parallel to the De-Bruijn stack) to the IR atom that reads it in THIS function,
 //! and hands out activation slots stack-disciplined so independent scopes reuse
 //! them (`nlocals` is the high-water mark). `collect_free` walks a lifted body
-//! with the SAME binder discipline the indexer used, so a De-Bruijn index maps
-//! back to an enclosing-scope position.
+//! with the SAME binder discipline the indexer used, so a De-Bruijn index (read
+//! from [`CoreProgram::de_bruijn`]) maps back to an enclosing-scope position.
 //!
 //! Input: a Core program after the [`crate::passes`]. Output: the IR's codes
 //! and globals, before [`super::ownership`] marks moves and drops.
@@ -21,15 +21,17 @@
 use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 
+use utilities::{Aol, StrId};
+
 use super::data::{self, builtin_arity, Alt, AltKind, Atom, Code, IrExpr, HandleClause, ResumeUse};
-use crate::core::{CoreClause, CoreHandler, Pat, CoreProgram, Term};
+use crate::core::{CoreArm, CoreClause, CoreHandler, Pat, CoreProgram, Term};
 
 /// Closure-convert a Core program (already match-compiled, A-normal, and De
 /// Bruijn indexed) into the IR.
 pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
-    let mut conv = ClosureConverter { codes: Vec::new() };
+    let mut conv = ClosureConverter { core, codes: Vec::new() };
     let mut globals = Vec::new();
-    for (name, term) in &core.globals {
+    for &(name, term) in &core.globals {
         let mut ctx = FunctionScope::new();
         let body = conv.expr(term, &mut ctx, true);
         let id = conv.codes.len();
@@ -37,12 +39,12 @@ pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
             nparams: 0,
             nlocals: ctx.nlocals,
             body,
-            name: name.clone(),
+            name,
         });
-        globals.push((name.clone(), id));
+        globals.push((name, id));
     }
     let mut codes = conv.codes;
-    let names: HashSet<&str> = globals.iter().map(|(n, _)| n.as_str()).collect();
+    let names: HashSet<StrId> = globals.iter().map(|(n, _)| *n).collect();
     for code in &mut codes {
         let body = std::mem::replace(&mut code.body, IrExpr::Fault(String::new()));
         code.body = sink_partials(body, &names);
@@ -54,8 +56,8 @@ pub fn convert_closures(core: &CoreProgram) -> data::IrProgram {
             .effects
             .iter()
             .map(|e| data::IrEffect {
-                effect: e.effect.clone(),
-                op: e.op.clone(),
+                effect: e.effect,
+                op: e.op,
             })
             .collect(),
         crepr_layouts: core.crepr_layouts.clone(),
@@ -100,46 +102,58 @@ impl FunctionScope {
     }
 }
 
-/// Collect the enclosing-scope positions (`< m`) that a lifted body references,
-/// so the lifted function captures exactly its free variables. `depth` counts the
-/// binders introduced INSIDE the lifted construct; a Var at De-Bruijn index `i`
-/// resolves to outer position `(m + depth) - i`, free iff `< m`. The binder
-/// discipline must match [`crate::passes::de_bruijn`].
-fn collect_free(t: &Term, m: usize, depth: usize, out: &mut BTreeSet<usize>) {
-    if let Term::Var { module, idx, .. } = t {
-        if module.is_none() && *idx >= 1 {
-            let pos = (m + depth) as isize - *idx as isize;
-            if pos >= 0 && (pos as usize) < m {
-                out.insert(pos as usize);
-            }
-        }
-        return;
-    }
-    t.for_each_child(&mut |child, bound| collect_free(child, m, depth + bound.len(), out));
-}
-
-struct ClosureConverter {
+struct ClosureConverter<'c> {
+    core: &'c CoreProgram,
     codes: Vec<Code>,
 }
 
-impl ClosureConverter {
+impl<'c> ClosureConverter<'c> {
+    fn node(&self, t: Aol<Term>) -> &'c Term {
+        self.core.terms.get(t)
+    }
+
+    /// The De Bruijn index of a variable occurrence (`0` for a global).
+    fn index(&self, var: Aol<Term>) -> usize {
+        self.core.de_bruijn.get(var).copied().unwrap_or(0)
+    }
+
+    /// Collect the enclosing-scope positions (`< m`) that a lifted body references,
+    /// so the lifted function captures exactly its free variables. `depth` counts the
+    /// binders introduced INSIDE the lifted construct; a Var at De-Bruijn index `i`
+    /// resolves to outer position `(m + depth) - i`, free iff `< m`. The binder
+    /// discipline must match [`crate::passes::de_bruijn`].
+    fn collect_free(&self, t: Aol<Term>, m: usize, depth: usize, out: &mut BTreeSet<usize>) {
+        if let Term::Var { module, .. } = self.node(t) {
+            let idx = self.index(t);
+            if module.is_none() && idx >= 1 {
+                let pos = (m + depth) as isize - idx as isize;
+                if pos >= 0 && (pos as usize) < m {
+                    out.insert(pos as usize);
+                }
+            }
+            return;
+        }
+        self.core.terms.for_each_child(t, &mut |child, bound| self.collect_free(child, m, depth + bound.len(), out));
+    }
+
     /// Convert a Core atom (Var / literal / lambda).
-    fn atom(&mut self, t: &Term, ctx: &mut FunctionScope) -> data::Atom {
-        match t {
+    fn atom(&mut self, t: Aol<Term>, ctx: &mut FunctionScope) -> data::Atom {
+        match self.node(t) {
             Term::Int(n) => data::Atom::LitI(*n),
             Term::Real(r) => data::Atom::LitR(*r),
-            Term::Str(s) => data::Atom::LitS(s.clone()),
+            Term::Str(s) => data::Atom::LitS(s.bytes().to_vec()),
             Term::Bool(b) => data::Atom::LitB(*b),
             Term::Unit => data::Atom::Unit,
-            Term::Var { module, name, idx } => {
-                if module.is_some() || *idx == 0 {
+            Term::Var { module, name } => {
+                let idx = self.index(t);
+                if module.is_some() || idx == 0 {
                     // Canonicalize to a single name: a
                     // qualified reference becomes `Module.name`; an unqualified one
                     // stays bare (a builtin, an ambient operation, or an
                     // own-module global resolved by the runtime's bare fallback).
                     let name = match module {
-                        Some(m) => format!("{m}.{name}"),
-                        None => name.clone(),
+                        Some(m) => StrId::intern(&format!("{m}.{name}")),
+                        None => *name,
                     };
                     data::Atom::Glob { name }
                 } else {
@@ -148,7 +162,7 @@ impl ClosureConverter {
                         .expect("a non-captured enclosing binder was referenced")
                 }
             }
-            Term::Lam { param, body } => self.lift(body, 1, &[param.clone()], ctx),
+            Term::Lam { param, body } => self.lift(*body, 1, &[*param], ctx),
             Term::Extern {
                 abi,
                 symbol,
@@ -156,11 +170,11 @@ impl ClosureConverter {
                 arg_types,
                 ret_type,
             } => data::Atom::Extern {
-                abi: abi.clone(),
-                symbol: symbol.clone(),
-                lib: lib.clone(),
-                arg_types: arg_types.to_vec(),
-                ret_type: ret_type.clone(),
+                abi: *abi,
+                symbol: *symbol,
+                lib: *lib,
+                arg_types: arg_types.clone(),
+                ret_type: *ret_type,
             },
             _ => unreachable!("non-atomic CoreProgram term in atom position (ANF violation)"),
         }
@@ -170,14 +184,30 @@ impl ClosureConverter {
     /// into a fresh `Code`, capturing its free enclosing binders, and return the
     /// closure that builds it. Shared by lambdas (1 param), handler clauses (2:
     /// argument, continuation), the value clause (1), and `defer` thunks (0).
-    fn lift(&mut self, body: &Term, nparams: usize, params: &[String], outer: &mut FunctionScope) -> data::Atom {
+    fn lift(&mut self, body: Aol<Term>, nparams: usize, params: &[StrId], outer: &mut FunctionScope) -> data::Atom {
         let m = outer.scope.len();
         let mut free = BTreeSet::new();
-        collect_free(body, m, nparams, &mut free);
+        self.collect_free(body, m, nparams, &mut free);
 
+        let (captures, mut inner) = Self::enter(&free, m, nparams, outer);
+        let cbody = self.expr(body, &mut inner, true);
+        let id = self.codes.len();
+        self.codes.push(Code {
+            nparams,
+            nlocals: inner.nlocals,
+            body: cbody,
+            name: params.last().copied().unwrap_or_else(|| StrId::intern("%thunk")),
+        });
+        data::Atom::Clos { code: id, captures }
+    }
+
+    /// The captures of a lifted body with free enclosing positions `free`, and
+    /// the scope it starts in: those positions read from its environment, and its
+    /// `nparams` parameters in the first local slots.
+    fn enter(free: &BTreeSet<usize>, m: usize, nparams: usize, outer: &FunctionScope) -> (Vec<data::Atom>, FunctionScope) {
         let mut captures = Vec::new();
         let mut env_of: HashMap<usize, usize> = HashMap::new();
-        for pos in &free {
+        for pos in free {
             env_of.insert(*pos, captures.len());
             captures.push(
                 outer.scope[*pos]
@@ -193,25 +223,16 @@ impl ClosureConverter {
                 *slot = Some(data::Atom::Env(e));
             }
         }
-        for (i, _) in params.iter().enumerate() {
+        for i in 0..nparams {
             inner.scope[m + i] = Some(data::Atom::Local(i));
         }
         inner.next_local = nparams;
         inner.nlocals = nparams;
-
-        let cbody = self.expr(body, &mut inner, true);
-        let id = self.codes.len();
-        self.codes.push(Code {
-            nparams,
-            nlocals: inner.nlocals,
-            body: cbody,
-            name: params.last().cloned().unwrap_or_else(|| "%thunk".into()),
-        });
-        data::Atom::Clos { code: id, captures }
+        (captures, inner)
     }
 
-    fn expr(&mut self, t: &Term, ctx: &mut FunctionScope, tail: bool) -> IrExpr {
-        match t {
+    fn expr(&mut self, t: Aol<Term>, ctx: &mut FunctionScope, tail: bool) -> IrExpr {
+        match self.node(t) {
             Term::Int(_)
             | Term::Real(_)
             | Term::Str(_)
@@ -224,14 +245,15 @@ impl ClosureConverter {
             Term::Fault(s) => IrExpr::Fault(s.clone()),
 
             Term::App(f, x) => IrExpr::App {
-                fun: self.atom(f, ctx),
-                arg: self.atom(x, ctx),
+                fun: self.atom(*f, ctx),
+                arg: self.atom(*x, ctx),
                 tail,
             },
 
             Term::Let { rec, val, body, .. } => {
+                let (rec, val, body) = (*rec, *val, *body);
                 let slot = ctx.alloc_local();
-                if *rec {
+                if rec {
                     ctx.scope.push(Some(data::Atom::Local(slot)));
                     let rhs = self.expr(val, ctx, false);
                     let b = self.expr(body, ctx, tail);
@@ -261,6 +283,7 @@ impl ClosureConverter {
                 arms,
                 default,
             } => {
+                let (scrut, default) = (*scrut, *default);
                 let scrut_atom = self.atom(scrut, ctx);
                 let alts = arms.iter().map(|a| self.alt(a, ctx)).collect();
                 let default = match default {
@@ -275,28 +298,37 @@ impl ClosureConverter {
             }
 
             Term::Tuple(fields) => {
-                IrExpr::MkTuple(fields.iter().map(|f| self.atom(f, ctx)).collect())
+                IrExpr::MkTuple(fields.iter().map(|f| self.atom(*f, ctx)).collect())
             }
 
-            Term::Struct { name, base, fields } => IrExpr::MkStruct {
-                name: name.clone(),
-                base: base.as_ref().map(|b| self.atom(b, ctx)),
-                fields: fields
-                    .iter()
-                    .map(|(n, v)| (n.clone(), self.atom(v, ctx)))
-                    .collect(),
-            },
+            Term::Struct { name, base, fields } => {
+                let (name, base) = (*name, *base);
+                IrExpr::MkStruct {
+                    name,
+                    base: base.map(|b| self.atom(b, ctx)),
+                    fields: fields
+                        .iter()
+                        .map(|(n, v)| (*n, self.atom(*v, ctx)))
+                        .collect(),
+                }
+            }
 
-            Term::Variant { ty, tag, fields } => self.variant(ty, tag, fields, ctx),
+            Term::Variant { ty, tag, fields } => {
+                self.variant(*ty, *tag, fields, ctx)
+            }
 
-            Term::Field(rec, name) => IrExpr::Field {
-                rec: self.atom(rec, ctx),
-                name: name.clone(),
-            },
+            Term::Field(rec, name) => {
+                let (rec, name) = (*rec, *name);
+                IrExpr::Field {
+                    rec: self.atom(rec, ctx),
+                    name,
+                }
+            }
 
-            Term::Handle { body, handler } => self.handle(body, handler, ctx),
+            Term::Handle { body, handler } => self.handle(*body, handler, ctx),
 
             Term::Defer { cleanup, body } => {
+                let (cleanup, body) = (*cleanup, *body);
                 let cl = self.lift(cleanup, 0, &[], ctx);
                 let b = self.expr(body, ctx, tail);
                 IrExpr::Defer {
@@ -309,17 +341,17 @@ impl ClosureConverter {
 
     /// Convert a shallow case alternative, binding its payload to fresh local
     /// slots `[binder_base ..)`.
-    fn alt(&mut self, arm: &crate::core::CoreArm, ctx: &mut FunctionScope) -> Alt {
-        let (kind, binder_names): (AltKind, Vec<Option<String>>) = match &arm.pat {
+    fn alt(&mut self, arm: &CoreArm, ctx: &mut FunctionScope) -> Alt {
+        let (kind, binder_names): (AltKind, Vec<Option<StrId>>) = match &arm.pat {
             Pat::Int(k) => (AltKind::Int(*k), Vec::new()),
             Pat::Real(r) => (AltKind::Real(*r), Vec::new()),
             Pat::Bool(b) => (AltKind::Bool(*b), Vec::new()),
             Pat::Variant { tag, fields } => (
-                AltKind::Con(tag.clone()),
+                AltKind::Con(*tag),
                 fields
                     .iter()
                     .map(|p| match p {
-                        Pat::Var(n) => Some(n.clone()),
+                        Pat::Var(n) => Some(*n),
                         Pat::Wild => None,
                         _ => unreachable!("non-shallow variant field after match compilation"),
                     })
@@ -333,7 +365,7 @@ impl ClosureConverter {
             let slot = ctx.alloc_local();
             ctx.scope.push(Some(data::Atom::Local(slot)));
         }
-        let body = self.expr(&arm.body, ctx, true);
+        let body = self.expr(arm.body, ctx, true);
         for _ in &binder_names {
             ctx.scope.pop();
             ctx.free_local();
@@ -349,11 +381,11 @@ impl ClosureConverter {
     /// Convert a variant construction. A computed field is hoisted into a `let`,
     /// its slot reserved before the field converts so a nested hoist gets a
     /// distinct slot. See Note [Constructor fields stay inline in ANF].
-    fn variant(&mut self, ty: &str, tag: &str, fields: &[Term], ctx: &mut FunctionScope) -> IrExpr {
+    fn variant(&mut self, ty: StrId, tag: StrId, fields: &[Aol<Term>], ctx: &mut FunctionScope) -> IrExpr {
         let mut atoms = Vec::new();
         let mut lets: Vec<(usize, IrExpr)> = Vec::new();
-        for f in fields {
-            if f.is_atom() {
+        for &f in fields {
+            if self.core.terms.is_atom(f) {
                 atoms.push(self.atom(f, ctx));
             } else {
                 let slot = ctx.alloc_local();
@@ -363,8 +395,8 @@ impl ClosureConverter {
             }
         }
         let mut res = IrExpr::MkVariant {
-            ty: ty.to_string(),
-            tag: tag.to_string(),
+            ty,
+            tag,
             fields: atoms,
         };
         for (slot, rhs) in lets.iter().rev() {
@@ -380,7 +412,7 @@ impl ClosureConverter {
         res
     }
 
-    fn handle(&mut self, body: &Term, handler: &CoreHandler, ctx: &mut FunctionScope) -> IrExpr {
+    fn handle(&mut self, body: Aol<Term>, handler: &CoreHandler, ctx: &mut FunctionScope) -> IrExpr {
         let high_water = ctx.nlocals;
         ctx.nlocals = ctx.next_local;
         let body_e = self.expr(body, ctx, true);
@@ -390,20 +422,11 @@ impl ClosureConverter {
         let clauses = handler
             .clauses
             .iter()
-            .map(|c| self.clause(c, &handler.continuation, ctx))
+            .map(|c| self.clause(c, handler.continuation, ctx))
             .collect();
-        let els = match &handler.default {
-            Some((x, b)) => self.lift(b, 1, &[x.clone()], ctx),
-            None => {
-                // The identity value clause `\x = x`: its body is a reference to
-                // the sole parameter (De-Bruijn index 1).
-                let x = Term::Var {
-                    module: None,
-                    name: "%x".into(),
-                    idx: 1,
-                };
-                self.lift(&x, 1, &["%x".into()], ctx)
-            }
+        let els = match handler.default {
+            Some((x, b)) => self.lift(b, 1, &[x], ctx),
+            None => self.identity(ctx),
         };
         IrExpr::Handle {
             body: Box::new(body_e),
@@ -412,17 +435,31 @@ impl ClosureConverter {
         }
     }
 
+    /// The identity value clause `\x = x`, lifted: its body reads the sole
+    /// parameter, and it captures nothing.
+    fn identity(&mut self, ctx: &mut FunctionScope) -> data::Atom {
+        let (captures, inner) = Self::enter(&BTreeSet::new(), ctx.scope.len(), 1, ctx);
+        let id = self.codes.len();
+        self.codes.push(Code {
+            nparams: 1,
+            nlocals: inner.nlocals,
+            body: IrExpr::Ret(data::Atom::Local(0)),
+            name: StrId::intern("%x"),
+        });
+        data::Atom::Clos { code: id, captures }
+    }
+
     /// A handler clause `\arg = \k = body` becomes a single 2-parameter code: the
     /// operation argument is `Local 0`, the continuation `Local 1`.
-    fn clause(&mut self, c: &CoreClause, continuation: &str, ctx: &mut FunctionScope) -> HandleClause {
-        let fun = self.lift(&c.body, 2, &[c.arg.clone(), continuation.to_string()], ctx);
+    fn clause(&mut self, c: &CoreClause, continuation: StrId, ctx: &mut FunctionScope) -> HandleClause {
+        let fun = self.lift(c.body, 2, &[c.arg, continuation], ctx);
         let resume = match &fun {
             Atom::Clos { code, .. } => resume_use(&self.codes[*code].body),
             _ => ResumeUse::Captured,
         };
         HandleClause {
-            effect: c.effect.clone(),
-            op: c.op.clone(),
+            effect: c.effect,
+            op: c.op,
             fun,
             resume,
         }
@@ -435,7 +472,7 @@ impl ClosureConverter {
 /// a backend can run as one direct call. Applying a built-in to fewer operands
 /// than its arity does nothing but collect them, so the move changes no
 /// behaviour, and `x`'s slots stay bound across the body it moves through.
-fn sink_partials(e: IrExpr, globals: &HashSet<&str>) -> IrExpr {
+fn sink_partials(e: IrExpr, globals: &HashSet<StrId>) -> IrExpr {
     match e {
         IrExpr::Let { slot, rhs, body } => {
             let rhs = sink_partials(*rhs, globals);
@@ -444,7 +481,7 @@ fn sink_partials(e: IrExpr, globals: &HashSet<&str>) -> IrExpr {
                 IrExpr::App {
                     fun: Atom::Glob { name },
                     ..
-                } => !globals.contains(name.as_str()) && builtin_arity(name).is_some_and(|n| n >= 2),
+                } => !globals.contains(name) && builtin_arity(name.as_str()).is_some_and(|n| n >= 2),
                 _ => false,
             };
             if partial {

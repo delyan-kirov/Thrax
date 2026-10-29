@@ -17,7 +17,7 @@
 //! [`Unifier::unify`] dispatches here for rows and records.
 
 
-use utilities::{Code, Diagnostic, Result, Span};
+use utilities::{Code, Diagnostic, Result, Span, StrId};
 
 use super::Unifier;
 use crate::typing::types::{Type, TypeNode, VarId};
@@ -28,14 +28,14 @@ use crate::typing::types::{Type, TypeNode, VarId};
 impl Unifier {
     /// Register the structs' record-row schemes for the nominal-struct / record-row
     /// unification bridge (see the `struct_rows` map).
-    pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<String, (Vec<VarId>, Type)>) {
+    pub fn set_struct_rows(&mut self, rows: std::collections::HashMap<StrId, (Vec<VarId>, Type)>) {
         self.struct_rows = rows;
     }
 
     /// Look up field `label` in a record type, growing an open tail to include it.
-    pub fn record_field(&mut self, record: Type, label: &str, where_: &str) -> Result<Type> {
+    pub fn record_field(&mut self, record: Type, label: impl Into<StrId>, where_: &str) -> Result<Type> {
         match self.head(record) {
-            TypeNode::Record(row) => Ok(self.rewrite_field(row, label, where_)?.0),
+            TypeNode::Record(row) => Ok(self.rewrite_field(row, label.into(), where_)?.0),
             _ => Ok(self.fresh()),
         }
     }
@@ -76,7 +76,6 @@ impl Unifier {
                     cur = head;
                 }
                 TypeNode::Con(name) => {
-                    let name = self.types.name(name).to_string();
                     let (params, row) = self.struct_rows.get(&name)?.clone();
                     args.reverse();
                     let mut sub = std::collections::HashMap::new();
@@ -159,16 +158,12 @@ impl Unifier {
             (TypeNode::Var(i), _) => self.bind(i, b),
             (_, TypeNode::Var(j)) => self.bind(j, a),
             (TypeNode::RowField(label, fty, a_rest), _) => {
-                let label = self.types.name(label).to_string();
-                let (b_fty, b_rest) = self.rewrite_field(b, &label, where_)?;
+                let (b_fty, b_rest) = self.rewrite_field(b, label, where_)?;
                 self.unify(fty, b_fty, where_)?;
                 self.unify_record_row(a_rest, b_rest, where_)
             }
             // The other side ran out of fields but this one still wants `label`.
-            (TypeNode::RowEmpty, TypeNode::RowField(label, ..)) => {
-                let label = self.types.name(label).to_string();
-                Err(self.field_missing(&label, where_))
-            }
+            (TypeNode::RowEmpty, TypeNode::RowField(label, ..)) => Err(self.field_missing(label, where_)),
             _ => Err(self.mismatch(a, b, where_)),
         }
     }
@@ -176,10 +171,10 @@ impl Unifier {
     /// Bring an occurrence of field `label` to the head of record `row`, returning
     /// its field type and the remaining row. An open tail grows to include the
     /// field (fresh field type); a closed row lacking it is a type error.
-    pub(super) fn rewrite_field(&mut self, row: Type, label: &str, where_: &str) -> Result<(Type, Type)> {
+    pub(super) fn rewrite_field(&mut self, row: Type, label: StrId, where_: &str) -> Result<(Type, Type)> {
         match self.head(row) {
             TypeNode::RowField(l, fty, rest) => {
-                if self.types.name(l) == label {
+                if l == label {
                     Ok((fty, rest))
                 } else {
                     let (found, deeper) = self.rewrite_field(rest, label, where_)?;
@@ -198,7 +193,7 @@ impl Unifier {
         }
     }
 
-    pub(super) fn field_missing(&self, label: &str, where_: &str) -> Diagnostic {
+    pub(super) fn field_missing(&self, label: StrId, where_: &str) -> Diagnostic {
         Diagnostic::error(
             Code::TypeMismatch,
             Span::at(0),
@@ -224,13 +219,12 @@ impl Unifier {
         let TypeNode::RowExtend(label, a_args, a_rest) = self.types.node(a) else {
             unreachable!("unify_row without a row extension")
         };
-        let label = self.types.name(label).to_string();
         let outermost = self.performed.is_none();
         if outermost {
             self.performed = Some(self.row_labels(a));
         }
         let r = self
-            .rewrite_row(b, &label, a_args, where_)
+            .rewrite_row(b, label, a_args, where_)
             .and_then(|b_rest| self.unify(a_rest, b_rest, where_));
         if outermost {
             self.performed = None;
@@ -242,10 +236,10 @@ impl Unifier {
     /// arguments with `args`, and return the row that remains once it is
     /// removed. An open tail (a row variable) grows to accept the label. A closed
     /// row lacking the label is the unhandled-effect error.
-    pub(super) fn rewrite_row(&mut self, row: Type, label: &str, args: Type, where_: &str) -> Result<Type> {
+    pub(super) fn rewrite_row(&mut self, row: Type, label: StrId, args: Type, where_: &str) -> Result<Type> {
         match self.head(row) {
             TypeNode::RowExtend(l, l_args, rest) => {
-                if self.types.name(l) == label {
+                if l == label {
                     self.unify_effect_args(label, args, l_args, where_)?;
                     Ok(rest)
                 } else {
@@ -277,8 +271,7 @@ impl Unifier {
             TypeNode::RowEmpty => Ok(()),
             TypeNode::Var(_) => self.unify(sub, super_, where_),
             TypeNode::RowExtend(label, args, rest) => {
-                let label = self.types.name(label).to_string();
-                let super_rest = self.rewrite_row(super_, &label, args, where_)?;
+                let super_rest = self.rewrite_row(super_, label, args, where_)?;
                 self.subrow_go(rest, super_rest, where_)
             }
             _ => self.unify(sub, super_, where_),
@@ -286,11 +279,11 @@ impl Unifier {
     }
 
     /// The labels of a row, in order, up to its tail.
-    pub(super) fn row_labels(&self, row: Type) -> Vec<String> {
+    pub(super) fn row_labels(&self, row: Type) -> Vec<StrId> {
         let mut labels = Vec::new();
         let mut cur = row;
         while let TypeNode::RowExtend(label, _, rest) = self.head(cur) {
-            labels.push(self.types.name(label));
+            labels.push(label);
             cur = rest;
         }
         labels
@@ -299,7 +292,7 @@ impl Unifier {
     /// Unify the type arguments of two occurrences of one effect label. Unknown
     /// arguments (`RowEmpty`, a label written where its effect is not visible)
     /// match any.
-    pub(super) fn unify_effect_args(&mut self, label: &str, a: Type, b: Type, where_: &str) -> Result<()> {
+    pub(super) fn unify_effect_args(&mut self, label: StrId, a: Type, b: Type, where_: &str) -> Result<()> {
         let (a, b) = (self.resolve(a), self.resolve(b));
         if matches!(self.types.node(a), TypeNode::RowEmpty)
             || matches!(self.types.node(b), TypeNode::RowEmpty)
@@ -333,10 +326,11 @@ impl Unifier {
         }
     }
 
-    pub(super) fn effect_not_handled(&self, label: &str, where_: &str) -> Diagnostic {
+    pub(super) fn effect_not_handled(&self, label: StrId, where_: &str) -> Diagnostic {
         let part_of = self.performed.as_ref().and_then(|performed| {
             self.row_folds.iter().find(|(_, members)| {
-                members.iter().any(|m| m == label) && members.iter().all(|m| performed.contains(m))
+                members.iter().any(|m| label == m.as_str())
+                    && members.iter().all(|m| performed.iter().any(|p| *p == m.as_str()))
             })
         });
         let effect = match part_of {

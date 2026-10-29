@@ -216,7 +216,8 @@ impl<'p> Machine<'p> {
         let mut globals = HashMap::new();
         let mut bare = HashMap::new();
         for (name, code) in &prog.globals {
-            globals.entry(name.clone()).or_insert(*code);
+            let name = name.as_str();
+            globals.entry(name.to_string()).or_insert(*code);
             let last = name.rsplit('.').next().unwrap_or(name);
             bare.entry(last.to_string()).or_insert(*code);
         }
@@ -224,13 +225,13 @@ impl<'p> Machine<'p> {
         let mut ops_by_name: HashMap<String, Vec<String>> = HashMap::new();
         for e in &prog.effects {
             ops_by_effect
-                .entry(e.effect.clone())
+                .entry(e.effect.to_string())
                 .or_default()
-                .push(e.op.clone());
+                .push(e.op.to_string());
             ops_by_name
-                .entry(e.op.clone())
+                .entry(e.op.to_string())
                 .or_default()
-                .push(e.effect.clone());
+                .push(e.effect.to_string());
         }
         for effects in ops_by_name.values_mut() {
             effects.sort();
@@ -525,7 +526,7 @@ impl<'p> Machine<'p> {
                 .get_mut(*i)
                 .map(|field| std::mem::replace(field, self.unk.clone()))
                 .ok_or_else(|| fault("machine: env index out of range")),
-            Atom::Glob { name } => self.glob(name),
+            Atom::Glob { name } => self.glob(name.as_str()),
             Atom::LitI(n) => Ok(mk(Value::Int(*n))),
             Atom::LitR(r) => Ok(mk(Value::Real(*r))),
             Atom::LitS(s) => Ok(mk(Value::Str(Rc::new(s.clone())))),
@@ -548,7 +549,7 @@ impl<'p> Machine<'p> {
                 abi: Rc::from(abi.as_str()),
                 symbol: Rc::from(symbol.as_str()),
                 lib: Rc::from(lib.as_str()),
-                arg_types: Rc::from(arg_types.as_slice()),
+                arg_types: arg_types.iter().map(|t| t.to_string()).collect(),
                 ret_type: Rc::from(ret_type.as_str()),
                 args: Vec::new(),
             })),
@@ -719,7 +720,7 @@ impl<'p> Machine<'p> {
                                 (AltKind::Int(k), Value::Int(v)) => v == k,
                                 (AltKind::Real(r), Value::Real(v)) => v == r,
                                 (AltKind::Bool(x), Value::Bool(v)) => v == x,
-                                (AltKind::Con(c), Value::Variant { tag, .. }) => tag == c,
+                                (AltKind::Con(c), Value::Variant { tag, .. }) => *c == tag.as_str(),
                                 _ => false,
                             }
                         };
@@ -757,15 +758,15 @@ impl<'p> Machine<'p> {
                     };
                     for (fname, fa) in fields {
                         let fv = deref(self.eval_atom(fa, &ex.frame)?);
-                        match out.iter_mut().find(|(n, _)| n == fname) {
+                        match out.iter_mut().find(|(n, _)| *fname == n.as_str()) {
                             Some(slot) => slot.1 = fv,
-                            None => out.push((fname.clone(), fv)),
+                            None => out.push((fname.to_string(), fv)),
                         }
                     }
-                    let sname = if name.is_empty() {
+                    let sname = if name.bytes().is_empty() {
                         base_name
                     } else {
-                        name.clone()
+                        name.to_string()
                     };
                     let v = mk(Value::Struct {
                         name: sname,
@@ -783,10 +784,10 @@ impl<'p> Machine<'p> {
                         match &*b {
                             Value::Struct { fields, .. } => fields
                                 .iter()
-                                .find(|(n, _)| n == name)
+                                .find(|(n, _)| *name == n.as_str())
                                 .map(|(_, v)| v.clone()),
                             Value::Tuple(items) => {
-                                name.parse::<usize>().ok().and_then(|i| items.get(i).cloned())
+                                name.as_str().parse::<usize>().ok().and_then(|i| items.get(i).cloned())
                             }
                             _ => None,
                         }
@@ -803,8 +804,8 @@ impl<'p> Machine<'p> {
                         fs.push(deref(self.eval_atom(a, &ex.frame)?));
                     }
                     let v = mk(Value::Variant {
-                        ty: ty.clone(),
-                        tag: tag.clone(),
+                        ty: ty.to_string(),
+                        tag: tag.to_string(),
                         fields: fs,
                     });
                     if let Some(r) = ex.ret(self, v)? {
@@ -833,8 +834,8 @@ impl<'p> Machine<'p> {
                         let fun = deref(self.eval_atom(&c.fun, &ex.frame)?);
                         hclauses.push(HClause {
                             resume: c.resume,
-                            effect: c.effect.clone(),
-                            op: c.op.clone(),
+                            effect: c.effect.map(|e| e.to_string()),
+                            op: c.op.to_string(),
                             fun,
                         });
                     }
@@ -1334,7 +1335,7 @@ const RENDER_FORCE_BUDGET: usize = 64;
 pub fn eval(prog: &IrProgram, name: &str) -> Result<String> {
     // Install the program's C-repr struct layouts so the `@extern` seam can
     // marshal struct values by value.
-    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let shown = (|| {
         let m = Machine::new(prog);
         let v = m.eval_global(name)?;
@@ -1353,7 +1354,7 @@ pub fn eval(prog: &IrProgram, name: &str) -> Result<String> {
 /// rendering to a string), so a caller can inspect it, e.g. a compile-time
 /// `$ @e` whose `@Code` result the driver splices.
 pub fn eval_value<'p>(prog: &'p IrProgram, name: &str) -> Result<PVal<'p>> {
-    let outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let m = Machine::new(prog);
     let v = m.eval_global(name).and_then(|v| m.finish_tasks().map(|_| v));
     ffi::set_layouts(outer);
@@ -1554,7 +1555,7 @@ pub(crate) fn type_lookup(name: &str) -> Result<TypeInfo> {
 /// Run the program entry (`@main`): apply it to `argv` as a `@Vec @Str` and
 /// return its `@Int` result as the process exit code.
 pub fn run_entry(prog: &IrProgram, name: &str, argv: Vec<String>) -> Result<i64> {
-    let _outer = ffi::set_layouts(prog.crepr_layouts.iter().cloned().collect());
+    let _outer = ffi::set_layouts(prog.crepr_layouts.iter().map(|(n, l)| (n.to_string(), l.clone())).collect());
     let m = Machine::new(prog);
     let f = m.eval_global(name)?;
     let args: Vec<PVal> = argv

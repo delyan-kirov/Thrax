@@ -16,31 +16,32 @@
 
 use std::collections::HashMap;
 
-use crate::core::{CoreProgram, Term};
+use utilities::{Aol, StrId};
+
+use crate::core::{CoreProgram, Term, Terms};
 
 /// `(global name, field) -> (primitive, arity)` for every eta-expanded primitive
 /// method of a global struct literal.
-type Prims = HashMap<(String, String), (String, usize)>;
+type Prims = HashMap<(StrId, StrId), (StrId, usize)>;
 
 pub fn fold_primitive_methods(program: &mut CoreProgram) {
     let prims = collect(program);
     if prims.is_empty() {
         return;
     }
-    for (_, term) in program.globals.iter_mut() {
-        *term = rewrite(term, &prims);
-    }
+    program.rewrite_globals(|terms, term| rewrite(terms, term, &prims));
 }
 
 fn collect(program: &CoreProgram) -> Prims {
+    let terms = &program.terms;
     let mut out = Prims::new();
-    for (name, term) in &program.globals {
-        let Term::Struct { base: None, fields, .. } = term else {
+    for &(name, term) in &program.globals {
+        let Term::Struct { base: None, fields, .. } = terms.get(term) else {
             continue;
         };
-        for (field, body) in fields.iter() {
-            if let Some(found) = eta_primitive(body) {
-                out.insert((name.clone(), field.clone()), found);
+        for &(field, body) in fields {
+            if let Some(found) = eta_primitive(terms, body) {
+                out.insert((name, field), found);
             }
         }
     }
@@ -49,72 +50,73 @@ fn collect(program: &CoreProgram) -> Prims {
 
 /// The primitive and arity of `\p1 .. pn = @prim p1 .. pn`, else `None`. The
 /// parameters must be distinct and appear exactly once each, in order.
-fn eta_primitive(term: &Term) -> Option<(String, usize)> {
-    let mut params: Vec<&str> = Vec::new();
+fn eta_primitive(terms: &Terms, term: Aol<Term>) -> Option<(StrId, usize)> {
+    let mut params: Vec<StrId> = Vec::new();
     let mut cur = term;
-    while let Term::Lam { param, body } = cur {
-        params.push(param);
-        cur = body;
+    while let Term::Lam { param, body } = terms.get(cur) {
+        params.push(*param);
+        cur = *body;
     }
     if params.is_empty() {
         return None;
     }
-    let mut args: Vec<&Term> = Vec::new();
-    while let Term::App(f, x) = cur {
-        args.push(x);
-        cur = f;
+    let mut args: Vec<Aol<Term>> = Vec::new();
+    while let Term::App(f, x) = terms.get(cur) {
+        args.push(*x);
+        cur = *f;
     }
     args.reverse();
-    let Term::Var { module: None, name, .. } = cur else {
+    let Term::Var { module: None, name } = terms.get(cur) else {
         return None;
     };
     // Only an `@`-sigil intrinsic: those are runtime builtins resolved by bare
     // name everywhere, so moving the reference to another module is sound.
-    if !name.starts_with('@') || args.len() != params.len() {
+    if !name.as_str().starts_with('@') || args.len() != params.len() {
         return None;
     }
     for (arg, want) in args.iter().zip(&params) {
-        match arg {
-            Term::Var { module: None, name, .. } if name == want => {}
+        match terms.get(*arg) {
+            Term::Var { module: None, name } if name == want => {}
             _ => return None,
         }
     }
-    Some((name.clone(), params.len()))
+    Some((*name, params.len()))
 }
 
 /// The primitive a saturated application of `term` to `argc` arguments folds to.
-fn folded_head(term: &Term, argc: usize, prims: &Prims) -> Option<String> {
-    let Term::Field(record, field) = term else {
+fn folded_head(terms: &Terms, term: Aol<Term>, argc: usize, prims: &Prims) -> Option<StrId> {
+    let Term::Field(record, field) = terms.get(term) else {
         return None;
     };
-    let Term::Var { module: Some(m), name, .. } = &**record else {
+    let Term::Var { module: Some(m), name } = terms.get(*record) else {
         return None;
     };
-    let (prim, arity) = prims.get(&(format!("{m}.{name}"), field.clone()))?;
-    (*arity == argc).then(|| prim.clone())
+    let global = StrId::intern(&format!("{m}.{name}"));
+    let (prim, arity) = prims.get(&(global, *field))?;
+    (*arity == argc).then_some(*prim)
 }
 
-fn rewrite(term: &Term, prims: &Prims) -> Term {
+fn rewrite(terms: &mut Terms, term: Aol<Term>, prims: &Prims) -> Aol<Term> {
     // Peel the application spine first: the fold needs the argument count.
-    if matches!(term, Term::App(..)) {
-        let mut args: Vec<&Term> = Vec::new();
+    if matches!(terms.get(term), Term::App(..)) {
+        let mut args: Vec<Aol<Term>> = Vec::new();
         let mut head = term;
-        while let Term::App(f, x) = head {
-            args.push(x);
-            head = f;
+        while let Term::App(f, x) = terms.get(head) {
+            args.push(*x);
+            head = *f;
         }
         args.reverse();
-        let folded = folded_head(head, args.len(), prims);
-        let mut out = match &folded {
-            Some(prim) => Term::var(prim.clone()),
-            None => rewrite(head, prims),
+        let mut out = match folded_head(terms, head, args.len(), prims) {
+            Some(prim) => terms.var(prim),
+            None => rewrite(terms, head, prims),
         };
         for a in args {
-            out = Term::app(out, rewrite(a, prims));
+            let a = rewrite(terms, a, prims);
+            out = terms.app(out, a);
         }
         return out;
     }
-    term.map_children(&mut |child, _| rewrite(child, prims))
+    terms.map_children(term, &mut |terms, child, _| rewrite(terms, child, prims))
 }
 
 #[cfg(test)]

@@ -44,12 +44,22 @@ fn secondary_map_annotates_by_handle() {
 
 #[test]
 fn interner_dedups() {
-    let mut i = Interner::new();
-    let a = i.intern("hello");
-    let b = i.intern("hello");
-    let c = i.intern("world");
+    let a = StrId::intern("hello");
+    let b = StrId::intern("hello");
+    let c = StrId::intern("world");
     assert_eq!(a, b);
     assert_ne!(a, c);
-    assert_eq!(i.resolve(a), "hello");
-    assert_eq!(i.resolve(c), "world");
+    assert_eq!(a.as_str(), "hello");
+    assert_eq!(c.as_str(), "world");
+}
+
+#[test]
+fn interner_keeps_text_across_chunks() {
+    let big = "x".repeat(super::CHUNK_MAX + 1);
+    let ids: Vec<StrId> = (0..2000).map(|n| StrId::intern(&format!("chunk-{n}"))).collect();
+    let long = StrId::intern(&big);
+    for (n, id) in ids.iter().enumerate() {
+        assert_eq!(id.as_str(), format!("chunk-{n}"));
+    }
+    assert_eq!(long.as_str(), big);
 }

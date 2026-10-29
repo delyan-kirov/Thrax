@@ -28,7 +28,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Unify a definition's variable with the type its signature exposes.
-    pub(super) fn bind_signature(&mut self, def: &Def<'a>, decl: Type) -> Result<()> {
+    pub(super) fn bind_signature(&mut self, def: &Def, decl: Type) -> Result<()> {
         let Some(sig) = def.sig else {
             return Ok(());
         };
@@ -44,7 +44,7 @@ impl<'a> Checker<'a> {
     /// Check a definition's body. For a signed one, also hand back the
     /// variables its signature names, for [`Self::check_sig_vars_rigid`] once the
     /// component is solved.
-    pub(super) fn check_def_body(&mut self, def: &Def<'a>, decl: Type) -> Result<Option<SigVars<'a>>> {
+    pub(super) fn check_def_body(&mut self, def: &Def, decl: Type) -> Result<Option<SigVars>> {
         self.ambient = self.top_level_ambient();
         if let Some(sig) = def.sig {
             let mut tvars = HashMap::new();
@@ -75,7 +75,7 @@ impl<'a> Checker<'a> {
             let vars = sites
                 .into_iter()
                 .filter(|(name, _)| !tails.contains(name))
-                .filter_map(|(name, span)| tvars.get(name).map(|&ty| (name, span, ty)))
+                .filter_map(|(name, span)| tvars.get(&name).map(|&ty| (name, span, ty)))
                 .collect();
             Ok(Some(SigVars { def: def.name, vars }))
         } else {
@@ -93,8 +93,8 @@ impl<'a> Checker<'a> {
     /// leave each one a variable of its own: one the body fixed to a type, or
     /// merged with another, makes the signature claim more than the definition
     /// gives (#270).
-    pub(super) fn check_sig_vars_rigid(&mut self, sig: &SigVars<'a>) -> Result<()> {
-        let mut seen: Vec<(VarId, &'a str)> = Vec::new();
+    pub(super) fn check_sig_vars_rigid(&mut self, sig: &SigVars) -> Result<()> {
+        let mut seen: Vec<(VarId, StrId)> = Vec::new();
         for &(name, span, ty) in &sig.vars {
             let zonked = self.unifier.zonk(ty);
             match self.unifier.types.node(zonked) {
@@ -186,10 +186,10 @@ impl<'a> Checker<'a> {
         // look each field up by name in its row.
         let recfields = self.record_fields_of(param_ty)?;
         for f in fields {
-            let name = self.text(f.name);
+            let name = f.name;
             let t = recfields
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| *n == name)
                 .map(|(_, t)| *t)
                 .unwrap_or_else(|| self.unifier.fresh());
             self.bind(name, t);
@@ -203,16 +203,16 @@ impl<'a> Checker<'a> {
     /// Bring the struct's fields into scope, returning their names in declaration
     /// order (empty if `ty` is not a known struct). Lowering keys the `with`
     /// desugaring off these names.
-    pub(super) fn scope_struct_fields(&mut self, ty: Type) -> Result<Vec<String>> {
+    pub(super) fn scope_struct_fields(&mut self, ty: Type) -> Result<Vec<StrId>> {
         let (head, args) = self.spine(ty);
         let mut names = Vec::new();
         if let TypeNode::Con(name) = self.unifier.types.node(head) {
-            if let Some(info) = self.structs.get(self.unifier.types.name(name).as_str()).cloned() {
+            if let Some(info) = self.structs.get(&name).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.unifier);
                 for (fname, fty) in &info.fields {
                     let field_ty = self.ty_of_ast(*fty, &mut subst);
-                    self.bind(fname, field_ty);
-                    names.push(fname.to_string());
+                    self.bind(*fname, field_ty);
+                    names.push(*fname);
                 }
             }
         }
@@ -365,7 +365,7 @@ impl<'a> Checker<'a> {
                 let (ty, spread) = (*ty, *spread);
                 let fields = self.ast.slice(*fields);
                 let save = self.unifier.save();
-                let name = ty.map(|t| self.text(t)).or_else(|| self.struct_name_of(expected));
+                let name = ty.or_else(|| self.struct_name_of(expected));
                 let direct = self
                     .infer_struct_lit(e, name, fields, spread, Some(expected))
                     .and_then(|got| {
@@ -383,7 +383,7 @@ impl<'a> Checker<'a> {
                     return Err(err);
                 }
                 self.unifier.restore(save);
-                let got = self.infer_struct_lit(e, ty.map(|t| self.text(t)), fields, spread, None)?;
+                let got = self.infer_struct_lit(e, ty, fields, spread, None)?;
                 self.promote_to_record(e, &[got], expected).map_err(|_| err)
             }
             // A branch does not produce a value of its own, so the expectation
@@ -438,10 +438,10 @@ impl<'a> Checker<'a> {
             // a constructor name shared by several unions resolves unambiguously.
             Expr::Variant { module: None, ty: None, tag, fields }
                 if self
-                    .union_head_with_tag(expected, self.text(*tag))
+                    .union_head_with_tag(expected, *tag)
                     .is_some() =>
             {
-                let tag = self.text(*tag);
+                let tag = *tag;
                 let uname = self
                     .union_head_with_tag(expected, tag)
                     .expect("guarded above");
@@ -472,13 +472,13 @@ impl<'a> Checker<'a> {
             // ambiguity here is deferred like any other, so an expected type that is
             // still an unpinned variable is settled once inference constrains it.
             Expr::Var { module: None, name }
-                if self.overloads.contains_key(self.text(*name))
-                    && self.lookup(self.text(*name)).is_none()
-                    && !self.shadowed_locally(self.text(*name)) =>
+                if self.overloads.contains_key(name)
+                    && self.lookup(*name).is_none()
+                    && !self.shadowed_locally(*name) =>
             {
-                let name = self.text(*name);
-                let cands = self.overloads.get(name).cloned().expect("guarded above");
-                let got = self.resolve_overload(name, &cands, &[], Some(e))?;
+                let name = *name;
+                let cands = self.overloads.get(&name).cloned().expect("guarded above");
+                let got = self.resolve_overload(name.as_str(), &cands, &[], Some(e))?;
                 self.unifier.unify_expected(got, expected, "against the expected type")
             }
             _ => {
@@ -552,7 +552,7 @@ impl<'a> Checker<'a> {
         matches!(
             self.unifier.head(ty),
             TypeNode::Con(name)
-                if matches!(self.unifier.types.name(name).as_str(), "@Float64" | "@Float32")
+                if matches!(self.unifier.types.name(name), "@Float64" | "@Float32")
         )
     }
 
@@ -560,7 +560,7 @@ impl<'a> Checker<'a> {
     /// reinterprets between these; float and non-numeric types are rejected.
     pub(super) fn is_int_scalar(&self, ty: Type) -> bool {
         matches!(self.unifier.head(ty),
-            TypeNode::Con(name) if matches!(self.unifier.types.name(name).as_str(),
+            TypeNode::Con(name) if matches!(self.unifier.types.name(name),
                 "@Int" | "@Nat"
                     | "@Int8" | "@Int16" | "@Int32" | "@Int64"
                     | "@Nat8" | "@Nat16" | "@Nat32" | "@Nat64"))
@@ -568,7 +568,7 @@ impl<'a> Checker<'a> {
 
     /// Whether `f` is the `@cast` intrinsic in head position.
     pub(super) fn is_cast_head(&self, f: Aol<Expr>) -> bool {
-        matches!(self.node(f), Expr::Var { module: None, name } if self.text(*name) == "@cast")
+        matches!(self.node(f), Expr::Var { module: None, name } if *name == "@cast")
     }
 
     /// Check `@cast x` against the expected integer type. Both engines hold every
@@ -658,8 +658,8 @@ impl<'a> Checker<'a> {
             Expr::Unit => Ok(self.unifier.types.con(ty::UNIT)),
 
             Expr::Var { module, name } => {
-                let module = module.map(|m| self.text(m));
-                let name = self.text(*name);
+                let module = module.map(|m| m);
+                let name = *name;
                 self.infer_var(module, name, e)
             }
 
@@ -672,8 +672,8 @@ impl<'a> Checker<'a> {
             }
 
             Expr::BinOp { op, lhs, rhs } => {
-                let (op, lhs, rhs) = (self.text(*op), *lhs, *rhs);
-                match op {
+                let (op, lhs, rhs) = (*op, *lhs, *rhs);
+                match op.as_str() {
                     "<|" if self.is_meta_e(lhs) => return self.infer_meta_e(rhs),
                     "|>" if self.is_meta_e(rhs) => return self.infer_meta_e(lhs),
                     _ => {}
@@ -684,10 +684,10 @@ impl<'a> Checker<'a> {
                 // the other's type rather than inferred on its own: that is what
                 // lets a literal reach its type-directed construction hook, as in
                 // `3.4 + 1.2i`, where the real literal is built as a `Cpx`.
-                let ctx_sig = self.global_ctx.get(op).copied();
+                let ctx_sig = self.global_ctx.get(&op).copied();
                 if let Some(sig) = ctx_sig {
                     let (req, exposed) = self.ctx_use_type(sig);
-                    self.plan_ctx(e, op, req)?;
+                    self.plan_ctx(e, op.as_str(), req)?;
                     let owner = self.owner_of(op);
                     self.record_call(Some(e), owner);
                     // Take the operand types from the OPERATOR's signature rather
@@ -745,7 +745,7 @@ impl<'a> Checker<'a> {
             }
 
             Expr::UnOp { op, operand } => {
-                let (op, operand) = (self.text(*op), *operand);
+                let (op, operand) = (*op, *operand);
                 let t = self.infer(operand)?;
                 // `-128` is `neg 128`: range-check the literal as the value it denotes.
                 if op == "neg" && matches!(self.node(operand), Expr::Int(_)) {
@@ -755,10 +755,10 @@ impl<'a> Checker<'a> {
                         lit.2 = span.unwrap_or(lit.2);
                     }
                 }
-                let op_ty = match self.global_ctx.get(op).copied() {
+                let op_ty = match self.global_ctx.get(&op).copied() {
                     Some(sig) => {
                         let (req, exposed) = self.ctx_use_type(sig);
-                        self.plan_ctx(e, op, req)?;
+                        self.plan_ctx(e, op.as_str(), req)?;
                         let owner = self.owner_of(op);
                         self.record_call(Some(e), owner);
                         exposed
@@ -895,12 +895,12 @@ impl<'a> Checker<'a> {
             }
 
             Expr::Field { record, name } => {
-                let (record, name) = (*record, self.text(*name));
+                let (record, name) = (*record, *name);
                 let rec_ty = self.infer(record)?;
                 self.infer_field(rec_ty, name)
             }
             Expr::StructLit { ty, fields, spread } => {
-                let (ty, fields, spread) = (ty.map(|t| self.text(t)), self.ast.slice(*fields), *spread);
+                let (ty, fields, spread) = (ty.map(|t| t), self.ast.slice(*fields), *spread);
                 self.infer_struct_lit(e, ty, fields, spread, None)
             }
             Expr::Record {
@@ -914,8 +914,8 @@ impl<'a> Checker<'a> {
             Expr::Variant {
                 module, ty, tag, fields,
             } => {
-                let ty = ty.map(|t| self.text(t));
-                let tag = self.text(*tag);
+                let ty = ty.map(|t| t);
+                let tag = *tag;
                 if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
                     let span = self.ast.expr_span(e).unwrap_or(Span::at(0));
                     return Err(d.fill_span(span));
@@ -1028,20 +1028,20 @@ impl<'a> Checker<'a> {
         // Each handled effect gets one instance of its type parameters, shared
         // by every clause and every operation the body performs on it.
         let mut inner = self.ambient;
-        let mut instances: HashMap<String, Type> = HashMap::new();
+        let mut instances: HashMap<StrId, Type> = HashMap::new();
         for clause in self.ast.slice(handler.clauses).iter() {
-            let effect = clause.effect.map(|e| self.text(e));
-            let op = self.text(clause.op);
+            let effect = clause.effect;
+            let op = clause.op;
             if let Some(eff_name) = self.op_owner(effect, op) {
                 if !instances.contains_key(&eff_name) {
-                    let n = self.effect_arity.get(eff_name.as_str()).copied().unwrap_or(0);
+                    let n = self.effect_arity.get(&eff_name).copied().unwrap_or(0);
                     let args = if n == 0 {
                         self.unifier.types.row_empty()
                     } else {
                         let vars: Vec<Type> = (0..n).map(|_| self.unifier.fresh()).collect();
                         self.unifier.types.tuple(vars)
                     };
-                    inner = self.unifier.types.row_extend_args(&eff_name, args, inner);
+                    inner = self.unifier.types.row_extend_args(eff_name, args, inner);
                     instances.insert(eff_name, args);
                 }
             }
@@ -1052,8 +1052,8 @@ impl<'a> Checker<'a> {
         let body_ty = body_ty?;
 
         for clause in self.ast.slice(handler.clauses).iter() {
-            let effect = clause.effect.map(|e| self.text(e));
-            let op = self.text(clause.op);
+            let effect = clause.effect;
+            let op = clause.op;
             let owner = self.op_owner(effect, op);
             let shown = match &owner {
                 Some(o) => format!("{o}.{op}"),
@@ -1076,12 +1076,12 @@ impl<'a> Checker<'a> {
                 None => (self.unifier.fresh(), self.unifier.fresh()),
             };
             self.enter_scope();
-            self.bind(self.text(clause.arg), arg_ty);
+            self.bind(clause.arg, arg_ty);
             // Deep handler: resuming continues the computation under the outer
             // ambient, so `k : Res -[amb]-> R`.
             let amb = self.ambient;
             let k_ty = self.unifier.types.arrow_eff(res_ty, result, amb);
-            self.bind(self.text(handler.continuation), k_ty);
+            self.bind(handler.continuation, k_ty);
             let cb = self.infer(clause.body).map_err(|d| {
                 if !d.root().msg.contains(&format!(" of `{shown}`")) {
                     return d;
@@ -1101,7 +1101,7 @@ impl<'a> Checker<'a> {
         match &handler.value {
             Some((name, value_body)) => {
                 self.enter_scope();
-                self.bind(self.text(*name), body_ty);
+                self.bind(*name, body_ty);
                 let vb = self.infer(*value_body)?;
                 self.unifier.unify(vb, result, "in a handler value arm")?;
                 self.leave_scope();
@@ -1258,8 +1258,8 @@ impl<'a> Checker<'a> {
         }
 
         if let Expr::Var { module: None, name } = self.node(head) {
-            let name = self.text(*name);
-            if is_blessed_interface(name) {
+            let name = *name;
+            if is_blessed_interface(name.as_str()) {
                 return self.infer_blessed_app(head, name, &args);
             }
         }
@@ -1268,14 +1268,14 @@ impl<'a> Checker<'a> {
         // argument types to pick one (`ask {}` under a `<Reader>` ambient); nothing
         // else dispatches by argument type any more.
         if let Expr::Var { module: None, name } = self.node(head) {
-            let name = self.text(*name);
+            let name = *name;
             if !self.shadowed_locally(name) {
-                if let Some(cands) = self.overloads.get(name).cloned() {
+                if let Some(cands) = self.overloads.get(&name).cloned() {
                     let arg_tys = args
                         .iter()
                         .map(|a| self.infer(*a))
                         .collect::<Result<Vec<_>>>()?;
-                    return self.resolve_overload(name, &cands, &arg_tys, Some(head));
+                    return self.resolve_overload(name.as_str(), &cands, &arg_tys, Some(head));
                 }
             }
         }
@@ -1361,7 +1361,7 @@ impl<'a> Checker<'a> {
         self.unifier.enter_level();
         let declared = match self.pnode(b.pat) {
             Pattern::Var(name) => {
-                let name = self.text(*name);
+                let name = *name;
                 let v = self.unifier.fresh();
                 self.bind(name, v);
                 Some(v)
@@ -1403,8 +1403,8 @@ impl<'a> Checker<'a> {
 impl<'a> Checker<'a> {
     pub(super) fn infer_var(
         &mut self,
-        module: Option<&'a str>,
-        name: &'a str,
+        module: Option<StrId>,
+        name: StrId,
         site: Aol<Expr>,
     ) -> Result<Type> {
         if module.is_none() && name == crate::lexer::HOLE {
@@ -1417,10 +1417,10 @@ impl<'a> Checker<'a> {
         // method of the instance the compiler resolves here (`.[i]` emits `@IIndex`,
         // `1.2i` emits `@IImagLit`). Resolution is deferred like any other context, so
         // the surrounding types pin the instance before the search runs.
-        if module.is_none() && is_blessed_interface(name) {
-            let arity = self.structs.get(name).map(|i| i.params.len()).unwrap_or(0);
+        if module.is_none() && is_blessed_interface(name.as_str()) {
+            let arity = self.structs.get(&name).map(|i| i.params.len()).unwrap_or(0);
             let args: Vec<Type> = (0..arity).map(|_| self.unifier.fresh()).collect();
-            let Some((req, field, field_ty)) = self.blessed_req(name, &args) else {
+            let Some((req, field, field_ty)) = self.blessed_req(name.as_str(), &args) else {
                 let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
                 return Err(diag!(
                     Code::TypeUnbound, span, 0,
@@ -1429,12 +1429,12 @@ impl<'a> Checker<'a> {
                            CORE declares it as a one-field `@struct`"
                 ));
             };
-            self.plan_ctx(site, name, req)?;
+            self.plan_ctx(site, name.as_str(), req)?;
             self.blessed_sites.insert(site, field);
             return Ok(field_ty);
         }
         if let Some(m) = module {
-            if self.imported_private.get(m).is_some_and(|s| s.contains(name)) {
+            if self.imported_private.get(&m).is_some_and(|s| s.contains(&name)) {
                 let span = self.ast.expr_span(site).unwrap_or_else(|| Span::at(0));
                 return Err(diag!(
                     Code::TypeUnbound, span, 0,
@@ -1446,7 +1446,7 @@ impl<'a> Checker<'a> {
             // than staying an under-applied function.
             if let Some(sig) = self.qualified_ctx.get(&(m, name)).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name, req)?;
+                self.plan_ctx(site, name.as_str(), req)?;
                 return Ok(exposed);
             }
             return match self.qualified_candidates(m, name) {
@@ -1464,10 +1464,10 @@ impl<'a> Checker<'a> {
         // A local definition resolves to this module; a single imported value to
         // its owner. Skip names an inner binder shadows, and overloaded names
         // (resolved instead at the application site).
-        if !self.shadowed_locally(name) && !self.overloads.contains_key(name) {
-            if self.local_defs.contains(name) {
+        if !self.shadowed_locally(name) && !self.overloads.contains_key(&name) {
+            if self.local_defs.contains(&name) {
                 self.resolved_calls.insert(site, self.module_name);
-            } else if let Some(m) = self.value_module.get(name).copied() {
+            } else if let Some(m) = self.value_module.get(&name).copied() {
                 self.resolved_calls.insert(site, m);
             }
         }
@@ -1476,16 +1476,16 @@ impl<'a> Checker<'a> {
         // variable map and plan the context. The returned type is the plain arrow, so
         // callers apply only the explicit parameters.
         if !self.shadowed_locally(name) {
-            if let Some(sig) = self.global_ctx.get(name).copied() {
+            if let Some(sig) = self.global_ctx.get(&name).copied() {
                 let (req, exposed) = self.ctx_use_type(sig);
-                self.plan_ctx(site, name, req)?;
+                self.plan_ctx(site, name.as_str(), req)?;
                 return Ok(exposed);
             }
         }
         // Several imports bring this name in. Global scope is flat, so the bare form
         // names nothing; say which modules have it and let the user qualify.
-        if !self.shadowed_locally(name) && !self.local_defs.contains(name) {
-            if let Some(owners) = self.ambiguous_imports.get(name) {
+        if !self.shadowed_locally(name) && !self.local_defs.contains(&name) {
+            if let Some(owners) = self.ambiguous_imports.get(&name) {
                 let list = owners
                     .iter()
                     .map(|m| format!("`{m}.{name}`"))
@@ -1501,9 +1501,9 @@ impl<'a> Checker<'a> {
         }
         if let Some(scheme) = self.lookup(name) {
             Ok(self.unifier.instantiate(scheme))
-        } else if self.overloads.contains_key(name) {
+        } else if self.overloads.contains_key(&name) {
             Ok(self.unifier.fresh())
-        } else if self.broken.contains(name) {
+        } else if self.broken.contains(&name) {
             Ok(self.unifier.types.error())
         } else if self.lenient {
             // A metaprogram-expansion round: the name may be injected by a
@@ -1517,21 +1517,21 @@ impl<'a> Checker<'a> {
 
     /// The module that owns a bare global name, so lowering emits a qualified
     /// reference instead of a bare one (which the runtime would read as a builtin).
-    pub(super) fn owner_of(&self, name: &str) -> Option<&'a str> {
-        if self.local_defs.contains(name) {
+    pub(super) fn owner_of(&self, name: StrId) -> Option<StrId> {
+        if self.local_defs.contains(&name) {
             return Some(self.module_name);
         }
-        self.value_module.get(name).copied()
+        self.value_module.get(&name).copied()
     }
 
     /// Whether `name` is bound by an inner scope (a lambda/`let`/pattern binder),
     /// as opposed to the global scope where imports and top-level defs live.
-    pub(super) fn shadowed_locally(&self, name: &str) -> bool {
-        self.scopes[1..].iter().any(|s| s.contains_key(name))
+    pub(super) fn shadowed_locally(&self, name: StrId) -> bool {
+        self.scopes[1..].iter().any(|s| s.contains_key(&name))
     }
 
     pub(super) fn is_meta_e(&self, e: Aol<Expr>) -> bool {
-        matches!(self.node(e), Expr::Var { module: None, name } if self.text(*name) == "@e")
+        matches!(self.node(e), Expr::Var { module: None, name } if *name == "@e")
     }
 
     /// `@e X` runs the `@Code`-valued X at compile time and splices the code in
@@ -1573,10 +1573,10 @@ impl<'a> Checker<'a> {
 // ## Records, structs and variants
 
 impl<'a> Checker<'a> {
-    pub(super) fn infer_field(&mut self, rec_ty: Type, field: &str) -> Result<Type> {
+    pub(super) fn infer_field(&mut self, rec_ty: Type, field: StrId) -> Result<Type> {
         let (head, args) = self.spine(rec_ty);
         if let TypeNode::Con(name) = self.unifier.types.node(head) {
-            if let Some(info) = self.structs.get(self.unifier.types.name(name).as_str()).cloned() {
+            if let Some(info) = self.structs.get(&name).cloned() {
                 let mut subst = subst_from_args(&info.params, &args, &mut self.unifier);
                 if let Some((_, ty)) = info.fields.iter().find(|(n, _)| *n == field) {
                     return Ok(self.ty_of_ast(*ty, &mut subst));
@@ -1584,7 +1584,7 @@ impl<'a> Checker<'a> {
             }
         }
         if let TypeNode::Tuple(items) = self.unifier.types.node(head) {
-            if let Ok(idx) = field.parse::<usize>() {
+            if let Ok(idx) = field.as_str().parse::<usize>() {
                 if let Some(t) = self.unifier.types.items(items).get(idx) {
                     return Ok(*t);
                 }
@@ -1605,7 +1605,7 @@ impl<'a> Checker<'a> {
             // field, and nothing here can yet say which, so it stays unconstrained
             // until the type is known some other way. This is the one place a
             // field access still fabricates a type.
-            if field.parse::<usize>().is_ok() {
+            if field.as_str().parse::<usize>().is_ok() {
                 return Ok(self.unifier.fresh());
             }
             let fty = self.unifier.fresh();
@@ -1628,23 +1628,23 @@ impl<'a> Checker<'a> {
     pub(super) fn infer_struct_lit(
         &mut self,
         site: Aol<Expr>,
-        ty: Option<&'a str>,
+        ty: Option<StrId>,
         fields: &'a [FieldInit],
         spread: Option<Aol<Expr>>,
         expected: Option<Type>,
     ) -> Result<Type> {
-        let mut struct_name = ty.unwrap_or("");
+        let mut struct_name = ty.unwrap_or(StrId::intern(""));
         let (info, result, mut subst) = if let Some(base) = spread {
             let base_ty = self.infer(base)?;
             let (head, args) = self.spine(base_ty);
             match self.unifier.types.node(head) {
-                TypeNode::Con(n) if self.structs.contains_key(self.unifier.types.name(n).as_str()) => {
+                TypeNode::Con(n) if self.structs.contains_key(&n) => {
                     let (name, info) = self
                         .structs
-                        .get_key_value(self.unifier.types.name(n).as_str())
+                        .get_key_value(&n)
                         .map(|(k, v)| (*k, v.clone()))
                         .expect("struct present");
-                    self.struct_lit_names.insert(site, name.to_string());
+                    self.struct_lit_names.insert(site, name);
                     let subst = subst_from_args(&info.params, &args, &mut self.unifier);
                     (info, base_ty, subst)
                 }
@@ -1655,12 +1655,12 @@ impl<'a> Checker<'a> {
             }
         } else {
             let resolved = match ty {
-                Some(n) => self.structs.get_key_value(n).map(|(k, v)| (*k, v.clone())),
+                Some(n) => self.structs.get_key_value(&n).map(|(k, v)| (*k, v.clone())),
                 None => self.resolve_struct_by_fields(fields),
             };
             match resolved {
                 Some((name, info)) => {
-                    self.struct_lit_names.insert(site, name.to_string());
+                    self.struct_lit_names.insert(site, name);
                     struct_name = name;
                     let (args, subst) = self.instantiate_params(&info.params);
                     (info, applied(&self.unifier.types, name, &args), subst)
@@ -1704,7 +1704,7 @@ impl<'a> Checker<'a> {
                 // A clause the struct has no slot for is an error: skipping it would
                 // let a literal claim a type whose shape it does not have.
                 FieldInit::Named { name, value } => {
-                    let name = self.text(*name);
+                    let name = *name;
                     match info.fields.iter().position(|(n, _)| *n == name) {
                         Some(slot) => (slot, *value),
                         None => {
@@ -1760,8 +1760,8 @@ impl<'a> Checker<'a> {
 
     pub(super) fn infer_variant(
         &mut self,
-        ty: Option<&'a str>,
-        tag: &'a str,
+        ty: Option<StrId>,
+        tag: StrId,
         fields: &'a [FieldInit],
     ) -> Result<Type> {
         let union = match ty {
@@ -1775,7 +1775,7 @@ impl<'a> Checker<'a> {
         let Some((result, payload)) = resolved else {
             self.infer_field_inits(fields)?;
             return Err(match ty {
-                Some(n) if !self.unions.contains_key(n) => diag!(
+                Some(n) if !self.unions.contains_key(&n) => diag!(
                     Code::TypeMismatch, Span::at(0), 0,
                     "`{n}` is not a union, so it has no constructor `{tag}`"
                 ),
@@ -1795,7 +1795,7 @@ impl<'a> Checker<'a> {
         for (i, fi) in fields.iter().enumerate() {
             let (slot, value) = match fi {
                 FieldInit::Named { name, value } => {
-                    let name = self.text(*name);
+                    let name = *name;
                     match payload.iter().position(|(n, _)| *n == Some(name)) {
                         Some(slot) => (slot, *value),
                         None => {
@@ -1854,7 +1854,7 @@ impl<'a> Checker<'a> {
             match fi {
                 FieldInit::Named { name, value } => {
                     let t = self.infer(*value)?;
-                    explicit.push((self.text(*name).to_string(), t));
+                    explicit.push((name.to_string(), t));
                 }
                 FieldInit::Positional(value) => {
                     self.infer(*value)?;
@@ -1930,7 +1930,7 @@ impl<'a> Checker<'a> {
     pub(super) fn resolve_overload(
         &mut self,
         name: &str,
-        candidates: &[Cand<'a>],
+        candidates: &[Cand],
         args: &[Type],
         site: Option<Aol<Expr>>,
     ) -> Result<Type> {
@@ -1963,7 +1963,7 @@ impl<'a> Checker<'a> {
 
     /// Note that a bare call `site` resolved to `module`, so lowering can qualify
     /// it. A builtin/local candidate (`module` is `None`) needs no annotation.
-    pub(super) fn record_call(&mut self, site: Option<Aol<Expr>>, module: Option<&'a str>) {
+    pub(super) fn record_call(&mut self, site: Option<Aol<Expr>>, module: Option<StrId>) {
         if let (Some(site), Some(module)) = (site, module) {
             self.resolved_calls.insert(site, module);
         }
@@ -1971,7 +1971,7 @@ impl<'a> Checker<'a> {
 
     /// Which candidate the argument types select: exactly one is a match, none is a
     /// miss, several is an ambiguity the caller defers.
-    pub(super) fn match_overload(&mut self, candidates: &[Cand<'a>], args: &[Type], result: Type) -> Match {
+    pub(super) fn match_overload(&mut self, candidates: &[Cand], args: &[Type], result: Type) -> Match {
         let mut matched = None;
         let mut count = 0;
         for (idx, cand) in candidates.iter().enumerate() {
@@ -2025,7 +2025,7 @@ impl<'a> Checker<'a> {
                 continue;
             }
             if let Some(p) = self.pending.first() {
-                let mut mods: Vec<&str> = p.candidates.iter().filter_map(|c| c.module).collect();
+                let mut mods: Vec<&str> = p.candidates.iter().filter_map(|c| c.module).map(|m| m.as_str()).collect();
                 mods.sort_unstable();
                 mods.dedup();
                 let err = diag!(
@@ -2156,10 +2156,10 @@ impl<'a> Checker<'a> {
                     changed = true;
                 }
                 // Pinned to a numeric type by use: fine.
-                TypeNode::Con(name) if is_numeric_type(&self.unifier.types.name(name)) => {}
+                TypeNode::Con(name) if is_numeric_type(self.unifier.types.name(name)) => {}
                 // Pinned to a genuinely UNKNOWN con (a typo'd type): let that type's
                 // own "unknown type" diagnostic surface instead of the numeric error.
-                TypeNode::Con(name) if !self.is_known_type(&self.unifier.types.name(name)) => {}
+                TypeNode::Con(name) if !self.is_known_type(name) => {}
                 // Pinned to a known non-numeric type (e.g. `if 1` wants `@Bool`): a
                 // bare literal is a number, so this is a type error, not a coercion.
                 _ => {
@@ -2206,7 +2206,7 @@ impl<'a> Checker<'a> {
         let TypeNode::Con(name) = self.unifier.head(ty) else {
             return None;
         };
-        Some(match self.unifier.types.name(name).as_str() {
+        Some(match self.unifier.types.name(name) {
             "@Int8" => (true, 8),
             "@Int16" => (true, 16),
             "@Int32" => (true, 32),
@@ -2225,32 +2225,32 @@ impl<'a> Checker<'a> {
 
 /// The variables a definition's signature names, each with the span of its
 /// first occurrence and the type it elaborated to.
-pub(super) struct SigVars<'a> {
-    def: &'a str,
-    vars: Vec<(&'a str, Span, Type)>,
+pub(super) struct SigVars {
+    def: StrId,
+    vars: Vec<(StrId, Span, Type)>,
 }
 
 /// Collect the type variables appearing in `ty`, in order of first appearance.
 /// Every variable a signature names, in order of first occurrence, with the
 /// span of the type it occurs in (the nearest one with a span, falling back to
 /// `outer`). The names of effect-row and record tails go to `tails` instead.
-pub(super) fn sig_var_sites<'a>(
-    ast: &'a Ast,
+pub(super) fn sig_var_sites(
+    ast: &Ast,
     ty: Aol<Ty>,
     outer: Span,
-    out: &mut Vec<(&'a str, Span)>,
-    tails: &mut Vec<&'a str>,
+    out: &mut Vec<(StrId, Span)>,
+    tails: &mut Vec<StrId>,
 ) {
     let span = ast.ty_span(ty).unwrap_or(outer);
-    let row = |row: &EffectRow, out: &mut Vec<(&'a str, Span)>, tails: &mut Vec<&'a str>| {
+    let row = |row: &EffectRow, out: &mut Vec<(StrId, Span)>, tails: &mut Vec<StrId>| {
         for entry in ast.slice(row.entries) {
             ast.slice(entry.args).iter().for_each(|a| sig_var_sites(ast, *a, span, out, tails));
         }
-        tails.extend(row.tail.map(|t| ast.text(t)));
+        tails.extend(row.tail);
     };
     match ast.ty(ty) {
         Ty::Var(name) => {
-            let name = ast.text(*name);
+            let name = *name;
             if !out.iter().any(|(n, _)| *n == name) {
                 out.push((name, span));
             }
@@ -2271,7 +2271,7 @@ pub(super) fn sig_var_sites<'a>(
         }
         Ty::Record { fields, tail } => {
             ast.slice(*fields).iter().for_each(|f| sig_var_sites(ast, f.ty, span, out, tails));
-            tails.extend(tail.map(|t| ast.text(t)));
+            tails.extend(*tail);
         }
         Ty::Sized { size, elem, .. } => {
             sig_var_sites(ast, *size, span, out, tails);
@@ -2285,7 +2285,7 @@ pub(super) fn sig_var_sites<'a>(
 /// Select a payload field's type by name (if named) or by position.
 /// A pattern names a field the type does not declare. `what` is "struct" or
 /// "constructor"; `owner` is its name (`Union.Tag` for a constructor).
-pub(super) fn no_such_field(what: &str, owner: &str, field: &str) -> Diagnostic {
+pub(super) fn no_such_field(what: &str, owner: impl Display, field: impl Display) -> Diagnostic {
     diag!(
         Code::TypeMismatch, Span::at(0), 0,
         "{what} `{owner}` has no field `{field}`"
@@ -2293,7 +2293,7 @@ pub(super) fn no_such_field(what: &str, owner: &str, field: &str) -> Diagnostic 
 }
 
 /// A pattern binds more positional fields than the type has.
-pub(super) fn no_field_at(what: &str, owner: &str, index: usize, n: usize) -> Diagnostic {
+pub(super) fn no_field_at(what: &str, owner: impl Display, index: usize, n: usize) -> Diagnostic {
     diag!(
         Code::TypeMismatch, Span::at(0), 0,
         "{what} `{owner}` has {n} field(s), so there is no field {index}"
@@ -2302,14 +2302,14 @@ pub(super) fn no_field_at(what: &str, owner: &str, index: usize, n: usize) -> Di
 
 /// How a constructor is named in a diagnostic: `Union.Tag` when the union is
 /// known, otherwise the bare tag (a `.Tag` whose union never resolved).
-pub(super) fn variant_label(union: Option<&str>, tag: &str) -> String {
+pub(super) fn variant_label(union: Option<StrId>, tag: StrId) -> String {
     match union {
         Some(u) => format!("{u}.{tag}"),
         None => tag.to_string(),
     }
 }
 
-pub(super) fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, index: usize) -> Option<Type> {
+pub(super) fn variant_field_ty(payload: &VariantPayload, name: Option<StrId>, index: usize) -> Option<Type> {
     match name {
         Some(name) => payload
             .iter()
@@ -2319,7 +2319,7 @@ pub(super) fn variant_field_ty(payload: &VariantPayload, name: Option<&str>, ind
     }
 }
 
-pub(super) fn unbound(name: &str) -> Diagnostic {
+pub(super) fn unbound(name: impl Display) -> Diagnostic {
     diag!(Code::TypeUnbound, Span::at(0), 0, "unbound name `{name}`")
 }
 

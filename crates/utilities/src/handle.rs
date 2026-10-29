@@ -24,6 +24,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 /// Distinguishes stores so a handle carries the identity of its origin. Starts at
 /// 1 so a zero tag is never a valid store (useful as a niche/sentinel).
@@ -277,71 +278,151 @@ impl<T, V> SecondaryMap<T, V> {
     }
 }
 
-/// Identifier of an interned byte string, the handle form of `&str` / `&[u8]`.
-/// An `(offset, len)` pair into an [`Interner`]'s buffer: `offset` and `len` are
-/// indices, not a borrowed slice, so a `StrId` carries no lifetime and the AST it
-/// sits in loses its source lifetime too. The pair slices the buffer directly.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct StrId {
-    offset: usize,
-    len: usize,
+// Note [One process-wide interner]
+//
+// Every name the compiler handles, from the AST through the checker and the
+// Core to the IR, is a `StrId` into one interner that lives as long as the
+// process. One table means a `StrId` means the same text everywhere: a type
+// constructor the checker builds from an AST name reuses the AST's handle, and
+// a backend reads an IR name without being handed a table to read it from.
+//
+// The text is never freed. Interned bytes go into chunks that are leaked, so a
+// lookup returns `&'static str` with no `unsafe`. Interning takes a lock;
+// reading usually does not, since each thread mirrors the append-only table.
+// Nothing is lost by never freeing: a compiler interns a bounded vocabulary,
+// and an editor that rechecks a file on every keystroke interns only the
+// strings it has not seen before.
+
+/// An interned byte string, the handle form of `&str` / `&[u8]`: an index into
+/// the process-wide interner, `Copy` and free of any lifetime. Equal text has
+/// an equal `StrId`. See Note [One process-wide interner].
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StrId(u32);
+
+/// The size of the first chunk; each later chunk doubles, up to [`CHUNK_MAX`].
+const CHUNK_MIN: usize = 4 << 10;
+const CHUNK_MAX: usize = 1 << 20;
+
+#[derive(Default)]
+struct Strings {
+    texts: Vec<&'static [u8]>,
+    dedup: HashMap<&'static [u8], StrId>,
+    /// The unused tail of the current chunk.
+    free: &'static mut [u8],
+    chunk: usize,
 }
 
-/// A string interner: one growable byte buffer plus a dedup index, so equal
-/// identifiers share a single [`StrId`].
-#[derive(Clone, Default)]
-pub struct Interner {
-    buf: Vec<u8>,
-    dedup: HashMap<Box<[u8]>, StrId>,
+static STRINGS: Mutex<Option<Strings>> = Mutex::new(None);
+
+thread_local! {
+    /// This thread's copy of a prefix of `STRINGS.texts`, so reading a `StrId`
+    /// takes the lock only for a string interned since the thread last looked.
+    /// Valid because the table is append-only and its entries are `'static`.
+    static SEEN: std::cell::RefCell<Vec<&'static [u8]>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-impl Interner {
-    pub fn new() -> Interner {
-        Interner::default()
+fn with_strings<R>(f: impl FnOnce(&mut Strings) -> R) -> R {
+    let mut guard = STRINGS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(guard.get_or_insert_with(Strings::default))
+}
+
+impl Strings {
+    fn store(&mut self, bytes: &[u8]) -> &'static [u8] {
+        if bytes.len() > self.free.len() {
+            self.chunk = (self.chunk * 2).clamp(CHUNK_MIN, CHUNK_MAX);
+            self.free = vec![0u8; self.chunk.max(bytes.len())].leak();
+        }
+        let (head, tail) = std::mem::take(&mut self.free).split_at_mut(bytes.len());
+        head.copy_from_slice(bytes);
+        self.free = tail;
+        head
     }
+}
 
-    /// Intern UTF-8 text, returning a handle (deduplicated).
-    pub fn intern(&mut self, s: &str) -> StrId {
-        self.intern_bytes(s.as_bytes())
+impl StrId {
+    /// Intern UTF-8 text, returning its handle (deduplicated).
+    pub fn intern(s: &str) -> StrId {
+        StrId::intern_bytes(s.as_bytes())
     }
 
     /// Intern raw bytes (string literals are byte vectors, not necessarily UTF-8).
-    pub fn intern_bytes(&mut self, bytes: &[u8]) -> StrId {
-        if let Some(&id) = self.dedup.get(bytes) {
-            return id;
+    pub fn intern_bytes(bytes: &[u8]) -> StrId {
+        with_strings(|t| {
+            if let Some(&id) = t.dedup.get(bytes) {
+                return id;
+            }
+            let id = StrId(u32::try_from(t.texts.len()).expect("fewer than 2^32 interned strings"));
+            let stored = t.store(bytes);
+            t.texts.push(stored);
+            t.dedup.insert(stored, id);
+            id
+        })
+    }
+
+    pub fn bytes(self) -> &'static [u8] {
+        let i = self.0 as usize;
+        SEEN.with(|seen| {
+            if let Some(&text) = seen.borrow().get(i) {
+                return text;
+            }
+            let mut seen = seen.borrow_mut();
+            let known = seen.len();
+            with_strings(|t| seen.extend_from_slice(&t.texts[known..]));
+            seen[i]
+        })
+    }
+
+    /// The text. Text interned with [`StrId::intern`] is UTF-8; read raw bytes
+    /// with [`StrId::bytes`].
+    pub fn as_str(self) -> &'static str {
+        std::str::from_utf8(self.bytes()).expect("interned as UTF-8")
+    }
+}
+
+/// Interns the text.
+impl From<&str> for StrId {
+    fn from(s: &str) -> StrId {
+        StrId::intern(s)
+    }
+}
+
+impl From<&String> for StrId {
+    fn from(s: &String) -> StrId {
+        StrId::intern(s)
+    }
+}
+
+impl From<String> for StrId {
+    fn from(s: String) -> StrId {
+        StrId::intern(&s)
+    }
+}
+
+impl PartialEq<str> for StrId {
+    fn eq(&self, other: &str) -> bool {
+        self.bytes() == other.as_bytes()
+    }
+}
+
+impl PartialEq<&str> for StrId {
+    fn eq(&self, other: &&str) -> bool {
+        self.bytes() == other.as_bytes()
+    }
+}
+
+/// Prints as the text it stands for, quoted like a `String`.
+impl fmt::Debug for StrId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match std::str::from_utf8(self.bytes()) {
+            Ok(s) => write!(f, "{s:?}"),
+            Err(_) => write!(f, "{:?}", self.bytes()),
         }
-        let id = StrId {
-            offset: self.buf.len(),
-            len: bytes.len(),
-        };
-        self.buf.extend_from_slice(bytes);
-        self.dedup.insert(bytes.into(), id);
-        id
     }
+}
 
-    /// The buffer length: a watermark for [`Interner::truncate`].
-    pub fn len(&self) -> usize {
-        self.buf.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-
-    /// Forget every string interned at or past `len` (see [`Store::truncate`]).
-    pub fn truncate(&mut self, len: usize) {
-        self.buf.truncate(len);
-        self.dedup.retain(|_, id| id.offset + id.len <= len);
-    }
-
-    pub fn bytes(&self, id: StrId) -> &[u8] {
-        &self.buf[id.offset..id.offset + id.len]
-    }
-
-    /// Resolve to `&str`. The interned text came in as UTF-8 via [`Interner::intern`];
-    /// callers that interned raw bytes should use [`Interner::bytes`].
-    pub fn resolve(&self, id: StrId) -> &str {
-        std::str::from_utf8(self.bytes(id)).expect("interned as UTF-8")
+impl fmt::Display for StrId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&String::from_utf8_lossy(self.bytes()))
     }
 }
 

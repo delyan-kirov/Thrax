@@ -11,7 +11,7 @@
 
 use std::cell::RefCell;
 
-use utilities::{Aol, Interner, Slice, Store, StrId};
+use utilities::{Aol, Slice, Store, StrId};
 
 use crate::parser::data::Variance;
 
@@ -75,7 +75,7 @@ pub enum TypeNode {
     RowField(StrId, Type, Type),
 }
 
-/// Every type node, plus the interner for constructor and label names.
+/// Every type node. Constructor and label names are [`StrId`]s.
 ///
 /// `Con` nodes and the empty row are shared rather than rebuilt, because they are
 /// the leaves inference creates over and over. The rest are appended: the store
@@ -85,7 +85,6 @@ pub enum TypeNode {
 pub struct TypesMark {
     nodes: usize,
     tuples: usize,
-    names: usize,
     rigids: std::collections::HashMap<String, u32>,
 }
 
@@ -95,7 +94,6 @@ pub const ERROR_CON: &str = "{error}";
 pub struct Types {
     nodes: RefCell<Store<TypeNode>>,
     tuples: RefCell<Store<Type>>,
-    names: RefCell<Interner>,
     cons: RefCell<std::collections::HashMap<StrId, Type>>,
     row_empty: Type,
     /// The type of a definition or expression that failed to check. It unifies
@@ -115,13 +113,11 @@ impl Types {
     pub fn new() -> Types {
         let mut nodes = Store::new();
         let row_empty = nodes.create(TypeNode::RowEmpty);
-        let mut names = Interner::new();
-        let error_name = names.intern(ERROR_CON);
+        let error_name = StrId::intern(ERROR_CON);
         let error = nodes.create(TypeNode::Con(error_name));
         Types {
             nodes: RefCell::new(nodes),
             tuples: RefCell::new(Store::new()),
-            names: RefCell::new(names),
             cons: RefCell::new(std::collections::HashMap::from([(error_name, error)])),
             row_empty,
             error,
@@ -136,14 +132,12 @@ impl Types {
     }
 
     /// The text of an interned name.
-    /// The text of an interned name, copied out: the interner sits behind a
-    /// `RefCell`, so a borrow of it cannot escape.
-    pub fn name(&self, s: StrId) -> String {
-        self.names.borrow().resolve(s).to_string()
+    pub fn name(&self, s: StrId) -> &'static str {
+        s.as_str()
     }
 
     pub fn intern(&self, s: &str) -> StrId {
-        self.names.borrow_mut().intern(s)
+        StrId::intern(s)
     }
 
     /// The elements of a tuple node.
@@ -176,7 +170,6 @@ impl Types {
         TypesMark {
             nodes: self.nodes.borrow().len(),
             tuples: self.tuples.borrow().len(),
-            names: self.names.borrow().len(),
             rigids: self.rigids.borrow().clone(),
         }
     }
@@ -187,7 +180,6 @@ impl Types {
     pub fn truncate(&self, mark: &TypesMark) {
         self.nodes.borrow_mut().truncate(mark.nodes);
         self.tuples.borrow_mut().truncate(mark.tuples);
-        self.names.borrow_mut().truncate(mark.names);
         self.cons.borrow_mut().retain(|_, t| t.index() < mark.nodes);
         *self.rigids.borrow_mut() = mark.rigids.clone();
     }
@@ -201,9 +193,8 @@ impl Types {
         t
     }
 
-    pub fn con(&self, name: &str) -> Type {
-        let id = self.intern(name);
-        self.con_id(id)
+    pub fn con(&self, name: impl Into<StrId>) -> Type {
+        self.con_id(name.into())
     }
 
     /// A rigid type: an opaque constructor equal only to itself, shown as
@@ -240,24 +231,22 @@ impl Types {
     }
 
     /// Extend a row with an effect label that takes no arguments.
-    pub fn row_extend(&self, label: &str, rest: Type) -> Type {
+    pub fn row_extend(&self, label: impl Into<StrId>, rest: Type) -> Type {
         let args = self.row_empty;
         self.row_extend_args(label, args, rest)
     }
 
     /// Extend a row with an effect label and its type arguments (a tuple).
-    pub fn row_extend_args(&self, label: &str, args: Type, rest: Type) -> Type {
-        let l = self.intern(label);
-        self.add(TypeNode::RowExtend(l, args, rest))
+    pub fn row_extend_args(&self, label: impl Into<StrId>, args: Type, rest: Type) -> Type {
+        self.add(TypeNode::RowExtend(label.into(), args, rest))
     }
 
     pub fn record(&self, row: Type) -> Type {
         self.add(TypeNode::Record(row))
     }
 
-    pub fn row_field(&self, label: &str, ty: Type, rest: Type) -> Type {
-        let l = self.intern(label);
-        self.add(TypeNode::RowField(l, ty, rest))
+    pub fn row_field(&self, label: impl Into<StrId>, ty: Type, rest: Type) -> Type {
+        self.add(TypeNode::RowField(label.into(), ty, rest))
     }
 
     pub fn tuple(&self, items: impl IntoIterator<Item = Type>) -> Type {
@@ -327,7 +316,7 @@ pub fn display_folding(
             // The axis-variance markers (`@co`/`@contra`/`@neutral`) read back in
             // their source spelling when they surface on their own (a variance
             // mismatch); a whole tensor renders via the `[..]` path below.
-            TypeNode::Con(name) => out.push_str(&types.name(name)),
+            TypeNode::Con(name) => out.push_str(types.name(name)),
             TypeNode::Nat(n) => out.push_str(&n.to_string()),
             TypeNode::NatAdd(a, b) => paren(out, prec > 2, |out| {
                 go(types, folds, a, namer, out, 2);
@@ -416,7 +405,7 @@ pub fn display_folding(
                         TypeNode::RowField(label, fty, rest) => {
                             out.push_str(if first { " " } else { ", " });
                             first = false;
-                            out.push_str(&types.name(label));
+                            out.push_str(types.name(label));
                             out.push_str(": ");
                             go(types, folds, fty, namer, out, 0);
                             cur = rest;
@@ -433,7 +422,7 @@ pub fn display_folding(
             }
             // A record row seen outside a `Record` wrapper (raw dumps only).
             TypeNode::RowField(label, fty, rest) => {
-                out.push_str(&types.name(label));
+                out.push_str(types.name(label));
                 out.push_str(": ");
                 go(types, folds, fty, namer, out, 0);
                 out.push_str(" | ");

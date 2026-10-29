@@ -777,7 +777,7 @@ fn crepr_layout(src: &str, name: &str) -> utilities::CLayout {
         .unwrap_or_else(|e| panic!("{}", e.render(src, "test.thx")));
     checker
         .crepr_layouts()
-        .get(name)
+        .get(&utilities::StrId::intern(name))
         .cloned()
         .expect("crepr layout present")
 }

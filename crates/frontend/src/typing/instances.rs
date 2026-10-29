@@ -104,8 +104,7 @@ impl<'a> Checker<'a> {
     /// Whether a type-constructor name is a declared struct or union (as opposed to
     /// a base type like `@Int` or an arrow).
     pub(super) fn is_nominal(&self, head: utilities::StrId) -> bool {
-        let name = self.unifier.types.name(head).to_string();
-        self.structs.contains_key(name.as_str()) || self.unions.contains_key(name.as_str())
+        self.structs.contains_key(&head) || self.unions.contains_key(&head)
     }
 }
 
@@ -139,8 +138,8 @@ impl<'a> Checker<'a> {
     /// binder qualifies only when its type's head constructor is already the
     /// requirement's: a binder whose type is still open is not a candidate, because
     /// matching it would decide its type rather than read it.
-    pub(super) fn ctx_locals(&mut self, req: Type) -> Vec<CtxLocal<'a>> {
-        let entries: Vec<(usize, &'a str, Type)> = self
+    pub(super) fn ctx_locals(&mut self, req: Type) -> Vec<CtxLocal> {
+        let entries: Vec<(usize, StrId, Type)> = self
             .scopes
             .iter()
             .enumerate()
@@ -253,7 +252,7 @@ impl<'a> Checker<'a> {
         &mut self,
         fname: &str,
         req: Type,
-        locals: &[CtxLocal<'a>],
+        locals: &[CtxLocal],
         rigid: &HashSet<VarId>,
         depth: usize,
     ) -> Result<CtxVal> {
@@ -302,7 +301,7 @@ impl<'a> Checker<'a> {
             ds
         };
         for d in depths {
-            let hits: Vec<CtxLocal<'a>> = locals
+            let hits: Vec<CtxLocal> = locals
                 .iter()
                 .filter(|l| l.depth == d)
                 .filter(|l| self.ctx_matches(l.ty, req, &local_closed))
@@ -320,16 +319,15 @@ impl<'a> Checker<'a> {
                     req,
                     &format!("resolving the context of `{fname}`"),
                 )?;
-                let base = CtxVal::Bare(name.to_string());
+                let base = CtxVal::Bare(name);
                 return Ok(match index {
                     Some(i) => CtxVal::Proj(Box::new(base), i),
                     None => base,
                 });
             }
         }
-        let key = self.unifier.types.name(head).to_string();
-        let cands = self.instances.get(&key).cloned().unwrap_or_default();
-        let mut hits: Vec<Inst<'a>> = Vec::new();
+        let cands = self.instances.get(&head).cloned().unwrap_or_default();
+        let mut hits: Vec<Inst> = Vec::new();
         for c in &cands {
             let save = self.unifier.save();
             let inst = self.unifier.instantiate(c.bundle);
@@ -349,7 +347,7 @@ impl<'a> Checker<'a> {
             return Err(self.ctx_unresolved(fname, req));
         }
         if hits.len() > 1 {
-            let names: Vec<String> = hits.iter().map(|c| c.name.clone()).collect();
+            let names: Vec<String> = hits.iter().map(|c| c.name.to_string()).collect();
             return Err(self.ctx_ambiguous(fname, req, &names));
         }
         let Some(c) = hits.first().cloned() else {
@@ -365,16 +363,16 @@ impl<'a> Checker<'a> {
         )?;
         let base = match c.module {
             Some(m) => CtxVal::Qualified {
-                module: m.to_string(),
-                name: c.name.clone(),
+                module: m,
+                name: c.name,
             },
-            None => CtxVal::Bare(c.name.clone()),
+            None => CtxVal::Bare(c.name),
         };
         if !c.has_ctx {
             return Ok(base);
         }
         let own = self.unifier.zonk(own.expect("an instance with a context packs it"));
-        let arg = self.resolve_ctx(&c.name.clone(), own, locals, rigid, depth + 1)?;
+        let arg = self.resolve_ctx(c.name.as_str(), own, locals, rigid, depth + 1)?;
         Ok(CtxVal::App(Box::new(base), Box::new(arg)))
     }
 
@@ -421,7 +419,7 @@ impl<'a> Checker<'a> {
     /// through the body's result. Then the context IS determined and simply does
     /// not fit, so say that, naming the instance and the parameter that differs,
     /// rather than claim none is in scope.
-    pub(super) fn explain_near_miss(&mut self, d: Diagnostic, fname: &str, cands: &[Inst<'a>], req: Type) -> Diagnostic {
+    pub(super) fn explain_near_miss(&mut self, d: Diagnostic, fname: &str, cands: &[Inst], req: Type) -> Diagnostic {
         let (_, want) = self.spine(req);
         let Some(&first) = want.first() else {
             return d;
@@ -531,12 +529,12 @@ impl<'a> Checker<'a> {
     /// The requirement type, single field name, and field type of blessed interface
     /// `name` applied to `args`. `None` when the interface is not declared in scope,
     /// so a desugar site keeps its built-in meaning.
-    pub(super) fn blessed_req(&mut self, name: &str, args: &[Type]) -> Option<(Type, String, Type)> {
-        let info = self.structs.get(name)?.clone();
+    pub(super) fn blessed_req(&mut self, name: &str, args: &[Type]) -> Option<(Type, StrId, Type)> {
+        let info = self.structs.get(&StrId::intern(name))?.clone();
         if info.params.len() != args.len() || info.fields.len() != 1 {
             return None;
         }
-        let mut tvars: HashMap<&'a str, Type> = info
+        let mut tvars: HashMap<StrId, Type> = info
             .params
             .iter()
             .copied()
@@ -548,7 +546,7 @@ impl<'a> Checker<'a> {
         for a in args {
             req = self.unifier.types.app(req, *a);
         }
-        Some((req, field.to_string(), field_ty))
+        Some((req, field, field_ty))
     }
 
     /// Resolve blessed interface `name` applied to `args` at a desugar site: the
@@ -573,7 +571,7 @@ impl<'a> Checker<'a> {
     /// The instance satisfying an already-built blessed requirement. Unlike
     /// [`Self::blessed`] a failure is NOT rolled back, so callers that have already
     /// committed unifications probe with their own `save`/`restore` first.
-    pub(super) fn resolve_blessed(&mut self, name: &str, req: Type, field: String) -> Option<HookImpl> {
+    pub(super) fn resolve_blessed(&mut self, name: &str, req: Type, field: StrId) -> Option<HookImpl> {
         let locals = self.ctx_locals(req);
         let rigid = HashSet::new();
         self.resolve_ctx(name, req, &locals, &rigid, 0)
@@ -589,12 +587,12 @@ impl<'a> Checker<'a> {
     pub(super) fn infer_blessed_app(
         &mut self,
         head: Aol<Expr>,
-        name: &'a str,
+        name: StrId,
         args: &[Aol<Expr>],
     ) -> Result<Type> {
-        let arity = self.structs.get(name).map(|i| i.params.len()).unwrap_or(0);
+        let arity = self.structs.get(&name).map(|i| i.params.len()).unwrap_or(0);
         let vars: Vec<Type> = (0..arity).map(|_| self.unifier.fresh()).collect();
-        let Some((req, field, method)) = self.blessed_req(name, &vars) else {
+        let Some((req, field, method)) = self.blessed_req(name.as_str(), &vars) else {
             let span = self.ast.expr_span(head).unwrap_or_else(|| Span::at(0));
             return Err(diag!(
                 Code::TypeUnbound, span, 0,
@@ -614,45 +612,43 @@ impl<'a> Checker<'a> {
         let probe = self.unifier.save();
         let zonked = self.unifier.zonk(req);
         let resolvable = self
-            .resolve_blessed(name, zonked, field.clone())
+            .resolve_blessed(name.as_str(), zonked, field)
             .is_some();
         self.unifier.restore(probe);
         if resolvable {
             let zonked = self.unifier.zonk(req);
             let hook = self
-                .resolve_blessed(name, zonked, field)
+                .resolve_blessed(name.as_str(), zonked, field)
                 .expect("the probe above resolved it");
             self.ctx_args.insert(head, hook.ctx);
             self.blessed_sites.insert(head, hook.field);
             return Ok(self.unifier.zonk(rest));
         }
-        self.plan_ctx(head, name, req)?;
+        self.plan_ctx(head, name.as_str(), req)?;
         self.blessed_sites.insert(head, field);
         Ok(rest)
     }
 
     /// Every instance of blessed interface `name` in scope, as the diagnostic that
     /// lists what a range can build needs them.
-    pub(super) fn blessed_instances(&self, name: &str) -> Vec<Inst<'a>> {
-        self.instances.get(name).cloned().unwrap_or_default()
+    pub(super) fn blessed_instances(&self, name: &str) -> Vec<Inst> {
+        self.instances.get(&StrId::intern(name)).cloned().unwrap_or_default()
     }
 
     /// The head constructor of `ty` if it is a user-declared type (struct / union /
     /// alias), following an application spine (`MyVec Int` -> `MyVec`). A
     /// builtin, a variable, a tuple, or a function returns `None`, so a construction
     /// hook only ever intercepts a literal aimed at a user type.
-    pub(super) fn user_type_head(&self, ty: Type) -> Option<String> {
+    pub(super) fn user_type_head(&self, ty: Type) -> Option<StrId> {
         let mut cur = self.unifier.resolve(ty);
         loop {
             match self.unifier.types.node(cur) {
                 TypeNode::App(head, _) => cur = self.unifier.resolve(head),
                 TypeNode::Con(name) => {
-                    let n = self.unifier.types.name(name);
-                    let k = n.as_str();
-                    return (self.structs.contains_key(k)
-                        || self.unions.contains_key(k)
-                        || self.aliases.contains_key(k))
-                    .then_some(n);
+                    return (self.structs.contains_key(&name)
+                        || self.unions.contains_key(&name)
+                        || self.aliases.contains_key(&name))
+                    .then_some(name);
                 }
                 _ => return None,
             }
@@ -732,7 +728,7 @@ impl<'a> Checker<'a> {
             let offered = self
                 .blessed_instances(name)
                 .iter()
-                .map(|i| i.name.clone())
+                .map(|i| i.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             let want = self.show(result);
@@ -778,15 +774,15 @@ impl<'a> Checker<'a> {
             }
             let base = match inst.module {
                 Some(m) => CtxVal::Qualified {
-                    module: m.to_string(),
-                    name: inst.name.clone(),
+                    module: m,
+                    name: inst.name,
                 },
-                None => CtxVal::Bare(inst.name.clone()),
+                None => CtxVal::Bare(inst.name),
             };
             let ctx = if inst.has_ctx {
                 let own = self.unifier.zonk(own.expect("an instance with a context packs it"));
                 let locals = self.ctx_locals(own);
-                match self.resolve_ctx(&inst.name, own, &locals, &HashSet::new(), 0) {
+                match self.resolve_ctx(inst.name.as_str(), own, &locals, &HashSet::new(), 0) {
                     Ok(arg) => CtxVal::App(Box::new(base), Box::new(arg)),
                     Err(_) => {
                         self.unifier.restore(save);
@@ -912,15 +908,15 @@ pub(super) const CTX_DEPTH: usize = 32;
 /// `\d p1 .. pn = d.field p1 .. pn`, with `d` and the parameters distinct variable
 /// patterns applied in order. Anything else (`neg`'s `ds.0.sub ds.1.zero x`, a
 /// wrapper that reorders or transforms) returns `None`.
-pub(super) fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<String> {
+pub(super) fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<StrId> {
     let Expr::Lambda { params, body } = ast.expr(body) else {
         return None;
     };
     let params = ast.slice(*params);
-    let names: Vec<&str> = params
+    let names: Vec<StrId> = params
         .iter()
         .map(|p| match ast.pat(p.pat) {
-            Pattern::Var(n) => Some(ast.text(*n)),
+            Pattern::Var(n) => Some(*n),
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
@@ -938,7 +934,7 @@ pub(super) fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<String> {
     }
     for (arg, want) in args.iter().zip(rest) {
         match ast.expr(*arg) {
-            Expr::Var { module: None, name } if ast.text(*name) == *want => {}
+            Expr::Var { module: None, name } if *name == *want => {}
             _ => return None,
         }
     }
@@ -946,9 +942,7 @@ pub(super) fn wrapper_field(ast: &Ast, body: Aol<Expr>) -> Option<String> {
         return None;
     };
     match ast.expr(*record) {
-        Expr::Var { module: None, name: r } if ast.text(*r) == *ctx => {
-            Some(ast.text(*name).to_string())
-        }
+        Expr::Var { module: None, name: r } if *r == *ctx => Some(*name),
         _ => None,
     }
 }

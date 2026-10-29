@@ -1,76 +1,51 @@
-use std::sync::Arc;
-
-use crate::core::Term;
+use crate::core::Terms;
 use super::ANormalizer;
-
-fn app(f: Term, x: Term) -> Term {
-    Term::App(Arc::new(f), Arc::new(x))
-}
-
-fn is_var(t: &Term, expect: &str) -> bool {
-    matches!(t, Term::Var { name, .. } if name == expect)
-}
 
 /// A nested application names its inner call: `f (g x)` => `let %a0 = g x in f %a0`.
 #[test]
 fn names_nested_application() {
-    let anf = ANormalizer::default();
-    let out = anf.term(&app(Term::var("f"), app(Term::var("g"), Term::var("x"))));
-    let Term::Let {
-        name, val, body, ..
-    } = out
-    else {
-        panic!("expected a let, got {out:?}");
-    };
-    assert_eq!(name, "%a0");
-    let Term::App(g, x) = val.as_ref() else {
-        panic!("value is not the inner application");
-    };
-    assert!(is_var(g, "g") && is_var(x, "x"));
-    let Term::App(f, a) = body.as_ref() else {
-        panic!("body is not the outer application");
-    };
-    assert!(is_var(f, "f") && is_var(a, "%a0"));
+    let mut t = Terms::new();
+    let (f, g, x) = (t.var("f"), t.var("g"), t.var("x"));
+    let gx = t.app(g, x);
+    let e = t.app(f, gx);
+    let out = ANormalizer::default().term(&mut t, e);
+    assert_eq!(t.render(out), "(Let %a0 (App (Var g) (Var x)) (App (Var f) (Var %a0)))");
 }
 
 /// An application of two atoms is already in A-normal form.
 #[test]
 fn atoms_pass_through() {
-    let anf = ANormalizer::default();
-    let out = anf.term(&app(Term::var("f"), Term::var("x")));
-    let Term::App(f, x) = out else {
-        panic!("expected an application, got {out:?}");
-    };
-    assert!(is_var(&f, "f") && is_var(&x, "x"));
+    let mut t = Terms::new();
+    let (f, x) = (t.var("f"), t.var("x"));
+    let e = t.app(f, x);
+    let out = ANormalizer::default().term(&mut t, e);
+    assert_eq!(t.render(out), "(App (Var f) (Var x))");
 }
 
 /// Both operands of a call are named left-to-right: `f (g a) (h b)`.
 #[test]
 fn both_operands_named_in_order() {
-    let anf = ANormalizer::default();
-    // ((f (g a)) (h b))
-    let inner = app(Term::var("f"), app(Term::var("g"), Term::var("a")));
-    let out = anf.term(&app(inner, app(Term::var("h"), Term::var("b"))));
-    // Outermost binding is the first-normalized operand: `g a` -> %a0.
-    let Term::Let { name, val, .. } = &out else {
-        panic!("expected a let, got {out:?}");
-    };
-    assert_eq!(name, "%a0");
-    assert!(matches!(val.as_ref(), Term::App(g, _) if is_var(g, "g")));
+    let mut t = Terms::new();
+    let (f, g, a, h, b) = (t.var("f"), t.var("g"), t.var("a"), t.var("h"), t.var("b"));
+    let ga = t.app(g, a);
+    let inner = t.app(f, ga);
+    let hb = t.app(h, b);
+    let e = t.app(inner, hb);
+    let out = ANormalizer::default().term(&mut t, e);
+    assert_eq!(
+        t.render(out),
+        "(Let %a0 (App (Var g) (Var a)) (Let %a1 (App (Var f) (Var %a0)) \
+         (Let %a2 (App (Var h) (Var b)) (App (Var %a1) (Var %a2)))))"
+    );
 }
 
 /// A field access on a computation names the record first.
 #[test]
 fn field_names_its_record() {
-    let anf = ANormalizer::default();
-    let rec = app(Term::var("mk"), Term::var("z"));
-    let out = anf.term(&Term::Field(Arc::new(rec), "x".into()));
-    let Term::Let { name, body, .. } = out else {
-        panic!("expected a let, got {out:?}");
-    };
-    assert_eq!(name, "%a0");
-    let Term::Field(r, f) = body.as_ref() else {
-        panic!("body is not a field access");
-    };
-    assert!(is_var(r, "%a0") && f == "x");
+    let mut t = Terms::new();
+    let (mk, z) = (t.var("mk"), t.var("z"));
+    let rec = t.app(mk, z);
+    let e = t.field(rec, "x");
+    let out = ANormalizer::default().term(&mut t, e);
+    assert_eq!(t.render(out), "(Let %a0 (App (Var mk) (Var z)) (Field x (Var %a0)))");
 }

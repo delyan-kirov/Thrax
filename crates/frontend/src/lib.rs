@@ -9,6 +9,12 @@
 //!
 //! [`format`](mod@format) is the source formatter, which runs on tokens alone.
 //!
+//! The AST, the types and the Core are nodes in stores addressed by `Copy`
+//! handles ([`utilities::Aol`]), with annotations in side tables keyed by
+//! handle. Every name in every phase, the IR included, is a [`utilities::StrId`]
+//! into one shared interner, so text appears only where something is rendered.
+//! See Note [One process-wide interner].
+//!
 //! Entry points: [`parse`] (source to AST), [`check`] (AST to inferred types),
 //! [`desugar_program`] (AST to Core), and [`ir::lower_modules`] (Core to IR).
 
@@ -33,7 +39,7 @@ pub use typing::unify::Unifier;
 pub use typing::Checker;
 pub use typing::{collect_resolved, Declarations, ReflectInfo, Resolved};
 
-use utilities::Result;
+use utilities::{Result, StrId};
 
 /// A parsed compilation unit: the [`Program`] root and the [`Ast`] stores that
 /// back every handle in it. Reads go through `parsed.ast` (`ast.expr(id)`,
@@ -73,6 +79,6 @@ pub fn parse_recovering(ast: Ast, source: &str) -> (Ast, Result<Program>, Vec<ut
 }
 
 /// Type-check a program, returning each global definition's generalized type.
-pub fn check<'a>(ast: &'a Ast, program: &Program) -> Result<Vec<(&'a str, Type)>> {
+pub fn check(ast: &Ast, program: &Program) -> Result<Vec<(StrId, Type)>> {
     Checker::new(ast, std::rc::Rc::new(Types::new())).check_program(program)
 }

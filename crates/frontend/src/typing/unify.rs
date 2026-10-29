@@ -27,7 +27,7 @@ pub mod sizes;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use utilities::{Code, Diagnostic, Result, Span};
+use utilities::{Code, Diagnostic, Result, Span, StrId};
 
 use crate::typing::types::{display_folding, Level, RowFold, Type, TypeNode, Types, VarId};
 
@@ -52,7 +52,7 @@ pub struct Unifier {
     /// record row (the hybrid bridge): passing a struct where an open row
     /// `{ x | r }` is expected. A generic struct instance `App(Con("Box"), Int)`
     /// bridges by substituting its arguments for the parameter vars.
-    struct_rows: std::collections::HashMap<String, (Vec<VarId>, Type)>,
+    struct_rows: std::collections::HashMap<StrId, (Vec<VarId>, Type)>,
     /// Variables of the `Nat` kind (a size in `[n]T`). A `Nat` variable unifies
     /// only with another `Nat` variable or a `TypeNode::Nat`; kind mismatches are
     /// rejected in [`Unifier::bind`]. Snapshotted by save/restore so a rolled-back
@@ -71,7 +71,7 @@ pub struct Unifier {
     pub row_folds: Vec<RowFold>,
     /// The labels of the row being performed while [`Unifier::subrow`] or a row
     /// unification runs, to name the alias an unhandled label belongs to.
-    performed: Option<Vec<String>>,
+    performed: Option<Vec<StrId>>,
 }
 
 /// One reversible mutation, recorded so [`Unifier::restore`] can rewind a trial.

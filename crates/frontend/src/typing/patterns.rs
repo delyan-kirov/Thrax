@@ -32,7 +32,7 @@ impl<'a> Checker<'a> {
         match self.pnode(pat) {
             Pattern::Wild => Ok(()),
             Pattern::Var(name) => {
-                self.bind(self.text(*name), expected);
+                self.bind(*name, expected);
                 Ok(())
             }
             Pattern::Int(_) if self.literal_pattern_hook_check(pat, expected)? => Ok(()),
@@ -100,7 +100,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Struct { ty, fields } => {
-                let ty = self.text(*ty);
+                let ty = *ty;
                 let fields = self.ast.slice(*fields);
                 self.type_struct_pattern(ty, fields, expected)
             }
@@ -111,14 +111,13 @@ impl<'a> Checker<'a> {
             Pattern::Variant {
                 module, ty, tag, fields,
             } => {
-                let ty = ty.map(|t| self.text(t));
-                let tag = self.text(*tag);
-                if let Some(d) = self.unqualified_alias_ctor(*module, ty, tag) {
+                let tag = *tag;
+                if let Some(d) = self.unqualified_alias_ctor(*module, *ty, tag) {
                     let span = self.ast.pat_span(pat).unwrap_or(Span::at(0));
                     return Err(d.fill_span(span));
                 }
                 let fields = self.ast.slice(*fields);
-                self.type_variant_pattern(pat, ty, tag, fields, expected)
+                self.type_variant_pattern(pat, *ty, tag, fields, expected)
             }
         }
     }
@@ -134,13 +133,13 @@ impl<'a> Checker<'a> {
         expected: Type,
     ) -> Result<()> {
         let tail = self.unifier.fresh();
-        let mut entries: Vec<(&'a str, Type, Option<Aol<Pattern>>)> = Vec::new();
+        let mut entries: Vec<(StrId, Type, Option<Aol<Pattern>>)> = Vec::new();
         for f in fields {
             match f {
                 FieldPat::Named { name, pat } => {
-                    entries.push((self.text(*name), self.unifier.fresh(), Some(*pat)))
+                    entries.push((*name, self.unifier.fresh(), Some(*pat)))
                 }
-                FieldPat::Shorthand(name) => entries.push((self.text(*name), self.unifier.fresh(), None)),
+                FieldPat::Shorthand(name) => entries.push((*name, self.unifier.fresh(), None)),
                 FieldPat::Positional(_) => {
                     return Err(diag!(
                         Code::TypeMismatch, Span::at(0), 0,
@@ -152,7 +151,7 @@ impl<'a> Checker<'a> {
         let row = entries
             .iter()
             .rev()
-            .fold(tail, |rest, (n, t, _)| self.unifier.types.row_field(n, *t, rest));
+            .fold(tail, |rest, (n, t, _)| self.unifier.types.row_field(*n, *t, rest));
         let want = self.unifier.types.record(row);
         self.unifier.unify(expected, want, "in a record pattern")?;
         for (name, t, pat) in entries {
@@ -172,15 +171,15 @@ impl<'a> Checker<'a> {
 
     pub(super) fn type_struct_pattern(
         &mut self,
-        ty: &'a str,
+        ty: StrId,
         fields: &'a [FieldPat],
         expected: Type,
     ) -> Result<()> {
         // No loose fallback: binding a pattern's fields to fresh variables without
         // unifying against the scrutinee would let the arm claim any type it liked,
         // so an unresolvable pattern is an error, not an unconstrained one.
-        let Some(info) = self.structs.get(ty).cloned() else {
-            let what = if self.unions.contains_key(ty) {
+        let Some(info) = self.structs.get(&ty).cloned() else {
+            let what = if self.unions.contains_key(&ty) {
                 "a union, so match its variants (`{ty}.Tag.{{ .. }}`)".to_string()
             } else if self.is_known_type(ty) {
                 "not a struct".to_string()
@@ -200,7 +199,7 @@ impl<'a> Checker<'a> {
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let name = self.text(*name);
+                    let name = *name;
                     let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
                     let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
                     self.type_pattern(*pat, want)?;
@@ -212,7 +211,7 @@ impl<'a> Checker<'a> {
                     self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
-                    let name = self.text(*name);
+                    let name = *name;
                     let want = self.struct_field_ty(&info, &mut subst, Some(name), i);
                     let want = want.ok_or_else(|| no_such_field("struct", ty, name))?;
                     self.bind(name, want);
@@ -225,8 +224,8 @@ impl<'a> Checker<'a> {
     pub(super) fn type_variant_pattern(
         &mut self,
         pat: Aol<Pattern>,
-        ty: Option<&'a str>,
-        tag: &'a str,
+        ty: Option<StrId>,
+        tag: StrId,
         fields: &'a [FieldPat],
         expected: Type,
     ) -> Result<()> {
@@ -239,7 +238,7 @@ impl<'a> Checker<'a> {
         // an arm that binds fresh variables and constrains nothing.
         let Some((result, payload)) = resolved else {
             return Err(match ty {
-                Some(n) if !self.unions.contains_key(n) => diag!(
+                Some(n) if !self.unions.contains_key(&n) => diag!(
                     Code::TypeMismatch, Span::at(0), 0,
                     "`{n}` is not a union, so it has no variant `{tag}`"
                 ),
@@ -263,7 +262,7 @@ impl<'a> Checker<'a> {
         for (i, f) in fields.iter().enumerate() {
             match f {
                 FieldPat::Named { name, pat } => {
-                    let name = self.text(*name);
+                    let name = *name;
                     let want = variant_field_ty(&payload, Some(name), i);
                     let want =
                         want.ok_or_else(|| no_such_field("constructor", &label, name))?;
@@ -276,7 +275,7 @@ impl<'a> Checker<'a> {
                     self.type_pattern(*pat, want)?;
                 }
                 FieldPat::Shorthand(name) => {
-                    let name = self.text(*name);
+                    let name = *name;
                     let want = variant_field_ty(&payload, Some(name), i);
                     let want =
                         want.ok_or_else(|| no_such_field("constructor", &label, name))?;
@@ -407,7 +406,7 @@ impl<'a> Checker<'a> {
         let handler = matches!(
             self.node(e),
             Expr::Match { scrut, .. }
-                if matches!(self.node(*scrut), Expr::Var { module: None, name } if self.text(*name) == "%ret")
+                if matches!(self.node(*scrut), Expr::Var { module: None, name } if *name == "%ret")
         );
         for dead in report.unreachable {
             let (msg, pats) = match dead {
@@ -481,7 +480,7 @@ impl<'a> Checker<'a> {
         };
         let signed = |bits: u32| (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
         let unsigned = |bits: u32| (0, (1i128 << bits) - 1);
-        Some(match self.unifier.types.name(name).as_str() {
+        Some(match self.unifier.types.name(name) {
             "@Int8" => signed(8),
             "@Int16" => signed(16),
             "@Int32" => signed(32),
@@ -618,15 +617,15 @@ impl<'a> Checker<'a> {
                 DPat::Product(ProductKind::Tuple, fields.collect())
             }
             Pattern::Struct { ty, fields } => {
-                let ty = self.text(*ty);
-                let Some(info) = self.structs.get(ty) else {
+                let ty = *ty;
+                let Some(info) = self.structs.get(&ty) else {
                     return DPat::Opaque;
                 };
                 let mut out = Vec::new();
                 for (i, f) in self.ast.slice(*fields).iter().enumerate() {
                     match f {
                         FieldPat::Named { name, pat } => {
-                            out.push((self.text(*name).to_string(), self.dpat(*pat)))
+                            out.push((name.to_string(), self.dpat(*pat)))
                         }
                         FieldPat::Positional(pat) => match info.fields.get(i) {
                             Some((name, _)) => out.push((name.to_string(), self.dpat(*pat))),
@@ -635,26 +634,26 @@ impl<'a> Checker<'a> {
                         FieldPat::Shorthand(_) => {}
                     }
                 }
-                DPat::Product(ProductKind::Struct(ty.into()), out)
+                DPat::Product(ProductKind::Struct(ty.as_str().into()), out)
             }
             Pattern::Record { fields, .. } => {
                 let fields = self.ast.slice(*fields).iter().filter_map(|f| match f {
                     FieldPat::Named { name, pat } => {
-                        Some((self.text(*name).to_string(), self.dpat(*pat)))
+                        Some((name.to_string(), self.dpat(*pat)))
                     }
                     _ => None,
                 });
                 DPat::Product(ProductKind::Record, fields.collect())
             }
             Pattern::Variant { ty, tag, fields, .. } => {
-                let tag = self.text(*tag);
+                let tag = *tag;
                 let union = self
                     .variant_pattern_unions
                     .get(&pat)
                     .copied()
-                    .or_else(|| ty.map(|t| self.text(t)))
+                    .or(*ty)
                     .or_else(|| self.find_union_by_tag(tag));
-                let Some((union, info)) = union.and_then(|u| Some((u, self.unions.get(u)?))) else {
+                let Some((union, info)) = union.and_then(|u| Some((u, self.unions.get(&u)?))) else {
                     return DPat::Opaque;
                 };
                 let Some(index) = info.variants.iter().position(|v| v.tag == tag) else {
@@ -665,8 +664,7 @@ impl<'a> Checker<'a> {
                 for (i, f) in self.ast.slice(*fields).iter().enumerate() {
                     let (slot, p) = match f {
                         FieldPat::Named { name, pat } => {
-                            let name = self.text(*name);
-                            (payload.iter().position(|(n, _)| *n == Some(name)), *pat)
+                            (payload.iter().position(|(n, _)| *n == Some(*name)), *pat)
                         }
                         FieldPat::Positional(pat) => (Some(i), *pat),
                         FieldPat::Shorthand(_) => continue,
@@ -682,7 +680,7 @@ impl<'a> Checker<'a> {
                     .map(|v| (v.tag.to_string(), v.payload.len()))
                     .collect();
                 DPat::Ctor(
-                    Ctor::Variant { union: union.into(), index, siblings: siblings.into() },
+                    Ctor::Variant { union: union.as_str().into(), index, siblings: siblings.into() },
                     args,
                 )
             }
